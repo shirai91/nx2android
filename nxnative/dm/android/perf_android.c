@@ -15,6 +15,7 @@
 #include <dirent.h>
 #include <sys/syscall.h>
 #include <sched.h>
+#include <errno.h>
 #include "dm.h"
 
 typedef struct APerformanceHintManager APerformanceHintManager;
@@ -194,8 +195,32 @@ static void adapt_frame(int64_t work, int64_t now) {
 // the clock a slow main thread needs
 static int64_t g_prev_present, g_pace;
 void dm_perf_frame_start(uint64_t pace_ns) { g_work_start = perf_now(); g_pace = (int64_t)pace_ns; }
+// Opt-in diagnostic: EAS can put this serial replay workload on little cores despite an active ADPF session.
+static void render_big_core(void) {
+    static _Thread_local int checked;
+    if (checked) return;
+    checked = 1;
+    const char *e = getenv("DM_RENDER_BIG_CORE"); if (!e || strcmp(e, "1")) return;
+    cpu_set_t allowed, best; CPU_ZERO(&best);
+    if (sched_getaffinity(0, sizeof allowed, &allowed)) { LOG("[perf] render affinity query refused: %d", errno); return; }
+    int maximum = 0, minimum = 0;
+    for (int cpu = 0; cpu < CPU_SETSIZE; cpu++) if (CPU_ISSET(cpu, &allowed)) {
+        char path[128]; snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%d/cpu_capacity", cpu);
+        FILE *f = fopen(path, "r"); int capacity = 0;
+        if (!f) { LOG("[perf] render CPU capacities unavailable; affinity unchanged"); return; }
+        int ok = fscanf(f, "%d", &capacity); fclose(f);
+        if (ok != 1 || capacity <= 0) { LOG("[perf] invalid render CPU capacity; affinity unchanged"); return; }
+        if (!minimum || capacity < minimum) minimum = capacity;
+        if (capacity > maximum) { maximum = capacity; CPU_ZERO(&best); }
+        if (capacity == maximum) CPU_SET(cpu, &best);
+    }
+    if (!maximum || maximum == minimum) return;
+    if (sched_setaffinity(0, sizeof best, &best)) LOG("[perf] render affinity request refused: %d", errno);
+    else LOG("[perf] render thread %d restricted to allowed CPUs with capacity %d", gettid(), maximum);
+}
 // Called on the presenting thread right before a present; period in seconds (1/60, 1/30, ...).
 void dm_perf_frame(double period) {
+    render_big_core();
     int64_t p = period > 0 && period < 1 ? (int64_t)(period * 1e9) : 16666667, t = perf_now();
     // the CPU hint's target is the game's own period, not the adaptive one: with the longer target the CPU clocks drop until the work fills it,
     // and the work then never shows the room to step back up (NEO stayed at 30 fps with frames of 31 to 48 ms)
