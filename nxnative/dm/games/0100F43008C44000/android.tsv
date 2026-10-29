@@ -1,0 +1,5 @@
+# Provisional Android port;
+status	experimental
+package	org.nx2a.pokemonlegendsza
+orientation	landscape
+requires	bcn

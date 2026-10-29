@@ -112,6 +112,17 @@ static Result mount_ex(const char *name, const char *dir, int ro, int txn) {
     if (txn_err) front_save_failed(txn_err);
     if (!ro && !txn) mkdir(dir, 0755);
     LOG("fs mount %s: → %s%s%s", name, txn ? g_mnt[g_nmnt - 1].dir : dir, ro || txn_err ? " (read-only)" : txn ? " (transactional save: work directory, swapped in atomically on Commit)" : "", g_mnt[g_nmnt - 1].overlay[0] ? " (overlay first)" : "");
+    // A read-only mount the host may not list: every lookup in it fails with EACCES and the game sees no files at all (issue #9: Mario vs. Donkey Kong then dereferenced a null at its first heap setup, which read as a crash of its own)
+    if (ro && !txn) { DIR *d = opendir(dir); int e = errno; struct stat st;
+        if (d) closedir(d);
+        else if (e == ENOENT) ;   // a game with no RomFS of its own, or a stand-in that is not there: lookups answer "not found" as they should
+        else if (!stat(dir, &st))
+            LOG("[RED] fs mount %s: %s cannot be listed (errno=%d; owner uid %u gid %u mode %o, the host runs as uid %u): exact paths are looked up without listing, directory listings fail"
+#ifdef __ANDROID__
+                "; most likely the data pack went into a folder the app did not make -- install again with the porter (it has the app make the folder), or uninstall the app, install it, start it once, then push the data"
+#endif
+                , name, dir, e, (unsigned)st.st_uid, (unsigned)st.st_gid, (unsigned)(st.st_mode & 07777), (unsigned)getuid());
+        else LOG("[RED] fs mount %s: %s cannot be listed (errno=%d)", name, dir, e); }
     return RES_OK;
 }
 static Result mount(const char *name, const char *dir, int ro) { return mount_ex(name, dir, ro, 0); }
@@ -178,7 +189,17 @@ static int path_component(char *parent, size_t n, const char *name, int create, 
             parent[len] = '/'; memcpy(parent + len + 1, hit->phys, k + 1); return 1;
         }
     }
-    DIR *d = opendir(parent); if (!d) return 0;
+    DIR *d = opendir(parent);
+    if (!d) {
+        // A read-only directory the host may search but not list (EACCES from opendir; seen on an Android data pack, where open by name still worked): take the exact name. Only names chosen on a
+        // case collision (.dm-case-N) differ from the guest name, and those exist in writable mounts
+        if (errno != EACCES || !ro || create) return 0;
+        char p[1280]; struct stat st; snprintf(p, sizeof p, "%s/%s", parent, name);
+        if (lstat(p, &st)) return 0;
+        size_t len = strlen(parent), k = strlen(name);
+        if (len + k + 2 > n) { errno = ENAMETOOLONG; return 0; }
+        parent[len] = '/'; memcpy(parent + len + 1, name, k + 1); return 1;
+    }
     struct dirent *e; char physical[0x301] = "", guest[0x301];
     while ((e = readdir(d))) {
         if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
