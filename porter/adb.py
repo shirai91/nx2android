@@ -151,11 +151,13 @@ class Adb:
 
     def remote_sizes(self, rdir):   # {relative path: size} of every file under rdir on the device
         q = shlex.quote(rdir)
-        out = self.shell(f'[ -d {q} ] && cd {q} && find . -type f -exec stat -c "%s %n" {{}} + ; true')
+        # find's own -printf, not -exec stat {} +: toybox 0.8.6 (AYN Thor, Android 13) fails most -exec batches with "Argument list too long",
+        # which adb hands back among the output, so the listing came back silently short (6,759 of 206,904 files) and the install pushed everything again
+        out = self.shell(f"[ -d {q} ] && cd {q} && find . -type f -printf '%s %P\\n' ; true")
         have = {}
         for ln in out.splitlines():
             sz, _, name = ln.partition(' ')
-            if sz.isdigit(): have[name[2:] if name.startswith('./') else name] = int(sz)
+            if sz.isdigit(): have[name] = int(sz)
         return have
 
     def remote_md5(self, rdir, rels):   # {relative path: MD5} of those files under rdir (missing ones left out)
