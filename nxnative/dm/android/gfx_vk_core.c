@@ -13,6 +13,7 @@
 #include <android/hardware_buffer.h>
 #include <dlfcn.h>
 #include <errno.h>
+#include <limits.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
@@ -38,6 +39,30 @@ static int is_on(const char *const *on, uint32_t n, const char *name) { for (uin
 typedef struct { VkBaseOutStructure h; VkBool32 b[24]; } featx_t;
 static VkBool32 *featx(featx_t *x, uint32_t n, VkStructureType s) { static VkBool32 off[24]; for (uint32_t i = 0; i < n; i++) if (x[i].h.sType == s) return x[i].b; return off; }   // (off: only 0 is written to it)
 
+// Optional app-local driver; the ordinary build keeps the system driver.
+static void *vk_open_driver(void) {
+    const char *driver = getenv("DM_VK_DRIVER");
+    if (!driver || !strcmp(driver, "system")) return dlopen("libvulkan.so", RTLD_NOW | RTLD_LOCAL);
+    if (strcmp(driver, "turnip")) die("[vk] DM_VK_DRIVER must be system or turnip");
+    // Find the optional loader beside the app's own host library.
+    Dl_info info; char dir[PATH_MAX], path[PATH_MAX];
+    if (!dladdr((void *)&vk_init, &info) || !info.dli_fname || strlen(info.dli_fname) >= sizeof dir) die("[vk] cannot locate native libraries");
+    strcpy(dir, info.dli_fname); char *slash = strrchr(dir, '/');
+    if (!slash) die("[vk] native library has no directory");
+    slash[1] = 0;
+    if (snprintf(path, sizeof path, "%slibadrenotools.so", dir) >= (int)sizeof path) die("[vk] native library path too long");
+    void *helper = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+    if (!helper) die("[vk] app-local adrenotools: %s", dlerror());
+    // Public adrenotools C ABI; dynamic loading keeps its C++ dependency optional for ordinary system-driver builds.
+    typedef void *(*open_driver_t)(int, int, const char *, const char *, const char *, const char *, const char *, void **);
+    open_driver_t open_driver = (open_driver_t)dlsym(helper, "adrenotools_open_libvulkan");
+    if (!open_driver) die("[vk] adrenotools_open_libvulkan: %s", dlerror());
+    void *lib = open_driver(RTLD_NOW | RTLD_LOCAL, 1 /* ADRENOTOOLS_DRIVER_CUSTOM */, NULL, dir, dir, "libvulkan_freedreno.so", NULL, NULL);
+    if (!lib) die("[vk] requested app-local Turnip could not be loaded");
+    VKLOG("app-local Turnip loaded");
+    return lib;
+}
+
 static void completion_start(void);
 static void slots_init(void);
 static VKAPI_ATTR VkBool32 VKAPI_CALL vk_validation_msg(VkDebugUtilsMessageSeverityFlagBitsEXT sev, VkDebugUtilsMessageTypeFlagsEXT type, const VkDebugUtilsMessengerCallbackDataEXT *d, void *u) {
@@ -52,9 +77,10 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL vk_validation_msg(VkDebugUtilsMessageSever
 
 void vk_init(void) {
     static int done; if (done) return; done = 1;
-    void *lib = dlopen("libvulkan.so", RTLD_NOW | RTLD_LOCAL);
+    void *lib = vk_open_driver();
     if (!lib) die("[vk] libvulkan.so: %s", dlerror());
     p_vkGetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)dlsym(lib, "vkGetInstanceProcAddr");
+    if (!p_vkGetInstanceProcAddr) die("[vk] driver has no vkGetInstanceProcAddr");
     vkCreateInstance = (PFN_vkCreateInstance)p_vkGetInstanceProcAddr(NULL, "vkCreateInstance");
     const char *iext[] = {"VK_KHR_surface", "VK_KHR_android_surface", "VK_EXT_debug_utils"};
     VkApplicationInfo app = {VK_STRUCTURE_TYPE_APPLICATION_INFO, NULL, "dmhost", 1, "nxnative", 1, VK_API_VERSION_1_3};

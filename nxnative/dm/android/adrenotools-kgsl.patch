@@ -1,0 +1,34 @@
+--- a/src/hook/hook_impl.cpp
++++ b/src/hook/hook_impl.cpp
+@@ -2,6 +2,7 @@
+ #include <string>
+ #include <cstdio>
+ #include <cstring>
++#include <cstdlib>
+ #include <dlfcn.h>
+ #include <fcntl.h>
+ #include <sys/ioctl.h>
+@@ -76,6 +77,12 @@
+         return nullptr;
+
+     initHookParam(hook_params);
++
++    const char *gpuPower = getenv("DM_GPU_PERF");
++    if (gpuPower && !strcmp(gpuPower, "1")) {
++        if (!linkernsbypass_namespace_dlopen("libkgsl_power_hook.so", RTLD_NOW | RTLD_GLOBAL, driverNs))
++            LOGI("GPU context power hook unavailable; ordinary driver retained");
++    }
+
+     if (hook_params->featureFlags & ADRENOTOOLS_DRIVER_FILE_REDIRECT) {
+         if (!linkernsbypass_namespace_dlopen("libfile_redirect_hook.so", RTLD_GLOBAL, driverNs)) {
+--- a/src/hook/CMakeLists.txt
++++ b/src/hook/CMakeLists.txt
+@@ -25,3 +25,8 @@
+ target_link_options(gsl_alloc_hook PRIVATE -z global)
+ target_link_libraries(gsl_alloc_hook hook_impl)
+ set_target_properties(gsl_alloc_hook PROPERTIES CXX_VISIBILITY_PRESET hidden)
++
++add_library(kgsl_power_hook SHARED kgsl_power_hook.c)
++target_compile_options(kgsl_power_hook PRIVATE -Wall -Wextra -Werror)
++target_link_options(kgsl_power_hook PRIVATE -z global)
++target_link_libraries(kgsl_power_hook log)

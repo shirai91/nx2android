@@ -119,6 +119,29 @@ class Experimental(unittest.TestCase):
 
 
 class Misc(unittest.TestCase):
+    def test_apk_driver_libraries_and_missing_bundle(self):
+        from types import SimpleNamespace as NS
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as td:
+            t = Path(td); libs = t / 'driver'; libs.mkdir()
+            for name in ('libadrenotools.so', 'libvulkan_freedreno.so'): (libs / name).write_bytes(b'ELF')
+            p = pipeline.Port(pipeline.Options(folder=t, out=t, app_name='Test'))
+            p.g = game.load(NEO); p.app_name = 'Test'; p.package = 'org.nx2a.test'; p.pkg_ver = 'v0'; p.display = '1.0'
+            p.ap = NS(landscape=True); p.so = t / 'host.so'; p.logs = t; p.env = {}; p.icon = lambda: None
+            def package(args, *a, **kw):
+                Path(args[3]).write_bytes(b'APK')
+            with patch.dict(os.environ, {'DM_VK_DRIVER_LIBS': str(libs)}), patch.object(pipeline.nsp, 'run', side_effect=package) as run:
+                p.apk()
+                args = run.call_args.args[0]
+                self.assertEqual([args[i + 1].name for i, a in enumerate(args) if a == '--extra-so'], ['libadrenotools.so', 'libvulkan_freedreno.so'])
+                self.assertTrue(p.apk_path.is_file())
+            with patch.dict(os.environ, {'DM_VK_DRIVER_LIBS': ''}), patch.object(pipeline.nsp, 'run', side_effect=package) as run:
+                p.apk()
+                self.assertNotIn('--extra-so', run.call_args.args[0])
+            with patch.dict(os.environ, {'DM_VK_DRIVER_LIBS': str(t / 'missing')}), patch.object(pipeline.nsp, 'run') as run:
+                with self.assertRaises(pipeline.BuildError): p.apk()
+                run.assert_not_called()
+
     def test_config_roundtrip(self):
         config.set_value('device', 'abc:5555'); self.assertEqual(config.load()['device'], 'abc:5555')
         with self.assertRaises(KeyError): config.set_value('nope', 'x')
