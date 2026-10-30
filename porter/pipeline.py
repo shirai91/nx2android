@@ -3,7 +3,7 @@
 # the rewrite for DM_TARGET=android, the Vulkan shader bundle, the host built with the player's NDK, the APK, the data pack and the install.
 # Work files go where upstream's NSP script puts them, <game folder>/<title ID>_build/ (extract/, aoc/, shader/, logs/ are shared with an iOS build of the same folder),
 # with the Android ones in its android/ folder.
-import os, re, shutil, sys
+import hashlib, os, re, shutil, struct, sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -230,6 +230,7 @@ class Port:
         gfx = src['graphics'][0]
         if gfx != 'nvn': raise BuildError(f'{self.app_name} renders with {gfx} ({src["graphics"][1]}): the Android host replays NVN only so far')
         for k in ('glslc_capture', 'ue_decode', 'oodle_packs', 'ue_legacy'):
+            if k == 'oodle_packs' and self.env.get('DM_ANDROID_PREDECODED_SHADER_PKG'): continue
             if src[k][0]: raise BuildError(f'{self.app_name} needs a step that boots the game in the Mac host ({src[k][1]}), which a Windows port cannot run yet')
 
     # ---- 60 fps (--fps60): the profile's own cap (fps_target: frame-step stubs or hle_fpslock.c's rows), else the community's FPSLocker config of the build ----
@@ -275,14 +276,55 @@ class Port:
     # ---- shaders: upstream's split, then SPIR-V for the Vulkan backend ----
     def shaders(self):
         sv = self.versions
-        pkg = self.work / 'shader' / 'pkg'
-        nsp.split_shaders(PY, NXNATIVE, [self.dirs[v] / 'RomFS' for v in sv], [self.dirs[v] / 'ExeFS/main' for v in sv], pkg, self.env, self.logs, self.g, bool(self.derived or self.provisional),
-                         aoc=self.aoc)   # DLC with shaders of its own (Xenoblade Chronicles 3's archives)
+        pkg = self.aw / 'shader_pkg'
+        decoded_pkg = self.env.get('DM_ANDROID_PREDECODED_SHADER_PKG')
+        pkg_content_key = None
+        if decoded_pkg:
+            decoded_pkg = Path(decoded_pkg)
+            # User-supplied decoded cache: verify its shader keys and completeness against this profile.
+            rows = {}
+            for line in self.g.table('shader_map.tsv').read_text(encoding='utf-8').splitlines():
+                c = line.split('\t')
+                if len(c) > 4 and c[0].endswith('.bin'): rows.setdefault(c[0], {})[int(c[1])] = c[3]
+            if not rows: raise BuildError(f'{self.g.id}: shader map has no records to validate')
+            if {p.name for p in decoded_pkg.glob('*.bin')} != set(rows): raise BuildError(f'{decoded_pkg}: shader package files do not match this profile')
+            records = 0
+            for name, keys in rows.items():
+                if not (decoded_pkg / name).is_file(): raise BuildError(f'{decoded_pkg}: missing {name} from this profile\'s shader map')
+                d = (decoded_pkg / name).read_bytes()
+                starts = [m.start() for m in re.finditer(b'BTCDBTCD', d)]
+                records += len(starts)
+                if max(keys, default=-1) >= len(starts): raise BuildError(f'{decoded_pkg}: {name} is missing shader records from this profile')
+                for i, key in keys.items():
+                    rec = d[starts[i]:starts[i + 1] if i + 1 < len(starts) else len(d)]
+                    ci = rec.find(bytes.fromhex('34127698'))
+                    if ci < 0: raise BuildError(f'{decoded_pkg}: malformed record {i} in {name}')
+                    nctl, ncode = struct.unpack_from('<2I', rec, 0x28)
+                    if ci != 0x38 + ncode or ci + nctl > len(rec) or nctl < 0x24: raise BuildError(f'{decoded_pkg}: malformed record {i} in {name}')
+                    ctl = rec[0x38 + ncode:0x38 + ncode + nctl]
+                    code = rec[0x38:0x38 + ncode]
+                    ctl_len = struct.unpack_from('<I', ctl, 0x20)[0]
+                    ctl_len = ctl_len if 0x760 <= ctl_len < 0x880 else 0x880
+                    if hashlib.sha256(ctl[:ctl_len] + code).hexdigest()[:16] != key:
+                        raise BuildError(f'{decoded_pkg}: {name} record {i} does not match this profile\'s shader map')
+            sidecar = decoded_pkg.parent / 'pkg.key'
+            if not sidecar.is_file(): raise BuildError(f'{decoded_pkg}: missing pkg.key record-count stamp')
+            meta = sidecar.read_text(encoding='utf-8').splitlines()
+            count = re.fullmatch(r'([\d,]+) shaders', meta[1]) if len(meta) > 1 else None
+            pkg_content_key = nsp.package_key(decoded_pkg)
+            if records != sum(map(len, rows.values())) or not count or int(count[1].replace(',', '')) != records:
+                raise BuildError(f'{decoded_pkg}: package record count does not match this profile')
+            nsp.rmtree(pkg)
+            shutil.copytree(decoded_pkg, pkg)
+        else:
+            nsp.split_shaders(PY, NXNATIVE, [self.dirs[v] / 'RomFS' for v in sv], [self.dirs[v] / 'ExeFS/main' for v in sv], pkg, self.env, self.logs, self.g, bool(self.derived or self.provisional),
+                             aoc=self.aoc)   # DLC with shaders of its own (Xenoblade Chronicles 3's archives)
         self.dmsv = self.aw / 'shaders.dmsv'; kf = self.aw / 'shaders.dmsv.key'; cap = self.aw / 'captured_shaders'
+        if pkg_content_key is None: pkg_content_key = nsp.package_key(pkg)
         PROG.stage('Vulkan shaders', step='building the translator')
         xlate, xkey = self.translator()
         PROG.set(step='checking the inputs')
-        key = nsp.fingerprint(nsp.package_key(pkg), ('files', [DM / 'android/tools/shader_vk.py'] + nsp.tool_files(NXNATIVE)), ('files', nsp.profile_files(self.g)), xkey,
+        key = nsp.fingerprint(pkg_content_key, ('files', [DM / 'android/tools/shader_vk.py'] + nsp.tool_files(NXNATIVE)), ('files', nsp.profile_files(self.g)), xkey,
                               ('files', sorted(cap.glob('*.bin'))))
         if self.dmsv.is_file() and (note := nsp.reused(kf, key)) is not None:
             PROG.end(f'{note}, reused (inputs unchanged)'); return
