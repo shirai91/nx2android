@@ -779,14 +779,18 @@ static uint32_t ubo_word(int st, int reg, int off) {
 }
 static uint32_t g_dispatch[3], g_draw_binst;
 #define SB_ALIGN 256   // storage buffers are bound from this boundary below their address (dm/android/tools/shader_vk.py SB_ALIGN, which the shaders were translated for)
-static void drv_segment(int st, int bank, uint8_t *d) {
+static void drv_segment(int st, int bank, int dyn, uint8_t *d) {
     memset(d, 0, 0x1000);
     if (bank == 0) {
         int base = st == 0 ? 0x110 : st == 5 ? 0x310 : st == 1 ? 0x510 : -1;
         if (base >= 0) for (int r = 0; r < 16; r++) { uint64_t a = S.ssbo[st][r].addr; uint32_t n = (uint32_t)S.ssbo[st][r].size; memcpy(d + base + 16 * r, &a, 8); memcpy(d + base + 16 * r + 8, &n, 4); }
         if (st != 5) { const float mp = 2047.0f; memcpy(d + 0x610, &mp, 4); memcpy(d + 0x644, &g_draw_binst, 4); }
         else { memcpy(d + 0x200, g_dispatch, 12); for (int r = 0; r < 16; r++) { uint64_t a = S.ubo[5][r].addr; uint32_t n = (uint32_t)S.ubo[5][r].size; memcpy(d + 0x210 + 16 * r, &a, 8); memcpy(d + 0x210 + 16 * r + 8, &n, 4); } }
-    } else for (int off = 0x20; off < 0x968; off += 8) { uint64_t h = c2_handle(st, off); memcpy(d + off, &h, 8); }
+    } else for (int off = 0x20; off < 0x968; off += 8) { uint64_t h = c2_handle(st, off);
+        // dynamic handle arrays index by the handle's texture / sampler ID, so the tables hold slot indices instead (as nvn_mtl.m's TEXD / SAMPD)
+        if (dyn && h) { if (off < 0x120) { int r = (off - 0x20) / 8; h = (uint64_t)r | (h >> 20 ? (uint64_t)r << 20 : 0); }
+                        else if (off >= 0x168 && off < 0x568) h = (uint64_t)(off - 0x168) / 8; else if (off >= 0x568) h = (uint64_t)((off - 0x568) / 8) << 20; }
+        memcpy(d + off, &h, 8); }
 }
 // vk_samp_by_id without the registry lock while no sampler ID was registered with other parameters (g_samp_gen): a 32-slot texture array took the lock
 // per slot, a lock the game thread takes for every texture it registers (DM_NVN_ASYNC). VkSamplers are never destroyed, so a kept handle stays valid
@@ -858,8 +862,8 @@ static inline uint64_t fnv(uint64_t h, const void *p, size_t n) {
     for (; i < n; i++) { h ^= b[i]; h *= 0x100000001b3ull; }
     return h;
 }
-static void drv_shared(int st, int bank, VkBuffer *buf, VkDeviceSize *off) {   // the driver segment: built, then one copy per distinct content in the submission
-    uint8_t d[0x1000]; drv_segment(st, bank, d);
+static void drv_shared(int st, int bank, int dyn, VkBuffer *buf, VkDeviceSize *off) {   // the driver segment: built, then one copy per distinct content in the submission
+    uint8_t d[0x1000]; drv_segment(st, bank, dyn && bank == 2, d);
     // only the bytes drv_segment can write are hashed (bank 0 ends at 0x648, the c2 table at 0x968; the rest is always zero): 4 KB was 512 hash steps a segment
     uint64_t h = fnv(0xcbf29ce484222325ull, d, bank ? 0x968 : 0x648); unsigned k = (unsigned)(h % DRVC);
     if (g_drvc[k].epoch == g_set_epoch && g_drvc[k].h == h && !g_x_nodrvc) { *buf = g_drvc[k].b; *off = g_drvc[k].o; return; }
@@ -929,7 +933,7 @@ static VkDescriptorSet stage_set(int st, vkshader_t *s, uint32_t *dofs) {
         case RK_SUPPORT: bi[nw] = (VkDescriptorBufferInfo){vk_support_buffer(), 0, 65536}; break;
         case RK_C1: vk_shader_c1(s, &buf, &off, &len); bi[nw] = (VkDescriptorBufferInfo){buf, off, len}; break;
         case RK_CBUF: cbuf_desc(st, s, b, &bi[nw]); if (ncb < MEMO_CB) { mci[ncb] = (uint8_t)i; mcd[ncb++] = bi[nw]; } break;
-        case RK_DRV: { VkBuffer sb; VkDeviceSize so; drv_shared(st, b->reg, &sb, &so); bi[nw] = (VkDescriptorBufferInfo){sb, so, 0x1000}; break; }
+        case RK_DRV: { VkBuffer sb; VkDeviceSize so; drv_shared(st, b->reg, s->dyn_slots, &sb, &so); bi[nw] = (VkDescriptorBufferInfo){sb, so, 0x1000}; break; }
         case RK_SBUF: case RK_UBO_PTR: case RK_SBUF_UBO: {
             uint64_t a = 0, n = 0;
             if (b->kind == RK_SBUF && b->reg >= 0 && b->reg < 16) { a = S.ssbo[st][b->reg].addr; n = S.ssbo[st][b->reg].size; }
@@ -953,6 +957,20 @@ static VkDescriptorSet stage_set(int st, vkshader_t *s, uint32_t *dofs) {
             }
             wr->pImageInfo = &ii[nii]; nii += (uint32_t)cnt; wr->descriptorCount = (uint32_t)cnt; wr->descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; nw++;
             continue; }
+        case RK_TEX_DYN: case RK_SAMP_DYN: if (s->dyn_slots) {
+            int cnt = b->count ? b->count : 32; if (nii + (uint32_t)cnt > sizeof ii / sizeof *ii) cnt = 1;
+            for (int k = 0; k < cnt; k++) {
+                uint64_t th = k < 128 ? (S.tex[st][k] ? S.tex[st][k] : S.tex[st][128 + k]) : 0;
+                if (b->kind == RK_TEX_DYN && b->dim == 3 && th) { const view_t *v = NULL; const tex_t *t = NULL;
+                    if (!vk_tex_by_id((int)(th & 0xfffff), &v, &t) || !t || (t->d.target != NVN_TEXTURE_TARGET_CUBEMAP && t->d.target != NVN_TEXTURE_TARGET_CUBEMAP_ARRAY)) th = 0; }
+                if (b->kind == RK_TEX_DYN) { int num = tex_desc_for(st, b, th, &ii[nii + k], 0); ii[nii + k].sampler = VK_NULL_HANDLE;
+                    if (num && i < 64) { if (num == 1) g_num_um |= 1ull << i; else g_num_im |= 1ull << i; } }
+                else { int sid = k < 128 ? (int)(S.samp[st][k] >> 20) : 0; if (!sid) sid = (int)(th >> 20); VkSampler sm = sid ? samp_cached(sid) : VK_NULL_HANDLE;
+                    ii[nii + k] = (VkDescriptorImageInfo){sm ? sm : vk_dummy_sampler(), VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL}; }
+            }
+            wr->pImageInfo = &ii[nii]; nii += (uint32_t)cnt; wr->descriptorCount = (uint32_t)cnt;
+            wr->descriptorType = b->kind == RK_TEX_DYN ? VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE : VK_DESCRIPTOR_TYPE_SAMPLER; nw++;
+            continue; } goto unknown;
         case RK_IMG: case RK_IMG_UBO: {
             uint64_t h = b->kind == RK_IMG ? (b->reg >= 0 && b->reg < 32 ? S.img[st][b->reg] : 0) : ubo_word(st, b->reg, b->off);
             tex_desc_for(st, b, h, &ii[nii], 1); wr->pImageInfo = &ii[nii++]; wr->descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE; nw++;
@@ -965,7 +983,7 @@ static VkDescriptorSet stage_set(int st, vkshader_t *s, uint32_t *dofs) {
             else if (b->kind != RK_IMG_TBUF && i < 64) { int num = view_num(t, NULL); if (num == 1) g_num_um |= 1ull << i; else if (num == 2) g_num_im |= 1ull << i; }   // texel buffers read their words alike
             wr->pTexelBufferView = &bv[nw]; wr->descriptorType = b->kind == RK_IMG_TBUF ? VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER : VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER; nw++;
             continue; }
-        default: {   // unknown: the descriptor type it was declared with, filled with what reads zero
+        default: unknown: {   // unknown: the descriptor type it was declared with, filled with what reads zero
             if (b->desc == RD_UBO || b->desc == RD_SSBO) bi[nw] = (VkDescriptorBufferInfo){vk_zero_buffer(), 0, 65536};
             else if (b->desc == RD_SAMPLED || b->desc == RD_STORAGE) {
                 ii[nii] = (VkDescriptorImageInfo){b->desc == RD_SAMPLED ? vk_dummy_sampler() : VK_NULL_HANDLE, vk_dummy_view(b->dim == 0xff ? 1 : b->dim, b->flags & 1, (b->flags & 2) != 0, b->desc == RD_STORAGE, 0), VK_IMAGE_LAYOUT_GENERAL};

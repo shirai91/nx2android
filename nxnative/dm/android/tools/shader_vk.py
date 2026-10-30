@@ -193,6 +193,9 @@ def classify(stage, b, res):
     # cb<slots> = texture buffer slot in the low 16 bits, sampler buffer slot + 1 in the high 16 bits. Handle: word offsets o0 (bits 0-13), o1 (14-27), type (28-31):
     # 0 one combined handle (the sampler is the texture handle's high bits), 1 the sampler handle in another word, 3 a constant sampler ID in o1.
     # Vulkan binds each as a combined image sampler: 'tex' / 'tbuf' slots name the texture, samp_* where the sampler comes from.
+    # Ryujinx's fallback for a handle it cannot trace to one slot (handle type 4): arrays indexed by the handle's texture / sampler ID
+    if re.match(r'[a-z]+_(?:t\w*|s)_cb0_40000000$', nm) and b['type'] in ('image', 'sampler'):
+        e.update(kind='tex_dyn' if b['type'] == 'image' else 'samp_dyn'); return e
     m = re.match(r'[a-z]+_([ti])\w*?_(?:cb(\d+)|tcb)_([0-9A-F]+)', nm)
     if m:
         kind = m.group(1); slots = int(m.group(2)) if m.group(2) else -1; h = int(m.group(3), 16)
@@ -227,7 +230,7 @@ def classify(stage, b, res):
 # binding: u8 kind, u8 desc (descriptor type), u8 dim (SPIR-V Dim, 0xff none), u8 flags (1 arrayed, 2 multisampled, 4 written), u16 binding, u16 count,
 #          i16 reg, u8 samp (sampler source), u8 fmt (SPIR-V image format), i32 off, i32 samp_arg
 KIND = {'support': 0, 'cbuf': 1, 'c1': 2, 'drvcb': 3, 'sbuf': 4, 'ubo_ptr': 5, 'sbuf_ubo': 6, 'tex': 7, 'tbuf': 8, 'img': 9, 'img_tbuf': 10, 'tex_c2a': 11,
-        'tex_ubo': 12, 'tbuf_ubo': 13, 'img_ubo': 14, '?': 255}
+        'tex_ubo': 12, 'tbuf_ubo': 13, 'img_ubo': 14, 'tex_dyn': 15, 'samp_dyn': 16, '?': 255}
 DESC = {'ubo': 0, 'ssbo': 1, 'sampled': 2, 'storage': 3, 'tbuf': 4, 'storage_tbuf': 5, 'image': 6, 'sampler': 7, '?': 255}
 SAMP_NONE, SAMP_TEX, SAMP_SLOT, SAMP_ID, SAMP_UBO = 0, 1, 2, 3, 4
 kinds_all = collections.Counter()

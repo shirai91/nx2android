@@ -217,6 +217,7 @@ vkshader_t *vk_shader(uint64_t key, int stage) {
         s->dyn[i] = (uint8_t)dyn; s->ndyn += dyn;
         lb[nl++] = (VkDescriptorSetLayoutBinding){b->binding, dyn ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC : desc_type(b->desc), b->count ? b->count : 32, stage_flag(stage), NULL};
     }
+    for (int i = 0; i < s->nbind; i++) s->dyn_slots |= DM_GAME_TEX_DYN_SLOTS && (s->b[i].kind == RK_TEX_DYN || s->b[i].kind == RK_SAMP_DYN);
     s->dsl = shader_layout(lb, nl);
     nvn_hm_put(&g_shaders, &hk, s);
     pthread_mutex_unlock(&g_sh_mu);
