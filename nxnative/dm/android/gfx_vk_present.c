@@ -668,6 +668,12 @@ uint64_t mtl_present(const tex_t *t, double period, const int crop[4]) {
               nd, (g_vkst.ns_exec - pe) / 6e8, (g_vkst.ns_desc - pd) / 6e8, (g_vkst.ns_pipe - pp) / 6e8, (g_ns_submit - ps) / 6e8, (g_ubd_bytes - pb) / 600.0 / 1024, (g_gpu_ns - pg) / 6e8, (g_pkg_n - pkn) / 600.0, (g_pkg_bytes - pkb) / 600.0 / 1048576, (g_pkg_ns - pkt) / 6e8, (unsigned long long)g_set_hits, (unsigned long long)g_set_new, (g_ns_set_build - psb) / 6e8, (g_ns_set_hash - psh) / 6e8, (g_ns_set_new - psn) / 6e8,
               (g_set_memo - psm) / 600.0, (unsigned long long)g_set_memo_bad);
         void vk_pass_report(void); vk_pass_report();
+        { extern uint64_t g_gpu_work_ns; static uint64_t work, span;
+          VKLOG("GPU chunks per frame (last 600): execution %.2f ms, inter-chunk gaps %.2f ms", (g_gpu_work_ns - work) / 6e8, ((g_gpu_ns - span) - (g_gpu_work_ns - work)) / 6e8);
+          work = g_gpu_work_ns; span = g_gpu_ns; }
+        { extern uint64_t g_oq_reports, g_oq_hidden; static uint64_t reports, hidden;
+          VKLOG("occlusion reports (last 600): %llu, fully hidden %llu", (unsigned long long)(g_oq_reports - reports), (unsigned long long)(g_oq_hidden - hidden));
+          reports = g_oq_reports; hidden = g_oq_hidden; }
         pe = g_vkst.ns_exec; pd = g_vkst.ns_desc; pp = g_vkst.ns_pipe; ps = g_ns_submit; pb = g_ubd_bytes; pdr = g_vkst.draws; pg = g_gpu_ns; pkn = g_pkg_n; pkb = g_pkg_bytes; pkt = g_pkg_ns; psb = g_ns_set_build; psh = g_ns_set_hash; psn = g_ns_set_new; psm = g_set_memo;
     }
     if (!im) { no_img++; return present_enqueue(NULL, NULL, n, period); }
