@@ -1,0 +1,14 @@
+# Untitled Goose Game on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Unity 2018.4.1f1 IL2CPP with FMOD on SDK 8.2.0, update 1.1.2; 4,511 shaders from Data/*.assets and Data/Resources, all translated. It boots only with sdk_patches.py's node area
+# cut on its sdk build: nninitStartup's AllocateAddressRegion(+0xc9400000) was refused (0x1803) with no region live, and the game stopped at a Break before nnMain.
+# On a Galaxy S23 Ultra (2026-10-30): the save select, a new game into the garden, and a save made in another Switch emulator copied into the app's save folder, which loads into
+# its later area with its language and settings; then a play session by hand. 60 fps held, as the game asks (present interval 1): in gameplay frame time p50 16.7 / p95 17.5 ms,
+# 0 dropped frames, about 625 draws per frame, GPU busy about 10 ms, footprint about 770 MiB; no red log line.
+# Known gap: about 1 launch in 3 fails in the first seconds (3 of 10 in a row: 1 black screen, 2 crashes); launching again plays. The crash is always the render thread's
+# texture binding (main+0x1b2a424, called from main+0x1ce0188): a combined texture-sampler entry takes the texture of a slot the first pass skipped, because that texture
+# had no descriptor ID yet (+0xd0 / +0xd4 still 0), and reads through a null slot. The black screen comes at the same point of the load (after the second garbage collection),
+# with every guest thread waiting: probably the same race between the loading thread creating textures and the render thread binding them. Not found yet.
+status	playable
+tested	v458752 Samsung Galaxy S23 Ultra SM-S918B (Snapdragon 8 Gen 2, Adreno 740, Android 16)
+package	org.nx2a.untitledgoosegame
+orientation	landscape
