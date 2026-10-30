@@ -551,6 +551,10 @@ static Result commit_mount_locked(int i, int *notify_error) {
     }
     return r;
 }
+// Every Commit waits while the front end's game data export or import (the Android pause menu) reads or replaces the committed directories
+void dm_save_hold(int on) {
+    if (on) { pthread_mutex_lock(&g_path_lock); pthread_mutex_lock(&g_lock); } else { pthread_mutex_unlock(&g_lock); pthread_mutex_unlock(&g_path_lock); }
+}
 HLE_FORCE("_ZN2nn2fs6CommitEPKc", "fsp-srv; transactional save: the whole work directory tree is cloned, then swapped atomically with the committed directory (renamex_np RENAME_SWAP)", Result, h_fs_Commit, const char *name) {
     PATH_LOCK(); pthread_mutex_lock(&g_lock);
     int i = 0; while (i < g_nmnt && strcmp(g_mnt[i].name, name)) i++;

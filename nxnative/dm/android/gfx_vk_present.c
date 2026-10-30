@@ -288,17 +288,25 @@ static void cv_button(const ov_canvas *cv, const float b[4], const char *l, int 
 }
 // The pause menu (overlay_layout.h: the rows, the tabs, the slider's track), in the raster's panel rectangle. Its letters are as large as a row allows (0.30 of
 // its height, about 2.7 mm on a 6.7" phone and 3.6 mm on the 8.8" tablet) and smaller only when the widest row would not fit beside its control
-static const char *const OVM_LABELS[OVM_N] = {"Show gamepad", "Opacity", "Edit layout", "Rumble", "Show FPS", "Mode", "Resume", ""};
+static const char *const OVM_LABELS[OVM_N] = {"Show gamepad", "Opacity", "Edit layout", "Rumble", "Show FPS", "Mode", "Game data", "Export data", "Import data", "Clear data",
+                                              "Resume", "", "< Game data"};
 static const char *const OVM_MODES[2] = {"Handheld", "Docked"};
+// The game data rows: the last action's result, or the question, in the label's place (no longer than the label)
+static const char *ov_data_label(int it, int ss) {
+    if (it == OVM_EXPORT) return ss == OVS_EXPORTED ? "Exported" : ss == OVS_EXPORT_FAILED ? "Export failed" : NULL;
+    if (it == OVM_IMPORT) return ss == OVS_IMPORT_CONFIRM ? "Replace data?" : ss == OVS_IMPORT_FAILED ? "Import failed" : ss == OVS_IMPORTED ? "Done, closing" : NULL;
+    return ss == OVS_RESET_CONFIRM ? "Clear all data?" : ss == OVS_RESET_DONE ? "Cleared, closing" : NULL;
+}
 static void ov_menu_panel(const ov_canvas *cv, int st) {
     float p[4] = {0, 0, (float)cv->w, (float)cv->h}, r[4]; ov_menu_rowrect(p, 0, r);
     float rh = r[3], rw = r[2], gap = rh * 0.35f, sh = rh * 0.40f, sw = sh * 1.85f;
-    int tab = st >> 8 & 1, sel = (st >> 4 & 15) - 1, op = st >> 9 & 127;
+    int tab = st >> 21 & 1 ? OVM_DATA_PAGE : st >> 8 & 1, sel = (st >> 4 & 15) - 1, op = st >> 9 & 127;
     int is = (int)fmaxf(1, roundf(rh * 0.30f / 7));
     for (; is > 1; is--) {   // the widest row: its label, a gap and its control
         float need = 0;
         for (int i = 0; i < OVM_RESUME; i++) {
-            float lw = cv_text_w(OVM_LABELS[i], is), cw = i == OVM_MODE ? 2 * (cv_text_w(OVM_MODES[0], is) + sh) : i == OVM_EDIT ? cv_text_w("Edit", is) + 2 * sh : sw + gap + cv_text_w("OFF", is);
+            float lw = cv_text_w(OVM_LABELS[i], is), cw = i == OVM_MODE ? 2 * (cv_text_w(OVM_MODES[0], is) + sh) : i == OVM_EDIT ? cv_text_w("Edit", is) + 2 * sh
+                     : i == OVM_DATA || i == OVM_EXPORT || i == OVM_IMPORT || i == OVM_RESET ? cv_text_w("Import", is) + 2 * sh : sw + gap + cv_text_w("OFF", is);
             need = fmaxf(need, i == OVM_OPACITY ? fmaxf(lw / 0.38f, cv_text_w("80%", is) / 0.14f) : lw + gap + cw + rh * 0.3f);
         }
         if (need <= rw && cv_text_w(OVM_TAB_NAMES[0], is) < rw / 2 - sh) break;
@@ -316,7 +324,25 @@ static void ov_menu_panel(const ov_canvas *cv, int st) {
             cv_rrect(cv, r[0], r[1] + rh - 1, r[0] + rw, r[1] + rh, 0.5f, C_LINE);
             continue;
         }
+        if (it == OVM_BACK) {
+            cv_text(cv, r[0] + rh * 0.15f, cy, OVM_LABELS[OVM_BACK], is, C_ACCENT);
+            cv_rrect(cv, r[0], r[1] + rh - 1, r[0] + rw, r[1] + rh, 0.5f, C_LINE);
+            continue;
+        }
         if (it == OVM_RESUME) { cv_rrect(cv, r[0], r[1], r[0] + rw, r[1] + 1, 0.5f, C_LINE); cv_text(cv, r[0] + (rw - cv_text_w("Resume", is)) / 2, cy, "Resume", is, C_ACCENT); continue; }
+        if (it == OVM_DATA) {
+            float bw = cv_text_w("Import", is) + 2 * sh, b[4] = {x1 - bw, cy - rh * 0.30f, bw, rh * 0.60f}; cv_button(cv, b, "Open", 0, 0);
+            cv_text(cv, r[0] + rh * 0.15f, cy, OVM_LABELS[it], is, row == sel ? C_WHITE : C_DIM);
+            continue;
+        }
+        if (it == OVM_EXPORT || it == OVM_IMPORT || it == OVM_RESET) {
+            int ss = st >> OVS_SHIFT & 7, ask = (it == OVM_IMPORT && ss == OVS_IMPORT_CONFIRM) || (it == OVM_RESET && ss == OVS_RESET_CONFIRM);
+            const char *word = ask ? "Yes" : it == OVM_EXPORT ? "Export" : it == OVM_IMPORT ? "Import" : "Clear", *msg = ov_data_label(it, ss);
+            float bw = cv_text_w("Import", is) + 2 * sh, b[4] = {x1 - bw, cy - rh * 0.30f, bw, rh * 0.60f}; cv_button(cv, b, word, ask, 0);
+            const char *l = msg ? msg : OVM_LABELS[it]; int ls = is; while (ls > 1 && cv_text_w(l, ls) > b[0] - gap - r[0] - rh * 0.15f) ls--;
+            cv_text(cv, r[0] + rh * 0.15f, cy, l, ls, ask ? C_ACCENT : msg || row == sel ? C_WHITE : C_DIM);
+            continue;
+        }
         cv_text(cv, r[0] + rh * 0.15f, cy, OVM_LABELS[it], is, row == sel ? C_WHITE : C_DIM);
         if (it == OVM_OPACITY) {   // the slider: its track, filled to the value, the knob and the percent
             float t[3]; ov_menu_track(p, row, t); float f = (float)(op - OV_OPACITY_MIN) / (OV_OPACITY_MAX - OV_OPACITY_MIN), th = fmaxf(2, rh * 0.08f), kr = rh * 0.20f;
