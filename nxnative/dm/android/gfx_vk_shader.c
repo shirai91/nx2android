@@ -201,6 +201,30 @@ vkshader_t *vk_shader(uint64_t key, int stage) {
             if (drop) i += n; else for (uint32_t k = 0; k < n; k++) w[o++] = w[i++]; }
         nw = o; } }
     spv_io_locs(w, nw, &s->in_locs, &s->out_locs);
+    if (stage == 0 && s->out_locs) {
+        // As vs_init_vary in the Metal chain: unwritten varying components are (0,0,0,1), not driver-dependent (Z-A divides by W).
+        uint32_t *at = calloc(w[3], sizeof *at); uint8_t *loc = calloc(w[3], 1); uint32_t fn = nw, nloc = 0;
+        for (uint32_t i = 5; i < nw;) { uint32_t n = w[i] >> 16, op = w[i] & 0xffff; if (op == 54) { fn = i; break; }
+            if (op == 22 || op == 23 || op == 32) at[w[i + 1]] = i;
+            if (op == 71 && n == 4 && w[i + 2] == 30) { loc[w[i + 1]] = 1; nloc++; }
+            i += n; }
+        uint32_t *o = malloc(((size_t)nw + 16 * nloc) * 4), no = 5, bound = w[3]; memcpy(o, w, 20);
+        for (uint32_t i = 5; i < fn;) { uint32_t n = w[i] >> 16;
+            if ((w[i] & 0xffff) == 59 && n == 4 && w[i + 3] == 3 && loc[w[i + 2]]) {
+                uint32_t p = at[w[i + 1]], v = p ? at[w[p + 3]] : 0, f = v ? at[w[v + 2]] : 0;
+                if (v && (w[v] & 0xffff) == 23 && w[v + 3] == 4 && f && (w[f] & 0xffff) == 22 && w[f + 2] == 32) {
+                    uint32_t z = bound++, one = bound++, init = bound++;
+                    uint32_t d[] = {4u << 16 | 43, w[f + 1], z, 0, 4u << 16 | 43, w[f + 1], one, 0x3f800000,
+                                    7u << 16 | 44, w[v + 1], init, z, z, z, one,
+                                    5u << 16 | 59, w[i + 1], w[i + 2], 3, init};
+                    memcpy(o + no, d, sizeof d); no += sizeof d / 4; i += n; continue;
+                }
+            }
+            memcpy(o + no, w + i, n * 4); no += n; i += n;
+        }
+        memcpy(o + no, w + fn, (nw - fn) * 4); no += nw - fn; o[3] = bound;
+        free(at); free(loc); free(w); w = o; nw = no;
+    }
     VkShaderModuleCreateInfo ci = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, NULL, 0, (size_t)nw * 4, w};
     VkResult vr = vkCreateShaderModule(V.dev, &ci, NULL, &s->mod); s->spv = w; s->nspv = nw;
     if (vr) { VKLOG("[RED] shader %016llx: vkCreateShaderModule %d", (unsigned long long)key, vr); free(w); free(s); nvn_hm_put(&g_shaders, &hk, (void *)1); pthread_mutex_unlock(&g_sh_mu); return NULL; }

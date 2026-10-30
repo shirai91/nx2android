@@ -716,6 +716,8 @@ __attribute__((visibility("default"))) void ANativeActivity_onCreate(ANativeActi
     ANativeActivity_setWindowFlags(act, AWINDOW_FLAG_KEEP_SCREEN_ON | AWINDOW_FLAG_FULLSCREEN, 0);
     static int started; if (started++) return;   // a second onCreate (configuration change) keeps the running game
     snprintf(g_root, sizeof g_root, "%s", act->externalDataPath ? act->externalDataPath : act->internalDataPath);
+    { char ready[700]; snprintf(ready, sizeof ready, "%s/.nx2a-imported/.ready", g_root);
+      if (!access(ready, R_OK)) { size_t n = strlen(g_root); snprintf(g_root + n, sizeof g_root - n, "/.nx2a-imported"); } }
     char p[700];
     snprintf(p, sizeof p, "%s/log.txt", g_root); char prev[720]; snprintf(prev, sizeof prev, "%s/log.prev.txt", g_root); rename(p, prev);
     if (!freopen(p, "w", stderr)) __android_log_print(ANDROID_LOG_ERROR, "dmhost", "cannot write %s", p);

@@ -84,6 +84,10 @@ def load_patches():
     return tables, where
 PATCHES, PATCH_WHERE = load_patches()
 BUILD_ID = d[0x40:0x50].hex()
+FS_STATE_OFF = 0
+if BUILD_ID in PATCHES['FRAME_STEP'] and NAME == 'main':
+    FS_STATE_OFF = KEY_PAGE_OFF + 0x4000
+    PATCH_OFF = max(PATCH_OFF, (FS_STATE_OFF + 0x4000 + 0xFFFF) & ~0xFFFF)
 cuts = list(PATCHES['CUTS'].get(BUILD_ID, []))
 for off, ob, nb, why in cuts:
     ob, nb = bytes.fromhex(ob), bytes.fromhex(nb)
@@ -893,10 +897,8 @@ for off, oid, ow, why in obs:
 # A build's stubs are FRAME_STEP[build ID](ctx) in its patches.py: ctx.here() / ctx.emit(word) assemble into the patch area, ctx.site(offset, original bytes) asserts a site and that it is
 # no rewrite site, ctx.put(offset, words, reason) writes it (listed with the cuts), ctx.state is the state page's offset, and ctx.render_scale = 1 marks a render-scale stub
 FRAME_STEP = PATCHES['FRAME_STEP']
-FS_STATE_OFF = 0
 RENDER_SCALE = 0   # 1 = the build has a render-scale stub (state +0x10): the fixups table says so (RENDER_SCALE), and the iOS launcher offers the setting (dm/games/settings.tsv)
 if BUILD_ID in FRAME_STEP and NAME == 'main':
-    FS_STATE_OFF = KEY_PAGE_OFF + 0x4000
     assert not FAR and FS_STATE_OFF % 0x1000 == 0 and FS_STATE_OFF + 0x40 <= PATCH_OFF and not any(IMG[FS_STATE_OFF:]), 'frame step state page'
     def fs_site(off, orig):
         ob = bytes.fromhex(orig)
