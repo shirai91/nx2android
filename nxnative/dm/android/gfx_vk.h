@@ -51,11 +51,14 @@ typedef struct {
     VkPhysicalDeviceProperties props; VkPhysicalDeviceMemoryProperties mem;
     VkPipelineCache pcache;
     int has_bc, has_astc, has_gs, has_depth_clip_ctl, has_custom_border, has_robust2, has_xfb, has_imageless, has_dtiming, has_dynrender;
+    int has_timeline, has_rp2;   // the device gives vkWaitSemaphores, vkCreateRenderPass2 (by either name; vk_init asks the device itself)
     float max_aniso;
 } vkdev_t;
 extern vkdev_t V;
 uint32_t vk_mem_type(uint32_t bits, VkMemoryPropertyFlags want, VkMemoryPropertyFlags avoid);
 void vk_init(void);   // once, from mtl_init or the first use
+VkResult vk_create_render_pass(const VkRenderPassCreateInfo2 *ci, VkRenderPass *rp);   // vkCreateRenderPass2, or the same pass with vkCreateRenderPass
+void vk_fb_view_gone(VkImageView v);   // gfx_vk_exec.c: a view is being destroyed, and the framebuffers made over it (without imageless framebuffers) with it
 
 // ---- memory pools (gfx_vk_core.c): the guest's pool memory is GPU memory (AHardwareBuffer mapped over it) ----
 typedef struct { uint64_t lo, hi; VkBuffer buf; VkDeviceMemory mem; void *ahb; int zero_copy; uint8_t *shadow; uint64_t serial, base, end; int flags, synced; uint64_t stamp, stamp0; const void *span; } vkpool_t;   // serial: unique per pool made (caches of views over a pool's buffer key on it); [base, end): the game's pool, of which [lo, hi) is one chunk (ZC_CHUNK); flags: the NVN pool's (vk_pool_set_flags); synced, stamp, stamp0, span: a copied pool's incremental sync

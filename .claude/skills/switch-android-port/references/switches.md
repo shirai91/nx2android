@@ -61,7 +61,7 @@ The source of each switch is in `nxnative/dm/android/` unless noted. Check the c
 | `DM_VK_RD_TOUCH=0` | live | no transfer read of the memory a run of rasterizer-discard draws wrote, where the run ends: Xenoblade Chronicles 3's grass then flickers (whole blades black in some frames: the G-buffer's grass cards, depth EQUAL against the pre-pass, meet sway records not yet written) |
 | `DM_VK_X_RDKEEP=1` | live | runs of rasterizer-discard draws (vertex shaders that write memory) stay in the pass of the draws around them instead of a pass of their own: Xenoblade Chronicles 3 then draws thin black slivers over cliffs and grass in a few percent of frames |
 | `DM_VK_X_SKIPVS=<key>[,<key>...]` | live | leave out the draws whose vertex shader key (hex, as the traces print it; up to 8) is listed: bisect which shaders an artifact needs, a group at a time (it found XC3's slivers from 40 candidates in 4 rounds) |
-| `DM_VK_RP=0` | start-up | dynamic rendering instead of cached `VkRenderPass` objects with imageless framebuffers (Adreno's `vkCmdBeginRendering` cost about 40 µs a pass) |
+| `DM_VK_RP=0` | start-up | dynamic rendering instead of cached `VkRenderPass` objects with imageless framebuffers (Adreno's `vkCmdBeginRendering` cost about 40 µs a pass); ignored where the driver gives no dynamic rendering |
 
 ## Frame pacing and modes
 

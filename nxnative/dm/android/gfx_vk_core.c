@@ -132,13 +132,12 @@ void vk_init(void) {
     VkPhysicalDeviceVulkan11Features f11 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES, &f12};
     VkPhysicalDeviceFeatures2 ff = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, v12 ? (void *)&f11 : xs};
     vkGetPhysicalDeviceFeatures2(V.pd, &ff);
-    if (!(v12 ? f12.timelineSemaphore : featx(xf, nxf, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES)[0]))
-        die("[vk] the device has no timeline semaphores (Vulkan 1.2 or VK_KHR_timeline_semaphore): every submission signals one");
+    // timeline semaphores (Vulkan 1.2 or VK_KHR_timeline_semaphore): without them, or without their functions (V.has_timeline below), submissions signal fences
+    int timeline = v12 ? f12.timelineSemaphore : featx(xf, nxf, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES)[0];
     // dynamic rendering is 1.3 or its extension with the feature on; a loaded pointer does not tell, since the loader hands out a trampoline for core functions the driver lacks
     V.has_dynrender = v13 ? f13.dynamicRendering : featx(xf, nxf, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES)[0];
     // imageless framebuffers need render pass 2 (gfx_vk_exec.c rp_get): core in 1.2, else its extension
     V.has_imageless = v12 ? f12.imagelessFramebuffer : featx(xf, nxf, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGELESS_FRAMEBUFFER_FEATURES)[0] && is_on(on, non, "VK_KHR_create_renderpass2");
-    if (!V.has_imageless && !V.has_dynrender) die("[vk] the device has neither dynamic rendering nor imageless framebuffers with render pass 2: passes cannot be begun");
     if (!v13) VKLOG("Vulkan %u.%u device: %u extensions enabled for the features promoted to 1.2 / 1.3; dynamic rendering %s", VK_API_VERSION_MAJOR(V.props.apiVersion),
                     VK_API_VERSION_MINOR(V.props.apiVersion), npromo, V.has_dynrender ? "yes" : "no (render pass objects only)");
     VkPhysicalDeviceCustomBorderColorFeaturesEXT fcb = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CUSTOM_BORDER_COLOR_FEATURES_EXT};
@@ -175,6 +174,20 @@ void vk_init(void) {
     vkGetDeviceProcAddr = (PFN_vkGetDeviceProcAddr)p_vkGetInstanceProcAddr(V.inst, "vkGetDeviceProcAddr");
 #define VK_LOADD(f) f = (PFN_##f)vkGetDeviceProcAddr(V.dev, #f); if (!f) f = (PFN_##f)vkGetDeviceProcAddr(V.dev, #f "KHR"); if (!f) f = (PFN_##f)p_vkGetInstanceProcAddr(V.inst, #f);   // a promoted function by its extension's name (Vulkan 1.1 / 1.2 devices)
     VK_DEV_FNS(VK_LOADD)
+    // what the driver gives, asked of the device by either name: for a function it lacks, the loader's trampoline that VK_LOADD falls back to calls a null pointer.
+    // The Android Emulator's Android 13 image (system image 33 r17) says Vulkan 1.3 with timeline semaphores and imageless framebuffers, yet its device gives no
+    // vkWaitSemaphores, no vkCreateRenderPass2 and no dynamic rendering: Link's Awakening stopped at its first render pass (pc 0 in rp_get). A Vulkan 1.1 driver
+    // without the extensions (the Galaxy S20 FE's on Android 13) has none of the three either
+#define VK_GIVES(f) (vkGetDeviceProcAddr(V.dev, f) || vkGetDeviceProcAddr(V.dev, f "KHR"))
+    V.has_timeline = timeline && VK_GIVES("vkWaitSemaphores");
+    V.has_rp2 = VK_GIVES("vkCreateRenderPass2");
+    V.has_dynrender = V.has_dynrender && VK_GIVES("vkCmdBeginRendering");
+    // a driver without render pass 2 has no imageless framebuffers either (gfx_vk_exec.c rp_get), whatever it reports: that image's crashed in its own encoder
+    // (goldfish_vk::reservedmarshal_VkFramebufferCreateInfo reads pAttachments, which an imageless framebuffer leaves NULL)
+    if (!V.has_rp2) V.has_imageless = 0;
+    if (!V.has_timeline || !V.has_rp2 || !V.has_dynrender) VKLOG("the driver gives no%s%s%s: %s%s%s", V.has_timeline ? "" : " vkWaitSemaphores", V.has_rp2 ? "" : " vkCreateRenderPass2",
+        V.has_dynrender ? "" : " vkCmdBeginRendering", V.has_timeline ? "" : "submissions signal fences; ", V.has_rp2 ? "" : "render passes made with vkCreateRenderPass; ",
+        V.has_dynrender ? "" : V.has_imageless ? "passes in render pass objects" : "passes in render pass objects with framebuffers over image views");
     vkGetDeviceQueue(V.dev, V.qf, 0, &V.q);
     VkPipelineCacheCreateInfo pci = {VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
     char path[1024]; const char *root = getenv("DM_ROOT"); void *data = NULL; size_t dn = 0;
@@ -188,6 +201,21 @@ void vk_init(void) {
           V.has_bc ? "yes" : "no", V.has_astc ? "yes" : "no", V.has_gs ? "yes" : "no", V.has_robust2 ? "yes" : "no", V.has_custom_border ? "yes" : "no", V.has_depth_clip_ctl ? "yes" : "no", V.has_xfb ? "yes" : "no", dn);
     slots_init();
     completion_start();
+}
+// Where the driver has no vkCreateRenderPass2, the same pass through vkCreateRenderPass: one subpass and no dependencies, as every pass the backend makes
+// (version 1 lacks only the references' aspect masks, which input attachments alone use)
+VkResult vk_create_render_pass(const VkRenderPassCreateInfo2 *ci, VkRenderPass *rp) {
+    if (V.has_rp2) return vkCreateRenderPass2(V.dev, ci, NULL, rp);
+    const VkSubpassDescription2 *s = ci->pSubpasses;
+    if (ci->attachmentCount > 9 || ci->subpassCount != 1 || ci->dependencyCount || s->colorAttachmentCount > 8 || s->inputAttachmentCount || s->pResolveAttachments) return VK_ERROR_FEATURE_NOT_PRESENT;
+    VkAttachmentDescription ad[9]; VkAttachmentReference cr[8], dr = {0};
+    for (uint32_t i = 0; i < ci->attachmentCount; i++) { const VkAttachmentDescription2 *a = &ci->pAttachments[i];
+        ad[i] = (VkAttachmentDescription){a->flags, a->format, a->samples, a->loadOp, a->storeOp, a->stencilLoadOp, a->stencilStoreOp, a->initialLayout, a->finalLayout}; }
+    for (uint32_t i = 0; i < s->colorAttachmentCount; i++) cr[i] = (VkAttachmentReference){s->pColorAttachments[i].attachment, s->pColorAttachments[i].layout};
+    if (s->pDepthStencilAttachment) dr = (VkAttachmentReference){s->pDepthStencilAttachment->attachment, s->pDepthStencilAttachment->layout};
+    VkSubpassDescription sd = {s->flags, s->pipelineBindPoint, 0, NULL, s->colorAttachmentCount, cr, NULL, s->pDepthStencilAttachment ? &dr : NULL, 0, NULL};
+    VkRenderPassCreateInfo c1 = {VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, NULL, ci->flags, ci->attachmentCount, ad, 1, &sd, 0, NULL};
+    return vkCreateRenderPass(V.dev, &c1, NULL, rp);
 }
 void vk_pipeline_cache_save(void) {
     static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER; static size_t last;
@@ -416,6 +444,7 @@ struct vksub {
     VkCommandBuffer mains[MAIN_CBS]; int nmain_alloc, nmain_used, cb_err;
     VkCommandBuffer ups[MAIN_CBS]; int nup_alloc, nup_used; int nmain_sent;   // upload command buffers in order (one per part sent early), main buffers already submitted   // the submission's main command buffers in order (vk_cmd_split); main = the one being recorded
     uint64_t fence;   // the fence this slot last committed with (0 = never)
+    VkFence done;     // without timeline semaphores (vk_init has_timeline): signalled by the slot's submission
     int ncq;          // timestamp counter queries used in this submission (g_cq)
     scratch_blk *blk; int nblk, capblk;
     VkDescriptorPool *dp; int ndp, capdp, dp_cur;
@@ -470,7 +499,7 @@ static uint64_t g_done;
 static void slots_init(void) {
     VkSemaphoreTypeCreateInfo ti = {VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO, NULL, VK_SEMAPHORE_TYPE_TIMELINE, 0};
     VkSemaphoreCreateInfo si = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, &ti};
-    VKCHK(vkCreateSemaphore(V.dev, &si, NULL, &g_timeline));
+    if (V.has_timeline) VKCHK(vkCreateSemaphore(V.dev, &si, NULL, &g_timeline));
     VkQueryPoolCreateInfo qi = {VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, NULL, 0, VK_QUERY_TYPE_TIMESTAMP, 2 * NSLOT};
     if (V.props.limits.timestampComputeAndGraphics && vkCreateQueryPool(V.dev, &qi, NULL, &g_tsq)) g_tsq = VK_NULL_HANDLE;
     VkQueryPoolCreateInfo cqi = {VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, NULL, 0, VK_QUERY_TYPE_TIMESTAMP, NSLOT * CQ};
@@ -482,11 +511,14 @@ static void slots_init(void) {
         VKCHK(vkCreateCommandPool(V.dev, &ci, NULL, &g_slot[i].pool));
         VkCommandBuffer cb[2]; VkCommandBufferAllocateInfo ai = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, NULL, g_slot[i].pool, VK_COMMAND_BUFFER_LEVEL_PRIMARY, 2};
         VKCHK(vkAllocateCommandBuffers(V.dev, &ai, cb)); g_slot[i].up = g_slot[i].ups[0] = cb[0]; g_slot[i].main = g_slot[i].mains[0] = cb[1]; g_slot[i].nmain_alloc = 1; g_slot[i].nup_alloc = 1;
+        VkFenceCreateInfo fi = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO}; if (!V.has_timeline) VKCHK(vkCreateFence(V.dev, &fi, NULL, &g_slot[i].done));
     }
 }
 uint64_t vk_fence_done(void) { return __atomic_load_n(&g_done, __ATOMIC_ACQUIRE); }   // written under g_done_mu (for the waiters) with a release store
+int mtl_wait(uint64_t fence, uint64_t timeout_ns);
 static void wait_fence(uint64_t f) {
     if (!f) return;
+    if (!V.has_timeline) { mtl_wait(f, ~0ull); return; }   // fences: the completion thread waits for each submission's and counts it done (g_done)
     VkSemaphoreWaitInfo wi = {VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, NULL, 0, 1, &g_timeline, &f};
     vkWaitSemaphores(V.dev, &wi, UINT64_MAX);
 }
@@ -495,7 +527,6 @@ static void wait_fence(uint64_t f) {
 // replay ~3,000 draws a frame on a thread that is the frame's limit). The slot is then taken only after the completion thread has passed it (mtl_wait, g_done)
 // rather than as soon as the GPU has. DM_VK_X_NOPRERESET=1 (start-up): reset as they are begun
 static int g_prereset = -1;
-int mtl_wait(uint64_t fence, uint64_t timeout_ns);
 static void slot_recycle(vksub_t *s) {   // the GPU has passed this slot's last submission: free what it held, rewind its allocators
     if (g_prereset < 0) { const char *e = getenv("DM_VK_X_NOPRERESET"); g_prereset = !(e && atoi(e)); }
     if (g_prereset) mtl_wait(s->fence, ~0ull); else wait_fence(s->fence);
@@ -504,7 +535,7 @@ static void slot_recycle(vksub_t *s) {   // the GPU has passed this slot's last 
         if (d->kind == 0) { vkDestroyBuffer(V.dev, (VkBuffer)d->a, NULL); if (d->b) vkFreeMemory(V.dev, (VkDeviceMemory)d->b, NULL); }
         else if (d->kind == 1) { vkDestroyImage(V.dev, (VkImage)d->a, NULL); if (d->b) vkFreeMemory(V.dev, (VkDeviceMemory)d->b, NULL); }
         else if (d->kind == 4) { void img_sub_free_(void *); vkDestroyImage(V.dev, (VkImage)d->a, NULL); img_sub_free_(d->b); }
-        else if (d->kind == 2) vkDestroyImageView(V.dev, (VkImageView)d->a, NULL);
+        else if (d->kind == 2) { vk_fb_view_gone((VkImageView)d->a); vkDestroyImageView(V.dev, (VkImageView)d->a, NULL); }
         else if (d->kind == 3) vkDestroyBufferView(V.dev, (VkBufferView)d->a, NULL);
     }
     s->ndf = 0;
@@ -579,7 +610,7 @@ static void df_add(int kind, void *a, void *b) {
         if (kind == 0) { vkDestroyBuffer(V.dev, (VkBuffer)a, NULL); if (b) vkFreeMemory(V.dev, (VkDeviceMemory)b, NULL); }
         else if (kind == 1) { vkDestroyImage(V.dev, (VkImage)a, NULL); if (b) vkFreeMemory(V.dev, (VkDeviceMemory)b, NULL); }
         else if (kind == 4) { void img_sub_free_(void *); vkDestroyImage(V.dev, (VkImage)a, NULL); img_sub_free_(b); }
-        else if (kind == 2) vkDestroyImageView(V.dev, (VkImageView)a, NULL);
+        else if (kind == 2) { vk_fb_view_gone((VkImageView)a); vkDestroyImageView(V.dev, (VkImageView)a, NULL); }
         else vkDestroyBufferView(V.dev, (VkBufferView)a, NULL);
         return;
     }
@@ -836,7 +867,7 @@ void mtl_sub_index(const uint64_t *h, int n) { (void)h; (void)n; }
 void mtl_exec_rest(const uint64_t *h, int n) { (void)h; (void)n; }
 
 // completion: a queue of committed submissions, each with its CPU-visible effects
-typedef struct cpend { uint64_t fence, frame; post_op *ops; int n; int slot, rslot; int npass; pass_meta pmeta[PASSQ]; struct cpend *next; } cpend;
+typedef struct cpend { uint64_t fence, frame; VkFence vkf; post_op *ops; int n; int slot, rslot; int npass; pass_meta pmeta[PASSQ]; struct cpend *next; } cpend;
 static cpend *g_ch, *g_ct; static pthread_mutex_t g_cmu = PTHREAD_MUTEX_INITIALIZER; static pthread_cond_t g_ccv = PTHREAD_COND_INITIALIZER;
 uint64_t guest_ns(void);
 static uint64_t gpu_ticks(void) { uint64_t g = guest_ns(); if (!g) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); g = (uint64_t)t.tv_sec * 1000000000ull + (uint64_t)t.tv_nsec; } return g * 12 / 625; }
@@ -855,7 +886,7 @@ static void *completion_main(void *a) {
         pthread_mutex_lock(&g_cmu);
         while (!g_ch) pthread_cond_wait(&g_ccv, &g_cmu);
         cpend *c = g_ch; pthread_mutex_unlock(&g_cmu);
-        wait_fence(c->fence);
+        if (c->vkf) vkWaitForFences(V.dev, 1, &c->vkf, VK_TRUE, UINT64_MAX); else wait_fence(c->fence);
         if (g_shadow_pools && c->rslot >= 0) pools_copy_back(&g_slot[c->rslot]);
         if (g_tsq && c->slot >= 0) { uint64_t t[2]; if (vkGetQueryPoolResults(V.dev, g_tsq, 2 * (uint32_t)c->slot, 2, sizeof t, t, 8, VK_QUERY_RESULT_64_BIT) == VK_SUCCESS && t[1] > t[0])
             { uint64_t ns = (uint64_t)((double)(t[1] - t[0]) * V.props.limits.timestampPeriod); g_gpu_ns += ns; int k = (int)(c->frame % 64);
@@ -912,10 +943,12 @@ uint64_t mtl_sub_commit(void) {
     VkCommandBuffer cbs[1 + MAIN_CBS]; uint32_t ncb = 0; if (s->up_used) cbs[ncb++] = s->up; for (int i = s->nmain_sent; i < s->nmain_used; i++) cbs[ncb++] = s->mains[i];
     VkTimelineSemaphoreSubmitInfo ts = {VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO, NULL, 0, NULL, 1, &f};
     VkSubmitInfo si = {VK_STRUCTURE_TYPE_SUBMIT_INFO, &ts, 0, NULL, NULL, ncb, cbs, 1, &g_timeline};
-    struct timespec t0, t1; clock_gettime(CLOCK_MONOTONIC, &t0); pthread_mutex_lock(&g_vk_queue_mu); VkResult r = vkQueueSubmit(V.q, 1, &si, VK_NULL_HANDLE); pthread_mutex_unlock(&g_vk_queue_mu); clock_gettime(CLOCK_MONOTONIC, &t1); g_ns_submit += (uint64_t)((t1.tv_sec - t0.tv_sec) * 1000000000ll + (t1.tv_nsec - t0.tv_nsec));
+    VkFence vf = VK_NULL_HANDLE;   // without timeline semaphores, the slot's fence (its last submission is done: slot_recycle waited for it)
+    if (!V.has_timeline) { si.pNext = NULL; si.signalSemaphoreCount = 0; vf = s->done; vkResetFences(V.dev, 1, &vf); }
+    struct timespec t0, t1; clock_gettime(CLOCK_MONOTONIC, &t0); pthread_mutex_lock(&g_vk_queue_mu); VkResult r = vkQueueSubmit(V.q, 1, &si, vf); pthread_mutex_unlock(&g_vk_queue_mu); clock_gettime(CLOCK_MONOTONIC, &t1); g_ns_submit += (uint64_t)((t1.tv_sec - t0.tv_sec) * 1000000000ll + (t1.tv_nsec - t0.tv_nsec));
     if (r) { void vk_crumbs_report(void); vk_crumbs_report(); die("[vk] vkQueueSubmit: %d (device lost?)", r); }
     s->fence = f;
-    cpend *c = calloc(1, sizeof *c); c->fence = f; c->frame = __atomic_load_n(&g_cur_frame, __ATOMIC_RELAXED); c->n = s->npost; c->rslot = g_cur; c->slot = s->no_ts ? -1 : g_cur; s->no_ts = 0;
+    cpend *c = calloc(1, sizeof *c); c->fence = f; c->vkf = vf; c->frame = __atomic_load_n(&g_cur_frame, __ATOMIC_RELAXED); c->n = s->npost; c->rslot = g_cur; c->slot = s->no_ts ? -1 : g_cur; s->no_ts = 0;
     c->npass = g_npass[g_cur]; memcpy(c->pmeta, g_pmeta[g_cur], sizeof(pass_meta) * (size_t)c->npass);
     if (s->npost) { c->ops = malloc(s->npost * sizeof *c->ops); memcpy(c->ops, s->post, s->npost * sizeof *c->ops); }
     pthread_mutex_lock(&g_cmu); if (g_ct) g_ct->next = c; else g_ch = c; g_ct = c; pthread_cond_signal(&g_ccv); pthread_mutex_unlock(&g_cmu);

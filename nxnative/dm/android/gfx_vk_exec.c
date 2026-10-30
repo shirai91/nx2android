@@ -181,8 +181,10 @@ static VkRenderingAttachmentInfo P_ca[8], P_da, P_sa; static VkRenderingInfo P_r
 typedef struct { uint32_t ncol, cfmt[8], cload[8], dfmt, dload, sload, dstore, samples; } rpkey;
 typedef struct { VkRenderPass rp; uint32_t w, h, layers, n; struct { uint32_t usage, flags, w, h, layers, fmt, fmt2; } a[9]; } fbkey;   // fmt2: a format-listed image's second format (an imageless framebuffer names the image's whole list)
 static nvn_hmap g_rps = {.klen = sizeof(rpkey)}, g_fbs = {.klen = sizeof(fbkey)}; static pthread_mutex_t g_rp_mu = PTHREAD_MUTEX_INITIALIZER;
-// Without dynamic rendering (a Vulkan 1.1 / 1.2 device, V.has_dynrender) passes must be render pass objects, whatever DM_VK_RP says (vk_init refuses a device with neither)
-static int rp_on(void) { static int on = -1; if (on < 0) { const char *e = getenv("DM_VK_RP"); on = V.has_imageless && (!V.has_dynrender || !(e && !atoi(e))); VKLOG("passes: %s", on ? "render pass objects with imageless framebuffers" : "dynamic rendering"); } return on; }
+// Without dynamic rendering (a Vulkan 1.1 / 1.2 device, V.has_dynrender) passes must be render pass objects, whatever DM_VK_RP says; without imageless
+// framebuffers either (a Vulkan 1.1 driver without the extensions; the emulator's Android 13 image) each pass gets a framebuffer over its own views (fb_get_views)
+static int rp_on(void) { static int on = -1; if (on < 0) { const char *e = getenv("DM_VK_RP"); on = !V.has_dynrender || (V.has_imageless && !(e && !atoi(e)));
+    VKLOG("passes: %s", !on ? "dynamic rendering" : V.has_imageless ? "render pass objects with imageless framebuffers" : "render pass objects with a framebuffer per set of views"); } return on; }
 static int fmt_has_depth(uint32_t f) { return f && f != VK_FORMAT_S8_UINT; }
 static int fmt_has_stencil(uint32_t f) { return f == VK_FORMAT_D24_UNORM_S8_UINT || f == VK_FORMAT_D32_SFLOAT_S8_UINT || f == VK_FORMAT_S8_UINT || f == VK_FORMAT_D16_UNORM_S8_UINT; }
 static VkRenderPass rp_get(const rpkey *k) {
@@ -204,7 +206,7 @@ static VkRenderPass rp_get(const rpkey *k) {
         }
         VkSubpassDescription2 sd = {VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_2, NULL, 0, VK_PIPELINE_BIND_POINT_GRAPHICS, 0, 0, NULL, k->ncol, cr, NULL, k->dfmt ? &dr : NULL, 0, NULL};
         VkRenderPassCreateInfo2 ci = {VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO_2, NULL, 0, na, ad, 1, &sd, 0, NULL, 0, NULL};
-        if (vkCreateRenderPass2(V.dev, &ci, NULL, &rp)) { VKRED_ONCE(70, "vkCreateRenderPass2 failed"); rp = VK_NULL_HANDLE; } else nvn_hm_put(&g_rps, k, rp);
+        if (vk_create_render_pass(&ci, &rp)) { VKRED_ONCE(70, "render pass creation failed"); rp = VK_NULL_HANDLE; } else nvn_hm_put(&g_rps, k, rp);
     }
     pthread_mutex_unlock(&g_rp_mu); return rp;
 }
@@ -223,6 +225,31 @@ static VkFramebuffer fb_get(const fbkey *k) {
         if (vkCreateFramebuffer(V.dev, &ci, NULL, &fb)) { VKRED_ONCE(71, "vkCreateFramebuffer failed"); fb = VK_NULL_HANDLE; } else nvn_hm_put(&g_fbs, k, fb);
     }
     pthread_mutex_unlock(&g_rp_mu); return fb;
+}
+// Without imageless framebuffers: one over the pass's own views. A view's framebuffers are destroyed with it (vk_fb_view_gone, once the GPU has passed the
+// submission that freed it), so a later view given the same handle never finds them
+typedef struct { VkRenderPass rp; uint32_t w, h, layers, n; VkImageView v[9]; } vfbkey;
+static nvn_hmap g_vfbs = {.klen = sizeof(vfbkey)};
+static VkFramebuffer fb_get_views(const fbkey *k, const VkImageView *views) {
+    vfbkey vk; memset(&vk, 0, sizeof vk); vk.rp = k->rp; vk.w = k->w; vk.h = k->h; vk.layers = k->layers; vk.n = k->n; memcpy(vk.v, views, k->n * sizeof *views);
+    pthread_mutex_lock(&g_rp_mu); VkFramebuffer fb = nvn_hm_get(&g_vfbs, &vk);
+    if (!fb) {
+        VkFramebufferCreateInfo ci = {VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, NULL, 0, k->rp, k->n, views, k->w, k->h, k->layers};
+        if (vkCreateFramebuffer(V.dev, &ci, NULL, &fb)) { VKRED_ONCE(77, "vkCreateFramebuffer over views failed"); fb = VK_NULL_HANDLE; } else nvn_hm_put(&g_vfbs, &vk, fb);
+    }
+    pthread_mutex_unlock(&g_rp_mu); return fb;
+}
+void vk_fb_view_gone(VkImageView v) {
+    if (V.has_imageless || !g_vfbs.n) return;
+    pthread_mutex_lock(&g_rp_mu);
+    for (;;) {   // one at a time: a deletion moves the entries after it
+        vfbkey hit; int found = 0;
+        for (uint32_t i = 0; i < g_vfbs.cap && !found; i++) if (g_vfbs.vals[i]) { const vfbkey *e = (const vfbkey *)(g_vfbs.keys + (size_t)i * g_vfbs.klen);
+            for (uint32_t j = 0; j < e->n && !found; j++) if (e->v[j] == v) { hit = *e; found = 1; } }
+        if (!found) break;
+        vkDestroyFramebuffer(V.dev, (VkFramebuffer)nvn_hm_del(&g_vfbs, &hit), NULL);
+    }
+    pthread_mutex_unlock(&g_rp_mu);
 }
 // the attachments begin_pass found, for the render pass begin: each colour slot's (and the depth's) image, view, view format and layers, size at the view's level
 static struct { vkimg_t *im; VkImageView v; uint32_t fmt, layers, w, h; } P_att[9];
@@ -276,9 +303,9 @@ static int pass_commit(void) {
             fk.a[na].usage = P_att[8].im->usage; fk.a[na].flags = P_att[8].im->cflags; fk.a[na].w = P_att[8].w; fk.a[na].h = P_att[8].h; fk.a[na].layers = P_att[8].layers; fk.a[na].fmt = P_att[8].fmt; na++; }
         VkRenderPass rp = rp_get(&k);
         fk.rp = rp_compat(k.ncol, k.cfmt, k.dfmt, k.samples); fk.w = P_ri.renderArea.extent.width; fk.h = P_ri.renderArea.extent.height; fk.layers = P_ri.layerCount; fk.n = na;
-        VkFramebuffer fb = rp && fk.rp ? fb_get(&fk) : VK_NULL_HANDLE;
+        VkFramebuffer fb = rp && fk.rp ? (V.has_imageless ? fb_get(&fk) : fb_get_views(&fk, views)) : VK_NULL_HANDLE;
         if (fb) { VkRenderPassAttachmentBeginInfo abi = {VK_STRUCTURE_TYPE_RENDER_PASS_ATTACHMENT_BEGIN_INFO, NULL, na, views};
-            VkRenderPassBeginInfo rbi = {VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, &abi, rp, fb, P_ri.renderArea, na, cv};
+            VkRenderPassBeginInfo rbi = {VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, V.has_imageless ? &abi : NULL, rp, fb, P_ri.renderArea, na, cv};
             vkCmdBeginRenderPass(vk_cmd(), &rbi, VK_SUBPASS_CONTENTS_INLINE); S.rp_pass = 1; }
         else if (V.has_dynrender) { vkCmdBeginRendering(vk_cmd(), &P_ri); S.rp_pass = 0; }
         else { VKRED_ONCE(76, "render pass or framebuffer failed without dynamic rendering: pass skipped"); return 0; }   // (still pass_open 2: vk_end_pass drops it)
