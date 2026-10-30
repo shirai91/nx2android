@@ -1,25 +1,46 @@
-# The on-screen gamepad's default layout (dm/android/overlay_layout.h draws and hit-tests it). A game profile's android.tsv moves single controls with `overlay <name> <x> <y> [<r>]`;
-# dm/android/tools/android_profile.py compiles the result into android_profile.h (DM_AOV_TABLE). Columns, separated by tabs:
-#   name     what android.tsv calls the control
-#   kind     stick_l, stick_r, button, dpad, menu (the menu button: pauses the game and opens the settings; always shown)
-#   x, y     the centre, as fractions of the window's width and height
-#   r        the radius, as a fraction of the window's height (round controls stay round on any aspect); L, R, ZL and ZR are drawn as shoulder buttons
-#            this radius sizes (overlay_layout.h ov_sdf), and a small control still takes touches OV_REACH_MIN from its centre
+# The on-screen gamepad's layouts (dm/android/overlay_layout.h hit-tests them; gfx_vk_present.c draws the app's theme on them): the ergonomic layout of the
+# "Themed Virtual Controllers" designs, written by devtools/theme_render.py --layout from themes/ergo (every theme shares it). Two layouts, the same controls in the
+# same order in each: tablet (designed at 1216x760) and phone (915x412); the app takes the one nearer its window's aspect (overlay_layout.h OV_PHONE_ASPECT).
+# A game profile's android.tsv moves single controls with `overlay <layout> <name> <x> <y>`; dm/android/tools/android_profile.py compiles the result into
+# android_profile.h (DM_AOV_TABLE). Columns, separated by tabs:
+#   layout   tablet or phone
+#   name     what android.tsv and a theme's theme.tsv call the control
+#   kind     stick_l, stick_r, button, dpad (its four directions, and the diagonals between them), menu (the menu button: pauses the game and opens the settings; always shown)
+#   anchor   where x is measured from: 0 the window's left edge, 0.5 its middle, 1 its right edge (a thumb reaches as far from the edge on any width)
+#   x        the centre's offset from the anchor, in window heights
+#   y        the centre, as a fraction of the window's height
+#   w, h     the size, in window heights (w = h: a round control)
 #   button   the DM_BTN_* bit a button sends, - for the others
-#   label    the text drawn on a button, ~ for none
-stick_l	stick_l	0.12	0.70	0.12	-	~
-stick_r	stick_r	0.74	0.80	0.09	-	~
-a	button	0.935	0.60	0.050	DM_BTN_A	A
-b	button	0.885	0.72	0.050	DM_BTN_B	B
-x	button	0.885	0.48	0.050	DM_BTN_X	X
-y	button	0.835	0.60	0.050	DM_BTN_Y	Y
-l	button	0.06	0.12	0.050	DM_BTN_L	L
-zl	button	0.06	0.30	0.050	DM_BTN_ZL	ZL
-r	button	0.94	0.12	0.050	DM_BTN_R	R
-zr	button	0.94	0.30	0.050	DM_BTN_ZR	ZR
-minus	button	0.42	0.08	0.020	DM_BTN_MINUS	-
-plus	button	0.58	0.08	0.020	DM_BTN_PLUS	+
-menu	menu	0.50	0.08	0.018	-	~
-dpad	dpad	0.30	0.80	0.10	-	~
-ls	button	0.20	0.42	0.040	DM_BTN_LS	LS
-rs	button	0.62	0.62	0.040	DM_BTN_RS	RS
+#   label    the text the theme-less drawing puts on a button, ~ for none
+tablet	stick_l	stick_l	0	0.2105	0.5789	0.2421	0.2421	-	~
+tablet	stick_r	stick_r	1	-0.4342	0.7632	0.2211	0.2211	-	~
+tablet	dpad	dpad	0	0.4342	0.7632	0.2263	0.2263	-	~
+tablet	a	button	1	-0.1421	0.5658	0.0895	0.0895	DM_BTN_A	A
+tablet	b	button	1	-0.2237	0.6474	0.0895	0.0895	DM_BTN_B	B
+tablet	x	button	1	-0.2237	0.4842	0.0895	0.0895	DM_BTN_X	X
+tablet	y	button	1	-0.3053	0.5658	0.0895	0.0895	DM_BTN_Y	Y
+tablet	l	button	0	0.2737	0.3658	0.1684	0.0737	DM_BTN_L	L
+tablet	zl	button	0	0.1053	0.3658	0.1474	0.0737	DM_BTN_ZL	ZL
+tablet	r	button	1	-0.2737	0.3658	0.1684	0.0737	DM_BTN_R	R
+tablet	zr	button	1	-0.1053	0.3658	0.1474	0.0737	DM_BTN_ZR	ZR
+tablet	minus	button	0	0.0842	0.2632	0.0632	0.0632	DM_BTN_MINUS	-
+tablet	plus	button	1	-0.0842	0.2632	0.0632	0.0632	DM_BTN_PLUS	+
+tablet	ls	button	0	0.3974	0.5079	0.0684	0.0684	DM_BTN_LS	L3
+tablet	rs	button	1	-0.3974	0.5079	0.0684	0.0684	DM_BTN_RS	R3
+tablet	menu	menu	0.5	0.0000	0.0368	0.1000	0.0579	-	~
+phone	stick_l	stick_l	0	0.3155	0.6359	0.3883	0.3883	-	~
+phone	stick_r	stick_r	1	-0.7282	0.7816	0.3398	0.3398	-	~
+phone	dpad	dpad	0	0.7087	0.7913	0.3544	0.3544	-	~
+phone	a	button	1	-0.2209	0.6505	0.1456	0.1456	DM_BTN_A	A
+phone	b	button	1	-0.3519	0.7816	0.1456	0.1456	DM_BTN_B	B
+phone	x	button	1	-0.3519	0.5194	0.1456	0.1456	DM_BTN_X	X
+phone	y	button	1	-0.4830	0.6505	0.1456	0.1456	DM_BTN_Y	Y
+phone	l	button	0	0.4223	0.3131	0.2621	0.1214	DM_BTN_L	L
+phone	zl	button	0	0.1553	0.3131	0.2330	0.1214	DM_BTN_ZL	ZL
+phone	r	button	1	-0.4223	0.3131	0.2621	0.1214	DM_BTN_R	R
+phone	zr	button	1	-0.1553	0.3131	0.2330	0.1214	DM_BTN_ZR	ZR
+phone	minus	button	0	0.7330	0.0728	0.0971	0.0971	DM_BTN_MINUS	-
+phone	plus	button	1	-0.7330	0.0728	0.0971	0.0971	DM_BTN_PLUS	+
+phone	ls	button	0	0.6117	0.4854	0.1068	0.1068	DM_BTN_LS	L3
+phone	rs	button	1	-0.6117	0.4854	0.1068	0.1068	DM_BTN_RS	R3
+phone	menu	menu	0.5	-0.0012	0.0485	0.1553	0.0874	-	~

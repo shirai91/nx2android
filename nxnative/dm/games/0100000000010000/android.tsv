@@ -1,0 +1,19 @@
+# Super Mario Odyssey on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Nintendo EPD's sead / agl engine (NintendoWare G3d / Ui2d / Vfx) on SDK 7.3.2, update 1.4.1; 27,984 shaders, all translated. The upstream profile as it is.
+# Tested 2026-10-30 on the Legion Y700 (TB322FC, Snapdragon 8 Elite, Adreno 830, Android 16), driven with DM_CTL: the controller notice, the title, a new save's opening (the airship,
+# Bowser, the cap torn), Cap Kingdom from waking up (Look Around, the hills, the steps, the bridge) to Cappy's cutscene and "Cappy is now your companion", the cap throw, Bonneton's
+# square; the game saved there and after a restart it continues with Cappy. HUD counters, the map, the pause menu's mode switch (docked 1600x900 / handheld 1280x720) checked.
+# 60 fps in both modes: docked at the wake-up field 1,230 draws, replay 6.4 ms and GPU 8.8 ms a frame, Bonneton 1,050 draws, replay 6.5 ms and GPU 9-11 ms; handheld GPU 6.9 ms;
+# 0 of 64 frames late on screen. The first run's opening cutscene held 40 fps while its pipelines were made for the first time (p90 work 15.4 ms); later runs have them cached.
+# Audio: the 8 underruns at startup all come before the game's first sound, none in play.
+# A 20-minute soak at the start of Cap Kingdom (walking, turning the camera, throwing the cap): one process throughout, frame time p50 16.5 ms, 0 frames dropped on screen
+# (4 of 40,200 shown a vsync late), footprint 1.5 GB flat.
+# Motion: shaking the device throws the cap (the front end's accelerometer sets DM_BTN_SHAKE, the six-axis sensor in hle_hid.c shakes; the game's "shake the Pro Controller to throw"):
+# a DM_CTL Shake threw it, and with DM_SHAKE_G lowered to the still tablet's noise the accelerometer alone made Mario spin-throw.
+# Under a spin throw the ground shows a patch of alternate dark pixel columns (an ordered-dither shadow of the half-transparent spin, as the game dithers its transparency); Mario's own
+# shadow, standing or in the air, is solid. Not compared with a Switch frame of the same throw.
+# The one red log line: "SetRenderEnableConditional: the host draws anyway" (no occlusion artefact seen, so render_cond is left off). Not tested yet: the kingdoms after Cap Kingdom
+status	playable
+tested	v393216 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
+package	org.nx2a.supermarioodyssey
+orientation	landscape

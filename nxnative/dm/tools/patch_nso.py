@@ -672,11 +672,14 @@ def table_cands(insl, rb):
     return sorted(cands)
 def tail_call(insl, j):
     """The br x18 is an indirect tail call, not a jump table: the last write of x18 before it is a plain pointer load and the br ends the function. Ace Attorney Investigations Collection
-    (Unity 2022.3 IL2CPP) main+0x1d271bc: ldr x18,[x0,#0x18]; ...; ldr x16,[sp]; ...; br x18, a thunk that moves stack arguments and jumps to the method pointer at +0x18"""
-    if j + 1 != len(insl): return False
+    (Unity 2022.3 IL2CPP) main+0x1d271bc: ldr x18,[x0,#0x18]; ...; ldr x16,[sp]; ...; br x18, a thunk that moves stack arguments and jumps to the method pointer at +0x18.
+    The br need not end the function when the frame is popped between the load and the br: Blasphemous 2 (Unity 2021.3 IL2CPP) main+0x1e86fc, ldr x18,[x0,#0x10]; ...;
+    ldp x29,x30,[sp],#0x10; br x18, with the null check's throw (bl; udf) after it"""
+    popped = j + 1 == len(insl)
     for p in reversed(insl[:j]):
+        if p.mnemonic == 'ldp' and re.fullmatch(r'x29, x30, \[sp\], #(0x[0-9a-f]+|\d+)', p.op_str): popped = True
         if 'x18' not in [p.reg_name(r) for r in p.regs_access()[1]]: continue
-        return p.mnemonic == 'ldr' and bool(re.fullmatch(r'x18, \[(x\d+|sp)(, #(0x[0-9a-f]+|\d+))?\]', p.op_str))
+        return popped and p.mnemonic == 'ldr' and bool(re.fullmatch(r'x18, \[(x\d+|sp)(, #(0x[0-9a-f]+|\d+))?\]', p.op_str))
     return False
 def jump_bytes_far(insl, j):
     """The byte / halfword table form with its add further back (Octopath Traveler 0 main+0x37f9bc8: adr x18,#L; ldrb w0,[x17,x15]; add x18,x18,x0,lsl #2, then 17 register moves before br x18).

@@ -5,5 +5,6 @@ pillow
 fonttools
 pyyaml
 backports.zstd; python_version < "3.14"
+pycryptodome   # NSZ / XCZ dumps (porter.dumps: AES-CTR, with zstd)
 # the GUI (python -m gui); the CLI (python -m porter) runs without it
 PySide6

@@ -67,6 +67,9 @@ int dm_focus_now(void) { return atomic_load(&g_focus); }
 uint64_t dm_focus_in_since(void) { return atomic_load(&g_focus_in_ns); }   // graphics layer display link watchdog: stalls are only computed while active, counted from activation (nvn_mtl.m mtl_present_wait)
 void dm_focus_set(int st) {
     if (st < 1 || st > 3) die("dm_focus_set: invalid state %d", st);
+    // Mode 1 (notify, never suspended) keeps running behind HOME on the Switch and sees OutOfFocus only: Blasphemous 2's Unity 2021.3, told Background, came back with its
+    // menus taking no selection (the save list opened with no slot chosen and A did nothing)
+    if (st == 3 && atomic_load(&g_focus_mode) == 1) st = 2;
     if (st == 1) atomic_store(&g_focus_in_ns, now_ns());
     if (atomic_exchange(&g_focus, st) == st) return;
     LOG("oe focus state → %d", st);

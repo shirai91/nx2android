@@ -9,6 +9,7 @@ _p = _ap.ArgumentParser(); _p.add_argument('so'); _p.add_argument('out'); _p.add
 _p.add_argument('--label', default='NX2A Probe'); _p.add_argument('--lib', default='probe'); _p.add_argument('--landscape', action='store_true')
 _p.add_argument('--extra-so', action='append', default=[], help='another arm64 library packed beside the main one (a Vulkan validation layer)')
 _p.add_argument('--icon', help='launcher icon (a PNG, used at its own size: nodpi)')
+_p.add_argument('--asset', action='append', default=[], metavar='NAME=FILE', help='a file the app reads with AAssetManager as NAME (assets/NAME in the APK): the gamepad theme')
 _p.add_argument('--release', action='store_true', help='not debuggable')
 _p.add_argument('--importer-sdk', help='Android SDK for the optional ZIP-import launcher (also requires javac)')
 _p.add_argument('--data-package', help='package named in the data ZIP (defaults to --package; a separate diagnostic app can import the original pack)')
@@ -220,6 +221,7 @@ def main():
             subprocess.run(['javac', '-source', '8', '-target', '8', '-classpath', str(android), '-d', str(classes), str(Path(__file__).with_name('ImportActivity.java'))], check=True)
             subprocess.run([str(d8), '--lib', str(android), '--min-api', str(MIN_SDK), '--output', tmp, *map(str, classes.rglob('*.class'))], check=True)
             entries.append(('classes.dex', (Path(tmp) / 'classes.dex').read_bytes(), 4))
+    entries += [(f'assets/{n}', open(f, 'rb').read(), 4) for n, _, f in (x.partition('=') for x in ARGS.asset)]   # stored, as every entry: AAsset reads them in place
     if ARGS.icon: entries += [('resources.arsc', res_table('res/drawable-nodpi-v4/icon.png'), 4), ('res/drawable-nodpi-v4/icon.png', open(ARGS.icon, 'rb').read(), 4)]
     z, cd, eocd = build_zip(entries)
     apk = sign_v2(z, cd, eocd, k, crt)

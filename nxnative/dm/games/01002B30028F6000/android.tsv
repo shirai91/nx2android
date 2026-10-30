@@ -1,0 +1,12 @@
+# Celeste on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# MonoGame over NVN (the C# compiled to C++ by BRUTE) with FMOD Studio through AudioOut, SDK 15.3.2, update 1.4.1.1 (shown in game as v.1.4.1.0); 26 MGFX shaders, all translated.
+# Tested 2026-10-29 on the Legion Y700 (TB322FC, Snapdragon 8 Elite, Adreno 830, Android 16), driven with DM_CTL: the title, the 3D mountain of the menus, a new file, the
+# Prologue's opening text and its first screens (running, jumping, dashing, dying and respawning), the game's pause menu, Save and Quit and the file select showing the save.
+# 60 fps as on the Switch (frame work p50 about 13-16 ms, GPU about 1.7 ms), no audio underrun while playing, no red log line. A 30-minute soak in the Prologue (running,
+# jumping, dashing, dying): frame time p50 16.66 ms, at most one frame of 300 dropped, footprint steady at about 1 GB, no audio underrun, no red log line.
+# What it needed from the core: the game keeps NVN's default lower-left window origin (GL's bottom-up rows), which the present now flips (gfx_vk_present.c); the whole
+# picture was upside down before. The shader tables were split on Windows (/ paths since d1ad5f2). Not tested yet: the chapters after the Prologue, handheld mode (played docked)
+status	playable
+tested	v589824 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
+package	org.nx2a.celeste
+orientation	landscape

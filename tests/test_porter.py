@@ -1,5 +1,5 @@
 # Unit tests of the port pipeline's own parts (python -m unittest discover tests). They need no game files, toolchains or device.
-import json, os, re, shutil, sys, tempfile, unittest
+import hashlib, importlib.util, json, os, random, re, shutil, struct, sys, tempfile, unittest
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -39,28 +39,78 @@ class AndroidProfiles(unittest.TestCase):
         self.assertEqual(android_profile.load(d.name).settings, {'fps': '1'})
         with self.assertRaises(android_profile.ProfileError): android_profile.load(profile_dir([('status', 'boots'), ('setting', 'fps=2')]).name)
 
+    def test_opacity_setting(self):   # the gamepad's opacity, 20..80 percent by 5 (the menu's slider, overlay_layout.h OV_OPACITY_MIN..MAX)
+        self.assertEqual(android_profile.load(profile_dir([('status', 'boots'), ('setting', 'opacity=45')]).name).settings, {'opacity': '45'})
+        for v in ('10', '85', '42'):
+            with self.assertRaises(android_profile.ProfileError, msg=v): android_profile.load(profile_dir([('status', 'boots'), ('setting', f'opacity={v}')]).name)
+
     def test_default_package(self):
         d = profile_dir([('status', 'boots')])
         self.assertEqual(android_profile.load(d.name).package, 'org.nx2a.t0100000000aaa000')
 
     def test_bad_keys_are_refused(self):
-        for rows in ([('status', 'great')], [('colour', 'red')], [('setting', 'volume=3')], [('overlay', 'q 0.1 0.2')], [('env', 'lower=1')], [('package', 'Not A Package')],
+        for rows in ([('status', 'great')], [('colour', 'red')], [('setting', 'volume=3')], [('overlay', 'tablet q 0.1 0.2')], [('env', 'lower=1')], [('package', 'Not A Package')],
                      [('status', 'boots'), ('status', 'playable')]):
             d = profile_dir(rows)
             with self.assertRaises(android_profile.ProfileError, msg=rows): android_profile.load(d.name)
 
-    def test_header_default_layout(self):   # the generated table is overlay_layout.h's table as it was written by hand before it moved to overlay_default.tsv
+    def test_header_default_layout(self):   # the ergonomic layouts (the themes' design), the tablet's then the phone's, the same controls in each
         h = android_profile.header(android_profile.load(NEO))
-        rows = re.findall(r'\{(OV_\w+), ([\d.]+)f, ([\d.]+)f, ([\d.]+)f, (\w+), "([^"]*)"\}', h)
-        self.assertEqual(len(rows), 16)
-        self.assertEqual(rows[0], ('OV_STICK_L', '0.12', '0.70', '0.12', '0', ''))
-        self.assertEqual(rows[2], ('OV_BUTTON', '0.935', '0.60', '0.050', 'DM_BTN_A', 'A'))
-        self.assertEqual(rows[10][-1], '-')   # the minus button's label, not "no label"
+        rx = r'\{(OV_\w+), (-?[\d.]+)f, (-?[\d.]+)f, ([\d.]+)f, ([\d.]+)f, ([\d.]+)f, (\w+), "([^"]*)", "(\w+)"\}'
+        tablet, phone = (re.findall(rx, h.split(f'#define DM_AOV_{n}')[1].split('#define')[0]) for n in ('TABLET', 'PHONE'))
+        self.assertEqual((len(tablet), len(phone)), (16, 16)); self.assertIn('#define DM_AOV_N 16', h)
+        self.assertEqual([r[0] for r in tablet], [r[0] for r in phone]); self.assertEqual([r[6] for r in tablet], [r[6] for r in phone])
+        self.assertEqual(tablet[0], ('OV_STICK_L', '0.0', '0.2105', '0.5789', '0.2421', '0.2421', '0', '', 'stick_l'))   # 184 px of the 1216x760 design, 160 px from the left edge
+        a = next(r for r in tablet if r[6] == 'DM_BTN_A'); self.assertEqual(a[1:3], ('1.0', '-0.1421'))   # from the right edge
+        self.assertEqual(next(r for r in tablet if r[6] == 'DM_BTN_MINUS')[-2], '-')   # the minus button's label, not "no label"
 
-    def test_header_overlay_move(self):
-        d = profile_dir([('status', 'boots'), ('overlay', 'a 0.5 0.5 0.07')])
+    def test_header_overlay_move(self):   # a moved control: x and y fractions of the window, in the one layout named
+        d = profile_dir([('status', 'boots'), ('overlay', 'phone a 0.5 0.5')])
         h = android_profile.header(android_profile.load(d.name))
-        self.assertIn('{OV_BUTTON, 0.5f, 0.5f, 0.07f, DM_BTN_A, "A"}', h)
+        self.assertIn('{OV_BUTTON, 0.5f, 0.0f, 0.5f, 0.1456f, 0.1456f, DM_BTN_A, "A", "a"}', h.split('#define DM_AOV_PHONE')[1])
+        self.assertNotIn('0.5f, 0.0f, 0.5f', h.split('#define DM_AOV_PHONE')[0])
+        with self.assertRaises(android_profile.ProfileError): android_profile.load(profile_dir([('status', 'boots'), ('overlay', 'a 0.5 0.5')]).name)
+
+    def test_theme_mapping(self):   # porter packs the game's own pack, the ergo pack for a game the table does not name
+        self.assertEqual(android_profile.theme(NEO).name, 'neotwewy'); self.assertEqual(android_profile.theme(NEO.lower()).name, 'neotwewy')
+        self.assertEqual(android_profile.theme('0100000000AAA000').name, 'ergo')
+        rows = [l.split('\t') for l in (android_profile.THEMES / 'themes.tsv').read_text(encoding='utf-8').splitlines() if l and not l.startswith('#')]
+        self.assertEqual(len({r[0] for r in rows}), len(rows))   # one pack per game
+        for r in rows: self.assertRegex(r[0], r'^0100[0-9A-F]{12}$'); self.assertTrue((android_profile.THEMES / r[1] / 'theme.tsv').is_file(), r)
+
+    def test_theme_packs(self):   # every pack: both layouts' atlases, and sprites only of the layout's controls, within the atlas, every control drawn idle (a button held too)
+        from PIL import Image
+        names = {r['name'] for r in android_profile.default_layout()}
+        for pack in sorted(p for p in android_profile.THEMES.iterdir() if p.is_dir()):
+            rows = [l.split('\t') for l in (pack / 'theme.tsv').read_text(encoding='utf-8').splitlines() if l and not l.startswith('#')]
+            lays = {r[1]: r for r in rows if r[0] == 'layout'}
+            self.assertEqual(set(lays), set(android_profile.LAYOUTS), pack.name)
+            for lay, row in lays.items():
+                im = Image.open(pack / row[4]); self.assertIn(im.mode, ('P', 'RGBA'), pack.name)   # what overlay_theme.c decodes
+                sp = [r for r in rows if r[0] == 'sprite' and r[1] == lay]
+                for r in sp:
+                    self.assertIn(r[2], names, r); self.assertIn(r[4], ('idle', 'held', 'knob', 'decor'), r)
+                    x, y, w, h = map(int, r[5:9]); self.assertTrue(x >= 0 and y >= 0 and x + w <= im.width and y + h <= im.height, (pack.name, r))
+                drawn = {(r[2], r[3], r[4]) for r in sp}
+                for n in names - {'dpad'}:
+                    self.assertIn((n, '-', 'idle'), drawn, (pack.name, lay, n))
+                    if n not in ('stick_l', 'stick_r'): self.assertIn((n, '-', 'held'), drawn, (pack.name, lay, n))
+                for d in ('up', 'down', 'left', 'right'): self.assertTrue({('dpad', d, 'idle'), ('dpad', d, 'held')} <= drawn, (pack.name, lay, d))
+                self.assertTrue({('stick_l', '-', 'knob'), ('stick_r', '-', 'knob')} <= drawn, (pack.name, lay))
+
+    def test_apk_assets(self):   # mkapk.py --asset: the theme's files as assets/overlay/<name>, nothing of the other packs
+        t = Path(tempfile.mkdtemp(prefix='nx2a_test_apk_'))
+        try:
+            so = t / 'libdmhost.so'; so.write_bytes(b'\x7fELF' + b'\0' * 60); pack = android_profile.theme(NEO)
+            args = [a for f in ('theme.tsv', 'tablet.png', 'phone.png') for a in ('--asset', f'overlay/{f}={pack / f}')]
+            import subprocess, zipfile
+            subprocess.run([sys.executable, str(REPO / 'nxnative/dm/android/apk/mkapk.py'), str(so), str(t / 'a.apk'), str(t / 'k.json'), '--lib', 'dmhost'] + args,
+                           check=True, capture_output=True)
+            with zipfile.ZipFile(t / 'a.apk') as z:
+                self.assertEqual(sorted(n for n in z.namelist() if n.startswith('assets/')), ['assets/overlay/phone.png', 'assets/overlay/tablet.png', 'assets/overlay/theme.tsv'])
+                self.assertEqual(z.read('assets/overlay/tablet.png'), (pack / 'tablet.png').read_bytes())
+        finally:
+            shutil.rmtree(t, ignore_errors=True)
 
 
 class DataPack(unittest.TestCase):
@@ -104,14 +154,14 @@ class DataPack(unittest.TestCase):
 
 class Experimental(unittest.TestCase):
     def test_ios_profile_copied_with_experimental_android_tsv(self):   # an iOS-only profile is copied out of the repository, never edited in place
-        odyssey = '0100000000010000'
+        ios_only = '010028600EBDA000'   # Super Mario 3D World + Bowser's Fury: an iOS profile without android.tsv or patches.py
         t = Path(tempfile.mkdtemp(prefix='nx2a_test_exp_')); environ = dict(os.environ)
         try:
-            port = pipeline.Port(pipeline.Options(folder=t, experimental=True)); port.env = {}; port.work = t / f'{odyssey}_build'; port.o.keys = None
-            g, ap = port.experimental_profile(game.load(odyssey), odyssey)
-            self.assertEqual(g.dir, (t / f'{odyssey}_build/profile/{odyssey}').resolve())
-            self.assertEqual((ap.status, ap.package), ('experimental', f'org.nx2a.t{odyssey}'))
-            self.assertFalse((REPO / f'nxnative/dm/games/{odyssey}/android.tsv').exists())
+            port = pipeline.Port(pipeline.Options(folder=t, experimental=True)); port.env = {}; port.work = t / f'{ios_only}_build'; port.o.keys = None
+            g, ap = port.experimental_profile(game.load(ios_only), ios_only)
+            self.assertEqual(g.dir, (t / f'{ios_only}_build/profile/{ios_only}').resolve())
+            self.assertEqual((ap.status, ap.package), ('experimental', f'org.nx2a.t{ios_only.lower()}'))
+            self.assertFalse((REPO / f'nxnative/dm/games/{ios_only}/android.tsv').exists())
             self.assertFalse((g.dir / 'patches.py').exists())   # patch_nso.py finds the per-build cuts in dm/games
             self.assertEqual(os.environ.get('DM_GAMES_FIRST'), '1')
         finally:
@@ -139,6 +189,68 @@ class Misc(unittest.TestCase):
             with self.assertRaises(pipeline.BuildError): pipeline.Port.check_space(p)
             work.mkdir(); (work / 'x').write_bytes(b'\0' * 2**20); pipeline.Port.check_space(p)   # a build folder already there counts
         finally: shutil.disk_usage = real
+
+
+def _hfs0(files):   # an HFS0 of (name, data): the XCI's partitions (hash fields left zero: nothing here reads them)
+    strs = b''.join(n.encode() + b'\0' for n, _ in files); ent, off = b'', 0
+    for i, (n, d) in enumerate(files):
+        ent += struct.pack('<QQII8x32s', off, len(d), sum(len(m.encode()) + 1 for m, _ in files[:i]), 0, b''); off += len(d)
+    return struct.pack('<4sII4x', b'HFS0', len(files), len(strs)) + ent + strs + b''.join(d for _, d in files)
+
+
+@unittest.skipUnless(importlib.util.find_spec('Crypto'), 'no pycryptodome')
+class Dumps(unittest.TestCase):   # porter/dumps.py: NSZ / XCZ → NSP; an NCZ made here as nsz makes it, from an NCA of a plain section and an AES-CTR one
+    def setUp(self):
+        from Crypto.Cipher import AES
+        from porter import dumps; self.dumps = dumps
+        rnd = random.Random(7); b = lambda n: bytes(rnd.getrandbits(8) for _ in range(n))
+        self.key, self.ctr = b(16), b(8) + b'\0' * 8
+        head, plain = b(0x4000), b(0x2000) + bytes(0x18000)   # the CTR part compresses (zeros), so zstd has something to do
+        self.nca = head + plain[:0x2000] + AES.new(self.key, AES.MODE_CTR, nonce=self.ctr[:8], initial_value=0x6000 >> 4).encrypt(plain[0x2000:])
+        self.name = hashlib.sha256(self.nca).hexdigest()[:32]
+        secs = struct.pack('<8sQ', b'NCZSECTN', 2) + struct.pack('<QQQQ16s16s', 0x4000, 0x2000, 1, 0, bytes(16), bytes(16)) + struct.pack('<QQQQ16s16s', 0x6000, 0x18000, 3, 0, self.key, self.ctr)
+        z = dumps.zstd_mod()
+        self.solid = head + secs + z.compress(plain)
+        bs = 1 << 14; blocks = [plain[i:i + bs] for i in range(0, len(plain), bs)]
+        comp = [z.compress(k) if i else k for i, k in enumerate(blocks)]   # the first block stored as it is (random data: compressing does not shrink it)
+        self.block = head + secs + struct.pack('<8sBBBBIQ', b'NCZBLOCK', 2, 1, 0, 14, len(blocks), len(plain)) + struct.pack(f'<{len(blocks)}I', *map(len, comp)) + b''.join(comp)
+        self.d = Path(tempfile.mkdtemp(prefix='nx2a_test_dumps_'))
+
+    def nsz(self, ncz, name='g.nsz'):
+        files = [(self.name + '.ncz', ncz), ('0100000000aaa0000000000000000000.tik', b't' * 0x2c0)]
+        hdr = self.dumps._pfs0_header([n for n, _ in files], [len(d) for _, d in files])
+        (self.d / name).write_bytes(hdr + b''.join(d for _, d in files)); return self.d / name
+
+    def check(self, src):
+        self.assertEqual(self.dumps.size(src), len(self.dumps._pfs0_header([self.name + '.nca', 'x' * 36], [0, 0])) + len(self.nca) + 0x2c0)
+        out = self.dumps.decompress(src, self.d / self.dumps.unpacked_name(src))
+        self.assertEqual(out.stat().st_size, self.dumps.size(src)); self.assertEqual(out.stat().st_mtime_ns, src.stat().st_mtime_ns)
+        with open(out, 'rb') as f: got = {n: (f.seek(o), f.read(s))[1] for n, o, s in self.dumps.entries(out)}
+        self.assertEqual(got[self.name + '.nca'], self.nca); self.assertEqual(len(got), 2)
+
+    def test_solid_and_block(self):
+        self.check(self.nsz(self.solid)); self.check(self.nsz(self.block, 'b.nsz'))
+
+    def test_first_section_in_the_header(self):   # nsz 5.0 starts the first section at 0xc00, inside the header it keeps as it is (a DLC NSZ it made, 2026-10-29)
+        s = bytearray(self.solid); s[0x4000 + 16:0x4000 + 32] = struct.pack('<QQ', 0xc00, 0x2000 + 0x4000 - 0xc00)
+        self.check(self.nsz(bytes(s)))
+
+    def test_xcz_is_its_secure_partition(self):
+        secure = _hfs0([(self.name + '.ncz', self.block), ('0100000000aaa0000000000000000000.tik', b't' * 0x2c0)])
+        root = _hfs0([('update', _hfs0([])), ('secure', secure)])
+        x = bytearray(0x200); x[0x100:0x104] = b'HEAD'; x[0x130:0x138] = struct.pack('<Q', 0x200)
+        (self.d / 'g.xcz').write_bytes(bytes(x) + root); self.check(self.d / 'g.xcz')
+
+    def test_damage_is_found(self):   # a changed byte: a zstd error, or an NCA whose SHA-256 is not its name; either way a BuildError and no NSP
+        for ncz, at in ((self.solid, 0x4000 + 16 + 0x80 + 40), (self.block, -1), (self.block, 0x4000 + 16 + 0x80 + 24 + 100)):
+            bad = bytearray(ncz); bad[at] ^= 1
+            with self.assertRaises(pipeline.BuildError): self.dumps.decompress(self.nsz(bytes(bad)), self.d / 'out.nsp')
+            self.assertFalse((self.d / 'out.nsp').exists())
+
+    def test_scan_takes_compressed_dumps(self):   # upstream's scan_nsps with porter's kinds: the NSZ's ticket names its title ID
+        self.nsz(self.solid, 'Game [v0].nsz')
+        app, fam = pipeline.nsp.scan_nsps(self.d, self.dumps.EXTS)
+        self.assertEqual(app, 0x0100000000AAA000); self.assertEqual(fam['base'].suffix, '.nsz')
 
 
 class FpsLocker(unittest.TestCase):   # porter/fpslocker.py: FPSLocker-Warehouse configs → the host's rows (hle_fpslock.c DM_FPS_LOCKS) and the rewriter's cuts

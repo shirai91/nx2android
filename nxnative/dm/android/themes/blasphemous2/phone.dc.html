@@ -1,0 +1,388 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Blasphemous II — Phone</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IM+Fell+English+SC&family=IM+Fell+English&amp;display=swap">
+<style>
+body{margin:0;background:#120c0a}
+a{color:#e9dcc0}a:hover{color:#e9dcc0}
+button{-webkit-tap-highlight-color:transparent}
+button:focus-visible{outline:2px solid #c9a24a;outline-offset:3px}
+</style>
+</helmet>
+<div style="position: relative; width: 915px; height: 412px; overflow: hidden; background: #120c0a; font-family: 'IM Fell English', serif; color: #e9dcc0; touch-action: none; user-select: none; -webkit-user-select: none">
+
+<!-- Backdrop -->
+<svg aria-hidden="true" width="915" height="412" viewBox="0 0 915 412" style="position: absolute; left: 0; top: 0">
+<path d="M0 398 Q-21 390 0 398 Q21 406 42 398 Q63 390 84 398 Q105 406 126 398 Q147 390 168 398 Q189 406 210 398 Q231 390 252 398 Q273 406 294 398 Q315 390 336 398 Q357 406 378 398 Q399 390 420 398 Q441 406 462 398 Q483 390 504 398 Q525 406 546 398 Q567 390 588 398 Q609 406 630 398 Q651 390 672 398 Q693 406 714 398 Q735 390 756 398 Q777 406 798 398 Q819 390 840 398 Q861 406 882 398 Q903 390 924 398" fill="none" stroke="#3a2a22" stroke-width="2.5"></path>
+<polygon points="-10,398 -6,398 -8,391" fill="#3a2a22"></polygon>
+<polygon points="32,398 36,398 34,405" fill="#3a2a22"></polygon>
+<polygon points="74,398 78,398 76,391" fill="#3a2a22"></polygon>
+<polygon points="116,398 120,398 118,405" fill="#3a2a22"></polygon>
+<polygon points="158,398 162,398 160,391" fill="#3a2a22"></polygon>
+<polygon points="200,398 204,398 202,405" fill="#3a2a22"></polygon>
+<polygon points="242,398 246,398 244,391" fill="#3a2a22"></polygon>
+<polygon points="284,398 288,398 286,405" fill="#3a2a22"></polygon>
+<polygon points="326,398 330,398 328,391" fill="#3a2a22"></polygon>
+<polygon points="368,398 372,398 370,405" fill="#3a2a22"></polygon>
+<polygon points="410,398 414,398 412,391" fill="#3a2a22"></polygon>
+<polygon points="452,398 456,398 454,405" fill="#3a2a22"></polygon>
+<polygon points="494,398 498,398 496,391" fill="#3a2a22"></polygon>
+<polygon points="536,398 540,398 538,405" fill="#3a2a22"></polygon>
+<polygon points="578,398 582,398 580,391" fill="#3a2a22"></polygon>
+<polygon points="620,398 624,398 622,405" fill="#3a2a22"></polygon>
+<polygon points="662,398 666,398 664,391" fill="#3a2a22"></polygon>
+<polygon points="704,398 708,398 706,405" fill="#3a2a22"></polygon>
+<polygon points="746,398 750,398 748,391" fill="#3a2a22"></polygon>
+<polygon points="788,398 792,398 790,405" fill="#3a2a22"></polygon>
+<polygon points="830,398 834,398 832,391" fill="#3a2a22"></polygon>
+<polygon points="872,398 876,398 874,405" fill="#3a2a22"></polygon>
+<polygon points="914,398 918,398 916,391" fill="#3a2a22"></polygon>
+<path d="M16 392 V246 Q16 125 126 92 Q236 125 236 246 V392" fill="none" stroke="#241814" stroke-width="2"></path>
+<path d="M679 392 V246 Q679 125 789 92 Q899 125 899 246 V392" fill="none" stroke="#241814" stroke-width="2"></path>
+</svg>
+
+<!-- Full-screen game placeholder -->
+<div style="position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; pointer-events: none">
+<span style="font-family: 'IM Fell English SC', serif; font-size: 15px; font-weight: 600; letter-spacing: 5px; color: #b9a88a; opacity: 0.8">[ FULL-SCREEN GAME ]</span>
+</div>
+<sc-if value="{{showZones}}" hint-placeholder-val="{{false}}">
+<svg aria-hidden="true" width="915" height="412" viewBox="0 0 915 412" style="position: absolute; left: 0; top: 0">
+<circle cx="24" cy="372" r="175" fill="none" stroke="rgba(72,214,140,0.18)" stroke-width="150"></circle><circle cx="24" cy="372" r="290" fill="none" stroke="rgba(255,184,64,0.12)" stroke-width="80"></circle><circle cx="24" cy="372" r="250" fill="none" stroke="rgba(40,170,100,0.7)" stroke-width="1.5" stroke-dasharray="6 6"></circle><circle cx="24" cy="372" r="330" fill="none" stroke="rgba(220,140,30,0.7)" stroke-width="1.5" stroke-dasharray="4 8"></circle><circle cx="891" cy="372" r="175" fill="none" stroke="rgba(72,214,140,0.18)" stroke-width="150"></circle><circle cx="891" cy="372" r="290" fill="none" stroke="rgba(255,184,64,0.12)" stroke-width="80"></circle><circle cx="891" cy="372" r="250" fill="none" stroke="rgba(40,170,100,0.7)" stroke-width="1.5" stroke-dasharray="6 6"></circle><circle cx="891" cy="372" r="330" fill="none" stroke="rgba(220,140,30,0.7)" stroke-width="1.5" stroke-dasharray="4 8"></circle>
+</svg>
+</sc-if>
+
+<!-- Controls (opacity is a tweak) -->
+<div style="position: absolute; inset: 0; opacity: {{op}}">
+
+<!-- Input readout -->
+<div style="position: absolute; left: 330px; top: 40px; width: 255px; height: 48px; box-sizing: border-box; padding: 3px 14px; border: 2px solid #c9a24a; border-radius: 3px; background: #1f1512; box-shadow: 0 4px 0 #060302; display: flex; flex-direction: column; justify-content: center; gap: 0px">
+<div style="display: flex; justify-content: space-between; align-items: center">
+<span style="font-family: 'IM Fell English SC', serif; font-size: 10px; font-weight: 700; letter-spacing: 3px; color: #b9a88a">INPUT</span>
+<span style="font-family: 'IM Fell English SC', serif; font-size: 10px; font-weight: 700; letter-spacing: 3px; color: #b9a88a">FERVOUR ×{{stokes}}</span>
+</div>
+<span style="font-family: 'IM Fell English SC', serif; font-size: 17px; font-weight: 700; letter-spacing: 1px; line-height: 21px; white-space: nowrap; overflow: hidden; color: {{accent}}">{{last}}</span>
+</div>
+
+<!-- Emulator settings: small oval, drag to move, tap to open -->
+<button type="button" aria-label="Emulator settings (drag to move)" onPointerDown="{{menu.h.down}}" onPointerMove="{{menu.h.move}}" onPointerUp="{{menu.h.up}}" onPointerCancel="{{menu.h.up}}" onClick="{{menu.h.click}}" style="position: absolute; left: 425px; top: 2px; width: 64px; height: 36px; padding: 0; border: none; border-radius: 999px; background: transparent; cursor: grab; touch-action: none; z-index: 2; transform: translate({{menu.x}}px, {{menu.y}}px)">
+<span style="position: absolute; left: 7px; top: 7px; width: 50px; height: 22px; box-sizing: border-box; border: 1.5px solid #c9a24a; border-radius: 999px; background: #1f1512; box-shadow: 0 3px 0 #060302; overflow: hidden; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px">
+<span aria-hidden="true" style="position: absolute; inset: 0; border-radius: inherit; background: {{accent}}; opacity: {{menu.o}}"></span>
+<span aria-hidden="true" style="position: relative; display: flex; flex-direction: column; gap: 3px"><span style="display: block; width: 18px; height: 2px; border-radius: 2px; background: #e9dcc0"></span><span style="display: block; width: 18px; height: 2px; border-radius: 2px; background: #e9dcc0"></span><span style="display: block; width: 18px; height: 2px; border-radius: 2px; background: #e9dcc0"></span></span>
+</span>
+</button>
+
+<!-- System buttons (small, out of the thumb's hot zone) -->
+<button type="button" aria-label="Minus button" onPointerDown="{{h.MINUS.down}}" onPointerUp="{{h.MINUS.up}}" onPointerCancel="{{h.MINUS.up}}" onClick="{{h.MINUS.click}}" style="position: absolute; left: 282px; top: 10px; width: 40px; height: 40px; padding: 0; border: none; background: transparent; cursor: pointer; transform: translateY({{p.MINUS.y}}px)">
+<span style="position: absolute; left: 7px; top: 7px; width: 26px; height: 26px; box-sizing: border-box; border: 1.5px solid #c9a24a; border-radius: 50%; background: #1f1512; box-shadow: 0 3px 0 #060302; overflow: hidden; display: flex; align-items: center; justify-content: center; color: #e9dcc0; font-family: 'IM Fell English SC', serif; font-size: 18px; font-weight: 700; line-height: 1">
+<span aria-hidden="true" style="position: absolute; inset: 0; border-radius: inherit; background: {{accent}}; opacity: {{p.MINUS.g}}"></span>
+<span style="position: relative; margin-top: -1px">−</span>
+</span>
+</button>
+<button type="button" aria-label="Plus button" onPointerDown="{{h.PLUS.down}}" onPointerUp="{{h.PLUS.up}}" onPointerCancel="{{h.PLUS.up}}" onClick="{{h.PLUS.click}}" style="position: absolute; left: 593px; top: 10px; width: 40px; height: 40px; padding: 0; border: none; background: transparent; cursor: pointer; transform: translateY({{p.PLUS.y}}px)">
+<span style="position: absolute; left: 7px; top: 7px; width: 26px; height: 26px; box-sizing: border-box; border: 1.5px solid #c9a24a; border-radius: 50%; background: #1f1512; box-shadow: 0 3px 0 #060302; overflow: hidden; display: flex; align-items: center; justify-content: center; color: #e9dcc0; font-family: 'IM Fell English SC', serif; font-size: 18px; font-weight: 700; line-height: 1">
+<span aria-hidden="true" style="position: absolute; inset: 0; border-radius: inherit; background: {{accent}}; opacity: {{p.PLUS.g}}"></span>
+<span style="position: relative; margin-top: -1px">+</span>
+</span>
+</button>
+
+<!-- Shoulders: on the thumb arc, above each cluster -->
+<button type="button" aria-label="ZL trigger" onPointerDown="{{h.ZL.down}}" onPointerUp="{{h.ZL.up}}" onPointerCancel="{{h.ZL.up}}" onClick="{{h.ZL.click}}" style="position: absolute; left: 16px; top: 104px; width: 96px; height: 50px; padding: 0; border: 2px solid #c9a24a; border-radius: 25px 25px 3px 3px; background: #1f1512; box-shadow: 0 4px 0 #060302; color: #e9dcc0; font-family: 'IM Fell English SC', serif; font-size: 19px; font-weight: 400; letter-spacing: 3px; cursor: pointer; overflow: hidden; transform: translateY({{p.ZL.y}}px)">
+<span aria-hidden="true" style="position: absolute; left: 0; right: 0; bottom: 0; height: 4px; background: #8f1d1d"></span>
+<span aria-hidden="true" style="position: absolute; inset: 0; border-radius: inherit; background: {{accent}}; opacity: {{p.ZL.g}}"></span>
+<span style="position: relative; ">ZL</span>
+</button>
+<button type="button" aria-label="L button" onPointerDown="{{h.L.down}}" onPointerUp="{{h.L.up}}" onPointerCancel="{{h.L.up}}" onClick="{{h.L.click}}" style="position: absolute; left: 120px; top: 104px; width: 108px; height: 50px; padding: 0; border: 1.5px solid #8a6d36; border-radius: 3px; background: #170f0d; box-shadow: 0 4px 0 #060302; color: #e9dcc0; font-family: 'IM Fell English SC', serif; font-size: 17px; font-weight: 400; letter-spacing: 3px; cursor: pointer; overflow: hidden; transform: translateY({{p.L.y}}px)">
+<span aria-hidden="true" style="position: absolute; left: 0; right: 0; bottom: 0; height: 4px; background: #8f1d1d"></span>
+<span aria-hidden="true" style="position: absolute; inset: 0; border-radius: inherit; background: {{accent}}; opacity: {{p.L.g}}"></span>
+<span style="position: relative; ">L</span>
+</button>
+<button type="button" aria-label="ZR trigger" onPointerDown="{{h.ZR.down}}" onPointerUp="{{h.ZR.up}}" onPointerCancel="{{h.ZR.up}}" onClick="{{h.ZR.click}}" style="position: absolute; left: 803px; top: 104px; width: 96px; height: 50px; padding: 0; border: 2px solid #c9a24a; border-radius: 25px 25px 3px 3px; background: #1f1512; box-shadow: 0 4px 0 #060302; color: #e9dcc0; font-family: 'IM Fell English SC', serif; font-size: 19px; font-weight: 400; letter-spacing: 3px; cursor: pointer; overflow: hidden; transform: translateY({{p.ZR.y}}px)">
+<span aria-hidden="true" style="position: absolute; left: 0; right: 0; bottom: 0; height: 4px; background: #8f1d1d"></span>
+<span aria-hidden="true" style="position: absolute; inset: 0; border-radius: inherit; background: {{accent}}; opacity: {{p.ZR.g}}"></span>
+<span style="position: relative; ">ZR</span>
+</button>
+<button type="button" aria-label="R button" onPointerDown="{{h.R.down}}" onPointerUp="{{h.R.up}}" onPointerCancel="{{h.R.up}}" onClick="{{h.R.click}}" style="position: absolute; left: 687px; top: 104px; width: 108px; height: 50px; padding: 0; border: 1.5px solid #8a6d36; border-radius: 3px; background: #170f0d; box-shadow: 0 4px 0 #060302; color: #e9dcc0; font-family: 'IM Fell English SC', serif; font-size: 17px; font-weight: 400; letter-spacing: 3px; cursor: pointer; overflow: hidden; transform: translateY({{p.R.y}}px)">
+<span aria-hidden="true" style="position: absolute; left: 0; right: 0; bottom: 0; height: 4px; background: #8f1d1d"></span>
+<span aria-hidden="true" style="position: absolute; inset: 0; border-radius: inherit; background: {{accent}}; opacity: {{p.R.g}}"></span>
+<span style="position: relative; ">R</span>
+</button>
+
+<!-- Left thumb: stick at rest, D-pad inner-low, L3 beside the stick -->
+<button type="button" aria-label="Left stick" onPointerDown="{{ls.h.down}}" onPointerMove="{{ls.h.move}}" onPointerUp="{{ls.h.up}}" onPointerCancel="{{ls.h.up}}" style="position: absolute; left: 50px; top: 182px; width: 160px; height: 160px; padding: 0; border: none; border-radius: 50%; background: transparent; cursor: grab; touch-action: none">
+<span aria-hidden="true" style="position: absolute; inset: 0; border-radius: 50%; border: 1.5px dashed #e9dcc0; opacity: 0.3"></span>
+<span aria-hidden="true" style="position: absolute; left: 10px; top: 10px; width: 140px; height: 140px; border-radius: 50%; background: radial-gradient(circle, {{accent}} 0%, rgba(0,0,0,0) 66%); opacity: {{ls.o}}"></span>
+<svg aria-hidden="true" width="116" height="116" viewBox="0 0 120 120" style="position: absolute; left: 22px; top: 22px; transform: rotate({{ls.r}}deg)">
+<circle cx="60" cy="60" r="57" fill="#1f1512" stroke="#c9a24a" stroke-width="2.5"></circle>
+<circle cx="60" cy="60" r="51" fill="none" stroke="#5a4426" stroke-width="1" stroke-dasharray="1.5 3"></circle>
+<circle cx="94.0" cy="60.0" r="12" fill="none" stroke="#c9a24a" stroke-width="1" opacity="0.55"></circle>
+<circle cx="89.4" cy="77.0" r="12" fill="none" stroke="#c9a24a" stroke-width="1" opacity="0.55"></circle>
+<circle cx="77.0" cy="89.4" r="12" fill="none" stroke="#c9a24a" stroke-width="1" opacity="0.55"></circle>
+<circle cx="60.0" cy="94.0" r="12" fill="none" stroke="#c9a24a" stroke-width="1" opacity="0.55"></circle>
+<circle cx="43.0" cy="89.4" r="12" fill="none" stroke="#c9a24a" stroke-width="1" opacity="0.55"></circle>
+<circle cx="30.6" cy="77.0" r="12" fill="none" stroke="#c9a24a" stroke-width="1" opacity="0.55"></circle>
+<circle cx="26.0" cy="60.0" r="12" fill="none" stroke="#c9a24a" stroke-width="1" opacity="0.55"></circle>
+<circle cx="30.6" cy="43.0" r="12" fill="none" stroke="#c9a24a" stroke-width="1" opacity="0.55"></circle>
+<circle cx="43.0" cy="30.6" r="12" fill="none" stroke="#c9a24a" stroke-width="1" opacity="0.55"></circle>
+<circle cx="60.0" cy="26.0" r="12" fill="none" stroke="#c9a24a" stroke-width="1" opacity="0.55"></circle>
+<circle cx="77.0" cy="30.6" r="12" fill="none" stroke="#c9a24a" stroke-width="1" opacity="0.55"></circle>
+<circle cx="89.4" cy="43.0" r="12" fill="none" stroke="#c9a24a" stroke-width="1" opacity="0.55"></circle>
+<circle cx="60" cy="60" r="22" fill="none" stroke="#c9a24a" stroke-width="1" opacity="0.7"></circle>
+</svg>
+<span aria-hidden="true" style="position: absolute; left: 55px; top: 55px; width: 49px; height: 49px; box-sizing: border-box; border-radius: 50%; border: 2px solid #6e5222; background: #c9a24a; box-shadow: inset -5px -4px 0 #9c7a33, 0 0 {{ls.glow}}px {{accent}}, 0 5px 0 #060302; transform: translate({{ls.x}}px, {{ls.y}}px)">
+<span style="position: absolute; left: 12px; top: 12px; width: 20px; height: 20px; border-radius: 50%; background: #5a1414; box-shadow: 0 0 0 2px #6e5222"></span>
+</span>
+</button>
+<sc-if value="{{showCaptions}}" hint-placeholder-val="{{true}}">
+<span style="position: absolute; left: 72px; top: 324px; width: 116px; text-align: center; font-family: 'IM Fell English SC', serif; font-size: 11px; font-weight: 400; letter-spacing: 3px; color: #b9a88a">L-STICK</span>
+</sc-if>
+<span aria-hidden="true" style="position: absolute; left: 285px; top: 319px; width: 14px; height: 14px; background: #c9a24a; transform: rotate(45deg)"></span>
+<button type="button" aria-label="D-pad up" onPointerDown="{{h.UP.down}}" onPointerUp="{{h.UP.up}}" onPointerCancel="{{h.UP.up}}" onClick="{{h.UP.click}}" style="position: absolute; left: 269px; top: 253px; width: 46px; height: 46px; padding: 0; border: 2px solid #c9a24a; border-radius: 4px; background: #1f1512; box-shadow: 0 4px 0 #060302; cursor: pointer; overflow: hidden; display: flex; align-items: center; justify-content: center; transform: translateY({{p.UP.y}}px)">
+<span aria-hidden="true" style="position: absolute; inset: 0; border-radius: inherit; background: {{accent}}; opacity: {{p.UP.g}}"></span>
+<svg aria-hidden="true" width="21" height="21" viewBox="0 0 22 22" style="position: relative"><polyline points="5,14 11,7 17,14" fill="none" stroke="#e9dcc0" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"></polyline></svg>
+</button>
+<button type="button" aria-label="D-pad down" onPointerDown="{{h.DOWN.down}}" onPointerUp="{{h.DOWN.up}}" onPointerCancel="{{h.DOWN.up}}" onClick="{{h.DOWN.click}}" style="position: absolute; left: 269px; top: 353px; width: 46px; height: 46px; padding: 0; border: 2px solid #c9a24a; border-radius: 4px; background: #1f1512; box-shadow: 0 4px 0 #060302; cursor: pointer; overflow: hidden; display: flex; align-items: center; justify-content: center; transform: translateY({{p.DOWN.y}}px)">
+<span aria-hidden="true" style="position: absolute; inset: 0; border-radius: inherit; background: {{accent}}; opacity: {{p.DOWN.g}}"></span>
+<svg aria-hidden="true" width="21" height="21" viewBox="0 0 22 22" style="position: relative"><polyline points="5,8 11,15 17,8" fill="none" stroke="#e9dcc0" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"></polyline></svg>
+</button>
+<button type="button" aria-label="D-pad left" onPointerDown="{{h.LEFT.down}}" onPointerUp="{{h.LEFT.up}}" onPointerCancel="{{h.LEFT.up}}" onClick="{{h.LEFT.click}}" style="position: absolute; left: 219px; top: 303px; width: 46px; height: 46px; padding: 0; border: 2px solid #c9a24a; border-radius: 4px; background: #1f1512; box-shadow: 0 4px 0 #060302; cursor: pointer; overflow: hidden; display: flex; align-items: center; justify-content: center; transform: translateY({{p.LEFT.y}}px)">
+<span aria-hidden="true" style="position: absolute; inset: 0; border-radius: inherit; background: {{accent}}; opacity: {{p.LEFT.g}}"></span>
+<svg aria-hidden="true" width="21" height="21" viewBox="0 0 22 22" style="position: relative"><polyline points="14,5 7,11 14,17" fill="none" stroke="#e9dcc0" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"></polyline></svg>
+</button>
+<button type="button" aria-label="D-pad right" onPointerDown="{{h.RIGHT.down}}" onPointerUp="{{h.RIGHT.up}}" onPointerCancel="{{h.RIGHT.up}}" onClick="{{h.RIGHT.click}}" style="position: absolute; left: 319px; top: 303px; width: 46px; height: 46px; padding: 0; border: 2px solid #c9a24a; border-radius: 4px; background: #1f1512; box-shadow: 0 4px 0 #060302; cursor: pointer; overflow: hidden; display: flex; align-items: center; justify-content: center; transform: translateY({{p.RIGHT.y}}px)">
+<span aria-hidden="true" style="position: absolute; inset: 0; border-radius: inherit; background: {{accent}}; opacity: {{p.RIGHT.g}}"></span>
+<svg aria-hidden="true" width="21" height="21" viewBox="0 0 22 22" style="position: relative"><polyline points="8,5 15,11 8,17" fill="none" stroke="#e9dcc0" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"></polyline></svg>
+</button>
+<button type="button" aria-label="L3, left stick click" onPointerDown="{{h.L3.down}}" onPointerUp="{{h.L3.up}}" onPointerCancel="{{h.L3.up}}" onClick="{{h.L3.click}}" style="position: absolute; left: 230px; top: 178px; width: 44px; height: 44px; padding: 0; border: none; border-radius: 50%; background: transparent; cursor: pointer; transform: translateY({{p.L3.y}}px)">
+<span style="position: absolute; left: 2px; top: 2px; width: 40px; height: 40px; box-sizing: border-box; border: 3px solid #c9a24a; border-radius: 50%; background: #5a1414; box-shadow: 0 4px 0 #060302; color: #e9dcc0; font-family: 'IM Fell English SC', serif; font-size: 14px; font-weight: 400; overflow: hidden; display: flex; align-items: center; justify-content: center;">
+<span aria-hidden="true" style="position: absolute; inset: 4px; border-radius: 50%; border: 1.5px dotted #c9a24a; opacity: 0.8"></span>
+<span aria-hidden="true" style="position: absolute; inset: 0; border-radius: inherit; background: radial-gradient(circle, {{accent}} 0%, rgba(0,0,0,0) 72%); opacity: {{p.L3.o}}"></span>
+<span style="position: relative; ">L3</span>
+</span>
+</button>
+
+<!-- Right thumb: A/B/X/Y at rest, right stick inner-low, R3 beside it -->
+<svg aria-hidden="true" width="192" height="192" viewBox="0 0 200 200" style="position: absolute; left: 674px; top: 172px">
+<circle cx="100" cy="100" r="95" fill="none" stroke="#3a2a22" stroke-width="2"></circle><circle cx="100" cy="100" r="88" fill="none" stroke="#5a4426" stroke-width="1" stroke-dasharray="1.5 4"></circle>
+</svg>
+<button type="button" aria-label="X button" onPointerDown="{{h.X.down}}" onPointerUp="{{h.X.up}}" onPointerCancel="{{h.X.up}}" onClick="{{h.X.click}}" style="position: absolute; left: 740px; top: 184px; width: 60px; height: 60px; padding: 0; border: none; border-radius: 50%; background: transparent; cursor: pointer; transform: translateY({{p.X.y}}px)">
+<span style="position: absolute; left: 0px; top: 0px; width: 60px; height: 60px; box-sizing: border-box; border: 3px solid #c9a24a; border-radius: 50%; background: #5a1414; box-shadow: 0 4px 0 #060302; color: #e9dcc0; font-family: 'IM Fell English SC', serif; font-size: 24px; font-weight: 400; overflow: hidden; display: flex; align-items: center; justify-content: center;">
+<span aria-hidden="true" style="position: absolute; inset: 4px; border-radius: 50%; border: 1.5px dotted #c9a24a; opacity: 0.8"></span>
+<span aria-hidden="true" style="position: absolute; inset: 0; border-radius: inherit; background: radial-gradient(circle, {{accent}} 0%, rgba(0,0,0,0) 72%); opacity: {{p.X.o}}"></span>
+<span style="position: relative; ">X</span>
+</span>
+</button>
+<button type="button" aria-label="Y button" onPointerDown="{{h.Y.down}}" onPointerUp="{{h.Y.up}}" onPointerCancel="{{h.Y.up}}" onClick="{{h.Y.click}}" style="position: absolute; left: 686px; top: 238px; width: 60px; height: 60px; padding: 0; border: none; border-radius: 50%; background: transparent; cursor: pointer; transform: translateY({{p.Y.y}}px)">
+<span style="position: absolute; left: 0px; top: 0px; width: 60px; height: 60px; box-sizing: border-box; border: 3px solid #c9a24a; border-radius: 50%; background: #5a1414; box-shadow: 0 4px 0 #060302; color: #e9dcc0; font-family: 'IM Fell English SC', serif; font-size: 24px; font-weight: 400; overflow: hidden; display: flex; align-items: center; justify-content: center;">
+<span aria-hidden="true" style="position: absolute; inset: 4px; border-radius: 50%; border: 1.5px dotted #c9a24a; opacity: 0.8"></span>
+<span aria-hidden="true" style="position: absolute; inset: 0; border-radius: inherit; background: radial-gradient(circle, {{accent}} 0%, rgba(0,0,0,0) 72%); opacity: {{p.Y.o}}"></span>
+<span style="position: relative; ">Y</span>
+</span>
+</button>
+<button type="button" aria-label="A button" onPointerDown="{{h.A.down}}" onPointerUp="{{h.A.up}}" onPointerCancel="{{h.A.up}}" onClick="{{h.A.click}}" style="position: absolute; left: 794px; top: 238px; width: 60px; height: 60px; padding: 0; border: none; border-radius: 50%; background: transparent; cursor: pointer; transform: translateY({{p.A.y}}px)">
+<span style="position: absolute; left: 0px; top: 0px; width: 60px; height: 60px; box-sizing: border-box; border: 3px solid #c9a24a; border-radius: 50%; background: #5a1414; box-shadow: 0 4px 0 #060302; color: #e9dcc0; font-family: 'IM Fell English SC', serif; font-size: 24px; font-weight: 400; overflow: hidden; display: flex; align-items: center; justify-content: center;">
+<span aria-hidden="true" style="position: absolute; inset: 4px; border-radius: 50%; border: 1.5px dotted #c9a24a; opacity: 0.8"></span>
+<span aria-hidden="true" style="position: absolute; inset: 0; border-radius: inherit; background: radial-gradient(circle, {{accent}} 0%, rgba(0,0,0,0) 72%); opacity: {{p.A.o}}"></span>
+<span style="position: relative; ">A</span>
+</span>
+</button>
+<button type="button" aria-label="B button" onPointerDown="{{h.B.down}}" onPointerUp="{{h.B.up}}" onPointerCancel="{{h.B.up}}" onClick="{{h.B.click}}" style="position: absolute; left: 740px; top: 292px; width: 60px; height: 60px; padding: 0; border: none; border-radius: 50%; background: transparent; cursor: pointer; transform: translateY({{p.B.y}}px)">
+<span style="position: absolute; left: 0px; top: 0px; width: 60px; height: 60px; box-sizing: border-box; border: 3px solid #c9a24a; border-radius: 50%; background: #5a1414; box-shadow: 0 4px 0 #060302; color: #e9dcc0; font-family: 'IM Fell English SC', serif; font-size: 24px; font-weight: 400; overflow: hidden; display: flex; align-items: center; justify-content: center;">
+<span aria-hidden="true" style="position: absolute; inset: 4px; border-radius: 50%; border: 1.5px dotted #c9a24a; opacity: 0.8"></span>
+<span aria-hidden="true" style="position: absolute; inset: 0; border-radius: inherit; background: radial-gradient(circle, {{accent}} 0%, rgba(0,0,0,0) 72%); opacity: {{p.B.o}}"></span>
+<span style="position: relative; ">B</span>
+</span>
+</button>
+<button type="button" aria-label="Right stick" onPointerDown="{{rs.h.down}}" onPointerMove="{{rs.h.move}}" onPointerUp="{{rs.h.up}}" onPointerCancel="{{rs.h.up}}" style="position: absolute; left: 545px; top: 252px; width: 140px; height: 140px; padding: 0; border: none; border-radius: 50%; background: transparent; cursor: grab; touch-action: none">
+<span aria-hidden="true" style="position: absolute; inset: 0; border-radius: 50%; border: 1.5px dashed #e9dcc0; opacity: 0.3"></span>
+<span aria-hidden="true" style="position: absolute; left: 6px; top: 6px; width: 128px; height: 128px; border-radius: 50%; background: radial-gradient(circle, {{accent}} 0%, rgba(0,0,0,0) 66%); opacity: {{rs.o}}"></span>
+<svg aria-hidden="true" width="104" height="104" viewBox="0 0 120 120" style="position: absolute; left: 18px; top: 18px; transform: rotate({{rs.r}}deg)">
+<circle cx="60" cy="60" r="57" fill="#1f1512" stroke="#c9a24a" stroke-width="2.5"></circle>
+<circle cx="60" cy="60" r="51" fill="none" stroke="#5a4426" stroke-width="1" stroke-dasharray="1.5 3"></circle>
+<circle cx="94.0" cy="60.0" r="12" fill="none" stroke="#c9a24a" stroke-width="1" opacity="0.55"></circle>
+<circle cx="89.4" cy="77.0" r="12" fill="none" stroke="#c9a24a" stroke-width="1" opacity="0.55"></circle>
+<circle cx="77.0" cy="89.4" r="12" fill="none" stroke="#c9a24a" stroke-width="1" opacity="0.55"></circle>
+<circle cx="60.0" cy="94.0" r="12" fill="none" stroke="#c9a24a" stroke-width="1" opacity="0.55"></circle>
+<circle cx="43.0" cy="89.4" r="12" fill="none" stroke="#c9a24a" stroke-width="1" opacity="0.55"></circle>
+<circle cx="30.6" cy="77.0" r="12" fill="none" stroke="#c9a24a" stroke-width="1" opacity="0.55"></circle>
+<circle cx="26.0" cy="60.0" r="12" fill="none" stroke="#c9a24a" stroke-width="1" opacity="0.55"></circle>
+<circle cx="30.6" cy="43.0" r="12" fill="none" stroke="#c9a24a" stroke-width="1" opacity="0.55"></circle>
+<circle cx="43.0" cy="30.6" r="12" fill="none" stroke="#c9a24a" stroke-width="1" opacity="0.55"></circle>
+<circle cx="60.0" cy="26.0" r="12" fill="none" stroke="#c9a24a" stroke-width="1" opacity="0.55"></circle>
+<circle cx="77.0" cy="30.6" r="12" fill="none" stroke="#c9a24a" stroke-width="1" opacity="0.55"></circle>
+<circle cx="89.4" cy="43.0" r="12" fill="none" stroke="#c9a24a" stroke-width="1" opacity="0.55"></circle>
+<circle cx="60" cy="60" r="22" fill="none" stroke="#c9a24a" stroke-width="1" opacity="0.7"></circle>
+</svg>
+<span aria-hidden="true" style="position: absolute; left: 48px; top: 48px; width: 44px; height: 44px; box-sizing: border-box; border-radius: 50%; border: 2px solid #6e5222; background: #c9a24a; box-shadow: inset -4px -4px 0 #9c7a33, 0 0 {{rs.glow}}px {{accent}}, 0 5px 0 #060302; transform: translate({{rs.x}}px, {{rs.y}}px)">
+<span style="position: absolute; left: 10px; top: 10px; width: 20px; height: 20px; border-radius: 50%; background: #5a1414; box-shadow: 0 0 0 2px #6e5222"></span>
+</span>
+</button>
+<sc-if value="{{showCaptions}}" hint-placeholder-val="{{true}}">
+<span style="position: absolute; left: 563px; top: 378px; width: 104px; text-align: center; font-family: 'IM Fell English SC', serif; font-size: 11px; font-weight: 400; letter-spacing: 3px; color: #b9a88a">R-STICK</span>
+</sc-if>
+<button type="button" aria-label="R3, right stick click" onPointerDown="{{h.R3.down}}" onPointerUp="{{h.R3.up}}" onPointerCancel="{{h.R3.up}}" onClick="{{h.R3.click}}" style="position: absolute; left: 641px; top: 178px; width: 44px; height: 44px; padding: 0; border: none; border-radius: 50%; background: transparent; cursor: pointer; transform: translateY({{p.R3.y}}px)">
+<span style="position: absolute; left: 2px; top: 2px; width: 40px; height: 40px; box-sizing: border-box; border: 3px solid #c9a24a; border-radius: 50%; background: #5a1414; box-shadow: 0 4px 0 #060302; color: #e9dcc0; font-family: 'IM Fell English SC', serif; font-size: 14px; font-weight: 400; overflow: hidden; display: flex; align-items: center; justify-content: center;">
+<span aria-hidden="true" style="position: absolute; inset: 4px; border-radius: 50%; border: 1.5px dotted #c9a24a; opacity: 0.8"></span>
+<span aria-hidden="true" style="position: absolute; inset: 0; border-radius: inherit; background: radial-gradient(circle, {{accent}} 0%, rgba(0,0,0,0) 72%); opacity: {{p.R3.o}}"></span>
+<span style="position: relative; ">R3</span>
+</span>
+</button>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"accent":{"editor":"color","default":"#e0413a","options":["#e0413a","#c9a24a","#e9dcc0","#6fb6c8"]},"showCaptions":{"editor":"boolean","default":true},"showZones":{"editor":"boolean","default":false},"opacity":{"editor":"range","default":0.9,"min":0.3,"max":1,"step":0.05},"$preview":{"width":915,"height":412}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.stickSize = 160;
+    this.stickTravel = 34;
+    this.state = { held: {}, last: 'AWAKEN', stokes: 0, ls: { x: 0, y: 0 }, rs: { x: 0, y: 0 }, menu: { x: 0, y: 0 }, menuHeld: false };
+    this.menuW = 64;
+    this.menuBounds = [-425, 426, -2, 374];
+    this._centers = {};
+  }
+
+  names() {
+    return {
+      ZL: 'ZL', L: 'L', ZR: 'ZR', R: 'R', MINUS: 'MINUS', PLUS: 'PLUS',
+      UP: 'D-PAD UP', DOWN: 'D-PAD DOWN', LEFT: 'D-PAD LEFT', RIGHT: 'D-PAD RIGHT',
+      A: 'A', B: 'B', X: 'X', Y: 'Y', L3: 'L3 · STICK CLICK', R3: 'R3 · STICK CLICK',
+      LS: 'L-STICK', RS: 'R-STICK'
+    };
+  }
+
+  press(id) {
+    const s = this.state;
+    const held = Object.assign({}, s.held);
+    held[id] = true;
+    this.setState({ held: held, last: this.names()[id], stokes: s.stokes + 1 });
+  }
+
+  release(id) {
+    const s = this.state;
+    if (!s.held[id]) return;
+    const held = Object.assign({}, s.held);
+    held[id] = false;
+    this.setState({ held: held });
+  }
+
+  moveStick(id, key, e) {
+    const c = this._centers[key];
+    if (!c) return;
+    let dx = (e.clientX - c.x) / c.k;
+    let dy = (e.clientY - c.y) / c.k;
+    const max = this.stickTravel;
+    const d = Math.sqrt(dx * dx + dy * dy);
+    if (d > max) { dx = dx / d * max; dy = dy / d * max; }
+    const f = (v) => (v >= 0 ? '+' : '−') + Math.abs(v / max).toFixed(2);
+    const patch = { last: this.names()[id] + '  ' + f(dx) + ' ' + f(-dy) };
+    patch[key] = { x: dx, y: dy };
+    this.setState(patch);
+  }
+
+  stick(id, key) {
+    return {
+      down: (e) => {
+        const el = e.currentTarget;
+        try { el.setPointerCapture(e.pointerId); } catch (err) {}
+        const r = el.getBoundingClientRect();
+        this._centers[key] = { x: r.left + r.width / 2, y: r.top + r.height / 2, k: (r.width / this.stickSize) || 1 };
+        this.press(id);
+        this.moveStick(id, key, e);
+      },
+      move: (e) => {
+        if (this.state.held[id]) this.moveStick(id, key, e);
+      },
+      up: () => {
+        const s = this.state;
+        const held = Object.assign({}, s.held);
+        held[id] = false;
+        const patch = { held: held };
+        patch[key] = { x: 0, y: 0 };
+        this.setState(patch);
+      }
+    };
+  }
+
+  menuHandlers() {
+    return {
+      down: (e) => {
+        const el = e.currentTarget;
+        try { el.setPointerCapture(e.pointerId); } catch (err) {}
+        const r = el.getBoundingClientRect();
+        this._menu = { sx: e.clientX, sy: e.clientY, ox: this.state.menu.x, oy: this.state.menu.y, k: (r.width / this.menuW) || 1, moved: false };
+        this.setState({ menuHeld: true });
+      },
+      move: (e) => {
+        const m = this._menu;
+        if (!m) return;
+        const dx = (e.clientX - m.sx) / m.k;
+        const dy = (e.clientY - m.sy) / m.k;
+        if (!m.moved && Math.abs(dx) + Math.abs(dy) < 6) return;
+        m.moved = true;
+        const b = this.menuBounds;
+        this.setState({ menu: { x: Math.max(b[0], Math.min(b[1], m.ox + dx)), y: Math.max(b[2], Math.min(b[3], m.oy + dy)) } });
+      },
+      up: () => {
+        const m = this._menu;
+        this._menu = null;
+        this.setState({ menuHeld: false, last: m && !m.moved ? 'EMULATOR MENU' : this.state.last });
+      },
+      click: (e) => {
+        if (e && e.detail === 0) this.setState({ last: 'EMULATOR MENU' });
+      }
+    };
+  }
+
+  renderVals() {
+    const accent = this.props.accent ?? '#e0413a';
+    const s = this.state;
+    const ids = ['ZL', 'L', 'ZR', 'R', 'MINUS', 'PLUS', 'UP', 'DOWN', 'LEFT', 'RIGHT', 'A', 'B', 'X', 'Y', 'L3', 'R3'];
+    const p = {};
+    const h = {};
+    ids.forEach((id) => {
+      const on = !!s.held[id];
+      p[id] = { o: on ? 1 : 0, g: on ? 0.32 : 0, y: on ? 3 : 0 };
+      h[id] = {
+        down: (e) => {
+          try { e.currentTarget.setPointerCapture(e.pointerId); } catch (err) {}
+          this.press(id);
+        },
+        up: () => this.release(id),
+        click: (e) => {
+          if (e && e.detail === 0) {
+            this.press(id);
+            setTimeout(() => this.release(id), 140);
+          }
+        }
+      };
+    });
+    const mk = (id, key) => {
+      const v = s[key];
+      const on = !!s.held[id];
+      return { x: v.x.toFixed(1), y: v.y.toFixed(1), r: (v.x * 1.40).toFixed(1), glow: on ? 18 : 0, o: on ? 0.8 : 0, h: this.stick(id, key) };
+    };
+    return {
+      accent: accent,
+      last: s.last,
+      stokes: String(s.stokes).padStart(3, '0'),
+      p: p,
+      h: h,
+      ls: mk('LS', 'ls'),
+      rs: mk('RS', 'rs'),
+      menu: { x: s.menu.x.toFixed(1), y: s.menu.y.toFixed(1), o: s.menuHeld ? 1 : 0, h: this.menuHandlers() },
+      showCaptions: this.props.showCaptions ?? true,
+      showZones: this.props.showZones ?? false,
+      op: this.props.opacity ?? 0.9
+    };
+  }
+}
+</script>
+</body>
+</html>

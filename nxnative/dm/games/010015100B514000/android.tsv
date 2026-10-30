@@ -7,7 +7,7 @@
 # the rate stepped down to 40; now about once in 20 s of play (the two runs had different inputs: dashing then, walking now). Loads (a restart after losing a life) still bring runs of interval-2 frames, from the game's own work.
 # What it needed from the core: CPU-written linear render-target textures copied from their storage (its sky's four 64x1 RGBA16F gradients: without it diagonal bands of
 # saturated colour over every level). The one red log line: its title logs "SetRenderEnableConditional: the host draws anyway"; render_cond on changed nothing seen, so it is left off.
-# The shader tables are the Windows split's (\ in paths), with the same 16,268 keys as upstream's. Not tested yet: later worlds, Wonder effects, multiplayer.
+# The shader tables were split on Windows (/ paths since d1ad5f2), with the same 16,268 keys as upstream's. Not tested yet: later worlds, Wonder effects, multiplayer.
 # Button icons in the game's text (Press L+R, A Select, B Back, + Delete Save Data) come from the Nintendo extension shared font: the porter's data pack ships make_ext_font.py's
 # stand-in (nintendo_ext.ttf, DM_SHARED_FONT_EXT) since 2026-10-29; before, they drew as '?'
 status	playable

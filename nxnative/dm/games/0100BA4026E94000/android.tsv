@@ -1,0 +1,14 @@
+# Castlevania: Belmont's Curse on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Unity 2022.3.62f2 IL2CPP with FMOD on SDK 19.3.16, update 1.1.0 with the Bonus Contents Pack (a licence, no files); 19,162 shaders, all translated. Brought up on Android first.
+# What it needed: the SDK's address-region node area cut on its sdk build (dm/tools/sdk_patches.py) and a 1 GB pool (game.tsv), or Unity's address regions ran out before the first screen.
+# Tested 2026-10-30 on the Legion Y700 (TB322FC, Snapdragon 8 Elite, Adreno 830, Android 16), driven with DM_CTL: the first-run language, confirm-button and brightness screens (their
+# Continue is a held A), the title, a new game: the intro movies (H.264 with AAC sound through MediaCodec), the dock, the street, the sewer, "Bank of the River Seine".
+# The game saved (BuildSave_0, PLAYERPREFS); after a restart the title offers Resume, which starts the prologue again from its beginning as the game does, and the first-run screens are skipped.
+# 60 fps docked (1920x1080) in play: 920-950 draws, replay 4.3-4.9 ms and GPU 7.7 ms a frame, 0 of 64 frames late on screen; the movies at 60 too. Audio: no underrun in play or in the movies.
+# A 20-minute soak in the street before the sewer (walking both ways): one process throughout, frame time p50 16.67 ms, max 17.5 ms, 0 frames dropped on screen, no underrun,
+# footprint 1.8 GB.
+# The grey band along the top of some intro shots is in the game's own video (its MP4, decoded on a PC, has the same rows). No red log line.
+status	playable
+tested	v65536 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
+package	org.nx2a.castlevaniabelmontscurse
+orientation	landscape

@@ -1,0 +1,23 @@
+# Which theme the on-screen gamepad wears in each game (README.md beside this file): <base game's title ID> <TAB> <pack folder> <TAB> <the game, for the reader>.
+# porter packs that one pack into the game's APK; a game with no row gets the ergo pack (the plain ergonomic layout).
+0100000000010000	smo	Super Mario Odyssey
+0100005027A18000	graveyardkeeper2	Graveyard Keeper 2
+010006E0230AC000	taleseternia	Tales of Eternia Remastered
+010013C00E930000	silksong	Hollow Knight: Silksong
+010015100B514000	smbwonder	Super Mario Bros. Wonder
+01002B30028F6000	celeste	Celeste
+0100300012F2A000	advancewars	Advance Wars 1+2: Re-Boot Camp
+01003FC01670C000	13sentinels	13 Sentinels: Aegis Rim
+010040801A4C8000	blasphemous2	Blasphemous 2
+010043B013C5C000	neotwewy	NEO: The World Ends with You
+010051701FB46000	monstertrain	Monster Train 2
+010054B01AD92000	unicornoverlord	Unicorn Overlord (Asia)
+010069401ADB8000	unicornoverlord	Unicorn Overlord
+010074F013262000	xc3	Xenoblade Chronicles 3
+010093801237C000	metroiddread	Metroid Dread
+01009BF0072D4000	captaintoad	Captain Toad: Treasure Tracker
+01009D901BC56000	dkcreturns	Donkey Kong Country Returns HD
+0100A00019DE0000	hades2	Hades II
+0100B99019412000	mariovsdk	Mario vs. Donkey Kong
+0100BA4026E94000	castlevania	Castlevania: Belmont's Curse
+0100FD501F95A000	viractal	Viractal: Will You Trust Your Party?

@@ -1,4 +1,4 @@
-# kind: evidence  Hollow Knight: Silksong shaders (provisional profile) (Unity Shader / GLSLC in RomFS + main) → control section + code area keys (dm/gfx/tools/shader_split.py)
+# kind: evidence  Hollow Knight: Silksong shaders (Unity Shader / GLSLC in RomFS + main) → control section + code area keys (dm/gfx/tools/shader_split.py)
 # column 5 records where each key first appears; this game has no PC version to pair with
 package	index	stage	dm_ctl_sha16	source
 vs_data.bin	0	vertex	926598b3cad4951e	/Data/Resources/unity default resources#GUI/Text Shader#var19.3

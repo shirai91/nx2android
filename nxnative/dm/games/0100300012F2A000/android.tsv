@@ -5,7 +5,7 @@
 # in battle too (30 there on the Switch): frame work p50 16.6 ms, 0 dropped frames outside loading screens, GPU about 5-9 ms; footprint 1.5-1.75 GB, the alias region mapped up
 # to +3.26 GB of 4.38; no audio underrun; no red log line. Not tested yet: a save, a whole mission, the other movies.
 # What it needed from the core: viewport swizzles on the Vulkan backend (the battle map's cursor was not drawn, so the tutorial waited for good), upstream's sdk cuts and
-# Bink shader reader. The shader tables are the Windows split's (Data\ paths, so every package is "other"), as the other Unity profiles made on Windows
+# Bink shader reader. The shader tables were split on Windows (/ paths since d1ad5f2), as the other Unity profiles made on Windows
 status	playable
 tested	v0 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
 package	org.nx2a.advancewars

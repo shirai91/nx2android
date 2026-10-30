@@ -1,0 +1,371 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>13 Sentinels: Aegis Rim — Tablet</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Orbitron:wght@600;700;800&family=Share+Tech+Mono&amp;display=swap">
+<style>
+body{margin:0;background:#04070c}
+a{color:#d8f6ff}a:hover{color:#d8f6ff}
+button{-webkit-tap-highlight-color:transparent}
+button:focus-visible{outline:2px solid #39d6ff;outline-offset:3px}
+</style>
+</helmet>
+<div style="position: relative; width: 1216px; height: 760px; overflow: hidden; background: #04070c; font-family: 'Orbitron', sans-serif; color: #d8f6ff; touch-action: none; user-select: none; -webkit-user-select: none">
+
+<!-- Backdrop -->
+<svg aria-hidden="true" width="1216" height="760" viewBox="0 0 1216 760" style="position: absolute; left: 0; top: 0">
+<defs>
+<pattern id="hexgrid" width="41.6" height="72" patternUnits="userSpaceOnUse">
+<path d="M20.8 0 L41.6 12.0 L41.6 36.0 L20.8 48.0 L0 36.0 L0 12.0 Z M20.8 48.0 V72" fill="none" stroke="#0b2230" stroke-width="1"></path>
+</pattern>
+</defs>
+<rect width="1216" height="760" fill="url(#hexgrid)"></rect>
+<polyline points="0,760 0,712 55,712 55,686 111,686 111,728 166,728 166,664 221,664 221,701 276,701 276,680 332,680 332,717 387,717 387,648 442,648 442,707 497,707 497,691 553,691 553,723 608,723 608,672 663,672 663,696 719,696 719,709 774,709 774,659 829,659 829,704 884,704 884,712 940,712 940,686 995,686 995,728 1050,728 1050,664 1105,664 1105,701 1161,701 1161,680 1216,680 1216,717 1271,717 1216,760" fill="#05101a" stroke="#12404f" stroke-width="1.5"></polyline>
+<line x1="0" y1="758" x2="1216" y2="758" stroke="#39d6ff" stroke-width="1" opacity="0.5"></line>
+<path d="M10 40 V10 H40 M1176 10 H1206 V40 M10 720 V750 H40 M1176 750 H1206 V720" fill="none" stroke="#ff9a2e" stroke-width="2" opacity="0.7"></path>
+</svg>
+
+<!-- Full-screen game placeholder -->
+<div style="position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; pointer-events: none">
+<span style="font-family: 'Orbitron', sans-serif; font-size: 15px; font-weight: 600; letter-spacing: 5px; color: #7fb6c8; opacity: 0.8">[ FULL-SCREEN GAME ]</span>
+</div>
+<sc-if value="{{showZones}}" hint-placeholder-val="{{false}}">
+<svg aria-hidden="true" width="1216" height="760" viewBox="0 0 1216 760" style="position: absolute; left: 0; top: 0">
+<circle cx="0" cy="520" r="230" fill="none" stroke="rgba(72,214,140,0.18)" stroke-width="220"></circle><circle cx="0" cy="520" r="385" fill="none" stroke="rgba(255,184,64,0.12)" stroke-width="90"></circle><circle cx="0" cy="520" r="340" fill="none" stroke="rgba(40,170,100,0.7)" stroke-width="1.5" stroke-dasharray="6 6"></circle><circle cx="0" cy="520" r="430" fill="none" stroke="rgba(220,140,30,0.7)" stroke-width="1.5" stroke-dasharray="4 8"></circle><circle cx="1216" cy="520" r="230" fill="none" stroke="rgba(72,214,140,0.18)" stroke-width="220"></circle><circle cx="1216" cy="520" r="385" fill="none" stroke="rgba(255,184,64,0.12)" stroke-width="90"></circle><circle cx="1216" cy="520" r="340" fill="none" stroke="rgba(40,170,100,0.7)" stroke-width="1.5" stroke-dasharray="6 6"></circle><circle cx="1216" cy="520" r="430" fill="none" stroke="rgba(220,140,30,0.7)" stroke-width="1.5" stroke-dasharray="4 8"></circle>
+</svg>
+</sc-if>
+
+<!-- Controls (opacity is a tweak) -->
+<div style="position: absolute; inset: 0; opacity: {{op}}">
+
+<!-- Input readout -->
+<div style="position: absolute; left: 438px; top: 56px; width: 340px; height: 62px; box-sizing: border-box; padding: 7px 16px; border: 1px solid #39d6ff; border-radius: 0px; background: #071824; box-shadow: none; display: flex; flex-direction: column; justify-content: center; gap: 0px">
+<div style="display: flex; justify-content: space-between; align-items: center">
+<span style="font-family: 'Orbitron', sans-serif; font-size: 12px; font-weight: 700; letter-spacing: 3px; color: #7fb6c8">INPUT</span>
+<span style="font-family: 'Orbitron', sans-serif; font-size: 12px; font-weight: 700; letter-spacing: 3px; color: #7fb6c8">LINK ×{{stokes}}</span>
+</div>
+<span style="font-family: 'Share Tech Mono', monospace; font-size: 22px; font-weight: 700; letter-spacing: 1px; line-height: 26px; white-space: nowrap; overflow: hidden; color: {{accent}}">{{last}}</span>
+</div>
+
+<!-- Emulator settings: small oval, drag to move, tap to open -->
+<button type="button" aria-label="Emulator settings (drag to move)" onPointerDown="{{menu.h.down}}" onPointerMove="{{menu.h.move}}" onPointerUp="{{menu.h.up}}" onPointerCancel="{{menu.h.up}}" onClick="{{menu.h.click}}" style="position: absolute; left: 570px; top: 6px; width: 76px; height: 44px; padding: 0; border: none; border-radius: 999px; background: transparent; cursor: grab; touch-action: none; z-index: 2; transform: translate({{menu.x}}px, {{menu.y}}px)">
+<span style="position: absolute; left: 8px; top: 8px; width: 60px; height: 28px; box-sizing: border-box; border: 1px solid #39d6ff; border-radius: 999px; background: #071824; box-shadow: none; overflow: hidden; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px">
+<span aria-hidden="true" style="position: absolute; inset: 0; border-radius: inherit; background: {{accent}}; opacity: {{menu.o}}"></span>
+<span aria-hidden="true" style="position: relative; display: flex; flex-direction: column; gap: 4px"><span style="display: block; width: 22px; height: 2px; border-radius: 2px; background: #d8f6ff"></span><span style="display: block; width: 22px; height: 2px; border-radius: 2px; background: #d8f6ff"></span><span style="display: block; width: 22px; height: 2px; border-radius: 2px; background: #d8f6ff"></span></span>
+</span>
+</button>
+
+<!-- System buttons (small, out of the thumb's hot zone) -->
+<button type="button" aria-label="Minus button" onPointerDown="{{h.MINUS.down}}" onPointerUp="{{h.MINUS.up}}" onPointerCancel="{{h.MINUS.up}}" onClick="{{h.MINUS.click}}" style="position: absolute; left: 40px; top: 176px; width: 48px; height: 48px; padding: 0; border: none; background: transparent; cursor: pointer; transform: translateY({{p.MINUS.y}}px)">
+<span style="position: absolute; left: 8px; top: 8px; width: 32px; height: 32px; box-sizing: border-box; border: 1px solid #39d6ff; border-radius: 2px; background: #071824; box-shadow: none; overflow: hidden; display: flex; align-items: center; justify-content: center; color: #d8f6ff; font-family: 'Orbitron', sans-serif; font-size: 20px; font-weight: 700; line-height: 1">
+<span aria-hidden="true" style="position: absolute; inset: 0; border-radius: inherit; background: {{accent}}; opacity: {{p.MINUS.g}}"></span>
+<span style="position: relative; margin-top: 0px">−</span>
+</span>
+</button>
+<button type="button" aria-label="Plus button" onPointerDown="{{h.PLUS.down}}" onPointerUp="{{h.PLUS.up}}" onPointerCancel="{{h.PLUS.up}}" onClick="{{h.PLUS.click}}" style="position: absolute; left: 1128px; top: 176px; width: 48px; height: 48px; padding: 0; border: none; background: transparent; cursor: pointer; transform: translateY({{p.PLUS.y}}px)">
+<span style="position: absolute; left: 8px; top: 8px; width: 32px; height: 32px; box-sizing: border-box; border: 1px solid #39d6ff; border-radius: 2px; background: #071824; box-shadow: none; overflow: hidden; display: flex; align-items: center; justify-content: center; color: #d8f6ff; font-family: 'Orbitron', sans-serif; font-size: 20px; font-weight: 700; line-height: 1">
+<span aria-hidden="true" style="position: absolute; inset: 0; border-radius: inherit; background: {{accent}}; opacity: {{p.PLUS.g}}"></span>
+<span style="position: relative; margin-top: 0px">+</span>
+</span>
+</button>
+
+<!-- Shoulders: on the thumb arc, above each cluster -->
+<button type="button" aria-label="ZL trigger" onPointerDown="{{h.ZL.down}}" onPointerUp="{{h.ZL.up}}" onPointerCancel="{{h.ZL.up}}" onClick="{{h.ZL.click}}" style="position: absolute; left: 24px; top: 250px; width: 112px; height: 56px; padding: 0; border: 1px solid #39d6ff; border-radius: 0px; background: #071824; box-shadow: 0 0 0 rgba(0,0,0,0); color: #d8f6ff; font-family: 'Orbitron', sans-serif; font-size: 18px; font-weight: 700; letter-spacing: 3px; cursor: pointer; overflow: hidden; transform: translateY({{p.ZL.y}}px)">
+<span aria-hidden="true" style="position: absolute; width: 8px; height: 8px; border-color: #ff9a2e; border-style: solid; border-width: 0; left: 3px; top: 3px; border-left-width: 2px; border-top-width: 2px"></span>
+<span aria-hidden="true" style="position: absolute; width: 8px; height: 8px; border-color: #ff9a2e; border-style: solid; border-width: 0; right: 3px; top: 3px; border-right-width: 2px; border-top-width: 2px"></span>
+<span aria-hidden="true" style="position: absolute; width: 8px; height: 8px; border-color: #ff9a2e; border-style: solid; border-width: 0; left: 3px; bottom: 3px; border-left-width: 2px; border-bottom-width: 2px"></span>
+<span aria-hidden="true" style="position: absolute; width: 8px; height: 8px; border-color: #ff9a2e; border-style: solid; border-width: 0; right: 3px; bottom: 3px; border-right-width: 2px; border-bottom-width: 2px"></span>
+<span aria-hidden="true" style="position: absolute; inset: 0; border-radius: inherit; background: {{accent}}; opacity: {{p.ZL.g}}"></span>
+<span style="position: relative; ">ZL</span>
+</button>
+<button type="button" aria-label="L button" onPointerDown="{{h.L.down}}" onPointerUp="{{h.L.up}}" onPointerCancel="{{h.L.up}}" onClick="{{h.L.click}}" style="position: absolute; left: 144px; top: 250px; width: 128px; height: 56px; padding: 0; border: 1px solid #12404f; border-radius: 0px; background: #050f18; box-shadow: 0 0 0 rgba(0,0,0,0); color: #d8f6ff; font-family: 'Orbitron', sans-serif; font-size: 16px; font-weight: 700; letter-spacing: 3px; cursor: pointer; overflow: hidden; transform: translateY({{p.L.y}}px)">
+<span aria-hidden="true" style="position: absolute; width: 8px; height: 8px; border-color: #39d6ff; border-style: solid; border-width: 0; left: 3px; top: 3px; border-left-width: 2px; border-top-width: 2px"></span>
+<span aria-hidden="true" style="position: absolute; width: 8px; height: 8px; border-color: #39d6ff; border-style: solid; border-width: 0; right: 3px; top: 3px; border-right-width: 2px; border-top-width: 2px"></span>
+<span aria-hidden="true" style="position: absolute; width: 8px; height: 8px; border-color: #39d6ff; border-style: solid; border-width: 0; left: 3px; bottom: 3px; border-left-width: 2px; border-bottom-width: 2px"></span>
+<span aria-hidden="true" style="position: absolute; width: 8px; height: 8px; border-color: #39d6ff; border-style: solid; border-width: 0; right: 3px; bottom: 3px; border-right-width: 2px; border-bottom-width: 2px"></span>
+<span aria-hidden="true" style="position: absolute; inset: 0; border-radius: inherit; background: {{accent}}; opacity: {{p.L.g}}"></span>
+<span style="position: relative; ">L</span>
+</button>
+<button type="button" aria-label="ZR trigger" onPointerDown="{{h.ZR.down}}" onPointerUp="{{h.ZR.up}}" onPointerCancel="{{h.ZR.up}}" onClick="{{h.ZR.click}}" style="position: absolute; left: 1080px; top: 250px; width: 112px; height: 56px; padding: 0; border: 1px solid #39d6ff; border-radius: 0px; background: #071824; box-shadow: 0 0 0 rgba(0,0,0,0); color: #d8f6ff; font-family: 'Orbitron', sans-serif; font-size: 18px; font-weight: 700; letter-spacing: 3px; cursor: pointer; overflow: hidden; transform: translateY({{p.ZR.y}}px)">
+<span aria-hidden="true" style="position: absolute; width: 8px; height: 8px; border-color: #ff9a2e; border-style: solid; border-width: 0; left: 3px; top: 3px; border-left-width: 2px; border-top-width: 2px"></span>
+<span aria-hidden="true" style="position: absolute; width: 8px; height: 8px; border-color: #ff9a2e; border-style: solid; border-width: 0; right: 3px; top: 3px; border-right-width: 2px; border-top-width: 2px"></span>
+<span aria-hidden="true" style="position: absolute; width: 8px; height: 8px; border-color: #ff9a2e; border-style: solid; border-width: 0; left: 3px; bottom: 3px; border-left-width: 2px; border-bottom-width: 2px"></span>
+<span aria-hidden="true" style="position: absolute; width: 8px; height: 8px; border-color: #ff9a2e; border-style: solid; border-width: 0; right: 3px; bottom: 3px; border-right-width: 2px; border-bottom-width: 2px"></span>
+<span aria-hidden="true" style="position: absolute; inset: 0; border-radius: inherit; background: {{accent}}; opacity: {{p.ZR.g}}"></span>
+<span style="position: relative; ">ZR</span>
+</button>
+<button type="button" aria-label="R button" onPointerDown="{{h.R.down}}" onPointerUp="{{h.R.up}}" onPointerCancel="{{h.R.up}}" onClick="{{h.R.click}}" style="position: absolute; left: 944px; top: 250px; width: 128px; height: 56px; padding: 0; border: 1px solid #12404f; border-radius: 0px; background: #050f18; box-shadow: 0 0 0 rgba(0,0,0,0); color: #d8f6ff; font-family: 'Orbitron', sans-serif; font-size: 16px; font-weight: 700; letter-spacing: 3px; cursor: pointer; overflow: hidden; transform: translateY({{p.R.y}}px)">
+<span aria-hidden="true" style="position: absolute; width: 8px; height: 8px; border-color: #39d6ff; border-style: solid; border-width: 0; left: 3px; top: 3px; border-left-width: 2px; border-top-width: 2px"></span>
+<span aria-hidden="true" style="position: absolute; width: 8px; height: 8px; border-color: #39d6ff; border-style: solid; border-width: 0; right: 3px; top: 3px; border-right-width: 2px; border-top-width: 2px"></span>
+<span aria-hidden="true" style="position: absolute; width: 8px; height: 8px; border-color: #39d6ff; border-style: solid; border-width: 0; left: 3px; bottom: 3px; border-left-width: 2px; border-bottom-width: 2px"></span>
+<span aria-hidden="true" style="position: absolute; width: 8px; height: 8px; border-color: #39d6ff; border-style: solid; border-width: 0; right: 3px; bottom: 3px; border-right-width: 2px; border-bottom-width: 2px"></span>
+<span aria-hidden="true" style="position: absolute; inset: 0; border-radius: inherit; background: {{accent}}; opacity: {{p.R.g}}"></span>
+<span style="position: relative; ">R</span>
+</button>
+
+<!-- Left thumb: stick at rest, D-pad inner-low, L3 beside the stick -->
+<button type="button" aria-label="Left stick" onPointerDown="{{ls.h.down}}" onPointerMove="{{ls.h.move}}" onPointerUp="{{ls.h.up}}" onPointerCancel="{{ls.h.up}}" style="position: absolute; left: 68px; top: 348px; width: 184px; height: 184px; padding: 0; border: none; border-radius: 50%; background: transparent; cursor: grab; touch-action: none">
+<span aria-hidden="true" style="position: absolute; inset: 0; border-radius: 50%; border: 1.5px dashed #d8f6ff; opacity: 0.3"></span>
+<span aria-hidden="true" style="position: absolute; left: 10px; top: 10px; width: 164px; height: 164px; border-radius: 50%; background: radial-gradient(circle, {{accent}} 0%, rgba(0,0,0,0) 66%); opacity: {{ls.o}}"></span>
+<svg aria-hidden="true" width="136" height="136" viewBox="0 0 120 120" style="position: absolute; left: 24px; top: 24px; transform: rotate({{ls.r}}deg)">
+<circle cx="60" cy="60" r="57" fill="#061520" stroke="#39d6ff" stroke-width="1.5"></circle>
+<circle cx="60" cy="60" r="51" fill="none" stroke="#1d6a80" stroke-width="5" stroke-dasharray="0.8 4.54"></circle>
+<circle cx="60" cy="60" r="38" fill="none" stroke="#12404f" stroke-width="1"></circle>
+<circle cx="60" cy="60" r="22" fill="none" stroke="#12404f" stroke-width="1"></circle>
+<line x1="60" y1="6" x2="60" y2="114" stroke="#12404f" stroke-width="1"></line>
+<line x1="6" y1="60" x2="114" y2="60" stroke="#12404f" stroke-width="1"></line>
+<path d="M60 60 L60 9 A51 51 0 0 1 96 24 Z" fill="#39d6ff" opacity="0.14"></path>
+<circle cx="84" cy="38" r="2.5" fill="#ff9a2e"></circle>
+</svg>
+<span aria-hidden="true" style="position: absolute; left: 63px; top: 63px; width: 58px; height: 58px; box-sizing: border-box; border-radius: 50%; border: 2px solid #39d6ff; background: #082231; box-shadow: 0 0 {{ls.glow}}px {{accent}}, 0 0 0 rgba(0,0,0,0); transform: translate({{ls.x}}px, {{ls.y}}px)">
+<span style="position: absolute; left: 23px; top: 23px; width: 8px; height: 8px; background: #ff9a2e"></span>
+<span style="position: absolute; left: 6px; right: 6px; top: 26px; height: 1px; background: #12404f"></span>
+</span>
+</button>
+<sc-if value="{{showCaptions}}" hint-placeholder-val="{{true}}">
+<span style="position: absolute; left: 92px; top: 512px; width: 136px; text-align: center; font-family: 'Orbitron', sans-serif; font-size: 11px; font-weight: 600; letter-spacing: 3px; color: #7fb6c8">L-STICK</span>
+</sc-if>
+<span aria-hidden="true" style="position: absolute; left: 325px; top: 575px; width: 10px; height: 10px; background: #ff9a2e"></span>
+<button type="button" aria-label="D-pad up" onPointerDown="{{h.UP.down}}" onPointerUp="{{h.UP.up}}" onPointerCancel="{{h.UP.up}}" onClick="{{h.UP.click}}" style="position: absolute; left: 303px; top: 494px; width: 54px; height: 54px; padding: 0; border: 1px solid #39d6ff; border-radius: 2px; background: #071824; box-shadow: 0 0 0 rgba(0,0,0,0); cursor: pointer; overflow: hidden; display: flex; align-items: center; justify-content: center; transform: translateY({{p.UP.y}}px)">
+<span aria-hidden="true" style="position: absolute; inset: 0; border-radius: inherit; background: {{accent}}; opacity: {{p.UP.g}}"></span>
+<svg aria-hidden="true" width="26" height="26" viewBox="0 0 22 22" style="position: relative"><polyline points="5,14 11,7 17,14" fill="none" stroke="#39d6ff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"></polyline></svg>
+</button>
+<button type="button" aria-label="D-pad down" onPointerDown="{{h.DOWN.down}}" onPointerUp="{{h.DOWN.up}}" onPointerCancel="{{h.DOWN.up}}" onClick="{{h.DOWN.click}}" style="position: absolute; left: 303px; top: 612px; width: 54px; height: 54px; padding: 0; border: 1px solid #39d6ff; border-radius: 2px; background: #071824; box-shadow: 0 0 0 rgba(0,0,0,0); cursor: pointer; overflow: hidden; display: flex; align-items: center; justify-content: center; transform: translateY({{p.DOWN.y}}px)">
+<span aria-hidden="true" style="position: absolute; inset: 0; border-radius: inherit; background: {{accent}}; opacity: {{p.DOWN.g}}"></span>
+<svg aria-hidden="true" width="26" height="26" viewBox="0 0 22 22" style="position: relative"><polyline points="5,8 11,15 17,8" fill="none" stroke="#39d6ff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"></polyline></svg>
+</button>
+<button type="button" aria-label="D-pad left" onPointerDown="{{h.LEFT.down}}" onPointerUp="{{h.LEFT.up}}" onPointerCancel="{{h.LEFT.up}}" onClick="{{h.LEFT.click}}" style="position: absolute; left: 244px; top: 553px; width: 54px; height: 54px; padding: 0; border: 1px solid #39d6ff; border-radius: 2px; background: #071824; box-shadow: 0 0 0 rgba(0,0,0,0); cursor: pointer; overflow: hidden; display: flex; align-items: center; justify-content: center; transform: translateY({{p.LEFT.y}}px)">
+<span aria-hidden="true" style="position: absolute; inset: 0; border-radius: inherit; background: {{accent}}; opacity: {{p.LEFT.g}}"></span>
+<svg aria-hidden="true" width="26" height="26" viewBox="0 0 22 22" style="position: relative"><polyline points="14,5 7,11 14,17" fill="none" stroke="#39d6ff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"></polyline></svg>
+</button>
+<button type="button" aria-label="D-pad right" onPointerDown="{{h.RIGHT.down}}" onPointerUp="{{h.RIGHT.up}}" onPointerCancel="{{h.RIGHT.up}}" onClick="{{h.RIGHT.click}}" style="position: absolute; left: 362px; top: 553px; width: 54px; height: 54px; padding: 0; border: 1px solid #39d6ff; border-radius: 2px; background: #071824; box-shadow: 0 0 0 rgba(0,0,0,0); cursor: pointer; overflow: hidden; display: flex; align-items: center; justify-content: center; transform: translateY({{p.RIGHT.y}}px)">
+<span aria-hidden="true" style="position: absolute; inset: 0; border-radius: inherit; background: {{accent}}; opacity: {{p.RIGHT.g}}"></span>
+<svg aria-hidden="true" width="26" height="26" viewBox="0 0 22 22" style="position: relative"><polyline points="8,5 15,11 8,17" fill="none" stroke="#39d6ff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"></polyline></svg>
+</button>
+<button type="button" aria-label="L3, left stick click" onPointerDown="{{h.L3.down}}" onPointerUp="{{h.L3.up}}" onPointerCancel="{{h.L3.up}}" onClick="{{h.L3.click}}" style="position: absolute; left: 276px; top: 360px; width: 52px; height: 52px; padding: 0; border: none; border-radius: 50%; background: transparent; cursor: pointer; transform: translateY({{p.L3.y}}px)">
+<span style="position: absolute; left: 3px; top: 3px; width: 46px; height: 46px; box-sizing: border-box; border: 1.5px solid #39d6ff; border-radius: 50%; background: #071824; box-shadow: 0 0 0 rgba(0,0,0,0); color: #d8f6ff; font-family: 'Orbitron', sans-serif; font-size: 13px; font-weight: 700; overflow: hidden; display: flex; align-items: center; justify-content: center;">
+<span aria-hidden="true" style="position: absolute; inset: 4px; border-radius: 50%; border: 1px dashed #1d6a80"></span>
+<span aria-hidden="true" style="position: absolute; inset: 0; border-radius: inherit; background: radial-gradient(circle, {{accent}} 0%, rgba(0,0,0,0) 72%); opacity: {{p.L3.o}}"></span>
+<span style="position: relative; ">L3</span>
+</span>
+</button>
+
+<!-- Right thumb: A/B/X/Y at rest, right stick inner-low, R3 beside it -->
+<svg aria-hidden="true" width="228" height="228" viewBox="0 0 200 200" style="position: absolute; left: 932px; top: 316px">
+<circle cx="100" cy="100" r="95" fill="none" stroke="#12404f" stroke-width="1.5"></circle><circle cx="100" cy="100" r="95" fill="none" stroke="#39d6ff" stroke-width="4" stroke-dasharray="2 72.6" opacity="0.8"></circle>
+</svg>
+<button type="button" aria-label="X button" onPointerDown="{{h.X.down}}" onPointerUp="{{h.X.up}}" onPointerCancel="{{h.X.up}}" onClick="{{h.X.click}}" style="position: absolute; left: 1012px; top: 334px; width: 68px; height: 68px; padding: 0; border: none; border-radius: 50%; background: transparent; cursor: pointer; transform: translateY({{p.X.y}}px)">
+<span style="position: absolute; left: 0px; top: 0px; width: 68px; height: 68px; box-sizing: border-box; border: 1.5px solid #39d6ff; border-radius: 50%; background: #071824; box-shadow: 0 0 0 rgba(0,0,0,0); color: #d8f6ff; font-family: 'Orbitron', sans-serif; font-size: 24px; font-weight: 700; overflow: hidden; display: flex; align-items: center; justify-content: center;">
+<span aria-hidden="true" style="position: absolute; inset: 4px; border-radius: 50%; border: 1px dashed #1d6a80"></span>
+<span aria-hidden="true" style="position: absolute; inset: 0; border-radius: inherit; background: radial-gradient(circle, {{accent}} 0%, rgba(0,0,0,0) 72%); opacity: {{p.X.o}}"></span>
+<span style="position: relative; ">X</span>
+</span>
+</button>
+<button type="button" aria-label="Y button" onPointerDown="{{h.Y.down}}" onPointerUp="{{h.Y.up}}" onPointerCancel="{{h.Y.up}}" onClick="{{h.Y.click}}" style="position: absolute; left: 950px; top: 396px; width: 68px; height: 68px; padding: 0; border: none; border-radius: 50%; background: transparent; cursor: pointer; transform: translateY({{p.Y.y}}px)">
+<span style="position: absolute; left: 0px; top: 0px; width: 68px; height: 68px; box-sizing: border-box; border: 1.5px solid #39d6ff; border-radius: 50%; background: #071824; box-shadow: 0 0 0 rgba(0,0,0,0); color: #d8f6ff; font-family: 'Orbitron', sans-serif; font-size: 24px; font-weight: 700; overflow: hidden; display: flex; align-items: center; justify-content: center;">
+<span aria-hidden="true" style="position: absolute; inset: 4px; border-radius: 50%; border: 1px dashed #1d6a80"></span>
+<span aria-hidden="true" style="position: absolute; inset: 0; border-radius: inherit; background: radial-gradient(circle, {{accent}} 0%, rgba(0,0,0,0) 72%); opacity: {{p.Y.o}}"></span>
+<span style="position: relative; ">Y</span>
+</span>
+</button>
+<button type="button" aria-label="A button" onPointerDown="{{h.A.down}}" onPointerUp="{{h.A.up}}" onPointerCancel="{{h.A.up}}" onClick="{{h.A.click}}" style="position: absolute; left: 1074px; top: 396px; width: 68px; height: 68px; padding: 0; border: none; border-radius: 50%; background: transparent; cursor: pointer; transform: translateY({{p.A.y}}px)">
+<span style="position: absolute; left: 0px; top: 0px; width: 68px; height: 68px; box-sizing: border-box; border: 1.5px solid #39d6ff; border-radius: 50%; background: #071824; box-shadow: 0 0 0 rgba(0,0,0,0); color: #d8f6ff; font-family: 'Orbitron', sans-serif; font-size: 24px; font-weight: 700; overflow: hidden; display: flex; align-items: center; justify-content: center;">
+<span aria-hidden="true" style="position: absolute; inset: 4px; border-radius: 50%; border: 1px dashed #1d6a80"></span>
+<span aria-hidden="true" style="position: absolute; inset: 0; border-radius: inherit; background: radial-gradient(circle, {{accent}} 0%, rgba(0,0,0,0) 72%); opacity: {{p.A.o}}"></span>
+<span style="position: relative; ">A</span>
+</span>
+</button>
+<button type="button" aria-label="B button" onPointerDown="{{h.B.down}}" onPointerUp="{{h.B.up}}" onPointerCancel="{{h.B.up}}" onClick="{{h.B.click}}" style="position: absolute; left: 1012px; top: 458px; width: 68px; height: 68px; padding: 0; border: none; border-radius: 50%; background: transparent; cursor: pointer; transform: translateY({{p.B.y}}px)">
+<span style="position: absolute; left: 0px; top: 0px; width: 68px; height: 68px; box-sizing: border-box; border: 1.5px solid #39d6ff; border-radius: 50%; background: #071824; box-shadow: 0 0 0 rgba(0,0,0,0); color: #d8f6ff; font-family: 'Orbitron', sans-serif; font-size: 24px; font-weight: 700; overflow: hidden; display: flex; align-items: center; justify-content: center;">
+<span aria-hidden="true" style="position: absolute; inset: 4px; border-radius: 50%; border: 1px dashed #1d6a80"></span>
+<span aria-hidden="true" style="position: absolute; inset: 0; border-radius: inherit; background: radial-gradient(circle, {{accent}} 0%, rgba(0,0,0,0) 72%); opacity: {{p.B.o}}"></span>
+<span style="position: relative; ">B</span>
+</span>
+</button>
+<button type="button" aria-label="Right stick" onPointerDown="{{rs.h.down}}" onPointerMove="{{rs.h.move}}" onPointerUp="{{rs.h.up}}" onPointerCancel="{{rs.h.up}}" style="position: absolute; left: 802px; top: 496px; width: 168px; height: 168px; padding: 0; border: none; border-radius: 50%; background: transparent; cursor: grab; touch-action: none">
+<span aria-hidden="true" style="position: absolute; inset: 0; border-radius: 50%; border: 1.5px dashed #d8f6ff; opacity: 0.3"></span>
+<span aria-hidden="true" style="position: absolute; left: 8px; top: 8px; width: 152px; height: 152px; border-radius: 50%; background: radial-gradient(circle, {{accent}} 0%, rgba(0,0,0,0) 66%); opacity: {{rs.o}}"></span>
+<svg aria-hidden="true" width="124" height="124" viewBox="0 0 120 120" style="position: absolute; left: 22px; top: 22px; transform: rotate({{rs.r}}deg)">
+<circle cx="60" cy="60" r="57" fill="#061520" stroke="#39d6ff" stroke-width="1.5"></circle>
+<circle cx="60" cy="60" r="51" fill="none" stroke="#1d6a80" stroke-width="5" stroke-dasharray="0.8 4.54"></circle>
+<circle cx="60" cy="60" r="38" fill="none" stroke="#12404f" stroke-width="1"></circle>
+<circle cx="60" cy="60" r="22" fill="none" stroke="#12404f" stroke-width="1"></circle>
+<line x1="60" y1="6" x2="60" y2="114" stroke="#12404f" stroke-width="1"></line>
+<line x1="6" y1="60" x2="114" y2="60" stroke="#12404f" stroke-width="1"></line>
+<path d="M60 60 L60 9 A51 51 0 0 1 96 24 Z" fill="#39d6ff" opacity="0.14"></path>
+<circle cx="84" cy="38" r="2.5" fill="#ff9a2e"></circle>
+</svg>
+<span aria-hidden="true" style="position: absolute; left: 57px; top: 57px; width: 53px; height: 53px; box-sizing: border-box; border-radius: 50%; border: 2px solid #39d6ff; background: #082231; box-shadow: 0 0 {{rs.glow}}px {{accent}}, 0 0 0 rgba(0,0,0,0); transform: translate({{rs.x}}px, {{rs.y}}px)">
+<span style="position: absolute; left: 20px; top: 20px; width: 8px; height: 8px; background: #ff9a2e"></span>
+<span style="position: absolute; left: 6px; right: 6px; top: 23px; height: 1px; background: #12404f"></span>
+</span>
+</button>
+<sc-if value="{{showCaptions}}" hint-placeholder-val="{{true}}">
+<span style="position: absolute; left: 824px; top: 646px; width: 124px; text-align: center; font-family: 'Orbitron', sans-serif; font-size: 11px; font-weight: 600; letter-spacing: 3px; color: #7fb6c8">R-STICK</span>
+</sc-if>
+<button type="button" aria-label="R3, right stick click" onPointerDown="{{h.R3.down}}" onPointerUp="{{h.R3.up}}" onPointerCancel="{{h.R3.up}}" onClick="{{h.R3.click}}" style="position: absolute; left: 888px; top: 360px; width: 52px; height: 52px; padding: 0; border: none; border-radius: 50%; background: transparent; cursor: pointer; transform: translateY({{p.R3.y}}px)">
+<span style="position: absolute; left: 3px; top: 3px; width: 46px; height: 46px; box-sizing: border-box; border: 1.5px solid #39d6ff; border-radius: 50%; background: #071824; box-shadow: 0 0 0 rgba(0,0,0,0); color: #d8f6ff; font-family: 'Orbitron', sans-serif; font-size: 13px; font-weight: 700; overflow: hidden; display: flex; align-items: center; justify-content: center;">
+<span aria-hidden="true" style="position: absolute; inset: 4px; border-radius: 50%; border: 1px dashed #1d6a80"></span>
+<span aria-hidden="true" style="position: absolute; inset: 0; border-radius: inherit; background: radial-gradient(circle, {{accent}} 0%, rgba(0,0,0,0) 72%); opacity: {{p.R3.o}}"></span>
+<span style="position: relative; ">R3</span>
+</span>
+</button>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"accent":{"editor":"color","default":"#ff9a2e","options":["#ff9a2e","#39d6ff","#ff4d6d","#b6ff5c"]},"showCaptions":{"editor":"boolean","default":true},"showZones":{"editor":"boolean","default":false},"opacity":{"editor":"range","default":0.9,"min":0.3,"max":1,"step":0.05},"$preview":{"width":1216,"height":760}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.stickSize = 184;
+    this.stickTravel = 39;
+    this.state = { held: {}, last: 'STANDBY', stokes: 0, ls: { x: 0, y: 0 }, rs: { x: 0, y: 0 }, menu: { x: 0, y: 0 }, menuHeld: false };
+    this.menuW = 76;
+    this.menuBounds = [-570, 570, -6, 710];
+    this._centers = {};
+  }
+
+  names() {
+    return {
+      ZL: 'ZL', L: 'L', ZR: 'ZR', R: 'R', MINUS: 'MINUS', PLUS: 'PLUS',
+      UP: 'D-PAD UP', DOWN: 'D-PAD DOWN', LEFT: 'D-PAD LEFT', RIGHT: 'D-PAD RIGHT',
+      A: 'A', B: 'B', X: 'X', Y: 'Y', L3: 'L3 · STICK CLICK', R3: 'R3 · STICK CLICK',
+      LS: 'L-STICK', RS: 'R-STICK'
+    };
+  }
+
+  press(id) {
+    const s = this.state;
+    const held = Object.assign({}, s.held);
+    held[id] = true;
+    this.setState({ held: held, last: this.names()[id], stokes: s.stokes + 1 });
+  }
+
+  release(id) {
+    const s = this.state;
+    if (!s.held[id]) return;
+    const held = Object.assign({}, s.held);
+    held[id] = false;
+    this.setState({ held: held });
+  }
+
+  moveStick(id, key, e) {
+    const c = this._centers[key];
+    if (!c) return;
+    let dx = (e.clientX - c.x) / c.k;
+    let dy = (e.clientY - c.y) / c.k;
+    const max = this.stickTravel;
+    const d = Math.sqrt(dx * dx + dy * dy);
+    if (d > max) { dx = dx / d * max; dy = dy / d * max; }
+    const f = (v) => (v >= 0 ? '+' : '−') + Math.abs(v / max).toFixed(2);
+    const patch = { last: this.names()[id] + '  ' + f(dx) + ' ' + f(-dy) };
+    patch[key] = { x: dx, y: dy };
+    this.setState(patch);
+  }
+
+  stick(id, key) {
+    return {
+      down: (e) => {
+        const el = e.currentTarget;
+        try { el.setPointerCapture(e.pointerId); } catch (err) {}
+        const r = el.getBoundingClientRect();
+        this._centers[key] = { x: r.left + r.width / 2, y: r.top + r.height / 2, k: (r.width / this.stickSize) || 1 };
+        this.press(id);
+        this.moveStick(id, key, e);
+      },
+      move: (e) => {
+        if (this.state.held[id]) this.moveStick(id, key, e);
+      },
+      up: () => {
+        const s = this.state;
+        const held = Object.assign({}, s.held);
+        held[id] = false;
+        const patch = { held: held };
+        patch[key] = { x: 0, y: 0 };
+        this.setState(patch);
+      }
+    };
+  }
+
+  menuHandlers() {
+    return {
+      down: (e) => {
+        const el = e.currentTarget;
+        try { el.setPointerCapture(e.pointerId); } catch (err) {}
+        const r = el.getBoundingClientRect();
+        this._menu = { sx: e.clientX, sy: e.clientY, ox: this.state.menu.x, oy: this.state.menu.y, k: (r.width / this.menuW) || 1, moved: false };
+        this.setState({ menuHeld: true });
+      },
+      move: (e) => {
+        const m = this._menu;
+        if (!m) return;
+        const dx = (e.clientX - m.sx) / m.k;
+        const dy = (e.clientY - m.sy) / m.k;
+        if (!m.moved && Math.abs(dx) + Math.abs(dy) < 6) return;
+        m.moved = true;
+        const b = this.menuBounds;
+        this.setState({ menu: { x: Math.max(b[0], Math.min(b[1], m.ox + dx)), y: Math.max(b[2], Math.min(b[3], m.oy + dy)) } });
+      },
+      up: () => {
+        const m = this._menu;
+        this._menu = null;
+        this.setState({ menuHeld: false, last: m && !m.moved ? 'EMULATOR MENU' : this.state.last });
+      },
+      click: (e) => {
+        if (e && e.detail === 0) this.setState({ last: 'EMULATOR MENU' });
+      }
+    };
+  }
+
+  renderVals() {
+    const accent = this.props.accent ?? '#ff9a2e';
+    const s = this.state;
+    const ids = ['ZL', 'L', 'ZR', 'R', 'MINUS', 'PLUS', 'UP', 'DOWN', 'LEFT', 'RIGHT', 'A', 'B', 'X', 'Y', 'L3', 'R3'];
+    const p = {};
+    const h = {};
+    ids.forEach((id) => {
+      const on = !!s.held[id];
+      p[id] = { o: on ? 1 : 0, g: on ? 0.3 : 0, y: on ? 3 : 0 };
+      h[id] = {
+        down: (e) => {
+          try { e.currentTarget.setPointerCapture(e.pointerId); } catch (err) {}
+          this.press(id);
+        },
+        up: () => this.release(id),
+        click: (e) => {
+          if (e && e.detail === 0) {
+            this.press(id);
+            setTimeout(() => this.release(id), 140);
+          }
+        }
+      };
+    });
+    const mk = (id, key) => {
+      const v = s[key];
+      const on = !!s.held[id];
+      return { x: v.x.toFixed(1), y: v.y.toFixed(1), r: (v.x * 1.40).toFixed(1), glow: on ? 22 : 0, o: on ? 0.8 : 0, h: this.stick(id, key) };
+    };
+    return {
+      accent: accent,
+      last: s.last,
+      stokes: String(s.stokes).padStart(3, '0'),
+      p: p,
+      h: h,
+      ls: mk('LS', 'ls'),
+      rs: mk('RS', 'rs'),
+      menu: { x: s.menu.x.toFixed(1), y: s.menu.y.toFixed(1), o: s.menuHeld ? 1 : 0, h: this.menuHandlers() },
+      showCaptions: this.props.showCaptions ?? true,
+      showZones: this.props.showZones ?? false,
+      op: this.props.opacity ?? 0.9
+    };
+  }
+}
+</script>
+</body>
+</html>

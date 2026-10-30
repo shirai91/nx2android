@@ -1,0 +1,19 @@
+# Captain Toad: Treasure Tracker on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Nintendo EPD Tokyo's engine (al / sead / agl, NintendoWare) on SDK 8.2.0, update 1.4.2 with both DLC packs; 7,258 shaders, all translated (the fin fur geometry shader too:
+# the Adreno 830 reports geometry shaders). Handheld as the profile's op_mode says: the game's pointer is the touch screen there, so the pause menu's default is handheld too.
+# Tested 2026-10-29 on the Legion Y700 (TB322FC, Snapdragon 8 Elite, Adreno 830, Android 16), driven with DM_CTL: a new save starts in the opening course (Toad, Toadette, the
+# Power Star on the temple): walking, the camera turned all round and from above, the course's pause menu, Toad's silhouette drawn through a wall that hides him.
+# 60 fps as on the Switch (frame work p50 about 4.4 ms, GPU about 4.7 ms), no red log line.
+# agl's post effect that samples the attachment it writes (feedback_snap, which the Mac and iPhone need): no snapshot on Android, and none needed on the Adreno: screen
+# recordings found no magenta block in any frame. The shader tables are the Windows split's.
+# A 30-minute soak in that course (walking and turning the camera): frame time p50 16.55 ms, p95 about 19.3 ms; about a quarter of the 300-frame windows dropped 1-3 frames;
+# footprint 654 MiB; the startup underruns (before the game's first sound), none after; no red log line.
+# Then the opening course finished (route: through the arch, the back walkway, the grass, the flower bed, the dark step block, the slab, the temple's steps), Wingo's cutscene,
+# the storybook and the title; the game saved (2 save commits) and after a restart it starts at the title with the save, and Episode 1's hub plays. Audio: the 8-11 underruns
+# at each startup all come before the game's first sound (silence while it boots, hle_audio.c counts them apart), none in play.
+# Not tested yet: the courses after the hub, the touch pointer, docked mode
+status	playable
+tested	v393216 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
+package	org.nx2a.captaintoadtreasuretracker
+orientation	landscape
+setting	docked=0

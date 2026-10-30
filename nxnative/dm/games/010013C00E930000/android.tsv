@@ -1,0 +1,13 @@
+# Hollow Knight: Silksong on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Unity 6000.0.50f1 IL2CPP on SDK 20.5.8, update 1.0.30000; 2,450 shaders from its Addressables bundles, all translated; subsdk0 plays the MP4 cinematics through MediaCodec.
+# Tested 2026-10-29 on the Legion Y700 (TB322FC, Snapdragon 8 Elite, Adreno 830, Android 16), driven with DM_CTL: the title, a new save, the opening poem and the 80 s
+# Intro_Cinematic (H.264 through MediaCodec; its sound is an AudioClip of its own, mixed by the game: the MP4's AAC track is never fed, as the game means), Moss Grotto
+# (the bind tutorial, running, jumping, attacking, the dark cave east of the start), the pause menu, Save and Quit and loading the save from the profile screen.
+# 60 fps as on the Switch (frame time p50 16.6 ms, GPU about 2.2 ms), no audio underrun, no red log line. The shader tables were split on Windows (/ paths since d1ad5f2).
+# A 30-minute soak from that save (running, jumping, attacking both ways through two rooms): frame time p50 16.6 ms, at most one frame of 300 dropped, frame work about
+# 4 ms, GPU about 3.6 ms, footprint steady at 1.39 GB, address regions up to +2.74 GB of the 4.38 GB alias region, no audio underrun, no red log line.
+# Not tested yet: the areas past Moss Grotto, the other cinematics, handheld mode (played docked)
+status	playable
+tested	v655360 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
+package	org.nx2a.hollowknightsilksong
+orientation	landscape

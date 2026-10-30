@@ -6,7 +6,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 
 "Profile here": `nxnative/dm/games/<title ID>/` has the game's profile from nxnative. "Upstream profile": only seedds/nxnative has one, to read as a reference or starter, not to pull. "60 fps with X" is upstream's note: they run that update at 60 fps (30 on the Switch).
 
-**12 / 91 ported**
+**19 / 92 ported**
 
 - [x] 13 Sentinels: Aegis Rim · `01003FC01670C000`
 - [ ] Ace Attorney Investigations Collection · `010005501E68C000` · profile here
@@ -22,11 +22,12 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [ ] Bayonetta 2 · `01007960049A0000` · upstream profile
 - [ ] Bayonetta 3 · `01004A4010FEA000` · profile here
 - [ ] Big Brain Academy: Brain vs. Brain · `0100620012D6E000` · profile here
-- [ ] Blasphemous 2 · `010040801A4C8000` · upstream profile
+- [x] Blasphemous 2 · `010040801A4C8000`
 - [ ] Brain Memory Training Academy · `0100F5D01DA3A000` · profile here
-- [ ] Captain Toad: Treasure Tracker · `01009BF0072D4000` · profile here
+- [x] Captain Toad: Treasure Tracker · `01009BF0072D4000`
+- [x] Castlevania: Belmont's Curse · `0100BA4026E94000`
 - [ ] Catherine: Full Body · `0100BF00112C0000` · profile here
-- [ ] Celeste · `01002B30028F6000` · profile here
+- [x] Celeste · `01002B30028F6000`
 - [ ] Cult of the Lamb · `01002E7016C46000` · upstream profile · iPhone only, through Apple Arcade
 - [ ] Cuphead · `0100A5C00D162000` · profile here
 - [ ] DARK SOULS: REMASTERED · `01004AB00A260000` · profile here · 60 fps with 1.0.3
@@ -43,7 +44,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [x] Graveyard Keeper 2 · `0100005027A18000`
 - [ ] Hades · `0100535012974000` · profile here · iPhone only, through Netflix
 - [x] Hades II · `0100A00019DE0000`
-- [ ] Hollow Knight: Silksong · `010013C00E930000` · profile here
+- [x] Hollow Knight: Silksong · `010013C00E930000`
 - [ ] Hyrule Warriors: Age of Calamity · `01002B00111A2000` · profile here · 60 fps with 1.3.0
 - [ ] Kirby and the Forgotten Land · `01004D300C5AE000` · upstream profile
 - [ ] Luigi's Mansion 3 · `0100DCA0064A6000` · profile here · 60 fps with 1.4.0
@@ -51,7 +52,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [ ] Mario + Rabbids Sparks of Hope · `0100317013770000` · upstream profile
 - [ ] Mario Kart 8 Deluxe · `0100152000022000` · profile here · no Mii heads
 - [x] Mario vs. Donkey Kong · `0100B99019412000`
-- [ ] Metroid Dread · `010093801237C000` · profile here
+- [x] Metroid Dread · `010093801237C000`
 - [ ] Monster Hunter Rise · `0100B04011742000` · profile here · 60 fps with 16.0.2
 - [ ] Monster Train 2 · `010051701FB46000` · profile here · 60 fps with 1.1.1 · only the first Monster Train is on mobile
 - [x] NEO: The World Ends with You · `010043B013C5C000`
@@ -83,7 +84,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [x] Super Mario Bros. Wonder · `010015100B514000`
 - [ ] Super Mario Galaxy · `010099C022B96000` · profile here
 - [ ] Super Mario Galaxy 2 · `0100FD8022DAA000` · profile here
-- [ ] Super Mario Odyssey · `0100000000010000` · profile here
+- [x] Super Mario Odyssey · `0100000000010000`
 - [ ] Super Mario Party Jamboree · `0100965017338000` · upstream profile
 - [ ] Super Smash Bros. Ultimate · `01006A800016E000` · profile here · offline
 - [ ] Taiko Risshiden V DX · `0100346017304000` · profile here · Japanese · played by touch

@@ -1,0 +1,15 @@
+# Metroid Dread on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# MercurySteam's engine on SDK 11.4.3, update 2.1.0; 1,010 shaders, all translated. The upstream profile as it is (its core_preempt and its movie player's request ring gates).
+# The base game's NSZ is ticketless (its NCAs were converted to standard crypto, so they no longer hash to their names): porter skips that check for such dumps.
+# What it needed from the core: vertex-only programs drawn (depth only, no colour written: about nine draws a frame in the intro were skipped as "not in the bundle"), and the movie
+# player's teardown made safe on Android: the same-core preemption check reads the threads' /proc state outside the thread lock, and the request ring's gate yields to the dispatcher after
+# the drain (hle_movie.c movie_ring_wait). Before them the intro crashed at a movie change in 3 runs of 3 (main+0x225338, main+0x224f74, sdk SignalEvent on a null MultiWait).
+# Tested 2026-10-30 on the Legion Y700 (TB322FC, Snapdragon 8 Elite, Adreno 830, Android 16), driven with DM_CTL: the title, brightness, file select, a new Normal Mode file, the whole
+# intro (the VP9 movies, the text pages, the ship's cockpit) and Artaria's first room. The file is saved (00:00:00 in file select after a restart).
+# A 20-minute soak in Artaria's first rooms (walking, turning): one process throughout, 0 frames dropped on screen, no underrun, no red log line, footprint 1.5 GB.
+# 60 fps docked: in Artaria's first room 270 draws, replay 1.65 ms and GPU 5.9 ms a frame, 0 of 64 frames late on screen. Audio: no underrun in play.
+# The dark overgrowth over the statue of Artaria's first room is in Nintendo's own screenshot of that room (Metroid Dread Report vol. 8) too.
+status	playable
+tested	v327680 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
+package	org.nx2a.metroiddread
+orientation	landscape

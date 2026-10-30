@@ -1,0 +1,40 @@
+# Game profile of Blasphemous 2 (Switch, update 1.0.8 = v524288). Plays on Android (android.tsv)
+# Format: see dm/games/README.md
+# Unity 2021.3.20f1 IL2CPP with FMOD, SDK 15.3.2, NVN; subsdk0 is NintendoSDK_movie, which plays the H.264 cinematics. Written from the survey, with the memory values
+# upstream's Mac bring-up measured (seedds/nxnative's profile of this game, read as a reference). The DLC NSP (Mea Culpa, 010040801A4C9001) is a licence only: its content is in the update
+
+# ---- Identity ----
+title_id	010040801A4C8000
+program_id	010040801A4C8000
+
+# ---- App ----
+# Game name: only a label for profile listings and the Mac window title
+name	Blasphemous 2
+ipa	Blasphemous2.ipa
+app_category	public.app-category.games
+
+# ---- Versions ----
+build	v524288	1.0.8	main=040ad650120b583a3dbfe70750c58b4b	subsdk0=368f01d5cb42f06cd125dc739d036719	sdk=8618895246b420329b77746b960a66ab
+package	v524288
+shader_versions	v524288
+
+# ---- Files ----
+# load order as on Horizon: main, subsdk*, sdk (subsdk0 = NintendoSDK_movie)
+modules	main subsdk0 sdk
+romfs_marker	Data/globalgamemanagers
+zip_store	.bundle:.dat:.json:.png:.ress:.metallib
+
+# ---- Memory ----
+# The NPDM declares 16 MB of system resource, so the game has virtual address memory. The 5 GB block of the other Unity games with it (256 MB in front + 4.375 GB alias region
+# + 256 MB stack region). Upstream measured on the Mac that StandardAllocator with the hardware's pool and Unity's own regions reach +4.26 GB of the alias region during startup;
+# a 1 GB pool leaves room for Unity's regions. The sdk build gets the node-area cut and the size-class alignment cuts (dm/tools/sdk_patches.py)
+sys_resource	0x1000000
+mem_reserve	0x140000000
+mem_alias	0x118000000
+mem_stack	0x10000000
+app_pool	0x40000000
+
+# ---- Shader split (shader_split.py; Unity Shader objects read by unityfs.py, and the player's eleven GLSLC outputs in main) ----
+# everything is under Data/: the player's serialized files and the StreamingAssets bundles
+shader_groups	/Data/=data
+shader_note	Blasphemous 2 shaders

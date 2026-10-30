@@ -4,7 +4,7 @@ nx2android ports your own Nintendo Switch games to Android. This folder is the w
 
 - a Windows PC with about 30 GB free (the tools take 4 GB, a port about twice the game's size);
 - an Android device whose GPU is an **Adreno** (Snapdragon) or **Xclipse** (Exynos 2200 and later). Mali and PowerVR GPUs cannot run these games;
-- the game's files dumped from your own Switch (the base game NSP or XCI, its update and DLC, in one folder) and your **`prod.keys`** from the same Switch. The tool reads NSP and XCI files; an NSZ must be decompressed to an NSP first.
+- the game's files dumped from your own Switch (the base game NSP or XCI, its update and DLC, in one folder) and your **`prod.keys`** from the same Switch. The tool reads NSP and XCI files, and NSZ and XCZ files, which it decompresses while it ports (they need that much more free space for a while).
 
 ## 1. Start the app
 

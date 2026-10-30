@@ -178,14 +178,26 @@ static void md_defer_body(void *arg) {
 // and WaitAny / SignalEvent walked into freed holders (the core_preempt approximation does not cover it: with the dispatcher busy, posting wakes nobody, and the main thread makes no SVC on the way).
 // The rewriter puts observation gates on the instruction after each "one request posted" (OBS 19 / 20 in Metroid Dread's patches.py, for this build only); here we wait for the pending count to reach zero, for at most 3 s.
 // 100 ms was too short once the Mac was saturated (an iOS shader build in parallel): the wait ran out with one request pending and WaitAny crashed right after. Waits over 50 ms are logged (the first eight)
+// After the drain the poster yields to its core's higher-priority threads until they block (at most 50 ms): the dispatcher finalizes the holders and events after counting the requests
+// down, and on hardware it keeps the core until it blocks. On Android the intro's movie changes crashed 3 runs of 3 (the dispatcher reading the rebuilt object at main+0x225338, a worker at
+// main+0x224f74 after the ring stayed undrained for 3 s with the dispatcher blocked on a mutex of a thread that used no CPU); with this and the same-core preemption check reading the threads'
+// /proc state outside the thread lock (hle_thread.c busy_peer) the intro played through 3 runs of 3. DM_MOVIE_TRACE=1 logs every gate: thread, priority, how long
+int dm_core_peer_busy(uint32_t *handle, int *prio);
+int dm_yield_to_core_peers(unsigned max_us);
+static int md_trace_all(void);
 static void movie_ring_wait(const uint64_t *regs) {
     const volatile uint64_t *pending = (const volatile uint64_t *)(regs[19] + 0x370);
-    uint64_t t0 = now_ns();
+    uint64_t t0 = now_ns(); unsigned long long p0 = (unsigned long long)*pending; int left = 0;
     while (*pending) {
-        if (now_ns() - t0 > 3000000000ull) { static int r; if (!r++) LOG("[RED] movie: player request ring not drained in 3 s (%llu pending), letting it through anyway", (unsigned long long)*pending); return; }
+        if (now_ns() - t0 > 3000000000ull) { left = 1; uint32_t h; int pr; int busy = dm_core_peer_busy(&h, &pr); static int r;
+            if (!r++) LOG("[RED] movie: player request ring not drained in 3 s (%llu pending, thread %#x priority %d, %s), letting it through anyway", (unsigned long long)*pending, h, pr, busy ? "a higher-priority thread of its core running" : "no higher-priority thread of its core running");
+            break; }
         struct timespec ts = {0, 50000}; nanosleep(&ts, 0);
     }
-    uint64_t dt = now_ns() - t0; static _Atomic int nlong; if (dt > 50000000ull && nlong++ < 8) LOG("[movie] waited %.1f ms on the player request ring", dt / 1e6);
+    uint64_t dt = now_ns() - t0;
+    int y = left ? 0 : dm_yield_to_core_peers(50000);
+    if (md_trace_all()) { uint32_t h; int pr; dm_core_peer_busy(&h, &pr); LOG("[movie] [%p] ring gate: thread %#x priority %d, %llu pending at entry, drained after %.2f ms%s%s", (void *)pthread_self(), h, pr, p0, dt / 1e6, left ? " (not drained)" : "", y < 0 ? ", the core's higher-priority threads still busy after 50 ms" : y ? ", then yielded to them" : ""); }
+    static _Atomic int nlong; if (dt > 50000000ull && nlong++ < 8) LOG("[movie] waited %.1f ms on the player request ring", dt / 1e6);
 }
 __attribute__((constructor)) static void movie_ring_gates(void) { gate_obs_set(OBS_MOVIE_RING_LINK, movie_ring_wait); gate_obs_set(OBS_MOVIE_RING_UNLINK, movie_ring_wait); }
 // log the first 12 calls one by one, then every 2^k-th (DM_MOVIE_TRACE=1: every call, with the calling thread and the decoder: Unity drives a movie's audio and video decoders from one thread)

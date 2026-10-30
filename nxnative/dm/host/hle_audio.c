@@ -35,6 +35,8 @@ typedef struct {
     int id;                            // open sequence number (#N in the log; tells simultaneous outputs apart, e.g. Engage's Wwise and Unity's built-in FMOD)
     int nlog;                          // Start / Stop / Close lines logged so far (at most 32 per output)
     _Atomic uint64_t under_n, under_b; // underruns: times the pending queue was empty when the callback needed data / zero-filled bytes
+    _Atomic uint64_t under_quiet;      // of those, the ones before the game's first non-zero sample: the device started before the game had anything to say, nothing was cut off
+    int heard;                         // a non-zero sample has been played (read and written only by the consumer)
     uint64_t st_calls, st_qsum, st_u0, st_ub0; uint32_t st_fmin, st_fmax;   // sound card callback statistics (read and written only on the callback thread)
     _Atomic uint64_t cb_n;             // device callbacks of this output (the watchdog's evidence that the device still plays it)
     uint64_t wd_n, wd_t;               // watchdog: callback count last seen and when it last moved (under g_aos_lock)
@@ -91,11 +93,13 @@ static void pull(aout *a, uint8_t *dst, uint64_t n) {
     while (n) {
         uint32_t qt = atomic_load_explicit(&a->q_tail, memory_order_acquire);
         if (qh == qt || atomic_load_explicit(&a->state, memory_order_acquire) != STATE_STARTED) {
-            if (qh == qt && atomic_load_explicit(&a->state, memory_order_acquire) == STATE_STARTED) { atomic_fetch_add(&a->under_n, 1); atomic_fetch_add(&a->under_b, n); }
+            // only what the sound card plays: the silent sink drains a held game's queue in the background, where nothing is heard (5 s at home were counted as 1,000 underruns)
+            if (qh == qt && a->backend == BK_AU && atomic_load_explicit(&a->state, memory_order_acquire) == STATE_STARTED) { atomic_fetch_add(&a->under_n, 1); atomic_fetch_add(&a->under_b, n); if (!a->heard) atomic_fetch_add(&a->under_quiet, 1); }
             memset(dst, 0, n); break; }
         gbuf *b = a->q[qh & (QMAX - 1)].b; uint8_t *bp = a->q[qh & (QMAX - 1)].ptr; uint64_t bs = a->q[qh & (QMAX - 1)].size;
         uint64_t k = bs - a->pos; if (k > n) k = n;
         if (bp) memcpy(dst, bp + a->pos, k); else memset(dst, 0, k);
+        if (!a->heard && bp) for (uint64_t i = 0; i < k; i++) if (dst[i]) { a->heard = 1; break; }
         dst += k; n -= k; a->pos += k;
         if (a->pos >= bs) {
             uint32_t rw = atomic_load_explicit(&a->rel_tail, memory_order_relaxed);
@@ -160,8 +164,8 @@ static OSStatus au_render(void *ctx, AudioUnitRenderActionFlags *f, const AudioT
         uint32_t qd = atomic_load(&a->q_tail) - atomic_load(&a->q_head);
         if (!a->st_calls || frames < a->st_fmin) a->st_fmin = frames; if (frames > a->st_fmax) a->st_fmax = frames; a->st_qsum += qd;
         if (++a->st_calls % 2000 == 0) { uint64_t un = atomic_load(&a->under_n), ubb = atomic_load(&a->under_b);
-            LOG("audio #%d device callbacks %llu: %u–%u frames each, %.1f blocks queued on average at callback; in these 2000, %llu underruns, %.1f ms zero-padded", a->id, (unsigned long long)a->st_calls, a->st_fmin, a->st_fmax, a->st_qsum / 2000.0,
-                (unsigned long long)(un - a->st_u0), (ubb - a->st_ub0) / (2.0 * a->ch) / (RATE / 1000.0)); a->st_fmin = ~0u; a->st_fmax = 0; a->st_qsum = 0; a->st_u0 = un; a->st_ub0 = ubb; } }
+            LOG("audio #%d device callbacks %llu: %u–%u frames each, %.1f blocks queued on average at callback; in these 2000, %llu underruns, %.1f ms zero-padded%s", a->id, (unsigned long long)a->st_calls, a->st_fmin, a->st_fmax, a->st_qsum / 2000.0,
+                (unsigned long long)(un - a->st_u0), (ubb - a->st_ub0) / (2.0 * a->ch) / (RATE / 1000.0), un != a->st_u0 && atomic_load(&a->under_quiet) == un ? " (all before the game's first sound: silence, not a gap)" : ""); a->st_fmin = ~0u; a->st_fmax = 0; a->st_qsum = 0; a->st_u0 = un; a->st_ub0 = ubb; } }
     if (a->backend != BK_AU || !pull_begin(a)) { memset(bl->mBuffers[0].mData, 0, bl->mBuffers[0].mDataByteSize); return noErr; }   // a late callback (see pull_begin)
     pull_device(a, bl->mBuffers[0].mData, bl->mBuffers[0].mDataByteSize);
     pull_end(a);

@@ -127,20 +127,32 @@ static int thr_running(const thr_t *t) {
     if (thread_info(t->mport, THREAD_BASIC_INFO, (thread_info_t)&bi, &n) != KERN_SUCCESS) return 0;
     return bi.run_state == TH_STATE_RUNNING;
 }
+// The higher-priority threads pinned to self's core that are running now: candidates are picked under G, and their kernel state is read after it is released (on Android that is a
+// /proc/self/task/<tid>/stat read each, tens of µs: with G held across them every other thread's SVC waited, the dispatcher a game waits for among them, and a thread blocked on G reads
+// as not running). Returns the first busy one (its handle, priority, last SVC and lr in *b) or 0
+typedef struct { thr_t *t; uint32_t handle; int prio, svc; uint64_t lr; } peer_t;
+static int busy_peer(thr_t *self, peer_t *b) {
+    uint64_t bit = 1ull << (self->core & 63); peer_t c[64]; int n = 0;
+    pthread_mutex_lock(&G);
+    for (thr_t *t = g_all; t && n < 64; t = t->all)
+        if (t != self && t->started && !t->exited && !t->host_owned && t->mask == bit && t->prio < self->prio && !t->wkind && !t->sleeping) c[n++] = (peer_t){t, t->handle, t->prio, t->last_svc, t->last_lr};
+    pthread_mutex_unlock(&G);
+    for (int i = 0; i < n; i++) if (thr_running(c[i].t)) { if (b) *b = c[i]; return 1; }
+    return 0;
+}
+// One look: whether a higher-priority thread pinned to the caller's core is running now (0 for a non-guest caller); the caller's handle and priority for logs
+int dm_core_peer_busy(uint32_t *handle, int *prio) {
+    thr_t *self = pthread_getspecific(g_keythr); if (handle) *handle = self ? self->handle : 0; if (prio) *prio = self ? self->prio : 0;
+    return self ? busy_peer(self, NULL) : 0;
+}
 int dm_yield_to_core_peers(unsigned max_us) {
     thr_t *self = pthread_getspecific(g_keythr); if (!self) return 0;
-    uint64_t bit = 1ull << (self->core & 63), t0 = now_ns(); int waited = 0;
+    uint64_t t0 = now_ns(); int waited = 0; peer_t b;
     for (;;) {
-        thr_t *busy = NULL;
-        pthread_mutex_lock(&G);
-        for (thr_t *t = g_all; t && !busy; t = t->all)
-            if (t != self && t->started && !t->exited && !t->host_owned && t->mask == bit && t->prio < self->prio && thr_running(t)) busy = t;
-        uint32_t bh = busy ? busy->handle : 0; int bp = busy ? busy->prio : 0; uint64_t blr = busy ? busy->last_lr : 0; int bsvc = busy ? busy->last_svc : 0;
-        pthread_mutex_unlock(&G);
-        if (!busy) return waited;
+        if (!busy_peer(self, &b)) return waited;
         if (now_ns() - t0 > (uint64_t)max_us * 1000) {
-            static _Atomic int nlog; if (nlog++ < 8) { module_t *m = module_of((void *)blr);   // the first few cap hits: who waits, who keeps running
-                LOG("same-core preemption yield hit its cap: thread %#x (priority %d core %d) waits for %#x (priority %d, last svc %#x lr=%s+%#llx)", self->handle, self->prio, self->core, bh, bp, bsvc, m ? m->name : "?", (unsigned long long)(m ? blr - (uint64_t)m->base : blr)); }
+            static _Atomic int nlog; if (nlog++ < 8) { module_t *m = module_of((void *)b.lr);   // the first few cap hits: who waits, who keeps running
+                LOG("same-core preemption yield hit its cap: thread %#x (priority %d core %d) waits for %#x (priority %d, last svc %#x lr=%s+%#llx)", self->handle, self->prio, self->core, b.handle, b.prio, b.svc, m ? m->name : "?", (unsigned long long)(m ? b.lr - (uint64_t)m->base : b.lr)); }
             return -1;
         }
         { struct timespec ts = {0, 50000}; nanosleep(&ts, 0); } waited = 1;

@@ -41,7 +41,8 @@ hits = []
 for f in files:
     if not re.match(r'nxnative/dm/(host|gfx|tools)/', f) or not f.endswith(('.c', '.h', '.m')): continue
     code = strip_c((R / f).read_text(encoding='utf-8', errors='replace'))
-    if re.search(r'DM_ANDROID|__ANDROID__', code) and re.search(r'0100[0-9A-Fa-f]{12}', code): hits.append(f)
+    # system titles (0100000000000000..0100000000001fff: firmware programs, system data such as hle_fs.c's MiiModel 0100000000000802, applets) are not games
+    if re.search(r'DM_ANDROID|__ANDROID__', code) and re.search(r'0100(?!00000000[01])[0-9A-Fa-f]{12}', code): hits.append(f)
 check('shared core: no title-ID branch in Android-guarded code', not hits, ', '.join(hits))
 diff = subprocess.run(['git', '-C', str(R), 'log', '--format=%h', '--', 'nxnative/dm/host', 'nxnative/dm/gfx', 'nxnative/dm/tools', 'nxnative/dm/third_party'], capture_output=True, text=True).stdout.split()
 notes.append(f'{len(diff)} commits touch the shared core since the subtree')

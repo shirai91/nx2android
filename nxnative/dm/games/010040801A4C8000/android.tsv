@@ -1,0 +1,20 @@
+# Blasphemous 2 on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Unity 2021.3.20f1 IL2CPP with FMOD on SDK 15.3.2, update 1.0.8; 4,354 shaders (Shader objects in its Addressables bundles and the player's GLSLC outputs in main), all translated;
+# subsdk0 plays the H.264 cinematics (Addressables .mp4 bundles) through MediaCodec.
+# Tested 2026-10-29 on the Legion Y700 (TB322FC, Snapdragon 8 Elite, Adreno 830, Android 16), driven with DM_CTL: the title, Pilgrimage, a new game, the opening cinematics
+# with their subtitles (cts01 decoded whole: 1,682 frames), the awakening, the Bile Flasks tutorial, the weapon room and taking Veredicto or the sword, swinging, jumping, the first
+# enemy; the game's save data (0_Global, 0_Header) committed six times (reading it back after a restart is not checked). 60 fps as on the Switch (frame time p50 16.6 ms, GPU about 2.1 ms), no red log line.
+# What it needed: the rewriter takes a br x18 after the frame is popped as a tail call (its delegate thunks: patch_nso.py tail_call), and the sdk build gets the size-class
+# alignment cuts beside the node-area cut (sdk_patches.py). The shader tables were split on Windows (/ paths since d1ad5f2).
+# A 30-minute soak in the weapon room (walking both ways, jumping, swinging): frame time p50 16.7 ms, at most 1-3 frames of 300 dropped, footprint about 1.5 GB, address
+# regions up to +3.08 GB of the 4.38 GB alias region and flat, no audio underrun, no red log line. Outside it: the governor fell to 40 fps for about 5 s around the Veredicto
+# pickup's cinematic (game CPU work, GPU 1.4 ms), and the frames while loading the title and the first cinematic run long.
+# Later the same day: the weapon confirmed at the room's circle opens the way; the user played on from the cave past the first Prie Dieu into the Faceless One boss
+# fight (18 save commits, frame time p50 16.7 ms, no audio underrun, no red log line), and after a restart the slot loads at that Prie Dieu with the sword and items.
+# A trip to the Android home screen and back, in the menus and in play: input and menus as before (needed the focus fix in front_android.c / hle_oe.c). Room changes
+# recorded on screen: the picture holds only while the screen is black in the fade (about 0.5 s), no flickering frame.
+# Not tested yet: the areas after the first boss, the Mea Culpa DLC campaign, handheld mode (played docked)
+status	playable
+tested	v524288 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
+package	org.nx2a.blasphemous2
+orientation	landscape

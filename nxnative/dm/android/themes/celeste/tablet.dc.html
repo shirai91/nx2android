@@ -1,0 +1,369 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Celeste — Tablet</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Silkscreen:wght@400;700&family=Pixelify+Sans:wght@500;600;700&amp;display=swap">
+<style>
+body{margin:0;background:#1b1335}
+a{color:#f4f0ff}a:hover{color:#f4f0ff}
+button{-webkit-tap-highlight-color:transparent}
+button:focus-visible{outline:2px solid #ff6fae;outline-offset:3px}
+</style>
+</helmet>
+<div style="position: relative; width: 1216px; height: 760px; overflow: hidden; background: #1b1335; font-family: 'Pixelify Sans', sans-serif; color: #f4f0ff; touch-action: none; user-select: none; -webkit-user-select: none">
+
+<!-- Backdrop -->
+<svg aria-hidden="true" width="1216" height="760" viewBox="0 0 1216 760" shape-rendering="crispEdges" style="position: absolute; left: 0; top: 0">
+<polygon points="0,532 97,395 195,456 328,289 438,418 572,228 705,395 827,274 948,418 1070,304 1216,441 1216,760 0,760" fill="#2a1f4f"></polygon>
+<polygon points="572,228 523,274 620,274" fill="#f4f0ff" opacity="0.85"></polygon>
+<polygon points="328,289 292,327 365,327" fill="#f4f0ff" opacity="0.85"></polygon>
+<polygon points="827,274 790,312 863,312" fill="#f4f0ff" opacity="0.85"></polygon>
+<polygon points="1070,304 1040,338 1100,338" fill="#f4f0ff" opacity="0.85"></polygon>
+<polygon points="0,654 122,532 243,608 389,502 535,623 681,532 827,638 973,517 1094,608 1216,547 1216,760 0,760" fill="#3b2a63"></polygon>
+<rect x="61" y="76" width="4" height="4" fill="#f4f0ff" opacity="0.7"></rect>
+<rect x="170" y="205" width="4" height="4" fill="#f4f0ff" opacity="0.7"></rect>
+<rect x="280" y="61" width="4" height="4" fill="#f4f0ff" opacity="0.7"></rect>
+<rect x="377" y="152" width="4" height="4" fill="#f4f0ff" opacity="0.7"></rect>
+<rect x="523" y="91" width="4" height="4" fill="#f4f0ff" opacity="0.7"></rect>
+<rect x="608" y="182" width="4" height="4" fill="#f4f0ff" opacity="0.7"></rect>
+<rect x="754" y="53" width="4" height="4" fill="#f4f0ff" opacity="0.7"></rect>
+<rect x="863" y="144" width="4" height="4" fill="#f4f0ff" opacity="0.7"></rect>
+<rect x="973" y="84" width="4" height="4" fill="#f4f0ff" opacity="0.7"></rect>
+<rect x="1119" y="190" width="4" height="4" fill="#f4f0ff" opacity="0.7"></rect>
+<rect x="1180" y="61" width="4" height="4" fill="#f4f0ff" opacity="0.7"></rect>
+<rect x="231" y="342" width="4" height="4" fill="#f4f0ff" opacity="0.7"></rect>
+<rect x="924" y="357" width="4" height="4" fill="#f4f0ff" opacity="0.7"></rect>
+<rect x="49" y="304" width="4" height="4" fill="#f4f0ff" opacity="0.7"></rect>
+<rect x="1167" y="327" width="4" height="4" fill="#f4f0ff" opacity="0.7"></rect>
+</svg>
+
+<!-- Full-screen game placeholder -->
+<div style="position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; pointer-events: none">
+<span style="font-family: 'Silkscreen', monospace; font-size: 14px; font-weight: 600; letter-spacing: 5px; color: #c9bff0; opacity: 0.8">[ FULL-SCREEN GAME ]</span>
+</div>
+<sc-if value="{{showZones}}" hint-placeholder-val="{{false}}">
+<svg aria-hidden="true" width="1216" height="760" viewBox="0 0 1216 760" style="position: absolute; left: 0; top: 0">
+<circle cx="0" cy="520" r="230" fill="none" stroke="rgba(72,214,140,0.18)" stroke-width="220"></circle><circle cx="0" cy="520" r="385" fill="none" stroke="rgba(255,184,64,0.12)" stroke-width="90"></circle><circle cx="0" cy="520" r="340" fill="none" stroke="rgba(40,170,100,0.7)" stroke-width="1.5" stroke-dasharray="6 6"></circle><circle cx="0" cy="520" r="430" fill="none" stroke="rgba(220,140,30,0.7)" stroke-width="1.5" stroke-dasharray="4 8"></circle><circle cx="1216" cy="520" r="230" fill="none" stroke="rgba(72,214,140,0.18)" stroke-width="220"></circle><circle cx="1216" cy="520" r="385" fill="none" stroke="rgba(255,184,64,0.12)" stroke-width="90"></circle><circle cx="1216" cy="520" r="340" fill="none" stroke="rgba(40,170,100,0.7)" stroke-width="1.5" stroke-dasharray="6 6"></circle><circle cx="1216" cy="520" r="430" fill="none" stroke="rgba(220,140,30,0.7)" stroke-width="1.5" stroke-dasharray="4 8"></circle>
+</svg>
+</sc-if>
+
+<!-- Controls (opacity is a tweak) -->
+<div style="position: absolute; inset: 0; opacity: {{op}}">
+
+<!-- Input readout -->
+<div style="position: absolute; left: 438px; top: 56px; width: 340px; height: 62px; box-sizing: border-box; padding: 7px 16px; border: 3px solid #f4f0ff; border-radius: 0px; background: #2a1f4f; box-shadow: 4px 4px 0 #0c0820; display: flex; flex-direction: column; justify-content: center; gap: 0px">
+<div style="display: flex; justify-content: space-between; align-items: center">
+<span style="font-family: 'Silkscreen', monospace; font-size: 11px; font-weight: 700; letter-spacing: 3px; color: #c9bff0">INPUT</span>
+<span style="font-family: 'Silkscreen', monospace; font-size: 11px; font-weight: 700; letter-spacing: 3px; color: #c9bff0">CLIMB ×{{stokes}}</span>
+</div>
+<span style="font-family: 'Silkscreen', monospace; font-size: 17px; font-weight: 700; letter-spacing: 1px; line-height: 21px; white-space: nowrap; overflow: hidden; color: {{accent}}">{{last}}</span>
+</div>
+
+<!-- Emulator settings: small oval, drag to move, tap to open -->
+<button type="button" aria-label="Emulator settings (drag to move)" onPointerDown="{{menu.h.down}}" onPointerMove="{{menu.h.move}}" onPointerUp="{{menu.h.up}}" onPointerCancel="{{menu.h.up}}" onClick="{{menu.h.click}}" style="position: absolute; left: 570px; top: 6px; width: 76px; height: 44px; padding: 0; border: none; border-radius: 999px; background: transparent; cursor: grab; touch-action: none; z-index: 2; transform: translate({{menu.x}}px, {{menu.y}}px)">
+<span style="position: absolute; left: 8px; top: 8px; width: 60px; height: 28px; box-sizing: border-box; border: 2px solid #f4f0ff; border-radius: 999px; background: #2a1f4f; box-shadow: 3px 3px 0 #0c0820; overflow: hidden; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px">
+<span aria-hidden="true" style="position: absolute; inset: 0; border-radius: inherit; background: {{accent}}; opacity: {{menu.o}}"></span>
+<span aria-hidden="true" style="position: relative; display: flex; flex-direction: column; gap: 4px"><span style="display: block; width: 22px; height: 2px; border-radius: 2px; background: #f4f0ff"></span><span style="display: block; width: 22px; height: 2px; border-radius: 2px; background: #f4f0ff"></span><span style="display: block; width: 22px; height: 2px; border-radius: 2px; background: #f4f0ff"></span></span>
+</span>
+</button>
+
+<!-- System buttons (small, out of the thumb's hot zone) -->
+<button type="button" aria-label="Minus button" onPointerDown="{{h.MINUS.down}}" onPointerUp="{{h.MINUS.up}}" onPointerCancel="{{h.MINUS.up}}" onClick="{{h.MINUS.click}}" style="position: absolute; left: 40px; top: 176px; width: 48px; height: 48px; padding: 0; border: none; background: transparent; cursor: pointer; transform: translateY({{p.MINUS.y}}px)">
+<span style="position: absolute; left: 8px; top: 8px; width: 32px; height: 32px; box-sizing: border-box; border: 2px solid #f4f0ff; border-radius: 0px; background: #2a1f4f; box-shadow: 3px 3px 0 #0c0820; overflow: hidden; display: flex; align-items: center; justify-content: center; color: #f4f0ff; font-family: 'Silkscreen', monospace; font-size: 18px; font-weight: 700; line-height: 1">
+<span aria-hidden="true" style="position: absolute; inset: 0; border-radius: inherit; background: {{accent}}; opacity: {{p.MINUS.g}}"></span>
+<span style="position: relative; margin-top: 0px">−</span>
+</span>
+</button>
+<button type="button" aria-label="Plus button" onPointerDown="{{h.PLUS.down}}" onPointerUp="{{h.PLUS.up}}" onPointerCancel="{{h.PLUS.up}}" onClick="{{h.PLUS.click}}" style="position: absolute; left: 1128px; top: 176px; width: 48px; height: 48px; padding: 0; border: none; background: transparent; cursor: pointer; transform: translateY({{p.PLUS.y}}px)">
+<span style="position: absolute; left: 8px; top: 8px; width: 32px; height: 32px; box-sizing: border-box; border: 2px solid #f4f0ff; border-radius: 0px; background: #2a1f4f; box-shadow: 3px 3px 0 #0c0820; overflow: hidden; display: flex; align-items: center; justify-content: center; color: #f4f0ff; font-family: 'Silkscreen', monospace; font-size: 18px; font-weight: 700; line-height: 1">
+<span aria-hidden="true" style="position: absolute; inset: 0; border-radius: inherit; background: {{accent}}; opacity: {{p.PLUS.g}}"></span>
+<span style="position: relative; margin-top: 0px">+</span>
+</span>
+</button>
+
+<!-- Shoulders: on the thumb arc, above each cluster -->
+<button type="button" aria-label="ZL trigger" onPointerDown="{{h.ZL.down}}" onPointerUp="{{h.ZL.up}}" onPointerCancel="{{h.ZL.up}}" onClick="{{h.ZL.click}}" style="position: absolute; left: 24px; top: 250px; width: 112px; height: 56px; padding: 0; border: 3px solid #f4f0ff; border-radius: 0px; background: #3b2a63; box-shadow: 4px 4px 0 #0c0820; color: #f4f0ff; font-family: 'Silkscreen', monospace; font-size: 17px; font-weight: 700; letter-spacing: 2px; cursor: pointer; overflow: hidden; transform: translateY({{p.ZL.y}}px)">
+<span aria-hidden="true" style="position: absolute; left: 6px; top: 6px; width: 10px; height: 4px; background: #b8a6ff"></span>
+<span aria-hidden="true" style="position: absolute; inset: 0; border-radius: inherit; background: {{accent}}; opacity: {{p.ZL.g}}"></span>
+<span style="position: relative; ">ZL</span>
+</button>
+<button type="button" aria-label="L button" onPointerDown="{{h.L.down}}" onPointerUp="{{h.L.up}}" onPointerCancel="{{h.L.up}}" onClick="{{h.L.click}}" style="position: absolute; left: 144px; top: 250px; width: 128px; height: 56px; padding: 0; border: 3px solid #b8a6ff; border-radius: 0px; background: #2a1f4f; box-shadow: 4px 4px 0 #0c0820; color: #f4f0ff; font-family: 'Silkscreen', monospace; font-size: 16px; font-weight: 700; letter-spacing: 2px; cursor: pointer; overflow: hidden; transform: translateY({{p.L.y}}px)">
+<span aria-hidden="true" style="position: absolute; left: 6px; top: 6px; width: 10px; height: 4px; background: #b8a6ff"></span>
+<span aria-hidden="true" style="position: absolute; inset: 0; border-radius: inherit; background: {{accent}}; opacity: {{p.L.g}}"></span>
+<span style="position: relative; ">L</span>
+</button>
+<button type="button" aria-label="ZR trigger" onPointerDown="{{h.ZR.down}}" onPointerUp="{{h.ZR.up}}" onPointerCancel="{{h.ZR.up}}" onClick="{{h.ZR.click}}" style="position: absolute; left: 1080px; top: 250px; width: 112px; height: 56px; padding: 0; border: 3px solid #f4f0ff; border-radius: 0px; background: #3b2a63; box-shadow: 4px 4px 0 #0c0820; color: #f4f0ff; font-family: 'Silkscreen', monospace; font-size: 17px; font-weight: 700; letter-spacing: 2px; cursor: pointer; overflow: hidden; transform: translateY({{p.ZR.y}}px)">
+<span aria-hidden="true" style="position: absolute; left: 6px; top: 6px; width: 10px; height: 4px; background: #b8a6ff"></span>
+<span aria-hidden="true" style="position: absolute; inset: 0; border-radius: inherit; background: {{accent}}; opacity: {{p.ZR.g}}"></span>
+<span style="position: relative; ">ZR</span>
+</button>
+<button type="button" aria-label="R button" onPointerDown="{{h.R.down}}" onPointerUp="{{h.R.up}}" onPointerCancel="{{h.R.up}}" onClick="{{h.R.click}}" style="position: absolute; left: 944px; top: 250px; width: 128px; height: 56px; padding: 0; border: 3px solid #b8a6ff; border-radius: 0px; background: #2a1f4f; box-shadow: 4px 4px 0 #0c0820; color: #f4f0ff; font-family: 'Silkscreen', monospace; font-size: 16px; font-weight: 700; letter-spacing: 2px; cursor: pointer; overflow: hidden; transform: translateY({{p.R.y}}px)">
+<span aria-hidden="true" style="position: absolute; left: 6px; top: 6px; width: 10px; height: 4px; background: #b8a6ff"></span>
+<span aria-hidden="true" style="position: absolute; inset: 0; border-radius: inherit; background: {{accent}}; opacity: {{p.R.g}}"></span>
+<span style="position: relative; ">R</span>
+</button>
+
+<!-- Left thumb: stick at rest, D-pad inner-low, L3 beside the stick -->
+<button type="button" aria-label="Left stick" onPointerDown="{{ls.h.down}}" onPointerMove="{{ls.h.move}}" onPointerUp="{{ls.h.up}}" onPointerCancel="{{ls.h.up}}" style="position: absolute; left: 68px; top: 348px; width: 184px; height: 184px; padding: 0; border: none; border-radius: 50%; background: transparent; cursor: grab; touch-action: none">
+<span aria-hidden="true" style="position: absolute; inset: 0; border-radius: 50%; border: 1.5px dashed #f4f0ff; opacity: 0.3"></span>
+<span aria-hidden="true" style="position: absolute; left: 10px; top: 10px; width: 164px; height: 164px; border-radius: 50%; background: radial-gradient(circle, {{accent}} 0%, rgba(0,0,0,0) 66%); opacity: {{ls.o}}"></span>
+<svg aria-hidden="true" width="136" height="136" viewBox="0 0 120 120" style="position: absolute; left: 24px; top: 24px; transform: rotate({{ls.r}}deg)">
+<polygon points="35,4 85,4 116,35 116,85 85,116 35,116 4,85 4,35" fill="#2a1f4f" stroke="#f4f0ff" stroke-width="3"></polygon>
+<polygon points="44,20 76,20 100,44 100,76 76,100 44,100 20,76 20,44" fill="none" stroke="#4e3577" stroke-width="3"></polygon>
+<line x1="60" y1="10" x2="60" y2="110" stroke="#4e3577" stroke-width="2" stroke-dasharray="4 4"></line>
+<line x1="10" y1="60" x2="110" y2="60" stroke="#4e3577" stroke-width="2" stroke-dasharray="4 4"></line>
+<rect x="56" y="8" width="8" height="8" fill="#b8a6ff"></rect>
+<rect x="104" y="56" width="8" height="8" fill="#b8a6ff"></rect>
+<rect x="56" y="104" width="8" height="8" fill="#b8a6ff"></rect>
+<rect x="8" y="56" width="8" height="8" fill="#b8a6ff"></rect>
+</svg>
+<span aria-hidden="true" style="position: absolute; left: 63px; top: 63px; width: 58px; height: 58px; box-sizing: border-box; border-radius: 0px; border: 3px solid #0c0820; background: #f4f0ff; box-shadow: inset -7px -7px 0 #b8a6ff, 0 0 {{ls.glow}}px {{accent}}, 4px 4px 0 #0c0820; transform: translate({{ls.x}}px, {{ls.y}}px)">
+<span style="position: absolute; left: 22px; top: 22px; width: 8px; height: 8px; background: #3b2a63"></span>
+</span>
+</button>
+<sc-if value="{{showCaptions}}" hint-placeholder-val="{{true}}">
+<span style="position: absolute; left: 92px; top: 512px; width: 136px; text-align: center; font-family: 'Silkscreen', monospace; font-size: 12px; font-weight: 600; letter-spacing: 3px; color: #c9bff0">L-STICK</span>
+</sc-if>
+<span aria-hidden="true" style="position: absolute; left: 323px; top: 573px; width: 14px; height: 14px; background: #b8a6ff"></span>
+<button type="button" aria-label="D-pad up" onPointerDown="{{h.UP.down}}" onPointerUp="{{h.UP.up}}" onPointerCancel="{{h.UP.up}}" onClick="{{h.UP.click}}" style="position: absolute; left: 303px; top: 494px; width: 54px; height: 54px; padding: 0; border: 3px solid #f4f0ff; border-radius: 0px; background: #3b2a63; box-shadow: 4px 4px 0 #0c0820; cursor: pointer; overflow: hidden; display: flex; align-items: center; justify-content: center; transform: translateY({{p.UP.y}}px)">
+<span aria-hidden="true" style="position: absolute; inset: 0; border-radius: inherit; background: {{accent}}; opacity: {{p.UP.g}}"></span>
+<svg aria-hidden="true" width="26" height="26" viewBox="0 0 22 22" style="position: relative"><path d="M9 5h4v2h2v2h2v2h2v4H3v-4h2V9h2V7h2z" fill="#f4f0ff"></path></svg>
+</button>
+<button type="button" aria-label="D-pad down" onPointerDown="{{h.DOWN.down}}" onPointerUp="{{h.DOWN.up}}" onPointerCancel="{{h.DOWN.up}}" onClick="{{h.DOWN.click}}" style="position: absolute; left: 303px; top: 612px; width: 54px; height: 54px; padding: 0; border: 3px solid #f4f0ff; border-radius: 0px; background: #3b2a63; box-shadow: 4px 4px 0 #0c0820; cursor: pointer; overflow: hidden; display: flex; align-items: center; justify-content: center; transform: translateY({{p.DOWN.y}}px)">
+<span aria-hidden="true" style="position: absolute; inset: 0; border-radius: inherit; background: {{accent}}; opacity: {{p.DOWN.g}}"></span>
+<svg aria-hidden="true" width="26" height="26" viewBox="0 0 22 22" style="position: relative"><path d="M3 7h16v4h-2v2h-2v2h-2v2H9v-2H7v-2H5v-2H3z" fill="#f4f0ff"></path></svg>
+</button>
+<button type="button" aria-label="D-pad left" onPointerDown="{{h.LEFT.down}}" onPointerUp="{{h.LEFT.up}}" onPointerCancel="{{h.LEFT.up}}" onClick="{{h.LEFT.click}}" style="position: absolute; left: 244px; top: 553px; width: 54px; height: 54px; padding: 0; border: 3px solid #f4f0ff; border-radius: 0px; background: #3b2a63; box-shadow: 4px 4px 0 #0c0820; cursor: pointer; overflow: hidden; display: flex; align-items: center; justify-content: center; transform: translateY({{p.LEFT.y}}px)">
+<span aria-hidden="true" style="position: absolute; inset: 0; border-radius: inherit; background: {{accent}}; opacity: {{p.LEFT.g}}"></span>
+<svg aria-hidden="true" width="26" height="26" viewBox="0 0 22 22" style="position: relative"><path d="M5 9v4h2v2h2v2h2v2h4V3h-4v2H9v2H7v2z" fill="#f4f0ff"></path></svg>
+</button>
+<button type="button" aria-label="D-pad right" onPointerDown="{{h.RIGHT.down}}" onPointerUp="{{h.RIGHT.up}}" onPointerCancel="{{h.RIGHT.up}}" onClick="{{h.RIGHT.click}}" style="position: absolute; left: 362px; top: 553px; width: 54px; height: 54px; padding: 0; border: 3px solid #f4f0ff; border-radius: 0px; background: #3b2a63; box-shadow: 4px 4px 0 #0c0820; cursor: pointer; overflow: hidden; display: flex; align-items: center; justify-content: center; transform: translateY({{p.RIGHT.y}}px)">
+<span aria-hidden="true" style="position: absolute; inset: 0; border-radius: inherit; background: {{accent}}; opacity: {{p.RIGHT.g}}"></span>
+<svg aria-hidden="true" width="26" height="26" viewBox="0 0 22 22" style="position: relative"><path d="M17 9v4h-2v2h-2v2h-2v2H7V3h4v2h2v2h2v2z" fill="#f4f0ff"></path></svg>
+</button>
+<button type="button" aria-label="L3, left stick click" onPointerDown="{{h.L3.down}}" onPointerUp="{{h.L3.up}}" onPointerCancel="{{h.L3.up}}" onClick="{{h.L3.click}}" style="position: absolute; left: 276px; top: 360px; width: 52px; height: 52px; padding: 0; border: none; border-radius: 50%; background: transparent; cursor: pointer; transform: translateY({{p.L3.y}}px)">
+<span style="position: absolute; left: 3px; top: 3px; width: 46px; height: 46px; box-sizing: border-box; border: 3px solid #f4f0ff; border-radius: 0px; background: #2a1f4f; box-shadow: 4px 4px 0 #0c0820; color: #f4f0ff; font-family: 'Silkscreen', monospace; font-size: 12px; font-weight: 700; overflow: hidden; display: flex; align-items: center; justify-content: center;">
+<span aria-hidden="true" style="position: absolute; left: 4px; top: 4px; width: 7px; height: 4px; background: #b8a6ff"></span>
+<span aria-hidden="true" style="position: absolute; inset: 0; border-radius: inherit; background: {{accent}}; opacity: {{p.L3.g}}"></span>
+<span style="position: relative; ">L3</span>
+</span>
+</button>
+
+<!-- Right thumb: A/B/X/Y at rest, right stick inner-low, R3 beside it -->
+<svg aria-hidden="true" width="228" height="228" viewBox="0 0 200 200" style="position: absolute; left: 932px; top: 316px">
+<rect x="30" y="30" width="140" height="140" fill="none" stroke="#4e3577" stroke-width="3" stroke-dasharray="6 6" transform="rotate(45 100 100)"></rect>
+</svg>
+<button type="button" aria-label="X button" onPointerDown="{{h.X.down}}" onPointerUp="{{h.X.up}}" onPointerCancel="{{h.X.up}}" onClick="{{h.X.click}}" style="position: absolute; left: 1012px; top: 334px; width: 68px; height: 68px; padding: 0; border: none; border-radius: 50%; background: transparent; cursor: pointer; transform: translateY({{p.X.y}}px)">
+<span style="position: absolute; left: 0px; top: 0px; width: 68px; height: 68px; box-sizing: border-box; border: 3px solid #f4f0ff; border-radius: 0px; background: #2a1f4f; box-shadow: 4px 4px 0 #0c0820; color: #f4f0ff; font-family: 'Silkscreen', monospace; font-size: 20px; font-weight: 700; overflow: hidden; display: flex; align-items: center; justify-content: center;">
+<span aria-hidden="true" style="position: absolute; left: 4px; top: 4px; width: 11px; height: 5px; background: #b8a6ff"></span>
+<span aria-hidden="true" style="position: absolute; inset: 0; border-radius: inherit; background: {{accent}}; opacity: {{p.X.g}}"></span>
+<span style="position: relative; ">X</span>
+</span>
+</button>
+<button type="button" aria-label="Y button" onPointerDown="{{h.Y.down}}" onPointerUp="{{h.Y.up}}" onPointerCancel="{{h.Y.up}}" onClick="{{h.Y.click}}" style="position: absolute; left: 950px; top: 396px; width: 68px; height: 68px; padding: 0; border: none; border-radius: 50%; background: transparent; cursor: pointer; transform: translateY({{p.Y.y}}px)">
+<span style="position: absolute; left: 0px; top: 0px; width: 68px; height: 68px; box-sizing: border-box; border: 3px solid #f4f0ff; border-radius: 0px; background: #2a1f4f; box-shadow: 4px 4px 0 #0c0820; color: #f4f0ff; font-family: 'Silkscreen', monospace; font-size: 20px; font-weight: 700; overflow: hidden; display: flex; align-items: center; justify-content: center;">
+<span aria-hidden="true" style="position: absolute; left: 4px; top: 4px; width: 11px; height: 5px; background: #b8a6ff"></span>
+<span aria-hidden="true" style="position: absolute; inset: 0; border-radius: inherit; background: {{accent}}; opacity: {{p.Y.g}}"></span>
+<span style="position: relative; ">Y</span>
+</span>
+</button>
+<button type="button" aria-label="A button" onPointerDown="{{h.A.down}}" onPointerUp="{{h.A.up}}" onPointerCancel="{{h.A.up}}" onClick="{{h.A.click}}" style="position: absolute; left: 1074px; top: 396px; width: 68px; height: 68px; padding: 0; border: none; border-radius: 50%; background: transparent; cursor: pointer; transform: translateY({{p.A.y}}px)">
+<span style="position: absolute; left: 0px; top: 0px; width: 68px; height: 68px; box-sizing: border-box; border: 3px solid #f4f0ff; border-radius: 0px; background: #2a1f4f; box-shadow: 4px 4px 0 #0c0820; color: #f4f0ff; font-family: 'Silkscreen', monospace; font-size: 20px; font-weight: 700; overflow: hidden; display: flex; align-items: center; justify-content: center;">
+<span aria-hidden="true" style="position: absolute; left: 4px; top: 4px; width: 11px; height: 5px; background: #b8a6ff"></span>
+<span aria-hidden="true" style="position: absolute; inset: 0; border-radius: inherit; background: {{accent}}; opacity: {{p.A.g}}"></span>
+<span style="position: relative; ">A</span>
+</span>
+</button>
+<button type="button" aria-label="B button" onPointerDown="{{h.B.down}}" onPointerUp="{{h.B.up}}" onPointerCancel="{{h.B.up}}" onClick="{{h.B.click}}" style="position: absolute; left: 1012px; top: 458px; width: 68px; height: 68px; padding: 0; border: none; border-radius: 50%; background: transparent; cursor: pointer; transform: translateY({{p.B.y}}px)">
+<span style="position: absolute; left: 0px; top: 0px; width: 68px; height: 68px; box-sizing: border-box; border: 3px solid #f4f0ff; border-radius: 0px; background: #2a1f4f; box-shadow: 4px 4px 0 #0c0820; color: #f4f0ff; font-family: 'Silkscreen', monospace; font-size: 20px; font-weight: 700; overflow: hidden; display: flex; align-items: center; justify-content: center;">
+<span aria-hidden="true" style="position: absolute; left: 4px; top: 4px; width: 11px; height: 5px; background: #b8a6ff"></span>
+<span aria-hidden="true" style="position: absolute; inset: 0; border-radius: inherit; background: {{accent}}; opacity: {{p.B.g}}"></span>
+<span style="position: relative; ">B</span>
+</span>
+</button>
+<button type="button" aria-label="Right stick" onPointerDown="{{rs.h.down}}" onPointerMove="{{rs.h.move}}" onPointerUp="{{rs.h.up}}" onPointerCancel="{{rs.h.up}}" style="position: absolute; left: 802px; top: 496px; width: 168px; height: 168px; padding: 0; border: none; border-radius: 50%; background: transparent; cursor: grab; touch-action: none">
+<span aria-hidden="true" style="position: absolute; inset: 0; border-radius: 50%; border: 1.5px dashed #f4f0ff; opacity: 0.3"></span>
+<span aria-hidden="true" style="position: absolute; left: 8px; top: 8px; width: 152px; height: 152px; border-radius: 50%; background: radial-gradient(circle, {{accent}} 0%, rgba(0,0,0,0) 66%); opacity: {{rs.o}}"></span>
+<svg aria-hidden="true" width="124" height="124" viewBox="0 0 120 120" style="position: absolute; left: 22px; top: 22px; transform: rotate({{rs.r}}deg)">
+<polygon points="35,4 85,4 116,35 116,85 85,116 35,116 4,85 4,35" fill="#2a1f4f" stroke="#f4f0ff" stroke-width="3"></polygon>
+<polygon points="44,20 76,20 100,44 100,76 76,100 44,100 20,76 20,44" fill="none" stroke="#4e3577" stroke-width="3"></polygon>
+<line x1="60" y1="10" x2="60" y2="110" stroke="#4e3577" stroke-width="2" stroke-dasharray="4 4"></line>
+<line x1="10" y1="60" x2="110" y2="60" stroke="#4e3577" stroke-width="2" stroke-dasharray="4 4"></line>
+<rect x="56" y="8" width="8" height="8" fill="#b8a6ff"></rect>
+<rect x="104" y="56" width="8" height="8" fill="#b8a6ff"></rect>
+<rect x="56" y="104" width="8" height="8" fill="#b8a6ff"></rect>
+<rect x="8" y="56" width="8" height="8" fill="#b8a6ff"></rect>
+</svg>
+<span aria-hidden="true" style="position: absolute; left: 57px; top: 57px; width: 53px; height: 53px; box-sizing: border-box; border-radius: 0px; border: 3px solid #0c0820; background: #f4f0ff; box-shadow: inset -6px -6px 0 #b8a6ff, 0 0 {{rs.glow}}px {{accent}}, 4px 4px 0 #0c0820; transform: translate({{rs.x}}px, {{rs.y}}px)">
+<span style="position: absolute; left: 19px; top: 19px; width: 8px; height: 8px; background: #3b2a63"></span>
+</span>
+</button>
+<sc-if value="{{showCaptions}}" hint-placeholder-val="{{true}}">
+<span style="position: absolute; left: 824px; top: 646px; width: 124px; text-align: center; font-family: 'Silkscreen', monospace; font-size: 12px; font-weight: 600; letter-spacing: 3px; color: #c9bff0">R-STICK</span>
+</sc-if>
+<button type="button" aria-label="R3, right stick click" onPointerDown="{{h.R3.down}}" onPointerUp="{{h.R3.up}}" onPointerCancel="{{h.R3.up}}" onClick="{{h.R3.click}}" style="position: absolute; left: 888px; top: 360px; width: 52px; height: 52px; padding: 0; border: none; border-radius: 50%; background: transparent; cursor: pointer; transform: translateY({{p.R3.y}}px)">
+<span style="position: absolute; left: 3px; top: 3px; width: 46px; height: 46px; box-sizing: border-box; border: 3px solid #f4f0ff; border-radius: 0px; background: #2a1f4f; box-shadow: 4px 4px 0 #0c0820; color: #f4f0ff; font-family: 'Silkscreen', monospace; font-size: 12px; font-weight: 700; overflow: hidden; display: flex; align-items: center; justify-content: center;">
+<span aria-hidden="true" style="position: absolute; left: 4px; top: 4px; width: 7px; height: 4px; background: #b8a6ff"></span>
+<span aria-hidden="true" style="position: absolute; inset: 0; border-radius: inherit; background: {{accent}}; opacity: {{p.R3.g}}"></span>
+<span style="position: relative; ">R3</span>
+</span>
+</button>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"accent":{"editor":"color","default":"#ff6fae","options":["#ff6fae","#5ee6d6","#ffd86b","#b8a6ff"]},"showCaptions":{"editor":"boolean","default":true},"showZones":{"editor":"boolean","default":false},"opacity":{"editor":"range","default":0.9,"min":0.3,"max":1,"step":0.05},"$preview":{"width":1216,"height":760}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.stickSize = 184;
+    this.stickTravel = 39;
+    this.state = { held: {}, last: 'BREATHE IN', stokes: 0, ls: { x: 0, y: 0 }, rs: { x: 0, y: 0 }, menu: { x: 0, y: 0 }, menuHeld: false };
+    this.menuW = 76;
+    this.menuBounds = [-570, 570, -6, 710];
+    this._centers = {};
+  }
+
+  names() {
+    return {
+      ZL: 'ZL', L: 'L', ZR: 'ZR', R: 'R', MINUS: 'MINUS', PLUS: 'PLUS',
+      UP: 'D-PAD UP', DOWN: 'D-PAD DOWN', LEFT: 'D-PAD LEFT', RIGHT: 'D-PAD RIGHT',
+      A: 'A', B: 'B', X: 'X', Y: 'Y', L3: 'L3 · STICK CLICK', R3: 'R3 · STICK CLICK',
+      LS: 'L-STICK', RS: 'R-STICK'
+    };
+  }
+
+  press(id) {
+    const s = this.state;
+    const held = Object.assign({}, s.held);
+    held[id] = true;
+    this.setState({ held: held, last: this.names()[id], stokes: s.stokes + 1 });
+  }
+
+  release(id) {
+    const s = this.state;
+    if (!s.held[id]) return;
+    const held = Object.assign({}, s.held);
+    held[id] = false;
+    this.setState({ held: held });
+  }
+
+  moveStick(id, key, e) {
+    const c = this._centers[key];
+    if (!c) return;
+    let dx = (e.clientX - c.x) / c.k;
+    let dy = (e.clientY - c.y) / c.k;
+    const max = this.stickTravel;
+    const d = Math.sqrt(dx * dx + dy * dy);
+    if (d > max) { dx = dx / d * max; dy = dy / d * max; }
+    const f = (v) => (v >= 0 ? '+' : '−') + Math.abs(v / max).toFixed(2);
+    const patch = { last: this.names()[id] + '  ' + f(dx) + ' ' + f(-dy) };
+    patch[key] = { x: dx, y: dy };
+    this.setState(patch);
+  }
+
+  stick(id, key) {
+    return {
+      down: (e) => {
+        const el = e.currentTarget;
+        try { el.setPointerCapture(e.pointerId); } catch (err) {}
+        const r = el.getBoundingClientRect();
+        this._centers[key] = { x: r.left + r.width / 2, y: r.top + r.height / 2, k: (r.width / this.stickSize) || 1 };
+        this.press(id);
+        this.moveStick(id, key, e);
+      },
+      move: (e) => {
+        if (this.state.held[id]) this.moveStick(id, key, e);
+      },
+      up: () => {
+        const s = this.state;
+        const held = Object.assign({}, s.held);
+        held[id] = false;
+        const patch = { held: held };
+        patch[key] = { x: 0, y: 0 };
+        this.setState(patch);
+      }
+    };
+  }
+
+  menuHandlers() {
+    return {
+      down: (e) => {
+        const el = e.currentTarget;
+        try { el.setPointerCapture(e.pointerId); } catch (err) {}
+        const r = el.getBoundingClientRect();
+        this._menu = { sx: e.clientX, sy: e.clientY, ox: this.state.menu.x, oy: this.state.menu.y, k: (r.width / this.menuW) || 1, moved: false };
+        this.setState({ menuHeld: true });
+      },
+      move: (e) => {
+        const m = this._menu;
+        if (!m) return;
+        const dx = (e.clientX - m.sx) / m.k;
+        const dy = (e.clientY - m.sy) / m.k;
+        if (!m.moved && Math.abs(dx) + Math.abs(dy) < 6) return;
+        m.moved = true;
+        const b = this.menuBounds;
+        this.setState({ menu: { x: Math.max(b[0], Math.min(b[1], m.ox + dx)), y: Math.max(b[2], Math.min(b[3], m.oy + dy)) } });
+      },
+      up: () => {
+        const m = this._menu;
+        this._menu = null;
+        this.setState({ menuHeld: false, last: m && !m.moved ? 'EMULATOR MENU' : this.state.last });
+      },
+      click: (e) => {
+        if (e && e.detail === 0) this.setState({ last: 'EMULATOR MENU' });
+      }
+    };
+  }
+
+  renderVals() {
+    const accent = this.props.accent ?? '#ff6fae';
+    const s = this.state;
+    const ids = ['ZL', 'L', 'ZR', 'R', 'MINUS', 'PLUS', 'UP', 'DOWN', 'LEFT', 'RIGHT', 'A', 'B', 'X', 'Y', 'L3', 'R3'];
+    const p = {};
+    const h = {};
+    ids.forEach((id) => {
+      const on = !!s.held[id];
+      p[id] = { o: on ? 1 : 0, g: on ? 0.45 : 0, y: on ? 3 : 0 };
+      h[id] = {
+        down: (e) => {
+          try { e.currentTarget.setPointerCapture(e.pointerId); } catch (err) {}
+          this.press(id);
+        },
+        up: () => this.release(id),
+        click: (e) => {
+          if (e && e.detail === 0) {
+            this.press(id);
+            setTimeout(() => this.release(id), 140);
+          }
+        }
+      };
+    });
+    const mk = (id, key) => {
+      const v = s[key];
+      const on = !!s.held[id];
+      return { x: v.x.toFixed(1), y: v.y.toFixed(1), r: (v.x * 1.40).toFixed(1), glow: on ? 22 : 0, o: on ? 0.8 : 0, h: this.stick(id, key) };
+    };
+    return {
+      accent: accent,
+      last: s.last,
+      stokes: String(s.stokes).padStart(3, '0'),
+      p: p,
+      h: h,
+      ls: mk('LS', 'ls'),
+      rs: mk('RS', 'rs'),
+      menu: { x: s.menu.x.toFixed(1), y: s.menu.y.toFixed(1), o: s.menuHeld ? 1 : 0, h: this.menuHandlers() },
+      showCaptions: this.props.showCaptions ?? true,
+      showZones: this.props.showZones ?? false,
+      op: this.props.opacity ?? 0.9
+    };
+  }
+}
+</script>
+</body>
+</html>

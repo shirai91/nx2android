@@ -32,6 +32,7 @@ A fix that only one game needs today is still a core fix when it follows the sem
 - **Match the surrounding code**: its comment density, naming and dense one-line style.
 - **Tests before committing**: `python -m unittest discover tests` (includes `tests/arch_rules.py`, which enforces ARCHITECTURE.md's layer rules: no game IDs, names or packages in core code, data-only profiles, GUI only over `python -m porter`…). Commit and push only when the user asks; end commit messages with the attribution line the session gives. Messages are Conventional Commits (`fix(vk): …`, `feat(profile): …`, `docs(status): …`; README's Commit messages), checked by `.githooks/commit-msg`.
 - **Update the docs with the code**: ARCHITECTURE.md when a layer, key or stage changes; docs/PORT_STATUS.md's games table when a status changes (the only place it is kept: README links there); the profile's `android.tsv` comment header with what was tested.
+- **Every finished port updates both game lists, in the same commit as the profile**: docs/PORT_CHECKLIST.md (tick the game, adding its line in alphabetical order if it is missing, drop "profile here" / "upstream profile", recount the `N / M ported` line) and docs/PORT_STATUS.md (its row, with a real device screenshot in docs/images/, never an icon or internet image: references/new-game-profile.md §4). SMO and Metroid Dread once shipped ticked in PORT_STATUS only.
 
 ## Windows environment gotchas (this PC)
 
