@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
-# mkapk.py: build and sign a code-less NativeActivity APK with the Python standard library only (no JDK, no Android SDK).
+# mkapk.py: build and sign a NativeActivity APK with the Python standard library only (no JDK, no Android SDK).
 #   binary AndroidManifest.xml (AXML) -> stored ZIP with the .so page-aligned -> APK Signature Scheme v2 (RSA-2048, SHA-256) with a self-signed cert.
+#   Its one Java class is mkdex.py's GameActivity (the file picker's answer); the launcher entry stays android.app.NativeActivity, an alias of it.
 # Usage: mkapk.py <lib.so> <out.apk> [key.json] [--package P] [--label L] [--lib NAME] [--landscape] [--icon icon.png] [--release] [--version-code N] [--version-name V]   (the key is created on first use and reused, so reinstalls keep the same signer)
 import hashlib, json, os, secrets, struct, sys, time, zlib
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import mkdex   # noqa: E402
 
 import argparse as _ap
 _p = _ap.ArgumentParser(); _p.add_argument('so'); _p.add_argument('out'); _p.add_argument('key', nargs='?'); _p.add_argument('--package', default='org.nx2a.probe')
@@ -22,7 +25,7 @@ ATTR_IDS = {  # android: attribute resource IDs (frameworks/base/core/res/res/va
     'label': 0x01010001, 'icon': 0x01010002, 'name': 0x01010003, 'hasCode': 0x0101000c, 'debuggable': 0x0101000f, 'exported': 0x01010010,
     'configChanges': 0x0101001f, 'screenOrientation': 0x0101001e, 'value': 0x01010024, 'minSdkVersion': 0x0101020c, 'versionCode': 0x0101021b,
     'versionName': 0x0101021c, 'targetSdkVersion': 0x01010270, 'isGame': 0x010103f4, 'extractNativeLibs': 0x010104ea, 'appCategory': 0x01010545,
-    'enableOnBackInvokedCallback': 0x0101066c}
+    'targetActivity': 0x01010202, 'enableOnBackInvokedCallback': 0x0101066c}
 T_REF, T_STRING, T_INT_DEC, T_INT_HEX, T_BOOL = 0x01, 0x03, 0x10, 0x11, 0x12
 ICON_ID = 0x7f010000   # drawable/icon in resources.arsc (res_table)
 
@@ -30,12 +33,15 @@ ICON_ID = 0x7f010000   # drawable/icon in resources.arsc (res_table)
 MANIFEST = ('manifest', [(False, 'package', PKG), (True, 'versionCode', ARGS.version_code), (True, 'versionName', ARGS.version_name)], [
     ('uses-sdk', [(True, 'minSdkVersion', MIN_SDK), (True, 'targetSdkVersion', TARGET_SDK)], []),
     ('uses-permission', [(True, 'name', 'android.permission.VIBRATE')], []),   # rumble and the touch gamepad's taps (a normal permission: granted at install)
-    ('application', [(True, 'label', LABEL)] + ([(True, 'icon', ('ref', ICON_ID))] if ARGS.icon else []) + [(True, 'hasCode', False), (True, 'debuggable', not ARGS.release), (True, 'isGame', True), (True, 'extractNativeLibs', True),
+    ('application', [(True, 'label', LABEL)] + ([(True, 'icon', ('ref', ICON_ID))] if ARGS.icon else []) + [(True, 'hasCode', True), (True, 'debuggable', not ARGS.release), (True, 'isGame', True), (True, 'extractNativeLibs', True),
         (True, 'appCategory', 0),   # a game (appCategory game = 0, and the older isGame): Android's game mode and game dashboard, and the device maker's game tools, apply to it
         # no predictive back: from target SDK 36 the system takes the back gesture itself and finishes the activity, which ends the game (front_android.c on_destroy), without
         # dispatching KEYCODE_BACK; opted out, the gesture comes as the Back key, which opens the front end's menu
         (True, 'enableOnBackInvokedCallback', False)], [
-        ('activity', [(True, 'name', 'android.app.NativeActivity'), (True, 'exported', True), (True, 'configChanges', ('hex', 0x4a0 | 0x80 | 0x1000))] + ([(True, 'screenOrientation', 6)] if ARGS.landscape else []), [
+        ('activity', [(True, 'name', mkdex.CLASS_NAME), (True, 'exported', False), (True, 'configChanges', ('hex', 0x4a0 | 0x80 | 0x1000))] + ([(True, 'screenOrientation', 6)] if ARGS.landscape else []), [
+            ('meta-data', [(True, 'name', 'android.app.lib_name'), (True, 'value', LIB)], [])]),
+        # NativeActivity reads lib_name from the component it was started by: the alias carries it too
+        ('activity-alias', [(True, 'name', 'android.app.NativeActivity'), (True, 'targetActivity', mkdex.CLASS_NAME), (True, 'exported', True)], [
             ('meta-data', [(True, 'name', 'android.app.lib_name'), (True, 'value', LIB)], []),
             ('intent-filter', [], [
                 ('action', [(True, 'name', 'android.intent.action.MAIN')], []),
@@ -197,7 +203,7 @@ def main():
         t = time.time(); k = gen_key(); crt = cert(k)
         json.dump({**{a: str(v) for a, v in k.items()}, 'cert': crt.hex()}, open(keyf, 'w'))
         print(f'new signing key {keyf} ({time.time() - t:.1f} s)')
-    entries = [('AndroidManifest.xml', axml(MANIFEST), 4), (f'lib/arm64-v8a/lib{LIB}.so', open(so, 'rb').read(), 16384)]
+    entries = [('AndroidManifest.xml', axml(MANIFEST), 4), ('classes.dex', mkdex.dex(), 4), (f'lib/arm64-v8a/lib{LIB}.so', open(so, 'rb').read(), 16384)]
     entries += [(f'lib/arm64-v8a/{os.path.basename(x)}', open(x, 'rb').read(), 16384) for x in ARGS.extra_so]
     entries += [(f'assets/{n}', open(f, 'rb').read(), 4) for n, _, f in (x.partition('=') for x in ARGS.asset)]   # stored, as every entry: AAsset reads them in place
     if ARGS.icon: entries += [('resources.arsc', res_table('res/drawable-nodpi-v4/icon.png'), 4), ('res/drawable-nodpi-v4/icon.png', open(ARGS.icon, 'rb').read(), 4)]
