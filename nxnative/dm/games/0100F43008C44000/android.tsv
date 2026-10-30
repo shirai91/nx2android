@@ -3,3 +3,6 @@ status	experimental
 package	org.nx2a.pokemonlegendsza
 orientation	landscape
 requires	bcn
+env	DM_FPS_HOLD=off
+env	DM_FPS_PIN=60
+env	DM_VK_CB_DRAWS=32
