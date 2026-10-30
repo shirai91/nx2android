@@ -555,6 +555,32 @@ static void map_image(module_t *m, const char *dir) {
     m->base = (uint8_t *)base; install_key_page(m);
 }
 #else
+#if defined(__ANDROID__)
+// Horizon's loader maps a process's modules back to back in load order (main, subsdk*, sdk), so a read past one module's end lands in the next one. Link's Awakening 1.1.0
+// reads entry 0xFFFF of a camera table at its first camera (main+0x1c180: main+0x1bcc898 + 0xffff * 0x58 = main+0x214c840, past main's end, in subsdk0 on the hardware):
+// harmless there and on Apple, whose allocator happens to put each module right after the one before; Linux's mmap scattered them (subsdk0 about 100 MB above main, sdk
+// below it) and the read crashed (SIGSEGV). One reservation for all of them, each module placed after the last
+static uint8_t *g_mod_next; static size_t g_mod_left;
+static void *map_module(size_t len) {   // the next len bytes of the reservation (anywhere once it is used up)
+    if (g_mod_next && len <= g_mod_left) {
+        void *a = mmap(g_mod_next, len, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0);
+        if (a != MAP_FAILED) { g_mod_next += len; g_mod_left -= len; return a; }
+    }
+    return mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+}
+static void reserve_modules(const char *dir, module_t *mods, int n) {   // the address space of every module, as map_image will size it
+    size_t total = 0; char path[1024]; struct stat st;
+    for (int i = 0; i < n; i++) {
+        snprintf(path, sizeof path, "%s/%s.patched.bin", dir, mods[i].name);
+        if (stat(path, &st)) return;
+        total += mods[i].patch_off < 0 ? (size_t)-mods[i].patch_off + mods[i].image_size : ((size_t)st.st_size + 0x3FFF) & ~(size_t)0x3FFF;
+    }
+    void *a = mmap(NULL, total, PROT_NONE, MAP_PRIVATE | MAP_ANON | MAP_NORESERVE, -1, 0);
+    if (a != MAP_FAILED) { g_mod_next = a; g_mod_left = total; }
+}
+#else
+#define map_module(len) mmap(NULL, (len), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0)
+#endif
 static uint8_t *slurp(const char *path, size_t *n) {
     int fd = open(path, O_RDONLY);
     if (fd < 0) die("open %s", path);
@@ -575,7 +601,7 @@ static void map_image(module_t *m, const char *dir) {
         if (sz < fl) die("%s is shorter than FILE_IMAGE_LEN %#llx", path, (unsigned long long)fl);
         m->size = m->image_size; m->patch_len = (sz - fl + 0x3FFF) & ~0x3FFFull;
         if (m->patch_len > pre) die("%s patch area of %#llx bytes does not fit in the %#llx before the base", path, (unsigned long long)m->patch_len, (unsigned long long)pre);
-        uint8_t *a = mmap(NULL, pre + m->size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+        uint8_t *a = map_module(pre + m->size);
         if (a == MAP_FAILED) die("%s mmap %#llx", m->name, (unsigned long long)(pre + m->size));
         m->base = a + pre;
         memcpy(m->base, raw, fl); memcpy(a, raw + fl, sz - fl); free(raw); install_key_page(m);
@@ -586,7 +612,7 @@ static void map_image(module_t *m, const char *dir) {
         return;
     }
     m->size = (sz + 0x3FFF) & ~0x3FFFull;
-    m->base = mmap(NULL, m->size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    m->base = map_module(m->size);
     if (m->base == MAP_FAILED) die("%s mmap", m->name);
     memcpy(m->base, raw, sz); free(raw); install_key_page(m);
     uint64_t rx = (m->text_end + 0x3FFF) & ~0x3FFFull;
@@ -605,6 +631,9 @@ void load_modules(const char *dir, const char **names, int n) {
         strlcpy(m->name, names[i], sizeof m->name);
         read_layout(m, dir);
     }
+#if defined(__ANDROID__)
+    reserve_modules(dir, g_mod, n);
+#endif
     create_keys();
     for (int i = 0; i < n; i++) {
         module_t *m = &g_mod[i];

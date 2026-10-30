@@ -77,6 +77,16 @@ def dotnet_sdks(dotnet):   # ['10.0.402', ...]
     return re.findall(r'^(\d+\.\d+\.\d+)', r.stdout, re.M)
 
 
+def dotnet_root(dotnet):
+    """The folder holding dotnet's runtime (host/, shared/, sdk/), which an apphost such as nx_extract's looks for in DOTNET_ROOT: the parent of the SDK folder
+    `--list-sdks` prints ("10.0.403 [/opt/homebrew/Cellar/dotnet/10.0.403/libexec/sdk]"). Not the executable's folder: Homebrew's dotnet is a wrapper script in
+    /opt/homebrew/bin that sets DOTNET_ROOT to libexec itself, and with DOTNET_ROOT=/opt/homebrew/bin nx_extract found no runtime ("You must install .NET")"""
+    try: r = subprocess.run([str(dotnet), '--list-sdks'], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired): r = None
+    m = r and re.search(r'^\d+\.\d+\.\d+\S* \[(.+)\]\s*$', r.stdout, re.M)
+    return Path(m.group(1)).parent if m else Path(dotnet).resolve().parent
+
+
 def find_adb(cfg=None):
     cfg = cfg if cfg is not None else config.load()
     for c in [cfg.get('adb'), shutil.which('adb'), *[str(r / 'platform-tools' / f'adb{EXE}') for r in _sdk_roots()], str(LOCAL_TOOLS / 'platform-tools' / f'adb{EXE}'), str(player_tools() / 'platform-tools' / f'adb{EXE}')]:

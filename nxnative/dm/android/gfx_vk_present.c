@@ -760,9 +760,9 @@ static void shot(vkimg_t *im, uint64_t n) {
     FILE *f = fopen(path, "wb");
     if (!f) { VKLOG("[RED] cannot write %s", path); return; }
     fprintf(f, "P6\n%u %u\n255\n", w, h);
-    int bgra = im->fmt == VK_FORMAT_B8G8R8A8_UNORM || im->fmt == VK_FORMAT_B8G8R8A8_SRGB;
+    int bgra = im->fmt == VK_FORMAT_B8G8R8A8_UNORM || im->fmt == VK_FORMAT_B8G8R8A8_SRGB, ll = vk_window_bottom_up();   // a lower-left window image is stored bottom-up: written top row first, as shown
     uint8_t *row = malloc((size_t)w * 3);
-    for (uint32_t y = 0; y < h; y++) { const uint8_t *s = p + (size_t)y * w * 4; for (uint32_t x = 0; x < w; x++) { row[3 * x] = s[4 * x + (bgra ? 2 : 0)]; row[3 * x + 1] = s[4 * x + 1]; row[3 * x + 2] = s[4 * x + (bgra ? 0 : 2)]; } fwrite(row, 1, (size_t)w * 3, f); }
+    for (uint32_t y = 0; y < h; y++) { const uint8_t *s = p + (size_t)(ll ? h - 1 - y : y) * w * 4; for (uint32_t x = 0; x < w; x++) { row[3 * x] = s[4 * x + (bgra ? 2 : 0)]; row[3 * x + 1] = s[4 * x + 1]; row[3 * x + 2] = s[4 * x + (bgra ? 0 : 2)]; } fwrite(row, 1, (size_t)w * 3, f); }
     free(row); fclose(f);
     VKLOG("frame %llu written to %s (%ux%u)", (unsigned long long)n, path, w, h);
 }

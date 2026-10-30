@@ -1,0 +1,28 @@
+# The Legend of Zelda: Link's Awakening on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Grezzo's engine on NintendoWare, SDK 8.2.0, NVN; update v131072 (1.1.0), 9,698 shaders, all translated. Not run on a phone or tablet yet: tested 2026-10-28 in the
+# Android Emulator only, on a Mac: Apple M3 Max (16 cores, 128 GB), macOS 26.7.1; emulator 37.2.12 with the android-36 google_apis arm64-v8a image (revision 7,
+# Android 16); an AVD of 8 cores, 12 GB of RAM, 1920x1080 at 280 dpi in landscape and a hardware keyboard, started with -gpu host -feature Vulkan (Vulkan 1.3 with BC
+# through MoltenVK 1.4.0). Played by keyboard: the opening movie with its sound, the title (L+R), the file select, a new file, Marin and Tarin's house and Mabe Village
+# outside it, the pause menu, at a held 60 fps (frame p50 16.7 ms, p95 18.3 ms in the house), the house's colours, with the dark blue around it, matching a Switch
+# capture within a few units.
+# Also run 2026-10-30 in an AVD shaped like a Galaxy S20 FE: the android-33 google_apis arm64-v8a image (revision 17, Android 13), 8 cores, 6 GB of RAM, 1080x2400 at
+# 420 dpi, a punch-hole cutout and three-button navigation. The movie, the title, a new file, the house and Mabe Village, once the backend ran on that image's driver
+# (it says Vulkan 1.3 but gives no vkWaitSemaphores, vkCreateRenderPass2 or dynamic rendering, and its imageless framebuffers crash in its own encoder). The game's
+# memory there: 0.56-0.67 GB of the guest's RAM, plus 1.1-1.5 GB of the driver's GPU-visible memory and 632 MB of textures that the emulator keeps on the Mac, a
+# phone in the same RAM. Frames: p50 16.8 / p95 28 ms in the house, about 30 fps in the village, 8.6 ms of each frame in making descriptor sets on that driver.
+# What it needed from the core: compute dispatches given their own group counts (its light culling reads them; outdoors most of the screen had no lights),
+# ASTC decoded on the CPU where the device reads it back wrong (the emulator read every ASTC texture as 0: its hearts, its menus' panels and icons, the dark blue),
+# present flipped for NVN's lower-left window origin, mirrored copies, sRGB window images presented as their bytes, every vertex output
+# starting at (0, 0, 0, 1) (as on iOS, where its outdoor shadows needed w = 1), modules laid out back to back (the game reads past main's end at its first camera),
+# shared-font stand-ins in the data pack (its missing-glyph stand-in U+25A1 is not in Roboto); for the emulator, D24S8 as D32S8, no block-texel views where refused,
+# vertex inputs retyped to their formats' numeric types, and zero-copy pools through the driver's own device file. Depth-stencil copies now carry their stencil too
+# (as NVN's do): that changed its 480x270 mask pass. For the Android 13 image: fences where the driver gives no timeline semaphore wait, vkCreateRenderPass where
+# it gives no vkCreateRenderPass2, framebuffers over image views, and the overlay in a render pass.
+# DM_ADAPTIVE_FPS=0: the game sets its own present interval (1 or 2) as its frames run long, thousands of times a session; with the host's rate stepping on top it sat
+# at 30-40 fps in the emulator, where pinned at 60 (DM_FPS_PIN) it held 16.7 ms frames
+status	wip
+tested	v131072 Android Emulator 37.2.12 on an Apple M3 Max Mac (MoltenVK)
+package	org.nx2a.zeldalinksawakening
+orientation	landscape
+requires	bcn
+env	DM_ADAPTIVE_FPS=0

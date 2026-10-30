@@ -50,6 +50,56 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL vk_validation_msg(VkDebugUtilsMessageSever
     return VK_FALSE;
 }
 
+// Whether the device reads ASTC back as it was given: a solid red block (void extent) copied into a 4x4 ASTC image, blitted to RGBA8 and read back. The Android
+// emulator on a Mac (37.2.12; gfxstream's "ASTC LDR emulation mode: Gpu" over MoltenVK) reports ASTC and read (0, 0, 0, 0) from it, in a blit and in a compute
+// shader's texelFetch alike, while BC1 read red: Link's Awakening's ASTC hearts drew nothing. 1 also when the format cannot be blitted (nothing to look at)
+static int astc_reads_back(void) {
+    VkFormatProperties fp; vkGetPhysicalDeviceFormatProperties(V.pd, VK_FORMAT_ASTC_4x4_UNORM_BLOCK, &fp);
+    if (!(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_SRC_BIT)) return 1;
+    int ok = 1; VkBuffer b = VK_NULL_HANDLE; VkDeviceMemory bm = VK_NULL_HANDLE, im_m[2] = {0}; VkImage im[2] = {0}; VkCommandPool cp = VK_NULL_HANDLE; uint8_t *p = NULL;
+    VkBufferCreateInfo bci = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, NULL, 0, 256, VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT};
+    VkMemoryRequirements rq; VkMemoryAllocateInfo ai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    if (vkCreateBuffer(V.dev, &bci, NULL, &b)) goto done;
+    vkGetBufferMemoryRequirements(V.dev, b, &rq); ai.allocationSize = rq.size; ai.memoryTypeIndex = vk_mem_type(rq.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 0);
+    if (ai.memoryTypeIndex == UINT32_MAX || vkAllocateMemory(V.dev, &ai, NULL, &bm) || vkBindBufferMemory(V.dev, b, bm, 0) || vkMapMemory(V.dev, bm, 0, 256, 0, (void **)&p)) goto done;
+    static const uint8_t red[16] = {0xFC, 0xFD, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0, 0xFF, 0xFF};   // void extent: RGBA16 (1, 0, 0, 1)
+    memset(p, 0, 256); memcpy(p, red, 16);
+    VkFormat fm[2] = {VK_FORMAT_ASTC_4x4_UNORM_BLOCK, VK_FORMAT_R8G8B8A8_UNORM};
+    for (int k = 0; k < 2; k++) {
+        VkImageCreateInfo ic = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, NULL, 0, VK_IMAGE_TYPE_2D, fm[k], {4, 4, 1}, 1, 1, VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_TILING_OPTIMAL,
+                                VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_SHARING_MODE_EXCLUSIVE, 0, NULL, VK_IMAGE_LAYOUT_UNDEFINED};
+        if (vkCreateImage(V.dev, &ic, NULL, &im[k])) goto done;
+        vkGetImageMemoryRequirements(V.dev, im[k], &rq); ai.allocationSize = rq.size; ai.memoryTypeIndex = vk_mem_type(rq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0);
+        if (ai.memoryTypeIndex == UINT32_MAX || vkAllocateMemory(V.dev, &ai, NULL, &im_m[k]) || vkBindImageMemory(V.dev, im[k], im_m[k], 0)) goto done;
+    }
+    VkCommandPoolCreateInfo pci = {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, NULL, 0, V.qf}; VkCommandBuffer cb;
+    VkCommandBufferAllocateInfo cai = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, NULL, VK_NULL_HANDLE, VK_COMMAND_BUFFER_LEVEL_PRIMARY, 1};
+    if (vkCreateCommandPool(V.dev, &pci, NULL, &cp)) goto done;
+    cai.commandPool = cp; VkCommandBufferBeginInfo cbi = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    if (vkAllocateCommandBuffers(V.dev, &cai, &cb) || vkBeginCommandBuffer(cb, &cbi)) goto done;
+    VkImageMemoryBarrier ib[2]; VkMemoryBarrier mb = {VK_STRUCTURE_TYPE_MEMORY_BARRIER, NULL, VK_ACCESS_MEMORY_WRITE_BIT, VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT};
+    for (int k = 0; k < 2; k++) ib[k] = (VkImageMemoryBarrier){VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL, 0, VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+        VK_IMAGE_LAYOUT_GENERAL, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, im[k], {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, NULL, 0, NULL, 2, ib);
+    VkBufferImageCopy up = {0, 0, 0, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {4, 4, 1}}, down = {64, 0, 0, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {4, 4, 1}};
+    vkCmdCopyBufferToImage(cb, b, im[0], VK_IMAGE_LAYOUT_GENERAL, 1, &up);
+    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &mb, 0, NULL, 0, NULL);
+    VkImageBlit bl = {{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {{0, 0, 0}, {4, 4, 1}}, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {{0, 0, 0}, {4, 4, 1}}};
+    vkCmdBlitImage(cb, im[0], VK_IMAGE_LAYOUT_GENERAL, im[1], VK_IMAGE_LAYOUT_GENERAL, 1, &bl, VK_FILTER_NEAREST);
+    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &mb, 0, NULL, 0, NULL);
+    vkCmdCopyImageToBuffer(cb, im[1], VK_IMAGE_LAYOUT_GENERAL, b, 1, &down);
+    mb.dstAccessMask = VK_ACCESS_HOST_READ_BIT; vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &mb, 0, NULL, 0, NULL);
+    VkSubmitInfo si = {VK_STRUCTURE_TYPE_SUBMIT_INFO, NULL, 0, NULL, NULL, 1, &cb};
+    if (vkEndCommandBuffer(cb) || vkQueueSubmit(V.q, 1, &si, VK_NULL_HANDLE) || vkQueueWaitIdle(V.q)) goto done;
+    for (int t = 0; t < 16; t++) if (p[64 + 4 * t] != 255 || p[65 + 4 * t] || p[66 + 4 * t] || p[67 + 4 * t] != 255) ok = 0;
+    if (!ok) VKLOG("ASTC: a solid red block reads back as (%u, %u, %u, %u)", p[64], p[65], p[66], p[67]);
+done:
+    if (cp) vkDestroyCommandPool(V.dev, cp, NULL);
+    for (int k = 0; k < 2; k++) { if (im[k]) vkDestroyImage(V.dev, im[k], NULL); if (im_m[k]) vkFreeMemory(V.dev, im_m[k], NULL); }
+    if (b) vkDestroyBuffer(V.dev, b, NULL); if (bm) vkFreeMemory(V.dev, bm, NULL);
+    return ok;
+}
+
 void vk_init(void) {
     static int done; if (done) return; done = 1;
     void *lib = dlopen("libvulkan.so", RTLD_NOW | RTLD_LOCAL);
@@ -186,6 +236,8 @@ void vk_init(void) {
     VKLOG("%s, Vulkan %u.%u, driver %#x; BC %s, ASTC %s, geometry shaders %s, nullDescriptor %s, custom border colours %s, depth clip control %s, transform feedback %s; pipeline cache %zu bytes",
           V.props.deviceName, VK_API_VERSION_MAJOR(V.props.apiVersion), VK_API_VERSION_MINOR(V.props.apiVersion), V.props.driverVersion,
           V.has_bc ? "yes" : "no", V.has_astc ? "yes" : "no", V.has_gs ? "yes" : "no", V.has_robust2 ? "yes" : "no", V.has_custom_border ? "yes" : "no", V.has_depth_clip_ctl ? "yes" : "no", V.has_xfb ? "yes" : "no", dn);
+    { const char *e = getenv("DM_VK_ASTC_CPU"); V.astc_cpu = e && *e ? atoi(e) != 0 : !V.has_astc || !astc_reads_back();   // DM_VK_ASTC_CPU=1 / =0: either way
+      if (V.astc_cpu) VKLOG("ASTC textures are decoded on the CPU into RGBA8 (%s)", e && *e ? "DM_VK_ASTC_CPU" : !V.has_astc ? "the device has no ASTC" : "the device reads ASTC back wrong"); }
     slots_init();
     completion_start();
 }
@@ -255,6 +307,45 @@ static int pool_zero_copy(vkpool_t *p, uint8_t *mem, uint64_t size) {
     p->ahb = ahb; p->zero_copy = 1;
     return 0;
 }
+// Zero copy through the driver's own memory, where the allocator makes no AHardwareBuffer for GPU data (the Android emulator: its ranchu gralloc refuses every BLOB
+// with GPU usage, so every pool was copied in full around every submission): host-visible coherent memory is mapped with vkMapMemory, and the device file behind that
+// mapping (its /proc/self/maps line: the emulator's /dev/goldfish_address_space, at an offset) is mapped again, MAP_SHARED | MAP_FIXED, over [mem, mem+size) after the
+// pool's contents are copied in. The guest pointer is then GPU memory: CPU writes reach the GPU and back with no flush (probes/vkzc.c "remap" moved the same pages:
+// 0 wrong words in 2 x 64 MB, read and write as fast as anonymous memory). Moving the driver's mapping onto the pool (mremap) worked too, but left its old range free
+// until a placeholder covered it, and another thread's mapping landed there in between: the placeholder wiped it and malloc crashed at start-up. The second mapping
+// leaves the driver's where it is. DM_VK_NO_ZC_MAP=1 turns it off. 0 on success
+static int dev_mapping(const void *at, int *fd, uint64_t *off) {   // the device file and offset behind a mapped address: an open fd on that file
+    FILE *f = fopen("/proc/self/maps", "r"); if (!f) return -1;
+    char ln[512], path[256] = ""; unsigned long lo, hi, fo; int found = 0;
+    while (fgets(ln, sizeof ln, f)) {
+        int pos = 0; if (sscanf(ln, "%lx-%lx %*s %lx %*s %*s %n", &lo, &hi, &fo, &pos) < 3 || (uintptr_t)at < lo || (uintptr_t)at >= hi) continue;
+        if (pos > 0) { snprintf(path, sizeof path, "%s", ln + pos); path[strcspn(path, "\n")] = 0; }
+        *off = fo + ((uintptr_t)at - lo); found = path[0] == '/'; break; }
+    fclose(f); if (!found) return -1;
+    char lp[64], tg[256];
+    for (int i = 0; i < 1024; i++) { snprintf(lp, sizeof lp, "/proc/self/fd/%d", i); ssize_t k = readlink(lp, tg, sizeof tg - 1);
+        if (k > 0) { tg[k] = 0; if (!strcmp(tg, path)) { *fd = i; return 0; } } }
+    return -1;
+}
+static int pool_zero_copy_map(vkpool_t *p, uint8_t *mem, uint64_t size) {
+    static int off = -1; if (off < 0) off = getenv("DM_VK_NO_ZC_MAP") != NULL;
+    if (off) return -6;
+    VkBufferCreateInfo bi = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, NULL, 0, size, POOL_USAGE, VK_SHARING_MODE_EXCLUSIVE};
+    VkBuffer b; if (vkCreateBuffer(V.dev, &bi, NULL, &b)) return -6;
+    VkMemoryRequirements req; vkGetBufferMemoryRequirements(V.dev, b, &req);
+    uint32_t t = vk_mem_type(req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT, 0);   // cached: the game reads its own memory
+    if (t == UINT32_MAX) t = vk_mem_type(req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 0);
+    VkMemoryDedicatedAllocateInfo ded = {VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO, NULL, VK_NULL_HANDLE, b};
+    VkMemoryAllocateInfo ai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, &ded, req.size, t};
+    VkDeviceMemory m; void *at = NULL; int fd = -1; uint64_t fo = 0;
+    if (t == UINT32_MAX || vkAllocateMemory(V.dev, &ai, NULL, &m)) { vkDestroyBuffer(V.dev, b, NULL); return -6; }
+    if (vkBindBufferMemory(V.dev, b, m, 0) || vkMapMemory(V.dev, m, 0, VK_WHOLE_SIZE, 0, &at) || ((uintptr_t)at & 0xfff) || dev_mapping(at, &fd, &fo) || (fo & 0xfff)) {
+        vkDestroyBuffer(V.dev, b, NULL); vkFreeMemory(V.dev, m, NULL); return -7; }
+    memcpy(at, mem, size);
+    if (mmap(mem, size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, (off_t)fo) != mem) { vkDestroyBuffer(V.dev, b, NULL); vkFreeMemory(V.dev, m, NULL); return -8; }
+    p->buf = b; p->mem = m; p->zero_copy = 1; p->dfd = fd; p->doff = fo;
+    return 0;
+}
 // A zero-copy pool's dma-buf mapped again over [mem, mem+len) in one piece per chunk, read-only (nvn_dirty_defrag: the mappings its protection split never merge). 0 = done
 int vk_pool_remap_ro(void *mem, size_t len) {
     int rc = 0; uint64_t done = 0;
@@ -262,6 +353,11 @@ int vk_pool_remap_ro(void *mem, size_t len) {
     for (int i = 0; i < g_npool && !rc; i++) {
         vkpool_t *p = &g_pool[i]; if (p->base != (uint64_t)(uintptr_t)mem || p->end - p->base != len) continue;
         if (!p->zero_copy) { if (!p->shadow) { rc = -1; break; } done += p->hi - p->lo; continue; }   // a copied pool: nothing to map again (its protection stays as it is), and done, so defrag stops taking its pages busy
+        if (!p->ahb) {   // zero copy through the driver's device file (pool_zero_copy_map)
+            void *at = (void *)(uintptr_t)p->lo; rc = p->dfd >= 0 && mmap(at, p->hi - p->lo, PROT_READ, MAP_SHARED | MAP_FIXED, p->dfd, (off_t)p->doff) == at ? 0 : -1;
+            if (!rc) done += p->hi - p->lo;
+            continue;
+        }
         int sv[2], fds[16], nfd = -1; if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sv)) { rc = -1; break; }
         if (!AHardwareBuffer_sendHandleToUnixSocket(p->ahb, sv[0])) nfd = recv_fds(sv[1], fds, 16);
         close(sv[0]); close(sv[1]);
@@ -296,9 +392,11 @@ void mtl_pool_add(const void *mem, uint64_t size) {
 static void pool_add_one(const void *mem, uint64_t size, uint64_t base, uint64_t end) {
     pthread_rwlock_wrlock(&g_pool_mu);
     if (g_npool == MAXPOOL) { pthread_rwlock_unlock(&g_pool_mu); die("[vk] too many memory pools"); }
-    vkpool_t *p = &g_pool[g_npool]; memset(p, 0, sizeof *p);
+    vkpool_t *p = &g_pool[g_npool]; memset(p, 0, sizeof *p); p->dfd = -1;
     p->lo = (uint64_t)(uintptr_t)mem; p->hi = p->lo + size; p->base = base; p->end = end; { static uint64_t ser; p->serial = ++ser; }
     int zc = ((uintptr_t)mem & 0xfff) || (size & 0xfff) ? -3 : getenv("DM_VK_NO_ZEROCOPY") ? -4 : zc_over(end - base) ? -5 : pool_zero_copy(p, (uint8_t *)mem, size);
+    if (zc == -1 && !(zc = pool_zero_copy_map(p, (uint8_t *)mem, size))) {   // no AHardwareBuffer for GPU data: the driver's device file mapped again instead
+        static int said; if (!said++) VKLOG("memory pools: no AHardwareBuffer for GPU data, zero copy through the driver's device file mapped again at the pool"); }
     if (zc) {
         static int said; if (!said++) VKLOG("[RED] memory pool %p +%#llx could not be zero-copy (%d): a GPU copy is refreshed before each submission (slow)", mem, (unsigned long long)size, zc);
         VkBufferCreateInfo bi = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, NULL, 0, size, POOL_USAGE, VK_SHARING_MODE_EXCLUSIVE};

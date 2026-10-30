@@ -4,6 +4,7 @@
 #   aoc/<index>/   the DLC the player has
 #   shaders.dmsv   the Vulkan shaders (dm/android/tools/shader_vk.py)
 #   nintendo_ext.ttf  the button-icon font, the stand-in for the Nintendo extension shared font (dm/tools/make_ext_font.py; env.txt's DM_SHARED_FONT_EXT)
+#   standard.ttf   the stand-in for the standard shared font, a font of the porting machine (env.txt's DM_SHARED_FONT)
 #   env.txt        host switches: the game language, the DLC folder, the profile's env rows
 #   settings.txt   the pause menu's first-launch defaults (the profile's setting rows); the installer never replaces the player's own
 #   nx2a-data.json what the pack is: the game, the package, the version, the device features the profile requires (android.tsv requires), which the installer checks

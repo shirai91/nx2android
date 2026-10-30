@@ -125,13 +125,30 @@ static uint64_t key_bit(int32_t k) {   // Nintendo layout by position: the botto
     default: return 0;
     }
 }
+// A keyboard (a tablet's, a Chromebook's, the Android emulator's window on a computer) plays as a controller in Ryujinx's default layout: Z A, X B, C X, V Y, E L, U R, Q ZL,
+// O ZR, F and H the stick buttons, - and = minus and plus, the arrow keys the d-pad (key_bit), WASD the left stick and IJKL the right one, at full tilt. In the emulator a mouse
+// is one finger, so the on-screen L and R could not be held together for Link's Awakening's "Press L+R"
+static uint64_t kb_bit(int32_t k) {
+    switch (k) {
+    case AKEYCODE_Z: return DM_BTN_A; case AKEYCODE_X: return DM_BTN_B; case AKEYCODE_C: return DM_BTN_X; case AKEYCODE_V: return DM_BTN_Y;
+    case AKEYCODE_E: return DM_BTN_L; case AKEYCODE_U: return DM_BTN_R; case AKEYCODE_Q: return DM_BTN_ZL; case AKEYCODE_O: return DM_BTN_ZR;
+    case AKEYCODE_F: return DM_BTN_LS; case AKEYCODE_H: return DM_BTN_RS; case AKEYCODE_MINUS: return DM_BTN_MINUS; case AKEYCODE_EQUALS: case AKEYCODE_PLUS: return DM_BTN_PLUS;
+    default: return 0;
+    }
+}
+static uint32_t kb_stick(int32_t k) {   // bits: left stick x− x+ y− y+ (A D W S, y in Android's direction: W is −), then the right stick's (J L I K)
+    switch (k) { case AKEYCODE_A: return 1; case AKEYCODE_D: return 2; case AKEYCODE_W: return 4; case AKEYCODE_S: return 8;
+                 case AKEYCODE_J: return 16; case AKEYCODE_L: return 32; case AKEYCODE_I: return 64; case AKEYCODE_K: return 128; default: return 0; }
+}
+static uint32_t g_kstick;   // the stick keys held
+static float kb_axis(int sh, float pad) { uint32_t m = g_kstick >> sh & 3; return m ? (m & 2 ? 1.0f : 0.0f) - (m & 1 ? 1.0f : 0.0f) : pad; }   // keys held win over the controller's axis
 static int32_t axis(float v) { if (v > -0.12f && v < 0.12f) return 0; return (int32_t)(v * DM_STICK_MAX); }
 static uint64_t g_shake_btn;   // DM_BTN_SHAKE while the device is being shaken (below); input thread only
 static void pad_publish(void) {
     uint64_t b = g_btn | g_shake_btn;
     if (g_ax[4] > 0.5f) b |= DM_BTN_ZL; if (g_ax[5] > 0.5f) b |= DM_BTN_ZR;
     if (g_ax[6] < -0.5f) b |= DM_BTN_LEFT; if (g_ax[6] > 0.5f) b |= DM_BTN_RIGHT; if (g_ax[7] < -0.5f) b |= DM_BTN_UP; if (g_ax[7] > 0.5f) b |= DM_BTN_DOWN;
-    dm_pad_set(b, axis(g_ax[0]), -axis(g_ax[1]), axis(g_ax[2]), -axis(g_ax[3]));   // Android's y grows downward, the Switch's upward
+    dm_pad_set(b, axis(kb_axis(0, g_ax[0])), -axis(kb_axis(2, g_ax[1])), axis(kb_axis(4, g_ax[2])), -axis(kb_axis(6, g_ax[3])));   // Android's y grows downward, the Switch's upward
 }
 // ---- the on-screen gamepad (overlay_layout.h): a pointer that goes down on a control keeps it until it lifts; every other pointer is the game's touch screen ----
 static _Atomic int g_overlay = 1;   // shown until a physical controller is used, again at the next touch (when the player has it on)
@@ -606,7 +623,15 @@ static int handle_event(AInputEvent *e) {
             if (down && AKeyEvent_getRepeatCount(e) == 0) { if (atomic_load(&g_menu)) menu_close(); else menu_open(k == AKEYCODE_BACK ? -1 : 0); }
             return 1;
         }
-        uint64_t bit = key_bit(k);
+        uint64_t bit = key_bit(k); uint32_t ks = 0;
+        // a keyboard's letters (kb_bit): any key not from a controller (adb's `input keyevent` sends them with no source at all)
+        if (!bit && (src & AINPUT_SOURCE_GAMEPAD) != AINPUT_SOURCE_GAMEPAD && !(ks = kb_stick(k))) bit = kb_bit(k);
+        if ((ks || bit) && (src & AINPUT_SOURCE_GAMEPAD) != AINPUT_SOURCE_GAMEPAD) { static int said; if (!said++) LOG("[input] keyboard (device %d) played as a controller: WASD / IJKL sticks, Z X C V = A B X Y, E U = L R, Q O = ZL ZR, arrows d-pad, - = minus plus", AInputEvent_getDeviceId(e)); }
+        if (ks) {   // a stick key: not for the pause menu, which the arrow keys move in
+            atomic_store(&g_overlay, 0); g_pad_used = 1;
+            if (!atomic_load(&g_menu)) { if (down) g_kstick |= ks; else if (AKeyEvent_getAction(e) == AKEY_EVENT_ACTION_UP) g_kstick &= ~ks; dm_pad_players(1); pad_publish(); }
+            return 1;
+        }
         if (!bit) {   // the rest: the system's. A controller's key nothing maps is logged once, so a new controller's menu key can be found
             static uint8_t seen[64];
             if ((src & AINPUT_SOURCE_GAMEPAD) == AINPUT_SOURCE_GAMEPAD && down && k >= 0 && k < 512 && !(seen[k >> 3] >> (k & 7) & 1)) {

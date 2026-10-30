@@ -2,7 +2,7 @@
 # devices (a 6 GB RomFS), so small files go in batches and big files in 64 MB pieces that the device joins; a rerun resumes (files already at their size are skipped,
 # pieces already in place are kept). The port's own outputs are also compared by MD5: a rewriter cut changes a module without changing its size, and Unpacking's sdk cuts never
 # reached the device until they were. Pushes use -Z: compressing them took adbd down.
-import contextlib, hashlib, os, re, shlex, shutil, subprocess, tempfile, time
+import contextlib, hashlib, json, os, re, shlex, shutil, subprocess, tempfile, time
 from pathlib import Path
 
 
@@ -79,7 +79,12 @@ class Adb:
         return out[len('GLES:'):].strip() if out.startswith('GLES:') else ''
 
     def bc_textures(self):
-        """Whether the GPU samples BC-compressed textures (the Switch's format, profile key requires bcn): Adreno and Xclipse do, Mali and PowerVR do not; None when unknown"""
+        """Whether the GPU samples BC-compressed textures (the Switch's format, profile key requires bcn): the Vulkan driver's own answer (`cmd gpu vkjson`, Android 10 and
+        later: textureCompressionBC), else by name: Adreno and Xclipse do, Mali and PowerVR do not; None when unknown. The Android emulator on a Mac names its GPU
+        "Google (Apple)" and reads BC through MoltenVK (1); an Honor 10's Mali-G72 reported 0"""
+        out = self.shell('cmd gpu vkjson 2>/dev/null; true', check=False)
+        try: return bool(json.loads(out[out.index('{'):])['devices'][0]['features']['textureCompressionBC'])
+        except (ValueError, KeyError, IndexError, TypeError): pass
         g = self.gpu().lower()
         if any(v in g for v in ('adreno', 'xclipse', 'nvidia')): return True
         if any(v in g for v in ('mali', 'powervr', 'immortalis')): return False
