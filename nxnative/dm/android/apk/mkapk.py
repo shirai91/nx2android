@@ -10,6 +10,8 @@ _p.add_argument('--label', default='NX2A Probe'); _p.add_argument('--lib', defau
 _p.add_argument('--extra-so', action='append', default=[], help='another arm64 library packed beside the main one (a Vulkan validation layer)')
 _p.add_argument('--icon', help='launcher icon (a PNG, used at its own size: nodpi)')
 _p.add_argument('--release', action='store_true', help='not debuggable')
+_p.add_argument('--importer-sdk', help='Android SDK for the optional ZIP-import launcher (also requires javac)')
+_p.add_argument('--data-package', help='package named in the data ZIP (defaults to --package; a separate diagnostic app can import the original pack)')
 _p.add_argument('--version-code', type=int, default=1, help='versionCode: a later port of the game must have a higher one to install over it')
 _p.add_argument('--version-name', default='1.0', help='versionName: the version the player sees (the game\'s display version)'); ARGS = _p.parse_args()
 PKG, LIB, LABEL = ARGS.package, ARGS.lib, ARGS.label
@@ -38,7 +40,16 @@ MANIFEST = ('manifest', [(False, 'package', PKG), (True, 'versionCode', ARGS.ver
             ('meta-data', [(True, 'name', 'android.app.lib_name'), (True, 'value', LIB)], []),
             ('intent-filter', [], [
                 ('action', [(True, 'name', 'android.intent.action.MAIN')], []),
-                ('category', [(True, 'name', 'android.intent.category.LAUNCHER')], [])])])])])
+                 ('category', [(True, 'name', 'android.intent.category.LAUNCHER')], [])])])])])
+
+if ARGS.importer_sdk:
+    app = MANIFEST[2][-1]
+    native = app[2][0]
+    launcher = native[2].pop()
+    native[1][:] = [(ns, name, False if name == 'exported' else value) for ns, name, value in native[1]]
+    app[1][:] = [(ns, name, True if name == 'hasCode' else value) for ns, name, value in app[1]]
+    app[2].append(('activity', [(True, 'name', 'org.nx2a.ImportActivity'), (True, 'exported', True), (True, 'configChanges', ('hex', 0x4a0 | 0x80 | 0x1000))], [
+        ('meta-data', [(True, 'name', 'nx2a.data_package'), (True, 'value', ARGS.data_package or PKG)], []), launcher]))
 
 def axml(root):
     # string pool: attribute names that carry resource IDs come first, in resource-map order
@@ -198,6 +209,17 @@ def main():
         print(f'new signing key {keyf} ({time.time() - t:.1f} s)')
     entries = [('AndroidManifest.xml', axml(MANIFEST), 4), (f'lib/arm64-v8a/lib{LIB}.so', open(so, 'rb').read(), 16384)]
     entries += [(f'lib/arm64-v8a/{os.path.basename(x)}', open(x, 'rb').read(), 16384) for x in ARGS.extra_so]
+    if ARGS.importer_sdk:
+        import subprocess, tempfile
+        from pathlib import Path
+        sdk = Path(ARGS.importer_sdk)
+        android = sorted(sdk.glob('platforms/android-*/android.jar'), key=lambda p: int(p.parent.name.split('-')[1]))[-1]
+        d8 = sorted(sdk.glob('build-tools/*/d8' + ('.bat' if os.name == 'nt' else '')), key=lambda p: tuple(int(x) for x in p.parent.name.split('.')))[-1]
+        with tempfile.TemporaryDirectory(prefix='nx2a-import-') as tmp:
+            classes = Path(tmp) / 'classes'; classes.mkdir()
+            subprocess.run(['javac', '-source', '8', '-target', '8', '-classpath', str(android), '-d', str(classes), str(Path(__file__).with_name('ImportActivity.java'))], check=True)
+            subprocess.run([str(d8), '--lib', str(android), '--min-api', str(MIN_SDK), '--output', tmp, *map(str, classes.rglob('*.class'))], check=True)
+            entries.append(('classes.dex', (Path(tmp) / 'classes.dex').read_bytes(), 4))
     if ARGS.icon: entries += [('resources.arsc', res_table('res/drawable-nodpi-v4/icon.png'), 4), ('res/drawable-nodpi-v4/icon.png', open(ARGS.icon, 'rb').read(), 4)]
     z, cd, eocd = build_zip(entries)
     apk = sign_v2(z, cd, eocd, k, crt)
