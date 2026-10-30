@@ -73,24 +73,32 @@ typedef struct { int layout, w, h; uint8_t *px; float dh, scale, travel, alpha; 
 const ov_theme *dm_overlay_theme(int layout);   // the theme's sprites for a layout, NULL when the app has none (it keeps its pixels until dm_overlay_theme_done)
 void dm_overlay_theme_done(const ov_theme *t);   // the pixels are on the GPU: their memory can go
 
-// ---- the pause menu: a panel in the middle of the window: a row of tabs, the open tab's rows, and Resume. Everything is placed in a panel rectangle p
+// ---- the pause menu: a panel in the middle of the window: a row of tabs, the open tab's rows, and Resume (the game data page: Back in the tabs' place). Everything
+// is placed in a panel rectangle p
 // (x, y, width, height: the window's for touches, the raster's for drawing), so the touches and the drawing agree ----
-enum { OVM_OVERLAY, OVM_OPACITY, OVM_EDIT, OVM_RUMBLE, OVM_FPS, OVM_MODE, OVM_RESUME, OVM_TAB, OVM_N };   // OVM_TAB: the tabs' row; OVM_EDIT: the layout editor;
-                                                                                                        // OVM_MODE: handheld (performance) or docked (resolution)
+enum { OVM_OVERLAY, OVM_OPACITY, OVM_EDIT, OVM_RUMBLE, OVM_FPS, OVM_MODE, OVM_DATA, OVM_EXPORT, OVM_IMPORT, OVM_RESET, OVM_RESUME, OVM_TAB, OVM_BACK, OVM_N };   // OVM_TAB:
+    // the tabs' row; OVM_EDIT: the layout editor; OVM_MODE: handheld (performance) or docked (resolution)
 #define OVM_TABS 2
+#define OVM_DATA_PAGE OVM_TABS   // the game data page, after the tabs in OVM_TAB_ITEMS
 #define OVM_PER_TAB 4
-static const int OVM_TAB_ITEMS[OVM_TABS][OVM_PER_TAB] = {{OVM_OVERLAY, OVM_OPACITY, OVM_EDIT, OVM_RUMBLE}, {OVM_FPS, OVM_MODE, -1, -1}};
+static const int OVM_TAB_ITEMS[OVM_TABS + 1][OVM_PER_TAB] = {{OVM_OVERLAY, OVM_OPACITY, OVM_EDIT, OVM_RUMBLE}, {OVM_FPS, OVM_MODE, OVM_DATA, -1}, {OVM_EXPORT, OVM_IMPORT, OVM_RESET, -1}};
+// The game data rows' state: the last export, import or reset, or the question an import or a reset asks first
+enum { OVS_NONE, OVS_EXPORTED, OVS_EXPORT_FAILED, OVS_IMPORT_CONFIRM, OVS_IMPORT_FAILED, OVS_IMPORTED, OVS_RESET_CONFIRM, OVS_RESET_DONE };
+#define OVS_SHIFT 18
 static const char *const OVM_TAB_NAMES[OVM_TABS] = {"Gamepad", "Game"};
-#define OVM_ROWS (OVM_PER_TAB + 2)   // the tabs, a tab's rows (as many for every tab: the panel keeps its size), Resume
-static inline int ov_menu_item(int tab, int row) { return row == 0 ? OVM_TAB : row == OVM_ROWS - 1 ? OVM_RESUME : row > 0 && row < OVM_ROWS - 1 ? OVM_TAB_ITEMS[tab & 1][row - 1] : -1; }
+#define OVM_ROWS (OVM_PER_TAB + 2)   // the tabs (or Back), a tab's rows (as many for every tab: the panel keeps its size), Resume
+static inline int ov_menu_item(int tab, int row) {
+    tab = tab < 0 || tab > OVM_DATA_PAGE ? 0 : tab;
+    return row == 0 ? (tab == OVM_DATA_PAGE ? OVM_BACK : OVM_TAB) : row == OVM_ROWS - 1 ? OVM_RESUME : row > 0 && row < OVM_ROWS - 1 ? OVM_TAB_ITEMS[tab][row - 1] : -1;
+}
 #define OV_MENU_ROW 0.115f   // row height, of the window's height
 #define OV_MENU_W 0.95f      // panel width, of the window's height
 #define OV_MENU_PAD 0.03f
 #define OV_OPACITY_MIN 20    // the gamepad's opacity, percent (the Opacity slider, settings.txt opacity=)
 #define OV_OPACITY_MAX 80
 // what the menu shows (-1 = closed): bit 0 the gamepad is on, bit 1 rumble is on, bit 2 docked, bit 3 the frame rate shown, bits 4..7 the highlighted row + 1
-// (0 = none), bit 8 the open tab, bits 9..15 the opacity in percent. Bit 16: the text entry's panel instead (its edit count below); bit 17: the layout editor
-// (OVE_ST_* below)
+// (0 = none), bit 8 the open tab, bits 9..15 the opacity in percent, bits 18..20 the game data rows' state (OVS_*), bit 21 the game data page open (instead of the
+// tab). Bit 16: the text entry's panel instead (its edit count below); bit 17: the layout editor (OVE_ST_* below)
 int dm_menu_state(void);
 static inline float ov_menu_scale(void) { float s = dm_overlay_scale(), fit = 0.92f / (OVM_ROWS * OV_MENU_ROW + 2 * OV_MENU_PAD); return s < fit ? s : fit; }
 static inline void ov_menu_rect(float W, float H, float r[4]) {   // x, y, width, height in window pixels

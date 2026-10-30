@@ -9,6 +9,7 @@
 #include "front.h"
 #include "dm_input.h"
 #include "overlay_layout.h"
+#include "data_zip.h"
 #include <math.h>
 #include <time.h>
 #include <android/asset_manager.h>
@@ -20,12 +21,15 @@
 #include <android/window.h>
 #include <android/native_window.h>
 #include <android/sensor.h>
+#include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <jni.h>
 #include <pthread.h>
 #include <sys/mman.h>
 #include <stdatomic.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -46,7 +50,7 @@ __attribute__((weak)) void vk_window_lost(void) {}   // the backend lets go of t
 static void on_window_created(ANativeActivity *a, ANativeWindow *w) { (void)a; pthread_mutex_lock(&g_win_mu); g_win = w; pthread_mutex_unlock(&g_win_mu); }
 static void on_window_destroyed(ANativeActivity *a, ANativeWindow *w) { (void)a; (void)w; pthread_mutex_lock(&g_win_mu); g_win = NULL; pthread_mutex_unlock(&g_win_mu); vk_window_lost(); }
 
-void dm_focus_set(int st); void dm_audio_suspend(int on); void guest_clock_freeze_for(int reason, int on); void dm_gfx_suspend(int on);
+void dm_focus_set(int st); void dm_audio_suspend(int on); void guest_clock_freeze_for(int reason, int on); void dm_gfx_suspend(int on); void dm_save_hold(int on);
 // ---- settings (the pause menu's), kept in the files folder as KEY=VALUE lines ----
 static char g_root[512];
 static _Atomic int g_set_overlay = 1, g_set_rumble = 1, g_set_fps;   // the gamepad shown; rumble and tap vibration; the frame rate counter (top left)
@@ -257,22 +261,24 @@ static void *pad_watch(void *a) {
 }
 
 // ---- the pause menu: the game is held while it is open; touches and a controller's keys go to it. Two tabs (overlay_layout.h OVM_TAB_ITEMS): the gamepad's
-// settings (shown, opacity, the layout editor, rumble) and the game's (the frame rate counter, the mode); Resume under them ----
-static _Atomic int g_menu_hi = -1, g_menu_tab;   // the highlighted row (a controller's selection, or the row a finger is on), -1 none; the open tab
+// settings (shown, opacity, the layout editor, rumble) and the game's (the frame rate counter, the mode, and the game data page: export, import, reset); Resume under them ----
+static _Atomic int g_menu_hi = -1, g_menu_tab;   // the highlighted row (a controller's selection, or the row a finger is on), -1 none; the open tab, or OVM_DATA_PAGE
 static int g_menu_ptr = -1, g_menu_row = -2;   // the pointer pressing in the menu, and the row it went down on (-3 the menu button)
 static _Atomic int g_tx_ver;   // the text entry's edit count: the panel is drawn again when it changes
 static _Atomic int g_ed_st;    // the layout editor's state for dm_menu_state (overlay_layout.h OVE_ST)
+static _Atomic int g_save_st;  // the game data rows' state (overlay_layout.h OVS_*)
 int dm_menu_state(void) {
     if (atomic_load(&g_tx_on)) return 1 << 16 | (atomic_load(&g_tx_ver) & 0xffff);   // the text entry's panel (gfx_vk_present.c ov_text_panel)
     if (!atomic_load(&g_menu)) return -1;
     if (atomic_load(&g_edit)) return OVE_ST | atomic_load(&g_ed_st);
     return atomic_load(&g_set_overlay) | atomic_load(&g_set_rumble) << 1 | (dm_opmode() != 0) << 2 | atomic_load(&g_set_fps) << 3 | (atomic_load(&g_menu_hi) + 1) << 4 |
-           atomic_load(&g_menu_tab) << 8 | atomic_load(&g_set_opacity) << 9;
+           (atomic_load(&g_menu_tab) & 1) << 8 | atomic_load(&g_set_opacity) << 9 | atomic_load(&g_save_st) << OVS_SHIFT | (atomic_load(&g_menu_tab) == OVM_DATA_PAGE) << 21;
 }
 int dm_overlay_fps(void) { return atomic_load(&g_set_fps) && !atomic_load(&g_menu); }   // gfx_vk_present.c draws the counter (not while the menu holds the game)
 static void menu_open(int hi) {
     if (!atomic_load(&g_running) || atomic_exchange(&g_menu, 1)) return;
-    atomic_store(&g_menu_hi, hi); g_menu_ptr = -1;
+    atomic_store(&g_menu_hi, hi); g_menu_ptr = -1; atomic_store(&g_save_st, OVS_NONE);
+    if (atomic_load(&g_menu_tab) == OVM_DATA_PAGE) atomic_store(&g_menu_tab, 1);
     dm_input_set(0, 0, 0, 0, 0); dm_touch_set(NULL, 0); g_touch_btn = 0;   // nothing stays pressed in the game
     for (int i = 0; i < 16; i++) atomic_store(&g_press_t[i], 0);
     for (int s = 0; s < 2; s++) { atomic_store(&g_stick_t[s], 0); for (int a = 0; a < 2; a++) atomic_store(&g_knob[s][a], 0); }
@@ -283,8 +289,12 @@ static void menu_open(int hi) {
     LOG("[menu] opened: the game is paused");
 }
 static void ed_cancel(void);
+static void data_unstage(void);
 static void menu_close(void) {
     if (atomic_load(&g_edit)) { ed_cancel(); return; }   // the editor first: its changes are kept or thrown away before the game goes on
+    int ss = atomic_load(&g_save_st);
+    if (ss == OVS_IMPORTED || ss == OVS_RESET_DONE) return;   // the app is closing (data_apply)
+    if (ss == OVS_IMPORT_CONFIRM) data_unstage();
     if (!atomic_exchange(&g_menu, 0)) return;
     g_menu_ptr = -1; atomic_store(&g_menu_t, 0);
     hold_sync(); dm_haptics_suspend(4, 0); dm_overlay_redraw();
@@ -295,14 +305,192 @@ static void menu_opacity(int v) {   // the slider: a new value is drawn at once 
     v = v < OV_OPACITY_MIN ? OV_OPACITY_MIN : v > OV_OPACITY_MAX ? OV_OPACITY_MAX : v;
     if (atomic_exchange(&g_set_opacity, v) != v) { dm_haptics_android_tap(); dm_overlay_redraw(); }
 }
-static void menu_tab(int t) { t = (t % OVM_TABS + OVM_TABS) % OVM_TABS; if (atomic_exchange(&g_menu_tab, t) != t) dm_haptics_android_tap(); dm_overlay_redraw(); }
+static void menu_tab(int t) {   // or OVM_DATA_PAGE
+    if (t != OVM_DATA_PAGE) t = (t % OVM_TABS + OVM_TABS) % OVM_TABS;
+    if (atomic_exchange(&g_menu_tab, t) != t) {
+        dm_haptics_android_tap(); int ss = atomic_load(&g_save_st);
+        if (ss == OVS_IMPORT_CONFIRM) data_unstage();
+        if (ss == OVS_IMPORT_CONFIRM || ss == OVS_RESET_CONFIRM) atomic_store(&g_save_st, OVS_NONE);
+    }
+    dm_overlay_redraw();
+}
+// ---- game data (the menu's game data page): the save directories ($DM_SAVE, which only the app can read, and <DM_SAVE>_device) exported to a zip and imported from
+// one (data_zip.c) that the player picks with Android's file picker, and reset. Commits wait while they are read or replaced (hle_fs.c dm_save_hold); an import and a
+// reset close the app, whose running game would commit its older state over them ----
+static const char *const DATA_SFX[2] = {"", "_device"};
+static const char *data_dir(int k, char *b, size_t n) { const char *s = getenv("DM_SAVE"); if (!s) return NULL; snprintf(b, n, "%s%s", s, DATA_SFX[k]); return b; }
+static int tree_rm(const char *p) {
+    struct stat st; if (lstat(p, &st)) return errno == ENOENT ? 0 : -1;
+    if (!S_ISDIR(st.st_mode)) return unlink(p);
+    DIR *d = opendir(p); if (!d) return -1;
+    struct dirent *e; char c[1024]; int r = 0;
+    while ((e = readdir(d))) if (strcmp(e->d_name, ".") && strcmp(e->d_name, "..")) { snprintf(c, sizeof c, "%s/%s", p, e->d_name); r |= tree_rm(c); }
+    closedir(d); return r | rmdir(p);
+}
+static void data_export(int fd) {
+    char dirs[2][600], names[2][64]; const char *d[2] = {dirs[0], dirs[1]}, *nm[2] = {names[0], names[1]}; unsigned files = 0; int r = -1;
+    if (data_dir(0, dirs[0], sizeof dirs[0]) && data_dir(1, dirs[1], sizeof dirs[1])) {
+        for (int k = 0; k < 2; k++) snprintf(names[k], sizeof names[k], "%s%s", DM_GAME_ID, DATA_SFX[k]);
+        dm_save_hold(1); r = dz_write(fd, d, nm, 2, &files); dm_save_hold(0);
+    }
+    if (close(fd)) r = -1;
+    atomic_store(&g_save_st, r ? OVS_EXPORT_FAILED : OVS_EXPORTED);
+    if (r) LOG("[RED] [data] export failed: errno=%d", errno); else LOG("[data] exported %u files", files);
+}
+static void data_unstage(void) {
+    char dir[600], tmp[640];
+    for (int k = 0; k < 2; k++) if (data_dir(k, dir, sizeof dir)) { snprintf(tmp, sizeof tmp, "%s.import", dir); tree_rm(tmp); }
+}
+static int data_stage(int fd) {   // into <DM_SAVE>.import (and _device.import): the files, or -1
+    size_t cap = 1 << 20, n = 0; uint8_t *b = malloc(cap); ssize_t r = 0;
+    while (b && (r = read(fd, b + n, cap - n)) > 0) { n += (size_t)r; if (n == cap) { uint8_t *q = cap < (size_t)1 << 30 ? realloc(b, cap * 2) : NULL; if (!q) { r = -1; break; } b = q; cap *= 2; } }
+    close(fd);
+    char dirs[2][600], tmp[2][640]; const char *dest[2] = {tmp[0], tmp[1]}; int files = -1;
+    if (b && r >= 0 && data_dir(0, dirs[0], sizeof dirs[0]) && data_dir(1, dirs[1], sizeof dirs[1])) {
+        data_unstage();
+        for (int k = 0; k < 2; k++) snprintf(tmp[k], sizeof tmp[k], "%s.import", dirs[k]);
+        files = dz_extract(b, n, dest);
+    }
+    free(b);
+    if (files <= 0) { data_unstage(); LOG("[RED] [data] the picked file is no game data zip that could be read"); return -1; }
+    LOG("[data] %d files ready to import", files);
+    return files;
+}
+enum { PICK_EXPORT = 1, PICK_IMPORT, UI_FINISH };
+static int g_ui_pipe[2] = {-1, -1};
+static void *data_close(void *a) {   // the activity finishes (then on_destroy): a bare _exit left a task that the launcher could not start again
+    (void)a; struct timespec ts = {1, 500000000}; nanosleep(&ts, NULL);
+    LOG("[data] closing the app: open it again to play with the new game data");
+    uint8_t c = UI_FINISH; if (g_ui_pipe[1] < 0 || write(g_ui_pipe[1], &c, 1) != 1) ANativeActivity_finish(g_act);
+    ts.tv_sec = 5; ts.tv_nsec = 0; nanosleep(&ts, NULL);
+    _exit(0);
+}
+static void data_apply(int reset) {
+    char dir[600], tmp[640], old[640]; int r = 0, n = 0;
+    dm_save_hold(1);   // until the app closes
+    for (int k = 0; k < 2 && !r; k++) {
+        if (!data_dir(k, dir, sizeof dir)) { r = -1; break; }
+        if (reset) { r = tree_rm(dir); n++; continue; }
+        snprintf(tmp, sizeof tmp, "%s.import", dir); snprintf(old, sizeof old, "%s.old", dir);
+        if (access(tmp, F_OK)) continue;
+        r = tree_rm(old) || (access(dir, F_OK) ? 0 : rename(dir, old)) || rename(tmp, dir);
+        if (r) { tree_rm(tmp); if (access(dir, F_OK) && !access(old, F_OK)) rename(old, dir); break; }
+        tree_rm(old); n++;
+    }
+    if (reset && data_dir(0, dir, sizeof dir)) mkdir(dir, 0700);
+    data_unstage();
+    if (!n) { dm_save_hold(0); atomic_store(&g_save_st, OVS_IMPORT_FAILED); LOG("[RED] [data] import failed: errno=%d", errno); return; }
+    atomic_store(&g_save_st, reset ? OVS_RESET_DONE : r ? OVS_IMPORT_FAILED : OVS_IMPORTED);
+    LOG("%s[data] %s: the app closes", r ? "[RED] " : "", reset ? "game data erased" : "game data imported");
+    pthread_t th; if (!pthread_create(&th, NULL, data_close, NULL)) pthread_detach(th); else _exit(0);
+}
+// The file picker: the main thread opens it (on_ui_cmd), and a thread of its own waits for mkdex.py's GameActivity to keep the answer (pick_wait)
+static jclass g_gacls; static jfieldID g_f_seq, g_f_req, g_f_res, g_f_uri;
+static _Atomic int g_pick;   // PICK_* while a picker is open
+static int on_ui_cmd(int fd, int events, void *data) {
+    (void)events; (void)data; uint8_t what;
+    if (read(fd, &what, 1) != 1) return 1;
+    JNIEnv *E = g_act->env; (*E)->PushLocalFrame(E, 16);
+    jclass ac = (*E)->GetObjectClass(E, g_act->clazz);
+    if (what == UI_FINISH) {
+        (*E)->CallVoidMethod(E, g_act->clazz, (*E)->GetMethodID(E, ac, "finishAndRemoveTask", "()V"));
+        if (jx(E)) ANativeActivity_finish(g_act);
+        (*E)->PopLocalFrame(E, NULL); return 1;
+    }
+    jclass ic = (*E)->FindClass(E, "android/content/Intent");
+    jmethodID ctor = (*E)->GetMethodID(E, ic, "<init>", "(Ljava/lang/String;)V"), add = (*E)->GetMethodID(E, ic, "addCategory", "(Ljava/lang/String;)Landroid/content/Intent;");
+    jmethodID type = (*E)->GetMethodID(E, ic, "setType", "(Ljava/lang/String;)Landroid/content/Intent;");
+    jmethodID put = (*E)->GetMethodID(E, ic, "putExtra", "(Ljava/lang/String;Ljava/lang/String;)Landroid/content/Intent;");
+    jobject in = (*E)->NewObject(E, ic, ctor, (*E)->NewStringUTF(E, what == PICK_EXPORT ? "android.intent.action.CREATE_DOCUMENT" : "android.intent.action.OPEN_DOCUMENT"));
+    (*E)->CallObjectMethod(E, in, add, (*E)->NewStringUTF(E, "android.intent.category.OPENABLE"));
+    (*E)->CallObjectMethod(E, in, type, (*E)->NewStringUTF(E, "application/zip"));
+    if (what == PICK_EXPORT) {
+        char nm[160]; time_t now = time(NULL); struct tm t; localtime_r(&now, &t);
+        snprintf(nm, sizeof nm, "%s game data - %04d-%02d-%02d %02d_%02d.zip", DM_GAME_NAME, t.tm_year + 1900, t.tm_mon + 1, t.tm_mday, t.tm_hour, t.tm_min);
+        (*E)->CallObjectMethod(E, in, put, (*E)->NewStringUTF(E, "android.intent.extra.TITLE"), (*E)->NewStringUTF(E, nm));
+    }
+    jmethodID start = (*E)->GetMethodID(E, ac, "startActivityForResult", "(Landroid/content/Intent;I)V");
+    if (!jx(E)) (*E)->CallVoidMethod(E, g_act->clazz, start, in, (jint)what);
+    if (jx(E)) {
+        LOG("[RED] [data] cannot open the file picker"); atomic_store(&g_save_st, what == PICK_EXPORT ? OVS_EXPORT_FAILED : OVS_IMPORT_FAILED); atomic_store(&g_pick, 0); dm_overlay_redraw();
+    }
+    (*E)->PopLocalFrame(E, NULL);
+    return 1;
+}
+static int uri_fd(JNIEnv *E, jstring us, const char *mode) {
+    (*E)->PushLocalFrame(E, 16); int fd = -1;
+    jclass uc = (*E)->FindClass(E, "android/net/Uri");
+    jobject uri = jx(E) ? NULL : (*E)->CallStaticObjectMethod(E, uc, (*E)->GetStaticMethodID(E, uc, "parse", "(Ljava/lang/String;)Landroid/net/Uri;"), us);
+    jobject cr = jx(E) || !uri ? NULL : (*E)->CallObjectMethod(E, g_act->clazz, (*E)->GetMethodID(E, (*E)->GetObjectClass(E, g_act->clazz), "getContentResolver", "()Landroid/content/ContentResolver;"));
+    jobject pfd = jx(E) || !cr ? NULL : (*E)->CallObjectMethod(E, cr, (*E)->GetMethodID(E, (*E)->GetObjectClass(E, cr), "openFileDescriptor",
+                                                                 "(Landroid/net/Uri;Ljava/lang/String;)Landroid/os/ParcelFileDescriptor;"), uri, (*E)->NewStringUTF(E, mode));
+    if (!jx(E) && pfd) {
+        jclass pc = (*E)->GetObjectClass(E, pfd);
+        fd = (*E)->CallIntMethod(E, pfd, (*E)->GetMethodID(E, pc, "detachFd", "()I")); if (jx(E)) fd = -1;
+        (*E)->CallVoidMethod(E, pfd, (*E)->GetMethodID(E, pc, "close", "()V")); jx(E);
+    }
+    (*E)->PopLocalFrame(E, NULL);
+    return fd;
+}
+static void *pick_wait(void *a) {
+    int what = (int)(intptr_t)a; JavaVM *vm = g_act->vm; JNIEnv *E;
+    pthread_setname_np(pthread_self(), "data picker");
+    if ((*vm)->AttachCurrentThread(vm, &E, NULL) != JNI_OK) { atomic_store(&g_pick, 0); return NULL; }
+    jint seq0 = (*E)->GetStaticIntField(E, g_gacls, g_f_seq); uint8_t c = (uint8_t)what;
+    if (write(g_ui_pipe[1], &c, 1) != 1) atomic_store(&g_pick, 0);
+    struct timespec ts = {0, 100000000};
+    while (atomic_load(&g_pick) && (*E)->GetStaticIntField(E, g_gacls, g_f_seq) == seq0) nanosleep(&ts, NULL);
+    if (atomic_load(&g_pick)) {
+        jint req = (*E)->GetStaticIntField(E, g_gacls, g_f_req), res = (*E)->GetStaticIntField(E, g_gacls, g_f_res);
+        jstring us = (*E)->GetStaticObjectField(E, g_gacls, g_f_uri);
+        if (res != -1 || !us || req != what) { LOG("[data] the file picker was closed: nothing %s", what == PICK_EXPORT ? "exported" : "imported"); atomic_store(&g_save_st, OVS_NONE); }   // -1: RESULT_OK
+        else {
+            int fd = uri_fd(E, us, what == PICK_EXPORT ? "wt" : "r");
+            if (fd < 0) { LOG("[RED] [data] cannot open the picked file"); atomic_store(&g_save_st, what == PICK_EXPORT ? OVS_EXPORT_FAILED : OVS_IMPORT_FAILED); }
+            else if (what == PICK_EXPORT) data_export(fd);
+            else atomic_store(&g_save_st, data_stage(fd) > 0 ? OVS_IMPORT_CONFIRM : OVS_IMPORT_FAILED);
+        }
+        if (us) (*E)->DeleteLocalRef(E, us);
+    }
+    atomic_store(&g_pick, 0); dm_overlay_redraw();
+    (*vm)->DetachCurrentThread(vm);
+    return NULL;
+}
+static void pick_start(int what) {
+    if (!g_gacls || g_ui_pipe[1] < 0) { atomic_store(&g_save_st, what == PICK_EXPORT ? OVS_EXPORT_FAILED : OVS_IMPORT_FAILED); return; }
+    int z = 0; if (!atomic_compare_exchange_strong(&g_pick, &z, what)) return;
+    pthread_t th; if (pthread_create(&th, NULL, pick_wait, (void *)(intptr_t)what)) atomic_store(&g_pick, 0); else pthread_detach(th);
+}
+static void data_init(ANativeActivity *act) {
+    JNIEnv *E = act->env; jclass c = (*E)->GetObjectClass(E, act->clazz);
+    g_f_seq = (*E)->GetStaticFieldID(E, c, "resultSeq", "I"); g_f_req = jx(E) ? NULL : (*E)->GetStaticFieldID(E, c, "requestCode", "I");
+    g_f_res = jx(E) ? NULL : (*E)->GetStaticFieldID(E, c, "resultCode", "I"); g_f_uri = jx(E) ? NULL : (*E)->GetStaticFieldID(E, c, "resultUri", "Ljava/lang/String;");
+    if (jx(E) || !g_f_seq || !g_f_req || !g_f_res || !g_f_uri) { LOG("[RED] [data] the activity is no GameActivity: no file picker for the game data"); return; }
+    if (pipe2(g_ui_pipe, O_CLOEXEC)) { g_ui_pipe[0] = g_ui_pipe[1] = -1; return; }
+    ALooper_addFd(ALooper_forThread(), g_ui_pipe[0], ALOOPER_POLL_CALLBACK, ALOOPER_EVENT_INPUT, on_ui_cmd, NULL);
+    g_gacls = (*E)->NewGlobalRef(E, c);
+}
 static void ed_open(void);
 static void menu_do(int item) {
-    if (item == OVM_OVERLAY) { atomic_store(&g_set_overlay, !atomic_load(&g_set_overlay)); atomic_store(&g_overlay, 1); settings_save(); }
+    int ss = atomic_load(&g_save_st);
+    if (ss == OVS_IMPORTED || ss == OVS_RESET_DONE) return;
+    if (atomic_load(&g_pick) && (item == OVM_EXPORT || item == OVM_IMPORT || item == OVM_RESET)) return;
+    if (ss == OVS_IMPORT_CONFIRM && item != OVM_IMPORT) data_unstage();   // a question goes with any other press
+    if ((ss == OVS_IMPORT_CONFIRM && item != OVM_IMPORT) || (ss == OVS_RESET_CONFIRM && item != OVM_RESET)) atomic_store(&g_save_st, ss = OVS_NONE);
+    if (item == OVM_EXPORT) { atomic_store(&g_save_st, OVS_NONE); pick_start(PICK_EXPORT); }
+    else if (item == OVM_IMPORT) { if (ss == OVS_IMPORT_CONFIRM) data_apply(0); else { atomic_store(&g_save_st, OVS_NONE); pick_start(PICK_IMPORT); } }
+    else if (item == OVM_RESET) { if (ss == OVS_RESET_CONFIRM) data_apply(1); else atomic_store(&g_save_st, OVS_RESET_CONFIRM); }
+    else if (item == OVM_OVERLAY) { atomic_store(&g_set_overlay, !atomic_load(&g_set_overlay)); atomic_store(&g_overlay, 1); settings_save(); }
     else if (item == OVM_RUMBLE) { int on = !atomic_load(&g_set_rumble); atomic_store(&g_set_rumble, on); dm_haptics_android_set(on); settings_save(); }
     else if (item == OVM_FPS) { atomic_store(&g_set_fps, !atomic_load(&g_set_fps)); settings_save(); }
     else if (item == OVM_MODE) { dm_set_opmode(dm_opmode() ? 0 : 1); settings_save(); }   // the game takes it when it goes on
     else if (item == OVM_TAB) { menu_tab(atomic_load(&g_menu_tab) + 1); return; }
+    else if (item == OVM_DATA || item == OVM_BACK) {
+        menu_tab(item == OVM_DATA ? OVM_DATA_PAGE : 1);
+        int r = 1; if (item == OVM_BACK) while (r < OVM_ROWS - 1 && ov_menu_item(1, r) != OVM_DATA) r++;
+        if (atomic_load(&g_menu_hi) >= 0) atomic_store(&g_menu_hi, r);
+        dm_overlay_redraw(); return;
+    }
     else if (item == OVM_EDIT) { dm_haptics_android_tap(); ed_open(); return; }
     else if (item == OVM_OPACITY) return;   // (the slider is dragged, or stepped with left and right)
     if (item >= 0 && item < OVM_N) dm_haptics_android_tap();
@@ -339,6 +527,7 @@ static void ed_key(uint64_t bit);
 static void menu_key(uint64_t bit) {   // a controller key pressed while the menu is open: up and down go through the rows, left and right change the tab or the
     if (atomic_load(&g_edit)) { ed_key(bit); return; }   // opacity on their rows, L and R change the tab anywhere, A does the row, B and + close
     int hi = atomic_load(&g_menu_hi), tab = atomic_load(&g_menu_tab), item = hi >= 0 ? ov_menu_item(tab, hi) : -1;
+    if (tab == OVM_DATA_PAGE && (bit == DM_BTN_B || bit == DM_BTN_L || bit == DM_BTN_ZL || bit == DM_BTN_R || bit == DM_BTN_ZR)) { menu_do(OVM_BACK); return; }   // back to the Game tab
     if (bit == DM_BTN_UP || bit == DM_BTN_DOWN) {
         for (int k = 0; k < OVM_ROWS; k++) { hi = hi < 0 ? (bit == DM_BTN_UP ? OVM_ROWS - 1 : 1) : (hi + (bit == DM_BTN_UP ? OVM_ROWS - 1 : 1)) % OVM_ROWS; if (ov_menu_item(tab, hi) >= 0) break; }
         atomic_store(&g_menu_hi, hi); dm_overlay_redraw();
@@ -737,7 +926,7 @@ __attribute__((visibility("default"))) void ANativeActivity_onCreate(ANativeActi
 #ifdef DM_RELEASE
     unsetenv("DM_CTL");   // a release build takes no remote key presses (the control file is a development tool)
 #endif
-    settings_load(); dm_haptics_android_start(act, atomic_load(&g_set_rumble));
+    settings_load(); dm_haptics_android_start(act, atomic_load(&g_set_rumble)); data_init(act);
     { pthread_t w; if (!pthread_create(&w, NULL, pad_watch, act->vm)) pthread_detach(w); }
     LOG("NX2A host on Android: files %s, saves %s", g_root, act->internalDataPath);
     pthread_t t; pthread_create(&t, NULL, input_thread, NULL); pthread_detach(t);

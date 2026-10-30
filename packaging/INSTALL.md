@@ -28,6 +28,16 @@ A few antivirus engines may flag `nx2android.exe` (on VirusTotal, 3 of 69 flagge
 
 With **USB debugging** on (Settings → About → tap *Build number* seven times, then Settings → Developer options → USB debugging) and the device plugged in, tick **Install on the device when done** before porting, or click **Install on device** afterwards. Allow the PC when the device asks.
 
+## 5. Your game data (saves)
+
+The game keeps its saves inside the app, where no other app can reach them. To move them, open the game's menu (the ☰ button, or Back), then **Game** → **Game data** → **Open**:
+
+- **Export data** asks where to save a `.zip` (any folder, a USB drive or a cloud drive). It is laid out as Eden exports a save, a folder named after the game's title ID with the save's files in it, so Eden can import it.
+- **Import data** asks for such a `.zip`, an Eden export for instance, and then asks again: it **replaces the game data in the app**. The app closes; open it again to play with the imported data.
+- **Clear data** erases the game data, after asking, and closes the app.
+
+Updating the app (porting the game again and installing over it) keeps the game data; uninstalling the app deletes it, so export it first.
+
 ## When something goes wrong
 
 The log at the bottom of the Port tab says why; lines in red are errors. Ask on the project's GitHub page (Issues), with the game's title ID, your device and the red lines. Never post your keys or game files.
