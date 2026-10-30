@@ -647,7 +647,7 @@ uint64_t mtl_present(const tex_t *t, double period, const int crop[4]) {
     { uint64_t vk_replay_ns(void); double vk_gpu_ms_recent(void);   // what else the frame costs: its replay and its GPU time
       static uint64_t last_exec; uint64_t ex = vk_replay_ns(), rp = ex - last_exec; last_exec = ex; double g = vk_gpu_ms_recent(); int64_t gn = g > 0 ? (int64_t)(g * 1e6) : 0;
       dm_perf_frame_cost((int64_t)rp > gn ? (int64_t)rp : gn); }
-    dm_perf_frame(period);   // paced to the game's frame period, and its work time reported to ADPF
+    dm_perf_frame(nvn_frame_deadline_ns((uint64_t)(period * 1e9)) / 1e9);   // ADPF keeps the cap's deadline: a 50 ms hint parked Z-A's CPU below 1 GHz
     static ANativeWindow *rate_win; static double rate_period;
     if (g_win && (g_win != rate_win || period != rate_period)) { rate_win = g_win; rate_period = period; dm_perf_window(g_win, period > 0 ? 1.0 / period : 60); }
     uint64_t n = ++g_presents;
