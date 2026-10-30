@@ -127,6 +127,9 @@ static class SwshXlate
         // early, over the game's malloc chunks in the same pool, and the heap broke (a crash in dlmalloc after the opening movie). With an alignment given, every access takes the form
         public int QueryHostStorageBufferOffsetAlignment() => _job["sb_align"] is JsonNode n ? (int)n : 16;
         public bool QueryHasUnalignedStorageBuffer() => _job["sb_align"] != null;
+        // Android GPUs may use 64/128 lanes: select each 32-lane warp's ballot, masks and shuffle sources (Z-A's visibility counts broke on Adreno 840).
+        public int QueryHostSubgroupSize() => _job["subgroup_size"] is JsonNode n ? (int)n : 32;
+        public bool QueryHasConstantBufferDrawParameters() => _job["draw_parameters"] is JsonNode n && (bool)n;
         // Job "gs_passthrough" = false (the Android chain): passthrough geometry shaders (Maxwell's fast GS) are written out as ordinary ones. VK_NV_geometry_shader_passthrough is NVIDIA's
         // alone; with its capability declared, Adreno refused every pipeline of Xenoblade Chronicles 3's effect geometry shaders (VK_ERROR_UNKNOWN)
         public bool QueryHostSupportsGeometryShaderPassthrough() => !(_job["gs_passthrough"] is JsonNode n && !(bool)n);

@@ -102,7 +102,8 @@ def job_for(key, stage, rec, w):   # dmsh_build.py job_for; transform feedback i
     elif code[:4] == bytes.fromhex('79563412'): code = code[0x100:]
     cp = os.path.join(w, key + '.bin'); open(cp, 'wb').write(code)
     xfb = xfb_layout(key, rec[ci:]) if stage == 'vs' else None
-    j = {'key': key, 'stage': stage, 'code': cp, 'tex': {}, 'img': {}, 'attr': {}, 'fout': {}, 'c1': c1.hex(), 'debug': False, 'reduced': True, 'sb_align': SB_ALIGN, 'gs_passthrough': False, **({'xfb': xfb} if xfb else {})}
+    # The 128-lane path also handles 32/64 lanes, preserving Maxwell's 32-lane warps without a device-specific bundle.
+    j = {'key': key, 'stage': stage, 'code': cp, 'tex': {}, 'img': {}, 'attr': {}, 'fout': {}, 'c1': c1.hex(), 'debug': False, 'reduced': True, 'sb_align': SB_ALIGN, 'subgroup_size': 128, 'gs_passthrough': False, 'draw_parameters': True, **({'xfb': xfb} if xfb else {})}
     if key in FACTS: j.update(FACTS[key])
     else: j['no_facts'] = True
     return j, c1

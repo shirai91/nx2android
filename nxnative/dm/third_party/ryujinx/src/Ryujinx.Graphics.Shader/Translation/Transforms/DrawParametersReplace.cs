@@ -59,8 +59,6 @@ namespace Ryujinx.Graphics.Shader.Translation.Transforms
                             modified = true;
                             break;
                         case Constants.NvnDrawIndexByteOffset / 4:
-                            operation.SetSource(srcIndex, GenerateLoad(IoVariable.DrawIndex));
-                            modified = true;
                             break;
                     }
                 }
