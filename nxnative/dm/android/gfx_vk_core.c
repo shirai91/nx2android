@@ -407,7 +407,11 @@ void vk_pools_sync(VkCommandBuffer cb) {
 struct vksub; static void pools_copy_back(const struct vksub *s);
 
 // ---------------- submission slots ----------------
-#define NSLOT 6
+// A submission takes the slot of the one NSLOT before it, after the GPU has finished that one (slot_recycle). With 6 slots, FINAL FANTASY RESONANCE's 9 submissions
+// a frame put each frame's main submission behind the GPU's end of the last frame's other large one: its replay waited ~37 ms a frame on the GPU, and a frame
+// was the replay plus the GPU's work (33 + 43 ms) instead of the larger of them. Slots hold command buffers and scratch memory, allocated as used
+#define NSLOT 16   // the ring's size; DM_VK_SLOTS=N (start-up, 2-16) uses N of them (a measurement)
+static int g_nslot = NSLOT;
 #define MAIN_CBS 32   // (allocated as used: DM_VK_PASS_SPLIT cuts inside passes as well)
 // GPU time: a timestamp at the start and end of each submission's main command buffer (one queue: their sum is the time the GPU was busy)
 static VkQueryPool g_tsq; uint64_t g_gpu_ns;
@@ -683,7 +687,8 @@ void mtl_sub_begin(void) {
     pthread_mutex_lock(&g_sub_lock);
     // the next slot of the ring (g_cur is -1 between submissions, so it cannot say where the ring is: every submission took slot 0 and waited in slot_recycle
     // for the one before to finish on the GPU, which kept the replay of a frame from overlapping the GPU work of the last)
-    static int next; g_cur = next; next = (next + 1) % NSLOT; vksub_t *s = &g_slot[g_cur];
+    static int next = -1; if (next < 0) { const char *e = getenv("DM_VK_SLOTS"); int n = e ? atoi(e) : 0; if (n >= 2 && n <= NSLOT) g_nslot = n; next = 0; VKLOG("submission slots: %d", g_nslot); }
+    g_cur = next; next = (next + 1) % g_nslot; vksub_t *s = &g_slot[g_cur];
     slot_recycle(s);
     s->npost = 0; s->up_used = 0; s->ngw = 0;
     VkCommandBufferBeginInfo bi = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, NULL, VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
