@@ -187,4 +187,11 @@ CUTS = {
     (0xc98f4, 'eb030732', '0b04a052', 'AllocateAddressRegion: alignment of regions from 32 MB to 1 GB orr w11,wzr,#0x2000000 → mov w11,#0x200000 (2 MB, as SDK 20)'),
     (0xc9900, 'e8030a32', '0804a052', 'AllocateAddressRegion: alignment of regions from 4 MB to 32 MB orr w8,wzr,#0x400000 → mov w8,#0x200000 (2 MB, as SDK 20)'),
   ],
+  # Untitled Goose Game 1.1.2 (v458752) sdk (SDK 8.2.0, Unity 2018.4.1f1; the same build as Captain Toad: Treasure Tracker 1.4.2's, which has no virtual address memory): the same
+  # node area cut. nninitStartup's AllocateAddressRegion(+0xc9400000) was refused (0x1803) with no region live: the 1 GB-aligned 3.14 GB did not fit in the 4.375 GB alias region
+  # after the node area. The constructor is at sdk+0x336b40 (the limit at +0x336b50 and the occupied length at +0x336bf0, both orr w9,wzr,#0x3fe00000)
+  '3ae34e689d7a35f13cbf42bfd672af8b': [
+    (0x336b50, 'e9230b32', '097ca052', 'AddressRegionManager constructor: node area limit orr w9,wzr,#0x3fe00000 → mov w9,#0x3e00000'),
+    (0x336bf0, 'e9230b32', '097ca052', 'AddressRegionManager constructor: length of the node area registered as an occupied region orr w9,wzr,#0x3fe00000 → mov w9,#0x3e00000'),
+  ],
 }
