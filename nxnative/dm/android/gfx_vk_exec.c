@@ -55,6 +55,7 @@ static void state_reset(void) {
 }
 static void prewarm_start(void);
 static uint64_t g_set_epoch = 1;   // the submission the descriptor set cache belongs to (stage_set)
+uint64_t vk_submission_serial(void) { return g_set_epoch; }   // submissions replayed so far (gfx_vk_present.c's per-frame line)
 static int32_t g_pass_bb[4];   // bounding box of the scissors the open pass's draws used (x0 y0 x1 y1)
 static int g_cb_draws;   // draws in the command buffer being recorded (vk_cmd_split after DM_VK_CB_DRAWS draws, 0 = never)
 static int g_psplit, g_psplit_depth, g_psplit_now, g_ord_parts, g_setsplit;   // DM_VK_PASS_SPLIT / _DEPTH (prepare_draw); g_psplit_now: the pass being begun goes on with the one just ended (begin_pass cuts before it);
@@ -955,7 +956,7 @@ static int tex_desc_for(int st, const dmsv_bind *b, uint64_t h, VkDescriptorImag
 enum { SETC = 8192, DRVC = 1024 };
 static struct { uint64_t h, epoch; VkDescriptorSetLayout l; VkDescriptorSet set; } g_setc[SETC];
 static struct { uint64_t h, epoch; VkBuffer b; VkDeviceSize o; } g_drvc[DRVC];
-uint64_t g_set_hits, g_set_new, g_ns_set_build, g_ns_set_hash, g_ns_set_new;   // descriptor sets: reused, new; time collecting their descriptors, hashing them, allocating and writing new ones
+uint64_t g_set_xhit, g_set_hits, g_set_new, g_ns_set_build, g_ns_set_hash, g_ns_set_new;   // descriptor sets: reused, new; time collecting their descriptors, hashing them, allocating and writing new ones
 // content hash of descriptor sets and driver segments: 8 bytes a step (a set with 32-slot texture arrays is several KB, which byte-wise FNV took milliseconds a frame over)
 static inline uint64_t fnv(uint64_t h, const void *p, size_t n) {
     const uint8_t *b = p; size_t i = 0;
@@ -963,10 +964,11 @@ static inline uint64_t fnv(uint64_t h, const void *p, size_t n) {
     for (; i < n; i++) { h ^= b[i]; h *= 0x100000001b3ull; }
     return h;
 }
+static uint64_t g_drv_last_h;   // the last driver segment's content hash (stage_set's reuse across submissions, DM_VK_SETX)
 static void drv_shared(int st, int bank, VkBuffer *buf, VkDeviceSize *off) {   // the driver segment: built, then one copy per distinct content in the submission
     uint8_t d[0x1000]; drv_segment(st, bank, d);
     // only the bytes drv_segment can write are hashed (bank 0 ends at 0x648, the c2 table at 0x968; the rest is always zero): 4 KB was 512 hash steps a segment
-    uint64_t h = fnv(0xcbf29ce484222325ull, d, bank ? 0x968 : 0x648); unsigned k = (unsigned)(h % DRVC);
+    uint64_t h = fnv(0xcbf29ce484222325ull, d, bank ? 0x968 : 0x648); unsigned k = (unsigned)(h % DRVC); g_drv_last_h = h;
     if (g_drvc[k].epoch == g_set_epoch && g_drvc[k].h == h && !g_x_nodrvc) { *buf = g_drvc[k].b; *off = g_drvc[k].o; return; }
     uint8_t *p = vk_scratch(0x1000, V.props.limits.minUniformBufferOffsetAlignment, buf, off); memcpy(p, d, sizeof d);
     g_drvc[k].h = h; g_drvc[k].epoch = g_set_epoch; g_drvc[k].b = *buf; g_drvc[k].o = *off;
@@ -1024,6 +1026,7 @@ static VkDescriptorSet stage_set(int st, vkshader_t *s, uint32_t *dofs) {
     VkDescriptorSet set = VK_NULL_HANDLE; struct { uint32_t b, o; int i; } dp[96]; int nd = 0; uint64_t tb0 = tick();
     VkWriteDescriptorSet w[96]; VkDescriptorBufferInfo bi[96]; VkDescriptorImageInfo ii[96 * 4]; VkBufferView bv[96]; uint32_t nw = 0, nii = 0;
     int ncb = 0; uint8_t mci[MEMO_CB]; VkDescriptorBufferInfo mcd[MEMO_CB];   // the constant buffers, for the memo
+    uint64_t drvh[96]; memset(drvh, 0, sizeof drvh);   // driver segments by content (DM_VK_SETX)
     g_num_um = g_num_im = 0;
     for (int i = 0; i < s->nbind && nw < 96; i++) {
         const dmsv_bind *b = &s->b[i];
@@ -1034,7 +1037,7 @@ static VkDescriptorSet stage_set(int st, vkshader_t *s, uint32_t *dofs) {
         case RK_SUPPORT: bi[nw] = (VkDescriptorBufferInfo){vk_support_buffer(), 0, 65536}; break;
         case RK_C1: vk_shader_c1(s, &buf, &off, &len); bi[nw] = (VkDescriptorBufferInfo){buf, off, len}; break;
         case RK_CBUF: cbuf_desc(st, s, b, &bi[nw]); if (ncb < MEMO_CB) { mci[ncb] = (uint8_t)i; mcd[ncb++] = bi[nw]; } break;
-        case RK_DRV: { VkBuffer sb; VkDeviceSize so; drv_shared(st, b->reg, &sb, &so); bi[nw] = (VkDescriptorBufferInfo){sb, so, 0x1000}; break; }
+        case RK_DRV: { VkBuffer sb; VkDeviceSize so; drv_shared(st, b->reg, &sb, &so); bi[nw] = (VkDescriptorBufferInfo){sb, so, 0x1000}; drvh[nw] = g_drv_last_h; break; }
         case RK_SBUF: case RK_UBO_PTR: case RK_SBUF_UBO: {
             uint64_t a = 0, n = 0;
             if (b->kind == RK_SBUF && b->reg >= 0 && b->reg < 16) { a = S.ssbo[st][b->reg].addr; n = S.ssbo[st][b->reg].size; }
@@ -1108,6 +1111,17 @@ static VkDescriptorSet stage_set(int st, vkshader_t *s, uint32_t *dofs) {
         else if (x->pTexelBufferView) h = fnv(h, x->pTexelBufferView, sizeof *x->pTexelBufferView);
     }
     unsigned k = (unsigned)(h % SETC); uint64_t tb2 = tick(); g_ns_set_hash += tb2 - tb1;
+    // DM_VK_SETX=1 (a measurement): would a set cache kept across submissions find this set? The content with driver segments by their bytes, not their copy's
+    // place, looked up among the sets of the last 20 submissions (about two frames of FINAL FANTASY RESONANCE's 9 a frame); counted only where this submission's cache misses
+    static int setx = -1; if (setx < 0) { const char *e = getenv("DM_VK_SETX"); setx = e && atoi(e); }
+    if (setx) { uint64_t h2 = fnv(0xcbf29ce484222325ull, &s->dsl, sizeof s->dsl);
+        for (uint32_t i = 0; i < nw; i++) { const VkWriteDescriptorSet *x = &w[i]; h2 = fnv(h2, &x->dstBinding, 4); h2 = fnv(h2, &x->descriptorType, 4); h2 = fnv(h2, &x->descriptorCount, 4);
+            if (drvh[i]) h2 = fnv(h2, &drvh[i], 8); else if (x->pBufferInfo) h2 = fnv(h2, x->pBufferInfo, sizeof *x->pBufferInfo);
+            else if (x->pImageInfo) h2 = fnv(h2, x->pImageInfo, sizeof *x->pImageInfo * x->descriptorCount); else if (x->pTexelBufferView) h2 = fnv(h2, x->pTexelBufferView, sizeof *x->pTexelBufferView); }
+        static struct { uint64_t h, epoch; } x[1 << 16]; unsigned k2 = (unsigned)(h2 % (1 << 16));
+        int here = g_setc[k].epoch == g_set_epoch && g_setc[k].h == h && g_setc[k].l == s->dsl;
+        if (!here && x[k2].h == h2 && x[k2].epoch < g_set_epoch && x[k2].epoch + 20 >= g_set_epoch) g_set_xhit++;
+        x[k2].h = h2; x[k2].epoch = g_set_epoch; }
     if (g_setc[k].epoch == g_set_epoch && g_setc[k].h == h && g_setc[k].l == s->dsl && !g_tracing && !g_x_nosetc) { g_set_hits++; set = g_setc[k].set; }
     else { set = vk_alloc_set(s->dsl); g_set_new++;
         for (uint32_t i = 0; i < nw; i++) w[i].dstSet = set;
