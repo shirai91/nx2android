@@ -695,6 +695,7 @@ static VkBufferView tbuf_shadow(const tex_t *t, const vkfmt_t *f, uint64_t pool)
     VkBufferViewCreateInfo ci = {VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO, NULL, 0, b, f->vk, off, n}; VkBufferView v;
     if (vkCreateBufferView(V.dev, &ci, NULL, &v)) return VK_NULL_HANDLE;
     vk_defer_free_bview(v); g_tbs_bytes += n;
+    if (g_ntbs >= 64) VKRED_ONCE(17, "more than 64 buffer textures read through aligned copies in one submission: the later ones are copied again at each binding");
     if (g_ntbs < 64) g_tbs[g_ntbs++] = (__typeof__(g_tbs[0])){(uint64_t)(uintptr_t)t->mem, pool, (uint32_t)t->d.format, t->d.width, v};
     { static int k; if (k++ < 3) VKLOG("buffer texture at %#llx (format %#x, %u elements) read through an aligned copy (submission %llu, %llu KB copied so far)",
                                       (unsigned long long)(uintptr_t)t->mem, t->d.format, t->d.width, (unsigned long long)g_tbs_gen, (unsigned long long)(g_tbs_bytes >> 10)); }
