@@ -1,0 +1,10 @@
+# Pokémon Shining Pearl on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Unity on SDK 11.4.3, update 1.3.0 (v393216). game.tsv and the shader tables are the survey's (profile_guess.py), not checked further than the port running.
+# On a POCO F7 (25053PC47G, Snapdragon 8s Gen 4, Adreno 825, Android 16; 2026-10-31), handheld, 1280x720 in a 1920x1080 window with the crop set: boot, the first scenes
+# and the player's house render right (a pass dump of the last pass shows the opening scene), 30-33 fps, no [RED] line. The first launch after an install compiles about 2,100
+# pipelines in its first frame (65 s) with the screen black and the loading starters in the corner; later launches reuse the pipeline cache (vk_pipelines.bin).
+# Not played yet beyond that: menus, a save, battles, the overworld at speed.
+status	boots
+tested	v393216 POCO F7 25053PC47G (Snapdragon 8s Gen 4, Adreno 825, Android 16)
+package	org.nx2a.pokemonshiningpearl
+orientation	landscape

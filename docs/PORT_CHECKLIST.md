@@ -36,7 +36,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [ ] Donkey Kong Country: Tropical Freeze · `0100C1F0051B6000` · upstream profile
 - [ ] DRAGON QUEST VII Reimagined · `0100A9D01C446000` · profile here
 - [ ] DRAGON QUEST XI S: Echoes of an Elusive Age – Definitive Edition · `01006C300E9F0000` · profile here · 60 fps with 1.0.4
-- [ ] FINAL FANTASY RESONANCE · `0100606026F12000` · profile here · 60 fps with 1.0.1
+- [x] FINAL FANTASY RESONANCE · `0100606026F12000` · profile here · 60 fps with 1.0.1
 - [ ] FINAL FANTASY TACTICS - The Ivalice Chronicles · `010038B015560000` · profile here
 - [ ] FINAL FANTASY X/X-2 HD Remaster · `0100BC300CB48000` · upstream profile
 - [ ] Fire Emblem Engage · `0100A6301214E000` · profile here · 60 fps with 2.0.0
@@ -71,6 +71,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [ ] Pokémon Legends: Z-A · `0100F43008C44000` · profile here
 - [ ] Pokémon Scarlet · `0100A3D008C5C000` · upstream profile
 - [ ] Pokémon Shield · `01008DB008C2C000` · upstream profile
+- [x] Pokémon Shining Pearl · `010018E011D92000` · profile here
 - [ ] Pokémon Sword · `0100ABF008968000` · upstream profile
 - [ ] Portal · `01007BB017812000` · upstream profile · Android only on NVIDIA Shield TV
 - [ ] Return of the Obra Dinn · `010032E00E6E2000` · upstream profile

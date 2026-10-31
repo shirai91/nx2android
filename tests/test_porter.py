@@ -469,5 +469,17 @@ class Saves(unittest.TestCase):   # porter/saves.py: the save folders on the dev
         self.assertEqual(saves._unpacked(t, None), t)   # a folder: as it is
 
 
+class UeBatch(unittest.TestCase):   # nxnative/dm/gfx/tools/uepak.py Batch: the rounds of the device's Oodle decoder
+    def test_rounds(self):
+        sys.path.insert(0, str(REPO / 'nxnative/dm/gfx/tools')); import uepak
+        b = uepak.Batch()
+        self.assertEqual(b(b'abc', 4), bytes(4))   # not decoded yet: zeros, and recorded
+        b(b'abc', 4); b(b'xyz', 2)
+        self.assertEqual(list(b.todo), [(hashlib.sha1(b'abc').digest(), 4), (hashlib.sha1(b'xyz').digest(), 2)])
+        b.add([b'ABCD', b'XY'])
+        self.assertEqual((b(b'abc', 4), b(b'xyz', 2)), (b'ABCD', b'XY'))
+        self.assertFalse(b.todo)
+
+
 if __name__ == '__main__':
     unittest.main()

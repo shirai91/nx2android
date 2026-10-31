@@ -52,6 +52,7 @@ typedef struct {
     VkPipelineCache pcache;
     int has_bc, has_astc, has_gs, has_depth_clip_ctl, has_custom_border, has_robust2, has_xfb, has_imageless, has_dtiming, has_dynrender, has_timeline;
     float max_aniso;
+    VkDeviceSize tbuf_align_u, tbuf_align_s; int tbuf_single_u, tbuf_single_s;   // texel buffer view offsets, uniform / storage (Vulkan 1.3's texel buffer alignment; vk_tbuf_view)
 } vkdev_t;
 extern vkdev_t V;
 uint32_t vk_mem_type(uint32_t bits, VkMemoryPropertyFlags want, VkMemoryPropertyFlags avoid);
@@ -75,6 +76,7 @@ void vk_defer_free_image(VkImage i, VkDeviceMemory m);
 VkDeviceMemory vk_image_memory(const VkMemoryRequirements *req, uint32_t type, VkDeviceSize *off, void **sub);   // NULL on failure; *sub: a slot of a shared block, or NULL (memory of its own)
 void vk_defer_free_image_sub(VkImage i, void *sub);
 void vk_defer_free_view(VkImageView v);
+void vk_defer_free_bview(VkBufferView v);
 VkDescriptorSet vk_alloc_set(VkDescriptorSetLayout l);    // from this submission's descriptor pools
 uint64_t vk_fence_done(void);   // the highest submission fence the GPU has completed
 
@@ -139,14 +141,14 @@ typedef struct {
     uint8_t dyn[96]; int ndyn;          // bindings of uniform buffers bound with a dynamic offset (gfx_vk_exec.c stage_set), and their count
     int xfb; uint32_t xfb_stride[4];    // a vertex shader that captures transform feedback (its SPIR-V has the Xfb execution mode), and each buffer's stride
     uint32_t *spv, nspv;                // its SPIR-V as the module was made from it, for the variants below
-    struct { uint64_t um, im; uint32_t xo; int fd; VkShaderModule mod; } var[8]; int nvar;   // variants whose sampled bindings (bit = index in b) of an integer view read uint (um) / int (im) texels,
+    struct { uint64_t um, im; uint32_t xo; int fd; VkShaderModule mod; uint32_t ii; } var[8]; int nvar;   // variants whose sampled bindings (bit = index in b) of an integer view read uint (um) / int (im) texels,
                                                                                     // that declare the vec4 outputs xo (bit = location) the next stage reads, and (fd) that write gl_FragDepth = gl_FragCoord.z
     int depth_repl;                     // a fragment shader that writes gl_FragDepth (DepthReplacing / DepthGreater / DepthLess)
     uint32_t in_locs, out_locs;         // the vec4 (or per-vertex vec4) inputs and outputs it declares, by location
     int setmemo;                        // gfx_vk_exec.c stage_set: 1 its set may be memoized per stage, 2 not (it reads handles or addresses from uniform buffer memory), 0 not known yet
 } vkshader_t;
 vkshader_t *vk_shader(uint64_t key, int stage);   // NULL when the bundle has no such shader
-VkShaderModule vk_shader_module(vkshader_t *s, uint64_t um, uint64_t im, uint32_t xo, int fd);   // the module, or its variant (integer views; extra outputs; fragment depth written)
+VkShaderModule vk_shader_module(vkshader_t *s, uint64_t um, uint64_t im, uint32_t xo, int fd, uint32_t ii);   // the module, or its variant (integer views; extra outputs; fragment depth written)
 void vk_shaders_open(const char *path);
 VkBuffer vk_support_buffer(void);
 VkBuffer vk_zero_buffer(void);

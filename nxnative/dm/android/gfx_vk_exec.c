@@ -55,6 +55,7 @@ static void state_reset(void) {
 }
 static void prewarm_start(void);
 static uint64_t g_set_epoch = 1;   // the submission the descriptor set cache belongs to (stage_set)
+uint64_t vk_submission_serial(void) { return g_set_epoch; }   // submissions replayed so far (gfx_vk_present.c's per-frame line)
 static int32_t g_pass_bb[4];   // bounding box of the scissors the open pass's draws used (x0 y0 x1 y1)
 static int g_cb_draws;   // draws in the command buffer being recorded (vk_cmd_split after DM_VK_CB_DRAWS draws, 0 = never)
 static int g_psplit, g_psplit_depth, g_psplit_now, g_ord_parts, g_setsplit;   // DM_VK_PASS_SPLIT / _DEPTH (prepare_draw); g_psplit_now: the pass being begun goes on with the one just ended (begin_pass cuts before it);
@@ -163,9 +164,10 @@ static void render_cond(const p_render_cond *rc) {
     g_rc_skip = known && (rc->mode ? x == y : x != y);
 }
 
+static void ira_poll(void); static int g_nira; static struct { uint64_t mem; uint32_t n, fmt; } g_tbr[4]; static int g_ntbr;   // (and the buffer textures stage_set traced for the next one)   // traced indirect draws' arguments as the GPU read them (ira_record)
 void vk_exec_reset(void) {   // a new submission: NVN state does not carry over between command buffers, the replay starts from the defaults
     static int inited; if (!inited) { inited = 1; state_reset(); prewarm_start(); }
-    g_rc_npend = 0; g_rc_skip = 0;
+    g_rc_npend = 0; g_rc_skip = 0; void vk_tbuf_shadow_reset(void); vk_tbuf_shadow_reset(); if (g_nira) ira_poll();
     S.pass_open = 0; S.bound_pipe = VK_NULL_HANDLE; g_cb_draws = 0; g_ord_parts = 0; g_psplit_now = 0; g_set_epoch++; x_read();
 }
 
@@ -288,7 +290,7 @@ static int pass_commit(void) {
     if (g_x_tracepass == -2) { g_x_listpasses = 1; VKLOG("--- pass %d: %ux%u, colour formats %d %d, depth format %d", g_sub_pass - 1, S.pass_w, S.pass_h, S.cfmt[0], S.cfmt[1], S.dfmt); }
     if (g_x_traceframe[0]) {   // DM_VK_TRACE_FRAME=WxH[:fmt[:fmt]] (live): trace every pass of the next submission whose targets match (a whole effect chain in one log)
         char b[48]; snprintf(b, sizeof b, "%ux%u:%d:%d", S.pass_w, S.pass_h, S.cfmt[0], S.cfmt[1]);
-        g_x_tracepass = !strncmp(b, g_x_traceframe, strlen(g_x_traceframe)) ? g_sub_pass - 1 : -1; g_x_traceframe_on = 1; }
+        g_x_tracepass = !strncmp(b, g_x_traceframe, strlen(g_x_traceframe)) ? g_sub_pass - 1 : -1; if (g_x_tracepass >= 0) g_x_traceframe_on = 1; }   // armed until a submission has such a pass (9 a frame in FINAL FANTASY RESONANCE)
     if (g_x_tracesize[0] && g_x_tracepass < 0) {   // DM_VK_TRACE_SIZE=WxH[:format[:format]] (live): trace the next pass whose first colour target is that (passes are numbered anew each frame)
         char b[48]; snprintf(b, sizeof b, "%ux%u:%d:%d", S.pass_w, S.pass_h, S.cfmt[0], S.cfmt[1]);
         const char *h = strchr(g_x_tracesize, '#'); size_t l = h ? (size_t)(h - g_x_tracesize) : strlen(g_x_tracesize);   // #n: the (n+1)th such pass
@@ -634,6 +636,17 @@ static void clear_ds(const p_clear_ds *c) {
 }
 
 // ---------------- formats and enums ----------------
+static int vfmt_int(VkFormat f) {   // an integer vertex attribute format: 1 unsigned, 2 signed (build_pipeline's integer inputs)
+    switch (f) {
+    case VK_FORMAT_R8_UINT: case VK_FORMAT_R8G8_UINT: case VK_FORMAT_R8G8B8_UINT: case VK_FORMAT_R8G8B8A8_UINT: case VK_FORMAT_A2B10G10R10_UINT_PACK32: case VK_FORMAT_R16_UINT:
+    case VK_FORMAT_R16G16_UINT: case VK_FORMAT_R16G16B16_UINT: case VK_FORMAT_R16G16B16A16_UINT: case VK_FORMAT_R32_UINT: case VK_FORMAT_R32G32_UINT: case VK_FORMAT_R32G32B32_UINT:
+    case VK_FORMAT_R32G32B32A32_UINT: return 1;
+    case VK_FORMAT_R8_SINT: case VK_FORMAT_R8G8_SINT: case VK_FORMAT_R8G8B8_SINT: case VK_FORMAT_R8G8B8A8_SINT: case VK_FORMAT_A2B10G10R10_SINT_PACK32: case VK_FORMAT_R16_SINT:
+    case VK_FORMAT_R16G16_SINT: case VK_FORMAT_R16G16B16_SINT: case VK_FORMAT_R16G16B16A16_SINT: case VK_FORMAT_R32_SINT: case VK_FORMAT_R32G32_SINT: case VK_FORMAT_R32G32B32_SINT:
+    case VK_FORMAT_R32G32B32A32_SINT: return 2;
+    default: return 0;
+    }
+}
 static VkFormat vertex_format(int f, int want_int, int want_sint) {
     static const uint16_t rgb[] = {VK_FORMAT_R8G8B8_UNORM, VK_FORMAT_R8G8B8_SNORM, VK_FORMAT_R8G8B8_UINT, VK_FORMAT_R8G8B8_SINT, VK_FORMAT_R16G16B16_SFLOAT, VK_FORMAT_R16G16B16_UNORM,
         VK_FORMAT_R16G16B16_SNORM, VK_FORMAT_R16G16B16_UINT, VK_FORMAT_R16G16B16_SINT, VK_FORMAT_R32G32B32_SFLOAT, VK_FORMAT_R32G32B32_UINT, VK_FORMAT_R32G32B32_SINT};
@@ -720,8 +733,16 @@ typedef struct {
     uint64_t um[3], im[3];   // each stage's sampled bindings given integer views (vk_shader_module)
 } pkey;
 static nvn_hmap g_pipes = {.klen = sizeof(pkey)}; static pthread_mutex_t g_pipe_mu = PTHREAD_MUTEX_INITIALIZER;   // the replay thread and the prewarm threads
+static nvn_hmap g_cpipes = {.klen = 24};   // compute pipelines by {shader, its integer-texel bindings}; under g_pipe_mu too
+static VkPipeline compute_make(vkshader_t *cs, const uint64_t ck[3]);
 static VkPipeline build_pipeline(const pkey *k, VkPipelineLayout layout, vkshader_t *const stg[3]);
 static void pipe_record(const pkey *k);
+// Pipelines made on the replay thread, the frame waiting on them (the long-frame log's "new pipelines … ms in all", hle_nvn.c, through mtl_create_stats / mtl_create_ns):
+// graphics and compute counted apart, so the log tells a compile stall from other long frames (FINAL FANTASY RESONANCE's 0.5-2.3 s frames after its first shader variants)
+static uint64_t g_made_n[2], g_made_ns[2];
+static void vk_made_note(int compute, uint64_t ns) { __atomic_add_fetch(&g_made_n[compute], 1, __ATOMIC_RELAXED); __atomic_add_fetch(&g_made_ns[compute], ns, __ATOMIC_RELAXED); }
+void mtl_create_stats(uint64_t *l, uint64_t *p) { *l = __atomic_load_n(&g_made_n[1], __ATOMIC_RELAXED); *p = __atomic_load_n(&g_made_n[0], __ATOMIC_RELAXED); }   // l: compute, p: graphics
+void mtl_create_ns(uint64_t *l, uint64_t *p) { *l = __atomic_load_n(&g_made_ns[1], __ATOMIC_RELAXED); *p = __atomic_load_n(&g_made_ns[0], __ATOMIC_RELAXED); }
 // The last key and its pipeline (the replay thread's only; pipelines are never dropped): runs of draws with one pipeline skip the 992-byte hash and the lock
 static pkey g_last_k; static VkPipeline g_last_p;
 static VkPipeline graphics_pipeline(const pkey *k, VkPipelineLayout layout) {
@@ -729,7 +750,7 @@ static VkPipeline graphics_pipeline(const pkey *k, VkPipelineLayout layout) {
     pthread_mutex_lock(&g_pipe_mu); VkPipeline p = nvn_hm_get(&g_pipes, k); pthread_mutex_unlock(&g_pipe_mu);
     if (p) { g_last_k = *k; g_last_p = p; return p == (void *)1 ? VK_NULL_HANDLE : p; }
     vkshader_t *stg[3] = {S.sh[0], S.sh[1], S.sh[2]};
-    p = build_pipeline(k, layout, stg);
+    uint64_t t0 = tnow(); p = build_pipeline(k, layout, stg); vk_made_note(0, tnow() - t0);
     pthread_mutex_lock(&g_pipe_mu);
     VkPipeline had = nvn_hm_get(&g_pipes, k);
     if (had) { if (p != (void *)1) vkDestroyPipeline(V.dev, p, NULL); p = had; }   // a prewarm thread made it meanwhile
@@ -741,17 +762,34 @@ static VkPipeline graphics_pipeline(const pkey *k, VkPipelineLayout layout) {
 // threads, before the game reaches it, so a scene seen once never stalls a frame on a pipeline compile again (the driver's compile, not the
 // pipeline cache's lookup, is the cost: tens of milliseconds per pipeline on Adreno). DM_VK_NOPREWARM=1 turns it off.
 #define PIPE_MAGIC 0x31455050u   // "PPE1"; the header also holds sizeof(pkey), so a changed key layout starts a new file
-static FILE *g_prec;
+// Compute pipelines the same way, in DM_ROOT/vk_cpipelines.bin ({shader, integer-texel bindings} records): until then they were made at their first dispatch at every boot,
+// the frame waiting on the compile (FINAL FANTASY RESONANCE has 2,934 compute shaders)
+#define CPIPE_MAGIC 0x31455043u   // "CPE1"
+static FILE *g_prec, *g_cprec;
 static void pipe_record(const pkey *k) {   // under g_pipe_mu
     if (!g_prec || k->alt) return;   // DM_VK_SPV_ALT's pipelines are a debugging run's own
     fwrite(k, sizeof *k, 1, g_prec); fflush(g_prec);
 }
+static void cpipe_record(const uint64_t ck[3]) { if (g_cprec) { fwrite(ck, 8, 3, g_cprec); fflush(g_cprec); } }   // under g_pipe_mu
 static pkey *g_pw; static size_t g_pw_n; static volatile size_t g_pw_next, g_pw_done;
+static uint64_t (*g_cpw)[3]; static size_t g_cpw_n;   // compute records, prewarmed after the graphics ones
 static void *prewarm_thread(void *arg) {
     (void)arg; pthread_setname_np(pthread_self(), "vk prewarm");
     setpriority(PRIO_PROCESS, 0, 10);   // below the game's threads: prewarm uses idle cores
     for (;;) {
-        size_t i = __atomic_fetch_add(&g_pw_next, 1, __ATOMIC_RELAXED); if (i >= g_pw_n) break;
+        size_t i = __atomic_fetch_add(&g_pw_next, 1, __ATOMIC_RELAXED); if (i >= g_pw_n + g_cpw_n) break;
+        if (i >= g_pw_n) {
+            const uint64_t *ck = g_cpw[i - g_pw_n]; vkshader_t *cs = vk_shader(ck[0], 5); if (!cs) continue;
+            pthread_mutex_lock(&g_pipe_mu); int have = nvn_hm_get(&g_cpipes, ck) != NULL; pthread_mutex_unlock(&g_pipe_mu);
+            if (have) continue;
+            VkPipeline p = compute_make(cs, ck);
+            pthread_mutex_lock(&g_pipe_mu);
+            if (!nvn_hm_get(&g_cpipes, ck)) nvn_hm_put(&g_cpipes, ck, p); else if (p != (void *)1) vkDestroyPipeline(V.dev, p, NULL);
+            pthread_mutex_unlock(&g_pipe_mu);
+            size_t d = __atomic_add_fetch(&g_pw_done, 1, __ATOMIC_RELAXED);
+            if (d == g_pw_n + g_cpw_n) VKLOG("prewarm: %zu of %zu pipelines (%zu compute)", d, g_pw_n + g_cpw_n, g_cpw_n);
+            continue;
+        }
         const pkey *k = &g_pw[i];
         pthread_mutex_lock(&g_pipe_mu); int have = nvn_hm_get(&g_pipes, k) != NULL; pthread_mutex_unlock(&g_pipe_mu);
         if (have) continue;
@@ -765,7 +803,7 @@ static void *prewarm_thread(void *arg) {
         if (!nvn_hm_get(&g_pipes, k)) nvn_hm_put(&g_pipes, k, p); else if (p != (void *)1) vkDestroyPipeline(V.dev, p, NULL);
         pthread_mutex_unlock(&g_pipe_mu);
         size_t d = __atomic_add_fetch(&g_pw_done, 1, __ATOMIC_RELAXED);
-        if (d == g_pw_n || d % 500 == 0) VKLOG("prewarm: %zu of %zu pipelines", d, g_pw_n);
+        if (d == g_pw_n + g_cpw_n || d % 500 == 0) VKLOG("prewarm: %zu of %zu pipelines", d, g_pw_n + g_cpw_n);
     }
     return NULL;
 }
@@ -781,9 +819,17 @@ static void prewarm_start(void) {
     if (f) fclose(f);
     // rewrite the file with the records read (dropping a torn last record), then append to it
     g_prec = fopen(path, "wb"); if (g_prec) { fwrite(hdr, sizeof hdr, 1, g_prec); if (g_pw_n) fwrite(g_pw, sizeof(pkey), g_pw_n, g_prec); fflush(g_prec); }
-    if (!g_pw_n || getenv("DM_VK_NOPREWARM")) { VKLOG("prewarm: %zu pipelines recorded%s", g_pw_n, g_pw_n ? ", off (DM_VK_NOPREWARM)" : ""); return; }
+    snprintf(path, sizeof path, "%s/vk_cpipelines.bin", root);   // the compute records, the same way
+    uint32_t chdr[2] = {CPIPE_MAGIC, 24}; f = fopen(path, "rb");
+    if (f && fread(fh, sizeof fh, 1, f) == 1 && fh[0] == chdr[0] && fh[1] == chdr[1]) {
+        fseek(f, 0, SEEK_END); long n = (ftell(f) - (long)sizeof fh) / 24; fseek(f, sizeof fh, SEEK_SET);
+        if (n > 0) { g_cpw = malloc((size_t)n * 24); g_cpw_n = fread(g_cpw, 24, (size_t)n, f); }
+    }
+    if (f) fclose(f);
+    g_cprec = fopen(path, "wb"); if (g_cprec) { fwrite(chdr, sizeof chdr, 1, g_cprec); if (g_cpw_n) fwrite(g_cpw, 24, g_cpw_n, g_cprec); fflush(g_cprec); }
+    if (!(g_pw_n + g_cpw_n) || getenv("DM_VK_NOPREWARM")) { VKLOG("prewarm: %zu + %zu compute pipelines recorded%s", g_pw_n, g_cpw_n, g_pw_n + g_cpw_n ? ", off (DM_VK_NOPREWARM)" : ""); return; }
     long nc = sysconf(_SC_NPROCESSORS_ONLN); int nt = nc >= 8 ? 3 : nc >= 4 ? 2 : 1;
-    VKLOG("prewarm: %zu recorded pipelines on %d threads", g_pw_n, nt);
+    VKLOG("prewarm: %zu recorded pipelines + %zu compute on %d threads", g_pw_n, g_cpw_n, nt);
     for (int i = 0; i < nt; i++) { pthread_t t; pthread_attr_t a; pthread_attr_init(&a); pthread_attr_setdetachstate(&a, PTHREAD_CREATE_DETACHED); pthread_create(&t, &a, prewarm_thread, NULL); pthread_attr_destroy(&a); }
 }
 static VkPipeline build_pipeline(const pkey *k, VkPipelineLayout layout, vkshader_t *const stg[3]) {
@@ -794,7 +840,10 @@ static VkPipeline build_pipeline(const pkey *k, VkPipelineLayout layout, vkshade
     const vkshader_t *fs = stg[1] && !k->raster_discard ? stg[1] : NULL; uint32_t xo[3] = {0};
     if (stg[0]) xo[0] = (stg[2] ? stg[2]->in_locs : fs ? fs->in_locs : 0) & ~stg[0]->out_locs;
     if (stg[2]) xo[2] = (fs ? fs->in_locs : 0) & ~stg[2]->out_locs;
-    for (int i = 0; i < 3; i++) if (stg[i] && !(i == 1 && k->raster_discard)) ss[ns++] = (VkPipelineShaderStageCreateInfo){VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, fl[i], vk_shader_module(stg[i], k->um[i], k->im[i], k->alt && !k->um[i] && !k->im[i] && !xo[i] ? 1u << 31 : xo[i], i == 1 ? (k->fdz ? 1 : 0) | (k->dual ? 2 : 0) : 0), "main", NULL};
+    // integer attribute formats at inputs the vertex shader declares float (vk_shader_module's integer inputs: bit = location, uint; bit 16 + location, int)
+    uint32_t ii = 0; if (stg[0]) for (uint32_t a = 0; a < k->nattr; a++) { int kd = vfmt_int((VkFormat)k->attr[a].fmt); uint32_t l = k->attr[a].loc;
+        if (kd && l < 16 && !((stg[0]->local[1] | stg[0]->local[2]) >> l & 1)) ii |= 1u << (kd == 2 ? 16 + l : l); }
+    for (int i = 0; i < 3; i++) if (stg[i] && !(i == 1 && k->raster_discard)) ss[ns++] = (VkPipelineShaderStageCreateInfo){VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, fl[i], vk_shader_module(stg[i], k->um[i], k->im[i], xo[i], (i == 1 ? (k->fdz ? 1 : 0) | (k->dual ? 2 : 0) : 0) | (k->alt ? 4 : 0), i == 0 ? ii : 0), "main", NULL};
     VkVertexInputAttributeDescription ad[16]; VkVertexInputBindingDescription bd[17]; VkVertexInputBindingDivisorDescriptionEXT dd[17]; uint32_t ndd = 0;
     for (uint32_t i = 0; i < k->nattr; i++) ad[i] = (VkVertexInputAttributeDescription){k->attr[i].loc, k->attr[i].binding, (VkFormat)k->attr[i].fmt, k->attr[i].off};
     for (uint32_t i = 0; i < k->nbind; i++) { bd[i] = (VkVertexInputBindingDescription){k->bind[i].binding, k->bind[i].stride, (VkVertexInputRate)k->bind[i].rate};
@@ -922,7 +971,7 @@ static int tex_desc_for(int st, const dmsv_bind *b, uint64_t h, VkDescriptorImag
 enum { SETC = 8192, DRVC = 1024 };
 static struct { uint64_t h, epoch; VkDescriptorSetLayout l; VkDescriptorSet set; } g_setc[SETC];
 static struct { uint64_t h, epoch; VkBuffer b; VkDeviceSize o; } g_drvc[DRVC];
-uint64_t g_set_hits, g_set_new, g_ns_set_build, g_ns_set_hash, g_ns_set_new;   // descriptor sets: reused, new; time collecting their descriptors, hashing them, allocating and writing new ones
+uint64_t g_set_xhit, g_set_hits, g_set_new, g_ns_set_build, g_ns_set_hash, g_ns_set_new;   // descriptor sets: reused, new; time collecting their descriptors, hashing them, allocating and writing new ones
 // content hash of descriptor sets and driver segments: 8 bytes a step (a set with 32-slot texture arrays is several KB, which byte-wise FNV took milliseconds a frame over)
 static inline uint64_t fnv(uint64_t h, const void *p, size_t n) {
     const uint8_t *b = p; size_t i = 0;
@@ -930,10 +979,11 @@ static inline uint64_t fnv(uint64_t h, const void *p, size_t n) {
     for (; i < n; i++) { h ^= b[i]; h *= 0x100000001b3ull; }
     return h;
 }
+static uint64_t g_drv_last_h;   // the last driver segment's content hash (stage_set's reuse across submissions, DM_VK_SETX)
 static void drv_shared(int st, int bank, VkBuffer *buf, VkDeviceSize *off) {   // the driver segment: built, then one copy per distinct content in the submission
     uint8_t d[0x1000]; drv_segment(st, bank, d);
     // only the bytes drv_segment can write are hashed (bank 0 ends at 0x648, the c2 table at 0x968; the rest is always zero): 4 KB was 512 hash steps a segment
-    uint64_t h = fnv(0xcbf29ce484222325ull, d, bank ? 0x968 : 0x648); unsigned k = (unsigned)(h % DRVC);
+    uint64_t h = fnv(0xcbf29ce484222325ull, d, bank ? 0x968 : 0x648); unsigned k = (unsigned)(h % DRVC); g_drv_last_h = h;
     if (g_drvc[k].epoch == g_set_epoch && g_drvc[k].h == h && !g_x_nodrvc) { *buf = g_drvc[k].b; *off = g_drvc[k].o; return; }
     uint8_t *p = vk_scratch(0x1000, V.props.limits.minUniformBufferOffsetAlignment, buf, off); memcpy(p, d, sizeof d);
     g_drvc[k].h = h; g_drvc[k].epoch = g_set_epoch; g_drvc[k].b = *buf; g_drvc[k].o = *off;
@@ -991,6 +1041,7 @@ static VkDescriptorSet stage_set(int st, vkshader_t *s, uint32_t *dofs) {
     VkDescriptorSet set = VK_NULL_HANDLE; struct { uint32_t b, o; int i; } dp[96]; int nd = 0; uint64_t tb0 = tick();
     VkWriteDescriptorSet w[96]; VkDescriptorBufferInfo bi[96]; VkDescriptorImageInfo ii[96 * 4]; VkBufferView bv[96]; uint32_t nw = 0, nii = 0;
     int ncb = 0; uint8_t mci[MEMO_CB]; VkDescriptorBufferInfo mcd[MEMO_CB];   // the constant buffers, for the memo
+    uint64_t drvh[96]; memset(drvh, 0, sizeof drvh);   // driver segments by content (DM_VK_SETX)
     g_num_um = g_num_im = 0;
     for (int i = 0; i < s->nbind && nw < 96; i++) {
         const dmsv_bind *b = &s->b[i];
@@ -1000,8 +1051,14 @@ static VkDescriptorSet stage_set(int st, vkshader_t *s, uint32_t *dofs) {
         switch (b->kind) {
         case RK_SUPPORT: bi[nw] = (VkDescriptorBufferInfo){vk_support_buffer(), 0, 65536}; break;
         case RK_C1: vk_shader_c1(s, &buf, &off, &len); bi[nw] = (VkDescriptorBufferInfo){buf, off, len}; break;
-        case RK_CBUF: cbuf_desc(st, s, b, &bi[nw]); if (ncb < MEMO_CB) { mci[ncb] = (uint8_t)i; mcd[ncb++] = bi[nw]; } break;
-        case RK_DRV: { VkBuffer sb; VkDeviceSize so; drv_shared(st, b->reg, &sb, &so); bi[nw] = (VkDescriptorBufferInfo){sb, so, 0x1000}; break; }
+        case RK_CBUF: cbuf_desc(st, s, b, &bi[nw]); if (ncb < MEMO_CB) { mci[ncb] = (uint8_t)i; mcd[ncb++] = bi[nw]; }
+            if (g_tracing) { char t[220]; int o = 0; for (int q = 0; q < 12; q++) { uint32_t u = ubo_word(st, b->reg, 4 * q); float f; memcpy(&f, &u, 4); o += snprintf(t + o, sizeof t - (size_t)o, " %g", (double)f); }   // its first 12 words (a traced draw)
+                VKLOG("  stage %d binding %u: constant buffer c%d at %#llx, first words:%s", st, b->binding, b->reg, (unsigned long long)(b->reg >= 0 && b->reg < 16 ? S.ubo[st][b->reg].addr : 0), t);
+                const char *dd = getenv("DM_VK_TRACE_DUMP"); const p_bind_buf *u = b->reg >= 0 && b->reg < 16 ? &S.ubo[st][b->reg] : NULL;   // DM_VK_TRACE_DUMP=<dir>: the whole buffer to <dir>/d<draw>_s<stage>_b<binding>.bin
+                if (dd && *dd && u && u->addr) { uint32_t n = u->size ? (uint32_t)(u->size > 65536 ? 65536 : u->size) : 4096; uint8_t *x = malloc(n); void vk_ubd_read(uint64_t a, uint64_t n, uint8_t *dst); vk_ubd_read(u->addr, n, x);
+                    char path[600]; snprintf(path, sizeof path, "%s/d%llu_s%d_b%u.bin", dd, (unsigned long long)g_vkst.draws, st, b->binding); FILE *f = fopen(path, "wb"); if (f) { fwrite(x, 1, n, f); fclose(f); } free(x); } }
+            break;
+        case RK_DRV: { VkBuffer sb; VkDeviceSize so; drv_shared(st, b->reg, &sb, &so); bi[nw] = (VkDescriptorBufferInfo){sb, so, 0x1000}; drvh[nw] = g_drv_last_h; break; }
         case RK_SBUF: case RK_UBO_PTR: case RK_SBUF_UBO: {
             uint64_t a = 0, n = 0;
             if (b->kind == RK_SBUF && b->reg >= 0 && b->reg < 16) { a = S.ssbo[st][b->reg].addr; n = S.ssbo[st][b->reg].size; }
@@ -1033,6 +1090,12 @@ static VkDescriptorSet stage_set(int st, vkshader_t *s, uint32_t *dofs) {
             uint64_t h = b->kind == RK_TBUF ? (b->reg >= 0 && b->reg < 256 ? S.tex[st][b->reg] : 0) : b->kind == RK_IMG_TBUF ? (b->reg >= 0 && b->reg < 32 ? S.img[st][b->reg] : 0) : ubo_word(st, b->reg, b->off);
             const view_t *v; const tex_t *t = NULL; int tid = (int)(h & 0xfffff);
             bv[nw] = tid && vk_tex_by_id(tid, &v, &t) && t && t->d.target == NVN_TEXTURE_TARGET_BUFFER ? vk_tbuf_view(t) : VK_NULL_HANDLE;
+            if (g_tracing && t) { vkpool_t *tp = t->mem ? vk_pool_of((uint64_t)(uintptr_t)t->mem, 1) : NULL;   // a buffer texture: where it is, and whether its view is the aligned copy (tbuf_shadow)
+                VKLOG("  stage %d binding %u: buffer texture id %d at %p (pool +%#llx) format %#x, %u elements, target %d%s", st, b->binding, tid, t->mem, tp ? (unsigned long long)((uint64_t)(uintptr_t)t->mem - tp->lo) : 0ull,
+                      t->d.format, t->d.width, t->d.target, tp && ((uint64_t)(uintptr_t)t->mem - tp->lo) % V.props.limits.minTexelBufferOffsetAlignment ? " (misaligned: aligned copy)" : "");
+                if (tp) { uint32_t x[12] = {0}; void vk_ubd_read(uint64_t a, uint64_t n, uint8_t *dst); uint32_t n = t->d.width < 12 ? t->d.width : 12; vk_ubd_read((uint64_t)(uintptr_t)t->mem, 4ull * n, (uint8_t *)x);
+                    char b[200]; int o = 0; for (uint32_t j = 0; j < n; j++) o += snprintf(b + o, sizeof b - (size_t)o, t->d.format == 0xa ? " %g" : " %u", t->d.format == 0xa ? (double)((float *)x)[j] : (double)x[j]);
+                    VKLOG("    its first words as the CPU sees them:%s", b); if (st == 0 && g_ntbr < 4) g_tbr[g_ntbr++] = (typeof(g_tbr[0])){(uint64_t)(uintptr_t)t->mem, t->d.width, (uint32_t)t->d.format}; } }   // (all its elements: ira_record copies up to 12, or 4,096 when dumping)
             if (!bv[nw]) bv[nw] = vk_dummy_tbuf(b->kind == RK_IMG_TBUF);
             else if (b->kind != RK_IMG_TBUF && i < 64) { int num = view_num(t, NULL); if (num == 1) g_num_um |= 1ull << i; else if (num == 2) g_num_im |= 1ull << i; }   // texel buffers read their words alike
             wr->pTexelBufferView = &bv[nw]; wr->descriptorType = b->kind == RK_IMG_TBUF ? VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER : VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER; nw++;
@@ -1075,6 +1138,17 @@ static VkDescriptorSet stage_set(int st, vkshader_t *s, uint32_t *dofs) {
         else if (x->pTexelBufferView) h = fnv(h, x->pTexelBufferView, sizeof *x->pTexelBufferView);
     }
     unsigned k = (unsigned)(h % SETC); uint64_t tb2 = tick(); g_ns_set_hash += tb2 - tb1;
+    // DM_VK_SETX=1 (a measurement): would a set cache kept across submissions find this set? The content with driver segments by their bytes, not their copy's
+    // place, looked up among the sets of the last 20 submissions (about two frames of FINAL FANTASY RESONANCE's 9 a frame); counted only where this submission's cache misses
+    static int setx = -1; if (setx < 0) { const char *e = getenv("DM_VK_SETX"); setx = e && atoi(e); }
+    if (setx) { uint64_t h2 = fnv(0xcbf29ce484222325ull, &s->dsl, sizeof s->dsl);
+        for (uint32_t i = 0; i < nw; i++) { const VkWriteDescriptorSet *x = &w[i]; h2 = fnv(h2, &x->dstBinding, 4); h2 = fnv(h2, &x->descriptorType, 4); h2 = fnv(h2, &x->descriptorCount, 4);
+            if (drvh[i]) h2 = fnv(h2, &drvh[i], 8); else if (x->pBufferInfo) h2 = fnv(h2, x->pBufferInfo, sizeof *x->pBufferInfo);
+            else if (x->pImageInfo) h2 = fnv(h2, x->pImageInfo, sizeof *x->pImageInfo * x->descriptorCount); else if (x->pTexelBufferView) h2 = fnv(h2, x->pTexelBufferView, sizeof *x->pTexelBufferView); }
+        static struct { uint64_t h, epoch; } x[1 << 16]; unsigned k2 = (unsigned)(h2 % (1 << 16));
+        int here = g_setc[k].epoch == g_set_epoch && g_setc[k].h == h && g_setc[k].l == s->dsl;
+        if (!here && x[k2].h == h2 && x[k2].epoch < g_set_epoch && x[k2].epoch + 20 >= g_set_epoch) g_set_xhit++;
+        x[k2].h = h2; x[k2].epoch = g_set_epoch; }
     if (g_setc[k].epoch == g_set_epoch && g_setc[k].h == h && g_setc[k].l == s->dsl && !g_tracing && !g_x_nosetc) { g_set_hits++; set = g_setc[k].set; }
     else { set = vk_alloc_set(s->dsl); g_set_new++;
         for (uint32_t i = 0; i < nw; i++) w[i].dstSet = set;
@@ -1423,10 +1497,50 @@ static void trace_draw(const char *kind, int prim, uint32_t count, uint32_t inst
               im ? im->fmt : 0, t->d.format, t->d.flags, (unsigned long long)t->L.size, (const void *)t->pool, (unsigned long long)t->off); }
     VKLOG("  scissor set %d: %d %d %d %d; depth range %.3f %.3f; viewport count first %.1f %.1f %.1f %.1f", S.sc_set, S.sc.x, S.sc.y, S.sc.w, S.sc.h, S.dnear, S.dfar, S.vp[0][0], S.vp[0][1], S.vp[0][2], S.vp[0][3]);
     vkshader_t *vsh = S.sh[0]; uint32_t in_mask = vsh ? vsh->local[0] : 0;
-    for (int l = 0; l < 16; l++) if (in_mask >> l & 1) { uint32_t a = S.vattr[l]; VKLOG("  location %d: attrib state %#x (stream %u) stride %d divisor %d buffer %#llx +%llu", l, a, (a >> 16) & 0x1f,
-        S.vstream[(a >> 16) & 0xf].stride, S.vstream[(a >> 16) & 0xf].divisor, (unsigned long long)S.vbuf[(a >> 16) & 0xf].address, (unsigned long long)S.vbuf[(a >> 16) & 0xf].size); }
+    for (int l = 0; l < 16; l++) if (in_mask >> l & 1) { va_st a; memcpy(&a, &S.vattr[l], 4); uint32_t st = a.stream & 0xf;   // (va_st: the stream is bits 27-31)
+        VKLOG("  location %d: attrib state %#x (format %#x offset %u stream %u) stride %d divisor %d buffer %#llx +%llu", l, S.vattr[l], a.fmt, a.offset, a.stream,
+              S.vstream[st].stride, S.vstream[st].divisor, (unsigned long long)S.vbuf[st].address, (unsigned long long)S.vbuf[st].size); }
+}
+// A traced indirect draw (DM_VK_TRACE_PASS / DM_VK_TRACE_FRAME): its arguments and the first 64 bytes of its instance-rate stream copied on the GPU at the draw,
+// logged once the submission is done (vk_exec_reset polls): what a culling compute shader wrote there, which the CPU's view before the replay cannot show.
+// The copy, after the draw, ends the traced pass (a debugging run's own split)
+static struct { uint64_t fence, ind, draw; const uint32_t *p; int n; uint32_t fmt[4], full[4]; int nt; char dir[200]; } g_ira[32];   // full: a buffer texture's words copied after the first 12 (DM_VK_TRACE_DUMP)
+static void ira_record(const p_draw_idx *d) {
+    VkBuffer ab, sb, db; VkDeviceSize ao, so, dof; if (g_nira >= 32 || !vk_buf_at(d->ind, 20, &ab, &ao)) return;
+    int ist = -1; for (int s = 0; s < 16 && ist < 0; s++) if (S.vstream[s].divisor && S.vbuf[s].address && vk_buf_at(S.vbuf[s].address, 64, &sb, &so)) ist = s;
+    vk_end_pass_land(); VkCommandBuffer cb = vk_cmd();
+    const char *dd = getenv("DM_VK_TRACE_DUMP"); uint32_t fw = dd && *dd ? 4096 : 12;   // words of each buffer texture copied: all (up to 4,096) when dumping
+    uint32_t *p = vk_scratch(84 + 4 * 4 * fw, 16, &db, &dof); memset(p, 0, 84 + 4 * 4 * fw);
+    vk_img_barrier_all(cb);
+    vkCmdCopyBuffer(cb, ab, db, 1, &(VkBufferCopy){ao, dof, 20});
+    if (ist >= 0) vkCmdCopyBuffer(cb, sb, db, 1, &(VkBufferCopy){so, dof + 20, 64});
+    typeof(g_ira[0]) r = {.fence = mtl_last_fence() + 1, .ind = d->ind, .p = p, .n = ist >= 0 ? 21 : 5};
+    for (int j = 0; j < g_ntbr; j++) { VkBuffer tb; VkDeviceSize to;   // the vertex stage's buffer textures (stage_set traced them for this draw)
+        uint32_t n = g_tbr[j].n < fw ? g_tbr[j].n : fw;
+        if (vk_buf_at(g_tbr[j].mem, 4ull * n, &tb, &to)) vkCmdCopyBuffer(cb, tb, db, 1, &(VkBufferCopy){to, dof + 84 + 4ull * fw * (VkDeviceSize)j, 4ull * n});
+        r.full[r.nt] = n; r.fmt[r.nt++] = g_tbr[j].fmt; }
+    r.draw = g_vkst.draws; snprintf(r.dir, sizeof r.dir, "%s", dd && *dd ? dd : "");
+    if (fw != 12) r.nt |= 0x100;   // (the stride of the copies: fw words)
+    g_ntbr = 0;
+    vk_img_barrier_all(cb);
+    g_ira[g_nira++] = r;
+}
+static void ira_poll(void) {
+    uint64_t done = vk_fence_done();
+    for (int i = 0; i < g_nira;) { if (g_ira[i].fence > done) { i++; continue; }
+        const uint32_t *w = g_ira[i].p; char b[256]; int o = 0; for (int j = 5; j < g_ira[i].n && o < 230; j++) o += snprintf(b + o, sizeof b - (size_t)o, " %08x", w[j]);
+        VKLOG("indirect arguments at %#llx as the GPU read them: count %u instances %u first index %u base vertex %d first instance %u; instance stream:%s", (unsigned long long)g_ira[i].ind,
+              w[0], w[1], w[2], (int)w[3], w[4], g_ira[i].n > 5 ? b : " (none)");
+        uint32_t fw = g_ira[i].nt & 0x100 ? 4096 : 12; int nt = g_ira[i].nt & 0xff;
+        for (int j = 0; j < nt && g_ira[i].dir[0]; j++) { char path[300]; snprintf(path, sizeof path, "%s/gpu_d%llu_t%d.bin", g_ira[i].dir, (unsigned long long)g_ira[i].draw, j);
+            FILE *f = fopen(path, "wb"); if (f) { fwrite(w + 21 + fw * j, 4, g_ira[i].full[j], f); fclose(f); } }   // the whole buffer texture as the GPU read it
+        for (int j = 0; j < nt; j++) { const uint32_t *x = w + 21 + fw * j; o = 0;
+            for (int q = 0; q < 12; q++) o += snprintf(b + o, sizeof b - (size_t)o, g_ira[i].fmt[j] == 0xa ? " %g" : " %u", g_ira[i].fmt[j] == 0xa ? (double)((const float *)x)[q] : (double)x[q]);
+            VKLOG("  buffer texture %d (format %#x) as the GPU read it:%s", j, g_ira[i].fmt[j], b); }
+        g_ira[i] = g_ira[--g_nira]; }
 }
 static void draw(const p_draw *d) {
+    g_ntbr = 0;
     if (d->mdi_cnt) VKRED_ONCE(52, "multi-draw indirect with a count: drawn once");
     int prim = d->prim;
     // before prepare_draw, whose driver segment carries it (c0 + 0x644): set after it, each draw's segment had the draw before's. An indirect draw's is in GPU memory: 0
@@ -1454,12 +1568,15 @@ static void draw(const p_draw *d) {
     if (!(dbg_draw() & 1) && g_ok) { int xf = xfb_begin(cb); vkCmdDraw(cb, (uint32_t)d->count, inst, (uint32_t)d->first, (uint32_t)d->base_instance); if (xf) xfb_end(cb, prim, (uint32_t)d->count, inst); }
 }
 static void draw_idx(const p_draw_idx *d) {
+    g_ntbr = 0;
     if (d->mdi_cnt) VKRED_ONCE(55, "multi-draw indirect (indexed) with a count: drawn once");
     int prim = d->prim;
     g_draw_binst = d->ind ? 0 : (uint32_t)d->base_instance;   // before prepare_draw (see draw)
     if (!prepare_draw(prim == 7 ? 4 : prim, 1)) return;
     VkCommandBuffer cb = vk_cmd();
     int g_ok = draw_allowed(); if (g_ok == 2 || (g_tracing && g_x_tracepass >= 0)) trace_draw("indexed draw", d->prim, (uint32_t)d->count, (uint32_t)d->instances, d->itype);
+    if ((g_ok == 2 || (g_tracing && g_x_tracepass >= 0)) && d->ind) { uint32_t a[5] = {0}; void vk_ubd_read(uint64_t a, uint64_t n, uint8_t *dst); vk_ubd_read(d->ind, 20, (uint8_t *)a);   // the arguments as the CPU sees them
+        VKLOG("  indirect arguments at %#llx: count %u instances %u first index %u base vertex %d first instance %u", (unsigned long long)d->ind, a[0], a[1], a[2], (int)a[3], a[4]); }
     if (g_var_now == 11) g_ok = 0;
     VkIndexType it = d->itype == 0 ? VK_INDEX_TYPE_UINT8_EXT : d->itype == 1 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32;
     uint32_t isz = d->itype == 0 ? 1 : d->itype == 1 ? 2 : 4;
@@ -1484,14 +1601,21 @@ static void draw_idx(const p_draw_idx *d) {
     uint32_t inst = d->instances ? (uint32_t)d->instances : 1;
     { static int n; if (n < 12 && (d->itype == 0 || d->ind || (uint32_t)d->count > (1u << 20) || inst > (1u << 16))) { n++;
         VKLOG("unusual indexed draw: itype %d count %u instances %u indirect %#llx prim %d base vertex %d", d->itype, (unsigned)d->count, inst, (unsigned long long)d->ind, d->prim, d->base_vertex); } }
-    if (d->ind) { VkBuffer b; VkDeviceSize o; bc_index(cb, ib, io, it); if (vk_buf_at(d->ind, 20, &b, &o)) if (!(dbg_draw() & 1) && g_ok) vkCmdDrawIndexedIndirect(cb, b, o, 1, 20); return; }
+    if (d->ind) { VkBuffer b; VkDeviceSize o; bc_index(cb, ib, io, it); if (vk_buf_at(d->ind, 20, &b, &o)) if (!(dbg_draw() & 1) && g_ok) vkCmdDrawIndexedIndirect(cb, b, o, 1, 20);
+        if (g_ok == 2 || (g_tracing && g_x_tracepass >= 0)) ira_record(d);   // after the draw: its pass may end there
+        return; }
     if (prim == 7) { VkBuffer b; VkDeviceSize o; int n = quad_indices((uint32_t)d->count, (const uint8_t *)(uintptr_t)d->ibuf, d->itype, 0, &b, &o); if (!n) return;
         bc_index(cb, b, o, VK_INDEX_TYPE_UINT32); if (!(dbg_draw() & 1) && g_ok) vkCmdDrawIndexed(cb, (uint32_t)n, inst, 0, d->base_vertex, (uint32_t)d->base_instance); return; }
     if (io % isz) { VKRED_ONCE(57, "index buffer offset not aligned to its index size"); return; }
     bc_index(cb, ib, io, it);
     if (!(dbg_draw() & 1) && g_ok) { int xf = xfb_begin(cb); vkCmdDrawIndexed(cb, (uint32_t)d->count, inst, 0, d->base_vertex, (uint32_t)d->base_instance); if (xf) xfb_end(cb, prim, (uint32_t)d->count, inst); }
 }
-static nvn_hmap g_cpipes = {.klen = 24};   // {shader, its integer-texel bindings}
+static VkPipeline compute_make(vkshader_t *cs, const uint64_t ck[3]) {   // (VkPipeline)1 = failed
+    VkDescriptorSetLayout dsl[5] = {cs->dsl}; VkPipelineLayout layout = vk_pipeline_layout(dsl, 1); VkPipeline p;
+    VkComputePipelineCreateInfo ci = {VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, NULL, 0, {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, VK_SHADER_STAGE_COMPUTE_BIT, vk_shader_module(cs, ck[1], ck[2], 0, 0, 0), "main", NULL}, layout, VK_NULL_HANDLE, -1};
+    if (vkCreateComputePipelines(V.dev, V.pcache, 1, &ci, NULL, &p)) { LOG("[RED] [vk] compute pipeline failed: %016llx", (unsigned long long)cs->key); p = (VkPipeline)1; }
+    return p;
+}
 static void dispatch(const p_dispatch *d) {
     vkshader_t *cs = S.sh[5];
     if (!cs) { VKRED_ONCE(60, "dispatch with no compute shader in the bundle: skipped"); return; }
@@ -1501,11 +1625,14 @@ static void dispatch(const p_dispatch *d) {
     VkDescriptorSetLayout dsl[5] = {cs->dsl}; VkPipelineLayout layout = vk_pipeline_layout(dsl, 1);
     uint32_t dofs[96]; VkDescriptorSet set = stage_set(5, cs, dofs);
     uint64_t ck[3] = {cs->key, g_num_um, g_num_im};
-    VkPipeline p = nvn_hm_get(&g_cpipes, ck);
+    pthread_mutex_lock(&g_pipe_mu); VkPipeline p = nvn_hm_get(&g_cpipes, ck); pthread_mutex_unlock(&g_pipe_mu);
     if (!p) {
-        VkComputePipelineCreateInfo ci = {VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, NULL, 0, {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, VK_SHADER_STAGE_COMPUTE_BIT, vk_shader_module(cs, ck[1], ck[2], 0, 0), "main", NULL}, layout, VK_NULL_HANDLE, -1};
-        if (vkCreateComputePipelines(V.dev, V.pcache, 1, &ci, NULL, &p)) { LOG("[RED] [vk] compute pipeline failed: %016llx", (unsigned long long)cs->key); p = (VkPipeline)1; }
-        nvn_hm_put(&g_cpipes, ck, p);
+        uint64_t t0 = tnow(); p = compute_make(cs, ck); vk_made_note(1, tnow() - t0);
+        pthread_mutex_lock(&g_pipe_mu);
+        VkPipeline had = nvn_hm_get(&g_cpipes, ck);
+        if (had) { if (p != (void *)1) vkDestroyPipeline(V.dev, p, NULL); p = had; }   // a prewarm thread made it meanwhile
+        else { nvn_hm_put(&g_cpipes, ck, p); if (p != (void *)1) cpipe_record(ck); }
+        pthread_mutex_unlock(&g_pipe_mu);
     }
     if (p == (void *)1) return;
     g_dispatch[0] = (uint32_t)d->x; g_dispatch[1] = (uint32_t)d->y; g_dispatch[2] = (uint32_t)d->z;

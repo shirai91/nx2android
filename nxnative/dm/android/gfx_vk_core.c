@@ -81,6 +81,17 @@ void vk_init(void) {
     { uint32_t d = V.props.driverVersion;
       VKLOG("GPU %s (vendor %#x, device %#x), Vulkan %u.%u.%u, driver %u.%u.%u (%#x)", V.props.deviceName, V.props.vendorID, V.props.deviceID, VK_API_VERSION_MAJOR(V.props.apiVersion),
             VK_API_VERSION_MINOR(V.props.apiVersion), VK_API_VERSION_PATCH(V.props.apiVersion), d >> 22, d >> 12 & 0x3ff, d & 0xfff, d); }
+    // texel buffer view offsets: Vulkan 1.3 (texel buffer alignment, core there) lets a device take a view at any multiple of the texel, which minTexelBufferOffsetAlignment alone
+    // refuses. FINAL FANTASY RESONANCE's Niagara particle data starts 4, 8 or 12 bytes past a 16-byte boundary (one at pool offset 0x2fd208)
+    V.tbuf_align_u = V.tbuf_align_s = V.props.limits.minTexelBufferOffsetAlignment;
+    if (V.props.apiVersion >= VK_API_VERSION_1_3) {
+        VkPhysicalDeviceVulkan13Properties p13 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES};
+        VkPhysicalDeviceProperties2 p2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &p13}; vkGetPhysicalDeviceProperties2(V.pd, &p2);
+        V.tbuf_align_u = p13.uniformTexelBufferOffsetAlignmentBytes; V.tbuf_single_u = p13.uniformTexelBufferOffsetSingleTexelAlignment;
+        V.tbuf_align_s = p13.storageTexelBufferOffsetAlignmentBytes; V.tbuf_single_s = p13.storageTexelBufferOffsetSingleTexelAlignment;
+    }
+    VKLOG("texel buffer view offsets: minimum %llu; uniform %llu%s, storage %llu%s", (unsigned long long)V.props.limits.minTexelBufferOffsetAlignment,
+          (unsigned long long)V.tbuf_align_u, V.tbuf_single_u ? " or one texel" : "", (unsigned long long)V.tbuf_align_s, V.tbuf_single_s ? " or one texel" : "");
     uint32_t qn = 0; vkGetPhysicalDeviceQueueFamilyProperties(V.pd, &qn, NULL);
     VkQueueFamilyProperties qp[16]; if (qn > 16) qn = 16; vkGetPhysicalDeviceQueueFamilyProperties(V.pd, &qn, qp);
     V.qf = 0; while (V.qf < qn && (qp[V.qf].queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) != (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) V.qf++;
@@ -400,7 +411,11 @@ void vk_pools_sync(VkCommandBuffer cb) {
 struct vksub; static void pools_copy_back(const struct vksub *s);
 
 // ---------------- submission slots ----------------
-#define NSLOT 6
+// A submission takes the slot of the one NSLOT before it, after the GPU has finished that one (slot_recycle). With 6 slots, FINAL FANTASY RESONANCE's 9 submissions
+// a frame put each frame's main submission behind the GPU's end of the last frame's other large one: its replay waited ~37 ms a frame on the GPU, and a frame
+// was the replay plus the GPU's work (33 + 43 ms) instead of the larger of them. Slots hold command buffers and scratch memory, allocated as used
+#define NSLOT 16   // the ring's size; DM_VK_SLOTS=N (start-up, 2-16) uses N of them (a measurement)
+static int g_nslot = NSLOT;
 #define MAIN_CBS 32   // (allocated as used: DM_VK_PASS_SPLIT cuts inside passes as well)
 // GPU time: a timestamp at the start and end of each submission's main command buffer (one queue: their sum is the time the GPU was busy)
 static VkQueryPool g_tsq; uint64_t g_gpu_ns;
@@ -430,6 +445,10 @@ struct vksub {
 };
 enum { GW_SUB = 64 };
 static vksub_t g_slot[NSLOT]; static int g_cur = -1; uint64_t g_cmd_gen;   // g_cmd_gen: main command buffers begun (gfx_vk_exec.c bind cache)
+// g_df_mu: a slot's deferred frees (df_add) and g_cur as they see it. Frees come from threads that hold no submission (a texture looked up at present evicts
+// the images under it, gfx_vk_tex.c evict_overlaps), and appending to the open slot's list while its own thread did raced the list's realloc: FINAL FANTASY
+// RESONANCE aborted after 20 minutes in slot_recycle, freeing an image's sub-allocation that was freed already (scudo "invalid chunk state", POCO F7, 2026-10-31)
+static pthread_mutex_t g_df_mu = PTHREAD_MUTEX_INITIALIZER;
 static void pools_copy_back(const struct vksub *s) {
     pthread_rwlock_rdlock(&g_pool_mu);
     for (int i = 0; i < g_npool; i++) { vkpool_t *p = &g_pool[i]; if (!p->shadow || !p->synced) continue;
@@ -469,7 +488,7 @@ void vk_pass_report(void) {   // the most expensive passes since the last report
 static pthread_mutex_t g_sub_lock = PTHREAD_MUTEX_INITIALIZER;
 static uint64_t g_fence;   // fence of the last commit
 static VkSemaphore g_timeline;   // submission f signals the value f (V.has_timeline), else g_fring[f % NFRING]
-#define NFRING 16   // more than the submissions in flight (NSLOT: mtl_sub_begin's slot_recycle waits for the slot's last one)
+#define NFRING 32   // at least the submissions in flight (NSLOT: mtl_sub_begin's slot_recycle waits for the slot's last one), so the ring never waits on its own
 static VkFence g_fring[NFRING];
 static pthread_mutex_t g_done_mu = PTHREAD_MUTEX_INITIALIZER; static pthread_cond_t g_done_cv = PTHREAD_COND_INITIALIZER;
 static uint64_t g_done;
@@ -509,6 +528,7 @@ static int g_prereset = -1;
 static void slot_recycle(vksub_t *s) {   // the GPU has passed this slot's last submission: free what it held, rewind its allocators
     if (g_prereset < 0) { const char *e = getenv("DM_VK_X_NOPRERESET"); g_prereset = !(e && atoi(e)); }
     if (g_prereset) mtl_wait(s->fence, ~0ull); else wait_fence(s->fence);
+    pthread_mutex_lock(&g_df_mu);
     for (int i = 0; i < s->ndf; i++) {
         dfree_t *d = &s->df[i];
         if (d->kind == 0) { vkDestroyBuffer(V.dev, (VkBuffer)d->a, NULL); if (d->b) vkFreeMemory(V.dev, (VkDeviceMemory)d->b, NULL); }
@@ -518,6 +538,7 @@ static void slot_recycle(vksub_t *s) {   // the GPU has passed this slot's last 
         else if (d->kind == 3) vkDestroyBufferView(V.dev, (VkBufferView)d->a, NULL);
     }
     s->ndf = 0;
+    pthread_mutex_unlock(&g_df_mu);
     for (int i = 0; i < s->nblk; i++) s->blk[i].used = 0;
     for (int i = 0; i < s->ndp; i++) vkResetDescriptorPool(V.dev, s->dp[i], 0);
     s->dp_cur = 0; s->dp_counted = -1;
@@ -584,17 +605,20 @@ void *vk_scratch(VkDeviceSize n, VkDeviceSize align, VkBuffer *buf, VkDeviceSize
     b->used = n; *buf = b->b; *off = 0; return b->p;
 }
 static void df_add(int kind, void *a, void *b) {
-    if (g_cur < 0) {   // outside a submission (a pool finalized between frames): after everything submitted so far
+    pthread_mutex_lock(&g_df_mu);
+    if (g_cur >= 0) {
+        vksub_t *s = &g_slot[g_cur]; if (s->ndf == s->capdf) { s->capdf = s->capdf ? 2 * s->capdf : 64; s->df = realloc(s->df, s->capdf * sizeof *s->df); }
+        s->df[s->ndf++] = (dfree_t){kind, a, b}; pthread_mutex_unlock(&g_df_mu); return;
+    }
+    pthread_mutex_unlock(&g_df_mu);
+    {   // outside a submission (a pool finalized between frames): after everything submitted so far
         wait_fence(g_fence);
         if (kind == 0) { vkDestroyBuffer(V.dev, (VkBuffer)a, NULL); if (b) vkFreeMemory(V.dev, (VkDeviceMemory)b, NULL); }
         else if (kind == 1) { vkDestroyImage(V.dev, (VkImage)a, NULL); if (b) vkFreeMemory(V.dev, (VkDeviceMemory)b, NULL); }
         else if (kind == 4) { void img_sub_free_(void *); vkDestroyImage(V.dev, (VkImage)a, NULL); img_sub_free_(b); }
         else if (kind == 2) vkDestroyImageView(V.dev, (VkImageView)a, NULL);
         else vkDestroyBufferView(V.dev, (VkBufferView)a, NULL);
-        return;
     }
-    vksub_t *s = cur(); if (s->ndf == s->capdf) { s->capdf = s->capdf ? 2 * s->capdf : 64; s->df = realloc(s->df, s->capdf * sizeof *s->df); }
-    s->df[s->ndf++] = (dfree_t){kind, a, b};
 }
 // Image memory. Small images share blocks: each allocation the driver makes is a mapping of the process (Adreno maps them all), and a game with thousands of textures
 // ran towards the kernel's per-process mapping limit (Xenoblade Chronicles 3: about 9,400 driver mappings in its first area, 2,216 of them 172 KB). Images up to
@@ -636,6 +660,7 @@ void vk_defer_free_image_sub(VkImage i, void *sub) { df_add(4, (void *)i, sub); 
 void img_sub_free_(void *s) { img_sub_free((imgsub *)s); }
 void vk_defer_free_image(VkImage i, VkDeviceMemory m) { df_add(1, (void *)i, (void *)m); }
 void vk_defer_free_view(VkImageView v) { df_add(2, (void *)v, NULL); }
+void vk_defer_free_bview(VkBufferView v) { df_add(3, (void *)v, NULL); }
 // Descriptor pools: the allocator counts what each set takes and moves to a new pool before any count runs out. Adreno's driver does not refuse an
 // allocation past a pool's sizes: it succeeds and the submission then fails as a whole at vkEndCommandBuffer (VK_ERROR_OUT_OF_HOST_MEMORY; NEO's
 // handheld frames with 32-slot texture arrays crossed the old 8192 combined-sampler limit at about the 712th draw)
@@ -681,8 +706,12 @@ void mtl_sub_begin(void) {
     pthread_mutex_lock(&g_sub_lock);
     // the next slot of the ring (g_cur is -1 between submissions, so it cannot say where the ring is: every submission took slot 0 and waited in slot_recycle
     // for the one before to finish on the GPU, which kept the replay of a frame from overlapping the GPU work of the last)
-    static int next; g_cur = next; next = (next + 1) % NSLOT; vksub_t *s = &g_slot[g_cur];
+    static int next = -1; if (next < 0) { const char *e = getenv("DM_VK_SLOTS"); int n = e ? atoi(e) : 0; if (n >= 2 && n <= NSLOT) g_nslot = n; next = 0; VKLOG("submission slots: %d", g_nslot); }
+    // recycled before it is the open slot: a free another thread queued in between went into this list and was done at once, while earlier submissions
+    // the slot's fence does not cover could still read it
+    int k = next; next = (next + 1) % g_nslot; vksub_t *s = &g_slot[k];
     slot_recycle(s);
+    pthread_mutex_lock(&g_df_mu); g_cur = k; pthread_mutex_unlock(&g_df_mu);
     s->npost = 0; s->up_used = 0; s->ngw = 0;
     VkCommandBufferBeginInfo bi = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, NULL, VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
     s->main = s->mains[0]; s->nmain_used = 1; s->cb_err = 0; s->up = s->ups[0]; s->nup_used = 1; s->nmain_sent = 0;
@@ -934,7 +963,7 @@ uint64_t mtl_sub_commit(void) {
     c->npass = g_npass[g_cur]; memcpy(c->pmeta, g_pmeta[g_cur], sizeof(pass_meta) * (size_t)c->npass);
     if (s->npost) { c->ops = malloc(s->npost * sizeof *c->ops); memcpy(c->ops, s->post, s->npost * sizeof *c->ops); }
     pthread_mutex_lock(&g_cmu); if (g_ct) g_ct->next = c; else g_ch = c; g_ct = c; pthread_cond_signal(&g_ccv); pthread_mutex_unlock(&g_cmu);
-    s->npost = 0; g_cur = -1;
+    s->npost = 0; pthread_mutex_lock(&g_df_mu); g_cur = -1; pthread_mutex_unlock(&g_df_mu);
     pthread_mutex_unlock(&g_sub_lock);
     return f;
 }

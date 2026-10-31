@@ -675,6 +675,32 @@ VkBufferView vk_dummy_tbuf(int storage) {
     VKCHK(vkCreateBufferView(V.dev, &ci, NULL, &v[storage]));
     return v[storage];
 }
+// the offset alignment a texel buffer view of format f needs: one view serves both descriptor types, so the stricter of the two; a three-component format's texel alignment is
+// its component's (VUID-VkBufferViewCreateInfo-buffer-02750 / -02751)
+static VkDeviceSize tbuf_align(const vkfmt_t *f) {
+    VkDeviceSize texel = f->bpb % 3 ? f->bpb : f->bpb / 3;
+    VkDeviceSize u = V.tbuf_single_u && texel < V.tbuf_align_u ? texel : V.tbuf_align_u, s = V.tbuf_single_s && texel < V.tbuf_align_s ? texel : V.tbuf_align_s;
+    return u > s ? u : s;
+}
+// A buffer texture at an offset the device will not view (Adreno 825: 64-byte texel buffer offsets, no single-texel alignment; FINAL FANTASY RESONANCE's Niagara particle data
+// at 32 bytes past a boundary, pool offset 0x40720) is read through a copy of its bytes at an aligned offset of the submission's scratch memory, made at its first binding in
+// each submission and kept for the rest of it, as the Metal host's tbuf_shadow. The copy holds what the CPU wrote before the replay reached the binding (with the deferred
+// uniform updates, vk_ubd_read): a GPU write to the buffer in the same submission, or in one still running, is not seen (vk_ubd_read's red line says when one was pending)
+static struct { uint64_t mem, pool; uint32_t fmt, n; VkBufferView v; } g_tbs[64]; static int g_ntbs; static uint64_t g_tbs_gen, g_tbs_bytes;
+void vk_tbuf_shadow_reset(void) { g_ntbs = 0; g_tbs_gen++; }   // a new submission (vk_exec_reset): its views are destroyed once the GPU has passed the last one
+static VkBufferView tbuf_shadow(const tex_t *t, const vkfmt_t *f, uint64_t pool) {
+    for (int i = 0; i < g_ntbs; i++) if (g_tbs[i].mem == (uint64_t)(uintptr_t)t->mem && g_tbs[i].pool == pool && g_tbs[i].fmt == (uint32_t)t->d.format && g_tbs[i].n == t->d.width) return g_tbs[i].v;
+    VkDeviceSize n = (VkDeviceSize)t->d.width * f->bpb, off; VkBuffer b; void vk_ubd_read(uint64_t a, uint64_t n, uint8_t *dst);
+    uint8_t *d = vk_scratch(n, tbuf_align(f), &b, &off); vk_ubd_read((uint64_t)(uintptr_t)t->mem, n, d);
+    VkBufferViewCreateInfo ci = {VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO, NULL, 0, b, f->vk, off, n}; VkBufferView v;
+    if (vkCreateBufferView(V.dev, &ci, NULL, &v)) return VK_NULL_HANDLE;
+    vk_defer_free_bview(v); g_tbs_bytes += n;
+    if (g_ntbs >= 64) VKRED_ONCE(17, "more than 64 buffer textures read through aligned copies in one submission: the later ones are copied again at each binding");
+    if (g_ntbs < 64) g_tbs[g_ntbs++] = (__typeof__(g_tbs[0])){(uint64_t)(uintptr_t)t->mem, pool, (uint32_t)t->d.format, t->d.width, v};
+    { static int k; if (k++ < 3) VKLOG("buffer texture at %#llx (format %#x, %u elements) read through an aligned copy (submission %llu, %llu KB copied so far)",
+                                      (unsigned long long)(uintptr_t)t->mem, t->d.format, t->d.width, (unsigned long long)g_tbs_gen, (unsigned long long)(g_tbs_bytes >> 10)); }
+    return v;
+}
 // a buffer texture's texel buffer view over its pool (cached by texture contents: the registered copy)
 VkBufferView vk_tbuf_view(const tex_t *t) {
     static nvn_hmap cache = {.klen = 24}; static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
@@ -686,11 +712,12 @@ VkBufferView vk_tbuf_view(const tex_t *t) {
     pthread_mutex_lock(&mu);
     VkBufferView v = nvn_hm_get(&cache, &k);
     if (!v) {
-        const vkfmt_t *f = vk_fmt(t->d.format); VkBuffer b; VkDeviceSize off;
-        if (f && t->mem && vk_buf_at((uint64_t)(uintptr_t)t->mem, (uint64_t)t->d.width * f->bpb, &b, &off) && off % V.props.limits.minTexelBufferOffsetAlignment == 0) {
+        const vkfmt_t *f = vk_fmt(t->d.format); VkBuffer b; VkDeviceSize off = 0; int in = f && t->mem && vk_buf_at((uint64_t)(uintptr_t)t->mem, (uint64_t)t->d.width * f->bpb, &b, &off);
+        if (in && off % tbuf_align(f) == 0) {
             VkBufferViewCreateInfo ci = {VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO, NULL, 0, b, f->vk, off, (VkDeviceSize)t->d.width * f->bpb};
             if (vkCreateBufferView(V.dev, &ci, NULL, &v)) v = VK_NULL_HANDLE; else nvn_hm_put(&cache, &k, v);
-        } else VKRED_ONCE(16, "buffer texture not in a pool or misaligned (format %#x, %u elements)", t->d.format, t->d.width);
+        } else if (in) v = tbuf_shadow(t, f, k.pool);   // not cached here: a copy per submission
+        else VKRED_ONCE(16, "buffer texture not in a pool (format %#x, %u elements)", t->d.format, t->d.width);
     }
     pthread_mutex_unlock(&mu);
     return v;
