@@ -19,6 +19,7 @@ the old way, as outlines.
 Every pack shares one layout per form factor, the ergonomic one ([../overlay_default.tsv](../overlay_default.tsv)); a pack only changes how the
 controls look. The app takes the phone layout when its window is at least 1.9 times as wide as it is high (a 20:9 phone), the tablet one otherwise, and
 places each sprite at its offset from its control's centre, scaled by the window's height over the design's. The player can move and resize any control in the pause menu's layout editor (Gamepad tab, Edit layout) and set the controls' opacity there (20 to 80%); the theme's sprites follow, at each control's own size.
+The editor's **Snap to grid** option shows a square grid and snaps dragged control centres to it, including the sticks, d-pad and menu button. It starts off and is saved with the layout; it does not change the theme's sprites or sizes.
 
 ## Making or changing a theme
 

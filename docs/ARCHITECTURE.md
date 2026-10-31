@@ -47,6 +47,8 @@ A profile is offered for Android when it has an `android.tsv`; the profiles with
 
 Per-build knowledge stays where upstream keeps it: the rewriter's cuts in `patches.py` / `dm/tools/sdk_patches.py`, keyed by build ID.
 
+The layout editor also saves `grid=0|1` in `settings.txt` (off by default), with the layout's `ui=` rows. This is a player preference, not a profile key. With it on, the editor draws a square grid spaced at 1/20 of the window height and snaps dragged control centers to the nearest grid point that keeps their bounds on screen. Save commits the preference and layout together; Cancel discards both. The grid is only drawn in the editor.
+
 ## The port
 
 `python -m porter port <game folder> -k <prod.keys>` (the GUI's **Port** button) runs these stages. The slow ones (extraction, rewrite, shader split, the translator build, the Vulkan shaders) keep their output with a key of their inputs and are skipped on the next run when the key is unchanged; the host build is incremental (`build.py`), and the APK and the data pack are made again each time (seconds).
