@@ -1499,6 +1499,10 @@ static void dispatch(const p_dispatch *d) {
     vk_end_pass_land();
     VkCommandBuffer cb = vk_cmd();
     VkDescriptorSetLayout dsl[5] = {cs->dsl}; VkPipelineLayout layout = vk_pipeline_layout(dsl, 1);
+    // the group counts before the descriptors: the driver segment stage_set builds carries them at c0 + 0x200 (drv_segment), as nvn_mtl.m's does. Set after it, every
+    // dispatch read the previous one's: Link's Awakening's light culling (tile = workgroup y × c0[0x200] + workgroup x) ran after a 2x1x1 dispatch, so of its 30x17
+    // tiles it wrote only 0-61. An indirect dispatch's counts are on the GPU only (0 here; nvn_mtl.m copies them in)
+    g_dispatch[0] = (uint32_t)d->x; g_dispatch[1] = (uint32_t)d->y; g_dispatch[2] = (uint32_t)d->z;
     uint32_t dofs[96]; VkDescriptorSet set = stage_set(5, cs, dofs);
     uint64_t ck[3] = {cs->key, g_num_um, g_num_im};
     VkPipeline p = nvn_hm_get(&g_cpipes, ck);
@@ -1508,7 +1512,6 @@ static void dispatch(const p_dispatch *d) {
         nvn_hm_put(&g_cpipes, ck, p);
     }
     if (p == (void *)1) return;
-    g_dispatch[0] = (uint32_t)d->x; g_dispatch[1] = (uint32_t)d->y; g_dispatch[2] = (uint32_t)d->z;
     vk_img_barrier_all(cb);
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, p);
     vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, 1, &set, (uint32_t)cs->ndyn, dofs);
