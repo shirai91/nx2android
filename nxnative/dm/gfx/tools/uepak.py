@@ -32,7 +32,7 @@
 #        uepak.py job <RomFS> <main NSO> <work dir> [<Mac host> <rewritten modules>]   the shader code archives of every pak, and an Oodle job of their Oodle-compressed shaders (LZ4 ones
 #                                                                       decoded at once); IoStore shader libraries (UE 5.6) decoded at once through the game's Oodle in the host (OodleHost)
 #        uepak.py finish <work dir> <out dir>                           after the host has run the job: the archives with every shader decoded
-import ctypes, json, os, struct, sys
+import ctypes, hashlib, json, os, struct, sys
 
 PAK_MAGIC, ARCHIVE_VERSION = 0x5A6F12E1, 2
 JOB_MAGIC, OUT_MAGIC = 0x4a4f4d44, 0x524f4d44   # "DMOJ", "DMOR" (hle_oodle.c)
@@ -378,6 +378,29 @@ def io_shader_tocs(romfs):
                 if Toc(os.path.join(dp, f), b'\0' * 32).of_type(IO_SHADER_LIBRARY): out.append(os.path.join(dp, f))
             except (OSError, ValueError, struct.error): pass
     return sorted(out)
+
+class Batch:
+    """A decode for Toc.read / io_archive / job in rounds, for a decoder that takes a whole job file at once (the Android device runs the game's Oodle with DM_OODLE_JOB, no pipe): it answers
+    from the earlier rounds' results and collects what it cannot (todo: (compressed, raw length) by key), answering those with zeros meanwhile; add(results) takes a round's results in todo's order"""
+    def __init__(self): self.done, self.todo = {}, {}
+    def __call__(self, c, n):
+        k = (hashlib.sha1(c).digest(), n)
+        if k in self.done: return self.done[k]
+        self.todo.setdefault(k, (bytes(c), n)); return bytes(n)
+    def add(self, results):
+        for k, r in zip(list(self.todo), results): self.done[k] = r
+        self.todo = {}
+
+def io_rounds(romfs, decode):
+    """The passes over the IoStore shader libraries a Batch needs: yields after each pass that left records in decode.todo, first the Oodle container blocks of the shader chunks, then
+    the shader groups (FINAL FANTASY RESONANCE: its shader chunks are stored, its 5,919 groups Oodle-compressed, 146 MB → 671 MB); job(decode=decode) then runs on results only"""
+    tocs = [Toc(tp) for tp in io_shader_tocs(romfs)]
+    for t in tocs:
+        for i in t.of_type(IO_SHADER_LIBRARY) + t.of_type(IO_SHADER_CODE): t.read(i, decode)
+    if decode.todo: yield
+    for t in tocs:
+        for i in t.of_type(IO_SHADER_LIBRARY): io_archive(t, i, decode)
+    if decode.todo: yield
 
 def archive_names(romfs):
     """The shader code archive names ("ShaderArchive-<library>-<format>") the RomFS's manifests list (Unreal's Manifest_UFSFiles_<platform>.txt)"""

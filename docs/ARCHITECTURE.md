@@ -70,7 +70,9 @@ Shaders captured on the device: a game can set shaders whose code is in no game 
 
 The install starts the app once before pushing anything: Android makes the app's files folder, owned by the app with the app's group, when the app first asks for it, and a folder the shell makes first lacks that group underneath FUSE, so the app cannot read what is pushed below it. Files whose path passes Windows' 260 characters are pushed through short hard links (adb.exe is not long-path aware). A file already on the device at its size is skipped; the port's own outputs (everything but `RomFS/` and `aoc/`, which change only with the game's version) are also compared by MD5, because a rewriter cut changes a module without changing its size.
 
-What the port refuses: a game whose `main` renders with Vulkan or OpenGL (the Android host replays NVN only so far), and one whose shaders need a step upstream runs by booting the game in the Mac host (GLSLC capture, Unreal / Oodle decoding).
+Shaders in Oodle-compressed archives are decoded by the game's own decoder on the Android device, so such a port needs the device connected: the host is built as an executable (`build.py --exe`) and run under `/data/local/tmp` with the rewritten modules on one job file (`DM_OODLE_JOB`, `dm/host/hle_oodle.c`), removed afterwards. Game Freak's GFPAKs (Pokémon Legends: Arceus) go to the split as `DM_GFPAK_DECODED`; Unreal's shader code archives and Unreal Engine 5's IoStore shader libraries (FINAL FANTASY RESONANCE) to `<version>/ue_shaders`, the libraries' two layers of Oodle (container blocks, then shader groups) in rounds (`uepak.py` `Batch` / `io_rounds`, `pipeline.py` `device_ue_shaders`).
+
+What the port refuses: a game whose `main` renders with Vulkan or OpenGL (the Android host replays NVN only so far), and one whose shaders need a step upstream runs by booting the game in the Mac host (GLSLC capture, legacy Unreal paks, Trinity and PKZ packs).
 
 **Versions.** The newest version in the folder is packed. A version the profile was not brought up on is packed from a derived profile (upstream's `derive_profile`, in `profile-derived/`), without that version's per-build fixes.
 
