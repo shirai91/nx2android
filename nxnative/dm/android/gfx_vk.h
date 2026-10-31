@@ -52,6 +52,7 @@ typedef struct {
     VkPipelineCache pcache;
     int has_bc, has_astc, has_gs, has_depth_clip_ctl, has_custom_border, has_robust2, has_xfb, has_imageless, has_dtiming, has_dynrender;
     float max_aniso;
+    VkDeviceSize tbuf_align_u, tbuf_align_s; int tbuf_single_u, tbuf_single_s;   // texel buffer view offsets, uniform / storage (Vulkan 1.3's texel buffer alignment; vk_tbuf_view)
 } vkdev_t;
 extern vkdev_t V;
 uint32_t vk_mem_type(uint32_t bits, VkMemoryPropertyFlags want, VkMemoryPropertyFlags avoid);
@@ -75,6 +76,7 @@ void vk_defer_free_image(VkImage i, VkDeviceMemory m);
 VkDeviceMemory vk_image_memory(const VkMemoryRequirements *req, uint32_t type, VkDeviceSize *off, void **sub);   // NULL on failure; *sub: a slot of a shared block, or NULL (memory of its own)
 void vk_defer_free_image_sub(VkImage i, void *sub);
 void vk_defer_free_view(VkImageView v);
+void vk_defer_free_bview(VkBufferView v);
 VkDescriptorSet vk_alloc_set(VkDescriptorSetLayout l);    // from this submission's descriptor pools
 uint64_t vk_fence_done(void);   // the highest submission fence the GPU has completed
 

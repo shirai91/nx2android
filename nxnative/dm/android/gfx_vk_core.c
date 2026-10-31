@@ -81,6 +81,17 @@ void vk_init(void) {
     { uint32_t d = V.props.driverVersion;
       VKLOG("GPU %s (vendor %#x, device %#x), Vulkan %u.%u.%u, driver %u.%u.%u (%#x)", V.props.deviceName, V.props.vendorID, V.props.deviceID, VK_API_VERSION_MAJOR(V.props.apiVersion),
             VK_API_VERSION_MINOR(V.props.apiVersion), VK_API_VERSION_PATCH(V.props.apiVersion), d >> 22, d >> 12 & 0x3ff, d & 0xfff, d); }
+    // texel buffer view offsets: Vulkan 1.3 (texel buffer alignment, core there) lets a device take a view at any multiple of the texel, which minTexelBufferOffsetAlignment alone
+    // refuses. FINAL FANTASY RESONANCE's Niagara particle data starts 4, 8 or 12 bytes past a 16-byte boundary (one at pool offset 0x2fd208)
+    V.tbuf_align_u = V.tbuf_align_s = V.props.limits.minTexelBufferOffsetAlignment;
+    if (V.props.apiVersion >= VK_API_VERSION_1_3) {
+        VkPhysicalDeviceVulkan13Properties p13 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES};
+        VkPhysicalDeviceProperties2 p2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &p13}; vkGetPhysicalDeviceProperties2(V.pd, &p2);
+        V.tbuf_align_u = p13.uniformTexelBufferOffsetAlignmentBytes; V.tbuf_single_u = p13.uniformTexelBufferOffsetSingleTexelAlignment;
+        V.tbuf_align_s = p13.storageTexelBufferOffsetAlignmentBytes; V.tbuf_single_s = p13.storageTexelBufferOffsetSingleTexelAlignment;
+    }
+    VKLOG("texel buffer view offsets: minimum %llu; uniform %llu%s, storage %llu%s", (unsigned long long)V.props.limits.minTexelBufferOffsetAlignment,
+          (unsigned long long)V.tbuf_align_u, V.tbuf_single_u ? " or one texel" : "", (unsigned long long)V.tbuf_align_s, V.tbuf_single_s ? " or one texel" : "");
     uint32_t qn = 0; vkGetPhysicalDeviceQueueFamilyProperties(V.pd, &qn, NULL);
     VkQueueFamilyProperties qp[16]; if (qn > 16) qn = 16; vkGetPhysicalDeviceQueueFamilyProperties(V.pd, &qn, qp);
     V.qf = 0; while (V.qf < qn && (qp[V.qf].queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) != (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) V.qf++;
@@ -626,6 +637,7 @@ void vk_defer_free_image_sub(VkImage i, void *sub) { df_add(4, (void *)i, sub); 
 void img_sub_free_(void *s) { img_sub_free((imgsub *)s); }
 void vk_defer_free_image(VkImage i, VkDeviceMemory m) { df_add(1, (void *)i, (void *)m); }
 void vk_defer_free_view(VkImageView v) { df_add(2, (void *)v, NULL); }
+void vk_defer_free_bview(VkBufferView v) { df_add(3, (void *)v, NULL); }
 // Descriptor pools: the allocator counts what each set takes and moves to a new pool before any count runs out. Adreno's driver does not refuse an
 // allocation past a pool's sizes: it succeeds and the submission then fails as a whole at vkEndCommandBuffer (VK_ERROR_OUT_OF_HOST_MEMORY; NEO's
 // handheld frames with 32-slot texture arrays crossed the old 8192 combined-sampler limit at about the 712th draw)

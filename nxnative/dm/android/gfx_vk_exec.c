@@ -165,7 +165,7 @@ static void render_cond(const p_render_cond *rc) {
 
 void vk_exec_reset(void) {   // a new submission: NVN state does not carry over between command buffers, the replay starts from the defaults
     static int inited; if (!inited) { inited = 1; state_reset(); prewarm_start(); }
-    g_rc_npend = 0; g_rc_skip = 0;
+    g_rc_npend = 0; g_rc_skip = 0; void vk_tbuf_shadow_reset(void); vk_tbuf_shadow_reset();
     S.pass_open = 0; S.bound_pipe = VK_NULL_HANDLE; g_cb_draws = 0; g_ord_parts = 0; g_psplit_now = 0; g_set_epoch++; x_read();
 }
 
