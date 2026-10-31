@@ -16,8 +16,6 @@ uint64_t mtl_blit_splits(void) { return 0; }
 void mtl_bw(uint64_t *l, uint64_t *s, uint64_t *f) { *l = *s = *f = 0; }
 uint64_t mtl_copy_cut_count(void) { return 0; }
 uint64_t mtl_cut_count(void) { return 0; }
-void mtl_create_ns(uint64_t *l, uint64_t *p) { *l = *p = 0; }
-void mtl_create_stats(uint64_t *l, uint64_t *p) { *l = *p = 0; }
 uint64_t mtl_drawable_ns_take(void) { return 0; }
 uint64_t mtl_ds_omit(void) { return 0; }
 __attribute__((weak)) double mtl_gpu_ms(uint64_t f) { (void)f; return 0; }   // gfx_vk_core.c has the real one

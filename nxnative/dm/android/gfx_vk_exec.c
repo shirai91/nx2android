@@ -720,8 +720,16 @@ typedef struct {
     uint64_t um[3], im[3];   // each stage's sampled bindings given integer views (vk_shader_module)
 } pkey;
 static nvn_hmap g_pipes = {.klen = sizeof(pkey)}; static pthread_mutex_t g_pipe_mu = PTHREAD_MUTEX_INITIALIZER;   // the replay thread and the prewarm threads
+static nvn_hmap g_cpipes = {.klen = 24};   // compute pipelines by {shader, its integer-texel bindings}; under g_pipe_mu too
+static VkPipeline compute_make(vkshader_t *cs, const uint64_t ck[3]);
 static VkPipeline build_pipeline(const pkey *k, VkPipelineLayout layout, vkshader_t *const stg[3]);
 static void pipe_record(const pkey *k);
+// Pipelines made on the replay thread, the frame waiting on them (the long-frame log's "new pipelines … ms in all", hle_nvn.c, through mtl_create_stats / mtl_create_ns):
+// graphics and compute counted apart, so the log tells a compile stall from other long frames (FINAL FANTASY RESONANCE's 0.5-2.3 s frames after its first shader variants)
+static uint64_t g_made_n[2], g_made_ns[2];
+static void vk_made_note(int compute, uint64_t ns) { __atomic_add_fetch(&g_made_n[compute], 1, __ATOMIC_RELAXED); __atomic_add_fetch(&g_made_ns[compute], ns, __ATOMIC_RELAXED); }
+void mtl_create_stats(uint64_t *l, uint64_t *p) { *l = __atomic_load_n(&g_made_n[1], __ATOMIC_RELAXED); *p = __atomic_load_n(&g_made_n[0], __ATOMIC_RELAXED); }   // l: compute, p: graphics
+void mtl_create_ns(uint64_t *l, uint64_t *p) { *l = __atomic_load_n(&g_made_ns[1], __ATOMIC_RELAXED); *p = __atomic_load_n(&g_made_ns[0], __ATOMIC_RELAXED); }
 // The last key and its pipeline (the replay thread's only; pipelines are never dropped): runs of draws with one pipeline skip the 992-byte hash and the lock
 static pkey g_last_k; static VkPipeline g_last_p;
 static VkPipeline graphics_pipeline(const pkey *k, VkPipelineLayout layout) {
@@ -729,7 +737,7 @@ static VkPipeline graphics_pipeline(const pkey *k, VkPipelineLayout layout) {
     pthread_mutex_lock(&g_pipe_mu); VkPipeline p = nvn_hm_get(&g_pipes, k); pthread_mutex_unlock(&g_pipe_mu);
     if (p) { g_last_k = *k; g_last_p = p; return p == (void *)1 ? VK_NULL_HANDLE : p; }
     vkshader_t *stg[3] = {S.sh[0], S.sh[1], S.sh[2]};
-    p = build_pipeline(k, layout, stg);
+    uint64_t t0 = tnow(); p = build_pipeline(k, layout, stg); vk_made_note(0, tnow() - t0);
     pthread_mutex_lock(&g_pipe_mu);
     VkPipeline had = nvn_hm_get(&g_pipes, k);
     if (had) { if (p != (void *)1) vkDestroyPipeline(V.dev, p, NULL); p = had; }   // a prewarm thread made it meanwhile
@@ -741,17 +749,34 @@ static VkPipeline graphics_pipeline(const pkey *k, VkPipelineLayout layout) {
 // threads, before the game reaches it, so a scene seen once never stalls a frame on a pipeline compile again (the driver's compile, not the
 // pipeline cache's lookup, is the cost: tens of milliseconds per pipeline on Adreno). DM_VK_NOPREWARM=1 turns it off.
 #define PIPE_MAGIC 0x31455050u   // "PPE1"; the header also holds sizeof(pkey), so a changed key layout starts a new file
-static FILE *g_prec;
+// Compute pipelines the same way, in DM_ROOT/vk_cpipelines.bin ({shader, integer-texel bindings} records): until then they were made at their first dispatch at every boot,
+// the frame waiting on the compile (FINAL FANTASY RESONANCE has 2,934 compute shaders)
+#define CPIPE_MAGIC 0x31455043u   // "CPE1"
+static FILE *g_prec, *g_cprec;
 static void pipe_record(const pkey *k) {   // under g_pipe_mu
     if (!g_prec || k->alt) return;   // DM_VK_SPV_ALT's pipelines are a debugging run's own
     fwrite(k, sizeof *k, 1, g_prec); fflush(g_prec);
 }
+static void cpipe_record(const uint64_t ck[3]) { if (g_cprec) { fwrite(ck, 8, 3, g_cprec); fflush(g_cprec); } }   // under g_pipe_mu
 static pkey *g_pw; static size_t g_pw_n; static volatile size_t g_pw_next, g_pw_done;
+static uint64_t (*g_cpw)[3]; static size_t g_cpw_n;   // compute records, prewarmed after the graphics ones
 static void *prewarm_thread(void *arg) {
     (void)arg; pthread_setname_np(pthread_self(), "vk prewarm");
     setpriority(PRIO_PROCESS, 0, 10);   // below the game's threads: prewarm uses idle cores
     for (;;) {
-        size_t i = __atomic_fetch_add(&g_pw_next, 1, __ATOMIC_RELAXED); if (i >= g_pw_n) break;
+        size_t i = __atomic_fetch_add(&g_pw_next, 1, __ATOMIC_RELAXED); if (i >= g_pw_n + g_cpw_n) break;
+        if (i >= g_pw_n) {
+            const uint64_t *ck = g_cpw[i - g_pw_n]; vkshader_t *cs = vk_shader(ck[0], 5); if (!cs) continue;
+            pthread_mutex_lock(&g_pipe_mu); int have = nvn_hm_get(&g_cpipes, ck) != NULL; pthread_mutex_unlock(&g_pipe_mu);
+            if (have) continue;
+            VkPipeline p = compute_make(cs, ck);
+            pthread_mutex_lock(&g_pipe_mu);
+            if (!nvn_hm_get(&g_cpipes, ck)) nvn_hm_put(&g_cpipes, ck, p); else if (p != (void *)1) vkDestroyPipeline(V.dev, p, NULL);
+            pthread_mutex_unlock(&g_pipe_mu);
+            size_t d = __atomic_add_fetch(&g_pw_done, 1, __ATOMIC_RELAXED);
+            if (d == g_pw_n + g_cpw_n) VKLOG("prewarm: %zu of %zu pipelines (%zu compute)", d, g_pw_n + g_cpw_n, g_cpw_n);
+            continue;
+        }
         const pkey *k = &g_pw[i];
         pthread_mutex_lock(&g_pipe_mu); int have = nvn_hm_get(&g_pipes, k) != NULL; pthread_mutex_unlock(&g_pipe_mu);
         if (have) continue;
@@ -765,7 +790,7 @@ static void *prewarm_thread(void *arg) {
         if (!nvn_hm_get(&g_pipes, k)) nvn_hm_put(&g_pipes, k, p); else if (p != (void *)1) vkDestroyPipeline(V.dev, p, NULL);
         pthread_mutex_unlock(&g_pipe_mu);
         size_t d = __atomic_add_fetch(&g_pw_done, 1, __ATOMIC_RELAXED);
-        if (d == g_pw_n || d % 500 == 0) VKLOG("prewarm: %zu of %zu pipelines", d, g_pw_n);
+        if (d == g_pw_n + g_cpw_n || d % 500 == 0) VKLOG("prewarm: %zu of %zu pipelines", d, g_pw_n + g_cpw_n);
     }
     return NULL;
 }
@@ -781,9 +806,17 @@ static void prewarm_start(void) {
     if (f) fclose(f);
     // rewrite the file with the records read (dropping a torn last record), then append to it
     g_prec = fopen(path, "wb"); if (g_prec) { fwrite(hdr, sizeof hdr, 1, g_prec); if (g_pw_n) fwrite(g_pw, sizeof(pkey), g_pw_n, g_prec); fflush(g_prec); }
-    if (!g_pw_n || getenv("DM_VK_NOPREWARM")) { VKLOG("prewarm: %zu pipelines recorded%s", g_pw_n, g_pw_n ? ", off (DM_VK_NOPREWARM)" : ""); return; }
+    snprintf(path, sizeof path, "%s/vk_cpipelines.bin", root);   // the compute records, the same way
+    uint32_t chdr[2] = {CPIPE_MAGIC, 24}; f = fopen(path, "rb");
+    if (f && fread(fh, sizeof fh, 1, f) == 1 && fh[0] == chdr[0] && fh[1] == chdr[1]) {
+        fseek(f, 0, SEEK_END); long n = (ftell(f) - (long)sizeof fh) / 24; fseek(f, sizeof fh, SEEK_SET);
+        if (n > 0) { g_cpw = malloc((size_t)n * 24); g_cpw_n = fread(g_cpw, 24, (size_t)n, f); }
+    }
+    if (f) fclose(f);
+    g_cprec = fopen(path, "wb"); if (g_cprec) { fwrite(chdr, sizeof chdr, 1, g_cprec); if (g_cpw_n) fwrite(g_cpw, 24, g_cpw_n, g_cprec); fflush(g_cprec); }
+    if (!(g_pw_n + g_cpw_n) || getenv("DM_VK_NOPREWARM")) { VKLOG("prewarm: %zu + %zu compute pipelines recorded%s", g_pw_n, g_cpw_n, g_pw_n + g_cpw_n ? ", off (DM_VK_NOPREWARM)" : ""); return; }
     long nc = sysconf(_SC_NPROCESSORS_ONLN); int nt = nc >= 8 ? 3 : nc >= 4 ? 2 : 1;
-    VKLOG("prewarm: %zu recorded pipelines on %d threads", g_pw_n, nt);
+    VKLOG("prewarm: %zu recorded pipelines + %zu compute on %d threads", g_pw_n, g_cpw_n, nt);
     for (int i = 0; i < nt; i++) { pthread_t t; pthread_attr_t a; pthread_attr_init(&a); pthread_attr_setdetachstate(&a, PTHREAD_CREATE_DETACHED); pthread_create(&t, &a, prewarm_thread, NULL); pthread_attr_destroy(&a); }
 }
 static VkPipeline build_pipeline(const pkey *k, VkPipelineLayout layout, vkshader_t *const stg[3]) {
@@ -1491,7 +1524,12 @@ static void draw_idx(const p_draw_idx *d) {
     bc_index(cb, ib, io, it);
     if (!(dbg_draw() & 1) && g_ok) { int xf = xfb_begin(cb); vkCmdDrawIndexed(cb, (uint32_t)d->count, inst, 0, d->base_vertex, (uint32_t)d->base_instance); if (xf) xfb_end(cb, prim, (uint32_t)d->count, inst); }
 }
-static nvn_hmap g_cpipes = {.klen = 24};   // {shader, its integer-texel bindings}
+static VkPipeline compute_make(vkshader_t *cs, const uint64_t ck[3]) {   // (VkPipeline)1 = failed
+    VkDescriptorSetLayout dsl[5] = {cs->dsl}; VkPipelineLayout layout = vk_pipeline_layout(dsl, 1); VkPipeline p;
+    VkComputePipelineCreateInfo ci = {VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, NULL, 0, {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, VK_SHADER_STAGE_COMPUTE_BIT, vk_shader_module(cs, ck[1], ck[2], 0, 0), "main", NULL}, layout, VK_NULL_HANDLE, -1};
+    if (vkCreateComputePipelines(V.dev, V.pcache, 1, &ci, NULL, &p)) { LOG("[RED] [vk] compute pipeline failed: %016llx", (unsigned long long)cs->key); p = (VkPipeline)1; }
+    return p;
+}
 static void dispatch(const p_dispatch *d) {
     vkshader_t *cs = S.sh[5];
     if (!cs) { VKRED_ONCE(60, "dispatch with no compute shader in the bundle: skipped"); return; }
@@ -1501,11 +1539,14 @@ static void dispatch(const p_dispatch *d) {
     VkDescriptorSetLayout dsl[5] = {cs->dsl}; VkPipelineLayout layout = vk_pipeline_layout(dsl, 1);
     uint32_t dofs[96]; VkDescriptorSet set = stage_set(5, cs, dofs);
     uint64_t ck[3] = {cs->key, g_num_um, g_num_im};
-    VkPipeline p = nvn_hm_get(&g_cpipes, ck);
+    pthread_mutex_lock(&g_pipe_mu); VkPipeline p = nvn_hm_get(&g_cpipes, ck); pthread_mutex_unlock(&g_pipe_mu);
     if (!p) {
-        VkComputePipelineCreateInfo ci = {VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, NULL, 0, {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, VK_SHADER_STAGE_COMPUTE_BIT, vk_shader_module(cs, ck[1], ck[2], 0, 0), "main", NULL}, layout, VK_NULL_HANDLE, -1};
-        if (vkCreateComputePipelines(V.dev, V.pcache, 1, &ci, NULL, &p)) { LOG("[RED] [vk] compute pipeline failed: %016llx", (unsigned long long)cs->key); p = (VkPipeline)1; }
-        nvn_hm_put(&g_cpipes, ck, p);
+        uint64_t t0 = tnow(); p = compute_make(cs, ck); vk_made_note(1, tnow() - t0);
+        pthread_mutex_lock(&g_pipe_mu);
+        VkPipeline had = nvn_hm_get(&g_cpipes, ck);
+        if (had) { if (p != (void *)1) vkDestroyPipeline(V.dev, p, NULL); p = had; }   // a prewarm thread made it meanwhile
+        else { nvn_hm_put(&g_cpipes, ck, p); if (p != (void *)1) cpipe_record(ck); }
+        pthread_mutex_unlock(&g_pipe_mu);
     }
     if (p == (void *)1) return;
     g_dispatch[0] = (uint32_t)d->x; g_dispatch[1] = (uint32_t)d->y; g_dispatch[2] = (uint32_t)d->z;
