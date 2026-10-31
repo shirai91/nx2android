@@ -1,0 +1,17 @@
+# FINAL FANTASY RESONANCE on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Square Enix, Unreal Engine 5.6.1 (the desktop renderer) on SDK 20.5.17, update 1.0.1. The shaders are Oodle-compressed in the IoStore container's two shader libraries:
+# the port decodes them with the game's own decoder on the device (porter device_ue_shaders, one round of 5,919 groups, 146 MB → 671 MB, under a minute), and the split's tables
+# match the iOS profile's byte for byte. All 73,496 shaders translate to SPIR-V.
+# On a POCO F7 (25053PC47G, Snapdragon 8s Gen 4, Adreno 825, Android 16; 2026-10-31): boot, the opening movie and cutscene, the title, Continue into the first field and its tutorials, the
+# pause menu's docked / handheld switch. Its Niagara particle data is in buffer textures 32 bytes past a 64-byte boundary, which Adreno 825 will not view: read through
+# an aligned copy (gfx_vk_tex.c tbuf_shadow), no red line left.
+# Speed: handheld, the opening and the first field run 13-30 fps. In the field's busiest view (about 2,700 draws) a frame is the replay's 33 ms on the CPU (descriptor
+# sets 10-16 ms) and then 43 ms of GPU: 13 fps. Docked (1920x1080) the GPU alone took 27-45 ms in the opening. Pipelines compile in 70-220 ms each on this Adreno,
+# so the first sight of a material stalls a frame for up to 2 s; the next boot prewarms them (graphics and compute, vk_pipelines.bin / vk_cpipelines.bin): 0 long
+# frames in a second run through the same field (55 in the first). DM_NVN_ASYNC=1 does not run: the game raises Unreal's LowLevelFatalError at boot (abort at main+0x11bc).
+# The game's 30 (the Switch's rate) rather than the profile's 60 (env below): the phone holds neither, and 30 keeps the pacing steady.
+status	boots
+tested	v65536 POCO F7 25053PC47G (Snapdragon 8s Gen 4, Adreno 825, Android 16)
+orientation	landscape
+setting	docked=0
+env	DM_FPS_TARGET=30
