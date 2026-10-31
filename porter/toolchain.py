@@ -71,10 +71,17 @@ def find_dotnet(cfg=None):
     return next((d for d in found if any(int(s.split('.')[0]) >= DOTNET_MAJOR for s in dotnet_sdks(d))), found[0] if found else None)
 
 
-def dotnet_sdks(dotnet):   # ['10.0.402', ...]
+def dotnet_sdks(dotnet):   # {'10.0.402': '/usr/local/share/dotnet/sdk', ...}
     try: r = subprocess.run([str(dotnet), '--list-sdks'], capture_output=True, text=True, timeout=60)
-    except (OSError, subprocess.TimeoutExpired): return []
-    return re.findall(r'^(\d+\.\d+\.\d+)', r.stdout, re.M)
+    except (OSError, subprocess.TimeoutExpired): return {}
+    return dict(re.findall(r'^(\d+\.\d+\.\d+)\S* \[(.+)\]', r.stdout, re.M))
+
+
+def dotnet_root(dotnet):
+    """The folder with dotnet's runtime, where an apphost (nx_extract) looks in DOTNET_ROOT: the SDK folder's parent, not the executable's, which on a Mac is
+    a link or wrapper elsewhere (/usr/local/bin from Microsoft's installer, /opt/homebrew/bin)"""
+    sdks = dotnet_sdks(dotnet)
+    return Path(next(iter(sdks.values()))).parent if sdks else Path(dotnet).resolve().parent
 
 
 def find_adb(cfg=None):

@@ -2,16 +2,30 @@
 
 Which games the player's bundle has been checked to port, from the game files to an APK and a data pack, on a Windows PC with nothing from the developer's machine: the bundle unzipped into an empty folder, its own player folder, the tools from its **Download missing tools**, and a game folder holding only the game's NSP files. Which games play is in the README's [Games](../README.md#games).
 
-A release ships when every row of the results below has been ported by the bundle it ships.
+A release ships when the games it adds, and the games it fixes, have been ported by the bundle it ships.
 
-## When to run the check again
+## Older games are not checked again
+
+Since 2026-10-31 a release does not port the older games again, even after a core change: there are too many games to test each one for each release. Their rows below stay from the bundle that last ported them. A break that a player or a later port finds in an older game is fixed in a later patch release, which then checks that game again.
+
+Which nx2android version each game was last tested on is the tag in the README's [Games](../README.md#games) table: one tag, the highest version. A release sets the tag of each game it checks to its own version.
+
+## When to run the check
 
 | What changed | Run the check for |
 |---|---|
 | A new game profile (`nxnative/dm/games/<title ID>/` only) | that game: add its row |
 | A game's profile (its `android.tsv`, `game.tsv`, `patches.py`) | that game |
-| The core (`porter/`, `packaging/`, `nxnative/dm/{host,gfx,tools,android,third_party}`, `nxnative/scripts/`), or the NDK or .NET version | every game |
+| A fix for a game that broke | that game |
+| The core (`porter/`, `packaging/`, `nxnative/dm/{host,gfx,tools,android,third_party}`, `nxnative/scripts/`), or the NDK or .NET version | only the games above; the Results paragraph names the core commits the older rows have not seen |
 | `gui/` or docs only | nothing (start the app once) |
+
+## Version number
+
+The version is `0.MINOR.PATCH` (`porter/__init__.py`, commit `chore(release): version <x.y.z>`). The major version stays 0 while the project is early.
+
+- **Patch** (0.1.3 → 0.1.4): the release only adds games and fixes bugs, in profiles or in the core.
+- **Minor** (0.1.3 → 0.2.0): the release changes the core (the paths in the table above) other than to fix a bug: a new feature or a change in behaviour, such as the save manager or the device Oodle decoder.
 
 ## How
 

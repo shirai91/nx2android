@@ -10,7 +10,7 @@ porter/  (headless port pipeline, also a CLI)
   │  inputs → extract → rewrite → shaders → host → apk → data pack → [install]
   │  reuses nxnative/scripts/build_ipa_from_nsp.py's steps (imported, not copied)
   ▼
-nxnative/  (git subtree of seedds/nxnative + the Android port)
+nxnative/  (our fork of seedds/nxnative + the Android port)
   ├─ dm/host, dm/gfx, dm/tools        core: Horizon host, NVN layer, rewriter, shader split   (shared with iOS)
   ├─ dm/android                       core: Android runtime (Vulkan backend, front end, build.py, mkapk.py)
   └─ dm/games/<title ID>/             profiles: game.tsv + shader tables (+ patches.py) + android.tsv
@@ -20,8 +20,8 @@ nxnative/  (git subtree of seedds/nxnative + the Android port)
 
 | Layer | Where | Holds | Must not hold |
 |---|---|---|---|
-| **Core, shared** | `nxnative/dm/{host,gfx,tools,third_party}` | What every game and both platforms need. Android differences behind `DM_ANDROID` / `__APPLE__` / `DM_TARGET`. | Game-specific branches. Keep the diff to upstream small: it is merged with `git subtree pull`. |
-| **Core, Android runtime** | `nxnative/dm/android/` | Vulkan replay backend (`gfx_vk_*`), the NativeActivity front end (on-screen gamepad, pause menu, settings, text entry with an on-screen keyboard, haptics, shaking the device as shaking the controller, audio, performance hints), the NDK build (`build.py`), the APK writer (`apk/mkapk.py`), the Vulkan shader bundle (`tools/shader_vk.py`), the profile's Android header (`tools/android_profile.py`), the gamepad's layouts (`overlay_default.tsv`: tablet and phone) and its themes (`themes/`: a sprite pack per design, and `themes.tsv`, the table of which game wears which; `themes/README.md`). | Code that depends on a game: no title IDs, game names or per-game branches in code (comments may name the game a rule was found with, as upstream's do). A game that needs something different gets a profile key. |
+| **Core, shared** | `nxnative/dm/{host,gfx,tools,third_party}` | What every game and both platforms need. Android differences behind `DM_ANDROID` / `__APPLE__` / `DM_TARGET`. | Game-specific branches. |
+| **Core, Android runtime** | `nxnative/dm/android/` | Vulkan replay backend (`gfx_vk_*`), the NativeActivity front end (on-screen gamepad, pause menu, settings, the save manager's export and import, text entry with an on-screen keyboard, haptics, shaking the device as shaking the controller, audio, performance hints), the NDK build (`build.py`), the APK writer (`apk/mkapk.py`), the Vulkan shader bundle (`tools/shader_vk.py`), the profile's Android header (`tools/android_profile.py`), the gamepad's layouts (`overlay_default.tsv`: tablet and phone) and its themes (`themes/`: a sprite pack per design, and `themes.tsv`, the table of which game wears which; `themes/README.md`). | Code that depends on a game: no title IDs, game names or per-game branches in code (comments may name the game a rule was found with, as upstream's do). A game that needs something different gets a profile key. |
 | **Game profile** | `nxnative/dm/games/<title ID>/` | Data only: `game.tsv` (upstream keys), shader tables, `patches.py` (per-build rewriter cuts), and `android.tsv` (Android keys, below). | Code paths. |
 | **Port pipeline** | `porter/` | The stages that turn game files into the APK and data pack; the toolchain check; the profile registry; installing over adb. Runs headless. | UI. |
 | **GUI** | `gui/` | Screens over `porter`: setup check, game folder, profile status, options, progress, install. | Pipeline logic: everything it does, the CLI does too. |
@@ -66,6 +66,16 @@ Per-build knowledge stays where upstream keeps it: the rewriter's cuts in `patch
 
 RomFS in the data pack is hard-linked to the extraction when the volume allows it, so it takes no extra space.
 
+## Saves
+
+The app keeps the game's save in its internal storage (`$DM_SAVE`, and `<DM_SAVE>_device` for a game that mounts a device save too: `hle_fs.c`), which a reinstall keeps, an uninstall deletes, and adb cannot read in a release build (it is not debuggable). The save manager (`dm/android/saves_android.c`) copies it in and out through the app's files folder, which adb, porter and the PC reach without a permission:
+
+- `saves/<YYYYMMDD-HHMMSS>/`: one export, the save's files byte for byte, as a console's save tools copy them (so a console's save folder imports as it is, and an export goes back to a console the same way); `saves/<name>.device/` beside it holds the device save.
+- **Export save** (the pause menu's Game tab) copies the committed save (never `.work`: a transaction in flight is not a save) on a thread of its own, through a hidden `.part` folder renamed when whole, and starts again if the game commits meanwhile.
+- **Import save** opens a picker of the folders in `saves/`, newest first. The import is applied at the next start, before the host mounts anything (`ANativeActivity_onCreate` → `dm_saves_start`), so it never meets a commit: the menu writes `saves/import.txt` and the app ends. At the start the save it replaces is exported first (`<stamp>-before-import`), the folder is copied to `<DM_SAVE>.import` and swapped in with one `renameat2(RENAME_EXCHANGE)`.
+- `porter saves` (the GUI's **Saves** tab) does the same from the PC: `apps`, `list`, `export [dest] [--name …]` (a fresh export: the app is stopped and started with `saves/export.txt`, exports and ends without starting the game, then the folder is pulled), `import <folder or .zip>` (pushed under a hidden name, renamed, named in `saves/import.txt`, and the app started to apply it). Each request carries a token the app writes back in `saves/result.txt` with its outcome.
+- The files are not changed. A save made on a console belongs to that console's user; a game that keeps its user's id inside its own files (Animal Crossing: New Horizons, issue #16) reads it as another user's, since the host's one user (`hle_account.c`) is not mapped into it.
+
 Shaders captured on the device: a game can set shaders whose code is in no game file (Xenoblade Chronicles 3, hundreds: effects and model materials), which the split cannot find. When a draw needs a shader the bundle lacks, the app saves it to `captured_shaders/<key>.bin` in its files folder (`gfx_vk_shader.c` `vk_shader_missing`; the draw is skipped this time). A port with `--install` first pulls that folder into `<build folder>/android/captured_shaders/`, which is kept from port to port, and `shader_vk.py --capture` translates it into the bundle. These shaders are not in the profile's tables: the tables stay what the game files give. So such a game draws everything only after it has been played that far once and ported again.
 
 The install starts the app once before pushing anything: Android makes the app's files folder, owned by the app with the app's group, when the app first asks for it, and a folder the shell makes first lacks that group underneath FUSE, so the app cannot read what is pushed below it. Files whose path passes Windows' 260 characters are pushed through short hard links (adb.exe is not long-path aware). A file already on the device at its size is skipped; the port's own outputs (everything but `RomFS/` and `aoc/`, which change only with the game's version) are also compared by MD5, because a rewriter cut changes a module without changing its size.
@@ -86,7 +96,7 @@ Events: with `--progress json`, every line on stdout is one JSON object, the pro
 
 ## What the player installs
 
-The player gets the bundle (`dist/nx2android-<version>.zip` from `python packaging/build_bundle.py`): unzip, start `nx2android.exe`, nothing to install with pip. It does not ship toolchains; the Setup tab (`nx2android.exe -m porter doctor`, or `python -m porter doctor` from the repository) checks them and the free disk space, and its **Download missing tools** button (`porter tools --download`, `porter/fetch.py`) fetches the missing NDK, .NET SDK and platform-tools from Google's SDK repository and Microsoft's release list, checks each archive against the checksum its list gives, and unpacks them into the player's nx2android folder (`toolchains/`), which the finders search:
+The player gets the bundle (`dist/nx2android-<version>-<os>-<cpu>.zip` from `python packaging/build_bundle.py`, for Windows and macOS): unzip, start `nx2android.exe` (`nx2android` on a Mac), nothing to install with pip. It does not ship toolchains; the Setup tab (`nx2android.exe -m porter doctor`, or `python -m porter doctor` from the repository) checks them and the free disk space, and its **Download missing tools** button (`porter tools --download`, `porter/fetch.py`) fetches the missing NDK, .NET SDK and platform-tools from Google's SDK repository and Microsoft's release list, checks each archive against the checksum its list gives, and unpacks them into the player's nx2android folder (`toolchains/`), which the finders search:
 - **Android NDK r27c** (`ANDROID_NDK_HOME`, the configured path, or the usual install folders). No Android SDK or JDK: `mkapk.py` writes and signs the APK itself.
 - **.NET SDK 10**: builds `nx_extract` and the shader translator, and runs them.
 - From the repository instead of the bundle: **Python 3.11+** with `requirements.txt` (`lz4`, `capstone`, `pillow`, `fonttools`, and `PySide6` for the GUI): the port runs the engine's own Python tools (the rewriter, the shader split). The bundle carries that Python.
@@ -107,11 +117,11 @@ nx2android/
   tests/                 unit tests (python -m unittest discover tests); arch_rules.py checks this file's layer rules
   requirements.txt       the Python modules the tool needs
   probes/                first on-device probes (research)
-  nxnative/              subtree: engine, Android runtime, profiles
+  nxnative/              our fork: engine, Android runtime, profiles
   RESEARCH.md            feasibility study
 ```
 
-The engine is our own fork since 2026-10-29: no subtree pull from upstream ([DEVELOPMENT_GUIDE.md](DEVELOPMENT_GUIDE.md#nxnative)).
+The engine is our own fork since 2026-10-29: no subtree pull from upstream, and no `upstream` remote ([DEVELOPMENT_GUIDE.md](DEVELOPMENT_GUIDE.md#nxnative)).
 
 ## Adding a game
 

@@ -102,7 +102,7 @@ class Port:
         o.out = Path(o.out or self.cfg.get('out') or o.folder).expanduser().resolve()
         # the chosen dotnet first on PATH, in this process too: Windows finds a program by the parent's PATH, not the one passed to the child (upstream runs `dotnet` by name)
         os.environ['PATH'] = os.pathsep.join([str(self.tools['dotnet'].parent), os.environ.get('PATH', '')])
-        os.environ['DOTNET_ROOT'] = str(self.tools['dotnet'].parent)   # where nx_extract.exe's apphost looks for the runtime (else the system's, which may lack .NET 10)
+        os.environ['DOTNET_ROOT'] = str(toolchain.dotnet_root(self.tools['dotnet']))   # where nx_extract.exe's apphost looks for the runtime (else the system's, which may lack .NET 10)
         # PYTHONUTF8: the engine's tools write their tables with open() and no encoding, which is the ANSI code page on Windows (shader_split.py's "→" failed)
         self.env = dict(os.environ, J=str(o.jobs), PYTHONIOENCODING='utf-8', PYTHONUTF8='1', DOTNET_CLI_TELEMETRY_OPTOUT='1')
 
@@ -287,7 +287,7 @@ class Port:
             except (AdbError, KeyError) as e: raise BuildError(f"{self.app_name}'s shaders are in Oodle-compressed archives ({self.oodle_why}): the port decodes them with the game's own decoder on "
                                                                f'the Android device, so connect it (adb) and port again ({e})') from e
         for k in ('glslc_capture', 'ue_decode', 'ue_legacy') + (() if self.oodle_why else ('oodle_packs',)):
-            if src[k][0]: raise BuildError(f'{self.app_name} needs a step that boots the game in the Mac host ({src[k][1]}), which a Windows port cannot run yet')
+            if src[k][0]: raise BuildError(f'{self.app_name} needs a step that boots the game in the Mac host ({src[k][1]}), which the Android port cannot run yet')
 
     # ---- the game's own Oodle decoder on the device, for the shader split (Pokémon Legends: Arceus's GFPAKs) ----
     ODEV = '/data/local/tmp/nx2a-oodle'   # dmhost, the rewritten modules and the job, removed afterwards
@@ -322,7 +322,8 @@ class Port:
         adb.shell(f'rm -rf {self.ODEV}; mkdir -p {self.ODEV}/mods', check=False)
         adb.push_file(out / 'dmhost', f'{self.ODEV}/dmhost'); adb.push_tree(self.patched, f'{self.ODEV}/mods'); adb.push_file(job, f'{self.ODEV}/job.bin')
         nsp.rmtree(job)
-        r = adb.shell(f'chmod 755 {self.ODEV}/dmhost; cd {self.ODEV} && DM_OODLE_JOB={self.ODEV}/job.bin DM_OODLE_JOB_BNSH=1 ./dmhost mods > job.log 2>&1; echo "exit $?"; '
+        # (the device's timeout ends the decoder before adb gives up, so no decoder is left running and holding memory on the device)
+        r = adb.shell(f'chmod 755 {self.ODEV}/dmhost; cd {self.ODEV} && DM_OODLE_JOB={self.ODEV}/job.bin DM_OODLE_JOB_BNSH=1 timeout 3300 ./dmhost mods > job.log 2>&1; echo "exit $?"; '
                       f'grep -a -e DM_OODLE_JOB -e RED job.log | tail -5', timeout=3600)
         (self.logs / 'android_oodle_job.log').write_text(r, encoding='utf-8')
         if 'exit 0' not in r: raise BuildError(f"the game's Oodle decoder on the device failed (see {self.logs / 'android_oodle_job.log'})")

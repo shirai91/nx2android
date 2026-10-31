@@ -6,7 +6,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 
 "Profile here": `nxnative/dm/games/<title ID>/` has the game's profile from nxnative. "Upstream profile": only seedds/nxnative has one, to read as a reference or starter, not to pull. "60 fps with X" is upstream's note: they run that update at 60 fps (30 on the Switch).
 
-**22 / 93 ported**
+**23 / 93 ported**
 
 - [x] 13 Sentinels: Aegis Rim · `01003FC01670C000`
 - [ ] Ace Attorney Investigations Collection · `010005501E68C000` · profile here
@@ -61,7 +61,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [ ] Octopath Traveler 0 · `01005270232F2000` · profile here · 60 fps with 1.0.5
 - [ ] Octopath Traveler II · `0100A3501946E000` · upstream profile · 60 fps with 1.1.1
 - [x] Paper Mario: The Origami King · `0100A3900C3E2000`
-- [ ] Paper Mario: The Thousand-Year Door · `0100ECD018EBE000` · profile here · 60 fps with 1.0.1
+- [x] Paper Mario: The Thousand-Year Door · `0100ECD018EBE000`
 - [ ] Patrick's Parabox · `0100E44016C22000` · profile here
 - [ ] Persona 4 Golden · `010062B01525C000` · upstream profile
 - [ ] Persona 5 Royal · `01005CA01580E000` · upstream profile

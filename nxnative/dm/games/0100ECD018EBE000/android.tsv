@@ -1,0 +1,13 @@
+# Paper Mario: The Thousand-Year Door on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Intelligent Systems' engine on SDK 15.3.2; game.tsv, patches.py and the shader tables are upstream's, checked by hand.
+# On the Y700 (2026-10-30/31), docked, driven with DM_CTL: the title, a new file, the prologue (Peach in Rogueport, Mario's house, the letter, the boat) and Rogueport's harbour.
+# 60 fps with the host frame step (game time at real time: the same walk at 60 and pinned at 30; frame step log 1.000 of real time), GPU about 10-11 ms; a 30-minute
+# soak kept one process at 1.26-1.91 GiB with no growth and no audio underruns. Saves at the Rogueport save block and loads after a restart (File 1).
+# Status wip: playable, but the lighting flickers.
+# Open: for single frames the side faces of walls, floors and water go black (their tops stay sky-lit) while Mario walks blinking after damage. To reproduce: from the
+# harbour dock, LDown into the water, then LLeft 2.5 s and LRight 2.5 s: about one bad frame per fall. Not lost draws, barriers, the bind cache, CPU cache coherency,
+# occlusion report timing, CPU/GPU overlap or LRZ (A/B switches); likely a light the game takes as hidden for a frame
+status	wip
+tested	v65536 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
+package	org.nx2a.pmttyd
+orientation	landscape

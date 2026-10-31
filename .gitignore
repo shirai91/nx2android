@@ -3,8 +3,6 @@
 # Scratch work and probe outputs (some are made from game files)
 /work/
 /build/
-# The local nxnative clone's git folder, kept while moving it into the subtree
-/nxnative.local.git/
 
 # Android build outputs
 /nxnative/dm/android/out/

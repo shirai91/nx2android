@@ -75,11 +75,11 @@ void dm_overlay_theme_done(const ov_theme *t);   // the pixels are on the GPU: t
 
 // ---- the pause menu: a panel in the middle of the window: a row of tabs, the open tab's rows, and Resume. Everything is placed in a panel rectangle p
 // (x, y, width, height: the window's for touches, the raster's for drawing), so the touches and the drawing agree ----
-enum { OVM_OVERLAY, OVM_OPACITY, OVM_EDIT, OVM_RUMBLE, OVM_FPS, OVM_MODE, OVM_RESUME, OVM_TAB, OVM_N };   // OVM_TAB: the tabs' row; OVM_EDIT: the layout editor;
-                                                                                                        // OVM_MODE: handheld (performance) or docked (resolution)
+enum { OVM_OVERLAY, OVM_OPACITY, OVM_EDIT, OVM_RUMBLE, OVM_FPS, OVM_MODE, OVM_EXPORT, OVM_IMPORT, OVM_RESUME, OVM_TAB, OVM_N };   // OVM_TAB: the tabs' row;
+            // OVM_EDIT: the layout editor; OVM_MODE: handheld (performance) or docked (resolution); OVM_EXPORT, OVM_IMPORT: the save manager (saves_android.c)
 #define OVM_TABS 2
 #define OVM_PER_TAB 4
-static const int OVM_TAB_ITEMS[OVM_TABS][OVM_PER_TAB] = {{OVM_OVERLAY, OVM_OPACITY, OVM_EDIT, OVM_RUMBLE}, {OVM_FPS, OVM_MODE, -1, -1}};
+static const int OVM_TAB_ITEMS[OVM_TABS][OVM_PER_TAB] = {{OVM_OVERLAY, OVM_OPACITY, OVM_EDIT, OVM_RUMBLE}, {OVM_FPS, OVM_MODE, OVM_EXPORT, OVM_IMPORT}};
 static const char *const OVM_TAB_NAMES[OVM_TABS] = {"Gamepad", "Game"};
 #define OVM_ROWS (OVM_PER_TAB + 2)   // the tabs, a tab's rows (as many for every tab: the panel keeps its size), Resume
 static inline int ov_menu_item(int tab, int row) { return row == 0 ? OVM_TAB : row == OVM_ROWS - 1 ? OVM_RESUME : row > 0 && row < OVM_ROWS - 1 ? OVM_TAB_ITEMS[tab & 1][row - 1] : -1; }
@@ -89,9 +89,11 @@ static inline int ov_menu_item(int tab, int row) { return row == 0 ? OVM_TAB : r
 #define OV_OPACITY_MIN 20    // the gamepad's opacity, percent (the Opacity slider, settings.txt opacity=)
 #define OV_OPACITY_MAX 80
 // what the menu shows (-1 = closed): bit 0 the gamepad is on, bit 1 rumble is on, bit 2 docked, bit 3 the frame rate shown, bits 4..7 the highlighted row + 1
-// (0 = none), bit 8 the open tab, bits 9..15 the opacity in percent. Bit 16: the text entry's panel instead (its edit count below); bit 17: the layout editor
-// (OVE_ST_* below)
+// (0 = none), bit 8 the open tab, bits 9..15 the opacity in percent, bits 20..23 the last export's outcome (OVX_*), bits 24..27 a count of exports (its name
+// changes with each). Bit 16: the text entry's panel instead (its edit count below); bit 17: the layout editor (OVE_ST_* below); bit 18: the save picker (OVS_ST)
 int dm_menu_state(void);
+enum { OVX_IDLE, OVX_BUSY, OVX_DONE, OVX_NOSAVE, OVX_FAILED };   // Export save: the button; copying; the export's name; the game has not saved yet; failed
+int dm_save_note(char *out, int cap);   // front_android.c: the outcome (OVX_*) and the last export's name, or why it failed
 static inline float ov_menu_scale(void) { float s = dm_overlay_scale(), fit = 0.92f / (OVM_ROWS * OV_MENU_ROW + 2 * OV_MENU_PAD); return s < fit ? s : fit; }
 static inline void ov_menu_rect(float W, float H, float r[4]) {   // x, y, width, height in window pixels
     float s = ov_menu_scale(), pw = OV_MENU_W * H * s, ph = (OVM_ROWS * OV_MENU_ROW + 2 * OV_MENU_PAD) * H * s;
@@ -139,6 +141,14 @@ static inline int ov_ed_button_at(float x, float y, const float p[4], int first,
     for (int i = first; i < first + n; i++) { float b[4]; ov_ed_button(i, p, b); if (x >= b[0] && x < b[0] + b[2] && y >= b[1] && y < b[1] + b[3]) return i; }
     return -1;
 }
+
+// ---- the save picker (front_android.c, from the menu's Import save): the pause menu's panel and rows, with what front_android.c puts in each row: the saves in
+// saves/ newest first, OVM_ROWS - 2 to a page (left and right page), then the confirmation, then the note that the game closes. dm_menu_state: bit 18, bits 4..7
+// the highlighted row + 1, bits 20..27 the picker's edit count (a page, a confirmation) ----
+#define OVS_ST 0x40000
+enum { OVS_EMPTY, OVS_TITLE, OVS_ITEM, OVS_NOTE, OVS_BUTTON, OVS_BACK };   // a row: nothing; the title (left) and the page (right); a save (its name, its size);
+typedef struct { int style; char left[80], right[40]; } ov_srow;            // a line of text; a button (the import); Back or Cancel, centred as Resume is
+int dm_save_rows(ov_srow rows[OVM_ROWS]);   // front_android.c: the picker's rows, 0 when it is not open
 
 // ---- the text entry's keyboard (front_android.c front_text_input, drawn by gfx_vk_present.c ov_text_panel), in the pause menu's panel rectangle ----
 // Four rows of ten character keys and a row of four wide ones; p is the panel's rectangle (x, y, width, height: the window's for touches, the raster's for drawing).

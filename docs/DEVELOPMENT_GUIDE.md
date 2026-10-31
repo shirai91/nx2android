@@ -29,6 +29,18 @@ python -m porter port "D:\Games\NEO" -k "D:\keys\prod.keys" --install
 
 The APK (`NeoTheWorldEndsWithYou.apk`) and the data pack (`NeoTheWorldEndsWithYou-data/`) appear in the game folder (`-o` picks another). The first port takes a while (extraction, rewriting the game's code, translating its shaders); later ones reuse what has not changed. `python -m porter -h` lists the commands.
 
+### Saves
+
+`porter saves` does what the app's **Saves** tab does (see the README's [Saves](../README.md#saves)):
+
+```
+python -m porter saves list
+python -m porter saves export "D:\Backups\Celeste"
+python -m porter saves import "D:\Backups\Celeste\20261030-141200"
+```
+
+How the export folders are laid out: [ARCHITECTURE.md](ARCHITECTURE.md#saves).
+
 ## Layout
 
 - `porter/`: the port pipeline (`python -m porter`).
@@ -41,19 +53,23 @@ The APK (`NeoTheWorldEndsWithYou.apk`) and the data pack (`NeoTheWorldEndsWithYo
 
 ## Adding a game
 
-Each game is a profile in `nxnative/dm/games/<title ID>/` with an `android.tsv`: [ARCHITECTURE.md](ARCHITECTURE.md#adding-a-game). A finished port updates, in the profile's commit, the games table in the [README](../README.md#games) (its row, with a gameplay frame captured on the device in `docs/images/`) and [PORT_CHECKLIST.md](PORT_CHECKLIST.md).
+Each game is a profile in `nxnative/dm/games/<title ID>/` with an `android.tsv`: [ARCHITECTURE.md](ARCHITECTURE.md#adding-a-game). A finished port updates, in the profile's commit, the games table in the [README](../README.md#games) (its row, with a gameplay frame captured on the device in `docs/images/` and the tag of the nx2android version it was tested on) and [PORT_CHECKLIST.md](PORT_CHECKLIST.md).
+
+## Releases and version numbers
+
+The version is `0.MINOR.PATCH`. A release that only adds games and fixes bugs raises the patch version; a release with any other core change (a new feature or a change in behaviour) raises the minor version. The major version stays 0 while the project is early. A release checks only the games it adds or fixes, not the older ones; a break in an older game is fixed by a later patch release. Details: [RELEASE_CHECK.md](RELEASE_CHECK.md).
 
 ## Building the bundle
 
 ```
 python -m pip install -r requirements.txt pyinstaller
-python packaging/build_bootloader.py
+python packaging/build_bootloader.py      (Windows only)
 python packaging/build_bundle.py
 ```
 
-`build_bootloader.py` compiles PyInstaller's launcher on this PC (it needs the Microsoft C++ Build Tools), because a few antivirus engines flag the prebuilt one every PyInstaller app shares. Run it again after installing or upgrading PyInstaller.
+On Windows, `build_bootloader.py` compiles PyInstaller's launcher on this PC (it needs the Microsoft C++ Build Tools), because a few antivirus engines flag the prebuilt one every PyInstaller app shares. Run it again after installing or upgrading PyInstaller.
 
-`dist/nx2android/` and `dist/nx2android-<version>.zip`: the app, the committed `nxnative/` and the install guide; no toolchains, keys or game files.
+`dist/nx2android/` and `dist/nx2android-<version>-<os>-<cpu>.zip` (`windows-x64`, `macos-arm64`): the app, the committed `nxnative/` and the install guide; no toolchains, keys or game files. Publishing a release builds the macOS zip and attaches it (`.github/workflows/release-macos.yml`); the Windows zip is built and uploaded by hand.
 
 ## Tests
 
@@ -95,10 +111,4 @@ The commits before 2026-10-28 predate the rule.
 
 ## nxnative
 
-`nxnative/` started as a squashed git subtree of [seedds/nxnative](https://github.com/seedds/nxnative) (upstream 6034fca, 2026-10-24). Since 2026-10-29 it is our own fork: no `git subtree pull`, cherry-pick or merge from upstream. Upstream's profiles are still a good reference when bringing up a game it has; read them and write our own:
-
-```
-git remote add upstream https://github.com/seedds/nxnative.git
-git fetch upstream
-git show upstream/main:dm/games/<title ID>/game.tsv
-```
+`nxnative/` started as a squashed git subtree of [seedds/nxnative](https://github.com/seedds/nxnative) (upstream 6034fca, 2026-10-24). Since 2026-10-29 it is our own fork: no `git subtree pull`, cherry-pick or merge from upstream, and the repository has no `upstream` remote (removed 2026-10-31): `origin` is the only one. Upstream's profiles are still a good reference when bringing up a game it has; read them on GitHub (`https://github.com/seedds/nxnative/tree/main/dm/games/<title ID>`) and write our own.

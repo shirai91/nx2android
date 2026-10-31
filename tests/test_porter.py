@@ -356,5 +356,47 @@ class FpsLocker(unittest.TestCase):   # porter/fpslocker.py: FPSLocker-Warehouse
         self.assertTrue(fpslocker.url('0100fd501f95a000', self.BID).endswith('/patches/0100FD501F95A000/D49165C05EAD8AE1.yaml'))
 
 
+class Saves(unittest.TestCase):   # porter/saves.py: the save folders on the device, a .zip or folder to import (no device: the shell answers are made up)
+    class FakeAdb:
+        def __init__(self, sizes, times, packages=('org.nx2a.a',)): self.sizes, self.times, self.packages, self.cmds = sizes, times, packages, []
+        def remote_sizes(self, rdir): return dict(self.sizes)
+        def shell(self, script, **kw):
+            self.cmds.append(script)
+            if script.startswith('pm list packages'): return ''.join(f'package:{p}\n' for p in self.packages)
+            if 'stat -c "%Y %n"' in script: return ''.join(f'{t} {n}\n' for n, t in self.times.items())
+            return ''
+
+    def test_listing(self):   # newest first; a device save counts with its own; hidden folders (an export still copying) and the request files left out
+        from porter import saves
+        adb = self.FakeAdb({'20261030-100000/a.dat': 10, '20261030-100000.device/d.dat': 5, '20261029-090000/a.dat': 7, 'result.txt': 40, '.x.part/a.dat': 9, 'console/sub/b.bin': 3},
+                           {'20261030-100000': 200, '20261030-100000.device': 200, '20261029-090000': 100, 'console': 300})
+        rows = saves.listing(adb, 'org.nx2a.a')
+        self.assertEqual([r['name'] for r in rows], ['console', '20261030-100000', '20261029-090000'])
+        self.assertEqual((rows[1]['files'], rows[1]['bytes'], rows[1]['device']), (2, 15, True))
+        self.assertEqual((rows[0]['files'], rows[0]['bytes'], rows[0]['device']), (1, 3, False))
+
+    def test_pick_app(self):
+        from porter import saves
+        from porter.upstream import BuildError
+        self.assertEqual(saves.pick_app(self.FakeAdb({}, {}), ''), 'org.nx2a.a')
+        two = self.FakeAdb({}, {}, ('org.nx2a.a', 'org.nx2a.b'))
+        self.assertEqual(saves.pick_app(two, 'org.nx2a.b'), 'org.nx2a.b')
+        with self.assertRaises(BuildError): saves.pick_app(two, '')
+        with self.assertRaises(BuildError): saves.pick_app(two, 'org.nx2a.c')
+
+    def test_zip(self):   # a .zip of one folder imports that folder; one of loose files imports them; a path out of the archive is refused
+        import zipfile
+        from porter import saves
+        from porter.upstream import BuildError
+        t = Path(tempfile.mkdtemp(prefix='nx2a_test_saves_'))
+        with zipfile.ZipFile(t / 'one.zip', 'w') as z: z.writestr('MySave/main.dat', b'x'); z.writestr('MySave/sub/b.dat', b'y')
+        with zipfile.ZipFile(t / 'loose.zip', 'w') as z: z.writestr('main.dat', b'x'); z.writestr('other.dat', b'y')
+        with zipfile.ZipFile(t / 'bad.zip', 'w') as z: z.writestr('../evil.dat', b'x')
+        u = Path(tempfile.mkdtemp(dir=t)); self.assertEqual(saves._unpacked(t / 'one.zip', u), u / 'MySave')
+        u = Path(tempfile.mkdtemp(dir=t)); self.assertEqual(sorted(p.name for p in saves._unpacked(t / 'loose.zip', u).iterdir()), ['main.dat', 'other.dat'])
+        with self.assertRaises(BuildError): saves._unpacked(t / 'bad.zip', Path(tempfile.mkdtemp(dir=t)))
+        self.assertEqual(saves._unpacked(t, None), t)   # a folder: as it is
+
+
 if __name__ == '__main__':
     unittest.main()

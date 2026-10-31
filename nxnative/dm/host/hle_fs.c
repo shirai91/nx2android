@@ -436,6 +436,13 @@ HLE_FORCE("_ZN2nn2fs21GetUtf16PathLengthMaxEPbPmPKc", "fsp-srv; host mounts have
 HLE_FORCE("_ZN2nn2fs26GetUtf16EntryNameLengthMaxEPbPmPKc", "fsp-srv; host mounts have no UTF-16 entry name limit", Result, h_fs_GetUtf16EntryNameLengthMax, uint8_t *limited, uint64_t *out, const char *path) {
     (void)path; *limited = 0; *out = 0x300; return RES_OK;
 }
+// RAM disk (Paper Mario: The Thousand-Year Door mounts "cache:" on one): the SDK's own MountRamDisk registered the mount in the SDK's table, which the host's file
+// functions never look in, so every "cache:" file failed (3,416 creates and opens in one session) so the game read and wrote nothing there. The host gives it an empty
+// directory, <temporary storage>_ramdisk_<name>, emptied at mount as RAM is at boot; the buffer the game passes is not used
+HLE_FORCE("_ZN2nn2fs12MountRamDiskEPKcPvm", "fsp-srv; RAM disk → an emptied host directory", Result, h_fs_MountRamDisk, const char *name, void *buf, size_t size) {
+    (void)buf; char t[1024], b[1300]; snprintf(b, sizeof b, "%s_ramdisk_%s", envdir("DM_TEMP", "run/platform/temp", t, sizeof t), name);
+    rm_tree(b); mkdir(b, 0755); LOG("fs mount RAM disk %s (%zu bytes) → %s", name, size, b); return mount(name, b, 0);
+}
 HLE_FORCE("_ZN2nn2fs21MountTemporaryStorageEPKc", "fsp-srv; temporary storage → host directory", Result, h_fs_MountTemp, const char *name) {
     char b[1024]; return mount(name, envdir("DM_TEMP", "run/platform/temp", b, sizeof b), 0);
 }

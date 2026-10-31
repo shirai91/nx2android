@@ -1,17 +1,20 @@
 # Running porter from the GUI: one QProcess per command, its stdout read as JSON. A port (`--progress json`) is a stream of events, one object per line
 # (stage, step, progress, stage_end, say, result); the other commands (`--json`) print one JSON document. Cancelling stops the whole process tree:
 # a port runs dotnet, the rewriter and the NDK's clang as children of its own.
-import json, os, subprocess, sys
+import json, os, signal, subprocess, sys
 
 from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, Signal
 
 from porter.paths import REPO
 
 
-def _env():
+def _porter(parent, args):   # a porter process in its own session, so cancel() can stop its children with it
     e = QProcessEnvironment.systemEnvironment()
     e.insert('PYTHONIOENCODING', 'utf-8'); e.insert('PYTHONUNBUFFERED', '1')
-    return e
+    p = QProcess(parent)
+    p.setProgram(sys.executable); p.setArguments(['-m', 'porter', *args]); p.setWorkingDirectory(str(REPO)); p.setProcessEnvironment(e)
+    if os.name != 'nt': p.setUnixProcessParameters(QProcess.UnixProcessFlag.CreateNewSession)
+    return p
 
 
 class Porter(QObject):
@@ -26,9 +29,7 @@ class Porter(QObject):
     def running(self): return self.p is not None and self.p.state() != QProcess.NotRunning
 
     def start(self, args):
-        self.p = QProcess(self); self.buf, self.err = b'', []
-        self.p.setProgram(sys.executable); self.p.setArguments(['-m', 'porter', *args])
-        self.p.setWorkingDirectory(str(REPO)); self.p.setProcessEnvironment(_env())
+        self.p = _porter(self, args); self.buf, self.err = b'', []
         self.p.readyReadStandardOutput.connect(self._out)
         self.p.readyReadStandardError.connect(lambda: self.err.append(bytes(self.p.readAllStandardError()).decode('utf-8', 'replace')))
         self.p.finished.connect(self._done)
@@ -53,13 +54,12 @@ class Porter(QObject):
     def cancel(self):
         if not self.running(): return
         if os.name == 'nt': subprocess.run(['taskkill', '/T', '/F', '/PID', str(self.p.processId())], capture_output=True)
-        else: self.p.kill()
+        else: os.killpg(self.p.processId(), signal.SIGKILL)
 
 
 def call_json(parent, args, done):
     """A short porter command that prints one JSON document: done(obj or None, exit code)"""
-    p = QProcess(parent)
-    p.setProgram(sys.executable); p.setArguments(['-m', 'porter', *args]); p.setWorkingDirectory(str(REPO)); p.setProcessEnvironment(_env())
+    p = _porter(parent, args)
     def fin(code, _status):
         out = bytes(p.readAllStandardOutput()).decode('utf-8', 'replace')
         try: obj = json.loads(out)
