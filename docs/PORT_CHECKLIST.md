@@ -6,7 +6,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 
 "Profile here": `nxnative/dm/games/<title ID>/` has the game's profile from nxnative. "Upstream profile": only seedds/nxnative has one, to read as a reference or starter, not to pull. "60 fps with X" is upstream's note: they run that update at 60 fps (30 on the Switch).
 
-**22 / 93 ported**
+**24 / 94 ported**
 
 - [x] 13 Sentinels: Aegis Rim · `01003FC01670C000`
 - [ ] Ace Attorney Investigations Collection · `010005501E68C000` · profile here
@@ -36,7 +36,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [ ] Donkey Kong Country: Tropical Freeze · `0100C1F0051B6000` · upstream profile
 - [ ] DRAGON QUEST VII Reimagined · `0100A9D01C446000` · profile here
 - [ ] DRAGON QUEST XI S: Echoes of an Elusive Age – Definitive Edition · `01006C300E9F0000` · profile here · 60 fps with 1.0.4
-- [ ] FINAL FANTASY RESONANCE · `0100606026F12000` · profile here · 60 fps with 1.0.1
+- [x] FINAL FANTASY RESONANCE · `0100606026F12000` · profile here · 60 fps with 1.0.1
 - [ ] FINAL FANTASY TACTICS - The Ivalice Chronicles · `010038B015560000` · profile here
 - [ ] FINAL FANTASY X/X-2 HD Remaster · `0100BC300CB48000` · upstream profile
 - [ ] Fire Emblem Engage · `0100A6301214E000` · profile here · 60 fps with 2.0.0
@@ -71,7 +71,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [ ] Pokémon Legends: Z-A · `0100F43008C44000` · profile here
 - [ ] Pokémon Scarlet · `0100A3D008C5C000` · upstream profile
 - [ ] Pokémon Shield · `01008DB008C2C000` · upstream profile
-- [ ] Pokémon Shining Pearl · `010018E011D92000` · profile here
+- [x] Pokémon Shining Pearl · `010018E011D92000` · profile here
 - [ ] Pokémon Sword · `0100ABF008968000` · upstream profile
 - [ ] Portal · `01007BB017812000` · upstream profile · Android only on NVIDIA Shield TV
 - [ ] Return of the Obra Dinn · `010032E00E6E2000` · upstream profile
@@ -95,6 +95,8 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [ ] The Legend of Zelda: Echoes of Wisdom · `01008CF01BAAC000` · upstream profile
 - [ ] The Legend of Zelda: Link's Awakening · `01006BB00C6F0000` · profile here
 - [ ] The Legend of Zelda: Tears of the Kingdom · `0100F2C0115B6000` · profile here · 60 fps with 1.4.3
+- [x] UNDER NIGHT IN-BIRTH Exe:Late[cl-r] · `010038C00EC34000`
+- [x] UNDER NIGHT IN-BIRTH II Sys:Celes · `0100BD401D18A000`
 - [x] Unicorn Overlord · `010069401ADB8000` · boots; saving and a full battle not tested yet
 - [x] Viractal: Will You Trust Your Party? · `0100FD501F95A000`
 - [ ] Xenoblade Chronicles 2 · `0100E95004038000` · upstream profile

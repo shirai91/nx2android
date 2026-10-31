@@ -1,0 +1,37 @@
+# Game profile of UNDER NIGHT IN-BIRTH Exe:Late[cl-r] (Switch, the Aksys release 010038C00EC34000, update 1.0.3 = v131072). Its DLC is a licence only (no content).
+# Format: see dm/games/README.md
+# French-Bread's own engine over NVN, SDK 6.4.2; subsdk0 is NintendoSDK_movie (the opening movie). Started from the survey's provisional profile, whose guesses held:
+# no key needed changing. Brought up on Android (Legion Y700) on 2026-10-31 after a player reported another release of it working (issue #23), not on the Mac or an iPhone
+
+# ---- Identity ----
+title_id	010038C00EC34000
+program_id	010038C00EC34000
+
+# ---- App ----
+name	UNDER NIGHT IN-BIRTH Exe:Late[cl-r]
+ipa	UnderNightInBirthExeLateClR.ipa
+app_category	public.app-category.games
+
+# ---- Versions ----
+build	v131072	1.0.3	main=a25c9668b3ccc11ca2d3172635ed2d9e	subsdk0=16577266bb9797abf6029f85025f6d35	sdk=184751379007f9c50fc96ba4d26a5dca
+package	v131072
+shader_versions	v131072
+
+# ---- Files ----
+# every module main imports from
+modules	main subsdk0 sdk
+romfs_marker	Movie/uniest2cs_op.mp4
+zip_store	.bntx:.cg:.mp4:.pac:.pat:.png:.uka:.zip:.metallib
+
+# ---- Memory ----
+# main sets a heap of at most the pool − 64 MB − 589 MB of bss (counted as used memory): a 2816 MB heap region
+mem_reserve	0xe0000000
+mem_alias	0x10000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+# the NPDM declares 0 MB of system resource: IsVirtualAddressMemoryEnabled is false, as on Horizon (Big Brain Academy: Brain vs. Brain sets a heap only then)
+sys_resource	0x0
+
+# ---- Shader split ----
+shader_groups	/grpdat/=grpdat /se/=se /manual/=manual /data/=data /___S_Chinese/=schinese /___Korean/=korean /___T_Chinese/=tchinese /___English/=english /PackFile/=packfile /BattleRes/=battleres /___Region/=region /System/=system /Bgm/=bgm /bg/=bg /Shader/=shader /script/=script /Movie/=movie
+shader_note	UNDER NIGHT IN-BIRTH Exe: Late[cl-r] shaders (provisional profile)

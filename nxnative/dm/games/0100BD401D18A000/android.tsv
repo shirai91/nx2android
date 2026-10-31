@@ -1,0 +1,12 @@
+# UNDER NIGHT IN-BIRTH II Sys:Celes on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# French-Bread's own 2D fighting game engine over NVN, SDK 15.3.2, update 1.42 (v1179648) with its six DLC (licences only); 81 shaders, all translated. Nothing in the core changed for it.
+# Reported working by a player on a POCO F6 (Snapdragon 8s Gen 3, Adreno 735) with update 1.0.1 and all DLC (issue #21).
+# Tested 2026-10-31 on the Legion Y700 (TB322FC, Snapdragon 8 Elite, Adreno 830, Android 16), driven with DM_CTL: the new save and replay data prompts, the opening movie
+# (H.264 through MediaCodec), the title, the main menu, Versus > Vs. CPU, the game settings, side select, character select (the full roster with the DLC characters), two
+# matches against the CPU to the result screen and a rematch, the pause menu. After a restart the game opens without the new save prompt (its save is kept).
+# 60 fps in battle (frame work p50 about 5 ms, GPU about 1.9 ms a frame); 35 of 36,553 frames dropped on screen in a 10-minute session, no audio underrun, no red log line.
+# Not tested: Single Player's story, Network (online play), handheld mode (played docked)
+status	playable
+tested	v1179648 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
+package	org.nx2a.undernightinbirth2
+orientation	landscape

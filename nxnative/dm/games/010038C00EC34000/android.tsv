@@ -1,0 +1,14 @@
+# UNDER NIGHT IN-BIRTH Exe:Late[cl-r] on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# French-Bread's own 2D fighting game engine over NVN, SDK 6.4.2, update 1.0.3 (v131072) with its DLC (a licence only); 36 shaders, all translated. Nothing in the core changed for it.
+# This is the Aksys release, 010038C00EC34000. A player reported another release, 0100D3200C52A000 1.0.3, working on a POCO F6 (Snapdragon 8s Gen 3, Adreno 735) (issue #23);
+# that release has no profile here because it was not tested.
+# Tested 2026-10-31 on the Legion Y700 (TB322FC, Snapdragon 8 Elite, Adreno 830, Android 16), driven with DM_CTL: the new save and replay data prompts, the publisher logos,
+# the title, the main menu, Arcade: side select, character select, the story scene, stage 1 against the CPU to its end and back to the main menu, the pause menu.
+# After a restart the game opens without the new save prompt (its save is kept).
+# 60 fps in battle (frame work p50 about 2-4 ms, GPU under 1 ms a frame), no audio underrun, no red log line. Frames dropped on screen: about 275 in the first
+# 5 seconds of each launch, while the game loads, and after that about 1 in 300 (42 of 24,554 in a 7-minute session).
+# Not tested: Chronicles, Network (online play), handheld mode (played docked)
+status	playable
+tested	v131072 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
+package	org.nx2a.undernightinbirthexelate
+orientation	landscape
