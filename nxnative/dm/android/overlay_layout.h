@@ -121,21 +121,33 @@ static inline int ov_menu_track_value(float x, const float p[4], int row) {   //
 // ---- the layout editor (front_android.c, from the menu's Edit layout): the game stays held; every control (the menu button too) can be dragged, and
 // resized by a pinch or the toolbar's - and + (the tapped control, or all of them when none is). A toolbar under the top edge: its hint line and buttons;
 // Cancel with changes asks first, in a prompt in the middle. Both are drawn into the menu panel's raster (gfx_vk_present.c ov_edit_panel) ----
-enum { OVE_SMALLER, OVE_BIGGER, OVE_RESET, OVE_CANCEL, OVE_SAVE, OVE_N, OVE_DISCARD = OVE_N, OVE_KEEP, OVE_ALL };
-// the editor's state in dm_menu_state: bit 17, bit 0 the prompt is open, bit 1 something changed, bits 4..7 the button held + 1, bits 8..15 the chosen control + 1
+enum { OVE_SMALLER, OVE_BIGGER, OVE_RESET, OVE_CANCEL, OVE_SAVE, OVE_GRID, OVE_N, OVE_DISCARD = OVE_N, OVE_KEEP, OVE_ALL };
+// the editor's state in dm_menu_state: bit 17, bit 0 the prompt is open, bit 1 something changed, bit 2 grid snapping, bits 4..7 the button held + 1, bits 8..15 the chosen control + 1
 #define OVE_ST 0x20000
+#define OVE_GRID_ON 4
+#define OVE_GRID_ROWS 20
 #define OVE_SCALE_MIN 0.5f   // a control's size factor
 #define OVE_SCALE_MAX 2.0f
+static inline float ov_ed_position(float p, float half, float extent, float step) {
+    float lo = fminf(half, extent / 2), hi = extent - lo;
+    if (step > 0) {
+        float first = ceilf(lo / step), last = floorf(hi / step);
+        if (first <= last) return fminf(fmaxf(roundf(p / step), first), last) * step;
+    }
+    return fminf(fmaxf(p, lo), hi);   // an oversized control may leave no room for a grid point
+}
 static inline void ov_ed_rect(float W, float H, float r[4]) {   // the toolbar, in window pixels: under the top edge, in the middle (below the menu button's place)
-    float s = ov_menu_scale(); r[2] = fminf(0.85f * H * s, W * 0.96f); r[3] = 0.20f * H * s; r[0] = (W - r[2]) / 2; r[1] = 0.13f * H;
+    float s = ov_menu_scale(); r[2] = fminf(0.85f * H * s, W * 0.96f); r[3] = 0.30f * H * s; r[0] = (W - r[2]) / 2; r[1] = 0.13f * H;
 }
 static inline void ov_ed_prompt_rect(float W, float H, float r[4]) {   // the discard prompt, in the middle
     float s = ov_menu_scale(); r[2] = fminf(0.75f * H * s, W * 0.9f); r[3] = 0.30f * H * s; r[0] = (W - r[2]) / 2; r[1] = (H - r[3]) / 2;
 }
 static inline void ov_ed_button(int i, const float p[4], float b[4]) {   // button i in its panel p (the toolbar's, or the prompt's for OVE_DISCARD, OVE_KEEP)
-    static const float x0[OVE_ALL] = {0.15f, 1.30f, 2.80f, 5.25f, 7.70f, 0.50f, 5.20f}, w[OVE_ALL] = {1.0f, 1.0f, 2.30f, 2.30f, 2.15f, 4.30f, 4.30f};
+    static const float x0[OVE_ALL] = {0.15f, 1.30f, 2.80f, 5.25f, 7.70f, 0.15f, 0.50f, 5.20f}, w[OVE_ALL] = {1.0f, 1.0f, 2.30f, 2.30f, 2.15f, 9.70f, 4.30f, 4.30f};
     float u = p[2] / 10; b[0] = p[0] + x0[i] * u; b[2] = w[i] * u;
-    if (i < OVE_N) { b[1] = p[1] + p[3] * 0.42f; b[3] = p[3] * 0.52f; } else { b[1] = p[1] + p[3] * 0.50f; b[3] = p[3] * 0.36f; }
+    if (i == OVE_GRID) { b[1] = p[1] + p[3] * 0.68f; b[3] = p[3] * 0.28f; }
+    else if (i < OVE_N) { b[1] = p[1] + p[3] * 0.28f; b[3] = p[3] * 0.34f; }
+    else { b[1] = p[1] + p[3] * 0.50f; b[3] = p[3] * 0.36f; }
 }
 static inline int ov_ed_button_at(float x, float y, const float p[4], int first, int n) {   // the button of first..first+n-1 under (x, y), -1 none
     for (int i = first; i < first + n; i++) { float b[4]; ov_ed_button(i, p, b); if (x >= b[0] && x < b[0] + b[2] && y >= b[1] && y < b[1] + b[3]) return i; }
