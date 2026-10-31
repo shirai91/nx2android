@@ -9,6 +9,10 @@
 #include "../gfx/tex/nvn_deswizzle.h"
 #include "nvn_hmap.h"
 #include <string.h>
+#define BCDEC_STATIC
+#define BCDEC_BC4BC5_PRECISE
+#define BCDEC_IMPLEMENTATION
+#include "../third_party/bcdec/bcdec.h"
 
 int nvn_dirty_since_span(const void *span, const void *addr, size_t len, uint64_t stamp);
 const void *nvn_dirty_span(const void *addr, size_t len);
@@ -55,6 +59,47 @@ static const fent FT[0x9D] = {
     [0x99] = FX(VK_FORMAT_B8G8R8A8_UNORM), F(VK_FORMAT_B8G8R8A8_UNORM), FX(VK_FORMAT_B8G8R8A8_SRGB), F(VK_FORMAT_B8G8R8A8_SRGB),
 };
 static vkfmt_t g_fmt[0x9D]; static uint8_t g_fmt_done[0x9D];
+// BC decoded on the CPU: what each BC format decodes into (dec 1 BC1 RGB, 2 BC1, 3 BC2, 4 BC3, 5 / 6 BC4 unsigned / signed, 7 / 8 BC5, 9 / 10 BC6H unsigned / signed, 11 BC7)
+static void bc_target(vkfmt_t *o) {
+    int srgb = o->vk == VK_FORMAT_BC1_RGB_SRGB_BLOCK || o->vk == VK_FORMAT_BC1_RGBA_SRGB_BLOCK || o->vk == VK_FORMAT_BC2_SRGB_BLOCK || o->vk == VK_FORMAT_BC3_SRGB_BLOCK || o->vk == VK_FORMAT_BC7_SRGB_BLOCK;
+    VkFormat rgba = srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+    switch (o->vk) {
+    case VK_FORMAT_BC1_RGB_UNORM_BLOCK: case VK_FORMAT_BC1_RGB_SRGB_BLOCK: o->dec = 1; o->vk = rgba; o->dbpp = 4; break;
+    case VK_FORMAT_BC1_RGBA_UNORM_BLOCK: case VK_FORMAT_BC1_RGBA_SRGB_BLOCK: o->dec = 2; o->vk = rgba; o->dbpp = 4; break;
+    case VK_FORMAT_BC2_UNORM_BLOCK: case VK_FORMAT_BC2_SRGB_BLOCK: o->dec = 3; o->vk = rgba; o->dbpp = 4; break;
+    case VK_FORMAT_BC3_UNORM_BLOCK: case VK_FORMAT_BC3_SRGB_BLOCK: o->dec = 4; o->vk = rgba; o->dbpp = 4; break;
+    case VK_FORMAT_BC4_UNORM_BLOCK: o->dec = 5; o->vk = VK_FORMAT_R8_UNORM; o->dbpp = 1; break;
+    case VK_FORMAT_BC4_SNORM_BLOCK: o->dec = 6; o->vk = VK_FORMAT_R8_SNORM; o->dbpp = 1; break;
+    case VK_FORMAT_BC5_UNORM_BLOCK: o->dec = 7; o->vk = VK_FORMAT_R8G8_UNORM; o->dbpp = 2; break;
+    case VK_FORMAT_BC5_SNORM_BLOCK: o->dec = 8; o->vk = VK_FORMAT_R8G8_SNORM; o->dbpp = 2; break;
+    case VK_FORMAT_BC6H_UFLOAT_BLOCK: o->dec = 9; o->vk = VK_FORMAT_R16G16B16A16_SFLOAT; o->dbpp = 8; break;
+    case VK_FORMAT_BC6H_SFLOAT_BLOCK: o->dec = 10; o->vk = VK_FORMAT_R16G16B16A16_SFLOAT; o->dbpp = 8; break;
+    default: o->dec = 11; o->vk = rgba; o->dbpp = 4; break;   // BC7
+    }
+}
+// Decodes BC blocks (rows of whole blocks pitch bytes apart, (h + 3) / 4 rows a slice, z slices) into w x h x z texels of f->vk, rows of w * f->dbpp bytes
+static void bc_decode(const vkfmt_t *f, const uint8_t *src, size_t pitch, uint32_t w, uint32_t h, uint32_t z, uint8_t *dst) {
+    uint32_t bx = (w + 3) / 4, by = (h + 3) / 4; size_t row = (size_t)w * f->dbpp;
+    uint8_t t[4 * 4 * 8];   // one decoded block: 4 rows of 4 texels, up to 8 bytes each (BC6H decodes to RGB16F, widened to RGBA16F)
+    for (uint32_t s = 0; s < z; s++) for (uint32_t y = 0; y < by; y++) for (uint32_t x = 0; x < bx; x++) {
+        const uint8_t *b = src + ((size_t)s * by + y) * pitch + (size_t)x * f->bpb;
+        switch (f->dec) {
+        case 1: case 2: bcdec_bc1(b, t, 16); if (f->dec == 1) for (int i = 0; i < 16; i++) t[i * 4 + 3] = 255; break;   // BC1 RGB: no alpha
+        case 3: bcdec_bc2(b, t, 16); break;
+        case 4: bcdec_bc3(b, t, 16); break;
+        case 5: case 6: bcdec_bc4(b, t, 4, f->dec == 6); break;
+        case 7: case 8: bcdec_bc5(b, t, 8, f->dec == 8); break;
+        case 9: case 10: {
+            uint16_t h3[16 * 3]; bcdec_bc6h_half(b, h3, 12, f->dec == 10);
+            for (int i = 0; i < 16; i++) { uint16_t px[4] = {h3[i * 3], h3[i * 3 + 1], h3[i * 3 + 2], 0x3c00}; memcpy(t + i * 8, px, 8); }   // alpha 1.0
+            break; }
+        default: bcdec_bc7(b, t, 16); break;
+        }
+        uint32_t x0 = x * 4, y0 = y * 4, cw = w - x0 < 4 ? w - x0 : 4, ch = h - y0 < 4 ? h - y0 : 4;
+        for (uint32_t r = 0; r < ch; r++) memcpy(dst + ((size_t)s * h + y0 + r) * row + (size_t)x0 * f->dbpp, t + r * 4 * f->dbpp, (size_t)cw * f->dbpp);
+    }
+}
+void vk_bc_decode(const vkfmt_t *f, const uint8_t *src, size_t pitch, uint32_t w, uint32_t h, uint32_t z, uint8_t *dst) { bc_decode(f, src, pitch, w, h, z, dst); }
 static pthread_mutex_t g_fmt_mu = PTHREAD_MUTEX_INITIALIZER;
 const vkfmt_t *vk_fmt(int f) {
     if (f <= 0 || f >= 0x9D) return NULL;
@@ -79,11 +124,14 @@ const vkfmt_t *vk_fmt(int f) {
             o->compressed = o->bw > 1 || o->bh > 1;
             o->is_int = e.kind == K_INT || e.kind == K_SINT; o->is_sint = e.kind == K_SINT; o->kind = 1;
             o->swz = (VkComponentMapping){VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, e.noalpha ? VK_COMPONENT_SWIZZLE_ONE : VK_COMPONENT_SWIZZLE_IDENTITY};
-            if ((o->compressed && o->vk >= VK_FORMAT_BC1_RGB_UNORM_BLOCK && o->vk <= VK_FORMAT_BC7_SRGB_BLOCK && !V.has_bc) ||
-                (o->vk >= VK_FORMAT_ASTC_4x4_UNORM_BLOCK && o->vk <= VK_FORMAT_ASTC_12x12_SRGB_BLOCK && !V.has_astc)) {
-                o->kind = 0;   // said once per format: these textures went missing with nothing in the log (Adreno 6xx drivers of 2021 have no BC)
-                VKLOG("[RED] texture format %#x (VkFormat %d) needs %s, which the device lacks: textures in it are not drawn", f, o->vk,
-                      o->vk <= VK_FORMAT_BC7_SRGB_BLOCK ? "BC (textureCompressionBC)" : "ASTC (textureCompressionASTC_LDR)");
+            if (o->compressed && o->vk >= VK_FORMAT_BC1_RGB_UNORM_BLOCK && o->vk <= VK_FORMAT_BC7_SRGB_BLOCK && !V.has_bc) {
+                // no BC on the device (the Adreno 618 / 619 drivers of 2021, 512.530): an uncompressed image the CPU decodes into (bc_decode), 4 to 8 times the memory
+                VkFormat bc = o->vk; bc_target(o); o->compressed = 0;
+                VKLOG("texture format %#x (VkFormat %d): the device has no BC textures, decoded on the CPU into VkFormat %d", f, bc, o->vk);
+            }
+            if (o->vk >= VK_FORMAT_ASTC_4x4_UNORM_BLOCK && o->vk <= VK_FORMAT_ASTC_12x12_SRGB_BLOCK && !V.has_astc) {
+                o->kind = 0;   // said once per format: these textures went missing with nothing in the log
+                VKLOG("[RED] texture format %#x (VkFormat %d) needs ASTC (textureCompressionASTC_LDR), which the device lacks: textures in it are not drawn", f, o->vk);
             }
         }
         __atomic_store_n(&g_fmt_done[f], 1, __ATOMIC_RELEASE);   // published once complete
@@ -198,11 +246,13 @@ static void pkg_upload_(vkimg_t *im, const tex_t *t, const vkfmt_t *f) {
         uint32_t w = im->w >> lv ? im->w >> lv : 1, h = im->h >> lv ? im->h >> lv : 1, z = im->d >> lv ? im->d >> lv : 1;
         uint32_t bx = (w + bw - 1) / bw, by = (h + bh - 1) / bh; size_t pitch = (size_t)bx * bpb, slab = pitch * by * z;
         for (unsigned ly = 0; ly < im->layers; ly++) {
-            VkBuffer sb; VkDeviceSize so; uint8_t *dst = vk_scratch(slab, 16, &sb, &so);
+            VkBuffer sb; VkDeviceSize so; uint8_t *blocks = f->dec ? malloc(slab) : NULL, *dst = blocks ? blocks : vk_scratch(slab, 16, &sb, &so);
+            if (f->dec && !blocks) return;
             if (linear) {   // linear storage: rows of the texture's stride, one level, one layer
                 size_t stride = t->d.stride ? t->d.stride : pitch;
                 for (uint32_t y = 0; y < by * z; y++) memcpy(dst + y * pitch, t->mem + (size_t)y * stride, pitch);
-            } else if (nvn_deswizzle(&t->d, lv, ly, t->mem, dst, pitch)) { VKRED_ONCE(13, "deswizzle refused texture format %#x target %d", t->d.format, t->d.target); return; }
+            } else if (nvn_deswizzle(&t->d, lv, ly, t->mem, dst, pitch)) { free(blocks); VKRED_ONCE(13, "deswizzle refused texture format %#x target %d", t->d.format, t->d.target); return; }
+            if (blocks) { dst = vk_scratch((size_t)w * h * z * f->dbpp, 16, &sb, &so); bc_decode(f, blocks, pitch, w, h, z, dst); free(blocks); }   // (BC the device lacks)
             VkBufferImageCopy r = {so, 0, 0, {im->aspect & VK_IMAGE_ASPECT_COLOR_BIT ? VK_IMAGE_ASPECT_COLOR_BIT : VK_IMAGE_ASPECT_DEPTH_BIT, lv, ly, 1}, {0, 0, 0}, {w, h, z}};
             vkCmdCopyBufferToImage(cb, sb, im->img, VK_IMAGE_LAYOUT_GENERAL, 1, &r);
         }
@@ -446,7 +496,8 @@ VkImageView vk_tex_view(const tex_t *t, const view_t *vw, int dim, int arrayed, 
                                      swz.b = apply(swz_comp(vw->swz[2]), &o, VK_COMPONENT_SWIZZLE_B); swz.a = apply(swz_comp(vw->swz[3]), &o, VK_COMPONENT_SWIZZLE_A); }
     } else swz = (VkComponentMapping){0};
     VkFormat fmt = f->vk;
-    if ((im->aspect & ~VK_IMAGE_ASPECT_COLOR_BIT) || f->compressed != vk_fmt(im->nvn_format)->compressed) fmt = im->fmt;   // depth views and block-size changes keep the image's format
+    const vkfmt_t *imf = vk_fmt(im->nvn_format);   // (a BC format decoded on the CPU counts as compressed: its view keeps the decoded image's format)
+    if ((im->aspect & ~VK_IMAGE_ASPECT_COLOR_BIT) || (f->compressed || f->dec) != (imf->compressed || imf->dec) || (f->dec && f->dbpp != imf->dbpp)) fmt = im->fmt;   // depth views and block-size changes keep the image's format
     if (im->fixed_fmt && fmt != im->fmt && fmt != srgb_twin(im->fmt)) { fmt = im->fmt; static int n; if (n++ < 8) VKLOG("[RED] view format %d of a format-listed image (%d, DM_VK_UBWC): the image's own used", f->vk, im->fmt); }
     pthread_mutex_lock(&g_view_mu);
     vview *head = nvn_hm_get(&g_views, &im);
@@ -677,6 +728,7 @@ void mtl_read_texels(const tex_t *t, unsigned level, unsigned layer0, const NVNc
     vkimg_t *im = vk_tex(t); const vkfmt_t *f = vk_fmt(t->d.format);
     size_t depth = r->depth ? r->depth : 1;
     if (!im || !f) { mtl_sub_commit(); for (size_t z = 0; z < depth; z++) for (int y = 0; y < r->height; y++) memset(dst + z * img + (size_t)y * row, 0, row); return; }
+    if (f->dec) { VKRED_ONCE(17, "ReadTexels of a BC texture decoded on the CPU: zeros returned"); mtl_sub_commit(); for (size_t z = 0; z < depth; z++) for (int y = 0; y < (r->height + 3) / 4; y++) memset(dst + z * img + (size_t)y * row, 0, row); return; }
     unsigned bw = f->bw ? f->bw : 1, bh = f->bh ? f->bh : 1;
     size_t pitch = (size_t)((r->width + bw - 1) / bw) * f->bpb, rows = (r->height + bh - 1) / bh;
     VkBuffer sb; VkDeviceSize so; uint8_t *p = vk_scratch(pitch * rows * depth, 16, &sb, &so);

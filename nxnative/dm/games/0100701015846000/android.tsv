@@ -7,6 +7,8 @@
 # handheld (1280x720). 60 fps held, as the game asks (present interval 1): frame work p50 6-7 ms in the room, no audio underrun; screen recordings found no flickering frame,
 # standing or dragging items; a 10-minute touch soak docked, no red log line. A play session by hand on the same build: music and effects clean (no crackle or dropout), the
 # save kept across launches, and the notes screen (the album, the button at the top left of a room), which froze until the host had a standard shared font (Android's Roboto).
+# The base game 1.0 alone (v0, a derived profile, 2026-10-31; GitHub issue #26): its sdk is SDK 11.4.3's 2d369d99, which now has 2.01's node-area and alignment cuts (sdk_patches.py).
+# The title, a new album, the first room (1997) and items out of a box at 60 fps, no refusal. Without the cuts its StandardAllocator region ended at +4.14 GB of the alias region; with them +3.21 GB.
 status	playable
 tested	v327680 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
 package	org.nx2a.unpacking

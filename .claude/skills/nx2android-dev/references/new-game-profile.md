@@ -7,7 +7,7 @@ A profile is data only: `nxnative/dm/games/<base game's title ID>/` with upstrea
 Run `python -m porter inspect "<game folder>"`. The port refuses:
 - a game whose `main` renders with Vulkan or OpenGL (the Android host replays NVN only);
 - one whose shaders need a step upstream runs by booting the game on a Mac (GLSLC capture, Unreal / Oodle decoding).
-NSZ files must be decompressed to NSP first. The game folder for development work is `.gamedump/<App>/` in the repository (git-ignored; `<App>` is the APK's name, e.g. `HadesII`): decompress NSZ there (`nsz --keys <prod.keys> -D -o .gamedump/<App> <file>.nsz`), hard-link NSPs that came as NSP (`ln`, no copy), and never write into the downloaded game's folder. The port's `_build`/`_survey` folders, APK and data pack then land there too. If the game has an iOS profile in `dm/games/` (52 do), its constants are already proven: start from it.
+The game folder for any port, test or check is `.gamedump/<App>/` in the main checkout (git-ignored; `<App>` is the APK's name, e.g. `HadesII`), also from a worktree, and never a folder elsewhere on the PC: hard-link the downloaded NSP / NSZ / XCI files into it (`ln`, no copy; porter decompresses NSZ and XCZ itself), and never write into the downloaded game's folder. The port's `_build`/`_survey` folders, APK and data pack then land there too, and the folder is deleted when the work is done (§5). If the game has an iOS profile in `dm/games/` (52 do), its constants are already proven: start from it.
 
 ## 1. Experimental port
 
@@ -68,6 +68,10 @@ When the game boots on the device:
 
 - Play it on the device: title, menus, gameplay, a save, the pause menu, the on-screen gamepad, a controller if the game uses one, text entry if it asks for names, a few minutes of steady frame rate (`[perf]` lines) and no new `[RED]` lines.
 - Set `status playable` and `tested <version> <device>`; update the header comment and the Games table in README.md. Its picture is a gameplay frame captured on the device while porting, saved as a 1280x720 JPEG in docs/images/: a frame shot (`DM_VK_SHOTS=1`, the switch-android-port skill's `frame_shots.sh`) or the last pass of a pass dump, so the on-screen gamepad is not in it (a game whose window origin is bottom-up, like Celeste, comes out upside down: flip it). Never the game's icon or an image from the internet.
-- The row's `<sub>` line starts with one tag, the nx2android version the game was tested on: `` `v0.1.3` · update 1.10 · 60 fps ``. A port on the development checkout takes the next release's version: the patch after the latest tag if `main` has only new games and bug fixes since it, else the next minor (docs/RELEASE_CHECK.md, Version number). This is not the profile's `tested <version> <device>`, which names the game's update.
+- The row's `<sub>` line starts with one tag, the nx2android version the game was tested on: `` `v0.1.3` · update 1.10 · 60 fps ``. A port on the development checkout takes the next release's version: the patch after the latest tag if `main` has only new games and bug fixes since it, else the next minor (docs/DEVELOPMENT_GUIDE.md, Releases and version numbers). This is not the profile's `tested <version> <device>`, which names the game's update.
 - Tick the game in docs/PORT_CHECKLIST.md: ``- [x] <name> · `<title ID>` `` with the "profile here" / "upstream profile" note dropped (add the line in alphabetical order if the game is not listed), and recount the `N / M ported` line from the `- [x]` and `- [` lines. Both docs go in the profile's commit; a port is not done until both show it.
 - Run `python -m unittest discover tests`; uninstall the test app; commit when asked.
+
+## 5. Clean up
+
+The PC has little disk space. Once the port is committed and the test app uninstalled, delete `.gamedump/<App>/`: first check that each dump file in it has a link count of 2 or more (`fsutil hardlink list <file>`), so the downloaded copy remains; a file with one link is the only copy, so stop and ask. Keep a folder that other work still uses, and say so. A test or check that is not a port ends the same way.

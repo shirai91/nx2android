@@ -44,6 +44,13 @@ The work folder is `<NSP folder>/01009D901BC56000-work`. `run/boot.py <log name>
 - Only the opening portion of the first level was played; finishing it, later levels, bosses and multiplayer remain untested.
 - The other thirteen MP4 movies and non-English languages are untested.
 
+## Base game v0
+
+- Not registered (`main` `8ac516e8…`, `subsdk0` `ca1378cd…`, `sdk` `f118ae1c…`, the Absolum build with the node-area and alignment cuts). GitHub issue #26 (an Honor MagicPad 3 Pro); measured on the Y700 on 2026-10-31.
+- Its `nninitStartup` hands pool − used to a StandardAllocator as one 3.14 GB address region before Unity reserves its own regions above it. Update 1.1.0 makes no such region: on the Y700 it reserves about 1.8 GB, up to +2.75 GB of the alias region.
+- With this profile's layout (4.375 GB alias region) v0 was refused (`0x1803`) a few seconds in and crashed at `main+0x829630`. With 1 GB more (the issue's `mem_alias 0x158000000`) it crashed in the opening movie at +5.37 GB, after 32 refusals.
+- Unity frees regions and makes new ones higher up, so the highest address rises above the 4.8 GB reserved: +6.26 GB after the movie, +7.01 GB in 1-1, and below +7.25 GB to the end of 22 minutes (the movie, the treehouse, 1-1 and the world map) with 8 GB more, at 60 fps with no red line. Porter gives every derived profile of a game with virtual address memory these 8 GB (`porter/pipeline.py` `alias_headroom`).
+
 ## Found on this game
 
 - The stripped Unity 6 Shader layout, hash `2ec7223d…`: [shaders.md](../../../docs/reference/shaders.md#unity-shader-layouts-written-out-for-players-without-bundles).

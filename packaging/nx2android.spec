@@ -14,10 +14,12 @@ for m in sorted(sys.stdlib_module_names - NOT_STDLIB):
 datas, binaries = [], []
 for pkg in ('capstone', 'lz4', 'PIL', 'yaml', 'fontTools', 'Crypto') + (('backports.zstd',) if sys.version_info < (3, 14) else ()):
     d, b, h = collect_all(pkg); datas += d; binaries += b; hidden += h
+datas.append((str(ROOT / 'gui/icon.png'), 'gui'))   # the window icon
 
 a = Analysis([str(ROOT / 'packaging/nx2android.py')], pathex=[str(ROOT)], binaries=binaries, datas=datas, hiddenimports=hidden,
              excludes=sorted(NOT_STDLIB - {'test'}), noarchive=False)
 pyz = PYZ(a.pure)
 # u: unbuffered, so the GUI gets each progress line as it is printed; X utf8: the engine's tools write their tables with open() and no encoding
-exe = EXE(pyz, a.scripts, [('u', None, 'OPTION'), ('X utf8', None, 'OPTION')], exclude_binaries=True, name='nx2android', console=True, upx=False)
+exe = EXE(pyz, a.scripts, [('u', None, 'OPTION'), ('X utf8', None, 'OPTION')], exclude_binaries=True, name='nx2android', console=True, upx=False,
+          icon=str(ROOT / 'packaging/nx2android.ico') if sys.platform == 'win32' else None)   # the Mac bundle is a folder, not an .app: no icon there
 coll = COLLECT(exe, a.binaries, a.datas, name='nx2android', upx=False)

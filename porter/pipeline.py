@@ -3,7 +3,7 @@
 # the rewrite for DM_TARGET=android, the Vulkan shader bundle, the host built with the player's NDK, the APK, the data pack and the install.
 # Work files go where upstream's NSP script puts them, <game folder>/<title ID>_build/ (extract/, aoc/, shader/, logs/ are shared with an iOS build of the same folder),
 # with the Android ones in its android/ folder.
-import os, re, shutil, sys
+import importlib.util, os, re, shutil, sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -33,7 +33,9 @@ class Options:
     experimental: bool = False         # a game not ported to Android yet: a provisional profile from upstream's survey (or a copy of its iOS profile), status experimental
     package: str = ''                  # the app's package instead of the profile's (a test install beside another build of the game)
     fps60: bool = False                # 60 fps: the profile's own frame-rate cap, else the build's FPSLocker-Warehouse config (porter/fpslocker.py)
+    touch: bool = False                # a game played by touch: the on-screen gamepad starts hidden (TOUCH_SETTINGS), so it takes none of the game's touches
     vercode_offset: int = 0            # added to the APK's versionCode: a rebuild of the same game version installs over a build with a higher one (version_code)
+    alias_headroom: int = None         # GB more alias region (alias_headroom); None: ALIAS_HEADROOM for a version the profile was not brought up on, none for one it was
     jobs: int = field(default_factory=lambda: os.cpu_count() or 8)
 
 
@@ -41,6 +43,11 @@ def app_stem(g, name):   # the file name of the APK and the data pack: the profi
     ipa = g.get('ipa') or nsp.ipa_name(name, g.title_id)
     return ipa[:-4] if ipa.endswith('.ipa') else ipa
 
+
+# --touch: the pause menu's first-launch defaults for a game played by touch. The gamepad's controls take every touch that goes down on them or near them (front_android.c ctl_at,
+# overlay_layout.h ov_reach: about a quarter of a tablet's screen, at its sides); hidden, only the menu button does and every other touch is the game's, in both modes (hle_hid.c
+# touch_on). As Unpacking's profile (setting overlay=0); the pause menu's Gamepad item shows it again, and a controller works either way
+TOUCH_SETTINGS = {'overlay': '0'}
 
 VERCODE_OFFSET_MAX = 65535   # Switch versions are 65536 apart (v65536, v131072): a rebuild of one, offset by this much at most, stays below the next one's port
 
@@ -51,6 +58,64 @@ def version_code(ver, offset=0):
     the device (an earlier rebuild with an offset, a port of a later version) and keeps its saves, where an uninstall deletes them"""
     if not 0 <= offset <= VERCODE_OFFSET_MAX: raise BuildError(f'the versionCode offset must be 0 to {VERCODE_OFFSET_MAX} (the next game version\'s port must stay above it): {offset}')
     return nsp.vnum(ver) + 1 + offset
+
+
+ALIAS_HEADROOM, ALIAS_HEADROOM_MAX = 8 << 30, 48   # the automatic headroom (bytes); the most --alias-headroom takes (GB: a 64 GB block with Engage's 5 GB layout)
+def alias_headroom_gb(gb):   # --alias-headroom checked: None (automatic) or 0 .. ALIAS_HEADROOM_MAX GB
+    if gb is not None and not 0 <= gb <= ALIAS_HEADROOM_MAX: raise BuildError(f'--alias-headroom {gb}: give 0 to {ALIAS_HEADROOM_MAX} GB')
+    return gb
+ALIAS_HINT = ('if it still crashes after "[RED] [mem] AllocateAddressRegion … refused" (0x1803), port again with a larger --alias-headroom '
+              '(the Port tab\'s Extra address space)')
+
+
+def alias_headroom(tsv, gb=None):
+    """A profile's guest block for a game whose profile declares virtual address memory (a sys_resource row, not 0): mem_alias and mem_reserve grow by gb GB (None: ALIAS_HEADROOM,
+    which a derived profile gets; the player's --alias-headroom, for any port), so the heap (the rest of the block, hle_svc.c mem_init) stays as it is. Such a game takes its
+    memory as address regions in the alias region, and how it does depends on its build: the profile's alias region was sized for the tested build. Donkey Kong Country Returns HD on the Y700 (GitHub issue #26): update 1.1.0 reserves about 1.8 GB of regions, up to
+    +2.75 GB of the 4.375 GB alias region; its base game v0 (main 8ac516e8…) first hands pool − used to a StandardAllocator as one 3.14 GB region, which 1.1.0 does not, and then
+    reserves Unity's regions above it. In the 4.375 GB region it was refused (0x1803) a few seconds in and crashed at main+0x829630; with 1 GB more it crashed in the opening movie at
+    +5.37 GB. Unity frees regions and makes new ones higher up, so the highest address keeps rising above the bytes reserved (4.8 GB): +6.26 GB after the movie, +7.01 GB in 1-1,
+    and below +7.25 GB from there to 22 minutes of play with 8 GB more, at 60 fps. A profile without the row (the host then reports 32 MB) is older than the key, and its games set
+    a heap; it is left as it is. The Android host reserves the block with MAP_NORESERVE, so the address space costs no memory (Xenoblade Chronicles 3 runs in a 64 GB alias region).
+    → (old alias, new alias), or None when the profile is left as it is (gb 0 too)"""
+    add = ALIAS_HEADROOM if gb is None else gb << 30
+    lines = tsv.read_text(encoding='utf-8').splitlines()
+    rows = {l.split('\t', 1)[0]: i for i, l in enumerate(lines) if '\t' in l and not l.startswith('#')}
+    val = lambda k, d=None: int(lines[rows[k]].split('\t')[1], 0) if k in rows else d
+    if not add or not val('sys_resource', 0) or 'mem_alias' not in rows or 'mem_reserve' not in rows: return None
+    alias, reserve = val('mem_alias'), val('mem_reserve')
+    lines[rows['mem_alias']], lines[rows['mem_reserve']] = f'mem_alias\t{alias + add:#x}', f'mem_reserve\t{reserve + add:#x}'
+    lines.insert(min(rows['mem_alias'], rows['mem_reserve']), f'# porter: {add >> 30} GB more alias region than the tested build\'s ({alias:#x}), and the block with it, for this build\'s address regions')
+    tsv.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+    return alias, alias + add
+
+
+def registered_patches():
+    """{build ID: (the file, [the reason of each patch])} of the files the rewriter loads (patch_nso.py "Registered patches": dm/tools/sdk_patches.py and the profiles' patches.py;
+    CUTS and OBS by their reasons, FRAME_STEP as its stubs)"""
+    out = {}
+    for n, p in enumerate([DM / 'tools/sdk_patches.py'] + sorted((DM / 'games').glob('*/patches.py'))):
+        spec = importlib.util.spec_from_file_location(f'porter_patches_{n}', p); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+        rel = p.relative_to(DM.parent).as_posix()
+        for kind in ('CUTS', 'OBS', 'FRAME_STEP'):
+            for bid, v in getattr(m, kind, {}).items(): out.setdefault(bid, (rel, []))[1].extend(['frame step stubs'] if kind == 'FRAME_STEP' else [x[3] for x in v])
+    return out
+
+
+def lost_patches(builds, exefs, mods, table=None):
+    """The modules of a derived port whose build has no registered patch while the profile's tested builds of it have some: the rewriter applies a module's patches by its build ID
+    only, so the module runs without them. Unpacking's base game v0 ships sdk 2d369d99… (no cuts until GitHub issue #26) where update 2.01's sdk 357efc19… has the node-area and
+    1 GB alignment cuts, without which Unity's camera target got no address region and the title was white. → ['<module> build … is not the tested …: …'], one per module"""
+    table = registered_patches() if table is None else table
+    out = []
+    for m in mods:
+        if not (exefs / m).is_file(): continue
+        bid, tested = nsp.build_id(exefs / m), sorted({b[m] for b in builds.values() if b.get(m)})
+        lost = [(t, *table[t]) for t in tested if t in table]
+        if bid in tested or bid in table or not lost: continue
+        why = '; '.join(f'{f}: ' + ', '.join(dict.fromkeys(r.split(':')[0] for r in rs)) for _, f, rs in lost)
+        out.append(f'{m} build {bid[:8]}… is not the tested {", ".join(t[:8] + "…" for t in tested)} and has none of its {sum(len(rs) for _, _, rs in lost)} registered patches ({why})')
+    return out
 
 
 def inspect(folder, keys=None):
@@ -93,7 +158,7 @@ class Port:
         o = self.o
         o.folder = Path(o.folder).expanduser().resolve()
         if not o.folder.is_dir(): raise BuildError(f'not a folder: {o.folder}')
-        version_code('v0', o.vercode_offset)   # an offset out of range fails now, not after the shaders
+        version_code('v0', o.vercode_offset); alias_headroom_gb(o.alias_headroom)   # an offset or headroom out of range fails now, not after the shaders
         keys = o.keys or self.cfg.get('keys')
         if not keys: raise BuildError('no prod.keys: give -k / --keys, or set it once with `porter config keys <path>`')
         o.keys = Path(keys).expanduser().resolve()
@@ -102,7 +167,7 @@ class Port:
         o.out = Path(o.out or self.cfg.get('out') or o.folder).expanduser().resolve()
         # the chosen dotnet first on PATH, in this process too: Windows finds a program by the parent's PATH, not the one passed to the child (upstream runs `dotnet` by name)
         os.environ['PATH'] = os.pathsep.join([str(self.tools['dotnet'].parent), os.environ.get('PATH', '')])
-        os.environ['DOTNET_ROOT'] = str(self.tools['dotnet'].parent)   # where nx_extract.exe's apphost looks for the runtime (else the system's, which may lack .NET 10)
+        os.environ['DOTNET_ROOT'] = str(toolchain.dotnet_root(self.tools['dotnet']))   # where nx_extract.exe's apphost looks for the runtime (else the system's, which may lack .NET 10)
         # PYTHONUTF8: the engine's tools write their tables with open() and no encoding, which is the ANSI code page on Windows (shader_split.py's "→" failed)
         self.env = dict(os.environ, J=str(o.jobs), PYTHONIOENCODING='utf-8', PYTHONUTF8='1', DOTNET_CLI_TELEMETRY_OPTOUT='1')
 
@@ -124,7 +189,9 @@ class Port:
         self.result.update(title_id=self.g.id, name=self.app_name, package=self.package, version=self.pkg_ver, display=self.display, language=self.lang,
                            status=self.ap.status, derived=bool(self.derived), installed=bool(o.install))
         say(f'done: {self.result["apk"]} and {self.result["data"]}')
-        if self.derived: say(f'[RED] {self.derived}: the port is built from a derived profile and may not run as the profile\'s tested version does')
+        if self.derived: say(f'[RED] {self.derived}: the port is built from a derived profile and may not run as the profile\'s tested version does'
+                             + (f'; {self.derived_mem}' if self.derived_mem else ''))
+        for x in self.lost: say(f'[RED] {x}')
         return self.result
 
     # ---- inputs: the folder's games and versions, the profile, the version to pack ----
@@ -146,7 +213,7 @@ class Port:
         say(f'game profile: {g.id} {g.get("name", "")} (Android: {ap.status}' + (f', tested on {ap.tested}' if ap.tested else '') + ')')
         builds, need = g.builds(), g.words('shader_versions')
         have = nsp.nsp_versions(self.fam, builds)
-        self.derived = ''
+        self.derived, self.derived_mem, self.lost = '', '', []
         if self.provisional:   # the version the survey saw
             self.pkg_ver = o.version or g.get('package')
             if self.pkg_ver not in builds: raise BuildError(f'the version to pack must be one the provisional profile registers: {", ".join(builds)}')
@@ -231,12 +298,23 @@ class Port:
             say(f'{self.derived}: packing {self.pkg_ver} from a profile derived from it')
             self.versions, self.dirs = [self.pkg_ver], {self.pkg_ver: self.dirs[self.pkg_ver]}
         self.game = self.dirs[self.pkg_ver]
+        nsp.rmtree(self.work / 'profile-mem')   # an earlier run's --alias-headroom copy (mem_profile)
         if self.derived:   # the derived profile (android.tsv included) goes into the build folder, and every tool takes it first
             pdir = self.work / 'profile-derived'   # not profile/: an experimental port's copy there is the profile it derives from
             disp = nsp.derive_profile(g, pdir / g.id, self.pkg_ver, self.game, g.words('modules'))
+            # automatic headroom only for another build: a registered one, derived because the folder lacks a shader version, keeps the layout it was tested with
+            other = self.pkg_ver not in g.builds() or bool(nsp.build_mismatch(self.game, self.pkg_ver, g))
+            gb = self.o.alias_headroom if self.o.alias_headroom is not None else (ALIAS_HEADROOM >> 30 if other else 0)
+            if grown := alias_headroom(pdir / g.id / 'game.tsv', gb):
+                self.derived_mem = f'its alias region has {gb} GB of headroom over the tested build\'s (mem_alias {grown[0]:#x} → {grown[1]:#x}); {ALIAS_HINT}'
+                say(f'derived game profile: {self.derived_mem}' + ('' if self.o.alias_headroom is None else ' (--alias-headroom)'))
             self.use_profile_dir(pdir, first=True)
             self.g = game.load(g.id); self.ap = android_profile.AndroidProfile(self.g)
             say(f'derived game profile for {self.pkg_ver} ({disp}): {self.g.dir}')
+            self.lost = [f'{x}: the port may fail where they are needed; register them for this build (dm/tools/nso_fnmap.py carries addresses over) or port a version the '
+                         f'profile registers' for x in lost_patches(g.builds(), self.game / 'ExeFS', g.words('modules'))]
+            for x in self.lost: say(f'[RED] {x}')
+        else: self.mem_profile()
         if dlc_reused:
             PROG.stage('extract DLC'); self.aoc = self.work / 'aoc'; PROG.end(f'{len(self.fam["dlc"])} DLC, reused (inputs unchanged)')
         else:
@@ -253,6 +331,20 @@ class Port:
         have = nacp.languages(self.game / 'control.nacp') or nacp.languages(self.base / 'control.nacp')
         self.lang = nsp.game_language(want, bool(lang_in), have)
         say(f'app: {self.app_name} {self.display} ({self.package}), game language {self.lang}')
+
+    def mem_profile(self):
+        """The player's --alias-headroom on a version the profile was brought up on (or a provisional or experimental profile): a copy of the profile in
+        <build folder>/profile-mem/ with the bigger guest block, which every tool takes first. patches.py stays in dm/games, where patch_nso.py finds it. extract() removes
+        an earlier run's copy before it, so the build folder keeps none without the option"""
+        pdir = self.work / 'profile-mem'
+        if not self.o.alias_headroom: return
+        d = pdir / self.g.id; shutil.copytree(self.g.dir, d, ignore=shutil.ignore_patterns('patches.py', '__pycache__'))
+        grown = alias_headroom(d / 'game.tsv', self.o.alias_headroom)
+        if not grown:
+            nsp.rmtree(pdir); say(f'--alias-headroom {self.o.alias_headroom}: {self.g.get("name", self.g.id)} declares no virtual address memory (sys_resource): its layout stays as it is'); return
+        self.use_profile_dir(pdir, first=True)
+        self.g = game.load(self.g.id); self.ap = android_profile.AndroidProfile(self.g)
+        say(f'alias region: mem_alias {grown[0]:#x} → {grown[1]:#x} (+{self.o.alias_headroom} GB, --alias-headroom): {self.g.dir}')
 
     # ---- NSZ / XCZ: decompressed for the stages that read the game files (porter.dumps) into <build folder>/tmp/dumps/, deleted once extracted ----
     def unpack(self, paths):
@@ -291,7 +383,7 @@ class Port:
                                                                f'the Android device, so connect it (adb) and port again ({e})') from e
             break
         for k in ('glslc_capture', 'ue_legacy') + (() if self.oodle_why else ('oodle_packs',)):   # (ue_decode: decoded on the device, device_ue_shaders)
-            if src[k][0]: raise BuildError(f'{self.app_name} needs a step that boots the game in the Mac host ({src[k][1]}), which a Windows port cannot run yet')
+            if src[k][0]: raise BuildError(f'{self.app_name} needs a step that boots the game in the Mac host ({src[k][1]}), which the Android port cannot run yet')
 
     # ---- the game's own Oodle decoder on the device, for the shader split (Pokémon Legends: Arceus's GFPAKs) ----
     ODEV = '/data/local/tmp/nx2a-oodle'   # dmhost, the rewritten modules and the job, removed afterwards
@@ -555,7 +647,8 @@ class Port:
         font_env, font_files = self.button_font()
         dst = self.o.out / f'{app_stem(self.g, self.app_name)}-data'
         man = datapack.build(dst, profile=self.ap, version=self.pkg_ver, display=self.display, patched=self.patched, romfs=self.game / 'RomFS', shaders=self.dmsv,
-                             aoc=self.aoc, language=self.lang, package=self.package, env=self.fps_env + font_env, files={**self.fps_files, **font_files},
+                             aoc=self.aoc, language=self.lang, package=self.package, env=self.fps_env + font_env, settings=TOUCH_SETTINGS if self.o.touch else None,
+                             files={**self.fps_files, **font_files},
                              progress=lambda what: PROG.set(step=f'linking {what}'))
         self.data_path = dst; self.result['data'] = str(dst)
         PROG.end(f'{man["files"]:,} files, {man["bytes"] / 2**30:.1f} GB')

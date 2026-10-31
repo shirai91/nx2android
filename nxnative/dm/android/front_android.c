@@ -9,6 +9,7 @@
 #include "front.h"
 #include "dm_input.h"
 #include "overlay_layout.h"
+#include "saves_android.h"
 #include <math.h>
 #include <time.h>
 #include <android/asset_manager.h>
@@ -110,7 +111,15 @@ static void on_pause(ANativeActivity *a) { (void)a; go_background(); }
 // and Blasphemous 2's Unity, which asks for focus notifications, kept its title paused and ignored every press after a trip to another app. A window losing focus while in
 // front (a system dialog, the notification shade) is OutOfFocus as on the Switch's HOME overlay
 static void on_window_focus(ANativeActivity *a, int focused) { (void)a; if (atomic_load(&g_running) && !atomic_load(&g_bg)) dm_focus_set(focused ? 1 : 2); }
-static void on_resume(ANativeActivity *a) { (void)a; go_foreground(); }
+// A save manager's request asked the app to end (ANativeActivity_onCreate): Activity.finish() when it is resumed, through JNI on the main thread.
+// ANativeActivity_finish, from onCreate or from here, left the activity on the screen (Y700, Android 16), and porter's am start -W waited out its timeout
+static int g_quit;
+static void act_finish(ANativeActivity *a) {
+    JNIEnv *E = a->env; jclass c = (*E)->GetObjectClass(E, a->clazz); jmethodID m = c ? (*E)->GetMethodID(E, c, "finish", "()V") : NULL;
+    if (m) (*E)->CallVoidMethod(E, a->clazz, m);
+    if (!m || (*E)->ExceptionCheck(E)) { (*E)->ExceptionClear(E); LOG("[RED] [saves] Activity.finish() failed: the app ends itself"); _exit(0); }
+}
+static void on_resume(ANativeActivity *a) { if (g_quit) { act_finish(a); return; } go_foreground(); }
 static void on_destroy(ANativeActivity *a) { (void)a; _exit(0); }   // one game per process
 
 // ---- input ----
@@ -257,22 +266,26 @@ static void *pad_watch(void *a) {
 }
 
 // ---- the pause menu: the game is held while it is open; touches and a controller's keys go to it. Two tabs (overlay_layout.h OVM_TAB_ITEMS): the gamepad's
-// settings (shown, opacity, the layout editor, rumble) and the game's (the frame rate counter, the mode); Resume under them ----
+// settings (shown, opacity, the layout editor, rumble) and the game's (the frame rate counter, the mode, exporting and importing the save); Resume under them ----
 static _Atomic int g_menu_hi = -1, g_menu_tab;   // the highlighted row (a controller's selection, or the row a finger is on), -1 none; the open tab
 static int g_menu_ptr = -1, g_menu_row = -2;   // the pointer pressing in the menu, and the row it went down on (-3 the menu button)
 static _Atomic int g_tx_ver;   // the text entry's edit count: the panel is drawn again when it changes
 static _Atomic int g_ed_st;    // the layout editor's state for dm_menu_state (overlay_layout.h OVE_ST)
+static _Atomic int g_sp_on, g_sp_hi = -1, g_sp_ver;   // the save picker (below): open, its highlighted row, its edit count
+static _Atomic int g_sv_st, g_sv_n;                   // Export save: its outcome (overlay_layout.h OVX_*), the exports made
 int dm_menu_state(void) {
     if (atomic_load(&g_tx_on)) return 1 << 16 | (atomic_load(&g_tx_ver) & 0xffff);   // the text entry's panel (gfx_vk_present.c ov_text_panel)
     if (!atomic_load(&g_menu)) return -1;
     if (atomic_load(&g_edit)) return OVE_ST | atomic_load(&g_ed_st);
+    if (atomic_load(&g_sp_on)) return OVS_ST | (atomic_load(&g_sp_hi) + 1) << 4 | (atomic_load(&g_sp_ver) & 255) << 20;
     return atomic_load(&g_set_overlay) | atomic_load(&g_set_rumble) << 1 | (dm_opmode() != 0) << 2 | atomic_load(&g_set_fps) << 3 | (atomic_load(&g_menu_hi) + 1) << 4 |
-           atomic_load(&g_menu_tab) << 8 | atomic_load(&g_set_opacity) << 9;
+           atomic_load(&g_menu_tab) << 8 | atomic_load(&g_set_opacity) << 9 | atomic_load(&g_sv_st) << 20 | (atomic_load(&g_sv_n) & 15) << 24;
 }
 int dm_overlay_fps(void) { return atomic_load(&g_set_fps) && !atomic_load(&g_menu); }   // gfx_vk_present.c draws the counter (not while the menu holds the game)
 static void menu_open(int hi) {
     if (!atomic_load(&g_running) || atomic_exchange(&g_menu, 1)) return;
     atomic_store(&g_menu_hi, hi); g_menu_ptr = -1;
+    if (atomic_load(&g_sv_st) != OVX_BUSY) atomic_store(&g_sv_st, OVX_IDLE);   // the last export's note goes (one still copying stays)
     dm_input_set(0, 0, 0, 0, 0); dm_touch_set(NULL, 0); g_touch_btn = 0;   // nothing stays pressed in the game
     for (int i = 0; i < 16; i++) atomic_store(&g_press_t[i], 0);
     for (int s = 0; s < 2; s++) { atomic_store(&g_stick_t[s], 0); for (int a = 0; a < 2; a++) atomic_store(&g_knob[s][a], 0); }
@@ -282,9 +295,10 @@ static void menu_open(int hi) {
     hold_sync(); dm_overlay_redraw();
     LOG("[menu] opened: the game is paused");
 }
-static void ed_cancel(void);
+static void ed_cancel(void); static void sp_back(void);
 static void menu_close(void) {
     if (atomic_load(&g_edit)) { ed_cancel(); return; }   // the editor first: its changes are kept or thrown away before the game goes on
+    if (atomic_load(&g_sp_on)) { sp_back(); return; }    // the save picker: back a step
     if (!atomic_exchange(&g_menu, 0)) return;
     g_menu_ptr = -1; atomic_store(&g_menu_t, 0);
     hold_sync(); dm_haptics_suspend(4, 0); dm_overlay_redraw();
@@ -296,7 +310,7 @@ static void menu_opacity(int v) {   // the slider: a new value is drawn at once 
     if (atomic_exchange(&g_set_opacity, v) != v) { dm_haptics_android_tap(); dm_overlay_redraw(); }
 }
 static void menu_tab(int t) { t = (t % OVM_TABS + OVM_TABS) % OVM_TABS; if (atomic_exchange(&g_menu_tab, t) != t) dm_haptics_android_tap(); dm_overlay_redraw(); }
-static void ed_open(void);
+static void ed_open(void); static void sp_open(void); static void save_export(void);
 static void menu_do(int item) {
     if (item == OVM_OVERLAY) { atomic_store(&g_set_overlay, !atomic_load(&g_set_overlay)); atomic_store(&g_overlay, 1); settings_save(); }
     else if (item == OVM_RUMBLE) { int on = !atomic_load(&g_set_rumble); atomic_store(&g_set_rumble, on); dm_haptics_android_set(on); settings_save(); }
@@ -305,6 +319,8 @@ static void menu_do(int item) {
     else if (item == OVM_TAB) { menu_tab(atomic_load(&g_menu_tab) + 1); return; }
     else if (item == OVM_EDIT) { dm_haptics_android_tap(); ed_open(); return; }
     else if (item == OVM_OPACITY) return;   // (the slider is dragged, or stepped with left and right)
+    else if (item == OVM_EXPORT) { if (atomic_load(&g_sv_st) == OVX_BUSY) return; save_export(); }
+    else if (item == OVM_IMPORT) { dm_haptics_android_tap(); sp_open(); return; }
     if (item >= 0 && item < OVM_N) dm_haptics_android_tap();
     if (item == OVM_RESUME) menu_close(); else dm_overlay_redraw();
 }
@@ -335,9 +351,10 @@ static void menu_touch(AInputEvent *e, float W, float H) {   // a press on a row
         else dm_overlay_redraw();
     } else if (act == AMOTION_EVENT_ACTION_CANCEL) { g_menu_ptr = -1; atomic_store(&g_menu_hi, -1); dm_overlay_redraw(); }
 }
-static void ed_key(uint64_t bit);
+static void ed_key(uint64_t bit); static void sp_key(uint64_t bit);
 static void menu_key(uint64_t bit) {   // a controller key pressed while the menu is open: up and down go through the rows, left and right change the tab or the
     if (atomic_load(&g_edit)) { ed_key(bit); return; }   // opacity on their rows, L and R change the tab anywhere, A does the row, B and + close
+    if (atomic_load(&g_sp_on)) { sp_key(bit); return; }
     int hi = atomic_load(&g_menu_hi), tab = atomic_load(&g_menu_tab), item = hi >= 0 ? ov_menu_item(tab, hi) : -1;
     if (bit == DM_BTN_UP || bit == DM_BTN_DOWN) {
         for (int k = 0; k < OVM_ROWS; k++) { hi = hi < 0 ? (bit == DM_BTN_UP ? OVM_ROWS - 1 : 1) : (hi + (bit == DM_BTN_UP ? OVM_ROWS - 1 : 1)) % OVM_ROWS; if (ov_menu_item(tab, hi) >= 0) break; }
@@ -350,6 +367,125 @@ static void menu_key(uint64_t bit) {   // a controller key pressed while the men
     }
     else if (bit == DM_BTN_A) menu_do(hi < 0 ? OVM_RESUME : item);
     else if (bit == DM_BTN_B || bit == DM_BTN_PLUS) menu_close();
+}
+
+// ---- the save manager (saves_android.c): Export save copies the game's committed save to the files folder's saves/ on a thread of its own (the row shows it
+// copying, then the export's name); Import save opens the picker, in the menu's panel (overlay_layout.h OVS_*): the saves there newest first, a page of
+// OVM_ROWS - 2 (left and right, L and R page), Back. A save chosen asks first; the import then waits for the next start (the save is not touched while the
+// game runs) and the app ends, as the panel says. A controller: up and down choose, A does, B goes back; a finger taps a row, or outside the panel to go back ----
+#define SP_MAX 64
+#define SP_PER (OVM_ROWS - 2)
+static pthread_mutex_t g_sp_mu = PTHREAD_MUTEX_INITIALIZER;   // the picker's list and the export's note
+static struct { int n, page, confirm, closing, ptr, row; dm_save_entry e[SP_MAX], pick; } g_sp = {.ptr = -1};
+static char g_sv_note[96];
+int dm_save_note(char *out, int cap) { pthread_mutex_lock(&g_sp_mu); snprintf(out, (size_t)cap, "%s", g_sv_note); pthread_mutex_unlock(&g_sp_mu); return atomic_load(&g_sv_st); }
+static void *export_run(void *a) {
+    (void)a; char name[64], err[600]; int r = dm_saves_export("", name, sizeof name, err, sizeof err);
+    pthread_mutex_lock(&g_sp_mu); snprintf(g_sv_note, sizeof g_sv_note, "%s", r ? err : name); pthread_mutex_unlock(&g_sp_mu);
+    atomic_store(&g_sv_st, !r ? OVX_DONE : r == -ENOENT ? OVX_NOSAVE : OVX_FAILED); atomic_fetch_add(&g_sv_n, 1); dm_overlay_redraw();
+    return NULL;
+}
+static void save_export(void) {
+    pthread_t t; atomic_store(&g_sv_st, OVX_BUSY); dm_overlay_redraw();
+    if (pthread_create(&t, NULL, export_run, NULL)) { atomic_store(&g_sv_st, OVX_FAILED); LOG("[RED] [saves] cannot start the export"); } else pthread_detach(t);
+}
+static void sp_changed(void) { atomic_fetch_add(&g_sp_ver, 1); dm_overlay_redraw(); }
+static int sp_on_page(void) { int k = g_sp.n - g_sp.page * SP_PER; return k < 0 ? 0 : k > SP_PER ? SP_PER : k; }   // the caller holds g_sp_mu
+static int sp_selectable(int row) {   // the rows a controller and a finger can choose
+    pthread_mutex_lock(&g_sp_mu);
+    int ok = g_sp.closing ? 0 : g_sp.confirm ? row == OVM_ROWS - 2 || row == OVM_ROWS - 1 : (row >= 1 && row <= sp_on_page()) || row == OVM_ROWS - 1;
+    pthread_mutex_unlock(&g_sp_mu); return ok;
+}
+static void sp_open(void) {
+    pthread_mutex_lock(&g_sp_mu);
+    int n = g_sp.n = dm_saves_list(g_sp.e, SP_MAX); g_sp.page = g_sp.confirm = g_sp.closing = 0; g_sp.ptr = -1;
+    pthread_mutex_unlock(&g_sp_mu);
+    atomic_store(&g_sp_hi, n ? 1 : OVM_ROWS - 1); atomic_store(&g_sp_on, 1); sp_changed();
+    LOG("[saves] picker opened: %d saves in %s", n, dm_saves_dir());
+}
+static void sp_back(void) {   // the confirmation → the list → the menu (nothing once the import is under way)
+    pthread_mutex_lock(&g_sp_mu); int closing = g_sp.closing, confirm = g_sp.confirm; if (!closing) g_sp.confirm = 0; g_sp.ptr = -1; pthread_mutex_unlock(&g_sp_mu);
+    if (closing) return;
+    dm_haptics_android_tap();
+    if (confirm) { atomic_store(&g_sp_hi, 1); sp_changed(); return; }
+    atomic_store(&g_sp_on, 0); atomic_store(&g_menu_hi, -1); dm_overlay_redraw();
+}
+static void *sp_end(void *a) {   // the panel's note shows for a moment, then the app ends; the next start imports the save (saves_android.c dm_saves_start)
+    (void)a; sleep(3); LOG("[saves] the app ends for the import"); _exit(0);
+}
+static void sp_do(int row) {
+    if (!sp_selectable(row)) return;
+    dm_haptics_android_tap();
+    if (row == OVM_ROWS - 1) { sp_back(); return; }
+    pthread_mutex_lock(&g_sp_mu);
+    if (!g_sp.confirm) { g_sp.pick = g_sp.e[g_sp.page * SP_PER + row - 1]; g_sp.confirm = 1; pthread_mutex_unlock(&g_sp_mu); atomic_store(&g_sp_hi, OVM_ROWS - 2); sp_changed(); return; }
+    char name[64]; snprintf(name, sizeof name, "%s", g_sp.pick.name);
+    pthread_mutex_unlock(&g_sp_mu);
+    if (dm_saves_request_import(name)) return;
+    pthread_mutex_lock(&g_sp_mu); g_sp.closing = 1; pthread_mutex_unlock(&g_sp_mu);
+    atomic_store(&g_sp_hi, -1); sp_changed();
+    pthread_t t; if (pthread_create(&t, NULL, sp_end, NULL)) sp_end(NULL); else pthread_detach(t);
+}
+static void sp_page(int d) {
+    pthread_mutex_lock(&g_sp_mu); int pages = (g_sp.n + SP_PER - 1) / SP_PER, p = g_sp.page + d, ok = !g_sp.confirm && !g_sp.closing && p >= 0 && p < pages;
+    if (ok) g_sp.page = p;
+    int k = sp_on_page(); pthread_mutex_unlock(&g_sp_mu);
+    if (!ok) return;
+    int hi = atomic_load(&g_sp_hi); if (hi >= 1 && hi < OVM_ROWS - 1 && hi > k) atomic_store(&g_sp_hi, k);
+    dm_haptics_android_tap(); sp_changed();
+}
+static void sp_key(uint64_t bit) {
+    int hi = atomic_load(&g_sp_hi);
+    if (bit == DM_BTN_UP || bit == DM_BTN_DOWN) {
+        for (int k = 0; k < OVM_ROWS; k++) { hi = hi < 0 ? (bit == DM_BTN_UP ? OVM_ROWS - 1 : 0) : (hi + (bit == DM_BTN_UP ? OVM_ROWS - 1 : 1)) % OVM_ROWS; if (sp_selectable(hi)) break; }
+        if (sp_selectable(hi)) { atomic_store(&g_sp_hi, hi); sp_changed(); }
+    } else if (bit == DM_BTN_LEFT || bit == DM_BTN_L || bit == DM_BTN_ZL) sp_page(-1);
+    else if (bit == DM_BTN_RIGHT || bit == DM_BTN_R || bit == DM_BTN_ZR) sp_page(1);
+    else if (bit == DM_BTN_A) sp_do(hi);
+    else if (bit == DM_BTN_B) sp_back();
+}
+static void sp_touch(AInputEvent *e, float W, float H) {   // a row is done when the finger that went down on it lifts there; outside the panel goes back
+    int act = AMotionEvent_getAction(e) & AMOTION_EVENT_ACTION_MASK, ai = AMotionEvent_getAction(e) >> AMOTION_EVENT_ACTION_POINTER_INDEX_SHIFT;
+    int i = act == AMOTION_EVENT_ACTION_DOWN || act == AMOTION_EVENT_ACTION_UP ? 0 : ai, id = AMotionEvent_getPointerId(e, (size_t)i) & 31;
+    int row = ov_menu_row_at(AMotionEvent_getX(e, (size_t)i), AMotionEvent_getY(e, (size_t)i), W, H);
+    if (act == AMOTION_EVENT_ACTION_DOWN || act == AMOTION_EVENT_ACTION_POINTER_DOWN) {
+        if (g_sp.ptr >= 0) return;
+        g_sp.ptr = id; g_sp.row = row;
+        if (sp_selectable(row)) { atomic_store(&g_sp_hi, row); sp_changed(); }
+    } else if ((act == AMOTION_EVENT_ACTION_UP || act == AMOTION_EVENT_ACTION_POINTER_UP) && id == g_sp.ptr) {
+        int down = g_sp.row; g_sp.ptr = -1;
+        if (row == down && row == -2) sp_back(); else if (row == down) sp_do(row);
+    } else if (act == AMOTION_EVENT_ACTION_CANCEL) g_sp.ptr = -1;
+}
+static void sp_size(char *out, int cap, const dm_save_entry *s) {
+    if (s->bytes >= 1 << 20) snprintf(out, (size_t)cap, "%ld file%s, %.1f MB", s->files, s->files == 1 ? "" : "s", s->bytes / 1048576.0);
+    else snprintf(out, (size_t)cap, "%ld file%s, %lld KB", s->files, s->files == 1 ? "" : "s", (s->bytes + 1023) / 1024);
+}
+#define SP_ROW(i, st, ...) do { rows[i].style = st; snprintf(rows[i].left, sizeof rows[i].left, __VA_ARGS__); } while (0)
+int dm_save_rows(ov_srow rows[OVM_ROWS]) {   // (gfx_vk_present.c ov_save_panel)
+    if (!atomic_load(&g_sp_on)) return 0;
+    memset(rows, 0, sizeof(ov_srow) * OVM_ROWS);
+    pthread_mutex_lock(&g_sp_mu);
+    if (g_sp.closing) {
+        SP_ROW(0, OVS_TITLE, "Importing the save"); SP_ROW(1, OVS_ITEM, "%s", g_sp.pick.name); sp_size(rows[1].right, sizeof rows[1].right, &g_sp.pick);
+        SP_ROW(2, OVS_NOTE, "The game closes now. Open it again:"); SP_ROW(3, OVS_NOTE, "the save is imported as it starts.");
+    } else if (g_sp.confirm) {
+        SP_ROW(0, OVS_TITLE, "Import this save?"); SP_ROW(1, OVS_ITEM, "%s", g_sp.pick.name); sp_size(rows[1].right, sizeof rows[1].right, &g_sp.pick);
+        SP_ROW(2, OVS_NOTE, "Your current save is exported first,"); SP_ROW(3, OVS_NOTE, "then the game closes: open it again.");
+        SP_ROW(OVM_ROWS - 2, OVS_BUTTON, "Import and close"); SP_ROW(OVM_ROWS - 1, OVS_BACK, "Cancel");
+    } else {
+        int pages = (g_sp.n + SP_PER - 1) / SP_PER, k = sp_on_page();
+        SP_ROW(0, OVS_TITLE, "Import a save"); if (pages > 1) snprintf(rows[0].right, sizeof rows[0].right, "page %d of %d", g_sp.page + 1, pages);
+        for (int j = 0; j < k; j++) { const dm_save_entry *s = &g_sp.e[g_sp.page * SP_PER + j]; SP_ROW(1 + j, OVS_ITEM, "%s", s->name); sp_size(rows[1 + j].right, sizeof rows[1 + j].right, s); }
+        if (!g_sp.n) {
+            const char *d = strstr(dm_saves_dir(), "Android/data/");
+            SP_ROW(1, OVS_NOTE, "No saves yet. Export one, or put a save folder"); SP_ROW(2, OVS_NOTE, "(a console's, as its save tools copy it) in");
+            SP_ROW(3, OVS_NOTE, "%s", d ? d : dm_saves_dir());
+        }
+        SP_ROW(OVM_ROWS - 1, OVS_BACK, "Back");
+    }
+    pthread_mutex_unlock(&g_sp_mu);
+    return 1;
 }
 
 // ---- the layout editor (overlay_layout.h OVE_*): opened from the menu, the game stays held. A finger on a control chooses it and drags it; a second finger
@@ -544,7 +680,7 @@ __attribute__((weak)) void dm_picture_rect(float r[4]);   // gfx_vk_present.c
 static void touch_event(AInputEvent *e) {
     ANativeWindow *w = dm_front_window(); float W = w ? (float)ANativeWindow_getWidth(w) : 1, H = w ? (float)ANativeWindow_getHeight(w) : 1;
     if (atomic_load(&g_tx_on)) { tx_touch(e, W, H); return; }   // the text entry's keys
-    if (atomic_load(&g_menu)) { if (atomic_load(&g_edit)) ed_touch(e, W, H); else menu_touch(e, W, H); return; }
+    if (atomic_load(&g_menu)) { if (atomic_load(&g_edit)) ed_touch(e, W, H); else if (atomic_load(&g_sp_on)) sp_touch(e, W, H); else menu_touch(e, W, H); return; }
     int act = AMotionEvent_getAction(e) & AMOTION_EVENT_ACTION_MASK, ai = AMotionEvent_getAction(e) >> AMOTION_EVENT_ACTION_POINTER_INDEX_SHIFT;
     size_t pc = AMotionEvent_getPointerCount(e);
     if (act == AMOTION_EVENT_ACTION_DOWN || act == AMOTION_EVENT_ACTION_POINTER_DOWN) {
@@ -737,6 +873,8 @@ __attribute__((visibility("default"))) void ANativeActivity_onCreate(ANativeActi
 #ifdef DM_RELEASE
     unsetenv("DM_CTL");   // a release build takes no remote key presses (the control file is a development tool)
 #endif
+    // the save manager's requests (saves_android.c), before the host mounts the save: an import chosen in the menu or pushed by porter, an export porter asks for
+    if (dm_saves_start(g_root)) { LOG("[saves] the request asked the app to end: the game is not started"); g_quit = 1; return; }
     settings_load(); dm_haptics_android_start(act, atomic_load(&g_set_rumble));
     { pthread_t w; if (!pthread_create(&w, NULL, pad_watch, act->vm)) pthread_detach(w); }
     LOG("NX2A host on Android: files %s, saves %s", g_root, act->internalDataPath);

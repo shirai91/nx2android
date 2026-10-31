@@ -49,6 +49,16 @@ CUTS = {
     (0x37bdcc, '09fca752', '097ca052', 'AddressRegionManager constructor: length of the node area registered as an occupied region mov w9,#0x3fe00000 → mov w9,#0x3e00000'),
     (0x37bf2c, '0a00a852', '0a40a052', 'AllocateAddressRegion: alignment of regions of 1 GB and more mov w10,#0x40000000 → mov w10,#0x2000000 (32 MB, as from 32 MB up)'),
   ],
+  # SDK 11.4.3 sdk 2d369d99 (Unpacking's base game 1.0 = v0, 13 Sentinels: Aegis Rim, Metroid Dread, Monster Hunter Rise, Big Brain Academy: Brain vs. Brain): the cuts of Unpacking 2.01's
+  # SDK 13.3.2 build above, carried over with nso_fnmap.py and checked by disassembly (the same constructor at sdk+0x34e0b8 and the same size alignment at sdk+0x34e258; the two node area
+  # movs are the only ones in the module). A base-only Unpacking port (GitHub issue #26) went without them: its 3.14 GB StandardAllocator region sat at +1.00 GB after the 1 GB node area
+  # and ended at +4.14 GB of the 4.375 GB alias region, 0.23 GB from the end (it reached the first room without a refusal; update 2.01's Unity regions were refused there). The other
+  # four games set a heap in a 256 MB alias region, as Celeste does on its cut SDK 15.3.2 build; they were not run again with these cuts
+  '2d369d9999e3e10e665106f840ffff9b': [
+    (0x34e0c8, '08fca752', '087ca052', 'AddressRegionManager constructor: node area limit mov w8,#0x3fe00000 → mov w8,#0x3e00000'),
+    (0x34e164, '09fca752', '097ca052', 'AddressRegionManager constructor: length of the node area registered as an occupied region mov w9,#0x3fe00000 → mov w9,#0x3e00000'),
+    (0x34e2c4, '0a00a852', '0a40a052', 'AllocateAddressRegion: alignment of regions of 1 GB and more mov w10,#0x40000000 → mov w10,#0x2000000 (32 MB, as from 32 MB up)'),
+  ],
   # Pokémon Legends: Z-A 2.0.2 (v393216) sdk (SDK 19.3.11): the same node area cut. The constructor is at sdk+0x1423ec (limit = alias start + 0x3fe00000 at +0x28, a unit heap of 0x30-byte
   # nodes, the area then registered as occupied at +0x142468). With main's allocator region below, the guest block fits the 5 GB proven on a phone
   'df7a3960c74c3a4803f826c587153252': [

@@ -25,7 +25,8 @@ A fix that only one game needs today is still a core fix when it follows the sem
 ## Rules that always hold
 
 - **Ask before installing on the user's device.** Name the package and size; install test builds under another package (`--package org.nx2a.<name>.test`) beside the user's own app, and uninstall them afterwards. Someone at the tablet once removed an unannounced test app by hand. Never uninstall or overwrite the user's own install (`org.nx2a.neo` etc.) without being told to.
-- **Keys and game files never enter the repository or the chat.** Game folders live outside the repo (ask the user where; the port writes its build folder beside the game files); print key names, never values.
+- **Keys and game files never enter the repository or the chat.** Print key names, never values.
+- **Game files go only in `.gamedump/<App>/`** (the main checkout's, git-ignored), as hard links to the downloads, for every port, test or check: never a folder elsewhere on the PC (`C:\nx2a-test` once kept 263 GB that nobody deleted). Delete the folder when the work is done: references/new-game-profile.md §0 and §5.
 - **Measure, then change.** Every fix starts from evidence (a log line, a crash address, a census, a screen recording), and the evidence goes in the comment beside the fix, as the existing code does.
 - **English everywhere; log lines for something unimplemented or wrong start with `[RED] `.**
 - **Keep the shared core shared.** Changes in `nxnative/dm/{host,gfx,tools,third_party}` keep the iOS paths working and platform differences go behind `__APPLE__` / `__ANDROID__` / `DM_TARGET`. Android-only code belongs in `nxnative/dm/android/`.
@@ -33,7 +34,7 @@ A fix that only one game needs today is still a core fix when it follows the sem
 - **Tests before committing**: `python -m unittest discover tests` (includes `tests/arch_rules.py`, which enforces ARCHITECTURE.md's layer rules: no game IDs, names or packages in core code, data-only profiles, GUI only over `python -m porter`…). Commit and push only when the user asks; end commit messages with the attribution line the session gives. Messages are Conventional Commits (`fix(vk): …`, `feat(profile): …`, `docs(status): …`; docs/DEVELOPMENT_GUIDE.md's Commit messages), checked by `.githooks/commit-msg`.
 - **Update the docs with the code**: ARCHITECTURE.md when a layer, key or stage changes; README.md's Games table when a status changes (the only place it is kept: docs/PORT_STATUS.md only points there); the profile's `android.tsv` comment header with what was tested.
 - **Every finished port updates both game lists, in the same commit as the profile**: docs/PORT_CHECKLIST.md (tick the game, adding its line in alphabetical order if it is missing, drop "profile here" / "upstream profile", recount the `N / M ported` line) and README.md's Games table (its row, with a real device screenshot in docs/images/, never an icon or internet image, and the nx2android version tag: references/new-game-profile.md §4). SMO and Metroid Dread once shipped in the games table only.
-- **Releases do not re-test older games** (since 2026-10-31): a release checks only the games it adds or fixes; a break in an older game is fixed by a later patch release. Version `0.MINOR.PATCH`: patch for new games and bug fixes only, minor for any other core change, major stays 0. docs/RELEASE_CHECK.md has the details.
+- **Releases do not re-test older games** (since 2026-10-31): a release checks only the games it adds or fixes; a break in an older game is fixed by a later patch release. Version `0.MINOR.PATCH`: patch for new games and bug fixes only, minor for any other core change, major stays 0 (docs/DEVELOPMENT_GUIDE.md, Releases and version numbers).
 
 ## Windows environment gotchas (this PC)
 

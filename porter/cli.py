@@ -24,9 +24,16 @@ def _parser():
     po.add_argument('--experimental', action='store_true', help='try a game not ported to Android yet (a profile guessed from a survey of its files; it may not start)')
     po.add_argument('--package', default='', help="the app's package instead of the profile's (a test install beside another build of the game)")
     po.add_argument('--fps60', action='store_true', help='60 fps: the profile\'s own frame-rate cap, else the community\'s FPSLocker-Warehouse config of the game\'s build, fetched from GitHub')
+    po.add_argument('--touch', action='store_true',
+                    help='a game played by touch: the on-screen gamepad starts hidden, so every touch but the menu button\'s goes to the game (the pause menu shows it again; '
+                         'the first launch\'s default: the app keeps the player\'s own settings)')
     po.add_argument('--vercode-offset', type=int, default=None, metavar='N',
                     help='add N (0-65535) to the APK\'s versionCode, so a rebuild of the same game version installs over a build with a higher one and keeps its saves '
                          '(default: $NX2A_VERCODE_OFFSET, else 0)')
+    po.add_argument('--alias-headroom', type=int, default=None, metavar='GB',
+                    help='GB (0-48) of extra guest address space (the alias region) for a game with virtual address memory, for a game whose log shows '
+                         '"AllocateAddressRegion refused (0x1803)" before it crashes; it uses no memory (default: 8 for a game version the profile was not '
+                         'brought up on, none for one it was)')
     po.add_argument('--jobs', type=int, default=os.cpu_count() or 8)
     po.add_argument('--progress', default='auto', choices=('auto', 'bar', 'lines', 'json', 'off'), help='json: one JSON event per line, for the GUI')
     ins = sub.add_parser('install', help='install a port made earlier'); ins.add_argument('data', help='the data pack folder (<App>-data)'); ins.add_argument('--apk', help='the APK (default: <App>.apk beside the pack)')
@@ -37,6 +44,18 @@ def _parser():
     t.add_argument('--only', default='', help='these instead of the missing ones: ndk, dotnet, adb (comma-separated)'); t.add_argument('--json', action='store_true')
     t.add_argument('--progress', default='auto', choices=('auto', 'bar', 'lines', 'json', 'off'))
     c = sub.add_parser('config', help='show or change the saved settings'); c.add_argument('key', nargs='?'); c.add_argument('value', nargs='?')
+    sv = sub.add_parser('saves', help="a game's save between the device and this PC: list, export, import (a console's save too)")
+    svs = sv.add_subparsers(dest='saves_cmd', required=True)
+    sa = svs.add_parser('apps', help='the ported games installed on the device')
+    sl = svs.add_parser('list', help="the save folders in the app's files folder (saves/), newest first")
+    se = svs.add_parser('export', help="the game's save to a folder here: a fresh export (the app is stopped, started to export, and ends), or --name one already there")
+    se.add_argument('dest', nargs='?', default='.', help='the folder to put it in (default: here)'); se.add_argument('--name', default='', help='a save folder on the device instead of a fresh export')
+    si = svs.add_parser('import', help="a save folder or .zip as the game's save (a console's, as its save tools copy it, or an export); the save it replaces is exported first on the device")
+    si.add_argument('src', help='the save folder (its files at the top, as the game keeps them) or a .zip of it; <folder>.device beside it is the device save')
+    si.add_argument('--name', default='', help="its folder name on the device (default: the folder's or the .zip's)")
+    for x in (sa, sl, se, si):
+        x.add_argument('--device', default='', help='adb serial (default: the configured device, else the only one)'); x.add_argument('--json', action='store_true')
+        if x is not sa: x.add_argument('--package', default='', help='the app (default: the only ported game installed)')
     return ap
 
 
@@ -107,8 +126,8 @@ def cmd_port(a):
         try: offset = int(env)
         except ValueError: print(f'NX2A_VERCODE_OFFSET is not a number: {env}', file=sys.stderr); return 2
     opts = pipeline.Options(folder=Path(a.folder), keys=Path(a.keys) if a.keys else None, out=Path(a.out) if a.out else None, version=a.version, language=a.language,
-                            app_name=a.app_name, install=a.install, device=a.device, replace_signer=a.replace_signer, debug=a.debug, experimental=a.experimental, package=a.package, fps60=a.fps60,
-                            vercode_offset=offset, jobs=a.jobs)
+                            app_name=a.app_name, install=a.install, device=a.device, replace_signer=a.replace_signer, debug=a.debug, experimental=a.experimental, package=a.package, fps60=a.fps60, touch=a.touch,
+                            vercode_offset=offset, alias_headroom=a.alias_headroom, jobs=a.jobs)
     return _with_progress(a.progress, lambda: pipeline.emit_result(pipeline.Port(opts).run()))
 
 
@@ -166,7 +185,33 @@ def cmd_config(a):
     return 0
 
 
+def cmd_saves(a):
+    import contextlib
+    from porter import config, saves, toolchain
+    from porter.upstream import BuildError
+    try:
+        with contextlib.redirect_stdout(sys.stderr if a.json else sys.stdout):   # with --json, stdout is the one JSON document (the GUI parses it whole)
+            cfg = config.load(); adb = saves.connect(toolchain.find_adb(cfg), a.device or cfg.get('device'))
+            if a.saves_cmd == 'apps': out = saves.apps(adb)
+            else:
+                pkg = saves.pick_app(adb, a.package)
+                if a.saves_cmd == 'list': out = saves.listing(adb, pkg)
+                elif a.saves_cmd == 'export': out = {'package': pkg, 'folder': str(saves.export(adb, pkg, Path(a.dest), a.name))}
+                else: out = dict(saves.import_(adb, pkg, Path(a.src), a.name), package=pkg)
+    except BuildError as e:
+        if a.json: _print_json({'error': str(e)})
+        else: print(e, file=sys.stderr)
+        return 1
+    if a.json: _print_json(out)
+    elif a.saves_cmd == 'apps': print('\n'.join(out) or 'no ported game is installed')
+    elif a.saves_cmd == 'list':
+        import time
+        for r in out: print(f'{time.strftime("%Y-%m-%d %H:%M", time.localtime(r["time"]))}  {r["name"]:32} {r["files"]:5} files {r["bytes"] / 2**20:9.2f} MB' + ('  (+ device save)' if r['device'] else ''))
+        if not out: print(f'no save folders on the device ({saves.saves_folder(pkg)})')
+    return 0
+
+
 def main(argv):
     if hasattr(sys.stdout, 'reconfigure'): sys.stdout.reconfigure(encoding='utf-8', errors='replace')   # game names and progress bars on a Windows console
     a = _parser().parse_args(argv)
-    return {'doctor': cmd_doctor, 'profiles': cmd_profiles, 'inspect': cmd_inspect, 'port': cmd_port, 'install': cmd_install, 'devices': cmd_devices, 'tools': cmd_tools, 'config': cmd_config}[a.cmd](a)
+    return {'doctor': cmd_doctor, 'profiles': cmd_profiles, 'inspect': cmd_inspect, 'port': cmd_port, 'install': cmd_install, 'devices': cmd_devices, 'tools': cmd_tools, 'config': cmd_config, 'saves': cmd_saves}[a.cmd](a)

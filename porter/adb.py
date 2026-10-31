@@ -160,11 +160,19 @@ class Adb:
             local.mkdir(parents=True, exist_ok=True); self.run('pull', f'{rdir}/{rel}', local / rel); got.append(rel)
         return got
 
-    def remote_sizes(self, rdir):   # {relative path: size} of every file under rdir on the device
+    def remote_sizes(self, rdir):
+        """{relative path: size} of every file under rdir on the device ({} when rdir is not there). find's own -printf, not -exec stat {} +: toybox 0.8.6 (AYN Thor,
+        Android 13) fails most -exec batches with "Argument list too long", and the listing came back short (6,759 of 206,904 files), so an install pushed everything again.
+        Android 10's toybox has no -printf (11's has): there -exec stat stays. A find that fails is an AdbError, never a short listing"""
         q = shlex.quote(rdir)
-        out = self.shell(f'[ -d {q} ] && cd {q} && find . -type f -exec stat -c "%s %n" {{}} + ; true')
+        out = self.shell(f"[ -d {q} ] || exit 0; cd {q} && if find /dev/null -printf '' 2>/dev/null; then find . -type f -printf '%s %P\\n' 2>&1; "
+                         f'else find . -type f -exec stat -c "%s %n" {{}} + 2>&1; fi; echo "rc=$?"')
+        lines = out.splitlines()
+        if lines and lines[-1].strip() != 'rc=0':
+            bad = [ln for ln in lines[:-1] if not ln.partition(' ')[0].isdigit()]
+            raise AdbError(f'listing {rdir} on the device failed ({lines[-1].strip() if lines[-1].startswith("rc=") else "no exit status"}): ' + ('; '.join(bad[-3:]) or 'no message'))
         have = {}
-        for ln in out.splitlines():
+        for ln in lines[:-1]:
             sz, _, name = ln.partition(' ')
             if sz.isdigit(): have[name[2:] if name.startswith('./') else name] = int(sz)
         return have
@@ -177,13 +185,14 @@ class Adb:
                 if len(h) == 32: out[name] = h
         return out
 
-    def push_tree(self, local, remote, chunk=64 << 20, skip=(), keep=(), verify=None, progress=None):
+    def push_tree(self, local, remote, chunk=64 << 20, skip=(), keep=(), verify=None, progress=None, have=None):
         """local folder → remote folder. skip: relative paths not pushed; keep: relative paths pushed only when the device has none (the player's settings);
         verify(rel): files whose content can change at the same size (the rewritten modules: a rewriter cut keeps the module's size), pushed again when their MD5 differs.
-        progress(done_bytes, total_bytes, note) after each transfer. Returns the bytes pushed"""
+        progress(done_bytes, total_bytes, note) after each transfer. have: remote_sizes(remote) when the caller listed it already (a big pack takes seconds to list).
+        Returns the bytes pushed"""
         local, remote = Path(local), remote.rstrip('/')
         files = sorted((p.relative_to(local).as_posix(), p) for p in local.rglob('*') if p.is_file())
-        have = self.remote_sizes(remote)
+        if have is None: have = self.remote_sizes(remote)
         same = [rel for rel, p in files if verify and verify(rel) and rel not in keep and rel not in skip and have.get(rel) == p.stat().st_size]
         rmd5 = self.remote_md5(remote, same) if same else {}
         changed = {rel for rel, p in files if rel in same and rmd5.get(rel) != hashlib.md5(p.read_bytes()).hexdigest()}
