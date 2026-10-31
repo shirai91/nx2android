@@ -5,10 +5,13 @@
 # On a POCO F7 (25053PC47G, Snapdragon 8s Gen 4, Adreno 825, Android 16; 2026-10-31): boot, the opening movie and cutscene, the title, Continue into the first field and its tutorials, the
 # pause menu's docked / handheld switch. Its Niagara particle data is in buffer textures 32 bytes past a 64-byte boundary, which Adreno 825 will not view: read through
 # an aligned copy (gfx_vk_tex.c tbuf_shadow), no red line left.
-# Speed: handheld, the opening and the first field run 13-30 fps. In the field's busiest view (about 2,700 draws) a frame is the replay's 33 ms on the CPU (descriptor
-# sets 10-16 ms) and then 43 ms of GPU: 13 fps. Docked (1920x1080) the GPU alone took 27-45 ms in the opening. Pipelines compile in 70-220 ms each on this Adreno,
-# so the first sight of a material stalls a frame for up to 2 s; the next boot prewarms them (graphics and compute, vk_pipelines.bin / vk_cpipelines.bin): 0 long
-# frames in a second run through the same field (55 in the first). DM_NVN_ASYNC=1 does not run: the game raises Unreal's LowLevelFatalError at boot (abort at main+0x11bc).
+# Speed: handheld. The game sends 9 submissions a frame, and with 6 submission slots each frame's main submission waited for the GPU to finish the last
+# frame's other large one (DM_NVN_SEQ: ~37 ms a frame in the replay), so a frame was the replay plus the GPU's work. With 16 slots (gfx_vk_core.c NSLOT), from
+# one save in the Earth Shrine: frame p50 45 ms → 33 ms, submit+present 40 → 16 ms (DM_VK_SLOTS=6 / 16, same build). The busiest view seen before the fix
+# (about 2,700 draws) took 76 ms: replay 33 ms (descriptor sets 10-16 ms; 66-72% of the new sets were in the last 20 submissions, DM_VK_SETX) and GPU 43 ms.
+# Docked (1920x1080) the GPU alone took 27-45 ms in the opening. Pipelines compile in 70-220 ms each on this Adreno, so the first sight of a material stalls
+# a frame for up to 2 s; the next boot prewarms them (graphics and compute, vk_pipelines.bin / vk_cpipelines.bin): 0 long frames in a second run through the
+# same field (55 in the first). DM_NVN_ASYNC=1 does not run: the game raises Unreal's LowLevelFatalError at boot (abort at main+0x11bc).
 # The game's 30 (the Switch's rate) rather than the profile's 60 (env below): the phone holds neither, and 30 keeps the pacing steady.
 status	boots
 tested	v65536 POCO F7 25053PC47G (Snapdragon 8s Gen 4, Adreno 825, Android 16)
