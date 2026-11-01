@@ -362,14 +362,15 @@ static const char *ov_ctl_name(const ov_ctl *c) {
 static void ov_edit_panel(const ov_canvas *cv, int st) {
     float tb[4], pr[4]; ov_ed_rects(tb, pr);
     int held = (st >> 4 & 15) - 1, sel = (st >> 8 & 255) - 1;
-    static const char *const words[OVE_ALL] = {"-", "+", "Reset", "Cancel", "Save", "Discard", "Keep editing"};
+    static const char *const words[OVE_ALL] = {"-", "+", "Reset", "Cancel", "Save", "Snap to grid: Off", "Discard", "Keep editing"};
     cv_rrect(cv, tb[0], tb[1], tb[0] + tb[2], tb[1] + tb[3], tb[3] * 0.14f, C_BG);
     char hint[96];
     if (sel >= 0 && sel < OV_N) snprintf(hint, sizeof hint, "%s: drag, pinch, - +", ov_ctl_name(&OV_CTLS[sel]));   // (short: 2x-scale letters on a phone)
     else snprintf(hint, sizeof hint, "Drag to move, pinch to resize");
-    int hs = (int)fmaxf(1, roundf(tb[3] * 0.17f / 7)); while (hs > 1 && cv_text_w(hint, hs) > tb[2] * 0.94f) hs--;
-    cv_text(cv, tb[0] + (tb[2] - cv_text_w(hint, hs)) / 2, tb[1] + tb[3] * 0.21f, hint, hs, sel >= 0 ? C_WHITE : C_DIM);
-    for (int i = 0; i < OVE_N; i++) { float b[4]; ov_ed_button(i, tb, b); cv_button(cv, b, words[i], i == OVE_SAVE, i == held); }
+    int hs = (int)fmaxf(1, roundf(tb[3] * 0.11f / 7)); while (hs > 1 && cv_text_w(hint, hs) > tb[2] * 0.94f) hs--;
+    cv_text(cv, tb[0] + (tb[2] - cv_text_w(hint, hs)) / 2, tb[1] + tb[3] * 0.14f, hint, hs, sel >= 0 ? C_WHITE : C_DIM);
+    for (int i = 0; i < OVE_N; i++) { float b[4]; ov_ed_button(i, tb, b); int grid = i == OVE_GRID && (st & OVE_GRID_ON);
+        cv_button(cv, b, grid ? "Snap to grid: On" : words[i], i == OVE_SAVE || grid, i == held); }
     if (!(st & 1)) return;
     cv_rrect(cv, pr[0], pr[1], pr[0] + pr[2], pr[1] + pr[3], pr[3] * 0.10f, C_BG);
     const char *q = "Discard your changes?"; int qs = (int)fmaxf(1, roundf(pr[3] * 0.13f / 7)); while (qs > 1 && cv_text_w(q, qs) > pr[2] * 0.9f) qs--;
@@ -509,7 +510,14 @@ static void ov_render(VkCommandBuffer cb, int mode, int menu, int fps) {
         ov_rect(cb, 0, 0, W, H, bx - 2, by - 2, bx + 2, by + 2, 0.55f);
         float r[4]; ov_menu_rect(W, H, r);
         ov_rect(cb, r[0], r[1], r[0] + r[2], r[1] + r[3], 0, (float)(g_ov.h + g_ov.sh), (float)g_ov.pw, (float)(g_ov.h + g_ov.sh + g_ov.ph), 1);
-    } else if (edit) ov_rect(cb, 0, 0, W, H, bx - 2, by - 2, bx + 2, by + 2, 0.30f);
+    } else if (edit) {
+        ov_rect(cb, 0, 0, W, H, bx - 2, by - 2, bx + 2, by + 2, 0.30f);
+        if (menu & OVE_GRID_ON) {
+            float step = H / OVE_GRID_ROWS, t = fmaxf(1, H * 0.001f);
+            for (int i = 1; i * step < W; i++) { float x = i * step; ov_block(cb, SP_WHITE, x - t / 2, 0, x + t / 2, H, 0.20f); }
+            for (int i = 1; i < OVE_GRID_ROWS; i++) { float y = i * step; ov_block(cb, SP_WHITE, 0, y - t / 2, W, y + t / 2, 0.20f); }
+        }
+    }
     const ov_theme *th = g_tt[g_ov.lay].ready == 1 ? g_tt[g_ov.lay].t : NULL; int tbound = 0;   // (the theme's texture bound)
     if ((menu < 0 || edit) && mode == 1 && th) {
         vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_ov.layout, 0, 1, &g_tt[g_ov.lay].set, 0, NULL); tbound = 1;

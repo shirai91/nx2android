@@ -299,7 +299,10 @@ static void evict_overlaps(uint64_t pool, int64_t off, int64_t size) {
     }
     for (int j = 0; j < n; j++) { vkimg_t *o = nvn_hm_get(&g_by_key, &ks[j]); if (!o) continue; nvn_hm_del(&g_by_key, &ks[j]); img_drop(o); g_img_evicted++; }
 }
-vkimg_t *vk_tex(const tex_t *t) {
+static vkimg_t *vk_tex_(const tex_t *t);
+vkimg_t *vk_tex(const tex_t *t) { extern int g_prof_on; extern uint64_t g_prof_ns[8]; struct timespec a, b; if (g_prof_on) clock_gettime(CLOCK_MONOTONIC, &a);
+    vkimg_t *im = vk_tex_(t); if (g_prof_on) { clock_gettime(CLOCK_MONOTONIC, &b); g_prof_ns[1] += (uint64_t)((b.tv_sec - a.tv_sec) * 1000000000ll + (b.tv_nsec - a.tv_nsec)); } return im; }
+static vkimg_t *vk_tex_(const tex_t *t) {
     if (!t || !t->serial || t->magic != MAGIC('T', 'E', 'X', 0)) return NULL;
     const vkfmt_t *f = vk_fmt(t->d.format);
     if (!f) { VKRED_ONCE(14, "texture format %#x has no Vulkan counterpart here (first case %ux%u target %d)", t->d.format, t->d.width, t->d.height, t->d.target); return NULL; }
@@ -531,6 +534,16 @@ static treg_t *g_treg; static int g_ntreg;
 uint64_t g_tex_gen = 1;   // changes whenever a texture ID is registered again or views go (gfx_vk_exec.c's per-submission view cache)
 uint64_t g_samp_gen = 1;  // changes whenever a sampler ID is registered with other parameters (gfx_vk_exec.c samp_cached and the descriptor set memo)
 static samp_par *g_sreg; static uint8_t *g_sreg_ok; static VkSampler *g_samp; static int g_nsreg;
+// Samplers as a bind saw them. Super Mario Odyssey hands out sampler IDs from a cache of slots and registers a slot again with other parameters while a command
+// buffer it has not submitted yet still binds that ID: the first pass of its bloom (a 400x228 chain, the level read chosen by the sampler's LOD range 0..0) bound a
+// sampler that was then registered again as LOD 1..1 to 3..3, and read the chain's previous upsampled level. The bloom came out 2.7 times too strong for that frame:
+// the glow around the moon flashed while the camera turned, in about 1% of frames (3 of 332 first passes; issue #42). Every registration that changes an ID's
+// parameters counts (g_sregs), each bind records the count when it was made (mtl_samp_seq, hle_nvn.c), and a bind resolves its sampler to the newest version
+// registered before it (vk_samp_at): SREG_OLD earlier versions are kept per ID. DM_NVN_SAMP_SNAP=0 (live, gfx_vk_exec.c): the newest, as before
+enum { SREG_OLD = 3 };
+typedef struct { samp_par p; uint64_t seq; } sreg_ver;
+static uint64_t *g_sseq; static sreg_ver *g_sold; static uint64_t g_sregs;   // the current version's count, SREG_OLD older ones per ID (newest first)
+uint64_t mtl_samp_seq(void) { return __atomic_load_n(&g_sregs, __ATOMIC_ACQUIRE); }
 static pthread_mutex_t g_rmu = PTHREAD_MUTEX_INITIALIZER;
 __attribute__((weak)) uint64_t nvn_jobs_queued(void) { return 0; }
 __attribute__((weak)) uint64_t nvn_replaying_job(void) { return 0; }
@@ -592,21 +605,46 @@ static VkSampler make_sampler(const samp_par *p) {
     VkSampler s; if (vkCreateSampler(V.dev, &ci, NULL, &s)) return VK_NULL_HANDLE;
     return s;
 }
+volatile int g_vk_samp_log;   // DM_VK_SAMP_LOG=<n> (live, gfx_vk_exec.c x_read): the next n sampler registrations, in time order with the replay's lines
 void mtl_reg_samp(int sid, const samp_par *sp) {
     if (sid < 0) return;
+    if (g_vk_samp_log > 0) { extern uint64_t g_tex_frame; g_vk_samp_log--; LOG("[vk] sampler registered: id %d lod %g..%g min %d (present %llu, thread %d)", sid, sp->lod_min, sp->lod_max, sp->minf, (unsigned long long)g_tex_frame, (int)gettid()); }
     pthread_mutex_lock(&g_rmu);
     if (sid >= g_nsreg) { int n = sid + 256; g_sreg = realloc(g_sreg, n * sizeof *g_sreg); g_sreg_ok = realloc(g_sreg_ok, n); g_samp = realloc(g_samp, n * sizeof *g_samp);
-        memset(g_sreg_ok + g_nsreg, 0, n - g_nsreg); memset(g_samp + g_nsreg, 0, (n - g_nsreg) * sizeof *g_samp); g_nsreg = n; }
-    if (!g_sreg_ok[sid] || memcmp(&g_sreg[sid], sp, sizeof *sp)) { g_sreg[sid] = *sp; g_sreg_ok[sid] = 1; g_samp[sid] = VK_NULL_HANDLE; __atomic_fetch_add(&g_samp_gen, 1, __ATOMIC_RELEASE); }   // samplers are cached by parameters below
+        g_sseq = realloc(g_sseq, n * sizeof *g_sseq); g_sold = realloc(g_sold, (size_t)n * SREG_OLD * sizeof *g_sold);
+        memset(g_sreg_ok + g_nsreg, 0, n - g_nsreg); memset(g_samp + g_nsreg, 0, (n - g_nsreg) * sizeof *g_samp); memset(g_sseq + g_nsreg, 0, (n - g_nsreg) * sizeof *g_sseq);
+        memset(g_sold + (size_t)g_nsreg * SREG_OLD, 0, (size_t)(n - g_nsreg) * SREG_OLD * sizeof *g_sold); g_nsreg = n; }
+    if (!g_sreg_ok[sid] || memcmp(&g_sreg[sid], sp, sizeof *sp)) {
+        sreg_ver *o = g_sold + (size_t)sid * SREG_OLD;
+        if (g_sreg_ok[sid]) { memmove(o + 1, o, sizeof *o * (SREG_OLD - 1)); o[0] = (sreg_ver){g_sreg[sid], g_sseq[sid]}; }
+        g_sreg[sid] = *sp; g_sreg_ok[sid] = 1; g_samp[sid] = VK_NULL_HANDLE; g_sseq[sid] = __atomic_add_fetch(&g_sregs, 1, __ATOMIC_RELEASE); __atomic_fetch_add(&g_samp_gen, 1, __ATOMIC_RELEASE); }   // samplers are cached by parameters below
     pthread_mutex_unlock(&g_rmu);
 }
 static nvn_hmap g_samp_cache = {.klen = sizeof(samp_par)};   // samp_par → VkSampler (VkSamplers are never destroyed: few distinct parameter sets)
-void vk_samp_describe(int sid, char *out, size_t n) {   // the registered parameters (traces)
+static const samp_par *samp_at(int sid, uint64_t seq);
+void vk_samp_describe_at(int sid, uint64_t seq, char *out, size_t n) {   // the registered parameters a bind made after seq registrations sees (traces; 0: the newest)
     pthread_mutex_lock(&g_rmu);
-    if (sid > 0 && sid < g_nsreg && g_sreg_ok[sid]) { const samp_par *p = &g_sreg[sid]; snprintf(out, n, "sampler %d: wrap %d %d %d min %d mag %d lod %g..%g bias %g aniso %g cmp %d/%d red %d border %g %g %g %g", sid, p->ws, p->wt, p->wr,
+    if (sid > 0 && sid < g_nsreg && g_sreg_ok[sid]) { const samp_par *p = samp_at(sid, seq); snprintf(out, n, "sampler %d: wrap %d %d %d min %d mag %d lod %g..%g bias %g aniso %g cmp %d/%d red %d border %g %g %g %g", sid, p->ws, p->wt, p->wr,
         p->minf, p->magf, p->lod_min, p->lod_max, p->lod_bias, p->aniso, p->cmp_mode, p->cmp_func, p->reduction, p->border[0], p->border[1], p->border[2], p->border[3]); }
     else snprintf(out, n, "sampler %d: not registered (dummy)", sid);
     pthread_mutex_unlock(&g_rmu);
+}
+void vk_samp_describe(int sid, char *out, size_t n) { vk_samp_describe_at(sid, 0, out, n); }
+static const samp_par *samp_at(int sid, uint64_t seq) {   // under g_rmu: the version a bind made after seq registrations sees; NULL when not registered
+    if (sid <= 0 || sid >= g_nsreg || !g_sreg_ok[sid]) return NULL;
+    if (!seq || g_sseq[sid] <= seq) return &g_sreg[sid];
+    const sreg_ver *o = g_sold + (size_t)sid * SREG_OLD;
+    for (int k = 0; k < SREG_OLD; k++) if (o[k].seq && o[k].seq <= seq) return &o[k].p;
+    return &g_sreg[sid];   // older than what is kept: the newest
+}
+VkSampler vk_samp_at(int sid, uint64_t seq, int nearest) {   // the sampler a bind made after seq registrations sees (gfx_vk_exec.c samp_for)
+    pthread_mutex_lock(&g_rmu);
+    VkSampler s = VK_NULL_HANDLE; const samp_par *q = samp_at(sid, seq);
+    if (q) { samp_par p = *q;
+        if (nearest) { p.magf = 0; p.minf = p.minf == 1 ? 0 : p.minf == 3 || p.minf == 4 || p.minf == 5 ? 2 : p.minf; p.aniso = 1; p.reduction = 0; }
+        if (!(s = nvn_hm_get(&g_samp_cache, &p)) && (s = make_sampler(&p))) nvn_hm_put(&g_samp_cache, &p, s); }
+    pthread_mutex_unlock(&g_rmu);
+    return s;
 }
 VkSampler vk_samp_by_id(int sid) {
     pthread_mutex_lock(&g_rmu);

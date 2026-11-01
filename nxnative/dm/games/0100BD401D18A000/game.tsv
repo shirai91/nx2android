@@ -1,0 +1,37 @@
+# Game profile of UNDER NIGHT IN-BIRTH II Sys:Celes (Switch, update 1.42 = v1179648; the NACP names it "... Sys:Celes EU"). Its DLC are licences only (no content).
+# Format: see dm/games/README.md
+# French-Bread's own engine over NVN, SDK 15.3.2; subsdk0 is NintendoSDK_movie (the opening movie). Started from the survey's provisional profile, whose guesses held:
+# no key needed changing. Brought up on Android (Legion Y700) on 2026-10-31 after a player reported it working (issue #21), not on the Mac or an iPhone
+
+# ---- Identity ----
+title_id	0100BD401D18A000
+program_id	0100BD401D18A000
+
+# ---- App ----
+name	UNDER NIGHT IN-BIRTH II Sys:Celes
+ipa	UnderNightInBirth2SysCeles.ipa
+app_category	public.app-category.games
+
+# ---- Versions ----
+build	v1179648	1.42	main=483b117cbb580bb22a3780959ebe52bd	subsdk0=368f01d5cb42f06cd125dc739d036719	sdk=8618895246b420329b77746b960a66ab
+package	v1179648
+shader_versions	v1179648
+
+# ---- Files ----
+# every module main imports from
+modules	main subsdk0 sdk
+romfs_marker	Movie/UNI_OP.mp4
+zip_store	.cg:.mp4:.pac:.png:.metallib
+
+# ---- Memory ----
+# main sets a heap of at most the pool − 64 MB − 694 MB of bss (counted as used memory): a 2560 MB heap region
+mem_reserve	0xd0000000
+mem_alias	0x10000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+# the NPDM declares 0 MB of system resource: IsVirtualAddressMemoryEnabled is false, as on Horizon (Big Brain Academy: Brain vs. Brain sets a heap only then)
+sys_resource	0x0
+
+# ---- Shader split ----
+shader_groups	/se/=se /grpdat/=grpdat /BattleRes/=battleres /___S_Chinese/=schinese /___T_Chinese/=tchinese /___Korean/=korean /data/=data /___French/=french /___German/=german /___Italian/=italian /___Spanish/=spanish /___English/=english /bg/=bg /System/=system /Shader/=shader /PackFile/=packfile /Bgm/=bgm /script/=script /DLC/=dlc /Movie/=movie
+shader_note	UNDER NIGHT IN-BIRTH II Sys:Celes EU shaders (provisional profile)

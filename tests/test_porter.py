@@ -9,6 +9,9 @@ os.environ['NX2A_HOME'] = tempfile.mkdtemp(prefix='nx2a_test_home_')
 from porter import config, datapack, pipeline, profiles   # noqa: E402
 from porter.upstream import android_profile, game          # noqa: E402
 
+# The pipeline's messages hold "→" (mem_profile's alias region line): stdout as porter.cli.main sets it, or the Windows release runner's cp1252 pipe fails the test
+if hasattr(sys.stdout, 'reconfigure'): sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+
 NEO = '010043B013C5C000'
 
 

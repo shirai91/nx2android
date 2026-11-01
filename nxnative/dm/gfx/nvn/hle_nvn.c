@@ -966,9 +966,11 @@ NVN(nvnCommandBufferBindStorageBuffer, void, NVNcommandBuffer *c, NVNshaderStage
 NVN(nvnCommandBufferBindStorageBuffers, void, NVNcommandBuffer *c, NVNshaderStage st, int first, int n, const NVNbufferRange *rg) {
     for (int i = 0; i < n; i++) *REC(c, OP_BIND_SSBO, p_bind_buf) = (p_bind_buf){st, first + i, rg[i].address, rg[i].size};
 }
+// The backend's count of sampler registrations so far, kept with each texture / sampler bind (gfx_vk_tex.c: a bind sees the samplers as registered when it was recorded); 0 without one
+__attribute__((weak)) uint64_t mtl_samp_seq(void) { return 0; }
 static p_bind_handles *bind_handles(NVNcommandBuffer *c, int op, int st, int first, int n, const uint64_t *h) {
     if (n < 0 || n > 32) { LOG("[RED] bind handle count %d", n); return NULL; }
-    p_bind_handles *r = RECN(c, op, p_bind_handles, h, n); r->stage = st; r->first = first; r->n = n; r->defer = 0; r->src = 0; memcpy(r->h, h, 8 * n);
+    p_bind_handles *r = RECN(c, op, p_bind_handles, h, n); r->stage = st; r->first = first; r->n = n; r->defer = 0; r->src = 0; r->sseq = mtl_samp_seq(); memcpy(r->h, h, 8 * n);
     {   // this command buffer may have bound a pool other than the first: move its IDs to that pool's part of the table (handle: texture ID in bits 0-19, sampler ID from bit 20)
         int tb = CB(c)->tex_base, sb = CB(c)->samp_base;
         for (int i = 0; i < n && (tb || sb); i++) {
@@ -2298,7 +2300,7 @@ NVN(nvnCommandBufferCallCommands, void, NVNcommandBuffer *c, int n, const NVNcom
 // Combined texture handle (texture id | sampler id << 20) is recorded into the texture slot as is: the replay layer takes the texture from the low 20 bits and the sampler from the high bits (nvn_mtl.m NVN_RB_SAMPT)
 // One combined handle: recorded as the hardware lays the command out, the handle 16 bytes in, where Luigi's Mansion 3 patches it after recording (nvn_obj.h p_bind_tex1)
 NVN(nvnCommandBufferBindTexture, void, NVNcommandBuffer *c, NVNshaderStage st, int i, NVNtextureHandle h) {
-    p_bind_tex1 *r = REC(c, OP_BIND_TEX1, p_bind_tex1); *r = (p_bind_tex1){st, i, (uint64_t)h, CB(c)->tex_base, CB(c)->samp_base};
+    p_bind_tex1 *r = REC(c, OP_BIND_TEX1, p_bind_tex1); *r = (p_bind_tex1){st, i, (uint64_t)h, CB(c)->tex_base, CB(c)->samp_base, mtl_samp_seq()};
 }
 _Static_assert(offsetof(p_bind_tex1, h) == 8, "a single texture bind keeps its handle 16 bytes into the record (8 of header)");
 NVN(nvnCommandBufferBindTextures, void, NVNcommandBuffer *c, NVNshaderStage st, int first, int n, const NVNtextureHandle *h) { bind_handles(c, OP_BIND_TEX, st, first, n, (const uint64_t *)h); }

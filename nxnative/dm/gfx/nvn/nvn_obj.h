@@ -122,17 +122,17 @@ typedef struct { int32_t first, n; vs_st st[16]; } p_bind_vstream;
 typedef struct { int32_t first, n; NVNbufferRange r[16]; } p_bind_vbuf;
 typedef struct { int32_t stage, index; uint64_t addr, size; } p_bind_buf;  // UBO / SSBO
 // defer / src: the handles of BindTexturesDeferred are read from src at execution time (h at recording time is only a fallback); the replay layer refreshes them with bh_fresh before reading the record (nvn_mtl.m)
-typedef struct { int32_t stage, first, n, defer; uint64_t src; uint64_t h[32]; } p_bind_handles; // Separate texture / sampler handles
+typedef struct { int32_t stage, first, n, defer; uint64_t src, sseq; uint64_t h[32]; } p_bind_handles; // Separate texture / sampler handles; sseq: the sampler registrations made before the bind (mtl_samp_seq)
 // nvnCommandBufferBindTexture (one combined handle) is laid out as the hardware's command: the handle 16 bytes from the start of the record, where an engine that patches its recorded commands
 // in place writes a new one. Luigi's Mansion 3 takes the command memory base + GetCommandMemoryUsed before each such bind (main+0x7c8964) and stores a handle there + 0x10 every frame
 // (main+0xb7d0d4); in a p_bind_handles record that word is the count, and the replay read a handle as a count of 535 million. h is the handle as the game gives it (32 bits: texture ID |
 // sampler ID << 20, all a patch writes); tbase / sbase are the numbering bases of the descriptor pools the command buffer had bound (hle_nvn.c bind_handles), added when it is read.
 // Read it with bind_rec, which gives a p_bind_handles
-typedef struct { int32_t stage, slot; uint64_t h; int32_t tbase, sbase; } p_bind_tex1;
+typedef struct { int32_t stage, slot; uint64_t h; int32_t tbase, sbase; uint64_t sseq; } p_bind_tex1;
 static inline const p_bind_handles *bind_rec(uint32_t op, const void *a, p_bind_handles *t) {
     if (op != OP_BIND_TEX1) return a;
     const p_bind_tex1 *b = a; uint64_t tid = b->h & 0xfffff, sid = (uint32_t)b->h >> 20;
-    t->stage = b->stage; t->first = b->slot; t->n = 1; t->defer = 0; t->src = 0;
+    t->stage = b->stage; t->first = b->slot; t->n = 1; t->defer = 0; t->src = 0; t->sseq = b->sseq;
     t->h[0] = (tid ? tid + (uint64_t)b->tbase : 0) | (sid ? sid + (uint64_t)b->sbase : 0) << 20; return t;
 }
 // Texture slots of a stage: 0-127 nvnCommandBufferBindTexture's (combined handles), 128-255 the separate texture binds. The driver keeps the two in tables of their own (c2 0x20 + 8 r and

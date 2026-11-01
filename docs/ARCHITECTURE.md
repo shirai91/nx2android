@@ -41,7 +41,7 @@ A profile is offered for Android when it has an `android.tsv`; the profiles with
 | `package` | The app's package name (default `org.nx2a.t<title ID in lowercase>`) |
 | `orientation` | `landscape` (default) or `any` |
 | `requires` | Device features the game needs, checked by the installer: `bcn` (BC texture compression) |
-| `setting` | `<name>=<value>`: the pause menu's defaults on first launch (`overlay`, `rumble`, `docked`, `fps`: the frame rate counter in the top left corner, off by default; `opacity`: the gamepad's, 20 to 80 percent by 5, 60 by default), written to the data pack's `settings.txt`, where the app also keeps the player's own gamepad layout from the pause menu's layout editor (`ui=` rows) |
+| `setting` | `<name>=<value>`: the pause menu's defaults on first launch (`overlay`, `rumble`, `docked`, `fps`: the frame rate counter in the top left corner, off by default; `opacity`: the gamepad's, 20 to 80 percent by 5, 60 by default), written to the data pack's `settings.txt`, where the app also keeps the player's own gamepad layout from the pause menu's layout editor (`ui=` rows) and its Snap to grid (`grid`, off by default) |
 | `env` | `<KEY>=<VALUE>`: a host switch the game needs on Android, written to the data pack's `env.txt` |
 | `overlay` | `<tablet\|phone> <control> <x> <y>`: moves one on-screen control of that layout (`dm/android/overlay_default.tsv`) to x, y as fractions of the window, compiled into `android_profile.h` |
 

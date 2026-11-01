@@ -382,7 +382,10 @@ static uint64_t g_sync_bytes, g_sync_full;   // copied pools: bytes copied by th
 // Copied pools: the guest's bytes into the GPU copy. The first sync copies the whole pool; later ones copy only the 64 KB blocks with pages the CPU wrote since the last
 // sync (nvn_dirty's write-protect tracking: a block is protected again before it is copied, so a write during the copy is caught by the next sync). An 860 MB
 // pool copied whole at every submission (Unicorn Overlord on a Legion Y700 2023) ran at a few frames a second
-void vk_pools_sync(VkCommandBuffer cb) {
+static void vk_pools_sync_(VkCommandBuffer cb);
+void vk_pools_sync(VkCommandBuffer cb) { extern int g_prof_on; extern uint64_t g_prof_ns[8]; struct timespec a, b; if (g_prof_on) clock_gettime(CLOCK_MONOTONIC, &a);
+    vk_pools_sync_(cb); if (g_prof_on) { clock_gettime(CLOCK_MONOTONIC, &b); g_prof_ns[2] += (uint64_t)((b.tv_sec - a.tv_sec) * 1000000000ll + (b.tv_nsec - a.tv_nsec)); } }
+static void vk_pools_sync_(VkCommandBuffer cb) {
     (void)cb;
     enum { BLK = 64 << 10 };
     pthread_rwlock_rdlock(&g_pool_mu);
@@ -550,7 +553,10 @@ static vksub_t *cur(void) { if (g_cur < 0) die("[vk] no open submission"); retur
 int vk_sub_open(void) { return g_cur >= 0; }
 // A long submission is recorded into several command buffers, submitted together in order: Adreno's driver refuses a command buffer past some size at
 // vkEndCommandBuffer (VK_ERROR_OUT_OF_HOST_MEMORY), which NEO's handheld frames reached at about the 712th draw. The caller has ended the render pass.
-void vk_cmd_split(void) {
+static void vk_cmd_split_(void);
+void vk_cmd_split(void) { extern int g_prof_on; extern uint64_t g_prof_ns[8]; struct timespec a, b; if (g_prof_on) clock_gettime(CLOCK_MONOTONIC, &a);
+    vk_cmd_split_(); if (g_prof_on) { clock_gettime(CLOCK_MONOTONIC, &b); g_prof_ns[6] += (uint64_t)((b.tv_sec - a.tv_sec) * 1000000000ll + (b.tv_nsec - a.tv_nsec)); } }
+static void vk_cmd_split_(void) {
     vksub_t *s = cur(); if (s->nmain_used == MAIN_CBS || s->nup_used == MAIN_CBS) return;
     if (vkEndCommandBuffer(s->main) < 0) { s->cb_err = 1; static int n; if (n++ < 3) VKLOG("[RED] a part of a long submission was refused at its end (part %d)", s->nmain_used); }
     // what is recorded so far goes to the GPU now, as a submission of its own (with its uploads first): Adreno refuses a single submission past about
@@ -925,6 +931,7 @@ static void *completion_main(void *a) {
 }
 static void completion_start(void) { pthread_t t; if (pthread_create(&t, NULL, completion_main, NULL)) die("[vk] completion thread"); pthread_detach(t); }
 uint64_t mtl_sub_commit(void) {
+    { void vk_prof_end(void); vk_prof_end(); }
     vksub_t *s = cur();
     vk_end_pass_land();
     if (g_tsq) vkCmdWriteTimestamp(s->main, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, g_tsq, 2 * (uint32_t)g_cur + 1);

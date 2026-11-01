@@ -29,6 +29,11 @@ static void bundle_open_once(void) {
 // once, and every caller waits until it is open: the replay and the prewarm threads both look shaders up at start, and a lookup that ran before the bundle
 // was open cached its shader as missing for good (every draw skipped as "no program" in some runs)
 static void bundle_auto(void) { static pthread_once_t once = PTHREAD_ONCE_INIT; pthread_once(&once, bundle_open_once); }
+int vk_shader_keys(uint32_t stage, uint64_t *out, int max) {   // the bundle's shaders of one stage (gfx_vk_exec.c compute_warm)
+    bundle_auto(); int n = 0;
+    for (uint32_t i = 0; i < g_nent && n < max; i++) { uint32_t st; memcpy(&st, &g_ent[i].stage, 4); if (st == stage) memcpy(&out[n++], &g_ent[i].key, 8); }
+    return n;
+}
 static const bent *find(uint64_t key) {
     uint32_t lo = 0, hi = g_nent;
     while (lo < hi) { uint32_t m = (lo + hi) / 2; uint64_t k; memcpy(&k, &g_ent[m].key, 8); if (k < key) lo = m + 1; else hi = m; }
@@ -449,7 +454,10 @@ static uint32_t *spv_dual(const uint32_t *w, uint32_t nw, uint32_t *onw) {
     memcpy(&o[at + 8], &w[at + 4], (size_t)(nw - at - 4) * 4); *onw = nw + 4;
     return o;
 }
-VkShaderModule vk_shader_module(vkshader_t *s, uint64_t um, uint64_t im, uint32_t xo, int fd, uint32_t ii) {
+static VkShaderModule vk_shader_module_(vkshader_t *s, uint64_t um, uint64_t im, uint32_t xo, int fd, uint32_t ii);
+VkShaderModule vk_shader_module(vkshader_t *s, uint64_t um, uint64_t im, uint32_t xo, int fd, uint32_t ii) { extern int g_prof_on; extern uint64_t g_prof_ns[8]; struct timespec a, b; if (g_prof_on) clock_gettime(CLOCK_MONOTONIC, &a);
+    VkShaderModule m = vk_shader_module_(s, um, im, xo, fd, ii); if (g_prof_on) { clock_gettime(CLOCK_MONOTONIC, &b); g_prof_ns[3] += (uint64_t)((b.tv_sec - a.tv_sec) * 1000000000ll + (b.tv_nsec - a.tv_nsec)); } return m; }
+static VkShaderModule vk_shader_module_(vkshader_t *s, uint64_t um, uint64_t im, uint32_t xo, int fd, uint32_t ii) {
     int alt = fd >> 2 & 1, dual = fd >> 1 & 1; fd &= 1;   // fd bit 1: the dual-source variant; bit 2: DM_VK_SPV_ALT's code as the base (alt_words)
     if (fd && (s->stage != 1 || s->depth_repl)) fd = 0;
     if (dual && s->stage != 1) dual = 0;

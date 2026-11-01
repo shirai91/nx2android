@@ -12,7 +12,19 @@
 # a DM_CTL Shake threw it, and with DM_SHAKE_G lowered to the still tablet's noise the accelerometer alone made Mario spin-throw.
 # Under a spin throw the ground shows a patch of alternate dark pixel columns (an ordered-dither shadow of the half-transparent spin, as the game dithers its transparency); Mario's own
 # shadow, standing or in the air, is solid. Not compared with a Switch frame of the same throw.
-# The one red log line: "SetRenderEnableConditional: the host draws anyway" (no occlusion artefact seen, so render_cond is left off). Not tested yet: the kingdoms after Cap Kingdom
+# The one red log line: "SetRenderEnableConditional: the host draws anyway". The game draws about 16 draws a frame under "draw if not equal" conditions on its
+# occlusion reports (agl, Cap Kingdom); evaluating them from real occlusion counts, or skipping them, changed nothing visible (2026-10-31), so render_cond stays off.
+# Issue #42 (2026-10-31/11-01, Y700, Cap Kingdom at the wake-up field and the hat tower): the moon's glow flashed for single frames while the camera turned (3-10 of
+# 780 frames): the bloom's first pass bound a sampler ID the game registered again before submitting (core: samplers as bound, DM_NVN_SAMP_SNAP), 0 in 2,300 frames
+# since. agl's full-screen passes draw past their vertex streams (core: DM_VK_VBOUND). The ground fog parted around a standing Mario and only slowly around a walking
+# one: its wave surface (al::FluidSimulateWave) ends in linear render targets (128x128 RGBA16F, 256x128 R32F) that the game's CPU reads from memory, and the host
+# left what the GPU drew in the Vulkan images (core: copied back, DM_VK_LIN_BACK). Checked by the user on the tablet 2026-11-01: the fog clears around Mario on contact.
+# First-use stalls (2026-11-01, user's route with empty pipeline caches: cap throws at barrels and fences, the first swim, the frog capture): each new pipeline cost 20-35 ms
+# (compute 45-105 ms) on the replay thread, 40-30 fps for a moment. Core: new pipelines built in the background (DM_VK_ASYNC_PIPE), every compute shader made ahead;
+# cap throws 6 frames over 50 ms -> 0. The first frog capture still builds 33 pipelines at once (new full-screen targets, two 300 ms frames); after a restart the
+# saved list prewarms them: 0 pipelines on the replay thread, no drop (user-checked), and the Resume load 4.9 s -> 0.2 s.
+# Draws left out while a pipeline builds must reach only targets drawn every frame: looser rules lost the fog for a whole run in 2 of 4 clean starts (the wave
+# solver's linear targets, an image kept from the title and drawn once at the load); with the final rule 4 of 4 clean starts matched a run without background builds.
 status	playable
 tested	v393216 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
 package	org.nx2a.supermarioodyssey
