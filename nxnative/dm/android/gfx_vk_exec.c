@@ -1763,7 +1763,8 @@ static pthread_mutex_t g_cpipe_mu = PTHREAD_MUTEX_INITIALIZER;   // the replay t
 static VkPipeline compute_build(vkshader_t *cs, uint64_t um, uint64_t im) {   // (VkPipeline)1 when it fails
     VkDescriptorSetLayout dsl[5] = {cs->dsl}; VkPipeline p;
     VkComputePipelineCreateInfo ci = {VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, NULL, g_db_on ? VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT : 0, {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, VK_SHADER_STAGE_COMPUTE_BIT, vk_shader_module(cs, um, im, 0, 0, 0), "main", NULL}, vk_pipeline_layout(dsl, 1), VK_NULL_HANDLE, -1};
-    if (vkCreateComputePipelines(V.dev, V.pcache, 1, &ci, NULL, &p)) { LOG("[RED] [vk] compute pipeline failed: %016llx", (unsigned long long)cs->key); p = (VkPipeline)1; }
+    VkResult vr = vkCreateComputePipelines(V.dev, V.pcache, 1, &ci, NULL, &p);
+    if (vr) { LOG("[RED] [vk] compute pipeline failed: %016llx (VkResult %d)", (unsigned long long)cs->key, (int)vr); p = (VkPipeline)1; }
     return p;
 }
 // Compute pipelines made ahead. One depends only on its shader (and integer-texel variants, rare), and building one costs Adreno 45-105 ms: Super Mario Odyssey's
@@ -2093,8 +2094,8 @@ static void exec_ops(const uint8_t *p) {
             break; }
         case OP_BIND_VATTR: { const p_bind_vattr *v = (const p_bind_vattr *)a; memset(S.vattr, 0, sizeof S.vattr); for (int i = 0; i < v->n && i < 16; i++) S.vattr[v->first + i] = v->st[i]; break; }
         case OP_BIND_VSTREAM: { const p_bind_vstream *v = (const p_bind_vstream *)a; for (int i = 0; i < v->n && v->first + i < 16; i++) S.vstream[v->first + i] = v->st[i]; break; }
-        case OP_BIND_VBUF: { const p_bind_vbuf *v = (const p_bind_vbuf *)a; for (int i = 0; i < v->n && v->first + i < 16; i++) S.vbuf[v->first + i] = v->r[i]; break; }
-        case OP_BIND_UBO: { const p_bind_buf *b = (const p_bind_buf *)a; if (b->stage >= 0 && b->stage < 6 && b->index >= 0 && b->index < 16 && memcmp(&S.ubo[b->stage][b->index], b, sizeof *b)) { S.ubo[b->stage][b->index] = *b; g_ubo_gen[b->stage]++; } break; }
+        case OP_BIND_VBUF: case OP_BIND_VBUF1: { p_bind_vbuf tv; const p_bind_vbuf *v = vbuf_rec(h.op, a, &tv); for (int i = 0; i < v->n && v->first + i < 16; i++) S.vbuf[v->first + i] = v->r[i]; break; }
+        case OP_BIND_UBO: case OP_BIND_UBO_SMALL: { p_bind_buf tb; const p_bind_buf *b = bind_buf_rec(h.op, a, &tb); if (b->stage >= 0 && b->stage < 6 && b->index >= 0 && b->index < 16 && memcmp(&S.ubo[b->stage][b->index], b, sizeof *b)) { S.ubo[b->stage][b->index] = *b; g_ubo_gen[b->stage]++; } break; }
         case OP_BIND_SSBO: { const p_bind_buf *b = (const p_bind_buf *)a; if (b->stage >= 0 && b->stage < 6 && b->index >= 0 && b->index < 16 && memcmp(&S.ssbo[b->stage][b->index], b, sizeof *b)) { S.ssbo[b->stage][b->index] = *b; g_bind_gen[b->stage]++; } break; }
         case OP_BIND_TEX: case OP_BIND_SAMP: case OP_BIND_IMG: case OP_BIND_TEX1: bind_handles_rec(h.op, a); break;
         case OP_STENCIL: { const p_stencil *s = (const p_stencil *)a;
@@ -2119,6 +2120,10 @@ static void exec_ops(const uint8_t *p) {
         case OP_CLEAR_TEX: clear_tex((const p_clear_tex *)a); break;
         case OP_RENDER_COND: render_cond((const p_render_cond *)a); break;   // recorded only with the profile key render_cond (hle_nvn.c)
         case OP_DRAW_TF: if (!g_rc_skip) draw_tf((const p_draw_tf *)a); break;
+        // The compact vertex and uniform buffer binds are read above (vbuf_rec / bind_buf_rec). The alpha test's reference and NVN2's push constants have no use in this replay
+        // (no alpha test, no Switch 2 shaders); DrawTexture is not drawn yet
+        case OP_ALPHA_REF: case OP_PUSH_CONST: break;
+        case OP_DRAW_TEX: VKRED_ONCE(96, "DrawTexture: not drawn by the Vulkan replay"); break;
         case OP_TF_BIND: { const p_tf_bind *b = (const p_tf_bind *)a; if (b->index >= 0 && b->index < 4) g_tf[b->index] = *b; break; }
         case OP_TF_STATE: if (!V.has_xfb) VKRED_ONCE(80, "transform feedback: the device has none, its draws write nothing"); tf_state((const p_tf_state *)a); break;
         case OP_VP_SWIZZLE: { const p_vp_swizzle *b = (const p_vp_swizzle *)a; memcpy(S.vp_sw[b->first], b->sw, 4 * (size_t)b->n); break; }

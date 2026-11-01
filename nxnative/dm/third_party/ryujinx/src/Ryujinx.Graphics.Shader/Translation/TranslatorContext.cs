@@ -36,6 +36,7 @@ namespace Ryujinx.Graphics.Shader.Translation
 
         private bool IsTransformFeedbackEmulated => !GpuAccessor.QueryHostSupportsTransformFeedback() && GpuAccessor.QueryTransformFeedbackEnabled();
         public bool HasStore => _program.UsedFeatures.HasFlag(FeatureFlags.Store) || (IsTransformFeedbackEmulated && Definitions.LastInVertexPipeline);
+        internal bool UsesViewportMask => _program.UsedFeatures.HasFlag(FeatureFlags.ViewportMask);
 
         public bool LayerOutputWritten { get; private set; }
         public int LayerOutputAttribute { get; private set; }
@@ -377,7 +378,8 @@ namespace Ryujinx.Graphics.Shader.Translation
                 GpuAccessor.QueryHostSupportsShaderFloat64(),
                 GpuAccessor.QueryHostSupportsShaderNonUniformIndexing(),
                 GpuAccessor.QueryHostSupportsTextureShadowLod(),
-                GpuAccessor.QueryHostSupportsViewportMask());
+                GpuAccessor.QueryHostSupportsViewportMask(),
+                Options.Flags.HasFlag(TranslationFlags.MetalImageAtomics));
 
             CodeGenParameters parameters = new CodeGenParameters(attributeUsage, definitions, resourceManager.Properties, hostCapabilities, GpuAccessor, Options.TargetApi);
 

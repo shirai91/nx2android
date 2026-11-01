@@ -278,7 +278,7 @@ class Port:
         need = sum(dumps.size(p) * (2 if dumps.compressed(p) else 1) for p in {p for b, u in picks.values() for p in (b, u) if p}) / 2**30 + 6
         if nsp.free_gb(self.work) < need and not all((ex / v).exists() for v in self.versions): raise BuildError(f'less than {need:.0f} GB free on the volume of {self.work}')
         # NSZ / XCZ: only what a stage will read is decompressed, all in one stage before nx_extract runs (a version nsp.extract reuses reads nothing)
-        fresh = lambda v: (ex / v / 'ExeFS/main').exists() and (ex / v / 'RomFS' / g.get('romfs_marker')).exists()   # nsp.extract's reuse test
+        fresh = lambda v: (ex / v / 'ExeFS/main').exists() and (ex / v / 'RomFS.img').is_file() and not (ex / v / 'RomFS').exists() and (nsp.rfs.source(ex / v) / g.get('romfs_marker')).exists()   # nsp.extract's reuse test
         zdlc = [p for _, _, p in self.fam['dlc'] if dumps.compressed(p)]
         # extract_aoc keys its reuse on the names, sizes and times of the NSPs it reads, decompressed ones here: with NSZ / XCZ DLC, porter keys it on those files instead
         dkey = nsp.fingerprint(sorted((t, p.name, p.stat().st_size, p.stat().st_mtime_ns) for t, _, p in self.fam['dlc']),
@@ -290,7 +290,7 @@ class Port:
         PROG.stage('build nx_extract')
         nx = nsp.build_nx_extract(NXNATIVE, self.work, self.logs, self.env)
         PROG.end()
-        self.dirs = {ver: nsp.extract(nx, o.keys, ex, ver, *picks[ver], None, self.logs, g) for ver in self.versions}
+        self.dirs = {ver: nsp.extract(nx, o.keys, ex, ver, *picks[ver], None, self.logs, g, self.app) for ver in self.versions}
         bad = [] if self.derived else [f'{v}: {x}' for v in self.versions for x in nsp.build_mismatch(self.dirs[v], v, g)]
         if bad and self.provisional: raise BuildError(f'not the builds the provisional profile registers: {"; ".join(bad)}')
         if bad:
@@ -369,7 +369,7 @@ class Port:
     def check_graphics(self):
         """What the Android host can run: NVN games whose shaders are all in their files. The other kinds need a step upstream runs on a Mac (booting the game in the Mac host)
         or a graphics layer the Android host does not have yet"""
-        src = profile_guess.build_sources(self.game / 'ExeFS', self.game / 'RomFS', self.g.words('modules'))
+        src = profile_guess.build_sources(self.game / 'ExeFS', nsp.rfs.source(self.game), self.g.words('modules'))
         gfx = src['graphics'][0]
         if gfx != 'nvn': raise BuildError(f'{self.app_name} renders with {gfx} ({src["graphics"][1]}): the Android host replays NVN only so far')
         # Game Freak's GFPAKs with Oodle entries: decoded by the game's own decoder on the Android device (device_oodle); Trinity and PKZ packs still need the Mac host
@@ -400,7 +400,7 @@ class Port:
         with open(job, 'wb') as jf:
             jf.write(b'DMOJ' + struct.pack('<I', 0))
             for v in self.versions:
-                rom = self.dirs[v] / 'RomFS'
+                rom = nsp.rfs.source(self.dirs[v])   # RomFS.img, read in place (romfs.Path)
                 for p in sorted(rom.rglob('*.gfpak')):
                     d = p.read_bytes()
                     if d[:8] != b'GFLXPACK': continue
@@ -475,7 +475,7 @@ class Port:
         total = 0
         try:
             for v, d in todo.items():
-                jd, rom = self.work / f'tmp/ue_job_{v}', str(d / 'RomFS'); nsp.rmtree(jd); jd.mkdir(parents=True)
+                jd, rom = self.work / f'tmp/ue_job_{v}', str(nsp.rfs.source(d)); nsp.rmtree(jd); jd.mkdir(parents=True)
                 dec = uepak.Batch()
                 for k, _ in enumerate(uepak.io_rounds(rom, dec), 1):
                     PROG.set(step=f"{v}: the game's Oodle decoder on the device, round {k}: {len(dec.todo):,} records, {sum(len(c) for c, _ in dec.todo.values()) / 2**20:,.0f} MB")
@@ -483,7 +483,7 @@ class Port:
                 PROG.set(step=f'{v}: shader archives out of the paks and IoStore containers')
                 listing, n = uepak.job(rom, str(d / 'ExeFS/main'), str(jd), decode=dec)
                 if dec.todo: raise BuildError(f'{v}: the IoStore shader libraries need Oodle records the rounds did not decode ({len(dec.todo):,})')
-                if not listing: raise BuildError(f'the RomFS has Unreal paks, but none under {d / "RomFS"} holds a shader code archive: where the shaders are has to be found first')
+                if not listing: raise BuildError(f'the RomFS has Unreal paks, but none under {nsp.rfs.source(d)} holds a shader code archive: where the shaders are has to be found first')
                 say(f'{v}: ' + '; '.join(f'{x["name"]} {x["shaders"]:,} shaders' + (f' ({x["compression"]})' if x.get('compression') else '') for x in listing))
                 if n:   # Oodle-compressed shaders in the paks' archives; LZ4 ones (Unreal Engine 4.26 and later by default) are decoded by uepak.py already
                     PROG.set(step=f"{v}: decoding {n:,} shaders with the game's Oodle decoder on the device")
@@ -546,9 +546,9 @@ class Port:
         sv = self.versions
         pkg = self.work / 'shader' / 'pkg'
         if self.ue_why: self.device_ue_shaders()   # before the split, which reads <version dir>/ue_shaders
-        try: nsp.split_shaders(PY, NXNATIVE, [self.dirs[v] / 'RomFS' for v in sv], [self.dirs[v] / 'ExeFS/main' for v in sv], pkg, self.env, self.logs, self.g, bool(self.derived or self.provisional),
+        try: nsp.split_shaders(PY, NXNATIVE, [nsp.rfs.source(self.dirs[v]) for v in sv], [self.dirs[v] / 'ExeFS/main' for v in sv], pkg, self.env, self.logs, self.g, bool(self.derived or self.provisional),
                                oodle=self.device_oodle if self.oodle_why else None,   # Oodle-compressed archives: the game's own decoder on the device
-                               aoc=self.aoc)   # DLC with shaders of its own (Xenoblade Chronicles 3's archives)
+                               dlc_roms=sorted(p for p in self.aoc.iterdir() if p.is_dir() or p.suffix == '.img') if self.aoc else ())   # DLC with shaders of its own (Xenoblade Chronicles 3's archives)
         finally: self.device_oodle_end()
         self.dmsv = self.aw / 'shaders.dmsv'; kf = self.aw / 'shaders.dmsv.key'; cap = self.aw / 'captured_shaders'
         PROG.stage('Vulkan shaders', step='building the translator')
@@ -646,7 +646,7 @@ class Port:
         PROG.stage('data pack', step='button-icon font')
         font_env, font_files = self.button_font()
         dst = self.o.out / f'{app_stem(self.g, self.app_name)}-data'
-        man = datapack.build(dst, profile=self.ap, version=self.pkg_ver, display=self.display, patched=self.patched, romfs=self.game / 'RomFS', shaders=self.dmsv,
+        man = datapack.build(dst, profile=self.ap, version=self.pkg_ver, display=self.display, patched=self.patched, romfs=nsp.rfs.source(self.game), shaders=self.dmsv,
                              aoc=self.aoc, language=self.lang, package=self.package, env=self.fps_env + font_env, settings=TOUCH_SETTINGS if self.o.touch else None,
                              files={**self.fps_files, **font_files},
                              progress=lambda what: PROG.set(step=f'linking {what}'))

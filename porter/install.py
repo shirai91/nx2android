@@ -28,20 +28,21 @@ def install(apk, data, adb_exe, serial=None, replace_signer=False):
         free = adb.free_bytes()
         files = datapack.files_folder(man['package'])
         have = adb.remote_sizes(files)
-        need = man['bytes'] - sum(have.values())
+        need = man['bytes'] - sum(s for rel, s in have.items() if (data / rel).is_file())   # what stays: stale files are removed before the push
         if free is not None and need > free: raise BuildError(f'the device has {free / 2**30:.1f} GB free; the game needs {need / 2**30:.1f} GB more')
         PROG.set(step=f'installing {apk.name}')
         adb.install(apk, man['package'], replace_signer=replace_signer)
         PROG.set(step='letting the app create its files folder')
         if adb.prepare_app_files(man['package']): say('started the app once so Android made its files folder (it stops at once without its data)')
-        PROG.set(step='pushing the game data', done=0, total=man['bytes'], unit='B'); pushing = True
         have = adb.remote_sizes(files)   # again: an install with --replace-signer uninstalls first, and Android deletes the files folder with the app
-        adb.push_tree(data, files, keep=datapack.KEEP_ON_DEVICE, skip=(datapack.MANIFEST,), verify=lambda rel: rel.split('/', 1)[0] not in ('RomFS', 'aoc'),   # the game's own files change only with their version
-                      progress=lambda d, t, note: PROG.set(done=d, total=t, note=note), have=have)
         stale = [rel for rel in have if rel.split('/', 1)[0] in datapack.OWNED and not (data / rel).is_file()]   # the push only adds the pack's own files, which are never stale
-        if stale:   # an older version's files, which the game would still find
+        if stale:   # an older version's files, which the game would still find; removed first, so that the device never holds both (a RomFS folder and the image that replaces it: 12 GB each)
             PROG.set(step=f'removing {len(stale):,} stale files')
             for i in range(0, len(stale), 64): adb.shell(f'cd {shlex.quote(files)} && rm -f ' + ' '.join(shlex.quote(r) for r in stale[i:i + 64]))
+            have = {rel: s for rel, s in have.items() if rel not in set(stale)}
+        PROG.set(step='pushing the game data', done=0, total=man['bytes'], unit='B'); pushing = True
+        adb.push_tree(data, files, keep=datapack.KEEP_ON_DEVICE, skip=(datapack.MANIFEST,), verify=lambda rel: rel.split('/', 1)[0] not in ('RomFS', 'RomFS.img', 'aoc'),   # the game's own files change only with their version
+                      progress=lambda d, t, note: PROG.set(done=d, total=t, note=note), have=have)
         adb.push_file(data / datapack.MANIFEST, f'{files}/{datapack.MANIFEST}')   # last: a pack on the device with its manifest is a complete one
     except AdbError as e:
         try: gone = pushing and adb.serial in [s for s, st, _ in adb.devices() if st == 'device'] and not adb.installed(man['package'])   # a device that went away is not an uninstall

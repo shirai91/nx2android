@@ -33,7 +33,10 @@ static module_t *module_from(const ro_module *rm) {
 
 HLE_FORCE("_ZN2nn2ro18LookupModuleSymbolEPmPKNS0_6ModuleEPKc", "look up a definition by name in one loaded NRO", Result, h_ro_LookupModuleSymbol, uintptr_t *out, const void *mod, const char *name) {
     module_t *m = module_from(mod); void *p = m && name ? module_sym(m, name) : NULL;
-    if (!p) { static int red; if (!red++) LOG("[RED] ro::LookupModuleSymbol %s: %s", name ? name : "(null)", m ? "not defined in that module" : "not a loaded module"); return RO_FAIL; }
+    // A name the loaded module does not define fails on Horizon too (ldr:ro's not-found result), and games probe for one: Portal's Source engine asks each module for BuiltDebug, which
+    // only its debug builds define. Only a module the host does not know is wrong
+    if (!p && m) { static int n; if (n++ < 8) LOG("ro::LookupModuleSymbol %s: not defined in that module (failure, as on Horizon)", name ? name : "(null)"); return RO_FAIL; }
+    if (!p) { static int red; if (!red++) LOG("[RED] ro::LookupModuleSymbol %s: not a loaded module", name ? name : "(null)"); return RO_FAIL; }
     if (out) *out = (uintptr_t)p;
     return 0;
 }

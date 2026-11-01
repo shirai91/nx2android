@@ -42,6 +42,11 @@ uint64_t dm_haptics_epoch(int p) {
     uint64_t e = valid(p) ? states[p].epoch : 0;
     pthread_mutex_unlock(&lock); return e;
 }
+int dm_haptics_enabled(void) {
+    pthread_mutex_lock(&lock);
+    int on = enabled && output != NULL;
+    pthread_mutex_unlock(&lock); return on;
+}
 uint32_t dm_haptics_available(void) {
     pthread_mutex_lock(&lock);
     uint32_t m = enabled && output ? available : 0;

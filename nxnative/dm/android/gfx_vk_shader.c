@@ -217,6 +217,13 @@ vkshader_t *vk_shader(uint64_t key, int stage) {
     s->b = (const dmsv_bind *)(r + 20); s->c1 = r + 20 + 20 * s->nbind;
     // SPIR-V with the stage's set
     uint32_t nw = e->spv_len / 4; uint32_t *w = malloc(e->spv_len); memcpy(w, g_bundle + e->spv_off, e->spv_len);
+    // DM_VK_SPV_DIR (debugging): <dir>/<key>.spv replaces the bundle's SPIR-V (same bindings), to try a changed shader without a new bundle
+    { const char *d = getenv("DM_VK_SPV_DIR"); char p[512]; FILE *f;
+      if (d && snprintf(p, sizeof p, "%s/%016llx.spv", d, (unsigned long long)key) > 0 && (f = fopen(p, "rb"))) {
+          fseek(f, 0, SEEK_END); long len = ftell(f); fseek(f, 0, SEEK_SET);
+          uint32_t *o = len > 20 && !(len & 3) ? malloc((size_t)len) : NULL;
+          if (o && fread(o, 1, (size_t)len, f) == (size_t)len) { free(w); w = o; nw = (uint32_t)(len / 4); VKLOG("shader %016llx: SPIR-V from %s (%ld bytes)", (unsigned long long)key, p, len); } else free(o);
+          fclose(f); } }
     int f64_used = 0; uint32_t xb = 4;
     for (uint32_t i = 5; i < nw;) { uint32_t n = w[i] >> 16, op = w[i] & 0xffff; if (!n) break; if (op == 71 && n >= 4 && w[i + 2] == 34) w[i + 3] = (uint32_t)s->set;   // OpDecorate DescriptorSet
         if (op == 22 && n == 3 && w[i + 2] == 64) f64_used = 1;   // OpTypeFloat 64

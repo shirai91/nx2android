@@ -69,10 +69,13 @@ static int region_at(uint64_t addr, uint64_t *lo, uint64_t *hi, int *prot, int *
 }
 kern_return_t vm_region_64(task_t task, vm_address_t *addr, vm_size_t *size, vm_region_flavor_t flavor, vm_region_info_t info, mach_msg_type_number_t *count, mach_port_t *obj) {
     (void)task; (void)count; uint64_t lo, hi; int prot, shared;
-    if (flavor != VM_REGION_BASIC_INFO_64 || region_at(*addr, &lo, &hi, &prot, &shared)) return KERN_INVALID_ADDRESS;
+    // Scudo's heap pointers carry a tag in the top byte (0xb4...), which /proc/self/maps does not: look the untagged address up and give the region back with the tag,
+    // so a caller comparing it with its tagged pointer (hle_uemalloc.c dm_ue_heap_owns: Unreal's thread stacks, malloc'd, moved by svcMapMemory) finds it inside
+    uint64_t tag = (uint64_t)*addr & UINT64_C(0xff00000000000000);
+    if (flavor != VM_REGION_BASIC_INFO_64 || region_at((uint64_t)*addr & ~tag, &lo, &hi, &prot, &shared)) return KERN_INVALID_ADDRESS;
     vm_region_basic_info_data_64_t *bi = (vm_region_basic_info_data_64_t *)info; memset(bi, 0, sizeof *bi);
     bi->protection = prot; bi->max_protection = VM_PROT_READ | VM_PROT_WRITE | VM_PROT_EXECUTE; bi->shared = shared;
-    *addr = (vm_address_t)lo; *size = (vm_size_t)(hi - lo); if (obj) *obj = 0;
+    *addr = (vm_address_t)(lo | tag); *size = (vm_size_t)(hi - lo); if (obj) *obj = 0;
     return KERN_SUCCESS;
 }
 kern_return_t mach_vm_region(task_t task, mach_vm_address_t *addr, mach_vm_size_t *size, vm_region_flavor_t flavor, vm_region_info_t info, mach_msg_type_number_t *count, mach_port_t *obj) {
@@ -307,3 +310,19 @@ int sysctl(int *name, unsigned namelen, void *old, size_t *oldlen, void *newp, s
     *oldlen = sizeof *kp; return 0;
 }
 int sysctlbyname(const char *name, void *old, size_t *oldlen, void *newp, size_t newlen) { (void)name; (void)old; (void)oldlen; (void)newp; (void)newlen; errno = ENOENT; return -1; }
+
+// BSD mergesort: stable, O(n log n), with a scratch copy of the array
+int mergesort(void *base, size_t n, size_t size, int (*cmp)(const void *, const void *)) {
+    if (n < 2) return 0;
+    unsigned char *a = base, *t = malloc(n * size); if (!t) return -1;
+    for (size_t w = 1; w < n; w *= 2) {
+        for (size_t lo = 0; lo < n; lo += 2 * w) {
+            size_t mid = lo + w < n ? lo + w : n, hi = lo + 2 * w < n ? lo + 2 * w : n, i = lo, j = mid, k = lo;
+            while (i < mid && j < hi) { if (cmp(a + j * size, a + i * size) < 0) { memcpy(t + k * size, a + j * size, size); j++; } else { memcpy(t + k * size, a + i * size, size); i++; } k++; }
+            memcpy(t + k * size, a + i * size, (mid - i) * size); k += mid - i;
+            memcpy(t + k * size, a + j * size, (hi - j) * size);
+        }
+        memcpy(a, t, n * size);
+    }
+    free(t); return 0;
+}

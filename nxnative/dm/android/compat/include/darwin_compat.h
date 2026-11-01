@@ -35,3 +35,7 @@ static inline int pthread_cond_timedwait_relative_np(pthread_cond_t *c, pthread_
     return pthread_cond_timedwait(c, m, &t);
 }
 #define MACH_PORT_NULL 0
+// BSD's stable merge sort (hle_hid.c's DM_KEYS steps): bionic has no mergesort (darwin_compat.c)
+int mergesort(void *base, size_t n, size_t size, int (*cmp)(const void *, const void *));
+// struct stat's modification time: st_mtimespec on Darwin, st_mtim on Linux
+#define st_mtimespec st_mtim

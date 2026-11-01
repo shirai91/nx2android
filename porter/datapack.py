@@ -1,6 +1,6 @@
 # The data pack: everything the app reads from its files folder on the device (/sdcard/Android/data/<package>/files, front_android.c), as a folder beside the APK:
 #   mods/          the rewritten code modules (patch_nso.py's outputs)
-#   RomFS/         the game's files (the packed version's merged RomFS)
+#   RomFS.img      the game's files (the packed version's merged RomFS, one image: nsp.extract's; env.txt's DM_ROMFS); RomFS/ when the extraction is a folder
 #   aoc/<index>/   the DLC the player has
 #   shaders.dmsv   the Vulkan shaders (dm/android/tools/shader_vk.py)
 #   nintendo_ext.ttf  the button-icon font, the stand-in for the Nintendo extension shared font (dm/tools/make_ext_font.py; env.txt's DM_SHARED_FONT_EXT)
@@ -13,7 +13,7 @@ from pathlib import Path
 
 MANIFEST = 'nx2a-data.json'
 KEEP_ON_DEVICE = ('settings.txt',)          # the player's choices win over the pack's defaults
-OWNED = ('mods', 'RomFS', 'aoc')            # folders the pack owns on the device: files there that the pack lacks are stale (an older version's) and removed
+OWNED = ('mods', 'RomFS', 'RomFS.img', 'aoc')   # what the pack owns on the device: files there that the pack lacks are stale (an older version's, or the RomFS folder an image replaced) and removed
 
 
 def link_or_copy(src, dst):
@@ -42,7 +42,11 @@ def build(dst, *, profile, version, display, patched, romfs, shaders, aoc=None, 
     if tmp.exists(): shutil.rmtree(tmp)
     tmp.mkdir(parents=True)
     n = b = 0
-    for what, src, sub in (('the rewritten modules', patched, 'mods'), ('the RomFS', romfs, 'RomFS'), ('the DLC', aoc, 'aoc')):
+    image = romfs and Path(romfs).is_file()   # RomFS.img: one file, hard-linked like the trees
+    if image:
+        if progress: progress('the RomFS')
+        link_or_copy(Path(romfs), tmp / 'RomFS.img'); n += 1; b += Path(romfs).stat().st_size
+    for what, src, sub in (('the rewritten modules', patched, 'mods'), ('the RomFS', None if image else romfs, 'RomFS'), ('the DLC', aoc, 'aoc')):
         if not src: continue
         if progress: progress(what)
         dn, db = link_tree(src, tmp / sub); n += dn; b += db
@@ -50,6 +54,7 @@ def build(dst, *, profile, version, display, patched, romfs, shaders, aoc=None, 
     for name, src in (files or {}).items(): shutil.copyfile(src, tmp / name); n += 1; b += Path(src).stat().st_size
     rows = [f'# Written by nx2android\'s porter for {profile.name} ({profile.id}); KEY=VALUE per line, read by the app at launch',
             f'DM_LANG={language}']
+    if image: rows.append(f'DM_ROMFS={files_folder(package)}/RomFS.img')   # the host mounts a RomFS image as it does a folder (hle_fs.c)
     if aoc: rows.append(f'DM_AOC_DIR={files_folder(package)}/aoc')
     rows += profile.env + list(env)
     (tmp / 'env.txt').write_text('\n'.join(rows) + '\n', encoding='utf-8', newline='\n')

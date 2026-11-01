@@ -3,6 +3,7 @@
 #pragma once
 #include <stdint.h>
 #include <stddef.h>
+#include <string.h>
 
 static int nvn_geo_topology(int prim) {
     switch (prim) {
@@ -21,6 +22,12 @@ static int nvn_geo_width(int topology) { static const int width[] = {1, 2, 4, 3,
 static size_t nvn_geo_assemble(int prim, const uint32_t *src, size_t count, int restart, uint32_t restart_index, uint32_t *dst, size_t capacity) {
     int width = nvn_geo_width(nvn_geo_topology(prim));
     if (!width) return SIZE_MAX;
+    if (!restart && (prim == 0 || prim == 1 || prim == 4 || prim == 10 || prim == 12)) {   // lists: the map is the indices up to the last whole primitive
+        size_t words = count / (size_t)width * (size_t)width;
+        if (dst && words > capacity) return SIZE_MAX;
+        if (dst) memcpy(dst, src, words * sizeof *src);
+        return words;
+    }
     if (dst) {
         size_t needed = nvn_geo_assemble(prim, src, count, restart, restart_index, NULL, 0);
         if (needed == SIZE_MAX || needed > capacity) return SIZE_MAX;
@@ -70,19 +77,19 @@ static size_t nvn_geo_assemble(int prim, const uint32_t *src, size_t count, int 
 // One ordered compaction per draw. Output is a point/line/triangle list, so it
 // does not depend on Metal primitive-restart behaviour. Preserve triangle-strip
 // winding and the last vertex. Unwritten GS index slots are UINT_MAX.
-static const char k_nvn_geo_pack_msl[] =
-"#include <metal_stdlib>\nusing namespace metal;\n"
-"struct geo_pack { device const uint *src; device uint *dst; device uint *args; uint groups, stride, topology, capacity; };\n"
-"kernel void geo_pack_indices(constant geo_pack& j [[buffer(0)]]) {\n"
-" uint outn=0;\n"
-" for(uint g=0;g<j.groups;g++) { uint a=0,b=0,n=0;\n"
-"  for(uint i=0;i<j.stride;i++) { uint v=j.src[g*j.stride+i];\n"
-"   if(v==0xffffffffu) {n=0;continue;}\n"
-"   if(j.topology==1) {if(outn<j.capacity) j.dst[outn++]=v;}\n"
-"   else if(j.topology==6) {if(n && outn+2<=j.capacity) {j.dst[outn++]=b;j.dst[outn++]=v;}}\n"
-"   else if(n>=2 && outn+3<=j.capacity) {j.dst[outn++]=(n&1)?b:a;j.dst[outn++]=(n&1)?a:b;j.dst[outn++]=v;}\n"
-"   a=b;b=v;n++;\n"
-"  }\n"
-" }\n"
-" j.args[0]=outn;j.args[1]=1;j.args[2]=0;j.args[3]=0;j.args[4]=0;\n"
-"}\n";
+// Large draws use three dispatches: geo_pack_count scans 64-group blocks,
+// geo_pack_scan scans their totals in parallel and writes indirect arguments,
+// then geo_pack_write adds local and block offsets. A draw of up to 1024 groups
+// instead runs geo_pack_small, doing the ordered compaction in one workgroup.
+// A single thread used to
+// walk every group: with it, each frame that drew OCTOPATH TRAVELER II's 129,032-triangle cube shadow mesh
+// (drawn in runs, nvn_geometry.inc geo_split) took about 300 ms; now only the first one is long.
+// The kernels: dm/gfx/msl/geo_pack.metal (host_msl_lib "geo_pack")
+typedef struct { uint64_t raw, mask, map, dst, args; uint32_t groups, stride, first, first_instance, capacity, collapse; } nvn_geo_lean_job;
+// The capture's record description (dmsh_geometry.capture dm_geometry_capture), vertex buffer 13: where the records go,
+// {first vertex, vertices, first instance, instances}, the record's words, and each capture word's slot in it (-1: not stored)
+enum { GEO_CAPTURE_WORDS = 144 };
+typedef struct { uint64_t dst, pad; uint32_t info[4]; uint32_t stride; int16_t slot[GEO_CAPTURE_WORDS]; } nvn_geo_capture;
+_Static_assert(__builtin_offsetof(nvn_geo_capture, info) == 16 && __builtin_offsetof(nvn_geo_capture, stride) == 32 && __builtin_offsetof(nvn_geo_capture, slot) == 36, "dm_geometry_capture layout");
+// The job record geo_pack reads (host side): the counts / offsets buffer holds a word per group
+typedef struct { uint64_t src, dst, args; uint32_t groups, stride, topology, capacity; uint64_t cnt; } nvn_geo_pack_job;

@@ -156,7 +156,15 @@ namespace Ryujinx.Graphics.Shader.Translation
             _graphicsState = graphicsState;
             GpPassthrough = gpPassthrough;
             ThreadsPerInputPrimitive = threadsPerInputPrimitive;
-            OutputTopology = outputTopology;
+            // Native geometry passthrough inherits the input primitive; its
+            // SPH output declaration is unused. Compute emulation must expose
+            // the same primitive to index compaction and raster replay.
+            OutputTopology = gpPassthrough ? graphicsState.Topology switch
+            {
+                InputTopology.Points => OutputTopology.PointList,
+                InputTopology.Lines or InputTopology.LinesAdjacency => OutputTopology.LineStrip,
+                _ => OutputTopology.TriangleStrip,
+            } : outputTopology;
             MaxOutputVertices = gpPassthrough ? graphicsState.Topology.InputVertexCountNoAdjacency : maxOutputVertices;
             ImapTypes = imapTypes;
             OmapTargets = omapTargets;

@@ -14,6 +14,11 @@ for line in open(src, encoding='utf-8'):
     code = re.sub(SYM + r'@PAGEOFF', r':lo12:\1', code)
     code = re.sub(SYM + r'@PAGE', r'\1', code)
     code = code.replace('.private_extern', '.hidden')
+    # .zerofill __DATA,__bss,_sym,size,align (entry.S's gate stack table): a bss object of its own, hidden (the stubs reach it with adrp alone)
+    m = re.match(r'^(\s*)\.zerofill\s+__DATA\s*,\s*__bss\s*,\s*' + SYM + r'\s*,\s*(\w+)\s*,\s*(\w+)\s*$', code.rstrip('\n'))
+    if m:
+        i, s, n, a = m.groups()
+        out.append(f'{i}.pushsection .bss\n{i}.hidden {s}\n{i}.p2align {a}\n{s}:\n{i}.zero {n}\n{i}.size {s}, {n}\n{i}.popsection' + (' ' + sep + comment if sep else '\n')); continue
     for pat, rep in SECTIONS: code = re.sub(r'^(\s*)' + pat, lambda m: m.group(1) + rep, code)
     code = re.sub(r'(\.globl\s+|\.hidden\s+|\b(?:bl|b|b\.\w+|cbz\s+\w+,|cbnz\s+\w+,|tbz\s+\w+,\s*#\d+,|tbnz\s+\w+,\s*#\d+,|adr\s+\w+,)\s*)' + SYM + r'\b', r'\1\2', code)
     code = re.sub(r'^(\s*)' + SYM + r':', r'\1\2:', code)   # label definitions

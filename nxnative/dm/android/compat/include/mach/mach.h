@@ -15,6 +15,7 @@ typedef mach_port_t *thread_act_array_t;
 typedef unsigned int mach_msg_type_number_t;
 typedef uintptr_t vm_address_t, vm_offset_t, vm_size_t;
 typedef uint64_t mach_vm_address_t, mach_vm_size_t;
+#define vm_page_size ((vm_size_t)getpagesize())   // Darwin's global page size
 typedef int vm_prot_t, vm_inherit_t, boolean_t;
 typedef int *thread_info_t, *task_info_t, *thread_state_t, *vm_region_info_t;
 typedef int thread_flavor_t, task_flavor_t, vm_region_flavor_t;

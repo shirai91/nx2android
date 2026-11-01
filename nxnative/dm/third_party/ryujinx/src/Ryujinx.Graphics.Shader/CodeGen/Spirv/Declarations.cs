@@ -231,6 +231,14 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
 
                 Dim dim = GetDim(image.Type);
 
+                // nxnative: a storage image of unknown format is read and written only with these capabilities (Vulkan's shaderStorageImageRead/WriteWithoutFormat): without them
+                // the SPIR-V is invalid, and Adreno refuses the pipeline
+                if (image.Format == TextureFormat.Unknown)
+                {
+                    context.AddCapability(Capability.StorageImageReadWithoutFormat);
+                    context.AddCapability(Capability.StorageImageWriteWithoutFormat);
+                }
+
                 SpvInstruction imageType = context.TypeImage(
                     context.GetType(image.Format.GetComponentType()),
                     dim,
