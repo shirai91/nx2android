@@ -144,10 +144,8 @@ static inline void ov_ed_prompt_rect(float W, float H, float r[4]) {   // the di
 }
 static inline void ov_ed_button(int i, const float p[4], float b[4]) {   // button i in its panel p (the toolbar's, or the prompt's for OVE_DISCARD, OVE_KEEP)
     static const float x0[OVE_ALL] = {0.15f, 1.30f, 2.80f, 5.25f, 7.70f, 0.15f, 0.50f, 5.20f}, w[OVE_ALL] = {1.0f, 1.0f, 2.30f, 2.30f, 2.15f, 9.70f, 4.30f, 4.30f};
-    float u = p[2] / 10; b[0] = p[0] + x0[i] * u; b[2] = w[i] * u;
-    if (i == OVE_GRID) { b[1] = p[1] + p[3] * 0.68f; b[3] = p[3] * 0.28f; }
-    else if (i < OVE_N) { b[1] = p[1] + p[3] * 0.28f; b[3] = p[3] * 0.34f; }
-    else { b[1] = p[1] + p[3] * 0.50f; b[3] = p[3] * 0.36f; }
+    static const float y0[OVE_ALL] = {0.28f, 0.28f, 0.28f, 0.28f, 0.28f, 0.68f, 0.50f, 0.50f}, h[OVE_ALL] = {0.34f, 0.34f, 0.34f, 0.34f, 0.34f, 0.28f, 0.36f, 0.36f};
+    float u = p[2] / 10; b[0] = p[0] + x0[i] * u; b[1] = p[1] + y0[i] * p[3]; b[2] = w[i] * u; b[3] = h[i] * p[3];
 }
 static inline int ov_ed_button_at(float x, float y, const float p[4], int first, int n) {   // the button of first..first+n-1 under (x, y), -1 none
     for (int i = first; i < first + n; i++) { float b[4]; ov_ed_button(i, p, b); if (x >= b[0] && x < b[0] + b[2] && y >= b[1] && y < b[1] + b[3]) return i; }
