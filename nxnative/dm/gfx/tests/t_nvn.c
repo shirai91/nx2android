@@ -266,7 +266,7 @@ int main(void) {
             for (int guard = 0; guard < 8; guard++) {
                 op_hdr h; memcpy(&h, p, sizeof h);
                 if (h.op == OP_JUMP) { const uint8_t *t; memcpy(&t, p + 8, 8); int in = t >= m && t < m + sizeof m;
-                    for (int i = 0; i < g_nhostseg; i++) in |= t >= g_hostseg[i].mem && t < g_hostseg[i].mem + HOSTSEG_SZ;
+                    for (int i = 0; i < g_nhostseg; i++) in |= t >= g_hostseg[i].mem && t < g_hostseg[i].mem + g_hostseg[i].sz;
                     if (!in) { ok = 0; break; } jumped = 1; p = t; continue; }
                 if (k < 4) ops[k] = (int)h.op; k++;
                 if (h.op == OP_END) break;
@@ -280,6 +280,19 @@ int main(void) {
         EXPECT("slotted lists replay whole after the next slot is recorded", 0, broken);
         EXPECT("lists of 64..504 bytes stay in their 512 (no host segment)", (504 - 64) / 8 + 1, jumps_fit);
         P(nvnCommandBufferFinalize)(&c3); P(nvnMemoryPoolFinalize)(&mp);
+    }
+    // 5b''. An empty pool with a length, as Super Mario Odyssey sets up thousands of command buffers entering the Wooded Kingdom (AddCommandMemory(NULL, 0, 0x200)):
+    //       the host lends that much (4 KB at least), not a whole 256 KB segment; such segments are never reclaimed, and at 256 KB each they reached the 1 GB cap
+    {
+        NVNcommandBuffer c4; static uint8_t ub[1024]; uint64_t before = g_hostseg_bytes; int n0 = g_nhostseg, small = 1;
+        for (int i = 0; i < 64; i++) { P(nvnCommandBufferInitialize)(&c4, &dev); P(nvnCommandBufferAddCommandMemory)(&c4, NULL, 0, 0x200); P(nvnCommandBufferFinalize)(&c4); }
+        for (int i = n0; i < g_nhostseg; i++) small &= g_hostseg[i].sz == 4096;
+        EXPECT("64 empty-pool grants of 0x200 bytes lend 64 × 4 KB", 64 * 4096, (int)(g_hostseg_bytes - before));
+        EXPECT("each of them a 4 KB segment", 1, small);
+        P(nvnCommandBufferInitialize)(&c4, &dev); P(nvnCommandBufferAddCommandMemory)(&c4, NULL, 0, 0x200); P(nvnCommandBufferBeginRecording)(&c4);
+        for (int i = 0; i < 8; i++) P(nvnCommandBufferUpdateUniformBuffer)(&c4, 0x10000, 0x1000, 0, sizeof ub, ub);   // 8 KB: overflows its 4 KB into further segments
+        EXPECT("a recording larger than the lent 4 KB still ends", 1, P(nvnCommandBufferEndRecording)(&c4) != 0);
+        P(nvnCommandBufferFinalize)(&c4);
     }
 
     // 5b. Sync must hold the CPU back: first queue 24 copies of 64 MiB to keep the GPU busy, with the last one copying src to dst;
