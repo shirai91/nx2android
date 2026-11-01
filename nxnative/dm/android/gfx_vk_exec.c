@@ -1671,10 +1671,14 @@ static VkPipeline compute_build(vkshader_t *cs, uint64_t um, uint64_t im) {   //
 }
 // Compute pipelines made ahead. One depends only on its shader (and integer-texel variants, rare), and building one costs Adreno 45-105 ms: Super Mario Odyssey's
 // particle emitters run on compute shaders (EffectPtcl), and the first cap throw at a breakable object built one on the replay thread (a 65 ms frame), the first scenes
-// several. A game has few (Odyssey 41), so at the first submission a background thread builds every compute shader in the bundle with no integer-texel variant
+// several. A game has few (Odyssey 41), so at the first submission a background thread builds every compute shader in the bundle with no integer-texel variant (up to a cap, below)
 static void *compute_warm(void *arg) {
     (void)arg; pthread_setname_np(pthread_self(), "vk compute warm"); setpriority(PRIO_PROCESS, 0, 10);
     int vk_shader_keys(uint32_t stage, uint64_t *out, int max); static uint64_t keys[4096]; int n = vk_shader_keys(5, keys, 4096), made = 0; uint64_t t0 = tick();
+    // A bundle with many compute shaders is left to the replay: Monster Hunter Rise's (4096 or more) held ~550 MB more from the title on, and a Retroid Pocket 5
+    // (Adreno 650, 8 GB) ran out of GPU memory loading the first area (vkAllocateMemory -2 at a 4 MB pool). DM_VK_COMPUTE_WARM_MAX (start-up, default 256): the most made ahead
+    { const char *e = getenv("DM_VK_COMPUTE_WARM_MAX"); int cap = e ? atoi(e) : 256;
+      if (n > cap) { VKLOG("compute pipelines made ahead: none, the bundle has %d%s compute shaders (more than %d, DM_VK_COMPUTE_WARM_MAX)", n, n == 4096 ? " or more" : "", cap); return NULL; } }
     for (int i = 0; i < n; i++) {
         uint64_t ck[3] = {keys[i], 0, 0};
         pthread_mutex_lock(&g_cpipe_mu); int have = nvn_hm_get(&g_cpipes, ck) != NULL; pthread_mutex_unlock(&g_cpipe_mu);
