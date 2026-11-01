@@ -514,14 +514,15 @@ static float ed_size(int l, int i) { int z = atomic_load(&g_cust[1][l][i][2]); r
 static void ed_resize(int l, int i, float s) { s = fminf(fmaxf(s, OVE_SCALE_MIN), OVE_SCALE_MAX); atomic_store(&g_cust[1][l][i][2], (int)lroundf(s * 1000)); g_ed.dirty = 1; }
 static void ed_do(int b) {
     int l = dm_overlay_layout();
-    if (b == OVE_SMALLER || b == OVE_BIGGER) { float f = b == OVE_BIGGER ? 1.1f : 1 / 1.1f; for (int i = 0; i < OV_N; i++) if (g_ed.sel < 0 || i == g_ed.sel) ed_resize(l, i, ed_size(l, i) * f); }
-    else if (b == OVE_RESET) { for (int i = 0; i < OV_N; i++) for (int k = 0; k < 3; k++) atomic_store(&g_cust[1][l][i][k], 0); g_ed.sel = -1; g_ed.dirty = 1; }
+    if (b == OVE_SMALLER || b == OVE_BIGGER) { float f = b == OVE_BIGGER ? 1.1f : 1 / 1.1f; for (int i = 0; i < OV_N; i++) if (g_ed.sel < 0 || i == g_ed.sel) ed_resize(l, i, ed_size(l, i) * f);
+        atomic_fetch_add(&g_cust_ver, 1); }
+    else if (b == OVE_RESET) { for (int i = 0; i < OV_N; i++) for (int k = 0; k < 3; k++) atomic_store(&g_cust[1][l][i][k], 0); g_ed.sel = -1; g_ed.dirty = 1; atomic_fetch_add(&g_cust_ver, 1); }
     else if (b == OVE_GRID) { atomic_store(&g_set_grid, !atomic_load(&g_set_grid)); settings_save(); }   // a setting, saved now: Cancel does not undo it
     else if (b == OVE_CANCEL) { ed_cancel(); return; }
     else if (b == OVE_SAVE) { ed_close(1); return; }
     else if (b == OVE_DISCARD) { ed_close(0); return; }
     else if (b == OVE_KEEP) g_ed.prompt = 0;
-    dm_haptics_android_tap(); if (b != OVE_GRID) atomic_fetch_add(&g_cust_ver, 1); ed_publish();
+    dm_haptics_android_tap(); ed_publish();
 }
 static void ed_key(uint64_t bit) {
     if (g_ed.prompt) { if (bit == DM_BTN_A) ed_do(OVE_DISCARD); else if (bit == DM_BTN_B) ed_do(OVE_KEEP); return; }
