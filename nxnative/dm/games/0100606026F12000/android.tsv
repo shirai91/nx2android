@@ -18,3 +18,6 @@ tested	v65536 POCO F7 25053PC47G (Snapdragon 8s Gen 4, Adreno 825, Android 16)
 orientation	landscape
 setting	docked=0
 env	DM_FPS_TARGET=30
+# Only the descriptor sets that changed are bound again (gfx_vk_exec.c DM_VK_SETSPLIT): Adreno copies a bound set into the command stream, and in the heavy
+# scene after the first field (about 20,000 draws a submission) the binds were 48% of the replay thread; a slow submission took 300-390 ms, 190-250 with it.
+env	DM_VK_SETSPLIT=1

@@ -529,7 +529,7 @@ static void wait_fence(uint64_t f) {
 // rather than as soon as the GPU has. DM_VK_X_NOPRERESET=1 (start-up): reset as they are begun
 static int g_prereset = -1;
 // The process's mappings, read every second: Adreno's driver maps every allocation it makes, and the kernel refuses mmap past about 65,500
-enum { MAPS_HIGH = 30000 };
+enum { MAPS_SMALL = 30000, MAPS_LOW = 15000, MAPS_SLOTS = 6, MAPS_HIGH = 45000 };
 static int g_maps_now;
 static int maps_n(void) { FILE *f = fopen("/proc/self/maps", "r"); if (!f) return -1; int n = 0, c; while ((c = getc_unlocked(f)) != EOF) n += c == '\n'; fclose(f); return n; }
 static void *maps_watch(void *arg) { (void)arg; pthread_setname_np(pthread_self(), "vk maps watch"); for (;;) { g_maps_now = maps_n(); sleep(1); } return NULL; }
@@ -557,7 +557,8 @@ static void slot_recycle(vksub_t *s) {   // the GPU has passed this slot's last 
     // ... except when the process has many mappings: Adreno's driver maps each 16 KB block of command memory on its own (20,000 small copies: 776 mappings), and a
     // command buffer reset keeps its blocks, so the slots kept their heaviest submissions' blocks. FINAL FANTASY RESONANCE's heavy frames took the process to the
     // kernel's limit of about 65,500 mappings (42,569 of them 16 KB driver blocks), and mmap failed everywhere: the Unreal heap, scudo, the driver (POCO F7, 2026-11-01).
-    // Over MAPS_HIGH the slot's pool is reset releasing its memory (the mapping count is read every second, maps_watch)
+    // Over MAPS_HIGH the slot's pool is reset releasing its memory (the mapping count is read every second, maps_watch). Only near the limit: the next submission
+    // in the slot then has its blocks made and mapped again, and with a release at every reuse the same 8,300 draws took 101-289 ms to replay instead of ~100
     if (g_maps_now > MAPS_HIGH) { VKCHK(vkResetCommandPool(V.dev, s->pool, VK_COMMAND_POOL_RESET_RELEASE_RESOURCES_BIT));
         static int said; if (!said++) VKLOG("%d mappings (over %d): a submission slot's command memory is released when it is reused", g_maps_now, MAPS_HIGH); }
 }
@@ -757,7 +758,17 @@ void mtl_sub_begin(void) {
     static int next = -1; if (next < 0) { const char *e = getenv("DM_VK_SLOTS"); int n = e ? atoi(e) : 0; if (n >= 2 && n <= NSLOT) g_nslot = n; next = 0; VKLOG("submission slots: %d", g_nslot); }
     // recycled before it is the open slot: a free another thread queued in between went into this list and was done at once, while earlier submissions
     // the slot's fence does not cover could still read it
-    int k = next; next = (next + 1) % g_nslot; vksub_t *s = &g_slot[k];
+    // Over MAPS_SMALL mappings the ring is MAPS_SLOTS long until they are under MAPS_LOW: the command memory of submissions in flight is what took FINAL FANTASY
+    // RESONANCE's heavy scene to 55,785 mappings with 16 slots (about 3,400 16 KB blocks a submission), more than releasing it as slots are reused could take back
+    // (scudo: "internal map failure"); with 6 it held at about 44,000 (a release past MAPS_HIGH now and then), and its slow submissions took 60-90 ms to replay
+    // rather than 100-290. The slots left out are recycled at once, releasing what they held
+    static int small; int ring = g_nslot;
+    { int was = small; if (g_maps_now > MAPS_SMALL) small = 1; else if (g_maps_now < MAPS_LOW) small = 0;
+      if (small && g_nslot > MAPS_SLOTS) ring = MAPS_SLOTS;
+      if (small != was) { VKLOG("%d mappings: %d submission slots", g_maps_now, ring);
+          if (small) for (int i = ring; i < g_nslot; i++) { slot_recycle(&g_slot[i]); VKCHK(vkResetCommandPool(V.dev, g_slot[i].pool, VK_COMMAND_POOL_RESET_RELEASE_RESOURCES_BIT)); } }
+      if (next >= ring) next = 0; }
+    int k = next; next = (next + 1) % ring; vksub_t *s = &g_slot[k];
     slot_recycle(s);
     pthread_mutex_lock(&g_df_mu); g_cur = k; pthread_mutex_unlock(&g_df_mu);
     s->npost = 0; s->up_used = 0; s->ngw = 0;
