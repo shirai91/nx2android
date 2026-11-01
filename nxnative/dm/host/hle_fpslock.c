@@ -150,7 +150,33 @@ static void imp_tick(uint8_t *base, int target) {
     }
 }
 
+// DM_UE_CVARS (start-up; a profile env line): Unreal console variables held at a value, "<main build id>:<main offset>=f<float>|i<int>,..." with the offset of the
+// TAutoConsoleVariable object (its value pointer at +0x10: the game thread's copy, then the render thread's), written whenever the game sets them otherwise
+// (a level load reads the config again). For a setting the shipping build takes from no command line. FINAL FANTASY RESONANCE: the dynamic resolution's floor
+static void cvars_tick(void) {
+    static int n = -1; static struct { uint64_t off; int is_f; uint32_t bits; int logged; } c[16]; static uint8_t *base;
+    if (n < 0) { n = 0; const char *e = getenv("DM_UE_CVARS"); if (!e || !*e) return;
+        const char *colon = strchr(e, ':'); const char *bid = "";
+        for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "main")) { base = g_mod[i].base; bid = g_mod[i].build_id; }
+        if (!colon || strncmp(e, bid, (size_t)(colon - e)) || (size_t)(colon - e) != strlen(bid)) { LOG("DM_UE_CVARS: for another main build (%.*s, this is %s): not used", colon ? (int)(colon - e) : 0, e, bid); base = NULL; return; }
+        char *s = strdup(colon + 1);
+        for (char *t = strtok(s, ","); t && n < 16; t = strtok(NULL, ",")) { char *eq = strchr(t, '='); if (!eq || (eq[1] != 'f' && eq[1] != 'i')) { LOG("[RED] DM_UE_CVARS: \"%s\" is not <offset>=f<value> or i<value>", t); continue; }
+            c[n].off = strtoull(t, NULL, 0); c[n].is_f = eq[1] == 'f';
+            if (c[n].is_f) { float f = strtof(eq + 2, NULL); memcpy(&c[n].bits, &f, 4); } else { int32_t v = (int32_t)strtol(eq + 2, NULL, 0); memcpy(&c[n].bits, &v, 4); }
+            n++; }
+        free(s); }
+    for (int k = 0; k < n && base; k++) {
+        uint64_t obj; if (!rd((uint64_t)(uintptr_t)(base + c[k].off + 0x10), &obj, sizeof obj) || !obj) continue;   // not registered yet
+        for (int cp = 0; cp < 2; cp++) { uint32_t *p = (uint32_t *)(uintptr_t)(obj + 4 * (uint64_t)cp), cur;
+            if (!rd((uint64_t)(uintptr_t)p, &cur, 4) || cur == c[k].bits) continue;
+            dm_guest_write_prepare(p, 4); __atomic_store_n(p, c[k].bits, __ATOMIC_RELAXED);
+            if (c[k].logged < 4) { c[k].logged++; float f; int32_t v; memcpy(&f, &c[k].bits, 4); memcpy(&v, &c[k].bits, 4);
+                if (c[k].is_f) LOG("main: console variable at main+%#llx (%s) set to %g (DM_UE_CVARS)", (unsigned long long)c[k].off, cp ? "render thread" : "game thread", (double)f);
+                else LOG("main: console variable at main+%#llx (%s) set to %d (DM_UE_CVARS)", (unsigned long long)c[k].off, cp ? "render thread" : "game thread", v); } }
+    }
+}
 void dm_fps_lock_tick(void) {
+    cvars_tick();
     static int state = -2, rows[NLOCKS], nrow, nlog[NLOCKS], target; static uint8_t *base; static const char *src;
     if (state == -1) return;
     if (state == -2) {

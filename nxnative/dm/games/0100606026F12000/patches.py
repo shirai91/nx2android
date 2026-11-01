@@ -15,5 +15,12 @@ CUTS = {
     # landscape.EnableGPUCulling 0 (its TAutoConsoleVariable at main+0x8bafca8, set live with DM_CTL "cvari 8bafca8 0" on a POCO F7, 2026-10-31) the terrain draws uncut and right,
     # at the same 30 fps. Its registration (main+0x1ea8f50, IConsoleManager slot 1) passes the default in w2: 0 here. The culling path's own fault on Vulkan is not found yet
     (0x1ea8f48, '22008052', '02008052', 'landscape.EnableGPUCulling registration: mov w2, #1 → #0 (default off; Android only)'),
+    # Android only: r.EarlyZPass default 3 (all opaque and masked meshes) runs a full depth prepass. In the heavy scene after the first field, the prepass draws the same
+    # 2,624 meshes that BasePass draws again, forcing Adreno's TBDR to run vertex binning and GMEM tiling twice (~2,624 draws, ~18-22 ms GPU, ~18 ms CPU replay).
+    # Unreal caches the prepass mode at startup ("Cannot be changed at runtime"), so a live memory write skips the callback. Initializing with default 0 turns it off at boot
+    (0x1b8f778, '62008052', '02008052', 'r.EarlyZPass registration: mov w2, #3 → #0 (default off; Android only)'),
+    # Android only: r.VelocityOutputPass default 0 writes velocity in the depth pass, splitting the depth pass into 2 phases (with and without velocity).
+    # Setting it to 1 renders velocity during the regular base pass instead of separate depth pass phases, preventing prepass draw multiplication
+    (0x1d8ff94, 'e2031f2a', '22008052', 'r.VelocityOutputPass registration: mov w2, wzr → #1 (write velocity during base pass; Android only)'),
   ] if os.environ.get('DM_TARGET') == 'android' else []),
 }

@@ -134,6 +134,27 @@ static size_t desc_size(VkDescriptorType t) {
 #define SET_ENC(off, size) ((uint64_t)(off) + 1 + ((uint64_t)(size) << 32))
 #define SET_OFF(s) (((uint64_t)(uintptr_t)(s) & 0xffffffffull) - 1)
 #define SET_SIZE(s) ((uint64_t)(uintptr_t)(s) >> 32)
+// vkGetDescriptorEXT results cached per thread: many draws bind identical descriptors across materials
+static void db_get_desc(const VkDescriptorGetInfoEXT *gi, size_t ds, void *dst, uint64_t k1, uint64_t k2, uint32_t extra) {
+    enum { DC_CAP = 1024 };
+    static __thread struct { uint32_t type, extra; uint64_t k1, k2, gen; uint8_t desc[192]; } c[DC_CAP];
+    uint64_t g = g_kill_gen;
+    uint64_t hk = (k1 * 0x9e3779b97f4a7c15ull) ^ (k2 * 0xc6a4a7935bd1e995ull) ^ (uint64_t)gi->type ^ ((uint64_t)extra << 16);
+    unsigned h = (unsigned)(hk >> 40) & (DC_CAP - 1);
+    if (c[h].gen == g && c[h].type == (uint32_t)gi->type && c[h].extra == extra && c[h].k1 == k1 && c[h].k2 == k2) {
+        memcpy(dst, c[h].desc, ds);
+        return;
+    }
+    p_get(V.dev, gi, ds, dst);
+    if (ds <= sizeof c[h].desc) {
+        memcpy(c[h].desc, dst, ds);
+        c[h].type = (uint32_t)gi->type;
+        c[h].extra = extra;
+        c[h].k1 = k1;
+        c[h].k2 = k2;
+        c[h].gen = g;
+    }
+}
 // A set's descriptors written into the ring
 VkDescriptorSet vk_db_write(VkDescriptorSetLayout l, const VkWriteDescriptorSet *w, uint32_t nw) {
     const dblay *d = lay_of(l); uint64_t at = ring_alloc(d->size ? d->size : 1); uint8_t *base = g_ring_p + at;
@@ -144,12 +165,14 @@ VkDescriptorSet vk_db_write(VkDescriptorSetLayout l, const VkWriteDescriptorSet 
         if (!ds) { VKRED_ONCE(121, "descriptor buffer: descriptor type %d not handled", x->descriptorType); continue; }
         for (uint32_t k = 0; k < x->descriptorCount; k++) {
             VkDescriptorGetInfoEXT gi = {VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT, NULL, x->descriptorType, {0}}; VkDescriptorAddressInfoEXT ai = {VK_STRUCTURE_TYPE_DESCRIPTOR_ADDRESS_INFO_EXT};
+            uint64_t dk1 = 0, dk2 = 0; uint32_t dextra = 0;
             switch (x->descriptorType) {
             case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER: case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER: {
                 const VkDescriptorBufferInfo *b = &x->pBufferInfo[k]; VkDeviceSize sz = 0; VkDeviceAddress a = b->buffer ? buf_addr(b->buffer, &sz) : 0;
                 if (a) { ai.address = a + b->offset; ai.range = b->range == VK_WHOLE_SIZE ? sz - b->offset : b->range; ai.format = VK_FORMAT_UNDEFINED; }
                 else if (b->buffer) VKRED_ONCE(122, "descriptor buffer: a buffer with no device address (made before the wrapper?)");
                 if (x->descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER) gi.data.pUniformBuffer = a ? &ai : NULL; else gi.data.pStorageBuffer = a ? &ai : NULL;
+                dk1 = ai.address; dk2 = ai.range;
                 break; }
             case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER: case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER: {
                 VkBufferView v = x->pTexelBufferView[k]; int ok = 0;
@@ -159,12 +182,22 @@ VkDescriptorSet vk_db_write(VkDescriptorSetLayout l, const VkWriteDescriptorSet 
                     VkDeviceSize sz = 0; VkDeviceAddress a = c.k ? buf_addr((VkBuffer)(uintptr_t)c.a, &sz) : 0;
                     if (a) { ai.address = a + c.b; ai.range = c.c == VK_WHOLE_SIZE ? sz - c.b : c.c; ai.format = (VkFormat)c.d; ok = 1; } }
                 if (x->descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER) gi.data.pUniformTexelBuffer = ok ? &ai : NULL; else gi.data.pStorageTexelBuffer = ok ? &ai : NULL;
+                dk1 = ai.address; dk2 = ai.range; dextra = (uint32_t)ai.format;
                 break; }
-            case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER: gi.data.pCombinedImageSampler = &x->pImageInfo[k]; break;
-            case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE: gi.data.pStorageImage = &x->pImageInfo[k]; break;
+            case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
+                gi.data.pCombinedImageSampler = &x->pImageInfo[k];
+                dk1 = (uint64_t)(uintptr_t)x->pImageInfo[k].imageView;
+                dk2 = (uint64_t)(uintptr_t)x->pImageInfo[k].sampler;
+                dextra = (uint32_t)x->pImageInfo[k].imageLayout;
+                break;
+            case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+                gi.data.pStorageImage = &x->pImageInfo[k];
+                dk1 = (uint64_t)(uintptr_t)x->pImageInfo[k].imageView;
+                dextra = (uint32_t)x->pImageInfo[k].imageLayout;
+                break;
             default: break;
             }
-            p_get(V.dev, &gi, ds, base + bo + ds * (x->dstArrayElement + k));
+            db_get_desc(&gi, ds, base + bo + ds * (x->dstArrayElement + k), dk1, dk2, dextra);
         }
     }
     return (VkDescriptorSet)(uintptr_t)(SET_ENC(at, d->size ? d->size : 1));
