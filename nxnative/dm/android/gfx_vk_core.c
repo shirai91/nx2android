@@ -50,6 +50,7 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL vk_validation_msg(VkDebugUtilsMessageSever
     return VK_FALSE;
 }
 
+static void maps_watch_start(void);
 void vk_init(void) {
     static int done; if (done) return; done = 1;
     void *lib = dlopen("libvulkan.so", RTLD_NOW | RTLD_LOCAL);
@@ -201,7 +202,7 @@ void vk_init(void) {
     VKLOG("%s, Vulkan %u.%u, driver %#x; timeline semaphores %s, BC %s, ASTC %s, geometry shaders %s, nullDescriptor %s, custom border colours %s, depth clip control %s, transform feedback %s; pipeline cache %zu bytes",
           V.props.deviceName, VK_API_VERSION_MAJOR(V.props.apiVersion), VK_API_VERSION_MINOR(V.props.apiVersion), V.props.driverVersion, V.has_timeline ? "yes" : "no (fences)",
           V.has_bc ? "yes" : "no (decoded on the CPU)", V.has_astc ? "yes" : "no", V.has_gs ? "yes" : "no", V.has_robust2 ? "yes" : "no", V.has_custom_border ? "yes" : "no", V.has_depth_clip_ctl ? "yes" : "no", V.has_xfb ? "yes" : "no", dn);
-    slots_init();
+    slots_init(); maps_watch_start();
     completion_start();
 }
 void vk_pipeline_cache_save(void) {
@@ -440,8 +441,7 @@ struct vksub {
     uint64_t fence;   // the fence this slot last committed with (0 = never)
     int ncq;          // timestamp counter queries used in this submission (g_cq)
     scratch_blk *blk; int nblk, capblk;
-    VkDescriptorPool *dp; int ndp, capdp, dp_cur;
-    uint32_t dp_used[9], dp_sets; int dp_counted; int no_ts;   // what pool dp_cur has given out (vk_alloc_set)
+    struct dpslot *bk; int nbk; int no_ts;   // descriptor pools by bank (vk_alloc_set)
     dfree_t *df; int ndf, capdf;
     post_op *post; int npost, cappost;
     struct { uint64_t lo, hi; } gw[64]; int ngw;   // GPU writes into pool memory in this submission (sub_gpu_wrote), for pools_copy_back: nearby ones merged, and once full each joins the nearest
@@ -528,6 +528,13 @@ static void wait_fence(uint64_t f) {
 // replay ~3,000 draws a frame on a thread that is the frame's limit). The slot is then taken only after the completion thread has passed it (mtl_wait, g_done)
 // rather than as soon as the GPU has. DM_VK_X_NOPRERESET=1 (start-up): reset as they are begun
 static int g_prereset = -1;
+// The process's mappings, read every second: Adreno's driver maps every allocation it makes, and the kernel refuses mmap past about 65,500
+enum { MAPS_HIGH = 30000 };
+static int g_maps_now;
+static int maps_n(void) { FILE *f = fopen("/proc/self/maps", "r"); if (!f) return -1; int n = 0, c; while ((c = getc_unlocked(f)) != EOF) n += c == '\n'; fclose(f); return n; }
+static void *maps_watch(void *arg) { (void)arg; pthread_setname_np(pthread_self(), "vk maps watch"); for (;;) { g_maps_now = maps_n(); sleep(1); } return NULL; }
+static void maps_watch_start(void) { pthread_t t; pthread_attr_t a; pthread_attr_init(&a); pthread_attr_setdetachstate(&a, PTHREAD_CREATE_DETACHED); pthread_create(&t, &a, maps_watch, NULL); pthread_attr_destroy(&a); }
+static void dp_give_back(vksub_t *s);
 static void slot_recycle(vksub_t *s) {   // the GPU has passed this slot's last submission: free what it held, rewind its allocators
     if (g_prereset < 0) { const char *e = getenv("DM_VK_X_NOPRERESET"); g_prereset = !(e && atoi(e)); }
     if (g_prereset) mtl_wait(s->fence, ~0ull); else wait_fence(s->fence);
@@ -543,11 +550,16 @@ static void slot_recycle(vksub_t *s) {   // the GPU has passed this slot's last 
     s->ndf = 0;
     pthread_mutex_unlock(&g_df_mu);
     for (int i = 0; i < s->nblk; i++) s->blk[i].used = 0;
-    for (int i = 0; i < s->ndp; i++) vkResetDescriptorPool(V.dev, s->dp[i], 0);
-    s->dp_cur = 0; s->dp_counted = -1;
+    dp_give_back(s);
     // The pool is not reset: each command buffer is reset as it is begun again (the pool allows it). A reset of the transient pool made Adreno's driver free the
     // command memory and map it again as the next submission grew (ioctl, mmap and munmap): in Xenoblade Chronicles 3's battles the submission's start took 21%
     // of the replay thread, now 9%, and frames went from about 42 to 38 ms
+    // ... except when the process has many mappings: Adreno's driver maps each 16 KB block of command memory on its own (20,000 small copies: 776 mappings), and a
+    // command buffer reset keeps its blocks, so the slots kept their heaviest submissions' blocks. FINAL FANTASY RESONANCE's heavy frames took the process to the
+    // kernel's limit of about 65,500 mappings (42,569 of them 16 KB driver blocks), and mmap failed everywhere: the Unreal heap, scudo, the driver (POCO F7, 2026-11-01).
+    // Over MAPS_HIGH the slot's pool is reset releasing its memory (the mapping count is read every second, maps_watch)
+    if (g_maps_now > MAPS_HIGH) { VKCHK(vkResetCommandPool(V.dev, s->pool, VK_COMMAND_POOL_RESET_RELEASE_RESOURCES_BIT));
+        static int said; if (!said++) VKLOG("%d mappings (over %d): a submission slot's command memory is released when it is reused", g_maps_now, MAPS_HIGH); }
 }
 static vksub_t *cur(void) { if (g_cur < 0) die("[vk] no open submission"); return &g_slot[g_cur]; }
 int vk_sub_open(void) { return g_cur >= 0; }
@@ -667,39 +679,69 @@ void img_sub_free_(void *s) { img_sub_free((imgsub *)s); }
 void vk_defer_free_image(VkImage i, VkDeviceMemory m) { df_add(1, (void *)i, (void *)m); }
 void vk_defer_free_view(VkImageView v) { df_add(2, (void *)v, NULL); }
 void vk_defer_free_bview(VkBufferView v) { df_add(3, (void *)v, NULL); }
-// Descriptor pools: the allocator counts what each set takes and moves to a new pool before any count runs out. Adreno's driver does not refuse an
-// allocation past a pool's sizes: it succeeds and the submission then fails as a whole at vkEndCommandBuffer (VK_ERROR_OUT_OF_HOST_MEMORY; NEO's
-// handheld frames with 32-slot texture arrays crossed the old 8192 combined-sampler limit at about the 712th draw)
-enum { DP_SETS = 4096 };
-static const uint32_t DP_CAP[9] = {[VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC] = 16384, [VK_DESCRIPTOR_TYPE_SAMPLER] = 1024, [VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER] = 65536, [VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE] = 1024,
-    [VK_DESCRIPTOR_TYPE_STORAGE_IMAGE] = 2048, [VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER] = 4096, [VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER] = 2048,
-    [VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER] = 32768, [VK_DESCRIPTOR_TYPE_STORAGE_BUFFER] = 4096};
+// Descriptor pools, as Eden (yuzu) makes them: a pool takes its whole size in driver memory, used or not, so pools are made for a bank of layouts that take
+// about the same, sized to BANK_SETS sets of the bank's needs, rather than one size for every layout. The old single size (4096 sets, 65,536 combined samplers,
+// 32,768 uniform buffers, ...) was about 76 MB a pool on Adreno 825, and a slot kept every pool its heaviest submission made: FINAL FANTASY RESONANCE's heavy
+// frames, going round the 16 slots, held 63 pools (4.6 GB of GPU memory) and the system killed the app (POCO F7, 2026-11-01).
+// The allocator counts the sets a pool has given out and moves on at BANK_SETS: Adreno's driver does not refuse an allocation past a pool's sizes, it succeeds
+// and the submission then fails as a whole at vkEndCommandBuffer (VK_ERROR_OUT_OF_HOST_MEMORY; NEO's handheld frames, 2026). A bank's layouts each take at most
+// its needs (IsSuperset), so BANK_SETS sets of any of them fit. A recycled slot keeps one pool per bank and gives the rest to the bank's spares (BANK_SPARE)
+enum { BANK_SETS = 256, BANK_SPARE = 64, MAXBANK = 512, BANK_SCORE = 3 };
+typedef struct { uint32_t need[9], score; VkDescriptorPool spare[BANK_SPARE]; int nspare; } dpbank;
+struct dpslot { VkDescriptorPool *dp; int ndp, cap, cur; uint32_t sets; };   // a slot's pools of one bank; cur gives sets, sets of them so far
+static dpbank g_bank[MAXBANK]; static int g_nbank; static pthread_mutex_t g_dp_mu = PTHREAD_MUTEX_INITIALIZER;
+static void dp_give_back(vksub_t *s) {   // slot_recycle: reset every pool; the slot keeps the first of each bank
+    pthread_mutex_lock(&g_dp_mu);
+    for (int b = 0; b < s->nbk; b++) { struct dpslot *q = &s->bk[b];
+        for (int i = 0; i < q->ndp; i++) {
+            vkResetDescriptorPool(V.dev, q->dp[i], 0);
+            if (!i) continue;
+            if (g_bank[b].nspare < BANK_SPARE) g_bank[b].spare[g_bank[b].nspare++] = q->dp[i]; else vkDestroyDescriptorPool(V.dev, q->dp[i], NULL);
+        }
+        if (q->ndp > 1) q->ndp = 1;
+        q->cur = 0; q->sets = 0; }
+    pthread_mutex_unlock(&g_dp_mu);
+}
+static int bank_of(const uint32_t *need) {   // under g_dp_mu: the first bank that holds these needs, its score within BANK_SCORE, else a new one
+    uint32_t sc = 0; for (int t = 0; t < 9; t++) sc += need[t];
+    for (int b = 0; b < g_nbank; b++) { int ok = abs((int)g_bank[b].score - (int)sc) < BANK_SCORE; for (int t = 0; t < 9 && ok; t++) if (g_bank[b].need[t] < need[t]) ok = 0; if (ok) return b; }
+    if (g_nbank == MAXBANK) die("[vk] too many descriptor pool banks");
+    dpbank *k = &g_bank[g_nbank]; memcpy(k->need, need, sizeof k->need); k->score = sc; k->nspare = 0;
+        return g_nbank++;
+}
 static nvn_hmap g_dsl_need = {.klen = sizeof(VkDescriptorSetLayout)}; static pthread_mutex_t g_dsl_mu = PTHREAD_MUTEX_INITIALIZER;
-void vk_dsl_register(VkDescriptorSetLayout l, const VkDescriptorSetLayoutBinding *b, uint32_t n) {   // what one set of this layout takes, by type
-    uint32_t *need = calloc(9, sizeof *need);
+void vk_dsl_register(VkDescriptorSetLayout l, const VkDescriptorSetLayoutBinding *b, uint32_t n) {   // what one set of this layout takes, by type ([9]: its bank)
+    uint32_t *need = calloc(10, sizeof *need);
     for (uint32_t i = 0; i < n; i++) if ((uint32_t)b[i].descriptorType < 9) need[b[i].descriptorType] += b[i].descriptorCount;
+    pthread_mutex_lock(&g_dp_mu); need[9] = (uint32_t)bank_of(need); pthread_mutex_unlock(&g_dp_mu);
     pthread_mutex_lock(&g_dsl_mu); nvn_hm_put(&g_dsl_need, &l, need); pthread_mutex_unlock(&g_dsl_mu);
 }
 VkDescriptorSet vk_alloc_set(VkDescriptorSetLayout l) {
     vksub_t *s = cur();
     pthread_mutex_lock(&g_dsl_mu); const uint32_t *need = nvn_hm_get(&g_dsl_need, &l); pthread_mutex_unlock(&g_dsl_mu);
+    if (!need) die("[vk] descriptor set layout %p was not registered", (void *)l);
+    int b = (int)need[9];
+    if (b >= s->nbk) { s->bk = realloc(s->bk, sizeof *s->bk * (size_t)(b + 1)); memset(s->bk + s->nbk, 0, sizeof *s->bk * (size_t)(b + 1 - s->nbk)); s->nbk = b + 1; }
+    struct dpslot *q = &s->bk[b];
     for (;;) {
-        if (s->dp_cur == s->ndp) {
-            VkDescriptorPoolSize sz[9]; uint32_t nz = 0;
-            for (int t = 0; t < 9; t++) if (DP_CAP[t]) sz[nz++] = (VkDescriptorPoolSize){(VkDescriptorType)t, DP_CAP[t]};
-            VkDescriptorPoolCreateInfo pi = {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, NULL, 0, DP_SETS, nz, sz};
-            if (s->ndp == s->capdp) { s->capdp = s->capdp ? 2 * s->capdp : 4; s->dp = realloc(s->dp, s->capdp * sizeof *s->dp); }
-            VKCHK(vkCreateDescriptorPool(V.dev, &pi, NULL, &s->dp[s->ndp++]));
+        if (q->cur == q->ndp) {
+            if (q->ndp == q->cap) { q->cap = q->cap ? 2 * q->cap : 4; q->dp = realloc(q->dp, sizeof *q->dp * (size_t)q->cap); }
+            pthread_mutex_lock(&g_dp_mu); dpbank *k = &g_bank[b]; VkDescriptorPool p = k->nspare ? k->spare[--k->nspare] : VK_NULL_HANDLE; pthread_mutex_unlock(&g_dp_mu);
+            if (!p) {
+                VkDescriptorPoolSize sz[9]; uint32_t nz = 0;
+                for (int t = 0; t < 9; t++) if (k->need[t]) sz[nz++] = (VkDescriptorPoolSize){(VkDescriptorType)t, k->need[t] * BANK_SETS};
+                if (!nz) sz[nz++] = (VkDescriptorPoolSize){VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1};   // an empty layout's bank
+                VkDescriptorPoolCreateInfo pi = {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, NULL, 0, BANK_SETS, nz, sz};
+                VKCHK(vkCreateDescriptorPool(V.dev, &pi, NULL, &p));
+            }
+            q->dp[q->ndp++] = p; q->sets = 0;
         }
-        if (s->dp_cur != s->dp_counted) { memset(s->dp_used, 0, sizeof s->dp_used); s->dp_sets = 0; s->dp_counted = s->dp_cur; }
-        int fits = s->dp_sets < DP_SETS;
-        if (need) for (int t = 0; t < 9 && fits; t++) if (need[t] && s->dp_used[t] + need[t] > DP_CAP[t]) fits = 0;
-        if (!fits) { s->dp_cur++; continue; }
-        VkDescriptorSetAllocateInfo ai = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, NULL, s->dp[s->dp_cur], 1, &l};
+        if (q->sets >= BANK_SETS) { q->cur++; q->sets = 0; continue; }
+        VkDescriptorSetAllocateInfo ai = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, NULL, q->dp[q->cur], 1, &l};
         VkDescriptorSet set; VkResult r = vkAllocateDescriptorSets(V.dev, &ai, &set);
-        if (r == VK_SUCCESS) { s->dp_sets++; if (need) for (int t = 0; t < 9; t++) s->dp_used[t] += need[t]; return set; }
+        if (r == VK_SUCCESS) { q->sets++; return set; }
         if (r != VK_ERROR_OUT_OF_POOL_MEMORY && r != VK_ERROR_FRAGMENTED_POOL) die("[vk] vkAllocateDescriptorSets: %d", r);
-        s->dp_cur++;
+        q->cur++; q->sets = 0;
     }
 }
 

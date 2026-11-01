@@ -522,7 +522,7 @@ void vk_shader_c1(vkshader_t *s, VkBuffer *buf, VkDeviceSize *off, VkDeviceSize 
 VkPipelineLayout vk_pipeline_layout(VkDescriptorSetLayout sets[5], int nsets) {
     static VkDescriptorSetLayout empty; static nvn_hmap cache = {.klen = 5 * sizeof(VkDescriptorSetLayout)}; static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
     pthread_mutex_lock(&mu);
-    if (!empty) { VkDescriptorSetLayoutCreateInfo li = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO}; VKCHK(vkCreateDescriptorSetLayout(V.dev, &li, NULL, &empty)); }
+    if (!empty) { VkDescriptorSetLayoutCreateInfo li = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO}; VKCHK(vkCreateDescriptorSetLayout(V.dev, &li, NULL, &empty)); void vk_dsl_register(VkDescriptorSetLayout, const VkDescriptorSetLayoutBinding *, uint32_t); vk_dsl_register(empty, NULL, 0); }
     VkDescriptorSetLayout k[5]; for (int i = 0; i < 5; i++) { k[i] = i < nsets && sets[i] ? sets[i] : (i < nsets ? empty : VK_NULL_HANDLE); if (i < nsets) sets[i] = k[i]; }   // absent stages get the empty layout (the caller allocates their sets from it)
     VkPipelineLayout pl = nvn_hm_get(&cache, k);
     if (!pl) {
