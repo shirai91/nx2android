@@ -44,6 +44,16 @@ static inline void ov_box(const ov_ctl *c, float W, float H, float b[4]) {   // 
     else { b[0] = c->ax * W + c->x * H; b[1] = c->y * H; }
     b[2] = c->w * H * s * cs / 2; b[3] = c->h * H * s * cs / 2;
 }
+// a dragged control's centre on one axis (half: its half size, extent: the window's): kept on the screen, and with step > 0 on the nearest multiple
+// of step that keeps it there (none may fit an oversized control)
+static inline float ov_drag_pos(float p, float half, float extent, float step) {
+    float lo = fminf(half, extent / 2), hi = extent - lo;
+    if (step > 0) {
+        float first = ceilf(lo / step), last = floorf(hi / step);
+        if (first <= last) return fminf(fmaxf(roundf(p / step), first), last) * step;
+    }
+    return fminf(fmaxf(p, lo), hi);
+}
 // its corners' radius: a round control (as wide as high), the menu button (a pill) and the d-pad (its diagonals) are round; the shoulder buttons are rounded boxes
 static inline float ov_corner(const ov_ctl *c, const float b[4]) { float m = fminf(b[2], b[3]); return c->w == c->h || c->kind == OV_MENU ? m : m * 0.35f; }
 // the signed distance from (dx, dy), an offset from a rounded box's centre, to its edge (negative inside); hw, hh: half its width and height, rad: its corners
@@ -125,17 +135,9 @@ enum { OVE_SMALLER, OVE_BIGGER, OVE_RESET, OVE_CANCEL, OVE_SAVE, OVE_GRID, OVE_N
 // the editor's state in dm_menu_state: bit 17, bit 0 the prompt is open, bit 1 something changed, bit 2 grid snapping, bits 4..7 the button held + 1, bits 8..15 the chosen control + 1
 #define OVE_ST 0x20000
 #define OVE_GRID_ON 4
-#define OVE_GRID_ROWS 20
+#define OVE_GRID_ROWS 20   // Snap to grid's rows; its cells are square
 #define OVE_SCALE_MIN 0.5f   // a control's size factor
 #define OVE_SCALE_MAX 2.0f
-static inline float ov_ed_position(float p, float half, float extent, float step) {
-    float lo = fminf(half, extent / 2), hi = extent - lo;
-    if (step > 0) {
-        float first = ceilf(lo / step), last = floorf(hi / step);
-        if (first <= last) return fminf(fmaxf(roundf(p / step), first), last) * step;
-    }
-    return fminf(fmaxf(p, lo), hi);   // an oversized control may leave no room for a grid point
-}
 static inline void ov_ed_rect(float W, float H, float r[4]) {   // the toolbar, in window pixels: under the top edge, in the middle (below the menu button's place)
     float s = ov_menu_scale(); r[2] = fminf(0.85f * H * s, W * 0.96f); r[3] = 0.30f * H * s; r[0] = (W - r[2]) / 2; r[1] = 0.13f * H;
 }

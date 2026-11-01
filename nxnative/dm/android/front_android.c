@@ -210,7 +210,7 @@ static void menu_drag(const ov_ctl *m, float x, float y, float W, float H) {   /
     if (!g_drag.moved && hypotf(x - g_drag.x0, y - g_drag.y0) < OV_DRAG_SLOP * H) return;
     g_drag.moved = 1;
     float b[4]; ov_box(m, W, H, b);
-    float px = fminf(fmaxf(x + g_drag.gx, b[2]), W - b[2]), py = fminf(fmaxf(y + g_drag.gy, b[3]), H - b[3]); int l, i = ov_index(m, &l);
+    float px = ov_drag_pos(x + g_drag.gx, b[2], W, 0), py = ov_drag_pos(y + g_drag.gy, b[3], H, 0); int l, i = ov_index(m, &l);
     cust_place(0, l, i, px / W, py / H); atomic_fetch_add(&g_cust_ver, 1);
 }
 
@@ -531,7 +531,7 @@ static void ed_key(uint64_t bit) {
 static void ed_drag(float x, float y, float W, float H) {   // the chosen control's centre follows the finger, kept on the screen
     int l = dm_overlay_layout(); float b[4]; ov_box(&OV_LAYOUTS[l][g_ed.sel], W, H, b);
     float step = atomic_load(&g_set_grid) ? H / OVE_GRID_ROWS : 0;
-    float px = ov_ed_position(x + g_ed.gx, b[2], W, step), py = ov_ed_position(y + g_ed.gy, b[3], H, step);
+    float px = ov_drag_pos(x + g_ed.gx, b[2], W, step), py = ov_drag_pos(y + g_ed.gy, b[3], H, step);
     cust_place(1, l, g_ed.sel, px / W, py / H); g_ed.dirty = 1;
 }
 static void ed_touch(AInputEvent *e, float W, float H) {   // the prompt's buttons, else the toolbar's, else the controls

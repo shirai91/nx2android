@@ -21,23 +21,21 @@ class OverlayLayout(unittest.TestCase):
 #include "overlay_layout.h"
 float dm_overlay_scale(void) { return 1; }
 int main(void) {
-    assert(ov_ed_position(126, 30, 1000, 50) == 150);
-    assert(ov_ed_position(124, 30, 1000, 50) == 100);
-    assert(ov_ed_position(-100, 65, 1000, 50) == 100);
-    assert(ov_ed_position(1100, 65, 1000, 50) == 900);
-    assert(ov_ed_position(1100, 65, 1013, 50) == 900);
-    assert(ov_ed_position(126, 30, 1000, 0) == 126);
-    assert(ov_ed_position(-100, 65, 1000, 0) == 65);
-    assert(ov_ed_position(1100, 65, 1000, 0) == 935);
-    assert(ov_ed_position(1100, 600, 1013, 50) == 506.5f);
-    assert(ov_ed_position(1100, 505, 1013, 50) == 508);
+    assert(ov_drag_pos(126, 30, 1000, 50) == 150);
+    assert(ov_drag_pos(124, 30, 1000, 50) == 100);
+    assert(ov_drag_pos(-100, 65, 1000, 50) == 100);
+    assert(ov_drag_pos(1100, 65, 1000, 50) == 900);
+    assert(ov_drag_pos(126, 30, 1000, 0) == 126);
+    assert(ov_drag_pos(1100, 65, 1000, 0) == 935);
+    assert(ov_drag_pos(1100, 600, 1013, 50) == 506.5f);
+    assert(ov_drag_pos(1100, 505, 1013, 50) == 508);
 
     const float screens[][2] = {{915, 412}, {1216, 760}, {2400, 1080}, {1080, 2400}};
     for (unsigned s = 0; s < sizeof screens / sizeof screens[0]; s++) {
         float W = screens[s][0], H = screens[s][1], step = H / OVE_GRID_ROWS, p[4];
         for (int axis = 0; axis < 2; axis++) for (int i = -10; i <= 110; i++) {
             float extent = screens[s][axis], half = H * 0.12f;
-            float pos = ov_ed_position(extent * i / 100, half, extent, step);
+            float pos = ov_drag_pos(extent * i / 100, half, extent, step);
             assert(pos >= half - 0.001f && pos <= extent - half + 0.001f);
             assert(fabsf(pos / step - roundf(pos / step)) < 0.001f);
         }
