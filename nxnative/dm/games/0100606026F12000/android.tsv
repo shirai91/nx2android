@@ -10,8 +10,8 @@
 # one save in the Earth Shrine: frame p50 45 ms → 33 ms, submit+present 40 → 16 ms (DM_VK_SLOTS=6 / 16, same build). The busiest view seen before the fix
 # (about 2,700 draws) took 76 ms: replay 33 ms (descriptor sets 10-16 ms; 66-72% of the new sets were in the last 20 submissions, DM_VK_SETX) and GPU 43 ms.
 # Docked (1920x1080) the GPU alone took 27-45 ms in the opening. Pipelines compile in 70-220 ms each on this Adreno, so the first sight of a material stalls
-# a frame for up to 2 s; the next boot prewarms them (graphics and compute, vk_pipelines.bin / vk_cpipelines.bin): 0 long frames in a second run through the
-# same field (55 in the first). DM_NVN_ASYNC=1 does not run: the game raises Unreal's LowLevelFatalError at boot (abort at main+0x11bc).
+# a frame for up to 2 s; the next boot prewarms them: 0 long frames in a second run through the same field (55 in the first; measured when compute pipelines
+# had a record file of their own; now the graphics ones are recorded in vk_pipelines.bin and compute_warm builds the bundle's 2,934 compute shaders at the first submission). DM_NVN_ASYNC=1 does not run: the game raises Unreal's LowLevelFatalError at boot (abort at main+0x11bc).
 # The game's 30 (the Switch's rate) rather than the profile's 60 (env below): the phone holds neither, and 30 keeps the pacing steady.
 status	boots
 tested	v65536 POCO F7 25053PC47G (Snapdragon 8s Gen 4, Adreno 825, Android 16)
