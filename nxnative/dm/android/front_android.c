@@ -52,7 +52,7 @@ void dm_focus_set(int st); void dm_audio_suspend(int on); void guest_clock_freez
 static char g_root[512];
 static _Atomic int g_set_overlay = 1, g_set_rumble = 1, g_set_fps;   // the gamepad shown; rumble and tap vibration; the frame rate counter (top left)
 static _Atomic int g_set_opacity = 60;   // the gamepad's opacity, percent (OV_OPACITY_MIN..MAX: the menu's Opacity slider)
-static int g_set_grid;
+static _Atomic int g_set_grid;   // the layout editor's Snap to grid
 // the player's own layout (overlay_layout.h dm_overlay_custom): [0] the saved one (settings.txt ui= rows), [1] the layout editor's while it is open; per layout
 // and control: x + 1, y + 1 in 1/10000 of the window's width and height (0 = the layout's place), the size factor in 1/1000 (0 = 1)
 static _Atomic int g_cust[2][2][DM_AOV_N][3], g_cust_ver, g_edit;
@@ -66,7 +66,7 @@ static void settings_load(void) {
         else if (sscanf(line, "fps=%d", &v) == 1) atomic_store(&g_set_fps, v != 0);
         else if (sscanf(line, "docked=%d", &v) == 1) setenv("DM_OPMODE", v ? "1" : "0", 1);   // over env.txt's: the host reads it once, at its first query
         else if (sscanf(line, "opacity=%d", &v) == 1) atomic_store(&g_set_opacity, v < OV_OPACITY_MIN ? OV_OPACITY_MIN : v > OV_OPACITY_MAX ? OV_OPACITY_MAX : v);
-        else if (sscanf(line, "grid=%d", &v) == 1) g_set_grid = v != 0;
+        else if (sscanf(line, "grid=%d", &v) == 1) atomic_store(&g_set_grid, v != 0);
         else if (!strncmp(line, "ui=", 3)) {   // ui=<layout>,<control>,<x>,<y>,<size>: x, y in 1/10000 of the window (-1 the layout's place), size in 1/1000
             char lay[16], name[32]; int x, y, z, l, i;
             if (sscanf(line + 3, "%15[^,],%31[^,],%d,%d,%d", lay, name, &x, &y, &z) != 5 || (i = ctl_named(name)) < 0) continue;
@@ -83,7 +83,7 @@ static void settings_save(void) {
     char p[600], tmp[610]; snprintf(p, sizeof p, "%s/settings.txt", g_root); snprintf(tmp, sizeof tmp, "%s.new", p);
     FILE *f = fopen(tmp, "w"); if (!f) { LOG("[RED] cannot write %s", tmp); return; }
     fprintf(f, "overlay=%d\nrumble=%d\ndocked=%d\nfps=%d\nopacity=%d\ngrid=%d\n", atomic_load(&g_set_overlay), atomic_load(&g_set_rumble), dm_opmode() != 0, atomic_load(&g_set_fps),
-            atomic_load(&g_set_opacity), g_set_grid);
+            atomic_load(&g_set_opacity), atomic_load(&g_set_grid));
     for (int l = 0; l < 2; l++) for (int i = 0; i < OV_N; i++) {
         _Atomic int *c = g_cust[0][l][i]; int x = atomic_load(&c[0]), y = atomic_load(&c[1]), z = atomic_load(&c[2]);
         if ((x && y) || z) fprintf(f, "ui=%s,%s,%d,%d,%d\n", LAYOUT_NAMES[l], OV_LAYOUTS[0][i].name, x && y ? x - 1 : -1, x && y ? y - 1 : -1, z ? z : 1000);
@@ -494,19 +494,18 @@ int dm_save_rows(ov_srow rows[OVM_ROWS]) {   // (gfx_vk_present.c ov_save_panel)
 // pinches it bigger or smaller; - and + resize the chosen control, or every control when none is chosen; Reset puts the layout's places and sizes back;
 // Save keeps the editor's layout (settings.txt, the next start too) and Cancel throws it away, asking first when something changed. Either goes back to the
 // menu. A controller: + saves, B cancels; in the prompt A throws away and B goes back to editing. It edits the layout in use (tablet or phone) ----
-static struct { int ptr, ptr2, sel, held, prompt, dirty, bdown, bar, grid; float gx, gy, d0, s0; } g_ed = {-1, -1, -1, -1};   // bar: ptr went down on the toolbar or prompt
-static void ed_publish(void) { atomic_store(&g_ed_st, g_ed.prompt | g_ed.dirty << 1 | (g_ed.grid ? OVE_GRID_ON : 0) | (g_ed.held + 1) << 4 | (g_ed.sel + 1) << 8); dm_overlay_redraw(); }
+static struct { int ptr, ptr2, sel, held, prompt, dirty, bdown, bar; float gx, gy, d0, s0; } g_ed = {-1, -1, -1, -1};   // bar: ptr went down on the toolbar or prompt
+static void ed_publish(void) { atomic_store(&g_ed_st, g_ed.prompt | g_ed.dirty << 1 | (atomic_load(&g_set_grid) ? OVE_GRID_ON : 0) | (g_ed.held + 1) << 4 | (g_ed.sel + 1) << 8); dm_overlay_redraw(); }
 static void ed_open(void) {
     for (int l = 0; l < 2; l++) for (int i = 0; i < OV_N; i++) for (int k = 0; k < 3; k++) atomic_store(&g_cust[1][l][i][k], atomic_load(&g_cust[0][l][i][k]));
     g_ed.ptr = g_ed.ptr2 = g_ed.sel = g_ed.held = g_ed.bdown = -1; g_ed.prompt = g_ed.dirty = g_ed.bar = 0; g_menu_ptr = -1;
-    g_ed.grid = g_set_grid;
     atomic_store(&g_edit, 1); atomic_fetch_add(&g_cust_ver, 1); ed_publish();
     LOG("[overlay] layout editor opened (%s layout)", LAYOUT_NAMES[dm_overlay_layout()]);
 }
 static void ed_close(int save) {
     if (save) for (int l = 0; l < 2; l++) for (int i = 0; i < OV_N; i++) for (int k = 0; k < 3; k++) atomic_store(&g_cust[0][l][i][k], atomic_load(&g_cust[1][l][i][k]));
     atomic_store(&g_edit, 0); atomic_fetch_add(&g_cust_ver, 1); g_menu_ptr = -1; atomic_store(&g_menu_hi, -1);
-    if (save) { g_set_grid = g_ed.grid; settings_save(); }
+    if (save) settings_save();
     dm_haptics_android_tap(); dm_overlay_redraw();
     LOG("[overlay] layout editor closed: %s", save ? "the layout is saved" : g_ed.dirty ? "the changes are thrown away" : "no changes");
 }
@@ -517,7 +516,7 @@ static void ed_do(int b) {
     int l = dm_overlay_layout();
     if (b == OVE_SMALLER || b == OVE_BIGGER) { float f = b == OVE_BIGGER ? 1.1f : 1 / 1.1f; for (int i = 0; i < OV_N; i++) if (g_ed.sel < 0 || i == g_ed.sel) ed_resize(l, i, ed_size(l, i) * f); }
     else if (b == OVE_RESET) { for (int i = 0; i < OV_N; i++) for (int k = 0; k < 3; k++) atomic_store(&g_cust[1][l][i][k], 0); g_ed.sel = -1; g_ed.dirty = 1; }
-    else if (b == OVE_GRID) { g_ed.grid = !g_ed.grid; g_ed.dirty = 1; }
+    else if (b == OVE_GRID) { atomic_store(&g_set_grid, !atomic_load(&g_set_grid)); settings_save(); }   // a setting, saved now: Cancel does not undo it
     else if (b == OVE_CANCEL) { ed_cancel(); return; }
     else if (b == OVE_SAVE) { ed_close(1); return; }
     else if (b == OVE_DISCARD) { ed_close(0); return; }
@@ -530,7 +529,7 @@ static void ed_key(uint64_t bit) {
 }
 static void ed_drag(float x, float y, float W, float H) {   // the chosen control's centre follows the finger, kept on the screen
     int l = dm_overlay_layout(); float b[4]; ov_box(&OV_LAYOUTS[l][g_ed.sel], W, H, b);
-    float step = g_ed.grid ? H / OVE_GRID_ROWS : 0;
+    float step = atomic_load(&g_set_grid) ? H / OVE_GRID_ROWS : 0;
     float px = ov_ed_position(x + g_ed.gx, b[2], W, step), py = ov_ed_position(y + g_ed.gy, b[3], H, step);
     cust_place(1, l, g_ed.sel, px / W, py / H); g_ed.dirty = 1;
 }

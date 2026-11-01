@@ -42,7 +42,7 @@ A game that is not in this table is not supported yet. The games we look at next
 
 A game played by touch: tick **Touch game** on the Port tab (`--touch`). The on-screen gamepad then starts hidden and every touch but one on the menu button goes to the game; the pause menu shows the gamepad again.
 
-To arrange the on-screen controls, open the pause menu's **Gamepad** tab and choose **Edit layout**. Turn **Snap to grid** on to show a square grid and snap each control's center as you drag it. It starts off; **Save** keeps the layout and the grid setting for the next launch, and **Cancel** discards your edits. Pinch or use **− / +** to resize controls.
+To arrange the on-screen controls, open the pause menu's **Gamepad** tab and choose **Edit layout**: drag a control to move it, pinch or use **− / +** to resize it. **Save** keeps the layout for the next launch and **Cancel** discards your edits. **Snap to grid** (off at first, and remembered) shows a square grid and snaps each control's center to it as you drag.
 
 A game that crashes with "AllocateAddressRegion … refused (0x1803)" in its log needs more address space: port it again with a larger **Extra address space** on the Port tab (`--alias-headroom` on the command line). [packaging/INSTALL.md](packaging/INSTALL.md#when-something-goes-wrong) says more.
 
