@@ -56,6 +56,7 @@ typedef struct {
 } vkdev_t;
 extern vkdev_t V;
 uint32_t vk_mem_type(uint32_t bits, VkMemoryPropertyFlags want, VkMemoryPropertyFlags avoid);
+void vk_worker_track(VkCommandBuffer cb);   // a submission slot's command buffer, recorded through the worker queue with DM_VK_WORKER (gfx_vk_worker.c)
 void vk_init(void);   // once, from mtl_init or the first use
 
 // ---- memory pools (gfx_vk_core.c): the guest's pool memory is GPU memory (AHardwareBuffer mapped over it) ----

@@ -21,3 +21,6 @@ env	DM_FPS_TARGET=30
 # Only the descriptor sets that changed are bound again (gfx_vk_exec.c DM_VK_SETSPLIT): Adreno copies a bound set into the command stream, and in the heavy
 # scene after the first field (about 20,000 draws a submission) the binds were 48% of the replay thread; a slow submission took 300-390 ms, 190-250 with it.
 env	DM_VK_SETSPLIT=1
+# The slots' command recording on a thread of its own (gfx_vk_worker.c DM_VK_WORKER): about 40% of the replay thread there was inside Adreno's driver; the heavy
+# submission's replay took 56 ms rather than 80, frames p50 162 ms rather than 171 (the 6-slot ring the mapping limit asks for still waits on the GPU).
+env	DM_VK_WORKER=1

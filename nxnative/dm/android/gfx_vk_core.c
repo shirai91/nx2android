@@ -191,6 +191,7 @@ void vk_init(void) {
     vkGetDeviceProcAddr = (PFN_vkGetDeviceProcAddr)p_vkGetInstanceProcAddr(V.inst, "vkGetDeviceProcAddr");
 #define VK_LOADD(f) f = (PFN_##f)vkGetDeviceProcAddr(V.dev, #f); if (!f) f = (PFN_##f)vkGetDeviceProcAddr(V.dev, #f "KHR"); if (!f) f = (PFN_##f)p_vkGetInstanceProcAddr(V.inst, #f);   // a promoted function by its extension's name (Vulkan 1.1 / 1.2 devices)
     VK_DEV_FNS(VK_LOADD)
+    { void vk_worker_install(void); vk_worker_install(); }   // DM_VK_WORKER: the slots' command recording on a thread of its own (gfx_vk_worker.c)
     vkGetDeviceQueue(V.dev, V.qf, 0, &V.q);
     VkPipelineCacheCreateInfo pci = {VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
     char path[1024]; const char *root = getenv("DM_ROOT"); void *data = NULL; size_t dn = 0;
@@ -510,7 +511,7 @@ static void slots_init(void) {
         VkCommandPoolCreateInfo ci = {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, NULL, VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT, V.qf};
         VKCHK(vkCreateCommandPool(V.dev, &ci, NULL, &g_slot[i].pool));
         VkCommandBuffer cb[2]; VkCommandBufferAllocateInfo ai = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, NULL, g_slot[i].pool, VK_COMMAND_BUFFER_LEVEL_PRIMARY, 2};
-        VKCHK(vkAllocateCommandBuffers(V.dev, &ai, cb)); g_slot[i].up = g_slot[i].ups[0] = cb[0]; g_slot[i].main = g_slot[i].mains[0] = cb[1]; g_slot[i].nmain_alloc = 1; g_slot[i].nup_alloc = 1;
+        VKCHK(vkAllocateCommandBuffers(V.dev, &ai, cb)); vk_worker_track(cb[0]); vk_worker_track(cb[1]); g_slot[i].up = g_slot[i].ups[0] = cb[0]; g_slot[i].main = g_slot[i].mains[0] = cb[1]; g_slot[i].nmain_alloc = 1; g_slot[i].nup_alloc = 1;
     }
 }
 uint64_t vk_fence_done(void) { return __atomic_load_n(&g_done, __ATOMIC_ACQUIRE); }   // written under g_done_mu (for the waiters) with a release store
@@ -587,13 +588,13 @@ static void vk_cmd_split_(void) {
             s->nmain_sent = s->nmain_used;
             if (s->up_used) {   // the next part records its uploads into a fresh upload buffer
                 if (s->nup_used == s->nup_alloc) { VkCommandBufferAllocateInfo ai = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, NULL, s->pool, VK_COMMAND_BUFFER_LEVEL_PRIMARY, 1};
-                    VKCHK(vkAllocateCommandBuffers(V.dev, &ai, &s->ups[s->nup_alloc])); s->nup_alloc++; }
+                    VKCHK(vkAllocateCommandBuffers(V.dev, &ai, &s->ups[s->nup_alloc])); vk_worker_track(s->ups[s->nup_alloc]); s->nup_alloc++; }
                 s->up = s->ups[s->nup_used++]; s->up_used = 0;
             }
         }
     }
     if (s->nmain_used == s->nmain_alloc) { VkCommandBufferAllocateInfo ai = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, NULL, s->pool, VK_COMMAND_BUFFER_LEVEL_PRIMARY, 1};
-        VKCHK(vkAllocateCommandBuffers(V.dev, &ai, &s->mains[s->nmain_alloc])); s->nmain_alloc++; }
+        VKCHK(vkAllocateCommandBuffers(V.dev, &ai, &s->mains[s->nmain_alloc])); vk_worker_track(s->mains[s->nmain_alloc]); s->nmain_alloc++; }
     s->main = s->mains[s->nmain_used++];
     VkCommandBufferBeginInfo bi = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, NULL, VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT}; VKCHK(vkBeginCommandBuffer(s->main, &bi)); g_cmd_gen++;
 }   // outside a submission nothing may be recorded (present, a pool finalized between frames)
@@ -764,7 +765,8 @@ void mtl_sub_begin(void) {
     // rather than 100-290. The slots left out are recycled at once, releasing what they held
     static int small; int ring = g_nslot;
     { int was = small; if (g_maps_now > MAPS_SMALL) small = 1; else if (g_maps_now < MAPS_LOW) small = 0;
-      if (small && g_nslot > MAPS_SLOTS) ring = MAPS_SLOTS;
+      static int ms = -1; if (ms < 0) { const char *e = getenv("DM_VK_MAPS_SLOTS"); ms = e && atoi(e) >= 2 ? atoi(e) : MAPS_SLOTS; }   // (start-up) the small ring's size
+      if (small && g_nslot > ms) ring = ms;
       if (small != was) { VKLOG("%d mappings: %d submission slots", g_maps_now, ring);
           if (small) for (int i = ring; i < g_nslot; i++) { slot_recycle(&g_slot[i]); VKCHK(vkResetCommandPool(V.dev, g_slot[i].pool, VK_COMMAND_POOL_RESET_RELEASE_RESOURCES_BIT)); } }
       if (next >= ring) next = 0; }
