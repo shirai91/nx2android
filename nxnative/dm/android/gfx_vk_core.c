@@ -183,6 +183,15 @@ void vk_init(void) {
     fxf.pNext = &fu8;
     VkBaseOutStructure *t = ff.pNext; while (t->pNext) t = t->pNext;   // the queried chain (core / promoted features), then the extensions'
     t->pNext = V.has_xfb ? (VkBaseOutStructure *)&fxf : (VkBaseOutStructure *)&fu8;
+    // DM_VK_DESCBUF=1: descriptor buffers (gfx_vk_descbuf.c), when the device has them
+    int vk_db_wanted(void); VkPhysicalDeviceDescriptorBufferFeaturesEXT fdb = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT}; int db = 0;
+    if (vk_db_wanted() && has_ext(ex, ne, "VK_EXT_descriptor_buffer") && non < 64) {
+        VkPhysicalDeviceFeatures2 q = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &fdb}; vkGetPhysicalDeviceFeatures2(V.pd, &q);
+        int bda = v12 ? f12.bufferDeviceAddress : featx(xf, nxf, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES)[0];
+        if (fdb.descriptorBuffer && bda) { db = 1; on[non++] = "VK_EXT_descriptor_buffer"; fdb.descriptorBufferCaptureReplay = 0; fdb.descriptorBufferImageLayoutIgnored = 0; fdb.descriptorBufferPushDescriptors = 0;
+            fdb.pNext = t->pNext; t->pNext = (VkBaseOutStructure *)&fdb; }
+        else VKLOG("[RED] DM_VK_DESCBUF: the device has no descriptor buffer feature (%d) or no buffer device address (%d)", fdb.descriptorBuffer, bda);
+    } else if (vk_db_wanted()) VKLOG("[RED] DM_VK_DESCBUF: the device has no VK_EXT_descriptor_buffer");
     VkPhysicalDeviceFeatures2 enf = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, ff.pNext, en};
     float prio = 1;
     VkDeviceQueueCreateInfo qci = {VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, NULL, 0, V.qf, 1, &prio};
@@ -191,6 +200,7 @@ void vk_init(void) {
     vkGetDeviceProcAddr = (PFN_vkGetDeviceProcAddr)p_vkGetInstanceProcAddr(V.inst, "vkGetDeviceProcAddr");
 #define VK_LOADD(f) f = (PFN_##f)vkGetDeviceProcAddr(V.dev, #f); if (!f) f = (PFN_##f)vkGetDeviceProcAddr(V.dev, #f "KHR"); if (!f) f = (PFN_##f)p_vkGetInstanceProcAddr(V.inst, #f);   // a promoted function by its extension's name (Vulkan 1.1 / 1.2 devices)
     VK_DEV_FNS(VK_LOADD)
+    { void vk_db_init(int); vk_db_init(db); }   // before any buffer is made: in that mode each needs its device address
     { void vk_worker_install(void); vk_worker_install(); }   // DM_VK_WORKER: the slots' command recording on a thread of its own (gfx_vk_worker.c)
     vkGetDeviceQueue(V.dev, V.qf, 0, &V.q);
     VkPipelineCacheCreateInfo pci = {VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
@@ -443,6 +453,7 @@ struct vksub {
     int ncq;          // timestamp counter queries used in this submission (g_cq)
     scratch_blk *blk; int nblk, capblk;
     struct dpslot *bk; int nbk; int no_ts;   // descriptor pools by bank (vk_alloc_set)
+    uint64_t db_end;  // descriptor buffer ring (gfx_vk_descbuf.c): where its submission's bytes end, freed when it is recycled
     dfree_t *df; int ndf, capdf;
     post_op *post; int npost, cappost;
     struct { uint64_t lo, hi; } gw[64]; int ngw;   // GPU writes into pool memory in this submission (sub_gpu_wrote), for pools_copy_back: nearby ones merged, and once full each joins the nearest
@@ -528,6 +539,8 @@ static void wait_fence(uint64_t f) {
 // implicit reset at vkBeginCommandBuffer took 7% of Xenoblade Chronicles 3's replay thread at a submission's start and more at every part (its battles
 // replay ~3,000 draws a frame on a thread that is the frame's limit). The slot is then taken only after the completion thread has passed it (mtl_wait, g_done)
 // rather than as soon as the GPU has. DM_VK_X_NOPRERESET=1 (start-up): reset as they are begun
+static uint64_t g_db_cur_start;   // the descriptor buffer ring's head when the open submission began
+void vk_db_wait_submitted(void) { wait_fence(g_fence); void vk_db_release(uint64_t); vk_db_release(g_db_cur_start); }   // the ring full: everything submitted is done
 static int g_prereset = -1;
 // The process's mappings, read every second: Adreno's driver maps every allocation it makes, and the kernel refuses mmap past about 65,500
 enum { MAPS_SMALL = 30000, MAPS_LOW = 15000, MAPS_SLOTS = 6, MAPS_HIGH = 45000 };
@@ -552,6 +565,7 @@ static void slot_recycle(vksub_t *s) {   // the GPU has passed this slot's last 
     pthread_mutex_unlock(&g_df_mu);
     for (int i = 0; i < s->nblk; i++) s->blk[i].used = 0;
     dp_give_back(s);
+    { void vk_db_release(uint64_t); vk_db_release(s->db_end); }
     // The pool is not reset: each command buffer is reset as it is begun again (the pool allows it). A reset of the transient pool made Adreno's driver free the
     // command memory and map it again as the next submission grew (ioctl, mmap and munmap): in Xenoblade Chronicles 3's battles the submission's start took 21%
     // of the replay thread, now 9%, and frames went from about 42 to 38 ms
@@ -717,6 +731,7 @@ void vk_dsl_register(VkDescriptorSetLayout l, const VkDescriptorSetLayoutBinding
     for (uint32_t i = 0; i < n; i++) if ((uint32_t)b[i].descriptorType < 9) need[b[i].descriptorType] += b[i].descriptorCount;
     pthread_mutex_lock(&g_dp_mu); need[9] = (uint32_t)bank_of(need); pthread_mutex_unlock(&g_dp_mu);
     pthread_mutex_lock(&g_dsl_mu); nvn_hm_put(&g_dsl_need, &l, need); pthread_mutex_unlock(&g_dsl_mu);
+    void vk_db_layout(VkDescriptorSetLayout, const VkDescriptorSetLayoutBinding *, uint32_t); vk_db_layout(l, b, n);
 }
 VkDescriptorSet vk_alloc_set(VkDescriptorSetLayout l) {
     vksub_t *s = cur();
@@ -771,7 +786,9 @@ void mtl_sub_begin(void) {
           if (small) for (int i = ring; i < g_nslot; i++) { slot_recycle(&g_slot[i]); VKCHK(vkResetCommandPool(V.dev, g_slot[i].pool, VK_COMMAND_POOL_RESET_RELEASE_RESOURCES_BIT)); } }
       if (next >= ring) next = 0; }
     int k = next; next = (next + 1) % ring; vksub_t *s = &g_slot[k];
+    { uint64_t vk_db_head(void); static int last = -1; if (last >= 0) g_slot[last].db_end = vk_db_head(); last = k; }   // descriptor buffer bytes: up to here the last submission's
     slot_recycle(s);
+    { uint64_t vk_db_head(void); g_db_cur_start = vk_db_head(); }
     pthread_mutex_lock(&g_df_mu); g_cur = k; pthread_mutex_unlock(&g_df_mu);
     s->npost = 0; s->up_used = 0; s->ngw = 0;
     VkCommandBufferBeginInfo bi = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, NULL, VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};

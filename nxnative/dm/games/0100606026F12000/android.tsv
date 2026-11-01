@@ -24,3 +24,7 @@ env	DM_VK_SETSPLIT=1
 # The slots' command recording on a thread of its own (gfx_vk_worker.c DM_VK_WORKER): about 40% of the replay thread there was inside Adreno's driver; the heavy
 # submission's replay took 56 ms rather than 80, frames p50 162 ms rather than 171 (the 6-slot ring the mapping limit asks for still waits on the GPU).
 env	DM_VK_WORKER=1
+# Descriptor buffers (gfx_vk_descbuf.c DM_VK_DESCBUF): a draw's descriptors are bytes in a ring the backend owns, bound as offsets, not sets Adreno copies into the
+# command stream. In the heavy scene the 16 slots stay (18,000 mappings rather than 31,000-56,000, GPU memory 1.8 GB rather than 3-6), frames 80-90 ms rather
+# than 160-215 (about 10 fps; the GPU alone takes 66 ms), the heavy submission's replay 61 ms.
+env	DM_VK_DESCBUF=1

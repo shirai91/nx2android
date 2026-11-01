@@ -193,7 +193,8 @@ static VkDescriptorSetLayout shader_layout(const VkDescriptorSetLayoutBinding *b
     }
     VkDescriptorSetLayout layout = nvn_hm_get(&cache, &k);
     if (!layout) {
-        VkDescriptorSetLayoutCreateInfo li = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, NULL, 0, n, b};
+        extern int g_db_on;   // descriptor buffers (gfx_vk_descbuf.c): layouts made for them
+        VkDescriptorSetLayoutCreateInfo li = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, NULL, g_db_on ? VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT : 0, n, b};
         VKCHK(vkCreateDescriptorSetLayout(V.dev, &li, NULL, &layout));
         void vk_dsl_register(VkDescriptorSetLayout l, const VkDescriptorSetLayoutBinding *b, uint32_t n); vk_dsl_register(layout, b, n);
         nvn_hm_put(&cache, &k, layout);
@@ -254,7 +255,8 @@ vkshader_t *vk_shader(uint64_t key, int stage) {
     // with the same buffers (Unity updates a constant buffer before nearly every draw, and each update is a shadow at a new offset: NEO made a new set for
     // 94% of its draws, 5 ms a frame). Up to half the device's limit per stage, as the vertex and fragment sets share a pipeline layout. DM_VK_DYN_UBO=0: none.
     static int dyn_on = -1; if (dyn_on < 0) { const char *e = getenv("DM_VK_DYN_UBO"); dyn_on = !(e && !atoi(e)); }
-    uint32_t dynmax = dyn_on ? V.props.limits.maxDescriptorSetUniformBuffersDynamic / 2 : 0;
+    extern int g_db_on;   // (descriptor buffers have none: the offset is in the descriptor)
+    uint32_t dynmax = dyn_on && !g_db_on ? V.props.limits.maxDescriptorSetUniformBuffersDynamic / 2 : 0;
     VkDescriptorSetLayoutBinding lb[96]; uint32_t nl = 0;
     for (int i = 0; i < s->nbind && nl < 96; i++) {
         const dmsv_bind *b = &s->b[i];
@@ -522,7 +524,7 @@ void vk_shader_c1(vkshader_t *s, VkBuffer *buf, VkDeviceSize *off, VkDeviceSize 
 VkPipelineLayout vk_pipeline_layout(VkDescriptorSetLayout sets[5], int nsets) {
     static VkDescriptorSetLayout empty; static nvn_hmap cache = {.klen = 5 * sizeof(VkDescriptorSetLayout)}; static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
     pthread_mutex_lock(&mu);
-    if (!empty) { VkDescriptorSetLayoutCreateInfo li = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO}; VKCHK(vkCreateDescriptorSetLayout(V.dev, &li, NULL, &empty)); void vk_dsl_register(VkDescriptorSetLayout, const VkDescriptorSetLayoutBinding *, uint32_t); vk_dsl_register(empty, NULL, 0); }
+    if (!empty) { extern int g_db_on; VkDescriptorSetLayoutCreateInfo li = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, NULL, g_db_on ? VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT : 0}; VKCHK(vkCreateDescriptorSetLayout(V.dev, &li, NULL, &empty)); void vk_dsl_register(VkDescriptorSetLayout, const VkDescriptorSetLayoutBinding *, uint32_t); vk_dsl_register(empty, NULL, 0); }
     VkDescriptorSetLayout k[5]; for (int i = 0; i < 5; i++) { k[i] = i < nsets && sets[i] ? sets[i] : (i < nsets ? empty : VK_NULL_HANDLE); if (i < nsets) sets[i] = k[i]; }   // absent stages get the empty layout (the caller allocates their sets from it)
     VkPipelineLayout pl = nvn_hm_get(&cache, k);
     if (!pl) {

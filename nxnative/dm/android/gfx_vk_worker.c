@@ -16,8 +16,9 @@ enum {
     W_BARRIER, W_COPY_BUF, W_COPY_B2I, W_COPY_I2B, W_COPY_IMG, W_BLIT, W_FILL, W_UPDATE, W_CLEAR_COLOR, W_CLEAR_DS, W_CLEAR_ATT, W_RESOLVE,
     W_BEGIN_RP, W_END_RP, W_BEGIN_R, W_END_R, W_BIND_PIPE, W_BIND_SETS, W_BIND_VB, W_BIND_IB, W_VIEWPORT, W_SCISSOR, W_BLEND, W_ST_REF, W_ST_CMP, W_ST_WR,
     W_DEPTH_BIAS, W_LINE_W, W_DRAW, W_PUSH, W_DRAW_IDX, W_DRAW_IND, W_DRAW_IDX_IND, W_DISPATCH, W_DISPATCH_IND, W_RESET_QP, W_TIMESTAMP, W_XFB_BIND, W_XFB_BEGIN,
-    W_XFB_END, W_BEGIN_CB,
+    W_XFB_END, W_BEGIN_CB, W_DB_BIND, W_DB_OFFSETS,
 };
+extern PFN_vkCmdBindDescriptorBuffersEXT vkCmdBindDescriptorBuffersEXT; extern PFN_vkCmdSetDescriptorBufferOffsetsEXT vkCmdSetDescriptorBufferOffsetsEXT;   // (gfx_vk_descbuf.c)
 
 // The queue: blocks of bytes, filled by the one thread recording a submission (they take turns under g_sub_lock) and run by the worker in order. A record is reserved
 // whole before it is written (w_reserve), so it never spans two blocks; a block whose writer has moved on is closed: all of it is published
@@ -69,7 +70,7 @@ static int queued(VkCommandBuffer cb) {   // (a slot's command buffers are made 
     X(vkCmdSetScissor) X(vkCmdSetBlendConstants) X(vkCmdSetStencilReference) X(vkCmdSetStencilCompareMask) X(vkCmdSetStencilWriteMask) X(vkCmdSetDepthBias) X(vkCmdSetLineWidth) \
     X(vkCmdDraw) X(vkCmdPushConstants) X(vkCmdDrawIndexed) X(vkCmdDrawIndirect) X(vkCmdDrawIndexedIndirect) X(vkCmdDispatch) X(vkCmdDispatchIndirect) X(vkCmdResetQueryPool) \
     X(vkCmdWriteTimestamp) X(vkCmdBindTransformFeedbackBuffersEXT) X(vkCmdBeginTransformFeedbackEXT) X(vkCmdEndTransformFeedbackEXT) X(vkBeginCommandBuffer) \
-    X(vkEndCommandBuffer) X(vkQueueSubmit)
+    X(vkEndCommandBuffer) X(vkQueueSubmit) X(vkCmdBindDescriptorBuffersEXT) X(vkCmdSetDescriptorBufferOffsetsEXT)
 W_FNS(W_REAL)
 
 // Reading one back on the worker
@@ -138,6 +139,9 @@ static void run_one(wrd *r_) {
         if (op == W_XFB_BEGIN) r_vkCmdBeginTransformFeedbackEXT(cb, f, n, b, o); else r_vkCmdEndTransformFeedbackEXT(cb, f, n, b, o); break; }
     case W_BEGIN_CB: { VkCommandBufferBeginInfo bi = R_GET(VkCommandBufferBeginInfo); bi.pNext = NULL; bi.pInheritanceInfo = NULL;
         if (r_vkBeginCommandBuffer(cb, &bi)) VKLOG("[RED] worker: vkBeginCommandBuffer failed"); break; }
+    case W_DB_BIND: { uint32_t n = R_GET(uint32_t); r_vkCmdBindDescriptorBuffersEXT(cb, n, r_take(&rd, sizeof(VkDescriptorBufferBindingInfoEXT) * n)); break; }
+    case W_DB_OFFSETS: { VkPipelineBindPoint bp = R_GET(uint32_t); VkPipelineLayout l = R_GET(VkPipelineLayout); uint32_t f = R_GET(uint32_t), n = R_GET(uint32_t);
+        const uint32_t *ix = r_take(&rd, 4 * (size_t)n); r_vkCmdSetDescriptorBufferOffsetsEXT(cb, bp, l, f, n, ix, r_take(&rd, sizeof(VkDeviceSize) * n)); break; }
     default: die("[vk] worker queue: unknown record %d", op);
     }
     *r_ = rd;
@@ -300,6 +304,13 @@ static VKAPI_ATTR void VKAPI_CALL w_vkCmdBeginTransformFeedbackEXT(VkCommandBuff
 static VKAPI_ATTR void VKAPI_CALL w_vkCmdEndTransformFeedbackEXT(VkCommandBuffer cb, uint32_t f, uint32_t n, const VkBuffer *b, const VkDeviceSize *o) {
     W_HEAD(vkCmdEndTransformFeedbackEXT, 8 * 4 + 2 * WA(sizeof(VkDeviceSize) * n), f, n, b, o); W_PUT(uint32_t, f); W_PUT(uint32_t, n); W_PUT(uint32_t, b != NULL); W_PUT(uint32_t, o != NULL);
     if (b) w_copy(b, sizeof *b * n); if (o) w_copy(o, sizeof *o * n); w_end(); }
+#define vkCmdBindDescriptorBuffersEXT_ID W_DB_BIND
+static VKAPI_ATTR void VKAPI_CALL w_vkCmdBindDescriptorBuffersEXT(VkCommandBuffer cb, uint32_t n, const VkDescriptorBufferBindingInfoEXT *b) {   // (no pNext in ours)
+    W_HEAD(vkCmdBindDescriptorBuffersEXT, 8 + WA(sizeof *b * n), n, b); W_PUT(uint32_t, n); w_copy(b, sizeof *b * n); w_end(); }
+#define vkCmdSetDescriptorBufferOffsetsEXT_ID W_DB_OFFSETS
+static VKAPI_ATTR void VKAPI_CALL w_vkCmdSetDescriptorBufferOffsetsEXT(VkCommandBuffer cb, VkPipelineBindPoint bp, VkPipelineLayout l, uint32_t f, uint32_t n, const uint32_t *ix, const VkDeviceSize *o) {
+    W_HEAD(vkCmdSetDescriptorBufferOffsetsEXT, 8 * 4 + WA(4 * (size_t)n) + WA(sizeof *o * n), bp, l, f, n, ix, o);
+    W_PUT(uint32_t, bp); W_PUT(VkPipelineLayout, l); W_PUT(uint32_t, f); W_PUT(uint32_t, n); w_copy(ix, 4 * (size_t)n); w_copy(o, sizeof *o * n); w_end(); }
 static VKAPI_ATTR VkResult VKAPI_CALL w_vkBeginCommandBuffer(VkCommandBuffer cb, const VkCommandBufferBeginInfo *bi) {
     if (!queued(cb)) return r_vkBeginCommandBuffer(cb, bi);
     if (bi->pNext || bi->pInheritanceInfo) VKRED_ONCE(112, "worker: command buffer begin with a pNext or inheritance, left out");
