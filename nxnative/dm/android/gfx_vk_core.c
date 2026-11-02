@@ -101,6 +101,7 @@ typedef struct { VkBaseOutStructure h; VkBool32 b[24]; } featx_t;
 static VkBool32 *featx(featx_t *x, uint32_t n, VkStructureType s) { static VkBool32 off[24]; for (uint32_t i = 0; i < n; i++) if (x[i].h.sType == s) return x[i].b; return off; }   // (off: only 0 is written to it)
 
 static void completion_start(void);
+static void memlog_start(void);
 static void slots_init(void);
 static VKAPI_ATTR VkBool32 VKAPI_CALL vk_validation_msg(VkDebugUtilsMessageSeverityFlagBitsEXT sev, VkDebugUtilsMessageTypeFlagsEXT type, const VkDebugUtilsMessengerCallbackDataEXT *d, void *u) {
     (void)type; (void)u;   // each distinct message ID logged its first 3 times
@@ -318,6 +319,7 @@ void vk_init(void) {
         en.shaderStorageImageExtendedFormats ? "yes" : "no", en.shaderStorageImageReadWithoutFormat ? "yes" : "no", en.shaderStorageImageWriteWithoutFormat ? "yes" : "no");
     slots_init();
     completion_start();
+    memlog_start();
     { void crash_handlers_check(const char *when); crash_handlers_check("after the Vulkan device was made"); }   // (again at present 600, gfx_vk_present.c: the shader compiler loads with the first pipelines)
 }
 const void *vk_sg_pin(VkShaderStageFlagBits stage, const uint32_t *local) {
@@ -405,8 +407,8 @@ static void pool_cache_sync(vkpool_t *p, int invalidate, uint64_t lo, uint64_t h
     else { VKCHK(vkFlushMappedMemoryRanges(V.dev, 1, &range)); }
     if (diag) mem_diag_note(invalidate ? 4 : 3, t, range.size == VK_WHOLE_SIZE ? p->hi - p->lo - range.offset : range.size);
 }
-// Zero copy: the pages of [mem, mem+size) become an AHardwareBuffer's, imported as a VkBuffer. 0 on success
-static int pool_zero_copy(vkpool_t *p, uint8_t *mem, uint64_t size) {
+// A BLOB hardware buffer of size bytes and a file descriptor of its memory (the caller closes it). 0 on success
+static int ahb_new(uint64_t size, AHardwareBuffer **out, int *fd) {
     AHardwareBuffer_Desc d = {(uint32_t)size, 1, 1, AHARDWAREBUFFER_FORMAT_BLOB,
         AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN | AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN | AHARDWAREBUFFER_USAGE_GPU_DATA_BUFFER, 0, 0, 0};
     if (size > 0xffffffffull) { mem_diag_zc(0, "size", size, "limit", -1); return -1; }
@@ -420,16 +422,11 @@ static int pool_zero_copy(vkpool_t *p, uint8_t *mem, uint64_t size) {
     else mem_diag_zc(3, "AHardwareBuffer_sendHandleToUnixSocket", size, "return", ar);
     close(sv[0]); close(sv[1]);
     if (nfd < 1) { AHardwareBuffer_release(ahb); return -1; }
-    // copy the pool's current contents into the buffer through a temporary mapping, then put the buffer's pages at the pool's address
-    uint8_t *tmp = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fds[0], 0);
-    int ok = tmp != MAP_FAILED;
-    if (ok) {
-        memcpy(tmp, mem, size); munmap(tmp, size);
-        ok = mmap(mem, size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fds[0], 0) == mem;
-        if (!ok) mem_diag_zc(6, "mmap-fixed", size, "errno", errno);
-    } else mem_diag_zc(5, "mmap-temporary", size, "errno", errno);
-    for (int i = 0; i < nfd; i++) close(fds[i]);
-    if (!ok) { AHardwareBuffer_release(ahb); return -1; }
+    for (int i = 1; i < nfd; i++) close(fds[i]);
+    *out = ahb; *fd = fds[0]; return 0;
+}
+// The hardware buffer imported as the pool's VkBuffer (its pages are already at the pool's address). 0 on success; on failure the buffer is released
+static int ahb_import(vkpool_t *p, AHardwareBuffer *ahb, uint64_t size) {
     VkAndroidHardwareBufferPropertiesANDROID ap = {VK_STRUCTURE_TYPE_ANDROID_HARDWARE_BUFFER_PROPERTIES_ANDROID};
     VkExternalMemoryBufferCreateInfo eb = {VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO, NULL, VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID};
     VkBufferCreateInfo bi = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, &eb, 0, size, POOL_USAGE, VK_SHARING_MODE_EXCLUSIVE};
@@ -443,9 +440,56 @@ static int pool_zero_copy(vkpool_t *p, uint8_t *mem, uint64_t size) {
     vr = vkAllocateMemory(V.dev, &ai, NULL, &p->mem);
     if (!vr) { vr = vkBindBufferMemory(V.dev, p->buf, p->mem, 0); if (vr) mem_diag_zc(10, "vkBindBufferMemory", size, "VkResult", vr); }
     else mem_diag_zc(9, "vkAllocateMemory", size, "VkResult", vr);
-    if (vr) { vkDestroyBuffer(V.dev, p->buf, NULL); AHardwareBuffer_release(ahb); return -2; }
+    if (vr) { vkDestroyBuffer(V.dev, p->buf, NULL); p->buf = VK_NULL_HANDLE; AHardwareBuffer_release(ahb); return -2; }
     p->ahb = ahb; p->zero_copy = 1;
     return 0;
+}
+// Zero copy: the pages of [mem, mem+size) become an AHardwareBuffer's, imported as a VkBuffer. 0 on success
+static int pool_zero_copy(vkpool_t *p, uint8_t *mem, uint64_t size) {
+    AHardwareBuffer *ahb; int fd; if (ahb_new(size, &ahb, &fd)) return -1;
+    // copy the pool's current contents into the buffer through a temporary mapping, then put the buffer's pages at the pool's address
+    uint8_t *tmp = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    int ok = tmp != MAP_FAILED;
+    if (ok) {
+        memcpy(tmp, mem, size); munmap(tmp, size);
+        ok = mmap(mem, size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, 0) == mem;
+        if (!ok) mem_diag_zc(6, "mmap-fixed", size, "errno", errno);
+    } else mem_diag_zc(5, "mmap-temporary", size, "errno", errno);
+    close(fd);
+    if (!ok) { AHardwareBuffer_release(ahb); return -1; }
+    return ahb_import(p, ahb, size);
+}
+// Lazy chunks: the chunks of a pool over ZC_CHUNK get their hardware buffer when the GPU first uses them (vk_pool_of); until then their pages stay the game's anonymous memory,
+// taken only where it writes and swappable. A hardware buffer's pages are all taken when it is allocated and never swapped: Pokemon Pokopia makes 4.96 GB of pools in its
+// first seconds, of which the GPU had used 512 MB by its third frame, and with all of it backed Android's low-memory killer ended the game within seconds on an AYN Thor (11.5 GB).
+// DM_VK_ZEROCOPY_LAZY=0: every chunk is backed when its pool is made, as before
+static int zc_lazy(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_VK_ZEROCOPY_LAZY"); v = !(e && !atoi(e)); } return v; }
+static pthread_mutex_t g_lazy_mu = PTHREAD_MUTEX_INITIALIZER;   // one chunk backed at a time; mtl_pool_del takes it too
+static int lazy_fill(void *mem, size_t len, void *ctx) {   // nvn_dirty_swap's fill: the old pages copied into the buffer, the buffer's pages mapped read-only over them
+    int fd = *(int *)ctx;
+    uint8_t *tmp = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0); if (tmp == MAP_FAILED) return -2;
+    memcpy(tmp, mem, len); munmap(tmp, len);
+    return mmap(mem, len, PROT_READ, MAP_SHARED | MAP_FIXED, fd, 0) == mem ? 0 : -2;
+}
+static uint64_t g_lazy_bytes;   // lazy chunks backed so far
+// A lazy chunk given its hardware buffer. A chunk of a pool the dirty-page tracker does not hold (a sparse pool's run) is copied and mapped as at pool creation.
+// serial: the chunk's as vk_pool_of found it (a pool removed meanwhile moves another into its slot). 0 = backed
+static int pool_back(vkpool_t *p, uint64_t serial) {
+    pthread_mutex_lock(&g_lazy_mu);
+    int rc = p->serial == serial ? 0 : -1;
+    if (!rc && __atomic_load_n(&p->lazy, __ATOMIC_ACQUIRE)) {
+        uint64_t size = p->hi - p->lo; AHardwareBuffer *ahb; int fd;
+        rc = ahb_new(size, &ahb, &fd);
+        if (!rc) {
+            rc = nvn_dirty_swap((void *)(uintptr_t)p->lo, size, lazy_fill, &fd);
+            if (rc == 1) { AHardwareBuffer_release(ahb); close(fd); rc = pool_zero_copy(p, (uint8_t *)(uintptr_t)p->lo, size); }
+            else { close(fd); if (rc) AHardwareBuffer_release(ahb); else rc = ahb_import(p, ahb, size); }
+        }
+        if (!rc) { __atomic_store_n(&p->lazy, 0, __ATOMIC_RELEASE); g_lazy_bytes += size; }
+        else { static int said; if (!said++) VKLOG("[RED] memory pool chunk %#llx +%#llx: no hardware buffer when the GPU first used it (%d); draws that use it are skipped", (unsigned long long)p->lo, (unsigned long long)size, rc); }
+    }
+    pthread_mutex_unlock(&g_lazy_mu);
+    return rc;
 }
 // A zero-copy pool's dma-buf mapped again over [mem, mem+len) in one piece per chunk, read-only (nvn_dirty_defrag: the mappings its protection split never merge). 0 = done
 int vk_pool_remap_ro(void *mem, size_t len) {
@@ -453,6 +497,7 @@ int vk_pool_remap_ro(void *mem, size_t len) {
     pthread_rwlock_rdlock(&g_pool_mu);
     for (int i = 0; i < g_npool && !rc; i++) {
         vkpool_t *p = &g_pool[i]; if (p->base != (uint64_t)(uintptr_t)mem || p->end - p->base != len) continue;
+        if (__atomic_load_n(&p->lazy, __ATOMIC_ACQUIRE)) { done += p->hi - p->lo; continue; }   // a lazy chunk not backed yet: anonymous pages, which the kernel merges again by itself
         if (!p->zero_copy) { if (!p->shadow) { rc = -1; break; } done += p->hi - p->lo; continue; }   // a copied pool: nothing to map again (its protection stays as it is), and done, so defrag stops taking its pages busy
         int sv[2], fds[16], nfd = -1; if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sv)) { rc = -1; break; }
         if (!AHardwareBuffer_sendHandleToUnixSocket(p->ahb, sv[0])) nfd = recv_fds(sv[1], fds, 16);
@@ -474,7 +519,8 @@ static void pool_copy_back(vkpool_t *p) {   // the pages go back to anonymous me
 // (vendor.qti.hardware.display.allocator-service, snapalloc) aborts on a BLOB of 812 MB ("ubsan: mul-overflow" in SnapConstraintManager::AlignmentToAlignedConstraints),
 // and the whole Android UI restarts with it; 400 MB ones work (13 Sentinels: Aegis Rim's 0x32c00000-byte pool). A range across two chunks has no buffer (vk_pool_of)
 #define ZC_CHUNK 0x10000000ull
-static void pool_add_one(const void *mem, uint64_t size, uint64_t base, uint64_t end);
+static void pool_add_one(const void *mem, uint64_t size, uint64_t base, uint64_t end, int lazy);
+static uint64_t g_zc_bytes, g_cp_bytes, g_used_bytes, g_lazy_total;   // pools made zero-copy, copied, found by vk_pool_of and made lazy so far (pool_add_one's line and memlog_main's; pools removed are not taken off)
 // DM_VK_ZEROCOPY_MAX_MB=<n>: pools bigger than n MB are copied, not zero-copy, and kept whole (a copied pool takes no hardware buffer, so no chunks). The Legion Y700
 // 2023's gralloc aborts the process (no error returned) allocating a hardware buffer for Unicorn Overlord's 860 MB pool, while its pools up to 250 MB are fine
 static int zc_over(uint64_t size) { static uint64_t m = 1; if (m == 1) { const char *e = getenv("DM_VK_ZEROCOPY_MAX_MB"); m = e && atoi(e) > 0 ? (uint64_t)atoi(e) << 20 : 0; } return m && size > m; }
@@ -482,15 +528,15 @@ void mtl_pool_add(const void *mem, uint64_t size) {
     vk_init();
     if (!size) return;
     uint64_t a = (uint64_t)(uintptr_t)mem, c = ((a | size) & 0xfff) || zc_over(size) ? size : ZC_CHUNK;
-    for (uint64_t o = 0; o < size; o += c) pool_add_one((const uint8_t *)mem + o, size - o < c ? size - o : c, a, a + size);
+    for (uint64_t o = 0; o < size; o += c) pool_add_one((const uint8_t *)mem + o, size - o < c ? size - o : c, a, a + size, size > c && zc_lazy());
     if (size > c) VKLOG("memory pool %p +%#llx: %llu chunks of at most %#llx", mem, (unsigned long long)size, (unsigned long long)((size + c - 1) / c), c);
 }
-static void pool_add_one(const void *mem, uint64_t size, uint64_t base, uint64_t end) {
+static void pool_add_one(const void *mem, uint64_t size, uint64_t base, uint64_t end, int lazy) {
     pthread_rwlock_wrlock(&g_pool_mu);
     if (g_npool == MAXPOOL) { pthread_rwlock_unlock(&g_pool_mu); die("[vk] too many memory pools"); }
     vkpool_t *p = &g_pool[g_npool]; memset(p, 0, sizeof *p);
     p->lo = (uint64_t)(uintptr_t)mem; p->hi = p->lo + size; p->base = base; p->end = end; { static uint64_t ser; p->serial = ++ser; }
-    int zc = ((uintptr_t)mem & 0xfff) || (size & 0xfff) ? -3 : getenv("DM_VK_NO_ZEROCOPY") ? -4 : zc_over(end - base) ? -5 : pool_zero_copy(p, (uint8_t *)mem, size);
+    int zc = ((uintptr_t)mem & 0xfff) || (size & 0xfff) ? -3 : getenv("DM_VK_NO_ZEROCOPY") ? -4 : zc_over(end - base) ? -5 : lazy ? (p->lazy = 1, 0) : pool_zero_copy(p, (uint8_t *)mem, size);
     if (zc) {
         static int said; if (!said++) VKLOG("[RED] memory pool %p +%#llx could not be zero-copy (%d): a GPU copy is refreshed before each submission (slow)", mem, (unsigned long long)size, zc);
         const char *e = getenv("DM_VK_POOL_CACHED"); int cached = e && atoi(e);
@@ -506,16 +552,17 @@ static void pool_add_one(const void *mem, uint64_t size, uint64_t base, uint64_t
     int np = g_npool;
     pthread_rwlock_unlock(&g_pool_mu);
     if (np >= 1024 && !(np & (np - 1))) VKLOG("%d memory pools live", np);
-    static uint64_t zc_bytes, cp_bytes; if (zc) cp_bytes += size; else zc_bytes += size;
-    static int nlog; if (nlog++ < 24) VKLOG("memory pool %p +%#llx: %s (zero-copy %.1f MB, copied %.1f MB)", mem, (unsigned long long)size, zc ? "copied" : "zero-copy", zc_bytes / 1048576.0, cp_bytes / 1048576.0);
+    if (zc) g_cp_bytes += size; else if (lazy) g_lazy_total += size; else g_zc_bytes += size;
+    static int nlog; if (nlog++ < 24) VKLOG("memory pool %p +%#llx: %s (zero-copy %.1f MB, lazy %.1f MB, copied %.1f MB)", mem, (unsigned long long)size, zc ? "copied" : lazy ? "zero-copy when the GPU first uses it" : "zero-copy",
+                                        g_zc_bytes / 1048576.0, g_lazy_total / 1048576.0, g_cp_bytes / 1048576.0);
 }
 void mtl_pool_del(const void *mem) {
     for (;;) {   // every chunk of the pool
-        pthread_rwlock_wrlock(&g_pool_mu);
+        pthread_mutex_lock(&g_lazy_mu); pthread_rwlock_wrlock(&g_pool_mu);
         int i = 0; while (i < g_npool && g_pool[i].base != (uint64_t)(uintptr_t)mem) i++;
-        if (i == g_npool) { pthread_rwlock_unlock(&g_pool_mu); return; }
+        if (i == g_npool) { pthread_rwlock_unlock(&g_pool_mu); pthread_mutex_unlock(&g_lazy_mu); return; }
         vkpool_t p = g_pool[i]; g_pool[i] = g_pool[--g_npool]; pool_ord_remove(i); __atomic_fetch_add(&g_pool_gen, 1, __ATOMIC_RELEASE);
-        pthread_rwlock_unlock(&g_pool_mu);
+        pthread_rwlock_unlock(&g_pool_mu); pthread_mutex_unlock(&g_lazy_mu);
         if (p.zero_copy) pool_copy_back(&p);
         free(p.baseline);
         vk_defer_free_buffer(p.buf, p.mem);   // the AHardwareBuffer goes with the imported memory's last reference
@@ -536,6 +583,8 @@ vkpool_t *vk_pool_of(uint64_t addr, uint64_t len) {
         for (int i = 0; i < g_npool; i++) if (addr >= g_pool[i].lo && addr + len <= g_pool[i].hi) { r = &g_pool[i]; break; }
                                            else if (addr >= g_pool[i].lo && addr < g_pool[i].hi && addr + len <= g_pool[i].end) across = 1;
     pthread_rwlock_unlock(&g_pool_mu);
+    if (r && __atomic_load_n(&r->lazy, __ATOMIC_ACQUIRE) && pool_back(r, r->serial)) r = NULL;
+    if (r && !__atomic_exchange_n(&r->used, 1, __ATOMIC_RELAXED)) __atomic_fetch_add(&g_used_bytes, r->hi - r->lo, __ATOMIC_RELAXED);
     if (r) { if (c.gen != g) { memset(&c, 0, sizeof c); c.gen = g; } memmove(&c.p[1], &c.p[0], 3 * sizeof *c.p); c.p[0] = r; }
     if (!r && across) { static uint64_t n; uint64_t k = ++n; if (!(k & (k - 1))) LOG("[RED] [vk] %llu ranges across two chunks of a memory pool (ZC_CHUNK; this one %#llx +%#llx): no buffer for them", (unsigned long long)k, (unsigned long long)addr, (unsigned long long)len); }
     return r;
@@ -1201,6 +1250,31 @@ static void *completion_main(void *a) {
     return NULL;
 }
 static void completion_start(void) { pthread_t t; if (pthread_create(&t, NULL, completion_main, NULL)) die("[vk] completion thread"); pthread_detach(t); }
+
+// DM_VK_MEMLOG=<s>: every s seconds a line with the process's memory (/proc/self/status: resident anonymous / file / shared, swapped), the system's (/proc/meminfo, memory pressure
+// from /proc/pressure/memory) and the pools made zero-copy (hardware buffers: never swapped) or copied. Android's low-memory killer ends a game with SIGKILL and nothing in its log;
+// sampling from outside (dumpsys meminfo, run-as) stalled for half a minute under that pressure on an AYN Thor (Pokemon Pokopia, 2026-11-02), and these reads do not
+static long kb_of(const char *buf, const char *key) { const char *p = strstr(buf, key); return p ? strtol(p + strlen(key), NULL, 10) : -1; }
+static int slurp_small(const char *path, char *buf, size_t n) {
+    FILE *f = fopen(path, "r"); if (!f) return 0;
+    size_t k = fread(buf, 1, n - 1, f); fclose(f); buf[k] = 0; return 1;
+}
+static void *memlog_main(void *arg) {
+    unsigned s = (unsigned)(uintptr_t)arg; char st[4096], mi[4096], ps[256];
+    for (;;) {
+        sleep(s);
+        if (!slurp_small("/proc/self/status", st, sizeof st) || !slurp_small("/proc/meminfo", mi, sizeof mi)) continue;
+        const char *some = slurp_small("/proc/pressure/memory", ps, sizeof ps) ? strstr(ps, "avg10=") : NULL;
+        VKLOG("[mem] process: anon %ld MB, file %ld MB, shared %ld MB, swapped %ld MB | system: available %ld MB, free %ld MB, swap free %ld MB, pressure %.*s | pools: zero-copy %.0f MB (%.0f MB of it backed when first used, %.0f MB not used yet), copied %.0f MB, used %.0f MB",
+              kb_of(st, "RssAnon:") >> 10, kb_of(st, "RssFile:") >> 10, kb_of(st, "RssShmem:") >> 10, kb_of(st, "VmSwap:") >> 10,
+              kb_of(mi, "MemAvailable:") >> 10, kb_of(mi, "MemFree:") >> 10, kb_of(mi, "SwapFree:") >> 10, some ? 11 : 1, some ? some : "?", (g_zc_bytes + g_lazy_bytes) / 1048576.0, g_lazy_bytes / 1048576.0, (g_lazy_total - g_lazy_bytes) / 1048576.0, g_cp_bytes / 1048576.0, g_used_bytes / 1048576.0);
+    }
+    return NULL;
+}
+static void memlog_start(void) {
+    const char *e = getenv("DM_VK_MEMLOG"); int s = e ? atoi(e) : 0; if (s <= 0) return;
+    pthread_t t; if (!pthread_create(&t, NULL, memlog_main, (void *)(uintptr_t)s)) pthread_detach(t);
+}
 uint64_t mtl_sub_commit(void) {
     { void vk_prof_end(void); vk_prof_end(); }
     vksub_t *s = cur();

@@ -188,6 +188,31 @@ int nvn_dirty_defrag(int (*remap)(void *mem, size_t len)) {
     }
     return done;
 }
+// [mem, mem+len) of one range given new pages by fill (gfx_vk_core.c: a lazy pool chunk's hardware buffer, the first time the GPU uses it). As in nvn_dirty_defrag every page is made
+// BUSY, and also read-only, so no write lands while fill copies the old pages into the new ones; fill maps the new pages read-only (0 = done). Then the runs that were writable are
+// made writable again and stamped as written (a write that waited on a BUSY page is the module's to let through), and the protected pages keep their protection.
+// → fill's result; 1 when no registered range holds the span (nothing done); -1 when a page stayed BUSY past BUSY_WAIT_MS (nothing done)
+int nvn_dirty_swap(void *mem, size_t len, int (*fill)(void *mem, size_t len, void *ctx), void *ctx) {
+    range_t *r = find_span((uintptr_t)mem, len); if (!r) return 1;
+    uintptr_t p0 = ((uintptr_t)mem - r->base) >> g_shift; size_t np = len >> g_shift;
+    uint8_t *was = malloc(np); if (!was) return -1;
+    for (size_t k = 0; k < np; k++)
+        for (;;) { uint8_t st = atomic_load(&r->state[p0 + k]);
+            if (st == PG_BUSY) { if (busy_wait(r, p0 + k)) continue;
+                for (size_t j = 0; j < k; j++) atomic_store(&r->state[p0 + j], was[j]);
+                free(was); return -1; }
+            if (atomic_compare_exchange_strong(&r->state[p0 + k], &st, PG_BUSY)) { was[k] = st; break; } }
+    mp((uintptr_t)mem, len, PROT_READ);
+    int rc = fill(mem, len, ctx);
+    for (size_t k = 0; k < np; ) {
+        if (was[k] != PG_NONE) { k++; continue; }
+        size_t q = k; while (q < np && was[q] == PG_NONE) q++;
+        mp((uintptr_t)mem + (k << g_shift), (q - k) << g_shift, PROT_READ | PROT_WRITE); k = q;
+    }
+    for (size_t k = 0; k < np; k++) { if (was[k] == PG_NONE) stamp_page(r, p0 + k); atomic_store(&r->state[p0 + k], was[k]); }
+    free(was);
+    return rc;
+}
 // Runs of protected pages over every live range: each is a mapping of its own (at most two with the writable pieces around it)
 int nvn_dirty_runs(void) {
     int n = atomic_load(&g_nr), runs = 0;
