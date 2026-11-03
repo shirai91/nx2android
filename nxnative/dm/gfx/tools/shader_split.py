@@ -162,6 +162,22 @@ def sead_prim_shaders(d, label):
         out.append((f'{label}#SEADPRIM@{c:#x}', st, ctl, code))
     return out
 
+def ndsr_shaders(d, label):
+    """agl's NDSR pack (Lib/agl/agl_resource.*.sarc.zs agl_ndsr.pck: Donkey Kong Bananza's upscaler, 3 vertex / pixel programs and 24 compute shaders): 'NDSR', then from +0x10
+    16-byte records {u32 control offset, u32 control length << 4 | type, u32 code offset, u32 code length / 16 << 8 | type} up to a zero one. Records whose control offset holds an
+    NVN2 control section are shaders, a vertex record followed by its pixel one; the others hold constant data. Without it the upscaler's shaders came only from run-time captures"""
+    out, var = [], None
+    for c, cl, k, _ in struct.iter_unpack('<4I', d[0x10:len(d) - (len(d) - 0x10) % 16]):
+        if not c and not cl: break
+        ctl = d[c:c + max(NVN2_KEY, cl >> 4)]
+        if not nvn2(ctl): continue
+        st, code = NVN2_STAGE.get(ctl[0x56]), d[k:k + struct.unpack_from('<I', ctl, 0x44)[0]]
+        if not st or check(label, st, ctl, code): continue
+        if st == 'vs': var = f'{label}#NDSR#var{c:#x}'
+        out.append((var if st in ('vs', 'ps') and var else f'{label}#NDSR@{c:#x}', st, ctl, code))
+        if st != 'vs': var = None
+    return out
+
 def mshd_shaders(d, label):
     out, c = [], d.find(CTL_MAGIC)
     while c >= 0:
@@ -1293,6 +1309,7 @@ def scan_blob(d, label, out):
         for nm, m in sarc_members(d): scan_blob(m, f'{label}/{nm}', out)
         return
     if d[:4] == b'BAHS': out.extend(bahs_shaders(d, label)); return
+    if d[:4] == b'NDSR': out.extend(ndsr_shaders(d, label)); return
     if sp := sead_prim_shaders(d, label): out.extend(sp); return
     if d[:4] == b'MSHD': out.extend(mshd_shaders(d, label)); return
     if d[:4] == PGDAT and len(d) >= 0x1c and (mem := pgdat_members(d, label)) is not None:   # PlatinumGames
@@ -1545,7 +1562,7 @@ def main():
     for name, rr in recs.items():
         with open(os.path.join(pkg, name), 'wb') as f: f.write(b''.join(rr))
     with open(mapout, 'w') as f:
-        kinds = ' / '.join(k for k, hit in (('BNSH / BAHS', any('#BNSH@' in r[4] or '#BAHS@' in r[4] for r in rows)), ('Unity Shader', any('#var' in r[4] and '#BNSH@' not in r[4] and '#MSHD#' not in r[4] and '#SDF#' not in r[4] and '#HCPS@' not in r[4] and '#SLCT@' not in r[4] for r in rows)),
+        kinds = ' / '.join(k for k, hit in (('BNSH / BAHS', any('#BNSH@' in r[4] or '#BAHS@' in r[4] for r in rows)), ('agl NDSR', any('#NDSR' in r[4] for r in rows)), ('Unity Shader', any('#var' in r[4] and '#BNSH@' not in r[4] and '#NDSR#' not in r[4] and '#MSHD#' not in r[4] and '#SDF#' not in r[4] and '#HCPS@' not in r[4] and '#SLCT@' not in r[4] for r in rows)),
                                             ('MSHD', any('#MSHD#' in r[4] for r in rows)), ('GLSLC', any('#GLSLC@' in r[4] for r in rows)), ('RE Engine SDF', any('#SDF#' in r[4] for r in rows)),
                                             ('MT Framework SPK', any('#MTSPK@' in r[4] for r in rows)), ('MonoGame MGFX', any('#MGFX@' in r[4] for r in rows)),
                                             ('PlatinumGames shader objects', any('#PGSO' in r[4] for r in rows)), ('Monolith SLCT', any('#HCPS@' in r[4] or '#SLCT@' in r[4] for r in rows)),
