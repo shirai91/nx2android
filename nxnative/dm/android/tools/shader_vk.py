@@ -231,7 +231,7 @@ def int_inputs(spv):
 
 # Handle decoding: as dmsh_build.py decode_tex / decode_ubo_tex / reflect (names: <stage>_t<type>_cb<slot>_<handle>, <stage>_c<n>, <stage>_s<n>, <stage>_i…)
 TEX_BASE, IMG_BASE, IMG_SLOTS, SEPTEX_BASE, SEPTEX_SLOT0, SAMP_BASE = 0x20, 0x120, 8, 0x168, 128, 0x568
-SSBO = {'vs': 0x110, 'cs': 0x310, 'ps': 0x510}
+SSBO = {'vs': 0x110, 'hs': 0x210, 'ds': 0x310, 'gs': 0x410, 'ps': 0x510, 'cs': 0x310}   # each stage's storage buffer table in c[0] (graphics: 0x110 + 0x100 x the hardware stage)
 def classify(stage, b, res):
     nm = b['name']; e = dict(b)
     m = re.fullmatch(r'[a-z]+_c(\d+)', nm)

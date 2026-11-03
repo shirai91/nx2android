@@ -1000,8 +1000,9 @@ static uint32_t g_dispatch[3], g_draw_binst;
 static void drv_segment(int st, int bank, uint8_t *d) {
     memset(d, 0, 0x1000);
     if (bank == 0) {
-        int base = st == 0 ? 0x110 : st == 5 ? 0x310 : st == 1 ? 0x510 : -1;
-        if (base >= 0) for (int r = 0; r < 16; r++) { uint64_t a = S.ssbo[st][r].addr; uint32_t n = (uint32_t)S.ssbo[st][r].size; memcpy(d + base + 16 * r, &a, 8); memcpy(d + base + 16 * r + 8, &n, 4); }
+        static const int sbo[6] = {0x110, 0x510, 0x410, 0x210, 0x310, 0x310};   // each NVN stage's storage buffer table (graphics: 0x110 + 0x100 x the hardware stage)
+        int base = sbo[st];
+        for (int r = 0; r < 16; r++) { uint64_t a = S.ssbo[st][r].addr; uint32_t n = (uint32_t)S.ssbo[st][r].size; memcpy(d + base + 16 * r, &a, 8); memcpy(d + base + 16 * r + 8, &n, 4); }
         if (st != 5) { const float mp = 2047.0f; memcpy(d + 0x610, &mp, 4); memcpy(d + 0x644, &g_draw_binst, 4); }
         else { memcpy(d + 0x200, g_dispatch, 12); for (int r = 0; r < 16; r++) { uint64_t a = S.ubo[5][r].addr; uint32_t n = (uint32_t)S.ubo[5][r].size; memcpy(d + 0x210 + 16 * r, &a, 8); memcpy(d + 0x210 + 16 * r + 8, &n, 4); } }
     } else if (bank == NVN_PUSH_BANK) memcpy(d, S.push[st == 5], NVN_PUSH_SIZE);
