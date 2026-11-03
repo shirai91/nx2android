@@ -10,7 +10,7 @@ from pathlib import Path
 from porter import config, datapack, dumps, fpslocker, install, paths, profiles, toolchain
 from porter.adb import Adb, AdbError
 from porter.paths import DM, NXNATIVE
-from porter.upstream import BuildError, PROG, android_profile, game, nacp, nsp, profile_guess, say
+from porter.upstream import BuildError, PROG, android_profile, game, nacp, nsp, profile_guess, say, trinity
 
 PY = sys.executable
 # The letters of the button-icon font (make_ext_font.py knocks them out of the icons): a bold system font of the machine that ports, never shipped in the repository
@@ -382,8 +382,8 @@ class Port:
         src = profile_guess.build_sources(self.game / 'ExeFS', self.game / 'RomFS', self.g.words('modules'))
         gfx = src['graphics'][0]
         if gfx != 'nvn': raise BuildError(f'{self.app_name} renders with {gfx} ({src["graphics"][1]}): the Android host replays NVN only so far')
-        # Game Freak's GFPAKs with Oodle entries: decoded by the game's own decoder on the Android device (device_oodle); Trinity and PKZ packs still need the Mac host
-        self.oodle_why = src['oodle_packs'][1] if src['oodle_packs'][0] and 'GFPAK' in src['oodle_packs'][1] else ''
+        # Game Freak's GFPAKs and Trinity packs with Oodle entries: decoded by the game's own decoder on the Android device (device_oodle); PKZ packs still need the Mac host
+        self.oodle_why = src['oodle_packs'][1] if src['oodle_packs'][0] and ('GFPAK' in src['oodle_packs'][1] or 'Trinity' in src['oodle_packs'][1]) else ''
         if self.oodle_why:
             try: Adb(self.tools['adb'], self.o.device or self.cfg.get('device'), log=say).pick()
             except (AdbError, KeyError) as e: raise BuildError(f"{self.app_name}'s shaders are in Oodle-compressed archives ({self.oodle_why}): the port decodes them with the game's own decoder on "
@@ -391,14 +391,16 @@ class Port:
         for k in ('glslc_capture', 'ue_decode', 'ue_legacy') + (() if self.oodle_why else ('oodle_packs',)):
             if src[k][0]: raise BuildError(f'{self.app_name} needs a step that boots the game in the Mac host ({src[k][1]}), which the Android port cannot run yet')
 
-    # ---- the game's own Oodle decoder on the device, for the shader split (Pokémon Legends: Arceus's GFPAKs) ----
+    # ---- the game's own Oodle decoder on the device, for the shader split (Pokémon Legends: Arceus's GFPAKs, Pokémon Legends: Z-A's Trinity packs) ----
     ODEV = '/data/local/tmp/nx2a-oodle'   # dmhost, the rewritten modules and the job, removed afterwards
     def device_oodle(self):
         """The Mac host's Oodle tool mode runs in the Android host as well (dm/host/hle_oodle.c DM_OODLE_JOB): the host built as an executable (build.py --exe) runs on the device
-        with the rewritten modules and decodes with the game's own OodleLZ_Decompress, the same ARM64 code the Switch runs. Every Oodle entry of the GFPAKs goes in one job file
-        (1.6 GB for Pokémon Legends: Arceus), pushed and decoded there in one run; only the entries that hold a BNSH shader come back (DM_OODLE_JOB_BNSH), written as the split's
-        decoded folder (shader_split.py gfpak_decoded). Streaming the entries through an adb forward instead reset the connection whenever both directions were busy.
+        with the rewritten modules and decodes with the game's own OodleLZ_Decompress, the same ARM64 code the Switch runs. Every Oodle entry of the GFPAKs and of the Trinity packs goes
+        in one job file (1.6 GB for Pokémon Legends: Arceus, 4.4 GB for Pokémon Legends: Z-A's 223,018 files), pushed and decoded there in one run; only the entries that hold a BNSH
+        shader come back (DM_OODLE_JOB_BNSH), written as the split's decoded folder (shader_split.py gfpak_decoded, trpfs_decoded). Streaming the entries through an adb forward
+        instead reset the connection whenever both directions were busy.
         → the split's environment"""
+        import mmap
         import struct
         adb = self.oodle_adb = Adb(self.tools['adb'], self.o.device or self.cfg.get('device'), log=say); adb.pick()
         out = self.aw / ('host-debug' if self.o.debug else 'host')   # the host stage's own folder: its objects serve both
@@ -407,7 +409,7 @@ class Port:
                 self.logs / 'android_oodle_host.log', env=self.env)
         PROG.set(step="the game's Oodle entries in a job file")
         tmp = self.work / 'tmp/oodle'; nsp.rmtree(tmp); tmp.mkdir(parents=True)
-        recs, job = [], tmp / 'job.bin'   # recs: (label, archive size, entry index) of each record, in order
+        recs, job = [], tmp / 'job.bin'   # recs: (label, archive size, entry index) of each record, in order; a Trinity file's index is (pack offset, index in the pack)
         with open(job, 'wb') as jf:
             jf.write(b'DMOJ' + struct.pack('<I', 0))
             for v in self.versions:
@@ -419,6 +421,13 @@ class Port:
                     for i in range(n):
                         ct, usz, csz, off = struct.unpack_from('<2xHII4xQ', d, fo + 0x18 * i)
                         if ct == 3: jf.write(struct.pack('<II', csz, usz) + d[off:off + csz]); recs.append((label, len(d), i))
+                for p in sorted(rom.rglob('*.trpfs')):
+                    if (packs := trinity.packs(str(p))) is None: continue
+                    label = '/' + p.relative_to(rom).as_posix()
+                    with open(p, 'rb') as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as d:
+                        for off, _, _ in packs:
+                            for k, _, comp, n, st, sz in trinity.pack_files(d, off):
+                                if comp == 3: jf.write(struct.pack('<II', sz, n)); jf.write(d[st:st + sz]); recs.append((label, len(d), (off, k)))
             jf.seek(4); jf.write(struct.pack('<I', len(recs)))
         PROG.set(step=f"the game's Oodle decoder on the device: {len(recs):,} entries, {job.stat().st_size / 2**30:.1f} GB")
         adb.shell(f'rm -rf {self.ODEV}; mkdir -p {self.ODEV}/mods', check=False)
@@ -441,8 +450,9 @@ class Port:
             ent[i] = b[o:o + n]; o += n
         dec = tmp / 'decoded'; dec.mkdir()
         for label, (size, ent) in by.items():
-            body = b''.join(struct.pack('<II', i, len(x)) + x for i, x in sorted(ent.items()))
-            (dec / (label.lstrip('/').replace('/', '__') + '.dec')).write_bytes(b'DGFD' + struct.pack('<QI', size, len(ent)) + body)
+            if label.endswith('.trpfs'): body, magic = b''.join(struct.pack('<QII', off, k, len(x)) + x for (off, k), x in sorted(ent.items())), b'DTPD'
+            else: body, magic = b''.join(struct.pack('<II', i, len(x)) + x for i, x in sorted(ent.items())), b'DGFD'
+            (dec / (label.lstrip('/').replace('/', '__') + '.dec')).write_bytes(magic + struct.pack('<QI', size, len(ent)) + body)
         say(f"shaders in Oodle-compressed archives ({self.oodle_why}): {len(recs):,} entries decoded by the game's own decoder on the device, "
             f"{sum(len(e) for _, e in by.values()):,} of them hold shaders")
         return {'DM_GFPAK_DECODED': str(dec)}
