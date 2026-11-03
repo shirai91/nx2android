@@ -174,8 +174,10 @@ static VkFormat srgb_twin(VkFormat f) {
 // default (3): Super Mario Bros. Wonder's world map on the Adreno 830 took 8.7-8.9 ms of GPU a frame instead of 11.8, the same picture (1 alone: 9.5-10.0 ms).
 // Xenoblade Chronicles 3's field took 22.9-23.0 ms against 23.0-23.6 (its own shading dominates), with clouds in every frame of a sky turn and no idle flicker;
 // Graveyard Keeper 2, Advance Wars and DKCR drew the same pictures. A colour view in another format than the image's and its twin is logged [RED] (vk_tex_view):
-// such a game wants DM_VK_UBWC=2 in its profile
-static int ubwc_mode(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_VK_UBWC"); v = e ? atoi(e) : 3; } return v; }
+// such a game wants DM_VK_UBWC=2 in its profile. On Apple GPUs (MoltenVK, the Android emulator on a Mac) the default is 2: a colour image made without
+// MUTABLE_FORMAT keeps Metal's lossless compression, and a compute shader read it as one value a compression tile. Donkey Kong Bananza's upscaler network
+// read its 960x540 input in 8x8 blocks, and its whole picture came out blocky
+static int ubwc_mode(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_VK_UBWC"); v = e ? atoi(e) : V.props.vendorID == 0x106b ? 2 : 3; } return v; }
 static vkimg_t *img_new(const tex_t *t, const vkfmt_t *f) {
     vkimg_t *im = calloc(1, sizeof *im);
     const nvn_texdesc *d = &t->d;
