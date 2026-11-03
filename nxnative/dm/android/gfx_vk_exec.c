@@ -237,7 +237,7 @@ static VkFramebuffer fb_get(const fbkey *k) {
     pthread_mutex_unlock(&g_rp_mu); return fb;
 }
 // the attachments begin_pass found, for the render pass begin: each colour slot's (and the depth's) image, view, view format and layers, size at the view's level
-static struct { vkimg_t *im; VkImageView v; uint32_t fmt, layers, w, h; } P_att[9];
+static struct { vkimg_t *im; VkImageView v; uint32_t fmt, layers, w, h, lv; } P_att[9];   // lv: the attachment's mip level
 
 // Before a pass that goes on with a depth buffer (loads it), one texel of its depth is copied out: a transfer read makes Adreno's driver drop the buffer's
 // low-resolution depth (LRZ), which it otherwise kept from earlier passes even within one command buffer. NEO's menu → field wipe drew whole 32x32 squares of
@@ -527,12 +527,15 @@ void vk_end_pass(void) {
 // copies, the submission's end): the deferred uniform updates land first (draws read them through their shadows, so ordinary pass ends keep them)
 void vk_end_pass_land(void) { vk_end_pass(); if (vk_sub_open()) vk_ubd_land(vk_cmd()); }
 static int pass_whole(VkRect2D r) { return !r.offset.x && !r.offset.y && r.extent.width >= S.pass_w && r.extent.height >= S.pass_h; }
+extern uint64_t g_tex_gen;
+static int g_fb_cut;   // the open pass draws a mip level above 0: its draws' sets and views (fb_cut_levels) are not reused past it
 static int begin_pass(void) {
     if (S.pass_open) return 1;
     int psplit = g_psplit_now; g_psplit_now = 0;   // a pass split (prepare_draw): taken before any early return, so the flag never forces a later pass's cut
     VkCommandBuffer cb = vk_cmd();
     VkRenderingAttachmentInfo *ca = P_ca; memset(ca, 0, sizeof P_ca);
     for (int i = 0; i < 9; i++) P_att[i].im = NULL;
+    if (g_fb_cut) { g_fb_cut = 0; g_tex_gen++; }   // the cut views stay in this pass's caches only
     VkRenderingAttachmentInfo da = {0}, sa = {0};
     uint32_t w = UINT32_MAX, h = UINT32_MAX, layers = UINT32_MAX, samples = 1; int ncol = 0, have = 0;
     for (int i = 0; i < S.rt_n; i++) {
@@ -551,6 +554,7 @@ static int begin_pass(void) {
               static int said; if (!said++) VKLOG("colour target: block-compressed format %#x drawn through view format %#x: pass in blocks, %ux%u", S.rt_col[i].d.format, S.rt_cview[i].format, iw, ih); } }
         if (iw < w) w = iw; if (ih < h) h = ih; samples = im->samples; have = 1;
         ca[i].imageView = v; S.cfmt[i] = vk_view_fmt; ncol = i + 1; P_att[i].im = im;   // (the view's format: a render pass's attachment and its pipelines take it)
+        P_att[i].lv = lv; if (lv) { g_tex_gen++; g_fb_cut = 1; }   // sets and views made before may sample this level (fb_cut_levels)
         P_att[i].fmt = vk_view_fmt; P_att[i].layers = vk_view_layers ? vk_view_layers : 1; P_att[i].w = iw; P_att[i].h = ih;
         if (P_att[i].layers < layers) layers = P_att[i].layers;
     }
@@ -1045,11 +1049,23 @@ static int view_num(const tex_t *t, const view_t *v) {
 }
 static uint64_t g_num_um, g_num_im;   // stage_set: the sampled bindings of the stage being built that got uint / int views (bit = binding index)
 extern uint64_t g_tex_gen;
+// A mip-chain pass draws level n of a texture while sampling level n - 1 through a view of the whole chain: the fetch may touch level n (at weight 0, but 0 x NaN is NaN),
+// which the pass is writing. On Metal, so on the Android emulator, it held no defined data: Donkey Kong Bananza's environment cube got NaN texels, which bloom spread into
+// white blotches. Such a draw samples a view cut below the attachment's level (the same base, so the shader's level numbers keep their meaning)
+static int fb_cut_levels(const vkimg_t *im, const view_t *v, view_t *cut) {
+    if (!S.pass_open || !im) return 0;
+    uint32_t lv0 = v && v->set_levels ? v->base_level : 0, nlv = v && v->set_levels && v->nlevels ? v->nlevels : im->levels - lv0;
+    for (int i = 0; i < 8; i++) if (P_att[i].im == im && P_att[i].lv > lv0 && P_att[i].lv < lv0 + nlv) {
+        if (v) *cut = *v; else memset(cut, 0, sizeof *cut);
+        cut->set_levels = 1; cut->base_level = lv0; cut->nlevels = P_att[i].lv - lv0; return 1; }
+    return 0;
+}
+static int pass_has_mip_rt(void) { if (!S.pass_open) return 0; for (int i = 0; i < 8; i++) if (P_att[i].im && P_att[i].lv) return 1; return 0; }
 static int tex_desc_for(int st, const dmsv_bind *b, uint64_t h, VkDescriptorImageInfo *ii, int storage) {   // the view's view_num
-    int tid = (int)(h & 0xfffff); const view_t *v = NULL; const tex_t *t = NULL;
+    int tid = (int)(h & 0xfffff); const view_t *v = NULL; const tex_t *t = NULL; int mip_rt = !storage && pass_has_mip_rt();
     ii->imageLayout = VK_IMAGE_LAYOUT_GENERAL; ii->sampler = storage ? VK_NULL_HANDLE : samp_for(st, b, h, 0); ii->imageView = VK_NULL_HANDLE;
     unsigned ck = ((unsigned)tid * 2654435761u ^ (unsigned)b->dim * 97u ^ (unsigned)(b->flags & 1)) % TVC;
-    if (tid && g_var_now != 3 && !g_tracing && g_tvc[ck].epoch == g_set_epoch && g_tvc[ck].gen == g_tex_gen && g_tvc[ck].tid == tid && g_tvc[ck].dim == b->dim && g_tvc[ck].arr == (b->flags & 1)) {
+    if (tid && g_var_now != 3 && !g_tracing && !mip_rt && g_tvc[ck].epoch == g_set_epoch && g_tvc[ck].gen == g_tex_gen && g_tvc[ck].tid == tid && g_tvc[ck].dim == b->dim && g_tvc[ck].arr == (b->flags & 1)) {
         ii->imageView = g_tvc[ck].v; if (g_tvc[ck].im) g_tvc[ck].im->last_use = mtl_last_fence() + 1; vk_texdump_note(g_tvc[ck].im);
         if (g_tvc[ck].num && !storage) ii->sampler = samp_for(st, b, h, 1);
         return g_tvc[ck].num;
@@ -1057,6 +1073,7 @@ static int tex_desc_for(int st, const dmsv_bind *b, uint64_t h, VkDescriptorImag
     int num = 0;
     if (tid && g_var_now != 3 && vk_tex_by_id(tid, &v, &t) && t) {
         vkimg_t *im = NULL; ii->imageView = vk_tex_view(t, v, b->dim, b->flags & 1, 0, &im); if (storage && im) im->gpu_w = 1;
+        view_t cut; if (mip_rt && fb_cut_levels(im, v, &cut)) { ii->imageView = vk_tex_view(t, &cut, b->dim, b->flags & 1, 0, &im); v = &cut; }
         if (g_tracing) VKLOG("  texture handle %#llx id %d: %ux%u nvn format %#x target %d serial %llu pool %p+%#llx size %#llx → image %p (%ux%u fmt %d layers %u levels %u) view %p", (unsigned long long)h, tid, t->d.width, t->d.height, t->d.format, t->d.target,
                              (unsigned long long)t->serial, (const void *)t->pool, (unsigned long long)t->off, (unsigned long long)t->L.size, (void *)im, im ? im->w : 0, im ? im->h : 0, im ? im->fmt : 0, im ? im->layers : 0, im ? im->levels : 0, (void *)ii->imageView);
         if (im) im->last_use = mtl_last_fence() + 1;
