@@ -4,6 +4,7 @@
 // A port can also bring rows of its own from a FPSLocker config of its main build (DM_FPS_LOCKS, "Imported rows" below)
 #include "hle.h"
 #include <mach/mach.h>
+#include <sys/mman.h>
 
 // What a field holds: the frame rate as a float, vsyncs per frame (60 / frame rate) as an int32, or the frame time in milliseconds or seconds as a float. Copies: consecutive copies of the value
 // (Unreal keeps one for the game thread, one for the render thread). A row with no pointer (ptr_off 0) has its field at main + field: a constant in main's read-only data, which the loader
@@ -60,6 +61,13 @@ static const struct { const char *build, *what; uint64_t ptr_off; uint32_t field
 #define NLOCKS ((int)(sizeof k_locks / sizeof k_locks[0]))
 
 static int rd(uint64_t a, void *out, size_t n) { vm_size_t got = 0; return a >= 0x1000 && vm_read_overwrite(mach_task_self(), (vm_address_t)a, n, (vm_address_t)out, &got) == KERN_SUCCESS && got == n; }
+// the same, for the debug reads (peek, memdump): pages mapped but not readable that way, a GPU memory pool shared with the device (Android's zero-copy pools are
+// dma-buf mappings, which process_vm_readv refuses: Pokémon Legends: Z-A's culling counters), are copied directly once msync says they are mapped
+static int rd_dbg(uint64_t a, void *out, size_t n) {
+    if (rd(a, out, n)) return 1;
+    uint64_t pg = a & ~0xfffull; if (a < 0x1000 || msync((void *)(uintptr_t)pg, (a + n - pg + 0xfff) & ~0xfffull, MS_ASYNC)) return 0;
+    memcpy(out, (const void *)(uintptr_t)a, n); return 1;
+}
 
 // Imported rows (DM_FPS_LOCKS: fpslock.tsv in an Android port's data pack, written by porter/fpslocker.py): the memory writes of the community's FPSLocker config of this main
 // build (masagrator's FPSLocker-Warehouse, its ALL_FPS entries), whose expressions the porter evaluated for 30 and 60. A row: the value type, main offsets (all but the last name
@@ -207,7 +215,7 @@ void dm_ctl_cvar_f32(uint64_t off, float v) {
 void dm_ctl_peek(uint64_t a, int n) {
     for (int i = 0; i < n && i < 64; i += 4) {
         uint32_t w[4] = {0}; int k = n - i < 4 ? n - i : 4;
-        if (!rd(a + 4 * (uint64_t)i, w, 4 * (size_t)k)) { LOG("DM_CTL: peek %#llx: not readable", (unsigned long long)(a + 4 * (uint64_t)i)); return; }
+        if (!rd_dbg(a + 4 * (uint64_t)i, w, 4 * (size_t)k)) { LOG("DM_CTL: peek %#llx: not readable", (unsigned long long)(a + 4 * (uint64_t)i)); return; }
         float f[4]; memcpy(f, w, sizeof f);
         LOG("DM_CTL: peek %#llx: %g %g %g %g (%08x %08x %08x %08x)", (unsigned long long)(a + 4 * (uint64_t)i), f[0], f[1], f[2], f[3], w[0], w[1], w[2], w[3]);
     }
@@ -216,7 +224,7 @@ void dm_ctl_peek(uint64_t a, int n) {
 void dm_ctl_memdump(uint64_t a, uint64_t n, const char *path) {
     FILE *f = fopen(path, "wb"); if (!f) { LOG("[RED] DM_CTL: memdump: cannot open %s", path); return; }
     static uint8_t buf[1 << 16]; uint64_t done = 0;
-    while (done < n) { size_t k = n - done < sizeof buf ? (size_t)(n - done) : sizeof buf; if (!rd(a + done, buf, k)) break; fwrite(buf, 1, k, f); done += k; }
+    while (done < n) { size_t k = n - done < sizeof buf ? (size_t)(n - done) : sizeof buf; if (!rd_dbg(a + done, buf, k)) break; fwrite(buf, 1, k, f); done += k; }
     fclose(f); LOG("DM_CTL: memdump %#llx: %llu of %llu bytes → %s", (unsigned long long)a, (unsigned long long)done, (unsigned long long)n, path);
 }
 // "cvari <main offset> <value>": the same for an int console variable

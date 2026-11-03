@@ -1365,7 +1365,9 @@ NVN(nvnWindowBuilderSetTextures, void, NVNwindowBuilder *b, int n, NVNtexture *c
     if (n < 0 || n > 4) { LOG("[RED] WindowBuilderSetTextures count %d", n); n = n < 0 ? 0 : 4; }
     WB(b)->ntex = n; for (int i = 0; i < n; i++) WB(b)->tex[i] = t[i];
 }
-NVN(nvnWindowBuilderSetPresentInterval, void, NVNwindowBuilder *b, int v) { WB(b)->interval = v; }
+NVN(nvnWindowBuilderSetPresentInterval, void, NVNwindowBuilder *b, int v) {
+    char at[96]; crash_addr_str(at, sizeof at, (uint64_t)__builtin_return_address(0)); LOG("[nvn] window builder present interval %d (from %s)", v, at); WB(b)->interval = v;
+}
 NVN(nvnWindowInitialize, NVNboolean, NVNwindow *w, const NVNwindowBuilder *b) {
     const win_builder_t *s = (const win_builder_t *)b; win_t *o = (win_t *)w;
     memset(o, 0, sizeof *o); o->magic = MAGIC('W', 'I', 'N', 'D'); o->native = s->native; o->ntex = s->ntex; o->interval = s->interval;
@@ -1376,7 +1378,10 @@ NVN(nvnWindowInitialize, NVNboolean, NVNwindow *w, const NVNwindowBuilder *b) {
     return 1;
 }
 NVN(nvnWindowGetPresentInterval, int, const NVNwindow *w) { return ((const win_t *)w)->interval; }   // Link's Awakening reads it back every frame
-NVN(nvnWindowSetPresentInterval, void, NVNwindow *w, int v) { if (((win_t *)w)->interval != v) LOG("[nvn] the game sets present interval %d → %d", ((win_t *)w)->interval, v); ((win_t *)w)->interval = v; }
+NVN(nvnWindowSetPresentInterval, void, NVNwindow *w, int v) {   // the caller in the log: where a 60 fps cut starts looking (Pokémon Legends: Z-A)
+    if (((win_t *)w)->interval != v) { char at[96]; crash_addr_str(at, sizeof at, (uint64_t)__builtin_return_address(0)); LOG("[nvn] the game sets present interval %d → %d (from %s)", ((win_t *)w)->interval, v, at); }
+    ((win_t *)w)->interval = v;
+}
 NVN(nvnWindowSetCrop, void, NVNwindow *w, int x, int y, int ww, int hh) {
     win_t *o = (win_t *)w; int v[4] = {x, y, ww, hh};
     if (memcmp(o->crop, v, sizeof v)) LOG("[nvn] WindowCrop %d,%d %dx%d", x, y, ww, hh);

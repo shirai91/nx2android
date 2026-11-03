@@ -1757,7 +1757,10 @@ static void dispatch(const p_dispatch *d) {
     vk_pass_ts(1, (uint32_t)d->x, (uint32_t)d->y, PT_DISPATCH, (uint32_t)d->z);
     if (!g_x_nodispbar) vk_img_barrier_all(cb);   // DM_VK_X_NODISPBAR=1 (live, a cost measurement that may draw wrong): no barrier after the dispatch
     if (crumbs_on()) { crumb_t *c = crumb_cur(); if (c->n < 8) { c->k[c->n][0] = 0; c->k[c->n][1] = 0; c->k[c->n][2] = cs->key; c->n++; } crumb_mark(1); }
-    if (g_x_tracepass == -2) VKLOG("--- dispatch %016llx %dx%dx%d%s after pass %d", (unsigned long long)cs->key, d->x, d->y, d->z, d->ind ? " (indirect)" : "", g_sub_pass - 1);   // (DM_VK_TRACE_PASS=-2 lists the dispatches too)
+    if (g_x_tracepass == -2) {   // (DM_VK_TRACE_PASS=-2 lists the dispatches too, with their storage buffers: the addresses for a DM_CTL memdump)
+        char sb[512]; int o = 0; for (int r = 0; r < 16 && o < (int)sizeof sb - 40; r++) if (S.ssbo[5][r].addr) o += snprintf(sb + o, sizeof sb - (size_t)o, " s%d %#llx+%#llx", r, (unsigned long long)S.ssbo[5][r].addr, (unsigned long long)S.ssbo[5][r].size);
+        VKLOG("--- dispatch %016llx %dx%dx%d%s after pass %d;%s", (unsigned long long)cs->key, d->x, d->y, d->z, d->ind ? " (indirect)" : "", g_sub_pass - 1, o ? sb : " no storage buffers");
+    }
 }
 
 // ---------------- copies and clears ----------------
@@ -2017,9 +2020,13 @@ static void exec_ops(const uint8_t *p) {
         case OP_REPORT_COUNTER: { uint64_t t, ad; memcpy(&t, a, 8); memcpy(&ad, a + 8, 8); if (DM_GAME_RENDER_COND) rc_note(ad, t == 0 || t == 0x10 ? 1 : 2); mtl_sub_counter(ad, (uint32_t)t); break; }
         case OP_RESET_COUNTER: break;
         case OP_FENCE_SYNC: { sync_t *s; memcpy(&s, a, 8); s->fence = mtl_last_fence() + 1; s->fenced = 1; break; }
-        case OP_COPY_B2B: { uint64_t s_, d, n; memcpy(&s_, a, 8); memcpy(&d, a + 8, 8); memcpy(&n, a + 16, 8); mtl_sub_copy(s_, d, n); break; }
-        case OP_CLEAR_BUF: { const p_clear_buf *c = (const p_clear_buf *)a; mtl_sub_fill(c->addr, c->size, c->value); break; }
-        case OP_UPDATE_UB: { uint64_t d, n; memcpy(&d, a, 8); memcpy(&n, a + 8, 8); vk_sub_update(d, a + 16, n); break; }
+        // (DM_VK_TRACE_PASS=-2 lists the buffer writes too: copies, clears and uniform updates, by address)
+        case OP_COPY_B2B: { uint64_t s_, d, n; memcpy(&s_, a, 8); memcpy(&d, a + 8, 8); memcpy(&n, a + 16, 8); mtl_sub_copy(s_, d, n);
+            if (g_x_tracepass == -2) VKLOG("--- copy %#llx → %#llx, %llu bytes, after pass %d", (unsigned long long)s_, (unsigned long long)d, (unsigned long long)n, g_sub_pass - 1); break; }
+        case OP_CLEAR_BUF: { const p_clear_buf *c = (const p_clear_buf *)a; mtl_sub_fill(c->addr, c->size, c->value);
+            if (g_x_tracepass == -2) VKLOG("--- buffer clear %#llx, %llu bytes to %#x, after pass %d", (unsigned long long)c->addr, (unsigned long long)c->size, c->value, g_sub_pass - 1); break; }
+        case OP_UPDATE_UB: { uint64_t d, n; memcpy(&d, a, 8); memcpy(&n, a + 8, 8); vk_sub_update(d, a + 16, n);
+            if (g_x_tracepass == -2) VKLOG("--- uniform update %#llx, %llu bytes, after pass %d", (unsigned long long)d, (unsigned long long)n, g_sub_pass - 1); break; }
         case OP_SET_RT: set_rt((const p_set_rt *)a); break;
         case OP_CLEAR_COLOR: if (!g_rc_skip) clear_color((const p_clear_color *)a); break;
         case OP_CLEAR_DS: if (!g_rc_skip) clear_ds((const p_clear_ds *)a); break;
