@@ -88,19 +88,19 @@ public final class ExternalActivity extends NativeActivity implements ExternalDi
         AudioManager manager = (AudioManager)getSystemService(Context.AUDIO_SERVICE);
         if (manager == null) return;
         ArrayList<String> names = new ArrayList<>(); ArrayList<Integer> ids = new ArrayList<>();
-        names.add("跟随系统"); ids.add(0);
+        names.add("System default"); ids.add(0);
         for (AudioDeviceInfo device : manager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)) {
             int type = device.getType(); String name;
-            if (type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) name = "手机扬声器";
-            else if (type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO) name = "蓝牙通话 · " + device.getProductName();
-            else if (type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP || type == AudioDeviceInfo.TYPE_BLE_HEADSET || type == AudioDeviceInfo.TYPE_BLE_SPEAKER) name = "蓝牙媒体 · " + device.getProductName();
-            else if (type == AudioDeviceInfo.TYPE_HDMI || type == AudioDeviceInfo.TYPE_HDMI_ARC || type == AudioDeviceInfo.TYPE_USB_DEVICE || type == AudioDeviceInfo.TYPE_USB_HEADSET) name = "外接音频 · " + device.getProductName();
+            if (type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) name = "Phone speaker";
+            else if (type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO) name = "Bluetooth call · " + device.getProductName();
+            else if (type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP || type == AudioDeviceInfo.TYPE_BLE_HEADSET || type == AudioDeviceInfo.TYPE_BLE_SPEAKER) name = "Bluetooth media · " + device.getProductName();
+            else if (type == AudioDeviceInfo.TYPE_HDMI || type == AudioDeviceInfo.TYPE_HDMI_ARC || type == AudioDeviceInfo.TYPE_USB_DEVICE || type == AudioDeviceInfo.TYPE_USB_HEADSET) name = "External audio · " + device.getProductName();
             else continue;
             names.add(name); ids.add(device.getId());
         }
-        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("声音输出")
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("Audio output")
             .setItems(names.toArray(new String[0]), (d, which) -> audioExecutor.execute(() -> externalAudio(ids.get(which))))
-            .setNegativeButton("取消", null).create();
+            .setNegativeButton("Cancel", null).create();
         dialog.setOnShowListener(d -> dialog.getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND));
         dialog.show();
     }
@@ -164,7 +164,7 @@ public final class ExternalActivity extends NativeActivity implements ExternalDi
             if (edit) drawEditor(canvas, data, menu);
             else {
                 paint.setAlpha(255); paint.setColor(Color.WHITE); paint.setTextAlign(Paint.Align.CENTER);
-                paint.setTextSize(getHeight() * .035f); canvas.drawText("声音", getWidth() * .62f, getHeight() * .06f, paint);
+                paint.setTextSize(getHeight() * .035f); canvas.drawText("Audio", getWidth() * .62f, getHeight() * .06f, paint);
             }
             postInvalidateDelayed(33);
         }
@@ -219,7 +219,7 @@ public final class ExternalActivity extends NativeActivity implements ExternalDi
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Map<Integer,Integer> captured = new HashMap<>();
         private final Map<Integer,float[]> points = new HashMap<>();
-        private final String[] labels = {"L", "ZL", "R", "ZR", "−", "+", "L3", "R3", "A", "B", "X", "Y", "✥", "↑", "→", "↓", "MENU", "L", "R", "声音"};
+        private final String[] labels = {"L", "ZL", "R", "ZR", "−", "+", "L3", "R3", "A", "B", "X", "Y", "✥", "↑", "→", "↓", "MENU", "L", "R", "Audio"};
         private final long[] bits = {1L<<6,1L<<8,1L<<7,1L<<9,1L<<11,1L<<10,1L<<4,1L<<5,1L,1L<<1,1L<<2,1L<<3,0,0,0,0,0,0,0,0};
         private final float[] xs = {.20f,.07f,.80f,.93f,.43f,.57f,.28f,.72f,.88f,.82f,.82f,.76f,.25f,.25f,.30f,.25f,.5f,.11f,.65f,.50f};
         private final float[] ys = {.19f,.19f,.19f,.19f,.10f,.10f,.45f,.45f,.62f,.76f,.48f,.62f,.76f,.65f,.76f,.87f,.10f,.57f,.78f,.27f};

@@ -46,7 +46,6 @@ To arrange the on-screen controls, open the pause menu's **Gamepad** tab and cho
 
 For the experimental external-screen controller, port from the command line with `--external-display`. The game moves to a connected display and the phone shows the gamepad; the sound menu selects the phone or an external output. This option requires `javac` and an Android SDK with a platform and build-tools (`ANDROID_HOME`). Android 12 or newer uses the saved native layout; Android 10–11 use the fallback controller. Support varies by device and game.
 
-实验性外屏手柄可在命令行打包时添加 `--external-display`：连接显示器后，游戏显示在外屏，手机显示手柄，声音菜单可选择手机或外接设备。该选项需要 `javac` 和包含 platform、build-tools 的 Android SDK（设置 `ANDROID_HOME`）。Android 12 及以上复用已保存的原版布局；Android 10–11 使用备用手柄。效果取决于设备与游戏。
 
 A game that crashes with "AllocateAddressRegion … refused (0x1803)" in its log needs more address space: port it again with a larger **Extra address space** on the Port tab (`--alias-headroom` on the command line). [packaging/INSTALL.md](packaging/INSTALL.md#when-something-goes-wrong) says more.
 
