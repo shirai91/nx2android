@@ -532,7 +532,7 @@ static int begin_pass(void) {
     VkRenderingAttachmentInfo *ca = P_ca; memset(ca, 0, sizeof P_ca);
     for (int i = 0; i < 9; i++) P_att[i].im = NULL;
     VkRenderingAttachmentInfo da = {0}, sa = {0};
-    uint32_t w = UINT32_MAX, h = UINT32_MAX, layers = 1, samples = 1; int ncol = 0, have = 0;
+    uint32_t w = UINT32_MAX, h = UINT32_MAX, layers = UINT32_MAX, samples = 1; int ncol = 0, have = 0;
     for (int i = 0; i < S.rt_n; i++) {
         S.cfmt[i] = VK_FORMAT_UNDEFINED;
         ca[i].sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO; ca[i].imageLayout = VK_IMAGE_LAYOUT_GENERAL; ca[i].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD; ca[i].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -550,6 +550,7 @@ static int begin_pass(void) {
         if (iw < w) w = iw; if (ih < h) h = ih; samples = im->samples; have = 1;
         ca[i].imageView = v; S.cfmt[i] = vk_view_fmt; ncol = i + 1; P_att[i].im = im;   // (the view's format: a render pass's attachment and its pipelines take it)
         P_att[i].fmt = vk_view_fmt; P_att[i].layers = vk_view_layers ? vk_view_layers : 1; P_att[i].w = iw; P_att[i].h = ih;
+        if (P_att[i].layers < layers) layers = P_att[i].layers;
     }
     S.dfmt = VK_FORMAT_UNDEFINED; S.daspect = 0;
     if (S.rt_has_dep) {
@@ -561,6 +562,7 @@ static int begin_pass(void) {
             if (iw < w) w = iw; if (ih < h) h = ih; samples = im->samples; have = 1;
             da = (VkRenderingAttachmentInfo){VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, NULL, v, VK_IMAGE_LAYOUT_GENERAL, 0, NULL, VK_IMAGE_LAYOUT_UNDEFINED, VK_ATTACHMENT_LOAD_OP_LOAD, VK_ATTACHMENT_STORE_OP_STORE};
             S.dfmt = im->fmt; S.daspect = im->aspect; P_att[8].im = im; P_att[8].fmt = vk_view_fmt; P_att[8].layers = vk_view_layers ? vk_view_layers : 1; P_att[8].w = iw; P_att[8].h = ih;
+            if (P_att[8].layers < layers) layers = P_att[8].layers;
             if (im->aspect & VK_IMAGE_ASPECT_STENCIL_BIT) sa = da;
         }
     }
