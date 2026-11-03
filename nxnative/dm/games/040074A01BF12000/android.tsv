@@ -1,6 +1,7 @@
 # Donkey Kong Bananza (Switch 2, update v458752): Nintendo EPD's engine on NVN2, its shaders Ampere code (the translator's sm_86 frontend).
-# Brought up on an arm64 Android emulator (2026-11-02): boots to its frame loop with sound and renders its first screens (the autosave notice in the pass dumps);
-# the emulator presents black, as it has no depth clip control for NVN's GL depth mode (z = -1 is clipped), no zero-copy pools and no BC7. Not tested on a device yet
+# Android emulator (arm64, API 35, Vulkan over MoltenVK, 2026-11-03): boots to the title menu, plays the opening and the mining tunnel with sound; all 23,638 shaders
+# translate. Open: agl's upscaler network (14a8aaf3e0a9edbd) writes its 2304x1296 output in 8x8 blocks there although its inputs are bound right (DM_VK_TRACE_CS),
+# and the emulator draws no geometry shaders (the terrain's culling pass) nor pipelines past Metal's 16 samplers. Not tested on a device yet
 status	boots
 package	org.nx2a.donkeykongbananza
 orientation	landscape
