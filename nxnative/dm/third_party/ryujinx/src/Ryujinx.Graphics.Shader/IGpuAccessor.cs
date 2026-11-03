@@ -22,6 +22,14 @@ namespace Ryujinx.Graphics.Shader
         }
 
         /// <summary>
+        /// The vertex position's z is scaled at run time by the support buffer's viewport_inverse.zw (a host that emulates the GL depth convention).
+        /// </summary>
+        bool QueryRuntimeDepthMode()
+        {
+            return false;
+        }
+
+        /// <summary>
         /// Size in bytes of the constant buffer 1 data known (an Ampere jump table ends there at the latest).
         /// </summary>
         int QueryConstantBuffer1Size()

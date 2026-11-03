@@ -44,6 +44,8 @@ static class SwshXlate
         }
         // c1 constant segment (the 0x100 bytes before the control segment in the shader package): the jump table of indirect jump BRX lives here (LDC c[1]); without it the translator cannot resolve jump targets and control flow goes wrong (particle shaders loop forever)
         public int QueryConstantBuffer1Size() => _c1.Length;
+        // Job "depth_runtime" (the Android chain): z scaled by the support buffer, where the host emulates NVN's GL depth mode without VK_EXT_depth_clip_control
+        public bool QueryRuntimeDepthMode() => _job["depth_runtime"] is JsonNode n && (bool)n;
         // Job "nvn2_cs" (NVN2 compute): its c[0] layout (shader_vk.py nvn2_layout)
         public int[] QueryAmpereComputeC0Layout() => _job["nvn2_cs"] is JsonArray l ? l.Select(v => (int)v).ToArray() : null;
         public uint ConstantBuffer1Read(int offset) { if (offset >= 0 && offset + 4 <= _c1.Length) return BitConverter.ToUInt32(_c1, offset); Notes.Add($"c1 read out of bounds +{offset:X} (c1 length {_c1.Length})"); return 0; }

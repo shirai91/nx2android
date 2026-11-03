@@ -125,7 +125,7 @@ def job_for(key, stage, rec, w):   # dmsh_build.py job_for; transform feedback i
         elif code[:4] == bytes.fromhex('79563412'): code = code[0x100:]
         xfb = xfb_layout(key, ctl) if stage == 'vs' else None
     cp = os.path.join(w, key + '.bin'); open(cp, 'wb').write(code)
-    j = {'key': key, 'stage': stage, 'code': cp, 'tex': {}, 'img': {}, 'attr': {}, 'fout': {}, 'c1': c1.hex(), 'debug': False, 'reduced': True, 'sb_align': SB_ALIGN, 'subgroup': SUBGROUP, 'gather_bias': GATHER_BIAS, 'gs_passthrough': False,
+    j = {'key': key, 'stage': stage, 'code': cp, 'tex': {}, 'img': {}, 'attr': {}, 'fout': {}, 'c1': c1.hex(), 'debug': False, 'reduced': True, 'sb_align': SB_ALIGN, 'subgroup': SUBGROUP, 'gather_bias': GATHER_BIAS, 'gs_passthrough': False, 'depth_runtime': True,
          **extra, **({'xfb': xfb} if xfb else {})}
     if key in FACTS: j.update(FACTS[key])
     else: j['no_facts'] = True

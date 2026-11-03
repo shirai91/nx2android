@@ -34,7 +34,7 @@ static struct {
 } S;
 static p_tf_bind g_tf[4]; static uint64_t g_tf_off[4]; static int g_tf_on, g_tf_in_pass; static uint32_t g_tf_verts;   // transform feedback: buffers, bytes written into each, capture on, a capture in the open pass (xfb_begin), vertices captured since Begin
 static int g_depth_zero = 1, g_lower_left;
-void mtl_set_depth_zero(int on) { g_depth_zero = on; }
+void mtl_set_depth_zero(int on) { g_depth_zero = on; void vk_support_depth(int gl); vk_support_depth(!on); }
 void mtl_set_origin_lower_left(int on) { g_lower_left = on; }
 // NVN's upper-left mode has clip space y up (as Metal and D3D): it is drawn with a flipped viewport over the same top-left rectangle, lower-left mode without
 // one; the scissor is then never flipped and the winding follows nvn_mtl.m's. Drawn the other way, every blit flipped the picture (NEO docked: upside down)
@@ -1265,7 +1265,6 @@ static void set_dynamic(VkCommandBuffer cb) {
     VkViewport vp = {x, y, w, h, S.dnear, S.dfar};
     if (g_lower_left && !g_flipy) { vp.y = (float)S.pass_h - y; vp.height = -h; }   // lower-left viewports count y from the bottom
     else if (!g_lower_left && g_flipy) { vp.y = y + h; vp.height = -h; }        // clip space y up over the same top-left rectangle
-    if (!g_depth_zero && !V.has_depth_clip_ctl) { /* GL depth convention without clip control: left as is (rare) */ }
     // Viewport swizzle (Absolum's FNA3D sets NEGATIVE_Y every frame; Advance Wars 1+2's Unity sets it too): NEGATIVE_Y negates clip y, the same as the viewport flipped about
     // its centre; facing is decided after the viewport transform in Vulkan as on NVN, so the winding stays. Other swizzles are drawn unswizzled (nvn_mtl.m does the same)
     { uint32_t sw; memcpy(&sw, S.vp_sw[0], 4);

@@ -431,6 +431,8 @@ static VkShaderModule vk_shader_module_(vkshader_t *s, uint64_t um, uint64_t im,
     return m;
 }
 // static buffers: Ryujinx's support buffer (render scales 1.0, nothing else set: as nvn_mtl.m support_buf) and 64 KB of zeros (unbound uniform slots, driver segments nobody reads)
+static void *g_support; static int g_support_gl;
+void vk_support_depth(int gl);
 static VkBuffer static_buf(int which) {
     static VkBuffer b[2]; static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
     { VkBuffer r = __atomic_load_n(&b[which], __ATOMIC_ACQUIRE); if (r) return r; }   // made already: no lock (every draw binds them)
@@ -441,13 +443,21 @@ static VkBuffer static_buf(int which) {
         VkMemoryAllocateInfo ai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, req.size, vk_mem_type(req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 0)};
         VkDeviceMemory m; VKCHK(vkAllocateMemory(V.dev, &ai, NULL, &m)); VKCHK(vkBindBufferMemory(V.dev, nb, m, 0));
         void *p; VKCHK(vkMapMemory(V.dev, m, 0, VK_WHOLE_SIZE, 0, &p)); memset(p, 0, 65536);
-        if (which == 0) for (int i = 0; i < 73; i++) *(float *)((uint8_t *)p + 192 + 16 * i) = 1.0f;   // render_scale[i].x (SupportBuffer.cs layout)
+        if (which == 0) {   // SupportBuffer.cs layout: render_scale[i].x, and viewport_inverse.zw the vertex z scale (vk_support_depth)
+            for (int i = 0; i < 73; i++) *(float *)((uint8_t *)p + 192 + 16 * i) = 1.0f;
+            g_support = p; vk_support_depth(g_support_gl);
+        }
         __atomic_store_n(&b[which], nb, __ATOMIC_RELEASE);   // published once filled
     }
     pthread_mutex_unlock(&mu);
     return b[which];
 }
 VkBuffer vk_support_buffer(void) { return static_buf(0); }
+// NVN's GL depth mode (near = -w) where the device has no VK_EXT_depth_clip_control: the vertex stages map z from [-w, w] to [0, w] themselves, z' = (z + w) / 2
+void vk_support_depth(int gl_mode) {
+    g_support_gl = gl_mode; int em = gl_mode && !V.has_depth_clip_ctl;
+    if (g_support) { float *f = (float *)((uint8_t *)g_support + 152); f[0] = em ? 0.5f : 1.0f; f[1] = em ? 0.5f : 0.0f; }
+}
 VkBuffer vk_zero_buffer(void) { return static_buf(1); }
 // a shader's c1 constants: copied once into a buffer of their own (the bundle bytes do not change)
 void vk_shader_c1(vkshader_t *s, VkBuffer *buf, VkDeviceSize *off, VkDeviceSize *len) {
