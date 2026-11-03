@@ -1732,8 +1732,11 @@ static void draw_idx(const p_draw_idx *d) {
     if (prim == 7) { VkBuffer b; VkDeviceSize o; int n = quad_indices((uint32_t)d->count, (const uint8_t *)(uintptr_t)d->ibuf, d->itype, 0, &b, &o); if (!n) return;
         bc_index(cb, b, o, VK_INDEX_TYPE_UINT32); if (!(dbg_draw() & 1) && g_ok) vkCmdDrawIndexed(cb, (uint32_t)n, inst, 0, d->base_vertex, (uint32_t)d->base_instance); return; }
     if (io % isz) { VKRED_ONCE(57, "index buffer offset not aligned to its index size"); return; }
+    // the pool's buffer is bound from its start and the draw starts at its first index: consecutive draws whose indices lie in one pool bind it once. Donkey Kong
+    // Bananza's mining tunnel on the Android emulator bound an index buffer for 5,500 of its 6,650 draws a frame at their offsets, 4,900 so (most of its draws change pools)
+    uint32_t first = 0; if (!(g_vk_ab & AB_IDX_FIRST) && io / isz <= UINT32_MAX) { first = (uint32_t)(io / isz); io = 0; }
     bc_index(cb, ib, io, it);
-    if (!(dbg_draw() & 1) && g_ok) { int xf = xfb_begin(cb); vkCmdDrawIndexed(cb, (uint32_t)d->count, inst, 0, d->base_vertex, (uint32_t)d->base_instance); if (xf) xfb_end(cb, prim, (uint32_t)d->count, inst); }
+    if (!(dbg_draw() & 1) && g_ok) { int xf = xfb_begin(cb); vkCmdDrawIndexed(cb, (uint32_t)d->count, inst, first, d->base_vertex, (uint32_t)d->base_instance); if (xf) xfb_end(cb, prim, (uint32_t)d->count, inst); }
 }
 static nvn_hmap g_cpipes = {.klen = 24};   // {shader, its integer-texel bindings}
 static pthread_mutex_t g_cpipe_mu = PTHREAD_MUTEX_INITIALIZER;   // the replay thread and compute_warm
