@@ -1,8 +1,8 @@
 # adb for installing a port: the device list, installing the APK, and pushing the data pack in short transfers. Big pushes over one adb connection wedge adbd on some
-# devices (a 6 GB RomFS), so small files go in batches and big files in 64 MB pieces that the device joins; a rerun resumes (files already at their size are skipped,
+# devices (a 6 GB RomFS), so small files go in batches (tar archives of up to 64 MB when there are many) and big files in 64 MB pieces that the device joins; a rerun resumes (files already at their size are skipped,
 # pieces already in place are kept). The port's own outputs are also compared by MD5: a rewriter cut changes a module without changing its size, and Unpacking's sdk cuts never
 # reached the device until they were. Pushes use -Z: compressing them took adbd down.
-import contextlib, hashlib, os, re, shlex, shutil, subprocess, tempfile, time
+import contextlib, hashlib, os, re, shlex, shutil, subprocess, tarfile, tempfile, time
 from pathlib import Path
 
 
@@ -11,6 +11,12 @@ class AdbError(Exception):
 
 
 LONG_PATH = 240   # adb.exe is not long-path aware: it cannot open a file whose full path passes Windows' 260 characters (Viractal's Unity bundles in a deep game folder)
+TAR_MIN, TAR_FILES, TAR_BYTES = 256, 8192, 64 << 20   # push_tree: from this many small files on, tar archives of at most this many files / bytes
+
+
+def long_path(p):   # a path Python can open on Windows past 260 characters
+    p = str(Path(p).resolve())
+    return '\\\\?\\' + p if os.name == 'nt' and len(p) >= LONG_PATH and not p.startswith('\\\\') else p
 
 
 @contextlib.contextmanager
@@ -48,7 +54,9 @@ class Adb:
             except subprocess.TimeoutExpired: err = f'timed out after {timeout or self.timeout} s'
             if attempt + 1 < retries:
                 self.log(f'adb {a[0]} failed ({err}), retry {attempt + 1}')
-                subprocess.run(self.cmd('wait-for-device'), timeout=300, env=self.env); time.sleep(2)
+                try: subprocess.run(self.cmd('wait-for-device'), timeout=300, env=self.env)
+                except subprocess.TimeoutExpired: raise AdbError(f'adb {a[0]} failed ({err}) and the device did not come back within 300 s') from None
+                time.sleep(2)
         raise AdbError(f'adb {a[0]}: {err}')
 
     def shell(self, script, **kw): return self.run('shell', script, **kw)
@@ -200,21 +208,48 @@ class Adb:
                 if rel not in skip and not rel.startswith('.dmpart') and (rel not in have if rel in keep else have.get(rel) != p.stat().st_size or rel in changed)]
         total, done = sum(s for _, _, s in todo), 0
         self.log(f'{len(todo):,} files to push, {total / 2**20:,.0f} MB ({len(files) - len(todo):,} already on the device)')
-        for d in sorted({os.path.dirname(r) for r, _, _ in todo}): self.shell(f'mkdir -p {shlex.quote(f"{remote}/{d}" if d else remote)}')
+        dirs = [shlex.quote(f'{remote}/{d}' if d else remote) for d in sorted({os.path.dirname(r) for r, _, _ in todo})]
+        for i in range(0, len(dirs), 200): self.shell('mkdir -p ' + ' '.join(dirs[i:i + 200]))   # one shell per directory took 3 min for Tears of the Kingdom's 2,669
         small = [(r, p, s) for r, p, s in todo if s <= chunk]
-        for i in range(0, len(small), 32):   # small files: up to 32 per push, one push per directory
-            part, by = small[i:i + 32], {}
-            for r, p, s in part: by.setdefault(os.path.dirname(r), []).append(p)
-            for d, ps in by.items():
-                with short_paths(ps) as qs:
-                    self.run('push', '-Z', *qs, f'{remote}/{d}/' if d else f'{remote}/', timeout=max(self.timeout, 600))
-            done += sum(s for _, _, s in part)
-            if progress: progress(done, total, f'{len(part)} files')
+        if len(small) >= TAR_MIN:   # many small files: tar archives unpacked on the device
+            done = self.push_tars(local, remote, small, progress=progress and (lambda d, note: progress(d, total, note)))
+        else:
+            for i in range(0, len(small), 32):   # small files: up to 32 per push, one push per directory
+                part, by = small[i:i + 32], {}
+                for r, p, s in part: by.setdefault(os.path.dirname(r), []).append(p)
+                for d, ps in by.items():
+                    with short_paths(ps) as qs:
+                        self.run('push', '-Z', *qs, f'{remote}/{d}/' if d else f'{remote}/', timeout=max(self.timeout, 600))
+                done += sum(s for _, _, s in part)
+                if progress: progress(done, total, f'{len(part)} files')
         for rel, p, size in [(r, p, s) for r, p, s in todo if s > chunk]:
             base = done
             self.push_file(p, f'{remote}/{rel}', chunk, progress=progress and (lambda d, t, note: progress(base + d, total, note)))
             done += size
         return total
+
+    def push_tars(self, local, remote, small, progress=None):
+        """small [(relative path, local path, size)] → remote, as tar archives of at most TAR_BYTES / TAR_FILES built beside local, pushed in one transfer each and
+        unpacked by the device's tar. 32 files per adb push cost ~2 s a push, ~1 MB/s for Tears of the Kingdom's 304,000 files of ~57 kB (hours); an archive goes at the
+        link's speed. An archive cut short by a dropped link is not unpacked; a rerun pushes what is missing. progress(done_bytes, note) after each archive. Returns the bytes"""
+        done, q = 0, shlex.quote(remote)
+        with tempfile.TemporaryDirectory(prefix='.nx2a_tar_', dir=Path(local).parent) as t:   # beside the data: same drive, deleted with it
+            arc = Path(t) / 'p.tar'
+            i = 0
+            while i < len(small):
+                part, size = [], 0
+                while i < len(small) and len(part) < TAR_FILES and (not part or size + small[i][2] <= TAR_BYTES): part.append(small[i]); size += small[i][2]; i += 1
+                with tarfile.open(arc, 'w', format=tarfile.GNU_FORMAT) as tar:   # GNU long names: toybox reads them
+                    for rel, p, s in part:
+                        ti = tarfile.TarInfo(rel); ti.size, ti.mode, ti.mtime = s, 0o644, int(time.time())
+                        with open(long_path(p), 'rb') as f: tar.addfile(ti, f)
+                with short_paths([arc]) as (qa,):
+                    self.run('push', '-Z', qa, f'{remote}/.dmpart.tar', timeout=max(self.timeout, 600))
+                out = self.shell(f'cd {q} && tar -xf .dmpart.tar 2>&1; rc=$?; rm -f .dmpart.tar; echo "rc=$rc"', timeout=max(self.timeout, 600))
+                if not out.rstrip().endswith('rc=0'): raise AdbError(f'unpacking an archive of {len(part)} files in {remote} failed: {out.strip()[-300:]}')
+                done += size
+                if progress: progress(done, f'{len(part):,} files')
+        return done
 
     def push_file(self, local, dst, chunk=64 << 20, progress=None):
         """One file in pieces of chunk bytes, joined on the device; pieces already there are kept, so an interrupted push resumes. progress(done, size, note)"""
