@@ -102,15 +102,20 @@ static inline int nvn_fstep_next(nvn_fstep *s, double shown, double cost, int km
 // The GPU clock follows the hold too: Breath of the Wild on an iPhone went from 14.4 to about 25 ms of GPU time a frame at hold 2 with the same 4,900 draws, the CPU still on its
 // performance cores, so its cost never fitted hold 1 again. The GPU counts as slowed (another reason for nvn_fstep_next's slow) when its time at a hold above kmin is at least
 // FSTEP_GPU_SLOW times its time at kmin and it alone does not fit k − 1 (a GPU at 3 ms of 17, 6 times its time on a loading screen, is not what holds a frame back).
-// The reference is not updated during a probe's trial (its frames run while the clock is still rising), so a failed probe leaves it as it was
+// The reference is not updated during a probe's grace (its frames run while the clock is still rising). The probe's frames after the grace ran at kmin with the clock up:
+// they move the reference half-way each, so a scene that is heavy at every hold stops calling the GPU slowed after a failed probe. Tears of the Kingdom on the Y700 kept a
+// reference from its title screen (0.1 vsyncs), so its open world (GPU 1.4-1.9 vsyncs at every hold) was "15 times slower" for good: 27 probes in 66 s, each a burst of
+// late frames that sent the hold to 3 (20 fps), and every trial back from 3 to 2 that held set the hold-off back to 1 s
 #define FSTEP_GPU_SLOW 1.3    // GPU time at the longer hold against its time at kmin
 #define FSTEP_GPU_N 30        // frames at the longer hold before the comparison counts
 typedef struct { double ref, cur; int n, k; } nvn_fgpu;   // GPU time at kmin (running mean); at the current hold k and its frame count
 static inline int nvn_fgpu_slow(const nvn_fgpu *g) { return g->n >= FSTEP_GPU_N && g->ref > 0 && g->cur >= FSTEP_GPU_SLOW * g->ref && g->cur > FSTEP_FIT * (g->k - 1); }
-// Once per frame, with the frame's GPU time (vsyncs; 0 = none finished yet) and the hold and probe state (nvn_fstep.probe) it ran under
+// What nvn_fstep_gpu_slowed's probe takes: 0 no probe's trial, 1 a probe's trial in its grace, 2 a probe's trial after it
+static inline int nvn_fstep_probe_phase(const nvn_fstep *s) { return s->probe != 1 ? 0 : s->grace > 0 ? 1 : 2; }
+// Once per frame, with the frame's GPU time (vsyncs; 0 = none finished yet), the hold it ran under and the probe phase (nvn_fstep_probe_phase)
 static inline int nvn_fstep_gpu_slowed(nvn_fgpu *g, double gpu, int k, int kmin, int probe) {
     if (gpu <= 0) return nvn_fgpu_slow(g);
-    if (k <= kmin) { if (probe != 1) g->ref = g->ref > 0 ? g->ref + (gpu - g->ref) / 32 : gpu; g->n = 0; g->k = k; return 0; }
+    if (k <= kmin) { if (probe != 1) g->ref = g->ref > 0 ? g->ref + (gpu - g->ref) / (probe == 2 ? 2 : 32) : gpu; g->n = 0; g->k = k; return 0; }
     if (k != g->k) { g->k = k; g->n = 0; }
     g->cur = g->n ? g->cur + (gpu - g->cur) / 8 : gpu; g->n++;
     return nvn_fgpu_slow(g);

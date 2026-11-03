@@ -159,3 +159,5 @@ void vk_end_pass(void);     // close an open render pass
 // ---- presentation (gfx_vk_present.c) ----
 void vk_present_init(void);
 uint64_t vk_present(const tex_t *t, double period, const int crop[4]);
+enum { PT_DISPATCH = 0xd15 };   // vk_pass_ts: a dispatch timed as a pass (its format field)
+

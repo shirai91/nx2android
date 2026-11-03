@@ -334,8 +334,11 @@ static vkimg_t *vk_tex_(const tex_t *t) {
     im->used = g_tex_frame;
     pthread_mutex_unlock(&g_img_mu);
     if (!vk_sub_open()) return fresh ? NULL : im;   // looked up outside a submission (present): nothing can be recorded, a new image has no contents yet
+    // a texture's first use: written by the CPU since it was registered (profile tex_dirty_upload), it is CPU-written from now on, as at nvn_mtl.m's first resolution;
+    // otherwise only a later nvn_ft_poll pass finds it, and its first draws read zeros
+    int nvn_ft_written(const tex_t *);
     if (t->mem && lin_copy(im, t, f)) {}
-    else if (t->mem && packaged_tex(t)) {
+    else if (t->mem && (packaged_tex(t) || (fresh && nvn_ft_written(t)))) {
         im->pkg_used = g_tex_frame;
         if (!im->packaged) { im->packaged = 1; pkg_upload(im, t, f); }
         else {

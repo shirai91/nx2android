@@ -1,0 +1,4 @@
+libadrenotools, copied from https://github.com/bylaws/libadrenotools at 8fae8ce (2024-09-10), its submodule lib/linkernsbypass
+(https://github.com/bylaws/liblinkernsbypass) at aa39758. BSD-2-Clause (LICENSE, lib/linkernsbypass/LICENSE). Built by dm/android/build.py
+(adrenotools_libs): libadrenotools.so and the hooks libhook_impl.so, libmain_hook.so, libfile_redirect_hook.so, libgsl_alloc_hook.so, which the APK
+carries with a custom Vulkan driver (porter port --vulkan-driver; gfx_vk_core.c vk_init DM_VK_DRIVER). The CMake files are not kept.

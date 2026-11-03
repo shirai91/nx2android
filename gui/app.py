@@ -78,6 +78,11 @@ class PortTab(QWidget):
                                 'An app of another package has its own saves.')
         self.fps60 = QCheckBox('60 fps (the profile\'s own frame-rate cap, else the community\'s FPSLocker-Warehouse config of the game\'s build, fetched from GitHub)')
         self.touch = QCheckBox('Touch game: start with the on-screen gamepad hidden, so every touch but the menu button\'s goes to the game (the pause menu shows it again)')   # porter port --touch
+        self.driver = QLineEdit(); self.driver.setPlaceholderText('the device\'s own')   # porter port --vulkan-driver
+        self.driver.setToolTip('A Vulkan driver library (.so) to pack in the APK and use instead of the device\'s own,\n'
+                               'such as Mesa\'s Turnip for Adreno GPUs. Empty: the device\'s driver.\n'
+                               'If the library does not load on the device, the app uses the device\'s driver.')
+        self.mt_replay = QCheckBox('Multithread replay: record the game\'s Vulkan commands on a thread of their own (faster in busy scenes; port again to turn it off)')   # porter port --mt-replay
         self.debug = QCheckBox('Development build (debuggable, debug information, DM_CTL key presses)')
         self.experimental = QCheckBox('Experimental: try a game that is not ported to Android yet (it may not start)')
         self.experimental.toggled.connect(lambda _: self.update_port_button())
@@ -93,7 +98,8 @@ class PortTab(QWidget):
         f.addRow('App name', self.app_name); f.addRow('Game language', self.language)
         f.addRow('Output folder', path_row(self.out, self.pick_out)); f.addRow('Device', dev); f.addRow('', self.replace_signer)
         f.addRow('Package', self.package); f.addRow('versionCode offset', self.vercode); f.addRow('Extra address space', headroom)
-        f.addRow('', self.fps60); f.addRow('', self.touch); f.addRow('', self.debug); f.addRow('', self.experimental)
+        f.addRow('Vulkan driver', path_row(self.driver, self.pick_driver))
+        f.addRow('', self.fps60); f.addRow('', self.touch); f.addRow('', self.mt_replay); f.addRow('', self.debug); f.addRow('', self.experimental)
         v.addWidget(o)
 
         bar = QHBoxLayout()
@@ -123,6 +129,10 @@ class PortTab(QWidget):
     def pick_folder(self):
         d = QFileDialog.getExistingDirectory(self, 'Game folder', self.folder.text() or str(Path.home()))
         if d: self.folder.setText(d); self.inspect()
+
+    def pick_driver(self):
+        p = QFileDialog.getOpenFileName(self, 'Vulkan driver', self.driver.text() or str(Path.home()), 'Vulkan driver (*.so)')[0]
+        if p: self.driver.setText(p)
 
     def pick_out(self):
         d = QFileDialog.getExistingDirectory(self, 'Output folder', self.out.text() or self.folder.text() or str(Path.home()))
@@ -188,6 +198,8 @@ class PortTab(QWidget):
         if self.headroom.value() >= 0: args += ['--alias-headroom', str(self.headroom.value())]
         if self.fps60.isChecked(): args.append('--fps60')
         if self.touch.isChecked(): args.append('--touch')
+        if self.mt_replay.isChecked(): args.append('--mt-replay')
+        if self.driver.text().strip(): args += ['--vulkan-driver', self.driver.text().strip()]
         if self.debug.isChecked(): args.append('--debug')
         if self.experimental.isChecked() and not self.info.get('supported'): args.append('--experimental')
         self.run(args)

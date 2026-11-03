@@ -221,6 +221,20 @@ class Misc(unittest.TestCase):
                 self.assertEqual(game.load(d.name).int('mem_alias'), 0x10000000)
         finally: shutil.rmtree(d.parent, ignore_errors=True); os.environ.pop('DM_GAMES_DIR', None)
 
+    def test_mt_replay_option(self):   # --mt-replay: off unless given; the port's env rows then end with DM_VK_MT_REPLAY=1 (gfx_vk_dq.c)
+        from porter import cli
+        self.assertTrue(cli._parser().parse_args(['port', 'x', '--mt-replay']).mt_replay); self.assertFalse(cli._parser().parse_args(['port', 'x']).mt_replay)
+        self.assertFalse(pipeline.Options(Path(".")).mt_replay)
+
+    def test_vulkan_driver_option(self):   # --vulkan-driver FILE: parsed, and a file that is not a .so library fails before any stage
+        from porter import cli
+        self.assertEqual(cli._parser().parse_args(['port', 'x', '--vulkan-driver', 'libvulkan_freedreno.so']).vulkan_driver, 'libvulkan_freedreno.so')
+        self.assertIsNone(cli._parser().parse_args(['port', 'x']).vulkan_driver)
+        t = Path(tempfile.mkdtemp(prefix='nx2a_test_game_'))
+        try:
+            with self.assertRaises(pipeline.BuildError): pipeline.Port(pipeline.Options(t, vulkan_driver=t / 'driver.txt')).run()
+        finally: shutil.rmtree(t, ignore_errors=True)
+
     def test_alias_headroom_option(self):   # --alias-headroom: parsed, checked before any stage, and kept as None (automatic) when not given
         from porter import cli
         self.assertEqual(cli._parser().parse_args(['port', 'x', '--alias-headroom', '16']).alias_headroom, 16)
