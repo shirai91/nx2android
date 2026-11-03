@@ -114,10 +114,10 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
             Add(Instruction.ShiftLeft,                AggregateType.S32,    AggregateType.S32,     AggregateType.S32);
             Add(Instruction.ShiftRightS32,            AggregateType.S32,    AggregateType.S32,     AggregateType.S32);
             Add(Instruction.ShiftRightU32,            AggregateType.U32,    AggregateType.U32,     AggregateType.S32);
-            Add(Instruction.Shuffle,                  AggregateType.FP32,   AggregateType.FP32,    AggregateType.U32);
-            Add(Instruction.ShuffleDown,              AggregateType.FP32,   AggregateType.FP32,    AggregateType.U32);
-            Add(Instruction.ShuffleUp,                AggregateType.FP32,   AggregateType.FP32,    AggregateType.U32);
-            Add(Instruction.ShuffleXor,               AggregateType.FP32,   AggregateType.FP32,    AggregateType.U32);
+            Add(Instruction.Shuffle,                  AggregateType.U32,    AggregateType.U32,     AggregateType.U32);
+            Add(Instruction.ShuffleDown,              AggregateType.U32,    AggregateType.U32,     AggregateType.U32);
+            Add(Instruction.ShuffleUp,                AggregateType.U32,    AggregateType.U32,     AggregateType.U32);
+            Add(Instruction.ShuffleXor,               AggregateType.U32,    AggregateType.U32,     AggregateType.U32);
             Add(Instruction.Sine,                     AggregateType.Scalar, AggregateType.Scalar);
             Add(Instruction.SquareRoot,               AggregateType.Scalar, AggregateType.Scalar);
             Add(Instruction.Store,                    AggregateType.Void);

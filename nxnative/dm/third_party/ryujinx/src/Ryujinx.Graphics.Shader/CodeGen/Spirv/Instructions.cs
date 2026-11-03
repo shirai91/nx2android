@@ -1089,42 +1089,42 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
 
         private static OperationResult GenerateShuffle(CodeGenContext context, AstOperation operation)
         {
-            SpvInstruction value = context.GetFP32(operation.GetSource(0));
+            SpvInstruction value = context.GetU32(operation.GetSource(0));
             SpvInstruction index = context.GetU32(operation.GetSource(1));
 
-            SpvInstruction result = context.GroupNonUniformShuffle(context.TypeFP32(), context.Constant(context.TypeU32(), (int)Scope.Subgroup), value, index);
+            SpvInstruction result = context.GroupNonUniformShuffle(context.TypeU32(), context.Constant(context.TypeU32(), (int)Scope.Subgroup), value, index);
 
-            return new OperationResult(AggregateType.FP32, result);
+            return new OperationResult(AggregateType.U32, result);
         }
 
         private static OperationResult GenerateShuffleDown(CodeGenContext context, AstOperation operation)
         {
-            SpvInstruction value = context.GetFP32(operation.GetSource(0));
+            SpvInstruction value = context.GetU32(operation.GetSource(0));
             SpvInstruction index = context.GetU32(operation.GetSource(1));
 
-            SpvInstruction result = context.GroupNonUniformShuffleDown(context.TypeFP32(), context.Constant(context.TypeU32(), (int)Scope.Subgroup), value, index);
+            SpvInstruction result = context.GroupNonUniformShuffleDown(context.TypeU32(), context.Constant(context.TypeU32(), (int)Scope.Subgroup), value, index);
 
-            return new OperationResult(AggregateType.FP32, result);
+            return new OperationResult(AggregateType.U32, result);
         }
 
         private static OperationResult GenerateShuffleUp(CodeGenContext context, AstOperation operation)
         {
-            SpvInstruction value = context.GetFP32(operation.GetSource(0));
+            SpvInstruction value = context.GetU32(operation.GetSource(0));
             SpvInstruction index = context.GetU32(operation.GetSource(1));
 
-            SpvInstruction result = context.GroupNonUniformShuffleUp(context.TypeFP32(), context.Constant(context.TypeU32(), (int)Scope.Subgroup), value, index);
+            SpvInstruction result = context.GroupNonUniformShuffleUp(context.TypeU32(), context.Constant(context.TypeU32(), (int)Scope.Subgroup), value, index);
 
-            return new OperationResult(AggregateType.FP32, result);
+            return new OperationResult(AggregateType.U32, result);
         }
 
         private static OperationResult GenerateShuffleXor(CodeGenContext context, AstOperation operation)
         {
-            SpvInstruction value = context.GetFP32(operation.GetSource(0));
+            SpvInstruction value = context.GetU32(operation.GetSource(0));
             SpvInstruction index = context.GetU32(operation.GetSource(1));
 
-            SpvInstruction result = context.GroupNonUniformShuffleXor(context.TypeFP32(), context.Constant(context.TypeU32(), (int)Scope.Subgroup), value, index);
+            SpvInstruction result = context.GroupNonUniformShuffleXor(context.TypeU32(), context.Constant(context.TypeU32(), (int)Scope.Subgroup), value, index);
 
-            return new OperationResult(AggregateType.FP32, result);
+            return new OperationResult(AggregateType.U32, result);
         }
 
         private static OperationResult GenerateSine(CodeGenContext context, AstOperation operation)
