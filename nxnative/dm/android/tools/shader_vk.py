@@ -101,17 +101,30 @@ def xfb_layout(key, ctl):
         out.append({'stride': strides[b], 'words': words})
     return out
 
+def nvn2_job(stage, code, ctl):
+    """An NVN2 (Switch 2) shader (shader_split.py nvn2): the instructions (a 0x80-byte SPH first in the graphics stages) are control +0x38 long, the c1 segment lies between
+    +0x40 and +0x44. A compute shader's c[0] layout (the translator's QueryAmpereComputeC0Layout): uniform buffer, storage buffer and texture handle counts (+0xb1..+0xb3),
+    its size (+0xba) and its push constant bytes (+0xa9, in words) → (code, c1, job keys)"""
+    n, c1a, c1e = struct.unpack_from('<I4xII', ctl, 0x38)
+    extra = {'arch': 'sm86'}
+    if stage == 'cs': extra['nvn2_cs'] = [ctl[0xb1], ctl[0xb2], ctl[0xb3], struct.unpack_from('<H', ctl, 0xba)[0], ctl[0xa9] * 4]
+    return code[:n], code[c1a:c1e], extra
+
 def job_for(key, stage, rec, w):   # dmsh_build.py job_for; transform feedback is captured natively (xfb_layout)
-    ci = rec.find(bytes.fromhex('34127698')); code = rec[0x38:ci]
-    c1o, c1t = struct.unpack_from('<2I', rec, ci + 0x700)
-    c1 = rec[0x38 + c1o:0x38 + c1t]
-    ab = vertex_ab(key, code, rec[ci:]) if stage == 'vs' else None
-    if ab: code, c1 = ab
-    if stage != 'cs': code = code[0x30:]
-    elif code[:4] == bytes.fromhex('79563412'): code = code[0x100:]
+    ci = rec.find(bytes.fromhex('34127698')); code = rec[0x38:ci]; ctl = rec[ci:]
+    xfb, extra = None, {}
+    if ctl[4:8] == b'\xc9\0\0\0': code, c1, extra = nvn2_job(stage, code, ctl)
+    else:
+        c1o, c1t = struct.unpack_from('<2I', ctl, 0x700)
+        c1 = rec[0x38 + c1o:0x38 + c1t]
+        ab = vertex_ab(key, code, ctl) if stage == 'vs' else None
+        if ab: code, c1 = ab
+        if stage != 'cs': code = code[0x30:]
+        elif code[:4] == bytes.fromhex('79563412'): code = code[0x100:]
+        xfb = xfb_layout(key, ctl) if stage == 'vs' else None
     cp = os.path.join(w, key + '.bin'); open(cp, 'wb').write(code)
-    xfb = xfb_layout(key, rec[ci:]) if stage == 'vs' else None
-    j = {'key': key, 'stage': stage, 'code': cp, 'tex': {}, 'img': {}, 'attr': {}, 'fout': {}, 'c1': c1.hex(), 'debug': False, 'reduced': True, 'sb_align': SB_ALIGN, 'subgroup': SUBGROUP, 'gather_bias': GATHER_BIAS, 'gs_passthrough': False, **({'xfb': xfb} if xfb else {})}
+    j = {'key': key, 'stage': stage, 'code': cp, 'tex': {}, 'img': {}, 'attr': {}, 'fout': {}, 'c1': c1.hex(), 'debug': False, 'reduced': True, 'sb_align': SB_ALIGN, 'subgroup': SUBGROUP, 'gather_bias': GATHER_BIAS, 'gs_passthrough': False,
+         **extra, **({'xfb': xfb} if xfb else {})}
     if key in FACTS: j.update(FACTS[key])
     else: j['no_facts'] = True
     return j, c1

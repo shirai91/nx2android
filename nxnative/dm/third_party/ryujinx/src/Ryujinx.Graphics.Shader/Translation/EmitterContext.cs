@@ -1,4 +1,5 @@
 using Ryujinx.Graphics.Shader.Decoders;
+using Ryujinx.Graphics.Shader.Instructions;
 using Ryujinx.Graphics.Shader.IntermediateRepresentation;
 using System;
 using System.Collections.Generic;
@@ -214,6 +215,13 @@ namespace Ryujinx.Graphics.Shader.Translation
         {
             _operations.Add(operation);
         }
+
+        // The Ampere frontend redirects an instruction's results after emitting it (InstEmitAmpere.cs)
+        public AmpereScoreboards Scoreboards { get; set; }
+
+        public Operation GetOperation(int index) => _operations[index];
+
+        public void InsertOperation(int index, Operation operation) => _operations.Insert(index, operation);
 
         public void MarkLabel(Operand label)
         {

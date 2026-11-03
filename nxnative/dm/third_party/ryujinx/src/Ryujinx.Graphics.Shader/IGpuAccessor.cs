@@ -22,6 +22,22 @@ namespace Ryujinx.Graphics.Shader
         }
 
         /// <summary>
+        /// Size in bytes of the constant buffer 1 data known (an Ampere jump table ends there at the latest).
+        /// </summary>
+        int QueryConstantBuffer1Size()
+        {
+            return 0;
+        }
+
+        /// <summary>
+        /// NVN2 compute shaders: their driver constant layout in c[0] (uniform buffer, storage buffer and texture handle counts, its size, push constant bytes); null otherwise.
+        /// </summary>
+        int[] QueryAmpereComputeC0Layout()
+        {
+            return null;
+        }
+
+        /// <summary>
         /// Gets a span of the specified memory location, containing shader code.
         /// </summary>
         /// <param name="address">GPU virtual address of the data</param>
