@@ -193,6 +193,39 @@ def spirv_bindings(spv):
         if k == 'u': io[sc][2] |= 1 << loc
     return out, local, io
 
+def int_inputs(spv):
+    """A vertex shader's inputs it only uses as integers (every load bit-cast to an integer, or copied as is) → {location: 'uint'} (dmsh_build.py int_inputs on the SPIR-V).
+    The hardware puts an integer format's bits (bone indices RGBA8UI etc.) in the register as they are; under the translator's float declaration Vulkan leaves an integer
+    format's value undefined (MoltenVK refuses the pipeline), so these are translated again as uint inputs, and the replay gives them the integer format"""
+    w = struct.unpack(f'<{len(spv) // 4}I', spv)
+    ins, fvar, ints, loc, builtin, body, i = set(), set(), set(), {}, set(), [], 5
+    while i < len(w):
+        n, op = w[i] >> 16, w[i] & 0xffff; x = w[i:i + n]
+        if op == OP_DECORATE and x[2] == 30: loc[x[1]] = x[3]
+        elif op == OP_DECORATE and x[2] == 11: builtin.add(x[1])
+        elif op == 21 or op == 23 and x[2] in ints: ints.add(x[1])   # OpTypeInt, a vector of them
+        elif op == OP_VARIABLE and x[3] in (1, 7): (ins if x[3] == 1 else fvar).add(x[2])
+        if op == 54 or body: body.append(x)   # OpFunction onwards
+        i += n
+    base = {v: v for v in ins if v in loc and v not in builtin}   # pointer id → its input variable
+    vals, held = {}, {}   # loaded value id → its input variable; function variable (the translator's registers) → the input it holds, -1 if anything else too
+    for _ in range(2):    # twice: a register stored after the code that loads it (a loop) is seen
+        for x in body:
+            op = x[0] & 0xffff
+            if op in (65, 66) and x[3] in base: base[x[2]] = base[x[3]]   # OpAccessChain / OpInBoundsAccessChain
+            elif op == 61 and (x[3] in base or held.get(x[3], -1) != -1): vals[x[2]] = base.get(x[3]) or held[x[3]]   # OpLoad
+            elif op == 81 and x[3] in vals: vals[x[2]] = vals[x[3]]       # OpCompositeExtract
+            elif op == 62 and x[1] in fvar: v = vals.get(x[2], -1); held[x[1]] = v if held.get(x[1], v) == v else -1   # OpStore
+    good, bad = collections.Counter(), set()
+    for x in body:
+        op = x[0] & 0xffff
+        if op in (61, 81) and x[2] in vals or op in (65, 66): continue   # the loads themselves
+        for k, v in enumerate(x[1:], 1):
+            if v not in vals: continue
+            if op == 124 and k == 3 and x[1] in ints: good[vals[v]] += 1   # OpBitcast to an integer
+            elif not (op == 62 and k == 2 and held.get(x[1]) != -1): bad.add(vals[v])   # anything but a store as is (output, or a register holding only this input)
+    return {str(loc[v]): 'uint' for v in good if v not in bad}
+
 # Handle decoding: as dmsh_build.py decode_tex / decode_ubo_tex / reflect (names: <stage>_t<type>_cb<slot>_<handle>, <stage>_c<n>, <stage>_s<n>, <stage>_i…)
 TEX_BASE, IMG_BASE, IMG_SLOTS, SEPTEX_BASE, SEPTEX_SLOT0, SAMP_BASE = 0x20, 0x120, 8, 0x168, 128, 0x568
 SSBO = {'vs': 0x110, 'cs': 0x310, 'ps': 0x510}
@@ -295,6 +328,13 @@ def main():
         return subprocess.run([a.dotnet, XLATE_DLL, jp, w], capture_output=True, text=True, errors='replace')
     print(f'translating {len(keys)} shaders in {len(chunks)} batches ...', flush=True)
     with cf.ThreadPoolExecutor(len(chunks)) as ex: rs = list(ex.map(xl, chunks))
+    again = {}
+    for k in keys:
+        p = os.path.join(w, k + '.spv')
+        if stages[k] == 'vs' and os.path.exists(p) and (ii := int_inputs(open(p, 'rb').read())): jobs[k]['attr'] = ii; again[k] = 1
+    if again:
+        print(f'translating {len(again)} vertex shaders again with integer inputs ...', flush=True)
+        with cf.ThreadPoolExecutor(len(chunks)) as ex: rs += list(ex.map(xl, [c for c in ([k for k in ch if k in again] for ch in chunks) if c]))
     errs = collections.Counter()
     for r in rs:
         for ln in r.stderr.splitlines():
