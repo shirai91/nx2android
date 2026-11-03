@@ -370,6 +370,15 @@ def site_window(seg):
             if m in ('tbz', 'tbnz'): w = (w & 0xFFF8001F) | ((off & 0x3FFF) << 5)
             else: w = (w & 0xFF00001F) | ((off & 0x7FFFF) << 5)
             dd = dis(w, pc); assert dd.operands[-1].imm == newt and dd.mnemonic == m
+        elif m == 'b':   # an unconditional branch inside a CAS window (e.g. ldaxrb; cbz <store>; clrex; b <after>; stlxrb; cbz)
+            tgt = x.operands[-1].imm
+            if lo <= tgt < hi: newt = copy0 + (tgt - lo)
+            elif tgt == hi: newt = exits
+            else:
+                if tgt not in ex_targets: ex_targets.append(tgt)
+                newt = exits + 16 * ex_targets.index(tgt)
+            pc = copy0 + 4 * k; w = B(pc, newt)
+            dd = dis(w, pc); assert dd.operands[-1].imm == newt and dd.mnemonic == m
         else:
             assert m not in ('adr', 'adrp', 'b', 'bl', 'br', 'blr', 'ret') and not (m == 'ldr' and '[' not in x.op_str), hex(x.address)
         words.append(w)
@@ -810,6 +819,7 @@ for fa, fb in funcs:
             t = x.operands[-1].imm
             if t in inwin and t not in heads:
                 wseg = next(w for w in ws if any(y.address == t for y in w))
+                if any(y.address == x.address for y in wseg): continue   # a branch inside the window itself: site_window redirects it to the copy
                 rb = retry_block(insl, k, wseg) if x.mnemonic not in ('b', 'bl') else None
                 assert rb, f'branch into window {x.address:x}'
                 assert not any(y.address in done for y in rb[0]), f'retry block overlaps a window {rb[0][0].address:x}'
