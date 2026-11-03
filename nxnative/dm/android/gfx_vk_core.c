@@ -269,7 +269,9 @@ static const VkBufferUsageFlags POOL_USAGE0 = VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
     VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
     VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
 #define POOL_USAGE (POOL_USAGE0 | (V.has_xfb ? VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT : 0))   // any pool range may be a transform feedback buffer
-// a pool's buffer also has a device address, which shaders storing through pointers they loaded reach it by (vk_gmem_table); its memory is allocated for one (pool_mem_flags)
+// a zero-copy pool's buffer also has a device address, which shaders storing through pointers they loaded reach it by (vk_gmem_table); its memory is allocated for one
+// (pool_mem_flags). Copied pools have none: on the Android emulator, host-visible memory allocated for a device address took a hypervisor mapping slot each, and entering
+// Donkey Kong Bananza's first level ran out of them ("hvf_map_safe: no free slots", the emulator died)
 #define POOL_USAGE_BDA (POOL_USAGE | (V.has_bda ? VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT : 0))
 static VkMemoryAllocateFlagsInfo g_bda_flags = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO, NULL, VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT, 0};
 static const void *pool_mem_flags(const void *next) { if (!V.has_bda) return next; g_bda_flags.pNext = next; return &g_bda_flags; }   // (allocations are made under g_pool_mu or before)
@@ -349,13 +351,13 @@ static void pool_add_one(const void *mem, uint64_t size, uint64_t base, uint64_t
     int zc = ((uintptr_t)mem & 0xfff) || (size & 0xfff) ? -3 : getenv("DM_VK_NO_ZEROCOPY") ? -4 : zc_over(end - base) ? -5 : pool_zero_copy(p, (uint8_t *)mem, size);
     if (zc) {
         static int said; if (!said++) VKLOG("[RED] memory pool %p +%#llx could not be zero-copy (%d): a GPU copy is refreshed before each submission (slow)", mem, (unsigned long long)size, zc);
-        VkBufferCreateInfo bi = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, NULL, 0, size, POOL_USAGE_BDA, VK_SHARING_MODE_EXCLUSIVE};
+        VkBufferCreateInfo bi = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, NULL, 0, size, POOL_USAGE, VK_SHARING_MODE_EXCLUSIVE};
         VKCHK(vkCreateBuffer(V.dev, &bi, NULL, &p->buf));
         VkMemoryRequirements req; vkGetBufferMemoryRequirements(V.dev, p->buf, &req);
-        VkMemoryAllocateInfo ai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, pool_mem_flags(NULL), req.size,
+        VkMemoryAllocateInfo ai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, req.size,
             vk_mem_type(req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 0)};
         VKCHK(vkAllocateMemory(V.dev, &ai, NULL, &p->mem)); VKCHK(vkBindBufferMemory(V.dev, p->buf, p->mem, 0));
-        void *m; VKCHK(vkMapMemory(V.dev, p->mem, 0, VK_WHOLE_SIZE, 0, &m)); p->shadow = m; p->gpu = buf_gpu(p->buf);
+        void *m; VKCHK(vkMapMemory(V.dev, p->mem, 0, VK_WHOLE_SIZE, 0, &m)); p->shadow = m;
     }
     g_npool++; pool_ord_make(); __atomic_fetch_add(&g_pool_gen, 1, __ATOMIC_RELEASE);
     pthread_rwlock_unlock(&g_pool_mu);
@@ -380,11 +382,12 @@ void mtl_pool_del(const void *mem) {
 void vk_gmem_table(VkBuffer *buf, VkDeviceSize *off, VkDeviceSize *size) {
     extern uint64_t g_cmd_gen; static VkBuffer tb; static VkDeviceSize to, tn; static uint32_t gen; static uint64_t cmd, sink;
     if (!V.has_bda) VKRED_ONCE(90, "a shader stores through pointers it loads, and the device has no buffer device address: its accesses go nowhere");
-    if (!sink && V.has_bda) {   // 4 KB of device memory for addresses in no pool
+    static int made; if (!made++ && V.has_bda) {   // 4 KB of device memory for addresses in no pool
         VkBuffer b; VkDeviceMemory m; VkBufferCreateInfo bi = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, NULL, 0, 4096, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, VK_SHARING_MODE_EXCLUSIVE};
         VKCHK(vkCreateBuffer(V.dev, &bi, NULL, &b)); VkMemoryRequirements req; vkGetBufferMemoryRequirements(V.dev, b, &req);
         VkMemoryAllocateInfo ai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, pool_mem_flags(NULL), req.size, vk_mem_type(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0)};
         VKCHK(vkAllocateMemory(V.dev, &ai, NULL, &m)); VKCHK(vkBindBufferMemory(V.dev, b, m, 0)); sink = buf_gpu(b);
+        VKLOG("global accesses through loaded pointers: sink at device address %#llx", (unsigned long long)sink);
     }
     uint32_t g = __atomic_load_n(&g_pool_gen, __ATOMIC_ACQUIRE);
     if (tb && gen == g && cmd == g_cmd_gen) { *buf = tb; *off = to; *size = tn; return; }
