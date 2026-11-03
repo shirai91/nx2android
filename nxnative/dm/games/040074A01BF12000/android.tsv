@@ -1,0 +1,7 @@
+# Donkey Kong Bananza (Switch 2, update v458752): Nintendo EPD's engine on NVN2, its shaders Ampere code (the translator's sm_86 frontend).
+# Brought up on an arm64 Android emulator (2026-11-02): boots to its frame loop with sound and renders its first screens (the autosave notice in the pass dumps);
+# the emulator presents black, as it has no depth clip control for NVN's GL depth mode (z = -1 is clipped), no zero-copy pools and no BC7. Not tested on a device yet
+status	boots
+package	org.nx2a.donkeykongbananza
+orientation	landscape
+requires	bcn

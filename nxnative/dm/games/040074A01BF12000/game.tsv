@@ -1,0 +1,37 @@
+# Game profile of Donkey Kong Bananza (Switch 2, update v458752): Nintendo EPD's sead / agl / gsys engine on SDK 20.5.19 (Ounce) and NVN2, whose shaders are Ampere code.
+# Format: key <TAB> value; see 010015100B514000/game.tsv
+
+# ---- Identity ----
+title_id	040074A01BF12000
+program_id	040074A01BF12000
+name	Donkey Kong Bananza
+ipa	DonkeyKongBananza.ipa
+app_category	public.app-category.action-games
+
+# ---- Versions ----
+build	v458752	v458752	main=e25c90c1c136638885659fd55bf8a03b	sdk=18265daea2105b31f25346adfbbd09b5
+package	v458752
+shader_versions	v458752
+
+# ---- Files ----
+modules	main sdk
+romfs_marker	System/Resource/ResourceSizeTable.Product.rsizetable.zs
+zip_store	.zs:.bwav:.webm
+
+# ---- Shader split (shader_split.py) ----
+shader_groups	/Shader/=shader /Effect/=effect /Layout/=layout /Lib/=lib
+shader_note	Donkey Kong Bananza shaders
+
+# ---- Memory (hle_svc.c) ----
+# The heap region is the Switch 2's 9 GB, reserved, not committed: the game sets an 8.94 GB heap and touches what it uses (a 2.2 GB footprint at its first screens on an
+# arm64 Android emulator, 2026-11-02). Gameplay's footprint is not measured yet; the pool is to be trimmed to that plus a margin for 12 GB devices
+mem_reserve	0x270000000
+mem_alias	0x10000000
+mem_stack	0x10000000
+app_pool	0x240000000
+sys_resource	0x0
+
+# ---- Graphics ----
+# agl's render buffer binding wraps its clears in render conditions (SetRenderEnableConditional before its ClearColor): drawn unconditionally, a clear-only rebinding of the
+# composite target after the composite draw wiped it before the upscaler read it, and gameplay frames came out black
+render_cond	on
