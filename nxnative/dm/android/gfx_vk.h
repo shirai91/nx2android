@@ -62,7 +62,7 @@ void vk_init(void);   // once, from mtl_init or the first use
 #define VK_POOL_USAGE (VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT | \
     VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | \
     VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | (V.has_xfb ? VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT : 0))   // any pool range may be any kind of buffer
-typedef struct { uint64_t lo, hi, gpu; VkBuffer buf; VkDeviceMemory mem; void *ahb; int zero_copy; uint8_t *shadow; uint64_t serial, base, end; int synced; uint64_t stamp, stamp0; const void *span; uint8_t *hot; uint64_t nsync; } vkpool_t;   // serial: unique per pool made (caches of views over a pool's buffer key on it); [base, end): the game's pool, of which [lo, hi) is one chunk (ZC_CHUNK); synced, stamp, stamp0, span, hot, nsync: a copied pool's incremental sync (pool_sync)
+typedef struct { uint64_t lo, hi, gpu; VkBuffer buf; VkDeviceMemory mem; void *ahb; int zero_copy; uint8_t *shadow; uint64_t serial, base, end; int synced, blocks; uint64_t stamp, stamp0, *hot, nsync; uint32_t *last; const void *span; } vkpool_t;   // serial: unique per pool made (caches of views over a pool's buffer key on it); [base, end): the game's pool, of which [lo, hi) is one chunk (ZC_CHUNK); synced to span: a copied pool's incremental sync (pool_sync)
 typedef struct { uint64_t lo, hi; } vk_range;
 typedef struct { uint64_t lo, hi, fence; } vk_gwrite;
 enum { VK_GWRITE_MAX = 6 * 64 };
@@ -176,8 +176,8 @@ VkBuffer vk_zero_buffer(void);
 
 // ---- replay (gfx_vk_exec.c) ----
 // DM_VK_AB=<mask> (live, read as each submission begins): each bit turns one replay optimization off, so a change is measured against the old way in one run
-enum { AB_POOL_TLS = 1 };
-extern int g_vk_ab;
+enum { AB_POOL_TLS = 1, AB_POOL_SCAN = 2 };
+extern int g_vk_ab, g_vk_hot_syncs;   // g_vk_hot_syncs: DM_VK_HOT_SYNCS (live): a copied pool's block written twice within that many syncs turns hot (gfx_vk_pool.c pool_sync)
 void vk_exec_reset(void);   // per submission
 void vk_end_pass(void);     // close an open render pass
 

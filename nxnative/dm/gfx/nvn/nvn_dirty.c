@@ -31,7 +31,9 @@ enum { BLK_SHIFT = 10, BLK = 1 << BLK_SHIFT, NBLK = 256, MAX_RANGE = BLK * NBLK 
 // last: the highest generation of any page of the range (a check of a range nothing was written in since its stamp scans no page)
 // nmp: this module's mprotect calls on the range since it was registered or defragmented (nvn_dirty_defrag)
 // prep: when the host last made pages of the range writable for a write of its own (prep_write; mach time)
-typedef struct { uintptr_t base, end, mem; _Atomic uint8_t *state; _Atomic uint64_t *gen; _Atomic uint32_t *span; size_t cap; _Atomic int live; _Atomic uint32_t nmp; _Atomic uint64_t prep; _Atomic uint64_t last; } range_t;
+// blk: one bit per 1 << blk_shift bytes from mem, set as a page of the block is made writable (nvn_dirty_blocks; NULL until a caller asks for it)
+typedef struct { uintptr_t base, end, mem; _Atomic uint8_t *state; _Atomic uint64_t *gen; _Atomic uint32_t *span; size_t cap; _Atomic int live; _Atomic uint32_t nmp; _Atomic uint64_t prep; _Atomic uint64_t last;
+                 _Atomic(_Atomic uint64_t *) blk; unsigned blk_shift; size_t nblk_words; } range_t;
 static _Atomic(range_t *) g_blk[NBLK];
 static inline range_t *rg(int i) { return &atomic_load_explicit(&g_blk[i >> BLK_SHIFT], memory_order_acquire)[i & (BLK - 1)]; }
 static _Atomic int g_nr;
@@ -41,6 +43,11 @@ static _Atomic uint64_t g_now = 1;
 static inline void stamp_page(range_t *r, uintptr_t p) {
     uint64_t g = atomic_fetch_add(&g_now, 1) + 1; atomic_store(&r->gen[p], g);
     uint64_t o = atomic_load(&r->last); while (o < g && !atomic_compare_exchange_weak(&r->last, &o, g)) {}
+    _Atomic uint64_t *b = atomic_load_explicit(&r->blk, memory_order_acquire);
+    if (b) {   // (after the page's generation: a caller that takes the bit finds the generation too)
+        uintptr_t a = r->base + (p << g_shift), lo = a > r->mem ? a - r->mem : 0, hi = a + g_pg - r->mem;
+        for (uintptr_t k = lo >> r->blk_shift; k <= (hi - 1) >> r->blk_shift && k >> 6 < r->nblk_words; k++) atomic_fetch_or(&b[k >> 6], 1ull << (k & 63));
+    }
 }
 static _Atomic uint64_t g_faults, g_preps, g_released;
 static _Atomic uint64_t g_adds_total;
@@ -228,7 +235,7 @@ void nvn_dirty_add_range(const void *mem, size_t size) {
     } else {
         memset((void *)state, 0, np); memset((void *)gen, 0, np * sizeof *gen); memset((void *)r->span, 0, np * sizeof *r->span);
     }
-    r->base = base; r->end = end; r->mem = (uintptr_t)mem; r->state = state; r->gen = gen; atomic_store(&r->nmp, 0); atomic_store(&r->prep, 0); atomic_store(&r->last, 0);
+    r->base = base; r->end = end; r->mem = (uintptr_t)mem; r->state = state; r->gen = gen; atomic_store(&r->nmp, 0); atomic_store(&r->prep, 0); atomic_store(&r->last, 0); atomic_store(&r->blk, NULL);
     if (slot == n) atomic_store(&g_nr, n + 1);
     atomic_store_explicit(&r->live, 1, memory_order_release);
     pthread_mutex_unlock(&g_slot_mu);
@@ -271,6 +278,22 @@ int nvn_dirty_since_span(const void *span, const void *addr, size_t len, uint64_
     uintptr_t a = (uintptr_t)addr, p = (a - r->base) >> g_shift, q = (a + len - 1 - r->base) >> g_shift;
     for (uintptr_t i = p; i <= q; i++) if (atomic_load(&r->gen[i]) > stamp) return 1;   // The generation of the last write before upload is <= the stamp; any later write must be > the stamp
     return 0;
+}
+// Write tracking by block for a caller that copies the range elsewhere: each page made writable from now on sets its blocks' bits (1 << shift bytes each, counted from
+// the pool's start), which the caller takes word by word. A write lets the page through only after its bits are set, so a block whose bit was taken and found clear,
+// and was not protected again, is written later with its bit set again
+int nvn_dirty_blocks(const void *span, unsigned shift) {
+    range_t *r = (range_t *)span; if (!r) return -1;
+    if (atomic_load(&r->blk)) return r->blk_shift == shift ? 0 : -1;
+    pthread_mutex_lock(&g_slot_mu);
+    if (!atomic_load(&r->blk)) { size_t n = (((r->end - r->mem + (1ull << shift) - 1) >> shift) + 63) / 64; _Atomic uint64_t *b = calloc(n, sizeof *b);   // never freed: the fault path may still hold it
+        if (b) { r->blk_shift = shift; r->nblk_words = n; atomic_store_explicit(&r->blk, b, memory_order_release); } }
+    pthread_mutex_unlock(&g_slot_mu);
+    return atomic_load(&r->blk) && r->blk_shift == shift ? 0 : -1;
+}
+uint64_t nvn_dirty_blocks_take(const void *span, size_t word) {
+    const range_t *r = span; _Atomic uint64_t *b = r ? atomic_load_explicit(&r->blk, memory_order_acquire) : NULL;
+    return b && word < r->nblk_words ? atomic_exchange(&b[word], 0) : ~0ull;   // (no bitmap: every block written)
 }
 int nvn_dirty_since(const void *addr, size_t len, uint64_t stamp) { return nvn_dirty_since_span(NULL, addr, len, stamp); }
 void nvn_dirty_slot_stats(int *live, int *used_slots, uint64_t *adds_total) {
