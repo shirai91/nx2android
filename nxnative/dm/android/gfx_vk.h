@@ -176,7 +176,7 @@ VkBuffer vk_zero_buffer(void);
 
 // ---- replay (gfx_vk_exec.c) ----
 // DM_VK_AB=<mask> (live, read as each submission begins): each bit turns one replay optimization off, so a change is measured against the old way in one run
-enum { AB_POOL_TLS = 1, AB_POOL_SCAN = 2, AB_IDX_FIRST = 4, AB_VB_EACH = 8 };
+enum { AB_POOL_TLS = 1, AB_POOL_SCAN = 2, AB_IDX_FIRST = 4, AB_VB_EACH = 8, AB_PROG_MEMO = 16 };
 extern int g_vk_ab, g_vk_hot_syncs;   // g_vk_hot_syncs: DM_VK_HOT_SYNCS (live): a copied pool's block written twice within that many syncs turns hot (gfx_vk_pool.c pool_sync)
 void vk_exec_reset(void);   // per submission
 void vk_end_pass(void);     // close an open render pass

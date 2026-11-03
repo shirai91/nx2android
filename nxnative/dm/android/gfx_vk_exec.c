@@ -760,19 +760,25 @@ static void bind_program(const p_bind_program *bp) {
     // NVN binds by stage mask (vertex 1, fragment 2, geometry 4, tessellation 8 / 0x10, compute 0x20): only the masked stages change, so a game that keeps
     // its vertex and fragment shaders in programs of their own (NEO, AI: THE SOMNIUM FILES) binds them one after the other and draws with both.
     // prog_key's index is the position in the program's shader array (as the game passed them to SetShaders), not the stage: the stage is the bundle's.
+    // A program's shaders by the stage the bundle has them as, kept by its serial (SetShaders gives it a new one): each bind looked up every stage's key (prog_key, a
+    // locked table), its bundle entry (a search over the bundle's 23,000 entries) and its shader (another locked table), 1.3% of Donkey Kong Bananza's replay thread
+    enum { PROGC = 1024 }; static struct { uint64_t serial; vkshader_t *sh[6]; } progc[PROGC];
     int vk_shader_stage(uint64_t key);
     uint32_t mask = bp->stages ? (uint32_t)bp->stages & 0x3f : 0x3f;
-    for (int st = 0; st < 6; st++) if (mask >> st & 1) S.sh[st] = NULL;
     S.prog = bp->prog;
-    if (S.prog) for (unsigned i = 0; i < 6; i++) {
-        uint8_t k[8]; if (!prog_key(S.prog, i, k)) break;
-        uint64_t kk = key64(k); int st = kk ? vk_shader_stage(kk) : -1;
-        if (kk && st < 0) {   // the draw or dispatch is skipped. Logged once per shader (the first 16 binds were 4 shaders of Xenoblade Chronicles 3 over and over, which hid others)
-            static uint64_t seen[256]; static int nseen; int known = 0; for (int j = 0; j < nseen; j++) if (seen[j] == kk) { known = 1; break; }
-            if (!known && nseen < 256) { seen[nseen++] = kk; void vk_shader_missing(uint64_t key); vk_shader_missing(kk); shader_dump(S.prog, i, kk); } }
-        if (st < 0 || st > 5 || !(mask >> st & 1)) continue;
-        S.sh[st] = vk_shader(kk, st);
+    uint64_t ser = S.prog && !(g_vk_ab & AB_PROG_MEMO) ? S.prog->serial : 0; typeof(progc[0]) one, *c = ser ? &progc[ser % PROGC] : &one;
+    if (!ser || c->serial != ser) {
+        c->serial = ser; memset(c->sh, 0, sizeof c->sh);
+        if (S.prog) for (unsigned i = 0; i < 6; i++) {
+            uint8_t k[8]; if (!prog_key(S.prog, i, k)) break;
+            uint64_t kk = key64(k); int st = kk ? vk_shader_stage(kk) : -1;
+            if (kk && st < 0) {   // the draw or dispatch is skipped. Logged once per shader (the first 16 binds were 4 shaders of Xenoblade Chronicles 3 over and over, which hid others)
+                static uint64_t seen[256]; static int nseen; int known = 0; for (int j = 0; j < nseen; j++) if (seen[j] == kk) { known = 1; break; }
+                if (!known && nseen < 256) { seen[nseen++] = kk; void vk_shader_missing(uint64_t key); vk_shader_missing(kk); shader_dump(S.prog, i, kk); } }
+            if (st >= 0 && st <= 5) c->sh[st] = vk_shader(kk, st);
+        }
     }
+    for (int st = 0; st < 6; st++) if (mask >> st & 1) S.sh[st] = c->sh[st];
     S.prog_ok = S.sh[0] || S.sh[5];   // a vertex-only program draws depth only (prepare_draw)
 }
 typedef struct {
