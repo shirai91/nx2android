@@ -8,6 +8,9 @@
 # a frame, sound clean (0 underruns).
 # The culling compute shaders' counters grew every frame (GPU 9 -> 70 ms within minutes) until the translator stopped running a single-use atomic twice
 # (AstOptimizer: a source with side effects is never propagated).
+# Not checked yet: the city streets past the station, battles, catching. Seen once and not reproduced: an NPC passing right beside the camera drew as a black shape
+# with blocky white noise for a moment (NPCs held close to the camera afterwards drew correctly); the game fades such characters with alpha-to-coverage dither
+# (MultisampleStateGetAlphaToCoverageDither, a2c draws on single-sample targets), the first place to look if it shows again.
 # 60 fps: not done. FPSLocker-Warehouse's only Z-A config (1.0.1) is withdrawn; it patches the game's frame-time constants as well (ladders, rolling), so the
 # present interval alone is not enough.
 status	playable
