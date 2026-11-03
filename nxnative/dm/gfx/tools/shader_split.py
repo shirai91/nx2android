@@ -1089,7 +1089,7 @@ def ue_legacy_jobs(files, parts=64):
 
 _PAKS = {}
 def ue_legacy_shaders(path, rel, names, out):
-    """Files of a legacy Unreal pak (ue_legacy_jobs), each decoded block by block with the game's own decoder (DRAGON QUEST XI S: LZ5) and scanned for the shader records the engine keeps inline"""
+    """Files of a legacy Unreal pak (ue_legacy_jobs), each decoded block by block, with the game's own decoder (DRAGON QUEST XI S: LZ5) or zlib (OCTOPATH TRAVELER: uepak.INFLATE), and scanned for the shader records the engine keeps inline"""
     pk = _PAKS.get(path) or _PAKS.setdefault(path, uepak.Pak(path))
     for name in names:
         d = pk.read(name, decode=oodle)

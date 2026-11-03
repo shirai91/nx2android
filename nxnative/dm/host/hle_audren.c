@@ -86,6 +86,13 @@ static void render_main(void *arg) {
 // hook below since that form has one (Balatro): the inner call started the render thread before the event form had created its event, and the outer call then logged a second
 // renderer. The inner call (t_in_open) goes straight to the SDK with the host's copy of the parameter, as it did before the form without an event was hooked
 static __thread int t_in_open;
+// The renderer's own event. With the DSP service (what a game that asks for device 0 gets on Horizon) the SDK keeps no pointer to the game's SystemEventType: it stores NULL in the
+// handle's event slot and attaches the service's readable handle to the game's object (SDK 3.5.1 sdk+0x17e004). The CPU + manual open the host substitutes creates a local event in
+// the game's object instead and stores the object in that slot (sdk+0x17dffc), and ExecuteAudioRendererRendering signals it after every render (sdk+0x17e690), so the object had to
+// outlive the renderer, which Horizon never asks of it. OCTOPATH TRAVELER (SDK 3.5.1) reuses its object's memory: the render thread's first SignalSystemEvent found 0 in the state
+// byte (+0x28, 1 local / 2 kernel event) that read 1 right after the open, and the SDK aborted. So the SDK gets the host's own object, alive until Close, made a kernel event
+// (auto-clear) once the SDK has created it, and the game's object gets that event's readable handle, unmanaged: the game may destroy or reuse its object, and the renderer never touches it
+static uint8_t g_rev[0x80] __attribute__((aligned(16))); static int g_rev_on;
 static Result ar_open(void **handle, void *ev, const uint8_t *param, void *work, size_t sz) {
     static Result (*orig_ev)(void **, void *, const uint8_t *, void *, size_t), (*orig)(void **, const uint8_t *, void *, size_t);
     if (!orig_ev) orig_ev = gsym("_ZN2nn5audio17OpenAudioRendererEPNS0_19AudioRendererHandleEPNS_2os11SystemEventERKNS0_22AudioRendererParameterEPvm");
@@ -95,8 +102,17 @@ static Result ar_open(void **handle, void *ev, const uint8_t *param, void *work,
     LOG("audren: OpenAudioRenderer%s rate %d samples per frame %d mix buffers %d submixes %d voices %d sinks %d effects %d splitters %d (original device %d mode %d → CPU / manual) work buffer %p+%#zx",
         ev ? "" : " (no event)", *(int32_t *)param, *(int32_t *)(param + 4), *(int32_t *)(param + 8), *(int32_t *)(param + 0xc), *(int32_t *)(param + 0x10), *(int32_t *)(param + 0x14),
         *(int32_t *)(param + 0x18), *(int32_t *)(param + 0x24), *(int32_t *)(param + P_DEVICE), *(int32_t *)(param + P_MODE), work, sz);
-    t_in_open = 1; Result r = ev ? orig_ev(handle, ev, p, work, sz) : orig(handle, p, work, sz); t_in_open = 0;
+    void *sev = ev && *(int32_t *)(param + P_DEVICE) == 0 && !g_rev_on ? g_rev : NULL;   // a game that opens a CPU renderer itself keeps the SDK's contract: the SDK keeps its event
+    if (sev) memset(g_rev, 0, sizeof g_rev);
+    t_in_open = 1; Result r = ev ? orig_ev(handle, sev ? sev : ev, p, work, sz) : orig(handle, p, work, sz); t_in_open = 0;
     if (r) { LOG("[RED] audren: SDK OpenAudioRenderer failed %#x", r); return r; }
+    if (sev) {
+        static void (*destroy)(void *), (*attach)(void *, uint32_t, int, int); static uint32_t (*getr)(const void *);
+        if (!destroy) { destroy = gsym("_ZN2nn2os18DestroySystemEventEPNS0_15SystemEventTypeE"); getr = gsym("_ZN2nn2os30GetReadableHandleOfSystemEventEPKNS0_15SystemEventTypeE");
+                        attach = gsym("_ZN2nn2os33AttachReadableHandleToSystemEventEPNS0_15SystemEventTypeEjbNS0_14EventClearModeE"); }
+        destroy(sev); hle_bind_system_event(sev, 1); g_rev_on = 1;   // the SDK's local event becomes a kernel event in the same object (handle[1] still points at it)
+        attach(ev, getr(sev), 0, 1);   // not managed: the game's DestroySystemEvent leaves the handle open; EventClearMode_AutoClear
+    }
     if (atomic_load(&g_open)) { LOG("[RED] audren: a second renderer (the host drives only one)"); return r; }
     g_handle[0] = handle[0]; g_handle[1] = handle[1]; atomic_store(&g_open, 1);
     g_render_tt = dm_guest_thread_spawn(render_main, NULL, 9, 0x10000);
@@ -112,6 +128,10 @@ HLE_FORCE("_ZN2nn5audio18CloseAudioRendererENS0_19AudioRendererHandleE", "close 
     // A fixed 20 ms sleep used to stand in for this, and a renderer reopened inside that window ran a second thread over the first one's static buffers
     if (obj == g_handle[0] && g_render_tt) { atomic_store(&g_open, 0); dm_guest_thread_join(g_render_tt); g_render_tt = NULL; }
     orig(obj, state);
+    if (g_rev_on && state == (void *)g_rev) {   // the host's renderer event: its kernel handles close (CloseHandle unbinds it), so a reopen binds afresh
+        static void (*destroy)(void *); if (!destroy) destroy = gsym("_ZN2nn2os18DestroySystemEventEPNS0_15SystemEventTypeE");
+        destroy(g_rev); g_rev_on = 0;
+    }
 }
 
 // DeviceSink input mix buffers → int16 stereo. The command ID is 0x13 in SDK 16; SDK 20 inserted a command before it, making it 0x14 (written at sdk+0x233f44); SDK 8 (Link's Awakening)
@@ -281,7 +301,6 @@ static Result render_once(uint8_t *sys, int16_t *dst, int *nout) {
     static span_t (*gen20)(void *, void *, size_t); static size_t mu_off;
     static void (*tmax)(void *, uint32_t), (*setup)(void *, const void *, size_t), (*process)(void *), (*lock)(void *), (*unlock)(void *);
     if (!process) {
-        lock = gsym("_ZN2nn2os12SdkMutexType4LockEv"); unlock = gsym("_ZN2nn2os12SdkMutexType6UnlockEv");
         gen20 = guest_sym("_ZN2nn5audio6server17AudioRenderSystem15GenerateCommandENS_4SpanISt4byteEE");
         if (!gen20) {
             mode = gsym("_ZNK2nn5audio6server17AudioRenderSystem16GetExecutionModeEv"); device = gsym("_ZNK2nn5audio6server17AudioRenderSystem18GetRenderingDeviceEv");
@@ -291,6 +310,8 @@ static Result render_once(uint8_t *sys, int16_t *dst, int *nout) {
         mu_off = gen20 ? 0x2d0 : 0x1f0; g_sink_id = gen20 ? 0x14 : 0x13;
         int os_mutex = 0;
         if (!gen20 && update_lock(&mu_off, &os_mutex) && os_mutex) { lock = gsym("_ZN2nn2os9LockMutexEPNS0_9MutexTypeE"); unlock = gsym("_ZN2nn2os11UnlockMutexEPNS0_9MutexTypeE"); }
+        // SDK 3.5.1 (OCTOPATH TRAVELER) has no SdkMutexType at all, and its Update takes nn::os::LockMutex: look the SdkMutexType functions up only when that is not the lock
+        else { lock = gsym("_ZN2nn2os12SdkMutexType4LockEv"); unlock = gsym("_ZN2nn2os12SdkMutexType6UnlockEv"); }
         LOG("audren: AudioRenderSystem in the SDK %s layout (update lock %s at +%#zx)", gen20 ? "20" : "16", os_mutex ? "nn::os::MutexType" : "SdkMutexType", mu_off);
         tmax = gsym("_ZN2nn5audio3dsp20CommandListProcessor17SetProcessTimeMaxEj"); setup = gsym("_ZN2nn5audio3dsp20CommandListProcessor5SetupEPKvm");
         process = gsym("_ZN2nn5audio3dsp20CommandListProcessor7ProcessEv");
@@ -315,8 +336,25 @@ static Result render_once(uint8_t *sys, int16_t *dst, int *nout) {
     pthread_mutex_unlock(&g_render_mu);
     return RES_OK;
 }
+// Where the AudioRenderSystem sits inside AudioRendererImpl, read off the SDK's own ExecuteAudioRendererRendering: the first add xd, x0, #imm before any branch. +0x60 in SDK 16 and 20
+// (add x0, x0, #0x60 and a jump), +0x50 in SDK 3.4 (upstream nxnative, SteamWorld Dig: add x19, x0, #0x50). With +0x60 on an old SDK the mode and device came from other fields, every
+// render of the render thread failed with 0x40299 and only the game's catch-up frames played (chopped sound). Anything not found keeps +0x60
+static size_t impl_sys_off(void) {
+    static _Atomic size_t found;   // the offset + 1 once looked up
+    size_t k = atomic_load(&found);
+    if (k) return k - 1;
+    size_t off = 0x60;
+    const uint32_t *f = guest_sym("_ZN2nn5audio6server24AudioRendererManagerImpl17AudioRendererImpl29ExecuteAudioRendererRenderingEv");
+    for (int i = 0; f && i < 16; i++) {
+        uint32_t w = f[i];
+        if ((w & 0xffc003e0u) == 0x91000000u) { off = (w >> 10) & 0xfff; break; }   // add xd, x0, #imm12
+        if ((w & 0x7c000000u) == 0x14000000u) break;   // b / bl: no offset before the first branch
+    }
+    if (!atomic_exchange(&found, off + 1)) LOG("audren: AudioRenderSystem at +%#zx in AudioRendererImpl", off);
+    return off;
+}
 HLE_FORCE("_ZN2nn5audio6server24AudioRendererManagerImpl17AudioRendererImpl29ExecuteAudioRendererRenderingEv", "render one frame manually: SDK generates commands + CPU processing, the host takes the DeviceSink output",
-          Result, h_ar_ImplExec, uint8_t *impl) { return render_once(impl + 0x60, g_frame, &g_frame_n); }   // the AudioRenderSystem sits at +0x60 inside AudioRendererImpl
+          Result, h_ar_ImplExec, uint8_t *impl) { return render_once(impl + impl_sys_off(), g_frame, &g_frame_n); }
 // SDK 20 (The Legend of Zelda: Breath of the Wild 1.9.0): the public ExecuteAudioRendererRendering (sdk+0x221e90) calls the AudioRendererImpl version through the vtable (sdk+0x22ca88, just x0 += 0x60 and a jump through the PLT to here),
 // so the takeover above is never reached. The original generates commands here without the update lock; with the render thread on the original and the game thread's RequestUpdate rendering catch-up frames ("nothing rendered since the last update"),
 // both sides wrote the same command buffer at once and CommandListProcessor::Process sometimes read a half-written command list and crashed (once at 60 s and once at 134 s in the shrine). Taken over here, so rendering goes through the host's locked render as well

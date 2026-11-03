@@ -124,7 +124,8 @@ void vk_watch(const vkimg_t *im, const char *what) {
     g_watch_n--; VKLOG("watch: present %llu pass %d (%ux%u): %s %ux%u fmt %d pool %#llx+%#llx (image %p, nvn flags %#x, %d overlapping)", (unsigned long long)g_tex_frame, g_sub_pass - 1, S.pass_w, S.pass_h, what, im->w, im->h, im->fmt,
                        (unsigned long long)im->pool, (unsigned long long)im->off, (const void *)im, im->flags, im->novl);
 }
-static void x_read(void) { const char *c = getenv("DM_VK_CB_DRAWS"); g_x_cbdraws = c ? atoi(c) : 128; g_sub_pass = 0;
+static int g_x_layers1;   // DM_VK_X_LAYERS1=1 (live): every pass one layer, as before passes took their attachments' layers (begin_pass)
+static void x_read(void) { const char *l1 = getenv("DM_VK_X_LAYERS1"); g_x_layers1 = l1 && atoi(l1); const char *c = getenv("DM_VK_CB_DRAWS"); g_x_cbdraws = c ? atoi(c) : 128; g_sub_pass = 0;
     const char *fy = getenv("DM_VK_FLIPY"); g_flipy = !(fy && !atoi(fy));   // on unless DM_VK_FLIPY=0
     if (g_x_listpasses) { g_x_listpasses = 0; setenv("DM_VK_TRACE_PASS", "-1", 1); }
     const char *tp = getenv("DM_VK_TRACE_PASS"); g_x_tracepass = tp ? atoi(tp) : -1;
@@ -532,7 +533,7 @@ static int begin_pass(void) {
     VkRenderingAttachmentInfo *ca = P_ca; memset(ca, 0, sizeof P_ca);
     for (int i = 0; i < 9; i++) P_att[i].im = NULL;
     VkRenderingAttachmentInfo da = {0}, sa = {0};
-    uint32_t w = UINT32_MAX, h = UINT32_MAX, layers = 1, samples = 1; int ncol = 0, have = 0;
+    uint32_t w = UINT32_MAX, h = UINT32_MAX, layers = UINT32_MAX, samples = 1; int ncol = 0, have = 0;
     for (int i = 0; i < S.rt_n; i++) {
         S.cfmt[i] = VK_FORMAT_UNDEFINED;
         ca[i].sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO; ca[i].imageLayout = VK_IMAGE_LAYOUT_GENERAL; ca[i].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD; ca[i].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -547,7 +548,7 @@ static int begin_pass(void) {
         { const vkfmt_t *tf = vk_fmt(S.rt_col[i].d.format), *vf = S.rt_has_cview[i] && S.rt_cview[i].set_format ? vk_fmt(S.rt_cview[i].format) : tf;
           if (tf && vf && tf->compressed && !tf->dec && !vf->compressed && tf->bw && tf->bh) { iw = (iw + tf->bw - 1) / tf->bw; ih = (ih + tf->bh - 1) / tf->bh;
               static int said; if (!said++) VKLOG("colour target: block-compressed format %#x drawn through view format %#x: pass in blocks, %ux%u", S.rt_col[i].d.format, S.rt_cview[i].format, iw, ih); } }
-        if (iw < w) w = iw; if (ih < h) h = ih; samples = im->samples; have = 1;
+        if (iw < w) w = iw; if (ih < h) h = ih; if ((vk_view_layers ? vk_view_layers : 1) < layers) layers = vk_view_layers ? vk_view_layers : 1; samples = im->samples; have = 1;
         ca[i].imageView = v; S.cfmt[i] = vk_view_fmt; ncol = i + 1; P_att[i].im = im;   // (the view's format: a render pass's attachment and its pipelines take it)
         P_att[i].fmt = vk_view_fmt; P_att[i].layers = vk_view_layers ? vk_view_layers : 1; P_att[i].w = iw; P_att[i].h = ih;
     }
@@ -558,13 +559,17 @@ static int begin_pass(void) {
             vk_tex_prepare(cb, im);
             uint32_t lv = S.rt_has_dview && S.rt_dview.set_levels ? S.rt_dview.base_level : 0;
             uint32_t iw = im->w >> lv ? im->w >> lv : 1, ih = im->h >> lv ? im->h >> lv : 1;
-            if (iw < w) w = iw; if (ih < h) h = ih; samples = im->samples; have = 1;
+            if (iw < w) w = iw; if (ih < h) h = ih; if ((vk_view_layers ? vk_view_layers : 1) < layers) layers = vk_view_layers ? vk_view_layers : 1; samples = im->samples; have = 1;
             da = (VkRenderingAttachmentInfo){VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, NULL, v, VK_IMAGE_LAYOUT_GENERAL, 0, NULL, VK_IMAGE_LAYOUT_UNDEFINED, VK_ATTACHMENT_LOAD_OP_LOAD, VK_ATTACHMENT_STORE_OP_STORE};
             S.dfmt = im->fmt; S.daspect = im->aspect; P_att[8].im = im; P_att[8].fmt = vk_view_fmt; P_att[8].layers = vk_view_layers ? vk_view_layers : 1; P_att[8].w = iw; P_att[8].h = ih;
             if (im->aspect & VK_IMAGE_ASPECT_STENCIL_BIT) sa = da;
         }
     }
     if (!have) { VKRED_ONCE(30, "draw with no usable render target: skipped"); return 0; }
+    // The pass renders every layer its attachments' views hold (the fewest of them, as Vulkan requires), as NVN does: a shader's layer output picks one. The count was always 1,
+    // and Vulkan drops what a shader sends past it: OCTOPATH TRAVELER (Unreal Engine 4.18) draws its 32x32x32 colour-grading LUT in one pass whose geometry shader writes slice
+    // after slice, so only slice 0 was written and the graded picture came out dark with green shadows, against the Switch's warm one
+    if (layers == UINT32_MAX || g_x_layers1) layers = 1;
     // The cut (DM_VK_CB_DRAWS): only before a pass whose depth attachment no earlier pass of this submission drew with. Adreno keeps a low-resolution copy of a depth
     // attachment (LRZ) that it trusts within a command buffer; a pass that goes on with a depth buffer begun in an earlier command buffer had whole 8x8 blocks of its
     // nearest objects rejected in some frames (NEO: bushes, trees and the phone booth near the camera flickered light blue). DM_VK_X_CUTANY=1 cuts before any pass.
@@ -668,7 +673,7 @@ static void clear_color(const p_clear_color *c) {
     VkClearAttachment a = {VK_IMAGE_ASPECT_COLOR_BIT, (uint32_t)c->index, {{{c->rgba[0], c->rgba[1], c->rgba[2], c->rgba[3]}}}};
     const vkfmt_t *f = vk_fmt(S.rt_col[c->index].d.format);
     if (f && f->is_int) for (int i = 0; i < 4; i++) { if (f->is_sint) a.clearValue.color.int32[i] = (int32_t)c->rgba[i]; else a.clearValue.color.uint32[i] = c->rgba[i] > 0 ? (uint32_t)c->rgba[i] : 0; }
-    VkClearRect r = {scissor_rect(), 0, 1};
+    VkClearRect r = {scissor_rect(), 0, P_ri.layerCount ? P_ri.layerCount : 1};   // every layer of the pass, as NVN clears the whole bound view
     if (S.pass_open == 2 && (c->mask & 0xf) == 0xf && pass_whole(r.rect)) {   // the whole attachment before any draw: its load op
         P_ca[c->index].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; P_ca[c->index].clearValue.color = a.clearValue.color; P_cleared = 1; g_vkst.folded++; return;
     }
@@ -680,7 +685,7 @@ static void clear_ds(const p_clear_ds *c) {
     VkImageAspectFlags as = (c->depth_mask ? VK_IMAGE_ASPECT_DEPTH_BIT : 0) | (c->stencil_mask && (S.daspect & VK_IMAGE_ASPECT_STENCIL_BIT) ? VK_IMAGE_ASPECT_STENCIL_BIT : 0);
     as &= S.daspect; if (!as) return;
     VkClearAttachment a = {as, 0, {.depthStencil = {c->depth, (uint32_t)c->stencil}}};
-    VkClearRect r = {scissor_rect(), 0, 1};
+    VkClearRect r = {scissor_rect(), 0, P_ri.layerCount ? P_ri.layerCount : 1};   // every layer of the pass, as NVN clears the whole bound view
     if (S.pass_open == 2 && pass_whole(r.rect) && (!(as & VK_IMAGE_ASPECT_STENCIL_BIT) || (c->stencil_mask & 0xff) == 0xff)) {   // into the load ops
         if (as & VK_IMAGE_ASPECT_DEPTH_BIT) { P_da.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; P_da.clearValue.depthStencil = a.clearValue.depthStencil; }
         if (as & VK_IMAGE_ASPECT_STENCIL_BIT) { P_sa.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; P_sa.clearValue.depthStencil = a.clearValue.depthStencil; }
@@ -1707,18 +1712,26 @@ static VkPipeline compute_build(vkshader_t *cs, uint64_t um, uint64_t im) {   //
 }
 // Compute pipelines made ahead. One depends only on its shader (and integer-texel variants, rare), and building one costs Adreno 45-105 ms: Super Mario Odyssey's
 // particle emitters run on compute shaders (EffectPtcl), and the first cap throw at a breakable object built one on the replay thread (a 65 ms frame), the first scenes
-// several. A game has few (Odyssey 41), so at the first submission a background thread builds every compute shader in the bundle with no integer-texel variant
+// several. A game has few (Odyssey 41), so at the first submission a background thread builds every compute shader in the bundle with no integer-texel variant.
+// A pipeline is kept only when building it took little GPU memory (vk_gpu_mem, Adreno's own count): a shader with private (spilled or local-array) memory gets scratch for every
+// wave the GPU can run, which the driver allocates with the pipeline. OCTOPATH TRAVELER's bundle has 232 compute shaders, most of which it never dispatches; 38 of them took
+// 108-204 MB each, 4.3 GB in all (driver allocations no vkAllocateMemory reports), and on the AYN Thor (Adreno 740, 16 GB) Android's low-memory killer ended the game, the
+// launcher and Play Services within 8 s of start. Such a pipeline is destroyed again: its compiled code stays in the pipeline cache, so a dispatch that needs it builds it at
+// a cache hit. With the background builds off (DM_VK_NOPREWARM=1) the game held 486 MB of GPU memory
+enum { WARM_KEEP_MAX = 32u << 20 };
 static void *compute_warm(void *arg) {
     (void)arg; pthread_setname_np(pthread_self(), "vk compute warm"); setpriority(PRIO_PROCESS, 0, 10);
-    int vk_shader_keys(uint32_t stage, uint64_t *out, int max); static uint64_t keys[4096]; int n = vk_shader_keys(5, keys, 4096), made = 0; uint64_t t0 = tick();
+    int vk_shader_keys(uint32_t stage, uint64_t *out, int max); static uint64_t keys[4096]; int n = vk_shader_keys(5, keys, 4096), made = 0, dropped = 0; uint64_t t0 = tick(), freed = 0;
     for (int i = 0; i < n; i++) {
         uint64_t ck[3] = {keys[i], 0, 0};
         pthread_mutex_lock(&g_cpipe_mu); int have = nvn_hm_get(&g_cpipes, ck) != NULL; pthread_mutex_unlock(&g_cpipe_mu);
         vkshader_t *cs = have ? NULL : vk_shader(keys[i], 5); if (!cs) continue;
-        VkPipeline p = compute_build(cs, 0, 0); made++;
+        uint64_t g0 = vk_gpu_mem(); VkPipeline p = compute_build(cs, 0, 0); uint64_t g1 = vk_gpu_mem(); made++;
+        if (g0 && g1 > g0 + WARM_KEEP_MAX && p != (void *)1) { vkDestroyPipeline(V.dev, p, NULL); dropped++; freed += g1 - g0; continue; }   // left for the first dispatch (above)
         pthread_mutex_lock(&g_cpipe_mu); if (!nvn_hm_get(&g_cpipes, ck)) nvn_hm_put(&g_cpipes, ck, p); else if (p != (void *)1) vkDestroyPipeline(V.dev, p, NULL); pthread_mutex_unlock(&g_cpipe_mu);
     }
-    VKLOG("compute pipelines made ahead: %d of %d compute shaders in %.0f ms", made, n, (tick() - t0) / 1e6);
+    VKLOG("compute pipelines made ahead: %d of %d compute shaders in %.0f ms; %d not kept (%.0f MB of GPU memory each over %u MB, %.0f MB in all; GPU memory now %.0f MB)", made, n, (tick() - t0) / 1e6,
+          dropped, dropped ? freed / 1048576.0 / dropped : 0.0, WARM_KEEP_MAX >> 20, freed / 1048576.0, vk_gpu_mem() / 1048576.0);
     return NULL;
 }
 static void compute_warm_start(void) {
