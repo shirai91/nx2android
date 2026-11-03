@@ -1,4 +1,5 @@
 using Ryujinx.Graphics.Shader.Decoders;
+using Ryujinx.Graphics.Shader.Instructions;
 using Ryujinx.Graphics.Shader.IntermediateRepresentation;
 using System;
 using System.Linq;
@@ -10,6 +11,7 @@ namespace Ryujinx.Graphics.Shader.Translation
     {
         private const int ThreadsPerWarp = 32;
         private const int HeaderSize = 0x50;
+        private const int AmpereHeaderSize = 0x80;   // SPH version 4, its first 0x50 bytes laid out as version 3's
 
         internal readonly struct FunctionCode
         {
@@ -31,13 +33,13 @@ namespace Ryujinx.Graphics.Shader.Translation
             int localMemorySize;
             ShaderDefinitions definitions;
             DecodedProgram program;
+            bool ampere = options.Flags.HasFlag(TranslationFlags.Ampere);
+            int headerSize = options.Flags.HasFlag(TranslationFlags.Compute) ? 0 : ampere ? AmpereHeaderSize : HeaderSize;
 
             if (options.Flags.HasFlag(TranslationFlags.Compute))
             {
                 definitions = CreateComputeDefinitions(gpuAccessor);
                 localMemorySize = gpuAccessor.QueryComputeLocalMemorySize();
-
-                program = Decoder.Decode(definitions, gpuAccessor, address);
             }
             else
             {
@@ -45,9 +47,11 @@ namespace Ryujinx.Graphics.Shader.Translation
 
                 definitions = CreateGraphicsDefinitions(gpuAccessor, header);
                 localMemorySize = GetLocalMemorySize(header);
-
-                program = Decoder.Decode(definitions, gpuAccessor, address + HeaderSize);
             }
+
+            program = ampere
+                ? Decoder.DecodeAmpere(definitions, gpuAccessor, address + (ulong)headerSize)
+                : Decoder.Decode(definitions, gpuAccessor, address + (ulong)headerSize);
 
             ulong maxEndAddress = 0;
 
@@ -62,7 +66,7 @@ namespace Ryujinx.Graphics.Shader.Translation
                 }
             }
 
-            int size = (int)maxEndAddress + (options.Flags.HasFlag(TranslationFlags.Compute) ? 0 : HeaderSize);
+            int size = (int)maxEndAddress + headerSize;
 
             return new TranslatorContext(address, size, localMemorySize, definitions, gpuAccessor, options, program);
         }
@@ -143,7 +147,12 @@ namespace Ryujinx.Graphics.Shader.Translation
         {
             initializationOperations = 0;
 
-            FunctionMatch.RunPass(program);
+            bool ampere = translatorContext.Options.Flags.HasFlag(TranslationFlags.Ampere);
+
+            if (!ampere)
+            {
+                FunctionMatch.RunPass(program);
+            }
 
             foreach (DecodedFunction function in program.Where(x => !x.IsCompilerGenerated).OrderBy(x => x.Address))
             {
@@ -170,7 +179,14 @@ namespace Ryujinx.Graphics.Shader.Translation
 
                     context.EnterBlock(block.Address);
 
-                    EmitOps(context, block);
+                    if (ampere)
+                    {
+                        InstEmit.EmitAmpereBlock(context, block);
+                    }
+                    else
+                    {
+                        EmitOps(context, block);
+                    }
                 }
 
                 functions[index] = new(context.GetOperations());

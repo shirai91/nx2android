@@ -6,6 +6,7 @@
 #include <android/native_window.h>
 #include <dlfcn.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -255,6 +256,10 @@ static void adapt_frame(int64_t work, int64_t now) {
 // holding the frames back, and it stays in the work, or the rate could not step down for it
 static int64_t g_prev_present, g_pace, g_pq;
 void dm_perf_frame_start(uint64_t pace_ns, uint64_t pq_ns) { g_work_start = perf_now(); g_pace = (int64_t)pace_ns; g_pq = (int64_t)pq_ns; }
+// The pacing waits of a frame whose acquire returned at once (DM_NVN_ACQ_SYNC: another thread waits on the acquire's sync), as they end. Kept apart from
+// g_pace / g_pq: with the replay on its own thread the next frame's acquire (dm_perf_frame_start) comes before this frame's present reaches dm_perf_frame
+static _Atomic int64_t g_wpace, g_wpq;
+void dm_perf_frame_wait(uint64_t pace_ns, uint64_t pq_ns) { atomic_fetch_add(&g_wpace, (int64_t)pace_ns); atomic_fetch_add(&g_wpq, (int64_t)pq_ns); }
 // Called on the presenting thread right before a present; period in seconds (1/60, 1/30, ...).
 void dm_perf_frame(double period) {
     int64_t p = period > 0 && period < 1 ? (int64_t)(period * 1e9) : 16666667, t = perf_now();
@@ -264,8 +269,9 @@ void dm_perf_frame(double period) {
     hint_init(p);
     { static unsigned n; if (++n % 60 == 0) gpu_turbo(); }
     if (g_work_start) {   // (a longer span: the game was held, by the pause menu or the background)
-        int64_t w = g_prev_present ? t - g_prev_present - g_pace : t - g_work_start;
-        int64_t pq = g_prev_present ? g_pq : 0, pace = g_step > 0 ? pq : 0;   // (t - g_work_start starts after the wait already)
+        int64_t wpace = atomic_exchange(&g_wpace, 0), wpq = atomic_exchange(&g_wpq, 0);
+        int64_t w = g_prev_present ? t - g_prev_present - g_pace - wpace : t - g_work_start;
+        int64_t pq = g_prev_present ? g_pq + wpq : 0, pace = g_step > 0 ? pq : 0;   // (t - g_work_start starts after the wait already)
         if (w > 0 && w < 250000000) { adapt_frame(w - pace > 0 ? w - pace : 0, t); if (g_hint) hint_report(w, pq, pace, t, g_hint_target); }
         g_work_start = 0;
     }

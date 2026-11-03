@@ -7,8 +7,6 @@ namespace Ryujinx.Graphics.Shader.Translation
 {
     static class Ssa
     {
-        private const int GprsAndPredsCount = RegisterConsts.GprsCount + RegisterConsts.PredsCount;
-
         private class DefMap
         {
             private readonly Dictionary<Register, Operand> _map;
@@ -340,36 +338,47 @@ namespace Ryujinx.Graphics.Shader.Translation
             }
         }
 
+        // Register files in key order
+        private static readonly (RegisterType Type, int Count)[] _files =
+        [
+            (RegisterType.Gpr, RegisterConsts.GprsCount),
+            (RegisterType.Predicate, RegisterConsts.PredsCount),
+            (RegisterType.Flag, RegisterConsts.FlagsCount),
+            (RegisterType.Uniform, RegisterConsts.UniformsCount),
+            (RegisterType.UniformPredicate, RegisterConsts.UniformPredsCount),
+            (RegisterType.Shadow, RegisterConsts.ShadowsCount),
+        ];
+
         private static int GetKeyFromRegister(Register reg)
         {
-            if (reg.Type == RegisterType.Gpr)
+            int key = reg.Index;
+
+            foreach ((RegisterType type, int count) in _files)
             {
-                return reg.Index;
+                if (type == reg.Type)
+                {
+                    return key;
+                }
+
+                key += count;
             }
-            else if (reg.Type == RegisterType.Predicate)
-            {
-                return RegisterConsts.GprsCount + reg.Index;
-            }
-            else /* if (reg.Type == RegisterType.Flag) */
-            {
-                return GprsAndPredsCount + reg.Index;
-            }
+
+            throw new System.ArgumentException($"Register type {reg.Type}");
         }
 
         private static Register GetRegisterFromKey(int key)
         {
-            if (key < RegisterConsts.GprsCount)
+            foreach ((RegisterType type, int count) in _files)
             {
-                return new Register(key, RegisterType.Gpr);
+                if (key < count)
+                {
+                    return new Register(key, type);
+                }
+
+                key -= count;
             }
-            else if (key < GprsAndPredsCount)
-            {
-                return new Register(key - RegisterConsts.GprsCount, RegisterType.Predicate);
-            }
-            else /* if (key < RegisterConsts.TotalCount) */
-            {
-                return new Register(key - GprsAndPredsCount, RegisterType.Flag);
-            }
+
+            throw new System.ArgumentOutOfRangeException(nameof(key));
         }
     }
 }

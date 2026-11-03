@@ -653,6 +653,11 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
 
             targetCbs.Sort();
 
+            if (targetCbs.Count == 0 && gpuAccessor.QueryPhysicalGlobalMemory())
+            {
+                return TryGeneratePhysicalStorageOp(gtsContext, resourceManager, operation, out functionId);
+            }
+
             if (targetCbs.Count == 0)
             {
                 gpuAccessor.Log($"Failed to find storage buffer for global memory operation \"{operation.Inst}\".");
@@ -770,6 +775,100 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
                 0);
 
             functionId = gtsContext.AddFunction(operation, isMultiTarget: true, targetCbs, function);
+
+            return true;
+        }
+
+        // The host's memory pool table (gfx_vk_core.c vk_gmem_table), reserved as a storage buffer under this constant buffer slot (shader_vk.py: kind gmem).
+        // Words: 0 the entry count n (>= 1), 2 / 3 a sink's device address; from 4, 8 words a pool sorted by start: start, end, device minus guest address (each lo, hi)
+        public const int PhysicalTableCbSlot = 31;
+        private const int PhysicalTableMaxLog2 = 13;
+
+        // A global access whose address traces to no storage buffer: an address the shader loaded from memory (Donkey Kong Bananza's gsys vertex shader resets the
+        // terrain's indirect draw records through pointers it reads). It goes to the pool holding the address, found by a binary search of the host's table, through
+        // a physical storage buffer pointer; an address in no pool goes to the sink. Small stores are not done (no CAS loop over a pointer yet)
+        private static bool TryGeneratePhysicalStorageOp(GtsContext gtsContext, ResourceManager resourceManager, Operation operation, out int functionId)
+        {
+            bool small = IsSmallInt(operation.StorageKind);
+
+            if ((small && operation.Inst != Instruction.Load) || !resourceManager.TryGetStorageBufferBinding(PhysicalTableCbSlot, 0, false, out int table))
+            {
+                functionId = 0;
+                return false;
+            }
+
+            int inArgumentsCount = operation.Inst == Instruction.AtomicCompareAndSwap ? 4 : operation.Inst == Instruction.Store || operation.Inst.IsAtomic() ? 3 : 2;
+            EmitterContext context = new();
+            Operand lo = Argument(0), hi = Argument(1);
+            Operand Word(Operand index) => context.Load(StorageKind.StorageBuffer, table, Const(0), index);
+            Operand Le(Operand aLo, Operand aHi, Operand bLo, Operand bHi) =>
+                context.BitwiseOr(context.ICompareLessUnsigned(aHi, bHi), context.BitwiseAnd(context.ICompareEqual(aHi, bHi), context.ICompareLessOrEqualUnsigned(aLo, bLo)));
+
+            Operand addrLo = small ? context.BitwiseAnd(lo, Const(~3)) : lo;
+            Operand n = Word(Const(0));
+            Operand last = context.ISubtract(n, Const(1));
+            Operand index = Const(0);
+
+            for (int step = 1 << (PhysicalTableMaxLog2 - 1); step > 0; step >>= 1)
+            {
+                Operand next = context.IAdd(index, Const(step));
+                Operand entry = context.IAdd(context.ShiftLeft(context.IMinimumU32(next, last), Const(3)), Const(4));
+                Operand below = Le(Word(entry), Word(context.IAdd(entry, Const(1))), addrLo, hi);
+                index = context.ConditionalSelect(context.BitwiseAnd(context.ICompareLessUnsigned(next, n), below), next, index);
+            }
+
+            Operand e = context.IAdd(context.ShiftLeft(index, Const(3)), Const(4));
+            Operand inPool = context.BitwiseAnd(
+                Le(Word(e), Word(context.IAdd(e, Const(1))), addrLo, hi),
+                context.BitwiseNot(Le(Word(context.IAdd(e, Const(2))), Word(context.IAdd(e, Const(3))), addrLo, hi)));
+            Operand devLo = context.IAdd(addrLo, Word(context.IAdd(e, Const(4))));
+            Operand devHi = context.IAdd(context.IAdd(hi, Word(context.IAdd(e, Const(5)))), context.ConditionalSelect(context.ICompareLessUnsigned(devLo, addrLo), Const(1), Const(0)));
+            devLo = context.ConditionalSelect(inPool, devLo, context.IAdd(Word(Const(2)), context.BitwiseAnd(addrLo, Const(0xffc))));
+            devHi = context.ConditionalSelect(inPool, devHi, Word(Const(3)));
+
+            Operand result = null;
+
+            if (operation.Inst == Instruction.Load)
+            {
+                result = context.Load(StorageKind.PhysicalMemory, devLo, devHi);
+
+                if (small)
+                {
+                    Operand bitOffset = HelperFunctionManager.GetBitOffset(context, lo);
+                    int bits = operation.StorageKind is StorageKind.GlobalMemoryS8 or StorageKind.GlobalMemoryU8 ? 8 : 16;
+                    result = operation.StorageKind is StorageKind.GlobalMemoryS8 or StorageKind.GlobalMemoryS16
+                        ? context.BitfieldExtractS32(result, bitOffset, Const(bits))
+                        : context.BitfieldExtractU32(result, bitOffset, Const(bits));
+                }
+            }
+            else
+            {
+                Operand[] sources = new Operand[inArgumentsCount];
+                sources[0] = devLo;
+                sources[1] = devHi;
+
+                for (int i = 2; i < inArgumentsCount; i++)
+                {
+                    sources[i] = Argument(i);
+                }
+
+                result = context.Add(operation.Inst, StorageKind.PhysicalMemory, operation.Inst == Instruction.Store ? null : Local(), sources);
+            }
+
+            bool returnsValue = operation.Dest != null;
+
+            if (returnsValue)
+            {
+                context.Return(result);
+            }
+            else
+            {
+                context.Return();
+            }
+
+            Function function = new(ControlFlowGraph.Create(context.GetOperations()).Blocks, GetFunctionName(operation, isMultiTarget: true, []), returnsValue, inArgumentsCount, 0);
+            functionId = gtsContext.AddFunction(operation, isMultiTarget: true, [], function);
+            resourceManager.Properties.UsesPhysicalMemory = true;
 
             return true;
         }
@@ -1045,10 +1144,12 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
             // If both are constant buffer, give preference to the second operand,
             // because constant buffer are always encoded as the second operand,
             // so the second operand will always be the one from the last instruction.
+            // The driver's constant buffer still wins: NVN2 shaders add an offset from c[1] to a c[0] storage buffer address.
 
-            if (src1.Type != OperandType.ConstantBuffer ||
-                (src1.Type == OperandType.ConstantBuffer && src2.Type == OperandType.ConstantBuffer) ||
-                (src2.Type == OperandType.ConstantBuffer && src2.GetCbufSlot() == DriverReservedCb))
+            bool driver1 = src1.Type == OperandType.ConstantBuffer && src1.GetCbufSlot() == DriverReservedCb;
+            bool driver2 = src2.Type == OperandType.ConstantBuffer && src2.GetCbufSlot() == DriverReservedCb;
+
+            if (src1.Type != OperandType.ConstantBuffer || driver2 || (src2.Type == OperandType.ConstantBuffer && !driver1))
             {
                 return GetBaseAddressCbWithOffset(src2, src1, constOffset);
             }

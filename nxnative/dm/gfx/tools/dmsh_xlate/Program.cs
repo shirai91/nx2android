@@ -5,7 +5,7 @@
 //   Link's Awakening / 13 Sentinels / Engage set near=0), so dmsh_build.py adds the GL rewrite z' = z/2 + w/2 in the MSL as two entry points, main0 (rewritten, GL) and main0_z (unchanged, near=0), and the host picks by the game's convention.
 //   This used to rewrite for GL always: a near=0 game's depth was squeezed into 0.5..1, and effects that turn depth into distance (Link's Awakening's outdoor depth of field blurring the whole screen, occlusion) were all wrong.
 // Usage: dmsh_xlate <job.json> <output dir>
-//   Job: [{ "key", "stage": "vs|ps|cs", "code": machine code file (graphics = 0x50-byte SPH + instructions, compute = instructions),
+//   Job: [{ "key", "stage": "vs|ps|cs", "code": machine code file (graphics = 0x50-byte SPH + instructions, compute = instructions), "arch": "sm86" for NVN2's Ampere code (a 0x80-byte SPH),
 //           "tex": { "slot": "2d|2darray|cube|cubearray|3d|buffer|1d|1darray|2dms|2dmsarray", ... }, "img": { "slot": { "type", "fmt" } },
 //           "attr": { "location": "float|sint|uint" }, "fout": { "target": "float|sint|uint" }, "local": [x, y, z] }]
 //   Output: <key>.spv and <key>.res.json (offsets of storage buffer slots in c0, etc.; decoding texture handle → slot number is done in the script that builds the metallib;
@@ -16,6 +16,7 @@ using Ryujinx.Graphics.Shader.Translation;
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -42,6 +43,11 @@ static class SwshXlate
             return types;
         }
         // c1 constant segment (the 0x100 bytes before the control segment in the shader package): the jump table of indirect jump BRX lives here (LDC c[1]); without it the translator cannot resolve jump targets and control flow goes wrong (particle shaders loop forever)
+        public int QueryConstantBuffer1Size() => _c1.Length;
+        // Job "depth_runtime" (the Android chain): z scaled by the support buffer, where the host emulates NVN's GL depth mode without VK_EXT_depth_clip_control
+        public bool QueryRuntimeDepthMode() => _job["depth_runtime"] is JsonNode n && (bool)n;
+        // Job "nvn2_cs" (NVN2 compute): its c[0] layout (shader_vk.py nvn2_layout)
+        public int[] QueryAmpereComputeC0Layout() => _job["nvn2_cs"] is JsonArray l ? l.Select(v => (int)v).ToArray() : null;
         public uint ConstantBuffer1Read(int offset) { if (offset >= 0 && offset + 4 <= _c1.Length) return BitConverter.ToUInt32(_c1, offset); Notes.Add($"c1 read out of bounds +{offset:X} (c1 length {_c1.Length})"); return 0; }
         // All resources go into set 0, each with a distinct binding number (spirv-cross emits them as one argument buffer); the translator's convention of giving the buffer of constant segment number index binding = index+1 is not relied on
         public SetBindingPair CreateConstantBufferBinding(int index) => new(0, _binding++);
@@ -106,6 +112,7 @@ static class SwshXlate
         public int QueryComputeLocalSizeZ() => Local(2);
         public int QueryComputeSharedMemorySize() => _job["shared"] is JsonNode n ? (int)n : 0;   // the shared memory size in the compute shader's control section (shader_split.py)
         static AttributeType Attr(string s) => s switch { "sint" => AttributeType.Sint, "uint" => AttributeType.Uint, _ => AttributeType.Float };
+        public bool QueryPhysicalGlobalMemory() => _job["physical_gmem"] is JsonNode n && (bool)n;   // job "physical_gmem" (shader_vk.py): global accesses traced to no storage buffer go through the host's pool table
         public bool QueryGeometryInputFixed() => _job["geometry_topology"] != null;
         public GpuGraphicsState QueryGraphicsState()
         {
@@ -183,7 +190,8 @@ static class SwshXlate
                 byte[] code = File.ReadAllBytes((string)job["code"]);
                 var acc = new Accessor(code, job);
                 // Job debug = false: turn off DebugMode (DebugMode skips the AST optimizer and the output is full of temporaries; semantics unchanged)
-                var flags = (job["debug"] is JsonNode dbg && !(bool)dbg ? 0 : TranslationFlags.DebugMode) | ((string)job["stage"] == "cs" ? TranslationFlags.Compute : 0);
+                var flags = (job["debug"] is JsonNode dbg && !(bool)dbg ? 0 : TranslationFlags.DebugMode) | ((string)job["stage"] == "cs" ? TranslationFlags.Compute : 0) |
+                            ((string)job["arch"] == "sm86" ? TranslationFlags.Ampere : 0);
                 var ctx = Translator.CreateContext(0, acc, new TranslationOptions(TargetLanguage.Spirv, TargetApi.Vulkan, flags));
                 bool geometry = job["geometry_topology"] != null;
                 ShaderProgram p = ctx.Translate(geometry);

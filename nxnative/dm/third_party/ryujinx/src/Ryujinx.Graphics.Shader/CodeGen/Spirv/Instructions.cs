@@ -131,6 +131,7 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
             Add(Instruction.Sine,                     GenerateSine);
             Add(Instruction.SquareRoot,               GenerateSquareRoot);
             Add(Instruction.Store,                    GenerateStore);
+            Add(Instruction.SubgroupReduce,           GenerateSubgroupReduce);
             Add(Instruction.Subtract,                 GenerateSubtract);
             Add(Instruction.SwizzleAdd,               GenerateSwizzleAdd);
             Add(Instruction.TextureSample,            GenerateTextureSample);
@@ -743,6 +744,11 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
             SpvInstruction imageComponentType = context.GetType(componentType);
             AggregateType swizzledResultType = texOp.GetVectorType(componentType);
 
+            if (texOp.Format == TextureFormat.Unknown)
+            {
+                context.AddCapability(Capability.StorageImageReadWithoutFormat);
+            }
+
             SpvInstruction texel = context.ImageRead(context.TypeVector(imageComponentType, 4), image, pCoords, ImageOperandsMask.MaskNone);
             SpvInstruction result = GetSwizzledResult(context, texel, swizzledResultType, texOp.Index);
 
@@ -827,6 +833,11 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
             }
 
             SpvInstruction texel = context.CompositeConstruct(context.TypeVector(context.GetType(componentType), ComponentsCount), cElems);
+
+            if (texOp.Format == TextureFormat.Unknown)
+            {
+                context.AddCapability(Capability.StorageImageWriteWithoutFormat);
+            }
 
             context.ImageWrite(image, pCoords, texel, ImageOperandsMask.MaskNone);
 
@@ -1079,42 +1090,42 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
 
         private static OperationResult GenerateShuffle(CodeGenContext context, AstOperation operation)
         {
-            SpvInstruction value = context.GetFP32(operation.GetSource(0));
+            SpvInstruction value = context.GetU32(operation.GetSource(0));
             SpvInstruction index = context.GetU32(operation.GetSource(1));
 
-            SpvInstruction result = context.GroupNonUniformShuffle(context.TypeFP32(), context.Constant(context.TypeU32(), (int)Scope.Subgroup), value, index);
+            SpvInstruction result = context.GroupNonUniformShuffle(context.TypeU32(), context.Constant(context.TypeU32(), (int)Scope.Subgroup), value, index);
 
-            return new OperationResult(AggregateType.FP32, result);
+            return new OperationResult(AggregateType.U32, result);
         }
 
         private static OperationResult GenerateShuffleDown(CodeGenContext context, AstOperation operation)
         {
-            SpvInstruction value = context.GetFP32(operation.GetSource(0));
+            SpvInstruction value = context.GetU32(operation.GetSource(0));
             SpvInstruction index = context.GetU32(operation.GetSource(1));
 
-            SpvInstruction result = context.GroupNonUniformShuffleDown(context.TypeFP32(), context.Constant(context.TypeU32(), (int)Scope.Subgroup), value, index);
+            SpvInstruction result = context.GroupNonUniformShuffleDown(context.TypeU32(), context.Constant(context.TypeU32(), (int)Scope.Subgroup), value, index);
 
-            return new OperationResult(AggregateType.FP32, result);
+            return new OperationResult(AggregateType.U32, result);
         }
 
         private static OperationResult GenerateShuffleUp(CodeGenContext context, AstOperation operation)
         {
-            SpvInstruction value = context.GetFP32(operation.GetSource(0));
+            SpvInstruction value = context.GetU32(operation.GetSource(0));
             SpvInstruction index = context.GetU32(operation.GetSource(1));
 
-            SpvInstruction result = context.GroupNonUniformShuffleUp(context.TypeFP32(), context.Constant(context.TypeU32(), (int)Scope.Subgroup), value, index);
+            SpvInstruction result = context.GroupNonUniformShuffleUp(context.TypeU32(), context.Constant(context.TypeU32(), (int)Scope.Subgroup), value, index);
 
-            return new OperationResult(AggregateType.FP32, result);
+            return new OperationResult(AggregateType.U32, result);
         }
 
         private static OperationResult GenerateShuffleXor(CodeGenContext context, AstOperation operation)
         {
-            SpvInstruction value = context.GetFP32(operation.GetSource(0));
+            SpvInstruction value = context.GetU32(operation.GetSource(0));
             SpvInstruction index = context.GetU32(operation.GetSource(1));
 
-            SpvInstruction result = context.GroupNonUniformShuffleXor(context.TypeFP32(), context.Constant(context.TypeU32(), (int)Scope.Subgroup), value, index);
+            SpvInstruction result = context.GroupNonUniformShuffleXor(context.TypeU32(), context.Constant(context.TypeU32(), (int)Scope.Subgroup), value, index);
 
-            return new OperationResult(AggregateType.FP32, result);
+            return new OperationResult(AggregateType.U32, result);
         }
 
         private static OperationResult GenerateSine(CodeGenContext context, AstOperation operation)
@@ -1130,6 +1141,32 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
         private static OperationResult GenerateStore(CodeGenContext context, AstOperation operation)
         {
             return GenerateLoadOrStore(context, operation, isStore: true);
+        }
+
+        // nxnative: a reduction over the active lanes of the 32-lane cluster (an NVIDIA warp within any subgroup of 32 or more), its operation in Index
+        private static OperationResult GenerateSubgroupReduce(CodeGenContext context, AstOperation operation)
+        {
+            context.AddCapability(Capability.GroupNonUniformArithmetic);
+            context.AddCapability(Capability.GroupNonUniformClustered);
+
+            SpvInstruction type = context.TypeU32();
+            SpvInstruction scope = context.Constant(type, (int)Scope.Subgroup);
+            SpvInstruction value = context.GetU32(operation.GetSource(0));
+            SpvInstruction cluster = context.Constant(type, 32);
+
+            SpvInstruction result = (SubgroupReduceOp)operation.Index switch
+            {
+                SubgroupReduceOp.And => context.GroupNonUniformBitwiseAnd(type, scope, GroupOperation.ClusteredReduce, value, cluster),
+                SubgroupReduceOp.Or => context.GroupNonUniformBitwiseOr(type, scope, GroupOperation.ClusteredReduce, value, cluster),
+                SubgroupReduceOp.Xor => context.GroupNonUniformBitwiseXor(type, scope, GroupOperation.ClusteredReduce, value, cluster),
+                SubgroupReduceOp.Add => context.GroupNonUniformIAdd(type, scope, GroupOperation.ClusteredReduce, value, cluster),
+                SubgroupReduceOp.MinU32 => context.GroupNonUniformUMin(type, scope, GroupOperation.ClusteredReduce, value, cluster),
+                SubgroupReduceOp.MaxU32 => context.GroupNonUniformUMax(type, scope, GroupOperation.ClusteredReduce, value, cluster),
+                SubgroupReduceOp.MinS32 => context.GroupNonUniformSMin(type, scope, GroupOperation.ClusteredReduce, value, cluster),
+                _ => context.GroupNonUniformSMax(type, scope, GroupOperation.ClusteredReduce, value, cluster),
+            };
+
+            return new OperationResult(AggregateType.U32, result);
         }
 
         private static OperationResult GenerateSubtract(CodeGenContext context, AstOperation operation)
@@ -1714,16 +1751,20 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
         {
             SpvInstruction pointer = GetStoragePointer(context, operation, out AggregateType varType);
 
-            if (isStore)
+            // nxnative: a physical storage buffer access names its alignment (4: PhysicalMemory accesses are words)
+            bool physical = operation.StorageKind == StorageKind.PhysicalMemory;
+            MemoryAccessMask access = physical ? MemoryAccessMask.Aligned : (MemoryAccessMask)int.MaxValue;   // (the generator's "no operand")
+
+            SpvInstruction inst = isStore
+                ? context.Store(pointer, context.Get(varType, operation.GetSource(operation.SourcesCount - 1)), access)
+                : context.Load(context.GetType(varType), pointer, access);
+
+            if (physical)
             {
-                context.Store(pointer, context.Get(varType, operation.GetSource(operation.SourcesCount - 1)));
-                return OperationResult.Invalid;
+                inst.AddOperand((Spv.Generator.LiteralInteger)4);
             }
-            else
-            {
-                SpvInstruction result = context.Load(context.GetType(varType), pointer);
-                return new OperationResult(varType, result);
-            }
+
+            return isStore ? OperationResult.Invalid : new OperationResult(varType, inst);
         }
 
         private static SpvInstruction GetStoragePointer(CodeGenContext context, AstOperation operation, out AggregateType varType)
@@ -1737,6 +1778,13 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
 
             switch (storageKind)
             {
+                case StorageKind.PhysicalMemory:
+                    SpvInstruction address = context.CompositeConstruct(context.TypeVector(context.TypeU32(), 2),
+                        context.GetU32(operation.GetSource(0)), context.GetU32(operation.GetSource(1)));
+                    varType = AggregateType.U32;
+
+                    return context.Bitcast(context.TypePointer(StorageClass.PhysicalStorageBuffer, context.TypeU32()), address);
+
                 case StorageKind.ConstantBuffer:
                 case StorageKind.StorageBuffer:
                     if (operation.GetSource(srcIndex++) is not AstOperand bindingIndex || bindingIndex.Type != OperandType.Constant)

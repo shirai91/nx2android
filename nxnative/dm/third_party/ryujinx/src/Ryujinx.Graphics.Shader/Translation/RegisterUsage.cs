@@ -4,114 +4,54 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Numerics;
+using System.Runtime.Intrinsics;
 
 namespace Ryujinx.Graphics.Shader.Translation
 {
     static class RegisterUsage
     {
-        private const int RegsCount = 256;
-        private const int RegsMask = RegsCount - 1;
+        // 64 registers a mask word: GPRs take words 0-3, then a word each for predicates, flags, uniform registers and uniform predicates
+        private const int TotalMasks = 8;
+        private static readonly RegisterType[] _wordType = [RegisterType.Gpr, RegisterType.Gpr, RegisterType.Gpr, RegisterType.Gpr,
+                                                            RegisterType.Predicate, RegisterType.Flag, RegisterType.Uniform, RegisterType.UniformPredicate];
 
-        private const int GprMasks = 4;
-        private const int PredMasks = 1;
-        private const int FlagMasks = 1;
-        private const int TotalMasks = GprMasks + PredMasks + FlagMasks;
-
-        private struct RegisterMask : IEquatable<RegisterMask>
+        private static int FirstWord(RegisterType type) => type switch
         {
-            public long GprMask0 { get; set; }
-            public long GprMask1 { get; set; }
-            public long GprMask2 { get; set; }
-            public long GprMask3 { get; set; }
-            public long PredMask { get; set; }
-            public long FlagMask { get; set; }
+            RegisterType.Gpr => 0,
+            RegisterType.Predicate => 4,
+            RegisterType.Flag => 5,
+            RegisterType.Uniform => 6,
+            RegisterType.UniformPredicate => 7,
+            _ => -1,   // shadow registers live within a block
+        };
 
-            public RegisterMask(long gprMask0, long gprMask1, long gprMask2, long gprMask3, long predMask, long flagMask)
-            {
-                GprMask0 = gprMask0;
-                GprMask1 = gprMask1;
-                GprMask2 = gprMask2;
-                GprMask3 = gprMask3;
-                PredMask = predMask;
-                FlagMask = flagMask;
-            }
+        private readonly struct RegisterMask : IEquatable<RegisterMask>
+        {
+            private readonly Vector512<long> _masks;
 
-            public readonly long GetMask(int index)
-            {
-                return index switch
-                {
-                    0 => GprMask0,
-                    1 => GprMask1,
-                    2 => GprMask2,
-                    3 => GprMask3,
-                    4 => PredMask,
-                    5 => FlagMask,
-                    _ => throw new ArgumentOutOfRangeException(nameof(index)),
-                };
-            }
+            private RegisterMask(Vector512<long> masks) => _masks = masks;
 
-            public static RegisterMask operator &(RegisterMask x, RegisterMask y)
-            {
-                return new RegisterMask(
-                    x.GprMask0 & y.GprMask0,
-                    x.GprMask1 & y.GprMask1,
-                    x.GprMask2 & y.GprMask2,
-                    x.GprMask3 & y.GprMask3,
-                    x.PredMask & y.PredMask,
-                    x.FlagMask & y.FlagMask);
-            }
+            public RegisterMask(int word, long bits) => _masks = Vector512<long>.Zero.WithElement(word, bits);
 
-            public static RegisterMask operator |(RegisterMask x, RegisterMask y)
-            {
-                return new RegisterMask(
-                    x.GprMask0 | y.GprMask0,
-                    x.GprMask1 | y.GprMask1,
-                    x.GprMask2 | y.GprMask2,
-                    x.GprMask3 | y.GprMask3,
-                    x.PredMask | y.PredMask,
-                    x.FlagMask | y.FlagMask);
-            }
+            public long GetMask(int index) => _masks.GetElement(index);
 
-            public static RegisterMask operator ~(RegisterMask x)
-            {
-                return new RegisterMask(
-                    ~x.GprMask0,
-                    ~x.GprMask1,
-                    ~x.GprMask2,
-                    ~x.GprMask3,
-                    ~x.PredMask,
-                    ~x.FlagMask);
-            }
+            public static RegisterMask All() => new(Vector512<long>.AllBitsSet);
 
-            public static bool operator ==(RegisterMask x, RegisterMask y)
-            {
-                return x.Equals(y);
-            }
+            public static RegisterMask operator &(RegisterMask x, RegisterMask y) => new(x._masks & y._masks);
 
-            public static bool operator !=(RegisterMask x, RegisterMask y)
-            {
-                return !x.Equals(y);
-            }
+            public static RegisterMask operator |(RegisterMask x, RegisterMask y) => new(x._masks | y._masks);
 
-            public readonly override bool Equals(object obj)
-            {
-                return obj is RegisterMask regMask && Equals(regMask);
-            }
+            public static RegisterMask operator ~(RegisterMask x) => new(~x._masks);
 
-            public readonly bool Equals(RegisterMask other)
-            {
-                return GprMask0 == other.GprMask0 &&
-                       GprMask1 == other.GprMask1 &&
-                       GprMask2 == other.GprMask2 &&
-                       GprMask3 == other.GprMask3 &&
-                       PredMask == other.PredMask &&
-                       FlagMask == other.FlagMask;
-            }
+            public static bool operator ==(RegisterMask x, RegisterMask y) => x.Equals(y);
 
-            public readonly override int GetHashCode()
-            {
-                return HashCode.Combine(GprMask0, GprMask1, GprMask2, GprMask3, PredMask, FlagMask);
-            }
+            public static bool operator !=(RegisterMask x, RegisterMask y) => !x.Equals(y);
+
+            public override bool Equals(object obj) => obj is RegisterMask regMask && Equals(regMask);
+
+            public bool Equals(RegisterMask other) => _masks == other._masks;
+
+            public override int GetHashCode() => _masks.GetHashCode();
         }
 
         public readonly struct FunctionRegisterUsage
@@ -174,7 +114,7 @@ namespace Ryujinx.Graphics.Shader.Translation
             RegisterMask[] globalOutputs = new RegisterMask[cfg.Blocks.Length];
 
             RegisterMask allOutputs = new();
-            RegisterMask allCmnOutputs = new(-1L, -1L, -1L, -1L, -1L, -1L);
+            RegisterMask allCmnOutputs = RegisterMask.All();
 
             bool modified;
 
@@ -348,24 +288,9 @@ namespace Ryujinx.Graphics.Shader.Translation
 
         private static RegisterMask GetMask(Register register)
         {
-            Span<long> gprMasks = stackalloc long[4];
-            long predMask = 0;
-            long flagMask = 0;
+            int word = FirstWord(register.Type);
 
-            switch (register.Type)
-            {
-                case RegisterType.Gpr:
-                    gprMasks[register.Index >> 6] = 1L << (register.Index & 0x3f);
-                    break;
-                case RegisterType.Predicate:
-                    predMask = 1L << register.Index;
-                    break;
-                case RegisterType.Flag:
-                    flagMask = 1L << register.Index;
-                    break;
-            }
-
-            return new RegisterMask(gprMasks[0], gprMasks[1], gprMasks[2], gprMasks[3], predMask, flagMask);
+            return word < 0 ? new() : new(word + (register.Index >> 6), 1L << (register.Index & 0x3f));
         }
 
         private static bool Exchange(RegisterMask[] masks, int blkIndex, RegisterMask value)
@@ -459,23 +384,9 @@ namespace Ryujinx.Graphics.Shader.Translation
 
         private static (RegisterType RegType, int BaseRegIndex) GetRegTypeAndBaseIndex(int i)
         {
-            RegisterType regType = RegisterType.Gpr;
-            int baseRegIndex = 0;
+            RegisterType type = _wordType[i];
 
-            if (i < GprMasks)
-            {
-                baseRegIndex = i * sizeof(long) * 8;
-            }
-            else if (i == GprMasks)
-            {
-                regType = RegisterType.Predicate;
-            }
-            else
-            {
-                regType = RegisterType.Flag;
-            }
-
-            return (regType, baseRegIndex);
+            return (type, (i - FirstWord(type)) * 64);
         }
 
         private static bool EndsWithReturn(BasicBlock block)

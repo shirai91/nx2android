@@ -121,6 +121,15 @@ namespace Ryujinx.Graphics.Shader.Translation
             return dest;
         }
 
+        public static Operand SubgroupReduce(this EmitterContext context, Operand a, SubgroupReduceOp op)
+        {
+            Operand dest = Local();
+
+            context.Add(new Operation(Instruction.SubgroupReduce, (int)op, dest, a));
+
+            return dest;
+        }
+
         public static Operand Barrier(this EmitterContext context)
         {
             return context.Add(Instruction.Barrier);

@@ -22,6 +22,30 @@ namespace Ryujinx.Graphics.Shader
         }
 
         /// <summary>
+        /// The vertex position's z is scaled at run time by the support buffer's viewport_inverse.zw (a host that emulates the GL depth convention).
+        /// </summary>
+        bool QueryRuntimeDepthMode()
+        {
+            return false;
+        }
+
+        /// <summary>
+        /// Size in bytes of the constant buffer 1 data known (an Ampere jump table ends there at the latest).
+        /// </summary>
+        int QueryConstantBuffer1Size()
+        {
+            return 0;
+        }
+
+        /// <summary>
+        /// NVN2 compute shaders: their driver constant layout in c[0] (uniform buffer, storage buffer and texture handle counts, its size, push constant bytes); null otherwise.
+        /// </summary>
+        int[] QueryAmpereComputeC0Layout()
+        {
+            return null;
+        }
+
+        /// <summary>
         /// Gets a span of the specified memory location, containing shader code.
         /// </summary>
         /// <param name="address">GPU virtual address of the data</param>
@@ -165,6 +189,14 @@ namespace Ryujinx.Graphics.Shader
         /// </summary>
         /// <returns>True if any storage buffer address is not aligned to 16 bytes, false otherwise</returns>
         bool QueryHasUnalignedStorageBuffer()
+        {
+            return false;
+        }
+
+        /// <summary>
+        /// Queries whether a global memory access traced to no storage buffer goes through the host's memory pool table (StorageKind.PhysicalMemory).
+        /// </summary>
+        bool QueryPhysicalGlobalMemory()
         {
             return false;
         }

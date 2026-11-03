@@ -131,10 +131,10 @@ def checks(cfg=None, keys=None):
     return out
 
 
-def require(cfg=None, keys=None, adb=False):
-    """The checked tools for a port: {'ndk', 'dotnet', 'adb'}; ToolError naming every missing requirement"""
+def require(cfg=None, keys=None, adb=False, need_keys=True):
+    """The checked tools for a port: {'ndk', 'dotnet', 'adb'}; ToolError naming every missing requirement (prod.keys only with need_keys: an extracted dump needs none)"""
     rows = checks(cfg, keys)
-    bad = [r for r in rows if not r.ok and (r.required or (adb and r.name == 'adb'))]
+    bad = [r for r in rows if not r.ok and ((r.required and (need_keys or r.name != 'prod.keys')) or (adb and r.name == 'adb'))]
     if bad: raise ToolError('missing requirements: ' + '; '.join(f'{r.name}: {r.detail}' + (f' ({r.fix})' if r.fix else '') for r in bad))
     by = {r.name: r for r in rows}
     return {'ndk': Path(by['Android NDK'].path), 'dotnet': Path(by['.NET SDK'].path), 'adb': Path(by['adb'].path) if by['adb'].ok else None}

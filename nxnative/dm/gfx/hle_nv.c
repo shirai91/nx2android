@@ -13,5 +13,10 @@ HLE_FORCE("_ZN2nv20SetGraphicsAllocatorEPFPvmmS0_EPFvS0_S0_EPFS0_S0_mS0_ES0_", W
           void, h_nv_SetAlloc, nv_alloc_fn a, nv_free_fn f, nv_realloc_fn r, void *u) { g_nv_alloc = (struct nv_allocator){a, f, r, u}; }
 HLE_FORCE("_ZN2nv28SetGraphicsDevtoolsAllocatorEPFPvmmS0_EPFvS0_S0_EPFS0_S0_mS0_ES0_", WHY "; allocator recorded in g_nv_devtools_alloc",
           void, h_nv_SetDevAlloc, nv_alloc_fn a, nv_free_fn f, nv_realloc_fn r, void *u) { g_nv_devtools_alloc = (struct nv_allocator){a, f, r, u}; }
-HLE_FORCE("_ZN2nv18InitializeGraphicsEPvm", WHY, void, h_nv_Init, void *mem, unsigned long size) { (void)mem; (void)size; }
-HLE_FORCE("_ZN2nv16FinalizeGraphicsEv", WHY, void, h_nv_Fin, void) {}
+static int g_nv_inited;
+HLE_FORCE("_ZN2nv18InitializeGraphicsEPvm", WHY, void, h_nv_Init, void *mem, unsigned long size) { (void)mem; (void)size; g_nv_inited = 1; }
+HLE_FORCE("_ZN2nv16FinalizeGraphicsEv", WHY, void, h_nv_Fin, void) { g_nv_inited = 0; }
+// nv::InitCheck aborts unless graphics are initialized, by the flag the SDK's own InitializeGraphics sets (Donkey Kong Bananza calls it once gameplay starts, main+0xe19d04)
+HLE_FORCE("_ZN2nv9InitCheckEv", WHY "; graphics initialized as the host recorded", void, h_nv_InitCheck, void) {
+    if (!g_nv_inited) die("nv::InitCheck: nv::InitializeGraphics was not called");
+}

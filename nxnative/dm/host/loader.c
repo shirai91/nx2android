@@ -1,6 +1,7 @@
 // Multi-module loading (playing the role of Horizon's rtld): mapping, claiming thread slots, gate registration, cross-module relocation, take-over by name, segment permissions.
 // The code area (original text and patch area) is set to read-only+execute as soon as it is copied in, and from then on the loader only writes data: on iOS these two blocks must be embedded as is as signed code segments.
 #include "dm.h"
+#include <ctype.h>
 #include <TargetConditionals.h>
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -159,20 +160,35 @@ int dm_main_imports(const char *prefix) {
     return 0;
 }
 
+static int sdk_data(const char **b, const char **e) {   // the sdk module's read-only data, data and bss → 0 without an sdk module
+    for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "sdk")) {
+        *b = (const char *)g_mod[i].base + g_mod[i].ro_off; *e = (const char *)g_mod[i].base + g_mod[i].key_page_off; return 1; }
+    return 0;
+}
 // SDK major version, from the version string the SDK's libraries keep in the sdk module's read-only data ("NintendoSDK_nnSdk-10_4_0"; SDK 12 spells it NintendoSdk_).
 // Behaviour that follows the SDK version is decided by it (the NVN API version, the shared-font layout), not by the game profile. 0 = no sdk module or no version string
 int dm_sdk_major(void) {
     static int major = -1;
     if (major >= 0) return major;
-    major = 0;
-    for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "sdk")) {
-        const char *b = (const char *)g_mod[i].base + g_mod[i].ro_off, *e = (const char *)g_mod[i].base + g_mod[i].key_page_off;   // read-only data, data and bss
-        for (const char *p = b; (p = memmem(p, (size_t)(e - p), "_nnSdk-", 7)); p += 7)
-            if (p - b >= 11 && !strncasecmp(p - 11, "NintendoSDK", 11) && p[7] >= '0' && p[7] <= '9') {
-                major = atoi(p + 7); LOG("sdk: NintendoSDK nnSdk-%.12s (major %d)", p + 7, major); break; }
+    major = 0; const char *b, *e;
+    if (sdk_data(&b, &e)) for (const char *p = b; (p = memmem(p, (size_t)(e - p), "_nnSdk-", 7)); p += 7) {
+        if (p - b < 11 || strncasecmp(p - 11, "NintendoSDK", 11)) continue;
+        const char *v = p + 7;   // Switch 2 SDKs name a variant first: nnSdk-Generic_20_5_19
+        while (v < e && isalpha((unsigned char)*v)) v++;
+        if (v > p + 7 && v < e && *v == '_') v++;
+        if (v < e && isdigit((unsigned char)*v)) { major = atoi(v); LOG("sdk: NintendoSDK nnSdk-%.20s (major %d)", p + 7, major); break; }
     }
     if (!major) LOG("[RED] sdk: no SDK version string in the sdk module; SDK-dependent behaviour takes the newer SDKs' side");
     return major;
+}
+
+// The sdk module was built for the Switch 2: its file system access log line names the spec ("FS_ACCESS: { sdk_version: 20.5.19, spec: Ounce }"; Switch 1 SDKs say NX)
+int dm_sdk_ounce(void) {
+    static int ounce = -1;
+    if (ounce >= 0) return ounce;
+    const char *b, *e; ounce = sdk_data(&b, &e) && memmem(b, (size_t)(e - b), "spec: Ounce", 11);
+    if (ounce) LOG("sdk: built for the Switch 2 (spec: Ounce)");
+    return ounce;
 }
 
 // Cross-module symbol resolution: first look for a definition in the loaded modules, and only if not found hand over to HLE / stubs

@@ -6,7 +6,7 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 os.environ['NX2A_HOME'] = tempfile.mkdtemp(prefix='nx2a_test_home_')
 
-from porter import config, datapack, pipeline, profiles   # noqa: E402
+from porter import config, datapack, extracted, pipeline, profiles   # noqa: E402
 from porter.upstream import android_profile, game          # noqa: E402
 
 # The pipeline's messages hold "→" (mem_profile's alias region line): stdout as porter.cli.main sets it, or the Windows release runner's cp1252 pipe fails the test
@@ -297,6 +297,22 @@ def _hfs0(files):   # an HFS0 of (name, data): the XCI's partitions (hash fields
     for i, (n, d) in enumerate(files):
         ent += struct.pack('<QQII8x32s', off, len(d), sum(len(m.encode()) + 1 for m, _ in files[:i]), 0, b''); off += len(d)
     return struct.pack('<4sII4x', b'HFS0', len(files), len(strs)) + ent + strs + b''.join(d for _, d in files)
+
+
+class Extracted(unittest.TestCase):   # porter/extracted.py: a dump of extracted files (base/, updates/<version>/, dlc/<title ID>/<n>/) placed as hard links
+    def test_scan_and_place(self):
+        root = Path(tempfile.mkdtemp(prefix='nx2a_test_dump_')); app = 0x040074A01BF12000
+        npdm = bytearray(0x100); npdm[:4] = b'META'; struct.pack_into('<II', npdm, 0x70, 0x80, 0x40); npdm[0x80:0x84] = b'ACI0'; struct.pack_into('<Q', npdm, 0x90, app)
+        for d in ('base', 'updates/458752'):
+            (root / d / 'exefs').mkdir(parents=True); (root / d / 'exefs/main.npdm').write_bytes(npdm); (root / d / 'exefs/main').write_bytes(d.encode())
+            (root / d / 'romfs/System').mkdir(parents=True); (root / d / 'romfs/System/a.bin').write_bytes(b'x')
+        (root / 'dlc/040074a01bf13001/0/romfs').mkdir(parents=True); (root / 'dlc/040074a01bf13001/0/romfs/b.bin').write_bytes(b'y')
+        dump = extracted.scan(root)
+        self.assertEqual(dump.app, app); self.assertEqual(sorted(dump.versions), ['v0', 'v458752']); self.assertEqual(list(dump.dlc), [app + 0x1001])
+        game = dump.place('v458752', root / 'build/extract')
+        self.assertEqual((game / 'ExeFS/main').read_bytes(), b'updates/458752'); self.assertTrue((game / 'RomFS/System/a.bin').is_file())
+        self.assertEqual((dump.place_aoc(root / 'build') / '1/b.bin').read_bytes(), b'y')
+        self.assertIsNone(extracted.scan(root / 'base'))
 
 
 @unittest.skipUnless(importlib.util.find_spec('Crypto'), 'no pycryptodome')

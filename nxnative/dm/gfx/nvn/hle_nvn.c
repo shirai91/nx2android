@@ -11,6 +11,7 @@
 #include "../../host/hle.h"
 #include "nvn_protos.h"
 #include "nvn_count.h"
+#include "../tex/nvn_deswizzle.h"
 #include "nvn_tex.h"
 #include "nvn_mtl.h"
 #include "nvn_pace.h"
@@ -125,6 +126,7 @@ NVN(nvnDeviceBuilderSetFlags, void, NVNdeviceBuilder *b, int f) { ((dev_builder_
 NVN(nvnDeviceInitialize, NVNboolean, NVNdevice *d, const NVNdeviceBuilder *b) {
     dev_t_ *o = (dev_t_ *)d; memset(o, 0, sizeof *o);
     o->magic = MAGIC('D', 'E', 'V', 0); o->flags = ((const dev_builder_t *)b)->flags;
+    nvn_gob_switch2 = dm_sdk_ounce();   // the GOB order of the textures the game tiled itself (nvn_deswizzle.h)
     o->origin = NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT; mtl_set_origin_lower_left(1);   // NVN's default; every game so far switched to upper-left right away, Link's Awakening keeps it
     mtl_set_depth_zero(0);   // NVN's default depth mode: near = -w (GL)
     OLOG("DeviceInitialize %p flags=%#x", (void *)d, o->flags);
@@ -154,14 +156,18 @@ static const int g_devinfo[] = {
     [0x5D] = 4096, [0x5E] = 128, [0x5F] = 4096,
 };
 // The NVN API version the game's own driver would report follows its SDK: games check it and create no device on a mismatch. SDK 10 and older are API 53 (Super Mario 3D World 10.4,
-// Age of Calamity 9.6, Link's Awakening 8, Odyssey 7.3, Three Houses 6.5); SDK 11 and later take 55.15
+// Age of Calamity 9.6, Link's Awakening 8, Odyssey 7.3, Three Houses 6.5); SDK 11 and later take 55.15. The Switch 2's NVN2 is API 231: Donkey Kong Bananza creates its device only for
+// major 231 and minor 30 or later (main+0x5c61a4); 30 is that floor, not a console's value
 __attribute__((weak)) int dm_sdk_major(void) { return 0; }   // loader.c; graphics unit tests have no loader
+__attribute__((weak)) int dm_sdk_ounce(void) { return 0; }
 __attribute__((weak)) int dm_glslc_gpu_code(int *major, int *minor) { *major = *minor = 0; return 0; }   // hle_glslc.c: the game's own GLSLC's GPU code version
 static void nvn_api(int api[2]) {
 #ifdef DM_GAME_NVN_API_MAJOR
     api[0] = DM_GAME_NVN_API_MAJOR; api[1] = DM_GAME_NVN_API_MINOR; LOG("[nvn] device API %d.%d (game profile device_api)", api[0], api[1]);
 #else
-    int m = dm_sdk_major(); api[0] = DM_SDK_OLD(m) ? 53 : g_devinfo[0]; api[1] = DM_SDK_OLD(m) ? 313 : g_devinfo[1]; LOG("[nvn] device API %d.%d (SDK %d)", api[0], api[1], m);
+    int m = dm_sdk_major(); api[0] = DM_SDK_OLD(m) ? 53 : g_devinfo[0]; api[1] = DM_SDK_OLD(m) ? 313 : g_devinfo[1];
+    if (dm_sdk_ounce()) { api[0] = 231; api[1] = 30; }
+    LOG("[nvn] device API %d.%d (SDK %d%s)", api[0], api[1], m, dm_sdk_ounce() ? ", Switch 2" : "");
 #endif
 }
 NVN(nvnDeviceGetInteger, void, const NVNdevice *d, NVNdeviceInfo what, int *out) {
@@ -207,13 +213,12 @@ NVN(nvnMemoryPoolBuilderSetFlags, void, NVNmemoryPoolBuilder *b, int f) { ((pool
 static uint8_t *vpool_reserve(const pool_t *o); static void vpool_release(const pool_t *o);   // sparse virtual pools, see MapVirtual
 static void replay_lock(void); static void replay_unlock(void);   // the replay's state, from a game thread (see "Asynchronous replay")
 static void nvn_drain(void);
-__attribute__((weak)) void vk_pool_set_flags(const void *mem, int flags) { (void)mem; (void)flags; }
 __attribute__((weak)) void dm_perf_replay_thread(void) {}   // Android (perf_android.c): the replay thread's CPU placement   // Android's Vulkan host (gfx_vk_core.c): copied pools by their flags
 NVN(nvnMemoryPoolInitialize, NVNboolean, NVNmemoryPool *p, const NVNmemoryPoolBuilder *b) {
     const pool_builder_t *s = (const pool_builder_t *)b; pool_t *o = (pool_t *)p;
     o->magic = MAGIC('P', 'O', 'O', 'L'); o->flags = s->flags; o->mem = s->mem; o->size = s->size;
     if (!o->mem && (o->flags & 0x200)) { uint8_t *vr = vpool_reserve(o); if (vr) o->mem = vr; }   // a sparse virtual pool's own address range (see MapVirtual)
-    else if (o->mem) { replay_lock(); mtl_pool_add(o->mem, o->size); vk_pool_set_flags(o->mem, o->flags); replay_unlock(); nvn_dirty_add_range(o->mem, o->size); }
+    else if (o->mem) { replay_lock(); mtl_pool_add(o->mem, o->size); replay_unlock(); nvn_dirty_add_range(o->mem, o->size); }
     if (!o->mem && !(o->flags & 0x200)) LOG("[RED] MemoryPoolInitialize: non-virtual pool has no storage flags=%#x size=%#llx", o->flags, o->size);
     if (getenv("DM_NVN_VLOG")) { LOG("[nvn] MemoryPool %p mem=%p size=%#llx flags=%#x", (void *)p, (void *)o->mem, (unsigned long long)o->size, o->flags); void dm_backtrace(uint64_t fp); dm_backtrace((uint64_t)__builtin_frame_address(0)); }
     OLOG("MemoryPool %p mem=%p size=%#llx flags=%#x", (void *)p, (void *)o->mem, o->size, o->flags);
@@ -602,19 +607,16 @@ static void pk_drop(const void *p) {
 }
 // Set by a backend whose shaders are translated before the game runs (Android's Vulkan bundle, gfx_vk_shader.c): called at SetShaders for each stage whose key is known then, while the
 // control section is still the game's to read, so a shader whose code no game file holds can be saved and translated by the next port (Xenoblade Chronicles 3 sets hundreds)
-void (*g_nvn_on_shader)(const uint8_t key[8], const void *control, uint64_t data, uint32_t ncode);
+void (*g_nvn_on_shader)(const uint8_t key[8], const void *control, uint64_t data);
 // mapped = 1: computed only when the code area is in a registered memory pool (at SetShaders: Mario sets some programs with an unmapped address first and fills it in before the first draw)
 static int keys_hash(const NVNshaderData *sd, int mapped, uint8_t out[8]) {
-    uint32_t ncode = 0; void *mb; uint64_t mo;
+    void *mb; uint64_t mo; uint8_t ctl[0x880];
     if (!sd->control) return 0;
-    memcpy(&ncode, (const uint8_t *)sd->control + 0x704, 4);
+    uint32_t nctl = nvn_ctl_key(sd->control, ctl), ncode = nvn_ctl_code_len(sd->control);
     int code = sd->data && ncode && ncode < (1u << 24);
     if (mapped && !(code && mtl_addr(sd->data, ncode, &mb, &mo))) return 0;
-    // Control +0x20 holds the section's own length: sections of at least 0x880 bytes (all of Mario's, Engage's, Dread's and 13 Sentinels') use the first 0x880; SDK 10's 3D World has 0x850-byte ones followed by other data, so only their own length is used (shader_split.py ctl_len)
-    uint32_t nctl = 0x880, own; memcpy(&own, (const uint8_t *)sd->control + 0x20, 4);
-    if (own >= 0x760 && own < 0x880) nctl = own;
     uint8_t md[CC_SHA256_DIGEST_LENGTH]; CC_SHA256_CTX hc; CC_SHA256_Init(&hc);
-    CC_SHA256_Update(&hc, sd->control, nctl);
+    CC_SHA256_Update(&hc, ctl, nctl);
     if (code) CC_SHA256_Update(&hc, (const void *)(uintptr_t)sd->data, ncode);
     CC_SHA256_Final(md, &hc); memcpy(out, md, 8);
     return 1;
@@ -636,7 +638,7 @@ NVN(nvnProgramSetShaders, NVNboolean, NVNprogram *p, int n, const NVNshaderData 
     k->ok = 0;
     for (int i = 0; i < n; i++) {
         if (keys_hash(&sd[i], 1, k->key[i])) k->ok |= (uint8_t)(1u << i);
-        if (g_nvn_on_shader && (k->ok >> i & 1)) { uint32_t ncode; memcpy(&ncode, (const uint8_t *)sd[i].control + 0x704, 4); g_nvn_on_shader(k->key[i], sd[i].control, sd[i].data, ncode); }
+        if (g_nvn_on_shader && (k->ok >> i & 1)) g_nvn_on_shader(k->key[i], sd[i].control, sd[i].data);
         // DM_NVN_SHDUMP (debugging): keep a copy of the control section so the replay layer can save shaders missing from the map (never freed)
         if (dump && sd[i].control) { void *c = malloc(0x880); memcpy(c, sd[i].control, 0x880); o->sd[i].control = c; }
     }
@@ -662,9 +664,11 @@ NVN(nvnQueueWaitSync, NVNboolean, NVNqueue *q, const NVNsync *s) { (void)q; stat
 // ZCull data: the host does no ZCull, so there is nothing to save / restore
 NVN(nvnCommandBufferRestoreZCullData, void, NVNcommandBuffer *c, NVNbufferAddress a, size_t n) { (void)c; (void)a; (void)n; }
 NVN(nvnCommandBufferSaveZCullData, void, NVNcommandBuffer *c, NVNbufferAddress a, size_t n) { (void)c; (void)a; (void)n; }
+static int acq_sync_wait(sync_t *o, uint64_t timeout);
 NVN(nvnSyncWait, NVNsyncWaitResult, const NVNsync *s, uint64_t timeout) {
-    const sync_t *o = (const sync_t *)s;
+    sync_t *o = (sync_t *)s;
     if (!o->fenced) { SEQ("syncwait %p unfenced", (void *)s); return NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED; }
+    if (o->win && !acq_sync_wait(o, timeout)) return NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED;
     if (nvn_fence_wait(o->fence, 0)) { SEQ("syncwait %p kind %u already", (void *)s, o->fenced); return NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED; }
     uint64_t t0 = now_ns(); int r = nvn_fence_wait(o->fence, timeout);
     SEQ("syncwait %p kind %u timeout %llu waited %.2f ms -> %d", (void *)s, o->fenced, (unsigned long long)timeout, (now_ns() - t0) / 1e6, r);
@@ -1152,7 +1156,6 @@ NVN(nvnVertexAttribStateGetStreamIndex, int, const NVNvertexAttribState *s) { re
 static _Atomic uint64_t g_sub_wall_ns, g_sub_cpu_ns, g_sub_instr;   // Wall clock / this thread's CPU time / this thread's retired instruction count for submit (excluding present) (taken away per frame)
 static _Atomic uint64_t g_cum_sub_instr, g_cum_sub_cpu_ns;   // Cumulative versions of the above (the "translation" summary row every 300 frames takes the difference; on a real device read through the log port: instructions per draw / submit CPU per frame)
 extern int thread_selfcounts(int type, void *buf, size_t nbytes);   // This thread's cumulative {instructions, cycles} (libSystem private interface, present on both Mac and iOS)
-static uint64_t thr_instr(void) { uint64_t c[2] = {0, 0}; thread_selfcounts(1, c, sizeof c); return c[0]; }
 // Supplementary readings for the submit path (on a real device Metal 4 instruction count is -18% while submit CPU time is +49%; need to tell apart kernel mode, execution efficiency, or frequency throttling):
 // this thread's cycle count (the second item of the same interface), kernel-mode CPU time (THREAD_BASIC_INFO), wall clock
 static void thr_counts(uint64_t *instr, uint64_t *cyc) { uint64_t c[2] = {0, 0}; thread_selfcounts(1, c, sizeof c); *instr = c[0]; *cyc = c[1]; }
@@ -1213,8 +1216,8 @@ static void *replay_main(void *arg) {
         nvn_job j = g_jobs[0]; pthread_mutex_unlock(&g_job_mu);
         if (j.kind == JOB_SUBMIT) { uint64_t ts = now_ns(); __atomic_store_n(&g_replaying, g_job_done + 1, __ATOMIC_RELAXED); submit_now(j.q, j.n, (const NVNcommandHandle *)j.h); __atomic_store_n(&g_replaying, 0, __ATOMIC_RELAXED);
             static nvn_job prev; if (prev.h) { for (int i = 0; i < prev.n; i++) free((void *)(uintptr_t)prev.h[i]); free(prev.h); }   // the copies (rec_copy) go one submission later
-            prev = j; g_tl_enq = j.t_enq; g_tl_start = ts; g_tl_end = now_ns(); }
-        else { gfx_enter(); uint64_t t0 = now_ns(); uint64_t tk = mtl_present(j.tex, j.period, j.crop); __atomic_store_n(j.ticket, tk, __ATOMIC_RELEASE); gfx_leave(); atomic_fetch_add(&g_nvn_ns, now_ns() - t0); }
+            prev = j; g_tl_enq = j.t_enq; g_tl_start = ts; g_tl_end = now_ns(); SEQ("job %llu replayed: queued %.2f ms, replay %.2f ms", (unsigned long long)g_job_done + 1, (ts - j.t_enq) / 1e6, (g_tl_end - ts) / 1e6); }
+        else { gfx_enter(); uint64_t t0 = now_ns(); uint64_t tk = mtl_present(j.tex, j.period, j.crop); __atomic_store_n(j.ticket, tk, __ATOMIC_RELEASE); gfx_leave(); atomic_fetch_add(&g_nvn_ns, now_ns() - t0); SEQ("job %llu present: queued %.2f ms, took %.2f ms", (unsigned long long)g_job_done + 1, (t0 - j.t_enq) / 1e6, (now_ns() - t0) / 1e6); }
         pthread_mutex_lock(&g_job_mu);
         memmove(g_jobs, g_jobs + 1, sizeof *g_jobs * (size_t)--g_njob); g_job_done++; g_job_fence[g_job_done % JOB_RING] = mtl_last_fence();
         pthread_cond_broadcast(&g_jobdone_cv); pthread_mutex_unlock(&g_job_mu);
@@ -1399,6 +1402,7 @@ static int present_itv(const win_t *o);
 __attribute__((weak)) void dm_main_yield_stats(uint64_t *n, uint64_t *ns) { *n = 0; *ns = 0; }   // The host's hle_thread.c provides the ground truth; 0 in graphics unit tests
 __attribute__((weak)) uint32_t dm_guest_work_qos(unsigned *count) { if (count) *count = 0; return QOS_CLASS_UNSPECIFIED; }
 __attribute__((weak)) void dm_perf_frame_start(uint64_t pace_ns, uint64_t pq_ns) { (void)pace_ns; (void)pq_ns; }   // Android (perf_android.c): a frame's work starts, for the CPU performance hint
+__attribute__((weak)) void dm_perf_frame_wait(uint64_t pace_ns, uint64_t pq_ns) { (void)pace_ns; (void)pq_ns; }   // Android: the same waits, taken later in the frame (acq_sync_wait)
 __attribute__((weak)) uint64_t dm_present_period_adapt(uint64_t period) { return period; }   // Android (perf_android.c): a longer period the frames can hold steadily
 __attribute__((weak)) void dm_yield_top(char *out, size_t n) { if (n) snprintf(out, n, "-"); }   // hle_thread.c: the threads that yielded most since the last call; none in graphics unit tests
 __attribute__((weak)) void dm_thread_cpu(char *out, size_t n, double secs) { (void)secs; if (n) snprintf(out, n, "-"); }   // hle_thread.c: guest-thread CPU by Switch priority band since the last call
@@ -1407,39 +1411,61 @@ void mtl_barrier_stats(uint64_t *skip, uint64_t *full);
 extern uint32_t mtl_present_qos(void);
 static uint64_t g_frame;
 static uint64_t g_acq_wait_ns, g_pq_wait_ns;   // Accumulated display-link wait / wait for the present queue to return inside acquire, recorded per frame at present (there can be several acquires within one frame)
+// Texture idx's last present processed by the present thread (its job replayed first when still queued) → the time waited
+static uint64_t present_done_wait(win_t *o, int idx) {
+    uint64_t t0 = now_ns(), tk = idx < 4 ? __atomic_load_n(&o->ticket[idx], __ATOMIC_ACQUIRE) : 0;
+    if (tk & ASYNC_FENCE) { job_wait(tk & ~ASYNC_FENCE, ~0ull); tk = __atomic_load_n(&o->ticket[idx], __ATOMIC_ACQUIRE); }
+    if (tk) mtl_present_wait(tk);
+    return now_ns() - t0;
+}
+// Texture idx of o free to draw into: paced until at (its display time plus one period; the display link's ticks under DM_PRESENT_LINK), then present_done_wait.
+// 0 when the timeout runs out in the pace
+static int tex_wait(win_t *o, int idx, uint64_t at, uint64_t timeout, uint64_t *pace_ns, uint64_t *pq_ns) {
+    uint64_t t0 = now_ns();
+    if (mtl_link_active()) { uint64_t period = present_period(o); if (!mtl_link_wait_tick(present_itv(o), period ? 2 * period : 33333333ull) && at > t0) sleep_until_ns(at); }
+    else if (at > t0) { if (at - t0 > timeout) { sleep_until_ns(t0 + timeout); return 0; } sleep_until_ns(at); }
+    *pace_ns = now_ns() - t0; *pq_ns = present_done_wait(o, idx);
+    return 1;
+}
+// DM_NVN_ACQ_SYNC=1 (start-up; profile env): a window acquire returns at once and its sync waits for the texture (tex_wait) instead. Donkey Kong Bananza picks its
+// present interval from the time its main thread takes from the end of one present step to the end of its draw (or from then to the frame's last GPU timestamp,
+// if later; main+0x203674), and its render thread acquires inside that span, so the pace counted as work: interval 2 or 3 however short its frames were. Its
+// present step waits on the sync instead, outside the span
+static int acq_sync_wait(sync_t *o, uint64_t timeout) {
+    uint64_t pace, pq; if (!tex_wait(o->win, o->idx, o->at, timeout, &pace, &pq)) return 0;
+    g_acq_wait_ns += pace; g_pq_wait_ns += pq; o->win = NULL; dm_perf_frame_wait(pace, pq);
+    SEQ("syncwait %p for its texture: pace %.2f ms, present %.2f ms", (void *)o, pace / 1e6, pq / 1e6);
+    return 1;
+}
 static uint64_t g_fs_start, g_fs_wait;   // frame step (fstep_tick): when the first acquire after a present returned (the frame's start, 0 = none yet), and its pacing wait
 uint64_t dm_nvn_frame_count(void) { return g_frame; }
 extern uint64_t g_t0_ns;   // Host process start point (main.c; same base as the UIMSG timestamps)
 NVN(nvnWindowAcquireTexture, NVNwindowAcquireTextureResult, NVNwindow *w, NVNsync *s, int *idx) {
     win_t *o = (win_t *)w;
     *idx = o->ntex ? o->next++ % o->ntex : 0;
-    // Vsync blocks here (real-device NVN: when all textures in the swapchain are waiting for display, wait for the next one to be released), not in present -- the game often calls present while holding a lock
-    uint64_t at = *idx < 4 ? o->avail[*idx] : 0, now = dm_detclock_enabled() ? guest_ns() : now_ns(), wait = at > now ? at - now : 0, pace_ns = 0;
-    if (!dm_detclock_enabled()) {   // Register the acquire thread as a time-constraint thread (no longer registered only when it "arrived early": it must also declare itself when it is constantly behind in the hot state)
-        static uint64_t rt_period; uint64_t period = present_period(o), rtp = rt_period_ns(o, period);
-        if (rtp && rt_period != rtp) { rt_period = rtp; set_time_constraint(rtp); }
-        rt_comp_tick(rtp);
-        uint64_t p0 = now_ns();
-        if (mtl_link_active()) { if (!mtl_link_wait_tick(present_itv(o), period ? 2 * period : 33333333ull) && wait) sleep_until_ns(at); }   // DM_PRESENT_LINK: pacing fully follows the display link (wait for the present interval's display-link ticks when running fast, go immediately when behind); our own 60 Hz clock is only the fallback when no display-link tick arrives
-        else if (wait) sleep_until_ns(at);
-        pace_ns = now_ns() - p0;
-    } else {   // DM_DETCLOCK_PACE=1 (used by the screenshot gate): while the guest clock advances per frame, each frame's wall clock is no shorter than one step -- frame count and in-game time are deterministic, and the background loading thread has at least one step of wall clock available per frame;
-               // When the machine is fully loaded frames only get slower and the background only gets more wall clock, so the picture captured at "the Nth frame after the message" is independent of load
-        static int pace = -1; static uint64_t step, last;
-        if (pace < 0) { const char *e = getenv("DM_DETCLOCK_PACE"), *d = getenv("DM_DETCLOCK"); step = d ? strtoull(d, 0, 0) : 0; pace = e && atoi(e) && step; }
-        if (pace) { if (last && now_ns() < last + step) sleep_until_ns(last + step); last = now_ns(); }
-    }
-    g_acq_wait_ns += wait; trow(g_frame, "@late_ms", wait ? (now_ns() - at) / 1e6 : 0);
-    // The previous present of this texture has not yet been processed by the present thread (display cannot keep up, a whole swapchain round behind): wait for it to be returned, then hand it to the game to draw
+    static int acq_sync = -1; if (acq_sync < 0) { const char *e = getenv("DM_NVN_ACQ_SYNC"); acq_sync = e && atoi(e); }
+    int defer = acq_sync && s && *idx < 4 && !dm_detclock_enabled();   // DM_NVN_ACQ_SYNC: the waits go to the sync (acq_sync_wait)
+    // Vsync blocks here (real-device NVN: when all textures in the swapchain are waiting for display, wait for the next one to be released), not in present -- the game often calls present while holding a lock.
+    // DM_PRESENT_LINK: pacing fully follows the display link (wait for the present interval's display-link ticks when running fast, go immediately when behind); our own 60 Hz clock is only the fallback when no display-link tick arrives
     // The wait for the present thread (pq_ns) goes to the adaptive frame rate apart from the frame's work: at 40 or 30 fps it is the longer period's own pace
     // (Super Mario Odyssey's title held 30 fps with 1 ms of GPU work a frame and showed 60 when pinned there). The CPU hint still counts it as work: with the
     // replay on its own thread it holds the replay's and the GPU's time too, and without it the hint let the CPU clocks fall to 1 GHz (perf_android.c).
     // With the replay on its own thread the pace can be in the wait for the present's job (the replay thread held by the full present queue); the replay's
     // own time in that wait comes back to the rate as the frame's replay time (dm_perf_frame_cost)
-    uint64_t pq_ns = 0;
-    uint64_t tk = *idx < 4 ? __atomic_load_n(&o->ticket[*idx], __ATOMIC_ACQUIRE) : 0;
-    if (tk & ASYNC_FENCE) { uint64_t w0 = now_ns(); job_wait(tk & ~ASYNC_FENCE, ~0ull); pq_ns = now_ns() - w0; tk = __atomic_load_n(&o->ticket[*idx], __ATOMIC_ACQUIRE); }   // its present still queued
-    if (tk) { uint64_t w0 = now_ns(); mtl_present_wait(tk); pq_ns += now_ns() - w0; }
+    uint64_t at = *idx < 4 ? o->avail[*idx] : 0, now = dm_detclock_enabled() ? guest_ns() : now_ns(), wait = !defer && at > now ? at - now : 0, pace_ns = 0, pq_ns = 0;
+    if (!dm_detclock_enabled()) {   // Register the acquire thread as a time-constraint thread (no longer registered only when it "arrived early": it must also declare itself when it is constantly behind in the hot state)
+        static uint64_t rt_period; uint64_t rtp = rt_period_ns(o, present_period(o));
+        if (rtp && rt_period != rtp) { rt_period = rtp; set_time_constraint(rtp); }
+        rt_comp_tick(rtp);
+        if (!defer) tex_wait(o, *idx, at, ~0ull, &pace_ns, &pq_ns);
+    } else {   // DM_DETCLOCK_PACE=1 (used by the screenshot gate): while the guest clock advances per frame, each frame's wall clock is no shorter than one step -- frame count and in-game time are deterministic, and the background loading thread has at least one step of wall clock available per frame;
+               // When the machine is fully loaded frames only get slower and the background only gets more wall clock, so the picture captured at "the Nth frame after the message" is independent of load
+        static int pace = -1; static uint64_t step, last;
+        if (pace < 0) { const char *e = getenv("DM_DETCLOCK_PACE"), *d = getenv("DM_DETCLOCK"); step = d ? strtoull(d, 0, 0) : 0; pace = e && atoi(e) && step; }
+        if (pace) { if (last && now_ns() < last + step) sleep_until_ns(last + step); last = now_ns(); }
+        pq_ns = present_done_wait(o, *idx);
+    }
+    g_acq_wait_ns += wait; trow(g_frame, "@late_ms", wait ? (now_ns() - at) / 1e6 : 0);
     g_pq_wait_ns += pq_ns;
     // The sync signals when the texture is available: once the work before its last present is done, as Horizon releases a swap-chain image (not all work so far).
     // Xenoblade Chronicles 3 waits on it on the CPU right after presenting frame N, before it submits N+1: fenced "now", that wait took frame N's whole GPU tail
@@ -1450,7 +1476,7 @@ NVN(nvnWindowAcquireTexture, NVNwindowAcquireTextureResult, NVNwindow *w, NVNsyn
     // the wait was at its next submission instead (2 of 6 recordings) or absent (2 of 8 with the versioned texture table, about half without), none in 20 with it
     // here; its work between presenting and acquiring (~13 ms a frame) still overlaps the replay. DM_NVN_ACQ_REPLAYED=0: no wait
     { static int w = -1; if (w < 0) { const char *ar = getenv("DM_NVN_ACQ_REPLAYED"); w = !(ar && !atoi(ar)); } if (w && nvn_async()) job_wait(g_job_enq, ~0ull); }
-    if (s) { ((sync_t *)s)->fenced = 2; ((sync_t *)s)->fence = acq_now || *idx >= 4 ? nvn_fence_now() : o->done[*idx]; }
+    if (s) { sync_t *y = (sync_t *)s; y->fenced = 2; y->fence = acq_now || *idx >= 4 ? nvn_fence_now() : o->done[*idx]; y->win = defer ? o : NULL; y->idx = *idx; y->at = at; }
     SEQ("acquire %d sync %p", *idx, (void *)s);   // The swapchain texture becomes available once the commits before this point have completed
     if (!g_fs_start) { g_fs_start = now_ns(); g_fs_wait = pace_ns; dm_perf_frame_start(pace_ns, pq_ns); }   // the frame starts when the first acquire after a present returns: on a display-link tick when on time
     return NVN_WINDOW_ACQUIRE_TEXTURE_RESULT_SUCCESS;
@@ -2341,9 +2367,34 @@ NVN_NOPROTO(nvnProgramSetShadersExt, NVNboolean, NVNprogram *p, int n, const sha
     return h_nvnProgramSetShaders(p, n, plain);
 }
 
+// ---------- NVN2 (Switch 2) ----------
+// Programs come from a builder: SetDefaults, SetDevice, SetShaders(count, NVNshaderData[]), then InitializeFromBuilder. The builder keeps the caller's array, which lives until the
+// program is initialized (Donkey Kong Bananza keeps it in that stack frame)
+typedef struct { NVNdevice *dev; const NVNshaderData *sd; int n; } prog_builder_t;
+NVN_NOPROTO(nvnProgramBuilderSetDefaults, void, prog_builder_t *b) { memset(b, 0, sizeof *b); }
+NVN_NOPROTO(nvnProgramBuilderSetDevice, void, prog_builder_t *b, NVNdevice *d) { b->dev = d; }
+NVN_NOPROTO(nvnProgramBuilderSetShaders, void, prog_builder_t *b, int n, const NVNshaderData *sd) { b->n = n; b->sd = sd; }
+NVN_NOPROTO(nvnProgramInitializeFromBuilder, NVNboolean, NVNprogram *p, const prog_builder_t *b) {
+    return h_nvnProgramInitialize(p, b->dev) && (!b->n || h_nvnProgramSetShaders(p, b->n, b->sd));
+}
+// A queue tied to a primary queue: the host runs every queue's submissions in order on one device queue already
+NVN_NOPROTO(nvnQueueBuilderSetPrimaryQueue, void, NVNqueueBuilder *b, NVNqueue *primary) { (void)b; (void)primary; }
+// How the GPU front end runs a command buffer (recording, geometry processing, compute overlap): the replay runs every command in order, so none changes a result
+NVN_NOPROTO(nvnCommandBufferSetRecordingMode, void, NVNcommandBuffer *c, int mode) { (void)c; (void)mode; }
+NVN_NOPROTO(nvnCommandBufferSetGeometryProcessingMode, void, NVNcommandBuffer *c, int mode) { (void)c; (void)mode; }
+NVN_NOPROTO(nvnCommandBufferSetComputeOverlapMode, void, NVNcommandBuffer *c, int mode) { (void)c; (void)mode; }
+// Push constants: (command buffer, a word seen 0, byte offset, size, data). Donkey Kong Bananza's upscaler pushes its target's (1 / w, 1 / h, w, h) for its graphics passes
+static void push_const(NVNcommandBuffer *c, int compute, uint64_t w, uint64_t off, uint64_t n, const void *data) {
+    if (w || off + n > NVN_PUSH_SIZE || !data) { static int k; if (k++ < 8) LOG("[RED] push constants (word %#llx) at %#llx + %#llx: not taken", (unsigned long long)w, (unsigned long long)off, (unsigned long long)n); return; }
+    p_push_const *r = RECN(c, OP_PUSH_CONST, p_push_const, data, n); r->compute = (uint16_t)compute; r->offset = (uint16_t)off; r->size = (uint32_t)n; memcpy(r->data, data, n);
+}
+NVN_NOPROTO(nvnCommandBufferPushGraphicsConstants, void, NVNcommandBuffer *c, uint64_t w, uint64_t off, uint64_t n, const void *data) { push_const(c, 0, w, off, n, data); }
+NVN_NOPROTO(nvnCommandBufferPushComputeConstants, void, NVNcommandBuffer *c, uint64_t w, uint64_t off, uint64_t n, const void *data) { push_const(c, 1, w, off, n, data); }
+// Stencil culling tunes the GPU's early rejection, not what is drawn
+NVN_NOPROTO(nvnCommandBufferSetStencilCullCriteria, void, NVNcommandBuffer *c, int func, int ref) { (void)c; (void)func; (void)ref; }
+
 // ---------- Commands used by newer-SDK games (SMBW): most map onto existing record formats, the replay layer is unchanged ----------
 // Singular / combined forms → plural / separate forms; state the replay layer does not have yet (conditional render, depth bounds, ...) is logged once and drawing continues (better to over-draw than to drop).
-#include "../tex/nvn_deswizzle.h"
 
 NVN(nvnCommandBufferCallCommands, void, NVNcommandBuffer *c, int n, const NVNcommandHandle *h) { h_nvnCommandBufferCopyCommands(c, n, h); }   // the replay layer treats CALL and COPY alike
 // Combined texture handle (texture id | sampler id << 20) is recorded into the texture slot as is: the replay layer takes the texture from the low 20 bits and the sampler from the high bits (nvn_mtl.m NVN_RB_SAMPT)

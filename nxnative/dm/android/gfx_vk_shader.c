@@ -19,6 +19,10 @@ void vk_shaders_open(const char *path) {
     g_bundle = mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_SHARED, fd, 0); close(fd);
     if (g_bundle == MAP_FAILED || memcmp(g_bundle, "DMSV", 4)) { VKLOG("[RED] %s is not a shader bundle", path); g_bundle = NULL; return; }
     memcpy(&g_nent, g_bundle + 8, 4); g_ent = (const bent *)(g_bundle + 12);
+    // a bundle cut short (an interrupted copy to the device) would fault on its first shader past the end: refused whole (the blobs follow the table in order)
+    if (12 + (uint64_t)g_nent * sizeof *g_ent > (uint64_t)st.st_size || (g_nent && (uint64_t)g_ent[g_nent - 1].refl_off + g_ent[g_nent - 1].refl_len > (uint64_t)st.st_size)) {
+        VKLOG("[RED] shader bundle %s is cut short (%.1f MB): port and install again; nothing will be drawn", path, st.st_size / 1048576.0);
+        munmap((void *)g_bundle, (size_t)st.st_size); g_bundle = NULL; g_nent = 0; return; }
     VKLOG("shader bundle %s: %u shaders, %.1f MB", path, g_nent, st.st_size / 1048576.0);
 }
 static void bundle_open_once(void) {
@@ -43,7 +47,7 @@ static const bent *find(uint64_t key) {
 int vk_shader_stage(uint64_t key) { bundle_auto(); const bent *e = g_bundle ? find(key) : NULL; return e ? (int)e->stage : -1; }   // the NVN stage the bundle has this shader as
 
 // Run-time capture: a shader a draw needs that the bundle does not have is saved as DM_ROOT/captured_shaders/<key>.bin ("DMSC", u32 control length, u32 code length, the control
-// section as its key hashed it, the code area), and the porter translates the folder into the bundle at the next port (porter/pipeline.py, shader_vk.py --capture).
+// section (as its key hashed it; NVN2's whole), the code area), and the porter translates the folder into the bundle at the next port (porter/pipeline.py, shader_vk.py --capture).
 // Xenoblade Chronicles 3 sets hundreds of programs whose code is in no game file (GLSLC outputs of its Firehawk effects, and vertex / pixel shaders of models: a machine near
 // the camera in Everlight Plain drew as a black silhouette, its depth pre-pass drawn and its G-buffer draw skipped); 51 of them in the opening and the first field.
 // The game may free a control section once SetShaders returns, so SetShaders keeps a copy of each one the bundle lacks (shader_set); the file is written only when a draw misses
@@ -51,23 +55,25 @@ int vk_shader_stage(uint64_t key) { bundle_auto(); const bent *e = g_bundle ? fi
 typedef struct { uint64_t key, data; uint32_t nctl, ncode; uint8_t *ctl; } pend_t;
 enum { NPEND = 4096 };
 static pend_t g_pend[NPEND]; static unsigned g_npend; static pthread_mutex_t g_pend_mu = PTHREAD_MUTEX_INITIALIZER;
-static void shader_set(const uint8_t k[8], const void *control, uint64_t data, uint32_t ncode) {
+static void shader_set(const uint8_t k[8], const void *control, uint64_t data) {
     uint64_t key = 0; for (int i = 0; i < 8; i++) key = key << 8 | k[i];
-    if (!key || !control || !data || !ncode || ncode >= (1u << 24) || vk_shader_stage(key) >= 0) return;
-    uint32_t nctl = 0x880, own; memcpy(&own, (const uint8_t *)control + 0x20, 4); if (own >= 0x760 && own < 0x880) nctl = own;   // as hle_nvn.c keys_hash
+    if (!key || !control || !data || vk_shader_stage(key) >= 0) return;
+    uint8_t kc[0x880]; uint32_t ncode = nvn_ctl_code_len(control), nctl = nvn_ctl_v2(control) ? nvn_ctl_u32(control, 0x30) : nvn_ctl_key(control, kc);   // NVN2: the whole section, which the translator reads past the key
+    if (!ncode || ncode >= (1u << 24) || nctl < 0x48 || nctl > (1u << 20)) return;
     uint8_t *c = malloc(nctl); if (!c) return; memcpy(c, control, nctl);
     pthread_mutex_lock(&g_pend_mu);
     pend_t *p = &g_pend[g_npend++ % NPEND]; free(p->ctl); *p = (pend_t){key, data, nctl, ncode, c};   // the oldest goes: a draw needs a program soon after it is set
     pthread_mutex_unlock(&g_pend_mu);
 }
-__attribute__((constructor)) static void shader_set_on(void) { extern void (*g_nvn_on_shader)(const uint8_t *, const void *, uint64_t, uint32_t); g_nvn_on_shader = shader_set; }
+__attribute__((constructor)) static void shader_set_on(void) { extern void (*g_nvn_on_shader)(const uint8_t *, const void *, uint64_t); g_nvn_on_shader = shader_set; }
 void vk_shader_missing(uint64_t key) {
     pend_t p = {0};
     pthread_mutex_lock(&g_pend_mu);
     for (unsigned i = 0; i < NPEND && i < g_npend; i++) if (g_pend[i].key == key && g_pend[i].ctl) { p = g_pend[i]; p.ctl = malloc(p.nctl); if (p.ctl) memcpy(p.ctl, g_pend[i].ctl, p.nctl); break; }
     pthread_mutex_unlock(&g_pend_mu);
     if (!p.ctl) { VKLOG("[RED] shader %016llx is not in the bundle (and was not set while the capture could see it)", (unsigned long long)key); return; }
-    uint8_t md[CC_SHA256_DIGEST_LENGTH]; CC_SHA256_CTX hc; CC_SHA256_Init(&hc); CC_SHA256_Update(&hc, p.ctl, p.nctl); CC_SHA256_Update(&hc, (const void *)(uintptr_t)p.data, p.ncode); CC_SHA256_Final(md, &hc);
+    uint8_t kc[0x880]; uint32_t nk = nvn_ctl_key(p.ctl, kc);
+    uint8_t md[CC_SHA256_DIGEST_LENGTH]; CC_SHA256_CTX hc; CC_SHA256_Init(&hc); CC_SHA256_Update(&hc, kc, nk); CC_SHA256_Update(&hc, (const void *)(uintptr_t)p.data, p.ncode); CC_SHA256_Final(md, &hc);
     uint64_t now = 0; for (int i = 0; i < 8; i++) now = now << 8 | md[i];
     if (now != key) { VKLOG("[RED] shader %016llx is not in the bundle; its code area changed since SetShaders, not saved", (unsigned long long)key); free(p.ctl); return; }
     const char *r = getenv("DM_ROOT"); char dir[1024], path[1100], tmp[1110]; snprintf(dir, sizeof dir, "%s/captured_shaders", r ? r : "."); mkdir(dir, 0755);
@@ -195,7 +201,7 @@ static VkDescriptorSetLayout shader_layout(const VkDescriptorSetLayoutBinding *b
     if (!layout) {
         VkDescriptorSetLayoutCreateInfo li = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, NULL, 0, n, b};
         VKCHK(vkCreateDescriptorSetLayout(V.dev, &li, NULL, &layout));
-        void vk_dsl_register(VkDescriptorSetLayout l, const VkDescriptorSetLayoutBinding *b, uint32_t n); vk_dsl_register(layout, b, n);
+        vk_dsl_register(layout, b, n);
         nvn_hm_put(&cache, &k, layout);
     }
     return layout;
@@ -254,13 +260,18 @@ vkshader_t *vk_shader(uint64_t key, int stage) {
     // with the same buffers (Unity updates a constant buffer before nearly every draw, and each update is a shadow at a new offset: NEO made a new set for
     // 94% of its draws, 5 ms a frame). Up to half the device's limit per stage, as the vertex and fragment sets share a pipeline layout. DM_VK_DYN_UBO=0: none.
     static int dyn_on = -1; if (dyn_on < 0) { const char *e = getenv("DM_VK_DYN_UBO"); dyn_on = !(e && !atoi(e)); }
-    uint32_t dynmax = dyn_on ? V.props.limits.maxDescriptorSetUniformBuffersDynamic / 2 : 0;
+    // Storage buffers too, a pipeline layout's five graphics stages sharing the device's limit: a draw's storage buffers move through one pool from draw to draw (Donkey Kong
+    // Bananza's terrain chunks, whose geometry shader writes each chunk's triangles and indirect record: 40% of the sets made in gameplay)
+    uint32_t dynmax = dyn_on ? V.props.limits.maxDescriptorSetUniformBuffersDynamic / 2 : 0, ndu = 0;
+    uint32_t sdynmax = dyn_on ? V.props.limits.maxDescriptorSetStorageBuffersDynamic / (stage == 5 ? 1 : 5) : 0, nds = 0;
     VkDescriptorSetLayoutBinding lb[96]; uint32_t nl = 0;
     for (int i = 0; i < s->nbind && nl < 96; i++) {
         const dmsv_bind *b = &s->b[i];
-        int dyn = b->desc == RD_UBO && (b->kind == RK_CBUF || b->kind == RK_DRV) && b->count == 1 && (uint32_t)s->ndyn < dynmax;
-        s->dyn[i] = (uint8_t)dyn; s->ndyn += dyn;
-        lb[nl++] = (VkDescriptorSetLayoutBinding){b->binding, dyn ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC : desc_type(b->desc), b->count ? b->count : 32, stage_flag(stage), NULL};
+        int dyn = b->desc == RD_UBO && (b->kind == RK_CBUF || b->kind == RK_DRV) && b->count == 1 && ndu < dynmax;
+        int sdyn = b->desc == RD_SSBO && (b->kind == RK_SBUF || b->kind == RK_UBO_PTR || b->kind == RK_SBUF_UBO || b->kind == RK_GMEM) && b->count == 1 && nds < sdynmax;
+        ndu += dyn; nds += sdyn; s->dyn[i] = (uint8_t)(dyn | sdyn); s->ndyn += dyn | sdyn;
+        lb[nl++] = (VkDescriptorSetLayoutBinding){b->binding, dyn ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC : sdyn ? VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC : desc_type(b->desc),
+                                                  b->count ? b->count : 32, stage_flag(stage), NULL};
     }
     s->dsl = shader_layout(lb, nl);
     nvn_hm_put(&g_shaders, &hk, s);
@@ -370,8 +381,9 @@ static uint32_t *spv_frag_depth(const uint32_t *w, uint32_t nw, uint32_t *onw) {
         memcpy(&o[no], &w[i], n * 4); no += n; i += n; }
     o[3] = c.bound; *onw = no; free(c.nt); return o;
 }
-// DM_VK_SPV_DIR=<dir> with DM_VK_SPV_ALT=1 (live, debugging): pipelines made while it is on use <dir>/<key>.spv in place of the bundle's code where the file
+// DM_VK_SPV_DIR=<dir> with DM_VK_SPV_ALT=n (live, debugging): pipelines made while it is on use <dir>/<key>.spv in place of the bundle's code where the file
 // exists (same bindings), so two compilations of a shader can be compared in one run: the translator's module through spirv-opt, its GLSL through glslc...
+// Each n reads the file again, so an edited shader is tried by raising n
 static VkShaderModule alt_module(vkshader_t *s) {
     const char *dir = getenv("DM_VK_SPV_DIR"); char path[512]; if (!dir) return s->mod;
     snprintf(path, sizeof path, "%s/%016llx.spv", dir, (unsigned long long)s->key); FILE *f = fopen(path, "rb"); if (!f) return s->mod;
@@ -408,7 +420,7 @@ static VkShaderModule vk_shader_module_(vkshader_t *s, uint64_t um, uint64_t im,
     if (fd && (s->stage != 1 || s->depth_repl)) fd = 0;
     if (dual && s->stage != 1) dual = 0;
     if (!(um | im | xo | (uint32_t)fd | (uint32_t)dual) || !s->spv) return s->mod;
-    if (xo == 1u << 31) {   // DM_VK_SPV_ALT
+    if (xo >> 31) {   // DM_VK_SPV_ALT=n: each n reads the file once
         pthread_mutex_lock(&g_sh_mu); for (int i = 0; i < s->nvar; i++) if (s->var[i].um == 0 && s->var[i].im == 0 && s->var[i].xo == xo) { VkShaderModule m = s->var[i].mod; pthread_mutex_unlock(&g_sh_mu); return m; }
         VkShaderModule m = alt_module(s); if (s->nvar < 8) s->var[s->nvar++] = (typeof(s->var[0])){0, 0, xo, 0, m}; pthread_mutex_unlock(&g_sh_mu); return m; }
     xo &= ~(1u << 31);
@@ -431,6 +443,7 @@ static VkShaderModule vk_shader_module_(vkshader_t *s, uint64_t um, uint64_t im,
     return m;
 }
 // static buffers: Ryujinx's support buffer (render scales 1.0, nothing else set: as nvn_mtl.m support_buf) and 64 KB of zeros (unbound uniform slots, driver segments nobody reads)
+static void *g_support; static int g_support_gl;
 static VkBuffer static_buf(int which) {
     static VkBuffer b[2]; static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
     { VkBuffer r = __atomic_load_n(&b[which], __ATOMIC_ACQUIRE); if (r) return r; }   // made already: no lock (every draw binds them)
@@ -441,13 +454,21 @@ static VkBuffer static_buf(int which) {
         VkMemoryAllocateInfo ai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, req.size, vk_mem_type(req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 0)};
         VkDeviceMemory m; VKCHK(vkAllocateMemory(V.dev, &ai, NULL, &m)); VKCHK(vkBindBufferMemory(V.dev, nb, m, 0));
         void *p; VKCHK(vkMapMemory(V.dev, m, 0, VK_WHOLE_SIZE, 0, &p)); memset(p, 0, 65536);
-        if (which == 0) for (int i = 0; i < 73; i++) *(float *)((uint8_t *)p + 192 + 16 * i) = 1.0f;   // render_scale[i].x (SupportBuffer.cs layout)
+        if (which == 0) {   // SupportBuffer.cs layout: render_scale[i].x, and viewport_inverse.zw the vertex z scale (vk_support_depth)
+            for (int i = 0; i < 73; i++) *(float *)((uint8_t *)p + 192 + 16 * i) = 1.0f;
+            g_support = p; vk_support_depth(g_support_gl);
+        }
         __atomic_store_n(&b[which], nb, __ATOMIC_RELEASE);   // published once filled
     }
     pthread_mutex_unlock(&mu);
     return b[which];
 }
 VkBuffer vk_support_buffer(void) { return static_buf(0); }
+// NVN's GL depth mode (near = -w) where the device has no VK_EXT_depth_clip_control: the vertex stages map z from [-w, w] to [0, w] themselves, z' = (z + w) / 2
+void vk_support_depth(int gl_mode) {
+    g_support_gl = gl_mode; int em = gl_mode && !V.has_depth_clip_ctl;
+    if (g_support) { float *f = (float *)((uint8_t *)g_support + 152); f[0] = em ? 0.5f : 1.0f; f[1] = em ? 0.5f : 0.0f; }
+}
 VkBuffer vk_zero_buffer(void) { return static_buf(1); }
 // a shader's c1 constants: copied once into a buffer of their own (the bundle bytes do not change)
 void vk_shader_c1(vkshader_t *s, VkBuffer *buf, VkDeviceSize *off, VkDeviceSize *len) {

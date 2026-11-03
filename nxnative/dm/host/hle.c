@@ -22,9 +22,6 @@ uint64_t unimpl_c(unsigned idx, uint64_t *regs) {
     return 0;
 }
 
-// Per module, one cache of symbol number → resolved address
-static uint64_t g_cache[MAX_MOD][8192];
-
 uint64_t resolve_import(module_t *m, const char *name) {
     static const hle_ent *sec; static unsigned long secsz;
     if (!sec) sec = (const hle_ent *)getsectiondata(&_mh_execute_header, "__DATA", "swhle", &secsz);
@@ -85,7 +82,7 @@ uint64_t gate_dispatch(uint64_t ret_addr, uint64_t *regs) {
         if (g->ret == ret_addr) switch (g->kind) {
             case G_CNTPCT: case G_CNTVCT: {
                 guest_clock_read_wait();
-                uint64_t t = guest_ns() * 12 / 625;    // 19.2 MHz system counter; original instruction mrs xN, cntpct_el0, arg = N
+                uint64_t t = guest_ticks();    // system counter; original instruction mrs xN, cntpct_el0, arg = N
                 regs[g->arg] = t;
                 return t;
             }

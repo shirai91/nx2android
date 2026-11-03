@@ -184,5 +184,13 @@ namespace Ryujinx.Graphics.Shader.Decoders
         Vshl,
         Vshr,
         Xmad,
+
+        // Ampere only
+        Brev,
+        F2fp,
+        Frnd,
+        Fsel,
+        Iabs,
+        Sgxt,
     }
 }

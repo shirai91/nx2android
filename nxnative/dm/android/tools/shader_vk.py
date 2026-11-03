@@ -3,18 +3,19 @@
 # The same translator as the Apple chain (dm/gfx/tools/dmsh_xlate_bin, Ryujinx's translator with TargetApi.Vulkan) and the same jobs as dmsh_build.py
 # (control section / code area / c1 split, the VertexA + VertexB merge, the profile's answer table), but no MSL: Vulkan takes the SPIR-V as it is.
 # Geometry shaders are translated as Vulkan geometry shaders (the Apple chain emulates them in compute kernels).
-#   DM_GAME=<id> shader_vk.py <package dir> <out bundle> [--jobs N] [--keys k1,k2] [--xlate <dmsh_xlate.dll>] [--capture <dir>]
+#   DM_GAME=<id> shader_vk.py <package dir> <out bundle> [--jobs N] [--keys k1,k2] [--xlate <dmsh_xlate.dll>] [--capture <dir>] [--ndk <dir>]
+# --ndk: every module goes through the NDK's spirv-opt -O (Donkey Kong Bananza: 35% smaller, so less to read and for the driver to compile at pipeline creation)
 # --capture: shaders whose code no game file holds, saved on the device by the Vulkan backend (gfx_vk_shader.c vk_shader_missing: <key>.bin = "DMSC", u32 control length, u32 code length,
 #   control section, code area), translated beside the package's; a file whose content does not hash to its name, or whose key the package has, is left out
 # Bundle (read by the Vulkan backend, dm/android/gfx_vk_shader.c): "DMSV" u32 version, u32 count, then count entries {u64 key, u32 stage, u32 spv_off, u32 spv_len,
 #   u32 refl_off, u32 refl_len, u32 pad} sorted by key, then the blobs. refl is compact JSON: bindings, c1, local size, notes.
-import argparse, collections, concurrent.futures as cf, hashlib, json, os, re, struct, subprocess, sys, tempfile
+import argparse, collections, concurrent.futures as cf, json, os, re, struct, subprocess, sys, tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 TOOLS = HERE.parent.parent / 'gfx/tools'
 sys.path.insert(0, str(TOOLS))
-import dmsh_facts, dmsh_chain   # noqa: E402  (DM_GAME picks the profile)
+import dmsh_facts, dmsh_chain, shader_split   # noqa: E402  (DM_GAME picks the profile)
 
 ap = argparse.ArgumentParser()
 ap.add_argument('pkg'); ap.add_argument('out')
@@ -22,6 +23,7 @@ ap.add_argument('--jobs', type=int, default=os.cpu_count() or 8)
 ap.add_argument('--keys', default='')
 ap.add_argument('--dotnet', default=os.environ.get('DOTNET', 'dotnet'))
 ap.add_argument('--capture', help='a folder of shaders captured at run time on the device (<key>.bin)')
+ap.add_argument('--ndk', help='the Android NDK, whose spirv-opt optimizes the modules')
 ap.add_argument('--xlate', help="the translator (dmsh_xlate.dll) to run (default: the iOS chain's dm/gfx/tools/dmsh_xlate_bin; the porter builds one from the in-repo source)")
 a = ap.parse_args()
 
@@ -57,8 +59,9 @@ def captured(d):
         if len(b) < 12 or b[:4] != b'DMSC': print(f'[RED] capture {nm}: not a captured shader', flush=True); continue
         nctl, ncode = struct.unpack_from('<2I', b, 4); ctl, code = b[12:12 + nctl], b[12 + nctl:12 + nctl + ncode]
         if len(code) != ncode or len(ctl) != nctl or ctl[:4] != bytes.fromhex('34127698'): print(f'[RED] capture {nm}: truncated', flush=True); continue
-        if hashlib.sha256(ctl + code).hexdigest()[:16] != nm[:16]: print(f'[RED] capture {nm}: its content does not hash to its name', flush=True); continue
-        st = 'cs' if code[:4] == bytes.fromhex('79563412') else SPH_STAGE.get(struct.unpack_from('<I', code, 0x30)[0] >> 10 & 0xf) if code[:4] == bytes.fromhex('78563412') and len(code) > 0x80 else None
+        if shader_split.skey(ctl, code) != nm[:16]: print(f'[RED] capture {nm}: its content does not hash to its name', flush=True); continue
+        st = (shader_split.NVN2_STAGE.get(ctl[0x56]) if shader_split.nvn2(ctl) and len(ctl) > 0x56 else 'cs' if code[:4] == bytes.fromhex('79563412') else
+              SPH_STAGE.get(struct.unpack_from('<I', code, 0x30)[0] >> 10 & 0xf) if code[:4] == bytes.fromhex('78563412') and len(code) > 0x80 else None)
         if not st: print(f'[RED] capture {nm}: no stage in its code area header', flush=True); continue
         rec = bytearray(b'BTCDBTCD' + bytes(0x30)); struct.pack_into('<2I', rec, 0x28, len(ctl), len(code)); rec += code + ctl
         if rec.find(bytes.fromhex('34127698')) != 0x38 + len(code): print(f'[RED] capture {nm}: the control magic appears in its code area', flush=True); continue   # job_for splits there
@@ -101,19 +104,33 @@ def xfb_layout(key, ctl):
         out.append({'stride': strides[b], 'words': words})
     return out
 
+def nvn2_job(stage, code, ctl):
+    """An NVN2 (Switch 2) shader (shader_split.py nvn2): the instructions (a 0x80-byte SPH first in the graphics stages) are control +0x38 long, the c1 segment lies between
+    +0x40 and +0x44. A compute shader's c[0] layout (the translator's QueryAmpereComputeC0Layout): uniform buffer, storage buffer and texture handle counts (+0xb1..+0xb3),
+    its size (+0xba) and its push constant bytes (+0xa9, in words) → (code, c1, job keys)"""
+    n, c1a, c1e = struct.unpack_from('<I4xII', ctl, 0x38)
+    extra = {'arch': 'sm86'}
+    if stage == 'cs': extra['nvn2_cs'] = [ctl[0xb1], ctl[0xb2], ctl[0xb3], struct.unpack_from('<H', ctl, 0xba)[0], ctl[0xa9] * 4]
+    return code[:n], code[c1a:c1e], extra
+
 def job_for(key, stage, rec, w):   # dmsh_build.py job_for; transform feedback is captured natively (xfb_layout)
-    ci = rec.find(bytes.fromhex('34127698')); code = rec[0x38:ci]
-    c1o, c1t = struct.unpack_from('<2I', rec, ci + 0x700)
-    c1 = rec[0x38 + c1o:0x38 + c1t]
-    ab = vertex_ab(key, code, rec[ci:]) if stage == 'vs' else None
-    if ab: code, c1 = ab
-    if stage != 'cs': code = code[0x30:]
-    elif code[:4] == bytes.fromhex('79563412'): code = code[0x100:]
+    ci = rec.find(bytes.fromhex('34127698')); code = rec[0x38:ci]; ctl = rec[ci:]
+    xfb, extra = None, {}
+    if shader_split.nvn2(ctl): code, c1, extra = nvn2_job(stage, code, ctl)
+    else:
+        c1o, c1t = struct.unpack_from('<2I', ctl, 0x700)
+        c1 = rec[0x38 + c1o:0x38 + c1t]
+        ab = vertex_ab(key, code, ctl) if stage == 'vs' else None
+        if ab: code, c1 = ab
+        if stage != 'cs': code = code[0x30:]
+        elif code[:4] == bytes.fromhex('79563412'): code = code[0x100:]
+        xfb = xfb_layout(key, ctl) if stage == 'vs' else None
     cp = os.path.join(w, key + '.bin'); open(cp, 'wb').write(code)
-    xfb = xfb_layout(key, rec[ci:]) if stage == 'vs' else None
-    j = {'key': key, 'stage': stage, 'code': cp, 'tex': {}, 'img': {}, 'attr': {}, 'fout': {}, 'c1': c1.hex(), 'debug': False, 'reduced': True, 'sb_align': SB_ALIGN, 'subgroup': SUBGROUP, 'gather_bias': GATHER_BIAS, 'gs_passthrough': False, **({'xfb': xfb} if xfb else {})}
+    j = {'key': key, 'stage': stage, 'code': cp, 'tex': {}, 'img': {}, 'attr': {}, 'fout': {}, 'c1': c1.hex(), 'debug': False, 'reduced': True, 'sb_align': SB_ALIGN, 'subgroup': SUBGROUP, 'gather_bias': GATHER_BIAS, 'gs_passthrough': False, 'depth_runtime': True, 'physical_gmem': True,
+         **extra, **({'xfb': xfb} if xfb else {})}
     if key in FACTS: j.update(FACTS[key])
     else: j['no_facts'] = True
+    if stage == 'cs' and 'local' not in j: j['local'], j['shared'] = shader_split.cs_layout(ctl)   # a run-time capture has no facts: its control section holds them
     return j, c1
 
 # ---- SPIR-V reflection: descriptor bindings with the translator's names, decoded as dmsh_build.py reflect decodes the MSL names ----
@@ -179,9 +196,46 @@ def spirv_bindings(spv):
         if k == 'u': io[sc][2] |= 1 << loc
     return out, local, io
 
+OP_TYPE_INT, OP_TYPE_VECTOR, OP_FUNCTION, OP_LOAD, OP_STORE, OP_ACCESS_CHAIN, OP_IN_BOUNDS_ACCESS_CHAIN, OP_COMPOSITE_EXTRACT, OP_BITCAST = 21, 23, 54, 61, 62, 65, 66, 81, 124
+DEC_BUILTIN, DEC_LOCATION, SC_INPUT, SC_FUNCTION = 11, 30, 1, 7
+def int_inputs(spv):
+    """A vertex shader's inputs it only uses as integers (every load bit-cast to an integer, or copied as is) → {location: 'uint'} (dmsh_build.py int_inputs on the SPIR-V).
+    The hardware puts an integer format's bits (bone indices RGBA8UI etc.) in the register as they are; under the translator's float declaration Vulkan leaves an integer
+    format's value undefined (MoltenVK refuses the pipeline), so these are translated again as uint inputs, and the replay gives them the integer format"""
+    w = struct.unpack(f'<{len(spv) // 4}I', spv)
+    ins, fvar, ints, loc, builtin, body, i = set(), set(), set(), {}, set(), [], 5
+    while i < len(w):
+        n, op = w[i] >> 16, w[i] & 0xffff; x = w[i:i + n]
+        if op == OP_DECORATE and x[2] == DEC_LOCATION: loc[x[1]] = x[3]
+        elif op == OP_DECORATE and x[2] == DEC_BUILTIN: builtin.add(x[1])
+        elif op == OP_TYPE_INT or op == OP_TYPE_VECTOR and x[2] in ints: ints.add(x[1])
+        elif op == OP_VARIABLE and x[3] in (SC_INPUT, SC_FUNCTION): (ins if x[3] == SC_INPUT else fvar).add(x[2])
+        if op == OP_FUNCTION or body: body.append(x)
+        i += n
+    chains = (OP_ACCESS_CHAIN, OP_IN_BOUNDS_ACCESS_CHAIN)
+    base = {v: v for v in ins if v in loc and v not in builtin}   # pointer id → its input variable
+    vals, held = {}, {}   # loaded value id → its input variable; function variable (the translator's registers) → the input it holds, -1 if anything else too
+    for _ in range(2):    # twice: a register stored after the code that loads it (a loop) is seen
+        for x in body:
+            op = x[0] & 0xffff
+            if op in chains and x[3] in base: base[x[2]] = base[x[3]]
+            elif op == OP_LOAD and (x[3] in base or held.get(x[3], -1) != -1): vals[x[2]] = base.get(x[3]) or held[x[3]]
+            elif op == OP_COMPOSITE_EXTRACT and x[3] in vals: vals[x[2]] = vals[x[3]]
+            elif op == OP_STORE and x[1] in fvar: v = vals.get(x[2], -1); held[x[1]] = v if held.get(x[1], v) == v else -1
+    good, bad = set(), set()
+    for x in body:
+        op = x[0] & 0xffff
+        if op in (OP_LOAD, OP_COMPOSITE_EXTRACT) and x[2] in vals or op in chains: continue   # the loads themselves
+        for k, v in enumerate(x[1:], 1):
+            if v not in vals: continue
+            if op == OP_BITCAST and k == 3 and x[1] in ints: good.add(vals[v])
+            elif not (op == OP_STORE and k == 2 and held.get(x[1]) != -1): bad.add(vals[v])   # anything but a store as is (output, or a register holding only this input)
+    return {str(loc[v]): 'uint' for v in good - bad}
+
 # Handle decoding: as dmsh_build.py decode_tex / decode_ubo_tex / reflect (names: <stage>_t<type>_cb<slot>_<handle>, <stage>_c<n>, <stage>_s<n>, <stage>_i…)
 TEX_BASE, IMG_BASE, IMG_SLOTS, SEPTEX_BASE, SEPTEX_SLOT0, SAMP_BASE = 0x20, 0x120, 8, 0x168, 128, 0x568
-SSBO = {'vs': 0x110, 'cs': 0x310, 'ps': 0x510}
+GMEM_SLOT = 31   # the host's memory pool table, which global accesses through loaded pointers search (GlobalToStorage.cs PhysicalTableCbSlot)
+SSBO = {'vs': 0x110, 'hs': 0x210, 'ds': 0x310, 'gs': 0x410, 'ps': 0x510, 'cs': 0x310}   # each stage's storage buffer table in c[0] (graphics: 0x110 + 0x100 x the hardware stage)
 def classify(stage, b, res):
     nm = b['name']; e = dict(b)
     m = re.fullmatch(r'[a-z]+_c(\d+)', nm)
@@ -195,6 +249,7 @@ def classify(stage, b, res):
         s = sb[idx] if idx < len(sb) else None; off = s['cb_offset'] * 4 if s and s['cb_slot'] == 0 else None; base = SSBO.get(stage)
         e.update(kind='sbuf', rw=bool(s and s['flags'] & 2))
         if stage == 'cs' and off is not None and 0x210 <= off < 0x310 and (off - 0x210) % 16 == 0: e.update(kind='ubo_ptr', reg=(off - 0x210) // 16)
+        elif s and s['cb_slot'] == GMEM_SLOT: e.update(kind='gmem')
         elif s and s['cb_slot'] >= 3: e.update(kind='sbuf_ubo', reg=s['cb_slot'] - 3, off=s['cb_offset'] * 4)
         else: e['reg'] = (off - base) // 16 if off is not None and base is not None and 0 <= off - base < 0x100 and (off - base) % 16 == 0 else None
         return e
@@ -236,7 +291,7 @@ def classify(stage, b, res):
 # binding: u8 kind, u8 desc (descriptor type), u8 dim (SPIR-V Dim, 0xff none), u8 flags (1 arrayed, 2 multisampled, 4 written), u16 binding, u16 count,
 #          i16 reg, u8 samp (sampler source), u8 fmt (SPIR-V image format), i32 off, i32 samp_arg
 KIND = {'support': 0, 'cbuf': 1, 'c1': 2, 'drvcb': 3, 'sbuf': 4, 'ubo_ptr': 5, 'sbuf_ubo': 6, 'tex': 7, 'tbuf': 8, 'img': 9, 'img_tbuf': 10, 'tex_c2a': 11,
-        'tex_ubo': 12, 'tbuf_ubo': 13, 'img_ubo': 14, '?': 255}
+        'tex_ubo': 12, 'tbuf_ubo': 13, 'img_ubo': 14, 'gmem': 15, '?': 255}
 DESC = {'ubo': 0, 'ssbo': 1, 'sampled': 2, 'storage': 3, 'tbuf': 4, 'storage_tbuf': 5, 'image': 6, 'sampler': 7, '?': 255}
 SAMP_NONE, SAMP_TEX, SAMP_SLOT, SAMP_ID, SAMP_UBO = 0, 1, 2, 3, 4
 kinds_all = collections.Counter()
@@ -281,6 +336,21 @@ def main():
         return subprocess.run([a.dotnet, XLATE_DLL, jp, w], capture_output=True, text=True, errors='replace')
     print(f'translating {len(keys)} shaders in {len(chunks)} batches ...', flush=True)
     with cf.ThreadPoolExecutor(len(chunks)) as ex: rs = list(ex.map(xl, chunks))
+    again = {}
+    for k in keys:
+        p = os.path.join(w, k + '.spv')
+        if stages[k] == 'vs' and os.path.exists(p) and (ii := int_inputs(open(p, 'rb').read())): jobs[k]['attr'] = ii; again[k] = 1
+    if again:
+        print(f'translating {len(again)} vertex shaders again with integer inputs ...', flush=True)
+        with cf.ThreadPoolExecutor(len(chunks)) as ex: rs += list(ex.map(xl, [c for c in ([k for k in ch if k in again] for ch in chunks) if c]))
+    if a.ndk:
+        opt = str(next(Path(a.ndk).glob('shader-tools/*/spirv-opt*')))   # (an NDK holds one host's tools)
+        print(f'optimizing {len(keys)} modules ...', flush=True)
+        def optimize(k):   # in place; a module spirv-opt refuses stays as translated
+            p = os.path.join(w, k + '.spv')
+            return os.path.exists(p) and subprocess.run([opt, '-O', '--skip-validation', p, '-o', p], capture_output=True).returncode != 0
+        with cf.ThreadPoolExecutor(a.jobs) as ex: refused = sum(ex.map(optimize, keys))
+        if refused: print(f'[RED] spirv-opt refused {refused} modules: kept as translated', flush=True)
     errs = collections.Counter()
     for r in rs:
         for ln in r.stderr.splitlines():

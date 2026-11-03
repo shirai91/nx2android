@@ -18,6 +18,7 @@ namespace Ryujinx.Graphics.Shader.IntermediateRepresentation
         GlobalMemoryS16, // TODO: Remove this and store type as a field on the Operation class itself.
         GlobalMemoryU8, // TODO: Remove this and store type as a field on the Operation class itself.
         GlobalMemoryU16, // TODO: Remove this and store type as a field on the Operation class itself.
+        PhysicalMemory, // 32-bit words at a host device address (lo, hi): global memory reached through a pointer the shader loaded
     }
 
     static class StorageKindExtensions

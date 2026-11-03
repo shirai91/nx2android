@@ -177,7 +177,7 @@ static int read_request(const char *file, char *first, int fcap, char *req, int 
     char p[640], line[256]; snprintf(p, sizeof p, "%s/%s", g_dir, file);
     FILE *f = fopen(p, "r"); if (!f) return 0;
     first[0] = 0; snprintf(req, (size_t)rcap, "-"); *quit = 0;
-    for (int i = 0; fgets(line, sizeof line, f); i++) {
+    while (fgets(line, sizeof line, f)) {
         char *e = line + strlen(line); while (e > line && (e[-1] == '\n' || e[-1] == '\r' || e[-1] == ' ')) *--e = 0;
         if (!strncmp(line, "request=", 8)) snprintf(req, (size_t)rcap, "%s", line + 8);
         else if (!strcmp(line, "quit")) *quit = 1;

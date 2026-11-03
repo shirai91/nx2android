@@ -215,6 +215,11 @@ namespace Ryujinx.Graphics.Shader.Translation
             _operations.Add(operation);
         }
 
+        // The Ampere frontend redirects an instruction's results after emitting it (InstEmitAmpere.cs)
+        public Operation GetOperation(int index) => _operations[index];
+
+        public void InsertOperation(int index, Operation operation) => _operations.Insert(index, operation);
+
         public void MarkLabel(Operand label)
         {
             Add(Instruction.MarkLabel, label);
@@ -318,7 +323,17 @@ namespace Ryujinx.Graphics.Shader.Translation
                 this.Store(StorageKind.Output, IoVariable.Position, null, Const(1), this.FPFusedMultiplyAdd(y, yScale, negativeOne));
             }
 
-            if (TranslatorContext.Definitions.DepthMode && !TranslatorContext.GpuAccessor.QueryHostSupportsDepthClipControl())
+            if (TranslatorContext.GpuAccessor.QueryRuntimeDepthMode())
+            {
+                // z' = z s + w o, (s, o) from the support buffer: (1, 0) as it is, (0.5, 0.5) for the GL convention on a host without depth clip control
+                Operand z = this.Load(StorageKind.Output, IoVariable.Position, null, Const(2));
+                Operand w = this.Load(StorageKind.Output, IoVariable.Position, null, Const(3));
+                Operand s = this.Load(StorageKind.ConstantBuffer, SupportBuffer.Binding, Const((int)SupportBufferField.ViewportInverse), Const(2));
+                Operand o = this.Load(StorageKind.ConstantBuffer, SupportBuffer.Binding, Const((int)SupportBufferField.ViewportInverse), Const(3));
+
+                this.Store(StorageKind.Output, IoVariable.Position, null, Const(2), this.FPFusedMultiplyAdd(z, s, this.FPMultiply(w, o)));
+            }
+            else if (TranslatorContext.Definitions.DepthMode && !TranslatorContext.GpuAccessor.QueryHostSupportsDepthClipControl())
             {
                 Operand z = this.Load(StorageKind.Output, IoVariable.Position, null, Const(2));
                 Operand w = this.Load(StorageKind.Output, IoVariable.Position, null, Const(3));
@@ -343,7 +358,7 @@ namespace Ryujinx.Graphics.Shader.Translation
                 oldYLocal = null;
             }
 
-            if (TranslatorContext.Definitions.DepthMode && !TranslatorContext.GpuAccessor.QueryHostSupportsDepthClipControl())
+            if (TranslatorContext.GpuAccessor.QueryRuntimeDepthMode() || (TranslatorContext.Definitions.DepthMode && !TranslatorContext.GpuAccessor.QueryHostSupportsDepthClipControl()))
             {
                 oldZLocal = Local();
                 this.Copy(oldZLocal, this.Load(StorageKind.Output, IoVariable.Position, null, Const(2)));

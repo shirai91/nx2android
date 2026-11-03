@@ -303,7 +303,6 @@ static int host_path_ex(const char *p, char *out, size_t n, int *ro, int create)
     }
     errno = ENOENT; return 0;
 }
-static int host_path(const char *p, char *out, size_t n, int *ro) { return host_path_ex(p, out, n, ro, 0); }
 static int set_guest_name(const char *hp, const char *path) {
     const char *end = path + strlen(path); while (end > path && end[-1] == '/') end--;
     const char *start = end; while (start > path && start[-1] != '/' && start[-1] != ':') start--;

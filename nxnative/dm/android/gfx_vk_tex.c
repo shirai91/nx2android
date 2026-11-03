@@ -112,13 +112,11 @@ const vkfmt_t *vk_fmt(int f) {
         if (e.vk) {
             int bw, bh; o->bpb = (uint8_t)nvn_fmt_bpb(f, &bw, &bh); o->bw = (uint8_t)bw; o->bh = (uint8_t)bh;
             o->vk = (VkFormat)(e.vk == (uint16_t)VK_FORMAT_A1B5G5R5_UNORM_PACK16_KHR ? VK_FORMAT_A1B5G5R5_UNORM_PACK16_KHR : e.vk);
-            if (f == 0x33) {   // DEPTH24: X8_D24 where the device renders to it, else D32
-                VkFormatProperties fp; vkGetPhysicalDeviceFormatProperties(V.pd, VK_FORMAT_X8_D24_UNORM_PACK32, &fp);
-                if (!(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)) o->vk = VK_FORMAT_D32_SFLOAT;
+            if (f == 0x33 || f == 0x35) {   // DEPTH24 (X8_D24) and DEPTH24_STENCIL8 where the device renders to them, else D32 (with S8): Mali and the Android emulator have no D24S8
+                if (!(vk_fmt_features(o->vk) & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)) o->vk = f == 0x33 ? VK_FORMAT_D32_SFLOAT : VK_FORMAT_D32_SFLOAT_S8_UINT;
             }
             if (f == 0x31) {   // STENCIL8 alone: a combined format where the device has no S8 attachments
-                VkFormatProperties fp; vkGetPhysicalDeviceFormatProperties(V.pd, VK_FORMAT_S8_UINT, &fp);
-                if (!(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)) o->vk = VK_FORMAT_D24_UNORM_S8_UINT;
+                if (!(vk_fmt_features(VK_FORMAT_S8_UINT) & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)) o->vk = VK_FORMAT_D24_UNORM_S8_UINT;
             }
             o->depth = f >= 0x32 && f <= 0x36; o->stencil = f == 0x31 || f == 0x35 || f == 0x36 || (f == 0x31);
             o->compressed = o->bw > 1 || o->bh > 1;
@@ -174,8 +172,10 @@ static VkFormat srgb_twin(VkFormat f) {
 // default (3): Super Mario Bros. Wonder's world map on the Adreno 830 took 8.7-8.9 ms of GPU a frame instead of 11.8, the same picture (1 alone: 9.5-10.0 ms).
 // Xenoblade Chronicles 3's field took 22.9-23.0 ms against 23.0-23.6 (its own shading dominates), with clouds in every frame of a sky turn and no idle flicker;
 // Graveyard Keeper 2, Advance Wars and DKCR drew the same pictures. A colour view in another format than the image's and its twin is logged [RED] (vk_tex_view):
-// such a game wants DM_VK_UBWC=2 in its profile
-static int ubwc_mode(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_VK_UBWC"); v = e ? atoi(e) : 3; } return v; }
+// such a game wants DM_VK_UBWC=2 in its profile. On Apple GPUs (MoltenVK, the Android emulator on a Mac) the default is 2: a colour image made without
+// MUTABLE_FORMAT keeps Metal's lossless compression, and a compute shader read it as one value a compression tile. Donkey Kong Bananza's upscaler network
+// read its 960x540 input in 8x8 blocks, and its whole picture came out blocky
+static int ubwc_mode(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_VK_UBWC"); v = e ? atoi(e) : V.props.vendorID == 0x106b ? 2 : 3; } return v; }
 static vkimg_t *img_new(const tex_t *t, const vkfmt_t *f) {
     vkimg_t *im = calloc(1, sizeof *im);
     const nvn_texdesc *d = &t->d;
@@ -183,15 +183,15 @@ static vkimg_t *img_new(const tex_t *t, const vkfmt_t *f) {
     im->d = d->target == 2 ? (d->depth ? d->depth : 1) : 1; im->layers = layers_of(d);
     im->levels = d->levels ? d->levels : 1; im->samples = d->samples > 1 ? d->samples : 1; im->target = d->target; im->nvn_format = d->format;
     im->fmt = f->vk; im->vtype = vtype_of(d->target); im->aspect = aspect_of(f);
-    VkFormatProperties fp; vkGetPhysicalDeviceFormatProperties(V.pd, f->vk, &fp);
+    VkFormatFeatureFlags ff = vk_fmt_features(f->vk);
     VkImageUsageFlags u = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-    if (fp.optimalTilingFeatures & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT) u |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-    if (fp.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) u |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
-    if ((d->flags & NVN_TEXTURE_FLAGS_IMAGE) && (fp.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)) u |= VK_IMAGE_USAGE_STORAGE_BIT;
+    if (ff & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT) u |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    if (ff & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) u |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    if ((d->flags & NVN_TEXTURE_FLAGS_IMAGE) && (ff & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)) u |= VK_IMAGE_USAGE_STORAGE_BIT;
     // a block-compressed texture can be drawn into through a view in the uncompressed format of its block size (Mario Kart 8 Deluxe writes BC3 blocks into its
     // reflection cubemaps through RGBA32UI views): with EXTENDED_USAGE the image may carry a usage its own format lacks, and an attachment view needs it on the image
-    if (f->compressed && !f->dec && (f->bpb == 16 || f->bpb == 8)) { VkFormatProperties up; vkGetPhysicalDeviceFormatProperties(V.pd, f->bpb == 16 ? VK_FORMAT_R32G32B32A32_UINT : VK_FORMAT_R32G32_UINT, &up);
-        if (up.optimalTilingFeatures & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT) u |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT; }
+    if (f->compressed && !f->dec && (f->bpb == 16 || f->bpb == 8) && (vk_fmt_features(f->bpb == 16 ? VK_FORMAT_R32G32B32A32_UINT : VK_FORMAT_R32G32_UINT) & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT))
+        u |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     VkImageCreateInfo ci = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, NULL,
         // a square 2D array of 6n layers too: shaders read one as a cube (Pokémon Legends: Arceus's reflection probes; the view was refused by the validation layer without the flag)
         VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT | VK_IMAGE_CREATE_EXTENDED_USAGE_BIT | (d->target == 8 || d->target == 9 || (d->target == 4 && im->layers >= 6 && im->layers % 6 == 0 && im->w == im->h && im->samples <= 1) ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0) |
@@ -204,11 +204,17 @@ static vkimg_t *img_new(const tex_t *t, const vkfmt_t *f) {
         im->fixed_fmt = 1; im->fmt2 = fl[1]; ci.pNext = &fli;
         ci.flags &= ~(VkImageCreateFlags)VK_IMAGE_CREATE_EXTENDED_USAGE_BIT; if (!fl[1]) ci.flags &= ~(VkImageCreateFlags)VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
     }
-    im->usage = ci.usage; im->cflags = ci.flags;
     VkResult r = vkCreateImage(V.dev, &ci, NULL, &im->img);
     if (r && f->compressed && (ci.usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)) {   // the driver refused the attachment usage on a compressed image: as before, without it
         VKRED_ONCE(96, "compressed image format %#x refused colour-attachment usage (%d): created without it", d->format, r);
-        ci.usage &= ~(VkImageUsageFlags)VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT; im->usage = ci.usage; r = vkCreateImage(V.dev, &ci, NULL, &im->img); }
+        ci.usage &= ~(VkImageUsageFlags)VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT; r = vkCreateImage(V.dev, &ci, NULL, &im->img); }
+    if (r && (ci.flags & (VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT | VK_IMAGE_CREATE_EXTENDED_USAGE_BIT | VK_IMAGE_CREATE_BLOCK_TEXEL_VIEW_COMPATIBLE_BIT))) {
+        // a format the device cannot reinterpret (the Android emulator's BC7): an image of its own format alone, viewed only as that format
+        ci.flags &= ~(VkImageCreateFlags)(VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT | VK_IMAGE_CREATE_EXTENDED_USAGE_BIT | VK_IMAGE_CREATE_BLOCK_TEXEL_VIEW_COMPATIBLE_BIT);
+        ci.pNext = NULL; im->fixed_fmt = 1; im->fmt2 = VK_FORMAT_UNDEFINED;
+        r = vkCreateImage(V.dev, &ci, NULL, &im->img);
+    }
+    im->usage = ci.usage; im->cflags = ci.flags;
     if (r) { VKRED_ONCE(10, "vkCreateImage failed (%d): %ux%ux%u format %#x (vk %d) target %d levels %u layers %u samples %u", r, im->w, im->h, im->d, d->format, f->vk, d->target, im->levels, im->layers, im->samples); free(im); return NULL; }
     VkMemoryRequirements req; vkGetImageMemoryRequirements(V.dev, im->img, &req);
     if ((ci.usage & (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT)) && im->w >= 256) { static int n; if (n++ < 16)   // UBWC check: a compressed target takes room for its metadata
@@ -517,10 +523,10 @@ VkImageView vk_tex_view(const tex_t *t, const view_t *vw, int dim, int arrayed, 
     for (vview *v = head; v; v = v->next)
         if (v->type == type && v->fmt == fmt && v->lv0 == lv0 && v->nlv == nlv && v->ly0 == ly0 && v->nly == nly && v->aspect == aspect && v->attach == (as_attachment != 0) && !memcmp(&v->swz, &swz, sizeof swz)) { pthread_mutex_unlock(&g_view_mu); vk_view_fmt = fmt; vk_view_layers = nly; return v->v; }
     VkImageViewUsageCreateInfo uci = {VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO, NULL, 0};
-    VkFormatProperties fp; vkGetPhysicalDeviceFormatProperties(V.pd, fmt, &fp);
+    VkFormatFeatureFlags ff = vk_fmt_features(fmt);
     uci.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-    if (as_attachment) uci.usage = (fp.optimalTilingFeatures & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT ? VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT : 0) | (fp.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT : 0);
-    else if ((t->d.flags & NVN_TEXTURE_FLAGS_IMAGE) && (fp.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)) uci.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+    if (as_attachment) uci.usage = (ff & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT ? VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT : 0) | (ff & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT : 0);
+    else if ((t->d.flags & NVN_TEXTURE_FLAGS_IMAGE) && (ff & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)) uci.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
     VkImageViewCreateInfo ci = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, &uci, 0, im->img, type, fmt, swz, {aspect, lv0, nlv, ly0, nly}};
     VkImageView view; VkResult r = vkCreateImageView(V.dev, &ci, NULL, &view);
     if (r) { pthread_mutex_unlock(&g_view_mu); VKRED_ONCE(15, "vkCreateImageView failed (%d): type %d format %d levels %u+%u layers %u+%u of image %ux%ux%u", r, type, fmt, lv0, nlv, ly0, nly, im->w, im->h, im->layers); return VK_NULL_HANDLE; }
