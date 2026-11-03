@@ -650,7 +650,9 @@ static void slot_recycle(vksub_t *s) {   // the GPU has passed this slot's last 
     if (s->ndf) __atomic_fetch_add(&g_obj_gen, 1, __ATOMIC_RELAXED);
     s->ndf = 0;
     for (int i = 0; i < s->nblk; i++) s->blk[i].used = 0;
-    for (int i = 0; i < s->dps.ndp; i++) vkResetDescriptorPool(V.dev, s->dps.dp[i], 0);
+    // only the pools sets were taken from since the last reset (counted is -1 until one is): through gfxstream each reset is a round trip to the host, and most
+    // submissions take no set of their own now (the set cache's are kept), so resetting every pool of the slot was ~1 ms of Donkey Kong Bananza's frame
+    if (s->dps.counted >= 0) for (int i = 0; i <= s->dps.cur && i < s->dps.ndp; i++) vkResetDescriptorPool(V.dev, s->dps.dp[i], 0);
     s->dps.cur = 0; s->dps.counted = -1;
     // The pool is not reset: each command buffer is reset as it is begun again (the pool allows it). A reset of the transient pool made Adreno's driver free the
     // command memory and map it again as the next submission grew (ioctl, mmap and munmap): in Xenoblade Chronicles 3's battles the submission's start took 21%
