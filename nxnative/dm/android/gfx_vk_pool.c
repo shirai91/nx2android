@@ -16,7 +16,7 @@
 static vkpool_t g_pool[MAXPOOL]; static int g_npool;
 static pthread_rwlock_t g_pool_mu = PTHREAD_RWLOCK_INITIALIZER;
 static int g_ncopied;   // pools with a GPU copy (shadow)
-enum { SYNC_SHIFT = 16, SYNC_BLK = 1 << SYNC_SHIFT };   // a copied pool's incremental sync works in blocks of this size
+enum { SYNC_SHIFT = 14, SYNC_BLK = 1 << SYNC_SHIFT };   // a copied pool's incremental sync works in blocks of this size
 // A sequence lock over g_pool for vk_pool_of, which takes no lock: odd while a writer (under the write lock) changes the pools, bumped twice per change
 static uint32_t g_pool_gen;
 static void pool_change(void) { __atomic_fetch_add(&g_pool_gen, 1, __ATOMIC_RELEASE); __atomic_thread_fence(__ATOMIC_SEQ_CST); }
@@ -218,7 +218,8 @@ void mtl_alias_drop_pool(const void *pool) { void vk_tex_drop_pool(const void *)
 // Copied pools: the guest's bytes into the GPU copy, before each submission. The first sync copies the whole pool and protects it; later ones copy only the blocks
 // the CPU wrote since the last sync: a write faults on the protected page, which marks its block (nvn_dirty_blocks), and a block is protected again before it is
 // copied, so a write during the copy is caught by the next sync. Looking at every block's page generations instead was ~6% of Donkey Kong Bananza's replay thread
-// on the Android emulator (1.5 GB of copied pools, 24,000 blocks a sync); DM_VK_AB & AB_POOL_SCAN looks at them so again, judged against the sync before the last.
+// on the Android emulator (1.5 GB of copied pools, 24,000 64 KB blocks a sync); DM_VK_AB & AB_POOL_SCAN looks at them so again, judged against the sync before the last.
+// Blocks of 16 KB: the mining tunnel's syncs copied 10.2 MB a submission, against 16.6 MB in 64 KB blocks, with as many write faults (23 and 28) in the same time
 // An 860 MB pool copied whole at every submission (Unicorn Overlord on a Legion Y700 2023) ran at a few frames a second.
 // A block written twice within 16 syncs (DM_VK_HOT_SYNCS) turns hot: it stays writable and is copied at every sync, and is protected again once in 256 syncs to see
 // whether it cooled. The game's per-frame data otherwise took a write-protection fault and an mprotect per block and sync (Donkey Kong Bananza: ~1,000 mprotects a
@@ -238,7 +239,7 @@ static void pool_sync(vkpool_t *p, const vk_gwrite *gw, int ngw) {
     uint64_t w0 = (p->lo - p->base) >> SYNC_SHIFT >> 6;   // the pool's first word in its range's block marks (chunks start at multiples of ZC_CHUNK)
     if (!p->span && (p->span = nvn_dirty_span(lo, size))) { p->synced = 0; p->blocks = !nvn_dirty_blocks(p->span, SYNC_SHIFT); }   // tracked only now (nvnMemoryPoolInitialize registers the range after the pool): copied whole once more
     if (!p->synced || !p->span) {   // untracked: every sync copies all of it
-        if (p->span) { for (uint64_t w = 0; w < nw; w++) nvn_dirty_blocks_take(p->span, w0 + w); nvn_dirty_protect(lo, size); }   // (marks taken before the protection: a later write marks again)
+        if (p->span) { for (uint64_t w = 0; w < nw; w++) nvn_dirty_blocks_take(p->span, w0 + w); nvn_dirty_protect_span(p->span, lo, size); }   // (marks taken before the protection: a later write marks again)
         uint64_t f = gw_fence(gw, ngw, p->lo, p->hi); if (f) mtl_wait(f, ~0ull);
         memcpy(p->shadow, lo, size); g_sync_bytes += size; g_sync_full++; p->synced = 1; p->stamp0 = p->stamp = st; return; }
     int scan = !p->blocks || (g_vk_ab & AB_POOL_SCAN);
@@ -256,7 +257,7 @@ static void pool_sync(vkpool_t *p, const vk_gwrite *gw, int ngw) {
             else if (!hot) hot = !f && fresh && prev && p->nsync - prev < (uint64_t)g_vk_hot_syncs;
             else hot = (p->nsync & 255) != (b & 255);
             p->hot[w] = hot ? p->hot[w] | bit : p->hot[w] & ~bit;
-            if (!hot) nvn_dirty_protect(lo + off, n); else g_sync_hot += n;
+            if (!hot) nvn_dirty_protect_span(p->span, lo + off, n); else g_sync_hot += n;
             if (!f) { memcpy(p->shadow + off, lo + off, n); g_sync_bytes += n; continue; }
             for (uint64_t q = off; q < off + n; q += pgsz) if (nvn_dirty_since_span(p->span, lo + q, pgsz, p->stamp0)) { memcpy(p->shadow + q, lo + q, pgsz); g_sync_bytes += pgsz; }
         }

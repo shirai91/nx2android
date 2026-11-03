@@ -254,9 +254,13 @@ int nvn_dirty_tracked(const void *addr, size_t len) {
 // The tracked range holding [addr, addr+len), as a handle a caller keeps (packaged textures: the scan over every range ran twice per texture lookup). NULL = untracked
 const void *nvn_dirty_span(const void *addr, size_t len) { return len ? find_span((uintptr_t)addr, len) : NULL; }
 // Set read-only: mark the pages BUSY first and mark them PROT only after mprotect has landed (for the order and the invariant see the state notes at the top of the file)
-void nvn_dirty_protect(const void *addr, size_t len) {
-    range_t *r = len ? find_span((uintptr_t)addr, len) : NULL;
-    if (!r) return;
+static void protect_in(range_t *r, const void *addr, size_t len);
+void nvn_dirty_protect(const void *addr, size_t len) { range_t *r = len ? find_span((uintptr_t)addr, len) : NULL; if (r) protect_in(r, addr, len); }
+void nvn_dirty_protect_span(const void *span, const void *addr, size_t len) {   // through a kept handle, as nvn_dirty_since_span
+    range_t *r = (range_t *)span; uintptr_t a = (uintptr_t)addr;
+    if (!r || !atomic_load_explicit(&r->live, memory_order_acquire) || a < r->base || a + len > r->end) nvn_dirty_protect(addr, len); else if (len) protect_in(r, addr, len);
+}
+static void protect_in(range_t *r, const void *addr, size_t len) {
     uintptr_t a = (uintptr_t)addr, p = (a - r->base) >> g_shift, q = (a + len - 1 - r->base) >> g_shift;
     // Consecutive pages are merged into one mprotect (per-page calls reach thousands per frame on the first upload of large textures; character select page startup frame 5: 4888 calls).
     // Pages already PROT / BUSY break the consecutive run: do not protect again, and do not touch pages another thread is changing
