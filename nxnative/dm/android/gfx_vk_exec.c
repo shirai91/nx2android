@@ -1510,14 +1510,19 @@ static int prepare_draw(int prim, int indexed) {
         if (fresh || g_bc.lay != layout || g_bc.nsets != (uint32_t)nsets || g_bc.ndofs != ndofs || memcmp(g_bc.sets, sets, sizeof *sets * (size_t)nsets) || memcmp(g_bc.dofs, dall, sizeof *dall * ndofs)) {
             vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, (uint32_t)nsets, sets, ndofs, dall);
             g_bc.lay = layout; g_bc.nsets = (uint32_t)nsets; g_bc.ndofs = ndofs; memcpy(g_bc.sets, sets, sizeof *sets * (size_t)nsets); memcpy(g_bc.dofs, dall, sizeof *dall * ndofs); } }
-    // vertex buffers
+    // vertex buffers: the changed ones, a call per run of consecutive bindings
+    VkBuffer vb[17]; VkDeviceSize vo[17]; uint32_t vfirst = 0, vn = 0;
     for (uint32_t i = 0; i < k.nbind; i++) {
         uint32_t b = k.bind[i].binding; VkBuffer buf; VkDeviceSize off;
         if (b == 16) { buf = vk_zero_buffer(); off = 0; }
         else if (!vk_buf_at(S.vbuf[b].address, 1, &buf, &off)) { buf = vk_zero_buffer(); off = 0; VKRED_ONCE(51, "vertex buffer outside the memory pools"); }
         if (g_var_now == 5) { buf = vk_zero_buffer(); off = 0; }
-        if (!(dbg_draw() & 2) && b < 17) { int fresh = bc_fresh(); if (fresh || g_bc.vb[b] != buf || g_bc.vo[b] != off) { vkCmdBindVertexBuffers(cb, b, 1, &buf, &off); g_bc.vb[b] = buf; g_bc.vo[b] = off; } }
+        if (!(dbg_draw() & 2) && b < 17 && (bc_fresh() || g_bc.vb[b] != buf || g_bc.vo[b] != off)) {
+            if (vn && vfirst + vn != b) { vkCmdBindVertexBuffers(cb, vfirst, vn, vb, vo); vn = 0; }
+            if (!vn) vfirst = b;
+            vb[vn] = buf; vo[vn++] = off; g_bc.vb[b] = buf; g_bc.vo[b] = off; }
     }
+    if (vn) vkCmdBindVertexBuffers(cb, vfirst, vn, vb, vo);
     (void)indexed;
     return 1;
 }
