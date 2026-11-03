@@ -24,12 +24,13 @@ uint32_t vk_mem_type(uint32_t bits, VkMemoryPropertyFlags want, VkMemoryProperty
 }
 
 // A format's optimal-tiling features, asked of the driver once: on the Android emulator each query is a round trip to the host (two per texture blit took a tenth of
-// Donkey Kong Bananza's replay). Entries are published by the count; a race asks twice and keeps one answer
+// Donkey Kong Bananza's replay). Kept by core format, with bit 31 (no feature's) for "asked"; a race asks twice. The few extension formats are asked each time
 VkFormatFeatureFlags vk_fmt_features(VkFormat f) {
-    static struct { VkFormat f; VkFormatFeatureFlags v; } t[128]; static _Atomic int n; static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
-    for (int i = 0, m = atomic_load_explicit(&n, memory_order_acquire); i < m; i++) if (t[i].f == f) return t[i].v;
+    static _Atomic uint32_t t[VK_FORMAT_ASTC_12x12_SRGB_BLOCK + 1];
+    uint32_t v = (uint32_t)f < sizeof t / sizeof *t ? atomic_load_explicit(&t[f], memory_order_relaxed) : 0;
+    if (v) return v & ~(1u << 31);
     VkFormatProperties fp; vkGetPhysicalDeviceFormatProperties(V.pd, f, &fp);
-    pthread_mutex_lock(&mu); int m = atomic_load_explicit(&n, memory_order_relaxed); if (m < 128) { t[m].f = f; t[m].v = fp.optimalTilingFeatures; atomic_store_explicit(&n, m + 1, memory_order_release); } pthread_mutex_unlock(&mu);
+    if ((uint32_t)f < sizeof t / sizeof *t) atomic_store_explicit(&t[f], fp.optimalTilingFeatures | 1u << 31, memory_order_relaxed);
     return fp.optimalTilingFeatures;
 }
 static int has_ext(const VkExtensionProperties *e, uint32_t n, const char *name) { for (uint32_t i = 0; i < n; i++) if (!strcmp(e[i].extensionName, name)) return 1; return 0; }
