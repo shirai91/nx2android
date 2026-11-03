@@ -51,16 +51,16 @@ int vk_shader_stage(uint64_t key) { bundle_auto(); const bent *e = g_bundle ? fi
 typedef struct { uint64_t key, data; uint32_t nctl, ncode; uint8_t *ctl; } pend_t;
 enum { NPEND = 4096 };
 static pend_t g_pend[NPEND]; static unsigned g_npend; static pthread_mutex_t g_pend_mu = PTHREAD_MUTEX_INITIALIZER;
-static void shader_set(const uint8_t k[8], const void *control, uint64_t data, uint32_t ncode) {
+static void shader_set(const uint8_t k[8], const void *control, uint64_t data) {
     uint64_t key = 0; for (int i = 0; i < 8; i++) key = key << 8 | k[i];
-    if (!key || !control || !data || !ncode || ncode >= (1u << 24) || vk_shader_stage(key) >= 0) return;
-    uint32_t nctl = 0x880, own; memcpy(&own, (const uint8_t *)control + 0x20, 4); if (own >= 0x760 && own < 0x880) nctl = own;   // as hle_nvn.c keys_hash
-    uint8_t *c = malloc(nctl); if (!c) return; memcpy(c, control, nctl);
+    uint8_t ctl[0x880]; uint32_t ncode, nctl = control ? nvn_shader_key_ctl(control, ctl, &ncode) : 0;
+    if (!key || !nctl || !data || !ncode || ncode >= (1u << 24) || vk_shader_stage(key) >= 0) return;
+    uint8_t *c = malloc(nctl); if (!c) return; memcpy(c, ctl, nctl);
     pthread_mutex_lock(&g_pend_mu);
     pend_t *p = &g_pend[g_npend++ % NPEND]; free(p->ctl); *p = (pend_t){key, data, nctl, ncode, c};   // the oldest goes: a draw needs a program soon after it is set
     pthread_mutex_unlock(&g_pend_mu);
 }
-__attribute__((constructor)) static void shader_set_on(void) { extern void (*g_nvn_on_shader)(const uint8_t *, const void *, uint64_t, uint32_t); g_nvn_on_shader = shader_set; }
+__attribute__((constructor)) static void shader_set_on(void) { extern void (*g_nvn_on_shader)(const uint8_t *, const void *, uint64_t); g_nvn_on_shader = shader_set; }
 void vk_shader_missing(uint64_t key) {
     pend_t p = {0};
     pthread_mutex_lock(&g_pend_mu);

@@ -52,6 +52,17 @@ typedef struct { uint32_t magic; samp_par p; } samp_t;                          
 
 // The per-stage shader keys are not kept in prog_t: the game's real NVNprogram may be smaller than the header's 0xC0 (growing prog_t corrupted the adjacent object in Mario); see prog_keys in hle_nvn.c
 typedef struct { uint32_t magic, nstage; NVNshaderData sd[6]; uint64_t serial; } prog_t;     FITS(prog_t, NVNprogram);   // serial: table key for the replay layer's resolved result
+// A shader's control section as its key hashes it (shader_split.py key_ctl) and its code area's length. NVN2 (Switch 2, version 0xc9): the first 0x48 bytes with their own length (+0x30,
+// which only BNSH files fill) zeroed, the code length at +0x44. NVN: the first 0x880 bytes, or the section's own length (+0x20) when shorter (SDK 10's 0x850-byte ones are followed by other
+// data), the code length at +0x704. Returns the key's control length
+static inline uint32_t nvn_shader_key_ctl(const void *control, uint8_t ctl[0x880], uint32_t *ncode) {
+    const uint8_t *c = (const uint8_t *)control; uint32_t ver, n = 0x880, own;
+    memcpy(&ver, c + 4, 4);
+    if (ver == 0xc9) { memcpy(ctl, c, 0x48); memset(ctl + 0x30, 0, 4); memcpy(ncode, c + 0x44, 4); return 0x48; }
+    memcpy(&own, c + 0x20, 4); if (own >= 0x760 && own < 0x880) n = own;
+    memcpy(ctl, c, n); memcpy(ncode, c + 0x704, 4);
+    return n;
+}
 
 typedef struct { uint32_t magic, fenced; uint64_t fence; } sync_t;                            FITS(sync_t, NVNsync);
 typedef struct { const pool_t *pool; int64_t off; } ev_builder_t;                             FITS(ev_builder_t, NVNeventBuilder);
