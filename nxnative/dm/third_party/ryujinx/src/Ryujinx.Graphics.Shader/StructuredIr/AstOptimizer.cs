@@ -32,7 +32,9 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
                             PropagateExpression(propVar, assignment.Source);
                         }
 
-                        if (propVar.Type == OperandType.LocalVariable && propVar.Uses.Count == 0)
+                        // nxnative: not when the source has side effects. An atomic whose result is never read went with its assignment: Tears of the Kingdom's
+                        // visibility counter (vertex shader 1eee2726aae7493e, an atomic add of a ballot's count) lost the add and everything that fed it
+                        if (propVar.Type == OperandType.LocalVariable && propVar.Uses.Count == 0 && !HasSideEffects(assignment.Source))
                         {
                             visitor.Block.Remove(assignment);
 
@@ -43,6 +45,17 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
             }
 
             RemoveEmptyBlocks(mainBlock, targetLanguage);
+        }
+
+        private static bool HasSideEffects(IAstNode source)
+        {
+            return source is AstOperation operation && (operation.Inst & Instruction.Mask) switch
+            {
+                Instruction.AtomicAdd or Instruction.AtomicAnd or Instruction.AtomicCompareAndSwap or Instruction.AtomicMaxS32 or Instruction.AtomicMaxU32 or
+                Instruction.AtomicMinS32 or Instruction.AtomicMinU32 or Instruction.AtomicOr or Instruction.AtomicSwap or Instruction.AtomicXor or
+                Instruction.Call or Instruction.ImageAtomic => true,
+                _ => false,
+            };
         }
 
         private static bool UsedByCall(AstOperand propVar)

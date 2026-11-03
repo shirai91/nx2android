@@ -940,7 +940,10 @@ namespace Ryujinx.Graphics.Shader.Instructions
 
                         res = context.FPMultiply(res, ConstF(256.0f));
 
-                        Operand fixedPointValue = context.FP32ConvertToS32(res);
+                        // nxnative: unsigned 24.8, a negative LOD (a magnified texture) clamped to 0, as Maxwell returns it (yuzu #10234 converts both
+                        // components to unsigned; the TOTKDroid port found Tears of the Kingdom's cloud particles reading a negative LOD as a huge unsigned one).
+                        // 2,827 of its pixel shaders use TMML; the Great Sky Island frames checked looked the same either way
+                        Operand fixedPointValue = context.FP32ConvertToU32(context.FPMaximum(res, ConstF(0.0f)));
 
                         context.Copy(d, fixedPointValue);
                     }
