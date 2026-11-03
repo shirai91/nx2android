@@ -378,9 +378,9 @@ void mtl_pool_del(const void *mem) {
 }
 // The memory pool table that global accesses through loaded pointers search (GlobalToStorage.cs TryGeneratePhysicalStorageOp), in the open command buffer's scratch:
 // words 0 the entry count, 2 / 3 the sink's device address (an address in no pool reads and writes there); from 4, 8 words a pool by start: start, end, device minus
-// guest address (lo, hi each). Built again when the pools change or a command buffer begins
+// guest address (lo, hi each). Built again when the pools change or a submission begins (its scratch is the submission's)
 void vk_gmem_table(VkBuffer *buf, VkDeviceSize *off, VkDeviceSize *size) {
-    extern uint64_t g_cmd_gen; static VkBuffer tb; static VkDeviceSize to, tn; static uint32_t gen; static uint64_t cmd, sink;
+    static VkBuffer tb; static VkDeviceSize to, tn; static uint32_t gen; static uint64_t sub, sink;
     if (!V.has_bda) VKRED_ONCE(90, "a shader stores through pointers it loads, and the device has no buffer device address: its accesses go nowhere");
     static int made; if (!made++ && V.has_bda) {   // 4 KB of device memory for addresses in no pool
         VkBuffer b; VkDeviceMemory m; VkBufferCreateInfo bi = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, NULL, 0, 4096, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, VK_SHARING_MODE_EXCLUSIVE};
@@ -390,7 +390,7 @@ void vk_gmem_table(VkBuffer *buf, VkDeviceSize *off, VkDeviceSize *size) {
         VKLOG("global accesses through loaded pointers: sink at device address %#llx", (unsigned long long)sink);
     }
     uint32_t g = __atomic_load_n(&g_pool_gen, __ATOMIC_ACQUIRE);
-    if (tb && gen == g && cmd == g_cmd_gen) { *buf = tb; *off = to; *size = tn; return; }
+    if (tb && gen == g && sub == mtl_last_fence()) { *buf = tb; *off = to; *size = tn; return; }
     pthread_rwlock_rdlock(&g_pool_mu);
     tn = 16 + 32 * (VkDeviceSize)(g_npool ? g_npool : 1);
     uint32_t *w = vk_scratch(tn, V.props.limits.minStorageBufferOffsetAlignment, &tb, &to); memset(w, 0, tn);
@@ -399,7 +399,7 @@ void vk_gmem_table(VkBuffer *buf, VkDeviceSize *off, VkDeviceSize *size) {
         uint64_t e[4] = {p->lo, p->hi, p->gpu - p->lo, 0}; memcpy(w + 4 + 8 * n++, e, sizeof e); }
     pthread_rwlock_unlock(&g_pool_mu);
     w[0] = n ? n : 1; memcpy(w + 2, &sink, 8);
-    gen = g; cmd = g_cmd_gen; *buf = tb; *off = to; *size = tn;
+    gen = g; sub = mtl_last_fence(); *buf = tb; *off = to; *size = tn;
 }
 vkpool_t *vk_pool_of(uint64_t addr, uint64_t len) {
     // the last pools this thread found, while none was added or removed: the replay looks up every buffer binding of every draw, and the read lock alone was ~6% of it

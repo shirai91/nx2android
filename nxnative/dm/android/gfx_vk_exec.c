@@ -1061,9 +1061,8 @@ static int fb_cut_levels(const vkimg_t *im, const view_t *v, view_t *cut) {
         cut->set_levels = 1; cut->base_level = lv0; cut->nlevels = P_att[i].lv - lv0; return 1; }
     return 0;
 }
-static int pass_has_mip_rt(void) { if (!S.pass_open) return 0; for (int i = 0; i < 8; i++) if (P_att[i].im && P_att[i].lv) return 1; return 0; }
 static int tex_desc_for(int st, const dmsv_bind *b, uint64_t h, VkDescriptorImageInfo *ii, int storage) {   // the view's view_num
-    int tid = (int)(h & 0xfffff); const view_t *v = NULL; const tex_t *t = NULL; int mip_rt = !storage && pass_has_mip_rt();
+    int tid = (int)(h & 0xfffff); const view_t *v = NULL; const tex_t *t = NULL; int mip_rt = !storage && S.pass_open && g_fb_cut;
     ii->imageLayout = VK_IMAGE_LAYOUT_GENERAL; ii->sampler = storage ? VK_NULL_HANDLE : samp_for(st, b, h, 0); ii->imageView = VK_NULL_HANDLE;
     unsigned ck = ((unsigned)tid * 2654435761u ^ (unsigned)b->dim * 97u ^ (unsigned)(b->flags & 1)) % TVC;
     if (tid && g_var_now != 3 && !g_tracing && !mip_rt && g_tvc[ck].epoch == g_set_epoch && g_tvc[ck].gen == g_tex_gen && g_tvc[ck].tid == tid && g_tvc[ck].dim == b->dim && g_tvc[ck].arr == (b->flags & 1)) {
@@ -1107,7 +1106,10 @@ static VkDescriptorSet setc_get(uint64_t h, VkDescriptorSetLayout l) {
 // a set to write for this content: an entry's, when one is free or done with (its set goes to its layout's free list); else one of this submission alone
 static VkDescriptorSet setc_put(uint64_t h, VkDescriptorSetLayout l) {
     setc_t *e = &g_setc[h % SETC & ~(uint64_t)(SETW - 1)], *v = NULL; uint64_t done = vk_fence_done();
-    for (int i = 0; i < SETW; i++) if (!e[i].set ? !v || v->set : e[i].fence <= done && (!v || (v->set && e[i].fence < v->fence))) v = &e[i];
+    for (int i = 0; i < SETW; i++) {   // an empty entry, else the one the GPU finished with longest ago
+        if (!e[i].set) { v = &e[i]; break; }
+        if (e[i].fence <= done && (!v || e[i].fence < v->fence)) v = &e[i];
+    }
     if (!v || g_nkept > 4 * SETC) return vk_alloc_set(l);
     if (v->set) { setfree_t *f = nvn_hm_get(&g_setfree, &v->l); if (!f) { f = calloc(1, sizeof *f); nvn_hm_put(&g_setfree, &v->l, f); }
         if (f->n == f->cap) { f->cap = f->cap ? 2 * f->cap : 16; f->v = realloc(f->v, sizeof *f->v * (size_t)f->cap); } f->v[f->n++] = v->set; }
