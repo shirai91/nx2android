@@ -112,9 +112,9 @@ const vkfmt_t *vk_fmt(int f) {
         if (e.vk) {
             int bw, bh; o->bpb = (uint8_t)nvn_fmt_bpb(f, &bw, &bh); o->bw = (uint8_t)bw; o->bh = (uint8_t)bh;
             o->vk = (VkFormat)(e.vk == (uint16_t)VK_FORMAT_A1B5G5R5_UNORM_PACK16_KHR ? VK_FORMAT_A1B5G5R5_UNORM_PACK16_KHR : e.vk);
-            if (f == 0x33) {   // DEPTH24: X8_D24 where the device renders to it, else D32
-                VkFormatProperties fp; vkGetPhysicalDeviceFormatProperties(V.pd, VK_FORMAT_X8_D24_UNORM_PACK32, &fp);
-                if (!(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)) o->vk = VK_FORMAT_D32_SFLOAT;
+            if (f == 0x33 || f == 0x35) {   // DEPTH24 (X8_D24) and DEPTH24_STENCIL8 where the device renders to them, else D32 (with S8): Mali and the Android emulator have no D24S8
+                VkFormatProperties fp; vkGetPhysicalDeviceFormatProperties(V.pd, o->vk, &fp);
+                if (!(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)) o->vk = f == 0x33 ? VK_FORMAT_D32_SFLOAT : VK_FORMAT_D32_SFLOAT_S8_UINT;
             }
             if (f == 0x31) {   // STENCIL8 alone: a combined format where the device has no S8 attachments
                 VkFormatProperties fp; vkGetPhysicalDeviceFormatProperties(V.pd, VK_FORMAT_S8_UINT, &fp);
