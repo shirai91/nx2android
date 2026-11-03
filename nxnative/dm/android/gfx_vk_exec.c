@@ -1162,7 +1162,7 @@ static VkDescriptorSet stage_set(int st, vkshader_t *s, uint32_t *dofs) {
                 // bound from the 256-byte boundary below it, the boundary the translator offsets every access from (shader_vk.py SB_ALIGN; a multiple of any device's minimum alignment)
                 const VkDeviceSize al = SB_ALIGN; if (V.props.limits.minStorageBufferOffsetAlignment > al) VKRED_ONCE(41, "storage buffer alignment %llu above %llu", (unsigned long long)V.props.limits.minStorageBufferOffsetAlignment, (unsigned long long)al);
                 bi[nw] = (VkDescriptorBufferInfo){buf, off - off % al, n + off % al};
-                if (st == 5 && b->kind != RK_UBO_PTR) { void vk_gpu_wrote(uint64_t a, uint64_t n); vk_gpu_wrote(a, n); }   // a dispatch's storage buffers: taken as written
+                if ((b->flags & 4) && b->kind != RK_UBO_PTR) { void vk_gpu_wrote(uint64_t a, uint64_t n); vk_gpu_wrote(a, n); }   // a storage buffer the shader writes (any stage)
             } else bi[nw] = (VkDescriptorBufferInfo){vk_zero_buffer(), 0, 65536};
             break; }
         case RK_TEX: case RK_TEX_UBO: case RK_TEX_C2A: {

@@ -435,9 +435,9 @@ static void vk_pools_sync_(VkCommandBuffer cb) {
     pthread_rwlock_unlock(&g_pool_mu);
     static uint64_t n, last; if (++n % 600 == 0) { VKLOG("copied pools: %.1f MB synced in the last 600 submissions (%.2f MB each), %llu full copies so far", (g_sync_bytes - last) / 1048576.0, (g_sync_bytes - last) / 600.0 / 1048576.0, (unsigned long long)g_sync_full); last = g_sync_bytes; }
 }
-// Copied pools after a submission: what the GPU wrote, back into the guest's pages. A pool never synced yet is left alone (its copy holds nothing of the game's).
-// A CPU-uncached pool (vk_pool_set_flags) takes back only the ranges the submission's GPU writes covered (sub_gpu_wrote):
-// copying 860 MB back after every submission held Unicorn Overlord to a few frames a second
+// Copied pools after a submission: the ranges the submission's GPU writes covered (sub_gpu_wrote), back into the guest's pages. A pool never synced yet is left alone
+// (its copy holds nothing of the game's). Copying whole pools back held Unicorn Overlord to a few frames a second, and wrote every page of them, which the next sync
+// then copied to the GPU again: 1.4 GB a submission in Donkey Kong Bananza
 struct vksub; static void pools_copy_back(const struct vksub *s);
 
 // ---------------- submission slots ----------------
@@ -474,7 +474,6 @@ static vksub_t g_slot[NSLOT]; static int g_cur = -1; uint64_t g_cmd_gen;   // g_
 static void pools_copy_back(const struct vksub *s) {
     pthread_rwlock_rdlock(&g_pool_mu);
     for (int i = 0; i < g_npool; i++) { vkpool_t *p = &g_pool[i]; if (!p->shadow || !p->synced) continue;
-        if (!(p->flags & 0x2)) { memcpy((void *)(uintptr_t)p->lo, p->shadow, p->hi - p->lo); continue; }
         for (int k = 0; k < s->ngw; k++) { uint64_t lo = s->gw[k].lo > p->lo ? s->gw[k].lo : p->lo, hi = s->gw[k].hi < p->hi ? s->gw[k].hi : p->hi;
             if (lo < hi) memcpy((void *)(uintptr_t)lo, p->shadow + (lo - p->lo), hi - lo); } }
     pthread_rwlock_unlock(&g_pool_mu);
