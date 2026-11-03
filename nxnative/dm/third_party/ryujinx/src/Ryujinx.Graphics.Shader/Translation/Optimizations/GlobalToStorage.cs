@@ -1045,10 +1045,12 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
             // If both are constant buffer, give preference to the second operand,
             // because constant buffer are always encoded as the second operand,
             // so the second operand will always be the one from the last instruction.
+            // The driver's constant buffer still wins: NVN2 shaders add an offset from c[1] to a c[0] storage buffer address.
 
-            if (src1.Type != OperandType.ConstantBuffer ||
-                (src1.Type == OperandType.ConstantBuffer && src2.Type == OperandType.ConstantBuffer) ||
-                (src2.Type == OperandType.ConstantBuffer && src2.GetCbufSlot() == DriverReservedCb))
+            bool driver1 = src1.Type == OperandType.ConstantBuffer && src1.GetCbufSlot() == DriverReservedCb;
+            bool driver2 = src2.Type == OperandType.ConstantBuffer && src2.GetCbufSlot() == DriverReservedCb;
+
+            if (src1.Type != OperandType.ConstantBuffer || driver2 || (src2.Type == OperandType.ConstantBuffer && !driver1))
             {
                 return GetBaseAddressCbWithOffset(src2, src1, constOffset);
             }
