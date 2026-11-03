@@ -382,8 +382,9 @@ static uint32_t *spv_frag_depth(const uint32_t *w, uint32_t nw, uint32_t *onw) {
         memcpy(&o[no], &w[i], n * 4); no += n; i += n; }
     o[3] = c.bound; *onw = no; free(c.nt); return o;
 }
-// DM_VK_SPV_DIR=<dir> with DM_VK_SPV_ALT=1 (live, debugging): pipelines made while it is on use <dir>/<key>.spv in place of the bundle's code where the file
+// DM_VK_SPV_DIR=<dir> with DM_VK_SPV_ALT=n (live, debugging): pipelines made while it is on use <dir>/<key>.spv in place of the bundle's code where the file
 // exists (same bindings), so two compilations of a shader can be compared in one run: the translator's module through spirv-opt, its GLSL through glslc...
+// Each n reads the file again, so an edited shader is tried by raising n
 static VkShaderModule alt_module(vkshader_t *s) {
     const char *dir = getenv("DM_VK_SPV_DIR"); char path[512]; if (!dir) return s->mod;
     snprintf(path, sizeof path, "%s/%016llx.spv", dir, (unsigned long long)s->key); FILE *f = fopen(path, "rb"); if (!f) return s->mod;
@@ -420,7 +421,7 @@ static VkShaderModule vk_shader_module_(vkshader_t *s, uint64_t um, uint64_t im,
     if (fd && (s->stage != 1 || s->depth_repl)) fd = 0;
     if (dual && s->stage != 1) dual = 0;
     if (!(um | im | xo | (uint32_t)fd | (uint32_t)dual) || !s->spv) return s->mod;
-    if (xo == 1u << 31) {   // DM_VK_SPV_ALT
+    if (xo >> 31) {   // DM_VK_SPV_ALT=n: each n reads the file once
         pthread_mutex_lock(&g_sh_mu); for (int i = 0; i < s->nvar; i++) if (s->var[i].um == 0 && s->var[i].im == 0 && s->var[i].xo == xo) { VkShaderModule m = s->var[i].mod; pthread_mutex_unlock(&g_sh_mu); return m; }
         VkShaderModule m = alt_module(s); if (s->nvar < 8) s->var[s->nvar++] = (typeof(s->var[0])){0, 0, xo, 0, m}; pthread_mutex_unlock(&g_sh_mu); return m; }
     xo &= ~(1u << 31);
