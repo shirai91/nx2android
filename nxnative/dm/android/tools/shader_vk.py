@@ -124,7 +124,7 @@ def job_for(key, stage, rec, w):   # dmsh_build.py job_for; transform feedback i
         elif code[:4] == bytes.fromhex('79563412'): code = code[0x100:]
         xfb = xfb_layout(key, ctl) if stage == 'vs' else None
     cp = os.path.join(w, key + '.bin'); open(cp, 'wb').write(code)
-    j = {'key': key, 'stage': stage, 'code': cp, 'tex': {}, 'img': {}, 'attr': {}, 'fout': {}, 'c1': c1.hex(), 'debug': False, 'reduced': True, 'sb_align': SB_ALIGN, 'subgroup': SUBGROUP, 'gather_bias': GATHER_BIAS, 'gs_passthrough': False, 'depth_runtime': True,
+    j = {'key': key, 'stage': stage, 'code': cp, 'tex': {}, 'img': {}, 'attr': {}, 'fout': {}, 'c1': c1.hex(), 'debug': False, 'reduced': True, 'sb_align': SB_ALIGN, 'subgroup': SUBGROUP, 'gather_bias': GATHER_BIAS, 'gs_passthrough': False, 'depth_runtime': True, 'physical_gmem': True,
          **extra, **({'xfb': xfb} if xfb else {})}
     if key in FACTS: j.update(FACTS[key])
     else: j['no_facts'] = True
@@ -231,6 +231,7 @@ def int_inputs(spv):
 
 # Handle decoding: as dmsh_build.py decode_tex / decode_ubo_tex / reflect (names: <stage>_t<type>_cb<slot>_<handle>, <stage>_c<n>, <stage>_s<n>, <stage>_i…)
 TEX_BASE, IMG_BASE, IMG_SLOTS, SEPTEX_BASE, SEPTEX_SLOT0, SAMP_BASE = 0x20, 0x120, 8, 0x168, 128, 0x568
+GMEM_SLOT = 31   # the host's memory pool table, which global accesses through loaded pointers search (GlobalToStorage.cs PhysicalTableCbSlot)
 SSBO = {'vs': 0x110, 'hs': 0x210, 'ds': 0x310, 'gs': 0x410, 'ps': 0x510, 'cs': 0x310}   # each stage's storage buffer table in c[0] (graphics: 0x110 + 0x100 x the hardware stage)
 def classify(stage, b, res):
     nm = b['name']; e = dict(b)
@@ -245,6 +246,7 @@ def classify(stage, b, res):
         s = sb[idx] if idx < len(sb) else None; off = s['cb_offset'] * 4 if s and s['cb_slot'] == 0 else None; base = SSBO.get(stage)
         e.update(kind='sbuf', rw=bool(s and s['flags'] & 2))
         if stage == 'cs' and off is not None and 0x210 <= off < 0x310 and (off - 0x210) % 16 == 0: e.update(kind='ubo_ptr', reg=(off - 0x210) // 16)
+        elif s and s['cb_slot'] == GMEM_SLOT: e.update(kind='gmem')
         elif s and s['cb_slot'] >= 3: e.update(kind='sbuf_ubo', reg=s['cb_slot'] - 3, off=s['cb_offset'] * 4)
         else: e['reg'] = (off - base) // 16 if off is not None and base is not None and 0 <= off - base < 0x100 and (off - base) % 16 == 0 else None
         return e
@@ -286,7 +288,7 @@ def classify(stage, b, res):
 # binding: u8 kind, u8 desc (descriptor type), u8 dim (SPIR-V Dim, 0xff none), u8 flags (1 arrayed, 2 multisampled, 4 written), u16 binding, u16 count,
 #          i16 reg, u8 samp (sampler source), u8 fmt (SPIR-V image format), i32 off, i32 samp_arg
 KIND = {'support': 0, 'cbuf': 1, 'c1': 2, 'drvcb': 3, 'sbuf': 4, 'ubo_ptr': 5, 'sbuf_ubo': 6, 'tex': 7, 'tbuf': 8, 'img': 9, 'img_tbuf': 10, 'tex_c2a': 11,
-        'tex_ubo': 12, 'tbuf_ubo': 13, 'img_ubo': 14, '?': 255}
+        'tex_ubo': 12, 'tbuf_ubo': 13, 'img_ubo': 14, 'gmem': 15, '?': 255}
 DESC = {'ubo': 0, 'ssbo': 1, 'sampled': 2, 'storage': 3, 'tbuf': 4, 'storage_tbuf': 5, 'image': 6, 'sampler': 7, '?': 255}
 SAMP_NONE, SAMP_TEX, SAMP_SLOT, SAMP_ID, SAMP_UBO = 0, 1, 2, 3, 4
 kinds_all = collections.Counter()

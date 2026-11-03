@@ -1172,6 +1172,7 @@ static VkDescriptorSet stage_set(int st, vkshader_t *s, uint32_t *dofs) {
         case RK_SUPPORT: bi[nw] = (VkDescriptorBufferInfo){vk_support_buffer(), 0, 65536}; break;
         case RK_C1: vk_shader_c1(s, &buf, &off, &len); bi[nw] = (VkDescriptorBufferInfo){buf, off, len}; break;
         case RK_CBUF: cbuf_desc(st, s, b, &bi[nw]); if (ncb < MEMO_CB) { mci[ncb] = (uint8_t)i; mcd[ncb++] = bi[nw]; } break;
+        case RK_GMEM: { VkDeviceSize n; vk_gmem_table(&bi[nw].buffer, &bi[nw].offset, &n); bi[nw].range = n; break; }
         case RK_DRV: { VkBuffer sb; VkDeviceSize so; drv_shared(st, b->reg, &sb, &so); bi[nw] = (VkDescriptorBufferInfo){sb, so, 0x1000}; break; }
         case RK_SBUF: case RK_UBO_PTR: case RK_SBUF_UBO: {
             uint64_t a = 0, n = 0;
