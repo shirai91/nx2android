@@ -17,13 +17,19 @@ static vkpool_t g_pool[MAXPOOL]; static int g_npool;
 static pthread_rwlock_t g_pool_mu = PTHREAD_RWLOCK_INITIALIZER;
 static int g_ncopied;   // pools with a GPU copy (shadow)
 enum { SYNC_BLK = 64 << 10 };   // a copied pool's incremental sync works in blocks of this size
-static uint32_t g_pool_gen;   // bumped under the write lock when a pool is added or removed: vk_pool_of's per-thread cache holds while it is unchanged
-// g_pool's indices by lo, remade under the write lock whenever a pool is added or removed: vk_pool_of searches it. A linear scan of g_pool behind the per-thread
-// cache was 18% of the profiler's samples of Super Mario Bros. Wonder's replay in its first level (a draw looks up more pools than the cache holds); with the
-// search its world map's replay took 4.2 ms a frame instead of 4.6-4.9
-static uint16_t g_pool_ord[MAXPOOL];
+// A sequence lock over g_pool for vk_pool_of, which takes no lock: odd while a writer (under the write lock) changes the pools, bumped twice per change
+static uint32_t g_pool_gen;
+static void pool_change(void) { __atomic_fetch_add(&g_pool_gen, 1, __ATOMIC_RELEASE); __atomic_thread_fence(__ATOMIC_SEQ_CST); }
+// g_pool's indices by lo and their lo, remade whenever a pool is added or removed: vk_pool_of's binary search reads the dense lo array alone, not the pool entries
+// (120 bytes each). A linear scan of g_pool was 18% of the profiler's samples of Super Mario Bros. Wonder's replay in its first level; with a search its world map's
+// replay took 4.2 ms a frame instead of 4.6-4.9
+static uint16_t g_pool_ord[MAXPOOL]; static uint64_t g_ord_lo[MAXPOOL];
 static int pool_ord_cmp(const void *a, const void *b) { uint64_t x = g_pool[*(const uint16_t *)a].lo, y = g_pool[*(const uint16_t *)b].lo; return x < y ? -1 : x > y; }
-static void pool_ord_make(void) { for (int i = 0; i < g_npool; i++) g_pool_ord[i] = (uint16_t)i; qsort(g_pool_ord, (size_t)g_npool, sizeof *g_pool_ord, pool_ord_cmp); }
+static void pool_ord_make(void) {
+    for (int i = 0; i < g_npool; i++) g_pool_ord[i] = (uint16_t)i;
+    qsort(g_pool_ord, (size_t)g_npool, sizeof *g_pool_ord, pool_ord_cmp);
+    for (int i = 0; i < g_npool; i++) g_ord_lo[i] = g_pool[g_pool_ord[i]].lo;
+}
 static int recv_fds(int sock, int *fds, int max) {
     char data[4096], ctl[CMSG_SPACE(sizeof(int) * 16)]; struct iovec iov = {data, sizeof data};
     struct msghdr m = {0}; m.msg_iov = &iov; m.msg_iovlen = 1; m.msg_control = ctl; m.msg_controllen = sizeof ctl;
@@ -126,7 +132,7 @@ static void pool_add_one(const void *mem, uint64_t size, uint64_t base, uint64_t
         if (!(p->hot = calloc((size + SYNC_BLK - 1) / SYNC_BLK, 1))) die("[vk] out of memory");
         __atomic_fetch_add(&g_ncopied, 1, __ATOMIC_RELAXED);
     }
-    g_npool++; pool_ord_make(); __atomic_fetch_add(&g_pool_gen, 1, __ATOMIC_RELEASE);
+    pool_change(); g_npool++; pool_ord_make(); pool_change();
     pthread_rwlock_unlock(&g_pool_mu);
     static uint64_t zc_bytes, cp_bytes; if (zc) cp_bytes += size; else zc_bytes += size;
     static int nlog; if (nlog++ < 24) VKLOG("memory pool %p +%#llx: %s (zero-copy %.1f MB, copied %.1f MB)", mem, (unsigned long long)size, zc ? "copied" : "zero-copy", zc_bytes / 1048576.0, cp_bytes / 1048576.0);
@@ -136,7 +142,7 @@ void mtl_pool_del(const void *mem) {
         pthread_rwlock_wrlock(&g_pool_mu);
         int i = 0; while (i < g_npool && g_pool[i].base != (uint64_t)(uintptr_t)mem) i++;
         if (i == g_npool) { pthread_rwlock_unlock(&g_pool_mu); return; }
-        vkpool_t p = g_pool[i]; g_pool[i] = g_pool[--g_npool]; pool_ord_make(); __atomic_fetch_add(&g_pool_gen, 1, __ATOMIC_RELEASE);
+        vkpool_t p = g_pool[i]; pool_change(); g_pool[i] = g_pool[--g_npool]; pool_ord_make(); pool_change();
         pthread_rwlock_unlock(&g_pool_mu);
         if (p.zero_copy) pool_copy_back(&p);
         if (p.shadow) __atomic_fetch_sub(&g_ncopied, 1, __ATOMIC_RELAXED);
@@ -169,21 +175,30 @@ void vk_gmem_table(VkBuffer *buf, VkDeviceSize *off, VkDeviceSize *size) {
     w[0] = n ? n : 1; memcpy(w + 2, &sink, 8);
     gen = g; sub = mtl_last_fence(); *buf = tb; *off = to; *size = tn;
 }
+static vkpool_t *pool_find(uint64_t addr, uint64_t len, int *across) {
+    int n = g_npool; const uint64_t *b = g_ord_lo;
+    if (n && b[0] <= addr) {   // the last pool by lo that starts at or below addr
+        while (n > 1) { int h = n / 2; if (b[h] <= addr) b += h; n -= h; }
+        vkpool_t *p = &g_pool[g_pool_ord[b - g_ord_lo]]; if (addr + len <= p->hi) return p; }
+    for (int i = 0; i < g_npool; i++) if (addr >= g_pool[i].lo && addr + len <= g_pool[i].hi) return &g_pool[i];   // pools over the same memory
+                                       else if (addr >= g_pool[i].lo && addr < g_pool[i].hi && addr + len <= g_pool[i].end) *across = 1;
+    return NULL;
+}
+// The replay looks up every buffer binding of every draw: a locked search of the pool entries behind a 4-entry per-thread cache was 5.5% of Donkey Kong Bananza's
+// replay thread on the Android emulator, this search of the dense array alone 2.9% (the cache's per-thread storage access cost more than it saved)
 vkpool_t *vk_pool_of(uint64_t addr, uint64_t len) {
-    // the last pools this thread found, while none was added or removed: the replay looks up every buffer binding of every draw, and the read lock alone was ~6% of it
-    static __thread struct { uint32_t gen; vkpool_t *p[4]; } c;   // gen: g_pool_gen + 1 (0: empty)
-    uint32_t g = __atomic_load_n(&g_pool_gen, __ATOMIC_ACQUIRE) + 1;
-    if (c.gen == g) for (int i = 0; i < 4; i++) { vkpool_t *p = c.p[i]; if (p && addr >= p->lo && addr + len <= p->hi) return p; }
-    vkpool_t *r = NULL; int across = 0;
-    pthread_rwlock_rdlock(&g_pool_mu);
-    int lo = 0, hi = g_npool;   // the last pool by lo that starts at or below addr
-    while (lo < hi) { int m = (lo + hi) / 2; if (g_pool[g_pool_ord[m]].lo <= addr) lo = m + 1; else hi = m; }
-    if (lo > 0) { vkpool_t *p = &g_pool[g_pool_ord[lo - 1]]; if (addr + len <= p->hi) r = p; }
-    if (!r)   // not in that one: the scan as before (pools over the same memory, and the range across two chunks it reports)
-        for (int i = 0; i < g_npool; i++) if (addr >= g_pool[i].lo && addr + len <= g_pool[i].hi) { r = &g_pool[i]; break; }
-                                           else if (addr >= g_pool[i].lo && addr < g_pool[i].hi && addr + len <= g_pool[i].end) across = 1;
-    pthread_rwlock_unlock(&g_pool_mu);
-    if (r) { if (c.gen != g) { memset(&c, 0, sizeof c); c.gen = g; } memmove(&c.p[1], &c.p[0], 3 * sizeof *c.p); c.p[0] = r; }
+    // DM_VK_AB & AB_POOL_TLS: the last 4 pools this thread found first (they hold while the pools are unchanged), as the search's locked path once needed
+    static __thread struct { uint32_t gen; vkpool_t *p[4]; } c;
+    int tls = g_vk_ab & AB_POOL_TLS; uint32_t g;
+    if (tls && c.gen == (g = __atomic_load_n(&g_pool_gen, __ATOMIC_ACQUIRE)) + 1) for (int i = 0; i < 4; i++) { vkpool_t *p = c.p[i]; if (p && addr >= p->lo && addr + len <= p->hi) return p; }
+    vkpool_t *r; int across;
+    for (;;) {   // the sequence lock's read: searched again when a pool was added or removed meanwhile
+        while ((g = __atomic_load_n(&g_pool_gen, __ATOMIC_ACQUIRE)) & 1) {}
+        across = 0; r = pool_find(addr, len, &across);
+        __atomic_thread_fence(__ATOMIC_ACQUIRE);
+        if (__atomic_load_n(&g_pool_gen, __ATOMIC_RELAXED) == g) break;
+    }
+    if (r && tls) { if (c.gen != g + 1) { memset(&c, 0, sizeof c); c.gen = g + 1; } memmove(&c.p[1], &c.p[0], 3 * sizeof *c.p); c.p[0] = r; }
     if (!r && across) { static uint64_t n; uint64_t k = ++n; if (!(k & (k - 1))) LOG("[RED] [vk] %llu ranges across two chunks of a memory pool (ZC_CHUNK; this one %#llx +%#llx): no buffer for them", (unsigned long long)k, (unsigned long long)addr, (unsigned long long)len); }
     return r;
 }

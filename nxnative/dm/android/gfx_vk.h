@@ -175,6 +175,9 @@ void vk_support_depth(int gl_mode);   // NVN's GL depth mode (near = -w): withou
 VkBuffer vk_zero_buffer(void);
 
 // ---- replay (gfx_vk_exec.c) ----
+// DM_VK_AB=<mask> (live, read as each submission begins): each bit turns one replay optimization off, so a change is measured against the old way in one run
+enum { AB_POOL_TLS = 1 };
+extern int g_vk_ab;
 void vk_exec_reset(void);   // per submission
 void vk_end_pass(void);     // close an open render pass
 
