@@ -12,6 +12,8 @@
 #include <mach/mach.h>
 #include <stdatomic.h>
 #include <time.h>
+#include <fcntl.h>
+#include <pthread.h>
 
 static _Atomic uint64_t g_watch_last_ns;
 static _Atomic uint64_t g_watch_count;
@@ -69,14 +71,43 @@ static void *watchdog_main(void *arg) {
     }
     return NULL;
 }
+// An address as text: a guest module offset, a symbol of the host's own library, or library+offset for any other library (with its nearest exported symbol when it has one).
+// The offset is the library's own address, as a disassembler of that file shows it: issue #64's crash in the Adreno driver's shader compiler (libllvm-qgl.so, stripped) printed
+// a bare pc, and the reporter had to find the library and the offset from /proc/<pid>/maps by hand. Also used by the thread dump (hle_thread.c)
+int crash_addr_str(char *b, size_t n, uint64_t a) {
+    module_t *m = module_of((void *)a); Dl_info di, me;
+    if (m) return snprintf(b, n, "%s+%#llx", m->name, a - (uint64_t)m->base);
+    if (!dladdr((void *)a, &di) || !di.dli_fname) return snprintf(b, n, "%#llx", a);
+    if (di.dli_sname && dladdr((void *)crash_addr_str, &me) && me.dli_fbase == di.dli_fbase) return snprintf(b, n, "%s+%#lx", di.dli_sname, (unsigned long)(a - (uint64_t)di.dli_saddr));
+    const char *f = strrchr(di.dli_fname, '/'); f = f ? f + 1 : di.dli_fname;
+    if (di.dli_sname) return snprintf(b, n, "%s+%#lx(%s+%#lx)", f, (unsigned long)(a - (uint64_t)di.dli_fbase), di.dli_sname, (unsigned long)(a - (uint64_t)di.dli_saddr));
+    return snprintf(b, n, "%s+%#lx", f, (unsigned long)(a - (uint64_t)di.dli_fbase));
+}
+// A return address without its pointer authentication code: Android's libraries sign the return addresses they keep on the stack (PAC, in the bits above the virtual
+// address size), so a saved one read raw (0x68c07e50424a5c) resolved to nothing. The address size is taken from where this library is mapped, near the top of the
+// user range (39 bits on the Y700; not from a local: the crash handler runs on an alternate stack from malloc, whose pointers carry a tag byte). Only for return
+// addresses: a heap pointer's top byte is a tag the register dump keeps
+uint64_t crash_code_addr(uint64_t a) {
+    uint64_t ref = (uint64_t)(uintptr_t)crash_code_addr, mask = (1ull << (64 - __builtin_clzll(ref))) - 1;
+    return a > mask && (a & mask) >= 0x100000000ull ? a & mask : a;
+}
+// A thread's name by its thread port (the tid on Android), for the crash and thread dumps: "vk prewarm", "vk async pipe" or the replay tells which compile crashed (issue #64)
+void crash_thread_name(unsigned t, char *b, size_t n) {
+    b[0] = 0;
+#ifdef __ANDROID__
+    char path[64]; snprintf(path, sizeof path, "/proc/self/task/%u/comm", (unsigned)t);
+    int fd = open(path, O_RDONLY); if (fd < 0) return;
+    ssize_t r = read(fd, b, n - 1); close(fd); if (r <= 0) { b[0] = 0; return; }
+    b[r] = 0; if (b[r - 1] == '\n') b[r - 1] = 0;
+#else
+    pthread_t p = pthread_from_mach_thread_np(t); if (p) pthread_getname_np(p, b, n);
+#endif
+}
 void crash_off(const char *tag, uint64_t a) {   // Also used by diag.c
 #define off crash_off
 
-    module_t *m = module_of((void *)a);
-    Dl_info di;
-    if (m) fprintf(stderr, " %s%s%s+%#llx", tag, *tag ? "=" : "", m->name, a - (uint64_t)m->base);
-    else if (dladdr((void *)a, &di) && di.dli_sname) fprintf(stderr, " %s%s%s+%#lx", tag, *tag ? "=" : "", di.dli_sname, (unsigned long)(a - (uint64_t)di.dli_saddr));
-    else fprintf(stderr, " %s%s%#llx", tag, *tag ? "=" : "", a);
+    char b[192]; crash_addr_str(b, sizeof b, a);
+    fprintf(stderr, " %s%s%s", tag, *tag ? "=" : "", b);
 }
 // Frame pointer backtrace: x29 chain [fp]=previous frame's fp, [fp+8]=return address; only 8-byte aligned, monotonically increasing frames are walked.
 // Each frame is read with vm_read_overwrite, which fails instead of faulting: code built without frame pointers keeps data in x29 (STEINS;GATE RE:BOOT's main+0x38921c: x29 = 0x430),
@@ -87,7 +118,7 @@ void dm_backtrace(uint64_t fp) {
         uint64_t w[2]; vm_size_t got = 0;
         if (vm_read_overwrite(mach_task_self(), (vm_address_t)fp, sizeof w, (vm_address_t)w, &got) != KERN_SUCCESS || got != sizeof w) break;
         uint64_t nfp = w[0], ra = w[1];
-        off("", ra);
+        off("", crash_code_addr(ra));
         if (nfp <= fp) break;
         fp = nfp;
     }
@@ -119,6 +150,10 @@ static int (*g_trap_hook)(ucontext_t *uc);
 void crash_set_trap_hook(int (*fn)(ucontext_t *uc)) { g_trap_hook = fn; }
 void crash_set_dump_hook(void (*fn)(void)) { g_dump_hook = fn; }
 void crash_set_wait_dump(void (*fn)(void)) { g_wait_dump = fn; }
+// Notes printed right after the crashing thread's registers: what host threads were doing when it crashed (the Vulkan backend: the pipelines being built, gfx_vk_exec.c)
+static void (*g_note_hook[4])(void); static int g_nnote_hook;
+void crash_add_note_hook(void (*fn)(void)) { if (g_nnote_hook < 4) g_note_hook[g_nnote_hook++] = fn; }
+static struct sigaction g_old_sa[32]; static int g_old_ok[32];   // the handlers before ours (DM_CRASH_TOMBSTONE)
 // Dump the current state on demand (without exiting): the iOS app has no no-progress watchdog, so when the smoke test fails it sends dump through DM_LOG_PORT to trigger this -- what each guest thread is waiting on + the graphics-side wait points, the same thing the watchdog prints
 void crash_dump_now(const char *why) { fprintf(stderr, "[dm] state dump (%s): tick %u / stage %s\n", why, atomic_load(&g_watch_tick), g_watch_stage[atomic_load(&g_watch_stage_idx)]); if (g_dump_hook) g_dump_hook(); if (g_wait_dump) g_wait_dump(); }
 // Only the first crashing thread prints its state: when several threads crash at once (Unity's job threads often do), the dumps used to interleave and the process hung in the dump without exiting.
@@ -152,10 +187,12 @@ static void on_crash(int sig, siginfo_t *si, void *uc_) {
     }
     funlockfile(stderr);
     fprintf(stderr, "[dm] CRASH sig=%d", sig);
-    off("addr", (uint64_t)si->si_addr); off("pc", DM_UC_SS(uc)->__pc); off("lr", DM_UC_SS(uc)->__lr);
-    fprintf(stderr, " sp=%#llx\n", DM_UC_SS(uc)->__sp);
+    off("addr", (uint64_t)si->si_addr); off("pc", DM_UC_SS(uc)->__pc); off("lr", crash_code_addr(DM_UC_SS(uc)->__lr));
+    { mach_port_t me = mach_thread_self(); char nm[64]; crash_thread_name(me, nm, sizeof nm);
+      fprintf(stderr, " sp=%#llx thread %#x '%s'\n", DM_UC_SS(uc)->__sp, (unsigned)me, nm); }
     for (int i = 0; i < 29; i++) fprintf(stderr, "x%d=%#llx%s", i, DM_UC_SS(uc)->__x[i], i % 6 == 5 ? "\n" : " ");
     fprintf(stderr, "\n");
+    for (int i = 0; i < g_nnote_hook; i++) g_note_hook[i]();   // (before the long dumps below: the most useful lines come first)
     // What the registers point at: the first six words of each readable target (read with vm_read_overwrite, which fails instead of faulting); a word inside a module prints as a module offset, so an object's vtable names its class
     for (int i = 0; i < 29; i++) {
         uint64_t a = DM_UC_SS(uc)->__x[i], w[6]; vm_size_t got = 0;
@@ -170,17 +207,27 @@ static void on_crash(int sig, siginfo_t *si, void *uc_) {
         fprintf(stderr, "[dm] fp=%#llx  0x100 bytes below sp:", (unsigned long long)DM_UC_SS(uc)->__fp);
         for (int i = -32; i < 0 && sp && !(sp & 7); i++) fprintf(stderr, "%s%llx", (i + 32) % 4 ? " " : "\n[dm]   ", (unsigned long long)((uint64_t *)sp)[i]);
         fputc('\n', stderr); }
+    // Other libraries' addresses too (library+offset): the Adreno driver keeps no frame pointer, so a crash inside it (issue #64) has no backtrace, and the return addresses
+    // into the driver and libvulkan above sp are the only callers left. Data pointers into a library's segments show the same way; only text addresses are callers
     {   uint64_t sp = DM_UC_SS(uc)->__sp; int n = 0;
         fprintf(stderr, "[dm] stack scan sp=%#llx:", (unsigned long long)sp);
-        for (int i = -32; i < 512 && n < 24 && sp && !(sp & 7); i++) {
-            uint64_t v = ((uint64_t *)sp)[i]; Dl_info di;
+        for (int i = -32; i < 512 && n < 40 && sp && !(sp & 7); i++) {
+            uint64_t v = crash_code_addr(((uint64_t *)sp)[i]); Dl_info di; char b[192];
             if (v < 0x100000000ull || (v & 3)) continue;
-            int mod = -1; for (int k = 0; k < g_nmod; k++) { uint64_t b = (uint64_t)(uintptr_t)g_mod[k].base; if (v >= b && v < b + g_mod[k].size) mod = k; }
-            if (mod >= 0) { fprintf(stderr, " [%+d]%s+%#llx", i * 8, g_mod[mod].name, (unsigned long long)(v - (uint64_t)(uintptr_t)g_mod[mod].base)); n++; }
-            else if (dladdr((void *)v, &di) && di.dli_sname && di.dli_fname && strstr(di.dli_fname, "dmhost")) { fprintf(stderr, " [%+d]%s+%#llx", i * 8, di.dli_sname, (unsigned long long)(v - (uint64_t)di.dli_saddr)); n++; }
+            if (!module_of((void *)v) && !(dladdr((void *)v, &di) && di.dli_fname)) continue;
+            crash_addr_str(b, sizeof b, v); fprintf(stderr, " [%+d]%s", i * 8, b); n++;
         }
         fputc('\n', stderr); }
     if (g_dump_hook) g_dump_hook();
+    // DM_CRASH_TOMBSTONE=1: after this dump, hand the signal to the handler that was there before ours (Android's debuggerd), which writes a tombstone with the
+    // system's unwinder (it reads the libraries' unwind tables, so it walks through a driver that keeps no frame pointer). A fault returns and runs the instruction
+    // again, now under that handler; a raised signal (abort) is raised again for it
+    if (sig != SIGALRM && g_old_ok[sig & 31] && getenv("DM_CRASH_TOMBSTONE") && atoi(getenv("DM_CRASH_TOMBSTONE"))) {
+        fprintf(stderr, "[dm] CRASH: the signal goes on to the system's handler (DM_CRASH_TOMBSTONE): see the tombstone\n"); fflush(stderr);
+        alarm(0); sigaction(sig, &g_old_sa[sig & 31], NULL);
+        if (si->si_code <= 0) raise(sig);   // (sent by a thread: blocked until this handler returns)
+        return;
+    }
     _exit(128 + sig);
 }
 // The signal alternate stack is per thread: every guest thread must call this when it starts running (only then can the crash state be printed on the alternate stack on a stack overflow)
@@ -209,8 +256,9 @@ void crash_install(void) {
         pthread_t th; if (pthread_create(&th, NULL, watchdog_main, NULL)) die("watchdog thread");
         pthread_detach(th);
     }
-    sigaction(SIGSEGV, &sa, 0); sigaction(SIGBUS, &sa, 0); sigaction(SIGILL, &sa, 0); sigaction(SIGTRAP, &sa, 0);
     // abort() too (an assertion or an uncaught exception in the host or a framework): Big Brain Academy: Brain vs. Brain died once with SIGABRT 11 minutes into a run with nothing
     // in the log and no crash report, so where it came from was lost
-    sigaction(SIGABRT, &sa, 0);
+    const int sigs[] = {SIGSEGV, SIGBUS, SIGILL, SIGTRAP, SIGABRT};
+    for (int i = 0; i < 5; i++) { struct sigaction o; sigaction(sigs[i], &sa, &o);
+        if (!(o.sa_flags & SA_SIGINFO && o.sa_sigaction == on_crash)) { g_old_sa[sigs[i]] = o; g_old_ok[sigs[i]] = 1; } }   // (a second call keeps the first's)
 }

@@ -531,16 +531,14 @@ void svc_thread_dump(void) {
             if (!guest && ths[i] != mach_thread_self() && thread_suspend(ths[i]) == KERN_SUCCESS) {
                 arm_thread_state64_t st; mach_msg_type_number_t n = ARM_THREAD_STATE64_COUNT;
                 if (thread_get_state(ths[i], ARM_THREAD_STATE64, (thread_state_t)&st, &n) == KERN_SUCCESS) {
-                    char line[1200]; int p = snprintf(line, sizeof line, "[dm] host thread %#x:", ths[i]);
+                    char nm[64]; crash_thread_name(ths[i], nm, sizeof nm);
+                    char line[1600]; int p = snprintf(line, sizeof line, "[dm] host thread %#x '%s':", ths[i], nm);
                     uint64_t fp = __darwin_arm_thread_state64_get_fp(st), pc = __darwin_arm_thread_state64_get_pc(st);
-                    for (int k = 0; k < 12 && p < (int)sizeof line - 80; k++) {
-                        Dl_info di; module_t *m = module_of((void *)pc);
-                        if (m) p += snprintf(line + p, sizeof line - p, " %s+%#llx", m->name, pc - (uint64_t)m->base);
-                        else if (dladdr((void *)pc, &di) && di.dli_sname) p += snprintf(line + p, sizeof line - p, " %s+%#lx", di.dli_sname, (unsigned long)(pc - (uint64_t)di.dli_saddr));
-                        else p += snprintf(line + p, sizeof line - p, " %#llx", pc);
+                    for (int k = 0; k < 12 && p < (int)sizeof line - 120; k++) {
+                        char b[192]; crash_addr_str(b, sizeof b, pc); p += snprintf(line + p, sizeof line - p, " %s", b);
                         uint64_t fr[2]; vm_size_t g2 = 0;
                         if (!fp || vm_read_overwrite(mach_task_self(), fp, 16, (vm_address_t)fr, &g2) || g2 != 16 || fr[0] <= fp) break;
-                        fp = fr[0]; pc = fr[1];
+                        fp = fr[0]; pc = crash_code_addr(fr[1]);
                     }
                     fprintf(stderr, "%s\n", line);
                 }
