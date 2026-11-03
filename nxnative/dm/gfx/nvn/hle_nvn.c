@@ -11,6 +11,7 @@
 #include "../../host/hle.h"
 #include "nvn_protos.h"
 #include "nvn_count.h"
+#include "../tex/nvn_deswizzle.h"
 #include "nvn_tex.h"
 #include "nvn_mtl.h"
 #include "nvn_pace.h"
@@ -125,6 +126,7 @@ NVN(nvnDeviceBuilderSetFlags, void, NVNdeviceBuilder *b, int f) { ((dev_builder_
 NVN(nvnDeviceInitialize, NVNboolean, NVNdevice *d, const NVNdeviceBuilder *b) {
     dev_t_ *o = (dev_t_ *)d; memset(o, 0, sizeof *o);
     o->magic = MAGIC('D', 'E', 'V', 0); o->flags = ((const dev_builder_t *)b)->flags;
+    nvn_gob_switch2 = dm_sdk_ounce();   // the GOB order of the textures the game tiled itself (nvn_deswizzle.h)
     o->origin = NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT; mtl_set_origin_lower_left(1);   // NVN's default; every game so far switched to upper-left right away, Link's Awakening keeps it
     mtl_set_depth_zero(0);   // NVN's default depth mode: near = -w (GL)
     OLOG("DeviceInitialize %p flags=%#x", (void *)d, o->flags);
@@ -2361,7 +2363,6 @@ NVN_NOPROTO(nvnCommandBufferSetComputeOverlapMode, void, NVNcommandBuffer *c, in
 
 // ---------- Commands used by newer-SDK games (SMBW): most map onto existing record formats, the replay layer is unchanged ----------
 // Singular / combined forms → plural / separate forms; state the replay layer does not have yet (conditional render, depth bounds, ...) is logged once and drawing continues (better to over-draw than to drop).
-#include "../tex/nvn_deswizzle.h"
 
 NVN(nvnCommandBufferCallCommands, void, NVNcommandBuffer *c, int n, const NVNcommandHandle *h) { h_nvnCommandBufferCopyCommands(c, n, h); }   // the replay layer treats CALL and COPY alike
 // Combined texture handle (texture id | sampler id << 20) is recorded into the texture slot as is: the replay layer takes the texture from the low 20 bits and the sampler from the high bits (nvn_mtl.m NVN_RB_SAMPT)

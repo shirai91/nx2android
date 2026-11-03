@@ -77,6 +77,14 @@ int main(void) {
         CHECK(got == B[i].want, "B%u got %llu expected %llu", i, (unsigned long long)got, (unsigned long long)B[i].want);
         printf("  B%u (%u,%u,%u) → %llu %s  %s\n", i, B[i].x, B[i].y, B[i].z, (unsigned long long)got, got == B[i].want ? "✓" : "✗", B[i].how);
     }
+    // The Switch 2's GOB: 16-byte pieces x5 y2 x4 y1 y0, so (x%64/32)·256 + (y%8/4)·128 + (x%32/16)·64 + (y%4/2)·32 + (y%2)·16 + x%16
+    nvn_gob_switch2 = 1;
+    struct { uint32_t x, y; uint64_t want; } G[] = {{17, 3, 64 + 32 + 16 + 1}, {48, 5, 256 + 128 + 64 + 16}, {0, 6, 128 + 32}};
+    for (unsigned i = 0; i < sizeof G / sizeof *G; i++) {
+        uint64_t got = nvn_bl_offset(G[i].x, G[i].y, 0, 64, 8, 0, 0);
+        CHECK(got == G[i].want, "Switch 2 GOB (%u,%u) got %llu expected %llu", G[i].x, G[i].y, (unsigned long long)got, (unsigned long long)G[i].want);
+    }
+    nvn_gob_switch2 = 0;
 
     // ---------- E hand-built 3D: place markers into block-linear storage at hand-calculated addresses, decode, and verify where the markers land (round trip A only proves self-consistency, not whether the layout is right) ----------
     // Source of the block height / block depth rule: deko3d dk_image.cpp - for 3D textures block height is fixed at 1 GOB, block depth = pickTileSize(depth + depth/2).

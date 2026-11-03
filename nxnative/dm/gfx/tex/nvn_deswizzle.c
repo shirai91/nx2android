@@ -2,12 +2,16 @@
 // Tegra X1 block-linear layout (public descriptions: deko3d / Ryujinx BlockLinearLayout):
 //   GOB = 64 bytes × 8 rows = 512 bytes; offset of (x byte, y row) within a GOB =
 //     (x%64/32)·256 + (y%8/2)·64 + (x%32/16)·32 + (y%2)·16 + x%16
+//   The Switch 2 orders a GOB's 16-byte pieces x5 y2 x4 y1 y0 where the X1 has x5 y2 y1 x4 y0 (offset bits 5 and 6 exchanged; nvn_gob_switch2)
 //   block = 1 GOB wide × 2^tileH GOBs high × 2^tileD GOBs deep, ordered y first then z within a block; blocks fill the level in x → y → z row-major order.
 // Level / layer start offsets and the actual block height and block depth of this level come from nvn_tex.c; here we only do intra-level addressing and copying.
 #include "nvn_deswizzle.h"
 #include <string.h>
 
+int nvn_gob_switch2;
+
 static uint32_t gob_off(uint32_t x, uint32_t y) {
+    if (nvn_gob_switch2) return (x % 64 / 32) * 256 + (y % 8 / 4) * 128 + (x % 32 / 16) * 64 + (y % 4 / 2) * 32 + (y % 2) * 16 + x % 16;
     return (x % 64 / 32) * 256 + (y % 8 / 2) * 64 + (x % 32 / 16) * 32 + (y % 2) * 16 + x % 16;
 }
 
