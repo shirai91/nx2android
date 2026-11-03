@@ -66,7 +66,7 @@ namespace Ryujinx.Graphics.Shader.Translation
             _stage = stage;
             _stagePrefix = GetShaderStagePrefix(stage);
 
-            _cbSlotToBindingMap = new SetBindingPair[18];
+            _cbSlotToBindingMap = new SetBindingPair[25];   // NVN2 push constants are c[24]
             _sbSlotToBindingMap = new SetBindingPair[16];
             _cbSlotToBindingMap.AsSpan().Fill(new(-1, -1));
             _sbSlotToBindingMap.AsSpan().Fill(new(-1, -1));
