@@ -55,6 +55,7 @@ typedef struct {
 } vkdev_t;
 extern vkdev_t V;
 uint32_t vk_mem_type(uint32_t bits, VkMemoryPropertyFlags want, VkMemoryPropertyFlags avoid);
+VkFormatFeatureFlags vk_fmt_features(VkFormat f);
 void vk_init(void);   // once, from mtl_init or the first use
 
 // ---- memory pools (gfx_vk_core.c): the guest's pool memory is GPU memory (AHardwareBuffer mapped over it) ----
