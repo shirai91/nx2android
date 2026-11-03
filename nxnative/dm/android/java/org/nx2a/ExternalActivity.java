@@ -15,6 +15,8 @@ import android.graphics.RectF;
 import android.graphics.RadialGradient;
 import android.graphics.Shader;
 import android.view.MotionEvent;
+import android.view.KeyEvent;
+import android.view.InputDevice;
 import android.view.Surface;
 import android.view.View;
 import android.view.ViewGroup;
@@ -36,6 +38,8 @@ public final class ExternalActivity extends NativeActivity implements ExternalDi
     private static native void externalAudio(int deviceId);
     private static native void externalHaptic();
     private static native boolean externalTouch(MotionEvent event);
+    private static native boolean externalControllerKey(KeyEvent event);
+    private static native boolean externalControllerMotion(MotionEvent event);
     private static native float[] externalOverlay(int width, int height);
     private static native String[] externalPanel();
     private ExternalDisplay external;
@@ -49,7 +53,20 @@ public final class ExternalActivity extends NativeActivity implements ExternalDi
             try { pad = new OriginalPad(); } catch (IOException e) { android.util.Log.w("nx2a-dual", "original overlay unavailable", e); }
         }
         if (pad == null) pad = new Pad();
-        phonePad = new Dialog(this, android.R.style.Theme_Material_NoActionBar_Fullscreen);
+        phonePad = new Dialog(this, android.R.style.Theme_Material_NoActionBar_Fullscreen) {
+            @Override public boolean dispatchKeyEvent(KeyEvent event) {
+                int source = event.getSource();
+                if (((source & InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD || (source & InputDevice.SOURCE_DPAD) == InputDevice.SOURCE_DPAD)
+                    && externalControllerKey(event)) return true;
+                return super.dispatchKeyEvent(event);
+            }
+            @Override public boolean dispatchGenericMotionEvent(MotionEvent event) {
+                int source = event.getSource();
+                if (((source & InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK || (source & InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD)
+                    && externalControllerMotion(event)) return true;
+                return super.dispatchGenericMotionEvent(event);
+            }
+        };
         phonePad.setCancelable(false);
         phonePad.setContentView(pad);
         external = new ExternalDisplay(this, this);

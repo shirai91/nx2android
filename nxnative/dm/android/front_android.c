@@ -15,6 +15,7 @@
 #include <android/asset_manager.h>
 #include <android/configuration.h>
 #include <android/input.h>
+#include "external_input_event.h"
 #include <android/log.h>
 #include <android/looper.h>
 #include <android/native_activity.h>
@@ -149,36 +150,40 @@ static pthread_mutex_t g_ext_touch_mu = PTHREAD_MUTEX_INITIALIZER;
 static ext_touch *g_ext_touch_head, *g_ext_touch_tail;
 static _Atomic int g_ext_touch_enabled;
 typedef const AInputEvent *(*motion_from_java_fn)(JNIEnv *, jobject);
+typedef const AInputEvent *(*key_from_java_fn)(JNIEnv *, jobject);
 typedef void (*input_release_fn)(const AInputEvent *);
 static motion_from_java_fn g_motion_from_java;
+static key_from_java_fn g_key_from_java;
 static input_release_fn g_input_release;
 static pthread_once_t g_ext_touch_once = PTHREAD_ONCE_INIT;
 static void ext_touch_init(void) {
     g_motion_from_java = (motion_from_java_fn)dlsym(RTLD_DEFAULT, "AMotionEvent_fromJava");
+    g_key_from_java = (key_from_java_fn)dlsym(RTLD_DEFAULT, "AKeyEvent_fromJava");
     g_input_release = (input_release_fn)dlsym(RTLD_DEFAULT, "AInputEvent_release");
 }
-JNIEXPORT jboolean JNICALL Java_org_nx2a_ExternalActivity_externalTouch(JNIEnv *env, jclass cls, jobject motion) {
-    (void)cls;
+static jboolean external_event(JNIEnv *env, jobject java_event, int key, int touch) {
     pthread_once(&g_ext_touch_once, ext_touch_init);
-    if (!motion || !dm_external_active() || !g_motion_from_java || !g_input_release) return JNI_FALSE;
+    if (!java_event || !dm_external_active() || !g_input_release || (key ? !g_key_from_java : !g_motion_from_java)) return JNI_FALSE;
     unsigned epoch = atomic_load(&g_external_epoch);
-    const AInputEvent *event = g_motion_from_java(env, motion);
+    const AInputEvent *event = key ? g_key_from_java(env, java_event) : g_motion_from_java(env, java_event);
     ext_touch *item = event ? malloc(sizeof *item) : NULL;
     if (!item) { if (event) g_input_release(event); return JNI_FALSE; }
     *item = (ext_touch){event, NULL, epoch};
     pthread_mutex_lock(&g_ext_touch_mu);
-    if (g_ext_touch_tail && g_ext_touch_tail->epoch == item->epoch && (AMotionEvent_getAction(event) & AMOTION_EVENT_ACTION_MASK) == AMOTION_EVENT_ACTION_MOVE &&
-        (AMotionEvent_getAction(g_ext_touch_tail->event) & AMOTION_EVENT_ACTION_MASK) == AMOTION_EVENT_ACTION_MOVE) {
+    if (g_ext_touch_tail && g_ext_touch_tail->epoch == item->epoch && external_moves_match(g_ext_touch_tail->event, event)) {
         g_input_release(g_ext_touch_tail->event); g_ext_touch_tail->event = event; free(item);
     } else {
         if (g_ext_touch_tail) g_ext_touch_tail->next = item; else g_ext_touch_head = item;
         g_ext_touch_tail = item;
     }
-    atomic_store(&g_ext_touch_enabled, 1);
+    if (touch) atomic_store(&g_ext_touch_enabled, 1);
     pthread_mutex_unlock(&g_ext_touch_mu);
     if (g_ilooper) ALooper_wake(g_ilooper);
     return JNI_TRUE;
 }
+JNIEXPORT jboolean JNICALL Java_org_nx2a_ExternalActivity_externalTouch(JNIEnv *env, jclass cls, jobject event) { (void)cls; return external_event(env, event, 0, 1); }
+JNIEXPORT jboolean JNICALL Java_org_nx2a_ExternalActivity_externalControllerKey(JNIEnv *env, jclass cls, jobject event) { (void)cls; return external_event(env, event, 1, 0); }
+JNIEXPORT jboolean JNICALL Java_org_nx2a_ExternalActivity_externalControllerMotion(JNIEnv *env, jclass cls, jobject event) { (void)cls; return external_event(env, event, 0, 0); }
 void dm_audio_route_device(int32_t id);
 JNIEXPORT void JNICALL Java_org_nx2a_ExternalActivity_externalAudio(JNIEnv *env, jclass cls, jint id) { (void)env; (void)cls; dm_audio_route_device(id); }
 JNIEXPORT void JNICALL Java_org_nx2a_ExternalActivity_externalHaptic(JNIEnv *env, jclass cls) { (void)env; (void)cls; dm_haptics_android_tap(); }
@@ -900,7 +905,7 @@ static void ext_touch_drain(void) {
     pthread_mutex_lock(&g_ext_touch_mu);
     ext_touch *item = g_ext_touch_head; g_ext_touch_head = g_ext_touch_tail = NULL;
     pthread_mutex_unlock(&g_ext_touch_mu);
-    while (item) { ext_touch *next = item->next; if (dm_external_active() && item->epoch == atomic_load(&g_external_epoch)) touch_event((AInputEvent *)item->event); g_input_release(item->event); free(item); item = next; }
+    while (item) { ext_touch *next = item->next; if (dm_external_active() && item->epoch == atomic_load(&g_external_epoch)) handle_event((AInputEvent *)item->event); g_input_release(item->event); free(item); item = next; }
 }
 // ---- shaking the device: the controller is shaken (DM_BTN_SHAKE: its six-axis sensor, hle_hid.c; Super Mario Odyssey's cap throw), as the iOS front end does with the phone ----
 // The accelerometer at 60 Hz on the input thread's looper (no permission needed): gravity is followed by a slow low-pass (about 0.8 s), and a sample whose acceleration beyond it
