@@ -1858,7 +1858,10 @@ static void copy_b2t(const p_copy_b2t *c, int to_texture) {
     if (g_watch_off >= 0) { char w[96]; snprintf(w, sizeof w, "buffer copy %s (buffer %#llx, %dx%d)", to_texture ? "destination" : "source", (unsigned long long)c->src, c->r.width, c->r.height); vk_watch(im, w); }
     if (to_texture) { vkCmdCopyBufferToImage(cb, b, im->img, VK_IMAGE_LAYOUT_GENERAL, 1, &r); im->gpu_w = 1; }
     else { vkCmdCopyImageToBuffer(cb, im->img, VK_IMAGE_LAYOUT_GENERAL, b, 1, &r);
-        void vk_gpu_wrote(uint64_t a, uint64_t n); vkpool_t *p = vk_pool_of(c->src, 1); vk_gpu_wrote(c->src, p ? p->hi - c->src : 1); }   // (to the pool's end: the copy's extent in memory is not worked out here)
+        // the copy's extent in memory: its rows and slices at their strides
+        uint64_t bpr = (uint64_t)((r.imageExtent.width + bw - 1) / bw) * f->bpb, rows = (r.imageExtent.height + bh - 1) / bh, pitch = S.row_stride > 0 ? (uint64_t)S.row_stride : bpr;
+        uint64_t slice = S.image_stride > 0 ? (uint64_t)S.image_stride : pitch * rows, n = (uint64_t)(depth - 1) * slice + (rows - 1) * pitch + bpr;
+        void vk_gpu_wrote(uint64_t a, uint64_t n); vkpool_t *p = vk_pool_of(c->src, 1); vk_gpu_wrote(c->src, f->bpb ? n : p ? p->hi - c->src : 1); }
     vk_img_barrier_all(cb);
 }
 // Scaled copies of depth and stencil: Adreno blits no depth-stencil format (Pokémon Legends: Arceus copies its 1920x1080 D24S8 depth to a 480x270 one, which stayed unwritten), so each
