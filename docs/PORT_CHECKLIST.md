@@ -6,7 +6,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 
 "Profile here": `nxnative/dm/games/<title ID>/` has the game's profile from nxnative. "Upstream profile": only seedds/nxnative has one, to read as a reference or starter, not to pull. "60 fps with X" is upstream's note: they run that update at 60 fps (30 on the Switch).
 
-**24 / 94 ported**
+**25 / 94 ported**
 
 - [x] 13 Sentinels: Aegis Rim · `01003FC01670C000`
 - [ ] Ace Attorney Investigations Collection · `010005501E68C000` · profile here
@@ -57,7 +57,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [ ] Monster Train 2 · `010051701FB46000` · profile here · 60 fps with 1.1.1 · only the first Monster Train is on mobile
 - [x] NEO: The World Ends with You · `010043B013C5C000`
 - [ ] NieR:Automata The End of YoRHa Edition · `010056B015FE8000` · upstream profile · 60 fps with 1.0.3
-- [ ] OCTOPATH TRAVELER · `010057D006492000` · upstream profile
+- [x] OCTOPATH TRAVELER · `010057D006492000`
 - [ ] Octopath Traveler 0 · `01005270232F2000` · profile here · 60 fps with 1.0.5
 - [ ] Octopath Traveler II · `0100A3501946E000` · upstream profile · 60 fps with 1.1.1
 - [x] Paper Mario: The Origami King · `0100A3900C3E2000`
