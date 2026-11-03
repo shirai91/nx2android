@@ -78,7 +78,8 @@ void svc_guest_range(uint8_t **base, size_t *size) { *base = g_as; *size = RESER
 enum { I_CoreMask=0, I_PriorityMask=1, I_AliasAddr=2, I_AliasSize=3, I_HeapAddr=4, I_HeapSize=5,
        I_TotalMem=6, I_UsedMem=7, I_DebuggerAttached=8, I_ResourceLimit=9, I_IdleTick=10, I_RandomEntropy=11,
        I_AslrAddr=12, I_AslrSize=13, I_StackAddr=14, I_StackSize=15, I_SysResTotal=16, I_SysResUsed=17,
-       I_ProgramId=18, I_InitProcIdRange=19, I_UserExcAddr=20, I_TotalNonSys=21, I_UsedNonSys=22, I_IsApplication=23, I_FreeThreadCount=24, I_PageSize=33 };
+       I_ProgramId=18, I_InitProcIdRange=19, I_UserExcAddr=20, I_TotalNonSys=21, I_UsedNonSys=22, I_IsApplication=23, I_FreeThreadCount=24,
+       I_ThreadTickCount=25, I_IsSvcPermitted=26, I_IoRegionHint=27, I_AliasRegionExtraSize=28, I_PageSize=33 };
 
 static uint8_t g_seen[256];
 
@@ -328,8 +329,8 @@ uint64_t svc_dispatch(int num, uint64_t *regs, uint64_t orig_addr) {
         // left its main thread waiting at boot for a thread it never created (main+0x3e1ac4)
         case I_FreeThreadCount: { int thr_limit_used(void); int u = thr_limit_used(); v = u < 96 ? 96 - u : 0; break; }
         case I_UserExcAddr: { static _Alignas(0x1000) uint8_t ctx[0x1000]; v = (uint64_t)ctx; break; }   // user exception context area: newer SDKs' SetDyingMessageRegion writes to +0x1c0 (0 would write through a null pointer)
-        case I_PageSize: v = 0x1000; break;
-        case 25: case 26: case 27: case 28: v = 0; break;   // thread tick count, SVC permissions, I/O region hint, extra alias region size: none here   // Switch 2 SDKs: nn::ro::ProtectRelro aligns the RELRO bounds to it, and aborts on 0
+        case I_PageSize: v = 0x1000; break;   // Switch 2 SDKs: nn::ro::ProtectRelro aligns the RELRO bounds to it, and aborts on 0
+        case I_ThreadTickCount: case I_IsSvcPermitted: case I_IoRegionHint: case I_AliasRegionExtraSize: v = 0; break;   // none here
         default: { static uint8_t seen[64]; if (id < 64 && !seen[id]++) LOG("[RED] svc GetInfo: unknown info type %llu (answered 0)", (unsigned long long)id); v = 0; break; }
         }
         regs[0] = 0; regs[1] = v; return 0;
