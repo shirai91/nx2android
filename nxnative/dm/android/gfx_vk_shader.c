@@ -121,6 +121,33 @@ static void spv_io_locs(const uint32_t *w, uint32_t nw, uint32_t *in, uint32_t *
 // undefined (dmsh_build.py vs_init does the same for the Apple chain, found on Link's Awakening's lighting). Pokémon Legends: Arceus's deferred lighting draws
 // with vertex shader 1327af7c2b78070e, which writes out0.xy only, and its pixel shaders divide by in0.w: every lit pixel was wrong (a washed-out picture,
 // dark hair and cloth turned white). Each vec4 output with a Location gets that value stored at the entry point's start. NULL when the module is not as expected
+// A storage image of Unknown format (the translator's, for every image NVN binds without one) that is read with OpImageRead or written with OpImageWrite needs the
+// capability StorageImageRead/WriteWithoutFormat, which the translator never declares. OCTOPATH TRAVELER: 230 of its 232 compute shaders write such images without it, among
+// them Unreal's light grid (327fce53f1fce4c1 and 6d87d48e86bd7f3c, which spirv-val refuses); Adreno took them, and the town of Sunshade drew big purple and red bands over
+// the screen in some runs. The capabilities go in after the header when the device has the feature (enabled at device creation); NULL when nothing is added
+static uint32_t *spv_noformat_caps(const uint32_t *w, uint32_t nw, uint32_t *onw) {
+    if (nw < 5 || !(V.has_img_rwf || V.has_img_wwf)) return NULL;
+    uint32_t bound = w[3]; uint8_t *unk = calloc(bound, 1); uint32_t *type = calloc(bound, sizeof *type); if (!unk || !type) { free(unk); free(type); return NULL; }
+    int have_r = 0, have_w = 0, need_r = 0, need_w = 0;
+    for (uint32_t i = 5; i < nw;) {
+        uint32_t n = w[i] >> 16, op = w[i] & 0xffff; if (!n || i + n > nw) break;
+        if (op == 17 && n == 2) { have_r |= w[i + 1] == 55; have_w |= w[i + 1] == 56; }                               // OpCapability
+        else if (op == 25 && n >= 9 && w[i + 1] < bound) unk[w[i + 1]] = w[i + 7] == 2 && w[i + 8] == 0;             // OpTypeImage: storage, format Unknown
+        else if (op == 61 && n >= 4 && w[i + 2] < bound) type[w[i + 2]] = w[i + 1];                                  // OpLoad: its result's type
+        else if (op == 98 && n >= 4 && w[i + 3] < bound && type[w[i + 3]] < bound && unk[type[w[i + 3]]]) need_r = 1;   // OpImageRead
+        else if (op == 99 && n >= 3 && w[i + 1] < bound && type[w[i + 1]] < bound && unk[type[w[i + 1]]]) need_w = 1;   // OpImageWrite
+        i += n;
+    }
+    free(unk); free(type);
+    int add_r = need_r && !have_r && V.has_img_rwf, add_w = need_w && !have_w && V.has_img_wwf;
+    if (!add_r && !add_w) return NULL;
+    uint32_t *o = malloc((nw + 4) * sizeof *o), k = 5; memcpy(o, w, 5 * sizeof *o);
+    if (add_r) { o[k++] = 2u << 16 | 17; o[k++] = 55; }
+    if (add_w) { o[k++] = 2u << 16 | 17; o[k++] = 56; }
+    memcpy(o + k, w + 5, (nw - 5) * sizeof *o); *onw = k + nw - 5;
+    static _Atomic int said; if (!atomic_fetch_add(&said, 1)) VKLOG("shaders: StorageImage%s%sWithoutFormat declared where Unknown-format storage images are read or written", add_r ? "Read" : "", add_w ? "Write" : "");
+    return o;
+}
 static uint32_t *spv_vs_init(const uint32_t *w, uint32_t nw, uint32_t *onw) {
     uint32_t bound = w[3], fn = 0, ep = 0, f32 = 0, v4 = 0, c0 = 0, c1 = 0; uint8_t *ptr = calloc(bound, 1), *loc = calloc(bound, 1); uint32_t vars[32], nv = 0;
     for (uint32_t i = 5; i < nw;) { uint32_t n = w[i] >> 16, op = w[i] & 0xffff; if (!n || i + n > nw) goto fail;
@@ -245,6 +272,7 @@ vkshader_t *vk_shader(uint64_t key, int stage) {
             if (drop) i += n; else for (uint32_t k = 0; k < n; k++) w[o++] = w[i++]; }
         nw = o; } }
     if (stage == 0) { uint32_t n2 = 0, *w2 = spv_vs_init(w, nw, &n2); if (w2) { free(w); w = w2; nw = n2; } }
+    { uint32_t n2 = 0, *w2 = spv_noformat_caps(w, nw, &n2); if (w2) { free(w); w = w2; nw = n2; } }
     spv_io_locs(w, nw, &s->in_locs, &s->out_locs);
     VkShaderModuleCreateInfo ci = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, NULL, 0, (size_t)nw * 4, w};
     VkResult vr = vkCreateShaderModule(V.dev, &ci, NULL, &s->mod); s->spv = w; s->nspv = nw;

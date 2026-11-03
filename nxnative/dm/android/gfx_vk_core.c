@@ -159,6 +159,7 @@ void vk_init(void) {
     V.has_depth_clip_ctl = fdc.depthClipControl && has_ext(ex, ne, "VK_EXT_depth_clip_control");
     V.has_dtiming = has_ext(ex, ne, "VK_GOOGLE_display_timing");   // frame pacing on the display (gfx_vk_present.c pace_*)
     V.has_bc = ff.features.textureCompressionBC; V.has_astc = ff.features.textureCompressionASTC_LDR; V.has_gs = ff.features.geometryShader;
+    V.has_img_rwf = ff.features.shaderStorageImageReadWithoutFormat; V.has_img_wwf = ff.features.shaderStorageImageWriteWithoutFormat;   // (enabled below with every other feature the device has)
     { const char *e = getenv("DM_VK_X_BC_CPU"); if (e && atoi(e)) V.has_bc = 0; }   // (start-up) BC textures decoded on the CPU as on a device without them (gfx_vk_tex.c bc_decode)
     V.max_aniso = V.props.limits.maxSamplerAnisotropy;
     // enable: everything the shaders may use that the device has
@@ -654,6 +655,11 @@ void vk_dsl_register(VkDescriptorSetLayout l, const VkDescriptorSetLayoutBinding
     uint32_t *need = calloc(9, sizeof *need);
     for (uint32_t i = 0; i < n; i++) if ((uint32_t)b[i].descriptorType < 9) need[b[i].descriptorType] += b[i].descriptorCount;
     pthread_mutex_lock(&g_dsl_mu); nvn_hm_put(&g_dsl_need, &l, need); pthread_mutex_unlock(&g_dsl_mu);
+}
+// This process's GPU memory as Adreno's kgsl driver counts it (its own allocations included, which no Vulkan call reports); 0 where the file is missing (another GPU)
+uint64_t vk_gpu_mem(void) {
+    static char pth[96]; if (!pth[0]) snprintf(pth, sizeof pth, "/sys/class/kgsl/kgsl/proc/%d/gpumem_mapped", (int)getpid());
+    FILE *f = fopen(pth, "r"); unsigned long long v = 0; if (f) { if (fscanf(f, "%llu", &v) != 1) v = 0; fclose(f); } return v;
 }
 VkDescriptorSet vk_alloc_set(VkDescriptorSetLayout l) {
     vksub_t *s = cur();
