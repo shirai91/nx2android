@@ -72,19 +72,32 @@ def zstd_mod():
         except ImportError: red(f'Python {sys.version_info[0]}.{sys.version_info[1]} has no compression.zstd (3.14+): pip install backports.zstd')
     return zstd
 
+# NVN2 (Switch 2) control sections: version 0xc9 at +4, +0x30 the section's own length (0xd8 in BNSH; 0 in BAHS and in memory), +0x38 the instructions' length (the 0x80-byte SPH of the
+# graphics stages included), +0x40..+0x44 the c1 segment, +0x44 the code area's length, +0x56 the NVN stage, compute's thread group at +0x58 and shared memory at +0x64. The code
+# area has no header. The key takes the first 0x48 bytes with +0x30 zeroed (the host's keys_hash does the same)
+NVN2_MAGIC, NVN2_KEY = CTL_MAGIC + b'\xc9\0\0\0', 0x48
+NVN2_STAGE = {0: 'vs', 1: 'ps', 2: 'gs', 3: 'hs', 4: 'ds', 5: 'cs'}
+def nvn2(ctl): return ctl[:8] == NVN2_MAGIC and len(ctl) >= NVN2_KEY
+
 def ctl_len(ctl):
-    """Number of control bytes in the key: control +0x20 holds the section's own length. Every control section of Mario, Fire Emblem Engage, Metroid Dread and 13 Sentinels is at least 0x880 bytes, so the first 0x880 are used;
+    """Number of control bytes in the key: NVN2_KEY for NVN2, else control +0x20 holds the section's own length. Every control section of Mario, Fire Emblem Engage, Metroid Dread and 13 Sentinels is at least 0x880 bytes, so the first 0x880 are used;
     SDK 10's Super Mario 3D World + Bowser's Fury has 2,888 that are only 0x850 bytes (the bfsha in ShaderData, 6 layouts), with other data right after them, so only their own length is used (the same as the host's keys_hash)"""
+    if nvn2(ctl): return NVN2_KEY
     n = struct.unpack_from('<I', ctl, 0x20)[0]
     return n if 0x760 <= n < 0x880 else 0x880
 
+def key_ctl(ctl):
+    c = ctl[:ctl_len(ctl)]
+    return c[:0x30] + bytes(4) + c[0x34:] if nvn2(c) else c
+
 def skey(ctl, code):
-    return hashlib.sha256(ctl[:ctl_len(ctl)] + code).hexdigest()[:16]
+    return hashlib.sha256(key_ctl(ctl) + code).hexdigest()[:16]
 
 def same_shader(a, b):
     """Two copies of one key hold the same shader: the code areas are equal, and so are the control sections up to their own length (control +0x20). Pokémon Legends: Z-A's UI layout archives
     (__ArchiveShader.bnsh inside the .truiv packs) give 104 KB control sections whose stage descriptor length runs 456 bytes past their own length, and those trailing bytes differ between copies"""
     (ca, ka), (cb, kb) = a, b
+    if nvn2(ca): return ka == kb and key_ctl(ca) == key_ctl(cb)
     n = struct.unpack_from('<I', ca, 0x20)[0] if len(ca) >= 0x24 else len(ca)
     n = n if 0x760 <= n <= min(len(ca), len(cb)) else max(len(ca), len(cb))
     return ka == kb and ca[:n] == cb[:n]
@@ -92,6 +105,9 @@ def same_shader(a, b):
 def check(where, st, ctl, code):
     """control section and code area consistent; returns the reason if not"""
     if ctl[:4] != CTL_MAGIC or len(ctl) < ctl_len(ctl): return 'bad control section'
+    if nvn2(ctl):
+        if struct.unpack_from('<I', ctl, 0x44)[0] != len(code): return 'control +0x44 does not match the code area length'
+        return None if NVN2_STAGE.get(ctl[0x56]) == st else 'control +0x56 does not match the stage'
     # a compute code area may have no header (SDK 10's Super Mario 3D World + Bowser's Fury and D2R: instructions start at +0; dmsh_build strips only a 0x12345679 header)
     if st == 'cs' and code[:4] in (CS_MAGIC, GFX_MAGIC) and code[:4] != CS_MAGIC or st != 'cs' and code[:4] != GFX_MAGIC: return 'code area header magic does not match the stage'
     if struct.unpack_from('<I', ctl, 0x704)[0] != len(code): return 'control +0x704 does not match the code area length'
@@ -120,15 +136,30 @@ def bahs_shaders(d, label):
     out = []
     for a in range(0, region - 16, 4):
         off, z, csz, rel = struct.unpack_from('<IIIi', d, a)
-        if z or not (csz in (0x880, 0x88c) or 0x760 <= csz < 0x880) or off % 0x100: continue   # control length: Mario 0x880 / 0x88c, 3D World's BAHS version 9 0x848
+        # control length: Mario 0x880 / 0x88c, 3D World's BAHS version 9 0x848, NVN2 (Donkey Kong Bananza's agl and gsys packs) 0xd8
+        if z or not (csz in (0x880, 0x88c, 0xd8) or 0x760 <= csz < 0x880) or off % 0x100: continue
         c = a + rel
         if c < 0 or c + csz > region or d[c:c + 4] != CTL_MAGIC: continue
-        n = struct.unpack_from('<I', d, c + 0x704)[0]
+        ctl = d[c:c + csz]; v2 = nvn2(ctl)
+        n = struct.unpack_from('<I', ctl, 0x44 if v2 else 0x704)[0]
         if off + n > rsz: continue
-        code, ctl = d[region + off:region + off + n], d[c:c + csz]
-        st = 'cs' if code[:4] == CS_MAGIC else sph_stage(code) if code[:4] == GFX_MAGIC else None
+        code = d[region + off:region + off + n]
+        st = NVN2_STAGE.get(ctl[0x56]) if v2 else 'cs' if code[:4] == CS_MAGIC else sph_stage(code) if code[:4] == GFX_MAGIC else None
         if not st or check(label, st, ctl, code): continue
         out.append((f'{label}#BAHS@{a:#x}', st, ctl, code))
+    return out
+
+def sead_prim_shaders(d, label):
+    """sead's NVN2 primitive drawer (Lib/sead/primitive_renderer/primitive_drawer_nvn2_shader.bin): u32 offsets of the vertex and pixel control sections, then of their code areas"""
+    if len(d) < 0x10: return []
+    out = []
+    for st, c, k in zip(('vs', 'ps'), struct.unpack_from('<2I', d), struct.unpack_from('<2I', d, 8)):
+        ctl = d[c:c + NVN2_KEY]
+        if not nvn2(ctl): return []
+        ctl = d[c:c + max(NVN2_KEY, struct.unpack_from('<I', ctl, 0x30)[0])]
+        code = d[k:k + struct.unpack_from('<I', ctl, 0x44)[0]]
+        if check(label, st, ctl, code): return []
+        out.append((f'{label}#SEADPRIM@{c:#x}', st, ctl, code))
     return out
 
 def mshd_shaders(d, label):
@@ -1262,6 +1293,7 @@ def scan_blob(d, label, out):
         for nm, m in sarc_members(d): scan_blob(m, f'{label}/{nm}', out)
         return
     if d[:4] == b'BAHS': out.extend(bahs_shaders(d, label)); return
+    if sp := sead_prim_shaders(d, label): out.extend(sp); return
     if d[:4] == b'MSHD': out.extend(mshd_shaders(d, label)); return
     if d[:4] == PGDAT and len(d) >= 0x1c and (mem := pgdat_members(d, label)) is not None:   # PlatinumGames
         for nm, m in mem: scan_blob(m, f'{label}/{nm}', out)
@@ -1392,7 +1424,7 @@ def scan_file(args):
         import unityfs
         try: unity_shaders(d, '/' + rel, found, trees if not TREES else dict(TREES))
         except unityfs.NoTree: return rel, {}, set(), 'defer'
-    elif b'BNSH\0\0\0\0' not in d and b'BAHS' not in d and d[:4] != b'MSHD' and not (d[:4] == b'SARC' and b'Yaz0' in d) and b'\x91\x68\x86\x19' not in d and MGFX not in d: return rel, {}, set(), {}   # a SARC may hold Yaz0 members
+    elif b'BNSH\0\0\0\0' not in d and b'BAHS' not in d and d[:4] != b'MSHD' and NVN2_MAGIC not in d[:0x20] and not (d[:4] == b'SARC' and b'Yaz0' in d) and b'\x91\x68\x86\x19' not in d and MGFX not in d: return rel, {}, set(), {}   # a SARC may hold Yaz0 members
     else:
         scan_blob(d, '/' + rel, found)
         # whole GLSLC outputs in a file no other reader takes (FINAL FANTASY TACTICS - The Ivalice Chronicles: its engine's technique files, resources_nx/…/shader/*.tec, 261 outputs beside
@@ -1506,8 +1538,9 @@ def main():
         if rec.count(b'BTCDBTCD') != 1: red(f'key {key}: the record separator appears inside the record')
         rows.append((name, len(recs[name]), STAGE_NAME[st], key, where)); recs[name].append(bytes(rec)); stat[st] += 1
         if st == 'cs':
-            x, y, z = struct.unpack_from('<3I', ctl, 0x748); sh = struct.unpack_from('<I', ctl, 0x754)[0]
-            if not x * y * z: red(f'compute shader {key}: control +0x748 thread group is 0 ({where})')
+            tg, so = (0x58, 0x64) if nvn2(ctl) else (0x748, 0x754)
+            x, y, z = struct.unpack_from('<3I', ctl, tg); sh = struct.unpack_from('<I', ctl, so)[0]
+            if not x * y * z: red(f'compute shader {key}: control +{tg:#x} thread group is 0 ({where})')
             facts[key] = {'local': [x, y, z], 'shared': (sh + 15) // 16 * 16}
     for name, rr in recs.items():
         with open(os.path.join(pkg, name), 'wb') as f: f.write(b''.join(rr))
