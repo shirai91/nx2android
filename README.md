@@ -44,6 +44,10 @@ A game played by touch: tick **Touch game** on the Port tab (`--touch`). The on-
 
 To arrange the on-screen controls, open the pause menu's **Gamepad** tab and choose **Edit layout**: drag a control to move it, pinch or use **− / +** to resize it. **Save** keeps the layout for the next launch and **Cancel** discards your edits. **Snap to grid** (off at first, and remembered) shows a square grid and snaps each control's center to it as you drag.
 
+For the experimental external-screen controller, port from the command line with `--external-display`. The game moves to a connected display and the phone shows the gamepad; the sound menu selects the phone or an external output. This option requires `javac` and an Android SDK with a platform and build-tools (`ANDROID_HOME`). Android 12 or newer uses the saved native layout; Android 10–11 use the fallback controller. Support varies by device and game.
+
+实验性外屏手柄可在命令行打包时添加 `--external-display`：连接显示器后，游戏显示在外屏，手机显示手柄，声音菜单可选择手机或外接设备。该选项需要 `javac` 和包含 platform、build-tools 的 Android SDK（设置 `ANDROID_HOME`）。Android 12 及以上复用已保存的原版布局；Android 10–11 使用备用手柄。效果取决于设备与游戏。
+
 A game that crashes with "AllocateAddressRegion … refused (0x1803)" in its log needs more address space: port it again with a larger **Extra address space** on the Port tab (`--alias-headroom` on the command line). [packaging/INSTALL.md](packaging/INSTALL.md#when-something-goes-wrong) says more.
 
 The step-by-step guide is [packaging/INSTALL.md](packaging/INSTALL.md). You need your own game files and `prod.keys`, dumped from your own Switch; the tool never ships or downloads either. NSZ and XCZ files are decompressed during the port (into the build folder's `tmp/`, deleted once extracted).

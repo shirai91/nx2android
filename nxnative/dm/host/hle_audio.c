@@ -244,6 +244,19 @@ static void au_go(aout *a, uint64_t now) {
     else if (a->retry_ms < 8000) a->retry_ms *= 2;
     a->retry_at = now + (uint64_t)a->retry_ms * 1000000;
 }
+#ifdef __ANDROID__
+void dm_aaudio_set_device(int32_t id);
+void dm_audio_route_device(int32_t id) {
+    pthread_mutex_lock(&g_aos_lock);
+    dm_aaudio_set_device(id);
+    for (int i = 0; i < AOMAX; i++) {
+        aout *a = g_aos[i];
+        if (!a || a->backend != BK_AU || !a->au) continue;
+        AudioOutputUnitStop(a->au); a->backend = BK_NONE; au_go(a, now_ns());
+    }
+    pthread_mutex_unlock(&g_aos_lock);
+}
+#endif
 // Watchdog (real output only): an AudioUnit that is started while the app is in focus must keep calling back. iOS stops calling back without telling the AudioUnit when another audio session takes over
 // (Siri, an alarm, a call) or the media services reset; the output's buffers were then never released, and a game whose audio thread waits for them (Wwise's poll-only output, FMOD) stayed silent for good.
 // After 200 ms without a callback the silent sink takes over (the game's audio keeps its real-time pace) and the AudioUnit is retried after 1, 2, 4, 8 s. A late wake-up of the watchdog itself (the whole process was stopped) only restarts the count.

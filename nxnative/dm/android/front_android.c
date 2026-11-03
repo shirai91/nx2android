@@ -20,10 +20,13 @@
 #include <android/native_activity.h>
 #include <android/window.h>
 #include <android/native_window.h>
+#include <android/native_window_jni.h>
 #include <android/sensor.h>
 #include <errno.h>
+#include <dlfcn.h>
 #include <jni.h>
 #include <pthread.h>
+#include <stdlib.h>
 #include <sys/mman.h>
 #include <stdatomic.h>
 #include <stdint.h>
@@ -41,11 +44,25 @@ void front_screen_match(int fps) { (void)fps; }
 static ANativeActivity *g_act;
 AAssetManager *dm_front_assets(void) { return g_act ? g_act->assetManager : NULL; }   // the APK's assets (overlay_theme.c: the gamepad's theme)
 static pthread_mutex_t g_win_mu = PTHREAD_MUTEX_INITIALIZER;
-static ANativeWindow *g_win;
-ANativeWindow *dm_front_window(void) { pthread_mutex_lock(&g_win_mu); ANativeWindow *w = g_win; pthread_mutex_unlock(&g_win_mu); return w; }
+static ANativeWindow *g_win, *g_external_win;
+static _Atomic int g_external_active;
+static _Atomic unsigned g_external_epoch;
+static _Atomic uint64_t g_ext_buttons, g_ext_presses;
+static _Atomic int g_ext_lx, g_ext_ly, g_ext_rx, g_ext_ry, g_ext_menu;
+ANativeWindow *dm_front_window(void) { pthread_mutex_lock(&g_win_mu); ANativeWindow *w = g_external_win ? g_external_win : g_win; pthread_mutex_unlock(&g_win_mu); return w; }
+static ANativeWindow *phone_window(void) { pthread_mutex_lock(&g_win_mu); ANativeWindow *w = g_win; pthread_mutex_unlock(&g_win_mu); return w; }
+int dm_external_active(void) { return atomic_load(&g_external_active); }
 __attribute__((weak)) void vk_window_lost(void) {}   // the backend lets go of the window's swapchain before the window goes
 static void on_window_created(ANativeActivity *a, ANativeWindow *w) { (void)a; pthread_mutex_lock(&g_win_mu); g_win = w; pthread_mutex_unlock(&g_win_mu); }
 static void on_window_destroyed(ANativeActivity *a, ANativeWindow *w) { (void)a; (void)w; pthread_mutex_lock(&g_win_mu); g_win = NULL; pthread_mutex_unlock(&g_win_mu); vk_window_lost(); }
+JNIEXPORT void JNICALL Java_org_nx2a_ExternalActivity_externalSurface(JNIEnv *env, jclass cls, jobject surface) {
+    (void)cls;
+    ANativeWindow *next = surface ? ANativeWindow_fromSurface(env, surface) : NULL;
+    pthread_mutex_lock(&g_win_mu); ANativeWindow *old = g_external_win; g_external_win = next; atomic_fetch_add(&g_external_epoch, 1); atomic_store(&g_external_active, next != NULL); pthread_mutex_unlock(&g_win_mu);
+    vk_window_lost();
+    if (old) ANativeWindow_release(old);
+    if (!next) { atomic_store(&g_ext_buttons, 0); atomic_store(&g_ext_presses, 0); atomic_store(&g_ext_menu, 0); dm_input_set(0, 0, 0, 0, 0); }
+}
 
 void dm_focus_set(int st); void dm_audio_suspend(int on); void guest_clock_freeze_for(int reason, int on); void dm_gfx_suspend(int on);
 // ---- settings (the pause menu's), kept in the files folder as KEY=VALUE lines ----
@@ -126,6 +143,54 @@ static void on_destroy(ANativeActivity *a) { (void)a; _exit(0); }   // one game 
 
 // ---- input ----
 static AInputQueue *g_queue; static ALooper *g_ilooper;
+// Java's dialog has its own input channel; hand its events to the normal input thread.
+typedef struct ext_touch { const AInputEvent *event; struct ext_touch *next; unsigned epoch; } ext_touch;
+static pthread_mutex_t g_ext_touch_mu = PTHREAD_MUTEX_INITIALIZER;
+static ext_touch *g_ext_touch_head, *g_ext_touch_tail;
+static _Atomic int g_ext_touch_enabled;
+typedef const AInputEvent *(*motion_from_java_fn)(JNIEnv *, jobject);
+typedef void (*input_release_fn)(const AInputEvent *);
+static motion_from_java_fn g_motion_from_java;
+static input_release_fn g_input_release;
+static pthread_once_t g_ext_touch_once = PTHREAD_ONCE_INIT;
+static void ext_touch_init(void) {
+    g_motion_from_java = (motion_from_java_fn)dlsym(RTLD_DEFAULT, "AMotionEvent_fromJava");
+    g_input_release = (input_release_fn)dlsym(RTLD_DEFAULT, "AInputEvent_release");
+}
+JNIEXPORT jboolean JNICALL Java_org_nx2a_ExternalActivity_externalTouch(JNIEnv *env, jclass cls, jobject motion) {
+    (void)cls;
+    pthread_once(&g_ext_touch_once, ext_touch_init);
+    if (!motion || !dm_external_active() || !g_motion_from_java || !g_input_release) return JNI_FALSE;
+    unsigned epoch = atomic_load(&g_external_epoch);
+    const AInputEvent *event = g_motion_from_java(env, motion);
+    ext_touch *item = event ? malloc(sizeof *item) : NULL;
+    if (!item) { if (event) g_input_release(event); return JNI_FALSE; }
+    *item = (ext_touch){event, NULL, epoch};
+    pthread_mutex_lock(&g_ext_touch_mu);
+    if (g_ext_touch_tail && g_ext_touch_tail->epoch == item->epoch && (AMotionEvent_getAction(event) & AMOTION_EVENT_ACTION_MASK) == AMOTION_EVENT_ACTION_MOVE &&
+        (AMotionEvent_getAction(g_ext_touch_tail->event) & AMOTION_EVENT_ACTION_MASK) == AMOTION_EVENT_ACTION_MOVE) {
+        g_input_release(g_ext_touch_tail->event); g_ext_touch_tail->event = event; free(item);
+    } else {
+        if (g_ext_touch_tail) g_ext_touch_tail->next = item; else g_ext_touch_head = item;
+        g_ext_touch_tail = item;
+    }
+    atomic_store(&g_ext_touch_enabled, 1);
+    pthread_mutex_unlock(&g_ext_touch_mu);
+    if (g_ilooper) ALooper_wake(g_ilooper);
+    return JNI_TRUE;
+}
+void dm_audio_route_device(int32_t id);
+JNIEXPORT void JNICALL Java_org_nx2a_ExternalActivity_externalAudio(JNIEnv *env, jclass cls, jint id) { (void)env; (void)cls; dm_audio_route_device(id); }
+JNIEXPORT void JNICALL Java_org_nx2a_ExternalActivity_externalHaptic(JNIEnv *env, jclass cls) { (void)env; (void)cls; dm_haptics_android_tap(); }
+JNIEXPORT void JNICALL Java_org_nx2a_ExternalActivity_externalInput(JNIEnv *env, jclass cls, jlong buttons, jint lx, jint ly, jint rx, jint ry, jboolean menu) {
+    (void)env; (void)cls;
+    uint64_t old = atomic_exchange(&g_ext_buttons, (uint64_t)buttons);
+    atomic_fetch_or(&g_ext_presses, (uint64_t)buttons & ~old);
+    if (((uint64_t)buttons & ~old) || menu) dm_haptics_android_tap();
+    atomic_store(&g_ext_lx, lx); atomic_store(&g_ext_ly, ly); atomic_store(&g_ext_rx, rx); atomic_store(&g_ext_ry, ry);
+    if (menu) atomic_fetch_add(&g_ext_menu, 1);
+    if (g_ilooper) ALooper_wake(g_ilooper);
+}
 static uint64_t g_btn; static float g_ax[8]; static int g_pad_used;   // lx ly rx ry lt rt hatx haty
 static uint64_t key_bit(int32_t k) {   // Nintendo layout by position: the bottom face button is B, the right one A (as the iOS front end maps)
     switch (k) {
@@ -155,8 +220,8 @@ static int64_t mono_ns(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC
 int dm_overlay_visible(void) { return atomic_load(&g_pads) ? 0 : atomic_load(&g_set_overlay) && atomic_load(&g_overlay) ? 1 : 2; }
 int dm_overlay_layout(void) {   // the phone's layout in a window at least OV_PHONE_ASPECT wide for its height (overlay_layout.h)
     static int last_w = -1, last_h = -1, phone;
-    ANativeWindow *w = dm_front_window(); int ww = w ? ANativeWindow_getWidth(w) : 0, wh = w ? ANativeWindow_getHeight(w) : 0;
-    if (ww != last_w || wh != last_h) { last_w = ww; last_h = wh; phone = wh > 0 && (float)ww / (float)wh >= OV_PHONE_ASPECT;
+    ANativeWindow *w = phone_window(); int ww = w ? ANativeWindow_getWidth(w) : 0, wh = w ? ANativeWindow_getHeight(w) : 0;
+    if (ww != last_w || wh != last_h) { last_w = ww; last_h = wh; phone = ov_layout_for_size(ww, wh);
         if (wh > 0) LOG("[overlay] window %dx%d: the %s layout", ww, wh, phone ? "phone" : "tablet"); }
     return phone;
 }
@@ -180,7 +245,7 @@ int64_t dm_overlay_pressed(int ctl, uint64_t bit) {
 static int g_dpi;   // the display's density (AConfiguration), 0 = unknown
 float dm_overlay_scale(void) {
     static int last_w = -1, last_h = -1; static float s = 1;
-    ANativeWindow *w = dm_front_window(); int ww = w ? ANativeWindow_getWidth(w) : 0, h = w ? ANativeWindow_getHeight(w) : 0;
+    ANativeWindow *w = phone_window(); int ww = w ? ANativeWindow_getWidth(w) : 0, h = w ? ANativeWindow_getHeight(w) : 0;
     if (h != last_h || ww != last_w) { last_w = ww; last_h = h; s = 1;   // (the width picks the layout, whose buttons are sized for its form factor)
         float face = 0.1f; const ov_ctl *L = OV_CTLS; for (int i = 0; i < OV_N; i++) if (L[i].kind == OV_BUTTON && L[i].btn == DM_BTN_A) face = L[i].w;   // A's width, in window heights
         if (h > 0 && g_dpi > 0 && g_dpi < 0xfffe) { float mm = face * (float)h / (float)g_dpi * 25.4f; s = OV_MIN_MM / mm; if (s < 1) s = 1; if (s > 1.45f) s = 1.45f; }   // (more and the face buttons touch)
@@ -188,6 +253,49 @@ float dm_overlay_scale(void) {
     return s;
 }
 void dm_overlay_knob(int stick, float *dx, float *dy) { *dx = atomic_load(&g_knob[stick][0]) / 10000.0f; *dy = atomic_load(&g_knob[stick][1]) / 10000.0f; }
+// Geometry and state come from the same tables and saved settings as native hit-testing.
+JNIEXPORT jfloatArray JNICALL Java_org_nx2a_ExternalActivity_externalOverlay(JNIEnv *env, jclass cls, jint width, jint height) {
+    (void)cls;
+    if (width <= 0 || height <= 0) return NULL;
+    int layout = ov_layout_for_size(width, height);
+    jfloat values[5 + OV_N * 9];
+    int state = dm_menu_state();
+    values[0] = layout; values[1] = dm_overlay_scale(); values[2] = dm_overlay_opacity(); values[3] = state < 0 ? -1 : state & 0xffffff;
+    for (int i = 0; i < OV_N; i++) {
+        const ov_ctl *c = &OV_LAYOUTS[layout][i]; float b[4], kx = 0, ky = 0;
+        ov_box(c, (float)width, (float)height, b);
+        if (c->kind == OV_STICK_L || c->kind == OV_STICK_R) dm_overlay_knob(c->kind == OV_STICK_R, &kx, &ky);
+        uint64_t held = 0;
+        if (c->kind == OV_DPAD) { for (int d = 0; d < 4; d++) if (dm_overlay_pressed(i, OV_DPAD_BITS[d])) held |= 1u << d; }
+        else if (dm_overlay_pressed(i, 0)) held = 1;
+        jfloat *v = &values[4 + i * 9];
+        v[0] = c->kind; v[1] = b[0]; v[2] = b[1]; v[3] = b[2]; v[4] = b[3]; v[5] = (jfloat)held; v[6] = kx; v[7] = ky; v[8] = ov_cscale(c);
+    }
+    values[4 + OV_N * 9] = dm_overlay_visible();
+    jfloatArray out = (*env)->NewFloatArray(env, (jsize)(5 + OV_N * 9));
+    if (out) (*env)->SetFloatArrayRegion(env, out, 0, (jsize)(5 + OV_N * 9), values);
+    return out;
+}
+int dm_text_entry(char *title, int tcap, char *text, int xcap, int *sel, int *shift);
+JNIEXPORT jobjectArray JNICALL Java_org_nx2a_ExternalActivity_externalPanel(JNIEnv *env, jclass cls) {
+    (void)cls;
+    char text[OVM_ROWS][160] = {{0}}; int state = dm_menu_state();
+    if (state >= 0 && (state & 0x10000)) {
+        int sel, shift; char title[80], value[80];
+        if (dm_text_entry(title, sizeof title, value, sizeof value, &sel, &shift)) {
+            snprintf(text[0], sizeof text[0], "%s", title); snprintf(text[1], sizeof text[1], "%s", value);
+            snprintf(text[2], sizeof text[2], "%d", shift);
+        }
+    } else if (state >= 0 && (state & OVS_ST)) {
+        ov_srow rows[OVM_ROWS];
+        if (dm_save_rows(rows)) for (int i = 0; i < OVM_ROWS; i++)
+            snprintf(text[i], sizeof text[i], "%s%s%s", rows[i].left, rows[i].right[0] ? "  " : "", rows[i].right);
+    }
+    jclass string = (*env)->FindClass(env, "java/lang/String"); if (!string) return NULL;
+    jobjectArray out = (*env)->NewObjectArray(env, OVM_ROWS, string, NULL);
+    if (out) for (int i = 0; i < OVM_ROWS; i++) { jstring s = (*env)->NewStringUTF(env, text[i]); if (!s) break; (*env)->SetObjectArrayElement(env, out, i, s); (*env)->DeleteLocalRef(env, s); }
+    (*env)->DeleteLocalRef(env, string); return out;
+}
 static int g_ptr_ctl[32];   // pointer id → control index + 1 (0 = the touch screen)
 static int ctl_at(float x, float y, float W, float H) {   // the control under (x, y) in pixels, -1 if none (in the layout editor: every control, shown or not)
     int best = -1, vis = atomic_load(&g_edit) ? 1 : dm_overlay_visible(), shown = vis == 1; float bd = 1e9f;
@@ -684,7 +792,7 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
 
 __attribute__((weak)) void dm_picture_rect(float r[4]);   // gfx_vk_present.c
 static void touch_event(AInputEvent *e) {
-    ANativeWindow *w = dm_front_window(); float W = w ? (float)ANativeWindow_getWidth(w) : 1, H = w ? (float)ANativeWindow_getHeight(w) : 1;
+    ANativeWindow *w = phone_window(); float W = w ? (float)ANativeWindow_getWidth(w) : 1, H = w ? (float)ANativeWindow_getHeight(w) : 1;
     if (atomic_load(&g_tx_on)) { tx_touch(e, W, H); return; }   // the text entry's keys
     if (atomic_load(&g_menu)) { if (atomic_load(&g_edit)) ed_touch(e, W, H); else if (atomic_load(&g_sp_on)) sp_touch(e, W, H); else menu_touch(e, W, H); return; }
     int act = AMotionEvent_getAction(e) & AMOTION_EVENT_ACTION_MASK, ai = AMotionEvent_getAction(e) >> AMOTION_EVENT_ACTION_POINTER_INDEX_SHIFT;
@@ -788,6 +896,12 @@ static int on_input(int fd, int events, void *data) {
     }
     return 1;
 }
+static void ext_touch_drain(void) {
+    pthread_mutex_lock(&g_ext_touch_mu);
+    ext_touch *item = g_ext_touch_head; g_ext_touch_head = g_ext_touch_tail = NULL;
+    pthread_mutex_unlock(&g_ext_touch_mu);
+    while (item) { ext_touch *next = item->next; if (dm_external_active() && item->epoch == atomic_load(&g_external_epoch)) touch_event((AInputEvent *)item->event); g_input_release(item->event); free(item); item = next; }
+}
 // ---- shaking the device: the controller is shaken (DM_BTN_SHAKE: its six-axis sensor, hle_hid.c; Super Mario Odyssey's cap throw), as the iOS front end does with the phone ----
 // The accelerometer at 60 Hz on the input thread's looper (no permission needed): gravity is followed by a slow low-pass (about 0.8 s), and a sample whose acceleration beyond it
 // exceeds DM_SHAKE_G (1.5 G by default; env.txt overrides) is a hit. The controller is shaken until 120 ms after the last hit: a flick is one shake (the host finishes it as a whole
@@ -829,7 +943,24 @@ static void shake_start(void) {
 static void *input_thread(void *a) {
     (void)a; g_ilooper = ALooper_prepare(0);
     shake_start();
-    for (;;) ALooper_pollOnce(-1, NULL, NULL, NULL);
+    uint64_t prev = 0, latched = 0, sample = 0; int64_t since = 0;
+    for (;;) {
+        ALooper_pollOnce(latched ? 10 : -1, NULL, NULL, NULL);
+        ext_touch_drain();
+        if (!dm_external_active()) { prev = latched = 0; atomic_store(&g_ext_presses, 0); atomic_store(&g_ext_touch_enabled, 0); continue; }
+        if (atomic_load(&g_ext_touch_enabled)) continue;
+        int toggle = atomic_exchange(&g_ext_menu, 0);
+        if (toggle & 1) { if (atomic_load(&g_menu)) menu_close(); else menu_open(0); }
+        uint64_t b = atomic_load(&g_ext_buttons), presses = atomic_exchange(&g_ext_presses, 0);
+        if (atomic_load(&g_menu)) { uint64_t down = (b & ~prev) | presses; latched = 0; for (int i = 0; i < 16; i++) if (down & (1ull << i)) menu_key(1ull << i); dm_input_set(0, 0, 0, 0, 0); }
+        else {
+            int64_t elapsed = mono_ns() - since;
+            if (latched && ((elapsed >= 20000000 && dm_input_samples() != sample) || elapsed >= 100000000)) latched = 0;
+            if (presses) { latched |= presses; sample = dm_input_samples(); since = mono_ns(); }
+            dm_input_set(b | latched, atomic_load(&g_ext_lx), atomic_load(&g_ext_ly), atomic_load(&g_ext_rx), atomic_load(&g_ext_ry));
+        }
+        prev = b;
+    }
     return NULL;
 }
 static void on_queue_created(ANativeActivity *a, AInputQueue *q) { (void)a; g_queue = q; while (!g_ilooper) usleep(1000); AInputQueue_attachLooper(q, g_ilooper, 1, on_input, NULL); }
