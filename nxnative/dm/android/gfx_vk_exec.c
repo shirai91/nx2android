@@ -527,15 +527,14 @@ void vk_end_pass(void) {
 // copies, the submission's end): the deferred uniform updates land first (draws read them through their shadows, so ordinary pass ends keep them)
 void vk_end_pass_land(void) { vk_end_pass(); if (vk_sub_open()) vk_ubd_land(vk_cmd()); }
 static int pass_whole(VkRect2D r) { return !r.offset.x && !r.offset.y && r.extent.width >= S.pass_w && r.extent.height >= S.pass_h; }
-extern uint64_t g_tex_gen;
-static int g_fb_cut;   // the open pass draws a mip level above 0: its draws' sets and views (fb_cut_levels) are not reused past it
+static int g_fb_cut;   // the pass draws a mip level above 0: its draws sample views cut below it (fb_cut_levels), which no cache keeps
 static int begin_pass(void) {
     if (S.pass_open) return 1;
     int psplit = g_psplit_now; g_psplit_now = 0;   // a pass split (prepare_draw): taken before any early return, so the flag never forces a later pass's cut
     VkCommandBuffer cb = vk_cmd();
     VkRenderingAttachmentInfo *ca = P_ca; memset(ca, 0, sizeof P_ca);
     for (int i = 0; i < 9; i++) P_att[i].im = NULL;
-    if (g_fb_cut) { g_fb_cut = 0; g_tex_gen++; }   // the cut views stay in this pass's caches only
+    g_fb_cut = 0;
     VkRenderingAttachmentInfo da = {0}, sa = {0};
     uint32_t w = UINT32_MAX, h = UINT32_MAX, layers = UINT32_MAX, samples = 1; int ncol = 0, have = 0;
     for (int i = 0; i < S.rt_n; i++) {
@@ -554,7 +553,7 @@ static int begin_pass(void) {
               static int said; if (!said++) VKLOG("colour target: block-compressed format %#x drawn through view format %#x: pass in blocks, %ux%u", S.rt_col[i].d.format, S.rt_cview[i].format, iw, ih); } }
         if (iw < w) w = iw; if (ih < h) h = ih; samples = im->samples; have = 1;
         ca[i].imageView = v; S.cfmt[i] = vk_view_fmt; ncol = i + 1; P_att[i].im = im;   // (the view's format: a render pass's attachment and its pipelines take it)
-        P_att[i].lv = lv; if (lv) { g_tex_gen++; g_fb_cut = 1; }   // sets and views made before may sample this level (fb_cut_levels)
+        P_att[i].lv = lv; g_fb_cut |= lv != 0;
         P_att[i].fmt = vk_view_fmt; P_att[i].layers = vk_view_layers ? vk_view_layers : 1; P_att[i].w = iw; P_att[i].h = ih;
         if (P_att[i].layers < layers) layers = P_att[i].layers;
     }
@@ -1053,7 +1052,7 @@ extern uint64_t g_tex_gen;
 // which the pass is writing. On Metal, so on the Android emulator, it held no defined data: Donkey Kong Bananza's environment cube got NaN texels, which bloom spread into
 // white blotches. Such a draw samples a view cut below the attachment's level (the same base, so the shader's level numbers keep their meaning)
 static int fb_cut_levels(const vkimg_t *im, const view_t *v, view_t *cut) {
-    if (!S.pass_open || !im) return 0;
+    if (!im) return 0;
     uint32_t lv0 = v && v->set_levels ? v->base_level : 0, nlv = v && v->set_levels && v->nlevels ? v->nlevels : im->levels - lv0;
     for (int i = 0; i < 8; i++) if (P_att[i].im == im && P_att[i].lv > lv0 && P_att[i].lv < lv0 + nlv) {
         if (v) *cut = *v; else memset(cut, 0, sizeof *cut);
@@ -1077,7 +1076,7 @@ static int tex_desc_for(int st, const dmsv_bind *b, uint64_t h, VkDescriptorImag
                              (unsigned long long)t->serial, (const void *)t->pool, (unsigned long long)t->off, (unsigned long long)t->L.size, (void *)im, im ? im->w : 0, im ? im->h : 0, im ? im->fmt : 0, im ? im->layers : 0, im ? im->levels : 0, (void *)ii->imageView);
         if (im) im->last_use = mtl_last_fence() + 1;
         if (ii->imageView) num = view_num(t, v);
-        if (ii->imageView) { g_tvc[ck].epoch = g_set_epoch; g_tvc[ck].gen = g_tex_gen; g_tvc[ck].tid = tid; g_tvc[ck].dim = b->dim; g_tvc[ck].arr = b->flags & 1; g_tvc[ck].v = ii->imageView; g_tvc[ck].im = im; g_tvc[ck].num = num; }
+        if (ii->imageView && !mip_rt) { g_tvc[ck].epoch = g_set_epoch; g_tvc[ck].gen = g_tex_gen; g_tvc[ck].tid = tid; g_tvc[ck].dim = b->dim; g_tvc[ck].arr = b->flags & 1; g_tvc[ck].v = ii->imageView; g_tvc[ck].im = im; g_tvc[ck].num = num; }
     }
     if (num && !storage) ii->sampler = samp_for(st, b, h, 1);
     if (!ii->imageView) {
@@ -1154,7 +1153,7 @@ static int set_memo_get(int st, vkshader_t *s, uint32_t *dofs) {
 }
 // dofs (at least s->ndyn entries): the dynamic offsets of the set's dynamic uniform and storage buffers, in binding order as vkCmdBindDescriptorSets takes them
 static VkDescriptorSet stage_set(int st, vkshader_t *s, uint32_t *dofs) {
-    int memo = st < 3 && !g_x_nosetmemo && !g_tracing && !g_var_now && !g_x_nosetc && !g_x_nodrvc && !g_ubolog_key && g_td_off < 0 && set_memo_ok(s), verify = 0;
+    int memo = st < 3 && !g_fb_cut && !g_x_nosetmemo && !g_tracing && !g_var_now && !g_x_nosetc && !g_x_nodrvc && !g_ubolog_key && g_td_off < 0 && set_memo_ok(s), verify = 0;
     uint32_t vd[96]; uint64_t vum = 0, vim = 0;   // verify: what the memo gave
     if (memo && set_memo_get(st, s, dofs)) { static unsigned nv; if (!g_x_setverify || ++nv % 64) { g_set_memo++; return g_smemo[st].set; }
         verify = 1; memcpy(vd, dofs, sizeof *dofs * (size_t)s->ndyn); vum = g_num_um; vim = g_num_im; }
