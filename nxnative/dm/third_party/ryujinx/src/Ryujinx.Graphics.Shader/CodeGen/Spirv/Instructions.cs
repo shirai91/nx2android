@@ -1723,15 +1723,26 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
         private static OperationResult GenerateLoadOrStore(CodeGenContext context, AstOperation operation, bool isStore)
         {
             SpvInstruction pointer = GetStoragePointer(context, operation, out AggregateType varType);
+            bool physical = operation.StorageKind == StorageKind.PhysicalMemory;   // a physical storage buffer access names its alignment
 
             if (isStore)
             {
-                context.Store(pointer, context.Get(varType, operation.GetSource(operation.SourcesCount - 1)));
+                SpvInstruction store = context.Store(pointer, context.Get(varType, operation.GetSource(operation.SourcesCount - 1)), physical ? MemoryAccessMask.Aligned : (MemoryAccessMask)int.MaxValue);
+                if (physical)
+                {
+                    store.AddOperand((Spv.Generator.LiteralInteger)4);
+                }
+
                 return OperationResult.Invalid;
             }
             else
             {
-                SpvInstruction result = context.Load(context.GetType(varType), pointer);
+                SpvInstruction result = context.Load(context.GetType(varType), pointer, physical ? MemoryAccessMask.Aligned : (MemoryAccessMask)int.MaxValue);
+                if (physical)
+                {
+                    result.AddOperand((Spv.Generator.LiteralInteger)4);
+                }
+
                 return new OperationResult(varType, result);
             }
         }
@@ -1747,6 +1758,13 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
 
             switch (storageKind)
             {
+                case StorageKind.PhysicalMemory:
+                    SpvInstruction address = context.CompositeConstruct(context.TypeVector(context.TypeU32(), 2),
+                        context.GetU32(operation.GetSource(0)), context.GetU32(operation.GetSource(1)));
+                    varType = AggregateType.U32;
+
+                    return context.Bitcast(context.TypePointer(StorageClass.PhysicalStorageBuffer, context.TypeU32()), address);
+
                 case StorageKind.ConstantBuffer:
                 case StorageKind.StorageBuffer:
                     if (operation.GetSource(srcIndex++) is not AstOperand bindingIndex || bindingIndex.Type != OperandType.Constant)

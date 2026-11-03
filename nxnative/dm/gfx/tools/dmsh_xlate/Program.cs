@@ -112,6 +112,7 @@ static class SwshXlate
         public int QueryComputeLocalSizeZ() => Local(2);
         public int QueryComputeSharedMemorySize() => _job["shared"] is JsonNode n ? (int)n : 0;   // the shared memory size in the compute shader's control section (shader_split.py)
         static AttributeType Attr(string s) => s switch { "sint" => AttributeType.Sint, "uint" => AttributeType.Uint, _ => AttributeType.Float };
+        public bool QueryPhysicalGlobalMemory() => _job["physical_gmem"] is JsonNode n && (bool)n;   // job "physical_gmem" (shader_vk.py): global accesses traced to no storage buffer go through the host's pool table
         public bool QueryGeometryInputFixed() => _job["geometry_topology"] != null;
         public GpuGraphicsState QueryGraphicsState()
         {

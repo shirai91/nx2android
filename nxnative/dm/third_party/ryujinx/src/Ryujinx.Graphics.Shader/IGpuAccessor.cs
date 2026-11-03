@@ -194,6 +194,14 @@ namespace Ryujinx.Graphics.Shader
         }
 
         /// <summary>
+        /// Queries whether a global memory access traced to no storage buffer goes through the host's memory pool table (StorageKind.PhysicalMemory).
+        /// </summary>
+        bool QueryPhysicalGlobalMemory()
+        {
+            return false;
+        }
+
+        /// <summary>
         /// Queries host's gather operation precision bits for biasing their coordinates. Zero means no bias.
         /// </summary>
         /// <returns>Bits of gather operation precision to use for coordinate bias</returns>

@@ -17,6 +17,7 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
         public IReadOnlyDictionary<SetBindingPair, TextureDefinition> Images => _images;
         public IReadOnlyDictionary<int, MemoryDefinition> LocalMemories => _localMemories;
         public IReadOnlyDictionary<int, MemoryDefinition> SharedMemories => _sharedMemories;
+        public bool UsesPhysicalMemory { get; set; }   // StorageKind.PhysicalMemory accesses: the module addresses physical storage buffers
 
         public ShaderProperties()
         {
