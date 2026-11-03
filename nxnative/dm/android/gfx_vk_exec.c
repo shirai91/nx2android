@@ -29,6 +29,7 @@ static struct {
     tex_t rt_col[8], rt_dep; view_t rt_cview[8], rt_dview; uint8_t rt_has_col[8], rt_has_cview[8], rt_has_dep, rt_has_dview; int rt_n; uint32_t rt_bad[8];   // rt_bad: the first word of a colour slot that is not a texture object (traces)
     int64_t row_stride, image_stride;
     uint8_t push[2][NVN_PUSH_SIZE];   // NVN2 push constants of the graphics stages and of compute (c[NVN_PUSH_BANK])
+    uint8_t hi[6][5];   // per stage, one past the highest slot ever bound non-zero: textures 0-31, textures 128-255 (from 128), images, samplers, storage buffers (drv_hash)
     // the open render pass
     int pass_open; uint32_t pass_w, pass_h; VkFormat cfmt[8], dfmt; VkImageAspectFlags daspect; uint32_t samples; int ncol;
     VkPipeline bound_pipe; int rp_pass;   // rp_pass: the open pass began with vkCmdBeginRenderPass
@@ -1008,10 +1009,8 @@ static uint32_t ubo_word(int st, int reg, int off) {
 }
 static uint32_t g_dispatch[3], g_draw_binst;
 #define SB_ALIGN 256   // storage buffers are bound from this boundary below their address (dm/android/tools/shader_vk.py SB_ALIGN, which the shaders were translated for)
-// The bytes of a driver segment its shaders can read, the rest of its 4 KB being zero: bank 0 to 0x648, NVN2 push constants, the c2 handle table to 0x968
-static uint32_t drv_len(int bank) { return bank == 0 ? 0x648 : bank == NVN_PUSH_BANK ? NVN_PUSH_SIZE : 0x968; }
 static void drv_segment(int st, int bank, uint8_t *d) {
-    memset(d, 0, drv_len(bank));
+    memset(d, 0, 0x1000);
     if (bank == 0) {
         static const int sbo[6] = {0x110, 0x510, 0x410, 0x210, 0x310, 0x310};   // each NVN stage's storage buffer table (graphics: 0x110 + 0x100 x the hardware stage)
         int base = sbo[st];
@@ -1111,11 +1110,20 @@ static inline uint64_t hash64(uint64_t h, const void *p, size_t n) {
     for (; i < n; i++) { h ^= b[i]; h *= 0x100000001b3ull; }
     return h;
 }
-static void drv_shared(int st, int bank, VkBuffer *buf, VkDeviceSize *off) {   // the driver segment: built, then one copy per distinct content in the submission
-    uint8_t d[0x1000]; uint32_t n = drv_len(bank); drv_segment(st, bank, d);
-    uint64_t h = hash64(0xcbf29ce484222325ull, d, n); unsigned k = (unsigned)(h % DRVC);
+// What a driver segment is built from, hashed: the arrays up to the highest slot ever bound in them (the rest reads zero) and the scalars, where the segment's own
+// bytes were hashed (up to 2.4 KB), after building it: Donkey Kong Bananza asks for ~1,700 a frame, most of them made already
+static uint64_t drv_hash(int st, int bank) {
+    const uint8_t *hi = S.hi[st]; uint64_t h = hmix(0xcbf29ce484222325ull, (uint64_t)bank << 8 | (uint64_t)(bank ? 0 : st));
+    if (bank == NVN_PUSH_BANK) return hash64(h, S.push[st == 5], NVN_PUSH_SIZE);
+    if (bank) { h = hash64(hmix(h, hi[0]), S.tex[st], 8u * hi[0]); h = hash64(hmix(h, hi[1]), S.tex[st] + 128, 8u * hi[1]);
+                h = hash64(hmix(h, hi[2] < 8 ? hi[2] : 8), S.img[st], 8u * (hi[2] < 8 ? hi[2] : 8)); return hash64(hmix(h, hi[3]), S.samp[st], 8u * hi[3]); }
+    h = hash64(hmix(h, hi[4]), S.ssbo[st], sizeof *S.ssbo[st] * hi[4]);
+    return st != 5 ? hmix(h, g_draw_binst) : hash64(hash64(h, g_dispatch, sizeof g_dispatch), S.ubo[5], sizeof S.ubo[5]);
+}
+static void drv_shared(int st, int bank, VkBuffer *buf, VkDeviceSize *off) {   // the driver segment: one copy per distinct content in the submission
+    uint64_t h = drv_hash(st, bank); unsigned k = (unsigned)(h % DRVC);
     if (g_drvc[k].epoch == g_set_epoch && g_drvc[k].h == h && !g_x_nodrvc) { *buf = g_drvc[k].b; *off = g_drvc[k].o; return; }
-    uint8_t *p = vk_scratch(0x1000, V.props.limits.minUniformBufferOffsetAlignment, buf, off); memcpy(p, d, n); memset(p + n, 0, 0x1000 - n);
+    drv_segment(st, bank, vk_scratch(0x1000, V.props.limits.minUniformBufferOffsetAlignment, buf, off));
     g_drvc[k].h = h; g_drvc[k].epoch = g_set_epoch; g_drvc[k].b = *buf; g_drvc[k].o = *off;
 }
 // A buffer binding's range rounded up to a power of two (at least 256), where its pool and the device allow: the range is part of a set's content while a dynamic
@@ -2008,7 +2016,9 @@ static void bind_handles_rec(uint32_t op, const void *a) {
         if (op == OP_BIND_TEX || op == OP_BIND_TEX1) { if (slot >= 0 && slot < 256) { d = &S.tex[st][slot]; q = &S.tex_sseq[st][slot]; } }
         else if (op == OP_BIND_SAMP) { if (slot >= 0 && slot < 128) { d = &S.samp[st][slot]; q = &S.samp_sseq[st][slot]; } }
         else if (op == OP_BIND_IMG) { if (slot >= 0 && slot < 32) d = &S.img[st][slot]; }
-        if (d && (*d != b->h[i] || (q && *q != b->sseq))) { *d = b->h[i]; if (q) *q = b->sseq; g_bind_gen[st]++; }   // only a change counts: games bind the same handles again before many draws (stage_set's memo)
+        if (d && (*d != b->h[i] || (q && *q != b->sseq))) { *d = b->h[i]; if (q) *q = b->sseq; g_bind_gen[st]++;   // only a change counts: games bind the same handles again before many draws (stage_set's memo)
+            int k = op == OP_BIND_SAMP ? 3 : op == OP_BIND_IMG ? 2 : slot < 32 ? 0 : slot >= 128 ? 1 : -1, at = k == 1 ? slot - 127 : slot + 1;   // (textures 32-127 are not in c2)
+            if (k >= 0 && b->h[i] && at > S.hi[st][k]) S.hi[st][k] = (uint8_t)at; }
     }
 }
 uint32_t g_sub_ops[64];   // record ops replayed in the open submission, by op (logged when the driver refuses it)
@@ -2101,7 +2111,8 @@ static void exec_ops(const uint8_t *p) {
         case OP_BIND_VSTREAM: { const p_bind_vstream *v = (const p_bind_vstream *)a; for (int i = 0; i < v->n && v->first + i < 16; i++) S.vstream[v->first + i] = v->st[i]; break; }
         case OP_BIND_VBUF: { const p_bind_vbuf *v = (const p_bind_vbuf *)a; for (int i = 0; i < v->n && v->first + i < 16; i++) S.vbuf[v->first + i] = v->r[i]; break; }
         case OP_BIND_UBO: { const p_bind_buf *b = (const p_bind_buf *)a; if (b->stage >= 0 && b->stage < 6 && b->index >= 0 && b->index < 16 && memcmp(&S.ubo[b->stage][b->index], b, sizeof *b)) { S.ubo[b->stage][b->index] = *b; g_ubo_gen[b->stage]++; } break; }
-        case OP_BIND_SSBO: { const p_bind_buf *b = (const p_bind_buf *)a; if (b->stage >= 0 && b->stage < 6 && b->index >= 0 && b->index < 16 && memcmp(&S.ssbo[b->stage][b->index], b, sizeof *b)) { S.ssbo[b->stage][b->index] = *b; g_bind_gen[b->stage]++; } break; }
+        case OP_BIND_SSBO: { const p_bind_buf *b = (const p_bind_buf *)a; if (b->stage >= 0 && b->stage < 6 && b->index >= 0 && b->index < 16 && memcmp(&S.ssbo[b->stage][b->index], b, sizeof *b)) { S.ssbo[b->stage][b->index] = *b; g_bind_gen[b->stage]++;
+            if ((b->addr || b->size) && b->index >= S.hi[b->stage][4]) S.hi[b->stage][4] = (uint8_t)(b->index + 1); } break; }
         case OP_BIND_TEX: case OP_BIND_SAMP: case OP_BIND_IMG: case OP_BIND_TEX1: bind_handles_rec(h.op, a); break;
         case OP_STENCIL: { const p_stencil *s = (const p_stencil *)a;
             for (int f = 0; f < 2; f++) if (s->face & (1 << f)) { if (s->which == 0) S.smask[f] = s->value_mask; else if (s->which == 1) S.swmask[f] = s->mask; else S.sref[f] = s->ref; }
