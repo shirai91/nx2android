@@ -975,7 +975,8 @@ static VkPipeline build_pipeline(const pkey *k, VkPipelineLayout layout, vkshade
     VkResult r = vkCreateGraphicsPipelines(V.dev, V.pcache, 1, &ci, NULL, &p);
     build_end(bs);
     static uint64_t n; uint64_t c = __atomic_add_fetch(&n, 1, __ATOMIC_RELAXED);
-    if (r) { LOG("[RED] [vk] graphics pipeline failed (%d): shaders %016llx %016llx %016llx", r, (unsigned long long)k->key[0], (unsigned long long)k->key[1], (unsigned long long)k->key[2]); p = (VkPipeline)1; }
+    if (r) { char af[160] = ""; for (uint32_t i = 0, o = 0; i < k->nattr && o < sizeof af - 12; i++) o += snprintf(af + o, sizeof af - o, " %u:%u", k->attr[i].loc, k->attr[i].fmt);
+        LOG("[RED] [vk] graphics pipeline failed (%d): shaders %016llx %016llx %016llx; attributes (location:format)%s", r, (unsigned long long)k->key[0], (unsigned long long)k->key[1], (unsigned long long)k->key[2], af); p = (VkPipeline)1; }
     else if (c % 200 == 0) VKLOG("%llu graphics pipelines", (unsigned long long)c);
     __atomic_add_fetch(&g_vkst.pipes_built, 1, __ATOMIC_RELAXED);
     return p;   // (VkPipeline)1 = failed
