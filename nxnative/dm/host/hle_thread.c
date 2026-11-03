@@ -67,6 +67,7 @@ typedef struct thr {
     uint64_t nsvc;             // SVC count (for the state dump)
     uint64_t nyield, nyield_seen, nbackoff, nbackoff_seen;   // Yields (SleepThread 0/-1/-2) and those the back-off turned into short sleeps, with both counts at the last power report (dm_yield_top)
     uint64_t nspin, nspin_seen, spin_site; const char *spin_mod;   // Spin wait passes (dm_spin_wait; those that yield count in nyield too) and where the last one was
+    uint64_t spun[2][2];   // DM_WAIT_SPIN_US / DM_LOCK_SPIN_US spins of this thread's waits [0] and locks [1]: [.][0] ended by the wake or release, [.][1] ran out (dm_thread_cpu)
     uint64_t srun_svc, srun_t0, spin_ret;     // Current spin wait: nsvc at its passes, when it began, when the last pass returned
     uint64_t cpu_seen_us;                     // CPU time (µs) at the last power report (dm_thread_cpu)
     uint64_t yrun_svc, yrun_t0, yrun_sig;     // Current run of yields: nsvc of the last yield, when the run began, and the caller's x19–x28 at the last yield (a run lasts while no other SVC comes between two yields and those registers stay the same, thr_yield)
@@ -213,7 +214,7 @@ static int64_t block(thr_t *t, int kind, int64_t ns) {
     uint64_t spin = spin_ns(0);
     if (spin && !dm_detclock_enabled()) {
         atomic_store(&t->spinning, 1); g_unlock();
-        uint64_t t0 = now_ns(); spin_until(thr_woke, t, ns > 0 && (uint64_t)ns < spin ? (uint64_t)ns : spin);
+        uint64_t t0 = now_ns(); int hit = spin_until(thr_woke, t, ns > 0 && (uint64_t)ns < spin ? (uint64_t)ns : spin); t->spun[0][!hit]++;
         g_lock(); atomic_store(&t->spinning, 0);
         if (t->woke) return t->wres;
         if (ns > 0 && (ns -= (int64_t)(now_ns() - t0)) <= 0) { wait_unlink(t); t->wkind = 0; return R_TIMEOUT; }
@@ -695,6 +696,15 @@ void dm_thread_cpu(char *out, size_t n, double secs) {
     if (!top[0] && o < n) snprintf(out + o, n - o, "none");
     g_unlock();
 }
+// The spins of DM_WAIT_SPIN_US and DM_LOCK_SPIN_US since the last call: how many, and how many ended in time (the others burnt their whole budget, then slept). "" when none
+void dm_spin_report(char *out, size_t n) {
+    static uint64_t seen[4], t0; uint64_t sp[4] = {0}, t = now_ns(); double secs = t0 ? (t - t0) / 1e9 : 1; t0 = t;
+    g_lock(); for (thr_t *th = g_all; th; th = th->all) for (int i = 0; i < 4; i++) sp[i] += th->spun[i >> 1][i & 1]; g_unlock();
+    uint64_t w[4]; for (int i = 0; i < 4; i++) { w[i] = sp[i] > seen[i] ? sp[i] - seen[i] : 0; seen[i] = sp[i]; }   // (an exited thread's counts go with it)
+    if (n) *out = 0;
+    if (w[0] | w[1] | w[2] | w[3]) snprintf(out, n, "%.0f waits/s (%.0f%% woken while spinning), %.0f locks/s (%.0f%% released)", (w[0] + w[1]) / secs,
+        100.0 * (double)w[0] / (double)(w[0] + w[1] + !(w[0] + w[1])), (w[2] + w[3]) / secs, 100.0 * (double)w[2] / (double)(w[2] + w[3] + !(w[2] + w[3])));
+}
 // Sleep until dl (host monotonic ns) on time: macOS nanosleep / mach_wait_until carry timer slack; measured, 33 ms sleeps take about 36.4 ms, 5 ms take 6.1 ms, 1 ms take 1.26 ms (the same at any QoS).
 // Metroid Dread's sound thread sleeps "33 ms minus this round's work" (main+0xf95b0), and on the host its period became 36.9 ms; cutscenes render a frame whenever the audio play position that thread updates moves, so they ran at about 27 fps (30 on the Switch).
 // Each step sleeps only 3/4 of the remaining time (the slack is at most about 25%, so it never oversleeps), looping until within 20 µs: a 33 ms sleep takes about 4 system calls with an error of tens of microseconds, and nothing spins
@@ -832,7 +842,7 @@ static int svc_thread_impl(int num, uint64_t *regs) {
         // DM_LOCK_SPIN_US: a release seen while spinning (the lock word changed: ArbitrateUnlock found no waiter and cleared it, or handed it on) returns at once,
         // and user mode takes the lock or arbitrates again
         uint64_t spin = spin_ns(1); struct lock_word w = {addr, (uint32_t)regs[0] | WAITERS_BIT};
-        if (spin && spin_until(lock_word_changed, &w, spin)) { regs[0] = 0; return 1; }
+        if (spin) { int hit = spin_until(lock_word_changed, &w, spin); t->spun[1][!hit]++; if (hit) { regs[0] = 0; return 1; } }
         g_lock();
         int64_t r = 0;
         if (ld32(addr) == ((uint32_t)regs[0] | WAITERS_BIT)) { t->waddr = addr; t->wtag = (uint32_t)regs[2];

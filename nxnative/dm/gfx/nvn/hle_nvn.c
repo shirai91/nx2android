@@ -1411,6 +1411,7 @@ __attribute__((weak)) void dm_perf_frame_wait(uint64_t pace_ns, uint64_t pq_ns) 
 __attribute__((weak)) uint64_t dm_present_period_adapt(uint64_t period) { return period; }   // Android (perf_android.c): a longer period the frames can hold steadily
 __attribute__((weak)) void dm_yield_top(char *out, size_t n) { if (n) snprintf(out, n, "-"); }   // hle_thread.c: the threads that yielded most since the last call; none in graphics unit tests
 __attribute__((weak)) void dm_thread_cpu(char *out, size_t n, double secs) { (void)secs; if (n) snprintf(out, n, "-"); }   // hle_thread.c: guest-thread CPU by Switch priority band since the last call
+__attribute__((weak)) void dm_spin_report(char *out, size_t n) { if (n) *out = 0; }   // hle_thread.c: the wait and lock spins since the last call
 void mtl_res_stats(char *out, size_t n);
 void mtl_barrier_stats(uint64_t *skip, uint64_t *full);
 extern uint32_t mtl_present_qos(void);
@@ -1615,6 +1616,7 @@ static void tsummary(uint64_t frame) {
       if (k) { qsort(v, k, sizeof *v, dcmp); LOG("[nvn] on-screen up to frame %llu: %u frames, dropped %u (discarded %u), p99 %.2f ms; footprint %.0f MiB; brightness %.2f; thermal %d", frame, k + discard, drop, discard, v[(k * 99) / 100 < k ? (k * 99) / 100 : k - 1], fp, br, dm_thermal_now()); }
       g_presn = 0; }
     power_line(frame);
+    { char sp[160]; dm_spin_report(sp, sizeof sp); if (*sp) LOG("[nvn] spins up to frame %llu: %s", frame, sp); }
     { static uint64_t prev[4], pf; uint64_t v[4]; mtl_vbuf_stats(&v[0], &v[1], &v[2], &v[3]);
       if (pf && frame > pf) { double nf = (double)(frame - pf);
           LOG("[nvn] vertex bindings up to frame %llu: per frame address lookups %.0f / reused %.0f, vertex table writes %.0f / skipped %.0f", frame,
