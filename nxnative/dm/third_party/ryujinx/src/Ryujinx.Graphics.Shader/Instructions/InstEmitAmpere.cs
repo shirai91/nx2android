@@ -131,7 +131,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
 
         public static void EmitAmpereBlock(EmitterContext context, Block block)
         {
-            AmpereScoreboards sb = context.Scoreboards ??= new AmpereScoreboards();
+            AmpereScoreboards sb = new();   // every result held lands by the block's end
 
             for (int i = 0; i < block.OpCodes.Count; i++)
             {
