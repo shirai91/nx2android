@@ -313,7 +313,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
             Operand[] a = Lanes(SA, x[74..76], AMods(x, SA));
             Operand[] s32 = Lanes(S32, x[60..62], AMods(x, S32));
             Operand[] s64 = Lanes(S64, x[81..83], (x[84], x[83]));
-            (Operand[] b, Operand[] c) = SlotB(x) == S32 ? (s32, s64) : (s64, s32);
+            (Operand[] b, Operand[] c) = (x.Op & 0x1ff) != 0x031 || SlotB(x) == S32 ? (s32, s64) : (s64, s32);   // HADD2 / HMUL2 take their second operand from the 32 slot in every form
             Operand[] res = new Operand[2];
 
             for (int i = 0; i < 2; i++)
