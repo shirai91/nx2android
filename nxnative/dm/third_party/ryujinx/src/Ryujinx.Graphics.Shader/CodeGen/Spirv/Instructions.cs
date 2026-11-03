@@ -743,6 +743,11 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
             SpvInstruction imageComponentType = context.GetType(componentType);
             AggregateType swizzledResultType = texOp.GetVectorType(componentType);
 
+            if (texOp.Format == TextureFormat.Unknown)
+            {
+                context.AddCapability(Capability.StorageImageReadWithoutFormat);
+            }
+
             SpvInstruction texel = context.ImageRead(context.TypeVector(imageComponentType, 4), image, pCoords, ImageOperandsMask.MaskNone);
             SpvInstruction result = GetSwizzledResult(context, texel, swizzledResultType, texOp.Index);
 
@@ -827,6 +832,11 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
             }
 
             SpvInstruction texel = context.CompositeConstruct(context.TypeVector(context.GetType(componentType), ComponentsCount), cElems);
+
+            if (texOp.Format == TextureFormat.Unknown)
+            {
+                context.AddCapability(Capability.StorageImageWriteWithoutFormat);
+            }
 
             context.ImageWrite(image, pCoords, texel, ImageOperandsMask.MaskNone);
 
