@@ -1578,6 +1578,12 @@ static void trace_draw(const char *kind, int prim, uint32_t count, uint32_t inst
     vkshader_t *vsh = S.sh[0]; uint32_t in_mask = vsh ? vsh->local[0] : 0;
     for (int l = 0; l < 16; l++) if (in_mask >> l & 1) { uint32_t a = S.vattr[l]; VKLOG("  location %d: attrib state %#x (stream %u) stride %d divisor %d buffer %#llx +%llu", l, a, (a >> 16) & 0x1f,
         S.vstream[(a >> 16) & 0xf].stride, S.vstream[(a >> 16) & 0xf].divisor, (unsigned long long)S.vbuf[(a >> 16) & 0xf].address, (unsigned long long)S.vbuf[(a >> 16) & 0xf].size); }
+    // the first words of each stream and of the vertex stage's uniform buffers, as the CPU sees them now
+    for (int s = 0; s < 16; s++) if (S.vbuf[s].address && S.vbuf[s].size) { const uint32_t *w = (const uint32_t *)(uintptr_t)S.vbuf[s].address;
+        VKLOG("  stream %d words: %08x %08x %08x %08x %08x %08x %08x %08x", s, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]); }
+    for (int r = 0; r < 16; r++) if (S.ubo[0][r].addr) { const float *f = (const float *)(uintptr_t)S.ubo[0][r].addr;
+        VKLOG("  vertex uniform buffer %d (%#llx, %u bytes): %g %g %g %g | %g %g %g %g | %g %g %g %g | %g %g %g %g | %g %g %g %g", r, (unsigned long long)S.ubo[0][r].addr, (unsigned)S.ubo[0][r].size,
+              f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7], f[8], f[9], f[10], f[11], f[12], f[13], f[14], f[15], f[16], f[17], f[18], f[19]); }
 }
 // Vertex fetches past a stream's bound size. NVN binds each stream with a size (BindVertexBuffers), and Maxwell's fetch reads zeros past it; Vulkan's binding carries no
 // size here (robustBufferAccess is off), so Adreno read on into whatever followed the stream in the pool. agl draws full-screen passes past their streams: Super Mario
