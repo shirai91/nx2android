@@ -261,13 +261,18 @@ vkshader_t *vk_shader(uint64_t key, int stage) {
     // with the same buffers (Unity updates a constant buffer before nearly every draw, and each update is a shadow at a new offset: NEO made a new set for
     // 94% of its draws, 5 ms a frame). Up to half the device's limit per stage, as the vertex and fragment sets share a pipeline layout. DM_VK_DYN_UBO=0: none.
     static int dyn_on = -1; if (dyn_on < 0) { const char *e = getenv("DM_VK_DYN_UBO"); dyn_on = !(e && !atoi(e)); }
-    uint32_t dynmax = dyn_on ? V.props.limits.maxDescriptorSetUniformBuffersDynamic / 2 : 0;
+    // Storage buffers too, a pipeline layout's five graphics stages sharing the device's limit: a draw's storage buffers move through one pool from draw to draw (Donkey Kong
+    // Bananza's terrain chunks, whose geometry shader writes each chunk's triangles and indirect record: 40% of the sets made in gameplay)
+    uint32_t dynmax = dyn_on ? V.props.limits.maxDescriptorSetUniformBuffersDynamic / 2 : 0, ndu = 0;
+    uint32_t sdynmax = dyn_on ? V.props.limits.maxDescriptorSetStorageBuffersDynamic / (stage == 5 ? 1 : 5) : 0, nds = 0;
     VkDescriptorSetLayoutBinding lb[96]; uint32_t nl = 0;
     for (int i = 0; i < s->nbind && nl < 96; i++) {
         const dmsv_bind *b = &s->b[i];
-        int dyn = b->desc == RD_UBO && (b->kind == RK_CBUF || b->kind == RK_DRV) && b->count == 1 && (uint32_t)s->ndyn < dynmax;
-        s->dyn[i] = (uint8_t)dyn; s->ndyn += dyn;
-        lb[nl++] = (VkDescriptorSetLayoutBinding){b->binding, dyn ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC : desc_type(b->desc), b->count ? b->count : 32, stage_flag(stage), NULL};
+        int dyn = b->desc == RD_UBO && (b->kind == RK_CBUF || b->kind == RK_DRV) && b->count == 1 && ndu < dynmax;
+        int sdyn = b->desc == RD_SSBO && b->kind == RK_SBUF && b->count == 1 && nds < sdynmax;
+        ndu += dyn; nds += sdyn; s->dyn[i] = (uint8_t)(dyn | sdyn); s->ndyn += dyn | sdyn;
+        lb[nl++] = (VkDescriptorSetLayoutBinding){b->binding, dyn ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC : sdyn ? VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC : desc_type(b->desc),
+                                                  b->count ? b->count : 32, stage_flag(stage), NULL};
     }
     s->dsl = shader_layout(lb, nl);
     nvn_hm_put(&g_shaders, &hk, s);
