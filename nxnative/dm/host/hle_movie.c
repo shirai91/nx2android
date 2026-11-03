@@ -10,6 +10,7 @@
 #include "vpx/vpx_decoder.h"
 #include "vpx/vp8dx.h"
 #include "hle_movie_avc.h"   // H.264 on VideoToolbox
+#include "hle_yuv.h"
 #include <AudioToolbox/AudioToolbox.h>   // AAC
 // Vorbis (movie audio tracks, Link's Awakening): stb_vorbis, built into this file (dm/third_party/stb_vorbis); only its push-data API, floats out
 #define STB_VORBIS_NO_STDIO
@@ -232,7 +233,7 @@ static void md_dims(const mdec_t *d, int *w, int *h, int *stride, int *slice) {
 enum { MDJ_NONE, MDJ_DECODE, MDJ_CLOSE, MDJ_QUIT, MDJ_TAKE, MDJ_TAIL };
 static int md_threads(void) { long n = sysconf(_SC_NPROCESSORS_ONLN); return n >= 8 ? 4 : 2; }
 // I420 → NV12 (stride = width, plane height = height); a smaller picture is padded with black, a larger one cropped
-static void md_nv12(const vpx_image_t *im, uint8_t *dst, int w, int h) {
+void dm_yuv_nv12(const vpx_image_t *im, uint8_t *dst, int w, int h) {
     int cw = (int)im->d_w < w ? (int)im->d_w : w, ch = (int)im->d_h < h ? (int)im->d_h : h;
     if (cw < w || ch < h) { memset(dst, 16, (size_t)w * h); memset(dst + (size_t)w * h, 128, (size_t)w * h / 2); }
     for (int y = 0; y < ch; y++) memcpy(dst + (size_t)y * w, im->planes[0] + (size_t)y * im->stride[0], cw);
@@ -246,7 +247,7 @@ static void md_nv12(const vpx_image_t *im, uint8_t *dst, int w, int h) {
     }
 }
 // I420 → RGBA (native texture mode): by the colour space and range the picture declares (VP9 colour config; when undeclared BT.709 from 720 lines up, else BT.601), 16-bit fixed point; a smaller picture is padded with black, a larger one cropped
-static void md_rgba(const vpx_image_t *im, uint8_t *dst, int w, int h) {
+void dm_yuv_rgba(const vpx_image_t *im, uint8_t *dst, int w, int h) {
     int full = im->range == VPX_CR_FULL_RANGE, b709 = im->cs == VPX_CS_BT_709 || (im->cs == VPX_CS_UNKNOWN && h >= 720);
     double ky = full ? 1.0 : 255.0 / 219.0, kc = full ? 1.0 : 255.0 / 224.0;
     double rv = b709 ? 1.5748 : 1.402, gu = b709 ? 0.1873 : 0.3441, gv = b709 ? 0.4681 : 0.7141, bu = b709 ? 1.8556 : 1.772;
@@ -287,7 +288,7 @@ static int md_vp9(mdec_t *d, const uint8_t *p, int n, int slot) {
     int rgba = d->fmt == MD_FMT_ABGR;
     size_t need = (size_t)d->w * d->h * (rgba ? 4 : 3) / (rgba ? 1 : 2);
     if (d->out[slot].cap < need) { free(d->out[slot].frm); d->out[slot].frm = malloc(need); d->out[slot].cap = need; }   // a Configure after Reset may change the size
-    if (rgba) md_rgba(last, d->out[slot].frm, d->w, d->h); else md_nv12(last, d->out[slot].frm, d->w, d->h);
+    if (rgba) dm_yuv_rgba(last, d->out[slot].frm, d->w, d->h); else dm_yuv_nv12(last, d->out[slot].frm, d->w, d->h);
     return 1;
 }
 // ---------- Vorbis ----------
