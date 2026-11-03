@@ -130,6 +130,24 @@ void nvn_tex_layout(const nvn_texdesc *d, nvn_texlayout *o) {
     o->align = sparse_of(d) ? SPARSE_TILE : 512;
 }
 
+int nvn_tex_sparse_tiles(const nvn_texdesc *d, uint32_t *tw, uint32_t *th, uint32_t *td) {
+    fmt_t t = fmt_of(d->format);
+    unsigned dpl; int layered; uint32_t w, h, z;
+    shape(d, &dpl, &layered, &w, &h, &z);
+    *tw = *th = *td = 0;
+    if (!sparse_of(d) || !t.bpb) return 0;
+    uint32_t sx, sy; samples_xy(d->samples, &sx, &sy);
+    nvn_texlayout L; nvn_tex_layout(d, &L);
+    uint32_t gw = 128u >> (L.tileH + L.tileD); if (!gw) gw = 1;   // GOB columns of a tile, as level_walk
+    *tw = gw * 64 / t.bpb * t.bw / sx; *th = dpl >= 2 ? (8u << L.tileH) * t.bh / sy : 1; *td = dpl >= 3 ? 1u << L.tileD : 1;
+    unsigned levels = d->levels ? d->levels : 1, n = 0;
+    for (; n < levels; n++) {   // level_walk's test: a level at least one tile wide, high and deep is tiled, and the first smaller one starts the mip tail
+        uint32_t lwb = blk(mip(w * sx, n), t.bw) * t.bpb, lh = dpl >= 2 ? blk(mip(h * sy, n), t.bh) : 1, ld = dpl >= 3 ? mip(z, n) : 1;
+        if (lwb < gw * 64 || lh < 8u << L.tileH || ld < 1u << L.tileD) break;
+    }
+    return (int)n;
+}
+
 uint64_t nvn_tex_level_offset(const nvn_texdesc *d, unsigned level) {
     fmt_t t = fmt_of(d->format);
     unsigned dpl; int layered; uint32_t w, h, z;
