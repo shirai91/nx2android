@@ -281,26 +281,6 @@ JNIEXPORT jfloatArray JNICALL Java_org_nx2a_ExternalActivity_externalOverlay(JNI
     if (out) (*env)->SetFloatArrayRegion(env, out, 0, (jsize)(5 + OV_N * 9), values);
     return out;
 }
-int dm_text_entry(char *title, int tcap, char *text, int xcap, int *sel, int *shift);
-JNIEXPORT jobjectArray JNICALL Java_org_nx2a_ExternalActivity_externalPanel(JNIEnv *env, jclass cls) {
-    (void)cls;
-    char text[OVM_ROWS][160] = {{0}}; int state = dm_menu_state();
-    if (state >= 0 && (state & 0x10000)) {
-        int sel, shift; char title[80], value[80];
-        if (dm_text_entry(title, sizeof title, value, sizeof value, &sel, &shift)) {
-            snprintf(text[0], sizeof text[0], "%s", title); snprintf(text[1], sizeof text[1], "%s", value);
-            snprintf(text[2], sizeof text[2], "%d", shift);
-        }
-    } else if (state >= 0 && (state & OVS_ST)) {
-        ov_srow rows[OVM_ROWS];
-        if (dm_save_rows(rows)) for (int i = 0; i < OVM_ROWS; i++)
-            snprintf(text[i], sizeof text[i], "%s%s%s", rows[i].left, rows[i].right[0] ? "  " : "", rows[i].right);
-    }
-    jclass string = (*env)->FindClass(env, "java/lang/String"); if (!string) return NULL;
-    jobjectArray out = (*env)->NewObjectArray(env, OVM_ROWS, string, NULL);
-    if (out) for (int i = 0; i < OVM_ROWS; i++) { jstring s = (*env)->NewStringUTF(env, text[i]); if (!s) break; (*env)->SetObjectArrayElement(env, out, i, s); (*env)->DeleteLocalRef(env, s); }
-    (*env)->DeleteLocalRef(env, string); return out;
-}
 static int g_ptr_ctl[32];   // pointer id → control index + 1 (0 = the touch screen)
 static int ctl_at(float x, float y, float W, float H) {   // the control under (x, y) in pixels, -1 if none (in the layout editor: every control, shown or not)
     int best = -1, vis = atomic_load(&g_edit) ? 1 : dm_overlay_visible(), shown = vis == 1; float bd = 1e9f;

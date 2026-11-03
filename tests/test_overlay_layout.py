@@ -49,6 +49,11 @@ int main(void) {
     const float screens[][2] = {{915, 412}, {1216, 760}, {2400, 1080}, {1080, 2400}};
     for (unsigned s = 0; s < sizeof screens / sizeof screens[0]; s++) {
         float W = screens[s][0], H = screens[s][1], step = H / OVE_GRID_ROWS, p[4];
+        ov_menu_rect(W, H, p);
+        for (int row = 0; row < OVM_ROWS; row++) {
+            float r[4]; ov_menu_rowrect(p, row, r);
+            assert(ov_menu_row_at(r[0] + r[2] / 2, r[1] + r[3] / 2, W, H) == row);
+        }
         for (int axis = 0; axis < 2; axis++) for (int i = -10; i <= 110; i++) {
             float extent = screens[s][axis], half = H * 0.12f;
             float pos = ov_drag_pos(extent * i / 100, half, extent, step);

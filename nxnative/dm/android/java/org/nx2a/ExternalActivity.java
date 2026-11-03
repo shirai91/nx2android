@@ -41,7 +41,8 @@ public final class ExternalActivity extends NativeActivity implements ExternalDi
     private static native boolean externalControllerKey(KeyEvent event);
     private static native boolean externalControllerMotion(MotionEvent event);
     private static native float[] externalOverlay(int width, int height);
-    private static native String[] externalPanel();
+    private static native int externalMenuState();
+    private static native int[] externalMenuPixels(int width, int height, int state);
     private ExternalDisplay external;
     private View pad;
     private Dialog phonePad;
@@ -129,7 +130,8 @@ public final class ExternalActivity extends NativeActivity implements ExternalDi
         private final Bitmap[] atlases = new Bitmap[2];
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
         private boolean audioPress;
-        private int menuState = -1;
+        private int menuState = -1, rasterState = -2, rasterWidth, rasterHeight;
+        private Bitmap menuRaster;
 
         OriginalPad() throws IOException {
             super(ExternalActivity.this);
@@ -160,7 +162,7 @@ public final class ExternalActivity extends NativeActivity implements ExternalDi
             if (data == null || data.length != 5 + names.length * 9) return;
             int layout = (int)data[0]; if (layout < 0 || layout >= themes.length) return;
             OverlayTheme theme = themes[layout]; Bitmap atlas = atlases[layout];
-            int menu = (int)data[3]; menuState = menu; boolean edit = menu >= 0 && (menu & 0x20000) != 0 && (menu & 0x10000) == 0;
+            int menu = externalMenuState(); menuState = menu; boolean edit = menu >= 0 && (menu & 0x20000) != 0 && (menu & 0x10000) == 0;
             if (menu >= 0 && !edit) { drawMenu(canvas, data); postInvalidateDelayed(33); return; }
             for (int pass = 0; pass < 2; pass++) for (OverlayTheme.Sprite s : theme.sprites) {
                 int ctl = control(s.control); if (ctl < 0) continue;
@@ -185,40 +187,45 @@ public final class ExternalActivity extends NativeActivity implements ExternalDi
             }
             postInvalidateDelayed(33);
         }
+        private Bitmap menuRaster(int state) {
+            int W = getWidth(), H = getHeight();
+            if (menuRaster != null && rasterState == state && rasterWidth == W && rasterHeight == H) return menuRaster;
+            int[] pixels = externalMenuPixels(W, H, state);
+            if (pixels == null || pixels.length < 3 || pixels[0] <= 0 || pixels[1] <= 0 || pixels.length != 2 + pixels[0] * pixels[1]) return null;
+            if (menuRaster == null || menuRaster.getWidth() != pixels[0] || menuRaster.getHeight() != pixels[1])
+                menuRaster = Bitmap.createBitmap(pixels[0], pixels[1], Bitmap.Config.ARGB_8888);
+            menuRaster.setPixels(pixels, 2, pixels[0], 0, 0, pixels[0], pixels[1]);
+            rasterState = state; rasterWidth = W; rasterHeight = H; return menuRaster;
+        }
         private void drawMenu(Canvas c, float[] data) {
-            float W=getWidth(), H=getHeight(), scale=Math.min(data[1], .92f/(6*.115f+2*.03f));
-            float w=Math.min(.95f*H*scale,W*.96f), h=(6*.115f+2*.03f)*H*scale, x=(W-w)/2, y=(H-h)/2, unit=h/(6*.115f+2*.03f);
-            int state=(int)data[3], tab=(state>>8)&1, opacity=(state>>9)&127;
-            String[] rows=tab==0 ? new String[]{"Gamepad     Game", "Gamepad: " + ((state&1)!=0?"On":"Off"), "Opacity: "+opacity+"%", "Edit layout", "Rumble: "+((state&2)!=0?"On":"Off"), "Resume"} :
-                new String[]{"Gamepad     Game", "FPS: "+((state&8)!=0?"On":"Off"), "Mode: "+((state&4)!=0?"Docked":"Handheld"), "Export save", "Import save", "Resume"};
-            if ((state&0x40000)!=0) { String[] saved=externalPanel(); if(saved!=null && saved.length==6) rows=saved; }
-            paint.setColor(Color.rgb(35,38,44)); paint.setAlpha(245); c.drawRoundRect(x,y,x+w,y+h,12,12,paint);
-            paint.setAlpha(255); paint.setColor(Color.WHITE); paint.setTextAlign(Paint.Align.CENTER); paint.setTextSize(H*.032f);
-            if ((state&0x10000)!=0) {
-                String[] text=externalPanel(); if(text==null) return;
-                c.drawText(text[0],x+w/2,y+h*.11f,paint); c.drawText(text[1],x+w/2,y+h*.24f,paint);
-                String[] keys={"1234567890","qwertyuiop","asdfghjkl'","zxcvbnm-._"}; boolean shift="1".equals(text[2]);
-                for(int row=0;row<4;row++) for(int col=0;col<10;col++) {
-                    String k=keys[row].substring(col,col+1); if(shift) k=k.toUpperCase(java.util.Locale.ROOT);
-                    c.drawText(k,x+w*(.03f+.94f*(col+.5f)/10),y+h*(.30f+(row+.7f)*.60f/5),paint);
-                }
-                String[] wide={"Shift","Space","Del","OK"}; float[] centers={.10f,.425f,.725f,.90f};
-                for(int i=0;i<4;i++) c.drawText(wide[i],x+w*(.03f+.94f*centers[i]),y+h*(.30f+4.7f*.60f/5),paint);
-                return;
-            }
-            for (int i=0;i<6;i++) c.drawText(rows[i],x+w/2,y+(.03f+(i+.62f)*.115f)*unit,paint);
+            Bitmap bitmap = menuRaster(menuState); if (bitmap == null) return;
+            float W = getWidth(), H = getHeight(), scale = Math.min(data[1], .92f / (6 * .115f + 2 * .03f));
+            float w = Math.min(.95f * H * scale, W * .96f), h = (6 * .115f + 2 * .03f) * H * scale;
+            paint.setAlpha(255); c.drawBitmap(bitmap, null, new RectF((W-w)/2, (H-h)/2, (W+w)/2, (H+h)/2), paint);
         }
         private void drawEditor(Canvas c, float[] data, int state) {
-            float W=getWidth(), H=getHeight(), scale=Math.min(data[1], .92f/(6*.115f+2*.03f));
+            Bitmap bitmap = menuRaster(state); if (bitmap == null) return;
+            float W = getWidth(), H = getHeight(), scale = Math.min(data[1], .92f / (6 * .115f + 2 * .03f));
+            if ((state & 4) != 0) {
+                paint.setStyle(Paint.Style.STROKE); paint.setStrokeWidth(Math.max(1, H*.001f)); paint.setColor(Color.argb(51,255,255,255));
+                float step=H/20; for(float x=step;x<W;x+=step)c.drawLine(x,0,x,H,paint); for(float y=step;y<H;y+=step)c.drawLine(0,y,W,y,paint);
+            }
+            int selected=((state >> 8) & 255)-1;
+            for(int i=0;i<names.length;i++) {
+                int b=4+i*9; float t=Math.max(2,H*.003f)*(i==selected?2:1);
+                paint.setStyle(Paint.Style.STROKE); paint.setStrokeWidth(t); paint.setColor(i==selected ? Color.rgb(255,60,142) : Color.argb(89,255,255,255));
+                c.drawRect(data[b+1]-data[b+3]-t/2,data[b+2]-data[b+4]-t/2,data[b+1]+data[b+3]+t/2,data[b+2]+data[b+4]+t/2,paint);
+            }
+            paint.setStyle(Paint.Style.FILL); paint.setAlpha(255); paint.setColor(Color.WHITE);
             float w=Math.min(.85f*H*scale,W*.96f), h=.30f*H*scale, x=(W-w)/2, y=.13f*H;
-            paint.setColor(Color.rgb(35,38,44)); paint.setAlpha(235); c.drawRoundRect(x,y,x+w,y+h,10,10,paint);
-            paint.setAlpha(255); paint.setColor(Color.WHITE); paint.setTextAlign(Paint.Align.CENTER); paint.setTextSize(H*.026f);
-            String[] labels={"−", "+", "Reset", "Cancel", "Save"}; float[] centers={.065f,.18f,.395f,.64f,.8775f};
-            for(int i=0;i<labels.length;i++) c.drawText(labels[i],x+w*centers[i],y+h*.51f,paint);
-            c.drawText((state&4)!=0?"Snap to grid: On":"Snap to grid: Off",x+w/2,y+h*.88f,paint);
-            if ((state&1)!=0) { float pw=Math.min(.75f*H*scale,W*.9f), ph=.30f*H*scale, px=(W-pw)/2, py=(H-ph)/2;
-                paint.setColor(Color.DKGRAY); c.drawRect(px,py,px+pw,py+ph,paint); paint.setColor(Color.WHITE);
-                c.drawText("Discard changes?",W/2,py+ph*.30f,paint); c.drawText("Discard",px+pw*.265f,py+ph*.72f,paint); c.drawText("Keep",px+pw*.735f,py+ph*.72f,paint); }
+            int tw=Math.min((int)(w/2),bitmap.getWidth()), th=Math.min((int)(h/2),bitmap.getHeight());
+            if(tw>0 && th>0) c.drawBitmap(bitmap,new Rect(0,0,tw,th),new RectF(x,y,x+w,y+h),paint);
+            if ((state & 1) != 0) {
+                c.drawColor(Color.argb(115,0,0,0));
+                float pw=Math.min(.75f*H*scale,W*.9f), ph=.30f*H*scale, px=(W-pw)/2, py=(H-ph)/2;
+                int sx=Math.min((int)(pw/2),bitmap.getWidth()), sy=th+2, sh=Math.min((int)(ph/2),bitmap.getHeight()-sy);
+                if(sx>0 && sh>0)c.drawBitmap(bitmap,new Rect(0,sy,sx,sy+sh),new RectF(px,py,px+pw,py+ph),paint);
+            }
         }
         @Override public boolean onTouchEvent(MotionEvent event) {
             int action=event.getActionMasked();
