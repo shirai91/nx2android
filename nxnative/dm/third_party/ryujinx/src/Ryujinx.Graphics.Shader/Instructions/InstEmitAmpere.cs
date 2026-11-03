@@ -48,6 +48,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
 
             InstEmit.RegisterAmpereAlu(Alu, X);
             InstEmit.RegisterAmpereMemory(X);
+            InstEmit.RegisterAmpereMma(X);
 
             void X(int op, InstName name, InstEmitter emitter, AmpereProps props, FeatureFlags features = FeatureFlags.None) =>
                 _exact[op] = new(name, emitter, props, features);
