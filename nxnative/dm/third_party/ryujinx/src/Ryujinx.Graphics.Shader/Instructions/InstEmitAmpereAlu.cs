@@ -36,6 +36,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
             alu(0x031, InstName.Hfma2, AHalf, None);
             alu(0x032, InstName.Hmul2, AHalf, None);
             alu(0x034, InstName.Hsetp2, AHsetp2, N);
+            alu(0x040, InstName.Hmul2, AHmnmx2, None);
             alu(0x013, InstName.Iabs, AIabs, None);
             alu(0x024, InstName.Imad, AImad, None);
             alu(0x025, InstName.Imad, AImad, None);
@@ -354,6 +355,23 @@ namespace Ryujinx.Graphics.Shader.Instructions
 
             ASetPred(context, x[81..84], GetPredLogicalOp(context, op, lo, acc));
             ASetPred(context, x[84..87], GetPredLogicalOp(context, op, hi, acc));
+        }
+
+        // HMNMX2: lane by lane the minimum where the predicate 87..90 holds, else the maximum
+        public static void AHmnmx2(EmitterContext context)
+        {
+            AmpereOp x = new(context.CurrOp);
+
+            if (x[78] || x[81] || x[82] || x[85])
+            {
+                throw AFail(context, "HMNMX2 .F32 / .NAN / .XORSIGN / BF16");
+            }
+
+            Operand[] a = InstEmitHelper.FPAbsNeg(context, AHalves(context, x, SA, x[74..76]), AMods(x, SA).Abs, AMods(x, SA).Neg);
+            Operand[] b = InstEmitHelper.FPAbsNeg(context, AHalves(context, x, S32, x[60..62]), AMods(x, S32).Abs, AMods(x, S32).Neg);
+            Operand min = APred(context, x, 87, 90);
+            Operand Lane(int i) => context.ConditionalSelect(min, context.FPMinimum(a[i], b[i]), context.FPMaximum(a[i], b[i]));
+            ASet(context, x, context.PackHalf2x16(Lane(0), Lane(1)));
         }
 
         // ---- moves ----
