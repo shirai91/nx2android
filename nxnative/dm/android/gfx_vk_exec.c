@@ -184,6 +184,28 @@ void vk_exec_reset(void) {   // a new submission: NVN state does not carry over 
 // Until then a clear of a whole attachment becomes that attachment's load op, so a tiler clears in tile memory instead of loading the
 // attachment from memory and clearing it with a draw; a pass that is set up and never used is dropped.
 static VkRenderingAttachmentInfo P_ca[8], P_da, P_sa; static VkRenderingInfo P_ri; static int P_cleared;
+// NVN may bind one subresource in multiple colour slots while masking all but
+// one writer. Separate Vulkan attachments would load/store the same image twice
+// (MK8's full-resolution normals in slots 3/4), which can lose the writer's contents.
+// Keep writable aliases and route inactive duplicates to the first writer, or
+// the first slot when none writes. Distinct views/layers are never combined.
+static VkImageView P_alias_views[8]; static uint8_t P_alias[8];
+static void color_alias_map(uint32_t n, const VkImageView views[8], uint32_t mask, uint8_t map[8]) {
+    for (uint32_t i=0;i<8;i++) map[i]=(uint8_t)i;
+    for (uint32_t i=0;i<n && i<8;i++) if (views[i] && map[i]==i) {
+        uint32_t keep=i;
+        for (uint32_t j=0;j<n && j<8;j++) if (views[j]==views[i] && ((mask>>(4*j))&15u)) {keep=j;break;}
+        for (uint32_t j=0;j<n && j<8;j++) if (j!=keep && views[j]==views[i] && !((mask>>(4*j))&15u)) map[j]=(uint8_t)keep;
+    }
+}
+static void bind_chmask(uint32_t mask) {
+    if (S.pass_open && mask!=S.chmask.mask) {
+        uint8_t map[8];color_alias_map((uint32_t)S.ncol,P_alias_views,mask,map);
+        if (memcmp(map,P_alias,sizeof map)) vk_end_pass();
+    }
+    S.chmask.mask=mask;
+}
+
 // Render passes. Adreno's driver spent about 40 µs in each vkCmdBeginRendering (a quarter of the replay thread in Xenoblade Chronicles 3's battles, 128 passes a
 // frame); a VkRenderPass is made once per set of formats and load operations, and an imageless framebuffer once per set of attachment descriptions, and passes
 // then begin with vkCmdBeginRenderPass (the battle's replay went from about 20 to 17.5 ms a frame). Pipelines are made against a compatible render pass (the same
@@ -552,6 +574,13 @@ static int begin_pass(void) {
         P_att[i].fmt = vk_view_fmt; P_att[i].layers = vk_view_layers ? vk_view_layers : 1; P_att[i].w = iw; P_att[i].h = ih;
         if (P_att[i].layers < layers) layers = P_att[i].layers;
     }
+    for (int i=0;i<8;i++) P_alias_views[i]=ca[i].imageView;
+    color_alias_map((uint32_t)ncol,P_alias_views,S.chmask.mask,P_alias);
+    for (int i=0;i<ncol;i++) if (P_alias[i]!=i) {
+        ca[i].imageView=VK_NULL_HANDLE;ca[i].loadOp=VK_ATTACHMENT_LOAD_OP_DONT_CARE;ca[i].storeOp=VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        S.cfmt[i]=VK_FORMAT_UNDEFINED;P_att[i].im=NULL;
+        static int said;if (!said++) VKLOG("inactive colour attachment alias: slot %d uses slot %u (one image load/store)",i,(unsigned)P_alias[i]);
+    }
     S.dfmt = VK_FORMAT_UNDEFINED; S.daspect = 0;
     if (S.rt_has_dep) {
         vkimg_t *im; VkImageView v = vk_tex_view(&S.rt_dep, S.rt_has_dview ? &S.rt_dview : NULL, 0xff, 0, 1, &im);
@@ -663,10 +692,12 @@ static int clear_masked(const p_clear_color *c, VkRect2D r) {   // 1 = done
 }
 static void clear_color(const p_clear_color *c) {
     if (!begin_pass()) return;
-    if (c->index < 0 || c->index >= S.ncol || S.cfmt[c->index] == VK_FORMAT_UNDEFINED) return;
-    if (!c->mask) return;
+    if (c->index < 0 || c->index >= S.ncol) return;
+    p_clear_color mapped=*c;mapped.index=P_alias[c->index];c=&mapped;
+    if (S.cfmt[c->index] == VK_FORMAT_UNDEFINED || !c->mask) return;
     if ((c->mask & 0xf) != 0xf) { VkRect2D r = scissor_rect(); if (!r.extent.width || !r.extent.height) return;
-        if (clear_masked(c, r)) return; VKRED_ONCE(31, "partial channel clear mask %#x cleared in full", c->mask); }
+        if (clear_masked(c, r)) return;
+        VKRED_ONCE(31, "partial channel clear mask %#x cleared in full", c->mask); }
     VkClearAttachment a = {VK_IMAGE_ASPECT_COLOR_BIT, (uint32_t)c->index, {{{c->rgba[0], c->rgba[1], c->rgba[2], c->rgba[3]}}}};
     const vkfmt_t *f = vk_fmt(S.rt_col[c->index].d.format);
     if (f && f->is_int) for (int i = 0; i < 4; i++) { if (f->is_sint) a.clearValue.color.int32[i] = (int32_t)c->rgba[i]; else a.clearValue.color.uint32[i] = c->rgba[i] > 0 ? (uint32_t)c->rgba[i] : 0; }
@@ -2026,7 +2057,7 @@ static void exec_ops(const uint8_t *p) {
             switch (s->kind) {
             case 0: { blend_st b; memcpy(&b, s->bytes, sizeof b); if (b.target < 8) S.blend[b.target] = b; break; }
             case 1: memcpy(&S.color, s->bytes, sizeof S.color); break;
-            case 2: memcpy(&S.chmask, s->bytes, sizeof S.chmask); break;
+            case 2: { chmask_st mask;memcpy(&mask,s->bytes,sizeof mask);bind_chmask(mask.mask);break; }
             case 3: memcpy(&S.ms, s->bytes, sizeof S.ms); break;
             case 4: memcpy(&S.poly, s->bytes, sizeof S.poly); break;
             case 5: memcpy(&S.ds, s->bytes, sizeof S.ds); break;
