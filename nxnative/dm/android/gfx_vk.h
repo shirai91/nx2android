@@ -92,6 +92,7 @@ struct vkimg {
     int packaged;                   // filled from guest memory (deswizzled upload), re-uploaded when its pages change
     uint64_t pkg_stamp; const void *pkg_span; uint64_t pkg_seen;
     const uint8_t *pkg_mem; size_t pkg_len; uint64_t pkg_used; int pkg_released;   // its storage, the present it was last drawn at, protection given up (vk_tex_sweep)
+    uint64_t pkg_vgen; int pkg_sparse;   // a texture of a sparse virtual pool (read through its page table, nvn_sparse_copy): the mapping generation at its upload
     uint64_t used;                  // the present it was last looked up at (vk_tex: evict_overlaps)
     uint64_t rt_last, rt_frames;     // as an attachment: 1 + the present it was last drawn in, and in how many presents in a row up to it (gfx_vk_exec.c async_pipe)
     uint64_t fdz_frame;             // depth images: 1 + the present at which a fragment shader that replaces depth last wrote it (gfx_vk_exec.c fdz)

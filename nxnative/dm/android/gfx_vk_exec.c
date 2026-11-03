@@ -1662,6 +1662,13 @@ static void draw_idx(const p_draw_idx *d) {
     if (!prepare_draw(prim == 7 ? 4 : prim, 1)) return;
     VkCommandBuffer cb = vk_cmd();
     int g_ok = draw_allowed(); if (g_ok == 2 || (g_tracing && g_x_tracepass >= 0)) trace_draw("indexed draw", d->prim, (uint32_t)d->count, (uint32_t)d->instances, d->itype);
+    if (g_tracing && g_x_tracepass >= 0 && !d->ind && S.vbuf[0].address && d->ibuf) {   // the vertices of the first indices, stream 0, every word as a float (as draw does)
+        uint32_t st = S.vstream[0].stride ? S.vstream[0].stride : 16, nw = st / 4 < 16 ? st / 4 : 16, isz = d->itype == 0 ? 1 : d->itype == 1 ? 2 : 4;
+        for (uint32_t i = 0; i < (uint32_t)d->count && i < 6; i++) { uint8_t ix[4] = {0}; vk_ubd_read(d->ibuf + (uint64_t)i * isz, isz, ix);
+            uint32_t v = isz == 1 ? ix[0] : isz == 2 ? (uint32_t)(ix[0] | ix[1] << 8) : (uint32_t)(ix[0] | ix[1] << 8 | ix[2] << 16 | (uint32_t)ix[3] << 24);
+            uint64_t o = (uint64_t)((int64_t)v + d->base_vertex) * st; if (o + nw * 4 > S.vbuf[0].size) break;
+            float w[16]; vk_ubd_read(S.vbuf[0].address + o, nw * 4, (uint8_t *)w); char t[400]; int k = 0; for (uint32_t j = 0; j < nw; j++) k += snprintf(t + k, sizeof t - k, " %g", w[j]);
+            VKLOG("  index %u → vertex %u of stream 0 (+%llu):%s", i, v, (unsigned long long)o, t); } }
     if (g_var_now == 11) g_ok = 0;
     VkIndexType it = d->itype == 0 ? VK_INDEX_TYPE_UINT8_EXT : d->itype == 1 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32;
     uint32_t isz = d->itype == 0 ? 1 : d->itype == 1 ? 2 : 4;
