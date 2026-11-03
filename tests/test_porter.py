@@ -299,7 +299,6 @@ def _hfs0(files):   # an HFS0 of (name, data): the XCI's partitions (hash fields
     return struct.pack('<4sII4x', b'HFS0', len(files), len(strs)) + ent + strs + b''.join(d for _, d in files)
 
 
-@unittest.skipUnless(importlib.util.find_spec('Crypto'), 'no pycryptodome')
 class Extracted(unittest.TestCase):   # porter/extracted.py: a dump of extracted files (base/, updates/<version>/, dlc/<title ID>/<n>/) placed as hard links
     def test_scan_and_place(self):
         root = Path(tempfile.mkdtemp(prefix='nx2a_test_dump_')); app = 0x040074A01BF12000
@@ -316,6 +315,7 @@ class Extracted(unittest.TestCase):   # porter/extracted.py: a dump of extracted
         self.assertIsNone(extracted.scan(root / 'base'))
 
 
+@unittest.skipUnless(importlib.util.find_spec('Crypto'), 'no pycryptodome')
 class Dumps(unittest.TestCase):   # porter/dumps.py: NSZ / XCZ → NSP; an NCZ made here as nsz makes it, from an NCA of a plain section and an AES-CTR one
     def setUp(self):
         from Crypto.Cipher import AES
