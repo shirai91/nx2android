@@ -269,7 +269,7 @@ vkshader_t *vk_shader(uint64_t key, int stage) {
     for (int i = 0; i < s->nbind && nl < 96; i++) {
         const dmsv_bind *b = &s->b[i];
         int dyn = b->desc == RD_UBO && (b->kind == RK_CBUF || b->kind == RK_DRV) && b->count == 1 && ndu < dynmax;
-        int sdyn = b->desc == RD_SSBO && b->kind == RK_SBUF && b->count == 1 && nds < sdynmax;
+        int sdyn = b->desc == RD_SSBO && (b->kind == RK_SBUF || b->kind == RK_UBO_PTR || b->kind == RK_SBUF_UBO || b->kind == RK_GMEM) && b->count == 1 && nds < sdynmax;
         ndu += dyn; nds += sdyn; s->dyn[i] = (uint8_t)(dyn | sdyn); s->ndyn += dyn | sdyn;
         lb[nl++] = (VkDescriptorSetLayoutBinding){b->binding, dyn ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC : sdyn ? VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC : desc_type(b->desc),
                                                   b->count ? b->count : 32, stage_flag(stage), NULL};

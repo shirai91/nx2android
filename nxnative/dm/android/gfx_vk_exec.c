@@ -1145,6 +1145,10 @@ static void cbuf_desc(int st, const vkshader_t *s, const dmsv_bind *b, VkDescrip
     if (vk_ubd_shadow(u->addr, n, &buf, &off)) { *bi = (VkDescriptorBufferInfo){buf, off, n}; return; }   // deferred updates in it: their shadow
     VkDeviceSize al = V.props.limits.minUniformBufferOffsetAlignment; if (off % al) VKRED_ONCE(40, "uniform buffer at an offset not aligned to %llu", (unsigned long long)al);
     *bi = (VkDescriptorBufferInfo){buf, off - off % al, n + off % al};
+    // a power-of-two range, as for storage buffers: the range is part of a set's content while a dynamic offset is not (robustBufferAccess is off: reads past
+    // the size the game bound were never clamped to it)
+    VkDeviceSize r = 256; while (r < bi->range) r <<= 1;
+    if (bi->offset + r <= p->hi - p->lo && r <= V.props.limits.maxUniformBufferRange) bi->range = r;
 }
 // The set a stage's last draw got, and what it was built from. Between two draws most stages change no texture, sampler, image or storage buffer, only
 // the offsets of their constant buffers, which go to the bind (dynamic uniform buffers). Then nothing is collected or hashed: the constant buffers alone are

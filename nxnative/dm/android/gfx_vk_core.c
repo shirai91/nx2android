@@ -497,7 +497,7 @@ static VkQueryPool g_tsq; uint64_t g_gpu_ns;
 enum { CQ = 64 };
 static VkQueryPool g_cq;
 #define SCRATCH_BLOCK (8u << 20)
-typedef struct { VkBuffer b; VkDeviceMemory m; uint8_t *p; VkDeviceSize size, used; } scratch_blk;
+typedef struct { VkBuffer b; VkDeviceMemory m; uint8_t *p; VkDeviceSize size, used, base; } scratch_blk;   // base: the block's offset in its buffer
 typedef struct { int kind; void *a; void *b; } dfree_t;   // 0 buffer+memory, 1 image+memory, 2 view
 typedef struct { int kind; volatile uint32_t *val; uint32_t mode, v; uint64_t addr; uint32_t type; int q; } post_op;   // q: a timestamp counter's query in g_cq, or -1
 struct vksub {
@@ -655,23 +655,31 @@ VkCommandBuffer vk_upload_cmd(void) {
     if (!s->up_used) { VkCommandBufferBeginInfo bi = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, NULL, VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT}; VKCHK(vkBeginCommandBuffer(s->up, &bi)); s->up_used = 1; g_up_gen++; }
     return s->up;
 }
+static scratch_blk scratch_new(VkDeviceSize size) {
+    scratch_blk b = {.size = size};
+    VkBufferCreateInfo bi = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, NULL, 0, size, POOL_USAGE, VK_SHARING_MODE_EXCLUSIVE};
+    VKCHK(vkCreateBuffer(V.dev, &bi, NULL, &b.b));
+    VkMemoryRequirements req; vkGetBufferMemoryRequirements(V.dev, b.b, &req);
+    VkMemoryAllocateInfo ai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, req.size, vk_mem_type(req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 0)};
+    VKCHK(vkAllocateMemory(V.dev, &ai, NULL, &b.m)); VKCHK(vkBindBufferMemory(V.dev, b.b, b.m, 0));
+    void *m; VKCHK(vkMapMemory(V.dev, b.m, 0, VK_WHOLE_SIZE, 0, &m)); b.p = m;
+    return b;
+}
+// Every slot's first block is its slice of one buffer: what is bound from scratch with a dynamic offset (driver segments, uniform shadows, the memory pool
+// table) names the same VkBuffer in every submission, so descriptor sets holding it are reused across frames instead of made again per slot
 void *vk_scratch(VkDeviceSize n, VkDeviceSize align, VkBuffer *buf, VkDeviceSize *off) {
     vksub_t *s = cur(); if (!align) align = 16;
     for (int i = 0; i < s->nblk; i++) {
         scratch_blk *b = &s->blk[i]; VkDeviceSize o = (b->used + align - 1) & ~(align - 1);
-        if (o + n <= b->size) { b->used = o + n; *buf = b->b; *off = o; return b->p + o; }
+        if (o + n <= b->size) { b->used = o + n; *buf = b->b; *off = b->base + o; return b->p + o; }
     }
     if (s->nblk == s->capblk) { s->capblk = s->capblk ? 2 * s->capblk : 8; s->blk = realloc(s->blk, s->capblk * sizeof *s->blk); }
-    scratch_blk *b = &s->blk[s->nblk++]; memset(b, 0, sizeof *b);
     static VkDeviceSize blk = 0; if (!blk) { const char *e = getenv("DM_VK_SCRATCH_MB"); blk = e && atoi(e) > 0 ? (VkDeviceSize)atoi(e) << 20 : SCRATCH_BLOCK; }
-    b->size = n > blk ? (n + 0xffff) & ~0xffffull : blk;
-    VkBufferCreateInfo bi = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, NULL, 0, b->size, POOL_USAGE, VK_SHARING_MODE_EXCLUSIVE};
-    VKCHK(vkCreateBuffer(V.dev, &bi, NULL, &b->b));
-    VkMemoryRequirements req; vkGetBufferMemoryRequirements(V.dev, b->b, &req);
-    VkMemoryAllocateInfo ai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, req.size, vk_mem_type(req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 0)};
-    VKCHK(vkAllocateMemory(V.dev, &ai, NULL, &b->m)); VKCHK(vkBindBufferMemory(V.dev, b->b, b->m, 0));
-    void *m; VKCHK(vkMapMemory(V.dev, b->m, 0, VK_WHOLE_SIZE, 0, &m)); b->p = m;
-    b->used = n; *buf = b->b; *off = 0; return b->p;
+    scratch_blk *b = &s->blk[s->nblk++];
+    if (s->nblk == 1 && n <= blk) { static scratch_blk all; if (!all.b) all = scratch_new(NSLOT * blk);
+        *b = all; b->size = blk; b->base = (VkDeviceSize)g_cur * blk; b->p += b->base; }
+    else *b = scratch_new(n > blk ? (n + 0xffff) & ~0xffffull : blk);
+    b->used = n; *buf = b->b; *off = b->base; return b->p;
 }
 static void df_add(int kind, void *a, void *b) {
     if (g_cur < 0) {   // outside a submission (a pool finalized between frames): after everything submitted so far
