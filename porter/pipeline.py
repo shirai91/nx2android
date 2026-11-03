@@ -184,7 +184,7 @@ class Port:
 
         try:
             self.inputs()
-            PROG.plan(1 + len(self.versions) + bool(self.fam['dlc']) + bool(o.fps60) + 6 + bool(o.install))   # nx_extract, the versions, the DLC, 60 fps, rewrite / split / Vulkan shaders / host / APK / data, install (unpack adds its own)
+            PROG.plan((1 if self.dump else 1 + len(self.versions) + bool(self.fam['dlc'])) + bool(o.fps60) + 6 + bool(o.install))   # the dump placed, or nx_extract, the versions and the DLC; 60 fps, rewrite / split / Vulkan shaders / host / APK / data, install (unpack adds its own)
             self.extract()
         finally: self.drop_unpacked()   # a failed run leaves no decompressed dumps behind either
         self.check_graphics()
@@ -209,7 +209,7 @@ class Port:
     def inputs(self):
         o = self.o
         say(f'game folder: {o.folder}')
-        if self.dump: self.app, self.fam = self.dump['app'], {'base': None, 'updates': [], 'dlc': list(self.dump['dlc'])}
+        if self.dump: self.app = self.dump.app
         else: self.app, self.fam = nsp.scan_nsps(o.folder, dumps.EXTS, o.keys)
         tid = f'{self.app:016X}'
         self.work = o.folder / f'{tid}_build'
@@ -225,7 +225,7 @@ class Port:
         if not re.fullmatch(r'[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+', self.package): raise BuildError(f'not a package name: {self.package}')
         say(f'game profile: {g.id} {g.get("name", "")} (Android: {ap.status}' + (f', tested on {ap.tested}' if ap.tested else '') + ')')
         builds, need = g.builds(), g.words('shader_versions')
-        have = dict.fromkeys(self.dump['versions']) if self.dump else nsp.nsp_versions(self.fam, builds)
+        have = self.dump.versions if self.dump else nsp.nsp_versions(self.fam, builds)
         self.derived, self.derived_mem, self.lost = '', '', []
         if self.provisional:   # the version the survey saw
             self.pkg_ver = o.version or g.get('package')
@@ -283,48 +283,14 @@ class Port:
         g = game.load(tid)
         return g, android_profile.AndroidProfile(g)
 
-    # ---- extract: nx_extract, each version the shaders come from, the DLC ----
+    # ---- extract: each version the shaders come from and the DLC (nx_extract, or a dump's files as hard links), then the profile they settle ----
     def extract(self):
         if self.dump:
             PROG.stage('place the extracted files', step='hard links into the build folder')
-            self.dirs = {v: extracted.place(self.dump, v, self.work / 'extract') for v in self.versions}
+            self.dirs = {v: self.dump.place(v, self.work / 'extract') for v in self.versions}; self.aoc = self.dump.place_aoc(self.work)
             PROG.end(', '.join(self.versions))
-            dlc = lambda: extracted.place_aoc(self.dump, self.work)
-        else: dlc = self.extract_nsps()
-        self.after_extract(dlc)
-
-    def extract_nsps(self):
-        """nx_extract on the versions' NSPs (self.dirs) → the step that extracts the DLC, run once the profile is settled"""
-        o, g = self.o, self.g
-        picks = nsp.pick_nsps(self.fam, self.have, self.versions)
-        ex = self.work / 'extract'; ex.mkdir(parents=True, exist_ok=True)
-        need = sum(dumps.size(p) * (2 if dumps.compressed(p) else 1) for p in {p for b, u in picks.values() for p in (b, u) if p}) / 2**30 + 6
-        if nsp.free_gb(self.work) < need and not all((ex / v).exists() for v in self.versions): raise BuildError(f'less than {need:.0f} GB free on the volume of {self.work}')
-        # NSZ / XCZ: only what a stage will read is decompressed, all in one stage before nx_extract runs (a version nsp.extract reuses reads nothing)
-        fresh = lambda v: (ex / v / 'ExeFS/main').exists() and (ex / v / 'RomFS' / g.get('romfs_marker')).exists()   # nsp.extract's reuse test
-        zdlc = [p for _, _, p in self.fam['dlc'] if dumps.compressed(p)]
-        # extract_aoc keys its reuse on the names, sizes and times of the NSPs it reads, decompressed ones here: with NSZ / XCZ DLC, porter keys it on those files instead
-        dkey = nsp.fingerprint(sorted((t, p.name, p.stat().st_size, p.stat().st_mtime_ns) for t, _, p in self.fam['dlc']),
-                               ('files', [NXNATIVE / 'dm/tools/nx_extract' / f for f in ('Program.cs', 'nx_extract.csproj')]))
-        dkf = self.work / 'aoc.dumps.key'
-        dlc_reused = bool(zdlc) and (self.work / 'aoc').is_dir() and nsp.reused(dkf, dkey) is not None
-        m = self.unpack([p for v in self.versions if not fresh(v) for p in picks[v] if p] + ([] if dlc_reused else zdlc))
-        picks = {v: tuple(m.get(p, p) if p else None for p in bu) for v, bu in picks.items()}
-        PROG.stage('build nx_extract')
-        nx = nsp.build_nx_extract(NXNATIVE, self.work, self.logs, self.env)
-        PROG.end()
-        self.dirs = {ver: nsp.extract(nx, o.keys, ex, ver, *picks[ver], None, self.logs, g) for ver in self.versions}
-
-        def dlc():
-            if dlc_reused:
-                PROG.stage('extract DLC'); PROG.end(f'{len(self.fam["dlc"])} DLC, reused (inputs unchanged)'); return self.work / 'aoc'
-            aoc = nsp.extract_aoc(nx, o.keys, NXNATIVE, self.work, self.app, dict(self.fam, dlc=[(t, v, m.get(p, p)) for t, v, p in self.fam['dlc']]), self.logs)
-            if zdlc: dkf.write_text(f'{dkey}\n')
-            else: nsp.rmtree(dkf)
-            return aoc
-        return dlc
-
-    def after_extract(self, dlc):
+        else: self.extract_nsps()
+        self.drop_unpacked()   # everything that reads them has run, and the shader stages that follow need the room
         o, g = self.o, self.g
         bad = [] if self.derived else [f'{v}: {x}' for v in self.versions for x in nsp.build_mismatch(self.dirs[v], v, g)]
         if bad and self.provisional: raise BuildError(f'not the builds the provisional profile registers: {"; ".join(bad)}')
@@ -350,8 +316,6 @@ class Port:
                          f'profile registers' for x in lost_patches(g.builds(), self.game / 'ExeFS', g.words('modules'))]
             for x in self.lost: say(f'[RED] {x}')
         else: self.mem_profile()
-        self.aoc = dlc()
-        self.drop_unpacked()   # everything that reads them has run, and the shader stages that follow need the room
         self.base = self.dirs.get('v0', self.dirs[self.versions[0]])
         self.app_name = o.app_name or nacp.name(self.base / 'control.nacp') or self.g.get('name', self.g.id)
         self.display = nacp.version(self.game / 'control.nacp') or nacp.version(self.base / 'control.nacp') or '1.0'
@@ -361,6 +325,33 @@ class Port:
         have = nacp.languages(self.game / 'control.nacp') or nacp.languages(self.base / 'control.nacp')
         self.lang = nsp.game_language(want, bool(lang_in), have)
         say(f'app: {self.app_name} {self.display} ({self.package}), game language {self.lang}')
+
+    def extract_nsps(self):
+        """nx_extract on the versions' NSPs (self.dirs) and the DLC (self.aoc)"""
+        o, g = self.o, self.g
+        picks = nsp.pick_nsps(self.fam, self.have, self.versions)
+        ex = self.work / 'extract'; ex.mkdir(parents=True, exist_ok=True)
+        need = sum(dumps.size(p) * (2 if dumps.compressed(p) else 1) for p in {p for b, u in picks.values() for p in (b, u) if p}) / 2**30 + 6
+        if nsp.free_gb(self.work) < need and not all((ex / v).exists() for v in self.versions): raise BuildError(f'less than {need:.0f} GB free on the volume of {self.work}')
+        # NSZ / XCZ: only what a stage will read is decompressed, all in one stage before nx_extract runs (a version nsp.extract reuses reads nothing)
+        fresh = lambda v: (ex / v / 'ExeFS/main').exists() and (ex / v / 'RomFS' / g.get('romfs_marker')).exists()   # nsp.extract's reuse test
+        zdlc = [p for _, _, p in self.fam['dlc'] if dumps.compressed(p)]
+        # extract_aoc keys its reuse on the names, sizes and times of the NSPs it reads, decompressed ones here: with NSZ / XCZ DLC, porter keys it on those files instead
+        dkey = nsp.fingerprint(sorted((t, p.name, p.stat().st_size, p.stat().st_mtime_ns) for t, _, p in self.fam['dlc']),
+                               ('files', [NXNATIVE / 'dm/tools/nx_extract' / f for f in ('Program.cs', 'nx_extract.csproj')]))
+        dkf = self.work / 'aoc.dumps.key'
+        dlc_reused = bool(zdlc) and (self.work / 'aoc').is_dir() and nsp.reused(dkf, dkey) is not None
+        m = self.unpack([p for v in self.versions if not fresh(v) for p in picks[v] if p] + ([] if dlc_reused else zdlc))
+        picks = {v: tuple(m.get(p, p) if p else None for p in bu) for v, bu in picks.items()}
+        PROG.stage('build nx_extract')
+        nx = nsp.build_nx_extract(NXNATIVE, self.work, self.logs, self.env)
+        PROG.end()
+        self.dirs = {ver: nsp.extract(nx, o.keys, ex, ver, *picks[ver], None, self.logs, g) for ver in self.versions}
+        if dlc_reused:
+            PROG.stage('extract DLC'); self.aoc = self.work / 'aoc'; PROG.end(f'{len(self.fam["dlc"])} DLC, reused (inputs unchanged)'); return
+        self.aoc = nsp.extract_aoc(nx, o.keys, NXNATIVE, self.work, self.app, dict(self.fam, dlc=[(t, v, m.get(p, p)) for t, v, p in self.fam['dlc']]), self.logs)
+        if zdlc: dkf.write_text(f'{dkey}\n')
+        else: nsp.rmtree(dkf)
 
     def mem_profile(self):
         """The player's --alias-headroom on a version the profile was brought up on (or a provisional or experimental profile): a copy of the profile in

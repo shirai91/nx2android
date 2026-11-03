@@ -308,10 +308,10 @@ class Extracted(unittest.TestCase):   # porter/extracted.py: a dump of extracted
             (root / d / 'romfs/System').mkdir(parents=True); (root / d / 'romfs/System/a.bin').write_bytes(b'x')
         (root / 'dlc/040074a01bf13001/0/romfs').mkdir(parents=True); (root / 'dlc/040074a01bf13001/0/romfs/b.bin').write_bytes(b'y')
         dump = extracted.scan(root)
-        self.assertEqual(dump['app'], app); self.assertEqual(sorted(dump['versions']), ['v0', 'v458752']); self.assertEqual(list(dump['dlc']), [app + 0x1001])
-        game = extracted.place(dump, 'v458752', root / 'build/extract')
+        self.assertEqual(dump.app, app); self.assertEqual(sorted(dump.versions), ['v0', 'v458752']); self.assertEqual(list(dump.dlc), [app + 0x1001])
+        game = dump.place('v458752', root / 'build/extract')
         self.assertEqual((game / 'ExeFS/main').read_bytes(), b'updates/458752'); self.assertTrue((game / 'RomFS/System/a.bin').is_file())
-        self.assertEqual((extracted.place_aoc(dump, root / 'build') / '1/b.bin').read_bytes(), b'y')
+        self.assertEqual((dump.place_aoc(root / 'build') / '1/b.bin').read_bytes(), b'y')
         self.assertIsNone(extracted.scan(root / 'base'))
 
 
