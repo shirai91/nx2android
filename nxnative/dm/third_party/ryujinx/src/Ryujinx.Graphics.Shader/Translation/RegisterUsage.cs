@@ -9,108 +9,75 @@ namespace Ryujinx.Graphics.Shader.Translation
 {
     static class RegisterUsage
     {
-        private const int RegsCount = 256;
-        private const int RegsMask = RegsCount - 1;
-
         private const int GprMasks = 4;
-        private const int PredMasks = 1;
-        private const int FlagMasks = 1;
-        private const int TotalMasks = GprMasks + PredMasks + FlagMasks;
+        private const int TotalMasks = GprMasks + 4;
+
+        // Masks in order: GPRs (4), predicates, flags, uniform registers, uniform predicates
+        private static readonly (RegisterType Type, int Mask)[] _files =
+        [
+            (RegisterType.Predicate, GprMasks),
+            (RegisterType.Flag, GprMasks + 1),
+            (RegisterType.Uniform, GprMasks + 2),
+            (RegisterType.UniformPredicate, GprMasks + 3),
+        ];
+
+        [System.Runtime.CompilerServices.InlineArray(TotalMasks)]
+        private struct Masks
+        {
+            private long _element0;
+        }
 
         private struct RegisterMask : IEquatable<RegisterMask>
         {
-            public long GprMask0 { get; set; }
-            public long GprMask1 { get; set; }
-            public long GprMask2 { get; set; }
-            public long GprMask3 { get; set; }
-            public long PredMask { get; set; }
-            public long FlagMask { get; set; }
+            private Masks _masks;
 
-            public RegisterMask(long gprMask0, long gprMask1, long gprMask2, long gprMask3, long predMask, long flagMask)
-            {
-                GprMask0 = gprMask0;
-                GprMask1 = gprMask1;
-                GprMask2 = gprMask2;
-                GprMask3 = gprMask3;
-                PredMask = predMask;
-                FlagMask = flagMask;
-            }
+            public readonly long GetMask(int index) => _masks[index];
 
-            public readonly long GetMask(int index)
+            public void SetMask(int index, long value) => _masks[index] = value;
+
+            private static RegisterMask Map(RegisterMask x, RegisterMask y, Func<long, long, long> f)
             {
-                return index switch
+                RegisterMask r = new();
+
+                for (int i = 0; i < TotalMasks; i++)
                 {
-                    0 => GprMask0,
-                    1 => GprMask1,
-                    2 => GprMask2,
-                    3 => GprMask3,
-                    4 => PredMask,
-                    5 => FlagMask,
-                    _ => throw new ArgumentOutOfRangeException(nameof(index)),
-                };
+                    r._masks[i] = f(x._masks[i], y._masks[i]);
+                }
+
+                return r;
             }
 
-            public static RegisterMask operator &(RegisterMask x, RegisterMask y)
+            public static RegisterMask All()
             {
-                return new RegisterMask(
-                    x.GprMask0 & y.GprMask0,
-                    x.GprMask1 & y.GprMask1,
-                    x.GprMask2 & y.GprMask2,
-                    x.GprMask3 & y.GprMask3,
-                    x.PredMask & y.PredMask,
-                    x.FlagMask & y.FlagMask);
+                RegisterMask r = new();
+                ((Span<long>)r._masks).Fill(-1L);
+                return r;
             }
 
-            public static RegisterMask operator |(RegisterMask x, RegisterMask y)
-            {
-                return new RegisterMask(
-                    x.GprMask0 | y.GprMask0,
-                    x.GprMask1 | y.GprMask1,
-                    x.GprMask2 | y.GprMask2,
-                    x.GprMask3 | y.GprMask3,
-                    x.PredMask | y.PredMask,
-                    x.FlagMask | y.FlagMask);
-            }
+            public static RegisterMask operator &(RegisterMask x, RegisterMask y) => Map(x, y, (a, b) => a & b);
 
-            public static RegisterMask operator ~(RegisterMask x)
-            {
-                return new RegisterMask(
-                    ~x.GprMask0,
-                    ~x.GprMask1,
-                    ~x.GprMask2,
-                    ~x.GprMask3,
-                    ~x.PredMask,
-                    ~x.FlagMask);
-            }
+            public static RegisterMask operator |(RegisterMask x, RegisterMask y) => Map(x, y, (a, b) => a | b);
 
-            public static bool operator ==(RegisterMask x, RegisterMask y)
-            {
-                return x.Equals(y);
-            }
+            public static RegisterMask operator ~(RegisterMask x) => Map(x, x, (a, _) => ~a);
 
-            public static bool operator !=(RegisterMask x, RegisterMask y)
-            {
-                return !x.Equals(y);
-            }
+            public static bool operator ==(RegisterMask x, RegisterMask y) => x.Equals(y);
 
-            public readonly override bool Equals(object obj)
-            {
-                return obj is RegisterMask regMask && Equals(regMask);
-            }
+            public static bool operator !=(RegisterMask x, RegisterMask y) => !x.Equals(y);
 
-            public readonly bool Equals(RegisterMask other)
-            {
-                return GprMask0 == other.GprMask0 &&
-                       GprMask1 == other.GprMask1 &&
-                       GprMask2 == other.GprMask2 &&
-                       GprMask3 == other.GprMask3 &&
-                       PredMask == other.PredMask &&
-                       FlagMask == other.FlagMask;
-            }
+            public readonly override bool Equals(object obj) => obj is RegisterMask regMask && Equals(regMask);
+
+            public readonly bool Equals(RegisterMask other) => ((ReadOnlySpan<long>)_masks).SequenceEqual(other._masks);
 
             public readonly override int GetHashCode()
             {
-                return HashCode.Combine(GprMask0, GprMask1, GprMask2, GprMask3, PredMask, FlagMask);
+                HashCode h = new();
+
+                for (int i = 0; i < TotalMasks; i++)
+                {
+                    h.Add(_masks[i]);
+                }
+
+                return h.ToHashCode();
             }
         }
 
@@ -174,7 +141,7 @@ namespace Ryujinx.Graphics.Shader.Translation
             RegisterMask[] globalOutputs = new RegisterMask[cfg.Blocks.Length];
 
             RegisterMask allOutputs = new();
-            RegisterMask allCmnOutputs = new(-1L, -1L, -1L, -1L, -1L, -1L);
+            RegisterMask allCmnOutputs = RegisterMask.All();
 
             bool modified;
 
@@ -348,24 +315,22 @@ namespace Ryujinx.Graphics.Shader.Translation
 
         private static RegisterMask GetMask(Register register)
         {
-            Span<long> gprMasks = stackalloc long[4];
-            long predMask = 0;
-            long flagMask = 0;
+            RegisterMask mask = new();
 
-            switch (register.Type)
+            if (register.Type == RegisterType.Gpr)
             {
-                case RegisterType.Gpr:
-                    gprMasks[register.Index >> 6] = 1L << (register.Index & 0x3f);
-                    break;
-                case RegisterType.Predicate:
-                    predMask = 1L << register.Index;
-                    break;
-                case RegisterType.Flag:
-                    flagMask = 1L << register.Index;
-                    break;
+                mask.SetMask(register.Index >> 6, 1L << (register.Index & 0x3f));
             }
 
-            return new RegisterMask(gprMasks[0], gprMasks[1], gprMasks[2], gprMasks[3], predMask, flagMask);
+            foreach ((RegisterType type, int index) in _files)
+            {
+                if (type == register.Type)
+                {
+                    mask.SetMask(index, 1L << register.Index);
+                }
+            }
+
+            return mask;
         }
 
         private static bool Exchange(RegisterMask[] masks, int blkIndex, RegisterMask value)
@@ -459,23 +424,7 @@ namespace Ryujinx.Graphics.Shader.Translation
 
         private static (RegisterType RegType, int BaseRegIndex) GetRegTypeAndBaseIndex(int i)
         {
-            RegisterType regType = RegisterType.Gpr;
-            int baseRegIndex = 0;
-
-            if (i < GprMasks)
-            {
-                baseRegIndex = i * sizeof(long) * 8;
-            }
-            else if (i == GprMasks)
-            {
-                regType = RegisterType.Predicate;
-            }
-            else
-            {
-                regType = RegisterType.Flag;
-            }
-
-            return (regType, baseRegIndex);
+            return i < GprMasks ? (RegisterType.Gpr, i * 64) : (Array.Find(_files, f => f.Mask == i).Type, 0);
         }
 
         private static bool EndsWithReturn(BasicBlock block)
