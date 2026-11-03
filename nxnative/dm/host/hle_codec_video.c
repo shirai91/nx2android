@@ -153,8 +153,7 @@ static void reopen(cv_dec *d) {   // a new stream: decoding starts again at the 
     d->vpx_ok = vpx_codec_dec_init(&d->vpx, vpx_codec_vp9_dx(), &cfg, 0) == VPX_CODEC_OK;
     if (!d->vpx_ok) LOG("[RED] nn::codec: libvpx would not start a decoder");
 }
-static Result dec_init(void *t, const char *codec, uint16_t w, uint16_t h) {
-    if (strcmp(codec, "VP9")) { LOG("[RED] nn::codec: a %s decoder: not served, Initialize fails", codec); return CV_R(CV_BAD); }
+static Result dec_init(void *t, uint16_t w, uint16_t h) {
     cv_dec *d = calloc(1, sizeof *d); d->magic = MAGIC; pthread_mutex_init(&d->mu, NULL);
     reopen(d);
     pthread_mutex_lock(&g_mu); for (int i = 0; i < NDEC && !d->id; i++) if (!g_dec[i]) { g_dec[i] = d; d->id = (uint32_t)i + 1; } pthread_mutex_unlock(&g_mu);
@@ -246,31 +245,40 @@ static Result dec_props(uint16_t *w, uint16_t *h, uint16_t *cw, uint16_t *ch, in
     pthread_mutex_unlock(&d->mu);
     return ok ? 0 : CV_R(CV_EMPTY);
 }
-static Result dec_encrypted(void) { static int once; if (!once++) LOG("[RED] nn::codec: encrypted input is not served"); return CV_R(CV_BAD); }
 
-// Each codec's entry points by their SDK names (T: the mangled type name, N: its length prefix in the names that take it, C: the codec's name)
-#define CV_FAMILY(tag, C, T, Ws, Ini, Fin, Reg, Unr, Sta, Sto, Flu, Evt, Sub, Enc, Acq, Rel, Pro) \
-    HLE_FORCE("_ZN2nn5codec" Ws "Calculate" C "DecoderWorkBufferEPmS1_mtt", "the host decoder needs no work memory", Result, h_##tag##_work, uint64_t *size, uint64_t *align, uint64_t bs, uint16_t w, uint16_t h) { (void)bs; (void)w; (void)h; *size = *align = 0x1000; return 0; } \
-    HLE_FORCE("_ZN2nn5codec" Ini "Initialize" C "DecoderEPNS0_" T "EPvmmttjNS0_23VideoDecoderInputFormatENS0_24VideoDecoderOutputFormatE" EXTRA_##tag, "decoded on the host", Result, h_##tag##_init, void *t, void *work, uint64_t wsize, uint64_t bs, uint16_t w, uint16_t h) { (void)work; (void)wsize; (void)bs; return dec_init(t, #tag, w, h); } \
-    HLE_FORCE("_ZN2nn5codec" Ini "Initialize" C "DecoderEPNS0_" T "EmttjNS0_23VideoDecoderInputFormatENS0_24VideoDecoderOutputFormatE" EXTRA_##tag, "decoded on the host", Result, h_##tag##_init2, void *t, uint64_t bs, uint16_t w, uint16_t h) { (void)bs; return dec_init(t, #tag, w, h); } \
-    HLE_FORCE("_ZN2nn5codec" Fin "Finalize" C "DecoderEPNS0_" T "E", "frees the host decoder", Result, h_##tag##_fin, void *t) { return dec_fin(t); } \
-    HLE_FORCE("_ZN2nn5codec" Reg "Register" C "DecoderBufferEPNS0_" T "EjPNS0_25VideoDecoderImagePoolTypeEj", "a buffer of the host decoder, acquirable at once", Result, h_##tag##_reg, void *t, uint32_t i, void *pool, uint32_t pidx) { return dec_reg(t, i, pool, pidx); } \
-    HLE_FORCE("_ZN2nn5codec" Unr "Unregister" C "DecoderBufferEPNS0_" T "Ej", "the buffer leaves the host decoder", Result, h_##tag##_unreg, void *t, uint32_t i) { return dec_unreg(t, i); } \
-    HLE_FORCE("_ZN2nn5codec" Sta "Start" C "DecoderEPNS0_" T "E", "the host decoder decodes on submission", Result, h_##tag##_start, void *t) { (void)t; return 0; } \
-    HLE_FORCE("_ZN2nn5codec" Sto "Stop" C "DecoderEPNS0_" T "E", "drops undelivered pictures", Result, h_##tag##_stop, void *t) { return dec_reset(t); } \
-    HLE_FORCE("_ZN2nn5codec" Flu "Flush" C "DecoderEPNS0_" T "E", "drops undelivered pictures", Result, h_##tag##_flush, void *t) { return dec_reset(t); } \
-    HLE_FORCE("_ZN2nn5codec" Evt "Get" C "DecoderSubmissionReadyEventEPPNS_2os15SystemEventTypeEPNS0_" T "E", "signalled while the host decoder takes packets", Result, h_##tag##_event, void **out, void *t) { cv_dec *d = dec_of(t); *out = d ? d->event : NULL; return d ? 0 : CV_R(CV_BAD); } \
-    HLE_FORCE("_ZN2nn5codec" Sub "Submit" C "DecoderInputBufferEPmPNS0_" T "EPKvmNS_8TimeSpanEb", "decodes the packet on the submitting thread", Result, h_##tag##_submit, uint64_t *out, void *t, const void *data, uint64_t size, int64_t ts, bool eos) { return dec_submit(out, t, data, size, ts, eos); } \
-    HLE_FORCE("_ZN2nn5codec" Enc "SubmitEncrypted" C "DecoderInputBufferEPmPNS0_" T "EPKNS0_18EncryptionPropertyEPKvmNS_8TimeSpanEb", "protected streams are not served", Result, h_##tag##_enc, void) { return dec_encrypted(); } \
-    HLE_FORCE("_ZN2nn5codec" Acq "Acquire" C "DecoderOutputBufferEPjPNS_2gs16NativeSyncHandleEPNS0_" T "E", "the oldest acquirable buffer and its sync handle", Result, h_##tag##_acq, uint32_t *idx, cv_sync *sync, void *t) { return dec_acquire(idx, sync, t); } \
-    HLE_FORCE("_ZN2nn5codec" Rel "Release" C "DecoderOutputBufferEPNS0_" T "EjNS_2gs16NativeSyncHandleE", "the buffer waits for a picture and is acquirable again", void, h_##tag##_rel, void *t, uint32_t i) { dec_release(t, i); } \
-    HLE_FORCE("_ZN2nn5codec" Pro "Get" C "DecoderOutputBufferPropertiesEPtS1_S1_S1_PNS_8TimeSpanEPbPNS0_" T "Ej", "the filled buffer's picture size, time and end of stream", Result, h_##tag##_props, uint16_t *w, uint16_t *h, uint16_t *cw, uint16_t *ch, int64_t *ts, bool *eos, void *t, uint32_t i) { return dec_props(w, h, cw, ch, ts, eos, t, i); }
-#define EXTRA_VP9 ""
-#define EXTRA_VP8 ""
-#define EXTRA_AV1 ""
-#define EXTRA_H264 "PKvm"   // H.264's Initialize also takes the stream's parameter sets
-CV_FAMILY(VP9, "Vp9", "14Vp9DecoderType", "29", "20", "18", "24", "26", "15", "14", "15", "33", "27", "36", "29", "29", "35")
-CV_FAMILY(VP8, "Vp8", "14Vp8DecoderType", "29", "20", "18", "24", "26", "15", "14", "15", "33", "27", "36", "29", "29", "35")
-CV_FAMILY(AV1, "Av1", "14Av1DecoderType", "29", "20", "18", "24", "26", "15", "14", "15", "33", "27", "36", "29", "29", "35")
-CV_FAMILY(H264, "H264", "15H264DecoderType", "30", "21", "19", "25", "27", "16", "15", "16", "34", "28", "37", "30", "30", "36")
-#undef CV_FAMILY
+#define CV_TYPE "EPNS0_14Vp9DecoderTypeE"
+#define CV_INIT_ARGS "ttjNS0_23VideoDecoderInputFormatENS0_24VideoDecoderOutputFormatE"
+HLE_FORCE("_ZN2nn5codec29CalculateVp9DecoderWorkBufferEPmS1_mtt", "the host decoder needs no work memory", Result, h_vp9_work, uint64_t *size, uint64_t *align) { *size = *align = 0x1000; return 0; }
+HLE_FORCE("_ZN2nn5codec20InitializeVp9DecoderEPNS0_14Vp9DecoderTypeEPvmm" CV_INIT_ARGS, "decoded on the host", Result, h_vp9_init, void *t, void *work, uint64_t wsize, uint64_t bs, uint16_t w, uint16_t h) { (void)work; (void)wsize; (void)bs; return dec_init(t, w, h); }
+HLE_FORCE("_ZN2nn5codec20InitializeVp9DecoderEPNS0_14Vp9DecoderTypeEm" CV_INIT_ARGS, "decoded on the host", Result, h_vp9_init2, void *t, uint64_t bs, uint16_t w, uint16_t h) { (void)bs; return dec_init(t, w, h); }
+HLE_FORCE("_ZN2nn5codec18FinalizeVp9Decoder" CV_TYPE, "frees the host decoder", Result, h_vp9_fin, void *t) { return dec_fin(t); }
+HLE_FORCE("_ZN2nn5codec24RegisterVp9DecoderBufferEPNS0_14Vp9DecoderTypeEjPNS0_25VideoDecoderImagePoolTypeEj", "a buffer of the host decoder, acquirable at once", Result, h_vp9_reg, void *t, uint32_t i, void *pool, uint32_t pidx) { return dec_reg(t, i, pool, pidx); }
+HLE_FORCE("_ZN2nn5codec26UnregisterVp9DecoderBufferEPNS0_14Vp9DecoderTypeEj", "the buffer leaves the host decoder", Result, h_vp9_unreg, void *t, uint32_t i) { return dec_unreg(t, i); }
+HLE_FORCE("_ZN2nn5codec15StartVp9Decoder" CV_TYPE, "the host decoder decodes on submission", Result, h_vp9_start, void *t) { (void)t; return 0; }
+HLE_FORCE("_ZN2nn5codec14StopVp9Decoder" CV_TYPE, "drops undelivered pictures", Result, h_vp9_stop, void *t) { return dec_reset(t); }
+HLE_FORCE("_ZN2nn5codec15FlushVp9Decoder" CV_TYPE, "drops undelivered pictures", Result, h_vp9_flush, void *t) { return dec_reset(t); }
+HLE_FORCE("_ZN2nn5codec33GetVp9DecoderSubmissionReadyEventEPPNS_2os15SystemEventTypeEPNS0_14Vp9DecoderTypeE", "signalled while the host decoder takes packets", Result, h_vp9_event, void **out, void *t) {
+    cv_dec *d = dec_of(t); *out = d ? d->event : NULL; return d ? 0 : CV_R(CV_BAD); }
+HLE_FORCE("_ZN2nn5codec27SubmitVp9DecoderInputBufferEPmPNS0_14Vp9DecoderTypeEPKvmNS_8TimeSpanEb", "decodes the packet on the submitting thread", Result, h_vp9_submit, uint64_t *out, void *t, const void *data, uint64_t size, int64_t ts, bool eos) {
+    return dec_submit(out, t, data, size, ts, eos); }
+HLE_FORCE("_ZN2nn5codec36SubmitEncryptedVp9DecoderInputBufferEPmPNS0_14Vp9DecoderTypeEPKNS0_18EncryptionPropertyEPKvmNS_8TimeSpanEb", "protected streams are not served", Result, h_vp9_enc, void) {
+    static int once; if (!once++) LOG("[RED] nn::codec: encrypted input is not served"); return CV_R(CV_BAD); }
+HLE_FORCE("_ZN2nn5codec29AcquireVp9DecoderOutputBufferEPjPNS_2gs16NativeSyncHandleEPNS0_14Vp9DecoderTypeE", "the oldest acquirable buffer and its sync handle", Result, h_vp9_acq, uint32_t *idx, cv_sync *sync, void *t) { return dec_acquire(idx, sync, t); }
+HLE_FORCE("_ZN2nn5codec29ReleaseVp9DecoderOutputBufferEPNS0_14Vp9DecoderTypeEjNS_2gs16NativeSyncHandleE", "the buffer waits for a picture and is acquirable again", void, h_vp9_rel, void *t, uint32_t i) { dec_release(t, i); }
+HLE_FORCE("_ZN2nn5codec35GetVp9DecoderOutputBufferPropertiesEPtS1_S1_S1_PNS_8TimeSpanEPbPNS0_14Vp9DecoderTypeEj", "the filled buffer's picture size, time and end of stream", Result, h_vp9_props,
+          uint16_t *w, uint16_t *h, uint16_t *cw, uint16_t *ch, int64_t *ts, bool *eos, void *t, uint32_t i) { return dec_props(w, h, cw, ch, ts, eos, t, i); }
+
+// The other codecs: Initialize fails, so the client takes its error path and calls nothing else of theirs
+static Result cv_refuse(const char *codec) { LOG("[RED] nn::codec: a %s decoder: not served, Initialize fails", codec); return CV_R(CV_BAD); }
+HLE_FORCE("_ZN2nn5codec29CalculateVp8DecoderWorkBufferEPmS1_mtt", "no decoder to size", Result, h_vp8_work, uint64_t *size, uint64_t *align) { *size = *align = 0x1000; return 0; }
+HLE_FORCE("_ZN2nn5codec20InitializeVp8DecoderEPNS0_14Vp8DecoderTypeEPvmm" CV_INIT_ARGS, "not served", Result, h_vp8_init, void) { return cv_refuse("Vp8"); }
+HLE_FORCE("_ZN2nn5codec20InitializeVp8DecoderEPNS0_14Vp8DecoderTypeEm" CV_INIT_ARGS, "not served", Result, h_vp8_init2, void) { return cv_refuse("Vp8"); }
+HLE_FORCE("_ZN2nn5codec18FinalizeVp8DecoderEPNS0_14Vp8DecoderTypeE", "nothing was made", Result, h_vp8_fin, void) { return 0; }
+HLE_FORCE("_ZN2nn5codec29CalculateAv1DecoderWorkBufferEPmS1_mtt", "no decoder to size", Result, h_av1_work, uint64_t *size, uint64_t *align) { *size = *align = 0x1000; return 0; }
+HLE_FORCE("_ZN2nn5codec20InitializeAv1DecoderEPNS0_14Av1DecoderTypeEPvmm" CV_INIT_ARGS, "not served", Result, h_av1_init, void) { return cv_refuse("Av1"); }
+HLE_FORCE("_ZN2nn5codec20InitializeAv1DecoderEPNS0_14Av1DecoderTypeEm" CV_INIT_ARGS, "not served", Result, h_av1_init2, void) { return cv_refuse("Av1"); }
+HLE_FORCE("_ZN2nn5codec18FinalizeAv1DecoderEPNS0_14Av1DecoderTypeE", "nothing was made", Result, h_av1_fin, void) { return 0; }
+HLE_FORCE("_ZN2nn5codec30CalculateH264DecoderWorkBufferEPmS1_mtt", "no decoder to size", Result, h_h264_work, uint64_t *size, uint64_t *align) { *size = *align = 0x1000; return 0; }
+HLE_FORCE("_ZN2nn5codec21InitializeH264DecoderEPNS0_15H264DecoderTypeEPvmm" CV_INIT_ARGS "PKvm", "not served", Result, h_h264_init, void) { return cv_refuse("H264"); }
+HLE_FORCE("_ZN2nn5codec21InitializeH264DecoderEPNS0_15H264DecoderTypeEm" CV_INIT_ARGS "PKvm", "not served", Result, h_h264_init2, void) { return cv_refuse("H264"); }
+HLE_FORCE("_ZN2nn5codec19FinalizeH264DecoderEPNS0_15H264DecoderTypeE", "nothing was made", Result, h_h264_fin, void) { return 0; }
