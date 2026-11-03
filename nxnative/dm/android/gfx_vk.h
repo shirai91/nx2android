@@ -59,7 +59,7 @@ VkFormatFeatureFlags vk_fmt_features(VkFormat f);
 void vk_init(void);   // once, from mtl_init or the first use
 
 // ---- memory pools (gfx_vk_core.c): the guest's pool memory is GPU memory (AHardwareBuffer mapped over it) ----
-typedef struct { uint64_t lo, hi, gpu; VkBuffer buf; VkDeviceMemory mem; void *ahb; int zero_copy; uint8_t *shadow; uint64_t serial, base, end; int flags, synced; uint64_t stamp, stamp0; const void *span; } vkpool_t;   // serial: unique per pool made (caches of views over a pool's buffer key on it); [base, end): the game's pool, of which [lo, hi) is one chunk (ZC_CHUNK); flags: the NVN pool's (vk_pool_set_flags); synced, stamp, stamp0, span: a copied pool's incremental sync
+typedef struct { uint64_t lo, hi, gpu; VkBuffer buf; VkDeviceMemory mem; void *ahb; int zero_copy; uint8_t *shadow; uint64_t serial, base, end; int flags, synced; uint64_t stamp, stamp0; const void *span; uint8_t *hot; uint64_t nsync; } vkpool_t;   // serial: unique per pool made (caches of views over a pool's buffer key on it); [base, end): the game's pool, of which [lo, hi) is one chunk (ZC_CHUNK); flags: the NVN pool's (vk_pool_set_flags); synced, stamp, stamp0, span, hot, nsync: a copied pool's incremental sync (vk_pools_sync_)
 void vk_gmem_table(VkBuffer *buf, VkDeviceSize *off, VkDeviceSize *size);   // the memory pool table global accesses through loaded pointers search (RK_GMEM)
 vkpool_t *vk_pool_of(uint64_t addr, uint64_t len);   // the pool containing [addr, addr+len), NULL if none
 int vk_buf_at(uint64_t addr, uint64_t len, VkBuffer *buf, VkDeviceSize *off);   // GPU buffer + offset of a pool address range

@@ -13,6 +13,7 @@
 #include <android/hardware_buffer.h>
 #include <dlfcn.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
@@ -381,7 +382,7 @@ void mtl_pool_del(const void *mem) {
         vkpool_t p = g_pool[i]; g_pool[i] = g_pool[--g_npool]; pool_ord_make(); __atomic_fetch_add(&g_pool_gen, 1, __ATOMIC_RELEASE);
         pthread_rwlock_unlock(&g_pool_mu);
         if (p.zero_copy) pool_copy_back(&p);
-        vk_defer_free_buffer(p.buf, p.mem);   // the AHardwareBuffer goes with the imported memory's last reference
+        free(p.hot); vk_defer_free_buffer(p.buf, p.mem);   // the AHardwareBuffer goes with the imported memory's last reference
         if (p.ahb) AHardwareBuffer_release(p.ahb);
     }
 }
@@ -452,11 +453,25 @@ static uint64_t g_sync_bytes, g_sync_full;   // copied pools: bytes copied by th
 // sync (nvn_dirty's write-protect tracking: a block is protected again before it is copied, so a write during the copy is caught by the next sync). An 860 MB
 // pool copied whole at every submission (Unicorn Overlord on a Legion Y700 2023) ran at a few frames a second
 static void vk_pools_sync_(VkCommandBuffer cb);
-void vk_pools_sync(VkCommandBuffer cb) { extern int g_prof_on; extern uint64_t g_prof_ns[8]; struct timespec a, b; if (g_prof_on) clock_gettime(CLOCK_MONOTONIC, &a);
-    vk_pools_sync_(cb); if (g_prof_on) { clock_gettime(CLOCK_MONOTONIC, &b); g_prof_ns[2] += (uint64_t)((b.tv_sec - a.tv_sec) * 1000000000ll + (b.tv_nsec - a.tv_nsec)); } }
+static uint64_t g_sync_ns;
+// The GPU writes into pool memory of the submissions still in flight (the completion thread copies them back into the guest's pages): a sync must not copy guest
+// pages over them before then, and waits for the one it would (the rest of a sync goes on while the GPU runs the submissions before it)
+typedef struct { uint64_t lo, hi, fence; } gwr_t;
+enum { GWR_MAX = 6 * 64 };
+static int inflight_writes(gwr_t *o);
+uint64_t vk_fence_done(void); int mtl_wait(uint64_t fence, uint64_t timeout_ns);
+static uint64_t gw_fence(const gwr_t *w, int n, uint64_t lo, uint64_t hi) {   // the last in-flight submission writing into [lo, hi), 0: none
+    uint64_t f = 0, done = vk_fence_done();
+    for (int k = 0; k < n; k++) if (w[k].lo < hi && lo < w[k].hi && w[k].fence > done && w[k].fence > f) f = w[k].fence;
+    return f;
+}
+void vk_pools_sync(VkCommandBuffer cb) { extern int g_prof_on; extern uint64_t g_prof_ns[8]; struct timespec a, b; clock_gettime(CLOCK_MONOTONIC, &a);
+    vk_pools_sync_(cb); clock_gettime(CLOCK_MONOTONIC, &b); uint64_t d = (uint64_t)((b.tv_sec - a.tv_sec) * 1000000000ll + (b.tv_nsec - a.tv_nsec)); g_sync_ns += d; if (g_prof_on) g_prof_ns[2] += d; }
 static void vk_pools_sync_(VkCommandBuffer cb) {
     (void)cb;
+    static uint64_t g_pgsz; if (!g_pgsz) g_pgsz = (uint64_t)getpagesize();
     enum { BLK = 64 << 10 };
+    gwr_t gw[GWR_MAX]; int ngw = inflight_writes(gw);
     pthread_rwlock_rdlock(&g_pool_mu);
     for (int i = 0; i < g_npool; i++) {
         vkpool_t *p = &g_pool[i]; if (!p->shadow) continue;
@@ -464,18 +479,37 @@ static void vk_pools_sync_(VkCommandBuffer cb) {
         if (!p->span && (p->span = nvn_dirty_span(lo, size))) p->synced = 0;   // tracked only now (nvnMemoryPoolInitialize registers the range after the pool): copied whole once more, protected
         if (!p->synced || !p->span) {   // untracked: every sync copies all of it, as before
             if (p->span) nvn_dirty_protect(lo, size);
+            uint64_t f = gw_fence(gw, ngw, p->lo, p->hi); if (f) mtl_wait(f, ~0ull);
             memcpy(p->shadow, lo, size); g_sync_bytes += size; g_sync_full++; p->synced = 1; p->stamp0 = p->stamp = st; continue; }
         // judged against the sync before the last: a write whose fault took its generation before the last sync's stamp but stored it after that sync looked
-        // at its block would otherwise never count (its page is writable from then on, and clean by every later stamp). A dirty block is copied twice
+        // at its block would otherwise never count (its page is writable from then on, and clean by every later stamp). A dirty block is copied twice.
+        // A block found dirty twice in its last 7 syncs stays writable and is copied at every sync; each block is protected again once in 256 syncs to see
+        // whether it cooled. The game's per-frame data otherwise took a write-protection fault and an mprotect per block and sync (Donkey Kong Bananza:
+        // ~1,000 mprotects a frame at ~23 us each on the Android emulator, holding the memory map lock against every other thread's page faults).
+        // hot[block]: bit 7 hot, bits 0-6 the dirty history
+        if (!p->hot) p->hot = calloc((size + BLK - 1) / BLK, 1);
+        p->nsync++;
         for (uint64_t off = 0; off < size; off += BLK) {
-            uint64_t n = size - off < BLK ? size - off : BLK;
-            if (!nvn_dirty_since_span(p->span, lo + off, n, p->stamp0)) continue;
-            nvn_dirty_protect(lo + off, n); memcpy(p->shadow + off, lo + off, n); g_sync_bytes += n;
+            uint64_t n = size - off < BLK ? size - off : BLK, b = off / BLK; uint8_t *h = p->hot ? &p->hot[b] : NULL, hot = h ? *h & 0x80 : 0;
+            int dirty = hot || nvn_dirty_since_span(p->span, lo + off, n, p->stamp0);
+            uint8_t hist = h ? (uint8_t)((*h << 1 | dirty) & 0x7f) : 0;
+            if (!dirty) { if (h) *h = hist; continue; }
+            // GPU writes of a submission in flight in this block (their extent is often only bounded by the pool's end): a hot block waits for them; any other
+            // copies only the pages the CPU wrote, at once (a page both wrote in the meantime would be a race on hardware as well)
+            uint64_t f = gw_fence(gw, ngw, p->lo + off, p->lo + off + n);
+            if (f && hot) { mtl_wait(f, ~0ull); f = 0; hot = 0; }
+            else if (!hot && __builtin_popcount(hist) >= 2 && !f) hot = 0x80;
+            else if (hot && (p->nsync & 255) == (b & 255)) hot = 0;
+            if (!hot) nvn_dirty_protect(lo + off, n);
+            if (h) *h = hist | hot;
+            if (f) { for (uint64_t q = 0; q < n; q += g_pgsz) if (nvn_dirty_since_span(p->span, lo + off + q, g_pgsz, p->stamp0)) { memcpy(p->shadow + off + q, lo + off + q, g_pgsz); g_sync_bytes += g_pgsz; }
+                     continue; }
+            memcpy(p->shadow + off, lo + off, n); g_sync_bytes += n;
         }
         p->stamp0 = p->stamp; p->stamp = st;
     }
     pthread_rwlock_unlock(&g_pool_mu);
-    static uint64_t n, last; if (++n % 600 == 0) { VKLOG("copied pools: %.1f MB synced in the last 600 submissions (%.2f MB each), %llu full copies so far", (g_sync_bytes - last) / 1048576.0, (g_sync_bytes - last) / 600.0 / 1048576.0, (unsigned long long)g_sync_full); last = g_sync_bytes; }
+    static uint64_t n, last, last_ns; if (++n % 600 == 0) { VKLOG("copied pools: %.1f MB synced in the last 600 submissions (%.2f MB, %.2f ms each), %llu full copies so far", (g_sync_bytes - last) / 1048576.0, (g_sync_bytes - last) / 600.0 / 1048576.0, (g_sync_ns - last_ns) / 600.0 / 1e6, (unsigned long long)g_sync_full); last = g_sync_bytes; last_ns = g_sync_ns; }
 }
 // Copied pools after a submission: the ranges the submission's GPU writes covered (sub_gpu_wrote), back into the guest's pages. A pool never synced yet is left alone
 // (its copy holds nothing of the game's). Copying whole pools back held Unicorn Overlord to a few frames a second, and wrote every page of them, which the next sync
@@ -514,14 +548,24 @@ struct vksub {
 };
 enum { GW_SUB = 64 };
 static vksub_t g_slot[NSLOT]; static int g_cur = -1; uint64_t g_cmd_gen;   // g_cmd_gen: main command buffers begun (gfx_vk_exec.c bind cache)
+// Written through /proc/self/mem, which a page's write protection does not stop: the pages take no fault and no new generation, so the next sync does not copy
+// them to the GPU again (it holds them already) and a block the GPU writes does not turn hot (vk_pools_sync_). memcpy when the kernel refuses
 static void pools_copy_back(const struct vksub *s) {
+    static int fd = -2; if (fd == -2) fd = open("/proc/self/mem", O_RDWR | O_CLOEXEC);
     pthread_rwlock_rdlock(&g_pool_mu);
     for (int i = 0; i < g_npool; i++) { vkpool_t *p = &g_pool[i]; if (!p->shadow || !p->synced) continue;
         for (int k = 0; k < s->ngw; k++) { uint64_t lo = s->gw[k].lo > p->lo ? s->gw[k].lo : p->lo, hi = s->gw[k].hi < p->hi ? s->gw[k].hi : p->hi;
-            if (lo < hi) memcpy((void *)(uintptr_t)lo, p->shadow + (lo - p->lo), hi - lo); } }
+            if (lo < hi && (fd < 0 || pwrite(fd, p->shadow + (lo - p->lo), hi - lo, (off_t)lo) != (ssize_t)(hi - lo))) memcpy((void *)(uintptr_t)lo, p->shadow + (lo - p->lo), hi - lo); } }
     pthread_rwlock_unlock(&g_pool_mu);
 }
 static VkCommandBuffer g_slot_main_cb(void) { return g_slot[g_cur].main; }
+_Static_assert(GWR_MAX >= NSLOT * GW_SUB, "inflight_writes: room for every slot's writes");
+static int inflight_writes(gwr_t *o) {
+    uint64_t done = vk_fence_done(); int n = 0;
+    for (int j = 0; j < NSLOT; j++) { const vksub_t *s = &g_slot[j]; if (j == g_cur || s->fence <= done) continue;
+        for (int k = 0; k < s->ngw && n < GWR_MAX; k++) o[n++] = (gwr_t){s->gw[k].lo, s->gw[k].hi, s->fence}; }
+    return n;
+}
 // DM_VK_PASS_TIMES=1: a timestamp before and after every render pass (the replay's per-frame line then lists the passes that cost the most GPU time)
 enum { PASSQ = 512 };   // passes (and dispatches) timed per submission
 static VkQueryPool g_pq; static int g_pq_on = -1;
@@ -790,7 +834,7 @@ void mtl_sub_begin(void) {
     // parts early; synced at the commit, those parts read the copy as the last submission left it), and only once no earlier submission still reads it
     pthread_rwlock_rdlock(&g_pool_mu); int shadow = 0; for (int i = 0; i < g_npool; i++) shadow |= g_pool[i].shadow != NULL; pthread_rwlock_unlock(&g_pool_mu);
     g_shadow_pools = shadow;
-    if (shadow) { mtl_wait(g_fence, ~0ull); vk_pools_sync(NULL); }   // (after the completion thread's copy-back of the last submission, not only its GPU work)
+    if (shadow) vk_pools_sync(NULL);
     if (g_tsq) { vkCmdResetQueryPool(s->main, g_tsq, 2 * (uint32_t)g_cur, 2); vkCmdWriteTimestamp(s->main, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, g_tsq, 2 * (uint32_t)g_cur); }
     if (g_cq) vkCmdResetQueryPool(s->main, g_cq, (uint32_t)g_cur * CQ, CQ);
     s->ncq = 0;
