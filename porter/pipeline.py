@@ -7,7 +7,7 @@ import importlib.util, os, re, shutil, sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from porter import config, datapack, dumps, fpslocker, install, paths, profiles, toolchain
+from porter import config, datapack, dumps, extracted, fpslocker, install, paths, profiles, toolchain
 from porter.adb import Adb, AdbError
 from porter.paths import DM, NXNATIVE
 from porter.upstream import BuildError, PROG, android_profile, game, nacp, nsp, profile_guess, say
@@ -169,10 +169,11 @@ class Port:
         if o.vulkan_driver:
             o.vulkan_driver = Path(o.vulkan_driver).expanduser().resolve()
             if not o.vulkan_driver.is_file() or o.vulkan_driver.suffix != '.so': raise BuildError(f'--vulkan-driver: not a .so library: {o.vulkan_driver}')
+        self.dump = extracted.scan(o.folder)   # files already extracted: no NSP, no keys
         keys = o.keys or self.cfg.get('keys')
-        if not keys: raise BuildError('no prod.keys: give -k / --keys, or set it once with `porter config keys <path>`')
-        o.keys = Path(keys).expanduser().resolve()
-        try: self.tools = toolchain.require(self.cfg, str(o.keys), adb=o.install)
+        if not keys and not self.dump: raise BuildError('no prod.keys: give -k / --keys, or set it once with `porter config keys <path>`')
+        o.keys = Path(keys).expanduser().resolve() if keys else None
+        try: self.tools = toolchain.require(self.cfg, str(o.keys) if keys else None, adb=o.install, need_keys=not self.dump)
         except toolchain.ToolError as e: raise BuildError(str(e)) from e
         o.out = Path(o.out or self.cfg.get('out') or o.folder).expanduser().resolve()
         # the chosen dotnet first on PATH, in this process too: Windows finds a program by the parent's PATH, not the one passed to the child (upstream runs `dotnet` by name)
@@ -208,7 +209,8 @@ class Port:
     def inputs(self):
         o = self.o
         say(f'game folder: {o.folder}')
-        self.app, self.fam = nsp.scan_nsps(o.folder, dumps.EXTS, o.keys)
+        if self.dump: self.app, self.fam = self.dump['app'], {'base': None, 'updates': [], 'dlc': list(self.dump['dlc'])}
+        else: self.app, self.fam = nsp.scan_nsps(o.folder, dumps.EXTS, o.keys)
         tid = f'{self.app:016X}'
         self.work = o.folder / f'{tid}_build'
         g, ap = profiles.by_title(self.app)
@@ -216,13 +218,14 @@ class Port:
         if not (g and ap):
             what = f'no game profile for {tid}' if not g else f'{g.get("name", g.id)} ({g.id}) has a game profile but is not ported to Android yet (no android.tsv in {g.dir})'
             if not o.experimental: raise BuildError(f'{what}: --experimental tries it anyway (profiles: `porter profiles`)')
+            if self.dump: raise BuildError(f'{what}: an experimental port surveys NSP files, not an extracted dump')
             g, ap = self.experimental_profile(g, tid)
         self.g, self.ap = g, ap
         self.package = o.package or ap.package
         if not re.fullmatch(r'[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+', self.package): raise BuildError(f'not a package name: {self.package}')
         say(f'game profile: {g.id} {g.get("name", "")} (Android: {ap.status}' + (f', tested on {ap.tested}' if ap.tested else '') + ')')
         builds, need = g.builds(), g.words('shader_versions')
-        have = nsp.nsp_versions(self.fam, builds)
+        have = dict.fromkeys(self.dump['versions']) if self.dump else nsp.nsp_versions(self.fam, builds)
         self.derived, self.derived_mem, self.lost = '', '', []
         if self.provisional:   # the version the survey saw
             self.pkg_ver = o.version or g.get('package')
@@ -282,6 +285,16 @@ class Port:
 
     # ---- extract: nx_extract, each version the shaders come from, the DLC ----
     def extract(self):
+        if self.dump:
+            PROG.stage('place the extracted files', step='hard links into the build folder')
+            self.dirs = {v: extracted.place(self.dump, v, self.work / 'extract') for v in self.versions}
+            PROG.end(', '.join(self.versions))
+            dlc = lambda: extracted.place_aoc(self.dump, self.work)
+        else: dlc = self.extract_nsps()
+        self.after_extract(dlc)
+
+    def extract_nsps(self):
+        """nx_extract on the versions' NSPs (self.dirs) → the step that extracts the DLC, run once the profile is settled"""
         o, g = self.o, self.g
         picks = nsp.pick_nsps(self.fam, self.have, self.versions)
         ex = self.work / 'extract'; ex.mkdir(parents=True, exist_ok=True)
@@ -301,6 +314,18 @@ class Port:
         nx = nsp.build_nx_extract(NXNATIVE, self.work, self.logs, self.env)
         PROG.end()
         self.dirs = {ver: nsp.extract(nx, o.keys, ex, ver, *picks[ver], None, self.logs, g) for ver in self.versions}
+
+        def dlc():
+            if dlc_reused:
+                PROG.stage('extract DLC'); PROG.end(f'{len(self.fam["dlc"])} DLC, reused (inputs unchanged)'); return self.work / 'aoc'
+            aoc = nsp.extract_aoc(nx, o.keys, NXNATIVE, self.work, self.app, dict(self.fam, dlc=[(t, v, m.get(p, p)) for t, v, p in self.fam['dlc']]), self.logs)
+            if zdlc: dkf.write_text(f'{dkey}\n')
+            else: nsp.rmtree(dkf)
+            return aoc
+        return dlc
+
+    def after_extract(self, dlc):
+        o, g = self.o, self.g
         bad = [] if self.derived else [f'{v}: {x}' for v in self.versions for x in nsp.build_mismatch(self.dirs[v], v, g)]
         if bad and self.provisional: raise BuildError(f'not the builds the provisional profile registers: {"; ".join(bad)}')
         if bad:
@@ -325,14 +350,9 @@ class Port:
                          f'profile registers' for x in lost_patches(g.builds(), self.game / 'ExeFS', g.words('modules'))]
             for x in self.lost: say(f'[RED] {x}')
         else: self.mem_profile()
-        if dlc_reused:
-            PROG.stage('extract DLC'); self.aoc = self.work / 'aoc'; PROG.end(f'{len(self.fam["dlc"])} DLC, reused (inputs unchanged)')
-        else:
-            self.aoc = nsp.extract_aoc(nx, o.keys, NXNATIVE, self.work, self.app, dict(self.fam, dlc=[(t, v, m.get(p, p)) for t, v, p in self.fam['dlc']]), self.logs)
-            if zdlc: dkf.write_text(f'{dkey}\n')
-            else: nsp.rmtree(dkf)
+        self.aoc = dlc()
         self.drop_unpacked()   # everything that reads them has run, and the shader stages that follow need the room
-        self.base = next((self.dirs[v] for v in self.versions if picks[v][1] is None), self.dirs[self.versions[0]])
+        self.base = self.dirs.get('v0', self.dirs[self.versions[0]])
         self.app_name = o.app_name or nacp.name(self.base / 'control.nacp') or self.g.get('name', self.g.id)
         self.display = nacp.version(self.game / 'control.nacp') or nacp.version(self.base / 'control.nacp') or '1.0'
         lang_in = o.language or self.cfg.get('language')
