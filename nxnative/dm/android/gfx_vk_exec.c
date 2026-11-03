@@ -1086,37 +1086,8 @@ static int tex_desc_for(int st, const dmsv_bind *b, uint64_t h, VkDescriptorImag
     }
     return num;
 }
-// Driver segments are shared by their bytes within a submission (their copies are in its scratch), so that sets using them can match.
-// Descriptor sets are found by their whole content (layout, and every buffer range, view, sampler and texel buffer view written) across submissions: a set
-// whose last use the GPU has finished is written again for other content, and a destroyed view or buffer (vk_obj_gen) retires every set, as they may name it.
-// Every new set is an allocation and a vkUpdateDescriptorSets. When the cache lived one submission, Donkey Kong Bananza's title menu made a new set for 68 of
-// its 66 draws every frame, and its gameplay ~230 of ~1,500 a frame
-enum { SETC = 8192, SETW = 4, DRVC = 1024 };   // SETW: the entries a content hash may take, side by side
-typedef struct { uint64_t h, fence, gen; VkDescriptorSetLayout l; VkDescriptorSet set; } setc_t;   // fence: the submission of its last use
-static setc_t g_setc[SETC];
-static nvn_hmap g_setfree = {.klen = sizeof(VkDescriptorSetLayout)};   // layout → kept sets no entry holds and the GPU is done with
-typedef struct { VkDescriptorSet *v; int n, cap; } setfree_t;
-static uint64_t g_nkept;   // sets taken from the long-lived pools
-static VkDescriptorSet setc_get(uint64_t h, VkDescriptorSetLayout l) {
-    setc_t *e = &g_setc[h % SETC & ~(uint64_t)(SETW - 1)]; uint64_t gen = vk_obj_gen();
-    for (int i = 0; i < SETW; i++) if (e[i].set && e[i].h == h && e[i].l == l && e[i].gen == gen) { e[i].fence = mtl_last_fence() + 1; return e[i].set; }
-    return VK_NULL_HANDLE;
-}
-// a set to write for this content: an entry's, when one is free or done with (its set goes to its layout's free list); else one of this submission alone
-static VkDescriptorSet setc_put(uint64_t h, VkDescriptorSetLayout l) {
-    setc_t *e = &g_setc[h % SETC & ~(uint64_t)(SETW - 1)], *v = NULL; uint64_t done = vk_fence_done();
-    for (int i = 0; i < SETW; i++) {   // an empty entry, else the one the GPU finished with longest ago
-        if (!e[i].set) { v = &e[i]; break; }
-        if (e[i].fence <= done && (!v || e[i].fence < v->fence)) v = &e[i];
-    }
-    if (!v || g_nkept > 4 * SETC) return vk_alloc_set(l);
-    if (v->set) { setfree_t *f = nvn_hm_get(&g_setfree, &v->l); if (!f) { f = calloc(1, sizeof *f); nvn_hm_put(&g_setfree, &v->l, f); }
-        if (f->n == f->cap) { f->cap = f->cap ? 2 * f->cap : 16; f->v = realloc(f->v, sizeof *f->v * (size_t)f->cap); } f->v[f->n++] = v->set; }
-    setfree_t *f = nvn_hm_get(&g_setfree, &l); VkDescriptorSet set = f && f->n ? f->v[--f->n] : VK_NULL_HANDLE;
-    if (!set) { set = vk_alloc_set_kept(l); g_nkept++; }
-    *v = (setc_t){h, mtl_last_fence() + 1, vk_obj_gen(), l, set};
-    return set;
-}
+// Driver segments are shared by their bytes within a submission (their copies are in its scratch), so that sets using them can match
+enum { DRVC = 1024 };
 static struct { uint64_t h, epoch; VkBuffer b; VkDeviceSize o; } g_drvc[DRVC];
 uint64_t g_set_hits, g_set_new, g_ns_set_build, g_ns_set_hash, g_ns_set_new;   // descriptor sets: reused, new; time collecting their descriptors, hashing them, allocating and writing new ones
 // content hash of descriptor sets and driver segments: 8 bytes a step (a set with 32-slot texture arrays is several KB, which byte-wise FNV took milliseconds a frame over)
@@ -1281,8 +1252,8 @@ static VkDescriptorSet stage_set(int st, vkshader_t *s, uint32_t *dofs) {
     }
     uint64_t tb2 = tick(); g_ns_set_hash += tb2 - tb1;
     int nocache = g_tracing || g_x_nosetc;
-    if (!nocache && (set = setc_get(h, s->dsl))) g_set_hits++;
-    else { set = nocache ? vk_alloc_set(s->dsl) : setc_put(h, s->dsl); g_set_new++;
+    if (!nocache && (set = vk_set_find(h, s->dsl))) g_set_hits++;
+    else { set = nocache ? vk_alloc_set(s->dsl) : vk_set_new(h, s->dsl); g_set_new++;
         for (uint32_t i = 0; i < nw; i++) w[i].dstSet = set;
         vkUpdateDescriptorSets(V.dev, nw, w, 0, NULL);
         g_ns_set_new += tick() - tb2; }
@@ -1501,8 +1472,7 @@ static int prepare_draw(int prim, int indexed) {
     for (int i = 0; i < nsets; i++) { at[i] = ndofs; for (int st = 0; st < 3; st++)   // the dynamic offsets: by set, then binding
         if (S.sh[st] && !(st == 1 && k.raster_discard) && S.sh[st]->set == i) { memcpy(dall + ndofs, dofs[i], sizeof(uint32_t) * (size_t)S.sh[st]->ndyn); ndofs += (uint32_t)S.sh[st]->ndyn; } }
     at[nsets] = ndofs;
-    // an absent stage's set: the empty layout's (vk_pipeline_layout fills it in), one kept set
-    for (int i = 0; i < nsets; i++) if (!sets[i]) { static VkDescriptorSetLayout el; static VkDescriptorSet es; if (el != dsl[i]) { el = dsl[i]; es = vk_alloc_set_kept(el); } sets[i] = es; }
+    for (int i = 0; i < nsets; i++) if (!sets[i]) sets[i] = vk_empty_set(dsl[i]);   // an absent stage: the empty layout vk_pipeline_layout filled in
     // DM_VK_SETSPLIT=1 (live): under the same layout, only the run of sets whose handle or dynamic offsets changed is bound again. Adreno's vkCmdBindDescriptorSets
     // took ~22% of the replay thread on Unicorn Overlord's battle map (one load in it), and a draw that moves only its vertex stage's offsets sent the fragment set too
     if (!(dbg_draw() & 4) && g_setsplit && !bc_fresh() && g_bc.lay == layout && g_bc.nsets == (uint32_t)nsets && g_bc.ndofs == ndofs) {

@@ -1,5 +1,5 @@
 // Android port: the Vulkan backend behind the replay interface of nvn_mtl.h (what nvn_mtl.m implements on Metal).
-// Files: gfx_vk_core.c (device, submissions, completion), gfx_vk_pool.c (memory pools), gfx_vk_tex.c (formats, textures, samplers, registration tables),
+// Files: gfx_vk_core.c (device, submissions, completion), gfx_vk_pool.c (memory pools), gfx_vk_desc.c (descriptor pools, set cache), gfx_vk_tex.c (formats, textures, samplers, registration tables),
 // gfx_vk_shader.c (shader bundle, modules, layouts), gfx_vk_exec.c (command replay: passes, pipelines, descriptors, draws, copies), gfx_vk_present.c (window, swapchain).
 // Version 1 is correct-first: whole-pipeline barriers between passes, full pipelines with a small dynamic state set, descriptor sets per draw.
 #pragma once
@@ -86,9 +86,18 @@ VkDeviceMemory vk_image_memory(const VkMemoryRequirements *req, uint32_t type, V
 void vk_defer_free_image_sub(VkImage i, void *sub);
 void vk_defer_free_view(VkImageView v);
 VkDescriptorSet vk_alloc_set(VkDescriptorSetLayout l);    // from this submission's descriptor pools
-VkDescriptorSet vk_alloc_set_kept(VkDescriptorSetLayout l);   // from pools that are never reset
 uint64_t vk_obj_gen(void);   // how many times views, buffers or images were destroyed: descriptors written before may name them
 uint64_t vk_fence_done(void);   // the highest submission fence the GPU has completed
+
+// ---- descriptor sets (gfx_vk_desc.c) ----
+enum { VK_NDT = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC + 1 };   // the descriptor types sets take, counted per pool
+typedef struct { VkDescriptorPool *dp; int ndp, capdp, cur, counted; uint32_t used[VK_NDT], sets; } vk_dpools;   // what pool cur has given out
+void vk_dsl_register(VkDescriptorSetLayout l, const VkDescriptorSetLayoutBinding *b, uint32_t n);   // what one set of a layout takes
+VkDescriptorSet vk_dp_alloc(vk_dpools *d, VkDescriptorSetLayout l);
+void vk_dp_reset(vk_dpools *d);   // the GPU is done with every set of d
+VkDescriptorSet vk_set_find(uint64_t h, VkDescriptorSetLayout l);   // the cached set of content hash h, VK_NULL_HANDLE if none
+VkDescriptorSet vk_set_new(uint64_t h, VkDescriptorSetLayout l);    // a set to write with content h (cached from now on)
+VkDescriptorSet vk_empty_set(VkDescriptorSetLayout l);              // the one set of the empty layout
 
 // ---- formats and textures (gfx_vk_tex.c) ----
 // dec: a BC format the device lacks, decoded on the CPU (gfx_vk_tex.c bc_decode) into vk, dbpp bytes a texel; bw, bh and bpb stay the guest's blocks

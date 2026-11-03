@@ -202,7 +202,7 @@ static VkDescriptorSetLayout shader_layout(const VkDescriptorSetLayoutBinding *b
     if (!layout) {
         VkDescriptorSetLayoutCreateInfo li = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, NULL, 0, n, b};
         VKCHK(vkCreateDescriptorSetLayout(V.dev, &li, NULL, &layout));
-        void vk_dsl_register(VkDescriptorSetLayout l, const VkDescriptorSetLayoutBinding *b, uint32_t n); vk_dsl_register(layout, b, n);
+        vk_dsl_register(layout, b, n);
         nvn_hm_put(&cache, &k, layout);
     }
     return layout;
