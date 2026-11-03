@@ -128,6 +128,9 @@ def job_for(key, stage, rec, w):   # dmsh_build.py job_for; transform feedback i
          **extra, **({'xfb': xfb} if xfb else {})}
     if key in FACTS: j.update(FACTS[key])
     else: j['no_facts'] = True
+    if stage == 'cs' and 'local' not in j:   # a run-time capture has no facts: its control section holds them (shader_split.py)
+        tg, so = (0x58, 0x64) if 'nvn2_cs' in extra else (0x748, 0x754)
+        j['local'] = list(struct.unpack_from('<3I', ctl, tg)); j['shared'] = (struct.unpack_from('<I', ctl, so)[0] + 15) // 16 * 16
     return j, c1
 
 # ---- SPIR-V reflection: descriptor bindings with the translator's names, decoded as dmsh_build.py reflect decodes the MSL names ----
