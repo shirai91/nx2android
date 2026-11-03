@@ -32,7 +32,7 @@
 #        uepak.py job <RomFS> <main NSO> <work dir> [<Mac host> <rewritten modules>]   the shader code archives of every pak, and an Oodle job of their Oodle-compressed shaders (LZ4 ones
 #                                                                       decoded at once); IoStore shader libraries (UE 5.6) decoded at once through the game's Oodle in the host (OodleHost)
 #        uepak.py finish <work dir> <out dir>                           after the host has run the job: the archives with every shader decoded
-import ctypes, json, os, struct, sys
+import ctypes, json, os, struct, sys, zlib
 
 PAK_MAGIC, ARCHIVE_VERSION = 0x5A6F12E1, 2
 JOB_MAGIC, OUT_MAGIC = 0x4a4f4d44, 0x524f4d44   # "DMOJ", "DMOR" (hle_oodle.c)
@@ -147,6 +147,7 @@ class R:
 
 LEGACY = (4,)   # legacy pak versions read (the per-file index); 11 has the encoded one
 LEGACY_METHODS = {1: 'Zlib', 2: 'Gzip', 3: 'LZ5', 4: 'Custom'}   # compression flags of a legacy pak (3: DRAGON QUEST XI S's engine, see the header)
+INFLATE = {'Zlib': 15, 'Gzip': 31}   # methods zlib inflates here (window bits), with no game decoder: OCTOPATH TRAVELER's legacy paks are all Zlib blocks or stored
 
 def magic_back(f):
     """(how far from the end the footer's magic is, the pak version): a legacy footer is the last 0x2d bytes (magic 0x2c from the end); version 11's magic is 0xc8 from the end in
@@ -228,9 +229,10 @@ class Pak:
         return dict(off=off, raw=raw, size=size, method=self.methods[meth - 1] if meth else '', encrypted=enc, block_size=bsz, blocks=blocks)
     def read(self, path, decode=None):
         """A file's bytes. A compressed one needs decode(block bytes, raw length) → bytes, block by block (each block holds block_size raw bytes, the last one the rest):
-        the game's own decoder in the Mac host (shader_split.py oodle); Octopath Traveler 0's archives go through the Oodle job instead"""
+        the game's own decoder in the Mac host (shader_split.py oodle), or zlib here for Zlib and Gzip blocks (INFLATE); Octopath Traveler 0's archives go through the Oodle job instead"""
         e = self.entry(path)
         if not e['method']: return self.read_at(e['off'] + 53, e['size'], e['encrypted'])
+        if e['method'] in INFLATE: decode = lambda b, k, w=INFLATE[e['method']]: zlib.decompress(b, w)
         if not decode: raise ValueError(f'{path} is {e["method"]}-compressed in the pak')
         out, left = [], e['raw']
         for s, n in e['blocks']:
@@ -402,6 +404,14 @@ def unreal_paks(romfs, legacy=None):
         except (OSError, ValueError, struct.error): continue   # shorter than a footer, or no Unreal pak
         if legacy is None or (ver in LEGACY) == legacy: out.append(p)
     return out
+
+def decoder_paks(romfs):
+    """The legacy paks under the RomFS with a file only the game's own decoder reads (a compression method zlib does not inflate, DRAGON QUEST XI S's LZ5, or an encrypted index):
+    the shader split needs the Mac host for these; paks of Zlib blocks and stored files (OCTOPATH TRAVELER) are read here"""
+    def needs(p):
+        try: return any(e['method'] and e['method'] not in INFLATE for e in Pak(p).files.values())
+        except ValueError: return True
+    return [p for p in unreal_paks(romfs, legacy=True) if needs(p)]
 
 def job(romfs, main_nso, work, decode=None):
     """The shader code archives of every pak under the RomFS into <work>/archives, and one Oodle job (<work>/oodle.job) of every compressed shader in them; <work>/job.json lists them.
