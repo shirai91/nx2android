@@ -233,14 +233,14 @@ static void md_dims(const mdec_t *d, int *w, int *h, int *stride, int *slice) {
 enum { MDJ_NONE, MDJ_DECODE, MDJ_CLOSE, MDJ_QUIT, MDJ_TAKE, MDJ_TAIL };
 static int md_threads(void) { long n = sysconf(_SC_NPROCESSORS_ONLN); return n >= 8 ? 4 : 2; }
 // I420 → NV12 (stride = width, plane height = height); a smaller picture is padded with black, a larger one cropped
-void dm_yuv_nv12(const vpx_image_t *im, uint8_t *dst, int w, int h) {
+void dm_yuv_nv12(const vpx_image_t *im, uint8_t *dst, uint8_t *uv, int w, int h) {
     int cw = (int)im->d_w < w ? (int)im->d_w : w, ch = (int)im->d_h < h ? (int)im->d_h : h;
-    if (cw < w || ch < h) { memset(dst, 16, (size_t)w * h); memset(dst + (size_t)w * h, 128, (size_t)w * h / 2); }
+    if (cw < w || ch < h) { memset(dst, 16, (size_t)w * h); memset(uv, 128, (size_t)w * h / 2); }
     for (int y = 0; y < ch; y++) memcpy(dst + (size_t)y * w, im->planes[0] + (size_t)y * im->stride[0], cw);
     int cw2 = (cw + 1) / 2, ch2 = (ch + 1) / 2;
     for (int y = 0; y < ch2 && y < h / 2; y++) {
         const uint8_t *u = im->planes[1] + (size_t)y * im->stride[1], *v = im->planes[2] + (size_t)y * im->stride[2];
-        uint8_t *o = dst + (size_t)w * h + (size_t)y * w;
+        uint8_t *o = uv + (size_t)y * w;
         int x = 0;
         for (; x + 16 <= cw2; x += 16) { uint8x16x2_t t = { { vld1q_u8(u + x), vld1q_u8(v + x) } }; vst2q_u8(o + 2 * x, t); }
         for (; x < cw2 && 2 * x + 1 < w; x++) { o[2 * x] = u[x]; o[2 * x + 1] = v[x]; }
@@ -288,7 +288,7 @@ static int md_vp9(mdec_t *d, const uint8_t *p, int n, int slot) {
     int rgba = d->fmt == MD_FMT_ABGR;
     size_t need = (size_t)d->w * d->h * (rgba ? 4 : 3) / (rgba ? 1 : 2);
     if (d->out[slot].cap < need) { free(d->out[slot].frm); d->out[slot].frm = malloc(need); d->out[slot].cap = need; }   // a Configure after Reset may change the size
-    if (rgba) dm_yuv_rgba(last, d->out[slot].frm, d->w, d->h); else dm_yuv_nv12(last, d->out[slot].frm, d->w, d->h);
+    if (rgba) dm_yuv_rgba(last, d->out[slot].frm, d->w, d->h); else dm_yuv_nv12(last, d->out[slot].frm, d->out[slot].frm + (size_t)d->w * d->h, d->w, d->h);
     return 1;
 }
 // ---------- Vorbis ----------

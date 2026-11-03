@@ -124,10 +124,7 @@ HLE_FORCE("_ZN2nn5codec26ReadDecoderOutputImageNv12EPKNS0_25VideoDecoderImagePoo
     const vpx_image_t *im = picture(t, i);
     uint64_t ny = (uint64_t)w * h;
     if (!im || !whole("ReadDecoderOutputImageNv12", x, y) || ystride != w || uvstride != w || ysize < ny || uvsize < ny / 2) { memset(ydst, 16, ysize); memset(uvdst, 128, uvsize); return 0; }
-    if (uvdst == ydst + ny) { dm_yuv_nv12(im, ydst, w, h); return 0; }
-    uint8_t *tmp = malloc(ny * 3 / 2); if (!tmp) return 0;
-    dm_yuv_nv12(im, tmp, w, h); memcpy(ydst, tmp, ny); memcpy(uvdst, tmp + ny, ny / 2); free(tmp);
-    return 0;
+    dm_yuv_nv12(im, ydst, uvdst, w, h); return 0;
 }
 
 // ---- decoders ----
