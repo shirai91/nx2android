@@ -27,7 +27,11 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
 
                         // nxnative: a call's arguments stay the locals StructuredProgram copied them to (SPIR-V passes them by pointer). Propagated, the call
                         // kept a local whose declaration was removed (KeyNotFoundException in CodeGen/Spirv GetLocalPointer: 1,894 shaders of Viractal)
-                        if (propVar.Defs.Count == 1 && isWorthPropagating && !UsedByCall(propVar))
+                        // nxnative: a source with side effects is never propagated either: its assignment stays (below), so a copy at the use ran it twice.
+                        // Pokémon Legends: Z-A's culling compute shaders (66f848f2d65e7b75, e7dd2a9e45c705b9, ec5ebd6d9902a9a1) did each warp's atomic add on a
+                        // record's done counter twice; the lane whose rank equals the total then never came, the counters were never reset and grew every frame
+                        // (GPU 9 → 70 ms a frame within minutes on both the Adreno driver and Turnip)
+                        if (propVar.Defs.Count == 1 && isWorthPropagating && !UsedByCall(propVar) && !HasSideEffects(assignment.Source))
                         {
                             PropagateExpression(propVar, assignment.Source);
                         }
