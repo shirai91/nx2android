@@ -54,7 +54,7 @@ typedef struct thr {
     int started, exited, cancel;
     pthread_t pt; pthread_cond_t cv;
     // Current wait: kind 0=none 1=lock 2=condition 3=address 4=synchronization object
-    int wkind, woke; uint64_t waddr, wkey; uint32_t wtag; int64_t wres;
+    int wkind; _Atomic int woke, spinning; uint64_t waddr, wkey; uint32_t wtag; int64_t wres;
     _Atomic int sleeping;      // inside SleepThread's timed sleep (not runnable; used by dm_yield_to_core_peers)
     int yield_pending;         // this SVC woke a higher-priority thread pinned to this core: let it run before the SVC returns (svc_thread)
     _Atomic int *host_work;    // points at the thread's dm_host_work (registered when the thread starts)
@@ -175,14 +175,36 @@ static thr_t *pick(int kind, uint64_t a) {
     return b;
 }
 static void wake(thr_t *t, int64_t res) {
-    wait_unlink(t); t->wkind = 0; t->woke = 1; t->wres = res; pthread_cond_signal(&t->cv);
+    wait_unlink(t); t->wkind = 0; t->wres = res; atomic_store(&t->woke, 1); if (!atomic_load(&t->spinning)) pthread_cond_signal(&t->cv);   // a spinning waiter (block) sees woke itself
     thr_t *self = pthread_getspecific(g_keythr);   // the woken thread is pinned to this core with a higher priority: on Horizon it preempts at once (see dm_yield_to_core_peers)
     if (self && self != t && !t->host_owned && t->prio < self->prio && t->mask == 1ull << (self->core & 63)) self->yield_pending = 1;
+}
+// Spinning before sleeping (start-up, microseconds; 0, the default: none). DM_WAIT_SPIN_US: any wait, as long as its timeout allows; DM_LOCK_SPIN_US: a lock
+// still held at ArbitrateLock, until its owner lets it go. A sleeping thread costs its waker a futex wake and itself a scheduler wake-up: on the Android
+// emulator ~50 us of an idle virtual CPU's wake in try_to_wake_up, half of Donkey Kong Bananza's main thread's CPU time, and its job workers convoyed on one
+// allocator lock at ~0.5 ms a handoff. Spinning burns a core while it waits: the game's profile turns it on
+static int spin_cfg(const char *name) { const char *e = getenv(name); return e && atoi(e) > 0 ? atoi(e) : 0; }
+static inline void cpu_relax(void) {
+#if defined(__aarch64__)
+    __asm__ volatile("yield");
+#elif defined(__x86_64__)
+    __builtin_ia32_pause();
+#endif
 }
 // Suspend until woken or timed out (ns<0 infinite, 0 immediate timeout); returns wres or R_TIMEOUT
 static int64_t block(thr_t *t, int kind, int64_t ns) {
     t->wkind = kind; t->woke = 0; t->next = g_wait; g_wait = t; t->wseq = ++g_wseq;
     if (ns == 0) { wait_unlink(t); t->wkind = 0; return R_TIMEOUT; }
+    // Spun outside G first (DM_WAIT_SPIN_US): wake() sees `spinning` under G and leaves the condition variable alone
+    static int spin_us = -1; if (spin_us < 0) spin_us = spin_cfg("DM_WAIT_SPIN_US");
+    if (spin_us && !dm_detclock_enabled()) {
+        atomic_store(&t->spinning, 1); pthread_mutex_unlock(&G);
+        uint64_t t0 = now_ns(), end = t0 + (uint64_t)(ns > 0 && ns < spin_us * 1000ll ? ns : spin_us * 1000ll);
+        for (unsigned i = 1; !atomic_load(&t->woke); i++) { cpu_relax(); if (!(i & 63) && now_ns() > end) break; }
+        pthread_mutex_lock(&G); atomic_store(&t->spinning, 0);
+        if (t->woke) return t->wres;
+        if (ns > 0 && (ns -= (int64_t)(now_ns() - t0)) <= 0) { wait_unlink(t); t->wkind = 0; return R_TIMEOUT; }
+    }
     struct timespec dl;
     int det_wait = ns > 0 && dm_detclock_enabled();
     uint64_t guest_deadline = det_wait ? guest_ns() + (uint64_t)ns : 0;
@@ -792,6 +814,12 @@ static int svc_thread_impl(int num, uint64_t *regs) {
 
     case 0x1A: {  // ArbitrateLock(w0 owner handle, x1 address, w2 this thread's tag)
         thr_t *t = cur(); uint64_t addr = regs[1];
+        // DM_LOCK_SPIN_US: a release seen while spinning (the lock word changed: ArbitrateUnlock found no waiter and cleared it, or handed it on) returns at once,
+        // and user mode takes the lock or arbitrates again
+        static int spin_us = -1; if (spin_us < 0) spin_us = spin_cfg("DM_LOCK_SPIN_US");
+        if (spin_us) { uint32_t want = (uint32_t)regs[0] | WAITERS_BIT; uint64_t end = now_ns() + (uint64_t)spin_us * 1000;
+            for (unsigned i = 1; ld32(addr) == want; i++) { cpu_relax(); if (!(i & 63) && now_ns() > end) break; }
+            if (ld32(addr) != want) { regs[0] = 0; return 1; } }
         pthread_mutex_lock(&G);
         int64_t r = 0;
         if (ld32(addr) == ((uint32_t)regs[0] | WAITERS_BIT)) { t->waddr = addr; t->wtag = (uint32_t)regs[2];
