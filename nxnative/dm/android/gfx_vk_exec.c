@@ -35,7 +35,7 @@ static struct {
 } S;
 static p_tf_bind g_tf[4]; static uint64_t g_tf_off[4]; static int g_tf_on, g_tf_in_pass; static uint32_t g_tf_verts;   // transform feedback: buffers, bytes written into each, capture on, a capture in the open pass (xfb_begin), vertices captured since Begin
 static int g_depth_zero = 1, g_lower_left;
-void mtl_set_depth_zero(int on) { g_depth_zero = on; void vk_support_depth(int gl); vk_support_depth(!on); }
+void mtl_set_depth_zero(int on) { g_depth_zero = on; vk_support_depth(!on); }
 void mtl_set_origin_lower_left(int on) { g_lower_left = on; }
 // NVN's upper-left mode has clip space y up (as Metal and D3D): it is drawn with a flipped viewport over the same top-left rectangle, lower-left mode without
 // one; the scissor is then never flipped and the winding follows nvn_mtl.m's. Drawn the other way, every blit flipped the picture (NEO docked: upside down)
