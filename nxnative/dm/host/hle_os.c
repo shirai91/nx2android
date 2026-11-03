@@ -54,6 +54,9 @@ static int detclock_cfg(void) {
 }
 static uint64_t wall_guest_ns(void) { return atomic_load(&g_gfz) ? atomic_load(&g_gfrozen) : now_ns() - atomic_load(&g_glag); }
 uint64_t guest_ns(void) { return atomic_load(&g_gdet_on) ? atomic_load(&g_gdet) : wall_guest_ns(); }
+// The system counter on the guest clock, at the rate the game's SDK converts it with: the Switch 2's SDK uses 31.25 MHz (32 ns a tick), the Switch's 19.2 MHz. Served at
+// 19.2 MHz, a Switch 2 game measured every span 1.63 times too short: Donkey Kong Bananza's frame-rate controller compares GPU timestamps with tick stamps and held 20 fps
+uint64_t guest_ticks(void) { return dm_sdk_ounce() ? guest_ns() / 32 : guest_ns() * 12 / 625; }
 int dm_detclock_enabled(void) { return detclock_cfg() && atomic_load(&g_gdet_on); }
 void dm_guest_frame_tick(void) {
     crash_watch_frame();
