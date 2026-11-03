@@ -1,5 +1,5 @@
 // Android port: the Vulkan backend behind the replay interface of nvn_mtl.h (what nvn_mtl.m implements on Metal).
-// Files: gfx_vk_core.c (device, memory pools, submissions, completion), gfx_vk_tex.c (formats, textures, samplers, registration tables),
+// Files: gfx_vk_core.c (device, submissions, completion), gfx_vk_pool.c (memory pools), gfx_vk_tex.c (formats, textures, samplers, registration tables),
 // gfx_vk_shader.c (shader bundle, modules, layouts), gfx_vk_exec.c (command replay: passes, pipelines, descriptors, draws, copies), gfx_vk_present.c (window, swapchain).
 // Version 1 is correct-first: whole-pipeline barriers between passes, full pipelines with a small dynamic state set, descriptor sets per draw.
 #pragma once
@@ -58,13 +58,21 @@ uint32_t vk_mem_type(uint32_t bits, VkMemoryPropertyFlags want, VkMemoryProperty
 VkFormatFeatureFlags vk_fmt_features(VkFormat f);
 void vk_init(void);   // once, from mtl_init or the first use
 
-// ---- memory pools (gfx_vk_core.c): the guest's pool memory is GPU memory (AHardwareBuffer mapped over it) ----
-typedef struct { uint64_t lo, hi, gpu; VkBuffer buf; VkDeviceMemory mem; void *ahb; int zero_copy; uint8_t *shadow; uint64_t serial, base, end; int flags, synced; uint64_t stamp, stamp0; const void *span; uint8_t *hot; uint64_t nsync; } vkpool_t;   // serial: unique per pool made (caches of views over a pool's buffer key on it); [base, end): the game's pool, of which [lo, hi) is one chunk (ZC_CHUNK); flags: the NVN pool's (vk_pool_set_flags); synced, stamp, stamp0, span, hot, nsync: a copied pool's incremental sync (vk_pools_sync_)
+// ---- memory pools (gfx_vk_pool.c): the guest's pool memory is GPU memory (AHardwareBuffer mapped over it) ----
+#define VK_POOL_USAGE (VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT | \
+    VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | \
+    VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | (V.has_xfb ? VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT : 0))   // any pool range may be any kind of buffer
+typedef struct { uint64_t lo, hi, gpu; VkBuffer buf; VkDeviceMemory mem; void *ahb; int zero_copy; uint8_t *shadow; uint64_t serial, base, end; int synced; uint64_t stamp, stamp0; const void *span; uint8_t *hot; uint64_t nsync; } vkpool_t;   // serial: unique per pool made (caches of views over a pool's buffer key on it); [base, end): the game's pool, of which [lo, hi) is one chunk (ZC_CHUNK); synced, stamp, stamp0, span, hot, nsync: a copied pool's incremental sync (pool_sync)
+typedef struct { uint64_t lo, hi; } vk_range;
+typedef struct { uint64_t lo, hi, fence; } vk_gwrite;
+enum { VK_GWRITE_MAX = 6 * 64 };
+int vk_inflight_writes(vk_gwrite *o);   // (gfx_vk_core.c) the GPU writes into pool memory of the submissions in flight, at most VK_GWRITE_MAX
 void vk_gmem_table(VkBuffer *buf, VkDeviceSize *off, VkDeviceSize *size);   // the memory pool table global accesses through loaded pointers search (RK_GMEM)
 vkpool_t *vk_pool_of(uint64_t addr, uint64_t len);   // the pool containing [addr, addr+len), NULL if none
 int vk_buf_at(uint64_t addr, uint64_t len, VkBuffer *buf, VkDeviceSize *off);   // GPU buffer + offset of a pool address range
-// Pools that could not be made zero-copy keep a GPU copy refreshed before each submission (vk_pools_sync, called from mtl_sub_commit)
-void vk_pools_sync(VkCommandBuffer cb);
+// Pools that could not be made zero-copy keep a GPU copy: refreshed as a submission begins, and the ranges its GPU wrote written back once it completes
+void vk_pools_sync(void);
+void vk_pools_writeback(const vk_range *gw, int n);
 
 // ---- submissions (gfx_vk_core.c) ----
 typedef struct vksub vksub_t;
