@@ -1,0 +1,10 @@
+# OCTOPATH TRAVELER on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Unreal Engine 4.18 on SDK 3.5.1, update 1.0.5; 5,434 shaders, all translated. What it needed: the legacy paks' zlib blocks read without the game (uepak.py), a jump table bounded by
+# a 64-bit compare (patch_nso.py), the sparse tile layout queries and a virtual pool per streamed texture read through its page table (hle_nvn.c, gfx_vk_tex.c), and the automatic
+# block height for sparse textures smaller than a tile (nvn_tex.c: the menus' button frames and the travelers' signatures were scrambled).
+# Tested 2026-11-03 on the Red Magic Astra (NP05J, Snapdragon 8 Elite, Adreno 830, Android 16): the boot, the title, a new game, the traveler selection and its confirmation at 30 fps,
+# no red log line. Not yet seen: a story opening, a battle.
+status	boots
+tested	v327680 Red Magic Astra NP05J (Snapdragon 8 Elite, Adreno 830, Android 16)
+package	org.nx2a.t010057d006492000
+orientation	landscape
