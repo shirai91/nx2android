@@ -1750,28 +1750,21 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
         private static OperationResult GenerateLoadOrStore(CodeGenContext context, AstOperation operation, bool isStore)
         {
             SpvInstruction pointer = GetStoragePointer(context, operation, out AggregateType varType);
-            bool physical = operation.StorageKind == StorageKind.PhysicalMemory;   // a physical storage buffer access names its alignment
 
-            if (isStore)
+            // nxnative: a physical storage buffer access names its alignment (4: PhysicalMemory accesses are words)
+            bool physical = operation.StorageKind == StorageKind.PhysicalMemory;
+            MemoryAccessMask access = physical ? MemoryAccessMask.Aligned : (MemoryAccessMask)int.MaxValue;   // (the generator's "no operand")
+
+            SpvInstruction inst = isStore
+                ? context.Store(pointer, context.Get(varType, operation.GetSource(operation.SourcesCount - 1)), access)
+                : context.Load(context.GetType(varType), pointer, access);
+
+            if (physical)
             {
-                SpvInstruction store = context.Store(pointer, context.Get(varType, operation.GetSource(operation.SourcesCount - 1)), physical ? MemoryAccessMask.Aligned : (MemoryAccessMask)int.MaxValue);
-                if (physical)
-                {
-                    store.AddOperand((Spv.Generator.LiteralInteger)4);
-                }
-
-                return OperationResult.Invalid;
+                inst.AddOperand((Spv.Generator.LiteralInteger)4);
             }
-            else
-            {
-                SpvInstruction result = context.Load(context.GetType(varType), pointer, physical ? MemoryAccessMask.Aligned : (MemoryAccessMask)int.MaxValue);
-                if (physical)
-                {
-                    result.AddOperand((Spv.Generator.LiteralInteger)4);
-                }
 
-                return new OperationResult(varType, result);
-            }
+            return isStore ? OperationResult.Invalid : new OperationResult(varType, inst);
         }
 
         private static SpvInstruction GetStoragePointer(CodeGenContext context, AstOperation operation, out AggregateType varType)
