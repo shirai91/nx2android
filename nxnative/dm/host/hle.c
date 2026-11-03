@@ -22,9 +22,6 @@ uint64_t unimpl_c(unsigned idx, uint64_t *regs) {
     return 0;
 }
 
-// Per module, one cache of symbol number → resolved address
-static uint64_t g_cache[MAX_MOD][8192];
-
 uint64_t resolve_import(module_t *m, const char *name) {
     static const hle_ent *sec; static unsigned long secsz;
     if (!sec) sec = (const hle_ent *)getsectiondata(&_mh_execute_header, "__DATA", "swhle", &secsz);

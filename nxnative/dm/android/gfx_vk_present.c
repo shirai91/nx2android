@@ -225,12 +225,6 @@ static void cv_box(const ov_canvas *cv, const ov_ctl *c, const float b[4], float
     for (int y = (int)(b[1] - b[3]) - 1; y <= (int)(b[1] + b[3]) + 1; y++) for (int x = (int)(b[0] - b[2]) - 1; x <= (int)(b[0] + b[2]) + 1; x++)
         cv_blend(cv, x, y, col, 0.5f - (ov_sdf(c, b, x + 0.5f - b[0], y + 0.5f - b[1]) + inset));
 }
-static void cv_ring(const ov_canvas *cv, float cx, float cy, float r, float t, const uint8_t c[4]) {
-    for (int y = (int)(cy - r) - 1; y <= (int)(cy + r) + 1; y++) for (int x = (int)(cx - r) - 1; x <= (int)(cx + r) + 1; x++) {
-        float d = sqrtf((x + 0.5f - cx) * (x + 0.5f - cx) + (y + 0.5f - cy) * (y + 0.5f - cy));
-        cv_blend(cv, x, y, c, fminf(0.5f - (d - r), 0.5f + (d - (r - t))));
-    }
-}
 static float cv_text_w(const char *s, int scale) { return (float)strlen(s) * 6 * scale - scale; }
 static void cv_text(const ov_canvas *cv, float x, float cy, const char *s, int scale, const uint8_t c[4]) {   // x: the left edge
     int x0 = (int)(x + 0.5f), y0 = (int)(cy - 7 * scale / 2.0f + 0.5f);
