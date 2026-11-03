@@ -1487,19 +1487,21 @@ static int prepare_draw(int prim, int indexed) {
         if (fresh || g_bc.lay != layout || g_bc.nsets != (uint32_t)nsets || g_bc.ndofs != ndofs || memcmp(g_bc.sets, sets, sizeof *sets * (size_t)nsets) || memcmp(g_bc.dofs, dall, sizeof *dall * ndofs)) {
             vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, (uint32_t)nsets, sets, ndofs, dall);
             g_bc.lay = layout; g_bc.nsets = (uint32_t)nsets; g_bc.ndofs = ndofs; memcpy(g_bc.sets, sets, sizeof *sets * (size_t)nsets); memcpy(g_bc.dofs, dall, sizeof *dall * ndofs); } }
-    // vertex buffers: the changed ones, a call per run of consecutive bindings
-    VkBuffer vb[17]; VkDeviceSize vo[17]; uint32_t vfirst = 0, vn = 0;
+    // vertex buffers: one call from the first changed binding to the last, the unchanged between them bound again (each call is a driver entry, and the encoder's per-call
+    // cost outweighs a binding: Donkey Kong Bananza's 6,600 draws a frame on the Android emulator). DM_VK_AB & AB_VB_EACH: a call per changed binding, as before
+    int lo = 17, hi = -1;
     for (uint32_t i = 0; i < k.nbind; i++) {
         uint32_t b = k.bind[i].binding; VkBuffer buf; VkDeviceSize off;
         if (b == 16) { buf = vk_zero_buffer(); off = 0; }
         else if (!vk_buf_at(S.vbuf[b].address, 1, &buf, &off)) { buf = vk_zero_buffer(); off = 0; VKRED_ONCE(51, "vertex buffer outside the memory pools"); }
         if (g_var_now == 5) { buf = vk_zero_buffer(); off = 0; }
-        if (!(dbg_draw() & 2) && b < 17 && (bc_fresh() || g_bc.vb[b] != buf || g_bc.vo[b] != off)) {
-            if (vn && vfirst + vn != b) { vkCmdBindVertexBuffers(cb, vfirst, vn, vb, vo); vn = 0; }
-            if (!vn) vfirst = b;
-            vb[vn] = buf; vo[vn++] = off; g_bc.vb[b] = buf; g_bc.vo[b] = off; }
+        if (dbg_draw() & 2 || b >= 17 || (!bc_fresh() && g_bc.vb[b] == buf && g_bc.vo[b] == off)) continue;
+        g_bc.vb[b] = buf; g_bc.vo[b] = off;
+        if (g_vk_ab & AB_VB_EACH) vkCmdBindVertexBuffers(cb, b, 1, &buf, &off);
+        else { if ((int)b < lo) lo = (int)b; hi = (int)b; }
     }
-    if (vn) vkCmdBindVertexBuffers(cb, vfirst, vn, vb, vo);
+    if (hi >= 0) { for (int b = lo; b <= hi; b++) if (!g_bc.vb[b]) { g_bc.vb[b] = vk_zero_buffer(); g_bc.vo[b] = 0; }   // (a binding the pipeline does not read)
+        vkCmdBindVertexBuffers(cb, (uint32_t)lo, (uint32_t)(hi - lo + 1), g_bc.vb + lo, g_bc.vo + lo); }
     (void)indexed;
     return 1;
 }
