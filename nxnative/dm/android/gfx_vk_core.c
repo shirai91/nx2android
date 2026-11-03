@@ -483,7 +483,7 @@ static void vk_pools_sync_(VkCommandBuffer cb) {
             memcpy(p->shadow, lo, size); g_sync_bytes += size; g_sync_full++; p->synced = 1; p->stamp0 = p->stamp = st; continue; }
         // judged against the sync before the last: a write whose fault took its generation before the last sync's stamp but stored it after that sync looked
         // at its block would otherwise never count (its page is writable from then on, and clean by every later stamp). A dirty block is copied twice.
-        // A block found dirty twice in its last 7 syncs stays writable and is copied at every sync; each block is protected again once in 256 syncs to see
+        // A block written in two of its last 7 syncs stays writable and is copied at every sync; each block is protected again once in 256 syncs to see
         // whether it cooled. The game's per-frame data otherwise took a write-protection fault and an mprotect per block and sync (Donkey Kong Bananza:
         // ~1,000 mprotects a frame at ~23 us each on the Android emulator, holding the memory map lock against every other thread's page faults).
         // hot[block]: bit 7 hot, bits 0-6 the dirty history
@@ -491,8 +491,8 @@ static void vk_pools_sync_(VkCommandBuffer cb) {
         p->nsync++;
         for (uint64_t off = 0; off < size; off += BLK) {
             uint64_t n = size - off < BLK ? size - off : BLK, b = off / BLK; uint8_t *h = p->hot ? &p->hot[b] : NULL, hot = h ? *h & 0x80 : 0;
-            int dirty = hot || nvn_dirty_since_span(p->span, lo + off, n, p->stamp0);
-            uint8_t hist = h ? (uint8_t)((*h << 1 | dirty) & 0x7f) : 0;
+            int dirty = hot || nvn_dirty_since_span(p->span, lo + off, n, p->stamp0), fresh = hot || (dirty && nvn_dirty_since_span(p->span, lo + off, n, p->stamp));
+            uint8_t hist = h ? (uint8_t)((*h << 1 | fresh) & 0x7f) : 0;   // (a write since the last sync: one write is dirty for two)
             if (!dirty) { if (h) *h = hist; continue; }
             // GPU writes of a submission in flight in this block (their extent is often only bounded by the pool's end): a hot block waits for them; any other
             // copies only the pages the CPU wrote, at once (a page both wrote in the meantime would be a race on hardware as well)
