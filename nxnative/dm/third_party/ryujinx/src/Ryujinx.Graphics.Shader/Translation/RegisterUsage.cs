@@ -4,81 +4,54 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Numerics;
+using System.Runtime.Intrinsics;
 
 namespace Ryujinx.Graphics.Shader.Translation
 {
     static class RegisterUsage
     {
-        private const int GprMasks = 4;
-        private const int TotalMasks = GprMasks + 4;
+        // 64 registers a mask word: GPRs take words 0-3, then a word each for predicates, flags, uniform registers and uniform predicates
+        private const int TotalMasks = 8;
+        private static readonly RegisterType[] _wordType = [RegisterType.Gpr, RegisterType.Gpr, RegisterType.Gpr, RegisterType.Gpr,
+                                                            RegisterType.Predicate, RegisterType.Flag, RegisterType.Uniform, RegisterType.UniformPredicate];
 
-        // Masks in order: GPRs (4), predicates, flags, uniform registers, uniform predicates
-        private static readonly (RegisterType Type, int Mask)[] _files =
-        [
-            (RegisterType.Predicate, GprMasks),
-            (RegisterType.Flag, GprMasks + 1),
-            (RegisterType.Uniform, GprMasks + 2),
-            (RegisterType.UniformPredicate, GprMasks + 3),
-        ];
-
-        [System.Runtime.CompilerServices.InlineArray(TotalMasks)]
-        private struct Masks
+        private static int FirstWord(RegisterType type) => type switch
         {
-            private long _element0;
-        }
+            RegisterType.Gpr => 0,
+            RegisterType.Predicate => 4,
+            RegisterType.Flag => 5,
+            RegisterType.Uniform => 6,
+            RegisterType.UniformPredicate => 7,
+            _ => -1,   // shadow registers live within a block
+        };
 
-        private struct RegisterMask : IEquatable<RegisterMask>
+        private readonly struct RegisterMask : IEquatable<RegisterMask>
         {
-            private Masks _masks;
+            private readonly Vector512<long> _masks;
 
-            public readonly long GetMask(int index) => _masks[index];
+            private RegisterMask(Vector512<long> masks) => _masks = masks;
 
-            public void SetMask(int index, long value) => _masks[index] = value;
+            public RegisterMask(int word, long bits) => _masks = Vector512<long>.Zero.WithElement(word, bits);
 
-            private static RegisterMask Map(RegisterMask x, RegisterMask y, Func<long, long, long> f)
-            {
-                RegisterMask r = new();
+            public long GetMask(int index) => _masks.GetElement(index);
 
-                for (int i = 0; i < TotalMasks; i++)
-                {
-                    r._masks[i] = f(x._masks[i], y._masks[i]);
-                }
+            public static RegisterMask All() => new(Vector512<long>.AllBitsSet);
 
-                return r;
-            }
+            public static RegisterMask operator &(RegisterMask x, RegisterMask y) => new(x._masks & y._masks);
 
-            public static RegisterMask All()
-            {
-                RegisterMask r = new();
-                ((Span<long>)r._masks).Fill(-1L);
-                return r;
-            }
+            public static RegisterMask operator |(RegisterMask x, RegisterMask y) => new(x._masks | y._masks);
 
-            public static RegisterMask operator &(RegisterMask x, RegisterMask y) => Map(x, y, (a, b) => a & b);
-
-            public static RegisterMask operator |(RegisterMask x, RegisterMask y) => Map(x, y, (a, b) => a | b);
-
-            public static RegisterMask operator ~(RegisterMask x) => Map(x, x, (a, _) => ~a);
+            public static RegisterMask operator ~(RegisterMask x) => new(~x._masks);
 
             public static bool operator ==(RegisterMask x, RegisterMask y) => x.Equals(y);
 
             public static bool operator !=(RegisterMask x, RegisterMask y) => !x.Equals(y);
 
-            public readonly override bool Equals(object obj) => obj is RegisterMask regMask && Equals(regMask);
+            public override bool Equals(object obj) => obj is RegisterMask regMask && Equals(regMask);
 
-            public readonly bool Equals(RegisterMask other) => ((ReadOnlySpan<long>)_masks).SequenceEqual(other._masks);
+            public bool Equals(RegisterMask other) => _masks == other._masks;
 
-            public readonly override int GetHashCode()
-            {
-                HashCode h = new();
-
-                for (int i = 0; i < TotalMasks; i++)
-                {
-                    h.Add(_masks[i]);
-                }
-
-                return h.ToHashCode();
-            }
+            public override int GetHashCode() => _masks.GetHashCode();
         }
 
         public readonly struct FunctionRegisterUsage
@@ -315,22 +288,9 @@ namespace Ryujinx.Graphics.Shader.Translation
 
         private static RegisterMask GetMask(Register register)
         {
-            RegisterMask mask = new();
+            int word = FirstWord(register.Type);
 
-            if (register.Type == RegisterType.Gpr)
-            {
-                mask.SetMask(register.Index >> 6, 1L << (register.Index & 0x3f));
-            }
-
-            foreach ((RegisterType type, int index) in _files)
-            {
-                if (type == register.Type)
-                {
-                    mask.SetMask(index, 1L << register.Index);
-                }
-            }
-
-            return mask;
+            return word < 0 ? new() : new(word + (register.Index >> 6), 1L << (register.Index & 0x3f));
         }
 
         private static bool Exchange(RegisterMask[] masks, int blkIndex, RegisterMask value)
@@ -424,7 +384,9 @@ namespace Ryujinx.Graphics.Shader.Translation
 
         private static (RegisterType RegType, int BaseRegIndex) GetRegTypeAndBaseIndex(int i)
         {
-            return i < GprMasks ? (RegisterType.Gpr, i * 64) : (Array.Find(_files, f => f.Mask == i).Type, 0);
+            RegisterType type = _wordType[i];
+
+            return (type, (i - FirstWord(type)) * 64);
         }
 
         private static bool EndsWithReturn(BasicBlock block)
