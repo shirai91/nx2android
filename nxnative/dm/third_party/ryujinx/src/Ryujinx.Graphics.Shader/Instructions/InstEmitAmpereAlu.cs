@@ -35,6 +35,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
             alu(0x030, InstName.Hadd2, AHalf, None);
             alu(0x031, InstName.Hfma2, AHalf, None);
             alu(0x032, InstName.Hmul2, AHalf, None);
+            alu(0x034, InstName.Hsetp2, AHsetp2, N);
             alu(0x013, InstName.Iabs, AIabs, None);
             alu(0x024, InstName.Imad, AImad, None);
             alu(0x025, InstName.Imad, AImad, None);
@@ -332,6 +333,27 @@ namespace Ryujinx.Graphics.Shader.Instructions
             }
 
             ASet(context, x, x[78] ? res[0] : context.PackHalf2x16(res[0], res[1]));
+        }
+
+        // HSETP2: each lane compared (76..80) and combined (69..71) with the predicate 87..90 into 81..84 (low) and 84..87 (high); .H_AND (71) gives the first
+        // both lanes' AND and the second its negation
+        public static void AHsetp2(EmitterContext context)
+        {
+            AmpereOp x = new(context.CurrOp);
+            Operand[] a = InstEmitHelper.FPAbsNeg(context, AHalves(context, x, SA, x[74..76]), AMods(x, SA).Abs, AMods(x, SA).Neg);
+            Operand[] b = InstEmitHelper.FPAbsNeg(context, AHalves(context, x, S32, x[60..62]), AMods(x, S32).Abs, AMods(x, S32).Neg);
+            Operand lo = GetFPComparison(context, (FComp)x[76..80], a[0], b[0]), hi = GetFPComparison(context, (FComp)x[76..80], a[1], b[1]);
+            Operand acc = APred(context, x, 87, 90);
+            BoolOp op = (BoolOp)x[69..71];
+
+            if (x[71])
+            {
+                lo = context.BitwiseAnd(lo, hi);
+                hi = context.BitwiseNot(lo);
+            }
+
+            ASetPred(context, x[81..84], GetPredLogicalOp(context, op, lo, acc));
+            ASetPred(context, x[84..87], GetPredLogicalOp(context, op, hi, acc));
         }
 
         // ---- moves ----
