@@ -16,6 +16,9 @@
 #include <dirent.h>
 #include <sys/syscall.h>
 #include <sched.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/ioctl.h>
 #include "dm.h"
 
 typedef struct APerformanceHintManager APerformanceHintManager;
@@ -39,8 +42,24 @@ static AWorkDuration *g_wd;   // made once, its fields set for each frame's repo
 
 static int64_t perf_now(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec; }
 
+// DM_GPU_TURBO=1 (live, read every 60 presents): Adreno's GPU at its highest clock (thermal limits still apply) through the KGSL property libadrenotools'
+// adrenotools_set_turbo sets: power control off on /dev/kgsl-3d0; 0 gives it back. A frame held at 30 fps lets the GPU governor lower the clock until the work
+// fills the frame, so its GPU time says little about what 60 would need. Any Vulkan driver on KGSL (Qualcomm's, Turnip)
+static void gpu_turbo(void) {
+    static int on;   // what was last set
+    const char *e = getenv("DM_GPU_TURBO"); int want = e && atoi(e) > 0;
+    if (want == on) return;
+    struct { unsigned type; void *value; size_t size; } prop; uint32_t enable = !want;   // (kgsl.h kgsl_device_getproperty; KGSL_PROP_PWRCTRL 0xE: 0 = power control off)
+    prop.type = 0xE; prop.value = &enable; prop.size = sizeof enable;
+    int fd = open("/dev/kgsl-3d0", O_RDWR); int r = fd < 0 ? -1 : ioctl(fd, _IOW(0x09, 0x32, prop), &prop);   // IOCTL_KGSL_SETPROPERTY
+    if (fd >= 0) close(fd);
+    if (r) { LOG("[RED] [perf] DM_GPU_TURBO=%d: the GPU's power control could not be set (%s)", want, strerror(errno)); return; }
+    on = want; LOG("[perf] DM_GPU_TURBO=%d: %s", want, want ? "the GPU at its highest clock (power control off)" : "the GPU's own clock control again");
+}
+
 static void hint_init(int64_t target) {
     static int tried; if (tried) return; tried = 1;
+    gpu_turbo();
     if (getenv("DM_NO_ADPF")) return;
     void *lib = dlopen("libandroid.so", RTLD_NOW); if (!lib) return;
     H.get = dlsym(lib, "APerformanceHint_getManager"); H.create = dlsym(lib, "APerformanceHint_createSession");
@@ -243,6 +262,7 @@ void dm_perf_frame(double period) {
     // and the work then never shows the room to step back up (NEO stayed at 30 fps with frames of 31 to 48 ms)
     if (g_game_period && (int64_t)g_game_period < p) p = (int64_t)g_game_period;
     hint_init(p);
+    { static unsigned n; if (++n % 60 == 0) gpu_turbo(); }
     if (g_work_start) {   // (a longer span: the game was held, by the pause menu or the background)
         int64_t w = g_prev_present ? t - g_prev_present - g_pace : t - g_work_start;
         int64_t pq = g_prev_present ? g_pq : 0, pace = g_step > 0 ? pq : 0;   // (t - g_work_start starts after the wait already)

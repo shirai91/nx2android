@@ -17,7 +17,10 @@
 # porter port --vulkan-driver with Mesa's Turnip 26.2.6 (built from source; loaded through libadrenotools): picture correct, the user's play session held 30 fps in
 # the open world with replay 11.0 ms and GPU 18.9 ms a frame at about 3,550 draws (Qualcomm's driver: 14.2 and 24.0 ms at about 4,070), and the user found it
 # faster. Its lakes were black until the depth a fragment shader writes stayed exact (Ryujinx ForcePreciseEnable: the light classifier's D16 material id).
-# Open: 60 fps in the open world (GPU about 19 ms on Turnip); fights show single GPU frames of 25-180 ms (DM_VK_PASS_TIMES=1 + DM_VK_PASS_SPIKE=<ms> lists such a
+# DM_GPU_TURBO=1 (live; the GPU at its highest clock) on Turnip: a shrine 18 -> 15 ms of GPU, then 60 fps held (GPU p50 about 12 ms); the open world (about
+# 2,000 draws) went from 30 to 60 fps with 4 of 11 ten-second windows dropping frames, but the GPU went from 53 to 75 °C in 60 s, so it is not in the profile.
+# Open: 60 fps in the open world without turbo (GPU about 19 ms on Turnip); the frame step tries 60 only under 0.85 of a frame; GPU frames of 0.8-1.9 s on
+# entering a shrine (Turnip); fights show single GPU frames of 25-180 ms (DM_VK_PASS_TIMES=1 + DM_VK_PASS_SPIKE=<ms> lists such a
 # frame's passes); a flickering light ray the user saw in a sky view on Qualcomm's driver.
 status	experimental
 tested	v720896 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
