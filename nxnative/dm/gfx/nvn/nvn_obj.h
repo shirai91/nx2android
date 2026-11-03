@@ -52,15 +52,15 @@ typedef struct { uint32_t magic; samp_par p; } samp_t;                          
 
 // The per-stage shader keys are not kept in prog_t: the game's real NVNprogram may be smaller than the header's 0xC0 (growing prog_t corrupted the adjacent object in Mario); see prog_keys in hle_nvn.c
 typedef struct { uint32_t magic, nstage; NVNshaderData sd[6]; uint64_t serial; } prog_t;     FITS(prog_t, NVNprogram);   // serial: table key for the replay layer's resolved result
-// A shader's control section as its key hashes it (shader_split.py key_ctl) and its code area's length. NVN2 (Switch 2, version 0xc9): the first 0x48 bytes with their own length (+0x30,
-// which only BNSH files fill) zeroed, the code length at +0x44. NVN: the first 0x880 bytes, or the section's own length (+0x20) when shorter (SDK 10's 0x850-byte ones are followed by other
-// data), the code length at +0x704. Returns the key's control length
-static inline uint32_t nvn_shader_key_ctl(const void *control, uint8_t ctl[0x880], uint32_t *ncode) {
-    const uint8_t *c = (const uint8_t *)control; uint32_t ver, n = 0x880, own;
-    memcpy(&ver, c + 4, 4);
-    if (ver == 0xc9) { memcpy(ctl, c, 0x48); memset(ctl + 0x30, 0, 4); memcpy(ncode, c + 0x44, 4); return 0x48; }
-    memcpy(&own, c + 0x20, 4); if (own >= 0x760 && own < 0x880) n = own;
-    memcpy(ctl, c, n); memcpy(ncode, c + 0x704, 4);
+// Shader control sections (shader_split.py). NVN2 (Switch 2, version 0xc9 at +4): the code area's length at +0x44, the section's own length at +0x30; its key hashes the first
+// 0x48 bytes with +0x30 zeroed. NVN: the code length at +0x704; the key hashes the first 0x880 bytes, or the section's own length (+0x20) when shorter (SDK 10's 0x850-byte
+// ones are followed by other data)
+static inline uint32_t nvn_ctl_u32(const void *c, uint32_t off) { uint32_t v; memcpy(&v, (const uint8_t *)c + off, 4); return v; }
+static inline int nvn_ctl_v2(const void *c) { return nvn_ctl_u32(c, 4) == 0xc9; }
+static inline uint32_t nvn_ctl_code_len(const void *c) { return nvn_ctl_u32(c, nvn_ctl_v2(c) ? 0x44 : 0x704); }
+static inline uint32_t nvn_ctl_key(const void *c, uint8_t key[0x880]) {   // the key's bytes → their length
+    uint32_t own = nvn_ctl_u32(c, 0x20), n = nvn_ctl_v2(c) ? 0x48 : own >= 0x760 && own < 0x880 ? own : 0x880;
+    memcpy(key, c, n); if (n == 0x48) memset(key + 0x30, 0, 4);
     return n;
 }
 

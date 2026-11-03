@@ -748,7 +748,7 @@ static uint64_t key64(const uint8_t k[8]) { uint64_t v = 0; for (int i = 0; i < 
 static void shader_dump(const prog_t *p, unsigned i, uint64_t kk) {
     static int on = -1; if (on < 0) on = getenv("DM_NVN_SHDUMP") != NULL;
     if (!on || i >= p->nstage || !p->sd[i].control || !p->sd[i].data) return;
-    uint8_t ctl[0x880]; uint32_t ncode; nvn_shader_key_ctl(p->sd[i].control, ctl, &ncode);
+    uint32_t ncode = nvn_ctl_code_len(p->sd[i].control);
     const char *dir = getenv("DM_ROOT"); char path[1024]; snprintf(path, sizeof path, "%s/shader_%016llx.bin", dir ? dir : ".", (unsigned long long)kk);
     FILE *f = fopen(path, "wb"); if (!f) return;
     fwrite(p->sd[i].control, 1, 0x880, f); if (ncode < (1u << 24)) fwrite((const void *)(uintptr_t)p->sd[i].data, 1, ncode, f); fclose(f);

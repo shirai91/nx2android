@@ -57,11 +57,10 @@ enum { NPEND = 4096 };
 static pend_t g_pend[NPEND]; static unsigned g_npend; static pthread_mutex_t g_pend_mu = PTHREAD_MUTEX_INITIALIZER;
 static void shader_set(const uint8_t k[8], const void *control, uint64_t data) {
     uint64_t key = 0; for (int i = 0; i < 8; i++) key = key << 8 | k[i];
-    uint8_t ctl[0x880]; uint32_t ncode, nctl = control ? nvn_shader_key_ctl(control, ctl, &ncode) : 0;
-    if (!key || !nctl || !data || !ncode || ncode >= (1u << 24) || vk_shader_stage(key) >= 0) return;
-    const void *src = ctl; if (nctl == 0x48) { memcpy(&nctl, (const uint8_t *)control + 0x30, 4); src = control; }   // NVN2: the whole section (+0x30 its length), which the translator reads past the key
-    if (nctl < 0x48 || nctl > (1u << 20)) return;
-    uint8_t *c = malloc(nctl); if (!c) return; memcpy(c, src, nctl);
+    if (!key || !control || !data || vk_shader_stage(key) >= 0) return;
+    uint8_t kc[0x880]; uint32_t ncode = nvn_ctl_code_len(control), nctl = nvn_ctl_v2(control) ? nvn_ctl_u32(control, 0x30) : nvn_ctl_key(control, kc);   // NVN2: the whole section, which the translator reads past the key
+    if (!ncode || ncode >= (1u << 24) || nctl < 0x48 || nctl > (1u << 20)) return;
+    uint8_t *c = malloc(nctl); if (!c) return; memcpy(c, control, nctl);
     pthread_mutex_lock(&g_pend_mu);
     pend_t *p = &g_pend[g_npend++ % NPEND]; free(p->ctl); *p = (pend_t){key, data, nctl, ncode, c};   // the oldest goes: a draw needs a program soon after it is set
     pthread_mutex_unlock(&g_pend_mu);
@@ -73,7 +72,7 @@ void vk_shader_missing(uint64_t key) {
     for (unsigned i = 0; i < NPEND && i < g_npend; i++) if (g_pend[i].key == key && g_pend[i].ctl) { p = g_pend[i]; p.ctl = malloc(p.nctl); if (p.ctl) memcpy(p.ctl, g_pend[i].ctl, p.nctl); break; }
     pthread_mutex_unlock(&g_pend_mu);
     if (!p.ctl) { VKLOG("[RED] shader %016llx is not in the bundle (and was not set while the capture could see it)", (unsigned long long)key); return; }
-    uint8_t kc[0x880]; uint32_t nk = nvn_shader_key_ctl(p.ctl, kc, &(uint32_t){0});
+    uint8_t kc[0x880]; uint32_t nk = nvn_ctl_key(p.ctl, kc);
     uint8_t md[CC_SHA256_DIGEST_LENGTH]; CC_SHA256_CTX hc; CC_SHA256_Init(&hc); CC_SHA256_Update(&hc, kc, nk); CC_SHA256_Update(&hc, (const void *)(uintptr_t)p.data, p.ncode); CC_SHA256_Final(md, &hc);
     uint64_t now = 0; for (int i = 0; i < 8; i++) now = now << 8 | md[i];
     if (now != key) { VKLOG("[RED] shader %016llx is not in the bundle; its code area changed since SetShaders, not saved", (unsigned long long)key); free(p.ctl); return; }

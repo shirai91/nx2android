@@ -610,9 +610,9 @@ static void pk_drop(const void *p) {
 void (*g_nvn_on_shader)(const uint8_t key[8], const void *control, uint64_t data);
 // mapped = 1: computed only when the code area is in a registered memory pool (at SetShaders: Mario sets some programs with an unmapped address first and fills it in before the first draw)
 static int keys_hash(const NVNshaderData *sd, int mapped, uint8_t out[8]) {
-    void *mb; uint64_t mo; uint8_t ctl[0x880]; uint32_t ncode;
+    void *mb; uint64_t mo; uint8_t ctl[0x880];
     if (!sd->control) return 0;
-    uint32_t nctl = nvn_shader_key_ctl(sd->control, ctl, &ncode);
+    uint32_t nctl = nvn_ctl_key(sd->control, ctl), ncode = nvn_ctl_code_len(sd->control);
     int code = sd->data && ncode && ncode < (1u << 24);
     if (mapped && !(code && mtl_addr(sd->data, ncode, &mb, &mo))) return 0;
     uint8_t md[CC_SHA256_DIGEST_LENGTH]; CC_SHA256_CTX hc; CC_SHA256_Init(&hc);
