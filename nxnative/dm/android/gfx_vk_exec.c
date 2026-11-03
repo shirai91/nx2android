@@ -1002,8 +1002,10 @@ static uint32_t ubo_word(int st, int reg, int off) {
 }
 static uint32_t g_dispatch[3], g_draw_binst;
 #define SB_ALIGN 256   // storage buffers are bound from this boundary below their address (dm/android/tools/shader_vk.py SB_ALIGN, which the shaders were translated for)
+// The bytes of a driver segment its shaders can read, the rest of its 4 KB being zero: bank 0 to 0x648, NVN2 push constants, the c2 handle table to 0x968
+static uint32_t drv_len(int bank) { return bank == 0 ? 0x648 : bank == NVN_PUSH_BANK ? NVN_PUSH_SIZE : 0x968; }
 static void drv_segment(int st, int bank, uint8_t *d) {
-    memset(d, 0, 0x1000);
+    memset(d, 0, drv_len(bank));
     if (bank == 0) {
         static const int sbo[6] = {0x110, 0x510, 0x410, 0x210, 0x310, 0x310};   // each NVN stage's storage buffer table (graphics: 0x110 + 0x100 x the hardware stage)
         int base = sbo[st];
@@ -1011,7 +1013,7 @@ static void drv_segment(int st, int bank, uint8_t *d) {
         if (st != 5) { const float mp = 2047.0f; memcpy(d + 0x610, &mp, 4); memcpy(d + 0x644, &g_draw_binst, 4); }
         else { memcpy(d + 0x200, g_dispatch, 12); for (int r = 0; r < 16; r++) { uint64_t a = S.ubo[5][r].addr; uint32_t n = (uint32_t)S.ubo[5][r].size; memcpy(d + 0x210 + 16 * r, &a, 8); memcpy(d + 0x210 + 16 * r + 8, &n, 4); } }
     } else if (bank == NVN_PUSH_BANK) memcpy(d, S.push[st == 5], NVN_PUSH_SIZE);
-    else for (int off = 0x20; off < 0x968; off += 8) { uint64_t h = c2_handle(st, off); memcpy(d + off, &h, 8); }
+    else { memcpy(d + 0x20, S.tex[st], 0x100); memcpy(d + 0x120, S.img[st], 0x40); memcpy(d + 0x168, S.tex[st] + 128, 0x400); memcpy(d + 0x568, S.samp[st], 0x400); }   // as c2_handle reads it
 }
 // vk_samp_by_id without the registry lock while no sampler ID was registered with other parameters (g_samp_gen): a 32-slot texture array took the lock
 // per slot, a lock the game thread takes for every texture it registers (DM_NVN_ASYNC). VkSamplers are never destroyed, so a kept handle stays valid
@@ -1091,19 +1093,23 @@ static int tex_desc_for(int st, const dmsv_bind *b, uint64_t h, VkDescriptorImag
 enum { DRVC = 1024 };
 static struct { uint64_t h, epoch; VkBuffer b; VkDeviceSize o; } g_drvc[DRVC];
 uint64_t g_set_hits, g_set_new, g_ns_set_build, g_ns_set_hash, g_ns_set_new;   // descriptor sets: reused, new; time collecting their descriptors, hashing them, allocating and writing new ones
-// content hash of descriptor sets and driver segments: 8 bytes a step (a set with 32-slot texture arrays is several KB, which byte-wise FNV took milliseconds a frame over)
-static inline uint64_t fnv(uint64_t h, const void *p, size_t n) {
+// content hash of descriptor sets and driver segments: 8 bytes a step (a set with 32-slot texture arrays is several KB, which byte-wise FNV took milliseconds a frame over),
+// in four independent lanes over 32-byte runs, as one lane's multiply chain held a 2.4 KB driver segment to ~1,500 cycles (Donkey Kong Bananza builds ~1,700 a frame)
+static inline uint64_t hmix(uint64_t h, uint64_t w) { h = (h ^ w) * 0x9E3779B97F4A7C15ull; return h ^ h >> 29; }
+static inline uint64_t hash64(uint64_t h, const void *p, size_t n) {
     const uint8_t *b = p; size_t i = 0;
-    for (; i + 8 <= n; i += 8) { uint64_t w; memcpy(&w, b + i, 8); h = (h ^ w) * 0x9E3779B97F4A7C15ull; h ^= h >> 29; }
+    if (n >= 32) { uint64_t l[4] = {h, h ^ 0x6a09e667f3bcc909ull, h ^ 0xbb67ae8584caa73bull, h ^ 0x3c6ef372fe94f82bull};
+        for (; i + 32 <= n; i += 32) for (int k = 0; k < 4; k++) { uint64_t w; memcpy(&w, b + i + 8 * k, 8); l[k] = hmix(l[k], w); }
+        h = hmix(hmix(hmix(l[0], l[1]), l[2]), l[3]); }
+    for (; i + 8 <= n; i += 8) { uint64_t w; memcpy(&w, b + i, 8); h = hmix(h, w); }
     for (; i < n; i++) { h ^= b[i]; h *= 0x100000001b3ull; }
     return h;
 }
 static void drv_shared(int st, int bank, VkBuffer *buf, VkDeviceSize *off) {   // the driver segment: built, then one copy per distinct content in the submission
-    uint8_t d[0x1000]; drv_segment(st, bank, d);
-    // only the bytes drv_segment can write are hashed (bank 0 ends at 0x648, the c2 table at 0x968; the rest is always zero): 4 KB was 512 hash steps a segment
-    uint64_t h = fnv(0xcbf29ce484222325ull, d, bank ? 0x968 : 0x648); unsigned k = (unsigned)(h % DRVC);
+    uint8_t d[0x1000]; uint32_t n = drv_len(bank); drv_segment(st, bank, d);
+    uint64_t h = hash64(0xcbf29ce484222325ull, d, n); unsigned k = (unsigned)(h % DRVC);
     if (g_drvc[k].epoch == g_set_epoch && g_drvc[k].h == h && !g_x_nodrvc) { *buf = g_drvc[k].b; *off = g_drvc[k].o; return; }
-    uint8_t *p = vk_scratch(0x1000, V.props.limits.minUniformBufferOffsetAlignment, buf, off); memcpy(p, d, sizeof d);
+    uint8_t *p = vk_scratch(0x1000, V.props.limits.minUniformBufferOffsetAlignment, buf, off); memcpy(p, d, n); memset(p + n, 0, 0x1000 - n);
     g_drvc[k].h = h; g_drvc[k].epoch = g_set_epoch; g_drvc[k].b = *buf; g_drvc[k].o = *off;
 }
 // A buffer binding's range rounded up to a power of two (at least 256), where its pool and the device allow: the range is part of a set's content while a dynamic
@@ -1246,12 +1252,12 @@ static VkDescriptorSet stage_set(int st, vkshader_t *s, uint32_t *dofs) {
     }
     // the set's content, then an earlier identical set of this submission or a new one
     uint64_t tb1 = tick(); g_ns_set_build += tb1 - tb0;
-    uint64_t h = fnv(0xcbf29ce484222325ull, &s->dsl, sizeof s->dsl);
+    uint64_t h = hash64(0xcbf29ce484222325ull, &s->dsl, sizeof s->dsl);
     for (uint32_t i = 0; i < nw; i++) {
-        const VkWriteDescriptorSet *x = &w[i]; h = fnv(h, &x->dstBinding, 4); h = fnv(h, &x->descriptorType, 4); h = fnv(h, &x->descriptorCount, 4);
-        if (x->pBufferInfo) h = fnv(h, x->pBufferInfo, sizeof *x->pBufferInfo);
-        else if (x->pImageInfo) h = fnv(h, x->pImageInfo, sizeof *x->pImageInfo * x->descriptorCount);
-        else if (x->pTexelBufferView) h = fnv(h, x->pTexelBufferView, sizeof *x->pTexelBufferView);
+        const VkWriteDescriptorSet *x = &w[i]; h = hash64(h, &x->dstBinding, 4); h = hash64(h, &x->descriptorType, 4); h = hash64(h, &x->descriptorCount, 4);
+        if (x->pBufferInfo) h = hash64(h, x->pBufferInfo, sizeof *x->pBufferInfo);
+        else if (x->pImageInfo) h = hash64(h, x->pImageInfo, sizeof *x->pImageInfo * x->descriptorCount);
+        else if (x->pTexelBufferView) h = hash64(h, x->pTexelBufferView, sizeof *x->pTexelBufferView);
     }
     uint64_t tb2 = tick(); g_ns_set_hash += tb2 - tb1;
     int nocache = g_tracing || g_x_nosetc;
@@ -1465,7 +1471,7 @@ static int prepare_draw(int prim, int indexed) {
     uint64_t t1 = tick(); g_vkst.ns_pipe += t1 - t0 - tdesc;
     if (!p) { g_vkst.skip_pipe++; return 0; }
     if (g_ubolog_key && g_ubolog_n > 0 && S.sh[0] && S.sh[0]->key == g_ubolog_key) {   // DM_VK_UBO_LOG: the pipeline the draw got, and its key's hash
-        uint64_t kh = fnv(1469598103934665603ull, &k, sizeof k); VKLOG("ubo: present %llu pipeline %p key %016llx um %llx/%llx im %llx/%llx", (unsigned long long)g_tex_frame, (void *)p, (unsigned long long)kh,
+        uint64_t kh = hash64(1469598103934665603ull, &k, sizeof k); VKLOG("ubo: present %llu pipeline %p key %016llx um %llx/%llx im %llx/%llx", (unsigned long long)g_tex_frame, (void *)p, (unsigned long long)kh,
               (unsigned long long)k.um[0], (unsigned long long)k.um[1], (unsigned long long)k.im[0], (unsigned long long)k.im[1]); }
     g_vkst.draws++; if (++g_pass_draws > g_vkst.max_pass_draws) g_vkst.max_pass_draws = g_pass_draws;
     if (p != S.bound_pipe) { uint64_t tb = g_prof_on ? tick() : 0; vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, p); S.bound_pipe = p; if (g_prof_on) g_prof_ns[4] += tick() - tb; }
