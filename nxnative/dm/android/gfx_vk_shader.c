@@ -4,7 +4,6 @@
 // geometry 2, tessellation 3 / 4; compute 0) by rewriting the DescriptorSet decorations, so a program's stages never collide.
 #include "gfx_vk.h"
 #include "nvn_hmap.h"
-#include <CommonCrypto/CommonDigest.h>
 #include <fcntl.h>
 #include <string.h>
 #include <sys/mman.h>
@@ -58,7 +57,7 @@ static pend_t g_pend[NPEND]; static unsigned g_npend; static pthread_mutex_t g_p
 static void shader_set(const uint8_t k[8], const void *control, uint64_t data) {
     uint64_t key = 0; for (int i = 0; i < 8; i++) key = key << 8 | k[i];
     if (!key || !control || !data || vk_shader_stage(key) >= 0) return;
-    uint8_t kc[0x880]; uint32_t ncode = nvn_ctl_code_len(control), nctl = nvn_ctl_v2(control) ? nvn_ctl_u32(control, 0x30) : nvn_ctl_key(control, kc);   // NVN2: the whole section, which the translator reads past the key
+    uint32_t ncode = nvn_ctl_code_len(control), nctl = nvn_ctl_v2(control) ? nvn_ctl_u32(control, 0x30) : nvn_ctl_key_len(control);   // NVN2: the whole section, which the translator reads past the key
     if (!ncode || ncode >= (1u << 24) || nctl < 0x48 || nctl > (1u << 20)) return;
     uint8_t *c = malloc(nctl); if (!c) return; memcpy(c, control, nctl);
     pthread_mutex_lock(&g_pend_mu);
@@ -72,9 +71,8 @@ void vk_shader_missing(uint64_t key) {
     for (unsigned i = 0; i < NPEND && i < g_npend; i++) if (g_pend[i].key == key && g_pend[i].ctl) { p = g_pend[i]; p.ctl = malloc(p.nctl); if (p.ctl) memcpy(p.ctl, g_pend[i].ctl, p.nctl); break; }
     pthread_mutex_unlock(&g_pend_mu);
     if (!p.ctl) { VKLOG("[RED] shader %016llx is not in the bundle (and was not set while the capture could see it)", (unsigned long long)key); return; }
-    uint8_t kc[0x880]; uint32_t nk = nvn_ctl_key(p.ctl, kc);
-    uint8_t md[CC_SHA256_DIGEST_LENGTH]; CC_SHA256_CTX hc; CC_SHA256_Init(&hc); CC_SHA256_Update(&hc, kc, nk); CC_SHA256_Update(&hc, (const void *)(uintptr_t)p.data, p.ncode); CC_SHA256_Final(md, &hc);
-    uint64_t now = 0; for (int i = 0; i < 8; i++) now = now << 8 | md[i];
+    uint8_t k[8]; nvn_shader_key(p.ctl, (const void *)(uintptr_t)p.data, p.ncode, k);
+    uint64_t now = 0; for (int i = 0; i < 8; i++) now = now << 8 | k[i];
     if (now != key) { VKLOG("[RED] shader %016llx is not in the bundle; its code area changed since SetShaders, not saved", (unsigned long long)key); free(p.ctl); return; }
     const char *r = getenv("DM_ROOT"); char dir[1024], path[1100], tmp[1110]; snprintf(dir, sizeof dir, "%s/captured_shaders", r ? r : "."); mkdir(dir, 0755);
     snprintf(path, sizeof path, "%s/%016llx.bin", dir, (unsigned long long)key); snprintf(tmp, sizeof tmp, "%s.part", path);

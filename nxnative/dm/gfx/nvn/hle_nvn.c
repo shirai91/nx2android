@@ -609,16 +609,21 @@ static void pk_drop(const void *p) {
 // control section is still the game's to read, so a shader whose code no game file holds can be saved and translated by the next port (Xenoblade Chronicles 3 sets hundreds)
 void (*g_nvn_on_shader)(const uint8_t key[8], const void *control, uint64_t data);
 // mapped = 1: computed only when the code area is in a registered memory pool (at SetShaders: Mario sets some programs with an unmapped address first and fills it in before the first draw)
+void nvn_shader_key(const void *control, const void *code, uint32_t ncode, uint8_t key[8]) {
+    static const uint8_t zero[4]; const uint8_t *c = control; uint32_t n = nvn_ctl_key_len(c);
+    uint8_t md[CC_SHA256_DIGEST_LENGTH]; CC_SHA256_CTX hc; CC_SHA256_Init(&hc);
+    if (nvn_ctl_v2(c)) { CC_SHA256_Update(&hc, c, 0x30); CC_SHA256_Update(&hc, zero, 4); CC_SHA256_Update(&hc, c + 0x34, n - 0x34); }   // NVN2: +0x30 hashed as zero
+    else CC_SHA256_Update(&hc, c, n);
+    if (ncode) CC_SHA256_Update(&hc, code, ncode);
+    CC_SHA256_Final(md, &hc); memcpy(key, md, 8);
+}
 static int keys_hash(const NVNshaderData *sd, int mapped, uint8_t out[8]) {
-    void *mb; uint64_t mo; uint8_t ctl[0x880];
+    void *mb; uint64_t mo;
     if (!sd->control) return 0;
-    uint32_t nctl = nvn_ctl_key(sd->control, ctl), ncode = nvn_ctl_code_len(sd->control);
+    uint32_t ncode = nvn_ctl_code_len(sd->control);
     int code = sd->data && ncode && ncode < (1u << 24);
     if (mapped && !(code && mtl_addr(sd->data, ncode, &mb, &mo))) return 0;
-    uint8_t md[CC_SHA256_DIGEST_LENGTH]; CC_SHA256_CTX hc; CC_SHA256_Init(&hc);
-    CC_SHA256_Update(&hc, ctl, nctl);
-    if (code) CC_SHA256_Update(&hc, (const void *)(uintptr_t)sd->data, ncode);
-    CC_SHA256_Final(md, &hc); memcpy(out, md, 8);
+    nvn_shader_key(sd->control, (const void *)(uintptr_t)sd->data, code ? ncode : 0, out);
     return 1;
 }
 int prog_key(const prog_t *p, unsigned st, uint8_t key[8]) {

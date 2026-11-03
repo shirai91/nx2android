@@ -58,11 +58,8 @@ typedef struct { uint32_t magic, nstage; NVNshaderData sd[6]; uint64_t serial; }
 static inline uint32_t nvn_ctl_u32(const void *c, uint32_t off) { uint32_t v; memcpy(&v, (const uint8_t *)c + off, 4); return v; }
 static inline int nvn_ctl_v2(const void *c) { return nvn_ctl_u32(c, 4) == 0xc9; }
 static inline uint32_t nvn_ctl_code_len(const void *c) { return nvn_ctl_u32(c, nvn_ctl_v2(c) ? 0x44 : 0x704); }
-static inline uint32_t nvn_ctl_key(const void *c, uint8_t key[0x880]) {   // the key's bytes → their length
-    uint32_t own = nvn_ctl_u32(c, 0x20), n = nvn_ctl_v2(c) ? 0x48 : own >= 0x760 && own < 0x880 ? own : 0x880;
-    memcpy(key, c, n); if (n == 0x48) memset(key + 0x30, 0, 4);
-    return n;
-}
+static inline uint32_t nvn_ctl_key_len(const void *c) { uint32_t own = nvn_ctl_u32(c, 0x20); return nvn_ctl_v2(c) ? 0x48 : own >= 0x760 && own < 0x880 ? own : 0x880; }
+void nvn_shader_key(const void *control, const void *code, uint32_t ncode, uint8_t key[8]);   // (hle_nvn.c) the first 8 bytes of SHA-256 over the key's control bytes and the code
 
 // fenced: 0 never, 1 a queue fence, 2 a window acquire's (win: the window whose texture idx it waits for, with DM_NVN_ACQ_SYNC; the texture is free at `at`)
 typedef struct { uint32_t magic, fenced; uint64_t fence, at; struct win_s *win; int32_t idx; } sync_t; FITS(sync_t, NVNsync);
