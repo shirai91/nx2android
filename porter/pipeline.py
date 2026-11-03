@@ -526,13 +526,13 @@ class Port:
         xlate, xkey = self.translator()
         PROG.set(step='checking the inputs')
         key = nsp.fingerprint(nsp.package_key(pkg), ('files', [DM / 'android/tools/shader_vk.py'] + nsp.tool_files(NXNATIVE)), ('files', nsp.profile_files(self.g)), xkey,
-                              ('files', sorted(cap.glob('*.bin'))))
+                              ('files', sorted(cap.glob('*.bin'))), str(self.tools['ndk']))
         if self.dmsv.is_file() and (note := nsp.reused(kf, key)) is not None:
             PROG.end(f'{note}, reused (inputs unchanged)'); return
         tmp = self.dmsv.with_name('shaders.dmsv.partial'); nsp.rmtree(tmp); nsp.rmtree(kf)
         def line(s):
             if m := re.match(r'translating (\d+) shaders', s): PROG.set(step=f'translating {int(m.group(1)):,} shaders')
-        nsp.run([PY, DM / 'android/tools/shader_vk.py', pkg, tmp, '--jobs', str(self.o.jobs), '--dotnet', self.tools['dotnet'], '--xlate', xlate, '--capture', cap],
+        nsp.run([PY, DM / 'android/tools/shader_vk.py', pkg, tmp, '--jobs', str(self.o.jobs), '--dotnet', self.tools['dotnet'], '--xlate', xlate, '--capture', cap, '--ndk', self.tools['ndk']],
                 self.logs / 'android_shaders.log', env=self.env, on_line=line)
         m = re.search(r'^(\d+) of (\d+) shaders', (self.logs / 'android_shaders.log').read_text(errors='replace'), re.M)
         if not m or m.group(1) == '0': raise BuildError(f'no shader translated (see {self.logs / "android_shaders.log"})')

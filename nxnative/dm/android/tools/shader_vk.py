@@ -3,7 +3,8 @@
 # The same translator as the Apple chain (dm/gfx/tools/dmsh_xlate_bin, Ryujinx's translator with TargetApi.Vulkan) and the same jobs as dmsh_build.py
 # (control section / code area / c1 split, the VertexA + VertexB merge, the profile's answer table), but no MSL: Vulkan takes the SPIR-V as it is.
 # Geometry shaders are translated as Vulkan geometry shaders (the Apple chain emulates them in compute kernels).
-#   DM_GAME=<id> shader_vk.py <package dir> <out bundle> [--jobs N] [--keys k1,k2] [--xlate <dmsh_xlate.dll>] [--capture <dir>]
+#   DM_GAME=<id> shader_vk.py <package dir> <out bundle> [--jobs N] [--keys k1,k2] [--xlate <dmsh_xlate.dll>] [--capture <dir>] [--ndk <dir>]
+# --ndk: every module goes through the NDK's spirv-opt -O (Donkey Kong Bananza: 35% smaller, so less to read and for the driver to compile at pipeline creation)
 # --capture: shaders whose code no game file holds, saved on the device by the Vulkan backend (gfx_vk_shader.c vk_shader_missing: <key>.bin = "DMSC", u32 control length, u32 code length,
 #   control section, code area), translated beside the package's; a file whose content does not hash to its name, or whose key the package has, is left out
 # Bundle (read by the Vulkan backend, dm/android/gfx_vk_shader.c): "DMSV" u32 version, u32 count, then count entries {u64 key, u32 stage, u32 spv_off, u32 spv_len,
@@ -22,6 +23,7 @@ ap.add_argument('--jobs', type=int, default=os.cpu_count() or 8)
 ap.add_argument('--keys', default='')
 ap.add_argument('--dotnet', default=os.environ.get('DOTNET', 'dotnet'))
 ap.add_argument('--capture', help='a folder of shaders captured at run time on the device (<key>.bin)')
+ap.add_argument('--ndk', help='the Android NDK, whose spirv-opt optimizes the modules')
 ap.add_argument('--xlate', help="the translator (dmsh_xlate.dll) to run (default: the iOS chain's dm/gfx/tools/dmsh_xlate_bin; the porter builds one from the in-repo source)")
 a = ap.parse_args()
 
@@ -340,6 +342,15 @@ def main():
     if again:
         print(f'translating {len(again)} vertex shaders again with integer inputs ...', flush=True)
         with cf.ThreadPoolExecutor(len(chunks)) as ex: rs += list(ex.map(xl, [c for c in ([k for k in ch if k in again] for ch in chunks) if c]))
+    if a.ndk:
+        host = 'windows-x86_64' if os.name == 'nt' else 'linux-x86_64' if sys.platform.startswith('linux') else 'darwin-x86_64'   # as build.py
+        opt = str(Path(a.ndk) / 'shader-tools' / host / ('spirv-opt.exe' if os.name == 'nt' else 'spirv-opt'))
+        print(f'optimizing {len(keys)} modules ...', flush=True)
+        def optimize(k):   # in place; a module spirv-opt refuses stays as translated
+            p = os.path.join(w, k + '.spv')
+            return os.path.exists(p) and subprocess.run([opt, '-O', '--skip-validation', p, '-o', p], capture_output=True).returncode != 0
+        with cf.ThreadPoolExecutor(a.jobs) as ex: refused = sum(ex.map(optimize, keys))
+        if refused: print(f'[RED] spirv-opt refused {refused} modules: kept as translated', flush=True)
     errs = collections.Counter()
     for r in rs:
         for ln in r.stderr.splitlines():
