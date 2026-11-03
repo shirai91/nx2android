@@ -10,9 +10,9 @@
 
 int nvn_gob_switch2;
 
-static uint32_t gob_off(uint32_t x, uint32_t y) {
-    if (nvn_gob_switch2) return (x % 64 / 32) * 256 + (y % 8 / 4) * 128 + (x % 32 / 16) * 64 + (y % 4 / 2) * 32 + (y % 2) * 16 + x % 16;
-    return (x % 64 / 32) * 256 + (y % 8 / 2) * 64 + (x % 32 / 16) * 32 + (y % 2) * 16 + x % 16;
+static uint32_t gob_off(uint32_t x, uint32_t y) {   // (the Switch 2's: x4 and y1 at bits 6 and 5 instead of 5 and 6)
+    uint32_t sw = nvn_gob_switch2 != 0;
+    return (x >> 5 & 1) << 8 | (y >> 2 & 1) << 7 | (x >> 4 & 1) << (5 + sw) | (y >> 1 & 1) << (6 - sw) | (y & 1) << 4 | (x & 15);
 }
 
 uint64_t nvn_bl_offset(uint32_t x, uint32_t y, uint32_t z, uint32_t row_bytes, uint32_t rows, unsigned th, unsigned td) {
