@@ -113,6 +113,7 @@ namespace Ryujinx.Graphics.Shader.IntermediateRepresentation
         Sine,
         SquareRoot,
         Store,
+        SubgroupReduce,
         Subtract,
         SwizzleAdd,
         TextureSample,
@@ -132,6 +133,19 @@ namespace Ryujinx.Graphics.Shader.IntermediateRepresentation
         FP64 = 1 << 17,
 
         Mask = 0xffff,
+    }
+
+    // nxnative: the operations of Instruction.SubgroupReduce (its Index), in Ampere REDUX's order, then the signed minimum and maximum
+    enum SubgroupReduceOp
+    {
+        And,
+        Or,
+        Xor,
+        Add,
+        MinU32,
+        MaxU32,
+        MinS32,
+        MaxS32,
     }
 
     static class InstructionExtensions

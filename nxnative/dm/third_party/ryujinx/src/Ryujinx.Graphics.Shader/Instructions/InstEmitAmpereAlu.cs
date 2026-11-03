@@ -87,6 +87,8 @@ namespace Ryujinx.Graphics.Shader.Instructions
             x(0x89c, InstName.Psetp, APlop3, P | N | U);
             x(0x806, InstName.Vote, AVote, None);
             x(0x886, InstName.Vote, AVote, None);
+            x(0x3a1, InstName.Vote, AMatch, None, FeatureFlags.Shuffle);
+            x(0x3c4, InstName.Vote, ARedux, None);
 
             foreach (int op in new[] { 0x389, 0x589, 0x989, 0xf89 })
             {
@@ -830,6 +832,42 @@ namespace Ryujinx.Graphics.Shader.Instructions
             }
 
             ASet(context, x.Op == 0x886 ? Register(x[16..22], RegisterType.Uniform) : Register(x.Rd, RegisterType.Gpr), EmitBallot(context, pred));
+        }
+
+        // MATCH.ALL Rd, Pd, Ra (.U64, 73: the pair Ra, Ra + 1): Pd whether every active lane holds the lowest active lane's value, Rd the active lanes' mask if so,
+        // else 0. .ANY (79), the mask of the lanes holding each lane's own value, is not decoded
+        public static void AMatch(EmitterContext context)
+        {
+            AmpereOp x = new(context.CurrOp);
+
+            if (x[79])
+            {
+                throw AFail(context, "MATCH.ANY");
+            }
+
+            Operand active = EmitBallot(context, Const(IrConsts.True));
+            Operand first = context.FindLSB(active);
+            Operand Same(Operand v) => context.ICompareEqual(v, AShuffle(context, v, first));
+            Operand same = x[73] ? context.BitwiseAnd(Same(AGpr(x.Ra)), Same(AGpr(x.Ra, 1))) : Same(AGpr(x.Ra));
+            Operand all = EmitVote(context, VoteMode.All, same);
+
+            ASetPred(context, x[81..84], all);
+            ASet(context, x, context.ConditionalSelect(all, active, Const(0)));
+        }
+
+        // REDUX URd, Ra: Ra reduced over the warp's active lanes by 78..81 (AND, OR, XOR, SUM, MIN, MAX; 73 a signed MIN / MAX)
+        public static void ARedux(EmitterContext context)
+        {
+            AmpereOp x = new(context.CurrOp);
+            int op = x[78..81];
+
+            if (op > 5)
+            {
+                throw AFail(context, "REDUX operation");
+            }
+
+            SubgroupReduceOp kind = (SubgroupReduceOp)(op >= 4 && x[73] ? op + 2 : op);
+            ASet(context, Register(x[16..22], RegisterType.Uniform), context.SubgroupReduce(AGpr(x.Ra), kind));
         }
 
         // SHFL Rd, Pd, a, lane, c: lane a register (32..40) or an immediate (53..58; 0x989, 0xf89), c a register (64..72) or an immediate (40..53; 0x589, 0xf89),
