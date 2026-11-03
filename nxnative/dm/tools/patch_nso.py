@@ -555,6 +555,10 @@ def jump_offsets(insl, j, copy_first=False, far_base=False):
         m = re.fullmatch(r'([wx]\d+), ([wx]\d+), #(0x[0-9a-f]+|\d+)', p.op_str) if p.mnemonic == 'and' else None
         if m and wname(m.group(1)) in idx and masked is None: masked = (wname(m.group(2)), int(m.group(3), 0), i); continue
         m = re.fullmatch(r'(w\d+), #(0x[0-9a-f]+|\d+)', p.op_str) if p.mnemonic == 'cmp' else None
+        # A 64-bit compare bounds the index as well, since the load uses the whole xI (OCTOPATH TRAVELER 1.0.5 main+0x1676f58: cmp x22,#0x10; ...; b.hi; adrp x18 + add x18;
+        # mov x0,x18; ldrsw x18,[x0,x22,lsl #2]; add x18,x18,x0; br x18). Only the last attempt (far_base) takes it, so modules that rewrote before come out the same
+        mx = re.fullmatch(r'(x\d+), #(0x[0-9a-f]+|\d+)', p.op_str) if far_base and not m and p.mnemonic == 'cmp' else None
+        if mx and wname(mx.group(1)) in idx: cmp = p; break
         if not m: continue
         if m.group(1) in idx: cmp = p; break
         if masked:   # the checked register must be "the same source & the same mask", with the source unchanged up to the index's and
