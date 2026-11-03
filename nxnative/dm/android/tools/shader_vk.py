@@ -9,7 +9,7 @@
 #   control section, code area), translated beside the package's; a file whose content does not hash to its name, or whose key the package has, is left out
 # Bundle (read by the Vulkan backend, dm/android/gfx_vk_shader.c): "DMSV" u32 version, u32 count, then count entries {u64 key, u32 stage, u32 spv_off, u32 spv_len,
 #   u32 refl_off, u32 refl_len, u32 pad} sorted by key, then the blobs. refl is compact JSON: bindings, c1, local size, notes.
-import argparse, collections, concurrent.futures as cf, hashlib, json, os, re, struct, subprocess, sys, tempfile
+import argparse, collections, concurrent.futures as cf, json, os, re, struct, subprocess, sys, tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -116,7 +116,7 @@ def nvn2_job(stage, code, ctl):
 def job_for(key, stage, rec, w):   # dmsh_build.py job_for; transform feedback is captured natively (xfb_layout)
     ci = rec.find(bytes.fromhex('34127698')); code = rec[0x38:ci]; ctl = rec[ci:]
     xfb, extra = None, {}
-    if ctl[4:8] == b'\xc9\0\0\0': code, c1, extra = nvn2_job(stage, code, ctl)
+    if shader_split.nvn2(ctl): code, c1, extra = nvn2_job(stage, code, ctl)
     else:
         c1o, c1t = struct.unpack_from('<2I', ctl, 0x700)
         c1 = rec[0x38 + c1o:0x38 + c1t]
@@ -130,9 +130,7 @@ def job_for(key, stage, rec, w):   # dmsh_build.py job_for; transform feedback i
          **extra, **({'xfb': xfb} if xfb else {})}
     if key in FACTS: j.update(FACTS[key])
     else: j['no_facts'] = True
-    if stage == 'cs' and 'local' not in j:   # a run-time capture has no facts: its control section holds them (shader_split.py)
-        tg, so = (0x58, 0x64) if 'nvn2_cs' in extra else (0x748, 0x754)
-        j['local'] = list(struct.unpack_from('<3I', ctl, tg)); j['shared'] = (struct.unpack_from('<I', ctl, so)[0] + 15) // 16 * 16
+    if stage == 'cs' and 'local' not in j: j['local'], j['shared'] = shader_split.cs_layout(ctl)   # a run-time capture has no facts: its control section holds them
     return j, c1
 
 # ---- SPIR-V reflection: descriptor bindings with the translator's names, decoded as dmsh_build.py reflect decodes the MSL names ----
@@ -198,6 +196,8 @@ def spirv_bindings(spv):
         if k == 'u': io[sc][2] |= 1 << loc
     return out, local, io
 
+OP_TYPE_INT, OP_TYPE_VECTOR, OP_FUNCTION, OP_LOAD, OP_STORE, OP_ACCESS_CHAIN, OP_IN_BOUNDS_ACCESS_CHAIN, OP_COMPOSITE_EXTRACT, OP_BITCAST = 21, 23, 54, 61, 62, 65, 66, 81, 124
+DEC_BUILTIN, DEC_LOCATION, SC_INPUT, SC_FUNCTION = 11, 30, 1, 7
 def int_inputs(spv):
     """A vertex shader's inputs it only uses as integers (every load bit-cast to an integer, or copied as is) → {location: 'uint'} (dmsh_build.py int_inputs on the SPIR-V).
     The hardware puts an integer format's bits (bone indices RGBA8UI etc.) in the register as they are; under the translator's float declaration Vulkan leaves an integer
@@ -206,30 +206,31 @@ def int_inputs(spv):
     ins, fvar, ints, loc, builtin, body, i = set(), set(), set(), {}, set(), [], 5
     while i < len(w):
         n, op = w[i] >> 16, w[i] & 0xffff; x = w[i:i + n]
-        if op == OP_DECORATE and x[2] == 30: loc[x[1]] = x[3]
-        elif op == OP_DECORATE and x[2] == 11: builtin.add(x[1])
-        elif op == 21 or op == 23 and x[2] in ints: ints.add(x[1])   # OpTypeInt, a vector of them
-        elif op == OP_VARIABLE and x[3] in (1, 7): (ins if x[3] == 1 else fvar).add(x[2])
-        if op == 54 or body: body.append(x)   # OpFunction onwards
+        if op == OP_DECORATE and x[2] == DEC_LOCATION: loc[x[1]] = x[3]
+        elif op == OP_DECORATE and x[2] == DEC_BUILTIN: builtin.add(x[1])
+        elif op == OP_TYPE_INT or op == OP_TYPE_VECTOR and x[2] in ints: ints.add(x[1])
+        elif op == OP_VARIABLE and x[3] in (SC_INPUT, SC_FUNCTION): (ins if x[3] == SC_INPUT else fvar).add(x[2])
+        if op == OP_FUNCTION or body: body.append(x)
         i += n
+    chains = (OP_ACCESS_CHAIN, OP_IN_BOUNDS_ACCESS_CHAIN)
     base = {v: v for v in ins if v in loc and v not in builtin}   # pointer id → its input variable
     vals, held = {}, {}   # loaded value id → its input variable; function variable (the translator's registers) → the input it holds, -1 if anything else too
     for _ in range(2):    # twice: a register stored after the code that loads it (a loop) is seen
         for x in body:
             op = x[0] & 0xffff
-            if op in (65, 66) and x[3] in base: base[x[2]] = base[x[3]]   # OpAccessChain / OpInBoundsAccessChain
-            elif op == 61 and (x[3] in base or held.get(x[3], -1) != -1): vals[x[2]] = base.get(x[3]) or held[x[3]]   # OpLoad
-            elif op == 81 and x[3] in vals: vals[x[2]] = vals[x[3]]       # OpCompositeExtract
-            elif op == 62 and x[1] in fvar: v = vals.get(x[2], -1); held[x[1]] = v if held.get(x[1], v) == v else -1   # OpStore
-    good, bad = collections.Counter(), set()
+            if op in chains and x[3] in base: base[x[2]] = base[x[3]]
+            elif op == OP_LOAD and (x[3] in base or held.get(x[3], -1) != -1): vals[x[2]] = base.get(x[3]) or held[x[3]]
+            elif op == OP_COMPOSITE_EXTRACT and x[3] in vals: vals[x[2]] = vals[x[3]]
+            elif op == OP_STORE and x[1] in fvar: v = vals.get(x[2], -1); held[x[1]] = v if held.get(x[1], v) == v else -1
+    good, bad = set(), set()
     for x in body:
         op = x[0] & 0xffff
-        if op in (61, 81) and x[2] in vals or op in (65, 66): continue   # the loads themselves
+        if op in (OP_LOAD, OP_COMPOSITE_EXTRACT) and x[2] in vals or op in chains: continue   # the loads themselves
         for k, v in enumerate(x[1:], 1):
             if v not in vals: continue
-            if op == 124 and k == 3 and x[1] in ints: good[vals[v]] += 1   # OpBitcast to an integer
-            elif not (op == 62 and k == 2 and held.get(x[1]) != -1): bad.add(vals[v])   # anything but a store as is (output, or a register holding only this input)
-    return {str(loc[v]): 'uint' for v in good if v not in bad}
+            if op == OP_BITCAST and k == 3 and x[1] in ints: good.add(vals[v])
+            elif not (op == OP_STORE and k == 2 and held.get(x[1]) != -1): bad.add(vals[v])   # anything but a store as is (output, or a register holding only this input)
+    return {str(loc[v]): 'uint' for v in good - bad}
 
 # Handle decoding: as dmsh_build.py decode_tex / decode_ubo_tex / reflect (names: <stage>_t<type>_cb<slot>_<handle>, <stage>_c<n>, <stage>_s<n>, <stage>_i…)
 TEX_BASE, IMG_BASE, IMG_SLOTS, SEPTEX_BASE, SEPTEX_SLOT0, SAMP_BASE = 0x20, 0x120, 8, 0x168, 128, 0x568
@@ -343,8 +344,7 @@ def main():
         print(f'translating {len(again)} vertex shaders again with integer inputs ...', flush=True)
         with cf.ThreadPoolExecutor(len(chunks)) as ex: rs += list(ex.map(xl, [c for c in ([k for k in ch if k in again] for ch in chunks) if c]))
     if a.ndk:
-        host = 'windows-x86_64' if os.name == 'nt' else 'linux-x86_64' if sys.platform.startswith('linux') else 'darwin-x86_64'   # as build.py
-        opt = str(Path(a.ndk) / 'shader-tools' / host / ('spirv-opt.exe' if os.name == 'nt' else 'spirv-opt'))
+        opt = str(next(Path(a.ndk).glob('shader-tools/*/spirv-opt*')))   # (an NDK holds one host's tools)
         print(f'optimizing {len(keys)} modules ...', flush=True)
         def optimize(k):   # in place; a module spirv-opt refuses stays as translated
             p = os.path.join(w, k + '.spv')

@@ -79,6 +79,11 @@ NVN2_MAGIC, NVN2_KEY = CTL_MAGIC + b'\xc9\0\0\0', 0x48
 NVN2_STAGE = {0: 'vs', 1: 'ps', 2: 'gs', 3: 'hs', 4: 'ds', 5: 'cs'}
 def nvn2(ctl): return ctl[:8] == NVN2_MAGIC and len(ctl) >= NVN2_KEY
 
+def cs_layout(ctl):
+    """A compute shader's control section → its thread group [x, y, z] and shared memory bytes (rounded up to 16)"""
+    tg, so = (0x58, 0x64) if nvn2(ctl) else (0x748, 0x754)
+    return list(struct.unpack_from('<3I', ctl, tg)), (struct.unpack_from('<I', ctl, so)[0] + 15) // 16 * 16
+
 def ctl_len(ctl):
     """Number of control bytes in the key: NVN2_KEY for NVN2, else control +0x20 holds the section's own length. Every control section of Mario, Fire Emblem Engage, Metroid Dread and 13 Sentinels is at least 0x880 bytes, so the first 0x880 are used;
     SDK 10's Super Mario 3D World + Bowser's Fury has 2,888 that are only 0x850 bytes (the bfsha in ShaderData, 6 layouts), with other data right after them, so only their own length is used (the same as the host's keys_hash)"""
@@ -1555,10 +1560,9 @@ def main():
         if rec.count(b'BTCDBTCD') != 1: red(f'key {key}: the record separator appears inside the record')
         rows.append((name, len(recs[name]), STAGE_NAME[st], key, where)); recs[name].append(bytes(rec)); stat[st] += 1
         if st == 'cs':
-            tg, so = (0x58, 0x64) if nvn2(ctl) else (0x748, 0x754)
-            x, y, z = struct.unpack_from('<3I', ctl, tg); sh = struct.unpack_from('<I', ctl, so)[0]
-            if not x * y * z: red(f'compute shader {key}: control +{tg:#x} thread group is 0 ({where})')
-            facts[key] = {'local': [x, y, z], 'shared': (sh + 15) // 16 * 16}
+            local, shared = cs_layout(ctl)
+            if not local[0] * local[1] * local[2]: red(f'compute shader {key}: its thread group is 0 ({where})')
+            facts[key] = {'local': local, 'shared': shared}
     for name, rr in recs.items():
         with open(os.path.join(pkg, name), 'wb') as f: f.write(b''.join(rr))
     with open(mapout, 'w') as f:
