@@ -26,7 +26,7 @@ HLE_FORCE("_ZN2nn5audio39IsDeviceOutputVolumeAutoTuneModeEnabledEv", "output vol
 // ---------- streamplay: GameShare / GameChat streaming (stpl:u), initialized at boot. The host streams to nobody: the library is ready, no session opens and no guest
 // connects, so every guest pad, sensor, vibration and mouse query has nothing to report. Opening a session is a player's action and stays unhooked ----------
 static uint8_t g_stpl_event[0x80] __attribute__((aligned(16)));
-static _Atomic uint32_t g_stpl_styles, g_stpl_hold;
+static _Atomic uint32_t g_stpl_hold;
 HLE_FORCE("_ZN2nn10streamplay21GetRequiredMemorySizeENS0_14StreamPlayTypeENS0_13StreamingModeEi", "streamplay work memory: a page, unused", uint32_t, h_stpl_MemSize, int type, int mode, int n) {
     (void)type; (void)mode; (void)n; return 0x1000; }
 HLE_FORCE("_ZN2nn10streamplay10InitializeENS0_14StreamPlayTypeENS0_13StreamingModeEPvm", "streamplay: ready, no session", Result, h_stpl_Init, int type, int mode, void *work, uint64_t size) {
@@ -35,7 +35,7 @@ HLE_FORCE("_ZN2nn10streamplay8FinalizeEv", "streamplay: nothing to release", voi
 HLE_FORCE("_ZN2nn10streamplay30GetConnectionStateChangedEventEv", "streamplay connection event: bound, never signalled", void *, h_stpl_Event, void) {
     hle_bind_system_event(g_stpl_event, 0); return g_stpl_event; }
 HLE_FORCE("_ZN2nn10streamplay18GetConnectionStateEPNS0_15ConnectionStateE", "streamplay connection state: not connected", void, h_stpl_State, uint32_t *s) { *s = 0; }
-HLE_FORCE("_ZN2nn10streamplay29SetSupportedGuestNpadStyleSetENS_4util10BitFlagSetILi32ENS_3hid12NpadStyleTagEEE", "guest pad styles: kept", void, h_stpl_SetStyles, uint32_t s) { g_stpl_styles = s; }
+HLE_FORCE("_ZN2nn10streamplay29SetSupportedGuestNpadStyleSetENS_4util10BitFlagSetILi32ENS_3hid12NpadStyleTagEEE", "guest pad styles: no guest", void, h_stpl_SetStyles, uint32_t s) { (void)s; }
 HLE_FORCE("_ZN2nn10streamplay23SetGuestNpadJoyHoldTypeENS_3hid15NpadJoyHoldTypeE", "guest Joy-Con hold type: kept", void, h_stpl_SetHold, uint32_t t) { g_stpl_hold = t; }
 HLE_FORCE("_ZN2nn10streamplay23GetGuestNpadJoyHoldTypeEv", "guest Joy-Con hold type: what the game set", uint32_t, h_stpl_GetHold, void) { return g_stpl_hold; }
 HLE_FORCE("_ZN2nn10streamplay25SetSupportedHidFeatureSetENS_4util10BitFlagSetILi32ENS0_13HidFeatureTagEEE", "guest hid features: no guest", void, h_stpl_HidFeat, uint32_t s) { (void)s; }
