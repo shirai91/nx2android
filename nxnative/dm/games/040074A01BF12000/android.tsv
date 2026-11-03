@@ -1,8 +1,17 @@
 # Donkey Kong Bananza (Switch 2, update v458752): Nintendo EPD's engine on NVN2, its shaders Ampere code (the translator's sm_86 frontend).
 # Android emulator (arm64, API 35, Vulkan over MoltenVK, 2026-11-03): boots to the title menu, plays the opening and the mining tunnel with sound; all 23,638 shaders
-# translate. Open: agl's upscaler network (14a8aaf3e0a9edbd) writes its 2304x1296 output in 8x8 blocks there although its inputs are bound right (DM_VK_TRACE_CS),
-# and the emulator draws no geometry shaders (the terrain's culling pass) nor pipelines past Metal's 16 samplers. Not tested on a device yet
+# translate. The emulator draws no geometry shaders (the terrain's culling pass) nor pipelines past Metal's 16 samplers. Not tested on a device yet.
+# Speed (emulator, handheld mode, the mining tunnel's ~6,300 draws): 30 fps. The game picks its present interval from the span from the end of one present
+# step to the end of its draw, or to the frame's last GPU timestamp if later (main+0x203674; interval 1 under 20 ms). With the env below the CPU part is
+# ~9 ms (it was ~30 with the pacing and the job system's waits in it) and the game tries interval 1 every few seconds; the replay (~9 ms) and the emulator's
+# GPU (~13 ms) after the game's submission keep the GPU part over 20 ms. The replay on its own thread with no wait at the acquire for it (the game waits on
+# the last frame's fence before the next), the acquire's pacing in its sync (DM_NVN_ACQ_SYNC), and its job workers spinning before they sleep
 status	boots
 package	org.nx2a.donkeykongbananza
 orientation	landscape
 requires	bcn
+env	DM_NVN_ASYNC=1
+env	DM_NVN_ACQ_REPLAYED=0
+env	DM_NVN_ACQ_SYNC=1
+env	DM_WAIT_SPIN_US=300
+env	DM_LOCK_SPIN_US=50
