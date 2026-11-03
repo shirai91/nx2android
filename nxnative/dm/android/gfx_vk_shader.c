@@ -43,7 +43,7 @@ static const bent *find(uint64_t key) {
 int vk_shader_stage(uint64_t key) { bundle_auto(); const bent *e = g_bundle ? find(key) : NULL; return e ? (int)e->stage : -1; }   // the NVN stage the bundle has this shader as
 
 // Run-time capture: a shader a draw needs that the bundle does not have is saved as DM_ROOT/captured_shaders/<key>.bin ("DMSC", u32 control length, u32 code length, the control
-// section as its key hashed it, the code area), and the porter translates the folder into the bundle at the next port (porter/pipeline.py, shader_vk.py --capture).
+// section (as its key hashed it; NVN2's whole), the code area), and the porter translates the folder into the bundle at the next port (porter/pipeline.py, shader_vk.py --capture).
 // Xenoblade Chronicles 3 sets hundreds of programs whose code is in no game file (GLSLC outputs of its Firehawk effects, and vertex / pixel shaders of models: a machine near
 // the camera in Everlight Plain drew as a black silhouette, its depth pre-pass drawn and its G-buffer draw skipped); 51 of them in the opening and the first field.
 // The game may free a control section once SetShaders returns, so SetShaders keeps a copy of each one the bundle lacks (shader_set); the file is written only when a draw misses
@@ -55,7 +55,9 @@ static void shader_set(const uint8_t k[8], const void *control, uint64_t data) {
     uint64_t key = 0; for (int i = 0; i < 8; i++) key = key << 8 | k[i];
     uint8_t ctl[0x880]; uint32_t ncode, nctl = control ? nvn_shader_key_ctl(control, ctl, &ncode) : 0;
     if (!key || !nctl || !data || !ncode || ncode >= (1u << 24) || vk_shader_stage(key) >= 0) return;
-    uint8_t *c = malloc(nctl); if (!c) return; memcpy(c, ctl, nctl);
+    const void *src = ctl; if (nctl == 0x48) { memcpy(&nctl, (const uint8_t *)control + 0x30, 4); src = control; }   // NVN2: the whole section (+0x30 its length), which the translator reads past the key
+    if (nctl < 0x48 || nctl > (1u << 20)) return;
+    uint8_t *c = malloc(nctl); if (!c) return; memcpy(c, src, nctl);
     pthread_mutex_lock(&g_pend_mu);
     pend_t *p = &g_pend[g_npend++ % NPEND]; free(p->ctl); *p = (pend_t){key, data, nctl, ncode, c};   // the oldest goes: a draw needs a program soon after it is set
     pthread_mutex_unlock(&g_pend_mu);
@@ -67,7 +69,8 @@ void vk_shader_missing(uint64_t key) {
     for (unsigned i = 0; i < NPEND && i < g_npend; i++) if (g_pend[i].key == key && g_pend[i].ctl) { p = g_pend[i]; p.ctl = malloc(p.nctl); if (p.ctl) memcpy(p.ctl, g_pend[i].ctl, p.nctl); break; }
     pthread_mutex_unlock(&g_pend_mu);
     if (!p.ctl) { VKLOG("[RED] shader %016llx is not in the bundle (and was not set while the capture could see it)", (unsigned long long)key); return; }
-    uint8_t md[CC_SHA256_DIGEST_LENGTH]; CC_SHA256_CTX hc; CC_SHA256_Init(&hc); CC_SHA256_Update(&hc, p.ctl, p.nctl); CC_SHA256_Update(&hc, (const void *)(uintptr_t)p.data, p.ncode); CC_SHA256_Final(md, &hc);
+    uint8_t kc[0x880]; uint32_t nk = nvn_shader_key_ctl(p.ctl, kc, &(uint32_t){0});
+    uint8_t md[CC_SHA256_DIGEST_LENGTH]; CC_SHA256_CTX hc; CC_SHA256_Init(&hc); CC_SHA256_Update(&hc, kc, nk); CC_SHA256_Update(&hc, (const void *)(uintptr_t)p.data, p.ncode); CC_SHA256_Final(md, &hc);
     uint64_t now = 0; for (int i = 0; i < 8; i++) now = now << 8 | md[i];
     if (now != key) { VKLOG("[RED] shader %016llx is not in the bundle; its code area changed since SetShaders, not saved", (unsigned long long)key); free(p.ctl); return; }
     const char *r = getenv("DM_ROOT"); char dir[1024], path[1100], tmp[1110]; snprintf(dir, sizeof dir, "%s/captured_shaders", r ? r : "."); mkdir(dir, 0755);

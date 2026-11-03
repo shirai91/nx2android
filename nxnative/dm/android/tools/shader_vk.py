@@ -14,7 +14,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 TOOLS = HERE.parent.parent / 'gfx/tools'
 sys.path.insert(0, str(TOOLS))
-import dmsh_facts, dmsh_chain   # noqa: E402  (DM_GAME picks the profile)
+import dmsh_facts, dmsh_chain, shader_split   # noqa: E402  (DM_GAME picks the profile)
 
 ap = argparse.ArgumentParser()
 ap.add_argument('pkg'); ap.add_argument('out')
@@ -48,7 +48,6 @@ def records(d):
     return [d[x:(r[k + 1] if k + 1 < len(r) else len(d))] for k, x in enumerate(r)]
 
 SPH_STAGE = {1: 'vs', 2: 'hs', 3: 'ds', 4: 'gs', 5: 'ps'}   # SPH word 0 bits 10..13 (shader_split.py sph_stage)
-NVN2_STAGE = {0: 'vs', 1: 'ps', 2: 'gs', 3: 'hs', 4: 'ds', 5: 'cs'}   # NVN2 control +0x56 (shader_split.py NVN2_STAGE)
 def captured(d):
     """The run-time captures in folder d (--capture): {key: (stage, record in the package's form)}"""
     out = {}
@@ -58,8 +57,8 @@ def captured(d):
         if len(b) < 12 or b[:4] != b'DMSC': print(f'[RED] capture {nm}: not a captured shader', flush=True); continue
         nctl, ncode = struct.unpack_from('<2I', b, 4); ctl, code = b[12:12 + nctl], b[12 + nctl:12 + nctl + ncode]
         if len(code) != ncode or len(ctl) != nctl or ctl[:4] != bytes.fromhex('34127698'): print(f'[RED] capture {nm}: truncated', flush=True); continue
-        if hashlib.sha256(ctl + code).hexdigest()[:16] != nm[:16]: print(f'[RED] capture {nm}: its content does not hash to its name', flush=True); continue
-        st = (NVN2_STAGE.get(ctl[0x56]) if ctl[4:8] == b'\xc9\0\0\0' else 'cs' if code[:4] == bytes.fromhex('79563412') else
+        if shader_split.skey(ctl, code) != nm[:16]: print(f'[RED] capture {nm}: its content does not hash to its name', flush=True); continue
+        st = (shader_split.NVN2_STAGE.get(ctl[0x56]) if shader_split.nvn2(ctl) and len(ctl) > 0x56 else 'cs' if code[:4] == bytes.fromhex('79563412') else
               SPH_STAGE.get(struct.unpack_from('<I', code, 0x30)[0] >> 10 & 0xf) if code[:4] == bytes.fromhex('78563412') and len(code) > 0x80 else None)
         if not st: print(f'[RED] capture {nm}: no stage in its code area header', flush=True); continue
         rec = bytearray(b'BTCDBTCD' + bytes(0x30)); struct.pack_into('<2I', rec, 0x28, len(ctl), len(code)); rec += code + ctl
