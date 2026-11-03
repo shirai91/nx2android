@@ -19,6 +19,10 @@ void vk_shaders_open(const char *path) {
     g_bundle = mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_SHARED, fd, 0); close(fd);
     if (g_bundle == MAP_FAILED || memcmp(g_bundle, "DMSV", 4)) { VKLOG("[RED] %s is not a shader bundle", path); g_bundle = NULL; return; }
     memcpy(&g_nent, g_bundle + 8, 4); g_ent = (const bent *)(g_bundle + 12);
+    // a bundle cut short (an interrupted copy to the device) would fault on its first shader past the end: refused whole (the blobs follow the table in order)
+    if (12 + (uint64_t)g_nent * sizeof *g_ent > (uint64_t)st.st_size || (g_nent && (uint64_t)g_ent[g_nent - 1].refl_off + g_ent[g_nent - 1].refl_len > (uint64_t)st.st_size)) {
+        VKLOG("[RED] shader bundle %s is cut short (%.1f MB): port and install again; nothing will be drawn", path, st.st_size / 1048576.0);
+        munmap((void *)g_bundle, (size_t)st.st_size); g_bundle = NULL; g_nent = 0; return; }
     VKLOG("shader bundle %s: %u shaders, %.1f MB", path, g_nent, st.st_size / 1048576.0);
 }
 static void bundle_open_once(void) {
