@@ -1104,6 +1104,12 @@ static void drv_shared(int st, int bank, VkBuffer *buf, VkDeviceSize *off) {   /
     uint8_t *p = vk_scratch(0x1000, V.props.limits.minUniformBufferOffsetAlignment, buf, off); memcpy(p, d, sizeof d);
     g_drvc[k].h = h; g_drvc[k].epoch = g_set_epoch; g_drvc[k].b = *buf; g_drvc[k].o = *off;
 }
+// A buffer binding's range rounded up to a power of two (at least 256), where its pool and the device allow: the range is part of a set's content while a dynamic
+// offset is not, so draws whose buffers differ in offset and size share sets (robustBufferAccess is off: reads past the size the game bound were never clamped to it)
+static void range_pow2(VkDescriptorBufferInfo *bi, const vkpool_t *p, VkDeviceSize max) {
+    VkDeviceSize r = bi->range <= 256 ? 256 : 1ull << (64 - __builtin_clzll(bi->range - 1));
+    if (bi->offset + r <= p->hi - p->lo && r <= max) bi->range = r;
+}
 // a constant buffer binding's descriptor (stage_set, set_memo_get): its pool's buffer from the alignment boundary below it, or the shadow of the deferred updates over it
 static void cbuf_desc(int st, const vkshader_t *s, const dmsv_bind *b, VkDescriptorBufferInfo *bi) {
     const p_bind_buf *u = b->reg >= 0 && b->reg < 16 ? &S.ubo[st][b->reg] : NULL;
@@ -1115,10 +1121,7 @@ static void cbuf_desc(int st, const vkshader_t *s, const dmsv_bind *b, VkDescrip
     if (vk_ubd_shadow(u->addr, n, &buf, &off)) { *bi = (VkDescriptorBufferInfo){buf, off, n}; return; }   // deferred updates in it: their shadow
     VkDeviceSize al = V.props.limits.minUniformBufferOffsetAlignment; if (off % al) VKRED_ONCE(40, "uniform buffer at an offset not aligned to %llu", (unsigned long long)al);
     *bi = (VkDescriptorBufferInfo){buf, off - off % al, n + off % al};
-    // a power-of-two range, as for storage buffers: the range is part of a set's content while a dynamic offset is not (robustBufferAccess is off: reads past
-    // the size the game bound were never clamped to it)
-    VkDeviceSize r = 256; while (r < bi->range) r <<= 1;
-    if (bi->offset + r <= p->hi - p->lo && r <= V.props.limits.maxUniformBufferRange) bi->range = r;
+    range_pow2(bi, p, V.props.limits.maxUniformBufferRange);
 }
 // The set a stage's last draw got, and what it was built from. Between two draws most stages change no texture, sampler, image or storage buffer, only
 // the offsets of their constant buffers, which go to the bind (dynamic uniform buffers). Then nothing is collected or hashed: the constant buffers alone are
@@ -1183,8 +1186,7 @@ static VkDescriptorSet stage_set(int st, vkshader_t *s, uint32_t *dofs) {
                 // bound from the 256-byte boundary below it, the boundary the translator offsets every access from (shader_vk.py SB_ALIGN; a multiple of any device's minimum alignment)
                 const VkDeviceSize al = SB_ALIGN; if (V.props.limits.minStorageBufferOffsetAlignment > al) VKRED_ONCE(41, "storage buffer alignment %llu above %llu", (unsigned long long)V.props.limits.minStorageBufferOffsetAlignment, (unsigned long long)al);
                 bi[nw] = (VkDescriptorBufferInfo){buf, off - off % al, n + off % al};
-                if (s->dyn[i]) { VkDeviceSize r = al; while (r < bi[nw].range) r <<= 1;   // a power-of-two range, so draws whose buffers differ in offset and size share sets
-                                 if (bi[nw].offset + r <= p->hi - p->lo && r <= V.props.limits.maxStorageBufferRange) bi[nw].range = r; }
+                if (s->dyn[i]) range_pow2(&bi[nw], p, V.props.limits.maxStorageBufferRange);
                 if ((b->flags & 4) && b->kind != RK_UBO_PTR) { void vk_gpu_wrote(uint64_t a, uint64_t n); vk_gpu_wrote(a, n); }   // a storage buffer the shader writes (any stage)
             } else bi[nw] = (VkDescriptorBufferInfo){vk_zero_buffer(), 0, 65536};
             break; }
