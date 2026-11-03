@@ -64,14 +64,15 @@ static inline uint32_t nvn_shader_key_ctl(const void *control, uint8_t ctl[0x880
     return n;
 }
 
-typedef struct { uint32_t magic, fenced; uint64_t fence; } sync_t;                            FITS(sync_t, NVNsync);
+// fenced: 0 never, 1 a queue fence, 2 a window acquire's (win: the window whose texture idx it waits for, with DM_NVN_ACQ_SYNC; the texture is free at `at`)
+typedef struct { uint32_t magic, fenced; uint64_t fence, at; struct win_s *win; int32_t idx; } sync_t; FITS(sync_t, NVNsync);
 typedef struct { const pool_t *pool; int64_t off; } ev_builder_t;                             FITS(ev_builder_t, NVNeventBuilder);
 typedef struct { uint32_t magic; volatile uint32_t *val; } ev_t;                              FITS(ev_t, NVNevent);
 
 typedef struct { NVNdevice *dev; void *native; int32_t ntex, interval; NVNtexture *tex[4]; } win_builder_t;
 FITS(win_builder_t, NVNwindowBuilder);
 // avail[i]: time at which swapchain image i can be acquired again (ns, monotonic clock) = its display time + one present period; pace: target time of this window's present pacer
-typedef struct { uint32_t magic; void *native; int32_t ntex, interval, next, crop[4]; NVNtexture *tex[4]; uint64_t presents, avail[4], pace, ticket[4], done[4]; } win_t;   // ticket[i]: ticket of the most recent present of image i; done[i]: the fence of the work before it
+typedef struct win_s { uint32_t magic; void *native; int32_t ntex, interval, next, crop[4]; NVNtexture *tex[4]; uint64_t presents, avail[4], pace, ticket[4], done[4]; } win_t;   // ticket[i]: ticket of the most recent present of image i; done[i]: the fence of the work before it
 FITS(win_t, NVNwindow);
 
 // Command buffer: commands are written into the command memory given by the game (AddCommandMemory), handle = segment start address; when it runs out, the game is called back for more memory
