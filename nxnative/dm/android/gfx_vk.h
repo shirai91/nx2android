@@ -77,6 +77,8 @@ VkDeviceMemory vk_image_memory(const VkMemoryRequirements *req, uint32_t type, V
 void vk_defer_free_image_sub(VkImage i, void *sub);
 void vk_defer_free_view(VkImageView v);
 VkDescriptorSet vk_alloc_set(VkDescriptorSetLayout l);    // from this submission's descriptor pools
+VkDescriptorSet vk_alloc_set_kept(VkDescriptorSetLayout l);   // from pools that are never reset
+uint64_t vk_obj_gen(void);   // how many times views, buffers or images were destroyed: descriptors written before may name them
 uint64_t vk_fence_done(void);   // the highest submission fence the GPU has completed
 
 // ---- formats and textures (gfx_vk_tex.c) ----

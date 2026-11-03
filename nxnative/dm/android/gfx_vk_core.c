@@ -475,7 +475,8 @@ struct vksub; static void pools_copy_back(const struct vksub *s);
 
 // ---------------- submission slots ----------------
 #define NSLOT 6
-enum { NDT = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC + 1 };   // the descriptor types sets take, counted per pool (vk_alloc_set)
+enum { NDT = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC + 1 };   // the descriptor types sets take, counted per pool (dp_alloc)
+typedef struct { VkDescriptorPool *dp; int ndp, capdp, cur, counted; uint32_t used[NDT], sets; } dpools_t;   // what pool cur has given out
 #define MAIN_CBS 32   // (allocated as used: DM_VK_PASS_SPLIT cuts inside passes as well)
 // GPU time: a timestamp at the start and end of each submission's main command buffer (one queue: their sum is the time the GPU was busy)
 static VkQueryPool g_tsq; uint64_t g_gpu_ns;
@@ -497,8 +498,7 @@ struct vksub {
     uint64_t fence;   // the fence this slot last committed with (0 = never)
     int ncq;          // timestamp counter queries used in this submission (g_cq)
     scratch_blk *blk; int nblk, capblk;
-    VkDescriptorPool *dp; int ndp, capdp, dp_cur;
-    uint32_t dp_used[NDT], dp_sets; int dp_counted; int no_ts;   // what pool dp_cur has given out (vk_alloc_set)
+    dpools_t dps; int no_ts;
     dfree_t *df; int ndf, capdf;
     post_op *post; int npost, cappost;
     struct { uint64_t lo, hi; } gw[64]; int ngw;   // GPU writes into pool memory in this submission (sub_gpu_wrote), for pools_copy_back: nearby ones merged, and once full each joins the nearest
@@ -581,6 +581,8 @@ static void wait_fence(uint64_t f) {
 // replay ~3,000 draws a frame on a thread that is the frame's limit). The slot is then taken only after the completion thread has passed it (mtl_wait, g_done)
 // rather than as soon as the GPU has. DM_VK_X_NOPRERESET=1 (start-up): reset as they are begun
 static int g_prereset = -1;
+static uint64_t g_obj_gen;
+uint64_t vk_obj_gen(void) { return __atomic_load_n(&g_obj_gen, __ATOMIC_RELAXED); }
 static void slot_recycle(vksub_t *s) {   // the GPU has passed this slot's last submission: free what it held, rewind its allocators
     if (g_prereset < 0) { const char *e = getenv("DM_VK_X_NOPRERESET"); g_prereset = !(e && atoi(e)); }
     if (g_prereset) mtl_wait(s->fence, ~0ull); else wait_fence(s->fence);
@@ -592,10 +594,11 @@ static void slot_recycle(vksub_t *s) {   // the GPU has passed this slot's last 
         else if (d->kind == 2) vkDestroyImageView(V.dev, (VkImageView)d->a, NULL);
         else if (d->kind == 3) vkDestroyBufferView(V.dev, (VkBufferView)d->a, NULL);
     }
+    if (s->ndf) __atomic_fetch_add(&g_obj_gen, 1, __ATOMIC_RELAXED);
     s->ndf = 0;
     for (int i = 0; i < s->nblk; i++) s->blk[i].used = 0;
-    for (int i = 0; i < s->ndp; i++) vkResetDescriptorPool(V.dev, s->dp[i], 0);
-    s->dp_cur = 0; s->dp_counted = -1;
+    for (int i = 0; i < s->dps.ndp; i++) vkResetDescriptorPool(V.dev, s->dps.dp[i], 0);
+    s->dps.cur = 0; s->dps.counted = -1;
     // The pool is not reset: each command buffer is reset as it is begun again (the pool allows it). A reset of the transient pool made Adreno's driver free the
     // command memory and map it again as the next submission grew (ioctl, mmap and munmap): in Xenoblade Chronicles 3's battles the submission's start took 21%
     // of the replay thread, now 9%, and frames went from about 42 to 38 ms
@@ -663,7 +666,7 @@ void *vk_scratch(VkDeviceSize n, VkDeviceSize align, VkBuffer *buf, VkDeviceSize
 }
 static void df_add(int kind, void *a, void *b) {
     if (g_cur < 0) {   // outside a submission (a pool finalized between frames): after everything submitted so far
-        wait_fence(g_fence);
+        wait_fence(g_fence); __atomic_fetch_add(&g_obj_gen, 1, __ATOMIC_RELAXED);
         if (kind == 0) { vkDestroyBuffer(V.dev, (VkBuffer)a, NULL); if (b) vkFreeMemory(V.dev, (VkDeviceMemory)b, NULL); }
         else if (kind == 1) { vkDestroyImage(V.dev, (VkImage)a, NULL); if (b) vkFreeMemory(V.dev, (VkDeviceMemory)b, NULL); }
         else if (kind == 4) { void img_sub_free_(void *); vkDestroyImage(V.dev, (VkImage)a, NULL); img_sub_free_(b); }
@@ -727,28 +730,29 @@ void vk_dsl_register(VkDescriptorSetLayout l, const VkDescriptorSetLayoutBinding
     for (uint32_t i = 0; i < n; i++) if ((uint32_t)b[i].descriptorType < NDT) need[b[i].descriptorType] += b[i].descriptorCount;
     pthread_mutex_lock(&g_dsl_mu); nvn_hm_put(&g_dsl_need, &l, need); pthread_mutex_unlock(&g_dsl_mu);
 }
-VkDescriptorSet vk_alloc_set(VkDescriptorSetLayout l) {
-    vksub_t *s = cur();
+static VkDescriptorSet dp_alloc(dpools_t *d, VkDescriptorSetLayout l) {
     pthread_mutex_lock(&g_dsl_mu); const uint32_t *need = nvn_hm_get(&g_dsl_need, &l); pthread_mutex_unlock(&g_dsl_mu);
     for (;;) {
-        if (s->dp_cur == s->ndp) {
+        if (d->cur == d->ndp) {
             VkDescriptorPoolSize sz[NDT]; uint32_t nz = 0;
             for (int t = 0; t < NDT; t++) if (DP_CAP[t]) sz[nz++] = (VkDescriptorPoolSize){(VkDescriptorType)t, DP_CAP[t]};
             VkDescriptorPoolCreateInfo pi = {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, NULL, 0, DP_SETS, nz, sz};
-            if (s->ndp == s->capdp) { s->capdp = s->capdp ? 2 * s->capdp : 4; s->dp = realloc(s->dp, s->capdp * sizeof *s->dp); }
-            VKCHK(vkCreateDescriptorPool(V.dev, &pi, NULL, &s->dp[s->ndp++]));
+            if (d->ndp == d->capdp) { d->capdp = d->capdp ? 2 * d->capdp : 4; d->dp = realloc(d->dp, d->capdp * sizeof *d->dp); }
+            VKCHK(vkCreateDescriptorPool(V.dev, &pi, NULL, &d->dp[d->ndp++]));
         }
-        if (s->dp_cur != s->dp_counted) { memset(s->dp_used, 0, sizeof s->dp_used); s->dp_sets = 0; s->dp_counted = s->dp_cur; }
-        int fits = s->dp_sets < DP_SETS;
-        if (need) for (int t = 0; t < NDT && fits; t++) if (need[t] && s->dp_used[t] + need[t] > DP_CAP[t]) fits = 0;
-        if (!fits) { s->dp_cur++; continue; }
-        VkDescriptorSetAllocateInfo ai = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, NULL, s->dp[s->dp_cur], 1, &l};
+        if (d->cur != d->counted) { memset(d->used, 0, sizeof d->used); d->sets = 0; d->counted = d->cur; }
+        int fits = d->sets < DP_SETS;
+        if (need) for (int t = 0; t < NDT && fits; t++) if (need[t] && d->used[t] + need[t] > DP_CAP[t]) fits = 0;
+        if (!fits) { d->cur++; continue; }
+        VkDescriptorSetAllocateInfo ai = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, NULL, d->dp[d->cur], 1, &l};
         VkDescriptorSet set; VkResult r = vkAllocateDescriptorSets(V.dev, &ai, &set);
-        if (r == VK_SUCCESS) { s->dp_sets++; if (need) for (int t = 0; t < NDT; t++) s->dp_used[t] += need[t]; return set; }
+        if (r == VK_SUCCESS) { d->sets++; if (need) for (int t = 0; t < NDT; t++) d->used[t] += need[t]; return set; }
         if (r != VK_ERROR_OUT_OF_POOL_MEMORY && r != VK_ERROR_FRAGMENTED_POOL) die("[vk] vkAllocateDescriptorSets: %d", r);
-        s->dp_cur++;
+        d->cur++;
     }
 }
+VkDescriptorSet vk_alloc_set(VkDescriptorSetLayout l) { return dp_alloc(&cur()->dps, l); }   // freed with the submission's slot
+VkDescriptorSet vk_alloc_set_kept(VkDescriptorSetLayout l) { static dpools_t d; return dp_alloc(&d, l); }   // never freed: the set cache writes it again (gfx_vk_exec.c setc_put)
 
 // ---------------- submissions: begin, CPU-visible effects, commit ----------------
 static void post(post_op o) { vksub_t *s = cur(); if (s->npost == s->cappost) { s->cappost = s->cappost ? 2 * s->cappost : 64; s->post = realloc(s->post, s->cappost * sizeof *s->post); } s->post[s->npost++] = o; }
