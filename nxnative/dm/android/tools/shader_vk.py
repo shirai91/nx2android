@@ -15,6 +15,7 @@ HERE = Path(__file__).resolve().parent
 TOOLS = HERE.parent.parent / 'gfx/tools'
 sys.path.insert(0, str(TOOLS))
 import dmsh_facts, dmsh_chain   # noqa: E402  (DM_GAME picks the profile)
+from shader_split import glslc_stage   # the package reader also recognizes headerless compute code
 
 ap = argparse.ArgumentParser()
 ap.add_argument('pkg'); ap.add_argument('out')
@@ -47,7 +48,6 @@ def records(d):
     r = [m.start() for m in re.finditer(b'BTCDBTCD', d)]
     return [d[x:(r[k + 1] if k + 1 < len(r) else len(d))] for k, x in enumerate(r)]
 
-SPH_STAGE = {1: 'vs', 2: 'hs', 3: 'ds', 4: 'gs', 5: 'ps'}   # SPH word 0 bits 10..13 (shader_split.py sph_stage)
 def captured(d):
     """The run-time captures in folder d (--capture): {key: (stage, record in the package's form)}"""
     out = {}
@@ -58,8 +58,8 @@ def captured(d):
         nctl, ncode = struct.unpack_from('<2I', b, 4); ctl, code = b[12:12 + nctl], b[12 + nctl:12 + nctl + ncode]
         if len(code) != ncode or len(ctl) != nctl or ctl[:4] != bytes.fromhex('34127698'): print(f'[RED] capture {nm}: truncated', flush=True); continue
         if hashlib.sha256(ctl + code).hexdigest()[:16] != nm[:16]: print(f'[RED] capture {nm}: its content does not hash to its name', flush=True); continue
-        st = 'cs' if code[:4] == bytes.fromhex('79563412') else SPH_STAGE.get(struct.unpack_from('<I', code, 0x30)[0] >> 10 & 0xf) if code[:4] == bytes.fromhex('78563412') and len(code) > 0x80 else None
-        if not st: print(f'[RED] capture {nm}: no stage in its code area header', flush=True); continue
+        st = glslc_stage(ctl, code)
+        if not st: print(f'[RED] capture {nm}: cannot determine its shader stage', flush=True); continue
         rec = bytearray(b'BTCDBTCD' + bytes(0x30)); struct.pack_into('<2I', rec, 0x28, len(ctl), len(code)); rec += code + ctl
         if rec.find(bytes.fromhex('34127698')) != 0x38 + len(code): print(f'[RED] capture {nm}: the control magic appears in its code area', flush=True); continue   # job_for splits there
         out[nm[:16]] = (st, bytes(rec))
@@ -112,6 +112,9 @@ def job_for(key, stage, rec, w):   # dmsh_build.py job_for; transform feedback i
     cp = os.path.join(w, key + '.bin'); open(cp, 'wb').write(code)
     xfb = xfb_layout(key, rec[ci:]) if stage == 'vs' else None
     j = {'key': key, 'stage': stage, 'code': cp, 'tex': {}, 'img': {}, 'attr': {}, 'fout': {}, 'c1': c1.hex(), 'debug': False, 'reduced': True, 'sb_align': SB_ALIGN, 'subgroup': SUBGROUP, 'gather_bias': GATHER_BIAS, 'gs_passthrough': False, **({'xfb': xfb} if xfb else {})}
+    if stage == 'cs':   # Runtime captures have no facts-table row; their control section still declares the workgroup.
+        x, y, z, shared = struct.unpack_from('<4I', rec, ci + 0x748)
+        j.update(local=[x, y, z], shared=(shared + 15) // 16 * 16)
     if key in FACTS: j.update(FACTS[key])
     else: j['no_facts'] = True
     return j, c1
