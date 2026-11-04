@@ -45,24 +45,31 @@ int nvn_deswizzle_geom(const nvn_texdesc *d, unsigned level, unsigned layer,
     return 0;
 }
 
+// A row's 16-byte pieces go GOB by GOB: the row's offset in its block row and the four pieces' offsets within a GOB are worked out once per row, where each
+// piece's address was the whole formula (nvn_bl_offset: divisions and 64-bit products for every 16 bytes). 16 bytes are contiguous within a GOB, and 16
+// divides all block widths
 static int move(const nvn_texdesc *d, unsigned level, unsigned layer, uint8_t *bl, uint8_t *lin, size_t pitch, int to_linear) {
     uint32_t row_bytes, rows, slices, bpb; uint64_t base; unsigned th, td;
     if (nvn_deswizzle_geom(d, level, layer, &row_bytes, &rows, &slices, &base, &th, &td, &bpb)) return -1;
     if (pitch < row_bytes) return -1;
     bl += base; uint32_t lb = nvn_tex_level_gobs(d, level) * 64;   // the row as laid out (padded in a sparse texture's tiled levels)
     if (lb < row_bytes) lb = row_bytes;
+    uint32_t bh = 1u << th, bd = 1u << td; uint64_t gobs_x = (lb + 63) / 64, block = 512ull * bh * bd, blocks_y = (rows + 8 * bh - 1) / (8 * bh);
     for (uint32_t z = 0; z < slices; z++)
         for (uint32_t y = 0; y < rows; y++) {
             uint8_t *row = lin + ((size_t)z * rows + y) * pitch;
-            for (uint32_t x = 0; x < row_bytes; x += 16) {             // 16-byte segments: 16 bytes are contiguous within a GOB, and 16 divides all block widths
+            uint8_t *gob = bl + (z / bd) * gobs_x * blocks_y * block + (y / (8 * bh)) * gobs_x * block + ((z % bd) * bh + (y % (8 * bh)) / 8) * 512ull;
+            uint32_t piece[4] = {gob_off(0, y), gob_off(16, y), gob_off(32, y), gob_off(48, y)};
+            uint32_t x = 0;
+            for (; x + 64 <= row_bytes; x += 64, gob += block)
+                for (int k = 0; k < 4; k++) { if (to_linear) memcpy(row + x + 16 * k, gob + piece[k], 16); else memcpy(gob + piece[k], row + x + 16 * k, 16); }
+            for (int k = 0; x < row_bytes; x += 16, k++) {   // the last GOB's pieces in a row that ends inside it
                 uint32_t n = row_bytes - x < 16 ? row_bytes - x : 16;
-                uint8_t *p = bl + nvn_bl_offset(x, y, z, lb, rows, th, td);
-                if (to_linear) memcpy(row + x, p, n); else memcpy(p, row + x, n);
+                if (to_linear) memcpy(row + x, gob + piece[k], n); else memcpy(gob + piece[k], row + x, n);
             }
         }
     return 0;
 }
-
 int nvn_deswizzle(const nvn_texdesc *d, unsigned level, unsigned layer, const void *src, void *dst, size_t dst_pitch) {
     return move(d, level, layer, (uint8_t *)src, (uint8_t *)dst, dst_pitch, 1);
 }

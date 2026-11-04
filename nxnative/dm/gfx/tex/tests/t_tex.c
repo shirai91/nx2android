@@ -45,6 +45,22 @@ static void roundtrip(const char *tag, int target, int fmt, uint32_t w, uint32_t
     free(st);
 }
 
+// ---------- M the copy loop against the per-piece address (nvn_bl_offset): odd widths, block heights and depths, 3D, the Switch 2's GOB order, a sparse texture's padded rows ----------
+static void vs_pieces(const char *tag, nvn_texdesc d) {
+    nvn_texlayout L; nvn_tex_layout(&d, &L); uint8_t *st = malloc(L.size); for (size_t i = 0; i < L.size; i++) st[i] = rnd();
+    for (unsigned l = 0; l < (d.levels ? d.levels : 1); l++) {
+        uint32_t rb, rows, sl, bpb; uint64_t base; unsigned th, td;
+        if (nvn_deswizzle_geom(&d, l, 0, &rb, &rows, &sl, &base, &th, &td, &bpb)) { CHECK(0, "M %s level %u: no geometry", tag, l); continue; }
+        uint32_t lb = nvn_tex_level_gobs(&d, l) * 64; if (lb < rb) lb = rb;
+        size_t n = (size_t)rb * rows * sl; uint8_t *got = malloc(n), *want = malloc(n);
+        for (uint32_t z = 0; z < sl; z++) for (uint32_t y = 0; y < rows; y++) for (uint32_t x = 0; x < rb; x += 16)
+            memcpy(want + ((size_t)z * rows + y) * rb + x, st + base + nvn_bl_offset(x, y, z, lb, rows, th, td), rb - x < 16 ? rb - x : 16);
+        CHECK(!nvn_deswizzle(&d, l, 0, st, got, rb) && !memcmp(got, want, n), "M %s level %u differs from the per-piece addresses", tag, l);
+        free(got); free(want);
+    }
+    free(st);
+}
+
 int main(void) {
     printf("A round trip (random data, non-power-of-2 sizes)\n");
     roundtrip("2D 100×37 R8 4 levels", 1, 0x01, 100, 37, 1, 4);
@@ -135,6 +151,14 @@ int main(void) {
         CHECK(nvn_tex_level_offset(&d, 1) == 0x81000 && L.size == 0xBC400 && nvn_tex_level_gobs(&d, 0) == 43, "S not sparse: level 1 %#llx storage %#llx, expected 0x81000 / 0xbc400",
               (unsigned long long)nvn_tex_level_offset(&d, 1), (unsigned long long)L.size);
     }
+
+    printf("M copy loop against per-piece addresses\n");
+    for (int sw = 0; sw < 2; sw++) { nvn_gob_switch2 = sw;
+        vs_pieces("2D RGBA8 100x37", (nvn_texdesc){1, 0x25, 0, 0, 100, 37, 1, 4, 0});
+        vs_pieces("2D 16-byte 260x130", (nvn_texdesc){1, 0x2E, 0, 0, 260, 130, 1, 3, 0});
+        vs_pieces("3D RGBA8 33x17x9", (nvn_texdesc){2, 0x25, 0, 0, 33, 17, 9, 2, 0});
+        vs_pieces("sparse ASTC 6x6 1024x1024", (nvn_texdesc){1, 0x8B, 0x20, 0, 1024, 1024, 1, 3, 0, 4}); }
+    nvn_gob_switch2 = 0;
 
     printf("%s: %d/%d checks passed\n", fails ? "RED" : "all passed", checks - fails, checks);
     return fails ? 1 : 0;
