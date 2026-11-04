@@ -19,5 +19,7 @@ Three projects from Ryujinx 1.3.2: `Ryujinx.Graphics.Shader`, `Ryujinx.Common` a
 
 - Ampere's half pairs as halves: the IR instruction `HalfPair` (add, multiply, fused multiply-add, minimum, maximum of the two halves packed in each 32-bit source; `CodeGen/Spirv` an `f16vec2`, chained ones without bitcasts) for HADD2, HMUL2, HFMA2 and HMNMX2 without .F32 (`InstEmitAmpereAlu.cs` `AHalfWord`); they had been unpacked to floats and packed back through `PackHalf2x16`'s integer rounding. Ampere code packs halves with `PackHalf2x16Rte` (the IR's `PackHalf2x16`, in SPIR-V two conversions to f16, rounded to nearest by the `RoundingModeRTE` that `shader_vk.py` adds after spirv-opt), and HMMA multiplies in fp32 for both accumulators (on the Adreno 750 fp32 FMAs run at twice fp16's rate and four times f16vec2's). Needs `shaderFloat16`, which Switch 2 hardware-class devices have (2026-11-04). Marked `nxnative:` in the code.
 
+- `Instructions/InstEmitAmpere.cs` `AMapC0`: NVN2 compute's dispatch workgroup counts at c[0] + 4 are read from c[0] + 0x200, where the host writes them (Donkey Kong Bananza's tile depth bounds read 0). `InstEmitAmpereAlu.cs`: HFMA2's `.H0_NH1` (bit 86) rotates B (its low lane takes B's high half negated, its high lane B's low half), and MUFU.F16 applies its source's modifiers, as upstream nxnative's frontend does (2026-11-04).
+
 The shader translation tool in `dm/gfx/tools/dmsh_xlate` references them to translate the original Switch shaders to SPIR-V.
 License: MIT, see `LICENSE.txt`. Upstream: <https://github.com/Ryubing>.

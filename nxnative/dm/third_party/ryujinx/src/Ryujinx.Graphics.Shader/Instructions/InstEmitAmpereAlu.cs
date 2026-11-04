@@ -172,7 +172,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
         {
             AmpereOp x = new(context.CurrOp);
             bool half = x[73];
-            Operand src = half ? AHalves(context, x, S32, x[60..62])[0] : AF(context, x, S32);
+            Operand src = half ? context.FPAbsNeg(AHalves(context, x, S32, x[60..62])[0], AMods(x, S32).Abs, AMods(x, S32).Neg) : AF(context, x, S32);
 
             Operand res = x[74..80] switch
             {
@@ -318,7 +318,8 @@ namespace Ryujinx.Graphics.Shader.Instructions
         }
 
         // HADD2 / HMUL2 / HFMA2: lanes of A (swizzle 74..76, neg 72, abs 73), the 32 slot (60..62, 63, 62) and the 64 slot (81..83, 84, 83). .F32 (78) writes the
-        // low lane as one float, computed in fp32; otherwise the pair is computed as halves (HalfPair). .RELU (79, HMUL2 / HFMA2) clamps at zero
+        // low lane as one float, computed in fp32; otherwise the pair is computed as halves (HalfPair). .RELU (79, HMUL2 / HFMA2) clamps at zero. HFMA2's .H0_NH1
+        // (86): the low lane takes B's high half negated, the high lane B's low half (a rotation by 90 degrees; upstream nxnative, Pokemon Pokopia's shadows)
         public static void AHalf(EmitterContext context)
         {
             AmpereOp x = new(context.CurrOp);
@@ -336,6 +337,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
                 Operand a = AHalfWord(context, x, SA, x[74..76], AMods(x, SA));
                 Operand s32 = AHalfWord(context, x, S32, x[60..62], AMods(x, S32)), s64 = AHalfWord(context, x, S64, x[81..83], (x[84], x[83]));
                 (Operand b, Operand c) = s32First ? (s32, s64) : (s64, s32);
+                b = op == 0x031 && x[86] ? context.BitwiseExclusiveOr(context.BitwiseOr(context.ShiftRightU32(b, Const(16)), context.ShiftLeft(b, Const(16))), Const(0x8000)) : b;
                 Operand res = op switch
                 {
                     0x030 => context.HalfPair(HalfPairOp.Add, a, b),
@@ -348,11 +350,16 @@ namespace Ryujinx.Graphics.Shader.Instructions
                 return;
             }
 
-            Operand Lane(int slot, int swizzle, (bool Neg, bool Abs) m) => context.FPAbsNeg(AHalves(context, x, slot, swizzle)[0], m.Abs, m.Neg);
+            Operand Lane(int slot, int swizzle, (bool Neg, bool Abs) m, int lane = 0) => context.FPAbsNeg(AHalves(context, x, slot, swizzle)[lane], m.Abs, m.Neg);
 
             Operand fa = Lane(SA, x[74..76], AMods(x, SA));
             Operand f32 = Lane(S32, x[60..62], AMods(x, S32)), f64 = Lane(S64, x[81..83], (x[84], x[83]));
             (Operand fb, Operand fc) = s32First ? (f32, f64) : (f64, f32);
+
+            if (op == 0x031 && x[86])
+            {
+                fb = context.FPNegate(s32First ? Lane(S32, x[60..62], AMods(x, S32), 1) : Lane(S64, x[81..83], (x[84], x[83]), 1), true);
+            }
             Operand f = op switch
             {
                 0x030 => context.FPAdd(fa, fb),
