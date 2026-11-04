@@ -5,6 +5,7 @@
 // Version 1 orders everything with whole-pipeline barriers around passes, copies and dispatches.
 #include "gfx_vk.h"
 #include "nvn_hmap.h"
+#include <fcntl.h>
 #include <math.h>
 #include <string.h>
 #include <sys/resource.h>
@@ -1818,18 +1819,38 @@ static VkPipeline compute_build(vkshader_t *cs, uint64_t um, uint64_t im, int al
 // Compute pipelines made ahead. One depends only on its shader (and integer-texel variants, rare), and building one costs Adreno 45-105 ms: Super Mario Odyssey's
 // particle emitters run on compute shaders (EffectPtcl), and the first cap throw at a breakable object built one on the replay thread (a 65 ms frame), the first scenes
 // several. A game has few (Odyssey 41), so at the first submission a background thread builds every compute shader in the bundle with no integer-texel variant
+// A compute shader whose pipeline the driver's compiler crashed on while made ahead: its key is in DM_ROOT/vk_warm_building.txt when the process dies, moves to
+// vk_warm_skip.txt at the next start, and its pipeline is left to the game's own dispatches. The Adreno 750's compiler (libllvm-qgl.so) faulted on Donkey Kong
+// Bananza's 72b4adba0a491c21, which the warm-up reached six minutes into its first run there
+enum { WARM_SKIP = 64 };
+static int warm_skip_load(uint64_t *skip, int *fd) {
+    const char *r = getenv("DM_ROOT"); char p[1024], q[1024]; unsigned long long k = 0; int n = 0; *fd = -1; if (!r) return 0;
+    snprintf(p, sizeof p, "%s/vk_warm_building.txt", r); snprintf(q, sizeof q, "%s/vk_warm_skip.txt", r);
+    FILE *f = fopen(p, "r");
+    if (f) { if (fscanf(f, "%llx", &k) == 1 && k) { FILE *g = fopen(q, "a"); if (g) { fprintf(g, "%016llx\n", k); fclose(g); }
+                 VKLOG("[RED] compute shader %016llx crashed the driver's compiler when made ahead last run: left to the game from now on", k); }
+             fclose(f); }
+    if ((f = fopen(q, "r"))) { while (n < WARM_SKIP && fscanf(f, "%llx", &k) == 1) skip[n++] = k; fclose(f); }
+    *fd = open(p, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    return n;
+}
 static void *compute_warm(void *arg) {
     (void)arg; pthread_setname_np(pthread_self(), "vk compute warm"); setpriority(PRIO_PROCESS, 0, 10);
     int vk_shader_keys(uint32_t stage, uint64_t *out, int max); static uint64_t keys[4096]; int n = vk_shader_keys(5, keys, 4096), made = 0; uint64_t t0 = tick();
     const char *e = getenv("DM_VK_SPV_ALT"); int alt = e ? atoi(e) : 0;   // DM_VK_SPV_ALT in env.txt: built with the alternative code
+    uint64_t skip[WARM_SKIP]; int fd, nskip = warm_skip_load(skip, &fd);
     for (int i = 0; i < n; i++) {
-        uint64_t ck[3] = {keys[i], 0, (uint64_t)alt << 48};
+        uint64_t ck[3] = {keys[i], 0, (uint64_t)alt << 48}; int skipped = 0;
+        for (int j = 0; j < nskip; j++) skipped |= skip[j] == keys[i];
         pthread_mutex_lock(&g_cpipe_mu); int have = nvn_hm_get(&g_cpipes, ck) != NULL; pthread_mutex_unlock(&g_cpipe_mu);
-        vkshader_t *cs = have ? NULL : vk_shader(keys[i], 5); if (!cs) continue;
+        vkshader_t *cs = have || skipped ? NULL : vk_shader(keys[i], 5); if (!cs) continue;
+        char kb[18]; snprintf(kb, sizeof kb, "%016llx\n", (unsigned long long)keys[i]); if (fd >= 0) pwrite(fd, kb, 17, 0);
         VkPipeline p = compute_build(cs, 0, 0, alt); made++;
+        if (fd >= 0) pwrite(fd, "0000000000000000\n", 17, 0);
         pthread_mutex_lock(&g_cpipe_mu); if (!nvn_hm_get(&g_cpipes, ck)) nvn_hm_put(&g_cpipes, ck, p); else if (p != (void *)1) vkDestroyPipeline(V.dev, p, NULL); pthread_mutex_unlock(&g_cpipe_mu);
     }
     VKLOG("compute pipelines made ahead: %d of %d compute shaders in %.0f ms", made, n, (tick() - t0) / 1e6);
+    if (fd >= 0) close(fd);
     return NULL;
 }
 static void compute_warm_start(void) {
