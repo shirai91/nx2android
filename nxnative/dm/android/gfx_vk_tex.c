@@ -176,7 +176,7 @@ static VkFormat srgb_twin(VkFormat f) {
 // MUTABLE_FORMAT keeps Metal's lossless compression, and a compute shader read it as one value a compression tile. Donkey Kong Bananza's upscaler network
 // read its 960x540 input in 8x8 blocks, and its whole picture came out blocky
 static int ubwc_mode(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_VK_UBWC"); v = e ? atoi(e) : V.props.vendorID == 0x106b ? 2 : 3; } return v; }
-static vkimg_t *img_new(const tex_t *t, const vkfmt_t *f) {
+static vkimg_t *img_new(const tex_t *t, const vkfmt_t *f, int image) {   // image: shaders store to it
     vkimg_t *im = calloc(1, sizeof *im);
     const nvn_texdesc *d = &t->d;
     im->w = d->width ? d->width : 1; im->h = d->target == 0 || d->target == 3 ? 1 : (d->height ? d->height : 1);
@@ -184,10 +184,11 @@ static vkimg_t *img_new(const tex_t *t, const vkfmt_t *f) {
     im->levels = d->levels ? d->levels : 1; im->samples = d->samples > 1 ? d->samples : 1; im->target = d->target; im->nvn_format = d->format;
     im->fmt = f->vk; im->vtype = vtype_of(d->target); im->aspect = aspect_of(f);
     VkFormatFeatureFlags ff = vk_fmt_features(f->vk);
+    if (image && !(ff & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) && !f->compressed) VKRED_ONCE(97, "image format %#x (VkFormat %d) cannot be stored to on this device: shader writes to it are lost", d->format, f->vk);
     VkImageUsageFlags u = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     if (ff & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT) u |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     if (ff & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) u |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
-    if ((d->flags & NVN_TEXTURE_FLAGS_IMAGE) && (ff & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)) u |= VK_IMAGE_USAGE_STORAGE_BIT;
+    if (image && (ff & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)) u |= VK_IMAGE_USAGE_STORAGE_BIT;
     // a block-compressed texture can be drawn into through a view in the uncompressed format of its block size (Mario Kart 8 Deluxe writes BC3 blocks into its
     // reflection cubemaps through RGBA32UI views): with EXTENDED_USAGE the image may carry a usage its own format lacks, and an attachment view needs it on the image
     if (f->compressed && !f->dec && (f->bpb == 16 || f->bpb == 8) && (vk_fmt_features(f->bpb == 16 ? VK_FORMAT_R32G32B32A32_UINT : VK_FORMAT_R32G32_UINT) & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT))
@@ -312,6 +313,19 @@ static void evict_overlaps(uint64_t pool, int64_t off, int64_t size) {
     }
     for (int j = 0; j < n; j++) { vkimg_t *o = nvn_hm_get(&g_by_key, &ks[j]); if (!o) continue; nvn_hm_del(&g_by_key, &ks[j]); img_drop(o); g_img_evicted++; }
 }
+// Storage that a shader stored to through a texture without IMAGE: NVN2 binds images without the flag (Donkey Kong Bananza's upscaler writes its 2304x1296 output
+// through a texture of flags 0, and the Adreno 750 dropped the stores to an image without storage usage: the picture stayed its clear colour). Every image made over
+// such storage from then on has storage usage; the one without it is no longer looked up, and goes with evict_overlaps. Under g_img_mu
+typedef struct { uint64_t pool; int64_t off; } sloc;
+static nvn_hmap g_storage_at = {.klen = sizeof(sloc)};
+static int storage_at(uint64_t pool, int64_t off) { sloc l = {pool, off}; return g_storage_at.n && nvn_hm_get(&g_storage_at, &l) != NULL; }
+int vk_tex_want_storage(const tex_t *t) {
+    sloc l = {(uint64_t)(uintptr_t)t->pool, t->off}; int added = 0;
+    if (!t->pool) return 0;
+    pthread_mutex_lock(&g_img_mu); if (!nvn_hm_get(&g_storage_at, &l)) { nvn_hm_put(&g_storage_at, &l, (void *)1); added = 1; } pthread_mutex_unlock(&g_img_mu);
+    if (added) { static int n; if (n++ < 8) VKLOG("texture %ux%u format %#x flags %#x stored to by a shader: its images get storage usage", t->d.width, t->d.height, t->d.format, t->d.flags); }
+    return added;
+}
 static vkimg_t *vk_tex_(const tex_t *t);
 vkimg_t *vk_tex(const tex_t *t) { extern int g_prof_on; extern uint64_t g_prof_ns[8]; struct timespec a, b; if (g_prof_on) clock_gettime(CLOCK_MONOTONIC, &a);
     vkimg_t *im = vk_tex_(t); if (g_prof_on) { clock_gettime(CLOCK_MONOTONIC, &b); g_prof_ns[1] += (uint64_t)((b.tv_sec - a.tv_sec) * 1000000000ll + (b.tv_nsec - a.tv_nsec)); } return im; }
@@ -328,11 +342,12 @@ static vkimg_t *vk_tex_(const tex_t *t) {
     k.d.flags &= NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_SPARSE | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET | NVN_TEXTURE_FLAGS_MINIMAL_LAYOUT | (f->depth || f->stencil ? 0 : NVN_TEXTURE_FLAGS_IMAGE);
     int keyed = t->pool != NULL;
     pthread_mutex_lock(&g_img_mu);
+    if (keyed && !(f->depth || f->stencil) && storage_at(k.pool, t->off)) k.d.flags |= NVN_TEXTURE_FLAGS_IMAGE;
     vkimg_t *im = keyed ? nvn_hm_get(&g_by_key, &k) : nvn_hm_get(&g_by_serial, &t->serial);
     int fresh = 0;
     if (!im) {
         if (keyed) evict_overlaps(k.pool, t->off, (int64_t)t->L.size);
-        im = img_new(t, f); if (!im) { pthread_mutex_unlock(&g_img_mu); return NULL; }
+        im = img_new(t, f, (k.d.flags & NVN_TEXTURE_FLAGS_IMAGE) != 0); if (!im) { pthread_mutex_unlock(&g_img_mu); return NULL; }
         im->pool = k.pool; im->off = t->off; im->size = (int64_t)t->L.size; im->flags = t->d.flags; g_img_n++; g_img_bytes += t->L.size;
         if (keyed) { alias_link(im); nvn_hm_put(&g_by_key, &k, im); } else nvn_hm_put(&g_by_serial, &t->serial, im);
         fresh = 1;
@@ -526,7 +541,7 @@ VkImageView vk_tex_view(const tex_t *t, const view_t *vw, int dim, int arrayed, 
     VkFormatFeatureFlags ff = vk_fmt_features(fmt);
     uci.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     if (as_attachment) uci.usage = (ff & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT ? VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT : 0) | (ff & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT : 0);
-    else if ((t->d.flags & NVN_TEXTURE_FLAGS_IMAGE) && (ff & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)) uci.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+    else if ((im->usage & VK_IMAGE_USAGE_STORAGE_BIT) && (ff & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT)) uci.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
     VkImageViewCreateInfo ci = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, &uci, 0, im->img, type, fmt, swz, {aspect, lv0, nlv, ly0, nly}};
     VkImageView view; VkResult r = vkCreateImageView(V.dev, &ci, NULL, &view);
     if (r) { pthread_mutex_unlock(&g_view_mu); VKRED_ONCE(15, "vkCreateImageView failed (%d): type %d format %d levels %u+%u layers %u+%u of image %ux%ux%u", r, type, fmt, lv0, nlv, ly0, nly, im->w, im->h, im->layers); return VK_NULL_HANDLE; }
@@ -699,9 +714,9 @@ VkImageView vk_dummy_view(int dim, int arrayed, int ms, int storage, int is_int)
         if (!*pi) {
             tex_t t; memset(&t, 0, sizeof t); t.magic = MAGIC('T', 'E', 'X', 0); t.serial = 1;
             t.d.format = is_int ? 0x27 : 0x25; t.d.width = t.d.height = 1; t.d.depth = d == 3 ? 12 : 6; t.d.levels = 1; t.d.samples = ms ? 4 : 0;
-            t.d.target = d == 0 ? 3 : d == 2 ? 2 : d == 3 ? 9 : ms ? 6 : 4; t.d.flags = storage ? NVN_TEXTURE_FLAGS_IMAGE : 0;
+            t.d.target = d == 0 ? 3 : d == 2 ? 2 : d == 3 ? 9 : ms ? 6 : 4;
             if (d == 2) t.d.depth = 1;
-            *pi = img_new(&t, vk_fmt(t.d.format));
+            *pi = img_new(&t, vk_fmt(t.d.format), storage);
             VkCommandBuffer cb = vk_upload_cmd(); vk_tex_prepare(cb, *pi);
             VkClearColorValue z = {{0}}; VkImageSubresourceRange rg = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, VK_REMAINING_ARRAY_LAYERS};
             if (!ms) vkCmdClearColorImage(cb, (*pi)->img, VK_IMAGE_LAYOUT_GENERAL, &z, 1, &rg);
