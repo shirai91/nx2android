@@ -1826,7 +1826,9 @@ static VkPipeline compute_build(vkshader_t *cs, uint64_t um, uint64_t im, int al
 // A compute shader whose pipeline the driver's compiler crashed on while made ahead: its key is in DM_ROOT/vk_warm_building.txt when the process dies, moves to
 // vk_warm_skip.txt at the next start, and its pipeline is left to the game's own dispatches. The Adreno 750's compiler (libllvm-qgl.so) faulted on Donkey Kong
 // Bananza's 72b4adba0a491c21, which the warm-up reached six minutes into its first run there
-enum { WARM_SKIP = 64 };
+// Nor does it build a shader of over 512 KB of SPIR-V: Donkey Kong Bananza's 24 upscaler networks (1.1-2.2 MB each, the next largest 177 KB) ran the Adreno 750's
+// compiler out of memory (std::bad_alloc in libllvm-qgl.so), and the game dispatches one or two of them
+enum { WARM_SKIP = 64, WARM_MAX_WORDS = 512 * 1024 / 4 };
 static int warm_skip_load(uint64_t *skip, int *fd) {
     const char *r = getenv("DM_ROOT"); char p[1024], q[1024]; unsigned long long k = 0; int n = 0; *fd = -1; if (!r) return 0;
     snprintf(p, sizeof p, "%s/vk_warm_building.txt", r); snprintf(q, sizeof q, "%s/vk_warm_skip.txt", r);
@@ -1847,7 +1849,7 @@ static void *compute_warm(void *arg) {
         uint64_t ck[3] = {keys[i], 0, (uint64_t)alt << 48}; int skipped = 0;
         for (int j = 0; j < nskip; j++) skipped |= skip[j] == keys[i];
         pthread_mutex_lock(&g_cpipe_mu); int have = nvn_hm_get(&g_cpipes, ck) != NULL; pthread_mutex_unlock(&g_cpipe_mu);
-        vkshader_t *cs = have || skipped ? NULL : vk_shader(keys[i], 5); if (!cs) continue;
+        vkshader_t *cs = have || skipped ? NULL : vk_shader(keys[i], 5); if (!cs || cs->nspv > WARM_MAX_WORDS) continue;
         char kb[18]; snprintf(kb, sizeof kb, "%016llx\n", (unsigned long long)keys[i]); if (fd >= 0) pwrite(fd, kb, 17, 0);
         VkPipeline p = compute_build(cs, 0, 0, alt); made++;
         if (fd >= 0) pwrite(fd, "0000000000000000\n", 17, 0);
