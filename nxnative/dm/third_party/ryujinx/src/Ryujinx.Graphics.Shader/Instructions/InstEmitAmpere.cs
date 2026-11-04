@@ -481,10 +481,12 @@ namespace Ryujinx.Graphics.Shader.Instructions
             return Cbuf(bank, offset >> 2);
         }
 
-        // NVN2 compute shaders keep their driver constants in c[0] in a layout of their own, the counts in the control section: from 0x10 the push constants, then
-        // 0x10 bytes per uniform buffer slot, per storage buffer slot, then 8 bytes per texture handle and per image handle. They are moved to where NVN's layout
-        // has them, which the reflection and the host read: push constants to c[24], uniform slot r to c[0] + 0x210 + 0x10 r, storage slot s to c[0] + 0x310 + 0x10 s,
-        // texture handle t to c[2] + 0x20 + 8 t, image handle i to c[2] + 0x120 + 8 i
+        // NVN2 compute shaders keep their driver constants in c[0] in a layout of their own, the counts in the control section: at 4 the dispatch's workgroup counts
+        // x, y, z, from 0x10 the push constants, then 0x10 bytes per uniform buffer slot, per storage buffer slot, then 8 bytes per texture handle and per image
+        // handle. They are moved to where NVN's layout has them, which the reflection and the host read: the workgroup counts to c[0] + 0x200, push constants to
+        // c[24], uniform slot r to c[0] + 0x210 + 0x10 r, storage slot s to c[0] + 0x310 + 0x10 s, texture handle t to c[2] + 0x20 + 8 t, image handle i to
+        // c[2] + 0x120 + 8 i (Donkey Kong Bananza's tile depth bounds c5c746915e9a3265 and e697fe655b1e24bd index their output by the count of groups across, and
+        // had read 0)
         private static (int Bank, int Offset) AMapC0(EmitterContext context, int bank, int offset)
         {
             int[] l = bank == 0 ? context.TranslatorContext.GpuAccessor.QueryAmpereComputeC0Layout() : null;
@@ -498,6 +500,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
 
             return offset switch
             {
+                >= 4 and < 0x10 => (0, 0x200 + offset - 4),
                 >= 0x10 when offset < push => (24, offset - 0x10),
                 _ when offset >= push && offset < ubo => (0, 0x210 + offset - push),
                 _ when offset >= ubo && offset < sbo => (0, 0x310 + offset - ubo),
