@@ -16,6 +16,12 @@ _p.add_argument('--version-name', default='1.0', help='versionName: the version 
 PKG, LIB, LABEL = ARGS.package, ARGS.lib, ARGS.label
 MIN_SDK, TARGET_SDK = 29, 36
 ANDROID_NS = 'http://schemas.android.com/apk/res/android'
+# configChanges: what the game takes without its activity made again. Android relaunches the activity for any other change while it runs, and that ends the game
+# (front_android.c on_destroy: one game per process): switching dark mode (uiMode) ended Link's Awakening in the emulator's Android 13 image. The rest are what
+# Android can change during play (a keyboard or controller connected, split screen, the language, the font size): the set game engines declare
+CONFIG_CHANGES = (0x0001 | 0x0002 | 0x0004 | 0x0008 | 0x0010 | 0x0020 | 0x0040 | 0x0080 | 0x0100 | 0x0200 | 0x0400 | 0x0800 | 0x1000 | 0x2000 | 0x4000
+                  | 0x10000000 | 0x40000000)   # mcc mnc locale touchscreen keyboard keyboardHidden navigation orientation screenLayout uiMode screenSize
+                                               # smallestScreenSize density layoutDirection colorMode fontWeightAdjustment fontScale
 
 # ---------------- binary XML ----------------
 ATTR_IDS = {  # android: attribute resource IDs (frameworks/base/core/res/res/values/public.xml)
@@ -35,7 +41,7 @@ MANIFEST = ('manifest', [(False, 'package', PKG), (True, 'versionCode', ARGS.ver
         # no predictive back: from target SDK 36 the system takes the back gesture itself and finishes the activity, which ends the game (front_android.c on_destroy), without
         # dispatching KEYCODE_BACK; opted out, the gesture comes as the Back key, which opens the front end's menu
         (True, 'enableOnBackInvokedCallback', False)], [
-        ('activity', [(True, 'name', 'android.app.NativeActivity'), (True, 'exported', True), (True, 'configChanges', ('hex', 0x4a0 | 0x80 | 0x1000))] + ([(True, 'screenOrientation', 6)] if ARGS.landscape else []), [
+        ('activity', [(True, 'name', 'android.app.NativeActivity'), (True, 'exported', True), (True, 'configChanges', ('hex', CONFIG_CHANGES))] + ([(True, 'screenOrientation', 6)] if ARGS.landscape else []), [
             ('meta-data', [(True, 'name', 'android.app.lib_name'), (True, 'value', LIB)], []),
             ('intent-filter', [], [
                 ('action', [(True, 'name', 'android.intent.action.MAIN')], []),
