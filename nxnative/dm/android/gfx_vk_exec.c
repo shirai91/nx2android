@@ -9,6 +9,7 @@
 #include <math.h>
 #include <string.h>
 #include <sys/resource.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 VkPipelineLayout vk_pipeline_layout(VkDescriptorSetLayout sets[5], int nsets);
@@ -96,6 +97,7 @@ static int g_async_pipe = 1;   // DM_VK_ASYNC_PIPE (see async_pipe)
 static int g_lin_back = 1;   // DM_VK_LIN_BACK (see lin_back)
 static int g_samp_snap = 1;   // DM_NVN_SAMP_SNAP=0 (live): samplers as registered now, not as the bind saw them (gfx_vk_tex.c vk_samp_at)
 static uint64_t g_x_logfs;   // DM_VK_LOG_FS=<fragment shader key> (live): one line per draw with it, with its samplers as the draw sees them
+static uint64_t g_x_cscap;   // DM_VK_CS_CAPTURE (cs_cap_poll)
 static uint64_t g_x_tracecs;   // DM_VK_TRACE_CS=<compute shader key> (live): the next dispatch with it logs every descriptor it is given, once
 static int g_rd_touch = 1, g_x_rdkeep, g_x_nskipvs; static uint64_t g_x_skipvs[8];   // DM_VK_RD_TOUCH, DM_VK_X_RDKEEP, DM_VK_X_SKIPVS (see prepare_draw)
 static char g_x_tracesize[40], g_x_traceframe[40]; static int g_x_traceframe_on;
@@ -149,7 +151,7 @@ static void x_read(void) { const char *c = getenv("DM_VK_CB_DRAWS"); g_x_cbdraws
     g_x_nokeep = (e = getenv("DM_VK_X_NOKEEP")) && atoi(e); g_x_nobc = (e = getenv("DM_VK_X_NOBC")) && atoi(e); g_x_noshc = (e = getenv("DM_VK_X_NOSHC")) && atoi(e); g_x_cutany = (e = getenv("DM_VK_X_CUTANY")) && atoi(e); g_x_nogs = (e = getenv("DM_VK_X_NOGS")) && atoi(e); g_spv_alt = (e = getenv("DM_VK_SPV_ALT")) ? atoi(e) : 0; g_rd_touch = !((e = getenv("DM_VK_RD_TOUCH")) && !atoi(e));
     g_lrz_touch = !((e = getenv("DM_VK_LRZ_TOUCH")) && !atoi(e)); g_fdz = !((e = getenv("DM_VK_FDZ")) && !atoi(e)); g_xfb_on = !((e = getenv("DM_VK_XFB")) && !atoi(e));
     g_psplit = (e = getenv("DM_VK_PASS_SPLIT")) ? atoi(e) : 0; g_setsplit = (e = getenv("DM_VK_SETSPLIT")) && atoi(e); g_psplit_depth = (e = getenv("DM_VK_PASS_SPLIT_DEPTH")) && atoi(e);
-    g_x_rdkeep = (e = getenv("DM_VK_X_RDKEEP")) && atoi(e); g_vbound = !((e = getenv("DM_VK_VBOUND")) && !atoi(e)); g_x_logfs = (e = getenv("DM_VK_LOG_FS")) ? strtoull(e, NULL, 16) : 0; g_x_tracecs = (e = getenv("DM_VK_TRACE_CS")) ? strtoull(e, NULL, 16) : 0; g_samp_snap = !((e = getenv("DM_NVN_SAMP_SNAP")) && !atoi(e)); g_lin_back = !((e = getenv("DM_VK_LIN_BACK")) && !atoi(e)); g_async_pipe = !((e = getenv("DM_VK_ASYNC_PIPE")) && !atoi(e)); g_prof_on = (e = getenv("DM_VK_PROF_SLOW")) && atoi(e); { extern volatile int g_vk_samp_log; if ((e = getenv("DM_VK_SAMP_LOG")) && atoi(e) > 0) { g_vk_samp_log = atoi(e); setenv("DM_VK_SAMP_LOG", "0", 1); } } g_x_nosetmemo = (e = getenv("DM_VK_X_NOSETMEMO")) && atoi(e); g_x_setverify = (e = getenv("DM_VK_X_SETVERIFY")) && atoi(e);
+    g_x_rdkeep = (e = getenv("DM_VK_X_RDKEEP")) && atoi(e); g_vbound = !((e = getenv("DM_VK_VBOUND")) && !atoi(e)); g_x_logfs = (e = getenv("DM_VK_LOG_FS")) ? strtoull(e, NULL, 16) : 0; g_x_tracecs = (e = getenv("DM_VK_TRACE_CS")) ? strtoull(e, NULL, 16) : 0; g_x_cscap = (e = getenv("DM_VK_CS_CAPTURE")) ? strtoull(e, NULL, 16) : 0; g_samp_snap = !((e = getenv("DM_NVN_SAMP_SNAP")) && !atoi(e)); g_lin_back = !((e = getenv("DM_VK_LIN_BACK")) && !atoi(e)); g_async_pipe = !((e = getenv("DM_VK_ASYNC_PIPE")) && !atoi(e)); g_prof_on = (e = getenv("DM_VK_PROF_SLOW")) && atoi(e); { extern volatile int g_vk_samp_log; if ((e = getenv("DM_VK_SAMP_LOG")) && atoi(e) > 0) { g_vk_samp_log = atoi(e); setenv("DM_VK_SAMP_LOG", "0", 1); } } g_x_nosetmemo = (e = getenv("DM_VK_X_NOSETMEMO")) && atoi(e); g_x_setverify = (e = getenv("DM_VK_X_SETVERIFY")) && atoi(e);
     g_x_nskipvs = 0; for (const char *q = getenv("DM_VK_X_SKIPVS"); q && *q && g_x_nskipvs < 8;) { char *n; uint64_t v = strtoull(q, &n, 16); if (n == q) break; if (v) g_x_skipvs[g_x_nskipvs++] = v; q = *n ? n + 1 : n; } }
 // ---------------- conditional rendering (profile render_cond) ----------------
 // As nvn_mtl.m (OP_RENDER_COND): SetRenderEnableConditional draws while the 64-bit counters of the reports at addr and addr + 16 are equal / differ, until SetRenderEnable(true).
@@ -401,10 +403,44 @@ static void pass_dump_depth(void) {   // the pass's depth (D24S8 / D32 / D16) as
     VkBufferImageCopy c = {0, 0, 0, {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1}, {0, 0, 0}, {im->w, im->h, 1}};
     vkCmdCopyImageToBuffer(cb, im->img, VK_IMAGE_LAYOUT_GENERAL, d->b, 1, &c); vk_img_barrier_all(cb);
 }
+// DM_VK_CS_CAPTURE=<compute shader key> (live, debugging): the next dispatch with it writes what it is given to DM_ROOT/cs_<key>/: b<binding>.bin each buffer's
+// bound range, i<binding>.bin each image's level 0 (packed rows of texels as its format stores them), o<binding>.bin a storage image again after the dispatch,
+// info.txt the dispatch size and a line a binding: a dispatch to run again off the device, bit for bit
+typedef struct { VkBuffer b; VkDeviceMemory m; void *p; VkDeviceSize n; char name[8]; } cscap_t;
+static cscap_t g_csc[16]; static int g_ncsc, g_cs_cap, g_ncso; static uint64_t g_csc_key, g_csc_fence; static char g_csc_info[1024]; static struct { uint32_t binding; const vkimg_t *im; } g_cso[8];
+static VkBuffer cs_cap_new(VkDeviceSize n, char kind, uint32_t binding, const char *what) {
+    if (g_ncsc >= 16) return VK_NULL_HANDLE;
+    cscap_t *c = &g_csc[g_ncsc++]; c->n = n; snprintf(c->name, sizeof c->name, "%c%u", kind, binding);
+    size_t l = strlen(g_csc_info); snprintf(g_csc_info + l, sizeof g_csc_info - l, "%s %s\n", c->name, what);
+    VkBufferCreateInfo bi = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, NULL, 0, n, VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_SHARING_MODE_EXCLUSIVE};
+    VKCHK(vkCreateBuffer(V.dev, &bi, NULL, &c->b)); VkMemoryRequirements rq; vkGetBufferMemoryRequirements(V.dev, c->b, &rq);
+    VkMemoryAllocateInfo ai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, rq.size, vk_mem_type(rq.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT, 0)};
+    VKCHK(vkAllocateMemory(V.dev, &ai, NULL, &c->m)); VKCHK(vkBindBufferMemory(V.dev, c->b, c->m, 0)); VKCHK(vkMapMemory(V.dev, c->m, 0, VK_WHOLE_SIZE, 0, &c->p));
+    return c->b;
+}
+static void cs_cap_buf(uint32_t binding, VkBuffer src, VkDeviceSize off, VkDeviceSize n) {
+    char what[32]; snprintf(what, sizeof what, "%llu", (unsigned long long)n); VkBuffer d = cs_cap_new(n, 'b', binding, what); if (!d) return;
+    VkCommandBuffer cb = vk_cmd(); VkBufferCopy r = {off, 0, n}; vk_img_barrier_all(cb); vkCmdCopyBuffer(cb, src, d, 1, &r); vk_img_barrier_all(cb);
+}
+static void cs_cap_img(char kind, uint32_t binding, const vkimg_t *im) {
+    uint32_t bpp = im->fmt == VK_FORMAT_R16G16B16A16_SFLOAT ? 8 : im->fmt == VK_FORMAT_R32G32B32A32_SFLOAT ? 16 : im->fmt == VK_FORMAT_R8_UNORM ? 1 : im->fmt == VK_FORMAT_R16_SFLOAT ? 2 : 4;
+    char what[48]; snprintf(what, sizeof what, "%ux%u fmt %d", im->w, im->h, im->fmt); VkBuffer d = cs_cap_new((VkDeviceSize)im->w * im->h * bpp, kind, binding, what); if (!d) return;
+    VkCommandBuffer cb = vk_cmd(); VkBufferImageCopy c = {0, 0, 0, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {im->w, im->h, 1}};
+    vk_img_barrier_all(cb); vkCmdCopyImageToBuffer(cb, im->img, VK_IMAGE_LAYOUT_GENERAL, d, 1, &c); vk_img_barrier_all(cb);
+}
+static void cs_cap_poll(uint64_t done_fence) {
+    if (!g_ncsc || g_cs_cap || done_fence < g_csc_fence) return;
+    const char *root = getenv("DM_ROOT"); char dir[1024], path[1100]; snprintf(dir, sizeof dir, "%s/cs_%016llx", root ? root : ".", (unsigned long long)g_csc_key); mkdir(dir, 0755);
+    for (int i = 0; i < g_ncsc; i++) { cscap_t *c = &g_csc[i]; snprintf(path, sizeof path, "%s/%s.bin", dir, c->name);
+        FILE *f = fopen(path, "wb"); if (f) { fwrite(c->p, 1, c->n, f); fclose(f); } vkDestroyBuffer(V.dev, c->b, NULL); vkFreeMemory(V.dev, c->m, NULL); }
+    snprintf(path, sizeof path, "%s/info.txt", dir); FILE *f = fopen(path, "w"); if (f) { fputs(g_csc_info, f); fclose(f); }
+    VKLOG("compute capture: %d bindings of %016llx in %s", g_ncsc, (unsigned long long)g_csc_key, dir); g_ncsc = 0;
+}
 static inline float half2f(uint16_t h) { uint32_t s = (uint32_t)(h >> 15) << 31, e = (h >> 10) & 31, m = h & 1023, f;
     if (!e) { if (!m) f = s; else { e = 1; while (!(m & 1024)) { m <<= 1; e--; } m &= 1023; f = s | ((e + 112) << 23) | (m << 13); } } else if (e == 31) f = s | 0x7f800000 | (m << 13); else f = s | ((e + 112) << 23) | (m << 13);
     float r; memcpy(&r, &f, 4); return r; }
 void vk_pass_dump_poll(uint64_t done_fence) {   // gfx_vk_present.c, every present: start on the switch, write once the GPU finished
+    cs_cap_poll(done_fence);
     const char *e = getenv("DM_VK_PASSDUMP");
     if (g_pd_state == 0 && e && atoi(e) > 1) { char n[16]; snprintf(n, sizeof n, "%d", atoi(e) - 1); setenv("DM_VK_PASSDUMP", n, 1); return; }   // =N: the frame after N - 1 more presents
     if (g_pd_state == 0 && e && atoi(e)) { const char *sk = getenv("DM_VK_PASSDUMP_SKIP"); g_pd_skip = sk && !strchr(sk, 'x') ? atoi(sk) : 0;
@@ -1092,6 +1128,7 @@ static int tex_desc_for(int st, const dmsv_bind *b, uint64_t h, VkDescriptorImag
         if (g_tracing) VKLOG("  texture handle %#llx id %d: %ux%u nvn format %#x target %d flags %#x serial %llu pool %p+%#llx size %#llx → image %p (%ux%u fmt %d layers %u levels %u usage %#x) view %p", (unsigned long long)h, tid, t->d.width, t->d.height, t->d.format, t->d.target, t->d.flags,
                              (unsigned long long)t->serial, (const void *)t->pool, (unsigned long long)t->off, (unsigned long long)t->L.size, (void *)im, im ? im->w : 0, im ? im->h : 0, im ? im->fmt : 0, im ? im->layers : 0, im ? im->levels : 0, im ? im->usage : 0, (void *)ii->imageView);
         if (im) im->last_use = mtl_last_fence() + 1;
+        if (g_cs_cap && im) { cs_cap_img('i', b->binding, im); if (storage && g_ncso < 8) { g_cso[g_ncso].binding = b->binding; g_cso[g_ncso++].im = im; } }
         if (ii->imageView) num = view_num(t, v);
         if (ii->imageView && !mip_rt) { g_tvc[ck].epoch = g_set_epoch; g_tvc[ck].gen = g_tex_gen; g_tvc[ck].tid = tid; g_tvc[ck].dim = b->dim; g_tvc[ck].arr = b->flags & 1; g_tvc[ck].v = ii->imageView; g_tvc[ck].im = im; g_tvc[ck].num = num; }
     }
@@ -1265,6 +1302,8 @@ static VkDescriptorSet stage_set(int st, vkshader_t *s, uint32_t *dofs) {
         nw++;
     }
     for (int j = 0; j < nd; j++) dofs[j] = dp[j].o;
+    if (g_cs_cap) for (uint32_t i = 0; i < nw; i++) if (w[i].pBufferInfo) { VkDeviceSize o = w[i].pBufferInfo->offset; for (int j = 0; j < nd; j++) if (dp[j].b == w[i].dstBinding) o += dp[j].o;
+        cs_cap_buf(w[i].dstBinding, w[i].pBufferInfo->buffer, o, w[i].pBufferInfo->range); }
     if (g_tracing) for (int j = 0; j < nd; j++) VKLOG("  stage %d binding %u: dynamic offset %u", st, dp[j].b, dp[j].o);
     if (g_tracing) for (uint32_t i = 0; i < nw; i++) {   // the refused draw (bisection): every descriptor it is given
         const VkWriteDescriptorSet *x = &w[i];
@@ -1871,7 +1910,9 @@ static void dispatch(const p_dispatch *d) {
     VkCommandBuffer cb = vk_cmd();
     VkDescriptorSetLayout dsl[5] = {cs->dsl}; VkPipelineLayout layout = vk_pipeline_layout(dsl, 1);
     if (g_x_tracecs == cs->key) { g_tracing = 1; setenv("DM_VK_TRACE_CS", "0", 1); g_x_tracecs = 0; VKLOG("=== traced dispatch %016llx %dx%dx%d", (unsigned long long)cs->key, d->x, d->y, d->z); }
+    if (g_x_cscap == cs->key && !g_ncsc) { g_cs_cap = g_tracing = 1; g_csc_key = cs->key; setenv("DM_VK_CS_CAPTURE", "0", 1); g_x_cscap = 0; snprintf(g_csc_info, sizeof g_csc_info, "dispatch %d %d %d\n", d->x, d->y, d->z); }
     uint32_t dofs[96]; VkDescriptorSet set = stage_set(5, cs, dofs); g_tracing = 0;
+    if (g_cs_cap) { g_cs_cap = 0; g_csc_fence = mtl_last_fence() + 1; }
     uint64_t ck[3] = {cs->key, g_num_um, g_num_im | (uint64_t)g_spv_alt << 48};
     pthread_mutex_lock(&g_cpipe_mu); VkPipeline p = nvn_hm_get(&g_cpipes, ck); pthread_mutex_unlock(&g_cpipe_mu);
     if (!p) {
@@ -1880,7 +1921,7 @@ static void dispatch(const p_dispatch *d) {
         if (had) { if (p != (void *)1) vkDestroyPipeline(V.dev, p, NULL); p = had; } else nvn_hm_put(&g_cpipes, ck, p);   // (compute_warm made it meanwhile)
         pthread_mutex_unlock(&g_cpipe_mu);
     }
-    if (p == (void *)1) return;
+    if (p == (void *)1) { g_ncso = 0; return; }
     g_dispatch[0] = (uint32_t)d->x; g_dispatch[1] = (uint32_t)d->y; g_dispatch[2] = (uint32_t)d->z;
     vk_img_barrier_all(cb);
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, p);
@@ -1889,6 +1930,8 @@ static void dispatch(const p_dispatch *d) {
     if (d->ind) { VkBuffer b; VkDeviceSize o; if (vk_buf_at(d->ind, 12, &b, &o)) vkCmdDispatchIndirect(cb, b, o); }
     else vkCmdDispatch(cb, (uint32_t)d->x, (uint32_t)d->y, (uint32_t)d->z);
     vk_pass_ts(1, (uint32_t)d->x, (uint32_t)d->y, PT_DISPATCH, (uint32_t)d->z);
+    for (int i = 0; i < g_ncso; i++) cs_cap_img('o', g_cso[i].binding, g_cso[i].im);
+    g_ncso = 0;
     if (!g_x_nodispbar) vk_img_barrier_all(cb);   // DM_VK_X_NODISPBAR=1 (live, a cost measurement that may draw wrong): no barrier after the dispatch
     if (crumbs_on()) { crumb_t *c = crumb_cur(); if (c->n < 8) { c->k[c->n][0] = 0; c->k[c->n][1] = 0; c->k[c->n][2] = cs->key; c->n++; } crumb_mark(1); }
     if (g_x_tracepass == -2) VKLOG("--- dispatch %016llx %dx%dx%d%s after pass %d", (unsigned long long)cs->key, d->x, d->y, d->z, d->ind ? " (indirect)" : "", g_sub_pass - 1);   // (DM_VK_TRACE_PASS=-2 lists the dispatches too)
