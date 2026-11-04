@@ -299,43 +299,69 @@ namespace Ryujinx.Graphics.Shader.Instructions
             };
         }
 
+        // A half pair's word after its swizzle (as AHalves) and modifiers (abs, then neg), its halves kept packed
+        private static Operand AHalfWord(EmitterContext context, AmpereOp x, int slot, int swizzle, (bool Neg, bool Abs) m)
+        {
+            Operand v = ASrc(context, x, slot);
+            bool plain = slot == S32 && x.Form is not (1 or 6);
+
+            v = (plain ? 0 : swizzle) switch
+            {
+                0 => v,
+                2 => context.IMultiply(context.BitwiseAnd(v, Const(0xffff)), Const(0x10001)),
+                _ => context.IMultiply(context.ShiftRightU32(v, Const(16)), Const(0x10001)),
+            };
+
+            v = m.Abs ? context.BitwiseAnd(v, Const(0x7fff7fff)) : v;
+
+            return m.Neg ? context.BitwiseExclusiveOr(v, Const(unchecked((int)0x80008000))) : v;
+        }
+
         // HADD2 / HMUL2 / HFMA2: lanes of A (swizzle 74..76, neg 72, abs 73), the 32 slot (60..62, 63, 62) and the 64 slot (81..83, 84, 83). .F32 (78) writes the
-        // low lane as one float; .RELU (79, HMUL2 / HFMA2) clamps at zero
+        // low lane as one float, computed in fp32; otherwise the pair is computed as halves (HalfPair). .RELU (79, HMUL2 / HFMA2) clamps at zero
         public static void AHalf(EmitterContext context)
         {
             AmpereOp x = new(context.CurrOp);
+            int op = x.Op & 0x1ff;
 
             if (x[85])
             {
                 throw AFail(context, "BF16 half pair");
             }
 
-            Operand[] Lanes(int slot, int swizzle, (bool Neg, bool Abs) m) => InstEmitHelper.FPAbsNeg(context, AHalves(context, x, slot, swizzle), m.Abs, m.Neg);
+            bool s32First = op != 0x031 || SlotB(x) == S32;   // HADD2 / HMUL2 take their second operand from the 32 slot in every form
 
-            Operand[] a = Lanes(SA, x[74..76], AMods(x, SA));
-            Operand[] s32 = Lanes(S32, x[60..62], AMods(x, S32));
-            Operand[] s64 = Lanes(S64, x[81..83], (x[84], x[83]));
-            (Operand[] b, Operand[] c) = (x.Op & 0x1ff) != 0x031 || SlotB(x) == S32 ? (s32, s64) : (s64, s32);   // HADD2 / HMUL2 take their second operand from the 32 slot in every form
-            Operand[] res = new Operand[2];
-
-            for (int i = 0; i < 2; i++)
+            if (!x[78])
             {
-                res[i] = (x.Op & 0x1ff) switch
+                Operand a = AHalfWord(context, x, SA, x[74..76], AMods(x, SA));
+                Operand s32 = AHalfWord(context, x, S32, x[60..62], AMods(x, S32)), s64 = AHalfWord(context, x, S64, x[81..83], (x[84], x[83]));
+                (Operand b, Operand c) = s32First ? (s32, s64) : (s64, s32);
+                Operand res = op switch
                 {
-                    0x030 => context.FPAdd(a[i], b[i]),
-                    0x032 => context.FPMultiply(a[i], b[i]),
-                    _ => context.FPFusedMultiplyAdd(a[i], b[i], c[i]),
+                    0x030 => context.HalfPair(HalfPairOp.Add, a, b),
+                    0x032 => context.HalfPair(HalfPairOp.Multiply, a, b),
+                    _ => context.HalfPair(HalfPairOp.FusedMultiplyAdd, a, b, c),
                 };
 
-                if (x[79] && (x.Op & 0x1ff) != 0x030)
-                {
-                    res[i] = context.FPMaximum(res[i], ConstF(0));
-                }
-
-                res[i] = context.FPSaturate(res[i], x[77]);
+                res = x[79] && op != 0x030 ? context.HalfPair(HalfPairOp.Maximum, res, Const(0)) : res;
+                ASet(context, x, x[77] ? context.HalfPair(HalfPairOp.Minimum, context.HalfPair(HalfPairOp.Maximum, res, Const(0)), Const(0x3c003c00)) : res);
+                return;
             }
 
-            ASet(context, x, x[78] ? res[0] : context.PackHalf2x16(res[0], res[1]));
+            Operand Lane(int slot, int swizzle, (bool Neg, bool Abs) m) => context.FPAbsNeg(AHalves(context, x, slot, swizzle)[0], m.Abs, m.Neg);
+
+            Operand fa = Lane(SA, x[74..76], AMods(x, SA));
+            Operand f32 = Lane(S32, x[60..62], AMods(x, S32)), f64 = Lane(S64, x[81..83], (x[84], x[83]));
+            (Operand fb, Operand fc) = s32First ? (f32, f64) : (f64, f32);
+            Operand f = op switch
+            {
+                0x030 => context.FPAdd(fa, fb),
+                0x032 => context.FPMultiply(fa, fb),
+                _ => context.FPFusedMultiplyAdd(fa, fb, fc),
+            };
+
+            f = x[79] && op != 0x030 ? context.FPMaximum(f, ConstF(0)) : f;
+            ASet(context, x, context.FPSaturate(f, x[77]));
         }
 
         // HSETP2: each lane compared (76..80) and combined (69..71) with the predicate 87..90 into 81..84 (low) and 84..87 (high); .H_AND (71) gives the first
@@ -359,7 +385,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
             ASetPred(context, x[84..87], GetPredLogicalOp(context, op, hi, acc));
         }
 
-        // HMNMX2: lane by lane the minimum where the predicate 87..90 holds, else the maximum
+        // HMNMX2: lane by lane the minimum where the predicate 87..90 holds, else the maximum (of the numbers, as NVIDIA's without .NAN)
         public static void AHmnmx2(EmitterContext context)
         {
             AmpereOp x = new(context.CurrOp);
@@ -369,11 +395,8 @@ namespace Ryujinx.Graphics.Shader.Instructions
                 throw AFail(context, "HMNMX2 .F32 / .NAN / .XORSIGN / BF16");
             }
 
-            Operand[] a = InstEmitHelper.FPAbsNeg(context, AHalves(context, x, SA, x[74..76]), AMods(x, SA).Abs, AMods(x, SA).Neg);
-            Operand[] b = InstEmitHelper.FPAbsNeg(context, AHalves(context, x, S32, x[60..62]), AMods(x, S32).Abs, AMods(x, S32).Neg);
-            Operand min = APred(context, x, 87, 90);
-            Operand Lane(int i) => context.ConditionalSelect(min, context.FPMinimum(a[i], b[i]), context.FPMaximum(a[i], b[i]));
-            ASet(context, x, context.PackHalf2x16(Lane(0), Lane(1)));
+            Operand a = AHalfWord(context, x, SA, x[74..76], AMods(x, SA)), b = AHalfWord(context, x, S32, x[60..62], AMods(x, S32));
+            ASet(context, x, context.ConditionalSelect(APred(context, x, 87, 90), context.HalfPair(HalfPairOp.Minimum, a, b), context.HalfPair(HalfPairOp.Maximum, a, b)));
         }
 
         // ---- moves ----

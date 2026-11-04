@@ -135,7 +135,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
             }
 
             Func<Operand, int, Operand> frag = AWarp(context, words);
-            Operand[,] a = new Operand[2, k], b = new Operand[2, k];
+            Operand[,,] aw = new Operand[2, k / 8, 4], bw = new Operand[2, k / 8, 4];   // the words of A's rows and B's columns with halves 8 h + 2 q and 8 h + 2 q + 1
 
             for (int q = 0; q < 4; q++)
             {
@@ -143,52 +143,47 @@ namespace Ryujinx.Graphics.Shader.Instructions
 
                 for (int h = 0; h < k / 8; h++)
                 {
-                    for (int m = 0; m < 2; m++)
+                    for (int i = 0; i < 2; i++)
                     {
-                        Operand w = frag(aLane, m + 2 * h);
-                        a[m, 8 * h + 2 * q] = context.UnpackHalf2x16Low(w);
-                        a[m, 8 * h + 2 * q + 1] = context.UnpackHalf2x16High(w);
-                    }
-
-                    for (int j = 0; j < 2; j++)
-                    {
-                        Operand bLane = context.IAdd(context.ShiftLeft(quad, Const(3)), Const(4 * j + q));
-                        Operand w = frag(bLane, k / 4 + h);
-                        b[j, 8 * h + 2 * q] = context.UnpackHalf2x16Low(w);
-                        b[j, 8 * h + 2 * q + 1] = context.UnpackHalf2x16High(w);
+                        aw[i, h, q] = frag(aLane, i + 2 * h);
+                        bw[i, h, q] = frag(context.IAdd(context.ShiftLeft(quad, Const(3)), Const(4 * i + q)), k / 4 + h);
                     }
                 }
             }
 
-            Operand[] d = new Operand[4];
-
             for (int m = 0; m < 2; m++)
             {
+                Operand[] d = new Operand[2];
+
                 for (int j = 0; j < 2; j++)
                 {
-                    Operand acc = f32
-                        ? AGpr(x.Rc, 2 * m + j)
-                        : (j == 0 ? context.UnpackHalf2x16Low(AGpr(x.Rc, m)) : context.UnpackHalf2x16High(AGpr(x.Rc, m)));
+                    // an F16 accumulator sums the pairs' products as halves, C in the low lane, then adds the two lanes (HalfPair); an F32 one in floats
+                    Operand c = AGpr(x.Rc, f32 ? 2 * m + j : m);
+                    Operand acc = f32 ? c : j == 0 ? context.BitwiseAnd(c, Const(0xffff)) : context.ShiftRightU32(c, Const(16));
 
-                    for (int i = 0; i < k; i++)
+                    for (int h = 0; h < k / 8; h++)
                     {
-                        acc = context.FPFusedMultiplyAdd(a[m, i], b[j, i], acc);
+                        for (int q = 0; q < 4; q++)
+                        {
+                            Operand ab = aw[m, h, q], bb = bw[j, h, q];
+                            acc = f32
+                                ? context.FPFusedMultiplyAdd(context.UnpackHalf2x16High(ab), context.UnpackHalf2x16High(bb),
+                                    context.FPFusedMultiplyAdd(context.UnpackHalf2x16Low(ab), context.UnpackHalf2x16Low(bb), acc))
+                                : context.HalfPair(HalfPairOp.FusedMultiplyAdd, ab, bb, acc);
+                        }
                     }
 
-                    d[2 * m + j] = acc;
+                    d[j] = f32 ? acc : context.HalfPair(HalfPairOp.Add, acc, context.BitwiseOr(context.ShiftRightU32(acc, Const(16)), context.ShiftLeft(acc, Const(16))));
                 }
-            }
 
-            for (int m = 0; m < 2; m++)
-            {
                 if (f32)
                 {
-                    ASet(context, x, d[2 * m], 2 * m);
-                    ASet(context, x, d[2 * m + 1], 2 * m + 1);
+                    ASet(context, x, d[0], 2 * m);
+                    ASet(context, x, d[1], 2 * m + 1);
                 }
                 else
                 {
-                    ASet(context, x, context.PackHalf2x16(d[2 * m], d[2 * m + 1]), m);
+                    ASet(context, x, context.BitwiseOr(context.BitwiseAnd(d[0], Const(0xffff)), context.ShiftLeft(d[1], Const(16))), m);
                 }
             }
         }

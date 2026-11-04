@@ -74,6 +74,7 @@ namespace Ryujinx.Graphics.Shader.IntermediateRepresentation
         Floor,
         FusedMultiplyAdd,
         GroupMemoryBarrier,
+        HalfPair,
         ImageLoad,
         ImageStore,
         ImageAtomic,
@@ -134,6 +135,16 @@ namespace Ryujinx.Graphics.Shader.IntermediateRepresentation
         FP64 = 1 << 17,
 
         Mask = 0xffff,
+    }
+
+    // nxnative: the operations of Instruction.HalfPair (its Index), on the two halves packed in each 32-bit source
+    enum HalfPairOp
+    {
+        Add,
+        Multiply,
+        FusedMultiplyAdd,
+        Minimum,
+        Maximum,
     }
 
     // nxnative: the operations of Instruction.SubgroupReduce (its Index), in Ampere REDUX's order, then the signed minimum and maximum

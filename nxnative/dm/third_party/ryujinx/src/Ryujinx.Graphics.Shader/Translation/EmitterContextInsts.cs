@@ -121,6 +121,15 @@ namespace Ryujinx.Graphics.Shader.Translation
             return dest;
         }
 
+        public static Operand HalfPair(this EmitterContext context, HalfPairOp op, params Operand[] sources)
+        {
+            Operand dest = Local();
+
+            context.Add(new Operation(Instruction.HalfPair, (int)op, dest, sources));
+
+            return dest;
+        }
+
         public static Operand SubgroupReduce(this EmitterContext context, Operand a, SubgroupReduceOp op)
         {
             Operand dest = Local();

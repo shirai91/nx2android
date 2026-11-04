@@ -93,6 +93,7 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
             Add(Instruction.Floor,                    GenerateFloor);
             Add(Instruction.FusedMultiplyAdd,         GenerateFusedMultiplyAdd);
             Add(Instruction.GroupMemoryBarrier,       GenerateGroupMemoryBarrier);
+            Add(Instruction.HalfPair,                 GenerateHalfPair);
             Add(Instruction.ImageAtomic,              GenerateImageAtomic);
             Add(Instruction.ImageLoad,                GenerateImageLoad);
             Add(Instruction.ImageStore,               GenerateImageStore);
@@ -581,6 +582,32 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
         private static OperationResult GenerateFusedMultiplyAdd(CodeGenContext context, AstOperation operation)
         {
             return GenerateTernary(context, operation, context.Delegates.GlslFma, null);
+        }
+
+        // nxnative: the halves packed in 32-bit words as an f16vec2 (needs shaderFloat16); a source that is itself a HalfPair stays an f16vec2 (no bitcast
+        // round trip between chained operations, such as HMMA's sums)
+        private static OperationResult GenerateHalfPair(CodeGenContext context, AstOperation operation)
+        {
+            return new OperationResult(AggregateType.U32, context.Bitcast(context.TypeU32(), HalfPairValue(context, operation)));
+        }
+
+        private static SpvInstruction HalfPairValue(CodeGenContext context, AstOperation operation)
+        {
+            context.AddCapability(Capability.Float16);
+
+            SpvInstruction pair = context.TypeVector(context.TypeFloat(16), 2);
+            SpvInstruction Src(int i) => operation.GetSource(i) is AstOperation { Inst: Instruction.HalfPair } inner
+                ? HalfPairValue(context, inner)
+                : context.Bitcast(pair, context.GetU32(operation.GetSource(i)));
+
+            return (HalfPairOp)operation.Index switch
+            {
+                HalfPairOp.Add => context.FAdd(pair, Src(0), Src(1)),
+                HalfPairOp.Multiply => context.FMul(pair, Src(0), Src(1)),
+                HalfPairOp.FusedMultiplyAdd => context.GlslFma(pair, Src(0), Src(1), Src(2)),
+                HalfPairOp.Minimum => context.GlslNMin(pair, Src(0), Src(1)),
+                _ => context.GlslNMax(pair, Src(0), Src(1)),
+            };
         }
 
         private static OperationResult GenerateGroupMemoryBarrier(CodeGenContext context, AstOperation operation)
