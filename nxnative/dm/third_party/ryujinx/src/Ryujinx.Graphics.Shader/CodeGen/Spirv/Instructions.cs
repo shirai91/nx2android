@@ -1143,30 +1143,28 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
             return GenerateLoadOrStore(context, operation, isStore: true);
         }
 
-        // nxnative: a reduction over the active lanes of the 32-lane cluster (an NVIDIA warp within any subgroup of 32 or more), its operation in Index
+        // nxnative: a reduction over the subgroup's active lanes, its operation in Index (InstEmitAmpereAlu ARedux keeps it to one warp)
         private static OperationResult GenerateSubgroupReduce(CodeGenContext context, AstOperation operation)
         {
             context.AddCapability(Capability.GroupNonUniformArithmetic);
-            context.AddCapability(Capability.GroupNonUniformClustered);
 
             SpvInstruction type = context.TypeU32();
             SpvInstruction scope = context.Constant(type, (int)Scope.Subgroup);
             SpvInstruction value = context.GetU32(operation.GetSource(0));
-            SpvInstruction cluster = context.Constant(type, 32);
 
-            SpvInstruction result = (SubgroupReduceOp)operation.Index switch
+            Func<SpvInstruction, SpvInstruction, GroupOperation, SpvInstruction, SpvInstruction, SpvInstruction> reduce = (SubgroupReduceOp)operation.Index switch
             {
-                SubgroupReduceOp.And => context.GroupNonUniformBitwiseAnd(type, scope, GroupOperation.ClusteredReduce, value, cluster),
-                SubgroupReduceOp.Or => context.GroupNonUniformBitwiseOr(type, scope, GroupOperation.ClusteredReduce, value, cluster),
-                SubgroupReduceOp.Xor => context.GroupNonUniformBitwiseXor(type, scope, GroupOperation.ClusteredReduce, value, cluster),
-                SubgroupReduceOp.Add => context.GroupNonUniformIAdd(type, scope, GroupOperation.ClusteredReduce, value, cluster),
-                SubgroupReduceOp.MinU32 => context.GroupNonUniformUMin(type, scope, GroupOperation.ClusteredReduce, value, cluster),
-                SubgroupReduceOp.MaxU32 => context.GroupNonUniformUMax(type, scope, GroupOperation.ClusteredReduce, value, cluster),
-                SubgroupReduceOp.MinS32 => context.GroupNonUniformSMin(type, scope, GroupOperation.ClusteredReduce, value, cluster),
-                _ => context.GroupNonUniformSMax(type, scope, GroupOperation.ClusteredReduce, value, cluster),
+                SubgroupReduceOp.And => context.GroupNonUniformBitwiseAnd,
+                SubgroupReduceOp.Or => context.GroupNonUniformBitwiseOr,
+                SubgroupReduceOp.Xor => context.GroupNonUniformBitwiseXor,
+                SubgroupReduceOp.Add => context.GroupNonUniformIAdd,
+                SubgroupReduceOp.MinU32 => context.GroupNonUniformUMin,
+                SubgroupReduceOp.MaxU32 => context.GroupNonUniformUMax,
+                SubgroupReduceOp.MinS32 => context.GroupNonUniformSMin,
+                _ => context.GroupNonUniformSMax,
             };
 
-            return new OperationResult(AggregateType.U32, result);
+            return new OperationResult(AggregateType.U32, reduce(type, scope, GroupOperation.Reduce, value, null));
         }
 
         private static OperationResult GenerateSubtract(CodeGenContext context, AstOperation operation)

@@ -62,7 +62,7 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
         }
 
         // nxnative: an operation over the warp's lanes runs where the code put it. Propagated into its one use, Ampere's REDUX moved into the branch only the warp's leader
-        // takes, and reduced over that one lane (Donkey Kong Bananza's compute shaders 72b4adba0a491c21 and c5b4ee0ce9a02d7d, whose pipelines the Adreno 750's compiler crashed on)
+        // takes, and reduced over that one lane (Donkey Kong Bananza's compute shaders 72b4adba0a491c21 and c5b4ee0ce9a02d7d)
         private static bool IsWarpWide(IAstNode source)
         {
             return source is AstOperation operation && (operation.Inst & Instruction.Mask) is Instruction.Ballot or Instruction.Shuffle or Instruction.ShuffleDown or

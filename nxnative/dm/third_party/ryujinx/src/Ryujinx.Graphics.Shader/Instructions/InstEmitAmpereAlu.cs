@@ -855,7 +855,9 @@ namespace Ryujinx.Graphics.Shader.Instructions
             ASet(context, x, context.ConditionalSelect(all, active, Const(0)));
         }
 
-        // REDUX URd, Ra: Ra reduced over the warp's active lanes by 78..81 (AND, OR, XOR, SUM, MIN, MAX; 73 a signed MIN / MAX)
+        // REDUX URd, Ra: Ra reduced over the warp's active lanes by 78..81 (AND, OR, XOR, SUM, MIN, MAX; 73 a signed MIN / MAX). In a host subgroup of several
+        // warps, one reduction a warp, each over its own lanes' values and the identity elsewhere: the Adreno 750's compiler crashed on clustered reductions
+        // (Donkey Kong Bananza's compute shaders 72b4adba0a491c21 and c5b4ee0ce9a02d7d)
         public static void ARedux(EmitterContext context)
         {
             AmpereOp x = new(context.CurrOp);
@@ -867,7 +869,33 @@ namespace Ryujinx.Graphics.Shader.Instructions
             }
 
             SubgroupReduceOp kind = (SubgroupReduceOp)(op >= 4 && x[73] ? op + 2 : op);
-            ASet(context, Register(x[16..22], RegisterType.Uniform), context.SubgroupReduce(AGpr(x.Ra), kind));
+            int warps = context.TranslatorContext.GpuAccessor.QueryHostSubgroupSize() / 32;
+            Operand value = AGpr(x.Ra), res;
+
+            if (warps <= 1)
+            {
+                res = context.SubgroupReduce(value, kind);
+            }
+            else
+            {
+                Operand identity = Const(kind switch
+                {
+                    SubgroupReduceOp.And or SubgroupReduceOp.MinU32 => -1,
+                    SubgroupReduceOp.MinS32 => int.MaxValue,
+                    SubgroupReduceOp.MaxS32 => int.MinValue,
+                    _ => 0,
+                });
+                Operand warp = context.ShiftRightU32(context.Load(StorageKind.Input, IoVariable.SubgroupLaneId), Const(5));
+                res = identity;
+
+                for (int w = 0; w < warps; w++)
+                {
+                    Operand mine = context.ICompareEqual(warp, Const(w));
+                    res = context.ConditionalSelect(mine, context.SubgroupReduce(context.ConditionalSelect(mine, value, identity), kind), res);
+                }
+            }
+
+            ASet(context, Register(x[16..22], RegisterType.Uniform), res);
         }
 
         // SHFL Rd, Pd, a, lane, c: lane a register (32..40) or an immediate (53..58; 0x989, 0xf89), c a register (64..72) or an immediate (40..53; 0x589, 0xf89),
