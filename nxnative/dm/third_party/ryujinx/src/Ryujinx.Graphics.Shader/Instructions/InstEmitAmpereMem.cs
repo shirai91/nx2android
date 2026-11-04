@@ -462,7 +462,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
         {
             for (int i = 0; f16 && i < dests.Length; i += 2)
             {
-                ASet(context, AGpr(ATexReg(x, i / 2, true)), context.PackHalf2x16(dests[i], i + 1 < dests.Length ? dests[i + 1] : ConstF(0)));
+                ASet(context, AGpr(ATexReg(x, i / 2, true)), context.PackHalf2x16Rte(dests[i], i + 1 < dests.Length ? dests[i + 1] : ConstF(0)));
             }
         }
 

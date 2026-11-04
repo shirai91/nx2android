@@ -1065,14 +1065,17 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
             return new OperationResult(AggregateType.FP64, result);
         }
 
+        // nxnative: two conversions to halves (needs shaderFloat16), instead of the driver's packHalf2x16 (the Adreno 750's rounds toward zero and flushes
+        // denormals): rounded to nearest even by the RoundingModeRTE the Android packager gives modules with halves (shader_vk.py round_halves_to_nearest)
         private static OperationResult GeneratePackHalf2x16(CodeGenContext context, AstOperation operation)
         {
-            SpvInstruction value0 = context.GetFP32(operation.GetSource(0));
-            SpvInstruction value1 = context.GetFP32(operation.GetSource(1));
-            SpvInstruction vector = context.CompositeConstruct(context.TypeVector(context.TypeFP32(), 2), value0, value1);
-            SpvInstruction result = context.GlslPackHalf2x16(context.TypeU32(), vector);
+            context.AddCapability(Capability.Float16);
 
-            return new OperationResult(AggregateType.U32, result);
+            SpvInstruction half = context.TypeFloat(16);
+            SpvInstruction value0 = context.FConvert(half, context.GetFP32(operation.GetSource(0)));
+            SpvInstruction value1 = context.FConvert(half, context.GetFP32(operation.GetSource(1)));
+
+            return new OperationResult(AggregateType.U32, context.Bitcast(context.TypeU32(), context.CompositeConstruct(context.TypeVector(half, 2), value0, value1)));
         }
 
         private static OperationResult GenerateReciprocalSquareRoot(CodeGenContext context, AstOperation operation)

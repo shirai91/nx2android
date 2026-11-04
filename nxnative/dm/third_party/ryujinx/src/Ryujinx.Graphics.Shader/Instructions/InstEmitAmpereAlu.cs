@@ -188,7 +188,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
                 int op => throw AFail(context, $"MUFU {op}"),
             };
 
-            ASet(context, x, half ? context.PackHalf2x16(res, ConstF(0)) : res);
+            ASet(context, x, half ? context.PackHalf2x16Rte(res, ConstF(0)) : res);
         }
 
         // ---- conversions: source size 84..86 and destination size 75..77 (log2 bytes), rounding 78..80, signed 72 (F2I) / 74 (I2F) ----
@@ -280,7 +280,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
                 throw AFail(context, "F2FP.MERGE_C");
             }
 
-            ASet(context, x, context.PackHalf2x16(AF(context, x, S32), AF(context, x, SA)));
+            ASet(context, x, context.PackHalf2x16Rte(AF(context, x, S32), AF(context, x, SA)));
         }
 
         // ---- packed halves ----

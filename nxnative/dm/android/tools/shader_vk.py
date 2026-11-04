@@ -45,6 +45,25 @@ SUBGROUP = 128
 # steps at the Great Sky Island pond and every frame at the Temple of Time's stone circle; with the bias, 0 in 24
 GATHER_BIAS = 8
 
+# Vulkan's default rounding of conversions to halves is the driver's: the Adreno 750 rounds toward zero, where NVIDIA rounds to nearest even. A module with 16-bit floats
+# (the translator's half packing and half pairs) gets RoundingModeRTE for them, added after spirv-opt, whose SSA passes (NDK r27c's) leave modules with
+# SPV_KHR_float_controls unoptimized (Donkey Kong Bananza's upscaler kept 15,728 function variables). Needs shaderRoundingModeRTEFloat16
+def round_halves_to_nearest(path):
+    w = list(struct.unpack(f'<{os.path.getsize(path) // 4}I', open(path, 'rb').read()))
+    ins, i = [], 5
+    while i < len(w):
+        ins.append(w[i:i + (w[i] >> 16)]); i += w[i] >> 16
+    op = lambda x: x[0] & 0xffff
+    if not any(op(x) == 17 and x[1] == 9 for x in ins) or any(op(x) == 17 and x[1] == 4467 for x in ins):   # Capability Float16, RoundingModeRTE
+        return
+    caps = max(n for n, x in enumerate(ins) if op(x) == 17) + 1
+    name = b'SPV_KHR_float_controls\0\0'
+    ext = [(1 + len(name) // 4) << 16 | 10, *struct.unpack(f'<{len(name) // 4}I', name)]
+    modes = [[4 << 16 | 16, x[2], 4462, 16] for x in ins if op(x) == 15]   # ExecutionMode RoundingModeRTE 16 a entry point
+    at = max(n for n, x in enumerate(ins) if op(x) in (15, 16)) + 1
+    ins = ins[:caps] + [[2 << 16 | 17, 4467], ext] + ins[caps:at] + modes + ins[at:]
+    open(path, 'wb').write(struct.pack(f'<{5 + sum(map(len, ins))}I', *w[:5], *[v for x in ins for v in x]))
+
 def records(d):
     r = [m.start() for m in re.finditer(b'BTCDBTCD', d)]
     return [d[x:(r[k + 1] if k + 1 < len(r) else len(d))] for k, x in enumerate(r)]
@@ -351,6 +370,8 @@ def main():
             return os.path.exists(p) and subprocess.run([opt, '-O', '--skip-validation', p, '-o', p], capture_output=True).returncode != 0
         with cf.ThreadPoolExecutor(a.jobs) as ex: refused = sum(ex.map(optimize, keys))
         if refused: print(f'[RED] spirv-opt refused {refused} modules: kept as translated', flush=True)
+    for k in keys:
+        if os.path.exists(p := os.path.join(w, k + '.spv')): round_halves_to_nearest(p)
     errs = collections.Counter()
     for r in rs:
         for ln in r.stderr.splitlines():

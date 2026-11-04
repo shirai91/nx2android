@@ -845,6 +845,13 @@ namespace Ryujinx.Graphics.Shader.Translation
             return context.Add(Instruction.PackDouble2x32, Local(), a, b);
         }
 
+        // nxnative: the halves rounded to nearest even by conversions under RoundingModeRTE (CodeGen/Spirv GeneratePackHalf2x16): one instruction each, for
+        // Ampere code, whose devices have shaderFloat16 and RTE halves; PackHalf2x16 below builds them in integer operations for any device
+        public static Operand PackHalf2x16Rte(this EmitterContext context, Operand a, Operand b)
+        {
+            return context.Add(Instruction.PackHalf2x16, Local(), a, b);
+        }
+
         // nxnative: the halves rounded to nearest even, with denormals and infinities, as NVIDIA converts. The Adreno 750's packHalf2x16 rounds toward zero
         // and flushes denormals to zero, and Donkey Kong Bananza's upscaler network, whose layers pass their activations on as halves, drew blocks of noise
         public static Operand PackHalf2x16(this EmitterContext context, Operand a, Operand b)

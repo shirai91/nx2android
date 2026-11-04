@@ -152,29 +152,26 @@ namespace Ryujinx.Graphics.Shader.Instructions
                 }
             }
 
+            // fp32 FMAs for an F16 accumulator too, rounded to halves once: on the Adreno 750 fp32 FMAs run at twice the rate of fp16 ones and four times f16vec2's
             for (int m = 0; m < 2; m++)
             {
                 Operand[] d = new Operand[2];
 
                 for (int j = 0; j < 2; j++)
                 {
-                    // an F16 accumulator sums the pairs' products as halves, C in the low lane, then adds the two lanes (HalfPair); an F32 one in floats
-                    Operand c = AGpr(x.Rc, f32 ? 2 * m + j : m);
-                    Operand acc = f32 ? c : j == 0 ? context.BitwiseAnd(c, Const(0xffff)) : context.ShiftRightU32(c, Const(16));
+                    Operand acc = f32 ? AGpr(x.Rc, 2 * m + j) : j == 0 ? context.UnpackHalf2x16Low(AGpr(x.Rc, m)) : context.UnpackHalf2x16High(AGpr(x.Rc, m));
 
                     for (int h = 0; h < k / 8; h++)
                     {
                         for (int q = 0; q < 4; q++)
                         {
                             Operand ab = aw[m, h][q], bb = bw[j, h][q];
-                            acc = f32
-                                ? context.FPFusedMultiplyAdd(context.UnpackHalf2x16High(ab), context.UnpackHalf2x16High(bb),
-                                    context.FPFusedMultiplyAdd(context.UnpackHalf2x16Low(ab), context.UnpackHalf2x16Low(bb), acc))
-                                : context.HalfPair(HalfPairOp.FusedMultiplyAdd, ab, bb, acc);
+                            acc = context.FPFusedMultiplyAdd(context.UnpackHalf2x16High(ab), context.UnpackHalf2x16High(bb),
+                                context.FPFusedMultiplyAdd(context.UnpackHalf2x16Low(ab), context.UnpackHalf2x16Low(bb), acc));
                         }
                     }
 
-                    d[j] = f32 ? acc : context.HalfPair(HalfPairOp.Add, acc, context.BitwiseOr(context.ShiftRightU32(acc, Const(16)), context.ShiftLeft(acc, Const(16))));
+                    d[j] = acc;
                 }
 
                 if (f32)
@@ -184,7 +181,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
                 }
                 else
                 {
-                    ASet(context, x, context.BitwiseOr(context.BitwiseAnd(d[0], Const(0xffff)), context.ShiftLeft(d[1], Const(16))), m);
+                    ASet(context, x, context.PackHalf2x16Rte(d[0], d[1]), m);
                 }
             }
         }
