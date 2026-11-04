@@ -140,6 +140,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
             context.Mirrored = ends.Count == 0 || ends.Contains(null)
                 ? new()
                 : ends[0].Where(e => ends.All(d => d.GetValueOrDefault(e.Key) == e.Value)).ToDictionary(e => e.Key, e => e.Value);
+            context.ScratchBusy = block.Predecessors.Count == 0 ? 7 : block.Predecessors.Aggregate(0, (busy, p) => busy | context.ScratchBusyAtEnd.GetValueOrDefault(p, 7));
 
             for (int i = 0; i < block.OpCodes.Count; i++)
             {
@@ -189,10 +190,18 @@ namespace Ryujinx.Graphics.Shader.Instructions
                     skip = last ? null : skip;
                 }
 
+                int busy = context.ScratchBusy;
+
                 op.Emitter(context);
 
-                if (op.Name == InstName.Cal)   // (the callee's registers are not known here)
+                if (guard != null && !select)   // (skipped, its exchanges' barriers were not passed)
                 {
+                    context.ScratchBusy |= busy;
+                }
+
+                if (op.Name == InstName.Cal)   // (the callee's exchanges and registers are not known here)
+                {
+                    context.ScratchBusy = 7;
                     context.Fragments.Clear();
                     context.Mirrored.Clear();
                 }
@@ -237,6 +246,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
 
             sb.CommitAll(context);
             context.MirroredAtEnd[block] = context.Mirrored;
+            context.ScratchBusyAtEnd[block] = context.ScratchBusy;
         }
 
         // The registers the operations from start on write are no longer mirrored

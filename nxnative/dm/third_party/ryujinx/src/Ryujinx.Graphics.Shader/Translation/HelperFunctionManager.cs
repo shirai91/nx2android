@@ -64,9 +64,14 @@ namespace Ryujinx.Graphics.Shader.Translation
             }
 
             // nxnative: the source lane's value through workgroup memory in compute shaders (WarpScratch), else a subgroup shuffle; lane & 31 keeps an invalid
-            // source (its result unused) inside the warp's words
+            // source (its result unused) inside the warp's words. A barrier after the read leaves the memory free for the caller's exchanges
             Func<EmitterContext, Operand, Operand, Operand> read = WarpScratch.Applies(_stage)
-                ? (context, value, lane) => new WarpScratch(context, resources, definitions, value).Read(context.BitwiseAnd(lane, Const(31)))
+                ? (context, value, lane) =>
+                {
+                    Operand word = new WarpScratch(context, resources, definitions, value).Read(context.BitwiseAnd(lane, Const(31)));
+                    context.SubgroupBarrier();
+                    return word;
+                }
                 : (context, value, lane) => context.Shuffle(value, GenerateSubgroupShuffleIndex(context, lane, subgroupSize));
 
             Function function = GenerateShuffleFunction(functionName, subgroupSize, read);

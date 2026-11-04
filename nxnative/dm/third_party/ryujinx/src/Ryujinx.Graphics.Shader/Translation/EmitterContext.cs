@@ -18,6 +18,8 @@ namespace Ryujinx.Graphics.Shader.Translation
         public Dictionary<int, int> Mirrored { get; set; } = new();   // nxnative: registers whose words the warp's mirror holds, by slot (WarpScratch.Mirror)
         public Dictionary<int, int> Mirroring { get; } = new();   // nxnative: the registers the current instruction mirrors
         public Dictionary<Block, Dictionary<int, int>> MirroredAtEnd { get; } = new();
+        public int ScratchBusy { get; set; } = -1;   // nxnative: WarpScratch's memories other lanes may still read (bits: buffers 0, 1, the mirror); -1 not tracked
+        public Dictionary<Block, int> ScratchBusyAtEnd { get; } = new();
 
         public bool VertexAsCompute { get; }
 
