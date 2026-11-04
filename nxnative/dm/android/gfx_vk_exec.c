@@ -1848,15 +1848,38 @@ static void draw_idx(const p_draw_idx *d) {
 }
 static nvn_hmap g_cpipes = {.klen = 24};   // {shader, its integer-texel bindings}
 static pthread_mutex_t g_cpipe_mu = PTHREAD_MUTEX_INITIALIZER;   // the replay thread and compute_warm
+static void pipe_stats_log(VkPipeline p, uint64_t key) {   // DM_VK_PIPE_STATS (gfx_vk_core.c)
+    PFN_vkGetPipelineExecutableStatisticsKHR get = (PFN_vkGetPipelineExecutableStatisticsKHR)vkGetDeviceProcAddr(V.dev, "vkGetPipelineExecutableStatisticsKHR");
+    VkPipelineExecutableInfoKHR ei = {VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_INFO_KHR, NULL, p, 0}; VkPipelineExecutableStatisticKHR st[32]; uint32_t n = 32;
+    for (uint32_t i = 0; i < n; i++) st[i] = (VkPipelineExecutableStatisticKHR){VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_STATISTIC_KHR};
+    if (!get || get(V.dev, &ei, &n, st) < 0) return;
+    char line[1536]; size_t l = 0; line[0] = 0;
+    for (uint32_t i = 0; i < n && l < sizeof line - 80; i++) l += (size_t)snprintf(line + l, sizeof line - l, "%s%s %llu", i ? ", " : "", st[i].name,
+        st[i].format == VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_FLOAT64_KHR ? (unsigned long long)st[i].value.f64 : (unsigned long long)st[i].value.u64);
+    VKLOG("compute pipeline %016llx statistics: %s", (unsigned long long)key, line);
+    if (V.pipe_stats < 2) return;   // =2: the driver's internal representations too, as DM_ROOT/pipe_<key>_<n>.txt
+    PFN_vkGetPipelineExecutableInternalRepresentationsKHR irs = (PFN_vkGetPipelineExecutableInternalRepresentationsKHR)vkGetDeviceProcAddr(V.dev, "vkGetPipelineExecutableInternalRepresentationsKHR");
+    VkPipelineExecutableInternalRepresentationKHR ir[8]; n = 8;
+    for (uint32_t i = 0; i < n; i++) ir[i] = (VkPipelineExecutableInternalRepresentationKHR){VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_INTERNAL_REPRESENTATION_KHR};
+    if (!irs || irs(V.dev, &ei, &n, ir) < 0) return;
+    for (uint32_t i = 0; i < n; i++) ir[i].pData = malloc(ir[i].dataSize);
+    if (irs(V.dev, &ei, &n, ir) >= 0) for (uint32_t i = 0; i < n; i++) {
+        const char *root = getenv("DM_ROOT"); char path[1024]; snprintf(path, sizeof path, "%s/pipe_%016llx_%u.txt", root ? root : ".", (unsigned long long)key, i);
+        FILE *f = fopen(path, "wb"); if (f) { fwrite(ir[i].pData, 1, ir[i].dataSize, f); fclose(f); }
+        VKLOG("compute pipeline %016llx representation %u: %s (%s), %zu bytes%s → %s", (unsigned long long)key, i, ir[i].name, ir[i].description, ir[i].dataSize, ir[i].isText ? " of text" : "", path); }
+    for (uint32_t i = 0; i < n; i++) free(ir[i].pData);
+}
 static VkPipeline compute_build(vkshader_t *cs, uint64_t um, uint64_t im, int alt) {   // (VkPipeline)1 when it fails; alt: DM_VK_SPV_ALT's code
     VkDescriptorSetLayout dsl[5] = {cs->dsl}; VkPipeline p;
     int bs = build_begin();   // (the crash dump's note: build_pipeline)
     if (bs >= 0) { snprintf(g_build[bs].what, sizeof g_build[bs].what, "compute pipeline, shader %016llx, integer-texel views %#llx/%#llx", (unsigned long long)cs->key, (unsigned long long)um, (unsigned long long)im); g_build[bs].phase = 1; }
     VkComputePipelineCreateInfo ci = {VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, NULL, 0, {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, VK_SHADER_STAGE_COMPUTE_BIT,
         vk_shader_module(cs, um, im, alt && !um && !im ? 1u << 31 | (uint32_t)alt : 0, 0), "main", NULL}, vk_pipeline_layout(dsl, 1), VK_NULL_HANDLE, -1};
+    if (V.pipe_stats) ci.flags |= VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR | (V.pipe_stats > 1 ? VK_PIPELINE_CREATE_CAPTURE_INTERNAL_REPRESENTATIONS_BIT_KHR : 0);
     if (bs >= 0) g_build[bs].phase = 2;
     VkResult r = vkCreateComputePipelines(V.dev, V.pcache, 1, &ci, NULL, &p); build_end(bs);
     if (r) { LOG("[RED] [vk] compute pipeline failed: %016llx", (unsigned long long)cs->key); p = (VkPipeline)1; }
+    else if (V.pipe_stats) pipe_stats_log(p, cs->key);
     return p;
 }
 // Compute pipelines made ahead. One depends only on its shader (and integer-texel variants, rare), and building one costs Adreno 45-105 ms: Super Mario Odyssey's
