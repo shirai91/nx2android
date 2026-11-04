@@ -860,8 +860,12 @@ uint64_t mtl_present(const tex_t *t, double period, const int crop[4]) {
       static uint64_t last_exec; uint64_t ex = vk_replay_ns(), rp = ex - last_exec; last_exec = ex; double g = vk_gpu_ms_recent(); int64_t gn = g > 0 ? (int64_t)(g * 1e6) : 0;
       dm_perf_frame_cost((int64_t)rp, gn); }
     dm_perf_frame(period);   // paced to the game's frame period, and its work time reported to ADPF
-    static ANativeWindow *rate_win; static double rate_period;
-    if (g_win && (g_win != rate_win || period != rate_period)) { rate_win = g_win; rate_period = period; dm_perf_window(g_win, period > 0 ? 1.0 / period : 60); }
+    // A longer period goes to the window only once it has held for 60 presents; a shorter one at once. Super Mario Bros. Wonder's own controller (main+0xcfd24) asks
+    // for interval 2 for a frame or a few and then 1 again: each ask was a vote (176 in 3 minutes of its first level on the Y700, 27-60 a run in issue #64's log of an
+    // Adreno 750 phone with a 60 Hz display), and where the display changes its mode for a vote, the switch itself lengthens the next frames (issue #45: 30-40 fps)
+    static ANativeWindow *rate_win; static double rate_period, want_period; static uint64_t want_since;
+    if (period != want_period) { want_period = period; want_since = g_presents; }
+    if (g_win && (g_win != rate_win || (period != rate_period && (period < rate_period || g_presents - want_since >= 60)))) { rate_win = g_win; rate_period = period; dm_perf_window(g_win, period > 0 ? 1.0 / period : 60); }
     uint64_t n = ++g_presents;
     // without display times (no VK_GOOGLE_display_timing, no window, or none came back) the hand-over time stands in, as before: the governor's late check needs readings
     { int disp = V.has_dtiming && dm_front_window() && (n <= 240 || g_pres_recorded); struct timespec ts; if (!disp) clock_gettime(CLOCK_MONOTONIC, &ts);
