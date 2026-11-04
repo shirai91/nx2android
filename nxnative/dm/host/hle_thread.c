@@ -67,7 +67,8 @@ typedef struct thr {
     uint64_t nsvc;             // SVC count (for the state dump)
     uint64_t nyield, nyield_seen, nbackoff, nbackoff_seen;   // Yields (SleepThread 0/-1/-2) and those the back-off turned into short sleeps, with both counts at the last power report (dm_yield_top)
     uint64_t nspin, nspin_seen, spin_site; const char *spin_mod;   // Spin wait passes (dm_spin_wait; those that yield count in nyield too) and where the last one was
-    uint64_t spun[2][2];   // DM_WAIT_SPIN_US / DM_LOCK_SPIN_US spins of this thread's waits [0] and locks [1]: [.][0] ended by the wake or release, [.][1] ran out (dm_thread_cpu)
+    uint64_t spun[2][2];   // DM_WAIT_SPIN_US / DM_LOCK_SPIN_US spins of this thread's waits [0] and locks [1]: [.][0] ended by the wake or release, [.][1] ran out (dm_spin_report)
+    uint8_t spin_miss, spin_probe;   // how far this thread's recent wait spins ran out (block), and its waits that skipped spinning
     uint64_t srun_svc, srun_t0, spin_ret;     // Current spin wait: nsvc at its passes, when it began, when the last pass returned
     uint64_t cpu_seen_us;                     // CPU time (µs) at the last power report (dm_thread_cpu)
     uint64_t yrun_svc, yrun_t0, yrun_sig;     // Current run of yields: nsvc of the last yield, when the run began, and the caller's x19–x28 at the last yield (a run lasts while no other SVC comes between two yields and those registers stay the same, thr_yield)
@@ -211,10 +212,16 @@ static int64_t block(thr_t *t, int kind, int64_t ns) {
     t->wkind = kind; t->woke = 0; t->next = g_wait; g_wait = t; t->wseq = ++g_wseq;
     if (ns == 0) { wait_unlink(t); t->wkind = 0; return R_TIMEOUT; }
     // Spun outside G first (DM_WAIT_SPIN_US): wake() sees `spinning` under G and leaves the condition variable alone
-    uint64_t spin = spin_ns(0);
-    if (spin && !dm_detclock_enabled()) {
+    // A thread whose waits keep outlasting the spin sleeps at once: spin_miss rises 16 on a spin that ran out and falls 48 on one that ended in time, so a thread
+    // whose spins end in time less than a quarter of the time reaches 128, from where it spins in one wait of 16 to see whether its waits got short again. On the
+    // Android emulator Donkey Kong Bananza's guest threads spun ~7,800 waits a second, 30% of them to the end of their 300 us; with this 2.03 cores busy became
+    // 1.80-1.83, the frame's work the same within its noise (rising 32 / falling 64, 1.45 cores but 4-5 ms more work a frame). DM_WAIT_SPIN_ADAPT=0 (start-up):
+    // every wait spins
+    uint64_t spin = spin_ns(0); static int adapt = -1; if (adapt < 0) { const char *e = getenv("DM_WAIT_SPIN_ADAPT"); adapt = !(e && !atoi(e)); }
+    if (spin && !dm_detclock_enabled() && (!adapt || t->spin_miss < 128 || !(++t->spin_probe & 15))) {
         atomic_store(&t->spinning, 1); g_unlock();
         uint64_t t0 = now_ns(); int hit = spin_until(thr_woke, t, ns > 0 && (uint64_t)ns < spin ? (uint64_t)ns : spin); t->spun[0][!hit]++;
+        t->spin_miss = hit ? (t->spin_miss > 48 ? t->spin_miss - 48 : 0) : (t->spin_miss > 239 ? 255 : t->spin_miss + 16);
         g_lock(); atomic_store(&t->spinning, 0);
         if (t->woke) return t->wres;
         if (ns > 0 && (ns -= (int64_t)(now_ns() - t0)) <= 0) { wait_unlink(t); t->wkind = 0; return R_TIMEOUT; }

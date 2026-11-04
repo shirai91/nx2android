@@ -82,6 +82,9 @@ The source of each switch is in `nxnative/dm/android/` unless noted. Check the c
 | `DM_VK_X_RDKEEP=1` | live | runs of rasterizer-discard draws (vertex shaders that write memory) stay in the pass of the draws around them instead of a pass of their own: Xenoblade Chronicles 3 then draws thin black slivers over cliffs and grass in a few percent of frames |
 | `DM_VK_X_SKIPVS=<key>[,<key>...]` | live | leave out the draws whose vertex shader key (hex, as the traces print it; up to 8) is listed: bisect which shaders an artifact needs, a group at a time (it found XC3's slivers from 40 candidates in 4 rounds) |
 | `DM_VK_RP=0` | start-up | dynamic rendering instead of cached `VkRenderPass` objects with imageless framebuffers (Adreno's `vkCmdBeginRendering` cost about 40 µs a pass) |
+| `DM_VK_AB=<mask>` | live (`gfx_vk.h` `AB_*`) | each bit turns one replay optimization off, to measure it against the old way in one run: 1 the per-thread pool cache in front of the lock-free search, 2 copied pools read every block's page generations instead of the write marks, 4 index buffers bound at the draw's offset, 8 a vertex-buffer bind call per binding, 16 a program's shaders resolved at every bind, 32 the whole 992-byte pipeline key built for every draw |
+| `DM_VK_HOT_SYNCS=<n>` | live (`gfx_vk_pool.c`) | a copied pool's block written twice within n syncs (16) turns hot: copied at every sync instead of write-protected (fewer write faults on the game's threads for more bytes copied) |
+| `DM_WAIT_SPIN_ADAPT=0` | start-up (`host/hle_thread.c`) | with `DM_WAIT_SPIN_US`: every wait spins (default: a thread whose waits keep outlasting the spin sleeps at once, and spins in one wait of 16 to look again). The timing summary's `spins up to frame` line counts the spins and how many ended in time |
 
 ## Frame pacing and modes
 
