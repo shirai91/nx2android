@@ -142,6 +142,9 @@ static class SwshXlate
         // Job "gs_passthrough" = false (the Android chain): passthrough geometry shaders (Maxwell's fast GS) are written out as ordinary ones. VK_NV_geometry_shader_passthrough is NVIDIA's
         // alone; with its capability declared, Adreno refused every pipeline of Xenoblade Chronicles 3's effect geometry shaders (VK_ERROR_UNKNOWN)
         public bool QueryHostSupportsGeometryShaderPassthrough() => !(_job["gs_passthrough"] is JsonNode n && !(bool)n);
+        // Neither Metal nor any Android GPU has VK_NV_viewport_array2: a viewport mask write is left out instead of declaring ShaderViewportMaskNV (Donkey Kong Bananza's terrain
+        // geometry shader 5d537f7630ec3671 writes mask 1, viewport 0, which is where its primitives go anyway)
+        public bool QueryHostSupportsViewportMask() => false;
         JsonObject Xfb(int b) => _job["xfb"] is JsonArray a && b < a.Count ? a[b] as JsonObject : null;
         public bool QueryTransformFeedbackEnabled() => _job["xfb"] != null;
         public ReadOnlySpan<byte> QueryTransformFeedbackVaryingLocations(int bufferIndex)
