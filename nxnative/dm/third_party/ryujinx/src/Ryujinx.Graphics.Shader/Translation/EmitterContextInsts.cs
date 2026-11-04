@@ -821,9 +821,25 @@ namespace Ryujinx.Graphics.Shader.Translation
             return context.Add(Instruction.PackDouble2x32, Local(), a, b);
         }
 
+        // nxnative: the halves rounded to nearest even, with denormals and infinities, as NVIDIA converts. The Adreno 750's packHalf2x16 rounds toward zero
+        // and flushes denormals to zero, and Donkey Kong Bananza's upscaler network, whose layers pass their activations on as halves, drew blocks of noise
         public static Operand PackHalf2x16(this EmitterContext context, Operand a, Operand b)
         {
-            return context.Add(Instruction.PackHalf2x16, Local(), a, b);
+            return context.BitwiseOr(context.HalfBits(a), context.ShiftLeft(context.HalfBits(b), Const(16)));
+        }
+
+        private static Operand HalfBits(this EmitterContext context, Operand f)
+        {
+            Operand mag = context.BitwiseAnd(f, Const(0x7fffffff));
+            Operand sign = context.BitwiseAnd(context.ShiftRightU32(f, Const(16)), Const(0x8000));
+            Operand rounded = context.IAdd(context.IAdd(mag, Const(0xfff)), context.BitwiseAnd(context.ShiftRightU32(mag, Const(13)), Const(1)));
+            Operand normal = context.ISubtract(context.ShiftRightU32(rounded, Const(13)), Const(0x1c000));
+            Operand denormal = context.FP32ConvertToU32(context.FPRound(context.FPMultiply(mag, ConstF(16777216f))));
+            Operand h = context.ConditionalSelect(context.ICompareLessUnsigned(mag, Const(0x38800000)), denormal, normal);
+            h = context.ConditionalSelect(context.ICompareGreaterOrEqualUnsigned(rounded, Const(0x47800000)), Const(0x7c00), h);
+            h = context.ConditionalSelect(context.ICompareGreaterUnsigned(mag, Const(0x7f800000)), Const(0x7e00), h);
+
+            return context.BitwiseOr(h, sign);
         }
 
         public static void Return(this EmitterContext context)

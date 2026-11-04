@@ -22,10 +22,13 @@ namespace Ryujinx.Graphics.Shader.Instructions
 
         private static Operand AShuffle(EmitterContext context, Operand value, Operand lane) => context.Shuffle(value, lane, Const(0x1f)).Item1;
 
-        // The half of a 32-bit word selected by bit 0 of sel (0 low, 1 high), as a float
-        private static Operand AHalfOf(EmitterContext context, Operand word, Operand sel)
+        // The halves of 32-bit words selected by bit 0 of sel (0 low, 1 high), packed as a pair: moved as bits
+        private static Operand APackHalves(EmitterContext context, Operand lo, Operand hi, Operand sel)
         {
-            return context.ConditionalSelect(context.ICompareNotEqual(context.BitwiseAnd(sel, Const(1)), Const(0)), context.UnpackHalf2x16High(word), context.UnpackHalf2x16Low(word));
+            Operand shift = context.ShiftLeft(context.BitwiseAnd(sel, Const(1)), Const(4));
+            Operand Half(Operand word) => context.BitwiseAnd(context.ShiftRightU32(word, shift), Const(0xffff));
+
+            return context.BitwiseOr(Half(lo), context.ShiftLeft(Half(hi), Const(16)));
         }
 
         // LDSM Rd, [Ra + UR + offset]: matrices 72..74 (1, 2, 4), .MT88 (78..80 = 1) transposed. Lanes 8i..8i+7 give the row addresses of matrix i; Rd + i gets it
@@ -61,7 +64,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
                 Operand col = context.ShiftLeft(row, Const(1));
                 Operand a0 = context.IAdd(AShuffle(context, addr, r0), col);
                 Operand a1 = context.IAdd(AShuffle(context, addr, context.IAdd(r0, Const(1))), col);
-                res[i] = context.PackHalf2x16(AHalfOf(context, Word(a0), row), AHalfOf(context, Word(a1), row));
+                res[i] = APackHalves(context, Word(a0), Word(a1), row);
             }
 
             for (int i = 0; i < count; i++)
@@ -86,9 +89,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
 
             // element (2 (l % 4) + j, l / 4) is in lane 4 (2 (l % 4) + j) + (l / 4) / 2, half (l / 4) % 2
             Operand from = context.IAdd(context.ShiftLeft(quad, Const(3)), context.ShiftRightU32(row, Const(1)));
-            Operand lo = AHalfOf(context, AShuffle(context, src, from), row);
-            Operand hi = AHalfOf(context, AShuffle(context, src, context.IAdd(from, Const(4))), row);
-            ASet(context, x, context.PackHalf2x16(lo, hi));
+            ASet(context, x, APackHalves(context, AShuffle(context, src, from), AShuffle(context, src, context.IAdd(from, Const(4))), row));
         }
 
         // HMMA.16816 / .1688 Rd, Ra, Rb, Rc: D = A B + C. A (16 x K, row-major) in Ra.. (lane l: rows l / 4 and l / 4 + 8, columns 2 (l % 4).. and 8 more), B (K x 8,
