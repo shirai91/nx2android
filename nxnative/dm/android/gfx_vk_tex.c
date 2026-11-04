@@ -470,6 +470,21 @@ static VkComponentSwizzle apply(VkComponentSwizzle outer, const VkComponentMappi
     default: return outer;
     }
 }
+static VkComponentMapping sample_swizzle(const VkComponentMapping *format, const tex_t *t, const view_t *v, int attachment) {
+    if (attachment) return (VkComponentMapping){0};
+    // NVN view selectors override texture selectors; both refer to the NVN
+    // format's channels. Applying the texture first composes two selectors
+    // and can turn a requested mask channel into a different component.
+    int sw[4];
+    if (v && v->set_swizzle) for (int c=0;c<4;c++) sw[c]=v->swz[c];
+    else if (t->set_swz) for (int c=0;c<4;c++) sw[c]=(t->swz>>(3*c))&7;
+    else return *format;
+    return (VkComponentMapping){
+        apply(swz_comp(sw[0]),format,VK_COMPONENT_SWIZZLE_R),
+        apply(swz_comp(sw[1]),format,VK_COMPONENT_SWIZZLE_G),
+        apply(swz_comp(sw[2]),format,VK_COMPONENT_SWIZZLE_B),
+        apply(swz_comp(sw[3]),format,VK_COMPONENT_SWIZZLE_A)};
+}
 __thread VkFormat vk_view_fmt; __thread uint32_t vk_view_layers;
 VkImageView vk_tex_view(const tex_t *t, const view_t *vw, int dim, int arrayed, int as_attachment, vkimg_t **img_out) {
     vkimg_t *im = vk_tex(t); if (img_out) *img_out = im;
@@ -503,13 +518,7 @@ VkImageView vk_tex_view(const tex_t *t, const view_t *vw, int dim, int arrayed, 
     VkImageAspectFlags aspect = im->aspect;
     if (aspect == (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT) && !as_attachment)
         aspect = (!f->depth || t->stencil || (vw && vw->set_dsmode && vw->dsmode == 1)) ? VK_IMAGE_ASPECT_STENCIL_BIT : VK_IMAGE_ASPECT_DEPTH_BIT;   // (STENCIL8 alone may be stored combined)
-    VkComponentMapping swz = f->swz;
-    if (!as_attachment) {
-        if (t->set_swz) { VkComponentMapping o = swz; swz.r = apply(swz_comp(t->swz & 7), &o, VK_COMPONENT_SWIZZLE_R); swz.g = apply(swz_comp(t->swz >> 3 & 7), &o, VK_COMPONENT_SWIZZLE_G);
-                          swz.b = apply(swz_comp(t->swz >> 6 & 7), &o, VK_COMPONENT_SWIZZLE_B); swz.a = apply(swz_comp(t->swz >> 9 & 7), &o, VK_COMPONENT_SWIZZLE_A); }
-        if (vw && vw->set_swizzle) { VkComponentMapping o = swz; swz.r = apply(swz_comp(vw->swz[0]), &o, VK_COMPONENT_SWIZZLE_R); swz.g = apply(swz_comp(vw->swz[1]), &o, VK_COMPONENT_SWIZZLE_G);
-                                     swz.b = apply(swz_comp(vw->swz[2]), &o, VK_COMPONENT_SWIZZLE_B); swz.a = apply(swz_comp(vw->swz[3]), &o, VK_COMPONENT_SWIZZLE_A); }
-    } else swz = (VkComponentMapping){0};
+    VkComponentMapping swz = sample_swizzle(&f->swz,t,vw,as_attachment);
     VkFormat fmt = f->vk;
     const vkfmt_t *imf = vk_fmt(im->nvn_format);   // (a BC format decoded on the CPU counts as compressed: its view keeps the decoded image's format)
     if ((im->aspect & ~VK_IMAGE_ASPECT_COLOR_BIT) || (f->compressed || f->dec) != (imf->compressed || imf->dec) || (f->dec && f->dbpp != imf->dbpp)) fmt = im->fmt;   // depth views and block-size changes keep the image's format
