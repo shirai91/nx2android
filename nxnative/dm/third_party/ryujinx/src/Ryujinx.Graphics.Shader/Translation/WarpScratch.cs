@@ -1,7 +1,7 @@
 using Ryujinx.Common;
+using Ryujinx.Graphics.Shader.IntermediateRepresentation;
 using System;
 using System.Linq;
-using Ryujinx.Graphics.Shader.IntermediateRepresentation;
 using static Ryujinx.Graphics.Shader.IntermediateRepresentation.OperandHelper;
 
 namespace Ryujinx.Graphics.Shader.Translation
@@ -14,6 +14,8 @@ namespace Ryujinx.Graphics.Shader.Translation
     // There are two buffers: where the emitter tracks which ones the last exchanges' reads may still use (EmitterContext.ScratchBusy, Ampere blocks), an exchange
     // takes a free one, after the barrier of the one before, with no barrier before its stores (half the barriers: they were 3-5 ms of the upscaler's 22);
     // elsewhere it takes buffer 0, after a barrier.
+    // An exchange may keep its words in column order (columns: lane l at position 8 (l % 4) + l / 4 of the warp's), so that lanes q, q + 4 .. q + 28 come in two
+    // loads (Column; MOVM's sources, InstEmitAmpereMma AFragments).
     // The mirror (Mirror) is memory of its own, of a slot a register: words stored there once stay for reads in any later block while the register is unchanged
     // (Donkey Kong Bananza's upscaler: the weights LDSM loads at each of its six stages, that the HMMAs of the five taps after read)
     readonly struct WarpScratch
@@ -22,6 +24,7 @@ namespace Ryujinx.Graphics.Shader.Translation
 
         private readonly EmitterContext _context;
         private readonly int _id, _stride, _first, _step;
+        private readonly bool _columns;
         private readonly Operand _warp;
 
         public static bool Applies(ShaderStage stage) => stage == ShaderStage.Compute;
@@ -31,7 +34,12 @@ namespace Ryujinx.Graphics.Shader.Translation
         {
         }
 
-        private WarpScratch(EmitterContext context, ShaderDefinitions definitions, Operand[] words, int[] slots, int first, int step, Func<int, int> memory)
+        public WarpScratch(EmitterContext context, bool columns, params Operand[] words)
+            : this(context, context.TranslatorContext.Definitions, words, null, Buffer(context), 2, stride => context.ResourceManager.WarpScratchId(stride * 2 * words.Length), columns)
+        {
+        }
+
+        private WarpScratch(EmitterContext context, ShaderDefinitions definitions, Operand[] words, int[] slots, int first, int step, Func<int, int> memory, bool columns = false)
         {
             int sx = definitions.ComputeLocalSizeX, sy = definitions.ComputeLocalSizeY;
             Operand Id(int c) => context.Load(StorageKind.Input, IoVariable.ThreadId, null, Const(c));
@@ -39,10 +47,11 @@ namespace Ryujinx.Graphics.Shader.Translation
             int threads = sx * sy * definitions.ComputeLocalSizeZ;
 
             _context = context;
-            _stride = BitUtils.AlignUp(threads, 4);
+            _stride = BitUtils.AlignUp(threads, columns ? 32 : 4);   // (a partial last warp's column positions stay inside the word's)
             _id = memory(_stride);
             _first = first;
             _step = step;
+            _columns = columns;
 
             Operand linear = threads == sx ? Id(0) : context.IAdd(Id(0), context.IMultiply(context.IAdd(Id(1), context.IMultiply(Id(2), Const(sy))), Const(sx)));
             _warp = context.BitwiseAnd(linear, Const(~31));
@@ -61,7 +70,7 @@ namespace Ryujinx.Graphics.Shader.Translation
 
             for (int k = 0; k < words.Length; k++)
             {
-                Operand at = context.IAdd(linear, Const(Slot(slots?[k] ?? k) * _stride));
+                Operand at = context.IAdd(columns ? context.IAdd(_warp, Position(context.BitwiseAnd(linear, Const(31)))) : linear, Const(Slot(slots?[k] ?? k) * _stride));
                 context.Store(StorageKind.SharedMemory, _id, context.ShiftRightU32(at, Const(2)), context.BitwiseAnd(at, Const(3)), words[k]);
             }
 
@@ -117,17 +126,44 @@ namespace Ryujinx.Graphics.Shader.Translation
 
         private int Slot(int k) => k * _step + _first;
 
+        private Operand Position(Operand lane) => _columns ? _context.BitwiseOr(_context.ShiftLeft(_context.BitwiseAnd(lane, Const(3)), Const(3)), _context.ShiftRightU32(lane, Const(2))) : lane;
+
         // Word k of the warp's lane (0..31)
         public Operand Read(Operand lane, int k = 0)
         {
-            Operand at = _context.IAdd(_context.IAdd(_warp, lane), Const(Slot(k) * _stride));
+            Operand at = _context.IAdd(_context.IAdd(_warp, Position(lane)), Const(Slot(k) * _stride));
 
             return _context.Load(StorageKind.SharedMemory, _id, _context.ShiftRightU32(at, Const(2)), _context.BitwiseAnd(at, Const(3)));
+        }
+
+        // Word k of the warp's lanes q, q + 4 .. q + 28 (q 0..3)
+        public Operand[] Column(Operand q, int k = 0)
+        {
+            if (!_columns)
+            {
+                Operand[] words = new Operand[8];
+
+                for (int r = 0; r < 8; r++)
+                {
+                    words[r] = Read(_context.IAdd(q, Const(4 * r)), k);
+                }
+
+                return words;
+            }
+
+            Operand at = _context.ShiftRightU32(_context.IAdd(_context.IAdd(_warp, _context.ShiftLeft(q, Const(3))), Const(Slot(k) * _stride)), Const(2));
+
+            return [.. _context.LoadVector4(StorageKind.SharedMemory, _id, at), .. _context.LoadVector4(StorageKind.SharedMemory, _id, _context.IAdd(at, Const(1)))];
         }
 
         // Word k of the warp's lanes lane4 .. lane4 + 3 (lane4 a multiple of 4)
         public Operand[] Read4(Operand lane4, int k = 0)
         {
+            if (_columns)
+            {
+                return [Read(lane4, k), Read(_context.IAdd(lane4, Const(1)), k), Read(_context.IAdd(lane4, Const(2)), k), Read(_context.IAdd(lane4, Const(3)), k)];
+            }
+
             return _context.LoadVector4(StorageKind.SharedMemory, _id, _context.ShiftRightU32(_context.IAdd(_context.IAdd(_warp, lane4), Const(Slot(k) * _stride)), Const(2)));
         }
     }

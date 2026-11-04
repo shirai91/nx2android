@@ -15,6 +15,7 @@ namespace Ryujinx.Graphics.Shader.Translation
         public TranslatorContext TranslatorContext { get; }
         public ResourceManager ResourceManager { get; }
         public Dictionary<(int Reg, int Lanes), Operand[]> Fragments { get; } = new();   // nxnative: an Ampere block's HMMA fragments read so far (AHmma)
+        public Dictionary<(int Reg, int Lanes), Operand[]> Written { get; } = new();   // nxnative: those of the registers the current instruction writes (AMovm)
         public Dictionary<int, int> Mirrored { get; set; } = new();   // nxnative: registers whose words the warp's mirror holds, by slot (WarpScratch.Mirror)
         public Dictionary<int, int> Mirroring { get; } = new();   // nxnative: the registers the current instruction mirrors
         public Dictionary<Block, Dictionary<int, int>> MirroredAtEnd { get; } = new();

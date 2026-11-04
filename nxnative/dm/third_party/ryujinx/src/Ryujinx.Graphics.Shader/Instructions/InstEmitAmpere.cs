@@ -82,21 +82,30 @@ namespace Ryujinx.Graphics.Shader.Instructions
     // in between read the registers' old values (LDG R2, [R2.64] then LDG R3, [R2.64 + 4] reads the address twice)
     sealed class AmpereScoreboards
     {
-        private readonly List<(Register Reg, Operand Shadow, Operand Guard, int Slot)>[] _pending = new List<(Register, Operand, Operand, int)>[6];
+        private readonly List<(Register Reg, Operand Shadow, Operand Guard, int Slot, (int, int)[] Keys, Operand[][] Words)>[] _pending =
+            new List<(Register, Operand, Operand, int, (int, int)[], Operand[][])>[6];
         private readonly Stack<int> _free = new(Enumerable.Range(0, RegisterConsts.ShadowsCount).Reverse());
 
         public Operand NewShadow() => Register(_free.Pop(), RegisterType.Shadow);
 
         public void Free(Operand shadow) => _free.Push(shadow.GetRegister().Index);
 
-        public void Hold(int barrier, Register reg, Operand shadow, Operand guard, int slot) => (_pending[barrier] ??= []).Add((reg, shadow, guard, slot));
+        // slot: the register's mirror slot, keys / words: its fragments (EmitterContext.Written), once it lands
+        public void Hold(int barrier, Register reg, Operand shadow, Operand guard, int slot, (int, int)[] keys, Operand[][] words) =>
+            (_pending[barrier] ??= []).Add((reg, shadow, guard, slot, keys, words));
 
         public void Commit(EmitterContext context, int barrier)
         {
-            foreach ((Register reg, Operand shadow, Operand guard, int slot) in _pending[barrier] ?? [])
+            foreach ((Register reg, Operand shadow, Operand guard, int slot, (int, int)[] keys, Operand[][] words) in _pending[barrier] ?? [])
             {
                 InstEmit.AWrite(context, Register(reg), shadow, guard);
                 InstEmit.SetMirrored(context, reg, slot);
+
+                for (int i = 0; i < keys.Length; i++)
+                {
+                    context.Written[keys[i]] = words[i];
+                }
+
                 Free(shadow);
             }
 
@@ -114,9 +123,9 @@ namespace Ryujinx.Graphics.Shader.Instructions
         // A register written again before its held result landed: the newer write stands
         public void Drop(Register reg)
         {
-            foreach (List<(Register Reg, Operand Shadow, Operand Guard, int Slot)> list in _pending)
+            foreach (List<(Register Reg, Operand Shadow, Operand Guard, int Slot, (int, int)[] Keys, Operand[][] Words)> list in _pending)
             {
-                foreach ((Register r, Operand shadow, _, _) in list?.FindAll(p => p.Reg.Equals(reg)) ?? [])
+                foreach ((Register r, Operand shadow, _, _, _, _) in list?.FindAll(p => p.Reg.Equals(reg)) ?? [])
                 {
                     Free(shadow);
                 }
@@ -167,7 +176,8 @@ namespace Ryujinx.Graphics.Shader.Instructions
                     context.Add(new CommentNode($"0x{op.Address:X6}: {x.Hi:X16}{x.Lo:X16} {op.Name}"));
                 }
 
-                Forget(context, landed);   // (held results that landed)
+                Forget(context, landed);   // (held results that landed, their fragments after)
+                Remember(context);
 
                 if (x.Guard == Pt && x.GuardNot)
                 {
@@ -214,6 +224,11 @@ namespace Ryujinx.Graphics.Shader.Instructions
                 Forget(context, start);
                 ForgetMirrored(context, start);
 
+                if (x.Guard != Pt)
+                {
+                    context.Written.Clear();
+                }
+
                 if (select || hold)
                 {
                     Operand g = select && hold ? context.Copy(guard) : guard;
@@ -222,7 +237,8 @@ namespace Ryujinx.Graphics.Shader.Instructions
                     {
                         if (hold)
                         {
-                            sb.Hold(x.WriteBarrier, reg, shadow, select ? g : null, context.Mirroring.GetValueOrDefault(reg.Index, -1));
+                            (int, int)[] keys = context.Written.Keys.Where(key => key.Item1 == reg.Index && reg.Type == RegisterType.Gpr).ToArray();
+                            sb.Hold(x.WriteBarrier, reg, shadow, select ? g : null, context.Mirroring.GetValueOrDefault(reg.Index, -1), keys, keys.Select(key => context.Written[key]).ToArray());
                         }
                         else
                         {
@@ -242,11 +258,30 @@ namespace Ryujinx.Graphics.Shader.Instructions
                 }
 
                 context.Mirroring.Clear();
+
+                if (hold)
+                {
+                    context.Written.Clear();
+                }
+
+                Remember(context);
             }
 
             sb.CommitAll(context);
+            context.Written.Clear();
             context.MirroredAtEnd[block] = context.Mirrored;
             context.ScratchBusyAtEnd[block] = context.ScratchBusy;
+        }
+
+        // The fragments of the registers just written (EmitterContext.Written) go to the block's cache
+        private static void Remember(EmitterContext context)
+        {
+            foreach (KeyValuePair<(int, int), Operand[]> written in context.Written)
+            {
+                context.Fragments[written.Key] = written.Value;
+            }
+
+            context.Written.Clear();
         }
 
         // The registers the operations from start on write are no longer mirrored

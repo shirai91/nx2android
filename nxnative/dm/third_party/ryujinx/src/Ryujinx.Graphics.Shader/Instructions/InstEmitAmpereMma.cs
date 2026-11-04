@@ -27,15 +27,18 @@ namespace Ryujinx.Graphics.Shader.Instructions
         // The words of the warp's lanes: Read(lane 0..31, k) is words[k] of that lane, Read4(lane4, k) of lanes lane4 .. lane4 + 3. Through workgroup memory in
         // compute shaders (WarpScratch), else by plain shuffles (the lane is valid by construction: no SHFL helper), in a host subgroup of several warps among the
         // lane's own
-        private readonly record struct AWarpWords(Func<Operand, int, Operand> Read, Func<Operand, int, Operand[]> Read4);
+        private readonly record struct AWarpWords(Func<Operand, int, Operand> Read, Func<Operand, int, Operand[]> Read4, Func<Operand, int, Operand[]> Column);
 
-        private static AWarpWords AWarp(EmitterContext context, params Operand[] words)
+        private static AWarpWords AWarp(EmitterContext context, params Operand[] words) => AWarp(context, false, words);
+
+        // columns: kept for Column (WarpScratch)
+        private static AWarpWords AWarp(EmitterContext context, bool columns, params Operand[] words)
         {
             if (WarpScratch.Applies(context.TranslatorContext.Definitions.Stage))
             {
-                WarpScratch scratch = new(context, context.ResourceManager, context.TranslatorContext.Definitions, words);
+                WarpScratch scratch = new(context, columns, words);
 
-                return new(scratch.Read, scratch.Read4);
+                return new(scratch.Read, scratch.Read4, scratch.Column);
             }
 
             Operand warp = context.TranslatorContext.GpuAccessor.QueryHostSubgroupSize() > 32
@@ -43,12 +46,14 @@ namespace Ryujinx.Graphics.Shader.Instructions
                 : null;
             Operand Read(Operand lane, int k) => context.Shuffle(words[k], warp != null ? context.BitwiseOr(lane, warp) : lane);
 
-            return new(Read, (lane4, k) => [Read(lane4, k), Read(context.IAdd(lane4, Const(1)), k), Read(context.IAdd(lane4, Const(2)), k), Read(context.IAdd(lane4, Const(3)), k)]);
+            return new(Read, (lane4, k) => [Read(lane4, k), Read(context.IAdd(lane4, Const(1)), k), Read(context.IAdd(lane4, Const(2)), k), Read(context.IAdd(lane4, Const(3)), k)],
+                (q, k) => Enumerable.Range(0, 8).Select(r => Read(context.IAdd(q, Const(4 * r)), k)).ToArray());
         }
 
         // The kinds of lane sets cross-lane reads take a register's words from (AFragments): HMMA's A (lanes 4 (l / 4) .. + 3), B (4 (2 (l % 4) + i) .. + 3, i = 0, 1),
-        // MOVM's (8 (l % 4) + (l / 4) / 2 and + 4), LDSM's row addresses (matrix i: l / 4 + 8 i; transposed rows 2 (l % 4) + 8 i and + 1)
-        private const int FragA = 0, FragB = 1, FragMovm = 3, FragLdsm = 4, FragLdsmT = 8;
+        // MOVM's (8 (l % 4) + (l / 4) / 2 and + 4), LDSM's row addresses (matrix i: l / 4 + 8 i; transposed rows 2 (l % 4) + 8 i and + 1), a column's (l % 4 + 4 r,
+        // r = 0..7)
+        private const int FragA = 0, FragB = 1, FragMovm = 3, FragLdsm = 4, FragLdsmT = 8, FragCol = 12;
 
         // Registers' words of other lanes, as (register, kind) keys want. Words an earlier instruction of the block read come from its cache (EmitterContext.Fragments,
         // emptied where a register is written); the others in one exchange, with those the run of like instructions after this one wants (MOVMs after a MOVM,
@@ -79,13 +84,13 @@ namespace Ryujinx.Graphics.Shader.Instructions
 
                     if (!written.Contains(y.Ra))
                     {
-                        missing.AddRange((x.Op == 0x23a ? [(y.Ra, FragMovm)] : LdsmKeys(y)).Where(key => !cache.ContainsKey(key) && !missing.Contains(key)));
+                        missing.AddRange((x.Op == 0x23a ? [(y.Ra, FragMovm), (y.Ra, FragCol)] : LdsmKeys(y)).Where(key => !cache.ContainsKey(key) && !missing.Contains(key)));
                     }
                 }
 
                 // mirrored registers' words come from the mirror, the others' through an exchange
                 int[] regs = missing.Select(m => m.Reg).Where(r => !context.Mirrored.ContainsKey(r)).Distinct().ToArray();
-                AWarpWords words = AWarp(context, regs.Select(r => AGpr(r)).ToArray());
+                AWarpWords words = AWarp(context, missing.All(m => m.Kind is FragMovm or FragCol), regs.Select(r => AGpr(r)).ToArray());
                 WarpScratch mirror = regs.Length < missing.Select(m => m.Reg).Distinct().Count() ? WarpScratch.Mirror(context) : default;
                 Operand lane = ALane(context);
                 Operand row = context.ShiftRightU32(lane, Const(2)), quad = context.BitwiseAnd(lane, Const(3));
@@ -93,7 +98,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
                 foreach ((int reg, int kind) in missing)
                 {
                     int w = Array.IndexOf(regs, reg);
-                    (AWarpWords src, int k) = w >= 0 ? (words, w) : (new(mirror.Read, mirror.Read4), context.Mirrored[reg]);
+                    (AWarpWords src, int k) = w >= 0 ? (words, w) : (new(mirror.Read, mirror.Read4, mirror.Column), context.Mirrored[reg]);
                     Operand at(int l) => context.IAdd(context.ShiftLeft(quad, Const(1)), Const(l));
 
                     res[(reg, kind)] = kind switch
@@ -103,6 +108,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
                         FragMovm => [src.Read(context.IAdd(context.ShiftLeft(quad, Const(3)), context.ShiftRightU32(row, Const(1))), k),
                                      src.Read(context.IAdd(context.IAdd(context.ShiftLeft(quad, Const(3)), context.ShiftRightU32(row, Const(1))), Const(4)), k)],
                         < FragLdsmT => [src.Read(context.IAdd(row, Const(8 * (kind - FragLdsm))), k)],
+                        FragCol => src.Column(quad, k),
                         _ => [src.Read(at(8 * (kind - FragLdsmT)), k), src.Read(at(8 * (kind - FragLdsmT) + 1), k)],
                     };
 
@@ -192,8 +198,20 @@ namespace Ryujinx.Graphics.Shader.Instructions
                 throw AFail(context, "MOVM other than MT88");
             }
 
-            Operand[] src = AFragments(context, [(x.Ra, FragMovm)])[(x.Ra, FragMovm)];
+            Dictionary<(int, int), Operand[]> frag = AFragments(context, [(x.Ra, FragMovm), (x.Ra, FragCol)]);
+            Operand[] src = frag[(x.Ra, FragMovm)], col = frag[(x.Ra, FragCol)];
             ASet(context, x, APackHalves(context, src[0], src[1], context.ShiftRightU32(ALane(context), Const(2))));
+
+            // the result's words as HMMA's B, from the same exchange: column 2 (l % 4) + i of B is the result's lanes 4 (2 (l % 4) + i) + q, whose words are halves i
+            // of the source's column l % 4, rows 2 q and 2 q + 1 (Donkey Kong Bananza's upscaler: B had been exchanged again after each tap's MOVMs)
+            Operand Halves(Operand lo, Operand hi, int i) => i == 0
+                ? context.BitwiseOr(context.BitwiseAnd(lo, Const(0xffff)), context.ShiftLeft(hi, Const(16)))
+                : context.BitwiseOr(context.ShiftRightU32(lo, Const(16)), context.BitwiseAnd(hi, Const(unchecked((int)0xffff0000))));
+
+            for (int i = 0; i < 2; i++)
+            {
+                context.Written[(x.Rd, FragB + i)] = Enumerable.Range(0, 4).Select(q => Halves(col[2 * q], col[2 * q + 1], i)).ToArray();
+            }
         }
 
         // HMMA.16816 / .1688 Rd, Ra, Rb, Rc: D = A B + C. A (16 x K, row-major) in Ra.. (lane l: rows l / 4 and l / 4 + 8, columns 2 (l % 4).. and 8 more), B (K x 8,
