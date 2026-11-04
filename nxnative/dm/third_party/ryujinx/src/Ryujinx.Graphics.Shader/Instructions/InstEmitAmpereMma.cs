@@ -2,6 +2,8 @@ using Ryujinx.Graphics.Shader.Decoders;
 using Ryujinx.Graphics.Shader.IntermediateRepresentation;
 using Ryujinx.Graphics.Shader.Translation;
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using static Ryujinx.Graphics.Shader.IntermediateRepresentation.OperandHelper;
 
 namespace Ryujinx.Graphics.Shader.Instructions
@@ -131,24 +133,51 @@ namespace Ryujinx.Graphics.Shader.Instructions
             Operand lane = ALane(context);
             Operand row = context.ShiftRightU32(lane, Const(2)), quad = context.BitwiseAnd(lane, Const(3));
 
-            // A's rows r and r + 8 (r = l / 4) come from lanes 4r + q; B's columns 2 (l % 4) and 2 (l % 4) + 1 from lanes 4 (2 (l % 4) + j) + q (q = 0..3). The
-            // exchange holds Ra.. (A's k / 4 registers), then Rb.. (B's k / 8)
-            Operand[] words = new Operand[k / 4 + k / 8];
+            // A's rows r and r + 8 (r = l / 4) are register Ra + m + 2 h's words of lanes 4r .. 4r + 3; B's column 2 (l % 4) + i is Rb + h's words of lanes
+            // 4 (2 (l % 4) + i) .. + 3. Words an earlier HMMA of the block read come from the block's cache (EmitterContext.Fragments, emptied where a register is
+            // written), the others through one exchange: a tile's HMMAs share their A and B registers (Donkey Kong Bananza's upscaler: 64 vector loads a tile to 40)
+            Dictionary<(int Reg, int Lanes), Operand[]> cache = context.Fragments, fetched = new();
+            List<(int Reg, int Lanes)> missing = [];
+            Operand Lanes(int kind) => kind == 0 ? context.ShiftLeft(row, Const(2)) : context.IAdd(context.ShiftLeft(quad, Const(3)), Const(4 * (kind - 1)));
 
-            for (int i = 0; i < words.Length; i++)
+            for (int h = 0; h < k / 8; h++)
             {
-                words[i] = i < k / 4 ? AGpr(x.Ra, i) : AGpr(x.Rb, i - k / 4);
+                for (int i = 0; i < 2; i++)
+                {
+                    foreach ((int, int) key in new[] { (x.Ra + i + 2 * h, 0), (x.Rb + h, 1 + i) })
+                    {
+                        if (!cache.ContainsKey(key) && !missing.Contains(key))
+                        {
+                            missing.Add(key);
+                        }
+                    }
+                }
             }
 
-            AWarpWords frag = AWarp(context, words);
+            if (missing.Count != 0)
+            {
+                int[] regs = missing.Select(m => m.Reg).Distinct().ToArray();
+                AWarpWords frag = AWarp(context, regs.Select(r => AGpr(r)).ToArray());
+                missing.ForEach(m => fetched[m] = frag.Read4(Lanes(m.Lanes), Array.IndexOf(regs, m.Reg)));
+
+                if (x.Guard == Pt)   // (a guarded HMMA's words do not dominate the block's later code)
+                {
+                    foreach (KeyValuePair<(int, int), Operand[]> f in fetched)
+                    {
+                        cache[f.Key] = f.Value;
+                    }
+                }
+            }
+
+            Operand[] Words((int, int) key) => cache.TryGetValue(key, out Operand[] w) ? w : fetched[key];
             Operand[,][] aw = new Operand[2, k / 8][], bw = new Operand[2, k / 8][];   // the words of A's rows and B's columns, [q] with halves 8 h + 2 q and + 1
 
             for (int h = 0; h < k / 8; h++)
             {
                 for (int i = 0; i < 2; i++)
                 {
-                    aw[i, h] = frag.Read4(context.ShiftLeft(row, Const(2)), i + 2 * h);
-                    bw[i, h] = frag.Read4(context.IAdd(context.ShiftLeft(quad, Const(3)), Const(4 * i)), k / 4 + h);
+                    aw[i, h] = Words((x.Ra + i + 2 * h, 0));
+                    bw[i, h] = Words((x.Rb + h, 1 + i));
                 }
             }
 

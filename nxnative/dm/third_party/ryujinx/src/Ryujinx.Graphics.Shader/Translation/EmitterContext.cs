@@ -14,6 +14,7 @@ namespace Ryujinx.Graphics.Shader.Translation
         public DecodedProgram Program { get; }
         public TranslatorContext TranslatorContext { get; }
         public ResourceManager ResourceManager { get; }
+        public Dictionary<(int Reg, int Lanes), Operand[]> Fragments { get; } = new();   // nxnative: an Ampere block's HMMA fragments read so far (AHmma)
 
         public bool VertexAsCompute { get; }
 

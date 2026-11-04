@@ -132,12 +132,14 @@ namespace Ryujinx.Graphics.Shader.Instructions
         public static void EmitAmpereBlock(EmitterContext context, Block block)
         {
             AmpereScoreboards sb = new();   // every result held lands by the block's end
+            context.Fragments.Clear();
 
             for (int i = 0; i < block.OpCodes.Count; i++)
             {
                 InstOp op = block.OpCodes[i];
                 AmpereOp x = new(op);
                 AmpereProps props = AmpereTable.Props(x.Op);
+                int landed = context.OperationsCount;
 
                 for (int b = 0; b < 6; b++)
                 {
@@ -156,6 +158,8 @@ namespace Ryujinx.Graphics.Shader.Instructions
                 {
                     context.Add(new CommentNode($"0x{op.Address:X6}: {x.Hi:X16}{x.Lo:X16} {op.Name}"));
                 }
+
+                Forget(context, landed);   // (held results that landed)
 
                 if (x.Guard == Pt && x.GuardNot)
                 {
@@ -185,6 +189,8 @@ namespace Ryujinx.Graphics.Shader.Instructions
                     context.MarkLabel(skip);
                 }
 
+                Forget(context, start);
+
                 if (select || hold)
                 {
                     Operand g = select && hold ? context.Copy(guard) : guard;
@@ -213,6 +219,18 @@ namespace Ryujinx.Graphics.Shader.Instructions
             }
 
             sb.CommitAll(context);
+        }
+
+        // The cached HMMA fragments of the registers the operations from start on write
+        private static void Forget(EmitterContext context, int start)
+        {
+            foreach (Register reg in Dests(context, start))
+            {
+                foreach ((int, int) key in context.Fragments.Keys.Where(f => f.Reg == reg.Index && reg.Type == RegisterType.Gpr).ToList())
+                {
+                    context.Fragments.Remove(key);
+                }
+            }
         }
 
         // reg = shadow, or where guard holds
