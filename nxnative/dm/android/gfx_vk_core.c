@@ -230,6 +230,7 @@ void vk_init(void) {
           V.has_bc ? "yes" : "no (decoded on the CPU)", V.has_astc ? "yes" : "no", V.has_gs ? "yes" : "no", V.has_robust2 ? "yes" : "no", V.has_custom_border ? "yes" : "no", V.has_depth_clip_ctl ? "yes" : "no", V.has_xfb ? "yes" : "no", dn);
     slots_init();
     completion_start();
+    { void crash_handlers_check(const char *when); crash_handlers_check("after the Vulkan device was made"); }   // (again at present 600, gfx_vk_present.c: the shader compiler loads with the first pipelines)
 }
 void vk_pipeline_cache_save(void) {
     static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER; static size_t last;
