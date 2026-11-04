@@ -3,18 +3,18 @@
 # The same translator as the Apple chain (dm/gfx/tools/dmsh_xlate_bin, Ryujinx's translator with TargetApi.Vulkan) and the same jobs as dmsh_build.py
 # (control section / code area / c1 split, the VertexA + VertexB merge, the profile's answer table), but no MSL: Vulkan takes the SPIR-V as it is.
 # Geometry shaders are translated as Vulkan geometry shaders (the Apple chain emulates them in compute kernels).
-#   DM_GAME=<id> shader_vk.py <package dir> <out bundle> [--jobs N] [--keys k1,k2] [--xlate <dmsh_xlate.dll>] [--capture <dir>]
+#   DM_GAME=<id> shader_vk.py <package dir> <out bundle> [--jobs N] [--keys k1,k2] [--xlate <dmsh_xlate.dll>] [--capture <dir>] [--zstd <level>]
 # --capture: shaders whose code no game file holds, saved on the device by the Vulkan backend (gfx_vk_shader.c vk_shader_missing: <key>.bin = "DMSC", u32 control length, u32 code length,
 #   control section, code area), translated beside the package's; a file whose content does not hash to its name, or whose key the package has, is left out
-# Bundle (read by the Vulkan backend, dm/android/gfx_vk_shader.c): "DMSV" u32 version, u32 count, then count entries {u64 key, u32 stage, u32 spv_off, u32 spv_len,
-#   u32 refl_off, u32 refl_len, u32 pad} sorted by key, then the blobs. refl is compact JSON: bindings, c1, local size, notes.
+# Bundle (read by the Vulkan backend, dm/android/gfx_vk_shader.c): dmsv.py has the format and writes it. Each shader's SPIR-V and its binary reflection (refl_bin, below);
+#   version 2, the SPIR-V of each module zstd-compressed (--zstd, default dmsv.LEVEL; 0 or a Python without zstd: version 1, uncompressed).
 import argparse, collections, concurrent.futures as cf, hashlib, json, os, re, struct, subprocess, sys, tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 TOOLS = HERE.parent.parent / 'gfx/tools'
-sys.path.insert(0, str(TOOLS))
-import dmsh_facts, dmsh_chain   # noqa: E402  (DM_GAME picks the profile)
+sys.path[:0] = [str(TOOLS), str(HERE)]
+import dmsh_facts, dmsh_chain, dmsv   # noqa: E402  (DM_GAME picks the profile)
 
 ap = argparse.ArgumentParser()
 ap.add_argument('pkg'); ap.add_argument('out')
@@ -22,6 +22,7 @@ ap.add_argument('--jobs', type=int, default=os.cpu_count() or 8)
 ap.add_argument('--keys', default='')
 ap.add_argument('--dotnet', default=os.environ.get('DOTNET', 'dotnet'))
 ap.add_argument('--capture', help='a folder of shaders captured at run time on the device (<key>.bin)')
+ap.add_argument('--zstd', type=int, default=dmsv.LEVEL, help=f'zstd level of the SPIR-V in the bundle (default {dmsv.LEVEL}); 0: version 1, uncompressed')
 ap.add_argument('--xlate', help="the translator (dmsh_xlate.dll) to run (default: the iOS chain's dm/gfx/tools/dmsh_xlate_bin; the porter builds one from the in-repo source)")
 a = ap.parse_args()
 
@@ -297,13 +298,10 @@ def main():
         # header words 2-4: a compute shader's local size; a vertex shader's input locations (all, signed int, unsigned int); a pixel shader's output locations
         hdr3 = (local or jobs[k].get('local') or [1, 1, 1]) if st == 'cs' else io[1] if st == 'vs' else io[3] if st == 'ps' else [0, 0, 0]
         entries.append((int(k, 16), STAGES.get(st, 0), spv, refl_bin(cl, c1s[k], hdr3)))
-    entries.sort(key=lambda e: e[0])
-    hdr = struct.pack('<4sII', b'DMSV', 1, len(entries)); ent_sz = 32
-    off = len(hdr) + ent_sz * len(entries); table, blobs = [], []
-    for key, st, spv, refl in entries:
-        table.append(struct.pack('<QIIIIII', key, st, off, len(spv), off + len(spv), len(refl), 0)); blobs += [spv, refl]; off += len(spv) + len(refl)
-    with open(a.out, 'wb') as f: f.write(hdr + b''.join(table) + b''.join(blobs))
-    print(f'{len(entries)} of {len(keys)} shaders → {a.out} ({off / 2**20:.1f} MB); failed: {dict(fails)}; binding kinds: {dict(kinds_all)}')
+    if a.zstd: print(f'compressing {len(entries)} shaders (zstd level {a.zstd}, {a.jobs} threads) ...', flush=True)
+    ver, raw, stored = dmsv.write(a.out, entries, level=a.zstd, jobs=a.jobs)
+    print(f'{len(entries)} of {len(keys)} shaders → {a.out} ({os.path.getsize(a.out) / 2**20:.1f} MB, version {ver}: SPIR-V {raw / 2**20:.1f} MB'
+          f'{f", {stored / 2**20:.1f} MB compressed" if ver > 1 else ""}); failed: {dict(fails)}; binding kinds: {dict(kinds_all)}')
     for e, n in errs.most_common(8): print(f'  translator: {n:5d}  {e}')
 
 main()

@@ -515,13 +515,14 @@ class Port:
         PROG.stage('Vulkan shaders', step='building the translator')
         xlate, xkey = self.translator()
         PROG.set(step='checking the inputs')
-        key = nsp.fingerprint(nsp.package_key(pkg), ('files', [DM / 'android/tools/shader_vk.py'] + nsp.tool_files(NXNATIVE)), ('files', nsp.profile_files(self.g)), xkey,
+        key = nsp.fingerprint(nsp.package_key(pkg), ('files', [DM / 'android/tools/shader_vk.py', DM / 'android/tools/dmsv.py'] + nsp.tool_files(NXNATIVE)), ('files', nsp.profile_files(self.g)), xkey,
                               ('files', sorted(cap.glob('*.bin'))))
         if self.dmsv.is_file() and (note := nsp.reused(kf, key)) is not None:
             PROG.end(f'{note}, reused (inputs unchanged)'); return
         tmp = self.dmsv.with_name('shaders.dmsv.partial'); nsp.rmtree(tmp); nsp.rmtree(kf)
         def line(s):
-            if m := re.match(r'translating (\d+) shaders', s): PROG.set(step=f'translating {int(m.group(1)):,} shaders')
+            if m := re.match(r'(translating|compressing) (\d+) shaders', s): PROG.set(step=f'{m.group(1)} {int(m.group(2)):,} shaders')   # compressing: the bundle's SPIR-V (dmsv.py)
+            elif s.startswith('[RED] this Python has no zstd'): say(s)   # the bundle then goes uncompressed: 3.5x the space on the device
         nsp.run([PY, DM / 'android/tools/shader_vk.py', pkg, tmp, '--jobs', str(self.o.jobs), '--dotnet', self.tools['dotnet'], '--xlate', xlate, '--capture', cap],
                 self.logs / 'android_shaders.log', env=self.env, on_line=line)
         m = re.search(r'^(\d+) of (\d+) shaders', (self.logs / 'android_shaders.log').read_text(errors='replace'), re.M)
