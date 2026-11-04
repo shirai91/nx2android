@@ -30,9 +30,13 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
                         // well ran twice (Donkey Kong Bananza's terrain geometry shader 5d537f7630ec3671 counted every triangle twice)
                         bool sideEffects = HasSideEffects(assignment.Source);
 
+                        // nxnative: a load from memory the shader writes stays where it is too: propagated into its use, it could move past stores and barriers
+                        // (WarpScratch's words, read after the next exchange stored over them)
+                        bool pinned = sideEffects || ReadsWritableMemory(assignment.Source);
+
                         // nxnative: a call's arguments stay the locals StructuredProgram copied them to (SPIR-V passes them by pointer). Propagated, the call
                         // kept a local whose declaration was removed (KeyNotFoundException in CodeGen/Spirv GetLocalPointer: 1,894 shaders of Viractal)
-                        if (propVar.Defs.Count == 1 && isWorthPropagating && !sideEffects && !IsWarpWide(assignment.Source) && !UsedByCall(propVar))
+                        if (propVar.Defs.Count == 1 && isWorthPropagating && !pinned && !IsWarpWide(assignment.Source) && !UsedByCall(propVar))
                         {
                             PropagateExpression(propVar, assignment.Source);
                         }
@@ -59,6 +63,12 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
                 Instruction.Call or Instruction.ImageAtomic => true,
                 _ => false,
             };
+        }
+
+        private static bool ReadsWritableMemory(IAstNode source)
+        {
+            return source is AstOperation { Inst: Instruction.Load } operation && operation.StorageKind is StorageKind.SharedMemory or StorageKind.LocalMemory or
+                StorageKind.StorageBuffer or StorageKind.GlobalMemory or StorageKind.PhysicalMemory;
         }
 
         // nxnative: an operation over the warp's lanes runs where the code put it. Propagated into its one use, Ampere's REDUX moved into the branch only the warp's leader
