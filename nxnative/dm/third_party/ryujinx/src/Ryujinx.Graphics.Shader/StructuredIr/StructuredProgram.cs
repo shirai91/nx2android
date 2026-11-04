@@ -267,6 +267,12 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
 
                     dest.VarType = type;
                 }
+                else if (inst == Instruction.Load && (!storageKind.IsInputOrOutput() || IsIntegerBuiltIn((IoVariable)operation.GetSource(0).Value)))
+                {
+                    // nxnative: a word loaded from memory is bits (addresses, packed halves) and a built-in like the thread id an integer, held as such: in a
+                    // float variable (the table's type for loads), a small integer is a denormal, which Vulkan lets a driver flush
+                    dest.VarType = AggregateType.S32;
+                }
                 else
                 {
                     dest.VarType = InstructionInfo.GetDestVarType(inst);
@@ -340,6 +346,14 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
                     context.Info.HelperFunctionsMask |= HelperFunctionsMask.FSI;
                     break;
             }
+        }
+
+        private static bool IsIntegerBuiltIn(IoVariable ioVariable)
+        {
+            return ioVariable is IoVariable.BaseInstance or IoVariable.BaseVertex or IoVariable.CtaId or IoVariable.DrawIndex or IoVariable.GlobalId or
+                IoVariable.InstanceId or IoVariable.InstanceIndex or IoVariable.InvocationId or IoVariable.Layer or IoVariable.PatchVertices or IoVariable.PrimitiveId or
+                IoVariable.SubgroupEqMask or IoVariable.SubgroupGeMask or IoVariable.SubgroupGtMask or IoVariable.SubgroupLaneId or IoVariable.SubgroupLeMask or
+                IoVariable.SubgroupLtMask or IoVariable.ThreadId or IoVariable.VertexId or IoVariable.VertexIndex or IoVariable.ViewportIndex;
         }
 
         private static AggregateType GetVarTypeFromUses(Operand dest)
