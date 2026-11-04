@@ -131,6 +131,7 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
             Add(Instruction.Sine,                     GenerateSine);
             Add(Instruction.SquareRoot,               GenerateSquareRoot);
             Add(Instruction.Store,                    GenerateStore);
+            Add(Instruction.SubgroupBarrier,          GenerateSubgroupBarrier);
             Add(Instruction.SubgroupReduce,           GenerateSubgroupReduce);
             Add(Instruction.Subtract,                 GenerateSubtract);
             Add(Instruction.SwizzleAdd,               GenerateSwizzleAdd);
@@ -1144,6 +1145,15 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
         }
 
         // nxnative: a reduction over the subgroup's active lanes, its operation in Index (InstEmitAmpereAlu ARedux keeps it to one warp)
+        // nxnative: the subgroup's workgroup-memory accesses so far are done and seen (WarpScratch)
+        private static OperationResult GenerateSubgroupBarrier(CodeGenContext context, AstOperation operation)
+        {
+            SpvInstruction subgroup = context.Constant(context.TypeU32(), Scope.Subgroup);
+            context.ControlBarrier(subgroup, subgroup, context.Constant(context.TypeU32(), MemorySemanticsMask.WorkgroupMemory | MemorySemanticsMask.AcquireRelease));
+
+            return OperationResult.Invalid;
+        }
+
         private static OperationResult GenerateSubgroupReduce(CodeGenContext context, AstOperation operation)
         {
             context.AddCapability(Capability.GroupNonUniformArithmetic);

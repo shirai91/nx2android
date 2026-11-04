@@ -30,7 +30,7 @@ namespace Ryujinx.Graphics.Shader.Translation.Transforms
                 return node;
             }
 
-            int functionId = context.Hfm.GetOrCreateShuffleFunctionId(functionName, context.GpuAccessor.QueryHostSubgroupSize());
+            int functionId = context.Hfm.GetOrCreateShuffleFunctionId(functionName, context.GpuAccessor.QueryHostSubgroupSize(), context.ResourceManager, context.Definitions);
 
             Operand result = operation.GetDest(0);
             Operand valid = operation.GetDest(1);

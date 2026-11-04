@@ -56,14 +56,20 @@ namespace Ryujinx.Graphics.Shader.Translation
             return functionId;
         }
 
-        public int GetOrCreateShuffleFunctionId(HelperFunctionName functionName, int subgroupSize)
+        public int GetOrCreateShuffleFunctionId(HelperFunctionName functionName, int subgroupSize, ResourceManager resources, ShaderDefinitions definitions)
         {
             if (_functionIds.TryGetValue((int)functionName, out int functionId))
             {
                 return functionId;
             }
 
-            Function function = GenerateShuffleFunction(functionName, subgroupSize);
+            // nxnative: the source lane's value through workgroup memory in compute shaders (WarpScratch), else a subgroup shuffle; lane & 31 keeps an invalid
+            // source (its result unused) inside the warp's words
+            Func<EmitterContext, Operand, Operand, Operand> read = WarpScratch.Applies(_stage)
+                ? (context, value, lane) => new WarpScratch(context, resources, definitions, value).Read(context.BitwiseAnd(lane, Const(31)))
+                : (context, value, lane) => context.Shuffle(value, GenerateSubgroupShuffleIndex(context, lane, subgroupSize));
+
+            Function function = GenerateShuffleFunction(functionName, subgroupSize, read);
             functionId = AddFunction(function);
             _functionIds.Add((int)functionName, functionId);
 
@@ -230,19 +236,19 @@ namespace Ryujinx.Graphics.Shader.Translation
             return new Function(ControlFlowGraph.Create(context.GetOperations()).Blocks, $"SharedStore{bitSize}_{id}", false, 2, 0);
         }
 
-        private static Function GenerateShuffleFunction(HelperFunctionName functionName, int subgroupSize)
+        private static Function GenerateShuffleFunction(HelperFunctionName functionName, int subgroupSize, Func<EmitterContext, Operand, Operand, Operand> read)
         {
             return functionName switch
             {
-                HelperFunctionName.Shuffle => GenerateShuffle(subgroupSize),
-                HelperFunctionName.ShuffleDown => GenerateShuffleDown(subgroupSize),
-                HelperFunctionName.ShuffleUp => GenerateShuffleUp(subgroupSize),
-                HelperFunctionName.ShuffleXor => GenerateShuffleXor(subgroupSize),
+                HelperFunctionName.Shuffle => GenerateShuffle(subgroupSize, read),
+                HelperFunctionName.ShuffleDown => GenerateShuffleDown(subgroupSize, read),
+                HelperFunctionName.ShuffleUp => GenerateShuffleUp(subgroupSize, read),
+                HelperFunctionName.ShuffleXor => GenerateShuffleXor(subgroupSize, read),
                 _ => throw new ArgumentException($"Invalid function name {functionName}"),
             };
         }
 
-        private static Function GenerateShuffle(int subgroupSize)
+        private static Function GenerateShuffle(int subgroupSize, Func<EmitterContext, Operand, Operand, Operand> read)
         {
             EmitterContext context = new();
 
@@ -259,14 +265,14 @@ namespace Ryujinx.Graphics.Shader.Translation
 
             context.Copy(Argument(3), valid);
 
-            Operand result = context.Shuffle(value, GenerateSubgroupShuffleIndex(context, srcThreadId, subgroupSize));
+            Operand result = read(context, value, srcThreadId);
 
             context.Return(context.ConditionalSelect(valid, result, value));
 
             return new Function(ControlFlowGraph.Create(context.GetOperations()).Blocks, "Shuffle", true, 3, 1);
         }
 
-        private static Function GenerateShuffleDown(int subgroupSize)
+        private static Function GenerateShuffleDown(int subgroupSize, Func<EmitterContext, Operand, Operand, Operand> read)
         {
             EmitterContext context = new();
 
@@ -284,14 +290,14 @@ namespace Ryujinx.Graphics.Shader.Translation
 
             context.Copy(Argument(3), valid);
 
-            Operand result = context.Shuffle(value, GenerateSubgroupShuffleIndex(context, srcThreadId, subgroupSize));
+            Operand result = read(context, value, srcThreadId);
 
             context.Return(context.ConditionalSelect(valid, result, value));
 
             return new Function(ControlFlowGraph.Create(context.GetOperations()).Blocks, "ShuffleDown", true, 3, 1);
         }
 
-        private static Function GenerateShuffleUp(int subgroupSize)
+        private static Function GenerateShuffleUp(int subgroupSize, Func<EmitterContext, Operand, Operand, Operand> read)
         {
             EmitterContext context = new();
 
@@ -307,14 +313,14 @@ namespace Ryujinx.Graphics.Shader.Translation
 
             context.Copy(Argument(3), valid);
 
-            Operand result = context.Shuffle(value, GenerateSubgroupShuffleIndex(context, srcThreadId, subgroupSize));
+            Operand result = read(context, value, srcThreadId);
 
             context.Return(context.ConditionalSelect(valid, result, value));
 
             return new Function(ControlFlowGraph.Create(context.GetOperations()).Blocks, "ShuffleUp", true, 3, 1);
         }
 
-        private static Function GenerateShuffleXor(int subgroupSize)
+        private static Function GenerateShuffleXor(int subgroupSize, Func<EmitterContext, Operand, Operand, Operand> read)
         {
             EmitterContext context = new();
 
@@ -332,7 +338,7 @@ namespace Ryujinx.Graphics.Shader.Translation
 
             context.Copy(Argument(3), valid);
 
-            Operand result = context.Shuffle(value, GenerateSubgroupShuffleIndex(context, srcThreadId, subgroupSize));
+            Operand result = read(context, value, srcThreadId);
 
             context.Return(context.ConditionalSelect(valid, result, value));
 

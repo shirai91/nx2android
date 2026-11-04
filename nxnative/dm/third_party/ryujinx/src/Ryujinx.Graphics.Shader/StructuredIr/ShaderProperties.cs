@@ -65,6 +65,11 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
             return id;
         }
 
+        public void SetSharedMemory(int id, MemoryDefinition definition)
+        {
+            _sharedMemories[id] = definition;
+        }
+
         public static TextureFormat GetTextureFormat(IGpuAccessor gpuAccessor, int handle, int cbufSlot = -1)
         {
             // When the formatted load extension is supported, we don't need to

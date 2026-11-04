@@ -87,7 +87,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
             x(0x89c, InstName.Psetp, APlop3, P | N | U);
             x(0x806, InstName.Vote, AVote, None);
             x(0x886, InstName.Vote, AVote, None);
-            x(0x3a1, InstName.Vote, AMatch, None, FeatureFlags.Shuffle);
+            x(0x3a1, InstName.Vote, AMatch, None);
             x(0x3c4, InstName.Vote, ARedux, None);
 
             foreach (int op in new[] { 0x389, 0x589, 0x989, 0xf89 })
@@ -847,8 +847,9 @@ namespace Ryujinx.Graphics.Shader.Instructions
 
             Operand active = EmitBallot(context, Const(IrConsts.True));
             Operand first = context.FindLSB(active);
-            Operand Same(Operand v) => context.ICompareEqual(v, AShuffle(context, v, first));
-            Operand same = x[73] ? context.BitwiseAnd(Same(AGpr(x.Ra)), Same(AGpr(x.Ra, 1))) : Same(AGpr(x.Ra));
+            Func<Operand, int, Operand> lowest = x[73] ? AWarp(context, AGpr(x.Ra), AGpr(x.Ra, 1)) : AWarp(context, AGpr(x.Ra));
+            Operand Same(int k) => context.ICompareEqual(AGpr(x.Ra, k), lowest(first, k));
+            Operand same = x[73] ? context.BitwiseAnd(Same(0), Same(1)) : Same(0);
             Operand all = EmitVote(context, VoteMode.All, same);
 
             ASetPred(context, x[81..84], all);

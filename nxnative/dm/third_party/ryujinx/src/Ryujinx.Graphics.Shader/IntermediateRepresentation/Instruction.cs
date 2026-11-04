@@ -113,6 +113,7 @@ namespace Ryujinx.Graphics.Shader.IntermediateRepresentation
         Sine,
         SquareRoot,
         Store,
+        SubgroupBarrier,
         SubgroupReduce,
         Subtract,
         SwizzleAdd,

@@ -492,6 +492,11 @@ namespace Ryujinx.Graphics.Shader.Translation
             return context.Add(Instruction.GroupMemoryBarrier);
         }
 
+        public static Operand SubgroupBarrier(this EmitterContext context)
+        {
+            return context.Add(Instruction.SubgroupBarrier);
+        }
+
         public static Operand IAbsNeg(this EmitterContext context, Operand a, bool abs, bool neg)
         {
             return context.INegate(context.IAbsolute(a, abs), neg);

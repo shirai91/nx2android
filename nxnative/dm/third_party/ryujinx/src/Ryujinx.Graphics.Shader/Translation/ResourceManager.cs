@@ -104,6 +104,23 @@ namespace Ryujinx.Graphics.Shader.Translation
             }
         }
 
+        private int _warpScratchId = -1;
+
+        // nxnative: WarpScratch's workgroup memory, as long as its largest exchange needs
+        public int WarpScratchId(int words)
+        {
+            if (_warpScratchId < 0)
+            {
+                _warpScratchId = Properties.AddSharedMemory(new MemoryDefinition("warp_scratch", AggregateType.Array | AggregateType.U32, words));
+            }
+            else if (Properties.SharedMemories[_warpScratchId].ArrayLength < words)
+            {
+                Properties.SetSharedMemory(_warpScratchId, new MemoryDefinition("warp_scratch", AggregateType.Array | AggregateType.U32, words));
+            }
+
+            return _warpScratchId;
+        }
+
         public void SetCurrentSharedMemory(int size, bool isUsed)
         {
             if (isUsed)
