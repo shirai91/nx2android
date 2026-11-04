@@ -1,0 +1,106 @@
+"""Run the actual BC upload with separate GPU storage and stubbed Vulkan calls."""
+from pathlib import Path
+import shutil
+import subprocess
+import tempfile
+import unittest
+
+ROOT = Path(__file__).resolve().parents[1]
+DM = ROOT / 'nxnative/dm'
+
+
+@unittest.skipUnless(shutil.which('cc'), 'host C compiler required')
+class BCBufferUpload(unittest.TestCase):
+    def test_gpu_snapshot_strides_layers_and_validation(self):
+        source = (DM / 'android/gfx_vk_exec.c').read_text()
+        functions = source[source.index('static VkImageSubresourceLayers sub_of('):
+                           source.index('// Scaled copies of depth and stencil:')]
+        code = r'''
+#include <vulkan/vulkan_core.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include <assert.h>
+#include <setjmp.h>
+#include "nvn_bc.h"
+typedef struct {int format;} desc_t;
+typedef struct {desc_t d;} tex_t;
+typedef struct {int set_levels,base_level,set_layers,min_layer;} view_t;
+typedef struct {int xoffset,yoffset,zoffset,width,height,depth;} region_t;
+typedef struct {tex_t *tex;view_t view;int has_view;region_t r;uint64_t src;} p_copy_b2t;
+typedef struct {unsigned layers,levels,w,h,d,gpu_w;VkImageAspectFlags aspect;VkImage img;} vkimg_t;
+typedef struct {unsigned dec,bw,bh,bpb,dbpp;} vkfmt_t;
+typedef struct {uint64_t hi;} vkpool_t;
+static vkimg_t image={.layers=3,.levels=5,.w=19,.h=13,.d=8,.aspect=VK_IMAGE_ASPECT_COLOR_BIT,.img=(VkImage)7};
+static vkfmt_t format={.dec=5,.bw=4,.bh=4,.bpb=8,.dbpp=1};
+static struct {int64_t row_stride,image_stride;} S={24,32};
+static int64_t g_watch_off=-1;
+static uint8_t gpu[64],scratch[128];
+static unsigned snapshots,uploads,ended,phase,expect_error,span_limit=48;
+static VkBufferImageCopy last;
+static jmp_buf failure;
+static void die(const char *s,...) {(void)s;assert(expect_error);longjmp(failure,1);}
+#define VKRED_ONCE(...) ((void)0)
+static void vk_end_pass_land(void) {ended++;phase=0;}
+static vkimg_t *vk_tex(const tex_t *t) {(void)t;return &image;}
+static const vkfmt_t *vk_fmt(int f) {assert(f==0x49);return &format;}
+static int vk_buf_at(uint64_t a,size_t n,VkBuffer *b,VkDeviceSize *o) {
+    if(a<0x1000 || n>span_limit)return 0;*b=(VkBuffer)8;*o=a-0x1000;return 1;
+}
+static void vk_buffer_snapshot(VkBuffer b,VkDeviceSize off,size_t n,void *dst) {
+    assert(b==(VkBuffer)8 && off==4 && n==48 && !phase);
+    memcpy(dst,gpu+off,n);snapshots++;phase=1;
+}
+static void *vk_scratch(size_t n,size_t align,VkBuffer *b,VkDeviceSize *o) {
+    assert(phase==1 && n==30 && align==16);*b=(VkBuffer)9;*o=16;return scratch+16;
+}
+static VkCommandBuffer vk_cmd(void) {assert(phase==1);return (VkCommandBuffer)2;}
+static void vk_tex_prepare(VkCommandBuffer cb,vkimg_t *im) {assert(cb==(VkCommandBuffer)2 && im==&image && phase==1);}
+static void vk_img_barrier_all(VkCommandBuffer cb) {assert(cb==(VkCommandBuffer)2);}
+static void vk_watch(vkimg_t *im,const char *s) {(void)im;(void)s;}
+static vkpool_t *vk_pool_of(uint64_t a,uint64_t n) {(void)a;(void)n;return NULL;}
+static void vk_readback_unknown(void) {abort();}
+void vk_gpu_wrote(uint64_t a,uint64_t n) {(void)a;(void)n;abort();}
+void vkCmdCopyImageToBuffer(VkCommandBuffer c,VkImage i,VkImageLayout l,VkBuffer b,uint32_t n,const VkBufferImageCopy *r) {
+    (void)c;(void)i;(void)l;(void)b;(void)n;(void)r;abort();
+}
+void vkCmdCopyBufferToImage(VkCommandBuffer cb,VkBuffer b,VkImage im,VkImageLayout l,uint32_t n,const VkBufferImageCopy *r) {
+    assert(cb==(VkCommandBuffer)2 && b==(VkBuffer)9 && im==image.img && l==VK_IMAGE_LAYOUT_GENERAL && n==1);
+    assert(r->bufferOffset==16 && !r->bufferRowLength && !r->bufferImageHeight);
+    for(unsigned z=0;z<2;z++)for(unsigned y=0;y<3;y++)for(unsigned x=0;x<5;x++)
+        assert(scratch[16+z*15+y*5+x]==20+z*30+(x==4));
+    last=*r;uploads++;
+}
+''' + functions + r'''
+int main(void) {
+    // c.src is deliberately not a CPU pointer. Only the snapshot can read gpu[].
+    tex_t t={.d={0x49}};
+    p_copy_b2t c={.tex=&t,.view={1,1,1,1},.has_view=1,.r={4,0,0,5,3,2},.src=0x1004};
+    for(unsigned z=0;z<2;z++)for(unsigned x=0;x<2;x++)gpu[4+z*32+x*8]=20+z*30+x;
+    copy_b2t(&c,1);
+    assert(snapshots==1 && uploads==1 && image.gpu_w && last.imageSubresource.mipLevel==1);
+    assert(last.imageSubresource.baseArrayLayer==1 && last.imageSubresource.layerCount==2 && last.imageExtent.depth==1);
+    image.layers=1;c.view=(view_t){0};c.r.xoffset=0;c.r.zoffset=2;
+    copy_b2t(&c,1);
+    assert(last.imageSubresource.baseArrayLayer==0 && last.imageSubresource.layerCount==1);
+    assert(last.imageOffset.z==2 && last.imageExtent.depth==2);
+    expect_error=1;
+    S.row_stride=8;if(!setjmp(failure)){copy_b2t(&c,1);abort();}S.row_stride=24;
+    span_limit=47;if(!setjmp(failure)){copy_b2t(&c,1);abort();}span_limit=48;
+    c.src=0x1002;if(!setjmp(failure)){copy_b2t(&c,1);abort();}c.src=0x1004;
+    c.r.width=20;if(!setjmp(failure)){copy_b2t(&c,1);abort();}c.r.width=5;
+    expect_error=0;copy_b2t(&c,0); // unsupported reverse copy still skips
+    assert(snapshots==2 && uploads==2 && ended==7);
+}
+'''
+        with tempfile.TemporaryDirectory() as folder:
+            src = Path(folder) / 'upload.c'
+            exe = Path(folder) / 'upload'
+            src.write_text(code)
+            subprocess.run(['cc', '-std=c11', '-O1', '-fno-strict-aliasing',
+                            '-I', str(DM / 'third_party/vulkan-headers/include'),
+                            '-I', str(DM / 'gfx/tex'), str(src), str(DM / 'gfx/tex/nvn_bc.c'),
+                            '-o', str(exe)], check=True)
+            result = subprocess.run([str(exe)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
