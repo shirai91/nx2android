@@ -1,7 +1,7 @@
 // Android port: the host front end (dm/host/front.h), in two forms.
 //   dmhost executable (adb shell): headless, the guest runs on the calling thread as on the Mac without DM_WINDOW; no window, no input, no text entry.
 //   libdmhost.so in the app (a NativeActivity, no Java): ANativeActivity_onCreate lays out the game's files in the app's external files folder
-//   (/sdcard/Android/data/<package>/files: mods/ = the rewritten modules, RomFS/, shaders.dmsv; env.txt = KEY=VALUE switches; log.txt = the log), keeps saves in
+//   (/sdcard/Android/data/<package>/files: mods/ = the rewritten modules, RomFS/ (or env.txt's DM_ROMFS: romfs_readable), shaders.dmsv; env.txt = KEY=VALUE switches; log.txt = the log), keeps saves in
 //   internal storage, and starts the host on a thread of its own. The window goes to the Vulkan backend's swapchain (dm_front_window); game controllers
 //   (KEYCODE_BUTTON_*, sticks, triggers, hat) feed player 1's pad; touches go to the game's touch screen; shaking the device shakes player 1's controller;
 //   leaving and coming back pauses as on iOS.
@@ -113,13 +113,13 @@ static void on_pause(ANativeActivity *a) { (void)a; go_background(); }
 // and Blasphemous 2's Unity, which asks for focus notifications, kept its title paused and ignored every press after a trip to another app. A window losing focus while in
 // front (a system dialog, the notification shade) is OutOfFocus as on the Switch's HOME overlay
 static void on_window_focus(ANativeActivity *a, int focused) { (void)a; if (atomic_load(&g_running) && !atomic_load(&g_bg)) dm_focus_set(focused ? 1 : 2); }
-// A save manager's request asked the app to end (ANativeActivity_onCreate): Activity.finish() when it is resumed, through JNI on the main thread.
+// A save manager's request, or a RomFS the app cannot read (romfs_readable), asked the app to end (ANativeActivity_onCreate): Activity.finish() when it is resumed, through JNI on the main thread.
 // ANativeActivity_finish, from onCreate or from here, left the activity on the screen (Y700, Android 16), and porter's am start -W waited out its timeout
 static int g_quit;
 static void act_finish(ANativeActivity *a) {
     JNIEnv *E = a->env; jclass c = (*E)->GetObjectClass(E, a->clazz); jmethodID m = c ? (*E)->GetMethodID(E, c, "finish", "()V") : NULL;
     if (m) (*E)->CallVoidMethod(E, a->clazz, m);
-    if (!m || (*E)->ExceptionCheck(E)) { (*E)->ExceptionClear(E); LOG("[RED] [saves] Activity.finish() failed: the app ends itself"); _exit(0); }
+    if (!m || (*E)->ExceptionCheck(E)) { (*E)->ExceptionClear(E); LOG("[RED] Activity.finish() failed: the app ends itself"); _exit(0); }
 }
 static void on_resume(ANativeActivity *a) { if (g_quit) { act_finish(a); return; } go_foreground(); }
 static void on_destroy(ANativeActivity *a) { (void)a; _exit(0); }   // one game per process
@@ -856,10 +856,56 @@ static void env_file(const char *path) {   // KEY=VALUE per line (# comments): s
     }
     fclose(f);
 }
+// ---- a RomFS outside the app's files folder (env.txt's DM_ROMFS, written by porter install --romfs-at: a game dump another app also reads, a folder on the SD card). The app
+// reads it only with All files access (the appop MANAGE_EXTERNAL_STORAGE, Android 11 on) or, on Android 10, READ_EXTERNAL_STORAGE in the legacy storage view: mkapk.py asks
+// for both and porter grants them over adb. Without it scoped storage gives the app none of the files another app made there, and the game would fail somewhere in its
+// boot with nothing that says why: the app says so in the log, opens Android's page for the switch and ends (not yet seen on a device: the check is from Android's rules) ----
+static void open_access_page(ANativeActivity *act, int sdk) {   // the app's All files access switch (Android 10: its app info page, where its permissions are)
+    JNIEnv *E = act->env; jobject a = act->clazz; char uri[300];
+    do {
+        jclass cA = (*E)->GetObjectClass(E, a); jmethodID mPkg = (*E)->GetMethodID(E, cA, "getPackageName", "()Ljava/lang/String;");
+        jstring pkg = mPkg ? (*E)->CallObjectMethod(E, a, mPkg) : NULL; if (jx(E) || !pkg) break;
+        const char *pc = (*E)->GetStringUTFChars(E, pkg, NULL); snprintf(uri, sizeof uri, "package:%s", pc ? pc : ""); if (pc) (*E)->ReleaseStringUTFChars(E, pkg, pc);
+        jclass cU = (*E)->FindClass(E, "android/net/Uri"); jmethodID mParse = cU ? (*E)->GetStaticMethodID(E, cU, "parse", "(Ljava/lang/String;)Landroid/net/Uri;") : NULL; if (jx(E) || !mParse) break;
+        jobject u = (*E)->CallStaticObjectMethod(E, cU, mParse, (*E)->NewStringUTF(E, uri)); if (jx(E) || !u) break;
+        jclass cI = (*E)->FindClass(E, "android/content/Intent"); jmethodID mNew = cI ? (*E)->GetMethodID(E, cI, "<init>", "(Ljava/lang/String;Landroid/net/Uri;)V") : NULL; if (jx(E) || !mNew) break;
+        jmethodID mStart = (*E)->GetMethodID(E, cA, "startActivity", "(Landroid/content/Intent;)V"); if (jx(E) || !mStart) break;
+        const char *pages[] = {sdk >= 30 ? "android.settings.MANAGE_APP_ALL_FILES_ACCESS_PERMISSION" : "android.settings.APPLICATION_DETAILS_SETTINGS", "android.settings.APPLICATION_DETAILS_SETTINGS"};
+        for (int i = 0; i < 2; i++) {   // a device without the first page (ActivityNotFoundException) gets the app's info page
+            jobject it = (*E)->NewObject(E, cI, mNew, (*E)->NewStringUTF(E, pages[i]), u);
+            if (!jx(E) && it) { (*E)->CallVoidMethod(E, a, mStart, it); if (!jx(E)) { LOG("RomFS: opened Android's page %s for the app", pages[i]); return; } }
+        }
+    } while (0);
+    LOG("[RED] RomFS: Android's All files access page could not be opened: open it by hand (Settings > Apps > the game)");
+}
+static int romfs_readable(ANativeActivity *act, int sdk) {   // 0: the game cannot read its RomFS, and the app ends
+    const char *r = getenv("DM_ROMFS"), *own[] = {g_root, act->internalDataPath}; char rr[4096], orr[4096];
+    const char *rp = r && realpath(r, rr) ? rr : r;   // canonical paths: /sdcard/… is the /storage/emulated/0/… Android names the files folder by
+    for (int i = 0; i < 2; i++) { const char *o = own[i] && realpath(own[i], orr) ? orr : own[i]; size_t n = o ? strlen(o) : 0;
+        if (!rp || (n && !strncmp(rp, o, n) && (rp[n] == '/' || !rp[n]))) return 1; }   // the app's own folders need no permission
+    JNIEnv *E = act->env; jclass c; jmethodID m; int ok = -1;   // -1: not known
+    if (sdk >= 30) { c = (*E)->FindClass(E, "android/os/Environment"); m = c ? (*E)->GetStaticMethodID(E, c, "isExternalStorageManager", "()Z") : NULL; if (m) ok = (*E)->CallStaticBooleanMethod(E, c, m) ? 1 : 0; }
+    else { jstring s = (*E)->NewStringUTF(E, "android.permission.READ_EXTERNAL_STORAGE"); c = (*E)->GetObjectClass(E, act->clazz);
+           m = s ? (*E)->GetMethodID(E, c, "checkSelfPermission", "(Ljava/lang/String;)I") : NULL; if (m) ok = (*E)->CallIntMethod(E, act->clazz, m, s) == 0; }   // PERMISSION_GRANTED
+    if (jx(E)) ok = -1;
+    const char *what = sdk >= 30 ? "All files access" : "the storage permission (READ_EXTERNAL_STORAGE)";
+    if (!ok) {
+        LOG("[RED] RomFS: %s is outside the app's files folder, and the app does not have %s, so the game cannot read its files there: the game is not started. "
+            "Allow it on the device (%s), or install again with porter install, which grants it over adb; the app opens that page and ends",
+            r, what, sdk >= 30 ? "Settings > Apps > the game > All files access" : "Settings > Apps > the game > Permissions > Files and media");
+        open_access_page(act, sdk); return 0;
+    }
+    if (ok < 0) LOG("[RED] RomFS: %s is outside the app's files folder, and whether the app has %s is not known (a Java call failed): starting the game anyway", r, what);
+    struct stat st; int e = stat(r, &st) ? errno : S_ISDIR(st.st_mode) ? 0 : ENOTDIR;
+    if (e) { LOG("[RED] RomFS: %s is not there (errno=%d): an SD card that is not in, or a folder moved or renamed; porter install --romfs-at <folder> points the app at it "
+                 "(--romfs-at app: back into the files folder). The game is not started", r, e); return 0; }
+    LOG("RomFS: %s, outside the app's files folder (%s granted)", r, what);
+    return 1;
+}
 __attribute__((visibility("default"))) void ANativeActivity_onCreate(ANativeActivity *act, void *saved, size_t saved_size) {
     (void)saved; (void)saved_size;
     g_act = act;
-    { AConfiguration *cfg = AConfiguration_new(); AConfiguration_fromAssetManager(cfg, act->assetManager); g_dpi = AConfiguration_getDensity(cfg); AConfiguration_delete(cfg); }
+    int sdk; { AConfiguration *cfg = AConfiguration_new(); AConfiguration_fromAssetManager(cfg, act->assetManager); g_dpi = AConfiguration_getDensity(cfg); sdk = AConfiguration_getSdkVersion(cfg); AConfiguration_delete(cfg); }
     act->callbacks->onNativeWindowCreated = on_window_created; act->callbacks->onNativeWindowDestroyed = on_window_destroyed;
     act->callbacks->onInputQueueCreated = on_queue_created; act->callbacks->onInputQueueDestroyed = on_queue_destroyed;
     act->callbacks->onPause = on_pause; act->callbacks->onResume = on_resume; act->callbacks->onWindowFocusChanged = on_window_focus; act->callbacks->onDestroy = on_destroy;
@@ -881,9 +927,10 @@ __attribute__((visibility("default"))) void ANativeActivity_onCreate(ANativeActi
 #endif
     // the save manager's requests (saves_android.c), before the host mounts the save: an import chosen in the menu or pushed by porter, an export porter asks for
     if (dm_saves_start(g_root)) { LOG("[saves] the request asked the app to end: the game is not started"); g_quit = 1; return; }
+    if (!romfs_readable(act, sdk)) { g_quit = 1; return; }   // after the save manager's requests, which need no RomFS
     settings_load(); dm_haptics_android_start(act, atomic_load(&g_set_rumble));
     { pthread_t w; if (!pthread_create(&w, NULL, pad_watch, act->vm)) pthread_detach(w); }
-    LOG("NX2A host on Android: files %s, saves %s", g_root, act->internalDataPath);
+    LOG("NX2A host on Android: files %s, RomFS %s, saves %s", g_root, getenv("DM_ROMFS"), act->internalDataPath);
     pthread_t t; pthread_create(&t, NULL, input_thread, NULL); pthread_detach(t);
     // The game's main thread: a 16 MB stack mapped here and handed over whole (pthread_attr_setstack), so the range pthread_getattr_np reports, which
     // svcQueryMemory gives the game as its main thread stack (hle_svc.c), is exactly mapped memory: IL2CPP's garbage collector scans that range from

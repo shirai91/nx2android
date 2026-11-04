@@ -35,6 +35,18 @@ A few antivirus engines may flag `nx2android.exe` (on VirusTotal, 3 of 69 flagge
 
 With **USB debugging** on (Settings → About → tap *Build number* seven times, then Settings → Developer options → USB debugging) and the device plugged in, tick **Install on the device when done** before porting, or click **Install on device** afterwards. Allow the computer when the device asks.
 
+### The game is already on the device
+
+The data folder carries the game's own files, its RomFS (most of the game: often 7 to 18 GB). If the same version of the game is already on the device, dumped for an emulator or copied to the SD card, the app can read it from there instead, so the device keeps one copy. Install from the command line with the folder of that dump's RomFS (the folder that holds the game's own folders, often called `romfs`):
+
+```
+nx2android.exe -m porter install "<Game>-data" --romfs-at /sdcard/<path to the dump>/romfs
+```
+
+(`./nx2android -m porter …` on a Mac.) The installer checks that the folder holds exactly the game's files, gives the app **All files access** (the device does not ask you), does not copy the game's files, and deletes the copy an earlier install left in the app's folder. Later installs, from the app's **Install on device** button too, keep reading that folder; a port of a newer game version needs that version's folder (`--romfs-at` again). `--romfs-at app` puts the files back in the app's own folder. A folder inside another app's `Android/data` cannot be used: Android lets no app read it. To put the game's files on the SD card instead, add `--romfs-push` with an empty folder there.
+
+If the app closes at once and its `log.txt` says it lacks All files access, turn it on in Settings → Apps → the game → All files access (the app opens that page itself), or install again.
+
 ## When something goes wrong
 
 The log at the bottom of the Port tab says why; lines in red are errors. Ask on the project's GitHub page (Issues), with the game's title ID, your device and the red lines. Never post your keys or game files.
