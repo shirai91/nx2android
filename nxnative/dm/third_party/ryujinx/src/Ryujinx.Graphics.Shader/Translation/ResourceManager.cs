@@ -4,6 +4,7 @@ using Ryujinx.Graphics.Shader.StructuredIr;
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 
 namespace Ryujinx.Graphics.Shader.Translation
 {
@@ -104,23 +105,46 @@ namespace Ryujinx.Graphics.Shader.Translation
             }
         }
 
-        private int _warpScratchId = -1;
+        private int _warpScratchId = -1, _warpMirrorId = -1;
+        private readonly Dictionary<int, int> _mirrorSlots = new();
 
         // nxnative: WarpScratch's workgroup memory, 4-word vectors, as long as its largest exchange needs
-        public int WarpScratchId(int words)
+        public int WarpScratchId(int words) => WarpMemory(ref _warpScratchId, "warp_scratch", words);
+
+        // nxnative: the warp mirror's (WarpScratch.Mirror), as long as its slots need
+        public int WarpMirrorId(int words) => WarpMemory(ref _warpMirrorId, "warp_mirror", words);
+
+        // nxnative: the mirror's slot of a register, of slotBytes; -1 where a new one would take the shader's workgroup memory with room for the scratch to grow to
+        // twice its size past 32 KB (the Adreno 750's maxComputeSharedMemorySize)
+        public int MirrorSlot(int reg, int slotBytes)
         {
-            MemoryDefinition scratch = new("warp_scratch", AggregateType.Array | AggregateType.Vector4 | AggregateType.U32, BitUtils.DivRoundUp(words, 4));
-
-            if (_warpScratchId < 0)
+            if (_mirrorSlots.TryGetValue(reg, out int slot))
             {
-                _warpScratchId = Properties.AddSharedMemory(scratch);
-            }
-            else if (Properties.SharedMemories[_warpScratchId].ArrayLength < scratch.ArrayLength)
-            {
-                Properties.SetSharedMemory(_warpScratchId, scratch);
+                return slot;
             }
 
-            return _warpScratchId;
+            int bytes = Properties.SharedMemories.Values.Sum(m => m.ArrayLength * m.Type.GetSizeInBytes());
+            int scratch = _warpScratchId < 0 ? 0 : Properties.SharedMemories[_warpScratchId].ArrayLength * 16;
+
+            return bytes + scratch + slotBytes > 32768 ? -1 : _mirrorSlots[reg] = _mirrorSlots.Count;
+        }
+
+        public int MirrorSlots => _mirrorSlots.Count;
+
+        private int WarpMemory(ref int id, string name, int words)
+        {
+            MemoryDefinition memory = new(name, AggregateType.Array | AggregateType.Vector4 | AggregateType.U32, BitUtils.DivRoundUp(words, 4));
+
+            if (id < 0)
+            {
+                id = Properties.AddSharedMemory(memory);
+            }
+            else if (Properties.SharedMemories[id].ArrayLength < memory.ArrayLength)
+            {
+                Properties.SetSharedMemory(id, memory);
+            }
+
+            return id;
         }
 
         public void SetCurrentSharedMemory(int size, bool isUsed)

@@ -1,4 +1,6 @@
 using Ryujinx.Common;
+using System;
+using System.Linq;
 using Ryujinx.Graphics.Shader.IntermediateRepresentation;
 using static Ryujinx.Graphics.Shader.IntermediateRepresentation.OperandHelper;
 
@@ -9,7 +11,9 @@ namespace Ryujinx.Graphics.Shader.Translation
     // upscaler read its weights back from shared memory with other lanes' shuffled values in their low halves. A lane stores its words at its linear invocation
     // index (word k a workgroup's length further on) and reads lane l of its warp at the warp's first index + l (NVIDIA's lanes are linear index % 32). A
     // subgroup barrier goes before the stores, as the last exchange's reads are done, and after them. The memory is 4-word vectors, so that 4 lanes' words come in
-    // one load (Read4)
+    // one load (Read4).
+    // The mirror (Mirror) is memory of its own, of a slot a register: words stored there once stay for reads in any later block while the register is unchanged
+    // (Donkey Kong Bananza's upscaler: the weights LDSM loads at each of its six stages, that the HMMAs of the five taps after read)
     readonly struct WarpScratch
     {
         private readonly EmitterContext _context;
@@ -19,6 +23,11 @@ namespace Ryujinx.Graphics.Shader.Translation
         public static bool Applies(ShaderStage stage) => stage == ShaderStage.Compute;
 
         public WarpScratch(EmitterContext context, ResourceManager resources, ShaderDefinitions definitions, params Operand[] words)
+            : this(context, definitions, words, null, stride => resources.WarpScratchId(stride * words.Length))
+        {
+        }
+
+        private WarpScratch(EmitterContext context, ShaderDefinitions definitions, Operand[] words, int[] slots, Func<int, int> memory)
         {
             int sx = definitions.ComputeLocalSizeX, sy = definitions.ComputeLocalSizeY;
             Operand Id(int c) => context.Load(StorageKind.Input, IoVariable.ThreadId, null, Const(c));
@@ -27,20 +36,49 @@ namespace Ryujinx.Graphics.Shader.Translation
 
             _context = context;
             _stride = BitUtils.AlignUp(threads, 4);
-            _id = resources.WarpScratchId(_stride * words.Length);
+            _id = memory(_stride);
 
             Operand linear = threads == sx ? Id(0) : context.IAdd(Id(0), context.IMultiply(context.IAdd(Id(1), context.IMultiply(Id(2), Const(sy))), Const(sx)));
             _warp = context.BitwiseAnd(linear, Const(~31));
+
+            if (words.Length == 0)
+            {
+                return;
+            }
 
             context.SubgroupBarrier();
 
             for (int k = 0; k < words.Length; k++)
             {
-                Operand at = context.IAdd(linear, Const(k * _stride));
+                Operand at = context.IAdd(linear, Const((slots?[k] ?? k) * _stride));
                 context.Store(StorageKind.SharedMemory, _id, context.ShiftRightU32(at, Const(2)), context.BitwiseAnd(at, Const(3)), words[k]);
             }
 
             context.SubgroupBarrier();
+        }
+
+        // The mirror, to read the registers' slots
+        public static WarpScratch Mirror(EmitterContext context)
+        {
+            return new(context, context.TranslatorContext.Definitions, [], null, stride => context.ResourceManager.WarpMirrorId(stride * context.ResourceManager.MirrorSlots));
+        }
+
+        // The words of registers regs stored at their slots of the mirror; null where the workgroup memory has no room for them
+        public static int[] Mirror(EmitterContext context, int[] regs, Operand[] words)
+        {
+            ShaderDefinitions definitions = context.TranslatorContext.Definitions;
+            ResourceManager resources = context.ResourceManager;
+            int slotBytes = BitUtils.AlignUp(definitions.ComputeLocalSizeX * definitions.ComputeLocalSizeY * definitions.ComputeLocalSizeZ, 4) * 4;
+            int[] slots = regs.Select(reg => resources.MirrorSlot(reg, slotBytes)).ToArray();
+
+            if (slots.Contains(-1))
+            {
+                return null;
+            }
+
+            _ = new WarpScratch(context, definitions, words, slots, stride => resources.WarpMirrorId(stride * resources.MirrorSlots));
+
+            return slots;
         }
 
         // Word k of the warp's lane (0..31)
