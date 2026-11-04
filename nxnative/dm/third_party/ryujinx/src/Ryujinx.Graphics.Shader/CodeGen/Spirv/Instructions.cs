@@ -1859,8 +1859,12 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
                     }
                     else
                     {
+                        // nxnative: a memory of vectors (WarpScratch) gives a vector at one index, a component at two
+                        AggregateType type = context.Properties.SharedMemories[bindingId.Value].Type;
+                        bool vector = (type & AggregateType.ElementCountMask) != 0 && operation.SourcesCount - (operation.Inst == Instruction.Store ? 1 : 0) == srcIndex + 1;
+
                         storageClass = StorageClass.Workgroup;
-                        varType = context.Properties.SharedMemories[bindingId.Value].Type & AggregateType.ElementTypeMask;
+                        varType = type & (vector ? AggregateType.ElementTypeMask | AggregateType.ElementCountMask : AggregateType.ElementTypeMask);
                         baseObj = context.SharedMemories[bindingId.Value];
                     }
 

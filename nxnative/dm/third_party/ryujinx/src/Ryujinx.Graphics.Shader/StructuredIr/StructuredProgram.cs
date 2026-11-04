@@ -112,7 +112,7 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
                 }
             }
 
-            bool vectorDest = IsVectorDestInst(inst);
+            bool vectorDest = IsVectorDestInst(inst) || (inst == Instruction.Load && operation.DestsCount > 1);   // nxnative: LoadVector4
 
             int sourcesCount = operation.SourcesCount;
             int outDestsCount = operation.DestsCount != 0 && !vectorDest ? operation.DestsCount - 1 : 0;
@@ -186,7 +186,7 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
 
             if (vectorDest && componentsCount > 1)
             {
-                AggregateType destType = InstructionInfo.GetDestVarType(inst);
+                AggregateType destType = inst == Instruction.Load ? AggregateType.U32 : InstructionInfo.GetDestVarType(inst);
 
                 IAstNode source;
 

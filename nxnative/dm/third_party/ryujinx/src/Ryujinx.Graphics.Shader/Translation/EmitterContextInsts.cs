@@ -121,6 +121,16 @@ namespace Ryujinx.Graphics.Shader.Translation
             return dest;
         }
 
+        // nxnative: 4 words of a memory whose elements are 4-word vectors, at a vector's index (WarpScratch)
+        public static Operand[] LoadVector4(this EmitterContext context, StorageKind storageKind, int binding, Operand index)
+        {
+            Operand[] dests = [Local(), Local(), Local(), Local()];
+
+            context.Add(new Operation(Instruction.Load, 0xf, dests, [Const(binding), index], storageKind));
+
+            return dests;
+        }
+
         public static Operand HalfPair(this EmitterContext context, HalfPairOp op, params Operand[] sources)
         {
             Operand dest = Local();

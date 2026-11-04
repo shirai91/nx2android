@@ -22,20 +22,26 @@ namespace Ryujinx.Graphics.Shader.Instructions
 
         private static Operand ALane(EmitterContext context) => EmitLoadSubgroupLaneId(context);
 
-        // The words of the warp's lanes: read(lane 0..31, k) is words[k] of that lane. Through workgroup memory in compute shaders (WarpScratch), else by plain
-        // shuffles (the lane is valid by construction: no SHFL helper), in a host subgroup of several warps among the lane's own
-        private static Func<Operand, int, Operand> AWarp(EmitterContext context, params Operand[] words)
+        // The words of the warp's lanes: Read(lane 0..31, k) is words[k] of that lane, Read4(lane4, k) of lanes lane4 .. lane4 + 3. Through workgroup memory in
+        // compute shaders (WarpScratch), else by plain shuffles (the lane is valid by construction: no SHFL helper), in a host subgroup of several warps among the
+        // lane's own
+        private readonly record struct AWarpWords(Func<Operand, int, Operand> Read, Func<Operand, int, Operand[]> Read4);
+
+        private static AWarpWords AWarp(EmitterContext context, params Operand[] words)
         {
             if (WarpScratch.Applies(context.TranslatorContext.Definitions.Stage))
             {
-                return new WarpScratch(context, context.ResourceManager, context.TranslatorContext.Definitions, words).Read;
+                WarpScratch scratch = new(context, context.ResourceManager, context.TranslatorContext.Definitions, words);
+
+                return new(scratch.Read, scratch.Read4);
             }
 
             Operand warp = context.TranslatorContext.GpuAccessor.QueryHostSubgroupSize() > 32
                 ? context.BitwiseAnd(context.Load(StorageKind.Input, IoVariable.SubgroupLaneId), Const(~31))
                 : null;
+            Operand Read(Operand lane, int k) => context.Shuffle(words[k], warp != null ? context.BitwiseOr(lane, warp) : lane);
 
-            return (lane, k) => context.Shuffle(words[k], warp != null ? context.BitwiseOr(lane, warp) : lane);
+            return new(Read, (lane4, k) => [Read(lane4, k), Read(context.IAdd(lane4, Const(1)), k), Read(context.IAdd(lane4, Const(2)), k), Read(context.IAdd(lane4, Const(3)), k)]);
         }
 
         // The halves of 32-bit words selected by bit 0 of sel (0 low, 1 high), packed as a pair: moved as bits
@@ -63,7 +69,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
             Operand lane = ALane(context);
             Operand row = context.ShiftRightU32(lane, Const(2)), quad = context.BitwiseAnd(lane, Const(3));
             int id = context.ResourceManager.SharedMemoryId;
-            Func<Operand, int, Operand> rowAddr = AWarp(context, addr);
+            Func<Operand, int, Operand> rowAddr = AWarp(context, addr).Read;
             Operand[] res = new Operand[count];
 
             Operand Word(Operand byteAddr) => context.Load(StorageKind.SharedMemory, id, context.ShiftRightU32(byteAddr, Const(2)));
@@ -100,7 +106,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
 
             Operand lane = ALane(context);
             Operand row = context.ShiftRightU32(lane, Const(2)), quad = context.BitwiseAnd(lane, Const(3));
-            Func<Operand, int, Operand> src = AWarp(context, AGpr(x.Ra));
+            Func<Operand, int, Operand> src = AWarp(context, AGpr(x.Ra)).Read;
 
             // element (2 (l % 4) + j, l / 4) is in lane 4 (2 (l % 4) + j) + (l / 4) / 2, half (l / 4) % 2
             Operand from = context.IAdd(context.ShiftLeft(quad, Const(3)), context.ShiftRightU32(row, Const(1)));
@@ -134,20 +140,15 @@ namespace Ryujinx.Graphics.Shader.Instructions
                 words[i] = i < k / 4 ? AGpr(x.Ra, i) : AGpr(x.Rb, i - k / 4);
             }
 
-            Func<Operand, int, Operand> frag = AWarp(context, words);
-            Operand[,,] aw = new Operand[2, k / 8, 4], bw = new Operand[2, k / 8, 4];   // the words of A's rows and B's columns with halves 8 h + 2 q and 8 h + 2 q + 1
+            AWarpWords frag = AWarp(context, words);
+            Operand[,][] aw = new Operand[2, k / 8][], bw = new Operand[2, k / 8][];   // the words of A's rows and B's columns, [q] with halves 8 h + 2 q and + 1
 
-            for (int q = 0; q < 4; q++)
+            for (int h = 0; h < k / 8; h++)
             {
-                Operand aLane = context.IAdd(context.ShiftLeft(row, Const(2)), Const(q));
-
-                for (int h = 0; h < k / 8; h++)
+                for (int i = 0; i < 2; i++)
                 {
-                    for (int i = 0; i < 2; i++)
-                    {
-                        aw[i, h, q] = frag(aLane, i + 2 * h);
-                        bw[i, h, q] = frag(context.IAdd(context.ShiftLeft(quad, Const(3)), Const(4 * i + q)), k / 4 + h);
-                    }
+                    aw[i, h] = frag.Read4(context.ShiftLeft(row, Const(2)), i + 2 * h);
+                    bw[i, h] = frag.Read4(context.IAdd(context.ShiftLeft(quad, Const(3)), Const(4 * i)), k / 4 + h);
                 }
             }
 
@@ -165,7 +166,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
                     {
                         for (int q = 0; q < 4; q++)
                         {
-                            Operand ab = aw[m, h, q], bb = bw[j, h, q];
+                            Operand ab = aw[m, h][q], bb = bw[j, h][q];
                             acc = f32
                                 ? context.FPFusedMultiplyAdd(context.UnpackHalf2x16High(ab), context.UnpackHalf2x16High(bb),
                                     context.FPFusedMultiplyAdd(context.UnpackHalf2x16Low(ab), context.UnpackHalf2x16Low(bb), acc))

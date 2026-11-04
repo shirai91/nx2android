@@ -873,7 +873,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
 
             Operand active = EmitBallot(context, Const(IrConsts.True));
             Operand first = context.FindLSB(active);
-            Func<Operand, int, Operand> lowest = x[73] ? AWarp(context, AGpr(x.Ra), AGpr(x.Ra, 1)) : AWarp(context, AGpr(x.Ra));
+            Func<Operand, int, Operand> lowest = (x[73] ? AWarp(context, AGpr(x.Ra), AGpr(x.Ra, 1)) : AWarp(context, AGpr(x.Ra))).Read;
             Operand Same(int k) => context.ICompareEqual(AGpr(x.Ra, k), lowest(first, k));
             Operand same = x[73] ? context.BitwiseAnd(Same(0), Same(1)) : Same(0);
             Operand all = EmitVote(context, VoteMode.All, same);

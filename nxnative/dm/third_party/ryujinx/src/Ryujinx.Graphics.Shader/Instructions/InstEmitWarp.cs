@@ -114,11 +114,16 @@ namespace Ryujinx.Graphics.Shader.Instructions
             }
 
             WarpScratch lanes = new(context, context.ResourceManager, definitions, context.ConditionalSelect(pred, Const(1), Const(0)));
-            Operand bits = lanes.Read(Const(0));
+            Operand bits = Const(0);
 
-            for (int i = 1; i < 32; i++)
+            for (int i = 0; i < 32; i += 4)
             {
-                bits = context.BitwiseOr(bits, context.ShiftLeft(lanes.Read(Const(i)), Const(i)));
+                Operand[] w = lanes.Read4(Const(i));
+
+                for (int j = 0; j < 4; j++)
+                {
+                    bits = context.BitwiseOr(bits, context.ShiftLeft(w[j], Const(i + j)));
+                }
             }
 
             return context.BitwiseAnd(bits, EmitHostBallot(context, Const(IrConsts.True)));

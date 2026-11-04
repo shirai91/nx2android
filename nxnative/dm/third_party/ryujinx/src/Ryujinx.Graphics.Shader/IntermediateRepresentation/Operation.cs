@@ -60,10 +60,11 @@ namespace Ryujinx.Graphics.Shader.IntermediateRepresentation
             }
         }
 
-        public Operation(Instruction inst, int index, Operand[] dests, Operand[] sources) : this(sources)
+        public Operation(Instruction inst, int index, Operand[] dests, Operand[] sources, StorageKind storageKind = StorageKind.None) : this(sources)
         {
             Inst = inst;
             Index = index;
+            StorageKind = storageKind;
 
             if (dests != null)
             {

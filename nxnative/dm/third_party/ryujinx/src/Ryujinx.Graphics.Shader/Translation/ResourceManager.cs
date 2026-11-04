@@ -106,16 +106,18 @@ namespace Ryujinx.Graphics.Shader.Translation
 
         private int _warpScratchId = -1;
 
-        // nxnative: WarpScratch's workgroup memory, as long as its largest exchange needs
+        // nxnative: WarpScratch's workgroup memory, 4-word vectors, as long as its largest exchange needs
         public int WarpScratchId(int words)
         {
+            MemoryDefinition scratch = new("warp_scratch", AggregateType.Array | AggregateType.Vector4 | AggregateType.U32, BitUtils.DivRoundUp(words, 4));
+
             if (_warpScratchId < 0)
             {
-                _warpScratchId = Properties.AddSharedMemory(new MemoryDefinition("warp_scratch", AggregateType.Array | AggregateType.U32, words));
+                _warpScratchId = Properties.AddSharedMemory(scratch);
             }
-            else if (Properties.SharedMemories[_warpScratchId].ArrayLength < words)
+            else if (Properties.SharedMemories[_warpScratchId].ArrayLength < scratch.ArrayLength)
             {
-                Properties.SetSharedMemory(_warpScratchId, new MemoryDefinition("warp_scratch", AggregateType.Array | AggregateType.U32, words));
+                Properties.SetSharedMemory(_warpScratchId, scratch);
             }
 
             return _warpScratchId;
