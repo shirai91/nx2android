@@ -101,7 +101,30 @@ namespace Ryujinx.Graphics.Shader.Instructions
             };
         }
 
+        // nxnative: in compute shaders a predicate's bits come through workgroup memory (WarpScratch), and only the active lanes' mask from a ballot: the
+        // Adreno 750 gave a shader's ballots of different predicates one value (Donkey Kong Bananza's upscaler: each VOTE.ALL compared a ballot with itself,
+        // and its network was skipped as flat everywhere), and ballots of one predicate stay right
         private static Operand EmitBallot(EmitterContext context, Operand pred)
+        {
+            ShaderDefinitions definitions = context.TranslatorContext.Definitions;
+
+            if (!WarpScratch.Applies(definitions.Stage) || pred.Type == OperandType.Constant)
+            {
+                return EmitHostBallot(context, pred);
+            }
+
+            WarpScratch lanes = new(context, context.ResourceManager, definitions, context.ConditionalSelect(pred, Const(1), Const(0)));
+            Operand bits = lanes.Read(Const(0));
+
+            for (int i = 1; i < 32; i++)
+            {
+                bits = context.BitwiseOr(bits, context.ShiftLeft(lanes.Read(Const(i)), Const(i)));
+            }
+
+            return context.BitwiseAnd(bits, EmitHostBallot(context, Const(IrConsts.True)));
+        }
+
+        private static Operand EmitHostBallot(EmitterContext context, Operand pred)
         {
             int subgroupSize = context.TranslatorContext.GpuAccessor.QueryHostSubgroupSize();
 

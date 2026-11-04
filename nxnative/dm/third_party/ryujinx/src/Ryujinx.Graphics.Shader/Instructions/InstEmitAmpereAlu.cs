@@ -831,7 +831,10 @@ namespace Ryujinx.Graphics.Shader.Instructions
                 context.Copy(Register(x[81..84], RegisterType.Predicate), vote);
             }
 
-            ASet(context, x.Op == 0x886 ? Register(x[16..22], RegisterType.Uniform) : Register(x.Rd, RegisterType.Gpr), EmitBallot(context, pred));
+            if (x.Op == 0x886 ? x[16..22] != 63 : x.Rd != Rz)
+            {
+                ASet(context, x.Op == 0x886 ? Register(x[16..22], RegisterType.Uniform) : Register(x.Rd, RegisterType.Gpr), EmitBallot(context, pred));
+            }
         }
 
         // MATCH.ALL Rd, Pd, Ra (.U64, 73: the pair Ra, Ra + 1): Pd whether every active lane holds the lowest active lane's value, Rd the active lanes' mask if so,
