@@ -122,7 +122,12 @@ static void release_pages(range_t *r, uintptr_t p, uintptr_t q, _Atomic uint64_t
         uint8_t st = PG_PROT; int took = i <= q && atomic_compare_exchange_strong(&r->state[i], &st, PG_BUSY);
         if (took) { if (!open) { run = i; open = 1; } continue; }
         if (open) {
-            atomic_fetch_add(&r->nmp, 1); mp(r->base + (run << g_shift), (i - run) << g_shift, PROT_READ | PROT_WRITE);
+            atomic_fetch_add(&r->nmp, 1);
+            if (mp(r->base + (run << g_shift), (i - run) << g_shift, PROT_READ | PROT_WRITE)) {
+                // A failed mprotect may change only part of the run; neither writable states nor a retry are safe. Also called from the fault handler.
+                static const char msg[] = "[dm] [RED] dirty-page tracking: cannot make guest memory writable; stopping\n";
+                (void)write(STDERR_FILENO, msg, sizeof msg - 1); _exit(1);
+            }
             for (uintptr_t k = run; k < i; k++) { stamp_page(r, k); atomic_store(&r->state[k], PG_NONE); }
             if (count) atomic_fetch_add(count, i - run);
             open = 0;
