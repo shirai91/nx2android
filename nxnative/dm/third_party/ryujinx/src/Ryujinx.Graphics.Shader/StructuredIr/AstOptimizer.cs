@@ -25,16 +25,19 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
                     {
                         bool isWorthPropagating = propVar.Uses.Count == 1 || IsWorthPropagating(assignment.Source);
 
+                        // nxnative: an operation with side effects stays where it is, in its assignment. An atomic whose result is never read went with its
+                        // assignment (Tears of the Kingdom's visibility counter, vertex shader 1eee2726aae7493e, lost its add); one propagated into its use as
+                        // well ran twice (Donkey Kong Bananza's terrain geometry shader 5d537f7630ec3671 counted every triangle twice)
+                        bool sideEffects = HasSideEffects(assignment.Source);
+
                         // nxnative: a call's arguments stay the locals StructuredProgram copied them to (SPIR-V passes them by pointer). Propagated, the call
                         // kept a local whose declaration was removed (KeyNotFoundException in CodeGen/Spirv GetLocalPointer: 1,894 shaders of Viractal)
-                        if (propVar.Defs.Count == 1 && isWorthPropagating && !UsedByCall(propVar))
+                        if (propVar.Defs.Count == 1 && isWorthPropagating && !sideEffects && !IsWarpWide(assignment.Source) && !UsedByCall(propVar))
                         {
                             PropagateExpression(propVar, assignment.Source);
                         }
 
-                        // nxnative: not when the source has side effects. An atomic whose result is never read went with its assignment: Tears of the Kingdom's
-                        // visibility counter (vertex shader 1eee2726aae7493e, an atomic add of a ballot's count) lost the add and everything that fed it
-                        if (propVar.Type == OperandType.LocalVariable && propVar.Uses.Count == 0 && !HasSideEffects(assignment.Source))
+                        if (propVar.Type == OperandType.LocalVariable && propVar.Uses.Count == 0 && !sideEffects)
                         {
                             visitor.Block.Remove(assignment);
 
@@ -56,6 +59,15 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
                 Instruction.Call or Instruction.ImageAtomic => true,
                 _ => false,
             };
+        }
+
+        // nxnative: an operation over the warp's lanes runs where the code put it. Propagated into its one use, Ampere's REDUX moved into the branch only the warp's leader
+        // takes, and reduced over that one lane (Donkey Kong Bananza's compute shaders 72b4adba0a491c21 and c5b4ee0ce9a02d7d, whose pipelines the Adreno 750's compiler crashed on)
+        private static bool IsWarpWide(IAstNode source)
+        {
+            return source is AstOperation operation && (operation.Inst & Instruction.Mask) is Instruction.Ballot or Instruction.Shuffle or Instruction.ShuffleDown or
+                Instruction.ShuffleUp or Instruction.ShuffleXor or Instruction.SubgroupReduce or Instruction.VoteAll or Instruction.VoteAllEqual or Instruction.VoteAny or
+                Instruction.Ddx or Instruction.Ddy;
         }
 
         private static bool UsedByCall(AstOperand propVar)
