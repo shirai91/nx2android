@@ -3,12 +3,14 @@
 # decodes with the game's own Oodle on the device (porter device_ue: one round, 5,919 groups, 74,244 shaders in 44 s), so the port needs the device connected.
 # Tested 2026-11-06 on the Legion Y700 (TB322FC, Snapdragon 8 Elite, Adreno 830, Android 16), docked (1920x1080): the brightness setting, the title, a new game (difficulty), the
 # opening cinematic, the first road (walking, tutorials), the cutscene, the first battle's command menu; an autosave, and Continue from it after a restart.
-# 60 fps (the profile's fps_target): frame work p50 about 16.5 ms, GPU 10-13 ms in the field and the cinematic, 0-6 dropped frames per 300; 0 audio underruns; one red line
-# in some runs: an R32F buffer texture of 44 elements at an offset 8 bytes past a multiple of 64 (Adreno's minTexelBufferOffsetAlignment, no single-texel relaxation), read as zeros.
-# Open: the fires in the first battle's background (the battle tutorial's picture shows them) are not drawn; no draw is skipped (no program, target or pipeline missing), and
-# every indirect draw's arguments are in the pools. Ruled out: culling (DM_VK_NOCULL=1), the particle vertex factories' dynamic texture slots (android_dynamic_slots on), the
-# misaligned buffer texture (a view 8 bytes early, test build: no change). Next: the Niagara simulation's submission (about 60 dispatches over one data buffer, cleared and
-# copied each frame) and whether the CPU sees its counts (copied pools merge back only tracked GPU writes).
+# 60 fps (the profile's fps_target): frame work p50 about 16.5 ms, GPU 10-13 ms in the field and the cinematic, 0-6 dropped frames per 300; 0 audio underruns; no red line.
+# Its sprite particles' parameters (R32F buffer textures of 36-44 elements at offsets not a multiple of Adreno's 64) are read from an aligned copy (gfx_vk_tex.c vk_tbuf_view).
+# Open: the fires in the first battle's background (the battle tutorial's picture shows them) are not drawn. What is known: they are pass 22's translucent indirect draws
+# (DM_VK_TRACE_PASS=22): vertex shader fb570ef861debd17 draws 6 indices x 15-131 instances (the count grows: the GPU simulation spawns them), 1300ca45ddca3566 and
+# c55d54c8f41b1520 are mesh particles; leaving any of them out (DM_VK_X_SKIPVS) changes no pixel, so they draw nothing visible. Ruled out: culling (DM_VK_NOCULL=1), the
+# fragment-depth variant (DM_VK_FDZ=0), the dynamic texture slots (android_dynamic_slots on), the zero parameters (now copied), the indirect arguments (in the pools, the CPU
+# sees the GPU's instance counts), a uint table the simulation writes (the CPU sees it change), tracking a dispatch's storage texel buffers as written (test build). Next: the
+# vertex shader's positions: its storage buffers (bindings 76-81, 560-6048 bytes) and the SV_InstanceID / base instance it computes for indirect draws.
 status	experimental
 tested	v65536 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
 package	org.nx2a.finalfantasyresonance
