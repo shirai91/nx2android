@@ -1113,13 +1113,37 @@ static void drv_shared(int st, int bank, VkBuffer *buf, VkDeviceSize *off, int d
     uint8_t *p = vk_scratch(0x1000, V.props.limits.minUniformBufferOffsetAlignment, buf, off); memcpy(p, d, sizeof d);
     g_drvc[k].h = h; g_drvc[k].epoch = g_set_epoch; g_drvc[k].b = *buf; g_drvc[k].o = *off;
 }
+// A binding that runs past its chunk's end into the pool's next chunk (pools over ZC_CHUNK come in chunks, each its own buffer, and the replay looks a binding up by its first byte):
+// the GPU would read past the buffer, and with robustBufferAccess off it saw zeros. Found with smaller chunks in a fork: Pokemon Pokopia's per-frame constants, a 64 MB ring, crossed
+// a 16 MB chunk's end about 2.5 times a second on an AYN Thor, one frame of black objects with a white bloom halo or a model's bones collapsed each time a draw read past it (7 in 3
+// minutes at one spot, 0 with this). A constant buffer is bound from a copy of the whole range out of CPU memory (vk_ubd_read, as a deferred update's shadow); a storage or index
+// range is memory the GPU may write, so it is counted and named, not copied
+extern uint64_t g_ubd_gen;
+static uint64_t g_cross[4];   // ranges across a chunk's end: constant buffers copied, storage buffers, vertex buffers (their bound range), index buffers (the draw's indices)
+static void vk_cross(int k, uint64_t a, uint64_t n, const vkpool_t *p) {
+    // vertex buffers: the stream's bound range, which a draw may read only part of (Pokopia, 16 MB chunks: 32,768 such bindings in 3 minutes of ~1 MB ranges, no wrong frame)
+    static const char *const what[4] = {"constant buffer ranges (bound from a copy)", "storage buffer ranges", "vertex buffer bound ranges (a draw may read less)", "index ranges"};
+    uint64_t c = ++g_cross[k]; if (!(c & (c - 1))) VKLOG("%s%llu %s across a memory pool chunk's end (this one %#llx +%#llx, the chunk ends at %#llx)", k == 1 || k == 3 ? "[RED] " : "", (unsigned long long)c, what[k],
+                                                           (unsigned long long)a, (unsigned long long)n, (unsigned long long)p->hi);
+}
 // a constant buffer binding's descriptor (stage_set, set_memo_get): its pool's buffer from the alignment boundary below it, or the shadow of the deferred updates over it
 static void cbuf_desc(int st, const vkshader_t *s, const dmsv_bind *b, VkDescriptorBufferInfo *bi) {
     const p_bind_buf *u = b->reg >= 0 && b->reg < 16 ? &S.ubo[st][b->reg] : NULL;
     uint64_t n = u && u->size ? (u->size > 65536 ? 65536 : u->size) : 65536; VkBuffer buf; VkDeviceSize off;
     vkpool_t *p = g_var_now != 9 && u && u->addr ? vk_pool_of(u->addr, 1) : NULL;
     if (!p) { *bi = (VkDescriptorBufferInfo){vk_zero_buffer(), 0, 65536}; return; }
-    buf = p->buf; off = u->addr - p->lo; if (off + n > p->hi - p->lo) n = p->hi - p->lo - off;
+    buf = p->buf; off = u->addr - p->lo;
+    if (off + n > p->hi - p->lo) {
+        if (p->hi < p->end && u->addr + n <= p->end) {   // into the pool's next chunk (vk_cross): the whole range from CPU memory, one copy per submission
+            static struct { uint64_t a, n, ep, gen; VkBuffer b; VkDeviceSize o; } cc[16]; unsigned k = (unsigned)(u->addr >> 8) % 16;
+            if (cc[k].a != u->addr || cc[k].n != n || cc[k].ep != g_set_epoch || cc[k].gen != g_ubd_gen) {
+                uint8_t *d = vk_scratch(n, V.props.limits.minUniformBufferOffsetAlignment, &buf, &off); vk_ubd_read(u->addr, n, d); vk_cross(0, u->addr, n, p);
+                cc[k].a = u->addr; cc[k].n = n; cc[k].ep = g_set_epoch; cc[k].gen = g_ubd_gen; cc[k].b = buf; cc[k].o = off;
+            } else { buf = cc[k].b; off = cc[k].o; }
+            ubo_log(s, st, b->reg, u->addr, n); *bi = (VkDescriptorBufferInfo){buf, off, n}; return;
+        }
+        n = p->hi - p->lo - off;
+    }
     ubo_log(s, st, b->reg, u->addr, n);
     if (vk_ubd_shadow(u->addr, n, &buf, &off)) { *bi = (VkDescriptorBufferInfo){buf, off, n}; return; }   // deferred updates in it: their shadow
     VkDeviceSize al = V.props.limits.minUniformBufferOffsetAlignment; if (off % al) VKRED_ONCE(40, "uniform buffer at an offset not aligned to %llu", (unsigned long long)al);
@@ -1186,7 +1210,7 @@ static VkDescriptorSet stage_set(int st, vkshader_t *s, uint32_t *dofs) {
             else if (b->kind == RK_UBO_PTR && b->reg >= 0 && b->reg < 16) { a = S.ubo[st][b->reg].addr; n = S.ubo[st][b->reg].size; }
             else if (b->kind == RK_SBUF_UBO) { a = (uint64_t)ubo_word(st, b->reg, b->off) | (uint64_t)ubo_word(st, b->reg, b->off + 4) << 32; }
             vkpool_t *p = a ? vk_pool_of(a, 1) : NULL;
-            if (p) { buf = p->buf; off = a - p->lo; if (!n || off + n > p->hi - p->lo) n = p->hi - p->lo - off;
+            if (p) { buf = p->buf; off = a - p->lo; if (n && off + n > p->hi - p->lo && p->hi < p->end) vk_cross(1, a, n, p); if (!n || off + n > p->hi - p->lo) n = p->hi - p->lo - off;
                 // bound from the 256-byte boundary below it, the boundary the translator offsets every access from (shader_vk.py SB_ALIGN; a multiple of any device's minimum alignment)
                 const VkDeviceSize al = SB_ALIGN; if (V.props.limits.minStorageBufferOffsetAlignment > al) VKRED_ONCE(41, "storage buffer alignment %llu above %llu", (unsigned long long)V.props.limits.minStorageBufferOffsetAlignment, (unsigned long long)al);
                 bi[nw] = (VkDescriptorBufferInfo){buf, off - off % al, n + off % al};
@@ -1522,6 +1546,7 @@ static int prepare_draw(int prim, int indexed) {
         uint32_t b = k.bind[i].binding; VkBuffer buf; VkDeviceSize off;
         if (b == 16) { buf = vk_zero_buffer(); off = 0; }
         else if (!vk_buf_at(S.vbuf[b].address, 1, &buf, &off)) { buf = vk_zero_buffer(); off = 0; VKRED_ONCE(51, "vertex buffer outside the memory pools"); }
+        else if (S.vbuf[b].size) { vkpool_t *vp = vk_pool_of(S.vbuf[b].address, 1); if (vp && S.vbuf[b].address + S.vbuf[b].size > vp->hi && vp->hi < vp->end) vk_cross(2, S.vbuf[b].address, S.vbuf[b].size, vp); }
         if (g_var_now == 5) { buf = vk_zero_buffer(); off = 0; }
         if (!(dbg_draw() & 2) && b < 17) { int fresh = bc_fresh(); if (fresh || g_bc.vb[b] != buf || g_bc.vo[b] != off) { vkCmdBindVertexBuffers(cb, b, 1, &buf, &off); g_bc.vb[b] = buf; g_bc.vo[b] = off; } }
     }
@@ -1776,6 +1801,7 @@ static void draw_idx(const p_draw_idx *d) {
     uint32_t isz = d->itype == 0 ? 1 : d->itype == 1 ? 2 : 4;
     VkBuffer ib; VkDeviceSize io;
     if (!vk_buf_at(d->ibuf, 1, &ib, &io)) { VKRED_ONCE(56, "index buffer outside the memory pools"); return; }
+    if (!d->ind) { vkpool_t *ip = vk_pool_of(d->ibuf, 1); uint64_t in = (uint64_t)d->count * isz; if (ip && d->ibuf + in > ip->hi && ip->hi < ip->end) vk_cross(3, d->ibuf, in, ip); }
     if (g_ubolog_key && S.sh[0] && S.sh[0]->key == g_ubolog_key && g_ubolog_n > 0) {   // DM_VK_UBO_LOG: the index data the draw reads (CPU view at replay)
         const uint8_t *ix = (const uint8_t *)(uintptr_t)d->ibuf; uint64_t h = 1469598103934665603ull; uint32_t mn = ~0u, mx = 0;
         for (uint32_t i = 0; i < (uint32_t)d->count; i++) { uint32_t v = isz == 1 ? ix[i] : isz == 2 ? ((const uint16_t *)ix)[i] : ((const uint32_t *)ix)[i]; h = (h ^ v) * 1099511628211ull; if (v < mn) mn = v; if (v > mx) mx = v; }
