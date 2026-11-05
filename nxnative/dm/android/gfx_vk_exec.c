@@ -1515,7 +1515,7 @@ static uint32_t xfb_verts(int prim, uint32_t n) {   // vertices a capture writes
 // A geometry shader's capture (Xenoblade Chronicles 3's particle update, 293ecebc0136519b: what it emits, 172 bytes a particle) writes a count no host can know: the bytes go to a
 // counter buffer, 16 bytes for each control buffer's slot (one u32 a feedback buffer), which the next capture of the sequence starts from and DrawTransformFeedback draws by
 // (vkCmdDrawIndirectByteCountEXT). Without it the particle update wrote nothing: no red particles at husks, none rising at a send-off, no glow on far items
-enum { TFC = 4096 }; static struct { uint64_t ctl; uint32_t verts; uint8_t gs, ctr_ok; } g_tf_ctl[TFC];
+enum { TFC = 4096 }; static struct { uint64_t ctl; uint32_t verts; uint8_t gs, ctr_ok, dirty; } g_tf_ctl[TFC];
 static VkBuffer g_tfc_buf; static int g_tfc_cur = -1, g_bc_slot = -1;   // the counter buffer; the slot of the open sequence; a DrawTransformFeedback drawn by its counter
 static int tfc_ready(void) {
     static int failed; if (g_tfc_buf || failed) return g_tfc_buf != VK_NULL_HANDLE;
@@ -1550,7 +1550,7 @@ static void xfb_end(VkCommandBuffer cb, int prim, uint32_t count, uint32_t inst,
     void vk_gpu_wrote(uint64_t a, uint64_t n);
     if (xf == 2) {
         VkBuffer cbs[4] = {g_tfc_buf, g_tfc_buf, g_tfc_buf, g_tfc_buf}; VkDeviceSize co[4]; for (int k = 0; k < 4; k++) co[k] = (VkDeviceSize)g_tfc_cur * 16 + 4 * k;
-        vkCmdEndTransformFeedbackEXT(cb, 0, 4, cbs, co); g_tf_in_pass = 1;
+        vkCmdEndTransformFeedbackEXT(cb, 0, 4, cbs, co); g_tf_in_pass = 1; g_tf_ctl[g_tfc_cur].dirty = 1;
         g_tf_ctl[g_tfc_cur].ctr_ok = 1; g_tf_ctl[g_tfc_cur].gs = 1;
         for (int k = 0; k < 4; k++) if (S.sh[2]->xfb_stride[k] && g_tf[k].addr) vk_gpu_wrote(g_tf[k].addr, g_tf[k].size);   // how much is only known on the GPU
         { static int n; if (n++ < 4) VKLOG("transform feedback: geometry shader %016llx captured, counted on the GPU (control buffer %#llx)", (unsigned long long)S.sh[2]->key, (unsigned long long)g_tf_ctl[g_tfc_cur].ctl); }
@@ -1580,6 +1580,12 @@ static void tf_state(const p_tf_state *t) {
     default: g_tf_on = 0;                                                // End / Pause: what was captured is read by later draws (as vertices), after the barrier the next pass begins with
         if (g_tf_in_pass) { vk_end_pass(); g_tf_in_pass = 0; }
         int i = tf_ctl_slot(t->ctl, 1); g_tf_ctl[i].ctl = t->ctl; g_tf_ctl[i].verts = g_tf_verts;
+        if (g_tf_ctl[i].gs && g_tf_ctl[i].dirty) {   // a counted capture: its bytes into the game's control buffer too (+0, one u32 a feedback buffer), for anything that reads it there
+            VkBuffer b; VkDeviceSize o; g_tf_ctl[i].dirty = 0;
+            if (vk_buf_at(t->ctl, 16, &b, &o)) { VkCommandBuffer cb = vk_cmd(); VkBufferCopy c = {(VkDeviceSize)i * 16, o, 16};
+                VkMemoryBarrier mb = {VK_STRUCTURE_TYPE_MEMORY_BARRIER, NULL, VK_ACCESS_MEMORY_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT};
+                vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &mb, 0, NULL, 0, NULL); vkCmdCopyBuffer(cb, g_tfc_buf, b, 1, &c);
+                void vk_gpu_wrote(uint64_t a, uint64_t n); vk_gpu_wrote(t->ctl, 16); } }
     }
 }
 static void draw(const p_draw *d);
@@ -1692,7 +1698,10 @@ static void draw(const p_draw *d) {
         vkshader_t *vsh = S.sh[0]; uint32_t st = 0;
         for (int loc = 0; vsh && loc < 16 && !st; loc++) if (vsh->local[0] >> loc & 1) { va_st a; memcpy(&a, &S.vattr[loc], 4); if (a.fmt) st = S.vstream[a.stream].stride; }
         if (!st) { VKRED_ONCE(92, "DrawTransformFeedback of a geometry shader's capture with no vertex stride: nothing drawn"); return; }
-        if (!(dbg_draw() & 1) && g_ok) vkCmdDrawIndirectByteCountEXT(cb, inst, (uint32_t)d->base_instance, g_tfc_buf, (VkDeviceSize)g_bc_slot * 16, 0, st);
+        // The particles' update draws last frame's capture this way while capturing this frame's (a sequence of its own): the capture goes around the draw as at any other
+        if (!(dbg_draw() & 1) && g_ok) { int xf = xfb_begin(cb); vkCmdDrawIndirectByteCountEXT(cb, inst, (uint32_t)d->base_instance, g_tfc_buf, (VkDeviceSize)g_bc_slot * 16, 0, st);
+            if (xf == 2) xfb_end(cb, prim, 0, inst, xf); else if (xf) { vkCmdEndTransformFeedbackEXT(cb, 0, 0, NULL, NULL); VKRED_ONCE(93, "a vertex shader's capture around a DrawTransformFeedback of a counted capture: its bytes are not counted"); }
+            { static int n; if (n++ < 6) VKLOG("transform feedback: DrawTransformFeedback by the counter of control buffer %#llx, stride %u%s", (unsigned long long)g_tf_ctl[g_bc_slot].ctl, st, xf == 2 ? ", captured again" : ""); } }
         return;
     }
     if (!(dbg_draw() & 1) && g_ok) { int xf = xfb_begin(cb); vkCmdDraw(cb, (uint32_t)d->count, inst, (uint32_t)d->first, (uint32_t)d->base_instance); if (xf) xfb_end(cb, prim, (uint32_t)d->count, inst, xf); }
