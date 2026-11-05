@@ -464,6 +464,39 @@ static int pool_zero_copy(vkpool_t *p, uint8_t *mem, uint64_t size) {
 // first seconds, of which the GPU had used 512 MB by its third frame, and with all of it backed Android's low-memory killer ended the game within seconds on an AYN Thor (11.5 GB).
 // DM_VK_ZEROCOPY_LAZY=0: every chunk is backed when its pool is made, as before
 static int zc_lazy(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_VK_ZEROCOPY_LAZY"); v = !(e && !atoi(e)); } return v; }
+// Where the CPU reads hardware buffers uncached, every page-aligned pool is lazy, small ones too: a pool the GPU never uses (command memory, shader code, texture and sampler
+// descriptors, which the replay reads and the GPU does not) keeps the CPU's cached pages, and one it uses is backed the first time, as a big pool's chunks are. On a Retroid
+// Pocket 5 (Adreno 650, Android 13, kernel 4.19) every BLOB hardware buffer, whatever its CPU usage, and every Vulkan memory type, HOST_CACHED included, read at 1.7-1.9 GB/s
+// against 16-21 GB/s for malloc (163 ns a scattered line against 43), and wrote at full speed (write-combined); an AYN Thor's read at 35 GB/s. Pokemon Legends: Z-A's replay
+// walked its 36 MB command pool through such pages, 24 ms of a 37 ms frame; with the pool left cached it took 12 ms and the game held its 30 fps in handheld mode.
+// The check reads 1 MB of a new hardware buffer and of malloc memory, best of 3 each. DM_VK_ZEROCOPY_LAZY=2: every pool lazy on any device; =1: only the big pools' chunks
+static volatile uint64_t g_read_sink;
+static uint64_t read_ns(const uint8_t *p, size_t n) {
+    uint64_t best = UINT64_MAX;
+    for (int k = 0; k < 3; k++) {
+        struct timespec t0, t1; uint64_t s = 0; clock_gettime(CLOCK_MONOTONIC, &t0);
+        for (size_t i = 0; i < n / 8; i++) s += ((const uint64_t *)p)[i];
+        clock_gettime(CLOCK_MONOTONIC, &t1); g_read_sink += s;
+        uint64_t ns = (uint64_t)((t1.tv_sec - t0.tv_sec) * 1000000000ll + (t1.tv_nsec - t0.tv_nsec)); if (ns < best) best = ns;
+    }
+    return best ? best : 1;
+}
+static int ahb_cpu_uncached(void) {
+    enum { N = 1 << 20 };
+    AHardwareBuffer *ahb; int fd; if (ahb_new(N, &ahb, &fd)) return 0;
+    uint8_t *a = mmap(NULL, N, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0); close(fd);
+    uint8_t *m = malloc(N); int slow = 0;
+    if (a != MAP_FAILED && m) {
+        memset(a, 1, N); memset(m, 1, N);
+        uint64_t ta = read_ns(a, N), tm = read_ns(m, N); slow = ta > 4 * tm;
+        VKLOG("hardware buffers: the CPU reads one at %.0f MB/s, malloc memory at %.0f MB/s%s", N / (ta / 1e9) / 1e6, N / (tm / 1e9) / 1e6,
+              slow ? ": uncached, so every memory pool stays in cached memory until the GPU first uses it" : "");
+    }
+    if (a != MAP_FAILED) munmap(a, N);
+    free(m); AHardwareBuffer_release(ahb);
+    return slow;
+}
+static int zc_lazy_all(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_VK_ZEROCOPY_LAZY"); v = e ? atoi(e) >= 2 : zc_lazy() && ahb_cpu_uncached(); } return v; }
 static pthread_mutex_t g_lazy_mu = PTHREAD_MUTEX_INITIALIZER;   // one chunk backed at a time; mtl_pool_del takes it too
 static int lazy_fill(void *mem, size_t len, void *ctx) {   // nvn_dirty_swap's fill: the old pages copied into the buffer, the buffer's pages mapped read-only over them
     int fd = *(int *)ctx;
@@ -528,7 +561,8 @@ void mtl_pool_add(const void *mem, uint64_t size) {
     vk_init();
     if (!size) return;
     uint64_t a = (uint64_t)(uintptr_t)mem, c = ((a | size) & 0xfff) || zc_over(size) ? size : ZC_CHUNK;
-    for (uint64_t o = 0; o < size; o += c) pool_add_one((const uint8_t *)mem + o, size - o < c ? size - o : c, a, a + size, size > c && zc_lazy());
+    int lazy = (size > c || (c != size && zc_lazy_all())) && zc_lazy();   // c == size: an unaligned or over-limit pool, copied whole
+    for (uint64_t o = 0; o < size; o += c) pool_add_one((const uint8_t *)mem + o, size - o < c ? size - o : c, a, a + size, lazy);
     if (size > c) VKLOG("memory pool %p +%#llx: %llu chunks of at most %#llx", mem, (unsigned long long)size, (unsigned long long)((size + c - 1) / c), c);
 }
 static void pool_add_one(const void *mem, uint64_t size, uint64_t base, uint64_t end, int lazy) {
