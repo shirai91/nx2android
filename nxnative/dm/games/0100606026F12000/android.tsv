@@ -9,7 +9,7 @@
 # (DM_VK_TRACE_PASS=22): vertex shader fb570ef861debd17 draws 6 indices x 15-131 instances (the count grows: the GPU simulation spawns them), 1300ca45ddca3566 and
 # c55d54c8f41b1520 are mesh particles; leaving any of them out (DM_VK_X_SKIPVS) changes no pixel, so they draw nothing visible. Ruled out: culling (DM_VK_NOCULL=1), the
 # fragment-depth variant (DM_VK_FDZ=0), the dynamic texture slots (android_dynamic_slots on), the zero parameters (now copied), the indirect arguments (in the pools, the CPU
-# sees the GPU's instance counts), a uint table the simulation writes (the CPU sees it change), tracking a dispatch's storage texel buffers as written (test build). Next: the
+# sees the GPU's instance counts), a uint table the simulation writes (the CPU sees it change), tracking a dispatch's storage texel buffers as written, views to the pool's end (test builds); all pools are zero-copy. Next: the
 # GPU culling / sorting compute that feeds them: the sprite's position depends on its float data (R32F, 44 elements = 2 particles x 22 components, the layout fits) and a
 # shared R32UI table of 8192 indices (instance → particle) that a dispatch writes; the table holds values like 2 and 1023 (out of range for 2 particles) and the draw's GPU
 # instance count runs 15-131: most instances then likely read past the data (not proven). Look at the dispatches that write that table and the count, and at their buffer clears and atomics.
