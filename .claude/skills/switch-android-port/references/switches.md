@@ -11,6 +11,8 @@ The source of each switch is in `nxnative/dm/android/` unless noted. Check the c
 | Switch | When read | What it does |
 |---|---|---|
 | `DM_VK_VALIDATE=1` | start-up | Khronos validation layer; its messages go to the log. The APK must carry it (`mkapk.py --extra-so <libVkLayer_khronos_validation.so>`; built copy in `tools/vvl`) |
+| `DM_GAME_ARGS_ADD=<args>` | start-up (`dm/host/main.c`) | more arguments after the profile's `game_args`, split at spaces: an engine's own options tried without a new port. A shipping Unreal build ignores `-dpcvars=` and `-ini:` (Final Fantasy Resonance: `r.ScreenPercentage=25` changed nothing) |
+| `ctl.txt` `pokei <address> <value>` | live (`dm/host/hle_fpslock.c`) | write one 32-bit int to guest memory, logged with the value before (`peek <address> <count>` reads; `cvari <main offset> <value>` sets a `TAutoConsoleVariable`). An Unreal `FAutoConsoleVariableRef`'s int is at the second argument of its registration (the `adrp x2` after the name's `adrp x1`); a write skips the variable's change callback, so a cached copy keeps the old value |
 | `DM_VK_SHOTS=N` | live | save each of the next N presented frames as `frame_<n>.ppm` in the files folder (logs "frame shots: presents a to b") |
 | `DM_VK_SHOT=n1,n2` | start-up | headless runs: save those presents (`DM_VK_SHOT_DIR`) |
 | `DM_VK_PASSDUMP=1` / `=N` | live | dump each pass's first colour target and its depth (PPM, NaN counts, depth stretched) for one frame; `=N` waits N−1 presents first. **The dump adds barriers and depth reads, which can hide bugs** |
