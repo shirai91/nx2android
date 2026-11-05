@@ -1,6 +1,6 @@
 # porter/install.py without a device: a RomFS read from a folder outside the app's files folder (--romfs-at). The device is made up: a dict of its files and the shell's
 # answers (python -m unittest discover tests).
-import json, os, shlex, shutil, struct, subprocess, sys, tempfile, unittest, zipfile
+import hashlib, json, os, shlex, shutil, struct, subprocess, sys, tempfile, unittest, zipfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -17,10 +17,13 @@ ROM = {'Data/a.bin': 20, 'Data/sub/b.bin': 7, 'c.bin': 5}
 
 
 class Device(Adb):
-    """A made-up device: files {absolute path: size}, the text of the few files the installer reads, All files access as the appop says, and every step in ops"""
-    def __init__(self, files=(), text=None, sdk=34, access='default', grants=True, free=1 << 40):
+    """A made-up device: files {absolute path: size}, the text of the few files the installer reads, All files access as the appop says, and every step in ops.
+    A file's content is the pack's (size times b'x') unless md5 {absolute path: MD5} says otherwise; md5=False: md5sum gives nothing. installed: the app is on the
+    device already; requests: its manifest asks for the access"""
+    def __init__(self, files=(), text=None, sdk=34, access='default', grants=True, free=1 << 40, md5=None, installed=False, requests=True):
         super().__init__('adb'); self.serial = 'dev'
         self.fs, self.text, self.sdk_, self.access, self.grants, self.free, self.ops = dict(files), dict(text or {}), sdk, access, grants, free, []
+        self.md5, self.installed_, self.requests = md5 if md5 is not None else {}, installed, requests
     def pick(self): return 'dev'
     def prop(self, name): return str(self.sdk_) if name == 'ro.build.version.sdk' else 'Test'
     def gpu(self): return 'Qualcomm, Adreno (TM) 830'
@@ -28,7 +31,13 @@ class Device(Adb):
     def same_volume(self, a, b): return True
     def read_text(self, path): return self.text.get(path, '')
     def remote_sizes(self, rdir): p = rdir.rstrip('/') + '/'; return {k[len(p):]: v for k, v in self.fs.items() if k.startswith(p)}
-    def install(self, apk, package, replace_signer=False): self.ops.append(('install', package))
+    def install(self, apk, package, replace_signer=False): self.ops.append(('install', package)); self.installed_ = True
+    def installed(self, package): return self.installed_
+    def requests_permission(self, package, perm): return self.requests
+    def remote_md5(self, rdir, rels):
+        self.ops.append(('md5', rdir, len(rels)))
+        if self.md5 is False: return {}
+        return {r: self.md5.get(f'{rdir}/{r}') or hashlib.md5(b'x' * self.fs[f'{rdir}/{r}']).hexdigest() for r in rels if f'{rdir}/{r}' in self.fs}
     def prepare_app_files(self, package): return False
     def push_tree(self, local, remote, skip=(), exclude=(), have=None, **kw):   # what the real one pushes: every file but skip's and exclude's folders
         local, n = Path(local), 0
@@ -36,6 +45,7 @@ class Device(Adb):
             rel = p.relative_to(local).as_posix()
             if p.is_file() and rel not in skip and rel.split('/')[0] not in exclude:
                 self.fs[f'{remote}/{rel}'] = p.stat().st_size; n += 1
+                if self.md5: self.md5.pop(f'{remote}/{rel}', None)   # the pack's content now
                 if rel.endswith('.txt'): self.text[f'{remote}/{rel}'] = p.read_text(encoding='utf-8')
         self.ops.append(('push_tree', remote, n))
     def push_file(self, local, dst, **kw):
@@ -159,6 +169,36 @@ class RomfsAt(unittest.TestCase):
         dev = self.run_on(Device({f'{DUMP}/c.bin': 4}), romfs_at=DUMP, romfs_push=True)
         self.assertEqual(dev.remote_sizes(DUMP), ROM); self.assertNotEqual(dev.step('push_tree', DUMP), -1)
         with self.assertRaisesRegex(BuildError, '--romfs-push needs --romfs-at'): self.run_on(Device(), romfs_push=True)
+
+    def test_content(self):   # a folder of the right names and sizes but other bytes (another game version): refused, or pushed again with --romfs-push
+        rom = {f'{DUMP}/{r}': n for r, n in ROM.items()}
+        dev = Device(rom, md5={f'{DUMP}/c.bin': '0' * 32})
+        with self.assertRaisesRegex(BuildError, r'1 have the right size but other content \(MD5: c.bin\)'): self.run_on(dev, romfs_at=DUMP)
+        self.assertEqual(dev.step('install'), -1); self.assertNotEqual(dev.step('md5', DUMP), -1)
+        dev = self.run_on(Device(rom, md5={f'{DUMP}/c.bin': '0' * 32}), romfs_at=DUMP, romfs_push=True)
+        self.assertNotEqual(dev.step('push_tree', DUMP), -1); self.assertFalse(dev.md5)
+        dev = self.run_on(Device(rom, md5=False), romfs_at=DUMP)   # no MD5 from the device: names and sizes only, as before
+        self.assertNotEqual(dev.step('push_file', 'env.txt'), -1)
+        dev = Device({f'{DUMP}/c.bin': 6})   # a listing that is refused anyway: no MD5 asked for
+        with self.assertRaises(BuildError): self.run_on(dev, romfs_at=DUMP)
+        self.assertEqual(dev.step('md5'), -1)
+
+    def test_sample(self):   # files of at most SAMPLE_MAX bytes, at most SAMPLE_FILES of them, spread over the sorted paths
+        rom = {f'f{i:04d}': 10 for i in range(1000)} | {'big': install.SAMPLE_MAX + 1}
+        s = install.romfs_sample(rom)
+        self.assertEqual(len(s), install.SAMPLE_FILES); self.assertNotIn('big', s); self.assertEqual((s[0], s[-1] > 'f0990'), ('f0000', True)); self.assertEqual(s, sorted(set(s)))
+        self.assertEqual(install.romfs_sample(ROM), sorted(ROM))
+
+    def test_update_grant_first(self):   # an update whose app asks for the access: a refused grant stops the install before the APK goes in
+        rom = {f'{DUMP}/{r}': n for r, n in ROM.items()}
+        dev = Device(rom, grants=False, installed=True)
+        with self.assertRaisesRegex(BuildError, 'did not grant it'): self.run_on(dev, romfs_at=DUMP)
+        self.assertEqual(dev.step('install'), -1)
+        dev = Device(rom, grants=False, installed=True, requests=False)   # an older APK that did not ask: refused after the APK, before any data
+        with self.assertRaisesRegex(BuildError, 'did not grant it'): self.run_on(dev, romfs_at=DUMP)
+        self.assertNotEqual(dev.step('install'), -1); self.assertEqual((dev.step('push_tree'), dev.step('push_file')), (-1, -1))
+        dev = self.run_on(Device(rom, installed=True), romfs_at=DUMP)   # granted before the APK
+        self.assertLess(dev.step('shell', 'appops set'), dev.step('install'))
 
     def test_free_space(self):   # the RomFS in another folder needs no room in the files folder
         rom = sum(ROM.values())

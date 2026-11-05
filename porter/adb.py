@@ -105,7 +105,8 @@ class Adb:
         return int(out[3]) * 1024 if len(out) >= 4 and out[3].isdigit() else None
 
     def same_volume(self, a, b):   # whether two paths (their nearest folders that exist) share a volume and its free space: stat's device number (an SD card is a volume of its own)
-        out = self.shell('for p in ' + ' '.join(shlex.quote(x) for x in (a, b)) + '; do while [ ! -e "$p" ]; do p=$(dirname "$p"); done; stat -c %d "$p"; done', check=False).split()
+        # -L: /sdcard is a symlink, and toybox stat does not follow one without it (the root file system's device number, never shared storage's)
+        out = self.shell('for p in ' + ' '.join(shlex.quote(x) for x in (a, b)) + '; do while [ ! -e "$p" ]; do p=$(dirname "$p"); done; stat -L -c %d "$p"; done', check=False).split()
         return len(out) == 2 and out[0] == out[1]
 
     def read_text(self, path):   # a small text file on the device, '' when it is not there
@@ -114,6 +115,9 @@ class Adb:
     def sdk(self):   # the device's API level (29: Android 10), 0 when unknown
         v = self.prop('ro.build.version.sdk')
         return int(v) if v.isdigit() else 0
+
+    def requests_permission(self, package, perm):   # whether the installed app's manifest asks for perm (dumpsys lists only the permissions an app asks for)
+        return perm in self.shell(f'dumpsys package {shlex.quote(package)} 2>/dev/null | grep -F {shlex.quote(perm)}; true', check=False)
 
     def storage_access(self, package, grant=False):
         """Whether the app may read shared storage outside its own folders (a RomFS read from a game dump's folder: install --romfs-at): All files access, the appop

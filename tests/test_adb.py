@@ -40,6 +40,15 @@ class RemoteSizes(unittest.TestCase):
             self.FakeAdb('5 a\n7 d\n').remote_sizes('/sdcard/x')
 
 
+class SameVolume(unittest.TestCase):   # /sdcard is a symlink: stat must follow it (-L), or it gives the root file system's device number
+    def test_follows_links(self):
+        cmds = []
+        class FakeAdb(Adb):
+            def shell(self, script, **kw): cmds.append(script); return '64\n64\n'
+        self.assertTrue(FakeAdb('adb').same_volume('/sdcard', '/sdcard/Games/x'))
+        self.assertIn('stat -L -c %d', cmds[0])
+
+
 class PushTree(unittest.TestCase):
     class FakeAdb(Adb):   # small pushes recorded by their device folder and file names
         def __init__(self): super().__init__('adb'); self.pushed = []
