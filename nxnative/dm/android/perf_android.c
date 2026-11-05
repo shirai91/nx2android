@@ -155,6 +155,8 @@ static int64_t work_pct(int q) {   // the q-th percentile of the last 64 frames'
 }
 static int64_t work_p95(void) { return work_pct(95); }
 uint64_t dm_present_period_adapt(uint64_t period) {
+    extern int dm_user_present_hz(void) __attribute__((weak));
+    if (dm_user_present_hz && dm_user_present_hz() > 0) return period;   // an explicit user limit bypasses the 60/40/30 governor
     if (g_adapt < 0) { const char *e = getenv("DM_ADAPTIVE_FPS"); g_adapt = !(e && !atoi(e)); }
     if (!g_adapt || !period) return period;
     g_game_period = period;

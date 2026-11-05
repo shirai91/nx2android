@@ -3,6 +3,7 @@
 // presented with FIFO (vsync) pacing. Headless (dmhost from adb shell): frames are counted, and DM_VK_SHOT=n1,n2,... writes those presented frames as PPM files to
 // DM_VK_SHOT_DIR (default DM_ROOT), which is how a run without a screen is checked.
 #include "gfx_vk.h"
+#include "frame_limit.h"
 #include <android/native_window.h>
 #include <jni.h>
 #include <string.h>
@@ -292,7 +293,7 @@ static void cv_button(const ov_canvas *cv, const float b[4], const char *l, int 
 }
 // The pause menu (overlay_layout.h: the rows, the tabs, the slider's track), in the raster's panel rectangle. Its letters are as large as a row allows (0.30 of
 // its height, about 2.7 mm on a 6.7" phone and 3.6 mm on the 8.8" tablet) and smaller only when the widest row would not fit beside its control
-static const char *const OVM_LABELS[OVM_N] = {"Show gamepad", "Opacity", "Edit layout", "Rumble", "Show FPS", "Mode", "Export save", "Import save", "Resume", ""};
+static const char *const OVM_LABELS[OVM_N] = {"Show gamepad", "Opacity", "Edit layout", "Rumble", "Show FPS", "FPS limit", "Mode", "Export save", "Import save", "Resume", ""};
 static const char *const OVM_BUTTONS[OVM_N] = {[OVM_EDIT] = "Edit", [OVM_EXPORT] = "Export", [OVM_IMPORT] = "Import"};   // the rows that are a button: its word
 static const char *const OVM_MODES[2] = {"Handheld", "Docked"};
 static void ov_menu_panel(const ov_canvas *cv, int st) {
@@ -303,7 +304,7 @@ static void ov_menu_panel(const ov_canvas *cv, int st) {
     for (; is > 1; is--) {   // the widest row: its label, a gap and its control
         float need = 0;
         for (int i = 0; i < OVM_RESUME; i++) {
-            float lw = cv_text_w(OVM_LABELS[i], is), cw = i == OVM_MODE ? 2 * (cv_text_w(OVM_MODES[0], is) + sh) : OVM_BUTTONS[i] ? cv_text_w(OVM_BUTTONS[i], is) + 2 * sh : sw + gap + cv_text_w("OFF", is);
+            float lw = cv_text_w(OVM_LABELS[i], is), cw = i == OVM_LIMIT ? fmaxf(cv_text_w("120 FPS", is), cv_text_w("Default", is)) + 2 * sh : i == OVM_MODE ? 2 * (cv_text_w(OVM_MODES[0], is) + sh) : OVM_BUTTONS[i] ? cv_text_w(OVM_BUTTONS[i], is) + 2 * sh : sw + gap + cv_text_w("OFF", is);
             need = fmaxf(need, i == OVM_OPACITY ? fmaxf(lw / 0.38f, cv_text_w("80%", is) / 0.14f) : lw + gap + cw + rh * 0.3f);
         }
         if (need <= rw && cv_text_w(OVM_TAB_NAMES[0], is) < rw / 2 - sh) break;
@@ -335,6 +336,12 @@ static void ov_menu_panel(const ov_canvas *cv, int st) {
             snprintf(v, sizeof v, "%s", x == OVX_BUSY ? "Exporting..." : x == OVX_DONE ? nm : x == OVX_NOSAVE ? "No save yet" : "Failed");
             while (vs > 1 && cv_text_w(v, vs) > rw - cv_text_w(OVM_LABELS[it], is) - gap - rh * 0.3f) vs--;
             cv_text(cv, x1 - cv_text_w(v, vs), cy, v, vs, x == OVX_FAILED ? C_ACCENT : C_WHITE);
+        } else if (it == OVM_LIMIT) {
+            int index = (unsigned)st >> 28 & 7; char value[16];
+            int rate = DM_FRAME_LIMITS[index < DM_FRAME_LIMIT_COUNT ? index : 0];
+            if (rate) snprintf(value, sizeof value, "%d FPS", rate); else snprintf(value, sizeof value, "Default");
+            float bw = fmaxf(cv_text_w("120 FPS", is), cv_text_w("Default", is)) + 2 * sh, b[4] = {x1 - bw, cy - rh * 0.30f, bw, rh * 0.60f};
+            cv_button(cv, b, value, 0, 0);
         } else if (OVM_BUTTONS[it]) {   // a button
             float bw = cv_text_w(OVM_BUTTONS[it], is) + 2 * sh, b[4] = {x1 - bw, cy - rh * 0.30f, bw, rh * 0.60f}; cv_button(cv, b, OVM_BUTTONS[it], 0, 0);
         } else if (it == OVM_MODE) {   // two segments, the current one filled: handheld (performance) | docked (resolution)
@@ -711,13 +718,20 @@ static int overlay_ready(VkCommandBuffer cb, uint32_t k, int menu) {   // k: thi
 // desired present time: the last one's plus the game's period, on the display's vsync grid (anchored at a past frame's actual present time), half a vsync before that vsync so
 // it cannot go out early. A frame that would not be ready in time moves the cadence to the first vsync it can make (a "resync": one longer frame, and from then on a vsync of
 // slack). The pause menu's redraws carry no time. DM_VK_PACE=0 (live) presents without times
-static uint64_t g_refresh_ns, g_pace_target, g_pace_anchor, g_pace_n, g_pace_resync, g_pace_slip; static uint32_t g_pace_id; static int g_pace_on = 1;
+static uint64_t g_refresh_ns, g_pace_target, g_pace_anchor, g_pace_n, g_pace_resync, g_pace_slip, g_pace_ideal, g_pace_period; static uint32_t g_pace_id; static int g_pace_on = 1;
 static uint64_t mono_ns(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (uint64_t)t.tv_sec * 1000000000ull + (uint64_t)t.tv_nsec; }
-static void pace_reset(void) { g_pace_target = g_pace_anchor = g_refresh_ns = 0; }
+static void pace_reset(void) { g_pace_target = g_pace_anchor = g_refresh_ns = g_pace_ideal = g_pace_period = 0; }
 static uint64_t pace_snap(uint64_t t) {   // the first vsync at or after t on the grid through the anchor
     uint64_t r = g_refresh_ns, a = g_pace_anchor;
     if (t <= a) return a - (a - t) / r * r;
     return a + (t - a + r - 1) / r * r;
+}
+static uint64_t pace_next_tick(uint64_t period) {
+    // Keep an unsnapped phase: rounding each increment loses the fraction at 50/90 fps.
+    if (period != g_pace_period) { g_pace_period = period; g_pace_ideal = 0; g_pace_target = 0; }
+    if (!g_pace_ideal) return 0;
+    g_pace_ideal += period;
+    return pace_snap(g_pace_ideal - g_refresh_ns / 2);
 }
 static uint64_t pace_desired(double period) {   // the frame's desired present time (0 = none)
     if (!V.has_dtiming || !g_swap) return 0;
@@ -725,7 +739,7 @@ static uint64_t pace_desired(double period) {   // the frame's desired present t
     if (!g_refresh_ns || g_pace_n % 120 == 0) {
         VkRefreshCycleDurationGOOGLE rc; uint64_t was = g_refresh_ns;
         if (vkGetRefreshCycleDurationGOOGLE(V.dev, g_swap, &rc) == VK_SUCCESS && rc.refreshDuration > 1000000) g_refresh_ns = rc.refreshDuration;
-        if (g_refresh_ns && g_refresh_ns != was) { VKLOG("[perf] display timing: refresh %.3f ms", g_refresh_ns / 1e6); g_pace_target = 0; }
+        if (g_refresh_ns && g_refresh_ns != was) { VKLOG("[perf] display timing: refresh %.3f ms", g_refresh_ns / 1e6); g_pace_target = g_pace_ideal = 0; }
     }
     VkPastPresentationTimingGOOGLE pt[16]; uint32_t np = 16;
     if (vkGetPastPresentationTimingGOOGLE(V.dev, g_swap, &np, pt) >= 0)
@@ -737,13 +751,13 @@ static uint64_t pace_desired(double period) {   // the frame's desired present t
     g_pace_n++;
     if (g_pace_n % 600 == 0) VKLOG("[perf] display timing: %llu frames, %llu resyncs, %llu shown a vsync or more after their time (cumulative)%s",
                                    (unsigned long long)g_pace_n, (unsigned long long)g_pace_resync, (unsigned long long)g_pace_slip, g_pace_on ? "" : "; off (DM_VK_PACE=0)");
-    if (!g_pace_on || !g_refresh_ns || !g_pace_anchor || period <= 0) { g_pace_target = 0; return 0; }
+    if (!g_pace_on || !g_refresh_ns || !g_pace_anchor || period <= 0) { g_pace_target = g_pace_ideal = g_pace_period = 0; return 0; }
     // The earliest vsync this frame can make: its GPU work (submitted just before), the blit, then the latch a vsync before it is shown. When the cadence's next vsync is
     // earlier, the cadence restarts half a vsync further out than that, so the next frames have room for the jitter: restarting at the earliest itself made 31 long frames
     // in 4,200 (5 shown late), and going on until the target was under a vsync away made 54 in 3,600 go out late
     double vk_gpu_ms_recent(void); double g = vk_gpu_ms_recent(); uint64_t gpu = (uint64_t)((g > 4 ? g : 4) * 1e6) + 3000000;
-    uint64_t now = mono_ns(), t = g_pace_target ? pace_snap(g_pace_target + (uint64_t)(period * 1e9) - g_refresh_ns / 2) : 0;
-    if (t < now + gpu + g_refresh_ns) { if (g_pace_target) g_pace_resync++; t = pace_snap(now + gpu + g_refresh_ns * 3 / 2); }
+    uint64_t now = mono_ns(), t = pace_next_tick((uint64_t)(period * 1e9));
+    if (t < now + gpu + g_refresh_ns) { if (g_pace_target) g_pace_resync++; t = pace_snap(now + gpu + g_refresh_ns * 3 / 2); g_pace_ideal = t; }
     g_pace_target = t;
     return t - g_refresh_ns / 2;
 }
