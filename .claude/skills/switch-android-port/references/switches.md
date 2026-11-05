@@ -81,6 +81,12 @@ The source of each switch is in `nxnative/dm/android/` unless noted. Check the c
 | `DM_VK_X_SKIPVS=<key>[,<key>...]` | live | leave out the draws whose vertex shader key (hex, as the traces print it; up to 8) is listed: bisect which shaders an artifact needs, a group at a time (it found XC3's slivers from 40 candidates in 4 rounds) |
 | `DM_VK_RP=0` | start-up | dynamic rendering instead of cached `VkRenderPass` objects with imageless framebuffers (Adreno's `vkCmdBeginRendering` cost about 40 µs a pass) |
 
+## Fonts
+
+| Switch | When read | Meaning |
+|---|---|---|
+| `DM_SHARED_FONT_CJK=<font>` | start-up (`host/hle_sdk16.c`); `$DM_FONT_DIR/cjk.ttf` as well | the shared font of the CJK types (1-4: Simplified and Traditional Chinese, Korean): a TTF with their glyphs, which the game's text drew as "?" for every character before (Super Mario Odyssey in Chinese). Without it the player's own font is taken (`DM_SHARED_FONT` or `$DM_FONT_DIR/standard.ttf`, the font the game asks for when the porter's `--shared-font` packs one), and after that the device's own CJK font (on Android: a known path of /system/fonts, or a font of it whose name says it covers them; a .ttc is taken as its first font, which the game's font engine reads as a plain font — NotoSansCJK-Regular.ttc crashed it as it was), on iOS and macOS the Latin stand-in (Arial Unicode covers the scripts). It is loaded only when a game asks for one of those types |
+
 ## Frame pacing and modes
 
 | Switch | When read | Meaning |
