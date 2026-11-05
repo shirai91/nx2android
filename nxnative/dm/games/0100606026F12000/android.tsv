@@ -7,12 +7,13 @@
 # Its sprite particles' parameters (R32F buffer textures of 36-44 elements at offsets not a multiple of Adreno's 64) are read from an aligned copy (gfx_vk_tex.c vk_tbuf_view).
 # Its particle compute shaders write R32UI / R32I buffer textures through float images: those get an integer variant (gfx_vk_shader.c spv_int_images), and the battle's
 # haze and dust sprites (vertex shader fb570ef861debd17) draw since.
-# Open: the fires in the first battle's background (the battle tutorial's picture shows them) are not drawn. Every blended draw of the frame is in pass 22 (DM_VK_TRACE_PASS
-# for passes 0-52): fb570ef8 (sprites: the haze), 70eb4102 (the moon's glow), 1300ca45ddca3566 (12 draws of a 36-index box, 1 instance each) and c55d54c8f41b1520
-# (4 draws of a 1188-index mesh, 1 instance each); a frame without 1300ca45 or c55d54c8 (DM_VK_X_SKIPVS) does not differ, so those draw nothing visible. They are indirect;
-# their particle data (R32F, 44 elements, now copied when misaligned) and the shared R32UI instance table (8192 elements) are read as the GPU wrote them. Ruled out: culling,
-# the fragment-depth variant, dynamic texture slots, the indirect arguments, the buffer view size, stale pool copies (all pools are zero-copy). Next: what 1300ca45 and
-# c55d54c8 compute for their positions (their instance table entries and float data) against what the material expects.
+# Open: the fires in the first battle's background (the battle tutorial's picture shows them) are not drawn: the game issues no draw for them. Every blended draw of the
+# frame is in pass 22 (DM_VK_TRACE_PASS for passes 0-52), and DM_VK_X_FLAT_VS (in env.txt: pipelines made before it keep their state) shows what each is: fb570ef8 the
+# haze sprites, 1300ca45ddca3566 (12 draws) and c55d54c8f41b1520 (4 draws) large flat ground-fog volumes, 70eb4102 the moon's glow. The fire light is there (orange on
+# the wreck at the right in pass 22's input) and a 255x5 RGBA16F curve texture of fire colours is bound, but no flame geometry. Unreal culls GPU particle systems on the
+# CPU from data it reads back: each frame the simulation copies its 32 KB count buffer (pool region 0x...630100 in the traces) to a ring of readback buffers, and those
+# read as all zeros on the CPU in a memdump (the pools are zero-copy and measured coherent; the region is reused several times a frame, so not proven). Next: when the
+# game reads those buffers (its fence / query wait against our completion), and what it reads, for the fire emitters.
 status	experimental
 tested	v65536 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
 package	org.nx2a.finalfantasyresonance
