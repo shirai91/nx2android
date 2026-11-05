@@ -116,7 +116,7 @@ Events: with `--progress json`, every line on stdout is one JSON object, the pro
 ## What the player installs
 
 The player gets the bundle (`dist/nx2android-<version>-<os>-<cpu>.zip` from `python packaging/build_bundle.py`, for Windows and macOS): unzip, start `nx2android.exe` (`nx2android` on a Mac), nothing to install with pip. It does not ship toolchains; the Setup tab (`nx2android.exe -m porter doctor`, or `python -m porter doctor` from the repository) checks them and the free disk space, and its **Download missing tools** button (`porter tools --download`, `porter/fetch.py`) fetches the missing NDK, .NET SDK and platform-tools from Google's SDK repository and Microsoft's release list, checks each archive against the checksum its list gives, and unpacks them into the player's nx2android folder (`toolchains/`), which the finders search:
-- **Android NDK r27c** (`ANDROID_NDK_HOME`, the configured path, or the usual install folders). No Android SDK or JDK: `mkapk.py` writes and signs the APK itself.
+- **Android NDK r27c** (`ANDROID_NDK_HOME`, the configured path, or the usual install folders). The default build needs no Android SDK or JDK: `mkapk.py` writes and signs the APK itself. The optional `--external-display` activity additionally needs `javac` and Android SDK platform and build-tools.
 - **.NET SDK 10**: builds `nx_extract` and the shader translator, and runs them.
 - From the repository instead of the bundle: **Python 3.11+** with `requirements.txt` (`lz4`, `capstone`, `pillow`, `fonttools`, and `PySide6` for the GUI): the port runs the engine's own Python tools (the rewriter, the shader split). The bundle carries that Python.
 - **adb** (platform-tools), only to install from the tool.

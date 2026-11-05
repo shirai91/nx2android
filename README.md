@@ -51,6 +51,8 @@ A game slowed by its draw calls in busy scenes: tick **Multithread replay** on t
 
 To arrange the on-screen controls, open the pause menu's **Gamepad** tab and choose **Edit layout**: drag a control to move it, pinch or use **− / +** to resize it. **Save** keeps the layout for the next launch and **Cancel** discards your edits. **Snap to grid** (off at first, and remembered) shows a square grid and snaps each control's center to it as you drag.
 
+For the experimental external-screen controller, port from the command line with `--external-display`. The game moves to a connected display and the phone shows the gamepad; the sound menu selects the phone or an external output. This option requires `javac` and an Android SDK with a platform and build-tools (`ANDROID_HOME`). Android 12 or newer uses the saved native layout; Android 10–11 use the fallback controller. Support varies by device and game.
+
 Already have the game on the device for an emulator? The app can read the game's files (its RomFS, most of its size) from that dump's folder instead of a second copy: type the dump's RomFS folder in the app's **RomFS on the device** field (or give it to `--romfs-at`) before you install, which must be the same game version as the port. [packaging/INSTALL.md](packaging/INSTALL.md#the-game-is-already-on-the-device) says how.
 
 A game that crashes with "AllocateAddressRegion … refused (0x1803)" in its log needs more address space: port it again with a larger **Extra address space** on the Port tab (`--alias-headroom` on the command line). [packaging/INSTALL.md](packaging/INSTALL.md#when-something-goes-wrong) says more.

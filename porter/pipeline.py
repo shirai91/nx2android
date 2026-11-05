@@ -37,6 +37,7 @@ class Options:
     shared_font: Path = None           # a TrueType font packed as the system's shared fonts, instead of the device's Roboto (DM_SHARED_FONT, dm/host/hle_sdk16.c)
     mt_replay: bool = False            # multithread replay: DM_VK_MT_REPLAY=1 in env.txt (dm/android/gfx_vk_dq.c), after the profile's env rows
     touch: bool = False                # a game played by touch: the on-screen gamepad starts hidden (TOUCH_SETTINGS), so it takes none of the game's touches
+    external_display: bool = False     # compile the optional external-screen activity with the Android SDK
     vercode_offset: int = 0            # added to the APK's versionCode: a rebuild of the same game version installs over a build with a higher one (version_code)
     alias_headroom: int = None         # GB more alias region (alias_headroom); None: ALIAS_HEADROOM for a version the profile was not brought up on, none for one it was
     romfs_at: str = None               # with install: the folder on the device the app reads the RomFS from (porter/install.py), 'app' for its files folder; None: as the device has it
@@ -586,13 +587,30 @@ class Port:
         icon = self.icon()
         code = version_code(self.pkg_ver, self.o.vercode_offset)
         if self.o.vercode_offset: say(f'versionCode {code} ({self.pkg_ver} + 1 + offset {self.o.vercode_offset})')
+        external = self.external_activity() if self.o.external_display else []
         nsp.run([PY, DM / 'android/apk/mkapk.py', self.so, self.apk_path, paths.signing_key(), '--package', self.package, '--label', self.app_name, '--lib', 'dmhost',
                  '--version-code', str(code), '--version-name', self.display]
-                + (['--landscape'] if self.ap.landscape else []) + (['--icon', icon] if icon else []) + self.theme() + ([] if self.o.debug else ['--release'])
+                + (['--landscape'] if self.ap.landscape else []) + (['--icon', icon] if icon else []) + self.theme() + external + ([] if self.o.debug else ['--release'])
                 + [a for f in ([self.o.vulkan_driver] + [self.so.parent / n for n in ADRENOTOOLS_LIBS] if self.o.vulkan_driver else []) for a in ('--extra-so', str(f))],
                 self.logs / 'android_apk.log', env=self.env)
         self.result['apk'] = str(self.apk_path)
         PROG.end(f'{self.apk_path.name}, {self.apk_path.stat().st_size / 2**20:.1f} MB')
+
+    def external_activity(self):
+        javac = shutil.which('javac')
+        roots = toolchain._sdk_roots()
+        platforms = [p for root in roots for p in (root / 'platforms').glob('android-*/android.jar')]
+        d8s = [p for root in roots for p in (root / 'build-tools').glob('*/d8' + ('.bat' if os.name == 'nt' else ''))]
+        def version(p): return tuple(int(x) for x in re.findall(r'\d+', p.parent.name))
+        if not javac or not platforms or not d8s:
+            raise BuildError('--external-display needs javac and an Android SDK with a platform and build-tools (set ANDROID_HOME)')
+        platform, d8 = max(platforms, key=version), max(d8s, key=version)
+        out = self.aw / 'external-activity'; classes, dex = out / 'classes', out / 'dex'
+        shutil.rmtree(out, ignore_errors=True); classes.mkdir(parents=True); dex.mkdir()
+        sources = sorted((DM / 'android/java/org/nx2a').glob('*.java'))
+        nsp.run([javac, '-source', '8', '-target', '8', '-classpath', platform, '-d', classes, *sources], self.logs / 'android_external_java.log', env=self.env)
+        nsp.run([d8, '--min-api', '29', '--lib', platform, '--output', dex, *sorted(classes.rglob('*.class'))], self.logs / 'android_external_dex.log', env=self.env)
+        return ['--dex', dex / 'classes.dex', '--activity', 'org.nx2a.ExternalActivity']
 
     def theme(self):
         """The on-screen gamepad's theme: only the game's own pack goes in the APK (dm/android/themes/themes.tsv maps title IDs to packs; a game with no row
