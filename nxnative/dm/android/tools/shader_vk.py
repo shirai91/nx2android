@@ -36,7 +36,7 @@ SB_ALIGN = 256
 # Maxwell's warps are 32 lanes; Adreno runs 64 or 128 (a wave's size is the driver's choice per pipeline). Translated for a group above 32 (Program.cs QueryHostSubgroupSize),
 # the translator emulates 32-lane warps inside it: lane id & 31, the ballot word of the lane's own 32, shuffles inside its 32, votes by ballot. Its 128 path picks the word by
 # lane id >> 5, so it holds for 64 too. At 32 the warp code read only the first 32 lanes' ballot (Tears of the Kingdom: 32 shaders vote, ballot or shuffle)
-SUBGROUP = 128
+SUBGROUP = int(GAME.get("android_subgroup_size", "128"))
 # Adreno rounds a gather coordinate that sits on a texel edge the other way from Maxwell, so a gather can pick the wrong 2x2 texels. Eden moves gather coordinates
 # 1/512 texel on Qualcomm and Turnip (#4565, TotK's large dark squares); Ryujinx's TexturePass does the same with 8 bits (Program.cs QueryHostGatherBiasPrecision).
 # Tears of the Kingdom on the Adreno 830 drew dark boxes of whole 16x16 tiles in its tiled lighting (607 shaders gather, 38 of them compute): in 2 of 12 camera
@@ -188,6 +188,9 @@ TEX_BASE, IMG_BASE, IMG_SLOTS, SEPTEX_BASE, SEPTEX_SLOT0, SAMP_BASE = 0x20, 0x12
 SSBO = {'vs': 0x110, 'cs': 0x310, 'ps': 0x510}
 def classify(stage, b, res):
     nm = b['name']; e = dict(b)
+    # Dynamic pool arrays use driver c2 slot indices (as the Metal backend).
+    if GAME.get('android_dynamic_slots', 'off') == 'on' and b['type'] in ('image', 'sampler') and b['count'] == 32 and re.fullmatch(r'[a-z]+_[ts]\w*_cb0_40000000', nm):
+        e.update(kind='texd' if b['type'] == 'image' else 'sampd'); return e
     m = re.fullmatch(r'[a-z]+_c(\d+)', nm)
     if m:
         n = int(m.group(1))
@@ -240,7 +243,7 @@ def classify(stage, b, res):
 # binding: u8 kind, u8 desc (descriptor type), u8 dim (SPIR-V Dim, 0xff none), u8 flags (1 arrayed, 2 multisampled, 4 written), u16 binding, u16 count,
 #          i16 reg, u8 samp (sampler source), u8 fmt (SPIR-V image format), i32 off, i32 samp_arg
 KIND = {'support': 0, 'cbuf': 1, 'c1': 2, 'drvcb': 3, 'sbuf': 4, 'ubo_ptr': 5, 'sbuf_ubo': 6, 'tex': 7, 'tbuf': 8, 'img': 9, 'img_tbuf': 10, 'tex_c2a': 11,
-        'tex_ubo': 12, 'tbuf_ubo': 13, 'img_ubo': 14, '?': 255}
+        'tex_ubo': 12, 'tbuf_ubo': 13, 'img_ubo': 14, 'texd': 15, 'sampd': 16, '?': 255}
 DESC = {'ubo': 0, 'ssbo': 1, 'sampled': 2, 'storage': 3, 'tbuf': 4, 'storage_tbuf': 5, 'image': 6, 'sampler': 7, '?': 255}
 SAMP_NONE, SAMP_TEX, SAMP_SLOT, SAMP_ID, SAMP_UBO = 0, 1, 2, 3, 4
 kinds_all = collections.Counter()
@@ -261,7 +264,65 @@ def refl_bin(binds, c1, local):
                                reg, samp, e.get('fmt') or 0, off, sarg))
     return b''.join(out) + bytes(c1)
 
+def remap_handles(spv, source, target, expected):
+    """Remap a packed handle at stores feeding both texture and sampler array indices."""
+    words = list(struct.unpack(f'<{len(spv) // 4}I', spv))
+    constants, loads, uses, types = {}, {}, collections.defaultdict(set), {}
+    bool_type = None
+    instructions = []
+    i = 5
+    while i < len(words):
+        count, op = words[i] >> 16, words[i] & 0xffff
+        if not count or i + count > len(words):
+            raise ValueError('invalid SPIR-V instruction')
+        ins = words[i:i + count]
+        instructions.append((op, ins))
+        if op == 20:  # OpTypeBool
+            bool_type = ins[1]
+        elif op == 21 and ins[2] == 32:  # OpTypeInt
+            types[ins[1]] = ins[3]
+        elif op == 43 and count == 4:  # OpConstant
+            constants[ins[2]] = ins[3]
+        elif op == 61:  # OpLoad
+            loads[ins[2]] = (ins[3], ins[1])
+        elif op in (194, 199) and ins[3] in loads:  # ShiftRightLogical / BitwiseAnd
+            uses[loads[ins[3]]].add((op, constants.get(ins[4])))
+        i += count
+
+    handles = {ptr: typ for (ptr, typ), ops in uses.items()
+               if typ in types and {(194, 20), (199, 0xfffff)} <= ops}
+    if not bool_type or not expected or len(handles) != expected or len(set(handles.values())) != 1:
+        raise ValueError('packed handle shader interface changed')
+    typ = next(iter(handles.values()))
+    raw, slot = words[3], words[3] + 1
+    out = words[:5]
+    out[3] += 2
+    inserted = False
+    stores = []
+    for op, ins in instructions:
+        if op == 54 and not inserted:  # constants must precede OpFunction
+            out.extend([4 << 16 | 43, typ, raw, source, 4 << 16 | 43, typ, slot, target])
+            inserted = True
+        if op == 62 and ins[1] in handles:  # OpStore
+            stores.append(ins[1])
+            cond, value = out[3], out[3] + 1
+            out[3] += 2
+            out.extend([5 << 16 | 170, bool_type, cond, ins[2], raw])  # OpIEqual
+            out.extend([6 << 16 | 169, typ, value, cond, slot, ins[2]])  # OpSelect
+            ins[2] = value
+        out.extend(ins)
+    if sorted(stores) != sorted(handles):
+        raise ValueError('expected one assignment per packed handle')
+    return struct.pack(f'<{len(out)}I', *out)
+
 def main():
+    handle_remaps = {}
+    table = GAME.table('android_shader_handles.tsv')
+    if table.exists():
+        for line in table.read_text().splitlines():
+            if line and not line.startswith('#'):
+                key, source, target, sites = line.split()
+                handle_remaps[key] = int(source, 0), int(target, 0), int(sites)
     pc, loc = {}, {}
     for ln in open(MAP, encoding='utf-8'):
         c = ln.rstrip('\n').split('\t')
@@ -295,6 +356,8 @@ def main():
         if not os.path.exists(spv_p): fails['no output'] += 1; continue
         spv = open(spv_p, 'rb').read(); res = json.load(open(res_p)) if os.path.exists(res_p) else {}
         binds, local, io = spirv_bindings(spv)
+        if k in handle_remaps:
+            spv = remap_handles(spv, *handle_remaps[k])
         st = stages[k]
         cl = [classify(st, b, res) for b in binds]
         for e in cl: kinds_all[e['kind']] += 1
