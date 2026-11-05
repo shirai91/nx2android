@@ -21,6 +21,14 @@ static uint8_t *asset(const char *name, size_t *n) {   // the whole asset, NUL-t
     return b;
 }
 
+// The overlay's font (pixel_font.h): read once, kept for good. Without it the overlay shows no text
+const uint8_t *dm_overlay_font(void) {
+    static int tried; static const uint8_t *f; if (tried) return f;
+    tried = 1; size_t n = 0; uint8_t *b = asset("font/ui.bin", &n);
+    if (b && n >= 8 && !memcmp(b, "NXPF", 4)) f = b; else LOG("[RED] the APK has no overlay font (assets/font/ui.bin): the overlay shows no text");
+    return f;
+}
+
 static uint32_t be32(const uint8_t *p) { return (uint32_t)p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3]; }
 static uint8_t *png_rgba(const uint8_t *f, size_t n, int *pw, int *ph) {   // RGBA texels (malloc), NULL for a PNG of another kind
     if (n < 8 || memcmp(f, "\x89PNG\r\n\x1a\n", 8)) return NULL;

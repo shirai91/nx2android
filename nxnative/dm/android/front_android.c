@@ -9,6 +9,7 @@
 #include "front.h"
 #include "dm_input.h"
 #include "overlay_layout.h"
+#include "pixel_font.h"
 #include "saves_android.h"
 #include <math.h>
 #include <time.h>
@@ -582,11 +583,11 @@ static void ed_touch(AInputEvent *e, float W, float H) {   // the prompt's butto
 // ---- text entry: the game's software keyboard (nn::swkbd, hle_swkbd.c → front_text_input), as an on-screen keyboard of the overlay ----
 // The game thread that asks waits here while the player types; the game is held as by the menu and the last frame is shown with the entry's panel and keys
 // (overlay_layout.h ov_kb_*, drawn by gfx_vk_present.c ov_text_panel from dm_text_entry). Touch: tap the keys. Controller: the d-pad moves the highlight,
-// A presses it, B erases, + accepts, − cancels. A physical keyboard types (letters, digits, space, punctuation as ASCII, the overlay's font), Del erases,
+// A presses it, B erases, + accepts, − cancels. A physical keyboard types (letters, digits, space, punctuation as ASCII), Del erases,
 // Enter accepts. Back cancels (the game keeps its initial text). Android's own keyboard is not used: a code-less NativeActivity's content view is no text
 // editor, so the system does not show one for it, and asking for one routed the key events to it
 static pthread_mutex_t g_tx_mu = PTHREAD_MUTEX_INITIALIZER; static pthread_cond_t g_tx_cv = PTHREAD_COND_INITIALIZER;
-static struct { char title[128], text[256]; int n, max, done, ok, sel, shift, ptr; } g_tx;
+static struct { char title[128], text[256]; int n, cap, max, done, ok, sel, shift, ptr; } g_tx;   // n, cap: bytes of UTF-8; max: UTF-16 units, the game's limit
 int dm_text_entry(char *title, int tcap, char *text, int xcap, int *sel, int *shift) {   // the panel's content (the present thread); 0 when no entry is open
     if (!atomic_load(&g_tx_on)) return 0;
     pthread_mutex_lock(&g_tx_mu);
@@ -596,7 +597,7 @@ int dm_text_entry(char *title, int tcap, char *text, int xcap, int *sel, int *sh
 }
 static void tx_changed(void) { atomic_fetch_add(&g_tx_ver, 1); dm_overlay_redraw(); }
 static void tx_add(int c) {   // the caller holds g_tx_mu; a capital ends the shift, as on a phone
-    if (!c || g_tx.n >= g_tx.max) return;
+    if (!c || g_tx.n >= g_tx.cap || pf_units(g_tx.text) >= g_tx.max) return;
     g_tx.text[g_tx.n++] = (char)c; g_tx.text[g_tx.n] = 0;
     if (c >= 'A' && c <= 'Z') g_tx.shift = 0;
 }
@@ -606,7 +607,7 @@ static void tx_press(int i) {   // an on-screen key
     pthread_mutex_lock(&g_tx_mu);
     if (i == OVK_SHIFT) g_tx.shift = !g_tx.shift;
     else if (i == OVK_SPACE) tx_add(' ');
-    else if (i == OVK_DEL) { if (g_tx.n) g_tx.text[--g_tx.n] = 0; }
+    else if (i == OVK_DEL) { g_tx.n = (int)pf_chop(g_tx.text, (size_t)g_tx.n); }
     else tx_add(ov_kb_char(i, g_tx.shift));
     pthread_mutex_unlock(&g_tx_mu);
     dm_haptics_android_tap(); tx_changed();
@@ -637,7 +638,7 @@ static int tx_key(AInputEvent *e) {   // every key goes to the entry while it is
     pthread_mutex_lock(&g_tx_mu);
     int dx = bit == DM_BTN_LEFT ? -1 : bit == DM_BTN_RIGHT ? 1 : 0, dy = bit == DM_BTN_UP ? -1 : bit == DM_BTN_DOWN ? 1 : 0;
     if (dx || dy) g_tx.sel = ov_kb_move(g_tx.sel, dx, dy);
-    else if (k == AKEYCODE_DEL || bit == DM_BTN_B) { if (g_tx.n) g_tx.text[--g_tx.n] = 0; }
+    else if (k == AKEYCODE_DEL || bit == DM_BTN_B) { g_tx.n = (int)pf_chop(g_tx.text, (size_t)g_tx.n); }
     else if (bit == DM_BTN_Y) g_tx.shift = !g_tx.shift;
     else tx_add(tx_char(k, AKeyEvent_getMetaState(e)));
     pthread_mutex_unlock(&g_tx_mu);
@@ -662,12 +663,17 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
     if (!g_act || !dm_front_window()) return -1;   // the adb shell executable, or no window yet: nothing is shown
     pthread_mutex_lock(&g_tx_mu);
     const char *t = title && *title ? title : guide && *guide ? guide : sub && *sub ? sub : "Enter text";
-    snprintf(g_tx.title, sizeof g_tx.title, "%s", t);
+    snprintf(g_tx.title, sizeof g_tx.title, "%s", t); pf_trim(g_tx.title);
+    g_tx.cap = out_cap - 1 < (int)sizeof g_tx.text - 1 ? out_cap - 1 : (int)sizeof g_tx.text - 1;
     g_tx.n = 0; g_tx.text[0] = 0;
-    for (const char *s = initial ? initial : ""; *s && g_tx.n < (int)sizeof g_tx.text - 1; s++) if ((unsigned char)*s >= 32 && (unsigned char)*s < 127) g_tx.text[g_tx.n++] = *s;   // ASCII of the initial text
+    for (const char *s = initial ? initial : ""; *s;) {   // the initial text without its control characters, whole characters only
+        const char *c0 = s; uint32_t c = pf_next(&s); int k = (int)(s - c0);
+        if (c < 32 || c == 127) continue;
+        if (g_tx.n + k > g_tx.cap) break;
+        memcpy(g_tx.text + g_tx.n, c0, (size_t)k); g_tx.n += k;
+    }
     g_tx.text[g_tx.n] = 0;
     g_tx.max = max_chars > 0 && max_chars < (int)sizeof g_tx.text - 1 ? max_chars : (int)sizeof g_tx.text - 1;
-    if (g_tx.max > out_cap - 1) g_tx.max = out_cap - 1;
     g_tx.done = g_tx.ok = 0; g_tx.sel = 11; g_tx.shift = g_tx.n == 0; g_tx.ptr = -1;   // the highlight on q; a capital first, as on a phone
     pthread_mutex_unlock(&g_tx_mu);
     dm_input_set(0, 0, 0, 0, 0); dm_touch_set(NULL, 0); g_touch_btn = 0;   // nothing stays pressed in the game

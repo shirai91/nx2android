@@ -14,6 +14,7 @@ from porter.upstream import BuildError, PROG, android_profile, game, nacp, nsp, 
 
 PY = sys.executable
 # The letters of the button-icon font (make_ext_font.py knocks them out of the icons): a bold system font of the machine that ports, never shipped in the repository
+UI_FONT = DM / 'third_party/fusion-pixel-font/fusion-pixel-12px-proportional-zh_tw.nxpf'
 LETTER_FONTS = [f'{os.environ.get("WINDIR", "C:/Windows")}/Fonts/{f}' for f in ('ARLRDBD.TTF', 'arialbd.ttf')] + [
     '/System/Library/Fonts/Supplemental/Arial Rounded Bold.ttf', '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf', '/usr/share/fonts/TTF/DejaVuSans-Bold.ttf']
 
@@ -586,7 +587,7 @@ class Port:
         if self.o.vercode_offset: say(f'versionCode {code} ({self.pkg_ver} + 1 + offset {self.o.vercode_offset})')
         nsp.run([PY, DM / 'android/apk/mkapk.py', self.so, self.apk_path, paths.signing_key(), '--package', self.package, '--label', self.app_name, '--lib', 'dmhost',
                  '--version-code', str(code), '--version-name', self.display]
-                + (['--landscape'] if self.ap.landscape else []) + (['--icon', icon] if icon else []) + self.theme() + ([] if self.o.debug else ['--release'])
+                + (['--landscape'] if self.ap.landscape else []) + (['--icon', icon] if icon else []) + self.theme() + self.ui_font() + ([] if self.o.debug else ['--release'])
                 + [a for f in ([self.o.vulkan_driver] + [self.so.parent / n for n in ADRENOTOOLS_LIBS] if self.o.vulkan_driver else []) for a in ('--extra-so', str(f))],
                 self.logs / 'android_apk.log', env=self.env)
         self.result['apk'] = str(self.apk_path)
@@ -601,6 +602,11 @@ class Port:
         if missing: say(f'[RED] the gamepad theme {pack.name} has no {", ".join(missing)}: the app draws its gamepad without a theme'); return []
         self.result['theme'] = pack.name; say(f'gamepad theme: {pack.name}')
         return [a for f in files for a in ('--asset', f'overlay/{f.name}={f}')]
+
+    def ui_font(self):
+        """The overlay's font (dm/android/overlay_theme.c dm_overlay_font) and, as its license asks, the license files beside it, as assets/font/"""
+        d = UI_FONT.parent
+        return ['--asset', f'font/ui.bin={UI_FONT}'] + [a for f in sorted(p for p in d.rglob('*.txt')) for a in ('--asset', f'font/{f.relative_to(d).as_posix()}={f}')]
 
     def icon(self):   # the game's icon (nx_extract saves the control data's English one as icon.jpg) as a 256 px PNG; None without Pillow or an icon
         src = next((d / 'icon.jpg' for d in (self.game, self.base) if (d / 'icon.jpg').exists()), None)
