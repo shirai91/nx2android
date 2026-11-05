@@ -12,6 +12,7 @@ from pathlib import Path
 
 SOURCE = Path(__file__).resolve().parents[1] / 'nxnative/dm/android/gfx_vk_subgroup.c'
 HARNESS = r'''
+#define _CRT_SECURE_NO_WARNINGS   /* clang or MSVC with Microsoft's C library (a Windows runner): fopen is deprecated there, an error with -Werror */
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
