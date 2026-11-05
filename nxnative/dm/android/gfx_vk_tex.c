@@ -791,11 +791,14 @@ VkBufferView vk_tbuf_view(const tex_t *t) {
     pthread_mutex_lock(&mu);
     VkBufferView v = nvn_hm_get(&cache, &k);
     if (!v) {
-        const vkfmt_t *f = vk_fmt(t->d.format); VkBuffer b; VkDeviceSize off;
-        if (f && t->mem && vk_buf_at((uint64_t)(uintptr_t)t->mem, (uint64_t)t->d.width * f->bpb, &b, &off) && off % V.props.limits.minTexelBufferOffsetAlignment == 0) {
+        const vkfmt_t *f = vk_fmt(t->d.format); VkBuffer b; VkDeviceSize off = 0;
+        uint32_t al = (uint32_t)V.props.limits.minTexelBufferOffsetAlignment;
+        int in = f && t->mem && vk_buf_at((uint64_t)(uintptr_t)t->mem, (uint64_t)t->d.width * f->bpb, &b, &off);
+        if (in && off % al == 0) {
             VkBufferViewCreateInfo ci = {VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO, NULL, 0, b, f->vk, off, (VkDeviceSize)t->d.width * f->bpb};
             if (vkCreateBufferView(V.dev, &ci, NULL, &v)) v = VK_NULL_HANDLE; else nvn_hm_put(&cache, &k, v);
-        } else VKRED_ONCE(16, "buffer texture not in a pool or misaligned (format %#x, %u elements)", t->d.format, t->d.width);
+        } else if (in) VKRED_ONCE(16, "buffer texture at a misaligned offset: %llu, not a multiple of %u (format %#x, %u elements)", (unsigned long long)off, al, t->d.format, t->d.width);
+        else VKRED_ONCE(16, "buffer texture not in a pool (format %#x, %u elements)", t->d.format, t->d.width);
     }
     pthread_mutex_unlock(&mu);
     return v;
