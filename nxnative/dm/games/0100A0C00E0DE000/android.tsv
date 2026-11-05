@@ -1,0 +1,19 @@
+# Lonely Mountains: Downhill 1.0.5 (base v0), Unity 2018.4.14f1 IL2CPP / FMOD, SDK 9.3.1.
+# Tested 2026-11-05 with nx2android v0.3.0 on Retroid Pocket 6, Android 13,
+# QCS8550 / Adreno 740, PurpleVK-public git-62ac221a33 (Vulkan 1.4.359, driver 26.2.99).
+# Launch, controller input and downhill gameplay work at approximately 60 fps.
+# The tested conversion enabled multithread replay; preserve that option here.
+# Stock-driver behavior has not been compared. No custom driver is bundled or selected by this profile.
+# Known issues: a brief visual glitch between rider preparation and GO on the first race;
+# occasional one-frame black/white flashes. No crash observed in the short sessions.
+# Runtime reports CPU reads overlapping GPU writes not known complete; their relation to the
+# visual glitches is unproven, and the warnings also occur before the 120 Hz experiment.
+# Save/reload, a full playthrough and all DLC courses have not been systematically verified.
+# A separate opt-in 120 Hz experiment (DM_PRESENT_HZ=120, DM_ADAPTIVE_FPS=0) was reported
+# playable at normal speed, with recorded frame medians near 8.3 ms. It is not the default:
+# long-term thermals, precise simulation timing and all routes remain unverified.
+status	playable
+tested	v0 Retroid Pocket 6 (QCS8550, Adreno 740, Android 13); PurpleVK-public git-62ac221a33
+package	org.nx2a.t0100a0c00e0de000
+orientation	landscape
+env	DM_VK_MT_REPLAY=1
