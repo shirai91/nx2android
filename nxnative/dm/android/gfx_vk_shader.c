@@ -306,6 +306,16 @@ static vkshader_t *vk_shader_q(uint64_t key, int stage, int quiet) {
                        (op == 10 && !memcmp(&w[i + 1], "SPV_EXT_fragment_shader_interlock", 33));
             if (drop) i += n; else for (uint32_t k = 0; k < n; k++) w[o++] = w[i++]; }
         nw = o; } }
+    // subgroup operations of a class the stage lacks (not in supportedStages, VUID-RuntimeSpirv-None-06343; a class not in supportedOperations; quad operations outside
+    // fragment and compute without quadOperationsInAllStages, -06342): the module runs as subgroups of one invocation (gfx_vk_subgroup.c). On a Retroid Pocket 5
+    // (Adreno 650, Turnip: compute alone) Pokemon Pokopia's fragment shader 541aa7b27f1fae4d, the translator's SHFL helper, lost the device at the title screen.
+    // Qualcomm's driver on the Y700 (Adreno 830) lists fragment and compute alone too: 12 of Tears of the Kingdom's vertex shaders (ballots) and 1 of Xenoblade
+    // Chronicles 3's are rewritten there. DM_VK_SUBGROUP_ONE_LANE=0 (start-up): no module is rewritten, as before, for A/B tests
+    static int one_lane = -1; if (one_lane < 0) { const char *e = getenv("DM_VK_SUBGROUP_ONE_LANE"); one_lane = !(e && !atoi(e)); if (!one_lane) VKLOG("subgroups: no one-invocation rewrite (DM_VK_SUBGROUP_ONE_LANE=0)"); }
+    if (one_lane) { uint32_t ops = V.sg_stages & stage_flag(stage) ? V.sg_ops : 0; if (stage != 1 && stage != 5 && !V.sg_quad_all) ops &= ~(uint32_t)VK_SUBGROUP_FEATURE_QUAD_BIT;
+      char why[64]; uint32_t n2 = 0, *w2 = spv_one_lane(w, nw, ops, &n2, why, sizeof why);
+      if (w2) { free(w); w = w2; nw = n2; VKLOG("shader %016llx (stage %d): subgroups of one invocation (the device's subgroup operations in this stage: %#x)", (unsigned long long)key, stage, ops); }
+      else if (why[0]) VKLOG("[RED] shader %016llx (stage %d) uses subgroup operations the device lacks in this stage (it has %#x), and %s is not covered by the one-invocation rewrite: left as it is", (unsigned long long)key, stage, ops, why); }
     if (stage == 0) { uint32_t n2 = 0, *w2 = spv_vs_init(w, nw, &n2); if (w2) { free(w); w = w2; nw = n2; } }
     spv_io_locs(w, nw, &s->in_locs, &s->out_locs);
     VkShaderModuleCreateInfo ci = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, NULL, 0, (size_t)nw * 4, w};
