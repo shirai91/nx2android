@@ -6,7 +6,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 
 "Profile here": `nxnative/dm/games/<title ID>/` has the game's profile from nxnative. "Upstream profile": only seedds/nxnative has one, to read as a reference or starter, not to pull. "60 fps with X" is upstream's note: they run that update at 60 fps (30 on the Switch).
 
-**27 / 95 ported**
+**28 / 96 ported**
 
 - [x] 13 Sentinels: Aegis Rim · `01003FC01670C000`
 - [ ] Ace Attorney Investigations Collection · `010005501E68C000` · profile here
@@ -66,6 +66,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [ ] Patrick's Parabox · `0100E44016C22000` · profile here
 - [ ] Persona 4 Golden · `010062B01525C000` · upstream profile
 - [ ] Persona 5 Royal · `01005CA01580E000` · upstream profile
+- [x] Picross S+ · `0100D7B01AE58000` · update 1.0.1; RP6 / PurpleVK only; Pixel rendering issues
 - [ ] Pikmin 4 · `0100B7C00933A000` · upstream profile
 - [ ] Pokémon Brilliant Diamond · `0100000011D90000` · upstream profile · 60 fps with 1.3.0
 - [x] Pokémon Legends: Arceus · `01001F5010DFA000`
