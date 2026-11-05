@@ -10,6 +10,9 @@ class AdbError(Exception):
     pass
 
 
+NO_ADB = 'adb not found: install Android platform-tools (Download missing tools), or set its path with `porter config adb <path>`'
+
+
 LONG_PATH = 240   # adb.exe is not long-path aware: it cannot open a file whose full path passes Windows' 260 characters (Viractal's Unity bundles in a deep game folder)
 TAR_MIN, TAR_FILES, TAR_BYTES = 256, 8192, 64 << 20   # push_tree: from this many small files on, tar archives of at most this many files / bytes
 
@@ -37,6 +40,7 @@ def short_paths(paths):
 
 class Adb:
     def __init__(self, exe, serial=None, timeout=120, log=print):
+        if not exe: raise AdbError(NO_ADB)   # str(None) would run a program named "None" (issue #109: FileNotFoundError out of the bundle)
         self.exe, self.serial, self.timeout, self.log = str(exe), serial or None, timeout, log
         self.env = dict(os.environ, MSYS_NO_PATHCONV='1')   # Git Bash would rewrite /sdcard/... arguments into Windows paths
 
@@ -52,6 +56,7 @@ class Adb:
                 err = (r.stderr.strip() or r.stdout.strip())[-400:]   # adb's reason is on stderr; stdout has the files that went
                 if a and a[0] == 'install': break   # an install failure is an answer, not a dropped link
             except subprocess.TimeoutExpired: err = f'timed out after {timeout or self.timeout} s'
+            except OSError as e: raise AdbError(f'cannot run adb ({self.exe}): {e}') from e   # adb removed or moved: no retry brings it back
             if attempt + 1 < retries:
                 self.log(f'adb {a[0]} failed ({err}), retry {attempt + 1}')
                 try: subprocess.run(self.cmd('wait-for-device'), timeout=300, env=self.env)
@@ -64,7 +69,9 @@ class Adb:
     # ---- devices ----
     def devices(self):
         """[(serial, state, description)] of every device adb sees"""
-        out = subprocess.run([self.exe, 'devices', '-l'], capture_output=True, text=True, errors='replace', timeout=30, env=self.env).stdout
+        try: out = subprocess.run([self.exe, 'devices', '-l'], capture_output=True, text=True, errors='replace', timeout=30, env=self.env).stdout
+        except OSError as e: raise AdbError(f'cannot run adb ({self.exe}): {e}') from e
+        except subprocess.TimeoutExpired: raise AdbError('adb devices: timed out after 30 s') from None
         rows = []
         for ln in out.splitlines()[1:]:
             parts = ln.split()
