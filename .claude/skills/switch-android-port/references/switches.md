@@ -97,6 +97,12 @@ The source of each switch is in `nxnative/dm/android/` unless noted. Check the c
 | `DM_SHAKE_G=1.5` | start-up (`android/front_android.c`) | how hard (in G beyond gravity, 1.5 by default) the device must be shaken for the controller's six-axis sensor to be shaken (`DM_BTN_SHAKE`, `host/hle_hid.c`; Super Mario Odyssey's cap throw). Each detected shake logs `front end: device shaken (peak … G)`; `ctl.txt` `Shake~0.4` shakes it without the device |
 | `DM_TOUCH_DOCKED=screen` | first touch read (`host/hle_touch.c`) | profile env: docked touch points as a game that takes the panel's values as screen pixels expects them (Unity 2019.4: x = screen column, y = screen row − 360 on 1920x1080). On Android touches reach the game in both modes (`hle_hid.c` `touch_on`); a Switch has no docked touch |
 
+## Input
+
+| Switch | When read | Meaning |
+|---|---|---|
+| `DM_PAD_XBOX=1` | start-up (`android/front_android.c` `key_bit`); a profile's `env` row | a physical controller's face buttons go to the game by their label (an Xbox controller's A is the game's A) instead of by their position (the Switch's: the bottom button is B, the right one A). The game's prompts name the button (A to confirm, B to go back), which an Xbox controller's labels match and its positions do not. The on-screen gamepad is not remapped: it sends the game's buttons as they are, in the Switch layout its A, B, X and Y labels name. The pause menu and the text entry follow the remap (A confirms, B erases) |
+
 ## Control file lines (`ctl.txt`)
 - **Buttons:** `A`, `B`, `X`, `Y`, `L`, `R`, `ZL`, `ZR`, `Plus`, `Minus`, `Up`, `Down`, `Left`, `Right`, `LS`, `RS`.
 - **Sticks:** `LUp`, `LDown`, `LLeft`, `LRight` (same for `R…`).
