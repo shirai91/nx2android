@@ -29,3 +29,7 @@ status	playable
 tested	v393216 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
 package	org.nx2a.supermarioodyssey
 orientation	landscape
+# A physical controller's face buttons go to the game by their label, not by their position (DM_PAD_XBOX=1, below): the game's prompts name the button (A to confirm, B to go back),
+# which an Xbox controller's labels match and its positions do not (its A is at the bottom, the Switch's B is). The default, without the row, is the position (a Switch Pro Controller's
+# layout). The on-screen gamepad is not remapped: it sends the game's buttons as they are, in the Switch layout its A, B, X and Y labels name.
+env	DM_PAD_XBOX=1
