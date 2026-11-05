@@ -687,6 +687,15 @@ HLE_FORCE("_ZN5movie7Decoder24SendInputBufferForDecodeEiiilj", "movie decoder: s
         break;
     }
     d->inown[i] = d->instale[i] = 0; d->in_ns = now_ns();
+    // A second end-of-stream packet (one the client acquired before it sent the first) gives no output: a stream ends once, as with MediaCodec, whose input port takes nothing after EOS.
+    // The World Ends with You -Final Remix-'s Unity player sends one with each of the 4 inputs it holds when its extractor ends; each became an end-of-stream output, each output queues a
+    // "movie ended" event (main+0x11e06b8), and when two were fired in one frame the first one's handler destroyed the player under the loop firing them (crash at main+0x11e3008, 1 run in 2)
+    if ((flags & 4) && d->in_eos) {
+        d->infree[d->ninfree++] = i;
+        pthread_mutex_unlock(&d->mu);
+        MD_TRACE(d, 7, "SendInputBufferForDecode index %d: another end-of-stream packet after the first, no output", i);
+        return 0;
+    }
     if (md_held(d)) md_defer_at(d, 1, d->in_ns + md_idle_ns(d) + 50000000ull);   // Unity waits for the output event: one comes if no packet follows (md_tail)
     if (flags & 4) d->in_eos = 1;   // the last input until Flush / Stop (h_movie_AcqIn)
     for (int k = 0; k < d->npend; k++) if (d->pend[k].in == i) { pthread_mutex_unlock(&d->mu); if (!d->red_dec++) LOG("[RED] movie: input index %d sent twice, the second packet is dropped (first case)", i); return 0x100b; }
