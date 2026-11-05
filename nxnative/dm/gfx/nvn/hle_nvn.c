@@ -1797,7 +1797,8 @@ static nvn_fstep g_fs;   // present thread only
 static nvn_fgpu g_fg;   // the GPU time at kmin and at the current hold (nvn_fstep_gpu_slowed)
 static _Atomic int g_fs_k;   // the hold presentation follows (0 = not decided yet)
 // The display link runs at 30 Hz at a 30 cap, except while the game fixes its own step at 1 (BotW's VFR override)
-int nvn_game_fps(void) { int c = fps_step_cap(); if (c) return c == 30 && atomic_load(&g_fs_k) == 1 && fstep_on() ? 60 : c; uint64_t s = atomic_load(&g_itv2_since); return g_hz > 0 && !g_display_mode && s && now_ns() - s >= 1000000000ull ? 30 : 60; }
+int nvn_game_fps(void) { int c = fps_step_cap(); if (c) return c == 30 && atomic_load(&g_fs_k) == 1 && fstep_on() ? 60 : c; extern int dm_user_present_hz(void) __attribute__((weak)); int selected = dm_user_present_hz ? dm_user_present_hz() : 0; if (selected > 0 && (g_display_mode || atomic_load(&g_game_itv) < 2)) return selected; uint64_t s = atomic_load(&g_itv2_since); return g_hz > 0 && !g_display_mode && s && now_ns() - s >= 1000000000ull ? 30 : 60; }
+int dm_nvn_fps_step_cap(void) { return fps_step_cap(); }   // perf_android.c: explicit limits must not override games whose logic advances in frame steps
 static void present_cfg(const win_t *o) {
     if (g_hz >= 0) return;
     // The interval mode comes from the game profile (present_interval, default game): whether frames follow the present interval the game sets depends on whether the game's logic counts frames, which differs per game. Environment variables override it, and can override the fixed 60 Hz.
@@ -1822,6 +1823,9 @@ static uint64_t present_period(const win_t *o) {
         else if (was < 2) atomic_store(&g_itv2_since, now_ns() | 1);   // | 1: the start is never 0
     }
     int itv = present_itv(o), hz = g_hz;
+    extern int dm_user_present_hz(void) __attribute__((weak));
+    int selected = dm_user_present_hz ? dm_user_present_hz() : 0;
+    if (selected > 0 && !fps_step_cap() && itv == 1) hz = selected;   // an interval > 1 is the game's own rate limit (e.g. interval 2 at 60 Hz = 30 fps)
     return dm_present_period_adapt(hz > 0 ? (uint64_t)itv * 1000000000ull / (uint64_t)hz : 0);
 }
 // The period the acquire thread declares to the scheduler (set_time_constraint): the present period, except that a hold the frame step raised for late frames keeps the cap's deadline.
