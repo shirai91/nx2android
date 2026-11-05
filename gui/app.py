@@ -73,6 +73,12 @@ class PortTab(QWidget):
         refresh = QPushButton('Refresh'); refresh.clicked.connect(self.refresh_devices)
         dev = QWidget(); dh = QHBoxLayout(dev); dh.setContentsMargins(0, 0, 0, 0); dh.addWidget(self.install); dh.addWidget(self.device, 1); dh.addWidget(refresh)
         self.replace_signer = QCheckBox('Replace an app of the same package signed with another key (uninstalls it first: its saves are deleted)')
+        self.romfs_at = QLineEdit(); self.romfs_at.setPlaceholderText('as the device has it (an earlier install\'s folder, else the app\'s files folder)')   # porter install --romfs-at
+        romfs_tip = ('A folder on the device that already holds this game version\'s RomFS (a dump an emulator reads, e.g. /sdcard/<dump>/romfs),\n'
+                     'which the app then reads instead of a copy in its own files folder (7 to 18 GB less). The installer checks the folder and gives the app All files access.\n'
+                     'Empty: as the device has it. "app": the RomFS back in the app\'s files folder. Install only: the port itself does not change.')
+        self.romfs_push = QCheckBox('Push the game\'s RomFS into that folder (an empty folder, or one of this game: files are added, never deleted)')   # porter install --romfs-push
+        romfs = with_info(self.romfs_at, romfs_tip); romfs.layout().setStretch(0, 1)
         self.package = QLineEdit(); self.package.setPlaceholderText('the profile\'s package')   # porter port --package: a test install beside the player's other build
         self.package.setToolTip('Install under another package than the profile\'s (org.nx2a.<game>.test), beside your other build of the game.\n'
                                 'An app of another package has its own saves.')
@@ -100,6 +106,7 @@ class PortTab(QWidget):
                              'Raise it (16, 24 …) if the game still runs out. It uses no memory and does not change the speed.')
         f.addRow('App name', self.app_name); f.addRow('Game language', self.language)
         f.addRow('Output folder', path_row(self.out, self.pick_out)); f.addRow('Device', dev); f.addRow('', self.replace_signer)
+        f.addRow('RomFS on the device', romfs); f.addRow('', self.romfs_push)
         f.addRow('Package', self.package); f.addRow('versionCode offset', self.vercode); f.addRow('Extra address space', headroom)
         f.addRow('Vulkan driver', path_row(self.driver, self.pick_driver))
         f.addRow('System font', path_row(self.shared_font, self.pick_shared_font))
@@ -201,6 +208,7 @@ class PortTab(QWidget):
             args.append('--install')
             if self.device.currentData(): args += ['--device', self.device.currentData()]
             if self.replace_signer.isChecked(): args.append('--replace-signer')
+            args += self.romfs_args()
         if self.package.text().strip(): args += ['--package', self.package.text().strip()]
         if self.vercode.value(): args += ['--vercode-offset', str(self.vercode.value())]
         if self.headroom.value() >= 0: args += ['--alias-headroom', str(self.headroom.value())]
@@ -218,7 +226,10 @@ class PortTab(QWidget):
         args = ['install', self.result['data'], '--apk', self.result['apk'], '--progress', 'json']
         if self.device.currentData(): args += ['--device', self.device.currentData()]
         if self.replace_signer.isChecked(): args.append('--replace-signer')
-        self.run(args)
+        self.run(args + self.romfs_args())
+
+    def romfs_args(self):   # porter install --romfs-at / --romfs-push (porter/install.py)
+        return (['--romfs-at', self.romfs_at.text().strip()] if self.romfs_at.text().strip() else []) + (['--romfs-push'] if self.romfs_push.isChecked() else [])
 
     def run(self, args):
         self.stages.clear(); self.items = {}; self.log.clear(); self.prog.setValue(0); self.step.setText('starting…')
