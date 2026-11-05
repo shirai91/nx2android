@@ -4,6 +4,7 @@
 // DM_VK_SHOT_DIR (default DM_ROOT), which is how a run without a screen is checked.
 #include "gfx_vk.h"
 #include <android/native_window.h>
+#include <jni.h>
 #include <string.h>
 #include <math.h>
 #include <time.h>
@@ -13,6 +14,7 @@
 #include "overlay_frag.spv.h"
 
 __attribute__((weak)) ANativeWindow *dm_front_window(void) { return NULL; }
+__attribute__((weak)) int dm_external_active(void) { return 0; }
 static uint64_t g_presents;
 // Vulkan present IDs include overlay redraws; only the game's tickets have a time for the NVN frame statistics.
 enum { PRES_TIMES = 64 };
@@ -255,7 +257,7 @@ static void ov_menu_icon(const ov_canvas *cv, const ov_ctl *c, const float b[4])
 // (overlay_layout.h ov_kb_*: the same rectangles the touches are tested against) with the highlighted key, and the controller's keys
 static void ov_text_panel(const ov_canvas *cv) {
     char title[128], text[256]; int sel, shift; if (!dm_text_entry(title, sizeof title, text, sizeof text, &sel, &shift)) return;
-    float W = (float)g_ov.pw, H = (float)g_ov.ph, p[4] = {0, 0, W, H}, pad = W * 0.03f;
+    float W = (float)cv->w, H = (float)cv->h, p[4] = {0, 0, W, H}, pad = W * 0.03f;
     static const uint8_t bg[4] = {14, 14, 20, 236}, field[4] = {255, 255, 255, 30}, key[4] = {255, 255, 255, 26}, dim[4] = {200, 200, 210, 255};
     cv_rrect(cv, 0, 0, W, H, H * 0.03f, bg);
     int ts = (int)fmaxf(1, roundf(H * 0.045f / 7)), xs = (int)fmaxf(1, roundf(H * 0.06f / 7)), ks = (int)fmaxf(1, roundf(H * 0.05f / 7)), hs = (int)fmaxf(1, roundf(H * 0.036f / 7));
@@ -350,17 +352,18 @@ static void ov_menu_panel(const ov_canvas *cv, int st) {
 }
 // The layout editor's toolbar and prompt (overlay_layout.h ov_ed_*), at half the window's scale in the raster's panel rectangle: the toolbar at its top, the
 // prompt under it (gfx_vk_present.c ov_render draws each where overlay_layout.h puts it)
-static void ov_ed_rects(float tb[4], float pr[4]) {   // their places in the raster
-    float W = (float)g_sext.width, H = (float)g_sext.height, a[4], b[4]; ov_ed_rect(W, H, a); ov_ed_prompt_rect(W, H, b);
-    tb[0] = 0; tb[1] = 0; tb[2] = fminf(a[2] / 2, (float)g_ov.pw); tb[3] = a[3] / 2;
-    pr[0] = 0; pr[1] = tb[3] + 2; pr[2] = fminf(b[2] / 2, (float)g_ov.pw); pr[3] = fminf(b[3] / 2, (float)g_ov.ph - pr[1]);
+static void ov_ed_rects_for(float W, float H, float pw, float ph, float tb[4], float pr[4]) {
+    float a[4], b[4]; ov_ed_rect(W, H, a); ov_ed_prompt_rect(W, H, b);
+    tb[0] = 0; tb[1] = 0; tb[2] = fminf(a[2] / 2, pw); tb[3] = a[3] / 2;
+    pr[0] = 0; pr[1] = tb[3] + 2; pr[2] = fminf(b[2] / 2, pw); pr[3] = fminf(b[3] / 2, ph - pr[1]);
 }
+static void ov_ed_rects(float tb[4], float pr[4]) { ov_ed_rects_for((float)g_sext.width, (float)g_sext.height, (float)g_ov.pw, (float)g_ov.ph, tb, pr); }
 static const char *ov_ctl_name(const ov_ctl *c) {
     return c->kind == OV_STICK_L ? "Left stick" : c->kind == OV_STICK_R ? "Right stick" : c->kind == OV_DPAD ? "D-pad" : c->kind == OV_MENU ? "Menu button"
          : !strcmp(c->label, "-") ? "Minus" : !strcmp(c->label, "+") ? "Plus" : c->label;
 }
-static void ov_edit_panel(const ov_canvas *cv, int st) {
-    float tb[4], pr[4]; ov_ed_rects(tb, pr);
+static void ov_edit_panel(const ov_canvas *cv, int st, float W, float H) {
+    float tb[4], pr[4]; ov_ed_rects_for(W, H, (float)cv->w, (float)cv->h, tb, pr);
     int held = (st >> 4 & 15) - 1, sel = (st >> 8 & 255) - 1;
     static const char *const words[OVE_ALL] = {"-", "+", "Reset", "Cancel", "Save", "Snap to grid: Off", "Discard", "Keep editing"};
     cv_rrect(cv, tb[0], tb[1], tb[0] + tb[2], tb[1] + tb[3], tb[3] * 0.14f, C_BG);
@@ -403,9 +406,32 @@ static void ov_panel(int st) {   // the pause menu, the text entry or the layout
     ov_canvas cv = {g_ov.px, g_ov.w, 0, g_ov.h + g_ov.sh, g_ov.pw, g_ov.ph};
     for (uint32_t y = 0; y < g_ov.ph; y++) memset(g_ov.px + 4 * ((size_t)(cv.y0 + y) * g_ov.w), 0, (size_t)g_ov.pw * 4);
     if (st >> 16 & 1) ov_text_panel(&cv);   // a text entry is open (dm_menu_state)
-    else if (st & OVE_ST) ov_edit_panel(&cv, st);
+    else if (st & OVE_ST) ov_edit_panel(&cv, st, (float)g_sext.width, (float)g_sext.height);
     else if (st & OVS_ST) ov_save_panel(&cv, st);
     else ov_menu_panel(&cv, st);
+}
+// The phone window uses the same menu raster as Vulkan, independently of the external swapchain.
+JNIEXPORT jint JNICALL Java_org_nx2a_ExternalActivity_externalMenuState(JNIEnv *env, jclass cls) { (void)env; (void)cls; return dm_menu_state(); }
+JNIEXPORT jintArray JNICALL Java_org_nx2a_ExternalActivity_externalMenuPixels(JNIEnv *env, jclass cls, jint W, jint H, jint st) {
+    (void)cls;
+    if (W <= 0 || H <= 0 || W > 8192 || H > 8192 || st < 0) return NULL;
+    float r[4]; ov_menu_rect((float)W, (float)H, r);
+    uint32_t w = (uint32_t)(r[2] / 2) + 1, h = (uint32_t)(r[3] / 2) + 1, maxw = (uint32_t)W / 2;
+    if (w > maxw) w = maxw;
+    if (!w || !h || (size_t)w * h > 16 * 1024 * 1024) return NULL;
+    uint8_t *pixels = calloc((size_t)w * h, 4); if (!pixels) return NULL;
+    ov_canvas cv = {pixels, w, 0, 0, w, h};
+    if (st & 0x10000) ov_text_panel(&cv);
+    else if (st & OVE_ST) ov_edit_panel(&cv, st, (float)W, (float)H);
+    else if (st & OVS_ST) ov_save_panel(&cv, st);
+    else ov_menu_panel(&cv, st);
+    size_t count = (size_t)w * h; jint *argb = malloc((count + 2) * sizeof *argb);
+    if (!argb) { free(pixels); return NULL; }
+    argb[0] = (jint)w; argb[1] = (jint)h;
+    for (size_t i = 0; i < count; i++) { uint8_t *p = pixels + i * 4; argb[i + 2] = (jint)((uint32_t)p[3] << 24 | (uint32_t)p[0] << 16 | (uint32_t)p[1] << 8 | p[2]); }
+    jintArray out = (*env)->NewIntArray(env, (jsize)(count + 2));
+    if (out) (*env)->SetIntArrayRegion(env, out, 0, (jsize)(count + 2), argb);
+    free(argb); free(pixels); return out;
 }
 static void ov_raster(uint8_t *px, uint32_t w, uint32_t h, uint32_t sh) {
     memset(px, 0, (size_t)w * (h + sh) * 4);
@@ -743,7 +769,8 @@ static void present_window(vkimg_t *im, const int crop[4], double period, uint64
     if (vk_window_bottom_up()) { b.srcOffsets[0].y = cy + ch; b.srcOffsets[1].y = cy; }   // lower-left origin: the window image is stored bottom-up (gfx_vk_exec.c)
     vkCmdBlitImage(cb, im->img, VK_IMAGE_LAYOUT_GENERAL, g_simg[idx], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &b, VK_FILTER_LINEAR);
     VkImageLayout lay = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    int ovm = dm_overlay_visible(), menu = dm_menu_state(), fps = dm_overlay_fps();
+    int external = dm_external_active();
+    int ovm = external ? 0 : dm_overlay_visible(), menu = external ? -1 : dm_menu_state(), fps = dm_overlay_fps();
     if ((ovm || menu >= 0 || fps) && overlay_ready(cb, k, menu) && (V.has_dynrender || ov_fb(idx))) {   // without dynamic rendering, only with the image's framebuffer
         barrier(cb, g_simg[idx], lay, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL); lay = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         VkRenderingAttachmentInfo ca = {VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, NULL, g_sview[idx], lay, 0, NULL, VK_IMAGE_LAYOUT_UNDEFINED, VK_ATTACHMENT_LOAD_OP_LOAD, VK_ATTACHMENT_STORE_OP_STORE};

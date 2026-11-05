@@ -18,6 +18,7 @@ struct dm_audio_unit {
     AURenderCallbackStruct cb;
     int32_t frames_hint;
     AAudioStream *st;
+    int32_t requested_device;
     _Atomic uint64_t sample_time;
     uint64_t stop_time;    // sample_time at the unit's last stop: unchanged at the next start = the stream stopped calling back (a stall), so it is opened again
     _Atomic int failed;    // the error callback came (disconnected): the next start opens a new stream
@@ -25,6 +26,8 @@ struct dm_audio_unit {
     uint64_t held_frames;  // silence played since the stop: past HOLD_MAX the stream stops itself
 };
 static struct dm_audio_component g_output;
+static _Atomic int32_t g_output_device;
+void dm_aaudio_set_device(int32_t id) { atomic_store(&g_output_device, id); }
 
 AudioComponent AudioComponentFindNext(AudioComponent after, const AudioComponentDescription *d) {
     return !after && d && d->componentType == kAudioUnitType_Output ? &g_output : NULL;
@@ -91,13 +94,15 @@ OSStatus AudioOutputUnitStart(AudioUnit u) {
     // Unicorn Overlord's CRI output short in every other callback for good (998 underruns of 2000, 25% of the sound zero padding; the same 200 callbacks a
     // second), where a new stream had none. A stream that failed, stopped itself (HOLD_MAX_S), or did not call back since the stop (the watchdog's retry after
     // a stall) is opened again
-    if (u->st && !atomic_load(&u->failed) && AAudioStream_getState(u->st) == AAUDIO_STREAM_STATE_STARTED && (!atomic_load(&u->held) || atomic_load(&u->sample_time) != u->stop_time)) {
+    if (u->st && u->requested_device == atomic_load(&g_output_device) && !atomic_load(&u->failed) && AAudioStream_getState(u->st) == AAUDIO_STREAM_STATE_STARTED && (!atomic_load(&u->held) || atomic_load(&u->sample_time) != u->stop_time)) {
         atomic_store(&u->held, 0); return noErr; }
     stop_stream(u); close_stream(u);
     atomic_store(&u->failed, 0); atomic_store(&u->held, 0);
     AAudioStreamBuilder *b; aaudio_result_t r = AAudio_createStreamBuilder(&b);
     if (r != AAUDIO_OK) return r;
     AAudioStreamBuilder_setDirection(b, AAUDIO_DIRECTION_OUTPUT);
+    u->requested_device = atomic_load(&g_output_device);
+    AAudioStreamBuilder_setDeviceId(b, u->requested_device);
     AAudioStreamBuilder_setSampleRate(b, (int32_t)u->fmt.mSampleRate);
     AAudioStreamBuilder_setChannelCount(b, (int32_t)u->fmt.mChannelsPerFrame);
     AAudioStreamBuilder_setFormat(b, u->fmt.mFormatFlags & kAudioFormatFlagIsFloat ? AAUDIO_FORMAT_PCM_FLOAT : AAUDIO_FORMAT_PCM_I16);
@@ -114,6 +119,7 @@ OSStatus AudioOutputUnitStart(AudioUnit u) {
     r = AAudioStreamBuilder_openStream(b, &u->st);
     AAudioStreamBuilder_delete(b);
     if (r != AAUDIO_OK) { u->st = NULL; return r; }
+    __android_log_print(ANDROID_LOG_INFO, "dmhost", "AAudio requested device %d, opened device %d", u->requested_device, AAudioStream_getDeviceId(u->st));
     // the device's own rate and channel count must be ours: AAudio converts when they differ (it reports the requested format back)
     r = AAudioStream_requestStart(u->st);
     if (r != AAUDIO_OK) { close_stream(u); return r; }
