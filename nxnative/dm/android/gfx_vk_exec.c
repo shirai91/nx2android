@@ -1316,10 +1316,10 @@ static VkDescriptorSet stage_set(int st, vkshader_t *s, uint32_t *dofs) {
             uint64_t h = b->kind == RK_TBUF ? (b->reg >= 0 && b->reg < 256 ? S.tex[st][b->reg] : 0) : b->kind == RK_IMG_TBUF ? (b->reg >= 0 && b->reg < 32 ? S.img[st][b->reg] : 0) : mem_handle(ubo_word(st, b->reg, b->off));
             const view_t *v; const tex_t *t = NULL; int tid = (int)(h & 0xfffff);
             bv[nw] = tid && vk_tex_by_id(tid, &v, &t) && t && t->d.target == NVN_TEXTURE_TARGET_BUFFER ? vk_tbuf_view(t, b->kind == RK_IMG_TBUF) : VK_NULL_HANDLE;
-            if (g_tracing && g_x_tracepass >= 0) VKLOG("  texel buffer binding %d (kind %d, cbuf %d +%d): handle %#llx → %s format %#x, %u elements at %#llx%s", b->binding, b->kind, b->reg, b->off,
+            if ((g_tracing && g_x_tracepass >= 0) || (st == 5 && g_x_tracepass == -2)) VKLOG("  texel buffer binding %d (kind %d, cbuf %d +%d): handle %#llx → %s format %#x, %u elements at %#llx%s", b->binding, b->kind, b->reg, b->off,
                 (unsigned long long)h, t ? "texture" : "no texture", t ? t->d.format : 0, t ? t->d.width : 0, t ? (unsigned long long)(uintptr_t)t->mem : 0ull, bv[nw] ? "" : " (the dummy: zeros)");
             if (!bv[nw]) bv[nw] = vk_dummy_tbuf(b->kind == RK_IMG_TBUF);
-            else if (b->kind != RK_IMG_TBUF && i < 64) { int num = view_num(t, NULL); if (num == 1) g_num_um |= 1ull << i; else if (num == 2) g_num_im |= 1ull << i; }   // texel buffers read their words alike
+            else if (i < 64) { int num = view_num(t, NULL); if (num == 1) g_num_um |= 1ull << i; else if (num == 2) g_num_im |= 1ull << i; }   // texel buffers read and write their words alike (storage ones too: gfx_vk_shader.c spv_int_images)
             wr->pTexelBufferView = &bv[nw]; wr->descriptorType = b->kind == RK_IMG_TBUF ? VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER : VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER; nw++;
             continue; }
         default: {   // unknown: the descriptor type it was declared with, filled with what reads zero

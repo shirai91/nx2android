@@ -344,6 +344,10 @@ static vkshader_t *vk_shader_q(uint64_t key, int stage, int quiet) {
 // STENCIL), must be read through a uint / int image in Vulkan, and Adreno converts the value otherwise. Xenoblade Chronicles 3 tags each pixel's material
 // for its lighting from the stencil's bit 3 (shader 094f4afb9c876459 tests the raw word & 8): read as float, every tag was 0 and the lit scene was black.
 // A variant of the module retypes those bindings' images to uint / int and bitcasts each texel read back to float, which gives the shader the raw words.
+// Storage texel buffers too: a store (OpImageWrite) of a vec4 of floats into a retyped image is bitcast to the integer type first, so the words land as written.
+// Final Fantasy Resonance (Unreal Engine 5.6) builds its particle index tables in R32UI buffers its compute shaders write through float images (812650f2ed1cba0d
+// stores four floats of a uniform buffer); through the R32_UINT views its battle's haze and dust sprites (vertex shader fb570ef861debd17) drew nothing, with the
+// variant they draw (a frame with that shader left out differs in those areas)
 typedef struct { const uint32_t *w; uint32_t fn, bound, *at, *nt, nnt; struct { uint32_t old, kind, id; } map[64]; int nmap; } spvi;
 static uint32_t spvi_find(const uint32_t *a, uint32_t lo, uint32_t hi, uint32_t op, const uint32_t *ops, uint32_t nops) {   // a declaration op with these operands (after the result id)
     for (uint32_t j = lo; j < hi;) { uint32_t m = a[j] >> 16; if (!m) break; if ((a[j] & 0xffff) == op && m == nops + 2 && !memcmp(&a[j + 2], ops, nops * 4)) return a[j + 1]; j += m; }
@@ -386,9 +390,17 @@ static uint32_t *spv_int_images(const uint32_t *w, uint32_t nw, const uint16_t *
     for (uint32_t i = c.fn; i < nw && ok;) { uint32_t n = w[i] >> 16, op = w[i] & 0xffff; if (!n) { ok = 0; break; }
         uint32_t *x = &fb[nf]; memcpy(x, &w[i], n * 4); nf += n;
         uint32_t src = n >= 4 ? w[i + 3] : 0, k = src && src < base ? taint[src] : 0;
-        if (k && (op == 61 || op == 65 || op == 66 || op == 83 || op == 100 || op == 86)) {   // Load, AccessChain, InBoundsAccessChain, CopyObject, Image, SampledImage
+        if (op == 99 && n >= 4 && w[i + 1] < base && taint[w[i + 1]]) {   // ImageWrite image coord texel: the texel (a vec4 of floats) bitcast to the integer vec4
+            uint32_t kk = taint[w[i + 1]], tx = w[i + 3], tt = 0;
+            for (uint32_t j = c.fn; j < nw;) { uint32_t m = w[j] >> 16; if (!m) break; if (m >= 3 && w[j + 2] == tx && (w[j] & 0xffff) != 71 && (w[j] & 0xffff) != 72) { tt = w[j + 1]; break; } j += m; }
+            uint32_t ti = tt && tt < base ? c.at[tt] : 0, ci = ti && (w[ti] & 0xffff) == 23 && w[ti] >> 16 == 4 && w[ti + 3] == 4 && w[ti + 2] < base ? c.at[w[ti + 2]] : 0;
+            if (ci && (w[ci] & 0xffff) == 21) { i += n; continue; }   // integer texels already (an image the translator typed uint): as it is
+            if (!ci || (w[ci] & 0xffff) != 22 || w[ci + 2] != 32) { ok = 0; break; }   // not a vec4 of 32-bit floats: no variant
+            uint32_t r2 = c.bound++; nf -= n; fb[nf++] = 4u << 16 | 124; fb[nf++] = spvi_vec4(&c, kk); fb[nf++] = r2; fb[nf++] = tx;   // OpBitcast
+            x = &fb[nf]; memcpy(x, &w[i], n * 4); x[3] = r2; nf += n;
+        } else if (k && (op == 61 || op == 65 || op == 66 || op == 83 || op == 100 || op == 86)) {   // Load, AccessChain, InBoundsAccessChain, CopyObject, Image, SampledImage
             uint32_t t = spvi_type(&c, x[1], k); if (!t) { ok = 0; break; } x[1] = t; if (x[2] < base) taint[x[2]] = (uint8_t)k;
-        } else if (k && (op == 87 || op == 88 || op == 91 || op == 92 || op == 95 || op == 96)) {   // Sample{Implicit,Explicit}Lod, SampleProj*, Fetch, Gather: a vec4 of the integer type, bitcast back
+        } else if (k && (op == 87 || op == 88 || op == 91 || op == 92 || op == 95 || op == 96 || op == 98)) {   // Sample{Implicit,Explicit}Lod, SampleProj*, Fetch, Gather, Read: a vec4 of the integer type, bitcast back
             uint32_t ft = x[1], r = x[2], r2 = c.bound++; x[1] = spvi_vec4(&c, k); x[2] = r2;
             fb[nf++] = 4u << 16 | 124; fb[nf++] = ft; fb[nf++] = r; fb[nf++] = r2;   // OpBitcast
         }
