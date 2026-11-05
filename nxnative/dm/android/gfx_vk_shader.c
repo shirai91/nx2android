@@ -307,6 +307,18 @@ static vkshader_t *vk_shader_q(uint64_t key, int stage, int quiet) {
             if (drop) i += n; else for (uint32_t k = 0; k < n; k++) w[o++] = w[i++]; }
         nw = o; } }
     if (stage == 0) { uint32_t n2 = 0, *w2 = spv_vs_init(w, nw, &n2); if (w2) { free(w); w = w2; nw = n2; } }
+    // Maxwell's FMNMX returns the operand that is a number when the other is NaN, and its saturate turns NaN into 0 (IEEE minNum / maxNum, as Metal's fmin / fmax).
+    // The translator emits GLSL.std.450 FMin / FMax / FClamp, whose result is undefined for a NaN operand, and Adreno passes the NaN on: their NaN-aware forms NMin /
+    // NMax / NClamp give Maxwell's results. Xenoblade Chronicles 3's fur pixel shaders (4fd6e9e891e821cf, f8cc7339c930dc07) take max(0, sqrt(1 - x² - y²)) of
+    // their fur direction texels; where x² + y² is just over 1 the NaN went through, the whole fur vector became NaN and its saturate 0, which the motion blur
+    // reads as full speed down-left: the Nopons' fur smeared over their faces (the Mac and Eden: clean). DM_VK_NAN_MINMAX=0 (start-up, A/B): as translated
+    { static int on = -1; if (on < 0) { const char *e = getenv("DM_VK_NAN_MINMAX"); on = !(e && !strcmp(e, "0")); }
+      uint32_t glsl = 0;
+      for (uint32_t i = 5; on && i < nw;) { uint32_t n = w[i] >> 16, op = w[i] & 0xffff; if (!n || i + n > nw) break;
+          if (op == 11 && n >= 3 && !memcmp(&w[i + 2], "GLSL.std.450", 12)) glsl = w[i + 1];   // OpExtInstImport
+          else if (op == 12 && n >= 5 && glsl && w[i + 3] == glsl) { uint32_t *x = &w[i + 4];   // OpExtInst: FMin 37 → NMin 79, FMax 40 → NMax 80, FClamp 43 → NClamp 81
+              if (*x == 37) *x = 79; else if (*x == 40) *x = 80; else if (*x == 43) *x = 81; }
+          i += n; } }
     spv_io_locs(w, nw, &s->in_locs, &s->out_locs);
     VkShaderModuleCreateInfo ci = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, NULL, 0, (size_t)nw * 4, w};
     VkResult vr = vkCreateShaderModule(V.dev, &ci, NULL, &s->mod); s->spv = w; s->nspv = nw;
