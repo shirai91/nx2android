@@ -1748,6 +1748,9 @@ static uint64_t present_period(const win_t *o) {
         else if (was < 2) atomic_store(&g_itv2_since, now_ns() | 1);   // | 1: the start is never 0
     }
     int itv = present_itv(o), hz = g_hz;
+    extern int dm_user_present_hz(void) __attribute__((weak));
+    int selected = dm_user_present_hz ? dm_user_present_hz() : 0;
+    if (selected > 0) hz = selected;
     return dm_present_period_adapt(hz > 0 ? (uint64_t)itv * 1000000000ull / (uint64_t)hz : 0);
 }
 // The period the acquire thread declares to the scheduler (set_time_constraint): the present period, except that a hold the frame step raised for late frames keeps the cap's deadline.

@@ -49,6 +49,8 @@ Chinese or Korean text drawn as `???`: choose a TrueType font with those charact
 
 A game slowed by its draw calls in busy scenes: tick **Multithread replay** on the Port tab (`--mt-replay`). The game's Vulkan commands are then recorded on a thread of their own. It stays on until you port the game again without it.
 
+The pause menu's **Game** tab has **FPS limit**: **Default**, **30**, **40**, **50**, **60**, **90** or **120**. Tap it or press A to cycle; controller left/right changes the value without wrapping. The choice takes effect when play resumes and is remembered for that game. **Default** restores the profile/environment pacing and adaptive frame rate. A chosen rate overrides the runtime pacing target; it cannot remove an engine's own cap or guarantee that every game runs correctly above its original rate. Higher rates can increase heat and power use. See [behavior and validation](docs/FPS_LIMIT.md).
+
 To arrange the on-screen controls, open the pause menu's **Gamepad** tab and choose **Edit layout**: drag a control to move it, pinch or use **− / +** to resize it. **Save** keeps the layout for the next launch and **Cancel** discards your edits. **Snap to grid** (off at first, and remembered) shows a square grid and snaps each control's center to it as you drag.
 
 For the experimental external-screen controller, port from the command line with `--external-display`. The game moves to a connected display and the phone shows the gamepad; the sound menu selects the phone or an external output. This option requires `javac` and an Android SDK with a platform and build-tools (`ANDROID_HOME`). Android 12 or newer uses the saved native layout; Android 10–11 use the fallback controller. Support varies by device and game.
