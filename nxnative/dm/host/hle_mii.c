@@ -51,7 +51,8 @@ static void mii_default(mii_charinfo *c, int gender, int index) {
 
 // The object keeps its service pointer at +0, which the constructor zeroes and the destructor releases through its vtable when set; the host never sets it
 HLE_FORCE("_ZN2nn3mii8Database10InitializeEv", "mii:u service; the host's database: the six default Miis, none of the console's own", Result, h_mii_Init, void *self) {
-    (void)self; LOG("mii: Database::Initialize (the six default Miis, none of the console's own)"); return RES_OK;
+    // logged once: Tomodachi Life: Living the Dream initializes a Database for each Mii it shows (1,733 times in its first minutes)
+    (void)self; static _Atomic int n; if (!n++) LOG("mii: Database::Initialize (the six default Miis, none of the console's own; logged once)"); return RES_OK;
 }
 HLE_FORCE("_ZN2nn3mii8Database8FinalizeEv", "mii:u service; nothing to release", void, h_mii_Fin, void *self) { (void)self; }
 HLE_FORCE("_ZNK2nn3mii8Database11IsAvailableEv", "mii:u service; always available", int, h_mii_Avail, const void *self) { (void)self; return 1; }

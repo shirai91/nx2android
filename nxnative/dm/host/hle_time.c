@@ -94,6 +94,10 @@ HLE_FORCE("_ZN2nn4time13ClockSnapshot29CreateWithStandardSystemClockEPS1_", "sna
     tzset(); strlcpy((char *)s + 0xa8, tzname[0] && *tzname[0] ? tzname[0] : "UTC", 0x24);
     return RES_OK;
 }
+// The same from the adjustable user clock (Tomodachi Life: Living the Dream, SDK 20: Adjust, then this, at main+0x5082d4 during boot; the SDK asked the time service and aborted
+// with Result 0 at sdk+0x4406f8). On the host the adjustable clock is the user clock (above), so the snapshot is the standard one
+HLE_FORCE("_ZN2nn4time13ClockSnapshot31CreateWithAdjustableSystemClockEPS1_", "snapshot of the adjustable user clock (time service): the host's user clock, as the standard snapshot",
+          Result, h_time_SnapshotAdj, uint8_t *s) { return h_time_Snapshot(s); }
 // Arithmetic on two snapshots: the SDK hands both to the time service (a call through its session, AbortImpl when there is none: STEINS;GATE RE:BOOT's and Tears of the Kingdom's SDK;
 // Tears of the Kingdom imports both); the host computes what the service does (as Ryujinx's time service). TimeSpan is nanoseconds
 static int64_t snap64(const uint8_t *s, int off) { int64_t v; memcpy(&v, s + off, 8); return v; }
