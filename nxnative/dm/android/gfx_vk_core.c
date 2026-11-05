@@ -554,7 +554,7 @@ static void vk_pools_sync_(VkCommandBuffer cb) {
             if (off < first) first = off; last = off + n;
             if (p->baseline_complete) SYNC_MEASURE(3, n, memcpy(p->baseline + off, p->shadow + off, n));
         }
-        // A full merge already refreshed the baseline; only uploaded blocks changed. Partial merges still need a full snapshot.
+        // A full merge already refreshed the baseline; only uploaded blocks changed. A pool synced again with no merge since (no completion) takes a full snapshot.
         if (diag) { ns[0] += mem_diag_ns() - scan_start - (ns[1] + ns[2] + ns[3] - work_start); amount[0] += size; }
         if (!p->baseline_complete) {
             if (diag) { int reason = p->flags & 0x2 ? 2 : 3; reason_count[reason]++; reason_bytes[reason] += size; }
@@ -648,8 +648,10 @@ static void pools_copy_back(const struct vksub *s) {
             if (diag && p->noncoherent) { invalidate_ns += mem_diag_ns() - start; invalidate_calls++; invalidate_bytes += last - first; }
         }
         if (!(p->flags & 0x2) && !s->readback_ranges) { bytes += pool_merge_back(p, p->lo, p->hi); p->baseline_complete = 1; continue; }
-        // Eligible submissions cover every pool write, including NVN CPU_UNCACHED pools.
-        p->baseline_complete = s->readback_ranges;
+        // The baseline stays complete after a merge of the tracked ranges, for NVN CPU_UNCACHED pools too after a submission with an unknown writer: those pools
+        // trust the tracked ranges, as before the baseline (an untracked GPU write stays in the GPU copy only and is merged with a later tracked range over it).
+        // Taking a full snapshot at the next sync instead copied the whole pool before every submission: Unicorn Overlord's 860 MB CPU_UNCACHED pool, as before
+        p->baseline_complete = 1;
         for (int k = 0; k < s->ngw; k++) { uint64_t lo = s->gw[k].lo > p->lo ? s->gw[k].lo : p->lo, hi = s->gw[k].hi < p->hi ? s->gw[k].hi : p->hi;
             if (lo < hi) bytes += pool_merge_back(p, lo, hi); } }
     pthread_rwlock_unlock(&g_pool_mu);

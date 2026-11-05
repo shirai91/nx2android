@@ -264,8 +264,10 @@ int main(int argc, char **argv) {
             s.readback_ranges=0; gpu[20]=55; scanned=0; pools_copy_back(&s);
             if (cached_memory) assert(last_invalidate_offset==0 && last_invalidate_size==VK_WHOLE_SIZE && diag_invalidate_bytes==size);
             if (uncached) {
-                assert(scanned==8 && mem[20]==11 && !g_pool[0].baseline_complete);
-                snapshot_bytes=0; vk_pools_sync_(NULL); assert(snapshot_bytes==size && !memcmp(baseline,shadow,size));
+                // CPU_UNCACHED pools trust the tracked ranges, as before the baseline: no full snapshot at the next sync
+                // (Unicorn Overlord's 860 MB pool would be copied before every submission)
+                assert(scanned==8 && mem[20]==11 && g_pool[0].baseline_complete);
+                snapshot_bytes=0; vk_pools_sync_(NULL); assert(snapshot_bytes<size);
                 s.readback_ranges=1; gpu[0]=66; mem[16]=27; pools_copy_back(&s);
                 assert(mem[0]==66 && mem[16]==27 && g_pool[0].baseline_complete);
                 sync_before=g_sync_bytes; snapshot_bytes=0; vk_pools_sync_(NULL);
@@ -297,11 +299,12 @@ int main(int argc, char **argv) {
                 dm_guest_write_prepare(mem+16,1); mem[16]=15;
                 pools_copy_back(&s); assert(mem[16]==15);
                 vk_pools_sync_(NULL); assert(device_data[16]==15);
-                // Partial completion still invalidates data outside its merge ranges before the next full snapshot.
+                // Partial completion still invalidates data outside its merge ranges. The untracked byte stays in the GPU copy only:
+                // CPU_UNCACHED pools trust the tracked ranges, so the next sync takes no full snapshot.
                 g_pool[0].flags=2; device_data[0]=31; device_data[size-1]=77;
                 s.ngw=1; s.gw[0].lo=(uintptr_t)mem; s.gw[0].hi=(uintptr_t)(mem+4);
                 pools_copy_back(&s); assert(mem[0]==31 && mem[size-1]==99 && shadow[size-1]==77);
-                vk_pools_sync_(NULL); assert(!memcmp(baseline,shadow,size));
+                vk_pools_sync_(NULL); assert(baseline[size-1]==99 && !memcmp(baseline,shadow,size-1));
                 for (int i=0;i<3;i++) { pools_copy_back(&s); vk_pools_sync_(NULL); }
                 int before=flushes; pools_copy_back(&s); vk_pools_sync_(NULL); assert(flushes==before);
                 dm_guest_write_prepare(mem+16,1); mem[16]=21; vk_pools_sync_(NULL);
@@ -309,24 +312,30 @@ int main(int argc, char **argv) {
                 free(device_data); free(baseline); free(shadow); assert(!munmap(mem,size*5)); return 0;
             }
             if (mode == 10 || mode == 11) {
-                // Multiple 64 KB blocks, including a partial tail. A partial merge must retain the full snapshot.
+                // Multiple 64 KB blocks, including a partial tail. A CPU_UNCACHED pool's partial merge trusts its tracked ranges: an untracked
+                // GPU byte stays in the GPU copy only, and the next sync takes no full snapshot (it copied 860 MB pools before every submission).
                 struct vksub s = {0}; g_pool[0].flags = mode==11 ? 2 : 4;
                 shadow[size-1]=23; pools_copy_back(&s);
                 assert(mem[size-1]==(mode==11 ? 11 : 23));
                 dm_guest_write_prepare(mem,1); mem[0]=7;
                 uint64_t before=g_sync_bytes; snapshot_bytes=0;
                 vk_pools_sync_(NULL);
-                assert(!memcmp(baseline,shadow,size) && shadow[0]==7);
-                assert(snapshot_bytes==(mode==11 ? size : g_sync_bytes-before));
-                if (mode==10) assert(snapshot_bytes<size);
-                // No CPU or GPU changes after stamps settle: a full merge needs no snapshot reads.
+                assert(shadow[0]==7 && baseline[0]==7);
+                if (mode==11) assert(baseline[size-1]==11 && shadow[size-1]==23 && !memcmp(baseline,shadow,size-1));
+                else assert(!memcmp(baseline,shadow,size));
+                assert(snapshot_bytes==g_sync_bytes-before && snapshot_bytes<size);
+                // No CPU or GPU changes after stamps settle: no snapshot reads.
                 for (int i=0;i<3;i++) { pools_copy_back(&s); snapshot_bytes=0; vk_pools_sync_(NULL); }
-                assert(snapshot_bytes==(mode==11 ? size : 0));
+                assert(snapshot_bytes==0);
                 // A later GPU update must still preserve independent CPU data in the same cache line.
                 dm_guest_write_prepare(mem+16,1); mem[16]=9; shadow[0]=31;
                 s.gw[0].lo=(uintptr_t)mem; s.gw[0].hi=(uintptr_t)(mem+4); s.ngw=1;
                 pools_copy_back(&s); assert(mem[0]==31 && mem[16]==9);
-                vk_pools_sync_(NULL); assert(!memcmp(baseline,shadow,size) && shadow[16]==9);
+                vk_pools_sync_(NULL); assert(shadow[16]==9 && !memcmp(baseline,shadow,mode==11 ? size-1 : size));
+                if (mode==11) {   // a later tracked range over the untracked byte merges it
+                    s.gw[0].lo=(uintptr_t)(mem+size-4); s.gw[0].hi=(uintptr_t)(mem+size);
+                    pools_copy_back(&s); assert(mem[size-1]==23 && !memcmp(baseline,shadow,size));
+                }
                 free(baseline); free(shadow); assert(!munmap(mem,size*5)); return 0;
             }
             if (mode == 9) {
