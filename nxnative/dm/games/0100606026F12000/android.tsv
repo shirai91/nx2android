@@ -12,7 +12,7 @@
 # haze sprites, 1300ca45ddca3566 (12 draws) and c55d54c8f41b1520 (4 draws) large flat ground-fog volumes, 70eb4102 the moon's glow. The fire light is there (orange on
 # the wreck at the right in pass 22's input) and a 255x5 RGBA16F curve texture of fire colours is bound, but no flame geometry. Ruled out for the missing draws: the
 # GPU count readback (each frame's 32 KB copies hold the source's 2,084 non-zero words, one zero-copy pool at each end) and occlusion (the game reports only timestamps
-# and SAMPLES_PASSED counters, the latter answered as visible). Next: the game's own reason to leave the fire emitters out (Niagara scalability / visibility on the
+# and SAMPLES_PASSED counters, the latter answered as visible), the frame rate (DM_FPS_TARGET=30: the same). Next: the game's own reason to leave the fire emitters out (Niagara scalability / visibility on the
 # CPU), for example by tracing which Niagara systems it ticks and renders.
 status	experimental
 tested	v65536 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
