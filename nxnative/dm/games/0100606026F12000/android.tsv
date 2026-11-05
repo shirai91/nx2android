@@ -10,10 +10,10 @@
 # Open: the fires in the first battle's background (the battle tutorial's picture shows them) are not drawn: the game issues no draw for them. Every blended draw of the
 # frame is in pass 22 (DM_VK_TRACE_PASS for passes 0-52), and DM_VK_X_FLAT_VS (in env.txt: pipelines made before it keep their state) shows what each is: fb570ef8 the
 # haze sprites, 1300ca45ddca3566 (12 draws) and c55d54c8f41b1520 (4 draws) large flat ground-fog volumes, 70eb4102 the moon's glow. The fire light is there (orange on
-# the wreck at the right in pass 22's input) and a 255x5 RGBA16F curve texture of fire colours is bound, but no flame geometry. Unreal culls GPU particle systems on the
-# CPU from data it reads back: each frame the simulation copies its 32 KB count buffer (pool region 0x...630100 in the traces) to a ring of readback buffers, and those
-# read as all zeros on the CPU in a memdump (the pools are zero-copy and measured coherent; the region is reused several times a frame, so not proven). Next: when the
-# game reads those buffers (its fence / query wait against our completion), and what it reads, for the fire emitters.
+# the wreck at the right in pass 22's input) and a 255x5 RGBA16F curve texture of fire colours is bound, but no flame geometry. Ruled out for the missing draws: the
+# GPU count readback (each frame's 32 KB copies hold the source's 2,084 non-zero words, one zero-copy pool at each end) and occlusion (the game reports only timestamps
+# and SAMPLES_PASSED counters, the latter answered as visible). Next: the game's own reason to leave the fire emitters out (Niagara scalability / visibility on the
+# CPU), for example by tracing which Niagara systems it ticks and renders.
 status	experimental
 tested	v65536 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
 package	org.nx2a.finalfantasyresonance
