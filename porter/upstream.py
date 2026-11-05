@@ -1,6 +1,6 @@
 # nxnative's own tools, used as libraries: the NSP script's steps (scripts/build_ipa_from_nsp.py: NSP scan, extraction, rewrite, shader split, stage reuse, progress), the game profiles
 # (dm/games/game.py), the guesses from game files (dm/games/profile_guess.py), the control data reader (dm/tools/nacp.py), the Android profile (dm/android/tools/android_profile.py) and
-# Game Freak's Trinity file system (dm/gfx/tools/trinity.py).
+# Game Freak's Trinity file system (dm/gfx/tools/trinity.py) and Unreal Engine's paks and IoStore containers (dm/gfx/tools/uepak.py).
 # Importing them instead of copying keeps one implementation of each step for iOS and Android; what differs on Android (the rewrite target, the Vulkan shaders, the host, the APK)
 # is in porter.pipeline.
 import importlib.util, sys
@@ -15,6 +15,7 @@ import game              # noqa: E402
 import nacp              # noqa: E402
 import profile_guess     # noqa: E402
 import trinity           # noqa: E402
+import uepak             # noqa: E402
 
 
 def _load_nsp():
