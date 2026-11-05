@@ -31,7 +31,7 @@ PurpleVK support only, not general Mali support.
 
 - [x] RP6 menu and puzzle manually verified
 - [x] Address exhaustion reproduced and controlled headroom test passed
-- [ ] Add a real RP6 gameplay screenshot and README games-table cell
+- [x] Real RP6 gameplay screenshot and README games-table cell added
 - [ ] Retest this profile on current main (device test used v0.3.0 runtime)
 
 No APKs, game data, drivers, keys, private FPS menu or Pixel diagnostics are included.
