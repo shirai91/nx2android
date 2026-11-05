@@ -1,6 +1,6 @@
 // The SDK's movie library (subsdk0 = NintendoSDK_movie, Engage): Extractor demuxes, Decoder uses NVIDIA's hardware decoder (NVOMX → NvRmChannelOpen opens the nvdrv device).
 // The host has no nvdrv: the SDK aborts when the decoder thread opens the device. Extractor::SetDataSource returns 0x1000 (the same code the SDK returns when it has no implementation object); Engage's Unity demuxes WebM itself and does not use it.
-// The host takes over Decoder (below; VP9 is decoded with libvpx, H.264 with VideoToolbox in hle_movie_avc.c, Vorbis audio with stb_vorbis): Engage's movies are 103 VP9 WebM files under RomFS/Data/StreamingAssets/Movie (2.7 GB, no audio track), and the game does not go on until the opening movie S01F has played.
+// The host takes over Decoder (below; VP8 / VP9 are decoded with libvpx, H.264 with VideoToolbox in hle_movie_avc.c, Vorbis audio with stb_vorbis): Engage's movies are 103 VP9 WebM files under RomFS/Data/StreamingAssets/Movie (2.7 GB, no audio track), and the game does not go on until the opening movie S01F has played.
 #include "hle.h"
 #include <arm_neon.h>
 #include <mach/mach.h>
@@ -37,7 +37,7 @@ HLE_FORCE("_ZN5movie9Extractor13SetDataSourceEPKc", "movie demuxer: the host doe
 //   · input: AcquireInputBufferIndex takes a free input index (none: 0x1011) → GetInputBuffer hands its data area to the client's movie::Buffer → SendInputBufferForDecode(index, offset, size, time µs, flags);
 //   · output: AcquireOutputBufferIndex(index, time, flags, remaining) (none: 0x100e) → GetOutputBufferFormat / GetOutputBuffer copy one NV12 frame into a buffer the client allocated → ReleaseOutputBufferIndex.
 //   Unity (mode 1, output format 4 = NV12) allocates its output buffers by GetOutputBufferSize and reads width / height / crop / nv12-y-stride / nv12-y-offset / nv12-uv-offset / slice-height from the MediaData.
-// The host implements the same protocol and decodes VP9 with libvpx (dm/third_party/libvpx). Input packets queue in arrival order; whenever an output slot is free, the head packet is decoded and its input index returned, and a picture goes to the ready-output queue with its time and flags copied
+// The host implements the same protocol and decodes VP8 / VP9 with libvpx (dm/third_party/libvpx). Input packets queue in arrival order; whenever an output slot is free, the head packet is decoded and its input index returned, and a picture goes to the ready-output queue with its time and flags copied
 // (the end-of-stream flag comes back with the last frame). While the client holds every output slot, packets stay queued and their input indices are not returned (as with MediaCodec: a decoder only consumes input when it has a free output); each output index the client returns lets one more packet be decoded.
 // The size comes from Configure's MediaData, or else from the VP9 header of the first key frame. Unity allocates its output buffers itself as width × height × 1.5 (it does not call GetOutputBufferSize), so the stride is the width and the plane height the height, unaligned.
 // Decoding runs on each decoder's own host thread, and the guest thread that sends a packet or returns an output index waits for it: guest threads run on guest stacks given by the SDK, and libvpx's stack frames are large. Events are still signalled by guest threads (SignalEvent is guest code).
@@ -54,7 +54,9 @@ HLE_FORCE("_ZN5movie9Extractor13SetDataSourceEPKc", "movie demuxer: the host doe
 #define MD_FMT_ABGR 3            // 4-byte RGBA (memory order R G B A), only with the native texture mode
 #define MD_MODE_TEX 2            // native texture mode: the decoder writes frames into the client's NVN texture
 #define MD_TYPE_AVC 1
+#define MD_TYPE_VP8 2
 #define MD_TYPE_VP9 3
+#define MD_VPX(d) ((d)->type == MD_TYPE_VP8 || (d)->type == MD_TYPE_VP9)
 #define MD_TYPE_AAC 4            // audio: the SDK's Decoder accepts AAC (4) and Vorbis (5) in CPU mode, output format 1 only (interleaved PCM16)
 #define MD_TYPE_VORBIS 5
 #define MD_AUDIO(d) ((d)->type == MD_TYPE_VORBIS || (d)->type == MD_TYPE_AAC)
@@ -223,6 +225,13 @@ static int vp9_size(const uint8_t *p, int n, int *w, int *h) {
     #undef RB
     return 1;
 }
+// VP8 key frame: frame tag, sync code, then 14-bit width and height (RFC 6386 section 9.1).
+static int vp8_size(const uint8_t *p, int n, int *w, int *h) {
+    if (n < 10 || (p[0] & 1) || memcmp(p + 3, "\x9d\x01\x2a", 3)) return 0;
+    int x = (p[6] | p[7] << 8) & 0x3fff, y = (p[8] | p[9] << 8) & 0x3fff;
+    if (!x || !y) return 0;
+    *w = x; *h = y; return 1;
+}
 static void md_dims(const mdec_t *d, int *w, int *h, int *stride, int *slice) {
     *w = d->w > 0 ? d->w : 1920; *h = d->h > 0 ? d->h : 1080;
     *stride = *w; *slice = *h;
@@ -266,24 +275,26 @@ static void md_rgba(const vpx_image_t *im, uint8_t *dst, int w, int h) {
     #undef CL
 }
 // decode one packet into output slot slot: 1 = a picture came out, 0 = none (hidden frame or error)
-static int md_vp9(mdec_t *d, const uint8_t *p, int n, int slot) {
+static int md_vpx(mdec_t *d, const uint8_t *p, int n, int slot) {
+    const char *codec = d->type == MD_TYPE_VP8 ? "VP8" : "VP9";
     if (!d->vpx_on) {
         vpx_codec_dec_cfg_t cfg = { .threads = (unsigned)md_threads(), .w = (unsigned)d->w, .h = (unsigned)d->h };
-        vpx_codec_err_t e = vpx_codec_dec_init(&d->vpx, vpx_codec_vp9_dx(), &cfg, 0);
-        if (e) { LOG("[RED] movie: libvpx failed to create the VP9 decoder: %s", vpx_codec_err_to_string(e)); return 0; }
-        vpx_codec_control(&d->vpx, VP9D_SET_ROW_MT, 1);
+        vpx_codec_iface_t *iface = d->type == MD_TYPE_VP8 ? vpx_codec_vp8_dx() : vpx_codec_vp9_dx();
+        vpx_codec_err_t e = vpx_codec_dec_init(&d->vpx, iface, &cfg, 0);
+        if (e) { LOG("[RED] movie: libvpx failed to create the %s decoder: %s", codec, vpx_codec_err_to_string(e)); return 0; }
+        if (d->type == MD_TYPE_VP9) vpx_codec_control(&d->vpx, VP9D_SET_ROW_MT, 1);
         d->vpx_on = 1;
-        LOG("[movie] libvpx %s: VP9 decoder, %d threads", vpx_codec_version_str(), cfg.threads);
+        LOG("[movie] libvpx %s: %s decoder, %d threads", vpx_codec_version_str(), codec, cfg.threads);
     }
     if (vpx_codec_decode(&d->vpx, p, (unsigned)n, NULL, 0)) {
-        if (!d->red_dec++) LOG("[RED] movie: VP9 decode error (first case, %d bytes): %s %s", n, vpx_codec_error(&d->vpx), vpx_codec_error_detail(&d->vpx) ? vpx_codec_error_detail(&d->vpx) : "");
+        if (!d->red_dec++) LOG("[RED] movie: %s decode error (first case, %d bytes): %s %s", codec, n, vpx_codec_error(&d->vpx), vpx_codec_error_detail(&d->vpx) ? vpx_codec_error_detail(&d->vpx) : "");
         return 0;
     }
     vpx_codec_iter_t it = NULL; vpx_image_t *im, *last = NULL;
     while ((im = vpx_codec_get_frame(&d->vpx, &it))) last = im;
     if (!last) return 0;
-    if (last->fmt != VPX_IMG_FMT_I420) { if (!d->red_img++) LOG("[RED] movie: VP9 picture format %#x is not I420 (4:2:0 8-bit), outputting a black frame", last->fmt); return 0; }
-    if ((int)last->d_w != d->w || (int)last->d_h != d->h) { if (!d->red_img++) LOG("[RED] movie: VP9 picture %u×%u does not match the output %d×%d (first case), cropping / padding with black", last->d_w, last->d_h, d->w, d->h); }
+    if (last->fmt != VPX_IMG_FMT_I420) { if (!d->red_img++) LOG("[RED] movie: %s picture format %#x is not I420 (4:2:0 8-bit), outputting a black frame", codec, last->fmt); return 0; }
+    if ((int)last->d_w != d->w || (int)last->d_h != d->h) { if (!d->red_img++) LOG("[RED] movie: %s picture %u×%u does not match the output %d×%d (first case), cropping / padding with black", codec, last->d_w, last->d_h, d->w, d->h); }
     int rgba = d->fmt == MD_FMT_ABGR;
     size_t need = (size_t)d->w * d->h * (rgba ? 4 : 3) / (rgba ? 1 : 2);
     if (d->out[slot].cap < need) { free(d->out[slot].frm); d->out[slot].frm = malloc(need); d->out[slot].cap = need; }   // a Configure after Reset may change the size
@@ -440,7 +451,7 @@ static void *md_worker(void *arg) {
         else if (job == MDJ_DECODE || job == MDJ_TAKE) {
             uint64_t t0 = now_ns();
             d->jgot = d->type == MD_TYPE_AVC ? md_avc(d, d->jp, d->jn, d->jslot, job == MDJ_TAKE) : d->type == MD_TYPE_VORBIS ? md_vorbis(d, d->jp, d->jn, d->jslot) :
-                      d->type == MD_TYPE_AAC ? md_aac(d, d->jp, d->jn, d->jslot) : md_vp9(d, d->jp, d->jn, d->jslot);
+                      d->type == MD_TYPE_AAC ? md_aac(d, d->jp, d->jn, d->jslot) : md_vpx(d, d->jp, d->jn, d->jslot);
             uint64_t dt = now_ns() - t0; d->dec_n++; d->dec_ns += dt; if (dt > d->dec_max) d->dec_max = dt;
         }
         else md_close(d);
@@ -487,12 +498,12 @@ static void md_pump(mdec_t *d) {
         if (eos && (pk.pts < 0 || (uint32_t)pk.size >= MD_INCAP)) pk.size = 0;   // Monster Hunter Rise ends a stream with time -1 and the whole input buffer (4 MB) as its length: no data (decoding it gave VideoToolbox -12909 and AudioToolbox -50); an end-of-stream packet as long as the whole buffer is the same, with a real time (from PR #36)
         // H.264 end of stream: this packet's output takes the first queued picture (jflush). Taking none put a black picture without the flag ahead of the last
         // `depth` pictures, a black flash before the movie's last frames
-        if ((pk.size > 0 && (d->type == MD_TYPE_VP9 || MD_AUDIO(d) || avc)) || (avc && eos)) {
+        if ((pk.size > 0 && (MD_VPX(d) || MD_AUDIO(d) || avc)) || (avc && eos)) {
             d->jp = d->in[pk.in] + pk.off; d->jn = pk.size; d->jslot = slot; d->jpts = pk.pts; d->jflush = avc && eos; md_job(d, MDJ_DECODE); got = d->jgot; }
         int more = avc && eos && d->avc && mavc_queued(d->avc) > 0;   // H.264 pictures still queued: they follow this output, the last of them carries the end-of-stream flag
         pthread_mutex_lock(&d->mu);
         d->infree[d->ninfree++] = pk.in;
-        int ready = got || eos || (d->type != MD_TYPE_VP9 && !MD_AUDIO(d) && !avc);   // an end-of-stream packet without a picture still yields an output to carry the flag back; VP8 has no decoder and gives black frames
+        int ready = got || eos;   // an end-of-stream packet without a picture still yields an output to carry the flag back
         if (ready) { d->out[slot].pic = got; d->out[slot].pts = got && (avc || d->type == MD_TYPE_AAC) ? d->jpts_out : pk.pts; d->out[slot].flags = more ? pk.flags & ~4u : pk.flags; d->outq[d->noutq++] = slot; }
         else d->out[slot].used = 0;
         if (more) d->avc_drain = 1;
@@ -504,17 +515,16 @@ static void md_pump(mdec_t *d) {
     pthread_mutex_unlock(&d->dmu);
 }
 
-HLE_FORCE("_ZN5movie7DecoderC1ENS_11DecoderTypeENS_19DecoderOutputFormatENS_11DecoderModeEi", "movie decoder: host implementation (no NVIDIA hardware decoder; VP9 with libvpx, AVC with VideoToolbox)",
+HLE_FORCE("_ZN5movie7DecoderC1ENS_11DecoderTypeENS_19DecoderOutputFormatENS_11DecoderModeEi", "movie decoder: host implementation (no NVIDIA hardware decoder; VP8 / VP9 with libvpx, AVC with VideoToolbox)",
           void, h_movie_Decoder, void **self, int type, int fmt, int mode, int prio) {
     static void *vt; if (!vt) { uint8_t *t = guest_sym("_ZTVN5movie7DecoderE"); if (!t) die("movie: missing the vtable of movie::Decoder"); vt = t + 0x10; }
     md_syms();
     self[0] = vt; self[1] = NULL;
     // Only video (AVC / VP8 / VP9 = 1..3): NV12 output (Engage's Unity, CPU buffers), or RGBA output into the client's NVN texture (mode 2: Metroid Dread's VP9, Monster Hunter Rise's AVC);
-    // anything else (audio) keeps a null impl and every method returns the SDK's failure code. VP9 is decoded with libvpx, AVC with VideoToolbox (hle_movie_avc.c); VP8 gives black frames
+    // anything else (audio) keeps a null impl and every method returns the SDK's failure code. VP8 / VP9 use libvpx, AVC uses VideoToolbox (hle_movie_avc.c)
     // Audio: Vorbis to PCM16 (Link's Awakening's movies carry a Vorbis track; without a decoder the SDK's player plays them silent), AAC to PCM16 with AudioToolbox (Monster Hunter Rise)
     int audio = (type == MD_TYPE_VORBIS || type == MD_TYPE_AAC) && fmt == MD_FMT_PCM16;
     if (!audio && (type < 1 || type > 3 || (fmt != MD_FMT_NV12 && !(fmt == MD_FMT_ABGR && mode == MD_MODE_TEX)))) { LOG("[RED] movie: decoder type %d output %d mode %d not supported by the host, every method returns failure", type, fmt, mode); return; }
-    if (!audio && type != MD_TYPE_VP9 && type != MD_TYPE_AVC) LOG("[RED] movie: decoder type %d (VP8) is not decoded by the host, outputting black frames", type);
     mdec_t *d = calloc(1, sizeof *d);
     pthread_mutex_init(&d->mu, NULL); pthread_mutex_init(&d->dmu, NULL); pthread_mutex_init(&d->wmu, NULL); pthread_cond_init(&d->wcv, NULL);
     d->type = type; d->fmt = fmt; d->mode = mode;
@@ -673,7 +683,7 @@ HLE_FORCE("_ZN5movie7Decoder14GetInputBufferEiPNS_6BufferE", "movie decoder: han
     G.set_data(buf, d->in[i], MD_INCAP); G.set_range(buf, 0, (int)MD_INCAP);
     return 0;
 }
-HLE_FORCE("_ZN5movie7Decoder24SendInputBufferForDecodeEiiilj", "movie decoder: send a packet for decoding (VP9 with libvpx, AVC with VideoToolbox)", int, h_movie_SendIn,
+HLE_FORCE("_ZN5movie7Decoder24SendInputBufferForDecodeEiiilj", "movie decoder: send a packet for decoding (VP8 / VP9 with libvpx, AVC with VideoToolbox)", int, h_movie_SendIn,
           void **self, int i, int off, int size, int64_t pts, uint32_t flags) {
     mdec_t *d = md_of(self); if (!d) return 0x1000;
     if (i < 0 || i >= MD_NIN || off < 0 || size < 0 || (uint32_t)off + (uint32_t)size > MD_INCAP) return 0x100b;
@@ -693,6 +703,7 @@ HLE_FORCE("_ZN5movie7Decoder24SendInputBufferForDecodeEiiilj", "movie decoder: s
     if (d->npend == MD_NIN) { pthread_mutex_unlock(&d->mu); if (!d->red_dec++) LOG("[RED] movie: more packets pending than input buffers, one dropped (first case)"); return 0x100b; }
     int fmt_now = 0;
     if (d->type == MD_TYPE_VP9 && !d->w && size > 0 && vp9_size(d->in[i] + off, size, &d->w, &d->h)) LOG("[movie] VP9 key frame: %d×%d", d->w, d->h);
+    if (d->type == MD_TYPE_VP8 && !d->w && size > 0 && vp8_size(d->in[i] + off, size, &d->w, &d->h)) LOG("[movie] VP8 key frame: %d×%d", d->w, d->h);
     if (!d->fmt_sent) { d->fmt_sent = 1; fmt_now = 1; if (!d->w && !MD_AUDIO(d)) { d->w = 1920; d->h = 1080; } }   // the size is fixed from here on (slots are allocated by it)
     d->pend[d->npend].in = i; d->pend[d->npend].off = off; d->pend[d->npend].size = size; d->pend[d->npend].pts = pts; d->pend[d->npend].flags = flags; d->npend++;
     int queued = d->npend;
@@ -784,7 +795,7 @@ HLE_FORCE("_ZN5movie7Decoder19GetOutputBufferSizeEPiS1_", "movie decoder: output
     MD_TRACE(d, 11, "GetOutputBufferSize → %d (%d×%d)", *size, w, h);
     return 0;
 }
-// Write one frame into the client buffer: the decoded picture, or a black frame (video range Y 16, UV 128) when there is none (end-of-stream packet, AVC / VP8); a client texture keeps its last frame then
+// Write one frame into the client buffer: the decoded picture, or a black frame (video range Y 16, UV 128) when there is none (an end-of-stream packet); a client texture keeps its last frame then
 // Native texture mode: the client Buffer's data pointer is the NVNtexture object itself (capacity given as 8; Metroid Dread main+0x226c98: the texture object embedded at +0x18 of a texture pool entry), plus the NVN device and a sync object (SetNvnDev / SetNvnSync).
 // In the SDK, NnCodecConsumer draws the decoded frame into that texture on the GPU and signals the sync when done; the host writes the texture storage on the CPU (as WriteTexels; the replay layer re-uploads dirty pages), and the sync counts as done once written
 int nvn_host_write_texture(const void *nvntex, const void *src, int w, int h, size_t row, int *tw, int *th);
