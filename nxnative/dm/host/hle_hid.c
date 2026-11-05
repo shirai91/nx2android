@@ -2,7 +2,8 @@
 // Generic, game-independent version: player 1 is always connected, as the handheld controller (Npad id 0x20) with DM_OPMODE=0 (handheld), otherwise as the 1P full-key controller (id 0);
 // players 2..8 are full-key controllers on No2..No8 (ids 1..7) while the front end reports a controller for them (dm_pad_players; the Mac gives each physical controller a player
 // of its own, front_mac.m). A player whose npad the game does not support (SetSupportedNpadIdType) is not reported: in a one-player game it feeds player 1, otherwise it is not used.
-// Six-axis sensor: one per connected controller (two for handheld), at rest lying flat, player 1's shaken side to side while the front end holds DM_BTN_SHAKE (see the six-axis section below).
+// Six-axis sensor: one per connected controller (two for handheld), at rest lying flat, player 1's shaken side to side while the front end holds DM_BTN_SHAKE and moved as the
+// device is when the front end feeds its motion (dm_motion_set: Android's gyroscope; see the six-axis section below).
 // Vibration follows the player assignments through hle_haptics.c. Mouse and keyboard: not connected; the controller applet reports the connected players with player 1 selected.
 #include "hle.h"
 #include "hle_haptics.h"
@@ -308,10 +309,56 @@ enum { SIX_PERIOD_NS = 5000000 };
 #define SHAKE_G 3.0
 #define SHAKE_REV 1.5
 static int shaking(uint64_t t) { return t >= atomic_load(&g_shake_t0) && t < atomic_load(&g_shake_end); }
+// The device's own motion (dm_motion_set, dm_input.h: the Android front end's gyroscope and accelerometer): player 1's controller moves as the device does, as the Switch's
+// Joy-Cons move with the console in handheld mode (The Legend of Zelda: Tears of the Kingdom aims the bow by them: its main reads only GetSixAxisSensorHandles / Start /
+// GetSixAxisSensorStates). Each sample goes in a ring under the guest sampling number it arrived at, so a history read returns the newest sample at or before each entry's
+// time; the angle is the angular velocity integrated (revolutions, not wrapped) and the direction the gyroscope's rotation from the identity at the first sample (no
+// gravity correction). A shake (DM_BTN_SHAKE) still overrides it with the made-up side-to-side motion. Front ends that feed nothing (iOS, the Mac) keep the controller at rest
+enum { MO_RING = 16 };
+typedef struct { int64_t samp; float acc[3], gyro[3], angle[3], dir[9]; } motion_sample;
+static pthread_mutex_t g_mo_mu = PTHREAD_MUTEX_INITIALIZER;
+static motion_sample g_mo[MO_RING]; static int g_mo_n; static int64_t g_mo_t; static double g_mo_q[4] = {1, 0, 0, 0}, g_mo_ang[3];   // under g_mo_mu
+static _Atomic int g_mo_on; static _Atomic uint64_t g_mo_moved;   // fed at least once; the guest time the device last turned faster than MO_REST_REV
+#define MO_REST_REV 0.01   // revolutions / s (3.6 degrees / s): slower is at rest (IsSixAxisSensorAtRest)
+void dm_motion_set(const float acc[3], const float gyro[3], int64_t t_ns) {
+    pthread_mutex_lock(&g_mo_mu);
+    double dt = g_mo_n && t_ns > g_mo_t ? (double)(t_ns - g_mo_t) / 1e9 : 0; if (dt > 0.05) dt = 0.05;   // a gap (the app in the background) is not one long turn
+    g_mo_t = t_ns;
+    for (int i = 0; i < 3; i++) g_mo_ang[i] += gyro[i] * dt;
+    // q (controller to world) turns by the body-frame angular velocity w (radians): q' = q (x) (0, w) / 2, then normalized
+    double w[3] = {2 * M_PI * gyro[0], 2 * M_PI * gyro[1], 2 * M_PI * gyro[2]}, *q = g_mo_q, h = dt / 2;
+    double n0 = q[0] - h * (q[1] * w[0] + q[2] * w[1] + q[3] * w[2]), n1 = q[1] + h * (q[0] * w[0] + q[2] * w[2] - q[3] * w[1]),
+           n2 = q[2] + h * (q[0] * w[1] + q[3] * w[0] - q[1] * w[2]), n3 = q[3] + h * (q[0] * w[2] + q[1] * w[1] - q[2] * w[0]), m = sqrt(n0 * n0 + n1 * n1 + n2 * n2 + n3 * n3);
+    q[0] = n0 / m; q[1] = n1 / m; q[2] = n2 / m; q[3] = n3 / m;
+    int64_t samp = (int64_t)(guest_ns() / SIX_PERIOD_NS);
+    motion_sample *s = &g_mo[samp % MO_RING]; s->samp = samp;
+    for (int i = 0; i < 3; i++) { s->acc[i] = acc[i]; s->gyro[i] = gyro[i]; s->angle[i] = (float)g_mo_ang[i]; }
+    // direction: row j = the controller's axis j in the world (as the shake's yaw rows below), i.e. column j of q's rotation matrix
+    double a = q[0], b = q[1], c = q[2], d = q[3];
+    double R[9] = {1 - 2 * (c * c + d * d), 2 * (b * c - a * d), 2 * (b * d + a * c), 2 * (b * c + a * d), 1 - 2 * (b * b + d * d), 2 * (c * d - a * b),
+                   2 * (b * d - a * c), 2 * (c * d + a * b), 1 - 2 * (b * b + c * c)};
+    for (int j = 0; j < 3; j++) for (int k = 0; k < 3; k++) s->dir[3 * j + k] = (float)R[3 * k + j];
+    if (g_mo_n < MO_RING) g_mo_n++;
+    pthread_mutex_unlock(&g_mo_mu);
+    if (gyro[0] * gyro[0] + gyro[1] * gyro[1] + gyro[2] * gyro[2] > MO_REST_REV * MO_REST_REV) atomic_store(&g_mo_moved, guest_ns());
+    if (!atomic_exchange(&g_mo_on, 1)) LOG("hid: the device's motion moves player 1's six-axis sensor (gyroscope + accelerometer)");
+}
+static int mo_moving(void) { return atomic_load(&g_mo_on) && guest_ns() - atomic_load(&g_mo_moved) < 100000000; }
+static int mo_fill(SixAxisState *s, int64_t samp) {   // the newest fed sample at or before samp (else the oldest kept), under g_mo_mu; 0 when nothing was fed
+    const motion_sample *best = NULL, *old = NULL;
+    for (int i = 0; i < MO_RING; i++) { const motion_sample *m = &g_mo[i]; if (!m->samp) continue;
+        if (m->samp <= samp && (!best || m->samp > best->samp)) best = m;
+        if (!old || m->samp < old->samp) old = m; }
+    if (!best) best = old;
+    if (!best) return 0;
+    memcpy(s->acc, best->acc, sizeof s->acc); memcpy(s->gyro, best->gyro, sizeof s->gyro); memcpy(s->angle, best->angle, sizeof s->angle); memcpy(s->dir, best->dir, sizeof s->dir);
+    return 1;
+}
 static void six_sample(SixAxisState *s, int64_t samp, int shakes) {
     memset(s, 0, sizeof *s);
     uint64_t t = (uint64_t)samp * SIX_PERIOD_NS;
     s->delta_ns = SIX_PERIOD_NS; s->sampling = samp; s->attributes = 1;   // IsConnected
+    if (shakes && !shaking(t) && atomic_load(&g_mo_on) && mo_fill(s, samp)) return;   // (shakes: player 1's, the device's)
     s->acc[2] = -1;
     double yaw = 0;
     if (shakes && shaking(t)) {
@@ -332,7 +379,9 @@ static int six_states(SixAxisState *out, int n, uint32_t h) {
     if (!six_connected(h)) { memset(out, 0, sizeof *out * (size_t)n); return 0; }
     int64_t samp = (int64_t)(guest_ns() / SIX_PERIOD_NS);
     int shakes = player_of(h >> 8 & 0xff) == 0;
+    pthread_mutex_lock(&g_mo_mu);
     for (int i = 0; i < n; i++) six_sample(&out[i], samp - i, shakes);
+    pthread_mutex_unlock(&g_mo_mu);
     return n;
 }
 HLE_FORCE("_ZN2nn3hid23GetSixAxisSensorHandlesEPNS0_19SixAxisSensorHandleEiRKjNS_4util10BitFlagSetILi32ENS0_12NpadStyleTagEEE", "six-axis sensor handles: two for handheld / dual Joy-Cons, one otherwise",
@@ -480,7 +529,8 @@ HLE_FORCE("_ZN2nn3hid16GetGestureStatesEPNS0_12GestureStateEi", "gesture states,
 // Six-axis details: the current state, at rest unless shaking, fusion off
 HLE_FORCE("_ZN2nn3hid17StopSixAxisSensorERKNS0_19SixAxisSensorHandleE", "six-axis sensor; always sampling on the host", void, h_hid_SixStop, const uint32_t *h) { (void)h; }
 HLE_FORCE("_ZN2nn3hid21GetSixAxisSensorStateEPNS0_18SixAxisSensorStateERKNS0_19SixAxisSensorHandleE", "six-axis sensor current state", void, h_hid_SixState, SixAxisState *s, const uint32_t *h) { six_states(s, 1, *h); }
-HLE_FORCE("_ZN2nn3hid21IsSixAxisSensorAtRestERKNS0_19SixAxisSensorHandleE", "six-axis sensor at rest: yes unless player 1's is shaking", unsigned, h_hid_SixRest, const uint32_t *h) { return player_of(*h >> 8 & 0xff) != 0 || !shaking(guest_ns()); }
+HLE_FORCE("_ZN2nn3hid21IsSixAxisSensorAtRestERKNS0_19SixAxisSensorHandleE", "six-axis sensor at rest: yes unless player 1's is shaking or the device turns", unsigned, h_hid_SixRest, const uint32_t *h) {
+    return player_of(*h >> 8 & 0xff) != 0 || (!shaking(guest_ns()) && !mo_moving()); }
 // The console's own six-axis sensor (SevenSixAxisSensor, the body's orientation in handheld mode; The Legend of Zelda: Breath of the Wild): takes a work buffer and is switched through the hid service. The host provides none: switching succeeds, 0 states
 HLE_FORCE("_ZN2nn3hid28InitializeSevenSixAxisSensorEPvm", "console six-axis sensor initialization; not provided by the host", Result, h_hid_SevenInit, void *buf, size_t n) { (void)buf; (void)n; return RES_OK; }
 HLE_FORCE("_ZN2nn3hid26FinalizeSevenSixAxisSensorEv", "console six-axis sensor", Result, h_hid_SevenFini, void) { return RES_OK; }
