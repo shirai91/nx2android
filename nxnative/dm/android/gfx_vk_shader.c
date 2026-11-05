@@ -237,7 +237,28 @@ static VkDescriptorSetLayout shader_layout(const VkDescriptorSetLayoutBinding *b
     }
     return layout;
 }
-vkshader_t *vk_shader(uint64_t key, int stage) {
+static vkshader_t *vk_shader_q(uint64_t key, int stage, int quiet);
+vkshader_t *vk_shader(uint64_t key, int stage) { return vk_shader_q(key, stage, 0); }
+// A geometry shader's input primitive is fixed when it is translated, and Maxwell's shader header doesn't give it: shader_vk.py translates each geometry shader for
+// triangles under its own key and for the other four kinds under derived keys. Read as triangles, the points Xenoblade Chronicles 3's particle updates draw were taken
+// three at a time (Vulkan leaves a mismatch undefined), and the particles' records came out wrong: no husk particles, send-off particles or item orbs
+vkshader_t *vk_shader_gs_topo(vkshader_t *gs, VkPrimitiveTopology topo) {
+    int t;
+    switch (topo) {
+    case VK_PRIMITIVE_TOPOLOGY_POINT_LIST: t = 0; break;
+    case VK_PRIMITIVE_TOPOLOGY_LINE_LIST: case VK_PRIMITIVE_TOPOLOGY_LINE_STRIP: t = 1; break;
+    case VK_PRIMITIVE_TOPOLOGY_LINE_LIST_WITH_ADJACENCY: case VK_PRIMITIVE_TOPOLOGY_LINE_STRIP_WITH_ADJACENCY: t = 2; break;
+    case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST_WITH_ADJACENCY: case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP_WITH_ADJACENCY: t = 4; break;
+    default: return gs;   // triangles (lists, strips, fans): the shader's own translation
+    }
+    if (!gs) return gs;
+    vkshader_t *v = vk_shader_q(gs->key ^ ((uint64_t)(t + 1) * 0x9E3779B97F4A7C15ull), 2, 1);
+    { static int n; if (n < 8) { n++; VKLOG("geometry shader %016llx drawn with topology %d: %s", (unsigned long long)gs->key, (int)topo, v ? "its translation for that input" : "[RED] no translation for that input in the bundle, the triangles one"); } }
+    if (!v) return gs;
+    v->xfb = gs->xfb; memcpy(v->xfb_stride, gs->xfb_stride, sizeof v->xfb_stride);
+    return v;
+}
+static vkshader_t *vk_shader_q(uint64_t key, int stage, int quiet) {
     bundle_auto();
     struct { uint64_t key; uint64_t stage; } hk = {key, (uint64_t)stage};
     pthread_mutex_lock(&g_sh_mu);
@@ -245,7 +266,7 @@ vkshader_t *vk_shader(uint64_t key, int stage) {
     if (s) { pthread_mutex_unlock(&g_sh_mu); return s == (void *)1 ? NULL : s; }
     const bent *e = g_bundle ? find(key) : NULL;
     if (!e) { nvn_hm_put(&g_shaders, &hk, (void *)1); pthread_mutex_unlock(&g_sh_mu);
-              static int n; if (n++ < 16) VKLOG("[RED] shader %016llx (stage %d) is not in the bundle", (unsigned long long)key, stage); return NULL; }
+              static int n; if (!quiet && n++ < 16) VKLOG("[RED] shader %016llx (stage %d) is not in the bundle", (unsigned long long)key, stage); return NULL; }
     pthread_mutex_unlock(&g_sh_mu);
     uint32_t nw = 0, *w = bundle_spv(e, &nw);   // copied or decompressed outside the lock
     pthread_mutex_lock(&g_sh_mu);

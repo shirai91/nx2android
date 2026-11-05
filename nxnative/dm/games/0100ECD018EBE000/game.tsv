@@ -61,3 +61,7 @@ tex_dyn_slots	on
 # ---- Shader split (shader_split.py: BNSH in the zstd .bfsha and .ptcl files) ----
 shader_groups	/shaders/=shaders /effect/=effect
 shader_note	Paper Mario: The Thousand-Year Door shaders
+
+# Android graphics settings verified on the Adreno 840.
+android_subgroup_size	64
+android_dynamic_slots	on
