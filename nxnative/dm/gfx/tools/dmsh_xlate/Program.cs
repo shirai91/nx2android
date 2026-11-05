@@ -113,7 +113,7 @@ static class SwshXlate
             if (_job["attr"] is JsonObject a) foreach (var kv in a) attr[int.Parse(kv.Key)] = Attr((string)kv.Value);
             if (_job["fout"] is JsonObject f) foreach (var kv in f) fout[int.Parse(kv.Key)] = Attr((string)kv.Value);
             // Job "early_z" (shader_vk.py job_for, from the control section): the fragment shader's layout(early_fragment_tests), as NVN sets FORCE_EARLY_FRAGMENT_TESTS for it
-            return new GpuGraphicsState(_job["early_z"] is JsonNode ez && (bool)ez, _job["geometry_topology"] is JsonNode gt ? (InputTopology)(int)gt : InputTopology.Triangles, false, TessPatchType.Triangles, TessSpacing.EqualSpacing,
+            return new GpuGraphicsState(_job["early_z"] is JsonNode ez && (bool)ez, _job["geometry_topology"] is JsonNode gt ? (InputTopology)(int)gt : _job["gs_input"] is JsonNode gi ? (InputTopology)(int)gi : InputTopology.Triangles, false, TessPatchType.Triangles, TessSpacing.EqualSpacing,
                 false, false, false, false /* depth not rewritten: dmsh_build.py adds the GL entry point (see the file header) */, false, 1f, AlphaTestOp.Always, 0f, attr, false, fout, false,
                 false /* no Y flip */, true /* origin upper-left */, false);
         }

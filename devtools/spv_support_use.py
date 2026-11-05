@@ -1,11 +1,13 @@
 # Which shaders of a DMSV bundle read which members of Ryujinx's support buffer (the uniform block named "support_buffer").   spv_support_use.py <bundle> [--keys]
 # Members: 0 FragmentAlphaTest, 1 FragmentIsBgra[8], 2 ViewportInverse, 3 ViewportSize, 4 FragmentRenderScaleCount, 5 RenderScale[73], 6 TfeOffset, 7 TfeVertexCount
-import collections, struct, sys
-b = open(sys.argv[1], 'rb').read(); n = struct.unpack_from('<I', b, 8)[0]
+import collections, os, struct, sys
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'nxnative', 'dm', 'android', 'tools'))
+import dmsv   # noqa: E402  (either version of the bundle)
+bundle = dmsv.Bundle(sys.argv[1])
 use = collections.Counter(); keys = collections.defaultdict(list)
-for i in range(n):
-    key, st, so, sl, ro, rl, _ = struct.unpack_from('<QIIIIII', b, 12 + 32 * i)
-    w = struct.unpack_from('<%dI' % (sl // 4), b, so)
+for e in bundle.entries:
+    key, st = e[0], e[1]; spv = bundle.spv(e)
+    w = struct.unpack_from('<%dI' % (len(spv) // 4), spv)
     names, consts, j, sb, found = {}, {}, 5, None, set()
     while j < len(w):
         wc, op = w[j] >> 16, w[j] & 0xffff

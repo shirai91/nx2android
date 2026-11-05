@@ -1,0 +1,145 @@
+# The Vulkan shader bundle (nxnative/dm/android/tools/dmsv.py): tiny bundles written, read back, converted between versions 1 and 2, and read by the host's own
+# reader (gfx_vk_shader.c, its bundle functions compiled with the vendored zstd decoder when a C compiler is at hand).
+import contextlib, io, os, random, shutil, struct, subprocess, sys, tempfile, unittest
+from pathlib import Path
+from unittest import mock
+
+REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO / 'nxnative/dm/android/tools'))
+import dmsv   # noqa: E402
+
+ZSTD = dmsv.zstd_mod() is not None
+
+
+def spirv(seed, n):   # a SPIR-V-like module: the header, then n OpDecorate Location words (repetitive, as the translator's output is: zstd shrinks it)
+    rnd = random.Random(seed)
+    return struct.pack('<5I', 0x07230203, 0x10000, 0, 100, 0) + b''.join(struct.pack('<4I', 4 << 16 | 71, rnd.randrange(60), 30, rnd.randrange(8)) for _ in range(n))
+
+
+def refl(nbind, c1):   # shader_vk.py refl_bin's layout: {nbind, c1_len, local[3]}, nbind 20-byte bindings, c1
+    return struct.pack('<5I', nbind, len(c1), 1, 1, 1) + bytes(20 * nbind) + c1
+
+
+ENTRIES = [(0x1327af7c2b78070e, 0, spirv(1, 400), refl(2, b'c1 constants')), (0x094f4afb9c876459, 1, spirv(2, 900), refl(0, b'')),
+           (0xfedcba9876543210, 5, struct.pack('<I', 0x07230203) + random.Random(3).randbytes(1020), refl(1, b''))]   # the last: random words, which zstd cannot shrink
+
+
+def v1_reference(entries):   # the bundle as shader_vk.py wrote it before version 2 (2026-11)
+    entries = sorted(entries, key=lambda e: e[0]); hdr = struct.pack('<4sII', b'DMSV', 1, len(entries)); off = len(hdr) + 32 * len(entries); table, blobs = [], []
+    for key, st, spv, r in entries:
+        table.append(struct.pack('<QIIIIII', key, st, off, len(spv), off + len(spv), len(r), 0)); blobs += [spv, r]; off += len(spv) + len(r)
+    return hdr + b''.join(table) + b''.join(blobs)
+
+
+class Bundle(unittest.TestCase):
+    def setUp(self): self.d = Path(tempfile.mkdtemp(prefix='nx2a_test_dmsv_'))
+    def tearDown(self): shutil.rmtree(self.d, ignore_errors=True)
+
+    def read(self, p):
+        with dmsv.Bundle(str(p)) as b: return b.version, [(e[0], e[1], bytes(b.spv(e)), bytes(b.refl(e))) for e in b.entries], list(b.entries)
+
+    def test_version1_is_the_old_layout(self):   # --zstd 0: byte for byte what the old writer made, and it reads back
+        p = self.d / 'v1.dmsv'; self.assertEqual(dmsv.write(str(p), ENTRIES, level=0)[0], 1)
+        self.assertEqual(p.read_bytes(), v1_reference(ENTRIES))
+        ver, got, _ = self.read(p); self.assertEqual((ver, got), (1, sorted(ENTRIES)))
+
+    @unittest.skipUnless(ZSTD, 'no zstd in this Python')
+    def test_version2_round_trip(self):
+        p = self.d / 'v2.dmsv'; ver, raw, stored = dmsv.write(str(p), ENTRIES, jobs=2)
+        self.assertEqual((ver, raw), (2, sum(len(e[2]) for e in ENTRIES))); self.assertLess(stored, raw)
+        ver, got, ents = self.read(p); self.assertEqual((ver, got), (2, sorted(ENTRIES)))
+        by = {e[0]: e for e in ents}
+        for key, _, spv, _ in ENTRIES[:2]:   # compressed: spv_size = the SPIR-V's length, a zstd frame stored, with its content size and checksum
+            e = by[key]; self.assertEqual(e[6], len(spv)); self.assertLess(e[3], len(spv))
+            frame = p.read_bytes()[e[2]:e[2] + e[3]]; self.assertEqual(frame[:4], b'\x28\xb5\x2f\xfd'); self.assertTrue(frame[4] & 0x04, 'no checksum flag')
+        e = by[ENTRIES[2][0]]; self.assertEqual((e[6], e[3]), (0, len(ENTRIES[2][2])))   # one zstd does not shrink: stored as it is
+        self.assertEqual([e[0] for e in ents], sorted(e[0] for e in ENTRIES))
+
+    def test_without_zstd_version1(self):   # a Python without compression.zstd or backports.zstd: version 1, and a [RED] line says why
+        p, out = self.d / 'nz.dmsv', io.StringIO()
+        with mock.patch.object(dmsv, 'zstd_mod', return_value=None), contextlib.redirect_stdout(out): ver = dmsv.write(str(p), ENTRIES)[0]
+        self.assertEqual(ver, 1); self.assertIn('[RED] ', out.getvalue()); self.assertEqual(p.read_bytes(), v1_reference(ENTRIES))
+
+    @unittest.skipUnless(ZSTD, 'no zstd in this Python')
+    def test_pack_both_ways(self):   # dmsv.py pack: version 1 → 2 → 1 gives the first file back
+        v1, v2, back = self.d / 'a.dmsv', self.d / 'b.dmsv', self.d / 'c.dmsv'; v1.write_bytes(v1_reference(ENTRIES))
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(dmsv.main(['pack', str(v1), str(v2), '--level', '3']), 0); self.assertEqual(dmsv.main(['pack', str(v2), str(back), '--level', '0']), 0)
+        self.assertEqual(self.read(v2)[0], 2); self.assertEqual(back.read_bytes(), v1.read_bytes()); self.assertFalse(Path(str(back) + '.partial').exists())
+
+    def test_refused(self):   # not a bundle, a version this reader does not know, a copy cut short
+        good = v1_reference(ENTRIES)
+        for name, data in (('magic', b'NOPE' + good[4:]), ('version', good[:4] + struct.pack('<I', 3) + good[8:]), ('short', good[:-10]), ('table', good[:40])):
+            p = self.d / f'{name}.dmsv'; p.write_bytes(data)
+            with self.assertRaises(ValueError, msg=name): dmsv.Bundle(str(p))
+
+
+@unittest.skipUnless(shutil.which('cc') and ZSTD, 'a host C compiler and zstd in this Python are needed')
+class HostReader(unittest.TestCase):   # gfx_vk_shader.c's bundle functions (vk_shaders_open, find, bundle_spv) with nxnative/dm/third_party/zstd, as the app runs them
+    @classmethod
+    def setUpClass(cls):
+        cls.d = Path(tempfile.mkdtemp(prefix='nx2a_test_dmsv_c_')); src = (REPO / 'nxnative/dm/android/gfx_vk_shader.c').read_text(encoding='utf-8')
+        body = src[src.index('// spv_size: 0 ='):src.index('// Run-time capture:')]
+        harness = r'''
+#include <fcntl.h>
+#include <pthread.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <time.h>
+#include <unistd.h>
+#include "zstd.h"
+#define VKLOG(...) (fprintf(stderr, __VA_ARGS__), fputc('\n', stderr))
+''' + body + r'''
+int main(int argc, char **argv) {   // each shader: key, stage, words, FNV-1a 64 of its SPIR-V; exit 2 when the bundle is refused
+    (void)argc; vk_shaders_open(argv[1]); if (!g_bundle) return 2;
+    for (uint32_t i = 0; i < g_nent; i++) {
+        uint64_t key = g_ent[i].key; if (find(key) != &g_ent[i]) return 3;
+        uint32_t nw = 0, *w = bundle_spv(&g_ent[i], &nw); if (!w) { printf("%016llx fail\n", (unsigned long long)key); continue; }
+        uint64_t h = 0xcbf29ce484222325ull; const uint8_t *p = (const uint8_t *)w; for (uint64_t k = 0; k < 4ull * nw; k++) h = (h ^ p[k]) * 0x100000001b3ull;
+        printf("%016llx %d %u %016llx\n", (unsigned long long)key, vk_shader_stage(key), nw, (unsigned long long)h); free(w);
+    }
+    return 0;
+}
+'''
+        (cls.d / 'h.c').write_text(harness, encoding='utf-8'); z = REPO / 'nxnative/dm/third_party/zstd'
+        subprocess.run(['cc', '-O1', '-std=gnu11', '-Wall', '-Werror', '-Wno-unused-function', '-I', str(z), '-c', str(cls.d / 'h.c'), '-o', str(cls.d / 'h.o')], check=True)
+        subprocess.run(['cc', '-O1', '-w', '-fvisibility=hidden', '-DZSTDLIB_VISIBLE=', '-DZSTDERRORLIB_VISIBLE=', '-c', str(z / 'zstddeclib.c'), '-o', str(cls.d / 'z.o')], check=True)
+        subprocess.run(['cc', str(cls.d / 'h.o'), str(cls.d / 'z.o'), '-o', str(cls.d / 'h')], check=True)
+
+    @classmethod
+    def tearDownClass(cls): shutil.rmtree(cls.d, ignore_errors=True)
+
+    def run_host(self, p): return subprocess.run([str(self.d / 'h'), str(p)], capture_output=True, text=True, timeout=60)
+
+    def expect(self, entries):
+        def fnv(b):
+            h = 0xcbf29ce484222325
+            for x in b: h = ((h ^ x) * 0x100000001b3) & 0xffffffffffffffff
+            return h
+        return ''.join(f'{k:016x} {st} {len(spv) // 4} {fnv(spv):016x}\n' for k, st, spv, _ in sorted(entries))
+
+    def test_both_versions(self):
+        for level in (0, 3):
+            p = self.d / f'l{level}.dmsv'; dmsv.write(str(p), ENTRIES, level=level, jobs=2); r = self.run_host(p)
+            self.assertEqual(r.returncode, 0, r.stderr); self.assertEqual(r.stdout, self.expect(ENTRIES))
+            self.assertIn(f'version {1 if level == 0 else 2}, 3 shaders ({0 if level == 0 else 2} zstd-compressed)', r.stderr)
+
+    def test_damage(self):   # a frame whose bytes changed fails its checksum: that shader alone is left out, with a [RED] line
+        p = self.d / 'bad.dmsv'; dmsv.write(str(p), ENTRIES, jobs=2)
+        with dmsv.Bundle(str(p)) as b: e = next(x for x in b.entries if x[6])
+        data = bytearray(p.read_bytes()); data[e[2] + e[3] // 2] ^= 0x55; p.write_bytes(bytes(data)); r = self.run_host(p)
+        self.assertEqual(r.returncode, 0, r.stderr); self.assertIn(f'{e[0]:016x} fail', r.stdout); self.assertIn('[RED] ', r.stderr); self.assertEqual(r.stdout.count('fail'), 1)
+
+    def test_refused(self):   # a version this host does not read, a copy cut short: no bundle (nothing drawn) and a [RED] line, never a read past the file
+        good = (self.d / 'g.dmsv'); dmsv.write(str(good), ENTRIES, jobs=2); g = good.read_bytes()
+        for name, data in (('version', g[:4] + struct.pack('<I', 3) + g[8:]), ('short', g[:-10]), ('table', g[:40])):
+            p = self.d / f'{name}.dmsv'; p.write_bytes(data); r = self.run_host(p)
+            self.assertEqual(r.returncode, 2, name); self.assertIn('[RED] ', r.stderr)
+
+
+if __name__ == '__main__':
+    unittest.main()

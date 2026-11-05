@@ -853,7 +853,19 @@ static int handle_event(AInputEvent *e) {
         if (down) g_btn |= bit; else if (AKeyEvent_getAction(e) == AKEY_EVENT_ACTION_UP) g_btn &= ~bit;
         dm_pad_players(1); pad_publish(); return 1;
     }
-    if (atomic_load(&g_tx_on) && ((src & AINPUT_SOURCE_JOYSTICK) == AINPUT_SOURCE_JOYSTICK || (src & AINPUT_SOURCE_GAMEPAD) == AINPUT_SOURCE_GAMEPAD)) return 1;   // sticks: not for the text entry
+    if (atomic_load(&g_tx_on) && ((src & AINPUT_SOURCE_JOYSTICK) == AINPUT_SOURCE_JOYSTICK || (src & AINPUT_SOURCE_GAMEPAD) == AINPUT_SOURCE_GAMEPAD)) {
+        // the d-pad (reported as a hat on Retroid and many Android handhelds) or the left stick moves the text-entry highlight on edge transitions, as the pause menu uses the hat; touch taps the keys (tx_touch)
+        static float thx, thy;
+        float hx = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_HAT_X, 0), hy = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_HAT_Y, 0);
+        float sx = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_X, 0), sy = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_Y, 0);
+        float x = fabsf(sx) > fabsf(hx) ? sx : hx, y = fabsf(sy) > fabsf(hy) ? sy : hy;
+        int dx = 0, dy = 0;
+        if (y < -0.5f && thy >= -0.5f) dy = -1; else if (y > 0.5f && thy <= 0.5f) dy = 1;
+        if (x < -0.5f && thx >= -0.5f) dx = -1; else if (x > 0.5f && thx <= 0.5f) dx = 1;
+        thx = x; thy = y;
+        if (dx || dy) { pthread_mutex_lock(&g_tx_mu); g_tx.sel = ov_kb_move(g_tx.sel, dx, dy); pthread_mutex_unlock(&g_tx_mu); tx_changed(); }
+        return 1;
+    }
     if ((src & AINPUT_SOURCE_JOYSTICK) == AINPUT_SOURCE_JOYSTICK || (src & AINPUT_SOURCE_GAMEPAD) == AINPUT_SOURCE_GAMEPAD) {
         g_pad_used = 1; atomic_store(&g_pad_in, AInputEvent_getDeviceId(e)); dm_haptics_android_device(AInputEvent_getDeviceId(e));
         if (atomic_load(&g_menu)) {   // the hat moves the selection
