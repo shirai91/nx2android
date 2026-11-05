@@ -151,10 +151,11 @@ def cmd_install(a):
 
 def cmd_devices(a):
     from porter import config, toolchain
-    from porter.adb import Adb
+    from porter.adb import Adb, AdbError
     exe = toolchain.find_adb()
     if not exe: print('adb not found', file=sys.stderr); return 1
-    rows = Adb(exe).devices()
+    try: rows = Adb(exe).devices()
+    except AdbError as e: print(e, file=sys.stderr); return 1
     if a.json: _print_json([{'serial': s, 'state': st, 'info': d} for s, st, d in rows]); return 0
     for s, st, d in rows: print(f'{s}\t{st}\t{d}')
     if not rows: print('no device')
