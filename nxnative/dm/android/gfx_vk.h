@@ -94,6 +94,7 @@ struct vkimg {
     uint64_t pkg_hash;              // hash of the guest bytes it was last uploaded from: pages written around it with its own bytes unchanged keep what the GPU wrote (gfx_vk_tex.c vk_tex)
     const uint8_t *pkg_mem; size_t pkg_len; uint64_t pkg_used; int pkg_released;   // its storage, the present it was last drawn at, protection given up (vk_tex_sweep)
     uint64_t used;                  // the present it was last looked up at (vk_tex: evict_overlaps)
+    int looked;                     // looked up inside a submission once (vk_tex: its first use, when its content is decided; a lookup outside one records nothing)
     uint64_t rt_last, rt_frames;     // as an attachment: 1 + the present it was last drawn in, and in how many presents in a row up to it (gfx_vk_exec.c async_pipe)
     uint64_t fdz_frame;             // depth images: 1 + the present at which a fragment shader that replaces depth last wrote it (gfx_vk_exec.c fdz)
     int gpu_w;                      // the GPU wrote it: an attachment, a storage image, a copy or clear destination (gfx_vk_exec.c); lin_copy keeps that until the CPU writes its storage
