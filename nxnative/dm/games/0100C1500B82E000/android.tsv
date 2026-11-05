@@ -1,0 +1,16 @@
+# The World Ends with You -Final Remix- on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Unity 2017.2 IL2CPP on SDK 4.4.1, base game 1.0.0; 458 shaders, all translated. The game is 60 fps on the Switch, and is here.
+# Tested 2026-11-06 on the Legion Y700 (TB322FC, Snapdragon 8 Elite, Adreno 830, Android 16): the title, the tips, a new game's opening movie (H.264 + AAC, sound and
+# picture), the story scenes, Scramble Crossing (walking by touch, the scan with the player pin), the first battle (running from the frogs by dragging Neku).
+# 60 fps throughout: frame work p95 about 18 ms of a 16.7 ms period at the vsync, GPU about 2 ms, 0 dropped frames in each 300-frame window; no red log line; 0 audio underruns.
+# Handheld, played by touch: docked the game wants one Joy-Con as a gyro pointer ("Point the Joy-Con at the center of the screen"), so the pause menu starts in handheld
+# mode with the on-screen gamepad hidden. A drag that starts at the tablet's left edge is Android's back gesture (the pause menu).
+# The opening movie crashed the game 1 run in 2 at its end, until a second end-of-stream packet gave no decoder output (hle_movie.c h_movie_SendIn); 3 of 3 runs after.
+# Not tested yet: a save point, the later battles (psych pins), the staff roll movie
+status	playable
+tested	v0 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
+package	org.nx2a.theworldendswithyoufinalremix
+orientation	landscape
+setting	docked=0
+setting	overlay=0
+setting	rumble=1
