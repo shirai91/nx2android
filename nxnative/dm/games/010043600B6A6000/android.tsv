@@ -3,8 +3,11 @@
 # checked by hand; the memory split is the one the game's own SetHeapSize request needs (see game.tsv).
 # On the Xiaomi Pad 5 (21051182G, Snapdragon 860 / Adreno 640, Android 13) on 2026-11-05, played by hand and driven with adb taps:
 # the "Press A to Begin" title screen, the opening movie (the game's own Bink decoder: audio through the SDK's audout with 0 underruns), the whole
-# character creation (5 steps: skin tone, outfit and its primary/secondary colours, ...) and the opening tutorial in the New Kid's bedroom
-# ("Use L to move around the room"), with the on-screen gamepad.
+# character creation (5 steps: skin tone, outfit and its primary/secondary colours, ...), the opening tutorial in the New Kid's bedroom both of its
+# first lessons ("Use L to move around the room", then "to open doors and containers, activate objects, or talk to people, face them and press A",
+# walked with the on-screen gamepad's left stick), the game's own menu (character sheet, inventory; the New Kid has no name entry) and the host's pause
+# menu (which the gamepad button opens), and a save: the game mounted SPSOT_SAVE, the host committed it atomically ("save commit #1") and porter
+# saves export brought both files off the device (SP-Opt, SP-Sav-A-Checkpoint-1, 709 KB).
 # 30 fps solid (the game's own cap: frame work p50 33.4 ms of the 33.3 ms budget, GPU p50 18.8 ms, 200 draws a frame, replay 6.0 ms, 92 pipelines over
 # 24,600 presents), audio clean, no [RED] line.
 # The device's driver must let the host begin passes: dynamic rendering (Vulkan 1.3) or imageless framebuffers with render pass 2 (Vulkan 1.1 +
