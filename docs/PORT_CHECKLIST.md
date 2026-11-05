@@ -6,7 +6,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 
 "Profile here": `nxnative/dm/games/<title ID>/` has the game's profile from nxnative. "Upstream profile": only seedds/nxnative has one, to read as a reference or starter, not to pull. "60 fps with X" is upstream's note: they run that update at 60 fps (30 on the Switch).
 
-**28 / 96 ported**
+**29 / 97 ported**
 
 - [x] 13 Sentinels: Aegis Rim · `01003FC01670C000`
 - [ ] Ace Attorney Investigations Collection · `010005501E68C000` · profile here
@@ -99,6 +99,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [x] UNDER NIGHT IN-BIRTH Exe:Late[cl-r] · `010038C00EC34000`
 - [x] UNDER NIGHT IN-BIRTH II Sys:Celes · `0100BD401D18A000`
 - [x] Unicorn Overlord · `010069401ADB8000` · boots; saving and a full battle not tested yet
+- [x] Untitled Goose Game · `010082400BCC6000`
 - [x] Viractal: Will You Trust Your Party? · `0100FD501F95A000`
 - [ ] Xenoblade Chronicles 2 · `0100E95004038000` · upstream profile
 - [x] Xenoblade Chronicles 3 · `010074F013262000` · work in progress: some effects and models don't draw yet
