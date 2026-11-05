@@ -52,7 +52,7 @@ def romfs_diff(want, have):   # want, have: {path in the RomFS: size} → (missi
 
 def romfs_sample(rom, n=SAMPLE_FILES, max_size=SAMPLE_MAX):
     """The RomFS files whose content the installer compares by MD5 (romfs_changed): up to n of at most max_size bytes, spread evenly over the sorted paths. Names and
-    sizes alone let a dump of another game version through when the files it changed kept their sizes; a sample of the small files catches that in a few seconds"""
+    sizes alone let a dump of another game version through when the files it changed kept their sizes; a sample of the small files catches that (at most SAMPLE_FILES x SAMPLE_MAX = 1 GB read on each side: seconds on internal storage, longer on an SD card)"""
     small = sorted(r for r, s in rom.items() if s <= max_size)
     return small if len(small) <= n else [small[i * len(small) // n] for i in range(n)]
 
