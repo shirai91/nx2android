@@ -40,6 +40,31 @@ class RemoteSizes(unittest.TestCase):
             self.FakeAdb('5 a\n7 d\n').remote_sizes('/sdcard/x')
 
 
+class SameVolume(unittest.TestCase):   # /sdcard is a symlink: stat must follow it (-L), or it gives the root file system's device number
+    def test_follows_links(self):
+        cmds = []
+        class FakeAdb(Adb):
+            def shell(self, script, **kw): cmds.append(script); return '64\n64\n'
+        self.assertTrue(FakeAdb('adb').same_volume('/sdcard', '/sdcard/Games/x'))
+        self.assertIn('stat -L -c %d', cmds[0])
+
+
+class PushTree(unittest.TestCase):
+    class FakeAdb(Adb):   # small pushes recorded by their device folder and file names
+        def __init__(self): super().__init__('adb'); self.pushed = []
+        def run(self, *a, **kw):
+            if a[0] == 'push': self.pushed += [f'{a[-1]}{Path(p).name}' for p in a[2:-1]]
+            return ''
+        def shell(self, script, **kw): return ''
+
+    def test_exclude(self):   # install --romfs-at: the pack's RomFS folder left out whole, and not counted as on the device
+        with tempfile.TemporaryDirectory() as t:
+            for rel in ('RomFS/Data/a.bin', 'RomFS/b.bin', 'mods/main', 'env.txt'): p = Path(t) / rel; p.parent.mkdir(parents=True, exist_ok=True); p.write_bytes(b'x')
+            adb, said = self.FakeAdb(), []; adb.log = said.append
+            self.assertEqual(adb.push_tree(t, '/sdcard/f', exclude=('RomFS',), skip=('env.txt',), have={}), 1)
+            self.assertEqual(adb.pushed, ['/sdcard/f/mods/main']); self.assertIn('(1 already on the device)', said[0])   # env.txt: skipped, as before
+
+
 class PushTars(unittest.TestCase):
     class FakeAdb(Adb):   # pushes are unpacked into a local folder standing in for the device's
         def __init__(self, dev, rc='rc=0'): super().__init__('adb'); self.dev, self.rc, self.got = Path(dev), rc, []

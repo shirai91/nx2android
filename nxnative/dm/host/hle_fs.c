@@ -120,6 +120,7 @@ static Result mount_ex(const char *name, const char *dir, int ro, int txn) {
             LOG("[RED] fs mount %s: %s cannot be listed (errno=%d; owner uid %u gid %u mode %o, the host runs as uid %u): exact paths are looked up without listing, directory listings fail"
 #ifdef __ANDROID__
                 "; most likely the data pack went into a folder the app did not make -- install again with the porter (it has the app make the folder), or uninstall the app, install it, start it once, then push the data"
+                "; a RomFS outside the app's files folder (porter install --romfs-at) needs All files access, and a folder its owner made unreadable to other apps cannot be read with it either"
 #endif
                 , name, dir, e, (unsigned)st.st_uid, (unsigned)st.st_gid, (unsigned)(st.st_mode & 07777), (unsigned)getuid());
         else LOG("[RED] fs mount %s: %s cannot be listed (errno=%d)", name, dir, e); }
