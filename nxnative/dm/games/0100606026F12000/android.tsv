@@ -1,0 +1,13 @@
+# FINAL FANTASY RESONANCE on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Unreal Engine 5.6.1 on SDK 20.5.17, update 1.0.1; 73,512 shaders, all translated. Its shader libraries are in the IoStore container, Oodle-compressed shader groups that the port
+# decodes with the game's own Oodle on the device (porter device_ue: one round, 5,919 groups, 74,244 shaders in 44 s), so the port needs the device connected.
+# Tested 2026-11-06 on the Legion Y700 (TB322FC, Snapdragon 8 Elite, Adreno 830, Android 16), docked (1920x1080): the brightness setting, the title, a new game (difficulty), the
+# opening cinematic, the first road (walking, tutorials), the cutscene, the first battle's command menu; an autosave, and Continue from it after a restart.
+# 60 fps (the profile's fps_target): frame work p50 about 16.5 ms, GPU 10-13 ms in the field and the cinematic, 0-6 dropped frames per 300; 0 audio underruns; one red line
+# (a buffer texture not in a pool, once at the title).
+# Open: the fires along the first road and in the first battle's background (the game's own tutorial pictures show them) are not drawn; no draw is skipped (no program, target
+# or pipeline missing), DM_VK_NOCULL=1 and android_dynamic_slots on (the particle vertex factories' dynamic texture slots) did not bring them back.
+status	experimental
+tested	v65536 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
+package	org.nx2a.finalfantasyresonance
+orientation	landscape
