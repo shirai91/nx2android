@@ -6,6 +6,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from porter.adb import Adb, AdbError   # noqa: E402
 
 
+class MissingAdb(unittest.TestCase):   # issue #109: a port without platform-tools ran a program named "None" and ended in FileNotFoundError
+    def test_no_exe(self):
+        with self.assertRaisesRegex(AdbError, 'adb not found'): Adb(None)
+
+    def test_exe_gone(self):   # a configured adb that is no longer there: an AdbError at once, no retries
+        with tempfile.TemporaryDirectory() as t:
+            adb = Adb(Path(t) / 'adb.exe', log=lambda s: self.fail(f'retried: {s}'))
+            for f in (adb.devices, adb.pick, lambda: adb.shell('true')):
+                with self.assertRaisesRegex(AdbError, 'cannot run adb'): f()
+
+
 class RemoteSizes(unittest.TestCase):
     class FakeAdb(Adb):
         def __init__(self, out): super().__init__('adb'); self.out, self.cmds = out, []

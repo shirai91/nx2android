@@ -43,7 +43,7 @@ For finding what is wrong once it runs (validation layer, LRZ flicker, frame sho
 
 ## Helpers in devtools/
 
-`device.py` (ADB / PKG / FILES from device.json or `NX2A_DEVICE` / `NX2A_PACKAGE`), `push_chunked.py` (resumable big pushes), `rec_flicker.py`, `burst.py`, `soak.sh <minutes>` (moves without pressing A, so a save's story does not advance), `trace_pass.sh <pass>`, `dmsv_extract.py` / `spv_support_use.py` (inspect the shader bundle), `nso_image.py`, `ppm2png.py`.
+`device.py` (ADB / PKG / FILES from device.json or `NX2A_DEVICE` / `NX2A_PACKAGE`), `push_chunked.py` (resumable big pushes), `rec_flicker.py`, `burst.py`, `soak.sh <minutes>` (moves without pressing A, so a save's story does not advance), `trace_pass.sh <pass>`, `dmsv_extract.py` / `spv_support_use.py` (inspect the shader bundle, either version; `nxnative/dm/android/tools/dmsv.py info` shows its version and sizes, `dmsv.py pack <in> <out> [--level N]` writes it again compressed or, with `--level 0`, uncompressed), `nso_image.py`, `ppm2png.py`.
 
 ## Finish
 

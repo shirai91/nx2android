@@ -82,6 +82,9 @@ class PortTab(QWidget):
         self.driver.setToolTip('A Vulkan driver library (.so) to pack in the APK and use instead of the device\'s own,\n'
                                'such as Mesa\'s Turnip for Adreno GPUs. Empty: the device\'s driver.\n'
                                'If the library does not load on the device, the app uses the device\'s driver.')
+        self.shared_font = QLineEdit(); self.shared_font.setPlaceholderText('the device\'s Roboto')   # porter port --shared-font
+        self.shared_font.setToolTip('A TrueType font (.ttf) to pack as the system font the game asks for.\n'
+                                    'One with CJK characters shows the Chinese and Korean text of a game that draws it with the system font.')
         self.mt_replay = QCheckBox('Multithread replay: record the game\'s Vulkan commands on a thread of their own (faster in busy scenes; port again to turn it off)')   # porter port --mt-replay
         self.debug = QCheckBox('Development build (debuggable, debug information, DM_CTL key presses)')
         self.experimental = QCheckBox('Experimental: try a game that is not ported to Android yet (it may not start)')
@@ -99,6 +102,7 @@ class PortTab(QWidget):
         f.addRow('Output folder', path_row(self.out, self.pick_out)); f.addRow('Device', dev); f.addRow('', self.replace_signer)
         f.addRow('Package', self.package); f.addRow('versionCode offset', self.vercode); f.addRow('Extra address space', headroom)
         f.addRow('Vulkan driver', path_row(self.driver, self.pick_driver))
+        f.addRow('System font', path_row(self.shared_font, self.pick_shared_font))
         f.addRow('', self.fps60); f.addRow('', self.touch); f.addRow('', self.mt_replay); f.addRow('', self.debug); f.addRow('', self.experimental)
         v.addWidget(o)
 
@@ -133,6 +137,10 @@ class PortTab(QWidget):
     def pick_driver(self):
         p = QFileDialog.getOpenFileName(self, 'Vulkan driver', self.driver.text() or str(Path.home()), 'Vulkan driver (*.so)')[0]
         if p: self.driver.setText(p)
+
+    def pick_shared_font(self):
+        p = QFileDialog.getOpenFileName(self, 'System font', self.shared_font.text() or str(Path.home()), 'TrueType font (*.ttf)')[0]
+        if p: self.shared_font.setText(p)
 
     def pick_out(self):
         d = QFileDialog.getExistingDirectory(self, 'Output folder', self.out.text() or self.folder.text() or str(Path.home()))
@@ -200,6 +208,7 @@ class PortTab(QWidget):
         if self.touch.isChecked(): args.append('--touch')
         if self.mt_replay.isChecked(): args.append('--mt-replay')
         if self.driver.text().strip(): args += ['--vulkan-driver', self.driver.text().strip()]
+        if self.shared_font.text().strip(): args += ['--shared-font', self.shared_font.text().strip()]
         if self.debug.isChecked(): args.append('--debug')
         if self.experimental.isChecked() and not self.info.get('supported'): args.append('--experimental')
         self.run(args)

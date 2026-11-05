@@ -226,6 +226,17 @@ class Misc(unittest.TestCase):
         self.assertTrue(cli._parser().parse_args(['port', 'x', '--mt-replay']).mt_replay); self.assertFalse(cli._parser().parse_args(['port', 'x']).mt_replay)
         self.assertFalse(pipeline.Options(Path(".")).mt_replay)
 
+    def test_shared_font_option(self):   # --shared-font FILE: parsed, and a file that is not a .ttf fails before any stage
+        from porter import cli
+        self.assertEqual(cli._parser().parse_args(['port', 'x', '--shared-font', 'cjk.ttf']).shared_font, 'cjk.ttf')
+        self.assertIsNone(cli._parser().parse_args(['port', 'x']).shared_font)
+        t = Path(tempfile.mkdtemp(prefix='nx2a_test_game_'))
+        try:
+            (t / 'cjk.ttc').write_bytes(b'x')
+            for bad in ('cjk.ttc', 'missing.ttf'):
+                with self.assertRaisesRegex(pipeline.BuildError, 'shared-font'): pipeline.Port(pipeline.Options(t, shared_font=t / bad)).run()
+        finally: shutil.rmtree(t, ignore_errors=True)
+
     def test_vulkan_driver_option(self):   # --vulkan-driver FILE: parsed, and a file that is not a .so library fails before any stage
         from porter import cli
         self.assertEqual(cli._parser().parse_args(['port', 'x', '--vulkan-driver', 'libvulkan_freedreno.so']).vulkan_driver, 'libvulkan_freedreno.so')
