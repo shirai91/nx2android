@@ -10,10 +10,13 @@ _p.add_argument('--label', default='NX2A Probe'); _p.add_argument('--lib', defau
 _p.add_argument('--extra-so', action='append', default=[], help='another arm64 library packed beside the main one (a Vulkan validation layer)')
 _p.add_argument('--icon', help='launcher icon (a PNG, used at its own size: nodpi)')
 _p.add_argument('--asset', action='append', default=[], metavar='NAME=FILE', help='a file the app reads with AAssetManager as NAME (assets/NAME in the APK): the gamepad theme')
+_p.add_argument('--dex', help='optional classes.dex for a custom NativeActivity')
+_p.add_argument('--activity', default='android.app.NativeActivity', help='NativeActivity class name')
 _p.add_argument('--release', action='store_true', help='not debuggable')
 _p.add_argument('--version-code', type=int, default=1, help='versionCode: a later port of the game must have a higher one to install over it')
 _p.add_argument('--version-name', default='1.0', help='versionName: the version the player sees (the game\'s display version)'); ARGS = _p.parse_args()
 PKG, LIB, LABEL = ARGS.package, ARGS.lib, ARGS.label
+if ARGS.activity != 'android.app.NativeActivity' and not ARGS.dex: _p.error('--activity requires --dex')
 MIN_SDK, TARGET_SDK = 29, 36
 ANDROID_NS = 'http://schemas.android.com/apk/res/android'
 # configChanges: what the game takes without its activity made again. Android relaunches the activity for any other change while it runs, and that ends the game
@@ -27,8 +30,8 @@ CONFIG_CHANGES = (0x0001 | 0x0002 | 0x0004 | 0x0008 | 0x0010 | 0x0020 | 0x0040 |
 ATTR_IDS = {  # android: attribute resource IDs (frameworks/base/core/res/res/values/public.xml)
     'label': 0x01010001, 'icon': 0x01010002, 'name': 0x01010003, 'hasCode': 0x0101000c, 'debuggable': 0x0101000f, 'exported': 0x01010010,
     'configChanges': 0x0101001f, 'screenOrientation': 0x0101001e, 'value': 0x01010024, 'minSdkVersion': 0x0101020c, 'versionCode': 0x0101021b,
-    'versionName': 0x0101021c, 'targetSdkVersion': 0x01010270, 'isGame': 0x010103f4, 'extractNativeLibs': 0x010104ea, 'appCategory': 0x01010545,
-    'enableOnBackInvokedCallback': 0x0101066c}
+    'versionName': 0x0101021c, 'targetSdkVersion': 0x01010270, 'maxSdkVersion': 0x01010271, 'isGame': 0x010103f4, 'extractNativeLibs': 0x010104ea, 'appCategory': 0x01010545,
+    'requestLegacyExternalStorage': 0x01010603, 'enableOnBackInvokedCallback': 0x0101066c}   # (maxSdkVersion and requestLegacyExternalStorage read from android-36's android.jar, R$attr)
 T_REF, T_STRING, T_INT_DEC, T_INT_HEX, T_BOOL = 0x01, 0x03, 0x10, 0x11, 0x12
 ICON_ID = 0x7f010000   # drawable/icon in resources.arsc (res_table)
 
@@ -36,12 +39,19 @@ ICON_ID = 0x7f010000   # drawable/icon in resources.arsc (res_table)
 MANIFEST = ('manifest', [(False, 'package', PKG), (True, 'versionCode', ARGS.version_code), (True, 'versionName', ARGS.version_name)], [
     ('uses-sdk', [(True, 'minSdkVersion', MIN_SDK), (True, 'targetSdkVersion', TARGET_SDK)], []),
     ('uses-permission', [(True, 'name', 'android.permission.VIBRATE')], []),   # rumble and the touch gamepad's taps (a normal permission: granted at install)
-    ('application', [(True, 'label', LABEL)] + ([(True, 'icon', ('ref', ICON_ID))] if ARGS.icon else []) + [(True, 'hasCode', False), (True, 'debuggable', not ARGS.release), (True, 'isGame', True), (True, 'extractNativeLibs', True),
+    # A RomFS read from a folder outside the app's files folder (porter install --romfs-at: a game dump another app also reads, a folder on the SD card; env.txt's DM_ROMFS):
+    # All files access from Android 11 (an appop, off until porter's `appops set` or the player's switch in Settings turns it on), and on Android 10, which has no
+    # All files access, READ_EXTERNAL_STORAGE in the legacy storage view (requestLegacyExternalStorage below; `pm grant`). Neither is asked for at run time, so a port
+    # that reads its RomFS from its files folder runs as before; requestLegacyExternalStorage is ignored from Android 11 with this target SDK
+    ('uses-permission', [(True, 'name', 'android.permission.MANAGE_EXTERNAL_STORAGE')], []),
+    ('uses-permission', [(True, 'name', 'android.permission.READ_EXTERNAL_STORAGE'), (True, 'maxSdkVersion', 29)], []),
+    ('application', [(True, 'label', LABEL)] + ([(True, 'icon', ('ref', ICON_ID))] if ARGS.icon else []) + [(True, 'hasCode', bool(ARGS.dex)), (True, 'debuggable', not ARGS.release), (True, 'isGame', True), (True, 'extractNativeLibs', True),
+        (True, 'requestLegacyExternalStorage', True),
         (True, 'appCategory', 0),   # a game (appCategory game = 0, and the older isGame): Android's game mode and game dashboard, and the device maker's game tools, apply to it
         # no predictive back: from target SDK 36 the system takes the back gesture itself and finishes the activity, which ends the game (front_android.c on_destroy), without
         # dispatching KEYCODE_BACK; opted out, the gesture comes as the Back key, which opens the front end's menu
         (True, 'enableOnBackInvokedCallback', False)], [
-        ('activity', [(True, 'name', 'android.app.NativeActivity'), (True, 'exported', True), (True, 'configChanges', ('hex', CONFIG_CHANGES))] + ([(True, 'screenOrientation', 6)] if ARGS.landscape else []), [
+        ('activity', [(True, 'name', ARGS.activity), (True, 'exported', True), (True, 'configChanges', ('hex', CONFIG_CHANGES))] + ([(True, 'screenOrientation', 6)] if ARGS.landscape else []), [
             ('meta-data', [(True, 'name', 'android.app.lib_name'), (True, 'value', LIB)], []),
             ('intent-filter', [], [
                 ('action', [(True, 'name', 'android.intent.action.MAIN')], []),
@@ -204,6 +214,7 @@ def main():
         json.dump({**{a: str(v) for a, v in k.items()}, 'cert': crt.hex()}, open(keyf, 'w'))
         print(f'new signing key {keyf} ({time.time() - t:.1f} s)')
     entries = [('AndroidManifest.xml', axml(MANIFEST), 4), (f'lib/arm64-v8a/lib{LIB}.so', open(so, 'rb').read(), 16384)]
+    if ARGS.dex: entries.append(('classes.dex', open(ARGS.dex, 'rb').read(), 4))
     entries += [(f'lib/arm64-v8a/{os.path.basename(x)}', open(x, 'rb').read(), 16384) for x in ARGS.extra_so]
     entries += [(f'assets/{n}', open(f, 'rb').read(), 4) for n, _, f in (x.partition('=') for x in ARGS.asset)]   # stored, as every entry: AAsset reads them in place
     if ARGS.icon: entries += [('resources.arsc', res_table('res/drawable-nodpi-v4/icon.png'), 4), ('res/drawable-nodpi-v4/icon.png', open(ARGS.icon, 'rb').read(), 4)]

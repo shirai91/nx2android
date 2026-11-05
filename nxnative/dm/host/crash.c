@@ -109,6 +109,20 @@ void crash_off(const char *tag, uint64_t a) {   // Also used by diag.c
     char b[192]; crash_addr_str(b, sizeof b, a);
     fprintf(stderr, " %s%s%s", tag, *tag ? "=" : "", b);
 }
+static int stack_word(uint64_t a, uint64_t *w) { vm_size_t got = 0; return vm_read_overwrite(mach_task_self(), (vm_address_t)a, 8, (vm_address_t)w, &got) == KERN_SUCCESS && got == 8; }
+// 512 words up from a (32 below it): every word that resolves to a module or a library, nearest first; stops at the first unreadable word
+static void stack_scan(const char *tag, uint64_t a) {
+    int n = 0; uint64_t w;
+    fprintf(stderr, "[dm] %s=%#llx:", tag, (unsigned long long)a);
+    for (int i = -32; i < 512 && n < 40 && a && !(a & 7); i++) {
+        if (!stack_word(a + 8 * (int64_t)i, &w)) { if (i >= 0) { fprintf(stderr, " (unreadable from [%+d])", i * 8); break; } continue; }
+        uint64_t v = crash_code_addr(w); Dl_info di; char b[192];
+        if (v < 0x100000000ull || (v & 3)) continue;
+        if (!module_of((void *)v) && !(dladdr((void *)v, &di) && di.dli_fname)) continue;
+        crash_addr_str(b, sizeof b, v); fprintf(stderr, " [%+d]%s", i * 8, b); n++;
+    }
+    fputc('\n', stderr);
+}
 // Frame pointer backtrace: x29 chain [fp]=previous frame's fp, [fp+8]=return address; only 8-byte aligned, monotonically increasing frames are walked.
 // Each frame is read with vm_read_overwrite, which fails instead of faulting: code built without frame pointers keeps data in x29 (STEINS;GATE RE:BOOT's main+0x38921c: x29 = 0x430),
 // and a probe's backtrace there used to crash the host
@@ -202,22 +216,22 @@ static void on_crash(int sig, siginfo_t *si, void *uc_) {
         fputc('\n', stderr);
     }
     dm_backtrace(DM_UC_SS(uc)->__fp);
+    // Stack words are read with vm_read_overwrite too: a host function the guest called runs on a stack of its own, and Super Mario Bros. Wonder's crash in
+    // nvnBufferInitialize (issue #48) had sp 16 bytes below the top of it; the scan read past the top, faulted inside this handler, and its line came out empty
     // Stack scan: when the frame chain is broken (a return address was overwritten, pc = lr lands on garbage) the backtrace prints nothing; scan 512 words up from sp and list everything that resolves to a module / host symbol (nearest callers first)
-    {   uint64_t sp = DM_UC_SS(uc)->__sp;   // The frame just popped (when a return address was overwritten, the bad value and the leftovers of whatever overwrote it sit below sp)
+    {   uint64_t sp = DM_UC_SS(uc)->__sp, w;   // The frame just popped (when a return address was overwritten, the bad value and the leftovers of whatever overwrote it sit below sp)
         fprintf(stderr, "[dm] fp=%#llx  0x100 bytes below sp:", (unsigned long long)DM_UC_SS(uc)->__fp);
-        for (int i = -32; i < 0 && sp && !(sp & 7); i++) fprintf(stderr, "%s%llx", (i + 32) % 4 ? " " : "\n[dm]   ", (unsigned long long)((uint64_t *)sp)[i]);
+        for (int i = -32; i < 0 && sp && !(sp & 7); i++) {
+            fputs((i + 32) % 4 ? " " : "\n[dm]   ", stderr);
+            if (stack_word(sp + 8 * i, &w)) fprintf(stderr, "%llx", (unsigned long long)w); else fputc('?', stderr);
+        }
         fputc('\n', stderr); }
     // Other libraries' addresses too (library+offset): the Adreno driver keeps no frame pointer, so a crash inside it (issue #64) has no backtrace, and the return addresses
     // into the driver and libvulkan above sp are the only callers left. Data pointers into a library's segments show the same way; only text addresses are callers
-    {   uint64_t sp = DM_UC_SS(uc)->__sp; int n = 0;
-        fprintf(stderr, "[dm] stack scan sp=%#llx:", (unsigned long long)sp);
-        for (int i = -32; i < 512 && n < 40 && sp && !(sp & 7); i++) {
-            uint64_t v = crash_code_addr(((uint64_t *)sp)[i]); Dl_info di; char b[192];
-            if (v < 0x100000000ull || (v & 3)) continue;
-            if (!module_of((void *)v) && !(dladdr((void *)v, &di) && di.dli_fname)) continue;
-            crash_addr_str(b, sizeof b, v); fprintf(stderr, " [%+d]%s", i * 8, b); n++;
-        }
-        fputc('\n', stderr); }
+    // When x29 is far from sp (a host function on its own stack, called from the guest), the guest's stack is scanned from x29 as well: its callers are there
+    {   uint64_t sp = DM_UC_SS(uc)->__sp, fp = DM_UC_SS(uc)->__fp;
+        stack_scan("stack scan sp", sp);
+        if (fp > sp ? fp - sp > 0x10000 : sp - fp > 0x10000) stack_scan("stack scan fp", fp); }
     if (g_dump_hook) g_dump_hook();
     // DM_CRASH_TOMBSTONE=1: after this dump, hand the signal to the handler that was there before ours (Android's debuggerd), which writes a tombstone with the
     // system's unwinder (it reads the libraries' unwind tables, so it walks through a driver that keeps no frame pointer). A fault returns and runs the instruction
@@ -241,6 +255,16 @@ void crash_thread_init(void) {
     if (pthread_getspecific(g_altstack_key)) return;                 // Repeated calls on the same thread do not allocate again
     stack_t ss = {.ss_sp = malloc(65536), .ss_size = 65536}; sigaltstack(&ss, 0);
     pthread_setspecific(g_altstack_key, ss.ss_sp);
+}
+// Whether the crash handlers are still ours after a library loaded (Android: the Vulkan driver, gfx_vk_core.c). Issue #64's Adreno 750 died in its shader compiler
+// with a tombstone and no CRASH lines in log.txt; a handler the driver installs over ours would do that. Only logged, not undone: the library may rely on its own
+static const char *const g_sig_names[] = {[SIGSEGV] = "SIGSEGV", [SIGBUS] = "SIGBUS", [SIGILL] = "SIGILL", [SIGTRAP] = "SIGTRAP", [SIGABRT] = "SIGABRT"};
+void crash_handlers_check(const char *when) {
+    const int sigs[] = {SIGSEGV, SIGBUS, SIGILL, SIGTRAP, SIGABRT};
+    for (int i = 0; i < 5; i++) { struct sigaction o; if (sigaction(sigs[i], NULL, &o)) continue;
+        if (o.sa_flags & SA_SIGINFO && o.sa_sigaction == on_crash) continue;
+        Dl_info di; void *h = o.sa_flags & SA_SIGINFO ? (void *)o.sa_sigaction : (void *)o.sa_handler;
+        LOG("[RED] crash: the %s handler is not ours %s: %p (%s)", g_sig_names[sigs[i]], when, h, h && dladdr(h, &di) && di.dli_fname ? di.dli_fname : "?"); }
 }
 void crash_install(void) {
     crash_thread_init();

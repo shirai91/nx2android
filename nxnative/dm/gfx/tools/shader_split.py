@@ -979,6 +979,19 @@ def xbc1(d, at=0):
     if out is None or len(out) != usz: raise ValueError(f'xbc1 compression {t}, {len(out or b"")} of {usz} bytes')
     return out
 
+CMPZ = b'cmp\0zlib'
+def cmp_zlib(d, off):
+    """A Firehawk effect resource's zlib stream: 'cmp\0zlib', u32 stored length, u32 length, the stream (as upstream nxnative's monolith_cmp_data). → its bytes, or None for bytes that only look like one"""
+    import zlib
+    if off + 16 > len(d): return None
+    size, raw = struct.unpack_from('<2I', d, off + 8)
+    if not size or size > len(d) - off - 16: return None
+    z = zlib.decompressobj()
+    try: data = z.decompress(d[off + 16:off + 16 + size]) + z.flush()
+    except zlib.error: return None
+    if not z.eof or len(data) != raw: red(f'cmp zlib @{off:#x}: {len(data)} bytes, not the {raw} its header gives')
+    return data
+
 def spch_shaders(d, b, label):
     """A Monolith shader archive ('HCPS', version 1010 in Xenoblade Chronicles 3; xc3_lib's Spch): u32 offset / count pairs from +8 of the SLCT offsets (8 bytes each, offset into the SLCT section
     first), an unknown table, the SLCT section, the code section (xV4, the code areas) and the control sections (0x880 each), all relative to the HCPS. An SLCT: 'SLCT', u32, u32 count / offset of
@@ -1053,6 +1066,16 @@ def ard_shaders(path, rel, ents, out):
             if HCPS in d or XBC1 in d: mono_shaders(d, f'/{rel}{name}', out)
             # GLSLC outputs: the Firehawk effect archives (.wipac, 'FirehawkAssetArchive') keep their effects' shaders as whole compiler outputs beside a few HCPS
             if b'\x91\x68\x86\x19' in d: out.extend(glslc_shaders(d, f'/{rel}{name}', need=False))
+            # ... and more of them in zlib streams of their own inside the file ('cmp\0zlib', upstream nxnative's monolith_cmp_data): 4,412 effect shaders of Xenoblade Chronicles 3
+            # (.wipac, .wiefxa), among them the particles' update (vertex 09bd50b78ed863f0, geometry 293ecebc0136519b). Without them the husks' red particles, the send-off's
+            # white ones, the glow of far items and many cutscene effects were missing, and the app captured a few of them at run time
+            if CMPZ in d:
+                for m in re.finditer(CMPZ, d):
+                    z = cmp_zlib(d, m.start())
+                    if z is None: continue
+                    lab = f'/{rel}{name}#cmp-zlib@{m.start():#x}'
+                    if HCPS in z or XBC1 in z: mono_shaders(z, lab, out)
+                    if b'\x91\x68\x86\x19' in z: out.extend(glslc_shaders(z, lab, need=False))
 
 UE_LEGACY = 'UE legacy pak'
 def ue_legacy_jobs(files, parts=64):

@@ -294,6 +294,7 @@ void vk_init(void) {
         en.shaderStorageImageExtendedFormats ? "yes" : "no", en.shaderStorageImageReadWithoutFormat ? "yes" : "no", en.shaderStorageImageWriteWithoutFormat ? "yes" : "no");
     slots_init();
     completion_start();
+    { void crash_handlers_check(const char *when); crash_handlers_check("after the Vulkan device was made"); }   // (again at present 600, gfx_vk_present.c: the shader compiler loads with the first pipelines)
 }
 void vk_pipeline_cache_save(void) {
     static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER; static size_t last;

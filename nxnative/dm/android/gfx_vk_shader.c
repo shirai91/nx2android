@@ -1,9 +1,11 @@
 // Android port, Vulkan backend: the game's shaders (see gfx_vk.h).
-// The bundle (dm/android/tools/shader_vk.py) is mapped read-only: entries sorted by key, each the SPIR-V of one Switch shader and its binary reflection.
+// The bundle (written by dm/android/tools/shader_vk.py; its format in dm/android/tools/dmsv.py) is mapped read-only: entries sorted by key, each the SPIR-V of one Switch
+// shader and its binary reflection. Version 2 stores each SPIR-V module as one zstd frame (dm/third_party/zstd), decompressed when the shader is first made (bundle_spv).
 // The translator numbers every stage's bindings from 0 in set 0; at module creation each stage's bindings move to a set of its own (vertex 0, fragment 1,
 // geometry 2, tessellation 3 / 4; compute 0) by rewriting the DescriptorSet decorations, so a program's stages never collide.
 #include "gfx_vk.h"
 #include "nvn_hmap.h"
+#include "zstd.h"
 #include <CommonCrypto/CommonDigest.h>
 #include <fcntl.h>
 #include <string.h>
@@ -11,15 +13,24 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-typedef struct __attribute__((packed)) { uint64_t key; uint32_t stage, spv_off, spv_len, refl_off, refl_len, pad; } bent;
+// spv_size: 0 = the SPIR-V is stored as it is (spv_len bytes; every version 1 entry), else a zstd frame of spv_len bytes that decompresses to spv_size (version 2)
+typedef struct __attribute__((packed)) { uint64_t key; uint32_t stage, spv_off, spv_len, refl_off, refl_len, spv_size; } bent;
 static const uint8_t *g_bundle; static uint32_t g_nent; static const bent *g_ent;
+// Every entry is checked against the file's size once here, so a lookup never reads past the mapping (a copy cut short, say a push stopped outside porter, would fault there)
 void vk_shaders_open(const char *path) {
     int fd = open(path, O_RDONLY | O_CLOEXEC); struct stat st;
     if (fd < 0 || fstat(fd, &st)) { VKLOG("[RED] no shader bundle at %s: nothing will be drawn", path); if (fd >= 0) close(fd); return; }
-    g_bundle = mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_SHARED, fd, 0); close(fd);
-    if (g_bundle == MAP_FAILED || memcmp(g_bundle, "DMSV", 4)) { VKLOG("[RED] %s is not a shader bundle", path); g_bundle = NULL; return; }
-    memcpy(&g_nent, g_bundle + 8, 4); g_ent = (const bent *)(g_bundle + 12);
-    VKLOG("shader bundle %s: %u shaders, %.1f MB", path, g_nent, st.st_size / 1048576.0);
+    const uint8_t *b = st.st_size >= 12 ? mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_SHARED, fd, 0) : MAP_FAILED; close(fd);
+    if (b == MAP_FAILED || memcmp(b, "DMSV", 4)) { VKLOG("[RED] %s is not a shader bundle", path); if (b != MAP_FAILED) munmap((void *)b, (size_t)st.st_size); return; }
+    uint32_t ver, n, nz = 0, bad = 0; memcpy(&ver, b + 4, 4); memcpy(&n, b + 8, 4); const bent *t = (const bent *)(b + 12); uint64_t sz = (uint64_t)st.st_size, raw = 0, stored = 0;
+    if (ver < 1 || ver > 2) { VKLOG("[RED] %s: shader bundle version %u, this host reads 1 and 2: nothing will be drawn", path, ver); munmap((void *)b, (size_t)sz); return; }
+    if (12 + 32ull * n > sz) bad = n;
+    else for (uint32_t i = 0; i < n; i++) { const bent *e = &t[i];
+        bad += (uint64_t)e->spv_off + e->spv_len > sz || (uint64_t)e->refl_off + e->refl_len > sz || e->refl_len < 20;
+        raw += e->spv_size ? e->spv_size : e->spv_len; stored += e->spv_len; nz += e->spv_size != 0; }
+    if (bad) { VKLOG("[RED] %s: %u of its %u shaders lie past the end of the file (%llu bytes), a partial copy: nothing will be drawn", path, bad, n, (unsigned long long)sz); munmap((void *)b, (size_t)sz); return; }
+    g_bundle = b; g_nent = n; g_ent = t;
+    VKLOG("shader bundle %s: version %u, %u shaders (%u zstd-compressed), %.1f MB; SPIR-V %.1f MB stored, %.1f MB decompressed", path, ver, n, nz, sz / 1048576.0, stored / 1048576.0, raw / 1048576.0);
 }
 static void bundle_open_once(void) {
     const char *p = getenv("DM_VK_SHADERS"); char buf[1024];
@@ -41,6 +52,32 @@ static const bent *find(uint64_t key) {
     return NULL;
 }
 int vk_shader_stage(uint64_t key) { bundle_auto(); const bent *e = g_bundle ? find(key) : NULL; return e ? (int)e->stage : -1; }   // the NVN stage the bundle has this shader as
+// A shader's SPIR-V as the host's own copy (patched at module creation, then kept for the variants: vkshader_t spv), copied out of the mapping or decompressed from its zstd
+// frame. Called outside g_sh_mu: the replay thread looks its shaders up under that lock while the prewarm threads make theirs. Decompression contexts (94 KB each) are kept
+// for the next shader, one per thread decompressing at once. NULL, logged, when the module is not SPIR-V of its entry's length
+static ZSTD_DCtx *g_dctx[8]; static int g_ndctx; static pthread_mutex_t g_dctx_mu = PTHREAD_MUTEX_INITIALIZER;
+static uint64_t g_unz_n, g_unz_bytes, g_unz_ns;   // modules decompressed, their bytes, the time it took (the log line at 64, 128, 256 ...)
+static uint32_t *bundle_spv(const bent *e, uint32_t *nw) {
+    uint32_t n = e->spv_size ? e->spv_size : e->spv_len, *w = n >= 20 && !(n & 3) ? malloc(n) : NULL; size_t r = n; char why[96] = "";
+    if (w && !e->spv_size) memcpy(w, g_bundle + e->spv_off, n);
+    else if (w) {
+        struct timespec a, b; clock_gettime(CLOCK_MONOTONIC, &a);
+        ZSTD_DCtx *dc = NULL; pthread_mutex_lock(&g_dctx_mu); if (g_ndctx) dc = g_dctx[--g_ndctx]; pthread_mutex_unlock(&g_dctx_mu);
+        if (!dc) dc = ZSTD_createDCtx();
+        r = dc ? ZSTD_decompressDCtx(dc, w, n, g_bundle + e->spv_off, e->spv_len) : 0;   // checks the frame's checksum too
+        pthread_mutex_lock(&g_dctx_mu); if (dc && g_ndctx < 8) { g_dctx[g_ndctx++] = dc; dc = NULL; } pthread_mutex_unlock(&g_dctx_mu); ZSTD_freeDCtx(dc);
+        clock_gettime(CLOCK_MONOTONIC, &b);
+        uint64_t k = __atomic_add_fetch(&g_unz_n, 1, __ATOMIC_RELAXED), by = __atomic_add_fetch(&g_unz_bytes, n, __ATOMIC_RELAXED),
+                 ns = __atomic_add_fetch(&g_unz_ns, (uint64_t)((b.tv_sec - a.tv_sec) * 1000000000ll + (b.tv_nsec - a.tv_nsec)), __ATOMIC_RELAXED);
+        if (k >= 64 && !(k & (k - 1))) VKLOG("shaders: %llu decompressed so far, %.1f MB of SPIR-V in %.1f ms", (unsigned long long)k, by / 1048576.0, ns / 1e6);
+    }
+    if (!w) snprintf(why, sizeof why, "%u bytes of SPIR-V in its entry, not a module", n);
+    else if (ZSTD_isError(r)) snprintf(why, sizeof why, "its SPIR-V does not decompress (zstd error %d, zstd_errors.h)", (int)ZSTD_getErrorCode(r));
+    else if (r != n) snprintf(why, sizeof why, "its SPIR-V decompresses to %zu bytes, its entry says %u", r, n);
+    else if (w[0] != 0x07230203) snprintf(why, sizeof why, "not SPIR-V (first word %#x)", w[0]);
+    if (*why) { VKLOG("[RED] shader %016llx: %s: left out as if missing", (unsigned long long)e->key, why); free(w); return NULL; }
+    *nw = n / 4; return w;
+}
 
 // Run-time capture: a shader a draw needs that the bundle does not have is saved as DM_ROOT/captured_shaders/<key>.bin ("DMSC", u32 control length, u32 code length, the control
 // section as its key hashed it, the code area), and the porter translates the folder into the bundle at the next port (porter/pipeline.py, shader_vk.py --capture).
@@ -200,7 +237,28 @@ static VkDescriptorSetLayout shader_layout(const VkDescriptorSetLayoutBinding *b
     }
     return layout;
 }
-vkshader_t *vk_shader(uint64_t key, int stage) {
+static vkshader_t *vk_shader_q(uint64_t key, int stage, int quiet);
+vkshader_t *vk_shader(uint64_t key, int stage) { return vk_shader_q(key, stage, 0); }
+// A geometry shader's input primitive is fixed when it is translated, and Maxwell's shader header doesn't give it: shader_vk.py translates each geometry shader for
+// triangles under its own key and for the other four kinds under derived keys. Read as triangles, the points Xenoblade Chronicles 3's particle updates draw were taken
+// three at a time (Vulkan leaves a mismatch undefined), and the particles' records came out wrong: no husk particles, send-off particles or item orbs
+vkshader_t *vk_shader_gs_topo(vkshader_t *gs, VkPrimitiveTopology topo) {
+    int t;
+    switch (topo) {
+    case VK_PRIMITIVE_TOPOLOGY_POINT_LIST: t = 0; break;
+    case VK_PRIMITIVE_TOPOLOGY_LINE_LIST: case VK_PRIMITIVE_TOPOLOGY_LINE_STRIP: t = 1; break;
+    case VK_PRIMITIVE_TOPOLOGY_LINE_LIST_WITH_ADJACENCY: case VK_PRIMITIVE_TOPOLOGY_LINE_STRIP_WITH_ADJACENCY: t = 2; break;
+    case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST_WITH_ADJACENCY: case VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP_WITH_ADJACENCY: t = 4; break;
+    default: return gs;   // triangles (lists, strips, fans): the shader's own translation
+    }
+    if (!gs) return gs;
+    vkshader_t *v = vk_shader_q(gs->key ^ ((uint64_t)(t + 1) * 0x9E3779B97F4A7C15ull), 2, 1);
+    { static int n; if (n < 8) { n++; VKLOG("geometry shader %016llx drawn with topology %d: %s", (unsigned long long)gs->key, (int)topo, v ? "its translation for that input" : "[RED] no translation for that input in the bundle, the triangles one"); } }
+    if (!v) return gs;
+    v->xfb = gs->xfb; memcpy(v->xfb_stride, gs->xfb_stride, sizeof v->xfb_stride);
+    return v;
+}
+static vkshader_t *vk_shader_q(uint64_t key, int stage, int quiet) {
     bundle_auto();
     struct { uint64_t key; uint64_t stage; } hk = {key, (uint64_t)stage};
     pthread_mutex_lock(&g_sh_mu);
@@ -208,14 +266,18 @@ vkshader_t *vk_shader(uint64_t key, int stage) {
     if (s) { pthread_mutex_unlock(&g_sh_mu); return s == (void *)1 ? NULL : s; }
     const bent *e = g_bundle ? find(key) : NULL;
     if (!e) { nvn_hm_put(&g_shaders, &hk, (void *)1); pthread_mutex_unlock(&g_sh_mu);
-              static int n; if (n++ < 16) VKLOG("[RED] shader %016llx (stage %d) is not in the bundle", (unsigned long long)key, stage); return NULL; }
+              static int n; if (!quiet && n++ < 16) VKLOG("[RED] shader %016llx (stage %d) is not in the bundle", (unsigned long long)key, stage); return NULL; }
+    pthread_mutex_unlock(&g_sh_mu);
+    uint32_t nw = 0, *w = bundle_spv(e, &nw);   // copied or decompressed outside the lock
+    pthread_mutex_lock(&g_sh_mu);
+    if ((s = nvn_hm_get(&g_shaders, &hk))) { pthread_mutex_unlock(&g_sh_mu); free(w); return s == (void *)1 ? NULL : s; }   // another thread made it meanwhile
+    if (!w) { nvn_hm_put(&g_shaders, &hk, (void *)1); pthread_mutex_unlock(&g_sh_mu); return NULL; }
     s = calloc(1, sizeof *s); s->key = key; s->stage = stage; s->set = set_of(stage);
     // reflection
     const uint8_t *r = g_bundle + e->refl_off; uint32_t hdr[5]; memcpy(hdr, r, 20);
     s->nbind = (int)hdr[0]; s->c1_len = hdr[1]; memcpy(s->local, hdr + 2, 12);
     s->b = (const dmsv_bind *)(r + 20); s->c1 = r + 20 + 20 * s->nbind;
     // SPIR-V with the stage's set
-    uint32_t nw = e->spv_len / 4; uint32_t *w = malloc(e->spv_len); memcpy(w, g_bundle + e->spv_off, e->spv_len);
     int f64_used = 0; uint32_t xb = 4;
     for (uint32_t i = 5; i < nw;) { uint32_t n = w[i] >> 16, op = w[i] & 0xffff; if (!n) break; if (op == 71 && n >= 4 && w[i + 2] == 34) w[i + 3] = (uint32_t)s->set;   // OpDecorate DescriptorSet
         if (op == 22 && n == 3 && w[i + 2] == 64) f64_used = 1;   // OpTypeFloat 64
@@ -449,7 +511,7 @@ static VkBuffer static_buf(int which) {
 }
 VkBuffer vk_support_buffer(void) { return static_buf(0); }
 VkBuffer vk_zero_buffer(void) { return static_buf(1); }
-// a shader's c1 constants: copied once into a buffer of their own (the bundle bytes do not change)
+// a shader's c1 constants: copied once into a buffer of their own (the bundle bytes do not change; the reflection is never compressed)
 void vk_shader_c1(vkshader_t *s, VkBuffer *buf, VkDeviceSize *off, VkDeviceSize *len) {
     if (!s->c1_len) { *buf = vk_zero_buffer(); *off = 0; *len = 65536; return; }
     if (!s->c1_buf) {

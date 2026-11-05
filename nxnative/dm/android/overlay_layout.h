@@ -13,6 +13,7 @@ static const ov_ctl OV_LAYOUTS[2][DM_AOV_N] = {{DM_AOV_TABLET}, {DM_AOV_PHONE}};
 #define OV_N DM_AOV_N
 // the layout in use: the phone's when the window is at least OV_PHONE_ASPECT wide for its height (a 20:9 phone is 2.2, a 16:10 tablet 1.6), else the tablet's
 #define OV_PHONE_ASPECT 1.9f
+static inline int ov_layout_for_size(int width, int height) { return height > 0 && (float)width / (float)height >= OV_PHONE_ASPECT; }
 int dm_overlay_layout(void);   // front_android.c: 0 the tablet's, 1 the phone's
 #define OV_CTLS (OV_LAYOUTS[dm_overlay_layout()])
 #define OV_KNOB 0.42f        // a stick's knob radius, of the stick's (the theme-less drawing)
