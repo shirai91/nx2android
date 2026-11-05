@@ -744,25 +744,42 @@ VkBufferView vk_dummy_tbuf(int storage) {
     VKCHK(vkCreateBufferView(V.dev, &ci, NULL, &v[storage]));
     return v[storage];
 }
+typedef struct { uint64_t mem, pool; uint32_t fmt, n; } tbuf_key;
+static nvn_hmap g_tbuf_cache = {.klen = sizeof(tbuf_key)};
+static pthread_mutex_t g_tbuf_mu = PTHREAD_MUTEX_INITIALIZER;
 // a buffer texture's texel buffer view over its pool (cached by texture contents: the registered copy)
 VkBufferView vk_tbuf_view(const tex_t *t) {
-    static nvn_hmap cache = {.klen = 24}; static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
     // keyed by the pool too: a pool finalized and another made at the same address has a new VkBuffer, and the old one's memory is freed once the GPU is past it. Keyed by address
     // alone, the view over the old buffer was handed out again and shaders read and wrote freed memory, which the kernel gives to newer buffers (Xenoblade Chronicles 3: the
     // allocator kept inside one of its memory pools had its tree bins overwritten during the opening movie, and malloc crashed at the next scene)
     vkpool_t *pl = t->mem ? vk_pool_of((uint64_t)(uintptr_t)t->mem, 1) : NULL;
-    struct { uint64_t mem, pool; uint32_t fmt, n; } k = {(uint64_t)(uintptr_t)t->mem, pl ? pl->serial : 0, (uint32_t)t->d.format, t->d.width};
-    pthread_mutex_lock(&mu);
-    VkBufferView v = nvn_hm_get(&cache, &k);
+    tbuf_key k = {(uint64_t)(uintptr_t)t->mem, pl ? pl->serial : 0, (uint32_t)t->d.format, t->d.width};
+    pthread_mutex_lock(&g_tbuf_mu);
+    VkBufferView v = nvn_hm_get(&g_tbuf_cache, &k);
     if (!v) {
         const vkfmt_t *f = vk_fmt(t->d.format); VkBuffer b; VkDeviceSize off;
         if (f && t->mem && vk_buf_at((uint64_t)(uintptr_t)t->mem, (uint64_t)t->d.width * f->bpb, &b, &off) && off % V.props.limits.minTexelBufferOffsetAlignment == 0) {
             VkBufferViewCreateInfo ci = {VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO, NULL, 0, b, f->vk, off, (VkDeviceSize)t->d.width * f->bpb};
-            if (vkCreateBufferView(V.dev, &ci, NULL, &v)) v = VK_NULL_HANDLE; else nvn_hm_put(&cache, &k, v);
+            if (vkCreateBufferView(V.dev, &ci, NULL, &v)) v = VK_NULL_HANDLE; else nvn_hm_put(&g_tbuf_cache, &k, v);
         } else VKRED_ONCE(16, "buffer texture not in a pool or misaligned (format %#x, %u elements)", t->d.format, t->d.width);
     }
-    pthread_mutex_unlock(&mu);
+    pthread_mutex_unlock(&g_tbuf_mu);
     return v;
+}
+void vk_tbuf_pool_drop(uint64_t serial) {
+    typedef struct { tbuf_key key; VkBufferView view; } retired_view;
+    pthread_mutex_lock(&g_tbuf_mu);
+    const tbuf_key *keys = (const tbuf_key *)g_tbuf_cache.keys;
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < g_tbuf_cache.cap; i++) if (g_tbuf_cache.vals[i] && keys[i].pool == serial) n++;
+    if (!n) { pthread_mutex_unlock(&g_tbuf_mu); return; }
+    retired_view *drop = malloc((size_t)n * sizeof *drop); if (!drop) abort();
+    // Snapshot the keys before deletion shifts probe chains, including chains that wrap around the table.
+    for (uint32_t i = 0, j = 0; i < g_tbuf_cache.cap; i++) if (g_tbuf_cache.vals[i] && keys[i].pool == serial) drop[j++].key = keys[i];
+    for (uint32_t i = 0; i < n; i++) drop[i].view = nvn_hm_del(&g_tbuf_cache, &drop[i].key);
+    pthread_mutex_unlock(&g_tbuf_mu);
+    for (uint32_t i = 0; i < n; i++) vk_defer_free_buffer_view(drop[i].view);
+    free(drop);
 }
 // CPU readback of texels (ReadTexels): the image copied to scratch memory by a submission of its own, waited for
 void mtl_read_texels(const tex_t *t, unsigned level, unsigned layer0, const NVNcopyRegion *r, uint8_t *dst, size_t row, size_t img) {

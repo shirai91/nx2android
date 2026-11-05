@@ -52,29 +52,55 @@ static int pool_zero_copy(vkpool_t *p, uint8_t *mem, uint64_t size) {
     AHardwareBuffer_Desc d = {(uint32_t)size, 1, 1, AHARDWAREBUFFER_FORMAT_BLOB,
         AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN | AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN | AHARDWAREBUFFER_USAGE_GPU_DATA_BUFFER, 0, 0, 0};
     if (size > 0xffffffffull) return -1;
-    AHardwareBuffer *ahb; if (AHardwareBuffer_allocate(&d, &ahb)) return -1;
-    int sv[2]; if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sv)) { AHardwareBuffer_release(ahb); return -1; }
-    int fds[16], nfd = -1;
-    if (!AHardwareBuffer_sendHandleToUnixSocket(ahb, sv[0])) nfd = recv_fds(sv[1], fds, 16);
-    close(sv[0]); close(sv[1]);
-    if (nfd < 1) { AHardwareBuffer_release(ahb); return -1; }
-    // copy the pool's current contents into the buffer through a temporary mapping, then put the buffer's pages at the pool's address
-    uint8_t *tmp = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fds[0], 0);
-    int ok = tmp != MAP_FAILED;
-    if (ok) { memcpy(tmp, mem, size); munmap(tmp, size); }
-    ok = ok && mmap(mem, size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fds[0], 0) == mem;
-    for (int i = 0; i < nfd; i++) close(fds[i]);
-    if (!ok) { AHardwareBuffer_release(ahb); return -1; }
+    AHardwareBuffer *ahb;
+    if (AHardwareBuffer_allocate(&d, &ahb)) return -1;
+
+    // Finish the Vulkan import before replacing the guest mapping, which the copied fallback still needs.
+    int result = -2;
+    VkBuffer buffer;
     VkAndroidHardwareBufferPropertiesANDROID ap = {VK_STRUCTURE_TYPE_ANDROID_HARDWARE_BUFFER_PROPERTIES_ANDROID};
     VkExternalMemoryBufferCreateInfo eb = {VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO, NULL, VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID};
     VkBufferCreateInfo bi = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, &eb, 0, size, POOL_USAGE_BDA, VK_SHARING_MODE_EXCLUSIVE};
-    if (vkGetAndroidHardwareBufferPropertiesANDROID(V.dev, ahb, &ap) || vkCreateBuffer(V.dev, &bi, NULL, &p->buf)) { AHardwareBuffer_release(ahb); return -2; }
-    VkMemoryDedicatedAllocateInfo ded = {VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO, NULL, VK_NULL_HANDLE, p->buf};   // the driver requires a dedicated allocation for an imported AHardwareBuffer
+    if (vkGetAndroidHardwareBufferPropertiesANDROID(V.dev, ahb, &ap) ||
+        vkCreateBuffer(V.dev, &bi, NULL, &buffer)) goto fail_ahb;
+    VkMemoryDedicatedAllocateInfo ded = {VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO, NULL, VK_NULL_HANDLE, buffer};
     VkImportAndroidHardwareBufferInfoANDROID imp = {VK_STRUCTURE_TYPE_IMPORT_ANDROID_HARDWARE_BUFFER_INFO_ANDROID, &ded, ahb};
     VkMemoryAllocateInfo ai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, pool_mem_flags(&imp), ap.allocationSize, vk_mem_type(ap.memoryTypeBits, 0, 0)};
-    if (vkAllocateMemory(V.dev, &ai, NULL, &p->mem) || vkBindBufferMemory(V.dev, p->buf, p->mem, 0)) { vkDestroyBuffer(V.dev, p->buf, NULL); AHardwareBuffer_release(ahb); return -2; }
-    p->ahb = ahb; p->zero_copy = 1; p->gpu = buf_gpu(p->buf);
+    VkDeviceMemory backing;
+    VkResult allocation = vkAllocateMemory(V.dev, &ai, NULL, &backing);
+    if (allocation || vkBindBufferMemory(V.dev, buffer, backing, 0)) goto fail_buffer;
+
+    result = -1;
+    int sv[2];
+    if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sv)) goto fail_buffer;
+    int fds[16], nfd = -1;
+    if (!AHardwareBuffer_sendHandleToUnixSocket(ahb, sv[0])) nfd = recv_fds(sv[1], fds, 16);
+    close(sv[0]);
+    close(sv[1]);
+    if (nfd < 1) goto fail_buffer;
+    uint8_t *tmp = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fds[0], 0);
+    int mapped = 0;
+    if (tmp != MAP_FAILED) {
+        memcpy(tmp, mem, size);
+        mapped = mmap(mem, size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fds[0], 0) == mem;
+        munmap(tmp, size);
+    }
+    for (int i = 0; i < nfd; i++) close(fds[i]);
+    if (!mapped) goto fail_buffer;
+
+    p->buf = buffer;
+    p->mem = backing;
+    p->ahb = ahb;
+    p->zero_copy = 1;
+    p->gpu = buf_gpu(buffer);
     return 0;
+
+fail_buffer:
+    vkDestroyBuffer(V.dev, buffer, NULL);
+    if (!allocation) vkFreeMemory(V.dev, backing, NULL);
+fail_ahb:
+    AHardwareBuffer_release(ahb);
+    return result;
 }
 // A zero-copy pool's dma-buf mapped again over [mem, mem+len) in one piece per chunk, read-only (nvn_dirty_defrag: the mappings its protection split never merge). 0 = done
 int vk_pool_remap_ro(void *mem, size_t len) {
@@ -147,7 +173,7 @@ void mtl_pool_del(const void *mem) {
         pthread_rwlock_unlock(&g_pool_mu);
         if (p.zero_copy) pool_copy_back(&p);
         if (p.shadow) __atomic_fetch_sub(&g_ncopied, 1, __ATOMIC_RELAXED);
-        free(p.hot); free(p.last); vk_defer_free_buffer(p.buf, p.mem);   // the AHardwareBuffer goes with the imported memory's last reference
+        free(p.hot); free(p.last); vk_tbuf_pool_drop(p.serial); vk_defer_free_buffer(p.buf, p.mem);   // the AHardwareBuffer goes with the imported memory's last reference
         if (p.ahb) AHardwareBuffer_release(p.ahb);
     }
 }

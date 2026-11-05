@@ -87,6 +87,7 @@ uint64_t vk_replay_ns(void) { return g_vkst.ns_exec; }   // the replay time so f
 // uniform updates land at each cut, DM_VK_X_NOKEEP no pass kept for the same targets, DM_VK_X_NOSHC no shadow reuse
 static int g_fdz = 1;  // DM_VK_FDZ (live): fragment-depth variants for draws on depth written by fragment shaders (pipeline key fdz)
 static int g_x_nosetc, g_x_nodrvc, g_x_landcut, g_x_nokeep, g_x_nobc, g_x_cutany, g_lrz_touch, g_xfb_on = 1, g_x_nogs, g_spv_alt, g_x_nodispbar; int g_x_noshc;   // g_xfb_on: DM_VK_XFB=0 captures no transform feedback (A/B)
+static uint64_t g_spv_key;
 int g_vk_ab, g_vk_hot_syncs = 16;
 static int g_x_nosetmemo, g_x_setverify;   // DM_VK_X_NOSETMEMO=1 (live, A/B): no per-stage set memo; DM_VK_X_SETVERIFY=1 (live): one memo hit in 64 checked (see stage_set)
 static int g_vbound = 1;   // DM_VK_VBOUND (see vbuf_bound)
@@ -132,6 +133,25 @@ void vk_watch(const vkimg_t *im, const char *what) {
     g_watch_n--; VKLOG("watch: present %llu pass %d (%ux%u): %s %ux%u fmt %d pool %#llx+%#llx (image %p, nvn flags %#x, %d overlapping)", (unsigned long long)g_tex_frame, g_sub_pass - 1, S.pass_w, S.pass_h, what, im->w, im->h, im->fmt,
                        (unsigned long long)im->pool, (unsigned long long)im->off, (const void *)im, im->flags, im->novl);
 }
+// DM_VK_SPV_KEY=<hex> (live): select one shader for an ALT comparison. Zero keeps the all-stage override.
+static uint64_t spv_key_read(int alt) {
+    const char *key = alt ? getenv("DM_VK_SPV_KEY") : NULL;
+    return key ? strtoull(key, NULL, 16) : 0;
+}
+static inline uint32_t spv_alt_stages(uint64_t target, const uint64_t keys[3], int raster_discard) {
+    if (!target) return 0;
+    uint32_t stages = 0;
+    for (int i = 0; i < 3; i++) {
+        if (keys[i] == target && (i != 1 || !raster_discard)) stages |= 1u << i;
+    }
+    return stages;
+}
+static inline uint32_t spv_stage_alt(uint32_t alt, uint32_t stages, int stage) {
+    return (!stages || (stages & (1u << stage))) ? alt : 0;
+}
+static inline int spv_compute_alt(int alt, uint64_t target, uint64_t key, uint64_t um, uint64_t im) {
+    return alt && (!target || target == key) && !(um | im) ? alt : 0;
+}
 static void x_read(void) { const char *c = getenv("DM_VK_CB_DRAWS"); g_x_cbdraws = c ? atoi(c) : 128; g_sub_pass = 0;
     const char *fy = getenv("DM_VK_FLIPY"); g_flipy = !(fy && !atoi(fy));   // on unless DM_VK_FLIPY=0
     if (g_x_listpasses) { g_x_listpasses = 0; setenv("DM_VK_TRACE_PASS", "-1", 1); }
@@ -148,7 +168,9 @@ static void x_read(void) { const char *c = getenv("DM_VK_CB_DRAWS"); g_x_cbdraws
     g_vk_ab = (e = getenv("DM_VK_AB")) ? (int)strtol(e, NULL, 0) : 0; g_vk_hot_syncs = (e = getenv("DM_VK_HOT_SYNCS")) && atoi(e) > 0 ? atoi(e) : 16;
     g_x_nosetc = (e = getenv("DM_VK_X_NOSETC")) && atoi(e); g_x_nodrvc = (e = getenv("DM_VK_X_NODRVC")) && atoi(e); g_x_landcut = (e = getenv("DM_VK_X_LANDCUT")) && atoi(e);
     g_x_nodispbar = (e = getenv("DM_VK_X_NODISPBAR")) && atoi(e);
-    g_x_nokeep = (e = getenv("DM_VK_X_NOKEEP")) && atoi(e); g_x_nobc = (e = getenv("DM_VK_X_NOBC")) && atoi(e); g_x_noshc = (e = getenv("DM_VK_X_NOSHC")) && atoi(e); g_x_cutany = (e = getenv("DM_VK_X_CUTANY")) && atoi(e); g_x_nogs = (e = getenv("DM_VK_X_NOGS")) && atoi(e); g_spv_alt = (e = getenv("DM_VK_SPV_ALT")) ? atoi(e) : 0; g_rd_touch = !((e = getenv("DM_VK_RD_TOUCH")) && !atoi(e));
+    g_x_nokeep = (e = getenv("DM_VK_X_NOKEEP")) && atoi(e); g_x_nobc = (e = getenv("DM_VK_X_NOBC")) && atoi(e); g_x_noshc = (e = getenv("DM_VK_X_NOSHC")) && atoi(e); g_x_cutany = (e = getenv("DM_VK_X_CUTANY")) && atoi(e); g_x_nogs = (e = getenv("DM_VK_X_NOGS")) && atoi(e); g_rd_touch = !((e = getenv("DM_VK_RD_TOUCH")) && !atoi(e));
+    g_spv_alt = (e = getenv("DM_VK_SPV_ALT")) ? atoi(e) : 0;
+    g_spv_key = spv_key_read(g_spv_alt);
     g_lrz_touch = !((e = getenv("DM_VK_LRZ_TOUCH")) && !atoi(e)); g_fdz = !((e = getenv("DM_VK_FDZ")) && !atoi(e)); g_xfb_on = !((e = getenv("DM_VK_XFB")) && !atoi(e));
     g_psplit = (e = getenv("DM_VK_PASS_SPLIT")) ? atoi(e) : 0; g_setsplit = (e = getenv("DM_VK_SETSPLIT")) && atoi(e); g_psplit_depth = (e = getenv("DM_VK_PASS_SPLIT_DEPTH")) && atoi(e);
     g_x_rdkeep = (e = getenv("DM_VK_X_RDKEEP")) && atoi(e); g_vbound = !((e = getenv("DM_VK_VBOUND")) && !atoi(e)); g_x_logfs = (e = getenv("DM_VK_LOG_FS")) ? strtoull(e, NULL, 16) : 0; g_x_tracecs = (e = getenv("DM_VK_TRACE_CS")) ? strtoull(e, NULL, 16) : 0; g_x_cscap = (e = getenv("DM_VK_CS_CAPTURE")) ? strtoull(e, NULL, 16) : 0; g_samp_snap = !((e = getenv("DM_NVN_SAMP_SNAP")) && !atoi(e)); g_lin_back = !((e = getenv("DM_VK_LIN_BACK")) && !atoi(e)); g_async_pipe = !((e = getenv("DM_VK_ASYNC_PIPE")) && !atoi(e)); g_prof_on = (e = getenv("DM_VK_PROF_SLOW")) && atoi(e); { extern volatile int g_vk_samp_log; if ((e = getenv("DM_VK_SAMP_LOG")) && atoi(e) > 0) { g_vk_samp_log = atoi(e); setenv("DM_VK_SAMP_LOG", "0", 1); } } g_x_nosetmemo = (e = getenv("DM_VK_X_NOSETMEMO")) && atoi(e); g_x_setverify = (e = getenv("DM_VK_X_SETVERIFY")) && atoi(e);
@@ -828,7 +850,7 @@ typedef struct { uint32_t raster_discard, cull, front, mode, depth_clamp, bias_e
 typedef struct { uint32_t nattr; struct { uint32_t loc, binding, fmt, off; } attr[16]; uint32_t nbind; struct { uint32_t binding, stride, rate, divisor; } bind[17]; } pk_vi;
 typedef struct { uint32_t ncol, cfmt[8], dfmt, samples, a2c, blend_en, logic_en, logic_op, wmask[8]; struct { uint32_t src, dst, srca, dsta, eq, eqa; } bl[8]; uint32_t dual; } pk_at;
 typedef struct {
-    uint64_t key[3]; uint32_t topo, restart, fdz, pad;   // fdz: the fragment shader's variant that writes gl_FragDepth = gl_FragCoord.z (prepare_draw); at.dual: its dual-source variant
+    uint64_t key[3]; uint32_t topo, restart, fdz, alt_stages;   // alt_stages uses the reserved word so recorded key layout stays stable
     pk_rs rs; pk_vi vi; pk_at at;
     uint64_t um[3], im[3];   // each stage's sampled bindings given integer views (vk_shader_module)
 } pkey;
@@ -993,7 +1015,14 @@ static VkPipeline build_pipeline(const pkey *k, VkPipelineLayout layout, vkshade
     const vkshader_t *fs = stg[1] && !k->rs.raster_discard ? stg[1] : NULL; uint32_t xo[3] = {0};
     if (stg[0]) xo[0] = (stg[2] ? stg[2]->in_locs : fs ? fs->in_locs : 0) & ~stg[0]->out_locs;
     if (stg[2]) xo[2] = (fs ? fs->in_locs : 0) & ~stg[2]->out_locs;
-    for (int i = 0; i < 3; i++) if (stg[i] && !(i == 1 && k->rs.raster_discard)) ss[ns++] = (VkPipelineShaderStageCreateInfo){VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, fl[i], vk_shader_module(stg[i], k->um[i], k->im[i], k->rs.alt && !k->um[i] && !k->im[i] && !xo[i] ? 1u << 31 | k->rs.alt : xo[i], i == 1 ? (k->fdz ? 1 : 0) | (k->at.dual ? 2 : 0) : 0), "main", NULL};
+    for (int i = 0; i < 3; i++) {
+        if (!stg[i] || (i == 1 && k->rs.raster_discard)) continue;
+        uint32_t alt = spv_stage_alt(k->rs.alt, k->alt_stages, i);
+        uint32_t variant = alt && !k->um[i] && !k->im[i] && !xo[i] ? 1u << 31 | alt : xo[i];
+        int fd = i == 1 ? (k->fdz ? 1 : 0) | (k->at.dual ? 2 : 0) : 0;
+        ss[ns++] = (VkPipelineShaderStageCreateInfo){VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, fl[i],
+            vk_shader_module(stg[i], k->um[i], k->im[i], variant, fd), "main", NULL};
+    }
     VkVertexInputAttributeDescription ad[16]; VkVertexInputBindingDescription bd[17]; VkVertexInputBindingDivisorDescriptionEXT dd[17]; uint32_t ndd = 0;
     for (uint32_t i = 0; i < k->vi.nattr; i++) ad[i] = (VkVertexInputAttributeDescription){k->vi.attr[i].loc, k->vi.attr[i].binding, (VkFormat)k->vi.attr[i].fmt, k->vi.attr[i].off};
     for (uint32_t i = 0; i < k->vi.nbind; i++) { bd[i] = (VkVertexInputBindingDescription){k->vi.bind[i].binding, k->vi.bind[i].stride, (VkVertexInputRate)k->vi.bind[i].rate};
@@ -1024,7 +1053,7 @@ static VkPipeline build_pipeline(const pkey *k, VkPipelineLayout layout, vkshade
     if (!prp && !V.has_dynrender) { build_end(bs); return (VkPipeline)1; }   // no compatible render pass and no dynamic rendering: no valid pipeline (pass_commit skips such passes)
     VkGraphicsPipelineCreateInfo ci = {VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, prp ? NULL : &rci, 0, ns, ss, &vi, &ia, NULL, &vs, &rs, &ms, &ds, &cb, &dy, layout, prp, 0, VK_NULL_HANDLE, -1};
     if (bs >= 0) g_build[bs].phase = 2;
-    VkResult r = vkCreateGraphicsPipelines(V.dev, V.pcache, 1, &ci, NULL, &p);
+    VkResult r = vkCreateGraphicsPipelines(V.dev, k->rs.alt ? VK_NULL_HANDLE : V.pcache, 1, &ci, NULL, &p);
     build_end(bs);
     static uint64_t n; uint64_t c = __atomic_add_fetch(&n, 1, __ATOMIC_RELAXED);
     if (r) { char af[160] = ""; for (uint32_t i = 0, o = 0; i < k->vi.nattr && o < sizeof af - 12; i++) o += snprintf(af + o, sizeof af - o, " %u:%u", k->vi.attr[i].loc, k->vi.attr[i].fmt);
@@ -1199,8 +1228,8 @@ static void cbuf_desc(int st, const vkshader_t *s, const dmsv_bind *b, VkDescrip
 // buffers are marked written), nor for a shader that reads handles or addresses from uniform buffer memory (that memory changes under the same bindings).
 // DM_VK_X_NOSETMEMO=1 (live): always collected. DM_VK_X_SETVERIFY=1 (live): one hit in 64 is collected anyway and compared, [RED] on a difference
 enum { MEMO_CB = 16 };
-typedef struct { vkshader_t *s; uint64_t epoch, bind, ubo, ubd, tex, samp, h, um, im; uint32_t pool, binst, dofs[96]; int ncb; uint8_t ci[MEMO_CB], cpos[MEMO_CB]; VkDescriptorBufferInfo cd[MEMO_CB]; VkDescriptorSet set; } set_memo_t;
-static set_memo_t g_smemo[3]; static uint64_t g_bind_gen[6], g_ubo_gen[6];   // a stage's handles or storage buffers changed (bind_handles_rec, OP_BIND_SSBO), its uniform buffers (OP_BIND_UBO)
+typedef struct { vkshader_t *s; uint64_t epoch, bind, ubo, ubd, tex, samp, h, um, im, cbgen[MEMO_CB]; uint32_t pool, binst, dofs[96]; int ncb; uint8_t ci[MEMO_CB], cpos[MEMO_CB]; VkDescriptorBufferInfo cd[MEMO_CB]; VkDescriptorSet set; } set_memo_t;
+static set_memo_t g_smemo[3]; static uint64_t g_bind_gen[6], g_ubo_gen[6], g_ubo_slot_gen[6][16];   // a stage's handles or storage buffers changed (bind_handles_rec, OP_BIND_SSBO), its uniform buffers (OP_BIND_UBO)
 uint64_t g_set_memo, g_set_memo_bad;   // memo hits, and differences the verify mode found
 extern uint64_t g_ubd_gen; uint32_t vk_pool_gen(void);
 static int set_memo_ok(vkshader_t *s) {
@@ -1214,9 +1243,13 @@ static int set_memo_get(int st, vkshader_t *s, uint32_t *dofs) {
     set_memo_t *m = &g_smemo[st];
     if (m->s != s || m->epoch != g_set_epoch || m->bind != g_bind_gen[st] || m->tex != g_tex_gen || m->samp != __atomic_load_n(&g_samp_gen, __ATOMIC_ACQUIRE) || m->pool != vk_pool_gen() || m->binst != g_draw_binst) return 0;
     if (m->ubo != g_ubo_gen[st] || m->ubd != g_ubd_gen) {   // the constant buffers again: most draws move only their offsets
-        for (int c = 0; c < m->ncb; c++) { VkDescriptorBufferInfo d; cbuf_desc(st, s, &s->b[m->ci[c]], &d);
+        for (int c = 0; c < m->ncb; c++) { const dmsv_bind *b = &s->b[m->ci[c]]; int reg = b->reg;
+            // A changed slot need not resolve the other slots' pools again (8.7% of device replay samples were in vk_pool_of).
+            int tracked = reg >= 0 && reg < 16; uint64_t gen = tracked ? g_ubo_slot_gen[st][reg] : 0;
+            if (!(g_vk_ab & AB_UBO_EACH) && tracked && m->ubd == g_ubd_gen && m->cbgen[c] == gen) continue;
+            VkDescriptorBufferInfo d; cbuf_desc(st, s, b, &d);
             if (d.buffer != m->cd[c].buffer || d.range != m->cd[c].range || (m->cpos[c] == 0xff && d.offset != m->cd[c].offset)) return 0;
-            if (m->cpos[c] != 0xff) m->dofs[m->cpos[c]] = (uint32_t)d.offset; }
+            if (m->cpos[c] != 0xff) m->dofs[m->cpos[c]] = (uint32_t)d.offset; m->cbgen[c] = gen; }
         m->ubo = g_ubo_gen[st]; m->ubd = g_ubd_gen; }
     memcpy(dofs, m->dofs, sizeof *dofs * (size_t)s->ndyn); g_num_um = m->um; g_num_im = m->im;
     return 1;
@@ -1335,7 +1368,8 @@ static VkDescriptorSet stage_set(int st, vkshader_t *s, uint32_t *dofs) {
     if (memo) { set_memo_t *m = &g_smemo[st];   // (set_memo_ok: at most MEMO_CB constant buffers)
         m->s = s; m->epoch = g_set_epoch; m->bind = g_bind_gen[st]; m->ubo = g_ubo_gen[st]; m->ubd = g_ubd_gen; m->tex = gtex; m->samp = gsamp; m->pool = gpool; m->binst = g_draw_binst;
         m->h = h; m->um = g_num_um; m->im = g_num_im; m->set = set; memcpy(m->dofs, dofs, sizeof *dofs * (size_t)s->ndyn); m->ncb = ncb; memcpy(m->ci, mci, (size_t)ncb); memcpy(m->cd, mcd, sizeof *mcd * (size_t)ncb);
-        for (int c = 0; c < ncb; c++) { m->cpos[c] = 0xff; for (int j = 0; j < nd; j++) if (dp[j].i == mci[c]) m->cpos[c] = (uint8_t)j; } }
+        for (int c = 0; c < ncb; c++) { int reg = s->b[mci[c]].reg; m->cbgen[c] = reg >= 0 && reg < 16 ? g_ubo_slot_gen[st][reg] : 0;
+            m->cpos[c] = 0xff; for (int j = 0; j < nd; j++) if (dp[j].i == mci[c]) m->cpos[c] = (uint8_t)j; } }
     return set;
 }
 
@@ -1409,7 +1443,7 @@ static uint32_t pk_id(int g, const void *v) {
 static void pk_rs_build(pk_rs *r) {
     int has_depth = (S.daspect & VK_IMAGE_ASPECT_DEPTH_BIT) != 0, has_stencil = (S.daspect & VK_IMAGE_ASPECT_STENCIL_BIT) != 0;
     memset(r, 0, sizeof *r);
-    r->raster_discard = S.rast_discard; r->alt = (uint32_t)g_spv_alt; r->cull = g_no_cull ? 0 : S.poly.cull;
+    r->raster_discard = S.rast_discard; r->alt = g_spv_key ? 0 : (uint32_t)g_spv_alt; r->cull = g_no_cull ? 0 : S.poly.cull;
     // counter-clockwise front faces in Vulkan's framebuffer: Vulkan's clip space has y down, Metal's up (nvn_mtl.m: CCW when (front == CCW) != lower left), and the
     // lower-left origin mode flips the viewport again, so CCW when (front == CCW) == lower left. Taken as given, upper-left games (NEO) culled their ground and walls
     r->front = ((S.poly.front == NVN_FRONT_FACE_CCW) == (g_lower_left != 0)) != (g_flipy != 0); r->mode = S.poly.mode; r->depth_clamp = S.depth_clamp;
@@ -1546,6 +1580,21 @@ static int prepare_draw(int prim, int indexed) {
     uint64_t t1d = tick();
     for (int st = 0; st < 3; st++) if (S.sh[st] && !(st == 1 && rs->raster_discard)) { sets[S.sh[st]->set] = stage_set(st, S.sh[st], dofs[S.sh[st]->set]); um[st] = g_num_um; im[st] = g_num_im; }
     uint64_t tdesc = tick() - t1d; g_vkst.ns_desc += tdesc; if (g_prof_on) g_prof_ns[5] += tdesc;
+    if (g_spv_key) {
+        uint32_t stages = spv_alt_stages(g_spv_key, keys, rs->raster_discard);
+        if (stages) {
+            // Keep the targeted stage mask in the full key. Unmatched draws retain their compact memo entries.
+            if (!full) {
+                memset(&k, 0, sizeof k);
+                k.rs = g_rs;
+                k.vi = g_vi;
+                k.at = g_at;
+                full = 1;
+            }
+            k.rs.alt = (uint32_t)g_spv_alt;
+            k.alt_stages = stages;
+        }
+    }
     if (full) { memcpy(k.key, keys, sizeof keys); k.topo = tp; k.restart = rst; k.fdz = fdz; memcpy(k.um, um, sizeof um); memcpy(k.im, im, sizeof im); }
     if (g_tracing) {
         VKLOG("  pipeline: topology %u restart %u discard %u cull %u front %u mode %u clamp %u bias %u; depth test %u write %u func %u stencil %u; attributes %u bindings %u; colour %u (format %u) samples %u a2c %u; blend enable %#x logic %u/%u; fragment depth variant %u (depth written by a shader at present %llu, now %llu)",
@@ -1846,7 +1895,7 @@ static void draw_idx(const p_draw_idx *d) {
     bc_index(cb, ib, io, it);
     if (!(dbg_draw() & 1) && g_ok) { int xf = xfb_begin(cb); vkCmdDrawIndexed(cb, (uint32_t)d->count, inst, first, d->base_vertex, (uint32_t)d->base_instance); if (xf) xfb_end(cb, prim, (uint32_t)d->count, inst); }
 }
-static nvn_hmap g_cpipes = {.klen = 24};   // {shader, its integer-texel bindings}
+static nvn_hmap g_cpipes = {.klen = 24}, g_caltpipes = {.klen = 24};   // {shader, uint texels, int texels} or {shader, 0, ALT}
 static pthread_mutex_t g_cpipe_mu = PTHREAD_MUTEX_INITIALIZER;   // the replay thread and compute_warm
 static void pipe_stats_log(VkPipeline p, uint64_t key) {   // DM_VK_PIPE_STATS (gfx_vk_core.c)
     PFN_vkGetPipelineExecutableStatisticsKHR get = (PFN_vkGetPipelineExecutableStatisticsKHR)vkGetDeviceProcAddr(V.dev, "vkGetPipelineExecutableStatisticsKHR");
@@ -1877,7 +1926,7 @@ static VkPipeline compute_build(vkshader_t *cs, uint64_t um, uint64_t im, int al
         vk_shader_module(cs, um, im, alt && !um && !im ? 1u << 31 | (uint32_t)alt : 0, 0), "main", NULL}, vk_pipeline_layout(dsl, 1), VK_NULL_HANDLE, -1};
     if (V.pipe_stats) ci.flags |= VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR | (V.pipe_stats > 1 ? VK_PIPELINE_CREATE_CAPTURE_INTERNAL_REPRESENTATIONS_BIT_KHR : 0);
     if (bs >= 0) g_build[bs].phase = 2;
-    VkResult r = vkCreateComputePipelines(V.dev, V.pcache, 1, &ci, NULL, &p); build_end(bs);
+    VkResult r = vkCreateComputePipelines(V.dev, alt ? VK_NULL_HANDLE : V.pcache, 1, &ci, NULL, &p); build_end(bs);
     if (r) { LOG("[RED] [vk] compute pipeline failed: %016llx", (unsigned long long)cs->key); p = (VkPipeline)1; }
     else if (V.pipe_stats) pipe_stats_log(p, cs->key);
     return p;
@@ -1905,17 +1954,22 @@ static int warm_skip_load(uint64_t *skip, int *fd) {
 static void *compute_warm(void *arg) {
     (void)arg; pthread_setname_np(pthread_self(), "vk compute warm"); setpriority(PRIO_PROCESS, 0, 10);
     int vk_shader_keys(uint32_t stage, uint64_t *out, int max); static uint64_t keys[4096]; int n = vk_shader_keys(5, keys, 4096), made = 0; uint64_t t0 = tick();
-    const char *e = getenv("DM_VK_SPV_ALT"); int alt = e ? atoi(e) : 0;   // DM_VK_SPV_ALT in env.txt: built with the alternative code
+    const char *e = getenv("DM_VK_SPV_ALT"); int startup_alt = e ? atoi(e) : 0;
+    uint64_t target = spv_key_read(startup_alt);
     uint64_t skip[WARM_SKIP]; int fd, nskip = warm_skip_load(skip, &fd);
     for (int i = 0; i < n; i++) {
-        uint64_t ck[3] = {keys[i], 0, (uint64_t)alt << 48}; int skipped = 0;
+        int alt = spv_compute_alt(startup_alt, target, keys[i], 0, 0);
+        nvn_hmap *cache = alt ? &g_caltpipes : &g_cpipes;
+        uint64_t ck[3] = {keys[i], 0, (uint32_t)alt}; int skipped = 0;
         for (int j = 0; j < nskip; j++) skipped |= skip[j] == keys[i];
-        pthread_mutex_lock(&g_cpipe_mu); int have = nvn_hm_get(&g_cpipes, ck) != NULL; pthread_mutex_unlock(&g_cpipe_mu);
+        pthread_mutex_lock(&g_cpipe_mu); int have = nvn_hm_get(cache, ck) != NULL; pthread_mutex_unlock(&g_cpipe_mu);
         vkshader_t *cs = have || skipped ? NULL : vk_shader(keys[i], 5); if (!cs || cs->nspv > WARM_MAX_WORDS) continue;
-        char kb[18]; snprintf(kb, sizeof kb, "%016llx\n", (unsigned long long)keys[i]); if (fd >= 0) pwrite(fd, kb, 17, 0);
+        // A diagnostic variant's crash must not blacklist the bundled shader on the next run.
+        int record = fd >= 0 && !alt;
+        char kb[18]; snprintf(kb, sizeof kb, "%016llx\n", (unsigned long long)keys[i]); if (record) pwrite(fd, kb, 17, 0);
         VkPipeline p = compute_build(cs, 0, 0, alt); made++;
-        if (fd >= 0) pwrite(fd, "0000000000000000\n", 17, 0);
-        pthread_mutex_lock(&g_cpipe_mu); if (!nvn_hm_get(&g_cpipes, ck)) nvn_hm_put(&g_cpipes, ck, p); else if (p != (void *)1) vkDestroyPipeline(V.dev, p, NULL); pthread_mutex_unlock(&g_cpipe_mu);
+        if (record) pwrite(fd, "0000000000000000\n", 17, 0);
+        pthread_mutex_lock(&g_cpipe_mu); if (!nvn_hm_get(cache, ck)) nvn_hm_put(cache, ck, p); else if (p != (void *)1) vkDestroyPipeline(V.dev, p, NULL); pthread_mutex_unlock(&g_cpipe_mu);
     }
     VKLOG("compute pipelines made ahead: %d of %d compute shaders in %.0f ms", made, n, (tick() - t0) / 1e6);
     if (fd >= 0) close(fd);
@@ -1936,12 +1990,14 @@ static void dispatch(const p_dispatch *d) {
     if (g_x_cscap == cs->key && !g_ncsc) { g_cs_cap = g_tracing = 1; g_csc_key = cs->key; setenv("DM_VK_CS_CAPTURE", "0", 1); g_x_cscap = 0; snprintf(g_csc_info, sizeof g_csc_info, "dispatch %d %d %d\n", d->x, d->y, d->z); }
     uint32_t dofs[96]; VkDescriptorSet set = stage_set(5, cs, dofs); g_tracing = 0;
     if (g_cs_cap) { g_cs_cap = 0; g_csc_fence = mtl_last_fence() + 1; }
-    uint64_t ck[3] = {cs->key, g_num_um, g_num_im | (uint64_t)g_spv_alt << 48};
-    pthread_mutex_lock(&g_cpipe_mu); VkPipeline p = nvn_hm_get(&g_cpipes, ck); pthread_mutex_unlock(&g_cpipe_mu);
+    int alt = spv_compute_alt(g_spv_alt, g_spv_key, cs->key, g_num_um, g_num_im);
+    nvn_hmap *cache = alt ? &g_caltpipes : &g_cpipes;
+    uint64_t ck[3] = {cs->key, g_num_um, alt ? (uint32_t)alt : g_num_im};
+    pthread_mutex_lock(&g_cpipe_mu); VkPipeline p = nvn_hm_get(cache, ck); pthread_mutex_unlock(&g_cpipe_mu);
     if (!p) {
-        uint64_t tb = g_prof_on ? tick() : 0; p = compute_build(cs, ck[1], g_num_im, g_spv_alt); if (g_prof_on) g_prof_ns[7] += tick() - tb;
-        pthread_mutex_lock(&g_cpipe_mu); VkPipeline had = nvn_hm_get(&g_cpipes, ck);
-        if (had) { if (p != (void *)1) vkDestroyPipeline(V.dev, p, NULL); p = had; } else nvn_hm_put(&g_cpipes, ck, p);   // (compute_warm made it meanwhile)
+        uint64_t tb = g_prof_on ? tick() : 0; p = compute_build(cs, ck[1], g_num_im, alt); if (g_prof_on) g_prof_ns[7] += tick() - tb;
+        pthread_mutex_lock(&g_cpipe_mu); VkPipeline had = nvn_hm_get(cache, ck);
+        if (had) { if (p != (void *)1) vkDestroyPipeline(V.dev, p, NULL); p = had; } else nvn_hm_put(cache, ck, p);   // (compute_warm made it meanwhile)
         pthread_mutex_unlock(&g_cpipe_mu);
     }
     if (p == (void *)1) { g_ncso = 0; return; }
@@ -2245,7 +2301,7 @@ static void exec_ops(const uint8_t *p) {
         case OP_BIND_VSTREAM: { const p_bind_vstream *v = (const p_bind_vstream *)a; for (int i = 0; i < v->n && v->first + i < 16; i++) S.vstream[v->first + i] = v->st[i]; g_pk_dirty |= PK_VI; break; }
         case OP_BIND_VBUF: { const p_bind_vbuf *v = (const p_bind_vbuf *)a;   // (the vertex input changes only where a stream gets or loses its buffer)
             for (int i = 0; i < v->n && v->first + i < 16; i++) { if (!S.vbuf[v->first + i].address != !v->r[i].address) g_pk_dirty |= PK_VI; S.vbuf[v->first + i] = v->r[i]; } break; }
-        case OP_BIND_UBO: { const p_bind_buf *b = (const p_bind_buf *)a; if (b->stage >= 0 && b->stage < 6 && b->index >= 0 && b->index < 16 && memcmp(&S.ubo[b->stage][b->index], b, sizeof *b)) { S.ubo[b->stage][b->index] = *b; g_ubo_gen[b->stage]++; } break; }
+        case OP_BIND_UBO: { const p_bind_buf *b = (const p_bind_buf *)a; if (b->stage >= 0 && b->stage < 6 && b->index >= 0 && b->index < 16 && memcmp(&S.ubo[b->stage][b->index], b, sizeof *b)) { S.ubo[b->stage][b->index] = *b; g_ubo_gen[b->stage]++; g_ubo_slot_gen[b->stage][b->index]++; } break; }
         case OP_BIND_SSBO: { const p_bind_buf *b = (const p_bind_buf *)a; if (b->stage >= 0 && b->stage < 6 && b->index >= 0 && b->index < 16 && memcmp(&S.ssbo[b->stage][b->index], b, sizeof *b)) { S.ssbo[b->stage][b->index] = *b; g_bind_gen[b->stage]++;
             if ((b->addr || b->size) && b->index >= S.hi[b->stage][4]) S.hi[b->stage][4] = (uint8_t)(b->index + 1); } break; }
         case OP_BIND_TEX: case OP_BIND_SAMP: case OP_BIND_IMG: case OP_BIND_TEX1: bind_handles_rec(h.op, a); break;

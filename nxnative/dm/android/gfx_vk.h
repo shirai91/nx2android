@@ -69,6 +69,7 @@ enum { VK_GWRITE_MAX = 6 * 64 };
 int vk_inflight_writes(vk_gwrite *o);   // (gfx_vk_core.c) the GPU writes into pool memory of the submissions in flight, at most VK_GWRITE_MAX
 void vk_gmem_table(VkBuffer *buf, VkDeviceSize *off, VkDeviceSize *size);   // the memory pool table global accesses through loaded pointers search (RK_GMEM)
 vkpool_t *vk_pool_of(uint64_t addr, uint64_t len);   // the pool containing [addr, addr+len), NULL if none
+void vk_tbuf_pool_drop(uint64_t serial);   // retire texel-buffer views before their pool's buffer
 int vk_buf_at(uint64_t addr, uint64_t len, VkBuffer *buf, VkDeviceSize *off);   // GPU buffer + offset of a pool address range
 // Pools that could not be made zero-copy keep a GPU copy: refreshed as a submission begins, and the ranges its GPU wrote written back once it completes
 void vk_pools_sync(void);
@@ -85,6 +86,7 @@ void vk_defer_free_image(VkImage i, VkDeviceMemory m);
 VkDeviceMemory vk_image_memory(const VkMemoryRequirements *req, uint32_t type, VkDeviceSize *off, void **sub);   // NULL on failure; *sub: a slot of a shared block, or NULL (memory of its own)
 void vk_defer_free_image_sub(VkImage i, void *sub);
 void vk_defer_free_view(VkImageView v);
+void vk_defer_free_buffer_view(VkBufferView v);
 VkDescriptorSet vk_alloc_set(VkDescriptorSetLayout l);    // from this submission's descriptor pools
 uint64_t vk_obj_gen(void);   // how many times views, buffers or images were destroyed: descriptors written before may name them
 uint64_t vk_fence_done(void);   // the highest submission fence the GPU has completed
@@ -176,7 +178,7 @@ VkBuffer vk_zero_buffer(void);
 
 // ---- replay (gfx_vk_exec.c) ----
 // DM_VK_AB=<mask> (live, read as each submission begins): each bit turns one replay optimization off, so a change is measured against the old way in one run
-enum { AB_POOL_TLS = 1, AB_POOL_SCAN = 2, AB_IDX_FIRST = 4, AB_VB_EACH = 8, AB_PROG_MEMO = 16, AB_PKEY_FULL = 32 };
+enum { AB_POOL_TLS = 1, AB_POOL_SCAN = 2, AB_IDX_FIRST = 4, AB_VB_EACH = 8, AB_PROG_MEMO = 16, AB_PKEY_FULL = 32, AB_UBO_EACH = 64 };
 extern int g_vk_ab, g_vk_hot_syncs;   // g_vk_hot_syncs: DM_VK_HOT_SYNCS (live): a copied pool's block written twice within that many syncs turns hot (gfx_vk_pool.c pool_sync)
 void vk_exec_reset(void);   // per submission
 void vk_end_pass(void);     // close an open render pass

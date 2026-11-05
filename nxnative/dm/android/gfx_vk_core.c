@@ -4,6 +4,7 @@
 //   (event writes, counter reports), as nvn_mtl.m does in its completion handler.
 #define _GNU_SOURCE
 #include "gfx_vk.h"
+#include "nvn_hmap.h"
 #include <dlfcn.h>
 #include <errno.h>
 #include <string.h>
@@ -38,6 +39,91 @@ static int is_on(const char *const *on, uint32_t n, const char *name) { for (uin
 // a feature struct as vk_init queries it (sType, pNext, then VkBool32s; the largest, descriptor indexing, has 20); featx: its VkBool32s, all off if it is not chained
 typedef struct { VkBaseOutStructure h; VkBool32 b[24]; } featx_t;
 static VkBool32 *featx(featx_t *x, uint32_t n, VkStructureType s) { static VkBool32 off[24]; for (uint32_t i = 0; i < n; i++) if (x[i].h.sType == s) return x[i].b; return off; }   // (off: only 0 is written to it)
+
+// DM_VK_MEMORY_REPORT=1: bounded tracking of driver-reported device allocations, including internal ones. No allocation, logging or Vulkan calls in the callback.
+enum { MR_CAP = 32768, MR_RECORDS = MR_CAP * 3 / 4 - 1, MR_TYPES = 64 };   // below nvn_hmap's growth threshold
+typedef struct mr_object { uint64_t size; uint32_t refs[2], bucket[2]; struct mr_object *next; } mr_object;
+typedef struct { VkObjectType type; uint64_t bytes[2], peak[2], objects[2]; } mr_type;
+typedef struct { mr_type types[MR_TYPES]; uint32_t ntypes; uint64_t bytes[2], peak, failed, failed_bytes, dropped, unmatched, mismatched; } mr_stats;
+static uint64_t g_mr_keys[MR_CAP]; static void *g_mr_values[MR_CAP];
+static nvn_hmap g_mr_map = {.keys = (uint8_t *)g_mr_keys, .vals = g_mr_values, .klen = sizeof(uint64_t), .cap = MR_CAP};
+static mr_object g_mr_objects[MR_RECORDS], *g_mr_free;
+static mr_stats g_mr_stats; static pthread_mutex_t g_mr_mu = PTHREAD_MUTEX_INITIALIZER; static _Atomic int g_mr_on;
+static VkPhysicalDeviceDeviceMemoryReportFeaturesEXT g_mr_feature = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEVICE_MEMORY_REPORT_FEATURES_EXT};
+static void mr_account(const mr_object *o, int add) {
+    unsigned k = !o->refs[0]; mr_type *t = &g_mr_stats.types[o->bucket[k]];
+    if (add) { t->bytes[k] += o->size; t->objects[k]++; g_mr_stats.bytes[k] += o->size;
+        if (t->bytes[k] > t->peak[k]) t->peak[k] = t->bytes[k];
+        uint64_t total = g_mr_stats.bytes[0] + g_mr_stats.bytes[1]; if (total > g_mr_stats.peak) g_mr_stats.peak = total;
+    } else { t->bytes[k] -= o->size; t->objects[k]--; g_mr_stats.bytes[k] -= o->size; }
+}
+static VKAPI_ATTR void VKAPI_CALL memory_report_event(const VkDeviceMemoryReportCallbackDataEXT *d, void *u) {
+    (void)u; if (!atomic_load_explicit(&g_mr_on, memory_order_acquire)) return;
+    pthread_mutex_lock(&g_mr_mu);
+    if (d->type == VK_DEVICE_MEMORY_REPORT_EVENT_TYPE_ALLOCATION_FAILED_EXT) { g_mr_stats.failed++; g_mr_stats.failed_bytes += d->size; }
+    else if (d->type == VK_DEVICE_MEMORY_REPORT_EVENT_TYPE_ALLOCATE_EXT || d->type == VK_DEVICE_MEMORY_REPORT_EVENT_TYPE_IMPORT_EXT) {
+        unsigned k = d->type == VK_DEVICE_MEMORY_REPORT_EVENT_TYPE_IMPORT_EXT;
+        mr_object *o = nvn_hm_get(&g_mr_map, &d->memoryObjectId);
+        unsigned b = 0; while (b < g_mr_stats.ntypes && g_mr_stats.types[b].type != d->objectType) b++;
+        if ((!o && !g_mr_free) || b == MR_TYPES) { g_mr_stats.dropped++; pthread_mutex_unlock(&g_mr_mu); return; }
+        if (b == g_mr_stats.ntypes) { g_mr_stats.types[b].type = d->objectType; g_mr_stats.ntypes++; }
+        if (!o) {
+            o = g_mr_free; g_mr_free = o->next; *o = (mr_object){.size = d->size}; o->refs[k] = 1; o->bucket[k] = b;
+            nvn_hm_put(&g_mr_map, &d->memoryObjectId, o); mr_account(o, 1);
+        } else if (o->refs[k] == UINT32_MAX) g_mr_stats.dropped++;
+        else {
+            mr_account(o, 0);
+            if (!o->refs[k]) o->bucket[k] = b;
+            if (o->size != d->size) { g_mr_stats.mismatched++; if (d->size > o->size) o->size = d->size; }
+            o->refs[k]++; mr_account(o, 1);
+        }
+    } else if (d->type == VK_DEVICE_MEMORY_REPORT_EVENT_TYPE_FREE_EXT || d->type == VK_DEVICE_MEMORY_REPORT_EVENT_TYPE_UNIMPORT_EXT) {
+        unsigned k = d->type == VK_DEVICE_MEMORY_REPORT_EVENT_TYPE_UNIMPORT_EXT;
+        mr_object *o = nvn_hm_get(&g_mr_map, &d->memoryObjectId);
+        if (!o || !o->refs[k]) g_mr_stats.unmatched++;
+        else {
+            mr_account(o, 0); o->refs[k]--;
+            if (o->refs[0] || o->refs[1]) mr_account(o, 1);
+            else { nvn_hm_del(&g_mr_map, &d->memoryObjectId); o->next = g_mr_free; g_mr_free = o; }
+        }
+    }
+    pthread_mutex_unlock(&g_mr_mu);
+}
+static VkDeviceDeviceMemoryReportCreateInfoEXT g_mr_create = {VK_STRUCTURE_TYPE_DEVICE_DEVICE_MEMORY_REPORT_CREATE_INFO_EXT, NULL, 0, memory_report_event, NULL};
+static int memory_report_prepare(int requested, int advertised) {
+    if (!requested) return 0;
+    if (advertised) { VkPhysicalDeviceFeatures2 q = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, &g_mr_feature}; vkGetPhysicalDeviceFeatures2(V.pd, &q); }
+    if (!advertised || !g_mr_feature.deviceMemoryReport) { VKLOG("DM_VK_MEMORY_REPORT: device memory reporting not supported"); return 0; }
+    for (unsigned i = 0; i < MR_RECORDS; i++) g_mr_objects[i].next = i + 1 < MR_RECORDS ? &g_mr_objects[i + 1] : NULL;
+    g_mr_free = g_mr_objects; atomic_store_explicit(&g_mr_on, 1, memory_order_release);
+    VKLOG("device memory reporting on (up to %u live memory IDs)", MR_RECORDS); return 1;
+}
+static const char *mr_type_name(VkObjectType type) {
+    switch (type) {
+        case VK_OBJECT_TYPE_DEVICE: return "device"; case VK_OBJECT_TYPE_QUEUE: return "queue"; case VK_OBJECT_TYPE_QUERY_POOL: return "query-pool";
+        case VK_OBJECT_TYPE_DEVICE_MEMORY: return "device-memory"; case VK_OBJECT_TYPE_BUFFER: return "buffer"; case VK_OBJECT_TYPE_IMAGE: return "image";
+        case VK_OBJECT_TYPE_PIPELINE: return "pipeline"; case VK_OBJECT_TYPE_PIPELINE_CACHE: return "pipeline-cache"; case VK_OBJECT_TYPE_SHADER_MODULE: return "shader";
+        case VK_OBJECT_TYPE_COMMAND_POOL: return "command-pool"; case VK_OBJECT_TYPE_COMMAND_BUFFER: return "command-buffer";
+        case VK_OBJECT_TYPE_DESCRIPTOR_POOL: return "descriptor-pool"; case VK_OBJECT_TYPE_DESCRIPTOR_SET: return "descriptor-set";
+        case VK_OBJECT_TYPE_IMAGE_VIEW: return "image-view"; case VK_OBJECT_TYPE_BUFFER_VIEW: return "buffer-view"; case VK_OBJECT_TYPE_SAMPLER: return "sampler";
+        case VK_OBJECT_TYPE_RENDER_PASS: return "render-pass"; case VK_OBJECT_TYPE_FRAMEBUFFER: return "framebuffer"; default: return "other";
+    }
+}
+static void memory_report_poll(void) {
+    if (!atomic_load_explicit(&g_mr_on, memory_order_acquire)) return;
+    struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); uint64_t now = (uint64_t)t.tv_sec * 1000000000ull + (uint64_t)t.tv_nsec;
+    const char *e = getenv("DM_VK_MEMORY_DUMP"); int dump = e && atoi(e); mr_stats s; uint32_t n;
+    static uint64_t last; pthread_mutex_lock(&g_mr_mu);
+    if (!dump && last && now - last < 30000000000ull) { pthread_mutex_unlock(&g_mr_mu); return; }
+    last = now; s = g_mr_stats; n = g_mr_map.n; pthread_mutex_unlock(&g_mr_mu);
+    if (dump) setenv("DM_VK_MEMORY_DUMP", "0", 1);
+    VKLOG("device memory report: %.1f MB live (allocated %.1f, imported %.1f), peak %.1f MB, %u unique IDs; failed %llu (%.1f MB), dropped %llu, unmatched releases %llu, size mismatches %llu",
+        (s.bytes[0] + s.bytes[1]) / 1048576.0, s.bytes[0] / 1048576.0, s.bytes[1] / 1048576.0, s.peak / 1048576.0, n, (unsigned long long)s.failed,
+        s.failed_bytes / 1048576.0, (unsigned long long)s.dropped, (unsigned long long)s.unmatched, (unsigned long long)s.mismatched);
+    for (unsigned i = 0; i < s.ntypes; i++) { const mr_type *b = &s.types[i];
+        VKLOG("  device memory %s (type %u): allocated %.1f MB / peak %.1f (%llu IDs), imported %.1f MB / peak %.1f (%llu IDs)", mr_type_name(b->type), (uint32_t)b->type,
+            b->bytes[0] / 1048576.0, b->peak[0] / 1048576.0, (unsigned long long)b->objects[0], b->bytes[1] / 1048576.0, b->peak[1] / 1048576.0, (unsigned long long)b->objects[1]); }
+}
 
 static void completion_start(void);
 static void slots_init(void);
@@ -133,6 +219,8 @@ void vk_init(void) {
     // DM_VK_PIPE_STATS=1 (start-up, debugging): the driver's compiler statistics of each compute pipeline (registers, spills, instructions) in the log
     V.pipe_stats = getenv("DM_VK_PIPE_STATS") && has_ext(ex, ne, "VK_KHR_pipeline_executable_properties") ? atoi(getenv("DM_VK_PIPE_STATS")) : 0;   // =2: internal representations too
     if (V.pipe_stats) on[non++] = "VK_KHR_pipeline_executable_properties";
+    const char *mr_env = getenv("DM_VK_MEMORY_REPORT"); int mr = memory_report_prepare(mr_env && atoi(mr_env), has_ext(ex, ne, "VK_EXT_device_memory_report"));
+    if (mr) on[non++] = "VK_EXT_device_memory_report";
     // A Vulkan 1.1 or 1.2 device (Legion Y700 2023, Adreno 730: its stock driver reports 1.1) has what the replay uses from 1.2 / 1.3 as extensions: they are enabled
     // when present, so the features chained below and the functions loaded by their KHR names are valid there. A 1.3 device needs none of them
     int v12 = V.props.apiVersion >= VK_API_VERSION_1_2, v13 = V.props.apiVersion >= VK_API_VERSION_1_3; uint32_t npromo = 0;
@@ -219,6 +307,7 @@ void vk_init(void) {
     float prio = 1;
     VkDeviceQueueCreateInfo qci = {VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, NULL, 0, V.qf, 1, &prio};
     VkDeviceCreateInfo dci = {VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, &enf, 0, 1, &qci, 0, NULL, non, on, NULL};
+    if (mr) { g_mr_feature.pNext = (void *)dci.pNext; g_mr_create.pNext = &g_mr_feature; dci.pNext = &g_mr_create; }
     VKCHK(vkCreateDevice(V.pd, &dci, NULL, &V.dev));
     vkGetDeviceProcAddr = (PFN_vkGetDeviceProcAddr)p_vkGetInstanceProcAddr(V.inst, "vkGetDeviceProcAddr");
 #define VK_LOADD(f) f = (PFN_##f)vkGetDeviceProcAddr(V.dev, #f); if (!f) f = (PFN_##f)vkGetDeviceProcAddr(V.dev, #f "KHR"); if (!f) f = (PFN_##f)p_vkGetInstanceProcAddr(V.inst, #f);   // a promoted function by its extension's name (Vulkan 1.1 / 1.2 devices)
@@ -292,28 +381,24 @@ int vk_inflight_writes(vk_gwrite *o) {
 enum { PASSQ = 512 };   // passes (and dispatches) timed per submission
 static VkQueryPool g_pq; static int g_pq_on = -1;
 typedef struct { uint32_t w, h, fmt, draws, fidx; } pass_meta;   // fidx: the pass's place in its frame (submissions are cut every DM_VK_CB_DRAWS draws)
-enum { FPASSQ = 512 }; static int g_fpass;   // passes of the frame so far
-void vk_pass_frame(void) { g_fpass = 0; }   // a present: the next pass is the frame's first
+static int g_fpass;   // passes of the frame so far
+static _Atomic int g_pass_report;
+static _Atomic double g_pass_spike_ms = 25;
+void vk_pass_frame(void) {   // a present: the next pass is the frame's first; live options stay on the replay thread
+    g_fpass = 0;
+    if (g_pq) { const char *e = getenv("DM_VK_PASS_SPIKE"); double ms = e ? atof(e) : 25; atomic_store_explicit(&g_pass_spike_ms, ms > 0 ? ms : 25, memory_order_relaxed); }
+}
 static pass_meta g_pmeta[NSLOT][PASSQ]; static int g_npass[NSLOT];
-static double g_pacc[FPASSQ]; static uint32_t g_pcnt[FPASSQ]; static pass_meta g_plast[FPASSQ]; static int g_pmax;   // by the pass's place in its frame (the completion thread adds)
 static int pass_times_on(void) { if (g_pq_on < 0) { const char *e = getenv("DM_VK_PASS_TIMES"); g_pq_on = e && atoi(e); } return g_pq_on && g_pq; }
 void vk_pass_ts(int end, uint32_t w, uint32_t h, uint32_t fmt, uint32_t draws) {
     if (!pass_times_on() || g_cur < 0) return; int *n = &g_npass[g_cur]; if (*n >= PASSQ) return;
     vkCmdWriteTimestamp(g_slot_main_cb(), end ? VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, g_pq, (uint32_t)(g_cur * PASSQ * 2 + *n * 2 + end));
-    if (end) { g_pmeta[g_cur][*n] = (pass_meta){w, h, fmt, draws, (uint32_t)(g_fpass < FPASSQ - 1 ? g_fpass : FPASSQ - 1)}; (*n)++; g_fpass++; }
+    if (end) { g_pmeta[g_cur][*n] = (pass_meta){w, h, fmt, draws, (uint32_t)g_fpass++}; (*n)++; }
 }
-void vk_pass_report(void) {   // the most expensive passes since the last report, then the counters start again
+void vk_pass_report(void) {   // the completion thread reports a finished frame, without racing its accumulation
     if (!pass_times_on()) return;
-    static int idx[FPASSQ]; int m = g_pmax; for (int i = 0; i < m; i++) idx[i] = i;
-    for (int i = 0; i < m; i++) for (int j = i + 1; j < m; j++) if (g_pcnt[idx[j]] && (!g_pcnt[idx[i]] || g_pacc[idx[j]] / g_pcnt[idx[j]] > g_pacc[idx[i]] / g_pcnt[idx[i]])) { int t = idx[i]; idx[i] = idx[j]; idx[j] = t; }
-    double tot = 0; for (int i = 0; i < m; i++) if (g_pcnt[i]) tot += g_pacc[i] / g_pcnt[i];
-    char b[3000]; int o = snprintf(b, sizeof b, "passes by GPU time (%d passes, %.2f ms in passes per frame):", m, tot);
-    for (int i = 0; i < m && i < 20 && o < (int)sizeof b - 80; i++) { int k = idx[i]; if (!g_pcnt[k]) continue;
-        if (g_plast[k].fmt == PT_DISPATCH) o += snprintf(b + o, sizeof b - (size_t)o, " #%d %.2f ms (dispatch %ux%ux%u);", k, g_pacc[k] / g_pcnt[k], g_plast[k].w, g_plast[k].h, g_plast[k].draws);
-        else o += snprintf(b + o, sizeof b - (size_t)o, " #%d %.2f ms (%ux%u fmt %u, %u draws over %u px wide);", k, g_pacc[k] / g_pcnt[k], g_plast[k].w, g_plast[k].h, g_plast[k].fmt, g_plast[k].draws & 0xffff, g_plast[k].draws >> 16); }
-    { extern uint64_t g_nvn_discards[2]; static uint64_t pd0, pd1; o += snprintf(b + o, sizeof b - (size_t)o, " discards since: colour %llu, depth %llu", (unsigned long long)(g_nvn_discards[0] - pd0), (unsigned long long)(g_nvn_discards[1] - pd1)); pd0 = g_nvn_discards[0]; pd1 = g_nvn_discards[1]; }
-    VKLOG("%s", b);
-    memset(g_pacc, 0, sizeof g_pacc); memset(g_pcnt, 0, sizeof g_pcnt); g_pmax = 0;
+    atomic_store_explicit(&g_pass_report, 1, memory_order_release);
+    { extern uint64_t g_nvn_discards[2]; static uint64_t pd0, pd1; VKLOG("discards since: colour %llu, depth %llu", (unsigned long long)(g_nvn_discards[0] - pd0), (unsigned long long)(g_nvn_discards[1] - pd1)); pd0 = g_nvn_discards[0]; pd1 = g_nvn_discards[1]; }
 }
 // one submission at a time: the game's (hle_nvn.c holds its own lock around them) and the backend's own (texel readback, present)
 static pthread_mutex_t g_sub_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -499,6 +584,7 @@ void vk_defer_free_image_sub(VkImage i, void *sub) { df_add(4, (void *)i, sub); 
 void img_sub_free_(void *s) { img_sub_free((imgsub *)s); }
 void vk_defer_free_image(VkImage i, VkDeviceMemory m) { df_add(1, (void *)i, (void *)m); }
 void vk_defer_free_view(VkImageView v) { df_add(2, (void *)v, NULL); }
+void vk_defer_free_buffer_view(VkBufferView v) { df_add(3, (void *)v, NULL); }
 VkDescriptorSet vk_alloc_set(VkDescriptorSetLayout l) { return vk_dp_alloc(&cur()->dps, l); }   // freed with the submission's slot
 
 // ---------------- submissions: begin, CPU-visible effects, commit ----------------
@@ -674,29 +760,41 @@ uint64_t guest_ns(void);
 static uint64_t gpu_ticks(void) { uint64_t g = guest_ns(); if (!g) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); g = (uint64_t)t.tv_sec * 1000000000ull + (uint64_t)t.tv_nsec; } return g * 12 / 625; }
 // GPU time per NVN frame (the sum of its submissions' timestamp spans), for the timing line's GPU column: the frame a submission belongs to is the one being replayed
 static uint64_t g_cur_frame, g_frame_gpu[64], g_frame_gpu_of[64];
-void mtl_set_frame(uint64_t f) { __atomic_store_n(&g_cur_frame, f, __ATOMIC_RELAXED); }
+void mtl_set_frame(uint64_t f) { __atomic_store_n(&g_cur_frame, f, __ATOMIC_RELAXED); memory_report_poll(); }
 double mtl_gpu_ms(uint64_t f) { return g_frame_gpu_of[f % 64] == f + 1 ? g_frame_gpu[f % 64] / 1e6 : -1; }
 double vk_gpu_ms_recent(void) {   // the latest finished frame's GPU time among the last 8 (-1: none known)
     uint64_t f = __atomic_load_n(&g_cur_frame, __ATOMIC_RELAXED);
     for (uint64_t k = 2; k < 8 && k <= f; k++) { double g = mtl_gpu_ms(f - k); if (g >= 0) return g; }
     return -1;
 }
-// DM_VK_PASS_SPIKE=<ms> (read at start-up, with DM_VK_PASS_TIMES; default 25): a frame whose timed passes and dispatches, or whose submissions, take more than that lists its costliest
+// DM_VK_PASS_SPIKE=<ms> (live, with DM_VK_PASS_TIMES; default 25): a frame whose timed passes and dispatches, or whose submissions, take more than that lists its costliest
 // ones, to find what a one-frame GPU spike drew (Tears of the Kingdom: 25-180 ms frames among 10-13 ms ones while fighting). Completion thread only
-static uint64_t g_sf_frame = ~0ull; static struct { double ms; pass_meta m; } g_sf[PASSQ * 4]; static int g_nsf; static double g_sf_tot;
-static void pass_spike_add(double ms, const pass_meta *m) { g_sf_tot += ms; if (g_nsf < PASSQ * 4) { g_sf[g_nsf].ms = ms; g_sf[g_nsf].m = *m; g_nsf++; } }
+static uint64_t g_sf_frame = ~0ull; static struct { double ms; pass_meta m; } g_sf[20]; static int g_nsf, g_sf_bad; static uint32_t g_sf_passes, g_sf_frames, g_sf_incomplete; static double g_sf_tot, g_sf_acc;
+static void pass_spike_add(double ms, const pass_meta *m) {
+    g_sf_tot += ms; g_sf_passes++; int at = g_nsf;
+    if (at < 20) g_nsf++; else if (ms <= g_sf[--at].ms) return;
+    for (; at && ms > g_sf[at - 1].ms; at--) g_sf[at] = g_sf[at - 1];
+    g_sf[at].ms = ms; g_sf[at].m = *m;
+}
 static void pass_spike_flush(void) {
-    static double lim = -1; if (lim < 0) { const char *e = getenv("DM_VK_PASS_SPIKE"); lim = e && atof(e) > 0 ? atof(e) : 25; }
-    double fg = g_sf_frame != ~0ull ? mtl_gpu_ms(g_sf_frame) : -1;   // the frame's submissions end to end: a spike outside the timed passes shows as the difference
-    if (g_sf_frame != ~0ull && (g_sf_tot > lim || fg > lim)) {
-        for (int i = 0; i < g_nsf && i < 6; i++) for (int j = i + 1; j < g_nsf; j++) if (g_sf[j].ms > g_sf[i].ms) { __typeof__(g_sf[0]) x = g_sf[i]; g_sf[i] = g_sf[j]; g_sf[j] = x; }
-        char b[1200]; int o = snprintf(b, sizeof b, "GPU spike: frame %llu, %.2f ms in %d passes and dispatches (frame GPU %.2f ms, %.2f outside them):", (unsigned long long)g_sf_frame, g_sf_tot, g_nsf, fg, fg - g_sf_tot);
-        for (int i = 0; i < g_nsf && i < 6 && o < (int)sizeof b - 100; i++) { const pass_meta *m = &g_sf[i].m;
+    if (g_sf_frame == ~0ull) return;
+    int report = atomic_exchange_explicit(&g_pass_report, 0, memory_order_acquire);
+    if (g_sf_bad) g_sf_incomplete++; else { g_sf_acc += g_sf_tot; g_sf_frames++; }
+    double lim = atomic_load_explicit(&g_pass_spike_ms, memory_order_relaxed);
+    double fg = mtl_gpu_ms(g_sf_frame);   // the submissions' GPU span is distinct from the sum of pass spans
+    if (report || (!g_sf_bad && (g_sf_tot > lim || fg > lim))) {
+        char b[3000]; int o;
+        if (report && g_sf_frames) o = snprintf(b, sizeof b, "GPU passes: %.2f ms/frame in timed pass spans (%u complete frames, %u incomplete); ", g_sf_acc / g_sf_frames, g_sf_frames, g_sf_incomplete);
+        else if (report) o = snprintf(b, sizeof b, "GPU passes: no complete frames (%u incomplete); ", g_sf_incomplete);
+        else o = snprintf(b, sizeof b, "GPU spike: ");
+        o += snprintf(b + o, sizeof b - (size_t)o, "frame %llu%s, %.2f ms in %u timed passes and dispatches (GPU span %.2f ms):", (unsigned long long)g_sf_frame, g_sf_bad ? " (incomplete timestamps)" : "", g_sf_tot, g_sf_passes, fg);
+        for (int i = 0; i < g_nsf && i < (report ? 20 : 6) && o < (int)sizeof b - 100; i++) { const pass_meta *m = &g_sf[i].m;
             if (m->fmt == PT_DISPATCH) o += snprintf(b + o, sizeof b - (size_t)o, " #%u %.2f ms (dispatch %ux%ux%u);", m->fidx, g_sf[i].ms, m->w, m->h, m->draws);
-            else o += snprintf(b + o, sizeof b - (size_t)o, " #%u %.2f ms (%ux%u fmt %u, %u draws);", m->fidx, g_sf[i].ms, m->w, m->h, m->fmt, m->draws & 0xffff); }
+            else o += snprintf(b + o, sizeof b - (size_t)o, " #%u %.2f ms (%ux%u fmt %u, %u draws over %u px wide);", m->fidx, g_sf[i].ms, m->w, m->h, m->fmt, m->draws & 0xffff, m->draws >> 16); }
         VKLOG("%s", b);
     }
-    g_nsf = 0; g_sf_tot = 0;
+    if (report) { g_sf_acc = 0; g_sf_frames = g_sf_incomplete = 0; }
+    g_nsf = g_sf_bad = 0; g_sf_passes = 0; g_sf_tot = 0;
 }
 static void *completion_main(void *a) {
     (void)a; pthread_setname_np(pthread_self(), "dm-vk-complete");
@@ -709,11 +807,13 @@ static void *completion_main(void *a) {
         if (g_tsq && c->slot >= 0) { uint64_t t[2]; if (vkGetQueryPoolResults(V.dev, g_tsq, 2 * (uint32_t)c->slot, 2, sizeof t, t, 8, VK_QUERY_RESULT_64_BIT) == VK_SUCCESS && t[1] > t[0])
             { uint64_t ns = (uint64_t)((double)(t[1] - t[0]) * V.props.limits.timestampPeriod); g_gpu_ns += ns; int k = (int)(c->frame % 64);
               if (g_frame_gpu_of[k] != c->frame + 1) { g_frame_gpu[k] = 0; g_frame_gpu_of[k] = c->frame + 1; } g_frame_gpu[k] += ns; } }
-        if (g_pq && pass_times_on() && c->slot >= 0) {   // this submission's passes
+        if (g_pq && pass_times_on()) {   // this submission's passes
             int np = c->npass; uint64_t t[PASSQ * 2];
             if (c->frame != g_sf_frame) { pass_spike_flush(); g_sf_frame = c->frame; }
-            if (np && vkGetQueryPoolResults(V.dev, g_pq, (uint32_t)(c->slot * PASSQ * 2), (uint32_t)np * 2, sizeof t, t, 8, VK_QUERY_RESULT_64_BIT) == VK_SUCCESS)
-                for (int i = 0; i < np; i++) if (t[2 * i + 1] > t[2 * i]) { pass_spike_add((double)(t[2 * i + 1] - t[2 * i]) * V.props.limits.timestampPeriod / 1e6, &c->pmeta[i]); int f = (int)c->pmeta[i].fidx; g_pacc[f] += (double)(t[2 * i + 1] - t[2 * i]) * V.props.limits.timestampPeriod / 1e6; g_pcnt[f]++; g_plast[f] = c->pmeta[i]; if (f + 1 > g_pmax) g_pmax = f + 1; }
+            if (c->slot < 0 || np >= PASSQ) g_sf_bad = 1;   // at capacity, later passes may have no timestamps
+            if (c->slot >= 0 && np) { if (vkGetQueryPoolResults(V.dev, g_pq, (uint32_t)(c->slot * PASSQ * 2), (uint32_t)np * 2, sizeof t, t, 8, VK_QUERY_RESULT_64_BIT) == VK_SUCCESS) {
+                for (int i = 0; i < np; i++) if (t[2 * i + 1] >= t[2 * i]) pass_spike_add((double)(t[2 * i + 1] - t[2 * i]) * V.props.limits.timestampPeriod / 1e6, &c->pmeta[i]); else g_sf_bad = 1;
+            } else g_sf_bad = 1; }
         }
         uint64_t now = gpu_ticks(), tend = 0;
         if (g_tsq && c->slot >= 0) { uint64_t t[2]; if (vkGetQueryPoolResults(V.dev, g_tsq, 2 * (uint32_t)c->slot, 2, sizeof t, t, 8, VK_QUERY_RESULT_64_BIT) == VK_SUCCESS) tend = t[1]; }
@@ -790,4 +890,44 @@ int mtl_wait(uint64_t fence, uint64_t timeout_ns) {
     return ok;
 }
 void mtl_finish(void) { mtl_wait(g_fence, ~0ull); }
-void mtl_drain(void) { mtl_finish(); vk_pipeline_cache_save(); }
+static uint64_t reported_command_bytes(void) {
+    uint64_t bytes = 0;
+    pthread_mutex_lock(&g_mr_mu);
+    for (unsigned i = 0; i < g_mr_stats.ntypes; i++) {
+        const mr_type *type = &g_mr_stats.types[i];
+        if (type->type == VK_OBJECT_TYPE_COMMAND_BUFFER || type->type == VK_OBJECT_TYPE_COMMAND_POOL)
+            bytes += type->bytes[0] + type->bytes[1];
+    }
+    pthread_mutex_unlock(&g_mr_mu);
+    return bytes;
+}
+static void trim_idle_commands(void) {
+    // dm_gfx_suspend has gated submits and presents. The submission lock also excludes texel readback, and g_done follows the completion thread's resets.
+    pthread_mutex_lock(&g_sub_lock);
+    if (!g_fence) { pthread_mutex_unlock(&g_sub_lock); return; }
+    if (!mtl_wait(g_fence, ~0ull)) {
+        pthread_mutex_unlock(&g_sub_lock);
+        VKLOG("[RED] idle command pool reset timed out waiting for completion");
+        return;
+    }
+    int tracked = atomic_load_explicit(&g_mr_on, memory_order_acquire);
+    uint64_t before = tracked ? reported_command_bytes() : 0;
+    unsigned reset = 0;
+    VkResult error = VK_SUCCESS;
+    for (int i = 0; i < NSLOT; i++) {
+        VkResult r = vkResetCommandPool(V.dev, g_slot[i].pool, VK_COMMAND_POOL_RESET_RELEASE_RESOURCES_BIT);
+        if (r == VK_SUCCESS) reset++;
+        else if (!error) error = r;
+    }
+    uint64_t after = tracked ? reported_command_bytes() : 0;
+    pthread_mutex_unlock(&g_sub_lock);
+    if (error) VKLOG("[RED] idle command pool reset failed (%d)", error);
+    if (tracked) VKLOG("idle command pools reset %u/%d, reported command memory %.1f to %.1f MiB", reset, NSLOT, before / 1048576.0, after / 1048576.0);
+    else VKLOG("idle command pools reset %u/%d", reset, NSLOT);
+}
+void mtl_drain(void) {
+    const char *trim = getenv("DM_VK_TRIM_COMMANDS");
+    if (trim && atoi(trim)) trim_idle_commands();
+    else mtl_finish();
+    vk_pipeline_cache_save();
+}

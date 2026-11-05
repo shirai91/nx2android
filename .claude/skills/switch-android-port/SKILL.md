@@ -59,7 +59,7 @@ Installing, launching and the basic control-file lines are in `nx2android-dev/re
   - For release builds, set `BOOT_TAP="x y"` to tap the on-screen A button instead.
 - **Logs:**
   - `log.txt` is the current run and `log.prev.txt` the run before; each launch rotates them, so read the log after a crash before relaunching twice.
-  - Lines worth grepping: `timing up to frame` (frame p50/p95/max), `replay per frame` (draws, replay ms, GPU busy, descriptor reuse), `adaptive frame rate`, `passes by GPU time`, `[slowframe]` (with `DM_SLOWFRAME=1`).
+  - Lines worth grepping: `timing up to frame` (frame p50/p95/max), `replay per frame` (draws, replay ms, GPU busy, descriptor reuse), `adaptive frame rate`, `GPU passes:`, `[slowframe]` (with `DM_SLOWFRAME=1`).
 
 ## Debugging playbook
 
@@ -115,8 +115,9 @@ How to work a bug:
 - The CPU may be capped by policy, not heat: the Y700's `scaling_max_freq` stayed at ~2.0 GHz (of 3.5 / 4.3) at 55 °C. `dumpsys thermalservice` showed cached temperatures (93 °C) hours old: read `/sys/class/thermal/thermal_zone*/temp`.
 - Dropped submissions leave stale GPU timestamps.
 - One thermal sysfs zone can be stale; read several.
-- The GPU clock isn't readable on retail devices; infer it from GPU busy at a fixed rate.
-- `simpleperf` is refused on retail devices, and an in-process SIGPROF sampler crashed the game: use the replay's timers and per-thread `/proc` sampling.
+- GPU-clock access varies by device. Read `/sys/class/kgsl/kgsl-3d0/devfreq/cur_freq` when available and compare the same scene at matching clocks.
+- `simpleperf` access varies by device: `simpleperf stat --app PACKAGE --per-thread` and frame-pointer recording worked on the debuggable test app on the S24 Ultra. If refused, use the replay's timers and per-thread `/proc` sampling; an in-process SIGPROF sampler previously crashed a game.
+- The overlay's footprint counts resident CPU mappings. Check `dumpsys meminfo` graphics and SwapPss, `/proc/meminfo`, and memory PSI as well. LMK kills prove pressure, not a leak; use a stationary time series and resource lifetimes to distinguish them. `DM_VK_MEMORY_REPORT=1` can attribute driver memory on supported devices.
 - Runs that reach different scenes aren't comparable.
 - Run analysis scripts with plain `python`, not `python -I`: they need Pillow, numpy and PyAV from user site-packages.
 
