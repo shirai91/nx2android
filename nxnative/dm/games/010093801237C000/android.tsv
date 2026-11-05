@@ -8,7 +8,10 @@
 # intro (the VP9 movies, the text pages, the ship's cockpit) and Artaria's first room. The file is saved (00:00:00 in file select after a restart).
 # A 20-minute soak in Artaria's first rooms (walking, turning): one process throughout, 0 frames dropped on screen, no underrun, no red log line, footprint 1.5 GB.
 # 60 fps docked: in Artaria's first room 270 draws, replay 1.65 ms and GPU 5.9 ms a frame, 0 of 64 frames late on screen. Audio: no underrun in play.
-# The dark overgrowth over the statue of Artaria's first room is in Nintendo's own screenshot of that room (Metroid Dread Report vol. 8) too.
+# Issue #80 (2026-11-05): every dark area was black, Samus a silhouette. The image-based light cube maps (128x128 and 64x64 BC6H) are textures with no packaged layout over
+# memory the game fills before it makes their pool (CPU_NO_ACCESS): they stayed empty and the ambient light the material shaders write into the light buffer was 0. The core now
+# uploads such a texture from memory at its first use (hle_nvn.c nvnTextureInitialize). Artaria's statue room: median brightness 56 → 84 (of 255), pixels above 64 42% → 74%.
+# The dark overgrowth over its statue noted before was this bug, not the game's look.
 status	playable
 tested	v327680 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
 package	org.nx2a.metroiddread

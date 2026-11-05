@@ -1,0 +1,32 @@
+# The Legend of Zelda: Tears of the Kingdom on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Nintendo EPD's engine (sead / agl / gsys) on SDK 20.5.22, update 1.4.3; 28,669 shaders, all translated (0 rejected by spirv-val). The upstream profile with the frame step at 60 fps.
+# Tested 2026-11-03 on the Legion Y700 (TB322FC, Snapdragon 8 Elite, Adreno 830, Android 16), its CPU held at 2.0-2.25 GHz by the system: a new save's opening beneath Hyrule
+# Castle (the cave, the climb, the cutscenes, the Ganondorf movie), the Room of Awakening, the Great Sky Island (the pond, the Temple of Time's grounds, fights), Continue
+# from an autosave. Sound clean throughout (0 underruns). Played by the user for about 30 minutes.
+# Handheld (1280x720, the game's own size): 60 fps beneath Hyrule Castle (GPU p50 13.1 / p95 15.8 ms, 1,800 of 1,800 frames held one vsync). On the Great Sky Island
+# 20-40 fps: 2,000-4,200 draws a frame, replay 11-18 ms (mostly the driver's descriptor-set, draw and render-pass calls), GPU 14-23 ms, and the game's own threads waiting
+# on each other for about 23 ms a frame on cores at 1.0-2.0 GHz. Docked (1600x896) needed about 24 ms of GPU a frame, so the pause menu starts in handheld mode.
+# DM_VK_FDZ=0: the fragment-depth variants (gl_FragDepth = gl_FragCoord.z for draws that test a depth buffer a shader wrote) moved the half-resolution 640x360 RGBA16F
+# effects pass (46 blended draws over a depth buffer a downsampling shader writes) to late depth tests: GPU 17.8 -> 13.4 ms a frame in the cave. Without them no light
+# dropped out: 0 one-frame spikes in 10 s still, and while the camera turned fewer than with them (32-41 of 475 frames against 65-94 of 350, all camera motion).
+# DM_NVN_ASYNC=1 + DM_PIN_REPLAY=prime: the replay on a thread of its own on the prime cores, 13 -> 11 ms a frame at the Great Sky Island pond; the pond still mostly
+# held 30 fps either way (one run held 60 for about 450 frames). Two turning recordings with it showed only camera motion.
+# porter port --mt-replay (DM_VK_MT_REPLAY=1, the vkCmd* calls on a recorder thread): replay 11 -> 7.6 ms a frame at the pond; the Khronos validation layer showed
+# the same 11 message kinds with it and without it. The frame step's GPU reference no longer stays at the title screen's (27 probes in 66 s, drops to 20 fps): one
+# probe, then a steady 30 fps (1,800 of 1,800 frames at hold 2).
+# porter port --vulkan-driver with Mesa's Turnip 26.2.6 (built from source; loaded through libadrenotools): picture correct, the user's play session held 30 fps in
+# the open world with replay 11.0 ms and GPU 18.9 ms a frame at about 3,550 draws (Qualcomm's driver: 14.2 and 24.0 ms at about 4,070), and the user found it
+# faster. Its lakes were black until the depth a fragment shader writes stayed exact (Ryujinx ForcePreciseEnable: the light classifier's D16 material id).
+# DM_GPU_TURBO=1 (live; the GPU at its highest clock) on Turnip: a shrine 18 -> 15 ms of GPU, then 60 fps held (GPU p50 about 12 ms); the open world (about
+# 2,000 draws) went from 30 to 60 fps with 4 of 11 ten-second windows dropping frames, but the GPU went from 53 to 75 °C in 60 s, so it is not in the profile.
+# Open: 60 fps in the open world without turbo (GPU about 19 ms on Turnip); the frame step tries 60 only under 0.85 of a frame; GPU frames of 0.8-1.9 s on
+# entering a shrine (Turnip); fights show single GPU frames of 25-180 ms (DM_VK_PASS_TIMES=1 + DM_VK_PASS_SPIKE=<ms> lists such a
+# frame's passes); a flickering light ray the user saw in a sky view on Qualcomm's driver.
+status	experimental
+tested	v720896 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
+package	org.nx2a.zeldatearsofthekingdom
+orientation	landscape
+setting	docked=0
+env	DM_VK_FDZ=0
+env	DM_NVN_ASYNC=1
+env	DM_PIN_REPLAY=prime

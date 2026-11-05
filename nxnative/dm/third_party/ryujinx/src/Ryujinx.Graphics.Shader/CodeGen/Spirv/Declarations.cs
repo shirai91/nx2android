@@ -229,6 +229,13 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
             {
                 int setIndex = context.TargetApi == TargetApi.Vulkan ? image.Set : 0;
 
+                // nxnative: a store to an image of unknown format needs the capability (the host enables the device's shaderStorageImageWriteWithoutFormat).
+                // Tears of the Kingdom's compute shaders b940aa86d8939c47 / dfe7662fd03a0e42 failed spirv-val without it
+                if (image.Format == TextureFormat.Unknown && image.Flags.HasFlag(TextureUsageFlags.ImageStore))
+                {
+                    context.AddCapability(Capability.StorageImageWriteWithoutFormat);
+                }
+
                 Dim dim = GetDim(image.Type);
 
                 SpvInstruction imageType = context.TypeImage(

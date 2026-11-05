@@ -1,9 +1,20 @@
 # porter/adb.py without a device: the shell's answers are made up (python -m unittest discover tests).
-import sys, unittest
+import sys, tarfile, tempfile, unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from porter.adb import Adb, AdbError   # noqa: E402
+
+
+class MissingAdb(unittest.TestCase):   # issue #109: a port without platform-tools ran a program named "None" and ended in FileNotFoundError
+    def test_no_exe(self):
+        with self.assertRaisesRegex(AdbError, 'adb not found'): Adb(None)
+
+    def test_exe_gone(self):   # a configured adb that is no longer there: an AdbError at once, no retries
+        with tempfile.TemporaryDirectory() as t:
+            adb = Adb(Path(t) / 'adb.exe', log=lambda s: self.fail(f'retried: {s}'))
+            for f in (adb.devices, adb.pick, lambda: adb.shell('true')):
+                with self.assertRaisesRegex(AdbError, 'cannot run adb'): f()
 
 
 class RemoteSizes(unittest.TestCase):
@@ -27,6 +38,35 @@ class RemoteSizes(unittest.TestCase):
             self.FakeAdb('5 ./a\nfind: exec stat: Argument list too long\n7 ./d\nrc=1\n').remote_sizes('/sdcard/x')
         with self.assertRaisesRegex(AdbError, 'no exit status'):   # cut short
             self.FakeAdb('5 a\n7 d\n').remote_sizes('/sdcard/x')
+
+
+class PushTars(unittest.TestCase):
+    class FakeAdb(Adb):   # pushes are unpacked into a local folder standing in for the device's
+        def __init__(self, dev, rc='rc=0'): super().__init__('adb'); self.dev, self.rc, self.got = Path(dev), rc, []
+        def run(self, *a, **kw):
+            if a[0] == 'push':
+                with tarfile.open(a[2]) as t: self.got.append(sorted(t.getnames())); t.extractall(self.dev, filter='data')
+            return ''
+        def shell(self, script, **kw): return self.rc if 'tar -xf' in script else ''
+
+    def test_archives(self):   # every file once, by size limits; long names kept whole
+        import porter.adb as m
+        with tempfile.TemporaryDirectory() as t:
+            src, small = Path(t) / 'data', []
+            for i in range(5):
+                rel = f'RomFS/{"d" * 120}/f{i}.bin'; p = src / rel; p.parent.mkdir(parents=True, exist_ok=True); p.write_bytes(bytes([i]) * (i + 1)); small.append((rel, p, i + 1))
+            adb, old = self.FakeAdb(Path(t) / 'dev'), (m.TAR_FILES, m.TAR_BYTES)
+            m.TAR_FILES, m.TAR_BYTES = 2, 1 << 20
+            try: self.assertEqual(adb.push_tars(src, '/sdcard/x', small), 15)
+            finally: m.TAR_FILES, m.TAR_BYTES = old
+            self.assertEqual([len(g) for g in adb.got], [2, 2, 1])
+            for rel, p, s in small: self.assertEqual((Path(t) / 'dev' / rel).read_bytes(), p.read_bytes())
+            self.assertEqual([q.name for q in Path(t).iterdir() if q.name.startswith('.nx2a_tar_')], [])   # the archives' folder is gone
+
+    def test_unpack_error(self):   # a tar that fails on the device is an error
+        with tempfile.TemporaryDirectory() as t:
+            p = Path(t) / 'data' / 'a'; p.parent.mkdir(); p.write_bytes(b'x')
+            with self.assertRaisesRegex(AdbError, 'unpacking'): self.FakeAdb(Path(t) / 'dev', 'tar: short read\nrc=1').push_tars(p.parent, '/sdcard/x', [('a', p, 1)])
 
 
 if __name__ == '__main__':

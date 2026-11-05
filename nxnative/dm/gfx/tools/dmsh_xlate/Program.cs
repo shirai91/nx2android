@@ -112,7 +112,8 @@ static class SwshXlate
             Array32<AttributeType> attr = default; Array8<AttributeType> fout = default;
             if (_job["attr"] is JsonObject a) foreach (var kv in a) attr[int.Parse(kv.Key)] = Attr((string)kv.Value);
             if (_job["fout"] is JsonObject f) foreach (var kv in f) fout[int.Parse(kv.Key)] = Attr((string)kv.Value);
-            return new GpuGraphicsState(false, _job["geometry_topology"] is JsonNode gt ? (InputTopology)(int)gt : InputTopology.Triangles, false, TessPatchType.Triangles, TessSpacing.EqualSpacing,
+            // Job "early_z" (shader_vk.py job_for, from the control section): the fragment shader's layout(early_fragment_tests), as NVN sets FORCE_EARLY_FRAGMENT_TESTS for it
+            return new GpuGraphicsState(_job["early_z"] is JsonNode ez && (bool)ez, _job["geometry_topology"] is JsonNode gt ? (InputTopology)(int)gt : InputTopology.Triangles, false, TessPatchType.Triangles, TessSpacing.EqualSpacing,
                 false, false, false, false /* depth not rewritten: dmsh_build.py adds the GL entry point (see the file header) */, false, 1f, AlphaTestOp.Always, 0f, attr, false, fout, false,
                 false /* no Y flip */, true /* origin upper-left */, false);
         }
@@ -127,6 +128,11 @@ static class SwshXlate
         // early, over the game's malloc chunks in the same pool, and the heap broke (a crash in dlmalloc after the opening movie). With an alignment given, every access takes the form
         public int QueryHostStorageBufferOffsetAlignment() => _job["sb_align"] is JsonNode n ? (int)n : 16;
         public bool QueryHasUnalignedStorageBuffer() => _job["sb_align"] != null;
+        // Job "subgroup" (the Android chain, shader_vk.py SUBGROUP): the host's subgroup size; above 32 the translator emulates Maxwell's 32-lane warps inside it. Metal's SIMD groups are 32
+        public int QueryHostSubgroupSize() => _job["subgroup"] is JsonNode n ? (int)n : 32;
+        // Job "gather_bias" (the Android chain, shader_vk.py GATHER_BIAS): bits of the host's gather coordinate precision; the translator then moves gather coordinates by
+        // 1 / (size x 2^(bits + 1)) texels, off the texel edge where hosts round differently from Maxwell. 0 (Metal): none
+        public int QueryHostGatherBiasPrecision() => _job["gather_bias"] is JsonNode n ? (int)n : 0;
         // Job "gs_passthrough" = false (the Android chain): passthrough geometry shaders (Maxwell's fast GS) are written out as ordinary ones. VK_NV_geometry_shader_passthrough is NVIDIA's
         // alone; with its capability declared, Adreno refused every pipeline of Xenoblade Chronicles 3's effect geometry shaders (VK_ERROR_UNKNOWN)
         public bool QueryHostSupportsGeometryShaderPassthrough() => !(_job["gs_passthrough"] is JsonNode n && !(bool)n);
@@ -228,6 +234,8 @@ static class SwshXlate
 // highest active lane adds popcount(ballot) to s1[0]. SPIRV-Cross cannot give a Metal vertex function the subgroup builtins ("Subgroup builtins are not available in
 // this type of function"), so the shader never built and its draws were skipped. Lowered to singleton groups: lane id 0 and ballot(true) = (1, 0, 0, 0), so every passing
 // invocation adds one; the atomic's result is unused, so the final sum (mod 2^32) is the same. Not a general subgroup fallback: it runs only on these analysed bytes.
+// The Android chain also needs it: the translator assumes 32-lane groups (ballot .x only) and Adreno runs 64-lane waves. Its optimized SPIR-V (no DebugMode) has the
+// ballot once per use (2) and the lane id loaded where used; every ballot(true) and lane id load is replaced the same way
 // Adapted from MacNativeGames (games/totk/tools/totk_xlate/VertexCounterLowering.cs, https://github.com/ly05010419/MacNativeGames), MIT License: dm/third_party/macnativegames/LICENSE.
 static class VertexCounterLowering
 {
@@ -246,7 +254,7 @@ static class VertexCounterLowering
             if (op == 41) trueId = w[i + 2];   // OpConstantTrue
             if (op == 339) { vectorType = w[i + 1]; ballots++; if (w[i + 4] != trueId) throw new InvalidOperationException("visibility counter: ballot predicate changed"); }   // OpGroupNonUniformBallot
         }
-        if (lane == 0 || uintType == 0 || vectorType == 0 || ballots != 1) throw new InvalidOperationException("visibility counter: SPIR-V shape changed");
+        if (lane == 0 || uintType == 0 || vectorType == 0 || ballots == 0) throw new InvalidOperationException($"visibility counter: SPIR-V shape changed (lane id {lane}, uint {uintType}, uvec4 {vectorType}, {ballots} ballots)");
         uint zero = w[3]++, one = w[3]++, mask = w[3]++;   // new ids past the bound
         var result = new List<uint>(w.Length + 16); result.AddRange(w.AsSpan(0, 5).ToArray());
         bool constants = false;
@@ -262,7 +270,7 @@ static class VertexCounterLowering
             else if (op == 339) result.AddRange(new uint[] { (4u << 16) | 83, w[i + 1], w[i + 2], mask });   // ballot(true) -> OpCopyObject (1, 0, 0, 0)
             else result.AddRange(w.AsSpan(i, (int)(w[i] >> 16)).ToArray());
         }
-        if (loads != 1 || !constants) throw new InvalidOperationException("visibility counter: lane id use changed");
+        if (loads == 0 || !constants) throw new InvalidOperationException("visibility counter: lane id use changed");
         notes.Add("visibility counter lowered to singleton groups (one atomic add per passing vertex)");
         byte[] output = new byte[result.Count * 4]; Buffer.BlockCopy(result.ToArray(), 0, output, 0, output.Length);
         return output;
