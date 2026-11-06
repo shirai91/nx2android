@@ -12,6 +12,7 @@ void nvn_dirty_release(const void *addr, size_t len);              // Make the c
 uint64_t nvn_dirty_released(void);                                 // Cumulative: pages unprotected by nvn_dirty_release
 int nvn_dirty_runs(void);                                          // Runs of protected pages now (each a mapping of the process)
 int nvn_dirty_defrag(int (*remap)(void *mem, size_t len));         // Map the most fragmented ranges again in one piece (remap: read-only, 0 = done); number of ranges done
+int nvn_dirty_swap(void *mem, size_t len, int (*fill)(void *mem, size_t len, void *ctx), void *ctx);   // New pages under a span, no write lost (fill: copy, map read-only, 0 = done); 1 = untracked span
 uint64_t nvn_dirty_now(void);                                      // Current generation: taken before upload, as the stamp of that content
 int nvn_dirty_since(const void *addr, size_t len, uint64_t stamp); // Covered pages were written after the stamp -> 1
 const void *nvn_dirty_span(const void *addr, size_t len);          // The tracked range holding the span (a handle to keep; NULL = untracked)
