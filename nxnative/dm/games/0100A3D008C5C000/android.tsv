@@ -1,0 +1,19 @@
+# Pokémon Scarlet 4.0.0, SDK 13.3.13, Trinity / NVN.
+# 2026-11-06: RedMagic 11 Pro NX809J, Adreno 840, Android 16.
+# The player confirmed the community dynamic-FPS patch removes movement shaking.
+# Handheld mode reaches 60 FPS in lighter scenes; heavier gameplay still varies.
+# Disabling alpha coverage on the paving-stone vertex shader removes fixed black
+# road seams (player A/B confirmation); the other render states stay unchanged.
+# Startup reports one draw without a usable render target. Bluetooth peers
+# (including Pokemon GO connectivity) are unavailable; bt/btm:u expose none.
+status	experimental
+tested	4.0.0 RedMagic NX809J (Adreno 840, Android 16)
+package	org.nx2a.scarlet
+orientation	landscape
+requires	bcn
+setting	docked=0
+setting	fps=1
+env	DM_FPS_TARGET=0
+env	DM_FPS_PIN=60
+env	DM_FPS_HOLD=off
+env	DM_VK_X_FLAT_VS=45cd97ab0aae9cdc:8
