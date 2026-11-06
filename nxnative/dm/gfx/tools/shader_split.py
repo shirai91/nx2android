@@ -831,50 +831,18 @@ def raw_shaders(d, label, known=()):
         if why: print(f'[RED] {label} control section @{c:#x}: {why}; left out', flush=True)
     return out
 
-ONEPACK = b'ONEPACK\0'
-def fb_field(d, t, i):
-    """FlatBuffers: absolute offset of field i of the table at t, None when the field is absent"""
-    vt = t - struct.unpack_from('<i', d, t)[0]
-    if 4 + 2 * i >= struct.unpack_from('<H', d, vt)[0]: return None
-    off = struct.unpack_from('<H', d, vt + 4 + 2 * i)[0]
-    return t + off if off else None
-
-def fb_vec(d, t, i):
-    """FlatBuffers: (start, count) of the vector in field i"""
-    p = fb_field(d, t, i)
-    if p is None: return 0, 0
-    p += struct.unpack_from('<I', d, p)[0]
-    return p + 4, struct.unpack_from('<I', d, p)[0]
-
-def fb_refs(d, t, i):   # the tables / strings a vector of offsets points at
-    st, n = fb_vec(d, t, i)
-    return [st + 4 * k + struct.unpack_from('<I', d, st + 4 * k)[0] for k in range(n)]
-
-def fb_root(d, at=0): return at + struct.unpack_from('<I', d, at)[0]
+from trinity import ONEPACK, fb_field, fb_vec, fb_refs, fb_root   # noqa: E402  (Game Freak's Trinity file system, shared with the porter)
+import trinity   # noqa: E402
 
 def trpfs_jobs(files, parts=64):
-    """Game Freak's Trinity engine (Pokémon Legends: Z-A): almost everything is in arc/data.trpfs, packs of files, with arc/data.trpfd as their index, both FlatBuffers. The descriptor's root table:
-    0 file hashes [u64], 1 pack names [string], 2 file infos [{0 pack index u64}] (in file hash order), 3 pack infos [{0 pack size u64, 1 file count u64}]. The file system: 'ONEPACK\\0', u64 offset of its
-    root table {0 pack name hashes [u64], 1 pack offsets [u64]}, each pack a table of its own at its offset. A pack is named through its first file's hash (its own name hash is not a plain FNV-1a of the
-    descriptor's name). → ([(path, rel, ((pack offset, pack name), …)), …] in about equal sizes, the paths taken)"""
-    import mmap
+    """Game Freak's Trinity engine (Pokémon Legends: Z-A): almost everything is in arc/data.trpfs, packs of files, with arc/data.trpfd as their index (trinity.py packs).
+    → ([(path, rel, ((pack offset, pack name), …)), …] in about equal sizes, the paths taken)"""
     jobs, taken = [], set()
     for p, r in files:
-        if not p.endswith('.trpfs') or not os.path.exists(p[:-1] + 'd'): continue
-        with open(p, 'rb') as f:
-            if f.read(8) != ONEPACK: continue
-        fd = open(p[:-1] + 'd', 'rb').read(); fr = fb_root(fd)
-        hashes = struct.unpack_from(f'<{fb_vec(fd, fr, 0)[1]}Q', fd, fb_vec(fd, fr, 0)[0])
-        names = [fd[s + 4:s + 4 + struct.unpack_from('<I', fd, s)[0]].decode() for s in fb_refs(fd, fr, 1)]
-        pack_of = {h: struct.unpack_from('<Q', fd, fb_field(fd, t, 0))[0] if fb_field(fd, t, 0) is not None else 0 for h, t in zip(hashes, fb_refs(fd, fr, 2))}
-        sizes = [struct.unpack_from('<Q', fd, fb_field(fd, t, 0))[0] for t in fb_refs(fd, fr, 3)]
-        with open(p, 'rb') as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as d:
-            sr = fb_root(d, struct.unpack_from('<Q', d, 8)[0]); st, n = fb_vec(d, sr, 1)
-            packs = []
-            for off in struct.unpack_from(f'<{n}Q', d, st):
-                pr = fb_root(d, off); h0 = fb_vec(d, pr, 0)
-                if not h0[1] or struct.unpack_from('<Q', d, h0[0])[0] not in pack_of: red(f'{r}: the pack at {off:#x} has no file the descriptor lists')
-                i = pack_of[struct.unpack_from('<Q', d, h0[0])[0]]; packs.append((off, names[i], sizes[i]))
+        packs = trinity.packs(p)
+        if packs is None: continue
+        for off, name, _ in packs:
+            if name is None: red(f'{r}: the pack at {off:#x} has no file the descriptor lists')
         cur, size, step = [], 0, sum(s for _, _, s in packs) / parts
         for off, name, s in sorted(packs):
             cur.append((off, name)); size += s
@@ -934,19 +902,39 @@ def oodle(comp, n):
     return p.stdout.read(n)
 
 def trinity_shaders(path, rel, packs, out):
-    """A range of Trinity packs (trpfs_jobs). Pack table: 0 file hashes [u64], 1 files [{1 compression i8 (3 = Oodle; stored otherwise), 2 level u8, 3 length u64, 4 data [u8]}]; each file is scanned like a loose one"""
+    """A range of Trinity packs (trpfs_jobs); each file is scanned like a loose one. Oodle files are decoded by the game's own decoder: DM_GFPAK_DECODED = a folder of those already decoded
+    (the porter decodes them on the Android device, trpfs_decoded), else through the Mac host (oodle, DM_OODLE_HOST)"""
     import mmap
+    dec = trpfs_decoded('/' + rel, os.path.getsize(path))
     with open(path, 'rb') as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as d:
         for off, name in packs:
-            pr = fb_root(d, off); hs = fb_vec(d, pr, 0)
-            for k, t in enumerate(fb_refs(d, pr, 1)):
-                c, ln = fb_field(d, t, 1), fb_field(d, t, 3)
-                comp, n = (struct.unpack_from('<b', d, c)[0] if c is not None else 0), (struct.unpack_from('<Q', d, ln)[0] if ln is not None else 0)
-                st, sz = fb_vec(d, t, 4)
-                if comp == 3: data = oodle(d[st:st + sz], n)
+            for k, h, comp, n, st, sz in trinity.pack_files(d, off):
+                if comp == 3 and dec is not None:
+                    if (off, k) not in dec: continue   # decoded on the device: no shader in it
+                    data = bytes(dec[off, k])
+                elif comp == 3: data = oodle(d[st:st + sz], n)
                 elif sz == n: data = d[st:st + sz]
                 else: red(f'/{rel}#{name}: file {k} has compression {comp} ({sz} → {n} bytes), which is not known')
-                scan_blob(data, f'/{rel}#{name}#{struct.unpack_from("<Q", d, hs[0] + 8 * k)[0]:016x}', out)
+                scan_blob(data, f'/{rel}#{name}#{h:016x}', out)
+
+def trpfs_decoded(label, size):
+    """The Oodle files of a Trinity file system that hold a BNSH file, decoded already: DM_GFPAK_DECODED/<label with / as __>.dec = 'DTPD', u64 the .trpfs's size, u32 count, then per file
+    u64 pack offset, u32 index in the pack, u32 length and the bytes (porter/pipeline.py device_oodle). One file holds the whole file system's shaders, so each worker maps it once and
+    indexes it (the split runs one job per range of packs). → {(pack offset, index): memoryview}, or None without a folder or without a file of this size"""
+    import mmap
+    root = os.environ.get('DM_GFPAK_DECODED')
+    if not root: return None
+    p = os.path.join(root, label.lstrip('/').replace('/', '__') + '.dec')
+    if p in _TRPFS_DEC: return _TRPFS_DEC[p]
+    if not os.path.exists(p): return None
+    with open(p, 'rb') as f: b = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+    if b[:4] != b'DTPD' or struct.unpack_from('<Q', b, 4)[0] != size: return None
+    out, o, mv = {}, 16, memoryview(b)
+    for _ in range(struct.unpack_from('<I', b, 12)[0]):
+        off, k, n = struct.unpack_from('<QII', b, o); out[off, k] = mv[o + 16:o + 16 + n]; o += 16 + n
+    _TRPFS_DEC[p] = out
+    return out
+_TRPFS_DEC = {}
 
 MONO_ARD, ARH1, XBC1, HCPS = 'Monolith ard', b'arh1', b'xbc1', b'HCPS'
 def arh_entries(path):
@@ -990,6 +978,19 @@ def xbc1(d, at=0):
     out = zstd_mod().decompress(raw) if t == 3 else zlib.decompress(raw) if t == 1 else raw if t == 0 else None
     if out is None or len(out) != usz: raise ValueError(f'xbc1 compression {t}, {len(out or b"")} of {usz} bytes')
     return out
+
+CMPZ = b'cmp\0zlib'
+def cmp_zlib(d, off):
+    """A Firehawk effect resource's zlib stream: 'cmp\0zlib', u32 stored length, u32 length, the stream (as upstream nxnative's monolith_cmp_data). → its bytes, or None for bytes that only look like one"""
+    import zlib
+    if off + 16 > len(d): return None
+    size, raw = struct.unpack_from('<2I', d, off + 8)
+    if not size or size > len(d) - off - 16: return None
+    z = zlib.decompressobj()
+    try: data = z.decompress(d[off + 16:off + 16 + size]) + z.flush()
+    except zlib.error: return None
+    if not z.eof or len(data) != raw: red(f'cmp zlib @{off:#x}: {len(data)} bytes, not the {raw} its header gives')
+    return data
 
 def spch_shaders(d, b, label):
     """A Monolith shader archive ('HCPS', version 1010 in Xenoblade Chronicles 3; xc3_lib's Spch): u32 offset / count pairs from +8 of the SLCT offsets (8 bytes each, offset into the SLCT section
@@ -1065,6 +1066,16 @@ def ard_shaders(path, rel, ents, out):
             if HCPS in d or XBC1 in d: mono_shaders(d, f'/{rel}{name}', out)
             # GLSLC outputs: the Firehawk effect archives (.wipac, 'FirehawkAssetArchive') keep their effects' shaders as whole compiler outputs beside a few HCPS
             if b'\x91\x68\x86\x19' in d: out.extend(glslc_shaders(d, f'/{rel}{name}', need=False))
+            # ... and more of them in zlib streams of their own inside the file ('cmp\0zlib', upstream nxnative's monolith_cmp_data): 4,412 effect shaders of Xenoblade Chronicles 3
+            # (.wipac, .wiefxa), among them the particles' update (vertex 09bd50b78ed863f0, geometry 293ecebc0136519b). Without them the husks' red particles, the send-off's
+            # white ones, the glow of far items and many cutscene effects were missing, and the app captured a few of them at run time
+            if CMPZ in d:
+                for m in re.finditer(CMPZ, d):
+                    z = cmp_zlib(d, m.start())
+                    if z is None: continue
+                    lab = f'/{rel}{name}#cmp-zlib@{m.start():#x}'
+                    if HCPS in z or XBC1 in z: mono_shaders(z, lab, out)
+                    if b'\x91\x68\x86\x19' in z: out.extend(glslc_shaders(z, lab, need=False))
 
 UE_LEGACY = 'UE legacy pak'
 def ue_legacy_jobs(files, parts=64):
@@ -1148,7 +1159,10 @@ def sarc_members(d):
     names = hl + 12 + 16 * n + 8
     for i in range(n):
         h, attr, s, e = struct.unpack_from('<IIII', d, hl + 12 + 16 * i)
-        nm = d[names + (attr & 0xffffff) * 4:].split(b'\0')[0].decode('utf-8', 'replace') if attr >> 24 else f'#{i}'
+        # the name up to its NUL, not the rest of the archive split at every NUL: Pokémon Legends: Z-A's Trinity packs hold SARCs of thousands of members, and splitting the whole tail
+        # for each name kept the split's workers busy for over 40 minutes
+        p = names + (attr & 0xffffff) * 4; z = d.find(b'\0', p)
+        nm = d[p:z if z >= 0 else len(d)].decode('utf-8', 'replace') if attr >> 24 else f'#{i}'
         yield nm, d[doff + s:doff + e]
 
 NV_STAGES = ['vs', 'ps', 'gs', 'hs', 'ds', 'cs']   # NVN stage order

@@ -12,7 +12,7 @@ python -m porter port "<game folder>" --debug --install --package $PKG --device 
 
 - `--debug`: debuggable, debug info, and DM_CTL (a release build ignores it).
 - The installer starts the app once before pushing (Android gives the files folder the app's group only when the app creates it; a shell-made folder leaves pushed files unreadable: "FATAL open …/mods/main.fixups.tsv"), pushes only changed files, and stages paths over 260 characters through short hard links.
-- Each install **rewrites `env.txt`**: add debug lines after installing.
+- Each install **rewrites `env.txt`** (it keeps only its own `--romfs-at` row, the folder the app reads its RomFS from: docs/ARCHITECTURE.md): add debug lines after installing.
 
 ```
 $ADB shell "am force-stop $PKG; echo DM_CTL=$F/ctl.txt >> $F/env.txt; : > $F/ctl.txt; am start -n $PKG/android.app.NativeActivity"
@@ -43,7 +43,7 @@ For finding what is wrong once it runs (validation layer, LRZ flicker, frame sho
 
 ## Helpers in devtools/
 
-`device.py` (ADB / PKG / FILES from device.json or `NX2A_DEVICE` / `NX2A_PACKAGE`), `push_chunked.py` (resumable big pushes), `rec_flicker.py`, `burst.py`, `soak.sh <minutes>` (moves without pressing A, so a save's story does not advance), `trace_pass.sh <pass>`, `dmsv_extract.py` / `spv_support_use.py` (inspect the shader bundle), `nso_image.py`, `ppm2png.py`.
+`device.py` (ADB / PKG / FILES from device.json or `NX2A_DEVICE` / `NX2A_PACKAGE`), `push_chunked.py` (resumable big pushes), `rec_flicker.py`, `burst.py`, `soak.sh <minutes>` (moves without pressing A, so a save's story does not advance), `trace_pass.sh <pass>`, `dmsv_extract.py` / `spv_support_use.py` (inspect the shader bundle, either version; `nxnative/dm/android/tools/dmsv.py info` shows its version and sizes, `dmsv.py pack <in> <out> [--level N]` writes it again compressed or, with `--level 0`, uncompressed), `nso_image.py`, `ppm2png.py`.
 
 ## Finish
 

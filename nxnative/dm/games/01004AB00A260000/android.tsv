@@ -1,0 +1,13 @@
+# DARK SOULS: REMASTERED on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# FromSoftware's engine on SDK 4.5.0, update 1.0.3; 3,099 shaders, all translated. 30 fps, the game's own (patches.py says why its 60 fps patch was taken out).
+# Tested 2026-11-06 on the Legion Y700 (TB322FC, Snapdragon 8 Elite, Adreno 830, Android 16), docked: the title, the offline notice, the first-start settings (brightness,
+# options, buttons), character creation (the name through the overlay keyboard), the opening movie (skipped with +), the Undead Asylum's first cell (walking, the camera);
+# a save and Continue. 30 fps on screen (99% of frames at 33.3 ms, the rest 41.7; 6 long frames in 72 s of walking), GPU about 10 ms; 0 audio underruns.
+# The menus confirm with B and go back with A (the game's own prompts), and take short presses: a press of 0.3 s or more repeats in its lists.
+# Fixed on the way (core): more than 4,096 memory pools (FATAL "too many memory pools" within 3 s of boot); the scene's bindless textures bound the dummy sampler; integer
+# vertex inputs (RG16I / RGBA16I texture coordinates) declared as integers; texture handles the shaders read from memory rebased to the bound pools (the Asylum's walls,
+# pillars and floors were drawn as streaks of other textures).
+status	playable
+tested	v196608 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
+package	org.nx2a.darksoulsremastered
+orientation	landscape

@@ -13,6 +13,7 @@ static const ov_ctl OV_LAYOUTS[2][DM_AOV_N] = {{DM_AOV_TABLET}, {DM_AOV_PHONE}};
 #define OV_N DM_AOV_N
 // the layout in use: the phone's when the window is at least OV_PHONE_ASPECT wide for its height (a 20:9 phone is 2.2, a 16:10 tablet 1.6), else the tablet's
 #define OV_PHONE_ASPECT 1.9f
+static inline int ov_layout_for_size(int width, int height) { return height > 0 && (float)width / (float)height >= OV_PHONE_ASPECT; }
 int dm_overlay_layout(void);   // front_android.c: 0 the tablet's, 1 the phone's
 #define OV_CTLS (OV_LAYOUTS[dm_overlay_layout()])
 #define OV_KNOB 0.42f        // a stick's knob radius, of the stick's (the theme-less drawing)
@@ -68,6 +69,27 @@ static inline float ov_sdf(const ov_ctl *c, const float b[4], float dx, float dy
 static inline float ov_reach(const ov_ctl *c, const float b[4], float H) {
     float m = fminf(b[2], b[3]);
     return c->kind == OV_BUTTON || c->kind == OV_MENU ? fmaxf(m * 0.25f, OV_REACH_MIN * H * dm_overlay_scale() - m) : m * 0.5f;
+}
+// A small area between adjacent face buttons lets one thumb press both without changing their individual hit areas.
+static inline uint64_t ov_face_combo(const ov_ctl *layout, float x, float y, float W, float H) {
+    const uint64_t face = DM_BTN_A | DM_BTN_B | DM_BTN_X | DM_BTN_Y;
+    for (int i = 0; i < OV_N; i++) {
+        const ov_ctl *a = &layout[i]; if (a->kind != OV_BUTTON || !(a->btn & face)) continue;
+        for (int j = i + 1; j < OV_N; j++) {
+            const ov_ctl *b = &layout[j]; uint64_t pair = a->btn | b->btn;
+            if (b->kind != OV_BUTTON || !(b->btn & face) || a->btn == b->btn || pair == (DM_BTN_A | DM_BTN_Y) || pair == (DM_BTN_X | DM_BTN_B)) continue;
+            float ab[4], bb[4]; ov_box(a, W, H, ab); ov_box(b, W, H, bb);
+            float distance = hypotf(ab[0] - bb[0], ab[1] - bb[1]);
+            float radius = fminf(fminf(ab[2], ab[3]), fminf(bb[2], bb[3]));
+            if (distance < radius || distance > radius * 3.5f) continue;
+            if (hypotf(x - (ab[0] + bb[0]) * 0.5f, y - (ab[1] + bb[1]) * 0.5f) <= radius * 0.35f) return pair;
+        }
+    }
+    return 0;
+}
+static inline uint64_t ov_button_bits(const ov_ctl *layout, const ov_ctl *button, float x, float y, float W, float H) {
+    uint64_t pair = (button->btn & (DM_BTN_A | DM_BTN_B | DM_BTN_X | DM_BTN_Y)) ? ov_face_combo(layout, x, y, W, H) : 0;
+    return pair && (pair & button->btn) ? pair : button->btn;
 }
 // a d-pad direction's circle in the theme-less drawing: centre offset and radius, in the d-pad's half width (k: 0 right, 1 left, 2 down, 3 up)
 static inline void ov_dpad_dir(int k, float *ox, float *oy, float *r) { float s = 0.42f; *ox = k == 0 ? s * 1.2f : k == 1 ? -s * 1.2f : 0; *oy = k == 2 ? s * 1.2f : k == 3 ? -s * 1.2f : 0; *r = s * 0.75f; }

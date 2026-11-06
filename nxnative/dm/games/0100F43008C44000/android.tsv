@@ -1,0 +1,19 @@
+# Pokémon Legends: Z-A on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Game Freak's Trinity engine on SDK 19.3.11, update 2.0.2 (the Mega Dimension DLC is seen: "Downloadable content ready"); game.tsv, patches.py and the shader tables are
+# upstream's, checked by hand. Every shader is in the Oodle-compressed packs of arc/data.trpfs: the porter decodes them with the game's own decoder on the device
+# (dmhost, DM_OODLE_JOB: 223,018 files, about 7 minutes over USB), so a port needs the device connected. 28,603 shaders, all translated.
+# Tested 2026-11-04 on the Legion Y700 (TB322FC, Snapdragon 8 Elite, Adreno 830, Android 16), docked (1920x1080 targets, the game's dynamic resolution at about
+# 1056x592): a new save's language, appearance, the name on the host keyboard, the opening cutscene at Prism Tower, the train, the arrival at Lumiose station
+# (walking, talking, the camera), Continue from the autosave. 30 fps as on the Switch (the game sets present interval 2 every frame), 0 dropped frames, GPU 12-20 ms
+# a frame, sound clean (0 underruns).
+# The culling compute shaders' counters grew every frame (GPU 9 -> 70 ms within minutes) until the translator stopped running a single-use atomic twice
+# (AstOptimizer: a source with side effects is never propagated).
+# Not checked yet: the city streets past the station, battles, catching. Seen once and not reproduced: an NPC passing right beside the camera drew as a black shape
+# with blocky white noise for a moment (NPCs held close to the camera afterwards drew correctly); the game fades such characters with alpha-to-coverage dither
+# (MultisampleStateGetAlphaToCoverageDither, a2c draws on single-sample targets), the first place to look if it shows again.
+# 60 fps: not done. FPSLocker-Warehouse's only Z-A config (1.0.1) is withdrawn; it patches the game's frame-time constants as well (ladders, rolling), so the
+# present interval alone is not enough.
+status	playable
+tested	v393216 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
+package	org.nx2a.plza
+orientation	landscape

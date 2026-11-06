@@ -113,6 +113,10 @@ void dm_guest_frame_tick(void);        // Called on every present (hle_nvn.c): w
 uint64_t dm_nvn_frame_count(void);
 uint64_t dm_nvn_sub_cpu_ns(void);     // Cumulative CPU nanoseconds of submit (excluding present)
 void dm_backtrace(uint64_t fp);
+int crash_addr_str(char *b, size_t n, uint64_t a);   // "module+off", "symbol+off" or "library+off"
+uint64_t crash_code_addr(uint64_t a);   // a return address without its pointer authentication code
+void crash_thread_name(unsigned t, char *b, size_t n);   // by thread port (the tid on Android)
+void crash_add_note_hook(void (*fn)(void));   // printed after the crashing thread's registers
 void crash_watch_progress(uint32_t tick, const char *stage);
 void crash_watch_frame(void);
 void crash_watch_pregame_done(void);

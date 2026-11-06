@@ -3,18 +3,19 @@
 # The same translator as the Apple chain (dm/gfx/tools/dmsh_xlate_bin, Ryujinx's translator with TargetApi.Vulkan) and the same jobs as dmsh_build.py
 # (control section / code area / c1 split, the VertexA + VertexB merge, the profile's answer table), but no MSL: Vulkan takes the SPIR-V as it is.
 # Geometry shaders are translated as Vulkan geometry shaders (the Apple chain emulates them in compute kernels).
-#   DM_GAME=<id> shader_vk.py <package dir> <out bundle> [--jobs N] [--keys k1,k2] [--xlate <dmsh_xlate.dll>] [--capture <dir>]
+#   DM_GAME=<id> shader_vk.py <package dir> <out bundle> [--jobs N] [--keys k1,k2] [--xlate <dmsh_xlate.dll>] [--capture <dir>] [--zstd <level>]
 # --capture: shaders whose code no game file holds, saved on the device by the Vulkan backend (gfx_vk_shader.c vk_shader_missing: <key>.bin = "DMSC", u32 control length, u32 code length,
 #   control section, code area), translated beside the package's; a file whose content does not hash to its name, or whose key the package has, is left out
-# Bundle (read by the Vulkan backend, dm/android/gfx_vk_shader.c): "DMSV" u32 version, u32 count, then count entries {u64 key, u32 stage, u32 spv_off, u32 spv_len,
-#   u32 refl_off, u32 refl_len, u32 pad} sorted by key, then the blobs. refl is compact JSON: bindings, c1, local size, notes.
+# Bundle (read by the Vulkan backend, dm/android/gfx_vk_shader.c): dmsv.py has the format and writes it. Each shader's SPIR-V and its binary reflection (refl_bin, below);
+#   version 2, the SPIR-V of each module zstd-compressed (--zstd, default dmsv.LEVEL; 0 or a Python without zstd: version 1, uncompressed).
 import argparse, collections, concurrent.futures as cf, hashlib, json, os, re, struct, subprocess, sys, tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 TOOLS = HERE.parent.parent / 'gfx/tools'
-sys.path.insert(0, str(TOOLS))
-import dmsh_facts, dmsh_chain   # noqa: E402  (DM_GAME picks the profile)
+sys.path[:0] = [str(TOOLS), str(HERE)]
+import dmsh_facts, dmsh_chain, dmsv   # noqa: E402  (DM_GAME picks the profile)
+from shader_split import glslc_stage   # the package reader also recognizes headerless compute code
 
 ap = argparse.ArgumentParser()
 ap.add_argument('pkg'); ap.add_argument('out')
@@ -22,6 +23,7 @@ ap.add_argument('--jobs', type=int, default=os.cpu_count() or 8)
 ap.add_argument('--keys', default='')
 ap.add_argument('--dotnet', default=os.environ.get('DOTNET', 'dotnet'))
 ap.add_argument('--capture', help='a folder of shaders captured at run time on the device (<key>.bin)')
+ap.add_argument('--zstd', type=int, default=dmsv.LEVEL, help=f'zstd level of the SPIR-V in the bundle (default {dmsv.LEVEL}); 0: version 1, uncompressed')
 ap.add_argument('--xlate', help="the translator (dmsh_xlate.dll) to run (default: the iOS chain's dm/gfx/tools/dmsh_xlate_bin; the porter builds one from the in-repo source)")
 a = ap.parse_args()
 
@@ -33,12 +35,20 @@ STAGES = {'vs': 0, 'ps': 1, 'gs': 2, 'hs': 3, 'ds': 4, 'cs': 5}   # NVN stage nu
 # Storage buffers are bound from a 256-byte boundary below their address (gfx_vk_exec.c SB_ALIGN, the same number): Vulkan's largest minStorageBufferOffsetAlignment, so a multiple of
 # every device's; the translator offsets every storage access by the address's distance from that boundary (Program.cs QueryHostStorageBufferOffsetAlignment)
 SB_ALIGN = 256
+# Maxwell's warps are 32 lanes; Adreno runs 64 or 128 (a wave's size is the driver's choice per pipeline). Translated for a group above 32 (Program.cs QueryHostSubgroupSize),
+# the translator emulates 32-lane warps inside it: lane id & 31, the ballot word of the lane's own 32, shuffles inside its 32, votes by ballot. Its 128 path picks the word by
+# lane id >> 5, so it holds for 64 too. At 32 the warp code read only the first 32 lanes' ballot (Tears of the Kingdom: 32 shaders vote, ballot or shuffle)
+SUBGROUP = int(GAME.get("android_subgroup_size", "128"))
+# Adreno rounds a gather coordinate that sits on a texel edge the other way from Maxwell, so a gather can pick the wrong 2x2 texels. Eden moves gather coordinates
+# 1/512 texel on Qualcomm and Turnip (#4565, TotK's large dark squares); Ryujinx's TexturePass does the same with 8 bits (Program.cs QueryHostGatherBiasPrecision).
+# Tears of the Kingdom on the Adreno 830 drew dark boxes of whole 16x16 tiles in its tiled lighting (607 shaders gather, 38 of them compute): in 2 of 12 camera
+# steps at the Great Sky Island pond and every frame at the Temple of Time's stone circle; with the bias, 0 in 24
+GATHER_BIAS = 8
 
 def records(d):
     r = [m.start() for m in re.finditer(b'BTCDBTCD', d)]
     return [d[x:(r[k + 1] if k + 1 < len(r) else len(d))] for k, x in enumerate(r)]
 
-SPH_STAGE = {1: 'vs', 2: 'hs', 3: 'ds', 4: 'gs', 5: 'ps'}   # SPH word 0 bits 10..13 (shader_split.py sph_stage)
 def captured(d):
     """The run-time captures in folder d (--capture): {key: (stage, record in the package's form)}"""
     out = {}
@@ -49,8 +59,8 @@ def captured(d):
         nctl, ncode = struct.unpack_from('<2I', b, 4); ctl, code = b[12:12 + nctl], b[12 + nctl:12 + nctl + ncode]
         if len(code) != ncode or len(ctl) != nctl or ctl[:4] != bytes.fromhex('34127698'): print(f'[RED] capture {nm}: truncated', flush=True); continue
         if hashlib.sha256(ctl + code).hexdigest()[:16] != nm[:16]: print(f'[RED] capture {nm}: its content does not hash to its name', flush=True); continue
-        st = 'cs' if code[:4] == bytes.fromhex('79563412') else SPH_STAGE.get(struct.unpack_from('<I', code, 0x30)[0] >> 10 & 0xf) if code[:4] == bytes.fromhex('78563412') and len(code) > 0x80 else None
-        if not st: print(f'[RED] capture {nm}: no stage in its code area header', flush=True); continue
+        st = glslc_stage(ctl, code)
+        if not st: print(f'[RED] capture {nm}: cannot determine its shader stage', flush=True); continue
         rec = bytearray(b'BTCDBTCD' + bytes(0x30)); struct.pack_into('<2I', rec, 0x28, len(ctl), len(code)); rec += code + ctl
         if rec.find(bytes.fromhex('34127698')) != 0x38 + len(code): print(f'[RED] capture {nm}: the control magic appears in its code area', flush=True); continue   # job_for splits there
         out[nm[:16]] = (st, bytes(rec))
@@ -92,7 +102,10 @@ def xfb_layout(key, ctl):
         out.append({'stride': strides[b], 'words': words})
     return out
 
-def job_for(key, stage, rec, w):   # dmsh_build.py job_for; transform feedback is captured natively (xfb_layout)
+def gs_variant_key(key, t):   # the bundle key of a geometry shader translated for input primitive t (0 points, 1 lines, 2 lines with adjacency, 4 triangles with adjacency)
+    return key ^ ((t + 1) * 0x9E3779B97F4A7C15 & 0xFFFFFFFFFFFFFFFF)
+
+def job_for(key, stage, rec, w):   # dmsh_build.py job_for; transform feedback is captured natively (xfb_layout), from the vertex or the geometry stage
     ci = rec.find(bytes.fromhex('34127698')); code = rec[0x38:ci]
     c1o, c1t = struct.unpack_from('<2I', rec, ci + 0x700)
     c1 = rec[0x38 + c1o:0x38 + c1t]
@@ -101,8 +114,15 @@ def job_for(key, stage, rec, w):   # dmsh_build.py job_for; transform feedback i
     if stage != 'cs': code = code[0x30:]
     elif code[:4] == bytes.fromhex('79563412'): code = code[0x100:]
     cp = os.path.join(w, key + '.bin'); open(cp, 'wb').write(code)
-    xfb = xfb_layout(key, rec[ci:]) if stage == 'vs' else None
-    j = {'key': key, 'stage': stage, 'code': cp, 'tex': {}, 'img': {}, 'attr': {}, 'fout': {}, 'c1': c1.hex(), 'debug': False, 'reduced': True, 'sb_align': SB_ALIGN, 'gs_passthrough': False, **({'xfb': xfb} if xfb else {})}
+    xfb = xfb_layout(key, rec[ci:]) if stage in ('vs', 'gs') else None   # a geometry shader captures what it emits (Xenoblade Chronicles 3's particle update, 293ecebc0136519b)
+    j = {'key': key, 'stage': stage, 'code': cp, 'tex': {}, 'img': {}, 'attr': {}, 'fout': {}, 'c1': c1.hex(), 'debug': False, 'reduced': True, 'sb_align': SB_ALIGN, 'subgroup': SUBGROUP, 'gather_bias': GATHER_BIAS, 'gs_passthrough': False, **({'xfb': xfb} if xfb else {})}
+    if stage == 'cs':   # Runtime captures have no facts-table row; their control section still declares the workgroup.
+        x, y, z, shared = struct.unpack_from('<4I', rec, ci + 0x748)
+        j.update(local=[x, y, z], shared=(shared + 15) // 16 * 16)
+    # GLSLC marks a fragment shader declared layout(early_fragment_tests) at control +0x718 (bit 0); NVN then sets the 3D engine's FORCE_EARLY_FRAGMENT_TESTS, which
+    # the code area does not carry. Monster Hunter Rise's occlusion culling draws boxes over a 128x64 depth and stores a flag per visible box: tested after the shader,
+    # every box's fragments ran and flagged it (15 ms a frame in Kamura village on Adreno 650)
+    if stage == 'ps' and len(rec) >= ci + 0x71c and struct.unpack_from('<I', rec, ci + 0x718)[0] & 1: j['early_z'] = True
     if key in FACTS: j.update(FACTS[key])
     else: j['no_facts'] = True
     return j, c1
@@ -175,6 +195,9 @@ TEX_BASE, IMG_BASE, IMG_SLOTS, SEPTEX_BASE, SEPTEX_SLOT0, SAMP_BASE = 0x20, 0x12
 SSBO = {'vs': 0x110, 'cs': 0x310, 'ps': 0x510}
 def classify(stage, b, res):
     nm = b['name']; e = dict(b)
+    # Dynamic pool arrays use driver c2 slot indices (as the Metal backend).
+    if GAME.get('android_dynamic_slots', 'off') == 'on' and b['type'] in ('image', 'sampler') and b['count'] == 32 and re.fullmatch(r'[a-z]+_[ts]\w*_cb0_40000000', nm):
+        e.update(kind='texd' if b['type'] == 'image' else 'sampd'); return e
     m = re.fullmatch(r'[a-z]+_c(\d+)', nm)
     if m:
         n = int(m.group(1))
@@ -220,6 +243,10 @@ def classify(stage, b, res):
             e.update(kind=('img_ubo' if kind == 'i' else 'tbuf_ubo' if b['type'] == 'tbuf' else 'tex_ubo'), reg=tb - 3, off=o0 * 4)
             if ty == 3: e['samp_id'] = o1
             elif ty == 1: e['samp_ubo'] = [sb - 3, o1 * 4]
+            # One combined handle: the sampler ID is in the same handle's high bits (gfx_vk_exec.c samp_for RS_TEX). Without a source the host bound its dummy sampler: DARK SOULS:
+            # REMASTERED's scene shaders (SDK 4 GLSLC, fp_t_cb13_<word>) read every texture this way, and a pass trace showed "sampler 0: not registered (dummy)" for each of
+            # them while the handles named samplers 0x101-0x105 (mirrored-repeat and clamp-to-edge ones)
+            elif e['kind'] == 'tex_ubo': e['samp_tex'] = True
             return e
     e.update(kind='?'); return e
 
@@ -227,7 +254,7 @@ def classify(stage, b, res):
 # binding: u8 kind, u8 desc (descriptor type), u8 dim (SPIR-V Dim, 0xff none), u8 flags (1 arrayed, 2 multisampled, 4 written), u16 binding, u16 count,
 #          i16 reg, u8 samp (sampler source), u8 fmt (SPIR-V image format), i32 off, i32 samp_arg
 KIND = {'support': 0, 'cbuf': 1, 'c1': 2, 'drvcb': 3, 'sbuf': 4, 'ubo_ptr': 5, 'sbuf_ubo': 6, 'tex': 7, 'tbuf': 8, 'img': 9, 'img_tbuf': 10, 'tex_c2a': 11,
-        'tex_ubo': 12, 'tbuf_ubo': 13, 'img_ubo': 14, '?': 255}
+        'tex_ubo': 12, 'tbuf_ubo': 13, 'img_ubo': 14, 'texd': 15, 'sampd': 16, '?': 255}
 DESC = {'ubo': 0, 'ssbo': 1, 'sampled': 2, 'storage': 3, 'tbuf': 4, 'storage_tbuf': 5, 'image': 6, 'sampler': 7, '?': 255}
 SAMP_NONE, SAMP_TEX, SAMP_SLOT, SAMP_ID, SAMP_UBO = 0, 1, 2, 3, 4
 kinds_all = collections.Counter()
@@ -248,7 +275,97 @@ def refl_bin(binds, c1, local):
                                reg, samp, e.get('fmt') or 0, off, sarg))
     return b''.join(out) + bytes(c1)
 
+def remap_handles(spv, source, target, expected):
+    """Remap a packed handle at stores feeding both texture and sampler array indices."""
+    words = list(struct.unpack(f'<{len(spv) // 4}I', spv))
+    constants, loads, uses, types = {}, {}, collections.defaultdict(set), {}
+    bool_type = None
+    instructions = []
+    i = 5
+    while i < len(words):
+        count, op = words[i] >> 16, words[i] & 0xffff
+        if not count or i + count > len(words):
+            raise ValueError('invalid SPIR-V instruction')
+        ins = words[i:i + count]
+        instructions.append((op, ins))
+        if op == 20:  # OpTypeBool
+            bool_type = ins[1]
+        elif op == 21 and ins[2] == 32:  # OpTypeInt
+            types[ins[1]] = ins[3]
+        elif op == 43 and count == 4:  # OpConstant
+            constants[ins[2]] = ins[3]
+        elif op == 61:  # OpLoad
+            loads[ins[2]] = (ins[3], ins[1])
+        elif op in (194, 199) and ins[3] in loads:  # ShiftRightLogical / BitwiseAnd
+            uses[loads[ins[3]]].add((op, constants.get(ins[4])))
+        i += count
+
+    handles = {ptr: typ for (ptr, typ), ops in uses.items()
+               if typ in types and {(194, 20), (199, 0xfffff)} <= ops}
+    if not bool_type or not expected or len(handles) != expected or len(set(handles.values())) != 1:
+        raise ValueError('packed handle shader interface changed')
+    typ = next(iter(handles.values()))
+    raw, slot = words[3], words[3] + 1
+    out = words[:5]
+    out[3] += 2
+    inserted = False
+    stores = []
+    for op, ins in instructions:
+        if op == 54 and not inserted:  # constants must precede OpFunction
+            out.extend([4 << 16 | 43, typ, raw, source, 4 << 16 | 43, typ, slot, target])
+            inserted = True
+        if op == 62 and ins[1] in handles:  # OpStore
+            stores.append(ins[1])
+            cond, value = out[3], out[3] + 1
+            out[3] += 2
+            out.extend([5 << 16 | 170, bool_type, cond, ins[2], raw])  # OpIEqual
+            out.extend([6 << 16 | 169, typ, value, cond, slot, ins[2]])  # OpSelect
+            ins[2] = value
+        out.extend(ins)
+    if sorted(stores) != sorted(handles):
+        raise ValueError('expected one assignment per packed handle')
+    return struct.pack(f'<{len(out)}I', *out)
+
+def int_inputs(spv):
+    """A vertex shader's inputs that it uses only as integers → {location: 'sint' / 'uint'} (dmsh_build.py int_inputs, the Mac chain's, from SPIR-V instead of MSL): every load of the input
+    (whole, or one component through an access chain) is used only by OpBitcast. Maxwell does no type conversion reading vertex attribute registers: an integer format's bit pattern
+    reaches the register and the shader bit-casts it. The answer table has no attribute types, so the translator declared every input float, the pipeline fed the integer format
+    into a float input (undefined in Vulkan) before the bit casts: Dark Souls Remastered's scene vertex shaders read their RGBA16I attribute (loc 5) only through bit casts.
+    Declared an integer (signed when a cast is to a signed type), the pipeline takes the integer format of the same layout (gfx_vk_exec.c vertex_format)"""
+    w = struct.unpack(f'<{len(spv) // 4}I', spv); i = 5; loc, inputs, chain, loads, uses, other = {}, set(), {}, {}, collections.defaultdict(int), set()
+    ins, signed, sint = [], {}, set()
+    while i < len(w):
+        n = w[i] >> 16; op = w[i] & 0xffff
+        if n == 0: break
+        ins.append((op, w[i + 1:i + n])); i += n
+    for op, a in ins:
+        if op == OP_DECORATE and len(a) > 2 and a[1] == 30: loc[a[0]] = a[2]   # Location
+        elif op == OP_VARIABLE and a[2] == 1: inputs.add(a[1])                 # Input storage class
+        elif op == 21: signed[a[0]] = bool(a[2])                               # OpTypeInt width signedness
+        elif op == 23 and a[1] in signed: signed[a[0]] = signed[a[1]]          # OpTypeVector of an int
+    for op, a in ins:
+        if op == 65 and a[2] in inputs: chain[a[1]] = a[2]                     # OpAccessChain into an input
+    for op, a in ins:
+        if op == 61 and (a[2] in inputs or a[2] in chain): loads[a[1]] = a[2] if a[2] in inputs else chain[a[2]]   # OpLoad
+    for op, a in ins:
+        if op in (5, 6, 61, 65, 71, 72): continue   # names, decorations, the loads and chains themselves
+        ops = a[2:] if op == 124 else a   # OpBitcast: result type, result, operand
+        for x in ops:
+            if x not in loads: continue
+            if op == 124:
+                uses[loads[x]] += 1
+                if signed.get(a[0]): sint.add(loads[x])   # cast to a signed type: declared int, so a SINT format's fetch matches the input's numeric type
+            else: other.add(loads[x])
+    return {str(loc[v]): 'sint' if v in sint else 'uint' for v in uses if v not in other and v in loc}
+
 def main():
+    handle_remaps = {}
+    table = GAME.table('android_shader_handles.tsv')
+    if table.exists():
+        for line in table.read_text().splitlines():
+            if line and not line.startswith('#'):
+                key, source, target, sites = line.split()
+                handle_remaps[key] = int(source, 0), int(target, 0), int(sites)
     pc, loc = {}, {}
     for ln in open(MAP, encoding='utf-8'):
         c = ln.rstrip('\n').split('\t')
@@ -266,12 +383,31 @@ def main():
             if name not in packs: packs[name] = records(open(os.path.join(a.pkg, name), 'rb').read())
             stages[k], rec = name[:2], packs[name][idx]
         jobs[k], c1s[k] = job_for(k, stages[k], rec, w)
+    # A geometry shader's input primitive is the draw's (Maxwell's shader header doesn't say it; Ryujinx asks the GPU state): one translation for each kind, as the Mac
+    # chain's _g0.._g4 (dmsh_build.py), triangles under the shader's own key and the others under gs_variant_key, chosen by the pipeline's topology (gfx_vk_shader.c
+    # vk_shader_gs_topo). Xenoblade Chronicles 3's particle updates draw points into theirs: read as triangles, each took three particles as one and their records came out wrong
+    gs_var = {}
+    for k in [k for k in keys if stages[k] == 'gs']:
+        for t in (0, 1, 2, 4):
+            vk_ = f'{k}_t{t}'; jobs[vk_] = {**jobs[k], 'key': vk_, 'gs_input': t}; c1s[vk_] = c1s[k]; stages[vk_] = 'gs'; gs_var[vk_] = gs_variant_key(int(k, 16), t)
+    keys = keys + sorted(gs_var)
     chunks = [keys[i::a.jobs] for i in range(a.jobs) if keys[i::a.jobs]]
     def xl(ch):
         jp = os.path.join(w, f'job_{abs(hash(ch[0]))}.json'); json.dump([jobs[k] for k in ch], open(jp, 'w'))
         return subprocess.run([a.dotnet, XLATE_DLL, jp, w], capture_output=True, text=True, errors='replace')
     print(f'translating {len(keys)} shaders in {len(chunks)} batches ...', flush=True)
     with cf.ThreadPoolExecutor(len(chunks)) as ex: rs = list(ex.map(xl, chunks))
+    # second pass (as the Mac chain's dmsh_build.py finish): vertex shaders with inputs used only as integers, translated again with those inputs reported as uint (int_inputs)
+    again = []
+    for k in keys:
+        p = os.path.join(w, k + '.spv')
+        if stages[k] != 'vs' or not os.path.exists(p): continue
+        extra = {l: t for l, t in int_inputs(open(p, 'rb').read()).items() if l not in jobs[k]['attr']}
+        if extra: jobs[k]['attr'].update(extra); again.append(k)
+    if again:
+        print(f'translating {len(again)} vertex shaders again with their integer inputs ...', flush=True)
+        ch2 = [again[i::a.jobs] for i in range(a.jobs) if again[i::a.jobs]]
+        with cf.ThreadPoolExecutor(len(ch2)) as ex: rs += list(ex.map(xl, ch2))
     errs = collections.Counter()
     for r in rs:
         for ln in r.stderr.splitlines():
@@ -282,19 +418,18 @@ def main():
         if not os.path.exists(spv_p): fails['no output'] += 1; continue
         spv = open(spv_p, 'rb').read(); res = json.load(open(res_p)) if os.path.exists(res_p) else {}
         binds, local, io = spirv_bindings(spv)
+        if k in handle_remaps:
+            spv = remap_handles(spv, *handle_remaps[k])
         st = stages[k]
         cl = [classify(st, b, res) for b in binds]
         for e in cl: kinds_all[e['kind']] += 1
         # header words 2-4: a compute shader's local size; a vertex shader's input locations (all, signed int, unsigned int); a pixel shader's output locations
         hdr3 = (local or jobs[k].get('local') or [1, 1, 1]) if st == 'cs' else io[1] if st == 'vs' else io[3] if st == 'ps' else [0, 0, 0]
-        entries.append((int(k, 16), STAGES.get(st, 0), spv, refl_bin(cl, c1s[k], hdr3)))
-    entries.sort(key=lambda e: e[0])
-    hdr = struct.pack('<4sII', b'DMSV', 1, len(entries)); ent_sz = 32
-    off = len(hdr) + ent_sz * len(entries); table, blobs = [], []
-    for key, st, spv, refl in entries:
-        table.append(struct.pack('<QIIIIII', key, st, off, len(spv), off + len(spv), len(refl), 0)); blobs += [spv, refl]; off += len(spv) + len(refl)
-    with open(a.out, 'wb') as f: f.write(hdr + b''.join(table) + b''.join(blobs))
-    print(f'{len(entries)} of {len(keys)} shaders → {a.out} ({off / 2**20:.1f} MB); failed: {dict(fails)}; binding kinds: {dict(kinds_all)}')
+        entries.append((gs_var[k] if k in gs_var else int(k, 16), STAGES.get(st, 0), spv, refl_bin(cl, c1s[k], hdr3)))
+    if a.zstd: print(f'compressing {len(entries)} shaders (zstd level {a.zstd}, {a.jobs} threads) ...', flush=True)
+    ver, raw, stored = dmsv.write(a.out, entries, level=a.zstd, jobs=a.jobs)
+    print(f'{len(entries)} of {len(keys)} shaders → {a.out} ({os.path.getsize(a.out) / 2**20:.1f} MB, version {ver}: SPIR-V {raw / 2**20:.1f} MB'
+          f'{f", {stored / 2**20:.1f} MB compressed" if ver > 1 else ""}); failed: {dict(fails)}; binding kinds: {dict(kinds_all)}')
     for e, n in errs.most_common(8): print(f'  translator: {n:5d}  {e}')
 
 main()

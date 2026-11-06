@@ -1,0 +1,46 @@
+# Game profile of Tomodachi Life: Living the Dream (Switch, base game + update 1.0.4 = v262144). In bring-up on Android (android.tsv)
+# Format: see dm/games/README.md
+# Nintendo's engine (sead / agl / gsys, NintendoWare G3d2 / Ui2d / Vfx2 / Font, Havok) on SDK 20.5.3, NVN; Mii heads drawn by the SDK's Mii renderer from the MiiModel system data.
+# Started from the experimental port's survey (dm/games/profile_guess.py); checked against the survey: the modules and build IDs, the heap main sets, no system resource
+
+# ---- Identity ----
+title_id	010051F0207B2000
+program_id	010051F0207B2000
+
+# ---- App ----
+name	Tomodachi Life: Living the Dream
+ipa	TomodachiLifeLivingTheDream.ipa
+app_category	public.app-category.games
+
+# ---- Versions ----
+build	v262144	1.0.4	main=b39fef373fb12154385d012aab3bc99e	sdk=651781821e2c2e0b2bdfe905e8676f56
+package	v262144
+shader_versions	v262144
+
+# ---- Files ----
+# every module main imports from
+modules	main sdk
+romfs_marker	Font/Font_CNzh.Nin_NX_NVN.bfarc.zs
+zip_store	.bwav:.vtdb2:.zs:.metallib
+
+# ---- Memory ----
+# main sets a heap of at most the pool − 64 MB: a 3328 MB heap region
+mem_reserve	0x100000000
+mem_alias	0x10000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+# the NPDM declares 0 MB of system resource: IsVirtualAddressMemoryEnabled is false, as on Horizon (Big Brain Academy: Brain vs. Brain sets a heap only then)
+sys_resource	0x0
+
+# ---- Shader split ----
+shader_groups	/Tex/=tex /Icon/=icon /Pack/=pack /Model/=model /Sound/=sound /Parameter/=parameter /Effect/=effect /Layout/=layout /Data/=data /Phive/=phive /MiiNewsParam/=miinewsparam /AnimationEvent/=animationevent /RSDB/=rsdb /FocusLeading/=focusleading /UI/=ui /MapFile/=mapfile /AS/=as /VoiceText/=voicetext /Mii/=mii /MiiTouchCameraParam/=miitouchcamerapa /SoundLeakOutParam/=soundleakoutpara /Mals/=mals /WalkingGrid/=walkinggrid /Editor/=editor
+shader_note	Tomodachi Life: Living the Dream shaders (14,388 in the RomFS's archives)
+
+# ---- Graphics ----
+# The Mii renderer clears the depth of its colour pass under a render condition (SetRenderEnableConditional, main+0x208f18, before the clear at main+0x208f54): the
+# colour pass tests depth EQUAL against its depth pre-pass. Run unconditionally, the clear wiped that depth and every head, face part and hair draw failed the test
+render_cond	on
+
+# ---- After the rewrite ----
+# the rewritten modules are larger than the default 64 MB of used memory (Age of Calamity: 66.6 MB → 72 MB)
+mem_used	0x6600000

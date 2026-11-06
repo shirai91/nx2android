@@ -120,6 +120,7 @@ static Result mount_ex(const char *name, const char *dir, int ro, int txn) {
             LOG("[RED] fs mount %s: %s cannot be listed (errno=%d; owner uid %u gid %u mode %o, the host runs as uid %u): exact paths are looked up without listing, directory listings fail"
 #ifdef __ANDROID__
                 "; most likely the data pack went into a folder the app did not make -- install again with the porter (it has the app make the folder), or uninstall the app, install it, start it once, then push the data"
+                "; a RomFS outside the app's files folder (porter install --romfs-at) needs All files access, and a folder its owner made unreadable to other apps cannot be read with it either"
 #endif
                 , name, dir, e, (unsigned)st.st_uid, (unsigned)st.st_gid, (unsigned)(st.st_mode & 07777), (unsigned)getuid());
         else LOG("[RED] fs mount %s: %s cannot be listed (errno=%d)", name, dir, e); }
@@ -387,13 +388,18 @@ HLE_FORCE("_ZN2nn2fs17MountAddOnContentEPKciPvm", "fsp-srv; add-on content → D
     }
     return mount(name, dir, 1);   // mount_ex logs it
 }
-// System data archives are firmware content, which the host does not have. The one a game has needed so far is 0100000000000802, MiiModel (Mario Kart 8 Deluxe mounts it as MiiResource: and
-// builds Mii heads from it at boot, for the title screen's demo race): the host writes a stand-in with every part empty (hle_mii.c dm_mii_standin) into <DM_TEMP>_sysdata/<id> and mounts it
-// read-only. Any other archive answers "target not found", as for a title that is not installed
+// System data archives are firmware content, which the tool does not ship. DM_SYSDATA=<folder>: the player's own, one RomFS folder per title, <folder>/<16-digit title ID>
+// (porter --firmware extracts the profile's sysdata titles from their firmware dump into the data pack). Without it, 0100000000000802, MiiModel (Mario Kart 8 Deluxe mounts it as
+// MiiResource: and builds Mii heads from it at boot, for the title screen's demo race): the host writes a stand-in with every
+// part empty (hle_mii.c dm_mii_standin) into <DM_TEMP>_sysdata/<id>. Either is mounted read-only. Any other archive answers "target not found", as for a title that is not installed
 #define SYSDATA_MIIMODEL 0x0100000000000802ull
 int dm_mii_standin(const char *dir);
 static int sysdata_dir(char *dir, size_t n, uint64_t id) {
-    char t[1024];
+    char t[1024]; struct stat st; const char *own = getenv("DM_SYSDATA");
+    if (own && *own && snprintf(dir, n, "%s/%016llx", own, (unsigned long long)id) < (int)n && !stat(dir, &st) && S_ISDIR(st.st_mode)) {
+        static uint64_t said; if (said != id) { said = id; LOG("fs system data %016llx: the player's own, %s", (unsigned long long)id, dir); }
+        return 1;
+    }
     if (id != SYSDATA_MIIMODEL || snprintf(dir, n, "%s_sysdata/%016llx", envdir("DM_TEMP", "run/platform/temp", t, sizeof t), (unsigned long long)id) >= (int)n) return 0;
     return dm_mii_standin(dir);
 }
@@ -402,7 +408,7 @@ HLE_FORCE("_ZN2nn2fs29QueryMountSystemDataCacheSizeEPmNS_3ncm12SystemDataIdE", "
     *out = sysdata_dir(dir, sizeof dir, id) ? romfs_work_size(dir) : 0x1000;
     return RES_OK;
 }
-HLE_FORCE("_ZN2nn2fs15MountSystemDataEPKcNS_3ncm12SystemDataIdEPvm", "fsp-srv; system data: the host's MiiModel stand-in, nothing else", Result, h_fs_MountSysData, const char *name, uint64_t id, void *cache, size_t sz) {
+HLE_FORCE("_ZN2nn2fs15MountSystemDataEPKcNS_3ncm12SystemDataIdEPvm", "fsp-srv; system data: the player's own (DM_SYSDATA), else the host's MiiModel stand-in", Result, h_fs_MountSysData, const char *name, uint64_t id, void *cache, size_t sz) {
     (void)cache; (void)sz; char dir[1024];
     if (!sysdata_dir(dir, sizeof dir, id)) { LOG("[RED] fs mount system data %s: the host has no %016llx", name, (unsigned long long)id); return RES_TARGET_NOT_FOUND; }
     return mount(name, dir, 1);

@@ -73,11 +73,25 @@ class PortTab(QWidget):
         refresh = QPushButton('Refresh'); refresh.clicked.connect(self.refresh_devices)
         dev = QWidget(); dh = QHBoxLayout(dev); dh.setContentsMargins(0, 0, 0, 0); dh.addWidget(self.install); dh.addWidget(self.device, 1); dh.addWidget(refresh)
         self.replace_signer = QCheckBox('Replace an app of the same package signed with another key (uninstalls it first: its saves are deleted)')
+        self.romfs_at = QLineEdit(); self.romfs_at.setPlaceholderText('as the device has it (an earlier install\'s folder, else the app\'s files folder)')   # porter install --romfs-at
+        romfs_tip = ('A folder on the device that already holds this game version\'s RomFS (a dump an emulator reads, e.g. /sdcard/<dump>/romfs),\n'
+                     'which the app then reads instead of a copy in its own files folder (7 to 18 GB less). The installer checks the folder and gives the app All files access.\n'
+                     'Empty: as the device has it. "app": the RomFS back in the app\'s files folder. Install only: the port itself does not change.')
+        self.romfs_push = QCheckBox('Push the game\'s RomFS into that folder (an empty folder, or one of this game: files are added, never deleted)')   # porter install --romfs-push
+        romfs = with_info(self.romfs_at, romfs_tip); romfs.layout().setStretch(0, 1)
         self.package = QLineEdit(); self.package.setPlaceholderText('the profile\'s package')   # porter port --package: a test install beside the player's other build
         self.package.setToolTip('Install under another package than the profile\'s (org.nx2a.<game>.test), beside your other build of the game.\n'
                                 'An app of another package has its own saves.')
         self.fps60 = QCheckBox('60 fps (the profile\'s own frame-rate cap, else the community\'s FPSLocker-Warehouse config of the game\'s build, fetched from GitHub)')
         self.touch = QCheckBox('Touch game: start with the on-screen gamepad hidden, so every touch but the menu button\'s goes to the game (the pause menu shows it again)')   # porter port --touch
+        self.driver = QLineEdit(); self.driver.setPlaceholderText('the device\'s own')   # porter port --vulkan-driver
+        self.driver.setToolTip('A Vulkan driver library (.so) to pack in the APK and use instead of the device\'s own,\n'
+                               'such as Mesa\'s Turnip for Adreno GPUs. Empty: the device\'s driver.\n'
+                               'If the library does not load on the device, the app uses the device\'s driver.')
+        self.shared_font = QLineEdit(); self.shared_font.setPlaceholderText('the device\'s Roboto')   # porter port --shared-font
+        self.shared_font.setToolTip('A TrueType font (.ttf) to pack as the system font the game asks for.\n'
+                                    'One with CJK characters shows the Chinese and Korean text of a game that draws it with the system font.')
+        self.mt_replay = QCheckBox('Multithread replay: record the game\'s Vulkan commands on a thread of their own (faster in busy scenes; port again to turn it off)')   # porter port --mt-replay
         self.debug = QCheckBox('Development build (debuggable, debug information, DM_CTL key presses)')
         self.experimental = QCheckBox('Experimental: try a game that is not ported to Android yet (it may not start)')
         self.experimental.toggled.connect(lambda _: self.update_port_button())
@@ -92,8 +106,11 @@ class PortTab(QWidget):
                              'Raise it (16, 24 …) if the game still runs out. It uses no memory and does not change the speed.')
         f.addRow('App name', self.app_name); f.addRow('Game language', self.language)
         f.addRow('Output folder', path_row(self.out, self.pick_out)); f.addRow('Device', dev); f.addRow('', self.replace_signer)
+        f.addRow('RomFS on the device', romfs); f.addRow('', self.romfs_push)
         f.addRow('Package', self.package); f.addRow('versionCode offset', self.vercode); f.addRow('Extra address space', headroom)
-        f.addRow('', self.fps60); f.addRow('', self.touch); f.addRow('', self.debug); f.addRow('', self.experimental)
+        f.addRow('Vulkan driver', path_row(self.driver, self.pick_driver))
+        f.addRow('System font', path_row(self.shared_font, self.pick_shared_font))
+        f.addRow('', self.fps60); f.addRow('', self.touch); f.addRow('', self.mt_replay); f.addRow('', self.debug); f.addRow('', self.experimental)
         v.addWidget(o)
 
         bar = QHBoxLayout()
@@ -123,6 +140,14 @@ class PortTab(QWidget):
     def pick_folder(self):
         d = QFileDialog.getExistingDirectory(self, 'Game folder', self.folder.text() or str(Path.home()))
         if d: self.folder.setText(d); self.inspect()
+
+    def pick_driver(self):
+        p = QFileDialog.getOpenFileName(self, 'Vulkan driver', self.driver.text() or str(Path.home()), 'Vulkan driver (*.so)')[0]
+        if p: self.driver.setText(p)
+
+    def pick_shared_font(self):
+        p = QFileDialog.getOpenFileName(self, 'System font', self.shared_font.text() or str(Path.home()), 'TrueType font (*.ttf)')[0]
+        if p: self.shared_font.setText(p)
 
     def pick_out(self):
         d = QFileDialog.getExistingDirectory(self, 'Output folder', self.out.text() or self.folder.text() or str(Path.home()))
@@ -183,11 +208,15 @@ class PortTab(QWidget):
             args.append('--install')
             if self.device.currentData(): args += ['--device', self.device.currentData()]
             if self.replace_signer.isChecked(): args.append('--replace-signer')
+            args += self.romfs_args()
         if self.package.text().strip(): args += ['--package', self.package.text().strip()]
         if self.vercode.value(): args += ['--vercode-offset', str(self.vercode.value())]
         if self.headroom.value() >= 0: args += ['--alias-headroom', str(self.headroom.value())]
         if self.fps60.isChecked(): args.append('--fps60')
         if self.touch.isChecked(): args.append('--touch')
+        if self.mt_replay.isChecked(): args.append('--mt-replay')
+        if self.driver.text().strip(): args += ['--vulkan-driver', self.driver.text().strip()]
+        if self.shared_font.text().strip(): args += ['--shared-font', self.shared_font.text().strip()]
         if self.debug.isChecked(): args.append('--debug')
         if self.experimental.isChecked() and not self.info.get('supported'): args.append('--experimental')
         self.run(args)
@@ -197,7 +226,10 @@ class PortTab(QWidget):
         args = ['install', self.result['data'], '--apk', self.result['apk'], '--progress', 'json']
         if self.device.currentData(): args += ['--device', self.device.currentData()]
         if self.replace_signer.isChecked(): args.append('--replace-signer')
-        self.run(args)
+        self.run(args + self.romfs_args())
+
+    def romfs_args(self):   # porter install --romfs-at / --romfs-push (porter/install.py)
+        return (['--romfs-at', self.romfs_at.text().strip()] if self.romfs_at.text().strip() else []) + (['--romfs-push'] if self.romfs_push.isChecked() else [])
 
     def run(self, args):
         self.stages.clear(); self.items = {}; self.log.clear(); self.prog.setValue(0); self.step.setText('starting…')

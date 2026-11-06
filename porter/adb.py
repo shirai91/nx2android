@@ -1,8 +1,8 @@
 # adb for installing a port: the device list, installing the APK, and pushing the data pack in short transfers. Big pushes over one adb connection wedge adbd on some
-# devices (a 6 GB RomFS), so small files go in batches and big files in 64 MB pieces that the device joins; a rerun resumes (files already at their size are skipped,
+# devices (a 6 GB RomFS), so small files go in batches (tar archives of up to 64 MB when there are many) and big files in 64 MB pieces that the device joins; a rerun resumes (files already at their size are skipped,
 # pieces already in place are kept). The port's own outputs are also compared by MD5: a rewriter cut changes a module without changing its size, and Unpacking's sdk cuts never
 # reached the device until they were. Pushes use -Z: compressing them took adbd down.
-import contextlib, hashlib, os, re, shlex, shutil, subprocess, tempfile, time
+import contextlib, hashlib, os, re, shlex, shutil, subprocess, tarfile, tempfile, time
 from pathlib import Path
 
 
@@ -10,7 +10,16 @@ class AdbError(Exception):
     pass
 
 
+NO_ADB = 'adb not found: install Android platform-tools (Download missing tools), or set its path with `porter config adb <path>`'
+
+
 LONG_PATH = 240   # adb.exe is not long-path aware: it cannot open a file whose full path passes Windows' 260 characters (Viractal's Unity bundles in a deep game folder)
+TAR_MIN, TAR_FILES, TAR_BYTES = 256, 8192, 64 << 20   # push_tree: from this many small files on, tar archives of at most this many files / bytes
+
+
+def long_path(p):   # a path Python can open on Windows past 260 characters
+    p = str(Path(p).resolve())
+    return '\\\\?\\' + p if os.name == 'nt' and len(p) >= LONG_PATH and not p.startswith('\\\\') else p
 
 
 @contextlib.contextmanager
@@ -31,6 +40,7 @@ def short_paths(paths):
 
 class Adb:
     def __init__(self, exe, serial=None, timeout=120, log=print):
+        if not exe: raise AdbError(NO_ADB)   # str(None) would run a program named "None" (issue #109: FileNotFoundError out of the bundle)
         self.exe, self.serial, self.timeout, self.log = str(exe), serial or None, timeout, log
         self.env = dict(os.environ, MSYS_NO_PATHCONV='1')   # Git Bash would rewrite /sdcard/... arguments into Windows paths
 
@@ -46,9 +56,12 @@ class Adb:
                 err = (r.stderr.strip() or r.stdout.strip())[-400:]   # adb's reason is on stderr; stdout has the files that went
                 if a and a[0] == 'install': break   # an install failure is an answer, not a dropped link
             except subprocess.TimeoutExpired: err = f'timed out after {timeout or self.timeout} s'
+            except OSError as e: raise AdbError(f'cannot run adb ({self.exe}): {e}') from e   # adb removed or moved: no retry brings it back
             if attempt + 1 < retries:
                 self.log(f'adb {a[0]} failed ({err}), retry {attempt + 1}')
-                subprocess.run(self.cmd('wait-for-device'), timeout=300, env=self.env); time.sleep(2)
+                try: subprocess.run(self.cmd('wait-for-device'), timeout=300, env=self.env)
+                except subprocess.TimeoutExpired: raise AdbError(f'adb {a[0]} failed ({err}) and the device did not come back within 300 s') from None
+                time.sleep(2)
         raise AdbError(f'adb {a[0]}: {err}')
 
     def shell(self, script, **kw): return self.run('shell', script, **kw)
@@ -56,7 +69,9 @@ class Adb:
     # ---- devices ----
     def devices(self):
         """[(serial, state, description)] of every device adb sees"""
-        out = subprocess.run([self.exe, 'devices', '-l'], capture_output=True, text=True, errors='replace', timeout=30, env=self.env).stdout
+        try: out = subprocess.run([self.exe, 'devices', '-l'], capture_output=True, text=True, errors='replace', timeout=30, env=self.env).stdout
+        except OSError as e: raise AdbError(f'cannot run adb ({self.exe}): {e}') from e
+        except subprocess.TimeoutExpired: raise AdbError('adb devices: timed out after 30 s') from None
         rows = []
         for ln in out.splitlines()[1:]:
             parts = ln.split()
@@ -85,9 +100,42 @@ class Adb:
         if any(v in g for v in ('mali', 'powervr', 'immortalis')): return False
         return None
 
-    def free_bytes(self, path='/sdcard'):
-        out = self.shell(f'df -k {shlex.quote(path)} | tail -1', check=False).split()
+    def free_bytes(self, path='/sdcard'):   # free bytes on path's volume (its nearest folder that exists: a folder still to be made counts as its parent's), None when unknown
+        out = self.shell(f'p={shlex.quote(path)}; while [ ! -e "$p" ]; do p=$(dirname "$p"); done; df -k "$p" | tail -1', check=False).split()
         return int(out[3]) * 1024 if len(out) >= 4 and out[3].isdigit() else None
+
+    def same_volume(self, a, b):   # whether two paths (their nearest folders that exist) share a volume and its free space: stat's device number (an SD card is a volume of its own)
+        # -L: /sdcard is a symlink, and toybox stat does not follow one without it (the root file system's device number, never shared storage's)
+        out = self.shell('for p in ' + ' '.join(shlex.quote(x) for x in (a, b)) + '; do while [ ! -e "$p" ]; do p=$(dirname "$p"); done; stat -L -c %d "$p"; done', check=False).split()
+        return len(out) == 2 and out[0] == out[1]
+
+    def read_text(self, path):   # a small text file on the device, '' when it is not there
+        return self.shell(f'cat {shlex.quote(path)} 2>/dev/null; true', check=False)
+
+    def sdk(self):   # the device's API level (29: Android 10), 0 when unknown
+        v = self.prop('ro.build.version.sdk')
+        return int(v) if v.isdigit() else 0
+
+    def requests_permission(self, package, perm):   # whether the installed app's manifest asks for perm (dumpsys lists only the permissions an app asks for)
+        return perm in self.shell(f'dumpsys package {shlex.quote(package)} 2>/dev/null | grep -F {shlex.quote(perm)}; true', check=False)
+
+    def storage_access(self, package, grant=False):
+        """Whether the app may read shared storage outside its own folders (a RomFS read from a game dump's folder: install --romfs-at): All files access, the appop
+        MANAGE_EXTERNAL_STORAGE, from Android 11 (the switch Settings shows sets the app's uid mode, as `appops set --uid` does); on Android 10, which has no All files access,
+        READ_EXTERNAL_STORAGE (the APK asks for the legacy storage view there: mkapk.py). grant: have the shell grant it first, which adb may do without the player.
+        Returns (granted, what the device says)"""
+        q = shlex.quote(package)
+        if self.sdk() >= 30:
+            def mode():   # "Uid mode: MANAGE_EXTERNAL_STORAGE: allow"; "No operations." while it was never set (the default: not granted)
+                m = re.search(r'MANAGE_EXTERNAL_STORAGE: (\w+)', self.shell(f'appops get --uid {q} MANAGE_EXTERNAL_STORAGE 2>&1; true', check=False))
+                return m.group(1) if m else 'default'
+            if grant and mode() != 'allow': self.shell(f'appops set --uid {q} MANAGE_EXTERNAL_STORAGE allow 2>&1; true', check=False)
+            got = mode()
+            return got == 'allow', f'All files access (appop MANAGE_EXTERNAL_STORAGE): {got}'
+        perm = 'android.permission.READ_EXTERNAL_STORAGE'
+        if grant: self.shell(f'pm grant {q} {perm} 2>&1; true', check=False)
+        ok = f'{perm}: granted=true' in self.shell(f'dumpsys package {q} 2>/dev/null | grep -F {perm}: ; true', check=False)
+        return ok, f'{perm}: {"granted" if ok else "not granted"}'
 
     def installed(self, package):
         return f'package:{package}' in self.shell(f'pm list packages {shlex.quote(package)}', check=False).split()
@@ -185,13 +233,14 @@ class Adb:
                 if len(h) == 32: out[name] = h
         return out
 
-    def push_tree(self, local, remote, chunk=64 << 20, skip=(), keep=(), verify=None, progress=None, have=None):
-        """local folder → remote folder. skip: relative paths not pushed; keep: relative paths pushed only when the device has none (the player's settings);
+    def push_tree(self, local, remote, chunk=64 << 20, skip=(), keep=(), verify=None, progress=None, have=None, exclude=()):
+        """local folder → remote folder. skip: relative paths not pushed; exclude: top-level folders left out whole (the RomFS, when the app reads it from another
+        folder: install --romfs-at); keep: relative paths pushed only when the device has none (the player's settings);
         verify(rel): files whose content can change at the same size (the rewritten modules: a rewriter cut keeps the module's size), pushed again when their MD5 differs.
         progress(done_bytes, total_bytes, note) after each transfer. have: remote_sizes(remote) when the caller listed it already (a big pack takes seconds to list).
         Returns the bytes pushed"""
         local, remote = Path(local), remote.rstrip('/')
-        files = sorted((p.relative_to(local).as_posix(), p) for p in local.rglob('*') if p.is_file())
+        files = sorted((p.relative_to(local).as_posix(), p) for top in local.iterdir() if top.name not in exclude for p in (top.rglob('*') if top.is_dir() else [top]) if p.is_file())
         if have is None: have = self.remote_sizes(remote)
         same = [rel for rel, p in files if verify and verify(rel) and rel not in keep and rel not in skip and have.get(rel) == p.stat().st_size]
         rmd5 = self.remote_md5(remote, same) if same else {}
@@ -200,21 +249,48 @@ class Adb:
                 if rel not in skip and not rel.startswith('.dmpart') and (rel not in have if rel in keep else have.get(rel) != p.stat().st_size or rel in changed)]
         total, done = sum(s for _, _, s in todo), 0
         self.log(f'{len(todo):,} files to push, {total / 2**20:,.0f} MB ({len(files) - len(todo):,} already on the device)')
-        for d in sorted({os.path.dirname(r) for r, _, _ in todo}): self.shell(f'mkdir -p {shlex.quote(f"{remote}/{d}" if d else remote)}')
+        dirs = [shlex.quote(f'{remote}/{d}' if d else remote) for d in sorted({os.path.dirname(r) for r, _, _ in todo})]
+        for i in range(0, len(dirs), 200): self.shell('mkdir -p ' + ' '.join(dirs[i:i + 200]))   # one shell per directory took 3 min for Tears of the Kingdom's 2,669
         small = [(r, p, s) for r, p, s in todo if s <= chunk]
-        for i in range(0, len(small), 32):   # small files: up to 32 per push, one push per directory
-            part, by = small[i:i + 32], {}
-            for r, p, s in part: by.setdefault(os.path.dirname(r), []).append(p)
-            for d, ps in by.items():
-                with short_paths(ps) as qs:
-                    self.run('push', '-Z', *qs, f'{remote}/{d}/' if d else f'{remote}/', timeout=max(self.timeout, 600))
-            done += sum(s for _, _, s in part)
-            if progress: progress(done, total, f'{len(part)} files')
+        if len(small) >= TAR_MIN:   # many small files: tar archives unpacked on the device
+            done = self.push_tars(local, remote, small, progress=progress and (lambda d, note: progress(d, total, note)))
+        else:
+            for i in range(0, len(small), 32):   # small files: up to 32 per push, one push per directory
+                part, by = small[i:i + 32], {}
+                for r, p, s in part: by.setdefault(os.path.dirname(r), []).append(p)
+                for d, ps in by.items():
+                    with short_paths(ps) as qs:
+                        self.run('push', '-Z', *qs, f'{remote}/{d}/' if d else f'{remote}/', timeout=max(self.timeout, 600))
+                done += sum(s for _, _, s in part)
+                if progress: progress(done, total, f'{len(part)} files')
         for rel, p, size in [(r, p, s) for r, p, s in todo if s > chunk]:
             base = done
             self.push_file(p, f'{remote}/{rel}', chunk, progress=progress and (lambda d, t, note: progress(base + d, total, note)))
             done += size
         return total
+
+    def push_tars(self, local, remote, small, progress=None):
+        """small [(relative path, local path, size)] → remote, as tar archives of at most TAR_BYTES / TAR_FILES built beside local, pushed in one transfer each and
+        unpacked by the device's tar. 32 files per adb push cost ~2 s a push, ~1 MB/s for Tears of the Kingdom's 304,000 files of ~57 kB (hours); an archive goes at the
+        link's speed. An archive cut short by a dropped link is not unpacked; a rerun pushes what is missing. progress(done_bytes, note) after each archive. Returns the bytes"""
+        done, q = 0, shlex.quote(remote)
+        with tempfile.TemporaryDirectory(prefix='.nx2a_tar_', dir=Path(local).parent) as t:   # beside the data: same drive, deleted with it
+            arc = Path(t) / 'p.tar'
+            i = 0
+            while i < len(small):
+                part, size = [], 0
+                while i < len(small) and len(part) < TAR_FILES and (not part or size + small[i][2] <= TAR_BYTES): part.append(small[i]); size += small[i][2]; i += 1
+                with tarfile.open(arc, 'w', format=tarfile.GNU_FORMAT) as tar:   # GNU long names: toybox reads them
+                    for rel, p, s in part:
+                        ti = tarfile.TarInfo(rel); ti.size, ti.mode, ti.mtime = s, 0o644, int(time.time())
+                        with open(long_path(p), 'rb') as f: tar.addfile(ti, f)
+                with short_paths([arc]) as (qa,):
+                    self.run('push', '-Z', qa, f'{remote}/.dmpart.tar', timeout=max(self.timeout, 600))
+                out = self.shell(f'cd {q} && tar -xf .dmpart.tar 2>&1; rc=$?; rm -f .dmpart.tar; echo "rc=$rc"', timeout=max(self.timeout, 600))
+                if not out.rstrip().endswith('rc=0'): raise AdbError(f'unpacking an archive of {len(part)} files in {remote} failed: {out.strip()[-300:]}')
+                done += size
+                if progress: progress(done, f'{len(part):,} files')
+        return done
 
     def push_file(self, local, dst, chunk=64 << 20, progress=None):
         """One file in pieces of chunk bytes, joined on the device; pieces already there are kept, so an interrupted push resumes. progress(done, size, note)"""

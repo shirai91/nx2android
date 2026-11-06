@@ -49,6 +49,19 @@ static pthread_mutex_t g_cq_mu = PTHREAD_MUTEX_INITIALIZER; static pthread_cond_
 static void cq_popped(void) { pthread_mutex_lock(&g_cq_mu); pthread_cond_broadcast(&g_cq_cv); pthread_mutex_unlock(&g_cq_mu); }
 
 typedef struct { void *ptr; uint64_t cap, size; } gbuf;       // same as the front of hle_audio.c's AudioOutBuffer
+// The event ExecuteAudioRendererRendering signals after each render (the SystemEventType the game gave OpenAudioRenderer, kept at the handle's second word): FM24 Touch's was
+// valid when the renderer opened (state 1) and no longer by the first render, which the host runs in manual mode, so SignalSystemEvent (state at +0x28 neither 1 nor 2) aborted
+// (sdk+0x1e1390 → sdk+0x12bc10). On the Switch the service signals the game's event through its kernel handle and the game does not call ExecuteAudioRendererRendering. Such an
+// event is replaced with one the host owns (auto-clear), which nothing waits on
+static int g_ev_layout;   // the event's state byte read 1 or 2 when the renderer opened: this SDK keeps the state there (otherwise the check stays off)
+static void ev_check(void) {
+    void **slot = (void **)g_handle[1]; if (!g_ev_layout || !slot || !*slot) return;
+    uint8_t st = ((const uint8_t *)*slot)[0x28]; if (st == 1 || st == 2) return;
+    static uint64_t own[32]; static int made;
+    if (!made) { Result (*cse)(void *, int, int) = gsym("_ZN2nn2os17CreateSystemEventEPNS0_15SystemEventTypeENS0_14EventClearModeEb"); Result rc = cse ? cse(own, 1, 0) : RES_FAIL; made = 1;
+                 LOG("audren: the renderer's event %p is no longer an event (state %d): the SDK signals one of the host's instead (%#x)", *slot, st, rc); }
+    *slot = own;
+}
 static void render_main(void *arg) {
     (void)arg;
     void (*exec)(void *, void *) = gsym("_ZN2nn5audio29ExecuteAudioRendererRenderingENS0_19AudioRendererHandleE");
@@ -68,7 +81,7 @@ static void render_main(void *arg) {
         const int16_t *src; int got;
         uint32_t h = atomic_load(&g_cq_head);
         if (h != atomic_load(&g_cq_tail)) { src = g_cq[h % CQ]; got = g_cq_n[h % CQ]; atomic_store(&g_cq_head, h + 1); cq_popped(); }   // play queued catch-up output first
-        else { g_frame_n = 0; exec(g_handle[0], g_handle[1]); src = g_frame; got = g_frame_n; }   // SDK: generate commands → CPU processing (output taken in the host takeover) → signal the game's renderer event
+        else { ev_check(); g_frame_n = 0; exec(g_handle[0], g_handle[1]); src = g_frame; got = g_frame_n; }   // SDK: generate commands → CPU processing (output taken in the host takeover) → signal the game's renderer event
         int n = got ? got : 240;
         gbuf *b = free_list[--nfree];
         if (got) memcpy(b->ptr, src, (size_t)n * 4); else memset(b->ptr, 0, (size_t)n * 4);
@@ -98,7 +111,9 @@ static Result ar_open(void **handle, void *ev, const uint8_t *param, void *work,
     t_in_open = 1; Result r = ev ? orig_ev(handle, ev, p, work, sz) : orig(handle, p, work, sz); t_in_open = 0;
     if (r) { LOG("[RED] audren: SDK OpenAudioRenderer failed %#x", r); return r; }
     if (atomic_load(&g_open)) { LOG("[RED] audren: a second renderer (the host drives only one)"); return r; }
-    g_handle[0] = handle[0]; g_handle[1] = handle[1]; atomic_store(&g_open, 1);
+    g_handle[0] = handle[0]; g_handle[1] = handle[1];
+    { void **slot = (void **)handle[1]; uint8_t st = slot && *slot ? ((const uint8_t *)*slot)[0x28] : 0; g_ev_layout = (st == 1 || st == 2) && ev && *slot == ev; }
+    atomic_store(&g_open, 1);
     g_render_tt = dm_guest_thread_spawn(render_main, NULL, 9, 0x10000);
     return r;
 }
