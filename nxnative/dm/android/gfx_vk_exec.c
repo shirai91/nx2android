@@ -1118,9 +1118,43 @@ extern uint64_t g_tex_gen;
 static int tex_desc_for(int st, const dmsv_bind *b, uint64_t h, VkDescriptorImageInfo *ii, int storage) {   // the view's view_num
     int tid = (int)(h & 0xfffff); const view_t *v = NULL; const tex_t *t = NULL;
     ii->imageLayout = VK_IMAGE_LAYOUT_GENERAL; ii->sampler = storage ? VK_NULL_HANDLE : samp_for(st, b, h, 0); ii->imageView = VK_NULL_HANDLE;
+// Mip-chain passes. A game that fills a texture level by level draws level n while its shader samples another level of the same texture through a view of the
+// whole chain (an explicit level through the sampler's LOD clamp). Vulkan leaves a read through a view that holds the attached level undefined, even of other levels
+// (a feedback loop): Mario Kart 8 Deluxe draws its 320x180 R11G11B10F bloom chain (5 levels) that way every frame, and on the Galaxy S24 Ultra (Adreno 750) its
+// bloom swelled over the whole scene, which a Mac showed clear. So such a draw samples a view without the attached level, as upstream's Metal host does
+// (nvn_mtl.m fb_prepare, fb_pinned_level, found on Donkey Kong Bananza): the one level a sampler reads when it has no mipmap filter (the base) or pins one
+// (minimum LOD = maximum LOD, a whole number), else the levels below the attached one (the same base, so the shader's level numbers keep their meaning).
+static int att_level(const vkimg_t *im) {   // the level of im the open pass renders, -1 when it is not attached
+    if (!S.pass_open || !im) return -1;
+    for (int i = 0; i < 8; i++) if (P_att[i].im == im) return S.rt_has_cview[i] && S.rt_cview[i].set_levels ? S.rt_cview[i].base_level : 0;
+    if (P_att[8].im == im) return S.rt_has_dview && S.rt_dview.set_levels ? S.rt_dview.base_level : 0;
+    return -1;
+}
+static int samp_levels_for(int st, const dmsv_bind *b, uint64_t texh) {   // samp_for's sampler, as vk_samp_levels sees it
+    int sid = 0; uint64_t seq = 0;
+    switch (b->samp) {
+    case RS_TEX: sid = (int)(texh >> 20); seq = g_tex_sseq; break;
+    case RS_SLOT: sid = b->samp_arg >= 0 && b->samp_arg < 128 ? (int)(S.samp[st][b->samp_arg] >> 20) : 0; seq = sid ? S.samp_sseq[st][b->samp_arg] : 0; break;
+    case RS_ID: sid = b->samp_arg; break;
+    case RS_UBO: sid = (int)(mem_handle(ubo_word(st, b->samp_arg & 0xff, b->samp_arg >> 8) & ~0xfffffull) >> 20); break;
+    default: break;
+    }
+    int vk_samp_levels(int sid, uint64_t seq); return vk_samp_levels(sid, seq);
+}
+static int fb_view(int st, const dmsv_bind *b, uint64_t h, const tex_t *t, const view_t *v, vkimg_t *im, view_t *out) {   // 1: *out is the narrowed view to sample
+    int L = att_level(im); if (L < 0) return 0;
+    int b0 = v && v->set_levels ? v->base_level : 0, n = v && v->set_levels && v->nlevels ? v->nlevels : (int)im->levels - b0;
+    if (L < b0 || L >= b0 + n) return 0;   // the view leaves the attached level out already
+    int r = samp_levels_for(st, b, h), nb, nn;
+    if (r == -2) { nb = b0; nn = 1; } else if (r >= 0) { nb = b0 + r < b0 + n ? b0 + r : b0 + n - 1; nn = 1; } else { nb = b0; nn = L - b0; }
+    if (nn < 1 || (nb <= L && L < nb + nn)) return 0;   // nothing without the attached level (a pass drawing the view's base level and reading it through a range)
+    *out = v ? *v : (view_t){0}; out->set_levels = 1; out->base_level = (uint8_t)nb; out->nlevels = (uint8_t)nn;
+    static int said; if (said++ < 4) VKLOG("mip-chain pass: %ux%u (format %d, %u levels) drawn at level %d and sampled through levels %d+%d: levels %d+%d sampled", im->w, im->h, im->fmt, im->levels, L, b0, n, nb, nn);
+    (void)t; return 1;
+}
     unsigned ck = ((unsigned)tid * 2654435761u ^ (unsigned)b->dim * 97u ^ (unsigned)(b->flags & 1)) % TVC;
     int logfs = g_x_logfs && S.sh[1] && S.sh[1]->key == g_x_logfs && st == 1; static int nlogfs; if (logfs && nlogfs >= 60) logfs = 0;
-    if (tid && g_var_now != 3 && !g_tracing && !logfs && g_tvc[ck].epoch == g_set_epoch && g_tvc[ck].gen == g_tex_gen && g_tvc[ck].tid == tid && g_tvc[ck].dim == b->dim && g_tvc[ck].arr == (b->flags & 1)) {
+    if (tid && g_var_now != 3 && !g_tracing && !logfs && g_tvc[ck].epoch == g_set_epoch && g_tvc[ck].gen == g_tex_gen && g_tvc[ck].tid == tid && g_tvc[ck].dim == b->dim && g_tvc[ck].arr == (b->flags & 1) && (storage || att_level(g_tvc[ck].im) < 0)) {
         ii->imageView = g_tvc[ck].v; if (g_tvc[ck].im) g_tvc[ck].im->last_use = mtl_last_fence() + 1; vk_texdump_note(g_tvc[ck].im);
         if (g_tvc[ck].num && !storage) ii->sampler = samp_for(st, b, h, 1);
         return g_tvc[ck].num;
@@ -1131,9 +1165,11 @@ static int tex_desc_for(int st, const dmsv_bind *b, uint64_t h, VkDescriptorImag
         if (logfs) nlogfs++;
         if (g_tracing || logfs) VKLOG("  %stexture binding %d handle %#llx id %d: %ux%u nvn format %#x target %d serial %llu pool %p+%#llx size %#llx → image %p (%ux%u fmt %d layers %u levels %u, gpu-written %d) view %p", logfs ? "logfs " : "", b->binding, (unsigned long long)h, tid, t->d.width, t->d.height, t->d.format, t->d.target,
                              (unsigned long long)t->serial, (const void *)t->pool, (unsigned long long)t->off, (unsigned long long)t->L.size, (void *)im, im ? im->w : 0, im ? im->h : 0, im ? im->fmt : 0, im ? im->layers : 0, im ? im->levels : 0, im ? (int)im->gpu_w : -1, (void *)ii->imageView);
+        view_t nv; int narrowed = !storage && im && ii->imageView && fb_view(st, b, h, t, v, im, &nv);
+        if (narrowed) { VkImageView w = vk_tex_view(t, &nv, b->dim, b->flags & 1, 0, NULL); if (w) ii->imageView = w; else narrowed = 0; }
         if (im) im->last_use = mtl_last_fence() + 1;
         if (ii->imageView) num = view_num(t, v);
-        if (ii->imageView) { g_tvc[ck].epoch = g_set_epoch; g_tvc[ck].gen = g_tex_gen; g_tvc[ck].tid = tid; g_tvc[ck].dim = b->dim; g_tvc[ck].arr = b->flags & 1; g_tvc[ck].v = ii->imageView; g_tvc[ck].im = im; g_tvc[ck].num = num; }
+        if (ii->imageView && !narrowed) { g_tvc[ck].epoch = g_set_epoch; g_tvc[ck].gen = g_tex_gen; g_tvc[ck].tid = tid; g_tvc[ck].dim = b->dim; g_tvc[ck].arr = b->flags & 1; g_tvc[ck].v = ii->imageView; g_tvc[ck].im = im; g_tvc[ck].num = num; }
     }
     if (num && !storage) ii->sampler = samp_for(st, b, h, 1);
     if (!ii->imageView) {

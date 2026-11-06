@@ -698,6 +698,13 @@ static const samp_par *samp_at(int sid, uint64_t seq) {   // under g_rmu: the ve
     for (int k = 0; k < SREG_OLD; k++) if (o[k].seq && o[k].seq <= seq) return &o[k].p;
     return &g_sreg[sid];   // older than what is kept: the newest
 }
+// The levels a sampler can read, for a view narrowed around a level the draw renders (gfx_vk_exec.c fb_view): -2 no mipmap filter (the view's base level
+// alone), k >= 0 a mipmap filter with a minimum and maximum LOD of the same whole number k (that level alone), -1 a range or a sampler not registered
+int vk_samp_levels(int sid, uint64_t seq) {
+    pthread_mutex_lock(&g_rmu); const samp_par *p = samp_at(sid, seq); int r = -1;
+    if (p) { if (p->minf <= 1) r = -2; else if (p->lod_min == p->lod_max && p->lod_min >= 0 && p->lod_min < 16 && p->lod_min == (float)(int)p->lod_min) r = (int)p->lod_min; }
+    pthread_mutex_unlock(&g_rmu); return r;
+}
 VkSampler vk_samp_at(int sid, uint64_t seq, int nearest) {   // the sampler a bind made after seq registrations sees (gfx_vk_exec.c samp_for)
     pthread_mutex_lock(&g_rmu);
     VkSampler s = VK_NULL_HANDLE; const samp_par *q = samp_at(sid, seq);
