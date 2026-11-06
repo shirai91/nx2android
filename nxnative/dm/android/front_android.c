@@ -28,6 +28,7 @@
 #include <dlfcn.h>
 #include <jni.h>
 #include <pthread.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <sys/mman.h>
 #include <stdatomic.h>
@@ -361,6 +362,50 @@ static void *pad_watch(void *a) {
         }
         memcpy(prev, ids, sizeof ids); memcpy(used, on, sizeof on); np = n;
         sleep(1);
+    }
+    return NULL;
+}
+
+// ---- temperatures for the frame rate counter (gfx_vk_present.c ov_fps): read every 2 s while the counter is shown ----
+// Battery: the sticky ACTION_BATTERY_CHANGED intent's "temperature" (tenths of a degree), which any app may read. Chip: the hottest of the kernel's
+// thermal zones whose type starts with "cpu" or "gpu" and whose temp file the app may read (SELinux keeps them from apps on some phones: then none).
+static _Atomic int g_temp_soc = -1000, g_temp_bat = -1000;   // whole degrees C; -1000 = not known
+static _Atomic int64_t g_temp_want;                           // when the counter last asked (CLOCK_MONOTONIC ns)
+void dm_android_temps(int *soc, int *bat) { atomic_store(&g_temp_want, mono_ns()); *soc = atomic_load(&g_temp_soc); *bat = atomic_load(&g_temp_bat); }
+static void *temp_watch(void *a) {
+    JavaVM *vm = a; JNIEnv *E = NULL; pthread_setname_np(pthread_self(), "tempwatch");
+    char zones[64][64]; int nz = 0;
+    for (int i = 0; i < 200 && nz < 64; i++) {   // the chip's zones the app can read
+        char p[96], t[48] = {0}; snprintf(p, sizeof p, "/sys/class/thermal/thermal_zone%d/type", i); FILE *f = fopen(p, "r"); if (!f) { if (errno == ENOENT) break; continue; }
+        if (!fgets(t, sizeof t, f)) t[0] = 0; fclose(f);
+        if (strncmp(t, "cpu", 3) && strncmp(t, "gpu", 3)) continue;
+        snprintf(p, sizeof p, "/sys/class/thermal/thermal_zone%d/temp", i); f = fopen(p, "r"); if (!f) continue; long v; int ok = fscanf(f, "%ld", &v) == 1; fclose(f);
+        if (ok) snprintf(zones[nz++], sizeof zones[0], "%s", p);
+    }
+    jobject filter = NULL; jmethodID mReg = NULL, mInt = NULL;
+    if ((*vm)->AttachCurrentThread(vm, &E, NULL) == JNI_OK) {
+        jclass cF = (*E)->FindClass(E, "android/content/IntentFilter"); jmethodID mF = cF ? (*E)->GetMethodID(E, cF, "<init>", "(Ljava/lang/String;)V") : NULL;
+        jstring act = (*E)->NewStringUTF(E, "android.intent.action.BATTERY_CHANGED");
+        jobject fl = mF && act ? (*E)->NewObject(E, cF, mF, act) : NULL; if (!jx(E) && fl) filter = (*E)->NewGlobalRef(E, fl);
+        jclass cA = (*E)->GetObjectClass(E, g_act->clazz);
+        mReg = cA ? (*E)->GetMethodID(E, cA, "registerReceiver", "(Landroid/content/BroadcastReceiver;Landroid/content/IntentFilter;)Landroid/content/Intent;") : NULL;
+        jclass cI = (*E)->FindClass(E, "android/content/Intent"); mInt = cI ? (*E)->GetMethodID(E, cI, "getIntExtra", "(Ljava/lang/String;I)I") : NULL;
+        if (jx(E)) mReg = NULL;
+    }
+    LOG("[perf] temperatures for the counter: %d chip zones readable, battery %s", nz, filter && mReg && mInt ? "from the battery intent" : "not readable");
+    if (!nz && !(filter && mReg && mInt)) return NULL;
+    for (;;) {
+        struct timespec d = {2, 0}; nanosleep(&d, NULL);
+        if (mono_ns() - atomic_load(&g_temp_want) > 5000000000ll) continue;   // the counter is off
+        long hi = -1000000;
+        for (int i = 0; i < nz; i++) { FILE *f = fopen(zones[i], "r"); long v; if (f) { if (fscanf(f, "%ld", &v) == 1) { if (v > 1000) v /= 1000; if (v > hi && v < 200) hi = v; } fclose(f); } }   // millidegrees on most kernels
+        if (nz) atomic_store(&g_temp_soc, hi > -1000000 ? (int)hi : -1000);
+        if (filter && mReg && mInt) {
+            jobject in = (*E)->CallObjectMethod(E, g_act->clazz, mReg, NULL, filter); jstring k = (*E)->NewStringUTF(E, "temperature");
+            jint t = in && k && !jx(E) ? (*E)->CallIntMethod(E, in, mInt, k, -10000) : -10000; if (jx(E)) t = -10000;
+            atomic_store(&g_temp_bat, t > -10000 ? (t + 5) / 10 : -1000);
+            if (in) (*E)->DeleteLocalRef(E, in); if (k) (*E)->DeleteLocalRef(E, k);
+        }
     }
     return NULL;
 }
@@ -1114,6 +1159,7 @@ __attribute__((visibility("default"))) void ANativeActivity_onCreate(ANativeActi
     if (!romfs_readable(act, sdk)) { g_quit = 1; return; }   // after the save manager's requests, which need no RomFS
     settings_load(); dm_haptics_android_start(act, atomic_load(&g_set_rumble));
     { pthread_t w; if (!pthread_create(&w, NULL, pad_watch, act->vm)) pthread_detach(w); }
+    { pthread_t w; if (!pthread_create(&w, NULL, temp_watch, act->vm)) pthread_detach(w); }
     LOG("NX2A host on Android: files %s, RomFS %s, saves %s", g_root, getenv("DM_ROMFS"), act->internalDataPath);
     pthread_t t; pthread_create(&t, NULL, input_thread, NULL); pthread_detach(t);
     // The game's main thread: a 16 MB stack mapped here and handed over whole (pthread_attr_setstack), so the range pthread_getattr_np reports, which
