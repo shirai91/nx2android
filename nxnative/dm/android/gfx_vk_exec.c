@@ -705,7 +705,11 @@ static void clear_color(const p_clear_color *c) {
     VkClearAttachment a = {VK_IMAGE_ASPECT_COLOR_BIT, (uint32_t)c->index, {{{c->rgba[0], c->rgba[1], c->rgba[2], c->rgba[3]}}}};
     const vkfmt_t *f = vk_fmt(S.rt_col[c->index].d.format);
     if (f && f->is_int) for (int i = 0; i < 4; i++) { if (f->is_sint) a.clearValue.color.int32[i] = (int32_t)c->rgba[i]; else a.clearValue.color.uint32[i] = c->rgba[i] > 0 ? (uint32_t)c->rgba[i] : 0; }
-    VkClearRect r = {scissor_rect(), 0, 1};
+    // every layer of the pass: NVN clears the whole bound target, and a layered pass (a 3D texture drawn slice by slice, the layer from a geometry shader) cleared
+    // only its layer 0 here. FINAL FANTASY RESONANCE adds its lights into 32x32x32 volumes (vertex shader f701ff79cec258e6, 32 instances, additive blend): slices 1-31
+    // kept what earlier frames added, and the pass of fog boxes that reads them (vertex shader 1300ca45ddca3566) came out different every frame on its first road
+    // (pass dumps over 4 frames, centre of the road: 29.6, 40.7, 31.7, 39.7; with every layer cleared 30.4 in each, the passes before it the same either way)
+    VkClearRect r = {scissor_rect(), 0, P_ri.layerCount ? P_ri.layerCount : 1};
     if (S.pass_open == 2 && (c->mask & 0xf) == 0xf && pass_whole(r.rect)) {   // the whole attachment before any draw: its load op
         P_ca[c->index].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; P_ca[c->index].clearValue.color = a.clearValue.color; P_cleared = 1; g_vkst.folded++; return;
     }
@@ -717,7 +721,7 @@ static void clear_ds(const p_clear_ds *c) {
     VkImageAspectFlags as = (c->depth_mask ? VK_IMAGE_ASPECT_DEPTH_BIT : 0) | (c->stencil_mask && (S.daspect & VK_IMAGE_ASPECT_STENCIL_BIT) ? VK_IMAGE_ASPECT_STENCIL_BIT : 0);
     as &= S.daspect; if (!as) return;
     VkClearAttachment a = {as, 0, {.depthStencil = {c->depth, (uint32_t)c->stencil}}};
-    VkClearRect r = {scissor_rect(), 0, 1};
+    VkClearRect r = {scissor_rect(), 0, P_ri.layerCount ? P_ri.layerCount : 1};   // every layer (clear_color)
     if (g_x_tracepass == -2) VKLOG("--- depth-stencil clear: depth %g (mask %d), stencil %d (mask %#x), %ux%u at %d,%d, in pass %d%s", c->depth, (int)c->depth_mask, (int)c->stencil, (unsigned)c->stencil_mask,
         r.rect.extent.width, r.rect.extent.height, r.rect.offset.x, r.rect.offset.y, g_sub_pass - 1 + (S.pass_open == 2), S.pass_open == 2 ? " (before its first draw)" : "");
     if (S.pass_open == 2 && pass_whole(r.rect) && (!(as & VK_IMAGE_ASPECT_STENCIL_BIT) || (c->stencil_mask & 0xff) == 0xff)) {   // into the load ops
