@@ -1,0 +1,46 @@
+# The Legend of Zelda: Echoes of Wisdom 1.1.0 (SDK 20), tested on Android; see android.tsv.
+# Nintendo Switch SDK 20; tested as a playable Android port on Retroid Pocket 6 (see android.tsv).
+
+# ---- Identity ----
+title_id	01008CF01BAAC000
+program_id	01008CF01BAAC000
+
+# ---- App ----
+name	The Legend of Zelda: Echoes of Wisdom
+ipa	TheLegendOfZeldaEchoesOfWisdom.ipa
+app_category	public.app-category.games
+
+# ---- Versions ----
+build	v196608	1.1.0	main=9f221e1afa65ba5443e955158ab97da8	subsdk0=d6ad4f66925e3458f012915646501b4d	subsdk1=a4108e77b80cd0a9221b085a8e2c42d4	sdk=aa65d75ae1f61b1a2276f52a59f07d42
+package	v196608
+shader_versions	v196608
+
+# ---- Files ----
+# every module main imports from
+modules	main subsdk0 subsdk1 sdk
+romfs_marker	region_common/audio/edward.bfsar
+zip_store	.arc:.bffnt:.bfntpj:.bfres:.bfsar:.bfstm:.bntx:.ptcl:.webm:.metallib
+
+# ---- Memory ----
+# main sets a heap of at most the pool − 64 MB: a 3328 MB heap region
+mem_reserve	0x100000000
+mem_alias	0x10000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+# the NPDM declares 0 MB of system resource: IsVirtualAddressMemoryEnabled is false, as on Horizon (Big Brain Academy: Brain vs. Brain sets a heap only then)
+sys_resource	0x0
+
+# ---- Shader split ----
+shader_groups	/region_common/=regioncommon /regionEU/=regioneu /regionUS/=regionus /regionJP/=regionjp /regionCN/=regioncn /regionKR/=regionkr /regionTW/=regiontw
+shader_note	The Legend of Zelda: Echoes of Wisdom shaders
+
+# ---- After the rewrite ----
+# the rewritten modules are larger than the default 64 MB of used memory (Age of Calamity: 66.6 MB → 72 MB)
+mem_used	0x6400000
+
+# ---- Present interval ----
+# Zelda uses nvnWindowSetPresentInterval(2) at 30 fps. In "game" mode (default) this halves the
+# effective frame rate when the display is set to 30 Hz (overlay frame limiter → 15 fps).
+# "display" mode presents one frame per display vsync regardless of the game's interval:
+# frame limiter 30 → 30 fps, frame limiter 60 → 60 fps, 120 → 120 fps. Correct.
+present_interval	display
