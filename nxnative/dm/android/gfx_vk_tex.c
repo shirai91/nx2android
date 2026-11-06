@@ -557,7 +557,11 @@ VkImageView vk_tex_view(const tex_t *t, const view_t *vw, int dim, int arrayed, 
     VkComponentMapping swz = sample_swizzle(&f->swz,t,vw,as_attachment);
     VkFormat fmt = f->vk;
     const vkfmt_t *imf = vk_fmt(im->nvn_format);   // (a BC format decoded on the CPU counts as compressed: its view keeps the decoded image's format)
-    if ((im->aspect & ~VK_IMAGE_ASPECT_COLOR_BIT) || (f->compressed || f->dec) != (imf->compressed || imf->dec) || (f->dec && f->dbpp != imf->dbpp)) fmt = im->fmt;   // depth views and block-size changes keep the image's format
+    // a block-compressed image drawn into through an uncompressed view of its block size (BLOCK_TEXEL_VIEW_COMPATIBLE, one level and layer: the pass is in blocks,
+    // gfx_vk_exec.c) keeps the view's format. Kept in the image's, Mario Kart 8 Deluxe's BC3 reflection cube (drawn through RGBA32UI views as it loads) was rendered as a
+    // BC3 attachment, which Vulkan does not allow: on the Galaxy S24 Ultra (Adreno 750) its faces held block noise, and every reflection of it shone white
+    int block_view = as_attachment && imf->compressed && !imf->dec && !f->compressed && !f->dec && f->bpb == imf->bpb && (im->usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
+    if (!block_view && ((im->aspect & ~VK_IMAGE_ASPECT_COLOR_BIT) || (f->compressed || f->dec) != (imf->compressed || imf->dec) || (f->dec && f->dbpp != imf->dbpp))) fmt = im->fmt;   // depth views and block-size changes keep the image's format
     if (im->fixed_fmt && fmt != im->fmt && fmt != srgb_twin(im->fmt)) { fmt = im->fmt; static int n; if (n++ < 8) VKLOG("[RED] view format %d of a format-listed image (%d, DM_VK_UBWC): the image's own used", f->vk, im->fmt); }
     pthread_mutex_lock(&g_view_mu);
     vview *head = nvn_hm_get(&g_views, &im);
