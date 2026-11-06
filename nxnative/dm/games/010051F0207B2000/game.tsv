@@ -36,6 +36,11 @@ sys_resource	0x0
 shader_groups	/Tex/=tex /Icon/=icon /Pack/=pack /Model/=model /Sound/=sound /Parameter/=parameter /Effect/=effect /Layout/=layout /Data/=data /Phive/=phive /MiiNewsParam/=miinewsparam /AnimationEvent/=animationevent /RSDB/=rsdb /FocusLeading/=focusleading /UI/=ui /MapFile/=mapfile /AS/=as /VoiceText/=voicetext /Mii/=mii /MiiTouchCameraParam/=miitouchcamerapa /SoundLeakOutParam/=soundleakoutpara /Mals/=mals /WalkingGrid/=walkinggrid /Editor/=editor
 shader_note	Tomodachi Life: Living the Dream shaders (14,388 in the RomFS's archives)
 
+# ---- Graphics ----
+# The Mii renderer clears the depth of its colour pass under a render condition (SetRenderEnableConditional, main+0x208f18, before the clear at main+0x208f54): the
+# colour pass tests depth EQUAL against its depth pre-pass. Run unconditionally, the clear wiped that depth and every head, face part and hair draw failed the test
+render_cond	on
+
 # ---- After the rewrite ----
 # the rewritten modules are larger than the default 64 MB of used memory (Age of Calamity: 66.6 MB → 72 MB)
 mem_used	0x6600000
