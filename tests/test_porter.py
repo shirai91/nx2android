@@ -261,6 +261,10 @@ class Misc(unittest.TestCase):
         from porter import cli
         self.assertEqual(cli._parser().parse_args(['port', 'x', '--vulkan-driver', 'libvulkan_freedreno.so']).vulkan_driver, 'libvulkan_freedreno.so')
         self.assertIsNone(cli._parser().parse_args(['port', 'x']).vulkan_driver)
+        # the APK carries it as lib*.so, the only names the package manager extracts; env.txt's DM_VK_DRIVER names that file
+        self.assertEqual(pipeline.driver_lib_name(Path('/d/libvulkan_freedreno.so')), 'libvulkan_freedreno.so')
+        self.assertEqual(pipeline.driver_lib_name(Path('/d/vulkan.purple.so')), 'libvulkan.purple.so')
+        self.assertEqual(pipeline.driver_lib_name('vulkan.freedreno.so'), 'libvulkan.freedreno.so')
         t = Path(tempfile.mkdtemp(prefix='nx2a_test_game_'))
         try:
             with self.assertRaises(pipeline.BuildError): pipeline.Port(pipeline.Options(t, vulkan_driver=t / 'driver.txt')).run()
