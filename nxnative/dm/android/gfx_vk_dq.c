@@ -43,13 +43,15 @@ void vk_dq_drain(void) {
     g_dq_drains++; wake();
     for (int i = 0; i < 2000 && atomic_load_explicit(&g_rd, memory_order_acquire) < w; i++) sched_yield();   // the recorder is usually a few calls behind
     if (atomic_load_explicit(&g_rd, memory_order_acquire) >= w) return;
-    pthread_mutex_lock(&g_mu); atomic_store(&g_draining, 1);
+    // g_draining counts the waiters: the replay and the present thread can drain at once, and a flag the first one cleared left the second one without the
+    // recorder's broadcast until its 1 s timeout (Mario Kart 8 Deluxe: two 1-second freezes in a 5-minute race session, everything recorded meanwhile)
+    pthread_mutex_lock(&g_mu); atomic_fetch_add(&g_draining, 1);
     while (atomic_load_explicit(&g_rd, memory_order_acquire) < w) { pthread_cond_signal(&g_cv);
         struct timespec dl; clock_gettime(CLOCK_REALTIME, &dl); dl.tv_sec += 1;
         if (pthread_cond_timedwait(&g_dcv, &g_mu, &dl)) { uint64_t rd = atomic_load(&g_rd); const rec_hdr *h = (const rec_hdr *)(g_ring + rd % RING); static int n;
             if (n++ < 20) VKLOG("[RED] two-stage replay: a drain waits over 1 s: written %llu, published %llu, read %llu; the record there: op %u size %u",
                 (unsigned long long)w, (unsigned long long)atomic_load(&g_pub), (unsigned long long)rd, h->op, h->size); } }
-    atomic_store(&g_draining, 0); pthread_mutex_unlock(&g_mu);
+    atomic_fetch_sub(&g_draining, 1); pthread_mutex_unlock(&g_mu);
 }
 static void *rec_begin(uint32_t op, VkCommandBuffer cb, size_t n) {   // room for a record with n bytes after its header
     size_t need = (sizeof(rec_hdr) + n + 15) & ~(size_t)15;   // 16-byte records: the ring's end always has room for a whole header
