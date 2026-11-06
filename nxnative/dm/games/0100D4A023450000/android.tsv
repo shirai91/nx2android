@@ -14,3 +14,5 @@ orientation	landscape
 setting	docked=0
 setting	overlay=0
 setting	rumble=1
+# Docked, its Unity player takes the touch panel's values as pixels of its 1920x1080 screen: given so, taps land where they are (hle_touch.c; reported by the user 2026-11-06)
+env	DM_TOUCH_DOCKED=pixels

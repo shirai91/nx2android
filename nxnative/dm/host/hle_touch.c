@@ -42,11 +42,14 @@ static int32_t clampi(float v, int hi) { int32_t r = (int32_t)(v * (float)(hi + 
 // The panel is 1280x720 in both modes. DM_TOUCH_DOCKED=screen (a profile env, Android, where docked play has a touch screen too): in console mode a point is given as
 // the game's own player turns it into a pixel of the 1920x1080 console screen. Unity 2019.4's player takes the panel's values as screen pixels with the panel's flip:
 // main+0x55c5ac stores (x, 720 - y) unscaled in its bottom-up screen space, so in Unpacking a tap at 47% of the height pressed the item at 65% ((360 + y) / 1080). So x is
-// the screen column and y the screen row less 360 (from -360 up: Unity converts the int signed). The Switch never shows this: its screen cannot be touched when docked
-static int touch_docked_screen(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_TOUCH_DOCKED"); v = e && !strcmp(e, "screen"); } return v && dm_opmode() == 1; }
+// the screen column and y the screen row less 360 (from -360 up: Unity converts the int signed). The Switch never shows this: its screen cannot be touched when docked.
+// DM_TOUCH_DOCKED=pixels: the screen pixel as it is, top-down (x column, y row of 1920x1080): Football Manager 26 Touch's Unity player maps the panel's values onto its 1920x1080
+// docked screen unscaled, so a tap at 31% across and 55% down pressed the tile at 20% / 36% (Start New Career for Manager Profiles)
+static int touch_docked_mode(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_TOUCH_DOCKED"); v = !e ? 0 : !strcmp(e, "screen") ? 1 : !strcmp(e, "pixels") ? 2 : 0; } return dm_opmode() == 1 ? v : 0; }
 static void touch_xy(float nx, float ny, int32_t *x, int32_t *y) {
-    if (!touch_docked_screen()) { *x = clampi(nx, 1279); *y = clampi(ny, 719); return; }
-    *x = clampi(nx, 1919); *y = clampi(ny, 1079) - 360;
+    int m = touch_docked_mode();
+    if (!m) { *x = clampi(nx, 1279); *y = clampi(ny, 719); return; }
+    *x = clampi(nx, 1919); *y = clampi(ny, 1079) - (m == 1 ? 360 : 0);
 }
 // Fill one TouchScreenState<max> (out is 0x10 + 0x28 · max bytes; max 1–16); now_ns is used for delta_time. Returns the number of touch points written.
 // Fingers beyond max are left for a later read (their Start / End is not used up)
