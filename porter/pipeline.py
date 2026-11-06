@@ -660,7 +660,7 @@ class Port:
         external = self.external_activity() if self.o.external_display else []
         nsp.run([PY, DM / 'android/apk/mkapk.py', self.so, self.apk_path, paths.signing_key(), '--package', self.package, '--label', self.app_name, '--lib', 'dmhost',
                  '--version-code', str(code), '--version-name', self.display]
-                + (['--landscape'] if self.ap.landscape else []) + (['--icon', icon] if icon else []) + self.theme() + external + ([] if self.o.debug else ['--release'])
+                + (['--landscape'] if self.ap.landscape else []) + icon + self.theme() + external + ([] if self.o.debug else ['--release'])
                 + [a for f in ([self.o.vulkan_driver] + [self.so.parent / n for n in ADRENOTOOLS_LIBS] if self.o.vulkan_driver else []) for a in ('--extra-so', str(f))],
                 self.logs / 'android_apk.log', env=self.env)
         self.result['apk'] = str(self.apk_path)
@@ -692,14 +692,20 @@ class Port:
         self.result['theme'] = pack.name; say(f'gamepad theme: {pack.name}')
         return [a for f in files for a in ('--asset', f'overlay/{f.name}={f}')]
 
-    def icon(self):   # the game's icon (nx_extract saves the control data's English one as icon.jpg) as a 256 px PNG; None without Pillow or an icon
+    def icon(self):
+        """mkapk's icon arguments: the game's icon (nx_extract saves the control data's English one as icon.jpg) as a 256 px PNG, and an adaptive icon's layers
+        (Android 8+ launchers draw a plain icon small on a white disc): the icon fills the 72 dp the launcher's mask shows, over a blurred copy that fills
+        the 108 dp layer. [] without Pillow or an icon"""
         src = next((d / 'icon.jpg' for d in (self.game, self.base) if (d / 'icon.jpg').exists()), None)
-        if not src: say('[RED] no game icon in the extraction: the app gets the system\'s default icon'); return None
-        try: from PIL import Image
-        except ImportError: say('[RED] no Pillow (pip install pillow): the app gets the system\'s default icon'); return None
-        dst = self.aw / 'icon.png'
-        Image.open(src).convert('RGB').resize((256, 256), Image.LANCZOS).save(dst)
-        return dst
+        if not src: say('[RED] no game icon in the extraction: the app gets the system\'s default icon'); return []
+        try: from PIL import Image, ImageFilter
+        except ImportError: say('[RED] no Pillow (pip install pillow): the app gets the system\'s default icon'); return []
+        art = Image.open(src).convert('RGB'); plain, fg, bg = self.aw / 'icon.png', self.aw / 'icon_fg.png', self.aw / 'icon_bg.png'
+        art.resize((256, 256), Image.LANCZOS).save(plain)
+        layer, shown = 432, 288   # 108 dp and 72 dp at 4 px per dp
+        art.resize((layer, layer), Image.LANCZOS).filter(ImageFilter.GaussianBlur(24)).save(bg)
+        top = Image.new('RGBA', (layer, layer)); top.paste(art.resize((shown, shown), Image.LANCZOS), ((layer - shown) // 2,) * 2); top.save(fg)
+        return ['--icon', plain, '--icon-fg', fg, '--icon-bg', bg]
 
     # ---- data: the files the app reads from its files folder ----
     def data(self):
