@@ -220,6 +220,12 @@ void dm_ctl_peek(uint64_t a, int n) {
         LOG("DM_CTL: peek %#llx: %g %g %g %g (%08x %08x %08x %08x)", (unsigned long long)(a + 4 * (uint64_t)i), f[0], f[1], f[2], f[3], w[0], w[1], w[2], w[3]);
     }
 }
+// "pokei <guest address> <value>": one 32-bit int written to guest memory (an engine's switch tried while the game runs, its address found from its registration)
+void dm_ctl_poke_i32(uint64_t a, int32_t v) {
+    uint32_t was; if (!rd_dbg(a, &was, 4)) { LOG("DM_CTL: pokei %#llx: not readable", (unsigned long long)a); return; }
+    int32_t *p = (int32_t *)(uintptr_t)a; dm_guest_write_prepare(p, sizeof *p); *p = v;
+    LOG("DM_CTL: pokei %#llx: %d → %d", (unsigned long long)a, (int32_t)was, v);
+}
 // "memdump <guest address> <bytes> <path>": guest memory to a file, read safely (stops at the first unreadable page)
 void dm_ctl_memdump(uint64_t a, uint64_t n, const char *path) {
     FILE *f = fopen(path, "wb"); if (!f) { LOG("[RED] DM_CTL: memdump: cannot open %s", path); return; }

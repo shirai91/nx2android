@@ -22,6 +22,10 @@ void dm_pad_set(uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry
 void dm_pad_set_player(int player, uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry);   // player 0..DM_PLAYERS-1 (player 1..8)
 void dm_pad_players(uint32_t mask);   // bit p: player p + 1 has a controller; player 1 always counts as connected (the keyboard, the touch gamepad, DM_KEYS)
 uint32_t dm_player_npad(int player);  // the npad id the game reads player p + 1 on: Handheld (0x20) or No1 (0) for player 1, No n (id n - 1) for player n
+// The device's motion as player 1's six-axis sensor (hle_hid.c), in the Switch controller's frame: x right, y away from the player (the screen's top edge), z out of the screen.
+// acc: gravity's direction in G (lying flat face up: 0, 0, -1, the opposite sign of Android's accelerometer); gyro: angular velocity in revolutions / s, counter-clockwise
+// positive (right-hand rule, as Android's gyroscope); t_ns: the sample's time (any monotonic clock, for the integration). A front end that never calls it keeps the sensor at rest
+void dm_motion_set(const float acc[3], const float gyro[3], int64_t t_ns);
 
 // Optional diagnostic DM_HID_RECEIPT_LOG=<writable JSONL path>: received samples of real GetNpadState returns.
 // Fields read_start_ns/time_ns use the same host now_ns(); the front-end publish window must use the same helper, and a read interval that spans a publish must not be force-matched.

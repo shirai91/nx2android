@@ -9,10 +9,7 @@
 #include "../gfx/tex/nvn_deswizzle.h"
 #include "nvn_hmap.h"
 #include <string.h>
-#define BCDEC_STATIC
-#define BCDEC_BC4BC5_PRECISE
-#define BCDEC_IMPLEMENTATION
-#include "../third_party/bcdec/bcdec.h"
+#include "../gfx/tex/nvn_bc.h"
 
 int nvn_dirty_since_span(const void *span, const void *addr, size_t len, uint64_t stamp);
 const void *nvn_dirty_span(const void *addr, size_t len);
@@ -81,25 +78,18 @@ static void bc_target(vkfmt_t *o) {
 }
 // Decodes BC blocks (rows of whole blocks pitch bytes apart, (h + 3) / 4 rows a slice, z slices) into w x h x z texels of f->vk, rows of w * f->dbpp bytes
 static void bc_decode(const vkfmt_t *f, const uint8_t *src, size_t pitch, uint32_t w, uint32_t h, uint32_t z, uint8_t *dst) {
-    uint32_t bx = (w + 3) / 4, by = (h + 3) / 4; size_t row = (size_t)w * f->dbpp;
-    uint8_t t[4 * 4 * 8];   // one decoded block: 4 rows of 4 texels, up to 8 bytes each (BC6H decodes to RGB16F, widened to RGBA16F)
-    for (uint32_t s = 0; s < z; s++) for (uint32_t y = 0; y < by; y++) for (uint32_t x = 0; x < bx; x++) {
-        const uint8_t *b = src + ((size_t)s * by + y) * pitch + (size_t)x * f->bpb;
-        switch (f->dec) {
-        case 1: case 2: bcdec_bc1(b, t, 16); if (f->dec == 1) for (int i = 0; i < 16; i++) t[i * 4 + 3] = 255; break;   // BC1 RGB: no alpha
-        case 3: bcdec_bc2(b, t, 16); break;
-        case 4: bcdec_bc3(b, t, 16); break;
-        case 5: case 6: bcdec_bc4(b, t, 4, f->dec == 6); break;
-        case 7: case 8: bcdec_bc5(b, t, 8, f->dec == 8); break;
-        case 9: case 10: {
-            uint16_t h3[16 * 3]; bcdec_bc6h_half(b, h3, 12, f->dec == 10);
-            for (int i = 0; i < 16; i++) { uint16_t px[4] = {h3[i * 3], h3[i * 3 + 1], h3[i * 3 + 2], 0x3c00}; memcpy(t + i * 8, px, 8); }   // alpha 1.0
-            break; }
-        default: bcdec_bc7(b, t, 16); break;
-        }
-        uint32_t x0 = x * 4, y0 = y * 4, cw = w - x0 < 4 ? w - x0 : 4, ch = h - y0 < 4 ? h - y0 : 4;
-        for (uint32_t r = 0; r < ch; r++) memcpy(dst + ((size_t)s * h + y0 + r) * row + (size_t)x0 * f->dbpp, t + r * 4 * f->dbpp, (size_t)cw * f->dbpp);
-    }
+    // Retain the renderer's tight-output interface; the shared decoder also
+    // accepts explicit row/slice pitches and buffer bounds for copy paths.
+    static const uint8_t formats[] = {0, 0x41, 0x42, 0x43, 0x44, 0x49, 0x4a, 0x4b, 0x4c, 0x50, 0x4f, 0x4d};
+    if (!w || !h || !z || !f->dbpp || h > UINT32_MAX - 3 || f->dec >= sizeof formats || !formats[f->dec])
+        die("[vk] invalid CPU BC decode dimensions or format");
+    size_t rows = (h + 3) / 4;
+    if (pitch > SIZE_MAX / rows || pitch * rows > SIZE_MAX / z ||
+        (size_t)w > SIZE_MAX / f->dbpp || (size_t)w * f->dbpp > SIZE_MAX / h ||
+        (size_t)w * f->dbpp * h > SIZE_MAX / z) die("[vk] CPU BC decode size overflow");
+    size_t row = (size_t)w * f->dbpp, slice = pitch * rows;
+    if (nvn_bc_decode(formats[f->dec], w, h, z, src, slice * z, pitch, slice,
+                      dst, row * h * z, row, row * h)) die("[vk] invalid CPU BC decode layout");
 }
 void vk_bc_decode(const vkfmt_t *f, const uint8_t *src, size_t pitch, uint32_t w, uint32_t h, uint32_t z, uint8_t *dst) { bc_decode(f, src, pitch, w, h, z, dst); }
 static pthread_mutex_t g_fmt_mu = PTHREAD_MUTEX_INITIALIZER;
@@ -228,6 +218,16 @@ void vk_tex_prepare(VkCommandBuffer cb, vkimg_t *im) {
         VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, im->img, {im->aspect, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS}};
     vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, NULL, 0, NULL, 1, &b);
     im->layout = VK_IMAGE_LAYOUT_GENERAL;
+    // A new image's contents are undefined in Vulkan, where new Switch memory reads 0 (nxnative's Metal backend zeroes new textures too). Xenoblade Chronicles 3's water keeps
+    // a texture that builds on its previous frame: made again by the switch to docked mode, it started from leftover memory, and blocks of it stayed on the water from then on.
+    // So an image starts as zeros, before an upload or a draw replaces them. Block-compressed images can't be cleared; they are always uploaded
+    const vkfmt_t *f = vk_fmt(im->nvn_format);
+    if (!(im->usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) || (f && f->compressed)) return;
+    VkImageSubresourceRange r = {im->aspect, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS};
+    if (im->aspect & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) { VkClearDepthStencilValue z = {0, 0}; vkCmdClearDepthStencilImage(cb, im->img, VK_IMAGE_LAYOUT_GENERAL, &z, 1, &r); }
+    else { VkClearColorValue z = {{0, 0, 0, 0}}; vkCmdClearColorImage(cb, im->img, VK_IMAGE_LAYOUT_GENERAL, &z, 1, &r); }
+    VkMemoryBarrier mb = {VK_STRUCTURE_TYPE_MEMORY_BARRIER, NULL, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT};
+    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &mb, 0, NULL, 0, NULL);
 }
 // Upload a packaged texture from guest memory: each level and layer deswizzled into scratch memory, copied in by the upload command buffer
 uint64_t g_pkg_n, g_pkg_bytes, g_pkg_ns;   // packaged texture uploads: count, bytes, CPU time (the replay's per-frame line)
@@ -274,6 +274,7 @@ static void pkg_upload_(vkimg_t *im, const tex_t *t, const vkfmt_t *f) {
     }
 }
 static int packaged_tex(const tex_t *t);
+static int cpu_content_tex(const tex_t *t, const vkfmt_t *f);
 static int lin_copy(vkimg_t *im, const tex_t *t, const vkfmt_t *f);
 static void vk_tex_view_drop_all(vkimg_t *im);
 // Images over the same memory with different descriptions (the storage key differs) are separate Vulkan images: on the Switch a texture sees what another
@@ -331,22 +332,21 @@ static vkimg_t *vk_tex_(const tex_t *t) {
     int keyed = t->pool != NULL;
     pthread_mutex_lock(&g_img_mu);
     vkimg_t *im = keyed ? nvn_hm_get(&g_by_key, &k) : nvn_hm_get(&g_by_serial, &t->serial);
-    int fresh = 0;
     if (!im) {
         if (keyed) evict_overlaps(k.pool, t->off, (int64_t)t->L.size);
         im = img_new(t, f); if (!im) { pthread_mutex_unlock(&g_img_mu); return NULL; }
         im->pool = k.pool; im->off = t->off; im->size = (int64_t)t->L.size; im->flags = t->d.flags; g_img_n++; g_img_bytes += t->L.size;
         if (keyed) { alias_link(im); nvn_hm_put(&g_by_key, &k, im); } else nvn_hm_put(&g_by_serial, &t->serial, im);
-        fresh = 1;
     }
     im->used = g_tex_frame;
     pthread_mutex_unlock(&g_img_mu);
-    if (!vk_sub_open()) return fresh ? NULL : im;   // looked up outside a submission (present): nothing can be recorded, a new image has no contents yet
+    if (!vk_sub_open()) return __atomic_load_n(&im->looked, __ATOMIC_ACQUIRE) ? im : NULL;   // looked up outside a submission (present): nothing can be recorded, a new image has no contents yet
+    int first = !__atomic_exchange_n(&im->looked, 1, __ATOMIC_ACQ_REL);   // its first use is the first lookup inside a submission, not its creation (which may have been outside one)
     // a texture's first use: written by the CPU since it was registered (profile tex_dirty_upload), it is CPU-written from now on, as at nvn_mtl.m's first resolution;
     // otherwise only a later nvn_ft_poll pass finds it, and its first draws read zeros
     int nvn_ft_written(const tex_t *);
     if (t->mem && lin_copy(im, t, f)) {}
-    else if (t->mem && (packaged_tex(t) || (fresh && nvn_ft_written(t)))) {
+    else if (t->mem && (packaged_tex(t) || (first && (nvn_ft_written(t) || cpu_content_tex(t, f))))) {
         im->pkg_used = g_tex_frame;
         if (!im->packaged) { im->packaged = 1; pkg_upload(im, t, f); }
         else {
@@ -362,7 +362,7 @@ static vkimg_t *vk_tex_(const tex_t *t) {
             }
             im->pkg_seen = now;
         }
-    } else if (fresh) vk_tex_prepare(vk_upload_cmd(), im);
+    } else if (first) vk_tex_prepare(vk_upload_cmd(), im);
     return im;
 }
 // Packaged textures give up their write protection (nvn_dirty_release; drawn again, they are uploaded and protected again) when not drawn for PKG_IDLE presents, and the
@@ -448,6 +448,28 @@ static int lin_copy(vkimg_t *im, const tex_t *t, const vkfmt_t *f) {   // 1 = th
     if (im->layout != VK_IMAGE_LAYOUT_GENERAL) vk_tex_prepare(cb, im);
     VkBufferImageCopy r = {o, (uint32_t)(stride / f->bpb), 0, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {im->w, im->h, 1}};
     vkCmdCopyBufferToImage(cb, b, im->img, VK_IMAGE_LAYOUT_GENERAL, 1, &r);
+    return 1;
+}
+// A texture the CPU filled before its first use, as nxnative's tex_cpu_content (nvn_mtl.m) takes it: a sampled block-compressed texture (BC and ASTC are not colour-renderable, so
+// data in its storage at first use is the CPU's), or an uncompressed 3D texture with none of the flags below (upstream 6a16b7d3, #1050: Xenoblade Chronicles 3's particle steering
+// fields, 10x10x10 RGBA8 and RGBA16F, flags 0; as GPU textures of zeros every send-off particle moved along (-1, -1, -1)). It is made CPU-written: uploaded now, again when its pages
+// change. The compressed case was missing here: Xenoblade Chronicles 3's particle sprites (the husks' 128x128 BC7 sRGB, flags 0) were images of zeros, so the particle
+// pixel shader read alpha 0 and discarded every pixel (no red husk particles, no send-off ones). A pool the CPU cannot access is filled from its storage once in the same way, as the
+// Mac's tex_init_fill does (the game cannot write it again). DM_NVN_STORAGE_FIRST_USE=0 turns this off
+static int mem_any(const uint8_t *p, uint64_t n) {   // whether any byte is non-zero (stops at the first)
+    uint64_t i = 0, v;
+    for (; i + 8 <= n; i += 8) { memcpy(&v, p + i, 8); if (v) return 1; }
+    for (; i < n; i++) if (p[i]) return 1;
+    return 0;
+}
+static int cpu_content_tex(const tex_t *t, const vkfmt_t *f) {
+    static int on = -1; if (on < 0) { const char *e = getenv("DM_NVN_STORAGE_FIRST_USE"); on = !e || atoi(e) != 0; }
+    if (!on || !t->pool || t->has_layout || !(f->compressed || t->d.target == 2) || t->d.samples > 1) return 0;
+    if (t->pool->flags & NVN_MEMORY_POOL_FLAGS_VIRTUAL) return 0;
+    if (t->d.flags & (NVN_TEXTURE_FLAGS_IMAGE | NVN_TEXTURE_FLAGS_COMPRESSIBLE | NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET | NVN_TEXTURE_FLAGS_SPARSE)) return 0;
+    if (!mem_any(t->mem, t->L.size)) return 0;
+    static int n; if (n++ < 8) VKLOG("texture %ux%ux%u nvn format %#x at %p (pool flags %#x): the CPU filled it before its first use: uploaded from its storage", t->d.width, t->d.height, t->d.depth, t->d.format, (const void *)t->mem, t->pool->flags);
+    mtl_tex_cpu_written(t);
     return 1;
 }
 static int packaged_tex(const tex_t *t) {
@@ -748,8 +770,12 @@ VkBufferView vk_dummy_tbuf(int storage) {
     VKCHK(vkCreateBufferView(V.dev, &ci, NULL, &v[storage]));
     return v[storage];
 }
-// a buffer texture's texel buffer view over its pool (cached by texture contents: the registered copy)
-VkBufferView vk_tbuf_view(const tex_t *t) {
+// a buffer texture's texel buffer view over its pool (cached by texture contents: the registered copy). One at an offset that is not a multiple of
+// minTexelBufferOffsetAlignment cannot have a view there: a read-only one (storage 0) is given a copy of its bytes as the CPU sees them, at an aligned place in
+// this submission's scratch memory, made at each bind and freed with the submission. Final Fantasy Resonance (Unreal Engine 5.6) binds its sprite particles'
+// parameters (R32F, 44 elements: colours, sizes) at offsets 36 bytes past a multiple of Adreno's 64, and they read the zero dummy (its battle fires stay missing with
+// the copy: another cause). A buffer the GPU writes in the same submission would be read as last copied back; a storage one keeps the dummy (its writes would go to the copy)
+VkBufferView vk_tbuf_view(const tex_t *t, int storage) {
     static nvn_hmap cache = {.klen = 24}; static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
     // keyed by the pool too: a pool finalized and another made at the same address has a new VkBuffer, and the old one's memory is freed once the GPU is past it. Keyed by address
     // alone, the view over the old buffer was handed out again and shaders read and wrote freed memory, which the kernel gives to newer buffers (Xenoblade Chronicles 3: the
@@ -759,11 +785,21 @@ VkBufferView vk_tbuf_view(const tex_t *t) {
     pthread_mutex_lock(&mu);
     VkBufferView v = nvn_hm_get(&cache, &k);
     if (!v) {
-        const vkfmt_t *f = vk_fmt(t->d.format); VkBuffer b; VkDeviceSize off;
-        if (f && t->mem && vk_buf_at((uint64_t)(uintptr_t)t->mem, (uint64_t)t->d.width * f->bpb, &b, &off) && off % V.props.limits.minTexelBufferOffsetAlignment == 0) {
+        const vkfmt_t *f = vk_fmt(t->d.format); VkBuffer b; VkDeviceSize off = 0;
+        uint32_t al = (uint32_t)V.props.limits.minTexelBufferOffsetAlignment;
+        int in = f && t->mem && vk_buf_at((uint64_t)(uintptr_t)t->mem, (uint64_t)t->d.width * f->bpb, &b, &off);
+        if (in && off % al == 0) {
             VkBufferViewCreateInfo ci = {VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO, NULL, 0, b, f->vk, off, (VkDeviceSize)t->d.width * f->bpb};
             if (vkCreateBufferView(V.dev, &ci, NULL, &v)) v = VK_NULL_HANDLE; else nvn_hm_put(&cache, &k, v);
-        } else VKRED_ONCE(16, "buffer texture not in a pool or misaligned (format %#x, %u elements)", t->d.format, t->d.width);
+        } else if (in && !storage) {
+            VkDeviceSize n = (VkDeviceSize)t->d.width * f->bpb, so; VkBuffer sb; void vk_ubd_read(uint64_t a, uint64_t n, uint8_t *dst);
+            uint8_t *p = vk_scratch(n, al, &sb, &so); vk_ubd_read((uint64_t)(uintptr_t)t->mem, n, p);
+            VkBufferViewCreateInfo ci = {VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO, NULL, 0, sb, f->vk, so, n};
+            if (vkCreateBufferView(V.dev, &ci, NULL, &v)) v = VK_NULL_HANDLE; else vk_defer_free_bview(v);
+            static unsigned nc; if (nc++ < 4) VKLOG("buffer texture at a misaligned offset (%llu, not a multiple of %u; format %#x, %u elements): read from a copy", (unsigned long long)off, al, t->d.format, t->d.width);
+            pthread_mutex_unlock(&mu); return v;   // (not cached: a copy of this bind's bytes)
+        } else if (in) VKRED_ONCE(16, "storage buffer texture at a misaligned offset: %llu, not a multiple of %u (format %#x, %u elements): zeros", (unsigned long long)off, al, t->d.format, t->d.width);
+        else VKRED_ONCE(16, "buffer texture not in a pool (format %#x, %u elements)", t->d.format, t->d.width);
     }
     pthread_mutex_unlock(&mu);
     return v;

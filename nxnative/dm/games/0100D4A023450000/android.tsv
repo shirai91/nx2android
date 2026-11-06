@@ -1,0 +1,16 @@
+# Football Manager 26 Touch on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Sports Interactive, Unity IL2CPP on SDK 20.5.14, update 1.0.2; 5,747 shaders, all translated.
+# Tested 2026-11-06 on the Legion Y700 (TB322FC, Snapdragon 8 Elite, Adreno 830, Android 16), handheld: the start movie and the welcome page, the main menu over the 3D
+# locker room, a quick-start career (team selection, game setup, a new manager: 3D presets, names through the overlay keyboard, lists), the database load, the 3D press
+# room, the portal and its messages, a save (save commits in the log). Touch and the controller both work (the left stick moves the focus; the D-pad does not).
+# 30 fps, as the game asks (the window's present interval 2; frame work about 6 ms, GPU about 3 ms); 0 dropped frames per 300; 0 audio underruns; one red line at start
+# (ro::LookupModuleSymbol UnitySetGraphicsDevice, a symbol the game looks up and does without).
+# Played by touch in handheld mode, so the on-screen gamepad starts hidden (the pause menu shows it).
+# Not tested yet: a match (the 3D match view), days advancing past the first.
+status	playable
+tested	v131072 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
+package	org.nx2a.fm26touch
+orientation	landscape
+setting	docked=0
+setting	overlay=0
+setting	rumble=1

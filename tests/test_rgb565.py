@@ -44,7 +44,10 @@ int main(void) {
             src.write_text(code)
             # The production table deliberately truncates extension enums to
             # uint16_t; vk_fmt reconstructs those unrelated packed formats.
+            # GCC warns about that with -Woverflow, clang with -Wconstant-conversion;
+            # GCC ignores the clang option when it reports nothing else.
             subprocess.run(['cc', '-std=c11', '-Wall', '-Wextra', '-Werror', '-Wno-overflow',
+                            '-Wno-constant-conversion',
                             '-I', str(ROOT / 'nxnative/dm/third_party/vulkan-headers/include'),
                             str(src), '-o', str(exe)], check=True)
             result = subprocess.run([str(exe)], capture_output=True, text=True)

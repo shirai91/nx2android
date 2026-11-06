@@ -1,0 +1,40 @@
+# Game profile of The World Ends with You -Final Remix- (Switch, base game 1.0.0 = v0; no update was extracted). Plays on Android (android.tsv)
+# Format: see dm/games/README.md
+# Square Enix / h.a.n.d., Unity 2017.2 IL2CPP on SDK 4.4.1, NVN, FMOD; subsdk0 is the SDK's movie library (H.264 + AAC MP4 movies in StreamingAssets/Movie, decoded by the host).
+# Started from the experimental port's survey (dm/games/profile_guess.py); the values below were checked against the survey: modules, build IDs, the heap the game sets
+
+# ---- Identity ----
+title_id	0100C1500B82E000
+program_id	0100C1500B82E000
+
+# ---- App ----
+name	The World Ends with You -Final Remix-
+ipa	TheWorldEndsWithYouFinalRemix.ipa
+app_category	public.app-category.role-playing-games
+# Docked, the game is played with one Joy-Con as a gyro pointer, which the host does not have; handheld, by the touch screen (every touch goes to the game)
+op_mode	handheld
+pad_layout	touch
+
+# ---- Versions ----
+build	v0	1.0.0	main=2a5408063198b646afb74f47a3520622	subsdk0=a4604a0a8b8af7ae0eac1add42a8b978	sdk=af7348498c7759b0f3f0396a8a36014c
+package	v0
+shader_versions	v0
+
+# ---- Files ----
+# every module main imports from
+modules	main subsdk0 sdk
+romfs_marker	Data/StreamingAssets/Movie/staffroll.mp4
+zip_store	.dat:.mp4:.ress:.unity3d:.metallib
+
+# ---- Memory ----
+# main sets a heap of at most the pool − 64 MB: a 3328 MB heap region
+mem_reserve	0x100000000
+mem_alias	0x10000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+# the NPDM declares 0 MB of system resource: IsVirtualAddressMemoryEnabled is false, as on Horizon
+sys_resource	0x0
+
+# ---- Shader split ----
+shader_groups	/Data/=data
+shader_note	The World Ends with You -Final Remix- shaders (458 Unity shader variants in data.unity3d and the asset bundles)

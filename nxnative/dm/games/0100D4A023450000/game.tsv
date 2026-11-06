@@ -1,0 +1,37 @@
+# Game profile of Football Manager 26 Touch (Switch, base game + update 1.0.2 = v131072). Plays on Android (android.tsv)
+# Format: see dm/games/README.md
+# Sports Interactive, Unity IL2CPP on SDK 20.5.14, NVN, FMOD; subsdk0 is the SDK's movie library, and main loads one NRO. Started from the experimental port's survey
+# (dm/games/profile_guess.py); checked against the survey: the modules and build IDs, the 4 MB system resource of the NPDM (virtual address memory), no heap set by main
+
+# ---- Identity ----
+title_id	0100D4A023450000
+program_id	0100D4A023450000
+
+# ---- App ----
+name	Football Manager 26 Touch
+ipa	Fm26Touch.ipa
+app_category	public.app-category.sports-games
+
+# ---- Versions ----
+build	v131072	1.0.2	main=b8cdef5540c3ad752ced2d6b87d50b90	subsdk0=a9c08210149d6e4e37bfccd4491f58b6	sdk=14113deb20490afc27a1ed12d6930d8b
+package	v131072
+shader_versions	v131072
+
+# ---- Files ----
+# every module main imports from
+modules	main subsdk0 sdk
+romfs_marker	Data/StreamingAssets/aa/Switch/stadium-ads_assets_all.bundle
+zip_store	.amd:.bin:.bta:.bundle:.cat:.dat:.ltc:.nro:.ress:.metallib
+
+# ---- Memory ----
+# the NPDM declares 4 MB of system resource (virtual address memory) and main never sets a heap: a 5 GB block with a 4.375 GB alias region, where the game maps its memory itself
+mem_reserve	0x140000000
+mem_alias	0x118000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+# the NPDM declares 4 MB of system resource
+sys_resource	0x400000
+
+# ---- Shader split ----
+shader_groups	/sidata/=sidata /Data/=data /shared/=shared /.nrr/=nrr /Plugins/=plugins
+shader_note	Football Manager 26 Touch shaders (5,743 in the Unity asset bundles and the NRO)
