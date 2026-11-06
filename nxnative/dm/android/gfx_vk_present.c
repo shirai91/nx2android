@@ -793,9 +793,9 @@ static int overlay_ready(VkCommandBuffer cb, uint32_t k, int menu) {   // k: thi
 // desired present time: the last one's plus the game's period, on the display's vsync grid (anchored at a past frame's actual present time), half a vsync before that vsync so
 // it cannot go out early. A frame that would not be ready in time moves the cadence to the first vsync it can make (a "resync": one longer frame, and from then on a vsync of
 // slack). The pause menu's redraws carry no time. DM_VK_PACE=0 (live) presents without times
-static uint64_t g_refresh_ns, g_pace_target, g_pace_anchor, g_pace_n, g_pace_resync, g_pace_slip; static uint32_t g_pace_id; static int g_pace_on = 1;
+static uint64_t g_refresh_ns, g_pace_target, g_pace_ideal, g_pace_anchor, g_pace_n, g_pace_resync, g_pace_slip; static uint32_t g_pace_id; static int g_pace_on = 1;
 static uint64_t mono_ns(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (uint64_t)t.tv_sec * 1000000000ull + (uint64_t)t.tv_nsec; }
-static void pace_reset(void) { g_pace_target = g_pace_anchor = g_refresh_ns = 0; }
+static void pace_reset(void) { g_pace_target = g_pace_ideal = g_pace_anchor = g_refresh_ns = 0; }
 static uint64_t pace_snap(uint64_t t) {   // the first vsync at or after t on the grid through the anchor
     uint64_t r = g_refresh_ns, a = g_pace_anchor;
     if (t <= a) return a - (a - t) / r * r;
@@ -824,8 +824,11 @@ static uint64_t pace_desired(double period) {   // the frame's desired present t
     // earlier, the cadence restarts half a vsync further out than that, so the next frames have room for the jitter: restarting at the earliest itself made 31 long frames
     // in 4,200 (5 shown late), and going on until the target was under a vsync away made 54 in 3,600 go out late
     double vk_gpu_ms_recent(void); double g = vk_gpu_ms_recent(); uint64_t gpu = (uint64_t)((g > 4 ? g : 4) * 1e6) + 3000000;
-    uint64_t now = mono_ns(), t = g_pace_target ? pace_snap(g_pace_target + (uint64_t)(period * 1e9) - g_refresh_ns / 2) : 0;
-    if (t < now + gpu + g_refresh_ns) { if (g_pace_target) g_pace_resync++; t = pace_snap(now + gpu + g_refresh_ns * 3 / 2); }
+    // The cadence advances unsnapped (g_pace_ideal) and only the frame's vsync is snapped: snapping each target and adding the period to it lost the fraction,
+    // so a period that is not a whole number of vsyncs always rounded up (40 fps on a 60 Hz panel: 25 ms came out as 2 vsyncs every frame, 30 fps, on a Retroid Pocket 5)
+    uint64_t now = mono_ns(), t = 0;
+    if (g_pace_target) { g_pace_ideal += (uint64_t)(period * 1e9); t = pace_snap(g_pace_ideal - g_refresh_ns / 2); }
+    if (t < now + gpu + g_refresh_ns) { if (g_pace_target) g_pace_resync++; t = pace_snap(now + gpu + g_refresh_ns * 3 / 2); g_pace_ideal = t; }
     g_pace_target = t;
     return t - g_refresh_ns / 2;
 }
