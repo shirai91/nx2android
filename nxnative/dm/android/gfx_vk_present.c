@@ -854,6 +854,7 @@ static void present_window(vkimg_t *im, const int crop[4], double period, uint64
     vk_pic_set((float)dx / g_sext.width, (float)dy / g_sext.height, (float)dw / g_sext.width, (float)dh / g_sext.height);
     VkImageBlit b = {{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {{cx, cy, 0}, {cx + cw, cy + ch, 1}}, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {{dx, dy, 0}, {dx + dw, dy + dh, 1}}};
     if (vk_window_bottom_up()) { b.srcOffsets[0].y = cy + ch; b.srcOffsets[1].y = cy; }   // lower-left origin: the window image is stored bottom-up (gfx_vk_exec.c)
+    if (im->layout == VK_IMAGE_LAYOUT_UNDEFINED) { barrier(cb, im->img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL); im->layout = VK_IMAGE_LAYOUT_GENERAL; }   // an imported frame buffer, first shown (gl_android.c)
     vkCmdBlitImage(cb, im->img, VK_IMAGE_LAYOUT_GENERAL, tgt, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &b, VK_FILTER_LINEAR);
     VkImageLayout lay = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
     int external = dm_external_active();
@@ -1033,6 +1034,35 @@ uint64_t mtl_present(const tex_t *t, double period, const int crop[4]) {
         pthread_create(&th, &a, (void *(*)(void *))(void *)vk_pipeline_cache_save, NULL); pthread_attr_destroy(&a);
     }
     return present_enqueue(im, crop, n, period);
+}
+// OpenGL ES games (gl_android.c): their frames are AHardwareBuffers the device's GL driver drew, imported as images and shown as an NVN window texture is
+vkimg_t *vk_image_from_ahb(AHardwareBuffer *ahb, uint32_t w, uint32_t h) {
+    vk_init();
+    VkAndroidHardwareBufferPropertiesANDROID ap = {VK_STRUCTURE_TYPE_ANDROID_HARDWARE_BUFFER_PROPERTIES_ANDROID};
+    if (vkGetAndroidHardwareBufferPropertiesANDROID(V.dev, ahb, &ap)) { VKRED_ONCE(92, "vkGetAndroidHardwareBufferPropertiesANDROID failed for a GL frame buffer"); return NULL; }
+    VkExternalMemoryImageCreateInfo ei = {VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO, NULL, VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID};
+    VkImageCreateInfo ci = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, &ei, 0, VK_IMAGE_TYPE_2D, VK_FORMAT_R8G8B8A8_UNORM, {w, h, 1}, 1, 1, VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_TILING_OPTIMAL,
+                            VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_SHARING_MODE_EXCLUSIVE, 0, NULL, VK_IMAGE_LAYOUT_UNDEFINED};
+    vkimg_t *im = calloc(1, sizeof *im);
+    if (vkCreateImage(V.dev, &ci, NULL, &im->img)) { VKRED_ONCE(93, "vkCreateImage for a GL frame buffer failed"); free(im); return NULL; }
+    VkImportAndroidHardwareBufferInfoANDROID imp = {VK_STRUCTURE_TYPE_IMPORT_ANDROID_HARDWARE_BUFFER_INFO_ANDROID, NULL, ahb};
+    VkMemoryDedicatedAllocateInfo ded = {VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO, &imp, im->img, VK_NULL_HANDLE};
+    uint32_t mt = 0; while (mt < 32 && !(ap.memoryTypeBits & (1u << mt))) mt++;
+    VkMemoryAllocateInfo ai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, &ded, ap.allocationSize, mt};
+    if (vkAllocateMemory(V.dev, &ai, NULL, &im->mem) || vkBindImageMemory(V.dev, im->img, im->mem, 0)) { VKRED_ONCE(94, "importing a GL frame buffer into Vulkan failed"); free(im); return NULL; }
+    im->fmt = VK_FORMAT_R8G8B8A8_UNORM; im->w = w; im->h = h; im->d = im->layers = im->levels = im->samples = 1; im->aspect = VK_IMAGE_ASPECT_COLOR_BIT; im->layout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VKLOG("GL frame buffer %ux%u imported (memory type %u, %llu bytes)", w, h, mt, (unsigned long long)ap.allocationSize);
+    return im;
+}
+uint64_t vk_present_vkimg(vkimg_t *im, double period) {
+    vk_init();
+    dm_perf_frame(period);
+    uint64_t n = ++g_presents;
+    { int disp = V.has_dtiming && dm_front_window() && (n <= 240 || g_pres_recorded); struct timespec ts; if (!disp) clock_gettime(CLOCK_MONOTONIC, &ts);
+      present_time_begin(n, disp ? 0 : (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec); }
+    atomic_fetch_add(&g_fps_frames, 1);
+    if (shot_wanted(n) && im->layout == VK_IMAGE_LAYOUT_GENERAL) shot(im, n);
+    return present_enqueue(im, NULL, n, period);
 }
 void mtl_present_wait(uint64_t tk) {   // NVN acquire: the window texture's last present has been blitted (the game may draw into it again)
     if (!tk) return;
