@@ -104,8 +104,10 @@ static void ubo_log(const vkshader_t *s, int st, int reg, uint64_t a, uint64_t n
     if (!g_ubolog_key || s->key != g_ubolog_key || g_ubolog_n <= 0) return;
     g_ubolog_n--; uint8_t buf[4096]; if (n > sizeof buf) n = sizeof buf; void vk_ubd_read(uint64_t a, uint64_t n, uint8_t *dst); vk_ubd_read(a, n, buf);
     uint64_t h = 1469598103934665603ull; for (uint64_t i = 0; i < n; i++) h = (h ^ buf[i]) * 1099511628211ull; float f[16] = {0}; memcpy(f, buf, n < 64 ? n : 64);
-    char t[4096]; int k = 0; uint32_t nw = (uint32_t)(n < 512 ? n : 512) / 4; (void)f;   // every word up to 512 bytes, as floats
-    for (uint32_t i = 0; i < nw && k < (int)sizeof t - 24; i++) { float v; memcpy(&v, buf + 4 * i, 4); k += snprintf(t + k, sizeof t - k, "%s%g", i ? (i % 4 ? " " : " | ") : "", v); }
+    // every word of 512 bytes, as floats: from byte 0, or from DM_VK_UBO_LOG_FROM=<byte offset> (live, a multiple of 16) for fields further in
+    const char *fe = getenv("DM_VK_UBO_LOG_FROM"); uint32_t from = fe ? (uint32_t)atoi(fe) & ~15u : 0; if (from >= n) from = 0;
+    char t[4096]; int k = from ? snprintf(t, sizeof t, "(from +%u) ", from) : 0; uint32_t nw = (uint32_t)(n - from < 512 ? n - from : 512) / 4; (void)f;
+    for (uint32_t i = 0; i < nw && k < (int)sizeof t - 24; i++) { float v; memcpy(&v, buf + from + 4 * i, 4); k += snprintf(t + k, sizeof t - k, "%s%g", i ? (i % 4 ? " " : " | ") : "", v); }
     if (st == 0 && reg == 0 && S.vbuf[0].address) {   // the vertex stream 0 the draw reads, hashed the same way (CPU view at replay)
         uint64_t vn = S.vbuf[0].size > sizeof buf ? sizeof buf : S.vbuf[0].size, vh = 1469598103934665603ull; memcpy(buf, (const void *)(uintptr_t)S.vbuf[0].address, vn);
         for (uint64_t i = 0; i < vn; i++) vh = (vh ^ buf[i]) * 1099511628211ull;

@@ -19,7 +19,10 @@
 # First road, standing still (2026-11-06, docked): patches of fog on the road lit and went dark in turn. Its lights go into 32x32x32 volumes drawn slice by slice
 # with additive blending; the core cleared only slice 0 of a layered pass, so the fog boxes that read them (1300ca45ddca3566) changed every frame: fixed in the core
 # (gfx_vk_exec.c clear_color, every layer cleared; same on Qualcomm's driver and Turnip). A milder change of those patches still comes and goes in phases
-# (frame-to-frame change of the patch, 90th percentile about 2.5 of 255 most of the time, up to 8 in some stretches); not found yet (not DM_VK_FDZ, not cache flushes).
+# (frame-to-frame change of the patch, 90th percentile about 2.5 of 255 most of the time, up to 8 in some stretches); not DM_VK_FDZ, cache flushes, command-buffer cuts,
+# the volume shader's light and view data or its 143x50 texture (constant over frames); the same on Turnip. It follows game time, not frame order, and Unreal's own
+# forums report translucency-lighting-volume flicker in UE 5.5-5.6 (a low-resolution volume, shadowed directional lights), so likely the game's; its console
+# variables (r.TranslucentLightingVolume, r.TranslucencyLightingVolume.Batch) cannot be set in this shipping build.
 status	playable
 tested	v65536 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
 package	org.nx2a.finalfantasyresonance
