@@ -1,0 +1,15 @@
+# FM24 Touch on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Sports Interactive's engine on SDK 16, update 1.0.1; OpenGL ES 3.1: the first game run by the Android host's OpenGL ES layer (gl_android.c: the device's own EGL and GLES
+# driver, BC textures decoded on the CPU, frames shown through the Vulkan present path).
+# Tested 2026-11-06 on the Legion Y700 (TB322FC, Snapdragon 8 Elite, Adreno 830, Android 16), handheld (1280x720): the title, the controller tutorial and
+# preferences, the main menu, a new career (the 3D head-coach editor, names through the overlay keyboard), the tactics tutorial and a match in the 3D match view (players,
+# shadows, stadium, highlights). 60 fps in menus and the match view; 0 audio underruns; no red log line. The user played it and found it playable.
+# It aborted at its first audio render until the host replaced the renderer's event that the SDK keeps signalling after the game let it go (hle_audren.c ev_check).
+# Touch and the controller both work (ZR continues, the left stick moves the section focus).
+status	playable
+tested	v65536 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
+package	org.nx2a.fm24touch
+orientation	landscape
+setting	docked=0
+setting	overlay=0
+setting	rumble=1

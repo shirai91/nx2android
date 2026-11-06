@@ -6,7 +6,13 @@
 # 30 fps, as the game asks (the window's present interval 2; frame work about 6 ms, GPU about 3 ms); 0 dropped frames per 300; 0 audio underruns; one red line at start
 # (ro::LookupModuleSymbol UnitySetGraphicsDevice, a symbol the game looks up and does without).
 # Played by touch in handheld mode, so the on-screen gamepad starts hidden (the pause menu shows it).
-# Not tested yet: a match (the 3D match view), days advancing past the first.
+# Port it with a Turnip Vulkan driver (porter port --vulkan-driver <libvulkan_freedreno.so>, the GUI's "Vulkan driver" field) on Adreno devices.
+# 2026-11-06, docked, a friendly in the 3D match view: on Qualcomm's own driver (Adreno 830, driver 0800.72) the crowd's arms stretch along the seat
+# rows, different people every frame, in every crowd shader (33b0d5ca1675654b, 67a22e46c025a212, 56dce908e04beff6: instanced, each person's matrices read from
+# a uniform buffer by instance); with Mesa's Turnip 26.2.6 the same scenes are clean (8 of 8 half-time frames). Not the cause: the bone texture (its image
+# matches the game's memory), uniform shadows (DM_VK_X_NOSHC), command-buffer cuts, set reuse, the bind cache, dynamic vec4 component indexing (shaders
+# rewritten to load the whole vec4: still streaks). Root cause in Qualcomm's driver still open.
+# Not tested yet: days advancing past the first match.
 status	playable
 tested	v131072 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
 package	org.nx2a.fm26touch
@@ -14,3 +20,5 @@ orientation	landscape
 setting	docked=0
 setting	overlay=0
 setting	rumble=1
+# Docked, its Unity player takes the touch panel's values as pixels of its 1920x1080 screen: given so, taps land where they are (hle_touch.c; reported by the user 2026-11-06)
+env	DM_TOUCH_DOCKED=pixels
