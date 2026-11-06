@@ -98,6 +98,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [ ] The Legend of Zelda: Link's Awakening · `01006BB00C6F0000` · profile here
 - [x] The Legend of Zelda: Tears of the Kingdom · `0100F2C0115B6000`
 - [x] The World Ends with You -Final Remix- · `0100C1500B82E000`
+- [x] Tomodachi Life: Living the Dream · `010051F0207B2000`
 - [x] UNDER NIGHT IN-BIRTH Exe:Late[cl-r] · `010038C00EC34000`
 - [x] UNDER NIGHT IN-BIRTH II Sys:Celes · `0100BD401D18A000`
 - [x] Unicorn Overlord · `010069401ADB8000` · boots; saving and a full battle not tested yet

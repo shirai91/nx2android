@@ -6,7 +6,7 @@
 # It aborted at boot until the host answered ClockSnapshot::CreateWithAdjustableSystemClock (hle_time.c).
 # The Mii heads and their faces (eyes, eyebrows, nose, mouth) were empty until render_cond (game.tsv): the Mii renderer draws a depth pre-pass, then clears depth under a
 # render condition and draws the colour pass with depth test EQUAL; the clear ran unconditionally and every head draw failed the test. The game uses no MiiModel system data.
-status	experimental
+status	playable
 tested	v262144 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
 package	org.nx2a.tomodachilifelivingthedream
 orientation	landscape
