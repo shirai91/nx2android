@@ -292,6 +292,10 @@ static int ctl_at(float x, float y, float W, float H) {   // the control under (
         float d = ov_sdf(c, b, x - b[0], y - b[1]), reach = ov_reach(c, b, H), m = fminf(b[2], b[3]);
         if (d < reach && (d + m) / (m + reach) < bd) { bd = (d + m) / (m + reach); best = i; }   // between two, the one the touch is deeper into, for its size
     }
+    if (shown && !atomic_load(&g_edit) && (best < 0 || (OV_CTLS[best].kind == OV_BUTTON && (OV_CTLS[best].btn & (DM_BTN_A | DM_BTN_B | DM_BTN_X | DM_BTN_Y))))) {
+        uint64_t pair = ov_face_combo(OV_CTLS, x, y, W, H);
+        if (pair) for (int i = 0; i < OV_N; i++) if (OV_CTLS[i].kind == OV_BUTTON && (OV_CTLS[i].btn & pair)) return i;
+    }
     return best;
 }
 // dragging the menu button: the pointer holding it, whether it has moved past OV_DRAG_SLOP, where it went down and the finger's offset from the button's centre
@@ -812,7 +816,7 @@ static void touch_event(AInputEvent *e) {
         if (k->kind == OV_MENU) { if (id == g_drag.id) menu_drag(k, x, y, W, H); continue; }
         float b[4]; ov_box(k, W, H, b);
         float dx = (x - b[0]) / b[2], dy = (y - b[1]) / b[2], m = sqrtf(dx * dx + dy * dy);   // in the control's half widths (a stick's or the d-pad's radius)
-        if (k->kind == OV_BUTTON) btn |= k->btn;
+        if (k->kind == OV_BUTTON) btn |= ov_button_bits(OV_CTLS, k, x, y, W, H);
         else if (k->kind == OV_DPAD) {
             if (m > 0.25f) { float a = atan2f(dy, dx); int s = (int)lroundf(a / (3.14159265f / 4)) & 7;   // 8 directions, 0 = right, clockwise (y grows downward)
                 static const uint64_t dir[8] = {DM_BTN_RIGHT, DM_BTN_RIGHT | DM_BTN_DOWN, DM_BTN_DOWN, DM_BTN_DOWN | DM_BTN_LEFT, DM_BTN_LEFT, DM_BTN_LEFT | DM_BTN_UP, DM_BTN_UP, DM_BTN_UP | DM_BTN_RIGHT};
