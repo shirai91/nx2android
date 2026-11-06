@@ -9,10 +9,7 @@
 #include "../gfx/tex/nvn_deswizzle.h"
 #include "nvn_hmap.h"
 #include <string.h>
-#define BCDEC_STATIC
-#define BCDEC_BC4BC5_PRECISE
-#define BCDEC_IMPLEMENTATION
-#include "../third_party/bcdec/bcdec.h"
+#include "../gfx/tex/nvn_bc.h"
 
 int nvn_dirty_since_span(const void *span, const void *addr, size_t len, uint64_t stamp);
 const void *nvn_dirty_span(const void *addr, size_t len);
@@ -81,25 +78,18 @@ static void bc_target(vkfmt_t *o) {
 }
 // Decodes BC blocks (rows of whole blocks pitch bytes apart, (h + 3) / 4 rows a slice, z slices) into w x h x z texels of f->vk, rows of w * f->dbpp bytes
 static void bc_decode(const vkfmt_t *f, const uint8_t *src, size_t pitch, uint32_t w, uint32_t h, uint32_t z, uint8_t *dst) {
-    uint32_t bx = (w + 3) / 4, by = (h + 3) / 4; size_t row = (size_t)w * f->dbpp;
-    uint8_t t[4 * 4 * 8];   // one decoded block: 4 rows of 4 texels, up to 8 bytes each (BC6H decodes to RGB16F, widened to RGBA16F)
-    for (uint32_t s = 0; s < z; s++) for (uint32_t y = 0; y < by; y++) for (uint32_t x = 0; x < bx; x++) {
-        const uint8_t *b = src + ((size_t)s * by + y) * pitch + (size_t)x * f->bpb;
-        switch (f->dec) {
-        case 1: case 2: bcdec_bc1(b, t, 16); if (f->dec == 1) for (int i = 0; i < 16; i++) t[i * 4 + 3] = 255; break;   // BC1 RGB: no alpha
-        case 3: bcdec_bc2(b, t, 16); break;
-        case 4: bcdec_bc3(b, t, 16); break;
-        case 5: case 6: bcdec_bc4(b, t, 4, f->dec == 6); break;
-        case 7: case 8: bcdec_bc5(b, t, 8, f->dec == 8); break;
-        case 9: case 10: {
-            uint16_t h3[16 * 3]; bcdec_bc6h_half(b, h3, 12, f->dec == 10);
-            for (int i = 0; i < 16; i++) { uint16_t px[4] = {h3[i * 3], h3[i * 3 + 1], h3[i * 3 + 2], 0x3c00}; memcpy(t + i * 8, px, 8); }   // alpha 1.0
-            break; }
-        default: bcdec_bc7(b, t, 16); break;
-        }
-        uint32_t x0 = x * 4, y0 = y * 4, cw = w - x0 < 4 ? w - x0 : 4, ch = h - y0 < 4 ? h - y0 : 4;
-        for (uint32_t r = 0; r < ch; r++) memcpy(dst + ((size_t)s * h + y0 + r) * row + (size_t)x0 * f->dbpp, t + r * 4 * f->dbpp, (size_t)cw * f->dbpp);
-    }
+    // Retain the renderer's tight-output interface; the shared decoder also
+    // accepts explicit row/slice pitches and buffer bounds for copy paths.
+    static const uint8_t formats[] = {0, 0x41, 0x42, 0x43, 0x44, 0x49, 0x4a, 0x4b, 0x4c, 0x50, 0x4f, 0x4d};
+    if (!w || !h || !z || !f->dbpp || h > UINT32_MAX - 3 || f->dec >= sizeof formats || !formats[f->dec])
+        die("[vk] invalid CPU BC decode dimensions or format");
+    size_t rows = (h + 3) / 4;
+    if (pitch > SIZE_MAX / rows || pitch * rows > SIZE_MAX / z ||
+        (size_t)w > SIZE_MAX / f->dbpp || (size_t)w * f->dbpp > SIZE_MAX / h ||
+        (size_t)w * f->dbpp * h > SIZE_MAX / z) die("[vk] CPU BC decode size overflow");
+    size_t row = (size_t)w * f->dbpp, slice = pitch * rows;
+    if (nvn_bc_decode(formats[f->dec], w, h, z, src, slice * z, pitch, slice,
+                      dst, row * h * z, row, row * h)) die("[vk] invalid CPU BC decode layout");
 }
 void vk_bc_decode(const vkfmt_t *f, const uint8_t *src, size_t pitch, uint32_t w, uint32_t h, uint32_t z, uint8_t *dst) { bc_decode(f, src, pitch, w, h, z, dst); }
 static pthread_mutex_t g_fmt_mu = PTHREAD_MUTEX_INITIALIZER;
