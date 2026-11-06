@@ -1,0 +1,20 @@
+# South Park™: The Stick Of Truth™ on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Obsidian's engine on NVN, SDK 4.5.0 (the oldest SDK the host runs), base game 1.0.0 (EUR). game.tsv started as the survey's provisional profile and was
+# checked by hand; the memory split is the one the game's own SetHeapSize request needs (see game.tsv).
+# On the Xiaomi Pad 5 (21051182G, Snapdragon 860 / Adreno 640, Android 13) on 2026-11-05, played by hand and driven with adb taps:
+# the "Press A to Begin" title screen, the opening movie (the game's own Bink decoder: audio through the SDK's audout with 0 underruns), the whole
+# character creation (5 steps: skin tone, outfit and its primary/secondary colours, ...), the opening tutorial in the New Kid's bedroom both of its
+# first lessons ("Use L to move around the room", then "to open doors and containers, activate objects, or talk to people, face them and press A",
+# walked with the on-screen gamepad's left stick), the game's own menu (character sheet, inventory; the New Kid has no name entry) and the host's pause
+# menu (which the gamepad button opens), and a save: the game mounted SPSOT_SAVE, the host committed it atomically ("save commit #1") and porter
+# saves export brought both files off the device (SP-Opt, SP-Sav-A-Checkpoint-1, 709 KB).
+# 30 fps solid (the game's own cap: frame work p50 33.4 ms of the 33.3 ms budget, GPU p50 18.8 ms, 200 draws a frame, replay 6.0 ms, 92 pipelines over
+# 24,600 presents), audio clean, no [RED] line.
+# The device's driver must let the host begin passes: dynamic rendering (Vulkan 1.3) or imageless framebuffers with render pass 2 (Vulkan 1.1 +
+# VK_KHR_create_renderpass2). Qualcomm's system driver 512.502.0 on this Adreno 640 has neither (vk_init dies with "passes cannot be begun"), so this port is
+# packed with a Turnip build (Mesa 26.0.0, Vulkan 1.3.335; `--vulkan-driver vulkan.ad07xx.so`), with which the device reports BC and ASTC textures, geometry
+# shaders, transform feedback and zero-copy pools. A driver with Vulkan 1.3 needs no packing.
+# Not tested yet: past the opening tutorial (the game's first real scene), the pause menus, a save, and a controller.
+status	playable
+tested	v0 Xiaomi Pad 5 21051182G (Snapdragon 860, Adreno 640, Android 13)
+orientation	landscape
