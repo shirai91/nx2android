@@ -239,6 +239,7 @@ static struct { EGLDisplay dpy; EGLConfig cfg; EGLSurface surf; EGLContext ctx; 
     static ret h_##name(__VA_ARGS__)
 static void egl_init(void) {
     if (G.dpy) return;
+    setenv("DM_GL_ACTIVE", "1", 1);   // the Vulkan side needs no shader bundle (gfx_vk_shader.c vk_shaders_open)
     REAL(EGLDisplay, eglGetDisplay, void *); REAL(EGLBoolean, eglInitialize, EGLDisplay, EGLint *, EGLint *);
     G.dpy = r_eglGetDisplay(NULL); EGLint ma = 0, mi = 0;
     if (!G.dpy || !r_eglInitialize(G.dpy, &ma, &mi)) die("[gl] the device's EGL does not initialize");

@@ -6,7 +6,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 
 "Profile here": `nxnative/dm/games/<title ID>/` has the game's profile from nxnative. "Upstream profile": only seedds/nxnative has one, to read as a reference or starter, not to pull. "60 fps with X" is upstream's note: they run that update at 60 fps (30 on the Switch).
 
-**33 / 99 ported**
+**34 / 100 ported**
 
 - [x] 13 Sentinels: Aegis Rim · `01003FC01670C000`
 - [ ] Ace Attorney Investigations Collection · `010005501E68C000` · profile here
@@ -41,6 +41,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [ ] FINAL FANTASY X/X-2 HD Remaster · `0100BC300CB48000` · upstream profile
 - [ ] Fire Emblem Engage · `0100A6301214E000` · profile here · 60 fps with 2.0.0
 - [ ] Fire Emblem: Three Houses · `010055D009F78000` · profile here · 60 fps with 1.2.0
+- [x] FM24 Touch · `01008B101B87A000`
 - [x] Football Manager 26 Touch · `0100D4A023450000`
 - [x] Graveyard Keeper 2 · `0100005027A18000`
 - [ ] Hades · `0100535012974000` · profile here · iPhone only, through Netflix

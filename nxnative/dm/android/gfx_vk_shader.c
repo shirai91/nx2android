@@ -19,7 +19,8 @@ static const uint8_t *g_bundle; static uint32_t g_nent; static const bent *g_ent
 // Every entry is checked against the file's size once here, so a lookup never reads past the mapping (a copy cut short, say a push stopped outside porter, would fault there)
 void vk_shaders_open(const char *path) {
     int fd = open(path, O_RDONLY | O_CLOEXEC); struct stat st;
-    if (fd < 0 || fstat(fd, &st)) { VKLOG("[RED] no shader bundle at %s: nothing will be drawn", path); if (fd >= 0) close(fd); return; }
+    if (fd < 0 || fstat(fd, &st)) { if (getenv("DM_GL_ACTIVE")) VKLOG("no shader bundle at %s: an OpenGL ES game (gl_android.c) needs none", path);
+                                    else VKLOG("[RED] no shader bundle at %s: nothing will be drawn", path); if (fd >= 0) close(fd); return; }
     const uint8_t *b = st.st_size >= 12 ? mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_SHARED, fd, 0) : MAP_FAILED; close(fd);
     if (b == MAP_FAILED || memcmp(b, "DMSV", 4)) { VKLOG("[RED] %s is not a shader bundle", path); if (b != MAP_FAILED) munmap((void *)b, (size_t)st.st_size); return; }
     uint32_t ver, n, nz = 0, bad = 0; memcpy(&ver, b + 4, 4); memcpy(&n, b + 8, 4); const bent *t = (const bent *)(b + 12); uint64_t sz = (uint64_t)st.st_size, raw = 0, stored = 0;
