@@ -40,7 +40,7 @@ def _parser():
                          'characters shows the Chinese and Korean text of a game that draws it with the system font (DM_SHARED_FONT in env.txt); never shipped with the tool')
     po.add_argument('--firmware', default=None, metavar='DIR',
                     help="a folder of your console's system content files (.nca: its firmware dump, NAND SYSTEM Contents/registered) for a game that reads system data "
-                         "(android.tsv sysdata: Tomodachi Life's Mii heads come from MiiModel); never shipped with the tool (default: the configured one)")
+                         "(android.tsv sysdata: Mario Kart 8 Deluxe's Mii heads come from MiiModel); never shipped with the tool (default: the configured one)")
     po.add_argument('--vercode-offset', type=int, default=None, metavar='N',
                     help='add N (0-65535) to the APK\'s versionCode, so a rebuild of the same game version installs over a build with a higher one and keeps its saves '
                          '(default: $NX2A_VERCODE_OFFSET, else 0)')

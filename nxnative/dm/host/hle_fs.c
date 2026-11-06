@@ -390,7 +390,7 @@ HLE_FORCE("_ZN2nn2fs17MountAddOnContentEPKciPvm", "fsp-srv; add-on content → D
 }
 // System data archives are firmware content, which the tool does not ship. DM_SYSDATA=<folder>: the player's own, one RomFS folder per title, <folder>/<16-digit title ID>
 // (porter --firmware extracts the profile's sysdata titles from their firmware dump into the data pack). Without it, 0100000000000802, MiiModel (Mario Kart 8 Deluxe mounts it as
-// MiiResource: and builds Mii heads from it at boot, for the title screen's demo race; Tomodachi Life: Living the Dream draws every Mii with it): the host writes a stand-in with every
+// MiiResource: and builds Mii heads from it at boot, for the title screen's demo race): the host writes a stand-in with every
 // part empty (hle_mii.c dm_mii_standin) into <DM_TEMP>_sysdata/<id>. Either is mounted read-only. Any other archive answers "target not found", as for a title that is not installed
 #define SYSDATA_MIIMODEL 0x0100000000000802ull
 int dm_mii_standin(const char *dir);

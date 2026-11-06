@@ -5,7 +5,7 @@
 //   --allow-damaged writes those files as read instead and only lists them (Super Mario Galaxy's base NSP with 147 MB zeroed: its two prologue WebM movies).
 // Add-on content: nx_extract <prod.keys> --aoc <DLC NSP> <output dir> writes the RomFS of the DLC's data NCA to <output dir> (the packing script puts it at aoc/<index>/, the host mounts it through DM_AOC_DIR).
 // System data: nx_extract <prod.keys> --sysdata <firmware dir> <title ID hex> <output dir> writes the RomFS of that title's data NCA, found among the .nca files of a firmware dump
-// (a console's NAND SYSTEM Contents/registered, as DBI's MTP mode shows it): Tomodachi Life: Living the Dream draws its Mii heads from MiiModel, 0100000000000802.
+// (a console's NAND SYSTEM Contents/registered, as DBI's MTP mode shows it): Mario Kart 8 Deluxe builds its Mii heads from MiiModel, 0100000000000802.
 // System NCAs carry their keys in the key area (no ticket).
 // Title keys come from the common tickets (.tik) inside the NSPs, so only prod.keys is needed; key values are never printed.
 // The base game may also be a cartridge dump (.xci, Monster Hunter Rise): its secure partition holds the NCAs, which carry their keys in the key area (no ticket).
