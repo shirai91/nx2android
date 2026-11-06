@@ -109,13 +109,16 @@ HLE_FORCE("_ZN2nn4time13ClockSnapshot31CreateWithAdjustableSystemClockEPS1_", "s
 // Tears of the Kingdom imports both); the host computes what the service does (as Ryujinx's time service). TimeSpan is nanoseconds
 static int64_t snap64(const uint8_t *s, int off) { int64_t v; memcpy(&v, s + off, 8); return v; }
 static int same_source(const uint8_t *a, const uint8_t *b, int tp) { return !memcmp(a + tp + 8, b + tp + 8, 16); }   // the source IDs of the steady time points at +tp
+// It returns a bool, true when the span could be worked out (the SDK's own sets w0 to 1 on the service's success: Super Mario Odyssey's, Xenoblade Chronicles 3's,
+// Tears of the Kingdom's and SDK 20's alike). It returned Result 0 here, which games read as false: Tomodachi Life: Living the Dream (main+0x871410, tbz w0, #0) took every start for a clock change
+// and said "Your system time has changed since the last time you played", with both snapshots' clocks 1,026 s apart and in step
 HLE_FORCE("_ZN2nn4time20CalculateSpanBetweenEPNS_8TimeSpanERKNS0_13ClockSnapshotES5_", "span between two snapshots (time service): their steady time points, else their network times",
-          Result, h_time_SpanBetween, int64_t *out, const uint8_t *a, const uint8_t *b) {
+          int, h_time_SpanBetween, int64_t *out, const uint8_t *a, const uint8_t *b) {
     int64_t s;
     if (same_source(a, b, 0x90)) s = snap64(b, 0x90) - snap64(a, 0x90);
     else if (snap64(a, 0x48) && snap64(b, 0x48)) s = snap64(b, 0x48) - snap64(a, 0x48);
-    else return RES_FAIL;   // no common clock: the service answers "not found", *out untouched (as the SDK leaves it)
-    *out = s * 1000000000; return RES_OK;
+    else return 0;   // no common clock: the service answers "not found", *out untouched (as the SDK leaves it)
+    *out = s * 1000000000; return 1;
 }
 // How far the user moved the user clock between two snapshots (asked at Pokémon: Let's Go's first save, PR #36): the change of the user clock offset, 0 when the two contexts' steady
 // sources differ or both snapshots have automatic correction on. The snapshots carry h_time_GetContext's context, renewed when the host clock is set, so that shows up here
