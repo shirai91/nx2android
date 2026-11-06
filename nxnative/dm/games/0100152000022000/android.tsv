@@ -1,0 +1,25 @@
+# Mario Kart 8 Deluxe on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Nintendo's sead / agl / gsys engine (NintendoWare G3d / Ui2d / Vfx / Atk) on SDK 4.4.0; update 4.0.1 (v1507328, packed from a derived profile: game.tsv registers 4.0.0)
+# with the Booster Course Pass. 29,655 shaders, all translated.
+# Tested 2026-11-06 on a Galaxy S24 Ultra (SM-S928B, Snapdragon 8 Gen 3, Adreno 750, Android 16), handheld mode: boot, menus, the title's demo races, Grand Prix
+# races (Mario Kart Stadium). Footprint ~0.9-1.2 GB, flat. Docked mode runs about 30-45 fps (the game renders more); handheld is the mode to play.
+# The game advances one fixed step per frame: below 60 fps it runs slower, not choppier. Hence the env rows below:
+# - DM_ADAPTIVE_FPS=0: the 60/40/30 governor held the game at 40 fps (2/3 speed) for 4 s at a time, every ~10 s in races.
+# - DM_NVN_ASYNC=1, DM_VK_MT_REPLAY=1, DM_PIN_REPLAY=prime: the replay (~800-1,200 draws a race frame) ran 12-18 ms on the game's render thread; with these it is
+#   ~6-8 ms off that thread (title demo races: frame p95 29.1 -> 22.1 ms).
+# - DM_GPU_TURBO=1: the GPU was then the limit (19-21 ms at Mario Kart Stadium's start line with 12 karts in view, 36-40 fps there and before the anti-gravity
+#   section). With it: race frames p50 16.7 / p95 17.8 ms (was 17.8 / 22.2), GPU 10.8 -> 7.6 ms a frame, steady 60 by the player; GPU 47 C, battery 38 C after the session.
+#   Not yet soaked for 30 minutes.
+# Known gap: Mii heads draw nothing (MiiModel system data stand-in). A sysdata 0100000000000802 row with porter --firmware should give the real ones: not tried.
+status	playable
+tested	v1507328 Samsung Galaxy S24 Ultra SM-S928B (Snapdragon 8 Gen 3, Adreno 750, Android 16)
+package	org.nx2a.t0100152000022000
+orientation	landscape
+requires	bcn
+# handheld by default: docked renders more and runs about 30-45 fps on the S24 Ultra
+setting	docked=0
+env	DM_ADAPTIVE_FPS=0
+env	DM_NVN_ASYNC=1
+env	DM_VK_MT_REPLAY=1
+env	DM_PIN_REPLAY=prime
+env	DM_GPU_TURBO=1

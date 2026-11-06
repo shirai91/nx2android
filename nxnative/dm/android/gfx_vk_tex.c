@@ -557,7 +557,11 @@ VkImageView vk_tex_view(const tex_t *t, const view_t *vw, int dim, int arrayed, 
     VkComponentMapping swz = sample_swizzle(&f->swz,t,vw,as_attachment);
     VkFormat fmt = f->vk;
     const vkfmt_t *imf = vk_fmt(im->nvn_format);   // (a BC format decoded on the CPU counts as compressed: its view keeps the decoded image's format)
-    if ((im->aspect & ~VK_IMAGE_ASPECT_COLOR_BIT) || (f->compressed || f->dec) != (imf->compressed || imf->dec) || (f->dec && f->dbpp != imf->dbpp)) fmt = im->fmt;   // depth views and block-size changes keep the image's format
+    // a block-compressed image drawn into through an uncompressed view of its block size (BLOCK_TEXEL_VIEW_COMPATIBLE, one level and layer: the pass is in blocks,
+    // gfx_vk_exec.c) keeps the view's format. Kept in the image's, Mario Kart 8 Deluxe's BC3 reflection cube (drawn through RGBA32UI views as it loads) was rendered as a
+    // BC3 attachment, which Vulkan does not allow: on the Galaxy S24 Ultra (Adreno 750) its faces held block noise, and every reflection of it shone white
+    int block_view = as_attachment && imf->compressed && !imf->dec && !f->compressed && !f->dec && f->bpb == imf->bpb && (im->usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
+    if (!block_view && ((im->aspect & ~VK_IMAGE_ASPECT_COLOR_BIT) || (f->compressed || f->dec) != (imf->compressed || imf->dec) || (f->dec && f->dbpp != imf->dbpp))) fmt = im->fmt;   // depth views and block-size changes keep the image's format
     if (im->fixed_fmt && fmt != im->fmt && fmt != srgb_twin(im->fmt)) { fmt = im->fmt; static int n; if (n++ < 8) VKLOG("[RED] view format %d of a format-listed image (%d, DM_VK_UBWC): the image's own used", f->vk, im->fmt); }
     pthread_mutex_lock(&g_view_mu);
     vview *head = nvn_hm_get(&g_views, &im);
@@ -693,6 +697,13 @@ static const samp_par *samp_at(int sid, uint64_t seq) {   // under g_rmu: the ve
     const sreg_ver *o = g_sold + (size_t)sid * SREG_OLD;
     for (int k = 0; k < SREG_OLD; k++) if (o[k].seq && o[k].seq <= seq) return &o[k].p;
     return &g_sreg[sid];   // older than what is kept: the newest
+}
+// The levels a sampler can read, for a view narrowed around a level the draw renders (gfx_vk_exec.c fb_view): -2 no mipmap filter (the view's base level
+// alone), k >= 0 a mipmap filter with a minimum and maximum LOD of the same whole number k (that level alone), -1 a range or a sampler not registered
+int vk_samp_levels(int sid, uint64_t seq) {
+    pthread_mutex_lock(&g_rmu); const samp_par *p = samp_at(sid, seq); int r = -1;
+    if (p) { if (p->minf <= 1) r = -2; else if (p->lod_min == p->lod_max && p->lod_min >= 0 && p->lod_min < 16 && p->lod_min == (float)(int)p->lod_min) r = (int)p->lod_min; }
+    pthread_mutex_unlock(&g_rmu); return r;
 }
 VkSampler vk_samp_at(int sid, uint64_t seq, int nearest) {   // the sampler a bind made after seq registrations sees (gfx_vk_exec.c samp_for)
     pthread_mutex_lock(&g_rmu);
