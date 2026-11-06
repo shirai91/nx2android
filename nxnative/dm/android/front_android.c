@@ -131,7 +131,38 @@ static void on_pause(ANativeActivity *a) { (void)a; go_background(); }
 // Back in front, the game is out of focus until the window has the input focus again (Android sends it after onResume): without this it stayed OutOfFocus for good,
 // and Blasphemous 2's Unity, which asks for focus notifications, kept its title paused and ignored every press after a trip to another app. A window losing focus while in
 // front (a system dialog, the notification shade) is OutOfFocus as on the Switch's HOME overlay
-static void on_window_focus(ANativeActivity *a, int focused) { (void)a; if (atomic_load(&g_running) && !atomic_load(&g_bg)) dm_focus_set(focused ? 1 : 2); }
+// Immersive mode: the status and navigation bars hidden, shown for a moment by a swipe from the edge (AWINDOW_FLAG_FULLSCREEN hides only the status bar: the S24's
+// three-button bar stayed beside the game). On the main thread (resume, focus), as Android hides the bars again when a dialog or the shade took the focus.
+// API 30+: WindowInsetsController; before: View.setSystemUiVisibility. DM_IMMERSIVE=0 keeps the bars
+static int g_sdk;
+static void immersive(ANativeActivity *a) {
+    static int off = -1; if (off < 0) { const char *e = getenv("DM_IMMERSIVE"); off = e && !atoi(e); }
+    if (off) return;
+    JNIEnv *E = a->env; jclass ca = (*E)->GetObjectClass(E, a->clazz);
+    jmethodID mWin = ca ? (*E)->GetMethodID(E, ca, "getWindow", "()Landroid/view/Window;") : NULL;
+    jobject win = mWin ? (*E)->CallObjectMethod(E, a->clazz, mWin) : NULL; if ((*E)->ExceptionCheck(E) || !win) goto fail;
+    jclass cw = (*E)->GetObjectClass(E, win);
+    if (g_sdk >= 30) {
+        jmethodID mIc = (*E)->GetMethodID(E, cw, "getInsetsController", "()Landroid/view/WindowInsetsController;");
+        jobject ic = mIc ? (*E)->CallObjectMethod(E, win, mIc) : NULL; if ((*E)->ExceptionCheck(E) || !ic) goto fail;
+        jclass ct = (*E)->FindClass(E, "android/view/WindowInsets$Type"); jmethodID mBars = ct ? (*E)->GetStaticMethodID(E, ct, "systemBars", "()I") : NULL;
+        jint bars = mBars ? (*E)->CallStaticIntMethod(E, ct, mBars) : 0; if ((*E)->ExceptionCheck(E) || !bars) goto fail;
+        jclass cc = (*E)->GetObjectClass(E, ic);
+        jmethodID mBeh = (*E)->GetMethodID(E, cc, "setSystemBarsBehavior", "(I)V"), mHide = (*E)->GetMethodID(E, cc, "hide", "(I)V"); if (!mBeh || !mHide) goto fail;
+        (*E)->CallVoidMethod(E, ic, mBeh, 2);   // BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        (*E)->CallVoidMethod(E, ic, mHide, bars);
+    } else {
+        jmethodID mDv = (*E)->GetMethodID(E, cw, "getDecorView", "()Landroid/view/View;");
+        jobject dv = mDv ? (*E)->CallObjectMethod(E, win, mDv) : NULL; if ((*E)->ExceptionCheck(E) || !dv) goto fail;
+        jmethodID mVis = (*E)->GetMethodID(E, (*E)->GetObjectClass(E, dv), "setSystemUiVisibility", "(I)V"); if (!mVis) goto fail;
+        (*E)->CallVoidMethod(E, dv, mVis, 0x1000 | 0x400 | 0x200 | 0x100 | 0x4 | 0x2);   // IMMERSIVE_STICKY, LAYOUT_FULLSCREEN, LAYOUT_HIDE_NAVIGATION, LAYOUT_STABLE, FULLSCREEN, HIDE_NAVIGATION
+    }
+    if (!(*E)->ExceptionCheck(E)) return;
+fail:
+    (*E)->ExceptionClear(E);
+    static int n; if (!n++) LOG("[RED] front end: the system bars could not be hidden (immersive mode, API %d)", g_sdk);
+}
+static void on_window_focus(ANativeActivity *a, int focused) { if (focused) immersive(a); if (atomic_load(&g_running) && !atomic_load(&g_bg)) dm_focus_set(focused ? 1 : 2); }
 // A save manager's request, or a RomFS the app cannot read (romfs_readable), asked the app to end (ANativeActivity_onCreate): Activity.finish() when it is resumed, through JNI on the main thread.
 // ANativeActivity_finish, from onCreate or from here, left the activity on the screen (Y700, Android 16), and porter's am start -W waited out its timeout
 static int g_quit;
@@ -140,7 +171,7 @@ static void act_finish(ANativeActivity *a) {
     if (m) (*E)->CallVoidMethod(E, a->clazz, m);
     if (!m || (*E)->ExceptionCheck(E)) { (*E)->ExceptionClear(E); LOG("[RED] Activity.finish() failed: the app ends itself"); _exit(0); }
 }
-static void on_resume(ANativeActivity *a) { if (g_quit) { act_finish(a); return; } go_foreground(); }
+static void on_resume(ANativeActivity *a) { if (g_quit) { act_finish(a); return; } immersive(a); go_foreground(); }
 static void on_destroy(ANativeActivity *a) { (void)a; _exit(0); }   // one game per process
 
 // ---- input ----
@@ -1089,7 +1120,7 @@ static int romfs_readable(ANativeActivity *act, int sdk) {   // 0: the game cann
 __attribute__((visibility("default"))) void ANativeActivity_onCreate(ANativeActivity *act, void *saved, size_t saved_size) {
     (void)saved; (void)saved_size;
     g_act = act;
-    int sdk; { AConfiguration *cfg = AConfiguration_new(); AConfiguration_fromAssetManager(cfg, act->assetManager); g_dpi = AConfiguration_getDensity(cfg); sdk = AConfiguration_getSdkVersion(cfg); AConfiguration_delete(cfg); }
+    int sdk; { AConfiguration *cfg = AConfiguration_new(); AConfiguration_fromAssetManager(cfg, act->assetManager); g_dpi = AConfiguration_getDensity(cfg); sdk = AConfiguration_getSdkVersion(cfg); AConfiguration_delete(cfg); } g_sdk = sdk;
     act->callbacks->onNativeWindowCreated = on_window_created; act->callbacks->onNativeWindowDestroyed = on_window_destroyed;
     act->callbacks->onInputQueueCreated = on_queue_created; act->callbacks->onInputQueueDestroyed = on_queue_destroyed;
     act->callbacks->onPause = on_pause; act->callbacks->onResume = on_resume; act->callbacks->onWindowFocusChanged = on_window_focus; act->callbacks->onDestroy = on_destroy;
