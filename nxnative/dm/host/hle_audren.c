@@ -55,6 +55,8 @@ typedef struct { void *ptr; uint64_t cap, size; } gbuf;       // same as the fro
 // (sdk+0x1e1390 → sdk+0x12bc10). On the Switch the service signals the game's event through its kernel handle and the game does not call ExecuteAudioRendererRendering. Such an
 // event is replaced with one the host owns (auto-clear), which nothing waits on
 static int g_ev_layout;   // the event's state byte read 1 or 2 when the renderer opened: this SDK keeps the state there (otherwise the check stays off)
+// Not on SDK 10 and older (DM_SDK_OLD): OCTOPATH TRAVELER (SDK 3.5.1) passes the event at open too, but at the first render its state read 0, the host's event went over the slot, and
+// the next read faulted on what the game had put there (SIGSEGV here, before the title, on every driver). FM24 Touch, which needs the check, is on SDK 16
 static void ev_check(void) {
     void **slot = (void **)g_handle[1]; if (!g_ev_layout || !slot || !*slot) return;
     uint8_t st = ((const uint8_t *)*slot)[0x28]; if (st == 1 || st == 2) return;
@@ -122,7 +124,7 @@ static Result ar_open(void **handle, void *ev, const uint8_t *param, void *work,
     if (r) { LOG("[RED] audren: SDK OpenAudioRenderer failed %#x", r); return r; }
     if (atomic_load(&g_open)) { LOG("[RED] audren: a second renderer (the host drives only one)"); return r; }
     g_handle[0] = handle[0]; g_handle[1] = handle[1];
-    { void **slot = (void **)handle[1]; uint8_t st = slot && *slot ? ((const uint8_t *)*slot)[0x28] : 0; g_ev_layout = (st == 1 || st == 2) && ev && *slot == ev; }
+    { void **slot = (void **)handle[1]; uint8_t st = slot && *slot ? ((const uint8_t *)*slot)[0x28] : 0; g_ev_layout = (st == 1 || st == 2) && ev && *slot == ev && !DM_SDK_OLD(dm_sdk_major()); }
     atomic_store(&g_open, 1);
     g_render_tt = dm_guest_thread_spawn(render_main, NULL, 9, 0x10000);
     return r;
