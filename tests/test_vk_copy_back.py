@@ -1,4 +1,5 @@
 """Copy-back must prepare protected guest pages and retain dirty tracking."""
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -19,11 +20,15 @@ class CopyBack(unittest.TestCase):
         start = core.index('static void pools_readback_barrier(VkCommandBuffer cb) {')
         function = core[start:core.index('\n}\n', start)+3]
         harness = r'''
+#define _GNU_SOURCE
 #define VK_NO_PROTOTYPES
 #include <vulkan/vulkan_core.h>
 #include <assert.h>
 #include <stddef.h>
-static int g_shadow_pools, calls;
+#include <stdlib.h>
+#include <string.h>
+static int g_shadow_pools, calls, messages;
+#define VKLOG(s) do { assert(strstr(s,"zero-copy host-read barrier enabled")); messages++; } while(0)
 static void vkCmdPipelineBarrier(VkCommandBuffer cb, VkPipelineStageFlags src, VkPipelineStageFlags dst, VkDependencyFlags flags,
     uint32_t nm, const VkMemoryBarrier *m, uint32_t nb, const VkBufferMemoryBarrier *b, uint32_t ni, const VkImageMemoryBarrier *i) {
     assert(cb && !flags && nm==1 && !nb && !b && !ni && !i);
@@ -34,18 +39,23 @@ static void vkCmdPipelineBarrier(VkCommandBuffer cb, VkPipelineStageFlags src, V
     calls++;
 }
 FUNCTION
-int main(void) {
+int main(int argc, char **argv) {
+    assert(argc==2 && !setenv("DM_VK_ZC_HOST_BARRIER",argv[1],1));
+    int enabled=atoi(argv[1]);
     VkCommandBuffer cb = (VkCommandBuffer)(uintptr_t)1;
-    pools_readback_barrier(cb); assert(calls==0); // zero-copy: no new synchronization
-    g_shadow_pools=1; pools_readback_barrier(cb); pools_readback_barrier(cb); assert(calls==2);
-    g_shadow_pools=0; pools_readback_barrier(cb); assert(calls==2);
+    pools_readback_barrier(cb); assert(calls==enabled && messages==enabled);
+    g_shadow_pools=1; pools_readback_barrier(cb); pools_readback_barrier(cb); assert(calls==enabled+2);
+    g_shadow_pools=0; pools_readback_barrier(cb); assert(calls==2+2*enabled);
+    assert(!setenv("DM_VK_ZC_HOST_BARRIER",enabled ? "0" : "1",1));
+    pools_readback_barrier(cb); assert(calls==2+3*enabled && messages==enabled); // startup policy stays fixed
 }
 '''.replace('FUNCTION', function)
         with tempfile.TemporaryDirectory(prefix='nx2a-readback-') as tmp:
             c, exe = Path(tmp)/'check.c', Path(tmp)/'check'
             c.write_text(harness)
             subprocess.run(['cc', '-std=gnu11', '-Wall', '-Wextra', '-Werror', '-idirafter', str(headers), str(c), '-o', str(exe)], check=True)
-            subprocess.run([str(exe)], check=True, timeout=15)
+            for enabled in ('0', '1'):
+                subprocess.run([str(exe), enabled], check=True, timeout=15)
 
     @unittest.skipUnless(shutil.which('cc'), 'a host C compiler is required')
     def test_protected_pools(self):

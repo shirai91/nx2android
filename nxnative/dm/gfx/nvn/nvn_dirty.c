@@ -37,10 +37,13 @@ static inline range_t *rg(int i) { return &atomic_load_explicit(&g_blk[i >> BLK_
 static _Atomic int g_nr;
 static uintptr_t g_pg, g_shift;
 static _Atomic uint64_t g_now = 1;
+static _Atomic unsigned g_publishing;   // nonzero while a reserved generation has not reached its page/range
 // A page written (made writable for a write): its new generation, then the range's highest (a compare-and-swap maximum: signal-safe, and a slower thread never lowers it)
 static inline void stamp_page(range_t *r, uintptr_t p) {
+    atomic_fetch_add(&g_publishing, 1);
     uint64_t g = atomic_fetch_add(&g_now, 1) + 1; atomic_store(&r->gen[p], g);
     uint64_t o = atomic_load(&r->last); while (o < g && !atomic_compare_exchange_weak(&r->last, &o, g)) {}
+    atomic_fetch_sub(&g_publishing, 1);
 }
 static _Atomic uint64_t g_faults, g_preps, g_released;
 static _Atomic uint64_t g_adds_total;
@@ -177,7 +180,11 @@ int nvn_dirty_defrag(int (*remap)(void *mem, size_t len)) {
         for (size_t p = 0; ok && p < np; ) {   // the pages that were writable, a run at a time
             if (was[p] != PG_NONE) { p++; continue; }
             size_t q = p; while (q < np && was[q] == PG_NONE) q++;
-            mp(r->base + (p << g_shift), (q - p) << g_shift, PROT_READ | PROT_WRITE); p = q;
+            if (mp(r->base + (p << g_shift), (q - p) << g_shift, PROT_READ | PROT_WRITE)) {
+                free(was);
+                die("[RED] dirty-page tracking: cannot restore writable pages after remapping; stopping");
+            }
+            p = q;
         }
         for (size_t p = 0; p < np; p++) {
             if (!ok || was[p] == PG_PROT) { atomic_store(&r->state[p], was[p]); continue; }
@@ -263,10 +270,22 @@ void nvn_dirty_protect(const void *addr, size_t len) {
         uint8_t st = PG_NONE;
         int took = i <= q && atomic_compare_exchange_strong(&r->state[i], &st, PG_BUSY);
         if (took && !open) { run = i; open = 1; }
-        if (!took && open) { atomic_fetch_add(&r->nmp, 1); mp(r->base + (run << g_shift), (i - run) << g_shift, PROT_READ); for (uintptr_t k = run; k < i; k++) { atomic_store(&r->span[k], (uint32_t)p + 1); atomic_store(&r->state[k], PG_PROT); } open = 0; }
+        if (!took && open) {
+            atomic_fetch_add(&r->nmp, 1);
+            // A failed mprotect may have changed only part of the run; do not publish a guessed state.
+            if (mp(r->base + (run << g_shift), (i - run) << g_shift, PROT_READ))
+                die("[RED] dirty-page tracking: cannot protect guest pages read-only; stopping");
+            for (uintptr_t k = run; k < i; k++) { atomic_store(&r->span[k], (uint32_t)p + 1); atomic_store(&r->state[k], PG_PROT); }
+            open = 0;
+        }
     }
 }
-uint64_t nvn_dirty_now(void) { return atomic_load(&g_now); }
+uint64_t nvn_dirty_now(void) {
+    // Do not acknowledge a ticket before its page/range is visible; zero forces a conservative later recheck.
+    if (atomic_load(&g_publishing)) return 0;
+    uint64_t now = atomic_load(&g_now);
+    return atomic_load(&g_publishing) ? 0 : now;
+}
 int nvn_dirty_since_span(const void *span, const void *addr, size_t len, uint64_t stamp) {
     if (!len) return 0;
     range_t *r = (range_t *)span; uintptr_t a0 = (uintptr_t)addr;   // the kept handle still holds the span (a slot reused by another pool over the same memory is as good): no scan
