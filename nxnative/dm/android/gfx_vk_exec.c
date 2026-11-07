@@ -7,6 +7,7 @@
 #include "gfx_vk_slot.h"
 #include "nvn_hmap.h"
 #include "game_profile.h"
+#include "../gfx/tex/nvn_bc.h"
 #include <math.h>
 #include <string.h>
 #include <sys/resource.h>
@@ -1978,6 +1979,44 @@ static void copy_b2t(const p_copy_b2t *c, int to_texture) {
     vk_end_pass_land();
     vkimg_t *im = vk_tex(c->tex); const vkfmt_t *f = vk_fmt(c->tex->d.format);
     if (!im || !f) return;
+    if (f->dec) {
+        // The VkImage contains decoded pixels, but the guest copy buffer still
+        // contains BC blocks. Never hand those bytes to an uncompressed image.
+        if (!to_texture) { VKRED_ONCE(71, "copy of a BC texture decoded on the CPU into a buffer: skipped"); return; }
+        uint32_t w = c->r.width, h = c->r.height ? c->r.height : 1, d = c->r.depth ? c->r.depth : 1;
+        unsigned level = c->has_view && c->view.set_levels ? c->view.base_level : 0;
+        unsigned layer = c->has_view && c->view.set_layers ? c->view.min_layer : 0;
+        if (c->r.width <= 0 || c->r.height < 0 || c->r.depth < 0 || c->r.xoffset < 0 || c->r.yoffset < 0 || c->r.zoffset < 0 ||
+            level >= im->levels || c->r.xoffset % 4 || c->r.yoffset % 4 ||
+            (uint64_t)c->r.xoffset + w > (im->w >> level ? im->w >> level : 1) ||
+            (uint64_t)c->r.yoffset + h > (im->h >> level ? im->h >> level : 1) ||
+            (uint64_t)c->r.zoffset + d + (im->layers > 1 ? layer : 0) > (im->layers > 1 ? im->layers : (im->d >> level ? im->d >> level : 1)))
+            die("[vk] invalid BC buffer upload region");
+        size_t rows = ((size_t)h + 3) / 4, bytes = ((size_t)w + 3) / 4 * f->bpb;
+        size_t row = S.row_stride > 0 ? (size_t)S.row_stride : bytes;
+        if (row < bytes || row > SIZE_MAX / rows) die("[vk] invalid BC upload row stride");
+        size_t slice = S.image_stride > 0 ? (size_t)S.image_stride : row * rows;
+        if (slice < row * rows || slice > SIZE_MAX / d) die("[vk] invalid BC upload slice stride");
+        size_t size = slice * (d - 1) + row * (rows - 1) + bytes;
+        VkBuffer src; VkDeviceSize src_off;
+        if (!vk_buf_at(c->src, size, &src, &src_off)) die("[vk] BC upload source outside memory pools");
+        if (src_off % 4 || size % 4) die("[vk] BC upload source must be word aligned");
+        uint8_t *blocks = malloc(size); if (!blocks) die("[vk] BC buffer readback allocation failed");
+        vk_buffer_snapshot(src, src_off, size, blocks);
+        size_t pixel = nvn_bc_pixel_size(c->tex->d.format), pitch = (size_t)w * pixel;
+        if (pitch > SIZE_MAX / h || pitch * h > SIZE_MAX / d) die("[vk] BC upload is too large");
+        size_t decoded_size = pitch * h * d; VkBuffer dst; VkDeviceSize dst_off;
+        void *decoded = vk_scratch(decoded_size, 16, &dst, &dst_off);
+        int result = nvn_bc_decode(c->tex->d.format, w, h, d, blocks, size, row, slice,
+                                   decoded, decoded_size, pitch, pitch * h);
+        free(blocks); if (result) die("[vk] BC buffer upload decode failed");
+        VkCommandBuffer cb = vk_cmd(); vk_tex_prepare(cb, im); vk_img_barrier_all(cb);
+        VkBufferImageCopy r = {dst_off, 0, 0, sub_of(im, &c->view, c->has_view, c->r.zoffset),
+                              {c->r.xoffset, c->r.yoffset, im->layers > 1 ? 0 : c->r.zoffset}, {w, h, im->layers > 1 ? 1 : d}};
+        if (im->layers > 1) r.imageSubresource.layerCount = d;
+        vkCmdCopyBufferToImage(cb, dst, im->img, VK_IMAGE_LAYOUT_GENERAL, 1, &r);
+        im->gpu_w = 1; vk_img_barrier_all(cb); return;
+    }
     VkBuffer b; VkDeviceSize o;
     if (!vk_buf_at(c->src, 1, &b, &o)) { VKRED_ONCE(70, "buffer of a buffer ↔ texture copy outside the memory pools"); return; }
     VkCommandBuffer cb = vk_cmd(); vk_tex_prepare(cb, im); vk_img_barrier_all(cb);
@@ -1988,14 +2027,6 @@ static void copy_b2t(const p_copy_b2t *c, int to_texture) {
     VkBufferImageCopy r = {o, rowlen, imgh, sub_of(im, &c->view, c->has_view, c->r.zoffset), {c->r.xoffset, c->r.yoffset, layered ? 0 : c->r.zoffset},
                            {(uint32_t)c->r.width, (uint32_t)(c->r.height ? c->r.height : 1), layered ? 1 : (uint32_t)depth}};
     if (layered) r.imageSubresource.layerCount = (uint32_t)depth;
-    if (f->dec) {   // a BC format the device lacks (gfx_vk_tex.c bc_decode): the blocks decoded on the CPU from the buffer's memory as the replay reaches the copy
-        if (!to_texture) { VKRED_ONCE(71, "copy of a BC texture decoded on the CPU into a buffer: skipped"); return; }
-        uint32_t w = (uint32_t)c->r.width, h = (uint32_t)(c->r.height ? c->r.height : 1), nz = (uint32_t)depth;
-        size_t pitch = S.row_stride > 0 ? (size_t)S.row_stride : (size_t)((w + 3) / 4) * f->bpb, slice = S.image_stride > 0 ? (size_t)S.image_stride : pitch * ((h + 3) / 4), out = (size_t)w * h * f->dbpp;
-        VkBuffer sb; VkDeviceSize so; uint8_t *p = vk_scratch(out * nz, 16, &sb, &so);
-        for (uint32_t z = 0; z < nz; z++) vk_bc_decode(f, (const uint8_t *)(uintptr_t)c->src + z * slice, pitch, w, h, 1, p + z * out);
-        b = sb; r.bufferOffset = so; r.bufferRowLength = 0; r.bufferImageHeight = 0;
-    }
     if (g_watch_off >= 0) { char w[96]; snprintf(w, sizeof w, "buffer copy %s (buffer %#llx, %dx%d)", to_texture ? "destination" : "source", (unsigned long long)c->src, c->r.width, c->r.height); vk_watch(im, w); }
     if (to_texture) { vkCmdCopyBufferToImage(cb, b, im->img, VK_IMAGE_LAYOUT_GENERAL, 1, &r); im->gpu_w = 1; }
     else { vkCmdCopyImageToBuffer(cb, im->img, VK_IMAGE_LAYOUT_GENERAL, b, 1, &r);
