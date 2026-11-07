@@ -53,7 +53,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [ ] Luigi's Mansion 3 · `0100DCA0064A6000` · profile here · 60 fps with 1.4.0
 - [ ] Mario + Rabbids Kingdom Battle · `010067300059A000` · upstream profile
 - [ ] Mario + Rabbids Sparks of Hope · `0100317013770000` · upstream profile
-- [ ] Mario Kart 8 Deluxe · `0100152000022000` · profile here · no Mii heads
+- [x] Mario Kart 8 Deluxe · `0100152000022000` · no Mii heads
 - [x] Mario vs. Donkey Kong · `0100B99019412000`
 - [x] Metroid Dread · `010093801237C000`
 - [ ] Monster Hunter Rise · `0100B04011742000` · profile here · 60 fps with 16.0.2
