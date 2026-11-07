@@ -1,0 +1,41 @@
+# Game profile of Kirby and the Forgotten Land (Switch, base game v0 + update 1.1.0 = v65536). Plays on Android (android.tsv)
+# Format: see dm/games/README.md
+# HAL Laboratory's own engine on NintendoWare (G3d, Font, Fxt) with nn::atk2 sound, SDK 11.4.0 (the sdk build is Pokémon Legends: Arceus's), NVN; subsdk0 is the SDK's movie
+# library (VP9 / Vorbis WebM: the opening and ending movies, mov/EventMovie, and the guide movies, mov/GuideMovie). Checked on the device: the build IDs of the three modules,
+# the NPDM's system resource (none) and the heap the game sets ("[mem] heap 3.14 GB (heap region 3.25 GB)")
+
+# ---- Identity ----
+title_id	01004D300C5AE000
+program_id	01004D300C5AE000
+
+# ---- App ----
+name	Kirby and the Forgotten Land
+ipa	KirbyAndTheForgottenLand.ipa
+app_category	public.app-category.games
+
+# ---- Versions ----
+build	v65536	1.1.0	main=a6ce40dc3aedb1becacd2f1ff4515307	subsdk0=535249a546887cac875a099e9c8ef367	sdk=b39add63421be525d352e576dab438d3
+package	v65536
+shader_versions	v65536
+
+# ---- Files ----
+# load order as on Horizon: main, subsdk0 (the movie library, which main imports from), sdk
+modules	main subsdk0 sdk
+# the largest RomFS file
+romfs_marker	mov/EventMovie/Ending.webm
+zip_store	.bfstm:.cmpbin:.opus:.webm:.metallib
+
+# ---- Memory ----
+# The NPDM declares no system resource, so the game has no virtual address memory: it sets a heap of the pool less 64 MB of used memory, 3.14 GB, in the 3.25 GB heap region of
+# a 4 GB block (256 MB in front, a 256 MB alias region, a 256 MB stack region). The application pool is the Switch's 3285 MB. It grows with each new area: the most of any game here
+mem_reserve	0x100000000
+mem_alias	0x10000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+sys_resource	0x0
+
+# ---- Shader split ----
+# 27,297 shaders, BNSH in HAL's .cmp containers (a u32 size, then one zstd or LZ4 frame: shader_split.py unsized) under gfx/ (models, 18,476), ptcl/ (effects, 8,313, 70 of
+# them compute), lyt/ (layouts, 387), in the loose shader/ files (67) and in main (54). Without opening the containers the split finds only the 121 outside them
+shader_groups	/gfx/=gfx /ptcl/=ptcl /lyt/=lyt /shader/=shader
+shader_note	Kirby and the Forgotten Land shaders

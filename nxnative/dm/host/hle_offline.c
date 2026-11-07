@@ -145,6 +145,17 @@ HLE_FORCE("_ZN2nn3err39ShowUnacceptableApplicationVersionErrorEv", "game version
 // Pokémon Legends: Z-A (SDK 19): the application's own error screen (an error code number and two messages in the argument) goes through the error applet as well
 HLE_FORCE("_ZN2nn3err20ShowApplicationErrorERKNS0_19ApplicationErrorArgE", "application error applet; the host only logs it", void, h_err_ShowApp, const void *arg) { (void)arg; LOG("game asks to show an application error (ApplicationErrorArg)"); }
 
+// ---------- pdm: the system's play log. The host keeps none: every game asked about was never played ----------
+// Kirby and the Forgotten Land asks right after its save mount how much this user played Kirby Star Allies (01007E3006DDA000). The SDK's own call talks to the pdm service,
+// which the host does not run: SIGSEGV reading address 0 at sdk+0x359208 (QueryApplicationPlayStatistics+0xc8) on update 1.1.0. Each output entry is 0x18 bytes:
+// {application ID, play time, launch count}; the entry keeps the ID asked for with zero time and zero launches.
+HLE_FORCE("_ZN2nn3pdm30QueryApplicationPlayStatisticsEPNS0_25ApplicationPlayStatisticsERKNS_7account3UidEPKNS_13ApplicationIdEi", "play statistics of other games: never played (no play log on the host)",
+          Result, h_pdm_QueryStats, uint64_t *out, const void *uid, const uint64_t *ids, int count) {
+    (void)uid;
+    if (out && ids) for (int i = 0; i < count; i++) { uint64_t *e = out + 3 * i; e[0] = ids[i]; e[1] = 0; e[2] = 0; }
+    return RES_OK;
+}
+
 // ---------- web: web page applet (online lobby). Unavailable ----------
 HLE_FORCE("_ZN2nn3web13ShowLobbyPageEPNS0_20LobbyPageReturnValueERKNS0_16ShowLobbyPageArgE", "online lobby web applet (cut)", Result, h_web_Lobby, void *rv, const void *arg) { (void)rv; (void)arg; LOG("web::ShowLobbyPage (cut)"); return RES_FAIL; }
 // Tears of the Kingdom imports the general web page applet too (the game constructs the return value itself, so it stays as constructed)
