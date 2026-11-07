@@ -420,6 +420,12 @@ class UntaggedXci(unittest.TestCase):   # issue #28: a cartridge dump named by i
         self.xci('hr-bdlwa.xci', [('c.nca', self.nca(self.BASE + 0x800, 0)), ('d.cnmt.nca', self.nca(self.BASE + 0x800, 1))], key_area=True)
         self.assertEqual(pipeline.nsp.title_of(self.d / 'hr-bdlwa.xci', self.hk), self.BASE + 0x800)
 
+    def test_update_ticket_on_the_card(self):   # Crayon Shin-chan's cartridge: its update's ticket beside the base game's ticketless NCAs is not the card's title
+        tik = f'{self.BASE + 0x800:016x}0000000000000011.tik'
+        self.xci('Game (Base).xci', [(tik, b't' * 0x2c0), ('b.cnmt.nca', self.nca(self.BASE + 0x800, 1)), ('d.cnmt.nca', self.nca(self.BASE, 1))])
+        self.assertEqual(pipeline.nsp.title_of(self.d / 'Game (Base).xci', self.hk), self.BASE)
+        self.assertEqual(pipeline.nsp.title_of(self.d / 'Game (Base).xci'), self.BASE + 0x800)   # without prod.keys only the ticket is there to read
+
     def test_without_keys_the_error_says_how(self):
         self.xci('hr-bdlwa.xci', [('d.cnmt.nca', self.nca(self.BASE, 1))])
         with self.assertRaisesRegex(pipeline.BuildError, r'hr-bdlwa\.xci: no ticket .*no prod\.keys.*\[01009D901BC56000\]\[v0\]'): pipeline.nsp.scan_nsps(self.d, ('nsp', 'xci'))
