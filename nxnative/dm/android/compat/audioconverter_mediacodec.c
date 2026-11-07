@@ -9,11 +9,13 @@
 #include <string.h>
 #include <media/NdkMediaCodec.h>
 #include <media/NdkMediaFormat.h>
+#include "aac_layout.h"
 
 struct dm_audio_converter {
     AudioStreamBasicDescription in, out;
     uint8_t asc[64]; int nasc;
     AMediaCodec *mc; int failed, red, och;   // och: channels of the codec's output
+    int channel_config, channel_mask;      // ASC identity and the current output's speaker mask
     int64_t pts; long nin, nout;             // input timestamps (µs, made up from the packet count) and buffers in / out since the start
     uint8_t *pend; size_t npend, cappend;    // decoded PCM not handed out yet
 };
@@ -54,6 +56,7 @@ static int open_codec(AudioConverterRef c) {
         int fi = 3; for (int i = 0; i < 13; i++) if (rates[i] == rate) fi = i;
         c->asc[0] = (uint8_t)(2 << 3 | fi >> 1); c->asc[1] = (uint8_t)((fi & 1) << 7 | (ch & 15) << 3); c->nasc = 2;
     }
+    c->channel_config = aac_channel_config(c->asc, (size_t)c->nasc); c->channel_mask = 0;
     c->mc = AMediaCodec_createDecoderByType("audio/mp4a-latm");
     if (!c->mc) { LOG("[RED] movie: MediaCodec has no AAC decoder, outputting silence"); return 0; }
     AMediaFormat *f = AMediaFormat_new();
@@ -76,7 +79,10 @@ static void keep(AudioConverterRef c, const uint8_t *b, size_t n) {
     size_t frames = n / (2u * (size_t)c->och), need = c->npend + frames * 2u * (size_t)ch;
     if (need > c->cappend) { c->cappend = need * 2; c->pend = realloc(c->pend, c->cappend); if (!c->pend) die("movie: AAC buffer allocation failed"); }
     int16_t *o = (int16_t *)(c->pend + c->npend); const int16_t *s = (const int16_t *)b;
-    if (c->och == ch) memcpy(o, s, frames * 2u * (size_t)ch);
+    const uint8_t *order = c->och == ch ? aac_guest_order(c->channel_config, c->och, c->channel_mask) : NULL;
+    if (order) for (size_t i = 0; i < frames; i++) for (int k = 0; k < ch; k++)
+        memcpy(o + i * ch + k, b + 2 * (i * ch + order[k]), 2);
+    else if (c->och == ch) memcpy(o, s, frames * 2u * (size_t)ch);
     else for (size_t i = 0; i < frames; i++) for (int k = 0; k < ch; k++) o[i * ch + k] = s[i * c->och + (k < c->och ? k : c->och - 1)];   // a codec that mixes up or down: the channels it has
     c->npend = need;
 }
@@ -87,6 +93,7 @@ static void drain(AudioConverterRef c, int64_t wait_us) {
         if (i == AMEDIACODEC_INFO_OUTPUT_FORMAT_CHANGED) {
             AMediaFormat *f = AMediaCodec_getOutputFormat(c->mc); int32_t v, r = 0, enc = 2;
             if (AMediaFormat_getInt32(f, AMEDIAFORMAT_KEY_CHANNEL_COUNT, &v) && v > 0 && v <= 8) c->och = v;
+            c->channel_mask = 0; AMediaFormat_getInt32(f, "channel-mask", &c->channel_mask);
             AMediaFormat_getInt32(f, AMEDIAFORMAT_KEY_SAMPLE_RATE, &r); AMediaFormat_getInt32(f, "pcm-encoding", &enc);
             if (c->och != (int)c->out.mChannelsPerFrame || (r && r != (int)c->out.mSampleRate) || enc != 2)
                 LOG("[RED] movie: the AAC decoder puts out %d channels %d Hz encoding %d for %d channels %d Hz 16-bit", c->och, r, enc, (int)c->out.mChannelsPerFrame, (int)c->out.mSampleRate);
