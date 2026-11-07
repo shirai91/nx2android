@@ -407,14 +407,18 @@ void vk_tex_sweep(void) {
     if ((idle || lru) && (g_tex_frame % 3000 == 0 || lru)) VKLOG("packaged textures: %llu not drawn for %d presents and %llu least recently drawn released their write protection (%llu pages; %llu so far); %d protected runs",
                     (unsigned long long)idle, PKG_IDLE, (unsigned long long)lru, (unsigned long long)(nvn_dirty_released() - before), (unsigned long long)total, runs);
 }
+// The keys are gathered first, 64 a pass, then deleted (a delete rehashes the table): a rescan from the start after each delete went over the whole table once per image,
+// under the lock the replay's texture lookups take, for each of the pools Pokémon Scarlet drops while a capture loads
 void vk_tex_drop_pool(const void *pool) {   // the pool is finalized: its textures' images go once the GPU is done with them
     pthread_mutex_lock(&g_img_mu);
-    for (uint32_t i = 0; i < g_by_key.cap; i++) {
-        if (!g_by_key.vals[i]) continue;
-        akey k; memcpy(&k, g_by_key.keys + (size_t)i * g_by_key.klen, sizeof k);
-        if (k.pool != (uint64_t)(uintptr_t)pool) continue;
-        vkimg_t *im = g_by_key.vals[i]; nvn_hm_del(&g_by_key, &k); i = (uint32_t)-1;   // the table was rehashed by the delete: rescan
-        img_drop(im);
+    for (int n = 64; n == 64;) {
+        akey ks[64]; n = 0;
+        for (uint32_t i = 0; i < g_by_key.cap && n < 64; i++) {
+            if (!g_by_key.vals[i]) continue;
+            memcpy(&ks[n], g_by_key.keys + (size_t)i * g_by_key.klen, sizeof ks[n]);
+            if (ks[n].pool == (uint64_t)(uintptr_t)pool) n++;
+        }
+        for (int j = 0; j < n; j++) { vkimg_t *im = nvn_hm_get(&g_by_key, &ks[j]); if (!im) continue; nvn_hm_del(&g_by_key, &ks[j]); img_drop(im); }
     }
     pthread_mutex_unlock(&g_img_mu);
 }
