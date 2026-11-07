@@ -46,6 +46,7 @@ static int16_t g_frame[FRAME_MAX * 2]; static int g_frame_n;   // the latest fra
 static _Atomic uint64_t g_frames, g_nonsilent;
 enum { CQ = 4 }; static int16_t g_cq[CQ][FRAME_MAX * 2]; static int g_cq_n[CQ]; static _Atomic uint32_t g_cq_head, g_cq_tail;   // output queue of catch-up frames
 static pthread_mutex_t g_cq_mu = PTHREAD_MUTEX_INITIALIZER; static pthread_cond_t g_cq_cv = PTHREAD_COND_INITIALIZER;   // the render thread signals each frame it takes off the queue (catch-up pacing)
+static pthread_mutex_t g_order_mu = PTHREAD_MUTEX_INITIALIZER;   // the render thread's "queued frame or a new render" and the catch-up path's "render and queue" (frame order)
 static void cq_popped(void) { pthread_mutex_lock(&g_cq_mu); pthread_cond_broadcast(&g_cq_cv); pthread_mutex_unlock(&g_cq_mu); }
 
 typedef struct { void *ptr; uint64_t cap, size; } gbuf;       // same as the front of hle_audio.c's AudioOutBuffer
@@ -78,13 +79,22 @@ static void render_main(void *arg) {
             if (!atomic_load(&g_open)) break;
         }
         if (!nfree) break;
-        const int16_t *src; int got;
+        // Queued catch-up output first, else a render of our own: decided and done under g_order_mu, which the catch-up path holds while it renders and queues. Checked without it,
+        // the queue looked empty while an update was rendering a catch-up frame; this thread's render then waited for that one, came out a frame later and was played first, the
+        // queued frame after it: two 5 ms frames swapped. Animal Crossing: New Horizons' voices clicked at frame boundaries (all 253 jumps in 5 minutes on a 240-sample edge)
+        gbuf *b = free_list[--nfree]; int got, popped = 0;
+        pthread_mutex_lock(&g_order_mu);
         uint32_t h = atomic_load(&g_cq_head);
-        if (h != atomic_load(&g_cq_tail)) { src = g_cq[h % CQ]; got = g_cq_n[h % CQ]; atomic_store(&g_cq_head, h + 1); cq_popped(); }   // play queued catch-up output first
-        else { ev_check(); g_frame_n = 0; exec(g_handle[0], g_handle[1]); src = g_frame; got = g_frame_n; }   // SDK: generate commands → CPU processing (output taken in the host takeover) → signal the game's renderer event
+        if (h != atomic_load(&g_cq_tail)) {
+            got = g_cq_n[h % CQ]; if (got) memcpy(b->ptr, g_cq[h % CQ], (size_t)got * 4);   // (copied before the slot is handed back)
+            atomic_store(&g_cq_head, h + 1); popped = 1;
+        } else {   // SDK: generate commands → CPU processing (output taken in the host takeover) → signal the game's renderer event
+            ev_check(); g_frame_n = 0; exec(g_handle[0], g_handle[1]); got = g_frame_n; if (got) memcpy(b->ptr, g_frame, (size_t)got * 4);
+        }
+        pthread_mutex_unlock(&g_order_mu);
+        if (popped) cq_popped();
         int n = got ? got : 240;
-        gbuf *b = free_list[--nfree];
-        if (got) memcpy(b->ptr, src, (size_t)n * 4); else memset(b->ptr, 0, (size_t)n * 4);
+        if (!got) memset(b->ptr, 0, (size_t)n * 4);
         b->size = (uint64_t)n * 4;
         if (!dm_pcmout_append(out, b)) free_list[nfree++] = b;
     }
@@ -363,8 +373,12 @@ HLE_FORCE("_ZN2nn5audio6server17AudioRenderSystem6UpdateEPvmS3_mPKvm", "renderer
             while (atomic_load(&g_open) && t - atomic_load(&g_cq_head) >= CQ && !pthread_cond_timedwait(&g_cq_cv, &g_cq_mu, &dl)) {}
             pthread_mutex_unlock(&g_cq_mu);
         }
-        if (t - atomic_load(&g_cq_head) < CQ) { render_once(sys, g_cq[t % CQ], &g_cq_n[t % CQ]); atomic_store(&g_cq_tail, t + 1); }
-        else render_once(sys, NULL, NULL);   // still full (the output stopped): render anyway, output discarded
+        pthread_mutex_lock(&g_order_mu);   // render and queue as one step against the render thread's choice (render_main); a frame the render thread finished meanwhile counts
+        if (atomic_load(&g_renders) == last_r) {
+            if (t - atomic_load(&g_cq_head) < CQ) { render_once(sys, g_cq[t % CQ], &g_cq_n[t % CQ]); atomic_store(&g_cq_tail, t + 1); }
+            else render_once(sys, NULL, NULL);   // still full (the output stopped): render anyway, output discarded
+        }
+        pthread_mutex_unlock(&g_order_mu);
     }
     static int tr = -1; if (tr < 0) tr = getenv("DM_AUDREN_TRACE") != NULL;
     if (tr && u < 200) LOG("audren update #%llu t=%.3f ms, %llu frames rendered since the last update", (unsigned long long)u, now_ns() / 1e6, (unsigned long long)(atomic_load(&g_renders) - (last_r == ~0ull ? 0 : last_r)));
