@@ -13,10 +13,12 @@
 #include <android/hardware_buffer.h>
 #include <dlfcn.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <stdatomic.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -361,14 +363,61 @@ static void pool_ord_remove(int i) {
     for (int r = 0; r < n; r++) { uint16_t v = g_pool_ord[r]; if (v == i) continue; g_pool_ord[w++] = v == g_npool ? (uint16_t)i : v; }
 }
 static int recv_fds(int sock, int *fds, int max) {
-    char data[4096], ctl[CMSG_SPACE(sizeof(int) * 16)]; struct iovec iov = {data, sizeof data};
-    struct msghdr m = {0}; m.msg_iov = &iov; m.msg_iovlen = 1; m.msg_control = ctl; m.msg_controllen = sizeof ctl;
+    if (max < 1 || max > 16) { errno = EINVAL; return -1; }
+    char data[4096]; union { struct cmsghdr align; char bytes[CMSG_SPACE(sizeof(int) * 16)]; } ctl;
+    struct iovec iov = {data, sizeof data};
+    struct msghdr m = {0}; m.msg_iov = &iov; m.msg_iovlen = 1; m.msg_control = ctl.bytes; m.msg_controllen = sizeof ctl.bytes;
     if (recvmsg(sock, &m, 0) < 0) return -1;
-    int n = 0;
+    int n = 0, error = m.msg_flags & (MSG_TRUNC | MSG_CTRUNC) ? EMSGSIZE : 0;
     for (struct cmsghdr *c = CMSG_FIRSTHDR(&m); c; c = CMSG_NXTHDR(&m, c))
         if (c->cmsg_level == SOL_SOCKET && c->cmsg_type == SCM_RIGHTS)
-            for (size_t i = 0; i < (c->cmsg_len - CMSG_LEN(0)) / sizeof(int) && n < max; i++) fds[n++] = ((int *)CMSG_DATA(c))[i];
+            for (size_t i = 0; i < (c->cmsg_len - CMSG_LEN(0)) / sizeof(int); i++) {
+                int fd = ((int *)CMSG_DATA(c))[i];
+                if (n < max) fds[n++] = fd;
+                else { close(fd); error = EMSGSIZE; }
+            }
+    // Truncated handle lists must never reach payload selection, even when their first FD looks valid.
+    if (error) { for (int i = 0; i < n; i++) close(fds[i]); errno = error; return -1; }
     return n;
+}
+static void mem_diag_zc_fds(const int *fds, int nfd, uint64_t size, int error, int selected) {
+    int saved_errno = errno;
+    static _Atomic unsigned samples;
+    if (mem_diag_on() && atomic_fetch_add(&samples, 1) < 3) {
+        VKLOG("[memdiag] zero-copy FD sample: errno=%d, size=%llu, received=%d, selected=%d",
+            error, (unsigned long long)size, nfd, selected);
+        for (int i = 0; i < nfd && i < 16; i++) {
+            int flags = fcntl(fds[i], F_GETFL), flags_error = flags < 0 ? errno : 0;
+            struct stat st; int status = fstat(fds[i], &st), stat_error = status ? errno : 0;
+            char path[64], target[192]; snprintf(path, sizeof path, "/proc/self/fd/%d", fds[i]);
+            ssize_t len = readlink(path, target, sizeof target - 1); int link_error = len < 0 ? errno : 0;
+            if (len < 0) strcpy(target, "unavailable"); else target[len] = 0;
+            const char *access = flags < 0 ? "unknown" : (flags & O_ACCMODE) == O_RDWR ? "read-write" : (flags & O_ACCMODE) == O_RDONLY ? "read-only" : "write-only";
+            const char *kind = status ? "unknown" : S_ISREG(st.st_mode) ? "regular" : S_ISCHR(st.st_mode) ? "char" : S_ISFIFO(st.st_mode) ? "fifo" : S_ISSOCK(st.st_mode) ? "socket" : "other";
+            VKLOG("[memdiag] zero-copy FD[%d]: fd=%d access=%s flags=%#x flags_errno=%d kind=%s mode=%#o size=%lld stat_errno=%d target=%s link_errno=%d",
+                i, fds[i], access, (unsigned)flags, flags_error, kind, status ? 0 : (unsigned)st.st_mode,
+                status ? -1ll : (long long)st.st_size, stat_error, target, link_error);
+        }
+    }
+    errno = saved_errno;
+}
+static int pool_data_fd(const int *fds, int nfd, uint64_t size) {
+    static int scan = -1;
+    if (scan < 0) { const char *e = getenv("DM_VK_ZC_FD_SCAN"); scan = e && atoi(e); }
+    if (!scan) return nfd > 0 ? 0 : -1;
+    // TB373FU sends a read-only gralloc_extra before its payload dma-buf and a metadata memfd after it.
+    int selected = -1;
+    for (int i = 0; i < nfd && i < 16; i++) {
+        int flags = fcntl(fds[i], F_GETFL); struct stat st;
+        if (flags < 0 || (flags & O_ACCMODE) != O_RDWR || fstat(fds[i], &st) || st.st_size <= 0 || (uint64_t)st.st_size < size) continue;
+        char path[64], target[192]; snprintf(path, sizeof path, "/proc/self/fd/%d", fds[i]);
+        ssize_t n = readlink(path, target, sizeof target - 1); if (n < 0) continue; target[n] = 0;
+        if (strncmp(target, "/dmabuf", 7) && strcmp(target, "anon_inode:dmabuf") && strcmp(target, "anon_inode:[dmabuf]")) continue;
+        if (selected >= 0) { errno = EEXIST; return -1; }
+        selected = i;
+    }
+    if (selected < 0) errno = ENODEV;
+    return selected;
 }
 static const VkBufferUsageFlags POOL_USAGE0 = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT |
     VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
@@ -405,6 +454,20 @@ static void pool_cache_sync(vkpool_t *p, int invalidate, uint64_t lo, uint64_t h
     else { VKCHK(vkFlushMappedMemoryRanges(V.dev, 1, &range)); }
     if (diag) mem_diag_note(invalidate ? 4 : 3, t, range.size == VK_WHOLE_SIZE ? p->hi - p->lo - range.offset : range.size);
 }
+static int pool_init_copy(AHardwareBuffer *ahb, void *temporary, const void *src, size_t size) {
+    static int locked = -1;
+    if (locked < 0) { const char *e = getenv("DM_VK_ZC_INIT_LOCK"); locked = e && atoi(e);
+        if (locked) VKLOG("[memdiag] zero-copy initial upload lock enabled (experimental)"); }
+    if (!locked) { memcpy(temporary, src, size); return 0; }
+    // No GPU can use this new AHB yet; bracket the one CPU access whose lifetime is known.
+    void *cpu = NULL; int r = AHardwareBuffer_lock(ahb, AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN, -1, NULL, &cpu);
+    if (r) { mem_diag_zc(12, "AHardwareBuffer_lock-init", size, "return", r); return -1; }
+    if (cpu) memcpy(cpu, src, size);
+    r = AHardwareBuffer_unlock(ahb, NULL);   // NULL waits for completion; never publish an outstanding unlock fence
+    if (r) { mem_diag_zc(13, "AHardwareBuffer_unlock-init", size, "return", r); return -1; }
+    if (!cpu) { mem_diag_zc(14, "AHardwareBuffer_lock-init-pointer", size, "return", -EINVAL); return -1; }
+    return 0;
+}
 // Zero copy: the pages of [mem, mem+size) become an AHardwareBuffer's, imported as a VkBuffer. 0 on success
 static int pool_zero_copy(vkpool_t *p, uint8_t *mem, uint64_t size) {
     AHardwareBuffer_Desc d = {(uint32_t)size, 1, 1, AHARDWAREBUFFER_FORMAT_BLOB,
@@ -420,36 +483,54 @@ static int pool_zero_copy(vkpool_t *p, uint8_t *mem, uint64_t size) {
     else mem_diag_zc(3, "AHardwareBuffer_sendHandleToUnixSocket", size, "return", ar);
     close(sv[0]); close(sv[1]);
     if (nfd < 1) { AHardwareBuffer_release(ahb); return -1; }
-    // copy the pool's current contents into the buffer through a temporary mapping, then put the buffer's pages at the pool's address
-    uint8_t *tmp = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fds[0], 0);
+    int selected = pool_data_fd(fds, nfd, size);
+    if (selected < 0) { int error = errno; mem_diag_zc(11, "payload-fd", size, "errno", error); mem_diag_zc_fds(fds, nfd, size, error, selected);
+        for (int i = 0; i < nfd; i++) close(fds[i]);
+        AHardwareBuffer_release(ahb); return -1; }
+    if (selected && mem_diag_on()) { static unsigned samples; if (samples++ < 3) VKLOG("[memdiag] zero-copy selected FD[%d] of %d, size=%llu", selected, nfd, (unsigned long long)size); }
+    VkBuffer buffer; VkDeviceMemory memory; int have_buffer = 0, allocated = 0, result = -1;
+    // Prepare contents and Vulkan import before replacing any guest pages.
+    uint8_t *tmp = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fds[selected], 0);
     int ok = tmp != MAP_FAILED;
     if (ok) {
-        memcpy(tmp, mem, size); munmap(tmp, size);
-        ok = mmap(mem, size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fds[0], 0) == mem;
-        if (!ok) mem_diag_zc(6, "mmap-fixed", size, "errno", errno);
-    } else mem_diag_zc(5, "mmap-temporary", size, "errno", errno);
-    for (int i = 0; i < nfd; i++) close(fds[i]);
-    if (!ok) { AHardwareBuffer_release(ahb); return -1; }
+        ok = !pool_init_copy(ahb, tmp, mem, size); munmap(tmp, size);
+    } else { int error = errno; mem_diag_zc(5, "mmap-temporary", size, "errno", error); mem_diag_zc_fds(fds, nfd, size, error, selected); }
+    if (!ok) goto failed;
+    result = -2;
     VkAndroidHardwareBufferPropertiesANDROID ap = {VK_STRUCTURE_TYPE_ANDROID_HARDWARE_BUFFER_PROPERTIES_ANDROID};
     VkExternalMemoryBufferCreateInfo eb = {VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO, NULL, VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID};
     VkBufferCreateInfo bi = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, &eb, 0, size, POOL_USAGE, VK_SHARING_MODE_EXCLUSIVE};
     VkResult vr = vkGetAndroidHardwareBufferPropertiesANDROID(V.dev, ahb, &ap);
-    if (vr) { mem_diag_zc(7, "vkGetAndroidHardwareBufferPropertiesANDROID", size, "VkResult", vr); AHardwareBuffer_release(ahb); return -2; }
-    vr = vkCreateBuffer(V.dev, &bi, NULL, &p->buf);
-    if (vr) { mem_diag_zc(8, "vkCreateBuffer", size, "VkResult", vr); AHardwareBuffer_release(ahb); return -2; }
-    VkMemoryDedicatedAllocateInfo ded = {VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO, NULL, VK_NULL_HANDLE, p->buf};   // the driver requires a dedicated allocation for an imported AHardwareBuffer
+    if (vr) { mem_diag_zc(7, "vkGetAndroidHardwareBufferPropertiesANDROID", size, "VkResult", vr); goto failed; }
+    vr = vkCreateBuffer(V.dev, &bi, NULL, &buffer);
+    if (vr) { mem_diag_zc(8, "vkCreateBuffer", size, "VkResult", vr); goto failed; }
+    have_buffer = 1;
+    VkMemoryDedicatedAllocateInfo ded = {VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO, NULL, VK_NULL_HANDLE, buffer};   // the driver requires a dedicated allocation for an imported AHardwareBuffer
     VkImportAndroidHardwareBufferInfoANDROID imp = {VK_STRUCTURE_TYPE_IMPORT_ANDROID_HARDWARE_BUFFER_INFO_ANDROID, &ded, ahb};
     VkMemoryAllocateInfo ai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, &imp, ap.allocationSize, vk_mem_type(ap.memoryTypeBits, 0, 0)};
-    vr = vkAllocateMemory(V.dev, &ai, NULL, &p->mem);
-    if (!vr) { vr = vkBindBufferMemory(V.dev, p->buf, p->mem, 0); if (vr) mem_diag_zc(10, "vkBindBufferMemory", size, "VkResult", vr); }
+    vr = vkAllocateMemory(V.dev, &ai, NULL, &memory); allocated = vr == VK_SUCCESS;
+    if (allocated) { vr = vkBindBufferMemory(V.dev, buffer, memory, 0); if (vr) mem_diag_zc(10, "vkBindBufferMemory", size, "VkResult", vr); }
     else mem_diag_zc(9, "vkAllocateMemory", size, "VkResult", vr);
-    if (vr) { vkDestroyBuffer(V.dev, p->buf, NULL); AHardwareBuffer_release(ahb); return -2; }
-    p->ahb = ahb; p->zero_copy = 1;
+    if (vr) goto failed;
+    if (mmap(mem, size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fds[selected], 0) != mem) {
+        int error = errno; mem_diag_zc(6, "mmap-fixed", size, "errno", error);
+        for (int i = 0; i < nfd; i++) close(fds[i]);
+        vkDestroyBuffer(V.dev, buffer, NULL); vkFreeMemory(V.dev, memory, NULL); AHardwareBuffer_release(ahb);
+        // A failed MAP_FIXED is not assumed to leave the guest mapping intact.
+        die("[RED] [vk] cannot publish zero-copy guest mapping: errno=%d", error);
+    }
+    for (int i = 0; i < nfd; i++) close(fds[i]);
+    p->buf = buffer; p->mem = memory; p->ahb = ahb; p->zero_copy = 1;
     return 0;
+failed:
+    for (int i = 0; i < nfd; i++) close(fds[i]);
+    if (have_buffer) vkDestroyBuffer(V.dev, buffer, NULL);
+    if (allocated) vkFreeMemory(V.dev, memory, NULL);
+    AHardwareBuffer_release(ahb); return result;
 }
 // A zero-copy pool's dma-buf mapped again over [mem, mem+len) in one piece per chunk, read-only (nvn_dirty_defrag: the mappings its protection split never merge). 0 = done
 int vk_pool_remap_ro(void *mem, size_t len) {
-    int rc = 0; uint64_t done = 0;
+    int rc = 0, mapped = 0; uint64_t done = 0;
     pthread_rwlock_rdlock(&g_pool_mu);
     for (int i = 0; i < g_npool && !rc; i++) {
         vkpool_t *p = &g_pool[i]; if (p->base != (uint64_t)(uintptr_t)mem || p->end - p->base != len) continue;
@@ -457,42 +538,89 @@ int vk_pool_remap_ro(void *mem, size_t len) {
         int sv[2], fds[16], nfd = -1; if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sv)) { rc = -1; break; }
         if (!AHardwareBuffer_sendHandleToUnixSocket(p->ahb, sv[0])) nfd = recv_fds(sv[1], fds, 16);
         close(sv[0]); close(sv[1]);
-        void *at = (void *)(uintptr_t)p->lo; rc = nfd >= 1 && mmap(at, p->hi - p->lo, PROT_READ, MAP_SHARED | MAP_FIXED, fds[0], 0) == at ? 0 : -1;
+        int selected = nfd >= 1 ? pool_data_fd(fds, nfd, p->hi - p->lo) : -1;
+        rc = selected < 0 ? -1 : 0;
+        if (!rc) {
+            void *at = (void *)(uintptr_t)p->lo;
+            if (mmap(at, p->hi - p->lo, PROT_READ, MAP_SHARED | MAP_FIXED, fds[selected], 0) != at) {
+                int error = errno;
+                for (int k = 0; k < nfd; k++) close(fds[k]);
+                pthread_rwlock_unlock(&g_pool_mu);
+                // A failed fixed mapping may already have removed guest pages.
+                die("[RED] [vk] cannot remap zero-copy pool read-only: errno=%d", error);
+            }
+            mapped = 1;
+        }
         for (int k = 0; k < nfd; k++) close(fds[k]);
         if (!rc) done += p->hi - p->lo;
     }
     pthread_rwlock_unlock(&g_pool_mu);
+    if (mapped && (rc || done != len))
+        die("[RED] [vk] incomplete read-only pool remap after replacing guest pages (%llu/%zu bytes)", (unsigned long long)done, len);
     return !rc && done == len ? 0 : -1;
 }
 static void pool_copy_back(vkpool_t *p) {   // the pages go back to anonymous memory with the buffer's contents (the game may reuse the memory)
     uint64_t size = p->hi - p->lo; uint8_t *mem = (uint8_t *)(uintptr_t)p->lo;
-    uint8_t *save = malloc(size); if (save) memcpy(save, mem, size);
-    mmap(mem, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
-    if (save) { memcpy(mem, save, size); free(save); }
+    uint8_t *save = malloc(size);
+    if (!save) die("[RED] [vk] cannot preserve zero-copy pool before restoring guest memory (%llu bytes)", (unsigned long long)size);
+    memcpy(save, mem, size);
+    if (mmap(mem, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0) != mem) {
+        int error = errno; free(save);
+        die("[RED] [vk] cannot restore anonymous guest memory for zero-copy pool: errno=%d", error);
+    }
+    memcpy(mem, save, size); free(save);
 }
 // Pools over ZC_CHUNK are made of chunks of at most that size, each a pool entry with an AHardwareBuffer of its own: the Adreno 830's gralloc allocator service
 // (vendor.qti.hardware.display.allocator-service, snapalloc) aborts on a BLOB of 812 MB ("ubsan: mul-overflow" in SnapConstraintManager::AlignmentToAlignedConstraints),
 // and the whole Android UI restarts with it; 400 MB ones work (13 Sentinels: Aegis Rim's 0x32c00000-byte pool). A range across two chunks has no buffer (vk_pool_of)
 #define ZC_CHUNK 0x10000000ull
-static void pool_add_one(const void *mem, uint64_t size, uint64_t base, uint64_t end);
+static void pool_add_one(const void *mem, uint64_t size, uint64_t base, uint64_t end, int flags);
 // DM_VK_ZEROCOPY_MAX_MB=<n>: pools bigger than n MB are copied, not zero-copy, and kept whole (a copied pool takes no hardware buffer, so no chunks). The Legion Y700
 // 2023's gralloc aborts the process (no error returned) allocating a hardware buffer for Unicorn Overlord's 860 MB pool, while its pools up to 250 MB are fine
 static int zc_over(uint64_t size) { static uint64_t m = 1; if (m == 1) { const char *e = getenv("DM_VK_ZEROCOPY_MAX_MB"); m = e && atoi(e) > 0 ? (uint64_t)atoi(e) << 20 : 0; } return m && size > m; }
-void mtl_pool_add(const void *mem, uint64_t size) {
+// Diagnostic guard: serial (decimal or *), whole-pool size (hex), NVN flags (hex). Fixed at first creation.
+static int pool_copy_selected(const vkpool_t *p) {
+    static int initialized, enabled, any_serial; static uint64_t want[3];
+    if (!initialized) {
+        initialized = 1; const char *e = getenv("DM_VK_COPY_POOL");
+        if (e && *e) {
+            const char *q = e; int valid = 1;
+            any_serial = q[0] == '*' && q[1] == ':'; if (any_serial) q += 2;
+            for (int i = any_serial ? 1 : 0; i < 3 && valid; i++) {
+                char *end; errno = 0;
+                if (!((*q >= '0' && *q <= '9') || (i && ((*q >= 'a' && *q <= 'f') || (*q >= 'A' && *q <= 'F'))))) { valid = 0; break; }
+                want[i] = strtoull(q, &end, i ? 16 : 10);
+                if (errno || end == q || (i < 2 ? *end != ':' : *end != 0)) valid = 0;
+                q = end + (i < 2 && *end == ':');
+            }
+            enabled = valid && (any_serial || want[0]) && want[1] && want[2] <= 0x7fffffffull;
+            if (!enabled) VKLOG("[poolcopy] invalid DM_VK_COPY_POOL; selection disabled");
+        }
+    }
+    if (!enabled || (!any_serial && p->serial != want[0])) return 0;
+    int match = p->end - p->base == want[1] && (uint64_t)(unsigned)p->flags == want[2] && p->lo == p->base && p->hi == p->end;
+    if (match || !any_serial) VKLOG("[poolcopy] serial %llu size %#llx flags %#x base %#llx: %s (wanted size %#llx flags %#llx)",
+        (unsigned long long)p->serial, (unsigned long long)(p->end - p->base), p->flags, (unsigned long long)p->base,
+        match ? "selected for copied backing" : "identity mismatch; not selected", (unsigned long long)want[1], (unsigned long long)want[2]);
+    return match;
+}
+static void pool_add_flags(const void *mem, uint64_t size, int flags) {
     vk_init();
     if (!size) return;
     uint64_t a = (uint64_t)(uintptr_t)mem, c = ((a | size) & 0xfff) || zc_over(size) ? size : ZC_CHUNK;
-    for (uint64_t o = 0; o < size; o += c) pool_add_one((const uint8_t *)mem + o, size - o < c ? size - o : c, a, a + size);
+    for (uint64_t o = 0; o < size; o += c) pool_add_one((const uint8_t *)mem + o, size - o < c ? size - o : c, a, a + size, flags);
     if (size > c) VKLOG("memory pool %p +%#llx: %llu chunks of at most %#llx", mem, (unsigned long long)size, (unsigned long long)((size + c - 1) / c), c);
 }
-static void pool_add_one(const void *mem, uint64_t size, uint64_t base, uint64_t end) {
+void mtl_pool_add(const void *mem, uint64_t size) { pool_add_flags(mem, size, 0); }
+void vk_pool_add_flags(const void *mem, uint64_t size, int flags) { pool_add_flags(mem, size, flags); }
+static void pool_add_one(const void *mem, uint64_t size, uint64_t base, uint64_t end, int flags) {
     pthread_rwlock_wrlock(&g_pool_mu);
     if (g_npool == MAXPOOL) { pthread_rwlock_unlock(&g_pool_mu); die("[vk] too many memory pools"); }
     vkpool_t *p = &g_pool[g_npool]; memset(p, 0, sizeof *p);
-    p->lo = (uint64_t)(uintptr_t)mem; p->hi = p->lo + size; p->base = base; p->end = end; { static uint64_t ser; p->serial = ++ser; }
-    int zc = ((uintptr_t)mem & 0xfff) || (size & 0xfff) ? -3 : getenv("DM_VK_NO_ZEROCOPY") ? -4 : zc_over(end - base) ? -5 : pool_zero_copy(p, (uint8_t *)mem, size);
+    p->lo = (uint64_t)(uintptr_t)mem; p->hi = p->lo + size; p->base = base; p->end = end; p->flags = flags; { static uint64_t ser; p->serial = ++ser; }
+    int zc = ((uintptr_t)mem & 0xfff) || (size & 0xfff) ? -3 : getenv("DM_VK_NO_ZEROCOPY") ? -4 : zc_over(end - base) ? -5 : pool_copy_selected(p) ? -6 : pool_zero_copy(p, (uint8_t *)mem, size);
     if (zc) {
-        static int said; if (!said++) VKLOG("[RED] memory pool %p +%#llx could not be zero-copy (%d): a GPU copy is refreshed before each submission (slow)", mem, (unsigned long long)size, zc);
+        if (zc != -6) { static int said; if (!said++) VKLOG("[RED] memory pool %p +%#llx could not be zero-copy (%d): a GPU copy is refreshed before each submission (slow)", mem, (unsigned long long)size, zc); }
         const char *e = getenv("DM_VK_POOL_CACHED"); int cached = e && atoi(e);
         VkResult r = VK_ERROR_FEATURE_NOT_PRESENT;
         if (cached && vkFlushMappedMemoryRanges && vkInvalidateMappedMemoryRanges) r = pool_copied_alloc(p, size, 1);
@@ -507,7 +635,7 @@ static void pool_add_one(const void *mem, uint64_t size, uint64_t base, uint64_t
     pthread_rwlock_unlock(&g_pool_mu);
     if (np >= 1024 && !(np & (np - 1))) VKLOG("%d memory pools live", np);
     static uint64_t zc_bytes, cp_bytes; if (zc) cp_bytes += size; else zc_bytes += size;
-    static int nlog; if (nlog++ < 24) VKLOG("memory pool %p +%#llx: %s (zero-copy %.1f MB, copied %.1f MB)", mem, (unsigned long long)size, zc ? "copied" : "zero-copy", zc_bytes / 1048576.0, cp_bytes / 1048576.0);
+    static int nlog; if (nlog++ < 24 || zc == -6) VKLOG("memory pool %p +%#llx: %s (zero-copy %.1f MB, copied %.1f MB)", mem, (unsigned long long)size, zc ? "copied" : "zero-copy", zc_bytes / 1048576.0, cp_bytes / 1048576.0);
 }
 void mtl_pool_del(const void *mem) {
     for (;;) {   // every chunk of the pool
@@ -954,8 +1082,11 @@ static void post(post_op o) { vksub_t *s = cur(); if (s->npost == s->cappost) { 
 void mtl_init(void) { vk_init(); }
 static int g_shadow_pools;
 static void pools_readback_barrier(VkCommandBuffer cb) {
-    if (!g_shadow_pools) return;
-    // The last part can be dropped after earlier ones were sent; each part must publish its writes for the CPU merge.
+    static int zc_host = -1;
+    if (zc_host < 0) { const char *e = getenv("DM_VK_ZC_HOST_BARRIER"); zc_host = e && atoi(e);
+        if (zc_host) VKLOG("[memdiag] zero-copy host-read barrier enabled (experimental)"); }
+    if (!g_shadow_pools && !zc_host) return;
+    // Every part publishes its writes for CPU reads, including experimental zero-copy without shadow pools.
     VkMemoryBarrier b = {VK_STRUCTURE_TYPE_MEMORY_BARRIER, NULL, VK_ACCESS_MEMORY_WRITE_BIT, VK_ACCESS_HOST_READ_BIT};
     vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &b, 0, NULL, 0, NULL);
 }
@@ -975,10 +1106,14 @@ void mtl_sub_begin(void) {
     // parts early; synced at the commit, those parts read the copy as the last submission left it), and only once no earlier submission still reads it
     pthread_rwlock_rdlock(&g_pool_mu); int shadow = 0; for (int i = 0; i < g_npool; i++) shadow |= g_pool[i].shadow != NULL; pthread_rwlock_unlock(&g_pool_mu);
     g_shadow_pools = shadow;
-    if (shadow) {
+    static int zc_serial = -1;
+    if (zc_serial < 0) { const char *e = getenv("DM_VK_ZC_SERIAL"); zc_serial = e && atoi(e);
+        if (zc_serial) VKLOG("[memdiag] zero-copy submit serialization enabled (experimental)"); }
+    if (shadow || zc_serial) {
         int diag = mem_diag_on(); uint64_t t = diag ? mem_diag_ns() : 0;
-        mtl_wait(g_fence, ~0ull); if (diag) mem_diag_note(0, t, 0);
-        vk_pools_sync(NULL);
+        if (!mtl_wait(g_fence, ~0ull)) die("[RED] [vk] previous submission did not complete before pool use");
+        if (diag) mem_diag_note(0, t, 0);
+        if (shadow) vk_pools_sync(NULL);
     }   // (after the completion thread's copy-back of the last submission, not only its GPU work)
     if (g_tsq) { vkCmdResetQueryPool(s->main, g_tsq, 2 * (uint32_t)g_cur, 2); vkCmdWriteTimestamp(s->main, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, g_tsq, 2 * (uint32_t)g_cur); }
     if (g_cq) vkCmdResetQueryPool(s->main, g_cq, (uint32_t)g_cur * CQ, CQ);
