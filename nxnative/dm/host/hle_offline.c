@@ -145,6 +145,34 @@ HLE_FORCE("_ZN2nn3err39ShowUnacceptableApplicationVersionErrorEv", "game version
 // Pokémon Legends: Z-A (SDK 19): the application's own error screen (an error code number and two messages in the argument) goes through the error applet as well
 HLE_FORCE("_ZN2nn3err20ShowApplicationErrorERKNS0_19ApplicationErrorArgE", "application error applet; the host only logs it", void, h_err_ShowApp, const void *arg) { (void)arg; LOG("game asks to show an application error (ApplicationErrorArg)"); }
 
+// ---------- bluetooth: Bluetooth LE (Pokémon: Let's Go, Pikachu! / Eevee! looks for a Poké Ball Plus and Pokémon GO). The host has no radio: a scan finds nothing ----------
+// Let's Go calls InitializeBle at boot; the SDK's own call opens the bt service, which sm refuses, and aborts in bluetooth::user (sdk+0x251cdc, InitializeBle+0xc) on
+// update 1.0.2. The SDK's Acquire*Event functions return nothing and abort when the service refuses, so here the event is bound and never fires. Starting or stopping a
+// scan and (un)registering for notifications succeed, every list is empty, and anything that needs a device (connect, MTU, GATT reads and writes) fails.
+HLE_FORCE("_ZN2nn9bluetooth13InitializeBleEv", "Bluetooth LE init; the host has no radio, no-op", void, h_bt_Init, void) {}
+#define BT_EVENT(mangled, what, name) HLE_FORCE(mangled, "Bluetooth LE " what " event: bound, never fires", void, name, void *ev) { hle_bind_system_event(ev, 1); }
+BT_EVENT("_ZN2nn9bluetooth19AcquireBleScanEventEPNS_2os15SystemEventTypeE", "scan", h_bt_ScanEv)
+BT_EVENT("_ZN2nn9bluetooth24AcquireBleMtuConfigEventEPNS_2os15SystemEventTypeE", "MTU", h_bt_MtuEv)
+BT_EVENT("_ZN2nn9bluetooth28AcquireBleGattOperationEventEPNS_2os15SystemEventTypeE", "GATT operation", h_bt_GattEv)
+BT_EVENT("_ZN2nn9bluetooth31AcquireBleServiceDiscoveryEventEPNS_2os15SystemEventTypeE", "service discovery", h_bt_DiscEv)
+BT_EVENT("_ZN2nn9bluetooth37AcquireBleConnectionStateChangedEventEPNS_2os15SystemEventTypeE", "connection state", h_bt_ConnEv)
+#undef BT_EVENT
+HLE_FORCE("_ZN2nn9bluetooth23StartBleScanSmartDeviceERKNS0_17GattAttributeUuidE", "Bluetooth LE scan start; finds nothing", Result, h_bt_ScanStart, const void *uuid) { (void)uuid; return RES_OK; }
+HLE_FORCE("_ZN2nn9bluetooth22StopBleScanSmartDeviceEv", "Bluetooth LE scan stop", Result, h_bt_ScanStop, void) { return RES_OK; }
+HLE_FORCE("_ZN2nn9bluetooth16GetBleScanResultEPNS0_13BleScanResultEi", "Bluetooth LE scan results: none", int, h_bt_ScanRes, void *out, int n) { (void)out; (void)n; return 0; }
+HLE_FORCE("_ZN2nn9bluetooth24GetBleConnectionInfoListEPNS0_17BleConnectionInfoEi", "Bluetooth LE connections: none", int, h_bt_Conns, void *out, int n) { (void)out; (void)n; return 0; }
+HLE_FORCE("_ZN2nn9bluetooth15GetGattServicesEPNS0_11GattServiceEij", "Bluetooth LE GATT services: none", int, h_bt_Services, void *out, int n, uint32_t conn) { (void)out; (void)n; (void)conn; return 0; }
+HLE_FORCE("_ZN2nn9bluetooth33RegisterGattOperationNotificationERKNS0_17GattAttributeUuidE", "Bluetooth LE notification registration; nothing ever notifies", Result, h_bt_Reg, const void *uuid) { (void)uuid; return RES_OK; }
+HLE_FORCE("_ZN2nn9bluetooth35UnregisterGattOperationNotificationERKNS0_17GattAttributeUuidE", "Bluetooth LE notification registration", Result, h_bt_Unreg, const void *uuid) { (void)uuid; return RES_OK; }
+HLE_FORCE("_ZN2nn9bluetooth19ConnectToGattServerERKNS0_7AddressE", "Bluetooth LE connect: no device (fails)", Result, h_bt_Connect, const void *addr) { (void)addr; return RES_FAIL; }
+HLE_FORCE("_ZN2nn9bluetooth24DisconnectFromGattServerEj", "Bluetooth LE disconnect: nothing connected", Result, h_bt_Disconnect, uint32_t conn) { (void)conn; return RES_OK; }
+HLE_FORCE("_ZN2nn9bluetooth15ConfigureBleMtuEjt", "Bluetooth LE MTU: no device (fails)", Result, h_bt_Mtu, uint32_t conn, uint16_t mtu) { (void)conn; (void)mtu; return RES_FAIL; }
+HLE_FORCE("_ZN2nn9bluetooth22ReadGattCharacteristicERKNS0_18GattCharacteristicE", "Bluetooth LE GATT read: no device (fails)", Result, h_bt_Read, const void *c) { (void)c; return RES_FAIL; }
+HLE_FORCE("_ZN2nn9bluetooth23WriteGattCharacteristicERKNS0_18GattCharacteristicE", "Bluetooth LE GATT write: no device (fails)", Result, h_bt_Write, const void *c) { (void)c; return RES_FAIL; }
+HLE_FORCE("_ZN2nn9bluetooth19WriteGattDescriptorERKNS0_14GattDescriptorE", "Bluetooth LE GATT descriptor write: no device (fails)", Result, h_bt_WriteDesc, const void *d) { (void)d; return RES_FAIL; }
+HLE_FORCE("_ZN2nn9bluetooth36EnableGattCharacteristicNotificationERKNS0_18GattCharacteristicEb", "Bluetooth LE GATT notification: no device (fails)", Result, h_bt_Notify, const void *c, unsigned on) { (void)c; (void)on; return RES_FAIL; }
+HLE_FORCE("_ZN2nn9bluetooth22GetGattOperationResultEPNS0_26BleClientGattOperationInfoE", "Bluetooth LE GATT operation result: none (fails)", Result, h_bt_OpRes, void *info) { (void)info; return RES_FAIL; }
+
 // ---------- web: web page applet (online lobby). Unavailable ----------
 HLE_FORCE("_ZN2nn3web13ShowLobbyPageEPNS0_20LobbyPageReturnValueERKNS0_16ShowLobbyPageArgE", "online lobby web applet (cut)", Result, h_web_Lobby, void *rv, const void *arg) { (void)rv; (void)arg; LOG("web::ShowLobbyPage (cut)"); return RES_FAIL; }
 // Tears of the Kingdom imports the general web page applet too (the game constructs the return value itself, so it stays as constructed)
