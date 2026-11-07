@@ -2230,7 +2230,10 @@ static void exec_ops(const uint8_t *p) {
         case OP_END: return;
         case OP_BEGIN: break;
         case OP_JUMP: { const uint8_t *t; memcpy(&t, a, 8); p = t; continue; }
-        case OP_CALL: { uint64_t t; memcpy(&t, a, 8); exec_ops((const uint8_t *)(uintptr_t)t); break; }
+        case OP_CALL: {   // nesting this deep is records that CALL themselves: overwritten command memory. Each level costs stack, and the deepest draw needs 25 KB more
+            static int depth; uint64_t t; memcpy(&t, a, 8);
+            if (depth >= 32) { static int once; if (!once++) VKLOG("[RED] command handles nested 32 deep: skipped the CALL to %#llx (overwritten command memory?)", (unsigned long long)t); break; }
+            depth++; exec_ops((const uint8_t *)(uintptr_t)t); depth--; break; }
         case OP_SIGNAL_EVENT: { volatile uint32_t *val; uint32_t m, v; memcpy(&val, a, 8); memcpy(&m, a + 8, 4); memcpy(&v, a + 12, 4); mtl_sub_event(val, m, v); break; }
         case OP_REPORT_COUNTER: { uint64_t t, ad; memcpy(&t, a, 8); memcpy(&ad, a + 8, 8); if (DM_GAME_RENDER_COND) rc_note(ad, t == 0 || t == 0x10 ? 1 : 2); mtl_sub_counter(ad, (uint32_t)t); break; }
         case OP_RESET_COUNTER: break;
