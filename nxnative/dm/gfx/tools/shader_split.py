@@ -1194,6 +1194,22 @@ def unzs(path):
     if did not in _ZD: _ZD[did] = zstd.ZstdDict(ZDICTS[did])
     return zstd.decompress(d, zstd_dict=_ZD[did])
 
+def nested_zstd(d, label, limit):
+    """Decode one nested frame with an explicit expansion limit."""
+    if len(d) < 6: red(f'{label}: truncated zstd header')
+    fhd = d[4]
+    n, o = (0, 1, 2, 4)[fhd & 3], 6 - (fhd >> 5 & 1)
+    if len(d) < o + n: red(f'{label}: truncated zstd dictionary ID')
+    did = int.from_bytes(d[o:o + n], 'little')
+    zstd = zstd_mod()
+    if did and did not in ZDICTS: red(f'{label}: a frame needs zstd dictionary {did}, which Pack/ZsDic.pack.zs does not have')
+    if did and did not in _ZD: _ZD[did] = zstd.ZstdDict(ZDICTS[did])
+    dec = zstd.ZstdDecompressor(zstd_dict=_ZD[did]) if did else zstd.ZstdDecompressor()
+    result = dec.decompress(d, max_length=limit + 1)
+    if len(result) > limit or not dec.eof and not dec.needs_input: red(f'{label}: nested zstd exceeds expansion limit')
+    if not dec.eof or dec.unused_data: red(f'{label}: incomplete or trailing nested zstd data')
+    return result
+
 def unity_program(code, where, stage=None):
     """Unity's Switch program code → [(stage, control, code)]; stage = the subprogram's stage from m_ParsedForm, which only the pre-2019.3 layout needs"""
     if len(code) >= 0x14 and code[0x10:0x14] == CTL_MAGIC:   # before 2019.3: 0x10 header + control section + code area, one stage
@@ -1270,15 +1286,20 @@ def unity_shaders(d, label, out, trees):
                 out.extend((where, st, ctl, cd) for st, ctl, cd in unity_program(code, where, stages.get(k)))
         out.extend(unity_compute(x, f'{label}{":" + node if node else ""}', trees))
 
-def scan_blob(d, label, out):
+def scan_blob(d, label, out, depth=0, budget=None):
+    if depth > 32: red(f'{label}: archive nesting exceeds 32 levels')
+    if budget is None: budget = [1024 * 1024 * 1024]
+    if d[:4] == ZSTD_MAGIC:
+        d = nested_zstd(d, label, min(budget[0], 512 * 1024 * 1024))
+        budget[0] -= len(d)
     if d[:4] == b'Yaz0': d = yaz0(d)
     if d[:4] == b'SARC':
-        for nm, m in sarc_members(d): scan_blob(m, f'{label}/{nm}', out)
+        for nm, m in sarc_members(d): scan_blob(m, f'{label}/{nm}', out, depth + 1, budget)
         return
     if d[:4] == b'BAHS': out.extend(bahs_shaders(d, label)); return
     if d[:4] == b'MSHD': out.extend(mshd_shaders(d, label)); return
     if d[:4] == PGDAT and len(d) >= 0x1c and (mem := pgdat_members(d, label)) is not None:   # PlatinumGames
-        for nm, m in mem: scan_blob(m, f'{label}/{nm}', out)
+        for nm, m in mem: scan_blob(m, f'{label}/{nm}', out, depth + 1, budget)
         return
     if d[:4] in PG_STAGES and len(d) >= 0x18 and d[(o := struct.unpack_from('<I', d, 0xc)[0]):o + 4] == CTL_MAGIC: out.extend(pg_shader(d, label)); return
     for m in re.finditer(b'BNSH\0\0\0\0', d):
@@ -1406,7 +1427,7 @@ def scan_file(args):
         import unityfs
         try: unity_shaders(d, '/' + rel, found, trees if not TREES else dict(TREES))
         except unityfs.NoTree: return rel, {}, set(), 'defer'
-    elif b'BNSH\0\0\0\0' not in d and b'BAHS' not in d and d[:4] != b'MSHD' and not (d[:4] == b'SARC' and b'Yaz0' in d) and b'\x91\x68\x86\x19' not in d and MGFX not in d: return rel, {}, set(), {}   # a SARC may hold Yaz0 members
+    elif b'BNSH\0\0\0\0' not in d and b'BAHS' not in d and d[:4] != b'MSHD' and not (d[:4] == b'SARC' and (b'Yaz0' in d or ZSTD_MAGIC in d)) and b'\x91\x68\x86\x19' not in d and MGFX not in d: return rel, {}, set(), {}   # a SARC may hold compressed members
     else:
         scan_blob(d, '/' + rel, found)
         # whole GLSLC outputs in a file no other reader takes (FINAL FANTASY TACTICS - The Ivalice Chronicles: its engine's technique files, resources_nx/…/shader/*.tec, 261 outputs beside
