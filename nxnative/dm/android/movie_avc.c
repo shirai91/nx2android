@@ -21,8 +21,9 @@ struct mavc {
     uint8_t sps[512], pps[512]; int nsps, npps, dirty;
     AMediaCodec *mc; int eos_sent;
     int fw, fh, fstride, fslice, fcolor, cl, ct, cr, cb;   // output format: size, stride, slice height, colour format, crop rectangle (inclusive)
+    int fstandard, ffull;                                  // Android color-standard and full-range flag for the current output format
     long nin, nout;                                        // inputs queued and pictures out since the codec started (or was flushed)
-    struct { uint8_t *nv12; int w, h; int64_t pts; } q[QMAX]; int nq;
+    struct { uint8_t *nv12; int w, h, standard, full; int64_t pts; } q[QMAX]; int nq;
     uint8_t *au; size_t aucap;   // Annex B copy of the access unit being decoded
     int unknown_format_logged, dropped_picture_logged; // once per decoder, independently of other errors
     int red, rgba;               // rgba: pictures as 4-byte RGBA (native texture mode) instead of NV12
@@ -105,6 +106,8 @@ static void read_format(mavc *a) {
     a->fstride = AMediaFormat_getInt32(f, AMEDIAFORMAT_KEY_STRIDE, &v) && v >= a->fw ? v : a->fw;
     a->fslice = AMediaFormat_getInt32(f, AMEDIAFORMAT_KEY_SLICE_HEIGHT, &v) && v >= a->fh ? v : a->fh;
     a->fcolor = AMediaFormat_getInt32(f, AMEDIAFORMAT_KEY_COLOR_FORMAT, &v) ? v : 0;
+    a->fstandard = AMediaFormat_getInt32(f, "color-standard", &v) ? v : 0;
+    a->ffull = AMediaFormat_getInt32(f, "color-range", &v) && v == 1;
     int32_t l, t, r, b;
     if (AMediaFormat_getRect(f, AMEDIAFORMAT_KEY_DISPLAY_CROP, &l, &t, &r, &b) && l >= 0 && t >= 0 && r >= l && b >= t && r < a->fw && b < a->fh) { a->cl = l; a->ct = t; a->cr = r; a->cb = b; }
     else { a->cl = a->ct = 0; a->cr = a->fw > 0 ? a->fw - 1 : -1; a->cb = a->fh > 0 ? a->fh - 1 : -1; }
@@ -156,7 +159,11 @@ static void keep_picture(mavc *a, const uint8_t *src, size_t n, int64_t pts) {
     if (a->nq == QMAX) { if (!a->red++) LOG("[RED] movie: AVC picture queue full, dropping the oldest picture"); free(a->q[0].nv12); memmove(a->q, a->q + 1, --a->nq * sizeof a->q[0]); }
     for (int m = 0; m < a->npmap; m++) if (a->pmap[m].c == pts) { pts = a->pmap[m].g; a->pmap[m] = a->pmap[--a->npmap]; break; }   // the game's own timestamp
     int k = a->nq; while (!a->synth && k > 0 && a->q[k - 1].pts > pts) { a->q[k] = a->q[k - 1]; k--; }
-    a->q[k].nv12 = o; a->q[k].w = w; a->q[k].h = h; a->q[k].pts = pts; a->nq++;
+    a->q[k].nv12 = o; a->q[k].w = w; a->q[k].h = h; a->q[k].pts = pts;
+    // Metadata travels with the picture through sorting and later format changes.
+    int standard = a->fstandard;
+    a->q[k].standard = standard == 1 || standard == 2 || standard == 4 || standard == 6 ? standard : (h >= 720 ? 1 : 4);
+    a->q[k].full = a->ffull; a->nq++;
 }
 // collect the pictures the codec has ready, waiting up to wait_us for the first; 1 = the end-of-stream output came
 static int drain(mavc *a, int64_t wait_us) {
@@ -222,15 +229,18 @@ static void finish(mavc *a) {
     for (int k = 0; i >= 0 && k < 100 && !drain(a, 10000); k++) {}
     close_codec(a); a->eos_sent = 1;
 }
-// NV12 (video range) → RGBA rows of w pixels; BT.709 from 720 lines up, else BT.601 (VideoToolbox converts with the stream's colour matrix)
-static void nv12_rgba(const uint8_t *y, const uint8_t *uv, int pw, int ph, uint8_t *dst, int w, int h) {
-    int hd = ph >= 720, cw = pw < w ? pw : w, chh = ph < h ? ph : h;
-    int rv = hd ? 459 : 409, gu = hd ? 55 : 100, gv = hd ? 136 : 208, bu = hd ? 541 : 516;   // ×256, 8-bit video range (luma × 298)
+// NV12 → RGBA using the picture's matrix/range. Android standards: 1=709, 2/4=601, 6=2020.
+static void nv12_rgba(const uint8_t *y, const uint8_t *uv, int pw, int ph, uint8_t *dst, int w, int h, int standard, int full) {
+    int cw = pw < w ? pw : w, chh = ph < h ? ph : h;
+    int rv = 409, gu = 100, gv = 208, bu = 516;   // ×256, 8-bit video range (luma × 298)
+    if (standard == 1) { rv = 459; gu = 55; gv = 136; bu = 541; }
+    if (standard == 6) { rv = 430; gu = 48; gv = 167; bu = 548; }
+    if (full) { rv = rv * 224 / 255; gu = gu * 224 / 255; gv = gv * 224 / 255; bu = bu * 224 / 255; }
     if (cw < w || chh < h) for (size_t i = 0; i < (size_t)w * h; i++) ((uint32_t *)dst)[i] = 0xff000000u;
 #ifdef __aarch64__
     static int fast = -1; if (fast < 0) { const char *e = getenv("DM_MOVIE_FAST"); fast = e && !strcmp(e, "1"); }
-    const int16x8_t k16 = vdupq_n_s16(16), k128 = vdupq_n_s16(128); const int32x4_t rnd = vdupq_n_s32(128); const uint8x16_t a255 = vdupq_n_u8(255);
-    const int16x4_t c298 = vdup_n_s16(298), crv = vdup_n_s16((int16_t)rv), cgu = vdup_n_s16((int16_t)gu), cgv = vdup_n_s16((int16_t)gv), cbu = vdup_n_s16((int16_t)bu);
+    const int16x8_t k16 = vdupq_n_s16(full ? 0 : 16), k128 = vdupq_n_s16(128); const int32x4_t rnd = vdupq_n_s32(128); const uint8x16_t a255 = vdupq_n_u8(255);
+    const int16x4_t c298 = vdup_n_s16(full ? 256 : 298), crv = vdup_n_s16((int16_t)rv), cgu = vdup_n_s16((int16_t)gu), cgv = vdup_n_s16((int16_t)gv), cbu = vdup_n_s16((int16_t)bu);
 #endif
     for (int r = 0; r < chh; r++) {
         const uint8_t *yr = y + (size_t)r * pw, *cr = uv + (size_t)(r / 2) * ((pw + 1) & ~1); uint8_t *o = dst + (size_t)r * w * 4;
@@ -259,7 +269,7 @@ static void nv12_rgba(const uint8_t *y, const uint8_t *uv, int pw, int ph, uint8
         }
 #endif
         for (; x < cw; x++) {
-            int c = 298 * (yr[x] - 16), u = cr[x & ~1] - 128, v = cr[(x & ~1) + 1] - 128;
+            int c = full ? 256 * yr[x] : 298 * (yr[x] - 16), u = cr[x & ~1] - 128, v = cr[(x & ~1) + 1] - 128;
             int R = (c + rv * v + 128) >> 8, G = (c - gu * u - gv * v + 128) >> 8, B = (c + bu * u + 128) >> 8;
             o[4 * x] = (uint8_t)(R < 0 ? 0 : R > 255 ? 255 : R); o[4 * x + 1] = (uint8_t)(G < 0 ? 0 : G > 255 ? 255 : G); o[4 * x + 2] = (uint8_t)(B < 0 ? 0 : B > 255 ? 255 : B); o[4 * x + 3] = 255;
         }
@@ -270,12 +280,13 @@ int mavc_take(mavc *a, int flush, uint8_t *dst, int w, int h, int64_t *pts_us) {
     else if (!a->nq && a->mc && a->nin > a->nout) drain(a, 4000);   // a picture is in the codec's pipeline: give it a few milliseconds
     if (!a->nq) return 0;
     uint8_t *pic = a->q[0].nv12; int pw = a->q[0].w, ph = a->q[0].h; if (pts_us) *pts_us = a->q[0].pts;
+    int standard = a->q[0].standard, full = a->q[0].full;
     memmove(a->q, a->q + 1, --a->nq * sizeof a->q[0]);
     const uint8_t *uv = pic + (size_t)pw * ph;
-    if (a->rgba) nv12_rgba(pic, uv, pw, ph, dst, w, h);
+    if (a->rgba) nv12_rgba(pic, uv, pw, ph, dst, w, h, standard, full);
     else {
         int cw = pw < w ? pw : w, chh = ph < h ? ph : h;
-        if (cw < w || chh < h) { memset(dst, 16, (size_t)w * h); memset(dst + (size_t)w * h, 128, (size_t)w * h / 2); }
+        if (cw < w || chh < h) { memset(dst, full ? 0 : 16, (size_t)w * h); memset(dst + (size_t)w * h, 128, (size_t)w * h / 2); }
         for (int r = 0; r < chh; r++) memcpy(dst + (size_t)r * w, pic + (size_t)r * pw, (size_t)cw);
         int cs = (pw + 1) & ~1, copied = (cw + 1) & ~1;
         if (copied > w) copied = w;
