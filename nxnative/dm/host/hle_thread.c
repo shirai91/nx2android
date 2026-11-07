@@ -962,6 +962,13 @@ void hle_bind_system_event(void *ev, int autoclear) {      // Must be called on 
     g_se[g_nse].ev = ev; g_se[g_nse++].wh = wh;
     pthread_mutex_unlock(&g_se_lock);
 }
+// Bind ev afresh even if this address was bound before: a struct the game reuses without destroying it (a member of an object it cleared and set up again) keeps an old
+// binding while its own state is gone, and binding skipped it, so the SDK's TryWaitSystemEvent aborted on it (Animal Crossing: New Horizons' Pia LdnProtocol attaches the ldn state
+// event at the same address for every local-play session). The old kernel event stays open (two handles per session)
+void hle_rebind_system_event(void *ev, int autoclear) {
+    pthread_mutex_lock(&g_se_lock); for (int i = 0; i < g_nse; ) if (g_se[i].ev == ev) g_se[i] = g_se[--g_nse]; else i++; pthread_mutex_unlock(&g_se_lock);
+    hle_bind_system_event(ev, autoclear);
+}
 void hle_signal_system_event(void *ev) {   // An unbound one is bound on the spot as manual-clear (can only happen on a guest thread)
     // Lookup and signal under one hold of G: CloseHandle (which unbinds) also runs under G, so the handle cannot be closed and its number reused in between
     for (int bound = 0; ; bound = 1) {
