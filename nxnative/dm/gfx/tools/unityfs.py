@@ -233,6 +233,9 @@ ComputeShaderCB: string name; int byteSize; vector<data:ComputeShaderParam> para
 ComputeShaderVariant: int targetRenderer; int targetLevel; vector<data:ComputeShaderKernel> kernels; vector<data:ComputeShaderCB> constantBuffers; bool! resourcesResolved
 ComputeShader: string m_Name; vector<data:ComputeShaderVariant> variants
 '''
+COMPUTE_2020_3 = (COMPUTE_2022_3.replace('; SInt64 requirements', '')
+                  .replace('vector<data:ComputeShaderKernel> uniqueVariants; vector<data:pair(string,unsigned int)> variantIndices', 'map<data:pair(string,ComputeShaderKernel)>~ variantMap')
+                  .replace('; vector<data:string> dynamicKeywords', ''))
 CLASS_COMPUTE_SHADER = 72
 KNOWN_TREES = {(CLASS_SHADER, bytes.fromhex('ea424a5fc1e48db62144df956f9e1005')): ('Shader', SHADER_2022_3),
                (CLASS_SHADER, bytes.fromhex('2ec7223dce3af4232b14ae1441bd7999')): ('Shader', SHADER_6000_0),
@@ -240,6 +243,7 @@ KNOWN_TREES = {(CLASS_SHADER, bytes.fromhex('ea424a5fc1e48db62144df956f9e1005'))
                (CLASS_SHADER, bytes.fromhex('8db760073e1392061e4a36995f0735af')): ('Shader', SHADER_2018_3),
                (CLASS_SHADER, bytes.fromhex('ed2a06ce7fb8203f6efb5ab5e0ce20d5')): ('Shader', SHADER_2019_4),
                (CLASS_COMPUTE_SHADER, bytes.fromhex('1a95529ac2eb1a97cd9d2a4356bd722f')): ('ComputeShader', COMPUTE_2019_4),
+               (CLASS_COMPUTE_SHADER, bytes.fromhex('d0171b849bb064b2424893e7d4809be5')): ('ComputeShader', COMPUTE_2020_3),
                (CLASS_COMPUTE_SHADER, bytes.fromhex('bfdf63ab0ce84d5a2c765ee560d90fe7')): ('ComputeShader', COMPUTE_2022_3),
                (CLASS_COMPUTE_SHADER, bytes.fromhex('43a0948a3f403068c0b31bff90ba0c9a')): ('ComputeShader', COMPUTE_6000_3)}
 
