@@ -16,7 +16,9 @@
 // spv_size: 0 = the SPIR-V is stored as it is (spv_len bytes; every version 1 entry), else a zstd frame of spv_len bytes that decompresses to spv_size (version 2)
 typedef struct __attribute__((packed)) { uint64_t key; uint32_t stage, spv_off, spv_len, refl_off, refl_len, spv_size; } bent;
 static const uint8_t *g_bundle; static uint32_t g_nent; static const bent *g_ent;
-// Every entry is checked against the file's size once here, so a lookup never reads past the mapping (a copy cut short, say a push stopped outside porter, would fault there)
+// Validate the index and each reflection record before publishing pointers into
+// the mapping. File-end checks alone let a corrupted binding/constant count read
+// another record or escape the file; malformed-product fixtures reproduce this.
 void vk_shaders_open(const char *path) {
     int fd = open(path, O_RDONLY | O_CLOEXEC); struct stat st;
     if (fd < 0 || fstat(fd, &st)) { if (getenv("DM_GL_ACTIVE")) VKLOG("no shader bundle at %s: an OpenGL ES game (gl_android.c) needs none", path);
@@ -25,11 +27,16 @@ void vk_shaders_open(const char *path) {
     if (b == MAP_FAILED || memcmp(b, "DMSV", 4)) { VKLOG("[RED] %s is not a shader bundle", path); if (b != MAP_FAILED) munmap((void *)b, (size_t)st.st_size); return; }
     uint32_t ver, n, nz = 0, bad = 0; memcpy(&ver, b + 4, 4); memcpy(&n, b + 8, 4); const bent *t = (const bent *)(b + 12); uint64_t sz = (uint64_t)st.st_size, raw = 0, stored = 0;
     if (ver < 1 || ver > 2) { VKLOG("[RED] %s: shader bundle version %u, this host reads 1 and 2: nothing will be drawn", path, ver); munmap((void *)b, (size_t)sz); return; }
-    if (12 + 32ull * n > sz) bad = n;
+    uint64_t table_end = 12 + 32ull * n;
+    if (table_end > sz) bad = 1;
     else for (uint32_t i = 0; i < n; i++) { const bent *e = &t[i];
-        bad += (uint64_t)e->spv_off + e->spv_len > sz || (uint64_t)e->refl_off + e->refl_len > sz || e->refl_len < 20;
+        if (e->stage > 5 || (i && e->key <= t[i - 1].key) || (ver == 1 && e->spv_size) ||
+            e->spv_off < table_end || (uint64_t)e->spv_off + e->spv_len > sz ||
+            e->refl_off < table_end || (uint64_t)e->refl_off + e->refl_len > sz || e->refl_len < 20) { bad++; continue; }
+        uint32_t hdr[2]; memcpy(hdr, b + e->refl_off, sizeof hdr);
+        if (20 + 20ull * hdr[0] + hdr[1] > e->refl_len) { bad++; continue; }
         raw += e->spv_size ? e->spv_size : e->spv_len; stored += e->spv_len; nz += e->spv_size != 0; }
-    if (bad) { VKLOG("[RED] %s: %u of its %u shaders lie past the end of the file (%llu bytes), a partial copy: nothing will be drawn", path, bad, n, (unsigned long long)sz); munmap((void *)b, (size_t)sz); return; }
+    if (bad) { VKLOG("[RED] %s: invalid shader index or reflection (%u bad records, %u shaders, %llu bytes): nothing will be drawn", path, bad, n, (unsigned long long)sz); munmap((void *)b, (size_t)sz); return; }
     g_bundle = b; g_nent = n; g_ent = t;
     VKLOG("shader bundle %s: version %u, %u shaders (%u zstd-compressed), %.1f MB; SPIR-V %.1f MB stored, %.1f MB decompressed", path, ver, n, nz, sz / 1048576.0, stored / 1048576.0, raw / 1048576.0);
 }
@@ -76,6 +83,16 @@ static uint32_t *bundle_spv(const bent *e, uint32_t *nw) {
     else if (ZSTD_isError(r)) snprintf(why, sizeof why, "its SPIR-V does not decompress (zstd error %d, zstd_errors.h)", (int)ZSTD_getErrorCode(r));
     else if (r != n) snprintf(why, sizeof why, "its SPIR-V decompresses to %zu bytes, its entry says %u", r, n);
     else if (w[0] != 0x07230203) snprintf(why, sizeof why, "not SPIR-V (first word %#x)", w[0]);
+    else if (w[4]) snprintf(why, sizeof why, "invalid SPIR-V schema %u", w[4]);
+    else if (w[1] < 0x10000 || w[1] > 0x10300 || (w[1] & 0xff)) snprintf(why, sizeof why, "unsupported SPIR-V version %#x", w[1]);
+    // Match the bounded offline-product reader in nxnative's shader_contract.h.
+    // Our translator emits SPIR-V 1.3 for Vulkan 1.1; check framing before any
+    // runtime patcher walks instructions. This is not semantic spirv-val.
+    if (!*why) for (uint32_t at = 5; at < n / 4;) {
+        uint32_t count = w[at] >> 16;
+        if (!count || count > n / 4 - at) { snprintf(why, sizeof why, "invalid SPIR-V instruction at word %u", at); break; }
+        at += count;
+    }
     if (*why) { VKLOG("[RED] shader %016llx: %s: left out as if missing", (unsigned long long)e->key, why); free(w); return NULL; }
     *nw = n / 4; return w;
 }
@@ -277,7 +294,7 @@ static vkshader_t *vk_shader_q(uint64_t key, int stage, int quiet) {
     // reflection
     const uint8_t *r = g_bundle + e->refl_off; uint32_t hdr[5]; memcpy(hdr, r, 20);
     s->nbind = (int)hdr[0]; s->c1_len = hdr[1]; memcpy(s->local, hdr + 2, 12);
-    s->b = (const dmsv_bind *)(r + 20); s->c1 = r + 20 + 20 * s->nbind;
+    s->b = (const dmsv_bind *)(r + 20); s->c1 = r + 20 + (size_t)20 * s->nbind;
     // SPIR-V with the stage's set
     int f64_used = 0; uint32_t xb = 4;
     for (uint32_t i = 5; i < nw;) { uint32_t n = w[i] >> 16, op = w[i] & 0xffff; if (!n) break; if (op == 71 && n >= 4 && w[i + 2] == 34) w[i + 3] = (uint32_t)s->set;   // OpDecorate DescriptorSet

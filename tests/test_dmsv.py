@@ -1,6 +1,6 @@
 # The Vulkan shader bundle (nxnative/dm/android/tools/dmsv.py): tiny bundles written, read back, converted between versions 1 and 2, and read by the host's own
 # reader (gfx_vk_shader.c, its bundle functions compiled with the vendored zstd decoder when a C compiler is at hand).
-import contextlib, io, os, random, shutil, struct, subprocess, sys, tempfile, threading, unittest
+import contextlib, io, os, random, re, shutil, struct, subprocess, sys, tempfile, threading, unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest import mock
@@ -22,7 +22,7 @@ def refl(nbind, c1):   # shader_vk.py refl_bin's layout: {nbind, c1_len, local[3
 
 
 ENTRIES = [(0x1327af7c2b78070e, 0, spirv(1, 400), refl(2, b'c1 constants')), (0x094f4afb9c876459, 1, spirv(2, 900), refl(0, b'')),
-           (0xfedcba9876543210, 5, struct.pack('<I', 0x07230203) + random.Random(3).randbytes(1020), refl(1, b''))]   # the last: random words, which zstd cannot shrink
+           (0xfedcba9876543210, 5, struct.pack('<6I', 0x07230203, 0x10000, 0, 100, 0, (256 << 16) | 2) + random.Random(3).randbytes(1019) + b'\0', refl(1, b''))]   # framed OpSourceContinued with random bytes, which zstd cannot shrink; not a semantic shader
 
 
 def v1_reference(entries):   # the bundle as shader_vk.py wrote it before version 2 (2026-11)
@@ -236,11 +236,69 @@ int main(int argc, char **argv) {   // each shader: key, stage, words, FNV-1a 64
         data = bytearray(p.read_bytes()); data[e[2] + e[3] // 2] ^= 0x55; p.write_bytes(bytes(data)); r = self.run_host(p)
         self.assertEqual(r.returncode, 0, r.stderr); self.assertIn(f'{e[0]:016x} fail', r.stdout); self.assertIn('[RED] ', r.stderr); self.assertEqual(r.stdout.count('fail'), 1)
 
+    def test_invalid_index_contract(self):
+        good = v1_reference(ENTRIES)
+        fields = list(dmsv.ENT.unpack_from(good, dmsv.HDR.size))
+        mutations = [('stage', 1, 6), ('spv_in_index', 2, 12), ('reflection_in_index', 4, 12),
+                     ('v1_compressed', 6, fields[3]), ('short_reflection', 5, 19)]
+        for name, field, value in mutations:
+            data = bytearray(good); entry = fields.copy(); entry[field] = value
+            dmsv.ENT.pack_into(data, dmsv.HDR.size, *entry)
+            p = self.d / f'{name}.dmsv'; p.write_bytes(data); r = self.run_host(p)
+            self.assertEqual(r.returncode, 2, name + ': ' + r.stdout); self.assertIn('[RED] ', r.stderr)
+        for duplicate in (False, True):
+            data = bytearray(good)
+            first, second = (dmsv.ENT.unpack_from(data, dmsv.HDR.size+i*dmsv.ENT.size) for i in range(2))
+            struct.pack_into('<Q', data, dmsv.HDR.size, second[0])
+            if not duplicate: struct.pack_into('<Q', data, dmsv.HDR.size+dmsv.ENT.size, first[0])
+            p = self.d / f'keys-{duplicate}.dmsv'; p.write_bytes(data); r = self.run_host(p)
+            self.assertEqual(r.returncode, 2, r.stdout); self.assertIn('[RED] ', r.stderr)
+
+    def test_reflection_counts_cannot_escape_record(self):
+        good = v1_reference(ENTRIES)
+        first = dmsv.ENT.unpack_from(good, dmsv.HDR.size)
+        for bindings, constants in ((0xffffffff, 0), (0, 0xffffffff), (1, 0), (0, 1)):
+            # The first record has only a 20-byte reflection header; even a
+            # small nonzero count must not leave its declared record.
+            data = bytearray(good); struct.pack_into('<II', data, first[4], bindings, constants)
+            p = self.d / f'counts-{bindings}-{constants}.dmsv'; p.write_bytes(data); r = self.run_host(p)
+            self.assertEqual(r.returncode, 2, r.stdout); self.assertIn('[RED] ', r.stderr)
+
+    def test_malformed_module_is_rejected_before_rewriting(self):
+        original = bytearray(spirv(1, 2))
+        for name, word, value in (('zero_word_count', 5, 71), ('instruction_overrun', 5, (20 << 16) | 71),
+                                  ('version', 1, 0x20000), ('too_new', 1, 0x10400), ('revision', 1, 0x10301), ('schema', 4, 1)):
+            module = original.copy(); struct.pack_into('<I', module, word*4, value)
+            entries = [ENTRIES[0], (0x77, 5, bytes(module), refl(0, b''))]
+            p = self.d / f'{name}.dmsv'; dmsv.write(p, entries, level=0); r = self.run_host(p)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn('0000000000000077 fail', r.stdout, name)
+            self.assertEqual(r.stdout.count('fail'), 1, name); self.assertIn('[RED] ', r.stderr)
+
     def test_refused(self):   # a version this host does not read, a copy cut short: no bundle (nothing drawn) and a [RED] line, never a read past the file
         good = (self.d / 'g.dmsv'); dmsv.write(str(good), ENTRIES, jobs=2); g = good.read_bytes()
         for name, data in (('version', g[:4] + struct.pack('<I', 3) + g[8:]), ('short', g[:-10]), ('table', g[:40])):
             p = self.d / f'{name}.dmsv'; p.write_bytes(data); r = self.run_host(p)
             self.assertEqual(r.returncode, 2, name); self.assertIn('[RED] ', r.stderr)
+
+
+@unittest.skipUnless(shutil.which('cc'), 'host C compiler required')
+class ReflectionOffset(unittest.TestCase):
+    def test_large_bounded_reflection_uses_wide_pointer_offset(self):
+        source = (REPO / 'nxnative/dm/android/gfx_vk_shader.c').read_text()
+        expression = re.search(r's->c1 = r \+ ([^;]+);', source).group(1)
+        code = '''#include <stdint.h>
+#include <stddef.h>
+#include <assert.h>
+static uint64_t offset(int count) {struct {int nbind;} state={count}, *s=&state;return ''' + expression + ''';}
+int main(void) {int counts[]={0,1,107374181,107374182,214748363};
+for(unsigned i=0;i<sizeof counts/sizeof counts[0];i++)assert(offset(counts[i])==20+20ull*(unsigned)counts[i]);return 0;}
+'''
+        with tempfile.TemporaryDirectory() as folder:
+            src, exe = Path(folder)/'offset.c', Path(folder)/'offset'; src.write_text(code)
+            subprocess.run(['cc', '-std=c11', '-fsanitize=undefined', '-fno-sanitize-recover=all', str(src), '-o', str(exe)], check=True)
+            result = subprocess.run([str(exe)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == '__main__':
