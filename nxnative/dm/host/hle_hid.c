@@ -199,7 +199,17 @@ static int player_of(uint32_t id) {   // the reported player on npad id; -1 when
     if (id == connected_id()) return 0;
     return id > 0 && id < DM_PLAYERS && reported((int)id) ? (int)id : -1;
 }
-static uint32_t style_of(uint32_t id) { return player_of(id) < 0 ? 0 : id == NPAD_HANDHELD ? STYLE_HANDHELD : STYLE_FULLKEY; }
+// The style a controller on npad id is reported as: Handheld on the Handheld npad; otherwise a Pro Controller (full key), unless the game does not take one. Pokémon: Let's Go,
+// Pikachu! supports only handheld, single Joy-Cons and the Poké Ball Plus (SetSupportedNpadStyleSet 0x5a): docked, its "press a button on the controller you want to use"
+// screen never saw a press from a full-key controller. Then the first style the game takes of dual Joy-Cons, a right Joy-Con, a left Joy-Con
+static uint32_t g_styles_supported = 0xffffffffu;
+static uint32_t style_of(uint32_t id) {
+    if (player_of(id) < 0) return 0;
+    if (id == NPAD_HANDHELD) return STYLE_HANDHELD;
+    static const uint32_t pref[] = {STYLE_FULLKEY, STYLE_JOYDUAL, STYLE_JOYRIGHT, STYLE_JOYLEFT};
+    for (unsigned i = 0; i < sizeof pref / sizeof *pref; i++) if (g_styles_supported & pref[i]) return pref[i];
+    return STYLE_FULLKEY;
+}
 static int32_t ax(uint64_t v, int i) { return (int16_t)(v >> (16 * i)); }
 static int32_t pick(int32_t a, int32_t b) { return (a < 0 ? -a : a) >= (b < 0 ? -b : b) ? a : b; }   // whichever of two sources is deflected more
 
@@ -237,6 +247,8 @@ static void fill(NpadState *s, uint32_t id, uint32_t style) {
         b |= atomic_load(&g_pad_btn[p]) | atomic_exchange(&g_pad_latch[p], 0);
         uint64_t v = atomic_load(&g_pad_axes[p]); for (int i = 0; i < 4; i++) a[i] = pick(a[i], ax(v, i));
     }
+    uint32_t st = style_of(id), single = st & (STYLE_JOYLEFT | STYLE_JOYRIGHT);
+    if (single) { a[0] = pick(a[0], a[2]); a[1] = pick(a[1], a[3]); a[2] = a[0]; a[3] = a[1]; }   // a single Joy-Con has one stick: either stick of the controller moves it, in both fields
     s->lx = a[0]; s->ly = a[1]; s->rx = a[2]; s->ry = a[3];
     b &= 0xffffull;
     if (s->lx < -STICK_THRESH) b |= 1u << 16;
@@ -248,7 +260,8 @@ static void fill(NpadState *s, uint32_t id, uint32_t style) {
     if (s->rx > STICK_THRESH) b |= 1u << 22;
     if (s->ry < -STICK_THRESH) b |= 1u << 23;
     s->buttons = b;
-    s->attributes = ATTR_CONNECTED | (id == NPAD_HANDHELD ? ATTR_WIRED | ATTR_LEFT_CONN | ATTR_LEFT_WIRED | ATTR_RIGHT_CONN | ATTR_RIGHT_WIRED : ATTR_LEFT_CONN | ATTR_RIGHT_CONN);
+    s->attributes = ATTR_CONNECTED | (id == NPAD_HANDHELD ? ATTR_WIRED | ATTR_LEFT_CONN | ATTR_LEFT_WIRED | ATTR_RIGHT_CONN | ATTR_RIGHT_WIRED
+                                      : st == STYLE_JOYLEFT ? ATTR_LEFT_CONN : st == STYLE_JOYRIGHT ? ATTR_RIGHT_CONN : ATTR_LEFT_CONN | ATTR_RIGHT_CONN);
 }
 // GetNpadStates(out, n, id): newest first, n entries: the current state repeated with consecutive sampling numbers. The host keeps no history, but on hardware the
 // 16-entry history is always full, and games read all of it whatever count comes back: Super Mario Odyssey (main+0x93fc20) polls every controller slot each frame, which advances
@@ -273,9 +286,11 @@ HLE_FORCE("_ZN2nn3hid22SetSupportedNpadIdTypeEPKjm", "supported controller ids; 
     for (int p = 1; p < DM_PLAYERS; p++) if ((uint32_t)reported(p) != (was >> p & 1)) style_changed((uint32_t)p);
     note_merged();
 }
-static uint32_t g_styles_supported = 0xffffffffu;
 HLE_FORCE("_ZN2nn3hid24SetSupportedNpadStyleSetENS_4util10BitFlagSetILi32ENS0_12NpadStyleTagEEE", "supported controller styles; the host records them and picks the reported style from them", void, h_hid_SetStyles, uint32_t styles) {
-    if (styles != g_styles_supported) LOG("hid supported controller styles %#x", styles); g_styles_supported = styles; }
+    if (styles == g_styles_supported) return;
+    LOG("hid supported controller styles %#x", styles); g_styles_supported = styles;
+    for (uint32_t id = 0; id < DM_PLAYERS; id++) if (player_of(id) >= 0) style_changed(id);   // the reported style may follow (style_of): tell the game, as on a reconnect
+}
 HLE_FORCE("_ZN2nn3hid15GetNpadStyleSetERKj", "controller style query; follows DM_OPMODE", uint32_t, h_hid_GetStyle, const uint32_t *id) { return style_of(*id); }
 HLE_FORCE("_ZN2nn3hid13GetNpadStatesEPNS0_16NpadFullKeyStateEiRKj", "full-key controller states", int, h_hid_StatesFullKey, NpadState *s, int n, const uint32_t *id) { return states(s, n, *id, STYLE_FULLKEY); }
 HLE_FORCE("_ZN2nn3hid13GetNpadStatesEPNS0_17NpadHandheldStateEiRKj", "handheld controller states", int, h_hid_StatesHandheld, NpadState *s, int n, const uint32_t *id) { return states(s, n, *id, STYLE_HANDHELD); }
@@ -571,3 +586,40 @@ HLE_FORCE("_ZN2nn3hid23GetActualVibrationValueEPNS0_14VibrationValueERKNS0_21Vib
     uint32_t targets = h ? vib_targets(*h) : 0;
     *v = targets ? dm_haptics_actual(__builtin_ctz(targets), *h >> 16 & 1) : (dm_vibration){0, 160, 0, 320};
 }
+
+// ---------- Palma: the Poké Ball Plus (Pokémon: Let's Go, Pikachu! / Eevee!). The host has none, so none ever connects ----------
+// Let's Go calls SetPalmaBoostMode at boot; the SDK's own call opens the hid service, which sm refuses: SIGSEGV reading address 0 at sdk+0x2d3610
+// (detail::SetPalmaBoostMode+0x20) on update 1.0.2. The settings that need no ball succeed; everything on a connection handle fails, as for a ball that is not paired,
+// and no npad reports the Palma style, so the game keeps to the Joy-Con / controller path. The operation-complete event is bound and never fires.
+enum { STYLE_PALMA = 1u << 6 };   // NpadStyleTag: bit 5 is the GameCube controller, bit 6 the Poké Ball Plus
+HLE_FORCE("_ZN2nn3hid12GetNpadStateEPNS0_14NpadPalmaStateERKj", "Poké Ball Plus current state: not connected", void, h_hid_StatePalma, NpadState *s, const uint32_t *id) { fill(s, *id, STYLE_PALMA); }
+HLE_FORCE("_ZN2nn3hid17SetPalmaBoostModeEb", "Poké Ball Plus boost mode; no ball on the host, accepted", Result, h_palma_Boost, unsigned on) { (void)on; return RES_OK; }
+HLE_FORCE("_ZN2nn3hid24EnableAnyPalmaConnectionEv", "Poké Ball Plus pairing allowed; none ever pairs", Result, h_palma_EnableAny, void) { return RES_OK; }
+HLE_FORCE("_ZN2nn3hid25DisableAnyPalmaConnectionEv", "Poké Ball Plus pairing stopped", Result, h_palma_DisableAny, void) { return RES_OK; }
+HLE_FORCE("_ZN2nn3hid24GetPalmaConnectionHandleEPNS0_21PalmaConnectionHandleERKj", "Poké Ball Plus handle: none connected (fails)", Result, h_palma_Handle, uint64_t *h, const uint32_t *id) {
+    (void)id; if (h) *h = 0; return RES_FAIL;
+}
+HLE_FORCE("_ZN2nn3hid31BindPalmaOperationCompleteEventERKNS0_21PalmaConnectionHandleEPNS_2os15SystemEventTypeENS4_14EventClearModeE", "Poké Ball Plus operation event: bound, never fires (fails: no ball)",
+          Result, h_palma_BindEv, const uint64_t *h, void *ev, int clear) { (void)h; hle_bind_system_event(ev, clear == 1); return RES_FAIL; }
+#define PALMA_FAIL(mangled, what, name, ...) HLE_FORCE(mangled, "Poké Ball Plus " what ": no ball connected (fails)", Result, name, __VA_ARGS__) { return RES_FAIL; }
+PALMA_FAIL("_ZN2nn3hid15InitializePalmaERKNS0_21PalmaConnectionHandleE", "initialization", h_palma_Init, const uint64_t *h)
+PALMA_FAIL("_ZN2nn3hid9PairPalmaERKNS0_21PalmaConnectionHandleE", "pairing", h_palma_Pair, const uint64_t *h)
+PALMA_FAIL("_ZN2nn3hid21GetPalmaOperationInfoEPNS0_18PalmaOperationInfoERKNS0_21PalmaConnectionHandleE", "operation result", h_palma_OpInfo, void *info, const uint64_t *h)
+PALMA_FAIL("_ZN2nn3hid17PlayPalmaActivityERKNS0_21PalmaConnectionHandleERKt", "activity", h_palma_Play, const uint64_t *h, const uint16_t *i)
+PALMA_FAIL("_ZN2nn3hid18SetPalmaFrModeTypeERKNS0_21PalmaConnectionHandleERKNS0_15PalmaFrModeTypeE", "FR mode", h_palma_Fr, const uint64_t *h, const uint32_t *t)
+PALMA_FAIL("_ZN2nn3hid13ReadPalmaStepERKNS0_21PalmaConnectionHandleE", "step count", h_palma_Step, const uint64_t *h)
+PALMA_FAIL("_ZN2nn3hid15EnablePalmaStepERKNS0_21PalmaConnectionHandleEb", "step counting", h_palma_StepOn, const uint64_t *h, unsigned on)
+PALMA_FAIL("_ZN2nn3hid14ResetPalmaStepERKNS0_21PalmaConnectionHandleE", "step reset", h_palma_StepReset, const uint64_t *h)
+PALMA_FAIL("_ZN2nn3hid27ReadPalmaApplicationSectionERKNS0_21PalmaConnectionHandleEim", "application section read", h_palma_AppRead, const uint64_t *h, int at, uint64_t n)
+PALMA_FAIL("_ZN2nn3hid28WritePalmaApplicationSectionERKNS0_21PalmaConnectionHandleEimRKNS0_35PalmaApplicationSectionAccessBufferE", "application section write", h_palma_AppWrite, const uint64_t *h, int at, uint64_t n, const void *b)
+PALMA_FAIL("_ZN2nn3hid19ReadPalmaUniqueCodeERKNS0_21PalmaConnectionHandleE", "unique code", h_palma_Code, const uint64_t *h)
+PALMA_FAIL("_ZN2nn3hid25SetPalmaUniqueCodeInvalidERKNS0_21PalmaConnectionHandleE", "unique code reset", h_palma_CodeOff, const uint64_t *h)
+PALMA_FAIL("_ZN2nn3hid23WritePalmaActivityEntryERKNS0_21PalmaConnectionHandleERKtPKNS0_18PalmaActivityEntryE", "activity entry", h_palma_ActWrite, const uint64_t *h, const uint16_t *i, const void *e)
+PALMA_FAIL("_ZN2nn3hid28WritePalmaRgbLedPatternEntryERKNS0_21PalmaConnectionHandleERKtPKvm", "LED pattern", h_palma_Led, const uint64_t *h, const uint16_t *i, const void *d, uint64_t n)
+PALMA_FAIL("_ZN2nn3hid19WritePalmaWaveEntryERKNS0_21PalmaConnectionHandleERKNS0_12PalmaWaveSetERKtPKvmm", "sound", h_palma_Wave, const uint64_t *h, const uint32_t *set, const uint16_t *i, const void *d, uint64_t n, uint64_t m)
+PALMA_FAIL("_ZN2nn3hid37GetPalmaDataBaseIdentificationVersionERKNS0_21PalmaConnectionHandleE", "database version read", h_palma_DbGet, const uint64_t *h)
+PALMA_FAIL("_ZN2nn3hid37SetPalmaDataBaseIdentificationVersionERKNS0_21PalmaConnectionHandleEi", "database version write", h_palma_DbSet, const uint64_t *h, int v)
+PALMA_FAIL("_ZN2nn3hid16ReadPalmaPlayLogERKNS0_21PalmaConnectionHandleERKt", "play log", h_palma_Log, const uint64_t *h, const uint16_t *i)
+PALMA_FAIL("_ZN2nn3hid17ResetPalmaPlayLogERKNS0_21PalmaConnectionHandleERKt", "play log reset", h_palma_LogReset, const uint64_t *h, const uint16_t *i)
+PALMA_FAIL("_ZN2nn3hid19SuspendPalmaFeatureERKNS0_21PalmaConnectionHandleERKNS_4util10BitFlagSetILi32ENS0_12PalmaFeatureEEE", "feature suspend", h_palma_Suspend, const uint64_t *h, const uint32_t *f)
+#undef PALMA_FAIL
