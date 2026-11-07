@@ -378,7 +378,9 @@ static uint32_t spvi_type(spvi *c, uint32_t old, uint32_t k) {
     for (int j = 0; j < c->nmap; j++) if (c->map[j].old == old && c->map[j].kind == k) return c->map[j].id;
     uint32_t i = old < c->bound ? c->at[old] : 0; if (!i) return 0;
     uint32_t n = c->w[i] >> 16, op = c->w[i] & 0xffff, d[12]; if (n > 12 || n < 3) return 0; memcpy(d, &c->w[i + 2], (n - 2) * 4);
-    if (op == 25) d[0] = spvi_scalar(c, k);                                                                          // OpTypeImage: the sampled type
+    if ((op == 22 && n == 3 && d[0] == 32) || (op == 21 && n == 4 && d[0] == 32)) return spvi_scalar(c, k);
+    if (op == 23 && n == 4) { if (!(d[0] = spvi_type(c, d[0], k))) return 0; }
+    else if (op == 25) d[0] = spvi_scalar(c, k);                                                                          // OpTypeImage: the sampled type
     else if (op == 27 || op == 28 || op == 29) { if (!(d[0] = spvi_type(c, d[0], k))) return 0; }                  // OpTypeSampledImage, OpTypeArray, OpTypeRuntimeArray
     else if (op == 32 && n == 4) { if (!(d[1] = spvi_type(c, d[1], k))) return 0; }                                // OpTypePointer
     else return 0;
@@ -427,6 +429,78 @@ static uint32_t *spv_int_images(const uint32_t *w, uint32_t nw, const uint16_t *
     }
     free(c.at); free(c.nt); free(taint); free(fb); free(mv);
     return o;
+}
+// Maxwell writes raw words to integer colour targets. Retype location outputs
+// as uint and bitcast stores (including component stores); never numerically
+// convert floats, which would destroy GPU-generated compressed blocks.
+static uint32_t *spv_uint_outputs(const uint32_t *w, uint32_t nw, uint32_t *onw) {
+    if (nw < 5 || !w[3] || w[3] > 1048576) return NULL;
+    spvi c = {.w=w, .fn=nw, .bound=w[3]}; uint32_t base=c.bound;
+    c.at=calloc(base,sizeof *c.at); c.nt=malloc(4096*4);
+    uint8_t *loc=calloc(base,1), *taint=calloc(base,1); uint32_t *ptrt=calloc(base,sizeof *ptrt);
+    uint32_t *fb=NULL, *out=NULL, nf=0, no=5; int ok=1, fragment=0;
+    if (!c.at || !c.nt || !loc || !taint || !ptrt) goto done;
+    for (uint32_t i=5;i<nw;) {
+        uint32_t n=w[i]>>16, op=w[i]&0xffff; if (!n || n>nw-i) goto done;
+        if (op==54) {c.fn=i;break;}
+        if (op==15 && n>=4 && w[i+1]==4) fragment=1;
+        if (op>=19 && op<=39 && n>=2 && w[i+1]<base) c.at[w[i+1]]=i;
+        if (op==71 && n==4 && w[i+2]==30 && w[i+1]<base) loc[w[i+1]]=1;
+        i+=n;
+    }
+    if (!fragment || c.fn==nw) goto done;
+    for (uint32_t i=5;i<c.fn;i+=w[i]>>16) if ((w[i]&0xffff)==59 && w[i]>>16>=4 && w[i+3]==3 && w[i+2]<base && loc[w[i+2]]) {
+        uint32_t type=w[i+1], p=type<base?c.at[type]:0;
+        if (!p || (w[p]&0xffff)!=32 || w[p]>>16!=4) goto done;
+        uint32_t t=w[p+3], v=t<base?c.at[t]:0;
+        if (v && (w[v]&0xffff)==23) {t=w[v+2];v=t<base?c.at[t]:0;}
+        if (!v) goto done;
+        if ((w[v]&0xffff)==21 && w[v]>>16==4 && !w[v+3]) continue; // uint output already
+        if (!spvi_type(&c,type,1)) goto done;
+        taint[w[i+2]]=1;ptrt[w[i+2]]=type;
+    }
+    fb=malloc(((size_t)(nw-c.fn)*3+16)*4);if (!fb) goto done;
+    for (uint32_t i=c.fn;i<nw && ok;) {
+        uint32_t n=w[i]>>16, op=w[i]&0xffff;if (!n || n>nw-i) {ok=0;break;}
+        uint32_t src=n>=4?w[i+3]:0;
+        if ((op==65 || op==66 || op==83) && src<base && taint[src]) {
+            uint32_t type=spvi_type(&c,w[i+1],1);if (!type || w[i+2]>=base) {ok=0;break;}
+            memcpy(fb+nf,w+i,n*4);fb[nf+1]=type;nf+=n;
+            taint[w[i+2]]=1;ptrt[w[i+2]]=w[i+1];
+        } else if (op==61 && src<base && taint[src]) {
+            uint32_t type=spvi_type(&c,w[i+1],1), id=c.bound++;if (!type) {ok=0;break;}
+            memcpy(fb+nf,w+i,n*4);fb[nf+1]=type;fb[nf+2]=id;nf+=n;
+            uint32_t x[]={4u<<16|124,w[i+1],w[i+2],id};memcpy(fb+nf,x,sizeof x);nf+=4;
+        } else if (op==62 && n>=3 && w[i+1]<base && taint[w[i+1]]) {
+            uint32_t p=c.at[ptrt[w[i+1]]], type=p?spvi_type(&c,w[p+3],1):0, id=c.bound++;
+            if (!type) {ok=0;break;}
+            uint32_t x[]={4u<<16|124,type,id,w[i+2]};memcpy(fb+nf,x,sizeof x);nf+=4;
+            memcpy(fb+nf,w+i,n*4);fb[nf+2]=id;nf+=n;
+        } else {
+            if ((op==63 || op==64) && n>=3 && ((w[i+1]<base && taint[w[i+1]]) || (w[i+2]<base && taint[w[i+2]]))) {ok=0;break;}
+            if (op==57) for (uint32_t j=4;j<n;j++) if (w[i+j]<base && taint[w[i+j]]) ok=0;
+            memcpy(fb+nf,w+i,n*4);nf+=n;
+        }
+        i+=n;
+    }
+    if (!ok) goto done;
+    out=malloc(((size_t)c.fn+c.nnt+nf+8)*4);if (!out) goto done;
+    memcpy(out,w,20);out[3]=c.bound;
+    for (uint32_t i=5;i<c.fn;i+=w[i]>>16) {
+        uint32_t n=w[i]>>16;
+        if ((w[i]&0xffff)==59 && w[i+2]<base && taint[w[i+2]]) continue;
+        memcpy(out+no,w+i,n*4);no+=n;
+    }
+    memcpy(out+no,c.nt,c.nnt*4);no+=c.nnt;
+    for (uint32_t i=5;i<c.fn;i+=w[i]>>16) {
+        uint32_t n=w[i]>>16;
+        if ((w[i]&0xffff)==59 && w[i+2]<base && taint[w[i+2]]) {
+            memcpy(out+no,w+i,n*4);out[no+1]=spvi_type(&c,w[i+1],1);no+=n;
+        }
+    }
+    memcpy(out+no,fb,nf*4);no+=nf;*onw=no;
+ done:
+    free(c.at);free(c.nt);free(loc);free(taint);free(ptrt);free(fb);return out;
 }
 // A variant of a fragment shader that writes gl_FragDepth = gl_FragCoord.z before each return of its entry point (DepthReplacing): the same depth, tested after the
 // shader instead of by Adreno's early culling (gfx_vk_exec.c fdz says when). NULL when the shader writes its depth already or the module is not as expected
@@ -501,16 +575,18 @@ static VkShaderModule vk_shader_module_(vkshader_t *s, uint64_t um, uint64_t im,
 VkShaderModule vk_shader_module(vkshader_t *s, uint64_t um, uint64_t im, uint32_t xo, int fd) { extern int g_prof_on; extern uint64_t g_prof_ns[8]; struct timespec a, b; if (g_prof_on) clock_gettime(CLOCK_MONOTONIC, &a);
     VkShaderModule m = vk_shader_module_(s, um, im, xo, fd); if (g_prof_on) { clock_gettime(CLOCK_MONOTONIC, &b); g_prof_ns[3] += (uint64_t)((b.tv_sec - a.tv_sec) * 1000000000ll + (b.tv_nsec - a.tv_nsec)); } return m; }
 static VkShaderModule vk_shader_module_(vkshader_t *s, uint64_t um, uint64_t im, uint32_t xo, int fd) {
+    int uint_outputs = s->stage == 1 && (fd & VK_SHADER_UINT_OUTPUT);
     int dual = fd >> 1 & 1; fd &= 1;   // fd bit 1: the dual-source variant
     if (fd && (s->stage != 1 || s->depth_repl)) fd = 0;
     if (dual && s->stage != 1) dual = 0;
-    if (!(um | im | xo | (uint32_t)fd | (uint32_t)dual) || !s->spv) return s->mod;
+    int flags = fd | dual << 1 | (uint_outputs ? VK_SHADER_UINT_OUTPUT : 0);
+    if (!(um | im | xo | (uint32_t)flags) || !s->spv) return s->mod;
     if (xo == 1u << 31) {   // DM_VK_SPV_ALT
         pthread_mutex_lock(&g_sh_mu); for (int i = 0; i < s->nvar; i++) if (s->var[i].um == 0 && s->var[i].im == 0 && s->var[i].xo == xo) { VkShaderModule m = s->var[i].mod; pthread_mutex_unlock(&g_sh_mu); return m; }
         VkShaderModule m = alt_module(s); if (s->nvar < 8) s->var[s->nvar++] = (typeof(s->var[0])){0, 0, xo, 0, m}; pthread_mutex_unlock(&g_sh_mu); return m; }
     xo &= ~(1u << 31);
     pthread_mutex_lock(&g_sh_mu);
-    for (int i = 0; i < s->nvar; i++) if (s->var[i].um == um && s->var[i].im == im && s->var[i].xo == xo && s->var[i].fd == (fd | dual << 1)) { VkShaderModule m = s->var[i].mod; pthread_mutex_unlock(&g_sh_mu); return m; }
+    for (int i = 0; i < s->nvar; i++) if (s->var[i].um == um && s->var[i].im == im && s->var[i].xo == xo && s->var[i].fd == flags) { VkShaderModule m = s->var[i].mod; pthread_mutex_unlock(&g_sh_mu); return m; }
     uint16_t bind[64]; uint8_t kind[64]; int nb = 0;
     for (int i = 0; i < s->nbind && i < 64; i++) if ((um | im) >> i & 1) { bind[nb] = s->b[i].binding; kind[nb++] = um >> i & 1 ? 1 : 2; }
     uint32_t nw = s->nspv, *w = nb ? spv_int_images(s->spv, s->nspv, bind, kind, nb, &nw) : NULL; VkShaderModule m = s->mod;
@@ -518,12 +594,17 @@ static VkShaderModule vk_shader_module_(vkshader_t *s, uint64_t um, uint64_t im,
         if (w && s->stage == 0) { uint32_t n3 = 0, *w3 = spv_vs_init(w, nw, &n3); if (w3) { free(w); w = w3; nw = n3; } } }   // the added outputs start as (0, 0, 0, 1) too
     if (fd && (w || !(nb || xo))) { uint32_t n2 = 0, *w2 = spv_frag_depth(w ? w : s->spv, nw, &n2); free(w); w = w2; nw = n2; }
     if (dual && (w || !(nb || xo || fd))) { uint32_t n2 = 0, *w2 = spv_dual(w ? w : s->spv, nw, &n2); free(w); w = w2; nw = n2; }
+    if (uint_outputs) {
+        if ((nb || xo || fd || dual) && !w) die("[vk] prerequisite variant for integer output failed");
+        uint32_t n2 = 0, *w2 = spv_uint_outputs(w ? w : s->spv, nw, &n2); free(w); w = w2; nw = n2;
+        if (!w) die("[vk] shader %016llx: integer-output variant failed", (unsigned long long)s->key);
+    }
     if (w) { VkShaderModuleCreateInfo ci = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, NULL, 0, (size_t)nw * 4, w};
-        if (vkCreateShaderModule(V.dev, &ci, NULL, &m)) { m = s->mod; VKLOG("[RED] shader %016llx: its variant was refused (bindings %#llx / %#llx, outputs %#x, fragment depth %d, dual source %d)", (unsigned long long)s->key, (unsigned long long)um, (unsigned long long)im, xo, fd, dual); }
+        if (vkCreateShaderModule(V.dev, &ci, NULL, &m)) { if (uint_outputs) die("[vk] required integer-output shader module refused"); m = s->mod; VKLOG("[RED] shader %016llx: its variant was refused (bindings %#llx / %#llx, outputs %#x, fragment depth %d, dual source %d)", (unsigned long long)s->key, (unsigned long long)um, (unsigned long long)im, xo, fd, dual); }
         else VKLOG("shader %016llx: variant for bindings %#llx (uint texels) %#llx (int texels), outputs added %#x, fragment depth written %d, dual source %d", (unsigned long long)s->key, (unsigned long long)um, (unsigned long long)im, xo, fd, dual);
         free(w); }
     else VKLOG("[RED] shader %016llx: no variant could be made (bindings %#llx / %#llx, outputs %#x, fragment depth %d, dual source %d)", (unsigned long long)s->key, (unsigned long long)um, (unsigned long long)im, xo, fd, dual);
-    if (s->nvar < 8) s->var[s->nvar++] = (typeof(s->var[0])){um, im, xo, fd | dual << 1, m};
+    if (s->nvar < 8) s->var[s->nvar++] = (typeof(s->var[0])){um, im, xo, flags, m};
     pthread_mutex_unlock(&g_sh_mu);
     return m;
 }
