@@ -1,6 +1,7 @@
 # The Vulkan shader bundle (nxnative/dm/android/tools/dmsv.py): tiny bundles written, read back, converted between versions 1 and 2, and read by the host's own
 # reader (gfx_vk_shader.c, its bundle functions compiled with the vendored zstd decoder when a C compiler is at hand).
-import contextlib, io, os, random, shutil, struct, subprocess, sys, tempfile, unittest
+import contextlib, io, os, random, shutil, struct, subprocess, sys, tempfile, threading, unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest import mock
 
@@ -72,6 +73,107 @@ class Bundle(unittest.TestCase):
         for name, data in (('magic', b'NOPE' + good[4:]), ('version', good[:4] + struct.pack('<I', 3) + good[8:]), ('short', good[:-10]), ('table', good[:40])):
             p = self.d / f'{name}.dmsv'; p.write_bytes(data)
             with self.assertRaises(ValueError, msg=name): dmsv.Bundle(str(p))
+
+
+class Publication(unittest.TestCase):
+    def setUp(self):
+        self.folder = tempfile.TemporaryDirectory(prefix='nx2a_dmsv_publish_')
+        self.addCleanup(self.folder.cleanup)
+        self.root = Path(self.folder.name)
+        self.path = self.root / 'shaders.dmsv'
+        self.old = v1_reference(ENTRIES[:1])
+
+    def assert_preserved(self, existed):
+        self.assertEqual(self.path.exists(), existed)
+        if existed: self.assertEqual(self.path.read_bytes(), self.old)
+        self.assertEqual(set(self.root.iterdir()), {self.path} if existed else set())
+
+    def test_interrupted_write_preserves_old_bundle_and_removes_scratch(self):
+        real_open, real_fdopen = open, os.fdopen
+        class Interrupted:
+            def __init__(self, file): self.file, self.calls = file, 0
+            def __getattr__(self, name): return getattr(self.file, name)
+            def __enter__(self): return self
+            def __exit__(self, *exc): self.file.close()
+            def write(self, data):
+                self.calls += 1
+                if self.calls == 2: raise OSError('injected disk write failure')
+                return self.file.write(data)
+        def wrap(factory):
+            def opened(*args, **kwargs):
+                file = factory(*args, **kwargs)
+                return Interrupted(file) if 'w' in (args[1] if len(args)>1 else kwargs.get('mode','r')) else file
+            return opened
+        for existed in (True, False):
+            with self.subTest(existed=existed):
+                if existed: self.path.write_bytes(self.old)
+                else: self.path.unlink(missing_ok=True)
+                with mock.patch.object(dmsv, 'open', wrap(real_open), create=True), mock.patch.object(dmsv.os, 'fdopen', wrap(real_fdopen)):
+                    with self.assertRaisesRegex(OSError, 'injected disk write failure'):
+                        dmsv.write(self.path, ENTRIES, level=0)
+                self.assert_preserved(existed)
+
+    def test_sync_and_replace_failure_preserve_old_bundle(self):
+        for operation in ('fsync', 'replace'):
+            with self.subTest(operation=operation):
+                self.path.write_bytes(self.old)
+                with mock.patch.object(dmsv.os, operation, side_effect=OSError('injected '+operation)):
+                    with self.assertRaisesRegex(OSError, 'injected '+operation):
+                        dmsv.write(self.path, ENTRIES, level=0)
+                self.assert_preserved(True)
+
+    def test_readback_mismatch_cannot_publish(self):
+        for existed in (True, False):
+            with self.subTest(existed=existed):
+                if existed: self.path.write_bytes(self.old)
+                else: self.path.unlink(missing_ok=True)
+                with mock.patch.object(dmsv.Bundle, 'spv', return_value=b'corrupted'):
+                    with self.assertRaises(ValueError): dmsv.write(self.path, ENTRIES, level=0)
+                self.assert_preserved(existed)
+
+    def test_readback_open_failure_closes_handles_before_cleanup(self):
+        real_open, real_fstat = open, os.fstat
+        class FailedMap(dmsv.mmap.mmap):
+            def __new__(cls, *args, **kwargs): raise OSError('injected mmap failure')
+        for operation in ('fstat', 'mmap'):
+            opened = []
+            def track(*args, **kwargs):
+                file = real_open(*args, **kwargs); opened.append(file); return file
+            def failed_stat(fd):
+                if any(not file.closed and file.mode == 'rb' and file.fileno() == fd for file in opened):
+                    raise OSError('injected fstat failure')
+                return real_fstat(fd)
+            failure = (mock.patch.object(dmsv.os, 'fstat', side_effect=failed_stat)
+                       if operation == 'fstat' else mock.patch.object(dmsv.mmap, 'mmap', FailedMap))
+            self.path.write_bytes(self.old)
+            with self.subTest(operation=operation), mock.patch.object(dmsv, 'open', track, create=True), failure:
+                try: dmsv.write(self.path, ENTRIES, level=0)
+                except OSError as error:
+                    self.assertIn('injected '+operation, str(error))
+                    # Keep the exception live: its traceback retains a failed
+                    # constructor, and Windows cannot delete its open file.
+                    self.assertTrue(all(file.closed for file in opened))
+                else: self.fail('injected readback failure was ignored')
+            self.assert_preserved(True)
+
+    def test_concurrent_writers_use_distinct_scratch_files(self):
+        replace = os.replace; barrier = threading.Barrier(2); scratch = []
+        def rendezvous(source, destination):
+            scratch.append(source); barrier.wait(timeout=10); replace(source, destination)
+        self.path.write_bytes(self.old)
+        with mock.patch.object(dmsv.os, 'replace', side_effect=rendezvous), ThreadPoolExecutor(2) as pool:
+            jobs = [pool.submit(dmsv.write, self.path, entries, level=0) for entries in (ENTRIES[:1], ENTRIES)]
+            for job in jobs: job.result(timeout=15)
+        self.assertEqual(len(set(scratch)), 2)
+        self.assertIn(self.path.read_bytes(), (self.old, v1_reference(ENTRIES)))
+        self.assertEqual(set(self.root.iterdir()), {self.path})
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX permission bits')
+    def test_replacement_keeps_destination_permissions(self):
+        self.path.write_bytes(self.old); self.path.chmod(0o640)
+        dmsv.write(self.path, ENTRIES, level=0)
+        self.assertEqual(self.path.stat().st_mode & 0o777, 0o640)
+        self.assertEqual(self.path.read_bytes(), v1_reference(ENTRIES))
 
 
 @unittest.skipUnless(shutil.which('cc') and ZSTD, 'a host C compiler and zstd in this Python are needed')
