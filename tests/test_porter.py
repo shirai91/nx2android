@@ -183,7 +183,7 @@ class DataPack(unittest.TestCase):
 
 class Experimental(unittest.TestCase):
     def test_ios_profile_copied_with_experimental_android_tsv(self):   # an iOS-only profile is copied out of the repository, never edited in place
-        ios_only = '010028600EBDA000'   # Super Mario 3D World + Bowser's Fury: an iOS profile without android.tsv or patches.py
+        ios_only = '010099C022B96000'   # Super Mario Galaxy: an iOS profile without android.tsv or patches.py (it renders with Vulkan itself, which the Android host does not take)
         t = Path(tempfile.mkdtemp(prefix='nx2a_test_exp_')); environ = dict(os.environ)
         try:
             port = pipeline.Port(pipeline.Options(folder=t, experimental=True)); port.env = {}; port.work = t / f'{ios_only}_build'; port.o.keys = None
