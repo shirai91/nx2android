@@ -48,9 +48,11 @@ void hlecount_seal(void) {
 }
 void hlecount_svc(int num) { if (g_hon > 0 && num >= 0 && num < 256) atomic_fetch_add(&g_hsvc[num], 1); }
 void hlecount_flush(void) { if (hc_on() && g_hcode) hc_write(); }   // Also write a copy on the graceful exit path (SIGTERM / scene disconnect)
+void hlecount_dump(const char *path) { if (!hc_on() || !g_hcode) return; const char *o = g_hpath; g_hpath = path; hc_write(); g_hpath = o; }   // DM_CTL "hlecount <file>": the counts so far (two dumps diffed: what one action called)
 #else
 void *hlecount_wrap(const char *kind, const char *name, void *fn) { (void)kind; (void)name; return fn; }
 void hlecount_seal(void) {}
 void hlecount_svc(int num) { (void)num; }
 void hlecount_flush(void) {}
+void hlecount_dump(const char *path) { (void)path; }
 #endif
