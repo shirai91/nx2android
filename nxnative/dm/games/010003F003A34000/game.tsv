@@ -1,0 +1,46 @@
+# Game profile of Pokémon: Let's Go, Pikachu! (Switch, base game v0 + update 1.0.2 = v131072). Plays on Android (android.tsv)
+# Format: see dm/games/README.md
+# Game Freak's engine on SDK 5.4.151, NVN, Wwise, NEX; subsdk0 is GLSLC (some shaders are compiled at run time), subsdk1 the SDK's movie library (VP9 / Vorbis WebM: the
+# opening). Started from the provisional profile the survey wrote (dm/games/profile_guess.py); checked against the dump and the device: the build IDs of the four modules,
+# the NPDM's system resource (none) and the heap the game sets ("[mem] heap 3.14 GB (heap region 3.25 GB)")
+
+# ---- Identity ----
+title_id	010003F003A34000
+program_id	010003F003A34000
+
+# ---- App ----
+name	Pokémon: Let's Go, Pikachu!
+ipa	PokMonLetsGoPikachu.ipa
+app_category	public.app-category.games
+
+# ---- Versions ----
+# 1.0.2 is v131072 (FPSLocker-Warehouse lists build C208DB6A4EF4361F as "v2, 1.0.2", versions in units of 65536)
+build	v131072	1.0.2	main=c208db6a4ef4361f28b8402be0f7cd9a	subsdk0=7440b3aa6a8857b516f254b19b9ff184	subsdk1=89d8d937ddece47a93cccf87525a059c	sdk=1101700d4118f1fd1458391c671f81d5
+package	v131072
+shader_versions	v131072
+
+# ---- Files ----
+# every module main imports from: GLSLC (subsdk0) and the movie library (subsdk1)
+modules	main subsdk0 subsdk1 sdk
+# the largest RomFS file
+romfs_marker	bin/app/staff_roll/bin/staff_roll_00.arc
+zip_store	.arc:.bfotf:.gfpak:.ptcl:.webm:.metallib
+
+# ---- Memory ----
+# The NPDM declares no system resource, so the game has no virtual address memory: main sets a heap of the pool less 64 MB of used memory, 3.14 GB, in the 3.25 GB
+# heap region of a 4 GB block (256 MB in front, a 256 MB alias region, a 256 MB stack region). The application pool is the Switch's 3285 MB
+mem_reserve	0x100000000
+mem_alias	0x10000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+sys_resource	0x0
+
+# ---- Shader split ----
+# 8,430 shaders from the game files: 8,357 in bin/ (the models' and effects' BNSH, 39 of them compute), 33 in system_resource/, 40 in main. The game also compiles shaders at
+# run time with GLSLC that are in no game file: the app captures them on the device and a port with --install adds them to the bundle (docs/ARCHITECTURE.md)
+shader_groups	/bin/=bin /system_resource/=systemresource
+shader_note	Pokémon: Let's Go, Pikachu! shaders
+
+# ---- After the rewrite ----
+# the rewritten modules are larger than the default 64 MB of used memory
+mem_used	0x4600000

@@ -1,0 +1,14 @@
+# Pokémon: Let's Go, Pikachu! on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Game Freak's engine on SDK 5.4.151, update 1.0.2; 8,430 shaders from the game files, all translated, and 27 more the game compiles at run time (captured on the device).
+# Tested 2026-11-07 on the AYN Thor (Snapdragon 8 Gen 2, Adreno 740, Android 13) with the Mr Purple T30 Turnip driver (--vulkan-driver), docked, an Xbox Wireless
+# Controller: the controller choice, the opening movie, a console save continued in town riding Arcanine, and the pause menu. 30 fps as on the Switch (the game sets present
+# interval 2; frame work p50 about 25 ms in town), no frame late on screen, no red log line once the captured shaders are in the bundle.
+# Before them, the screen after the opening was black: a fresh port draws everything only after a play that far and another port with --install.
+# It needed four core changes: the Poké Ball Plus (Palma) and the style a controller is reported as (hle_hid.c: the game takes no Pro Controller, only handheld, single
+# Joy-Cons and the Poké Ball Plus), Bluetooth LE (hle_offline.c), nvnDeviceGetWindowOriginMode / GetDepthMode (hle_nvn.c).
+# 60 fps: FPSLocker-Warehouse marks this build as not doable (game speed and UI speed follow the frame rate).
+status	playable
+tested	v131072 AYN Thor (Snapdragon 8 Gen 2, Adreno 740, Android 13)
+package	org.nx2a.pokemonletsgopikachu
+orientation	landscape
+requires	bcn
