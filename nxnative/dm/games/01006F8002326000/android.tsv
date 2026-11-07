@@ -1,0 +1,19 @@
+# Animal Crossing: New Horizons on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Nintendo EPD's engine on SDK 20.5.4, update 3.0.3 (v2228224) with the Happy Home Paradise add-on; game.tsv and the shader tables are upstream's iOS profile.
+# On the Y700 (2026-11-06), handheld, driven with DM_CTL: the new-game interview (name and birthday on the game's own keyboard, the character), the opening
+# movie (VP9 + Vorbis), the arrival, the first island day, sleeping in the tent (the save, 11 MB) and loading it again from the title screen, then day 2's
+# airport. 30 fps as on the Switch (present interval 2; no 60 fps patch exists), 0 frames dropped on screen, GPU 9-11 ms; sound with no underruns, and
+# 0 clicks in 5 minutes of villager voices (there were 253 before the audio renderer's catch-up frames kept their order, hle_audren.c).
+# DM_VK_CB_DRAWS=0: no command-buffer cuts. With them the island's lit ground went dark in a full-width band over the top third (whole bins) in 7-22 of 60
+# frames, from the depth texel written back at a cut (DM_VK_LRZ_TOUCH bit 8; 0 of 60 without that bit or without cuts); uncut, the GPU also takes 8.9 ms
+# a frame instead of 11.3.
+# DM_LAN=1: local play over the LAN (hle_ldn.c, as Atmosphère's ldn_mitm): the airport's local play with Switches that run ldn_mitm, and with other ports.
+# 2026-11-07: a Switch (Atmosphère 1.11.2 with ldn_mitm 1.21.2 of the DefenderOfHyrule fork; spacemeowx2's 1.25.1 does not boot on 1.11.2) found the tablet's open gate and visited the island over Wi-Fi, and the user played with it. Before that, a test peer on the PC (ldn_mitm's
+# protocol) saw the gate in its scan (8 players, the island's advertise data) and joined (2 nodes). The tablet as the visitor was not tested.
+# Online play stays offline (nifm refuses internet requests).
+status	playable
+tested	v2228224 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
+package	org.nx2a.animalcrossing
+orientation	landscape
+env	DM_VK_CB_DRAWS=0
+env	DM_LAN=1
