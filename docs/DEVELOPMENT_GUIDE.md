@@ -206,6 +206,25 @@ keep their concurrent CPU writer checks; the zero-copy failure fixture supplies
 the current allocator context while forcing cache misses to exercise every
 allocation/import failure stage.
 
+`test_vk_texture_clear` compiles the production texture-clear dispatcher against a
+CPU write model to check rectangle/channel/subresource selection, invalid ranges
+and typed values. The optional ROM-free Vulkan probe also compiles the production
+clear pipelines and slice draw, then reads back every pixel of three mip levels:
+
+```
+python probes/vk_texture_clear.py --ndk <NDK> --out <scratch> --serial <adb-serial>
+```
+
+Use `--adb <path>` if adb is not on PATH; omit `--serial` to build only. The probe
+requires an ARM64 Android Vulkan 1.3 device/emulator with dynamic rendering. It
+checks both dynamic rendering and traditional render passes: float, unsigned and
+signed integer, UNORM and sRGB formats; all 16 masks; clipped/interior/full-mip
+rectangles; array layers, cube faces and 3D slices. It uses isolated resource and
+submission helpers, so it does not qualify the game's texture-cache integration,
+mobile-driver performance or physical devices. Partial clears of compressed,
+non-renderable, depth/stencil and 1D textures remain explicitly unsupported;
+they log an error instead of clearing the whole subresource.
+
 `test_vk_copy_back` exercises protected guest memory with the real dirty-page tracker: preserving independent CPU writes in the same cache line, successive submissions and snapshot initialization, cached/uncached and untracked pools, 200 partial/unaligned/overlapping range cases, and writes from another CPU thread. It also injects failed and partially successful bulk `mprotect` calls; a bulk unprotect failure stops the host with a `[RED]` message before publishing writable page states or continuing the copy. It also checks snapshot copy volume across clean and dirty 64 KB blocks, a partial tail, and full versus partial completion merges. These CPU tests do not establish correct rendering on a device.
 
 `test_vk_memory_diagnostics` also checks per-buffer cached-memory compatibility, restricted memory-type masks, diagnostics disabled, and unchanged coherent memory selection. The candidate lookup is diagnostic; cached allocation requires the separate opt-in switch. `test_vk_cached_pools` injects creation, allocation, mapping and binding failures and verifies cleanup, coherent fallback, unsupported types, missing cache functions, default-off behaviour, device-loss handling and rejecting failed/timed-out GPU waits before readback. `test_vk_copy_back` also models separate CPU-cache/device bytes to check flush before GPU use, invalidate before merging, independent CPU writes, partial merges, clean submissions and fatal cache-maintenance errors. Cache-range tests check 5,000 generated ranges for both flush and invalidate, plus explicit boundary/overflow cases and multiple cache-atom sizes. Native readback tests cover empty/non-intersecting transfers, unaligned disjoint writes with independent CPU changes in the same atom, clipping at both pool ends, subsequent uploads/baselines, and full invalidation for uncertain writers. These mocks do not emulate an actual GPU driver.

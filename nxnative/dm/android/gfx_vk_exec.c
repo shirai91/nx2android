@@ -697,23 +697,29 @@ static VkRect2D scissor_rect(void) {
 // target when Mario comes out of the water: cleared in full, the floor and water there went black for a frame. One pipeline per pass layout and mask, for attachment 0
 #include "maskclear_vert.spv.h"
 #include "maskclear_frag.spv.h"
+#include "maskclear_uint_frag.spv.h"
+#include "maskclear_sint_frag.spv.h"
 #include "flatdbg_frag.spv.h"
-typedef struct { uint32_t ncol, cfmt[8], dfmt, samples, mask; } mckey;
-static struct { VkPipelineLayout pl; VkShaderModule vs, fs; int bad; mckey k[32]; VkPipeline p[32]; int n; } g_mc;
-static VkPipeline mc_pipeline(uint32_t mask) {
-    mckey k; memset(&k, 0, sizeof k); k.ncol = (uint32_t)S.ncol; for (int i = 0; i < S.ncol && i < 8; i++) k.cfmt[i] = (uint32_t)S.cfmt[i];
-    k.dfmt = (uint32_t)S.dfmt; k.samples = S.samples ? S.samples : 1; k.mask = mask;
-    for (int i = 0; i < g_mc.n; i++) if (!memcmp(&g_mc.k[i], &k, sizeof k)) return g_mc.p[i];
-    if (g_mc.bad || g_mc.n == 32) return VK_NULL_HANDLE;
+typedef struct { uint32_t ncol, cfmt[8], dfmt, samples, mask, type; } mckey;   // type: float, uint, sint output
+static struct { VkPipelineLayout pl; VkShaderModule vs, fs[3]; int bad; } g_mc;
+static nvn_hmap g_mc_pipes = {.klen = sizeof(mckey)};
+static VkPipeline mc_pipeline_key(const mckey *key) {
+    mckey k = *key;
+    VkPipeline cached = nvn_hm_get(&g_mc_pipes, &k); if (cached) return cached;
+    if (g_mc.bad) return VK_NULL_HANDLE;
     if (!g_mc.pl) {
         VkPushConstantRange pr = {VK_SHADER_STAGE_FRAGMENT_BIT, 0, 16};
         VkPipelineLayoutCreateInfo li = {VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, NULL, 0, 0, NULL, 1, &pr};
         VkShaderModuleCreateInfo vi = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, NULL, 0, sizeof maskclear_vert_spv, maskclear_vert_spv}, fi = vi;
         fi.codeSize = sizeof maskclear_frag_spv; fi.pCode = maskclear_frag_spv;
-        if (vkCreatePipelineLayout(V.dev, &li, NULL, &g_mc.pl) || vkCreateShaderModule(V.dev, &vi, NULL, &g_mc.vs) || vkCreateShaderModule(V.dev, &fi, NULL, &g_mc.fs)) { g_mc.bad = 1; return VK_NULL_HANDLE; }
+        if (vkCreatePipelineLayout(V.dev, &li, NULL, &g_mc.pl) || vkCreateShaderModule(V.dev, &vi, NULL, &g_mc.vs) || vkCreateShaderModule(V.dev, &fi, NULL, &g_mc.fs[0])) { g_mc.bad = 1; return VK_NULL_HANDLE; }
+        fi.codeSize = sizeof maskclear_uint_frag_spv; fi.pCode = maskclear_uint_frag_spv;
+        if (vkCreateShaderModule(V.dev, &fi, NULL, &g_mc.fs[1])) { g_mc.bad = 1; return VK_NULL_HANDLE; }
+        fi.codeSize = sizeof maskclear_sint_frag_spv; fi.pCode = maskclear_sint_frag_spv;
+        if (vkCreateShaderModule(V.dev, &fi, NULL, &g_mc.fs[2])) { g_mc.bad = 1; return VK_NULL_HANDLE; }
     }
     VkPipelineShaderStageCreateInfo ss[2] = {{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, VK_SHADER_STAGE_VERTEX_BIT, g_mc.vs, "main", NULL},
-                                             {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, VK_SHADER_STAGE_FRAGMENT_BIT, g_mc.fs, "main", NULL}};
+                                             {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, VK_SHADER_STAGE_FRAGMENT_BIT, g_mc.fs[k.type], "main", NULL}};
     VkPipelineVertexInputStateCreateInfo vin = {VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
     VkPipelineInputAssemblyStateCreateInfo ia = {VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO, NULL, 0, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 0};
     VkPipelineViewportStateCreateInfo vs = {VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, NULL, 0, 1, NULL, 1, NULL};
@@ -721,7 +727,7 @@ static VkPipeline mc_pipeline(uint32_t mask) {
     VkPipelineMultisampleStateCreateInfo ms = {VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO, NULL, 0, (VkSampleCountFlagBits)k.samples, 0, 0, NULL, 0, 0};
     VkPipelineDepthStencilStateCreateInfo ds = {VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
     VkPipelineColorBlendAttachmentState cba[8]; memset(cba, 0, sizeof cba);
-    cba[0].colorWriteMask = mask & 0xf;   // NVN's mask bits R G B A are Vulkan's
+    cba[0].colorWriteMask = k.mask & 0xf;   // NVN's mask bits R G B A are Vulkan's
     VkPipelineColorBlendStateCreateInfo cb = {VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO, NULL, 0, 0, 0, k.ncol, cba, {0, 0, 0, 0}};
     VkDynamicState dyn[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
     VkPipelineDynamicStateCreateInfo dy = {VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, NULL, 0, 2, dyn};
@@ -731,9 +737,14 @@ static VkPipeline mc_pipeline(uint32_t mask) {
     VkRenderPass prp = rp_on() ? rp_compat(k.ncol, k.cfmt, k.dfmt, k.samples) : VK_NULL_HANDLE;
     VkGraphicsPipelineCreateInfo ci = {VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, prp ? NULL : &rci, 0, 2, ss, &vin, &ia, NULL, &vs, &rs, &ms, &ds, &cb, &dy, g_mc.pl, prp, 0, VK_NULL_HANDLE, -1};
     VkPipeline p = VK_NULL_HANDLE;
-    if ((!prp && !V.has_dynrender) || vkCreateGraphicsPipelines(V.dev, V.pcache, 1, &ci, NULL, &p)) { VKRED_ONCE(32, "masked clear pipeline failed: cleared in full"); p = VK_NULL_HANDLE; }
+    if ((!prp && !V.has_dynrender) || vkCreateGraphicsPipelines(V.dev, V.pcache, 1, &ci, NULL, &p)) { VKRED_ONCE(32, "masked clear pipeline failed"); p = VK_NULL_HANDLE; }
     vk_pipeline_cache_changed();
-    g_mc.k[g_mc.n] = k; g_mc.p[g_mc.n++] = p; return p;
+    if (p) nvn_hm_put(&g_mc_pipes, &k, p); return p;
+}
+static VkPipeline mc_pipeline(uint32_t mask) {
+    mckey k; memset(&k, 0, sizeof k); k.ncol = (uint32_t)S.ncol; for (int i = 0; i < S.ncol && i < 8; i++) k.cfmt[i] = (uint32_t)S.cfmt[i];
+    k.dfmt = (uint32_t)S.dfmt; k.samples = S.samples ? S.samples : 1; k.mask = mask;
+    return mc_pipeline_key(&k);
 }
 static int g_bc_stale;
 static int clear_masked(const p_clear_color *c, VkRect2D r) {   // 1 = done
@@ -2326,16 +2337,98 @@ static void copy_t2t(const p_copy_t2t *c) {
     }
     vk_img_barrier_all(cb);
 }
+// ClearTexture has its own coordinates, unrelated to the bound render targets or
+// the draw scissor/origin. A whole-image Vulkan clear cannot express a rectangle
+// or channel mask: the synthetic mip/layer test used to erase its guard pixels.
+// Adapted from nxnative's Vulkan region-clear path (80bee884), using this backend's
+// view cache, masked-clear pipelines and submission retirement.
+static int clear_tex_slice(vkimg_t *im, VkImageView view, VkFormat format, VkExtent2D extent, VkRect2D rect,
+                           unsigned mask, unsigned type, const VkClearColorValue *value) {
+    mckey key = {.ncol=1, .cfmt={(uint32_t)format}, .samples=im->samples, .mask=mask, .type=type};
+    VkPipeline pipe = mc_pipeline_key(&key); if (!pipe) return 0;
+    VkCommandBuffer cb = vk_cmd();
+    if (rp_on()) {
+        VkRenderPass rp = rp_compat(1, key.cfmt, 0, key.samples); if (!rp) return 0;
+        VkFramebufferCreateInfo fi = {VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, NULL, 0, rp, 1, &view, extent.width, extent.height, 1};
+        VkFramebuffer fb;
+        if (vkCreateFramebuffer(V.dev, &fi, NULL, &fb)) return 0;
+        vk_defer_free_framebuffer(fb);   // the view/image may retire after this command buffer, never before it
+        VkRenderPassBeginInfo ri = {VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, NULL, rp, fb, {{0,0},extent}, 0, NULL};
+        vkCmdBeginRenderPass(cb, &ri, VK_SUBPASS_CONTENTS_INLINE);
+    } else {
+        VkRenderingAttachmentInfo a = {VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, NULL, view, VK_IMAGE_LAYOUT_GENERAL,
+            VK_RESOLVE_MODE_NONE, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED, VK_ATTACHMENT_LOAD_OP_LOAD, VK_ATTACHMENT_STORE_OP_STORE, {0}};
+        VkRenderingInfo ri = {VK_STRUCTURE_TYPE_RENDERING_INFO, NULL, 0, {{0,0},extent}, 1, 0, 1, &a, NULL, NULL};
+        vkCmdBeginRendering(cb, &ri);
+    }
+    VkViewport vp = {0,0,(float)extent.width,(float)extent.height,0,1};
+    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+    vkCmdSetViewport(cb, 0, 1, &vp); vkCmdSetScissor(cb, 0, 1, &rect);
+    vkCmdPushConstants(cb, g_mc.pl, VK_SHADER_STAGE_FRAGMENT_BIT, 0, 16, value);
+    vkCmdDraw(cb, 3, 1, 0, 0);
+    if (rp_on()) vkCmdEndRenderPass(cb); else vkCmdEndRendering(cb);
+    S.bound_pipe = VK_NULL_HANDLE; g_bc_stale = 1;
+    vk_img_barrier_all(cb);
+    return 1;
+}
 static void clear_tex(const p_clear_tex *c) {
+    unsigned mask = (unsigned)c->mask & 15;
+    if (!c->tex || !mask || c->r.width <= 0 || c->r.height <= 0) return;
     vk_end_pass();
     vkimg_t *im = vk_tex(c->tex); if (!im) return;
-    VkCommandBuffer cb = vk_cmd(); vk_tex_prepare(cb, im); vk_img_barrier_all(cb); im->gpu_w = 1;
-    VkImageSubresourceLayers l = sub_of(im, &c->view, c->has_view, c->r.zoffset);
-    VkImageSubresourceRange rg = {l.aspectMask, l.mipLevel, 1, l.baseArrayLayer, im->layers > 1 ? (uint32_t)(c->r.depth ? c->r.depth : 1) : 1};
-    if (c->r.xoffset || c->r.yoffset || (uint32_t)c->r.width < (im->w >> l.mipLevel) || (uint32_t)c->r.height < (im->h >> l.mipLevel)) VKRED_ONCE(71, "partial texture clear: the whole level is cleared");
-    if (im->aspect & VK_IMAGE_ASPECT_COLOR_BIT) { VkClearColorValue v; memcpy(&v, c->c.u, 16); vkCmdClearColorImage(cb, im->img, VK_IMAGE_LAYOUT_GENERAL, &v, 1, &rg); }
-    else { VkClearDepthStencilValue v = {c->c.f[0], c->c.u[1]}; rg.aspectMask = im->aspect; vkCmdClearDepthStencilImage(cb, im->img, VK_IMAGE_LAYOUT_GENERAL, &v, 1, &rg); }
-    vk_img_barrier_all(cb);
+    uint32_t lv = c->has_view && c->view.set_levels ? (uint32_t)c->view.base_level : 0;
+    if (lv >= im->levels) { VKRED_ONCE(71, "texture clear outside mip levels"); return; }
+    uint32_t w = im->w >> lv ? im->w >> lv : 1, h = im->h >> lv ? im->h >> lv : 1;
+    int64_t x = c->r.xoffset, y = c->r.yoffset, x1 = x + c->r.width, y1 = y + c->r.height;
+    if (x < 0) x = 0; if (y < 0) y = 0; if (x1 > w) x1 = w; if (y1 > h) y1 = h;
+    if (x >= x1 || y >= y1) return;
+    VkRect2D rect = {{(int32_t)x,(int32_t)y},{(uint32_t)(x1-x),(uint32_t)(y1-y)}};
+    int volume = im->target == NVN_TEXTURE_TARGET_3D;
+    uint32_t layers = volume ? (im->d >> lv ? im->d >> lv : 1) : im->layers;
+    uint32_t base = !volume && c->has_view && c->view.set_layers ? (uint32_t)c->view.min_layer : 0;
+    uint32_t count = c->r.depth ? (uint32_t)c->r.depth : 1;
+    uint64_t first = (uint64_t)base + (uint32_t)c->r.zoffset;
+    if (c->r.zoffset < 0 || c->r.depth < 0 || first + count > layers ||
+        (!volume && c->has_view && c->view.set_layers && c->view.nlayers && (uint64_t)c->r.zoffset + count > (uint32_t)c->view.nlayers)) {
+        VKRED_ONCE(71, "texture clear outside view layers"); return;
+    }
+    const vkfmt_t *f = vk_fmt(c->has_view && c->view.set_format ? c->view.format : c->tex->d.format);
+    if (!f) return;
+    unsigned type = f->is_int ? (f->is_sint ? 2 : 1) : 0;
+    VkClearColorValue value;
+    for (int i=0;i<4;i++) {
+        double v = c->c.f[i];
+        if (c->is_uint && type) value.uint32[i] = c->c.u[i];
+        else if (!type) value.float32[i] = c->is_uint ? (float)c->c.u[i] : c->c.f[i];
+        else if (type == 1) value.uint32[i] = !(v > 0) ? 0 : v >= UINT32_MAX ? UINT32_MAX : (uint32_t)v;
+        else value.int32[i] = v != v ? 0 : v <= INT32_MIN ? INT32_MIN : v >= INT32_MAX ? INT32_MAX : (int32_t)v;
+    }
+    VkCommandBuffer cb = vk_cmd(); vk_tex_prepare(cb, im); vk_img_barrier_all(cb);
+    // Keep the existing whole depth/stencil path; channel masks below concern color.
+    int whole = rect.extent.width == w && rect.extent.height == h &&
+        (mask == 15 || !(im->aspect & VK_IMAGE_ASPECT_COLOR_BIT)) && (!volume || count == layers);
+    if (whole && im->samples == 1 && f->vk == im->fmt) {
+        VkImageSubresourceRange range = {im->aspect, lv, 1, volume ? 0 : (uint32_t)first, volume ? 1 : count};
+        if (im->aspect & VK_IMAGE_ASPECT_COLOR_BIT) vkCmdClearColorImage(cb, im->img, VK_IMAGE_LAYOUT_GENERAL, &value, 1, &range);
+        else { VkClearDepthStencilValue ds = {c->c.f[0],c->c.u[1]}; vkCmdClearDepthStencilImage(cb, im->img, VK_IMAGE_LAYOUT_GENERAL, &ds, 1, &range); }
+        vk_img_barrier_all(cb);
+    } else {
+        // The attachment-view cache currently represents only 2D/cube/3D targets.
+        if (im->target == NVN_TEXTURE_TARGET_1D || im->target == NVN_TEXTURE_TARGET_1D_ARRAY ||
+            im->aspect != VK_IMAGE_ASPECT_COLOR_BIT || !(im->usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) || f->compressed || f->dec) {
+            VKRED_ONCE(71, "texture region clear requires a color-renderable view"); return;
+        }
+        view_t view = c->has_view ? c->view : (view_t){0};
+        view.set_levels = view.set_layers = 1; view.base_level = lv; view.nlevels = view.nlayers = 1;
+        for (uint32_t i=0;i<count;i++) {
+            view.min_layer = (uint32_t)first+i;
+            VkImageView v = vk_tex_view(c->tex, &view, 0xff, 0, 1, NULL);
+            if (!v) return;
+            if (vk_view_fmt != f->vk) { VKRED_ONCE(71, "texture clear view format is not supported by the image"); return; }
+            if (!clear_tex_slice(im,v,vk_view_fmt,(VkExtent2D){w,h},rect,mask,type,&value)) { VKRED_ONCE(71, "texture region clear failed"); return; }
+        }
+    }
+    im->gpu_w = 1;
 }
 
 // ---------------- the record walker ----------------
