@@ -812,6 +812,23 @@ static void bind_program(const p_bind_program *bp) {
     }
     S.prog_ok = S.sh[0] || S.sh[5];   // a vertex-only program draws depth only (prepare_draw)
 }
+// All active attachments must be raw unsigned views, and at least one must
+// write BC blocks. Mixed float/integer passes keep their existing shader.
+static int bc_block_outputs(void) {
+    int blocks = 0;
+    for (int i = 0; i < S.ncol && i < 8; i++) if (S.cfmt[i]) {
+        const view_t *v = S.rt_has_cview[i] ? &S.rt_cview[i] : NULL;
+        const vkfmt_t *base = vk_fmt(S.rt_col[i].d.format);
+        const vkfmt_t *view = vk_fmt(v && v->set_format ? v->format : S.rt_col[i].d.format);
+        if (!base || !view || !view->is_int || view->is_sint ||
+            (view->vk != VK_FORMAT_R32G32_UINT && view->vk != VK_FORMAT_R32G32B32A32_UINT)) return 0;
+        if ((base->compressed || base->dec) && base->bw == 4 && base->bh == 4) {
+            if (base->bpb != view->bpb) return 0;
+            blocks = 1;
+        }
+    }
+    return blocks;
+}
 typedef struct {
     uint64_t key[3]; uint32_t topo, restart, raster_discard, cull, front, mode, depth_clamp, bias_en;
     uint32_t dt, dw, df, st, sf[2], sfail[2], szfail[2], szpass[2];
@@ -819,7 +836,7 @@ typedef struct {
     uint32_t nbind; struct { uint32_t binding, stride, rate, divisor; } bind[17];
     uint32_t ncol, cfmt[8], dfmt, samples, a2c, blend_en, logic_en, logic_op, wmask[8];
     struct { uint32_t src, dst, srca, dsta, eq, eqa; } bl[8];
-    uint32_t clip_neg1, alt, fdz, dual;   // fdz: the fragment shader's variant that writes gl_FragDepth = gl_FragCoord.z (fdz below); dual: its dual-source variant (below)
+    uint32_t clip_neg1, alt, fdz, dual, uint_outputs;   // fdz: the fragment shader's variant that writes gl_FragDepth = gl_FragCoord.z (fdz below); dual: its dual-source variant (below)
     uint64_t um[3], im[3];   // each stage's sampled bindings given integer views (vk_shader_module)
 } pkey;
 static nvn_hmap g_pipes = {.klen = sizeof(pkey)}; static pthread_mutex_t g_pipe_mu = PTHREAD_MUTEX_INITIALIZER;   // the replay thread and the prewarm threads
@@ -983,7 +1000,7 @@ static VkPipeline build_pipeline(const pkey *k, VkPipelineLayout layout, vkshade
     const vkshader_t *fs = stg[1] && !k->raster_discard ? stg[1] : NULL; uint32_t xo[3] = {0};
     if (stg[0]) xo[0] = (stg[2] ? stg[2]->in_locs : fs ? fs->in_locs : 0) & ~stg[0]->out_locs;
     if (stg[2]) xo[2] = (fs ? fs->in_locs : 0) & ~stg[2]->out_locs;
-    for (int i = 0; i < 3; i++) if (stg[i] && !(i == 1 && k->raster_discard)) ss[ns++] = (VkPipelineShaderStageCreateInfo){VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, vk_sg_pin(fl[i], NULL), 0, fl[i], vk_shader_module(stg[i], k->um[i], k->im[i], k->alt && !k->um[i] && !k->im[i] && !xo[i] ? 1u << 31 : xo[i], i == 1 ? (k->fdz ? 1 : 0) | (k->dual ? 2 : 0) : 0), "main", NULL};   // (pNext: DM_VK_SUBGROUP_PIN)
+    for (int i = 0; i < 3; i++) if (stg[i] && !(i == 1 && k->raster_discard)) ss[ns++] = (VkPipelineShaderStageCreateInfo){VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, vk_sg_pin(fl[i], NULL), 0, fl[i], vk_shader_module(stg[i], k->um[i], k->im[i], k->alt && !k->uint_outputs && !k->um[i] && !k->im[i] && !xo[i] ? 1u << 31 : xo[i], i == 1 ? (k->fdz ? 1 : 0) | (k->dual ? 2 : 0) | (k->uint_outputs ? VK_SHADER_UINT_OUTPUT : 0) : 0), "main", NULL};   // (pNext: DM_VK_SUBGROUP_PIN)
     int flat = 0; for (int i = 0; i < g_x_nflat && stg[0]; i++) if (stg[0]->key == g_x_flat[i]) flat = g_x_flat_mode[i];
     if (!fs) flat = 0;
     if (flat & 1) {   // DM_VK_X_FLAT_VS: the fragment stage becomes flatdbg.frag
@@ -1549,6 +1566,7 @@ static int prepare_draw(int prim, int indexed) {
     #define SRC1F(x) ((x) >= 0x10 && (x) <= 0x13)
     k.dual = (k.blend_en & 1) && S.sh[1] && !k.raster_discard && (SRC1F(k.bl[0].src) || SRC1F(k.bl[0].dst) || SRC1F(k.bl[0].srca) || SRC1F(k.bl[0].dsta));
     #undef SRC1F
+    k.uint_outputs = S.sh[1] && !k.raster_discard && bc_block_outputs();
     k.clip_neg1 = !g_depth_zero;
     // layout and pipeline
     VkDescriptorSetLayout dsl[5] = {0}; int nsets = 0;
