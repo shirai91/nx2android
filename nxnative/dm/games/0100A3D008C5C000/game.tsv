@@ -1,0 +1,43 @@
+# Pokémon Scarlet 4.0.0 (dump metadata v1), Game Freak Trinity, SDK 13.3.13, NVN.
+# Experimental Android bring-up on RedMagic NX809J / Adreno 840 (2026-11-06).
+# Shader tables come from this build's own main and Trinity packs, not Violet's.
+# The supplied dump reports v1; its NACP and main build identify 4.0.0.
+
+# ---- Identity ----
+title_id	0100A3D008C5C000
+program_id	0100A3D008C5C000
+
+# ---- App ----
+name	Pokémon Scarlet
+ipa	PokMonScarlet.ipa
+app_category	public.app-category.games
+pad_layout	full
+fps_target	60
+fps_hold	off
+
+# ---- Versions ----
+build	v1	4.0.0	main=421c5411b487eb4d049dd065fec95477	sdk=bb560bdfa85b4a97786ae2c3b7995df6
+package	v1
+shader_versions	v1
+
+# ---- Files ----
+# The host supplies the movie API; main takes nothing else from subsdk0.
+modules	main sdk
+romfs_marker	arc/data.trpfs
+zip_store	.bk2:.bnk:.pck:.trpfd:.trpfs:.metallib
+
+# ---- Memory ----
+# The NPDM declares 16 MB of system resource. nninitStartup reserves a 12 GB
+# StandardAllocator region; 4.375 GB and 12.375 GB alias regions both refused
+# it (0x1803). The survey layout plus 24 GB of virtual headroom boots without
+# allocator/SDK binary cuts; the log places that region's end at alias +13 GB.
+mem_reserve	0x740000000
+mem_alias	0x718000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+sys_resource	0x1000000
+
+# ---- Shader split ----
+# 35,937 shaders, including BNSH inside Oodle-compressed arc/data.trpfs entries.
+shader_groups	/audio/=audio /arc/=arc /demo/=demo /system/=system /event/=event
+shader_note	Pokémon Scarlet shaders
