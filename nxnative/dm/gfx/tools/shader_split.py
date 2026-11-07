@@ -1194,6 +1194,39 @@ def unzs(path):
     if did not in _ZD: _ZD[did] = zstd.ZstdDict(ZDICTS[did])
     return zstd.decompress(d, zstd_dict=_ZD[did])
 
+LZ4_FRAME_MAGIC = bytes.fromhex('04224d18')   # an LZ4 frame (lz4.frame); HAL's .cmp containers hold these as well as zstd frames
+
+def frame_size(f):
+    """The decompressed size a zstd or LZ4 frame header gives, or None when the header gives none.
+    zstd: frame header descriptor at +4; the size field (0, 1, 2, 4 or 8 bytes; 2 bytes count from 256) follows the window descriptor (absent in a single-segment frame) and
+    the dictionary ID (0, 1, 2 or 4 bytes). LZ4: FLG at +4, BD at +5, then an 8-byte content size when FLG bit 3 is set"""
+    if len(f) < 6: return None
+    if f[:4] == LZ4_FRAME_MAGIC: return int.from_bytes(f[6:14], 'little') if f[4] & 8 and len(f) >= 14 else None
+    fhd = f[4]
+    single = fhd >> 5 & 1
+    width = (single, 2, 4, 8)[fhd >> 6]
+    if not width: return None
+    at = 5 + (not single) + (0, 1, 2, 4)[fhd & 3]
+    return int.from_bytes(f[at:at + width], 'little') + (256 if width == 2 else 0)
+
+def unsized(d, where):
+    """HAL's .cmp container (Kirby and the Forgotten Land): a u32 decompressed size, then one zstd or LZ4 frame. → the decompressed bytes.
+    A file only looks like one when its frame header gives a size other than the prefix (Tears of the Kingdom's *.quad files: a hash, then a zstd frame of its own size):
+    it is returned unchanged. A frame that fails to decompress, or decompresses to another size than the prefix, is a red line and the file is scanned as it is"""
+    size, frame = struct.unpack_from('<I', d)[0], d[4:]
+    if frame_size(frame) not in (None, size): return d
+    try:
+        if frame[:4] == LZ4_FRAME_MAGIC:
+            import lz4.frame
+            out = lz4.frame.decompress(frame)
+        else: out = zstd_mod().decompress(frame)
+    except Exception as e: why = str(e) or type(e).__name__
+    else:
+        if len(out) == size: return out
+        why = f'{len(out)} bytes where the prefix gives {size}'
+    print(f'[RED] {where}: a size-prefixed frame did not decompress ({why}); scanned as it is', flush=True)
+    return d
+
 def unity_program(code, where, stage=None):
     """Unity's Switch program code → [(stage, control, code)]; stage = the subprogram's stage from m_ParsedForm, which only the pre-2019.3 layout needs"""
     if len(code) >= 0x14 and code[0x10:0x14] == CTL_MAGIC:   # before 2019.3: 0x10 header + control section + code area, one stage
@@ -1401,6 +1434,7 @@ def scan_file(args):
         for nm, m in gfpak_members(open(path, 'rb').read(), '/' + rel): scan_blob(m, f'/{rel}{nm}', found)
         return rel, uniq_keys(found), var_pairs(found), trees
     d = unzs(path) if head[:4] == ZSTD_MAGIC else open(path, 'rb').read()   # by the magic: Paper Mario: The Thousand-Year Door names its zstd files .zst (8,726, its shaders among them)
+    if head[:4] != ZSTD_MAGIC and head[4:8] in (ZSTD_MAGIC, LZ4_FRAME_MAGIC): d = unsized(d, '/' + rel)   # a size-prefixed frame (unsized): Kirby and the Forgotten Land keeps its BNSH in 7,201 .cmp files; read raw, the split found 121 of its 27,297 shaders
     if d[:4] == b'Yaz0': d = yaz0(d)
     if d[:8] == b'UnityFS\0' or (d[8:11] == b'\0\0\0' and __import__('unityfs').is_serialized(d)):
         import unityfs
