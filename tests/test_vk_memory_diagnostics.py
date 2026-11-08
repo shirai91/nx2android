@@ -68,6 +68,8 @@ int main(void) {
         helpers = src[src.index('// DM_VK_MEM_DIAG'):src.index('\nuint32_t vk_mem_type')]
         start = src.index('static int pool_zero_copy(')
         function = src[start:src.index('\n}\n', start) + 3]
+        start = src.index('int vk_pool_remap_ro(')
+        remap = src[start:src.index('\n}\n', start) + 3]
         harness = r'''
 #define _GNU_SOURCE
 #define VK_NO_PROTOTYPES
@@ -76,6 +78,8 @@ struct ANativeWindow;
 #include <vulkan/vulkan_android.h>
 #include <assert.h>
 #include <errno.h>
+#include <pthread.h>
+#include <setjmp.h>
 #include <stdarg.h>
 #include <stdatomic.h>
 #include <stdint.h>
@@ -93,11 +97,28 @@ typedef struct { uint32_t width, height, layers, format; uint64_t usage; uint32_
 #define AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN 48
 #define AHARDWAREBUFFER_USAGE_GPU_DATA_BUFFER 16777216
 #define POOL_USAGE VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
-typedef struct { VkBuffer buf; VkDeviceMemory mem; AHardwareBuffer *ahb; int zero_copy; } vkpool_t;
+typedef struct { VkBuffer buf; VkDeviceMemory mem; AHardwareBuffer *ahb; int zero_copy; uint64_t base,end,lo,hi; void *shadow; } vkpool_t;
 static struct { VkDevice dev; } V;
-static int failure, released, closed, destroyed, messages;
+static int failure, released, closed, destroyed, messages, memory_frees;
+static int selected, fd_count=1, remapping, mappings;
+static int init_failure, bound;
+static vkpool_t g_pool[1]; static int g_npool;
+static pthread_rwlock_t g_pool_mu=PTHREAD_RWLOCK_INITIALIZER;
 static char last[1024];
-static uint8_t temporary[64];
+static uint8_t temporary[64],memory[64];
+static jmp_buf stopped;
+void fake_die(const char *fmt,...) {
+    if (remapping) {
+        assert(failure==6 && strstr(fmt,"cannot remap zero-copy pool read-only"));
+        assert(closed==fd_count+2 && mappings==1);
+        assert(!pthread_rwlock_trywrlock(&g_pool_mu)); pthread_rwlock_unlock(&g_pool_mu);
+        longjmp(stopped,1);
+    }
+    assert(failure==6 && strstr(fmt,"cannot publish zero-copy guest mapping"));
+    assert(closed==fd_count+2 && destroyed==1 && memory_frees==1 && released==1);
+    longjmp(stopped,1);
+}
+#define die fake_die
 static uint64_t clock_ns;
 static int mock_clock(clockid_t id, struct timespec *t) {
     (void)id; clock_ns += 1000000; t->tv_sec = clock_ns / 1000000000; t->tv_nsec = clock_ns % 1000000000; return 0;
@@ -110,10 +131,15 @@ static void log_message(const char *fmt, ...) {
 static void nvn_dirty_stats(uint64_t *f, uint64_t *p) { *f = 7; *p = 3; }
 static int AHardwareBuffer_allocate(const AHardwareBuffer_Desc *d, AHardwareBuffer **out) {
     assert(d->format == AHARDWAREBUFFER_FORMAT_BLOB && d->width == 64);
+    bound=0;
     if (failure == 1) return -ENOMEM;
     static AHardwareBuffer a; *out = &a; return 0;
 }
-static void AHardwareBuffer_release(AHardwareBuffer *a) { assert(a); released++; }
+static void AHardwareBuffer_release(AHardwareBuffer *a) {
+    assert(a);
+    if(failure==10 || (failure==6 && !remapping))assert(destroyed==1 && memory_frees==1);
+    released++;
+}
 static int mock_socketpair(int family, int type, int protocol, int *sv) {
     (void)type; assert(family == AF_UNIX && protocol == 0);
     if (failure == 2) { errno = EPERM; return -1; } sv[0] = 10; sv[1] = 11; return 0;
@@ -122,52 +148,76 @@ static int mock_socketpair(int family, int type, int protocol, int *sv) {
 static int AHardwareBuffer_sendHandleToUnixSocket(AHardwareBuffer *a, int fd) {
     assert(a && fd == 10); return failure == 3 ? -EINVAL : 0;
 }
-static int recv_fds(int fd, int *fds, int cap) { assert(fd == 11 && cap == 16); fds[0] = 12; return failure == 4 ? -1 : 1; }
-static int mock_close(int fd) { assert(fd >= 10 && fd <= 12); closed++; return 0; }
+static int recv_fds(int fd, int *fds, int cap) { assert(fd == 11 && cap == 16); for(int i=0;i<fd_count;i++)fds[i]=12+i; return failure == 4 ? -1 : fd_count; }
+static int pool_data_fd(const int *fds, int nfd, uint64_t size) { assert(fds[0]==12 && nfd==fd_count && size==64); if(selected<0)errno=ENODEV; return selected; }
+static int mock_close(int fd) { assert(fd >= 10 && fd <= 14); closed++; return 0; }
 #define close mock_close
 static void *mock_mmap(void *addr, size_t n, int prot, int flags, int fd, off_t off) {
-    assert(n == 64 && prot == (PROT_READ | PROT_WRITE) && fd == 12 && off == 0);
+    assert(n == 64 && prot == (remapping ? PROT_READ : PROT_READ | PROT_WRITE) && fd == 12+selected && off == 0); mappings++;
+    if(addr && !remapping)assert(bound && !destroyed && !memory_frees); // import must finish before guest pages change
     if (failure == (addr ? 6 : 5)) { errno = EACCES; return MAP_FAILED; }
     assert(flags == (addr ? MAP_SHARED | MAP_FIXED : MAP_SHARED)); return addr ? addr : temporary;
 }
 #define mmap mock_mmap
 static int mock_munmap(void *p, size_t n) { assert(p == temporary && n == 64); return 0; }
 #define munmap mock_munmap
+static int pool_init_copy(AHardwareBuffer *a, void *tmp, const void *src, size_t n) {
+    assert(a && tmp==temporary && n==64);
+    if(init_failure)return -1;
+    memcpy(tmp,src,n); return 0;
+}
 static uint32_t vk_mem_type(uint32_t bits, uint32_t want, uint32_t avoid) { (void)bits; (void)want; (void)avoid; return 0; }
 static VkResult vkGetAndroidHardwareBufferPropertiesANDROID(VkDevice d, AHardwareBuffer *a, VkAndroidHardwareBufferPropertiesANDROID *out) {
-    (void)d; assert(a); out->allocationSize = 64; out->memoryTypeBits = 1; return failure == 7 ? VK_ERROR_UNKNOWN : VK_SUCCESS;
+    (void)d; assert(a && mappings==1 && !bound && closed==2); out->allocationSize = 64; out->memoryTypeBits = 1; return failure == 7 ? VK_ERROR_UNKNOWN : VK_SUCCESS;
 }
 static VkResult vkCreateBuffer(VkDevice d, const VkBufferCreateInfo *ci, const void *alloc, VkBuffer *out) {
     (void)d; (void)alloc; assert(ci->size == 64); *out = (VkBuffer)(uintptr_t)1; return failure == 8 ? VK_ERROR_UNKNOWN : VK_SUCCESS;
 }
 static VkResult vkAllocateMemory(VkDevice d, const VkMemoryAllocateInfo *ai, const void *alloc, VkDeviceMemory *out) {
-    (void)d; (void)alloc; assert(ai->allocationSize == 64); *out = (VkDeviceMemory)(uintptr_t)2; return failure == 9 ? VK_ERROR_UNKNOWN : VK_SUCCESS;
+    (void)d; (void)alloc; assert(ai->allocationSize == 64);
+    *out = (VkDeviceMemory)(uintptr_t)(failure==9 ? 0xbad : 2); return failure == 9 ? VK_ERROR_UNKNOWN : VK_SUCCESS;
 }
 static VkResult vkBindBufferMemory(VkDevice d, VkBuffer b, VkDeviceMemory m, VkDeviceSize off) {
-    (void)d; assert(b && m && off == 0); return failure == 10 ? VK_ERROR_UNKNOWN : VK_SUCCESS;
+    (void)d; assert(b && m && off == 0); if(failure==10)return VK_ERROR_UNKNOWN; bound=1; return VK_SUCCESS;
 }
 static void vkDestroyBuffer(VkDevice d, VkBuffer b, const void *alloc) { (void)d; (void)alloc; assert(b); destroyed++; }
+void vkFreeMemory(VkDevice d,VkDeviceMemory memory,const void *alloc) {
+    (void)d;assert(!alloc && memory==(VkDeviceMemory)(uintptr_t)2);
+    assert((failure==6 || failure==10) && destroyed==1 && !released && !memory_frees); memory_frees++;
+}
 HELPERS
+static void mem_diag_zc_fds(const int *fds, int nfd, uint64_t size, int error, int index) {
+    assert(nfd==fd_count && fds[0]==12 && size==64 && index==selected);
+    assert((failure==5 && error==EACCES) || (selected<0 && error==ENODEV));
+}
 FUNCTION
+REMAP
 int main(void) {
     int enabled = getenv("DM_VK_MEM_DIAG") && atoi(getenv("DM_VK_MEM_DIAG"));
     static const char *const names[] = {"size", "AHardwareBuffer_allocate", "socketpair", "AHardwareBuffer_sendHandleToUnixSocket", "recv_fds", "mmap-temporary", "mmap-fixed", "vkGetAndroidHardwareBufferPropertiesANDROID", "vkCreateBuffer", "vkAllocateMemory", "vkBindBufferMemory"};
-    uint8_t memory[64]; memset(memory, 23, sizeof memory);
+    memset(memory, 23, sizeof memory); static vkpool_t p;
     for (failure = 0; failure <= 10; failure++) {
         for (int repeat = 0; repeat < 2; repeat++) {
-            vkpool_t p = {0}; released = closed = destroyed = 0;
-            assert(pool_zero_copy(&p, memory, failure == 0 ? 0x100000000ull : 64) == (failure < 7 ? -1 : -2));
+            p=(vkpool_t){0}; released = closed = destroyed = memory_frees = mappings = 0;
+            if(!setjmp(stopped)) {
+                assert(pool_zero_copy(&p, memory, failure == 0 ? 0x100000000ull : 64) == (failure < 7 ? -1 : -2));
+                assert(failure!=6); // final MAP_FIXED failure must stop, not enter copied fallback
+            } else assert(failure==6);
             assert(!p.zero_copy);
+            assert(!p.buf && !p.mem && !p.ahb); // failed setup never publishes partial Vulkan handles
             assert(released == (failure >= 2));
             assert(closed == (failure < 3 ? 0 : failure < 5 ? 2 : 3));
-            assert(destroyed == (failure >= 9));
+            assert(destroyed == (failure==6 || failure>=9));
+            assert(memory_frees == (failure==6 || failure==10));
+            assert(mappings==(failure<5 ? 0 : failure==6 ? 2 : 1));
+            for(unsigned i=0;i<sizeof memory;i++)assert(memory[i]==23); // no writes to guest bytes during rejected setup
             assert(messages == (enabled ? failure + 1 : 0));
             if (enabled) assert(strstr(last, names[failure]));
         }
     }
-    failure = -1; released = closed = destroyed = 0; vkpool_t p = {0};
+    failure = -1; released = closed = destroyed = memory_frees = mappings = 0; p=(vkpool_t){0};
     assert(pool_zero_copy(&p, memory, 64) == 0 && p.zero_copy && p.ahb);
-    assert(closed == 3 && released == 0 && destroyed == 0 && memcmp(memory, temporary, 64) == 0);
+    assert(closed == 3 && released == 0 && destroyed == 0 && !memory_frees && memcmp(memory, temporary, 64) == 0);
     uint64_t t = mem_diag_ns(); mem_diag_note(1, t, 1048576);
     assert(strstr(last, "cpu-to-gpu: last 1.00 ms / 1.00 MiB, mean 1.00 ms / 1.00 MiB (1 calls)"));
     assert(strstr(last, "fault-released-pages=7 prep-pages=3"));
@@ -186,13 +236,36 @@ int main(void) {
     saved=messages; mem_diag_copyback(20000000,10000000,2,2097152); assert(messages==saved);
     clock_ns+=1000000000ull; mem_diag_copyback(20000000,10000000,2,2097152);
     assert(strstr(last,"mean total 14.00 ms, invalidate 6.40 ms (45.7%, 1.60 MiB), 5 submissions"));
+    // Initial and read-only remapping must both use the selected payload, not FD 0.
+    selected=1; fd_count=3; failure=-1; closed=released=mappings=0; p=(vkpool_t){0};
+    assert(!pool_zero_copy(&p,memory,64) && p.zero_copy && closed==5 && !released && mappings==2);
+    p.base=p.lo=(uintptr_t)memory; p.end=p.hi=p.lo+64; g_pool[0]=p; g_npool=1;
+    remapping=1; closed=mappings=0;
+    assert(!vk_pool_remap_ro(memory,64) && closed==5 && mappings==1);
+    failure=6; closed=mappings=0;
+    if (!setjmp(stopped)) { vk_pool_remap_ro(memory,64); assert(!"failed fixed remap continued"); }
+    assert(closed==5 && mappings==1 && g_pool[0].zero_copy);
+    remapping=0; failure=5; closed=released=mappings=0; p=(vkpool_t){0};
+    assert(pool_zero_copy(&p,memory,64)==-1 && closed==5 && released==1 && mappings==1 && !p.zero_copy);
+    failure=-1; init_failure=1; closed=released=mappings=0; p=(vkpool_t){0};
+    assert(pool_zero_copy(&p,memory,64)==-1 && closed==5 && released==1 && mappings==1 && !p.zero_copy);
+    init_failure=0;
+    // No candidate: leave guest pages intact, close every received handle, release the AHB.
+    failure=-1; selected=-1; closed=released=mappings=0; p=(vkpool_t){0};
+    memset(memory,23,sizeof memory);
+    assert(pool_zero_copy(&p,memory,64)==-1 && !p.zero_copy && closed==5 && released==1 && !mappings);
+    for(unsigned i=0;i<sizeof memory;i++)assert(memory[i]==23);
+    remapping=1; closed=mappings=0;
+    assert(vk_pool_remap_ro(memory,64)==-1 && closed==5 && !mappings);
+    // Failed remap never changes a successful pool into a copied one.
+    assert(g_pool[0].zero_copy);
     return 0;
 }
-'''.replace('HELPERS', helpers).replace('FUNCTION', function)
+'''.replace('HELPERS', helpers).replace('FUNCTION', function).replace('REMAP', remap)
         with tempfile.TemporaryDirectory(prefix='nx2a-memdiag-test-') as tmp:
             c, exe = Path(tmp) / 'check.c', Path(tmp) / 'check'
             c.write_text(harness)
-            subprocess.run(['cc', '-std=gnu11', '-Wall', '-Wextra', '-Werror', '-Wno-missing-field-initializers',
+            subprocess.run(['cc', '-std=gnu11', '-pthread', '-Wall', '-Wextra', '-Werror', '-Wno-missing-field-initializers',
                             '-idirafter', str(headers), str(c), '-o', str(exe)], check=True)
             for enabled in ('0', '1'):
                 subprocess.run([str(exe)], env=dict(os.environ, DM_VK_MEM_DIAG=enabled), check=True)
