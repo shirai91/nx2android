@@ -1,0 +1,13 @@
+# Kirby and the Forgotten Land on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# HAL Laboratory's engine on SDK 11.4.0, update 1.1.0; 27,297 shaders, all translated.
+# Tested 2026-11-07 on the AYN Thor (Snapdragon 8 Gen 2, Adreno 740, Android 13) with the Mr Purple T30 Turnip driver (--vulkan-driver): the online prompt, the difficulty
+# choice, the opening, the beach, Point of Arrival with its first guide movie, saving, closing the app and continuing the file, the pause menu, the on-screen gamepad and
+# a controller. 30 fps as on the Switch (the game paces itself; frame work p50 about 31 ms), no red log line; about 4.7 GB resident (PSS) in Point of Arrival.
+# Not tried on the system's own Adreno driver.
+# It crashed at boot until the host answered pdm::QueryApplicationPlayStatistics (hle_offline.c: the game asks about Kirby Star Allies), and drew without its sky, ground and
+# water until the shader split opened HAL's .cmp containers (121 shaders found before, 27,297 after).
+status	playable
+tested	v65536 AYN Thor (Snapdragon 8 Gen 2, Adreno 740, Android 13)
+package	org.nx2a.kirbyandtheforgottenland
+orientation	landscape
+requires	bcn
