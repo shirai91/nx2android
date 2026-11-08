@@ -111,7 +111,7 @@ static void read_format(mavc *a) {
     int32_t l, t, r, b;
     if (AMediaFormat_getRect(f, AMEDIAFORMAT_KEY_DISPLAY_CROP, &l, &t, &r, &b) && l >= 0 && t >= 0 && r >= l && b >= t && r < a->fw && b < a->fh) { a->cl = l; a->ct = t; a->cr = r; a->cb = b; }
     else { a->cl = a->ct = 0; a->cr = a->fw > 0 ? a->fw - 1 : -1; a->cb = a->fh > 0 ? a->fh - 1 : -1; }
-    LOG("[movie] AVC: output %dx%d stride %d slice height %d colour format %#x crop %d,%d-%d,%d", a->fw, a->fh, a->fstride, a->fslice, a->fcolor, a->cl, a->ct, a->cr, a->cb);
+    LOG("[movie] AVC: output %dx%d stride %d slice height %d colour format %#x crop %d,%d-%d,%d color-standard %d full-range %d", a->fw, a->fh, a->fstride, a->fslice, a->fcolor, a->cl, a->ct, a->cr, a->cb, a->fstandard, a->ffull);
     AMediaFormat_delete(f);
 }
 // one output buffer → a compact NV12 picture of the crop rectangle, queued in presentation order
