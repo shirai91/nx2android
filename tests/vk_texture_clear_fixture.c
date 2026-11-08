@@ -7,6 +7,7 @@
 #include <string.h>
 #include <limits.h>
 #include <assert.h>
+#include "vk_compressed_clear.h"
 enum { NVN_TEXTURE_TARGET_1D = 0, NVN_TEXTURE_TARGET_3D = 2, NVN_TEXTURE_TARGET_1D_ARRAY = 3 };
 typedef struct { int format, target; } desc;
 typedef struct { desc d; } tex_t;
@@ -14,23 +15,54 @@ typedef struct { int set_levels, base_level, nlevels, set_layers, min_layer, nla
 typedef struct { int xoffset,yoffset,zoffset,width,height,depth; } NVNcopyRegion;
 typedef struct { const tex_t *tex; view_t view; uint8_t has_view,is_uint; NVNcopyRegion r; int mask; union {float f[4];uint32_t u[4];} c; } p_clear_tex;
 typedef struct { VkImage img; uint32_t w,h,d,layers,levels,samples; int target,nvn_format; VkFormat fmt; VkImageAspectFlags aspect; VkImageUsageFlags usage; int gpu_w; } vkimg_t;
-typedef struct { VkFormat vk; int is_int,is_sint,compressed,dec; } vkfmt_t;
+typedef struct { VkFormat vk; int is_int,is_sint,compressed,dec,bw,bh,bpb; } vkfmt_t;
 static vkimg_t image;
 static uint32_t pixels[3][4][8][8][4];
 static VkFormat vk_view_fmt;
 static int diagnostics, view_level, view_layer, transfers, draws, depths, fail_view, fail_draw, wrong_format;
 static VkImageSubresourceRange depth_range;
 static VkClearDepthStencilValue depth_value;
+static unsigned char scratch[65536+16], covered[3][8][8192];
+static VkDeviceSize scratch_size;
+static unsigned copies, scratch_calls;
 #define VKRED_ONCE(...) ((void)++diagnostics)
 static vkimg_t *vk_tex(const tex_t *t) { (void)t;return &image; }
 static const vkfmt_t *vk_fmt(int f) {
-    static const vkfmt_t formats[]={{VK_FORMAT_R32G32B32A32_SFLOAT,0,0,0,0},{VK_FORMAT_R32G32B32A32_UINT,1,0,0,0},{VK_FORMAT_R32G32B32A32_SINT,1,1,0,0},{VK_FORMAT_D32_SFLOAT_S8_UINT,0,0,0,0},{VK_FORMAT_R32G32B32A32_SFLOAT,0,0,1,1},{VK_FORMAT_BC1_RGBA_UNORM_BLOCK,0,0,1,0}};
+    static const vkfmt_t formats[]={{VK_FORMAT_R32G32B32A32_SFLOAT,0,0,0,0},{VK_FORMAT_R32G32B32A32_UINT,1,0,0,0},{VK_FORMAT_R32G32B32A32_SINT,1,1,0,0},{VK_FORMAT_D32_SFLOAT_S8_UINT,0,0,0,0},{VK_FORMAT_R32G32B32A32_SFLOAT,0,0,1,1},{VK_FORMAT_BC1_RGBA_UNORM_BLOCK,0,0,1,0,4,4,8}};
     return f>=0 && f<6 ? &formats[f] : NULL;
 }
 static void vk_end_pass(void) {}
 static VkCommandBuffer vk_cmd(void) {return VK_NULL_HANDLE;}
 static void vk_tex_prepare(VkCommandBuffer cb,vkimg_t *im) {(void)cb;(void)im;}
 static void vk_img_barrier_all(VkCommandBuffer cb) {(void)cb;}
+static void *vk_scratch(VkDeviceSize n,VkDeviceSize align,VkBuffer *buf,VkDeviceSize *off) {
+    assert(n>0 && n<=65536 && align>=8);scratch_calls++;scratch_size=n;
+    *buf=(VkBuffer)(uintptr_t)9;*off=16;memset(scratch,0xcc,sizeof scratch);return scratch+16;
+}
+static void fake_copy_blocks(VkCommandBuffer cb,VkBuffer buf,VkImage im,VkImageLayout layout,uint32_t n,const VkBufferImageCopy *rs) {
+    (void)cb;(void)im;assert(buf==(VkBuffer)(uintptr_t)9 && layout==VK_IMAGE_LAYOUT_GENERAL);
+    for(unsigned i=0;i<n;i++) {
+        const VkBufferImageCopy *r=rs+i;unsigned lv=r->imageSubresource.mipLevel;
+        unsigned w=image.w>>lv ? image.w>>lv : 1,h=image.h>>lv ? image.h>>lv : 1;
+        unsigned bx=(w+3)/4,rows=(r->imageExtent.height+3)/4;
+        assert(r->bufferOffset==16 && !r->bufferRowLength && !r->bufferImageHeight);
+        assert(r->imageSubresource.aspectMask==VK_IMAGE_ASPECT_COLOR_BIT && r->imageSubresource.layerCount==1);
+        assert(r->imageOffset.x==0 && r->imageOffset.y>=0 && r->imageOffset.y%4==0);
+        assert(r->imageExtent.width==w && r->imageExtent.height>0 && r->imageExtent.depth==1);
+        assert((unsigned)r->imageOffset.y+r->imageExtent.height<=h);
+        assert(r->imageExtent.height%4==0 || (unsigned)r->imageOffset.y+r->imageExtent.height==h);
+        assert((VkDeviceSize)bx*rows*8<=scratch_size);
+        for(VkDeviceSize b=8;b<(VkDeviceSize)bx*rows*8;b+=8)assert(!memcmp(scratch+16,scratch+16+b,8));
+        unsigned layer=image.target==NVN_TEXTURE_TARGET_3D ? (unsigned)r->imageOffset.z : r->imageSubresource.baseArrayLayer;
+        assert(layer<8 && lv<3 && (unsigned)r->imageOffset.y/4+rows<8192);
+        assert(image.target==NVN_TEXTURE_TARGET_3D ? r->imageSubresource.baseArrayLayer==0 : r->imageOffset.z==0);
+        for(unsigned y=(unsigned)r->imageOffset.y/4;y<(unsigned)r->imageOffset.y/4+rows;y++) {
+            assert(!covered[lv][layer][y]);covered[lv][layer][y]=1;
+        }
+        copies++;
+    }
+}
+#define vkCmdCopyBufferToImage fake_copy_blocks
 static VkImageSubresourceLayers sub_of(vkimg_t *im,const view_t *v,int has,int z) {
     return (VkImageSubresourceLayers){im->aspect,has && v->set_levels ? (uint32_t)v->base_level : 0,
         (has && v->set_layers ? (uint32_t)v->min_layer : 0)+(uint32_t)z,1};
@@ -64,20 +96,18 @@ static int compatibility(const char *name) {
     image=(vkimg_t){.w=8,.h=8,.d=1,.layers=4,.levels=3,.samples=1,.target=4,.fmt=VK_FORMAT_R32G32B32A32_UINT,.aspect=VK_IMAGE_ASPECT_COLOR_BIT,.usage=VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,.nvn_format=1};
     p_clear_tex c={.tex=&t,.has_view=1,.view={.set_levels=1,.base_level=1,.nlevels=1,.set_layers=1,.min_layer=1,.nlayers=2},
         .r={1,1,0,2,2,2},.mask=1,.is_uint=1,.c.u={17,23,42,99}};
-    int depth=strstr(name,"depth")!=NULL, native_compressed=strstr(name,"compressed")!=NULL;
+    int depth=strstr(name,"depth")!=NULL;
     int oned=!strcmp(name,"1d") || !strcmp(name,"1d_array");
-    int full=!strcmp(name,"msaa_color") || !strcmp(name,"msaa_depth") || !strcmp(name,"compressed_full");
+    int full=!strcmp(name,"msaa_color") || !strcmp(name,"msaa_depth");
     if(depth){t.d.format=3;image.nvn_format=3;image.fmt=VK_FORMAT_D32_SFLOAT_S8_UINT;image.aspect=VK_IMAGE_ASPECT_DEPTH_BIT|VK_IMAGE_ASPECT_STENCIL_BIT;c.mask=0;c.c.f[0]=0.5f;c.c.u[1]=7;}
     if(full){image.samples=4;c.r.xoffset=c.r.yoffset=0;c.r.width=c.r.height=4;if(!depth)c.mask=15;}
     if(!strcmp(name,"decoded")){t.d.format=4;image.nvn_format=4;image.fmt=VK_FORMAT_R32G32B32A32_SFLOAT;}
-    if(native_compressed){t.d.format=5;image.nvn_format=5;image.fmt=VK_FORMAT_BC1_RGBA_UNORM_BLOCK;}
     if(!strcmp(name,"nonattachment"))image.usage=0;
     if(oned){image.target=!strcmp(name,"1d") ? NVN_TEXTURE_TARGET_1D : NVN_TEXTURE_TARGET_1D_ARRAY;image.h=1;c.r.yoffset=0;c.r.height=1;}
     if(!strcmp(name,"format")){c.view.set_format=1;c.view.format=0;wrong_format=1;}
     if(!strcmp(name,"view"))fail_view=1;
     if(!strcmp(name,"pipeline"))fail_draw=1;
     memset(pixels,0,sizeof pixels);clear_tex(&c);
-    if(native_compressed){assert(diagnostics && !transfers && !draws && !image.gpu_w);return 0;}
     assert(image.gpu_w && draws==0);
     assert(full ? diagnostics==0 : diagnostics>0);
     if(depth){assert(depths==1 && transfers==0);assert(depth_value.depth==0.5f && depth_value.stencil==7);assert(depth_range.aspectMask==image.aspect && depth_range.baseMipLevel==1 && depth_range.levelCount==1 && depth_range.baseArrayLayer==1 && depth_range.layerCount==2);}
@@ -87,8 +117,34 @@ static int compatibility(const char *name) {
     }}
     return 0;
 }
+static int compressed_case(const char *name) {
+    tex_t t={.d={.format=5}};
+    image=(vkimg_t){.w=13,.h=9,.d=1,.layers=4,.levels=3,.samples=1,.target=4,.fmt=VK_FORMAT_BC1_RGBA_UNORM_BLOCK,
+        .aspect=VK_IMAGE_ASPECT_COLOR_BIT,.usage=VK_IMAGE_USAGE_TRANSFER_DST_BIT,.nvn_format=5};
+    p_clear_tex c={.tex=&t,.has_view=1,.view={.set_levels=1,.base_level=1,.nlevels=1,.set_layers=1,.min_layer=1,.nlayers=2},
+        .r={1,1,0,2,2,2},.mask=1,.is_uint=1,.c.u={1,1,1,1}};
+    unsigned level=1,first=1,count=2;
+    int full=!strcmp(name,"compressed_full"),noop=!strcmp(name,"compressed_mask0");
+    int invalid=!strcmp(name,"compressed_msaa") || !strcmp(name,"compressed_bad_usage");
+    if(full){c.r=(NVNcopyRegion){0,0,0,6,4,2};c.mask=15;}
+    if(!strcmp(name,"compressed_volume")){image.target=NVN_TEXTURE_TARGET_3D;image.d=8;image.layers=1;c.r.zoffset=1;c.r.depth=1;first=0;count=4;}
+    if(!strcmp(name,"compressed_tail")){level=2;c.view.base_level=2;}
+    if(!strcmp(name,"compressed_chunks")){image.w=4096;image.h=129;level=0;c.view.base_level=0;}
+    if(noop)c.mask=0;
+    if(!strcmp(name,"compressed_msaa"))image.samples=4;
+    if(!strcmp(name,"compressed_bad_usage"))image.usage=0;
+    clear_tex(&c);
+    assert(!transfers && !depths && !draws);
+    if(noop || invalid){assert(!copies && !scratch_calls && !image.gpu_w);return 0;}
+    assert(copies && scratch_calls==1 && image.gpu_w);
+    assert(full ? !diagnostics : diagnostics>0);
+    unsigned h=image.h>>level ? image.h>>level : 1,rows=(h+3)/4;
+    for(unsigned lv=0;lv<3;lv++)for(unsigned ly=0;ly<8;ly++)for(unsigned y=0;y<8192;y++)
+        assert(covered[lv][ly][y]==(lv==level && ly>=first && ly<first+count && y<rows));
+    return 0;
+}
 int main(int argc,char **argv) {
-    if(argc>1)return compatibility(argv[1]);
+    if(argc>1)return strstr(argv[1],"compressed") ? compressed_case(argv[1]) : compatibility(argv[1]);
     tex_t t={.d={.format=1}};
     image=(vkimg_t){.w=8,.h=8,.d=1,.layers=4,.levels=3,.samples=1,.target=4,.fmt=VK_FORMAT_R32G32B32A32_UINT,.aspect=VK_IMAGE_ASPECT_COLOR_BIT,.usage=VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,.nvn_format=1};
     for (int kind=0;kind<3;kind++) for (unsigned mask=0;mask<16;mask++) {
