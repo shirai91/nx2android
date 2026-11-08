@@ -1,0 +1,15 @@
+# Picross S+ update 1.0.1 (v65536), SDK 16.2.0.
+# Tested on nx2android v0.3.0 with the expanded virtual address layout in game.tsv.
+# RP6 / Adreno 740 / Android 13 / PurpleVK-public git-62ac221a33:
+# menu, puzzle rendering and controls work; tester completed a puzzle without issues.
+# Original 4.38 GiB alias region exhausted (AllocateAddressRegion 0x1803), then SIGSEGV.
+# +8 GiB alias headroom resolves startup; physical app_pool remains unchanged.
+# Pixel 9 Pro / system Mali-G715: boots, but persistent rendering corruption.
+# Disabling zero-copy removes visible corruption but was reported far too slow.
+# That diagnostic option is deliberately NOT enabled here. Pixel 9a untested.
+# No custom driver is bundled or selected by this profile; no full-playthrough claim.
+status	playable
+tested	v65536 Retroid Pocket 6 (Adreno 740, Android 13); PurpleVK-public git-62ac221a33
+package	org.nx2a.t0100d7b01ae58000
+orientation	landscape
+env	DM_VK_MT_REPLAY=1
