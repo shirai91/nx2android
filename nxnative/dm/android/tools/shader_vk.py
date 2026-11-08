@@ -197,8 +197,8 @@ SSBO = {'vs': 0x110, 'cs': 0x310, 'ps': 0x510}
 def classify(stage, b, res):
     nm = b['name']; e = dict(b)
     # Dynamic pool arrays use driver c2 slot indices (as the Metal backend).
-    if GAME.get('android_dynamic_slots', 'off') == 'on' and b['type'] in ('image', 'sampler') and b['count'] == 32 and re.fullmatch(r'[a-z]+_[ts]\w*_cb0_40000000', nm):
-        e.update(kind='texd' if b['type'] == 'image' else 'sampd'); return e
+    if GAME.get('android_dynamic_slots', 'off') == 'on' and b['type'] in ('image', 'sampler', 'tbuf') and b['count'] == 32 and re.fullmatch(r'[a-z]+_[ts]\w*_cb0_40000000', nm):
+        e.update(kind='texd' if b['type'] in ('image', 'tbuf') else 'sampd'); return e
     m = re.fullmatch(r'[a-z]+_c(\d+)', nm)
     if m:
         n = int(m.group(1))

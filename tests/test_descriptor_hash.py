@@ -218,6 +218,28 @@ static void oversized_key(void) {
     w.descriptorCount = 32; a = cached(VK_NULL_HANDLE, &w, 1);
     assert(cached(VK_NULL_HANDLE, &w, 1) == a);
 }
+static void texel_array_views(void) {
+    // Every view of a texel buffer array is part of the key: two arrays differing only past slot 0 must not share a set.
+    for (unsigned pos = 0; pos < 32; pos++) {
+        reset(); VkBufferView views[32];
+        for (unsigned i = 0; i < 32; i++) views[i] = (VkBufferView)(uintptr_t)(100 + i);
+        VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstBinding = 5, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER,
+            .descriptorCount = 32, .pTexelBufferView = views};
+        VkDescriptorSet first = cached(VK_NULL_HANDLE, &w, 1);
+        views[pos] = (VkBufferView)(uintptr_t)999;
+        VkDescriptorSet second = cached(VK_NULL_HANDLE, &w, 1);
+        assert(second != first && updates == 2);
+        assert(cached(VK_NULL_HANDLE, &w, 1) == second && g_set_hits == 1);
+    }
+    reset(); VkBufferView views[32];
+    for (unsigned i = 0; i < 32; i++) views[i] = (VkBufferView)(uintptr_t)(100 + i);
+    VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        .dstBinding = 5, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER,
+        .descriptorCount = 32, .pTexelBufferView = views};
+    VkDescriptorSet first = cached(VK_NULL_HANDLE, &w, 1);
+    assert(cached(VK_NULL_HANDLE, &w, 1) == first && g_set_hits == 1 && updates == 1);
+}
 int main(int argc, char **argv) {
     assert(argc == 2);
     switch (atoi(argv[1])) {
@@ -231,6 +253,7 @@ int main(int argc, char **argv) {
     case 7: oversized_key(); break;
     case 8: dynamic_offsets(); break;
     case 9: large_mixed_key(); break;
+    case 10: texel_array_views(); break;
     default: abort();
     }
 }
@@ -278,6 +301,10 @@ int main(int argc, char **argv) {
 
     def test_maximum_mixed_descriptor_content_is_cacheable_and_exact(self):
         self.run_case(9)
+
+    def test_texel_buffer_array_hashes_every_view(self):
+        self.run_case(10)
+
 
 
 if __name__ == '__main__':
