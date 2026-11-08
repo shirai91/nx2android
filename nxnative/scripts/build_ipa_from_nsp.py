@@ -428,11 +428,11 @@ def title_of(path, hk=None):
     "hr-bdlwa.xci", issue #28), else [title ID] in the file name. A file name's tag can be wrong (FFT's base NSP is tagged …0001, its ticket is …0000)"""
     with open(path, 'rb') as f:
         files = dump_files(f)
-        for n, _ in files:
-            if re.match(r'[0-9A-Fa-f]{32}\.tik$', n): return int(n[:16], 16)
-        if hk and aes_ecb(hk[:16]):   # the smallest when a card holds more than one title: the base game …000 before its update …800 and DLC
-            tids = [t for n, o in files if n.endswith(('.nca', '.ncz')) and (t := meta_title(f, o, hk)) is not None]
-            if tids: return min(tids)
+        tids = [int(n[:16], 16) for n, _ in files if re.match(r'[0-9A-Fa-f]{32}\.tik$', n)]
+        # a cartridge may carry its update's ticket only (Crayon Shin-chan: …800.tik beside the base game's ticketless NCAs): its meta NCAs count too
+        if hk and aes_ecb(hk[:16]) and (not tids or Path(path).suffix.lower() in ('.xci', '.xcz')):
+            tids += [t for n, o in files if n.endswith(('.nca', '.ncz')) and (t := meta_title(f, o, hk)) is not None]
+        if tids: return min(tids)   # the smallest when a card holds more than one title: the base game …000 before its update …800 and DLC
     m = re.search(r'\[([0-9A-Fa-f]{16})\]', path.name)
     return int(m.group(1), 16) if m else None
 
