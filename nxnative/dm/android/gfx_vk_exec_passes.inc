@@ -679,7 +679,7 @@ static struct { VkPipelineLayout pl; VkShaderModule vs, fs[3]; int bad; } g_mc;
 static nvn_hmap g_mc_pipes = {.klen = sizeof(mckey)};
 static VkPipeline mc_pipeline_key(const mckey *key) {
     mckey k = *key;
-    VkPipeline cached = nvn_hm_get(&g_mc_pipes, &k); if (cached) return cached;
+    VkPipeline cached = nvn_hm_get(&g_mc_pipes, &k); if (cached) return cached == (VkPipeline)(uintptr_t)1 ? VK_NULL_HANDLE : cached;
     if (g_mc.bad) return VK_NULL_HANDLE;
     if (!g_mc.pl) {
         VkPushConstantRange pr = {VK_SHADER_STAGE_FRAGMENT_BIT, 0, 16};
@@ -713,7 +713,7 @@ static VkPipeline mc_pipeline_key(const mckey *key) {
     VkPipeline p = VK_NULL_HANDLE;
     if ((!prp && !V.has_dynrender) || vkCreateGraphicsPipelines(V.dev, V.pcache, 1, &ci, NULL, &p)) { VKRED_ONCE(32, "masked clear pipeline failed"); p = VK_NULL_HANDLE; }
     vk_pipeline_cache_changed();
-    if (p) nvn_hm_put(&g_mc_pipes, &k, p); return p;
+    nvn_hm_put(&g_mc_pipes, &k, p ? p : (VkPipeline)(uintptr_t)1); return p;
 }
 static VkPipeline mc_pipeline(uint32_t mask) {
     mckey k; memset(&k, 0, sizeof k); k.ncol = (uint32_t)S.ncol; for (int i = 0; i < S.ncol && i < 8; i++) k.cfmt[i] = (uint32_t)S.cfmt[i];

@@ -18,12 +18,14 @@ typedef struct { VkFormat vk; int is_int,is_sint,compressed,dec; } vkfmt_t;
 static vkimg_t image;
 static uint32_t pixels[3][4][8][8][4];
 static VkFormat vk_view_fmt;
-static int diagnostics, view_level, view_layer, transfers, draws;
+static int diagnostics, view_level, view_layer, transfers, draws, depths, fail_view, fail_draw, wrong_format;
+static VkImageSubresourceRange depth_range;
+static VkClearDepthStencilValue depth_value;
 #define VKRED_ONCE(...) ((void)++diagnostics)
 static vkimg_t *vk_tex(const tex_t *t) { (void)t;return &image; }
 static const vkfmt_t *vk_fmt(int f) {
-    static const vkfmt_t formats[]={{VK_FORMAT_R32G32B32A32_SFLOAT,0,0,0,0},{VK_FORMAT_R32G32B32A32_UINT,1,0,0,0},{VK_FORMAT_R32G32B32A32_SINT,1,1,0,0}};
-    return f>=0 && f<3 ? &formats[f] : NULL;
+    static const vkfmt_t formats[]={{VK_FORMAT_R32G32B32A32_SFLOAT,0,0,0,0},{VK_FORMAT_R32G32B32A32_UINT,1,0,0,0},{VK_FORMAT_R32G32B32A32_SINT,1,1,0,0},{VK_FORMAT_D32_SFLOAT_S8_UINT,0,0,0,0},{VK_FORMAT_R32G32B32A32_SFLOAT,0,0,1,1},{VK_FORMAT_BC1_RGBA_UNORM_BLOCK,0,0,1,0}};
+    return f>=0 && f<6 ? &formats[f] : NULL;
 }
 static void vk_end_pass(void) {}
 static VkCommandBuffer vk_cmd(void) {return VK_NULL_HANDLE;}
@@ -41,22 +43,52 @@ static void fake_clear_image(VkCommandBuffer cb,VkImage im,VkImageLayout layout,
     (void)cb;(void)im;(void)layout;transfers++;
     for (unsigned i=0;i<n;i++) for (unsigned lv=r[i].baseMipLevel;lv<r[i].baseMipLevel+r[i].levelCount;lv++)
         for(unsigned ly=r[i].baseArrayLayer;ly<r[i].baseArrayLayer+r[i].layerCount;ly++)
-            write_region(lv,ly,(VkRect2D){{0,0},{image.w>>lv,image.h>>lv}},15,v);
+            write_region(lv,ly,(VkRect2D){{0,0},{image.w>>lv ? image.w>>lv : 1,image.h>>lv ? image.h>>lv : 1}},15,v);
 }
 static void fake_clear_depth(VkCommandBuffer cb,VkImage im,VkImageLayout layout,const VkClearDepthStencilValue *v,uint32_t n,const VkImageSubresourceRange *r) {
-    (void)cb;(void)im;(void)layout;(void)v;(void)n;(void)r;diagnostics++;
+    (void)cb;(void)im;(void)layout;assert(n==1);depths++;depth_range=*r;depth_value=*v;
 }
 #define vkCmdClearColorImage fake_clear_image
 #define vkCmdClearDepthStencilImage fake_clear_depth
 static VkImageView vk_tex_view(const tex_t *t,const view_t *v,int dim,int arrayed,int attachment,vkimg_t **out) {
     (void)dim;(void)arrayed;(void)attachment;(void)out;view_level=v->base_level;view_layer=v->min_layer;
-    vk_view_fmt=vk_fmt(v->set_format ? v->format : t->d.format)->vk;return (VkImageView)(uintptr_t)1;
+    if(fail_view)return VK_NULL_HANDLE;
+    vk_view_fmt=wrong_format ? image.fmt : vk_fmt(v->set_format ? v->format : t->d.format)->vk;return (VkImageView)(uintptr_t)1;
 }
 static int clear_tex_slice(vkimg_t *im,VkImageView view,VkFormat format,VkExtent2D extent,VkRect2D rect,unsigned mask,unsigned type,const VkClearColorValue *v) {
-    (void)im;(void)view;(void)format;(void)extent;(void)type;draws++;write_region(view_level,view_layer,rect,mask,v);return 1;
+    (void)im;(void)view;(void)format;(void)extent;(void)type;if(fail_draw)return 0;draws++;write_region(view_level,view_layer,rect,mask,v);return 1;
 }
 /* PRODUCTION_CLEAR */
-int main(void) {
+static int compatibility(const char *name) {
+    tex_t t={.d={.format=1}};
+    image=(vkimg_t){.w=8,.h=8,.d=1,.layers=4,.levels=3,.samples=1,.target=4,.fmt=VK_FORMAT_R32G32B32A32_UINT,.aspect=VK_IMAGE_ASPECT_COLOR_BIT,.usage=VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,.nvn_format=1};
+    p_clear_tex c={.tex=&t,.has_view=1,.view={.set_levels=1,.base_level=1,.nlevels=1,.set_layers=1,.min_layer=1,.nlayers=2},
+        .r={1,1,0,2,2,2},.mask=1,.is_uint=1,.c.u={17,23,42,99}};
+    int depth=strstr(name,"depth")!=NULL, native_compressed=strstr(name,"compressed")!=NULL;
+    int oned=!strcmp(name,"1d") || !strcmp(name,"1d_array");
+    int full=!strcmp(name,"msaa_color") || !strcmp(name,"msaa_depth") || !strcmp(name,"compressed_full");
+    if(depth){t.d.format=3;image.nvn_format=3;image.fmt=VK_FORMAT_D32_SFLOAT_S8_UINT;image.aspect=VK_IMAGE_ASPECT_DEPTH_BIT|VK_IMAGE_ASPECT_STENCIL_BIT;c.mask=0;c.c.f[0]=0.5f;c.c.u[1]=7;}
+    if(full){image.samples=4;c.r.xoffset=c.r.yoffset=0;c.r.width=c.r.height=4;if(!depth)c.mask=15;}
+    if(!strcmp(name,"decoded")){t.d.format=4;image.nvn_format=4;image.fmt=VK_FORMAT_R32G32B32A32_SFLOAT;}
+    if(native_compressed){t.d.format=5;image.nvn_format=5;image.fmt=VK_FORMAT_BC1_RGBA_UNORM_BLOCK;}
+    if(!strcmp(name,"nonattachment"))image.usage=0;
+    if(oned){image.target=!strcmp(name,"1d") ? NVN_TEXTURE_TARGET_1D : NVN_TEXTURE_TARGET_1D_ARRAY;image.h=1;c.r.yoffset=0;c.r.height=1;}
+    if(!strcmp(name,"format")){c.view.set_format=1;c.view.format=0;wrong_format=1;}
+    if(!strcmp(name,"view"))fail_view=1;
+    if(!strcmp(name,"pipeline"))fail_draw=1;
+    memset(pixels,0,sizeof pixels);clear_tex(&c);
+    if(native_compressed){assert(diagnostics && !transfers && !draws && !image.gpu_w);return 0;}
+    assert(image.gpu_w && draws==0);
+    assert(full ? diagnostics==0 : diagnostics>0);
+    if(depth){assert(depths==1 && transfers==0);assert(depth_value.depth==0.5f && depth_value.stencil==7);assert(depth_range.aspectMask==image.aspect && depth_range.baseMipLevel==1 && depth_range.levelCount==1 && depth_range.baseArrayLayer==1 && depth_range.layerCount==2);}
+    else {assert(transfers==1);for(unsigned lv=0;lv<3;lv++)for(unsigned ly=0;ly<4;ly++)for(unsigned y=0;y<8;y++)for(unsigned x=0;x<8;x++)for(unsigned ch=0;ch<4;ch++){
+        uint32_t expected=0;if(lv==1 && ly>=1 && ly<3 && x<4 && y<(oned ? 1u : 4u)){if(t.d.format==4){float value=(float)c.c.u[ch];memcpy(&expected,&value,4);}else expected=c.c.u[ch];}
+        assert(pixels[lv][ly][y][x][ch]==expected);
+    }}
+    return 0;
+}
+int main(int argc,char **argv) {
+    if(argc>1)return compatibility(argv[1]);
     tex_t t={.d={.format=1}};
     image=(vkimg_t){.w=8,.h=8,.d=1,.layers=4,.levels=3,.samples=1,.target=4,.fmt=VK_FORMAT_R32G32B32A32_UINT,.aspect=VK_IMAGE_ASPECT_COLOR_BIT,.usage=VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,.nvn_format=1};
     for (int kind=0;kind<3;kind++) for (unsigned mask=0;mask<16;mask++) {
@@ -76,9 +108,9 @@ int main(void) {
     assert(!diagnostics);
     p_clear_tex full={.tex=&t,.r={0,0,0,8,8,1},.mask=15,.is_uint=1,.c.u={3,5,7,9}};
     transfers=draws=0;clear_tex(&full);assert(transfers==1 && draws==0);
-    image.samples=4;transfers=draws=0;clear_tex(&full);assert(transfers==0 && draws==1);image.samples=1;
+    image.samples=4;transfers=draws=0;clear_tex(&full);assert(transfers==1 && draws==0);image.samples=1;
     // Invalid/empty ranges must never reach either Vulkan write path.
-    for(int bad=0;bad<9;bad++) {
+    for(int bad=0;bad<8;bad++) {
         p_clear_tex c=full;
         if(bad==0)c.mask=0;
         if(bad==1)c.r.width=0;
@@ -88,7 +120,6 @@ int main(void) {
         if(bad==5)c.r.zoffset=4;
         if(bad==6){c.has_view=1;c.view.set_levels=1;c.view.base_level=3;}
         if(bad==7){c.has_view=1;c.view.set_layers=1;c.view.min_layer=3;c.view.nlayers=1;c.r.depth=2;}
-        if(bad==8){c.r.width=2;image.target=NVN_TEXTURE_TARGET_1D;}
         transfers=draws=0;clear_tex(&c);assert(transfers==0 && draws==0);
         image.target=4;
     }
@@ -96,7 +127,7 @@ int main(void) {
     p_clear_tex numeric=full;numeric.is_uint=0;numeric.c.f[0]=-17.75f;
     numeric.c.f[1]=23.5f;numeric.c.f[2]=42.0f;numeric.c.f[3]=99.0f;
     clear_tex(&numeric);assert(pixels[0][0][0][0][0]==(uint32_t)-17 && pixels[0][0][0][0][1]==23);
-    t.d.format=1;image.fmt=vk_fmt(1)->vk;clear_tex(&numeric);assert(pixels[0][0][0][0][0]==0);
+    t.d.format=1;image.nvn_format=1;image.fmt=vk_fmt(1)->vk;clear_tex(&numeric);assert(pixels[0][0][0][0][0]==0);
     puts("ClearTexture: format/mask guards, empty/invalid ranges, typed conversion and transfer/draw routing passed");
     return 0;
 }
