@@ -6,17 +6,21 @@
 #include <mach/mach.h>
 #include <sys/mman.h>
 
-// What a field holds: the frame rate as a float, vsyncs per frame (60 / frame rate) as an int32, or the frame time in milliseconds or seconds as a float. Copies: consecutive copies of the value
+// What a field holds: the frame rate as a float or int32, vsyncs per frame (60 / frame rate) as an int32, or the frame time in milliseconds or seconds as a float. Copies: consecutive copies of the value
 // (Unreal keeps one for the game thread, one for the render thread). A row with no pointer (ptr_off 0) has its field at main + field: a constant in main's read-only data, which the loader
 // leaves writable (the image's data block on iOS too, loader.c map_image).
 // At 60 a frame time gets MS_MARGIN less than the vsync: such a limiter counts from the frame's start, and the work after it (the GPU fence wait, the next frame's start) adds to the
 // period, so frames at exactly 16.667 ms came 0.11 ms late each on the Mac (59.6 fps, every 150th frame shown two vsyncs). Slightly shorter, the host's present pacing sets the pace
 // (the acquire waits): Luigi's Mansion 3's display interval p99 18.69 → 16.67 ms, 60.0 fps. Not at 30: with present_interval display the presents follow every vsync and hold no
 // frame for two, so a shorter time showed some frames for one (30.4 fps); 30 writes the game's own 33.333 ms
-enum { FPS_F32, VSYNCS_I32, MS_F32, SEC_F32 };
+enum { FPS_F32, VSYNCS_I32, MS_F32, SEC_F32, FPS_I32 };
 #define MS_MARGIN 0.5f
 static float ms_want(int fps) { return 1000.0f / (float)fps - (fps == 60 ? MS_MARGIN : 0); }
 static const struct { const char *build, *what; uint64_t ptr_off; uint32_t field; uint8_t kind, copies; uint32_t ptr2; } k_locks[] = {   // ptr2: a second pointer at that object + ptr2 (an IL2CPP class's static fields), 0 = none
+    // Pokemon Brilliant Diamond 1.3.0: Unity's Application.targetFrameRate. Its icall registration (main+0xe34e60) resolves to main+0xdc8e70 -> +0x5fa640,
+    // which stores w0 at main+0x4afc868; the getter at +0x5fa630 reads the same int32. The game sets 30 when entering the field; display pacing alone does not remove that cap.
+    // From seedds/nxnative ecbeae164c
+    { "94ceae325c205c4b9d6f7235552f28fd", "Unity targetFrameRate", 0, 0x4afc868, FPS_I32, 1, 0 },
     // Monster Hunter Rise 16.0.2: RE Engine's frame limit, a float at [main+0x1295b3f0]+0x434 (the pointer is a global in main's bss). The frame loop (main+0x6b106c8) sleeps until
     // [+0x430] / [+0x434] sixtieths of a second have passed ([+0x430] = 60) and steps the game by the time that really passed (+0x41c), so a higher limit runs the game faster in frames
     // at the same speed. The game sets 30 after boot; it also asks for present interval 2, which the profile's present_interval display ignores.
@@ -183,20 +187,21 @@ void dm_fps_lock_tick(void) {
         for (int c = 0; c < k_locks[k].copies; c++) {
             uint64_t a = obj + k_locks[k].field + 4 * (uint64_t)c; uint32_t cur, want; char was[16];
             if (!rd(a, &cur, sizeof cur)) break;
-            if (k_locks[k].kind != VSYNCS_I32) {
+            if (k_locks[k].kind != VSYNCS_I32 && k_locks[k].kind != FPS_I32) {
                 int ms = k_locks[k].kind == MS_F32 ? 1 : k_locks[k].kind == SEC_F32 ? 1000 : 0; float f, w = ms ? ms_want(target) / (float)ms : (float)target; memcpy(&f, &cur, sizeof f); memcpy(&want, &w, sizeof want);
                 if (cur == want || !(ms ? f * (float)ms >= 8 && f * (float)ms <= 100 : f >= 10 && f <= 120)) continue;   // already set, or not set yet (RE Engine: 6000 at boot; Unreal: 0 = no limit until the config sets it)
                 snprintf(was, sizeof was, ms ? "%.3f ms" : "%g", ms ? f * (float)ms : f);
             } else {
-                want = 60 / (uint32_t)target;
-                if (cur == want || cur < 1 || cur > 4) continue;
+                int fps = k_locks[k].kind == FPS_I32;
+                want = fps ? (uint32_t)target : 60 / (uint32_t)target;
+                if (cur == want || cur < (fps ? 10u : 1u) || cur > (fps ? 120u : 4u)) continue;
                 snprintf(was, sizeof was, "%u", cur);
             }
             uint32_t *p = (uint32_t *)(uintptr_t)a;
             dm_guest_write_prepare(p, sizeof *p); __atomic_store_n(p, want, __ATOMIC_RELAXED);
             if (nlog[k] < 8) { nlog[k]++; char now[24];
                 if (k_locks[k].kind == MS_F32 || k_locks[k].kind == SEC_F32) snprintf(now, sizeof now, "%.3f ms (%d fps)", ms_want(target), target);
-                else snprintf(now, sizeof now, "%u%s", k_locks[k].kind == FPS_F32 ? (unsigned)target : want, k_locks[k].kind == FPS_F32 ? " fps" : " vsyncs");
+                else snprintf(now, sizeof now, "%u%s", k_locks[k].kind == FPS_F32 ? (unsigned)target : want, k_locks[k].kind == FPS_F32 || k_locks[k].kind == FPS_I32 ? " fps" : " vsyncs");
                 LOG("main: %s%s %s → %s (%s)", k_locks[k].what, k_locks[k].copies > 1 ? (c ? " (render thread)" : " (game thread)") : "", was, now, src); }
         }
     }
