@@ -177,11 +177,17 @@ class Publication(unittest.TestCase):
 
 
 @unittest.skipUnless(shutil.which('cc') and ZSTD, 'a host C compiler and zstd in this Python are needed')
-class HostReader(unittest.TestCase):   # gfx_vk_shader.c's bundle functions (vk_shaders_open, find, bundle_spv) with nxnative/dm/third_party/zstd, as the app runs them
+class HostReader(unittest.TestCase):   # native bundle reader and vk_shader_q through reflection, before Vulkan module creation
     @classmethod
     def setUpClass(cls):
         cls.d = Path(tempfile.mkdtemp(prefix='nx2a_test_dmsv_c_')); src = (REPO / 'nxnative/dm/android/gfx_vk_shader.c').read_text(encoding='utf-8')
         body = src[src.index('// spv_size: 0 ='):src.index('// Run-time capture:')]
+        lookup_start = src.index('static vkshader_t *vk_shader_q(uint64_t key, int stage, int quiet) {')
+        lookup = src[lookup_start:src.index("    // SPIR-V with the stage's set", lookup_start)]
+        header = (REPO / 'nxnative/dm/android/gfx_vk.h').read_text(encoding='utf-8')
+        types = header[header.index('typedef struct __attribute__((packed))'):header.index('} vkshader_t;') + len('} vkshader_t;')]
+        set_start = src.index('static int set_of(')
+        set_of = src[set_start:src.index('\n', set_start)]
         harness = r'''
 #include <fcntl.h>
 #include <pthread.h>
@@ -194,13 +200,42 @@ class HostReader(unittest.TestCase):   # gfx_vk_shader.c's bundle functions (vk_
 #include <time.h>
 #include <unistd.h>
 #include "zstd.h"
+#include "nvn_hmap.h"
 #define VKLOG(...) (fprintf(stderr, __VA_ARGS__), fputc('\n', stderr))
+// Guard all pages after the index before vk_shaders_open can touch them.
+// Fixtures place both SPIR-V and reflection entirely on those pages.
+static void *index_only_mmap(void *addr, size_t len, int prot, int flags, int fd, off_t off) {
+    void *p = mmap(addr, len, prot, flags, fd, off);
+    if (p != MAP_FAILED && getenv("DMSV_PROTECT_PAYLOAD")) {
+        uint32_t n; memcpy(&n, (uint8_t *)p + 8, 4);
+        size_t page = (size_t)sysconf(_SC_PAGESIZE), end = (12 + 32ull * n + page - 1) / page * page;
+        if (end >= len || mprotect((uint8_t *)p + end, len - end, PROT_NONE)) exit(4);
+    }
+    return p;
+}
+#define mmap index_only_mmap
 ''' + body + r'''
+#undef mmap
+typedef void *VkShaderModule, *VkDescriptorSetLayout, *VkBuffer;
+typedef uint64_t VkDeviceSize;
+''' + types + '\n' + set_of + r'''
+static nvn_hmap g_shaders = {.klen = 16};
+static pthread_mutex_t g_sh_mu = PTHREAD_MUTEX_INITIALIZER;
+''' + lookup + r'''
+    // The production path above validates and consumes reflection. Stop before
+    // Vulkan rewriting/module creation, retaining its SPIR-V for the assertions.
+    s->spv = w; s->nspv = nw;
+    nvn_hm_put(&g_shaders, &hk, s); pthread_mutex_unlock(&g_sh_mu); return s;
+}
 int main(int argc, char **argv) {   // each shader: key, stage, words, FNV-1a 64 of its SPIR-V; exit 2 when the bundle is refused
-    (void)argc; vk_shaders_open(argv[1]); if (!g_bundle) return 2;
+    (void)argc; setenv("DM_VK_SHADERS", argv[1], 1); bundle_auto(); if (!g_bundle) return 2;
+    if (getenv("DMSV_PROTECT_PAYLOAD")) { printf("%u shaders indexed\n", g_nent); return 0; }
     for (uint32_t i = 0; i < g_nent; i++) {
         uint64_t key = g_ent[i].key; if (find(key) != &g_ent[i]) return 3;
-        uint32_t nw = 0, *w = bundle_spv(&g_ent[i], &nw); if (!w) { printf("%016llx fail\n", (unsigned long long)key); continue; }
+        vkshader_t *s = vk_shader_q(key, g_ent[i].stage, 0);
+        if (vk_shader_q(key, g_ent[i].stage, 0) != s) return 5;   // cached success or cached absence
+        if (!s) { printf("%016llx fail\n", (unsigned long long)key); continue; }
+        uint32_t nw = s->nspv, *w = s->spv;
         uint64_t h = 0xcbf29ce484222325ull; const uint8_t *p = (const uint8_t *)w; for (uint64_t k = 0; k < 4ull * nw; k++) h = (h ^ p[k]) * 0x100000001b3ull;
         printf("%016llx %d %u %016llx\n", (unsigned long long)key, vk_shader_stage(key), nw, (unsigned long long)h); free(w);
     }
@@ -208,14 +243,14 @@ int main(int argc, char **argv) {   // each shader: key, stage, words, FNV-1a 64
 }
 '''
         (cls.d / 'h.c').write_text(harness, encoding='utf-8'); z = REPO / 'nxnative/dm/third_party/zstd'
-        subprocess.run(['cc', '-O1', '-std=gnu11', '-Wall', '-Werror', '-Wno-unused-function', '-I', str(z), '-c', str(cls.d / 'h.c'), '-o', str(cls.d / 'h.o')], check=True)
+        subprocess.run(['cc', '-O1', '-std=gnu11', '-Wall', '-Werror', '-Wno-unused-function', '-I', str(z), '-I', str(REPO / 'nxnative/dm/gfx/nvn'), '-c', str(cls.d / 'h.c'), '-o', str(cls.d / 'h.o')], check=True)
         subprocess.run(['cc', '-O1', '-w', '-fvisibility=hidden', '-DZSTDLIB_VISIBLE=', '-DZSTDERRORLIB_VISIBLE=', '-c', str(z / 'zstddeclib.c'), '-o', str(cls.d / 'z.o')], check=True)
         subprocess.run(['cc', str(cls.d / 'h.o'), str(cls.d / 'z.o'), '-o', str(cls.d / 'h')], check=True)
 
     @classmethod
     def tearDownClass(cls): shutil.rmtree(cls.d, ignore_errors=True)
 
-    def run_host(self, p): return subprocess.run([str(self.d / 'h'), str(p)], capture_output=True, text=True, timeout=60)
+    def run_host(self, p, **env): return subprocess.run([str(self.d / 'h'), str(p)], capture_output=True, text=True, timeout=60, env={**os.environ, **env})
 
     def expect(self, entries):
         def fnv(b):
@@ -254,15 +289,33 @@ int main(int argc, char **argv) {   // each shader: key, stage, words, FNV-1a 64
             p = self.d / f'keys-{duplicate}.dmsv'; p.write_bytes(data); r = self.run_host(p)
             self.assertEqual(r.returncode, 2, r.stdout); self.assertIn('[RED] ', r.stderr)
 
-    def test_reflection_counts_cannot_escape_record(self):
+    def test_open_reads_only_header_and_index(self):
+        data = bytearray(v1_reference(ENTRIES))
+        table_end = dmsv.HDR.size + len(ENTRIES) * dmsv.ENT.size
+        page = os.sysconf('SC_PAGE_SIZE'); padding = (-table_end) % page
+        for i in range(len(ENTRIES)):
+            offset = dmsv.HDR.size + i * dmsv.ENT.size
+            entry = list(dmsv.ENT.unpack_from(data, offset)); entry[2] += padding; entry[4] += padding
+            dmsv.ENT.pack_into(data, offset, *entry)
+        data[table_end:table_end] = bytes(padding)
+        p = self.d / 'protected-payload.dmsv'; p.write_bytes(data)
+        r = self.run_host(p, DMSV_PROTECT_PAYLOAD='1')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, '3 shaders indexed\n')
+
+    def test_reflection_counts_reject_only_the_requested_record(self):
         good = v1_reference(ENTRIES)
         first = dmsv.ENT.unpack_from(good, dmsv.HDR.size)
         for bindings, constants in ((0xffffffff, 0), (0, 0xffffffff), (1, 0), (0, 1)):
             # The first record has only a 20-byte reflection header; even a
             # small nonzero count must not leave its declared record.
-            data = bytearray(good); struct.pack_into('<II', data, first[4], bindings, constants)
-            p = self.d / f'counts-{bindings}-{constants}.dmsv'; p.write_bytes(data); r = self.run_host(p)
-            self.assertEqual(r.returncode, 2, r.stdout); self.assertIn('[RED] ', r.stderr)
+            with self.subTest(bindings=bindings, constants=constants):
+                data = bytearray(good); struct.pack_into('<II', data, first[4], bindings, constants)
+                p = self.d / f'counts-{bindings}-{constants}.dmsv'; p.write_bytes(data); r = self.run_host(p)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertEqual(r.stdout, f'{first[0]:016x} fail\n' + self.expect([e for e in ENTRIES if e[0] != first[0]]))
+                self.assertIn('[RED] ', r.stderr); self.assertIn('left out as if missing', r.stderr)
+                self.assertEqual(r.stderr.count('[RED] '), 1)   # the rejected lookup is cached
 
     def test_malformed_module_is_rejected_before_rewriting(self):
         original = bytearray(spirv(1, 2))
