@@ -77,6 +77,15 @@ On Windows, `build_bootloader.py` compiles PyInstaller's launcher on this PC (it
 python -m unittest discover tests
 ```
 
+`test_dmsv` checks both shader-bundle versions and the native reader. Publication
+uses a unique staging directory beside the destination, flushes the file, verifies
+every shader and reflection payload, then atomically replaces the destination.
+Injected write, sync, readback and replacement failures leave the previous bundle
+intact and clean up staging; concurrent writers cannot overwrite each other's
+scratch files. The same contract applies to direct shader exports and CLI repacks.
+This protects completed file publication, not power-loss durability of the parent
+directory or semantic SPIR-V validation.
+
 `test_vk_copy_back` exercises protected guest memory with the real dirty-page tracker: preserving independent CPU writes in the same cache line, successive submissions and snapshot initialization, cached/uncached and untracked pools, 200 partial/unaligned/overlapping range cases, and writes from another CPU thread. It also injects failed and partially successful bulk `mprotect` calls; a bulk unprotect failure stops the host with a `[RED]` message before publishing writable page states or continuing the copy. It also checks snapshot copy volume across clean and dirty 64 KB blocks, a partial tail, and full versus partial completion merges. These CPU tests do not establish correct rendering on a device.
 
 `test_vk_memory_diagnostics` also checks per-buffer cached-memory compatibility, restricted memory-type masks, diagnostics disabled, and unchanged coherent memory selection. The candidate lookup is diagnostic; cached allocation requires the separate opt-in switch. `test_vk_cached_pools` injects creation, allocation, mapping and binding failures and verifies cleanup, coherent fallback, unsupported types, missing cache functions, default-off behaviour, device-loss handling and rejecting failed/timed-out GPU waits before readback. `test_vk_copy_back` also models separate CPU-cache/device bytes to check flush before GPU use, invalidate before merging, independent CPU writes, partial merges, clean submissions and fatal cache-maintenance errors. Cache-range tests check 5,000 generated ranges for both flush and invalidate, plus explicit boundary/overflow cases and multiple cache-atom sizes. Native readback tests cover empty/non-intersecting transfers, unaligned disjoint writes with independent CPU changes in the same atom, clipping at both pool ends, subsequent uploads/baselines, and full invalidation for uncertain writers. These mocks do not emulate an actual GPU driver.
