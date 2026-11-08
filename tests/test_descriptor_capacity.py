@@ -56,9 +56,14 @@ static void untouched_tail(void) {
     const unsigned char *p = (const unsigned char *)(images + prefix);
     for (size_t i = 0; i < (image_capacity - prefix) * sizeof *images; i++) assert(p[i] == 0xa5);
 }
+static VkBufferView *views; static uint32_t view_capacity, vprefix; static int view_mode;
+static void untouched_view_tail(void) {
+    const unsigned char *p = (const unsigned char *)(views + vprefix);
+    for (size_t i = 0; i < (view_capacity - vprefix) * sizeof *views; i++) assert(p[i] == 0xa5);
+}
 static void die(const char *fmt, ...) {
     assert(expect_reject && strstr(fmt, "capacity"));
-    untouched_tail();  // A refused binding must not partially fill the remaining entries.
+    if (view_mode) untouched_view_tail(); else untouched_tail();  // A refused binding must not partially fill the remaining entries.
     rejected = 1; longjmp(rejected_jump, 1);
 }
 static uint64_t vk_tex_slot_handle(const uint64_t *t, const uint64_t *i, unsigned n) {
@@ -85,10 +90,11 @@ static VkImageView vk_dummy_view(int dim, int arr, int ms, int storage, int num)
 }
 static VkBuffer vk_zero_buffer(void) { return VK_NULL_HANDLE; }
 static VkBufferView vk_dummy_tbuf(int storage) { (void)storage; return VK_NULL_HANDLE; }
+static VkBufferView vk_tbuf_view(const tex_t *t, int storage) { (void)t; (void)storage; return VK_NULL_HANDLE; }
 static void collect(dmsv_bind *bindings, int nbind, uint32_t want_count, VkDescriptorType want_type) {
 ''' + declarations + r'''
     (void)bi; (void)bv;
-    memset(ii, 0xa5, sizeof ii); images = ii; image_capacity = sizeof ii / sizeof *ii;
+    memset(ii, 0xa5, sizeof ii); images = ii; image_capacity = sizeof ii / sizeof *ii; view_mode = 0;
     int st = 0, dynslots = 0;
     for (int i = 0; i < nbind && nw < 96; i++) {
         const dmsv_bind *b = bindings + i;
@@ -126,6 +132,37 @@ static void run(int kind, int desc, unsigned count, unsigned before, int refuse,
     if (!setjmp(rejected_jump)) collect(b, n, want_count, want_type);
     assert(rejected == refuse);
 }
+static void collect_tbuf(dmsv_bind *bindings, int nbind, uint32_t want_count) {
+''' + declarations + r'''
+    (void)bi;
+    memset(bv, 0xa5, sizeof bv); views = bv; view_capacity = sizeof bv / sizeof *bv; view_mode = 1;
+    int st = 0, dynslots = 0;
+    for (int i = 0; i < nbind && nw < 96; i++) {
+        const dmsv_bind *b = bindings + i;
+        VkWriteDescriptorSet *wr = &w[nw]; memset(wr, 0, sizeof *wr); wr->descriptorCount = 1;
+        switch (b->kind) {
+''' + cases + r'''
+        default: abort(); }
+    }
+    assert(!expect_reject);
+    assert(nw == (uint32_t)nbind && nbv == vprefix + want_count);
+    const VkWriteDescriptorSet *last = &w[nw - 1];
+    assert(last->descriptorCount == want_count && last->descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER);
+    assert(last->pTexelBufferView == bv + vprefix);
+    vprefix = nbv; untouched_view_tail();
+}
+static void run_tbuf(unsigned count, unsigned before, int refuse, unsigned want_count) {
+    dmsv_bind b[96]; int n = 0;
+    for (unsigned left = before; left;) {
+        unsigned take = left > 32 ? 32 : left;
+        b[n++] = (dmsv_bind){.kind=RK_TEXD, .desc=RD_TBUF, .count=(uint16_t)take, .off=-1};
+        left -= take;
+    }
+    b[n++] = (dmsv_bind){.kind=RK_TEXD, .desc=RD_TBUF, .count=(uint16_t)count, .off=-1};
+    vprefix = before; expect_reject = refuse; rejected = 0;
+    if (!setjmp(rejected_jump)) collect_tbuf(b, n, want_count);
+    assert(rejected == refuse);
+}
 int main(int argc, char **argv) {
     assert(argc == 2);
     int mode = atoi(argv[1]);
@@ -154,6 +191,12 @@ int main(int argc, char **argv) {
             run(kinds[i], descs[i], 32, 353, 1, 0, types[i]);
             run(kinds[i], descs[i], 33, 0, 1, 0, types[i]);
         }
+    }
+    if (mode == 5) { // The texel buffer array: 32 fit (and exactly fill bv), 33 and a full bv are refused.
+        run_tbuf(32, 0, 0, 32);
+        run_tbuf(32, 96, 0, 32);
+        run_tbuf(33, 0, 1, 0);
+        run_tbuf(1, 128, 1, 0);
     }
     return 0;
 }
@@ -187,6 +230,9 @@ int main(int argc, char **argv) {
 
     def test_dynamic_arrays_keep_count_and_capacity_limits(self):
         self.run_case(4)
+
+    def test_texel_buffer_array_keeps_count_and_capacity_limits(self):
+        self.run_case(5)
 
 
 if __name__ == '__main__':

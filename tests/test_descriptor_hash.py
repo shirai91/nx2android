@@ -119,12 +119,35 @@ static void other_key_fields(void) {
     view = (VkBufferView)(uintptr_t)2;
     assert(cached(VK_NULL_HANDLE, &w, 1) != first && updates == 2);
 }
+static void texel_array_views(void) {
+    // Every view of a texel buffer array is part of the key: two arrays differing only past slot 0 must not share a set.
+    for (unsigned pos = 0; pos < 32; pos++) {
+        reset(); VkBufferView views[32];
+        for (unsigned i = 0; i < 32; i++) views[i] = (VkBufferView)(uintptr_t)(100 + i);
+        VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstBinding = 5, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER,
+            .descriptorCount = 32, .pTexelBufferView = views};
+        VkDescriptorSet first = cached(VK_NULL_HANDLE, &w, 1);
+        views[pos] = (VkBufferView)(uintptr_t)999;
+        VkDescriptorSet second = cached(VK_NULL_HANDLE, &w, 1);
+        assert(second != first && updates == 2);
+        assert(cached(VK_NULL_HANDLE, &w, 1) == second && g_set_hits == 1);
+    }
+    reset(); VkBufferView views[32];
+    for (unsigned i = 0; i < 32; i++) views[i] = (VkBufferView)(uintptr_t)(100 + i);
+    VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        .dstBinding = 5, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER,
+        .descriptorCount = 32, .pTexelBufferView = views};
+    VkDescriptorSet first = cached(VK_NULL_HANDLE, &w, 1);
+    assert(cached(VK_NULL_HANDLE, &w, 1) == first && g_set_hits == 1 && updates == 1);
+}
 int main(int argc, char **argv) {
     assert(argc == 2);
     switch (atoi(argv[1])) {
     case 0: padding_reuse(); break;
     case 1: field_changes(); break;
     case 2: other_key_fields(); break;
+    case 3: texel_array_views(); break;
     default: abort();
     }
 }
@@ -150,6 +173,9 @@ int main(int argc, char **argv) {
 
     def test_other_descriptor_keys_remain_distinct(self):
         self.run_case(2)
+
+    def test_texel_buffer_array_hashes_every_view(self):
+        self.run_case(3)
 
 
 if __name__ == '__main__':

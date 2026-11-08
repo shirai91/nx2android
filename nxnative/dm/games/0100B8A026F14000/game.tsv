@@ -56,6 +56,8 @@ pad_layout	full
 # 2,077 vertex shaders (Unreal's particle vertex factories) pick one of several c2 table slots at run time: texture table words 0x168-0x1c0 and sampler table words 0x568-0x590, and no other
 # word of c2. The translator cannot trace them to one slot: slot indices in c2, the bound slots in its arrays (without the key the first one aborted the host in a double free, now fixed)
 tex_dyn_slots	on
+# On Android the same arrays are bound from the driver slots, texel buffer arrays included (the Niagara particle parameters)
+android_dynamic_slots	on
 
 # ---- Shader split ----
 # The two shader libraries of the IoStore container FFRS-Switch.utoc / .ucas (no shader code archive in the pak): the engine's global shaders and the game's material shaders. Their tables and
