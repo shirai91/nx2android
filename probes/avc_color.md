@@ -13,6 +13,13 @@ range 1 means full, with missing/unknown ranges remaining limited. RGBA padding
 is opaque black; NV12 padding uses Y=0 for full or Y=16 for limited, with UV=128.
 This is 8-bit Y'CbCr conversion, not HDR tone mapping or display-gamut conversion.
 
+The existing `[movie] AVC: output` diagnostic includes `color-standard` (the
+reported Android value, or 0 when absent) and `full-range` (1 for full, otherwise
+0). Capture this line on the target device when checking untagged streams:
+some decoders supply size-based defaults, and the codec is initially configured
+at 1920x1080 before reporting the actual picture dimensions. The synthetic
+tagged-stream checks below do not establish those defaults for a physical device.
+
 ## Host regression
 
 ```sh
