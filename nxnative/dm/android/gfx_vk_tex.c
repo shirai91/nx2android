@@ -893,11 +893,13 @@ VkBufferView vk_dummy_tbuf(int storage) {
     VKCHK(vkCreateBufferView(V.dev, &ci, NULL, &v[storage]));
     return v[storage];
 }
-// a buffer texture's texel buffer view over its pool (cached by texture contents: the registered copy). One at an offset that is not a multiple of
-// minTexelBufferOffsetAlignment cannot have a view there: a read-only one (storage 0) is given a copy of its bytes as the CPU sees them, at an aligned place in
-// this submission's scratch memory, made at each bind and freed with the submission. Final Fantasy Resonance (Unreal Engine 5.6) binds its sprite particles'
-// parameters (R32F, 44 elements: colours, sizes) at offsets 36 bytes past a multiple of Adreno's 64, and they read the zero dummy (its battle fires stay missing with
-// the copy: another cause). A buffer the GPU writes in the same submission would be read as last copied back; a storage one keeps the dummy (its writes would go to the copy)
+// a buffer texture's texel buffer view over its pool (cached by texture contents: the registered copy).
+// Vulkan 1.3 / VK_EXT_texel_buffer_alignment supports single-texel element alignment (uniform/storageTexelBufferOffsetSingleTexelAlignment),
+// allowing buffer views to be created directly on the live GPU pool buffer (zero copy, same as Metal on iOS/macOS).
+// Final Fantasy Resonance (Unreal Engine 5.6) binds its Niagara sprite particles' parameters (R32F, 44/36 elements: colours, sizes)
+// at offsets 36 bytes past a multiple of Adreno's 64, computed by GPU compute shaders into the pool buffer.
+// If the driver rejects the offset, a read-only view falls back to the CPU copy (vk_ubd_read) into aligned scratch, made per bind: it reads the bytes as last copied
+// back, so parameters a compute shader wrote earlier in the same submission are stale there; a storage one keeps the dummy (its writes would go to the copy).
 typedef struct { uint64_t mem, pool; uint32_t fmt, n; } tbkey;   // pool: the chunk's serial (vkpool_t.serial)
 static nvn_hmap g_tbuf_cache = {.klen = sizeof(tbkey)}; static pthread_mutex_t g_tbuf_mu = PTHREAD_MUTEX_INITIALIZER;
 // A pool chunk goes (gfx_vk_core.c mtl_pool_del): the views over its buffer leave the cache and are destroyed once the GPU is past the submission open or next (vk_defer_free_bview,
@@ -927,20 +929,42 @@ VkBufferView vk_tbuf_view(const tex_t *t, int storage) {
     VkBufferView v = nvn_hm_get(&g_tbuf_cache, &k);
     if (!v) {
         const vkfmt_t *f = vk_fmt(t->d.format); VkBuffer b; VkDeviceSize off = 0;
-        uint32_t al = (uint32_t)V.props.limits.minTexelBufferOffsetAlignment;
+        VkDeviceSize al = V.props.limits.minTexelBufferOffsetAlignment;
+        // The pool and scratch buffers carry both UNIFORM_TEXEL_BUFFER and STORAGE_TEXEL_BUFFER usage (POOL_USAGE), so both rules apply to every view
+        // (VUID-VkBufferViewCreateInfo-buffer-02750 / -02751), whatever the descriptor kind; the cache key has no storage either, one view serves both kinds.
+        // Single-texel alignment allows a multiple of min(alignment, texel size); without it only a multiple of the alignment itself. Take the stricter of the two.
+        VkDeviceSize eu = V.tbuf_align_uniform ? V.tbuf_align_uniform : al;
+        VkDeviceSize es = V.tbuf_align_storage ? V.tbuf_align_storage : al;
+        VkDeviceSize sa = al; if (eu > sa) sa = eu; if (es > sa) sa = es;   // scratch copies satisfy both rules too
         int in = f && t->mem && vk_buf_at((uint64_t)(uintptr_t)t->mem, (uint64_t)t->d.width * f->bpb, &b, &off);
-        if (in && off % al == 0) {
-            VkBufferViewCreateInfo ci = {VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO, NULL, 0, b, f->vk, off, (VkDeviceSize)t->d.width * f->bpb};
-            if (vkCreateBufferView(V.dev, &ci, NULL, &v)) v = VK_NULL_HANDLE; else nvn_hm_put(&g_tbuf_cache, &k, v);
-        } else if (in && !storage) {
+        if (in && f->bpb) {
+            VkDeviceSize need_u = V.tbuf_single_uniform && f->bpb < eu ? f->bpb : eu;
+            VkDeviceSize need_s = V.tbuf_single_storage && f->bpb < es ? f->bpb : es;
+            VkDeviceSize need = need_u > need_s ? need_u : need_s;
+            int ok_align = (off % need == 0);
+            if (ok_align) {
+                VkBufferViewCreateInfo ci = {VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO, NULL, 0, b, f->vk, off, (VkDeviceSize)t->d.width * f->bpb};
+                if (!vkCreateBufferView(V.dev, &ci, NULL, &v)) {
+                    nvn_hm_put(&g_tbuf_cache, &k, v);
+                    if (off % al != 0) {
+                        static unsigned nc; if (nc++ < 4) VKLOG("buffer texture at a misaligned offset (%llu, not a multiple of %llu; format %#x, %u elements): direct GPU buffer view created", (unsigned long long)off, (unsigned long long)al, t->d.format, t->d.width);
+                    }
+                } else {
+                    v = VK_NULL_HANDLE;
+                }
+            }
+        }
+        if (!v && in && !storage) {
+            // The bind is already inside a render pass (prepare_draw begins it before stage_set): record no copy there, as Vulkan forbids it. The CPU copy the host used
+            // before the direct views is what is left for a driver that does not allow this offset.
             VkDeviceSize n = (VkDeviceSize)t->d.width * f->bpb, so; VkBuffer sb; void vk_ubd_read(uint64_t a, uint64_t n, uint8_t *dst);
-            uint8_t *p = vk_scratch(n, al, &sb, &so); vk_ubd_read((uint64_t)(uintptr_t)t->mem, n, p);
+            uint8_t *p = vk_scratch(n, sa, &sb, &so); vk_ubd_read((uint64_t)(uintptr_t)t->mem, n, p);
             VkBufferViewCreateInfo ci = {VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO, NULL, 0, sb, f->vk, so, n};
             if (vkCreateBufferView(V.dev, &ci, NULL, &v)) v = VK_NULL_HANDLE; else vk_defer_free_bview(v);
-            static unsigned nc; if (nc++ < 4) VKLOG("buffer texture at a misaligned offset (%llu, not a multiple of %u; format %#x, %u elements): read from a copy", (unsigned long long)off, al, t->d.format, t->d.width);
+            static unsigned nc; if (nc++ < 4) VKLOG("buffer texture at a misaligned offset (%llu, not a multiple of %llu; format %#x, %u elements): read from a copy", (unsigned long long)off, (unsigned long long)sa, t->d.format, t->d.width);
             pthread_mutex_unlock(&g_tbuf_mu); return v;   // (not cached: a copy of this bind's bytes)
-        } else if (in) VKRED_ONCE(16, "storage buffer texture at a misaligned offset: %llu, not a multiple of %u (format %#x, %u elements): zeros", (unsigned long long)off, al, t->d.format, t->d.width);
-        else VKRED_ONCE(16, "buffer texture not in a pool (format %#x, %u elements)", t->d.format, t->d.width);
+        } else if (!v && in) VKRED_ONCE(16, "storage buffer texture at a misaligned offset: %llu, not a multiple of %llu (format %#x, %u elements): zeros", (unsigned long long)off, (unsigned long long)sa, t->d.format, t->d.width);
+        else if (!in) VKRED_ONCE(16, "buffer texture not in a pool (format %#x, %u elements)", t->d.format, t->d.width);
     }
     pthread_mutex_unlock(&g_tbuf_mu);
     return v;
