@@ -238,6 +238,7 @@ static VkDescriptorSetLayout shader_layout(const VkDescriptorSetLayoutBinding *b
     }
     return layout;
 }
+static uint32_t *spv_frag_inf(const uint32_t *w, uint32_t nw, uint32_t *onw, int *nst, int mode);
 static vkshader_t *vk_shader_q(uint64_t key, int stage, int quiet);
 vkshader_t *vk_shader(uint64_t key, int stage) { return vk_shader_q(key, stage, 0); }
 // A geometry shader's input primitive is fixed when it is translated, and Maxwell's shader header doesn't give it: shader_vk.py translates each geometry shader for
@@ -330,6 +331,9 @@ static vkshader_t *vk_shader_q(uint64_t key, int stage, int quiet) {
           else if (op == 12 && n >= 5 && glsl && w[i + 3] == glsl) { uint32_t *x = &w[i + 4];   // OpExtInst: FMin 37 → NMin 79, FMax 40 → NMax 80, FClamp 43 → NClamp 81
               if (*x == 37) *x = 79; else if (*x == 40) *x = 80; else if (*x == 43) *x = 81; }
           i += n; } }
+    { static int on = -1; if (on < 0) { const char *e = getenv("DM_VK_FRAG_INF"); on = e ? atoi(e) : 0; }
+      if (on > 0 && stage == 1) { uint32_t n2 = 0; int nst = 0; uint32_t *w2 = spv_frag_inf(w, nw, &n2, &nst, on);
+          if (w2) { free(w); w = w2; nw = n2; static int nl; if (nl++ < 4) VKLOG("shader %016llx: DM_VK_FRAG_INF=%d: %d colour output stores guarded", (unsigned long long)key, on, nst); } } }
     spv_io_locs(w, nw, &s->in_locs, &s->out_locs);
     VkShaderModuleCreateInfo ci = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, NULL, 0, (size_t)nw * 4, w};
     VkResult vr = vkCreateShaderModule(V.dev, &ci, NULL, &s->mod); s->spv = w; s->nspv = nw;
@@ -466,6 +470,66 @@ static uint32_t *spv_frag_depth(const uint32_t *w, uint32_t nw, uint32_t *onw) {
                                   memcpy(&o[no], x, sizeof x); no += 12; }
         memcpy(&o[no], &w[i], n * 4); no += n; i += n; }
     o[3] = c.bound; *onw = no; free(c.nt); return o;
+}
+// DM_VK_FRAG_INF=1 (start-up, a profile env line): every float a fragment shader stores into a colour output passes isinf(x) ? (x > 0 ? 65504 : -65504) : x first.
+// Persona 5 Royal's battle menu unpremultiplies its scene copy (rgb / a, a = 0 outside the menu) and blends it with source alpha (a > 0 ? 1 : 0): on the Switch the UNORM
+// target clamps the infinite source to 1 before blending (1 x 0 + dst), on Adreno (Turnip) inf x 0 blended to NaN and everything but the menu was written black.
+// 65504 is the largest half float, so a 16-bit blender keeps it finite as well; finite values and NaN are left as they are.
+// DM_VK_FRAG_INF=2: x clamped to -65504..65504 by comparisons instead (no isinf a driver may fold away) and NaN made 0
+static uint32_t *spv_frag_inf(const uint32_t *w, uint32_t nw, uint32_t *onw, int *nst, int mode) {
+    spvi c = {.w = w, .fn = nw, .bound = w[3]};
+    uint32_t ep = 0, f32 = 0;
+    for (uint32_t i = 5; i < nw;) { uint32_t n = w[i] >> 16, op = w[i] & 0xffff; if (!n || i + n > nw) return NULL;
+        if (op == 15) { if (ep || n < 3 || w[i + 1] != 4) return NULL; ep = i; }   // one entry point, a Fragment one
+        if (op == 22 && n == 3 && w[i + 2] == 32) f32 = w[i + 1];
+        if (op == 54) { c.fn = i; break; }
+        i += n; }
+    if (!ep || !f32 || c.fn == nw) return NULL;
+    uint8_t *outp = calloc(c.bound, 1); if (!outp) return NULL;   // 1: a colour output variable; 2: a pointer to a float in one (the variable itself or an access chain)
+    uint8_t *pf = calloc(c.bound, 1); if (!pf) { free(outp); return NULL; }   // pointer types to an Output float
+    for (uint32_t i = 5; i < c.fn;) { uint32_t n = w[i] >> 16, op = w[i] & 0xffff;
+        if (op == 32 && n == 4 && w[i + 2] == 3 && w[i + 3] == f32 && w[i + 1] < c.bound) pf[w[i + 1]] = 1;
+        if (op == 59 && n >= 4 && w[i + 3] == 3 && w[i + 2] < c.bound) outp[w[i + 2]] = pf[w[i + 1]] ? 2 : 1;   // OpVariable Output
+        i += n; }
+    for (uint32_t i = 5; i < c.fn;) { uint32_t n = w[i] >> 16, op = w[i] & 0xffff;
+        if (op == 71 && n >= 4 && w[i + 2] == 11 && w[i + 1] < c.bound) outp[w[i + 1]] = 0;   // BuiltIn (FragDepth, SampleMask): not colour
+        i += n; }
+    uint32_t nfix = 0;
+    for (uint32_t i = c.fn; i < nw;) { uint32_t n = w[i] >> 16, op = w[i] & 0xffff; if (!n || i + n > nw) { free(outp); free(pf); return NULL; }
+        if ((op == 65 || op == 66) && n >= 4 && w[i + 3] < c.bound && outp[w[i + 3]] && w[i + 2] < c.bound && pf[w[i + 1]]) outp[w[i + 2]] = 2;   // OpAccessChain to a float of one
+        if (op == 62 && n >= 3 && w[i + 1] < c.bound && outp[w[i + 1]] == 2) nfix++;
+        i += n; }
+    if (!nfix) { free(outp); free(pf); return NULL; }
+    static const uint32_t kz0[1] = {0};
+    c.nt = malloc(4096 * 4);
+    uint32_t bl = spvi_decl(&c, 20, kz0, 0, 1), k[3] = {0, 0x477fe000, 0xc77fe000}, kid[3] = {0};   // OpTypeBool; float constants 0, 65504, -65504
+    if (!bl) { free(c.nt); free(outp); free(pf); return NULL; }
+    for (int j = 0; j < 3; j++) {   // OpConstant (its result type comes before its id, unlike spvi_decl's declarations)
+        for (uint32_t i = 5; i < c.fn && !kid[j];) { uint32_t n = w[i] >> 16; if ((w[i] & 0xffff) == 43 && n == 4 && w[i + 1] == f32 && w[i + 3] == k[j]) kid[j] = w[i + 2]; i += n; }
+        if (!kid[j]) { kid[j] = c.bound++; c.nt[c.nnt++] = 4u << 16 | 43; c.nt[c.nnt++] = f32; c.nt[c.nnt++] = kid[j]; c.nt[c.nnt++] = k[j]; } }
+    uint32_t z = kid[0], hp = kid[1], hn = kid[2];
+    uint32_t *o = malloc(((size_t)nw + c.nnt + 32 * nfix) * 4), no = c.fn; memcpy(o, w, (size_t)c.fn * 4);
+    memcpy(&o[no], c.nt, c.nnt * 4); no += c.nnt;
+    for (uint32_t i = c.fn; i < nw;) { uint32_t n = w[i] >> 16, op = w[i] & 0xffff;
+        if (op == 62 && n >= 3 && w[i + 1] < c.bound && outp[w[i + 1]] == 2) {
+            uint32_t v = w[i + 2], a = c.bound++, b = c.bound++, d = c.bound++, nv = c.bound++;
+            if (mode == 2) { uint32_t e = c.bound++, f = c.bound++;
+                uint32_t x[32] = {5u << 16 | 186, bl, a, v, hp,          // OpFOrdGreaterThan 65504
+                                  6u << 16 | 169, f32, b, a, hp, v,      // OpSelect
+                                  5u << 16 | 184, bl, d, b, hn,          // OpFOrdLessThan -65504
+                                  6u << 16 | 169, f32, e, d, hn, b,      // OpSelect
+                                  4u << 16 | 156, bl, f, v,              // OpIsNan
+                                  6u << 16 | 169, f32, nv, f, z, e};     // OpSelect 0
+                memcpy(&o[no], x, sizeof x); no += 32; }
+            else { uint32_t x[21] = {4u << 16 | 157, bl, a, v,           // OpIsInf
+                                     5u << 16 | 186, bl, b, v, z,        // OpFOrdGreaterThan 0
+                                     6u << 16 | 169, f32, d, b, hp, hn,  // OpSelect ±65504
+                                     6u << 16 | 169, f32, nv, a, d, v};  // OpSelect
+                memcpy(&o[no], x, sizeof x); no += 21; }
+            memcpy(&o[no], &w[i], n * 4); o[no + 2] = nv; no += n; }
+        else { memcpy(&o[no], &w[i], n * 4); no += n; }
+        i += n; }
+    o[3] = c.bound; *onw = no; *nst = (int)nfix; free(c.nt); free(outp); free(pf); return o;
 }
 // DM_VK_SPV_DIR=<dir> with DM_VK_SPV_ALT=1 (live, debugging): pipelines made while it is on use <dir>/<key>.spv in place of the bundle's code where the file
 // exists (same bindings), so two compilations of a shader can be compared in one run: the translator's module through spirv-opt, its GLSL through glslc...

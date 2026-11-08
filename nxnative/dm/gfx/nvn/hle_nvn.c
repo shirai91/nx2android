@@ -173,6 +173,20 @@ NVN(nvnDeviceGetInteger, void, const NVNdevice *d, NVNdeviceInfo what, int *out)
     if (w == 0x67) { *out = 256; return; }
     if (w >= sizeof g_devinfo / sizeof *g_devinfo) { LOG("[RED] nvnDeviceGetInteger unknown item %#x, returning 0", w); *out = 0; return; }
     *out = g_devinfo[w];
+    // DM_NVN_DEVINFO=<item>=<value>[,…] (hex or decimal) overrides table items for one game (env.txt, from the profile's android.tsv): Persona 5 Royal (SDK 13.3.2) sizes a 16x16 RGBA8 linear
+    // render target with item 0x39 (main+0x1026f78) and asserts it fits the 0x400 bytes its texture descriptor reserved (RsdxDevice11.cpp line 3262, main+0x10189d0): 128 gives 0x800, so its
+    // driver reports 64 or less there
+    static int ovr_n = -1; static unsigned ovr[16][2];
+    if (ovr_n < 0) {
+        ovr_n = 0; const char *e = getenv("DM_NVN_DEVINFO");
+        for (char *p = (char *)e; p && *p && ovr_n < 16; ) {
+            char *q; unsigned long k = strtoul(p, &q, 0), v;
+            if (*q != '=') break;
+            v = strtoul(q + 1, &p, 0); ovr[ovr_n][0] = (unsigned)k; ovr[ovr_n++][1] = (unsigned)v; LOG("[nvn] DM_NVN_DEVINFO: item %#lx = %lu", k, v);
+            if (*p == ',') p++;
+        }
+    }
+    for (int i = 0; i < ovr_n; i++) if (ovr[i][0] == w) *out = (int)ovr[i][1];
     // 0x2E / 0x30, the newest GPU code version the driver runs: the table's 1.14 is SMO's SDK 7 driver, while each SDK's driver runs the code of the GLSLC in the same SDK. A game that compiles
     // at run time checks its GLSLC's version against this range first (Catherine: Full Body, SDK 8.2.1: its GLSLC writes 1.15, main+0x330dcc refused it, no built-in program was compiled
     // and the first uniform lookup read a null program, main+0x3316dc), so the host reports at least the version of the GLSLC the game carries. A game that checks the shaders it ships
@@ -299,7 +313,8 @@ NVN(nvnTextureBuilderSetDevice, void, NVNtextureBuilder *b, NVNdevice *d) { TB(b
 NVN(nvnTextureBuilderSetFlags, void, NVNtextureBuilder *b, int f) { TB(b)->d.flags = f; }
 NVN(nvnTextureBuilderSetTarget, void, NVNtextureBuilder *b, NVNtextureTarget t) { TB(b)->d.target = t; }
 NVN(nvnTextureBuilderSetWidth, void, NVNtextureBuilder *b, int v) { TB(b)->d.width = v; }
-NVN(nvnTextureBuilderSetHeight, void, NVNtextureBuilder *b, int v) { TB(b)->d.height = v; }
+static void size_trace(int w, int h);
+NVN(nvnTextureBuilderSetHeight, void, NVNtextureBuilder *b, int v) { size_trace(TB(b)->d.width, v); TB(b)->d.height = v; }
 NVN(nvnTextureBuilderSetDepth, void, NVNtextureBuilder *b, int v) { TB(b)->d.depth = v; }
 NVN(nvnTextureBuilderSetSize1D, void, NVNtextureBuilder *b, int w) { TB(b)->d.width = w; TB(b)->d.height = TB(b)->d.depth = 1; }
 NVN(nvnTextureBuilderSetLevels, void, NVNtextureBuilder *b, int v) { TB(b)->d.levels = v; }
@@ -2183,8 +2198,23 @@ NVN(nvnSamplerCompare, NVNboolean, const NVNsampler *a, const NVNsampler *b) {
 }
 
 // Texture builder / texture / view
-NVN(nvnTextureBuilderSetSize2D, void, NVNtextureBuilder *b, int w, int h) { TB(b)->d.width = w; TB(b)->d.height = h; TB(b)->d.depth = 1; }
-NVN(nvnTextureBuilderSetSize3D, void, NVNtextureBuilder *b, int w, int h, int d) { TB(b)->d.width = w; TB(b)->d.height = h; TB(b)->d.depth = d; }
+// DM_NVN_SIZE_TRACE=<w>x<h> (debugging): the callers (frame-pointer chain, as module+offset) of each 2D texture builder sized w x h, the first 8 times (who picks a render size)
+static void size_trace(int w, int h) {
+    static int n; static char want[32] = "-"; const char *e = getenv("DM_NVN_SIZE_TRACE"); if (!e || !*e) return;
+    if (strcmp(want, e)) { snprintf(want, sizeof want, "%s", e); n = 0; }
+    int tw = 0, th = 0; if (sscanf(e, "%dx%d", &tw, &th) != 2 || tw != w || th != h || n >= 8) return;
+    n++; char line[512]; int at = snprintf(line, sizeof line, "[nvn] texture builder %dx%d from", w, h);
+    uint64_t *fp = (uint64_t *)__builtin_frame_address(0);
+    for (int k = 0; k < 10 && fp && !((uintptr_t)fp & 7) && at < (int)sizeof line - 48; k++) {
+        uint64_t lr = fp[1] & 0xffffffffffffull, *nx = (uint64_t *)fp[0]; const char *mn = "?"; uint64_t off = lr;
+        for (int i = 0; i < g_nmod; i++) if (lr >= (uint64_t)(uintptr_t)g_mod[i].base && lr < (uint64_t)(uintptr_t)g_mod[i].base + g_mod[i].size) { mn = g_mod[i].name; off = lr - (uint64_t)(uintptr_t)g_mod[i].base; }
+        at += snprintf(line + at, sizeof line - at, " %s+%#llx", mn, (unsigned long long)off);
+        if (nx <= fp) break; fp = nx;
+    }
+    LOG("%s", line);
+}
+NVN(nvnTextureBuilderSetSize2D, void, NVNtextureBuilder *b, int w, int h) { size_trace(w, h); TB(b)->d.width = w; TB(b)->d.height = h; TB(b)->d.depth = 1; }
+NVN(nvnTextureBuilderSetSize3D, void, NVNtextureBuilder *b, int w, int h, int d) { size_trace(w, h); TB(b)->d.width = w; TB(b)->d.height = h; TB(b)->d.depth = d; }
 NVN(nvnTextureBuilderSetSwizzle, void, NVNtextureBuilder *b, NVNtextureSwizzle r, NVNtextureSwizzle g, NVNtextureSwizzle bl, NVNtextureSwizzle a) {
     tex_builder_t *o = (tex_builder_t *)b; o->set_swz = 1; o->swz = (uint16_t)((r & 7) | (g & 7) << 3 | (bl & 7) << 6 | (a & 7) << 9);
     if (r != NVN_TEXTURE_SWIZZLE_R || g != NVN_TEXTURE_SWIZZLE_G || bl != NVN_TEXTURE_SWIZZLE_B || a != NVN_TEXTURE_SWIZZLE_A) ONCE_LOG("TextureBuilderSetSwizzle not identity (%d %d %d %d): remapped with a Metal view when sampling", (int)r, (int)g, (int)bl, (int)a);
