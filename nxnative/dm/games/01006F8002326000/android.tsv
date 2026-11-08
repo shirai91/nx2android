@@ -7,6 +7,12 @@
 # DM_VK_CB_DRAWS=0: no command-buffer cuts. With them the island's lit ground went dark in a full-width band over the top third (whole bins) in 7-22 of 60
 # frames, from the depth texel written back at a cut (DM_VK_LRZ_TOUCH bit 8; 0 of 60 without that bit or without cuts); uncut, the GPU also takes 8.9 ms
 # a frame instead of 11.3.
+# DM_VK_ASYNC_PIPE=0: new pipelines are built at once. Built in the background, a draw waits out of the frame until its pipeline is ready, and on a clean start the
+# first Nook Inc. scene showed one whole black frame (screen recording, 2026-11-07); things seen for the first time flashed black (user report on the release
+# build). Built at once: 0 black frames; the cost is in the loading screens (frames up to 307 ms there), then 30 fps (worst 37 ms).
+# DM_YIELD_BACKOFF=0: repeated yields stay plain yields (no short sleeps). The loads yield about 30,000 times a second (svc 0xb, DM_HLECOUNT; 2,000 a second in play),
+# and the back-off's sleeps stretched them: title to island 11.9-12.6 s of black screen, 10.3 s without (Y700, 2026-11-08, 3 + 2 runs); the game's CPU in play 107% of a
+# core either way. The first night's save screen (the tips screen after K.K.) lasted about 40 s, its commit 14 s in (24 ms from the first write to the swap).
 # DM_LAN=1: local play over the LAN (hle_ldn.c, as Atmosphère's ldn_mitm): the airport's local play with Switches that run ldn_mitm, and with other ports.
 # 2026-11-07: a Switch (Atmosphère 1.11.2 with ldn_mitm 1.21.2 of the DefenderOfHyrule fork; spacemeowx2's 1.25.1 does not boot on 1.11.2) found the tablet's open gate and visited the island over Wi-Fi, and the user played with it. Before that, a test peer on the PC (ldn_mitm's
 # protocol) saw the gate in its scan (8 players, the island's advertise data) and joined (2 nodes). The tablet as the visitor was not tested.
@@ -16,4 +22,6 @@ tested	v2228224 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Andr
 package	org.nx2a.animalcrossing
 orientation	landscape
 env	DM_VK_CB_DRAWS=0
+env	DM_VK_ASYNC_PIPE=0
+env	DM_YIELD_BACKOFF=0
 env	DM_LAN=1
