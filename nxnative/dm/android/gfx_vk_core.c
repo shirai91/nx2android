@@ -663,8 +663,44 @@ static uint64_t g_zc_bytes, g_cp_bytes, g_lazy_total, g_lazy_bytes, g_used_bytes
 // and whole host pages (nvn_dirty_swap replaces their pages with no write lost: nvnMemoryPoolInitialize registers the range first; a sparse pool's runs are not registered
 // and are backed when made).
 // DM_VK_ZEROCOPY_LAZY: 0, none; 1, also the chunks of pools over ZC_CHUNK (Pokopia on the Thor; the big pools of Xenoblade Chronicles 3, Tears of the Kingdom and
-// 13 Sentinels are not measured with it); 2, every page-aligned pool on any device. Unset: none
+// 13 Sentinels are not measured with it); 2, every page-aligned pool on any device. Unset: none, or the pools of one chunk where the CPU reads hardware buffers uncached
 static int zc_lazy_mode(void) { static int v = -2; if (v == -2) { const char *e = getenv("DM_VK_ZEROCOPY_LAZY"); v = e && *e ? atoi(e) : -1; } return v; }
+// Where the CPU reads hardware buffers uncached, the pools of one chunk are lazy (DM_VK_ZEROCOPY_LAZY unset or 1): a pool the GPU never uses (command memory, shader code,
+// texture and sampler descriptors, which the replay reads and the GPU does not) keeps the CPU's cached pages, and one it uses is backed the first time. On a Retroid
+// Pocket 5 (Adreno 650, Android 13, kernel 4.19) every BLOB hardware buffer, whatever its CPU usage, and every Vulkan memory type, HOST_CACHED included, read at
+// 1.7-1.9 GB/s against 16-21 GB/s for malloc (163 ns a scattered line against 43), and wrote at full speed (write-combined); an AYN Thor's read at 35-47 GB/s, as its
+// malloc memory. Pokemon Legends: Z-A's replay walked its 36 MB command pool through such pages, 24 ms of a 37 ms frame; with the pool left cached it took 12 ms and
+// the game held its 30 fps in handheld mode. The check, at the first pool, reads 1 MB of a new hardware buffer and of malloc memory, best of 3 each
+static volatile uint64_t g_read_sink;
+static uint64_t read_ns(const uint8_t *p, size_t n) {
+    uint64_t best = UINT64_MAX;
+    for (int k = 0; k < 3; k++) {
+        struct timespec t0, t1; uint64_t s = 0; clock_gettime(CLOCK_MONOTONIC, &t0);
+        for (size_t i = 0; i < n / 8; i++) s += ((const uint64_t *)p)[i];
+        clock_gettime(CLOCK_MONOTONIC, &t1); g_read_sink += s;
+        uint64_t ns = (uint64_t)((t1.tv_sec - t0.tv_sec) * 1000000000ll + (t1.tv_nsec - t0.tv_nsec)); if (ns < best) best = ns;
+    }
+    return best ? best : 1;
+}
+static int zc_uncached(void) {
+    static int v = -1; if (v >= 0) return v;
+    enum { N = 1 << 20 }; v = 0;
+    AHardwareBuffer_Desc d = {N, 1, 1, AHARDWAREBUFFER_FORMAT_BLOB, AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN | AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN | AHARDWAREBUFFER_USAGE_GPU_DATA_BUFFER, 0, 0, 0};
+    AHardwareBuffer *ahb = NULL; if (AHardwareBuffer_allocate(&d, &ahb)) return v;
+    int sv[2], fds[16], nfd = -1;
+    if (!socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sv)) { if (!AHardwareBuffer_sendHandleToUnixSocket(ahb, sv[0])) nfd = recv_fds(sv[1], fds, 16); close(sv[0]); close(sv[1]); }
+    uint8_t *a = nfd >= 1 ? mmap(NULL, N, PROT_READ | PROT_WRITE, MAP_SHARED, fds[0], 0) : MAP_FAILED, *m = malloc(N);
+    for (int i = 0; i < nfd; i++) close(fds[i]);
+    if (a != MAP_FAILED && m) {
+        memset(a, 1, N); memset(m, 1, N);
+        uint64_t ta = read_ns(a, N), tm = read_ns(m, N); v = ta > 4 * tm;
+        VKLOG("hardware buffers: the CPU reads one at %.0f MB/s, malloc memory at %.0f MB/s%s", N / (ta / 1e9) / 1e6, N / (tm / 1e9) / 1e6,
+              v ? ": uncached, so pools of one chunk stay in cached memory until the GPU first uses them" : "");
+    }
+    if (a != MAP_FAILED) munmap(a, N);
+    free(m); AHardwareBuffer_release(ahb);
+    return v;
+}
 // DM_VK_ZEROCOPY_MAX_MB=<n>: pools bigger than n MB are copied, not zero-copy, and kept whole (a copied pool takes no hardware buffer, so no chunks). The Legion Y700
 // 2023's gralloc aborts the process (no error returned) allocating a hardware buffer for Unicorn Overlord's 860 MB pool, while its pools up to 250 MB are fine
 static int zc_over(uint64_t size) { static uint64_t m = 1; if (m == 1) { const char *e = getenv("DM_VK_ZEROCOPY_MAX_MB"); m = e && atoi(e) > 0 ? (uint64_t)atoi(e) << 20 : 0; } return m && size > m; }
@@ -674,7 +710,7 @@ void mtl_pool_add(const void *mem, uint64_t size) {
     uint64_t a = (uint64_t)(uintptr_t)mem; int whole = ((a | size) & 0xfff) || zc_over(size);   // copied in one piece
     uint64_t c = whole ? size : ZC_CHUNK; int m = zc_lazy_mode();
     static uint64_t pg; if (!pg) pg = (uint64_t)getpagesize();   // (a 16 KB-page kernel: a pool only 4 KB-aligned is not swapped in place, it is copied as before)
-    int lazy = !whole && !((a | size) & (pg - 1)) && m > 0 && (m >= 2 || size > c) && nvn_dirty_tracked(mem, size);
+    int lazy = !whole && !((a | size) & (pg - 1)) && m && (m >= 2 || (size > c ? m == 1 : zc_uncached())) && nvn_dirty_tracked(mem, size);
     for (uint64_t o = 0; o < size; o += c) pool_add_one((const uint8_t *)mem + o, size - o < c ? size - o : c, a, a + size, lazy);
     if (size > c) VKLOG("memory pool %p +%#llx: %llu chunks of at most %#llx", mem, (unsigned long long)size, (unsigned long long)((size + c - 1) / c), c);
 }
