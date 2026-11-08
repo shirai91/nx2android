@@ -2,7 +2,8 @@
 """ROM-free AAC speaker-order regression using FFmpeg and an ARM64 Android device.
 
 Adapts nxnative's movie_audio_layouts.py tone fixtures. Builds the real nx2android
-AudioConverter adapter; compares decoded PCM with FFmpeg in guest speaker order.
+AudioConverter adapter; checks default Android order and optional MPEG order.
+These host decoder comparisons do not establish the Switch SDK's output order.
 """
 from array import array
 import argparse
@@ -51,23 +52,32 @@ def main():
         for ch, (layout, tones, order) in CASES.items():
             rate = 44100 if ch == 1 else 48000
             samples = array('h', (round(10000 * math.sin(i*f*2*math.pi/rate)) for i in range(32768) for f in tones))
-            stream, ref, got = (a.out / f'{name}-{ch}.{ext}' for name, ext in (('tones','aac'),('ref','pcm'),('android','pcm')))
+            stream, ref = (a.out / f'{name}-{ch}.{ext}' for name, ext in (('tones','aac'),('ref','pcm')))
             ff = [a.ffmpeg, '-nostdin', '-loglevel', 'error', '-y']
             subprocess.run([*ff, '-f', 's16le', '-ar', str(rate), '-ac', str(ch), '-channel_layout', layout,
                             '-i', 'pipe:0', '-c:a', 'aac', '-b:a', str(ch*48000), '-f', 'adts', str(stream)], input=samples.tobytes(), check=True)
             subprocess.run([*ff, '-i', str(stream), '-f', 's16le', str(ref)], check=True)
             subprocess.run(adb + ['push', str(stream), remote + '/input.aac'], check=True)
-            subprocess.run(adb + ['shell', remote + '/decode', remote + '/input.aac', remote + '/output.pcm'], check=True)
-            subprocess.run(adb + ['pull', remote + '/output.pcm', str(got)], check=True)
-            expected, actual = array('h', ref.read_bytes()), array('h', got.read_bytes())
-            if len(expected) != len(actual): raise AssertionError(f'{ch} channels: PCM lengths differ ({len(expected)} vs {len(actual)})')
-            scores = []
-            for i, speaker in enumerate(order):
-                signal, decoded = expected[speaker::ch], actual[i::ch]
-                error = sum((x-y)**2 for x, y in zip(signal, decoded)); power = sum(x*x for x in signal)
-                scores.append(10*math.log10(power/error) if error else math.inf)
-            print(f'{ch} channels: minimum speaker SNR {min(scores):.1f} dB', flush=True)
-            if min(scores) < 35: raise AssertionError(f'{ch} channels: wrong speaker order or decoded PCM')
+            baseline = None
+            for mode in ('unset', '0', '1'):
+                env = ['env', '-u', 'DM_MOVIE_AAC_MPEG_ORDER'] if mode == 'unset' else ['env', 'DM_MOVIE_AAC_MPEG_ORDER=' + mode]
+                got = a.out / f'android-{ch}-{mode}.pcm'
+                subprocess.run(adb + ['shell', *env, remote + '/decode', remote + '/input.aac', remote + '/output.pcm'], check=True)
+                subprocess.run(adb + ['pull', remote + '/output.pcm', str(got)], check=True)
+                expected, actual = array('h', ref.read_bytes()), array('h', got.read_bytes())
+                if len(expected) != len(actual): raise AssertionError(f'{ch} channels: PCM lengths differ ({len(expected)} vs {len(actual)})')
+                if mode == 'unset': baseline = actual
+                if mode == '0' and actual != baseline: raise AssertionError(f'{ch} channels: disabled output differs from default')
+                # FFmpeg's configuration-7 interpretation exchanges the front
+                # pairs relative to the observed Android 7.1-wide output.
+                native_order = [6, 7, 2, 3, 4, 5, 0, 1] if ch == 8 else range(ch)
+                scores = []
+                for i, speaker in enumerate(order if mode == '1' else native_order):
+                    signal, decoded = expected[speaker::ch], actual[i::ch]
+                    error = sum((x-y)**2 for x, y in zip(signal, decoded)); power = sum(x*x for x in signal)
+                    scores.append(10*math.log10(power/error) if error else math.inf)
+                print(f'{ch} channels, MPEG order {mode}: {len(actual)//ch} frames, minimum speaker SNR {min(scores):.1f} dB', flush=True)
+                if min(scores) < 35: raise AssertionError(f'{ch} channels ({mode}): wrong speaker order or decoded PCM')
     finally:
         subprocess.run(adb + ['shell', 'rm', '-rf', remote], check=True)
 

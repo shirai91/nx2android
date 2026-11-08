@@ -1,6 +1,7 @@
-// AAC channel layout adaptation from nxnative's movie_aac_android.inc.
-// AudioToolbox exposes MPEG element order to the guest; MediaCodec returns
-// Android speaker order. Synthetic per-speaker tones distinguish the layouts.
+// Experimental AAC layout adaptation from nxnative's movie_aac_android.inc.
+// Synthetic tones distinguish AudioToolbox's MPEG element order from Android
+// speaker order, but do not establish the Switch SDK's output order. Keep this
+// conversion opt-in (DM_MOVIE_AAC_MPEG_ORDER=1); Android order is the default.
 #pragma once
 #include <stddef.h>
 #include <stdint.h>
@@ -17,7 +18,7 @@ static inline int aac_channel_config(const uint8_t *asc, size_t n) {
     int frequency = aac_asc_bits(asc, n, freq_bit, 4); if (frequency < 0) return -1;
     return aac_asc_bits(asc, n, freq_bit + 4 + (frequency == 15 ? 24 : 0), 4);
 }
-static inline const uint8_t *aac_guest_order(int config, int channels, int mask) {
+static inline const uint8_t *aac_mpeg_order(int config, int channels, int mask) {
     static const uint8_t center_first[] = {2,0,1,3,4};
     static const uint8_t surround[] = {2,0,1,4,5,3};
     static const uint8_t wide[] = {2,6,7,0,1,4,5,3};

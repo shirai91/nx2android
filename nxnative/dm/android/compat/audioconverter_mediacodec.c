@@ -16,6 +16,7 @@ struct dm_audio_converter {
     uint8_t asc[64]; int nasc;
     AMediaCodec *mc; int failed, red, och;   // och: channels of the codec's output
     int channel_config, channel_mask;      // ASC identity and the current output's speaker mask
+    int mpeg_order;                        // experimental, opted into when this converter is created
     int64_t pts; long nin, nout;             // input timestamps (µs, made up from the packet count) and buffers in / out since the start
     uint8_t *pend; size_t npend, cappend;    // decoded PCM not handed out yet
 };
@@ -25,6 +26,7 @@ OSStatus AudioConverterNew(const AudioStreamBasicDescription *in, const AudioStr
     if (in->mFormatID != kAudioFormatMPEG4AAC || out->mFormatID != kAudioFormatLinearPCM || out->mBitsPerChannel != 16 || (out->mFormatFlags & (kAudioFormatFlagIsFloat | kAudioFormatFlagIsNonInterleaved)) ||
         in->mChannelsPerFrame != out->mChannelsPerFrame || !in->mChannelsPerFrame || in->mChannelsPerFrame > 8) return kAudio_UnimplementedError;
     AudioConverterRef a = calloc(1, sizeof *a); if (!a) return -1;
+    const char *e = getenv("DM_MOVIE_AAC_MPEG_ORDER"); a->mpeg_order = e && !strcmp(e, "1");
     a->in = *in; a->out = *out; a->och = (int)in->mChannelsPerFrame; *c = a; return noErr;
 }
 // one descriptor of an ES descriptor: its tag and its body; the length is in 7-bit groups, a set top bit meaning more follow
@@ -79,7 +81,7 @@ static void keep(AudioConverterRef c, const uint8_t *b, size_t n) {
     size_t frames = n / (2u * (size_t)c->och), need = c->npend + frames * 2u * (size_t)ch;
     if (need > c->cappend) { c->cappend = need * 2; c->pend = realloc(c->pend, c->cappend); if (!c->pend) die("movie: AAC buffer allocation failed"); }
     int16_t *o = (int16_t *)(c->pend + c->npend); const int16_t *s = (const int16_t *)b;
-    const uint8_t *order = c->och == ch ? aac_guest_order(c->channel_config, c->och, c->channel_mask) : NULL;
+    const uint8_t *order = c->mpeg_order && c->och == ch ? aac_mpeg_order(c->channel_config, c->och, c->channel_mask) : NULL;
     if (order) for (size_t i = 0; i < frames; i++) for (int k = 0; k < ch; k++)
         memcpy(o + i * ch + k, b + 2 * (i * ch + order[k]), 2);
     else if (c->och == ch) memcpy(o, s, frames * 2u * (size_t)ch);
