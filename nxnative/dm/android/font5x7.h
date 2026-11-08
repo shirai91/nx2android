@@ -25,3 +25,47 @@ static const unsigned char FONT5X7[95][5] = {
     {0x44,0x28,0x10,0x28,0x44}, {0x0C,0x50,0x50,0x50,0x3C}, {0x44,0x64,0x54,0x4C,0x44}, {0x00,0x08,0x36,0x41,0x00}, // x y z {
     {0x00,0x00,0x7F,0x00,0x00}, {0x00,0x41,0x36,0x08,0x00}, {0x02,0x01,0x02,0x04,0x02},                              // | } ~
 };
+
+// ---- UTF-8 aware lookup with Latin-1 extras for Spanish prompts (bit 0 = top row, as FONT5X7).
+// The 5x7 cell has no room above a capital, so accented capitals fall back to the base letter. ----
+static const unsigned char *glyph5x7(unsigned cp) {
+    static const unsigned char GQ[] = {0x30,0x48,0x45,0x40,0x20}; // U+00BF inverted question mark
+    static const unsigned char GE[] = {0x00,0x00,0x7D,0x00,0x00}; // U+00A1 inverted exclamation
+    static const unsigned char GA[] = {0x20,0x54,0x56,0x55,0x78}; // a-acute
+    static const unsigned char GEA[] = {0x38,0x54,0x56,0x55,0x18}; // e-acute
+    static const unsigned char GI[] = {0x00,0x44,0x7E,0x41,0x00}; // i-acute
+    static const unsigned char GO[] = {0x38,0x44,0x46,0x45,0x38}; // o-acute
+    static const unsigned char GU[] = {0x3C,0x40,0x42,0x21,0x7C}; // u-acute
+    static const unsigned char GN[] = {0x7D,0x0A,0x06,0x06,0x79}; // n-tilde
+    static const unsigned char GUE[] = {0x3C,0x41,0x40,0x21,0x7C}; // u-diaeresis
+    if (cp >= 32 && cp < 127) return FONT5X7[cp - 32];
+    switch (cp) {
+    case 0x00BF: return GQ;  case 0x00A1: return GE;
+    case 0x00E1: return GA;  case 0x00E9: return GEA; case 0x00ED: return GI;
+    case 0x00F3: return GO;  case 0x00FA: return GU;  case 0x00F1: return GN;  case 0x00FC: return GUE;
+    case 0x00C1: return FONT5X7['A' - 32]; case 0x00C9: return FONT5X7['E' - 32]; case 0x00CD: return FONT5X7['I' - 32];
+    case 0x00D3: return FONT5X7['O' - 32]; case 0x00DA: return FONT5X7['U' - 32]; case 0x00D1: return FONT5X7['N' - 32];
+    case 0x00DC: return FONT5X7['U' - 32]; case 0x00BA: return FONT5X7['o' - 32]; case 0x00AA: return FONT5X7['a' - 32];
+    default: return FONT5X7['?' - 32];
+    }
+}
+// Decode one UTF-8 codepoint at s[*i] and advance *i past it.
+static unsigned utf8_next(const char *s, int *i) {
+    unsigned char c = (unsigned char)s[*i];
+    if (c < 0x80) { (*i)++; return c; }
+    unsigned cp; int n;
+    if ((c & 0xE0) == 0xC0) { cp = c & 0x1Fu; n = 1; }
+    else if ((c & 0xF0) == 0xE0) { cp = c & 0x0Fu; n = 2; }
+    else if ((c & 0xF8) == 0xF0) { cp = c & 0x07u; n = 3; }
+    else { (*i)++; return 0xFFFD; }
+    (*i)++;
+    for (int k = 0; k < n; k++) {
+        unsigned char cc = (unsigned char)s[*i];
+        if ((cc & 0xC0) != 0x80) return 0xFFFD;
+        cp = (cp << 6) | (cc & 0x3Fu); (*i)++;
+    }
+    return cp;
+}
+// Count of glyph cells (UTF-8 codepoints) in s.
+static int glyph_count(const char *s) { int n = 0; for (int i = 0; s[i];) { utf8_next(s, &i); n++; } return n; }
+
