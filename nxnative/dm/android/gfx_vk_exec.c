@@ -125,7 +125,26 @@ static void ubo_log(const vkshader_t *s, int st, int reg, uint64_t a, uint64_t n
 // into RGBA16F images and dumped with the passes, so a compressed texture (BC6H cube maps...) can be looked at decoded by the GPU
 static long long g_td_off = -1; static unsigned long long g_td_pool; static vkimg_t *g_td_im; static int g_td_done;
 void vk_texdump_note(vkimg_t *im) { if (g_td_off >= 0 && !g_td_done && !g_td_im && im && im->off == g_td_off && im->pool == g_td_pool) g_td_im = im; }
+// the pass list (DM_VK_TRACE_PASS=-2, DM_VK_LIST_AT): the images each pass or dispatch reads, by pool offset, printed at its end
+static uint64_t g_lst_rd[48]; static int g_lst_nrd;
+// the images each stage's set was last collected with (prepare_draw: a memoized set keeps its last collection's), for the order barrier check below
+typedef struct { uint64_t pool; int64_t off, size; } stimg_t;
+static stimg_t g_stimg[3][32]; static int g_stn[3], g_coll_st = -1;
+// Order-only barriers inside a pass (profile key order_keep; DM_VK_ORDER_KEEP=0/1, live, overrides it). Every barrier ends the pass (OP_BARRIER), and on a tiled GPU each
+// pass begun again on the same attachments stores and loads all of them: Monster Hunter Rise orders its fragments (NVN barrier 0x2, sometimes 0x1) between almost every
+// draw of its decal, transparent and effect passes on the 960x540 scene (B10G11R11 + R8 + D24S8), 98 of its 182 passes a frame begun again that way. With the key a barrier
+// of only ORDER_PRIMITIVES / ORDER_FRAGMENTS / ORDER_FRAGMENTS_TILED leaves the pass open and is decided at the next draw (prepare_draw): the pass ends there, with the
+// barrier, when that draw samples one of the pass's attachments, or a shader of it or of an earlier draw of the pass writes memory (shader_wmem). Attachment writes
+// themselves keep their order inside a pass (primitive order). Off by default: Xenoblade Chronicles 3's characters tore with such barriers kept
+static int g_order_keep, g_order_pending, g_order_check, g_pass_wmem; uint64_t g_order_kept, g_order_ended;   // (kept / ended: gfx_vk_present.c reports them)
+static void list_reads(const char *what) {
+    if (!g_lst_nrd) return;
+    char t[1024]; int k = 0; for (int i = 0; i < g_lst_nrd && k < (int)sizeof t - 24; i++) k += snprintf(t + k, sizeof t - k, " %llx", (unsigned long long)g_lst_rd[i]);
+    VKLOG("    %s reads%s", what, t); g_lst_nrd = 0;
+}
 void vk_watch(const vkimg_t *im, const char *what) {
+    if (g_x_listpasses && im && what[0] == 's') { uint64_t o = (uint64_t)im->off; int i = 0; while (i < g_lst_nrd && g_lst_rd[i] != o) i++; if (i == g_lst_nrd && i < 48) g_lst_rd[g_lst_nrd++] = o; }
+    if (g_coll_st >= 0 && im && what[0] == 's') { if (g_stn[g_coll_st] < 32) g_stimg[g_coll_st][g_stn[g_coll_st]++] = (stimg_t){im->pool, im->off, im->size}; else g_stn[g_coll_st] = 33; }   // 33: too many to keep
     if (g_watch_off < 0 || !im || im->off != g_watch_off || g_watch_n <= 0) return;
     g_watch_n--; VKLOG("watch: present %llu pass %d (%ux%u): %s %ux%u fmt %d pool %#llx+%#llx (image %p, nvn flags %#x, %d overlapping)", (unsigned long long)g_tex_frame, g_sub_pass - 1, S.pass_w, S.pass_h, what, im->w, im->h, im->fmt,
                        (unsigned long long)im->pool, (unsigned long long)im->off, (const void *)im, im->flags, im->novl);
@@ -134,6 +153,10 @@ static void x_read(void) { const char *c = getenv("DM_VK_CB_DRAWS"); g_x_cbdraws
     const char *fy = getenv("DM_VK_FLIPY"); g_flipy = !(fy && !atoi(fy));   // on unless DM_VK_FLIPY=0
     if (g_x_listpasses) { g_x_listpasses = 0; setenv("DM_VK_TRACE_PASS", "-1", 1); }
     const char *tp = getenv("DM_VK_TRACE_PASS"); g_x_tracepass = tp ? atoi(tp) : -1;
+    { const char *e = getenv("DM_VK_ORDER_KEEP"); g_order_keep = e ? atoi(e) != 0 : DM_GAME_ORDER_KEEP; g_order_pending = g_order_check = 0; }
+    { static uint64_t until; static int done; const char *la = getenv("DM_VK_LIST_AT");   // DM_VK_LIST_AT=<present>: the pass list of every submission over two presents from there
+      if (la && !done && g_tex_frame >= (uint64_t)atoll(la)) { done = 1; until = g_tex_frame + 2; }
+      if (until && g_tex_frame < until) { g_x_tracepass = -2; g_x_listpasses = 1; g_lst_nrd = 0; VKLOG("--- submission at present %llu", (unsigned long long)g_tex_frame); } }
     { const char *w = getenv("DM_VK_WATCH"); static char last[40]; if (!w || !*w || !strcmp(w, "0")) g_watch_off = -1;
       else if (strcmp(w, last)) { g_watch_off = strtoll(w, NULL, 16); const char *h = strchr(w, '#'); g_watch_n = h ? atoi(h + 1) : 20; }
       snprintf(last, sizeof last, "%s", w ? w : ""); }
@@ -323,10 +346,14 @@ static int pass_commit(void) {
         else if (V.has_dynrender) { vkCmdBeginRendering(vk_cmd(), &P_ri); S.rp_pass = 0; }
         else { VKRED_ONCE(76, "render pass or framebuffer failed without dynamic rendering: pass skipped"); return 0; }   // (still pass_open 2: vk_end_pass drops it)
     } else { vkCmdBeginRendering(vk_cmd(), &P_ri); S.rp_pass = 0; }
-    S.pass_open = 1; g_vkst.passes++; g_sub_pass++;
+    S.pass_open = 1; g_vkst.passes++; g_sub_pass++; g_pass_wmem = 0;
     for (int i = 0; i < 9; i++) { vkimg_t *a = P_att[i].im; if (a && a->rt_last != g_tex_frame + 1) { a->rt_frames = a->rt_last == g_tex_frame ? a->rt_frames + 1 : 1; a->rt_last = g_tex_frame + 1; } }   // (async_pipe)
     { extern uint64_t g_cmd_gen; g_cmd_gen++; }   // the bind cache starts empty in each pass: Adreno does not keep the state a pass's draws set for the next pass (XC3 drew its lighting black)
-    if (g_x_tracepass == -2) { g_x_listpasses = 1; VKLOG("--- pass %d: %ux%u, colour formats %d %d, depth format %d", g_sub_pass - 1, S.pass_w, S.pass_h, S.cfmt[0], S.cfmt[1], S.dfmt); }
+    if (g_x_tracepass == -2) { g_x_listpasses = 1; list_reads("before it, dispatches");
+        char t[512]; int n = 0; static const char LO[] = "LCD";   // load ops: Load, Clear, Don't care; each attachment's image by pool offset
+        for (uint32_t i = 0; i < P_ri.colorAttachmentCount; i++) if (P_ca[i].imageView && P_att[i].im) n += snprintf(t + n, sizeof t - n, " c%u=%llx:%c(%ux%u)", i, (unsigned long long)P_att[i].im->off, LO[P_ca[i].loadOp < 3 ? P_ca[i].loadOp : 2], P_att[i].im->w, P_att[i].im->h);
+        if (P_ri.pDepthAttachment && P_att[8].im) n += snprintf(t + n, sizeof t - n, " d=%llx:%c(%ux%u)", (unsigned long long)P_att[8].im->off, LO[P_da.loadOp < 3 ? P_da.loadOp : 2], P_att[8].im->w, P_att[8].im->h);
+        VKLOG("--- pass %d: %ux%u, colour formats %d %d, depth format %d;%s", g_sub_pass - 1, S.pass_w, S.pass_h, S.cfmt[0], S.cfmt[1], S.dfmt, t); }
     if (g_x_traceframe[0]) {   // DM_VK_TRACE_FRAME=WxH[:fmt[:fmt]] (live): trace every pass of the next submission whose targets match (a whole effect chain in one log)
         char b[48]; snprintf(b, sizeof b, "%ux%u:%d:%d", S.pass_w, S.pass_h, S.cfmt[0], S.cfmt[1]);
         g_x_tracepass = !strncmp(b, g_x_traceframe, strlen(g_x_traceframe)) ? g_sub_pass - 1 : -1; g_x_traceframe_on = 1; }
@@ -544,7 +571,7 @@ static void lin_back(void) {
     }
 }
 void vk_end_pass(void) {
-    if (g_x_listpasses && S.pass_open == 1) { Dl_info di; void *ra = __builtin_return_address(0); uintptr_t base = dladdr((void *)vk_end_pass, &di) ? (uintptr_t)di.dli_fbase : 0; VKLOG("    ended from %#llx (%llu draws)", (unsigned long long)((uintptr_t)ra - base), (unsigned long long)g_pass_draws); }   // (DM_VK_TRACE_PASS=-2: who ends each pass)
+    if (g_x_listpasses && S.pass_open == 1) { Dl_info di; void *ra = __builtin_return_address(0); uintptr_t base = dladdr((void *)vk_end_pass, &di) ? (uintptr_t)di.dli_fbase : 0; VKLOG("    ended from %#llx (%llu draws)", (unsigned long long)((uintptr_t)ra - base), (unsigned long long)g_pass_draws); list_reads("it"); }   // (DM_VK_TRACE_PASS=-2: who ends each pass)
     if (S.pass_open == 2 && P_cleared) (void)pass_commit();   // only clears: the pass still runs, for its load ops
     if (S.pass_open == 1) { if (S.rp_pass) vkCmdEndRenderPass(vk_cmd()); else vkCmdEndRendering(vk_cmd()); void vk_pass_ts(int end, uint32_t w, uint32_t h, uint32_t fmt, uint32_t draws); vk_pass_ts(1, S.pass_w, S.pass_h, (uint32_t)S.cfmt[0], (uint32_t)g_pass_draws | (g_pass_draws ? (uint32_t)((g_pass_bb[2] - g_pass_bb[0]) & 0xffff) << 16 : 0));  pass_dump(); if (g_x_tracepass >= 0 && g_sub_pass - 1 == g_x_tracepass) { setenv("DM_VK_TRACE_PASS", "-1", 1); g_x_tracepass = -1; } }
     if (S.pass_open == 1 && g_lin_back && g_pass_draws) lin_back();
@@ -1448,6 +1475,35 @@ static void rd_read(const uint64_t *a, int n) {
         vk_scratch(4, 4, &db, &dof); VkBufferCopy r = {o, dof, 4}; vk_img_barrier_all(cb); vkCmdCopyBuffer(cb, b, db, 1, &r); vk_img_barrier_all(cb); }
 }
 // everything a draw needs bound; 0 when the draw cannot be done (logged once per reason)
+// A shader that writes memory: a store through a pointer into a storage buffer, a uniform block (only BufferBlock storage can be written) or an image, an image write, an
+// atomic other than a load, a memory copy into such a pointer (SPIR-V scanned once). Without its SPIR-V: assumed to write
+static int spv_wmem(const uint32_t *w, uint32_t n) {
+    if (!w || n < 5 || w[0] != 0x07230203) return 1;
+    uint32_t bound = w[3]; uint8_t *mp = calloc(bound ? bound : 1, 1); if (!mp) return 1;   // 1: a pointer type into memory, 2: a pointer into memory
+    int wr = 0;
+    for (uint32_t i = 5; i < n && !wr;) {
+        uint32_t op = w[i] & 0xffff, wc = w[i] >> 16; if (!wc || i + wc > n) break;
+        const uint32_t *o = w + i;
+        if (op == 32 && wc >= 4 && o[1] < bound && (o[2] == 2 || o[2] == 11 || o[2] == 12 || o[2] == 5349)) mp[o[1]] = 1;   // OpTypePointer: Uniform, Image, StorageBuffer, PhysicalStorageBuffer
+        else if ((op == 59 || op == 65 || op == 66 || op == 67 || op == 60) && wc >= 3 && o[1] < bound && o[2] < bound && mp[o[1]] == 1) mp[o[2]] = 2;   // OpVariable, access chains, OpImageTexelPointer
+        else if (op == 62 && wc >= 3 && o[1] < bound && mp[o[1]] == 2) wr = 1;   // OpStore
+        else if (op == 63 && wc >= 3 && o[1] < bound && mp[o[1]] == 2) wr = 1;   // OpCopyMemory
+        else if (op == 99) wr = 1;   // OpImageWrite
+        else if ((op >= 228 && op <= 242) || op == 5614 || op == 5615 || op == 6035) wr = 1;   // atomics but OpAtomicLoad (227)
+        i += wc;
+    }
+    free(mp); return wr;
+}
+static int shader_wmem(vkshader_t *s) { if (!s) return 0; if (!s->wmem) s->wmem = spv_wmem(s->spv, s->nspv) ? 1 : 2; return s->wmem == 1; }
+static int order_feedback(int nst) {   // a stage of the draw samples one of the open pass's attachments (its images by their storage)
+    for (int st = 0; st < nst; st++) {
+        if (!S.sh[st]) continue;
+        if (g_stn[st] > 32) return 1;
+        for (int j = 0; j < g_stn[st]; j++) for (int a = 0; a < 9; a++) { const vkimg_t *im = P_att[a].im;
+            if (im && im->pool == g_stimg[st][j].pool && g_stimg[st][j].off < im->off + im->size && im->off < g_stimg[st][j].off + g_stimg[st][j].size) return 1; }
+    }
+    return 0;
+}
 static int prepare_draw(int prim, int indexed) {
     // DM_VK_CB_DRAWS (read every submission, default 128, 0 = never): the replay is cut every that many draws and what is recorded goes to the GPU at once
     // (vk_cmd_split), so the GPU works on the frame while the rest is replayed instead of after all of it: NEO's Scramble Crossing 36.7 → 15.7 ms a frame
@@ -1492,6 +1548,7 @@ static int prepare_draw(int prim, int indexed) {
         int vk_cmd_parts_left(void); if (vk_cmd_parts_left() > 0) { { static int n; if (n++ < 3) VKLOG("pass split: pass %d (%ux%u) after %llu draws, depth %d", g_sub_pass - 1, S.pass_w, S.pass_h, (unsigned long long)g_pass_draws, S.dfmt); }
             vk_end_pass(); g_psplit_now = 1; } }
     else if (g_psplit > 0 && S.pass_open == 1 && g_pass_draws == (uint64_t)g_psplit && S.daspect && !g_psplit_depth) { static int n; if (n++ < 3) VKLOG("pass split: pass %d (%ux%u) has depth (format %d): not split", g_sub_pass - 1, S.pass_w, S.pass_h, S.dfmt); }
+    if (g_order_pending) { g_order_pending = 0; g_order_check = S.pass_open == 1; }   // an order-only barrier kept the pass open: decided below, once the draw's images are known
     if (!begin_pass() || !pass_commit()) { g_vkst.skip_rt++; return 0; }
     if (g_x_tracepass >= 0 && g_sub_pass - 1 == g_x_tracepass) g_tracing = 1;
     uint64_t t0 = tick();
@@ -1568,7 +1625,19 @@ static int prepare_draw(int prim, int indexed) {
     VkDescriptorSet sets[5] = {0};
     uint32_t dofs[5][96], ndofs = 0, dall[3 * 96];
     uint64_t t1d = tick();
-    for (int st = 0; st < 3; st++) if (S.sh[st] && !(st == 1 && k.raster_discard)) { sets[S.sh[st]->set] = stage_set(st, S.sh[st], dofs[S.sh[st]->set]); k.um[st] = g_num_um; k.im[st] = g_num_im; }
+    for (int st = 0; st < 3; st++) if (S.sh[st] && !(st == 1 && k.raster_discard)) {
+        uint64_t m0 = g_set_memo; int n0 = g_stn[st]; g_stn[st] = 0; g_coll_st = st;   // the images it is collected with (vk_watch); a memoized set keeps the last ones
+        sets[S.sh[st]->set] = stage_set(st, S.sh[st], dofs[S.sh[st]->set]); k.um[st] = g_num_um; k.im[st] = g_num_im;
+        g_coll_st = -1; if (g_set_memo != m0) g_stn[st] = n0; }
+    if (g_order_check) {   // the order-only barrier before this draw (see g_order_keep): kept, or the pass ends here with it
+        g_order_check = 0; vkshader_t *fs = k.raster_discard ? NULL : S.sh[1];
+        if (g_pass_wmem || shader_wmem(S.sh[0]) || shader_wmem(fs) || shader_wmem(S.sh[2]) || order_feedback(3)) {
+            g_order_ended++; vk_end_pass(); vk_img_barrier_all(vk_cmd());
+            if (!begin_pass() || !pass_commit()) { g_vkst.skip_rt++; return 0; }
+            cb = vk_cmd();
+        } else g_order_kept++;
+    }
+    g_pass_wmem |= shader_wmem(S.sh[0]) | shader_wmem(k.raster_discard ? NULL : S.sh[1]) | shader_wmem(S.sh[2]);
     uint64_t tdesc = tick() - t1d; g_vkst.ns_desc += tdesc; if (g_prof_on) g_prof_ns[5] += tdesc;
     if (g_tracing) {
         VKLOG("  pipeline: topology %u restart %u discard %u cull %u front %u mode %u clamp %u bias %u; depth test %u write %u func %u stencil %u; attributes %u bindings %u; colour %u (format %u) samples %u a2c %u; blend enable %#x logic %u/%u; fragment depth variant %u (depth written by a shader at present %llu, now %llu)",
@@ -2298,9 +2367,11 @@ static void exec_ops(const uint8_t *p) {
         case OP_DRAW: { if (g_rc_skip) break; p_draw t; draw(draw_rec(a, h.size, &t)); break; }
         case OP_DRAW_IDX: { if (g_rc_skip) break; p_draw_idx t; draw_idx(draw_idx_rec(a, h.size, &t)); break; }
         case OP_DISPATCH: dispatch((const p_dispatch *)a); break;
-        case OP_BARRIER:   // the pass ends at every barrier: kept across XC3's fragment- and primitive-order barriers (0x1 0x2 0x4) its characters drew torn in some frames
-            if (g_x_listpasses) VKLOG("    barrier %#x", *(const int32_t *)a);
-            vk_end_pass(); vk_img_barrier_all(vk_cmd()); break;
+        case OP_BARRIER: {   // the pass ends at every barrier: kept across XC3's fragment- and primitive-order barriers (0x1 0x2 0x4) its characters drew torn in some frames
+            int32_t bits = *(const int32_t *)a;
+            if (g_x_listpasses) VKLOG("    barrier %#x%s", bits, g_order_keep && S.pass_open == 1 && !(bits & ~0x7) ? " (order only: decided at the next draw)" : "");
+            if (g_order_keep && S.pass_open == 1 && !(bits & ~0x7)) { g_order_pending = 1; break; }   // (g_order_keep)
+            vk_end_pass(); vk_img_barrier_all(vk_cmd()); g_order_pending = 0; break; }
         case OP_SET_TEX_POOL: case OP_SET_SAMP_POOL: {   // bound handles were rebased when recorded (hle_nvn.c bind_handles); handles read from memory are rebased by these (mem_handle)
             const p_set_pool *sp = (const p_set_pool *)a; int base = sp->pool ? nvn_dpool_base(sp->pool, h.op == OP_SET_TEX_POOL) : 0;
             if (h.op == OP_SET_TEX_POOL) g_pool_tex_base = base; else g_pool_samp_base = base;
