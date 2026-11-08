@@ -225,9 +225,32 @@ mobile-driver performance or physical devices. Unsupported partial depth/stencil
 CPU-decoded, non-attachment and 1D clears, rejected view formats, and failed view
 or pipeline creation log a red message and retain the old whole-subresource clear.
 That fallback ignores the rectangle and color mask; for 3D images it clears the
-whole mip volume. Native compressed Vulkan images remain an explicit logged skip:
-Vulkan forbids `vkCmdClearColorImage` on compressed formats
-(`VUID-vkCmdClearColorImage-image-00007`). Whole color/depth clears keep the
+whole mip volume. Native BC1–BC7 and ASTC LDR images use constant-color encoded
+blocks and `vkCmdCopyBufferToImage`, since `vkCmdClearColorImage` forbids compressed
+formats (`VUID-vkCmdClearColorImage-image-00007`). Each compressed clear writes the
+whole selected mip and array layers; partial rectangles, nonzero partial masks,
+and view-format changes log the same compatibility warning. A zero color mask
+still does nothing. Other mip levels and array layers remain intact.
+
+Compressed colors are quantized to the block format's precision. sRGB formats
+encode linear RGB into sRGB while alpha stays linear; BC4/5 signed and BC6H HDR
+formats retain their respective ranges. The upload repeats an immutable chunk
+of at most 64 KiB (or one block row for unusually wide images) from the existing
+submission-owned scratch allocator. Copies end at the real mip edge, including
+mips smaller than one block, without a GPU wait or full-image staging allocation.
+The independent decoder tests are `tests/test_vk_compressed_clear.py`; the Vulkan
+probe also checks compressed transfers and sampled colors for supported formats.
+The optional `texture2ddecoder` Python package enables the independent ASTC
+decoder check; the BC decoder and ASTC format-layout checks need no extra package.
+
+The API35 emulator's llvmpipe reports ASTC LDR support but samples an independently
+encoded constant ASTC block incorrectly, even with no clear call. Reproduce that
+control with `--astc-seed-control`. The probe's default remains strict and fails
+on this discrepancy. `--astc-bytes-only` explicitly skips ASTC GPU color sampling
+while still checking its block transfers and preservation of other mip/layers;
+BC GPU sampling remains enabled. Results obtained with that option do not qualify
+ASTC GPU decoding or physical-device rendering.
+Whole color/depth clears keep the
 transfer path for MSAA too; a zero color mask does not suppress depth/stencil.
 The CPU fixtures check these fallback routes, selected mip/layers, typed values
 and caching failed pipeline creation.

@@ -1,0 +1,10 @@
+#version 450
+layout(local_size_x=8,local_size_y=8) in;
+layout(set=0,binding=0) uniform sampler3D image;
+layout(set=0,binding=1,std430) buffer Readback { vec4 pixels[]; } result;
+layout(push_constant) uniform Shape { uint w,h,d,level,offset; } shape;
+void main() {
+    uvec3 p=gl_GlobalInvocationID;
+    if(any(greaterThanEqual(p,uvec3(shape.w,shape.h,shape.d))))return;
+    result.pixels[shape.offset+(p.z*shape.h+p.y)*shape.w+p.x]=texelFetch(image,ivec3(p),int(shape.level));
+}
