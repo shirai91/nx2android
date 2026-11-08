@@ -218,7 +218,10 @@ class RomfsAt(unittest.TestCase):
         self.assertTrue(install.apk_asks_access(self.t / 'a.apk')); self.assertFalse(install.apk_asks_access(apk_file(self.t / 'old.apk', access=False)))
         with zipfile.ZipFile(self.t / 'a.apk') as z: els = axml_elements(z.read('AndroidManifest.xml'))
         perms = {a['name']: a.get('maxSdkVersion') for tag, a in els if tag == 'uses-permission'}
-        self.assertEqual(perms, {'android.permission.VIBRATE': None, install.ACCESS: None, 'android.permission.READ_EXTERNAL_STORAGE': 29})
+        self.assertEqual(perms, {'android.permission.VIBRATE': None, install.ACCESS: None, 'android.permission.READ_EXTERNAL_STORAGE': 29,
+                                 # local play over the LAN (DM_LAN): sockets, the Wi-Fi address, the multicast lock
+                                 'android.permission.INTERNET': None, 'android.permission.ACCESS_NETWORK_STATE': None,
+                                 'android.permission.ACCESS_WIFI_STATE': None, 'android.permission.CHANGE_WIFI_MULTICAST_STATE': None})
         app = next(a for tag, a in els if tag == 'application')
         self.assertIs(app['requestLegacyExternalStorage'], True); self.assertIs(app['debuggable'], False)
 

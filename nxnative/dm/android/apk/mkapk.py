@@ -44,6 +44,12 @@ ADAPTIVE_ICON = ('adaptive-icon', [], [('background', [(True, 'drawable', ('ref'
 MANIFEST = ('manifest', [(False, 'package', PKG), (True, 'versionCode', ARGS.version_code), (True, 'versionName', ARGS.version_name)], [
     ('uses-sdk', [(True, 'minSdkVersion', MIN_SDK), (True, 'targetSdkVersion', TARGET_SDK)], []),
     ('uses-permission', [(True, 'name', 'android.permission.VIBRATE')], []),   # rumble and the touch gamepad's taps (a normal permission: granted at install)
+    # Local play over the LAN (env.txt's DM_LAN=1, hle_ldn.c / hle_socket.c): sockets, the Wi-Fi address, and a multicast lock without which the Wi-Fi driver drops the broadcasts
+    # other players scan with. All normal permissions (granted at install); a game with DM_LAN off opens no socket
+    ('uses-permission', [(True, 'name', 'android.permission.INTERNET')], []),
+    ('uses-permission', [(True, 'name', 'android.permission.ACCESS_NETWORK_STATE')], []),
+    ('uses-permission', [(True, 'name', 'android.permission.ACCESS_WIFI_STATE')], []),
+    ('uses-permission', [(True, 'name', 'android.permission.CHANGE_WIFI_MULTICAST_STATE')], []),
     # A RomFS read from a folder outside the app's files folder (porter install --romfs-at: a game dump another app also reads, a folder on the SD card; env.txt's DM_ROMFS):
     # All files access from Android 11 (an appop, off until porter's `appops set` or the player's switch in Settings turns it on), and on Android 10, which has no
     # All files access, READ_EXTERNAL_STORAGE in the legacy storage view (requestLegacyExternalStorage below; `pm grant`). Neither is asked for at run time, so a port

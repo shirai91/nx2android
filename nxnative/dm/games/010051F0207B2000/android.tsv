@@ -10,6 +10,7 @@ status	playable
 tested	v262144 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
 package	org.nx2a.tomodachilifelivingthedream
 orientation	landscape
-# Its saved clock snapshot is compared with a new one at each start: with the steady clock on the host's real time the context holds, so no "system time has changed"
-# notice at every start (hle_time.c)
+# Its saved clock snapshot is compared with a new one at each start (main+0x871400): the "system time has changed" notice came at every start because the host's
+# CalculateSpanBetween returned Result 0 where the SDK returns a bool (fixed in the core, hle_time.c; checked 2026-11-06: two restarts after a save, no notice).
+# The steady clock follows the host's real time, as a Switch's runs on its battery-backed clock, so spans hold across device reboots
 env	DM_STEADY_REALTIME=1

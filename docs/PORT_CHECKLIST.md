@@ -6,14 +6,14 @@ Left out because they have an official Android release: Unpacking (ported here a
 
 "Profile here": `nxnative/dm/games/<title ID>/` has the game's profile from nxnative. "Upstream profile": only seedds/nxnative has one, to read as a reference or starter, not to pull. "60 fps with X" is upstream's note: they run that update at 60 fps (30 on the Switch).
 
-**36 / 101 ported**
+**37 / 101 ported**
 
 - [x] 13 Sentinels: Aegis Rim · `01003FC01670C000`
 - [ ] Ace Attorney Investigations Collection · `010005501E68C000` · profile here
 - [x] Advance Wars 1+2: Re-Boot Camp · `0100300012F2A000`
 - [ ] AI: THE SOMNIUM FILES · `010089B00D09C000` · profile here
 - [ ] AI: THE SOMNIUM FILES - nirvanA Initiative · `0100713016CCC000` · profile here
-- [ ] Animal Crossing: New Horizons · `01006F8002326000` · profile here
+- [x] Animal Crossing: New Horizons · `01006F8002326000`
 - [ ] ANIMAL WELL · `010020D01AD24000` · profile here
 - [ ] ASTRAL CHAIN · `01007300020FA000` · upstream profile · 60 fps target with 1.0.1
 - [ ] Bastion · `010038600B27E000` · upstream profile · iPhone only
