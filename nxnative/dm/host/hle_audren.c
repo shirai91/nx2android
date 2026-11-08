@@ -362,10 +362,17 @@ HLE_FORCE("_ZN2nn5audio6server17AudioRenderSystem6UpdateEPvmS3_mPKvm", "renderer
           Result, h_ars_Update, uint8_t *sys, void *o, size_t on, void *p, size_t pn, const void *in, size_t inn) {
     static Result (*orig)(void *, void *, size_t, void *, size_t, const void *, size_t); if (!orig) orig = gsym("_ZN2nn5audio6server17AudioRenderSystem6UpdateEPvmS3_mPKvm");
     static uint64_t last_r = ~0ull;
+    static _Atomic uint64_t last_u_ns; static _Atomic int ntr;
+    const char *tre = getenv("DM_AUDREN_TRACE"); int tr = tre != NULL;   // (live: a DM_CTL env line)
+    uint64_t un = now_ns(), gap = un - atomic_exchange(&last_u_ns, un);
     uint64_t u = atomic_fetch_add(&g_updates, 1) + 1, r = atomic_load(&g_renders);
     if (last_r != ~0ull && r == last_r) {
         uint64_t c = atomic_fetch_add(&g_catchups, 1) + 1;
         if (c <= 3) LOG("audren: no frame rendered before update %llu, rendering a catch-up frame first (%llu so far)", (unsigned long long)u, (unsigned long long)c);
+        // DM_AUDREN_TRACE: the next 300 catch-ups with the calling thread, the time since the previous update and the frames queued ahead: a late sound thread that then updates
+        // twice in a burst (gap above 5 ms, then under 1 ms) is a scheduling problem; updates evenly about 6-7 ms apart are the game's own pace
+        if (tr && atomic_fetch_add(&ntr, 1) < 300) LOG("audren: catch-up at update %llu on thread %#lx, %.2f ms after the previous update, %u frames queued", (unsigned long long)u,
+            (unsigned long)pthread_self(), gap / 1e6, atomic_load(&g_cq_tail) - atomic_load(&g_cq_head));
         uint32_t t = atomic_load(&g_cq_tail);
         if (t - atomic_load(&g_cq_head) >= CQ) {   // queue full: wait for the render thread to play one (every 5 ms), so catch-up frames keep real time; at most 50 ms (an output that stopped)
             struct timespec dl; clock_gettime(CLOCK_REALTIME, &dl); dl.tv_nsec += 50000000; if (dl.tv_nsec >= 1000000000) { dl.tv_sec++; dl.tv_nsec -= 1000000000; }
@@ -380,7 +387,6 @@ HLE_FORCE("_ZN2nn5audio6server17AudioRenderSystem6UpdateEPvmS3_mPKvm", "renderer
         }
         pthread_mutex_unlock(&g_order_mu);
     }
-    static int tr = -1; if (tr < 0) tr = getenv("DM_AUDREN_TRACE") != NULL;
     if (tr && u < 200) LOG("audren update #%llu t=%.3f ms, %llu frames rendered since the last update", (unsigned long long)u, now_ns() / 1e6, (unsigned long long)(atomic_load(&g_renders) - (last_r == ~0ull ? 0 : last_r)));
     Result res = orig(sys, o, on, p, pn, in, inn);
     last_r = atomic_load(&g_renders);
