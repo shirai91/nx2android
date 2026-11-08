@@ -5,6 +5,7 @@
 // Version 1 orders everything with whole-pipeline barriers around passes, copies and dispatches.
 #include "gfx_vk.h"
 #include "gfx_vk_slot.h"
+#include "vk_compressed_clear.h"
 #include "nvn_hmap.h"
 #include "game_profile.h"
 #include <math.h>
@@ -2382,6 +2383,38 @@ static VkClearColorValue clear_tex_value(const p_clear_tex *c, unsigned type) {
     }
     return value;
 }
+// A compressed VkFormat cannot be cleared by vkCmdClearColorImage. Upload valid
+// constant-color blocks instead, retaining the compatibility whole-subresource
+// result. One immutable scratch chunk is reused until this submission completes.
+static int clear_tex_compressed(vkimg_t *im, const vkfmt_t *f, const p_clear_tex *c,
+                                uint32_t lv, uint32_t first, uint32_t count, uint32_t w, uint32_t h) {
+    if (im->samples != 1 || !(im->usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT) || !f->bw || !f->bh) {
+        VKRED_ONCE(71, "compressed texture clear has invalid transfer parameters"); return 0;
+    }
+    VkClearColorValue color = clear_tex_value(c, 0); uint8_t block[16];
+    int bytes = vk_compressed_clear_block(im->fmt, color.float32, block);
+    if (!bytes || bytes != f->bpb) { VKRED_ONCE(71, "compressed texture clear format has no constant block encoding"); return 0; }
+    VkDeviceSize row = (((VkDeviceSize)w + f->bw - 1) / f->bw) * (unsigned)bytes;
+    if (!row || row > SIZE_MAX) { VKRED_ONCE(71, "compressed texture clear row size overflow"); return 0; }
+    uint32_t rows = h / f->bh + (h % f->bh != 0);
+    VkDeviceSize chunk_rows = 65536 / row; if (!chunk_rows) chunk_rows = 1;
+    if (chunk_rows > rows) chunk_rows = rows;
+    VkDeviceSize n = row * chunk_rows, off; VkBuffer buf;
+    uint8_t *dst = vk_scratch(n, 16, &buf, &off);
+    for (VkDeviceSize at = 0; at < n; at += (unsigned)bytes) memcpy(dst + at, block, (size_t)bytes);
+    int volume = im->target == NVN_TEXTURE_TARGET_3D;
+    uint32_t slices = volume ? (im->d >> lv ? im->d >> lv : 1) : count;
+    VkCommandBuffer cb = vk_cmd(); vk_tex_prepare(cb, im); vk_img_barrier_all(cb);
+    for (uint32_t slice = 0; slice < slices; slice++) for (uint32_t y = 0; y < h;) {
+        uint32_t height = (uint32_t)chunk_rows * f->bh; if (height > h - y) height = h - y;
+        VkBufferImageCopy copy = {off, 0, 0, {VK_IMAGE_ASPECT_COLOR_BIT, lv, volume ? 0 : first + slice, 1},
+            {0, (int32_t)y, volume ? (int32_t)slice : 0}, {w, height, 1}};
+        vkCmdCopyBufferToImage(cb, buf, im->img, VK_IMAGE_LAYOUT_GENERAL, 1, &copy);
+        y += height;
+    }
+    vk_img_barrier_all(cb); im->gpu_w = 1;
+    return 1;
+}
 static void clear_tex(const p_clear_tex *c) {
     unsigned mask = (unsigned)c->mask & 15;
     if (!c->tex || c->r.width <= 0 || c->r.height <= 0) return;
@@ -2407,9 +2440,12 @@ static void clear_tex(const p_clear_tex *c) {
     const vkfmt_t *f = vk_fmt(c->has_view && c->view.set_format ? c->view.format : c->tex->d.format);
     const vkfmt_t *storage = vk_fmt(im->nvn_format);
     if (!f || !storage) { VKRED_ONCE(71, "texture clear format is unknown"); return; }
-    // vkCmdClearColorImage forbids compressed Vulkan formats (VUID image-00007).
-    // CPU-decoded textures have an uncompressed backing image and can fall back.
-    if (storage->compressed && !storage->dec) { VKRED_ONCE(71, "texture clear of a compressed Vulkan image is unsupported: skipped"); return; }
+    if (storage->compressed && !storage->dec) {
+        if (rect.extent.width != w || rect.extent.height != h || mask != 15 || (volume && count != layers) || f->vk != im->fmt)
+            VKRED_ONCE(71, "compressed texture region/view clear: clearing whole subresource with encoded blocks");
+        clear_tex_compressed(im, storage, c, lv, (uint32_t)first, count, w, h);
+        return;
+    }
     unsigned type = f->is_int ? (f->is_sint ? 2 : 1) : 0;
     VkClearColorValue value = clear_tex_value(c, type);
     VkCommandBuffer cb = vk_cmd(); vk_tex_prepare(cb, im); vk_img_barrier_all(cb);

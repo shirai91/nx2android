@@ -47,11 +47,13 @@ class TextureClear(unittest.TestCase):
             build = subprocess.run(['cc', '-std=c11', '-Wall', '-Wextra', '-Werror',
                                     '-Wno-unused-function', '-Wno-missing-field-initializers',
                                     '-I', str(ROOT / 'nxnative/dm/third_party/vulkan-headers/include'),
-                                    str(src), '-o', str(exe)], capture_output=True, text=True)
+                                    '-I', str(ROOT / 'nxnative/dm/android'),
+                                    str(src), '-lm', '-o', str(exe)], capture_output=True, text=True)
             self.assertEqual(build.returncode, 0, build.stderr)
             for case in ('', 'msaa_color', 'msaa_depth', 'partial_depth', 'decoded',
                          'nonattachment', '1d', '1d_array', 'format', 'view', 'pipeline',
-                         'compressed', 'compressed_full'):
+                         'compressed', 'compressed_full', 'compressed_volume', 'compressed_tail',
+                         'compressed_chunks', 'compressed_mask0', 'compressed_msaa', 'compressed_bad_usage'):
                 with self.subTest(case=case):
                     run = subprocess.run([str(exe)] + ([case] if case else []), capture_output=True, text=True)
                     self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
