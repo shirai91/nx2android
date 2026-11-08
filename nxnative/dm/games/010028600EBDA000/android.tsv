@@ -1,0 +1,11 @@
+# Super Mario 3D World + Bowser's Fury on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Nintendo EPD's engine on SDK 10.4.0, update 1.2.2; 11,080 shaders, all translated. The profile is upstream's as it came (1.2.2 build IDs), no core change needed.
+# Tested 2026-11-07 on the AYN Thor (Snapdragon 8 Gen 2, Adreno 740, Android 13) with the Mr Purple T30 Turnip driver (--vulkan-driver), an Xbox Wireless Controller:
+# the title, the character choice, World 1-1 of 3D World, and Bowser's Fury's open world; the game saved twice (save commits in the log). Both at 60 fps, Bowser's Fury
+# too (30 on the Switch) at normal game speed; frame work p50 about 6 to 7 ms in 3D World, 12 to 15 ms in Bowser's Fury; no frame late on screen, no red log line.
+# Update 1.1.0 packs from a derived profile (its main is another build) and boots too; 1.2.2 is the tested one.
+status	playable
+tested	v262144 AYN Thor (Snapdragon 8 Gen 2, Adreno 740, Android 13)
+package	org.nx2a.supermario3dworld
+orientation	landscape
+requires	bcn

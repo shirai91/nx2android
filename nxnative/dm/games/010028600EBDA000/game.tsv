@@ -1,4 +1,4 @@
-# Game profile of Super Mario 3D World + Bowser's Fury (Switch, base game v0 + update 1.2.2 = v262144). In bring-up: on the Mac 3D World reaches World 1-1 and Bowser's Fury its open world
+# Game profile of Super Mario 3D World + Bowser's Fury (Switch, base game v0 + update 1.2.2 = v262144). Plays on Android (android.tsv); on the Mac 3D World reaches World 1-1 and Bowser's Fury its open world
 # Format: see dm/games/README.md
 # Nintendo EPD's engine (sead / agl, NintendoWare G3d / Ui2d / Vfx / Atk), SDK 10.4.0, NVN; RomFS is almost entirely Yaz0-compressed SARC archives (.szs).
 # Shaders: bfsha (BNSH) and agl sharcb (BAHS) in ShaderData/*.szs, particle effects in EffectData (BNSH), a few layouts in LayoutData (BNSH), SystemData/AglResource.szs (BAHS)
