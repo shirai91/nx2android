@@ -705,7 +705,7 @@ static struct { VkPipelineLayout pl; VkShaderModule vs, fs[3]; int bad; } g_mc;
 static nvn_hmap g_mc_pipes = {.klen = sizeof(mckey)};
 static VkPipeline mc_pipeline_key(const mckey *key) {
     mckey k = *key;
-    VkPipeline cached = nvn_hm_get(&g_mc_pipes, &k); if (cached) return cached;
+    VkPipeline cached = nvn_hm_get(&g_mc_pipes, &k); if (cached) return cached == (VkPipeline)(uintptr_t)1 ? VK_NULL_HANDLE : cached;
     if (g_mc.bad) return VK_NULL_HANDLE;
     if (!g_mc.pl) {
         VkPushConstantRange pr = {VK_SHADER_STAGE_FRAGMENT_BIT, 0, 16};
@@ -739,7 +739,7 @@ static VkPipeline mc_pipeline_key(const mckey *key) {
     VkPipeline p = VK_NULL_HANDLE;
     if ((!prp && !V.has_dynrender) || vkCreateGraphicsPipelines(V.dev, V.pcache, 1, &ci, NULL, &p)) { VKRED_ONCE(32, "masked clear pipeline failed"); p = VK_NULL_HANDLE; }
     vk_pipeline_cache_changed();
-    if (p) nvn_hm_put(&g_mc_pipes, &k, p); return p;
+    nvn_hm_put(&g_mc_pipes, &k, p ? p : (VkPipeline)(uintptr_t)1); return p;
 }
 static VkPipeline mc_pipeline(uint32_t mask) {
     mckey k; memset(&k, 0, sizeof k); k.ncol = (uint32_t)S.ncol; for (int i = 0; i < S.ncol && i < 8; i++) k.cfmt[i] = (uint32_t)S.cfmt[i];
@@ -2371,11 +2371,23 @@ static int clear_tex_slice(vkimg_t *im, VkImageView view, VkFormat format, VkExt
     vk_img_barrier_all(cb);
     return 1;
 }
+static VkClearColorValue clear_tex_value(const p_clear_tex *c, unsigned type) {
+    VkClearColorValue value;
+    for (int i=0;i<4;i++) {
+        double v = c->c.f[i];
+        if (c->is_uint && type) value.uint32[i] = c->c.u[i];
+        else if (!type) value.float32[i] = c->is_uint ? (float)c->c.u[i] : c->c.f[i];
+        else if (type == 1) value.uint32[i] = !(v > 0) ? 0 : v >= UINT32_MAX ? UINT32_MAX : (uint32_t)v;
+        else value.int32[i] = v != v ? 0 : v <= INT32_MIN ? INT32_MIN : v >= INT32_MAX ? INT32_MAX : (int32_t)v;
+    }
+    return value;
+}
 static void clear_tex(const p_clear_tex *c) {
     unsigned mask = (unsigned)c->mask & 15;
-    if (!c->tex || !mask || c->r.width <= 0 || c->r.height <= 0) return;
+    if (!c->tex || c->r.width <= 0 || c->r.height <= 0) return;
     vk_end_pass();
     vkimg_t *im = vk_tex(c->tex); if (!im) return;
+    if (!mask && (im->aspect & VK_IMAGE_ASPECT_COLOR_BIT)) return;   // NVN masks only color channels
     uint32_t lv = c->has_view && c->view.set_levels ? (uint32_t)c->view.base_level : 0;
     if (lv >= im->levels) { VKRED_ONCE(71, "texture clear outside mip levels"); return; }
     uint32_t w = im->w >> lv ? im->w >> lv : 1, h = im->h >> lv ? im->h >> lv : 1;
@@ -2393,41 +2405,53 @@ static void clear_tex(const p_clear_tex *c) {
         VKRED_ONCE(71, "texture clear outside view layers"); return;
     }
     const vkfmt_t *f = vk_fmt(c->has_view && c->view.set_format ? c->view.format : c->tex->d.format);
-    if (!f) return;
+    const vkfmt_t *storage = vk_fmt(im->nvn_format);
+    if (!f || !storage) { VKRED_ONCE(71, "texture clear format is unknown"); return; }
+    // vkCmdClearColorImage forbids compressed Vulkan formats (VUID image-00007).
+    // CPU-decoded textures have an uncompressed backing image and can fall back.
+    if (storage->compressed && !storage->dec) { VKRED_ONCE(71, "texture clear of a compressed Vulkan image is unsupported: skipped"); return; }
     unsigned type = f->is_int ? (f->is_sint ? 2 : 1) : 0;
-    VkClearColorValue value;
-    for (int i=0;i<4;i++) {
-        double v = c->c.f[i];
-        if (c->is_uint && type) value.uint32[i] = c->c.u[i];
-        else if (!type) value.float32[i] = c->is_uint ? (float)c->c.u[i] : c->c.f[i];
-        else if (type == 1) value.uint32[i] = !(v > 0) ? 0 : v >= UINT32_MAX ? UINT32_MAX : (uint32_t)v;
-        else value.int32[i] = v != v ? 0 : v <= INT32_MIN ? INT32_MIN : v >= INT32_MAX ? INT32_MAX : (int32_t)v;
-    }
+    VkClearColorValue value = clear_tex_value(c, type);
     VkCommandBuffer cb = vk_cmd(); vk_tex_prepare(cb, im); vk_img_barrier_all(cb);
     // Keep the existing whole depth/stencil path; channel masks below concern color.
     int whole = rect.extent.width == w && rect.extent.height == h &&
         (mask == 15 || !(im->aspect & VK_IMAGE_ASPECT_COLOR_BIT)) && (!volume || count == layers);
-    if (whole && im->samples == 1 && f->vk == im->fmt) {
-        VkImageSubresourceRange range = {im->aspect, lv, 1, volume ? 0 : (uint32_t)first, volume ? 1 : count};
-        if (im->aspect & VK_IMAGE_ASPECT_COLOR_BIT) vkCmdClearColorImage(cb, im->img, VK_IMAGE_LAYOUT_GENERAL, &value, 1, &range);
-        else { VkClearDepthStencilValue ds = {c->c.f[0],c->c.u[1]}; vkCmdClearDepthStencilImage(cb, im->img, VK_IMAGE_LAYOUT_GENERAL, &ds, 1, &range); }
-        vk_img_barrier_all(cb);
-    } else {
-        // The attachment-view cache currently represents only 2D/cube/3D targets.
-        if (im->target == NVN_TEXTURE_TARGET_1D || im->target == NVN_TEXTURE_TARGET_1D_ARRAY ||
-            im->aspect != VK_IMAGE_ASPECT_COLOR_BIT || !(im->usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) || f->compressed || f->dec) {
-            VKRED_ONCE(71, "texture region clear requires a color-renderable view"); return;
-        }
-        view_t view = c->has_view ? c->view : (view_t){0};
-        view.set_levels = view.set_layers = 1; view.base_level = lv; view.nlevels = view.nlayers = 1;
-        for (uint32_t i=0;i<count;i++) {
-            view.min_layer = (uint32_t)first+i;
-            VkImageView v = vk_tex_view(c->tex, &view, 0xff, 0, 1, NULL);
-            if (!v) return;
-            if (vk_view_fmt != f->vk) { VKRED_ONCE(71, "texture clear view format is not supported by the image"); return; }
-            if (!clear_tex_slice(im,v,vk_view_fmt,(VkExtent2D){w,h},rect,mask,type,&value)) { VKRED_ONCE(71, "texture region clear failed"); return; }
+    // Vulkan whole-image clears also support multisampled images.
+    if (whole && f->vk == im->fmt) goto whole_clear;
+    // Keep the old whole-subresource result when the region path cannot run.
+    if (im->target == NVN_TEXTURE_TARGET_1D || im->target == NVN_TEXTURE_TARGET_1D_ARRAY) {
+        VKRED_ONCE(71, "texture region clear of a 1D image: clearing whole subresource"); goto whole_clear;
+    }
+    if (im->aspect != VK_IMAGE_ASPECT_COLOR_BIT) {
+        VKRED_ONCE(71, "texture region clear of depth/stencil: clearing whole subresource"); goto whole_clear;
+    }
+    if (!(im->usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)) {
+        VKRED_ONCE(71, "texture region clear without attachment usage: clearing whole subresource"); goto whole_clear;
+    }
+    if (f->compressed || f->dec || storage->dec) {
+        VKRED_ONCE(71, "texture region clear with a compressed/decoded format: clearing whole subresource"); goto whole_clear;
+    }
+    view_t view = c->has_view ? c->view : (view_t){0};
+    view.set_levels = view.set_layers = 1; view.base_level = lv; view.nlevels = view.nlayers = 1;
+    for (uint32_t i=0;i<count;i++) {
+        view.min_layer = (uint32_t)first+i;
+        VkImageView v = vk_tex_view(c->tex, &view, 0xff, 0, 1, NULL);
+        if (!v) { VKRED_ONCE(71, "texture region clear view failed: clearing whole subresource"); goto whole_clear; }
+        if (vk_view_fmt != f->vk) { VKRED_ONCE(71, "texture clear view format is not supported by the image: clearing whole subresource"); goto whole_clear; }
+        if (!clear_tex_slice(im,v,vk_view_fmt,(VkExtent2D){w,h},rect,mask,type,&value)) {
+            VKRED_ONCE(71, "texture region clear failed: clearing whole subresource"); goto whole_clear;
         }
     }
+    im->gpu_w = 1;
+    return;
+whole_clear:;
+    VkImageSubresourceRange range = {im->aspect, lv, 1, volume ? 0 : (uint32_t)first, volume ? 1 : count};
+    if (im->aspect & VK_IMAGE_ASPECT_COLOR_BIT) {
+        // A transfer uses the image's actual format, including after a rejected view.
+        value = clear_tex_value(c, storage->is_int ? (storage->is_sint ? 2 : 1) : 0);
+        vkCmdClearColorImage(cb, im->img, VK_IMAGE_LAYOUT_GENERAL, &value, 1, &range);
+    } else { VkClearDepthStencilValue ds = {c->c.f[0],c->c.u[1]}; vkCmdClearDepthStencilImage(cb, im->img, VK_IMAGE_LAYOUT_GENERAL, &ds, 1, &range); }
+    vk_img_barrier_all(cb);
     im->gpu_w = 1;
 }
 

@@ -221,9 +221,16 @@ checks both dynamic rendering and traditional render passes: float, unsigned and
 signed integer, UNORM and sRGB formats; all 16 masks; clipped/interior/full-mip
 rectangles; array layers, cube faces and 3D slices. It uses isolated resource and
 submission helpers, so it does not qualify the game's texture-cache integration,
-mobile-driver performance or physical devices. Partial clears of compressed,
-non-renderable, depth/stencil and 1D textures remain explicitly unsupported;
-they log an error instead of clearing the whole subresource.
+mobile-driver performance or physical devices. Unsupported partial depth/stencil,
+CPU-decoded, non-attachment and 1D clears, rejected view formats, and failed view
+or pipeline creation log a red message and retain the old whole-subresource clear.
+That fallback ignores the rectangle and color mask; for 3D images it clears the
+whole mip volume. Native compressed Vulkan images remain an explicit logged skip:
+Vulkan forbids `vkCmdClearColorImage` on compressed formats
+(`VUID-vkCmdClearColorImage-image-00007`). Whole color/depth clears keep the
+transfer path for MSAA too; a zero color mask does not suppress depth/stencil.
+The CPU fixtures check these fallback routes, selected mip/layers, typed values
+and caching failed pipeline creation.
 
 `test_vk_copy_back` exercises protected guest memory with the real dirty-page tracker: preserving independent CPU writes in the same cache line, successive submissions and snapshot initialization, cached/uncached and untracked pools, 200 partial/unaligned/overlapping range cases, and writes from another CPU thread. It also injects failed and partially successful bulk `mprotect` calls; a bulk unprotect failure stops the host with a `[RED]` message before publishing writable page states or continuing the copy. It also checks snapshot copy volume across clean and dirty 64 KB blocks, a partial tail, and full versus partial completion merges. These CPU tests do not establish correct rendering on a device.
 
