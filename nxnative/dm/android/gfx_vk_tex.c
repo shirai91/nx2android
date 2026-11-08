@@ -512,6 +512,7 @@ static VkComponentSwizzle apply(VkComponentSwizzle outer, const VkComponentMappi
 }
 static VkComponentMapping sample_swizzle(const VkComponentMapping *format, const tex_t *t, const view_t *v, int attachment) {
     if (attachment) return (VkComponentMapping){0};
+    { const char *e = getenv("DM_VK_X_NOSWZ"); if (e && atoi(e)) return *format; }   // DM_VK_X_NOSWZ=1 (live, debugging): texture and view swizzles ignored
     // NVN view selectors override texture selectors; both refer to the NVN
     // format's channels. Applying the texture first composes two selectors
     // and can turn a requested mask channel into a different component.
@@ -531,6 +532,7 @@ VkImageView vk_tex_view(const tex_t *t, const view_t *vw, int dim, int arrayed, 
     if (!im) return VK_NULL_HANDLE;
     if (as_attachment) { im->wseq = ++g_wseq; im->gpu_w = 1; } else if (im->novl) alias_check(im);
     vk_watch(im, as_attachment ? "attachment" : "sampled or image");
+    { void vk_probe_note(vkimg_t *im); vk_probe_note(im); }
     if (!as_attachment) { void vk_texdump_note(vkimg_t *im); vk_texdump_note(im); }
     const vkfmt_t *f = vk_fmt(vw && vw->set_format ? vw->format : t->d.format); if (!f) f = vk_fmt(t->d.format);
     uint32_t lv0 = vw && vw->set_levels ? vw->base_level : 0, nlv = vw && vw->set_levels ? vw->nlevels : im->levels - lv0;

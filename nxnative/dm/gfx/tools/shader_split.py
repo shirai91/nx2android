@@ -368,6 +368,110 @@ def kpka_shaders(path, rel, ents, out):
         for e in ents:
             if e[3] >= 0x10 and kpka_data(d, e, 4) == b'SDF\0': out.extend(sdf_shaders(kpka_data(d, e), f'/{rel}#{e[0]:016x}'))
 
+CPK, CRILAYLA, GFS0, HNSH = b'CPK ', b'CRILAYLA', b'GFS0', b'HNSHV002'
+
+def utf_table(b):
+    """A CRI @UTF table (big-endian): '@UTF', u32 size, then from +8: u16, u16 rows offset, u32 strings offset, u32 data offset, u32 name, u16 column count, u16 row length, u32 row count.
+    A column is u8 flags (storage 0x10 none / 0x30 constant / 0x50 per row; type 0-9 integers and floats, 0xA string, 0xB data) + u32 name, a constant's value after it. → [{column: value}]"""
+    if b[:4] != b'@UTF': return None
+    t = b[8:8 + struct.unpack_from('>I', b, 4)[0]]
+    _, rows, strs, data, _, ncol, rowlen, nrows = struct.unpack_from('>HHIIIHHI', t, 0)
+    s = lambda o: t[strs + o:t.index(b'\0', strs + o)].decode('utf-8', 'replace')
+    fmt = {0: '>B', 1: '>b', 2: '>H', 3: '>h', 4: '>I', 5: '>i', 6: '>Q', 7: '>q', 8: '>f', 9: '>d'}
+    def val(typ, p):
+        if typ in fmt: return struct.unpack_from(fmt[typ], t, p)[0], p + struct.calcsize(fmt[typ])
+        if typ == 0xa: return s(struct.unpack_from('>I', t, p)[0]), p + 4
+        o, n = struct.unpack_from('>II', t, p); return t[data + o:data + o + n], p + 8
+    cols, p = [], 24
+    for _ in range(ncol):
+        fl, nm = t[p], s(struct.unpack_from('>I', t, p + 1)[0]); p += 5; cv = None
+        if fl & 0xf0 == 0x30: cv, p = val(fl & 0xf, p)
+        cols.append((nm, fl & 0xf0, fl & 0xf, cv))
+    out = []
+    for r in range(nrows):
+        p, row = rows + r * rowlen, {}
+        for nm, st, typ, cv in cols:
+            if st == 0x50: row[nm], p = val(typ, p)
+            else: row[nm] = cv
+        out.append(row)
+    return out
+
+def cpk_entries(path):
+    """A CRI CPK archive (Persona 5 Royal: CPK/ALL_USEU.CPK, 15 GB, 94,631 files): 'CPK ' + an @UTF header table at +0x10 (TocOffset, TocSize), the TOC ('TOC ' + an @UTF table at +0x10)
+    one row per file {DirName, FileName, FileSize (stored), ExtractSize, FileOffset (from TocOffset)}. A stored entry larger than its length is CRILAYLA-compressed (crilayla).
+    → [(path, offset, stored length, length)], None when not a CPK or its tables are masked"""
+    with open(path, 'rb') as f:
+        h = f.read(0x800)
+        if h[:4] != CPK or not (hdr := utf_table(h[0x10:])): return None
+        hdr = hdr[0]; f.seek(hdr['TocOffset']); t = f.read(hdr['TocSize'])
+    if t[:4] != b'TOC ' or (rows := utf_table(t[0x10:])) is None: return None
+    return [('/'.join(x for x in (r.get('DirName'), r.get('FileName')) if x), hdr['TocOffset'] + r['FileOffset'], r['FileSize'], r.get('ExtractSize') or r['FileSize']) for r in rows]
+
+def crilayla(d, head=None):
+    """CRI's CRILAYLA compression: 'CRILAYLA', u32 length (without the first 0x100 bytes), u32 compressed length; the first 0x100 bytes stored raw after the compressed data, which is read
+    backwards bit by bit (MSB first) and written backwards: bit 1 = a copy (13-bit distance + 3, length 3 + groups of 2, 3, 5, then 8 bits while a group is all ones), bit 0 = an 8-bit literal.
+    head: only the first bytes (from the raw prefix, nothing decompressed)"""
+    if d[:8] != CRILAYLA: return d[:head] if head else d
+    n, hoff = struct.unpack_from('<II', d, 8)
+    if head and head <= 0x100: return d[0x10 + hoff:0x10 + hoff + head]
+    out = bytearray(0x100 + n); out[:0x100] = d[0x10 + hoff:0x10 + hoff + 0x100]
+    src, pos, bits, cur = d[0x10:0x10 + hoff], hoff - 1, 0, 0
+    def take(k):
+        nonlocal pos, bits, cur
+        v = 0
+        while k:
+            if not bits: cur, pos, bits = src[pos], pos - 1, 8
+            m = min(k, bits); v = v << m | cur >> bits - m & (1 << m) - 1; bits -= m; k -= m
+        return v
+    w = 0x100 + n - 1
+    while w >= 0x100:
+        if not take(1): out[w] = take(8); w -= 1; continue
+        dist, ln = take(13) + 3, 3
+        for lv in (2, 3, 5):
+            v = take(lv); ln += v
+            if v != (1 << lv) - 1: break
+        else:
+            while (v := take(8)) == 0xff: ln += v
+            ln += v
+        for _ in range(min(ln, w - 0xff)): out[w] = out[w + dist]; w -= 1
+    return bytes(out)
+
+def cpk_jobs(files, parts=16):
+    """The GFD shader caches inside CPK archives (Persona 5 Royal: BASE/GFDNX*.GSC, CRILAYLA, 30,418 shaders in nine files), found by their first bytes ('GFS0', 'GSC0' at +0x10), which a
+    CRILAYLA entry keeps raw. The CPK file is still scanned whole as before: 13 Sentinels' and Unicorn Overlord's shaders are GLSLC outputs stored uncompressed in theirs.
+    → ([(path, rel, entries), …], ) in about equal stored sizes"""
+    import mmap
+    jobs = []
+    for p, r in files:
+        if not p.upper().endswith('.CPK') or not (ents := cpk_entries(p)): continue
+        with open(p, 'rb') as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as d:
+            gsc = [e for e in ents if e[2] >= 0x20 and (h := crilayla(d[e[1]:e[1] + min(e[2], 0x10)] if d[e[1]:e[1] + 8] != CRILAYLA else d[e[1]:e[1] + e[2]], 0x14))[:4] == GFS0 and h[0x10:0x14] == b'GSC0']
+        step = max(1, len(gsc) // parts + (len(gsc) % parts > 0))
+        jobs += [(p, r, (CPK, tuple(gsc[i:i + step]))) for i in range(0, len(gsc), step)]
+    return jobs
+
+def hnsh_shaders(d, label):
+    """GFD's NVN shader blocks (Atlus, Persona 5 Royal: the SVSV entries of its GSC0 shader caches, 108 in main): 'HNSHV002', big-endian u32 length, +0x10 option count, +0x18 variant count,
+    then (no options, one variant) from +0x24 a little-endian descriptor whose +0x30 control section offset, +0x34 code area offset, +0x38 code area length, +0x3c control length are relative
+    to +0x24. The code area follows the control section with no alignment (the control sections are 0x850 bytes); compute code has no header. A block with options (main's one with 10 and
+    121 variants) is left to raw_shaders, which takes its control sections by the same adjacency"""
+    out = []
+    for m in re.finditer(re.escape(HNSH), d):
+        b = m.start() + 0x24
+        if b + 0x40 > len(d) or struct.unpack_from('>II', d, m.start() + 0x10) != (0, 0) or struct.unpack_from('>I', d, m.start() + 0x18)[0] != 1: continue
+        pctl, pcode, ncode, nctl = struct.unpack_from('<IIII', d, b + 0x30)
+        ctl, code = d[b + pctl:b + pctl + nctl], d[b + pcode:b + pcode + ncode]
+        st = glslc_stage(ctl, code) if ctl[:4] == CTL_MAGIC else None
+        why = 'no stage' if not st else check(label, st, ctl, code)
+        if why: red(f'{label} HNSH @{m.start():#x}: {why}')
+        out.append((f'{label}#HNSH@{m.start():#x}', st, ctl, code))
+    return out
+
+def cpk_shaders(path, rel, ents, out):
+    import mmap
+    with open(path, 'rb') as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as d:
+        for nm, off, csz, _ in ents: out.extend(hnsh_shaders(crilayla(d[off:off + csz]), f'/{rel}/{nm}'))
+
 PKZL, PGDAT = b'pkzl', b'DAT\0'
 PG_STAGES = {b'VSO\0': 'vs', b'HSO\0': 'hs', b'DSO\0': 'ds', b'GSO\0': 'gs', b'PSO\0': 'ps', b'CSO\0': 'cs'}
 def pkz_entries(path):
@@ -828,6 +932,11 @@ def raw_shaders(d, label, known=()):
         for k in ([code_of[c]] if c in code_of else sorted((k for k in ((c + nctl + 15) & ~15, c - n) if k in built and c in built and near(k) < 0x400), key=near)):
             code = d[k:k + n]; st = glslc_stage(ctl, code) if k >= 0 and CTL_MAGIC not in code else None
             if st and not check(label, st, ctl, code): out.append((f'{label}#RAW@{c:#x}', st, ctl, code)); why = None; break
+        # GFD (Persona 5 Royal's main, 121 outside its single-variant HNSH blocks): the code area right after the control section's own length, mostly unaligned (0x850-byte control sections),
+        # with no data record and no address the code builds; taken only when no rule above found one, so the tables of the games above stay as they were
+        if why:
+            code = d[c + nctl:c + nctl + n]; st = glslc_stage(ctl, code) if CTL_MAGIC not in code else None
+            if st and not check(label, st, ctl, code): out.append((f'{label}#RAW@{c:#x}', st, ctl, code)); why = None
         if why: print(f'[RED] {label} control section @{c:#x}: {why}; left out', flush=True)
     return out
 
@@ -1318,7 +1427,8 @@ def scan_blob(d, label, out):
         size = struct.unpack_from('<I', d, m.start() + 0x1c)[0]
         if m.start() + size <= len(d) and d[m.start() + 0x60:m.start() + 0x64] == b'grsc': out.extend(bnsh_shaders(d, m.start(), label))
     if MGFX in d: out.extend(mgfx_shaders(d, label))
-    if b'SLCT' in d: out.extend(slct_loose(d, label))   # Monolith SLCTs outside an HCPS (Xenoblade Chronicles 3's main)
+    if b'SLCT' in d: out.extend(slct_loose(d, label))
+    if HNSH in d: out.extend(hnsh_shaders(d, label))   # GFD (Persona 5 Royal's main)   # Monolith SLCTs outside an HCPS (Xenoblade Chronicles 3's main)
 
 def group(label):
     """source group (second half of the package file name)"""
@@ -1409,6 +1519,9 @@ def scan_file(args):
     if len(args) > 2 and head[:4] == PKZL:   # entries of a PlatinumGames PKZ (pkz_jobs)
         pkz_shaders(path, rel, args[2], found)
         return rel, uniq_keys(found), var_pairs(found), trees
+    if len(args) > 2 and args[2][0] == CPK:   # GFD shader caches inside a CPK (cpk_jobs)
+        cpk_shaders(path, rel, args[2][1], found)
+        return rel, uniq_keys(found), var_pairs(found), trees
     if len(args) > 2 and head[:4] == KPKA:   # entries of an RE Engine PAK (kpka_jobs)
         kpka_shaders(path, rel, args[2], found)
         return rel, uniq_keys(found), var_pairs(found), trees
@@ -1440,7 +1553,7 @@ def scan_file(args):
         import unityfs
         try: unity_shaders(d, '/' + rel, found, trees if not TREES else dict(TREES))
         except unityfs.NoTree: return rel, {}, set(), 'defer'
-    elif b'BNSH\0\0\0\0' not in d and b'BAHS' not in d and d[:4] != b'MSHD' and not (d[:4] == b'SARC' and b'Yaz0' in d) and b'\x91\x68\x86\x19' not in d and MGFX not in d: return rel, {}, set(), {}   # a SARC may hold Yaz0 members
+    elif b'BNSH\0\0\0\0' not in d and b'BAHS' not in d and d[:4] != b'MSHD' and not (d[:4] == b'SARC' and b'Yaz0' in d) and b'\x91\x68\x86\x19' not in d and MGFX not in d and HNSH not in d: return rel, {}, set(), {}   # a SARC may hold Yaz0 members
     else:
         scan_blob(d, '/' + rel, found)
         # whole GLSLC outputs in a file no other reader takes (FINAL FANTASY TACTICS - The Ivalice Chronicles: its engine's technique files, resources_nx/…/shader/*.tec, 261 outputs beside
@@ -1515,6 +1628,7 @@ def main():
     arc_jobs, arcs = smash_arc_jobs(files)   # Super Smash Bros. Ultimate's data.arc: its current files, in ranges
     pz_jobs, pkzs = pkz_jobs(files)   # Bayonetta 3's PKZ archives, Oodle Kraken decoded by the game's own decoder in the Mac host
     ar_jobs, ards = ard_jobs(files)   # Xenoblade Chronicles 3's archive (bf3.arh / bf3.ard)
+    big += cpk_jobs(files)   # Persona 5 Royal's GFD shader caches, CRILAYLA entries of its CPK (the CPK is still scanned whole: 13 Sentinels' uncompressed GLSLC outputs)
     big += pak_jobs + tr_jobs + ue_jobs + bd_jobs + arc_jobs + pz_jobs + ar_jobs
     files = [(p, r) for p, r in files if not linkdata_jobs(p, r) and p not in paks and p not in trp and p not in uep and p not in bdts and p not in arcs and p not in pkzs and p not in ards]
     with cf.ProcessPoolExecutor(J, initializer=_pool_init, initargs=(common, {}, zdicts)) as ex:
