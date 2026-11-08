@@ -188,6 +188,40 @@ int nvn_dirty_defrag(int (*remap)(void *mem, size_t len)) {
     }
     return done;
 }
+// [mem, mem+len) of one range given new pages by fill (gfx_vk_core.c: a lazy pool's buffer, the first time the GPU uses it), SWAP_SLICE bytes at a time. As in nvn_dirty_defrag
+// every page of a slice is made BUSY, and also read-only, so no write lands while fill copies its old pages into the new ones; fill(at, n, off, ctx) maps the new pages over
+// [at, at+n), off bytes into the span, read-only (0 = done). Then the slice's runs that were writable are made writable again and stamped as written (a write that waited on a
+// BUSY page is the module's to let through), and the protected pages keep their protection; a run that cannot be made writable again stays read-only as protected (its next
+// write faults and is let through as any other), so a page whose state is NONE is never read-only. A slice at a time, so a page stays BUSY for one slice's copy, not the
+// span's: every wait on a BUSY page gives up after BUSY_WAIT_MS, and a game write that gives up is reported as a crash.
+// → 0; fill's error, or -1 (a page stayed BUSY past BUSY_WAIT_MS, mprotect failed, the span is not whole host pages), the slices before it done; 1 when no registered range holds the span (nothing done)
+enum { SWAP_SLICE = 16 << 20 };
+int nvn_dirty_swap(void *mem, size_t len, int (*fill)(void *at, size_t n, size_t off, void *ctx), void *ctx) {
+    if (!g_pg || (((uintptr_t)mem | len) & (g_pg - 1))) return -1;   // whole host pages only
+    range_t *r = find_span((uintptr_t)mem, len); if (!r) return 1;
+    size_t sp = (len < SWAP_SLICE ? len : SWAP_SLICE) >> g_shift; int rc = 0;
+    uint8_t *was = malloc(sp); if (!was) return -1;
+    for (size_t off = 0; off < len && !rc; off += sp << g_shift) {
+        size_t n = len - off < (sp << g_shift) ? len - off : sp << g_shift, np = n >> g_shift, k = 0;
+        uintptr_t a = (uintptr_t)mem + off, p0 = (a - r->base) >> g_shift;
+        while (k < np && !rc) {   // every page of the slice BUSY; was = its state before
+            uint8_t st = atomic_load(&r->state[p0 + k]);
+            if (st == PG_BUSY) { if (!busy_wait(r, p0 + k)) rc = -1; continue; }
+            if (atomic_compare_exchange_strong(&r->state[p0 + k], &st, PG_BUSY)) was[k++] = st;
+        }
+        if (rc) { for (size_t j = 0; j < k; j++) atomic_store(&r->state[p0 + j], was[j]); break; }
+        rc = mp(a, n, PROT_READ) ? -1 : fill((void *)a, n, off, ctx);   // (a failed mprotect may have made part of it read-only: the writable runs are made writable again below)
+        for (size_t j = 0; j < np; ) {
+            if (was[j] != PG_NONE) { j++; continue; }
+            size_t q = j; while (q < np && was[q] == PG_NONE) q++;
+            if (mp(a + (j << g_shift), (q - j) << g_shift, PROT_READ | PROT_WRITE)) for (size_t t = j; t < q; t++) was[t] = PG_PROT;
+            j = q;
+        }
+        for (size_t j = 0; j < np; j++) { if (was[j] == PG_NONE) stamp_page(r, p0 + j); atomic_store(&r->state[p0 + j], was[j]); }
+    }
+    free(was);
+    return rc;
+}
 // Runs of protected pages over every live range: each is a mapping of its own (at most two with the writable pieces around it)
 int nvn_dirty_runs(void) {
     int n = atomic_load(&g_nr), runs = 0;

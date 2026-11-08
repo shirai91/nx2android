@@ -68,8 +68,8 @@ int main(void) {
             self.skipTest('NDK Vulkan headers are required')
         src = (Path(__file__).resolve().parents[1] / 'nxnative/dm/android/gfx_vk_core.c').read_text()
         helpers = src[src.index('// DM_VK_MEM_DIAG'):src.index('\nuint32_t vk_mem_type')]
-        start = src.index('static int pool_zero_copy(')
-        function = src[start:src.index('\n}\n', start) + 3]
+        start = src.index('typedef struct { int fd; uint64_t off; uint8_t *map; int prot; } zcfill_t;')   # zc_fill, zc_place, pool_zero_copy
+        function = src[start:src.index('\n}\n', src.index('static int pool_zero_copy(')) + 3]
         harness = r'''
 #define _GNU_SOURCE
 #define VK_NO_PROTOTYPES
@@ -99,17 +99,16 @@ typedef struct { uint32_t width, height, layers, format; uint64_t usage; uint32_
 #define AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN 48
 #define AHARDWAREBUFFER_USAGE_GPU_DATA_BUFFER 16777216
 #define POOL_USAGE VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
-typedef struct { uint64_t slot_bytes; uint8_t *map; int fd; VkBuffer buf; } slab_t;
-typedef struct { AHardwareBuffer *ahb; VkBuffer buf; VkDeviceMemory mem; } zcfree_t;
-typedef struct { VkBuffer buf; VkDeviceMemory mem; AHardwareBuffer *ahb; int zero_copy;
-    uint64_t boff; slab_t *slab; uint32_t slot; } vkpool_t;
-// Force cache misses so each allocation/import stage below is fault-injected.
-static int slab_take(uint64_t size, slab_t **sl, uint32_t *slot) { (void)size; (void)sl; (void)slot; return 0; }
-static void slab_give(slab_t *sl, uint32_t slot, uint64_t fence) { (void)sl; (void)slot; (void)fence; assert(0); }
-static int zcf_take(uint64_t size, zcfree_t *out) { (void)size; (void)out; return 0; }
-static void zcf_free_now(const zcfree_t *entry) { (void)entry; assert(0); }
+typedef struct { VkBuffer buf; VkDeviceMemory mem; AHardwareBuffer *ahb; int zero_copy; uint64_t boff; void *slab; uint32_t slot; } vkpool_t;
 static struct { VkDevice dev; } V;
-static int failure, released, closed, destroyed, messages;
+static int failure, released, closed, destroyed, messages, swaps, swap_result, fixed_prot = PROT_READ | PROT_WRITE;
+typedef struct slab_t { int fd; uint8_t *map; VkBuffer buf; uint64_t slot_bytes; } slab_t;   // no slab and no kept buffer here: a hardware buffer of its own
+typedef struct { AHardwareBuffer *ahb; VkBuffer buf; VkDeviceMemory mem; } zcfree_t;
+static int slab_take(uint64_t size, slab_t **out, uint32_t *slot) { (void)size; (void)out; (void)slot; return 0; }
+static void slab_give(slab_t *s, uint32_t i, uint64_t fence) { (void)s; (void)i; (void)fence; assert(0); }
+static int zcf_take(uint64_t size, zcfree_t *out) { (void)size; (void)out; return 0; }
+static void zcf_free_now(const zcfree_t *e) { (void)e; assert(0); }
+static int nvn_dirty_swap(void *mem, size_t len, int (*fill)(void *at, size_t n, size_t off, void *ctx), void *ctx) { swaps++; return swap_result ? swap_result : fill(mem, len, 0, ctx); }
 static char last[1024];
 static uint8_t temporary[64];
 static uint64_t clock_ns;
@@ -140,7 +139,7 @@ static int recv_fds(int fd, int *fds, int cap) { assert(fd == 11 && cap == 16); 
 static int mock_close(int fd) { assert(fd >= 10 && fd <= 12); closed++; return 0; }
 #define close mock_close
 static void *mock_mmap(void *addr, size_t n, int prot, int flags, int fd, off_t off) {
-    assert(n == 64 && prot == (PROT_READ | PROT_WRITE) && fd == 12 && off == 0);
+    assert(n == 64 && prot == (addr ? fixed_prot : PROT_READ | PROT_WRITE) && fd == 12 && off == 0);
     if (failure == (addr ? 6 : 5)) { errno = EACCES; return MAP_FAILED; }
     assert(flags == (addr ? MAP_SHARED | MAP_FIXED : MAP_SHARED)); return addr ? addr : temporary;
 }
@@ -170,7 +169,7 @@ int main(void) {
     for (failure = 0; failure <= 10; failure++) {
         for (int repeat = 0; repeat < 2; repeat++) {
             vkpool_t p = {0}; released = closed = destroyed = 0;
-            assert(pool_zero_copy(&p, memory, failure == 0 ? 0x100000000ull : 64) == (failure < 7 ? -1 : -2));
+            assert(pool_zero_copy(&p, memory, failure == 0 ? 0x100000000ull : 64, 0) == (failure < 7 ? -1 : -2));
             assert(!p.zero_copy);
             assert(released == (failure >= 2));
             assert(closed == (failure < 3 ? 0 : failure < 5 ? 2 : 3));
@@ -180,8 +179,15 @@ int main(void) {
         }
     }
     failure = -1; released = closed = destroyed = 0; vkpool_t p = {0};
-    assert(pool_zero_copy(&p, memory, 64) == 0 && p.zero_copy && p.ahb);
-    assert(closed == 3 && released == 0 && destroyed == 0 && memcmp(memory, temporary, 64) == 0);
+    assert(pool_zero_copy(&p, memory, 64, 0) == 0 && p.zero_copy && p.ahb);
+    assert(closed == 3 && released == 0 && destroyed == 0 && memcmp(memory, temporary, 64) == 0 && !swaps);
+    // a lazy pool backed while the game runs: the pages replaced under the tracker and mapped read-only for it; pages it does not hold are left alone
+    fixed_prot = PROT_READ; released = closed = 0; memset(memory, 41, sizeof memory); vkpool_t l = {0};
+    assert(pool_zero_copy(&l, memory, 64, 1) == 0 && l.zero_copy && swaps == 1 && closed == 3 && !released && memcmp(memory, temporary, 64) == 0);
+    swap_result = 1; released = closed = 0; vkpool_t u = {0};
+    assert(pool_zero_copy(&u, memory, 64, 1) == 1 && !u.zero_copy && !u.buf && swaps == 2 && closed == 3 && released == 1);
+    swap_result = -1; released = 0; vkpool_t b = {0};
+    assert(pool_zero_copy(&b, memory, 64, 1) == -1 && !b.zero_copy && released == 1);
     uint64_t t = mem_diag_ns(); mem_diag_note(1, t, 1048576);
     assert(strstr(last, "cpu-to-gpu: last 1.00 ms / 1.00 MiB, mean 1.00 ms / 1.00 MiB (1 calls)"));
     assert(strstr(last, "fault-released-pages=7 prep-pages=3"));
