@@ -71,7 +71,7 @@ static VkDeviceMemory allocate(VkMemoryRequirements req,VkMemoryPropertyFlags fl
 }
 static void run_case(int kind,unsigned mask,int shape,int scenario) {
     int volume=shape==2;unsigned layers=shape==1 ? 6 : 4, pixel_bytes=kind<3 ? 16 : 4;
-    image=(vkimg_t){.w=8,.h=8,.d=volume?8:1,.layers=volume?1:layers,.levels=3,.samples=1,
+    image=(vkimg_t){.w=8,.h=8,.d=volume?8:1,.layers=volume?1:layers,.levels=3,.samples=1,.nvn_format=kind,
         .target=volume?NVN_TEXTURE_TARGET_3D:4,.fmt=formats[kind].vk,.aspect=VK_IMAGE_ASPECT_COLOR_BIT,
         .usage=VK_IMAGE_USAGE_TRANSFER_SRC_BIT|VK_IMAGE_USAGE_TRANSFER_DST_BIT|VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT};
     VkImageCreateInfo ii={VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,NULL,
@@ -165,7 +165,7 @@ int main(int argc,char **argv) {
     VkCommandBufferAllocateInfo ai={VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,NULL,pool,VK_COMMAND_BUFFER_LEVEL_PRIMARY,1};CHECK(vkAllocateCommandBuffers(V.dev,&ai,&command));
     unsigned tests=0;for(int kind=0;kind<5;kind++)for(int shape=0;shape<3;shape++)for(int scenario=0;scenario<4;scenario++)for(unsigned mask=0;mask<16;mask++){run_case(kind,mask,shape,scenario);tests++;}
     printf("PASS: %u clear/readback cases; untouched channels, pixels, layers and mips preserved\n",tests);
-    for(unsigned i=0;i<g_mc_pipes.cap;i++)if(g_mc_pipes.vals[i])vkDestroyPipeline(V.dev,g_mc_pipes.vals[i],NULL);
+    for(unsigned i=0;i<g_mc_pipes.cap;i++)if(g_mc_pipes.vals[i] && g_mc_pipes.vals[i]!=(void *)(uintptr_t)1)vkDestroyPipeline(V.dev,g_mc_pipes.vals[i],NULL);
     free(g_mc_pipes.keys);free(g_mc_pipes.vals);
     for(unsigned i=0;i<3;i++)vkDestroyShaderModule(V.dev,g_mc.fs[i],NULL);vkDestroyShaderModule(V.dev,g_mc.vs,NULL);vkDestroyPipelineLayout(V.dev,g_mc.pl,NULL);
     for(unsigned i=0;i<5;i++)if(passes[i])vkDestroyRenderPass(V.dev,passes[i],NULL);
