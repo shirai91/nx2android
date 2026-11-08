@@ -10,6 +10,13 @@ HLE_FORCE("_ZN2nn2vi10InitializeEv", "display service init; the host has no vi s
 HLE_FORCE("_ZN2nn2vi18OpenDefaultDisplayEPPNS0_7DisplayE", "open default display; the host returns a static object", Result, h_vi_OpenDisp, void **out) {
     *out = &g_display; return RES_OK;
 }
+// The named overload (South Park: The Stick of Truth, SDK 4.5.0, opens the display as "Default" early in nnMain). The host has no vi service, and this one's own
+// SDK implementation resolves the display through it (vi::GetService, sdk+0x401130): the pointer comes back null and the first vtable call reads address 0
+// (SIGSEGV at sdk+0x1d2f30, nn::vi::OpenDisplay+0xf4). Same two-enumeration shape as CreateLayer's size overload below: the host returns its static display.
+HLE_FORCE("_ZN2nn2vi11OpenDisplayEPPNS0_7DisplayEPKc", "open the named display (\"Default\"); the host returns the same static object as OpenDefaultDisplay", Result, h_vi_OpenDispNamed, void **out, const char *name) {
+    LOG("vi::OpenDisplay(\"%s\")", name ? name : "");
+    *out = &g_display; return RES_OK;
+}
 HLE_FORCE("_ZN2nn2vi11CreateLayerEPPNS0_5LayerEPNS0_7DisplayE", "create layer; the host returns a static object", Result, h_vi_CreateLayer, void **out, void *disp) {
     (void)disp; *out = &g_layer; return RES_OK;
 }

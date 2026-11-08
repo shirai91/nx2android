@@ -1,0 +1,42 @@
+# Game profile of FM24 Touch (Switch, base game + update 1.0.1 = v65536). Plays on Android (android.tsv)
+# Format: see dm/games/README.md
+# Sports Interactive's own engine on SDK 16, OpenGL ES 3.1 through NVIDIA's GL driver (subsdk0 NintendoSDK_OpenGL, not loaded: the Android host hands the GL calls to the
+# device's OpenGL ES driver, dm/android/gl_android.c); its 1,224 shaders are GLSL ES text in the RomFS (data/sigraphics/shaders/gles), compiled at run time, so the shader
+# tables are empty. Started from the experimental port's survey (dm/games/profile_guess.py); its memory values held on the device.
+
+# ---- Identity ----
+title_id	01008B101B87A000
+program_id	01008B101B87A000
+
+# ---- App ----
+name	FM24 Touch
+ipa	Fm24Touch.ipa
+app_category	public.app-category.games
+
+# ---- Versions ----
+build	v65536	1.0.1	main=adfcaa80728ae932ef08c4024e22aa15	sdk=3053b22935e32ddf15ef81997603e5c2
+package	v65536
+shader_versions	v65536
+
+# ---- Files ----
+# not loaded, main takes nothing from them the host does not supply: subsdk0 (NintendoSDK_OpenGL)
+modules	main sdk
+romfs_marker	data/simatchviewer/art/environments/dugouts/models/dugouts.sia
+zip_store	.bta:.cat:.dat:.ltc:.otf:.png:.skc:.metallib
+
+# ---- Memory ----
+# main sets a heap of at most the pool − 64 MB − 48 MB of bss (counted as used memory): a 3328 MB heap region
+mem_reserve	0x100000000
+mem_alias	0x10000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+# the NPDM declares 0 MB of system resource: IsVirtualAddressMemoryEnabled is false, as on Horizon (Big Brain Academy: Brain vs. Brain sets a heap only then)
+sys_resource	0x0
+
+# ---- Shader split ----
+shader_groups	/data/=data
+shader_note	FM24 Touch shaders (provisional profile)
+
+# ---- After the rewrite ----
+# the rewritten modules are larger than the default 64 MB of used memory (Age of Calamity: 66.6 MB → 72 MB)
+mem_used	0x7f6c000

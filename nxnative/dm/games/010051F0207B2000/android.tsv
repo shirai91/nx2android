@@ -1,0 +1,16 @@
+# Tomodachi Life: Living the Dream on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Nintendo's engine on SDK 20.5.3, update 1.0.4; 14,400 shaders, all translated.
+# Tested 2026-11-06 on the Legion Y700 (TB322FC, Snapdragon 8 Elite, Adreno 830, Android 16), docked: the date check, region and currency, the island (the 3D island, its sea and
+# trees, the cursor and the camera), naming the island, the Mii creation menus, the guided Mii creation (face questions, the 3D Mii with its face, height and body type).
+# 60 fps (frame work p50 about 5 ms), 0 dropped frames, 0 audio underruns, no red log line.
+# It aborted at boot until the host answered ClockSnapshot::CreateWithAdjustableSystemClock (hle_time.c).
+# The Mii heads and their faces (eyes, eyebrows, nose, mouth) were empty until render_cond (game.tsv): the Mii renderer draws a depth pre-pass, then clears depth under a
+# render condition and draws the colour pass with depth test EQUAL; the clear ran unconditionally and every head draw failed the test. The game uses no MiiModel system data.
+status	playable
+tested	v262144 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
+package	org.nx2a.tomodachilifelivingthedream
+orientation	landscape
+# Its saved clock snapshot is compared with a new one at each start (main+0x871400): the "system time has changed" notice came at every start because the host's
+# CalculateSpanBetween returned Result 0 where the SDK returns a bool (fixed in the core, hle_time.c; checked 2026-11-06: two restarts after a save, no notice).
+# The steady clock follows the host's real time, as a Switch's runs on its battery-backed clock, so spans hold across device reboots
+env	DM_STEADY_REALTIME=1

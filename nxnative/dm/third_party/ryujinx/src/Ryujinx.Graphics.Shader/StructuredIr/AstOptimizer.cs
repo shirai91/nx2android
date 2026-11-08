@@ -31,7 +31,12 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
                         // Pokémon Legends: Z-A's culling compute shaders (66f848f2d65e7b75, e7dd2a9e45c705b9, ec5ebd6d9902a9a1) did each warp's atomic add on a
                         // record's done counter twice; the lane whose rank equals the total then never came, the counters were never reset and grew every frame
                         // (GPU 9 → 70 ms a frame within minutes on both the Adreno driver and Turnip)
-                        if (propVar.Defs.Count == 1 && isWorthPropagating && !UsedByCall(propVar) && !HasSideEffects(assignment.Source))
+                        // nxnative: nor a load of memory the shader can write (shared, local, storage, global, images): moved to its use, it read the memory after
+                        // the stores between them. Final Fantasy Resonance's radix sort scatter (98dee7b8a8eb9f9f) and scan (5854663e6002c250) store a row's
+                        // exclusive prefix over the counts they read, then read the last count back from the word just stored: the 32nd lane's prefix came out
+                        // twice the 31st's, keys of the same digit took one slot and others none, and the fog boxes drawn from the sorted list blinked
+                        // (both Adreno drivers; the Apple chain translates with DebugMode, which propagates nothing)
+                        if (propVar.Defs.Count == 1 && isWorthPropagating && !UsedByCall(propVar) && !HasSideEffects(assignment.Source) && !ReadsWritableMemory(assignment.Source))
                         {
                             PropagateExpression(propVar, assignment.Source);
                         }
@@ -60,6 +65,25 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
                 Instruction.Call or Instruction.ImageAtomic => true,
                 _ => false,
             };
+        }
+
+        private static bool ReadsWritableMemory(IAstNode source)
+        {
+            if (source is not AstOperation operation)
+            {
+                return false;
+            }
+
+            Instruction inst = operation.Inst & Instruction.Mask;
+
+            if (inst == Instruction.ImageLoad)
+            {
+                return true;
+            }
+
+            return inst == Instruction.Load && operation.StorageKind is StorageKind.LocalMemory or StorageKind.SharedMemory or StorageKind.SharedMemory8 or
+                StorageKind.SharedMemory16 or StorageKind.StorageBuffer or StorageKind.GlobalMemory or StorageKind.GlobalMemoryS8 or StorageKind.GlobalMemoryS16 or
+                StorageKind.GlobalMemoryU8 or StorageKind.GlobalMemoryU16;
         }
 
         private static bool UsedByCall(AstOperand propVar)

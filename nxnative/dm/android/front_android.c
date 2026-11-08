@@ -3,7 +3,8 @@
 //   libdmhost.so in the app (a NativeActivity, no Java): ANativeActivity_onCreate lays out the game's files in the app's external files folder
 //   (/sdcard/Android/data/<package>/files: mods/ = the rewritten modules, RomFS/ (or env.txt's DM_ROMFS: romfs_readable), shaders.dmsv; env.txt = KEY=VALUE switches; log.txt = the log), keeps saves in
 //   internal storage, and starts the host on a thread of its own. The window goes to the Vulkan backend's swapchain (dm_front_window); game controllers
-//   (KEYCODE_BUTTON_*, sticks, triggers, hat) feed player 1's pad; touches go to the game's touch screen; shaking the device shakes player 1's controller;
+//   (KEYCODE_BUTTON_*, sticks, triggers, hat) feed player 1's pad; touches go to the game's touch screen; shaking the device shakes player 1's controller and turning it turns
+//   the controller's six-axis sensor (the gyroscope);
 //   leaving and coming back pauses as on iOS.
 #include "dm.h"
 #include "front.h"
@@ -108,6 +109,7 @@ static void settings_save(void) {
     }
     fclose(f); rename(tmp, p);
 }
+void dm_lan_android_start(ANativeActivity *act);   // lan_android.c: the Wi-Fi multicast lock for local play over the LAN (DM_LAN=1)
 void dm_haptics_android_start(ANativeActivity *act, int on); void dm_haptics_android_tap(void); void dm_haptics_android_device(int id); void dm_haptics_android_set(int on);
 void dm_haptics_suspend(unsigned reason, int suspended);
 __attribute__((weak)) void dm_overlay_redraw(void) {}   // the backend presents the last frame again (the pause menu changed while the game is held)
@@ -290,6 +292,10 @@ static int ctl_at(float x, float y, float W, float H) {   // the control under (
         float b[4]; ov_box(c, W, H, b);
         float d = ov_sdf(c, b, x - b[0], y - b[1]), reach = ov_reach(c, b, H), m = fminf(b[2], b[3]);
         if (d < reach && (d + m) / (m + reach) < bd) { bd = (d + m) / (m + reach); best = i; }   // between two, the one the touch is deeper into, for its size
+    }
+    if (shown && !atomic_load(&g_edit) && (best < 0 || (OV_CTLS[best].kind == OV_BUTTON && (OV_CTLS[best].btn & (DM_BTN_A | DM_BTN_B | DM_BTN_X | DM_BTN_Y))))) {
+        uint64_t pair = ov_face_combo(OV_CTLS, x, y, W, H);
+        if (pair) for (int i = 0; i < OV_N; i++) if (OV_CTLS[i].kind == OV_BUTTON && (OV_CTLS[i].btn & pair)) return i;
     }
     return best;
 }
@@ -811,7 +817,7 @@ static void touch_event(AInputEvent *e) {
         if (k->kind == OV_MENU) { if (id == g_drag.id) menu_drag(k, x, y, W, H); continue; }
         float b[4]; ov_box(k, W, H, b);
         float dx = (x - b[0]) / b[2], dy = (y - b[1]) / b[2], m = sqrtf(dx * dx + dy * dy);   // in the control's half widths (a stick's or the d-pad's radius)
-        if (k->kind == OV_BUTTON) btn |= k->btn;
+        if (k->kind == OV_BUTTON) btn |= ov_button_bits(OV_CTLS, k, x, y, W, H);
         else if (k->kind == OV_DPAD) {
             if (m > 0.25f) { float a = atan2f(dy, dx); int s = (int)lroundf(a / (3.14159265f / 4)) & 7;   // 8 directions, 0 = right, clockwise (y grows downward)
                 static const uint64_t dir[8] = {DM_BTN_RIGHT, DM_BTN_RIGHT | DM_BTN_DOWN, DM_BTN_DOWN, DM_BTN_DOWN | DM_BTN_LEFT, DM_BTN_LEFT, DM_BTN_LEFT | DM_BTN_UP, DM_BTN_UP, DM_BTN_UP | DM_BTN_RIGHT};
@@ -903,23 +909,69 @@ static void ext_touch_drain(void) {
 // The accelerometer at 60 Hz on the input thread's looper (no permission needed): gravity is followed by a slow low-pass (about 0.8 s), and a sample whose acceleration beyond it
 // exceeds DM_SHAKE_G (1.5 G by default; env.txt overrides) is a hit. The controller is shaken until 120 ms after the last hit: a flick is one shake (the host finishes it as a whole
 // cycle) and shaking on keeps it going. It goes through player 1's controller path, so it adds to the on-screen gamepad and a controller alike. Off while the app is in the background
-static ASensorEventQueue *g_sq; static const ASensor *g_accel;
+// ---- the device's motion: player 1's six-axis sensor turns as the device does (dm_motion_set, hle_hid.c), as the Joy-Cons turn with the console in handheld mode (aiming
+// by motion: The Legend of Zelda: Tears of the Kingdom's bow). The gyroscope at 200 Hz (the Switch sensor's rate) with the latest accelerometer sample, in the screen's frame
+// (x right, y to the top edge, z out of the screen: Android gives them in the device's natural orientation, so they turn with the display's rotation, read through JNI every
+// 250 ms because a 180-degree flip in sensorLandscape sends no configuration change), angular velocity in revolutions / s and gravity's direction in G (the opposite sign of
+// Android's). The same mapping as yuzu's Android front end (EmulationActivity: rotation 270 = (y, -x, z), 90 = (-y, x, z); yuzu divides by 6 for 2 pi). DM_MOTION=0 turns it off
+// (the sensor at rest, as before); DM_MOTION_LOG=1 logs the mapped values once a second. Off in the background with the accelerometer
+static ASensorEventQueue *g_sq; static const ASensor *g_accel, *g_gyro;
 static void shake_sensor(int on) {
     if (!g_sq || !g_accel) return;
-    // the rate goes with the registration: enableSensor + setEventRate left it at the default 200 ms on the Y700 (dumpsys sensorservice), too slow for a flick
-    if (on) ASensorEventQueue_registerSensor(g_sq, g_accel, 16667, 0); else ASensorEventQueue_disableSensor(g_sq, g_accel);
+    // the rate goes with the registration: enableSensor + setEventRate left it at the default 200 ms on the Y700 (dumpsys sensorservice), too slow for a flick.
+    // 200 Hz with the gyroscope (its samples carry the latest acceleration), 60 Hz for shaking alone
+    if (on) ASensorEventQueue_registerSensor(g_sq, g_accel, g_gyro ? 5000 : 16667, 0); else ASensorEventQueue_disableSensor(g_sq, g_accel);
+    if (g_gyro) { if (on) ASensorEventQueue_registerSensor(g_sq, g_gyro, 5000, 0); else ASensorEventQueue_disableSensor(g_sq, g_gyro); }
+}
+static JNIEnv *g_ienv; static jobject g_display; static jmethodID g_mRotation;   // the input thread's JNI: Display.getRotation
+static int g_rot;   // the display's rotation, Surface.ROTATION_0..270 = 0..3
+static void rotation_start(void) {
+    JavaVM *vm = g_act ? g_act->vm : NULL; JNIEnv *E;
+    if (!vm || (*vm)->AttachCurrentThread(vm, &E, NULL) != JNI_OK) { LOG("[RED] front end: the input thread cannot attach to the Java VM: motion keeps rotation 0"); return; }
+    jclass cA = (*E)->GetObjectClass(E, g_act->clazz); jmethodID mWm = (*E)->GetMethodID(E, cA, "getWindowManager", "()Landroid/view/WindowManager;");
+    jobject wm = mWm ? (*E)->CallObjectMethod(E, g_act->clazz, mWm) : NULL; if (jx(E) || !wm) { LOG("[RED] front end: no WindowManager: motion keeps rotation 0"); return; }
+    jclass cWm = (*E)->FindClass(E, "android/view/WindowManager"), cD = (*E)->FindClass(E, "android/view/Display");
+    jmethodID mDisp = cWm ? (*E)->GetMethodID(E, cWm, "getDefaultDisplay", "()Landroid/view/Display;") : NULL; if (jx(E) || !mDisp || !cD) return;
+    jobject d = (*E)->CallObjectMethod(E, wm, mDisp); g_mRotation = (*E)->GetMethodID(E, cD, "getRotation", "()I"); if (jx(E) || !d || !g_mRotation) return;
+    g_display = (*E)->NewGlobalRef(E, d); g_ienv = E;
+}
+static void rotation_poll(int64_t now) {
+    static int64_t next; static int first = 1;
+    if (!g_display || now < next) return;
+    next = now + 250000000;
+    int r = (*g_ienv)->CallIntMethod(g_ienv, g_display, g_mRotation); if (jx(g_ienv)) return;
+    if ((r & 3) != g_rot || first) LOG("front end: display rotation %d degrees: motion axes follow it", (r & 3) * 90);
+    g_rot = r & 3; first = 0;
+}
+static void motion_feed(const ASensorEvent *e, const double acc[3]) {   // a gyroscope sample with the latest acceleration (device frame, m/s^2) → the host
+    static int log = -1; static int64_t logged;
+    if (log < 0) { const char *v = getenv("DM_MOTION_LOG"); log = v && atoi(v) > 0; }
+    rotation_poll(e->timestamp);
+    double g[3] = {e->vector.x, e->vector.y, e->vector.z}, a[3] = {acc[0], acc[1], acc[2]};
+    // device (natural orientation) → screen: 90 = (-y, x), 180 = (-x, -y), 270 = (y, -x); z stays
+    for (double *v = g; v; v = v == g ? a : NULL) { double x = v[0], y = v[1];
+        switch (g_rot) { case 1: v[0] = -y; v[1] = x; break; case 2: v[0] = -x; v[1] = -y; break; case 3: v[0] = y; v[1] = -x; break; default: break; } }
+    float fa[3], fg[3];
+    for (int i = 0; i < 3; i++) { fg[i] = (float)(g[i] / (2 * M_PI)); fa[i] = (float)(-a[i] / ASENSOR_STANDARD_GRAVITY); }
+    dm_motion_set(fa, fg, e->timestamp);
+    if (log && e->timestamp - logged >= 1000000000) { logged = e->timestamp;
+        LOG("front end: motion (rotation %d) acc %+.2f %+.2f %+.2f G, gyro %+.3f %+.3f %+.3f rev/s", g_rot * 90, fa[0], fa[1], fa[2], fg[0], fg[1], fg[2]); }
 }
 static int on_sensor(int fd, int events, void *data) {
     (void)fd; (void)events; (void)data;
-    static double thr, gx, gy, gz, peak; static int64_t last = -1; static int init;
+    static double thr, gx, gy, gz, peak, acc[3] = {0, 0, ASENSOR_STANDARD_GRAVITY}; static int64_t last = -1, prev_t; static int init;
     if (!thr) { const char *e = getenv("DM_SHAKE_G"); thr = e && atof(e) > 0 ? atof(e) : 1.5; }
     ASensorEvent ev[16]; ssize_t n;
     while ((n = ASensorEventQueue_getEvents(g_sq, ev, 16)) > 0) for (ssize_t i = 0; i < n; i++) {
+        if (ev[i].type == ASENSOR_TYPE_GYROSCOPE) { motion_feed(&ev[i], acc); continue; }
         if (ev[i].type != ASENSOR_TYPE_ACCELEROMETER) continue;
+        acc[0] = ev[i].acceleration.x; acc[1] = ev[i].acceleration.y; acc[2] = ev[i].acceleration.z;
         double x = ev[i].acceleration.x / ASENSOR_STANDARD_GRAVITY, y = ev[i].acceleration.y / ASENSOR_STANDARD_GRAVITY, z = ev[i].acceleration.z / ASENSOR_STANDARD_GRAVITY;
-        if (!init) { gx = x; gy = y; gz = z; init = 1; }
+        if (!init) { gx = x; gy = y; gz = z; init = 1; prev_t = ev[i].timestamp; }
         double dx = x - gx, dy = y - gy, dz = z - gz, g = sqrt(dx * dx + dy * dy + dz * dz);
-        gx += (x - gx) * 0.02; gy += (y - gy) * 0.02; gz += (z - gz) * 0.02;
+        // gravity's low-pass: 0.02 a sample at 60 Hz, about 0.8 s, whatever the rate (200 Hz with the gyroscope)
+        double dt = (double)(ev[i].timestamp - prev_t) / 1e9, k = 1 - exp(-(dt > 0 && dt < 0.5 ? dt : 1 / 60.0) / 0.825); prev_t = ev[i].timestamp;
+        gx += (x - gx) * k; gy += (y - gy) * k; gz += (z - gz) * k;
         if (g > thr) { if (last < 0) peak = 0; last = ev[i].timestamp; peak = fmax(peak, g); }
         int on = last >= 0 && ev[i].timestamp - last < 120000000;
         if (!on && last >= 0) { LOG("front end: device shaken (peak %.1f G)", peak); last = -1; }
@@ -933,8 +985,13 @@ static void shake_start(void) {
     g_accel = m ? ASensorManager_getDefaultSensor(m, ASENSOR_TYPE_ACCELEROMETER) : NULL;
     if (!g_accel) { LOG("front end: no accelerometer, shaking the device does nothing"); return; }
     g_sq = ASensorManager_createEventQueue(m, g_ilooper, 2, on_sensor, NULL);
-    const char *e = getenv("DM_SHAKE_G");
+    const char *e = getenv("DM_SHAKE_G"), *mo = getenv("DM_MOTION");
     LOG("front end: shaking the device shakes the controller (threshold %.2f G)", e && atof(e) > 0 ? atof(e) : 1.5);
+    if (!(mo && !atoi(mo))) {
+        g_gyro = ASensorManager_getDefaultSensor(m, ASENSOR_TYPE_GYROSCOPE);
+        if (g_gyro) { rotation_start(); LOG("front end: the device's gyroscope (%s) moves the controller's six-axis sensor", ASensor_getName(g_gyro)); }
+        else LOG("front end: no gyroscope: the controller's six-axis sensor stays at rest");
+    } else LOG("front end: DM_MOTION=0: the controller's six-axis sensor stays at rest");
     shake_sensor(!atomic_load(&g_bg));
 }
 static void *input_thread(void *a) {
@@ -1056,7 +1113,7 @@ __attribute__((visibility("default"))) void ANativeActivity_onCreate(ANativeActi
     // the save manager's requests (saves_android.c), before the host mounts the save: an import chosen in the menu or pushed by porter, an export porter asks for
     if (dm_saves_start(g_root)) { LOG("[saves] the request asked the app to end: the game is not started"); g_quit = 1; return; }
     if (!romfs_readable(act, sdk)) { g_quit = 1; return; }   // after the save manager's requests, which need no RomFS
-    settings_load(); dm_haptics_android_start(act, atomic_load(&g_set_rumble));
+    settings_load(); dm_haptics_android_start(act, atomic_load(&g_set_rumble)); dm_lan_android_start(act);
     { pthread_t w; if (!pthread_create(&w, NULL, pad_watch, act->vm)) pthread_detach(w); }
     LOG("NX2A host on Android: files %s, RomFS %s, saves %s", g_root, getenv("DM_ROMFS"), act->internalDataPath);
     pthread_t t; pthread_create(&t, NULL, input_thread, NULL); pthread_detach(t);

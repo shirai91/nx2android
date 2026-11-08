@@ -19,7 +19,8 @@ static const uint8_t *g_bundle; static uint32_t g_nent; static const bent *g_ent
 // Every entry is checked against the file's size once here, so a lookup never reads past the mapping (a copy cut short, say a push stopped outside porter, would fault there)
 void vk_shaders_open(const char *path) {
     int fd = open(path, O_RDONLY | O_CLOEXEC); struct stat st;
-    if (fd < 0 || fstat(fd, &st)) { VKLOG("[RED] no shader bundle at %s: nothing will be drawn", path); if (fd >= 0) close(fd); return; }
+    if (fd < 0 || fstat(fd, &st)) { if (getenv("DM_GL_ACTIVE")) VKLOG("no shader bundle at %s: an OpenGL ES game (gl_android.c) needs none", path);
+                                    else VKLOG("[RED] no shader bundle at %s: nothing will be drawn", path); if (fd >= 0) close(fd); return; }
     const uint8_t *b = st.st_size >= 12 ? mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_SHARED, fd, 0) : MAP_FAILED; close(fd);
     if (b == MAP_FAILED || memcmp(b, "DMSV", 4)) { VKLOG("[RED] %s is not a shader bundle", path); if (b != MAP_FAILED) munmap((void *)b, (size_t)st.st_size); return; }
     uint32_t ver, n, nz = 0, bad = 0; memcpy(&ver, b + 4, 4); memcpy(&n, b + 8, 4); const bent *t = (const bent *)(b + 12); uint64_t sz = (uint64_t)st.st_size, raw = 0, stored = 0;
@@ -306,7 +307,29 @@ static vkshader_t *vk_shader_q(uint64_t key, int stage, int quiet) {
                        (op == 10 && !memcmp(&w[i + 1], "SPV_EXT_fragment_shader_interlock", 33));
             if (drop) i += n; else for (uint32_t k = 0; k < n; k++) w[o++] = w[i++]; }
         nw = o; } }
+    // subgroup operations of a class the stage lacks (not in supportedStages, VUID-RuntimeSpirv-None-06343; a class not in supportedOperations; quad operations outside
+    // fragment and compute without quadOperationsInAllStages, -06342): the module runs as subgroups of one invocation (gfx_vk_subgroup.c). On a Retroid Pocket 5
+    // (Adreno 650, Turnip: compute alone) Pokemon Pokopia's fragment shader 541aa7b27f1fae4d, the translator's SHFL helper, lost the device at the title screen.
+    // Qualcomm's driver on the Y700 (Adreno 830) lists fragment and compute alone too: 12 of Tears of the Kingdom's vertex shaders (ballots) and 1 of Xenoblade
+    // Chronicles 3's are rewritten there. DM_VK_SUBGROUP_ONE_LANE=0 (start-up): no module is rewritten, as before, for A/B tests
+    static int one_lane = -1; if (one_lane < 0) { const char *e = getenv("DM_VK_SUBGROUP_ONE_LANE"); one_lane = !(e && !atoi(e)); if (!one_lane) VKLOG("subgroups: no one-invocation rewrite (DM_VK_SUBGROUP_ONE_LANE=0)"); }
+    if (one_lane) { uint32_t ops = V.sg_stages & stage_flag(stage) ? V.sg_ops : 0; if (stage != 1 && stage != 5 && !V.sg_quad_all) ops &= ~(uint32_t)VK_SUBGROUP_FEATURE_QUAD_BIT;
+      char why[64]; uint32_t n2 = 0, *w2 = spv_one_lane(w, nw, ops, &n2, why, sizeof why);
+      if (w2) { free(w); w = w2; nw = n2; VKLOG("shader %016llx (stage %d): subgroups of one invocation (the device's subgroup operations in this stage: %#x)", (unsigned long long)key, stage, ops); }
+      else if (why[0]) VKLOG("[RED] shader %016llx (stage %d) uses subgroup operations the device lacks in this stage (it has %#x), and %s is not covered by the one-invocation rewrite: left as it is", (unsigned long long)key, stage, ops, why); }
     if (stage == 0) { uint32_t n2 = 0, *w2 = spv_vs_init(w, nw, &n2); if (w2) { free(w); w = w2; nw = n2; } }
+    // Maxwell's FMNMX returns the operand that is a number when the other is NaN, and its saturate turns NaN into 0 (IEEE minNum / maxNum, as Metal's fmin / fmax).
+    // The translator emits GLSL.std.450 FMin / FMax / FClamp, whose result is undefined for a NaN operand, and Adreno passes the NaN on: their NaN-aware forms NMin /
+    // NMax / NClamp give Maxwell's results. Xenoblade Chronicles 3's fur pixel shaders (4fd6e9e891e821cf, f8cc7339c930dc07) take max(0, sqrt(1 - x² - y²)) of
+    // their fur direction texels; where x² + y² is just over 1 the NaN went through, the whole fur vector became NaN and its saturate 0, which the motion blur
+    // reads as full speed down-left: the Nopons' fur smeared over their faces (the Mac and Eden: clean). DM_VK_NAN_MINMAX=0 (start-up, A/B): as translated
+    { static int on = -1; if (on < 0) { const char *e = getenv("DM_VK_NAN_MINMAX"); on = !(e && !strcmp(e, "0")); }
+      uint32_t glsl = 0;
+      for (uint32_t i = 5; on && i < nw;) { uint32_t n = w[i] >> 16, op = w[i] & 0xffff; if (!n || i + n > nw) break;
+          if (op == 11 && n >= 3 && !memcmp(&w[i + 2], "GLSL.std.450", 12)) glsl = w[i + 1];   // OpExtInstImport
+          else if (op == 12 && n >= 5 && glsl && w[i + 3] == glsl) { uint32_t *x = &w[i + 4];   // OpExtInst: FMin 37 → NMin 79, FMax 40 → NMax 80, FClamp 43 → NClamp 81
+              if (*x == 37) *x = 79; else if (*x == 40) *x = 80; else if (*x == 43) *x = 81; }
+          i += n; } }
     spv_io_locs(w, nw, &s->in_locs, &s->out_locs);
     VkShaderModuleCreateInfo ci = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, NULL, 0, (size_t)nw * 4, w};
     VkResult vr = vkCreateShaderModule(V.dev, &ci, NULL, &s->mod); s->spv = w; s->nspv = nw;
@@ -334,6 +357,10 @@ static vkshader_t *vk_shader_q(uint64_t key, int stage, int quiet) {
 // STENCIL), must be read through a uint / int image in Vulkan, and Adreno converts the value otherwise. Xenoblade Chronicles 3 tags each pixel's material
 // for its lighting from the stencil's bit 3 (shader 094f4afb9c876459 tests the raw word & 8): read as float, every tag was 0 and the lit scene was black.
 // A variant of the module retypes those bindings' images to uint / int and bitcasts each texel read back to float, which gives the shader the raw words.
+// Storage texel buffers too: a store (OpImageWrite) of a vec4 of floats into a retyped image is bitcast to the integer type first, so the words land as written.
+// Final Fantasy Resonance (Unreal Engine 5.6) builds its particle index tables in R32UI buffers its compute shaders write through float images (812650f2ed1cba0d
+// stores four floats of a uniform buffer); through the R32_UINT views its battle's haze and dust sprites (vertex shader fb570ef861debd17) drew nothing, with the
+// variant they draw (a frame with that shader left out differs in those areas)
 typedef struct { const uint32_t *w; uint32_t fn, bound, *at, *nt, nnt; struct { uint32_t old, kind, id; } map[64]; int nmap; } spvi;
 static uint32_t spvi_find(const uint32_t *a, uint32_t lo, uint32_t hi, uint32_t op, const uint32_t *ops, uint32_t nops) {   // a declaration op with these operands (after the result id)
     for (uint32_t j = lo; j < hi;) { uint32_t m = a[j] >> 16; if (!m) break; if ((a[j] & 0xffff) == op && m == nops + 2 && !memcmp(&a[j + 2], ops, nops * 4)) return a[j + 1]; j += m; }
@@ -376,9 +403,17 @@ static uint32_t *spv_int_images(const uint32_t *w, uint32_t nw, const uint16_t *
     for (uint32_t i = c.fn; i < nw && ok;) { uint32_t n = w[i] >> 16, op = w[i] & 0xffff; if (!n) { ok = 0; break; }
         uint32_t *x = &fb[nf]; memcpy(x, &w[i], n * 4); nf += n;
         uint32_t src = n >= 4 ? w[i + 3] : 0, k = src && src < base ? taint[src] : 0;
-        if (k && (op == 61 || op == 65 || op == 66 || op == 83 || op == 100 || op == 86)) {   // Load, AccessChain, InBoundsAccessChain, CopyObject, Image, SampledImage
+        if (op == 99 && n >= 4 && w[i + 1] < base && taint[w[i + 1]]) {   // ImageWrite image coord texel: the texel (a vec4 of floats) bitcast to the integer vec4
+            uint32_t kk = taint[w[i + 1]], tx = w[i + 3], tt = 0;
+            for (uint32_t j = c.fn; j < nw;) { uint32_t m = w[j] >> 16; if (!m) break; if (m >= 3 && w[j + 2] == tx && (w[j] & 0xffff) != 71 && (w[j] & 0xffff) != 72) { tt = w[j + 1]; break; } j += m; }
+            uint32_t ti = tt && tt < base ? c.at[tt] : 0, ci = ti && (w[ti] & 0xffff) == 23 && w[ti] >> 16 == 4 && w[ti + 3] == 4 && w[ti + 2] < base ? c.at[w[ti + 2]] : 0;
+            if (ci && (w[ci] & 0xffff) == 21) { i += n; continue; }   // integer texels already (an image the translator typed uint): as it is
+            if (!ci || (w[ci] & 0xffff) != 22 || w[ci + 2] != 32) { ok = 0; break; }   // not a vec4 of 32-bit floats: no variant
+            uint32_t r2 = c.bound++; nf -= n; fb[nf++] = 4u << 16 | 124; fb[nf++] = spvi_vec4(&c, kk); fb[nf++] = r2; fb[nf++] = tx;   // OpBitcast
+            x = &fb[nf]; memcpy(x, &w[i], n * 4); x[3] = r2; nf += n;
+        } else if (k && (op == 61 || op == 65 || op == 66 || op == 83 || op == 100 || op == 86)) {   // Load, AccessChain, InBoundsAccessChain, CopyObject, Image, SampledImage
             uint32_t t = spvi_type(&c, x[1], k); if (!t) { ok = 0; break; } x[1] = t; if (x[2] < base) taint[x[2]] = (uint8_t)k;
-        } else if (k && (op == 87 || op == 88 || op == 91 || op == 92 || op == 95 || op == 96)) {   // Sample{Implicit,Explicit}Lod, SampleProj*, Fetch, Gather: a vec4 of the integer type, bitcast back
+        } else if (k && (op == 87 || op == 88 || op == 91 || op == 92 || op == 95 || op == 96 || op == 98)) {   // Sample{Implicit,Explicit}Lod, SampleProj*, Fetch, Gather, Read: a vec4 of the integer type, bitcast back
             uint32_t ft = x[1], r = x[2], r2 = c.bound++; x[1] = spvi_vec4(&c, k); x[2] = r2;
             fb[nf++] = 4u << 16 | 124; fb[nf++] = ft; fb[nf++] = r; fb[nf++] = r2;   // OpBitcast
         }

@@ -1,0 +1,30 @@
+# FINAL FANTASY RESONANCE on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Unreal Engine 5.6.1 on SDK 20.5.17, update 1.0.1; 73,512 shaders, all translated. Its shader libraries are in the IoStore container, Oodle-compressed shader groups that the port
+# decodes with the game's own Oodle on the device (porter device_ue: one round, 5,919 groups, 74,244 shaders in 44 s), so the port needs the device connected.
+# Tested 2026-11-06 on the Legion Y700 (TB322FC, Snapdragon 8 Elite, Adreno 830, Android 16), docked (1920x1080): the brightness setting, the title, a new game (difficulty), the
+# opening cinematic, the first road (walking, tutorials), the cutscene, the first battle's command menu; an autosave, and Continue from it after a restart (many times).
+# 60 fps (the profile's fps_target): frame work p50 about 16.5 ms, GPU 10-13 ms in the field and the cinematic, 0-6 dropped frames per 300; 0 audio underruns; no red line.
+# Its sprite particles' parameters (R32F buffer textures of 36-44 elements at offsets not a multiple of Adreno's 64) are read from an aligned copy (gfx_vk_tex.c vk_tbuf_view).
+# Its particle compute shaders write R32UI / R32I buffer textures through float images: those get an integer variant (gfx_vk_shader.c spv_int_images), and the battle's
+# haze and dust sprites (vertex shader fb570ef861debd17) draw since.
+# Not drawn: the fires in the first battle's background that the battle tutorial's picture shows. Likely by design on this platform, not proven on a Switch: every blended
+# draw of the battle frame was identified with DM_VK_X_FLAT_VS (in env.txt: pipelines made before it keep their state) and none is a flame: fb570ef8 the haze sprites,
+# 1300ca45ddca3566 / c55d54c8f41b1520 ground-fog volumes, 70eb4102 the moon's glow (pass 22), 1bbd4f87bfa7cdf5 light shafts and 6a4e114179eda634 a screen effect (pass 24,
+# after depth of field). The fire light (not a Niagara effect) is there. The game's Switch device profile holds fx.Niagara.QualityLevel at 1 (Min and Max 1 at main+0x779eb70 /
+# 0x779eb80 / 0x779eb90 at run time; 3 in the binary) and fx.Niagara.PruneEmittersOnCook is 1, so emitters of higher quality levels are left out of its packaged data; the
+# binary is the original Switch's (no Switch 2 model query among its imports), and the tutorial pictures may come from another platform. Ruled out on the port's side: the
+# GPU count readback, occlusion (only timestamps and SAMPLES_PASSED, answered as visible), the frame rate (DM_FPS_TARGET=30), handheld mode, Niagara's culling switches
+# (visibility, distance, instance count and global budget culling written to 0 from the title, main+0x779eca8 / 0x779ecac / 0x779ecb0 / 0x779ec74, with DM_CTL pokei).
+# The game ignores command-line console variables (a shipping build: -dpcvars and -ini: through DM_GAME_ARGS_ADD changed nothing, r.ScreenPercentage included).
+# First road, standing still (2026-11-06, docked): patches of fog on the road lit and went dark in turn. Its lights go into 32x32x32 volumes drawn slice by slice
+# with additive blending; the core cleared only slice 0 of a layered pass, so the fog boxes that read them (1300ca45ddca3566) changed every frame: fixed in the core
+# (gfx_vk_exec.c clear_color, every layer cleared; same on Qualcomm's driver and Turnip). The patches still went on and off after that (2026-11-08: two exact
+# states, 37-56% of frames changed): each fog box's vertex shader reads its primitive from a table that a GPU radix sort builds every frame (a960d729840ecac2 clear,
+# c0a487a5afca4bb9 histogram, 5854663e6002c250 scan, 98dee7b8a8eb9f9f scatter, 6 passes of 4 bits), and the translated scan and scatter read back a word they had
+# just stored: the 32nd lane's prefix came out twice the 31st's, so the sort lost keys and the boxes drew from wrong entries in the frames whose batch order put
+# them behind a big batch. Fixed in the translator (AstOptimizer: a load of writable memory is never moved to its use); after: 0 changes in 900 frames standing,
+# 0 spike frames in 360 frames walking, the boxes drawn in every frame (DM_VK_X_FLAT_VS). Found by running Ryujinx's GLSL of the same jobs in a SIMT emulator.
+status	playable
+tested	v65536 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
+package	org.nx2a.finalfantasyresonance
+orientation	landscape

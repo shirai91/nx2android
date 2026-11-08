@@ -15,6 +15,7 @@ HERE = Path(__file__).resolve().parent
 TOOLS = HERE.parent.parent / 'gfx/tools'
 sys.path[:0] = [str(TOOLS), str(HERE)]
 import dmsh_facts, dmsh_chain, dmsv   # noqa: E402  (DM_GAME picks the profile)
+from shader_split import glslc_stage   # the package reader also recognizes headerless compute code
 
 ap = argparse.ArgumentParser()
 ap.add_argument('pkg'); ap.add_argument('out')
@@ -48,7 +49,6 @@ def records(d):
     r = [m.start() for m in re.finditer(b'BTCDBTCD', d)]
     return [d[x:(r[k + 1] if k + 1 < len(r) else len(d))] for k, x in enumerate(r)]
 
-SPH_STAGE = {1: 'vs', 2: 'hs', 3: 'ds', 4: 'gs', 5: 'ps'}   # SPH word 0 bits 10..13 (shader_split.py sph_stage)
 def captured(d):
     """The run-time captures in folder d (--capture): {key: (stage, record in the package's form)}"""
     out = {}
@@ -59,8 +59,8 @@ def captured(d):
         nctl, ncode = struct.unpack_from('<2I', b, 4); ctl, code = b[12:12 + nctl], b[12 + nctl:12 + nctl + ncode]
         if len(code) != ncode or len(ctl) != nctl or ctl[:4] != bytes.fromhex('34127698'): print(f'[RED] capture {nm}: truncated', flush=True); continue
         if hashlib.sha256(ctl + code).hexdigest()[:16] != nm[:16]: print(f'[RED] capture {nm}: its content does not hash to its name', flush=True); continue
-        st = 'cs' if code[:4] == bytes.fromhex('79563412') else SPH_STAGE.get(struct.unpack_from('<I', code, 0x30)[0] >> 10 & 0xf) if code[:4] == bytes.fromhex('78563412') and len(code) > 0x80 else None
-        if not st: print(f'[RED] capture {nm}: no stage in its code area header', flush=True); continue
+        st = glslc_stage(ctl, code)
+        if not st: print(f'[RED] capture {nm}: cannot determine its shader stage', flush=True); continue
         rec = bytearray(b'BTCDBTCD' + bytes(0x30)); struct.pack_into('<2I', rec, 0x28, len(ctl), len(code)); rec += code + ctl
         if rec.find(bytes.fromhex('34127698')) != 0x38 + len(code): print(f'[RED] capture {nm}: the control magic appears in its code area', flush=True); continue   # job_for splits there
         out[nm[:16]] = (st, bytes(rec))
@@ -116,6 +116,9 @@ def job_for(key, stage, rec, w):   # dmsh_build.py job_for; transform feedback i
     cp = os.path.join(w, key + '.bin'); open(cp, 'wb').write(code)
     xfb = xfb_layout(key, rec[ci:]) if stage in ('vs', 'gs') else None   # a geometry shader captures what it emits (Xenoblade Chronicles 3's particle update, 293ecebc0136519b)
     j = {'key': key, 'stage': stage, 'code': cp, 'tex': {}, 'img': {}, 'attr': {}, 'fout': {}, 'c1': c1.hex(), 'debug': False, 'reduced': True, 'sb_align': SB_ALIGN, 'subgroup': SUBGROUP, 'gather_bias': GATHER_BIAS, 'gs_passthrough': False, **({'xfb': xfb} if xfb else {})}
+    if stage == 'cs':   # Runtime captures have no facts-table row; their control section still declares the workgroup.
+        x, y, z, shared = struct.unpack_from('<4I', rec, ci + 0x748)
+        j.update(local=[x, y, z], shared=(shared + 15) // 16 * 16)
     # GLSLC marks a fragment shader declared layout(early_fragment_tests) at control +0x718 (bit 0); NVN then sets the 3D engine's FORCE_EARLY_FRAGMENT_TESTS, which
     # the code area does not carry. Monster Hunter Rise's occlusion culling draws boxes over a 128x64 depth and stores a flag per visible box: tested after the shader,
     # every box's fragments ran and flagged it (15 ms a frame in Kamura village on Adreno 650)
@@ -240,6 +243,10 @@ def classify(stage, b, res):
             e.update(kind=('img_ubo' if kind == 'i' else 'tbuf_ubo' if b['type'] == 'tbuf' else 'tex_ubo'), reg=tb - 3, off=o0 * 4)
             if ty == 3: e['samp_id'] = o1
             elif ty == 1: e['samp_ubo'] = [sb - 3, o1 * 4]
+            # One combined handle: the sampler ID is in the same handle's high bits (gfx_vk_exec.c samp_for RS_TEX). Without a source the host bound its dummy sampler: DARK SOULS:
+            # REMASTERED's scene shaders (SDK 4 GLSLC, fp_t_cb13_<word>) read every texture this way, and a pass trace showed "sampler 0: not registered (dummy)" for each of
+            # them while the handles named samplers 0x101-0x105 (mirrored-repeat and clamp-to-edge ones)
+            elif e['kind'] == 'tex_ubo': e['samp_tex'] = True
             return e
     e.update(kind='?'); return e
 
@@ -319,6 +326,38 @@ def remap_handles(spv, source, target, expected):
         raise ValueError('expected one assignment per packed handle')
     return struct.pack(f'<{len(out)}I', *out)
 
+def int_inputs(spv):
+    """A vertex shader's inputs that it uses only as integers → {location: 'sint' / 'uint'} (dmsh_build.py int_inputs, the Mac chain's, from SPIR-V instead of MSL): every load of the input
+    (whole, or one component through an access chain) is used only by OpBitcast. Maxwell does no type conversion reading vertex attribute registers: an integer format's bit pattern
+    reaches the register and the shader bit-casts it. The answer table has no attribute types, so the translator declared every input float, the pipeline fed the integer format
+    into a float input (undefined in Vulkan) before the bit casts: Dark Souls Remastered's scene vertex shaders read their RGBA16I attribute (loc 5) only through bit casts.
+    Declared an integer (signed when a cast is to a signed type), the pipeline takes the integer format of the same layout (gfx_vk_exec.c vertex_format)"""
+    w = struct.unpack(f'<{len(spv) // 4}I', spv); i = 5; loc, inputs, chain, loads, uses, other = {}, set(), {}, {}, collections.defaultdict(int), set()
+    ins, signed, sint = [], {}, set()
+    while i < len(w):
+        n = w[i] >> 16; op = w[i] & 0xffff
+        if n == 0: break
+        ins.append((op, w[i + 1:i + n])); i += n
+    for op, a in ins:
+        if op == OP_DECORATE and len(a) > 2 and a[1] == 30: loc[a[0]] = a[2]   # Location
+        elif op == OP_VARIABLE and a[2] == 1: inputs.add(a[1])                 # Input storage class
+        elif op == 21: signed[a[0]] = bool(a[2])                               # OpTypeInt width signedness
+        elif op == 23 and a[1] in signed: signed[a[0]] = signed[a[1]]          # OpTypeVector of an int
+    for op, a in ins:
+        if op == 65 and a[2] in inputs: chain[a[1]] = a[2]                     # OpAccessChain into an input
+    for op, a in ins:
+        if op == 61 and (a[2] in inputs or a[2] in chain): loads[a[1]] = a[2] if a[2] in inputs else chain[a[2]]   # OpLoad
+    for op, a in ins:
+        if op in (5, 6, 61, 65, 71, 72): continue   # names, decorations, the loads and chains themselves
+        ops = a[2:] if op == 124 else a   # OpBitcast: result type, result, operand
+        for x in ops:
+            if x not in loads: continue
+            if op == 124:
+                uses[loads[x]] += 1
+                if signed.get(a[0]): sint.add(loads[x])   # cast to a signed type: declared int, so a SINT format's fetch matches the input's numeric type
+            else: other.add(loads[x])
+    return {str(loc[v]): 'sint' if v in sint else 'uint' for v in uses if v not in other and v in loc}
+
 def main():
     handle_remaps = {}
     table = GAME.table('android_shader_handles.tsv')
@@ -358,6 +397,17 @@ def main():
         return subprocess.run([a.dotnet, XLATE_DLL, jp, w], capture_output=True, text=True, errors='replace')
     print(f'translating {len(keys)} shaders in {len(chunks)} batches ...', flush=True)
     with cf.ThreadPoolExecutor(len(chunks)) as ex: rs = list(ex.map(xl, chunks))
+    # second pass (as the Mac chain's dmsh_build.py finish): vertex shaders with inputs used only as integers, translated again with those inputs reported as uint (int_inputs)
+    again = []
+    for k in keys:
+        p = os.path.join(w, k + '.spv')
+        if stages[k] != 'vs' or not os.path.exists(p): continue
+        extra = {l: t for l, t in int_inputs(open(p, 'rb').read()).items() if l not in jobs[k]['attr']}
+        if extra: jobs[k]['attr'].update(extra); again.append(k)
+    if again:
+        print(f'translating {len(again)} vertex shaders again with their integer inputs ...', flush=True)
+        ch2 = [again[i::a.jobs] for i in range(a.jobs) if again[i::a.jobs]]
+        with cf.ThreadPoolExecutor(len(ch2)) as ex: rs += list(ex.map(xl, ch2))
     errs = collections.Counter()
     for r in rs:
         for ln in r.stderr.splitlines():

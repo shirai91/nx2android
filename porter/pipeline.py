@@ -10,7 +10,7 @@ from pathlib import Path
 from porter import config, datapack, dumps, fpslocker, install, paths, profiles, toolchain
 from porter.adb import NO_ADB, Adb, AdbError
 from porter.paths import DM, NXNATIVE
-from porter.upstream import BuildError, PROG, android_profile, game, nacp, nsp, profile_guess, say, trinity
+from porter.upstream import BuildError, PROG, android_profile, game, nacp, nsp, profile_guess, say, trinity, uepak
 
 PY = sys.executable
 # The letters of the button-icon font (make_ext_font.py knocks them out of the icons): a bold system font of the machine that ports, never shipped in the repository
@@ -35,6 +35,7 @@ class Options:
     fps60: bool = False                # 60 fps: the profile's own frame-rate cap, else the build's FPSLocker-Warehouse config (porter/fpslocker.py)
     vulkan_driver: Path = None         # an arm64 Vulkan driver (Mesa's Turnip) packed in the APK and used instead of the system's (DM_VK_DRIVER, dm/android/gfx_vk_core.c)
     shared_font: Path = None           # a TrueType font packed as the system's shared fonts, instead of the device's Roboto (DM_SHARED_FONT, dm/host/hle_sdk16.c)
+    firmware: Path = None              # the player's system content files (.nca), for the profile's sysdata titles (extract_sysdata; DM_SYSDATA, dm/host/hle_fs.c)
     mt_replay: bool = False            # multithread replay: DM_VK_MT_REPLAY=1 in env.txt (dm/android/gfx_vk_dq.c), after the profile's env rows
     touch: bool = False                # a game played by touch: the on-screen gamepad starts hidden (TOUCH_SETTINGS), so it takes none of the game's touches
     external_display: bool = False     # compile the optional external-screen activity with the Android SDK
@@ -48,6 +49,13 @@ class Options:
 # --vulkan-driver: libadrenotools and its hooks (dm/android/build.py --adrenotools, from dm/third_party/libadrenotools), which load the driver for the app
 # (gfx_vk_core.c vk_init); the APK carries them beside it
 ADRENOTOOLS_LIBS = ('libadrenotools.so', 'libhook_impl.so', 'libmain_hook.so', 'libfile_redirect_hook.so', 'libgsl_alloc_hook.so')
+
+
+def driver_lib_name(path):
+    """The name --vulkan-driver's library gets in the APK: the package manager extracts only lib*.so from lib/<abi>/, so a driver named otherwise (Mr Purple's
+    Turnip T30 is vulkan.purple.so, other Turnip builds vulkan.freedreno.so) never reached the app's library folder, and adrenotools fell back to the system's driver"""
+    name = Path(path).name
+    return name if name.startswith('lib') else f'lib{name}'
 
 
 def app_stem(g, name):   # the file name of the APK and the data pack: the profile's iOS IPA name without .ipa (NeoTheWorldEndsWithYou)
@@ -176,6 +184,9 @@ class Port:
         if o.shared_font:
             o.shared_font = Path(o.shared_font).expanduser().resolve()
             if not o.shared_font.is_file() or o.shared_font.suffix.lower() != '.ttf': raise BuildError(f'--shared-font: not a .ttf font: {o.shared_font}')
+        if fw := o.firmware or self.cfg.get('firmware'):
+            o.firmware = Path(fw).expanduser().resolve()
+            if not o.firmware.is_dir(): raise BuildError(f'--firmware: not a folder: {o.firmware}')
         keys = o.keys or self.cfg.get('keys')
         if not keys: raise BuildError('no prod.keys: give -k / --keys, or set it once with `porter config keys <path>`')
         o.keys = Path(keys).expanduser().resolve()
@@ -190,7 +201,7 @@ class Port:
 
         try:
             self.inputs()
-            PROG.plan(1 + len(self.versions) + bool(self.fam['dlc']) + bool(o.fps60) + 6 + bool(o.install))   # nx_extract, the versions, the DLC, 60 fps, rewrite / split / Vulkan shaders / host / APK / data, install (unpack adds its own)
+            PROG.plan(1 + len(self.versions) + bool(self.fam['dlc']) + bool(o.firmware and self.ap.sysdata) + bool(o.fps60) + 6 + bool(o.install))   # nx_extract, the versions, the DLC, the system data, 60 fps, rewrite / split / Vulkan shaders / host / APK / data, install (unpack adds its own)
             self.extract()
         finally: self.drop_unpacked()   # a failed run leaves no decompressed dumps behind either
         self.check_graphics()
@@ -338,6 +349,7 @@ class Port:
             self.aoc = nsp.extract_aoc(nx, o.keys, NXNATIVE, self.work, self.app, dict(self.fam, dlc=[(t, v, m.get(p, p)) for t, v, p in self.fam['dlc']]), self.logs)
             if zdlc: dkf.write_text(f'{dkey}\n')
             else: nsp.rmtree(dkf)
+        self.sysdata = self.extract_sysdata(nx)
         self.drop_unpacked()   # everything that reads them has run, and the shader stages that follow need the room
         self.base = next((self.dirs[v] for v in self.versions if picks[v][1] is None), self.dirs[self.versions[0]])
         self.app_name = o.app_name or nacp.name(self.base / 'control.nacp') or self.g.get('name', self.g.id)
@@ -383,22 +395,46 @@ class Port:
         if getattr(self, 'work', None): nsp.rmtree(self.work / 'tmp/dumps')
         self.unpacked = {}
 
+    def extract_sysdata(self, nx):
+        """The profile's system data titles (android.tsv sysdata), each a RomFS from the player's firmware dump (--firmware) into <work>/sysdata/<title ID>, which the
+        data pack carries and the host mounts (DM_SYSDATA, dm/host/hle_fs.c). Firmware content is never shipped with the tool: without a dump the host's stand-in is used
+        (MiiModel: Mii heads that draw nothing), and the port says so. Returns the folder, or None"""
+        ids = self.ap.sysdata
+        out = self.work / 'sysdata'; nsp.rmtree(out)
+        if not ids: return None
+        need = ', '.join(f'{t:016x}' for t in ids)
+        if not self.o.firmware:
+            say(f'[RED] {self.g.get("name", self.g.id)} reads system data from the console\'s firmware ({need}); without --firmware <your firmware dump\'s system content '
+                f'folder> the host\'s stand-in is used and those parts draw nothing (MiiModel: the Mii heads)')
+            return None
+        PROG.stage('extract system data')
+        for t in ids:
+            nsp.run([nx, self.o.keys, '--sysdata', self.o.firmware, f'{t:016x}', out / f'{t:016x}'], self.logs / 'sysdata.log', env=self.env)
+        PROG.end(f'{need} from {self.o.firmware}')
+        return out
+
     def check_graphics(self):
         """What the Android host can run: NVN games whose shaders are all in their files. The other kinds need a step upstream runs on a Mac (booting the game in the Mac host)
         or a graphics layer the Android host does not have yet"""
         src = profile_guess.build_sources(self.game / 'ExeFS', self.game / 'RomFS', self.g.words('modules'))
         gfx = src['graphics'][0]
-        if gfx != 'nvn': raise BuildError(f'{self.app_name} renders with {gfx} ({src["graphics"][1]}): the Android host replays NVN only so far')
+        # OpenGL ES: the device's own GL driver runs it (dm/android/gl_android.c); no shaders to translate, the game compiles its GLSL ES at run time
+        self.gl = gfx == 'gl'
+        if self.gl: say(f"{self.app_name} renders with OpenGL ({src['graphics'][1]}): the Android host hands its GL calls to the device's OpenGL ES driver"); return
+        if gfx != 'nvn': raise BuildError(f'{self.app_name} renders with {gfx} ({src["graphics"][1]}): the Android host replays NVN or OpenGL ES only so far')
         # Game Freak's GFPAKs and Trinity packs with Oodle entries: decoded by the game's own decoder on the Android device (device_oodle); PKZ packs still need the Mac host
         self.oodle_why = src['oodle_packs'][1] if src['oodle_packs'][0] and ('GFPAK' in src['oodle_packs'][1] or 'Trinity' in src['oodle_packs'][1]) else ''
-        if self.oodle_why:
+        # Unreal paks (version 11) and IoStore containers: their shader code archives are decoded with the game's own Oodle on the device too (device_ue)
+        self.ue_why = src['ue_decode'][1] if src['ue_decode'][0] else ''
+        why = self.oodle_why or self.ue_why
+        if why:
             if not self.tools.get('adb'):   # adb is optional for a port that does not install (toolchain.require): this one needs it
-                raise BuildError(f"{self.app_name}'s shaders are in Oodle-compressed archives ({self.oodle_why}): the port decodes them with the game's own decoder on the Android "
+                raise BuildError(f"{self.app_name}'s shaders are in Oodle-compressed archives ({why}): the port decodes them with the game's own decoder on the Android "
                                  f'device, so it needs adb and the device even without installing. {NO_ADB}; then connect the device (USB debugging on) and port again')
             try: Adb(self.tools['adb'], self.o.device or self.cfg.get('device'), log=say).pick()
-            except (AdbError, KeyError) as e: raise BuildError(f"{self.app_name}'s shaders are in Oodle-compressed archives ({self.oodle_why}): the port decodes them with the game's own decoder on "
+            except (AdbError, KeyError) as e: raise BuildError(f"{self.app_name}'s shaders are in Oodle-compressed archives ({why}): the port decodes them with the game's own decoder on "
                                                                f'the Android device, so connect it (adb) and port again ({e})') from e
-        for k in ('glslc_capture', 'ue_decode', 'ue_legacy') + (() if self.oodle_why else ('oodle_packs',)):
+        for k in ('glslc_capture', 'ue_legacy') + (() if self.ue_why else ('ue_decode',)) + (() if self.oodle_why else ('oodle_packs',)):
             if src[k][0]: raise BuildError(f'{self.app_name} needs a step that boots the game in the Mac host ({src[k][1]}), which the Android port cannot run yet')
 
     # ---- the game's own Oodle decoder on the device, for the shader split (Pokémon Legends: Arceus's GFPAKs, Pokémon Legends: Z-A's Trinity packs) ----
@@ -412,11 +448,6 @@ class Port:
         → the split's environment"""
         import mmap
         import struct
-        adb = self.oodle_adb = Adb(self.tools['adb'], self.o.device or self.cfg.get('device'), log=say); adb.pick()
-        out = self.aw / ('host-debug' if self.o.debug else 'host')   # the host stage's own folder: its objects serve both
-        PROG.set(step="building the host as a tool for the game's Oodle decoder")
-        nsp.run([PY, DM / 'android/build.py', '--game', self.g.id, '--ndk', self.tools['ndk'], '--out', out, '--exe', '--jobs', str(self.o.jobs)] + ([] if self.o.debug else ['--release']),
-                self.logs / 'android_oodle_host.log', env=self.env)
         PROG.set(step="the game's Oodle entries in a job file")
         tmp = self.work / 'tmp/oodle'; nsp.rmtree(tmp); tmp.mkdir(parents=True)
         recs, job = [], tmp / 'job.bin'   # recs: (label, archive size, entry index) of each record, in order; a Trinity file's index is (pack offset, index in the pack)
@@ -440,15 +471,7 @@ class Port:
                                 if comp == 3: jf.write(struct.pack('<II', sz, n)); jf.write(d[st:st + sz]); recs.append((label, len(d), (off, k)))
             jf.seek(4); jf.write(struct.pack('<I', len(recs)))
         PROG.set(step=f"the game's Oodle decoder on the device: {len(recs):,} entries, {job.stat().st_size / 2**30:.1f} GB")
-        adb.shell(f'rm -rf {self.ODEV}; mkdir -p {self.ODEV}/mods', check=False)
-        adb.push_file(out / 'dmhost', f'{self.ODEV}/dmhost'); adb.push_tree(self.patched, f'{self.ODEV}/mods'); adb.push_file(job, f'{self.ODEV}/job.bin')
-        nsp.rmtree(job)
-        # (the device's timeout ends the decoder before adb gives up, so no decoder is left running and holding memory on the device)
-        r = adb.shell(f'chmod 755 {self.ODEV}/dmhost; cd {self.ODEV} && DM_OODLE_JOB={self.ODEV}/job.bin DM_OODLE_JOB_BNSH=1 timeout 3300 ./dmhost mods > job.log 2>&1; echo "exit $?"; '
-                      f'grep -a -e DM_OODLE_JOB -e RED job.log | tail -5', timeout=3600)
-        (self.logs / 'android_oodle_job.log').write_text(r, encoding='utf-8')
-        if 'exit 0' not in r: raise BuildError(f"the game's Oodle decoder on the device failed (see {self.logs / 'android_oodle_job.log'})")
-        adb.run('pull', f'{self.ODEV}/job.bin.out', str(tmp / 'job.out'), timeout=1800)
+        self.device_oodle_job(job, tmp / 'job.out', bnsh=True)
         b = (tmp / 'job.out').read_bytes(); nsp.rmtree(tmp / 'job.out')
         if b[:4] != b'DMOR' or struct.unpack_from('<I', b, 4)[0] != len(recs): raise BuildError("the game's Oodle decoder on the device answered for other entries than it was given")
         by, o = {}, 8   # label → (size, {index: bytes})
@@ -466,6 +489,84 @@ class Port:
         say(f"shaders in Oodle-compressed archives ({self.oodle_why}): {len(recs):,} entries decoded by the game's own decoder on the device, "
             f"{sum(len(e) for _, e in by.values()):,} of them hold shaders")
         return {'DM_GFPAK_DECODED': str(dec)}
+    def device_oodle_job(self, job, out, bnsh=False):
+        """One Oodle job file (hle_oodle.c: "DMOJ" records) decoded on the device into out ("DMOR"); the job file is removed. The host as an executable and the rewritten modules
+        go to the device once a port (device_oodle_end removes them). bnsh: only the entries that hold a BNSH shader come back (DM_OODLE_JOB_BNSH)"""
+        adb = getattr(self, 'oodle_adb', None)
+        if not adb:
+            adb = Adb(self.tools['adb'], self.o.device or self.cfg.get('device'), log=say); adb.pick()
+            host = self.aw / ('host-debug' if self.o.debug else 'host')   # the host stage's own folder: its objects serve both
+            PROG.set(step="building the host as a tool for the game's Oodle decoder")
+            nsp.run([PY, DM / 'android/build.py', '--game', self.g.id, '--ndk', self.tools['ndk'], '--out', host, '--exe', '--jobs', str(self.o.jobs)] + ([] if self.o.debug else ['--release']),
+                    self.logs / 'android_oodle_host.log', env=self.env)
+            adb.shell(f'rm -rf {self.ODEV}; mkdir -p {self.ODEV}/mods', check=False)
+            adb.push_file(host / 'dmhost', f'{self.ODEV}/dmhost'); adb.push_tree(self.patched, f'{self.ODEV}/mods')
+            self.oodle_adb = adb
+        adb.push_file(job, f'{self.ODEV}/job.bin'); nsp.rmtree(job)
+        # (the device's timeout ends the decoder before adb gives up, so no decoder is left running and holding memory on the device)
+        r = adb.shell(f'chmod 755 {self.ODEV}/dmhost; cd {self.ODEV} && rm -f job.bin.out && DM_OODLE_JOB={self.ODEV}/job.bin{" DM_OODLE_JOB_BNSH=1" if bnsh else ""} timeout 3300 ./dmhost mods '
+                      f'> job.log 2>&1; echo "exit $?"; grep -a -e DM_OODLE_JOB -e RED job.log | tail -5', timeout=3600)
+        (self.logs / 'android_oodle_job.log').write_text(r, encoding='utf-8')
+        if 'exit 0' not in r: raise BuildError(f"the game's Oodle decoder on the device failed (see {self.logs / 'android_oodle_job.log'})")
+        adb.run('pull', f'{self.ODEV}/job.bin.out', str(out), timeout=1800)
+        adb.shell(f'rm -f {self.ODEV}/job.bin {self.ODEV}/job.bin.out', check=False)
+
+    # ---- Unreal Engine shader code archives decoded with the game's own Oodle on the device (the Mac does it in decode_ue_shaders) ----
+    UE_ROUNDS = 4
+    def device_ue(self):
+        """Unreal Engine keeps its shaders in shader code archives that only the game's own Oodle decodes: in its paks (version 11; each shader Oodle-compressed, Octopath Traveler 0), or
+        in IoStore containers (Unreal Engine 5.6, FINAL FANTASY RESONANCE: shader libraries whose shader groups are Oodle-compressed as wholes, 5,919 groups in 64 KB container blocks
+        that are stored). uepak.job reads both through a decoder it calls one stream at a time; on the Mac that is the host over a pipe (OodleHost), which adb cannot carry (its stdin is
+        not binary-safe on Windows, and a forward reset when both directions were busy). Here it runs in rounds instead: uepak.job runs with a decoder that answers from the
+        streams decoded so far and notes the others (answering zeros, so a stream that depends on one noted is noted only in a later round, with its real bytes, and a read that
+        fails on the zeros ends the round); the noted ones go to the device as one job (device_oodle_job), and the next round runs. A round that notes nothing has decoded everything;
+        its per-shader Oodle job (paks) goes to the device as well, and the decoded archives land in <version dir>/ue_shaders, where the split reads them, with the NSP script's stamp"""
+        import hashlib
+        import struct
+        todo = {v: self.dirs[v] for v in self.versions if not ((self.dirs[v] / 'ue_shaders/stamp').exists() and (self.dirs[v] / 'ue_shaders/stamp').read_text() == nsp.ue_stamp(self.dirs[v]))}
+        if not todo: return
+        PROG.add(1); PROG.stage('UE shader decode', step='the shader code archives')
+        tmp = self.work / 'tmp/ue'; total = 0
+        for v, d in todo.items():
+            cache, jd = {}, tmp / f'job_{v}'
+            for rnd in range(self.UE_ROUNDS):
+                want = {}
+                def dec(comp, n):
+                    k = (hashlib.sha1(comp).digest(), n)
+                    if k in cache: return cache[k]
+                    want.setdefault(k, bytes(comp)); return bytes(n)
+                nsp.rmtree(jd); PROG.set(step=f'{v}: the shader code archives (round {rnd + 1})')
+                try: listing, n = uepak.job(str(d / 'RomFS'), str(d / 'ExeFS/main'), str(jd), decode=dec)
+                except (ValueError, struct.error, IndexError) as e:
+                    if not want: raise BuildError(f'{v}: the Unreal shader code archives do not read: {e}') from e
+                if not want: break
+                job, out = tmp / 'round.job', tmp / 'round.out'
+                with open(job, 'wb') as f:
+                    f.write(b'DMOJ' + struct.pack('<I', len(want)))
+                    for (_, raw), comp in want.items(): f.write(struct.pack('<II', len(comp), raw) + comp)
+                PROG.set(step=f"{v}: {len(want):,} Oodle streams with the game's decoder on the device (round {rnd + 1})")
+                self.device_oodle_job(job, out)
+                b = out.read_bytes(); nsp.rmtree(out)
+                if b[:4] != b'DMOR' or struct.unpack_from('<I', b, 4)[0] != len(want): raise BuildError("the game's Oodle decoder on the device answered for other streams than it was given")
+                o, got = 8, 0
+                for k in want:
+                    ln = struct.unpack_from('<I', b, o)[0]; o += 4
+                    if ln == k[1]: cache[k] = b[o:o + ln]; got += 1   # a stream decoded from zeros fails (0) and is asked for again with its real bytes
+                    o += ln if ln != 0xffffffff else 0
+                say(f'{v}: round {rnd + 1}: {got:,} of {len(want):,} Oodle streams decoded on the device')
+                if not got: raise BuildError(f"{v}: the game's Oodle decoder on the device decoded none of {len(want):,} streams (see {self.logs / 'android_oodle_job.log'})")
+            else: raise BuildError(f'{v}: the Unreal shader code archives still need Oodle streams after {self.UE_ROUNDS} rounds')
+            if not listing: raise BuildError(f'the RomFS has Unreal paks, but none under {d / "RomFS"} holds a shader code archive: where the shaders are has to be found first')
+            if n:   # Oodle-compressed shaders in the paks' archives (Octopath Traveler 0): uepak.job's own job file
+                PROG.set(step=f"{v}: {n:,} shaders with the game's decoder on the device")
+                self.device_oodle_job(jd / 'oodle.job', jd / 'oodle.job.out')   # (finish reads job.json and the output only)
+            out = d / 'ue_shaders.partial'; nsp.rmtree(out)
+            uepak.finish(str(jd), str(out)); (out / 'stamp').write_text(nsp.ue_stamp(d))
+            nsp.swap_in(out, d / 'ue_shaders'); nsp.rmtree(jd)
+            say(f'{v}: ' + '; '.join(f'{x["name"]} {x["shaders"]:,} shaders' + (f' ({x["compression"]})' if x.get('compression') else '') for x in listing))
+            total += n + sum(x['shaders'] for x in listing if x['compression'] == 'IoStore, decoded')
+        nsp.rmtree(tmp)
+        PROG.end(f'{total:,} shaders decoded on the device')
     def device_oodle_end(self):
         adb = getattr(self, 'oodle_adb', None)
         if not adb: return
@@ -515,9 +616,15 @@ class Port:
 
     # ---- shaders: upstream's split, then SPIR-V for the Vulkan backend ----
     def shaders(self):
+        if getattr(self, 'gl', False):   # an OpenGL ES game: the driver compiles its shaders on the device
+            self.dmsv = None
+            for st in ('shader split', 'Vulkan shaders'): PROG.stage(st); PROG.end('none: the game renders with OpenGL ES')
+            return
         sv = self.versions
         pkg = self.work / 'shader' / 'pkg'
-        try: nsp.split_shaders(PY, NXNATIVE, [self.dirs[v] / 'RomFS' for v in sv], [self.dirs[v] / 'ExeFS/main' for v in sv], pkg, self.env, self.logs, self.g, bool(self.derived or self.provisional),
+        try:
+            if getattr(self, "ue_why", ""): self.device_ue()   # Unreal's shader code archives, decoded on the device into <version dir>/ue_shaders before the split reads them
+            nsp.split_shaders(PY, NXNATIVE, [self.dirs[v] / 'RomFS' for v in sv], [self.dirs[v] / 'ExeFS/main' for v in sv], pkg, self.env, self.logs, self.g, bool(self.derived or self.provisional),
                                oodle=self.device_oodle if self.oodle_why else None,   # Oodle-compressed archives: the game's own decoder on the device
                                aoc=self.aoc)   # DLC with shaders of its own (Xenoblade Chronicles 3's archives)
         finally: self.device_oodle_end()
@@ -588,10 +695,14 @@ class Port:
         code = version_code(self.pkg_ver, self.o.vercode_offset)
         if self.o.vercode_offset: say(f'versionCode {code} ({self.pkg_ver} + 1 + offset {self.o.vercode_offset})')
         external = self.external_activity() if self.o.external_display else []
+        driver = self.o.vulkan_driver
+        if driver and driver.name != driver_lib_name(driver):   # packed under a lib*.so name (driver_lib_name), copied beside the host library
+            driver = self.so.parent / driver_lib_name(driver); shutil.copyfile(self.o.vulkan_driver, driver)
+            say(f'--vulkan-driver: {self.o.vulkan_driver.name} is packed as {driver.name} (Android extracts only lib*.so libraries)')
         nsp.run([PY, DM / 'android/apk/mkapk.py', self.so, self.apk_path, paths.signing_key(), '--package', self.package, '--label', self.app_name, '--lib', 'dmhost',
                  '--version-code', str(code), '--version-name', self.display]
-                + (['--landscape'] if self.ap.landscape else []) + (['--icon', icon] if icon else []) + self.theme() + external + ([] if self.o.debug else ['--release'])
-                + [a for f in ([self.o.vulkan_driver] + [self.so.parent / n for n in ADRENOTOOLS_LIBS] if self.o.vulkan_driver else []) for a in ('--extra-so', str(f))],
+                + (['--landscape'] if self.ap.landscape else []) + icon + self.theme() + external + ([] if self.o.debug else ['--release'])
+                + [a for f in ([driver] + [self.so.parent / n for n in ADRENOTOOLS_LIBS] if driver else []) for a in ('--extra-so', str(f))],
                 self.logs / 'android_apk.log', env=self.env)
         self.result['apk'] = str(self.apk_path)
         PROG.end(f'{self.apk_path.name}, {self.apk_path.stat().st_size / 2**20:.1f} MB')
@@ -622,14 +733,20 @@ class Port:
         self.result['theme'] = pack.name; say(f'gamepad theme: {pack.name}')
         return [a for f in files for a in ('--asset', f'overlay/{f.name}={f}')]
 
-    def icon(self):   # the game's icon (nx_extract saves the control data's English one as icon.jpg) as a 256 px PNG; None without Pillow or an icon
+    def icon(self):
+        """mkapk's icon arguments: the game's icon (nx_extract saves the control data's English one as icon.jpg) as a 256 px PNG, and an adaptive icon's layers
+        (Android 8+ launchers draw a plain icon small on a white disc): the icon fills the 72 dp the launcher's mask shows, over a blurred copy that fills
+        the 108 dp layer. [] without Pillow or an icon"""
         src = next((d / 'icon.jpg' for d in (self.game, self.base) if (d / 'icon.jpg').exists()), None)
-        if not src: say('[RED] no game icon in the extraction: the app gets the system\'s default icon'); return None
-        try: from PIL import Image
-        except ImportError: say('[RED] no Pillow (pip install pillow): the app gets the system\'s default icon'); return None
-        dst = self.aw / 'icon.png'
-        Image.open(src).convert('RGB').resize((256, 256), Image.LANCZOS).save(dst)
-        return dst
+        if not src: say('[RED] no game icon in the extraction: the app gets the system\'s default icon'); return []
+        try: from PIL import Image, ImageFilter
+        except ImportError: say('[RED] no Pillow (pip install pillow): the app gets the system\'s default icon'); return []
+        art = Image.open(src).convert('RGB'); plain, fg, bg = self.aw / 'icon.png', self.aw / 'icon_fg.png', self.aw / 'icon_bg.png'
+        art.resize((256, 256), Image.LANCZOS).save(plain)
+        layer, shown = 432, 288   # 108 dp and 72 dp at 4 px per dp
+        art.resize((layer, layer), Image.LANCZOS).filter(ImageFilter.GaussianBlur(24)).save(bg)
+        top = Image.new('RGBA', (layer, layer)); top.paste(art.resize((shown, shown), Image.LANCZOS), ((layer - shown) // 2,) * 2); top.save(fg)
+        return ['--icon', plain, '--icon-fg', fg, '--icon-bg', bg]
 
     # ---- data: the files the app reads from its files folder ----
     def data(self):
@@ -639,8 +756,8 @@ class Port:
             font_env, font_files = font_env + [f'DM_SHARED_FONT={datapack.files_folder(self.package)}/standard.ttf'], {**font_files, 'standard.ttf': self.o.shared_font}
         dst = self.o.out / f'{app_stem(self.g, self.app_name)}-data'
         man = datapack.build(dst, profile=self.ap, version=self.pkg_ver, display=self.display, patched=self.patched, romfs=self.game / 'RomFS', shaders=self.dmsv,
-                             aoc=self.aoc, language=self.lang, package=self.package, env=self.fps_env + font_env + (['DM_VK_MT_REPLAY=1'] if self.o.mt_replay else [])
-                             + ([f'DM_VK_DRIVER={self.o.vulkan_driver.name}'] if self.o.vulkan_driver else []), settings=TOUCH_SETTINGS if self.o.touch else None,
+                             aoc=self.aoc, sysdata=self.sysdata, language=self.lang, package=self.package, env=self.fps_env + font_env + (['DM_VK_MT_REPLAY=1'] if self.o.mt_replay else [])
+                             + ([f'DM_VK_DRIVER={driver_lib_name(self.o.vulkan_driver)}'] if self.o.vulkan_driver else []), settings=TOUCH_SETTINGS if self.o.touch else None,
                              files={**self.fps_files, **font_files},
                              progress=lambda what: PROG.set(step=f'linking {what}'))
         self.data_path = dst; self.result['data'] = str(dst)

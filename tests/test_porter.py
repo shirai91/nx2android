@@ -115,6 +115,26 @@ class AndroidProfiles(unittest.TestCase):
         finally:
             shutil.rmtree(t, ignore_errors=True)
 
+    def test_apk_adaptive_icon(self):   # mkapk.py --icon-fg/--icon-bg: an anydpi-v26 adaptive icon beside the plain one, its layers as drawables 1 and 2
+        t = Path(tempfile.mkdtemp(prefix='nx2a_test_apk_'))
+        try:
+            so = t / 'libdmhost.so'; so.write_bytes(b'\x7fELF' + b'\0' * 60)
+            for n in ('icon', 'fg', 'bg'): (t / f'{n}.png').write_bytes(n.encode())
+            import subprocess, zipfile
+            subprocess.run([sys.executable, str(REPO / 'nxnative/dm/android/apk/mkapk.py'), str(so), str(t / 'a.apk'), str(t / 'k.json'), '--lib', 'dmhost',
+                            '--icon', str(t / 'icon.png'), '--icon-fg', str(t / 'fg.png'), '--icon-bg', str(t / 'bg.png')], check=True, capture_output=True)
+            with zipfile.ZipFile(t / 'a.apk') as z:
+                self.assertEqual(z.read('res/drawable-nodpi-v4/icon_fg.png'), b'fg'); self.assertEqual(z.read('res/drawable-nodpi-v4/icon_bg.png'), b'bg')
+                xml, arsc = z.read('res/drawable-anydpi-v26/icon.xml'), z.read('resources.arsc')
+                self.assertIn('adaptive-icon'.encode('utf-16-le'), xml)
+                for ref in (0x7f010001, 0x7f010002): self.assertIn(struct.pack('<I', ref), xml)   # background and foreground point at icon_bg and icon_fg
+                for s in ('icon_fg', 'icon_bg', 'res/drawable-anydpi-v26/icon.xml'): self.assertIn(s.encode('utf-16-le'), arsc)
+            bad = subprocess.run([sys.executable, str(REPO / 'nxnative/dm/android/apk/mkapk.py'), str(so), str(t / 'b.apk'), str(t / 'k.json'), '--icon', str(t / 'icon.png'),
+                                  '--icon-fg', str(t / 'fg.png')], capture_output=True)
+            self.assertNotEqual(bad.returncode, 0)
+        finally:
+            shutil.rmtree(t, ignore_errors=True)
+
 
 class DataPack(unittest.TestCase):
     def test_build(self):
@@ -241,6 +261,10 @@ class Misc(unittest.TestCase):
         from porter import cli
         self.assertEqual(cli._parser().parse_args(['port', 'x', '--vulkan-driver', 'libvulkan_freedreno.so']).vulkan_driver, 'libvulkan_freedreno.so')
         self.assertIsNone(cli._parser().parse_args(['port', 'x']).vulkan_driver)
+        # the APK carries it as lib*.so, the only names the package manager extracts; env.txt's DM_VK_DRIVER names that file
+        self.assertEqual(pipeline.driver_lib_name(Path('/d/libvulkan_freedreno.so')), 'libvulkan_freedreno.so')
+        self.assertEqual(pipeline.driver_lib_name(Path('/d/vulkan.purple.so')), 'libvulkan.purple.so')
+        self.assertEqual(pipeline.driver_lib_name('vulkan.freedreno.so'), 'libvulkan.freedreno.so')
         t = Path(tempfile.mkdtemp(prefix='nx2a_test_game_'))
         try:
             with self.assertRaises(pipeline.BuildError): pipeline.Port(pipeline.Options(t, vulkan_driver=t / 'driver.txt')).run()

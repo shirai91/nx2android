@@ -1,0 +1,43 @@
+# South Park™: The Stick Of Truth™ (Nintendo Switch, base game 1.0.0, EUR). Obsidian's engine on NVN, SDK 4.5.0 -- the oldest SDK the Android host runs.
+# Started from the NSP script's provisional profile (dm/games/profile_guess.py) and checked by hand against the survey on 2026-11-05:
+#   - modules main + sdk (nnSdk-4_5_0-Release); graphics NVN only (main imports neither Vulkan nor OpenGL), so the port is not refused
+#   - main carries the game's own GLSLC compiler (294 output magics): its 351 shaders are whole GLSLC outputs, which shader_split.py takes as they are
+#   - RomFS 499 files, 5.46 GB: data/global (0.01 GB), data/movies (183 .bk2 Bink movies, 3.68 GB, which the game decodes itself), engine/shaders (80), and
+#     1.77 GB of root-level archives (.oaf); the opening movie, the character creation and the tutorial all draw with these keys
+# South Park™: The Stick Of Truth™, SDK 4, survey <NSP folder>/010043600B6A6000_survey/survey.md
+
+# ---- Identity ----
+title_id	010043600B6A6000
+program_id	010043600B6A6000
+
+# ---- App ----
+name	South Park™: The Stick Of Truth™
+ipa	SouthParkTheStickOfTruth.ipa
+app_category	public.app-category.games
+
+# ---- Versions ----
+build	v0	1.0.0	main=bbf4d534053f335df294845742cbaa69	sdk=d95547528dcd684e2813ec83d338a472
+package	v0
+shader_versions	v0
+
+# ---- Files ----
+# every module main imports from
+modules	main sdk
+romfs_marker	data_archive.oaf
+zip_store	.bk2:.oaf:.metallib
+
+# ---- Memory ----
+# The heap region is the reserve minus the 0x10000000 base offset, the alias region and the stack (hle_svc.c mem_init), so a 5 GB reserve left only
+# 0x8000000 of heap and the game aborted in nninitStartup ("SetHeapSize OOM: req 0xc9400000 > cap 0x8000000").
+# The game asks for the heap itself at main+0x1b66160: 0xC9400000 = its application pool 0xCD500000 - 64 MB of used memory - 1 MB, so with the 16 MB
+# system resource in |sys_resource| the heap must hold the whole pool. 8 GB of reserve with a 4 GB alias region gives it 0xE0000000 (3.5 GB).
+# The upstream heap check (the Mac host) is what derives this split automatically; this one was written by hand from the request above and is what runs.
+mem_reserve	0x200000000
+mem_alias	0x100000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+sys_resource	0x1000000
+
+# ---- Shader split ----
+shader_groups	/data/=data /engine/=engine
+shader_note	South Park™: The Stick Of Truth™ shaders (whole GLSLC outputs in main)

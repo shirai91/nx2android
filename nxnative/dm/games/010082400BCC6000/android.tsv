@@ -1,0 +1,16 @@
+# Untitled Goose Game on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Unity 2018.4.1f1 IL2CPP with FMOD on SDK 8.2.0, update 1.1.2; 4,511 shaders from Data/*.assets and Data/Resources, all translated. It boots only with sdk_patches.py's node area
+# cut on its sdk build: nninitStartup's AllocateAddressRegion(+0xc9400000) was refused (0x1803) with no region live, and the game stopped at a Break before nnMain.
+# On a Galaxy S23 Ultra (2026-10-30): the save select, a new game into the garden, and a save made in another Switch emulator copied into the app's save folder, which loads into
+# its later area with its language and settings; then a play session by hand. 60 fps held, as the game asks (present interval 1): in gameplay frame time p50 16.7 / p95 17.5 ms,
+# 0 dropped frames, about 625 draws per frame, GPU busy about 10 ms, footprint about 770 MiB; no red log line.
+# About 1 launch in 3 to 5 failed in the first seconds (a crash or a black screen), always in the render thread's texture binding (main+0x1b2a424, called from main+0x1ce0188):
+# a binding that takes its sampler from another slot read that slot from a local array the first pass had not filled (its texture had no descriptor ID yet), and the array is not
+# cleared, so it held stack leftovers (null here). patches.py skips such a binding, as the first pass skips a texture that is not ready.
+# On the Legion Y700 (TB322FC, Snapdragon 8 Elite, Adreno 830, Android 16), 2026-11-06: before the patch 2 crashes in 10 launches; with it 0 in 47 (two of the first 20 showed no
+# frame line within 25 s, none of the 27 after); the title, save select, a new game into the garden, walking, honking: 60 fps (GPU about 7.3 ms, 0-1 dropped frames per 300),
+# 0 audio underruns, no red log line.
+status	playable
+tested	v458752 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
+package	org.nx2a.untitledgoosegame
+orientation	landscape
