@@ -119,6 +119,12 @@ The source of each switch is in `nxnative/dm/android/` unless noted. Check the c
 | `DM_LAN=1` | start-up (`host/hle_ldn.c`) | profile env: local play over the Wi-Fi network (`nn::ldn` as Atmosphère's ldn_mitm, UDP and TCP 11452; `nn::socket` on real sockets; nifm's local mode, parental controls' free communication and play history keys granted). Off, all of it stays offline |
 | `DM_TIME_OFFSET=<seconds>` | start-up (`host/hle_time.c`) | the user clocks run that many seconds from the device's time (a test jumps to the next day or hour without changing the device's clock); the steady clock is unchanged |
 
+## Input
+
+| Switch | When read | Meaning |
+|---|---|---|
+| `DM_PAD_XBOX=1` | start-up (`android/front_android.c` `key_bit`); a profile's `env` row | a physical controller's face buttons go to the game by their label (an Xbox controller's A is the game's A) instead of by their position (the Switch's: the bottom button is B, the right one A). The game's prompts name the button (A to confirm, B to go back), which an Xbox controller's labels match and its positions do not. The on-screen gamepad is not remapped: it sends the game's buttons as they are, in the Switch layout its A, B, X and Y labels name. The pause menu and the text entry follow the remap (A confirms, B erases) |
+
 ## Control file lines (`ctl.txt`)
 - **Buttons:** `A`, `B`, `X`, `Y`, `L`, `R`, `ZL`, `ZR`, `Plus`, `Minus`, `Up`, `Down`, `Left`, `Right`, `LS`, `RS`.
 - **Sticks:** `LUp`, `LDown`, `LLeft`, `LRight` (same for `R…`).

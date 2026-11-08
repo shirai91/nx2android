@@ -33,6 +33,7 @@
 #include <sys/mman.h>
 #include <stdatomic.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -200,7 +201,17 @@ JNIEXPORT void JNICALL Java_org_nx2a_ExternalActivity_externalInput(JNIEnv *env,
     if (g_ilooper) ALooper_wake(g_ilooper);
 }
 static uint64_t g_btn; static float g_ax[8]; static int g_pad_used;   // lx ly rx ry lt rt hatx haty
+static int pad_xbox(void) {   // DM_PAD_XBOX=1 in env.txt: a physical controller's face buttons by their label (an Xbox controller's A is the game's A) instead of by their position:
+    static int on = -1;         // the game's own prompts name the button (A to confirm, B to go back), which an Xbox controller's labels match and its positions do not. Only a
+                              // controller is remapped: the on-screen gamepad sends the game's buttons as they are (the Switch layout, with A, B, X and Y on the buttons, as the prompts name them)
+    if (on < 0) { const char *e = getenv("DM_PAD_XBOX"); on = e && atoi(e) ? 1 : 0; }
+    return on;
+}
 static uint64_t key_bit(int32_t k) {   // Nintendo layout by position: the bottom face button is B, the right one A (as the iOS front end maps)
+    if (pad_xbox()) switch (k) {   // by label instead: A is A, B is B, X is X, Y is Y (the pause menu and the text entry follow it: A confirms, B erases)
+    case AKEYCODE_BUTTON_A: return DM_BTN_A; case AKEYCODE_BUTTON_B: return DM_BTN_B; case AKEYCODE_BUTTON_X: return DM_BTN_X; case AKEYCODE_BUTTON_Y: return DM_BTN_Y;
+    default: break;
+    }
     switch (k) {
     case AKEYCODE_BUTTON_A: return DM_BTN_B; case AKEYCODE_BUTTON_B: return DM_BTN_A; case AKEYCODE_BUTTON_X: return DM_BTN_Y; case AKEYCODE_BUTTON_Y: return DM_BTN_X;
     case AKEYCODE_BUTTON_L1: return DM_BTN_L; case AKEYCODE_BUTTON_R1: return DM_BTN_R; case AKEYCODE_BUTTON_L2: return DM_BTN_ZL; case AKEYCODE_BUTTON_R2: return DM_BTN_ZR;
