@@ -241,8 +241,12 @@ static void *vsync_thread(void *ev) {
 HLE_FORCE("_ZN2nn2vi33GetIndirectImageMemoryRequirementEPmS1_ii", "indirect layer image memory: RGBA8 linear, 4 KB aligned", Result, h_vi_IndirectReq, size_t *size, size_t *align, int w, int h) {
     *size = ((size_t)(w > 0 ? w : 0) * (size_t)(h > 0 ? h : 0) * 4 + 0xfff) & ~(size_t)0xfff; *align = 0x1000; return RES_OK;
 }
+static void *g_vsync_ev[4]; static int g_nvsync; static pthread_mutex_t g_vsync_mu = PTHREAD_MUTEX_INITIALIZER;   // the events that have a thread
 HLE_FORCE("_ZN2nn2vi20GetDisplayVsyncEventEPNS_2os15SystemEventTypeEPNS0_7DisplayE", "vsync event: a host thread signals it at 60 Hz", Result, h_vi_VsyncEvent, void *ev, void *disp) {
     (void)disp; hle_bind_system_event(ev, 1);
+    // asked again for the same event (a display opened again): its thread runs on and signals the binding by address; a second one would signal twice a period for good, and a thread stayed per call
+    pthread_mutex_lock(&g_vsync_mu); int have = 0; for (int i = 0; i < g_nvsync; i++) have |= g_vsync_ev[i] == ev; if (!have && g_nvsync < (int)(sizeof g_vsync_ev / sizeof *g_vsync_ev)) g_vsync_ev[g_nvsync++] = ev; pthread_mutex_unlock(&g_vsync_mu);
+    if (have) { LOG("vi::GetDisplayVsyncEvent: %p again, its host thread goes on", ev); return RES_OK; }
     pthread_t th; if (pthread_create(&th, NULL, vsync_thread, ev)) die("cannot start the vsync thread"); pthread_detach(th);
     LOG("vi::GetDisplayVsyncEvent: %p signalled by the host at 60 Hz", ev); return RES_OK;
 }

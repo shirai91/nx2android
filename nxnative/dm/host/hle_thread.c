@@ -34,13 +34,14 @@ enum { O_FREE, O_THREAD, O_EVENT_R, O_EVENT_W };
 // An entry lives as long as that handle: CloseHandle on it removes the entry (se_unbind), so a SystemEvent destroyed and created again at the same address gets a new kernel event.
 // Entries used to stay forever: the second bind returned early, the new event was never created and signals went to the closed handle (or to whatever event reused its number).
 // Lock order: G, then g_se_lock (nothing takes G while holding g_se_lock)
-static struct { void *ev; uint32_t wh; } g_se[512];
+static struct { void *ev; uint32_t wh, rh; } g_se[512];   // rh: the read end the SDK put in the game's struct (0 when the SDK has no GetReadableHandleOfSystemEvent), closed with wh by hle_rebind_system_event
 static int g_nse;
 static pthread_mutex_t g_se_lock = PTHREAD_MUTEX_INITIALIZER;
 static uint32_t se_find(void *ev) {   // caller holds g_se_lock
     for (int i = 0; i < g_nse; i++) if (g_se[i].ev == ev) return g_se[i].wh;
     return 0;
 }
+static void h_close_event(uint32_t h);
 static void se_unbind(uint32_t wh) {   // caller holds G
     pthread_mutex_lock(&g_se_lock);
     for (int i = 0; i < g_nse; ) if (g_se[i].wh == wh) g_se[i] = g_se[--g_nse]; else i++;
@@ -987,11 +988,8 @@ static int svc_thread_impl(int num, uint64_t *regs) {
     case 0x16: {  // CloseHandle(w0): an event is freed only when both ends are closed; after a thread handle is closed the slot is recycled, and the object is freed once the thread has also exited
         G_lock();
         unsigned i = (uint32_t)regs[0] - 0x1000;
-        if (i > 0 && i < MAX_H && (g_h[i].type == O_EVENT_R || g_h[i].type == O_EVENT_W)) {
-            if (g_h[i].type == O_EVENT_W) se_unbind((uint32_t)regs[0]);
-            event_t *e = g_h[i].obj; if (--e->refs == 0) free(e);
-            g_h[i].type = O_FREE; g_h[i].obj = NULL;
-        } else if (i > 0 && i < MAX_H && g_h[i].type == O_THREAD) {
+        if (i > 0 && i < MAX_H && (g_h[i].type == O_EVENT_R || g_h[i].type == O_EVENT_W)) h_close_event((uint32_t)regs[0]);
+        else if (i > 0 && i < MAX_H && g_h[i].type == O_THREAD) {
             thr_t *t = g_h[i].obj;
             g_h[i].type = O_FREE; g_h[i].obj = NULL;
             t->closed = 1;
@@ -1004,6 +1002,12 @@ static int svc_thread_impl(int num, uint64_t *regs) {
     return 0;
 }
 
+static void h_close_event(uint32_t h) {   // holding G: an event handle (either end) is closed, and the event goes with its last one (CloseHandle, hle_rebind_system_event)
+    unsigned i = h - 0x1000; if (!(i > 0 && i < MAX_H && (g_h[i].type == O_EVENT_R || g_h[i].type == O_EVENT_W))) return;
+    if (g_h[i].type == O_EVENT_W) se_unbind(h);
+    event_t *e = g_h[i].obj; if (--e->refs == 0) free(e);
+    g_h[i].type = O_FREE; g_h[i].obj = NULL;
+}
 // ---------- SystemEvent of the service layer ----------
 // Real device: the service hands the read end of a kernel event to the client, and the guest waits on it through SDK nn::os. Host: on a guest thread, call the SDK's own
 // CreateSystemEvent(inter-process=true), and the SDK creates the kernel event through SVC 0x45; the write-end handle is recorded, after which any thread (including the host audio thread) can signal it.
@@ -1012,22 +1016,29 @@ void hle_bind_system_event(void *ev, int autoclear) {      // Must be called on 
     pthread_mutex_lock(&g_se_lock); uint32_t wh = se_find(ev); pthread_mutex_unlock(&g_se_lock);
     if (wh) return;
     if (!pthread_getspecific(g_keythr)) die("hle_bind_system_event must be called on a guest thread");
-    static uint32_t (*create)(void *, int, int); static uint32_t (*getw)(const void *);
+    static uint32_t (*create)(void *, int, int); static uint32_t (*getw)(const void *); static uint32_t (*getr)(const void *);
     if (!create) { create = guest_sym("_ZN2nn2os17CreateSystemEventEPNS0_15SystemEventTypeENS0_14EventClearModeEb");
-                   getw = guest_sym("_ZN2nn2os30GetWritableHandleOfSystemEventEPKNS0_15SystemEventTypeE"); }
+                   getw = guest_sym("_ZN2nn2os30GetWritableHandleOfSystemEventEPKNS0_15SystemEventTypeE");
+                   getr = guest_sym("_ZN2nn2os30GetReadableHandleOfSystemEventEPKNS0_15SystemEventTypeE"); }
     uint32_t r = create(ev, autoclear, 1);
     if (r) die("CreateSystemEvent failed %#x", r);
     wh = getw(ev);
     pthread_mutex_lock(&g_se_lock);
     if (g_nse >= (int)(sizeof g_se / sizeof g_se[0])) die("SystemEvent binding table full");
-    g_se[g_nse].ev = ev; g_se[g_nse++].wh = wh;
+    g_se[g_nse].ev = ev; g_se[g_nse].wh = wh; g_se[g_nse++].rh = getr ? getr(ev) : 0;
     pthread_mutex_unlock(&g_se_lock);
 }
 // Bind ev afresh even if this address was bound before: a struct the game reuses without destroying it (a member of an object it cleared and set up again) keeps an old
 // binding while its own state is gone, and binding skipped it, so the SDK's TryWaitSystemEvent aborted on it (Animal Crossing: New Horizons' Pia LdnProtocol attaches the ldn state
-// event at the same address for every local-play session). The old kernel event stays open (two handles per session)
+// event at the same address for every local-play session). The old kernel event's handles are closed here: the game's struct lost them without a DestroySystemEvent, so nothing
+// else closes them (kept, each session left an event and two of the 4096 handle slots behind, towards "handle table full")
 void hle_rebind_system_event(void *ev, int autoclear) {
-    pthread_mutex_lock(&g_se_lock); for (int i = 0; i < g_nse; ) if (g_se[i].ev == ev) g_se[i] = g_se[--g_nse]; else i++; pthread_mutex_unlock(&g_se_lock);
+    uint32_t wh = 0, rh = 0;
+    pthread_mutex_lock(&g_se_lock); for (int i = 0; i < g_nse; ) if (g_se[i].ev == ev) { wh = g_se[i].wh; rh = g_se[i].rh; g_se[i] = g_se[--g_nse]; } else i++; pthread_mutex_unlock(&g_se_lock);
+    if (wh) { G_lock();   // the read end only while the slot still holds this event (closed by the game alone, its slot may hold something else by now); the write end's slot is this event's as long as the binding stood
+        unsigned wi = wh - 0x1000, ri = rh - 0x1000; int w_ok = wi > 0 && wi < MAX_H && g_h[wi].type == O_EVENT_W;
+        if (rh && w_ok && ri > 0 && ri < MAX_H && g_h[ri].type == O_EVENT_R && g_h[ri].obj == g_h[wi].obj) h_close_event(rh);
+        h_close_event(wh); pthread_mutex_unlock(&G); }
     hle_bind_system_event(ev, autoclear);
 }
 void hle_signal_system_event(void *ev) {   // An unbound one is bound on the spot as manual-clear (can only happen on a guest thread)

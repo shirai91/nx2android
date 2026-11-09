@@ -144,7 +144,11 @@ kern_return_t task_threads(task_t task, thread_act_array_t *list, mach_msg_type_
     if (a == MAP_FAILED) { closedir(d); return KERN_NO_SPACE; }
     unsigned n = 0; struct dirent *e;
     while ((e = readdir(d)) && n < cap) if (e->d_name[0] >= '0' && e->d_name[0] <= '9') a[n++] = atoi(e->d_name);
-    closedir(d); *list = a; *count = n; return KERN_SUCCESS;
+    closedir(d);
+    // the callers give back n entries' worth (vm_deallocate(n * sizeof *list), as on Darwin): the pages past that go now, or they stayed mapped (12 KB of address space a call)
+    size_t pg = (size_t)getpagesize(), used = (n * sizeof *a + pg - 1) & ~(pg - 1), all = (cap * sizeof *a + pg - 1) & ~(pg - 1);
+    if (used < all) munmap((uint8_t *)a + used, all - used);
+    *list = a; *count = n; return KERN_SUCCESS;
 }
 int thread_policy_set(int thread, thread_policy_flavor_t flavor, thread_policy_t policy, unsigned count) { (void)thread; (void)flavor; (void)policy; (void)count; return KERN_NOT_SUPPORTED; }
 int thread_policy_get(int thread, thread_policy_flavor_t flavor, thread_policy_t policy, unsigned *count, int *get_default) {

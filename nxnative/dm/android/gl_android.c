@@ -317,6 +317,11 @@ vkimg_t *vk_image_from_ahb(AHardwareBuffer *b, uint32_t w, uint32_t h);
 uint64_t vk_present_vkimg(vkimg_t *im, double period);
 void mtl_present_wait(uint64_t tk);
 void dm_guest_frame_tick(void);
+static void slot_drop(slot_t *s) {   // what a slot_make that failed had made: eglSwapBuffers tries the slot again every frame, and each try allocated a frame buffer (8 MB at 1920x1080), an EGL image, a texture and a framebuffer more
+    REAL(EGLBoolean, eglDestroyImageKHR, EGLDisplay, EGLImageKHR); REAL(void, glDeleteTextures, GLsizei, const GLuint *); REAL(void, glDeleteFramebuffers, GLsizei, const GLuint *);
+    if (s->fbo) r_glDeleteFramebuffers(1, &s->fbo); if (s->tex) r_glDeleteTextures(1, &s->tex); if (s->img) r_eglDestroyImageKHR(G.dpy, s->img); if (s->ahb) AHardwareBuffer_release(s->ahb);
+    s->fbo = s->tex = 0; s->img = NULL; s->ahb = NULL;
+}
 static int slot_make(slot_t *s) {
     REAL(void *, eglGetNativeClientBufferANDROID, const AHardwareBuffer *); REAL(EGLImageKHR, eglCreateImageKHR, EGLDisplay, EGLContext, EGLenum, EGLClientBuffer, const EGLint *);
     REAL(void, glEGLImageTargetTexture2DOES, GLenum, void *); REAL(void, glGenTextures, GLsizei, GLuint *); REAL(void, glBindTexture, GLenum, GLuint);
@@ -324,15 +329,16 @@ static int slot_make(slot_t *s) {
     REAL(void, glGetIntegerv, GLenum, GLint *);
     AHardwareBuffer_Desc dd = {(uint32_t)G.w, (uint32_t)G.h, 1, AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM,
                                AHARDWAREBUFFER_USAGE_GPU_COLOR_OUTPUT | AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE, 0, 0, 0};
-    if (AHardwareBuffer_allocate(&dd, &s->ahb)) { RED1("AHardwareBuffer_allocate %dx%d failed", G.w, G.h); return 0; }
+    if (AHardwareBuffer_allocate(&dd, &s->ahb)) { RED1("AHardwareBuffer_allocate %dx%d failed", G.w, G.h); s->ahb = NULL; return 0; }
     const EGLint ia[] = {0x30D2, EGL_TRUE, EGL_NONE};   // IMAGE_PRESERVED
     s->img = r_eglCreateImageKHR(G.dpy, NULL, 0x3140, r_eglGetNativeClientBufferANDROID(s->ahb), ia);   // EGL_NATIVE_BUFFER_ANDROID
-    if (!s->img) { RED1("eglCreateImageKHR for the frame buffer failed"); return 0; }
+    if (!s->img) { RED1("eglCreateImageKHR for the frame buffer failed"); slot_drop(s); return 0; }
     GLint tex0 = 0, fb0 = 0; r_glGetIntegerv(GL_TEXTURE_BINDING_2D, &tex0); r_glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &fb0);
     r_glGenTextures(1, &s->tex); r_glBindTexture(GL_TEXTURE_2D, s->tex); r_glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, s->img);
     r_glGenFramebuffers(1, &s->fbo); r_glBindFramebuffer(GL_DRAW_FRAMEBUFFER, s->fbo); r_glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, s->tex, 0);
     r_glBindTexture(GL_TEXTURE_2D, (GLuint)tex0); r_glBindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint)fb0);
     s->vk = vk_image_from_ahb(s->ahb, (uint32_t)G.w, (uint32_t)G.h);
+    if (!s->vk) slot_drop(s);
     return s->vk != NULL;
 }
 EGLB(eglSwapBuffers, EGLBoolean, EGLDisplay d, EGLSurface surf) {
