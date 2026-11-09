@@ -6,6 +6,8 @@ import tempfile
 import unittest
 
 from porter.toolchain import find_ndk
+import sys; sys.path.insert(0, str(Path(__file__).resolve().parent))
+import host_cc   # noqa: E402
 
 
 class CopyBack(unittest.TestCase):
@@ -47,7 +49,7 @@ int main(void) {
             subprocess.run(['cc', '-std=gnu11', '-Wall', '-Wextra', '-Werror', '-idirafter', str(headers), str(c), '-o', str(exe)], check=True)
             subprocess.run([str(exe)], check=True, timeout=15)
 
-    @unittest.skipUnless(shutil.which('cc'), 'a host C compiler is required')
+    @unittest.skipUnless(host_cc.posix(), 'a POSIX host C compiler is required (<sys/mman.h>, pthread, setenv)')
     def test_protected_pools(self):
         dm = Path(__file__).resolve().parents[1] / 'nxnative/dm'
         dirty = (dm / 'gfx/nvn/nvn_dirty.c').read_text()

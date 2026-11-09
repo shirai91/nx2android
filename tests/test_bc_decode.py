@@ -1,5 +1,6 @@
 """Decode known blocks and compare independent Pillow BC decoders, without game data."""
 import ctypes as C
+import os
 from pathlib import Path
 import random
 import shutil
@@ -46,6 +47,8 @@ class BCDecode(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
+        if os.name == 'nt':   # Windows keeps a loaded DLL's file locked: unload it before the folder goes
+            C.windll.kernel32.FreeLibrary(C.c_void_p(cls.lib._handle))
         cls.tmp.cleanup()
 
     def block(self, fmt, data):

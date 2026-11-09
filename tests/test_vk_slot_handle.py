@@ -1,9 +1,11 @@
 import pathlib
+import shutil
 import subprocess
 import tempfile
 import unittest
 
 
+@unittest.skipUnless(shutil.which('cc'), 'a host C compiler is required')
 class VkSlotHandleTest(unittest.TestCase):
     def test_image_alias_and_texture_fallback(self):
         root = pathlib.Path(__file__).resolve().parents[1]

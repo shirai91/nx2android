@@ -8,6 +8,8 @@ from unittest import mock
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / 'nxnative/dm/android/tools'))
 import dmsv   # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import host_cc   # noqa: E402
 
 ZSTD = dmsv.zstd_mod() is not None
 
@@ -157,9 +159,11 @@ class Publication(unittest.TestCase):
             self.assert_preserved(True)
 
     def test_concurrent_writers_use_distinct_scratch_files(self):
-        replace = os.replace; barrier = threading.Barrier(2); scratch = []
+        replace = os.replace; barrier = threading.Barrier(2); turn = threading.Lock(); scratch = []
         def rendezvous(source, destination):
-            scratch.append(source); barrier.wait(timeout=10); replace(source, destination)
+            # both scratch files exist at once; the renames then take turns (Windows refuses two at the same moment onto one file)
+            scratch.append(source); barrier.wait(timeout=10)
+            with turn: replace(source, destination)
         self.path.write_bytes(self.old)
         with mock.patch.object(dmsv.os, 'replace', side_effect=rendezvous), ThreadPoolExecutor(2) as pool:
             jobs = [pool.submit(dmsv.write, self.path, entries, level=0) for entries in (ENTRIES[:1], ENTRIES)]
@@ -176,7 +180,7 @@ class Publication(unittest.TestCase):
         self.assertEqual(self.path.read_bytes(), v1_reference(ENTRIES))
 
 
-@unittest.skipUnless(shutil.which('cc') and ZSTD, 'a host C compiler and zstd in this Python are needed')
+@unittest.skipUnless(host_cc.posix() and ZSTD, 'a POSIX host C compiler (<sys/mman.h>) and zstd in this Python are needed')
 class HostReader(unittest.TestCase):   # native bundle reader and vk_shader_q through reflection, before Vulkan module creation
     @classmethod
     def setUpClass(cls):
@@ -335,7 +339,7 @@ int main(int argc, char **argv) {   // each shader: key, stage, words, FNV-1a 64
             self.assertEqual(r.returncode, 2, name); self.assertIn('[RED] ', r.stderr)
 
 
-@unittest.skipUnless(shutil.which('cc'), 'host C compiler required')
+@unittest.skipUnless(host_cc.ubsan(), 'a host C compiler with UBSan (libubsan) is required')
 class ReflectionOffset(unittest.TestCase):
     def test_large_bounded_reflection_uses_wide_pointer_offset(self):
         source = (REPO / 'nxnative/dm/android/gfx_vk_shader.c').read_text()
