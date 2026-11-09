@@ -13,7 +13,7 @@ DM = ROOT / 'nxnative/dm'
 class BCSnapshot(unittest.TestCase):
     def test_ordered_readback_reuses_command_buffers(self):
         source = (DM / 'android/gfx_vk_core.c').read_text()
-        start = source.index('void vk_buffer_snapshot(')
+        start = source.index('int vk_buffer_snapshot(')
         helper = source[start:source.index('\nint vk_cmd_parts_left', start)]
         code = r'''
 #include <vulkan/vulkan_core.h>
@@ -26,13 +26,16 @@ class BCSnapshot(unittest.TestCase):
 #define MAIN_CBS 32
 #define VKCHK(call) assert((call) == VK_SUCCESS)
 #define die(...) abort()
+#define VKRED_ONCE(...) ((void)0)
+#define VKLOG(...) ((void)0)
 typedef struct { VkCommandBuffer main, up, mains[MAIN_CBS]; int nmain_sent, nmain_used, up_used, cb_err; } vksub_t;
 static vksub_t sub;
 static struct { VkDevice dev; VkQueue q; } V;
 static pthread_mutex_t g_vk_queue_mu = PTHREAD_MUTEX_INITIALIZER;
 static uint64_t g_cmd_gen;
 static uint8_t gpu[32], scratch[32]; static VkBufferCopy copy;
-static unsigned submitted, waited, begun, reset, barrier;
+static unsigned submitted, waited, begun, reset, barrier, pool_barriers, end_calls, refuse;
+static void pools_readback_barrier(VkCommandBuffer cb) {assert(cb==sub.main);pool_barriers++;}
 static vksub_t *cur(void) { return &sub; }
 static VkCommandBuffer vk_cmd(void) { return sub.main; }
 static void vk_img_barrier_all(VkCommandBuffer cb) { assert(cb == sub.main || cb == sub.up); }
@@ -46,9 +49,9 @@ void vkCmdPipelineBarrier(VkCommandBuffer cb, VkPipelineStageFlags s, VkPipeline
     assert(cb == sub.main && s == VK_PIPELINE_STAGE_TRANSFER_BIT && d == VK_PIPELINE_STAGE_HOST_BIT);
     assert(n == 1 && !nb && !ni && b->srcAccessMask == VK_ACCESS_TRANSFER_WRITE_BIT && b->dstAccessMask == VK_ACCESS_HOST_READ_BIT); barrier++;
 }
-VkResult vkEndCommandBuffer(VkCommandBuffer cb) { assert(cb == sub.main || cb == sub.up); return VK_SUCCESS; }
+VkResult vkEndCommandBuffer(VkCommandBuffer cb) { assert(cb == sub.main || cb == sub.up);end_calls++;assert(pool_barriers);return (refuse==1 && cb==sub.main) || (refuse==2 && cb==sub.up) ? VK_ERROR_OUT_OF_HOST_MEMORY : VK_SUCCESS; }
 VkResult vkQueueSubmit(VkQueue q, uint32_t n, const VkSubmitInfo *s, VkFence f) {
-    (void)q; (void)f; assert(n == 1 && barrier == submitted + 1);
+    (void)q; (void)f; assert(n == 1 && barrier == submitted + 1 && pool_barriers==submitted+1);
     assert(s->commandBufferCount == (submitted ? 1u : 4u));
     if (!submitted) { assert(s->pCommandBuffers[0] == sub.up); assert(s->pCommandBuffers[1] == sub.mains[0]); assert(s->pCommandBuffers[2] == sub.mains[1]); }
     assert(s->pCommandBuffers[s->commandBufferCount-1] == sub.main); submitted++; return VK_SUCCESS;
@@ -64,11 +67,17 @@ int main(void) {
     for (int i=0;i<3;i++) sub.mains[i]=(VkCommandBuffer)(uintptr_t)(i+1);
     for (unsigned n=0;n<100;n++) {
         memset(gpu, n, sizeof gpu); uint8_t out[8]; memset(out, 0, sizeof out);
-        vk_buffer_snapshot((VkBuffer)8, 4, sizeof out, out);
+        assert(vk_buffer_snapshot((VkBuffer)8, 4, sizeof out, out));
         for(unsigned i=0;i<sizeof out;i++) assert(out[i] == n);
         assert(sub.nmain_sent == 2 && sub.nmain_used == 3 && !sub.up_used);
     }
     assert(submitted == 100 && waited == 100 && begun == 100 && reset == 101 && g_cmd_gen == 100);
+    uint8_t out[8];memset(out,0xcd,sizeof out);unsigned calls=end_calls;
+    sub.cb_err=1;assert(!vk_buffer_snapshot((VkBuffer)8,4,8,out));assert(end_calls==calls);
+    sub.cb_err=0;refuse=1;assert(!vk_buffer_snapshot((VkBuffer)8,4,8,out));assert(sub.cb_err);
+    sub.cb_err=0;sub.up_used=1;refuse=2;assert(!vk_buffer_snapshot((VkBuffer)8,4,8,out));assert(sub.cb_err && !sub.up_used);
+    for(unsigned i=0;i<8;i++)assert(out[i]==0xcd);
+    assert(submitted==100 && waited==100);
     puts("ordered readback and 100 buffer reuses passed");
 }
 '''

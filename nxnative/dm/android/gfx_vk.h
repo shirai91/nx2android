@@ -79,7 +79,7 @@ void vk_readback_unknown(void);   // force full cached-pool merge for this submi
 int vk_sub_open(void);                 // a submission is being recorded
 VkCommandBuffer vk_upload_cmd(void);   // the current submission's upload command buffer (runs before the main one)
 void *vk_scratch(VkDeviceSize n, VkDeviceSize align, VkBuffer *buf, VkDeviceSize *off);   // host-visible memory that lives until this submission completes
-void vk_buffer_snapshot(VkBuffer src, VkDeviceSize off, size_t len, void *dst); // ordered readback outside a render pass
+int vk_buffer_snapshot(VkBuffer src, VkDeviceSize off, size_t len, void *dst); // ordered readback outside a pass; 0: submission refused, caller skips the copy
 void vk_defer_free_buffer(VkBuffer b, VkDeviceMemory m);   // destroyed once the GPU has passed the current submission
 void vk_defer_free_image(VkImage i, VkDeviceMemory m);
 VkDeviceMemory vk_image_memory(const VkMemoryRequirements *req, uint32_t type, VkDeviceSize *off, void **sub);   // NULL on failure; *sub: a slot of a shared block, or NULL (memory of its own)

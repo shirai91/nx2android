@@ -982,17 +982,18 @@ VkCommandBuffer vk_cmd(void) { return cur()->main; }
 // CPU BC decoding needs the buffer's bytes at this exact replay point, including
 // prior GPU writes. Flush and wait, then reuse the current command buffers rather
 // than consuming a split slot for every texture upload.
-void vk_buffer_snapshot(VkBuffer src, VkDeviceSize off, size_t len, void *dst) {
+int vk_buffer_snapshot(VkBuffer src, VkDeviceSize off, size_t len, void *dst) {
     vksub_t *s = cur();
+    if (s->cb_err) { VKRED_ONCE(90, "BC readback skipped: submission already refused"); return 0; }
     VkBuffer b; VkDeviceSize o; void *p = vk_scratch(len, 16, &b, &o);
     VkCommandBuffer cb = vk_cmd(); vk_img_barrier_all(cb);
     VkBufferCopy r = {off, o, len}; vkCmdCopyBuffer(cb, src, b, 1, &r);
     VkMemoryBarrier barrier = {VK_STRUCTURE_TYPE_MEMORY_BARRIER, NULL, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT};
     vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &barrier, 0, NULL, 0, NULL);
-    VKCHK(vkEndCommandBuffer(s->main));
-    if (s->cb_err) die("[vk] BC buffer readback command buffer refused");
+    pools_readback_barrier(s->main);
+    if (vkEndCommandBuffer(s->main) < 0) goto refused;
     VkCommandBuffer cbs[MAIN_CBS + 1]; uint32_t n = 0;
-    if (s->up_used) { vk_img_barrier_all(s->up); VKCHK(vkEndCommandBuffer(s->up)); cbs[n++] = s->up; }
+    if (s->up_used) { vk_img_barrier_all(s->up); if (vkEndCommandBuffer(s->up) < 0) goto refused; cbs[n++] = s->up; }
     for (int i = s->nmain_sent; i < s->nmain_used; i++) cbs[n++] = s->mains[i];
     VkSubmitInfo si = {VK_STRUCTURE_TYPE_SUBMIT_INFO, NULL, 0, NULL, NULL, n, cbs, 0, NULL};
     pthread_mutex_lock(&g_vk_queue_mu);
@@ -1004,10 +1005,24 @@ void vk_buffer_snapshot(VkBuffer src, VkDeviceSize off, size_t len, void *dst) {
     // All pending work completed, so the last main/up buffers can be recorded
     // again. Earlier buffers stay marked as sent; final commit submits this tail.
     s->nmain_sent = s->nmain_used - 1;
-    VKCHK(vkResetCommandBuffer(s->main, 0));
+    if (vkResetCommandBuffer(s->main, 0) < 0) goto refused;
     VkCommandBufferBeginInfo bi = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, NULL, VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
-    VKCHK(vkBeginCommandBuffer(s->main, &bi)); g_cmd_gen++;
-    if (s->up_used) { VKCHK(vkResetCommandBuffer(s->up, 0)); s->up_used = 0; }
+    if (vkBeginCommandBuffer(s->main, &bi) < 0) goto refused;
+    g_cmd_gen++;
+    if (s->up_used) { if (vkResetCommandBuffer(s->up, 0) < 0) goto refused; s->up_used = 0; }
+    { static int said; if (!said++) VKLOG("BC GPU snapshot: ordered readback completed (%zu bytes)", len); }
+    return 1;
+refused:
+    s->cb_err = 1; // final commit uses the existing dropped-submission path
+    VKRED_ONCE(91, "BC readback skipped: command buffer refused, submission will be dropped");
+    // These buffers were never submitted, or the successful wait above finished
+    // them. Rearm recording so later replay ops need not touch an ended buffer.
+    if (vkResetCommandBuffer(s->main, 0) >= 0) {
+        VkCommandBufferBeginInfo retry = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, NULL, VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+        if (vkBeginCommandBuffer(s->main, &retry) >= 0) g_cmd_gen++;
+    }
+    if (s->up_used) { vkResetCommandBuffer(s->up, 0); s->up_used = 0; }
+    return 0;
 }
 
 int vk_cmd_parts_left(void) { vksub_t *s = cur(); return MAIN_CBS - (s->nmain_used > s->nup_used ? s->nmain_used : s->nup_used); }   // parts vk_cmd_split can still begin (gfx_vk_exec.c pass splits)

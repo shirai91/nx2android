@@ -2196,25 +2196,41 @@ static void copy_b2t(const p_copy_b2t *c, int to_texture) {
             (uint64_t)c->r.xoffset + w > (im->w >> level ? im->w >> level : 1) ||
             (uint64_t)c->r.yoffset + h > (im->h >> level ? im->h >> level : 1) ||
             (uint64_t)c->r.zoffset + d + (im->layers > 1 ? layer : 0) > (im->layers > 1 ? im->layers : (im->d >> level ? im->d >> level : 1)))
-            die("[vk] invalid BC buffer upload region");
+            { VKRED_ONCE(71, "invalid BC buffer upload region; copy skipped"); return; }
         size_t rows = ((size_t)h + 3) / 4, bytes = ((size_t)w + 3) / 4 * f->bpb;
         size_t row = S.row_stride > 0 ? (size_t)S.row_stride : bytes;
-        if (row < bytes || row > SIZE_MAX / rows) die("[vk] invalid BC upload row stride");
+        if (row < bytes || row > SIZE_MAX / rows) { VKRED_ONCE(71, "invalid BC upload row stride; copy skipped"); return; }
         size_t slice = S.image_stride > 0 ? (size_t)S.image_stride : row * rows;
-        if (slice < row * rows || slice > SIZE_MAX / d) die("[vk] invalid BC upload slice stride");
+        if (slice < row * rows || slice > SIZE_MAX / d) { VKRED_ONCE(71, "invalid BC upload slice stride; copy skipped"); return; }
         size_t size = slice * (d - 1) + row * (rows - 1) + bytes;
-        VkBuffer src; VkDeviceSize src_off;
-        if (!vk_buf_at(c->src, size, &src, &src_off)) die("[vk] BC upload source outside memory pools");
-        if (src_off % 4 || size % 4) die("[vk] BC upload source must be word aligned");
-        uint8_t *blocks = malloc(size); if (!blocks) die("[vk] BC buffer readback allocation failed");
-        vk_buffer_snapshot(src, src_off, size, blocks);
+        vkpool_t *pool = vk_pool_of(c->src, 1);
+        if (!pool || c->src > pool->end || size > pool->end - c->src) {
+            VKRED_ONCE(71, "BC upload source outside memory pools; copy skipped"); return;
+        }
         size_t pixel = nvn_bc_pixel_size(c->tex->d.format), pitch = (size_t)w * pixel;
-        if (pitch > SIZE_MAX / h || pitch * h > SIZE_MAX / d) die("[vk] BC upload is too large");
+        if (!pixel || pitch > SIZE_MAX / h || pitch * h > SIZE_MAX / d) {
+            VKRED_ONCE(71, "BC upload is too large; copy skipped"); return;
+        }
+        // Keep the previous CPU-address decode by default. GPU readback is
+        // opt-in because it submits pending work and waits under the queue lock.
+        const char *readback = getenv("DM_VK_BC_GPU_READBACK");
+        const void *input = (const void *)(uintptr_t)c->src; uint8_t *blocks = NULL;
+        if (readback && atoi(readback)) {
+            VkBuffer src; VkDeviceSize src_off;
+            if (!vk_buf_at(c->src, size, &src, &src_off) || src_off % 4 || size % 4) {
+                VKRED_ONCE(71, "BC GPU snapshot unavailable for chunk-spanning or misaligned range; using CPU blocks");
+            } else if (!(blocks = malloc(size))) {
+                VKRED_ONCE(71, "BC buffer readback allocation failed; using CPU blocks");
+            } else {
+                if (!vk_buffer_snapshot(src, src_off, size, blocks)) { free(blocks); return; }
+                input = blocks;
+            }
+        }
         size_t decoded_size = pitch * h * d; VkBuffer dst; VkDeviceSize dst_off;
         void *decoded = vk_scratch(decoded_size, 16, &dst, &dst_off);
-        int result = nvn_bc_decode(c->tex->d.format, w, h, d, blocks, size, row, slice,
+        int result = nvn_bc_decode(c->tex->d.format, w, h, d, input, size, row, slice,
                                    decoded, decoded_size, pitch, pitch * h);
-        free(blocks); if (result) die("[vk] BC buffer upload decode failed");
+        free(blocks); if (result) { VKRED_ONCE(71, "BC buffer upload decode failed; copy skipped"); return; }
         VkCommandBuffer cb = vk_cmd(); vk_tex_prepare(cb, im); vk_img_barrier_all(cb);
         VkBufferImageCopy r = {dst_off, 0, 0, sub_of(im, &c->view, c->has_view, c->r.zoffset),
                               {c->r.xoffset, c->r.yoffset, im->layers > 1 ? 0 : c->r.zoffset}, {w, h, im->layers > 1 ? 1 : d}};
