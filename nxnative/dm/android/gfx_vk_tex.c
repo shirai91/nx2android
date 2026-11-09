@@ -160,6 +160,21 @@ static VkFormat srgb_twin(VkFormat f) {
     default: return VK_FORMAT_UNDEFINED;
     }
 }
+// the uint (sint) format of a texel size, for a storage view that reads or writes the raw bits of a float or unorm texture (gfx_vk_exec.c tex_desc_for). VK_FORMAT_UNDEFINED
+// when the size has none, or the device cannot store into that format
+VkFormat vk_int_fmt(uint32_t bytes, int sint) {
+    VkFormat f;
+    switch (bytes) {
+    case 1: f = sint ? VK_FORMAT_R8_SINT : VK_FORMAT_R8_UINT; break;
+    case 2: f = sint ? VK_FORMAT_R16_SINT : VK_FORMAT_R16_UINT; break;
+    case 4: f = sint ? VK_FORMAT_R32_SINT : VK_FORMAT_R32_UINT; break;
+    case 8: f = sint ? VK_FORMAT_R32G32_SINT : VK_FORMAT_R32G32_UINT; break;
+    case 16: f = sint ? VK_FORMAT_R32G32B32A32_SINT : VK_FORMAT_R32G32B32A32_UINT; break;
+    default: return VK_FORMAT_UNDEFINED;
+    }
+    VkFormatProperties fp; vkGetPhysicalDeviceFormatProperties(V.pd, f, &fp);
+    return fp.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT ? f : VK_FORMAT_UNDEFINED;
+}
 // DM_VK_UBWC (start-up, bits): 1, uncompressed colour images get a format list (their format and its sRGB twin) instead of a free MUTABLE_FORMAT, which Adreno
 // needs to keep UBWC framebuffer compression; views in another format then use the image's own (vk_tex_view). 2, depth / stencil images are made without
 // MUTABLE_FORMAT and EXTENDED_USAGE (their views always take the image's own format). Unicorn Overlord on an Adreno 730: 1 cut GPU time by 35-40%. Both are the
@@ -191,10 +206,18 @@ static vkimg_t *img_new(const tex_t *t, const vkfmt_t *f) {
         d->target == 2 ? VK_IMAGE_TYPE_3D : d->target == 0 || d->target == 3 ? VK_IMAGE_TYPE_1D : VK_IMAGE_TYPE_2D, f->vk,
         {im->w, im->h, im->d}, im->levels, im->layers, (VkSampleCountFlagBits)im->samples, VK_IMAGE_TILING_OPTIMAL, u, VK_SHARING_MODE_EXCLUSIVE, 0, NULL, VK_IMAGE_LAYOUT_UNDEFINED};
     if (im->samples > 1) ci.flags &= ~(VkImageCreateFlags)VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT;
-    VkFormat fl[2] = {f->vk, srgb_twin(f->vk)}; VkImageFormatListCreateInfo fli = {VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO, NULL, fl[1] ? 2u : 1u, fl};
+    VkFormat fl[4] = {f->vk, srgb_twin(f->vk), 0, 0}; uint32_t nfl = fl[1] ? 2 : 1;
+    VkImageFormatListCreateInfo fli = {VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO, NULL, nfl, fl};
     if (!f->compressed && (ubwc_mode() & (im->aspect == VK_IMAGE_ASPECT_COLOR_BIT ? 1 : 2))) {   // (a depth format has no twin: a list of itself, no MUTABLE_FORMAT)
         im->fixed_fmt = 1; im->fmt2 = fl[1]; ci.pNext = &fli;
-        ci.flags &= ~(VkImageCreateFlags)VK_IMAGE_CREATE_EXTENDED_USAGE_BIT; if (!fl[1]) ci.flags &= ~(VkImageCreateFlags)VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
+        // a colour image flagged as an image may be stored into as integers (a shader declares r32ui over an RGBA8 texture, FINAL FANTASY TACTICS' UI composite:
+        // tex_desc_for): its list takes the uint and the sint format of its texel size, which a storage view in them then may use
+        if ((d->flags & NVN_TEXTURE_FLAGS_IMAGE) && im->aspect == VK_IMAGE_ASPECT_COLOR_BIT) {
+            im->fmt_cls[0] = vk_int_fmt(f->bpb, 0); im->fmt_cls[1] = vk_int_fmt(f->bpb, 1);
+            if (im->fmt_cls[0]) fl[nfl++] = im->fmt_cls[0];
+            if (im->fmt_cls[1]) fl[nfl++] = im->fmt_cls[1];
+            fli.viewFormatCount = nfl; }
+        ci.flags &= ~(VkImageCreateFlags)VK_IMAGE_CREATE_EXTENDED_USAGE_BIT; if (nfl == 1) ci.flags &= ~(VkImageCreateFlags)VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
     }
     im->usage = ci.usage; im->cflags = ci.flags;
     VkResult r = vkCreateImage(V.dev, &ci, NULL, &im->img);
@@ -550,6 +573,9 @@ static VkComponentMapping sample_swizzle(const VkComponentMapping *format, const
 }
 __thread VkFormat vk_view_fmt; __thread uint32_t vk_view_layers;
 VkImageView vk_tex_view(const tex_t *t, const view_t *vw, int dim, int arrayed, int as_attachment, vkimg_t **img_out) {
+    return vk_tex_view_as(t, vw, dim, arrayed, as_attachment, img_out, 0);
+}
+VkImageView vk_tex_view_as(const tex_t *t, const view_t *vw, int dim, int arrayed, int as_attachment, vkimg_t **img_out, VkFormat vfmt) {
     vkimg_t *im = vk_tex(t); if (img_out) *img_out = im;
     if (!im) return VK_NULL_HANDLE;
     if (as_attachment) { im->wseq = ++g_wseq; im->gpu_w = 1; } else if (im->novl) alias_check(im);
@@ -585,7 +611,10 @@ VkImageView vk_tex_view(const tex_t *t, const view_t *vw, int dim, int arrayed, 
     VkFormat fmt = f->vk;
     const vkfmt_t *imf = vk_fmt(im->nvn_format);   // (a BC format decoded on the CPU counts as compressed: its view keeps the decoded image's format)
     if ((im->aspect & ~VK_IMAGE_ASPECT_COLOR_BIT) || (f->compressed || f->dec) != (imf->compressed || imf->dec) || (f->dec && f->dbpp != imf->dbpp)) fmt = im->fmt;   // depth views and block-size changes keep the image's format
-    if (im->fixed_fmt && fmt != im->fmt && fmt != srgb_twin(im->fmt)) { fmt = im->fmt; static int n; if (n++ < 8) VKLOG("[RED] view format %d of a format-listed image (%d, DM_VK_UBWC): the image's own used", f->vk, im->fmt); }
+    // a storage view in the integer class of the shader's declaration (vfmt, the caller's texel size): identity swizzle, as an image takes no channel mapping. Only where the
+    // image allows it: its format list (fixed_fmt) names it, else the image is MUTABLE_FORMAT
+    if (vfmt && !as_attachment && im->aspect == VK_IMAGE_ASPECT_COLOR_BIT && (!im->fixed_fmt || vfmt == im->fmt_cls[0] || vfmt == im->fmt_cls[1])) { fmt = vfmt; swz = (VkComponentMapping){0}; }
+    if (im->fixed_fmt && fmt != im->fmt && fmt != srgb_twin(im->fmt) && fmt != im->fmt_cls[0] && fmt != im->fmt_cls[1]) { fmt = im->fmt; static int n; if (n++ < 8) VKLOG("[RED] view format %d of a format-listed image (%d, DM_VK_UBWC): the image's own used", f->vk, im->fmt); }
     pthread_mutex_lock(&g_view_mu);
     vview *head = nvn_hm_get(&g_views, &im);
     for (vview *v = head; v; v = v->next)
