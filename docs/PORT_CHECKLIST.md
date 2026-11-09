@@ -67,7 +67,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [x] Paper Mario: The Thousand-Year Door · `0100ECD018EBE000`
 - [ ] Patrick's Parabox · `0100E44016C22000` · profile here
 - [ ] Persona 4 Golden · `010062B01525C000` · upstream profile
-- [ ] Persona 5 Royal · `01005CA01580E000` · upstream profile
+- [x] Persona 5 Royal · `01005CA01580E000`
 - [x] Picross S+ · `0100D7B01AE58000` · update 1.0.1; RP6 / PurpleVK only; Pixel rendering issues
 - [ ] Pikmin 4 · `0100B7C00933A000` · upstream profile
 - [ ] Pokémon Brilliant Diamond · `0100000011D90000` · upstream profile · 60 fps with 1.3.0

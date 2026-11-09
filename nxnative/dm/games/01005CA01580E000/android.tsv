@@ -1,0 +1,15 @@
+# Persona 5 Royal on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Tested 2026-11-08 on an AYN Thor (Snapdragon 8 Gen 2, Adreno 740), ported with --vulkan-driver and a Turnip build (Apex): the title screen, the overworld, battles
+# (the command menu over the scene), the anime cutscenes, loading a save. Not checked with Qualcomm's own driver.
+# DM_NVN_DEVINFO=0x39=64: the device-info value 0x39 the game asserts on in RsdxDevice11.cpp (hle_nvn.c)
+# DM_VK_PACE=0: presents without the host's display pacing; the user found input less laggy
+# DM_PRESENT_INTERVAL=display: 60 fps. The game asks for a present interval of 2 (30 fps) and runs on its frame time: FPSLocker-Warehouse's config for 1.0.2 holds only a fade
+# fix (asm_a64, which porter's --fps60 does not convert), so fades may run faster than on Switch. Without this row the game runs at 30 fps as on Switch
+# Open: the scene renders at 1440x810 and is scaled to 1920x1080 (the Switch's docked size); a 1080p mod
+status	wip
+tested	v65536 AYN Thor (Snapdragon 8 Gen 2, Adreno 740)
+package	org.nx2a.t01005ca01580e000
+orientation	landscape
+env	DM_NVN_DEVINFO=0x39=64
+env	DM_VK_PACE=0
+env	DM_PRESENT_INTERVAL=display
