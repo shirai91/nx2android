@@ -2091,6 +2091,16 @@ static void copy_b2t(const p_copy_b2t *c, int to_texture) {
     VkBufferImageCopy r = {o, rowlen, imgh, sub_of(im, &c->view, c->has_view, c->r.zoffset), {c->r.xoffset, c->r.yoffset, layered ? 0 : c->r.zoffset},
                            {(uint32_t)c->r.width, (uint32_t)(c->r.height ? c->r.height : 1), layered ? 1 : (uint32_t)depth}};
     if (layered) r.imageSubresource.layerCount = (uint32_t)depth;
+    if (to_texture && !f->dec && f->bpb) {   // a source across two chunks of a pool (ZC_CHUNK, vk_pool_of has no buffer for it): copied into scratch memory first
+        uint32_t w = (uint32_t)c->r.width, h = (uint32_t)(c->r.height ? c->r.height : 1), nz = layered || depth > 1 ? (uint32_t)depth : 1;
+        uint64_t rowb = (uint64_t)((w + bw - 1) / bw) * f->bpb, pitch = S.row_stride > 0 ? (uint64_t)S.row_stride : rowb, rows = (h + bh - 1) / bh;
+        uint64_t slice = S.image_stride > 0 ? (uint64_t)S.image_stride : pitch * rows, ext = (nz - 1) * slice + (rows - 1) * pitch + rowb;
+        vkpool_t *sp = vk_pool_of(c->src, 1);   // only a range that runs past its chunk, not one past the game's pool
+        if (ext > 1 && sp && c->src + ext <= sp->end && !vk_pool_of(c->src, ext)) {
+            VkBuffer sb; VkDeviceSize so; uint8_t *p = vk_scratch(ext, 16, &sb, &so);
+            if (p) { memcpy(p, (const void *)(uintptr_t)c->src, ext); b = sb; r.bufferOffset = so; }
+        }
+    }
     if (f->dec) {   // a BC format the device lacks (gfx_vk_tex.c bc_decode): the blocks decoded on the CPU from the buffer's memory as the replay reaches the copy
         if (!to_texture) { VKRED_ONCE(71, "copy of a BC texture decoded on the CPU into a buffer: skipped"); return; }
         uint32_t w = (uint32_t)c->r.width, h = (uint32_t)(c->r.height ? c->r.height : 1), nz = (uint32_t)depth;
@@ -2211,9 +2221,29 @@ static void copy_t2t(const p_copy_t2t *c) {
     }
     vk_img_barrier_all(cb);
 }
+// A texture clear of some channels only: vkCmdClearColorImage writes every channel, so it is clear_masked in a pass of its own on the texture, the targets set
+// back after. Persona 5 Royal clears the alpha of its window target (mask 0x8) between the HUD and the battle menu: cleared in full, the scene behind the menu went black
+static int clear_tex_masked(const p_clear_tex *c, vkimg_t *im) {   // 1 = done
+    if (c->is_uint || !(im->aspect & VK_IMAGE_ASPECT_COLOR_BIT)) return 0;
+    tex_t col[8], dep; view_t cv[8], dv; uint8_t hc[8], hcv[8], hd = S.rt_has_dep, hdv = S.rt_has_dview; int n = S.rt_n; uint32_t bad[8];
+    memcpy(col, S.rt_col, sizeof col); dep = S.rt_dep; memcpy(cv, S.rt_cview, sizeof cv); dv = S.rt_dview; memcpy(hc, S.rt_has_col, sizeof hc); memcpy(hcv, S.rt_has_cview, sizeof hcv); memcpy(bad, S.rt_bad, sizeof bad);
+    S.rt_n = 1; S.rt_col[0] = *c->tex; S.rt_has_col[0] = 1; S.rt_has_cview[0] = c->has_view; if (c->has_view) S.rt_cview[0] = c->view; S.rt_bad[0] = 0; S.rt_has_dep = 0; S.rt_has_dview = 0;
+    int done = 0;
+    if (begin_pass() && S.ncol >= 1 && S.cfmt[0] != VK_FORMAT_UNDEFINED) {
+        int64_t x = c->r.xoffset > 0 ? c->r.xoffset : 0, y = c->r.yoffset > 0 ? c->r.yoffset : 0, x1 = (int64_t)c->r.xoffset + c->r.width, y1 = (int64_t)c->r.yoffset + c->r.height;
+        if (x1 > S.pass_w) x1 = S.pass_w; if (y1 > S.pass_h) y1 = S.pass_h;
+        p_clear_color cc = {0, c->mask, {c->c.f[0], c->c.f[1], c->c.f[2], c->c.f[3]}};
+        done = x1 <= x || y1 <= y || clear_masked(&cc, (VkRect2D){{(int32_t)x, (int32_t)y}, {(uint32_t)(x1 - x), (uint32_t)(y1 - y)}});
+    }
+    vk_end_pass();
+    memcpy(S.rt_col, col, sizeof col); S.rt_dep = dep; memcpy(S.rt_cview, cv, sizeof cv); S.rt_dview = dv; memcpy(S.rt_has_col, hc, sizeof hc); memcpy(S.rt_has_cview, hcv, sizeof hcv); memcpy(S.rt_bad, bad, sizeof bad);
+    S.rt_has_dep = hd; S.rt_has_dview = hdv; S.rt_n = n;
+    return done;
+}
 static void clear_tex(const p_clear_tex *c) {
     vk_end_pass();
     vkimg_t *im = vk_tex(c->tex); if (!im) return;
+    if ((c->mask & 0xf) != 0xf && (im->aspect & VK_IMAGE_ASPECT_COLOR_BIT) && (!(c->mask & 0xf) || clear_tex_masked(c, im))) return;
     VkCommandBuffer cb = vk_cmd(); vk_tex_prepare(cb, im); vk_img_barrier_all(cb); im->gpu_w = 1;
     VkImageSubresourceLayers l = sub_of(im, &c->view, c->has_view, c->r.zoffset);
     VkImageSubresourceRange rg = {l.aspectMask, l.mipLevel, 1, l.baseArrayLayer, im->layers > 1 ? (uint32_t)(c->r.depth ? c->r.depth : 1) : 1};
