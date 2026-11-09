@@ -89,6 +89,25 @@ class DriverTest(unittest.TestCase):
         self.assertEqual(dev.ops, ['shell', 'pull', 'shell', 'install', 'shell', 'push'])   # pm path, pull, force-stop, install, cat env.txt, push it
         with self.assertRaises(BuildError): driver.swap(dev, PKG, self.t / 'missing.so')
 
+    def test_host_swap(self):   # apkdriver.py --host: libdmhost.so replaced, the driver library kept
+        so = self.t / 'new_host.so'; so.write_bytes(b'\x7fELF new host' * 10)
+        r = self.tool(self.apk(), self.t / 'b.apk', paths.signing_key(), '--host', so)
+        self.assertEqual(r.returncode, 0, r.stderr); self.assertEqual(json.loads(r.stdout), {'driver': 'libvulkan.purple.so', 'dropped': []})
+        got = libs(self.t / 'b.apk'); self.assertEqual(got['libdmhost.so'], so.read_bytes()); self.assertEqual(got['libvulkan.purple.so'], b'libvulkan.purple.so' * 50)
+        self.assertNotEqual(self.tool(self.apk(), self.t / 'c.apk', paths.signing_key()).returncode, 0)   # nothing to change
+
+    def test_stale_sources(self):   # porter host: the rewriter's sources the device's modules were made with, against this checkout's
+        import hashlib
+        from porter import host
+        tools = REPO / 'nxnative/dm/tools'
+        def row(rel, ok=True): return (hashlib.sha256((tools / rel).read_bytes()).hexdigest() if ok else '0' * 64) + '  ' + rel
+        fft, other = '010038B015560000', '01004AB00A260000'   # two games with patches.py
+        good = [row('patch_nso.py'), row('sdk_patches.py'), row(f'../games/{fft}/patches.py'), row(f'../games/{other}/patches.py', ok=False), '0' * 64 + '  ../../../../build/fpslock/patches.py']
+        self.assertEqual(host.stale_sources('\n'.join(good), fft), [])   # another game's patches and a file outside the repository do not count
+        self.assertEqual(host.stale_sources('\n'.join([row('patch_nso.py', ok=False)] + good[1:]), fft), ['patch_nso.py'])
+        self.assertEqual(host.stale_sources('\n'.join(good[:2] + [row(f'../games/{fft}/patches.py', ok=False)]), fft), [f'../games/{fft}/patches.py'])
+        self.assertEqual(host.stale_sources('\n'.join(good[:2]), fft), [f'../games/{fft}/patches.py'])   # patches registered for the game since the port
+
 
 if __name__ == '__main__':
     unittest.main()

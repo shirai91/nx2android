@@ -78,6 +78,10 @@ def _parser():
     drg.add_argument('--system', action='store_true', help='no driver library: the device\'s own driver')
     dr.add_argument('--package', default='', help='the app (default: the only ported game installed)')
     dr.add_argument('--device', default='', help='adb serial (default: the configured device, else the only one)'); dr.add_argument('--json', action='store_true')
+    hs = sub.add_parser('host', help="a port on the device brought to this version's host, without the game files: its libdmhost.so is built again from the profile (the saves and the game's data stay)")
+    hs.add_argument('--package', default='', help='the app (default: the only ported game installed)')
+    hs.add_argument('--device', default='', help='adb serial (default: the configured device, else the only one)')
+    hs.add_argument('--jobs', type=int, default=os.cpu_count() or 8); hs.add_argument('--json', action='store_true')
     return ap
 
 
@@ -247,14 +251,15 @@ def cmd_saves(a):
     return 0
 
 
-def cmd_driver(a):
+def cmd_driver(a):   # porter driver and porter host: the installed APK rebuilt without the game files
     import contextlib
-    from porter import config, driver, saves, toolchain
+    from porter import config, driver, host, saves, toolchain
     from porter.upstream import BuildError
     try:
         with contextlib.redirect_stdout(sys.stderr if a.json else sys.stdout):   # with --json, stdout is the one JSON document
             cfg = config.load(); adb = saves.connect(toolchain.find_adb(cfg), a.device or cfg.get('device'))
-            out = driver.swap(adb, saves.pick_app(adb, a.package), None if a.system else a.library)
+            out = driver.swap(adb, saves.pick_app(adb, a.package), None if a.system else a.library) if a.cmd == 'driver' else \
+                  host.update(adb, saves.pick_app(adb, a.package), a.jobs)
     except BuildError as e:
         if a.json: _print_json({'error': str(e)})
         else: print(e, file=sys.stderr)
@@ -266,4 +271,4 @@ def cmd_driver(a):
 def main(argv):
     if hasattr(sys.stdout, 'reconfigure'): sys.stdout.reconfigure(encoding='utf-8', errors='replace')   # game names and progress bars on a Windows console
     a = _parser().parse_args(argv)
-    return {'doctor': cmd_doctor, 'profiles': cmd_profiles, 'inspect': cmd_inspect, 'port': cmd_port, 'install': cmd_install, 'devices': cmd_devices, 'tools': cmd_tools, 'config': cmd_config, 'saves': cmd_saves, 'driver': cmd_driver}[a.cmd](a)
+    return {'doctor': cmd_doctor, 'profiles': cmd_profiles, 'inspect': cmd_inspect, 'port': cmd_port, 'install': cmd_install, 'devices': cmd_devices, 'tools': cmd_tools, 'config': cmd_config, 'saves': cmd_saves, 'driver': cmd_driver, 'host': cmd_driver}[a.cmd](a)
