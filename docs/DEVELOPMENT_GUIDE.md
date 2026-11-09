@@ -41,6 +41,17 @@ python -m porter saves import "D:\Backups\Celeste\20261030-141200"
 
 How the export folders are laid out: [ARCHITECTURE.md](ARCHITECTURE.md#saves).
 
+### Vulkan driver
+
+`porter driver` changes the Vulkan driver of a port already on the device, without the game's files: the app's APK is rebuilt with the library and installed over it (the saves stay), and its `env.txt` names it. The app must have been ported with `--vulkan-driver` once (that build carries libadrenotools, which loads the driver):
+
+```
+python -m porter driver "D:\Drivers\libvulkan_freedreno.so" --package org.nx2a.supermario3dworld
+python -m porter driver --system --package org.nx2a.supermario3dworld
+```
+
+`--system` goes back to the device's own driver. How it works: [ARCHITECTURE.md](ARCHITECTURE.md#the-port).
+
 ## Layout
 
 - `porter/`: the port pipeline (`python -m porter`).
