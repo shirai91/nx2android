@@ -727,7 +727,8 @@ static int overlay_ready(VkCommandBuffer cb, uint32_t k, int menu) {   // k: thi
             VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE};
         VKCHK(vkCreateSampler(V.dev, &si, NULL, &g_ov.samp));
     }
-    if (g_ov.pfmt != g_sfmt) {   // the pipeline renders into the swapchain's format
+    if (g_ov.pfmt != g_sfmt) {   // the pipeline renders into the swapchain's format (the last format's goes: swap_destroy waited for the device on every path that changes g_sfmt)
+        if (g_ov.pipe) { vkDestroyPipeline(V.dev, g_ov.pipe, NULL); g_ov.pipe = VK_NULL_HANDLE; }
         VkShaderModule vm, fm;
         VkShaderModuleCreateInfo vc = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, NULL, 0, sizeof overlay_vert_spv, overlay_vert_spv}; VKCHK(vkCreateShaderModule(V.dev, &vc, NULL, &vm));
         VkShaderModuleCreateInfo fc = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, NULL, 0, sizeof overlay_frag_spv, overlay_frag_spv}; VKCHK(vkCreateShaderModule(V.dev, &fc, NULL, &fm));
@@ -744,7 +745,7 @@ static int overlay_ready(VkCommandBuffer cb, uint32_t k, int menu) {   // k: thi
         VkPipelineRenderingCreateInfo rci = {VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO, NULL, 0, 1, &g_sfmt};
         if (!V.has_dynrender && g_ov.rp) { ov_fb_drop(); vkDestroyRenderPass(V.dev, g_ov.rp, NULL); g_ov.rp = VK_NULL_HANDLE; }   // the pass follows the swapchain's format, as the pipeline does
         VkRenderPass orp = V.has_dynrender ? VK_NULL_HANDLE : ov_rp();
-        if (!V.has_dynrender && !orp) return 0;
+        if (!V.has_dynrender && !orp) { vkDestroyShaderModule(V.dev, vm, NULL); vkDestroyShaderModule(V.dev, fm, NULL); return 0; }
         VkGraphicsPipelineCreateInfo ci = {VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, orp ? NULL : &rci, 0, 2, ss, &vi, &ia, NULL, &vs, &rs, &ms, NULL, &cbs, &dy, g_ov.layout, orp};
         VkResult r = vkCreateGraphicsPipelines(V.dev, V.pcache, 1, &ci, NULL, &g_ov.pipe);
         vkDestroyShaderModule(V.dev, vm, NULL); vkDestroyShaderModule(V.dev, fm, NULL);
@@ -1063,7 +1064,8 @@ vkimg_t *vk_image_from_ahb(AHardwareBuffer *ahb, uint32_t w, uint32_t h) {
     VkMemoryDedicatedAllocateInfo ded = {VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO, &imp, im->img, VK_NULL_HANDLE};
     uint32_t mt = 0; while (mt < 32 && !(ap.memoryTypeBits & (1u << mt))) mt++;
     VkMemoryAllocateInfo ai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, &ded, ap.allocationSize, mt};
-    if (vkAllocateMemory(V.dev, &ai, NULL, &im->mem) || vkBindImageMemory(V.dev, im->img, im->mem, 0)) { VKRED_ONCE(94, "importing a GL frame buffer into Vulkan failed"); free(im); return NULL; }
+    if (vkAllocateMemory(V.dev, &ai, NULL, &im->mem) || vkBindImageMemory(V.dev, im->img, im->mem, 0)) { VKRED_ONCE(94, "importing a GL frame buffer into Vulkan failed");
+        if (im->mem) vkFreeMemory(V.dev, im->mem, NULL); vkDestroyImage(V.dev, im->img, NULL); free(im); return NULL; }   // (tried again at the next frame: nothing of this one stays)
     im->fmt = VK_FORMAT_R8G8B8A8_UNORM; im->w = w; im->h = h; im->d = im->layers = im->levels = im->samples = 1; im->aspect = VK_IMAGE_ASPECT_COLOR_BIT; im->layout = VK_IMAGE_LAYOUT_UNDEFINED;
     VKLOG("GL frame buffer %ux%u imported (memory type %u, %llu bytes)", w, h, mt, (unsigned long long)ap.allocationSize);
     return im;

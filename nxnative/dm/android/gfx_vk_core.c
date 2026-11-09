@@ -672,6 +672,7 @@ void mtl_pool_del(const void *mem) {
         uint64_t t0 = pool_ns();
         if (p.zero_copy) pool_copy_back(&p);
         free(p.baseline);
+        { void vk_tbuf_drop_pool(uint64_t); vk_tbuf_drop_pool(p.serial); }   // the texel buffer views over its buffer (gfx_vk_tex.c), before the buffer itself goes or is kept
         if (p.slab) slab_give(p.slab, p.slot, mtl_last_fence() + 1);   // the slot goes back to its slab (the GPU may still read it until that submission is done)
         else if (!(p.zero_copy && p.ahb && zcf_put(p.ahb, p.buf, p.mem, p.hi - p.lo))) {   // (kept for the next pool of its size)
             vk_defer_free_buffer(p.buf, p.mem);   // the AHardwareBuffer goes with the imported memory's last reference
@@ -1091,7 +1092,8 @@ static nvn_hmap g_dsl_need = {.klen = sizeof(VkDescriptorSetLayout)}; static pth
 void vk_dsl_register(VkDescriptorSetLayout l, const VkDescriptorSetLayoutBinding *b, uint32_t n) {   // what one set of this layout takes, by type
     uint32_t *need = calloc(9, sizeof *need);
     for (uint32_t i = 0; i < n; i++) if ((uint32_t)b[i].descriptorType < 9) need[b[i].descriptorType] += b[i].descriptorCount;
-    pthread_mutex_lock(&g_dsl_mu); nvn_hm_put(&g_dsl_need, &l, need); pthread_mutex_unlock(&g_dsl_mu);
+    pthread_mutex_lock(&g_dsl_mu); uint32_t *old = nvn_hm_put(&g_dsl_need, &l, need); pthread_mutex_unlock(&g_dsl_mu);
+    free(old);   // (a non-dispatchable handle may be the same value for two identical layouts: the counts are the same, the older array goes)
 }
 VkDescriptorSet vk_alloc_set(VkDescriptorSetLayout l) {
     vksub_t *s = cur();
