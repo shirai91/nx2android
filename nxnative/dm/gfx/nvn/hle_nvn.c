@@ -173,6 +173,19 @@ NVN(nvnDeviceGetInteger, void, const NVNdevice *d, NVNdeviceInfo what, int *out)
     if (w == 0x67) { *out = 256; return; }
     if (w >= sizeof g_devinfo / sizeof *g_devinfo) { LOG("[RED] nvnDeviceGetInteger unknown item %#x, returning 0", w); *out = 0; return; }
     *out = g_devinfo[w];
+    // DM_NVN_DEVINFO=<item>=<value>[,…] (hex or decimal) overrides table items for one game (env.txt, from the profile's android.tsv): Persona 5 Royal (SDK 13.3.2) sizes a 16x16 RGBA8 linear
+    // render target with item 0x39 and asserts it fits the 0x400 bytes its texture descriptor reserved (RsdxDevice11.cpp line 3262): 128 gives 0x800, so its driver reports 64 or less there
+    static int ovr_n = -1; static unsigned ovr[16][2];
+    if (ovr_n < 0) {
+        ovr_n = 0; const char *e = getenv("DM_NVN_DEVINFO");
+        for (char *p = (char *)e; p && *p && ovr_n < 16; ) {
+            char *q; unsigned long k = strtoul(p, &q, 0), v;
+            if (*q != '=') break;
+            v = strtoul(q + 1, &p, 0); ovr[ovr_n][0] = (unsigned)k; ovr[ovr_n++][1] = (unsigned)v; LOG("[nvn] DM_NVN_DEVINFO: item %#lx = %lu", k, v);
+            if (*p == ',') p++;
+        }
+    }
+    for (int i = 0; i < ovr_n; i++) if (ovr[i][0] == w) *out = (int)ovr[i][1];
     // 0x2E / 0x30, the newest GPU code version the driver runs: the table's 1.14 is SMO's SDK 7 driver, while each SDK's driver runs the code of the GLSLC in the same SDK. A game that compiles
     // at run time checks its GLSLC's version against this range first (Catherine: Full Body, SDK 8.2.1: its GLSLC writes 1.15, main+0x330dcc refused it, no built-in program was compiled
     // and the first uniform lookup read a null program, main+0x3316dc), so the host reports at least the version of the GLSLC the game carries. A game that checks the shaders it ships
