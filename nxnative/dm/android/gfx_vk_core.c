@@ -512,19 +512,46 @@ static int zc_fill(void *at, size_t n, size_t off, void *ctx) {
     memcpy(tmp, at, n); if (!f->map) munmap(tmp, n);
     return mmap(at, n, f->prot, MAP_SHARED | MAP_FIXED, f->fd, (off_t)o) == at ? 0 : -6;
 }
-// lazy: the game runs on, so the pages are replaced under the dirty-page tracker (nvn_dirty_swap: no write lost, 16 MB at a time; 1 = it does not hold them, nothing done) and
-// mapped read-only for it. A pool of one slice is swapped whole or not at all, so a slab's slot (SLAB_POOL_MAX) is never left half mapped when it goes back to its slab
-static int zc_place(void *mem, size_t len, zcfill_t *f, int lazy) { f->prot = lazy ? PROT_READ : PROT_READ | PROT_WRITE; return lazy ? nvn_dirty_swap(mem, len, zc_fill, f) : zc_fill(mem, len, 0, f); }
+// lazy: the game runs on, so the pages are replaced under the dirty-page tracker (nvn_dirty_swap: no write lost, 16 MB at a time; 1 = it does not hold them, nothing done;
+// 2 = the host wrote into them lately, try later) and mapped read-only for it. done: the bytes from mem now on the buffer's pages, also when it failed part way (a later slice).
+// A pool of one slice is swapped whole or not at all, so a slab's slot (SLAB_POOL_MAX) is never left half mapped when it goes back to its slab
+static int zc_place(void *mem, size_t len, zcfill_t *f, int lazy, size_t *done) {
+    f->prot = lazy ? PROT_READ : PROT_READ | PROT_WRITE;
+    if (lazy) return nvn_dirty_swap(mem, len, zc_fill, f, done);
+    int rc = zc_fill(mem, len, 0, f); *done = rc ? 0 : len; return rc;
+}
+// Pages that were a hardware buffer's put back on anonymous memory with their contents, before the buffer is dropped (a lazy pool's swap that failed part way, or an import
+// that failed after the copy): left on the dropped buffer, they would stay pinned and, on a Retroid Pocket 5, uncached for the CPU while the game goes on using the memory
+static void copy_back(uint8_t *mem, uint64_t size) {   // no game write under it: a pool being made, or one the game has removed
+    uint8_t *save = malloc(size); if (save) memcpy(save, mem, size);
+    mmap(mem, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+    if (save) { memcpy(mem, save, size); free(save); }
+}
+static int zc_anon_fill(void *at, size_t n, size_t off, void *ctx) {   // nvn_dirty_swap's fill: anonymous pages, filled, then moved over [at, at+n) read-only in one call
+    (void)off; (void)ctx; uint8_t *tmp = mmap(NULL, n, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (tmp == MAP_FAILED) return -5;
+    memcpy(tmp, at, n);
+    if (mprotect(tmp, n, PROT_READ) || mremap(tmp, n, n, MREMAP_MAYMOVE | MREMAP_FIXED, at) != at) { munmap(tmp, n); return -6; }
+    return 0;
+}
+// [mem, mem+n) back on anonymous pages. lazy: the game is running, so under the tracker as the swap was (nvn_dirty_swap with zc_anon_fill, which may also say try later);
+// → the bytes from mem left on the buffer's pages (0: all back), which mtl_pool_del copies back when the game removes the pool if no later try covered them (vkpool_t left)
+static uint64_t zc_unplace(uint8_t *mem, uint64_t n, int lazy) {
+    if (!n) return 0;
+    if (!lazy) { copy_back(mem, n); return 0; }
+    size_t back = 0; nvn_dirty_swap(mem, n, zc_anon_fill, NULL, &back); return n - back;
+}
 // Zero copy: the pages of [mem, mem+size) become an AHardwareBuffer's, imported as a VkBuffer (a slab's slot for a small pool, or a kept buffer of a freed pool of that size).
-// lazy: a pool given its buffer when the GPU first uses it (pool_back). 0 on success; 1: lazy, and the dirty-page tracker does not hold the pages (nothing done)
+// lazy: a pool given its buffer when the GPU first uses it (pool_back). 0 on success; 1: lazy, and the dirty-page tracker does not hold the pages (nothing done); 2: lazy, and
+// the host wrote into them lately (nothing done, try later). On a failure p->left is the bytes from mem still on a dropped buffer's pages (zc_unplace)
 static int pool_zero_copy(vkpool_t *p, uint8_t *mem, uint64_t size, int lazy) {
-    slab_t *sl; uint32_t si;
+    slab_t *sl; uint32_t si; size_t done = 0;
     if (slab_take(size, &sl, &si)) {
         uint64_t off = (uint64_t)si * sl->slot_bytes; zcfill_t f = {sl->fd, off, sl->map, 0};
-        int rc = zc_place(mem, size, &f, lazy);
+        int rc = zc_place(mem, size, &f, lazy, &done);
         if (!rc) { p->buf = sl->buf; p->mem = VK_NULL_HANDLE; p->ahb = NULL; p->boff = off; p->slab = sl; p->slot = si; p->zero_copy = 1; return 0; }
-        slab_give(sl, si, 0);
-        if (rc != -5 && rc != -6) return rc == 1 ? 1 : -1;   // the tracker's answer, the same for a buffer of its own
+        slab_give(sl, si, 0);   // (one slice: nothing of it was swapped)
+        if (rc != -5 && rc != -6) return rc == 1 || rc == 2 ? rc : -1;   // the tracker's answer, the same for a buffer of its own
         mem_diag_zc(11, "mmap-fixed slab", size, "errno", errno);   // (the old pages are still there: a buffer of its own)
     }
     AHardwareBuffer_Desc d = {(uint32_t)size, 1, 1, AHARDWAREBUFFER_FORMAT_BLOB,
@@ -543,27 +570,28 @@ static int pool_zero_copy(vkpool_t *p, uint8_t *mem, uint64_t size, int lazy) {
     close(sv[0]); close(sv[1]);
     if (nfd < 1) { ZC_DROP(); return -1; }
     // copy the pool's current contents into the buffer through a temporary mapping, then put the buffer's pages at the pool's address
-    zcfill_t f = {fds[0], 0, NULL, 0}; int rc = zc_place(mem, size, &f, lazy);
+    zcfill_t f = {fds[0], 0, NULL, 0}; int rc = zc_place(mem, size, &f, lazy, &done);
     if (rc == -5) mem_diag_zc(5, "mmap-temporary", size, "errno", errno);
     else if (rc == -6) mem_diag_zc(6, "mmap-fixed", size, "errno", errno);
     for (int i = 0; i < nfd; i++) close(fds[i]);
-    if (rc) { ZC_DROP(); return rc == 1 ? 1 : -1; }
+    if (rc) { p->left = zc_unplace(mem, done, lazy); ZC_DROP(); return rc == 1 || rc == 2 ? rc : -1; }   // (a slice swapped before the failing one goes back first)
 #undef ZC_DROP
     if (reuse) { p->buf = re.buf; p->mem = re.mem; p->ahb = ahb; p->zero_copy = 1; return 0; }   // imported already
     VkAndroidHardwareBufferPropertiesANDROID ap = {VK_STRUCTURE_TYPE_ANDROID_HARDWARE_BUFFER_PROPERTIES_ANDROID};
     VkExternalMemoryBufferCreateInfo eb = {VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO, NULL, VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID};
     VkBufferCreateInfo bi = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, &eb, 0, size, POOL_USAGE, VK_SHARING_MODE_EXCLUSIVE};
     VkResult vr = vkGetAndroidHardwareBufferPropertiesANDROID(V.dev, ahb, &ap);
-    if (vr) { mem_diag_zc(7, "vkGetAndroidHardwareBufferPropertiesANDROID", size, "VkResult", vr); AHardwareBuffer_release(ahb); return -2; }
-    vr = vkCreateBuffer(V.dev, &bi, NULL, &p->buf);
-    if (vr) { mem_diag_zc(8, "vkCreateBuffer", size, "VkResult", vr); p->buf = VK_NULL_HANDLE; AHardwareBuffer_release(ahb); return -2; }
-    VkMemoryDedicatedAllocateInfo ded = {VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO, NULL, VK_NULL_HANDLE, p->buf};   // the driver requires a dedicated allocation for an imported AHardwareBuffer
-    VkImportAndroidHardwareBufferInfoANDROID imp = {VK_STRUCTURE_TYPE_IMPORT_ANDROID_HARDWARE_BUFFER_INFO_ANDROID, &ded, ahb};
-    VkMemoryAllocateInfo ai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, &imp, ap.allocationSize, vk_mem_type(ap.memoryTypeBits, 0, 0)};
-    vr = vkAllocateMemory(V.dev, &ai, NULL, &p->mem);
-    if (!vr) { vr = vkBindBufferMemory(V.dev, p->buf, p->mem, 0); if (vr) mem_diag_zc(10, "vkBindBufferMemory", size, "VkResult", vr); }
-    else mem_diag_zc(9, "vkAllocateMemory", size, "VkResult", vr);
-    if (vr) { vkDestroyBuffer(V.dev, p->buf, NULL); p->buf = VK_NULL_HANDLE; AHardwareBuffer_release(ahb); return -2; }
+    if (vr) mem_diag_zc(7, "vkGetAndroidHardwareBufferPropertiesANDROID", size, "VkResult", vr);
+    else if ((vr = vkCreateBuffer(V.dev, &bi, NULL, &p->buf))) { mem_diag_zc(8, "vkCreateBuffer", size, "VkResult", vr); p->buf = VK_NULL_HANDLE; }
+    else {
+        VkMemoryDedicatedAllocateInfo ded = {VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO, NULL, VK_NULL_HANDLE, p->buf};   // the driver requires a dedicated allocation for an imported AHardwareBuffer
+        VkImportAndroidHardwareBufferInfoANDROID imp = {VK_STRUCTURE_TYPE_IMPORT_ANDROID_HARDWARE_BUFFER_INFO_ANDROID, &ded, ahb};
+        VkMemoryAllocateInfo ai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, &imp, ap.allocationSize, vk_mem_type(ap.memoryTypeBits, 0, 0)};
+        if ((vr = vkAllocateMemory(V.dev, &ai, NULL, &p->mem))) { mem_diag_zc(9, "vkAllocateMemory", size, "VkResult", vr); p->mem = VK_NULL_HANDLE; }
+        else if ((vr = vkBindBufferMemory(V.dev, p->buf, p->mem, 0))) { mem_diag_zc(10, "vkBindBufferMemory", size, "VkResult", vr); vkFreeMemory(V.dev, p->mem, NULL); p->mem = VK_NULL_HANDLE; }   // (as slab_new)
+        if (vr) { vkDestroyBuffer(V.dev, p->buf, NULL); p->buf = VK_NULL_HANDLE; }
+    }
+    if (vr) { p->left = zc_unplace(mem, size, lazy); AHardwareBuffer_release(ahb); return -2; }   // the pool's pages back off the buffer before it goes
     p->ahb = ahb; p->zero_copy = 1;
     return 0;
 }
@@ -641,11 +669,7 @@ static void pool_copy_back(vkpool_t *p) {
             if (own) close(fd);
             if (!ok) { static int said; if (!said++) VKLOG("[RED] memory pool %p +%#llx inside another pool: its pages could not go back to that pool's buffer (errno %d): anonymous memory, which the outer pool's next remap replaces", (void *)mem, (unsigned long long)n, errno); }
         }
-        if (!ok) {
-            uint8_t *save = malloc(n); if (save) memcpy(save, mem, n);
-            mmap(mem, n, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
-            if (save) { memcpy(mem, save, n); free(save); }
-        }
+        if (!ok) copy_back(mem, n);
         a = e;
     }
 }
@@ -704,13 +728,15 @@ static int zc_uncached(void) {
 // DM_VK_ZEROCOPY_MAX_MB=<n>: pools bigger than n MB are copied, not zero-copy, and kept whole (a copied pool takes no hardware buffer, so no chunks). The Legion Y700
 // 2023's gralloc aborts the process (no error returned) allocating a hardware buffer for Unicorn Overlord's 860 MB pool, while its pools up to 250 MB are fine
 static int zc_over(uint64_t size) { static uint64_t m = 1; if (m == 1) { const char *e = getenv("DM_VK_ZEROCOPY_MAX_MB"); m = e && atoi(e) > 0 ? (uint64_t)atoi(e) << 20 : 0; } return m && size > m; }
+static int zc_off(void) { static int v = -1; if (v < 0) v = getenv("DM_VK_NO_ZEROCOPY") != NULL; return v; }   // DM_VK_NO_ZEROCOPY (set at all): every pool copied
 void mtl_pool_add(const void *mem, uint64_t size) {
     vk_init();
     if (!size) return;
     uint64_t a = (uint64_t)(uintptr_t)mem; int whole = ((a | size) & 0xfff) || zc_over(size);   // copied in one piece
     uint64_t c = whole ? size : ZC_CHUNK; int m = zc_lazy_mode();
     static uint64_t pg; if (!pg) pg = (uint64_t)getpagesize();   // (a 16 KB-page kernel: a pool only 4 KB-aligned is not swapped in place, it is copied as before)
-    int lazy = !whole && !((a | size) & (pg - 1)) && m && (m >= 2 || (size > c ? m == 1 : zc_uncached())) && nvn_dirty_tracked(mem, size);
+    // (zero copy off: no lazy pools, and no uncached-read check either)
+    int lazy = !whole && !zc_off() && !((a | size) & (pg - 1)) && m && (m >= 2 || (size > c ? m == 1 : zc_uncached())) && nvn_dirty_tracked(mem, size);
     for (uint64_t o = 0; o < size; o += c) pool_add_one((const uint8_t *)mem + o, size - o < c ? size - o : c, a, a + size, lazy);
     if (size > c) VKLOG("memory pool %p +%#llx: %llu chunks of at most %#llx", mem, (unsigned long long)size, (unsigned long long)((size + c - 1) / c), c);
 }
@@ -753,7 +779,7 @@ static void pool_add_one(const void *mem, uint64_t size, uint64_t base, uint64_t
     for (int j = 0; j < g_npool && !inner; j++) inner = g_pool[j].zero_copy && g_pool[j].base != base && g_pool[j].lo < p->hi && g_pool[j].hi > p->lo;
     pthread_rwlock_unlock(&g_pool_mu);
     if (!inner) pthread_mutex_unlock(&g_nest_mu);
-    int zc = ((uintptr_t)mem & 0xfff) || (size & 0xfff) ? -3 : getenv("DM_VK_NO_ZEROCOPY") ? -4 : zc_over(end - base) ? -5 : lazy ? (p->lazy = 1, 0) : pool_zero_copy(p, (uint8_t *)mem, size, 0);
+    int zc = ((uintptr_t)mem & 0xfff) || (size & 0xfff) ? -3 : zc_off() ? -4 : zc_over(end - base) ? -5 : lazy ? (p->lazy = 1, 0) : pool_zero_copy(p, (uint8_t *)mem, size, 0);
     if (zc) {
         static int said; if (!said++) VKLOG("[RED] memory pool %p +%#llx could not be zero-copy (%d): a GPU copy is refreshed before each submission (slow)", mem, (unsigned long long)size, zc);
         const char *e = getenv("DM_VK_POOL_CACHED"); int cached = e && atoi(e);
@@ -780,8 +806,9 @@ static void pool_add_one(const void *mem, uint64_t size, uint64_t base, uint64_t
 }
 // A lazy pool given its buffer, the first time vk_pool_of finds it. serial: the pool's, read with the entry under the read lock. The buffer is made with g_lazy_mu held and the
 // entry's own lock free (lookups go on), and put in under the write lock, as pool_add_one does. A failed try is made again a second later, up to LAZY_TRIES in all (an
-// allocation refused under memory pressure may pass later); meanwhile, and after the last, the pool has no buffer and the draws that use it are skipped ([RED] lines).
-// → 0: backed; 1: the entry holds another pool now (look again); -1: no buffer
+// allocation refused under memory pressure may pass later); meanwhile, and after the last, the pool has no buffer, and the draws that use it are drawn with a zero buffer
+// or skipped ([RED] lines). A pool the host wrote into in the last second (nvn_dirty_swap's 2: a file read may still be writing into it) is tried again a second later
+// without counting as a failed try. → 0: backed; 1: the entry holds another pool now (look again); -1: no buffer
 enum { LAZY_TRIES = 8 };
 static pthread_mutex_t g_lazy_mu = PTHREAD_MUTEX_INITIALIZER;   // one pool backed at a time; mtl_pool_del takes it first, so no entry moves while one is backed
 static int pool_back(vkpool_t *p, uint64_t serial) {
@@ -798,12 +825,21 @@ static int pool_back(vkpool_t *p, uint64_t serial) {
         vkpool_t q; memset(&q, 0, sizeof q);
         rc = pool_zero_copy(&q, (uint8_t *)(uintptr_t)lo, size, 1);
         pthread_rwlock_wrlock(&g_pool_mu);
-        if (!rc) { p->buf = q.buf; p->mem = q.mem; p->ahb = q.ahb; p->boff = q.boff; p->slab = q.slab; p->slot = q.slot; p->zero_copy = 1; __atomic_store_n(&p->lazy, 0, __ATOMIC_RELEASE); }
-        else { gave_up = rc == 1 || ++p->lazy_n >= LAZY_TRIES; p->lazy_at = pool_ns() + 1000000000ull; if (gave_up) __atomic_store_n(&p->lazy, 2, __ATOMIC_RELEASE); }   // (1: the tracker will not hold it later either)
+        if (!rc) {   // (the whole pool on the new buffer: pages an earlier try left on a dropped one included)
+            p->buf = q.buf; p->mem = q.mem; p->ahb = q.ahb; p->boff = q.boff; p->slab = q.slab; p->slot = q.slot; p->zero_copy = 1; p->left = 0; __atomic_store_n(&p->lazy, 0, __ATOMIC_RELEASE);
+            __atomic_fetch_add(&g_pool_gen, 1, __ATOMIC_RELEASE);   // a descriptor set memo built with vk_zero_buffer() for it is not reused (set_memo_get keys on vk_pool_gen)
+        } else {
+            if (q.left > p->left) p->left = q.left;   // from mem, so the longest covers the others
+            if (rc == 2) p->lazy_at = pool_ns() + 1000000000ull;   // written by the host lately: later, and not a failed try
+            else { gave_up = rc == 1 || ++p->lazy_n >= LAZY_TRIES; p->lazy_at = pool_ns() + 1000000000ull; if (gave_up) __atomic_store_n(&p->lazy, 2, __ATOMIC_RELEASE); }   // (1: the tracker will not hold it later either)
+        }
         uint32_t tries = p->lazy_n;
         pthread_rwlock_unlock(&g_pool_mu);
-        if (rc) { static int n; if (n++ < 8 || gave_up) said = rc; rc = -1; if (said) VKLOG("[RED] memory pool %#llx +%#llx: no buffer when the GPU first used it (%d%s), try %u; %s", (unsigned long long)lo,
-                  (unsigned long long)size, said, said == 1 ? ": the dirty-page tracker does not hold its pages" : "", tries ? tries : 1, gave_up ? "no more tries: draws that use it are skipped" : "tried again in a second, its draws skipped meanwhile"); }
+        if (rc == 2) { static uint64_t n; uint64_t k = ++n; if (k <= 8 || !(k & (k - 1))) VKLOG("memory pool %#llx +%#llx: the host wrote into it in the last second, so its buffer is made a second later (drawn with a zero buffer or skipped meanwhile; %llu so far)",
+                                                                                      (unsigned long long)lo, (unsigned long long)size, (unsigned long long)k); rc = -1; }
+        else if (rc) { static int n; if (n++ < 8 || gave_up) said = rc; rc = -1; if (said) VKLOG("[RED] memory pool %#llx +%#llx: no buffer when the GPU first used it (%d%s), try %u; %s", (unsigned long long)lo,
+                  (unsigned long long)size, said, said == 1 ? ": the dirty-page tracker does not hold its pages" : "", tries ? tries : 1, gave_up ? "no more tries: draws that use it are drawn with a zero buffer or skipped" :
+                  "tried again in a second, its draws drawn with a zero buffer or skipped meanwhile"); }
         else __atomic_fetch_add(&g_lazy_bytes, size, __ATOMIC_RELAXED);
     } else rc = st < 0 ? 1 : st ? -1 : 0;   // removed, waiting or failed, or backed by another thread meanwhile
     pthread_mutex_unlock(&g_lazy_mu);
@@ -824,6 +860,7 @@ void mtl_pool_del(const void *mem) {
         if (!inner) pthread_mutex_unlock(&g_nest_mu);
         uint64_t t0 = pool_ns();
         if (p.zero_copy) pool_copy_back(&p);
+        else if (p.left) copy_back((uint8_t *)(uintptr_t)p.lo, p.left);   // a lazy pool's pages that a failed try left on a dropped buffer (zc_unplace)
         if (inner) pthread_mutex_unlock(&g_nest_mu);
         free(p.baseline);
         { void vk_tbuf_drop_pool(uint64_t); vk_tbuf_drop_pool(p.serial); }   // the texel buffer views over its buffer (gfx_vk_tex.c), before the buffer itself goes or is kept

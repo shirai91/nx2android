@@ -161,11 +161,12 @@ uint64_t nvn_dirty_released(void) { return atomic_load(&g_released); }
 // A range the host prepared a write into in the last DEFRAG_QUIET_MS is left for later: the host's own writes (a file read into a pool, which the game does for its
 // streaming) are system calls the kernel fails with EFAULT on a page made read-only under them; Xenoblade Chronicles 3 then inflated a short read and crashed in zlib
 enum { DEFRAG_MP = 4000, DEFRAG_QUIET_MS = 1000 };
+static int written_lately(range_t *r) { return (mach_absolute_time() - atomic_load(&r->prep)) * g_tb.numer / g_tb.denom < (uint64_t)DEFRAG_QUIET_MS * 1000000ull; }
 int nvn_dirty_defrag(int (*remap)(void *mem, size_t len)) {
     int done = 0, n = atomic_load(&g_nr);
     for (int i = 0; i < n; i++) {
         range_t *r = rg(i); if (!live_at(i) || atomic_load(&r->nmp) < DEFRAG_MP || r->mem != r->base) continue;   // a pool starting mid-page shares that page: left alone
-        if ((mach_absolute_time() - atomic_load(&r->prep)) * g_tb.numer / g_tb.denom < (uint64_t)DEFRAG_QUIET_MS * 1000000ull) continue;
+        if (written_lately(r)) continue;
         size_t np = (r->end - r->base) >> g_shift;
         uint8_t *was = malloc(np); if (!was) continue;
         for (size_t p = 0; p < np; p++) {   // every page BUSY; was = its state before
@@ -194,11 +195,17 @@ int nvn_dirty_defrag(int (*remap)(void *mem, size_t len)) {
 // BUSY page is the module's to let through), and the protected pages keep their protection; a run that cannot be made writable again stays read-only as protected (its next
 // write faults and is let through as any other), so a page whose state is NONE is never read-only. A slice at a time, so a page stays BUSY for one slice's copy, not the
 // span's: every wait on a BUSY page gives up after BUSY_WAIT_MS, and a game write that gives up is reported as a crash.
-// → 0; fill's error, or -1 (a page stayed BUSY past BUSY_WAIT_MS, mprotect failed, the span is not whole host pages), the slices before it done; 1 when no registered range holds the span (nothing done)
+// A range the host prepared a write into in the last DEFRAG_QUIET_MS is left for later, as in nvn_dirty_defrag: a system call that prepared its pages before they went BUSY
+// may still be writing, and fails with EFAULT on a page made read-only under it. Checked with the slice's pages BUSY: a prep_write after that waits for them (release_pages).
+// → 0; 2 when the host wrote into the range lately (try later); fill's error, or -1 (a page stayed BUSY past BUSY_WAIT_MS, mprotect failed, the span is not whole host pages);
+// 1 when no registered range holds the span (nothing done). done (may be NULL): the bytes from mem whose slices were swapped before it stopped, which keep the new pages
+// (a caller that drops them maps those slices back first: gfx_vk_core.c zc_unplace)
 enum { SWAP_SLICE = 16 << 20 };
-int nvn_dirty_swap(void *mem, size_t len, int (*fill)(void *at, size_t n, size_t off, void *ctx), void *ctx) {
+int nvn_dirty_swap(void *mem, size_t len, int (*fill)(void *at, size_t n, size_t off, void *ctx), void *ctx, size_t *done) {
+    if (done) *done = 0;
     if (!g_pg || (((uintptr_t)mem | len) & (g_pg - 1))) return -1;   // whole host pages only
     range_t *r = find_span((uintptr_t)mem, len); if (!r) return 1;
+    if (written_lately(r)) return 2;   // (checked again below with each slice BUSY; this spares the first slice's waits)
     size_t sp = (len < SWAP_SLICE ? len : SWAP_SLICE) >> g_shift; int rc = 0;
     uint8_t *was = malloc(sp); if (!was) return -1;
     for (size_t off = 0; off < len && !rc; off += sp << g_shift) {
@@ -209,6 +216,7 @@ int nvn_dirty_swap(void *mem, size_t len, int (*fill)(void *at, size_t n, size_t
             if (st == PG_BUSY) { if (!busy_wait(r, p0 + k)) rc = -1; continue; }
             if (atomic_compare_exchange_strong(&r->state[p0 + k], &st, PG_BUSY)) was[k++] = st;
         }
+        if (!rc && written_lately(r)) rc = 2;
         if (rc) { for (size_t j = 0; j < k; j++) atomic_store(&r->state[p0 + j], was[j]); break; }
         rc = mp(a, n, PROT_READ) ? -1 : fill((void *)a, n, off, ctx);   // (a failed mprotect may have made part of it read-only: the writable runs are made writable again below)
         for (size_t j = 0; j < np; ) {
@@ -218,6 +226,7 @@ int nvn_dirty_swap(void *mem, size_t len, int (*fill)(void *at, size_t n, size_t
             j = q;
         }
         for (size_t j = 0; j < np; j++) { if (was[j] == PG_NONE) stamp_page(r, p0 + j); atomic_store(&r->state[p0 + j], was[j]); }
+        if (!rc && done) *done = off + n;
     }
     free(was);
     return rc;
