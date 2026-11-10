@@ -60,7 +60,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [ ] Monster Train 2 · `010051701FB46000` · profile here · 60 fps with 1.1.1 · only the first Monster Train is on mobile
 - [x] NEO: The World Ends with You · `010043B013C5C000`
 - [ ] NieR:Automata The End of YoRHa Edition · `010056B015FE8000` · upstream profile · 60 fps with 1.0.3
-- [ ] OCTOPATH TRAVELER · `010057D006492000` · upstream profile
+- [ ] OCTOPATH TRAVELER · `010057D006492000` · profile here
 - [x] Octopath Traveler 0 · `01005270232F2000`
 - [ ] Octopath Traveler II · `0100A3501946E000` · upstream profile · 60 fps with 1.1.1
 - [x] Paper Mario: The Origami King · `0100A3900C3E2000`

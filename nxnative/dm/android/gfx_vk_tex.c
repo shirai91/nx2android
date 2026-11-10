@@ -254,7 +254,13 @@ void vk_tex_prepare(VkCommandBuffer cb, vkimg_t *im) {
     VkMemoryBarrier mb = {VK_STRUCTURE_TYPE_MEMORY_BARRIER, NULL, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT};
     vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &mb, 0, NULL, 0, NULL);
 }
-// Upload a packaged texture from guest memory: each level and layer deswizzled into scratch memory, copied in by the upload command buffer
+// Upload a packaged texture from guest memory: each level and layer deswizzled into scratch memory, copied in by the upload command buffer.
+// A texture of a sparse virtual pool (hle_nvn.c: OCTOPATH TRAVELER streams each texture into a virtual pool of its own and maps its tiles from physical pools) has no memory at its
+// address on Android: private memory cannot be aliased on Linux (darwin_compat.c vm_remap), so its bytes are read through the pool's page table (nvn_sparse_copy, unmapped pages as 0)
+// and uploaded again when a mapping in its range changes or the CPU writes a physical page behind it (nvn_sparse_since), as the Mac's replay does
+int nvn_sparse_pool(const void *pool); uint64_t nvn_sparse_gen(void); uint64_t nvn_sparse_copy(const void *pool, void *dst, uint64_t a, uint64_t n);
+int nvn_sparse_since(const void *pool, uint64_t a, uint64_t n, uint64_t gen, uint64_t stamp); void nvn_sparse_protect(const void *pool, uint64_t a, uint64_t n);
+static int sparse_tex(const tex_t *t) { return t->pool && nvn_sparse_pool(t->pool); }
 uint64_t g_pkg_n, g_pkg_bytes, g_pkg_ns;   // packaged texture uploads: count, bytes, CPU time (the replay's per-frame line)
 static void pkg_upload_(vkimg_t *im, const tex_t *t, const vkfmt_t *f);
 static uint64_t pkg_hash(const uint8_t *m, size_t n) {   // FNV-1a over 8-byte words
@@ -276,27 +282,39 @@ static void pkg_upload_(vkimg_t *im, const tex_t *t, const vkfmt_t *f) {
     if (im->packaged < 100) im->packaged++;
     VkCommandBuffer cb = vk_upload_cmd();
     if (im->layout != VK_IMAGE_LAYOUT_GENERAL) vk_tex_prepare(cb, im);
-    nvn_dirty_protect(t->mem, t->L.size);
-    im->pkg_stamp = nvn_dirty_now(); im->pkg_span = nvn_dirty_span(t->mem, t->L.size); im->pkg_seen = im->pkg_stamp;
-    im->pkg_mem = t->mem; im->pkg_len = t->L.size; im->pkg_released = 0; im->pkg_hash = pkg_hash(t->mem, t->L.size);
+    const uint8_t *mem = t->mem; uint8_t *copy = NULL;
+    if ((im->pkg_sparse = sparse_tex(t))) {   // through the page table (see above); its physical pages stay protected, so no sweep releases them (pkg_mem NULL)
+        im->pkg_vgen = nvn_sparse_gen(); nvn_sparse_protect(t->pool, (uint64_t)(uintptr_t)t->mem, t->L.size); im->pkg_stamp = nvn_dirty_now(); im->pkg_seen = im->pkg_stamp;
+        im->pkg_span = NULL; im->pkg_mem = NULL; im->pkg_len = 0; im->pkg_released = 0;
+        if (!(copy = malloc(t->L.size))) return;
+        uint64_t miss = nvn_sparse_copy(t->pool, copy, (uint64_t)(uintptr_t)t->mem, t->L.size); mem = copy;
+        { static int n; const char *e = getenv("DM_VK_LOG_SPARSE"); if (e && atoi(e) && n < 400) { n++;   // which sparse textures are read, and how much of them was not mapped yet
+            VKLOG("sparse upload: serial %llu %ux%ux%u format %#x levels %u flags %#x size %#llx mem %p pool %p tileH %u: %#llx bytes not mapped%s", (unsigned long long)t->serial, t->d.width, t->d.height,
+                  t->d.depth, t->d.format, im->levels, t->d.flags, (unsigned long long)t->L.size, (const void *)t->mem, t->pool, t->L.tileH, (unsigned long long)miss, im->packaged > 1 ? " (again)" : ""); } }
+    } else {
+        nvn_dirty_protect(t->mem, t->L.size);
+        im->pkg_stamp = nvn_dirty_now(); im->pkg_span = nvn_dirty_span(t->mem, t->L.size); im->pkg_seen = im->pkg_stamp;
+        im->pkg_mem = t->mem; im->pkg_len = t->L.size; im->pkg_released = 0; im->pkg_hash = pkg_hash(t->mem, t->L.size);
+    }
     int linear = (t->d.flags & (NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET)) != 0;
     unsigned bw = f->bw ? f->bw : 1, bh = f->bh ? f->bh : 1, bpb = f->bpb;
-    if (!bpb) { VKRED_ONCE(12, "packaged texture format %#x has no block size", t->d.format); return; }
+    if (!bpb) { free(copy); VKRED_ONCE(12, "packaged texture format %#x has no block size", t->d.format); return; }
     for (unsigned lv = 0; lv < im->levels; lv++) {
         uint32_t w = im->w >> lv ? im->w >> lv : 1, h = im->h >> lv ? im->h >> lv : 1, z = im->d >> lv ? im->d >> lv : 1;
         uint32_t bx = (w + bw - 1) / bw, by = (h + bh - 1) / bh; size_t pitch = (size_t)bx * bpb, slab = pitch * by * z;
         for (unsigned ly = 0; ly < im->layers; ly++) {
             VkBuffer sb; VkDeviceSize so; uint8_t *blocks = f->dec ? malloc(slab) : NULL, *dst = blocks ? blocks : vk_scratch(slab, 16, &sb, &so);
-            if (f->dec && !blocks) return;
+            if (f->dec && !blocks) { free(copy); return; }
             if (linear) {   // linear storage: rows of the texture's stride, one level, one layer
                 size_t stride = t->d.stride ? t->d.stride : pitch;
-                for (uint32_t y = 0; y < by * z; y++) memcpy(dst + y * pitch, t->mem + (size_t)y * stride, pitch);
-            } else if (nvn_deswizzle(&t->d, lv, ly, t->mem, dst, pitch)) { free(blocks); VKRED_ONCE(13, "deswizzle refused texture format %#x target %d", t->d.format, t->d.target); return; }
+                for (uint32_t y = 0; y < by * z; y++) memcpy(dst + y * pitch, mem + (size_t)y * stride, pitch);
+            } else if (nvn_deswizzle(&t->d, lv, ly, mem, dst, pitch)) { free(blocks); free(copy); VKRED_ONCE(13, "deswizzle refused texture format %#x target %d", t->d.format, t->d.target); return; }
             if (blocks) { dst = vk_scratch((size_t)w * h * z * f->dbpp, 16, &sb, &so); bc_decode(f, blocks, pitch, w, h, z, dst); free(blocks); }   // (BC the device lacks)
             VkBufferImageCopy r = {so, 0, 0, {im->aspect & VK_IMAGE_ASPECT_COLOR_BIT ? VK_IMAGE_ASPECT_COLOR_BIT : VK_IMAGE_ASPECT_DEPTH_BIT, lv, ly, 1}, {0, 0, 0}, {w, h, z}};
             vkCmdCopyBufferToImage(cb, sb, im->img, VK_IMAGE_LAYOUT_GENERAL, 1, &r);
         }
     }
+    free(copy);
 }
 static int packaged_tex(const tex_t *t);
 static int cpu_content_tex(const tex_t *t, const vkfmt_t *f);
@@ -376,11 +394,12 @@ static vkimg_t *vk_tex_(const tex_t *t) {
         if (!im->packaged) { im->packaged = 1; pkg_upload(im, t, f); }
         else {
             uint64_t now = nvn_dirty_now();
-            if (now != im->pkg_seen && nvn_dirty_since_span(im->pkg_span, t->mem, t->L.size, im->pkg_stamp)) {   // pages written since the upload
+            if (im->pkg_sparse) { if (nvn_sparse_since(t->pool, (uint64_t)(uintptr_t)t->mem, t->L.size, im->pkg_vgen, im->pkg_stamp)) pkg_upload(im, t, f); }   // mapped or written since
+            else if (now != im->pkg_seen && nvn_dirty_since_span(im->pkg_span, t->mem, t->L.size, im->pkg_stamp)) {   // pages written since the upload
                 // The GPU wrote the image since (a compute shader's image stores, a copy, a render) and its storage still holds the bytes of the upload: the writes were around
                 // it on shared pages, and an upload would put the CPU's bytes over the GPU's. Monster Hunter Rise's spot light profiles (512x1x64 R16F, written by a compute
                 // shader into memory the game had zeroed) were uploaded again as zeros at presents 60 and 1079: every spot light's profile read 0 and the faces lit only by
-                // those lights (the character maker, cutscenes) came out black
+                // those lights (the character maker, cutscenes) came out black. A sparse texture has no memory at t->mem to hash (it takes the branch above)
                 if (im->gpu_w && pkg_hash(t->mem, t->L.size) == im->pkg_hash) { nvn_dirty_protect(t->mem, t->L.size); im->pkg_stamp = nvn_dirty_now(); im->pkg_released = 0;
                     static int nl; if (nl++ < 16) VKLOG("texture %ux%u nvn format %#x at %p: its pages were written, its bytes are as uploaded and the GPU wrote it: kept", t->d.width, t->d.height, t->d.format, (const void *)t->mem); }
                 else pkg_upload(im, t, f);
@@ -502,7 +521,7 @@ static int cpu_content_tex(const tex_t *t, const vkfmt_t *f) {
     return 1;
 }
 static int packaged_tex(const tex_t *t) {
-    if (t->has_layout || linear_tex(t)) return 1;
+    if (t->has_layout || linear_tex(t) || sparse_tex(t)) return 1;
     pthread_mutex_lock(&g_cw_mu); int r = nvn_hm_get(&g_cpu_written, &t->serial) != NULL; pthread_mutex_unlock(&g_cw_mu);
     return r;
 }
