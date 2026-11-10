@@ -151,11 +151,17 @@ The commits before 2026-10-28 predate the rule.
 
 The Vulkan driver pipeline cache (`vk_pipeline_cache.bin` under `DM_ROOT`) now has a
 versioned envelope containing the device, driver, API and UUID identity, a renderer
-cache ABI, a bounded length and SHA-256 digest. Legacy raw caches and mismatched or
-corrupt files are ignored before the driver sees them; a driver rejection retries
-with an empty cache. Pipeline creation marks the cache dirty even when its size
-stays unchanged. Saves serialize the snapshot and publish a private temporary file
-only after successful writes and synchronization; failed or incomplete snapshots
-remain dirty for a later retry. `DM_VK_NOPCACHE` still means start empty, while
-allowing newly built pipelines to be saved. Bump `PCACHE_ABI` when changing the
-renderer's persistent cache contract.
+cache ABI, a bounded length and SHA-256 digest. A legacy raw cache is accepted only
+when its first 32 bytes match Vulkan's version-one device and pipeline-cache UUID
+header, then upgraded to the envelope on the next save even without new pipelines.
+Legacy files have no digest or extended identity, so they retain only those older
+compatibility checks until migration. Mismatched or corrupt envelopes start empty;
+a driver rejection retries empty, and failure to create that cache is logged.
+Pipeline creation marks the cache dirty even when its size stays unchanged. A
+complete snapshot with the same size and SHA-256 as the last accepted load or
+successful save skips publication. Other saves use one fixed `.tmp` file under the
+I/O lock, so the next write reuses an interrupted save's staging file. Publication
+requires successful writes and synchronization; failed or incomplete snapshots and
+pending legacy migrations remain eligible for retry. `DM_VK_NOPCACHE` still means
+start empty, while allowing newly built pipelines to be saved. Bump `PCACHE_ABI`
+when changing the renderer's persistent cache contract.
