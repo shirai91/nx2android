@@ -1,0 +1,9 @@
+# NieR:Automata The End of YoRHa Edition 1.0.3, PlatinumGames / NVN, SDK 12.3.9.
+# Tested 2026-11-08 through 2026-11-10: movies, title, menus and save-loaded Desert Zone.
+# CPU-filled colour LUT upload and geometry storage bindings restore title/map materials.
+# Missing triangles and bright background regions remain; New Game progression,
+# gameplay saving and long-session stability are unverified. See docs/NIER_AUTOMATA_ANDROID_PORT.md.
+status	boots
+tested	v131072 Android / Turnip
+package	org.nx2a.nierautomata
+orientation	landscape
