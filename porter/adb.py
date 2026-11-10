@@ -1,6 +1,6 @@
 # adb for installing a port: the device list, installing the APK, and pushing the data pack in short transfers. Big pushes over one adb connection wedge adbd on some
 # devices (a 6 GB RomFS), so small files go in batches (tar archives of up to 64 MB when there are many) and big files in 64 MB pieces that the device joins; a rerun resumes (files already at their size are skipped,
-# pieces already in place are kept). The port's own outputs are also compared by MD5: a rewriter cut changes a module without changing its size, and Unpacking's sdk cuts never
+# pieces are kept if their checksums match). The port's own outputs are also compared by MD5: a rewriter cut changes a module without changing its size, and Unpacking's sdk cuts never
 # reached the device until they were. Pushes use -Z: compressing them took adbd down.
 import contextlib, hashlib, os, re, shlex, shutil, subprocess, tarfile, tempfile, time
 from pathlib import Path
@@ -225,10 +225,10 @@ class Adb:
             if sz.isdigit(): have[name[2:] if name.startswith('./') else name] = int(sz)
         return have
 
-    def remote_md5(self, rdir, rels):   # {relative path: MD5} of those files under rdir (missing ones left out)
+    def remote_md5(self, rdir, rels, **kw):   # {relative path: MD5} of those files under rdir (missing ones left out)
         out, q = {}, shlex.quote(rdir)
         for i in range(0, len(rels), 64):
-            for ln in self.shell(f'cd {q} && md5sum ' + ' '.join(shlex.quote(r) for r in rels[i:i + 64]) + ' 2>/dev/null; true').splitlines():
+            for ln in self.shell(f'cd {q} && md5sum ' + ' '.join(shlex.quote(r) for r in rels[i:i + 64]) + ' 2>/dev/null; true', **kw).splitlines():
                 h, _, name = ln.partition('  ')
                 if len(h) == 32: out[name] = h
         return out
@@ -298,7 +298,14 @@ class Adb:
         pdir = f'{os.path.dirname(dst)}/.dmpart-{hashlib.sha1(dst.encode()).hexdigest()[:12]}'   # one piece folder per file: a resumed push finds its own pieces
         self.shell(f'mkdir -p {shlex.quote(pdir)}'); pieces = self.remote_sizes(pdir)
         same = [f'{k:05d}' for k in range(n) if pieces.get(f'{k:05d}') == min(chunk, size - k * chunk)]
-        md5 = self.remote_md5(pdir, same) if same else {}   # a previous port can leave pieces of another source at exactly these sizes
+        md5 = {}
+        batch = max(1, min(8, (256 << 20) // chunk))
+        for i in range(0, len(same), batch):
+            try:
+                md5.update(self.remote_md5(pdir, same[i:i + batch], timeout=min(self.timeout, 120), retries=1))
+            except AdbError as e:
+                self.log(f'{local.name}: could not verify retained pieces ({e}); sending the unverified pieces again')
+                break   # a slow device should not pay another checksum timeout for every remaining batch
         with tempfile.TemporaryDirectory(prefix='nx2a_push_') as t, open(local, 'rb') as f:
             for k in range(n):
                 want, name = min(chunk, size - k * chunk), f'{k:05d}'
@@ -313,6 +320,11 @@ class Adb:
             if os.fstat(f.fileno()).st_size != size: raise AdbError(f'{local.name}: source changed size during the push; try again')
         q, qp = shlex.quote(dst), shlex.quote(pdir)   # join the pieces in order, then check the size
         # Join only this source's pieces: a shorter file or a different chunk size may leave old tail pieces in the same folder.
-        self.shell(f'rm -f {q} && i=0 && while [ "$i" -lt {n} ]; do x=$(printf "%05d" "$i"); cat {qp}/"$x" >> {q} || exit 1; i=$((i + 1)); done && rm -rf {qp}', timeout=1200)
+        for i in range(0, n, 256):   # keep each command short even when there are many pieces
+            names = ' '.join(f'{k:05d}' for k in range(i, min(i + 256, n)))
+            start = f'rm -f {q} && ' if i == 0 else ''
+            # Retrying an interrupted append could duplicate data; a later push starts the join over.
+            self.shell(f'{start}(cd {qp} && cat {names}) >> {q}', timeout=1200, retries=1)
         got = self.shell(f'stat -c %s {q}').strip()
         if got != str(size): raise AdbError(f'{local.name}: {got} bytes on the device, expected {size}')
+        self.shell(f'rm -rf {qp}')

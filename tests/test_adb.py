@@ -1,5 +1,5 @@
 # porter/adb.py without a device: the shell's answers are made up (python -m unittest discover tests).
-import hashlib, shlex, shutil, subprocess, sys, tarfile, tempfile, unittest
+import hashlib, os, shlex, shutil, subprocess, sys, tarfile, tempfile, unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -94,12 +94,13 @@ class PushTars(unittest.TestCase):
             with self.assertRaisesRegex(AdbError, 'unpacking'): self.FakeAdb(Path(t) / 'dev', 'tar: short read\nrc=1').push_tars(p.parent, '/sdcard/x', [('a', p, 1)])
 
 
-@unittest.skipUnless(shutil.which('sh'), 'a POSIX shell is needed to run the device join script locally')
+@unittest.skipUnless(os.name == 'posix' and shutil.which('sh'), 'the local device shell harness needs POSIX paths and sh')
 class PushFile(unittest.TestCase):
     class LocalAdb(Adb):   # actual push_file, remote_md5 and join script; only adb's transport and Android stat/md5 output are substituted
         def __init__(self, dev):
             super().__init__('adb', log=lambda s: None)
             self.dev, self.pushed, self.fail_at, self.hashes, self.fail_join = Path(dev), [], None, True, False
+            self.hash_calls, self.no_printf = [], False
         def remote_sizes(self, rdir):
             return {p.name: p.stat().st_size for p in Path(rdir).iterdir() if p.is_file()}
         def run(self, *a, **kw):
@@ -113,10 +114,13 @@ class PushFile(unittest.TestCase):
             words = shlex.split(script)
             if words[:3] == ['stat', '-c', '%s']: return str(Path(words[3]).stat().st_size)
             if 'md5sum' in words:
-                if not self.hashes: return ''
                 root, start, end = Path(words[1]), words.index('md5sum') + 1, words.index('2>/dev/null;')
+                self.hash_calls.append((words[start:end], kw))
+                if self.hashes == 'timeout': raise AdbError('adb shell: timed out')
+                if not self.hashes: return ''
                 return ''.join(f'{hashlib.md5((root / name).read_bytes()).hexdigest()}  {name}\n' for name in words[start:end] if (root / name).is_file())
             if words[:2] == ['rm', '-f'] and self.fail_join: raise AdbError('interrupted join')
+            if self.no_printf: script = 'printf() { return 127; }\n' + script
             r = subprocess.run(['sh', '-c', script], capture_output=True, text=True)
             if r.returncode: raise AdbError(r.stderr)
             return r.stdout
@@ -149,6 +153,31 @@ class PushFile(unittest.TestCase):
         self.assertEqual(Path(self.dst).read_bytes(), b'AAAABBBB')
         self.assertEqual(self.adb.pushed, ['00000', '00001'])
 
+    def test_hash_timeout_resends_unverified_pieces(self):
+        self.interrupt(b'AAAABBBB')
+        self.adb.hashes = 'timeout'
+        self.adb.push_file(self.src, self.dst, chunk=4)
+        self.assertEqual(Path(self.dst).read_bytes(), b'AAAABBBB')
+        self.assertEqual(self.adb.pushed, ['00000', '00001'])
+        self.assertEqual(len(self.adb.hash_calls), 1)
+        self.assertEqual(self.adb.hash_calls[0][1].get('retries'), 1)
+
+    def test_resume_limits_hash_work_per_shell_call(self):
+        data = bytes(range(40))
+        self.interrupt(data, at='00009')
+        self.adb.push_file(self.src, self.dst, chunk=4)
+        self.assertEqual(Path(self.dst).read_bytes(), data)
+        self.assertEqual(self.adb.pushed, ['00009'])
+        self.assertGreater(len(self.adb.hash_calls), 1)
+        self.assertEqual([name for names, _ in self.adb.hash_calls for name in names],
+                         [f'{i:05d}' for i in range(9)])
+
+    def test_many_pieces_join_in_order_without_printf(self):
+        data = bytes(range(256)) + b'end'
+        self.adb.no_printf = True
+        self.src.write_bytes(data)
+        self.adb.push_file(self.src, self.dst, chunk=1)
+        self.assertEqual(Path(self.dst).read_bytes(), data)
     def test_shrinking_source_ignores_old_tail(self):
         self.interrupt(b'AAAABBBBCCCC', at='00002'); self.src.write_bytes(b'DDDD')
         self.adb.push_file(self.src, self.dst, chunk=4)
