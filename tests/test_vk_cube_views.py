@@ -27,11 +27,18 @@ class CubeViews(unittest.TestCase):
 #include <string.h>
 #include <pthread.h>
 #include <stdio.h>
+#include <stdarg.h>
 #include "nxnative/dm/gfx/nvn/nvn_obj.h"
 #include "nxnative/dm/gfx/nvn/nvn_hmap.h"
 #define VKLOG(...) ((void)0)
-#define VKRED_ONCE(...) ((void)0)
+static int red_calls;
+static char last_red[512];
+static void capture_red(const char *fmt, ...) {
+    va_list ap; va_start(ap,fmt); vsnprintf(last_red,sizeof last_red,fmt,ap); va_end(ap); red_calls++;
+}
+#define LOG capture_red
 '''
+        code += next(line for line in header.splitlines() if line.startswith('#define VKRED_ONCE(')) + '\n'
         code += between(header, 'typedef struct { VkFormat vk;', 'const vkfmt_t *vk_fmt')
         code += between(header, 'typedef struct vkimg vkimg_t;', 'vkimg_t *vk_tex(')
         code += between(header, 'typedef struct __attribute__((packed)) { uint8_t kind, desc, dim, flags;', '_Static_assert(sizeof(dmsv_bind)')
@@ -114,14 +121,23 @@ static void accepted(int arr, unsigned base, unsigned count) {
     tex_desc_for(1,&b,1,&ii,0); assert(ii.imageView==saved && view_calls==calls && lookup_calls==lookups);
     assert(vk_tex_view(&texture,has_subview?&subview:NULL,3,arr,0,NULL)==saved && view_calls==calls);
 }
-int main(void) {
+int main(int argc, char **argv) {
+    (void)argv;
+    if (argc>1) {
+        reset(4,16,16,7,1); accepted(0,0,6);
+        reset(4,16,16,8,1); has_subview=1; subview=(view_t){.set_layers=1,.min_layer=2,.nlayers=6}; accepted(0,2,6);
+        reset(4,16,16,14,1); has_subview=1; subview=(view_t){.set_layers=1,.min_layer=2,.nlayers=12}; accepted(1,2,12);
+        vk_tex_view_drop_all(&image); free(g_views.keys); free(g_views.vals); return 0;
+    }
     // The reported failure: an ordinary 2D view already exists in the cache.
     reset(1,16,16,1,1); assert(vk_tex_view(&texture,NULL,1,0,0,NULL)); rejected(0);
+    assert(red_calls==1 && strstr(last_red,"[RED]") && strstr(last_red,"image 16x16x1") && strstr(last_red,"layers 1") && strstr(last_red,"cflags 0x"));
+    assert(strstr(last_red,"levels 0+3") && strstr(last_red,"range 0+1"));
     reset(4,16,16,5,1); rejected(1);
     // Valid 2D-array storage with six layers must also have the creation flag.
     reset(4,16,8,6,1); rejected(0);
     reset(4,16,16,6,4); rejected(1);
-    reset(4,16,16,7,1); rejected(0); // this image was not created cube compatible
+    reset(4,16,16,7,1); rejected(1); // cube-array ranges still require six-face groups
     reset(3,16,6,1,1); rejected(0); // 1D-array, six layers
     reset(2,16,16,6,1); rejected(0); // 3D depth does not supply cube faces
     reset(4,16,16,12,1); image.cflags&=~VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT; rejected(1);
@@ -148,14 +164,17 @@ int main(void) {
     reset(8,16,16,1,1); subview=(view_t){.set_layers=1,.min_layer=2,.nlayers=1};
     assert(vk_tex_view(&texture,&subview,1,0,0,NULL)); assert(last_view.viewType==VK_IMAGE_VIEW_TYPE_2D && last_view.subresourceRange.baseArrayLayer==2);
     assert(vk_tex_view(&texture,&subview,3,0,1,NULL)); assert(last_view.viewType==VK_IMAGE_VIEW_TYPE_2D && last_view.subresourceRange.layerCount==1);
+    assert(red_calls==1); // the production VKRED_ONCE keeps repeated refusals quiet
     vk_tex_view_drop_all(&image); free(g_views.keys); free(g_views.vals);
 }
 '''
         with tempfile.TemporaryDirectory() as folder:
             src=Path(folder)/'cube.c';src.write_text(code);binary=Path(folder)/'cube'
             subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror','-I',str(ROOT),'-I',str(ROOT/'nxnative/dm/gfx/nvn/include'),'-I',str(ROOT/'nxnative/dm/third_party/vulkan-headers/include'),str(src),'-o',str(binary),'-pthread'],check=True)
-            result=subprocess.run([str(binary)],capture_output=True,text=True)
-            self.assertEqual(result.returncode,0,result.stderr)
+            for mode in ([], ['non-multiple-layers']):
+                with self.subTest(mode=mode):
+                    result=subprocess.run([str(binary), *mode],capture_output=True,text=True)
+                    self.assertEqual(result.returncode,0,result.stderr)
 
 
 if __name__ == '__main__':

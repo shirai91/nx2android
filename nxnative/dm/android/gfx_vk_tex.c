@@ -185,8 +185,8 @@ static vkimg_t *img_new(const tex_t *t, const vkfmt_t *f) {
     if (f->compressed && !f->dec && (f->bpb == 16 || f->bpb == 8)) { VkFormatProperties up; vkGetPhysicalDeviceFormatProperties(V.pd, f->bpb == 16 ? VK_FORMAT_R32G32B32A32_UINT : VK_FORMAT_R32G32_UINT, &up);
         if (up.optimalTilingFeatures & VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT) u |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT; }
     VkImageCreateInfo ci = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, NULL,
-        // a square 2D array of 6n layers too: shaders read one as a cube (Pokémon Legends: Arceus's reflection probes; the view was refused by the validation layer without the flag)
-        VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT | VK_IMAGE_CREATE_EXTENDED_USAGE_BIT | (d->target == 8 || d->target == 9 || (d->target == 4 && im->layers >= 6 && im->layers % 6 == 0 && im->w == im->h && im->samples <= 1) ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0) |
+        // a square single-sample 2D array with at least six layers too: shaders read one as a cube (Pokémon Legends: Arceus's reflection probes; the view was refused by the validation layer without the flag)
+        VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT | VK_IMAGE_CREATE_EXTENDED_USAGE_BIT | (d->target == 8 || d->target == 9 || (d->target == 4 && im->layers >= 6 && im->w == im->h && im->samples <= 1) ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0) |
         (d->target == 2 ? VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT : 0) | (f->compressed ? VK_IMAGE_CREATE_BLOCK_TEXEL_VIEW_COMPATIBLE_BIT : 0),
         d->target == 2 ? VK_IMAGE_TYPE_3D : d->target == 0 || d->target == 3 ? VK_IMAGE_TYPE_1D : VK_IMAGE_TYPE_2D, f->vk,
         {im->w, im->h, im->d}, im->levels, im->layers, (VkSampleCountFlagBits)im->samples, VK_IMAGE_TILING_OPTIMAL, u, VK_SHARING_MODE_EXCLUSIVE, 0, NULL, VK_IMAGE_LAYOUT_UNDEFINED};
@@ -573,7 +573,10 @@ VkImageView vk_tex_view(const tex_t *t, const view_t *vw, int dim, int arrayed, 
         if (want == VK_IMAGE_VIEW_TYPE_CUBE || want == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY) {
             // Returning a 2D view for a cube shader bypassed tex_desc_for's typed dummy. The saved creation flag also requires a square,
             // single-sample 2D image; having six layers alone is insufficient. Check the selected range before either view cache can keep a wrong type.
-            if (!(im->cflags & VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT) || nly < 6 || (want == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY && nly % 6)) return VK_NULL_HANDLE;
+            if (!(im->cflags & VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT) || nly < 6 || (want == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY && nly % 6)) {
+                VKRED_ONCE(106, "cube view refused: image %ux%ux%u layers %u cflags %#x, levels %u+%u range %u+%u type %d", im->w, im->h, im->d, im->layers, im->cflags, lv0, nlv, ly0, nly, want);
+                return VK_NULL_HANDLE;
+            }
             if (want == VK_IMAGE_VIEW_TYPE_CUBE) nly = 6;
         } else {
             if (want == VK_IMAGE_VIEW_TYPE_3D && im->d == 1) want = type;
