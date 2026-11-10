@@ -216,13 +216,47 @@ static int pad_labels(void) {
     if (on < 0) { const char *e = getenv("DM_PAD_LABEL"); if (!e) e = getenv("DM_PAD_XBOX"); on = e && atoi(e) ? 1 : 0; }
     return on;
 }
-static uint64_t key_bit(int32_t k) {   // Nintendo layout by position: the bottom face button is B, the right one A (as the iOS front end maps)
-    if (pad_labels()) switch (k) {   // by label instead: A is A, B is B, X is X, Y is Y (the pause menu and the text entry follow it: A confirms, B erases)
-    case AKEYCODE_BUTTON_A: return DM_BTN_A; case AKEYCODE_BUTTON_B: return DM_BTN_B; case AKEYCODE_BUTTON_X: return DM_BTN_X; case AKEYCODE_BUTTON_Y: return DM_BTN_Y;
-    default: break;
+// The physical controller's profile (controller.tsv in the files folder: porter port --controller, from dm/android/controllers.tsv). Without one, Android's standard:
+// BUTTON_A is the bottom face button, B the right, X the left, Y the top, with Xbox letters on them. Handhelds with Nintendo letters (A on the right) send BUTTON_A
+// from the button labelled A when set to their Nintendo layout (AYN's Odin style, Retroid's and Anbernic's NS modes): an AYN Thor's A and B reached the game swapped.
+// So a profile says where each face key's button is (its place) and which letters are printed on them; Position and Label then mean the same on every controller,
+// and agree on Nintendo letters, which are where the Switch has them. A key can also go to a Switch button outright, or to nothing (left to the system)
+enum { PAD_XBOX, PAD_NINTENDO, PAD_PLAYSTATION };   // the face buttons' letters (PlayStation's symbols, in the Xbox letters' places: cross is A)
+enum { PAD_KEYS = 512, PAD_SOUTH = 1, PAD_EAST, PAD_WEST, PAD_NORTH, PAD_BTN = 16 };
+static int g_pad_print = PAD_XBOX;
+static int8_t g_pad_key[PAD_KEYS];   // key code → 0: as below; -1: nothing (the system's); PAD_SOUTH..PAD_NORTH: the face button there; PAD_BTN + n: DM_BTN bit n
+static uint64_t face_bit(int place) {   // the game's button for the face button at a place: by position the Switch's layout, by label the printed letter
+    static const uint64_t BY_POS[5] = {0, DM_BTN_B, DM_BTN_A, DM_BTN_Y, DM_BTN_X}, BY_XBOX[5] = {0, DM_BTN_A, DM_BTN_B, DM_BTN_X, DM_BTN_Y};
+    return pad_labels() && g_pad_print != PAD_NINTENDO ? BY_XBOX[place] : BY_POS[place];
+}
+static int pad_target(const char *t) {   // controller.tsv's target names (porter/controllers.py TARGETS); 0: not one
+    static const char *const PLACE[] = {"south", "east", "west", "north"}, *const BTN[16] = {"A", "B", "X", "Y", "LS", "RS", "L", "R", "ZL", "ZR", "PLUS", "MINUS", "LEFT", "UP", "RIGHT", "DOWN"};
+    for (int i = 0; i < 4; i++) if (!strcmp(t, PLACE[i])) return PAD_SOUTH + i;
+    for (int i = 0; i < 16; i++) if (!strcmp(t, BTN[i])) return PAD_BTN + i;   // (dm_input.h's bit order)
+    return !strcmp(t, "none") ? -1 : 0;
+}
+static void pad_load(const char *path) {   // at start, before the input thread
+    FILE *f = fopen(path, "r"); char line[256], name[96] = "standard"; int n = 0, ln = 0;
+    if (!f) return;   // a pack made before the profiles: Android's standard
+    while (fgets(line, sizeof line, f)) {
+        char a[16], b[64], c[16]; int k; ln++; line[strcspn(line, "\r\n")] = 0;
+        if (line[0] == '#' || !line[0]) continue;
+        if (sscanf(line, "name\t%95[^\t\r\n]", name) == 1) continue;
+        if (sscanf(line, "labels\t%63[^\t\r\n]", b) == 1) { g_pad_print = !strcmp(b, "nintendo") ? PAD_NINTENDO : !strcmp(b, "playstation") ? PAD_PLAYSTATION : PAD_XBOX; continue; }
+        int t = sscanf(line, "%15[^\t]\t%d\t%15[^\t\r\n]", a, &k, c) == 3 && !strcmp(a, "key") ? pad_target(c) : 0;
+        if (!t || k <= 0 || k >= PAD_KEYS) { LOG("[RED] [input] %s line %d not understood: %s", path, ln, line); continue; }
+        g_pad_key[k] = (int8_t)t; n++;
     }
+    fclose(f);
+    LOG("[input] controller profile %s: %s letters, %d keys", name, g_pad_print == PAD_NINTENDO ? "Nintendo" : g_pad_print == PAD_PLAYSTATION ? "PlayStation" : "Xbox", n);
+}
+static uint64_t key_bit(int32_t k) {   // the pause menu and the text entry follow it too (A confirms, B goes back or erases)
+    int m = k > 0 && k < PAD_KEYS ? g_pad_key[k] : 0;
+    if (m < 0) return 0;
+    if (m >= PAD_SOUTH && m <= PAD_NORTH) return face_bit(m);
+    if (m >= PAD_BTN) return 1ull << (m - PAD_BTN);
     switch (k) {
-    case AKEYCODE_BUTTON_A: return DM_BTN_B; case AKEYCODE_BUTTON_B: return DM_BTN_A; case AKEYCODE_BUTTON_X: return DM_BTN_Y; case AKEYCODE_BUTTON_Y: return DM_BTN_X;
+    case AKEYCODE_BUTTON_A: return face_bit(PAD_SOUTH); case AKEYCODE_BUTTON_B: return face_bit(PAD_EAST); case AKEYCODE_BUTTON_X: return face_bit(PAD_WEST); case AKEYCODE_BUTTON_Y: return face_bit(PAD_NORTH);
     case AKEYCODE_BUTTON_L1: return DM_BTN_L; case AKEYCODE_BUTTON_R1: return DM_BTN_R; case AKEYCODE_BUTTON_L2: return DM_BTN_ZL; case AKEYCODE_BUTTON_R2: return DM_BTN_ZR;
     case AKEYCODE_BUTTON_THUMBL: return DM_BTN_LS; case AKEYCODE_BUTTON_THUMBR: return DM_BTN_RS; case AKEYCODE_BUTTON_START: return DM_BTN_PLUS; case AKEYCODE_BUTTON_SELECT: return DM_BTN_MINUS;
     case AKEYCODE_DPAD_UP: return DM_BTN_UP; case AKEYCODE_DPAD_DOWN: return DM_BTN_DOWN; case AKEYCODE_DPAD_LEFT: return DM_BTN_LEFT; case AKEYCODE_DPAD_RIGHT: return DM_BTN_RIGHT;
@@ -926,7 +960,7 @@ static int handle_event(AInputEvent *e) {
         if (!bit) {   // the rest: the system's. A controller's key nothing maps is logged once, so a new controller's menu key can be found
             static uint8_t seen[64];
             if ((src & AINPUT_SOURCE_GAMEPAD) == AINPUT_SOURCE_GAMEPAD && down && k >= 0 && k < 512 && !(seen[k >> 3] >> (k & 7) & 1)) {
-                seen[k >> 3] |= (uint8_t)(1 << (k & 7)); LOG("[input] controller key %d (device %d): not mapped", k, AInputEvent_getDeviceId(e)); }
+                seen[k >> 3] |= (uint8_t)(1 << (k & 7)); LOG("[input] controller key %d (device %d): not mapped (a controller profile's map row can map it: porter port --controller)", k, AInputEvent_getDeviceId(e)); }
             return 0;
         }
         atomic_store(&g_overlay, 0); g_pad_used = 1; atomic_store(&g_pad_in, AInputEvent_getDeviceId(e)); dm_haptics_android_device(AInputEvent_getDeviceId(e));   // a controller is in use: the gamepad steps aside (until a touch)
@@ -1200,6 +1234,7 @@ __attribute__((visibility("default"))) void ANativeActivity_onCreate(ANativeActi
     if (dm_saves_start(g_root)) { LOG("[saves] the request asked the app to end: the game is not started"); g_quit = 1; return; }
     if (!romfs_readable(act, sdk)) { g_quit = 1; return; }   // after the save manager's requests, which need no RomFS
     settings_load(); dm_haptics_android_start(act, atomic_load(&g_set_rumble)); dm_lan_android_start(act);
+    snprintf(p, sizeof p, "%s/controller.tsv", g_root); pad_load(p);
     { pthread_t w; if (!pthread_create(&w, NULL, pad_watch, act->vm)) pthread_detach(w); }
     { pthread_t w; if (!pthread_create(&w, NULL, temp_watch, act->vm)) pthread_detach(w); }
     LOG("NX2A host on Android: files %s, RomFS %s, saves %s", g_root, getenv("DM_ROMFS"), act->internalDataPath);

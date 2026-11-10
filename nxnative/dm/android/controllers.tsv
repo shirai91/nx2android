@@ -1,0 +1,36 @@
+# Physical controller profiles: how a controller's keys reach the game (porter port --controller <id>, the GUI's Controller list; docs/ARCHITECTURE.md "Physical controllers").
+# porter writes the chosen one into the data pack as controller.tsv, which the app reads at launch (front_android.c pad_load); the on-screen gamepad is never remapped.
+# <id> <TAB> <kind> <TAB> <labels> <TAB> <keys> <TAB> <name> [<TAB> <key>=<target> ...]
+#   kind     generic, handheld (an Android device with built-in controls) or controller
+#   labels   what the face buttons say: xbox (A at the bottom, B right, X left, Y top), nintendo (B at the bottom, A right, Y left, X top: the Switch's own),
+#            playstation (cross at the bottom, circle right, square left, triangle top)
+#   keys     which Android key each face button sends: position (Android's standard: BUTTON_A is the bottom one, B the right, X the left, Y the top), or label
+#            (BUTTON_A is the button labelled A: a handheld with Nintendo labels set to its Nintendo layout, as AYN's Odin style, Retroid's and Anbernic's NS modes do)
+#   key=target  more keys: an Android key name (BUTTON_C, BUTTON_L2, BUTTON_1 ...) or code (the app logs "[input] controller key 188 (device 5): not mapped") to a
+#            Switch button (A B X Y L R ZL ZR PLUS MINUS LS RS UP DOWN LEFT RIGHT), a face button by its place (south east west north), or none
+# A handheld whose system settings switch its face buttons between a Nintendo and an Xbox layout has a row for each: the setting changes the keys, not the labels.
+# Sources (2026-11): Android's key layout for the Switch Pro Controller (frameworks/base data/keyboards/Vendor_057e_Product_2009.kl: the bottom button, labelled B,
+# sends BUTTON_A); Anbernic's NS / Xbox modes (NS: the keys follow the printed letters; Xbox: A moves to the bottom); the AYN Odin's Odin / Xbox controller styles.
+# AYN Thor (Android 13, "Odin Controller" 2020:0111, 2026-11-10): getevent showed the right button (A) sending 0x130, which its Vendor_2020_Product_0111.kl makes
+# BUTTON_A, and the bottom one (B) 0x131 (BUTTON_B), so the standard mapping swapped A and B; with ayn-thor, Super Mario Odyssey's A confirmed and B went back.
+standard	generic	xbox	position	Android standard: A at the bottom (Xbox labels; most controllers and phones' controllers)
+nintendo	generic	nintendo	position	Nintendo labels, Android's standard keys (B at the bottom sends Android's A)
+nintendo-label	generic	nintendo	label	Nintendo labels, keys by label (a handheld set to its Nintendo layout)
+playstation	generic	playstation	position	PlayStation symbols (cross at the bottom)
+ayn-thor	handheld	nintendo	label	AYN Thor (Odin controller style)
+ayn-thor-xbox	handheld	nintendo	position	AYN Thor (Xbox controller style)
+ayn-odin	handheld	nintendo	label	AYN Odin 2 / Odin 2 Portal / Odin 2 Mini / Odin 3 (Odin controller style)
+ayn-odin-xbox	handheld	nintendo	position	AYN Odin 2 / Odin 2 Portal / Odin 2 Mini / Odin 3 (Xbox controller style)
+retroid	handheld	nintendo	label	Retroid Pocket 5 / Mini / Flip 2 / 4 Pro / Classic (Nintendo layout)
+retroid-xbox	handheld	nintendo	position	Retroid Pocket 5 / Mini / Flip 2 / 4 Pro / Classic (Xbox layout)
+anbernic	handheld	nintendo	label	Anbernic RG556 / RG557 / RG406H / RG406V / RG Cube / RG477M (NS mode)
+anbernic-xbox	handheld	nintendo	position	Anbernic RG556 / RG557 / RG406H / RG406V / RG Cube / RG477M (Xbox mode)
+ayaneo-pocket	handheld	xbox	position	AYANEO Pocket S / Pocket S2 / Pocket Evo / Pocket Ace
+logitech-g-cloud	handheld	xbox	position	Logitech G Cloud
+razer-edge	handheld	xbox	position	Razer Edge
+xbox	controller	xbox	position	Xbox Wireless Controller (Series X|S, One, Elite)
+dualsense	controller	playstation	position	PlayStation DualSense / DualSense Edge / DualShock 4
+switch-pro	controller	nintendo	position	Nintendo Switch Pro Controller
+8bitdo-nintendo	controller	nintendo	position	8BitDo with Nintendo labels (Pro 2, SN30 Pro, Ultimate for Switch)
+phone-xbox	controller	xbox	position	Phone controllers: Razer Kishi V2 / Ultra, Backbone One, GameSir X2 / X3 / G8 Galileo
+backbone-ps	controller	playstation	position	Backbone One PlayStation Edition
