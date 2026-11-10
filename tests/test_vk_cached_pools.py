@@ -126,7 +126,7 @@ COMPLETION
             return src[start:src.index('\n}\n', start)+3]
         usage = src[src.index('static const VkBufferUsageFlags POOL_USAGE0'):src.index('static VkResult pool_copied_alloc(')]
         start = src.index('        const char *e = getenv("DM_VK_POOL_CACHED")')
-        select = src[start:src.index('\n    }\n    g_npool', start)]
+        select = src[start:src.index('\n    }\n    pthread_rwlock_wrlock(&g_pool_mu);', start)]
         harness = r'''
 #define _GNU_SOURCE
 #define VK_NO_PROTOTYPES
