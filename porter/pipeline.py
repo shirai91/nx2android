@@ -7,7 +7,7 @@ import importlib.util, os, re, shutil, sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from porter import config, datapack, dumps, fpslocker, install, paths, profiles, toolchain
+from porter import config, datapack, dumps, fpslocker, install, paths, profiles, sdf_edit, toolchain, xbox_icons
 from porter.adb import NO_ADB, Adb, AdbError
 from porter.paths import DM, NXNATIVE
 from porter.upstream import BuildError, PROG, android_profile, game, nacp, nsp, profile_guess, say, trinity, uepak
@@ -39,6 +39,7 @@ class Options:
     shared_font: Path = None           # a TrueType font packed as the system's shared fonts, instead of the device's Roboto (DM_SHARED_FONT, dm/host/hle_sdk16.c)
     firmware: Path = None              # the player's system content files (.nca), for the profile's sysdata titles (extract_sysdata; DM_SYSDATA, dm/host/hle_fs.c)
     mt_replay: bool = False            # multithread replay: DM_VK_MT_REPLAY=1 in env.txt (dm/android/gfx_vk_dq.c), after the profile's env rows
+    pad_layout: str = ''               # 'xbox': A / B by label, X / Y by position, Xbox button icons (pad_layout); 'switch'; '': the config's pad_layout
     touch: bool = False                # a game played by touch: the on-screen gamepad starts hidden (TOUCH_SETTINGS), so it takes none of the game's touches
     external_display: bool = False     # compile the optional external-screen activity with the Android SDK
     vercode_offset: int = 0            # added to the APK's versionCode: a rebuild of the same game version installs over a build with a higher one (version_code)
@@ -180,6 +181,7 @@ class Port:
         o.folder = Path(o.folder).expanduser().resolve()
         if not o.folder.is_dir(): raise BuildError(f'not a folder: {o.folder}')
         version_code('v0', o.vercode_offset); alias_headroom_gb(o.alias_headroom)   # an offset or headroom out of range fails now, not after the shaders
+        if not o.vulkan_driver and self.cfg.get('vulkan_driver'): o.vulkan_driver = self.cfg['vulkan_driver']   # the player's default driver (porter config vulkan_driver)
         if o.vulkan_driver:
             o.vulkan_driver = Path(o.vulkan_driver).expanduser().resolve()
             if not o.vulkan_driver.is_file() or o.vulkan_driver.suffix != '.so': raise BuildError(f'--vulkan-driver: not a .so library: {o.vulkan_driver}')
@@ -774,32 +776,66 @@ class Port:
     # ---- data: the files the app reads from its files folder ----
     def data(self):
         PROG.stage('data pack', step='button-icon font')
-        font_env, font_files = self.button_font()
+        xbox = self.pad_layout() == 'xbox'
+        font_env, font_files = self.button_font(xbox)
+        romfs_patch = self.romfs_patch(xbox)
         if self.o.shared_font:   # the host serves it for every shared-font type but the button icons (hle_sdk16.c font_get)
             font_env, font_files = font_env + [f'DM_SHARED_FONT={datapack.files_folder(self.package)}/standard.ttf'], {**font_files, 'standard.ttf': self.o.shared_font}
         dst = self.o.out / f'{app_stem(self.g, self.app_name)}-data'
         man = datapack.build(dst, profile=self.ap, version=self.pkg_ver, display=self.display, patched=self.patched, romfs=self.game / 'RomFS', shaders=self.dmsv,
-                             aoc=self.aoc, sysdata=self.sysdata, language=self.lang, package=self.package, env=self.fps_env + font_env + (['DM_VK_MT_REPLAY=1'] if self.o.mt_replay else [])
+                             romfs_patch=romfs_patch, aoc=self.aoc, sysdata=self.sysdata, language=self.lang, package=self.package, env=self.fps_env + font_env + (['DM_PAD_LABEL=ab'] if xbox else []) + (['DM_VK_MT_REPLAY=1'] if self.o.mt_replay else [])
                              + ([f'DM_VK_DRIVER={driver_lib_name(self.o.vulkan_driver)}'] if self.o.vulkan_driver else []), settings=TOUCH_SETTINGS if self.o.touch else None,
                              files={**self.fps_files, **font_files},
                              progress=lambda what: PROG.set(step=f'linking {what}'))
         self.data_path = dst; self.result['data'] = str(dst)
         PROG.end(f'{man["files"]:,} files, {man["bytes"] / 2**30:.1f} GB')
 
-    def button_font(self):
+    def pad_layout(self):
+        """'xbox' or 'switch': --pad-layout, else the config's pad_layout. xbox: a physical controller's A and B by label (the bottom button confirms, the right one goes
+        back) and X and Y by position (DM_PAD_LABEL=ab, front_android.c pad_labels; the pause menu's Face buttons row can change it), with button icons that show the Xbox labels of those places"""
+        v = (self.o.pad_layout or self.cfg.get('pad_layout') or 'switch').lower()
+        if v not in ('switch', 'xbox'): raise BuildError(f'pad_layout {v!r}: switch or xbox')
+        return v
+
+    def romfs_patch(self, xbox):
+        """The folder of patched RomFS files (the pack's romfs_patch, DM_ROMFS_OVERLAY): the game's Xbox icons with the Xbox layout, then its profile's
+        edits inside its packed data (porter/sdf_edit.py). None when there are neither"""
+        out = self.aw / xbox_icons.FOLDER
+        if out.exists(): shutil.rmtree(out)
+        icons = self.xbox_icons() if xbox else None
+        table = self.g.dir / sdf_edit.TABLE
+        if table.is_file():
+            PROG.set(step='game data edits')
+            try: n = sdf_edit.patch(self.game / 'RomFS', table, out); say(f'{n} edits inside the game\'s packed data ({table.name})')
+            except sdf_edit.EditError as e: say(f'[RED] the edits inside the game\'s packed data: {e}; left out')
+        return out if out.is_dir() and any(out.iterdir()) else icons
+
+    def xbox_icons(self):
+        """The game's own Xbox button icons in place of its Switch ones, when its profile lists them (porter/xbox_icons.py): the folder of patched RomFS files, None without"""
+        table = self.g.dir / xbox_icons.TABLE
+        if not table.is_file(): return None
+        try: import PIL   # noqa: F401
+        except ImportError: say('[RED] no Pillow (pip install pillow): the game\'s own button icons stay the Switch ones'); return None
+        PROG.set(step='Xbox button icons')
+        try: n = xbox_icons.patch(self.game / 'RomFS', table, self.aw / xbox_icons.FOLDER)
+        except xbox_icons.IconError as e: say(f'[RED] the game\'s Xbox button icons: {e}; its own icons stay the Switch ones'); return None
+        say(f'Xbox layout: {n} of the game\'s own button icons replaced by its Xbox ones')
+        return self.aw / xbox_icons.FOLDER
+
+    def button_font(self, xbox=False):
         """The stand-in for the system's Nintendo extension shared font: the controller-button icons in game text (U+E0E0 = A; Super Mario Bros. Wonder's menus showed '?' without it), which
         the host serves for shared-font type 5 (hle_sdk16.c, DM_SHARED_FONT_EXT). make_ext_font.py draws it, as the Mac and iOS builds do, made again when the tool or the letters change.
-        Returns (env.txt rows, pack files); none without fontTools or a letter font, and the icons draw as '?'"""
+        xbox: the Xbox layout's labels (make_ext_font.py --xbox). Returns (env.txt rows, pack files); none without fontTools or a letter font, and the icons draw as '?'"""
         letters = next((Path(p) for p in LETTER_FONTS if Path(p).is_file()), None)
         try: import fontTools   # noqa: F401 (make_ext_font.py runs with this Python)
         except ImportError: letters, why = None, 'no fontTools (pip install fonttools)'
         else: why = 'no bold system font for the letters'
         if not letters: say(f'[RED] {why}: the button icons in the game\'s text draw as "?"'); return [], {}
         d = self.aw / 'font'; ttf, kf = d / 'nintendo_ext.ttf', d / 'nintendo_ext.key'
-        key = nsp.fingerprint(('files', [DM / 'tools/make_ext_font.py', letters]))
+        key = nsp.fingerprint(('files', [DM / 'tools/make_ext_font.py', letters]), ('xbox', xbox))
         if not (ttf.is_file() and nsp.reused(kf, key) is not None):
             nsp.rmtree(kf); d.mkdir(parents=True, exist_ok=True)
-            nsp.run([PY, DM / 'tools/make_ext_font.py', ttf, letters], self.logs / 'make_ext_font.log', env=self.env)
+            nsp.run([PY, DM / 'tools/make_ext_font.py'] + (['--xbox'] if xbox else []) + [ttf, letters], self.logs / 'make_ext_font.log', env=self.env)
             kf.write_text(f'{key}\n')
         return [f'DM_SHARED_FONT_EXT={datapack.files_folder(self.package)}/nintendo_ext.ttf'], {'nintendo_ext.ttf': ttf}
 

@@ -1,0 +1,18 @@
+# South Park: The Fractured But Whole on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Tested 2026-11-10 on the Odin 2 Portal (Snapdragon 8 Gen 2, Adreno 740) with a Turnip Vulkan driver (porter --vulkan-driver, or its vulkan_driver setting):
+# the opening hours (title, character creation, the town, the house, Kupa Keep, fights, saving and loading) at a steady 30 fps, as on the Switch, with sound.
+# Use Turnip. On Qualcomm's own driver (512.863) the views through windows showed one-frame blocks and specks (an offscreen view sampled in the same frame),
+# and the game stalled for about 0.4 s every few seconds until, after about 5 minutes, it froze; Turnip has neither. The host matches Turnip's UBWC hint to
+# Qualcomm's driver on the Adreno 740 (gfx_vk_core.c tu_ubwc_hint), without which Android's own drawing over the game flickers.
+# The interface quads come from a buffer texture whose handle sits in the game's own constant buffer; the core binds such buffers as rows of a 2D image
+# (vk_tbuf_rows_view), without which every screen stayed black. The save pictures are a CopyTextureToTexture into a linear texture that the CPU reads:
+# the core writes such copies back to their storage (gfx_vk_exec.c copy_t2t).
+# The main menu's Nintendo eShop and Ubisoft Club entries are dropped (sdf_edits.tsv): they lead to services the port cannot reach.
+status	wip
+tested	v327680 Odin 2 Portal (Snapdragon 8 Gen 2, Adreno 740), Turnip
+package	org.nx2a.southparkfbw
+orientation	landscape
+# Snowdrop keeps one thread yielding about 34,000 times a second from start-up through the title and the opening (thread 0x1010, sdk+0xa2f578): normal for
+# this engine, not a hang. At the default threshold (12,000) the yield watchdog fired about 30 s in, and its thread dump paused every thread for seconds:
+# the audio device stopped calling back and the game stalled, every time
+env	DM_YIELD_WATCH=60000

@@ -90,31 +90,42 @@ int main(void) {
 static struct { VkDevice dev; int has_timeline; } V;
 static VkSemaphore g_timeline;
 enum { NFRING=4 }; static VkFence g_fring[NFRING];
-static VkResult result; static int reads, waits;
+static VkResult result; static int reads, waits, lost; static uint64_t counter;
 #define die(...) do { assert(!reads); _exit(91); } while (0)
+#define VKRED_ONCE(id, ...) (lost++)
 static int mtl_wait(uint64_t f, uint64_t t) { (void)f; (void)t; assert(0); return 0; }
+// The timeline wait asks a second at a time: a timeout with the timeline still short of the value waits again (here the GPU gets there by the
+// second wait), one with the timeline already past it is a lost wakeup and carries on
 static VkResult vkWaitSemaphores(VkDevice dev, const VkSemaphoreWaitInfo *wi, uint64_t timeout) {
-    (void)dev; assert(wi->semaphoreCount==1 && *wi->pValues==1 && timeout==UINT64_MAX); waits++; return result;
+    (void)dev; assert(wi->semaphoreCount==1 && *wi->pValues==1 && timeout==1000000000ull); return waits++ && result==VK_TIMEOUT ? VK_SUCCESS : result;
 }
+static VkResult vkGetSemaphoreCounterValue(VkDevice dev, VkSemaphore s, uint64_t *v) { (void)dev; assert(s==g_timeline); *v=counter; return VK_SUCCESS; }
 static VkResult vkWaitForFences(VkDevice dev, uint32_t n, const VkFence *f, VkBool32 all, uint64_t timeout) {
     (void)dev; assert(n==1 && f==g_fring+1 && all && timeout==UINT64_MAX); waits++; return result;
 }
 WAIT
 int main(int argc, char **argv) {
-    assert(argc==3); V.has_timeline=atoi(argv[1]); result=(VkResult)atoi(argv[2]);
+    assert(argc==4); V.has_timeline=atoi(argv[1]); result=(VkResult)atoi(argv[2]); counter=strtoull(argv[3], NULL, 0);
     struct { uint64_t fence; } item={1}, *c=&item;
 COMPLETION
-    reads++; assert(waits==1 && result==VK_SUCCESS); return 0;
+    reads++;
+    if (result==VK_SUCCESS) assert(waits==1 && !lost);
+    else assert(V.has_timeline && result==VK_TIMEOUT && (counter ? waits==1 && lost==1 : waits==2 && !lost));
+    return 0;
 }
 '''.replace('WAIT', wait).replace('COMPLETION', completion)
         with tempfile.TemporaryDirectory(prefix='nx2a-gpu-wait-') as tmp:
             c, exe = Path(tmp)/'check.c', Path(tmp)/'check'
             c.write_text(harness)
             subprocess.run(['cc', '-std=gnu11', '-Wall', '-Wextra', '-Werror', '-idirafter', str(headers), str(c), '-o', str(exe)], check=True)
-            for timeline in ('0', '1'):
-                for result in ('0', '-4', '2'):  # success, device lost, timeout
-                    run = subprocess.run([str(exe), timeline, result], capture_output=True, text=True, timeout=15)
-                    self.assertEqual(run.returncode, 0 if result=='0' else 91, run.stderr)
+            # (timeline, result, timeline value at a timeout) -> exit code: 0 read back, 91 stopped before the readback
+            cases = {('0', '0', '0'): 0, ('0', '-4', '0'): 91, ('0', '2', '0'): 91,   # fences: success, device lost, timeout
+                     ('1', '0', '0'): 0, ('1', '-4', '0'): 91,
+                     ('1', '2', '0'): 0,   # timeline still short after a second: waits again
+                     ('1', '2', '1'): 0}   # timeline already past the value: a lost wakeup, carried on
+            for args, code in cases.items():
+                run = subprocess.run([str(exe), *args], capture_output=True, text=True, timeout=15)
+                self.assertEqual(run.returncode, code, (args, run.stderr))
 
     @unittest.skipUnless(host_cc.posix(), 'a POSIX host C compiler is required (<sys/mman.h>, pthread, setenv)')
     def test_allocation_and_fallback(self):

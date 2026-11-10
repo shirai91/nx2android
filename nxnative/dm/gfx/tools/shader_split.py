@@ -32,6 +32,7 @@
 #   · Monolith archives (Xenoblade Chronicles 3: bf3.arh index + bf3.ard data): HCPS shader archives (a control section and a code area per stage, vertex / pixel per program) in the files and in
 #       their xbc1 streams (zstd / zlib), see arh_entries, ard_shaders and spch_shaders
 #   · control sections loose in main, in no GLSLC output or BNSH file (Advance Wars 1+2: Re-Boot Camp's Bink 2 shaders): paired with their code areas by data records or adjacency, see raw_shaders
+#   · BERG (Ubisoft's Snowdrop, South Park: The Fractured But Whole; upstream's Mario + Rabbids games): shader objects in the zlib / zstd records of its SDF data slices, see snowdrop_shaders
 # Code area: 0x30 header + (graphics) 0x50 SPH + instructions; header magic 0x12345678 for graphics, 0x12345679 for compute. The control section starts with 0x98761234, +0x704 = code area length,
 #   +0x700 = start of the c1 constant segment within the code area; for compute +0x748 thread group xyz (u32 ×3), +0x754 shared memory bytes (checked one by one against PC reflection on D2R's 22 compute shaders).
 # Stage: BNSH uses the stage slot; BAHS uses bits 10..13 of SPH word 0 (1 vertex 2 hull 3 domain 4 geometry 5 pixel), and a compute header means compute.
@@ -43,9 +44,10 @@
 #   With an update: give RomFS and main as comma-separated lists (base game first, e.g. data/v0/RomFS,data/v327680/RomFS); the output is the union of both versions (see main())
 #   Unity type trees need Unity's common string table, which is taken from the first main
 # Pair table: (vertex key, pixel key) of every BNSH variation (every Unity program); dmsh_build uses it to give vertex shaders the outputs their pixel shaders read but they do not write (see dmsh_build.py vs_pad)
-import collections, concurrent.futures as cf, hashlib, json, os, re, struct, subprocess, sys
+import collections, concurrent.futures as cf, hashlib, json, os, re, struct, subprocess, sys, zlib
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../games')); import game as _game
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); import uepak
+from profile_guess import glsl_sources
 GAME = _game.load()   # the current game profile (DM_GAME, required): source group rules and the table header note
 GROUPS, NOTE = GAME.pairs('shader_groups'), GAME.get('shader_note')
 # The sources are what the game files hold, with no profile switch: GLSLC outputs in main (glslc_shaders), the outputs the game compiles at run time when a capture is there (DM_GLSLC_CAPTURE,
@@ -474,6 +476,98 @@ def mtarc_shaders(d, label, out):
         if m[:4] == MTSPK: out.extend(mtspk_shaders(m, f'{label}#{path}'))
 
 SCNE, ZSTD_MAGIC = b'SCNE', bytes.fromhex('28b52ffd')
+SNOWDROP_RECORD = rb'[\xc5\xc6]\x00\xcd\xab'
+def snowdrop_wrapped(d, label):
+    """Shader cache records can themselves be SDF zstd chunks. Peek at the decoded header of each frame, and finish only frames starting with a cache record, not other assets.
+    Incremental input keeps false frame magics and a large enclosing slice from causing an unbounded copy of all trailing bytes"""
+    zstd = zstd_mod()
+    for m in re.finditer(re.escape(ZSTD_MAGIC), d):
+        h = pos = m.start(); dec = zstd.ZstdDecompressor(); head = b''
+        try:
+            while len(head) < 20 and not dec.eof:
+                chunk = d[pos:pos + 0x20000] if dec.needs_input else b''
+                if dec.needs_input and not chunk: break
+                pos += len(chunk); head += dec.decompress(chunk, 20 - len(head))
+        except zstd.ZstdError: continue   # a magic inside another compressed asset
+        if len(head) != 20 or not re.match(SNOWDROP_RECORD, head): continue
+        parts = [head]
+        try:
+            while not dec.eof:
+                chunk = d[pos:pos + 0x20000] if dec.needs_input else b''
+                if dec.needs_input and not chunk: red(f'{label} Snowdrop chunk @{h:#x}: truncated frame')
+                pos += len(chunk); parts.append(dec.decompress(chunk))
+        except zstd.ZstdError as e: red(f'{label} Snowdrop chunk @{h:#x}: {e}')
+        yield h, pos - len(dec.unused_data), b''.join(parts)
+
+def snowdrop_sections(raw, where):
+    """The NVN shader sections of a decoded Snowdrop asset: each control section is followed directly by its code area, lengths from control +0x20 and +0x704, byte-packed (no alignment)"""
+    out = []
+    for cm in re.finditer(re.escape(CTL_MAGIC), raw):
+        c = cm.start()
+        if c + 0x708 > len(raw): continue
+        nc, nk = struct.unpack_from('<I', raw, c + 0x20)[0], struct.unpack_from('<I', raw, c + 0x704)[0]
+        if nc < 0x760 or nc & 3 or nk < 0x34 or c + nc + nk > len(raw): continue
+        ctl, code = raw[c:c + nc], raw[c + nc:c + nc + nk]
+        st = glslc_stage(ctl, code)
+        if st and not check(where, st, ctl, code): out.append((f'{where}:{c:#x}', st, ctl, code))
+    return out
+
+SNOWDROP_CHUNK = 0x10000
+SNOWDROP_ZLIB = re.compile(rb'[\x08\x18\x28\x38\x48\x58\x68\x78][\x00-\x1f\x40-\x5f\x80-\x9f\xc0-\xdf]')   # deflate, any window, no preset dictionary
+def snowdrop_streams(d, label):
+    """The older SDF slices (BERG version 22 as well, South Park: The Fractured But Whole, SDK 3.5.1) have no record headers: each asset is stored as bare zlib streams, one per 64 KB of its data,
+    back to back, with uncompressed assets (textures, sound) between them. Walk the streams from the start, resyncing at the next valid zlib header after anything that does not inflate; a run
+    of full 64 KB chunks continues into the next stream, so a shader that straddles a chunk boundary is joined. In that game three slices hold the shaders: 4,614 control sections, every one
+    followed by its code area (0x840-byte controls), as inside the newer records"""
+    out = []; pos = 0; run = []; start = 0; n = len(d)
+    def flush():
+        if run: out.extend(snowdrop_sections(b''.join(run), f'{label}#SNOWDROP@zlib{start:#x}'))
+        run.clear()
+    while pos < n - 2:
+        m = SNOWDROP_ZLIB.search(d, pos)
+        if not m: break
+        q = m.start()
+        if int.from_bytes(d[q:q + 2], 'big') % 31: pos = q + 1; continue
+        o = zlib.decompressobj()
+        try:
+            raw = o.decompress(d[q:q + 2 * SNOWDROP_CHUNK], SNOWDROP_CHUNK + 1)
+            ok = o.eof and len(raw) <= SNOWDROP_CHUNK
+        except zlib.error: ok = False
+        if not ok: flush(); pos = q + 1; continue
+        if q != pos or not run: flush(); start = q
+        run.append(raw); pos = q + min(n - q, 2 * SNOWDROP_CHUNK) - len(o.unused_data)
+        if len(raw) != SNOWDROP_CHUNK: flush()
+    flush()
+    return out
+
+def snowdrop_shaders(d, label, wrapped=True):
+    """Snowdrop's BERG data slices (SDF version 22): compressed shader records have a 20-byte header {0xabcd00c5 / 0xabcd00c6, flags, 0, raw length, stored length}, then zlib / zstd data.
+    The shader object inside keeps each control section immediately before its code area; its own +0x20 and +0x704 give their lengths. Both sections are byte-packed, without alignment, and
+    one record can hold more than one stage. Programs hold one stage; pairs are selected at draw time. Some cache records are wrapped in zstd chunks: only decoded frames starting with the cache
+    header are shader assets. Scan by the record header and peek at decoded chunk headers, not by slice names: compressed bytes can contain a coincidental frame header.
+    Ported from upstream nxnative (5708054, f838995: Mario + Rabbids Sparks of Hope uses c6 with zstd, Kingdom Battle c5 with zlib, some wrapped)"""
+    zstd_m = zstd_mod()
+    chunks = list(snowdrop_wrapped(d, label)) if wrapped else []
+    out = []; ci = 0
+    for m in re.finditer(SNOWDROP_RECORD, d):
+        h = m.start()
+        while ci < len(chunks) and h >= chunks[ci][1]: ci += 1
+        if ci < len(chunks) and h >= chunks[ci][0]: continue   # literal bytes inside a zstd block are not a separately stored record
+        if h + 24 > len(d): continue
+        zs = d[h] == 0xc6
+        if zs:
+            if d[h + 20:h + 24] != ZSTD_MAGIC: continue
+        elif d[h + 20] & 0xf != 8 or int.from_bytes(d[h + 20:h + 22], 'big') % 31: continue
+        nraw, nstored = struct.unpack_from('<II', d, h + 12)
+        if not nstored or h + 20 + nstored > len(d): red(f'{label} Snowdrop record @{h:#x}: stored bytes out of bounds')
+        stored = d[h + 20:h + 20 + nstored]
+        raw = zstd_m.decompress(stored) if zs else zlib.decompress(stored)
+        if len(raw) != nraw: red(f'{label} Snowdrop record @{h:#x}: expected {nraw} raw bytes, got {len(raw)}')
+        out += snowdrop_sections(raw, f'{label}#SNOWDROP@{h:#x}')
+    for h, _, raw in chunks:
+        out += snowdrop_shaders(raw, f'{label}#SDFZSTD@{h:#x}', wrapped=False)
+    return out
+
 def bea_members(d, label):
     """NintendoWare Bezel Engine archive ('.bea', magic 'SCNE', a NintendoWare binary file of version 0x10100; Big Brain Academy: Brain vs. Brain keeps nearly all of RomFS in 603 of them):
     +0x20 u64 entry count, +0x28 u64 offset of the entry pointer array (u64 each), each pointing at a 0x30-byte 'ASST' entry {+0x10 u16 kind, u16 alignment shift, u32 stored length,
@@ -1333,7 +1427,7 @@ def ps_inputs(code):
     """Generic attributes a pixel shader reads: SPH words 6–13 are the input map, 8 bits for each of the 32 attributes (Ryujinx ShaderHeader.ImapTypes), non-zero = read; the translated MSL inputs are exactly user(locn<attribute>)"""
     return {i for i in range(32) if struct.unpack_from('<I', code, 0x30 + 4 * (6 + (i >> 2)))[0] >> ((i & 3) * 8) & 0xff}
 
-SINGLE_STAGE = ('#GLSLC@', '#UE', '#MTSPK@', '#MGFX@', '#NLG', '#PGSO', '#RAW@')   # sources whose every shader is a program of one stage: GLSLC outputs, Unreal's shader records, MT Framework's shader package (BNSH variations, Unity programs, MSHD and SDF pair theirs);
+SINGLE_STAGE = ('#GLSLC@', '#UE', '#MTSPK@', '#MGFX@', '#NLG', '#PGSO', '#RAW@', '#SNOWDROP@')   # sources whose every shader is a program of one stage: GLSLC outputs, Unreal's shader records, MT Framework's shader package (BNSH variations, Unity programs, MSHD and SDF pair theirs);
 # MonoGame's effects, whose passes may name no vertex shader and keep the one bound (Celeste: 10 of its 13 effects draw through SpriteBatch's vertex shader, which is in main); Next Level Games'
 # archives (Luigi's Mansion 3 makes 5,317 programs of one stage each at boot); PlatinumGames' shader objects (Bayonetta 3: one stage each, pg_shader); and control sections loose in main
 # (Advance Wars 1+2: Re-Boot Camp's Bink shaders, raw_shaders), which no file pairs
@@ -1426,6 +1520,10 @@ def scan_file(args):
     if head[:4] == SPKG or head[:4] == b'\0\0\1\0' and path.endswith('.gz'):   # Three Houses' loose shader packages and chunked zlib files (kt_shaders)
         kt_shaders(open(path, 'rb').read(), '/' + rel, found)
         return rel, uniq_keys(found), var_pairs(found), trees
+    if head[:4] == b'BERG':   # Snowdrop's SDF data slices: shader objects in individual compressed records (snowdrop_shaders)
+        with open(path, 'rb') as f: d = f.read()
+        found += snowdrop_shaders(d, '/' + rel) or snowdrop_streams(d, '/' + rel)   # the newer records, else the older bare streams
+        return rel, uniq_keys(found), var_pairs(found), trees
     if head[:4] == MTARC:   # an MT Framework archive (mtarc_members): its shader package
         mtarc_shaders(open(path, 'rb').read(), '/' + rel, found)
         return rel, uniq_keys(found), var_pairs(found), trees
@@ -1491,7 +1589,7 @@ def main():
         # calls glslcCompile in a module it loads (Fire Emblem: Three Houses; profile_guess.py shader_sources). Captain Toad: Treasure Tracker imports it with agl's GLSL sources, but no module defines it
         cap = os.environ.get('DM_GLSLC_CAPTURE') or os.path.join(os.path.dirname(os.path.abspath(romfs)), 'glslc_capture')
         names = sorted(f for f in os.listdir(cap) if f.endswith('.glslc')) if os.path.isdir(cap) else []
-        if not names and img.count(b'#version ') and 'glslcCompile' in main_imports(img) and glslc_module(os.path.dirname(os.path.abspath(mainnso))):
+        if not names and glsl_sources(img) and 'glslcCompile' in main_imports(img) and glslc_module(os.path.dirname(os.path.abspath(mainnso))):
             print(f'[RED] main holds GLSL sources and imports glslcCompile, but there are no captured GLSLC outputs in {cap}: the shaders the game compiles at run time will have no translation', flush=True)
         for nm in names: found += glslc_shaders(open(os.path.join(cap, nm), 'rb').read(), f'/glslc_capture/{nm}')
         # Unreal Engine shader code archives decoded on the Mac (uepak.py): <version dir>/ue_shaders, or DM_UE_SHADERS; needed when the RomFS has Unreal paks
@@ -1565,7 +1663,7 @@ def main():
         kinds = ' / '.join(k for k, hit in (('BNSH / BAHS', any('#BNSH@' in r[4] or '#BAHS@' in r[4] for r in rows)), ('Unity Shader', any('#var' in r[4] and '#BNSH@' not in r[4] and '#MSHD#' not in r[4] and '#SDF#' not in r[4] and '#HCPS@' not in r[4] and '#SLCT@' not in r[4] for r in rows)),
                                             ('MSHD', any('#MSHD#' in r[4] for r in rows)), ('GLSLC', any('#GLSLC@' in r[4] for r in rows)), ('RE Engine SDF', any('#SDF#' in r[4] for r in rows)),
                                             ('MT Framework SPK', any('#MTSPK@' in r[4] for r in rows)), ('MonoGame MGFX', any('#MGFX@' in r[4] for r in rows)),
-                                            ('PlatinumGames shader objects', any('#PGSO' in r[4] for r in rows)), ('Monolith SLCT', any('#HCPS@' in r[4] or '#SLCT@' in r[4] for r in rows)),
+                                            ('PlatinumGames shader objects', any('#PGSO' in r[4] for r in rows)), ('Snowdrop shader objects', any('#SNOWDROP@' in r[4] for r in rows)), ('Monolith SLCT', any('#HCPS@' in r[4] or '#SLCT@' in r[4] for r in rows)),
                                             ('Unreal Engine shader code archives', any('#UE' in r[4] for r in rows))) if hit)
         f.write(f'# kind: evidence  {NOTE} ({kinds} in RomFS + main) → control section + code area keys (dm/gfx/tools/shader_split.py)\n')
         f.write('# column 5 records where each key first appears; this game has no PC version to pair with\n')

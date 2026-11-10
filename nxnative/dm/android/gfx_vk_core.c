@@ -129,6 +129,33 @@ static int drv_has_gpu(PFN_vkGetInstanceProcAddr g) {
     return ok;
 }
 
+// Turnip on an Adreno 740 beside a Qualcomm driver of v7xx or later: the GPU register TPL1_DBG_ECO_CNTL1.TP_UBWC_FLAG_HINT is shared by every driver on the GPU,
+// Qualcomm's sets it from v7xx on, Mesa's a740 default leaves it off, so Turnip flips it under the compositor and whatever Android draws from compressed buffers with
+// Qualcomm's driver (an overlay, a screenshot) flickers full-screen (the Odin 2 Portal, 512.863). Mesa reads FD_DEV_FEATURES at its first device, so it is set here,
+// before the driver loads, from the system driver's own answer (DroidDeck's rule, TpUbwcHint.kt: model 740, the version's middle number >= 700). A value already set wins
+static void tu_ubwc_hint(void) {
+    if (getenv("FD_DEV_FEATURES")) return;
+    void *sys = dlopen("libvulkan.so", RTLD_NOW | RTLD_LOCAL); if (!sys) return;
+    PFN_vkGetInstanceProcAddr g = (PFN_vkGetInstanceProcAddr)dlsym(sys, "vkGetInstanceProcAddr"); if (!g) return;
+    PFN_vkCreateInstance ci = (PFN_vkCreateInstance)g(NULL, "vkCreateInstance"); VkInstance in;
+    VkApplicationInfo app = {VK_STRUCTURE_TYPE_APPLICATION_INFO, NULL, "dmhost", 1, "nxnative", 1, VK_API_VERSION_1_1};
+    VkInstanceCreateInfo ici = {VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, NULL, 0, &app, 0, NULL, 0, NULL};
+    if (!ci || ci(&ici, NULL, &in)) return;
+    PFN_vkEnumeratePhysicalDevices ep = (PFN_vkEnumeratePhysicalDevices)g(in, "vkEnumeratePhysicalDevices");
+    PFN_vkGetPhysicalDeviceProperties gp = (PFN_vkGetPhysicalDeviceProperties)g(in, "vkGetPhysicalDeviceProperties");
+    PFN_vkDestroyInstance di = (PFN_vkDestroyInstance)g(in, "vkDestroyInstance");
+    VkPhysicalDevice pd[4]; uint32_t n = 4;
+    if (ep && gp && ep(in, &n, pd) >= 0 && n) {
+        VkPhysicalDeviceProperties p; gp(pd[0], &p);
+        unsigned mid = (p.driverVersion >> 12) & 0x3ff;   // Qualcomm's 512.863.1 is 512 << 22 | 863 << 12 | 1
+        if (p.vendorID == 0x5143 && strstr(p.deviceName, "740")) {
+            int on = mid >= 700; setenv("FD_DEV_FEATURES", on ? "enable_tp_ubwc_flag_hint=1" : "enable_tp_ubwc_flag_hint=0", 1);
+            VKLOG("Turnip on %s beside Qualcomm's driver %u.%u: FD_DEV_FEATURES=enable_tp_ubwc_flag_hint=%d (the GPU's shared UBWC hint as Qualcomm's driver keeps it)", p.deviceName, p.driverVersion >> 22, mid, on);
+        }
+    }
+    if (di) di(in, NULL);   // (the system's loader stays loaded: the game's own device comes from the custom driver's copy)
+}
+
 void vk_init(void) {
     static int done; if (done) return; done = 1;
     // DM_VK_DRIVER=<library>: a Vulkan driver the APK carries (Mesa's Turnip for Adreno; porter --vulkan-driver), loaded through libadrenotools (BSD-2-Clause), which the
@@ -138,6 +165,7 @@ void vk_init(void) {
     // against 22-27 ms here on Qualcomm's driver. A driver that does not load, or offers no Vulkan 1.3 GPU, leaves the system's
     const char *drv = getenv("DM_VK_DRIVER"); void *lib = NULL;
     if (drv && *drv) {
+        tu_ubwc_hint();
         Dl_info di; char dir[512] = "", dirs[520] = "";   // the APK's extracted libraries (mkapk.py: extractNativeLibs), where adrenotools finds its hooks and the driver
         if (dladdr((void *)vk_init, &di) && di.dli_fname && strrchr(di.dli_fname, '/')) {
             snprintf(dir, sizeof dir, "%.*s", (int)(strrchr(di.dli_fname, '/') - di.dli_fname), di.dli_fname); snprintf(dirs, sizeof dirs, "%s/", dir); }
@@ -913,8 +941,17 @@ int mtl_wait(uint64_t fence, uint64_t timeout_ns);
 static void wait_fence(uint64_t f) {
     if (!f) return;
     if (!V.has_timeline) { mtl_wait(f, ~0ull); return; }
+    // A second at a time, not forever: on the Odin 2 Portal (Adreno 740) a wait that a signal interrupted (a thread dump parks every thread, the yield
+    // watchdog's included) once never woke up although the GPU had long passed the value, and the game hung for 414 s in South Park. Asking again
+    // sees the value at once
     VkSemaphoreWaitInfo wi = {VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, NULL, 0, 1, &g_timeline, &f};
-    VkResult r = vkWaitSemaphores(V.dev, &wi, UINT64_MAX); if (r != VK_SUCCESS) die("[vk] GPU timeline wait did not complete: %d", r);
+    for (;;) {
+        VkResult r = vkWaitSemaphores(V.dev, &wi, 1000000000ull);
+        if (r == VK_SUCCESS) return;
+        if (r != VK_TIMEOUT) die("[vk] GPU timeline wait did not complete: %d", r);
+        uint64_t v = 0; vkGetSemaphoreCounterValue(V.dev, g_timeline, &v);
+        if (v >= f) { VKRED_ONCE(91, "GPU timeline wait for %llu still waiting after 1 s with the timeline at %llu: a lost wakeup, carried on", (unsigned long long)f, (unsigned long long)v); return; }
+    }
 }
 // The slot's command buffers are reset on the completion thread once its submission is done (completion_main), not when the replay begins them again: an
 // implicit reset at vkBeginCommandBuffer took 7% of Xenoblade Chronicles 3's replay thread at a submission's start and more at every part (its battles
