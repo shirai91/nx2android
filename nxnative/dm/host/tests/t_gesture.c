@@ -6,6 +6,7 @@
 #include <stdint.h>
 typedef struct { uint32_t id; float x, y; } dm_touch;
 void dm_touch_set(const dm_touch *t, int n);
+int dm_opmode(void) { return 0; }   // hle_oe.c: handheld (hle_touch.c DM_TOUCH_DOCKED applies docked only)
 int gesture_fill(void *out, int n, uint64_t now_ns);
 typedef struct { int64_t samp, ctx; int32_t type, dir, x, y, dx, dy; float vx, vy; uint32_t attr; float scale, rot; int32_t npt, pt[4][2]; } gesture_state;
 enum { IDLE, COMPLETE, CANCEL, TOUCH, PRESS, TAP, PAN, SWIPE, PINCH, ROTATE };

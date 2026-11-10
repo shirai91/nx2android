@@ -25,6 +25,10 @@ void dm_ctl_cvar_i32(uint64_t off, int32_t v) { (void)off; (void)v; }
 void dm_ctl_cvar_f32(uint64_t off, float v) { (void)off; (void)v; }
 void dm_gfx_texdump_next(const char *path) { (void)path; }
 void dm_gfx_passdump_next(long n) { (void)n; }
+void dm_ctl_poke_i32(uint64_t a, int32_t v) { (void)a; (void)v; }   // DM_CTL's other commands (hle_fpslock.c, hle_thread.c, hle_count.c): not used here
+void dm_yield_top(char *out, size_t n) { if (n) out[0] = 0; }
+void hlecount_dump(const char *path) { (void)path; }
+void svc_thread_dump(void) {}
 
 static uint64_t buttons_of(uint32_t id, uint32_t style) { NpadState s; fill(&s, id, style); return s.attributes ? s.buttons & 0xffff : 0; }
 static int32_t lx_of(uint32_t id) { NpadState s; fill(&s, id, STYLE_FULLKEY); return s.lx; }
