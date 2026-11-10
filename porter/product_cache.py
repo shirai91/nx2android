@@ -22,12 +22,13 @@ def inventory(root):
 
 
 def file_state(product):
-    """Cheap identity for a bundle; ctime also catches edits that restore mtime."""
-    # Windows ctime is creation time, so restored mtime cannot prove unchanged bytes.
-    if os.name == 'nt': return None
+    """Cheap identity for a file product; directories always use their inventories."""
     product = Path(product)
     if not product.is_file(): return None
     st = product.stat()
+    # Windows ctime is creation time, so the fast path cannot detect a
+    # same-size edit that restores the original mtime.
+    if os.name == 'nt': return [st.st_size, st.st_mtime_ns]
     return [st.st_size, st.st_mtime_ns, st.st_ctime_ns, st.st_dev, st.st_ino]
 
 

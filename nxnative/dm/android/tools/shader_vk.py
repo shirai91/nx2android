@@ -394,13 +394,13 @@ def main():
     keys = keys + sorted(gs_var)
     if not keys: raise ValueError('no shaders selected for export')
     if a.report and os.path.abspath(a.report) == os.path.abspath(a.out): raise ValueError('shader report must not overwrite the bundle')
-    failures, rs = {}, []
+    batch_errors, failures, rs = {}, {}, []
     def xl(ch):
         result = None
         try:
             jp = os.path.join(w, f'job_{abs(hash(ch[0]))}.json'); Path(jp).write_text(json.dumps([jobs[k] for k in ch]), encoding='utf-8')
             result = subprocess.run([a.dotnet, XLATE_DLL, jp, w], capture_output=True, text=True, errors='replace')
-            shader_products.check_batch(result, ch, w)
+            shader_products.check_batch(result, len(ch))
             return result, None
         except Exception as e:
             return result, str(e)
@@ -409,8 +409,9 @@ def main():
         with cf.ThreadPoolExecutor(len(chunks)) as ex:
             for ch, (result, error) in zip(chunks, ex.map(xl, chunks)):
                 if result is not None: rs.append(result)
-                if error is not None:
-                    for k in ch: failures[k] = error
+                # A failed process may have written valid products before it stopped.
+                # Keep its diagnostic for keys with no output, and validate each product.
+                batch_errors.update(dict.fromkeys(ch, error))
     print(f'translating {len(keys)} shaders in {min(a.jobs, len(keys))} batches ...', flush=True)
     translate(keys)
     # second pass (as the Mac chain's dmsh_build.py finish): vertex shaders with inputs used only as integers, translated again with those inputs reported as uint (int_inputs)
@@ -441,7 +442,7 @@ def main():
         try:
             if k in failures: raise ValueError(failures[k])
             product = shader_products.output(w, k, STAGES[stages[k]])
-            if product is None: raise ValueError('no output')
+            if product is None: raise ValueError(batch_errors[k] or 'no output')
             spv, res = product
             binds, local, io = spirv_bindings(spv)
             shader_products.validate_bindings(binds, res)

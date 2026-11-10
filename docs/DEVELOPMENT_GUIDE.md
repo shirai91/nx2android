@@ -158,13 +158,12 @@ completion before the next epoch. GPU-written segments must remain outside this
 immutable cache. Full descriptor-set key
 equality is separate; these tests do not measure device performance.
 
-Shader and translator reuse also checks content receipts: relative output names,
-sizes and SHA-256 hashes, including translator dependencies. On POSIX, matching
-size, modification/change timestamps and file identity avoid reading it again;
-changed metadata falls back to hashing, and unchanged contents refresh that fast
-path. Windows retains content hashing because its change timestamp is creation
-time, which cannot detect edits that restore modification time. Missing/changed/extra
-translator files and altered bundles trigger a rebuild.
+Shader and translator reuse checks content receipts with relative output names,
+sizes and SHA-256 hashes, including translator dependencies. The bundle takes
+the fast path when size and modification time match on Windows. POSIX also
+checks change time and file identity. Changed metadata falls back to hashing,
+and matching contents refresh the recorded metadata. The Windows fast path can
+miss a same-size edit that preserves the original modification time.
 The shader key includes the translator's actual output bytes and the export helpers
 `shader_vk.py`, `dmsv.py` and `shader_products.py`; unrelated Android tools do not
 invalidate it. Inputs changing during generation stop publication. The changed key
@@ -172,18 +171,18 @@ and receipt format make existing ports translate once before reuse resumes.
 
 The exporter records every expected shader (including geometry topology variants)
 and failed key/reason in `shaders.dmsv.report.json`. It checks SPIR-V framing and
-entry-point stage and requires reflection beside each emitted module. A bad shader
-or failed translator batch is omitted with a `[RED]` diagnostic; other shaders
-continue. Retrying integer vertex inputs first removes the old pass's outputs, so
-a failed retry cannot publish the incompatible first pass. The porter checks only
-the emitted keys/stages against the expected and failed inventory: `dmsv.write`
-already reads each payload back and the runtime checks framing and reflection.
-This is structural validation, not semantic `spirv-val` or device qualification.
-Best-effort exports, including ones with failed shaders, are reusable while inputs
-and products remain unchanged. The failure report is published before the receipt
-and its digest is checked on reuse; a missing or changed report triggers a rebuild.
-The receipt notes the failure count; a changed input triggers translation again. `test_shader_cache` and
-`test_shader_export_checks` exercise these contracts without game files or a GPU.
+entry-point stage and requires reflection beside each emitted module. Valid
+products from an interrupted batch are kept. Missing or invalid outputs get a
+`[RED]` diagnostic. Before retrying integer vertex inputs, the exporter removes
+the first pass's outputs to prevent reuse of an incompatible input interface.
+`dmsv.write` reads each payload back and the runtime checks framing and reflection.
+The porter compares the emitted keys and stages with the expected and failed
+inventory and rejects an empty result before publishing the bundle, report or
+receipt. An export with at least one valid shader can be reused with unchanged
+inputs and products. The receipt records the failure count and the published
+report's digest. A missing or changed report or changed input triggers a rebuild.
+`test_shader_cache` and `test_shader_export_checks` exercise these contracts without
+game files or a GPU.
 
 Native harnesses discover Vulkan headers through `ANDROID_NDK_HOME` (or the
 porter tool installation). Set it to an installed NDK when the SDK is outside the

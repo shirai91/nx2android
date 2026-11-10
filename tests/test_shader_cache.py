@@ -38,7 +38,7 @@ class ShaderCache(unittest.TestCase):
         p.env = dict(os.environ); p.derived = p.provisional = False; p.oodle_why = ''; p.aoc = []
         p.o = pipeline.Options(self.root, jobs=1); p.tools = {'dotnet': sys.executable}
         self.dll = self.root / 'translator/dmsh_xlate.dll'; self.dll.parent.mkdir(); self.dll.write_bytes(b'translator')
-        self.exports = self.builds = 0; self.partial = False; self.during_export = None
+        self.exports = self.builds = 0; self.partial = self.empty = False; self.during_export = None
         self.addCleanup(mock.patch.stopall)
         mock.patch.object(nsp, 'split_shaders').start()
         mock.patch.object(pipeline.Port, 'device_oodle_end').start()
@@ -55,14 +55,18 @@ class ShaderCache(unittest.TestCase):
             return
         self.exports += 1
         out = Path(argv[3])
-        dmsv.write(str(out), [(1, 5, SPV, REFL)], level=0)
+        entries = [] if self.empty else [(1, 5, SPV, REFL)]
+        dmsv.write(str(out), entries, level=0)
         expected = [['0000000000000001', 5]]
-        if self.partial: expected.append(['0000000000000002', 5])
+        failed = [['0000000000000001', 'no output']] if self.empty else []
+        if self.partial:
+            expected.append(['0000000000000002', 5])
+            failed.append(['0000000000000002', 'no output'])
         if '--report' in argv:
             Path(argv[argv.index('--report') + 1]).write_text(json.dumps({
                 'schema': 1, 'expected': expected,
-                'failed': [['0000000000000002', 'no output']] if self.partial else []}))
-        Path(logfile).write_text(f'1 of {len(expected)} shaders -> bundle\n')
+                'failed': failed}))
+        Path(logfile).write_text(f'{len(entries)} of {len(expected)} shaders -> bundle\n')
         if self.during_export: self.during_export()
 
     def export(self):
@@ -75,13 +79,33 @@ class ShaderCache(unittest.TestCase):
         self.assertEqual(self.exports, 1)
         self.assertEqual(self.p.dmsv.read_bytes(), first)
 
-    def test_same_size_corruption_rebuilt_even_with_original_mtime(self):
-        self.export(); path = self.p.dmsv; original = path.read_bytes(); st = path.stat()
-        path.write_bytes(original[:-1] + bytes([original[-1] ^ 1]))
-        os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns))
+    def test_posix_same_size_corruption_rebuilt_even_with_original_mtime(self):
+        product = self.root / 'bundle'; original = b'original'
+        product.write_bytes(original)
+        receipt = self.root / 'receipt'
+        posix = SimpleNamespace(name='posix', fsync=os.fsync, replace=os.replace)
+        st = SimpleNamespace(st_size=len(original), st_mtime_ns=1, st_ctime_ns=2,
+                             st_dev=3, st_ino=4, st_mode=0o100600)
+        actual_stat = Path.stat
+        def stat_with_controlled_ctime(path, *args, **kwargs):
+            return st if path == product else actual_stat(path, *args, **kwargs)
+        with mock.patch.object(product_cache, 'os', posix), mock.patch.object(Path, 'stat', stat_with_controlled_ctime):
+            product_cache.stamp(receipt, 'key', product, 'bundle')
+            product.write_bytes(b'changed!')
+            st.st_ctime_ns += 1
+            self.assertIsNone(product_cache.reused(receipt, 'key', product))
+
+    def test_empty_export_preserves_previous_products_and_receipt(self):
+        self.partial = True
         self.export()
-        self.assertEqual(self.exports, 2)
-        self.assertEqual(path.read_bytes(), original)
+        published = [self.p.aw / name for name in ('shaders.dmsv', 'shaders.dmsv.report.json', 'shaders.dmsv.key')]
+        original = [path.read_bytes() for path in published]
+        (self.p.work / 'shader/pkg/cs.bin').write_bytes(b'changed shader input')
+        self.partial = False
+        self.empty = True
+        with self.assertRaisesRegex(pipeline.BuildError, 'no shader translated'):
+            self.export()
+        self.assertEqual([path.read_bytes() for path in published], original)
 
     def test_partial_export_reused_with_failed_inventory(self):
         self.partial = True; self.export(); self.export()
@@ -151,20 +175,17 @@ class ShaderCache(unittest.TestCase):
         report.write_text('{}'); self.export(); self.assertEqual(self.exports, 3)
         self.assertEqual(json.loads(report.read_text())['failed'], [['0000000000000002', 'no output']])
 
-    def test_windows_restored_mtime_edit_is_not_reused(self):
+    def test_windows_bundle_fast_path_and_hash_after_metadata_change(self):
         product = self.root / 'bundle'; product.write_bytes(b'original')
         receipt = self.root / 'receipt'
-        # Windows ctime records creation; a same-size edit can restore every stat field.
-        st = SimpleNamespace(st_size=8, st_mtime_ns=1, st_ctime_ns=2, st_dev=3, st_ino=4, st_mode=0o100600)
-        actual_stat = Path.stat
-        def windows_stat(path, *args, **kwargs):
-            return st if path == product else actual_stat(path, *args, **kwargs)
-        # Patch only product_cache's OS view so pathlib still uses this host's paths.
-        with mock.patch.object(product_cache, 'os', SimpleNamespace(name='nt', fsync=os.fsync, replace=os.replace)), \
-             mock.patch.object(Path, 'stat', windows_stat):
+        windows = SimpleNamespace(name='nt', fsync=os.fsync, replace=os.replace)
+        with mock.patch.object(product_cache, 'os', windows):
             product_cache.stamp(receipt, 'key', product, 'bundle')
-            self.assertEqual(product_cache.reused(receipt, 'key', product), 'bundle')
+            with mock.patch.object(product_cache, 'inventory', side_effect=AssertionError('unchanged bundle was hashed')):
+                self.assertEqual(product_cache.reused(receipt, 'key', product), 'bundle')
+            st = product.stat()
             product.write_bytes(b'changed!')
+            os.utime(product, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
             self.assertIsNone(product_cache.reused(receipt, 'key', product))
 
     def test_inputs_changed_during_export_preserve_previous_bundle(self):

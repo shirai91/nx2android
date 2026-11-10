@@ -692,6 +692,7 @@ class Port:
             if input_key() != key: raise ValueError('shader inputs changed during export; port again')
         except (OSError, ValueError, TypeError, KeyError) as e:
             raise BuildError(f'invalid shader export: {e} (see {self.logs / "android_shaders.log"})') from e
+        if count == 0: raise BuildError(f'no shader translated (see {self.logs / "android_shaders.log"})')
         note = f'{count:,} of {expected:,} shaders, {tmp.stat().st_size / 2**20:,.0f} MB'
         # Unsupported shaders are deterministic for these inputs; retain their report on reuse.
         if not complete:

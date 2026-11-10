@@ -28,15 +28,14 @@ def validate_spirv(data, stage):
     if models != [MODELS[stage]]: raise ValueError('SPIR-V entry point does not match shader stage')
 
 
-def check_batch(result, keys, directory):
+def check_batch(result, count):
     # dmsh_xlate returns 1 for a completed batch containing unsupported shaders.
     # Its final summary distinguishes that result from a crash or truncated run.
     lines = result.stdout.rstrip().splitlines()
     summary = re.fullmatch(r'translated: (\d+) ok, (\d+) failed', lines[-1]) if lines else None
     if summary:
         ok, bad = map(int, summary.groups())
-        produced = sum((Path(directory) / f'{key}.spv').is_file() for key in keys)
-        if ok + bad == len(keys) and result.returncode == bool(bad) and produced == ok:
+        if ok + bad == count and result.returncode == bool(bad):
             return
     raise RuntimeError('shader translator did not complete its batch: ' + result.stderr[-2000:])
 

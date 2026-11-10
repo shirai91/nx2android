@@ -57,13 +57,16 @@ class ExportChecks(unittest.TestCase):
         for job in jobs:
             broken = self.bad_key is None or job['key'] == self.bad_key
             if self.behavior == 'partial' and job['key'].endswith('2'): bad += 1; continue
+            if broken and self.behavior in ('process-failed', 'crash-after-output'): bad += 1; continue
             if broken and self.behavior == 'second-missing' and job['attr']: bad += 1; continue
             key = job['key']
             (dest / f'{key}.spv').write_bytes(b'bad module' if broken and self.behavior == 'bad-module' else module(self.stage))
+            if broken and self.behavior == 'failed-after-spv': bad += 1; continue
             if self.reflect or not broken: (dest / f'{key}.res.json').write_text(json.dumps(self.bad_resource if broken and self.bad_resource is not None else reflection(key, self.stage)))
         summary = f'translated: {len(jobs)-bad} ok, {bad} failed\n'
-        return subprocess.CompletedProcess(argv, 17 if affected and self.behavior == 'process-failed' else 1 if bad else 0,
-                                           summary, 'injected translator failure' if self.behavior == 'process-failed' else '')
+        if affected and self.behavior in ('process-failed', 'crash-after-output'):
+            return subprocess.CompletedProcess(argv, 17, '', 'injected translator failure')
+        return subprocess.CompletedProcess(argv, 1 if bad else 0, summary, '')
 
     def run_export(self):
         table = self.root / 'shader_map.tsv'
@@ -114,6 +117,20 @@ class ExportChecks(unittest.TestCase):
             with self.subTest(behavior=behavior):
                 self.behavior = behavior; self.run_export()
                 self.assert_failed(self.bad_key, 'translator', [1])
+
+    def test_crashed_batch_retains_valid_output_from_same_batch(self):
+        self.second_shader = True
+        self.bad_key = '0000000000000002'
+        self.behavior = 'crash-after-output'
+        self.run_export()
+        self.assert_failed(self.bad_key, 'translator', [1])
+
+    def test_completed_batch_retains_valid_shader_when_failed_shader_left_spirv(self):
+        self.second_shader = True
+        self.bad_key = '0000000000000002'
+        self.behavior = 'failed-after-spv'
+        self.run_export()
+        self.assert_failed(self.bad_key, 'omitted reflection', [1])
 
     def test_all_failed_shaders_keep_best_effort_empty_export(self):
         self.behavior = 'process-failed'; self.run_export()
@@ -181,14 +198,13 @@ class ProductValidation(unittest.TestCase):
 
     def test_batch_exit_protocol_requires_complete_matching_summary(self):
         import shader_products
-        with tempfile.TemporaryDirectory() as tmp:
-            for code, summary in [(1, ''), (1, 'translated: 0 ok, 2 failed'),
-                                  (0, 'translated: 0 ok, 1 failed'),
-                                  (1, 'translated: 1 ok, 0 failed'),
-                                  (1, 'translated: 0 ok, 1 failed\ncrashed')]:
-                with self.subTest(code=code, summary=summary), self.assertRaises(RuntimeError):
-                    shader_products.check_batch(subprocess.CompletedProcess([], code, summary, ''), ['key'], tmp)
-            shader_products.check_batch(subprocess.CompletedProcess([], 1, 'translated: 0 ok, 1 failed\n', ''), ['key'], tmp)
+        for code, summary in [(1, ''), (1, 'translated: 0 ok, 2 failed'),
+                              (0, 'translated: 0 ok, 1 failed'),
+                              (1, 'translated: 1 ok, 0 failed'),
+                              (1, 'translated: 0 ok, 1 failed\ncrashed')]:
+            with self.subTest(code=code, summary=summary), self.assertRaises(RuntimeError):
+                shader_products.check_batch(subprocess.CompletedProcess([], code, summary, ''), 1)
+        shader_products.check_batch(subprocess.CompletedProcess([], 1, 'translated: 0 ok, 1 failed\n', ''), 1)
 
     def test_bundle_inventory_checked_without_reading_payloads_in_both_versions(self):
         import shader_products
