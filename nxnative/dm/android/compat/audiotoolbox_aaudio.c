@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include "audio_route_policy.h"
 
 struct dm_audio_component { int unused; };
 struct dm_audio_unit {
@@ -28,6 +29,8 @@ struct dm_audio_unit {
 static struct dm_audio_component g_output;
 static _Atomic int32_t g_output_device;
 void dm_aaudio_set_device(int32_t id) { atomic_store(&g_output_device, id); }
+int32_t dm_aaudio_get_device(void) { return atomic_load(&g_output_device); }
+int dm_aaudio_route_stale(AudioUnit u) { return u && u->requested_device != atomic_load(&g_output_device); }
 
 AudioComponent AudioComponentFindNext(AudioComponent after, const AudioComponentDescription *d) {
     return !after && d && d->componentType == kAudioUnitType_Output ? &g_output : NULL;
@@ -69,7 +72,10 @@ static aaudio_data_callback_result_t on_data(AAudioStream *st, void *ud, void *a
     atomic_fetch_sub(&u->in_cb, 1); (void)st; return AAUDIO_CALLBACK_RESULT_CONTINUE;
 }
 static void on_error(AAudioStream *st, void *ud, aaudio_result_t err) {
-    (void)st; atomic_store(&((AudioUnit)ud)->failed, 1); __android_log_print(ANDROID_LOG_WARN, "dmhost", "AAudio stream error %d (%s): the host's watchdog restarts it", err, AAudio_convertResultToText(err));
+    (void)st; AudioUnit u = ud; atomic_store(&u->failed, 1);
+    if (err == AAUDIO_ERROR_DISCONNECTED && audio_route_fallback(&g_output_device, u->requested_device))
+        __android_log_print(ANDROID_LOG_WARN, "dmhost", "AAudio selected device disconnected; falling back to system output");
+    __android_log_print(ANDROID_LOG_WARN, "dmhost", "AAudio stream error %d (%s): the host's watchdog restarts it", err, AAudio_convertResultToText(err));
 }
 // requestStop only asks: the data callback may still be running after it returns, and the host frees the output it pulls from once the unit is stopped
 // (hle_audio.c au_close; games close and open outputs when the operation mode changes). So ending a stream (uninitialize, dispose, opening a new one) waits
