@@ -396,7 +396,7 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
             {
                 if (context.Definitions.Stage != ShaderStage.Vertex)
                 {
-                    SpvInstruction perVertexInputStructType = CreatePerVertexStructType(context);
+                    SpvInstruction perVertexInputStructType = CreatePerVertexStructType(context, false);
                     int arraySize = context.Definitions.Stage == ShaderStage.Geometry ? context.Definitions.InputTopology.InputVertexCount : 32;
                     SpvInstruction perVertexInputArrayType = context.TypeArray(perVertexInputStructType, context.Constant(context.TypeU32(), arraySize));
                     SpvInstruction perVertexInputPointerType = context.TypePointer(StorageClass.Input, perVertexInputArrayType);
@@ -414,11 +414,10 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
                         context.MemberDecorate(perVertexInputStructType, 0, Decoration.PassthroughNV);
                         context.MemberDecorate(perVertexInputStructType, 1, Decoration.PassthroughNV);
                         context.MemberDecorate(perVertexInputStructType, 2, Decoration.PassthroughNV);
-                        context.MemberDecorate(perVertexInputStructType, 3, Decoration.PassthroughNV);
                     }
                 }
 
-                SpvInstruction perVertexOutputStructType = CreatePerVertexStructType(context);
+                SpvInstruction perVertexOutputStructType = CreatePerVertexStructType(context, true);
 
                 void DecorateTfo(IoVariable ioVariable, int fieldIndex)
                 {
@@ -454,21 +453,27 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
             }
         }
 
-        private static SpvInstruction CreatePerVertexStructType(CodeGenContext context)
+        private static SpvInstruction CreatePerVertexStructType(CodeGenContext context, bool isOutput)
         {
             SpvInstruction vec4FloatType = context.TypeVector(context.TypeFP32(), 4);
             SpvInstruction floatType = context.TypeFP32();
-            SpvInstruction array8FloatType = context.TypeArray(context.TypeFP32(), context.Constant(context.TypeU32(), 8));
-            SpvInstruction array1FloatType = context.TypeArray(context.TypeFP32(), context.Constant(context.TypeU32(), 1));
-
-            SpvInstruction perVertexStructType = context.TypeStruct(true, vec4FloatType, floatType, array8FloatType, array1FloatType);
+            // nx2android: no instruction maps or writes CullDistance. Declaring an unused ninth
+            // distance exceeds Vulkan's combined limit of eight (including an EXIT-only shader).
+            // Likewise, unused ClipDistance fields count against the geometry stage's combined
+            // input/output limit. Keep planes only for actual IO, transform feedback or native passthrough.
+            StorageKind storage = isOutput ? StorageKind.Output : StorageKind.Input;
+            bool hasClipDistance = context.Info.IoDefinitions.Contains(new IoDefinition(storage, IoVariable.ClipDistance)) ||
+                (context.Definitions.GpPassthrough && context.HostCapabilities.SupportsGeometryShaderPassthrough) ||
+                (isOutput && context.Definitions.TryGetTransformFeedbackOutput(IoVariable.ClipDistance, 0, 0, out _));
+            SpvInstruction perVertexStructType = hasClipDistance
+                ? context.TypeStruct(true, vec4FloatType, floatType, context.TypeArray(floatType, context.Constant(context.TypeU32(), 8)))
+                : context.TypeStruct(true, vec4FloatType, floatType);
 
             context.Name(perVertexStructType, "gl_PerVertex");
 
             context.MemberName(perVertexStructType, 0, "gl_Position");
             context.MemberName(perVertexStructType, 1, "gl_PointSize");
-            context.MemberName(perVertexStructType, 2, "gl_ClipDistance");
-            context.MemberName(perVertexStructType, 3, "gl_CullDistance");
+            if (hasClipDistance) context.MemberName(perVertexStructType, 2, "gl_ClipDistance");
 
             context.Decorate(perVertexStructType, Decoration.Block);
 
@@ -479,8 +484,7 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
 
             context.MemberDecorate(perVertexStructType, 0, Decoration.BuiltIn, (LiteralInteger)BuiltIn.Position);
             context.MemberDecorate(perVertexStructType, 1, Decoration.BuiltIn, (LiteralInteger)BuiltIn.PointSize);
-            context.MemberDecorate(perVertexStructType, 2, Decoration.BuiltIn, (LiteralInteger)BuiltIn.ClipDistance);
-            context.MemberDecorate(perVertexStructType, 3, Decoration.BuiltIn, (LiteralInteger)BuiltIn.CullDistance);
+            if (hasClipDistance) context.MemberDecorate(perVertexStructType, 2, Decoration.BuiltIn, (LiteralInteger)BuiltIn.ClipDistance);
 
             return perVertexStructType;
         }
@@ -495,6 +499,8 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
         {
             IoVariable ioVariable = ioDefinition.IoVariable;
             StorageClass storageClass = isOutput ? StorageClass.Output : StorageClass.Input;
+            bool privateMask = isOutput && ioVariable == IoVariable.ViewportMask && context.EmulatesViewportMask;
+            if (privateMask) storageClass = StorageClass.Private;
 
             bool isBuiltIn;
             BuiltIn builtIn = default;
@@ -566,7 +572,7 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
                 context.Decorate(spvVar, Decoration.PassthroughNV);
             }
 
-            if (isBuiltIn)
+            if (isBuiltIn && !privateMask)
             {
                 if (isPerPatch)
                 {
