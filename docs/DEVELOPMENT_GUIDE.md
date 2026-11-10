@@ -16,6 +16,8 @@ On arm64 Linux the NDK has x86_64 host tools only. `dm/android/build.py` uses `<
 - link `ld.lld` and the `llvm-*` tools to the same LLVM;
 - for the backend's own shaders, link `<NDK>/shader-tools/linux-aarch64/glslc` to a native `glslc` (Arch: `shaderc`, `/usr/bin/glslc`).
 
+On Windows, the Android host linker reads its object list from a UTF-8 response file (`dmhost.rsp` or `libdmhost.rsp` in the build output). This avoids `WinError 206` in long checkout paths. Clang is invoked with `--rsp-quoting=windows` so backslashes and spaces in those paths survive response-file parsing.
+
 ## Port a game
 
 The app:
