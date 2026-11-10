@@ -100,6 +100,12 @@ platform's protection-fault signal. The zero-copy diagnostics fixture forces
 slab and reuse-cache misses to exercise allocation/import failure cleanup; it
 does not validate the slab or reuse-cache implementations.
 
+`test_descriptor_hash` exercises the Vulkan descriptor hash and reuse path with
+different C padding bytes but identical image fields. Image keys include each
+array element's sampler, view and layout as explicit words; padding cannot force
+another descriptor allocation. Reuse still compares the hash, layout and
+submission epoch, without a full-content collision check.
+
 `test_dmsv` checks both shader-bundle versions and the native reader. Publication
 uses a unique staging directory beside the destination, flushes the file, verifies
 every shader and reflection payload, then atomically replaces the destination.

@@ -1417,7 +1417,13 @@ static VkDescriptorSet stage_set(int st, vkshader_t *s, uint32_t *dofs, VkDescri
     for (uint32_t i = 0; i < nw; i++) {
         const VkWriteDescriptorSet *x = &w[i]; h = fnv(h, &x->dstBinding, 4); h = fnv(h, &x->descriptorType, 4); h = fnv(h, &x->descriptorCount, 4);
         if (x->pBufferInfo) h = fnv(h, x->pBufferInfo, sizeof *x->pBufferInfo);
-        else if (x->pImageInfo) h = fnv(h, x->pImageInfo, sizeof *x->pImageInfo * x->descriptorCount);
+        else if (x->pImageInfo) for (uint32_t j = 0; j < x->descriptorCount; j++) {
+            const VkDescriptorImageInfo *im = &x->pImageInfo[j];
+            // Vulkan fields only: imageLayout can be followed by uninitialized C padding.
+            // Three whole words retain the fast hash path without depending on those bytes.
+            uint64_t fields[] = {(uint64_t)im->sampler, (uint64_t)im->imageView, (uint64_t)im->imageLayout};
+            h = fnv(h, fields, sizeof fields);
+        }
         else if (x->pTexelBufferView) h = fnv(h, x->pTexelBufferView, sizeof *x->pTexelBufferView);
     }
     unsigned k = (unsigned)(h % SETC); uint64_t tb2 = tick(); g_ns_set_hash += tb2 - tb1;
