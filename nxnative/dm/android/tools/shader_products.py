@@ -1,5 +1,6 @@
 """Bounded export checks and expected shader inventories; no graphics driver required."""
 import json
+import re
 from pathlib import Path
 import struct
 
@@ -27,13 +28,58 @@ def validate_spirv(data, stage):
     if models != [MODELS[stage]]: raise ValueError('SPIR-V entry point does not match shader stage')
 
 
+def check_batch(result, keys, directory):
+    # dmsh_xlate returns 1 for a completed batch containing unsupported shaders.
+    # Its final summary distinguishes that result from a crash or truncated run.
+    lines = result.stdout.rstrip().splitlines()
+    summary = re.fullmatch(r'translated: (\d+) ok, (\d+) failed', lines[-1]) if lines else None
+    if summary:
+        ok, bad = map(int, summary.groups())
+        produced = sum((Path(directory) / f'{key}.spv').is_file() for key in keys)
+        if ok + bad == len(keys) and result.returncode == bool(bad) and produced == ok:
+            return
+    raise RuntimeError('shader translator did not complete its batch: ' + result.stderr[-2000:])
+
+
+def validate_resource(resource, key, stage):
+    if not isinstance(resource, dict) or resource.get('key') != key or resource.get('stage') != ('vs','ps','gs','hs','ds','cs')[stage]:
+        raise ValueError(f'{key}: translator reflection identity mismatch')
+    fields = dict(cbufs=('binding','slot'), sbufs=('binding','slot','cb_slot','cb_offset','flags'),
+                  textures=('binding','type','cbuf_slot','handle','array','flags'),
+                  images=('binding','type','cbuf_slot','handle','array','flags'))
+    for name, integers in fields.items():
+        rows = resource.get(name)
+        if not isinstance(rows, list): raise ValueError(f'{key}: missing reflection {name}')
+        bindings = set()
+        for row in rows:
+            if not isinstance(row, dict) or any(type(row.get(f)) is not int for f in integers):
+                raise ValueError(f'{key}: invalid reflection {name} row')
+            if row['binding'] < 0 or row['binding'] in bindings: raise ValueError(f'{key}: invalid reflection binding')
+            bindings.add(row['binding'])
+            if name in ('textures','images') and (not isinstance(row.get('format'), str) or type(row.get('separate')) is not bool):
+                raise ValueError(f'{key}: invalid image reflection')
+    if 'fetch1d' in resource and (not isinstance(resource['fetch1d'], list) or any(type(x) is not int for x in resource['fetch1d'])):
+        raise ValueError(f'{key}: invalid fetch1d reflection')
+
+
+def validate_bindings(bindings, resource):
+    # classify() uses the ordered SBuffer rows to recover guest addresses and writes.
+    sbufs = sorted(resource['sbufs'], key=lambda x: x['binding'])
+    for binding in bindings:
+        match = re.fullmatch(r'[a-z]+_s(\d+)', binding['name'])
+        if match:
+            index = int(match.group(1))
+            if index >= len(sbufs) or sbufs[index]['binding'] != binding['binding']:
+                raise ValueError('storage buffer reflection does not match SPIR-V')
+
+
 def output(directory, key, stage):
     spv, reflection = Path(directory) / f'{key}.spv', Path(directory) / f'{key}.res.json'
     if not spv.is_file(): return None
     data = spv.read_bytes(); validate_spirv(data, stage)
     if not reflection.is_file(): raise ValueError(f'{key}: translator omitted reflection')
     resource = json.loads(reflection.read_text(encoding='utf-8'))
-    if not isinstance(resource, dict): raise ValueError(f'{key}: invalid translator reflection')
+    validate_resource(resource, key, stage)
     return data, resource
 
 

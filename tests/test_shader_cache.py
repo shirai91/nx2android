@@ -132,7 +132,7 @@ class ShaderCache(unittest.TestCase):
         self.export(); previous = self.p.dmsv.read_bytes()
         source = self.p.work / 'shader/pkg/cs.bin'; source.write_bytes(b'new shader source')
         def omit():
-            report = self.p.aw / 'shaders.dmsv.report.json'
+            report = self.p.aw / 'shaders.dmsv.partial.report.json'
             data = json.loads(report.read_text()); data['expected'].append(['0000000000000002', 5])
             report.write_text(json.dumps(data))
         self.during_export = omit

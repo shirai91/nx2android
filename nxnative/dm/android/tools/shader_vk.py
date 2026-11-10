@@ -397,10 +397,11 @@ def main():
     chunks = [keys[i::a.jobs] for i in range(a.jobs) if keys[i::a.jobs]]
     def xl(ch):
         jp = os.path.join(w, f'job_{abs(hash(ch[0]))}.json'); Path(jp).write_text(json.dumps([jobs[k] for k in ch]), encoding='utf-8')
-        return subprocess.run([a.dotnet, XLATE_DLL, jp, w], capture_output=True, text=True, errors='replace')
+        result = subprocess.run([a.dotnet, XLATE_DLL, jp, w], capture_output=True, text=True, errors='replace')
+        shader_products.check_batch(result, ch, w)
+        return result
     print(f'translating {len(keys)} shaders in {len(chunks)} batches ...', flush=True)
     with cf.ThreadPoolExecutor(len(chunks)) as ex: rs = list(ex.map(xl, chunks))
-    if any(r.returncode for r in rs): raise RuntimeError('shader translator process failed: ' + '\n'.join(r.stderr[-2000:] for r in rs if r.returncode))
     # second pass (as the Mac chain's dmsh_build.py finish): vertex shaders with inputs used only as integers, translated again with those inputs reported as uint (int_inputs)
     again = []
     for k in keys:
@@ -415,7 +416,6 @@ def main():
             for suffix in ('.spv', '.res.json'): os.unlink(os.path.join(w, k + suffix))
         ch2 = [again[i::a.jobs] for i in range(a.jobs) if again[i::a.jobs]]
         with cf.ThreadPoolExecutor(len(ch2)) as ex: retried = list(ex.map(xl, ch2))
-        if any(r.returncode for r in retried): raise RuntimeError('shader translator retry process failed')
         rs += retried
     errs = collections.Counter()
     for r in rs:
@@ -430,6 +430,7 @@ def main():
             fails['no output'] += 1; failed.append([f'{gs_var[k] if k in gs_var else int(k, 16):016x}', 'no output']); continue
         spv, res = product
         binds, local, io = spirv_bindings(spv)
+        shader_products.validate_bindings(binds, res)
         if k in handle_remaps:
             spv = remap_handles(spv, *handle_remaps[k])
         st = stages[k]

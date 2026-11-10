@@ -679,7 +679,7 @@ class Port:
         if (note := product_cache.reused(kf, key, self.dmsv)) is not None:
             PROG.end(f'{note}, reused (inputs unchanged)'); return
         tmp = self.dmsv.with_name('shaders.dmsv.partial'); nsp.rmtree(tmp)
-        report = tmp.with_suffix('.report.json'); nsp.rmtree(report)
+        report = Path(str(tmp) + '.report.json'); nsp.rmtree(report)
         def line(s):
             if m := re.match(r'(translating|compressing) (\d+) shaders', s): PROG.set(step=f'{m.group(1)} {int(m.group(2)):,} shaders')   # compressing: the bundle's SPIR-V (dmsv.py)
             elif s.startswith('[RED] this Python has no zstd'): say(s)   # the bundle then goes uncompressed: 3.5x the space on the device
@@ -696,7 +696,7 @@ class Port:
         if not complete: say('[RED] shader export is incomplete; the next port will retry translation')
         nsp.swap_in(tmp, self.dmsv)
         product_cache.stamp(kf, key, self.dmsv, note, complete=complete)
-        report.replace(self.dmsv.with_suffix('.report.json'))
+        report.replace(Path(str(self.dmsv) + '.report.json'))
         PROG.end(note)
         for d in (self.work / 'tmp').glob('shvk_*'): nsp.rmtree(d)   # the translator's work folders
 
