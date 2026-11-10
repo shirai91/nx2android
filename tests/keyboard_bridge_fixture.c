@@ -49,7 +49,9 @@ static void *g_win = (void *)1, *g_external_win;
 static pthread_mutex_t g_win_mu = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t g_keyboard_mu = PTHREAD_MUTEX_INITIALIZER;
 static _Atomic int g_ime_on;
-static uint64_t g_touch_btn;
+#include "keyboard_touch_state.inc"
+_Static_assert(_Generic(&g_touch_btn, _Atomic uint64_t *: 1, default: 0),
+               "the touch-button mask is shared by the input thread and keyboard worker");
 _Thread_local int g_swkbd_min_chars = -1;
 static pthread_t guest_thread;
 static _Thread_local int jni_attached;

@@ -45,11 +45,15 @@ class NativeKeyboardBridge(unittest.TestCase):
         front = (pipeline.DM / 'android/front_android.c').read_text()
         start = front.index('int front_text_input(')
         dispatch = front[start:front.index('\n}\n', start) + 3]
+        touch_state = next(line for line in front.splitlines() if ' g_touch_btn;' in line)
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
             (tmp / 'keyboard_dispatch.inc').write_text(dispatch)
-            subprocess.run(['cc', '-std=c11', '-Wall', '-Wextra', '-Werror', '-pthread',
-                            '-I', str(tmp), '-I', str(pipeline.DM / 'android'), '-I', str(pipeline.DM / 'host'),
-                            str(root / 'tests/keyboard_bridge_fixture.c'), '-o', str(tmp / 'bridge')], check=True, capture_output=True)
+            (tmp / 'keyboard_touch_state.inc').write_text(touch_state + '\n')
+            build = subprocess.run(['cc', '-std=c11', '-Wall', '-Wextra', '-Werror', '-pthread',
+                                    '-I', str(tmp), '-I', str(pipeline.DM / 'android'), '-I', str(pipeline.DM / 'host'),
+                                    str(root / 'tests/keyboard_bridge_fixture.c'), '-o', str(tmp / 'bridge')],
+                                   capture_output=True, text=True)
+            self.assertEqual(build.returncode, 0, build.stderr)
             result = subprocess.run([str(tmp / 'bridge')], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)

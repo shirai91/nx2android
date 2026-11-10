@@ -52,11 +52,11 @@ static void *android_keyboard_worker(void *arg) {
         }
         if (method && !(*env)->ExceptionCheck(env)) {
             atomic_store(&g_ime_on, 1); hold_sync();
-            dm_input_set(0, 0, 0, 0, 0); dm_touch_set(NULL, 0); g_touch_btn = 0;
+            dm_input_set(0, 0, 0, 0, 0); dm_touch_set(NULL, 0); atomic_store(&g_touch_btn, 0);
             jbyteArray answer = (*env)->CallObjectMethod(env, activity, method, bytes[0], bytes[1], bytes[2], bytes[3],
                                                           request->min_chars, request->max_chars);
             atomic_store(&g_ime_on, 0); hold_sync();
-            dm_input_set(0, 0, 0, 0, 0); dm_touch_set(NULL, 0); g_touch_btn = 0;
+            dm_input_set(0, 0, 0, 0, 0); dm_touch_set(NULL, 0); atomic_store(&g_touch_btn, 0);
             if (!(*env)->ExceptionCheck(env)) {
                 if (!answer) result = 0;
                 else {
