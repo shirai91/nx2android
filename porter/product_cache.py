@@ -21,13 +21,27 @@ def inventory(root):
     return result
 
 
+def file_state(product):
+    """Cheap identity for a bundle; ctime also catches edits that restore mtime."""
+    product = Path(product)
+    if not product.is_file(): return None
+    st = product.stat()
+    return [st.st_size, st.st_mtime_ns, st.st_ctime_ns, st.st_dev, st.st_ino]
+
+
 def reused(path, key, product):
     try:
         record = json.loads(Path(path).read_text(encoding='utf-8'))
-        if (not isinstance(record, dict) or record.get('schema') != 1 or record.get('key') != key or
-                record.get('complete') is not True or not isinstance(record.get('note'), str)):
+        if (not isinstance(record, dict) or record.get('schema') != 2 or record.get('key') != key or
+                type(record.get('complete')) is not bool or not isinstance(record.get('note'), str)):
             return None
+        state = file_state(product)
+        if state is not None and record.get('stat') == state: return record['note']
         if record.get('files') != inventory(product): return None
+        if state is not None:
+            if file_state(product) != state: return None
+            record['stat'] = state
+            write_json(path, record)
         return record['note']
     except (OSError, ValueError, TypeError):
         return None
@@ -43,4 +57,7 @@ def write_json(path, record):
 
 
 def stamp(path, key, product, note='', complete=True):
-    write_json(path, dict(schema=1, key=key, note=note, complete=complete, files=inventory(product)))
+    state = file_state(product)
+    files = inventory(product)
+    if file_state(product) != state: raise ValueError('product changed while recording its receipt')
+    write_json(path, dict(schema=2, key=key, note=note, complete=complete, files=files, stat=state))

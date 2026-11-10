@@ -1,4 +1,4 @@
-"""Cached shader products are reusable only while their actual bytes still match."""
+"""Shader reuse checks inputs, recorded failures and product integrity."""
 import contextlib
 import io
 import json
@@ -82,9 +82,49 @@ class ShaderCache(unittest.TestCase):
         self.assertEqual(self.exports, 2)
         self.assertEqual(path.read_bytes(), original)
 
-    def test_incomplete_export_is_not_reused_as_complete(self):
+    def test_partial_export_reused_with_failed_inventory(self):
         self.partial = True; self.export(); self.export()
+        self.assertEqual(self.exports, 1)
+        receipt = json.loads((self.p.aw / 'shaders.dmsv.key').read_text())
+        self.assertFalse(receipt['complete'])
+        self.assertIn('1 failed', receipt['note'])
+        report = json.loads((self.p.aw / 'shaders.dmsv.report.json').read_text())
+        self.assertEqual(report['failed'], [['0000000000000002', 'no output']])
+        (self.p.work / 'shader/pkg/cs.bin').write_bytes(b'changed shader input')
+        self.export()
         self.assertEqual(self.exports, 2)
+
+    def test_unchanged_bundle_reuse_does_not_read_product_bytes(self):
+        self.export()
+        original_open = Path.open
+        def checked_open(path, *args, **kwargs):
+            if path == self.p.dmsv: self.fail('unchanged bundle was read again')
+            return original_open(path, *args, **kwargs)
+        with mock.patch.object(Path, 'open', checked_open): self.export()
+        self.assertEqual(self.exports, 1)
+
+    def test_metadata_only_change_verified_once_then_reused(self):
+        self.export(); path = self.p.dmsv; st = path.stat()
+        os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 1000000))
+        self.export()
+        self.assertEqual(self.exports, 1)
+        original_open = Path.open
+        def checked_open(candidate, *args, **kwargs):
+            if candidate == path: self.fail('verified metadata change was not remembered')
+            return original_open(candidate, *args, **kwargs)
+        with mock.patch.object(Path, 'open', checked_open): self.export()
+
+    def test_only_shader_export_helpers_invalidate_shader_key(self):
+        dm = self.root / 'dm'; tools = dm / 'android/tools'; tools.mkdir(parents=True)
+        names = ('shader_vk.py', 'dmsv.py', 'shader_products.py', 'android_profile.py', 'darwin2elf.py')
+        for name in names: (tools / name).write_text('initial')
+        with mock.patch.object(pipeline, 'DM', dm):
+            self.export()
+            for name in names[3:]: (tools / name).write_text('unrelated change')
+            self.export(); self.assertEqual(self.exports, 1)
+            for i, name in enumerate(names[:3], 2):
+                (tools / name).write_text('export change')
+                self.export(); self.assertEqual(self.exports, i)
 
     def test_inputs_changed_during_export_preserve_previous_bundle(self):
         self.export(); original = self.p.dmsv.read_bytes()

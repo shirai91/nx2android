@@ -394,29 +394,42 @@ def main():
     keys = keys + sorted(gs_var)
     if not keys: raise ValueError('no shaders selected for export')
     if a.report and os.path.abspath(a.report) == os.path.abspath(a.out): raise ValueError('shader report must not overwrite the bundle')
-    chunks = [keys[i::a.jobs] for i in range(a.jobs) if keys[i::a.jobs]]
+    failures, rs = {}, []
     def xl(ch):
-        jp = os.path.join(w, f'job_{abs(hash(ch[0]))}.json'); Path(jp).write_text(json.dumps([jobs[k] for k in ch]), encoding='utf-8')
-        result = subprocess.run([a.dotnet, XLATE_DLL, jp, w], capture_output=True, text=True, errors='replace')
-        shader_products.check_batch(result, ch, w)
-        return result
-    print(f'translating {len(keys)} shaders in {len(chunks)} batches ...', flush=True)
-    with cf.ThreadPoolExecutor(len(chunks)) as ex: rs = list(ex.map(xl, chunks))
+        result = None
+        try:
+            jp = os.path.join(w, f'job_{abs(hash(ch[0]))}.json'); Path(jp).write_text(json.dumps([jobs[k] for k in ch]), encoding='utf-8')
+            result = subprocess.run([a.dotnet, XLATE_DLL, jp, w], capture_output=True, text=True, errors='replace')
+            shader_products.check_batch(result, ch, w)
+            return result, None
+        except Exception as e:
+            return result, str(e)
+    def translate(selected):
+        chunks = [selected[i::a.jobs] for i in range(a.jobs) if selected[i::a.jobs]]
+        with cf.ThreadPoolExecutor(len(chunks)) as ex:
+            for ch, (result, error) in zip(chunks, ex.map(xl, chunks)):
+                if result is not None: rs.append(result)
+                if error is not None:
+                    for k in ch: failures[k] = error
+    print(f'translating {len(keys)} shaders in {min(a.jobs, len(keys))} batches ...', flush=True)
+    translate(keys)
     # second pass (as the Mac chain's dmsh_build.py finish): vertex shaders with inputs used only as integers, translated again with those inputs reported as uint (int_inputs)
     again = []
     for k in keys:
-        product = shader_products.output(w, k, STAGES[stages[k]])
-        if stages[k] != 'vs' or product is None: continue
-        extra = {l: t for l, t in int_inputs(product[0]).items() if l not in jobs[k]['attr']}
-        if extra: jobs[k]['attr'].update(extra); again.append(k)
+        if stages[k] != 'vs' or k in failures: continue
+        try:
+            product = shader_products.output(w, k, STAGES[stages[k]])
+            if product is None: continue
+            extra = {l: t for l, t in int_inputs(product[0]).items() if l not in jobs[k]['attr']}
+            if extra:
+                jobs[k]['attr'].update(extra)
+                # A failed retry must not retain the first pass's incompatible input interface.
+                for suffix in ('.spv', '.res.json'): os.unlink(os.path.join(w, k + suffix))
+                again.append(k)
+        except Exception as e: failures[k] = str(e)
     if again:
         print(f'translating {len(again)} vertex shaders again with their integer inputs ...', flush=True)
-        # A failed retry must not silently retain the first pass's incompatible input interface.
-        for k in again:
-            for suffix in ('.spv', '.res.json'): os.unlink(os.path.join(w, k + suffix))
-        ch2 = [again[i::a.jobs] for i in range(a.jobs) if again[i::a.jobs]]
-        with cf.ThreadPoolExecutor(len(ch2)) as ex: retried = list(ex.map(xl, ch2))
-        rs += retried
+        translate(again)
     errs = collections.Counter()
     for r in rs:
         for ln in r.stderr.splitlines():
@@ -425,21 +438,26 @@ def main():
     expected = [[f'{gs_var[k] if k in gs_var else int(k, 16):016x}', STAGES[stages[k]]] for k in keys]
     if len({k for k, _ in expected}) != len(expected): raise ValueError('shader keys collide with geometry variants')
     for k in keys:
-        product = shader_products.output(w, k, STAGES[stages[k]])
-        if product is None:
-            fails['no output'] += 1; failed.append([f'{gs_var[k] if k in gs_var else int(k, 16):016x}', 'no output']); continue
-        spv, res = product
-        binds, local, io = spirv_bindings(spv)
-        shader_products.validate_bindings(binds, res)
-        if k in handle_remaps:
-            spv = remap_handles(spv, *handle_remaps[k])
-        st = stages[k]
-        cl = [classify(st, b, res) for b in binds]
-        for e in cl: kinds_all[e['kind']] += 1
-        # header words 2-4: a compute shader's local size; a vertex shader's input locations (all, signed int, unsigned int); a pixel shader's output locations
-        hdr3 = (local or jobs[k].get('local') or [1, 1, 1]) if st == 'cs' else io[1] if st == 'vs' else io[3] if st == 'ps' else [0, 0, 0]
-        entries.append((gs_var[k] if k in gs_var else int(k, 16), STAGES.get(st, 0), spv, refl_bin(cl, c1s[k], hdr3)))
-    if not entries: raise ValueError('no shader translated; previous bundle retained')
+        try:
+            if k in failures: raise ValueError(failures[k])
+            product = shader_products.output(w, k, STAGES[stages[k]])
+            if product is None: raise ValueError('no output')
+            spv, res = product
+            binds, local, io = spirv_bindings(spv)
+            shader_products.validate_bindings(binds, res)
+            if k in handle_remaps:
+                spv = remap_handles(spv, *handle_remaps[k])
+            st = stages[k]
+            cl = [classify(st, b, res) for b in binds]
+            for e in cl: kinds_all[e['kind']] += 1
+            # header words 2-4: a compute shader's local size; a vertex shader's input locations (all, signed int, unsigned int); a pixel shader's output locations
+            hdr3 = (local or jobs[k].get('local') or [1, 1, 1]) if st == 'cs' else io[1] if st == 'vs' else io[3] if st == 'ps' else [0, 0, 0]
+            entries.append((gs_var[k] if k in gs_var else int(k, 16), STAGES.get(st, 0), spv, refl_bin(cl, c1s[k], hdr3)))
+        except Exception as e:
+            reason = str(e)
+            failed.append([f'{gs_var[k] if k in gs_var else int(k, 16):016x}', reason])
+            fails[reason] += 1
+            print(f'[RED] {failed[-1][0]}: {reason}', flush=True)
     if a.zstd: print(f'compressing {len(entries)} shaders (zstd level {a.zstd}, {a.jobs} threads) ...', flush=True)
     ver, raw, stored = dmsv.write(a.out, entries, level=a.zstd, jobs=a.jobs)
     if a.report:

@@ -159,21 +159,36 @@ immutable cache. Full descriptor-set key
 equality is separate; these tests do not measure device performance.
 
 Shader and translator reuse also checks content receipts: relative output names,
-sizes and SHA-256 hashes, including translator dependencies. Old key-only receipts,
-missing/changed/extra translator files and altered shader bundles trigger a rebuild.
-The shader key includes the translator's actual output bytes and Android exporter
-helpers; changes to inputs during generation stop publication.
+sizes and SHA-256 hashes, including translator dependencies. For a bundle, matching
+size, modification/change timestamps and file identity avoid reading it again;
+changed metadata falls back to hashing, and unchanged contents refresh that fast
+path. Missing/changed/extra translator files and altered bundles trigger a rebuild.
+The shader key includes the translator's actual output bytes and the export helpers
+`shader_vk.py`, `dmsv.py` and `shader_products.py`; unrelated Android tools do not
+invalidate it. Inputs changing during generation stop publication. The changed key
+and receipt format make existing ports translate once before reuse resumes.
 
 The exporter records every expected shader (including geometry topology variants)
-in `shaders.dmsv.report.json`. It checks SPIR-V framing and entry-point stage,
-requires reflection beside each emitted module, and rejects failed translator
-processes. Retrying integer vertex inputs first removes the old pass's outputs.
-The porter verifies emitted bundle keys/stages and reflection bounds against that
-report before publication. This is structural validation, not semantic `spirv-val`.
-Individual unsupported shaders retain the existing best-effort behavior: omissions
-are reported, the partial bundle can be used, and the next port retries rather than
-reusing it as a complete export. `test_shader_cache` and `test_shader_export_checks`
-exercise these contracts without game files or a GPU.
+and failed key/reason in `shaders.dmsv.report.json`. It checks SPIR-V framing and
+entry-point stage and requires reflection beside each emitted module. A bad shader
+or failed translator batch is omitted with a `[RED]` diagnostic; other shaders
+continue. Retrying integer vertex inputs first removes the old pass's outputs, so
+a failed retry cannot publish the incompatible first pass. The porter checks only
+the emitted keys/stages against the expected and failed inventory: `dmsv.write`
+already reads each payload back and the runtime checks framing and reflection.
+This is structural validation, not semantic `spirv-val` or device qualification.
+Best-effort exports, including ones with failed shaders, are reusable while inputs
+and products remain unchanged. Their receipt notes the failure count and keeps the
+report; a changed input triggers translation again. `test_shader_cache` and
+`test_shader_export_checks` exercise these contracts without game files or a GPU.
+
+Native harnesses discover Vulkan headers through `ANDROID_NDK_HOME` (or the
+porter tool installation). Set it to an installed NDK when the SDK is outside the
+usual locations. The POSIX probe uses mutexes and condition variables supported on
+macOS and Linux. Protected-page tests handle both SIGSEGV and macOS SIGBUS and
+keep their concurrent CPU writer checks; the zero-copy failure fixture supplies
+the current allocator context while forcing cache misses to exercise every
+allocation/import failure stage.
 
 `test_vk_copy_back` exercises protected guest memory with the real dirty-page tracker: preserving independent CPU writes in the same cache line, successive submissions and snapshot initialization, cached/uncached and untracked pools, 200 partial/unaligned/overlapping range cases, and writes from another CPU thread. It also injects failed and partially successful bulk `mprotect` calls; a bulk unprotect failure stops the host with a `[RED]` message before publishing writable page states or continuing the copy. It also checks snapshot copy volume across clean and dirty 64 KB blocks, a partial tail, and full versus partial completion merges. These CPU tests do not establish correct rendering on a device.
 

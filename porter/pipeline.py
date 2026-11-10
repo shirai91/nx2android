@@ -672,7 +672,7 @@ class Port:
         xlate, xkey = self.translator()
         PROG.set(step='checking the inputs')
         def input_key():
-            return nsp.fingerprint(nsp.package_key(pkg), ('files', sorted((DM / 'android/tools').glob('*.py')) + nsp.tool_files(NXNATIVE)),
+            return nsp.fingerprint(nsp.package_key(pkg), ('files', [DM / 'android/tools' / name for name in ('shader_vk.py', 'dmsv.py', 'shader_products.py')] + nsp.tool_files(NXNATIVE)),
                                    ('files', nsp.profile_files(self.g)), xkey, product_cache.inventory(Path(xlate).parent),
                                    ('files', sorted(cap.glob('*.bin'))))
         key = input_key()
@@ -682,7 +682,7 @@ class Port:
         report = Path(str(tmp) + '.report.json'); nsp.rmtree(report)
         def line(s):
             if m := re.match(r'(translating|compressing) (\d+) shaders', s): PROG.set(step=f'{m.group(1)} {int(m.group(2)):,} shaders')   # compressing: the bundle's SPIR-V (dmsv.py)
-            elif s.startswith('[RED] this Python has no zstd'): say(s)   # the bundle then goes uncompressed: 3.5x the space on the device
+            elif s.startswith('[RED] '): say(s)
         nsp.run([PY, DM / 'android/tools/shader_vk.py', pkg, tmp, '--jobs', str(self.o.jobs), '--dotnet', self.tools['dotnet'], '--xlate', xlate, '--capture', cap, '--report', report],
                 self.logs / 'android_shaders.log', env=self.env, on_line=line)
         import shader_products
@@ -692,8 +692,10 @@ class Port:
         except (OSError, ValueError, TypeError, KeyError) as e:
             raise BuildError(f'invalid shader export: {e} (see {self.logs / "android_shaders.log"})') from e
         note = f'{count:,} of {expected:,} shaders, {tmp.stat().st_size / 2**20:,.0f} MB'
-        # Keep best-effort ports usable, but never stamp omitted shaders as a complete reusable export.
-        if not complete: say('[RED] shader export is incomplete; the next port will retry translation')
+        # Unsupported shaders are deterministic for these inputs; retain their report on reuse.
+        if not complete:
+            note += f', {expected - count:,} failed (see shaders.dmsv.report.json)'
+            say('[RED] ' + note)
         nsp.swap_in(tmp, self.dmsv)
         product_cache.stamp(kf, key, self.dmsv, note, complete=complete)
         report.replace(Path(str(self.dmsv) + '.report.json'))

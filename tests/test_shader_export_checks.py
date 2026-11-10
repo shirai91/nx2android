@@ -46,19 +46,23 @@ class ExportChecks(unittest.TestCase):
         self.root = Path(self.tmp.name); self.out = self.root / 'out.dmsv'; self.out.write_bytes(b'previous bundle')
         self.report = self.root / 'report.json'; self.stage = 'cs'; self.calls = 0
         self.behavior = 'ok'; self.reflect = True; self.second_shader = False; self.bad_resource = None
+        self.jobs = 1; self.bad_key = None; self.log = io.StringIO(); self.bindings = []
         (self.root / 'pkg').mkdir()
 
     def translate(self, argv, **kwargs):
         self.calls += 1; jobs = json.loads(Path(argv[2]).read_text()); dest = Path(argv[3])
+        affected = self.bad_key is None or any(job['key'] == self.bad_key for job in jobs)
+        if affected and self.behavior == 'launch-failed': raise OSError('translator unavailable')
+        bad = 0
         for job in jobs:
-            if self.behavior == 'partial' and job['key'].endswith('2'): continue
-            if self.behavior == 'second-missing' and self.calls == 2: continue
+            broken = self.bad_key is None or job['key'] == self.bad_key
+            if self.behavior == 'partial' and job['key'].endswith('2'): bad += 1; continue
+            if broken and self.behavior == 'second-missing' and job['attr']: bad += 1; continue
             key = job['key']
-            (dest / f'{key}.spv').write_bytes(module(self.stage))
-            if self.reflect: (dest / f'{key}.res.json').write_text(json.dumps(self.bad_resource if self.bad_resource is not None else reflection(key, self.stage)))
-        bad = 1 if self.behavior == 'partial' or (self.behavior == 'second-missing' and self.calls == 2) else 0
+            (dest / f'{key}.spv').write_bytes(b'bad module' if broken and self.behavior == 'bad-module' else module(self.stage))
+            if self.reflect or not broken: (dest / f'{key}.res.json').write_text(json.dumps(self.bad_resource if broken and self.bad_resource is not None else reflection(key, self.stage)))
         summary = f'translated: {len(jobs)-bad} ok, {bad} failed\n'
-        return subprocess.CompletedProcess(argv, 17 if self.behavior == 'process-failed' else 1 if bad else 0,
+        return subprocess.CompletedProcess(argv, 17 if affected and self.behavior == 'process-failed' else 1 if bad else 0,
                                            summary, 'injected translator failure' if self.behavior == 'process-failed' else '')
 
     def run_export(self):
@@ -73,18 +77,18 @@ class ExportChecks(unittest.TestCase):
                    tempfile=tempfile, subprocess=subprocess, dmsv=dmsv, Path=Path, re=re,
                    shader_products=products, GAME=game, MAP=str(table), XLATE_DLL='translator.dll',
                    a=SimpleNamespace(pkg=str(self.root/'pkg'), out=str(self.out), capture=None, keys='',
-                                     jobs=1, dotnet='dotnet', zstd=0, report=str(self.report)),
+                                     jobs=self.jobs, dotnet='dotnet', zstd=0, report=str(self.report)),
                    STAGES={'vs': 0, 'cs': 5}, kinds_all=collections.Counter(),
                    captured=lambda _: {}, records=lambda _: [b'fixture'],
                    job_for=lambda key, stage, rec, w: ({'key': key, 'attr': {}}, b''),
                    int_inputs=lambda _: {'0': 'uint'},
-                   spirv_bindings=lambda _: ([], [1, 1, 1], {1: [0, 0, 0], 3: [0, 0, 0]}),
+                   spirv_bindings=lambda _: (self.bindings, [1, 1, 1], {1: [0, 0, 0], 3: [0, 0, 0]}),
                    refl_bin=lambda cl,c1,hdr: struct.pack('<5I', 0, 0, *hdr),
                    classify=lambda *args: None)
         source = TOOLS / 'shader_vk.py'; tree = ast.parse(source.read_text())
         nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'main']
         exec(compile(ast.Module(body=nodes, type_ignores=[]), str(source), 'exec'), env)
-        with mock.patch.dict(os.environ, {'WORK': str(self.root)}), mock.patch.object(subprocess, 'run', side_effect=self.translate), contextlib.redirect_stdout(io.StringIO()):
+        with mock.patch.dict(os.environ, {'WORK': str(self.root)}), mock.patch.object(subprocess, 'run', side_effect=self.translate), contextlib.redirect_stdout(self.log):
             env['main']()
 
     def test_normal_per_shader_failure_keeps_best_effort_export(self):
@@ -96,28 +100,51 @@ class ExportChecks(unittest.TestCase):
         with dmsv.Bundle(str(self.out)) as bundle:
             self.assertEqual([e[0] for e in bundle.entries], [1])
 
-    def test_failed_translator_process_preserves_previous_bundle(self):
-        self.behavior = 'process-failed'
-        with self.assertRaises((ValueError, RuntimeError)): self.run_export()
-        self.assertEqual(self.out.read_bytes(), b'previous bundle')
+    def assert_failed(self, key, reason, emitted):
+        report = json.loads(self.report.read_text())
+        self.assertEqual([row[0] for row in report['failed']], [key])
+        self.assertIn(reason, report['failed'][0][1])
+        self.assertIn('[RED] ' + key, self.log.getvalue())
+        with dmsv.Bundle(str(self.out)) as bundle:
+            self.assertEqual([e[0] for e in bundle.entries], emitted)
 
-    def test_missing_reflection_is_not_published_as_success(self):
-        self.reflect = False
-        with self.assertRaises((ValueError, RuntimeError)): self.run_export()
-        self.assertEqual(self.out.read_bytes(), b'previous bundle')
+    def test_failed_translator_batch_does_not_stop_other_batches(self):
+        self.second_shader = True; self.jobs = 2; self.bad_key = '0000000000000002'
+        for behavior in ('process-failed', 'launch-failed'):
+            with self.subTest(behavior=behavior):
+                self.behavior = behavior; self.run_export()
+                self.assert_failed(self.bad_key, 'translator', [1])
 
-    def test_wrong_or_incomplete_reflection_preserves_previous_bundle(self):
-        for bad in ({}, {**reflection(), 'key': 'wrong'}, {**reflection(), 'stage': 'vs'},
-                    {**reflection(), 'sbufs': [{}]}, {**reflection(), 'images': None}):
+    def test_all_failed_shaders_keep_best_effort_empty_export(self):
+        self.behavior = 'process-failed'; self.run_export()
+        self.assert_failed('0000000000000001', 'translator', [])
+
+    def test_missing_reflection_omits_only_bad_shader(self):
+        self.second_shader = True; self.bad_key = '0000000000000002'; self.reflect = False
+        self.run_export(); self.assert_failed(self.bad_key, 'omitted reflection', [1])
+
+    def test_wrong_or_incomplete_reflection_omits_only_bad_shader(self):
+        self.second_shader = True; self.bad_key = '0000000000000002'
+        for bad in ({}, {**reflection(), 'key': 'wrong'}, {**reflection(self.bad_key), 'stage': 'vs'},
+                    {**reflection(self.bad_key), 'sbufs': [{}]}, {**reflection(self.bad_key), 'images': None}):
             with self.subTest(resource=bad):
-                self.bad_resource = bad
-                with self.assertRaises(ValueError): self.run_export()
-                self.assertEqual(self.out.read_bytes(), b'previous bundle')
+                self.bad_resource = bad; self.run_export()
+                self.assert_failed(self.bad_key, 'reflection', [1])
+
+    def test_malformed_module_omits_only_bad_shader(self):
+        self.second_shader = True; self.bad_key = '0000000000000002'; self.behavior = 'bad-module'
+        for self.stage in ('cs', 'vs'):
+            with self.subTest(stage=self.stage):
+                self.run_export(); self.assert_failed(self.bad_key, 'SPIR-V', [1])
+
+    def test_binding_validation_failure_is_reported(self):
+        self.bindings = [dict(name='cp_s0', binding=3, type='ssbo')]
+        self.run_export(); self.assert_failed('0000000000000001', 'reflection', [])
 
     def test_second_pass_cannot_reuse_first_pass_shader(self):
         self.stage = 'vs'; self.behavior = 'second-missing'
-        with self.assertRaises((ValueError, RuntimeError)): self.run_export()
-        self.assertEqual(self.out.read_bytes(), b'previous bundle')
+        self.second_shader = True; self.bad_key = '0000000000000002'
+        self.run_export(); self.assert_failed(self.bad_key, 'no output', [1])
 
     def test_export_reports_exact_expected_inventory(self):
         self.run_export()
@@ -163,24 +190,26 @@ class ProductValidation(unittest.TestCase):
                     shader_products.check_batch(subprocess.CompletedProcess([], code, summary, ''), ['key'], tmp)
             shader_products.check_batch(subprocess.CompletedProcess([], 1, 'translated: 0 ok, 1 failed\n', ''), ['key'], tmp)
 
-    def test_bundle_inventory_and_reflection_checked_in_both_versions(self):
+    def test_bundle_inventory_checked_without_reading_payloads_in_both_versions(self):
         import shader_products
         report = {'schema': 1, 'expected': [['0000000000000001', 5]], 'failed': []}
         with tempfile.TemporaryDirectory(prefix='nx2a_shader_products_') as tmp:
             path = Path(tmp) / 'out.dmsv'
             for level in ([0, 3] if dmsv.zstd_mod() else [0]):
-                for reflection, accepted in [(struct.pack('<5I', 0, 0, 1, 1, 1), True),
-                                              (struct.pack('<5I', 1, 0, 1, 1, 1), False),
-                                              (struct.pack('<5I', 0, 1, 1, 1, 1), False)]:
-                    dmsv.write(str(path), [(1, 5, module('cs'), reflection)], level=level)
-                    if accepted: self.assertEqual(shader_products.check_bundle(path, report), (1, 1, True))
-                    else:
-                        with self.assertRaises(ValueError): shader_products.check_bundle(path, report)
                 dmsv.write(str(path), [(1, 5, module('cs'), struct.pack('<5I', 0, 0, 1, 1, 1))], level=level)
+                with mock.patch.object(dmsv.Bundle, 'spv', side_effect=AssertionError('duplicate module read')), \
+                     mock.patch.object(dmsv.Bundle, 'refl', side_effect=AssertionError('duplicate reflection read')):
+                    self.assertEqual(shader_products.check_bundle(path, report), (1, 1, True))
                 for bad in ({'schema':1,'expected':[['0000000000000002',5]],'failed':[]},
                             {'schema':1,'expected':[['0000000000000001',5]]*2,'failed':[]},
                             {'schema':1,'expected':[['0000000000000001',5]],'failed':[['0000000000000001','missing']]}):
                     with self.assertRaises(ValueError): shader_products.check_bundle(path, bad)
+                partial = dict(schema=1, expected=[['0000000000000001',5], ['0000000000000002',5]],
+                               failed=[['0000000000000002', 'no output']])
+                self.assertEqual(shader_products.check_bundle(path, partial), (1, 2, False))
+                dmsv.write(str(path), [], level=level)
+                empty = dict(schema=1, expected=[['0000000000000001',5]], failed=[['0000000000000001', 'no output']])
+                self.assertEqual(shader_products.check_bundle(path, empty), (0, 1, False))
 
 
 if __name__ == '__main__': unittest.main()
