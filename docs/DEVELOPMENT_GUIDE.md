@@ -56,6 +56,16 @@ python -m porter driver --system --package org.nx2a.supermario3dworld
 
 `--system` goes back to the device's own driver. How it works: [ARCHITECTURE.md](ARCHITECTURE.md#the-port).
 
+### Host update
+
+`porter host` brings a port on the device to this checkout's host (the runtime: Vulkan backend, front end, Horizon services), also without the game's files: its `libdmhost.so` is built again from the profile (a few seconds) and installed over the app (the saves stay):
+
+```
+python -m porter host --package org.nx2a.supermario3dworld
+```
+
+It refuses when the game's code on the device was rewritten with other rewriter sources than this checkout's; then port the game again from its files. The data pack is not changed. How it works: [ARCHITECTURE.md](ARCHITECTURE.md#the-port).
+
 ## Layout
 
 - `porter/`: the port pipeline (`python -m porter`).
