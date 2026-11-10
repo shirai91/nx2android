@@ -1191,7 +1191,8 @@ static int tex_desc_for(int st, const dmsv_bind *b, uint64_t h, VkDescriptorImag
 // is an allocation and a vkUpdateDescriptorSets; the driver segment's copy is shared so that a set using it can match.
 enum { SETC = 8192, DRVC = 1024 };
 static struct { uint64_t h, epoch; VkDescriptorSetLayout l; VkDescriptorSet set; } g_setc[SETC];
-static struct { uint64_t h, epoch; VkBuffer b; VkDeviceSize o; } g_drvc[DRVC];
+// p points to immutable submission scratch; epoch must match before reading it. GPU-written segments must stay outside this cache.
+static struct { uint64_t h, epoch; VkBuffer b; VkDeviceSize o; const uint8_t *p; } g_drvc[DRVC];
 uint64_t g_set_hits, g_set_new, g_ns_set_build, g_ns_set_hash, g_ns_set_new;   // descriptor sets: reused, new; time collecting their descriptors, hashing them, allocating and writing new ones
 // content hash of descriptor sets and driver segments: 8 bytes a step (a set with 32-slot texture arrays is several KB, which byte-wise FNV took milliseconds a frame over)
 static inline uint64_t fnv(uint64_t h, const void *p, size_t n) {
@@ -1204,9 +1205,9 @@ static void drv_shared(int st, int bank, VkBuffer *buf, VkDeviceSize *off, int d
     uint8_t d[0x1000]; drv_segment(st, bank, d, dyn);
     // only the bytes drv_segment can write are hashed (bank 0 ends at 0x648, the c2 table at 0x968; the rest is always zero): 4 KB was 512 hash steps a segment
     uint64_t h = fnv(0xcbf29ce484222325ull, d, bank ? 0x968 : 0x648); unsigned k = (unsigned)(h % DRVC);
-    if (g_drvc[k].epoch == g_set_epoch && g_drvc[k].h == h && !g_x_nodrvc) { *buf = g_drvc[k].b; *off = g_drvc[k].o; return; }
+    if (g_drvc[k].epoch == g_set_epoch && g_drvc[k].h == h && !g_x_nodrvc && !memcmp(g_drvc[k].p, d, sizeof d)) { *buf = g_drvc[k].b; *off = g_drvc[k].o; return; }
     uint8_t *p = vk_scratch(0x1000, V.props.limits.minUniformBufferOffsetAlignment, buf, off); memcpy(p, d, sizeof d);
-    g_drvc[k].h = h; g_drvc[k].epoch = g_set_epoch; g_drvc[k].b = *buf; g_drvc[k].o = *off;
+    g_drvc[k].h = h; g_drvc[k].epoch = g_set_epoch; g_drvc[k].b = *buf; g_drvc[k].o = *off; g_drvc[k].p = p;
 }
 // A binding that runs past its chunk's end into the pool's next chunk (pools over ZC_CHUNK come in chunks, each its own buffer, and the replay looks a binding up by its first byte):
 // the GPU would read past the buffer, and with robustBufferAccess off it saw zeros. Found with smaller chunks in a fork: Pokemon Pokopia's per-frame constants, a 64 MB ring, crossed
