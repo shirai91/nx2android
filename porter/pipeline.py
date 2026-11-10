@@ -7,7 +7,7 @@ import importlib.util, os, re, shutil, sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from porter import config, datapack, dumps, fpslocker, install, paths, profiles, toolchain, xbox_icons
+from porter import config, datapack, dumps, fpslocker, install, paths, profiles, sdf_edit, toolchain, xbox_icons
 from porter.adb import NO_ADB, Adb, AdbError
 from porter.paths import DM, NXNATIVE
 from porter.upstream import BuildError, PROG, android_profile, game, nacp, nsp, profile_guess, say, trinity, uepak
@@ -181,6 +181,7 @@ class Port:
         o.folder = Path(o.folder).expanduser().resolve()
         if not o.folder.is_dir(): raise BuildError(f'not a folder: {o.folder}')
         version_code('v0', o.vercode_offset); alias_headroom_gb(o.alias_headroom)   # an offset or headroom out of range fails now, not after the shaders
+        if not o.vulkan_driver and self.cfg.get('vulkan_driver'): o.vulkan_driver = self.cfg['vulkan_driver']   # the player's default driver (porter config vulkan_driver)
         if o.vulkan_driver:
             o.vulkan_driver = Path(o.vulkan_driver).expanduser().resolve()
             if not o.vulkan_driver.is_file() or o.vulkan_driver.suffix != '.so': raise BuildError(f'--vulkan-driver: not a .so library: {o.vulkan_driver}')
@@ -797,10 +798,17 @@ class Port:
         return v
 
     def romfs_patch(self, xbox):
-        """The folder of patched RomFS files (the pack's romfs_patch, DM_ROMFS_OVERLAY): the game's Xbox icons with the Xbox layout. None without"""
+        """The folder of patched RomFS files (the pack's romfs_patch, DM_ROMFS_OVERLAY): the game's Xbox icons with the Xbox layout, then its profile's
+        edits inside its packed data (porter/sdf_edit.py). None when there are neither"""
         out = self.aw / xbox_icons.FOLDER
         if out.exists(): shutil.rmtree(out)
-        return self.xbox_icons() if xbox else None
+        icons = self.xbox_icons() if xbox else None
+        table = self.g.dir / sdf_edit.TABLE
+        if table.is_file():
+            PROG.set(step='game data edits')
+            try: n = sdf_edit.patch(self.game / 'RomFS', table, out); say(f'{n} edits inside the game\'s packed data ({table.name})')
+            except sdf_edit.EditError as e: say(f'[RED] the edits inside the game\'s packed data: {e}; left out')
+        return out if out.is_dir() and any(out.iterdir()) else icons
 
     def xbox_icons(self):
         """The game's own Xbox button icons in place of its Switch ones, when its profile lists them (porter/xbox_icons.py): the folder of patched RomFS files, None without"""

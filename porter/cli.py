@@ -35,7 +35,7 @@ def _parser():
                     help='multithread replay: the game\'s Vulkan commands are recorded on a thread of their own (DM_VK_MT_REPLAY=1 in env.txt), for a game whose replay '
                          'thread holds its frame rate back; it needs a port again (or env.txt edited) to turn off')
     po.add_argument('--vulkan-driver', default=None, metavar='FILE',
-                    help='an arm64 Vulkan driver library (.so, such as Mesa\'s Turnip for Adreno) to pack in the APK and use instead of the device\'s own driver '
+                    help='(default: the vulkan_driver setting) an arm64 Vulkan driver library (.so, such as Mesa\'s Turnip for Adreno) to pack in the APK and use instead of the device\'s own driver '
                          '(DM_VK_DRIVER in env.txt); the app falls back to the device\'s driver when the library does not load. A library not named lib*.so '
                          '(vulkan.purple.so) is packed as lib<name>, the only names Android extracts')
     po.add_argument('--shared-font', default=None, metavar='FILE',
