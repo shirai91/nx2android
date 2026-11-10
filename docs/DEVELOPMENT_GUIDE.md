@@ -225,7 +225,11 @@ mobile-driver performance or physical devices. Unsupported partial depth/stencil
 CPU-decoded, non-attachment and 1D clears, rejected view formats, and failed view
 or pipeline creation log a red message and retain the old whole-subresource clear.
 That fallback ignores the rectangle and color mask; for 3D images it clears the
-whole mip volume. Native BC1–BC7 and ASTC LDR images use constant-color encoded
+whole mip volume. Plain single-layer 2D images ignore the region's layer
+coordinates and clear layer zero; array and 3D ranges still reject out-of-bounds
+layers or slices. Whole MSAA clears always use the transfer path, including
+alternate-format views, with values interpreted in the backing image's format.
+Native BC1–BC7 and ASTC LDR images use constant-color encoded
 blocks and `vkCmdCopyBufferToImage`, since `vkCmdClearColorImage` forbids compressed
 formats (`VUID-vkCmdClearColorImage-image-00007`). Each compressed clear writes the
 whole selected mip and array layers; partial rectangles, nonzero partial masks,

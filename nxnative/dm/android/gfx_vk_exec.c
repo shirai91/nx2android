@@ -2433,7 +2433,8 @@ static void clear_tex(const p_clear_tex *c) {
     uint32_t base = !volume && c->has_view && c->view.set_layers ? (uint32_t)c->view.min_layer : 0;
     uint32_t count = c->r.depth ? (uint32_t)c->r.depth : 1;
     uint64_t first = (uint64_t)base + (uint32_t)c->r.zoffset;
-    if (c->r.zoffset < 0 || c->r.depth < 0 || first + count > layers ||
+    if (!volume && im->layers == 1) { first = 0; count = 1; }   // plain 2D ignores the region's layer coordinates, as sub_of did
+    else if (c->r.zoffset < 0 || c->r.depth < 0 || first + count > layers ||
         (!volume && c->has_view && c->view.set_layers && c->view.nlayers && (uint64_t)c->r.zoffset + count > (uint32_t)c->view.nlayers)) {
         VKRED_ONCE(71, "texture clear outside view layers"); return;
     }
@@ -2453,7 +2454,7 @@ static void clear_tex(const p_clear_tex *c) {
     int whole = rect.extent.width == w && rect.extent.height == h &&
         (mask == 15 || !(im->aspect & VK_IMAGE_ASPECT_COLOR_BIT)) && (!volume || count == layers);
     // Vulkan whole-image clears also support multisampled images.
-    if (whole && f->vk == im->fmt) goto whole_clear;
+    if (whole && (f->vk == im->fmt || im->samples > 1)) goto whole_clear;
     // Keep the old whole-subresource result when the region path cannot run.
     if (im->target == NVN_TEXTURE_TARGET_1D || im->target == NVN_TEXTURE_TARGET_1D_ARRAY) {
         VKRED_ONCE(71, "texture region clear of a 1D image: clearing whole subresource"); goto whole_clear;

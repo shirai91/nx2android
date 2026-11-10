@@ -50,10 +50,13 @@ class TextureClear(unittest.TestCase):
                                     '-I', str(ROOT / 'nxnative/dm/android'),
                                     str(src), '-lm', '-o', str(exe)], capture_output=True, text=True)
             self.assertEqual(build.returncode, 0, build.stderr)
-            for case in ('', 'msaa_color', 'msaa_depth', 'partial_depth', 'decoded',
+            for case in ('', 'msaa_color', 'msaa_depth', 'msaa_view_format', 'partial_depth', 'decoded',
+                         'single2d_whole', 'single2d_partial', 'single2d_depth',
+                         'invalid_array', 'invalid_volume', 'invalid_view',
                          'nonattachment', '1d', '1d_array', 'format', 'view', 'pipeline',
                          'compressed', 'compressed_full', 'compressed_volume', 'compressed_tail',
-                         'compressed_chunks', 'compressed_mask0', 'compressed_msaa', 'compressed_bad_usage'):
+                         'compressed_chunks', 'compressed_mask0', 'compressed_msaa', 'compressed_bad_usage',
+                         'compressed_single2d'):
                 with self.subTest(case=case):
                     run = subprocess.run([str(exe)] + ([case] if case else []), capture_output=True, text=True)
                     self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
