@@ -170,6 +170,7 @@ public final class ExternalActivity extends NativeActivity implements ExternalDi
                 if (visible == 0 || (visible == 2 && ctl != names.length - 1)) continue;
                 boolean decor = s.state.equals("decor"); if (decor != (pass == 0)) continue;
                 int base = 4 + ctl * 9, kind = (int)data[base], held = (int)data[base + 5];
+                if (kind < 0) continue;   // hidden by the player in the layout editor
                 int dir = direction(s.direction);
                 boolean on = kind == 3 ? dir >= 0 && (held & (1 << dir)) != 0 : held != 0;
                 if (!decor && !s.state.equals("knob") && !s.state.equals(on ? "held" : "idle")) continue;
