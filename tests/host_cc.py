@@ -15,7 +15,13 @@ POSIX_PROBE = r'''
 #include <sys/mman.h>
 #include <pthread.h>
 #include <stdlib.h>
-int main(void) { pthread_barrier_t b; (void)b; setenv("NX2A_PROBE", "1", 1); return mprotect(0, 0, PROT_READ) && 0; }
+int main(void) {
+    pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
+    pthread_cond_t cv = PTHREAD_COND_INITIALIZER;
+    pthread_mutex_lock(&mu); pthread_cond_broadcast(&cv); pthread_mutex_unlock(&mu);
+    pthread_cond_destroy(&cv); pthread_mutex_destroy(&mu);
+    setenv("NX2A_PROBE", "1", 1); return mprotect(0, 0, PROT_READ) && 0;
+}
 '''
 
 
@@ -33,7 +39,7 @@ def _builds(code, *flags):
 
 @functools.lru_cache(maxsize=None)
 def posix():
-    """cc builds a program with <sys/mman.h>, pthread barriers and setenv."""
+    """cc builds a program with <sys/mman.h>, pthread mutexes/conditions and setenv."""
     return _builds(POSIX_PROBE, '-std=gnu11', '-pthread')
 
 
