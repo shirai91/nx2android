@@ -170,7 +170,7 @@ class Adb:
         components = [ln.strip() for ln in out.splitlines() if re.fullmatch(re.escape(package) + r'/[A-Za-z_.$][A-Za-z0-9_.$]*', ln.strip())]
         if len(components) != 1:
             raise AdbError(f'{package}: cannot resolve its launcher activity: {out.strip()}')
-        out = self.shell(f'am start -W -n {shlex.quote(components[0])}', timeout=60)
+        out = self.shell(f'am start -W -n {shlex.quote(components[0])} 2>&1', timeout=60)
         if re.search(r'(?im)^(?:Error|Exception)', out):
             raise AdbError(f'{package}: could not start its launcher activity: {out.strip()}')
 

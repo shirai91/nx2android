@@ -1,6 +1,7 @@
 # porter/adb.py without a device: the shell's answers are made up (python -m unittest discover tests).
 import hashlib, os, shlex, shutil, subprocess, sys, tarfile, tempfile, unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from porter.adb import Adb, AdbError   # noqa: E402
@@ -218,8 +219,8 @@ class PushFile(unittest.TestCase):
 
 class LaunchActivity(unittest.TestCase):
     class FakeAdb(Adb):
-        def __init__(self, activity='android.app.NativeActivity', resolved=None, launch=''):
-            super().__init__('adb'); self.activity, self.resolved, self.launch = activity, resolved, launch
+        def __init__(self, activity='android.app.NativeActivity', resolved=None):
+            super().__init__('adb'); self.activity, self.resolved = activity, resolved
             self.cmds = []; self.started = False
         def shell(self, script, **kw):
             self.cmds.append(script)
@@ -227,7 +228,7 @@ class LaunchActivity(unittest.TestCase):
                 return self.resolved if self.resolved is not None else f'priority=0 preferredOrder=0 match=0x108000\norg.nx2a.test/{self.activity}\n'
             if script.startswith('am start'):
                 self.started = f'org.nx2a.test/{self.activity}' in script
-                return self.launch
+                return ''
             if script.startswith('[ -d'):
                 return 'yes' if self.started and '.nx2a-old' not in script else ''
             if script.startswith('cat ') and '/result.txt' in script:
@@ -244,7 +245,6 @@ class LaunchActivity(unittest.TestCase):
 
     def test_save_requests_resolve_each_packaged_activity(self):
         from porter import saves
-        from unittest import mock
         for activity in ('android.app.NativeActivity', 'org.nx2a.GameActivity', 'org.nx2a.ExternalActivity', 'org.nx2a.KeyboardExternalActivity'):
             with self.subTest(activity=activity), mock.patch.object(saves.secrets, 'token_hex', return_value='fixture'):
                 adb = self.FakeAdb(activity)
@@ -260,10 +260,23 @@ class LaunchActivity(unittest.TestCase):
                     adb.start_app('org.nx2a.test')
                 self.assertFalse(any(c.startswith('am start') for c in adb.cmds))
 
-    def test_start_error_is_reported_immediately(self):
-        adb = self.FakeAdb(launch='Error type 3\nError: Activity class does not exist.\n')
-        with self.assertRaisesRegex(AdbError, 'Activity class does not exist'):
-            adb.start_app('org.nx2a.test')
+    def test_start_error_on_stderr_is_reported_immediately(self):
+        def remote_shell(args, **kwargs):
+            if args[1] != 'shell':
+                self.fail(f'unexpected adb command: {args}')
+            script = args[2]
+            if script.startswith('cmd package resolve-activity '):
+                return subprocess.CompletedProcess(args, 0, 'org.nx2a.test/android.app.NativeActivity\n', '')
+            if script in ('am start -W -n org.nx2a.test/android.app.NativeActivity',
+                          'am start -W -n org.nx2a.test/android.app.NativeActivity 2>&1'):
+                error = 'Error type 3\nError: Activity class does not exist.\n'
+                stdout, stderr = (error, '') if script.endswith(' 2>&1') else ('', error)
+                return subprocess.CompletedProcess(args, 0, stdout, stderr)
+            self.fail(f'unexpected shell command: {script}')
+
+        with mock.patch('porter.adb.subprocess.run', side_effect=remote_shell):
+            with self.assertRaisesRegex(AdbError, 'Activity class does not exist'):
+                Adb('adb').start_app('org.nx2a.test')
 
     def test_failed_save_launch_removes_pending_request(self):
         from porter import saves

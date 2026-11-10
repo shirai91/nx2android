@@ -1,9 +1,11 @@
 """Optional native text input packaging; the controller-only APK stays SDK-free."""
 import os
+import subprocess
 from pathlib import Path
 import tempfile
 import unittest
 from unittest import mock
+import host_cc
 from porter import cli, pipeline
 
 
@@ -37,11 +39,8 @@ class NativeKeyboard(unittest.TestCase):
 
 
 class NativeKeyboardBridge(unittest.TestCase):
+    @unittest.skipUnless(host_cc.posix(), 'a POSIX host C compiler is required (<sys/mman.h>, pthread, setenv)')
     def test_cached_lookup_input_reset_and_concurrent_cancel(self):
-        import shutil
-        import subprocess
-        if not shutil.which('cc'):
-            self.skipTest('a host C compiler is required')
         root = Path(__file__).resolve().parents[1]
         front = (pipeline.DM / 'android/front_android.c').read_text()
         start = front.index('int front_text_input(')
