@@ -638,7 +638,8 @@ static int begin_pass(void) {
         // No target set at all (a target that failed to bind still skips): an attachment-less pass. FFT's UI composite draws into its window image with image
         // stores in passes with no colour or depth target; skipped, the screen stayed black. Its size is the viewport's (else the scissor's), clamped to the device
         int none = !S.rt_has_dep; for (int i = 0; i < S.rt_n && i < 8; i++) if (S.rt_has_col[i] || S.rt_bad[i]) none = 0;
-        if (!none) { VKRED_ONCE(30, "draw with no usable render target: skipped"); return 0; }
+        static int notarget = -1; if (notarget < 0) { const char *e = getenv("DM_VK_X_NOTARGET"); notarget = !(e && !atoi(e)); }   // DM_VK_X_NOTARGET=0: skip these too, as before (A/B)
+        if (!none || !notarget) { VKRED_ONCE(30, "draw with no usable render target: skipped"); return 0; }
         float ex = fmaxf(S.vp[0][0], 0.f) + fabsf(S.vp[0][2]), ey = fmaxf(S.vp[0][1], 0.f) + fabsf(S.vp[0][3]);
         if (S.vp[0][2] == 0.f && S.vp[0][3] == 0.f && S.sc_set) { ex = (float)S.sc.x + (float)S.sc.w; ey = (float)S.sc.y + (float)S.sc.h; }   // (set_dynamic's fallback)
         uint32_t mw = V.props.limits.maxFramebufferWidth, mh = V.props.limits.maxFramebufferHeight;

@@ -181,7 +181,9 @@ VkFormat vk_int_fmt(uint32_t bytes, int sint) {
 // default (3): Super Mario Bros. Wonder's world map on the Adreno 830 took 8.7-8.9 ms of GPU a frame instead of 11.8, the same picture (1 alone: 9.5-10.0 ms).
 // Xenoblade Chronicles 3's field took 22.9-23.0 ms against 23.0-23.6 (its own shading dominates), with clouds in every frame of a sky turn and no idle flicker;
 // Graveyard Keeper 2, Advance Wars and DKCR drew the same pictures. A colour view in another format than the image's and its twin is logged [RED] (vk_tex_view):
-// such a game wants DM_VK_UBWC=2 in its profile
+// such a game wants DM_VK_UBWC=2 in its profile. 4 (off by default): with 1, colour images flagged as images also list the uint and the sint format of their texel
+// size, for storage views that read or write their raw bits (tex_desc_for). A cross-class list may make Adreno / Turnip drop UBWC on those images, which was not
+// measured, so only a profile that needs it turns it on (DM_VK_UBWC=7); without it such a view falls back to the image's own format (vk_tex_view_as)
 static int ubwc_mode(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_VK_UBWC"); v = e ? atoi(e) : 3; } return v; }
 static vkimg_t *img_new(const tex_t *t, const vkfmt_t *f) {
     vkimg_t *im = calloc(1, sizeof *im);
@@ -211,8 +213,8 @@ static vkimg_t *img_new(const tex_t *t, const vkfmt_t *f) {
     if (!f->compressed && (ubwc_mode() & (im->aspect == VK_IMAGE_ASPECT_COLOR_BIT ? 1 : 2))) {   // (a depth format has no twin: a list of itself, no MUTABLE_FORMAT)
         im->fixed_fmt = 1; im->fmt2 = fl[1]; ci.pNext = &fli;
         // a colour image flagged as an image may be stored into as integers (a shader declares r32ui over an RGBA8 texture, FINAL FANTASY TACTICS' UI composite:
-        // tex_desc_for): its list takes the uint and the sint format of its texel size, which a storage view in them then may use
-        if ((d->flags & NVN_TEXTURE_FLAGS_IMAGE) && im->aspect == VK_IMAGE_ASPECT_COLOR_BIT) {
+        // tex_desc_for): with DM_VK_UBWC bit 4, its list takes the uint and the sint format of its texel size, which a storage view in them then may use
+        if ((ubwc_mode() & 4) && (d->flags & NVN_TEXTURE_FLAGS_IMAGE) && im->aspect == VK_IMAGE_ASPECT_COLOR_BIT) {   // (DM_VK_UBWC bit 4)
             im->fmt_cls[0] = vk_int_fmt(f->bpb, 0); im->fmt_cls[1] = vk_int_fmt(f->bpb, 1);
             if (im->fmt_cls[0]) fl[nfl++] = im->fmt_cls[0];
             if (im->fmt_cls[1]) fl[nfl++] = im->fmt_cls[1];
