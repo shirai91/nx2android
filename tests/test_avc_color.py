@@ -1,5 +1,6 @@
 """Exercise the actual AVC format/queue/conversion path with labeled YUV frames."""
 import ctypes as C
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -93,6 +94,11 @@ int exercise(const int *frames, int n, int rgba, int synth, int w, int h, uint8_
         cls.lib = C.CDLL(str(lib))
         cls.lib.exercise.argtypes = [C.POINTER(C.c_int)] + [C.c_int]*5 + [C.POINTER(C.c_uint8), C.POINTER(C.c_int64)]
         cls.lib.exercise.restype = C.c_int
+
+    @classmethod
+    def tearDownClass(cls):
+        if os.name == 'nt':  # Release the DLL before addClassCleanup removes its folder.
+            C.windll.kernel32.FreeLibrary(C.c_void_p(cls.lib._handle))
 
     def run_frames(self, frames, rgba=True, synth=False, w=2, h=2):
         n = len(frames)
