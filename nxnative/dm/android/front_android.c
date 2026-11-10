@@ -123,10 +123,11 @@ __attribute__((weak)) void dm_overlay_redraw(void) {}   // the backend presents 
 // ---- holding the game: in the background and while the pause menu is open. Its clock reads wait (reason 1) and its audio goes to the silent sink ----
 static _Atomic int g_running, g_bg, g_menu;
 static pthread_mutex_t g_hold_mu = PTHREAD_MUTEX_INITIALIZER; static int g_held;
+static _Atomic int g_ime_on;
 static _Atomic int g_tx_on;   // text entry open (front_text_input): the game is held as by the menu
 static void hold_sync(void) {
     pthread_mutex_lock(&g_hold_mu);
-    int want = atomic_load(&g_bg) || atomic_load(&g_menu) || atomic_load(&g_tx_on);
+    int want = atomic_load(&g_bg) || atomic_load(&g_menu) || atomic_load(&g_tx_on) || atomic_load(&g_ime_on);
     if (want != g_held) { g_held = want; if (want) { dm_movie_hold(1); dm_audio_suspend(1); guest_clock_freeze_for(1, 1); } else { guest_clock_freeze_for(1, 0); dm_audio_suspend(0); dm_movie_hold(0); } }
     pthread_mutex_unlock(&g_hold_mu);
 }
@@ -826,7 +827,9 @@ static void tx_touch(AInputEvent *e, float W, float H) {   // a key is pressed w
         if (key >= 0 && key == down) tx_press(key);
     }
 }
-int front_text_input(const char *title, const char *sub, const char *guide, const char *initial, int max_chars, char *out, int out_cap) {
+#include "keyboard_android.inc"
+static pthread_mutex_t g_keyboard_mu = PTHREAD_MUTEX_INITIALIZER;
+static int overlay_text_input(const char *title, const char *sub, const char *guide, const char *initial, int max_chars, char *out, int out_cap) {
     if (!out || out_cap <= 0) return -1;
     if (!g_act || !dm_front_window()) return -1;   // the adb shell executable, or no window yet: nothing is shown
     pthread_mutex_lock(&g_tx_mu);
@@ -854,6 +857,14 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
     atomic_store(&g_tx_on, 0); hold_sync(); dm_overlay_redraw();
     LOG("[text] entry %s", ok ? "accepted" : "cancelled");
     return ok;
+}
+
+int front_text_input(const char *title, const char *sub, const char *guide, const char *initial, int max_chars, char *out, int out_cap) {
+    if (pthread_mutex_trylock(&g_keyboard_mu)) return 0;
+    int result = android_text_input(title, sub, guide, initial, max_chars, out, out_cap);
+    if (result == -2) result = overlay_text_input(title, sub, guide, initial, max_chars, out, out_cap);
+    pthread_mutex_unlock(&g_keyboard_mu);
+    return result;
 }
 
 __attribute__((weak)) void dm_picture_rect(float r[4]);   // gfx_vk_present.c
