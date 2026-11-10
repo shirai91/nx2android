@@ -175,3 +175,6 @@ void vk_present_init(void);
 uint64_t vk_present(const tex_t *t, double period, const int crop[4]);
 enum { PT_DISPATCH = 0xd15 };   // vk_pass_ts: a dispatch timed as a pass (its format field)
 
+
+// Mark driver cache updates, including same-sized payload changes.
+void vk_pipeline_cache_changed(void);

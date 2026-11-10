@@ -148,3 +148,14 @@ The commits before 2026-10-28 predate the rule.
 ## nxnative
 
 `nxnative/` started as a squashed git subtree of [seedds/nxnative](https://github.com/seedds/nxnative) (upstream 6034fca, 2026-10-24). Since 2026-10-29 it is our own fork: no `git subtree pull`, cherry-pick or merge from upstream, and the repository has no `upstream` remote (removed 2026-10-31): `origin` is the only one. Upstream's profiles are still a good reference when bringing up a game it has; read them on GitHub (`https://github.com/seedds/nxnative/tree/main/dm/games/<title ID>`) and write our own.
+
+The Vulkan driver pipeline cache (`vk_pipeline_cache.bin` under `DM_ROOT`) now has a
+versioned envelope containing the device, driver, API and UUID identity, a renderer
+cache ABI, a bounded length and SHA-256 digest. Legacy raw caches and mismatched or
+corrupt files are ignored before the driver sees them; a driver rejection retries
+with an empty cache. Pipeline creation marks the cache dirty even when its size
+stays unchanged. Saves serialize the snapshot and publish a private temporary file
+only after successful writes and synchronization; failed or incomplete snapshots
+remain dirty for a later retry. `DM_VK_NOPCACHE` still means start empty, while
+allowing newly built pipelines to be saved. Bump `PCACHE_ABI` when changing the
+renderer's persistent cache contract.
