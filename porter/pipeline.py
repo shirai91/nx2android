@@ -7,7 +7,7 @@ import importlib.util, os, re, shutil, sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from porter import config, datapack, dumps, fpslocker, install, paths, profiles, toolchain
+from porter import config, controllers, datapack, dumps, fpslocker, install, paths, profiles, toolchain
 from porter.adb import NO_ADB, Adb, AdbError
 from porter.paths import DM, NXNATIVE
 from porter.upstream import BuildError, PROG, android_profile, game, nacp, nsp, profile_guess, say, trinity, uepak
@@ -40,6 +40,7 @@ class Options:
     firmware: Path = None              # the player's system content files (.nca), for the profile's sysdata titles (extract_sysdata; DM_SYSDATA, dm/host/hle_fs.c)
     mt_replay: bool = False            # multithread replay: DM_VK_MT_REPLAY=1 in env.txt (dm/android/gfx_vk_dq.c), after the profile's env rows
     touch: bool = False                # a game played by touch: the on-screen gamepad starts hidden (TOUCH_SETTINGS), so it takes none of the game's touches
+    controller: str = ''               # the physical controller's profile: an id of dm/android/controllers.tsv or the player's own .tsv (porter/controllers.py); '': the configured one, else standard
     external_display: bool = False     # compile the optional external-screen activity with the Android SDK
     vercode_offset: int = 0            # added to the APK's versionCode: a rebuild of the same game version installs over a build with a higher one (version_code)
     alias_headroom: int = None         # GB more alias region (alias_headroom); None: ALIAS_HEADROOM for a version the profile was not brought up on, none for one it was
@@ -186,6 +187,8 @@ class Port:
         if o.shared_font:
             o.shared_font = Path(o.shared_font).expanduser().resolve()
             if not o.shared_font.is_file() or o.shared_font.suffix.lower() != '.ttf': raise BuildError(f'--shared-font: not a .ttf font: {o.shared_font}')
+        try: self.controller = controllers.resolve(o.controller or self.cfg.get('controller'))   # an unknown profile or a bad file fails now, not after the shaders
+        except controllers.ControllerError as e: raise BuildError(str(e)) from e
         if fw := o.firmware or self.cfg.get('firmware'):
             o.firmware = Path(fw).expanduser().resolve()
             if not o.firmware.is_dir(): raise BuildError(f'--firmware: not a folder: {o.firmware}')
@@ -781,10 +784,10 @@ class Port:
         man = datapack.build(dst, profile=self.ap, version=self.pkg_ver, display=self.display, patched=self.patched, romfs=self.game / 'RomFS', shaders=self.dmsv,
                              aoc=self.aoc, sysdata=self.sysdata, language=self.lang, package=self.package, env=self.fps_env + font_env + (['DM_VK_MT_REPLAY=1'] if self.o.mt_replay else [])
                              + ([f'DM_VK_DRIVER={driver_lib_name(self.o.vulkan_driver)}'] if self.o.vulkan_driver else []), settings=TOUCH_SETTINGS if self.o.touch else None,
-                             files={**self.fps_files, **font_files},
+                             files={**self.fps_files, **font_files}, controller=self.controller[0].pack_text(self.controller[1]),
                              progress=lambda what: PROG.set(step=f'linking {what}'))
-        self.data_path = dst; self.result['data'] = str(dst)
-        PROG.end(f'{man["files"]:,} files, {man["bytes"] / 2**30:.1f} GB')
+        self.data_path = dst; self.result['data'] = str(dst); self.result['controller'] = self.controller[0].id
+        PROG.end(f'{man["files"]:,} files, {man["bytes"] / 2**30:.1f} GB, controller: {self.controller[0].name}')
 
     def button_font(self):
         """The stand-in for the system's Nintendo extension shared font: the controller-button icons in game text (U+E0E0 = A; Super Mario Bros. Wonder's menus showed '?' without it), which

@@ -84,6 +84,13 @@ class PortTab(QWidget):
                                 'An app of another package has its own saves.')
         self.fps60 = QCheckBox('60 fps (the profile\'s own frame-rate cap, else the community\'s FPSLocker-Warehouse config of the game\'s build, fetched from GitHub)')
         self.touch = QCheckBox('Touch game: start with the on-screen gamepad hidden, so every touch but the menu button\'s goes to the game (the pause menu shows it again)')   # porter port --touch
+        self.controller = QComboBox(); self.controller.setMinimumWidth(420)   # porter port --controller (porter controllers --json fills it)
+        self.controller.activated.connect(self.on_controller)
+        controller = with_info(self.controller, 'Your controller or handheld, so its face buttons reach the game as their labels and places say\n'
+                               '(an AYN Thor set to its Odin style sends its A from the right button, which the standard mapping takes for B).\n'
+                               'A handheld with a Nintendo / Xbox layout switch in its own settings has an entry for each: pick the one it is set to.\n'
+                               'If A and B are still swapped, port again with the other one. The pause menu\'s Face buttons row (Position / Label) works on top.\n'
+                               'Your own file… : a .tsv that maps more keys (porter/controllers.py says how). The choice is remembered.')
         self.driver = QLineEdit(); self.driver.setPlaceholderText('the device\'s own')   # porter port --vulkan-driver
         self.driver.setToolTip('A Vulkan driver library (.so) to pack in the APK and use instead of the device\'s own,\n'
                                'such as Mesa\'s Turnip for Adreno GPUs. Empty: the device\'s driver.\n'
@@ -108,6 +115,7 @@ class PortTab(QWidget):
         f.addRow('Output folder', path_row(self.out, self.pick_out)); f.addRow('Device', dev); f.addRow('', self.replace_signer)
         f.addRow('RomFS on the device', romfs); f.addRow('', self.romfs_push)
         f.addRow('Package', self.package); f.addRow('versionCode offset', self.vercode); f.addRow('Extra address space', headroom)
+        f.addRow('Controller', controller)
         f.addRow('Vulkan driver', path_row(self.driver, self.pick_driver))
         f.addRow('System font', path_row(self.shared_font, self.pick_shared_font))
         f.addRow('', self.fps60); f.addRow('', self.touch); f.addRow('', self.mt_replay); f.addRow('', self.debug); f.addRow('', self.experimental)
@@ -135,6 +143,7 @@ class PortTab(QWidget):
         v.addWidget(split, 1)
         self.tick = QTimer(self); self.tick.timeout.connect(self.on_tick); self.tick.start(1000)
         self.refresh_devices()
+        self.refresh_controllers()
 
     # ---- the game folder ----
     def pick_folder(self):
@@ -195,6 +204,24 @@ class PortTab(QWidget):
             if i >= 0: self.device.setCurrentIndex(i)
         call_json(self, ['devices', '--json'], got)
 
+    def refresh_controllers(self):   # the profiles, the remembered one chosen (porter config controller)
+        cur = config.load().get('controller') or 'standard'
+        def got(rows, code):
+            self.controller.clear()
+            for r in rows or [{'id': 'standard', 'name': 'Android standard: A at the bottom'}]: self.controller.addItem(r['name'], r['id'])
+            if cur not in [self.controller.itemData(i) for i in range(self.controller.count())]: self.controller.addItem(Path(cur).name, cur)   # the player's own file
+            self.controller.addItem('Your own file…', None)
+            self.controller.setCurrentIndex(max(0, self.controller.findData(cur)))
+        call_json(self, ['controllers', '--json'], got)
+
+    def on_controller(self, i):
+        spec = self.controller.itemData(i)
+        if spec is None:   # Your own file…: a .tsv of the player's
+            p = QFileDialog.getOpenFileName(self, 'Controller profile', str(Path.home()), 'Controller profile (*.tsv)')[0]
+            if not p: self.controller.setCurrentIndex(max(0, self.controller.findData(config.load().get('controller') or 'standard'))); return
+            spec = p; self.controller.insertItem(i, Path(p).name, p); self.controller.setCurrentIndex(i)
+        config.set_value('controller', '' if spec == 'standard' else spec)
+
     # ---- the port ----
     def start(self):
         cfg = config.load()
@@ -214,6 +241,7 @@ class PortTab(QWidget):
         if self.headroom.value() >= 0: args += ['--alias-headroom', str(self.headroom.value())]
         if self.fps60.isChecked(): args.append('--fps60')
         if self.touch.isChecked(): args.append('--touch')
+        if self.controller.currentData(): args += ['--controller', self.controller.currentData()]
         if self.mt_replay.isChecked(): args.append('--mt-replay')
         if self.driver.text().strip(): args += ['--vulkan-driver', self.driver.text().strip()]
         if self.shared_font.text().strip(): args += ['--shared-font', self.shared_font.text().strip()]
