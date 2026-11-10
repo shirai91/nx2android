@@ -5,6 +5,7 @@
 #include <stdint.h>
 typedef struct { uint32_t id; float x, y; } dm_touch;
 void dm_touch_set(const dm_touch *t, int n);
+int dm_opmode(void) { return 0; }   // hle_oe.c: handheld (hle_touch.c DM_TOUCH_DOCKED applies docked only)
 int touch_fill(void *out, uint64_t now_ns);
 static int fails, cases;
 typedef struct { int64_t dt; uint32_t attr; int32_t fid, x, y; } want_pt;
