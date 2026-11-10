@@ -11,7 +11,8 @@ MODELS = (0, 4, 3, 1, 2, 5)  # NVN stage -> SPIR-V execution model
 
 
 def validate_spirv(data, stage):
-    # Adapted from nxnative dm/android/tools/spv_module.py's bounded decoder.
+    # Bounded decoding adapted from dm/android/tools/spv_module.py in
+    # thehobbit85/nxnative at 1f01e28c87da (MIT, see nxnative/LICENSE).
     if stage not in range(6) or len(data) < 20 or len(data) % 4:
         raise ValueError('invalid shader stage or truncated SPIR-V')
     w = struct.unpack(f'<{len(data) // 4}I', data)

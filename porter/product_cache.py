@@ -1,4 +1,6 @@
-"""Content receipts for generated products, adapted from nxnative's Android export contracts."""
+"""Content receipts for generated products."""
+# The receipt design follows dm/android/tools/target_contract.py in
+# thehobbit85/nxnative at 1f01e28c87da (MIT, see nxnative/LICENSE).
 import hashlib
 import json
 import os
