@@ -237,14 +237,15 @@ static void pad_publish(void) {
     dm_pad_set(b, axis(g_ax[0]), -axis(g_ax[1]), axis(g_ax[2]), -axis(g_ax[3]));   // Android's y grows downward, the Switch's upward
 }
 // ---- the on-screen gamepad (overlay_layout.h): a pointer that goes down on a control keeps it until it lifts; every other pointer is the game's touch screen ----
-static _Atomic int g_overlay = 1;   // shown until a physical controller is used, again at the next touch (when the player has it on)
-static _Atomic int g_pads;          // controllers attached and used (pad_watch): while there is one, nothing of the gamepad is shown, the menu button neither
+static _Atomic int g_overlay = 1;   // the key/touch handoff for phone vibration; visibility follows g_set_overlay
+static _Atomic int g_pads;          // controllers attached and used (pad_watch), for the vibration handoff
 static _Atomic int g_pad_in = -1;   // the device that last sent a controller's input (handle_event), which pad_watch then counts
 static _Atomic int g_knob[2][2];    // the sticks' knob offsets, in 1/10000 of the stick radius
 static _Atomic int64_t g_press_t[16], g_menu_t, g_stick_t[2];   // when each overlay button (by DM_BTN_* bit), the menu button and each stick went down, 0 = not held
 static uint64_t g_touch_btn;        // the overlay buttons held, as of the last touch event
 static int64_t mono_ns(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec; }
-int dm_overlay_visible(void) { return atomic_load(&g_pads) ? 0 : atomic_load(&g_set_overlay) && atomic_load(&g_overlay) ? 1 : 2; }
+// A system input device can report itself as an active controller (issues #22, #210). The saved choice must still work, and the menu must stay reachable.
+int dm_overlay_visible(void) { return atomic_load(&g_set_overlay) ? 1 : 2; }
 int dm_overlay_layout(void) {   // the phone's layout in a window at least OV_PHONE_ASPECT wide for its height (overlay_layout.h)
     static int last_w = -1, last_h = -1, phone;
     ANativeWindow *w = phone_window(); int ww = w ? ANativeWindow_getWidth(w) : 0, wh = w ? ANativeWindow_getHeight(w) : 0;
@@ -306,7 +307,7 @@ JNIEXPORT jfloatArray JNICALL Java_org_nx2a_ExternalActivity_externalOverlay(JNI
 static int g_ptr_ctl[32];   // pointer id → control index + 1 (0 = the touch screen)
 static int ctl_at(float x, float y, float W, float H) {   // the control under (x, y) in pixels, -1 if none (in the layout editor: every control, shown or not)
     int best = -1, vis = atomic_load(&g_edit) ? 1 : dm_overlay_visible(), shown = vis == 1; float bd = 1e9f;
-    if (!vis) return -1;   // a controller is attached: every touch is the game's
+    if (!vis) return -1;   // no overlay: every touch is the game's
     for (int i = 0; i < OV_N; i++) {
         const ov_ctl *c = &OV_CTLS[i]; if (!shown && c->kind != OV_MENU) continue;   // hidden: only the menu button answers
         float b[4]; ov_box(c, W, H, b);
@@ -335,9 +336,8 @@ static void menu_drag(const ov_ctl *m, float x, float y, float W, float H) {   /
 
 // ---- controllers attached: InputDevice's list, read once a second through JNI (a code-less NativeActivity has no InputManager listener). A device counts
 // when it is a gamepad or a joystick and not virtual (the tablet's own keys, touch screen and pen are neither), and once it has sent input: Xiaomi phones
-// keep a system device "uinput-xiaomi" attached for good that says it is a gamepad and sends nothing, which hid the gamepad and its menu button (issue #22).
-// While one is attached nothing of the gamepad is shown and every touch is the game's; its keys open the menu (Back, Mode, Menu: handle_event). When the
-// last one goes, the gamepad comes back ----
+// keep a system device "uinput-xiaomi" attached for good that says it is a gamepad (issues #22, #210). This list controls the vibration handoff, never the
+// player's Show gamepad choice. When the last used controller goes, vibration returns to the phone ----
 static int jx(JNIEnv *E) { if (!(*E)->ExceptionCheck(E)) return 0; (*E)->ExceptionClear(E); return 1; }
 static void *pad_watch(void *a) {
     JavaVM *vm = a; JNIEnv *E; pthread_setname_np(pthread_self(), "padwatch");
@@ -363,11 +363,11 @@ static void *pad_watch(void *a) {
                     if (!known) {
                         jstring s = (*E)->CallObjectMethod(E, d, mName); const char *nm = !jx(E) && s ? (*E)->GetStringUTFChars(E, s, NULL) : NULL;
                         jint ven = (*E)->CallIntMethod(E, d, mVen), prod = (*E)->CallIntMethod(E, d, mProd); jx(E);
-                        LOG("[input] controller attached: %s (device %d, sources 0x%x, %04x:%04x): the gamepad is hidden once it is used", nm ? nm : "?", v[i], src, ven, prod);
+                        LOG("[input] controller attached: %s (device %d, sources 0x%x, %04x:%04x)", nm ? nm : "?", v[i], src, ven, prod);
                         if (nm) (*E)->ReleaseStringUTFChars(E, s, nm);
                         if (s) (*E)->DeleteLocalRef(E, s);
                     }
-                    if (on[n] && !was) LOG("[input] controller in use (device %d): the gamepad is hidden", v[i]);
+                    if (on[n] && !was) LOG("[input] controller in use (device %d)", v[i]);
                     n++;
                 }
                 (*E)->DeleteLocalRef(E, d);
@@ -376,9 +376,9 @@ static void *pad_watch(void *a) {
             (*E)->DeleteLocalRef(E, arr);
         }
         for (int k = 0; k < np; k++) { int still = 0; for (int i = 0; i < n; i++) still |= ids[i] == prev[k]; if (!still) LOG("[input] controller detached (device %d)", prev[k]); }
-        if (atomic_exchange(&g_pads, nu) && !nu) {   // the last one went: the gamepad again, and the device's motor for rumble
+        if (atomic_exchange(&g_pads, nu) && !nu) {   // the last one went: the device's motor for rumble
             atomic_store(&g_overlay, 1); dm_haptics_android_device(-1);
-            LOG("[input] no controller in use: the gamepad is shown");
+            LOG("[input] no controller in use: vibration returns to the phone");
         }
         memcpy(prev, ids, sizeof ids); memcpy(used, on, sizeof on); np = n;
         sleep(1);
@@ -862,7 +862,7 @@ static void touch_event(AInputEvent *e) {
         int c = ctl_at(AMotionEvent_getX(e, (size_t)i), AMotionEvent_getY(e, (size_t)i), W, H);
         g_ptr_ctl[id] = c + 1;
         if (c >= 0 && OV_CTLS[c].kind == OV_MENU) { atomic_store(&g_menu_t, mono_ns()); dm_haptics_android_tap(); menu_grab(id, &OV_CTLS[c], AMotionEvent_getX(e, (size_t)i), AMotionEvent_getY(e, (size_t)i), W, H); }
-        if (!atomic_load(&g_overlay) && !atomic_load(&g_pads)) { atomic_store(&g_overlay, 1); dm_haptics_android_device(-1); }   // a touch brings the gamepad back (not over an attached controller)
+        if (!atomic_load(&g_overlay) && !atomic_load(&g_pads)) { atomic_store(&g_overlay, 1); dm_haptics_android_device(-1); }   // touch returns vibration to the phone when no used controller is attached
     }
     uint64_t btn = 0; int32_t lx = 0, ly = 0, rx = 0, ry = 0; float kn[2][2] = {{0, 0}, {0, 0}}; int open = 0, held[2] = {0, 0};
     dm_touch t[16]; int n = 0;
@@ -923,7 +923,7 @@ static int handle_event(AInputEvent *e) {
                 seen[k >> 3] |= (uint8_t)(1 << (k & 7)); LOG("[input] controller key %d (device %d): not mapped", k, AInputEvent_getDeviceId(e)); }
             return 0;
         }
-        atomic_store(&g_overlay, 0); g_pad_used = 1; atomic_store(&g_pad_in, AInputEvent_getDeviceId(e)); dm_haptics_android_device(AInputEvent_getDeviceId(e));   // a controller is in use: the gamepad steps aside (until a touch)
+        atomic_store(&g_overlay, 0); g_pad_used = 1; atomic_store(&g_pad_in, AInputEvent_getDeviceId(e)); dm_haptics_android_device(AInputEvent_getDeviceId(e));   // remember the input device for vibration
         if (atomic_load(&g_menu)) { if (down && AKeyEvent_getRepeatCount(e) == 0) menu_key(bit); return 1; }
         if (down) g_btn |= bit; else if (AKeyEvent_getAction(e) == AKEY_EVENT_ACTION_UP) g_btn &= ~bit;
         dm_pad_players(1); pad_publish(); return 1;
