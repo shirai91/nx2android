@@ -1,5 +1,5 @@
 # Build the player's bundle: dist/nx2android/ with nx2android.exe (the app, and the Python the pipeline runs the engine's tools with), the committed
-# nxnative/ tree beside it (the engine the port builds from), and the install guide. Zipped as dist/nx2android-<version>-<os>-<cpu>.zip (windows-x64, macos-arm64).
+# nxnative/ tree beside it (the engine the port builds from), and the install guide. Zipped as dist/nx2android-<version>-<os>-<cpu>.zip (windows-x64, macos-arm64, linux-x64, linux-arm64; the Linux zip runs on glibc 2.39, Ubuntu 24.04, or later - a current Linux build machine, an older one needs an older system to stay that).
 #   python packaging/build_bundle.py      (with PySide6 and PyInstaller installed: pip install -r requirements.txt pyinstaller, and on Windows PyInstaller's
 #                                          bootloader compiled on this PC: python packaging/build_bootloader.py)
 # The bundle holds no toolchain: the Setup tab downloads NDK r27c, the .NET SDK 10 and platform-tools from their makers, or the player installs them (packaging/INSTALL.md).

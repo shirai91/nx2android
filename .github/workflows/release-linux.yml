@@ -1,0 +1,41 @@
+# Builds the Linux bundles (packaging/build_bundle.py), x64 and arm64, and attaches them to each published release, beside the macOS
+# and Windows zips (release-windows.yml, release-macos.yml). x64 on ubuntu-latest; arm has no such alias, so it is pinned to an
+# Ubuntu 24.04 arm image (bump it when x64 latest moves). The bundle carries the system libraries of the runner that made it (glibc
+# among them), so a 24.04 build runs on Ubuntu 24.04+, Debian 13+, Mint 22 and the rolling distributions.
+name: Linux release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:   # a test build of the branch, kept as the run's artifact
+
+permissions:
+  contents: write
+
+jobs:
+  bundle:
+    strategy:
+      matrix:
+        include:
+          - { runner: ubuntu-latest, cpu: x64 }
+          - { runner: ubuntu-24.04-arm, cpu: arm64 }   # GitHub's arm partner image: the same toolset the tests need (cc, jdk), free in public repos
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # the tags: git describe names the bundle
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.14'   # the Python the Windows zips ship with too
+      - run: python -m pip install -r requirements.txt pyinstaller
+      - run: python -m unittest discover tests
+      - run: python packaging/build_bundle.py
+      - if: github.event_name == 'release'
+        run: gh release upload "${{ github.event.release.tag_name }}" dist/nx2android-*-linux-*.zip --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v7
+        with:
+          name: nx2android-linux-${{ matrix.cpu }}
+          path: dist/nx2android-*-linux-*.zip
