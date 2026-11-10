@@ -2,7 +2,7 @@
 # Game Freak's engine on SDK 11.4.0; game.tsv and the shader tables are upstream's, checked by hand. 73 of its 12,851 shaders live only in Oodle Kraken GFPAK entries:
 # the porter decodes them with the game's own decoder on the device (dmhost, DM_OODLE_JOB), so a port needs the device connected.
 # On the Y700 (2026-10-30), docked and handheld, driven with DM_CTL: the opening (Arceus, the name, the fall), the beach with Laventon and the starters, the first walks.
-# 60 fps (30 on the Switch: patches.py), game time at real time (the same walk at 60 and pinned at 30), GPU 11-14.6 ms at the beach; a 30-minute soak kept one
+# 30 fps as on the Switch (a 60 fps patch made walking run too fast on the Thor: patches.py), GPU 11-14.6 ms at the beach at 60; a 30-minute soak kept one
 # process at a flat 1,307 MiB footprint with no audio underruns and no red log line. The washed-out picture it first had was the vertex outputs' Maxwell start values
 # (gfx_vk_shader.c spv_vs_init). Local wireless trades stay offline (nn::ldn cut): Trading Post → Local Communication not checked yet.
 status	playable
