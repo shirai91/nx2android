@@ -112,12 +112,21 @@ if a.only_compile: sys.exit(1 if failed else 0)
 
 LIBS = ['-landroid', '-llog', '-lvulkan', '-laaudio', '-lnativewindow', '-lmediandk', '-lz', '-lm', '-ldl']   # -lz: the gamepad theme's PNGs (overlay_theme.c)
 LDFLAGS = [TARGET, '-fuse-ld=lld', '-Wl,--error-limit=0', '-Wl,-z,max-page-size=16384', '-Wl,--build-id', '-Wl,-z,nostart-stop-gc']
+
+def link(args, name):
+    # The 192 object paths under a long checkout exceed Windows' command-line limit (WinError 206).
+    # Clang reads Windows-quoted arguments from a UTF-8 response file, including paths with spaces.
+    if os.name == 'nt':
+        rsp = out / f'{name}.rsp'; rsp.write_text(subprocess.list2cmdline(args), encoding='utf-8')
+        args = ['--rsp-quoting=windows', '@' + str(rsp)]
+    return subprocess.run([CC] + args, capture_output=True, text=True, errors='replace')
+
 if a.exe:
-    r = subprocess.run([CC] + LDFLAGS + ['-pie', '-o', str(out / 'dmhost')] + [str(o) for o in objs + vobjs] + LIBS, capture_output=True, text=True, errors='replace')
+    r = link(LDFLAGS + ['-pie', '-o', str(out / 'dmhost')] + [str(o) for o in objs + vobjs] + LIBS, 'dmhost')
     print(r.stderr.strip() if r.returncode else f'linked {out / "dmhost"}', file=sys.stderr if r.returncode else sys.stdout)
     if r.returncode: sys.exit(1)
 if a.lib:
-    r = subprocess.run([CC] + LDFLAGS + ['-shared', '-Wl,-soname,libdmhost.so', '-o', str(out / 'libdmhost.so')] + [str(o) for o in objs + vobjs] + LIBS, capture_output=True, text=True, errors='replace')
+    r = link(LDFLAGS + ['-shared', '-Wl,-soname,libdmhost.so', '-o', str(out / 'libdmhost.so')] + [str(o) for o in objs + vobjs] + LIBS, 'libdmhost')
     print(r.stderr.strip() if r.returncode else f'linked {out / "libdmhost.so"}', file=sys.stderr if r.returncode else sys.stdout)
     if r.returncode: sys.exit(1)
     if a.release:   # the static symbol table goes too (the dynamic one stays: ANativeActivity_onCreate)

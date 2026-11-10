@@ -10,6 +10,8 @@ Install [Python](https://www.python.org) 3.11 or later and `python -m pip instal
 - Android [platform-tools](https://developer.android.com/tools/releases/platform-tools) (adb), to install from the tool
 - your own `prod.keys`, dumped from your Switch
 
+On Windows, the Android host linker reads its object list from a UTF-8 response file (`dmhost.rsp` or `libdmhost.rsp` in the build output). This avoids `WinError 206` in long checkout paths. Clang is invoked with `--rsp-quoting=windows` so backslashes and spaces in those paths survive response-file parsing.
+
 ## Port a game
 
 The app:
