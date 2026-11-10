@@ -5,6 +5,7 @@
 
 static int unexpected, checks, fails;
 void *guest_sym(const char *name) { (void)name; unexpected++; return NULL; }
+int dm_lan_on(void) { return 0; }   // hle_ldn.c: no LAN play (hle_friends.c)
 module_t *module_of(const void *p) { (void)p; unexpected++; return NULL; }
 void hle_bind_system_event(void *g, int autoclear) { (void)g; (void)autoclear; unexpected++; }
 // The big-stack take-overs' stubs (HLE_FORCE_BIG) jump here with the implementation in x16; off a guest stack the real entry calls it straight
