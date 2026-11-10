@@ -243,7 +243,7 @@ static void bind_chmask(uint32_t mask) {
 // then begin with vkCmdBeginRenderPass (the battle's replay went from about 20 to 17.5 ms a frame). Pipelines are made against a compatible render pass (the same
 // formats, every load operation LOAD). DM_VK_RP=0 (start-up): dynamic rendering
 typedef struct { uint32_t ncol, cfmt[8], cload[8], dfmt, dload, sload, dstore, samples; } rpkey;
-typedef struct { VkRenderPass rp; uint32_t w, h, layers, n; struct { uint32_t usage, flags, w, h, layers, fmt, fmt2; } a[9]; } fbkey;   // fmt2: a format-listed image's second format (an imageless framebuffer names the image's whole list)
+typedef struct { VkRenderPass rp; uint32_t w, h, layers, n; struct { uint32_t usage, flags, w, h, layers, fmt, fmt2, fmt3, fmt4; } a[9]; } fbkey;   // fmt2..fmt4: a format-listed image's other formats (an imageless framebuffer names the image's whole list)
 static nvn_hmap g_rps = {.klen = sizeof(rpkey)}, g_fbs = {.klen = sizeof(fbkey)}; static pthread_mutex_t g_rp_mu = PTHREAD_MUTEX_INITIALIZER;
 // Without dynamic rendering (a Vulkan 1.1 / 1.2 device, V.has_dynrender) passes must be render pass objects, whatever DM_VK_RP says (vk_init refuses a device with neither)
 static int rp_on(void) { static int on = -1; if (on < 0) { const char *e = getenv("DM_VK_RP"); on = V.has_imageless && (!V.has_dynrender || !(e && !atoi(e))); VKLOG("passes: %s", on ? "render pass objects with imageless framebuffers" : "dynamic rendering"); } return on; }
@@ -279,9 +279,10 @@ static VkRenderPass rp_compat(uint32_t ncol, const uint32_t *cfmt, uint32_t dfmt
 static VkFramebuffer fb_get(const fbkey *k) {
     pthread_mutex_lock(&g_rp_mu); VkFramebuffer fb = nvn_hm_get(&g_fbs, k);
     if (!fb) {
-        VkFramebufferAttachmentImageInfo ai[9]; VkFormat vf[9][2];
-        for (uint32_t i = 0; i < k->n; i++) { vf[i][0] = (VkFormat)k->a[i].fmt; vf[i][1] = (VkFormat)k->a[i].fmt2;
-            ai[i] = (VkFramebufferAttachmentImageInfo){VK_STRUCTURE_TYPE_FRAMEBUFFER_ATTACHMENT_IMAGE_INFO, NULL, k->a[i].flags, k->a[i].usage, k->a[i].w, k->a[i].h, k->a[i].layers, k->a[i].fmt2 ? 2u : 1u, vf[i]}; }
+        VkFramebufferAttachmentImageInfo ai[9]; VkFormat vf[9][4];
+        for (uint32_t i = 0; i < k->n; i++) { uint32_t c[4] = {k->a[i].fmt, k->a[i].fmt2, k->a[i].fmt3, k->a[i].fmt4}, nf = 0;   // the image's list, without the unset entries (its own format first)
+            for (int j = 0; j < 4; j++) if (c[j] || (j == 0 && !nf)) vf[i][nf++] = (VkFormat)c[j];
+            ai[i] = (VkFramebufferAttachmentImageInfo){VK_STRUCTURE_TYPE_FRAMEBUFFER_ATTACHMENT_IMAGE_INFO, NULL, k->a[i].flags, k->a[i].usage, k->a[i].w, k->a[i].h, k->a[i].layers, nf, vf[i]}; }
         VkFramebufferAttachmentsCreateInfo aci = {VK_STRUCTURE_TYPE_FRAMEBUFFER_ATTACHMENTS_CREATE_INFO, NULL, k->n, ai};
         VkFramebufferCreateInfo ci = {VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, &aci, VK_FRAMEBUFFER_CREATE_IMAGELESS_BIT, k->rp, k->n, NULL, k->w, k->h, k->layers};
         if (vkCreateFramebuffer(V.dev, &ci, NULL, &fb)) { VKRED_ONCE(71, "vkCreateFramebuffer failed"); fb = VK_NULL_HANDLE; } else nvn_hm_put(&g_fbs, k, fb);
@@ -333,7 +334,8 @@ static int pass_commit(void) {
         for (uint32_t i = 0; i < k.ncol; i++) if (P_ca[i].imageView) {
             k.cfmt[i] = P_att[i].fmt; k.cload[i] = P_ca[i].loadOp; cv[na] = P_ca[i].clearValue; views[na] = P_ca[i].imageView;
             fk.a[na].usage = P_att[i].im->usage; fk.a[na].flags = P_att[i].im->cflags; fk.a[na].w = P_att[i].w; fk.a[na].h = P_att[i].h; fk.a[na].layers = P_att[i].layers;
-            fk.a[na].fmt = P_att[i].im->fmt2 ? (uint32_t)P_att[i].im->fmt : P_att[i].fmt; fk.a[na].fmt2 = (uint32_t)P_att[i].im->fmt2; na++; }   // (a format-listed image (DM_VK_UBWC): its whole list, as imageless framebuffers require)
+            fk.a[na].fmt = P_att[i].im->fixed_fmt ? (uint32_t)P_att[i].im->fmt : P_att[i].fmt; fk.a[na].fmt2 = (uint32_t)P_att[i].im->fmt2;
+            fk.a[na].fmt3 = (uint32_t)P_att[i].im->fmt_cls[0]; fk.a[na].fmt4 = (uint32_t)P_att[i].im->fmt_cls[1]; na++; }   // (a format-listed image (DM_VK_UBWC): its whole list, as imageless framebuffers require)
         if (P_ri.pDepthAttachment || P_ri.pStencilAttachment) {
             k.dfmt = P_att[8].fmt; k.dload = P_da.loadOp; k.sload = P_sa.imageView ? P_sa.loadOp : VK_ATTACHMENT_LOAD_OP_DONT_CARE; k.dstore = P_da.storeOp;
             cv[na] = P_da.loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR ? P_da.clearValue : P_sa.clearValue; if (P_sa.loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR) cv[na].depthStencil.stencil = P_sa.clearValue.depthStencil.stencil;
@@ -632,7 +634,22 @@ static int begin_pass(void) {
             if (im->aspect & VK_IMAGE_ASPECT_STENCIL_BIT) sa = da;
         }
     }
-    if (!have) { VKRED_ONCE(30, "draw with no usable render target: skipped"); return 0; }
+    if (!have) {
+        // No target set at all (a target that failed to bind still skips): an attachment-less pass. FFT's UI composite draws into its window image with image
+        // stores in passes with no colour or depth target; skipped, the screen stayed black. Its size is the viewport's (else the scissor's), clamped to the device
+        int none = !S.rt_has_dep; for (int i = 0; i < S.rt_n && i < 8; i++) if (S.rt_has_col[i] || S.rt_bad[i]) none = 0;
+        static int notarget = -1; if (notarget < 0) { const char *e = getenv("DM_VK_X_NOTARGET"); notarget = !(e && !atoi(e)); }   // DM_VK_X_NOTARGET=0: skip these too, as before (A/B)
+        if (!none || !notarget) { VKRED_ONCE(30, "draw with no usable render target: skipped"); return 0; }
+        float ex = fmaxf(S.vp[0][0], 0.f) + fabsf(S.vp[0][2]), ey = fmaxf(S.vp[0][1], 0.f) + fabsf(S.vp[0][3]);
+        if (S.vp[0][2] == 0.f && S.vp[0][3] == 0.f && S.sc_set) { ex = (float)S.sc.x + (float)S.sc.w; ey = (float)S.sc.y + (float)S.sc.h; }   // (set_dynamic's fallback)
+        uint32_t mw = V.props.limits.maxFramebufferWidth, mh = V.props.limits.maxFramebufferHeight;
+        w = ex >= 1.f ? (uint32_t)ceilf(ex) : 1; h = ey >= 1.f ? (uint32_t)ceilf(ey) : 1;
+        if (mw && w > mw) w = mw; if (mh && h > mh) h = mh;
+        layers = 1; samples = 1; ncol = 0; have = 1;
+        for (int i = 0; i < 8; i++) S.cfmt[i] = VK_FORMAT_UNDEFINED;
+        S.dfmt = VK_FORMAT_UNDEFINED; S.daspect = 0;
+        static int said; if (!said++) VKLOG("draw with no render target: attachment-less pass %ux%u", w, h);
+    }
     // The cut (DM_VK_CB_DRAWS): only before a pass whose depth attachment no earlier pass of this submission drew with. Adreno keeps a low-resolution copy of a depth
     // attachment (LRZ) that it trusts within a command buffer; a pass that goes on with a depth buffer begun in an earlier command buffer had whole 8x8 blocks of its
     // nearest objects rejected in some frames (NEO: bushes, trees and the phone booth near the camera flickered light blue). DM_VK_X_CUTANY=1 cuts before any pass.
@@ -1152,34 +1169,51 @@ static VkSampler samp_for(int st, const dmsv_bind *b, uint64_t texh, int nearest
 // texture views by ID within a submission: a draw's texture arrays (32 slots) looked every slot up again, each through the registry's and the view table's
 // locks (NEO: about 2 ms a frame). An entry holds while no texture ID is registered again and no view is dropped (g_tex_gen)
 enum { TVC = 4096 };
-static struct { uint64_t epoch, gen; int tid, dim, arr, num; VkImageView v; vkimg_t *im; } g_tvc[TVC];
+static struct { uint64_t epoch, gen; int tid, dim, arr, num, sc; VkImageView v; vkimg_t *im; } g_tvc[TVC];
 // what a view's texels are, as gfx_vk_shader.c's integer-texel variants need it: 0 float, 1 uint (unsigned integer formats, a stencil), 2 int
 static int view_num(const tex_t *t, const view_t *v) {
     const vkfmt_t *f = vk_fmt(v && v->set_format ? v->format : t->d.format); if (!f) return 0;
     if (f->depth || f->stencil) return f->stencil && (!f->depth || t->stencil || (v && v->set_dsmode && v->dsmode == 1));   // vk_tex_view's aspect
     return f->is_int ? (f->is_sint ? 2 : 1) : 0;
 }
+// the integer class a storage image binding's shader declares, from the SPIR-V image format the translator recorded (dmsv_bind.fmt, shader_vk.py): 1 uint, 2 sint,
+// 0 float or none declared (the format 0, Unknown, is left alone)
+static int img_fmt_cls(uint8_t f) {
+    switch (f) {
+    case 30: case 31: case 32: case 33: case 34: case 35: case 36: case 37: case 38: case 39: case 40: return 1;   // Rgba32ui .. R64ui
+    case 21: case 22: case 23: case 24: case 25: case 26: case 27: case 28: case 29: case 41: return 2;           // Rgba32i .. R8i, R64i
+    }
+    return 0;
+}
 static uint64_t g_num_um, g_num_im;   // stage_set: the sampled bindings of the stage being built that got uint / int views (bit = binding index)
 extern uint64_t g_tex_gen;
 static int tex_desc_for(int st, const dmsv_bind *b, uint64_t h, VkDescriptorImageInfo *ii, int storage) {   // the view's view_num
     int tid = (int)(h & 0xfffff); const view_t *v = NULL; const tex_t *t = NULL;
     ii->imageLayout = VK_IMAGE_LAYOUT_GENERAL; ii->sampler = storage ? VK_NULL_HANDLE : samp_for(st, b, h, 0); ii->imageView = VK_NULL_HANDLE;
-    unsigned ck = ((unsigned)tid * 2654435761u ^ (unsigned)b->dim * 97u ^ (unsigned)(b->flags & 1)) % TVC;
+    int sc = storage ? img_fmt_cls(b->fmt) : 0;   // FINAL FANTASY TACTICS' UI composite declares its window image r32ui over an RGBA8 texture: the view is in the shader's class
+    unsigned ck = ((unsigned)tid * 2654435761u ^ (unsigned)b->dim * 97u ^ (unsigned)(b->flags & 1) ^ (unsigned)sc * 0x9E37u) % TVC;
     int logfs = g_x_logfs && S.sh[1] && S.sh[1]->key == g_x_logfs && st == 1; static int nlogfs; if (logfs && nlogfs >= 60) logfs = 0;
-    if (tid && g_var_now != 3 && !g_tracing && !logfs && g_tvc[ck].epoch == g_set_epoch && g_tvc[ck].gen == g_tex_gen && g_tvc[ck].tid == tid && g_tvc[ck].dim == b->dim && g_tvc[ck].arr == (b->flags & 1)) {
+    if (tid && g_var_now != 3 && !g_tracing && !logfs && g_tvc[ck].epoch == g_set_epoch && g_tvc[ck].gen == g_tex_gen && g_tvc[ck].tid == tid && g_tvc[ck].dim == b->dim && g_tvc[ck].arr == (b->flags & 1) && g_tvc[ck].sc == sc) {
         ii->imageView = g_tvc[ck].v; if (g_tvc[ck].im) g_tvc[ck].im->last_use = mtl_last_fence() + 1; vk_texdump_note(g_tvc[ck].im);
         if (g_tvc[ck].num && !storage) ii->sampler = samp_for(st, b, h, 1);
         return g_tvc[ck].num;
     }
     int num = 0;
     if (tid && g_var_now != 3 && vk_tex_by_id(tid, &v, &t) && t) {
-        vkimg_t *im = NULL; ii->imageView = vk_tex_view(t, v, b->dim, b->flags & 1, 0, &im); if (storage && im) im->gpu_w = 1;
+        // a storage image the shader declares as integers over a float or unorm texture of the same texel size: a view of the same image in that class, so the shader
+        // reads the texels' bits (FINAL FANTASY TACTICS' UI composite loads its RGBA8 window as r32ui; through a float view its blend came out yellow and white). Integer
+        // textures keep their own views and the shader variants of gfx_vk_shader.c
+        extern __thread VkFormat vk_view_fmt;
+        VkFormat vf = 0; const vkfmt_t *tf = sc && !view_num(t, v) ? vk_fmt(v && v->set_format ? v->format : t->d.format) : NULL;
+        if (tf && !tf->compressed && !tf->dec && !tf->depth && !tf->stencil) vf = vk_int_fmt(tf->bpb, sc == 2);
+        vkimg_t *im = NULL; ii->imageView = vf ? vk_tex_view_as(t, v, b->dim, b->flags & 1, 0, &im, vf) : vk_tex_view(t, v, b->dim, b->flags & 1, 0, &im); if (storage && im) im->gpu_w = 1;
+        if (vf && ii->imageView && vk_view_fmt == vf) { static int once; if (!once++) VKLOG("storage image: nvn format %#x viewed as vk %d for a %s image binding", t->d.format, vf, sc == 1 ? "uint" : "int"); }
         if (logfs) nlogfs++;
         if (g_tracing || logfs) VKLOG("  %stexture binding %d handle %#llx id %d: %ux%u nvn format %#x target %d serial %llu pool %p+%#llx size %#llx → image %p (%ux%u fmt %d layers %u levels %u, gpu-written %d) view %p", logfs ? "logfs " : "", b->binding, (unsigned long long)h, tid, t->d.width, t->d.height, t->d.format, t->d.target,
                              (unsigned long long)t->serial, (const void *)t->pool, (unsigned long long)t->off, (unsigned long long)t->L.size, (void *)im, im ? im->w : 0, im ? im->h : 0, im ? im->fmt : 0, im ? im->layers : 0, im ? im->levels : 0, im ? (int)im->gpu_w : -1, (void *)ii->imageView);
         if (im) im->last_use = mtl_last_fence() + 1;
         if (ii->imageView) num = view_num(t, v);
-        if (ii->imageView) { g_tvc[ck].epoch = g_set_epoch; g_tvc[ck].gen = g_tex_gen; g_tvc[ck].tid = tid; g_tvc[ck].dim = b->dim; g_tvc[ck].arr = b->flags & 1; g_tvc[ck].v = ii->imageView; g_tvc[ck].im = im; g_tvc[ck].num = num; }
+        if (ii->imageView) { g_tvc[ck].epoch = g_set_epoch; g_tvc[ck].gen = g_tex_gen; g_tvc[ck].tid = tid; g_tvc[ck].dim = b->dim; g_tvc[ck].arr = b->flags & 1; g_tvc[ck].v = ii->imageView; g_tvc[ck].im = im; g_tvc[ck].num = num; g_tvc[ck].sc = sc; }
     }
     if (num && !storage) ii->sampler = samp_for(st, b, h, 1);
     if (!ii->imageView) {
