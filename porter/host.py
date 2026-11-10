@@ -68,7 +68,7 @@ def stale_sources(record, title_id, tools=DM / 'tools', modules=None):
         if sdk_patches_fit(modules, title_id, extra, tools): out.remove('sdk_patches.py')
     own = DM / 'games' / title_id / 'patches.py'
     if own.is_file() and not any(Path(ln.strip().partition('  ')[2]).name == 'patches.py' and title_id.upper() in ln.upper() for ln in record.splitlines()):
-        out.append(os.path.relpath(own, tools))   # patches registered for the game since the port: its modules on the device lack them
+        out.append(Path(os.path.relpath(own, tools)).as_posix())   # patches registered for the game since the port: its modules on the device lack them
     return out
 
 
