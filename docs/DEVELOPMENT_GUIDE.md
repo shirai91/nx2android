@@ -20,6 +20,10 @@ python -m gui
 
 Check the **Setup** tab, choose the game's folder (the base game NSP, XCI, NSZ or XCZ, its update and DLC) on the **Port** tab, and click **Port**.
 
+Keep the base game, update and DLC in separate files. When a dump's tickets or readable
+content-meta headers identify several titles in one file, porter warns which title it selects
+and which embedded titles it will not select as updates or DLC. It does not split merged dumps.
+
 Or the command line:
 
 ```
