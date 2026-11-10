@@ -108,6 +108,28 @@ class DriverTest(unittest.TestCase):
         self.assertEqual(host.stale_sources('\n'.join(good[:2] + [row(f'../games/{fft}/patches.py', ok=False)]), fft), [f'../games/{fft}/patches.py'])
         self.assertEqual(host.stale_sources('\n'.join(good[:2]), fft), [f'../games/{fft}/patches.py'])   # patches registered for the game since the port
 
+    def test_stale_sdk_patches(self):   # porter host: a changed sdk_patches.py counts only when it changes what the port's modules got
+        import hashlib
+        from porter import host
+        tools = REPO / 'nxnative/dm/tools'
+        def row(rel, ok=True): return (hashlib.sha256((tools / rel).read_bytes()).hexdigest() if ok else '0' * 64) + '  ' + rel
+        bdsp, sdk = '0100000011D90000', '2d369d9999e3e10e665106f840ffff9b'   # Brilliant Diamond (no patches.py) and its SDK 11.4.3 build, which sdk_patches.py cuts
+        cuts = host._tables(tools / 'sdk_patches.py')['CUTS'][sdk]
+        def tsv(rows): return f'# BUILD_ID\t{sdk}\n' + ''.join(f'{o:#x}\t{ob}\t{nb}\t{why}\n' for o, ob, nb, why in rows)
+        main = host.module_tables('# BUILD_ID\t94ceae325c205c4b9d6f7235552f28fd\n', '# BUILD_ID\t94ceae325c205c4b9d6f7235552f28fd\n')
+        record = '\n'.join([row('patch_nso.py'), row('sdk_patches.py', ok=False)])
+        self.assertEqual(host.module_tables(tsv(cuts), '')['cuts'][0], (cuts[0][0], cuts[0][1], cuts[0][2]))
+        self.assertEqual(host.stale_sources(record, bdsp, modules=[main, host.module_tables(tsv(cuts), f'# BUILD_ID\t{sdk}\n')]), [])   # changed for other builds only
+        self.assertEqual(host.stale_sources(record, bdsp, modules=[main, host.module_tables(tsv(cuts[:-1]), '')]), ['sdk_patches.py'])   # a cut of its build added since
+        self.assertEqual(host.stale_sources(record, bdsp, modules=[host.module_tables(tsv([]), '')]), ['sdk_patches.py'])
+        self.assertEqual(host.stale_sources(record, bdsp), ['sdk_patches.py'])   # nothing known of the modules
+        self.assertEqual(host.stale_sources(record, bdsp, modules=[]), ['sdk_patches.py'])
+        main_cut = [(0x100, '00', '01', 'fps')]   # a --fps60 port: its extra cuts follow main's registered ones (none here)
+        fps = host.module_tables(tsv(main_cut).replace(sdk, '94ceae325c205c4b9d6f7235552f28fd'), '')
+        sdk_mod = host.module_tables(tsv(cuts), '')
+        self.assertEqual(host.stale_sources(record, bdsp, modules=[fps, sdk_mod]), ['sdk_patches.py'])
+        self.assertEqual(host.stale_sources(record + '\n' + '0' * 64 + '  ../../../../build/fpslock/patches.py', bdsp, modules=[fps, sdk_mod]), [])
+
 
 if __name__ == '__main__':
     unittest.main()
