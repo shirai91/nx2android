@@ -3,6 +3,7 @@
 // --manifest: the RomFS is not written, only a list <output dir>/romfs_manifest.tsv (path, size, first 32 bytes), for surveying a new game (a large game's RomFS is well over 10 GB).
 // A damaged NSP (a file whose data fails the NCA's hash check, e.g. a copy cut short or a broken download) stops the extraction with exit code 3 after listing every damaged file;
 //   --allow-damaged writes those files as read instead and only lists them (Super Mario Galaxy's base NSP with 147 MB zeroed: its two prologue WebM movies).
+// Integrity failures outside the individual-file handlers (e.g. RomFS metadata) stop immediately with exit code 3 and the LibHac reason, even with --allow-damaged.
 // Add-on content: nx_extract <prod.keys> --aoc <DLC NSP> <output dir> writes the RomFS of the DLC's data NCA to <output dir> (the packing script puts it at aoc/<index>/, the host mounts it through DM_AOC_DIR).
 // System data: nx_extract <prod.keys> --sysdata <firmware dir> <title ID hex> <output dir> writes the RomFS of that title's data NCA, found among the .nca files of a firmware dump
 // (a console's NAND SYSTEM Contents/registered, as DBI's MTP mode shows it): Mario Kart 8 Deluxe builds its Mii heads from MiiModel, 0100000000000802.
@@ -28,7 +29,18 @@ using Path = System.IO.Path;
 static class P {
     [DllImport("libc", SetLastError = true)] static extern int clonefile(string src, string dst, uint flags);
 
-    static int Main(string[] a) {
+    static int Main(string[] a) => Run(() => Extract(a));
+
+    // File-data failures have their own handling below. A failure opening or traversing the filesystem cannot be recovered there.
+    static int Run(Func<int> extract) {
+        try { return extract(); }
+        catch (HorizonResultException e) when (HashError(e)) {
+            Console.Error.WriteLine($"[RED] extraction stopped by a filesystem integrity check: {e.Message}");
+            return 3;
+        }
+    }
+
+    static int Extract(string[] a) {
         bool manifest = Array.IndexOf(a, "--manifest") >= 0; a = Array.FindAll(a, s => s != "--manifest");
         g_allow = Array.IndexOf(a, "--allow-damaged") >= 0; a = Array.FindAll(a, s => s != "--allow-damaged");
         if (a.Length < 4) { Console.Error.WriteLine("usage: nx_extract <prod.keys> <base.nsp> <update.nsp|-> <out dir> [base RomFS dir] [--manifest] [--allow-damaged]\n       nx_extract <prod.keys> --aoc <dlc.nsp> <out dir>\n       nx_extract <prod.keys> --sysdata <firmware dir> <title id> <out dir>"); return 2; }
