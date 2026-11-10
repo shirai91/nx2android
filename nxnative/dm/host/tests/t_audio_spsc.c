@@ -8,6 +8,7 @@ enum { NBUF = 100000, MAX_SIZE = 37 };
 uint64_t now_ns(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (uint64_t)t.tv_sec * 1000000000ull + t.tv_nsec; }
 static struct { const void *k; void *v; } om[8];
 void *objmap_get(const void *k) { for (int i = 0; i < 8; i++) if (om[i].k == k) return om[i].v; return NULL; }
+void dm_guest_write_prepare(void *addr, size_t len) { (void)addr; (void)len; }   // dm.h: guest memory is plain host memory here
 void objmap_put(const void *k, void *v) { for (int i = 0; i < 8; i++) if (!om[i].k) { om[i].k = k; om[i].v = v; return; } }
 void *objmap_del(const void *k) { for (int i = 0; i < 8; i++) if (om[i].k == k) { om[i].k = 0; return om[i].v; } return NULL; }
 
@@ -43,8 +44,8 @@ static uint64_t available_bytes(aout *a) {
     uint32_t qh = atomic_load_explicit(&a->q_head, memory_order_relaxed);
     uint32_t qt = atomic_load_explicit(&a->q_tail, memory_order_acquire);
     if (qh == qt) return 0;
-    uint64_t bytes = a->q[qh & (QMAX - 1)]->size - a->pos;
-    for (uint32_t i = qh + 1; i != qt; i++) bytes += a->q[i & (QMAX - 1)]->size;
+    uint64_t bytes = a->q[qh & (QMAX - 1)].size - a->pos;
+    for (uint32_t i = qh + 1; i != qt; i++) bytes += a->q[i & (QMAX - 1)].size;
     return bytes;
 }
 
