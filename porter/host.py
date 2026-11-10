@@ -1,6 +1,6 @@
 # A port on the device brought to this nx2android checkout's host (python -m porter host …), without the game's files: libdmhost.so is built again from the repository's
 # profile (dm/android/build.py, as the port's host stage builds it: a debug build for a debuggable app) and put in place of the installed APK's by
-# nxnative/dm/android/apk/apkdriver.py --host, signed with the player's key (the same signer: it installs over the app, its saves stay). The data on the device is not touched.
+# nxnative/dm/android/apk/apkdriver.py --host (with the overlay's font, assets/font/, which an APK ported before it came lacks), signed with the player's key (the same signer: it installs over the app, its saves stay). The data on the device is not touched.
 # The game's rewritten modules on the device (mods/) must still fit the host: mods/build_src.sha256 holds the hashes of the rewriter and the patch files that made them
 # (patch_nso.py), and any of them changed since (the rewriter, the SDK's patches, the game's own) needs a port again from the game's files. Other games' patch files do not matter,
 # being keyed by their own build IDs. The host is built from the repository's profile, so the port must have been made from it too: its version one the profile registers and the
@@ -135,7 +135,9 @@ def update(adb, package, jobs=os.cpu_count() or 8):
         if r.returncode or not so.is_file(): raise BuildError(f'{package}: the host did not build: ' + ((r.stderr.strip() or r.stdout.strip()).splitlines() or ['no output'])[-1])
         src, out = Path(t) / 'installed.apk', Path(t) / 'host.apk'
         adb.run('pull', installed_apk(adb, package), src, timeout=600)
-        r = subprocess.run([sys.executable, str(DM / 'android/apk/apkdriver.py'), str(src), str(out), str(paths.signing_key()), '--host', str(so)],
+        from porter.pipeline import ui_font_assets   # the overlay's font: an APK ported before it came has none, and the new host looks for it
+        fonts = [a for n, f in ui_font_assets().items() for a in ('--asset', f'{n}={f}')]
+        r = subprocess.run([sys.executable, str(DM / 'android/apk/apkdriver.py'), str(src), str(out), str(paths.signing_key()), '--host', str(so)] + fonts,
                            capture_output=True, text=True, errors='replace')
         if r.returncode: raise BuildError((r.stderr.strip() or r.stdout.strip()).splitlines()[-1])
         size = so.stat().st_size

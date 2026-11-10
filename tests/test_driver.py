@@ -96,6 +96,19 @@ class DriverTest(unittest.TestCase):
         got = libs(self.t / 'b.apk'); self.assertEqual(got['libdmhost.so'], so.read_bytes()); self.assertEqual(got['libvulkan.purple.so'], b'libvulkan.purple.so' * 50)
         self.assertNotEqual(self.tool(self.apk(), self.t / 'c.apk', paths.signing_key()).returncode, 0)   # nothing to change
 
+    def test_host_assets(self):   # apkdriver.py --asset: a new asset added, one the APK has replaced, the rest kept (porter host: the overlay font)
+        so = self.t / 'new_host.so'; so.write_bytes(b'\x7fELF new host' * 10)
+        font, lic = self.t / 'ui.bin', self.t / 'LICENSE.txt'; font.write_bytes(b'NXPF font' * 20); lic.write_bytes(b'OFL')
+        r = self.tool(self.apk(), self.t / 'b.apk', paths.signing_key(), '--host', so, '--asset', f'font/ui.bin={font}', '--asset', f'font/LICENSE.txt={lic}')
+        self.assertEqual(r.returncode, 0, r.stderr); libs(self.t / 'b.apk')   # stored, page-aligned, signed
+        with zipfile.ZipFile(self.t / 'b.apk') as z: self.assertEqual((z.read('assets/font/ui.bin'), z.read('assets/font/LICENSE.txt')), (font.read_bytes(), b'OFL'))
+        font.write_bytes(b'NXPF newer font')
+        r = self.tool(self.t / 'b.apk', self.t / 'c.apk', paths.signing_key(), '--asset', f'font/ui.bin={font}')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        with zipfile.ZipFile(self.t / 'c.apk') as z:
+            self.assertEqual(z.read('assets/font/ui.bin'), b'NXPF newer font'); self.assertEqual(z.namelist().count('assets/font/ui.bin'), 1); self.assertEqual(z.read('assets/font/LICENSE.txt'), b'OFL')
+        self.assertNotEqual(self.tool(self.t / 'b.apk', self.t / 'd.apk', paths.signing_key(), '--asset', 'no-equals').returncode, 0)
+
     def test_stale_sources(self):   # porter host: the rewriter's sources the device's modules were made with, against this checkout's
         import hashlib
         from porter import host
@@ -206,6 +219,8 @@ class HostTest(unittest.TestCase):   # porter host's update(): its refusals, the
             self.assertEqual(len(self.builds), 1); b = self.builds[0]
             self.assertEqual(b[b.index('--game') + 1], self.BDSP); self.assertEqual('--release' in b, not debuggable)
             apk = self.t / 'installed.apk'; apk.write_bytes(dev.installed_apk); self.assertEqual(libs(apk)['libdmhost.so'], b'\x7fELF new host' * 8)
+            from porter.pipeline import UI_FONT
+            with zipfile.ZipFile(apk) as z: self.assertEqual(z.read('assets/font/ui.bin'), UI_FONT.read_bytes())   # the overlay font an older port lacks
             self.assertEqual(dev.ops[-3:], ['pull', 'am', 'install'])
 
 
