@@ -59,6 +59,8 @@ A game that reads system data from the console's firmware (`sysdata` in its prof
 
 A game slowed by its draw calls in busy scenes: tick **Multithread replay** on the Port tab (`--mt-replay`). The game's Vulkan commands are then recorded on a thread of their own. It stays on until you port the game again without it.
 
+When **Show gamepad** is enabled, using a controller hides the on-screen controls. Touch the screen to bring them back. The draggable menu button stays available even with **Show gamepad** off.
+
 To arrange the on-screen controls, open the pause menu's **Gamepad** tab and choose **Edit layout**: drag a control to move it, pinch or use **− / +** to resize it. **Save** keeps the layout for the next launch and **Cancel** discards your edits. **Snap to grid** (off at first, and remembered) shows a square grid and snaps each control's center to it as you drag.
 
 A controller whose A is the bottom button (Xbox labels, most Android devices' built-in controls) can have its face buttons follow their labels: the **Gamepad** tab's **Face buttons** row switches between **Position** (the Switch's layout, the default) and **Label**. It applies at once, also to the pause menu's own A and B, and each device keeps its own choice.
