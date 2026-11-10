@@ -8,6 +8,9 @@ CUTS = {
     # 0x9000 bytes, 4 KB aligned, main+0x4290c0) is placed, its 0x598-byte descriptor does not fit, the GPU allocation fails → a buffer is built on a null memory pool → null read crash at main+0x106f5c8.
     # Where this differs from hardware is not known (every allocation size before this block is determined by game code and data); for now every resource heap gets +16 KB.
     (0x1e62fc, 'e00317aa', 'e0124091', 'resource heap size: mov x0,x23 → add x0,x23,#0x4000 (ExpHeap::create size argument +16 KB)'),
+    # procFrame_ (main+0xe15ec) picks the present interval from the main thread's frame time and asks for 2 (30 fps) at
+    # 15.83 ms; its maximum is fw[0x24c]. Read as 1, the game stays at interval 1 (60 fps) and slows down instead when a frame runs long.
+    (0xe1624, '6b4e42b9', '2b008052', 'present interval maximum: ldr w11,[x19,#0x24c] → mov w11,#1 (never interval 2)'),
   ],
   # Super Mario Bros. Wonder 1.2.1 (v327680) main: same as above. Location carried over from v0 by dm/tools/nso_fnmap.py (containing function 0x1e603c → 0x1cf6f0 identical after address masking, ExpHeap::create 0x4aac38 → 0x4c4a18)
   'ff773e90972d544eb79406eaa65396d5': [
