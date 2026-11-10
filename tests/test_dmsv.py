@@ -247,7 +247,9 @@ int main(int argc, char **argv) {   // each shader: key, stage, words, FNV-1a 64
 }
 '''
         (cls.d / 'h.c').write_text(harness, encoding='utf-8'); z = REPO / 'nxnative/dm/third_party/zstd'
-        subprocess.run(['cc', '-O1', '-std=gnu11', '-Wall', '-Werror', '-Wno-unused-function', '-I', str(z), '-I', str(REPO / 'nxnative/dm/gfx/nvn'), '-c', str(cls.d / 'h.c'), '-o', str(cls.d / 'h.o')], check=True)
+        # -Wno-misleading-indentation: gcc (Linux, MinGW) flags the engine's dense `else ...; if (...) ...;` one-liners, clang does not
+        subprocess.run(['cc', '-O1', '-std=gnu11', '-Wall', '-Werror', '-Wno-misleading-indentation', '-Wno-unused-function',
+                        '-I', str(z), '-I', str(REPO / 'nxnative/dm/gfx/nvn'), '-c', str(cls.d / 'h.c'), '-o', str(cls.d / 'h.o')], check=True)
         subprocess.run(['cc', '-O1', '-w', '-fvisibility=hidden', '-DZSTDLIB_VISIBLE=', '-DZSTDERRORLIB_VISIBLE=', '-c', str(z / 'zstddeclib.c'), '-o', str(cls.d / 'z.o')], check=True)
         subprocess.run(['cc', str(cls.d / 'h.o'), str(cls.d / 'z.o'), '-o', str(cls.d / 'h')], check=True)
 

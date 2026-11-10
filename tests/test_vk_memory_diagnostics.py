@@ -68,6 +68,9 @@ int main(void) {
             self.skipTest('NDK Vulkan headers are required')
         src = (Path(__file__).resolve().parents[1] / 'nxnative/dm/android/gfx_vk_core.c').read_text()
         helpers = src[src.index('// DM_VK_MEM_DIAG'):src.index('\nuint32_t vk_mem_type')]
+        # pool_zero_copy takes a slab slot and, failing that, a kept buffer of the same size (the zcf cache): both, beside the logging
+        helpers += src[src.index('typedef struct { AHardwareBuffer *ahb; VkBuffer buf; VkDeviceMemory mem; uint64_t size, fence; } zcfree_t;'):src.index('// Small pools take a slot of a slab')]
+        helpers += src[src.index('#define SLAB_POOL_MAX'):src.index('// Zero copy: the pages of')]
         start = src.index('static int pool_zero_copy(')
         function = src[start:src.index('\n}\n', start) + 3]
         harness = r'''
@@ -84,6 +87,7 @@ struct ANativeWindow;
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <pthread.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
 #include <time.h>
@@ -95,8 +99,11 @@ typedef struct { uint32_t width, height, layers, format; uint64_t usage; uint32_
 #define AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN 48
 #define AHARDWAREBUFFER_USAGE_GPU_DATA_BUFFER 16777216
 #define POOL_USAGE VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
-typedef struct { VkBuffer buf; VkDeviceMemory mem; AHardwareBuffer *ahb; int zero_copy; } vkpool_t;
+struct slab_t;   // SLABS below defines it
+typedef struct { VkBuffer buf; VkDeviceMemory mem; AHardwareBuffer *ahb; int zero_copy; uint64_t boff; struct slab_t *slab; uint32_t slot; } vkpool_t;
 static struct { VkDevice dev; } V;
+static uint64_t vk_fence_done(void) { return 0; }
+uint64_t mtl_last_fence(void) { return 0; }
 static int failure, released, closed, destroyed, messages;
 static char last[1024];
 static uint8_t temporary[64];
@@ -149,6 +156,7 @@ static VkResult vkBindBufferMemory(VkDevice d, VkBuffer b, VkDeviceMemory m, VkD
     (void)d; assert(b && m && off == 0); return failure == 10 ? VK_ERROR_UNKNOWN : VK_SUCCESS;
 }
 static void vkDestroyBuffer(VkDevice d, VkBuffer b, const void *alloc) { (void)d; (void)alloc; assert(b); destroyed++; }
+static void vkFreeMemory(VkDevice d, VkDeviceMemory m, const void *alloc) { (void)d; (void)alloc; assert(m); }
 HELPERS
 FUNCTION
 int main(void) {
@@ -194,7 +202,7 @@ int main(void) {
         with tempfile.TemporaryDirectory(prefix='nx2a-memdiag-test-') as tmp:
             c, exe = Path(tmp) / 'check.c', Path(tmp) / 'check'
             c.write_text(harness)
-            subprocess.run(['cc', '-std=gnu11', '-Wall', '-Wextra', '-Werror', '-Wno-missing-field-initializers',
-                            '-idirafter', str(headers), str(c), '-o', str(exe)], check=True)
-            for enabled in ('0', '1'):
-                subprocess.run([str(exe)], env=dict(os.environ, DM_VK_MEM_DIAG=enabled), check=True)
+            subprocess.run(['cc', '-std=gnu11', '-Wall', '-Wextra', '-Werror', '-Wno-missing-field-initializers', '-Wno-unused-function', '-Wno-misleading-indentation',
+                            '-idirafter', str(headers), str(c), '-o', str(exe)], check=True)   # -Wno-unused-function: zcf_put has no caller in this cut; gcc flags the engine's dense one-liners
+            for enabled in ('0', '1'):   # DM_VK_POOL_SLABS=0: the fault table walks the self-buffer path (a small pool would take a slab slot otherwise, and the mocks make no whole-slab buffer)
+                subprocess.run([str(exe)], env=dict(os.environ, DM_VK_MEM_DIAG=enabled, DM_VK_POOL_SLABS='0'), check=True)
