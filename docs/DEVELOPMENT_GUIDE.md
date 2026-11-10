@@ -20,6 +20,10 @@ python -m gui
 
 Check the **Setup** tab, choose the game's folder (the base game NSP, XCI, NSZ or XCZ, its update and DLC) on the **Port** tab, and click **Port**.
 
+Keep the base game, update and DLC in separate files. When a dump's tickets or readable
+content-meta headers identify several titles in one file, porter warns which title it selects
+and which embedded titles it will not select as updates or DLC. It does not split merged dumps.
+
 Or the command line:
 
 ```
@@ -87,6 +91,14 @@ On Windows, `build_bootloader.py` compiles PyInstaller's launcher on this PC (it
 ```
 python -m unittest discover tests
 ```
+
+The Vulkan-header harnesses need a discoverable NDK; set `ANDROID_NDK_HOME`
+when it is not found automatically. They skip if no NDK headers are found.
+The protected-pool harness uses real page protection
+and a mutex/condition-variable rendezvous on macOS and Linux, handling each
+platform's protection-fault signal. The zero-copy diagnostics fixture forces
+slab and reuse-cache misses to exercise allocation/import failure cleanup; it
+does not validate the slab or reuse-cache implementations.
 
 `test_dmsv` checks both shader-bundle versions and the native reader. Publication
 uses a unique staging directory beside the destination, flushes the file, verifies
