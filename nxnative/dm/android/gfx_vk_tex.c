@@ -288,9 +288,13 @@ static void pkg_upload_(vkimg_t *im, const tex_t *t, const vkfmt_t *f) {
         for (unsigned ly = 0; ly < im->layers; ly++) {
             VkBuffer sb; VkDeviceSize so; uint8_t *blocks = f->dec ? malloc(slab) : NULL, *dst = blocks ? blocks : vk_scratch(slab, 16, &sb, &so);
             if (f->dec && !blocks) return;
-            if (linear) {   // linear storage: rows of the texture's stride, one level, one layer
+            if (linear) {   // linear storage: rows of the texture's stride, one level, one layer; nothing read past its size (a texture buffer's rows end mid-row)
                 size_t stride = t->d.stride ? t->d.stride : pitch;
-                for (uint32_t y = 0; y < by * z; y++) memcpy(dst + y * pitch, t->mem + (size_t)y * stride, pitch);
+                for (uint32_t y = 0; y < by * z; y++) {
+                    size_t at = (size_t)y * stride, n = at >= t->L.size ? 0 : t->L.size - at < pitch ? t->L.size - at : pitch;
+                    if (n) memcpy(dst + y * pitch, t->mem + at, n);
+                    if (n < pitch) memset(dst + y * pitch + n, 0, pitch - n);
+                }
             } else if (nvn_deswizzle(&t->d, lv, ly, t->mem, dst, pitch)) { free(blocks); VKRED_ONCE(13, "deswizzle refused texture format %#x target %d", t->d.format, t->d.target); return; }
             if (blocks) { dst = vk_scratch((size_t)w * h * z * f->dbpp, 16, &sb, &so); bc_decode(f, blocks, pitch, w, h, z, dst); free(blocks); }   // (BC the device lacks)
             VkBufferImageCopy r = {so, 0, 0, {im->aspect & VK_IMAGE_ASPECT_COLOR_BIT ? VK_IMAGE_ASPECT_COLOR_BIT : VK_IMAGE_ASPECT_DEPTH_BIT, lv, ly, 1}, {0, 0, 0}, {w, h, z}};
@@ -887,6 +891,28 @@ VkBufferView vk_tbuf_view(const tex_t *t, int storage) {
     }
     pthread_mutex_unlock(&g_tbuf_mu);
     return v;
+}
+// A texture buffer bound where the shader declares a sampled 2D texture: Maxwell reads 1D textures and texture buffers with the same instruction and only the descriptor decides,
+// so without a type answer the translator reads them as 2D rows of NVN_TBUF_ROW texels (x & 0x3FFF, x >> 14; Program.cs). That happens for every texture whose handle comes from
+// a constant buffer the game fills, which no answer table can reach. nvn_mtl.m's tbuf_as_2d makes a linear texture over the buffer's memory for slots the translator flagged;
+// here the pool memory is an AHardwareBuffer blob, which Vulkan binds to buffers only, so the rows are a pitch-linear 2D image of their own over the same storage, which lin_copy
+// fills from the pool in the upload buffer of each submission that binds it. Any sampled 2D binding that gets a texture buffer takes this form, flagged or not: the hardware
+// cannot sample a buffer as 2D, so the binding can only be the translator's wrapped 1D read. South Park: The Fractured But Whole's interface (vertex shader 3e6012cfa94f00b7)
+// reads its quads from a 580-element RGBA32 buffer through a handle in its own constant buffer; given the dummy, every quad read zeros and the loading screen stayed black
+VkImageView vk_tbuf_rows_view(const tex_t *t, int dim, vkimg_t **img_out) {
+    static unsigned nmade, nfail; const vkfmt_t *f = vk_fmt(t->d.format); uint32_t w, h, row;
+    if (img_out) *img_out = NULL;
+    if (!f || !t->mem || !t->pool || f->bw != 1 || f->bh != 1 || f->depth || f->stencil || !nvn_tbuf_rows(t->d.width, f->bpb, 1, &w, &h, &row)) {
+        if (!nfail++) VKLOG("[RED] texture buffer (%u elements of format %#x at %p) has no 2D-row form for a wrapped 1D fetch: the binding reads 0", t->d.width, t->d.format, (const void *)t->mem);
+        return VK_NULL_HANDLE;
+    }
+    tex_t r = *t;
+    r.d.target = NVN_TEXTURE_TARGET_2D; r.d.width = w; r.d.height = h; r.d.depth = 1; r.d.levels = 1; r.d.samples = 0; r.d.flags = NVN_TEXTURE_FLAGS_LINEAR; r.d.stride = row;
+    // the storage is the buffer's own elements: the last row is usually only partly the buffer's, and its tail can lie past the end of the pool's mapping (South Park
+    // crashed reading it when a cutscene put its buffer at a pool's end). pkg_upload_ copies only what is there and zeroes the rest; lin_copy refuses a span the pool lacks
+    r.has_layout = 0; r.L.size = r.L.layer_size = (uint64_t)t->d.width * f->bpb; r.L.layers = 1;
+    if (!nmade++) VKLOG("texture buffer read by wrapped 1D fetches: bound as %ux%u rows of %u bytes (%u elements of format %#x; first case)", w, h, row, t->d.width, t->d.format);
+    return vk_tex_view(&r, NULL, dim, 0, 0, img_out);
 }
 // CPU readback of texels (ReadTexels): the image copied to scratch memory by a submission of its own, waited for
 void mtl_read_texels(const tex_t *t, unsigned level, unsigned layer0, const NVNcopyRegion *r, uint8_t *dst, size_t row, size_t img) {
