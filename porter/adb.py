@@ -293,19 +293,26 @@ class Adb:
         return done
 
     def push_file(self, local, dst, chunk=64 << 20, progress=None):
-        """One file in pieces of chunk bytes, joined on the device; pieces already there are kept, so an interrupted push resumes. progress(done, size, note)"""
+        """One file in pieces of chunk bytes, joined on the device; matching pieces are kept after checking their MD5, so an interrupted push resumes. progress(done, size, note)"""
         local = Path(local); size = local.stat().st_size; n = max(1, (size + chunk - 1) // chunk)
         pdir = f'{os.path.dirname(dst)}/.dmpart-{hashlib.sha1(dst.encode()).hexdigest()[:12]}'   # one piece folder per file: a resumed push finds its own pieces
         self.shell(f'mkdir -p {shlex.quote(pdir)}'); pieces = self.remote_sizes(pdir)
+        same = [f'{k:05d}' for k in range(n) if pieces.get(f'{k:05d}') == min(chunk, size - k * chunk)]
+        md5 = self.remote_md5(pdir, same) if same else {}   # a previous port can leave pieces of another source at exactly these sizes
         with tempfile.TemporaryDirectory(prefix='nx2a_push_') as t, open(local, 'rb') as f:
             for k in range(n):
                 want, name = min(chunk, size - k * chunk), f'{k:05d}'
-                if pieces.get(name) != want:
+                f.seek(k * chunk); data = f.read(want)
+                if len(data) != want: raise AdbError(f'{local.name}: source changed during the push (short read); try again')
+                if pieces.get(name) != want or md5.get(name) != hashlib.md5(data).hexdigest():
                     tmp = Path(t) / 'piece.bin'
-                    f.seek(k * chunk); tmp.write_bytes(f.read(want))
+                    tmp.write_bytes(data)
                     self.run('push', '-Z', tmp, f'{pdir}/{name}', timeout=max(self.timeout, 600))
+                del data
                 if progress: progress(k * chunk + want, size, f'{local.name} piece {k + 1}/{n}')
+            if os.fstat(f.fileno()).st_size != size: raise AdbError(f'{local.name}: source changed size during the push; try again')
         q, qp = shlex.quote(dst), shlex.quote(pdir)   # join the pieces in order, then check the size
-        self.shell(f'rm -f {q} && for x in $(ls {qp} | sort); do cat {qp}/$x >> {q} || exit 1; done && rm -rf {qp}', timeout=1200)
+        # Join only this source's pieces: a shorter file or a different chunk size may leave old tail pieces in the same folder.
+        self.shell(f'rm -f {q} && i=0 && while [ "$i" -lt {n} ]; do x=$(printf "%05d" "$i"); cat {qp}/"$x" >> {q} || exit 1; i=$((i + 1)); done && rm -rf {qp}', timeout=1200)
         got = self.shell(f'stat -c %s {q}').strip()
         if got != str(size): raise AdbError(f'{local.name}: {got} bytes on the device, expected {size}')
