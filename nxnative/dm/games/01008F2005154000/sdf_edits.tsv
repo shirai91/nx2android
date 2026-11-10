@@ -1,0 +1,6 @@
+# Edits inside the game's packed data (porter/sdf_edit.py), into the pack's romfs_patch folder. Tab-separated:
+# slice	offset of the asset's first zlib stream	md5 of the asset's data	edit	arguments
+# bvm-list: tweakable	entry indices	new string	the list as the dump has it
+# The Switch main menu's entries (startmenu_mainmenu's twk_MenuOptions_NX): the Nintendo eShop (DLC) and Ubisoft Club entries lead to services the port
+# can't reach, so they become Quit, which the Switch menu already leaves out (Yve, 2026-11-10)
+camel/sdf/nx/data/sdf-A-0201.sdfdata	28310056	f977ee004fdc644d6d6aa22822722198	bvm-list	twk_MenuOptions_NX	3,4	Quit	Play,Advert,Options,DLC,UbiClub,Credits,Quit,Quit

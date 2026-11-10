@@ -1,0 +1,28 @@
+# The game's own Xbox One button icons in place of its Switch ones, for the porter's Xbox layout (config pad_layout xbox, porter/xbox_icons.py). The Switch release
+# still carries the Xbox One set (camel/ui/images/icons/buttons/durango), stored uncompressed in the same archive slice as the Switch set (buttons/nx). Each row
+# re-encodes one Xbox icon (64x64 like the Switch one) to fit a Switch icon's place byte for byte, so the slice's table of contents stays right; the patched
+# slice goes into the pack's romfs_patch folder, which the host reads before the RomFS (DM_ROMFS_OVERLAY). The game's X is the top button, an Xbox
+# controller's Y, so its X icons show Y and its Y icons X (DM_PAD_XBOX=ab keeps X and Y in their places). The d-pad, stick-click and + (start) icons stay:
+# the Switch ones already match. Places from the archive's _DataPartList.txt (each checked: a PNG starts there and ends in IEND), MD5s of the v327680 RomFS.
+# file	offset	length	md5	source offset	source length	source md5
+camel/sdf/nx/data/sdf-A-0201.sdfdata	62266610	4636	5e95447d9082ddff1ed34c87c8b0d102	62122508	4657	a3e6a2025c9a88ddc0dc377d98c6a362	# nx/abutton.png <- durango/ui_button_durangoa.png
+camel/sdf/nx/data/sdf-A-0201.sdfdata	62271246	4734	8230cf057d96b6720104666c3f7a6857	62127165	4518	8cbf5afd254b96afe5210c959a6d16b6	# nx/bbutton.png <- durango/ui_button_durangob.png
+camel/sdf/nx/data/sdf-A-0201.sdfdata	62761703	4528	3767fa20bb4b694f41cc3fd8dc466e1a	62250757	4700	fccc49062a9973d278e9b7489f78cd7c	# nx/xbutton.png <- durango/ui_button_durangoy.png
+camel/sdf/nx/data/sdf-A-0201.sdfdata	62766231	4602	8a2e041b87dbbdce2ca50b0f8c84096b	62245368	5389	69a59402d0da18db64f1c86dba116fdb	# nx/ybutton.png <- durango/ui_button_durangox.png
+camel/sdf/nx/data/sdf-A-0201.sdfdata	62623939	3255	23458ddd719285cfc8a54e6b680435f3	62186245	3759	caf7393d93fe51a5079cb9b80a7433b0	# nx/leftbumper.png <- durango/ui_button_durangolb.png
+camel/sdf/nx/data/sdf-A-0201.sdfdata	62636466	3658	029d3ca64810358ff2c4ec5aea266a7e	62213070	4125	a0c30652b3c3d17c4ce56be89d4fd0b7	# nx/rightbumper.png <- durango/ui_button_durangorb.png
+camel/sdf/nx/data/sdf-A-0201.sdfdata	62632558	3908	82c3ab54e145395538cc18cf3de3213c	62205229	3799	38446ae5adc951568640c576590693a5	# nx/lefttrigger.png <- durango/ui_button_durangolt.png
+camel/sdf/nx/data/sdf-A-0201.sdfdata	62645693	4067	f4e05ca71da321407f40e87f5eaf8818	62233070	4116	d7ed8bb407eb383ade4582ff6ed8a378	# nx/righttrigger.png <- durango/ui_button_durangort.png
+camel/sdf/nx/data/sdf-A-0201.sdfdata	62649760	3736	45c7ac887833b94b2a094be82094a8a7	62237186	4131	14265a50916b103e00f3efa6c1310eb9	# nx/select.png <- durango/ui_button_durangoselect.png
+camel/sdf/nx/data/sdf-A-0201.sdfdata	62658180	4636	5e95447d9082ddff1ed34c87c8b0d102	62122508	4657	a3e6a2025c9a88ddc0dc377d98c6a362	# nx/ui_button_nx_a.png <- durango/ui_button_durangoa.png
+camel/sdf/nx/data/sdf-A-0201.sdfdata	62662816	4734	8230cf057d96b6720104666c3f7a6857	62127165	4518	8cbf5afd254b96afe5210c959a6d16b6	# nx/ui_button_nx_b.png <- durango/ui_button_durangob.png
+camel/sdf/nx/data/sdf-A-0201.sdfdata	62752573	4528	3767fa20bb4b694f41cc3fd8dc466e1a	62250757	4700	fccc49062a9973d278e9b7489f78cd7c	# nx/ui_button_nx_x.png <- durango/ui_button_durangoy.png
+camel/sdf/nx/data/sdf-A-0201.sdfdata	62757101	4602	8a2e041b87dbbdce2ca50b0f8c84096b	62245368	5389	69a59402d0da18db64f1c86dba116fdb	# nx/ui_button_nx_y.png <- durango/ui_button_durangox.png
+camel/sdf/nx/data/sdf-A-0201.sdfdata	62694675	3255	23458ddd719285cfc8a54e6b680435f3	62186245	3759	caf7393d93fe51a5079cb9b80a7433b0	# nx/ui_button_nx_lb.png <- durango/ui_button_durangolb.png
+camel/sdf/nx/data/sdf-A-0201.sdfdata	62721034	3658	029d3ca64810358ff2c4ec5aea266a7e	62213070	4125	a0c30652b3c3d17c4ce56be89d4fd0b7	# nx/ui_button_nx_rb.png <- durango/ui_button_durangorb.png
+camel/sdf/nx/data/sdf-A-0201.sdfdata	62713084	3908	82c3ab54e145395538cc18cf3de3213c	62205229	3799	38446ae5adc951568640c576590693a5	# nx/ui_button_nx_lt.png <- durango/ui_button_durangolt.png
+camel/sdf/nx/data/sdf-A-0201.sdfdata	62740769	4067	f4e05ca71da321407f40e87f5eaf8818	62233070	4116	d7ed8bb407eb383ade4582ff6ed8a378	# nx/ui_button_nx_rt.png <- durango/ui_button_durangort.png
+camel/sdf/nx/data/sdf-A-0201.sdfdata	62744836	3736	45c7ac887833b94b2a094be82094a8a7	62237186	4131	14265a50916b103e00f3efa6c1310eb9	# nx/ui_button_nx_select.png <- durango/ui_button_durangoselect.png
+camel/sdf/nx/data/sdf-A-0201.sdfdata	62748572	4001	458aabe2985d96b8fe2df2e193ca585e	62241317	4051	d779b3ea9bd56b46c11bcf43744789e0	# nx/ui_button_nx_start.png <- durango/ui_button_durangostart.png
+camel/sdf/nx/data/sdf-A-0201.sdfdata	62697930	4630	de34ce5eb038ac147f53956ba7810cfc	62190004	4701	25987797b3a8f5196fe6a9a2081cdc04	# nx/ui_button_nx_lstick.png <- durango/ui_button_durangolstick.png
+camel/sdf/nx/data/sdf-A-0201.sdfdata	62724692	5072	1f7fadbf1b1d49a05ca538ef1c1e0afd	62217195	4870	f6d02d9f0818f342bf80bdb703af688a	# nx/ui_button_nx_rstick.png <- durango/ui_button_durangorstick.png
