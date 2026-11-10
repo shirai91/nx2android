@@ -763,10 +763,12 @@ NVN(nvnQueueFinish, void, NVNqueue *q) { (void)q; uint64_t t0 = now_ns(); nvn_dr
 // replay jumped to 0x1000000003 (that CALL record's header) after 8 to 30 minutes of play
 #define OP_RESERVE 16
 
+static void hostseg_disown(cmd_t *o);
 NVN(nvnCommandBufferInitialize, NVNboolean, NVNcommandBuffer *c, NVNdevice *d) {
+    if (CB(c)->magic == MAGIC('C', 'M', 'D', 'B')) hostseg_disown(CB(c));   // initialized again without a Finalize
     memset(c, 0, sizeof(cmd_t)); CB(c)->magic = MAGIC('C', 'M', 'D', 'B'); CB(c)->dev = d; return 1;
 }
-NVN(nvnCommandBufferFinalize, void, NVNcommandBuffer *c) { CB(c)->magic = 0; }
+NVN(nvnCommandBufferFinalize, void, NVNcommandBuffer *c) { hostseg_disown(CB(c)); CB(c)->magic = 0; }
 NVN(nvnCommandBufferSetMemoryCallback, void, NVNcommandBuffer *c, PFNNVNCOMMANDBUFFERMEMORYCALLBACKPROC cb) { CB(c)->cb = cb; }
 NVN(nvnCommandBufferSetMemoryCallbackData, void, NVNcommandBuffer *c, void *d) { CB(c)->cb_data = d; }
 static uint8_t *align8(uint8_t *p) { return (uint8_t *)(((uintptr_t)p + 7) & ~(uintptr_t)7); }
@@ -808,33 +810,178 @@ static void cmd_new_segment(cmd_t *o, uint8_t *mem, size_t n) {
 // A segment is as large as the game asked for when it says (an empty pool with a length: HOSTSEG_MIN up to HOSTSEG_SZ), else HOSTSEG_SZ: Super Mario Odyssey entering the Wooded Kingdom
 // sets up tens of thousands of command buffers with an empty pool and 0x200 bytes each before recording into them, and at 256 KB apiece these (never reclaimed: no guest bytes to hang off)
 // reached the 1 GB cap within 3 seconds, every time; at 4 KB they come to 128 MB
+// Those segments have no guest range, and the game tells nothing when they die: Odyssey sets a command buffer up with (no pool, offset 0, 0x200 bytes), records, finalizes the buffer at once and keeps
+// the handle, CALLing it whenever the object is drawn: 92% of closed buffers' segments were CALLed again, up to 1,710 frames later and growing (an object out of view is simply not drawn). So neither Finalize
+// nor a frame count says they are dead (giving them back at Finalize drew garbage and overflowed the replay's stack on CALLs into overwritten records, 30 s after loading a save).
+// What says it is that nothing refers to them any more: hostseg_scan looks for their addresses in the game's memory. Odyssey lent 4 KB ones steadily while the kingdoms loaded and reached the 1 GB cap after 15 minutes of play
 #define HOSTSEG_SZ (256u << 10)
 #define HOSTSEG_MIN (4u << 10)
 #define HOSTSEG_CAP (1u << 30)
+#define HOSTSEG_GRACE 120                 // frames after its buffer closed before a segment can be returned: past any submission still under way
+#define HOSTSEG_ARENA (32ull << 30)       // address space for segments, never used twice: a handle that was wrongly given up reads zeros, an OP_END, and draws nothing instead of someone else's commands
+#define HOSTSEG_SLOTS (1u << 19)
+#define HOSTSEG_SITES (1u << 20)
 uint64_t dm_nvn_frame_count(void);
-typedef struct { uint8_t *mem; uint64_t frame; int busy; uintptr_t org_lo, org_hi; uint32_t sz; } hostseg_t;   // org: the guest range of the recording it hangs off (0 = unknown, never reclaimed)
-static hostseg_t *g_hostseg; static int g_nhostseg, g_caphostseg; static uint64_t g_hostseg_bytes;
+// org: the guest range of the recording it hangs off (0 = none: it belongs to owner, chained from the buffer's hostseg_head by index + 1, until the buffer closes). sz 0: a free slot.
+// cand: its buffer closed at cand_frame: 1 waits for a scan to find no reference, 2 one scan found none
+typedef struct { uint8_t *mem; uint64_t frame; int busy; uintptr_t org_lo, org_hi; uint32_t sz; const cmd_t *owner; int owner_next; int cand; uint64_t cand_frame; } hostseg_t;
+// The tables are mapped apart and left out of the scan (the slots hold the very addresses it looks for)
+static hostseg_t *g_hostseg; static int g_nhostseg; static uint64_t g_hostseg_bytes, g_hostseg_back_segs, g_hostseg_back_scans;
 static pthread_mutex_t g_hostseg_mu = PTHREAD_MUTEX_INITIALIZER;
+static uint8_t *g_hs_base; static uint64_t g_hs_bump; static int32_t *g_hs_pages, *g_hs_free; static int g_hs_nfree;   // the arena, the used part of it, its pages' segment index + 1, free slots
+static uint64_t *g_hs_sites, *g_hs_sites2; static uint32_t g_hs_nsites; static uint64_t g_hs_new_cand, g_hs_stale;   // CALL records written, which memory the scan cannot read (the pools' dma-bufs) may hold
+static void *hs_map(uint64_t n) { void *m = mmap(NULL, n, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE | MAP_NORESERVE, -1, 0); if (m == MAP_FAILED) die("NVN command memory: no address space for host-lent segments (%llu bytes)", (unsigned long long)n); return m; }
+static void hostseg_init(void) {   // under g_hostseg_mu
+    if (g_hs_base) return;
+    g_hostseg = hs_map(sizeof *g_hostseg * HOSTSEG_SLOTS); g_hs_free = hs_map(sizeof *g_hs_free * HOSTSEG_SLOTS); g_hs_pages = hs_map(sizeof *g_hs_pages * (HOSTSEG_ARENA >> 12));
+    g_hs_sites = hs_map(sizeof *g_hs_sites * HOSTSEG_SITES); g_hs_sites2 = hs_map(sizeof *g_hs_sites2 * HOSTSEG_SITES); g_hs_base = hs_map(HOSTSEG_ARENA);
+}
 // Take a segment of sz bytes: origin = the current recording's guest bytes [BEGIN, end of JUMP); if the write pointer is already in a host segment (overflowing again), keep that segment's origin
-static uint8_t *hostseg_take(const cmd_t *o, uint32_t sz) {
-    static unsigned total; uint64_t f = dm_nvn_frame_count(); uint8_t *m = NULL;
+static uint8_t *hostseg_take(cmd_t *o, uint32_t sz) {
+    static unsigned total; uint64_t f = dm_nvn_frame_count(); uint8_t *m = NULL; int at = -1;
     uintptr_t lo = 0, hi = 0, cur = o ? (uintptr_t)o->cur : 0;
     pthread_mutex_lock(&g_hostseg_mu);
+    hostseg_init();
     int in_seg = 0;
-    for (int i = 0; i < g_nhostseg && cur; i++) if (cur >= (uintptr_t)g_hostseg[i].mem && cur <= (uintptr_t)g_hostseg[i].mem + g_hostseg[i].sz) { lo = g_hostseg[i].org_lo; hi = g_hostseg[i].org_hi; in_seg = 1; break; }
+    for (int i = 0; i < g_nhostseg && cur; i++) if (g_hostseg[i].sz && cur >= (uintptr_t)g_hostseg[i].mem && cur <= (uintptr_t)g_hostseg[i].mem + g_hostseg[i].sz) { lo = g_hostseg[i].org_lo; hi = g_hostseg[i].org_hi; in_seg = 1; break; }
     if (!in_seg && o && o->recording && o->cur) { lo = o->recording == 1 && o->begin && (uintptr_t)o->begin <= cur ? (uintptr_t)o->begin : cur; hi = cur + 16; }
     for (int i = 0; i < g_nhostseg && !m; i++)
-        if (!g_hostseg[i].busy && g_hostseg[i].sz == sz) { g_hostseg[i] = (hostseg_t){ g_hostseg[i].mem, f, 1, lo, hi, sz }; m = g_hostseg[i].mem; }
-    if (!m && g_hostseg_bytes + sz <= HOSTSEG_CAP) {
-        if (g_nhostseg == g_caphostseg) { g_caphostseg = g_caphostseg ? g_caphostseg * 2 : 64; g_hostseg = realloc(g_hostseg, sizeof *g_hostseg * (size_t)g_caphostseg); }
-        m = malloc(sz); g_hostseg_bytes += sz;
-        g_hostseg[g_nhostseg++] = (hostseg_t){ m, f, 1, lo, hi, sz };
+        if (!g_hostseg[i].busy && g_hostseg[i].sz == sz) { g_hostseg[i] = (hostseg_t){ .mem = g_hostseg[i].mem, .frame = f, .busy = 1, .org_lo = lo, .org_hi = hi, .sz = sz }; m = g_hostseg[i].mem; at = i; }
+    if (!m && g_hostseg_bytes + sz <= HOSTSEG_CAP && g_hs_bump + sz <= HOSTSEG_ARENA && (g_hs_nfree || g_nhostseg < (int)HOSTSEG_SLOTS)) {
+        at = g_hs_nfree ? g_hs_free[--g_hs_nfree] : g_nhostseg++;
+        m = g_hs_base + g_hs_bump; g_hs_bump += sz; g_hostseg_bytes += sz;
+        g_hostseg[at] = (hostseg_t){ .mem = m, .frame = f, .busy = 1, .org_lo = lo, .org_hi = hi, .sz = sz };
+        for (uint32_t k = 0; k < sz; k += 4096) g_hs_pages[(uint64_t)(m + k - g_hs_base) >> 12] = at + 1;
     }
-    unsigned t = ++total; int n = g_nhostseg; unsigned mb = (unsigned)(g_hostseg_bytes >> 20);
+    if (m && o && !lo && !hi) { g_hostseg[at].owner = o; g_hostseg[at].owner_next = o->hostseg_head; o->hostseg_head = at + 1; }
+    unsigned t = ++total; int n = g_nhostseg - g_hs_nfree; unsigned mb = (unsigned)(g_hostseg_bytes >> 20); unsigned long long sc = g_hostseg_back_scans, bs = g_hostseg_back_segs;
     pthread_mutex_unlock(&g_hostseg_mu);
     if (!m) die("NVN command memory: the game's pool is empty and host-lent segments reached %u MB without being reclaimed by the game's blocks", HOSTSEG_CAP >> 20);
-    if (t == 1 || t % 1024 == 0) LOG("[nvn] the game's command memory ran short, the host lends a segment (%u times so far, frame %llu, segment pool %d segments, %u MB)", t, (unsigned long long)f, n, mb);
+    if (t == 1 || t % 1024 == 0) LOG("[nvn] the game's command memory ran short, the host lends a segment (%u times so far, frame %llu, segment pool %d segments, %u MB; back with nothing referring to them: %llu segments in %llu scans)", t, (unsigned long long)f, n, mb, bs, sc);
     return m;
+}
+#ifdef DM_ANDROID
+#include <stdio.h>
+#include <sys/resource.h>
+#include <sys/syscall.h>
+#include <sys/uio.h>
+#include "nvn_hostseg_scan.h"
+typedef struct { uint64_t lo, hi; int shared; } hs_region_t;
+static hs_region_t *g_hs_regions; static uint8_t *g_hs_mark, *g_hs_buf;
+#define HS_BUF (1u << 20)
+#define HS_REGIONS (1u << 17)
+static uint32_t hs_regions_read(uint64_t *bytes) {   // the writable mappings, the game's heaps among them; the runtime's Java heaps and this scan's own tables left out
+    FILE *f = fopen("/proc/self/maps", "r"); if (!f) return 0;
+    char ln[512]; uint32_t n = 0; *bytes = 0;
+    while (fgets(ln, sizeof ln, f) && n < HS_REGIONS) {
+        unsigned long long lo, hi; char perm[8] = ""; int name = 0;
+        if (sscanf(ln, "%llx-%llx %7s %*s %*s %*s %n", &lo, &hi, perm, &name) < 3 || perm[0] != 'r' || perm[1] != 'w') continue;
+        const char *nm = name ? ln + name : "";
+        if (strstr(nm, "dalvik")) continue;
+        const void *own[] = { g_hostseg, g_hs_free, g_hs_pages, g_hs_sites, g_hs_sites2, g_hs_base, g_hs_regions, g_hs_mark, g_hs_buf };
+        int skip = 0; for (unsigned k = 0; k < sizeof own / sizeof *own; k++) if ((uint64_t)(uintptr_t)own[k] >= lo && (uint64_t)(uintptr_t)own[k] < hi) skip = 1;
+        if (skip) continue;
+        g_hs_regions[n++] = (hs_region_t){ lo, hi, perm[3] == 's' };
+        if (perm[3] != 's') *bytes += hi - lo;
+    }
+    fclose(f); return n;
+}
+// The CALL records written so far: a record still in place keeps its target. process_vm_readv refuses a pool's dma-buf, where the map says that it is mapped. What is still in place goes back on the list
+static uint32_t hs_sites_pass(uint32_t nr, uint64_t base, uint64_t span) {
+    pthread_mutex_lock(&g_hostseg_mu);
+    uint32_t n = g_hs_nsites; memcpy(g_hs_sites2, g_hs_sites, n * sizeof *g_hs_sites); g_hs_nsites = 0;
+    pthread_mutex_unlock(&g_hostseg_mu);
+    uint32_t keep = 0; uint64_t prev = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        uint64_t at = g_hs_sites2[i], rec[2]; if (at == prev) continue; prev = at;
+        struct iovec l = { rec, sizeof rec }, r = { (void *)(uintptr_t)at, sizeof rec };
+        int ok = process_vm_readv(getpid(), &l, 1, &r, 1, 0) == (ssize_t)sizeof rec;
+        if (!ok) { uint32_t a = 0, b = nr; while (a < b) { uint32_t c = (a + b) / 2; if (g_hs_regions[c].hi <= at) a = c + 1; else b = c; }
+            if (a < nr && g_hs_regions[a].lo <= at && at + sizeof rec <= g_hs_regions[a].hi && g_hs_regions[a].shared) { memcpy(rec, (const void *)(uintptr_t)at, sizeof rec); ok = 1; } }
+        if (!ok) continue;
+        op_hdr h; memcpy(&h, rec, sizeof h);
+        if (h.op != OP_CALL || rec[1] - base >= span) continue;
+        int t = g_hs_pages[(rec[1] - base) >> 12] - 1; if (t < 0) continue;
+        g_hs_mark[t] = 1; g_hs_sites2[keep++] = at;
+    }
+    return keep;
+}
+static void hostseg_scan(void) {
+    uint64_t t0 = now_ns(), f = dm_nvn_frame_count(), read_bytes = 0, refused = 0, rw_bytes = 0;
+    pthread_mutex_lock(&g_hostseg_mu);
+    int n = g_nhostseg; uint64_t bump = g_hs_bump, base = (uint64_t)(uintptr_t)g_hs_base; g_hs_new_cand = 0; int overflowed = g_hs_nsites >= HOSTSEG_SITES;
+    pthread_mutex_unlock(&g_hostseg_mu);
+    memset(g_hs_mark, 0, (size_t)n);
+    uint32_t nr = hs_regions_read(&rw_bytes);
+    if (!nr) { LOG("[RED] [nvn] host segment scan: cannot read the memory map: nothing returned"); return; }
+    uint32_t kept = hs_sites_pass(nr, base, bump);
+    for (uint32_t r = 0; r < nr; r++) { if (g_hs_regions[r].shared) continue;
+        for (uint64_t at = g_hs_regions[r].lo; at < g_hs_regions[r].hi; ) {
+            size_t want = g_hs_regions[r].hi - at < HS_BUF ? (size_t)(g_hs_regions[r].hi - at) : HS_BUF;
+            struct iovec l = { g_hs_buf, want }, v = { (void *)(uintptr_t)at, want };
+            ssize_t got = process_vm_readv(getpid(), &l, 1, &v, 1, 0);
+            if (got <= 0) { refused += 4096; at += 4096; continue; }
+            hostseg_mark_words((const uint64_t *)g_hs_buf, (size_t)got / 8, base, bump, g_hs_pages, -1, g_hs_mark); read_bytes += (uint64_t)got; at += (uint64_t)got;
+        } }
+    for (int i = 0; i < n; i++) { uint32_t sz = g_hostseg[i].sz; const uint8_t *m = g_hostseg[i].mem;   // the segments themselves: records CALL other segments and JUMP on to them
+        if (sz && m) hostseg_mark_words((const uint64_t *)m, sz / 8, base, bump, g_hs_pages, i, g_hs_mark); }
+    uint32_t cands = 0, refd = 0, back = 0; uint64_t back_bytes = 0;
+    pthread_mutex_lock(&g_hostseg_mu);
+    for (uint32_t i = 0; i < kept && g_hs_nsites < HOSTSEG_SITES; i++) g_hs_sites[g_hs_nsites++] = g_hs_sites2[i];
+    for (int i = 0; i < n; i++) { hostseg_t *s = &g_hostseg[i];
+        if (!s->cand || s->cand_frame + HOSTSEG_GRACE > f) continue;
+        cands++;
+        if (g_hs_mark[i]) { refd++; s->cand = 1; continue; }
+        if (s->cand == 1 || overflowed) { s->cand = 2; continue; }
+        // Two scans running found nothing: the pages go back, and the address stays unused
+        uint8_t *m = s->mem; uint32_t sz = s->sz; for (uint32_t k = 0; k < sz; k += 4096) g_hs_pages[(uint64_t)(m + k - g_hs_base) >> 12] = 0;
+        madvise(m, sz, MADV_DONTNEED);
+        *s = (hostseg_t){ 0 }; g_hs_free[g_hs_nfree++] = i; g_hostseg_bytes -= sz; back_bytes += sz; back++;
+    }
+    g_hostseg_back_segs += back; g_hostseg_back_scans++;
+    unsigned long long total = g_hostseg_back_segs, stale = g_hs_stale; unsigned mb = (unsigned)(g_hostseg_bytes >> 20); int live = g_nhostseg - g_hs_nfree;
+    pthread_mutex_unlock(&g_hostseg_mu);
+    LOG("[nvn] host segments: scan %.0f ms over %llu MB%s, %u of %u closed referred to, %u returned (%llu MB); live %d segments, %u MB; returned so far %llu; used after their return %llu; CALL records followed %u",
+        (now_ns() - t0) / 1e6, (unsigned long long)(read_bytes >> 20), refused ? " (some not readable)" : "", refd, cands, back, (unsigned long long)(back_bytes >> 20), live, mb, total, stale, kept);
+}
+static void *hostseg_thread(void *arg) { (void)arg;
+    setpriority(PRIO_PROCESS, (id_t)syscall(SYS_gettid), 10);
+    g_hs_regions = hs_map(sizeof *g_hs_regions * HS_REGIONS); g_hs_mark = hs_map(HOSTSEG_SLOTS); g_hs_buf = hs_map(HS_BUF);
+    for (uint64_t last = 0;;) { sleep(5);
+        pthread_mutex_lock(&g_hostseg_mu);
+        int due = g_hs_new_cand >= (4u << 20) || g_hs_nsites >= HOSTSEG_SITES / 2;
+        for (int i = 0; i < g_nhostseg && !due; i++) due = g_hostseg[i].cand == 2;
+        pthread_mutex_unlock(&g_hostseg_mu);
+        uint64_t now = now_ns();
+        if (due && now - last >= 15000000000ull) { hostseg_scan(); last = now; }
+    }
+    return NULL;
+}
+#endif
+// The buffer closed: the segments lent to it with no guest range are now only as alive as the references to them. DM_NVN_HOSTSEG_KEEP=1 keeps them for good
+static void hostseg_disown(cmd_t *o) {
+    static int keep = -1; if (keep < 0) keep = getenv("DM_NVN_HOSTSEG_KEEP") != NULL;
+    if (keep || !o->hostseg_head) return;
+#ifdef DM_ANDROID
+    uint64_t f = dm_nvn_frame_count(); static int started;
+    pthread_mutex_lock(&g_hostseg_mu);
+    for (int i = o->hostseg_head; i > 0 && i <= g_nhostseg && g_hostseg[i - 1].busy && g_hostseg[i - 1].owner == o; ) {
+        hostseg_t *s = &g_hostseg[i - 1]; i = s->owner_next; s->owner = NULL; s->owner_next = 0; s->cand = 1; s->cand_frame = f; g_hs_new_cand += s->sz;
+    }
+    int start = !started; started = 1;
+    pthread_mutex_unlock(&g_hostseg_mu);
+    o->cur = o->end = o->begin = NULL;   // the buffer's own pointers are not references
+    if (start) { pthread_t t; pthread_attr_t a; pthread_attr_init(&a); pthread_attr_setdetachstate(&a, PTHREAD_CREATE_DETACHED); if (pthread_create(&t, &a, hostseg_thread, NULL)) LOG("[RED] [nvn] no host segment scan thread"); pthread_attr_destroy(&a); }
+#endif
+    o->hostseg_head = 0;
+}
+// A handle CALLed or submitted: one into a segment already returned was given up wrongly (it reads zeros and draws nothing); at, the CALL record, is followed by the scan
+static void hostseg_note(uint64_t h, const uint8_t *at) {
+    if (!g_hs_base || h - (uint64_t)(uintptr_t)g_hs_base >= HOSTSEG_ARENA) return;
+    pthread_mutex_lock(&g_hostseg_mu);
+    if (!g_hs_pages[(h - (uint64_t)(uintptr_t)g_hs_base) >> 12]) { if (!g_hs_stale++) LOG("[RED] [nvn] a command handle was used after its host segment was returned: %#llx (draws nothing)", (unsigned long long)h); }
+    else if (at && g_hs_nsites < HOSTSEG_SITES) g_hs_sites[g_hs_nsites++] = (uint64_t)(uintptr_t)at;
+    pthread_mutex_unlock(&g_hostseg_mu);
 }
 // The game gives out [lo, hi): segments whose recording's guest bytes overlap it are dead, reclaim them
 static void hostseg_release(uintptr_t lo, uintptr_t hi) {
@@ -890,7 +1037,7 @@ NVN(nvnCommandBufferEndRecording, NVNcommandHandle, NVNcommandBuffer *c) {
 }
 NVN(nvnCommandBufferIsRecording, NVNboolean, const NVNcommandBuffer *c) { return ((const cmd_t *)c)->recording != 0; }
 NVN(nvnCommandBufferCopyCommands, void, NVNcommandBuffer *c, int n, const NVNcommandHandle *h) {
-    for (int i = 0; i < n; i++) { uint8_t *p = cmd_alloc(CB(c), 16); put_hdr(p, OP_CALL, 16); memcpy(p + 8, &h[i], 8); }
+    for (int i = 0; i < n; i++) { uint8_t *p = cmd_alloc(CB(c), 16); put_hdr(p, OP_CALL, 16); memcpy(p + 8, &h[i], 8); hostseg_note(h[i], p); }
 }
 NVN(nvnCommandBufferSignalEvent, void, NVNcommandBuffer *c, const NVNevent *e, NVNeventSignalMode m, NVNeventSignalLocation loc, int flags, uint32_t v) {
     (void)loc; (void)flags;
@@ -1331,6 +1478,7 @@ static uint64_t rec_copy(uint64_t h) {
     g_flat_bytes += n; return (uint64_t)(uintptr_t)c;
 }
 NVN(nvnQueueSubmitCommands, void, NVNqueue *q, int n, const NVNcommandHandle *h) {
+    for (int i = 0; i < n; i++) hostseg_note(h[i], NULL);
     if (nvn_async()) { uint64_t *c = malloc(sizeof *c * (size_t)(n > 0 ? n : 1)); for (int i = 0; i < n; i++) c[i] = rec_copy(h[i]); ((queue_t *)q)->submits++;
         static uint64_t ns, last; if (++ns % 600 == 0) { LOG("[nvn] submissions copied for the replay thread: %.2f MB each (last 600)", (g_flat_bytes - last) / 600.0 / 1048576); last = g_flat_bytes; }
         job_push((nvn_job){JOB_SUBMIT, n, c, q}); return; }
