@@ -84,6 +84,8 @@ uint64_t vk_replay_ns(void) { return g_vkst.ns_exec; }   // the replay time so f
 static int g_fdz = 1;  // DM_VK_FDZ (live): fragment-depth variants for draws on depth written by fragment shaders (pipeline key fdz)
 static int g_x_nosetc, g_x_nodrvc, g_x_landcut, g_x_nokeep, g_x_nobc, g_x_cutany, g_lrz_touch, g_xfb_on = 1, g_x_nogs, g_spv_alt, g_x_nodispbar; int g_x_noshc;   // g_xfb_on: DM_VK_XFB=0 captures no transform feedback (A/B)
 static int g_x_nosetmemo, g_x_setverify;   // DM_VK_X_NOSETMEMO=1 (live, A/B): no per-stage set memo; DM_VK_X_SETVERIFY=1 (live): one memo hit in 64 checked (see stage_set)
+static int g_x_nopipememo, g_x_nolayoutmemo, g_x_setmemo_one;
+uint64_t g_memo_pipe[2], g_memo_layout[2], g_memo_stage[3], g_memo_reject[7];
 static int g_vbound = 1;   // DM_VK_VBOUND (see vbuf_bound)
 // DM_VK_PROF_SLOW=1 (live): a submission whose replay took over 40 ms logs where it went: pipelines built on the replay thread, textures (vk_tex: images made and
 // packaged uploads, the latter also apart), the copied pools' sync before it, shader modules, and the rest
@@ -145,6 +147,7 @@ static void x_read(void) { const char *c = getenv("DM_VK_CB_DRAWS"); g_x_cbdraws
     g_lrz_touch = !((e = getenv("DM_VK_LRZ_TOUCH")) && !atoi(e)); g_fdz = !((e = getenv("DM_VK_FDZ")) && !atoi(e)); g_xfb_on = !((e = getenv("DM_VK_XFB")) && !atoi(e));
     g_psplit = (e = getenv("DM_VK_PASS_SPLIT")) ? atoi(e) : 0; g_setsplit = (e = getenv("DM_VK_SETSPLIT")) && atoi(e); g_psplit_depth = (e = getenv("DM_VK_PASS_SPLIT_DEPTH")) && atoi(e);
     g_x_rdkeep = (e = getenv("DM_VK_X_RDKEEP")) && atoi(e); g_vbound = !((e = getenv("DM_VK_VBOUND")) && !atoi(e)); g_x_logfs = (e = getenv("DM_VK_LOG_FS")) ? strtoull(e, NULL, 16) : 0; g_x_nflat = 0; if ((e = getenv("DM_VK_X_FLAT_VS"))) for (char *q = (char *)e; *q && g_x_nflat < 8; ) { char *nx; uint64_t v = strtoull(q, &nx, 16); if (nx == q) break; int m = 7; if (*nx == ':') m = (int)strtol(nx + 1, &nx, 10); g_x_flat_mode[g_x_nflat] = m; g_x_flat[g_x_nflat++] = v; q = *nx ? nx + 1 : nx; } g_samp_snap = !((e = getenv("DM_NVN_SAMP_SNAP")) && !atoi(e)); g_lin_back = !((e = getenv("DM_VK_LIN_BACK")) && !atoi(e)); g_async_pipe = !((e = getenv("DM_VK_ASYNC_PIPE")) && !atoi(e)); g_prof_on = (e = getenv("DM_VK_PROF_SLOW")) && atoi(e); { extern volatile int g_vk_samp_log; if ((e = getenv("DM_VK_SAMP_LOG")) && atoi(e) > 0) { g_vk_samp_log = atoi(e); setenv("DM_VK_SAMP_LOG", "0", 1); } } g_x_nosetmemo = (e = getenv("DM_VK_X_NOSETMEMO")) && atoi(e); g_x_setverify = (e = getenv("DM_VK_X_SETVERIFY")) && atoi(e);
+    g_x_nopipememo = (e = getenv("DM_VK_X_NOPIPEMEMO")) && atoi(e); g_x_nolayoutmemo = (e = getenv("DM_VK_X_NOLAYOUTMEMO")) && atoi(e); g_x_setmemo_one = (e = getenv("DM_VK_X_SETMEMO_ONE")) && atoi(e);
     g_x_nskipvs = 0; for (const char *q = getenv("DM_VK_X_SKIPVS"); q && *q && g_x_nskipvs < 8;) { char *n; uint64_t v = strtoull(q, &n, 16); if (n == q) break; if (v) g_x_skipvs[g_x_nskipvs++] = v; q = *n ? n + 1 : n; } }
 // ---------------- conditional rendering (profile render_cond) ----------------
 // As nvn_mtl.m (OP_RENDER_COND): SetRenderEnableConditional draws while the 64-bit counters of the reports at addr and addr + 16 are equal / differ, until SetRenderEnable(true).
@@ -820,6 +823,7 @@ static VkPipeline build_pipeline(const pkey *k, VkPipelineLayout layout, vkshade
 static void pipe_record(const pkey *k);
 // The last key and its pipeline (the replay thread's only; pipelines are never dropped): runs of draws with one pipeline skip the 992-byte hash and the lock
 static pkey g_last_k; static VkPipeline g_last_p;
+static struct { pkey k; VkPipeline p; } g_pipe_memo[64];
 // Pipelines built in the background. A pipeline met for the first time costs the driver's compile on the replay thread, 20-35 ms each on Adreno 830 (no pipeline
 // libraries there): in Super Mario Odyssey the first cap throw at a breakable object, the first swim, made 2-7 new pipelines a frame (175 ms frames, seen as 40, 30
 // fps or lower for a moment), then never again in that run; the prewarm (below) covers what an earlier run met. A draw whose pipeline does not exist yet is queued for
@@ -865,9 +869,17 @@ static int async_pipe(const pkey *k) {   // 1: queued (the draw is left out); un
 }
 static VkPipeline graphics_pipeline(const pkey *k, VkPipelineLayout layout) {
     if (g_last_p && !memcmp(k, &g_last_k, sizeof *k)) return g_last_p == (void *)1 ? VK_NULL_HANDLE : g_last_p;
+    unsigned slot = (unsigned)(k->key[0] ^ (k->key[0] >> 32) ^ k->key[1] ^ (k->key[1] >> 32) ^ k->key[2] ^ (k->key[2] >> 32) ^ k->topo ^ k->cfmt[0] ^ k->dfmt ^ k->ncol) & 63;
+    if (!g_x_nopipememo) {
+        if (g_pipe_memo[slot].p && !memcmp(k, &g_pipe_memo[slot].k, sizeof *k)) {
+            g_memo_pipe[0]++; g_last_k = *k; g_last_p = g_pipe_memo[slot].p;
+            return g_last_p == (void *)1 ? VK_NULL_HANDLE : g_last_p;
+        }
+        g_memo_pipe[1]++;
+    }
     pthread_mutex_lock(&g_pipe_mu); VkPipeline p = nvn_hm_get(&g_pipes, k); pthread_mutex_unlock(&g_pipe_mu);
     if (p == PIPE_PENDING) return VK_NULL_HANDLE;
-    if (p) { g_last_k = *k; g_last_p = p; return p == (void *)1 ? VK_NULL_HANDLE : p; }
+    if (p) { g_last_k = *k; g_last_p = p; if (!g_x_nopipememo) { g_pipe_memo[slot].k = *k; g_pipe_memo[slot].p = p; } return p == (void *)1 ? VK_NULL_HANDLE : p; }
     if (async_pipe(k)) return VK_NULL_HANDLE;
     vkshader_t *stg[3] = {S.sh[0], S.sh[1], S.sh[2]};
     uint64_t tb = g_prof_on ? tick() : 0; p = build_pipeline(k, layout, stg); if (g_prof_on) g_prof_ns[0] += tick() - tb; g_vkst.pipes_built++;
@@ -876,6 +888,8 @@ static VkPipeline graphics_pipeline(const pkey *k, VkPipelineLayout layout) {
     if (had) { if (p != (void *)1) vkDestroyPipeline(V.dev, p, NULL); p = had; }   // a prewarm thread made it meanwhile
     else { nvn_hm_put(&g_pipes, k, p); if (p != (void *)1) pipe_record(k); }
     pthread_mutex_unlock(&g_pipe_mu);
+    if (p != PIPE_PENDING && !g_x_nopipememo) { g_pipe_memo[slot].k = *k; g_pipe_memo[slot].p = p; }
+    if (p == PIPE_PENDING) return VK_NULL_HANDLE;
     return p == (void *)1 ? VK_NULL_HANDLE : p;
 }
 // ---- pipeline prewarm: every pipeline the game needed is recorded (DM_ROOT/vk_pipelines.bin) and made again at the next boot on background
@@ -1204,7 +1218,7 @@ static void cbuf_desc(int st, const vkshader_t *s, const dmsv_bind *b, VkDescrip
 // DM_VK_X_NOSETMEMO=1 (live): always collected. DM_VK_X_SETVERIFY=1 (live): one hit in 64 is collected anyway and compared, [RED] on a difference
 enum { MEMO_CB = 16 };
 typedef struct { vkshader_t *s; uint64_t epoch, bind, ubo, ubd, tex, samp, h, um, im; uint32_t pool, binst, dofs[96]; int ncb; uint8_t ci[MEMO_CB], cpos[MEMO_CB]; VkDescriptorBufferInfo cd[MEMO_CB]; VkDescriptorSet set; } set_memo_t;
-static set_memo_t g_smemo[3]; static uint64_t g_bind_gen[6], g_ubo_gen[6];   // a stage's handles or storage buffers changed (bind_handles_rec, OP_BIND_SSBO), its uniform buffers (OP_BIND_UBO)
+static set_memo_t g_smemo[3][8]; static uint64_t g_bind_gen[6], g_ubo_gen[6];   // a stage's handles or storage buffers changed (bind_handles_rec, OP_BIND_SSBO), its uniform buffers (OP_BIND_UBO)
 uint64_t g_set_memo, g_set_memo_bad;   // memo hits, and differences the verify mode found
 extern uint64_t g_ubd_gen; uint32_t vk_pool_gen(void);
 static int set_memo_ok(vkshader_t *s) {
@@ -1214,12 +1228,15 @@ static int set_memo_ok(vkshader_t *s) {
         s->setmemo = ok && ncb <= MEMO_CB ? 1 : 2; }
     return s->setmemo == 1;
 }
-static int set_memo_get(int st, vkshader_t *s, uint32_t *dofs) {
-    set_memo_t *m = &g_smemo[st];
-    if (m->s != s || m->epoch != g_set_epoch || m->bind != g_bind_gen[st] || m->tex != g_tex_gen || m->samp != __atomic_load_n(&g_samp_gen, __ATOMIC_ACQUIRE) || m->pool != vk_pool_gen() || m->binst != g_draw_binst) return 0;
+static int set_memo_get(int st, vkshader_t *s, uint32_t *dofs, set_memo_t *m) {
+    if (m->epoch != g_set_epoch) { g_memo_reject[1]++; return 0; }
+    if (m->s != s) { g_memo_reject[2]++; return 0; }
+    if (m->bind != g_bind_gen[st]) { g_memo_reject[3]++; return 0; }
+    if (m->tex != g_tex_gen || m->samp != __atomic_load_n(&g_samp_gen, __ATOMIC_ACQUIRE) || m->pool != vk_pool_gen()) { g_memo_reject[4]++; return 0; }
+    if (m->binst != g_draw_binst) { g_memo_reject[5]++; return 0; }
     if (m->ubo != g_ubo_gen[st] || m->ubd != g_ubd_gen) {   // the constant buffers again: most draws move only their offsets
         for (int c = 0; c < m->ncb; c++) { VkDescriptorBufferInfo d; cbuf_desc(st, s, &s->b[m->ci[c]], &d);
-            if (d.buffer != m->cd[c].buffer || d.range != m->cd[c].range || (m->cpos[c] == 0xff && d.offset != m->cd[c].offset)) return 0;
+            if (d.buffer != m->cd[c].buffer || d.range != m->cd[c].range || (m->cpos[c] == 0xff && d.offset != m->cd[c].offset)) { g_memo_reject[6]++; return 0; }
             if (m->cpos[c] != 0xff) m->dofs[m->cpos[c]] = (uint32_t)d.offset; }
         m->ubo = g_ubo_gen[st]; m->ubd = g_ubd_gen; }
     memcpy(dofs, m->dofs, sizeof *dofs * (size_t)s->ndyn); g_num_um = m->um; g_num_im = m->im;
@@ -1234,9 +1251,12 @@ static VkDescriptorSet stage_set(int st, vkshader_t *s, uint32_t *dofs) {
         if (k == RK_SBUF || k == RK_SBUF_UBO || k == RK_IMG || k == RK_IMG_UBO || k == RK_IMG_TBUF) { vk_readback_unknown(); break; }
         if (d != RD_UBO && d != RD_SAMPLED && d != RD_TBUF && d != RD_IMAGE && d != RD_SAMPLER) { vk_readback_unknown(); break; }
     }
-    int memo = st < 3 && !g_x_nosetmemo && !g_tracing && !g_var_now && !g_x_nosetc && !g_x_nodrvc && !g_ubolog_key && g_td_off < 0 && set_memo_ok(s), verify = 0;
+    extern volatile int g_vk_samp_log;
+    int memo = st < 3 && !g_x_nosetmemo && !g_tracing && !g_var_now && !g_x_nosetc && !g_x_nodrvc && !g_ubolog_key && g_td_off < 0 && !g_x_listpasses && g_x_tracepass != -2 && !g_x_logfs && !(g_watch_off >= 0 && g_watch_n > 0) && g_vk_samp_log <= 0 && set_memo_ok(s), verify = 0;
+    set_memo_t *m = st < 3 ? &g_smemo[st][g_x_setmemo_one ? 0 : (unsigned)((s->key ^ (s->key >> 32) ^ g_draw_binst) & 7)] : NULL;
+    if (st < 3 && !memo) g_memo_reject[0]++;
     uint32_t vd[96]; uint64_t vum = 0, vim = 0;   // verify: what the memo gave
-    if (memo && set_memo_get(st, s, dofs)) { static unsigned nv; if (!g_x_setverify || ++nv % 64) { g_set_memo++; return g_smemo[st].set; }
+    if (memo && set_memo_get(st, s, dofs, m)) { static unsigned nv; if (!g_x_setverify || ++nv % 64) { g_set_memo++; g_memo_stage[st]++; return m->set; }
         verify = 1; memcpy(vd, dofs, sizeof *dofs * (size_t)s->ndyn); vum = g_num_um; vim = g_num_im; }
     uint64_t gtex = g_tex_gen, gsamp = __atomic_load_n(&g_samp_gen, __ATOMIC_ACQUIRE); uint32_t gpool = vk_pool_gen();   // before collecting: a change racing it (game thread) leaves the memo outdated
     VkDescriptorSet set = VK_NULL_HANDLE; struct { uint32_t b, o; int i; } dp[96]; int nd = 0; uint64_t tb0 = tick();
@@ -1358,7 +1378,12 @@ static VkDescriptorSet stage_set(int st, vkshader_t *s, uint32_t *dofs) {
     for (uint32_t i = 0; i < nw; i++) {
         const VkWriteDescriptorSet *x = &w[i]; h = fnv(h, &x->dstBinding, 4); h = fnv(h, &x->descriptorType, 4); h = fnv(h, &x->descriptorCount, 4);
         if (x->pBufferInfo) h = fnv(h, x->pBufferInfo, sizeof *x->pBufferInfo);
-        else if (x->pImageInfo) h = fnv(h, x->pImageInfo, sizeof *x->pImageInfo * x->descriptorCount);
+        else if (x->pImageInfo) for (uint32_t j = 0; j < x->descriptorCount; j++) {
+            const VkDescriptorImageInfo *d = &x->pImageInfo[j];
+            h = fnv(h, &d->sampler, sizeof d->sampler);
+            h = fnv(h, &d->imageView, sizeof d->imageView);
+            h = fnv(h, &d->imageLayout, sizeof d->imageLayout);
+        }
         else if (x->pTexelBufferView) h = fnv(h, x->pTexelBufferView, sizeof *x->pTexelBufferView);
     }
     unsigned k = (unsigned)(h % SETC); uint64_t tb2 = tick(); g_ns_set_hash += tb2 - tb1;
@@ -1369,10 +1394,10 @@ static VkDescriptorSet stage_set(int st, vkshader_t *s, uint32_t *dofs) {
         g_setc[k].h = h; g_setc[k].epoch = g_set_epoch; g_setc[k].l = s->dsl; g_setc[k].set = set; g_ns_set_new += tick() - tb2; }
     // verify: the same content (hash), integer-texel bindings and dynamic offsets as the memo gave. A lone difference in dofs alone can be a driver segment
     // copied again after its g_drvc entry was taken by another (the memo's copy is as good); anything repeated is a dependency the memo misses
-    if (verify && (h != g_smemo[st].h || g_num_um != vum || g_num_im != vim || memcmp(vd, dofs, sizeof *dofs * (size_t)s->ndyn))) { g_set_memo_bad++; static int n;
+    if (verify && (h != m->h || g_num_um != vum || g_num_im != vim || memcmp(vd, dofs, sizeof *dofs * (size_t)s->ndyn))) { g_set_memo_bad++; static int n;
         if (n++ < 20) VKLOG("[RED] descriptor set memo: stage %d shader %016llx: a fresh set differs from the memo's (hash %016llx / %016llx, um %#llx / %#llx, im %#llx / %#llx, dynamic offsets %s)", st, (unsigned long long)s->key,
-                            (unsigned long long)h, (unsigned long long)g_smemo[st].h, (unsigned long long)g_num_um, (unsigned long long)vum, (unsigned long long)g_num_im, (unsigned long long)vim, memcmp(vd, dofs, sizeof *dofs * (size_t)s->ndyn) ? "differ" : "same"); }
-    if (memo) { set_memo_t *m = &g_smemo[st];   // (set_memo_ok: at most MEMO_CB constant buffers)
+                            (unsigned long long)h, (unsigned long long)m->h, (unsigned long long)g_num_um, (unsigned long long)vum, (unsigned long long)g_num_im, (unsigned long long)vim, memcmp(vd, dofs, sizeof *dofs * (size_t)s->ndyn) ? "differ" : "same"); }
+    if (memo) {   // (set_memo_ok: at most MEMO_CB constant buffers)
         m->s = s; m->epoch = g_set_epoch; m->bind = g_bind_gen[st]; m->ubo = g_ubo_gen[st]; m->ubd = g_ubd_gen; m->tex = gtex; m->samp = gsamp; m->pool = gpool; m->binst = g_draw_binst;
         m->h = h; m->um = g_num_um; m->im = g_num_im; m->set = set; memcpy(m->dofs, dofs, sizeof *dofs * (size_t)s->ndyn); m->ncb = ncb; memcpy(m->ci, mci, (size_t)ncb); memcpy(m->cd, mcd, sizeof *mcd * (size_t)ncb);
         for (int c = 0; c < ncb; c++) { m->cpos[c] = 0xff; for (int j = 0; j < nd; j++) if (dp[j].i == mci[c]) m->cpos[c] = (uint8_t)j; } }
@@ -1549,8 +1574,15 @@ static int prepare_draw(int prim, int indexed) {
     // the last draw's set layouts and what vk_pipeline_layout made of them (it fills absent stages with the empty layout): its lock and hash took ~10% of the
     // replay thread on Unicorn Overlord's battle map. Pipeline layouts are never destroyed
     static VkDescriptorSetLayout l_in[5], l_out[5]; static int l_n = -1; static VkPipelineLayout l_lay; VkPipelineLayout layout;
+    static struct { VkDescriptorSetLayout in[5], out[5]; int n; VkPipelineLayout lay; } lm[16];
     if (nsets == l_n && !memcmp(dsl, l_in, sizeof l_in)) { memcpy(dsl, l_out, sizeof l_out); layout = l_lay; }
-    else { memcpy(l_in, dsl, sizeof l_in); l_n = nsets; layout = l_lay = vk_pipeline_layout(dsl, nsets); memcpy(l_out, dsl, sizeof l_out); }
+    else { unsigned h = (unsigned)nsets; for (int i = 0; i < 5; i++) { uintptr_t v = (uintptr_t)dsl[i]; h = h * 33u ^ (unsigned)(v >> 4) ^ (unsigned)(v >> 32); } h &= 15;
+        memcpy(l_in, dsl, sizeof l_in); l_n = nsets;
+        if (!g_x_nolayoutmemo && lm[h].lay && lm[h].n == nsets && !memcmp(dsl, lm[h].in, sizeof l_in)) {
+            g_memo_layout[0]++; memcpy(dsl, lm[h].out, sizeof l_out); layout = lm[h].lay;
+        } else { if (!g_x_nolayoutmemo) g_memo_layout[1]++; layout = vk_pipeline_layout(dsl, nsets);
+            if (!g_x_nolayoutmemo) { memcpy(lm[h].in, l_in, sizeof l_in); memcpy(lm[h].out, dsl, sizeof l_out); lm[h].n = nsets; lm[h].lay = layout; } }
+        l_lay = layout; memcpy(l_out, dsl, sizeof l_out); }
     // descriptor sets first: the views they are given decide which shader variants the pipeline takes (integer texels, vk_shader_module)
     g_var_now = var;
     VkDescriptorSet sets[5] = {0};
