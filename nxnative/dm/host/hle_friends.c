@@ -2,6 +2,7 @@
 // Not cut: the getters of Friend / Profile / FriendPresence and the constructors of Friend / Profile / UserPresence (they only read and write the game's own objects and do not go through the service).
 // Return convention: Result returns RES_FAIL; bool returns false; event pointers get a SystemEvent that is bound to a kernel event and never fires.
 #include "hle.h"
+int dm_lan_on(void);   // hle_ldn.c: local play over the LAN (DM_LAN)
 
 // Notification event that never fires (GetSystemEvent-style calls return a pointer; bound on the guest thread on first use)
 static _Alignas(16) uint8_t g_ev_notify[0x100], g_ev_invite[0x100];
@@ -27,9 +28,16 @@ HLE_FORCE("_ZN2nn7friends14GetProfileListEPNS0_12AsyncContextEPNS0_7ProfileERKNS
 HLE_FORCE("_ZN2nn7friends16UpdateFriendInfoEPNS0_6FriendERKNS_7account3UidEPKNS3_23NetworkServiceAccountIdEi", "friend info update fails (cut)",
           Result, h_fr_UpdateFriendInfo, void *f, const void *uid, const void *ids, int n) { (void)f; (void)uid; (void)ids; (void)n; return RES_FAIL; }
 HLE_FORCE("_ZN2nn7friends14AddPlayHistoryERKNS0_26PlayHistoryRegistrationKeyERKNS0_15InAppScreenNameES6_", "play history is not registered (cut)",
-          Result, h_fr_AddPlayHistory, const void *k, const void *a, const void *b) { (void)k; (void)a; (void)b; return RES_FAIL; }
-HLE_FORCE("_ZN2nn7friends29GetPlayHistoryRegistrationKeyEPNS0_26PlayHistoryRegistrationKeyERKNS_7account3UidEb", "play history key unavailable (cut)",
-          Result, h_fr_GetPHKey, void *k, const void *uid, int local) { (void)k; (void)uid; (void)local; return RES_FAIL; }
+          Result, h_fr_AddPlayHistory, const void *k, const void *a, const void *b) { (void)k; (void)a; (void)b; return dm_lan_on() ? RES_OK : RES_FAIL; }
+// The play history key: on a Switch made locally, without the network, and a game in local play asks for it to exchange with the others (Animal Crossing:
+// New Horizons ended its local-play session with "A communication error has occurred" when it failed). With local play over the LAN on (DM_LAN) it is made as
+// Ryujinx makes it: 0x40 bytes, u16 type 0x101, a key index, the local flag, the user ID at +0x10; the 32-byte MAC at +0x20 stays zero (no friends service checks it here)
+HLE_FORCE("_ZN2nn7friends29GetPlayHistoryRegistrationKeyEPNS0_26PlayHistoryRegistrationKeyERKNS_7account3UidEb", "play history key: made locally with local play over the LAN on, else unavailable (cut)",
+          Result, h_fr_GetPHKey, uint8_t *k, const uint8_t *uid, int local) {
+    if (!dm_lan_on() || !k) return RES_FAIL;
+    memset(k, 0, 0x40); k[0] = 0x01; k[1] = 0x01; k[2] = 0x2a; k[4] = local & 1; if (uid) memcpy(k + 0x10, uid, 0x10);
+    return RES_OK;
+}
 // Notification queue
 HLE_FORCE("_ZN2nn7friends17NotificationQueueC1Ev", "notification queue creates no session (cut)", void, h_fr_NqCtor, void *self) { (void)self; }
 HLE_FORCE("_ZN2nn7friends17NotificationQueueD1Ev", "notification queue has no session to close (cut)", void, h_fr_NqDtor, void *self) { (void)self; }

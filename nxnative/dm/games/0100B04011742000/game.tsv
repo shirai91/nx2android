@@ -33,6 +33,9 @@ zip_store	.pak:.metallib
 # from guest memory (without these keys the cursor highlight composited black on black and the menus looked frozen)
 tex_flush_upload	on
 tex_dirty_upload	on
+# Android: its decal, transparent and effect passes order fragments (barrier 0x2) between almost every draw on the 960x540 scene; each barrier ending the pass stored and
+# loaded the scene's three attachments on the RP5's tiled GPU (98 of 182 passes a frame). The pass stays open where the next draw does not need the barrier (android/gfx_vk_exec.c)
+order_keep	on
 # 60 fps (30 on the Switch): the host raises RE Engine's frame limit from 30 to 60 (hle_fpslock.c, FPSLocker's address for this build); the game still asks for present interval 2,
 # which display mode ignores. The game steps by the time that really passed. DM_FPS_TARGET=30 (Documents/env.txt on the iPhone) keeps 30 and saves power
 fps_target	60

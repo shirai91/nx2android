@@ -1,0 +1,36 @@
+# Picross S+ 1.0.1: generated survey profile, validated on Retroid Pocket 6.
+# Picross S＋, SDK 16, survey <NSP folder>/0100D7B01AE58000_survey/survey.md
+
+# ---- Identity ----
+title_id	0100D7B01AE58000
+program_id	0100D7B01AE58000
+
+# ---- App ----
+name	Picross S＋
+ipa	PicrossS.ipa
+app_category	public.app-category.games
+
+# ---- Versions ----
+build	v65536	1.0.1	main=5eb832c899625df5b6bbe8aea93d073c	subsdk0=ff0149d0b5e882b87c2f06a981302b13	sdk=3053b22935e32ddf15ef81997603e5c2
+package	v65536
+shader_versions	v65536
+
+# ---- Files ----
+# every module main imports from
+modules	main subsdk0 sdk
+romfs_marker	Data/sharedassets0.assets
+zip_store	.assets:.dat:.ress:.metallib
+
+# ---- Memory ----
+# the NPDM declares 16 MB of system resource (virtual address memory) and main sets a heap: a 5 GB block with a large alias region; the heap check sizes the heap region from the heap the game asks for
+# porter: 8 GB more alias region than the tested build's (0x118000000), and the block with it, for this build's address regions
+mem_reserve	0x340000000
+mem_alias	0x318000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+# the NPDM declares 16 MB of system resource
+sys_resource	0x1000000
+
+# ---- Shader split ----
+shader_groups	/Data/=data
+shader_note	Picross S＋ shaders (provisional profile)

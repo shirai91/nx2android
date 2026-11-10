@@ -6,14 +6,14 @@ Left out because they have an official Android release: Unpacking (ported here a
 
 "Profile here": `nxnative/dm/games/<title ID>/` has the game's profile from nxnative. "Upstream profile": only seedds/nxnative has one, to read as a reference or starter, not to pull. "60 fps with X" is upstream's note: they run that update at 60 fps (30 on the Switch).
 
-**35 / 101 ported**
+**42 / 102 ported**
 
 - [x] 13 Sentinels: Aegis Rim · `01003FC01670C000`
 - [ ] Ace Attorney Investigations Collection · `010005501E68C000` · profile here
 - [x] Advance Wars 1+2: Re-Boot Camp · `0100300012F2A000`
 - [ ] AI: THE SOMNIUM FILES · `010089B00D09C000` · profile here
 - [ ] AI: THE SOMNIUM FILES - nirvanA Initiative · `0100713016CCC000` · profile here
-- [ ] Animal Crossing: New Horizons · `01006F8002326000` · profile here
+- [x] Animal Crossing: New Horizons · `01006F8002326000`
 - [ ] ANIMAL WELL · `010020D01AD24000` · profile here
 - [ ] ASTRAL CHAIN · `01007300020FA000` · upstream profile · 60 fps target with 1.0.1
 - [ ] Bastion · `010038600B27E000` · upstream profile · iPhone only
@@ -48,7 +48,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [x] Hades II · `0100A00019DE0000`
 - [x] Hollow Knight: Silksong · `010013C00E930000`
 - [ ] Hyrule Warriors: Age of Calamity · `01002B00111A2000` · profile here · 60 fps with 1.3.0
-- [ ] Kirby and the Forgotten Land · `01004D300C5AE000` · upstream profile
+- [x] Kirby and the Forgotten Land · `01004D300C5AE000`
 - [x] Lonely Mountains: Downhill · `0100A0C00E0DE000` · Retroid Pocket 6 / PurpleVK; brief visual glitches
 - [ ] Luigi's Mansion 3 · `0100DCA0064A6000` · profile here · 60 fps with 1.4.0
 - [ ] Mario + Rabbids Kingdom Battle · `010067300059A000` · upstream profile
@@ -61,18 +61,19 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [x] NEO: The World Ends with You · `010043B013C5C000`
 - [ ] NieR:Automata The End of YoRHa Edition · `010056B015FE8000` · upstream profile · 60 fps with 1.0.3
 - [ ] OCTOPATH TRAVELER · `010057D006492000` · upstream profile
-- [ ] Octopath Traveler 0 · `01005270232F2000` · profile here · 60 fps with 1.0.5
+- [x] Octopath Traveler 0 · `01005270232F2000`
 - [ ] Octopath Traveler II · `0100A3501946E000` · upstream profile · 60 fps with 1.1.1
 - [x] Paper Mario: The Origami King · `0100A3900C3E2000`
 - [x] Paper Mario: The Thousand-Year Door · `0100ECD018EBE000`
 - [ ] Patrick's Parabox · `0100E44016C22000` · profile here
 - [ ] Persona 4 Golden · `010062B01525C000` · upstream profile
 - [ ] Persona 5 Royal · `01005CA01580E000` · upstream profile
+- [x] Picross S+ · `0100D7B01AE58000` · update 1.0.1; RP6 / PurpleVK only; Pixel rendering issues
 - [ ] Pikmin 4 · `0100B7C00933A000` · upstream profile
 - [ ] Pokémon Brilliant Diamond · `0100000011D90000` · upstream profile · 60 fps with 1.3.0
 - [x] Pokémon Legends: Arceus · `01001F5010DFA000`
 - [x] Pokémon Legends: Z-A · `0100F43008C44000`
-- [ ] Pokémon Scarlet · `0100A3D008C5C000` · upstream profile
+- [x] Pokémon Scarlet · `0100A3D008C5C000`
 - [ ] Pokémon Shield · `01008DB008C2C000` · upstream profile
 - [ ] Pokémon Sword · `0100ABF008968000` · upstream profile
 - [ ] Portal · `01007BB017812000` · upstream profile · Android only on NVIDIA Shield TV
@@ -84,7 +85,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [x] South Park™: The Stick Of Truth™ · `010043600B6A6000` · needs a Vulkan 1.3 driver or imageless framebuffers with render pass 2 (Turnip packed on the Adreno 640)
 - [ ] SteamWorld Heist II · `010089C01E9CA000` · upstream profile
 - [ ] STEINS;GATE RE:BOOT · `01008BC024FDE000` · profile here
-- [ ] Super Mario 3D World + Bowser's Fury · `010028600EBDA000` · profile here
+- [x] Super Mario 3D World + Bowser's Fury · `010028600EBDA000`
 - [x] Super Mario Bros. Wonder · `010015100B514000`
 - [ ] Super Mario Galaxy · `010099C022B96000` · profile here
 - [ ] Super Mario Galaxy 2 · `0100FD8022DAA000` · profile here
@@ -95,7 +96,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [x] Tales of Eternia Remastered · `010006E0230AC000`
 - [ ] The Great Ace Attorney Chronicles · `010036E00FB20000` · profile here
 - [ ] The Legend of Zelda: Breath of the Wild · `01007EF00011E000` · profile here · 60 fps with 1.9.0
-- [ ] The Legend of Zelda: Echoes of Wisdom · `01008CF01BAAC000` · upstream profile
+- [x] The Legend of Zelda: Echoes of Wisdom · `01008CF01BAAC000` · Retroid Pocket 6 / PurpleVK; playable with minor transparency artifacts around rifts
 - [ ] The Legend of Zelda: Link's Awakening · `01006BB00C6F0000` · profile here
 - [x] The Legend of Zelda: Tears of the Kingdom · `0100F2C0115B6000`
 - [x] The World Ends with You -Final Remix- · `0100C1500B82E000`

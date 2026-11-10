@@ -6,6 +6,8 @@ import tempfile
 import unittest
 
 from porter.toolchain import find_ndk
+import sys; sys.path.insert(0, str(Path(__file__).resolve().parent))
+import host_cc   # noqa: E402
 
 
 class CopyBack(unittest.TestCase):
@@ -47,7 +49,7 @@ int main(void) {
             subprocess.run(['cc', '-std=gnu11', '-Wall', '-Wextra', '-Werror', '-idirafter', str(headers), str(c), '-o', str(exe)], check=True)
             subprocess.run([str(exe)], check=True, timeout=15)
 
-    @unittest.skipUnless(shutil.which('cc'), 'a host C compiler is required')
+    @unittest.skipUnless(host_cc.posix(), 'a POSIX host C compiler is required (<sys/mman.h>, pthread, setenv)')
     def test_protected_pools(self):
         dm = Path(__file__).resolve().parents[1] / 'nxnative/dm'
         dirty = (dm / 'gfx/nvn/nvn_dirty.c').read_text()
@@ -148,6 +150,7 @@ static void *snapshot_memcpy(void *dst, const void *src, size_t n) {
     if (b && a>=b && a-b<g_pool[0].hi-g_pool[0].lo) snapshot_bytes+=n;
     return memcpy(dst,src,n);
 }
+#undef memcpy // macOS headers may provide a fortified memcpy macro
 #define memcpy snapshot_memcpy
 SYNC
 #undef memcpy
@@ -157,15 +160,33 @@ static void handle_fault(int sig, siginfo_t *info, void *uc) {
     if (++calls > 32) _exit(77); // bound the old repeated-fault failure
     (void)sig; if (!fault_hook(info->si_addr, 1, uc)) _exit(99);
 }
-static pthread_barrier_t cpu_start, cpu_done;
+// A reusable two-thread rendezvous; macOS has no pthread_barrier_t.
+typedef struct { pthread_mutex_t mu; pthread_cond_t cv; unsigned waiting, generation; } test_barrier_t;
+#define TEST_BARRIER_INIT { PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER, 0, 0 }
+static test_barrier_t cpu_start = TEST_BARRIER_INIT, cpu_done = TEST_BARRIER_INIT;
+static void test_barrier_wait(test_barrier_t *b) {
+    assert(!pthread_mutex_lock(&b->mu));
+    unsigned generation = b->generation;
+    if (++b->waiting == 2) {
+        b->waiting = 0; b->generation++;
+        assert(!pthread_cond_broadcast(&b->cv));
+    } else {
+        while (generation == b->generation) assert(!pthread_cond_wait(&b->cv, &b->mu));
+    }
+    assert(!pthread_mutex_unlock(&b->mu));
+}
+static void test_barrier_destroy(test_barrier_t *b) {
+    assert(!pthread_cond_destroy(&b->cv)); assert(!pthread_mutex_destroy(&b->mu));
+}
 static void *cpu_writer(void *arg) {
     volatile uint8_t *mem = arg;
-    for (int i=0;i<8;i++) { pthread_barrier_wait(&cpu_start); mem[16]=(uint8_t)(9+i); pthread_barrier_wait(&cpu_done); }
+    for (int i=0;i<8;i++) { test_barrier_wait(&cpu_start); mem[16]=(uint8_t)(9+i); test_barrier_wait(&cpu_done); }
     return NULL;
 }
 int main(int argc, char **argv) {
     struct sigaction sa = {.sa_sigaction = handle_fault, .sa_flags = SA_SIGINFO};
     sigemptyset(&sa.sa_mask); assert(sigaction(SIGSEGV, &sa, NULL) == 0);
+    assert(sigaction(SIGBUS, &sa, NULL) == 0); // macOS reports protected-page writes as SIGBUS
     size_t pg = (size_t)getpagesize(), size = pg * (argc>1 && atoi(argv[1])>=10 ? 40 : 4);
     uint8_t *mem = mmap(NULL, size * 5, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     assert(mem != MAP_FAILED); memset(mem, 11, size * 5);
@@ -339,16 +360,15 @@ int main(int argc, char **argv) {
                 free(baseline); free(shadow); assert(!munmap(mem,size*5)); return 0;
             }
             if (mode == 9) {
-                assert(!pthread_barrier_init(&cpu_start,NULL,2) && !pthread_barrier_init(&cpu_done,NULL,2));
                 pthread_t cpu; assert(!pthread_create(&cpu,NULL,cpu_writer,mem));
                 struct vksub s = {0};
                 for (int i=0;i<8;i++) {
                     if (i) vk_pools_sync_(NULL);
-                    pthread_barrier_wait(&cpu_start); pthread_barrier_wait(&cpu_done);
+                    test_barrier_wait(&cpu_start); test_barrier_wait(&cpu_done);
                     shadow[0]=(uint8_t)(31+i); pools_copy_back(&s);
                     assert(mem[0]==(uint8_t)(31+i) && mem[16]==(uint8_t)(9+i));
                 }
-                assert(!pthread_join(cpu,NULL)); pthread_barrier_destroy(&cpu_start); pthread_barrier_destroy(&cpu_done);
+                assert(!pthread_join(cpu,NULL)); test_barrier_destroy(&cpu_start); test_barrier_destroy(&cpu_done);
                 free(baseline); free(shadow); assert(!munmap(mem,size*5)); return 0;
             }
             // CPU changes bytes the GPU does not write, including bytes in the same cache line.

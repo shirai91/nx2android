@@ -472,20 +472,36 @@ class Port:
             jf.seek(4); jf.write(struct.pack('<I', len(recs)))
         PROG.set(step=f"the game's Oodle decoder on the device: {len(recs):,} entries, {job.stat().st_size / 2**30:.1f} GB")
         self.device_oodle_job(job, tmp / 'job.out', bnsh=True)
-        b = (tmp / 'job.out').read_bytes(); nsp.rmtree(tmp / 'job.out')
-        if b[:4] != b'DMOR' or struct.unpack_from('<I', b, 4)[0] != len(recs): raise BuildError("the game's Oodle decoder on the device answered for other entries than it was given")
-        by, o = {}, 8   # label → (size, {index: bytes})
-        for label, size, i in recs:
-            n = struct.unpack_from('<I', b, o)[0]; o += 4
-            ent = by.setdefault(label, (size, {}))[1]
-            if n == 0xffffffff: continue
-            if n == 0: raise BuildError(f"the game's Oodle decoder on the device failed on {label} entry {i}")
-            ent[i] = b[o:o + n]; o += n
-        dec = tmp / 'decoded'; dec.mkdir()
-        for label, (size, ent) in by.items():
-            if label.endswith('.trpfs'): body, magic = b''.join(struct.pack('<QII', off, k, len(x)) + x for (off, k), x in sorted(ent.items())), b'DTPD'
-            else: body, magic = b''.join(struct.pack('<II', i, len(x)) + x for i, x in sorted(ent.items())), b'DGFD'
-            (dec / (label.lstrip('/').replace('/', '__') + '.dec')).write_bytes(magic + struct.pack('<QI', size, len(ent)) + body)
+        # Index result ranges, not their payloads: read_bytes + entry slices + joins held several copies of the decoded shaders in RAM.
+        # Check every record before writing a decoded archive; a short last payload used to be silently accepted by a bytes slice.
+        by = {}   # label → (archive size, {index: (offset in job.out, length)})
+        with (tmp / 'job.out').open('rb') as result:
+            total = os.fstat(result.fileno()).st_size; head = result.read(8)
+            if len(head) != 8 or head[:4] != b'DMOR' or struct.unpack_from('<I', head, 4)[0] != len(recs):
+                raise BuildError("the game's Oodle decoder on the device answered for other entries than it was given")
+            for label, size, i in recs:
+                word = result.read(4)
+                if len(word) != 4: raise BuildError(f"the game's Oodle decoder on the device returned a truncated result for {label} entry {i}")
+                n = struct.unpack('<I', word)[0]
+                ent = by.setdefault(label, (size, {}))[1]
+                if n == 0xffffffff: continue
+                if n == 0: raise BuildError(f"the game's Oodle decoder on the device failed on {label} entry {i}")
+                off = result.tell()
+                if n > total - off: raise BuildError(f"the game's Oodle decoder on the device returned a truncated result for {label} entry {i}")
+                ent[i] = (off, n); result.seek(n, os.SEEK_CUR)
+            dec = tmp / 'decoded'; dec.mkdir()
+            for label, (size, ent) in by.items():
+                trpfs = label.endswith('.trpfs')
+                with (dec / (label.lstrip('/').replace('/', '__') + '.dec')).open('wb') as out:
+                    out.write((b'DTPD' if trpfs else b'DGFD') + struct.pack('<QI', size, len(ent)))
+                    for i, (off, n) in sorted(ent.items()):
+                        out.write(struct.pack('<QII', *i, n) if trpfs else struct.pack('<II', i, n))
+                        result.seek(off)
+                        while n:
+                            chunk = result.read(min(n, 1 << 20))
+                            if not chunk: raise BuildError(f"the game's Oodle decoder on the device returned a truncated result for {label} entry {i}")
+                            out.write(chunk); n -= len(chunk)
+        nsp.rmtree(tmp / 'job.out')
         say(f"shaders in Oodle-compressed archives ({self.oodle_why}): {len(recs):,} entries decoded by the game's own decoder on the device, "
             f"{sum(len(e) for _, e in by.values()):,} of them hold shaders")
         return {'DM_GFPAK_DECODED': str(dec)}
@@ -587,13 +603,13 @@ class Port:
         PROG.set(step='fetching the FPSLocker-Warehouse config')
         try: text = fpslocker.fetch(self.g.id, bid)
         except OSError as e:
-            if not cache.is_file(): say(f'[RED] 60 fps: {src} could not be fetched ({e}): the game keeps its own frame rate'); PROG.end('not fetched: the game keeps its own frame rate'); return
+            if not cache.is_file(): say(f'[RED] 60 fps: {src} could not be fetched ({e}): no FPSLocker config applied; built-in profile patches are unaffected'); PROG.end('external config not fetched; built-in patches unaffected'); return
             text = cache.read_text(encoding='utf-8'); say(f'[RED] 60 fps: {src} could not be fetched ({e}): using the copy fetched before')
         if text is None:
-            nsp.rmtree(cache); say(f'60 fps: FPSLocker-Warehouse has no config for main build {bid[:16].upper()}: the game keeps its own frame rate'); PROG.end('no config for this build'); return
+            nsp.rmtree(cache); say(f'60 fps: FPSLocker-Warehouse has no config for main build {bid[:16].upper()}: no FPSLocker config applied; built-in profile patches are unaffected'); PROG.end('no external config for this build; built-in patches unaffected'); return
         cache.write_text(text, encoding='utf-8')
         try: tsv, cuts = fpslocker.convert(text, img, bid, src)
-        except fpslocker.Refused as e: say(f'[RED] 60 fps: {src} cannot be applied ({e}): the game keeps its own frame rate'); PROG.end('config not applicable: the game keeps its own frame rate'); return
+        except fpslocker.Refused as e: say(f'[RED] 60 fps: {src} cannot be applied ({e}): no FPSLocker config applied; built-in profile patches are unaffected'); PROG.end('external config not applicable; built-in patches unaffected'); return
         (d / 'fpslock.tsv').write_text(tsv, encoding='utf-8', newline='\n')
         if cuts:   # code bytes: the rewriter's cuts, applied before it rewrites main (patch_nso.py DM_PATCHES_EXTRA; part of the rewrite's reuse key)
             (d / 'patches.py').write_text(fpslocker.patches_py(bid, cuts, src), encoding='utf-8', newline='\n'); self.env['DM_PATCHES_EXTRA'] = str(d / 'patches.py')

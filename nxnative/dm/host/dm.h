@@ -128,6 +128,7 @@ extern struct dm_flags { int thr, svc, fs, movie, dbg, imports, bootprof; } g_fl
 void *objmap_get(const void *guest); void objmap_put(const void *guest, void *host); void *objmap_del(const void *guest);
 void hle_signal_system_event(void *g);   // hle_thread.c: signal a service-layer SystemEvent (any thread)
 void hle_bind_system_event(void *g, int autoclear);   // On a guest thread, bind a guest SystemEvent to a kernel event
+void hle_rebind_system_event(void *g, int autoclear);   // the same, dropping a binding this address had (a struct reused without being destroyed)
 void hle_clear_system_event(void *g);    // hle_thread.c: clear a bound service-layer SystemEvent (any thread)
 int hle_signal_bound_system_event(void *g);   // hle_thread.c: signal a service-layer SystemEvent only if it is bound (any thread); 0 when it is not
 // Page fault hook / hook before the host writes guest memory (crash.c; used for write-protect dirty page tracking)

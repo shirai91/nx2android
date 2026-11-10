@@ -16,6 +16,14 @@
 # GPU count readback, occlusion (only timestamps and SAMPLES_PASSED, answered as visible), the frame rate (DM_FPS_TARGET=30), handheld mode, Niagara's culling switches
 # (visibility, distance, instance count and global budget culling written to 0 from the title, main+0x779eca8 / 0x779ecac / 0x779ecb0 / 0x779ec74, with DM_CTL pokei).
 # The game ignores command-line console variables (a shipping build: -dpcvars and -ini: through DM_GAME_ARGS_ADD changed nothing, r.ScreenPercentage included).
+# First road, standing still (2026-11-06, docked): patches of fog on the road lit and went dark in turn. Its lights go into 32x32x32 volumes drawn slice by slice
+# with additive blending; the core cleared only slice 0 of a layered pass, so the fog boxes that read them (1300ca45ddca3566) changed every frame: fixed in the core
+# (gfx_vk_exec.c clear_color, every layer cleared; same on Qualcomm's driver and Turnip). The patches still went on and off after that (2026-11-08: two exact
+# states, 37-56% of frames changed): each fog box's vertex shader reads its primitive from a table that a GPU radix sort builds every frame (a960d729840ecac2 clear,
+# c0a487a5afca4bb9 histogram, 5854663e6002c250 scan, 98dee7b8a8eb9f9f scatter, 6 passes of 4 bits), and the translated scan and scatter read back a word they had
+# just stored: the 32nd lane's prefix came out twice the 31st's, so the sort lost keys and the boxes drew from wrong entries in the frames whose batch order put
+# them behind a big batch. Fixed in the translator (AstOptimizer: a load of writable memory is never moved to its use); after: 0 changes in 900 frames standing,
+# 0 spike frames in 360 frames walking, the boxes drawn in every frame (DM_VK_X_FLAT_VS). Found by running Ryujinx's GLSL of the same jobs in a SIMT emulator.
 status	playable
 tested	v65536 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
 package	org.nx2a.finalfantasyresonance

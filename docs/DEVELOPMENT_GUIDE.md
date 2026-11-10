@@ -20,6 +20,10 @@ python -m gui
 
 Check the **Setup** tab, choose the game's folder (the base game NSP, XCI, NSZ or XCZ, its update and DLC) on the **Port** tab, and click **Port**.
 
+Keep the base game, update and DLC in separate files. When a dump's tickets or readable
+content-meta headers identify several titles in one file, porter warns which title it selects
+and which embedded titles it will not select as updates or DLC. It does not split merged dumps.
+
 Or the command line:
 
 ```
@@ -40,6 +44,17 @@ python -m porter saves import "D:\Backups\Celeste\20261030-141200"
 ```
 
 How the export folders are laid out: [ARCHITECTURE.md](ARCHITECTURE.md#saves).
+
+### Vulkan driver
+
+`porter driver` changes the Vulkan driver of a port already on the device, without the game's files: the app's APK is rebuilt with the library and installed over it (the saves stay), and its `env.txt` names it. The app must have been ported with `--vulkan-driver` once (that build carries libadrenotools, which loads the driver):
+
+```
+python -m porter driver "D:\Drivers\libvulkan_freedreno.so" --package org.nx2a.supermario3dworld
+python -m porter driver --system --package org.nx2a.supermario3dworld
+```
+
+`--system` goes back to the device's own driver. How it works: [ARCHITECTURE.md](ARCHITECTURE.md#the-port).
 
 ## Layout
 
@@ -69,13 +84,53 @@ python packaging/build_bundle.py
 
 On Windows, `build_bootloader.py` compiles PyInstaller's launcher on this PC (it needs the Microsoft C++ Build Tools), because a few antivirus engines flag the prebuilt one every PyInstaller app shares. Run it again after installing or upgrading PyInstaller.
 
-`dist/nx2android/` and `dist/nx2android-<version>-<os>-<cpu>.zip` (`windows-x64`, `macos-arm64`): the app, the committed `nxnative/` and the install guide; no toolchains, keys or game files. Publishing a release builds the macOS and Windows zips on GitHub's runners and attaches them (`.github/workflows/release-macos.yml`, `release-windows.yml`; `--clobber` replaces a zip of the same name, so do not upload them by hand). Run either workflow by hand (Actions → Run workflow) for a test build of a branch, kept as the run's artifact.
+`dist/nx2android/` and `dist/nx2android-<version>-<os>-<cpu>.zip` (`windows-x64`, `macos-arm64`, `linux-x64`, `linux-arm64`): the app, the committed `nxnative/` and the install guide; no toolchains, keys or game files. Publishing a release builds the macOS, Windows and Linux zips on GitHub's runners and attaches them (`.github/workflows/release-macos.yml`, `release-windows.yml`, `release-linux.yml`, which builds both Linux cpus on Ubuntu 24.04 (`ubuntu-latest` for x64, so the system libraries the bundle carries are never older than glibc 2.39); `--clobber` replaces a zip of the same name, so do not upload them by hand). Run either workflow by hand (Actions → Run workflow) for a test build of a branch, kept as the run's artifact.
+
+## Android motion
+
+The default accelerometer shake detector still sends `DM_BTN_SHAKE` on devices
+with or without a gyroscope. Ordinary gyro aiming below the shake threshold is
+unchanged. `DM_MOTION_RAW=1` in `env.txt` opts in to keeping measured acceleration
+and angular velocity during strong flicks instead of replacing them with the
+fixed shake waveform. A game profile can supply the same setting through an
+`env` row in `android.tsv` (see [Game profiles on Android](ARCHITECTURE.md#game-profiles-on-android)).
+No profile enables it by default.
+
+The opt-in requires an active gyroscope; without one, or with `DM_MOTION=0`, the
+synthetic shake fallback remains. Explicit controller/keyboard `Shake` always
+overrides raw motion. Physical Android validation of Super Mario Odyssey hand
+and directional cap throws and Tears of the Kingdom bow aiming is still required
+before enabling the opt-in in a profile. Host sensor tests verify routing and
+axis preservation, not game recognition or device behavior.
 
 ## Tests
 
 ```
 python -m unittest discover tests
 ```
+
+The Vulkan-header harnesses need a discoverable NDK; set `ANDROID_NDK_HOME`
+when it is not found automatically. They skip if no NDK headers are found.
+The protected-pool harness uses real page protection
+and a mutex/condition-variable rendezvous on macOS and Linux, handling each
+platform's protection-fault signal. The zero-copy diagnostics fixture forces
+slab and reuse-cache misses to exercise allocation/import failure cleanup; it
+does not validate the slab or reuse-cache implementations.
+
+`test_descriptor_hash` exercises the Vulkan descriptor hash and reuse path with
+different C padding bytes but identical image fields. Image keys include each
+array element's sampler, view and layout as explicit words; padding cannot force
+another descriptor allocation. Reuse still compares the hash, layout and
+submission epoch, without a full-content collision check.
+
+`test_dmsv` checks both shader-bundle versions and the native reader. Publication
+uses a unique staging directory beside the destination, flushes the file, verifies
+every shader and reflection payload, then atomically replaces the destination.
+Injected write, sync, readback and replacement failures leave the previous bundle
+intact and clean up staging; concurrent writers cannot overwrite each other's
+scratch files. The same contract applies to direct shader exports and CLI repacks.
+This protects completed file publication, not power-loss durability of the parent
+directory or semantic SPIR-V validation.
 
 `test_vk_copy_back` exercises protected guest memory with the real dirty-page tracker: preserving independent CPU writes in the same cache line, successive submissions and snapshot initialization, cached/uncached and untracked pools, 200 partial/unaligned/overlapping range cases, and writes from another CPU thread. It also injects failed and partially successful bulk `mprotect` calls; a bulk unprotect failure stops the host with a `[RED]` message before publishing writable page states or continuing the copy. It also checks snapshot copy volume across clean and dirty 64 KB blocks, a partial tail, and full versus partial completion merges. These CPU tests do not establish correct rendering on a device.
 

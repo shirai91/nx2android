@@ -407,14 +407,18 @@ void vk_tex_sweep(void) {
     if ((idle || lru) && (g_tex_frame % 3000 == 0 || lru)) VKLOG("packaged textures: %llu not drawn for %d presents and %llu least recently drawn released their write protection (%llu pages; %llu so far); %d protected runs",
                     (unsigned long long)idle, PKG_IDLE, (unsigned long long)lru, (unsigned long long)(nvn_dirty_released() - before), (unsigned long long)total, runs);
 }
+// The keys are gathered first, 64 a pass, then deleted (a delete rehashes the table): a rescan from the start after each delete went over the whole table once per image,
+// under the lock the replay's texture lookups take, for each of the pools Pokémon Scarlet drops while a capture loads
 void vk_tex_drop_pool(const void *pool) {   // the pool is finalized: its textures' images go once the GPU is done with them
     pthread_mutex_lock(&g_img_mu);
-    for (uint32_t i = 0; i < g_by_key.cap; i++) {
-        if (!g_by_key.vals[i]) continue;
-        akey k; memcpy(&k, g_by_key.keys + (size_t)i * g_by_key.klen, sizeof k);
-        if (k.pool != (uint64_t)(uintptr_t)pool) continue;
-        vkimg_t *im = g_by_key.vals[i]; nvn_hm_del(&g_by_key, &k); i = (uint32_t)-1;   // the table was rehashed by the delete: rescan
-        img_drop(im);
+    for (int n = 64; n == 64;) {
+        akey ks[64]; n = 0;
+        for (uint32_t i = 0; i < g_by_key.cap && n < 64; i++) {
+            if (!g_by_key.vals[i]) continue;
+            memcpy(&ks[n], g_by_key.keys + (size_t)i * g_by_key.klen, sizeof ks[n]);
+            if (ks[n].pool == (uint64_t)(uintptr_t)pool) n++;
+        }
+        for (int j = 0; j < n; j++) { vkimg_t *im = nvn_hm_get(&g_by_key, &ks[j]); if (!im) continue; nvn_hm_del(&g_by_key, &ks[j]); img_drop(im); }
     }
     pthread_mutex_unlock(&g_img_mu);
 }
@@ -478,7 +482,30 @@ static int packaged_tex(const tex_t *t) {
     return r;
 }
 void mtl_tex_init(const tex_t *t) { (void)t; }
-void mtl_tex_release(tex_t *t) { (void)t; }   // images belong to their storage key, dropped with the pool
+// A released serial's mark goes once no queued job can still bind it: under asynchronous replay (nvn_jobs_queued, hle_nvn.c) a texture Finalized between submit and replay is still
+// drawn by that submission, whose first use of it decides its content, and a mark deleted at once would have made it a GPU-only image of zeros there. The deletion waits for the
+// replay of the first job queued after the release (vk_tex_release_drain, from vk_exec_reset); without a replay thread it is at once
+uint64_t nvn_jobs_queued(void); uint64_t nvn_replaying_job(void);
+typedef struct { uint64_t serial, seq; } cwrel_t;
+static cwrel_t *g_cwrel; static int g_ncwrel, g_capcwrel;   // under g_cw_mu
+void mtl_tex_release(tex_t *t) {   // images belong to their storage key, dropped with the pool; the serial's CPU-written mark goes (serials are never reused: kept, the table grew by one entry per CPU-written texture made)
+    if (!t->serial) return;
+    uint64_t seq = nvn_jobs_queued();
+    pthread_mutex_lock(&g_cw_mu);
+    if (!seq) nvn_hm_del(&g_cpu_written, &t->serial);
+    else if (nvn_hm_get(&g_cpu_written, &t->serial)) {
+        if (g_ncwrel == g_capcwrel) { g_capcwrel = g_capcwrel ? 2 * g_capcwrel : 256; g_cwrel = realloc(g_cwrel, sizeof *g_cwrel * (size_t)g_capcwrel); if (!g_cwrel) die("[vk] texture release list allocation failed"); }
+        g_cwrel[g_ncwrel++] = (cwrel_t){t->serial, seq};
+    }
+    pthread_mutex_unlock(&g_cw_mu);
+}
+void vk_tex_release_drain(void) {   // the replay thread, at each submission (vk_exec_reset): the releases made before the job being replayed was queued
+    uint64_t job = nvn_replaying_job(); if (!job) return;
+    pthread_mutex_lock(&g_cw_mu);
+    int o = 0; for (int i = 0; i < g_ncwrel; i++) { if (g_cwrel[i].seq < job) nvn_hm_del(&g_cpu_written, &g_cwrel[i].serial); else g_cwrel[o++] = g_cwrel[i]; }
+    g_ncwrel = o;
+    pthread_mutex_unlock(&g_cw_mu);
+}
 int mtl_tex_gpu_owned(uint64_t serial) { (void)serial; return 0; }
 
 // ---------------- views ----------------
@@ -775,33 +802,51 @@ VkBufferView vk_dummy_tbuf(int storage) {
 // this submission's scratch memory, made at each bind and freed with the submission. Final Fantasy Resonance (Unreal Engine 5.6) binds its sprite particles'
 // parameters (R32F, 44 elements: colours, sizes) at offsets 36 bytes past a multiple of Adreno's 64, and they read the zero dummy (its battle fires stay missing with
 // the copy: another cause). A buffer the GPU writes in the same submission would be read as last copied back; a storage one keeps the dummy (its writes would go to the copy)
+typedef struct { uint64_t mem, pool; uint32_t fmt, n; } tbkey;   // pool: the chunk's serial (vkpool_t.serial)
+static nvn_hmap g_tbuf_cache = {.klen = sizeof(tbkey)}; static pthread_mutex_t g_tbuf_mu = PTHREAD_MUTEX_INITIALIZER;
+// A pool chunk goes (gfx_vk_core.c mtl_pool_del): the views over its buffer leave the cache and are destroyed once the GPU is past the submission open or next (vk_defer_free_bview,
+// listed before the buffer itself). Keyed by the serial they were never handed out again (a pool made at the same address has another serial), but never destroyed either: one
+// VkBufferView and one entry per buffer texture bound from every pool ever made stayed for the life of the process (a game that makes and drops pools as it streams kept growing)
+void vk_tbuf_drop_pool(uint64_t serial) {
+    for (int n = 64; n == 64;) {   // 64 keys a pass (nvn_hm_del rehashes), the views destroyed outside the lock
+        tbkey ks[64]; VkBufferView vs[64]; n = 0;
+        pthread_mutex_lock(&g_tbuf_mu);
+        for (uint32_t i = 0; i < g_tbuf_cache.cap && n < 64; i++) {
+            if (!g_tbuf_cache.vals[i]) continue;
+            memcpy(&ks[n], g_tbuf_cache.keys + (size_t)i * g_tbuf_cache.klen, sizeof ks[n]);
+            if (ks[n].pool == serial) n++;
+        }
+        int nv = 0; for (int j = 0; j < n; j++) { VkBufferView v = nvn_hm_del(&g_tbuf_cache, &ks[j]); if (v) vs[nv++] = v; }
+        pthread_mutex_unlock(&g_tbuf_mu);
+        for (int j = 0; j < nv; j++) vk_defer_free_bview(vs[j]);
+    }
+}
 VkBufferView vk_tbuf_view(const tex_t *t, int storage) {
-    static nvn_hmap cache = {.klen = 24}; static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
     // keyed by the pool too: a pool finalized and another made at the same address has a new VkBuffer, and the old one's memory is freed once the GPU is past it. Keyed by address
     // alone, the view over the old buffer was handed out again and shaders read and wrote freed memory, which the kernel gives to newer buffers (Xenoblade Chronicles 3: the
     // allocator kept inside one of its memory pools had its tree bins overwritten during the opening movie, and malloc crashed at the next scene)
     vkpool_t *pl = t->mem ? vk_pool_of((uint64_t)(uintptr_t)t->mem, 1) : NULL;
-    struct { uint64_t mem, pool; uint32_t fmt, n; } k = {(uint64_t)(uintptr_t)t->mem, pl ? pl->serial : 0, (uint32_t)t->d.format, t->d.width};
-    pthread_mutex_lock(&mu);
-    VkBufferView v = nvn_hm_get(&cache, &k);
+    tbkey k = {(uint64_t)(uintptr_t)t->mem, pl ? pl->serial : 0, (uint32_t)t->d.format, t->d.width};
+    pthread_mutex_lock(&g_tbuf_mu);
+    VkBufferView v = nvn_hm_get(&g_tbuf_cache, &k);
     if (!v) {
         const vkfmt_t *f = vk_fmt(t->d.format); VkBuffer b; VkDeviceSize off = 0;
         uint32_t al = (uint32_t)V.props.limits.minTexelBufferOffsetAlignment;
         int in = f && t->mem && vk_buf_at((uint64_t)(uintptr_t)t->mem, (uint64_t)t->d.width * f->bpb, &b, &off);
         if (in && off % al == 0) {
             VkBufferViewCreateInfo ci = {VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO, NULL, 0, b, f->vk, off, (VkDeviceSize)t->d.width * f->bpb};
-            if (vkCreateBufferView(V.dev, &ci, NULL, &v)) v = VK_NULL_HANDLE; else nvn_hm_put(&cache, &k, v);
+            if (vkCreateBufferView(V.dev, &ci, NULL, &v)) v = VK_NULL_HANDLE; else nvn_hm_put(&g_tbuf_cache, &k, v);
         } else if (in && !storage) {
             VkDeviceSize n = (VkDeviceSize)t->d.width * f->bpb, so; VkBuffer sb; void vk_ubd_read(uint64_t a, uint64_t n, uint8_t *dst);
             uint8_t *p = vk_scratch(n, al, &sb, &so); vk_ubd_read((uint64_t)(uintptr_t)t->mem, n, p);
             VkBufferViewCreateInfo ci = {VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO, NULL, 0, sb, f->vk, so, n};
             if (vkCreateBufferView(V.dev, &ci, NULL, &v)) v = VK_NULL_HANDLE; else vk_defer_free_bview(v);
             static unsigned nc; if (nc++ < 4) VKLOG("buffer texture at a misaligned offset (%llu, not a multiple of %u; format %#x, %u elements): read from a copy", (unsigned long long)off, al, t->d.format, t->d.width);
-            pthread_mutex_unlock(&mu); return v;   // (not cached: a copy of this bind's bytes)
+            pthread_mutex_unlock(&g_tbuf_mu); return v;   // (not cached: a copy of this bind's bytes)
         } else if (in) VKRED_ONCE(16, "storage buffer texture at a misaligned offset: %llu, not a multiple of %u (format %#x, %u elements): zeros", (unsigned long long)off, al, t->d.format, t->d.width);
         else VKRED_ONCE(16, "buffer texture not in a pool (format %#x, %u elements)", t->d.format, t->d.width);
     }
-    pthread_mutex_unlock(&mu);
+    pthread_mutex_unlock(&g_tbuf_mu);
     return v;
 }
 // CPU readback of texels (ReadTexels): the image copied to scratch memory by a submission of its own, waited for

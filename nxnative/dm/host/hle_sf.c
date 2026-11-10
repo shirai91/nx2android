@@ -5,6 +5,8 @@
 // switches backup off where it is on). Any other service name is refused with a red line, as sm refuses a service that is not registered.
 // The SDK's own client functions are taken over where they reach the kernel (their calls inside sdk go through its PLT): the session manager's CreateNewSession runs natively on
 // DuplicateSession, and ConvertToDomainImpl on QueryPointerBufferSize and ConvertSessionToDomain. DM_SF_TRACE=1 dumps every request.
+// Bluetooth clients also connect at boot (Scarlet 4.0.0 aborts in InitializeBle without bt). bt and btm:u expose no remote devices: acquisition returns real, unsignalled
+// kernel events, scans return no devices, and connection/GATT operations fail. The command layouts are libnx's bt.c / btmu.c; no Android Bluetooth access is implied.
 // Message layout (Atmosphère / libnx): HIPC header {u16 type, counts of X / A / B / W descriptors; u32 data words, receive list, special header flag}, the special header and descriptors,
 // then the data words, whose CMIF part starts 16-byte aligned to the buffer: in a domain session the domain header {u8 type, u8 objects, u16 size, u32 object, u32, u32 token} first,
 // then {"SFCI", version, command, token} and the arguments. The response is the same with {u32 objects, 3 × u32} and {"SFCO", version, result, token}
@@ -15,7 +17,14 @@
 #define SF_MAX 64
 static struct { char name[16]; int used, domain; unsigned seen; } g_sf[SF_MAX];
 static pthread_mutex_t g_sf_mu = PTHREAD_MUTEX_INITIALIZER;
-static const char *const sf_served[] = {"olsc:u"};
+static const char *const sf_served[] = {"olsc:u", "bt", "btm:u"};
+int svc_thread(int num, uint64_t *regs);
+
+static uint32_t sf_event(void) {
+    uint64_t r[32] = {0}; svc_thread(0x45, r); uint32_t read = (uint32_t)r[2];
+    r[0] = r[1]; svc_thread(0x16, r);   // no producer: close the write end; the client owns the read end
+    return read;
+}
 
 static int sf_slot(uint32_t h) {
     unsigned i = h - SF_H0;
@@ -35,7 +44,7 @@ HLE_FORCE("_ZN2nn2sf4hipc29FinalizeHipcServiceResolutionEv", "service name resol
 HLE_FORCE("_ZN2nn2sf4hipc20ConnectToHipcServiceEPNS_3svc6HandleEPKc", "connect to a service through sm → a host session for the services the host serves", Result, h_sf_Connect,
           uint32_t *out, const char *name) {
     for (size_t k = 0; k < sizeof sf_served / sizeof *sf_served; k++)
-        if (!strncmp(name, sf_served[k], 8)) { *out = sf_new(sf_served[k], 0); LOG("sf: %s → host session %#x (every request succeeds with zeroed output)", sf_served[k], *out); return RES_OK; }
+        if (!strncmp(name, sf_served[k], 8)) { *out = sf_new(sf_served[k], 0); LOG("sf: %s → host session %#x", sf_served[k], *out); return RES_OK; }
     LOG("[RED] sf: the game connects to service %.8s itself, which the host does not serve", name);
     return 0xe15u;   // sm ResultNotRegistered
 }
@@ -86,12 +95,34 @@ HLE_FORCE("_ZN2nn2sf4hipc15SendSyncRequestENS_3svc6HandleEPvm", "send a request 
     if (magic != 0x49434653) { LOG("[RED] sf: %s: request without SFCI (%#x)", g_sf[i].name, magic); return 0xe401u; }
     unsigned key = (obj & 0xff) << 16 | (cmd & 0xffff);   // log each object / command once
     pthread_mutex_lock(&g_sf_mu); int first = g_sf[i].seen != key; g_sf[i].seen = key; pthread_mutex_unlock(&g_sf_mu);
-    if (first || trace) LOG("sf: %s object %u command %u (%u data words in): success, zeroed output", g_sf[i].name, obj, cmd, ndw);
+    uint32_t handle = 0, special = 0, child = 0; int acquired = 0; Result result = RES_OK;
+    if (!strcmp(g_sf[i].name, "bt")) {
+        if (cmd == 9) { handle = sf_event(); special = 2; }   // RegisterBleEvent: one copied event handle
+        else result = RES_FAIL;   // no connected GATT peers or pending LE events
+    } else if (!strcmp(g_sf[i].name, "btm:u") && (!dom || obj == 1)) {
+        if (cmd == 0) {   // IBtmUser::GetCore: a domain object, or one moved session handle
+            if (dom) child = 2;
+            else { handle = sf_new("btm:core", 0); special = 0x20; }
+        } else result = RES_FAIL;
+    } else if (!strcmp(g_sf[i].name, "btm:core") || (!strcmp(g_sf[i].name, "btm:u") && obj == 2)) {
+        switch (cmd) {
+        case 0: case 17: case 21: case 26: case 33:   // scan, connection, pairing, discovery and MTU events
+            handle = sf_event(); special = 2; acquired = 1; break;
+        case 1: case 2: case 3: case 4: case 5: case 6: case 7: case 8: case 9: case 10:
+        case 20: case 25: case 27: case 28: case 29: case 30: case 31: case 32: case 36: case 37:
+            break;   // scans/registrations succeed; enumeration returns zero entries and lookups return false
+        default: result = RES_FAIL; break;   // cannot connect, pair or configure a device that is absent
+        }
+    }
+    if (first || trace) LOG("sf: %s object %u command %u (%u data words in): result %#x, handle %#x, child %u", g_sf[i].name, obj, cmd, ndw, result, handle, child);
     // The response: no special header and no descriptors, so the data words start at +8 and the CMIF part at +0x10; everything after the headers up to the buffer's end reads as zero
     size_t end = size < 0x1000 ? size : 0x1000;
     memset(base, 0, end);
-    m[1] = (uint32_t)((end - 8) / 4 < 0x3ff ? (end - 8) / 4 : 0x3ff);
+    m[1] = (uint32_t)((end - (special ? 16 : 8)) / 4 < 0x3ff ? (end - (special ? 16 : 8)) / 4 : 0x3ff);
+    if (special) { m[1] |= 0x80000000u; m[2] = special; m[3] = handle; }
     size_t out = 0x10 + (dom ? 16 : 0);
-    uint32_t *o = (uint32_t *)(base + out); o[0] = 0x4f434653; o[1] = ver; o[2] = RES_OK; o[3] = 0;   // "SFCO"; a domain's out-object count before it stays 0
+    uint32_t *o = (uint32_t *)(base + out); o[0] = 0x4f434653; o[1] = ver; o[2] = result; o[3] = 0;   // "SFCO"; a domain's out-object count before it stays 0
+    if (child) { *(uint32_t *)(base + 0x10) = 1; o[4] = child; }
+    if (acquired) o[4] = 1;
     return RES_OK;
 }

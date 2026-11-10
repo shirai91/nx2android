@@ -27,7 +27,7 @@ typedef struct {int is_int,is_sint;} vkfmt_t;
 static struct {int pass_open,ncol;struct {uint32_t mask;} chmask;VkFormat cfmt[8];
  int rt_has_cview[8];struct {int set_format,format;} rt_cview[8];struct {struct {int format;} d;} rt_col[8];} S;
 static VkImageView P_alias_views[8];static uint8_t P_alias[8];
-static VkRenderingAttachmentInfo P_ca[8];static int P_cleared,ended,clears;static uint32_t cleared_slot;
+static VkRenderingAttachmentInfo P_ca[8];static VkRenderingInfo P_ri;static int P_cleared,ended,clears;static uint32_t cleared_slot;
 static struct {unsigned folded;} g_vkst;
 static void vk_end_pass(void) {ended++;S.pass_open=0;}
 static int begin_pass(void) {return 1;}

@@ -13,18 +13,37 @@ static void *need(const char *n) { void *p = guest_sym(n); if (!p) die("host gue
 typedef struct { void (*fn)(void *); void *arg; } spawn_arg;
 void dm_thread_mark_host(void);
 static void spawn_tramp(void *p) { spawn_arg a = *(spawn_arg *)p; free(p); dm_thread_mark_host(); a.fn(a.arg); }
+// What one spawn makes: the ThreadType first (its address is the handle the caller keeps), then its stack. A joined thread's go to a free list for the next spawn of that stack size
+// rather than to free(): the thread exits on that stack (hle_thread.c thread_exit, pthread_exit after WaitThread can return), and reuse only happens at a later spawn. Freed never,
+// every OpenAudioRenderer after a CloseAudioRenderer (hle_audren.c: the render thread) left a ThreadType and a 64 KB stack behind
+typedef struct { uint8_t tt[0x200]; void *stack; size_t stack_size; uint64_t joined_ns; } gthr_t;   // tt: nn::os::ThreadType (0x1c0 bytes, with headroom); joined_ns: when its thread was joined
+enum { GTHR_REUSE_NS = 100 * 1000000 };   // WaitThread returns when the thread marks itself exited, still on its stack (hle_thread.c thread_exit: pthread_exit and the key destructors run there): a stack is
+                                          // taken again only this long after the join. (A game frees its own threads' stacks right after WaitThread, with the same window: not this file's)
+static gthr_t *g_gfree[8]; static int g_ngfree; static pthread_mutex_t g_gmu = PTHREAD_MUTEX_INITIALIZER;
 void *dm_guest_thread_spawn(void (*fn)(void *), void *arg, int prio, size_t stack_size) {
     spawn_arg *sa = malloc(sizeof *sa); if (!sa) die("host guest thread: allocation failed"); sa->fn = fn; sa->arg = arg; fn = spawn_tramp; arg = sa;
     stack_size = (stack_size + 0xfff) & ~(size_t)0xfff;
-    void *tt = calloc(1, 0x200);                                 // nn::os::ThreadType (0x1c0 bytes, with headroom)
-    void *stack = aligned_alloc(0x1000, stack_size);              // the SDK requires the stack to be 4 KiB aligned and its size a multiple of 4 KiB
-    if (!tt || !stack) die("host guest thread: allocation failed");
-    int rc = ((create_fn)need("_ZN2nn2os12CreateThreadEPNS0_10ThreadTypeEPFvPvES3_S3_mi"))(tt, fn, arg, stack, stack_size, prio);
+    gthr_t *g = NULL;
+    uint64_t now = now_ns();
+    pthread_mutex_lock(&g_gmu); for (int i = 0; i < g_ngfree && !g; i++) if (g_gfree[i]->stack_size == stack_size && now - g_gfree[i]->joined_ns > GTHR_REUSE_NS) { g = g_gfree[i]; g_gfree[i] = g_gfree[--g_ngfree]; } pthread_mutex_unlock(&g_gmu);
+    if (g) memset(g->tt, 0, sizeof g->tt);
+    else {
+        g = calloc(1, sizeof *g);
+        if (g) { g->stack = aligned_alloc(0x1000, stack_size); g->stack_size = stack_size; }   // the SDK requires the stack to be 4 KiB aligned and its size a multiple of 4 KiB
+        if (!g || !g->stack) die("host guest thread: allocation failed");
+    }
+    void *tt = g->tt;
+    int rc = ((create_fn)need("_ZN2nn2os12CreateThreadEPNS0_10ThreadTypeEPFvPvES3_S3_mi"))(tt, fn, arg, g->stack, stack_size, prio);
     if (rc) die("host guest thread: CreateThread failed %#x", rc);
     ((tt_fn)need("_ZN2nn2os11StartThreadEPNS0_10ThreadTypeE"))(tt);
     return tt;
 }
-void dm_guest_thread_join(void *tt) { ((tt_fn)need("_ZN2nn2os10WaitThreadEPNS0_10ThreadTypeE"))(tt); ((tt_fn)need("_ZN2nn2os13DestroyThreadEPNS0_10ThreadTypeE"))(tt); }
+void dm_guest_thread_join(void *tt) {
+    ((tt_fn)need("_ZN2nn2os10WaitThreadEPNS0_10ThreadTypeE"))(tt); ((tt_fn)need("_ZN2nn2os13DestroyThreadEPNS0_10ThreadTypeE"))(tt);
+    gthr_t *g = (gthr_t *)tt; int kept = 0; g->joined_ns = now_ns();
+    pthread_mutex_lock(&g_gmu); if (g_ngfree < (int)(sizeof g_gfree / sizeof *g_gfree)) { g_gfree[g_ngfree++] = g; kept = 1; } pthread_mutex_unlock(&g_gmu);
+    if (!kept) { free(g->stack); free(g); }   // (the list is full: more joined threads than ever spawned at once; the stack goes as a game's would after its WaitThread)
+}
 
 static struct { int malloc_ok, lock_owned, handle; } g_st;
 static void selftest_body(void *arg) {

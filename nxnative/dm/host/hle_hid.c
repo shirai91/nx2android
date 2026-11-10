@@ -141,6 +141,7 @@ static void *ctl_main(void *arg) {
                 if (!n || line[0] == '#') continue;
                 if (!strncmp(line, "shot ", 5)) { dm_gfx_shot_at(1, line + 5); LOG("DM_CTL: screenshot of the next frame → %s", line + 5); continue; }
                 if (!strcmp(line, "yields")) { void dm_yield_top(char *out, size_t n); char yt[256]; dm_yield_top(yt, sizeof yt); LOG("DM_CTL: top yielders since the last call: %s", yt); continue; }
+                if (!strncmp(line, "hlecount ", 9)) { void hlecount_dump(const char *path); hlecount_dump(line + 9); continue; }   // HLE call counts so far (DM_HLECOUNT)
                 if (!strcmp(line, "threads")) { void svc_thread_dump(void); LOG("DM_CTL: guest threads"); svc_thread_dump(); continue; }   // every guest thread: its wait and backtrace
                 if (!strncmp(line, "texlist ", 8)) { void dm_gfx_texlist(int target); dm_gfx_texlist(atoi(line + 8)); continue; }
                 if (!strncmp(line, "texraw ", 7)) { void dm_gfx_texraw(uint64_t serial, const char *path); char *e2; uint64_t s = strtoull(line + 7, &e2, 10); while (*e2 == ' ') e2++; dm_gfx_texraw(s, e2); continue; }

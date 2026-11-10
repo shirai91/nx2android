@@ -1,0 +1,47 @@
+# Pokémon Scarlet 4.0.0 (dump metadata v1), Game Freak Trinity, SDK 13.3.13, NVN.
+# Experimental Android bring-up on RedMagic NX809J / Adreno 840 (2026-11-06).
+# Shader tables come from this build's own main and Trinity packs, not Violet's.
+# The supplied dump reported v1; a normal 4.0.0 update dump is v786432 (NACP 4.0.0, the same main build), so the rows name v786432.
+
+# ---- Identity ----
+title_id	0100A3D008C5C000
+program_id	0100A3D008C5C000
+
+# ---- App ----
+name	Pokémon Scarlet
+ipa	PokMonScarlet.ipa
+app_category	public.app-category.games
+pad_layout	full
+fps_target	60
+fps_hold	off
+
+# ---- Versions ----
+build	v786432	4.0.0	main=421c5411b487eb4d049dd065fec95477	sdk=bb560bdfa85b4a97786ae2c3b7995df6
+package	v786432
+shader_versions	v786432
+
+# ---- Files ----
+# The host supplies the movie API; main takes nothing else from subsdk0.
+modules	main sdk
+romfs_marker	arc/data.trpfs
+zip_store	.bk2:.bnk:.pck:.trpfd:.trpfs:.metallib
+
+# ---- Memory ----
+# The NPDM declares 16 MB of system resource. nninitStartup reserves a 12 GB
+# StandardAllocator region; 4.375 GB and 12.375 GB alias regions both refused
+# it (0x1803). The survey layout plus 24 GB of virtual headroom boots without
+# allocator/SDK binary cuts; the log places that region's end at alias +13 GB.
+mem_reserve	0x740000000
+mem_alias	0x718000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+sys_resource	0x1000000
+# The allocator setup (main+0x167d510) allocates and frees all the 12 GB StandardAllocator can give, and the SDK keeps those pages mapped. Without the pool enforced, GetInfo's used
+# memory left them out and the allocators' free sizes counted them twice (6.04 GB allocatable at setup, 4.33 GB free at frame 9000): the free-memory sample the game takes every 9000
+# frames (main+0x2b7ab34) came out above its heap total, wrapped to 0, and the wild Pokémon spawner (Lua UpdatePokemon: despawn under 100 MB free) removed every wild Pokémon for good
+mem_map_limit	on
+
+# ---- Shader split ----
+# 35,937 shaders, including BNSH inside Oodle-compressed arc/data.trpfs entries.
+shader_groups	/audio/=audio /arc/=arc /demo/=demo /system/=system /event/=event
+shader_note	Pokémon Scarlet shaders
