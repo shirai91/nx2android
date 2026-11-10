@@ -85,7 +85,8 @@ static void fake_clear_depth(VkCommandBuffer cb,VkImage im,VkImageLayout layout,
 static VkImageView vk_tex_view(const tex_t *t,const view_t *v,int dim,int arrayed,int attachment,vkimg_t **out) {
     (void)dim;(void)arrayed;(void)attachment;(void)out;view_level=v->base_level;view_layer=v->min_layer;
     if(fail_view)return VK_NULL_HANDLE;
-    vk_view_fmt=wrong_format ? image.fmt : vk_fmt(v->set_format ? v->format : t->d.format)->vk;return (VkImageView)(uintptr_t)1;
+    const vkfmt_t *f=vk_fmt(v->set_format ? v->format : t->d.format);if(!f)f=vk_fmt(t->d.format);
+    vk_view_fmt=wrong_format ? image.fmt : f->vk;return (VkImageView)(uintptr_t)1;
 }
 static int clear_tex_slice(vkimg_t *im,VkImageView view,VkFormat format,VkExtent2D extent,VkRect2D rect,unsigned mask,unsigned type,const VkClearColorValue *v) {
     (void)im;(void)view;(void)format;(void)extent;(void)type;if(fail_draw)return 0;draws++;write_region(view_level,view_layer,rect,mask,v);return 1;
@@ -159,6 +160,7 @@ static int compressed_case(const char *name) {
     if(!strcmp(name,"compressed_volume")){image.target=NVN_TEXTURE_TARGET_3D;image.d=8;image.layers=1;c.r.zoffset=1;c.r.depth=1;first=0;count=4;}
     if(!strcmp(name,"compressed_tail")){level=2;c.view.base_level=2;}
     if(!strcmp(name,"compressed_chunks")){image.w=4096;image.h=129;level=0;c.view.base_level=0;}
+    if(!strcmp(name,"compressed_unknown_format")){c.view.set_format=1;c.view.format=999;}
     if(noop)c.mask=0;
     if(!strcmp(name,"compressed_msaa"))image.samples=4;
     if(!strcmp(name,"compressed_bad_usage"))image.usage=0;
@@ -180,12 +182,13 @@ int main(int argc,char **argv) {
     }
     tex_t t={.d={.format=1}};
     image=(vkimg_t){.w=8,.h=8,.d=1,.layers=4,.levels=3,.samples=1,.target=4,.fmt=VK_FORMAT_R32G32B32A32_UINT,.aspect=VK_IMAGE_ASPECT_COLOR_BIT,.usage=VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,.nvn_format=1};
-    for (int kind=0;kind<3;kind++) for (unsigned mask=0;mask<16;mask++) {
+    for (int unknown=0;unknown<2;unknown++) for (int kind=0;kind<3;kind++) for (unsigned mask=0;mask<16;mask++) {
         for (unsigned lv=0;lv<3;lv++) for(unsigned ly=0;ly<4;ly++) for(unsigned y=0;y<8;y++) for(unsigned x=0;x<8;x++)
             for(unsigned c=0;c<4;c++) pixels[lv][ly][y][x][c]=0x12345678u+c;
         t.d.format=kind;image.fmt=vk_fmt(kind)->vk;image.nvn_format=kind;
         p_clear_tex clear={.tex=&t,.has_view=1,.view={.set_levels=1,.base_level=1,.nlevels=1,.set_layers=1,.min_layer=1,.nlayers=2},
             .r={1,1,0,2,2,1},.mask=(int)mask,.is_uint=1,.c.u={17,23,42,99}};
+        clear.view.set_format=unknown;clear.view.format=999;
         clear_tex(&clear);
         VkClearColorValue want;
         if(kind)memcpy(want.uint32,clear.c.u,16);else for(int c=0;c<4;c++)want.float32[c]=(float)clear.c.u[c];
@@ -196,6 +199,7 @@ int main(int argc,char **argv) {
     }
     assert(!diagnostics);
     p_clear_tex full={.tex=&t,.r={0,0,0,8,8,1},.mask=15,.is_uint=1,.c.u={3,5,7,9}};
+    full.has_view=1;full.view.set_format=1;full.view.format=999;
     transfers=draws=0;clear_tex(&full);assert(transfers==1 && draws==0);
     image.samples=4;transfers=draws=0;clear_tex(&full);assert(transfers==1 && draws==0);image.samples=1;
     // Invalid/empty ranges must never reach either Vulkan write path.

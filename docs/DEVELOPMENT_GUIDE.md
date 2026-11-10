@@ -206,6 +206,8 @@ keep their concurrent CPU writer checks; the zero-copy failure fixture supplies
 the current allocator context while forcing cache misses to exercise every
 allocation/import failure stage.
 
+Unknown view formats retain the backing image format for both whole and partial clears, matching texture-view selection. The clear-pipeline cache marks newly attempted pipelines dirty for persistence while retaining failed-key memoization.
+
 `test_vk_texture_clear` compiles the production texture-clear dispatcher against a
 CPU write model to check rectangle/channel/subresource selection, invalid ranges
 and typed values. The optional ROM-free Vulkan probe also compiles the production

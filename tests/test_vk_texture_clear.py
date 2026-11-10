@@ -54,7 +54,7 @@ class TextureClear(unittest.TestCase):
                          'single2d_whole', 'single2d_partial', 'single2d_depth',
                          'invalid_array', 'invalid_volume', 'invalid_view',
                          'nonattachment', '1d', '1d_array', 'format', 'view', 'pipeline',
-                         'compressed', 'compressed_full', 'compressed_volume', 'compressed_tail',
+                         'compressed_unknown_format', 'compressed', 'compressed_full', 'compressed_volume', 'compressed_tail',
                          'compressed_chunks', 'compressed_mask0', 'compressed_msaa', 'compressed_bad_usage',
                          'compressed_single2d'):
                 with self.subTest(case=case):

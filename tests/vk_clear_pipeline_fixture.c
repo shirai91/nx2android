@@ -7,7 +7,8 @@
 #include "nvn_hmap.h"
 static struct { VkDevice dev; VkPipelineCache pcache; int has_dynrender; } V={.has_dynrender=1};
 static const uint32_t maskclear_vert_spv[]={0}, maskclear_frag_spv[]={0}, maskclear_uint_frag_spv[]={0}, maskclear_sint_frag_spv[]={0};
-static unsigned attempts;
+static unsigned attempts, cache_changes;
+static void vk_pipeline_cache_changed(void) {cache_changes++;}
 #define VKRED_ONCE(...) ((void)0)
 static int rp_on(void) {return 0;}
 static VkRenderPass rp_compat(uint32_t n,const uint32_t *f,uint32_t d,uint32_t s) {(void)n;(void)f;(void)d;(void)s;return VK_NULL_HANDLE;}
@@ -21,7 +22,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateGraphicsPipelines(VkDevice d,VkPipelineCa
 /* PRODUCTION_PIPELINE */
 int main(void) {
     mckey key={.ncol=1,.cfmt={VK_FORMAT_R8G8B8A8_UNORM},.samples=1,.mask=1};
-    assert(!mc_pipeline_key(&key));assert(!mc_pipeline_key(&key));assert(attempts==1);
-    key.mask=2;assert(mc_pipeline_key(&key)==(VkPipeline)(uintptr_t)2);assert(mc_pipeline_key(&key)==(VkPipeline)(uintptr_t)2);assert(attempts==2);
+    assert(!mc_pipeline_key(&key));assert(!mc_pipeline_key(&key));assert(attempts==1 && cache_changes==1);
+    key.mask=2;assert(mc_pipeline_key(&key)==(VkPipeline)(uintptr_t)2);assert(mc_pipeline_key(&key)==(VkPipeline)(uintptr_t)2);assert(attempts==2 && cache_changes==2);
     free(g_mc_pipes.keys);free(g_mc_pipes.vals);return 0;
 }

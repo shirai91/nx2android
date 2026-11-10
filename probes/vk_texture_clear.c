@@ -152,6 +152,8 @@ static VkRenderPass rp_compat(uint32_t ncol,const uint32_t *cfmt,uint32_t depth,
     }
     return passes[i];
 }
+// This isolated probe has no disk pipeline cache to mark dirty.
+static void vk_pipeline_cache_changed(void) {}
 /* PIPELINE */
 static vkimg_t *vk_tex(const tex_t *t) {(void)t;return &image;}
 static void vk_end_pass(void) {}

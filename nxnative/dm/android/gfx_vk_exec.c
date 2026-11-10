@@ -2425,7 +2425,10 @@ static void clear_tex(const p_clear_tex *c) {
     if (lv >= im->levels) { VKRED_ONCE(71, "texture clear outside mip levels"); return; }
     uint32_t w = im->w >> lv ? im->w >> lv : 1, h = im->h >> lv ? im->h >> lv : 1;
     int64_t x = c->r.xoffset, y = c->r.yoffset, x1 = x + c->r.width, y1 = y + c->r.height;
-    if (x < 0) x = 0; if (y < 0) y = 0; if (x1 > w) x1 = w; if (y1 > h) y1 = h;
+    if (x < 0) x = 0;
+    if (y < 0) y = 0;
+    if (x1 > w) x1 = w;
+    if (y1 > h) y1 = h;
     if (x >= x1 || y >= y1) return;
     VkRect2D rect = {{(int32_t)x,(int32_t)y},{(uint32_t)(x1-x),(uint32_t)(y1-y)}};
     int volume = im->target == NVN_TEXTURE_TARGET_3D;
@@ -2440,7 +2443,8 @@ static void clear_tex(const p_clear_tex *c) {
     }
     const vkfmt_t *f = vk_fmt(c->has_view && c->view.set_format ? c->view.format : c->tex->d.format);
     const vkfmt_t *storage = vk_fmt(im->nvn_format);
-    if (!f || !storage) { VKRED_ONCE(71, "texture clear format is unknown"); return; }
+    if (!storage) { VKRED_ONCE(71, "texture clear storage format is unknown"); return; }
+    if (!f) f = storage;   // Unknown view formats retain the backing format, as vk_tex_view does.
     if (storage->compressed && !storage->dec) {
         if (rect.extent.width != w || rect.extent.height != h || mask != 15 || (volume && count != layers) || f->vk != im->fmt)
             VKRED_ONCE(71, "compressed texture region/view clear: clearing whole subresource with encoded blocks");
