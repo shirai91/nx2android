@@ -18,6 +18,7 @@ class OverlayVisibility(unittest.TestCase):
         if not cc:
             raise unittest.SkipTest('a C compiler is needed for the overlay check')
         front = (ROOT / 'nxnative/dm/android/front_android.c').read_text()
+        pad = front[front.index('static int32_t axis('):front.index('// ---- the on-screen gamepad')]
         visible = front[front.index('int dm_overlay_visible(void)'):front.index('int dm_overlay_layout(void)')]
         hit = front[front.index('static int ctl_at('):front.index('// dragging the menu button:')]
         menu = front[front.index('static void menu_do('):front.index('static void menu_touch(')]
@@ -26,6 +27,7 @@ class OverlayVisibility(unittest.TestCase):
 #include <assert.h>
 #include <stdatomic.h>
 #include <stdlib.h>
+#include <string.h>
 #include "front.h"
 #include "overlay_layout.h"
 static _Atomic int g_set_overlay, g_overlay, g_pads, g_edit;
@@ -65,6 +67,8 @@ typedef int ANativeWindow;
 static int width, height, window, vibration = -1, touches, menu_opens, pad_publications, g_pad_used;
 static uint64_t g_btn, g_touch_btn, touch_buttons;
 static float g_ax[8];
+static int32_t pad_sticks[4];
+static uint64_t pad_buttons;
 static int g_ptr_ctl[32];
 static struct { int id, moved; } g_drag = {-1, 0};
 static _Atomic int g_menu, g_sp_on, g_tx_on, g_pad_in, g_knob[2][2];
@@ -103,13 +107,17 @@ static uint64_t key_bit(int code) { return code == TEST_PAD_KEY ? DM_BTN_A : 0; 
 static int tx_key(AInputEvent *e) { (void)e; return 1; }
 static void tx_changed(void) {}
 void dm_pad_players(uint32_t n) { assert(n == 1); }
-static void pad_publish(void) { pad_publications++; }
+void dm_pad_set(uint64_t b, int32_t lx, int32_t ly, int32_t rx, int32_t ry) {
+    pad_buttons = b;
+    pad_sticks[0] = lx; pad_sticks[1] = ly; pad_sticks[2] = rx; pad_sticks[3] = ry;
+    pad_publications++;
+}
 void dm_input_set(uint64_t b, int32_t lx, int32_t ly, int32_t rx, int32_t ry) {
     touch_buttons = b; (void)lx; (void)ly; (void)rx; (void)ry;
 }
 void dm_touch_set(const dm_touch *points, int n) { (void)points; touches = n; }
 static void (*dm_picture_rect)(float r[4]);
-''' + events + r'''
+''' + pad + events + r'''
 static void controls(int shown);
 static void input_handoff(int test) {
     width = layout ? 2400 : 1920; height = 1080;
@@ -144,6 +152,61 @@ static void input_handoff(int test) {
     }
 }
 
+static void motion_handoff(void) {
+    width = layout ? 2400 : 1920; height = 1080;
+    atomic_store(&g_set_overlay, 1);
+    atomic_store(&g_overlay, 1);
+    atomic_store(&g_pads, 0);
+    atomic_store(&g_pad_in, -1);
+    g_pad_used = 0; g_btn = 0; vibration = -1;
+    AInputEvent idle = {.source = AINPUT_SOURCE_JOYSTICK, .type = AINPUT_EVENT_TYPE_MOTION, .device = 43};
+    assert(handle_event(&idle) == 1);
+    assert(dm_overlay_visible() == 1 && !g_pad_used && atomic_load(&g_pad_in) == -1 && vibration == -1);
+    const struct { int code; float active, idle; int stick; uint64_t button; } cases[] = {
+        {AMOTION_EVENT_AXIS_X,         0.12f,  0.119f,  0, 0},
+        {AMOTION_EVENT_AXIS_Y,        -0.12f, -0.119f,  1, 0},
+        {AMOTION_EVENT_AXIS_Z,         0.12f,  0.119f,  2, 0},
+        {AMOTION_EVENT_AXIS_RZ,       -0.12f, -0.119f,  3, 0},
+        {AMOTION_EVENT_AXIS_LTRIGGER,  0.51f,  0.5f,   -1, DM_BTN_ZL},
+        {AMOTION_EVENT_AXIS_RTRIGGER,  0.51f,  0.5f,   -1, DM_BTN_ZR},
+        {AMOTION_EVENT_AXIS_HAT_X,    -0.51f, -0.5f,   -1, DM_BTN_LEFT},
+        {AMOTION_EVENT_AXIS_HAT_Y,     0.51f,  0.5f,   -1, DM_BTN_DOWN},
+        {AMOTION_EVENT_AXIS_BRAKE,     0.51f,  0.5f,   -1, DM_BTN_ZL},
+        {AMOTION_EVENT_AXIS_GAS,       0.51f,  0.5f,   -1, DM_BTN_ZR},
+    };
+    float a[4] = {0};
+    for (int i = 0; i < OV_N; i++) if (OV_CTLS[i].btn == DM_BTN_A) ov_box(&OV_CTLS[i], width, height, a);
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        int code = cases[i].code, stick = cases[i].stick;
+        AInputEvent pad = {.source = AINPUT_SOURCE_JOYSTICK, .type = AINPUT_EVENT_TYPE_MOTION, .device = 42};
+        pad.axis[code] = cases[i].active;
+        assert(handle_event(&pad) == 1);
+        assert(dm_overlay_visible() == 2 && g_pad_used && atomic_load(&g_pad_in) == 42 && vibration == 42);
+        assert(pad_buttons == cases[i].button);
+        if (stick >= 0) assert(pad_sticks[stick] == (int32_t)(0.12f * DM_STICK_MAX));
+
+        atomic_store(&g_pads, 1);
+        AInputEvent tap = {.source = AINPUT_SOURCE_TOUCHSCREEN, .type = AINPUT_EVENT_TYPE_MOTION,
+                           .action = AMOTION_EVENT_ACTION_DOWN, .x = width * 0.5f, .y = height * 0.5f};
+        assert(handle_event(&tap) == 1 && dm_overlay_visible() == 1);
+        tap.action = AMOTION_EVENT_ACTION_UP;
+        assert(handle_event(&tap) == 1);
+
+        int before = pad_publications;
+        pad.axis[code] = cases[i].idle;
+        assert(handle_event(&pad) == 1);
+        assert(handle_event(&idle) == 1);
+        assert(pad_publications == before + 2 && !pad_buttons);
+        for (int j = 0; j < 4; j++) assert(pad_sticks[j] == 0);
+        assert(dm_overlay_visible() == 1 && atomic_load(&g_pad_in) == 42 && vibration == 42);
+
+        tap.x = a[0]; tap.y = a[1]; tap.action = AMOTION_EVENT_ACTION_DOWN;
+        assert(handle_event(&tap) == 1 && touch_buttons == DM_BTN_A && touches == 0);
+        tap.action = AMOTION_EVENT_ACTION_UP;
+        assert(handle_event(&tap) == 1 && !touch_buttons);
+    }
+}
+
 static void controls(int shown) {
     float W = layout ? 2400 : 1920, H = 1080;
     int button = -1, menu = -1;
@@ -160,6 +223,7 @@ static void controls(int shown) {
 }
 int main(int argc, char **argv) {
     assert(argc == 2); int test = atoi(argv[1]);
+    if (test == 7) { for (layout = 0; layout < 2; layout++) motion_handoff(); return 0; }
     if (test >= 4) { for (layout = 0; layout < 2; layout++) input_handoff(test); return 0; }
     for (layout = 0; layout < 2; layout++) for (int pads = 0; pads < 3; pads++) for (int touch = 0; touch < 2; touch++) {
         atomic_store(&g_pads, pads); atomic_store(&g_overlay, touch);
@@ -220,6 +284,9 @@ int main(int argc, char **argv) {
 
     def test_show_gamepad_off_keeps_menu_accessible_through_input_handoff(self):
         self.run_case(6)
+
+    def test_idle_controller_motion_leaves_touch_controls_usable(self):
+        self.run_case(7)
 
 
 if __name__ == '__main__':
