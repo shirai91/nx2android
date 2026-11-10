@@ -53,7 +53,7 @@ Pokémon Legends: Arceus and Pokémon Legends: Z-A need the device during the po
 
 A game played by touch: tick **Touch game** on the Port tab (`--touch`). The on-screen gamepad then starts hidden and every touch but one on the menu button goes to the game; the pause menu shows the gamepad again.
 
-Chinese or Korean text drawn as `???`: choose a TrueType font with those characters as **System font** on the Port tab (`--shared-font`, a single `.ttf`, not a `.ttc`). It goes in the data pack; the tool ships none. The tool's own text entry panel still shows only ASCII, so its title stays `???` and names are typed in ASCII.
+Chinese or Korean text drawn as `???`: choose a TrueType font with those characters as **System font** on the Port tab (`--shared-font`, a single `.ttf`, not a `.ttc`). It goes in the data pack; the tool ships none. The tool's own text entry panel shows those characters in its title and the game's initial text, but its keyboard types only ASCII.
 
 A game that reads system data from the console's firmware (`sysdata` in its profile; Mario Kart 8 Deluxe builds its Mii heads from MiiModel, title 0100000000000802) needs your console's own system content files, which the tool cannot ship. Copy them (`.nca`, for example NAND SYSTEM `Contents/registered` in DBI's MTP mode) to a folder on the PC and give it with `--firmware <folder>` (or `porter config firmware <folder>` once). Without it the host's empty stand-in is used.
 
