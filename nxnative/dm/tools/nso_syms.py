@@ -26,6 +26,8 @@ def dynsyms(img):
         t, v = struct.unpack_from('<qQ', img, dyn + i * 16)
         if t == 0: break
         tags.setdefault(t, v)
+    if 6 not in tags or 5 not in tags:   # every 64-bit module has both (rtld too); a 32-bit (AArch32) game's are ELF32, 8-byte entries read here as nonsense (Rune Factory 4 Special, issue #161)
+        raise ValueError('no DT_SYMTAB / DT_STRTAB in the dynamic section: not a 64-bit NSO (a 32-bit game\'s modules have ELF32 entries)')
     symtab, strtab = tags[6], tags[5]
     n = struct.unpack_from('<I', img, tags[4] + 4)[0] if 4 in tags else (strtab - symtab) // 24
     out = []

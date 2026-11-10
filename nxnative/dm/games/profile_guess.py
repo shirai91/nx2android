@@ -69,6 +69,12 @@ def npdm(path):   # (system resource size, program ID) from main.npdm; a non-zer
     return (struct.unpack_from('<I', d, 0x14)[0] if d[:4] == b'META' else 0), (struct.unpack_from('<Q', d, a + 0x10)[0] if a >= 0 else None)
 
 
+def is_64bit(path):   # main.npdm's Is64BitInstruction flag (META byte 0xC, bit 0); None without the file. A 32-bit game (AArch32: Rune Factory 4 Special, issue #161) has ELF32 modules the tools do not read
+    if not Path(path).exists(): return None
+    d = Path(path).read_bytes()
+    return bool(d[0xC] & 1) if d[:4] == b'META' and len(d) > 0xC else None
+
+
 def facts_of(exefs, romfs):
     """What the profile rules (and the survey report) need from a game's code modules and RomFS"""
     exefs = Path(exefs)

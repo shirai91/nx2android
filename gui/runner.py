@@ -48,7 +48,10 @@ class Porter(QObject):
     def _done(self, code, _status):
         if self.buf.strip(): self.buf += b'\n'; self._out()
         err = ''.join(self.err).strip()
-        if code and err: self.event.emit({'ev': 'say', 'msg': '[RED] ' + err.splitlines()[-1]})   # a traceback's last line (the JSON stream has the error's message too)
+        if code and err:   # a traceback's last line (the JSON stream has the error's message too), and the frame it was raised in: a frozen bundle ends with PyInstaller's own line
+            lines = [ln for ln in err.splitlines() if ln.strip() and not ln.startswith('[PYI-')] or err.splitlines()
+            frame = next((ln.strip() for ln in reversed(lines) if ln.lstrip().startswith('File "')), None)
+            self.event.emit({'ev': 'say', 'msg': '[RED] ' + (f'{frame}: ' if frame else '') + lines[-1].strip()})
         self.finished.emit(code)
 
     def cancel(self):
