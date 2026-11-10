@@ -35,6 +35,8 @@ mem_alias	0x10000000
 mem_stack	0x10000000
 app_pool	0xCD500000
 sys_resource	0x0
+# each streamed texture has a virtual pool of its own (0x20000 to 0x560000 bytes) that it maps in parts: sparse, read through the page table (hle_nvn.c vpool_reserve)
+small_vpool_sparse	on
 # the rewritten modules (about 120 MB) are more than the default 64 MB of used memory the game takes off the pool for its heap
 mem_used	0x8000000
 
