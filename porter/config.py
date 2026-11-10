@@ -13,6 +13,7 @@ KEYS = {
     'out': 'folder for the APK and data pack (empty = the game folder)',
     'device': 'adb serial of the device to install on (empty = the only one connected)',
     'language': 'game language code (empty = English)',
+    'pad_layout': 'controller layout: xbox (A confirms at the bottom, B goes back at the right, Xbox button icons) or empty for the Switch\'s',
 }
 
 
