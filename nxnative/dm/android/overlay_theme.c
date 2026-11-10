@@ -4,6 +4,7 @@
 // The atlases are 8-bit PNGs, RGBA or 256 colours with their alphas (what theme_render.py saves), decoded here with the system's zlib.
 #include "dm.h"
 #include "overlay_layout.h"
+#include "pixel_font_latin1.h"
 #include <android/asset_manager.h>
 #include <pthread.h>
 #include <stdlib.h>
@@ -19,6 +20,15 @@ static uint8_t *asset(const char *name, size_t *n) {   // the whole asset, NUL-t
     if (b && AAsset_read(a, b, (size_t)len) != len) { free(b); b = NULL; }
     AAsset_close(a); if (b) { b[len] = 0; *n = (size_t)len; }
     return b;
+}
+
+// The overlay's font (pixel_font.h): read once, kept for good. Without it the overlay draws Latin-1 only, with the font built in (pixel_font_latin1.h)
+const uint8_t *dm_overlay_font(void) {
+    static int tried; static const uint8_t *f; if (tried) return f;
+    tried = 1; size_t n = 0; uint8_t *b = asset("font/ui.bin", &n);
+    if (b && n >= 8 && !memcmp(b, "NXPF", 4)) f = b;
+    else { free(b); f = PF_LATIN1; LOG("[RED] the APK has no overlay font (assets/font/ui.bin): the overlay draws Latin-1 only, Chinese, Japanese and Korean as boxes"); }
+    return f;
 }
 
 static uint32_t be32(const uint8_t *p) { return (uint32_t)p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3]; }

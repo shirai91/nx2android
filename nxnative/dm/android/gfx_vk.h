@@ -114,7 +114,8 @@ struct vkimg {
     uint64_t depth_cut;   // and the command buffer within it (gfx_vk_exec.c g_cuts)
     int fixed_fmt;   // created with a format list (DM_VK_UBWC): views only in its format or its sRGB twin
     VkFormat fmt2;   // with fixed_fmt: the other format of its list (its sRGB twin), VK_FORMAT_UNDEFINED when the list is its format alone
-    VkImageView full;               // a view of the whole image as created
+    VkFormat fmt_cls[2];   // with fixed_fmt, an image flag and an uncompressed colour format: the uint and the sint format of its texel size, in its list (storage views: vk_tex_view_as)
+    VkImageView full;              // a view of the whole image as created
     VkBufferView tbuf;              // buffer textures: a texel buffer view of the pool
     uint64_t last_use;              // submission fence of the last use
     uint64_t pool; int64_t off, size; int flags;   // its storage (pool, offset, layout size) and NVN texture flags: images over the same memory find each other
@@ -125,6 +126,8 @@ vkimg_t *vk_tex(const tex_t *t);                                 // the image of
 void vk_lrz_forget(vkimg_t *im);                                 // an image is being dropped: the pass code forgets it (gfx_vk_exec.c)
 int vk_window_bottom_up(void);                                   // the game draws in lower-left origin mode: its window image is stored bottom-up (gfx_vk_exec.c)
 VkImageView vk_tex_view(const tex_t *t, const view_t *v, int dim, int arrayed, int as_attachment, vkimg_t **img_out);   // a view for sampling / storage / rendering
+VkImageView vk_tex_view_as(const tex_t *t, const view_t *v, int dim, int arrayed, int as_attachment, vkimg_t **img_out, VkFormat want);   // the same, in the format want (a storage view of the shader's integer class; 0: the texture's own)
+VkFormat vk_int_fmt(uint32_t bytes, int sint);   // the uint (or sint) format of a texel size (1, 2, 4, 8, 16 bytes) that can be stored into; VK_FORMAT_UNDEFINED when none (gfx_vk_tex.c)
 void vk_watch(const vkimg_t *im, const char *what);   // DM_VK_WATCH (gfx_vk_exec.c)
 vkimg_t *vk_tex_by_id(int tid, const view_t **view_out, const tex_t **tex_out);   // registered texture ID → image (NULL if none)
 VkSampler vk_samp_by_id(int sid);
@@ -175,3 +178,6 @@ void vk_present_init(void);
 uint64_t vk_present(const tex_t *t, double period, const int crop[4]);
 enum { PT_DISPATCH = 0xd15 };   // vk_pass_ts: a dispatch timed as a pass (its format field)
 
+
+// Mark driver cache updates, including same-sized payload changes.
+void vk_pipeline_cache_changed(void);

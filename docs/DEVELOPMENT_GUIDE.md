@@ -20,6 +20,10 @@ python -m gui
 
 Check the **Setup** tab, choose the game's folder (the base game NSP, XCI, NSZ or XCZ, its update and DLC) on the **Port** tab, and click **Port**.
 
+Keep the base game, update and DLC in separate files. When a dump's tickets or readable
+content-meta headers identify several titles in one file, porter warns which title it selects
+and which embedded titles it will not select as updates or DLC. It does not split merged dumps.
+
 Or the command line:
 
 ```
@@ -90,13 +94,44 @@ python packaging/build_bundle.py
 
 On Windows, `build_bootloader.py` compiles PyInstaller's launcher on this PC (it needs the Microsoft C++ Build Tools), because a few antivirus engines flag the prebuilt one every PyInstaller app shares. Run it again after installing or upgrading PyInstaller.
 
-`dist/nx2android/` and `dist/nx2android-<version>-<os>-<cpu>.zip` (`windows-x64`, `macos-arm64`): the app, the committed `nxnative/` and the install guide; no toolchains, keys or game files. Publishing a release builds the macOS and Windows zips on GitHub's runners and attaches them (`.github/workflows/release-macos.yml`, `release-windows.yml`; `--clobber` replaces a zip of the same name, so do not upload them by hand). Run either workflow by hand (Actions → Run workflow) for a test build of a branch, kept as the run's artifact.
+`dist/nx2android/` and `dist/nx2android-<version>-<os>-<cpu>.zip` (`windows-x64`, `macos-arm64`, `linux-x64`, `linux-arm64`): the app, the committed `nxnative/` and the install guide; no toolchains, keys or game files. Publishing a release builds the macOS, Windows and Linux zips on GitHub's runners and attaches them (`.github/workflows/release-macos.yml`, `release-windows.yml`, `release-linux.yml`, which builds both Linux cpus on Ubuntu 24.04 (`ubuntu-latest` for x64, so the system libraries the bundle carries are never older than glibc 2.39); `--clobber` replaces a zip of the same name, so do not upload them by hand). Run either workflow by hand (Actions → Run workflow) for a test build of a branch, kept as the run's artifact.
+
+## Android motion
+
+The default accelerometer shake detector still sends `DM_BTN_SHAKE` on devices
+with or without a gyroscope. Ordinary gyro aiming below the shake threshold is
+unchanged. `DM_MOTION_RAW=1` in `env.txt` opts in to keeping measured acceleration
+and angular velocity during strong flicks instead of replacing them with the
+fixed shake waveform. A game profile can supply the same setting through an
+`env` row in `android.tsv` (see [Game profiles on Android](ARCHITECTURE.md#game-profiles-on-android)).
+No profile enables it by default.
+
+The opt-in requires an active gyroscope; without one, or with `DM_MOTION=0`, the
+synthetic shake fallback remains. Explicit controller/keyboard `Shake` always
+overrides raw motion. Physical Android validation of Super Mario Odyssey hand
+and directional cap throws and Tears of the Kingdom bow aiming is still required
+before enabling the opt-in in a profile. Host sensor tests verify routing and
+axis preservation, not game recognition or device behavior.
 
 ## Tests
 
 ```
 python -m unittest discover tests
 ```
+
+The Vulkan-header harnesses need a discoverable NDK; set `ANDROID_NDK_HOME`
+when it is not found automatically. They skip if no NDK headers are found.
+The protected-pool harness uses real page protection
+and a mutex/condition-variable rendezvous on macOS and Linux, handling each
+platform's protection-fault signal. The zero-copy diagnostics fixture forces
+slab and reuse-cache misses to exercise allocation/import failure cleanup; it
+does not validate the slab or reuse-cache implementations.
+
+`test_descriptor_hash` exercises the Vulkan descriptor hash and reuse path with
+different C padding bytes but identical image fields. Image keys include each
+array element's sampler, view and layout as explicit words; padding cannot force
+another descriptor allocation. Reuse still compares the hash, layout and
+submission epoch, without a full-content collision check.
 
 `test_dmsv` checks both shader-bundle versions and the native reader. Publication
 uses a unique staging directory beside the destination, flushes the file, verifies
@@ -106,6 +141,22 @@ intact and clean up staging; concurrent writers cannot overwrite each other's
 scratch files. The same contract applies to direct shader exports and CLI repacks.
 This protects completed file publication, not power-loss durability of the parent
 directory or semantic SPIR-V validation.
+
+`test_vk_cube_views` compiles production image setup, view selection, both view caches and descriptor fallback. Square single-sample 2D arrays with at least six layers are cube-compatible, even when their total layer count is not a multiple of six. Selected cube-array views still require six-face groups, while a single cube uses six consecutive layers. Refused cube views emit one red diagnostic with image dimensions, creation flags, mip and layer ranges, then use the typed dummy. Tests cover seven/eight/fourteen-layer images, range boundaries, cache reuse and the diagnostic; host mocks do not qualify a physical Vulkan driver or establish the cause of the rendering reported in [issue #112](https://github.com/shirai91/nx2android/issues/112).
+
+`test_vk_driver_cache` compiles the production driver-segment builder, cache lookup
+and scratch allocator with mocked Vulkan allocation calls. A constant-hash test
+stub checks that unequal segments never share a cached copy; it does not generate
+a natural hash collision or establish a game symptom. Equal segments reuse the
+existing copy without allocating. Each entry keeps a CPU copy of its live prefix
+(up to 0x968 bytes; about 2.35 MiB of content across 1,024 entries). Candidate hits
+compare 0x648 bytes for c0 or 0x968 for c2 in ordinary CPU memory, never the mapped
+scratch allocation. If two banks hash alike, comparison includes the longer live
+prefix and its implicit zero tail, preserving exact equality in both directions.
+Scratch references are reusable only in their submission; recycling waits for
+completion before the next epoch. GPU-written segments must remain outside this
+immutable cache. Full descriptor-set key
+equality is separate; these tests do not measure device performance.
 
 `test_vk_copy_back` exercises protected guest memory with the real dirty-page tracker: preserving independent CPU writes in the same cache line, successive submissions and snapshot initialization, cached/uncached and untracked pools, 200 partial/unaligned/overlapping range cases, and writes from another CPU thread. It also injects failed and partially successful bulk `mprotect` calls; a bulk unprotect failure stops the host with a `[RED]` message before publishing writable page states or continuing the copy. It also checks snapshot copy volume across clean and dirty 64 KB blocks, a partial tail, and full versus partial completion merges. These CPU tests do not establish correct rendering on a device.
 
@@ -158,3 +209,20 @@ The commits before 2026-10-28 predate the rule.
 ## nxnative
 
 `nxnative/` started as a squashed git subtree of [seedds/nxnative](https://github.com/seedds/nxnative) (upstream 6034fca, 2026-10-24). Since 2026-10-29 it is our own fork: no `git subtree pull`, cherry-pick or merge from upstream, and the repository has no `upstream` remote (removed 2026-10-31): `origin` is the only one. Upstream's profiles are still a good reference when bringing up a game it has; read them on GitHub (`https://github.com/seedds/nxnative/tree/main/dm/games/<title ID>`) and write our own.
+
+The Vulkan driver pipeline cache (`vk_pipeline_cache.bin` under `DM_ROOT`) now has a
+versioned envelope containing the device, driver, API and UUID identity, a renderer
+cache ABI, a bounded length and SHA-256 digest. A legacy raw cache is accepted only
+when its first 32 bytes match Vulkan's version-one device and pipeline-cache UUID
+header, then upgraded to the envelope on the next save even without new pipelines.
+Legacy files have no digest or extended identity, so they retain only those older
+compatibility checks until migration. Mismatched or corrupt envelopes start empty;
+a driver rejection retries empty, and failure to create that cache is logged.
+Pipeline creation marks the cache dirty even when its size stays unchanged. A
+complete snapshot with the same size and SHA-256 as the last accepted load or
+successful save skips publication. Other saves use one fixed `.tmp` file under the
+I/O lock, so the next write reuses an interrupted save's staging file. Publication
+requires successful writes and synchronization; failed or incomplete snapshots and
+pending legacy migrations remain eligible for retry. `DM_VK_NOPCACHE` still means
+start empty, while allowing newly built pipelines to be saved. Bump `PCACHE_ABI`
+when changing the renderer's persistent cache contract.

@@ -159,19 +159,23 @@ int thread_policy_get(int thread, thread_policy_flavor_t flavor, thread_policy_t
 // ---------------- thread suspension (thread dumps) ----------------
 // thread_suspend sends SIG_PARK; the target's handler (on its signal stack) records its registers and waits on a futex until thread_resume.
 // A thread blocked in a system call is interrupted there; SA_RESTART resumes the call afterwards.
+// A slot is free again only once its thread has left the handler (state 3 → 0, set by the handler): thread_resume used to free it at once and wake one waiter, so the
+// next suspend of a thread dump took the same slot and set it to 1 → 2 before the released thread ran again; that thread saw 2, went back to its wait and was never woken
+// (Kirby and the Forgotten Land, 2026-11-09: a guest thread left parked for good by a DM_CTL "threads" dump).
 #define MAX_PARK 64
-typedef struct { _Atomic int tid; _Atomic int state; arm_thread_state64_t regs; } park_t;   // state: 1 asked, 2 parked, 3 released
+typedef struct { _Atomic int tid; _Atomic int state; arm_thread_state64_t regs; } park_t;   // state: 1 asked, 2 parked, 3 released, 0 left the handler (slot free once tid is 0)
 static park_t g_park[MAX_PARK];
 static int sig_park(void) { return SIGRTMIN + 5; }
 static long futex(_Atomic int *a, int op, int v, const struct timespec *t) { return syscall(SYS_futex, a, op, v, t, NULL, 0); }
-static park_t *park_of(pid_t tid) { for (int i = 0; i < MAX_PARK; i++) if (atomic_load(&g_park[i].tid) == tid) return &g_park[i]; return NULL; }
+static park_t *park_of(pid_t tid, int state) { for (int i = 0; i < MAX_PARK; i++) if (atomic_load(&g_park[i].tid) == tid && atomic_load(&g_park[i].state) == state) return &g_park[i]; return NULL; }   // by state too: a slot kept by a resume that timed out holds the same tid
 static void on_park(int sig, siginfo_t *si, void *uc_) {
     (void)sig; (void)si; int e = errno;
-    park_t *p = park_of(gettid());
-    if (p && atomic_load(&p->state) == 1) {
+    park_t *p = park_of(gettid(), 1);
+    if (p) {
         ucontext_t *uc = uc_; memcpy(&p->regs, &uc->uc_mcontext.regs[0], sizeof p->regs);   // x0..x28, fp, lr, sp, pc, pstate: Darwin's order (see dm_uc.h)
-        atomic_store(&p->state, 2); futex(&p->state, FUTEX_WAKE_PRIVATE, 1, NULL);
+        atomic_store(&p->state, 2); futex(&p->state, FUTEX_WAKE_PRIVATE, INT_MAX, NULL);
         while (atomic_load(&p->state) == 2) futex(&p->state, FUTEX_WAIT_PRIVATE, 2, NULL);
+        atomic_store(&p->state, 0); futex(&p->state, FUTEX_WAKE_PRIVATE, INT_MAX, NULL);   // left the handler: thread_resume may free the slot
     }
     errno = e;
 }
@@ -194,13 +198,15 @@ kern_return_t thread_suspend(thread_act_t t) {
     return KERN_SUCCESS;
 }
 kern_return_t thread_get_state(thread_act_t t, thread_flavor_t flavor, thread_state_t out, mach_msg_type_number_t *count) {
-    (void)count; park_t *p = park_of(t);
-    if (flavor != ARM_THREAD_STATE64 || !p || atomic_load(&p->state) != 2) return KERN_INVALID_ARGUMENT;
+    (void)count; park_t *p = park_of(t, 2);
+    if (flavor != ARM_THREAD_STATE64 || !p) return KERN_INVALID_ARGUMENT;
     memcpy(out, &p->regs, sizeof p->regs); return KERN_SUCCESS;
 }
 kern_return_t thread_resume(thread_act_t t) {
-    park_t *p = park_of(t); if (!p) return KERN_INVALID_ARGUMENT;
-    atomic_store(&p->state, 3); futex(&p->state, FUTEX_WAKE_PRIVATE, 1, NULL);
+    park_t *p = park_of(t, 2); if (!p) return KERN_INVALID_ARGUMENT;
+    atomic_store(&p->state, 3); futex(&p->state, FUTEX_WAKE_PRIVATE, INT_MAX, NULL);
+    struct timespec to = {0, 200000000};   // until the thread has left the handler; a thread that never runs again keeps its slot (a leak of one of 64, not a hang)
+    while (atomic_load(&p->state) == 3) if (futex(&p->state, FUTEX_WAIT_PRIVATE, 3, &to) && errno == ETIMEDOUT) return KERN_SUCCESS;
     atomic_store(&p->tid, 0); return KERN_SUCCESS;
 }
 

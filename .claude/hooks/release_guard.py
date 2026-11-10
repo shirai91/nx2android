@@ -1,6 +1,6 @@
 # PreToolUse hook (.claude/settings.json): checks release commands against CLAUDE.md's release rules before they run.
 #   gh release create|upload|edit  needs --repo shirai91/nx2android (gh here defaults to seedds/nxnative) and attaches no zip (the
-#                                  release-windows.yml and release-macos.yml workflows build and attach them on publish, --clobber)
+#                                  release-windows.yml, release-macos.yml and release-linux.yml workflows build and attach them on publish, --clobber)
 #   gh release create <tag>        and git tag <tag>: the tag is v + porter/__init__.py's __version__ (bump it first)
 # A refused command gets the reason back; an allowed gh release create gets the steps that follow publishing.
 import json, re, shlex, sys
@@ -32,8 +32,8 @@ def check_gh(w):
     if repo != REPO:
         return f'gh release {sub} needs --repo {REPO}: gh in this checkout defaults to seedds/nxnative, which is not this project.'
     if sub in ('create', 'upload') and any(a.lower().endswith('.zip') or '.zip#' in a.lower() for a in w):
-        return ('Do not attach the bundle zips by hand: on publish, .github/workflows/release-windows.yml and release-macos.yml build them on '
-                "GitHub's runners and attach them with --clobber (CLAUDE.md, Releases). Create the release without a zip.")
+        return ('Do not attach the bundle zips by hand: on publish, .github/workflows/release-windows.yml, release-macos.yml and release-linux.yml '
+                "build them on GitHub's runners and attach them with --clobber (CLAUDE.md, Releases). Create the release without a zip.")
     if sub == 'create':
         tag = next((a for a in w[3:] if not a.startswith('-')), None)
         v = version()
@@ -51,8 +51,8 @@ def check_git_tag(w):
     return None
 
 
-AFTER = ('Release rules (CLAUDE.md, Releases): after publishing, watch the "Windows release" and "macOS release" runs '
-         f'(gh run list --repo {REPO} --limit 4) and check that both zips are on the release; a failed run means the release has no zip for that OS.')
+AFTER = ('Release rules (CLAUDE.md, Releases): after publishing, watch the "Windows release", "macOS release" and "Linux release" runs '
+         f'(gh run list --repo {REPO} --limit 6) and check that all four zips are on the release; a failed run means the release lacks that bundle.')
 
 
 def main():

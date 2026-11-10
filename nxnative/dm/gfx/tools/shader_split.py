@@ -789,7 +789,9 @@ def adrp_targets(d, lo, hi):
     w, out = memoryview(d)[:len(d) & ~3].cast('I'), collections.defaultdict(list)
     for i, x in enumerate(w):
         if x & 0x9f000000 != 0x90000000: continue
-        rd = x & 31; page = (i * 4 & ~0xfff) + ((((x >> 5 & 0x7ffff) << 2 | x >> 29 & 3) << 44 >> 44) << 12)
+        rd = x & 31; imm = (x >> 5 & 0x7ffff) << 2 | x >> 29 & 3
+        if imm & (1 << 20): imm -= 1 << 21   # signed 21-bit page offset; Python shifts do not truncate
+        page = (i * 4 & ~0xfff) + (imm << 12)
         if not lo - 0x1000 <= page < hi: continue
         for j, y in enumerate(w[i + 1:i + 9]):
             if y & 0xffc00000 == 0x91000000 and y >> 5 & 31 == rd:

@@ -88,6 +88,10 @@ struct ANativeWindow;
 #include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
+// Only the socketpair mock sees this Linux-only flag on macOS.
+#ifndef SOCK_CLOEXEC
+#define SOCK_CLOEXEC (1 << 24)
+#endif
 typedef struct AHardwareBuffer { int dummy; } AHardwareBuffer;
 typedef struct { uint32_t width, height, layers, format; uint64_t usage; uint32_t stride, rfu0; uint64_t rfu1; } AHardwareBuffer_Desc;
 #define AHARDWAREBUFFER_FORMAT_BLOB 33
@@ -95,7 +99,15 @@ typedef struct { uint32_t width, height, layers, format; uint64_t usage; uint32_
 #define AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN 48
 #define AHARDWAREBUFFER_USAGE_GPU_DATA_BUFFER 16777216
 #define POOL_USAGE VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
-typedef struct { VkBuffer buf; VkDeviceMemory mem; AHardwareBuffer *ahb; int zero_copy; } vkpool_t;
+typedef struct { uint64_t slot_bytes; uint8_t *map; int fd; VkBuffer buf; } slab_t;
+typedef struct { AHardwareBuffer *ahb; VkBuffer buf; VkDeviceMemory mem; } zcfree_t;
+typedef struct { VkBuffer buf; VkDeviceMemory mem; AHardwareBuffer *ahb; int zero_copy;
+    uint64_t boff; slab_t *slab; uint32_t slot; } vkpool_t;
+// Force cache misses so each allocation/import stage below is fault-injected.
+static int slab_take(uint64_t size, slab_t **sl, uint32_t *slot) { (void)size; (void)sl; (void)slot; return 0; }
+static void slab_give(slab_t *sl, uint32_t slot, uint64_t fence) { (void)sl; (void)slot; (void)fence; assert(0); }
+static int zcf_take(uint64_t size, zcfree_t *out) { (void)size; (void)out; return 0; }
+static void zcf_free_now(const zcfree_t *entry) { (void)entry; assert(0); }
 static struct { VkDevice dev; } V;
 static int failure, released, closed, destroyed, messages;
 static char last[1024];
@@ -117,7 +129,7 @@ static int AHardwareBuffer_allocate(const AHardwareBuffer_Desc *d, AHardwareBuff
 }
 static void AHardwareBuffer_release(AHardwareBuffer *a) { assert(a); released++; }
 static int mock_socketpair(int family, int type, int protocol, int *sv) {
-    (void)type; assert(family == AF_UNIX && protocol == 0);
+    assert(family == AF_UNIX && type == (SOCK_SEQPACKET | SOCK_CLOEXEC) && protocol == 0);
     if (failure == 2) { errno = EPERM; return -1; } sv[0] = 10; sv[1] = 11; return 0;
 }
 #define socketpair mock_socketpair
@@ -194,7 +206,7 @@ int main(void) {
         with tempfile.TemporaryDirectory(prefix='nx2a-memdiag-test-') as tmp:
             c, exe = Path(tmp) / 'check.c', Path(tmp) / 'check'
             c.write_text(harness)
-            subprocess.run(['cc', '-std=gnu11', '-Wall', '-Wextra', '-Werror', '-Wno-missing-field-initializers',
+            subprocess.run(['cc', '-std=gnu11', '-Wall', '-Wextra', '-Werror', '-Wno-missing-field-initializers', '-Wno-misleading-indentation',
                             '-idirafter', str(headers), str(c), '-o', str(exe)], check=True)
             for enabled in ('0', '1'):
                 subprocess.run([str(exe)], env=dict(os.environ, DM_VK_MEM_DIAG=enabled), check=True)

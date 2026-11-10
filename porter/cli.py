@@ -114,9 +114,12 @@ def cmd_profiles(a):
 
 
 def cmd_inspect(a):
+    import contextlib
     from porter import pipeline
     from porter.upstream import BuildError
-    try: info = pipeline.inspect(a.folder, a.keys)
+    try:
+        with contextlib.redirect_stdout(sys.stderr if a.json else sys.stdout):
+            info = pipeline.inspect(a.folder, a.keys)   # keep JSON stdout one document for the GUI
     except BuildError as e:
         if a.json: _print_json({'error': str(e)})
         else: print(e, file=sys.stderr)

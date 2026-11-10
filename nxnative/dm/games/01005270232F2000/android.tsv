@@ -1,0 +1,11 @@
+# OCTOPATH TRAVELER 0 on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Square Enix, Unreal Engine 5 on SDK 19.3.13, update 1.0.5; 10,324 shaders, all translated. The profile is the one here as it was, no core change needed.
+# Tested 2026-11-09 on the AYN Thor (Snapdragon 8 Gen 2, Adreno 740, Android 13) with the Turnip 27.0.0-R2 driver (--vulkan-driver), built from main with
+# the v327680 update and both DLC: town gameplay at 60 fps for about 4.5 minutes (14,700 frames), frame time p50 16.7 / p95 18.6 ms, GPU p50 12.6 ms,
+# no frame dropped or late on screen, no audio underrun, saves committed, no red log line; about 1.7 GiB footprint.
+# The 3D scene draws with normal exposure on this device (issue #112 reported it blown out to white elsewhere). Not tried on the system's own Adreno driver.
+status	playable
+tested	v327680 AYN Thor (Snapdragon 8 Gen 2, Adreno 740, Android 13)
+package	org.nx2a.octopathtraveler0
+orientation	landscape
+requires	bcn

@@ -10,6 +10,7 @@
 #include "front.h"
 #include "dm_input.h"
 #include "overlay_layout.h"
+#include "pixel_font.h"
 #include "saves_android.h"
 #include <math.h>
 #include <time.h>
@@ -399,6 +400,9 @@ static void *temp_watch(void *a) {
         char p[96], t[48] = {0}; snprintf(p, sizeof p, "/sys/class/thermal/thermal_zone%d/type", i); FILE *f = fopen(p, "r"); if (!f) { if (errno == ENOENT) break; continue; }
         if (!fgets(t, sizeof t, f)) t[0] = 0; fclose(f);
         if (strncmp(t, "cpu", 3) && strncmp(t, "gpu", 3)) continue;
+        if (strstr(t, "trip")) continue;   // a trip point's limit, not a sensor (Galaxy Z Fold: cpu-hw-trip-0 always 105000)
+        snprintf(p, sizeof p, "/sys/class/thermal/thermal_zone%d/mode", i); f = fopen(p, "r");
+        if (f) { char m[16] = {0}; if (!fgets(m, sizeof m, f)) m[0] = 0; fclose(f); if (!strncmp(m, "disabled", 8)) continue; }   // a zone the kernel does not poll
         snprintf(p, sizeof p, "/sys/class/thermal/thermal_zone%d/temp", i); f = fopen(p, "r"); if (!f) continue; long v; int ok = fscanf(f, "%ld", &v) == 1; fclose(f);
         if (ok) snprintf(zones[nz++], sizeof zones[0], "%s", p);
     }
@@ -747,11 +751,11 @@ static void ed_touch(AInputEvent *e, float W, float H) {   // the prompt's butto
 // ---- text entry: the game's software keyboard (nn::swkbd, hle_swkbd.c → front_text_input), as an on-screen keyboard of the overlay ----
 // The game thread that asks waits here while the player types; the game is held as by the menu and the last frame is shown with the entry's panel and keys
 // (overlay_layout.h ov_kb_*, drawn by gfx_vk_present.c ov_text_panel from dm_text_entry). Touch: tap the keys. Controller: the d-pad moves the highlight,
-// A presses it, B erases, + accepts, − cancels. A physical keyboard types (letters, digits, space, punctuation as ASCII, the overlay's font), Del erases,
+// A presses it, B erases, + accepts, − cancels. A physical keyboard types (letters, digits, space, punctuation as ASCII), Del erases,
 // Enter accepts. Back cancels (the game keeps its initial text). Android's own keyboard is not used: a code-less NativeActivity's content view is no text
 // editor, so the system does not show one for it, and asking for one routed the key events to it
 static pthread_mutex_t g_tx_mu = PTHREAD_MUTEX_INITIALIZER; static pthread_cond_t g_tx_cv = PTHREAD_COND_INITIALIZER;
-static struct { char title[128], text[256]; int n, max, done, ok, sel, shift, ptr; } g_tx;
+static struct { char title[128], text[256]; int n, cap, max, done, ok, sel, shift, ptr; } g_tx;   // n, cap: bytes of UTF-8; max: UTF-16 units, the game's limit
 int dm_text_entry(char *title, int tcap, char *text, int xcap, int *sel, int *shift) {   // the panel's content (the present thread); 0 when no entry is open
     if (!atomic_load(&g_tx_on)) return 0;
     pthread_mutex_lock(&g_tx_mu);
@@ -761,7 +765,7 @@ int dm_text_entry(char *title, int tcap, char *text, int xcap, int *sel, int *sh
 }
 static void tx_changed(void) { atomic_fetch_add(&g_tx_ver, 1); dm_overlay_redraw(); }
 static void tx_add(int c) {   // the caller holds g_tx_mu; a capital ends the shift, as on a phone
-    if (!c || g_tx.n >= g_tx.max) return;
+    if (!c || g_tx.n >= g_tx.cap || pf_units(g_tx.text) >= g_tx.max) return;
     g_tx.text[g_tx.n++] = (char)c; g_tx.text[g_tx.n] = 0;
     if (c >= 'A' && c <= 'Z') g_tx.shift = 0;
 }
@@ -771,7 +775,7 @@ static void tx_press(int i) {   // an on-screen key
     pthread_mutex_lock(&g_tx_mu);
     if (i == OVK_SHIFT) g_tx.shift = !g_tx.shift;
     else if (i == OVK_SPACE) tx_add(' ');
-    else if (i == OVK_DEL) { if (g_tx.n) g_tx.text[--g_tx.n] = 0; }
+    else if (i == OVK_DEL) { g_tx.n = (int)pf_chop(g_tx.text, (size_t)g_tx.n); }
     else tx_add(ov_kb_char(i, g_tx.shift));
     pthread_mutex_unlock(&g_tx_mu);
     dm_haptics_android_tap(); tx_changed();
@@ -802,7 +806,7 @@ static int tx_key(AInputEvent *e) {   // every key goes to the entry while it is
     pthread_mutex_lock(&g_tx_mu);
     int dx = bit == DM_BTN_LEFT ? -1 : bit == DM_BTN_RIGHT ? 1 : 0, dy = bit == DM_BTN_UP ? -1 : bit == DM_BTN_DOWN ? 1 : 0;
     if (dx || dy) g_tx.sel = ov_kb_move(g_tx.sel, dx, dy);
-    else if (k == AKEYCODE_DEL || bit == DM_BTN_B) { if (g_tx.n) g_tx.text[--g_tx.n] = 0; }
+    else if (k == AKEYCODE_DEL || bit == DM_BTN_B) { g_tx.n = (int)pf_chop(g_tx.text, (size_t)g_tx.n); }
     else if (bit == DM_BTN_Y) g_tx.shift = !g_tx.shift;
     else tx_add(tx_char(k, AKeyEvent_getMetaState(e)));
     pthread_mutex_unlock(&g_tx_mu);
@@ -827,12 +831,17 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
     if (!g_act || !dm_front_window()) return -1;   // the adb shell executable, or no window yet: nothing is shown
     pthread_mutex_lock(&g_tx_mu);
     const char *t = title && *title ? title : guide && *guide ? guide : sub && *sub ? sub : "Enter text";
-    snprintf(g_tx.title, sizeof g_tx.title, "%s", t);
+    snprintf(g_tx.title, sizeof g_tx.title, "%s", t); pf_trim(g_tx.title);
+    g_tx.cap = out_cap - 1 < (int)sizeof g_tx.text - 1 ? out_cap - 1 : (int)sizeof g_tx.text - 1;
     g_tx.n = 0; g_tx.text[0] = 0;
-    for (const char *s = initial ? initial : ""; *s && g_tx.n < (int)sizeof g_tx.text - 1; s++) if ((unsigned char)*s >= 32 && (unsigned char)*s < 127) g_tx.text[g_tx.n++] = *s;   // ASCII of the initial text
+    for (const char *s = initial ? initial : ""; *s;) {   // the initial text without its control characters, whole characters only
+        const char *c0 = s; uint32_t c = pf_next(&s); int k = (int)(s - c0);
+        if (c < 32 || c == 127) continue;
+        if (g_tx.n + k > g_tx.cap) break;
+        memcpy(g_tx.text + g_tx.n, c0, (size_t)k); g_tx.n += k;
+    }
     g_tx.text[g_tx.n] = 0;
     g_tx.max = max_chars > 0 && max_chars < (int)sizeof g_tx.text - 1 ? max_chars : (int)sizeof g_tx.text - 1;
-    if (g_tx.max > out_cap - 1) g_tx.max = out_cap - 1;
     g_tx.done = g_tx.ok = 0; g_tx.sel = 11; g_tx.shift = g_tx.n == 0; g_tx.ptr = -1;   // the highlight on q; a capital first, as on a phone
     pthread_mutex_unlock(&g_tx_mu);
     dm_input_set(0, 0, 0, 0, 0); dm_touch_set(NULL, 0); g_touch_btn = 0;   // nothing stays pressed in the game
@@ -971,7 +980,7 @@ static void ext_touch_drain(void) {
     pthread_mutex_unlock(&g_ext_touch_mu);
     while (item) { ext_touch *next = item->next; if (dm_external_active() && item->epoch == atomic_load(&g_external_epoch)) handle_event((AInputEvent *)item->event); g_input_release(item->event); free(item); item = next; }
 }
-// ---- shaking the device: the controller is shaken (DM_BTN_SHAKE: its six-axis sensor, hle_hid.c; Super Mario Odyssey's cap throw), as the iOS front end does with the phone ----
+// ---- shaking the device: the controller is shaken (DM_BTN_SHAKE: its six-axis sensor, hle_hid.c; Super Mario Odyssey's cap throw) ----
 // The accelerometer at 60 Hz on the input thread's looper (no permission needed): gravity is followed by a slow low-pass (about 0.8 s), and a sample whose acceleration beyond it
 // exceeds DM_SHAKE_G (1.5 G by default; env.txt overrides) is a hit. The controller is shaken until 120 ms after the last hit: a flick is one shake (the host finishes it as a whole
 // cycle) and shaking on keeps it going. It goes through player 1's controller path, so it adds to the on-screen gamepad and a controller alike. Off while the app is in the background
@@ -1023,6 +1032,13 @@ static void motion_feed(const ASensorEvent *e, const double acc[3]) {   // a gyr
     if (log && e->timestamp - logged >= 1000000000) { logged = e->timestamp;
         LOG("front end: motion (rotation %d) acc %+.2f %+.2f %+.2f G, gyro %+.3f %+.3f %+.3f rev/s", g_rot * 90, fa[0], fa[1], fa[2], fg[0], fg[1], fg[2]); }
 }
+// Opt in only after checking the game's raw-motion gestures on the target device.
+// The default keeps the verified automatic Shake path, including on gyro devices.
+static int motion_raw(void) {
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("DM_MOTION_RAW"); on = e && atoi(e) > 0; }
+    return on;
+}
 static int on_sensor(int fd, int events, void *data) {
     (void)fd; (void)events; (void)data;
     static double thr, gx, gy, gz, peak, acc[3] = {0, 0, ASENSOR_STANDARD_GRAVITY}; static int64_t last = -1, prev_t; static int init;
@@ -1032,6 +1048,9 @@ static int on_sensor(int fd, int events, void *data) {
         if (ev[i].type == ASENSOR_TYPE_GYROSCOPE) { motion_feed(&ev[i], acc); continue; }
         if (ev[i].type != ASENSOR_TYPE_ACCELEROMETER) continue;
         acc[0] = ev[i].acceleration.x; acc[1] = ev[i].acceleration.y; acc[2] = ev[i].acceleration.z;
+        // Opt-in raw motion keeps a flick's measured direction instead of the fixed
+        // DM_BTN_SHAKE waveform. Without a gyroscope the shake fallback stays active.
+        if (g_gyro && motion_raw()) continue;
         double x = ev[i].acceleration.x / ASENSOR_STANDARD_GRAVITY, y = ev[i].acceleration.y / ASENSOR_STANDARD_GRAVITY, z = ev[i].acceleration.z / ASENSOR_STANDARD_GRAVITY;
         if (!init) { gx = x; gy = y; gz = z; init = 1; prev_t = ev[i].timestamp; }
         double dx = x - gx, dy = y - gy, dz = z - gz, g = sqrt(dx * dx + dy * dy + dz * dz);
@@ -1052,12 +1071,13 @@ static void shake_start(void) {
     if (!g_accel) { LOG("front end: no accelerometer, shaking the device does nothing"); return; }
     g_sq = ASensorManager_createEventQueue(m, g_ilooper, 2, on_sensor, NULL);
     const char *e = getenv("DM_SHAKE_G"), *mo = getenv("DM_MOTION");
-    LOG("front end: shaking the device shakes the controller (threshold %.2f G)", e && atof(e) > 0 ? atof(e) : 1.5);
     if (!(mo && !atoi(mo))) {
         g_gyro = ASensorManager_getDefaultSensor(m, ASENSOR_TYPE_GYROSCOPE);
         if (g_gyro) { rotation_start(); LOG("front end: the device's gyroscope (%s) moves the controller's six-axis sensor", ASensor_getName(g_gyro)); }
-        else LOG("front end: no gyroscope: the controller's six-axis sensor stays at rest");
-    } else LOG("front end: DM_MOTION=0: the controller's six-axis sensor stays at rest");
+        else LOG("front end: no gyroscope: using accelerometer-only shake");
+    } else LOG("front end: DM_MOTION=0: using accelerometer-only shake");
+    if (g_gyro && motion_raw()) LOG("front end: DM_MOTION_RAW=1: raw device motion without automatic shake override");
+    else LOG("front end: shaking the device shakes the controller (threshold %.2f G)", e && atof(e) > 0 ? atof(e) : 1.5);
     shake_sensor(!atomic_load(&g_bg));
 }
 static void *input_thread(void *a) {
