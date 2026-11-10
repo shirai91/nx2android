@@ -51,7 +51,9 @@ static pthread_mutex_t g_keyboard_mu = PTHREAD_MUTEX_INITIALIZER;
 static _Atomic int g_ime_on;
 static uint64_t g_touch_btn;
 _Thread_local int g_swkbd_min_chars = -1;
-static int lookups, pending, clears, refs, attached, detached, detached_mode, call_error, logs, fallback;
+static pthread_t guest_thread;
+static _Thread_local int jni_attached;
+static int lookups, pending, clears, refs, attached, detached, call_error, logs, fallback;
 static int resets, touch_resets, holds, frame_error;
 static char log_text[256];
 #define LOG(...) do { ++logs; snprintf(log_text, sizeof log_text, __VA_ARGS__); } while (0)
@@ -62,6 +64,7 @@ static jobject ref(JNIEnv *e, jobject o) { (void)e; return o; }
 static jint frame(JNIEnv *e, jint n) { (void)e; assert(n >= 12); return frame_error ? (pending=1, -1) : 0; }
 static jmethodID method(JNIEnv *e, jclass c, const char *name, const char *sig) {
     (void)e; ++lookups;
+    assert(jni_attached && !pthread_equal(pthread_self(), guest_thread));
     assert(!strcmp(name,"readKeyboard") && !strcmp(sig,"([B[B[B[BII)[B"));
     if (c == (void *)1) { pending=1; return NULL; }
     return (void *)3;
@@ -72,6 +75,7 @@ static jbyteArray bytes(JNIEnv *e, jsize n) { (void)e; (void)n; static char data
 static void set(JNIEnv *e, jbyteArray a, jsize off, jsize n, const jbyte *p) { (void)e; memcpy((char *)a+off,p,n); }
 static jbyteArray call(JNIEnv *e, jobject a, jmethodID m, jbyteArray t, jbyteArray s, jbyteArray g, jbyteArray i, int min, int max) {
     (void)e; (void)a; (void)m; (void)t; (void)s; (void)g; (void)i;
+    assert(jni_attached && !pthread_equal(pthread_self(), guest_thread));
     assert(atomic_load(&g_ime_on) && !g_touch_btn && min==2 && max==6);
     g_touch_btn=99; if (call_error) { pending=1; return NULL; }
     return (void *)"A\xf0\x9f\x9a\x80" "B";
@@ -84,28 +88,51 @@ static void unglobal(JNIEnv *e,jobject o) { (void)e; assert(o); --refs; }
 static jboolean same(JNIEnv *e,jobject a,jobject b) { (void)e; return a==b; }
 static const struct JNITable jni={ref,frame,ref,method,exception,clear,bytes,set,call,length,get,ref,unref,global,unglobal,same};
 static JNIEnv env=&jni;
-static jint get_env(JavaVM *v,void **p,jint ver) { (void)v; assert(ver==JNI_VERSION_1_6); if(detached_mode) return JNI_EDETACHED; *p=&env; return JNI_OK; }
-static jint attach(JavaVM *v,JNIEnv **p,void *a) { (void)v; (void)a; ++attached; *p=&env; return JNI_OK; }
-static jint detach(JavaVM *v) { (void)v; ++detached; return JNI_OK; }
+static jint get_env(JavaVM *v, void **p, jint ver) {
+    (void)v; (void)p;
+    assert(!pthread_equal(pthread_self(), guest_thread) && "JNI GetEnv on guest caller");
+    assert(ver == JNI_VERSION_1_6 && !jni_attached);
+    return JNI_EDETACHED;
+}
+static jint attach(JavaVM *v, JNIEnv **p, void *a) {
+    (void)v; (void)a;
+    assert(!pthread_equal(pthread_self(), guest_thread) && "JNI attach on guest caller");
+    assert(!jni_attached);
+    jni_attached = 1;
+    ++attached;
+    *p = &env;
+    return JNI_OK;
+}
+static jint detach(JavaVM *v) {
+    (void)v;
+    assert(!pthread_equal(pthread_self(), guest_thread) && jni_attached);
+    jni_attached = 0;
+    ++detached;
+    return JNI_OK;
+}
 static const struct VMTable vmt={get_env,attach,detach};
 static JavaVM vm=&vmt;
 #include "keyboard_android.inc"
 static int overlay_text_input(const char *t,const char *s,const char *g,const char *i,int m,char *o,int n) {
-    (void)t;(void)s;(void)g;(void)i;(void)m;(void)o;(void)n; ++fallback; return 0;
+    (void)t;(void)s;(void)g;(void)i;(void)m;(void)o;(void)n;
+    assert(pthread_equal(pthread_self(), guest_thread) && !jni_attached);
+    ++fallback; return 0;
 }
 #include "keyboard_dispatch.inc"
 int main(void) {
+    guest_thread = pthread_self();
     ANativeActivity activity={&vm,(void *)1}; g_act=&activity;
     char out[9]="before";
     for(int i=0;i<3;i++) assert(front_text_input("T","S","G","I",6,out,sizeof out)==0);
     assert(lookups==1 && clears==1 && !pending && fallback==3 && refs==1);
-    activity.clazz=(void *)2; g_swkbd_min_chars=2; g_touch_btn=42; detached_mode=1;
+    assert(attached==3 && detached==3);
+    activity.clazz=(void *)2; g_swkbd_min_chars=2; g_touch_btn=42;
     for(int i=0;i<3;i++) {
         memset(out,0x7b,sizeof out);
         assert(front_text_input("T","S","G","I",6,out,5)==1);
         assert(!strcmp(out,"A") && out[5]==0x7b && !g_touch_btn && !atomic_load(&g_ime_on));
     }
-    assert(lookups==2 && refs==1 && attached==3 && detached==3 && resets==6 && touch_resets==6 && holds==6);
+    assert(lookups==2 && refs==1 && attached==6 && detached==6 && resets==6 && touch_resets==6 && holds==6);
     call_error=1; strcpy(out,"before");
     assert(front_text_input("T","S","G","I",6,out,sizeof out)==-1);
     assert(!pending && !atomic_load(&g_ime_on) && !g_touch_btn && !strcmp(out,"before") && fallback==3);

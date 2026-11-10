@@ -40,7 +40,7 @@ class NativeKeyboard(unittest.TestCase):
 
 class NativeKeyboardBridge(unittest.TestCase):
     @unittest.skipUnless(host_cc.posix(), 'a POSIX host C compiler is required (<sys/mman.h>, pthread, setenv)')
-    def test_cached_lookup_input_reset_and_concurrent_cancel(self):
+    def test_keyboard_jni_runs_off_guest_caller(self):
         root = Path(__file__).resolve().parents[1]
         front = (pipeline.DM / 'android/front_android.c').read_text()
         start = front.index('int front_text_input(')
