@@ -6,6 +6,7 @@ Khronos void-extent layout; texture2ddecoder adds an optional full decoder check
 import ctypes
 import importlib.util
 import math
+import os
 from pathlib import Path
 import random
 import shutil
@@ -101,6 +102,11 @@ void decode(int family, int is_signed, const unsigned char *block, float *out) {
         cls.lib.encode.restype = ctypes.c_int
         cls.lib.decode.argtypes = [ctypes.c_int, ctypes.c_int,
                                    ctypes.POINTER(ctypes.c_ubyte), ctypes.POINTER(ctypes.c_float)]
+
+    @classmethod
+    def tearDownClass(cls):
+        if os.name == 'nt':  # Release the DLL before addClassCleanup removes its folder.
+            ctypes.windll.kernel32.FreeLibrary(ctypes.c_void_p(cls.lib._handle))
 
     def encode(self, index, color, size):
         # Unaligned destination and guards catch whole-word stores and overruns.
