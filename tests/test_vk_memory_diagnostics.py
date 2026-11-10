@@ -101,13 +101,14 @@ typedef struct { uint32_t width, height, layers, format; uint64_t usage; uint32_
 #define POOL_USAGE VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
 typedef struct { VkBuffer buf; VkDeviceMemory mem; AHardwareBuffer *ahb; int zero_copy; uint64_t boff; void *slab; uint32_t slot; uint64_t left; } vkpool_t;
 static struct { VkDevice dev; } V;
-static int failure, released, closed, destroyed, freed, messages, swaps, anon, moved, fixed_prot = PROT_READ | PROT_WRITE;
+static int failure, released, closed, destroyed, freed, messages, swaps, anon, moved, allocs, quiet_rc, quiets, fixed_prot = PROT_READ | PROT_WRITE;
 typedef struct slab_t { int fd; uint8_t *map; VkBuffer buf; uint64_t slot_bytes; } slab_t;   // no slab and no kept buffer here: a hardware buffer of its own
 typedef struct { AHardwareBuffer *ahb; VkBuffer buf; VkDeviceMemory mem; } zcfree_t;
 static int slab_take(uint64_t size, slab_t **out, uint32_t *slot) { (void)size; (void)out; (void)slot; return 0; }
 static void slab_give(slab_t *s, uint32_t i, uint64_t fence) { (void)s; (void)i; (void)fence; assert(0); }
 static int zcf_take(uint64_t size, zcfree_t *out) { (void)size; (void)out; return 0; }
 static void zcf_free_now(const zcfree_t *e) { (void)e; assert(0); }
+static int nvn_dirty_quiet(const void *mem, size_t len) { (void)mem; (void)len; quiets++; return quiet_rc; }   // the tracker's answer before a buffer is taken
 static int swap_rc[4], nq; static size_t swap_done[4];   // answers for the next swaps (a queue), then fill as asked
 static int nvn_dirty_swap(void *mem, size_t len, int (*fill)(void *at, size_t n, size_t off, void *ctx), void *ctx, size_t *done) {
     swaps++;
@@ -128,7 +129,7 @@ static void log_message(const char *fmt, ...) {
 static void nvn_dirty_stats(uint64_t *f, uint64_t *p) { *f = 7; *p = 3; }
 static int AHardwareBuffer_allocate(const AHardwareBuffer_Desc *d, AHardwareBuffer **out) {
     assert(d->format == AHARDWAREBUFFER_FORMAT_BLOB && d->width == 64);
-    if (failure == 1) return -ENOMEM;
+    allocs++; if (failure == 1) return -ENOMEM;
     static AHardwareBuffer a; *out = &a; return 0;
 }
 static void AHardwareBuffer_release(AHardwareBuffer *a) { assert(a); released++; }
@@ -217,9 +218,18 @@ int main(void) {
     // and when that cannot be done now (the host wrote into the pool meanwhile): left says how much stays on the dropped buffer's pages
     swap_rc[0] = -6; swap_done[0] = 32; swap_rc[1] = 2; swap_done[1] = 0; nq = 2; released = anon = moved = 0; vkpool_t k = {0};
     assert(pool_zero_copy(&k, memory, 64, 1) == -1 && k.left == 32 && swaps == 8 && !moved && released == 1);
+    // the put-back itself stopping part way (16 of the 48 bytes back): left is a length from mem, so it covers the 32 still on the buffer's pages (copy_back reads it from mem)
+    swap_rc[0] = -6; swap_done[0] = 48; swap_rc[1] = -6; swap_done[1] = 16; nq = 2; released = 0; vkpool_t s = {0};
+    assert(pool_zero_copy(&s, memory, 64, 1) == -1 && s.left == 48 && swaps == 10 && released == 1);
+    // the tracker says try later (the host wrote into the pool lately) or that it does not hold the pages: answered before any slot, kept buffer or allocation is taken
+    quiet_rc = 2; released = allocs = closed = 0; int q0 = quiets; vkpool_t lt = {0};
+    assert(pool_zero_copy(&lt, memory, 64, 1) == 2 && quiets == q0 + 1 && !allocs && !released && !closed && swaps == 10 && !lt.left && !lt.zero_copy);
+    quiet_rc = 1; vkpool_t un = {0};
+    assert(pool_zero_copy(&un, memory, 64, 1) == 1 && !allocs && !released && swaps == 10);
+    quiet_rc = 0;
     // an import failing after a lazy pool's swap: the whole pool goes back the same way
     failure = 10; released = anon = moved = freed = 0; vkpool_t f = {0};
-    assert(pool_zero_copy(&f, memory, 64, 1) == -2 && !f.left && freed == 1 && moved == 1 && swaps == 10 && released == 1);
+    assert(pool_zero_copy(&f, memory, 64, 1) == -2 && !f.left && freed == 1 && moved == 1 && swaps == 12 && released == 1);
     failure = -1;
     uint64_t t = mem_diag_ns(); mem_diag_note(1, t, 1048576);
     assert(strstr(last, "cpu-to-gpu: last 1.00 ms / 1.00 MiB, mean 1.00 ms / 1.00 MiB (1 calls)"));

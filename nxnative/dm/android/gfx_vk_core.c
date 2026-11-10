@@ -535,17 +535,23 @@ static int zc_anon_fill(void *at, size_t n, size_t off, void *ctx) {   // nvn_di
     return 0;
 }
 // [mem, mem+n) back on anonymous pages. lazy: the game is running, so under the tracker as the swap was (nvn_dirty_swap with zc_anon_fill, which may also say try later);
-// → the bytes from mem left on the buffer's pages (0: all back), which mtl_pool_del copies back when the game removes the pool if no later try covered them (vkpool_t left)
+// → a length from mem (vkpool_t left), which mtl_pool_del copies back when the game removes the pool if no later try covered it: 0 when all went back, else n. A put-back
+// that stops part way leaves [mem+back, mem+n) on the buffer's pages, and copy_back and pool_back's merge read left from mem, so the slices already back are copied again too
+// (anonymous pages copied onto anonymous pages: no harm)
 static uint64_t zc_unplace(uint8_t *mem, uint64_t n, int lazy) {
     if (!n) return 0;
     if (!lazy) { copy_back(mem, n); return 0; }
-    size_t back = 0; nvn_dirty_swap(mem, n, zc_anon_fill, NULL, &back); return n - back;
+    size_t back = 0; nvn_dirty_swap(mem, n, zc_anon_fill, NULL, &back); return back < n ? n : 0;
 }
 // Zero copy: the pages of [mem, mem+size) become an AHardwareBuffer's, imported as a VkBuffer (a slab's slot for a small pool, or a kept buffer of a freed pool of that size).
 // lazy: a pool given its buffer when the GPU first uses it (pool_back). 0 on success; 1: lazy, and the dirty-page tracker does not hold the pages (nothing done); 2: lazy, and
 // the host wrote into them lately (nothing done, try later). On a failure p->left is the bytes from mem still on a dropped buffer's pages (zc_unplace)
 static int pool_zero_copy(vkpool_t *p, uint8_t *mem, uint64_t size, int lazy) {
     slab_t *sl; uint32_t si; size_t done = 0;
+    // lazy: the tracker's answer before a slab's slot, a kept buffer or a new one is taken. Asked only inside the swap, a pool the host keeps writing into (the game's
+    // streaming) cost an allocation of its size, up to 256 MB, on the replay's thread each second it was tried again, and dropping it destroyed a kept buffer another pool
+    // could use; try later is not a counted try, so with no limit. (nvn_dirty_swap asks again with each slice's pages BUSY, for a write prepared in between.)
+    if (lazy) { int q = nvn_dirty_quiet(mem, size); if (q) return q == 1 || q == 2 ? q : -1; }
     if (slab_take(size, &sl, &si)) {
         uint64_t off = (uint64_t)si * sl->slot_bytes; zcfill_t f = {sl->fd, off, sl->map, 0};
         int rc = zc_place(mem, size, &f, lazy, &done);

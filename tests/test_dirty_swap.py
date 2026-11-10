@@ -70,7 +70,7 @@ static void run(size_t len, int fail, int ro_fails, int back, int *rc_out) {   /
     last = calloc(np, sizeof *last); for (size_t p = 0; p < np; p++) ((uint32_t *)(mem + p * pg))[0] = (uint32_t)p;
     char path[] = "/tmp/nx2a-swap-XXXXXX"; fd = mkstemp(path); assert(fd >= 0); unlink(path); assert(ftruncate(fd, (off_t)len) == 0);
     char path2[] = "/tmp/nx2a-swap-XXXXXX"; fd2 = mkstemp(path2); assert(fd2 >= 0); unlink(path2); assert(ftruncate(fd2, (off_t)len) == 0);
-    nvn_dirty_add_range(mem, len);
+    nvn_dirty_add_range(mem, len); assert(nvn_dirty_quiet(mem, len) == 0);   // no host write prepared: go ahead
     nvn_dirty_protect(mem + 100 * pg, 64 * pg);   // a texture's storage, protected as the replay leaves it
     pthread_t t; assert(pthread_create(&t, NULL, writer, NULL) == 0);
     usleep(2000);
@@ -102,6 +102,7 @@ int main(void) {
     // a range the host prepared a write into just now (a file read into the pool): nothing swapped, try later (2), not a failure; the pages as they were
     mem = mmap(NULL, 8u << 20, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0); assert(mem != MAP_FAILED);
     nvn_dirty_add_range(mem, 8u << 20); write_hook(mem + 3 * pg, 2 * pg); fills = 0;
+    assert(nvn_dirty_quiet(mem, 8u << 20) == 2 && nvn_dirty_quiet(mem + pg, pg) == 2);   // asked before any buffer is taken (gfx_vk_core.c pool_zero_copy)
     assert(nvn_dirty_swap(mem, 8u << 20, fill, NULL, &swapped) == 2 && fills == 0 && swapped == 0);
     ((volatile uint32_t *)mem)[0] = 1;
     nvn_dirty_remove_range(mem);
@@ -111,6 +112,7 @@ int main(void) {
     // spans the tracker does not hold, or not whole pages: nothing done
     uint8_t *other = mmap(NULL, pg, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     assert(nvn_dirty_swap(other, pg, fill, NULL, NULL) == 1 && nvn_dirty_swap(mem + 8, pg, fill, NULL, NULL) == -1);
+    assert(nvn_dirty_quiet(other, pg) == 1 && nvn_dirty_quiet(mem + 8, pg) == -1);
     return 0;
 }
 '''.replace('DIRTY', dirty)

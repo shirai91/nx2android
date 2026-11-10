@@ -201,11 +201,18 @@ int nvn_dirty_defrag(int (*remap)(void *mem, size_t len)) {
 // 1 when no registered range holds the span (nothing done). done (may be NULL): the bytes from mem whose slices were swapped before it stopped, which keep the new pages
 // (a caller that drops them maps those slices back first: gfx_vk_core.c zc_unplace)
 enum { SWAP_SLICE = 16 << 20 };
-int nvn_dirty_swap(void *mem, size_t len, int (*fill)(void *at, size_t n, size_t off, void *ctx), void *ctx, size_t *done) {
-    if (done) *done = 0;
+// nvn_dirty_swap's answer before it touches a page: 0 = a registered range holds the span and the host has prepared no write into it in the last DEFRAG_QUIET_MS (go
+// ahead); 1 = no registered range holds it; 2 = the host wrote into it lately (try later); -1 = not whole host pages. gfx_vk_core.c asks before it takes a buffer for a
+// lazy pool, so a pool the host keeps writing into costs no allocation each time it is tried again
+int nvn_dirty_quiet(const void *mem, size_t len) {
     if (!g_pg || (((uintptr_t)mem | len) & (g_pg - 1))) return -1;   // whole host pages only
     range_t *r = find_span((uintptr_t)mem, len); if (!r) return 1;
-    if (written_lately(r)) return 2;   // (checked again below with each slice BUSY; this spares the first slice's waits)
+    return written_lately(r) ? 2 : 0;
+}
+int nvn_dirty_swap(void *mem, size_t len, int (*fill)(void *at, size_t n, size_t off, void *ctx), void *ctx, size_t *done) {
+    if (done) *done = 0;
+    int q = nvn_dirty_quiet(mem, len); if (q) return q;   // (written lately: checked again below with each slice BUSY; this spares the first slice's waits)
+    range_t *r = find_span((uintptr_t)mem, len);
     size_t sp = (len < SWAP_SLICE ? len : SWAP_SLICE) >> g_shift; int rc = 0;
     uint8_t *was = malloc(sp); if (!was) return -1;
     for (size_t off = 0; off < len && !rc; off += sp << g_shift) {
