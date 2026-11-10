@@ -399,6 +399,9 @@ static void *temp_watch(void *a) {
         char p[96], t[48] = {0}; snprintf(p, sizeof p, "/sys/class/thermal/thermal_zone%d/type", i); FILE *f = fopen(p, "r"); if (!f) { if (errno == ENOENT) break; continue; }
         if (!fgets(t, sizeof t, f)) t[0] = 0; fclose(f);
         if (strncmp(t, "cpu", 3) && strncmp(t, "gpu", 3)) continue;
+        if (strstr(t, "trip")) continue;   // a trip point's limit, not a sensor (Galaxy Z Fold: cpu-hw-trip-0 always 105000)
+        snprintf(p, sizeof p, "/sys/class/thermal/thermal_zone%d/mode", i); f = fopen(p, "r");
+        if (f) { char m[16] = {0}; if (!fgets(m, sizeof m, f)) m[0] = 0; fclose(f); if (!strncmp(m, "disabled", 8)) continue; }   // a zone the kernel does not poll
         snprintf(p, sizeof p, "/sys/class/thermal/thermal_zone%d/temp", i); f = fopen(p, "r"); if (!f) continue; long v; int ok = fscanf(f, "%ld", &v) == 1; fclose(f);
         if (ok) snprintf(zones[nz++], sizeof zones[0], "%s", p);
     }
