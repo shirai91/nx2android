@@ -206,7 +206,7 @@ int main(void) {
         with tempfile.TemporaryDirectory(prefix='nx2a-memdiag-test-') as tmp:
             c, exe = Path(tmp) / 'check.c', Path(tmp) / 'check'
             c.write_text(harness)
-            subprocess.run(['cc', '-std=gnu11', '-Wall', '-Wextra', '-Werror', '-Wno-missing-field-initializers',
+            subprocess.run(['cc', '-std=gnu11', '-Wall', '-Wextra', '-Werror', '-Wno-missing-field-initializers', '-Wno-misleading-indentation',
                             '-idirafter', str(headers), str(c), '-o', str(exe)], check=True)
             for enabled in ('0', '1'):
                 subprocess.run([str(exe)], env=dict(os.environ, DM_VK_MEM_DIAG=enabled), check=True)
