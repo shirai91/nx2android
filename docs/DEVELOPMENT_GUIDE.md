@@ -158,6 +158,23 @@ completion before the next epoch. GPU-written segments must remain outside this
 immutable cache. Full descriptor-set key
 equality is separate; these tests do not measure device performance.
 
+Shader and translator reuse also checks content receipts: relative output names,
+sizes and SHA-256 hashes, including translator dependencies. Old key-only receipts,
+missing/changed/extra translator files and altered shader bundles trigger a rebuild.
+The shader key includes the translator's actual output bytes and Android exporter
+helpers; changes to inputs during generation stop publication.
+
+The exporter records every expected shader (including geometry topology variants)
+in `shaders.dmsv.report.json`. It checks SPIR-V framing and entry-point stage,
+requires reflection beside each emitted module, and rejects failed translator
+processes. Retrying integer vertex inputs first removes the old pass's outputs.
+The porter verifies emitted bundle keys/stages and reflection bounds against that
+report before publication. This is structural validation, not semantic `spirv-val`.
+Individual unsupported shaders retain the existing best-effort behavior: omissions
+are reported, the partial bundle can be used, and the next port retries rather than
+reusing it as a complete export. `test_shader_cache` and `test_shader_export_checks`
+exercise these contracts without game files or a GPU.
+
 `test_vk_copy_back` exercises protected guest memory with the real dirty-page tracker: preserving independent CPU writes in the same cache line, successive submissions and snapshot initialization, cached/uncached and untracked pools, 200 partial/unaligned/overlapping range cases, and writes from another CPU thread. It also injects failed and partially successful bulk `mprotect` calls; a bulk unprotect failure stops the host with a `[RED]` message before publishing writable page states or continuing the copy. It also checks snapshot copy volume across clean and dirty 64 KB blocks, a partial tail, and full versus partial completion merges. These CPU tests do not establish correct rendering on a device.
 
 `test_vk_memory_diagnostics` also checks per-buffer cached-memory compatibility, restricted memory-type masks, diagnostics disabled, and unchanged coherent memory selection. The candidate lookup is diagnostic; cached allocation requires the separate opt-in switch. `test_vk_cached_pools` injects creation, allocation, mapping and binding failures and verifies cleanup, coherent fallback, unsupported types, missing cache functions, default-off behaviour, device-loss handling and rejecting failed/timed-out GPU waits before readback. `test_vk_copy_back` also models separate CPU-cache/device bytes to check flush before GPU use, invalidate before merging, independent CPU writes, partial merges, clean submissions and fatal cache-maintenance errors. Cache-range tests check 5,000 generated ranges for both flush and invalidate, plus explicit boundary/overflow cases and multiple cache-atom sizes. Native readback tests cover empty/non-intersecting transfers, unaligned disjoint writes with independent CPU changes in the same atom, clipping at both pool ends, subsequent uploads/baselines, and full invalidation for uncertain writers. These mocks do not emulate an actual GPU driver.

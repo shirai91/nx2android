@@ -14,7 +14,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 TOOLS = HERE.parent.parent / 'gfx/tools'
 sys.path[:0] = [str(TOOLS), str(HERE)]
-import dmsh_facts, dmsh_chain, dmsv   # noqa: E402  (DM_GAME picks the profile)
+import dmsh_facts, dmsh_chain, dmsv, shader_products   # noqa: E402  (DM_GAME picks the profile)
 from shader_split import glslc_stage   # the package reader also recognizes headerless compute code
 
 ap = argparse.ArgumentParser()
@@ -22,6 +22,7 @@ ap.add_argument('pkg'); ap.add_argument('out')
 ap.add_argument('--jobs', type=int, default=os.cpu_count() or 8)
 ap.add_argument('--keys', default='')
 ap.add_argument('--dotnet', default=os.environ.get('DOTNET', 'dotnet'))
+ap.add_argument('--report', help='write the expected and omitted shader inventory as JSON')
 ap.add_argument('--capture', help='a folder of shaders captured at run time on the device (<key>.bin)')
 ap.add_argument('--zstd', type=int, default=dmsv.LEVEL, help=f'zstd level of the SPIR-V in the bundle (default {dmsv.LEVEL}); 0: version 1, uncompressed')
 ap.add_argument('--xlate', help="the translator (dmsh_xlate.dll) to run (default: the iOS chain's dm/gfx/tools/dmsh_xlate_bin; the porter builds one from the in-repo source)")
@@ -367,7 +368,7 @@ def main():
                 key, source, target, sites = line.split()
                 handle_remaps[key] = int(source, 0), int(target, 0), int(sites)
     pc, loc = {}, {}
-    for ln in open(MAP, encoding='utf-8'):
+    for ln in Path(MAP).read_text(encoding='utf-8').splitlines():
         c = ln.rstrip('\n').split('\t')
         if len(c) > 4 and c[0].endswith('.bin'): loc.setdefault(c[3], (c[0], int(c[1])))
     cap = {k: v for k, v in captured(a.capture).items() if k not in loc}
@@ -380,7 +381,7 @@ def main():
         if k in cap: stages[k], rec = cap[k]
         else:
             name, idx = loc[k]
-            if name not in packs: packs[name] = records(open(os.path.join(a.pkg, name), 'rb').read())
+            if name not in packs: packs[name] = records((Path(a.pkg) / name).read_bytes())
             stages[k], rec = name[:2], packs[name][idx]
         jobs[k], c1s[k] = job_for(k, stages[k], rec, w)
     # A geometry shader's input primitive is the draw's (Maxwell's shader header doesn't say it; Ryujinx asks the GPU state): one translation for each kind, as the Mac
@@ -391,32 +392,43 @@ def main():
         for t in (0, 1, 2, 4):
             vk_ = f'{k}_t{t}'; jobs[vk_] = {**jobs[k], 'key': vk_, 'gs_input': t}; c1s[vk_] = c1s[k]; stages[vk_] = 'gs'; gs_var[vk_] = gs_variant_key(int(k, 16), t)
     keys = keys + sorted(gs_var)
+    if not keys: raise ValueError('no shaders selected for export')
+    if a.report and os.path.abspath(a.report) == os.path.abspath(a.out): raise ValueError('shader report must not overwrite the bundle')
     chunks = [keys[i::a.jobs] for i in range(a.jobs) if keys[i::a.jobs]]
     def xl(ch):
-        jp = os.path.join(w, f'job_{abs(hash(ch[0]))}.json'); json.dump([jobs[k] for k in ch], open(jp, 'w'))
+        jp = os.path.join(w, f'job_{abs(hash(ch[0]))}.json'); Path(jp).write_text(json.dumps([jobs[k] for k in ch]), encoding='utf-8')
         return subprocess.run([a.dotnet, XLATE_DLL, jp, w], capture_output=True, text=True, errors='replace')
     print(f'translating {len(keys)} shaders in {len(chunks)} batches ...', flush=True)
     with cf.ThreadPoolExecutor(len(chunks)) as ex: rs = list(ex.map(xl, chunks))
+    if any(r.returncode for r in rs): raise RuntimeError('shader translator process failed: ' + '\n'.join(r.stderr[-2000:] for r in rs if r.returncode))
     # second pass (as the Mac chain's dmsh_build.py finish): vertex shaders with inputs used only as integers, translated again with those inputs reported as uint (int_inputs)
     again = []
     for k in keys:
-        p = os.path.join(w, k + '.spv')
-        if stages[k] != 'vs' or not os.path.exists(p): continue
-        extra = {l: t for l, t in int_inputs(open(p, 'rb').read()).items() if l not in jobs[k]['attr']}
+        product = shader_products.output(w, k, STAGES[stages[k]])
+        if stages[k] != 'vs' or product is None: continue
+        extra = {l: t for l, t in int_inputs(product[0]).items() if l not in jobs[k]['attr']}
         if extra: jobs[k]['attr'].update(extra); again.append(k)
     if again:
         print(f'translating {len(again)} vertex shaders again with their integer inputs ...', flush=True)
+        # A failed retry must not silently retain the first pass's incompatible input interface.
+        for k in again:
+            for suffix in ('.spv', '.res.json'): os.unlink(os.path.join(w, k + suffix))
         ch2 = [again[i::a.jobs] for i in range(a.jobs) if again[i::a.jobs]]
-        with cf.ThreadPoolExecutor(len(ch2)) as ex: rs += list(ex.map(xl, ch2))
+        with cf.ThreadPoolExecutor(len(ch2)) as ex: retried = list(ex.map(xl, ch2))
+        if any(r.returncode for r in retried): raise RuntimeError('shader translator retry process failed')
+        rs += retried
     errs = collections.Counter()
     for r in rs:
         for ln in r.stderr.splitlines():
             if ln.strip(): errs[ln.strip()[:120]] += 1
-    entries, fails = [], collections.Counter()
+    entries, fails, failed = [], collections.Counter(), []
+    expected = [[f'{gs_var[k] if k in gs_var else int(k, 16):016x}', STAGES[stages[k]]] for k in keys]
+    if len({k for k, _ in expected}) != len(expected): raise ValueError('shader keys collide with geometry variants')
     for k in keys:
-        spv_p, res_p = os.path.join(w, k + '.spv'), os.path.join(w, k + '.res.json')
-        if not os.path.exists(spv_p): fails['no output'] += 1; continue
-        spv = open(spv_p, 'rb').read(); res = json.load(open(res_p)) if os.path.exists(res_p) else {}
+        product = shader_products.output(w, k, STAGES[stages[k]])
+        if product is None:
+            fails['no output'] += 1; failed.append([f'{gs_var[k] if k in gs_var else int(k, 16):016x}', 'no output']); continue
+        spv, res = product
         binds, local, io = spirv_bindings(spv)
         if k in handle_remaps:
             spv = remap_handles(spv, *handle_remaps[k])
@@ -426,8 +438,11 @@ def main():
         # header words 2-4: a compute shader's local size; a vertex shader's input locations (all, signed int, unsigned int); a pixel shader's output locations
         hdr3 = (local or jobs[k].get('local') or [1, 1, 1]) if st == 'cs' else io[1] if st == 'vs' else io[3] if st == 'ps' else [0, 0, 0]
         entries.append((gs_var[k] if k in gs_var else int(k, 16), STAGES.get(st, 0), spv, refl_bin(cl, c1s[k], hdr3)))
+    if not entries: raise ValueError('no shader translated; previous bundle retained')
     if a.zstd: print(f'compressing {len(entries)} shaders (zstd level {a.zstd}, {a.jobs} threads) ...', flush=True)
     ver, raw, stored = dmsv.write(a.out, entries, level=a.zstd, jobs=a.jobs)
+    if a.report:
+        with open(a.report, 'w', encoding='utf-8') as f: json.dump(dict(schema=1, expected=expected, failed=failed), f)
     print(f'{len(entries)} of {len(keys)} shaders → {a.out} ({os.path.getsize(a.out) / 2**20:.1f} MB, version {ver}: SPIR-V {raw / 2**20:.1f} MB'
           f'{f", {stored / 2**20:.1f} MB compressed" if ver > 1 else ""}); failed: {dict(fails)}; binding kinds: {dict(kinds_all)}')
     for e, n in errs.most_common(8): print(f'  translator: {n:5d}  {e}')
