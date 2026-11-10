@@ -35,6 +35,9 @@ static const struct { const char *build, *what; int layout; uint64_t obj, vtable
     { "f7ec03e4cb9de3bd8319d4e899d2e9cc", "DRAGON QUEST VII Reimagined 1.2.0", UE4_27, 0, 0x5e4c0e8, 0x32758dc },
     // FINAL FANTASY RESONANCE 1.0.1: the FMallocBinned3 object (main+0x77c6210, bss), its vtable (main+0x67df800, 32 slots), the cut constructor call (main+0x137f0)
     { "84e182f72ee1da4f477804bd05b54c15", "FINAL FANTASY RESONANCE 1.0.1", UE5_6, 0x77c6210, 0x67df800, 0x137f0 },
+    // FINAL FANTASY RESONANCE 1.0.1, the Korean / Chinese release: the same Unreal Engine 5.6.1 build at the same offsets (its main+0x137e4 puts main+0x77c6210 in x0, the cut call there is the
+    // FMallocBinned3 constructor, and the 32-slot vtable at main+0x67df800 is the same)
+    { "b7f965b9d7227db8e29f04e84ea7331b", "FINAL FANTASY RESONANCE 1.0.1 (Asian release)", UE5_6, 0x77c6210, 0x67df800, 0x137f0 },
 };
 enum { NSLOT = 32 };
 
