@@ -1,6 +1,7 @@
 # The data pack: everything the app reads from its files folder on the device (/sdcard/Android/data/<package>/files, front_android.c), as a folder beside the APK:
 #   mods/          the rewritten code modules (patch_nso.py's outputs)
 #   RomFS/         the game's files (the packed version's merged RomFS)
+#   romfs_patch/   patched copies of a few RomFS files, read before the RomFS (DM_ROMFS_OVERLAY; the Xbox button icons, porter/xbox_icons.py)
 #   aoc/<index>/   the DLC the player has
 #   sysdata/<title ID>/  system data from the player's firmware dump that the game reads (android.tsv sysdata, porter --firmware; env.txt's DM_SYSDATA)
 #   shaders.dmsv   the Vulkan shaders (dm/android/tools/shader_vk.py)
@@ -16,7 +17,7 @@ from pathlib import Path
 
 MANIFEST = 'nx2a-data.json'
 KEEP_ON_DEVICE = ('settings.txt',)          # the player's choices win over the pack's defaults
-OWNED = ('mods', 'RomFS', 'aoc', 'sysdata')            # folders the pack owns on the device: files there that the pack lacks are stale (an older version's) and removed
+OWNED = ('mods', 'RomFS', 'romfs_patch', 'aoc', 'sysdata')            # folders the pack owns on the device: files there that the pack lacks are stale (an older version's) and removed
 ROMFS = 'RomFS'
 
 
@@ -43,7 +44,7 @@ def romfs_sizes(d):   # {path in the RomFS: size} of the pack in d, '/'-separate
     return {p.relative_to(r).as_posix(): p.stat().st_size for p in r.rglob('*') if p.is_file()} if r.is_dir() else {}
 
 
-def build(dst, *, profile, version, display, patched, romfs, shaders, aoc=None, sysdata=None, language='en-US', package=None, env=(), settings=None, files=None, progress=None):
+def build(dst, *, profile, version, display, patched, romfs, shaders, romfs_patch=None, aoc=None, sysdata=None, language='en-US', package=None, env=(), settings=None, files=None, progress=None):
     """Write the pack to dst (replacing it). profile: the AndroidProfile; package: the app's, when not the profile's; env: more env.txt rows, after the profile's; settings: settings.txt values over the profile's;
     files: {name in the pack: source} (the 60 fps memory writes, fpslock.tsv; the button-icon font). Returns the manifest"""
     package = package or profile.package
@@ -51,7 +52,8 @@ def build(dst, *, profile, version, display, patched, romfs, shaders, aoc=None, 
     if tmp.exists(): shutil.rmtree(tmp)
     tmp.mkdir(parents=True)
     n = b = 0
-    for what, src, sub in (('the rewritten modules', patched, 'mods'), ('the RomFS', romfs, 'RomFS'), ('the DLC', aoc, 'aoc'), ('the system data', sysdata, 'sysdata')):
+    for what, src, sub in (('the rewritten modules', patched, 'mods'), ('the RomFS', romfs, 'RomFS'), ('the patched RomFS files', romfs_patch, 'romfs_patch'), ('the DLC', aoc, 'aoc'),
+                           ('the system data', sysdata, 'sysdata')):
         if not src: continue
         if progress: progress(what)
         dn, db = link_tree(src, tmp / sub); n += dn; b += db
@@ -61,6 +63,7 @@ def build(dst, *, profile, version, display, patched, romfs, shaders, aoc=None, 
             f'DM_LANG={language}']
     if aoc: rows.append(f'DM_AOC_DIR={files_folder(package)}/aoc')
     if sysdata: rows.append(f'DM_SYSDATA={files_folder(package)}/sysdata')
+    if romfs_patch: rows.append(f'DM_ROMFS_OVERLAY={files_folder(package)}/romfs_patch')
     rows += profile.env + list(env)
     (tmp / 'env.txt').write_text('\n'.join(rows) + '\n', encoding='utf-8', newline='\n')
     if sets := {**profile.settings, **(settings or {})}: (tmp / 'settings.txt').write_text(''.join(f'{k}={v}\n' for k, v in sets.items()), encoding='utf-8', newline='\n')

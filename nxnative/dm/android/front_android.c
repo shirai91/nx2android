@@ -75,7 +75,7 @@ static char g_root[512];
 static _Atomic int g_set_overlay = 1, g_set_rumble = 1, g_set_fps;   // the gamepad shown; rumble and tap vibration; the frame rate counter (top left)
 static _Atomic int g_set_opacity = 60;   // the gamepad's opacity, percent (OV_OPACITY_MIN..MAX: the menu's Opacity slider)
 static _Atomic int g_set_grid;   // the layout editor's Snap to grid
-static _Atomic int g_set_labels = -1;   // a controller's face buttons by their label (1) or their position (0); -1: as env.txt says (pad_labels)
+static _Atomic int g_set_labels = -1;   // a controller's face buttons by their label (1), their position (0), or A/B by label and X/Y by position (2); -1: as env.txt says (pad_labels)
 // the player's own layout (overlay_layout.h dm_overlay_custom): [0] the saved one (settings.txt ui= rows), [1] the layout editor's while it is open; per layout
 // and control: x + 1, y + 1 in 1/10000 of the window's width and height (0 = the layout's place), the size factor in 1/1000 (0 = 1)
 static _Atomic int g_cust[2][2][DM_AOV_N][3], g_cust_ver, g_edit;
@@ -90,7 +90,7 @@ static void settings_load(void) {
         else if (sscanf(line, "docked=%d", &v) == 1) setenv("DM_OPMODE", v ? "1" : "0", 1);   // over env.txt's: the host reads it once, at its first query
         else if (sscanf(line, "opacity=%d", &v) == 1) atomic_store(&g_set_opacity, v < OV_OPACITY_MIN ? OV_OPACITY_MIN : v > OV_OPACITY_MAX ? OV_OPACITY_MAX : v);
         else if (sscanf(line, "grid=%d", &v) == 1) atomic_store(&g_set_grid, v != 0);
-        else if (sscanf(line, "labels=%d", &v) == 1) atomic_store(&g_set_labels, v != 0);
+        else if (sscanf(line, "labels=%d", &v) == 1) atomic_store(&g_set_labels, v >= 0 && v <= 2 ? v : 1);
         else if (!strncmp(line, "ui=", 3)) {   // ui=<layout>,<control>,<x>,<y>,<size>: x, y in 1/10000 of the window (-1 the layout's place), size in 1/1000
             char lay[16], name[32]; int x, y, z, l, i;
             if (sscanf(line + 3, "%15[^,],%31[^,],%d,%d,%d", lay, name, &x, &y, &z) != 5 || (i = ctl_named(name)) < 0) continue;
@@ -208,17 +208,21 @@ static uint64_t g_btn; static float g_ax[8]; static int g_pad_used;   // lx ly r
 // A physical controller's face buttons by their label (an Xbox controller's A is the game's A) instead of by their position: the game's own prompts name the button
 // (A to confirm, B to go back), which an Xbox controller's labels match and its positions do not. Label or position is a property of the player's controller, not of
 // the game, so it is the pause menu's Face buttons row (settings.txt labels=, kept per device), or until the player chooses there DM_PAD_LABEL=1 in env.txt
-// (DM_PAD_XBOX=1, its first name, still counts). Only a controller is remapped: the on-screen gamepad sends the game's buttons as they are (the Switch layout,
+// (DM_PAD_XBOX=1, its first name, still counts). A third choice, A/B (DM_PAD_LABEL=ab, written by the porter's Xbox layout, pad_layout xbox): A and B by label,
+// so the bottom button confirms and the right one goes back, while X and Y keep their places (the top button is the game's X, the left one its Y), which the
+// porter's Xbox button icons show as Y and X. Only a controller is remapped: the on-screen gamepad sends the game's buttons as they are (the Switch layout,
 // with A, B, X and Y on the buttons, as the prompts name them). The row changes it at once: the menu's own A and B follow it
 static int pad_labels(void) {
     int s = atomic_load(&g_set_labels); if (s >= 0) return s;
     static int on = -1;
-    if (on < 0) { const char *e = getenv("DM_PAD_LABEL"); if (!e) e = getenv("DM_PAD_XBOX"); on = e && atoi(e) ? 1 : 0; }
+    if (on < 0) { const char *e = getenv("DM_PAD_LABEL"); if (!e) e = getenv("DM_PAD_XBOX"); on = !e ? 0 : !strcmp(e, "ab") ? 2 : atoi(e) ? 1 : 0; }
     return on;
 }
 static uint64_t key_bit(int32_t k) {   // Nintendo layout by position: the bottom face button is B, the right one A (as the iOS front end maps)
-    if (pad_labels()) switch (k) {   // by label instead: A is A, B is B, X is X, Y is Y (the pause menu and the text entry follow it: A confirms, B erases)
-    case AKEYCODE_BUTTON_A: return DM_BTN_A; case AKEYCODE_BUTTON_B: return DM_BTN_B; case AKEYCODE_BUTTON_X: return DM_BTN_X; case AKEYCODE_BUTTON_Y: return DM_BTN_Y;
+    if (pad_labels()) switch (k) {   // by label instead: A is A, B is B (the pause menu and the text entry follow it: A confirms, B erases), and with Label X is X, Y is Y
+    case AKEYCODE_BUTTON_A: return DM_BTN_A; case AKEYCODE_BUTTON_B: return DM_BTN_B;
+    case AKEYCODE_BUTTON_X: if (pad_labels() == 1) return DM_BTN_X; break;
+    case AKEYCODE_BUTTON_Y: if (pad_labels() == 1) return DM_BTN_Y; break;
     default: break;
     }
     switch (k) {
@@ -473,7 +477,7 @@ static void menu_close(void) {
     g_menu_ptr = -1; atomic_store(&g_menu_t, 0);
     hold_sync(); dm_haptics_suspend(4, 0); dm_overlay_redraw();
     LOG("[menu] closed: the game goes on (gamepad %s, opacity %d%%, rumble %s, face buttons by %s, frame rate %s, %s)", atomic_load(&g_set_overlay) ? "on" : "off", atomic_load(&g_set_opacity),
-        atomic_load(&g_set_rumble) ? "on" : "off", pad_labels() ? "label" : "position", atomic_load(&g_set_fps) ? "shown" : "hidden", dm_opmode() ? "docked" : "handheld");
+        atomic_load(&g_set_rumble) ? "on" : "off", pad_labels() == 2 ? "A/B label" : pad_labels() ? "label" : "position", atomic_load(&g_set_fps) ? "shown" : "hidden", dm_opmode() ? "docked" : "handheld");
 }
 static void menu_opacity(int v) {   // the slider: a new value is drawn at once and saved when the finger lifts (menu_touch) or with each controller step
     v = v < OV_OPACITY_MIN ? OV_OPACITY_MIN : v > OV_OPACITY_MAX ? OV_OPACITY_MAX : v;
@@ -486,7 +490,7 @@ static void menu_do(int item) {
     else if (item == OVM_RUMBLE) { int on = !atomic_load(&g_set_rumble); atomic_store(&g_set_rumble, on); dm_haptics_android_set(on); settings_save(); }
     else if (item == OVM_FPS) { atomic_store(&g_set_fps, !atomic_load(&g_set_fps)); settings_save(); }
     else if (item == OVM_MODE) { dm_set_opmode(dm_opmode() ? 0 : 1); settings_save(); }   // the game takes it when it goes on
-    else if (item == OVM_PAD) { atomic_store(&g_set_labels, !pad_labels()); settings_save(); }   // at once (pad_labels)
+    else if (item == OVM_PAD) { atomic_store(&g_set_labels, (pad_labels() + 1) % 3); settings_save(); }   // Position, Label, A/B in turn, at once (pad_labels)
     else if (item == OVM_TAB) { menu_tab(atomic_load(&g_menu_tab) + 1); return; }
     else if (item == OVM_EDIT) { dm_haptics_android_tap(); ed_open(); return; }
     else if (item == OVM_OPACITY) return;   // (the slider is dragged, or stepped with left and right)

@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 # Generate a stand-in for the "Nintendo extension" shared font (nintendo_ext.ttf): controller-button icons at the original private-use code points (A/B/X/Y, L/R/ZL/ZR/SL/SR, +/−, D-pad, stick direction arrows).
 # The host has no original system fonts; button icons in game text (e.g. Mario's GameMsg/Key.msbt: U+E0E0 = A button) render as "?" when the glyph is missing. Letters come from macOS's Arial Rounded Bold, knocked out of a solid plate.
-# Usage: make_ext_font.py out.ttf [letter-font.ttf]; needs fontTools (pip install fonttools)
+# --xbox draws them for an Xbox-style controller played with DM_PAD_XBOX=ab (front_android.c key_bit): A and B as they are, the game's X (the top button) as Y and its Y
+# (the left one) as X, the shoulders and triggers as LB / RB / LT / RT, + as the menu button (three bars) and - as the view button (two windows).
+# Usage: make_ext_font.py [--xbox] out.ttf [letter-font.ttf]; needs fontTools (pip install fonttools)
 import math, sys
 from fontTools.ttLib import TTFont
 from fontTools.fontBuilder import FontBuilder
@@ -67,7 +69,7 @@ def cross(cx, cy, half, arm):   # D-pad outline (one closed ring)
     return [(cx - a, cy + h, 1), (cx + a, cy + h, 1), (cx + a, cy + a, 1), (cx + h, cy + a, 1), (cx + h, cy - a, 1), (cx + a, cy - a, 1),
             (cx + a, cy - h, 1), (cx - a, cy - h, 1), (cx - a, cy - a, 1), (cx - h, cy - a, 1), (cx - h, cy + a, 1), (cx - a, cy + a, 1)]
 
-def build(out, letter_font):
+def build(out, letter_font, xbox=False):
     L = Letters(letter_font); glyphs = {}; adv = {}; cmap = {}
     def glyph(name, codes, width, draw):
         pen = TTGlyphPen(None); draw(pen, width / 2); glyphs[name] = pen.glyph(); adv[name] = width
@@ -104,10 +106,22 @@ def build(out, letter_font):
         return d
 
     pen = TTGlyphPen(None); glyphs['.notdef'] = pen.glyph(); adv['.notdef'] = 500
-    for i, t in enumerate(['A', 'B', 'X', 'Y']): glyph('btn' + t, [0xE0A0 + i, 0xE0E0 + i], 1000, round_btn(t))
-    for i, (t, w) in enumerate([('L', 900), ('R', 900), ('ZL', 1200), ('ZR', 1200), ('SL', 1200), ('SR', 1200)]):
-        glyph('btn' + t, [0xE0A4 + i, 0xE0E4 + i], w + 100, plate(t, w))
-    glyph('btnPlus', [0xE0B5, 0xE0EF], 1000, sign(False)); glyph('btnMinus', [0xE0B6, 0xE0F0], 1000, sign(True))
+    def bars(menu):   # Xbox: menu = three bars, view = two overlapping windows
+        def d(pen, cx):
+            contour(pen, circle(cx, CY, R))
+            if menu:
+                for dy in (-150, 0, 150): contour(pen, rect(cx - 230, CY + dy - 45, cx + 230, CY + dy + 45), hole=True)
+            else:
+                contour(pen, rect(cx - 250, CY - 60, cx + 90, CY + 200), hole=True); contour(pen, rect(cx - 170, CY + 20, cx + 10, CY + 120))
+                contour(pen, rect(cx - 90, CY - 200, cx + 250, CY + 60), hole=True); contour(pen, rect(cx - 10, CY - 120, cx + 170, CY - 20))
+        return d
+    face = ['A', 'B', 'Y', 'X'] if xbox else ['A', 'B', 'X', 'Y']   # the game's X is the top button, an Xbox controller's Y
+    for i, (n, t) in enumerate(zip(['A', 'B', 'X', 'Y'], face)): glyph('btn' + n, [0xE0A0 + i, 0xE0E0 + i], 1000, round_btn(t))
+    shoulders = ['LB', 'RB', 'LT', 'RT'] if xbox else ['L', 'R', 'ZL', 'ZR']
+    for i, (n, t, w) in enumerate(zip(['L', 'R', 'ZL', 'ZR', 'SL', 'SR'], shoulders + ['SL', 'SR'], [900, 900, 1200, 1200, 1200, 1200])):
+        w = 1200 if len(t) > 1 else w
+        glyph('btn' + n, [0xE0A4 + i, 0xE0E4 + i], w + 100, plate(t, w))
+    glyph('btnPlus', [0xE0B5, 0xE0EF], 1000, bars(True) if xbox else sign(False)); glyph('btnMinus', [0xE0B6, 0xE0F0], 1000, bars(False) if xbox else sign(True))
     glyph('dpad', [0xE0EA], 1000, dpad(None))
     for c, dr in [(0xE0AB, 'right'), (0xE0AC, 'down'), (0xE0AD, 'up'), (0xE0AE, 'left')]: glyph('dpad_' + dr, [c, c + 0x40], 1000, dpad(dr))
     for c, (nm, deg) in zip(range(0xE090, 0xE098), [('right', 0), ('left', 180), ('up', 90), ('down', 270), ('rightup', 45), ('rightdown', 315), ('leftdown', 225), ('leftup', 135)]):
@@ -127,5 +141,6 @@ def build(out, letter_font):
     print('%s: %d glyphs, %d code points' % (out, len(order), len(cmap)))
 
 if __name__ == '__main__':
-    if len(sys.argv) < 2: sys.exit(__doc__ or 'usage: make_ext_font.py out.ttf [letter-font.ttf]')
-    build(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else '/System/Library/Fonts/Supplemental/Arial Rounded Bold.ttf')
+    args = [a for a in sys.argv[1:] if a != '--xbox']
+    if not args: sys.exit('usage: make_ext_font.py [--xbox] out.ttf [letter-font.ttf]')
+    build(args[0], args[1] if len(args) > 1 else '/System/Library/Fonts/Supplemental/Arial Rounded Bold.ttf', xbox='--xbox' in sys.argv[1:])
