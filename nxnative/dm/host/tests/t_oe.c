@@ -10,6 +10,7 @@ uint64_t now_ns(void) { return 0; }
 void dm_audio_suspend(int on) { (void)on; }   // stubs for the bg item of DM_OE_SCRIPT (hle_audio.c / hle_os.c / hle_nvn.c)
 void guest_clock_freeze_for(int reason, int on) { (void)reason; (void)on; }
 void dm_gfx_suspend(int on) { (void)on; }
+static int hid_opmode_calls; void dm_hid_opmode_changed(void) { hid_opmode_calls++; }   // hle_hid.c
 // The notification event (hle_thread.c binds a kernel event): the unit test only tracks whether it is signalled
 static int ev_bound, ev_sig;
 void hle_bind_system_event(void *g, int autoclear) { (void)g; (void)autoclear; ev_bound = 1; }
@@ -60,6 +61,8 @@ int main(void) {
     unsetenv("DM_OE_SCRIPT"); reset();
     CHECK(empty(), "empty queue at start: returns false and leaves the output alone");
     dm_focus_set(1); dm_set_opmode(1); CHECK(empty(), "same state sends no notification");
+    CHECK(hid_opmode_calls == 0, "same state: hid not told");
+    dm_set_opmode(0); CHECK(hid_opmode_calls == 1, "a change tells hid (player 1 moves npad)"); reset(); hid_opmode_calls = 0;
     dm_focus_set(3); CHECK(h_oe_GetFocus() == 3, "background state 3 can be queried before popping");
     CHECK(pop_is(15) && empty(), "background change notification 15 exactly once");
     dm_focus_set(2); dm_focus_set(1);

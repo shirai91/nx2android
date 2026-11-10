@@ -156,10 +156,31 @@ static void t_vibration(void) {
     CHECK(!h_hid_VibPermit(), "disconnecting the last output disables vibration");
 }
 
+// The operation mode switched while the game runs (the pause menu's Handheld / Docked row, hle_oe.c dm_set_opmode): player 1 moves between Handheld and No1, and both npads'
+// style update events fire, so a game that picks its controller by style finds it again (Pokémon Legends: Arceus read only Handheld after a switch to docked, and no button worked)
+static void t_opmode(void) {
+    ids((uint32_t[]){0, NPAD_HANDHELD}, 2); dm_pad_players(1); dm_pad_set_player(0, DM_BTN_A, 0, 0, 0, 0);
+    static int hh, no1; uint32_t id;
+    g_mode = 0; g_signals = 0;
+    id = NPAD_HANDHELD; h_hid_BindStyleEv(&id, &hh, 0);
+    CHECK(g_signals == 1 && g_signalled == &hh, "Handheld's style event signalled on binding in handheld mode");
+    id = NPAD_NO1; h_hid_BindStyleEv(&id, &no1, 0);
+    CHECK(g_signals == 1, "No1's is not: no controller on it in handheld mode");
+    CHECK(buttons_of(NPAD_HANDHELD, STYLE_HANDHELD) == DM_BTN_A && buttons_of(NPAD_NO1, STYLE_FULLKEY) == 0, "handheld: player 1 on Handheld");
+    g_mode = 1; g_signals = 0; dm_hid_opmode_changed();
+    CHECK(g_signals == 2, "a switch to docked signals both npads' style events");
+    CHECK(h_hid_GetStyle(&(uint32_t){NPAD_HANDHELD}) == 0 && h_hid_GetStyle(&(uint32_t){NPAD_NO1}) == STYLE_FULLKEY, "docked: Handheld empty, No1 full-key");
+    CHECK(buttons_of(NPAD_NO1, STYLE_FULLKEY) == DM_BTN_A && buttons_of(NPAD_HANDHELD, STYLE_HANDHELD) == 0, "docked: player 1's buttons on No1");
+    g_mode = 0; g_signals = 0; dm_hid_opmode_changed();
+    CHECK(g_signals == 2 && h_hid_GetStyle(&(uint32_t){NPAD_HANDHELD}) == STYLE_HANDHELD, "and back to handheld");
+    dm_pad_set_player(0, 0, 0, 0, 0, 0); g_mode = 1;
+}
+
 int main(void) {
     t_slots();
     t_npads();
     t_vibration();
+    t_opmode();
     printf("hid players: %d checks, %d failed\n", checks, fails);
     return fails != 0;
 }
