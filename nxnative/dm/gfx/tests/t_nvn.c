@@ -54,6 +54,21 @@ static size_t tex_size(int fmt, int w, int h, int flags, size_t *align) {
     return P(nvnTextureBuilderGetStorageSize)(&tb);
 }
 
+// 5e's writer thread: hands the same game memory to one command buffer again and again and fills it with small draws, stopping each round while there is still room for the END
+typedef struct { NVNcommandBuffer *cb; NVNmemoryPool *pool; size_t bytes; _Atomic int quit; _Atomic long draws; } cmdsz_job_t;
+static void *cmdsz_writer(void *arg) {
+    cmdsz_job_t *j = arg;
+    while (!atomic_load(&j->quit)) {
+        P(nvnCommandBufferAddCommandMemory)(j->cb, j->pool, 0, j->bytes); P(nvnCommandBufferBeginRecording)(j->cb);
+        while (P(nvnCommandBufferGetCommandMemoryFree)(j->cb) > 256) {
+            P(nvnCommandBufferDrawElementsBaseVertex)(j->cb, NVN_DRAW_PRIMITIVE_TRIANGLES, NVN_INDEX_TYPE_UNSIGNED_SHORT, 3, 0x10000, 0);
+            atomic_fetch_add(&j->draws, 1);
+        }
+        P(nvnCommandBufferEndRecording)(j->cb);
+    }
+    return NULL;
+}
+
 int main(void) {
     crash_install();   // the same SIGSEGV / SIGBUS handling as production (the page-fault hook is dispatched from within it)
     // 1. Bootstrap address lookup: bootstrap gets GetProcAddress, then uses it to get all the names
@@ -321,6 +336,38 @@ int main(void) {
         EXPECT("long wait = condition satisfied (1)", 1, w1);
         EXPECT("dst holds only the pre-rewrite value (16384 samples)", 0, bad);
         P(nvnMemoryPoolFinalize)(&hp); free(heap);
+    }
+
+    // 5e. GetCommandMemorySize is the byte count the game last handed to AddCommandMemory, and records do not move it, also while another thread records into that buffer:
+    //     Super Smash Bros. Ultimate sorts a pool of command buffers by this size while its second render thread is recording into one of them (hle_nvn.c, at the getter)
+    {
+        static uint8_t m[8192] __attribute__((aligned(4096))); NVNmemoryPoolBuilder mb; NVNmemoryPool mp; NVNcommandBuffer c5;
+        P(nvnMemoryPoolBuilderSetDefaults)(&mb); P(nvnMemoryPoolBuilderSetStorage)(&mb, m, sizeof m); P(nvnMemoryPoolInitialize)(&mp, &mb);
+        P(nvnCommandBufferInitialize)(&c5, &dev);
+        EXPECT("size before any command memory: 0", 0, P(nvnCommandBufferGetCommandMemorySize)(&c5));
+        P(nvnCommandBufferAddCommandMemory)(&c5, &mp, 0, sizeof m);
+        EXPECT("size = the bytes added", sizeof m, P(nvnCommandBufferGetCommandMemorySize)(&c5));
+        P(nvnCommandBufferBeginRecording)(&c5);
+        for (int i = 0; i < 4; i++) P(nvnCommandBufferDrawElementsBaseVertex)(&c5, NVN_DRAW_PRIMITIVE_TRIANGLES, NVN_INDEX_TYPE_UNSIGNED_SHORT, 3, 0x10000, 0);
+        EXPECT("records leave the size alone", sizeof m, P(nvnCommandBufferGetCommandMemorySize)(&c5));
+        EXPECT("inside the game's memory, size = used + free", 1,
+               P(nvnCommandBufferGetCommandMemorySize)(&c5) == P(nvnCommandBufferGetCommandMemoryUsed)(&c5) + P(nvnCommandBufferGetCommandMemoryFree)(&c5));
+        for (int i = 0; i < 600; i++) P(nvnCommandBufferDrawElementsBaseVertex)(&c5, NVN_DRAW_PRIMITIVE_TRIANGLES, NVN_INDEX_TYPE_UNSIGNED_SHORT, 3, 0x10000, 0);
+        EXPECT("past the memory added the host lends a segment; the size stays the game's", 1,
+               P(nvnCommandBufferGetCommandMemorySize)(&c5) == sizeof m && P(nvnCommandBufferGetCommandMemoryUsed)(&c5) > sizeof m);
+        P(nvnCommandBufferEndRecording)(&c5);
+        P(nvnCommandBufferAddCommandMemory)(&c5, &mp, 16, sizeof m - 16);
+        EXPECT("memory added at an offset: size = the bytes passed", sizeof m - 16, P(nvnCommandBufferGetCommandMemorySize)(&c5));
+        // a second thread records over and over into the same memory while this one reads the size; every read must be the bytes added
+        cmdsz_job_t job = { .cb = &c5, .pool = &mp, .bytes = sizeof m }; pthread_t th; long reads = 0, wrong = 0;
+        P(nvnCommandBufferAddCommandMemory)(&c5, &mp, 0, sizeof m);
+        EXPECT("writer thread starts", 0, pthread_create(&th, NULL, cmdsz_writer, &job));
+        for (uint64_t t0 = now_ns(); atomic_load(&job.draws) < 20000 && now_ns() - t0 < 3000000000ull; reads++)
+            if (P(nvnCommandBufferGetCommandMemorySize)(&c5) != sizeof m) wrong++;
+        atomic_store(&job.quit, 1); pthread_join(th, NULL);
+        EXPECT("the writer recorded while sizes were read", 1, atomic_load(&job.draws) > 0 && reads > 0);
+        EXPECT("no size read during the recording differed from the bytes added", 0, wrong);
+        P(nvnCommandBufferFinalize)(&c5); P(nvnMemoryPoolFinalize)(&mp);
     }
 
     // 6. Sync / window / present
