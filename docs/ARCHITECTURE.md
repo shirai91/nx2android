@@ -119,6 +119,26 @@ checks synthetic planes and padding; physical-device qualification is separate.
 
 The shader translator's existing native-perspective compensation rule accepts either outer operand order in `(input * FragCoord.w) * (1 / FragCoord.w)`. Both alpha depth and material variants must reach the same native interpolated input; leaving the multiply/divide round trip in only one variant can change alpha coverage and retain old HDR colour. The FP32, input-load, FragCoord.w and constant-one guards remain in place.
 
+On Adreno, eligible direct geometry draws separate buffer effects from rasterization
+(`gfx_vk_gs_split.c`, `gfx_vk_shader.c`, `gfx_vk_exec.c`). A discarded, single-output
+point shader runs the guest memory writes with singleton subgroups; a second shader
+retains the original primitive output but removes buffer stores and atomic writes.
+A pass boundary and memory barrier separate them. This avoids repeated index-buffer
+appends observed with three-output software geometry passthrough on both Turnip and
+Qualcomm's driver. The SPIR-V analysis rejects mutable data reaching raster outputs
+or control flow, including through local memory, helper parameters/returns and
+subgroup operations. Unsupported pointer aliases, extension instructions, XFB,
+images and user UBOs retain the original path, as do indirect draws, captured command
+blocks, single-output geometry and vertex shaders with memory effects. Devices
+without geometry PointSize support also retain the original path. Both immutable shader modules must
+exist before either pass is selected. Pipeline keys distinguish the two phases;
+the GS buffers must not overlap vertex/index fetch or the VS's direct buffer reads,
+and VS textures or indirect handles conservatively retain the original path.
+PPE3 invalidates older prewarm records. The effects shader writes PointSize, and
+discarded pipelines invalidate cached stencil state before the next raster draw.
+`DM_VK_GS_SPLIT=0` restores the original path live for diagnosis. Other vendors keep
+the original default; other Adreno games still need rendering regression coverage.
+
 ## Game profiles on Android
 
 A profile is offered for Android when it has an `android.tsv`; the profiles without one (52 of the 54 today, upstream's iOS games) show as "ios only": an experimental port can still try them. `android.tsv` holds, one `key<TAB>value` row each:

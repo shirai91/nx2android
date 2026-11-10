@@ -486,6 +486,40 @@ static uint32_t *spv_frag_depth(const uint32_t *w, uint32_t nw, uint32_t *onw) {
         memcpy(&o[no], &w[i], n * 4); no += n; i += n; }
     o[3] = c.bound; *onw = no; free(c.nt); return o;
 }
+// Separate only GS buffer effects that do not drive its rasterization. User UBOs
+// and textures could alias a written buffer, so this first path accepts only the
+// host's immutable driver/support/constant segments and direct storage buffers.
+int vk_shader_gs_split_ready(vkshader_t *s) {
+    if (!s || s->stage != 2 || s->xfb || !s->spv || !V.has_gs_pointsize) return 0;
+    pthread_mutex_lock(&g_sh_mu);
+    if (s->gs_split) { int ok = s->gs_split == 1; pthread_mutex_unlock(&g_sh_mu); return ok; }
+    s->gs_split = 2;
+    for (int i = 0; i < s->nbind; i++) {
+        int k = s->b[i].kind;
+        if (k != RK_SUPPORT && k != RK_DRV && k != RK_C1 && k != RK_SBUF) { pthread_mutex_unlock(&g_sh_mu); return 0; }
+    }
+    uint32_t nr = 0, ne = 0, *r = NULL, *e = NULL; char why[128];
+    r = spv_gs_split(s->spv, s->nspv, 2, &nr, why, sizeof why);
+    if (r) e = spv_gs_split(s->spv, s->nspv, 1, &ne, why, sizeof why);
+    if (e) {
+        // Adreno's GS subgroup includes the physical output-vertex threads. Run
+        // guest warp scalarization in singleton groups in the effects pass.
+        uint32_t nn = 0, *one = spv_one_lane(e, ne, 0, &nn, why, sizeof why);
+        if (one) { free(e); e = one; ne = nn; }
+        else if (why[0]) { free(e); e = NULL; }
+    }
+    if (e && r) {
+        VkShaderModuleCreateInfo ei = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, NULL, 0, (size_t)ne * 4, e};
+        VkShaderModuleCreateInfo ri = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, NULL, 0, (size_t)nr * 4, r};
+        VkResult a = vkCreateShaderModule(V.dev, &ei, NULL, &s->gs_mod[0]);
+        VkResult b = a ? a : vkCreateShaderModule(V.dev, &ri, NULL, &s->gs_mod[1]);
+        if (!a && !b) { s->gs_split = 1; VKLOG("geometry shader %016llx: buffer effects separated from rasterization", (unsigned long long)s->key); }
+        else { if (s->gs_mod[0]) vkDestroyShaderModule(V.dev, s->gs_mod[0], NULL); if (s->gs_mod[1]) vkDestroyShaderModule(V.dev, s->gs_mod[1], NULL); s->gs_mod[0] = s->gs_mod[1] = VK_NULL_HANDLE; }
+    }
+    free(e); free(r); int ok = s->gs_split == 1;
+    pthread_mutex_unlock(&g_sh_mu); return ok;
+}
+
 // DM_VK_SPV_DIR=<dir> with DM_VK_SPV_ALT=1 (live, debugging): pipelines made while it is on use <dir>/<key>.spv in place of the bundle's code where the file
 // exists (same bindings), so two compilations of a shader can be compared in one run: the translator's module through spirv-opt, its GLSL through glslc...
 static VkShaderModule alt_module(vkshader_t *s) {
