@@ -227,20 +227,11 @@ pending legacy migrations remain eligible for retry. `DM_VK_NOPCACHE` still mean
 start empty, while allowing newly built pipelines to be saved. Bump `PCACHE_ABI`
 when changing the renderer's persistent cache contract.
 
-Optional native keyboard
-------------------------
+## Optional native keyboard
 
-`python -m porter port <folder> --native-keyboard` packages `org.nx2a.GameActivity` and its
-Unicode EditText dialog. The existing `--external-display` activity inherits the same
-bridge. These opt-in activities require JDK `javac` plus SDK platform and build-tools;
-ordinary NativeActivity builds remain code-less and keep the controller keyboard.
+`python -m porter port <folder> --native-keyboard` packages `org.nx2a.GameActivity` and its Unicode EditText dialog. Combine it with `--external-display` to select `org.nx2a.KeyboardExternalActivity`; external display alone keeps its controller keyboard. These opt-in activities require JDK `javac` plus SDK platform and build-tools; ordinary NativeActivity builds remain code-less and keep the controller keyboard. Installation and save requests resolve the installed package's launcher activity, including ports built before this option existed.
 
-JNI passes ordinary UTF-8 byte arrays, preserving supplementary characters rather than
-using modified UTF-8. The guest's minimum and maximum lengths are UTF-16 units; native
-output truncation preserves complete UTF-8 code points. Cancel, pause and destruction
-release waiting callers without accepting text. Requests are serialized, and only an
-absent optional Java bridge falls back to the overlay keyboard. This ports text entry,
-not additional guest keyboard modes or candidate/update callbacks.
+JNI passes ordinary UTF-8 byte arrays, preserving supplementary characters rather than using modified UTF-8. The guest's minimum and maximum lengths are UTF-16 units; native output truncation preserves complete UTF-8 code points. Cancel, pause and destruction release waiting callers without accepting text. Requests are serialized, and a concurrent request is cancelled with a log line. The bridge caches method presence or absence for the activity class, and only an absent optional Java bridge falls back to the overlay keyboard. This supports text entry; additional guest keyboard modes and candidate/update callbacks are not implemented.
 
 Run the asset-free emulator contract probe with:
 
@@ -248,8 +239,4 @@ Run the asset-free emulator contract probe with:
 python tests/android/keyboard_smoke.py --sdk "$ANDROID_HOME" --ndk "$ANDROID_NDK_HOME" --serial emulator-5554 --out /tmp/nx2a-keyboard
 ```
 
-It builds through the production Java/dex packager, uses the real guest keyboard
-conversion and JNI bridge, and checks Unicode/UTF-16 output, minimum length, cancel,
-background/resume, repeated requests and bounded UTF-8 output. Add `--without-java`
-to verify the default APK's fallback. The probe installs only `org.nx2a.keyboardtest`
-and uninstalls it afterward; run it on a dedicated emulator. No game dump is needed.
+It builds through the production Java/dex packager, uses the real guest keyboard conversion and JNI bridge, and checks Unicode/UTF-16 output, minimum length, cancel, background/resume, repeated requests and bounded UTF-8 output. Add `--without-java` to verify the default APK's fallback. The probe installs only `org.nx2a.keyboardtest` and uninstalls it afterward; run it on a dedicated emulator. No game dump is needed. This probe does not qualify the combined external-display keyboard or physical-device gameplay.

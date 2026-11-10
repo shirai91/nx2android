@@ -763,7 +763,8 @@ class Port:
         sources = sorted((DM / 'android/java/org/nx2a').glob('*.java'))
         nsp.run([javac, '-source', '8', '-target', '8', '-classpath', platform, '-d', classes, *sources], self.logs / 'android_external_java.log', env=self.env)
         nsp.run([d8, '--min-api', '29', '--lib', platform, '--output', dex, *sorted(classes.rglob('*.class'))], self.logs / 'android_external_dex.log', env=self.env)
-        return ['--dex', dex / 'classes.dex', '--activity', 'org.nx2a.ExternalActivity' if self.o.external_display else 'org.nx2a.GameActivity']
+        activity = 'KeyboardExternalActivity' if self.o.native_keyboard else 'ExternalActivity'
+        return ['--dex', dex / 'classes.dex', '--activity', 'org.nx2a.' + activity if self.o.external_display else 'org.nx2a.GameActivity']
 
     def theme(self):
         """The on-screen gamepad's theme: only the game's own pack goes in the APK (dm/android/themes/themes.tsv maps title IDs to packs; a game with no row

@@ -1,5 +1,6 @@
 package org.nx2a;
 
+import android.app.Activity;
 import android.app.AlertDialog;
 import android.os.Looper;
 import android.text.Editable;
@@ -13,11 +14,11 @@ import java.util.concurrent.CountDownLatch;
 
 /** A guest can wait for the native input box while the Android UI thread keeps handling lifecycle events. */
 final class GameKeyboard {
-    private final GameActivity activity;
+    private final Activity activity;
     private AlertDialog dialog;
     private boolean paused = true;
 
-    GameKeyboard(GameActivity activity) { this.activity = activity; }
+    GameKeyboard(Activity activity) { this.activity = activity; }
 
     void pause(boolean value) {
         paused = value;

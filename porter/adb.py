@@ -164,6 +164,16 @@ class Adb:
             self.run('uninstall', package, timeout=300, retries=1)
             self.run('install', apk, timeout=600, retries=1)
 
+    def start_app(self, package):
+        """Start the installed package's launcher, including optional Java activities and older ports."""
+        out = self.shell(f'cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.LAUNCHER {shlex.quote(package)}')
+        components = [ln.strip() for ln in out.splitlines() if re.fullmatch(re.escape(package) + r'/[A-Za-z_.$][A-Za-z0-9_.$]*', ln.strip())]
+        if len(components) != 1:
+            raise AdbError(f'{package}: cannot resolve its launcher activity: {out.strip()}')
+        out = self.shell(f'am start -W -n {shlex.quote(components[0])}', timeout=60)
+        if re.search(r'(?im)^(?:Error|Exception)', out):
+            raise AdbError(f'{package}: could not start its launcher activity: {out.strip()}')
+
     def prepare_app_files(self, package, timeout=30):
         """Have Android create the app's files folder (/sdcard/Android/data/<package>/files) before anything is pushed into it: the system makes it, owned by the app with
         the app's group, when the app first asks for it. A folder the shell makes first lacks that group underneath FUSE, and the app cannot read what is pushed below it
@@ -181,7 +191,7 @@ class Adb:
             if isdir(old): raise AdbError(f'{files} needs to be made again by the app, but {old} is already there (left by an earlier repair): move what you need out of it and delete it')
             self.log(f'{files} belongs to uid {owner}, not to the app (uid {uid}): letting the app make it again and moving its contents back in')
             self.shell(f'mv {shlex.quote(files)} {shlex.quote(old)}')
-        self.shell(f'am start -W -n {package}/android.app.NativeActivity >/dev/null 2>&1; true', timeout=60)
+        self.start_app(package)
         for _ in range(timeout * 2):
             if isdir(files): break
             time.sleep(0.5)

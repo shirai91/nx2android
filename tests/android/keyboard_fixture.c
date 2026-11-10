@@ -17,6 +17,7 @@ static ANativeActivity *g_act;
 static ANativeWindow *g_win, *g_external_win;
 static pthread_mutex_t g_win_mu = PTHREAD_MUTEX_INITIALIZER;
 static _Atomic int g_ime_on, resumed;
+static uint64_t g_touch_btn;
 static void hold_sync(void) {}
 static void dm_input_set(int a,int b,int c,int d,int e) { (void)a;(void)b;(void)c;(void)d;(void)e; }
 static void dm_touch_set(void *p,int n) { (void)p;(void)n; }

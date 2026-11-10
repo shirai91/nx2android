@@ -860,7 +860,7 @@ static int overlay_text_input(const char *title, const char *sub, const char *gu
 }
 
 int front_text_input(const char *title, const char *sub, const char *guide, const char *initial, int max_chars, char *out, int out_cap) {
-    if (pthread_mutex_trylock(&g_keyboard_mu)) return 0;
+    if (pthread_mutex_trylock(&g_keyboard_mu)) { LOG("[text] request cancelled: another keyboard request is active"); return 0; }
     int result = android_text_input(title, sub, guide, initial, max_chars, out, out_cap);
     if (result == -2) result = overlay_text_input(title, sub, guide, initial, max_chars, out, out_cap);
     pthread_mutex_unlock(&g_keyboard_mu);

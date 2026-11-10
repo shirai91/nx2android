@@ -63,12 +63,7 @@ To arrange the on-screen controls, open the pause menu's **Gamepad** tab and cho
 
 A controller whose A is the bottom button (Xbox labels, most Android devices' built-in controls) can have its face buttons follow their labels: the **Gamepad** tab's **Face buttons** row switches between **Position** (the Switch's layout, the default) and **Label**. It applies at once, also to the pause menu's own A and B, and each device keeps its own choice.
 
-For Android's Unicode keyboard, port with `--native-keyboard`. It supports composed text,
-non-Latin scripts and emoji through the system IME, preserves initial text, and applies
-the guest's UTF-16 length limits. This option requires `javac` and an Android SDK with
-platform and build-tools (`ANDROID_HOME`). The default APK keeps the existing controller
-keyboard and does not require Java build tools. The external-screen activity also includes
-the native keyboard.
+For Android's Unicode keyboard, port with `--native-keyboard`. It supports composed text, non-Latin scripts and emoji through the system IME, preserves initial text, and applies the guest's UTF-16 length limits. This option requires `javac` and an Android SDK with platform and build-tools (`ANDROID_HOME`). The default APK keeps the existing controller keyboard and does not require Java build tools. Combine `--external-display --native-keyboard` to opt into the native keyboard on an external-screen port; external display alone keeps the controller keyboard. The combined mode still needs runtime qualification over the full-screen phone gamepad.
 
 For the experimental external-screen controller, port from the command line with `--external-display`. The game moves to a connected display and the phone shows the gamepad; the sound menu selects the phone or an external output. This option requires `javac` and an Android SDK with a platform and build-tools (`ANDROID_HOME`). Android 12 or newer uses the saved native layout; Android 10–11 use the fallback controller. Support varies by device and game.
 

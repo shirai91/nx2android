@@ -216,5 +216,62 @@ class PushFile(unittest.TestCase):
         self.assertEqual(Path(self.dst).read_bytes(), b'AAAABBBB'); self.assertEqual(self.adb.pushed, [])
 
 
+class LaunchActivity(unittest.TestCase):
+    class FakeAdb(Adb):
+        def __init__(self, activity='android.app.NativeActivity', resolved=None, launch=''):
+            super().__init__('adb'); self.activity, self.resolved, self.launch = activity, resolved, launch
+            self.cmds = []; self.started = False
+        def shell(self, script, **kw):
+            self.cmds.append(script)
+            if script.startswith('cmd package resolve-activity'):
+                return self.resolved if self.resolved is not None else f'priority=0 preferredOrder=0 match=0x108000\norg.nx2a.test/{self.activity}\n'
+            if script.startswith('am start'):
+                self.started = f'org.nx2a.test/{self.activity}' in script
+                return self.launch
+            if script.startswith('[ -d'):
+                return 'yes' if self.started and '.nx2a-old' not in script else ''
+            if script.startswith('cat ') and '/result.txt' in script:
+                return 'request=fixture\nresult=ok\nname=exported\n' if self.started else ''
+            return ''
+
+    def test_prepare_files_resolves_each_packaged_activity(self):
+        for activity in ('android.app.NativeActivity', 'org.nx2a.GameActivity', 'org.nx2a.ExternalActivity', 'org.nx2a.KeyboardExternalActivity'):
+            with self.subTest(activity=activity):
+                adb = self.FakeAdb(activity)
+                self.assertTrue(adb.prepare_app_files('org.nx2a.test', timeout=1))
+                self.assertTrue(adb.started)
+                self.assertTrue(any(c.startswith('cmd package resolve-activity') for c in adb.cmds))
+
+    def test_save_requests_resolve_each_packaged_activity(self):
+        from porter import saves
+        from unittest import mock
+        for activity in ('android.app.NativeActivity', 'org.nx2a.GameActivity', 'org.nx2a.ExternalActivity', 'org.nx2a.KeyboardExternalActivity'):
+            with self.subTest(activity=activity), mock.patch.object(saves.secrets, 'token_hex', return_value='fixture'):
+                adb = self.FakeAdb(activity)
+                result = saves._request(adb, 'org.nx2a.test', 'export.txt', ['export'], timeout=0.01)
+                self.assertEqual(result['name'], 'exported')
+                self.assertTrue(any(c.startswith('cmd package resolve-activity') for c in adb.cmds))
+
+    def test_missing_or_foreign_launcher_fails_without_starting(self):
+        for resolved in ('No activity found\n', 'other.package/.Main\n', 'org.nx2a.test/Bad;echo bad\n'):
+            with self.subTest(resolved=resolved):
+                adb = self.FakeAdb(resolved=resolved)
+                with self.assertRaisesRegex(AdbError, 'launcher activity'):
+                    adb.start_app('org.nx2a.test')
+                self.assertFalse(any(c.startswith('am start') for c in adb.cmds))
+
+    def test_start_error_is_reported_immediately(self):
+        adb = self.FakeAdb(launch='Error type 3\nError: Activity class does not exist.\n')
+        with self.assertRaisesRegex(AdbError, 'Activity class does not exist'):
+            adb.start_app('org.nx2a.test')
+
+    def test_failed_save_launch_removes_pending_request(self):
+        from porter import saves
+        adb = self.FakeAdb(resolved='No activity found\n')
+        with self.assertRaisesRegex(AdbError, 'launcher activity'):
+            saves._request(adb, 'org.nx2a.test', 'export.txt', ['export'], timeout=0.01)
+        self.assertTrue(any('rm -f' in c and '/export.txt' in c for c in adb.cmds))
+
+
 if __name__ == '__main__':
     unittest.main()

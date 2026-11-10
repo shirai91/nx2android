@@ -1,7 +1,10 @@
-// Adapted from nxnative Android keyboard bridge. -2 means the optional Java activity is absent.
+// Optional Android keyboard bridge. -2 means the Java activity has no keyboard.
 // Shared swkbd owns the guest encodings and UTF-16 length contract. Use byte
 // arrays for ordinary UTF-8 across JNI: NewStringUTF uses modified UTF-8.
-extern _Thread_local int g_swkbd_min_chars;
+// Protected by g_keyboard_mu in front_text_input. Keep the class alive for the
+// cached method ID; absence is cached too, so code-less APKs throw only once.
+static jclass g_keyboard_class;
+static jmethodID g_keyboard_method;
 static int android_text_input(const char *title, const char *sub, const char *guide, const char *initial,
                      int max_chars, char *out, int out_cap) {
     if (!out || out_cap < 1) return -1;
@@ -21,9 +24,22 @@ static int android_text_input(const char *title, const char *sub, const char *gu
     pthread_mutex_unlock(&g_win_mu);
     if (activity && !(*env)->PushLocalFrame(env, 12)) {
         jclass cls = (*env)->GetObjectClass(env, activity);
-        jmethodID method = cls ? (*env)->GetMethodID(env, cls, "readKeyboard", "([B[B[B[BII)[B") : NULL;
-        if (!method && !(*env)->ExceptionCheck(env)) result = -2;
-        if (!method && (*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); result = -2; }
+        jmethodID method = NULL;
+        if (cls && !(*env)->ExceptionCheck(env)) {
+            if (!g_keyboard_class || !(*env)->IsSameObject(env, cls, g_keyboard_class)) {
+                jclass keep = (*env)->NewGlobalRef(env, cls);
+                if (keep) {
+                    if (g_keyboard_class) (*env)->DeleteGlobalRef(env, g_keyboard_class);
+                    g_keyboard_class = keep;
+                    g_keyboard_method = (*env)->GetMethodID(env, cls, "readKeyboard", "([B[B[B[BII)[B");
+                    if (!g_keyboard_method && (*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+                }
+            }
+            if (!(*env)->ExceptionCheck(env)) {
+                method = g_keyboard_method;
+                if (!method) result = -2;
+            }
+        }
         const char *args[] = {title, sub, guide, initial};
         jbyteArray bytes[4] = {0};
         for (int i = 0; method && i < 4 && !(*env)->ExceptionCheck(env); i++) {
@@ -33,11 +49,11 @@ static int android_text_input(const char *title, const char *sub, const char *gu
         }
         if (method && !(*env)->ExceptionCheck(env)) {
             atomic_store(&g_ime_on, 1); hold_sync();
-            dm_input_set(0, 0, 0, 0, 0); dm_touch_set(NULL, 0);
+            dm_input_set(0, 0, 0, 0, 0); dm_touch_set(NULL, 0); g_touch_btn = 0;
             jbyteArray answer = (*env)->CallObjectMethod(env, activity, method, bytes[0], bytes[1], bytes[2], bytes[3],
                                                           g_swkbd_min_chars, max_chars);
             atomic_store(&g_ime_on, 0); hold_sync();
-            dm_input_set(0, 0, 0, 0, 0); dm_touch_set(NULL, 0);
+            dm_input_set(0, 0, 0, 0, 0); dm_touch_set(NULL, 0); g_touch_btn = 0;
             if (!(*env)->ExceptionCheck(env)) {
                 if (!answer) result = 0;
                 else {
