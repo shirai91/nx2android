@@ -3,9 +3,11 @@
 # nxnative/dm/android/apk/apkdriver.py --host, signed with the player's key (the same signer: it installs over the app, its saves stay). The data on the device is not touched.
 # The game's rewritten modules on the device (mods/) must still fit the host: mods/build_src.sha256 holds the hashes of the rewriter and the patch files that made them
 # (patch_nso.py), and any of them changed since (the rewriter, the SDK's patches, the game's own) needs a port again from the game's files. Other games' patch files do not matter,
-# being keyed by their own build IDs. Nor does a change in sdk_patches.py for other SDK builds: the cuts and observation gates it and the game's patches.py give the build IDs of
+# being keyed by their own build IDs. The host is built from the repository's profile, so the port must have been made from it too: its version one the profile registers and the
+# hash of the game_profile.h it was built with (nx2a-data.json profile_h, which porter port writes) this checkout's. A derived profile (a version the profile does not register, with
+# its automatic alias headroom) or --alias-headroom compiled another DM_GAME_MEM_ALIAS into libdmhost.so, and the repository's would give the game a smaller alias region. Nor does a change in sdk_patches.py for other SDK builds: the cuts and observation gates it and the game's patches.py give the build IDs of
 # the port's modules are checked against those mods/<module>.cuts.tsv and .obs.tsv list. A changed shader translator or data pack is not carried over either: a port again does that.
-import hashlib, json, os, shlex, subprocess, sys, tempfile
+import hashlib, json, os, re, shlex, subprocess, sys, tempfile
 from pathlib import Path
 
 from porter import datapack, paths, toolchain
@@ -70,14 +72,52 @@ def stale_sources(record, title_id, tools=DM / 'tools', modules=None):
     return out
 
 
+TITLE_ID = re.compile(r'[0-9A-Fa-f]{16}')
+
+
+def clean_env():   # the environment without DM_GAMES_DIR / DM_GAMES_FIRST: the host and its profile header come from the repository's profile only
+    return {k: v for k, v in os.environ.items() if k not in ('DM_GAMES_DIR', 'DM_GAMES_FIRST')}
+
+
+def profile_hash(title_id):
+    """sha256 of the game_profile.h the repository's profile of title_id makes (dm/games/game.py header, as dm/android/build.py makes it)"""
+    with tempfile.TemporaryDirectory(prefix='nx2a_profile_') as t:
+        h = Path(t) / 'game_profile.h'
+        r = subprocess.run([sys.executable, str(DM / 'games/game.py'), 'header', title_id, str(h)], capture_output=True, text=True, errors='replace', env=clean_env())
+        if r.returncode or not h.is_file(): raise BuildError(f'{title_id}: the profile header did not build: ' + ((r.stderr.strip() or r.stdout.strip()).splitlines() or ['no output'])[-1])
+        return hashlib.sha256(h.read_bytes()).hexdigest()
+
+
+def check_profile(package, manifest, title_id):
+    """Refuses (BuildError) a port not made from this checkout's profile of title_id: its version unregistered, or its profile header's hash absent or another"""
+    sys.path.insert(0, str(DM / 'games'))
+    try: import game
+    finally: sys.path.pop(0)
+    builds = game.load(title_id).builds()
+    ver = manifest.get('version', '')
+    if ver not in builds:
+        raise BuildError(f'{package}: {ver or "no version"} is not a version the profile of {title_id} registers ({", ".join(builds) or "none"}): the port came from a derived profile '
+                         f'with its own alias region; port the game again')
+    if not manifest.get('profile_h'):
+        raise BuildError(f'{package}: no profile_h in nx2a-data.json (a data pack made before nx2android recorded the profile the host was built from): port the game again')
+    if manifest['profile_h'] != profile_hash(title_id):
+        raise BuildError(f'{package}: the host on the device was built from another profile of {title_id} than this checkout\'s (another layout, --alias-headroom or a derived profile): '
+                         f'port the game again')
+
+
 def update(adb, package, jobs=os.cpu_count() or 8):
     """package's libdmhost.so built again from this checkout and installed. → {'package', 'title_id', 'debug', 'host'}"""
     files = datapack.files_folder(package)
-    try: title_id = json.loads(adb.read_text(f'{files}/nx2a-data.json') or '{}').get('title_id', '')
-    except ValueError: title_id = ''
+    try: manifest = json.loads(adb.read_text(f'{files}/nx2a-data.json') or '{}')
+    except ValueError: manifest = {}
+    if not isinstance(manifest, dict): manifest = {}
+    title_id = manifest.get('title_id', '')
     if not title_id: raise BuildError(f'{package}: no title ID in {files}/nx2a-data.json (a data pack made before nx2android wrote one): port the game again')
+    if not isinstance(title_id, str) or not TITLE_ID.fullmatch(title_id): raise BuildError(f'{package}: {title_id!r} in {files}/nx2a-data.json is not a title ID (16 hexadecimal digits)')
+    title_id = title_id.upper()
     if not (DM / 'games' / title_id / 'game.tsv').is_file():
         raise BuildError(f'{package}: no profile of {title_id} in this checkout (an experimental port\'s profile stays in its build folder): port the game again')
+    check_profile(package, manifest, title_id)
     record = adb.read_text(f'{files}/mods/build_src.sha256')
     if not record.strip(): raise BuildError(f'{package}: no mods/build_src.sha256 on the device: port the game again')
     names = sorted({n.strip().rsplit('/', 1)[-1][:-len('.cuts.tsv')] for n in adb.shell(f'ls {shlex.quote(files)}/mods', check=False).split() if n.strip().endswith('.cuts.tsv')})
@@ -90,7 +130,7 @@ def update(adb, package, jobs=os.cpu_count() or 8):
     with tempfile.TemporaryDirectory(prefix='nx2a_host_') as t:
         say(f'{package}: building the host of {title_id} ({"debug" if debug else "release"} build)')
         r = subprocess.run([sys.executable, str(DM / 'android/build.py'), '--game', title_id, '--ndk', str(ndk), '--out', t, '--lib', '--jobs', str(jobs)] + ([] if debug else ['--release']),
-                           capture_output=True, text=True, errors='replace')
+                           capture_output=True, text=True, errors='replace', env=clean_env())
         so = Path(t) / 'libdmhost.so'
         if r.returncode or not so.is_file(): raise BuildError(f'{package}: the host did not build: ' + ((r.stderr.strip() or r.stdout.strip()).splitlines() or ['no output'])[-1])
         src, out = Path(t) / 'installed.apk', Path(t) / 'host.apk'

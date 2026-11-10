@@ -131,5 +131,83 @@ class DriverTest(unittest.TestCase):
         self.assertEqual(host.stale_sources(record + '\n' + '0' * 64 + '  ../../../../build/fpslock/patches.py', bdsp, modules=[fps, sdk_mod]), [])
 
 
+class HostDevice(Adb):   # porter host's made-up device: a port's data pack (nx2a-data.json, mods/) and its installed APK
+    def __init__(self, apk, files, debuggable=False):
+        super().__init__('adb'); self.serial = 'dev'; self.apk, self.files, self.debuggable, self.ops, self.installed_apk = apk, files, debuggable, [], None
+    def pick(self): return 'dev'
+    def run(self, *a, timeout=None, check=True, retries=3):
+        a = [str(x) for x in a]; self.ops.append(a[0] if a[0] != 'shell' else a[1].split()[0])
+        if a[0] == 'pull': shutil.copyfile(self.apk, a[2]); return ''
+        if a[0] == 'install': self.installed_apk = Path(a[-1]).read_bytes(); return 'Success'
+        if a[0] != 'shell': return ''
+        cmd = a[1]
+        if cmd.startswith('pm path'): return f'package:/data/app/{PKG}/base.apk\n'
+        if cmd.startswith('dumpsys package'): return '    flags=[ DEBUGGABLE HAS_CODE ]\n' if self.debuggable else '    flags=[ HAS_CODE ]\n'
+        if cmd.startswith('ls '): return '\n'.join(n.split('/', 1)[1] for n in self.files if n.startswith('mods/')) + '\n'
+        if cmd.startswith('cat '):
+            path = cmd.split()[1].strip("'")
+            return next((v for k, v in self.files.items() if path.endswith('/files/' + k)), '')
+        return ''
+
+
+class HostTest(unittest.TestCase):   # porter host's update(): its refusals, the debug or release build and the install, without an NDK (build.py is stood in for)
+    BDSP, SDK = '0100000011D90000', '2d369d9999e3e10e665106f840ffff9b'   # Brilliant Diamond: a registered version, no patches.py of its own, an SDK build that sdk_patches.py cuts
+
+    def setUp(self):
+        from unittest import mock
+        from porter import host
+        self.host, self.t = host, Path(tempfile.mkdtemp(prefix='nx2a_host_test_'))
+        self.addCleanup(shutil.rmtree, self.t, ignore_errors=True)
+        so = self.t / 'libdmhost.so'; so.write_bytes(b'\x7fELF old host' * 8)
+        subprocess.run([sys.executable, str(APK / 'mkapk.py'), str(so), str(self.t / 'a.apk'), str(paths.signing_key()), '--lib', 'dmhost', '--release'], check=True, capture_output=True)
+        self.builds, real = [], subprocess.run
+        def run(argv, *a, **kw):   # build.py stood in for: a made-up libdmhost.so in --out; everything else (apkdriver.py, game.py header) runs
+            argv = [str(x) for x in argv]
+            if argv[1].endswith('build.py'):
+                self.builds.append(argv); out = Path(argv[argv.index('--out') + 1]); (out / 'libdmhost.so').write_bytes(b'\x7fELF new host' * 8)
+                return subprocess.CompletedProcess(argv, 0, '', '')
+            return real(argv, *a, **kw)
+        for p in (mock.patch.object(host.subprocess, 'run', side_effect=run), mock.patch.object(host.toolchain, 'find_ndk', return_value=(self.t / 'ndk', '27.2'))):
+            p.start(); self.addCleanup(p.stop)
+
+    def files(self, **man):
+        import hashlib
+        tools = REPO / 'nxnative/dm/tools'
+        record = ''.join(f'{hashlib.sha256((tools / r).read_bytes()).hexdigest()}  {r}\n' for r in ('patch_nso.py', 'nso_code.py', 'nso_asm.py', 'sdk_patches.py'))
+        cuts = self.host._tables(tools / 'sdk_patches.py')['CUTS'][self.SDK]
+        manifest = dict(title_id=self.BDSP, package=PKG, version='v393216', profile_h=self.host.profile_hash(self.BDSP)); manifest.update(man)
+        return {'nx2a-data.json': json.dumps({k: v for k, v in manifest.items() if v is not None}), 'mods/build_src.sha256': record,
+                'mods/sdk.cuts.tsv': f'# BUILD_ID\t{self.SDK}\n' + ''.join(f'{o:#x}\t{ob}\t{nb}\t{w}\n' for o, ob, nb, w in cuts), 'mods/sdk.obs.tsv': f'# BUILD_ID\t{self.SDK}\n'}
+
+    def refused(self, files, says):
+        dev = HostDevice(self.t / 'a.apk', files)
+        with self.assertRaises(BuildError) as e: self.host.update(dev, PKG)
+        self.assertIn(says, str(e.exception)); self.assertEqual(self.builds, []); self.assertIsNone(dev.installed_apk)
+
+    def test_refusals(self):
+        self.refused(self.files(title_id='../../etc/passwd'), 'not a title ID')   # never a path or a build.py --game argument
+        self.refused(self.files(title_id='0100000011D9000'), 'not a title ID')
+        self.refused(self.files(title_id=None), 'no title ID')
+        self.refused(self.files(title_id='0100000000000ABC'), 'no profile of')
+        self.refused(self.files(version='v458752'), 'not a version the profile')   # a derived profile's port, with its own alias region
+        self.refused(self.files(profile_h=None), 'no profile_h')                    # a pack from before porter recorded it
+        self.refused(self.files(profile_h='0' * 64), 'another profile')             # --alias-headroom, or the profile changed since
+        f = self.files(); f['mods/build_src.sha256'] = f['mods/build_src.sha256'].replace(f['mods/build_src.sha256'][:64], '0' * 64)
+        self.refused(f, 'patch_nso.py')                                              # the rewriter changed since the port
+        f = self.files(); f['mods/build_src.sha256'] = ''
+        self.refused(f, 'no mods/build_src.sha256')
+
+    def test_update(self):
+        for debuggable in (False, True):
+            self.builds.clear()
+            dev = HostDevice(self.t / 'a.apk', self.files(title_id=self.BDSP.lower()), debuggable)
+            out = self.host.update(dev, PKG, jobs=2)
+            self.assertEqual((out['title_id'], out['debug']), (self.BDSP, debuggable))
+            self.assertEqual(len(self.builds), 1); b = self.builds[0]
+            self.assertEqual(b[b.index('--game') + 1], self.BDSP); self.assertEqual('--release' in b, not debuggable)
+            apk = self.t / 'installed.apk'; apk.write_bytes(dev.installed_apk); self.assertEqual(libs(apk)['libdmhost.so'], b'\x7fELF new host' * 8)
+            self.assertEqual(dev.ops[-3:], ['pull', 'am', 'install'])
+
+
 if __name__ == '__main__':
     unittest.main()
