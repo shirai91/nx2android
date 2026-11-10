@@ -58,6 +58,8 @@ static const vkfmt_t format = {.vk=VK_FORMAT_R8G8B8A8_UNORM, .kind=1, .bpb=4};
 static const vkfmt_t *vk_fmt(int f) { (void)f; return &format; }
 static vkimg_t *vk_tex(const tex_t *t) { (void)t; return &image; }
 static void alias_check(vkimg_t *im) { (void)im; }
+// gfx_vk.h declares this; vk_tex_view calls it before its definition
+VkImageView vk_tex_view_as(const tex_t *t, const view_t *vw, int dim, int arrayed, int as_attachment, vkimg_t **img_out, VkFormat vfmt);
 static void vk_watch(const vkimg_t *im, const char *s) { (void)im; (void)s; }
 void vk_texdump_note(vkimg_t *im) { (void)im; }
 static void vk_defer_free_view(VkImageView v) { (void)v; }
@@ -170,7 +172,7 @@ int main(int argc, char **argv) {
 '''
         with tempfile.TemporaryDirectory() as folder:
             src=Path(folder)/'cube.c';src.write_text(code);binary=Path(folder)/'cube'
-            subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror','-I',str(ROOT),'-I',str(ROOT/'nxnative/dm/gfx/nvn/include'),'-I',str(ROOT/'nxnative/dm/third_party/vulkan-headers/include'),str(src),'-o',str(binary),'-pthread'],check=True)
+            subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror','-Wno-misleading-indentation','-I',str(ROOT),'-I',str(ROOT/'nxnative/dm/gfx/nvn/include'),'-I',str(ROOT/'nxnative/dm/third_party/vulkan-headers/include'),str(src),'-o',str(binary),'-pthread'],check=True)
             for mode in ([], ['non-multiple-layers']):
                 with self.subTest(mode=mode):
                     result=subprocess.run([str(binary), *mode],capture_output=True,text=True)
