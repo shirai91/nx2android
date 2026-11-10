@@ -71,6 +71,23 @@ On Windows, `build_bootloader.py` compiles PyInstaller's launcher on this PC (it
 
 `dist/nx2android/` and `dist/nx2android-<version>-<os>-<cpu>.zip` (`windows-x64`, `macos-arm64`): the app, the committed `nxnative/` and the install guide; no toolchains, keys or game files. Publishing a release builds the macOS and Windows zips on GitHub's runners and attaches them (`.github/workflows/release-macos.yml`, `release-windows.yml`; `--clobber` replaces a zip of the same name, so do not upload them by hand). Run either workflow by hand (Actions → Run workflow) for a test build of a branch, kept as the run's artifact.
 
+## Android motion
+
+The default accelerometer shake detector still sends `DM_BTN_SHAKE` on devices
+with or without a gyroscope. Ordinary gyro aiming below the shake threshold is
+unchanged. `DM_MOTION_RAW=1` in `env.txt` opts in to keeping measured acceleration
+and angular velocity during strong flicks instead of replacing them with the
+fixed shake waveform. A game profile can supply the same setting through an
+`env` row in `android.tsv` (see [Game profiles on Android](ARCHITECTURE.md#game-profiles-on-android)).
+No profile enables it by default.
+
+The opt-in requires an active gyroscope; without one, or with `DM_MOTION=0`, the
+synthetic shake fallback remains. Explicit controller/keyboard `Shake` always
+overrides raw motion. Physical Android validation of Super Mario Odyssey hand
+and directional cap throws and Tears of the Kingdom bow aiming is still required
+before enabling the opt-in in a profile. Host sensor tests verify routing and
+axis preservation, not game recognition or device behavior.
+
 ## Tests
 
 ```

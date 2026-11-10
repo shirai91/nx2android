@@ -961,7 +961,7 @@ static void ext_touch_drain(void) {
     pthread_mutex_unlock(&g_ext_touch_mu);
     while (item) { ext_touch *next = item->next; if (dm_external_active() && item->epoch == atomic_load(&g_external_epoch)) handle_event((AInputEvent *)item->event); g_input_release(item->event); free(item); item = next; }
 }
-// ---- accelerometer-only fallback: the controller is shaken (DM_BTN_SHAKE: its six-axis sensor, hle_hid.c; Super Mario Odyssey's cap throw) ----
+// ---- shaking the device: the controller is shaken (DM_BTN_SHAKE: its six-axis sensor, hle_hid.c; Super Mario Odyssey's cap throw) ----
 // The accelerometer at 60 Hz on the input thread's looper (no permission needed): gravity is followed by a slow low-pass (about 0.8 s), and a sample whose acceleration beyond it
 // exceeds DM_SHAKE_G (1.5 G by default; env.txt overrides) is a hit. The controller is shaken until 120 ms after the last hit: a flick is one shake (the host finishes it as a whole
 // cycle) and shaking on keeps it going. It goes through player 1's controller path, so it adds to the on-screen gamepad and a controller alike. Off while the app is in the background
@@ -1013,6 +1013,13 @@ static void motion_feed(const ASensorEvent *e, const double acc[3]) {   // a gyr
     if (log && e->timestamp - logged >= 1000000000) { logged = e->timestamp;
         LOG("front end: motion (rotation %d) acc %+.2f %+.2f %+.2f G, gyro %+.3f %+.3f %+.3f rev/s", g_rot * 90, fa[0], fa[1], fa[2], fg[0], fg[1], fg[2]); }
 }
+// Opt in only after checking the game's raw-motion gestures on the target device.
+// The default keeps the verified automatic Shake path, including on gyro devices.
+static int motion_raw(void) {
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("DM_MOTION_RAW"); on = e && atoi(e) > 0; }
+    return on;
+}
 static int on_sensor(int fd, int events, void *data) {
     (void)fd; (void)events; (void)data;
     static double thr, gx, gy, gz, peak, acc[3] = {0, 0, ASENSOR_STANDARD_GRAVITY}; static int64_t last = -1, prev_t; static int init;
@@ -1022,9 +1029,9 @@ static int on_sensor(int fd, int events, void *data) {
         if (ev[i].type == ASENSOR_TYPE_GYROSCOPE) { motion_feed(&ev[i], acc); continue; }
         if (ev[i].type != ASENSOR_TYPE_ACCELEROMETER) continue;
         acc[0] = ev[i].acceleration.x; acc[1] = ev[i].acceleration.y; acc[2] = ev[i].acceleration.z;
-        // With real motion, a flick keeps its measured direction. DM_BTN_SHAKE overrides
-        // the six-axis samples with a fixed sideways shake, so use it only as a fallback.
-        if (g_gyro) continue;
+        // Opt-in raw motion keeps a flick's measured direction instead of the fixed
+        // DM_BTN_SHAKE waveform. Without a gyroscope the shake fallback stays active.
+        if (g_gyro && motion_raw()) continue;
         double x = ev[i].acceleration.x / ASENSOR_STANDARD_GRAVITY, y = ev[i].acceleration.y / ASENSOR_STANDARD_GRAVITY, z = ev[i].acceleration.z / ASENSOR_STANDARD_GRAVITY;
         if (!init) { gx = x; gy = y; gz = z; init = 1; prev_t = ev[i].timestamp; }
         double dx = x - gx, dy = y - gy, dz = z - gz, g = sqrt(dx * dx + dy * dy + dz * dz);
@@ -1050,7 +1057,8 @@ static void shake_start(void) {
         if (g_gyro) { rotation_start(); LOG("front end: the device's gyroscope (%s) moves the controller's six-axis sensor", ASensor_getName(g_gyro)); }
         else LOG("front end: no gyroscope: using accelerometer-only shake");
     } else LOG("front end: DM_MOTION=0: using accelerometer-only shake");
-    if (!g_gyro) LOG("front end: shaking the device shakes the controller (threshold %.2f G)", e && atof(e) > 0 ? atof(e) : 1.5);
+    if (g_gyro && motion_raw()) LOG("front end: DM_MOTION_RAW=1: raw device motion without automatic shake override");
+    else LOG("front end: shaking the device shakes the controller (threshold %.2f G)", e && atof(e) > 0 ? atof(e) : 1.5);
     shake_sensor(!atomic_load(&g_bg));
 }
 static void *input_thread(void *a) {

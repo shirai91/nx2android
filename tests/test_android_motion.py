@@ -91,6 +91,9 @@ int main(int argc, char **argv) {
     has_gyro = atoi(argv[1]); g_rot = atoi(argv[2]);
     float flick = (float)atof(argv[3]); int manual = atoi(argv[4]);
     shake_start();
+    const char *motion_env = getenv("DM_MOTION");
+    int expected_gyro = has_gyro && !(motion_env && !atoi(motion_env));
+    assert((g_gyro != NULL) == expected_gyro);
     const float gravity = ASENSOR_STANDARD_GRAVITY;
     event(ASENSOR_TYPE_ACCELEROMETER, 1000000000, 0, 0, gravity);
     if (g_gyro) event(ASENSOR_TYPE_GYROSCOPE, 1000000000, 0, 0, 0);
@@ -99,7 +102,9 @@ int main(int argc, char **argv) {
     if (manual) { atomic_store(&g_btn, DM_BTN_SHAKE); shake_note(); }
     SixAxisState s;
     six_sample(&s, clock_ns / SIX_PERIOD_NS, 1);
-    if (g_gyro && !manual) {
+    const char *raw = getenv("DM_MOTION_RAW");
+    int raw_motion = raw && atoi(raw) > 0;
+    if (g_gyro && !manual && (raw_motion || fabsf(flick) <= 1.5f)) {
         // Literal screen-frame mapping for a natural-Y flick at each rotation.
         const float ax[] = {0, flick, 0, -flick}, ay[] = {-flick, 0, flick, 0};
         const float gx[] = {0, -0.5f, 0, 0.5f}, gy[] = {0.5f, 0, -0.5f, 0};
@@ -133,9 +138,13 @@ int main(int argc, char **argv) {
         if result.returncode:
             raise AssertionError(result.stdout + result.stderr)
 
-    def run_case(self, gyro, rotation, flick, manual=False, motion='1'):
+    def run_case(self, gyro, rotation, flick, manual=False, motion='1', raw=None):
+        env = dict(os.environ, DM_MOTION=motion, DM_SHAKE_G='1.5', DM_MOTION_LOG='0')
+        env.pop('DM_MOTION_RAW', None)
+        if raw is not None:
+            env['DM_MOTION_RAW'] = raw
         result = subprocess.run([str(self.exe), str(gyro), str(rotation), str(flick), str(int(manual))],
-                                env=dict(os.environ, DM_MOTION=motion, DM_SHAKE_G='1.5', DM_MOTION_LOG='0'),
+                                env=env,
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
@@ -143,7 +152,28 @@ int main(int argc, char **argv) {
         for rotation in range(4):
             for flick in (-3, 3):
                 with self.subTest(rotation=rotation, flick=flick):
+                    self.run_case(1, rotation, flick, raw='1')
+
+    def test_default_gyro_shake_is_preserved(self):
+        for rotation in range(4):
+            for flick in (-3, 3):
+                with self.subTest(rotation=rotation, flick=flick):
                     self.run_case(1, rotation, flick)
+
+    def test_raw_motion_disabled_values_keep_shake(self):
+        for raw in ('0', '-1', '', 'invalid'):
+            with self.subTest(raw=raw):
+                self.run_case(1, 0, 3, raw=raw)
+
+    def test_below_threshold_gyro_motion_is_unchanged(self):
+        for raw in (None, '1'):
+            for rotation in range(4):
+                with self.subTest(raw=raw, rotation=rotation):
+                    self.run_case(1, rotation, 0.5, raw=raw)
+
+    def test_opt_in_without_motion_keeps_shake(self):
+        self.run_case(0, 0, 3, raw='1')
+        self.run_case(1, 0, 3, motion='0', raw='1')
 
     def test_accelerometer_only_fallback(self):
         for flick in (-3, 3):
@@ -157,7 +187,9 @@ int main(int argc, char **argv) {
         self.run_case(0, 0, 0.5)
 
     def test_explicit_shake_overrides_real_motion(self):
-        self.run_case(1, 0, 0.5, manual=True)
+        for raw in (None, '1'):
+            with self.subTest(raw=raw):
+                self.run_case(1, 0, 0.5, manual=True, raw=raw)
 
 
 if __name__ == '__main__':

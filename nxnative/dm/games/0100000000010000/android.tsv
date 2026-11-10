@@ -10,6 +10,9 @@
 # (4 of 40,200 shown a vsync late), footprint 1.5 GB flat.
 # Motion: shaking the device throws the cap (the front end's accelerometer sets DM_BTN_SHAKE, the six-axis sensor in hle_hid.c shakes; the game's "shake the Pro Controller to throw"):
 # a DM_CTL Shake threw it, and with DM_SHAKE_G lowered to the still tablet's noise the accelerometer alone made Mario spin-throw.
+# This remains the default on gyro devices. DM_MOTION_RAW=1 preserves measured flick direction instead of that automatic waveform, but is not enabled by this profile:
+# physical hand/directional Cappy throws and TotK aiming with raw motion still need qualification. The results above exercised synthetic Shake, not the raw-motion opt-in.
+# See docs/DEVELOPMENT_GUIDE.md, Android motion, for the switch contract.
 # Under a spin throw the ground shows a patch of alternate dark pixel columns (an ordered-dither shadow of the half-transparent spin, as the game dithers its transparency); Mario's own
 # shadow, standing or in the air, is solid. Not compared with a Switch frame of the same throw.
 # The one red log line: "SetRenderEnableConditional: the host draws anyway". The game draws about 16 draws a frame under "draw if not equal" conditions on its
