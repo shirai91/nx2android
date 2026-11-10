@@ -7,12 +7,13 @@ from pathlib import Path
 import struct
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from porter import pipeline, profiles
+from porter import pipeline, profiles, product_cache
 from porter.upstream import nsp
 import dmsv
 
@@ -95,24 +96,28 @@ class ShaderCache(unittest.TestCase):
         self.assertEqual(self.exports, 2)
 
     def test_unchanged_bundle_reuse_does_not_read_product_bytes(self):
-        self.export()
-        original_open = Path.open
-        def checked_open(path, *args, **kwargs):
-            if path == self.p.dmsv: self.fail('unchanged bundle was read again')
-            return original_open(path, *args, **kwargs)
-        with mock.patch.object(Path, 'open', checked_open): self.export()
-        self.assertEqual(self.exports, 1)
+        # Exercise the POSIX metadata path even on a Windows test runner.
+        with mock.patch.object(product_cache, 'os', SimpleNamespace(name='posix', fsync=os.fsync, replace=os.replace)):
+            self.export()
+            original_open = Path.open
+            def checked_open(path, *args, **kwargs):
+                if path == self.p.dmsv: self.fail('unchanged bundle was read again')
+                return original_open(path, *args, **kwargs)
+            with mock.patch.object(Path, 'open', checked_open): self.export()
+            self.assertEqual(self.exports, 1)
 
     def test_metadata_only_change_verified_once_then_reused(self):
-        self.export(); path = self.p.dmsv; st = path.stat()
-        os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 1000000))
-        self.export()
-        self.assertEqual(self.exports, 1)
-        original_open = Path.open
-        def checked_open(candidate, *args, **kwargs):
-            if candidate == path: self.fail('verified metadata change was not remembered')
-            return original_open(candidate, *args, **kwargs)
-        with mock.patch.object(Path, 'open', checked_open): self.export()
+        # Exercise the POSIX metadata path even on a Windows test runner.
+        with mock.patch.object(product_cache, 'os', SimpleNamespace(name='posix', fsync=os.fsync, replace=os.replace)):
+            self.export(); path = self.p.dmsv; st = path.stat()
+            os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 1000000))
+            self.export()
+            self.assertEqual(self.exports, 1)
+            original_open = Path.open
+            def checked_open(candidate, *args, **kwargs):
+                if candidate == path: self.fail('verified metadata change was not remembered')
+                return original_open(candidate, *args, **kwargs)
+            with mock.patch.object(Path, 'open', checked_open): self.export()
 
     def test_only_shader_export_helpers_invalidate_shader_key(self):
         dm = self.root / 'dm'; tools = dm / 'android/tools'; tools.mkdir(parents=True)
@@ -125,6 +130,42 @@ class ShaderCache(unittest.TestCase):
             for i, name in enumerate(names[:3], 2):
                 (tools / name).write_text('export change')
                 self.export(); self.assertEqual(self.exports, i)
+
+    def test_failed_report_publication_does_not_stamp_reuse(self):
+        self.partial = True
+        replace = Path.replace
+        def fail_report(path, target):
+            if path.name == 'shaders.dmsv.partial.report.json': raise OSError('report publication failed')
+            return replace(path, target)
+        with mock.patch.object(Path, 'replace', fail_report), self.assertRaises(OSError): self.export()
+        self.assertFalse((self.p.aw / 'shaders.dmsv.key').exists())
+        self.export()
+        self.assertEqual(self.exports, 2)
+        report = json.loads((self.p.aw / 'shaders.dmsv.report.json').read_text())
+        self.assertEqual(report['failed'], [['0000000000000002', 'no output']])
+
+    def test_missing_or_changed_failed_report_prevents_reuse(self):
+        self.partial = True; self.export()
+        report = self.p.aw / 'shaders.dmsv.report.json'
+        report.unlink(); self.export(); self.assertEqual(self.exports, 2)
+        report.write_text('{}'); self.export(); self.assertEqual(self.exports, 3)
+        self.assertEqual(json.loads(report.read_text())['failed'], [['0000000000000002', 'no output']])
+
+    def test_windows_restored_mtime_edit_is_not_reused(self):
+        product = self.root / 'bundle'; product.write_bytes(b'original')
+        receipt = self.root / 'receipt'
+        # Windows ctime records creation; a same-size edit can restore every stat field.
+        st = SimpleNamespace(st_size=8, st_mtime_ns=1, st_ctime_ns=2, st_dev=3, st_ino=4, st_mode=0o100600)
+        actual_stat = Path.stat
+        def windows_stat(path, *args, **kwargs):
+            return st if path == product else actual_stat(path, *args, **kwargs)
+        # Patch only product_cache's OS view so pathlib still uses this host's paths.
+        with mock.patch.object(product_cache, 'os', SimpleNamespace(name='nt', fsync=os.fsync, replace=os.replace)), \
+             mock.patch.object(Path, 'stat', windows_stat):
+            product_cache.stamp(receipt, 'key', product, 'bundle')
+            self.assertEqual(product_cache.reused(receipt, 'key', product), 'bundle')
+            product.write_bytes(b'changed!')
+            self.assertIsNone(product_cache.reused(receipt, 'key', product))
 
     def test_inputs_changed_during_export_preserve_previous_bundle(self):
         self.export(); original = self.p.dmsv.read_bytes()

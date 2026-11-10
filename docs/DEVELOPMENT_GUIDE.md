@@ -159,10 +159,12 @@ immutable cache. Full descriptor-set key
 equality is separate; these tests do not measure device performance.
 
 Shader and translator reuse also checks content receipts: relative output names,
-sizes and SHA-256 hashes, including translator dependencies. For a bundle, matching
+sizes and SHA-256 hashes, including translator dependencies. On POSIX, matching
 size, modification/change timestamps and file identity avoid reading it again;
 changed metadata falls back to hashing, and unchanged contents refresh that fast
-path. Missing/changed/extra translator files and altered bundles trigger a rebuild.
+path. Windows retains content hashing because its change timestamp is creation
+time, which cannot detect edits that restore modification time. Missing/changed/extra
+translator files and altered bundles trigger a rebuild.
 The shader key includes the translator's actual output bytes and the export helpers
 `shader_vk.py`, `dmsv.py` and `shader_products.py`; unrelated Android tools do not
 invalidate it. Inputs changing during generation stop publication. The changed key
@@ -178,8 +180,9 @@ the emitted keys/stages against the expected and failed inventory: `dmsv.write`
 already reads each payload back and the runtime checks framing and reflection.
 This is structural validation, not semantic `spirv-val` or device qualification.
 Best-effort exports, including ones with failed shaders, are reusable while inputs
-and products remain unchanged. Their receipt notes the failure count and keeps the
-report; a changed input triggers translation again. `test_shader_cache` and
+and products remain unchanged. The failure report is published before the receipt
+and its digest is checked on reuse; a missing or changed report triggers a rebuild.
+The receipt notes the failure count; a changed input triggers translation again. `test_shader_cache` and
 `test_shader_export_checks` exercise these contracts without game files or a GPU.
 
 Native harnesses discover Vulkan headers through `ANDROID_NDK_HOME` (or the

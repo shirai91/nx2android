@@ -676,7 +676,8 @@ class Port:
                                    ('files', nsp.profile_files(self.g)), xkey, product_cache.inventory(Path(xlate).parent),
                                    ('files', sorted(cap.glob('*.bin'))))
         key = input_key()
-        if (note := product_cache.reused(kf, key, self.dmsv)) is not None:
+        published_report = Path(str(self.dmsv) + '.report.json')
+        if (note := product_cache.reused(kf, key, self.dmsv, companions=(published_report,))) is not None:
             PROG.end(f'{note}, reused (inputs unchanged)'); return
         tmp = self.dmsv.with_name('shaders.dmsv.partial'); nsp.rmtree(tmp)
         report = Path(str(tmp) + '.report.json'); nsp.rmtree(report)
@@ -697,8 +698,8 @@ class Port:
             note += f', {expected - count:,} failed (see shaders.dmsv.report.json)'
             say('[RED] ' + note)
         nsp.swap_in(tmp, self.dmsv)
-        product_cache.stamp(kf, key, self.dmsv, note, complete=complete)
-        report.replace(Path(str(self.dmsv) + '.report.json'))
+        report.replace(published_report)
+        product_cache.stamp(kf, key, self.dmsv, note, complete=complete, companions=(published_report,))
         PROG.end(note)
         for d in (self.work / 'tmp').glob('shvk_*'): nsp.rmtree(d)   # the translator's work folders
 
