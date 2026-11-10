@@ -98,9 +98,10 @@ static int compatibility(const char *name) {
         .r={1,1,0,2,2,2},.mask=1,.is_uint=1,.c.u={17,23,42,99}};
     int depth=strstr(name,"depth")!=NULL;
     int oned=!strcmp(name,"1d") || !strcmp(name,"1d_array");
-    int full=!strcmp(name,"msaa_color") || !strcmp(name,"msaa_depth");
+    int full=!strcmp(name,"msaa_color") || !strcmp(name,"msaa_depth") || !strcmp(name,"msaa_view_format");
     if(depth){t.d.format=3;image.nvn_format=3;image.fmt=VK_FORMAT_D32_SFLOAT_S8_UINT;image.aspect=VK_IMAGE_ASPECT_DEPTH_BIT|VK_IMAGE_ASPECT_STENCIL_BIT;c.mask=0;c.c.f[0]=0.5f;c.c.u[1]=7;}
     if(full){image.samples=4;c.r.xoffset=c.r.yoffset=0;c.r.width=c.r.height=4;if(!depth)c.mask=15;}
+    if(!strcmp(name,"msaa_view_format")){c.view.set_format=1;c.view.format=0;}
     if(!strcmp(name,"decoded")){t.d.format=4;image.nvn_format=4;image.fmt=VK_FORMAT_R32G32B32A32_SFLOAT;}
     if(!strcmp(name,"nonattachment"))image.usage=0;
     if(oned){image.target=!strcmp(name,"1d") ? NVN_TEXTURE_TARGET_1D : NVN_TEXTURE_TARGET_1D_ARRAY;image.h=1;c.r.yoffset=0;c.r.height=1;}
@@ -117,6 +118,33 @@ static int compatibility(const char *name) {
     }}
     return 0;
 }
+static int layer_coordinates(const char *name) {
+    tex_t t={.d={.format=1}};
+    image=(vkimg_t){.w=8,.h=8,.d=1,.layers=1,.levels=3,.samples=1,.target=1,
+        .fmt=VK_FORMAT_R32G32B32A32_UINT,.aspect=VK_IMAGE_ASPECT_COLOR_BIT,
+        .usage=VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,.nvn_format=1};
+    p_clear_tex c={.tex=&t,.has_view=1,.view={.set_levels=1,.base_level=1,.nlevels=1},
+        .r={0,0,2,4,4,3},.mask=15,.is_uint=1,.c.u={17,23,42,99}};
+    int partial=!strcmp(name,"single2d_partial"),depth=!strcmp(name,"single2d_depth");
+    int invalid=strstr(name,"invalid_")!=NULL;
+    if(partial){c.r.xoffset=c.r.yoffset=1;c.r.width=c.r.height=2;c.mask=1;}
+    if(depth){t.d.format=image.nvn_format=3;image.fmt=VK_FORMAT_D32_SFLOAT_S8_UINT;
+        image.aspect=VK_IMAGE_ASPECT_DEPTH_BIT|VK_IMAGE_ASPECT_STENCIL_BIT;c.mask=0;c.c.f[0]=0.5f;c.c.u[1]=7;}
+    if(!strcmp(name,"invalid_array")){image.layers=4;image.target=4;c.r.zoffset=3;c.r.depth=2;}
+    if(!strcmp(name,"invalid_volume")){image.target=NVN_TEXTURE_TARGET_3D;image.d=4;c.r.zoffset=2;c.r.depth=1;}
+    if(!strcmp(name,"invalid_view")){image.layers=4;image.target=4;c.view.set_layers=1;c.view.min_layer=1;c.view.nlayers=1;c.r.zoffset=0;c.r.depth=2;}
+    clear_tex(&c);
+    if(invalid){assert(diagnostics && !draws && !transfers && !depths && !image.gpu_w);return 0;}
+    assert(!diagnostics && image.gpu_w);
+    if(depth){assert(depths==1 && !transfers && !draws);assert(depth_range.baseArrayLayer==0 && depth_range.layerCount==1 && depth_range.baseMipLevel==1);return 0;}
+    assert(partial ? draws==1 && !transfers : transfers==1 && !draws);
+    for(unsigned lv=0;lv<3;lv++)for(unsigned ly=0;ly<4;ly++)for(unsigned y=0;y<8;y++)for(unsigned x=0;x<8;x++)for(unsigned ch=0;ch<4;ch++){
+        int inside=partial ? x>=1 && x<3 && y>=1 && y<3 && ch==0 : x<4 && y<4;
+        uint32_t expected=lv==1 && ly==0 && inside ? c.c.u[ch] : 0;
+        assert(pixels[lv][ly][y][x][ch]==expected);
+    }
+    return 0;
+}
 static int compressed_case(const char *name) {
     tex_t t={.d={.format=5}};
     image=(vkimg_t){.w=13,.h=9,.d=1,.layers=4,.levels=3,.samples=1,.target=4,.fmt=VK_FORMAT_BC1_RGBA_UNORM_BLOCK,
@@ -127,6 +155,7 @@ static int compressed_case(const char *name) {
     int full=!strcmp(name,"compressed_full"),noop=!strcmp(name,"compressed_mask0");
     int invalid=!strcmp(name,"compressed_msaa") || !strcmp(name,"compressed_bad_usage");
     if(full){c.r=(NVNcopyRegion){0,0,0,6,4,2};c.mask=15;}
+    if(!strcmp(name,"compressed_single2d")){image.layers=1;image.target=1;c.view.set_layers=0;c.r.zoffset=2;c.r.depth=3;first=0;count=1;}
     if(!strcmp(name,"compressed_volume")){image.target=NVN_TEXTURE_TARGET_3D;image.d=8;image.layers=1;c.r.zoffset=1;c.r.depth=1;first=0;count=4;}
     if(!strcmp(name,"compressed_tail")){level=2;c.view.base_level=2;}
     if(!strcmp(name,"compressed_chunks")){image.w=4096;image.h=129;level=0;c.view.base_level=0;}
@@ -144,7 +173,11 @@ static int compressed_case(const char *name) {
     return 0;
 }
 int main(int argc,char **argv) {
-    if(argc>1)return strstr(argv[1],"compressed") ? compressed_case(argv[1]) : compatibility(argv[1]);
+    if(argc>1){
+        if(strstr(argv[1],"compressed"))return compressed_case(argv[1]);
+        if(strstr(argv[1],"single2d") || strstr(argv[1],"invalid_"))return layer_coordinates(argv[1]);
+        return compatibility(argv[1]);
+    }
     tex_t t={.d={.format=1}};
     image=(vkimg_t){.w=8,.h=8,.d=1,.layers=4,.levels=3,.samples=1,.target=4,.fmt=VK_FORMAT_R32G32B32A32_UINT,.aspect=VK_IMAGE_ASPECT_COLOR_BIT,.usage=VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,.nvn_format=1};
     for (int kind=0;kind<3;kind++) for (unsigned mask=0;mask<16;mask++) {
