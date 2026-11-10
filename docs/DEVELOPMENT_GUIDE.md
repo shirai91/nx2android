@@ -88,6 +88,14 @@ On Windows, `build_bootloader.py` compiles PyInstaller's launcher on this PC (it
 python -m unittest discover tests
 ```
 
+The Vulkan-header harnesses need a discoverable NDK; set `ANDROID_NDK_HOME`
+when it is not found automatically. They skip if no NDK headers are found.
+The protected-pool harness uses real page protection
+and a mutex/condition-variable rendezvous on macOS and Linux, handling each
+platform's protection-fault signal. The zero-copy diagnostics fixture forces
+slab and reuse-cache misses to exercise allocation/import failure cleanup; it
+does not validate the slab or reuse-cache implementations.
+
 `test_descriptor_hash` exercises the Vulkan descriptor hash and reuse path with
 different C padding bytes but identical image fields. Image keys include each
 array element's sampler, view and layout as explicit words; padding cannot force
