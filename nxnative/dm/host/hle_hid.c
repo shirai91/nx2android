@@ -206,8 +206,14 @@ static int32_t pick(int32_t a, int32_t b) { return (a < 0 ? -a : a) >= (b < 0 ? 
 
 // Style update events bound per npad (BindNpadStyleSetUpdateEvent, No1..No8 by id): signalled when a player's controller comes or goes, as the hid
 // service does. The front end reports from its own thread, where an event cannot be bound, so only a bound one is signalled (one the game destroyed is not bound any more)
-static void *_Atomic g_style_ev[DM_PLAYERS];
-static void style_changed(uint32_t id) { void *ev = id < DM_PLAYERS ? atomic_load(&g_style_ev[id]) : NULL; if (ev) hle_signal_bound_system_event(ev); }
+// Handheld's after No1..No8 (slot DM_PLAYERS): player 1 moves between Handheld and No1 when the operation mode changes (dm_hid_opmode_changed)
+static void *_Atomic g_style_ev[DM_PLAYERS + 1];
+static int ev_slot(uint32_t id) { return id < DM_PLAYERS ? (int)id : id == NPAD_HANDHELD ? DM_PLAYERS : -1; }
+static void style_changed(uint32_t id) { int k = ev_slot(id); void *ev = k < 0 ? NULL : atomic_load(&g_style_ev[k]); if (ev) hle_signal_bound_system_event(ev); }
+// The operation mode changed (hle_oe.c dm_set_opmode: the pause menu's Handheld / Docked row): player 1's controller is now on the other npad (connected_id), as on the Switch, where
+// docking takes the console's Joy-Cons off Handheld. Both npads' style events fire, so a game that picks its controller by style looks again: Pokémon Legends: Arceus, switched to docked
+// from the pause menu, kept reading Handheld, which reports nothing in docked mode, and no controller worked until the app was started again
+void dm_hid_opmode_changed(void) { style_changed(NPAD_HANDHELD); style_changed(NPAD_NO1); }
 static void note_merged(void) {   // logs the players whose npad the game does not support, when that changes
     static _Atomic uint32_t last; uint32_t m = unsupported_players(), one = (uint32_t)one_player();
     if (atomic_exchange(&last, m | one << 31) == (m | one << 31)) return;
@@ -478,10 +484,10 @@ HLE_FORCE("_ZN2nn3hid30SetNpadJoyAssignmentModeSingleEPjRKjNS0_17NpadJoyDeviceTy
 HLE_FORCE("_ZN2nn3hid23MergeSingleJoyAsDualJoyERKjS2_", "merge single Joy-Cons; ignored by the host, reports success", Result, h_hid_Merge, const uint32_t *a, const uint32_t *b) { (void)a; (void)b; return RES_OK; }
 // Bound and signalled once when its controller is connected (the hid service reports the controller already attached at start the same way), and again whenever a player's controller
 // comes or goes (dm_pad_players). Link's Awakening reads no controller state until this event has fired: without it GetNpadState was never called and the title's "Press L+R" never saw a press
-HLE_FORCE("_ZN2nn3hid27BindNpadStyleSetUpdateEventERKjPNS_2os15SystemEventTypeENS3_14EventClearModeE", "controller style update event: bound, signaled once for a connected controller and on connect / disconnect", void, h_hid_BindStyleEv,
+HLE_FORCE("_ZN2nn3hid27BindNpadStyleSetUpdateEventERKjPNS_2os15SystemEventTypeENS3_14EventClearModeE", "controller style update event: bound, signaled once for a connected controller, on connect / disconnect and on an operation mode change", void, h_hid_BindStyleEv,
           const uint32_t *id, void *ev, int clear) {
     hle_bind_system_event(ev, clear);
-    if (*id < DM_PLAYERS) atomic_store(&g_style_ev[*id], ev);
+    int k = ev_slot(*id); if (k >= 0) atomic_store(&g_style_ev[k], ev);
     if (style_of(*id)) hle_signal_system_event(ev);
 }
 // The Switch's player LEDs by npad (No1 1, No2 1-2, No3 1-3, No4 1-4, No5 1+4, No6 1+3, No7 1+3+4, No8 2+3; bit 0 = LED 1); Handheld and Other light LED 1 as before

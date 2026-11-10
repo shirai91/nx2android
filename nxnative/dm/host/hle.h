@@ -49,6 +49,7 @@ typedef struct { const char *name; void *fn; const char *why; } hle_force_ent;
 // Operation mode (0 handheld / 1 docked): owned by hle_oe.c, and the hid controller style follows it; the front end can switch it at runtime
 int dm_opmode(void);
 void dm_set_opmode(int m);          // On change, push notification 30 / 31 according to the switches the game has turned on
+void dm_hid_opmode_changed(void);   // hle_hid.c: an operation mode change signals the Handheld and No1 style update events (player 1 moves between them)
 // Focus (1 foreground / 2 focus lost / 3 background): called by the front end on lifecycle changes; a change pushes notification 15
 void dm_focus_set(int st);
 // Audio pause / resume following the lifecycle (called by the front end on going to background / returning to foreground)
