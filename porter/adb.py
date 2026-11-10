@@ -1,6 +1,6 @@
 # adb for installing a port: the device list, installing the APK, and pushing the data pack in short transfers. Big pushes over one adb connection wedge adbd on some
 # devices (a 6 GB RomFS), so small files go in batches (tar archives of up to 64 MB when there are many) and big files in 64 MB pieces that the device joins; a rerun resumes (files already at their size are skipped,
-# pieces already in place are kept). The port's own outputs are also compared by MD5: a rewriter cut changes a module without changing its size, and Unpacking's sdk cuts never
+# pieces are kept if their checksums match). The port's own outputs are also compared by MD5: a rewriter cut changes a module without changing its size, and Unpacking's sdk cuts never
 # reached the device until they were. Pushes use -Z: compressing them took adbd down.
 import contextlib, hashlib, os, re, shlex, shutil, subprocess, tarfile, tempfile, time
 from pathlib import Path
@@ -225,10 +225,10 @@ class Adb:
             if sz.isdigit(): have[name[2:] if name.startswith('./') else name] = int(sz)
         return have
 
-    def remote_md5(self, rdir, rels):   # {relative path: MD5} of those files under rdir (missing ones left out)
+    def remote_md5(self, rdir, rels, **kw):   # {relative path: MD5} of those files under rdir (missing ones left out)
         out, q = {}, shlex.quote(rdir)
         for i in range(0, len(rels), 64):
-            for ln in self.shell(f'cd {q} && md5sum ' + ' '.join(shlex.quote(r) for r in rels[i:i + 64]) + ' 2>/dev/null; true').splitlines():
+            for ln in self.shell(f'cd {q} && md5sum ' + ' '.join(shlex.quote(r) for r in rels[i:i + 64]) + ' 2>/dev/null; true', **kw).splitlines():
                 h, _, name = ln.partition('  ')
                 if len(h) == 32: out[name] = h
         return out
@@ -293,19 +293,38 @@ class Adb:
         return done
 
     def push_file(self, local, dst, chunk=64 << 20, progress=None):
-        """One file in pieces of chunk bytes, joined on the device; pieces already there are kept, so an interrupted push resumes. progress(done, size, note)"""
+        """One file in pieces of chunk bytes, joined on the device; matching pieces are kept after checking their MD5, so an interrupted push resumes. progress(done, size, note)"""
         local = Path(local); size = local.stat().st_size; n = max(1, (size + chunk - 1) // chunk)
         pdir = f'{os.path.dirname(dst)}/.dmpart-{hashlib.sha1(dst.encode()).hexdigest()[:12]}'   # one piece folder per file: a resumed push finds its own pieces
         self.shell(f'mkdir -p {shlex.quote(pdir)}'); pieces = self.remote_sizes(pdir)
+        same = [f'{k:05d}' for k in range(n) if pieces.get(f'{k:05d}') == min(chunk, size - k * chunk)]
+        md5 = {}
+        batch = max(1, min(8, (256 << 20) // chunk))
+        for i in range(0, len(same), batch):
+            try:
+                md5.update(self.remote_md5(pdir, same[i:i + batch], timeout=min(self.timeout, 120), retries=1))
+            except AdbError as e:
+                self.log(f'{local.name}: could not verify retained pieces ({e}); sending the unverified pieces again')
+                break   # a slow device should not pay another checksum timeout for every remaining batch
         with tempfile.TemporaryDirectory(prefix='nx2a_push_') as t, open(local, 'rb') as f:
             for k in range(n):
                 want, name = min(chunk, size - k * chunk), f'{k:05d}'
-                if pieces.get(name) != want:
+                f.seek(k * chunk); data = f.read(want)
+                if len(data) != want: raise AdbError(f'{local.name}: source changed during the push (short read); try again')
+                if pieces.get(name) != want or md5.get(name) != hashlib.md5(data).hexdigest():
                     tmp = Path(t) / 'piece.bin'
-                    f.seek(k * chunk); tmp.write_bytes(f.read(want))
+                    tmp.write_bytes(data)
                     self.run('push', '-Z', tmp, f'{pdir}/{name}', timeout=max(self.timeout, 600))
+                del data
                 if progress: progress(k * chunk + want, size, f'{local.name} piece {k + 1}/{n}')
+            if os.fstat(f.fileno()).st_size != size: raise AdbError(f'{local.name}: source changed size during the push; try again')
         q, qp = shlex.quote(dst), shlex.quote(pdir)   # join the pieces in order, then check the size
-        self.shell(f'rm -f {q} && for x in $(ls {qp} | sort); do cat {qp}/$x >> {q} || exit 1; done && rm -rf {qp}', timeout=1200)
+        # Join only this source's pieces: a shorter file or a different chunk size may leave old tail pieces in the same folder.
+        for i in range(0, n, 256):   # keep each command short even when there are many pieces
+            names = ' '.join(f'{k:05d}' for k in range(i, min(i + 256, n)))
+            start = f'rm -f {q} && ' if i == 0 else ''
+            # Retrying an interrupted append could duplicate data; a later push starts the join over.
+            self.shell(f'{start}(cd {qp} && cat {names}) >> {q}', timeout=1200, retries=1)
         got = self.shell(f'stat -c %s {q}').strip()
         if got != str(size): raise AdbError(f'{local.name}: {got} bytes on the device, expected {size}')
+        self.shell(f'rm -rf {qp}')
