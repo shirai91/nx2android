@@ -48,8 +48,15 @@ static struct allocation { VkDeviceSize size; void *memory; } *buffers[64];
 static size_t nbuffer, metadata_size;
 static const void *forbidden_compare;
 static unsigned comparisons;
+static size_t expected_compare;
 static int compare_bytes(const void *a, const void *b, size_t n) {
     assert(a != forbidden_compare && b != forbidden_compare);
+    if (expected_compare) assert(n == expected_compare);
+    for (size_t i=0;i<nbuffer;i++) {
+        uintptr_t lo=(uintptr_t)buffers[i]->memory, hi=lo+buffers[i]->size;
+        assert(!((uintptr_t)a>=lo && (uintptr_t)a<hi));
+        assert(!((uintptr_t)b>=lo && (uintptr_t)b<hi));
+    }
     comparisons++;
     return memcmp(a, b, n);
 }
@@ -107,7 +114,7 @@ static void clean(void) {
     for (size_t i = 0; i < nbuffer; i++) { free(buffers[i]->memory); free(buffers[i]); }
     free(slot.blk); memset(&slot, 0, sizeof slot); nbuffer = metadata_size = 0;
     memset(&S, 0, sizeof S); memset(g_dispatch, 0, sizeof g_dispatch); g_draw_binst = 0;
-    forbidden_compare = NULL; comparisons = 0; g_x_nodrvc = 0; force_hash = 1; forced_hash = 7; g_set_epoch++;
+    forbidden_compare = NULL; comparisons = 0; expected_compare = 0; g_x_nodrvc = 0; force_hash = 1; forced_hash = 7; g_set_epoch++;
 }
 static VkDeviceSize used(void) {
     VkDeviceSize total = 0; for (int i = 0; i < slot.nblk; i++) total += slot.blk[i].used; return total;
@@ -169,6 +176,11 @@ static void banks(void) {
     S.samp[5][127] = 3u << 20; word64(expected, 0x960, 3u << 20);
     ref c2 = get(5, 2, 0); assert(!same(zero, c2));
     assert(!memcmp(bytes(c2), expected, sizeof expected));
+    /* The short bank cannot ignore a cached long bank's nonzero tail. */
+    ref c0 = get(5, 0, 0); assert(!same(c2, c0));
+    S.samp[5][127] = 0;
+    assert(same(c0, get(5, 2, 0))); // identical zero contents can share across banks
+    S.samp[5][127] = 3u << 20; c2 = get(5, 2, 0);
     /* Different stages can share when their actual bytes match. */
     S.samp[1][127] = 3u << 20; VkDeviceSize n = used();
     assert(same(c2, get(1, 2, 0)) && used() == n);
@@ -209,6 +221,13 @@ static void growth(void) {
     assert(!same(first, second) && !memcmp(bytes(first), expected, sizeof expected));
     word32(expected, 0x644, 124); assert(!memcmp(bytes(second), expected, sizeof expected));
 }
+static void live_range(void) {
+    for (int bank=0;bank<=2;bank+=2) {
+        clean(); ref first = get(5,bank,0); VkDeviceSize n=used();
+        expected_compare=bank ? 0x968 : 0x648;
+        assert(same(first,get(5,bank,0)) && used()==n && comparisons==1);
+    }
+}
 static void ordinary(void) {
     clean(); force_hash = 0; g_draw_binst = 77;
     ref first = get(0, 0, 0); VkDeviceSize n = used();
@@ -229,6 +248,7 @@ int main(int argc, char **argv) {
     case 6: disabled(); break;
     case 7: growth(); break;
     case 8: ordinary(); break;
+    case 9: live_range(); break;
     default: abort();
     }
     clean(); return 0;
@@ -276,6 +296,9 @@ class DriverCache(unittest.TestCase):
 
     def test_scratch_growth_keeps_prior_copies(self):
         self.check_case(7)
+
+    def test_hits_compare_only_live_cpu_bytes(self):
+        self.check_case(9)
 
     def test_normal_hash_reuse(self):
         self.check_case(8)

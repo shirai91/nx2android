@@ -101,11 +101,14 @@ directory or semantic SPIR-V validation.
 and scratch allocator with mocked Vulkan allocation calls. A constant-hash test
 stub checks that unequal segments never share a cached copy; it does not generate
 a natural hash collision or establish a game symptom. Equal segments reuse the
-existing copy without allocating. The cache retains one CPU pointer per entry
-(8 KiB total on arm64) and compares all 4 KiB on a candidate hit. Those pointers
-are valid only in their submission: scratch grows without moving its mapped
-bytes, and recycling waits for completion before the next epoch. GPU-written
-segments must remain outside this immutable cache. Full descriptor-set key
+existing copy without allocating. Each entry keeps a CPU copy of its live prefix
+(up to 0x968 bytes; about 2.35 MiB of content across 1,024 entries). Candidate hits
+compare 0x648 bytes for c0 or 0x968 for c2 in ordinary CPU memory, never the mapped
+scratch allocation. If two banks hash alike, comparison includes the longer live
+prefix and its implicit zero tail, preserving exact equality in both directions.
+Scratch references are reusable only in their submission; recycling waits for
+completion before the next epoch. GPU-written segments must remain outside this
+immutable cache. Full descriptor-set key
 equality is separate; these tests do not measure device performance.
 
 `test_vk_copy_back` exercises protected guest memory with the real dirty-page tracker: preserving independent CPU writes in the same cache line, successive submissions and snapshot initialization, cached/uncached and untracked pools, 200 partial/unaligned/overlapping range cases, and writes from another CPU thread. It also injects failed and partially successful bulk `mprotect` calls; a bulk unprotect failure stops the host with a `[RED]` message before publishing writable page states or continuing the copy. It also checks snapshot copy volume across clean and dirty 64 KB blocks, a partial tail, and full versus partial completion merges. These CPU tests do not establish correct rendering on a device.
