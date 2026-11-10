@@ -779,12 +779,19 @@ class Port:
             font_env, font_files = font_env + [f'DM_SHARED_FONT={datapack.files_folder(self.package)}/standard.ttf'], {**font_files, 'standard.ttf': self.o.shared_font}
         dst = self.o.out / f'{app_stem(self.g, self.app_name)}-data'
         man = datapack.build(dst, profile=self.ap, version=self.pkg_ver, display=self.display, patched=self.patched, romfs=self.game / 'RomFS', shaders=self.dmsv,
-                             aoc=self.aoc, sysdata=self.sysdata, language=self.lang, package=self.package, env=self.fps_env + font_env + (['DM_VK_MT_REPLAY=1'] if self.o.mt_replay else [])
+                             aoc=self.aoc, sysdata=self.sysdata, language=self.lang, package=self.package, env=self.fps_env + font_env + self.attached_env() + (['DM_VK_MT_REPLAY=1'] if self.o.mt_replay else [])
                              + ([f'DM_VK_DRIVER={driver_lib_name(self.o.vulkan_driver)}'] if self.o.vulkan_driver else []), settings=TOUCH_SETTINGS if self.o.touch else None,
                              files={**self.fps_files, **font_files},
                              progress=lambda what: PROG.set(step=f'linking {what}'))
         self.data_path = dst; self.result['data'] = str(dst)
         PROG.end(f'{man["files"]:,} files, {man["bytes"] / 2**30:.1f} GB')
+
+    def attached_env(self):
+        """The config's hide_touch_controls: yes writes DM_PAD_ATTACHED=hide (front_android.c pad_watch), so an attached controller hides the on-screen gamepad
+        from the start instead of once it is used (touches still go to the game's touch screen, as on a Switch). Not the tool's default: some phones keep a silent system device attached that says it is a gamepad"""
+        v = (self.cfg.get('hide_touch_controls') or '').lower()
+        if v not in ('', 'no', 'yes'): raise BuildError(f'hide_touch_controls {v!r}: yes or empty')
+        return ['DM_PAD_ATTACHED=hide'] if v == 'yes' else []
 
     def button_font(self):
         """The stand-in for the system's Nintendo extension shared font: the controller-button icons in game text (U+E0E0 = A; Super Mario Bros. Wonder's menus showed '?' without it), which
