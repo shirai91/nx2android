@@ -201,7 +201,7 @@ namespace Ryujinx.Graphics.Shader.Translation
             // attribute such a shader does not write: the first 16 are forwarded (64 components, Vulkan's minimum geometry input and output limit)
             if (Definitions.GpPassthrough && !GpuAccessor.QueryHostSupportsGeometryShaderPassthrough() && !_nextStageMerged)
             {
-                AttributeUsage.SetPassthroughWithoutNextStage(0xffff);
+                AttributeUsage.SetPassthroughWithoutNextStage(GpuAccessor.QueryGeometryPassthroughAttributeMask());
             }
 
             ResourceManager resourceManager = CreateResourceManager(asCompute);
@@ -342,6 +342,7 @@ namespace Ryujinx.Graphics.Shader.Translation
                 definitions,
                 resourceManager,
                 Options.TargetLanguage,
+                GpuAccessor.QueryHostSupportsGeometryShaderPassthrough(),
                 Options.Flags.HasFlag(TranslationFlags.DebugMode));
 
             int geometryVerticesPerPrimitive = Definitions.OutputTopology switch

@@ -109,7 +109,7 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
                 context.AddCapability(Capability.ShaderViewportIndexLayerEXT);
             }
 
-            if (context.Info.IoDefinitions.Contains(new IoDefinition(StorageKind.Output, IoVariable.ViewportMask)))
+            if (context.HostCapabilities.SupportsViewportMask && context.Info.IoDefinitions.Contains(new IoDefinition(StorageKind.Output, IoVariable.ViewportMask)))
             {
                 context.AddExtension("SPV_NV_viewport_array2");
                 context.AddCapability(Capability.ShaderViewportMaskNV);
