@@ -3,11 +3,11 @@
 # the rewrite for DM_TARGET=android, the Vulkan shader bundle, the host built with the player's NDK, the APK, the data pack and the install.
 # Work files go where upstream's NSP script puts them, <game folder>/<title ID>_build/ (extract/, aoc/, shader/, logs/ are shared with an iOS build of the same folder),
 # with the Android ones in its android/ folder.
-import hashlib, importlib.util, os, re, shutil, sys, traceback
+import hashlib, importlib.util, json, os, re, shutil, sys, traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from porter import config, datapack, dumps, fpslocker, install, paths, profiles, toolchain
+from porter import config, datapack, dumps, fpslocker, install, paths, profiles, product_cache, toolchain
 from porter.adb import NO_ADB, Adb, AdbError
 from porter.paths import DM, NXNATIVE
 from porter.upstream import BuildError, PROG, android_profile, game, nacp, nsp, profile_guess, say, trinity, uepak
@@ -671,20 +671,36 @@ class Port:
         PROG.stage('Vulkan shaders', step='building the translator')
         xlate, xkey = self.translator()
         PROG.set(step='checking the inputs')
-        key = nsp.fingerprint(nsp.package_key(pkg), ('files', [DM / 'android/tools/shader_vk.py', DM / 'android/tools/dmsv.py'] + nsp.tool_files(NXNATIVE)), ('files', nsp.profile_files(self.g)), xkey,
-                              ('files', sorted(cap.glob('*.bin'))))
-        if self.dmsv.is_file() and (note := nsp.reused(kf, key)) is not None:
+        def input_key():
+            return nsp.fingerprint(nsp.package_key(pkg), ('files', [DM / 'android/tools' / name for name in ('shader_vk.py', 'dmsv.py', 'shader_products.py')] + nsp.tool_files(NXNATIVE)),
+                                   ('files', nsp.profile_files(self.g)), xkey, product_cache.inventory(Path(xlate).parent),
+                                   ('files', sorted(cap.glob('*.bin'))))
+        key = input_key()
+        published_report = Path(str(self.dmsv) + '.report.json')
+        if (note := product_cache.reused(kf, key, self.dmsv, companions=(published_report,))) is not None:
             PROG.end(f'{note}, reused (inputs unchanged)'); return
-        tmp = self.dmsv.with_name('shaders.dmsv.partial'); nsp.rmtree(tmp); nsp.rmtree(kf)
+        tmp = self.dmsv.with_name('shaders.dmsv.partial'); nsp.rmtree(tmp)
+        report = Path(str(tmp) + '.report.json'); nsp.rmtree(report)
         def line(s):
             if m := re.match(r'(translating|compressing) (\d+) shaders', s): PROG.set(step=f'{m.group(1)} {int(m.group(2)):,} shaders')   # compressing: the bundle's SPIR-V (dmsv.py)
-            elif s.startswith('[RED] this Python has no zstd'): say(s)   # the bundle then goes uncompressed: 3.5x the space on the device
-        nsp.run([PY, DM / 'android/tools/shader_vk.py', pkg, tmp, '--jobs', str(self.o.jobs), '--dotnet', self.tools['dotnet'], '--xlate', xlate, '--capture', cap],
+            elif s.startswith('[RED] '): say(s)
+        nsp.run([PY, DM / 'android/tools/shader_vk.py', pkg, tmp, '--jobs', str(self.o.jobs), '--dotnet', self.tools['dotnet'], '--xlate', xlate, '--capture', cap, '--report', report],
                 self.logs / 'android_shaders.log', env=self.env, on_line=line)
-        m = re.search(r'^(\d+) of (\d+) shaders', (self.logs / 'android_shaders.log').read_text(errors='replace'), re.M)
-        if not m or m.group(1) == '0': raise BuildError(f'no shader translated (see {self.logs / "android_shaders.log"})')
-        note = f'{int(m.group(1)):,} of {int(m.group(2)):,} shaders, {tmp.stat().st_size / 2**20:,.0f} MB'
-        nsp.swap_in(tmp, self.dmsv); kf.write_text(f'{key}\n{note}\n')
+        import shader_products
+        try:
+            count, expected, complete = shader_products.check_bundle(tmp, json.loads(report.read_text(encoding='utf-8')))
+            if input_key() != key: raise ValueError('shader inputs changed during export; port again')
+        except (OSError, ValueError, TypeError, KeyError) as e:
+            raise BuildError(f'invalid shader export: {e} (see {self.logs / "android_shaders.log"})') from e
+        if count == 0: raise BuildError(f'no shader translated (see {self.logs / "android_shaders.log"})')
+        note = f'{count:,} of {expected:,} shaders, {tmp.stat().st_size / 2**20:,.0f} MB'
+        # Unsupported shaders are deterministic for these inputs; retain their report on reuse.
+        if not complete:
+            note += f', {expected - count:,} failed (see shaders.dmsv.report.json)'
+            say('[RED] ' + note)
+        nsp.swap_in(tmp, self.dmsv)
+        report.replace(published_report)
+        product_cache.stamp(kf, key, self.dmsv, note, complete=complete, companions=(published_report,))
         PROG.end(note)
         for d in (self.work / 'tmp').glob('shvk_*'): nsp.rmtree(d)   # the translator's work folders
 
@@ -704,16 +720,22 @@ class Port:
         in <user dir>/tools/dmsh_xlate: (dmsh_xlate.dll, the source's key). Not the iOS chain's prebuilt dm/gfx/tools/dmsh_xlate_bin, which only a Mac can rebuild
         (its lock fingerprints Apple's Metal compiler): Android takes a translator fix as soon as it is in the source"""
         src = DM / 'gfx/tools/dmsh_xlate'; ryu = DM / 'third_party/ryujinx'
-        files = sorted([*src.glob('*.cs'), *src.glob('*.csproj'), *ryu.glob('*.props')] + [p for p in (ryu / 'src').rglob('*') if p.suffix in ('.cs', '.csproj', '.props')
-                                                                                         and not {'bin', 'obj'} & set(p.relative_to(ryu).parts)])
-        key = nsp.fingerprint(('files', files), ('cmd', [str(self.tools['dotnet']), '--version']), env=self.env)
+        def source_key():
+            files = sorted([p for root in (src, ryu) for p in root.rglob('*') if p.is_file() and
+                            (p.suffix in ('.cs', '.csproj', '.props', '.targets') or p.name in ('global.json', 'NuGet.Config', 'nuget.config'))
+                            and not {'bin', 'obj'} & set(p.relative_to(root).parts)])
+            return nsp.fingerprint([str(p.relative_to(DM)) for p in files], ('files', files),
+                                   ('cmd', [str(self.tools['dotnet']), '--version']), env=self.env)
+        key = source_key()
         out = paths.user_dir() / 'tools/dmsh_xlate'; kf = out.with_name('dmsh_xlate.key'); dll = out / 'dmsh_xlate.dll'
-        if dll.is_file() and nsp.reused(kf, key) is not None: return dll, key
-        tmp = out.with_name('dmsh_xlate.partial'); nsp.rmtree(tmp); nsp.rmtree(kf)
+        if dll.is_file() and product_cache.reused(kf, key, out) is not None:
+            return dll, nsp.fingerprint(key, product_cache.inventory(out))
+        tmp = out.with_name('dmsh_xlate.partial'); nsp.rmtree(tmp)
         nsp.run([self.tools['dotnet'], 'build', src, '-c', 'Release', '-o', tmp, '-nologo', '-v', 'quiet'], self.logs / 'android_translator_build.log', env=self.env)
         if not (tmp / 'dmsh_xlate.dll').is_file(): raise BuildError(f'the translator built without dmsh_xlate.dll (see {self.logs / "android_translator_build.log"})')
-        nsp.swap_in(tmp, out); kf.write_text(f'{key}\n')
-        return dll, key
+        if source_key() != key: raise BuildError('translator inputs changed during build; port again')
+        nsp.swap_in(tmp, out); product_cache.stamp(kf, key, out)
+        return dll, nsp.fingerprint(key, product_cache.inventory(out))
 
     # ---- host: the Android host built for this profile with the player's NDK ----
     def host(self):
