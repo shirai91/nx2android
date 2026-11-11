@@ -139,7 +139,25 @@ static void on_pause(ANativeActivity *a) { (void)a; go_background(); }
 // Back in front, the game is out of focus until the window has the input focus again (Android sends it after onResume): without this it stayed OutOfFocus for good,
 // and Blasphemous 2's Unity, which asks for focus notifications, kept its title paused and ignored every press after a trip to another app. A window losing focus while in
 // front (a system dialog, the notification shade) is OutOfFocus as on the Switch's HOME overlay
-static void on_window_focus(ANativeActivity *a, int focused) { (void)a; if (atomic_load(&g_running) && !atomic_load(&g_bg)) dm_focus_set(focused ? 1 : 2); }
+// The system bars off the screen: AWINDOW_FLAG_FULLSCREEN hides the status bar only, so on a device with three-button or gesture navigation the bar (Back, Home, Recents)
+// sat over the bottom of the picture and the touch controls. Immersive-sticky full screen hides both: an edge swipe shows them until they slide away again. Asked again each
+// time the window gets the focus back (a dialog, the notification shade or another app brings the bars back) and at each resume. Through JNI on the main thread (the
+// app has no Java of its own): getWindow().getDecorView().setSystemUiVisibility(IMMERSIVE_STICKY | FULLSCREEN | HIDE_NAVIGATION | LAYOUT_STABLE | LAYOUT_FULLSCREEN |
+// LAYOUT_HIDE_NAVIGATION), deprecated since Android 11 but still honoured. DM_IMMERSIVE=0 (env.txt) leaves the bars as before. The idea is droidplay-core b4557945f's
+static void immersive(ANativeActivity *a) {
+    static int on = -1; if (on < 0) { const char *e = getenv("DM_IMMERSIVE"); on = !(e && *e == '0'); }
+    if (!on || !a || !a->env || !a->clazz) return;
+    JNIEnv *E = a->env; jobject w = NULL, d = NULL; int ok = 0;
+    jclass ca = (*E)->GetObjectClass(E, a->clazz); jmethodID gw = ca ? (*E)->GetMethodID(E, ca, "getWindow", "()Landroid/view/Window;") : NULL;
+    if (gw && !(*E)->ExceptionCheck(E)) w = (*E)->CallObjectMethod(E, a->clazz, gw);
+    if (w && !(*E)->ExceptionCheck(E)) { jclass cw = (*E)->GetObjectClass(E, w); jmethodID gd = cw ? (*E)->GetMethodID(E, cw, "getDecorView", "()Landroid/view/View;") : NULL;
+        if (gd && !(*E)->ExceptionCheck(E)) d = (*E)->CallObjectMethod(E, w, gd); }
+    if (d && !(*E)->ExceptionCheck(E)) { jclass cv = (*E)->GetObjectClass(E, d); jmethodID sv = cv ? (*E)->GetMethodID(E, cv, "setSystemUiVisibility", "(I)V") : NULL;
+        if (sv && !(*E)->ExceptionCheck(E)) { (*E)->CallVoidMethod(E, d, sv, (jint)(0x1000 | 0x4 | 0x2 | 0x100 | 0x400 | 0x200)); ok = !(*E)->ExceptionCheck(E); } }
+    if ((*E)->ExceptionCheck(E)) (*E)->ExceptionClear(E);
+    static int said; if (!said++) { if (ok) LOG("[front] system bars hidden, immersive-sticky (DM_IMMERSIVE=0 leaves them)"); else LOG("[RED] [front] the system bars could not be hidden (setSystemUiVisibility failed)"); }
+}
+static void on_window_focus(ANativeActivity *a, int focused) { if (focused) immersive(a); if (atomic_load(&g_running) && !atomic_load(&g_bg)) dm_focus_set(focused ? 1 : 2); }
 // A save manager's request, or a RomFS the app cannot read (romfs_readable), asked the app to end (ANativeActivity_onCreate): Activity.finish() when it is resumed, through JNI on the main thread.
 // ANativeActivity_finish, from onCreate or from here, left the activity on the screen (Y700, Android 16), and porter's am start -W waited out its timeout
 static int g_quit;
@@ -148,7 +166,7 @@ static void act_finish(ANativeActivity *a) {
     if (m) (*E)->CallVoidMethod(E, a->clazz, m);
     if (!m || (*E)->ExceptionCheck(E)) { (*E)->ExceptionClear(E); LOG("[RED] Activity.finish() failed: the app ends itself"); _exit(0); }
 }
-static void on_resume(ANativeActivity *a) { if (g_quit) { act_finish(a); return; } go_foreground(); }
+static void on_resume(ANativeActivity *a) { if (g_quit) { act_finish(a); return; } immersive(a); go_foreground(); }
 static void on_destroy(ANativeActivity *a) { (void)a; _exit(0); }   // one game per process
 
 // ---- input ----
