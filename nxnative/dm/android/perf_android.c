@@ -63,16 +63,36 @@ static int turbo_auto(int on) {
     if (now - since < hold || late > 0 || g_gpu_mean <= 0 || g_gpu_mean >= AUTO_OFF_NS) return 1;
     off_at = now; LOG("[perf] DM_GPU_TURBO=auto: off (GPU %.1f ms at the highest clock)", g_gpu_mean / 1e6); return 0;
 }
-static void gpu_turbo(void) {
-    static int on;   // what was last set
-    const char *e = getenv("DM_GPU_TURBO"); int want = e && !strcmp(e, "auto") ? turbo_auto(on) : e && atoi(e) > 0;
-    if (want == on) return;
+// The KGSL property is device-wide and outlives the app, so the power control goes back to the governor when the app pauses or ends (front_android.c
+// on_pause, on_destroy); the next presents set it again. A device without KGSL (Mali, Xclipse) or one that refuses the ioctl is tried once and then left alone.
+static pthread_mutex_t g_turbo_mu = PTHREAD_MUTEX_INITIALIZER;
+static int g_turbo_on, g_turbo_dead;   // what was last set; the property could not be set
+static int turbo_set(int want) {
     struct { unsigned type; void *value; size_t size; } prop; uint32_t enable = !want;   // (kgsl.h kgsl_device_getproperty; KGSL_PROP_PWRCTRL 0xE: 0 = power control off)
     prop.type = 0xE; prop.value = &enable; prop.size = sizeof enable;
     int fd = open("/dev/kgsl-3d0", O_RDWR); int r = fd < 0 ? -1 : ioctl(fd, _IOW(0x09, 0x32, prop), &prop);   // IOCTL_KGSL_SETPROPERTY
+    int err = errno;
     if (fd >= 0) close(fd);
-    if (r) { LOG("[RED] [perf] DM_GPU_TURBO=%d: the GPU's power control could not be set (%s)", want, strerror(errno)); return; }
-    on = want; LOG("[perf] DM_GPU_TURBO=%d: %s", want, want ? "the GPU at its highest clock (power control off)" : "the GPU's own clock control again");
+    errno = err; return r;
+}
+static void gpu_turbo(void) {
+    pthread_mutex_lock(&g_turbo_mu);
+    if (g_turbo_dead) { pthread_mutex_unlock(&g_turbo_mu); return; }
+    const char *e = getenv("DM_GPU_TURBO"); int want = e && !strcmp(e, "auto") ? turbo_auto(g_turbo_on) : e && atoi(e) > 0;
+    if (want != g_turbo_on) {
+        if (turbo_set(want)) {
+            g_turbo_dead = 1;
+            LOG("[RED] [perf] DM_GPU_TURBO=%s: the GPU's power control could not be set (%s); not tried again", e ? e : "0", strerror(errno));
+        } else {
+            g_turbo_on = want; LOG("[perf] DM_GPU_TURBO=%d: %s", want, want ? "the GPU at its highest clock (power control off)" : "the GPU's own clock control again");
+        }
+    }
+    pthread_mutex_unlock(&g_turbo_mu);
+}
+void dm_perf_gpu_release(void) {
+    pthread_mutex_lock(&g_turbo_mu);
+    if (g_turbo_on && !turbo_set(0)) { g_turbo_on = 0; LOG("[perf] DM_GPU_TURBO: the GPU's own clock control again (the app paused or ended)"); }
+    pthread_mutex_unlock(&g_turbo_mu);
 }
 
 static void hint_init(int64_t target) {
@@ -189,6 +209,7 @@ static int fps_pin(void) {   // a DM_CTL "env DM_FPS_PIN=40" line holds that ste
 // replay on a thread of its own (DM_NVN_ASYNC) Xenoblade Chronicles 3's presenting thread worked ~8 ms a frame, the rate stepped up to 40 fps for frames
 // of ~24 ms GPU time, and the display's switch to 120 Hz and the missed frames made 80-550 ms frames
 static int64_t g_frame_cost, g_frame_gpu;
+static int64_t g_gpu_mean;   // (also above, for turbo_auto; tests/test_perf_adaptive.py compiles only this part)
 void dm_perf_frame_cost(int64_t replay_ns, int64_t gpu_ns) { g_frame_cost = replay_ns > gpu_ns ? replay_ns : gpu_ns; g_frame_gpu = gpu_ns;
     if (gpu_ns > 0) g_gpu_mean = g_gpu_mean ? g_gpu_mean + (gpu_ns - g_gpu_mean) / 16 : gpu_ns; }
 // The frame's work to the CPU hint: with the GPU's time where Android 15 takes it, and a load increase signalled (Android 16) when 3 frames in a row run over

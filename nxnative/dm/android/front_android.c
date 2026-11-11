@@ -134,7 +134,8 @@ static void shake_sensor(int on);   // the accelerometer, off in the background 
 static void go_background(void) { if (!atomic_load(&g_running) || atomic_exchange(&g_bg, 1)) return; dm_focus_set(2); dm_focus_set(3);   // through OutOfFocus, as a game sees HOME and then the suspension (front_mac.m does the same)
     hold_sync(); dm_gfx_suspend(1); shake_sensor(0); }
 static void go_foreground(void) { if (!atomic_load(&g_running) || !atomic_exchange(&g_bg, 0)) return; dm_gfx_suspend(0); hold_sync(); dm_focus_set(2); shake_sensor(1); }
-static void on_pause(ANativeActivity *a) { (void)a; go_background(); }
+void dm_perf_gpu_release(void);   // perf_android.c: the GPU's clock control back to its governor (DM_GPU_TURBO)
+static void on_pause(ANativeActivity *a) { (void)a; dm_perf_gpu_release(); go_background(); }
 // Back in front, the game is out of focus until the window has the input focus again (Android sends it after onResume): without this it stayed OutOfFocus for good,
 // and Blasphemous 2's Unity, which asks for focus notifications, kept its title paused and ignored every press after a trip to another app. A window losing focus while in
 // front (a system dialog, the notification shade) is OutOfFocus as on the Switch's HOME overlay
@@ -148,7 +149,7 @@ static void act_finish(ANativeActivity *a) {
     if (!m || (*E)->ExceptionCheck(E)) { (*E)->ExceptionClear(E); LOG("[RED] Activity.finish() failed: the app ends itself"); _exit(0); }
 }
 static void on_resume(ANativeActivity *a) { if (g_quit) { act_finish(a); return; } go_foreground(); }
-static void on_destroy(ANativeActivity *a) { (void)a; _exit(0); }   // one game per process
+static void on_destroy(ANativeActivity *a) { (void)a; dm_perf_gpu_release(); _exit(0); }   // one game per process
 
 // ---- input ----
 static AInputQueue *g_queue; static ALooper *g_ilooper;
