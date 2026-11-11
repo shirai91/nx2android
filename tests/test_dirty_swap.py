@@ -1,4 +1,4 @@
-"""nvn_dirty_swap replaces a tracked range's pages while another thread writes them, and no write is lost."""
+"""nvn_dirty_swap replaces a tracked range's pages while another thread writes them, and no write is lost: also when the range is retired part way, or another range overlaps it."""
 from pathlib import Path
 import subprocess
 import tempfile
@@ -80,9 +80,10 @@ static int zc_anon_fill(void *at, size_t n, size_t off, void *ctx) {   // as gfx
     }
     return 0;
 }
+static int (*skip)(size_t p);   // pages the writer leaves alone (NULL: none)
 static void *writer(void *a) {   // a game thread: a new value into a pseudo-random page, over and over
     (void)a; uint32_t v = 0, x = 12345;
-    while (!atomic_load(&stop)) { x = x * 1103515245u + 12345u; size_t p = (x >> 8) % np; ((volatile uint32_t *)(mem + p * pg))[1] = ++v; last[p] = v; }
+    while (!atomic_load(&stop)) { x = x * 1103515245u + 12345u; size_t p = (x >> 8) % np; if (skip && skip(p)) continue; ((volatile uint32_t *)(mem + p * pg))[1] = ++v; last[p] = v; }
     return NULL;
 }
 static void check(const char *what) {
@@ -164,6 +165,44 @@ static void retire_run(int *rc, range_t **slot) {
     atomic_store(&stop, 1); pthread_join(t, NULL);
     check("after a retirement during the swap");
 }
+// Two registered ranges over one slice (a pool inside a lazy pool, gfx_vk_core.c "Pools inside pools", or one sharing its edge pages): the inner range I, registered
+// first, so the textures inside it are protected in it (nvn_dirty_protect takes the first range that holds the span), lies across the first slice's end of the outer
+// range R being swapped. T1 (I, first slice) and T3 (I, second slice) are I's textures, T2 (R's first pages) is R's. fill_nest stages the lost write between the
+// copy and the new pages: W1 writes T1's first page and faults; once I lets it through (its page writable, at most 100 ms) W2 writes T1's second page, and the new
+// pages go over the slice 20 ms later. Pages, from mem: ns = one slice; I = [ns - 32, ns + 96); T1 = [ns - 24, ns - 8); T3 = [ns + 16, ns + 32); T2 = [8, 24)
+static size_t ns; static range_t *nri, *nrr; static pthread_t w1, w2;
+static int nest_tex(size_t p) { return (p >= 8 && p < 24) || (p >= ns - 24 && p < ns - 8) || (p >= ns + 16 && p < ns + 32); }   // T1, T2, T3: the writer's skip
+static void *poke(void *a) { ((volatile uint32_t *)a)[1] = 0x5eed0000u + (uint32_t)(((uint8_t *)a - mem) / pg); return NULL; }   // a game thread's one write
+static int fill_nest(void *at, size_t n, size_t off, void *ctx) {   // as fill, with the staging in the first slice
+    (void)ctx; fills++;
+    uint8_t *tmp = mmap(NULL, n, PROT_READ | PROT_WRITE, MAP_SHARED, fd, (off_t)off); if (tmp == MAP_FAILED) return -5;
+    memcpy(tmp, at, n); munmap(tmp, n);
+    if (!off) {
+        size_t t1 = ns - 24, i1 = ((uintptr_t)(mem + t1 * pg) - nri->base) >> g_shift;
+        assert(pthread_create(&w1, NULL, poke, mem + t1 * pg) == 0);
+        for (int i = 0; i < 100 && atomic_load(&nri->state[i1]) != PG_NONE; i++) usleep(1000);
+        assert(pthread_create(&w2, NULL, poke, mem + (t1 + 1) * pg) == 0); usleep(20000);
+    }
+    return mmap(at, n, PROT_READ, MAP_SHARED | MAP_FIXED, fd, (off_t)off) == at ? 0 : -6;
+}
+static void overlap_run(int *rc) {
+    size_t len = 24u << 20; ns = (16u << 20) / pg; np = len / pg; fills = 0; atomic_store(&stop, 0);
+    mem = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0); assert(mem != MAP_FAILED);
+    free(last); last = calloc(np, sizeof *last); for (size_t p = 0; p < np; p++) ((uint32_t *)(mem + p * pg))[0] = (uint32_t)p;
+    char p1[] = "/tmp/nx2a-swap-XXXXXX"; fd = mkstemp(p1); assert(fd >= 0); unlink(p1); assert(!ftruncate(fd, (off_t)len));
+    nvn_dirty_add_range(mem + (ns - 32) * pg, 128 * pg); nvn_dirty_add_range(mem, len);
+    nri = find_span((uintptr_t)mem + (ns - 32) * pg, 128 * pg); nrr = find_span((uintptr_t)mem, len);
+    nvn_dirty_protect(mem + (ns - 24) * pg, 16 * pg); nvn_dirty_protect(mem + (ns + 16) * pg, 16 * pg); nvn_dirty_protect(mem + 8 * pg, 16 * pg);
+    want(nri && nrr && nri != nrr && find_span((uintptr_t)mem + (ns - 24) * pg, 16 * pg) == nri && find_span((uintptr_t)mem + 8 * pg, 16 * pg) == nrr, "the staging: T1 not in I, or T2 not in R");
+    for (size_t t = ns - 24; t < ns - 22; t++) last[t] = 0x5eed0000u + (uint32_t)t;   // W1's and W2's writes
+    skip = nest_tex; pthread_t t; assert(pthread_create(&t, NULL, writer, NULL) == 0);
+    usleep(2000);
+    *rc = nvn_dirty_swap(mem, len, fill_nest, NULL, &swapped);
+    pthread_join(w1, NULL); pthread_join(w2, NULL);
+    usleep(20000);
+    atomic_store(&stop, 1); pthread_join(t, NULL); skip = NULL;
+    check("after the swap over two ranges");
+}
 int main(void) {
     pg = (size_t)getpagesize();
     struct sigaction sa = {0}; sa.sa_sigaction = handle_fault; sa.sa_flags = SA_SIGINFO; sigemptyset(&sa.sa_mask);
@@ -233,13 +272,32 @@ int main(void) {
     want(nvn_dirty_quiet(fresh, FRESH) == 0, "the new pool: not quiet");
     for (size_t p = 0; p < FRESH / pg; p++) fresh[p * pg] = 1;
     nvn_dirty_remove_range(fresh);
+    // a slice two registered ranges cover (overlap_run): no write lost (W2's included: check), and each range's state right afterwards: I's T3 still protected, I's T1
+    // let through by W1 and W2, R's T2 protected, every other page NONE in both; and the protection under them: a write into T3 or T2 after the swap faults and is seen
+    overlap_run(&rc);
+    want(rc == 0 && fills == 2 && swapped == 24u << 20, "swap over two ranges: rc %d, %d slices filled, %zu bytes swapped (want 0, 2, %u)", rc, fills, swapped, 24u << 20);
+    for (size_t p = ns - 32; p < ns + 96; p++) {
+        int want_st = p >= ns + 16 && p < ns + 32 ? PG_PROT : PG_NONE, st = atomic_load(&nri->state[((uintptr_t)(mem + p * pg) - nri->base) >> g_shift]);
+        want(st == want_st, "inner range, page %zu: state %d (want %d)", p, st, want_st);
+    }
+    for (size_t p = 0; p < np; p++) { int want_st = p >= 8 && p < 24 ? PG_PROT : PG_NONE, st = atomic_load(&nrr->state[p]); want(st == want_st, "outer range, page %zu: state %d (want %d)", p, st, want_st); }
+    uint64_t s = nvn_dirty_now();
+    ((volatile uint32_t *)(mem + (ns + 16) * pg))[2] = 9; ((volatile uint32_t *)(mem + 8 * pg))[2] = 9;
+    want(nvn_dirty_since(mem + (ns + 16) * pg, 16 * pg, s) == 1, "a write into T3 (protected in the inner range) after the swap was not seen: its page was writable");
+    want(nvn_dirty_since(mem + 8 * pg, 16 * pg, s) == 1, "a write into T2 (protected in the outer range) after the swap was not seen");
+    // nvn_dirty_quiet over nested ranges: a host write into the inner pool makes both spans "written lately" (prep_write stamps every range it overlaps)
+    write_hook(mem + (ns + 40) * pg, 16);
+    want(nvn_dirty_quiet(mem, 24u << 20) == 2 && nvn_dirty_quiet(mem + (ns - 32) * pg, 128 * pg) == 2, "quiet: a host write into the inner range not seen through the outer");
+    nvn_dirty_remove_range(mem); nvn_dirty_remove_range(mem + (ns - 32) * pg);
     return 0;
 }
 '''.replace('DIRTY', dirty).replace('ZCFILL', zc)
         with tempfile.TemporaryDirectory(prefix='nx2a-dirty-swap-') as tmp:
             c, exe = Path(tmp) / 'check.c', Path(tmp) / 'check'
             c.write_text(harness)
-            subprocess.run(['cc', '-std=gnu11', '-pthread', '-O1', '-Wall', '-Wextra', '-Werror', '-Wno-unused-function', '-Wno-unused-parameter', str(c), '-o', str(exe)], check=True)
+            # -Wno-misleading-indentation: gcc (15.2, Alpine) refuses nvn_dirty.c's one-line release_page under -Werror; clang never warns there
+            subprocess.run(['cc', '-std=gnu11', '-pthread', '-O1', '-Wall', '-Wextra', '-Werror', '-Wno-unused-function', '-Wno-unused-parameter', '-Wno-misleading-indentation',
+                            str(c), '-o', str(exe)], check=True)
             subprocess.run([str(exe)], check=True, timeout=60)
 
 
