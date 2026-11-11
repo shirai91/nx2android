@@ -2,10 +2,12 @@
 # Game Freak's engine on SDK 11.4.0; game.tsv and the shader tables are upstream's, checked by hand. 73 of its 12,851 shaders live only in Oodle Kraken GFPAK entries:
 # the porter decodes them with the game's own decoder on the device (dmhost, DM_OODLE_JOB), so a port needs the device connected.
 # On the Y700 (2026-10-30), docked and handheld, driven with DM_CTL: the opening (Arceus, the name, the fall), the beach with Laventon and the starters, the first walks.
-# 60 fps (30 on the Switch: patches.py), game time at real time (the same walk at 60 and pinned at 30), GPU 11-14.6 ms at the beach; a 30-minute soak kept one
+# Recorded there with patches.py's 60 fps cut (since taken out): 60 fps, game time at real time (the same walk at 60 and pinned at 30), GPU 11-14.6 ms at the beach; a 30-minute soak kept one
 # process at a flat 1,307 MiB footprint with no audio underruns and no red log line. The washed-out picture it first had was the vertex outputs' Maxwell start values
 # (gfx_vk_shader.c spv_vs_init). Local wireless trades stay offline (nn::ldn cut): Trading Post → Local Communication not checked yet.
+# On the AYN Thor (Snapdragon 8 Gen 2, Adreno 740, Android 13, Turnip 27.0.0-R2, 2026-11-11), played by hand from the same save with both builds installed side by side:
+# the build with the cut plays like fast-forward, about twice as fast; this one (no cut) plays at the Switch's pace. The game runs at its own 30.
 status	playable
-tested	v262144 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
+tested	v262144 AYN Thor (Snapdragon 8 Gen 2, Adreno 740, Android 13)
 package	org.nx2a.plarceus
 orientation	landscape
