@@ -1,0 +1,30 @@
+# Burnout Paradise Remastered (0100DBF01000A000), base game v0: Criterion's engine on Nintendo SDK 9, NVN.
+# Verified 2026-11-09/10 on the Retroid Pocket Nova through the title, the loading screen and into the junkyard tutorial and driving at 1280x960 4:3, with the
+# cuts in patches.py (the aspect at 4/3, the 1280x960 framebuffer, the screen size the window and the HUD are laid out in, the two 21:9 clamps NOPed,
+# the boot-video skip), at about 60 fps (frame time p50 16.8 ms, GPU 8-18 ms). The window texture stays 1920x1080 while the picture is cropped to 1280x960; the HUD is
+# mostly laid out correctly now, except the labels above/below the minimap which clip ~10-30px past the right edge (open item, §3 of game files/burnout/STATUS.md).
+# The loading screen's JPEG needed the host's nn::image::JpegDecoder HLE (dm/host/hle_image.c: the SDK's own Analyze fails through an unfilled
+# function-pointer table and Decode then asserts). The upstream Level of Detail cut (a -15 mip LOD bias) is gone since 2026-11-11: the black mips it hid
+# were the winding bug below, and the game's own bias samples every mip correctly.
+# Fixed 2026-11-11 (was §1 of STATUS.md: flat grey ground with holes, black car bodies, light-blue building boxes, black signs): the triangle winding.
+# The host's front-face rule for upper-left-origin games (gfx_vk_exec.c, written for NEO) culled this game's front faces: its one-sided ground and road
+# meshes never rasterized (main-pass depth stayed at the clear value 1.0 under the road) and closed meshes showed their back faces (cars, signs, buildings
+# dark). DM_VK_FRONT=2 (below) inverts that rule's front face (=1 forced it, the same here: every draw is NVN front 0); verified on the Retroid Pocket Nova in the garage and the city.
+# The save (a 512 KB profile) was exported to game files/burnout-save/20261109-230710. Not played through end to end.
+# World textures (WORLDTEX0-3.BIN, 1,489 Texture resources in all): bnd2 block 0 is 0x60 bytes of metadata (format id at +0x2C as a DXGI enum, width
+# +0x34, height +0x36, mip count +0x3D, pixel data length +0x4C) and block 1 the pixels: BC1 1,428, BC3 37, RGBA8 24; 1-13 mips; up to 4096x2048. Every
+# entry's data length is its mip levels summed with each level padded to 512 bytes, and the host's nvn_tex_layout gives the same total and the same level
+# offsets for these shapes (256x256 BC1 9 mips 46080, 256x128 BC1 9 mips 24576, 4096x1024 RGBA8 13 mips 22371840), with dm/gfx/tex/tests/t_tex passing
+# 164 checks: the layout and the deswizzler are not why the mips beyond the first read black, so what is missing is the mips' data or its upload.
+status	wip
+tested	v0 Retroid Pocket Nova RPN (Snapdragon 8 Gen 2 / QCS8550, Adreno 740, Android 16)
+package	org.nx2a.burnoutparadiseremastered
+orientation	landscape
+# the Retroid Pocket Nova's built-in pad is labelled Nintendo-style (A right, B bottom, X top, Y left) and sends the keycode of its label, so map the face
+# buttons by label: without this its physical B lands on the game's A (the default maps AKEYCODE_BUTTON_A, the bottom button, to B for Xbox pads)
+setting	abxy=label
+# hidden at launch: the player uses the device's own controls (the pause menu's Show gamepad brings it back)
+setting	overlay=0
+# Burnout's meshes are wound the other way from what the host's upper-left-origin rule assumes (see the header): without this the ground and
+# roads are culled and cars and signs show their back faces
+env	DM_VK_FRONT=2
