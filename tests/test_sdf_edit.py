@@ -46,5 +46,11 @@ class SdfEdit(unittest.TestCase):
         self.assertEqual(sdf_edit.patch(d / 'rom', d / 't.tsv', d / 'out'), 1)
         self.assertNotEqual((d / 'out/a/s.sdfdata').read_bytes(), (d / 'rom/a/s.sdfdata').read_bytes())
 
+    def test_table_path_stays_inside(self):   # a row cannot write outside romfs_patch
+        d = Path(tempfile.mkdtemp(prefix='nx2a_test_sdf_'))
+        for f in ('../s.sdfdata', '/tmp/s.sdfdata', 'a/../../s.sdfdata', 'C:/s.sdfdata'):
+            (d / 't.tsv').write_text('\t'.join([f, '10', '0' * 32, 'bvm-list', 'twk_Menu', '1', 'Quit', 'Play,DLC,Quit']) + '\n')
+            with self.assertRaises(sdf_edit.EditError): sdf_edit.patch(d / 'rom', d / 't.tsv', d / 'out')
+
 
 if __name__ == '__main__': unittest.main()

@@ -7,7 +7,7 @@
 # Scripts and tweakables are BVM ("Binary Variant Map"): 0xFF 'BVM', a string table, then one typed value; the reader follows Sir Kane's loader
 # (gist.github.com/SirKane/84f4d8bf1392a0a4b720087e414b4143). Signed integers keep their bytes as stored (the game does not always use the shortest form).
 import hashlib, shutil, struct, zlib
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 TABLE = 'sdf_edits.tsv'
 CHUNK = 65536
@@ -157,6 +157,8 @@ def patch(romfs, table, out):
     rows = read_table(table); by = {}
     for r in rows: by.setdefault(r[0], []).append(r)
     for f, rs in by.items():
+        if PurePosixPath(f).is_absolute() or PureWindowsPath(f).is_absolute() or PureWindowsPath(f).drive or '..' in PureWindowsPath(f).parts:
+            raise EditError(f'{f}: a slice path must stay inside the RomFS (no absolute path, no ..)')
         dst = Path(out) / f; src = dst if dst.is_file() else Path(romfs) / f
         if not src.is_file(): raise EditError(f'{f} is not in the RomFS')
         d = src.read_bytes()
