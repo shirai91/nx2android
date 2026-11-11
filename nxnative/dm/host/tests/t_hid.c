@@ -12,7 +12,8 @@ static void *g_signalled;
 static time_t rumble_second = 1;
 static int hid_clock_gettime(clockid_t clock, struct timespec *ts) { (void)clock; *ts = (struct timespec){.tv_sec = rumble_second}; return 0; }
 #define CHECK(c, msg) do { checks++; if (!(c)) { fails++; fprintf(stderr, "FAIL: %s (line %d)\n", msg, __LINE__); } } while (0)
-int dm_opmode(void) { return g_mode; }
+static int g_mode_flip;   // > 0: the operation mode flips right after that many more dm_opmode calls (t_one_lookup)
+int dm_opmode(void) { int m = g_mode; if (g_mode_flip > 0 && !--g_mode_flip) g_mode = !g_mode; return m; }
 uint64_t guest_ns(void) { return 1000000000ull; }
 uint64_t now_ns(void) { return 1000000000ull; }
 uint64_t dm_guest_frame(void) { return 0; }
@@ -253,12 +254,29 @@ static void t_opmode(void) {
     dm_pad_set_player(0, 0, 0, 0, 0, 0); g_mode = 1;
 }
 
+// seedds/nxnative issue #424: fill and vib_targets take the style and the player from one lookup. Here the operation mode flips right after the first lookup (g_mode_flip), as
+// the pause menu's Handheld / Docked row or a controller that leaves can between two lookups on another thread. With two lookups the second found no player (-1) and the
+// state or the value went to 1u << -1: no buttons on a connected npad, rumble lost
+static void t_one_lookup(void) {
+    g_mode = 1; ids((uint32_t[]){0, 1, NPAD_HANDHELD}, 3); dm_pad_players(1);
+    dm_pad_set_player(0, DM_BTN_A, 0, 0, 0, 0);
+    g_mode_flip = 1;
+    CHECK(buttons_of(NPAD_NO1, STYLE_FULLKEY) == DM_BTN_A, "the mode changes during a read: the state is that of the player the lookup found (player 1's A)");
+    g_mode = 1; g_mode_flip = 0;
+    dm_haptics_init(vibration_sink, 1); dm_haptics_route(0, 1);
+    dm_vibration v = {0.25, 160, 0.5, 320};
+    g_mode_flip = 1; h_hid_SendVib(&(uint32_t){3}, &v);
+    CHECK(dm_haptics_actual(0, 0).amplitude_low == 0.25f, "the mode changes during a send: the value reaches the player the lookup found");
+    g_mode = 1; g_mode_flip = 0; dm_pad_set_player(0, 0, 0, 0, 0, 0);
+}
+
 int main(void) {
     CHECK(setenv("DM_RUMBLE_LOG", "1", 1) == 0, "enable rumble diagnostics");
     t_slots();
     t_npads();
     t_vibration();
     t_rumble_log();
+    t_one_lookup();
     t_opmode();
     printf("hid players: %d checks, %d failed\n", checks, fails);
     return fails != 0;
