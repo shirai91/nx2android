@@ -5,7 +5,7 @@
 # --release: no debug information, the library stripped, DM_RELEASE defined (the app ignores DM_CTL), outputs in dm/android/out/<title ID>-release.
 # Outputs in <out> (default dm/android/out/<title ID>): dmhost (an executable for adb shell runs: headless, no window) and libdmhost.so (the app's NativeActivity).
 # Objects are rebuilt when a source or a header it includes changed (clang -MMD dependency files).
-import argparse, concurrent.futures as cf, os, re, subprocess, sys
+import argparse, concurrent.futures as cf, os, platform, re, subprocess, sys
 from pathlib import Path
 
 DM = Path(__file__).resolve().parent.parent          # dm/
@@ -25,7 +25,9 @@ ap.add_argument('--adrenotools', action='store_true', help='also libadrenotools.
 a = ap.parse_args()
 if not (a.exe or a.lib): a.exe = a.lib = True
 
-host = 'windows-x86_64' if os.name == 'nt' else 'linux-x86_64' if sys.platform.startswith('linux') else 'darwin-x86_64'
+# arm64 Linux: the NDK ships only x86_64 host tools, so its prebuilt/linux-aarch64 holds an arm64 clang beside the NDK's sysroot (a native build, not emulation)
+host = ('windows-x86_64' if os.name == 'nt' else 'linux-aarch64' if sys.platform.startswith('linux') and platform.machine() in ('aarch64', 'arm64') else
+        'linux-x86_64' if sys.platform.startswith('linux') else 'darwin-x86_64')
 bin_ = Path(a.ndk) / 'toolchains/llvm/prebuilt' / host / 'bin'
 CC = str(bin_ / ('clang.exe' if os.name == 'nt' else 'clang'))
 TARGET = f'--target=aarch64-linux-android{a.api}'
