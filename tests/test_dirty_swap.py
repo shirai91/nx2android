@@ -21,6 +21,7 @@ class DirtySwap(unittest.TestCase):
 #define _GNU_SOURCE
 #include <assert.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <sched.h>
 #include <signal.h>
@@ -44,6 +45,12 @@ static void dm_guest_write_prep_register(void (*fn)(void *, size_t)) { write_hoo
 static int fail_ro;   // 1: the next mprotect to read-only fails
 static int checked_mprotect(void *a, size_t n, int prot) { if (fail_ro && prot == PROT_READ) { fail_ro = 0; errno = ENOMEM; return -1; } return mprotect(a, n, prot); }
 #define mprotect checked_mprotect
+// 1: this thread's next page-state exchange (nvn_dirty_swap taking its next slice) first lets a retirement run (retire_stage), as t_dirty_retire_race stages one in nvn_dirty_protect
+static _Thread_local int retire_at_cas;
+static void retire_stage(void);
+#undef atomic_compare_exchange_strong
+#define atomic_compare_exchange_strong(o, e, d) ((retire_at_cas ? retire_stage() : (void)0), atomic_compare_exchange_strong_explicit(o, e, d, memory_order_seq_cst, memory_order_seq_cst))
+#define want(c, ...) do { if (!(c)) { fprintf(stderr, __VA_ARGS__); fputc('\n', stderr); _exit(97); } } while (0)
 DIRTY
 static int fail_fixed = -1;   // the n-th fixed mapping in gfx_vk_core.c's zc_fill fails (0: the next one)
 static void *checked_mmap(void *a, size_t n, int prot, int flags, int f, off_t off) { if ((flags & MAP_FIXED) && fail_fixed >= 0 && fail_fixed-- == 0) { errno = ENOMEM; return MAP_FAILED; } return mmap(a, n, prot, flags, f, off); }
@@ -125,6 +132,38 @@ static void nest_run(int fail, int *rc) {   // a lazy pool with two pools inside
     check("after the swap around the pools inside");
 }
 static uint32_t nest_word(int f, size_t p) { uint32_t v; assert(pread(f, &v, 4, (off_t)(p * pg + 12)) == 4); return v; }   // word 3 of page p in a file
+// A pool retired while its swap runs (hle_nvn.c: nvn_dirty_remove_range, then mtl_pool_del, which waits for pool_back): fill_retire arms retire_stage in the first slice,
+// which retires the range on another thread as the swap takes its second slice and gives it 100 ms; the same thread then registers a new pool elsewhere (fresh), which
+// takes the freed slot with prep 0, so a swap that went on found no "written lately" to stop it and worked from fresh's base and state array. The second slice's fill
+// starts a host write into its pages (prep_write, then read() from /dev/zero, as a file read into the pool) and gives it 50 ms
+static atomic_int retired, read_done; static pthread_t retirer, rdr; static int rdr_on, read_err; static ssize_t read_got; static uint8_t *fresh; enum { FRESH = 4u << 20 };
+static void *retire_thread(void *a) { (void)a; nvn_dirty_remove_range(mem); nvn_dirty_add_range(fresh, FRESH); atomic_store(&retired, 1); return NULL; }
+static void retire_stage(void) {
+    retire_at_cas = 0; assert(pthread_create(&retirer, NULL, retire_thread, NULL) == 0);
+    for (int i = 0; i < 100 && !atomic_load(&retired); i++) usleep(1000);   // over at once, unless the swap holds g_slot_mu
+}
+static void *reader(void *a) { int z = open("/dev/zero", O_RDONLY); write_hook(a, 16); read_got = read(z, a, 16); read_err = errno; close(z); atomic_store(&read_done, 1); return NULL; }
+static int fill_retire(void *at, size_t n, size_t off, void *ctx) {
+    if (fills == 0) retire_at_cas = 1;   // the swap's next page-state exchange takes the second slice
+    if (fills == 1) { rdr_on = 1; assert(pthread_create(&rdr, NULL, reader, (uint8_t *)at + 64) == 0); for (int i = 0; i < 50 && !atomic_load(&read_done); i++) usleep(1000); }   // (bytes 64-79: not the words check reads)
+    return fill(at, n, off, ctx);
+}
+static void retire_run(int *rc, range_t **slot) {
+    size_t len = 40u << 20; np = len / pg; fills = 0; fail_at = -1; rdr_on = 0; atomic_store(&stop, 0); atomic_store(&retired, 0); atomic_store(&read_done, 0);
+    mem = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0); assert(mem != MAP_FAILED);
+    free(last); last = calloc(np, sizeof *last); for (size_t p = 0; p < np; p++) ((uint32_t *)(mem + p * pg))[0] = (uint32_t)p;
+    char p1[] = "/tmp/nx2a-swap-XXXXXX", p2[] = "/tmp/nx2a-swap-XXXXXX"; fd = mkstemp(p1); fd2 = mkstemp(p2); assert(fd >= 0 && fd2 >= 0); unlink(p1); unlink(p2);
+    assert(!ftruncate(fd, (off_t)len) && !ftruncate(fd2, (off_t)len));
+    fresh = mmap(NULL, FRESH, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0); assert(fresh != MAP_FAILED);
+    nvn_dirty_add_range(mem, len); nvn_dirty_protect(mem + 100 * pg, 64 * pg); *slot = find_span((uintptr_t)mem, len);
+    pthread_t t; assert(pthread_create(&t, NULL, writer, NULL) == 0);
+    usleep(2000);
+    *rc = nvn_dirty_swap(mem, len, fill_retire, NULL, &swapped);
+    pthread_join(retirer, NULL); if (rdr_on) pthread_join(rdr, NULL);
+    usleep(20000);   // writes after the swap, into a pool no range holds now: every page must be writable
+    atomic_store(&stop, 1); pthread_join(t, NULL);
+    check("after a retirement during the swap");
+}
 int main(void) {
     pg = (size_t)getpagesize();
     struct sigaction sa = {0}; sa.sa_sigaction = handle_fault; sa.sa_flags = SA_SIGINFO; sigemptyset(&sa.sa_mask);
@@ -178,6 +217,22 @@ int main(void) {
         else assert(nest_word(fd2, p) != w);   // past the failed piece: the old anonymous pages
     }
     nvn_dirty_remove_range(mem);
+    // the range retired while the swap runs, its slot then taken by a new pool elsewhere: the second slice, taken before the retirement could finish, is swapped, and
+    // the retirement waits for it; the third finds another registration in the slot and is not swapped (1: the tracker no longer holds the span; done = the two
+    // slices). The host write into the second slice waits for its BUSY pages and lands (no EFAULT), no game write faults with no owner (the writer ran throughout: no
+    // crash, no lost write), the new pool's pages are untouched, and the put-back (gfx_vk_core.c zc_unplace) finds no range either, which leaves the swapped slices to
+    // mtl_pool_del's copy_back (vkpool_t left)
+    range_t *slot; retire_run(&rc, &slot);
+    want(rc == 1 && fills == 2 && swapped == 32u << 20, "retired during the swap: rc %d, %d slices filled, %zu bytes swapped (want 1, 2, %u)", rc, fills, swapped, 32u << 20);
+    want(atomic_load(&retired), "the retirement did not finish");
+    want(read_got == 16, "host write into the second slice: %zd bytes, errno %d (want 16)", read_got, read_got < 0 ? read_err : 0);
+    { size_t again = 1; want(nvn_dirty_quiet(mem, 40u << 20) == 1 && nvn_dirty_swap(mem, swapped, fill_back, NULL, &again) == 1 && again == 0, "a retired range still answers"); }
+    for (size_t p = 0; p < np; p++) ((volatile uint32_t *)(mem + p * pg))[2] = 7;
+    want(find_span((uintptr_t)fresh, FRESH) == slot, "the staging: the new pool did not take the retired range's slot");
+    for (size_t p = 0; p < FRESH / pg; p++) want(atomic_load(&slot->state[p]) == PG_NONE, "the new pool's page %zu: state %d (want none)", p, atomic_load(&slot->state[p]));
+    want(nvn_dirty_quiet(fresh, FRESH) == 0, "the new pool: not quiet");
+    for (size_t p = 0; p < FRESH / pg; p++) fresh[p * pg] = 1;
+    nvn_dirty_remove_range(fresh);
     return 0;
 }
 '''.replace('DIRTY', dirty).replace('ZCFILL', zc)

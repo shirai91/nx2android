@@ -31,7 +31,8 @@ enum { BLK_SHIFT = 10, BLK = 1 << BLK_SHIFT, NBLK = 256, MAX_RANGE = BLK * NBLK 
 // last: the highest generation of any page of the range (a check of a range nothing was written in since its stamp scans no page)
 // nmp: this module's mprotect calls on the range since it was registered or defragmented (nvn_dirty_defrag)
 // prep: when the host last made pages of the range writable for a write of its own (prep_write; mach time)
-typedef struct { uintptr_t base, end, mem; _Atomic uint8_t *state; _Atomic uint64_t *gen; _Atomic uint32_t *span; size_t cap; _Atomic int live; _Atomic uint32_t nmp; _Atomic uint64_t prep; _Atomic uint64_t last; } range_t;
+// id: the registration's number (g_adds_total), set and read under g_slot_mu: nvn_dirty_swap lets the mutex go between slices and tells its range from a pool that took the slot since
+typedef struct { uintptr_t base, end, mem; _Atomic uint8_t *state; _Atomic uint64_t *gen; _Atomic uint32_t *span; size_t cap; _Atomic int live; _Atomic uint32_t nmp; _Atomic uint64_t prep; _Atomic uint64_t last; uint64_t id; } range_t;
 static _Atomic(range_t *) g_blk[NBLK];
 static inline range_t *rg(int i) { return &atomic_load_explicit(&g_blk[i >> BLK_SHIFT], memory_order_acquire)[i & (BLK - 1)]; }
 static _Atomic int g_nr;
@@ -198,33 +199,50 @@ int nvn_dirty_defrag(int (*remap)(void *mem, size_t len)) {
 // A range the host prepared a write into in the last DEFRAG_QUIET_MS is left for later, as in nvn_dirty_defrag: a system call that prepared its pages before they went BUSY
 // may still be writing, and fails with EFAULT on a page made read-only under it. Checked with the slice's pages BUSY: a prep_write after that waits for them (release_pages).
 // → 0; 2 when the host wrote into the range lately (try later); fill's error, or -1 (a page stayed BUSY past BUSY_WAIT_MS, mprotect failed, the span is not whole host pages);
-// 1 when no registered range holds the span (nothing done). done (may be NULL): the bytes from mem whose slices were swapped before it stopped, which keep the new pages
-// (a caller that drops them maps those slices back first: gfx_vk_core.c zc_unplace)
+// 1 when no registered range holds the span (nothing done), or the range was retired between two slices. done (may be NULL): the bytes from mem whose slices were swapped
+// before it stopped, which keep the new pages (a caller that drops them maps those slices back first: gfx_vk_core.c zc_unplace, whose put-back of a retired range finds
+// none and leaves them to mtl_pool_del's copy_back through vkpool_t left)
+// The range is looked up, checked and each slice's pages made BUSY with g_slot_mu held, which pool registration and retirement hold, as nvn_dirty_protect does
+// (seedds/nxnative af616f54). Looked up without it, a retirement (hle_nvn.c: nvn_dirty_remove_range, then mtl_pool_del, which waits on g_lazy_mu while pool_back swaps)
+// could finish between the lookup and BUSY: its prep_write made the pages writable and live went 0, and the swap then made the retired pool's pages read-only with no live
+// range to let a write through (a game write faulted with no owner, a host read() into them failed with EFAULT), or worked from another pool's base and state array once
+// that pool took the slot (its prep reset, so no "written lately" stopped it); and the range of a second lookup after nvn_dirty_quiet's was used unchecked, NULL once a
+// retirement fell between the two. The mutex is let go before mprotect and fill: a retirement during the
+// copy waits in its prep_write on the BUSY pages, which are given back without the mutex, so nothing holds it while it waits on the swap. The waits on BUSY pages with it
+// held are on the fault and host pre-write paths, which take no lock. Between slices the range is checked again (live, and the same registration: id)
 enum { SWAP_SLICE = 16 << 20 };
 // nvn_dirty_swap's answer before it touches a page: 0 = a registered range holds the span and the host has prepared no write into it in the last DEFRAG_QUIET_MS (go
 // ahead); 1 = no registered range holds it; 2 = the host wrote into it lately (try later); -1 = not whole host pages. gfx_vk_core.c asks before it takes a buffer for a
-// lazy pool, so a pool the host keeps writing into costs no allocation each time it is tried again
+// lazy pool, so a pool the host keeps writing into costs no allocation each time it is tried again. With g_slot_mu held, so the prep read is the range's that was found
+// (a retirement in between could hand the slot to another pool)
 int nvn_dirty_quiet(const void *mem, size_t len) {
     if (!g_pg || (((uintptr_t)mem | len) & (g_pg - 1))) return -1;   // whole host pages only
-    range_t *r = find_span((uintptr_t)mem, len); if (!r) return 1;
-    return written_lately(r) ? 2 : 0;
+    pthread_mutex_lock(&g_slot_mu);
+    range_t *r = find_span((uintptr_t)mem, len); int q = !r ? 1 : written_lately(r) ? 2 : 0;
+    pthread_mutex_unlock(&g_slot_mu);
+    return q;
 }
 int nvn_dirty_swap(void *mem, size_t len, int (*fill)(void *at, size_t n, size_t off, void *ctx), void *ctx, size_t *done) {
     if (done) *done = 0;
     int q = nvn_dirty_quiet(mem, len); if (q) return q;   // (written lately: checked again below with each slice BUSY; this spares the first slice's waits)
-    range_t *r = find_span((uintptr_t)mem, len);
+    range_t *r = NULL; uint64_t id = 0;
     size_t sp = (len < SWAP_SLICE ? len : SWAP_SLICE) >> g_shift; int rc = 0;
     uint8_t *was = malloc(sp); if (!was) return -1;
     for (size_t off = 0; off < len && !rc; off += sp << g_shift) {
         size_t n = len - off < (sp << g_shift) ? len - off : sp << g_shift, np = n >> g_shift, k = 0;
-        uintptr_t a = (uintptr_t)mem + off, p0 = (a - r->base) >> g_shift;
+        uintptr_t a = (uintptr_t)mem + off;
+        pthread_mutex_lock(&g_slot_mu);   // (see above: the lookup, the check and the BUSY pages under it, mprotect and fill after it)
+        if (!r && (r = find_span((uintptr_t)mem, len))) id = r->id;
+        if (!r || !atomic_load_explicit(&r->live, memory_order_acquire) || r->id != id) { pthread_mutex_unlock(&g_slot_mu); rc = 1; break; }   // retired since (or before the first slice)
+        uintptr_t p0 = (a - r->base) >> g_shift;
         while (k < np && !rc) {   // every page of the slice BUSY; was = its state before
             uint8_t st = atomic_load(&r->state[p0 + k]);
             if (st == PG_BUSY) { if (!busy_wait(r, p0 + k)) rc = -1; continue; }
             if (atomic_compare_exchange_strong(&r->state[p0 + k], &st, PG_BUSY)) was[k++] = st;
         }
         if (!rc && written_lately(r)) rc = 2;
-        if (rc) { for (size_t j = 0; j < k; j++) atomic_store(&r->state[p0 + j], was[j]); break; }
+        if (rc) { for (size_t j = 0; j < k; j++) atomic_store(&r->state[p0 + j], was[j]); pthread_mutex_unlock(&g_slot_mu); break; }
+        pthread_mutex_unlock(&g_slot_mu);
         rc = mp(a, n, PROT_READ) ? -1 : fill((void *)a, n, off, ctx);   // (a failed mprotect may have made part of it read-only: the writable runs are made writable again below)
         for (size_t j = 0; j < np; ) {
             if (was[j] != PG_NONE) { j++; continue; }
@@ -252,7 +270,7 @@ int nvn_dirty_runs(void) {
 void nvn_dirty_add_range(const void *mem, size_t size) {
     static int inited;
     if (!inited) { inited = 1; g_pg = (uintptr_t)getpagesize(); g_shift = __builtin_ctzl(g_pg); mach_timebase_info(&g_tb); dm_fault_hook_register(on_fault); dm_guest_write_prep_register(prep_write); }
-    atomic_fetch_add(&g_adds_total, 1);
+    uint64_t id = atomic_fetch_add(&g_adds_total, 1) + 1;
     pthread_mutex_lock(&g_slot_mu);
     int n = atomic_load(&g_nr);
     int slot = -1;
@@ -284,6 +302,7 @@ void nvn_dirty_add_range(const void *mem, size_t size) {
         memset((void *)state, 0, np); memset((void *)gen, 0, np * sizeof *gen); memset((void *)r->span, 0, np * sizeof *r->span);
     }
     r->base = base; r->end = end; r->mem = (uintptr_t)mem; r->state = state; r->gen = gen; atomic_store(&r->nmp, 0); atomic_store(&r->prep, 0); atomic_store(&r->last, 0);
+    r->id = id;
     if (slot == n) atomic_store(&g_nr, n + 1);
     atomic_store_explicit(&r->live, 1, memory_order_release);
     pthread_mutex_unlock(&g_slot_mu);
