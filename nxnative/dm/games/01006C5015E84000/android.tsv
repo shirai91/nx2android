@@ -1,0 +1,14 @@
+# Disco Elysium - The Final Cut on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Unity 2020.3.12f1 IL2CPP with FMOD, SDK 11.4.3, NVN; subsdk0 is NintendoSDK_movie. Base v0, display 1.0.7.
+# 6,165 shaders from the package, 56 of them compute, all translated; Unity 2020.3's ComputeShader layout recovers 55 kernels from unity default
+# resources (type hash d0171b849bb064b2424893e7d4809be5), so the six shaders once captured at runtime are table rows now (4df74f72c570dd06
+# 711268aaf3eaed55 84b9cf5d567aa961 adaeee6e881b2b03 cab326f4c38b15c7 cfb8c0f3acfe6128).
+# Tested 2026-11-10/11 with these tables, a source-only split and no captures, on a Sony XQ-DQ72 (Adreno 740) and a OnePlus 15 (Snapdragon 8 Elite
+# Gen 5), 2 h on each: every region visited, menus, saves written and loaded, a steady 30 fps, no crash; 56/56 compute pipelines, no missing-program
+# draws, the VP8 and AVC intro movies decoded.
+# Handheld, no forced 60 fps, turbo or diagnostic overrides. Cold pipeline compilation and scene loading still stall; shader coverage is scene-dependent.
+status	playable
+tested	v0 (1.0.7) Sony XQ-DQ72 (Adreno 740) and OnePlus 15 (Snapdragon 8 Elite Gen 5), 2026-11-10
+package	org.nx2a.t01006c5015e84000
+orientation	landscape
+setting	docked=0

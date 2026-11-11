@@ -1,0 +1,40 @@
+# Disco Elysium - The Final Cut: base v0, display version 1.0.7.
+# Unity 2020.3.12f1 / IL2CPP, Nintendo SDK 11.4.3, NVN, FMOD; subsdk0 is NintendoSDK_movie.
+# Identity and module build IDs checked against the extraction and survey; there is no separate update in this dump.
+# Android validation scope is recorded in android.tsv.
+
+# ---- Identity ----
+title_id	01006C5015E84000
+program_id	01006C5015E84000
+
+# ---- App ----
+name	Disco Elysium - The Final Cut
+ipa	DiscoElysiumTheFinalCut.ipa
+app_category	public.app-category.games
+
+# ---- Versions ----
+build	v0	1.0.7	main=8cd5adbf3bbf1d5d526e21a9b42bfe23	subsdk0=507f19d1240d09d00992248e8a0fd77e	sdk=2d369d9999e3e10e665106f840ffff9b
+package	v0
+shader_versions	v0
+
+# ---- Files ----
+# Load main, the movie module, then sdk; runtime NRO collection follows the RomFS files.
+modules	main subsdk0 sdk
+romfs_marker	Data/AmplifyTexture/0d06445cc08e1d1a9a28ab04e56a8e48.vtc2_nx
+zip_store	.assets:.bundle:.dat:.json:.png:.resource:.ress:.vtc2_nx:.metallib
+
+# ---- Memory ----
+# NPDM system resource: 16 MiB. Preserve the layout used by the historical Sony run, not a new RAM requirement.
+# That run reserved its initial 0xc9400000-byte region in the alias area; address-region ends reached +3.76 GiB within its 4.375 GiB range.
+# No Mac heap-check result is claimed; this layout held on both tested phones.
+mem_reserve	0x140000000
+mem_alias	0x118000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+sys_resource	0x1000000
+
+# ---- Shader split ----
+# Source tables contain 6,165 package shaders, including 56 compute shaders; no runtime captures are needed for these rows.
+# Unity 2020.3's fallback ComputeShader layout recovers the six historical captures from the original resources; see android.tsv.
+shader_groups	/Data/=data /.nrr/=nrr /Plugins/=plugins
+shader_note	Disco Elysium - The Final Cut shaders (base v0, display 1.0.7)
