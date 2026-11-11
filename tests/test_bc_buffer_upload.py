@@ -1,15 +1,16 @@
 """Run the actual BC upload with separate GPU storage and stubbed Vulkan calls."""
 from pathlib import Path
-import shutil
 import subprocess
 import tempfile
 import unittest
+
+import host_cc
 
 ROOT = Path(__file__).resolve().parents[1]
 DM = ROOT / 'nxnative/dm'
 
 
-@unittest.skipUnless(shutil.which('cc'), 'host C compiler required')
+@unittest.skipUnless(host_cc.posix(), 'POSIX host C compiler required')
 class BCBufferUpload(unittest.TestCase):
     def test_gpu_snapshot_strides_layers_and_validation(self):
         source = (DM / 'android/gfx_vk_exec.c').read_text()
@@ -74,30 +75,37 @@ void vkCmdCopyBufferToImage(VkCommandBuffer cb,VkBuffer b,VkImage im,VkImageLayo
     last=*r;uploads++;
 }
 ''' + functions + r'''
-int main(void) {
+int main(int argc,char **argv) {
+    (void)argv;int enabled=argc>1;
     tex_t t={.d={0x49}};
     pool=(vkpool_t){(uintptr_t)cpu+32,(uintptr_t)cpu+64};
     p_copy_b2t c={.tex=&t,.view={1,1,1,1},.has_view=1,.r={4,0,0,5,3,2},.src=(uintptr_t)cpu+4};
     for(unsigned z=0;z<2;z++)for(unsigned x=0;x<2;x++) {gpu[4+z*32+x*8]=20+z*30+x;cpu[4+z*32+x*8]=50+z*30+x;}
-    unsetenv("DM_VK_BC_GPU_READBACK");copy_b2t(&c,1);
-    assert(snapshots==0 && uploads==1); // default retains CPU decode, no GPU wait
-    setenv("DM_VK_BC_GPU_READBACK","1",1);wanted=20;copy_b2t(&c,1);
-    assert(snapshots==1 && uploads==2 && image.gpu_w && last.imageSubresource.mipLevel==1);
+    if(enabled)setenv("DM_VK_X_BC_GPU_READBACK","1",1);else unsetenv("DM_VK_X_BC_GPU_READBACK");
+    wanted=enabled?20:50;copy_b2t(&c,1);
+    if(!enabled) {
+        assert(snapshots==0 && uploads==1);
+        setenv("DM_VK_X_BC_GPU_READBACK","1",1);copy_b2t(&c,1);
+        assert(snapshots==0 && uploads==2); // cached default stays off
+        return 0;
+    }
+    setenv("DM_VK_X_BC_GPU_READBACK","0",1); // cached opt-in stays on
+    assert(snapshots==1 && uploads==1 && image.gpu_w && last.imageSubresource.mipLevel==1);
     assert(last.imageSubresource.baseArrayLayer==1 && last.imageSubresource.layerCount==2 && last.imageExtent.depth==1);
     image.layers=1;c.view=(view_t){0};c.r.xoffset=0;c.r.zoffset=2;copy_b2t(&c,1);
     assert(last.imageSubresource.layerCount==1 && last.imageExtent.depth==2 && last.imageOffset.z==2);
     span_limit=47;wanted=50;copy_b2t(&c,1); // crosses chunk: valid CPU span, no abort
-    assert(snapshots==2 && uploads==4);span_limit=48;
+    assert(snapshots==2 && uploads==3);span_limit=48;
     memset(cpu,0,sizeof cpu);c.src=(uintptr_t)cpu+2;
     for(unsigned z=0;z<2;z++)for(unsigned x=0;x<2;x++)cpu[2+z*32+x*8]=50+z*30+x;
-    copy_b2t(&c,1);assert(snapshots==2 && uploads==5); // misaligned: CPU fallback
+    copy_b2t(&c,1);assert(snapshots==2 && uploads==4); // misaligned: CPU fallback
     c.src=(uintptr_t)cpu+4;
     S.row_stride=8;copy_b2t(&c,1);S.row_stride=24;
     pool.end=(uintptr_t)cpu+51;copy_b2t(&c,1);pool.end=(uintptr_t)cpu+64;
     c.r.width=20;copy_b2t(&c,1);c.r.width=5;
     fail_snapshot=1;copy_b2t(&c,1); // refused submission skips, never decodes undefined bytes
     copy_b2t(&c,0);
-    assert(snapshots==2 && uploads==5);
+    assert(snapshots==2 && uploads==4);
 }
 '''
         with tempfile.TemporaryDirectory() as folder:
@@ -108,5 +116,6 @@ int main(void) {
                             '-I', str(DM / 'third_party/vulkan-headers/include'),
                             '-I', str(DM / 'gfx/tex'), str(src), str(DM / 'gfx/tex/nvn_bc.c'),
                             '-o', str(exe)], check=True)
-            result = subprocess.run([str(exe)], capture_output=True, text=True)
-            self.assertEqual(result.returncode, 0, result.stderr)
+            for mode in ([], ['gpu']):
+                result = subprocess.run([str(exe), *mode], capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)

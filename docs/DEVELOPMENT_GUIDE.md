@@ -260,3 +260,23 @@ requires successful writes and synchronization; failed or incomplete snapshots a
 pending legacy migrations remain eligible for retry. `DM_VK_NOPCACHE` still means
 start empty, while allowing newly built pipelines to be saved. Bump `PCACHE_ABI`
 when changing the renderer's persistent cache contract.
+
+### CPU BC upload readback experiment
+
+`DM_VK_X_BC_GPU_READBACK=1` opts CPU-decoded BC buffer uploads into ordered
+GPU snapshots. It is off by default and read once on the first BC upload;
+restart the app after changing it. Native BC uploads are unchanged. The snapshot
+records the pool readback barrier before ending the buffer and waits for queue
+completion under the queue mutex, so enabling it can delay presents.
+
+Chunk-spanning or misaligned transfers use the prior CPU-address decode with a
+one-time diagnostic; that fallback preserves compatibility but may read stale
+GPU data. Invalid regions are skipped, and refused command buffers use the
+existing dropped-submission path. An executed snapshot logs
+`BC GPU snapshot: ordered readback completed` once.
+
+For device validation, compare switch-off and switch-on runs. A native-BC GPU
+also needs `DM_VK_X_BC_CPU=1` to exercise the CPU path; record the settings,
+driver and snapshot execution line. Forced fallback on Adreno 642L is useful
+functional coverage, but does not qualify Mali or Adreno 619 driver behavior.
+The upload and snapshot C harnesses require `host_cc.posix()` and skip MinGW.

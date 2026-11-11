@@ -2213,9 +2213,10 @@ static void copy_b2t(const p_copy_b2t *c, int to_texture) {
         }
         // Keep the previous CPU-address decode by default. GPU readback is
         // opt-in because it submits pending work and waits under the queue lock.
-        const char *readback = getenv("DM_VK_BC_GPU_READBACK");
+        static int readback = -1;
+        if (readback < 0) { const char *e = getenv("DM_VK_X_BC_GPU_READBACK"); readback = e && atoi(e); }
         const void *input = (const void *)(uintptr_t)c->src; uint8_t *blocks = NULL;
-        if (readback && atoi(readback)) {
+        if (readback) {
             VkBuffer src; VkDeviceSize src_off;
             if (!vk_buf_at(c->src, size, &src, &src_off) || src_off % 4 || size % 4) {
                 VKRED_ONCE(71, "BC GPU snapshot unavailable for chunk-spanning or misaligned range; using CPU blocks");

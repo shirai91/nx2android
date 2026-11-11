@@ -1,15 +1,16 @@
 """Check ordered BC buffer readback and command-buffer reuse with Vulkan stubbed."""
 from pathlib import Path
-import shutil
 import subprocess
 import tempfile
 import unittest
+
+import host_cc
 
 ROOT = Path(__file__).resolve().parents[1]
 DM = ROOT / 'nxnative/dm'
 
 
-@unittest.skipUnless(shutil.which('cc'), 'a host C compiler is required')
+@unittest.skipUnless(host_cc.posix(), 'POSIX host C compiler required')
 class BCSnapshot(unittest.TestCase):
     def test_ordered_readback_reuses_command_buffers(self):
         source = (DM / 'android/gfx_vk_core.c').read_text()
