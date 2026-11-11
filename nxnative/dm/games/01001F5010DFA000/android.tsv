@@ -5,8 +5,8 @@
 # Recorded there with patches.py's 60 fps cut (since taken out): 60 fps, game time at real time (the same walk at 60 and pinned at 30), GPU 11-14.6 ms at the beach; a 30-minute soak kept one
 # process at a flat 1,307 MiB footprint with no audio underruns and no red log line. The washed-out picture it first had was the vertex outputs' Maxwell start values
 # (gfx_vk_shader.c spv_vs_init). Local wireless trades stay offline (nn::ldn cut): Trading Post → Local Communication not checked yet.
-# On the AYN Thor (Snapdragon 8 Gen 2, Adreno 740, Android 13, Turnip 27.0.0-R2, 2026-11-11), the same 3 s stick hold (DM_CTL LUp~3) from one spot in the Obsidian Fieldlands walked
-# past the dead trees pinned at 60 but only to the boulder pinned at 30: the player moves a fixed step per frame, so the cut made walking about twice as fast. The game runs at its own 30.
+# On the AYN Thor (Snapdragon 8 Gen 2, Adreno 740, Android 13, Turnip 27.0.0-R2, 2026-11-11), played by hand from the same save with both builds installed side by side:
+# the build with the cut plays like fast-forward, about twice as fast; this one (no cut) plays at the Switch's pace. The game runs at its own 30.
 status	playable
 tested	v262144 AYN Thor (Snapdragon 8 Gen 2, Adreno 740, Android 13)
 package	org.nx2a.plarceus
