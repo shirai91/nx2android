@@ -13,6 +13,7 @@ KEYS = {
     'out': 'folder for the APK and data pack (empty = the game folder)',
     'device': 'adb serial of the device to install on (empty = the only one connected)',
     'language': 'game language code (empty = English)',
+    'hide_touch_controls': 'yes: never show the on-screen gamepad while a controller is attached (a handheld\'s own controls count from the start); empty: shown until a controller is used',
 }
 
 

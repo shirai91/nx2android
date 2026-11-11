@@ -245,7 +245,8 @@ static _Atomic int g_knob[2][2];    // the sticks' knob offsets, in 1/10000 of t
 static _Atomic int64_t g_press_t[16], g_menu_t, g_stick_t[2];   // when each overlay button (by DM_BTN_* bit), the menu button and each stick went down, 0 = not held
 static uint64_t g_touch_btn;        // the overlay buttons held, as of the last touch event
 static int64_t mono_ns(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec; }
-int dm_overlay_visible(void) { return atomic_load(&g_pads) ? 0 : atomic_load(&g_set_overlay) && atomic_load(&g_overlay) ? 1 : 2; }
+static _Atomic int g_pads_wait;     // DM_PAD_ATTACHED=hide: 1 until pad_watch has looked for controllers once, so the gamepad does not show for a moment at start-up
+int dm_overlay_visible(void) { return atomic_load(&g_pads) || atomic_load(&g_pads_wait) ? 0 : atomic_load(&g_set_overlay) && atomic_load(&g_overlay) ? 1 : 2; }
 int dm_overlay_layout(void) {   // the phone's layout in a window at least OV_PHONE_ASPECT wide for its height (overlay_layout.h)
     static int last_w = -1, last_h = -1, phone;
     ANativeWindow *w = phone_window(); int ww = w ? ANativeWindow_getWidth(w) : 0, wh = w ? ANativeWindow_getHeight(w) : 0;
@@ -338,7 +339,9 @@ static void menu_drag(const ov_ctl *m, float x, float y, float W, float H) {   /
 // when it is a gamepad or a joystick and not virtual (the tablet's own keys, touch screen and pen are neither), and once it has sent input: Xiaomi phones
 // keep a system device "uinput-xiaomi" attached for good that says it is a gamepad and sends nothing, which hid the gamepad and its menu button (issue #22).
 // While one is attached nothing of the gamepad is shown and every touch is the game's; its keys open the menu (Back, Mode, Menu: handle_event). When the
-// last one goes, the gamepad comes back ----
+// last one goes, the gamepad comes back. DM_PAD_ATTACHED=hide (porter config hide_touch_controls): the gamepad starts hidden and a controller counts as soon as
+// it is attached, so the gamepad shows only when the first look finds none, and never on a handheld with its own controls (the Odin 2 Portal's says it is an Xbox Wireless Controller); a phone with such a silent system
+// device then shows no gamepad either, which is why it is not the default ----
 static int jx(JNIEnv *E) { if (!(*E)->ExceptionCheck(E)) return 0; (*E)->ExceptionClear(E); return 1; }
 static void *pad_watch(void *a) {
     JavaVM *vm = a; JNIEnv *E; pthread_setname_np(pthread_self(), "padwatch");
@@ -348,8 +351,8 @@ static void *pad_watch(void *a) {
     jmethodID mSrc = cID ? (*E)->GetMethodID(E, cID, "getSources", "()I") : NULL, mVirt = cID ? (*E)->GetMethodID(E, cID, "isVirtual", "()Z") : NULL;
     jmethodID mName = cID ? (*E)->GetMethodID(E, cID, "getName", "()Ljava/lang/String;") : NULL;
     jmethodID mVen = cID ? (*E)->GetMethodID(E, cID, "getVendorId", "()I") : NULL, mProd = cID ? (*E)->GetMethodID(E, cID, "getProductId", "()I") : NULL;
-    if (jx(E) || !mIds || !mGet || !mSrc || !mVirt || !mName || !mVen || !mProd) { LOG("[RED] [input] InputDevice methods missing: attached controllers are not watched"); return NULL; }
-    int prev[16], used[16], np = 0;
+    if (jx(E) || !mIds || !mGet || !mSrc || !mVirt || !mName || !mVen || !mProd) { LOG("[RED] [input] InputDevice methods missing: attached controllers are not watched"); atomic_store(&g_pads_wait, 0); return NULL; }
+    int prev[16], used[16], np = 0; const char *ha = getenv("DM_PAD_ATTACHED"); int on_sight = ha && !strcmp(ha, "hide");
     for (;;) {
         int ids[16], on[16], n = 0, nu = 0, in = atomic_load(&g_pad_in);
         jintArray arr = (*E)->CallStaticObjectMethod(E, cID, mIds);
@@ -360,11 +363,11 @@ static void *pad_watch(void *a) {
                 jint src = (*E)->CallIntMethod(E, d, mSrc); jboolean virt = (*E)->CallBooleanMethod(E, d, mVirt);
                 if (!jx(E) && !virt && ((src & AINPUT_SOURCE_GAMEPAD) == AINPUT_SOURCE_GAMEPAD || (src & AINPUT_SOURCE_JOYSTICK) == AINPUT_SOURCE_JOYSTICK)) {
                     int known = 0, was = 0; for (int k = 0; k < np; k++) if (prev[k] == v[i]) { known = 1; was = used[k]; }
-                    ids[n] = v[i]; on[n] = was || v[i] == in; nu += on[n];
+                    ids[n] = v[i]; on[n] = was || v[i] == in || on_sight; nu += on[n];
                     if (!known) {
                         jstring s = (*E)->CallObjectMethod(E, d, mName); const char *nm = !jx(E) && s ? (*E)->GetStringUTFChars(E, s, NULL) : NULL;
                         jint ven = (*E)->CallIntMethod(E, d, mVen), prod = (*E)->CallIntMethod(E, d, mProd); jx(E);
-                        LOG("[input] controller attached: %s (device %d, sources 0x%x, %04x:%04x): the gamepad is hidden once it is used", nm ? nm : "?", v[i], src, ven, prod);
+                        LOG("[input] controller attached: %s (device %d, sources 0x%x, %04x:%04x): the gamepad is hidden %s", nm ? nm : "?", v[i], src, ven, prod, on_sight ? "while it is attached" : "once it is used");
                         if (nm) (*E)->ReleaseStringUTFChars(E, s, nm);
                         if (s) (*E)->DeleteLocalRef(E, s);
                     }
@@ -377,10 +380,12 @@ static void *pad_watch(void *a) {
             (*E)->DeleteLocalRef(E, arr);
         }
         for (int k = 0; k < np; k++) { int still = 0; for (int i = 0; i < n; i++) still |= ids[i] == prev[k]; if (!still) LOG("[input] controller detached (device %d)", prev[k]); }
+        int first = atomic_exchange(&g_pads_wait, 0);
         if (atomic_exchange(&g_pads, nu) && !nu) {   // the last one went: the gamepad again, and the device's motor for rumble
             atomic_store(&g_overlay, 1); dm_haptics_android_device(-1);
             LOG("[input] no controller in use: the gamepad is shown");
         }
+        if (first && !nu) LOG("[input] no controller attached: the gamepad is shown");
         memcpy(prev, ids, sizeof ids); memcpy(used, on, sizeof on); np = n;
         sleep(1);
     }
@@ -1200,7 +1205,9 @@ __attribute__((visibility("default"))) void ANativeActivity_onCreate(ANativeActi
     if (dm_saves_start(g_root)) { LOG("[saves] the request asked the app to end: the game is not started"); g_quit = 1; return; }
     if (!romfs_readable(act, sdk)) { g_quit = 1; return; }   // after the save manager's requests, which need no RomFS
     settings_load(); dm_haptics_android_start(act, atomic_load(&g_set_rumble)); dm_lan_android_start(act);
-    { pthread_t w; if (!pthread_create(&w, NULL, pad_watch, act->vm)) pthread_detach(w); }
+    { const char *ha = getenv("DM_PAD_ATTACHED"); pthread_t w;
+      if (ha && !strcmp(ha, "hide")) atomic_store(&g_pads_wait, 1);
+      if (!pthread_create(&w, NULL, pad_watch, act->vm)) pthread_detach(w); else atomic_store(&g_pads_wait, 0); }
     { pthread_t w; if (!pthread_create(&w, NULL, temp_watch, act->vm)) pthread_detach(w); }
     LOG("NX2A host on Android: files %s, RomFS %s, saves %s", g_root, getenv("DM_ROMFS"), act->internalDataPath);
     pthread_t t; pthread_create(&t, NULL, input_thread, NULL); pthread_detach(t);
