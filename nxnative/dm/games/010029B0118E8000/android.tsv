@@ -1,0 +1,28 @@
+# Need For Speed™ Hot Pursuit Remastered (010029B0118E8000), update 1.0.3 (v196608): Frostbite on NVN, SDK 10.4.1.
+# Tested 2026-11-10 on the Retroid Pocket Nova (RPN, Snapdragon 8 Gen 2 / QCS8550, Adreno 740, Android 16): the port runs with a native 1280x960 window at run time
+# (device log: '[nvn] WindowInitialize swap chain 3 textures, interval 1, first 1280x960', '[nvn] WindowCrop 0,0 1280x960', '[vk] swapchain 1280x960'; grep -c 1920x1080 over the run log = 0).
+# Verified screenshots at 1280x960 with zero letterbox bars, driven with DM_CTL presses: title, EULA and privacy pages scrolled and accepted, select-race-location map, select event, select car,
+# select colour, and race start in Grand Ocean Coast (driving itself was not exercised: the speedometer stayed at 0). The intro cinematics keep the game's own bars (133 px top/bottom symmetric); the
+# in-race HUD (bounty, minimap, position/timer, speedometer) sits inside the frame with the 2D HUD undistorted and the gauge arc a true circle (radius fit ~161 px); audio plays (audio device runs,
+# 0 underruns over 8000 callbacks after the first sound, log-20261110-race43.txt); 60 fps with the limiter cut plus DM_PRESENT_INTERVAL=display: '[dm] [perf] adaptive frame rate: 60 fps, frame work p50 16.7 / p90 17.0 / p95 17.1 ms'.
+# Open: of the 86 files in RomFS UI/MOVIES/ (1.0.3, .gamedump/NFSHotPursuit/010029B0118E8000_build/extract/v196608/RomFS/UI/MOVIES/), 79 Bink videos are 1280x720, 4 are 1920x1080 (1254893.BIK, the romfs_marker, is one of them) and 3 are 2048x1024; the videos fill the 4:3 frame with no bars, so the non-4:3 footage (16:9 or wider) is stretched or cropped, not fixed. Career progression, police chases and multiplayer are untested.
+# Shaders: 2112 GLSLC outputs in SHADERS.BNDL (Criterion Bundle 2 bnd2 v3, 15915907 B; bnd2_shaders) = 2065 unique keys + 89 whole GLSLC in main = 2154 in shaders.dmsv; race43 log 0 not in bundle.
+# Runtime captures (271 files, 266 unique IDs pre-43) all duplicate bundle keys, 0 added; a later `not in bundle` still means capture on play + port again.
+# Red log lines: nvnDeviceGetInteger items 0x60/0x61 (unimplemented, return 0) and 'view format 37 of a format-listed image (41, DM_VK_UBWC)'.
+status	wip
+tested	v196608 Retroid Pocket Nova RPN (Snapdragon 8 Gen 2, Adreno 740, Android 16)
+package	org.nx2a.t010029b0118e8000
+orientation	landscape
+# the Retroid Pocket Nova's built-in pad is labelled Nintendo-style (A right, B bottom, X top, Y left) and sends the keycode of its label, so map the face
+# buttons by label: without this its physical B lands on the game's A (the default maps AKEYCODE_BUTTON_A, the bottom button, to B for Xbox pads)
+setting	abxy=label
+# hidden at launch: the player uses the device's own controls (the pause menu's Show gamepad brings it back)
+setting	overlay=0
+# the 60 fps limiter cut: present every display frame so the game's 60 fps logic and the panel's 60 Hz agree (the stock game asks for interval 2)
+env	DM_PRESENT_INTERVAL=display
+# race log log-20261110-race43.txt:166-174 view format 37 of image 41 UBWC, capped gfx_vk_tex.c:588; per gfx_vk_tex.c:163-169 this game wants =2
+env	DM_VK_UBWC=2
+# The host's front-face rule for upper-left-origin games (gfx_vk_exec.c) gives this game the wrong winding, as for Burnout Paradise (also Criterion): cars
+# drew black (back faces). It uses both NVN fronts, so the rule is inverted (=2), not forced (=1 culled the car outright). Verified 2026-11-11 on the Retroid:
+# Select Color car silver instead of black, race start textured. The race intro and the rear-view mirror stay washed out white (separate, open)
+env	DM_VK_FRONT=2
