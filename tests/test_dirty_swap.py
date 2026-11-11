@@ -1,16 +1,18 @@
 """nvn_dirty_swap replaces a tracked range's pages while another thread writes them, and no write is lost."""
 from pathlib import Path
-import shutil
 import subprocess
 import tempfile
 import unittest
 
+import sys; sys.path.insert(0, str(Path(__file__).resolve().parent))
+import host_cc   # noqa: E402
+
 
 class DirtySwap(unittest.TestCase):
-    @unittest.skipUnless(shutil.which('cc'), 'a host C compiler is required')
+    @unittest.skipUnless(host_cc.posix(), 'a POSIX host C compiler is required (<sys/mman.h>, sigaction, mkstemp)')
     def test_swap_under_writes(self):
         dm = Path(__file__).resolve().parents[1] / 'nxnative/dm'
-        dirty = (dm / 'gfx/nvn/nvn_dirty.c').read_text()
+        dirty = (dm / 'gfx/nvn/nvn_dirty.c').read_text(encoding='utf-8')
         dirty = '\n'.join(s for s in dirty.splitlines() if not s.startswith('#include'))
         harness = r'''
 #define _GNU_SOURCE
