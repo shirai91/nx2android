@@ -1,10 +1,16 @@
 // Players and controllers (GitHub issue #74): the Mac front end's slot assignment (pad_slots.h) and the npads hle_hid.c reports for each player, docked and handheld, with the
 // game's supported npad ids; no controller, window or guest exists in this test (the hid take-overs are called directly, events are recorded by the stubs)
+#include <time.h>
+static int hid_clock_gettime(clockid_t clock, struct timespec *ts);
+#define clock_gettime hid_clock_gettime
 #include "../hle_hid.c"
+#undef clock_gettime
 #include "../pad_slots.h"
 
 static int checks, fails, g_mode = 1, g_signals;
 static void *g_signalled;
+static time_t rumble_second = 1;
+static int hid_clock_gettime(clockid_t clock, struct timespec *ts) { (void)clock; *ts = (struct timespec){.tv_sec = rumble_second}; return 0; }
 #define CHECK(c, msg) do { checks++; if (!(c)) { fails++; fprintf(stderr, "FAIL: %s (line %d)\n", msg, __LINE__); } } while (0)
 int dm_opmode(void) { return g_mode; }
 uint64_t guest_ns(void) { return 1000000000ull; }
@@ -131,7 +137,21 @@ static void t_vibration(void) {
     g_mode = 1; ids((uint32_t[]){0, 1, NPAD_HANDHELD}, 3); dm_pad_players(3);
     CHECK(!h_hid_VibPermit() && !h_hid_VibHandles(h, 2, &id, STYLE_FULLKEY), "no sink: no vibration devices");
     CHECK(!h_hid_VibMounted(&h[0]), "no routed output: device not mounted");
-    dm_haptics_init(vibration_sink, 1); dm_haptics_route(0, 1); dm_haptics_route(1, 1);
+    dm_haptics_init(vibration_sink, 1);
+    CHECK(!h_hid_VibPermit() && h_hid_VibHandles(h, 2, &id, STYLE_FULLKEY) == 2,
+          "startup handles do not wait for a routed haptics output");
+    h_hid_SendVib(&h[0], &v);
+    CHECK(dm_haptics_actual(0, 0).amplitude_low == 0, "a value before routing is not retained");
+    // The Android front end routes only player 1's rumble (haptics_android.c): players 2 and up, each controller a player of its own (front_android.c), still get their handles, as on a
+    // Switch, where they follow the npad id and style alone, and what the game sends them reaches no output
+    dm_haptics_route(0, 1);
+    uint32_t h2[2] = {0};
+    CHECK(h_hid_VibHandles(h2, 2, &(uint32_t){1}, STYLE_FULLKEY) == 2 && h2[0] == 0x103 && h2[1] == 0x10103, "player 2 with no routed output (Android) still gets its handles");
+    vibration_calls = 0; h_hid_SendVib(&h2[0], &v);
+    CHECK(!vibration_calls && dm_haptics_actual(0, 0).amplitude_low == 0 && !h_hid_VibMounted(&h2[0]), "a value for player 2 reaches no output, leaves player 1 alone, and its device is not mounted");
+    dm_haptics_route(1, 1);
+    h_hid_SendVib(&h[0], &v);
+    CHECK(!memcmp(&vibration[0].motor[0], &v, sizeof v), "cached startup handles reach an output routed later");
     CHECK(h_hid_VibPermit() && h_hid_VibHandles(h, 2, &id, STYLE_FULLKEY) == 2, "two vibration motors available");
     CHECK(h[0] == 3 && h[1] == 0x10003, "SDK vibration handle bytes: style 3, npad 0, motors 0 and 1");
     CHECK(!h_hid_VibHandles(h, 2, &id, STYLE_HANDHELD), "wrong controller style gets no motors");
@@ -164,6 +184,53 @@ static void t_vibration(void) {
     CHECK(!h_hid_VibMounted(&(uint32_t){3}) && h_hid_VibMounted(&h[0]), "mounted follows the connected controller's style");
     dm_haptics_route(1, 0);
     CHECK(!h_hid_VibPermit(), "disconnecting the last output disables vibration");
+    dm_haptics_init(vibration_sink, 0); dm_haptics_route(0, 1);
+    CHECK(!h_hid_VibPermit() && !h_hid_VibHandles(h, 2, &id, STYLE_HANDHELD), "rumble disabled: no vibration devices");
+}
+
+static void *vibration_sender(void *arg) {
+    (void)arg;
+    const uint32_t handles[] = {3, 0};
+    const dm_vibration values[] = {{0.25, 160, 0, 320}, {0.8, 160, 0, 320}};
+    for (int i = 0; i < 1000; i++) h_hid_SendVibs(handles, values, 2);
+    return NULL;
+}
+static void t_rumble_log(void) {
+    g_mode = 1; ids((uint32_t[]){0}, 1); dm_pad_players(1);
+    dm_haptics_init(vibration_sink, 1); dm_haptics_route(0, 1);
+    FILE *capture = tmpfile(); int saved = dup(STDERR_FILENO);
+    CHECK(capture && saved >= 0, "capture rumble diagnostics");
+    if (!capture || saved < 0) {
+        if (capture) fclose(capture);
+        if (saved >= 0) close(saved);
+        unsetenv("DM_RUMBLE_LOG"); return;
+    }
+    fflush(stderr); int redirected = dup2(fileno(capture), STDERR_FILENO);
+    CHECK(redirected >= 0, "redirect rumble diagnostics");
+    if (redirected >= 0) {
+        // Start a reporting interval, then send a batch with one routed and one invalid handle.
+        rumble_second++;
+        h_hid_SendVib(&(uint32_t){3}, &(dm_vibration){0, 160, 0, 320});
+        rumble_second++;
+        vibration_sender(NULL);
+        rumble_second++;
+        h_hid_SendVib(&(uint32_t){3}, &(dm_vibration){0, 160, 0, 320});
+        fflush(stderr); dup2(saved, STDERR_FILENO);
+        rewind(capture); char log[1024]; size_t n = fread(log, 1, sizeof log - 1, capture); log[n] = 0;
+        CHECK(strstr(log, "2 values sent, 1 with no output, peak amplitude 0.80") != NULL,
+              "a mixed batch counts unroutable values individually");
+        CHECK(strstr(log, "1999 values sent, 999 with no output, peak amplitude 0.80") != NULL,
+              "diagnostic totals reset once per second and retain the interval peak");
+    }
+    close(saved); fclose(capture);
+    // Game threads may send independently; ThreadSanitizer also covers the logger's shared totals.
+    pthread_t threads[4]; int started = 0;
+    for (int i = 0; i < 4; i++) {
+        int rc = pthread_create(&threads[started], NULL, vibration_sender, NULL);
+        CHECK(!rc, "start concurrent vibration sender"); if (!rc) started++;
+    }
+    for (int i = 0; i < started; i++) pthread_join(threads[i], NULL);
+    unsetenv("DM_RUMBLE_LOG");
 }
 
 // The operation mode switched while the game runs (the pause menu's Handheld / Docked row, hle_oe.c dm_set_opmode): player 1 moves between Handheld and No1, and both npads'
@@ -187,9 +254,11 @@ static void t_opmode(void) {
 }
 
 int main(void) {
+    CHECK(setenv("DM_RUMBLE_LOG", "1", 1) == 0, "enable rumble diagnostics");
     t_slots();
     t_npads();
     t_vibration();
+    t_rumble_log();
     t_opmode();
     printf("hid players: %d checks, %d failed\n", checks, fails);
     return fails != 0;
