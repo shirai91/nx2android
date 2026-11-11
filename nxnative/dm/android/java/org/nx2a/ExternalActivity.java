@@ -21,7 +21,12 @@ import android.view.Surface;
 import android.view.View;
 import android.view.ViewGroup;
 import android.media.AudioDeviceInfo;
+import android.media.AudioDeviceCallback;
 import android.media.AudioManager;
+import android.os.Handler;
+import android.os.Looper;
+import android.widget.ArrayAdapter;
+import android.widget.ListView;
 import java.util.ArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -47,6 +52,7 @@ public class ExternalActivity extends NativeActivity implements ExternalDisplay.
     private ExternalDisplay external;
     private View pad;
     private Dialog phonePad;
+    private AlertDialog audioDialog;
     private final ExecutorService audioExecutor = Executors.newSingleThreadExecutor();
 
     @Override protected void onCreate(Bundle state) {
@@ -77,6 +83,7 @@ public class ExternalActivity extends NativeActivity implements ExternalDisplay.
     @Override protected void onDestroy() {
         if (external != null) external.stop();
         if (phonePad != null) phonePad.dismiss();
+        if (audioDialog != null) audioDialog.dismiss();
         audioExecutor.shutdown();
         super.onDestroy();
     }
@@ -107,24 +114,39 @@ public class ExternalActivity extends NativeActivity implements ExternalDisplay.
     private void showAudioMenu() {
         AudioManager manager = (AudioManager)getSystemService(Context.AUDIO_SERVICE);
         if (manager == null) return;
+        if (audioDialog != null && audioDialog.isShowing()) return;
         ArrayList<String> names = new ArrayList<>(); ArrayList<Integer> ids = new ArrayList<>();
-        names.add("System default"); ids.add(0);
-        for (AudioDeviceInfo device : manager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)) {
-            int type = device.getType(); String name;
-            if (type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) name = "Phone speaker";
-            else if (type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO) name = "Bluetooth call · " + device.getProductName();
-            else if (type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP || type == AudioDeviceInfo.TYPE_BLE_HEADSET || type == AudioDeviceInfo.TYPE_BLE_SPEAKER) name = "Bluetooth media · " + device.getProductName();
-            else if (type == AudioDeviceInfo.TYPE_HDMI || type == AudioDeviceInfo.TYPE_HDMI_ARC || type == AudioDeviceInfo.TYPE_USB_DEVICE || type == AudioDeviceInfo.TYPE_USB_HEADSET) name = "External audio · " + device.getProductName();
-            else continue;
-            names.add(name); ids.add(device.getId());
-        }
-        int selected = ids.indexOf(externalAudioSelected());
-        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("Audio output (requested)")
-            .setSingleChoiceItems(names.toArray(new String[0]), selected, (d, which) -> {
+        ArrayAdapter<String> adapter = new ArrayAdapter<>(this, android.R.layout.simple_list_item_single_choice, names);
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("Audio output")
+            .setSingleChoiceItems(adapter, -1, (d, which) -> {
+                if (which < 0 || which >= ids.size()) return;
                 int id = ids.get(which); d.dismiss(); audioExecutor.execute(() -> externalAudio(id));
             })
             .setNegativeButton("Cancel", null).create();
-        dialog.setOnShowListener(d -> dialog.getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND));
+        Runnable refresh = () -> {
+            if (!dialog.isShowing()) return;
+            ArrayList<String> updated = new ArrayList<>();
+            ids.clear(); updated.add("System default"); ids.add(0);
+            for (AudioDeviceInfo device : manager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)) {
+                String name = AudioChoices.name(device);
+                if (name != null) { updated.add(name); ids.add(device.getId()); }
+            }
+            adapter.clear(); adapter.addAll(updated);
+            ListView list = dialog.getListView(); list.clearChoices();
+            int selected = ids.indexOf(externalAudioSelected());
+            if (selected >= 0) list.setItemChecked(selected, true);
+        };
+        AudioDeviceCallback callback = new AudioDeviceCallback() {
+            @Override public void onAudioDevicesAdded(AudioDeviceInfo[] devices) { refresh.run(); }
+            @Override public void onAudioDevicesRemoved(AudioDeviceInfo[] devices) { refresh.run(); }
+        };
+        dialog.setOnShowListener(d -> {
+            dialog.getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+            refresh.run();
+            manager.registerAudioDeviceCallback(callback, new Handler(Looper.getMainLooper()));
+        });
+        dialog.setOnDismissListener(d -> { manager.unregisterAudioDeviceCallback(callback); if (audioDialog == dialog) audioDialog = null; });
+        audioDialog = dialog;
         dialog.show();
     }
 
