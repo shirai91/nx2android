@@ -2,6 +2,7 @@
 # answers (python -m unittest discover tests).
 import hashlib, json, os, shlex, shutil, struct, subprocess, sys, tempfile, unittest, zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
@@ -119,6 +120,74 @@ class RomfsAt(unittest.TestCase):
         self.assertIsNone(install.device_romfs('DM_LANG=en-US\nDM_ROMFS=/sdcard/copy\n'))
         self.assertEqual(install.device_romfs(install.env_with_romfs(env, '/sdcard/b')), '/sdcard/b')   # the last one, as the app applies them
 
+    def test_merge_env(self):   # merge_env: the pack's rows win for their keys; the device's other rows, comments and blank lines are kept after them, in their order
+        pack = '# porter\nDM_LANG=en-US\nDM_VK_PIPE_LOG=1\n'
+        dev = ("# the player's\nDM_LANG=fr-FR\nDM_PAD_LABEL=1\n\nDM_VK_TEXBIND=t.png\n"
+               f"{install.ROMFS_MARK}: an earlier install\nDM_ROMFS=/sdcard/old\n")
+        self.assertEqual(install.merge_env(pack, dev), pack + "# the player's\nDM_PAD_LABEL=1\n\nDM_VK_TEXBIND=t.png\n")
+        got = install.merge_env(pack, dev, DUMP)   # the installer's row last; the device's own DM_ROMFS row and mark dropped
+        self.assertTrue(got.endswith(install.env_with_romfs('', DUMP)[1:])); self.assertEqual(got.count('DM_ROMFS='), 1)
+        self.assertNotIn('/sdcard/old', got); self.assertIn('DM_PAD_LABEL=1', got); self.assertNotIn('DM_LANG=fr-FR', got)
+        self.assertEqual(install.merge_env(pack, ''), pack)       # no env.txt on the device yet: the pack's as it is
+        self.assertEqual(install.merge_env(pack, pack), pack)     # the same rows on both sides: nothing kept twice
+        once = install.merge_env(pack, dev)
+        self.assertEqual(install.merge_env(pack, once), once)     # a reinstall over a merged env.txt changes nothing
+        self.assertEqual(datapack.env_key('DM_LANG=en-US '), 'DM_LANG')   # read as the app reads it (front_android.c env_file)
+        for not_a_row in ('# a comment', '', 'no equals here'): self.assertIsNone(datapack.env_key(not_a_row))
+
+    def test_merge_env_romfs_row(self):   # a DM_ROMFS row on the device is dropped only when it is the installer's own (under ROMFS_MARK) or a new one replaces it; a hand-written one is the player's
+        pack = '# porter\nDM_LANG=en-US\n'
+        hand = 'DM_LANG=fr-FR\nDM_ROMFS=/sdcard/my_hand_dump\nDM_PAD_LABEL=1\n'
+        got = install.merge_env(pack, hand)   # a plain install keeps the player's hand-written row
+        self.assertEqual(got, pack + 'DM_ROMFS=/sdcard/my_hand_dump\nDM_PAD_LABEL=1\n')
+        got = install.merge_env(pack, hand, DUMP)   # --romfs-at <folder>: the new installer row replaces any device one (appended last, it wins as the app applies the rows in order)
+        self.assertEqual(got.count('DM_ROMFS='), 1); self.assertTrue(got.endswith(f'DM_ROMFS={DUMP}\n')); self.assertNotIn('my_hand_dump', got)
+        marked = f'{install.ROMFS_MARK}: an earlier install\nDM_ROMFS=/sdcard/old\nDM_PAD_LABEL=1\n'
+        self.assertEqual(install.merge_env(pack, marked, DUMP), pack + 'DM_PAD_LABEL=1\n' + install.env_with_romfs('', DUMP)[1:])   # the marked pair replaced
+        self.assertEqual(install.merge_env(pack, marked), pack + 'DM_PAD_LABEL=1\n')   # --romfs-at app: the installer's marked row removed, the player's row kept
+
+    def test_merge_env_prev_pack(self):   # prev_pack_keys (the previous pack's manifest env_keys): a row it defined and this pack no longer does was the pack's, not the player's, and is dropped
+        v2 = 'DM_LANG=en-US\nDM_SHARED_FONT_EXT=/x.ttf\n'
+        device = 'DM_LANG=fr-FR\nDM_VK_PIPE_LOG=1\nDM_SHARED_FONT_EXT=/x.ttf\nDM_VK_TEXBIND=all\nDM_PAD_LABEL=1\n'
+        prev = ('DM_LANG', 'DM_VK_PIPE_LOG', 'DM_SHARED_FONT_EXT')
+        got = install.merge_env(v2, device, prev_pack_keys=prev)
+        self.assertEqual(got, v2 + 'DM_VK_TEXBIND=all\nDM_PAD_LABEL=1\n')   # the removed switch gone, the player's rows kept, in their order
+        self.assertEqual(got.count('DM_LANG='), 1); self.assertIn('DM_LANG=en-US', got); self.assertNotIn('DM_LANG=fr-FR', got)   # a switch the new pack still defines comes from the pack
+        self.assertEqual(install.merge_env(v2, device), v2 + 'DM_VK_PIPE_LOG=1\nDM_VK_TEXBIND=all\nDM_PAD_LABEL=1\n')   # no previous manifest (keys unknown): kept as before
+        self.assertEqual(install.merge_env(v2, 'DM_PAD_LABEL=1\n', prev_pack_keys=prev), v2 + 'DM_PAD_LABEL=1\n')   # a row no pack ever defined is the player's
+
+    def test_manifest_env_keys(self):   # datapack.build records the pack's env.txt keys in the manifest (as the app parses them); install reads them back off the device
+        prof = SimpleNamespace(name='Test Game', id='0100000000AAA000', package=PKG, env=['DM_VK_PIPE_LOG=1', '# a profile comment'], settings={}, requires=[])
+        man = datapack.build(self.t / 'pack', profile=prof, version='v1', display='1.0', patched=None, romfs=None, shaders=None, env=['DM_SHARED_FONT_EXT=/x.ttf'])
+        self.assertEqual(man['env_keys'], ['DM_LANG', 'DM_VK_PIPE_LOG', 'DM_SHARED_FONT_EXT'])
+        self.assertEqual(datapack.read_manifest(self.t / 'pack')['env_keys'], man['env_keys'])
+        self.assertEqual(install.manifest_env_keys(json.dumps(man)), man['env_keys'])
+        for unknown in ('', 'not json', '{"x": 1}', '[1, 2]'): self.assertEqual(install.manifest_env_keys(unknown), ())
+
+    def test_env_merged_on_install(self):   # an install merges env.txt instead of replacing it: a device env.txt with the pack's rows plus the player's own row keeps that row,
+        pack = (self.data / 'env.txt').read_text(encoding='utf-8')          # '# porter\nDM_LANG=en-US\n'
+        dev_env = 'DM_LANG=fr-FR\n' + pack + 'DM_PAD_LABEL=1\n# a note from a diagnostic run\n'   # the pack's rows, a stale value, and the player's own
+        dev = self.run_on(Device({f'{FILES}/env.txt': len(dev_env), f'{FILES}/log.txt': 9}, text={f'{FILES}/env.txt': dev_env}))
+        got = dev.text[f'{FILES}/env.txt']
+        self.assertEqual(got, pack + 'DM_PAD_LABEL=1\n# a note from a diagnostic run\n')   # the player's row and comment kept, after the pack's rows
+        self.assertEqual(got.count('DM_LANG='), 1); self.assertIn('DM_LANG=en-US', got); self.assertNotIn('DM_LANG=fr-FR', got)   # the pack's row wins
+        self.assertEqual((self.data / 'env.txt').read_text(encoding='utf-8'), pack)   # the pack's env.txt on disk is unchanged
+        dev = self.run_on(Device({f'{DUMP}/{r}': n for r, n in ROM.items()}, text={f'{FILES}/env.txt': dev_env}), romfs_at=DUMP)
+        got = dev.text[f'{FILES}/env.txt']   # the same with --romfs-at: the player's row kept, the installer's row last
+        self.assertIn('DM_PAD_LABEL=1', got); self.assertNotIn('DM_LANG=fr-FR', got); self.assertEqual(install.device_romfs(got), DUMP)
+
+    def test_env_prev_pack_on_install(self):   # install-level provenance: the device's manifest env_keys say which rows the old pack wrote — one the new pack no longer defines is removed,
+        pack = (self.data / 'env.txt').read_text(encoding='utf-8')          # '# porter\nDM_LANG=en-US\n'
+        dev_env = pack + 'DM_VK_PIPE_LOG=1\nDM_PAD_LABEL=1\nDM_ROMFS=/sdcard/my_hand_dump\n'   # the old pack's diagnostic row, the player's row, a hand-written DM_ROMFS
+        man = json.dumps({'package': PKG, 'env_keys': ['DM_LANG', 'DM_VK_PIPE_LOG']})   # the pack the device has now
+        dev = self.run_on(Device({f'{FILES}/env.txt': len(dev_env), f'{FILES}/{datapack.MANIFEST}': len(man)},
+                                 text={f'{FILES}/env.txt': dev_env, f'{FILES}/{datapack.MANIFEST}': man}))
+        got = dev.text[f'{FILES}/env.txt']
+        self.assertEqual(got, pack + 'DM_PAD_LABEL=1\nDM_ROMFS=/sdcard/my_hand_dump\n')   # the removed switch gone; the player's row and hand-written DM_ROMFS kept
+        self.assertEqual((self.data / 'env.txt').read_text(encoding='utf-8'), pack)   # the pack's env.txt on disk is unchanged
+        dev = self.run_on(Device({f'{FILES}/env.txt': len(dev_env)}, text={f'{FILES}/env.txt': dev_env}))   # no manifest on the device: keys unknown, kept as before
+        self.assertEqual(dev.text[f'{FILES}/env.txt'], pack + 'DM_VK_PIPE_LOG=1\nDM_PAD_LABEL=1\nDM_ROMFS=/sdcard/my_hand_dump\n')
+
     def test_mismatch(self):   # the first differences of each kind, with sizes; nothing for the same listing
         self.assertEqual(install.romfs_mismatch(DUMP, ROM, dict(ROM)), '')
         msg = install.romfs_mismatch(DUMP, ROM, {'Data/a.bin': 21, 'c.bin': 5, 'x.bin': 1, 'y.bin': 1}, n=1)
@@ -163,7 +232,8 @@ class RomfsAt(unittest.TestCase):
         with self.assertRaisesRegex(BuildError, 'earlier install\'s --romfs-at'): self.run_on(Device({f'{DUMP}/c.bin': 5}, text=env, access='allow'))
         dev = self.run_on(Device({f'{DUMP}/c.bin': 5}, text=env, access='allow'), romfs_at='app')
         self.assertEqual({k[len(FILES) + 7:] for k in dev.fs if k.startswith(f'{FILES}/RomFS/')}, set(ROM)); self.assertIsNone(install.device_romfs(dev.text[f'{FILES}/env.txt']))
-        self.assertEqual(dev.step('push_file', 'env.txt'), -1); self.assertIn(f'{DUMP}/c.bin', dev.fs)   # the folder is left as it is
+        self.assertNotEqual(dev.step('push_file', 'env.txt'), -1)   # the merged env.txt went on its own: the installer's row dropped
+        self.assertNotIn('DM_ROMFS', dev.text[f'{FILES}/env.txt']); self.assertIn(f'{DUMP}/c.bin', dev.fs)   # the folder is left as it is
 
     def test_romfs_push(self):   # --romfs-push: the missing files and those of another size go into the folder, then it is checked again
         dev = self.run_on(Device({f'{DUMP}/c.bin': 4}), romfs_at=DUMP, romfs_push=True)

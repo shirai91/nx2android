@@ -7,17 +7,28 @@
 #   nintendo_ext.ttf  the button-icon font, the stand-in for the Nintendo extension shared font (dm/tools/make_ext_font.py; env.txt's DM_SHARED_FONT_EXT)
 #   standard.ttf   the player's font for the system's shared fonts, with --shared-font (env.txt's DM_SHARED_FONT)
 #   env.txt        host switches: the game language, the DLC folder, the profile's env rows, then the port's (--fps60, --mt-replay); on the device the installer adds its
-#                  DM_ROMFS row after them when the app reads its RomFS from another folder (porter/install.py, --romfs-at): that is a fact of one device, not of the pack
+#                  DM_ROMFS row after them when the app reads its RomFS from another folder (porter/install.py, --romfs-at): that is a fact of one device, not of the pack.
+#                  An install merges the device's env.txt with the pack's (porter/install.py merge_env): the pack's rows win for their keys, the device's own rows are kept
 #   settings.txt   the pause menu's first-launch defaults (the profile's setting rows, then the port's: --touch); the installer never replaces the player's own
-#   nx2a-data.json what the pack is: the game, the package, the version, the device features the profile requires (android.tsv requires), which the installer checks
+#   nx2a-data.json what the pack is: the game, the package, the version, the device features the profile requires (android.tsv requires), which the installer checks,
+#                  and env_keys: the keys its env.txt defines (as the app parses them), which an install reads back off the device to tell a pack's old rows from the player's
+#                  (porter/install.py merge_env)
 # Big trees are hard links into the extraction when the volume allows, so the pack takes no extra space; the pack is rebuilt whole when anything in it changes.
 import json, os, shutil, time
 from pathlib import Path
 
 MANIFEST = 'nx2a-data.json'
-KEEP_ON_DEVICE = ('settings.txt',)          # the player's choices win over the pack's defaults
+ENV = 'env.txt'
+KEEP_ON_DEVICE = ('settings.txt',)          # the player's choices win over the pack's defaults; env.txt is not kept whole: install.py merges it with the pack's (merge_env)
 OWNED = ('mods', 'RomFS', 'aoc', 'sysdata')            # folders the pack owns on the device: files there that the pack lacks are stale (an older version's) and removed
 ROMFS = 'RomFS'
+
+
+def env_key(line):   # the KEY of an env.txt row, as the app reads it (front_android.c env_file: trailing blanks off, blank lines and # comments skipped, the first = splits), None for the rest
+    ln = line.rstrip(' \n\r')
+    if not ln or ln[0] == '#': return None
+    eq = ln.find('=')
+    return ln[:eq] if eq >= 0 else None
 
 
 def link_or_copy(src, dst):
@@ -62,9 +73,10 @@ def build(dst, *, profile, version, display, patched, romfs, shaders, aoc=None, 
     if aoc: rows.append(f'DM_AOC_DIR={files_folder(package)}/aoc')
     if sysdata: rows.append(f'DM_SYSDATA={files_folder(package)}/sysdata')
     rows += profile.env + list(env)
-    (tmp / 'env.txt').write_text('\n'.join(rows) + '\n', encoding='utf-8', newline='\n')
+    (tmp / ENV).write_text('\n'.join(rows) + '\n', encoding='utf-8', newline='\n')
     if sets := {**profile.settings, **(settings or {})}: (tmp / 'settings.txt').write_text(''.join(f'{k}={v}\n' for k, v in sets.items()), encoding='utf-8', newline='\n')
     man = dict(title_id=profile.id, name=profile.name, package=package, version=version, display=display, language=language, requires=profile.requires,
+               env_keys=list(dict.fromkeys(k for k in (env_key(r) for r in rows) if k is not None)),   # what the pack's env.txt defines: an install reads these back off the device ('' kept: merge_env parses a '=v' row as the empty key too)
                files=n, bytes=b, dlc=sorted(int(p.name) for p in aoc.iterdir() if p.is_dir() and p.name.isdigit()) if aoc else [],
                sysdata=sorted(p.name for p in sysdata.iterdir() if p.is_dir()) if sysdata else [], made=time.strftime('%Y-%m-%d %H:%M:%S'))
     if profile_h: man['profile_h'] = profile_h
