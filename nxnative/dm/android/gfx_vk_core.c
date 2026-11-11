@@ -132,9 +132,14 @@ static int drv_has_gpu(PFN_vkGetInstanceProcAddr g) {
 // Turnip on an Adreno 740 beside a Qualcomm driver of v7xx or later: the GPU register TPL1_DBG_ECO_CNTL1.TP_UBWC_FLAG_HINT is shared by every driver on the GPU,
 // Qualcomm's sets it from v7xx on, Mesa's a740 default leaves it off, so Turnip flips it under the compositor and whatever Android draws from compressed buffers with
 // Qualcomm's driver (an overlay, a screenshot) flickers full-screen (the Odin 2 Portal, 512.863). Mesa reads FD_DEV_FEATURES at its first device, so it is set here,
-// before the driver loads, from the system driver's own answer (DroidDeck's rule, TpUbwcHint.kt: model 740, the version's middle number >= 700). A value already set wins
+// before the driver loads, from the system driver's own answer (DroidDeck's rule, TpUbwcHint.kt: model 740, the version's middle number >= 700). A value already set wins.
+// The GPU model comes first from the kernel (/sys/class/kgsl/kgsl-3d0/gpu_model, "Adreno740v2"), so only an Adreno 740 loads Qualcomm's driver for its version; where
+// that file can't be read, the driver is asked for both
 static void tu_ubwc_hint(void) {
     if (getenv("FD_DEV_FEATURES")) return;
+    FILE *gm = fopen("/sys/class/kgsl/kgsl-3d0/gpu_model", "r"); char model[64] = "";
+    if (gm) { if (!fgets(model, sizeof model, gm)) model[0] = 0; fclose(gm); }
+    if (model[0] && !strstr(model, "740")) return;
     void *sys = dlopen("libvulkan.so", RTLD_NOW | RTLD_LOCAL); if (!sys) return;
     PFN_vkGetInstanceProcAddr g = (PFN_vkGetInstanceProcAddr)dlsym(sys, "vkGetInstanceProcAddr"); if (!g) return;
     PFN_vkCreateInstance ci = (PFN_vkCreateInstance)g(NULL, "vkCreateInstance"); VkInstance in;
@@ -943,14 +948,15 @@ static void wait_fence(uint64_t f) {
     if (!V.has_timeline) { mtl_wait(f, ~0ull); return; }
     // A second at a time, not forever: on the Odin 2 Portal (Adreno 740) a wait that a signal interrupted (a thread dump parks every thread, the yield
     // watchdog's included) once never woke up although the GPU had long passed the value, and the game hung for 414 s in South Park. Asking again
-    // sees the value at once
+    // sees the value at once. A GPU that really hangs still waits forever, as before, and says so in the log every 10 s
     VkSemaphoreWaitInfo wi = {VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO, NULL, 0, 1, &g_timeline, &f};
-    for (;;) {
+    for (unsigned s = 1;; s++) {
         VkResult r = vkWaitSemaphores(V.dev, &wi, 1000000000ull);
         if (r == VK_SUCCESS) return;
         if (r != VK_TIMEOUT) die("[vk] GPU timeline wait did not complete: %d", r);
         uint64_t v = 0; vkGetSemaphoreCounterValue(V.dev, g_timeline, &v);
         if (v >= f) { VKRED_ONCE(91, "GPU timeline wait for %llu still waiting after 1 s with the timeline at %llu: a lost wakeup, carried on", (unsigned long long)f, (unsigned long long)v); return; }
+        if (s % 10 == 0) VKLOG("[RED] GPU timeline wait for %llu: %u s and the timeline is at %llu (the GPU has not finished the work)", (unsigned long long)f, s, (unsigned long long)v);
     }
 }
 // The slot's command buffers are reset on the completion thread once its submission is done (completion_main), not when the replay begins them again: an

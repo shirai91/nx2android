@@ -1210,7 +1210,7 @@ static int tex_desc_for(int st, const dmsv_bind *b, uint64_t h, VkDescriptorImag
         extern __thread VkFormat vk_view_fmt;
         VkFormat vf = 0; const vkfmt_t *tf = sc && !view_num(t, v) ? vk_fmt(v && v->set_format ? v->format : t->d.format) : NULL;
         if (tf && !tf->compressed && !tf->dec && !tf->depth && !tf->stencil) vf = vk_int_fmt(tf->bpb, sc == 2);
-        vkimg_t *im = NULL; ii->imageView = t->d.target == NVN_TEXTURE_TARGET_BUFFER && !storage ? vk_tbuf_rows_view(t, b->dim, &im) : vf ? vk_tex_view_as(t, v, b->dim, b->flags & 1, 0, &im, vf) : vk_tex_view(t, v, b->dim, b->flags & 1, 0, &im); if (storage && im) im->gpu_w = 1;
+        vkimg_t *im = NULL; ii->imageView = t->d.target == NVN_TEXTURE_TARGET_BUFFER && !storage && b->dim == 1 && !(b->flags & 1) ? vk_tbuf_rows_view(t, b->dim, &im) : vf ? vk_tex_view_as(t, v, b->dim, b->flags & 1, 0, &im, vf) : vk_tex_view(t, v, b->dim, b->flags & 1, 0, &im); if (storage && im) im->gpu_w = 1;
         if (vf && ii->imageView && vk_view_fmt == vf) { static int once; if (!once++) VKLOG("storage image: nvn format %#x viewed as vk %d for a %s image binding", t->d.format, vf, sc == 1 ? "uint" : "int"); }
         if (logfs) nlogfs++;
         if (g_tracing || logfs) VKLOG("  %stexture binding %d handle %#llx id %d: %ux%u nvn format %#x target %d serial %llu pool %p+%#llx size %#llx → image %p (%ux%u fmt %d layers %u levels %u, gpu-written %d) view %p", logfs ? "logfs " : "", b->binding, (unsigned long long)h, tid, t->d.width, t->d.height, t->d.format, t->d.target,
@@ -2268,10 +2268,13 @@ static int depth_scale(VkCommandBuffer cb, vkimg_t *s, vkimg_t *d, VkImageSubres
 static void copy_t2t_(const p_copy_t2t *c);
 // A copy into a linear texture is copied back to its storage too: the CPU reads that memory. South Park: The Fractured But Whole makes its save pictures that way
 // (CopyTextureToTexture of the shrunk screen into a linear texture, whose storage it writes into the save): without this the saves held whatever the memory had
-// before, and the load screen showed noise. DM_VK_LIN_BACK=0 turns it off with the render-target one
+// before, and the load screen showed noise. Only a texture in a pool the CPU maps is copied back (one made CPU_NO_ACCESS can't be read by the game), so the
+// GPU-only linear copies other games make cost nothing. DM_VK_LIN_BACK=0 turns it off with the render-target one
+static int cpu_maps(const tex_t *t) { const vkpool_t *p = t && t->mem ? vk_pool_of((uint64_t)(uintptr_t)t->mem, 1) : NULL; return p && !(p->flags & NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS); }
 static void copy_t2t(const p_copy_t2t *c) {
     copy_t2t_(c);
-    if (g_lin_back && !(c->flags & DM_COPY_RESOLVE) && c->dst) lin_back_one(vk_tex(c->dst), c->dst, NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET);
+    if (g_lin_back && !(c->flags & DM_COPY_RESOLVE) && c->dst && (c->dst->d.flags & NVN_TEXTURE_FLAGS_LINEAR) && cpu_maps(c->dst))
+        lin_back_one(vk_tex(c->dst), c->dst, NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET);
 }
 static void copy_t2t_(const p_copy_t2t *c) {
     vk_end_pass();
