@@ -503,14 +503,29 @@ static int slab_take(uint64_t size, slab_t **out, uint32_t *slot) {   // 1: a sl
 static void slab_give(slab_t *s, uint32_t i, uint64_t fence) {
     pthread_mutex_lock(&g_slab_mu); s->fence[i] = fence; s->bits[i >> 6] |= 1ull << (i & 63); s->nfree++; pthread_mutex_unlock(&g_slab_mu);
 }
-// [at, at+n), off bytes into the pool, copied into its buffer, then the buffer's pages mapped over it (also nvn_dirty_swap's fill). map: the buffer's own mapping (a slab's),
-// else a temporary one is made. 0 on success; -5 / -6: the temporary / the fixed mapping failed
-typedef struct { int fd; uint64_t off; uint8_t *map; int prot; } zcfill_t;   // off: the pool's offset in the buffer (a slab slot's)
+// The pools inside a lazy pool that pool_back gives its buffer (see "Pools inside pools" below): n ranges [r[2i], r[2i+1]), by address and apart, whose pages stay their own
+typedef struct { const uint64_t *r; int n; } zcin_t;
+static void zc_next_in(const zcin_t *in, uint64_t a, uint64_t e, uint64_t *lo, uint64_t *hi) {   // the first of them in [a, e), cut to it; none: *lo = *hi = e
+    *lo = *hi = e;
+    for (int i = 0; in && i < in->n; i++) if (in->r[2 * i + 1] > a && in->r[2 * i] < e) { *lo = in->r[2 * i] > a ? in->r[2 * i] : a; *hi = in->r[2 * i + 1] < e ? in->r[2 * i + 1] : e; return; }
+}
+static int zc_anon_fill(void *at, size_t n, size_t off, void *ctx);
+// [at, at+n), off bytes into the pool, copied into its buffer, then the buffer's pages mapped over it (also nvn_dirty_swap's fill), but for the pools inside it (in), whose
+// pages stay their own: the buffer gets their bytes too. map: the buffer's own mapping (a slab's), else a temporary one is made. 0 on success; -5 / -6: the temporary / a
+// fixed mapping failed (the pieces of [at, at+n) mapped before it go back on anonymous pages first, so a failed slice is on no buffer's pages)
+typedef struct { int fd; uint64_t off; uint8_t *map; int prot; const zcin_t *in; } zcfill_t;   // off: the pool's offset in the buffer (a slab slot's)
 static int zc_fill(void *at, size_t n, size_t off, void *ctx) {
     const zcfill_t *f = ctx; uint64_t o = f->off + off; uint8_t *tmp = f->map ? f->map + o : mmap(NULL, n, PROT_READ | PROT_WRITE, MAP_SHARED, f->fd, (off_t)o);
     if (tmp == MAP_FAILED) return -5;
     memcpy(tmp, at, n); if (!f->map) munmap(tmp, n);
-    return mmap(at, n, f->prot, MAP_SHARED | MAP_FIXED, f->fd, (off_t)o) == at ? 0 : -6;
+    for (uint64_t a = (uintptr_t)at, e = a + n, lo, hi; a < e; a = hi) {   // [a, lo): the piece up to the next pool inside it, [lo, hi)
+        zc_next_in(f->in, a, e, &lo, &hi);
+        if (lo > a && mmap((void *)(uintptr_t)a, lo - a, f->prot, MAP_SHARED | MAP_FIXED, f->fd, (off_t)(o + (a - (uintptr_t)at))) != (void *)(uintptr_t)a) {
+            if (a > (uintptr_t)at) zc_anon_fill(at, a - (uintptr_t)at, 0, (void *)f->in);
+            return -6;
+        }
+    }
+    return 0;
 }
 // lazy: the game runs on, so the pages are replaced under the dirty-page tracker (nvn_dirty_swap: no write lost, 16 MB at a time; 1 = it does not hold them, nothing done;
 // 2 = the host wrote into them lately, try later) and mapped read-only for it. done: the bytes from mem now on the buffer's pages, also when it failed part way (a later slice).
@@ -527,33 +542,39 @@ static void copy_back(uint8_t *mem, uint64_t size) {   // no game write under it
     mmap(mem, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
     if (save) { memcpy(mem, save, size); free(save); }
 }
-static int zc_anon_fill(void *at, size_t n, size_t off, void *ctx) {   // nvn_dirty_swap's fill: anonymous pages, filled, then moved over [at, at+n) read-only in one call
-    (void)off; (void)ctx; uint8_t *tmp = mmap(NULL, n, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    if (tmp == MAP_FAILED) return -5;
-    memcpy(tmp, at, n);
-    if (mprotect(tmp, n, PROT_READ) || mremap(tmp, n, n, MREMAP_MAYMOVE | MREMAP_FIXED, at) != at) { munmap(tmp, n); return -6; }
+// nvn_dirty_swap's fill: anonymous pages, filled, then moved over [at, at+n) read-only in one call per piece between the pools inside it (ctx: zcin_t, or NULL for none)
+static int zc_anon_fill(void *at, size_t n, size_t off, void *ctx) {
+    (void)off;
+    for (uint64_t a = (uintptr_t)at, e = a + n, lo, hi; a < e; a = hi) {
+        zc_next_in(ctx, a, e, &lo, &hi); if (lo == a) continue;
+        size_t m = lo - a; void *to = (void *)(uintptr_t)a; uint8_t *tmp = mmap(NULL, m, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (tmp == MAP_FAILED) return -5;
+        memcpy(tmp, to, m);
+        if (mprotect(tmp, m, PROT_READ) || mremap(tmp, m, m, MREMAP_MAYMOVE | MREMAP_FIXED, to) != to) { munmap(tmp, m); return -6; }
+    }
     return 0;
 }
 // [mem, mem+n) back on anonymous pages. lazy: the game is running, so under the tracker as the swap was (nvn_dirty_swap with zc_anon_fill, which may also say try later);
 // → a length from mem (vkpool_t left), which mtl_pool_del copies back when the game removes the pool if no later try covered it: 0 when all went back, else n. A put-back
 // that stops part way leaves [mem+back, mem+n) on the buffer's pages, and copy_back and pool_back's merge read left from mem, so the slices already back are copied again too
 // (anonymous pages copied onto anonymous pages: no harm)
-static uint64_t zc_unplace(uint8_t *mem, uint64_t n, int lazy) {
+static uint64_t zc_unplace(uint8_t *mem, uint64_t n, int lazy, const zcin_t *in) {   // (in: the pools inside it keep their pages, as in zc_fill)
     if (!n) return 0;
     if (!lazy) { copy_back(mem, n); return 0; }
-    size_t back = 0; nvn_dirty_swap(mem, n, zc_anon_fill, NULL, &back); return back < n ? n : 0;
+    size_t back = 0; nvn_dirty_swap(mem, n, zc_anon_fill, (void *)in, &back); return back < n ? n : 0;
 }
 // Zero copy: the pages of [mem, mem+size) become an AHardwareBuffer's, imported as a VkBuffer (a slab's slot for a small pool, or a kept buffer of a freed pool of that size).
 // lazy: a pool given its buffer when the GPU first uses it (pool_back). 0 on success; 1: lazy, and the dirty-page tracker does not hold the pages (nothing done); 2: lazy, and
-// the host wrote into them lately (nothing done, try later). On a failure p->left is the bytes from mem still on a dropped buffer's pages (zc_unplace)
-static int pool_zero_copy(vkpool_t *p, uint8_t *mem, uint64_t size, int lazy) {
+// the host wrote into them lately (nothing done, try later). On a failure p->left is the bytes from mem still on a dropped buffer's pages (zc_unplace). in: the pools
+// inside a lazy one, whose pages stay their own (pool_back; NULL: none); such a pool takes no slab's slot, which would go back to its slab half mapped if a piece failed
+static int pool_zero_copy(vkpool_t *p, uint8_t *mem, uint64_t size, int lazy, const zcin_t *in) {
     slab_t *sl; uint32_t si; size_t done = 0;
     // lazy: the tracker's answer before a slab's slot, a kept buffer or a new one is taken. Asked only inside the swap, a pool the host keeps writing into (the game's
     // streaming) cost an allocation of its size, up to 256 MB, on the replay's thread each second it was tried again, and dropping it destroyed a kept buffer another pool
     // could use; try later is not a counted try, so with no limit. (nvn_dirty_swap asks again with each slice's pages BUSY, for a write prepared in between.)
     if (lazy) { int q = nvn_dirty_quiet(mem, size); if (q) return q == 1 || q == 2 ? q : -1; }
-    if (slab_take(size, &sl, &si)) {
-        uint64_t off = (uint64_t)si * sl->slot_bytes; zcfill_t f = {sl->fd, off, sl->map, 0};
+    if (!(in && in->n) && slab_take(size, &sl, &si)) {
+        uint64_t off = (uint64_t)si * sl->slot_bytes; zcfill_t f = {sl->fd, off, sl->map, 0, NULL};
         int rc = zc_place(mem, size, &f, lazy, &done);
         if (!rc) { p->buf = sl->buf; p->mem = VK_NULL_HANDLE; p->ahb = NULL; p->boff = off; p->slab = sl; p->slot = si; p->zero_copy = 1; return 0; }
         slab_give(sl, si, 0);   // (one slice: nothing of it was swapped)
@@ -576,11 +597,11 @@ static int pool_zero_copy(vkpool_t *p, uint8_t *mem, uint64_t size, int lazy) {
     close(sv[0]); close(sv[1]);
     if (nfd < 1) { ZC_DROP(); return -1; }
     // copy the pool's current contents into the buffer through a temporary mapping, then put the buffer's pages at the pool's address
-    zcfill_t f = {fds[0], 0, NULL, 0}; int rc = zc_place(mem, size, &f, lazy, &done);
+    zcfill_t f = {fds[0], 0, NULL, 0, in}; int rc = zc_place(mem, size, &f, lazy, &done);
     if (rc == -5) mem_diag_zc(5, "mmap-temporary", size, "errno", errno);
     else if (rc == -6) mem_diag_zc(6, "mmap-fixed", size, "errno", errno);
     for (int i = 0; i < nfd; i++) close(fds[i]);
-    if (rc) { p->left = zc_unplace(mem, done, lazy); ZC_DROP(); return rc == 1 || rc == 2 ? rc : -1; }   // (a slice swapped before the failing one goes back first)
+    if (rc) { p->left = zc_unplace(mem, done, lazy, in); ZC_DROP(); return rc == 1 || rc == 2 ? rc : -1; }   // (a slice swapped before the failing one goes back first)
 #undef ZC_DROP
     if (reuse) { p->buf = re.buf; p->mem = re.mem; p->ahb = ahb; p->zero_copy = 1; return 0; }   // imported already
     VkAndroidHardwareBufferPropertiesANDROID ap = {VK_STRUCTURE_TYPE_ANDROID_HARDWARE_BUFFER_PROPERTIES_ANDROID};
@@ -597,7 +618,7 @@ static int pool_zero_copy(vkpool_t *p, uint8_t *mem, uint64_t size, int lazy) {
         else if ((vr = vkBindBufferMemory(V.dev, p->buf, p->mem, 0))) { mem_diag_zc(10, "vkBindBufferMemory", size, "VkResult", vr); vkFreeMemory(V.dev, p->mem, NULL); p->mem = VK_NULL_HANDLE; }   // (as slab_new)
         if (vr) { vkDestroyBuffer(V.dev, p->buf, NULL); p->buf = VK_NULL_HANDLE; }
     }
-    if (vr) { p->left = zc_unplace(mem, size, lazy); AHardwareBuffer_release(ahb); return -2; }   // the pool's pages back off the buffer before it goes
+    if (vr) { p->left = zc_unplace(mem, size, lazy, in); AHardwareBuffer_release(ahb); return -2; }   // the pool's pages back off the buffer before it goes
     p->ahb = ahb; p->zero_copy = 1;
     return 0;
 }
@@ -775,17 +796,27 @@ static void pool_note(int kind, uint64_t bytes, uint64_t ns) {   // kind 0: made
 // into it and the driver's import take milliseconds each, and every lookup waits on the lock (vk_pool_of: each buffer binding of each draw on the replay thread, and the
 // game threads' mtl_addr, once a pool was added or removed). Pokémon Scarlet makes and drops pools on three threads at once while a thrown ball flies (its capture assets,
 // ~180 MB read in 1.5 s): the replay thread stood almost still for a second with the GPU idle (simpleperf), in frames of 100-580 ms
+static pthread_mutex_t g_lazy_mu = PTHREAD_MUTEX_INITIALIZER;   // one pool backed at a time (pool_back); mtl_pool_del takes it first, so no entry moves while one is backed
 static void pool_add_one(const void *mem, uint64_t size, uint64_t base, uint64_t end, int lazy) {
     uint64_t t0 = pool_ns();
     vkpool_t q, *p = &q; memset(p, 0, sizeof *p);
     p->lo = (uint64_t)(uintptr_t)mem; p->hi = p->lo + size; p->base = base; p->end = end;
+    // A pool over memory that another pool covers is never lazy: it is made now, as "Pools inside pools" says (lazy, its buffer would come when the GPU first used it, and
+    // a pool made inside it in between, or the one around it, would then lose or take pages). One that overlaps a lazy pool still without its buffer is made under
+    // g_lazy_mu, so not while pool_back maps that pool around the pools inside it (lock order: g_lazy_mu, g_nest_mu, g_pool_mu)
+    int near = 0;   // 1: it overlaps another pool; 3: one of them is lazy, with no buffer yet
+    pthread_rwlock_rdlock(&g_pool_mu);
+    for (int j = 0; j < g_npool; j++) if (g_pool[j].base != base && g_pool[j].lo < p->hi && g_pool[j].hi > p->lo) near |= __atomic_load_n(&g_pool[j].lazy, __ATOMIC_ACQUIRE) == 1 ? 3 : 1;
+    pthread_rwlock_unlock(&g_pool_mu);
+    if (near && lazy) { lazy = 0; static int said; if (said++ < 8) VKLOG("memory pool %p +%#llx overlaps another pool: zero-copy now, not lazy", mem, (unsigned long long)size); }
+    if (near & 2) pthread_mutex_lock(&g_lazy_mu);
     int inner = 0;   // inside another pool: made as one step against that pool's remap (see "Pools inside pools")
     pthread_mutex_lock(&g_nest_mu);
     pthread_rwlock_rdlock(&g_pool_mu);
     for (int j = 0; j < g_npool && !inner; j++) inner = g_pool[j].zero_copy && g_pool[j].base != base && g_pool[j].lo < p->hi && g_pool[j].hi > p->lo;
     pthread_rwlock_unlock(&g_pool_mu);
     if (!inner) pthread_mutex_unlock(&g_nest_mu);
-    int zc = ((uintptr_t)mem & 0xfff) || (size & 0xfff) ? -3 : zc_off() ? -4 : zc_over(end - base) ? -5 : lazy ? (p->lazy = 1, 0) : pool_zero_copy(p, (uint8_t *)mem, size, 0);
+    int zc = ((uintptr_t)mem & 0xfff) || (size & 0xfff) ? -3 : zc_off() ? -4 : zc_over(end - base) ? -5 : lazy ? (p->lazy = 1, 0) : pool_zero_copy(p, (uint8_t *)mem, size, 0, NULL);
     if (zc) {
         static int said; if (!said++) VKLOG("[RED] memory pool %p +%#llx could not be zero-copy (%d): a GPU copy is refreshed before each submission (slow)", mem, (unsigned long long)size, zc);
         const char *e = getenv("DM_VK_POOL_CACHED"); int cached = e && atoi(e);
@@ -804,6 +835,7 @@ static void pool_add_one(const void *mem, uint64_t size, uint64_t base, uint64_t
     int np = g_npool;
     pthread_rwlock_unlock(&g_pool_mu);
     if (inner) pthread_mutex_unlock(&g_nest_mu);
+    if (near & 2) pthread_mutex_unlock(&g_lazy_mu);
     if (np >= 1024 && !(np & (np - 1))) VKLOG("%d memory pools live", np);
     __atomic_fetch_add(zc ? &g_cp_bytes : lazy ? &g_lazy_total : &g_zc_bytes, size, __ATOMIC_RELAXED);
     static int nlog; if (nlog++ < 24) VKLOG("memory pool %p +%#llx: %s (zero-copy %.1f MB, lazy %.1f MB, copied %.1f MB)", mem, (unsigned long long)size, zc ? "copied" : lazy ? "zero-copy when the GPU first uses it" : "zero-copy",
@@ -816,7 +848,7 @@ static void pool_add_one(const void *mem, uint64_t size, uint64_t base, uint64_t
 // or skipped ([RED] lines). A pool the host wrote into in the last second (nvn_dirty_swap's 2: a file read may still be writing into it) is tried again a second later
 // without counting as a failed try. → 0: backed; 1: the entry holds another pool now (look again); -1: no buffer
 enum { LAZY_TRIES = 8 };
-static pthread_mutex_t g_lazy_mu = PTHREAD_MUTEX_INITIALIZER;   // one pool backed at a time; mtl_pool_del takes it first, so no entry moves while one is backed
+static int pair_cmp(const void *a, const void *b) { uint64_t x = *(const uint64_t *)a, y = *(const uint64_t *)b; return x < y ? -1 : x > y; }
 static int pool_back(vkpool_t *p, uint64_t serial) {
     uint64_t t0 = pool_ns(), lo = 0, size = 0; int rc, said = 0, gave_up = 0;
     pthread_mutex_lock(&g_lazy_mu);
@@ -826,10 +858,23 @@ static int pool_back(vkpool_t *p, uint64_t serial) {
     int st = p - g_pool < g_npool && p->serial == serial ? __atomic_load_n(&p->lazy, __ATOMIC_ACQUIRE) : -1;
     if (st == 1 && t0 < p->lazy_at) st = 2;   // waiting to try again
     lo = p->lo; size = p->hi - p->lo;
+    // the pools inside it keep their own pages, as in vk_pool_remap_ro (see "Pools inside pools"): none of them is lazy (pool_add_one), and with g_lazy_mu held none is made
+    // or dropped over this pool meanwhile. Kirby and the Forgotten Land makes small pools over files loaded into its 1.4 GB heap pool (#192, #239)
+    uint64_t *inr = NULL; int inn = 0, incap = 0;
+    if (st == 1) for (int j = 0; j < g_npool; j++) if (pool_within(&g_pool[j], p)) {
+        if (inn == incap) { uint64_t *r = realloc(inr, (size_t)(incap = incap ? 2 * incap : 8) * 2 * sizeof *r); if (!r) { st = 2; break; } inr = r; }
+        inr[2 * inn] = g_pool[j].lo > lo ? g_pool[j].lo : lo; inr[2 * inn + 1] = g_pool[j].hi < p->hi ? g_pool[j].hi : p->hi; inn++;
+    }
     pthread_rwlock_unlock(&g_pool_mu);
+    if (inn > 1) {   // by address, and the ones that touch or overlap joined
+        qsort(inr, (size_t)inn, 2 * sizeof *inr, pair_cmp); int k = 0;
+        for (int i = 1; i < inn; i++) if (inr[2 * i] <= inr[2 * k + 1]) { if (inr[2 * i + 1] > inr[2 * k + 1]) inr[2 * k + 1] = inr[2 * i + 1]; } else { k++; inr[2 * k] = inr[2 * i]; inr[2 * k + 1] = inr[2 * i + 1]; }
+        inn = k + 1;
+    }
     if (st == 1) {
-        vkpool_t q; memset(&q, 0, sizeof q);
-        rc = pool_zero_copy(&q, (uint8_t *)(uintptr_t)lo, size, 1);
+        vkpool_t q; memset(&q, 0, sizeof q); zcin_t in = {inr, inn};
+        rc = pool_zero_copy(&q, (uint8_t *)(uintptr_t)lo, size, 1, &in);
+        if (inn && !rc) { static int n; if (n++ < 8) VKLOG("memory pool %#llx +%#llx: given its buffer around the %d pools inside it", (unsigned long long)lo, (unsigned long long)size, inn); }
         pthread_rwlock_wrlock(&g_pool_mu);
         if (!rc) {   // (the whole pool on the new buffer: pages an earlier try left on a dropped one included)
             p->buf = q.buf; p->mem = q.mem; p->ahb = q.ahb; p->boff = q.boff; p->slab = q.slab; p->slot = q.slot; p->zero_copy = 1; p->left = 0; __atomic_store_n(&p->lazy, 0, __ATOMIC_RELEASE);
@@ -849,6 +894,7 @@ static int pool_back(vkpool_t *p, uint64_t serial) {
         else __atomic_fetch_add(&g_lazy_bytes, size, __ATOMIC_RELAXED);
     } else rc = st < 0 ? 1 : st ? -1 : 0;   // removed, waiting or failed, or backed by another thread meanwhile
     pthread_mutex_unlock(&g_lazy_mu);
+    free(inr);
     if (st == 1 && !rc) {
         uint64_t ns = pool_ns() - t0; pool_note(2, size, ns);
         static int nlog; if (ns >= 16000000ull && nlog++ < 32) VKLOG("memory pool %#llx +%#llx: its buffer took %.1f ms when the GPU first used it", (unsigned long long)lo, (unsigned long long)size, ns / 1e6);
@@ -861,13 +907,15 @@ void mtl_pool_del(const void *mem) {
         int i = 0; while (i < g_npool && g_pool[i].base != (uint64_t)(uintptr_t)mem) i++;
         if (i == g_npool) { pthread_rwlock_unlock(&g_pool_mu); pthread_mutex_unlock(&g_nest_mu); pthread_mutex_unlock(&g_lazy_mu); return; }
         vkpool_t p = g_pool[i]; g_pool[i] = g_pool[--g_npool]; pool_ord_remove(i); __atomic_fetch_add(&g_pool_gen, 1, __ATOMIC_RELEASE);
-        int inner = 0; for (int j = 0; j < g_npool && !inner; j++) inner = p.zero_copy && pool_within(&p, &g_pool[j]);   // its pages go back to the pool around it, as one step against that pool's remap
-        pthread_rwlock_unlock(&g_pool_mu); pthread_mutex_unlock(&g_lazy_mu);
+        int inner = 0, inlazy = 0;   // its pages go back to the pool around it, as one step against that pool's remap, and against pool_back when that pool is lazy, still without its buffer
+        for (int j = 0; j < g_npool && p.zero_copy; j++) { inner |= pool_within(&p, &g_pool[j]); inlazy |= pool_within(&p, &g_pool[j]) && __atomic_load_n(&g_pool[j].lazy, __ATOMIC_ACQUIRE) == 1; }
+        pthread_rwlock_unlock(&g_pool_mu); if (!inlazy) pthread_mutex_unlock(&g_lazy_mu);
         if (!inner) pthread_mutex_unlock(&g_nest_mu);
         uint64_t t0 = pool_ns();
         if (p.zero_copy) pool_copy_back(&p);
         else if (p.left) copy_back((uint8_t *)(uintptr_t)p.lo, p.left);   // a lazy pool's pages that a failed try left on a dropped buffer (zc_unplace)
         if (inner) pthread_mutex_unlock(&g_nest_mu);
+        if (inlazy) pthread_mutex_unlock(&g_lazy_mu);
         free(p.baseline);
         { void vk_tbuf_drop_pool(uint64_t); vk_tbuf_drop_pool(p.serial); }   // the texel buffer views over its buffer (gfx_vk_tex.c), before the buffer itself goes or is kept
         if (p.slab) slab_give(p.slab, p.slot, mtl_last_fence() + 1);   // the slot goes back to its slab (the GPU may still read it until that submission is done)

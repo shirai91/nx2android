@@ -14,6 +14,9 @@ class DirtySwap(unittest.TestCase):
         dm = Path(__file__).resolve().parents[1] / 'nxnative/dm'
         dirty = (dm / 'gfx/nvn/nvn_dirty.c').read_text(encoding='utf-8')
         dirty = '\n'.join(s for s in dirty.splitlines() if not s.startswith('#include'))
+        core = (dm / 'android/gfx_vk_core.c').read_text(encoding='utf-8')   # gfx_vk_core.c's own fill, for a lazy pool with pools inside it
+        start = core.index('typedef struct { const uint64_t *r; int n; } zcin_t;')
+        zc = core[start:core.index('\n}\n', core.index('static int zc_fill(', start)) + 3]
         harness = r'''
 #define _GNU_SOURCE
 #include <assert.h>
@@ -42,6 +45,11 @@ static int fail_ro;   // 1: the next mprotect to read-only fails
 static int checked_mprotect(void *a, size_t n, int prot) { if (fail_ro && prot == PROT_READ) { fail_ro = 0; errno = ENOMEM; return -1; } return mprotect(a, n, prot); }
 #define mprotect checked_mprotect
 DIRTY
+static int fail_fixed = -1;   // the n-th fixed mapping in gfx_vk_core.c's zc_fill fails (0: the next one)
+static void *checked_mmap(void *a, size_t n, int prot, int flags, int f, off_t off) { if ((flags & MAP_FIXED) && fail_fixed >= 0 && fail_fixed-- == 0) { errno = ENOMEM; return MAP_FAILED; } return mmap(a, n, prot, flags, f, off); }
+#define mmap checked_mmap
+ZCFILL
+#undef mmap
 static void handle_fault(int sig, siginfo_t *info, void *uc) { (void)sig; if (!fault_hook(info->si_addr, 1, uc)) _exit(99); }   // not the tracker's: a lost or stuck write
 static uint8_t *mem; static size_t pg, np, swapped; static int fd, fd2, fills, fail_at = -1; static atomic_int stop; static uint32_t *last;
 static int fill(void *at, size_t n, size_t off, void *ctx) {   // as gfx_vk_core.c's zc_fill: the old pages into the new ones, the new ones mapped over them read-only
@@ -54,6 +62,16 @@ static int fill_back(void *at, size_t n, size_t off, void *ctx) {   // as gfx_vk
     (void)ctx; uint8_t *tmp = mmap(NULL, n, PROT_READ | PROT_WRITE, MAP_SHARED, fd2, (off_t)off); if (tmp == MAP_FAILED) return -5;
     memcpy(tmp, at, n); munmap(tmp, n);
     return mmap(at, n, PROT_READ, MAP_SHARED | MAP_FIXED, fd2, (off_t)off) == at ? 0 : -6;
+}
+static int zc_anon_fill(void *at, size_t n, size_t off, void *ctx) {   // as gfx_vk_core.c's (no mremap here), onto the second file's pages at the same offsets, so the test sees where they went
+    (void)off;
+    for (uint64_t a = (uintptr_t)at, e = a + n, lo, hi; a < e; a = hi) {
+        zc_next_in(ctx, a, e, &lo, &hi); if (lo == a) continue;
+        off_t o = (off_t)(a - (uintptr_t)mem); uint8_t *tmp = mmap(NULL, lo - a, PROT_READ | PROT_WRITE, MAP_SHARED, fd2, o); if (tmp == MAP_FAILED) return -5;
+        memcpy(tmp, (void *)(uintptr_t)a, lo - a); munmap(tmp, lo - a);
+        if (mmap((void *)(uintptr_t)a, lo - a, PROT_READ, MAP_SHARED | MAP_FIXED, fd2, o) != (void *)(uintptr_t)a) return -6;
+    }
+    return 0;
 }
 static void *writer(void *a) {   // a game thread: a new value into a pseudo-random page, over and over
     (void)a; uint32_t v = 0, x = 12345;
@@ -82,6 +100,31 @@ static void run(size_t len, int fail, int ro_fails, int back, int *rc_out) {   /
     atomic_store(&stop, 1); pthread_join(t, NULL);
     check("after the swap");
 }
+static int fdi; static uint64_t nr[4];
+static int nest_inner(size_t p) { uint64_t a = (uintptr_t)mem + p * pg; return (a >= nr[0] && a < nr[1]) || (a >= nr[2] && a < nr[3]); }
+static void nest_run(int fail, int *rc) {   // a lazy pool with two pools inside it on their own file's pages (fdi), one across the first slice's end, given its buffer (fd) by
+    size_t len = 40u << 20; np = len / pg; atomic_store(&stop, 0);   // gfx_vk_core.c's zc_fill while a game thread writes; fail: its n-th fixed mapping fails
+    mem = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0); assert(mem != MAP_FAILED);
+    free(last); last = calloc(np, sizeof *last); for (size_t p = 0; p < np; p++) ((uint32_t *)(mem + p * pg))[0] = (uint32_t)p;
+    char p1[] = "/tmp/nx2a-swap-XXXXXX", p2[] = "/tmp/nx2a-swap-XXXXXX", p3[] = "/tmp/nx2a-swap-XXXXXX";
+    fd = mkstemp(p1); fd2 = mkstemp(p2); fdi = mkstemp(p3); assert(fd >= 0 && fd2 >= 0 && fdi >= 0); unlink(p1); unlink(p2); unlink(p3);
+    assert(!ftruncate(fd, (off_t)len) && !ftruncate(fd2, (off_t)len) && !ftruncate(fdi, (off_t)len));
+    uint64_t m = (uintptr_t)mem; nr[0] = m + 10 * pg; nr[1] = m + 30 * pg; nr[2] = m + (16u << 20) - 4 * pg; nr[3] = m + (16u << 20) + 8 * pg;
+    for (int i = 0; i < 2; i++) {   // the inner pools' own pages, as pool_zero_copy made them before the pool around them got its buffer
+        size_t n = nr[2 * i + 1] - nr[2 * i]; off_t o = (off_t)(nr[2 * i] - m); void *at = (void *)(uintptr_t)nr[2 * i];
+        uint8_t *t = mmap(NULL, n, PROT_READ | PROT_WRITE, MAP_SHARED, fdi, o); assert(t != MAP_FAILED); memcpy(t, at, n); munmap(t, n);
+        assert(mmap(at, n, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fdi, o) == at);
+    }
+    zcin_t in = {nr, 2}; zcfill_t f = {fd, 0, NULL, PROT_READ, &in};
+    nvn_dirty_add_range(mem, len);
+    pthread_t t; assert(pthread_create(&t, NULL, writer, NULL) == 0);
+    usleep(2000);
+    fail_fixed = fail; *rc = nvn_dirty_swap(mem, len, zc_fill, &f, &swapped); fail_fixed = -1;
+    usleep(20000);
+    atomic_store(&stop, 1); pthread_join(t, NULL);
+    check("after the swap around the pools inside");
+}
+static uint32_t nest_word(int f, size_t p) { uint32_t v; assert(pread(f, &v, 4, (off_t)(p * pg + 12)) == 4); return v; }   // word 3 of page p in a file
 int main(void) {
     pg = (size_t)getpagesize();
     struct sigaction sa = {0}; sa.sa_sigaction = handle_fault; sa.sa_flags = SA_SIGINFO; sigemptyset(&sa.sa_mask);
@@ -115,9 +158,29 @@ int main(void) {
     uint8_t *other = mmap(NULL, pg, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     assert(nvn_dirty_swap(other, pg, fill, NULL, NULL) == 1 && nvn_dirty_swap(mem + 8, pg, fill, NULL, NULL) == -1);
     assert(nvn_dirty_quiet(other, pg) == 1 && nvn_dirty_quiet(mem + 8, pg) == -1);
+    // pools inside a lazy pool (gfx_vk_core.c pool_back, zcin_t): the buffer's pages go only around them, and the buffer gets their bytes too; a write afterwards lands
+    // on the inner file's page inside them and on the buffer's page elsewhere
+    nest_run(-1, &rc); assert(rc == 0 && swapped == 40u << 20);
+    for (size_t p = 0; p < np; p++) {
+        uint32_t v; assert(pread(fd, &v, 4, (off_t)(p * pg)) == 4 && v == (uint32_t)p);
+        uint32_t w = 0xab000000u + (uint32_t)p; ((volatile uint32_t *)(mem + p * pg))[3] = w;
+        if (nest_inner(p)) assert(nest_word(fdi, p) == w && nest_word(fd, p) != w); else assert(nest_word(fd, p) == w);
+    }
+    nvn_dirty_remove_range(mem);
+    // the second fixed mapping of the first slice failing: the slice is reported failed, the piece mapped before it goes back on other pages (the second file's here,
+    // anonymous memory in gfx_vk_core.c) so none of the slice stays on the buffer's pages, and the pool inside keeps its own; no write lost
+    nest_run(1, &rc); assert(rc == -6 && swapped == 0);
+    for (size_t p = 0; p < (16u << 20) / pg; p++) {
+        uint32_t w = 0xcd000000u + (uint32_t)p; ((volatile uint32_t *)(mem + p * pg))[3] = w;
+        assert(nest_word(fd, p) != w);
+        if (nest_inner(p)) assert(nest_word(fdi, p) == w);
+        else if ((uintptr_t)mem + p * pg < nr[0]) assert(nest_word(fd2, p) == w);
+        else assert(nest_word(fd2, p) != w);   // past the failed piece: the old anonymous pages
+    }
+    nvn_dirty_remove_range(mem);
     return 0;
 }
-'''.replace('DIRTY', dirty)
+'''.replace('DIRTY', dirty).replace('ZCFILL', zc)
         with tempfile.TemporaryDirectory(prefix='nx2a-dirty-swap-') as tmp:
             c, exe = Path(tmp) / 'check.c', Path(tmp) / 'check'
             c.write_text(harness)
