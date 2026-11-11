@@ -74,12 +74,14 @@ static float g_ax[DM_PLAYERS][8];
 static int32_t pad_sticks[DM_PLAYERS][4];
 static uint64_t pad_buttons[DM_PLAYERS];
 static uint32_t players_mask;
-// The players (each controller its own): the slots, and the Java side stubbed
+// The players (each controller its own): the slots, and the Java side stubbed. Devices 7 (a keyboard) and -1 (`adb shell input`'s virtual one) are not
+// controllers; every other id is one, until the test marks it gone. Device 45 is device 44 back under a new id, 46 another controller with 42's name
 static pad_slots g_slots;
-static int g_pad_merge = -1, g_slot_mu, g_ndev_key;
+static int g_pad_merge = -1, g_slot_mu, g_ndev_key, key_reads, log_taken, dev_gone[256];
 static struct { int id; char key[64]; } g_dev_key[16];
-static void pad_key_now(int id, char *out, size_t n) { snprintf(out, n, "pad-%d", id); }
-static void log_line(const char *f, ...) { (void)f; }
+static int pad_dev_kind(int id) { return id == 7 || id == -1 ? 0 : id >= 0 && id < 256 && dev_gone[id] ? -1 : 1; }
+static void pad_key_now(int id, char *out, size_t n) { key_reads++; snprintf(out, n, "pad-%d", id == 45 ? 44 : id == 46 ? 42 : id); }
+static void log_line(const char *f, ...) { if (strstr(f, "are taken")) log_taken++; }
 static int g_ptr_ctl[32];
 static struct { int id, moved; } g_drag = {-1, 0};
 static _Atomic int g_menu, g_sp_on, g_tx_on, g_pad_in, g_knob[2][2];
@@ -220,12 +222,18 @@ static void motion_handoff(void) {
     }
 }
 
-// Each controller a player of its own: the first to send input that counts is player 1, the next player 2; a player that goes is free again
+// Each controller a player of its own (PR #238 review): only controllers take players, and only on input that counts; a refused one is logged once
 static void players(void) {
     width = 1920; height = 1080; layout = 0;
     atomic_store(&g_set_overlay, 1); atomic_store(&g_overlay, 1);
     AInputEvent idle = {.source = AINPUT_SOURCE_JOYSTICK, .type = AINPUT_EVENT_TYPE_MOTION, .device = 43};
     assert(handle_event(&idle) == 1 && pad_slot_mask(&g_slots) == 0 && pad_publications == 0);   // an idle report takes no player (issue #210)
+    AInputEvent key = {.source = AINPUT_SOURCE_KEYBOARD, .type = AINPUT_EVENT_TYPE_KEY, .key = TEST_PAD_KEY, .action = AKEY_EVENT_ACTION_DOWN, .device = 7};
+    assert(handle_event(&key) == 1 && (g_btn[0] & DM_BTN_A) && pad_buttons[0] == DM_BTN_A && pad_slot_mask(&g_slots) == 0 && players_mask == 1);   // a keyboard: player 1's
+    key.action = AKEY_EVENT_ACTION_UP; assert(handle_event(&key) == 1 && !pad_buttons[0]);
+    key.device = -1; key.action = AKEY_EVENT_ACTION_DOWN;
+    assert(handle_event(&key) == 1 && pad_buttons[0] == DM_BTN_A && pad_slot_mask(&g_slots) == 0);   // `adb shell input keyevent`: player 1's
+    key.action = AKEY_EVENT_ACTION_UP; assert(handle_event(&key) == 1 && !pad_buttons[0]);
     AInputEvent pad = {.source = AINPUT_SOURCE_GAMEPAD, .type = AINPUT_EVENT_TYPE_KEY, .key = TEST_PAD_KEY, .action = AKEY_EVENT_ACTION_DOWN, .device = 42};
     assert(handle_event(&pad) == 1 && pad_slot_of(&g_slots, pad_owner(42)) == 0 && vibration == 42);
     pad.device = 44;
@@ -234,8 +242,20 @@ static void players(void) {
     stick.axis[AMOTION_EVENT_AXIS_X] = 0.7f;
     assert(handle_event(&stick) == 1 && pad_sticks[0][0] > 0);
     assert(handle_event(&idle) == 1 && pad_sticks[0][0] > 0 && pad_slot_of(&g_slots, pad_owner(43)) < 0);   // it does not let go of player 1's stick either
-    pad_learn(44, "learned"); assert(!strcmp(g_slots.last[1], "learned"));
-    pad_gone(44); assert(pad_slot_of(&g_slots, pad_owner(44)) < 0 && !pad_buttons[1] && players_mask == 1);
+    for (int d = 0; d < DM_PLAYERS - 2; d++) { pad.device = 100 + d; assert(handle_event(&pad) == 1 && pad_slot_of(&g_slots, pad_owner(100 + d)) == 2 + d); }
+    assert(pad_slot_mask(&g_slots) == (1u << DM_PLAYERS) - 1);
+    int reads = key_reads; pad.device = 200;
+    for (int i = 0; i < 3; i++) assert(handle_event(&pad) == 1);
+    assert(log_taken == 1 && key_reads == reads + 1 && pad_slot_of(&g_slots, pad_owner(200)) < 0);   // refused: logged once, its descriptor read once
+    pad_gone(101);
+    assert(handle_event(&pad) == 1 && pad_slot_of(&g_slots, pad_owner(200)) == 3);   // a player went: the refused controller takes it at its next input
+    dev_gone[44] = 1; pad.device = 45;   // player 2's controller back as device 45 before pad_watch saw 44 go
+    assert(handle_event(&pad) == 1 && pad_slot_of(&g_slots, pad_owner(45)) == 1 && pad_slot_of(&g_slots, pad_owner(44)) < 0);
+    pad_gone(44); assert(pad_slot_of(&g_slots, pad_owner(45)) == 1);   // pad_watch's later word on 44 changes nothing
+    pad_gone(102); pad.device = 46;   // a controller with 42's name while 42 is still there: a player of its own
+    assert(handle_event(&pad) == 1 && pad_slot_of(&g_slots, pad_owner(46)) == 4 && pad_slot_of(&g_slots, pad_owner(42)) == 0);
+    pad_gone(103); pad_learn(47, "learned"); reads = key_reads; pad.device = 47;   // a descriptor pad_watch learned is not read again
+    assert(handle_event(&pad) == 1 && pad_slot_of(&g_slots, pad_owner(47)) == 5 && key_reads == reads && !strcmp(g_slots.last[5], "learned"));
 }
 
 static void controls(int shown) {

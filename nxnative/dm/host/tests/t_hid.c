@@ -36,7 +36,7 @@ static void ids(const uint32_t *v, uint64_t n) { h_hid_SetIds(v, n); }
 
 static void t_slots(void) {
     pad_slots s; memset(&s, 0, sizeof s);
-    static char a, b, c, d, b2, kbd;   // controllers stand in as distinct addresses
+    static char a, b, c, d, b2, a2, kbd;   // controllers stand in as distinct addresses
     CHECK(pad_slot_take(&s, &a, "Xbox Wireless Controller") == 0, "the first controller is player 1");
     CHECK(pad_slot_take(&s, &b, "DualSense Wireless Controller") == 1, "the second controller is player 2");
     CHECK(pad_slot_take(&s, &a, "Xbox Wireless Controller") == 0, "taking again keeps the slot");
@@ -54,6 +54,16 @@ static void t_slots(void) {
     CHECK(pad_slot_take(&s, NULL, "x") == -1 && pad_slot_free(&s, NULL) == -1, "no owner, no slot");
     memset(&s, 0, sizeof s);   // DM_KBD_PLAYER=own: the keyboard holds player 1 for good
     CHECK(pad_slot_take(&s, &kbd, "keyboard") == 0 && pad_slot_take(&s, &a, "Xbox Wireless Controller") == 1, "with the keyboard on its own the first controller is player 2");
+    // Android: a controller back under a new id while its old id still holds the slot (pad_watch has not seen it go): the front end finds the slot by name,
+    // frees it once the old device is gone, and the new id takes it, not the next free player
+    memset(&s, 0, sizeof s);
+    CHECK(pad_slot_take(&s, &a, "desc-a") == 0 && pad_slot_take(&s, &b, "desc-b") == 1, "two controllers");
+    CHECK(pad_slot_named(&s, "desc-a") == 0 && pad_slot_named(&s, "desc-b") == 1, "a held slot is found by its holder's name");
+    CHECK(pad_slot_named(&s, "desc-c") == -1 && pad_slot_named(&s, "") == -1 && pad_slot_named(&s, NULL) == -1, "no slot for an unknown or empty name");
+    CHECK(pad_slot_free(&s, &a) == 0 && pad_slot_named(&s, "desc-a") == -1, "a free slot is not a held one");
+    CHECK(pad_slot_take(&s, &a, "desc-a") == 0, "it comes back to player 1");
+    int q = pad_slot_named(&s, "desc-a");
+    CHECK(q == 0 && pad_slot_free(&s, s.owner[q]) == 0 && pad_slot_take(&s, &a2, "desc-a") == 0, "the same controller under a new id keeps player 1, not player 3");
 }
 
 static void t_npads(void) {

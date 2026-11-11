@@ -216,15 +216,16 @@ JNIEXPORT void JNICALL Java_org_nx2a_ExternalActivity_externalInput(JNIEnv *env,
 }
 // Each controller is a player of its own, as on the Mac (front_mac.m): it takes a slot (pad_slots.h) the first time it sends input that counts (a mapped key, or
 // an axis past its dead zone or threshold: a device that says it is a gamepad and sends nothing or only idle reports takes none, issues #22 and #210), player 1
-// first; a controller that comes back gets its player back by its InputDevice descriptor (read at its first input, pad_key_now, as a DualSense sends input before
-// pad_watch sees it), and pad_watch frees the slot when the device goes. The touch gamepad, shaking and the game's rumble stay player 1's. DM_PAD_MERGE=1: every
-// controller is player 1, as before
+// first. Only a controller as pad_watch counts one takes a slot (not virtual, a gamepad or a joystick); every other device's input (a keyboard's or a remote's keys,
+// `adb shell input`) is player 1's, as before. A controller that comes back gets its player back by its InputDevice descriptor (read at its first input, pad_key_now,
+// as a DualSense sends input before pad_watch sees it), also when it comes back under a new id before pad_watch's next poll freed the old one, and pad_watch frees
+// the slot when the device goes. The touch gamepad, shaking and the game's rumble stay player 1's. DM_PAD_MERGE=1: every controller is player 1, as before
 static uint64_t g_btn[DM_PLAYERS]; static float g_ax[DM_PLAYERS][8]; static int g_pad_used;   // per player: lx ly rx ry lt rt hatx haty
 static pad_slots g_slots; static int g_pad_merge = -1;
 static struct { int id; char key[64]; } g_dev_key[16]; static int g_ndev_key;   // each controller's descriptor (its name when it has none), from pad_watch
 static pthread_mutex_t g_slot_mu = PTHREAD_MUTEX_INITIALIZER;   // the slots, the keys and the per-player state: the input thread and pad_watch
 static int jx(JNIEnv *E) { if (!(*E)->ExceptionCheck(E)) return 0; (*E)->ExceptionClear(E); return 1; }
-static JavaVM *g_vm; static jclass g_in_cls; static jmethodID g_in_get, g_in_desc, g_in_name;   // InputDevice for the input thread (input_thread attaches it)
+static JavaVM *g_vm; static jclass g_in_cls; static jmethodID g_in_get, g_in_desc, g_in_name, g_in_src, g_in_virt;   // InputDevice for the input thread (input_thread attaches it)
 static void pad_key_now(int id, char *out, size_t n) {   // input thread: a controller's descriptor (its name when it has none) before pad_watch learns it; "" when unknown
     JNIEnv *E = NULL; out[0] = 0;
     if (!g_vm || !g_in_cls || (*g_vm)->GetEnv(g_vm, (void **)&E, JNI_VERSION_1_6) != JNI_OK) return;
@@ -236,6 +237,16 @@ static void pad_key_now(int id, char *out, size_t n) {   // input thread: a cont
         if (s) (*E)->DeleteLocalRef(E, s);
     }
     (*E)->DeleteLocalRef(E, d);
+}
+// input thread: a device by pad_watch's test. 1: a controller (not virtual, a gamepad or a joystick); 0: not one; -1: gone (InputDevice.getDevice gives null);
+// -2: unknown (Java cannot be asked on this thread)
+static int pad_dev_kind(int id) {
+    JNIEnv *E = NULL;
+    if (!g_vm || !g_in_cls || !g_in_src || !g_in_virt || (*g_vm)->GetEnv(g_vm, (void **)&E, JNI_VERSION_1_6) != JNI_OK) return -2;
+    jobject d = (*E)->CallStaticObjectMethod(E, g_in_cls, g_in_get, id); if (jx(E)) return -2; if (!d) return -1;
+    jint src = (*E)->CallIntMethod(E, d, g_in_src); jboolean virt = (*E)->CallBooleanMethod(E, d, g_in_virt); int bad = jx(E);
+    (*E)->DeleteLocalRef(E, d);
+    return bad ? -2 : !virt && ((src & AINPUT_SOURCE_GAMEPAD) == AINPUT_SOURCE_GAMEPAD || (src & AINPUT_SOURCE_JOYSTICK) == AINPUT_SOURCE_JOYSTICK);
 }
 // A physical controller's face buttons by their label (an Xbox controller's A is the game's A) instead of by their position: the game's own prompts name the button
 // (A to confirm, B to go back), which an Xbox controller's labels match and its positions do not. Label or position is a property of the player's controller, not of
@@ -278,16 +289,35 @@ static void pad_publish(int p) {   // caller holds g_slot_mu
     dm_pad_set_player(p, b, axis(g_ax[p][0]), -axis(g_ax[p][1]), axis(g_ax[p][2]), -axis(g_ax[p][3]));   // Android's y grows downward, the Switch's upward
 }
 static const void *pad_owner(int id) { return (const void *)((uintptr_t)(uint32_t)id + 1); }   // the slot table's key for a device id (never null)
-// The player of a device's input: its slot, taken the first time it sends input that counts (take: a mapped key, or an axis past its dead zone or threshold, the
-// test pad_mark_used is called on); -1 when it has none (only idle reports so far, or every player is taken). Caller holds g_slot_mu
-static int pad_player(int id, int take) {
+// Devices that sent input and hold no slot, so the input thread asks Java about each once: st 0, not a controller as pad_watch counts one (a keyboard's or a
+// remote's keys, `adb shell input`'s virtual device): its input is player 1's, as all input was before, and it takes no slot; 1, a controller that has sent
+// only idle reports so far (issue #210's silent system device: it never takes a player); 2, a controller refused because every player is taken (logged once,
+// and asked about again only when a player is free, pad_gone). Caller holds g_slot_mu
+static struct { int id, st; } g_noslot[16]; static int g_nnoslot;
+// The player of a device's input: its slot, taken the first time it sends input that counts (take: a mapped key going down, or an axis past its dead zone or threshold, the
+// test pad_mark_used is called on); 0 for a device that is not a controller; -1 for a controller with no player. Caller holds g_slot_mu
+static int pad_player(int id, int32_t src, int take) {
     if (g_pad_merge < 0) { const char *e = getenv("DM_PAD_MERGE"); g_pad_merge = e && atoi(e) != 0; }
     if (g_pad_merge) return 0;
-    int p = pad_slot_of(&g_slots, pad_owner(id)); if (p >= 0 || !take) return p;
-    const char *key = ""; for (int i = 0; i < g_ndev_key; i++) if (g_dev_key[i].id == id) key = g_dev_key[i].key;
+    int p = pad_slot_of(&g_slots, pad_owner(id)); if (p >= 0) return p;
+    int i = 0; while (i < g_nnoslot && g_noslot[i].id != id) i++;
+    if (i == g_nnoslot) {   // its first input: pad_watch's test (not virtual, a gamepad or a joystick); the event's source stands in when Java cannot be asked
+        int k = pad_dev_kind(id);
+        if (k == -2) k = id >= 0 && ((src & AINPUT_SOURCE_GAMEPAD) == AINPUT_SOURCE_GAMEPAD || (src & AINPUT_SOURCE_JOYSTICK) == AINPUT_SOURCE_JOYSTICK);
+        if (i == 16) { memmove(g_noslot, g_noslot + 1, 15 * sizeof *g_noslot); i = 15; } else g_nnoslot++;
+        g_noslot[i].id = id; g_noslot[i].st = k == 1;   // (gone already: pad_watch would not count it either)
+        if (k != 1) LOG("[input] device %d is not a controller: its input is player 1's, and it takes no player", id);
+    }
+    if (!g_noslot[i].st) return 0;
+    if (g_noslot[i].st == 2 || !take) return -1;
+    const char *key = ""; for (int j = 0; j < g_ndev_key; j++) if (g_dev_key[j].id == id) key = g_dev_key[j].key;
     char now[64]; if (!*key) { pad_key_now(id, now, sizeof now); key = now; }
+    int q = pad_slot_named(&g_slots, key);   // a fast reconnect: the same controller back under a new id before pad_watch's next poll freed the old one
+    if (q >= 0) { int old = (int)((uintptr_t)g_slots.owner[q] - 1);
+        if (pad_dev_kind(old) == -1) { pad_slot_free(&g_slots, g_slots.owner[q]); LOG("[input] controller (device %d) is back as device %d", old, id); } }
     p = pad_slot_take(&g_slots, pad_owner(id), key);
-    if (p < 0) { LOG("[input] controller (device %d): all %d players are taken, it is not used", id, DM_PLAYERS); return -1; }
+    if (p < 0) { g_noslot[i].st = 2; LOG("[input] controller (device %d): all %d players are taken, it is not used until one is free", id, DM_PLAYERS); return -1; }
+    g_noslot[i] = g_noslot[--g_nnoslot];   // (it holds a slot now)
     g_btn[p] = 0; memset(g_ax[p], 0, sizeof g_ax[p]);
     LOG("[input] controller (device %d) is player %d (npad %#x)", id, p + 1, dm_player_npad(p));
     return p;
@@ -300,9 +330,10 @@ static void pad_learn(int id, const char *key) {   // pad_watch: a controller's 
     int p = pad_slot_of(&g_slots, pad_owner(id)); if (p >= 0) snprintf(g_slots.last[p], sizeof g_slots.last[p], "%s", key);
     pthread_mutex_unlock(&g_slot_mu);
 }
-static void pad_gone(int id) {   // pad_watch: the device went; its player is free, with nothing left pressed
+static void pad_gone(int id) {   // pad_watch: the device went; its player is free, with nothing left pressed, and a controller refused for want of a player may take it
     pthread_mutex_lock(&g_slot_mu);
     int p = pad_slot_free(&g_slots, pad_owner(id));
+    for (int i = 0; i < g_nnoslot; ) if (g_noslot[i].id == id) g_noslot[i] = g_noslot[--g_nnoslot]; else { if (p >= 0 && g_noslot[i].st == 2) g_noslot[i].st = 1; i++; }
     if (p >= 0) { g_btn[p] = 0; memset(g_ax[p], 0, sizeof g_ax[p]); pad_publish(p); dm_pad_players(pad_slot_mask(&g_slots) | 1); LOG("[input] player %d is free", p + 1); }
     pthread_mutex_unlock(&g_slot_mu);
 }
@@ -1042,7 +1073,7 @@ static int handle_event(AInputEvent *e) {
             return 0;
         }
         int id = AInputEvent_getDeviceId(e);
-        pthread_mutex_lock(&g_slot_mu); int p = pad_player(id, down); pthread_mutex_unlock(&g_slot_mu);   // (a release takes no player either)
+        pthread_mutex_lock(&g_slot_mu); int p = pad_player(id, src, down); pthread_mutex_unlock(&g_slot_mu);   // (a release takes no player either)
         if (down) pad_mark_used(id, p);   // a release after a touch must not hide the controls again
         if (atomic_load(&g_menu)) { if (down && AKeyEvent_getRepeatCount(e) == 0) menu_key(bit); return 1; }
         if (p < 0) return 1;
@@ -1074,7 +1105,7 @@ static int handle_event(AInputEvent *e) {
         if (axes[5] == 0) axes[5] = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_GAS, 0);
         // Idle reports still release game inputs, but only a mapped axis outside its dead zone takes over from touch, or takes a player.
         int id = AInputEvent_getDeviceId(e), live = axis(axes[0]) || axis(axes[1]) || axis(axes[2]) || axis(axes[3]) || pad_axis_buttons(axes);
-        pthread_mutex_lock(&g_slot_mu); int p = pad_player(id, live); pthread_mutex_unlock(&g_slot_mu);
+        pthread_mutex_lock(&g_slot_mu); int p = pad_player(id, src, live); pthread_mutex_unlock(&g_slot_mu);
         if (live) pad_mark_used(id, p);
         if (atomic_load(&g_menu)) {   // the hat moves the selection
             static float hx, hy; float x = axes[6], y = axes[7];
@@ -1206,12 +1237,14 @@ static void shake_start(void) {
 }
 static void *input_thread(void *a) {
     (void)a; JNIEnv *E;
-    if (g_vm && (*g_vm)->AttachCurrentThread(g_vm, &E, NULL) == JNI_OK) {   // for pad_key_now; InputDevice.getDevice and getName are needed, getDescriptor is optional
+    if (g_vm && (*g_vm)->AttachCurrentThread(g_vm, &E, NULL) == JNI_OK) {   // for pad_key_now and pad_dev_kind; InputDevice.getDevice and getName are needed, getDescriptor is optional
         jclass c = (*E)->FindClass(E, "android/view/InputDevice");
         if (!jx(E) && c) {
             g_in_get = (*E)->GetStaticMethodID(E, c, "getDevice", "(I)Landroid/view/InputDevice;"); jx(E);
             g_in_desc = (*E)->GetMethodID(E, c, "getDescriptor", "()Ljava/lang/String;"); jx(E);
             g_in_name = (*E)->GetMethodID(E, c, "getName", "()Ljava/lang/String;"); jx(E);
+            g_in_src = (*E)->GetMethodID(E, c, "getSources", "()I"); jx(E);   // pad_dev_kind: without these the event's source decides
+            g_in_virt = (*E)->GetMethodID(E, c, "isVirtual", "()Z"); jx(E);
             if (g_in_get && g_in_name) g_in_cls = (*E)->NewGlobalRef(E, c);
             (*E)->DeleteLocalRef(E, c);
         }
