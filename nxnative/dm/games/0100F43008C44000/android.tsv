@@ -11,9 +11,14 @@
 # Not checked yet: the city streets past the station, battles, catching. Seen once and not reproduced: an NPC passing right beside the camera drew as a black shape
 # with blocky white noise for a moment (NPCs held close to the camera afterwards drew correctly); the game fades such characters with alpha-to-coverage dither
 # (MultisampleStateGetAlphaToCoverageDither, a2c draws on single-sample targets), the first place to look if it shows again.
-# 60 fps: not done. FPSLocker-Warehouse's only Z-A config (1.0.1) is withdrawn; it patches the game's frame-time constants as well (ladders, rolling), so the
-# present interval alone is not enough.
+# FPSLocker-Warehouse's only Z-A config (1.0.1) is withdrawn; it patched the game's frame-time constants as well (ladders, rolling), so the present interval alone
+# is not enough. The stock 30 fps measurements above predate the restored 2.0.2 native timing stubs in patches.py.
+# The stubs follow the host's vsync step, gated by the main build ID and original bytes; fps_target selects 60, DM_FPS_TARGET=0 restores the game's own timing.
+# Later PR testers reported on the restored 2.0.2 timing on AYN Thor and RP5; results vary by device. On a 60 Hz RP5, a 60 fps test pin produced uneven ~41 fps,
+# while 30 fps was smooth. The test pin is omitted to leave the adaptive cap in normal use; this final profile has not been tested on the RP5.
 status	playable
 tested	v393216 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
 package	org.nx2a.plza
 orientation	landscape
+env	DM_FPS_HOLD=off
+env	DM_VK_CB_DRAWS=32
