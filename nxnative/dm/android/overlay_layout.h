@@ -35,15 +35,31 @@ static inline int ov_index(const ov_ctl *c, int *layout) { int k = (int)(c - &OV
 static inline float ov_cscale(const ov_ctl *c) { int l, i = ov_index(c, &l); float x, y, s = 1; dm_overlay_custom(l, i, &x, &y, &s); return s; }
 #define OV_DRAG_SLOP 0.02f   // a press on the menu button that moves this far (of the window's height) drags it instead of opening the menu
 // the controls' size factor: 1, or more on a small screen so a face button stays at least OV_MIN_MM wide (sizes follow the window's height, which on a
-// 6.7" phone made them 7 mm against 12 on an 8.8" tablet). Positions stay where they are
+// 6.7" phone made them 7 mm against 12 on an 8.8" tablet). A side's controls grow out from its bottom corner with their size (ov_box), so they keep their
+// spacing; the factor stops where they would leave the window (ov_fit_scale). Grown around their own centres, the Odin 3's x1.45 made eleven pairs overlap
 #define OV_MIN_MM 10.0f
 float dm_overlay_scale(void);
-// where a control is now, in window pixels: its centre x, y and half its width and height
+// where a control is now, in window pixels: its centre x, y and half its width and height. A side's control (anchored to the left or the right edge) is
+// x window heights from its edge and 1 - y up from the bottom at scale 1; at scale s both distances are s times as far, so the whole side scales about
+// its bottom corner. The menu button (anchored to the middle) stays at the top middle, growing down from the top edge
 static inline void ov_box(const ov_ctl *c, float W, float H, float b[4]) {   // (c: in OV_LAYOUTS, whose index finds the player's own place and size)
     int l, i = ov_index(c, &l); float s = dm_overlay_scale(), mx, my, cs = 1;
     if (dm_overlay_custom(l, i, &mx, &my, &cs)) { b[0] = mx * W; b[1] = my * H; }
-    else { b[0] = c->ax * W + c->x * H; b[1] = c->y * H; }
+    else if (c->ax == 0.5f) { b[0] = c->ax * W + c->x * H; b[1] = c->y * H * s; }
+    else { b[0] = c->ax * W + c->x * H * s; b[1] = H - (1 - c->y) * H * s; }
     b[2] = c->w * H * s * cs / 2; b[3] = c->h * H * s * cs / 2;
+}
+// the largest scale up to s (and at least 1) at which every side control of layout L, grown out from its bottom corner (ov_box), stays inside a W x H
+// window and inside its half of the width, so the two sides never meet
+static inline float ov_fit_scale(const ov_ctl *L, float W, float H, float s) {
+    if (W <= 0 || H <= 0) return s;
+    for (int i = 0; i < OV_N; i++) {
+        const ov_ctl *c = &L[i]; if (c->ax == 0.5f) continue;
+        float up = 1 - c->y + c->h / 2, out = fabsf(c->x) + c->w / 2;
+        if (up > 0) s = fminf(s, 1 / up);
+        if (out > 0) s = fminf(s, W / H / 2 / out);
+    }
+    return fmaxf(s, 1);
 }
 // a dragged control's centre on one axis (half: its half size, extent: the window's): kept on the screen, and with step > 0 on the nearest multiple
 // of step that keeps it there (none may fit an oversized control)

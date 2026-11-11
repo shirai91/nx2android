@@ -122,5 +122,55 @@ int main(void) {
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
+    def test_grown_controls_do_not_overlap(self):
+        """On a small screen the controls grow so a face button stays 10 mm wide (front_android.c dm_overlay_scale). Each side grows out from its bottom
+        corner and no further than fits (overlay_layout.h ov_box, ov_fit_scale): no two controls overlap and none leaves the window. Grown around their
+        own centres, the Odin 3's 1920x1080 at x1.45 made eleven pairs overlap and pushed ZL, ZR and the menu button off the screen"""
+        cc = shutil.which('cc') or shutil.which('clang')
+        if not cc:
+            self.skipTest('a C compiler is needed for the layout geometry check')
+        harness = r"""
+#include <assert.h>
+#include <stdio.h>
+#include "overlay_layout.h"
+static float g_s = 1;
+float dm_overlay_scale(void) { return g_s; }
+int dm_overlay_custom(int layout, int ctl, float *x, float *y, float *s) { (void)layout; (void)ctl; (void)x; (void)y; *s = 1; return 0; }
+static float gap(const ov_ctl *a, const float p[4], const ov_ctl *b, const float q[4]) {   // < 0: they overlap (round ones as circles, the rest as boxes)
+    float dx = fabsf(p[0] - q[0]), dy = fabsf(p[1] - q[1]);
+    if (a->w == a->h && b->w == b->h) return hypotf(dx, dy) - p[2] - q[2];
+    return fmaxf(dx - p[2] - q[2], dy - p[3] - q[3]);
+}
+int main(void) {
+    const float screens[][3] = {{1920, 1080, 1}, {1920, 1080, 1.45f}, {2400, 1080, 1}, {2400, 1080, 1.45f}, {1280, 800, 1.45f}, {2560, 1600, 1.2f}, {2340, 1080, 1.45f}};
+    for (unsigned k = 0; k < sizeof screens / sizeof screens[0]; k++) {
+        float W = screens[k][0], H = screens[k][1]; int l = ov_layout_for_size((int)W, (int)H); const ov_ctl *L = OV_LAYOUTS[l];
+        g_s = ov_fit_scale(L, W, H, screens[k][2]);
+        assert(g_s >= 1 && g_s <= screens[k][2]);
+        float b[OV_N][4];
+        for (int i = 0; i < OV_N; i++) {
+            ov_box(&L[i], W, H, b[i]);
+            if (!(b[i][0] - b[i][2] >= -0.5f && b[i][0] + b[i][2] <= W + 0.5f && b[i][1] - b[i][3] >= -0.5f && b[i][1] + b[i][3] <= H + 0.5f)) {
+                fprintf(stderr, "%gx%g x%.2f: %s leaves the window\n", W, H, g_s, L[i].name); return 1; }
+        }
+        for (int i = 0; i < OV_N; i++) for (int j = i + 1; j < OV_N; j++) if (gap(&L[i], b[i], &L[j], b[j]) < 0) {
+            fprintf(stderr, "%gx%g x%.2f: %s and %s overlap by %.0f px\n", W, H, g_s, L[i].name, L[j].name, -gap(&L[i], b[i], &L[j], b[j])); return 1; }
+    }
+    g_s = ov_fit_scale(OV_LAYOUTS[0], 1920, 1080, 1.45f);   // the Odin 3 still gets bigger controls, only not as far as x1.45
+    assert(g_s > 1.25f && g_s < 1.45f);
+    return 0;
+}
+"""
+        with tempfile.TemporaryDirectory(prefix='nx2a_overlay_') as tmp:
+            tmp = Path(tmp)
+            (tmp / 'android_profile.h').write_text(android_profile.header(None), encoding='utf-8')
+            c, exe = tmp / 'check.c', tmp / 'check'
+            c.write_text(harness, encoding='utf-8')
+            result = subprocess.run([cc, '-std=gnu11', '-Wall', '-Wextra', '-Werror', '-Wno-missing-field-initializers', f'-I{tmp}',
+                                     f'-I{DM / "android"}', f'-I{DM / "host"}', str(c), '-lm', '-o', str(exe)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            result = subprocess.run([str(exe)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
 if __name__ == '__main__':
     unittest.main()
