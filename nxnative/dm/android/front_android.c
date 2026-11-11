@@ -123,10 +123,11 @@ __attribute__((weak)) void dm_overlay_redraw(void) {}   // the backend presents 
 // ---- holding the game: in the background and while the pause menu is open. Its clock reads wait (reason 1) and its audio goes to the silent sink ----
 static _Atomic int g_running, g_bg, g_menu;
 static pthread_mutex_t g_hold_mu = PTHREAD_MUTEX_INITIALIZER; static int g_held;
+static _Atomic int g_ime_on;
 static _Atomic int g_tx_on;   // text entry open (front_text_input): the game is held as by the menu
 static void hold_sync(void) {
     pthread_mutex_lock(&g_hold_mu);
-    int want = atomic_load(&g_bg) || atomic_load(&g_menu) || atomic_load(&g_tx_on);
+    int want = atomic_load(&g_bg) || atomic_load(&g_menu) || atomic_load(&g_tx_on) || atomic_load(&g_ime_on);
     if (want != g_held) { g_held = want; if (want) { dm_movie_hold(1); dm_audio_suspend(1); guest_clock_freeze_for(1, 1); } else { guest_clock_freeze_for(1, 0); dm_audio_suspend(0); dm_movie_hold(0); } }
     pthread_mutex_unlock(&g_hold_mu);
 }
@@ -251,7 +252,7 @@ static _Atomic int g_pads;          // controllers attached and used (pad_watch)
 static _Atomic int g_pad_in = -1;   // the device that last sent a controller's input (handle_event), which pad_watch then counts
 static _Atomic int g_knob[2][2];    // the sticks' knob offsets, in 1/10000 of the stick radius
 static _Atomic int64_t g_press_t[16], g_menu_t, g_stick_t[2];   // when each overlay button (by DM_BTN_* bit), the menu button and each stick went down, 0 = not held
-static uint64_t g_touch_btn;        // the overlay buttons held, as of the last touch event
+static _Atomic uint64_t g_touch_btn;   // the overlay buttons held, cleared by the menu or keyboard
 static int64_t mono_ns(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec; }
 // A system input device can report itself as an active controller (issues #22, #210). The saved choice must still work, and the menu must stay reachable.
 int dm_overlay_visible(void) { return atomic_load(&g_set_overlay) && atomic_load(&g_overlay) ? 1 : 2; }
@@ -464,7 +465,7 @@ static void menu_open(int hi) {
     if (!atomic_load(&g_running) || atomic_exchange(&g_menu, 1)) return;
     atomic_store(&g_menu_hi, hi); g_menu_ptr = -1;
     if (atomic_load(&g_sv_st) != OVX_BUSY) atomic_store(&g_sv_st, OVX_IDLE);   // the last export's note goes (one still copying stays)
-    dm_input_set(0, 0, 0, 0, 0); dm_touch_set(NULL, 0); g_touch_btn = 0;   // nothing stays pressed in the game
+    dm_input_set(0, 0, 0, 0, 0); dm_touch_set(NULL, 0); atomic_store(&g_touch_btn, 0);   // nothing stays pressed in the game
     for (int i = 0; i < 16; i++) atomic_store(&g_press_t[i], 0);
     for (int s = 0; s < 2; s++) { atomic_store(&g_stick_t[s], 0); for (int a = 0; a < 2; a++) atomic_store(&g_knob[s][a], 0); }
     if (g_pad_used) { g_btn = 0; memset(g_ax, 0, sizeof g_ax); pad_publish(); }
@@ -834,7 +835,9 @@ static void tx_touch(AInputEvent *e, float W, float H) {   // a key is pressed w
         if (key >= 0 && key == down) tx_press(key);
     }
 }
-int front_text_input(const char *title, const char *sub, const char *guide, const char *initial, int max_chars, char *out, int out_cap) {
+#include "keyboard_android.inc"
+static pthread_mutex_t g_keyboard_mu = PTHREAD_MUTEX_INITIALIZER;
+static int overlay_text_input(const char *title, const char *sub, const char *guide, const char *initial, int max_chars, char *out, int out_cap) {
     if (!out || out_cap <= 0) return -1;
     if (!g_act || !dm_front_window()) return -1;   // the adb shell executable, or no window yet: nothing is shown
     pthread_mutex_lock(&g_tx_mu);
@@ -852,7 +855,7 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
     g_tx.max = max_chars > 0 && max_chars < (int)sizeof g_tx.text - 1 ? max_chars : (int)sizeof g_tx.text - 1;
     g_tx.done = g_tx.ok = 0; g_tx.sel = 11; g_tx.shift = g_tx.n == 0; g_tx.ptr = -1;   // the highlight on q; a capital first, as on a phone
     pthread_mutex_unlock(&g_tx_mu);
-    dm_input_set(0, 0, 0, 0, 0); dm_touch_set(NULL, 0); g_touch_btn = 0;   // nothing stays pressed in the game
+    dm_input_set(0, 0, 0, 0, 0); dm_touch_set(NULL, 0); atomic_store(&g_touch_btn, 0);   // nothing stays pressed in the game
     atomic_store(&g_tx_on, 1); hold_sync(); tx_changed();
     LOG("[text] entry open: \"%s\" (at most %d characters)", g_tx.title, g_tx.max);
     pthread_mutex_lock(&g_tx_mu);
@@ -862,6 +865,14 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
     atomic_store(&g_tx_on, 0); hold_sync(); dm_overlay_redraw();
     LOG("[text] entry %s", ok ? "accepted" : "cancelled");
     return ok;
+}
+
+int front_text_input(const char *title, const char *sub, const char *guide, const char *initial, int max_chars, char *out, int out_cap) {
+    if (pthread_mutex_trylock(&g_keyboard_mu)) { LOG("[text] request cancelled: another keyboard request is active"); return 0; }
+    int result = android_text_input(title, sub, guide, initial, max_chars, out, out_cap);
+    if (result == -2) result = overlay_text_input(title, sub, guide, initial, max_chars, out, out_cap);
+    pthread_mutex_unlock(&g_keyboard_mu);
+    return result;
 }
 
 __attribute__((weak)) void dm_picture_rect(float r[4]);   // gfx_vk_present.c
@@ -912,7 +923,8 @@ static void touch_event(AInputEvent *e) {
             if (k->kind == OV_STICK_L) { lx = sx; ly = sy; } else { rx = sx; ry = sy; }
         }
     }
-    uint64_t down = btn & ~g_touch_btn, up = g_touch_btn & ~btn; int64_t now = mono_ns(); g_touch_btn = btn;
+    uint64_t previous = atomic_exchange(&g_touch_btn, btn);
+    uint64_t down = btn & ~previous, up = previous & ~btn; int64_t now = mono_ns();
     for (int b = 0; b < 16; b++) { if (down >> b & 1) atomic_store(&g_press_t[b], now); else if (up >> b & 1) atomic_store(&g_press_t[b], 0); }
     if (down) dm_haptics_android_tap();   // a tick for each button (or d-pad direction) the finger reaches
     for (int s = 0; s < 2; s++) for (int a = 0; a < 2; a++) atomic_store(&g_knob[s][a], (int)(kn[s][a] * 10000));
