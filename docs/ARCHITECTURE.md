@@ -77,6 +77,22 @@ Per-build knowledge stays where upstream keeps it: the rewriter's cuts in `patch
 
 `python -m porter port <game folder> -k <prod.keys>` (the GUI's **Port** button) runs these stages. The slow ones (extraction, rewrite, shader split, the translator build, the Vulkan shaders) keep their output with a key of their inputs and are skipped on the next run when the key is unchanged; the host build is incremental (`build.py`), and the APK and the data pack are made again each time (seconds).
 
+Shader reuse checks the generated bundle against its receipt. Windows uses size
+and modification time for the fast path. POSIX also checks change time and file
+identity. A metadata change triggers a digest check. On Windows, a same-size
+edit that preserves the original modification time can pass the fast path.
+Translator output trees are checked by relative name, size and hash, including
+dependencies. The exporter records expected keys and stages and failed keys and
+reasons in `android/shaders.dmsv.report.json`. Individually valid products from
+interrupted batches can still be included. The porter accounts for every
+expected shader and requires at least one emitted shader before publication.
+Partial bundles are reused when their inputs are unchanged, with the failure
+count in the receipt note. The report is published before the receipt and its
+digest is checked on reuse. A changed input or missing or changed report
+triggers translation. The shader key covers the three Android export helpers
+(`shader_vk.py`, `dmsv.py`, `shader_products.py`), the shared shader tools, profile,
+captures and translator. The new receipt format rebuilds existing ports once.
+
 | Stage | What | Output (in `<game folder>/<title ID>_build/`) |
 |---|---|---|
 | inputs | Find the base game, updates and DLC (NSP / XCI / NSZ / XCZ), match the profile, pick the version; check the game folder's drive has room (about twice the game files, NSZ / XCZ counted decompressed and once more for their NSP, less an earlier port's build folder) | |
