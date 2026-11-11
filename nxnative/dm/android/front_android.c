@@ -301,7 +301,8 @@ JNIEXPORT jfloatArray JNICALL Java_org_nx2a_ExternalActivity_externalOverlay(JNI
         if (c->kind == OV_DPAD) { for (int d = 0; d < 4; d++) if (dm_overlay_pressed(i, OV_DPAD_BITS[d])) held |= 1u << d; }
         else if (dm_overlay_pressed(i, 0)) held = 1;
         jfloat *v = &values[4 + i * 9];
-        v[0] = ov_off(c) ? -1 : c->kind;   // -1: hidden by the player (ExternalActivity draws nothing of it) v[1] = b[0]; v[2] = b[1]; v[3] = b[2]; v[4] = b[3]; v[5] = (jfloat)held; v[6] = kx; v[7] = ky; v[8] = ov_cscale(c);
+        // v[0] = -1: hidden by the player (ExternalActivity draws nothing of it)
+        v[0] = ov_off(c) ? -1 : c->kind; v[1] = b[0]; v[2] = b[1]; v[3] = b[2]; v[4] = b[3]; v[5] = (jfloat)held; v[6] = kx; v[7] = ky; v[8] = ov_cscale(c);
     }
     values[4 + OV_N * 9] = dm_overlay_visible();
     jfloatArray out = (*env)->NewFloatArray(env, (jsize)(5 + OV_N * 9));
