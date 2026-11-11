@@ -231,21 +231,30 @@ static uint64_t key_bit(int32_t k) {   // Nintendo layout by position: the botto
 }
 static int32_t axis(float v) { if (v > -0.12f && v < 0.12f) return 0; return (int32_t)(v * DM_STICK_MAX); }
 static uint64_t g_shake_btn;   // DM_BTN_SHAKE while the device is being shaken (below); input thread only
+static uint64_t pad_axis_buttons(const float axes[8]) {
+    uint64_t b = 0;
+    if (axes[4] > 0.5f) b |= DM_BTN_ZL;
+    if (axes[5] > 0.5f) b |= DM_BTN_ZR;
+    if (axes[6] < -0.5f) b |= DM_BTN_LEFT;
+    if (axes[6] > 0.5f) b |= DM_BTN_RIGHT;
+    if (axes[7] < -0.5f) b |= DM_BTN_UP;
+    if (axes[7] > 0.5f) b |= DM_BTN_DOWN;
+    return b;
+}
 static void pad_publish(void) {
-    uint64_t b = g_btn | g_shake_btn;
-    if (g_ax[4] > 0.5f) b |= DM_BTN_ZL; if (g_ax[5] > 0.5f) b |= DM_BTN_ZR;
-    if (g_ax[6] < -0.5f) b |= DM_BTN_LEFT; if (g_ax[6] > 0.5f) b |= DM_BTN_RIGHT; if (g_ax[7] < -0.5f) b |= DM_BTN_UP; if (g_ax[7] > 0.5f) b |= DM_BTN_DOWN;
+    uint64_t b = g_btn | g_shake_btn | pad_axis_buttons(g_ax);
     dm_pad_set(b, axis(g_ax[0]), -axis(g_ax[1]), axis(g_ax[2]), -axis(g_ax[3]));   // Android's y grows downward, the Switch's upward
 }
 // ---- the on-screen gamepad (overlay_layout.h): a pointer that goes down on a control keeps it until it lifts; every other pointer is the game's touch screen ----
-static _Atomic int g_overlay = 1;   // shown until a physical controller is used, again at the next touch (when the player has it on)
-static _Atomic int g_pads;          // controllers attached and used (pad_watch): while there is one, nothing of the gamepad is shown, the menu button neither
+static _Atomic int g_overlay = 1;   // shown until a controller sends input, restored at the next touch if enabled
+static _Atomic int g_pads;          // controllers attached and used (pad_watch), for the vibration handoff
 static _Atomic int g_pad_in = -1;   // the device that last sent a controller's input (handle_event), which pad_watch then counts
 static _Atomic int g_knob[2][2];    // the sticks' knob offsets, in 1/10000 of the stick radius
 static _Atomic int64_t g_press_t[16], g_menu_t, g_stick_t[2];   // when each overlay button (by DM_BTN_* bit), the menu button and each stick went down, 0 = not held
 static uint64_t g_touch_btn;        // the overlay buttons held, as of the last touch event
 static int64_t mono_ns(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec; }
-int dm_overlay_visible(void) { return atomic_load(&g_pads) ? 0 : atomic_load(&g_set_overlay) && atomic_load(&g_overlay) ? 1 : 2; }
+// A system input device can report itself as an active controller (issues #22, #210). The saved choice must still work, and the menu must stay reachable.
+int dm_overlay_visible(void) { return atomic_load(&g_set_overlay) && atomic_load(&g_overlay) ? 1 : 2; }
 int dm_overlay_layout(void) {   // the phone's layout in a window at least OV_PHONE_ASPECT wide for its height (overlay_layout.h)
     static int last_w = -1, last_h = -1, phone;
     ANativeWindow *w = phone_window(); int ww = w ? ANativeWindow_getWidth(w) : 0, wh = w ? ANativeWindow_getHeight(w) : 0;
@@ -307,7 +316,7 @@ JNIEXPORT jfloatArray JNICALL Java_org_nx2a_ExternalActivity_externalOverlay(JNI
 static int g_ptr_ctl[32];   // pointer id → control index + 1 (0 = the touch screen)
 static int ctl_at(float x, float y, float W, float H) {   // the control under (x, y) in pixels, -1 if none (in the layout editor: every control, shown or not)
     int best = -1, vis = atomic_load(&g_edit) ? 1 : dm_overlay_visible(), shown = vis == 1; float bd = 1e9f;
-    if (!vis) return -1;   // a controller is attached: every touch is the game's
+    if (!vis) return -1;   // no overlay: every touch is the game's
     for (int i = 0; i < OV_N; i++) {
         const ov_ctl *c = &OV_CTLS[i]; if (!shown && c->kind != OV_MENU) continue;   // hidden: only the menu button answers
         float b[4]; ov_box(c, W, H, b);
@@ -336,9 +345,8 @@ static void menu_drag(const ov_ctl *m, float x, float y, float W, float H) {   /
 
 // ---- controllers attached: InputDevice's list, read once a second through JNI (a code-less NativeActivity has no InputManager listener). A device counts
 // when it is a gamepad or a joystick and not virtual (the tablet's own keys, touch screen and pen are neither), and once it has sent input: Xiaomi phones
-// keep a system device "uinput-xiaomi" attached for good that says it is a gamepad and sends nothing, which hid the gamepad and its menu button (issue #22).
-// While one is attached nothing of the gamepad is shown and every touch is the game's; its keys open the menu (Back, Mode, Menu: handle_event). When the
-// last one goes, the gamepad comes back ----
+// keep a system device "uinput-xiaomi" attached for good that says it is a gamepad (issues #22, #210). The count controls vibration routing.
+// When the last used controller goes, the overlay can return and vibration returns to the phone ----
 static int jx(JNIEnv *E) { if (!(*E)->ExceptionCheck(E)) return 0; (*E)->ExceptionClear(E); return 1; }
 static void *pad_watch(void *a) {
     JavaVM *vm = a; JNIEnv *E; pthread_setname_np(pthread_self(), "padwatch");
@@ -364,11 +372,11 @@ static void *pad_watch(void *a) {
                     if (!known) {
                         jstring s = (*E)->CallObjectMethod(E, d, mName); const char *nm = !jx(E) && s ? (*E)->GetStringUTFChars(E, s, NULL) : NULL;
                         jint ven = (*E)->CallIntMethod(E, d, mVen), prod = (*E)->CallIntMethod(E, d, mProd); jx(E);
-                        LOG("[input] controller attached: %s (device %d, sources 0x%x, %04x:%04x): the gamepad is hidden once it is used", nm ? nm : "?", v[i], src, ven, prod);
+                        LOG("[input] controller attached: %s (device %d, sources 0x%x, %04x:%04x)", nm ? nm : "?", v[i], src, ven, prod);
                         if (nm) (*E)->ReleaseStringUTFChars(E, s, nm);
                         if (s) (*E)->DeleteLocalRef(E, s);
                     }
-                    if (on[n] && !was) LOG("[input] controller in use (device %d): the gamepad is hidden", v[i]);
+                    if (on[n] && !was) LOG("[input] controller in use (device %d)", v[i]);
                     n++;
                 }
                 (*E)->DeleteLocalRef(E, d);
@@ -377,9 +385,9 @@ static void *pad_watch(void *a) {
             (*E)->DeleteLocalRef(E, arr);
         }
         for (int k = 0; k < np; k++) { int still = 0; for (int i = 0; i < n; i++) still |= ids[i] == prev[k]; if (!still) LOG("[input] controller detached (device %d)", prev[k]); }
-        if (atomic_exchange(&g_pads, nu) && !nu) {   // the last one went: the gamepad again, and the device's motor for rumble
+        if (atomic_exchange(&g_pads, nu) && !nu) {   // the last one went: the device's motor for rumble
             atomic_store(&g_overlay, 1); dm_haptics_android_device(-1);
-            LOG("[input] no controller in use: the gamepad is shown");
+            LOG("[input] no controller in use: vibration returns to the phone");
         }
         memcpy(prev, ids, sizeof ids); memcpy(used, on, sizeof on); np = n;
         sleep(1);
@@ -868,7 +876,7 @@ static void touch_event(AInputEvent *e) {
         int c = ctl_at(AMotionEvent_getX(e, (size_t)i), AMotionEvent_getY(e, (size_t)i), W, H);
         g_ptr_ctl[id] = c + 1;
         if (c >= 0 && OV_CTLS[c].kind == OV_MENU) { atomic_store(&g_menu_t, mono_ns()); dm_haptics_android_tap(); menu_grab(id, &OV_CTLS[c], AMotionEvent_getX(e, (size_t)i), AMotionEvent_getY(e, (size_t)i), W, H); }
-        if (!atomic_load(&g_overlay) && !atomic_load(&g_pads)) { atomic_store(&g_overlay, 1); dm_haptics_android_device(-1); }   // a touch brings the gamepad back (not over an attached controller)
+        if (!atomic_exchange(&g_overlay, 1) && !atomic_load(&g_pads)) dm_haptics_android_device(-1);   // keep vibration on a used controller that is still attached
     }
     uint64_t btn = 0; int32_t lx = 0, ly = 0, rx = 0, ry = 0; float kn[2][2] = {{0, 0}, {0, 0}}; int open = 0, held[2] = {0, 0};
     dm_touch t[16]; int n = 0;
@@ -913,6 +921,12 @@ static void touch_event(AInputEvent *e) {
     dm_touch_set(t, n);
     if (open) menu_open(-1);
 }
+static void pad_mark_used(int32_t device) {
+    atomic_store(&g_overlay, 0);
+    g_pad_used = 1;
+    atomic_store(&g_pad_in, device);
+    dm_haptics_android_device(device);
+}
 static int handle_event(AInputEvent *e) {
     int32_t src = AInputEvent_getSource(e), type = AInputEvent_getType(e);
     if (type == AINPUT_EVENT_TYPE_KEY) {
@@ -929,7 +943,7 @@ static int handle_event(AInputEvent *e) {
                 seen[k >> 3] |= (uint8_t)(1 << (k & 7)); LOG("[input] controller key %d (device %d): not mapped", k, AInputEvent_getDeviceId(e)); }
             return 0;
         }
-        atomic_store(&g_overlay, 0); g_pad_used = 1; atomic_store(&g_pad_in, AInputEvent_getDeviceId(e)); dm_haptics_android_device(AInputEvent_getDeviceId(e));   // a controller is in use: the gamepad steps aside (until a touch)
+        pad_mark_used(AInputEvent_getDeviceId(e));
         if (atomic_load(&g_menu)) { if (down && AKeyEvent_getRepeatCount(e) == 0) menu_key(bit); return 1; }
         if (down) g_btn |= bit; else if (AKeyEvent_getAction(e) == AKEY_EVENT_ACTION_UP) g_btn &= ~bit;
         dm_pad_players(1); pad_publish(); return 1;
@@ -948,18 +962,24 @@ static int handle_event(AInputEvent *e) {
         return 1;
     }
     if ((src & AINPUT_SOURCE_JOYSTICK) == AINPUT_SOURCE_JOYSTICK || (src & AINPUT_SOURCE_GAMEPAD) == AINPUT_SOURCE_GAMEPAD) {
-        g_pad_used = 1; atomic_store(&g_pad_in, AInputEvent_getDeviceId(e)); dm_haptics_android_device(AInputEvent_getDeviceId(e));
+        float axes[8] = {
+            AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_X, 0), AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_Y, 0),
+            AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_Z, 0), AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_RZ, 0),
+            AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_LTRIGGER, 0), AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_RTRIGGER, 0),
+            AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_HAT_X, 0), AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_HAT_Y, 0),
+        };
+        if (axes[4] == 0) axes[4] = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_BRAKE, 0);
+        if (axes[5] == 0) axes[5] = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_GAS, 0);
+        // Idle reports still release game inputs, but only a mapped axis outside its dead zone takes over from touch.
+        if (axis(axes[0]) || axis(axes[1]) || axis(axes[2]) || axis(axes[3]) || pad_axis_buttons(axes))
+            pad_mark_used(AInputEvent_getDeviceId(e));
         if (atomic_load(&g_menu)) {   // the hat moves the selection
-            static float hx, hy; float x = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_HAT_X, 0), y = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_HAT_Y, 0);
+            static float hx, hy; float x = axes[6], y = axes[7];
             if (y < -0.5f && hy >= -0.5f) menu_key(DM_BTN_UP); else if (y > 0.5f && hy <= 0.5f) menu_key(DM_BTN_DOWN);
             if (x < -0.5f && hx >= -0.5f) menu_key(DM_BTN_LEFT); else if (x > 0.5f && hx <= 0.5f) menu_key(DM_BTN_RIGHT);
             hx = x; hy = y; return 1;
         }
-        g_ax[0] = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_X, 0); g_ax[1] = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_Y, 0);
-        g_ax[2] = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_Z, 0); g_ax[3] = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_RZ, 0);
-        g_ax[4] = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_LTRIGGER, 0); g_ax[5] = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_RTRIGGER, 0);
-        g_ax[6] = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_HAT_X, 0); g_ax[7] = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_HAT_Y, 0);
-        if (g_ax[4] == 0) g_ax[4] = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_BRAKE, 0); if (g_ax[5] == 0) g_ax[5] = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_GAS, 0);
+        memcpy(g_ax, axes, sizeof g_ax);
         dm_pad_players(1); pad_publish(); return 1;
     }
     if ((src & AINPUT_SOURCE_TOUCHSCREEN) == AINPUT_SOURCE_TOUCHSCREEN) { touch_event(e); return 1; }
