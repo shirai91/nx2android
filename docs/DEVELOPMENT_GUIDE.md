@@ -158,6 +158,40 @@ completion before the next epoch. GPU-written segments must remain outside this
 immutable cache. Full descriptor-set key
 equality is separate; these tests do not measure device performance.
 
+Shader and translator reuse checks content receipts with relative output names,
+sizes and SHA-256 hashes, including translator dependencies. The bundle takes
+the fast path when size and modification time match on Windows. POSIX also
+checks change time and file identity. Changed metadata falls back to hashing,
+and matching contents refresh the recorded metadata. The Windows fast path can
+miss a same-size edit that preserves the original modification time.
+The shader key includes the translator's actual output bytes and the export helpers
+`shader_vk.py`, `dmsv.py` and `shader_products.py`; unrelated Android tools do not
+invalidate it. Inputs changing during generation stop publication. The changed key
+and receipt format make existing ports translate once before reuse resumes.
+
+The exporter records every expected shader (including geometry topology variants)
+and failed key/reason in `shaders.dmsv.report.json`. It checks SPIR-V framing and
+entry-point stage and requires reflection beside each emitted module. Valid
+products from an interrupted batch are kept. Missing or invalid outputs get a
+`[RED]` diagnostic. Before retrying integer vertex inputs, the exporter removes
+the first pass's outputs to prevent reuse of an incompatible input interface.
+`dmsv.write` reads each payload back and the runtime checks framing and reflection.
+The porter compares the emitted keys and stages with the expected and failed
+inventory and rejects an empty result before publishing the bundle, report or
+receipt. An export with at least one valid shader can be reused with unchanged
+inputs and products. The receipt records the failure count and the published
+report's digest. A missing or changed report or changed input triggers a rebuild.
+`test_shader_cache` and `test_shader_export_checks` exercise these contracts without
+game files or a GPU.
+
+Native harnesses discover Vulkan headers through `ANDROID_NDK_HOME` (or the
+porter tool installation). Set it to an installed NDK when the SDK is outside the
+usual locations. The POSIX probe uses mutexes and condition variables supported on
+macOS and Linux. Protected-page tests handle both SIGSEGV and macOS SIGBUS and
+keep their concurrent CPU writer checks; the zero-copy failure fixture supplies
+the current allocator context while forcing cache misses to exercise every
+allocation/import failure stage.
+
 `test_vk_copy_back` exercises protected guest memory with the real dirty-page tracker: preserving independent CPU writes in the same cache line, successive submissions and snapshot initialization, cached/uncached and untracked pools, 200 partial/unaligned/overlapping range cases, and writes from another CPU thread. It also injects failed and partially successful bulk `mprotect` calls; a bulk unprotect failure stops the host with a `[RED]` message before publishing writable page states or continuing the copy. It also checks snapshot copy volume across clean and dirty 64 KB blocks, a partial tail, and full versus partial completion merges. These CPU tests do not establish correct rendering on a device.
 
 `test_vk_memory_diagnostics` also checks per-buffer cached-memory compatibility, restricted memory-type masks, diagnostics disabled, and unchanged coherent memory selection. The candidate lookup is diagnostic; cached allocation requires the separate opt-in switch. `test_vk_cached_pools` injects creation, allocation, mapping and binding failures and verifies cleanup, coherent fallback, unsupported types, missing cache functions, default-off behaviour, device-loss handling and rejecting failed/timed-out GPU waits before readback. `test_vk_copy_back` also models separate CPU-cache/device bytes to check flush before GPU use, invalidate before merging, independent CPU writes, partial merges, clean submissions and fatal cache-maintenance errors. Cache-range tests check 5,000 generated ranges for both flush and invalidate, plus explicit boundary/overflow cases and multiple cache-atom sizes. Native readback tests cover empty/non-intersecting transfers, unaligned disjoint writes with independent CPU changes in the same atom, clipping at both pool ends, subsequent uploads/baselines, and full invalidation for uncertain writers. These mocks do not emulate an actual GPU driver.
@@ -226,3 +260,19 @@ requires successful writes and synchronization; failed or incomplete snapshots a
 pending legacy migrations remain eligible for retry. `DM_VK_NOPCACHE` still means
 start empty, while allowing newly built pipelines to be saved. Bump `PCACHE_ABI`
 when changing the renderer's persistent cache contract.
+
+## Optional native keyboard
+
+`python -m porter port <folder> --native-keyboard` packages `org.nx2a.GameActivity` and its Unicode EditText dialog. Combine it with `--external-display` to select `org.nx2a.KeyboardExternalActivity`; external display alone keeps its controller keyboard. These opt-in activities require JDK `javac` plus SDK platform and build-tools; ordinary NativeActivity builds remain code-less and keep the controller keyboard. Installation and save requests resolve the installed package's launcher activity, including ports built before this option existed.
+
+JNI passes ordinary UTF-8 byte arrays, which preserve supplementary characters. The guest's minimum and maximum lengths are UTF-16 units, and native output truncation preserves complete UTF-8 code points. The guest passes its request-local minimum length to a host pthread and joins it. That worker attaches to the VM, looks up and calls the Java method, and detaches on its own pthread stack. The bridge caches method presence or absence for the activity class. When the optional method is absent, the guest uses the overlay keyboard after the worker exits.
+
+Cancel, pause and destruction release waiting callers without accepting text. Requests are serialized, and a concurrent request is cancelled with a log line. The native dialog takes activity window focus, so the regular Android window-focus callback reports the transition to the guest. The bridge supports text entry. Additional guest keyboard modes and candidate/update callbacks are outside its scope.
+
+Run the asset-free emulator contract probe with:
+
+```sh
+python tests/android/keyboard_smoke.py --sdk "$ANDROID_HOME" --ndk "$ANDROID_NDK_HOME" --serial emulator-5554 --out /tmp/nx2a-keyboard
+```
+
+It builds through the production Java/dex packager, uses the real guest keyboard conversion and JNI bridge, and checks Unicode/UTF-16 output, minimum length, cancel, background/resume, repeated requests and bounded UTF-8 output. Add `--without-java` to verify the default APK's fallback. The probe installs only `org.nx2a.keyboardtest` and uninstalls it afterward; run it on a dedicated emulator. No game dump is needed. This probe does not qualify the combined external-display keyboard or physical-device gameplay.

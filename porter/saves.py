@@ -56,7 +56,10 @@ def _request(adb, package, file, lines, timeout=60):
     adb.shell(f'am force-stop {package}')
     body = '\n'.join([*lines, f'request={token}', 'quit']) + '\n'
     adb.shell(f'mkdir -p {shlex.quote(root)} && printf %s {shlex.quote(body)} > {shlex.quote(root + "/" + file)}')
-    adb.shell(f'am start -W -n {package}/android.app.NativeActivity >/dev/null 2>&1; true', timeout=60)
+    try: adb.start_app(package)
+    except AdbError:
+        adb.shell(f'rm -f {shlex.quote(root + "/" + file)}', check=False)
+        raise
     t0 = time.time()
     while time.time() - t0 < timeout:
         kv = dict(ln.split('=', 1) for ln in adb.shell(f'cat {shlex.quote(root + "/result.txt")} 2>/dev/null; true', check=False).splitlines() if '=' in ln)
