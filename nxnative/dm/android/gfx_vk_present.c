@@ -1035,12 +1035,9 @@ uint64_t mtl_present(const tex_t *t, double period, const int crop[4]) {
         VKLOG("replay per frame (last 600): %.0f draws, replay %.2f ms (descriptor sets %.2f, pipeline keys %.2f), queue submit %.2f ms, uniform shadows %.0f KB; GPU busy %.2f ms; texture uploads %.1f (%.2f MB, %.2f ms); descriptor sets reused %llu, new %llu (collecting %.2f ms, hashing %.2f, new ones %.2f), kept per stage %.0f a frame (memo differences %llu)",
               nd, (g_vkst.ns_exec - pe) / 6e8, (g_vkst.ns_desc - pd) / 6e8, (g_vkst.ns_pipe - pp) / 6e8, (g_ns_submit - ps) / 6e8, (g_ubd_bytes - pb) / 600.0 / 1024, (g_gpu_ns - pg) / 6e8, (g_pkg_n - pkn) / 600.0, (g_pkg_bytes - pkb) / 600.0 / 1048576, (g_pkg_ns - pkt) / 6e8, (unsigned long long)g_set_hits, (unsigned long long)g_set_new, (g_ns_set_build - psb) / 6e8, (g_ns_set_hash - psh) / 6e8, (g_ns_set_new - psn) / 6e8,
               (g_set_memo - psm) / 600.0, (unsigned long long)g_set_memo_bad);
-        { extern uint64_t g_memo_pipe[2], g_memo_layout[2], g_memo_stage[3], g_memo_reject[7];
-          VKLOG("replay memo cumulative: pipeline hits/misses %llu/%llu, layout hits/misses %llu/%llu, stage hits %llu/%llu/%llu; rejected ineligible/epoch/shader/binding/texture-sampler-pool/base-instance/cbuf %llu/%llu/%llu/%llu/%llu/%llu/%llu",
-                (unsigned long long)g_memo_pipe[0], (unsigned long long)g_memo_pipe[1], (unsigned long long)g_memo_layout[0], (unsigned long long)g_memo_layout[1],
-                (unsigned long long)g_memo_stage[0], (unsigned long long)g_memo_stage[1], (unsigned long long)g_memo_stage[2],
-                (unsigned long long)g_memo_reject[0], (unsigned long long)g_memo_reject[1], (unsigned long long)g_memo_reject[2], (unsigned long long)g_memo_reject[3],
-                (unsigned long long)g_memo_reject[4], (unsigned long long)g_memo_reject[5], (unsigned long long)g_memo_reject[6]); }
+        { extern uint64_t g_order_kept, g_order_ended; static uint64_t pk, pn;   // gfx_vk_exec.c g_order_keep
+          if (g_order_kept + g_order_ended > pk + pn) VKLOG("order-only barriers per frame (last 600): %.1f kept inside their pass, %.1f ended it", (g_order_kept - pk) / 600.0, (g_order_ended - pn) / 600.0);
+          pk = g_order_kept; pn = g_order_ended; }
         void vk_pass_report(void); vk_pass_report();
         pe = g_vkst.ns_exec; pd = g_vkst.ns_desc; pp = g_vkst.ns_pipe; ps = g_ns_submit; pb = g_ubd_bytes; pdr = g_vkst.draws; pg = g_gpu_ns; pkn = g_pkg_n; pkb = g_pkg_bytes; pkt = g_pkg_ns; psb = g_ns_set_build; psh = g_ns_set_hash; psn = g_ns_set_new; psm = g_set_memo;
     }
