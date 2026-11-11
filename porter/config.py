@@ -13,7 +13,10 @@ KEYS = {
     'out': 'folder for the APK and data pack (empty = the game folder)',
     'device': 'adb serial of the device to install on (empty = the only one connected)',
     'language': 'game language code (empty = English)',
-    'hide_touch_controls': 'yes: never show the on-screen gamepad while a controller is attached (a handheld\'s own controls count from the start); empty: shown until a controller is used',
+    'hide_touch_controls': ('yes: never show the on-screen gamepad while a controller is attached (a handheld\'s own controls count from the start); empty or no: shown until a '
+                            'controller is used. With yes, a phone that keeps a system device attached that says it is a gamepad (Xiaomi / Redmi, #22, #210) shows no gamepad '
+                            'and no menu button, the pause menu\'s Show gamepad row cannot bring them back, and only the Back gesture opens the menu. Written into the data '
+                            'pack\'s env.txt at port time, so it applies to games ported after it is set; for an installed game, add or remove DM_PAD_ATTACHED=hide in its env.txt'),
 }
 
 
