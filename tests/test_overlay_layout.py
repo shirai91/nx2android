@@ -125,7 +125,8 @@ int main(void) {
     def test_grown_controls_do_not_overlap(self):
         """On a small screen the controls grow so a face button stays 10 mm wide (front_android.c dm_overlay_scale). Each side grows out from its bottom
         corner and no further than fits (overlay_layout.h ov_box, ov_fit_scale): no two controls overlap and none leaves the window. Grown around their
-        own centres, the Odin 3's 1920x1080 at x1.45 made eleven pairs overlap and pushed ZL, ZR and the menu button off the screen"""
+        own centres, the Odin 3's 1920x1080 at x1.45 made eleven pairs overlap and pushed ZL, ZR and the menu button off the screen. The top strip (the
+        menu button and the frame rate counter) stays clear"""
         cc = shutil.which('cc') or shutil.which('clang')
         if not cc:
             self.skipTest('a C compiler is needed for the layout geometry check')
@@ -153,11 +154,14 @@ int main(void) {
             if (!(b[i][0] - b[i][2] >= -0.5f && b[i][0] + b[i][2] <= W + 0.5f && b[i][1] - b[i][3] >= -0.5f && b[i][1] + b[i][3] <= H + 0.5f)) {
                 fprintf(stderr, "%gx%g x%.2f: %s leaves the window\n", W, H, g_s, L[i].name); return 1; }
         }
+        float strip = 0; for (int i = 0; i < OV_N; i++) if (L[i].kind == OV_MENU) strip = b[i][1] + b[i][3];   // the top strip: the menu button and the frame rate counter
+        for (int i = 0; i < OV_N; i++) if (L[i].kind != OV_MENU && b[i][1] - b[i][3] < strip - 0.5f && g_s > 1) {
+            fprintf(stderr, "%gx%g x%.2f: %s reaches into the top strip\n", W, H, g_s, L[i].name); return 1; }
         for (int i = 0; i < OV_N; i++) for (int j = i + 1; j < OV_N; j++) if (gap(&L[i], b[i], &L[j], b[j]) < 0) {
             fprintf(stderr, "%gx%g x%.2f: %s and %s overlap by %.0f px\n", W, H, g_s, L[i].name, L[j].name, -gap(&L[i], b[i], &L[j], b[j])); return 1; }
     }
     g_s = ov_fit_scale(OV_LAYOUTS[0], 1920, 1080, 1.45f);   // the Odin 3 still gets bigger controls, only not as far as x1.45
-    assert(g_s > 1.25f && g_s < 1.45f);
+    assert(g_s > 1.15f && g_s < 1.45f);
     return 0;
 }
 """

@@ -49,14 +49,16 @@ static inline void ov_box(const ov_ctl *c, float W, float H, float b[4]) {   // 
     else { b[0] = c->ax * W + c->x * H * s; b[1] = H - (1 - c->y) * H * s; }
     b[2] = c->w * H * s * cs / 2; b[3] = c->h * H * s * cs / 2;
 }
-// the largest scale up to s (and at least 1) at which every side control of layout L, grown out from its bottom corner (ov_box), stays inside a W x H
-// window and inside its half of the width, so the two sides never meet
+// the largest scale up to s (and at least 1) at which every side control of layout L, grown out from its bottom corner (ov_box), stays inside its half
+// of a W x H window's width (the two sides never meet) and below the top strip: down to the menu button's bottom edge, grown as it grows, where the
+// frame rate counter also sits (on the Odin 3, x1.30 put - under the counter in the top left corner)
 static inline float ov_fit_scale(const ov_ctl *L, float W, float H, float s) {
     if (W <= 0 || H <= 0) return s;
+    float top = 0; for (int i = 0; i < OV_N; i++) if (L[i].ax == 0.5f) top = fmaxf(top, L[i].y + L[i].h / 2);
     for (int i = 0; i < OV_N; i++) {
         const ov_ctl *c = &L[i]; if (c->ax == 0.5f) continue;
         float up = 1 - c->y + c->h / 2, out = fabsf(c->x) + c->w / 2;
-        if (up > 0) s = fminf(s, 1 / up);
+        if (up + top > 0) s = fminf(s, 1 / (up + top));
         if (out > 0) s = fminf(s, W / H / 2 / out);
     }
     return fmaxf(s, 1);
