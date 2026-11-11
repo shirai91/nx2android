@@ -10,6 +10,11 @@ Install [Python](https://www.python.org) 3.11 or later and `python -m pip instal
 - Android [platform-tools](https://developer.android.com/tools/releases/platform-tools) (adb), to install from the tool
 - your own `prod.keys`, dumped from your Switch
 
+On arm64 Linux the NDK has x86_64 host tools only. `dm/android/build.py` then uses `<NDK>/toolchains/llvm/prebuilt/linux-aarch64/bin` instead. Make that folder yourself:
+- link `sysroot` beside `bin` to `../linux-x86_64/sysroot`;
+- put in `bin` a wrapper `clang` (and `clang++`) running an arm64 LLVM 18 build with `--sysroot` set to that `sysroot`;
+- link `ld.lld` and the `llvm-*` tools to the same LLVM.
+
 ## Port a game
 
 The app:
