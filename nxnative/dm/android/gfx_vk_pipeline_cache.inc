@@ -149,7 +149,8 @@ void vk_pipeline_cache_save(void) {
     file=fdopen(fd,"wb");if (!file) { close(fd);goto done; }
     int ok=fwrite(&header,1,sizeof header,file)==sizeof header && fwrite(data,1,bytes,file)==bytes;
     if (ok) ok=fflush(file)==0 && fsync(fileno(file))==0;
-    if (fclose(file)) ok=0;file=NULL;
+    if (fclose(file)) ok=0;
+    file=NULL;
     if (ok && !rename(temporary,g_pcache_path)) {
         temporary[0]=0;g_pcache_saved=generation;g_pcache_bytes=bytes;
         memcpy(g_pcache_digest,header.digest,sizeof header.digest);g_pcache_digest_valid=1;g_pcache_migrate=0;
