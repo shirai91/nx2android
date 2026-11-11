@@ -1,11 +1,12 @@
 # Installing a port on a device over adb: the APK, then the data pack into the app's files folder (porter/adb.py pushes it in resumable pieces).
-# The player's own files there are kept: the pause menu's settings.txt, the logs, the Vulkan pipeline caches; saves are in the app's internal storage, which an update keeps.
+# The player's own files there are kept: the pause menu's settings.txt, the env.txt rows no pack defines (an install merges them in, merge_env), the logs, the Vulkan
+# pipeline caches; saves are in the app's internal storage, which an update keeps.
 # --romfs-at <folder>: the app reads the game's RomFS from a folder already on the device (a game dump an emulator also reads, a folder on the SD card) instead of a copy in
 # its files folder, which saves that copy's 7 to 18 GB. The folder must hold exactly the pack's RomFS, names and sizes and a sample's content (--romfs-push puts it there), the app gets All files
 # access over adb, and the installer writes DM_ROMFS=<folder> into the device's env.txt under ROMFS_MARK. The pack's env.txt is the same on every device, and the folder is
 # a fact of one device, so the row is the installer's, not the pack's: a later install without --romfs-at carries it over from the device's env.txt (and checks the folder
 # again), and --romfs-at app moves the RomFS back into the files folder. The DLC (aoc/) stays in the files folder: small for most games, and laid out by the port.
-import hashlib, posixpath, re, shlex, tempfile, zipfile
+import hashlib, json, posixpath, re, shlex, tempfile, zipfile
 from pathlib import Path
 
 from porter import datapack
@@ -44,6 +45,37 @@ def device_romfs(env_text):   # the folder an earlier --romfs-at install wrote i
 
 def env_with_romfs(pack_env, folder):   # the pack's env.txt with the installer's row last: the app applies the rows in order (front_android.c env_file), so it wins
     return pack_env.rstrip('\n') + f'\n{ROMFS_MARK}: the game\'s RomFS is read from this folder (later installs keep it; --romfs-at app moves it into the files folder)\nDM_ROMFS={folder}\n'
+
+
+def manifest_env_keys(manifest_text):   # the env.txt keys the pack already on the device defined (its nx2a-data.json's env_keys, datapack.build), () when unknown (no manifest there, not JSON, no list)
+    try: m = json.loads(manifest_text)
+    except ValueError: return ()
+    keys = m.get('env_keys') if isinstance(m, dict) else None
+    return [k for k in keys if isinstance(k, str)] if isinstance(keys, list) else ()
+
+
+def merge_env(pack_env, device_env, romfs=None, prev_pack_keys=()):
+    """The pack's env.txt merged with the device's, which an install writes in its place (the pack's own env.txt is not changed): the pack's rows win for the keys they
+    define (the app applies the rows in order, the last wins), and the device's rows for keys the pack does not define are kept verbatim after them, in their order, comments
+    and blank lines too (one the pack already has is not kept twice, so a reinstall changes nothing). prev_pack_keys: the keys the pack previously on the device defined
+    (the manifest's env_keys) — a device row with one of those keys that this pack no longer defines was the pack's, not the player's (a diagnostic switch since removed), and
+    is dropped; () when unknown (no manifest on the device, or one from before env_keys): every row the pack does not define is then kept, as before. A DM_ROMFS row is
+    dropped only when it is the installer's own (the line before it is ROMFS_MARK) or when a new one replaces it (romfs: appended last; None: none, --romfs-at app) — a
+    hand-written one is the player's and is kept"""
+    pack_lines = pack_env.splitlines()
+    keys = {k for ln in pack_lines if (k := datapack.env_key(ln)) is not None}
+    have = set(pack_lines)
+    prev_keys = set(prev_pack_keys)
+    kept, prev = [], ''
+    for ln in device_env.splitlines():
+        k = datapack.env_key(ln)
+        drop = ln.startswith(ROMFS_MARK)   # the installer's comment goes with its row
+        if k is not None and (k in keys or k in prev_keys or (k == 'DM_ROMFS' and (prev.startswith(ROMFS_MARK) or romfs is not None))): drop = True
+        elif k is None and ln in have: drop = True   # a comment or blank line the pack already has
+        if not drop: kept.append(ln)
+        prev = ln
+    out = pack_env.rstrip('\n') + '\n' + ('\n'.join(kept) + '\n' if kept else '')
+    return env_with_romfs(out, romfs) if romfs else out
 
 
 def romfs_diff(want, have):   # want, have: {path in the RomFS: size} → (missing, of another size, not the game's), each sorted
@@ -110,6 +142,8 @@ def install(apk, data, adb_exe, serial=None, replace_signer=False, romfs_at=None
             if bc is False: raise BuildError(f'{man["name"]} needs BC-compressed textures, which this device\'s GPU ({adb.gpu()}) cannot read')
             if bc is None: say(f'[RED] {man["name"]} needs BC-compressed textures; whether this GPU ({adb.gpu() or "unknown"}) reads them is not known')
         was = device_romfs(adb.read_text(f'{files}/env.txt'))   # an earlier --romfs-at install's folder
+        prev_keys = manifest_env_keys(adb.read_text(f'{files}/{datapack.MANIFEST}'))   # the pack already on the device: which env rows were its, not the player's. Read before the APK goes in:
+        # --replace-signer uninstalls the app first, and Android deletes the files folder with it (the device's manifest is pushed last, so the one there is the previous pack's)
         if romfs_at is None and was:
             target = romfs_target(was, files)
             if target: say(f'the app reads its RomFS from {target} (an earlier install\'s --romfs-at; --romfs-at app moves it into its files folder)')
@@ -162,7 +196,7 @@ def install(apk, data, adb_exe, serial=None, replace_signer=False, romfs_at=None
             say(f'{state}: the app reads its RomFS from {target}')
         PROG.set(step='pushing the game data', done=0, total=man['bytes'] - sum(rom.values()), unit='B'); pushing = True
         have = adb.remote_sizes(files)   # again: an install with --replace-signer uninstalls first, and Android deletes the files folder with the app
-        adb.push_tree(data, files, keep=datapack.KEEP_ON_DEVICE, skip=(datapack.MANIFEST,) + (('env.txt',) if target else ()), exclude=(datapack.ROMFS,) if target else (),
+        adb.push_tree(data, files, keep=datapack.KEEP_ON_DEVICE, skip=(datapack.MANIFEST, datapack.ENV), exclude=(datapack.ROMFS,) if target else (),
                       verify=lambda rel: rel.split('/', 1)[0] not in ('RomFS', 'aoc'),   # the game's own files change only with their version
                       progress=lambda d, t, note: PROG.set(done=d, total=t, note=note), have=have)
         if target and (missing or other or changed):   # --romfs-push: the pack's RomFS into the folder (changed: pushed again when their MD5 differs), then the folder checked again
@@ -171,11 +205,13 @@ def install(apk, data, adb_exe, serial=None, replace_signer=False, romfs_at=None
             adb.push_tree(data / datapack.ROMFS, target, verify=lambda rel: rel in again, progress=lambda d, t, note: PROG.set(done=d, total=t, note=note), have=there)
             now = adb.remote_sizes(target)
             if bad := romfs_mismatch(target, rom, now, changed=romfs_changed(adb, data, target, rom, now) or []): raise BuildError(f'after the push, {bad}')
-        if target:   # the pack's env.txt with the installer's row
-            with tempfile.TemporaryDirectory(prefix='nx2a_env_') as t:
-                env = Path(t) / 'env.txt'; env.write_text(env_with_romfs((data / 'env.txt').read_text(encoding='utf-8'), target), encoding='utf-8', newline='\n')
-                adb.push_file(env, f'{files}/env.txt')
-        elif was and romfs_at == APP: say(f'the app reads its RomFS from its files folder again; {was} is left as it is')
+        # env.txt goes on its own, merged with the device's (merge_env): the pack's rows win for their keys, the player's rows for the others are kept, never replaced whole.
+        # Read again here: an install with --replace-signer uninstalled the app first, and Android deleted the files folder with it
+        with tempfile.TemporaryDirectory(prefix='nx2a_env_') as t:
+            env = Path(t) / datapack.ENV
+            env.write_text(merge_env((data / datapack.ENV).read_text(encoding='utf-8'), adb.read_text(f'{files}/{datapack.ENV}'), target, prev_keys), encoding='utf-8', newline='\n')
+            adb.push_file(env, f'{files}/{datapack.ENV}')
+        if not target and was and romfs_at == APP: say(f'the app reads its RomFS from its files folder again; {was} is left as it is')
         stale = [rel for rel in have if rel.split('/', 1)[0] in datapack.OWNED and not (target and rel.startswith(datapack.ROMFS + '/')) and not (data / rel).is_file()]   # the push only adds the pack's own files, which are never stale
         if stale:   # an older version's files, which the game would still find
             PROG.set(step=f'removing {len(stale):,} stale files')
