@@ -139,7 +139,9 @@ static void tu_ubwc_hint(void) {
     if (getenv("FD_DEV_FEATURES")) return;
     FILE *gm = fopen("/sys/class/kgsl/kgsl-3d0/gpu_model", "r"); char model[64] = "";
     if (gm) { if (!fgets(model, sizeof model, gm)) model[0] = 0; fclose(gm); }
+    model[strcspn(model, "\r\n")] = 0;
     if (model[0] && !strstr(model, "740")) return;
+    VKLOG("Turnip's UBWC hint: GPU model %s%s", model[0] ? model : "unknown", model[0] ? " from /sys/class/kgsl, asking Qualcomm's driver for its version" : " (/sys/class/kgsl not readable), asking Qualcomm's driver");
     void *sys = dlopen("libvulkan.so", RTLD_NOW | RTLD_LOCAL); if (!sys) return;
     PFN_vkGetInstanceProcAddr g = (PFN_vkGetInstanceProcAddr)dlsym(sys, "vkGetInstanceProcAddr"); if (!g) return;
     PFN_vkCreateInstance ci = (PFN_vkCreateInstance)g(NULL, "vkCreateInstance"); VkInstance in;

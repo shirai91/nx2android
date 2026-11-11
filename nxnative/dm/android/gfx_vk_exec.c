@@ -2273,7 +2273,7 @@ static void copy_t2t_(const p_copy_t2t *c);
 static int cpu_maps(const tex_t *t) { const vkpool_t *p = t && t->mem ? vk_pool_of((uint64_t)(uintptr_t)t->mem, 1) : NULL; return p && !(p->flags & NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS); }
 static void copy_t2t(const p_copy_t2t *c) {
     copy_t2t_(c);
-    if (g_lin_back && !(c->flags & DM_COPY_RESOLVE) && c->dst && (c->dst->d.flags & NVN_TEXTURE_FLAGS_LINEAR) && cpu_maps(c->dst))
+    if (g_lin_back && !(c->flags & DM_COPY_RESOLVE) && c->dst && cpu_maps(c->dst))
         lin_back_one(vk_tex(c->dst), c->dst, NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET);
 }
 static void copy_t2t_(const p_copy_t2t *c) {
