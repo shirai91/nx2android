@@ -174,6 +174,16 @@ class Adb:
         if re.search(r'(?im)^(?:Error|Exception)', out):
             raise AdbError(f'{package}: could not start its launcher activity: {out.strip()}')
 
+    def hold(self, folder):
+        """One porter install per device at a time (two at once on one device uninstalled each other's app, and Android deleted the data and the saves with it): a lock
+        file per serial in folder, held until the returned file is closed; AdbError when another install has it. No lock where the system has no flock (Windows)"""
+        try: import fcntl
+        except ImportError: return None
+        f = open(Path(folder) / ('install-' + re.sub(r'[^A-Za-z0-9._-]', '_', self.serial or 'device') + '.lock'), 'w')
+        try: fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as e: f.close(); raise AdbError(f'another porter install is using {self.serial or "the device"}: wait for it to end') from e
+        return f
+
     def prepare_app_files(self, package, timeout=30):
         """Have Android create the app's files folder (/sdcard/Android/data/<package>/files) before anything is pushed into it: the system makes it, owned by the app with
         the app's group, when the app first asks for it. A folder the shell makes first lacks that group underneath FUSE, and the app cannot read what is pushed below it

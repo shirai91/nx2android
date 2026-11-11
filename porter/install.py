@@ -8,7 +8,7 @@
 import hashlib, posixpath, re, shlex, tempfile, zipfile
 from pathlib import Path
 
-from porter import datapack
+from porter import datapack, paths
 from porter.adb import Adb, AdbError, long_path
 from porter.upstream import BuildError, PROG, say
 
@@ -102,7 +102,7 @@ def install(apk, data, adb_exe, serial=None, replace_signer=False, romfs_at=None
     PROG.stage('install', step='finding the device')
     pushing = False
     try:
-        dev = adb.pick()
+        dev = adb.pick(); lock = adb.hold(paths.user_dir())   # (lock: released when this returns)
         model = adb.prop('ro.product.model')
         say(f'device: {model or dev} ({dev}), GPU {adb.gpu() or "unknown"}')
         if 'bcn' in man.get('requires', []):   # the profile's requires: BC-compressed textures

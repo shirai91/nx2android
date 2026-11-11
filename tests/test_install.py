@@ -25,6 +25,7 @@ class Device(Adb):
         self.fs, self.text, self.sdk_, self.access, self.grants, self.free, self.ops = dict(files), dict(text or {}), sdk, access, grants, free, []
         self.md5, self.installed_, self.requests = md5 if md5 is not None else {}, installed, requests
     def pick(self): return 'dev'
+    def hold(self, folder): return None
     def prop(self, name): return str(self.sdk_) if name == 'ro.build.version.sdk' else 'Test'
     def gpu(self): return 'Qualcomm, Adreno (TM) 830'
     def free_bytes(self, path='/sdcard'): return self.free
