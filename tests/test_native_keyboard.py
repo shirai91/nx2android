@@ -34,15 +34,15 @@ class NativeKeyboard(unittest.TestCase):
 
     def test_external_display_without_keyboard_keeps_native_activity(self):
         source = pipeline.DM / 'android/java/org/nx2a/ExternalActivity.java'
-        self.assertIn('extends NativeActivity', source.read_text())
-        self.assertNotIn('readKeyboard(', source.read_text())
+        self.assertIn('extends NativeActivity', source.read_text(encoding='utf-8'))
+        self.assertNotIn('readKeyboard(', source.read_text(encoding='utf-8'))
 
 
 class NativeKeyboardBridge(unittest.TestCase):
     @unittest.skipUnless(host_cc.posix(), 'a POSIX host C compiler is required (<sys/mman.h>, pthread, setenv)')
     def test_keyboard_jni_runs_off_guest_caller(self):
         root = Path(__file__).resolve().parents[1]
-        front = (pipeline.DM / 'android/front_android.c').read_text()
+        front = (pipeline.DM / 'android/front_android.c').read_text(encoding='utf-8')
         start = front.index('int front_text_input(')
         dispatch = front[start:front.index('\n}\n', start) + 3]
         touch_state = next(line for line in front.splitlines() if ' g_touch_btn;' in line)

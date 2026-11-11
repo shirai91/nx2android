@@ -17,7 +17,7 @@ class OverlayVisibility(unittest.TestCase):
         cc = shutil.which('cc') or shutil.which('clang')
         if not cc:
             raise unittest.SkipTest('a C compiler is needed for the overlay check')
-        front = (ROOT / 'nxnative/dm/android/front_android.c').read_text()
+        front = (ROOT / 'nxnative/dm/android/front_android.c').read_text(encoding='utf-8')
         pad = front[front.index('static int32_t axis('):front.index('// ---- the on-screen gamepad')]
         visible = front[front.index('int dm_overlay_visible(void)'):front.index('int dm_overlay_layout(void)')]
         hit = front[front.index('static int ctl_at('):front.index('// dragging the menu button:')]
