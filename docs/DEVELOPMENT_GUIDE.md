@@ -56,6 +56,16 @@ python -m porter driver --system --package org.nx2a.supermario3dworld
 
 `--system` goes back to the device's own driver. How it works: [ARCHITECTURE.md](ARCHITECTURE.md#the-port).
 
+### Host update
+
+`porter host` brings a port on the device to this checkout's host (the runtime: Vulkan backend, front end, Horizon services), also without the game's files: its `libdmhost.so` is built again from the profile (a few seconds) and installed over the app (the saves stay):
+
+```
+python -m porter host --package org.nx2a.supermario3dworld
+```
+
+It refuses when the game's code on the device was rewritten with other rewriter sources than this checkout's; then port the game again from its files. The data pack is not changed. How it works: [ARCHITECTURE.md](ARCHITECTURE.md#the-port).
+
 ## Layout
 
 - `porter/`: the port pipeline (`python -m porter`).
@@ -147,6 +157,40 @@ Scratch references are reusable only in their submission; recycling waits for
 completion before the next epoch. GPU-written segments must remain outside this
 immutable cache. Full descriptor-set key
 equality is separate; these tests do not measure device performance.
+
+Shader and translator reuse checks content receipts with relative output names,
+sizes and SHA-256 hashes, including translator dependencies. The bundle takes
+the fast path when size and modification time match on Windows. POSIX also
+checks change time and file identity. Changed metadata falls back to hashing,
+and matching contents refresh the recorded metadata. The Windows fast path can
+miss a same-size edit that preserves the original modification time.
+The shader key includes the translator's actual output bytes and the export helpers
+`shader_vk.py`, `dmsv.py` and `shader_products.py`; unrelated Android tools do not
+invalidate it. Inputs changing during generation stop publication. The changed key
+and receipt format make existing ports translate once before reuse resumes.
+
+The exporter records every expected shader (including geometry topology variants)
+and failed key/reason in `shaders.dmsv.report.json`. It checks SPIR-V framing and
+entry-point stage and requires reflection beside each emitted module. Valid
+products from an interrupted batch are kept. Missing or invalid outputs get a
+`[RED]` diagnostic. Before retrying integer vertex inputs, the exporter removes
+the first pass's outputs to prevent reuse of an incompatible input interface.
+`dmsv.write` reads each payload back and the runtime checks framing and reflection.
+The porter compares the emitted keys and stages with the expected and failed
+inventory and rejects an empty result before publishing the bundle, report or
+receipt. An export with at least one valid shader can be reused with unchanged
+inputs and products. The receipt records the failure count and the published
+report's digest. A missing or changed report or changed input triggers a rebuild.
+`test_shader_cache` and `test_shader_export_checks` exercise these contracts without
+game files or a GPU.
+
+Native harnesses discover Vulkan headers through `ANDROID_NDK_HOME` (or the
+porter tool installation). Set it to an installed NDK when the SDK is outside the
+usual locations. The POSIX probe uses mutexes and condition variables supported on
+macOS and Linux. Protected-page tests handle both SIGSEGV and macOS SIGBUS and
+keep their concurrent CPU writer checks; the zero-copy failure fixture supplies
+the current allocator context while forcing cache misses to exercise every
+allocation/import failure stage.
 
 `test_vk_copy_back` exercises protected guest memory with the real dirty-page tracker: preserving independent CPU writes in the same cache line, successive submissions and snapshot initialization, cached/uncached and untracked pools, 200 partial/unaligned/overlapping range cases, and writes from another CPU thread. It also injects failed and partially successful bulk `mprotect` calls; a bulk unprotect failure stops the host with a `[RED]` message before publishing writable page states or continuing the copy. It also checks snapshot copy volume across clean and dirty 64 KB blocks, a partial tail, and full versus partial completion merges. These CPU tests do not establish correct rendering on a device.
 

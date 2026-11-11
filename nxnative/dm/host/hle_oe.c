@@ -52,6 +52,7 @@ void dm_set_opmode(int m) {   // called by the front end (overheat downgrade etc
     int old = dm_opmode(); if (old == m) return;
     g_opmode = m;
     LOG("oe operation mode %d → %d", old, m);
+    dm_hid_opmode_changed();   // player 1's controller moves between the Handheld and No1 npads (hle_hid.c)
     if (g_ntf_opmode) mq_push(MSG_OPMODE);
     if (g_ntf_perfmode) mq_push(MSG_PERFMODE);
 }

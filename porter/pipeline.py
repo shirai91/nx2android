@@ -3,11 +3,11 @@
 # the rewrite for DM_TARGET=android, the Vulkan shader bundle, the host built with the player's NDK, the APK, the data pack and the install.
 # Work files go where upstream's NSP script puts them, <game folder>/<title ID>_build/ (extract/, aoc/, shader/, logs/ are shared with an iOS build of the same folder),
 # with the Android ones in its android/ folder.
-import importlib.util, os, re, shutil, sys
+import hashlib, importlib.util, json, os, re, shutil, sys, traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from porter import config, datapack, dumps, fpslocker, install, paths, profiles, toolchain
+from porter import config, datapack, dumps, fpslocker, install, paths, profiles, product_cache, toolchain
 from porter.adb import NO_ADB, Adb, AdbError
 from porter.paths import DM, NXNATIVE
 from porter.upstream import BuildError, PROG, android_profile, game, nacp, nsp, profile_guess, say, trinity, uepak
@@ -15,6 +15,11 @@ from porter.upstream import BuildError, PROG, android_profile, game, nacp, nsp, 
 PY = sys.executable
 # The overlay's font (Port.ui_font)
 UI_FONT = DM / 'third_party/fusion-pixel-font/fusion-pixel-12px-proportional-zh_tw.nxpf'
+
+
+def ui_font_assets():   # {name under assets/: file}: the overlay's font and its license files (Port.ui_font; porter host puts them in an APK ported before them)
+    d = UI_FONT.parent
+    return {'font/ui.bin': UI_FONT, **{f'font/{f.relative_to(d).as_posix()}': f for f in sorted(p for p in d.rglob('*.txt'))}}
 # The letters of the button-icon font (make_ext_font.py knocks them out of the icons): a bold system font of the machine that ports, never shipped in the repository
 LETTER_FONTS = [f'{os.environ.get("WINDIR", "C:/Windows")}/Fonts/{f}' for f in ('ARLRDBD.TTF', 'arialbd.ttf')] + [
     '/System/Library/Fonts/Supplemental/Arial Rounded Bold.ttf', '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf', '/usr/share/fonts/TTF/DejaVuSans-Bold.ttf']
@@ -176,6 +181,19 @@ class Port:
 
     # ---- the whole port ----
     def run(self):
+        try: return self._run()
+        except (BuildError, KeyboardInterrupt): raise
+        except Exception:   # a bug: the whole traceback goes into the build folder's logs, which a bug report zips (the GUI shows only its last line; issue #161 had just "KeyError: 6")
+            work = getattr(self, 'work', None)
+            if work:
+                try:
+                    (work / 'logs').mkdir(parents=True, exist_ok=True)
+                    (work / 'logs' / 'crash.log').write_text(traceback.format_exc(), encoding='utf-8')
+                    say(f'[RED] porter stopped on an error it does not expect; the traceback is in {work / "logs" / "crash.log"} (add it to a bug report)')
+                except OSError: pass
+            raise
+
+    def _run(self):
         o = self.o
         o.folder = Path(o.folder).expanduser().resolve()
         if not o.folder.is_dir(): raise BuildError(f'not a folder: {o.folder}')
@@ -281,7 +299,9 @@ class Port:
         A game brought up this way gets its profile into dm/games by hand (docs/ARCHITECTURE.md "Adding a game")"""
         pdir = self.work / 'profile'; d = pdir / tid
         if g is None:
-            if (d / 'game.tsv').is_file(): say(f'no game profile for {tid}: reusing the provisional profile from the last run ({d}; delete it to survey again)')
+            if (d / 'game.tsv').is_file():
+                nsp.require_64bit(self.o.folder / f'{tid}_survey/extract/ExeFS', f'{tid}')   # a provisional profile an older porter wrote for a 32-bit game (issue #161)
+                say(f'no game profile for {tid}: reusing the provisional profile from the last run ({d}; delete it to survey again)')
             else:
                 ups = [p for _, p in sorted(self.fam['updates'], key=lambda u: u[0] or 0)[-1:]]   # the survey reads the base game and the newest update
                 m = self.unpack([self.fam['base'], *ups])
@@ -321,6 +341,7 @@ class Port:
         nx = nsp.build_nx_extract(NXNATIVE, self.work, self.logs, self.env)
         PROG.end()
         self.dirs = {ver: nsp.extract(nx, o.keys, ex, ver, *picks[ver], None, self.logs, g) for ver in self.versions}
+        for d in self.dirs.values(): nsp.require_64bit(d / 'ExeFS', f'{g.get("name", g.id)} ({g.id})')
         bad = [] if self.derived else [f'{v}: {x}' for v in self.versions for x in nsp.build_mismatch(self.dirs[v], v, g)]
         if bad and self.provisional: raise BuildError(f'not the builds the provisional profile registers: {"; ".join(bad)}')
         if bad:
@@ -650,20 +671,36 @@ class Port:
         PROG.stage('Vulkan shaders', step='building the translator')
         xlate, xkey = self.translator()
         PROG.set(step='checking the inputs')
-        key = nsp.fingerprint(nsp.package_key(pkg), ('files', [DM / 'android/tools/shader_vk.py', DM / 'android/tools/dmsv.py'] + nsp.tool_files(NXNATIVE)), ('files', nsp.profile_files(self.g)), xkey,
-                              ('files', sorted(cap.glob('*.bin'))))
-        if self.dmsv.is_file() and (note := nsp.reused(kf, key)) is not None:
+        def input_key():
+            return nsp.fingerprint(nsp.package_key(pkg), ('files', [DM / 'android/tools' / name for name in ('shader_vk.py', 'dmsv.py', 'shader_products.py')] + nsp.tool_files(NXNATIVE)),
+                                   ('files', nsp.profile_files(self.g)), xkey, product_cache.inventory(Path(xlate).parent),
+                                   ('files', sorted(cap.glob('*.bin'))))
+        key = input_key()
+        published_report = Path(str(self.dmsv) + '.report.json')
+        if (note := product_cache.reused(kf, key, self.dmsv, companions=(published_report,))) is not None:
             PROG.end(f'{note}, reused (inputs unchanged)'); return
-        tmp = self.dmsv.with_name('shaders.dmsv.partial'); nsp.rmtree(tmp); nsp.rmtree(kf)
+        tmp = self.dmsv.with_name('shaders.dmsv.partial'); nsp.rmtree(tmp)
+        report = Path(str(tmp) + '.report.json'); nsp.rmtree(report)
         def line(s):
             if m := re.match(r'(translating|compressing) (\d+) shaders', s): PROG.set(step=f'{m.group(1)} {int(m.group(2)):,} shaders')   # compressing: the bundle's SPIR-V (dmsv.py)
-            elif s.startswith('[RED] this Python has no zstd'): say(s)   # the bundle then goes uncompressed: 3.5x the space on the device
-        nsp.run([PY, DM / 'android/tools/shader_vk.py', pkg, tmp, '--jobs', str(self.o.jobs), '--dotnet', self.tools['dotnet'], '--xlate', xlate, '--capture', cap],
+            elif s.startswith('[RED] '): say(s)
+        nsp.run([PY, DM / 'android/tools/shader_vk.py', pkg, tmp, '--jobs', str(self.o.jobs), '--dotnet', self.tools['dotnet'], '--xlate', xlate, '--capture', cap, '--report', report],
                 self.logs / 'android_shaders.log', env=self.env, on_line=line)
-        m = re.search(r'^(\d+) of (\d+) shaders', (self.logs / 'android_shaders.log').read_text(errors='replace'), re.M)
-        if not m or m.group(1) == '0': raise BuildError(f'no shader translated (see {self.logs / "android_shaders.log"})')
-        note = f'{int(m.group(1)):,} of {int(m.group(2)):,} shaders, {tmp.stat().st_size / 2**20:,.0f} MB'
-        nsp.swap_in(tmp, self.dmsv); kf.write_text(f'{key}\n{note}\n')
+        import shader_products
+        try:
+            count, expected, complete = shader_products.check_bundle(tmp, json.loads(report.read_text(encoding='utf-8')))
+            if input_key() != key: raise ValueError('shader inputs changed during export; port again')
+        except (OSError, ValueError, TypeError, KeyError) as e:
+            raise BuildError(f'invalid shader export: {e} (see {self.logs / "android_shaders.log"})') from e
+        if count == 0: raise BuildError(f'no shader translated (see {self.logs / "android_shaders.log"})')
+        note = f'{count:,} of {expected:,} shaders, {tmp.stat().st_size / 2**20:,.0f} MB'
+        # Unsupported shaders are deterministic for these inputs; retain their report on reuse.
+        if not complete:
+            note += f', {expected - count:,} failed (see shaders.dmsv.report.json)'
+            say('[RED] ' + note)
+        nsp.swap_in(tmp, self.dmsv)
+        report.replace(published_report)
+        product_cache.stamp(kf, key, self.dmsv, note, complete=complete, companions=(published_report,))
         PROG.end(note)
         for d in (self.work / 'tmp').glob('shvk_*'): nsp.rmtree(d)   # the translator's work folders
 
@@ -683,16 +720,22 @@ class Port:
         in <user dir>/tools/dmsh_xlate: (dmsh_xlate.dll, the source's key). Not the iOS chain's prebuilt dm/gfx/tools/dmsh_xlate_bin, which only a Mac can rebuild
         (its lock fingerprints Apple's Metal compiler): Android takes a translator fix as soon as it is in the source"""
         src = DM / 'gfx/tools/dmsh_xlate'; ryu = DM / 'third_party/ryujinx'
-        files = sorted([*src.glob('*.cs'), *src.glob('*.csproj'), *ryu.glob('*.props')] + [p for p in (ryu / 'src').rglob('*') if p.suffix in ('.cs', '.csproj', '.props')
-                                                                                         and not {'bin', 'obj'} & set(p.relative_to(ryu).parts)])
-        key = nsp.fingerprint(('files', files), ('cmd', [str(self.tools['dotnet']), '--version']), env=self.env)
+        def source_key():
+            files = sorted([p for root in (src, ryu) for p in root.rglob('*') if p.is_file() and
+                            (p.suffix in ('.cs', '.csproj', '.props', '.targets') or p.name in ('global.json', 'NuGet.Config', 'nuget.config'))
+                            and not {'bin', 'obj'} & set(p.relative_to(root).parts)])
+            return nsp.fingerprint([str(p.relative_to(DM)) for p in files], ('files', files),
+                                   ('cmd', [str(self.tools['dotnet']), '--version']), env=self.env)
+        key = source_key()
         out = paths.user_dir() / 'tools/dmsh_xlate'; kf = out.with_name('dmsh_xlate.key'); dll = out / 'dmsh_xlate.dll'
-        if dll.is_file() and nsp.reused(kf, key) is not None: return dll, key
-        tmp = out.with_name('dmsh_xlate.partial'); nsp.rmtree(tmp); nsp.rmtree(kf)
+        if dll.is_file() and product_cache.reused(kf, key, out) is not None:
+            return dll, nsp.fingerprint(key, product_cache.inventory(out))
+        tmp = out.with_name('dmsh_xlate.partial'); nsp.rmtree(tmp)
         nsp.run([self.tools['dotnet'], 'build', src, '-c', 'Release', '-o', tmp, '-nologo', '-v', 'quiet'], self.logs / 'android_translator_build.log', env=self.env)
         if not (tmp / 'dmsh_xlate.dll').is_file(): raise BuildError(f'the translator built without dmsh_xlate.dll (see {self.logs / "android_translator_build.log"})')
-        nsp.swap_in(tmp, out); kf.write_text(f'{key}\n')
-        return dll, key
+        if source_key() != key: raise BuildError('translator inputs changed during build; port again')
+        nsp.swap_in(tmp, out); product_cache.stamp(kf, key, out)
+        return dll, nsp.fingerprint(key, product_cache.inventory(out))
 
     # ---- host: the Android host built for this profile with the player's NDK ----
     def host(self):
@@ -702,6 +745,8 @@ class Port:
                 + (['--adrenotools'] if self.o.vulkan_driver else []), self.logs / 'android_host.log', env=self.env)
         self.so = out / 'libdmhost.so'
         if not self.so.is_file(): raise BuildError(f'build.py made no {self.so}')
+        ph = out / 'gen' / self.g.id / 'game_profile.h'   # the profile the host was built from, for the data pack (porter host compares it with its checkout's)
+        self.profile_h = hashlib.sha256(ph.read_bytes()).hexdigest() if ph.is_file() else None
         PROG.end(f'{self.so.stat().st_size / 2**20:.1f} MB')
 
     # ---- apk: the host as a NativeActivity app, signed with the player's key ----
@@ -753,8 +798,7 @@ class Port:
 
     def ui_font(self):
         """The overlay's font (dm/android/overlay_theme.c dm_overlay_font) and, as its license asks, the license files beside it, as assets/font/"""
-        d = UI_FONT.parent
-        return ['--asset', f'font/ui.bin={UI_FONT}'] + [a for f in sorted(p for p in d.rglob('*.txt')) for a in ('--asset', f'font/{f.relative_to(d).as_posix()}={f}')]
+        return [a for n, f in ui_font_assets().items() for a in ('--asset', f'{n}={f}')]
 
     def icon(self):
         """mkapk's icon arguments: the game's icon (nx_extract saves the control data's English one as icon.jpg) as a 256 px PNG, and an adaptive icon's layers
@@ -781,7 +825,7 @@ class Port:
         man = datapack.build(dst, profile=self.ap, version=self.pkg_ver, display=self.display, patched=self.patched, romfs=self.game / 'RomFS', shaders=self.dmsv,
                              aoc=self.aoc, sysdata=self.sysdata, language=self.lang, package=self.package, env=self.fps_env + font_env + (['DM_VK_MT_REPLAY=1'] if self.o.mt_replay else [])
                              + ([f'DM_VK_DRIVER={driver_lib_name(self.o.vulkan_driver)}'] if self.o.vulkan_driver else []), settings=TOUCH_SETTINGS if self.o.touch else None,
-                             files={**self.fps_files, **font_files},
+                             files={**self.fps_files, **font_files}, profile_h=getattr(self, 'profile_h', None),
                              progress=lambda what: PROG.set(step=f'linking {what}'))
         self.data_path = dst; self.result['data'] = str(dst)
         PROG.end(f'{man["files"]:,} files, {man["bytes"] / 2**30:.1f} GB')

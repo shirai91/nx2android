@@ -5,6 +5,7 @@
 uint64_t now_ns(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (uint64_t)t.tv_sec * 1000000000ull + t.tv_nsec; }
 static struct { const void *k; void *v; } om[8];
 void *objmap_get(const void *k) { for (int i = 0; i < 8; i++) if (om[i].k == k) return om[i].v; return NULL; }
+void dm_guest_write_prepare(void *addr, size_t len) { (void)addr; (void)len; }   // dm.h: guest memory is plain host memory here
 void objmap_put(const void *k, void *v) { for (int i = 0; i < 8; i++) if (!om[i].k) { om[i].k = k; om[i].v = v; return; } }
 void *objmap_del(const void *k) { for (int i = 0; i < 8; i++) if (om[i].k == k) { om[i].k = 0; return om[i].v; } return NULL; }
 static _Atomic int g_sig;
@@ -28,9 +29,10 @@ static int test_surround_output(void) {
             in[f * 6 + ch] = test < 6 ? (test == ch ? 10000 : 0) : test == 6 ? 32767 : -32768;
         memset(out, 0xa5, sizeof out);
         gbuf b[2] = {{in, SPLIT * 12, SPLIT * 12}, {in + SPLIT * 6, (FRAMES - SPLIT) * 12, (FRAMES - SPLIT) * 12}};
-        aout a = {.ch = 6};
+        aout a = {.ch = 6, .backend = BK_AU};   // the sound card is the consumer (au_render gives silence to any other)
         atomic_init(&a.state, STATE_STARTED); atomic_init(&a.vol, 0x3f800000u);
-        a.q[0] = b; a.q[1] = b + 1; atomic_init(&a.q_tail, 2);
+        for (int i = 0; i < 2; i++) { a.q[i].b = &b[i]; a.q[i].ptr = b[i].ptr; a.q[i].size = b[i].size; }   // as h_au_Append queues them (the block, its data and size)
+        atomic_init(&a.q_tail, 2);
         AudioBufferList bl = {.mNumberBuffers = 1, .mBuffers = {{2, sizeof out, out}}};
         au_render(&a, NULL, NULL, 0, FRAMES, &bl);
         for (int f = 0; f < FRAMES; f++) for (int ch = 0; ch < 2; ch++) {

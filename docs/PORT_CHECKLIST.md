@@ -6,7 +6,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 
 "Profile here": `nxnative/dm/games/<title ID>/` has the game's profile from nxnative. "Upstream profile": only seedds/nxnative has one, to read as a reference or starter, not to pull. "60 fps with X" is upstream's note: they run that update at 60 fps (30 on the Switch).
 
-**42 / 102 ported**
+**43 / 102 ported**
 
 - [x] 13 Sentinels: Aegis Rim · `01003FC01670C000`
 - [ ] Ace Attorney Investigations Collection · `010005501E68C000` · profile here
@@ -32,6 +32,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [ ] Cuphead · `0100A5C00D162000` · profile here
 - [x] DARK SOULS: REMASTERED · `01004AB00A260000`
 - [ ] Digimon Story Cyber Sleuth: Complete Edition · `010014E00DB56000` · profile here
+- [x] Disco Elysium - The Final Cut · `01006C5015E84000`
 - [x] Donkey Kong Country Returns HD · `01009D901BC56000`
 - [ ] Donkey Kong Country: Tropical Freeze · `0100C1F0051B6000` · upstream profile
 - [ ] DRAGON QUEST VII Reimagined · `0100A9D01C446000` · profile here
@@ -60,7 +61,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [ ] Monster Train 2 · `010051701FB46000` · profile here · 60 fps with 1.1.1 · only the first Monster Train is on mobile
 - [x] NEO: The World Ends with You · `010043B013C5C000`
 - [ ] NieR:Automata The End of YoRHa Edition · `010056B015FE8000` · upstream profile · 60 fps with 1.0.3
-- [ ] OCTOPATH TRAVELER · `010057D006492000` · upstream profile
+- [ ] OCTOPATH TRAVELER · `010057D006492000` · profile here
 - [x] Octopath Traveler 0 · `01005270232F2000`
 - [ ] Octopath Traveler II · `0100A3501946E000` · upstream profile · 60 fps with 1.1.1
 - [x] Paper Mario: The Origami King · `0100A3900C3E2000`

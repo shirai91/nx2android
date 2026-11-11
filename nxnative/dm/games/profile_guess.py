@@ -69,6 +69,12 @@ def npdm(path):   # (system resource size, program ID) from main.npdm; a non-zer
     return (struct.unpack_from('<I', d, 0x14)[0] if d[:4] == b'META' else 0), (struct.unpack_from('<Q', d, a + 0x10)[0] if a >= 0 else None)
 
 
+def is_64bit(path):   # main.npdm's Is64BitInstruction flag (META byte 0xC, bit 0); None without the file. A 32-bit game (AArch32: Rune Factory 4 Special, issue #161) has ELF32 modules the tools do not read
+    if not Path(path).exists(): return None
+    d = Path(path).read_bytes()
+    return bool(d[0xC] & 1) if d[:4] == b'META' and len(d) > 0xC else None
+
+
 def facts_of(exefs, romfs):
     """What the profile rules (and the survey report) need from a game's code modules and RomFS"""
     exefs = Path(exefs)
@@ -158,6 +164,9 @@ def guess(F, hooks=None):
 
     if F.get('main_markers', set()) & {'Unreal', 'Unreal 4'} and R['exts'].get('.pak') and 'nvnBootstrapLoader' in imp:
         G['shader_groups'] = ('ShaderArchive-Global-=global ShaderArchive-=game', 'the decoded shader code archives: the engine\'s global shaders and the game\'s material shaders')
+    # The engine region needs virtual address memory; without it (OCTOPATH TRAVELER 1.0.5, Unreal Engine 4 on SDK 3.5.1, no system resource) nninitStartup sets a heap of pool − used instead,
+    # which the heap-region layout above holds
+    if F.get('main_markers', set()) & {'Unreal', 'Unreal 4'} and R['exts'].get('.pak') and 'nvnBootstrapLoader' in imp and F['sysres']:
         G['mem_reserve'] = ('0x1028000000', 'Unreal: nninitStartup reserves a 62 GB address region and its FMallocBinned3 takes 37 GB of it, so a 64 GB alias region for the bring-up on the Mac. '
                             'An iPhone needs the allocator cut for the build and a capped region (game_args), as Octopath Traveler 0\'s profile (docs/agents/03)')
         G['mem_alias'] = ('0x1008000000', '')
@@ -177,7 +186,7 @@ def shader_sources(imports, glsl_src, glslc_mods, spirv, unreal_paks, trinity_pa
     GLSL source where gl_shaders.py looks, gl_src strings in main and gl_files files in the RomFS: it puts its shaders together at run time, LÖVE from its Lua), glslc_capture (main holds GLSL sources and calls glslcCompile in a module the game loads: it compiles some shaders at run time), ue_decode (Unreal paks keep the shaders Oodle-compressed
     in their shader code archives, which only the game's own Oodle decodes), oodle_packs (Trinity packs, or oodle_pkz PlatinumGames PKZ archives with Oodle Kraken entries:
     Oodle-compressed file by file, which the shader split decodes with the game's own decoder in the Mac host's tool mode), ue_legacy (legacy Unreal paks, version 4: the shaders are inline in the cooked packages, which the shader split reads through the game's own decoder the same way).
-    unreal_paks counts the version 11 paks, legacy_paks the older ones. Checked against every profile: Hades and Super Mario Galaxy Vulkan, Galaxy alone with no SPIR-V file, Three Houses alone compiling
+    unreal_paks counts the version 11 paks, legacy_paks the older ones whose files need the game's decoder (uepak.legacy_decoder_paks: OCTOPATH TRAVELER's zlib paks are not counted, the split reads them without the game). Checked against every profile: Hades and Super Mario Galaxy Vulkan, Galaxy alone with no SPIR-V file, Three Houses alone compiling
     shaders (13 Sentinels holds 106 GLSL sources but does not import glslcCompile; Captain Toad: Treasure Tracker imports it with agl's GLSL sources, but no module defines it), Octopath Traveler 0
     alone with version 11 Unreal paks, DRAGON QUEST XI S alone with legacy ones, Pokémon Legends: Z-A alone with Trinity packs, Digimon Story Cyber Sleuth and Balatro alone with OpenGL (of the 23 games
     extracted; Hades and both Galaxies import 99 or 100 Vulkan functions, Balatro only vkGetInstanceProcAddr), Balatro alone composing its GLSL"""
@@ -227,7 +236,7 @@ def build_sources(exefs, romfs, modules):
                     h = f.read(0x20)
                     if h[:8] == b'GFLXPACK' and struct.unpack_from('<I', h, 0x10)[0]:
                         f.seek(struct.unpack_from('<Q', h, 0x18)[0]); e = f.read(4); oodle_gfpak += len(e) == 4 and struct.unpack_from('<H', e, 2)[0] == 3
-    return shader_sources(imports, glsl_src, glslc_mods, spirv, len(uepak.unreal_paks(str(romfs), legacy=False)), trinity, len(uepak.unreal_paks(str(romfs), legacy=True)), gl_names, gl_src, gl_files, oodle_pkz,
+    return shader_sources(imports, glsl_src, glslc_mods, spirv, len(uepak.unreal_paks(str(romfs), legacy=False)), trinity, len(uepak.legacy_decoder_paks(str(romfs))), gl_names, gl_src, gl_files, oodle_pkz,
                           oodle_gfpak)
 
 

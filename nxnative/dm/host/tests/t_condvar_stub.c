@@ -7,6 +7,10 @@ void guest_thread_init(void) {}
 void dm_thread_enter(uint64_t entry, uint64_t arg, uint64_t sp) { (void)entry; (void)arg; (void)sp; abort(); }
 void *guest_sym(const char *name) { (void)name; return NULL; }
 module_t *module_of(const void *p) { (void)p; return NULL; }
+void dm_backtrace(uint64_t fp) { (void)fp; }   // crash.c: the thread dump's backtraces (not built here)
+int crash_addr_str(char *b, size_t n, uint64_t a) { return snprintf(b, n, "%#llx", (unsigned long long)a); }
+uint64_t crash_code_addr(uint64_t a) { return a; }
+void crash_thread_name(unsigned t, char *b, size_t n) { (void)t; if (n) b[0] = 0; }
 #include <mach/mach_time.h>
 uint64_t now_ns(void) { static mach_timebase_info_data_t tb; if (!tb.denom) mach_timebase_info(&tb); return mach_absolute_time() * tb.numer / tb.denom; }
 uint64_t guest_ns(void) { return now_ns(); }

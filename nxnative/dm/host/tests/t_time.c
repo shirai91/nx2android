@@ -19,19 +19,19 @@ static void put64(uint8_t *s, int off, int64_t v) { memcpy(s + off, &v, 8); }
 static int64_t get64(const uint8_t *s, int off) { int64_t v; memcpy(&v, s + off, 8); return v; }
 int main(void) {
     Result (*snap)(uint8_t *) = hook("_ZN2nn4time13ClockSnapshot29CreateWithStandardSystemClockEPS1_");
-    Result (*span)(int64_t *, const uint8_t *, const uint8_t *) = hook("_ZN2nn4time20CalculateSpanBetweenEPNS_8TimeSpanERKNS0_13ClockSnapshotES5_");
+    int (*span)(int64_t *, const uint8_t *, const uint8_t *) = hook("_ZN2nn4time20CalculateSpanBetweenEPNS_8TimeSpanERKNS0_13ClockSnapshotES5_");   // a bool since 496b414: true when the span could be worked out (Tomodachi Life read Result 0 as false)
     int64_t (*udiff)(const uint8_t *, const uint8_t *) = hook("_ZN2nn4time48CalculateStandardUserSystemClockDifferenceByUserERKNS0_13ClockSnapshotES3_");
     if (!snap || !span || !udiff) { printf("time: %d checks, %d failed\n", checks, fails); return 1; }
     uint8_t a[0xd0], b[0xd0], c[0xd0]; int64_t ts = -1;
     CHECK(snap(a) == RES_OK, "snapshot a");
-    CHECK(span(&ts, a, a) == RES_OK && ts == 0, "span of a snapshot with itself is 0");
+    CHECK(span(&ts, a, a) == 1 && ts == 0, "span of a snapshot with itself is 0");
     memcpy(b, a, sizeof b); put64(b, 0x90, get64(a, 0x90) + 90);   // b: 90 s of steady clock later
-    CHECK(span(&ts, a, b) == RES_OK && ts == 90 * 1000000000LL, "span from the steady time points, in nanoseconds");
-    CHECK(span(&ts, b, a) == RES_OK && ts == -90 * 1000000000LL, "span backwards is negative");
+    CHECK(span(&ts, a, b) == 1 && ts == 90 * 1000000000LL, "span from the steady time points, in nanoseconds");
+    CHECK(span(&ts, b, a) == 1 && ts == -90 * 1000000000LL, "span backwards is negative");
     memcpy(c, b, sizeof c); c[0x98] ^= 1; ts = 1234;   // c: another steady clock source, no network time
-    CHECK(span(&ts, a, c) != RES_OK && ts == 1234, "different sources and no network time: an error, output untouched");
+    CHECK(span(&ts, a, c) == 0 && ts == 1234, "different sources and no network time: an error, output untouched");
     put64(a, 0x48, 1000); put64(c, 0x48, 1600);   // with network times the span comes from them
-    CHECK(span(&ts, a, c) == RES_OK && ts == 600 * 1000000000LL, "different sources: span from the network times");
+    CHECK(span(&ts, a, c) == 1 && ts == 600 * 1000000000LL, "different sources: span from the network times");
     CHECK(snap(a) == RES_OK && snap(b) == RES_OK && udiff(a, b) == 0, "two host snapshots in a row: the user did not move the clock");
     memcpy(b, a, sizeof b); put64(b, 0x00, get64(a, 0x00) + 3600);   // b: the user clock offset one hour later
     CHECK(udiff(a, b) == 3600 * 1000000000LL, "user clock moved an hour");
