@@ -19,7 +19,8 @@ class OverlayLayout(unittest.TestCase):
         harness = r'''
 #include <assert.h>
 #include "overlay_layout.h"
-static int custom_faces, custom_a, custom_x;
+static int custom_faces, custom_a, custom_x, audio_available;
+int dm_menu_audio_available(void) { return audio_available; }
 float dm_overlay_scale(void) { return 1; }
 int dm_overlay_custom(int layout, int ctl, float *x, float *y, float *s) {
     *s = 1;
@@ -81,7 +82,10 @@ int main(void) {
     assert(ov_drag_pos(1100, 600, 1013, 50) == 506.5f);
     assert(ov_drag_pos(1100, 505, 1013, 50) == 508);
 
-    assert(ov_menu_item(0, 5) == OVM_PAD && ov_menu_item(1, 5) == OVM_AUDIO && ov_menu_item(1, OVM_ROWS - 1) == OVM_RESUME);
+    assert(ov_menu_item(0, OVM_ROWS - 2) == OVM_PAD && ov_menu_item(1, OVM_ROWS - 2) == -1);
+    assert(ov_menu_item(1, OVM_ROWS - 1) == OVM_RESUME);
+    audio_available = 1;
+    assert(ov_menu_item(1, OVM_ROWS - 2) == OVM_AUDIO);
     const float screens[][2] = {{915, 412}, {1216, 760}, {2400, 1080}, {1080, 2400}};
     for (unsigned s = 0; s < sizeof screens / sizeof screens[0]; s++) {
         float W = screens[s][0], H = screens[s][1], step = H / OVE_GRID_ROWS, p[4];
