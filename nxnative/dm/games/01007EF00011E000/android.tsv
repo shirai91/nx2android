@@ -11,22 +11,24 @@
 # With Mesa's Turnip 26.2.3 (whitebelyash's Stable Turnip v2, porter port --vulkan-driver), porter port --mt-replay and the first three switches below: the shrine at 30 fps
 # (3,770 draws, replay 13.1 ms, GPU 23 ms), the Great Plateau at 20 (4,400-5,000 draws in about 210 passes, replay 11.5-14.5 ms, GPU 33-36 ms against the 33.3 ms of 30 fps,
 # the same docked and handheld: 33.9-36.1 against 32.8-34.5 ms), the game at 0.928 of real time. The three were on in every run with Turnip and never switched one by one.
-# DM_GPU_TURBO=1 on top, docked, at the game's own size: the Great Plateau's GPU time 11-15 ms a frame at 3,800-4,650 draws, 60 fps where a frame's cost stays under a vsync
-# and 30 where it does not (1,800 frames: 1,010 held one vsync, 790 two, none three), the game at real time. Without it a frame held two or three vsyncs lets the GPU's
-# governor lower the clock until the work fills it. DM_RENDER_SCALE=0.75 with it changed nothing that shows (GPU 12-17 ms; 289 / 1,511 / 0 frames in a run with wider views),
-# so the profile keeps the game's size. The cost is heat: the overlay's SOC row went from 50 to 67-69 and then 76 C at 60 fps. Later in two runs the GPU took 17-21 ms a frame
-# with the same draws, passes and dispatches (about 4,000 / 200 / 27) and the game held 30: in one from the fight at the Bokoblin camp on, in the other the 30 fps screenshot
-# is at that camp's fire with SOC at 55 C. Whether that is the camp's fire and smoke or the phone limiting its GPU is not known. Tears of the Kingdom's profile leaves the
-# turbo out for that heat; here the plateau is 20 fps without it and 30 with it at worst. A player who wants a cooler phone deletes the row from env.txt on the device, or
-# adds DM_FPS_TARGET=30.
-# A further run of 9,300 frames with the same switches (the sampling profiler on too), around the Great Plateau's ruins: 95 to 100% of the frames held one vsync (1,800 /
-# 1,738 / 1,768 / 1,708 of each 1,800, none three), 3,600-4,500 draws, replay 10.3-11.1 ms, GPU p50 10.6-13.4 ms, 40 to 60 late frames in each 1,800: 60 fps with slight
-# stutters, the player said, with SOC at 67 C in that run's screenshot.
+# DM_GPU_TURBO=1 is not in the profile; a player adds it to env.txt on the device. It holds the GPU at its highest clock (KGSL's power control off). With it on top of those
+# three, docked, at the game's own size: the Great Plateau's GPU time 11-15 ms a frame at 3,800-4,650 draws, 60 fps where a frame's cost stays under a vsync and 30 where it
+# does not (1,800 frames: 1,010 held one vsync, 790 two, none three), the game at real time. Without it a frame held two or three vsyncs lets the GPU's governor lower the
+# clock until the work fills it. DM_RENDER_SCALE=0.75 with it changed nothing that shows (GPU 12-17 ms; 289 / 1,511 / 0 frames in a run with wider views), so the profile
+# keeps the game's size. The cost is heat: the overlay's SOC row went from 50 to 67-69 and then 76 C at 60 fps. Later in two runs the GPU took 17-21 ms a frame with the same
+# draws, passes and dispatches (about 4,000 / 200 / 27) and the game held 30: in one from the fight at the Bokoblin camp on, in the other the 30 fps screenshot is at that
+# camp's fire with SOC at 55 C. Whether that is the camp's fire and smoke or the phone limiting its GPU is not known. The profile leaves it out for that heat, as Tears of the
+# Kingdom's does, at the player's request: on this version the plateau is then 20 fps, as measured above. On a build with replay changes proposed separately (heap copies of
+# deferred uniform updates, a wider pool lookup cache) a short run without it, with the two cut switches below, held 60: 1,500 frames at about 4,000 draws, frame p50 16.6 /
+# p95 20-21 ms against 17-19 with it, GPU p50 12.6-13.4 ms as with it, since at 60 the governor keeps the clock up by itself.
+# A further run of 9,300 frames with the three switches and the turbo (the sampling profiler on too), around the Great Plateau's ruins: 95 to 100% of the frames held one
+# vsync (1,800 / 1,738 / 1,768 / 1,708 of each 1,800, none three), 3,600-4,500 draws, replay 10.3-11.1 ms, GPU p50 10.6-13.4 ms, 40 to 60 late frames in each 1,800: 60 fps
+# with slight stutters, the player said, with SOC at 67 C in that run's screenshot.
 # DM_VK_X_CUTANY=1 + DM_VK_CB_DRAWS=32 (the command buffer cut every 32 draws, before any pass, so that the GPU starts on the frame while the replay still records), at the
-# player's request after a run with them: 1,769 of 1,800 frames held one vsync, twice (98%), and the player reported a consistent 60 fps with SOC in the 70s (and no picture
-# fault). That run was on a build with replay changes proposed separately (heap copies of deferred uniform updates, a wider pool lookup cache: the replay 11.7 -> 8.1 ms a
-# frame in the woods), not on main, and the two were not switched within a run: its replay (9.3-10.1 ms at 4,000-4,300 draws) and the GPU's tail after it (3.8-4.0 ms) read as
-# in the run before without them. Cutting before any pass is the rule that made Adreno's LRZ flicker on Qualcomm's driver; it was run here with Turnip alone.
+# player's request after a run with them and the turbo: 1,769 of 1,800 frames held one vsync, twice (98%), and the player reported a consistent 60 fps with SOC in the 70s
+# (and no picture fault). That run was on a build with replay changes proposed separately (heap copies of deferred uniform updates, a wider pool lookup cache: the replay 11.7
+# -> 8.1 ms a frame in the woods), not on main, and the two were not switched within a run: its replay (9.3-10.1 ms at 4,000-4,300 draws) and the GPU's tail after it (3.8-4.0
+# ms) read as in the run before without them. Cutting before any pass is the rule that made Adreno's LRZ flicker on Qualcomm's driver; it was run here with Turnip alone.
 # Turnip's release notes name a glitchy picture on the Adreno 830 in its GMEM mode and TU_DEBUG=sysmem against it; the player was told to add it to env.txt, the log does
 # not show whether the driver took it, and the picture was right.
 # Open: the fight had GPU frames of 40-100 ms and one of 221 ms (38 frames held three vsyncs), as Tears of the Kingdom's fights have; 60 fps held on the plateau (a frame
@@ -41,6 +43,5 @@ requires	bcn
 env	DM_VK_FDZ=0
 env	DM_NVN_ASYNC=1
 env	DM_PIN_REPLAY=prime
-env	DM_GPU_TURBO=1
 env	DM_VK_X_CUTANY=1
 env	DM_VK_CB_DRAWS=32
