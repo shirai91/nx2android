@@ -6,7 +6,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 
 "Profile here": `nxnative/dm/games/<title ID>/` has the game's profile from nxnative. "Upstream profile": only seedds/nxnative has one, to read as a reference or starter, not to pull. "60 fps with X" is upstream's note: they run that update at 60 fps (30 on the Switch).
 
-**43 / 102 ported**
+**44 / 104 ported**
 
 - [x] 13 Sentinels: Aegis Rim · `01003FC01670C000`
 - [ ] Ace Attorney Investigations Collection · `010005501E68C000` · profile here
@@ -31,6 +31,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [ ] Cult of the Lamb · `01002E7016C46000` · upstream profile · iPhone only, through Apple Arcade
 - [ ] Cuphead · `0100A5C00D162000` · profile here
 - [x] DARK SOULS: REMASTERED · `01004AB00A260000`
+- [x] DEAD OR ALIVE Xtreme 3 Scarlet · `01009CC00C97C000` · boots; volleyball and gravure not tested yet
 - [ ] Digimon Story Cyber Sleuth: Complete Edition · `010014E00DB56000` · profile here
 - [x] Disco Elysium - The Final Cut · `01006C5015E84000`
 - [x] Donkey Kong Country Returns HD · `01009D901BC56000`
