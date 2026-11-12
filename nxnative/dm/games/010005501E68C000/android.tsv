@@ -1,0 +1,6 @@
+# Ace Attorney Investigations Collection (010005501E68C000): Unity 2022.3.17f1 IL2CPP, NintendoSDK 17.5.3; update 1.0.0.2 (v131072).
+# Tested 2026-11-12 on a OnePlus 8 IN2010 (Snapdragon 865, Adreno 650, Android 16) with Turnip 25.99.99: reached Episode 1's opening dialogue; Select autoplay ran for 14m 41s, with logs through frame 51,808 and no crash or missing presents.
+# At frame 51,600, the last 300-frame sample had frame-time p50 16.79 ms / p95 19.26 ms; 3 frames dropped, 0 discarded. Later episodes, save/load and a full playthrough are not tested. The shared game.tsv memory values are unchanged.
+status	experimental
+tested	v131072 OnePlus 8 IN2010 (Snapdragon 865, Adreno 650, Android 16; Turnip 25.99.99)
+requires	bcn
