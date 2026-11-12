@@ -39,6 +39,11 @@ skip identical content by digest; incomplete snapshots and publication failures
 remain retryable. The legacy path cannot provide integrity guarantees absent from
 the old format.
 
+Vulkan descriptor collection checks each image binding against its 384-entry
+scratch array before writing it. A binding that would exceed capacity stops the
+host with a diagnostic; valid arrays keep their full reflected counts, including
+the existing 32-entry default for a zero count.
+
 Immutable Vulkan driver segments share submission scratch only when both their
 hash and exact content match in the current epoch. Equality reads a CPU snapshot
 of the live c0/c2 prefix (0x648/0x968 bytes), avoiding reads from mapped GPU memory.
