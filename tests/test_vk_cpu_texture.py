@@ -4,7 +4,7 @@ from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
 
 def source():
-    text=(ROOT/'nxnative/dm/android/gfx_vk_tex.c').read_text()
+    text=(ROOT/'nxnative/dm/android/gfx_vk_tex.c').read_text(encoding='utf-8')
     def function(name):
         start=text.index('static int '+name+'(')
         # Skip the forward declaration.
@@ -29,10 +29,13 @@ static int g_img_mu, marked;
 #define pthread_mutex_unlock(p) ((void)(p))
 static void mtl_tex_cpu_written(const tex_t *t) { (void)t; marked++; }
 #define VKLOG(...) ((void)0)
+#define getenv(name) (TEX2D_ON ? "1" : NULL)   /* DM_NVN_CPU_TEX2D_FIRST_USE, the profile's switch */
 ''' + function('mem_any')+'\n'+function('cpu_storage_gpu_written')+'\n'+function('cpu_content_tex')+r'''
 int main(void) {
  uint8_t pixels[64]={1}; pool_t pool={0}; vkfmt_t rgba={0}, bc={1,0,0};
  tex_t t={.pool=&pool,.mem=pixels,.d={.target=1,.samples=1,.width=4,.height=4,.depth=1},.L={64}};
+ if (!TEX2D_ON) {   /* without the profile switch an uncompressed 2D texture keeps its old path; compressed ones are still uploaded */
+  assert(cpu_content_tex(&t,&rgba)==0 && marked==0); assert(cpu_content_tex(&t,&bc)==1); return 0; }
  assert(cpu_content_tex(&t,&rgba)==1 && marked==1);
  vkimg_t alias={.gpu_w=1,.pool=(uint64_t)(uintptr_t)&pool,.off=16,.size=16}; g_by_key.vals[0]=&alias;
  assert(cpu_content_tex(&t,&rgba)==0);
@@ -51,6 +54,8 @@ class CpuTexture(unittest.TestCase):
     @unittest.skipUnless(shutil.which('cc'),'a host C compiler is required; also run with the NDK on Android')
     def test_initial_cpu_content(self):
         with tempfile.TemporaryDirectory() as tmp:
-            p=Path(tmp); (p/'test.c').write_text(source())
-            subprocess.run(['cc','-std=c11',str(p/'test.c'),'-o',str(p/'test')],check=True)
-            subprocess.run([str(p/'test')],check=True)
+            p=Path(tmp); (p/'test.c').write_text(source(),encoding='utf-8')
+            for on in (0,1):
+                exe=p/f'test{on}'
+                subprocess.run(['cc','-std=c11',f'-DTEX2D_ON={on}',str(p/'test.c'),'-o',str(exe)],check=True)
+                subprocess.run([str(exe)],check=True)
