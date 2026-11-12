@@ -174,17 +174,17 @@ int nvn_dirty_defrag(int (*remap)(void *mem, size_t len)) {
                 if (atomic_compare_exchange_strong(&r->state[p], &st, PG_BUSY)) { was[p] = st; break; } }
         }
         int ok = remap((void *)r->base, r->end - r->base) == 0;
-        for (size_t p = 0; ok && p < np; ) {   // the pages that were writable, a run at a time
-            if (was[p] != PG_NONE) { p++; continue; }
-            size_t q = p; while (q < np && was[q] == PG_NONE) q++;
+        for (size_t p = 0; p < np; ) {   // the pages that were writable, a run at a time (also after a remap that failed: it may have mapped a part read-only before it did)
+            if (was[p] == PG_PROT) { p++; continue; }
+            size_t q = p; while (q < np && was[q] != PG_PROT) q++;
             mp(r->base + (p << g_shift), (q - p) << g_shift, PROT_READ | PROT_WRITE); p = q;
         }
         for (size_t p = 0; p < np; p++) {
-            if (!ok || was[p] == PG_PROT) { atomic_store(&r->state[p], was[p]); continue; }
+            if (was[p] == PG_PROT || (!ok && was[p] != PG_NONE)) { atomic_store(&r->state[p], was[p]); continue; }   // (a write that waited on a writable page is let through after a failed remap too)
             stamp_page(r, p); atomic_store(&r->state[p], PG_NONE);
         }
         free(was);
-        if (ok) { atomic_store(&r->nmp, 0); done++; }
+        atomic_store(&r->nmp, 0); if (ok) done++;   // a range that could not be mapped again is tried after another DEFRAG_MP calls, not at every sweep
     }
     return done;
 }
