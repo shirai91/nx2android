@@ -733,7 +733,37 @@ void mtl_pool_del(const void *mem) {
         pool_note(1, p.hi - p.lo, pool_ns() - t0);
     }
 }
+// DM_VK_POOL_TC=1 (start-up): vk_pool_of's per-thread cache in a static table claimed by thread (pthread_self, a register read) instead of a __thread variable, whose
+// every access from this dlopen'ed library went through the linker's TLS descriptor resolver (tlsdesc_resolver_dynamic: 1.5% of Breath of the Wild's replay), and 16
+// pools instead of 4 (vk_pool_of itself was 6.2% of it, most of it the locked search after a miss)
+enum { POOL_TC_THREADS = 8, POOL_TC_N = 16 };
+typedef struct { uint32_t gen; vkpool_t *p[POOL_TC_N]; } pool_tc_t;
+static pool_tc_t g_pool_tc[POOL_TC_THREADS]; static uintptr_t g_pool_tc_owner[POOL_TC_THREADS];
+static pool_tc_t *pool_tc(void) {
+    uintptr_t me = (uintptr_t)pthread_self();
+    for (int i = 0; i < POOL_TC_THREADS; i++) { uintptr_t o = __atomic_load_n(&g_pool_tc_owner[i], __ATOMIC_ACQUIRE); if (o == me) return &g_pool_tc[i]; if (!o) {
+        uintptr_t z = 0; if (__atomic_compare_exchange_n(&g_pool_tc_owner[i], &z, me, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) return &g_pool_tc[i]; if (z == me) return &g_pool_tc[i]; } }
+    return NULL;   // more threads than slots: the __thread cache
+}
 vkpool_t *vk_pool_of(uint64_t addr, uint64_t len) {
+    static int tc_on = -1; if (tc_on < 0) { const char *e = getenv("DM_VK_POOL_TC"); tc_on = e && atoi(e) > 0; }
+    pool_tc_t *t = tc_on ? pool_tc() : NULL;
+    if (t) {
+        uint32_t g = __atomic_load_n(&g_pool_gen, __ATOMIC_ACQUIRE) + 1;
+        if (t->gen == g) for (int i = 0; i < POOL_TC_N; i++) { vkpool_t *p = t->p[i]; if (!p) break; if (addr >= p->lo && addr + len <= p->hi) {
+            if (i) { memmove(&t->p[1], &t->p[0], (size_t)i * sizeof *t->p); t->p[0] = p; } return p; } }
+        vkpool_t *r = NULL; int across = 0;
+        pthread_rwlock_rdlock(&g_pool_mu);
+        int lo = 0, hi = g_npool;
+        while (lo < hi) { int m = (lo + hi) / 2; if (g_pool[g_pool_ord[m]].lo <= addr) lo = m + 1; else hi = m; }
+        if (lo > 0) { vkpool_t *p = &g_pool[g_pool_ord[lo - 1]]; if (addr + len <= p->hi) r = p; }
+        if (!r) for (int i = 0; i < g_npool; i++) if (addr >= g_pool[i].lo && addr + len <= g_pool[i].hi) { r = &g_pool[i]; break; }
+                                                 else if (addr >= g_pool[i].lo && addr < g_pool[i].hi && addr + len <= g_pool[i].end) across = 1;
+        pthread_rwlock_unlock(&g_pool_mu);
+        if (r) { if (t->gen != g) { memset(t, 0, sizeof *t); t->gen = g; } memmove(&t->p[1], &t->p[0], (POOL_TC_N - 1) * sizeof *t->p); t->p[0] = r; }
+        if (!r && across) { static uint64_t n; uint64_t k = ++n; if (!(k & (k - 1))) LOG("[RED] [vk] %llu ranges across two chunks of a memory pool (ZC_CHUNK; this one %#llx +%#llx): no buffer for them", (unsigned long long)k, (unsigned long long)addr, (unsigned long long)len); }
+        return r;
+    }
     // the last pools this thread found, while none was added or removed: the replay looks up every buffer binding of every draw, and the read lock alone was ~6% of it
     static __thread struct { uint32_t gen; vkpool_t *p[4]; } c;   // gen: g_pool_gen + 1 (0: empty)
     uint32_t g = __atomic_load_n(&g_pool_gen, __ATOMIC_ACQUIRE) + 1;
@@ -1067,7 +1097,14 @@ void *vk_scratch(VkDeviceSize n, VkDeviceSize align, VkBuffer *buf, VkDeviceSize
     VkBufferCreateInfo bi = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, NULL, 0, b->size, POOL_USAGE, VK_SHARING_MODE_EXCLUSIVE};
     VKCHK(vkCreateBuffer(V.dev, &bi, NULL, &b->b));
     VkMemoryRequirements req; vkGetBufferMemoryRequirements(V.dev, b->b, &req);
-    VkMemoryAllocateInfo ai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, req.size, vk_mem_type(req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 0)};
+    // DM_VK_SCRATCH_CACHED=1 (start-up): scratch memory from a host-cached coherent type where the device has one. Uncached, the CPU reads it at 2.25 GB/s (Adreno 830,
+    // Turnip) and writes it through write-combining: Breath of the Wild writes ~18 MB of uniform shadows into it a frame (288 copies of 64 KB, 2.3 ms)
+    static int sc_cached = -1; if (sc_cached < 0) { const char *e = getenv("DM_VK_SCRATCH_CACHED"); sc_cached = e && atoi(e) > 0; }
+    uint32_t mt = UINT32_MAX;
+    if (sc_cached) { mt = vk_mem_type(req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT, 0);
+        static int said; if (!said++) LOG("[vk] scratch memory: %s (DM_VK_SCRATCH_CACHED)", mt == UINT32_MAX ? "no host-cached coherent type, uncached as before" : "host-cached coherent"); }
+    if (mt == UINT32_MAX) mt = vk_mem_type(req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 0);
+    VkMemoryAllocateInfo ai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, req.size, mt};
     VKCHK(vkAllocateMemory(V.dev, &ai, NULL, &b->m)); VKCHK(vkBindBufferMemory(V.dev, b->b, b->m, 0));
     void *m; VKCHK(vkMapMemory(V.dev, b->m, 0, VK_WHOLE_SIZE, 0, &m)); b->p = m;
     b->used = n; *buf = b->b; *off = 0; return b->p;
@@ -1335,6 +1372,40 @@ void vk_ubd_read(uint64_t a, uint64_t n, uint8_t *dst) {
     if (vk_gpu_pending(a, n)) { static int k; g_ubd_racy++; if (k < 20) { k++; int cov = 0; for (int i = 0; i < g_nubd; i++) if (g_ubd[i].lo <= a && a + n <= g_ubd[i].hi) cov = 1;
         VKLOG("[RED] a CPU read of %#llx +%llu (%s) overlaps a GPU write not known to be complete", (unsigned long long)a, (unsigned long long)n, cov ? "covered by a deferred update" : "partly from memory"); } }
     memcpy(dst, (const void *)(uintptr_t)a, n);
+    // DM_VK_UBD_COVER=1 (start-up): the updates are laid over memory newest first, each only where no newer one wrote: the same bytes. Their bytes are in scratch
+    // memory, which the CPU reads uncached (Adreno 830 with Turnip: 2.25 GB/s against 61-72 for the other copies), and Breath of the Wild rewrites the same ~0.7 KB
+    // of a 64 KB constant buffer before each draw, so each shadow read every update landed in its submission so far (hundreds) over the same bytes
+    static int cover = -1; if (cover < 0) { const char *e = getenv("DM_VK_UBD_COVER"); cover = e && atoi(e) > 0; }
+    if (cover) {
+        enum { NCV = 64 }; uint64_t cv[NCV][2]; int ncv = 0, full = 0;   // the bytes written so far (newest first): disjoint, sorted by start
+        uint64_t done = g_ninfl ? vk_fence_done() : 0;
+        for (int pass = 0; pass < 2 && !full; pass++) for (int i = pass ? g_ninfl - 1 : g_nubd - 1; i >= 0 && !full; i--) {
+            uint64_t elo, ehi; const uint8_t *src;
+            if (!pass) { elo = g_ubd[i].lo; ehi = g_ubd[i].hi; src = g_ubd[i].p; }
+            else { if (g_infl[i].fence <= done) continue; elo = g_infl[i].lo; ehi = g_infl[i].hi; src = g_infl[i].data; }
+            uint64_t lo = elo > a ? elo : a, hi = ehi < a + n ? ehi : a + n; if (lo >= hi) continue;
+            // the parts of [lo, hi) no newer update wrote
+            uint64_t p = lo; int j = 0;
+            while (p < hi) {
+                while (j < ncv && cv[j][1] <= p) j++;
+                uint64_t e = j < ncv && cv[j][0] < hi ? cv[j][0] : hi;
+                if (j < ncv && cv[j][0] <= p) { p = cv[j][1]; continue; }   // covered from p on
+                if (e > p) memcpy(dst + (p - a), src + (p - elo), e - p);
+                p = e;
+            }
+            // add [lo, hi) to the covered set, merging
+            if (ncv == NCV) { full = 1; break; }
+            int k = 0; while (k < ncv && cv[k][1] < lo) k++;
+            uint64_t nlo = lo, nhi = hi; int m = k; while (m < ncv && cv[m][0] <= nhi) { if (cv[m][0] < nlo) nlo = cv[m][0]; if (cv[m][1] > nhi) nhi = cv[m][1]; m++; }
+            memmove(&cv[k + 1], &cv[m], sizeof cv[0] * (size_t)(ncv - m)); ncv -= m - k - 1; cv[k][0] = nlo; cv[k][1] = nhi;
+            if (ncv == 1 && cv[0][0] <= a && cv[0][1] >= a + n) full = 1;   // every byte from an update
+        }
+        if (!full || ncv != 1 || cv[0][0] > a || cv[0][1] < a + n) {
+            if (full && !(ncv == 1 && cv[0][0] <= a && cv[0][1] >= a + n)) goto ordered;   // the interval list ran out: the plain way, over what was copied
+        }
+        return;
+    }
+    ordered:
     if (g_ninfl) { uint64_t done = vk_fence_done();
         for (int i = 0; i < g_ninfl; i++) { if (g_infl[i].fence <= done) continue; uint64_t lo = g_infl[i].lo > a ? g_infl[i].lo : a, hi = g_infl[i].hi < a + n ? g_infl[i].hi : a + n;
             if (lo < hi) memcpy(dst + (lo - a), g_infl[i].data + (lo - g_infl[i].lo), hi - lo); } }
