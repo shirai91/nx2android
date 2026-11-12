@@ -19,7 +19,7 @@ class PerVertexInterface(unittest.TestCase):
         struct.pack_into('<Q', code, 0x58, 0xe30000000007000f)
         binary = cls.out / 'exit.bin'; binary.write_bytes(code)
         job = dict(key='exit', stage='vs', code=str(binary), tex={}, img={}, attr={}, fout={}, debug=False, reduced=True)
-        jobs = cls.out / 'jobs.json'; jobs.write_text(json.dumps([job]))
+        jobs = cls.out / 'jobs.json'; jobs.write_text(json.dumps([job]), encoding='utf-8')
         subprocess.run(['dotnet', str(cls.out / 'xlate/dmsh_xlate.dll'), str(jobs), str(cls.out)], check=True, capture_output=True)
         data = (cls.out / 'exit.spv').read_bytes()
         words = struct.unpack(f'<{len(data) // 4}I', data)
@@ -62,7 +62,7 @@ class PerVertexInterface(unittest.TestCase):
         binary = self.out / f'{key}.bin'; binary.write_bytes(code)
         job = dict(key=key, stage='gs', code=str(binary), tex={}, img={}, attr={}, fout={}, debug=False, reduced=True,
                    gs_passthrough=False, gs_input=3, viewport_mask=native, gs_passthrough_mask=attributes)
-        jobs = self.out / f'{key}.json'; jobs.write_text(json.dumps([job]))
+        jobs = self.out / f'{key}.json'; jobs.write_text(json.dumps([job]), encoding='utf-8')
         subprocess.run(['dotnet', str(self.out / 'xlate/dmsh_xlate.dll'), str(jobs), str(self.out)], check=True, capture_output=True)
         data = (self.out / f'{key}.spv').read_bytes(); words = struct.unpack(f'<{len(data) // 4}I', data)
         result = []; i = 5
@@ -106,7 +106,7 @@ class PerVertexInterface(unittest.TestCase):
         struct.pack_into('<2Q', code, 0x58, ast, 0xe30000000007000f)
         binary = self.out / 'clip.bin'; binary.write_bytes(code)
         job = dict(key='clip', stage='vs', code=str(binary), tex={}, img={}, attr={}, fout={}, debug=False, reduced=True)
-        jobs = self.out / 'clip.json'; jobs.write_text(json.dumps([job]))
+        jobs = self.out / 'clip.json'; jobs.write_text(json.dumps([job]), encoding='utf-8')
         subprocess.run(['dotnet', str(self.out / 'xlate/dmsh_xlate.dll'), str(jobs), str(self.out)], check=True, capture_output=True)
         data = (self.out / 'clip.spv').read_bytes(); words = struct.unpack(f'<{len(data) // 4}I', data)
         decorated = []; i = 5
