@@ -4,6 +4,7 @@
 // A damaged NSP (a file whose data fails the NCA's hash check, e.g. a copy cut short or a broken download) stops the extraction with exit code 3 after listing every damaged file;
 //   --allow-damaged writes those files as read instead and only lists them (Super Mario Galaxy's base NSP with 147 MB zeroed: its two prologue WebM movies).
 // Integrity failures outside the individual-file handlers (e.g. RomFS metadata) stop immediately with exit code 3 and the LibHac reason, even with --allow-damaged.
+// An unreadable NCA header stops with exit code 4, naming the input container and its NCA entry; --allow-damaged does not bypass it.
 // Add-on content: nx_extract <prod.keys> --aoc <DLC NSP> <output dir> writes the RomFS of the DLC's data NCA to <output dir> (the packing script puts it at aoc/<index>/, the host mounts it through DM_AOC_DIR).
 // System data: nx_extract <prod.keys> --sysdata <firmware dir> <title ID hex> <output dir> writes the RomFS of that title's data NCA, found among the .nca files of a firmware dump
 // (a console's NAND SYSTEM Contents/registered, as DBI's MTP mode shows it): Mario Kart 8 Deluxe builds its Mii heads from MiiModel, 0100000000000802.
@@ -29,11 +30,21 @@ using Path = System.IO.Path;
 static class P {
     [DllImport("libc", SetLastError = true)] static extern int clonefile(string src, string dst, uint flags);
 
+    // Issue #244: LibHac names the failed NCA header, but the player supplied a container holding several NCAs.
+    sealed class NcaOpenException : Exception {
+        public NcaOpenException(string input, string entry, InvalidDataException cause)
+            : base($"cannot open NCA entry '{entry}' in '{input}': {cause.Message}", cause) { }
+    }
+
     static int Main(string[] a) => Run(() => Extract(a));
 
     // File-data failures have their own handling below. A failure opening or traversing the filesystem cannot be recovered there.
     static int Run(Func<int> extract) {
         try { return extract(); }
+        catch (NcaOpenException e) {
+            Console.Error.WriteLine($"[RED] {e.Message}");
+            return 4;
+        }
         catch (HorizonResultException e) when (HashError(e)) {
             Console.Error.WriteLine($"[RED] extraction stopped by a filesystem integrity check: {e.Message}");
             return 3;
@@ -147,7 +158,12 @@ static class P {
                 byte[] t = new byte[0x2c0]; st.Read(0, t).ThrowIfFailure();
                 if (t[0x281] != 0) { Console.Error.WriteLine($"[RED] {e.Name} is not a common ticket; supply the title key separately"); continue; }
                 ks.ExternalKeySet.Add(new RightsId(t.AsSpan(0x2a0, 0x10)), new AccessKey(t.AsSpan(0x180, 0x10))).ThrowIfFailure();
-            } else if (e.Name.EndsWith(".nca", StringComparison.OrdinalIgnoreCase)) ncas.Add(new Nca(ks, st));
+            } else if (e.Name.EndsWith(".nca", StringComparison.OrdinalIgnoreCase)) {
+                Nca nca;
+                try { nca = new Nca(ks, st); }
+                catch (InvalidDataException x) { throw new NcaOpenException(path, e.Name, x); }
+                ncas.Add(nca);
+            }
         }
         return ncas;
     }

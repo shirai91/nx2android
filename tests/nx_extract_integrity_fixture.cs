@@ -1,13 +1,15 @@
-// Real LibHac storage under the extractor's production error boundary; no NSP, keys or game data.
+// Real LibHac storage and synthetic containers under the production error boundary; no keys or game data.
 using System;
 using System.IO;
 using System.Reflection;
 using System.Runtime.ExceptionServices;
 using LibHac;
 using LibHac.Fs;
+using LibHac.Common.Keys;
 using LibHac.FsSystem;
 using LibHac.Tools.FsSystem;
 using LibHac.Tools.FsSystem.RomFs;
+using Path = System.IO.Path;
 using CheckedStorage = LibHac.Tools.FsSystem.IntegrityVerificationStorage;
 
 static class IntegrityFixture {
@@ -42,12 +44,27 @@ static class IntegrityFixture {
         Call("Copy", fs, output, null);
         return (int)Call("Damaged");
     }
+    static int NcaCase(string mode, string output) {
+        // An ordinary PFS0 around artificial bytes: reproduce LibHac's actual header rejection through OpenNsp.
+        string input = Path.Combine(Path.GetDirectoryName(output), mode + " container's sample.nsp");
+        byte[] name = System.Text.Encoding.ASCII.GetBytes("header-entry.nca\0"), header = new byte[0xc00];
+        if (mode == "nca-readable") System.Text.Encoding.ASCII.GetBytes("NCA3").CopyTo(header, 0x200); // a readable, unencrypted header; no filesystem is opened
+        using (var w = new BinaryWriter(File.Create(input))) {
+            w.Write(System.Text.Encoding.ASCII.GetBytes("PFS0")); w.Write(1); w.Write(name.Length); w.Write(0);
+            w.Write(0L); w.Write((long)header.Length); w.Write(0); w.Write(0); w.Write(name); w.Write(header);
+        }
+        Set("g_allow", mode == "nca-allow");
+        var ncas = (System.Collections.ICollection)Call("OpenNsp", new KeySet(), input);
+        return ncas.Count == 1 ? 0 : 92;
+    }
     static int Main(string[] args) {
         try {
             var mode = args[0];
             if (mode == "usage") return (int)Call("Main", (object)Array.Empty<string>());
             return Boundary(() => {
                 if (mode.StartsWith("copy")) return CopyCase(mode, args[1]);
+                if (mode.StartsWith("nca")) return NcaCase(mode, args[1]);
+                if (mode == "invalid-data") throw new InvalidDataException("unrelated parser sentinel");
                 if (mode == "io") throw new IOException("file access sentinel");
                 if (mode == "other-result") throw new LibHac.Common.HorizonResultException(new Result(2, 1));
                 if (mode == "other-module") throw new LibHac.Common.HorizonResultException(new Result(3, 4604));
