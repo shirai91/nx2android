@@ -332,9 +332,12 @@ def int_inputs(spv):
     (whole, or one component through an access chain) is used only by OpBitcast. Maxwell does no type conversion reading vertex attribute registers: an integer format's bit pattern
     reaches the register and the shader bit-casts it. The answer table has no attribute types, so the translator declared every input float, the pipeline fed the integer format
     into a float input (undefined in Vulkan) before the bit casts: Dark Souls Remastered's scene vertex shaders read their RGBA16I attribute (loc 5) only through bit casts.
-    Declared an integer (signed when a cast is to a signed type), the pipeline takes the integer format of the same layout (gfx_vk_exec.c vertex_format)"""
+    Declared an integer (signed when a cast is to a signed type), the pipeline takes the integer format of the same layout (gfx_vk_exec.c vertex_format).
+    A cast whose integer only goes back to float (through the translator's register variables) is a raw move, not an integer use: Dead or Alive Xtreme 3 Scarlet's ocean
+    vertex shader 6548b85b2c1cb7cf copies its RGBA8 UNORM attribute (loc 6) into a register that also takes an integer constant and from there to an output; declared uint, it
+    was fed RGBA8_UINT, the output carried 0..255 as denormal float bits instead of 0..1, and the foam pass 40782b7bec1449db turned them into NaN: the whole sea drew black"""
     w = struct.unpack(f'<{len(spv) // 4}I', spv); i = 5; loc, inputs, chain, loads, uses, other = {}, set(), {}, {}, collections.defaultdict(int), set()
-    ins, signed, sint = [], {}, set()
+    ins, signed, sint, floats, fvars, users = [], {}, set(), set(), set(), collections.defaultdict(list)
     while i < len(w):
         n = w[i] >> 16; op = w[i] & 0xffff
         if n == 0: break
@@ -342,8 +345,26 @@ def int_inputs(spv):
     for op, a in ins:
         if op == OP_DECORATE and len(a) > 2 and a[1] == 30: loc[a[0]] = a[2]   # Location
         elif op == OP_VARIABLE and a[2] == 1: inputs.add(a[1])                 # Input storage class
+        elif op == OP_VARIABLE and a[2] == 7: fvars.add(a[1])                  # Function storage class: the translator's registers
         elif op == 21: signed[a[0]] = bool(a[2])                               # OpTypeInt width signedness
         elif op == 23 and a[1] in signed: signed[a[0]] = signed[a[1]]          # OpTypeVector of an int
+        elif op == 22: floats.add(a[0])                                        # OpTypeFloat
+        elif op == 23 and a[1] in floats: floats.add(a[0])                     # OpTypeVector of a float
+    no_result = {62, 63, 99, 218, 219, 224, 225, 228, 246, 247, 249, 250, 251, 252, 253, 254, 255}   # OpStore, OpImageWrite, barriers, branches, returns...: every word an operand
+    for op, a in ins:
+        if op not in (5, 6, 71, 72):
+            for x in (a if op in no_result else a[2:]): users[x].append((op, a))
+    fvar_loads = collections.defaultdict(list)
+    for op, a in ins:
+        if op == 61 and a[2] in fvars: fvar_loads[a[2]].append(a[1])
+    def raw(x, seen):   # every use of x ends in a cast to float, directly or through stores to register variables and their loads
+        if x in seen: return True
+        seen.add(x)
+        for op, a in users[x]:
+            if op == 124 and a[0] in floats: continue                                  # OpBitcast to float
+            if op == 62 and a[1] == x and a[0] in fvars and all(raw(l, seen) for l in fvar_loads[a[0]]): continue   # OpStore into a register
+            return False
+        return True
     for op, a in ins:
         if op == 65 and a[2] in inputs: chain[a[1]] = a[2]                     # OpAccessChain into an input
     for op, a in ins:
@@ -354,6 +375,7 @@ def int_inputs(spv):
         for x in ops:
             if x not in loads: continue
             if op == 124:
+                if raw(a[1], set()): continue   # a raw move: neither an integer use nor a float one
                 uses[loads[x]] += 1
                 if signed.get(a[0]): sint.add(loads[x])   # cast to a signed type: declared int, so a SINT format's fetch matches the input's numeric type
             else: other.add(loads[x])
