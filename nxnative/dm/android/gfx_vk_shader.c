@@ -6,6 +6,7 @@
 #include "gfx_vk.h"
 #include "nvn_hmap.h"
 #include "zstd.h"
+#include "vk_spv_vertex.h"
 #include <CommonCrypto/CommonDigest.h>
 #include <fcntl.h>
 #include <string.h>
@@ -485,6 +486,40 @@ static uint32_t *spv_frag_depth(const uint32_t *w, uint32_t nw, uint32_t *onw) {
         memcpy(&o[no], &w[i], n * 4); no += n; i += n; }
     o[3] = c.bound; *onw = no; free(c.nt); return o;
 }
+// Separate only GS buffer effects that do not drive its rasterization. User UBOs
+// and textures could alias a written buffer, so this first path accepts only the
+// host's immutable driver/support/constant segments and direct storage buffers.
+int vk_shader_gs_split_ready(vkshader_t *s) {
+    if (!s || s->stage != 2 || s->xfb || !s->spv || !V.has_gs_pointsize) return 0;
+    pthread_mutex_lock(&g_sh_mu);
+    if (s->gs_split) { int ok = s->gs_split == 1; pthread_mutex_unlock(&g_sh_mu); return ok; }
+    s->gs_split = 2;
+    for (int i = 0; i < s->nbind; i++) {
+        int k = s->b[i].kind;
+        if (k != RK_SUPPORT && k != RK_DRV && k != RK_C1 && k != RK_SBUF) { pthread_mutex_unlock(&g_sh_mu); return 0; }
+    }
+    uint32_t nr = 0, ne = 0, *r = NULL, *e = NULL; char why[128];
+    r = spv_gs_split(s->spv, s->nspv, 2, &nr, why, sizeof why);
+    if (r) e = spv_gs_split(s->spv, s->nspv, 1, &ne, why, sizeof why);
+    if (e) {
+        // Adreno's GS subgroup includes the physical output-vertex threads. Run
+        // guest warp scalarization in singleton groups in the effects pass.
+        uint32_t nn = 0, *one = spv_one_lane(e, ne, 0, &nn, why, sizeof why);
+        if (one) { free(e); e = one; ne = nn; }
+        else if (why[0]) { free(e); e = NULL; }
+    }
+    if (e && r) {
+        VkShaderModuleCreateInfo ei = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, NULL, 0, (size_t)ne * 4, e};
+        VkShaderModuleCreateInfo ri = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, NULL, 0, (size_t)nr * 4, r};
+        VkResult a = vkCreateShaderModule(V.dev, &ei, NULL, &s->gs_mod[0]);
+        VkResult b = a ? a : vkCreateShaderModule(V.dev, &ri, NULL, &s->gs_mod[1]);
+        if (!a && !b) { s->gs_split = 1; VKLOG("geometry shader %016llx: buffer effects separated from rasterization", (unsigned long long)s->key); }
+        else { if (s->gs_mod[0]) vkDestroyShaderModule(V.dev, s->gs_mod[0], NULL); if (s->gs_mod[1]) vkDestroyShaderModule(V.dev, s->gs_mod[1], NULL); s->gs_mod[0] = s->gs_mod[1] = VK_NULL_HANDLE; }
+    }
+    free(e); free(r); int ok = s->gs_split == 1;
+    pthread_mutex_unlock(&g_sh_mu); return ok;
+}
+
 // DM_VK_SPV_DIR=<dir> with DM_VK_SPV_ALT=1 (live, debugging): pipelines made while it is on use <dir>/<key>.spv in place of the bundle's code where the file
 // exists (same bindings), so two compilations of a shader can be compared in one run: the translator's module through spirv-opt, its GLSL through glslc...
 static VkShaderModule alt_module(vkshader_t *s) {
@@ -515,20 +550,20 @@ static uint32_t *spv_dual(const uint32_t *w, uint32_t nw, uint32_t *onw) {
     memcpy(&o[at + 8], &w[at + 4], (size_t)(nw - at - 4) * 4); *onw = nw + 4;
     return o;
 }
-static VkShaderModule vk_shader_module_(vkshader_t *s, uint64_t um, uint64_t im, uint32_t xo, int fd);
-VkShaderModule vk_shader_module(vkshader_t *s, uint64_t um, uint64_t im, uint32_t xo, int fd) { extern int g_prof_on; extern uint64_t g_prof_ns[8]; struct timespec a, b; if (g_prof_on) clock_gettime(CLOCK_MONOTONIC, &a);
-    VkShaderModule m = vk_shader_module_(s, um, im, xo, fd); if (g_prof_on) { clock_gettime(CLOCK_MONOTONIC, &b); g_prof_ns[3] += (uint64_t)((b.tv_sec - a.tv_sec) * 1000000000ll + (b.tv_nsec - a.tv_nsec)); } return m; }
-static VkShaderModule vk_shader_module_(vkshader_t *s, uint64_t um, uint64_t im, uint32_t xo, int fd) {
+static VkShaderModule vk_shader_module_(vkshader_t *s, uint64_t um, uint64_t im, uint32_t xo, int fd, uint32_t vi);
+VkShaderModule vk_shader_module(vkshader_t *s, uint64_t um, uint64_t im, uint32_t xo, int fd, uint32_t vi) { extern int g_prof_on; extern uint64_t g_prof_ns[8]; struct timespec a, b; if (g_prof_on) clock_gettime(CLOCK_MONOTONIC, &a);
+    VkShaderModule m = vk_shader_module_(s, um, im, xo, fd, vi); if (g_prof_on) { clock_gettime(CLOCK_MONOTONIC, &b); g_prof_ns[3] += (uint64_t)((b.tv_sec - a.tv_sec) * 1000000000ll + (b.tv_nsec - a.tv_nsec)); } return m; }
+static VkShaderModule vk_shader_module_(vkshader_t *s, uint64_t um, uint64_t im, uint32_t xo, int fd, uint32_t vi) {
     int dual = fd >> 1 & 1; fd &= 1;   // fd bit 1: the dual-source variant
     if (fd && (s->stage != 1 || s->depth_repl)) fd = 0;
     if (dual && s->stage != 1) dual = 0;
-    if (!(um | im | xo | (uint32_t)fd | (uint32_t)dual) || !s->spv) return s->mod;
+    if (!(um | im | xo | (uint32_t)fd | (uint32_t)dual | vi) || !s->spv) return s->mod;
     if (xo == 1u << 31) {   // DM_VK_SPV_ALT
         pthread_mutex_lock(&g_sh_mu); for (int i = 0; i < s->nvar; i++) if (s->var[i].um == 0 && s->var[i].im == 0 && s->var[i].xo == xo) { VkShaderModule m = s->var[i].mod; pthread_mutex_unlock(&g_sh_mu); return m; }
         VkShaderModule m = alt_module(s); if (s->nvar < 8) s->var[s->nvar++] = (typeof(s->var[0])){0, 0, xo, 0, m}; pthread_mutex_unlock(&g_sh_mu); return m; }
     xo &= ~(1u << 31);
     pthread_mutex_lock(&g_sh_mu);
-    for (int i = 0; i < s->nvar; i++) if (s->var[i].um == um && s->var[i].im == im && s->var[i].xo == xo && s->var[i].fd == (fd | dual << 1)) { VkShaderModule m = s->var[i].mod; pthread_mutex_unlock(&g_sh_mu); return m; }
+    for (int i = 0; i < s->nvar; i++) if (s->var[i].um == um && s->var[i].im == im && s->var[i].xo == xo && s->var[i].fd == (fd | dual << 1) && s->var[i].vi == vi) { VkShaderModule m = s->var[i].mod; pthread_mutex_unlock(&g_sh_mu); return m; }
     uint16_t bind[64]; uint8_t kind[64]; int nb = 0;
     for (int i = 0; i < s->nbind && i < 64; i++) if ((um | im) >> i & 1) { bind[nb] = s->b[i].binding; kind[nb++] = um >> i & 1 ? 1 : 2; }
     uint32_t nw = s->nspv, *w = nb ? spv_int_images(s->spv, s->nspv, bind, kind, nb, &nw) : NULL; VkShaderModule m = s->mod;
@@ -536,12 +571,13 @@ static VkShaderModule vk_shader_module_(vkshader_t *s, uint64_t um, uint64_t im,
         if (w && s->stage == 0) { uint32_t n3 = 0, *w3 = spv_vs_init(w, nw, &n3); if (w3) { free(w); w = w3; nw = n3; } } }   // the added outputs start as (0, 0, 0, 1) too
     if (fd && (w || !(nb || xo))) { uint32_t n2 = 0, *w2 = spv_frag_depth(w ? w : s->spv, nw, &n2); free(w); w = w2; nw = n2; }
     if (dual && (w || !(nb || xo || fd))) { uint32_t n2 = 0, *w2 = spv_dual(w ? w : s->spv, nw, &n2); free(w); w = w2; nw = n2; }
+    if (vi) { uint32_t n2 = 0, *w2 = spv_vertex_signedness(w ? w : s->spv, nw, vi, &n2); free(w); w = w2; nw = n2; }
     if (w) { VkShaderModuleCreateInfo ci = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, NULL, 0, (size_t)nw * 4, w};
         if (vkCreateShaderModule(V.dev, &ci, NULL, &m)) { m = s->mod; VKLOG("[RED] shader %016llx: its variant was refused (bindings %#llx / %#llx, outputs %#x, fragment depth %d, dual source %d)", (unsigned long long)s->key, (unsigned long long)um, (unsigned long long)im, xo, fd, dual); }
         else VKLOG("shader %016llx: variant for bindings %#llx (uint texels) %#llx (int texels), outputs added %#x, fragment depth written %d, dual source %d", (unsigned long long)s->key, (unsigned long long)um, (unsigned long long)im, xo, fd, dual);
         free(w); }
     else VKLOG("[RED] shader %016llx: no variant could be made (bindings %#llx / %#llx, outputs %#x, fragment depth %d, dual source %d)", (unsigned long long)s->key, (unsigned long long)um, (unsigned long long)im, xo, fd, dual);
-    if (s->nvar < 8) s->var[s->nvar++] = (typeof(s->var[0])){um, im, xo, fd | dual << 1, m};
+    if (s->nvar < 8) s->var[s->nvar++] = (typeof(s->var[0])){um, im, xo, fd | dual << 1, m, vi};
     pthread_mutex_unlock(&g_sh_mu);
     return m;
 }

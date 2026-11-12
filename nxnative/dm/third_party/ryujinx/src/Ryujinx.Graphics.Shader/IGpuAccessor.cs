@@ -268,6 +268,9 @@ namespace Ryujinx.Graphics.Shader
             return true;
         }
 
+        // Locations required by downstream consumers when translating software passthrough alone.
+        int QueryGeometryPassthroughAttributeMask() => 0xffff;
+
         /// <summary>
         /// Queries host support for readable images without a explicit format declaration on the shader.
         /// </summary>

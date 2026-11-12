@@ -510,11 +510,32 @@ static int mem_any(const uint8_t *p, uint64_t n) {   // whether any byte is non-
     for (; i < n; i++) if (p[i]) return 1;
     return 0;
 }
+// An uncompressed texture may alias a render target. Its CPU storage is not authoritative
+// after the GPU wrote any overlapping image, even when this description is looked up for the first time.
+static int cpu_storage_gpu_written(const tex_t *t) {
+    int written = 0;
+    pthread_mutex_lock(&g_img_mu);
+    for (uint32_t i = 0; i < g_by_key.cap; i++) {
+        const vkimg_t *im = g_by_key.vals[i];
+        if (im && im->gpu_w && im->pool == (uint64_t)(uintptr_t)t->pool && im->off < t->off + (int64_t)t->L.size && t->off < im->off + im->size) { written = 1; break; }
+    }
+    pthread_mutex_unlock(&g_img_mu);
+    return written;
+}
 static int cpu_content_tex(const tex_t *t, const vkfmt_t *f) {
     static int on = -1; if (on < 0) { const char *e = getenv("DM_NVN_STORAGE_FIRST_USE"); on = !e || atoi(e) != 0; }
-    if (!on || !t->pool || t->has_layout || !(f->compressed || t->d.target == 2) || t->d.samples > 1) return 0;
+    if (!on || !t->pool || t->has_layout || t->d.samples > 1) return 0;
     if (t->pool->flags & NVN_MEMORY_POOL_FLAGS_VIRTUAL) return 0;
     if (t->d.flags & (NVN_TEXTURE_FLAGS_IMAGE | NVN_TEXTURE_FLAGS_COMPRESSIBLE | NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET | NVN_TEXTURE_FLAGS_SPARSE)) return 0;
+    // CPU-filled 2D tables need the same first upload as compressed/3D textures. NieR's
+    // 256x16 RGBA8 LUT had 16,384 nonzero storage bytes but an all-black GPU image; its
+    // final colour pass consequently erased an otherwise correct title image.
+    // Off unless the profile sets DM_NVN_CPU_TEX2D_FIRST_USE=1: the alias walk and a wrong upload over render-target content stay out of other games.
+    static int tex2d = -1; if (tex2d < 0) { const char *e = getenv("DM_NVN_CPU_TEX2D_FIRST_USE"); tex2d = e && atoi(e) != 0; }
+    if (!f->compressed && t->d.target != 2 && !tex2d) return 0;
+    if (!f->compressed && t->d.target != 2 &&
+        (f->depth || f->stencil || (t->pool->flags & NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS) ||
+         (t->d.flags & (NVN_TEXTURE_FLAGS_DISPLAY | NVN_TEXTURE_FLAGS_VIDEO_DECODE)) || cpu_storage_gpu_written(t))) return 0;
     if (!mem_any(t->mem, t->L.size)) return 0;
     static int n; if (n++ < 8) VKLOG("texture %ux%ux%u nvn format %#x at %p (pool flags %#x): the CPU filled it before its first use: uploaded from its storage", t->d.width, t->d.height, t->d.depth, t->d.format, (const void *)t->mem, t->pool->flags);
     mtl_tex_cpu_written(t);
@@ -553,7 +574,7 @@ void vk_tex_release_drain(void) {   // the replay thread, at each submission (vk
 int mtl_tex_gpu_owned(uint64_t serial) { (void)serial; return 0; }
 
 // ---------------- views ----------------
-typedef struct vview { VkImageView v; VkImageViewType type; VkFormat fmt; uint32_t lv0, nlv, ly0, nly; VkComponentMapping swz; VkImageAspectFlags aspect; int attach; struct vview *next; } vview;   // attach: an attachment view (its usage differs from a sampling view's)
+typedef struct vview { VkImageView v; VkImageViewType type; VkFormat fmt; uint32_t lv0, nlv, ly0, nly; VkComponentMapping swz; VkImageAspectFlags aspect; int attach; VkImageUsageFlags usage; struct vview *next; } vview;   // attach: an attachment view (its usage differs from a sampling view's)
 static nvn_hmap g_views = {.klen = sizeof(vkimg_t *)};   // vkimg_t* → vview list
 static pthread_mutex_t g_view_mu = PTHREAD_MUTEX_INITIALIZER;
 extern uint64_t g_tex_gen;
@@ -592,7 +613,7 @@ static VkComponentMapping sample_swizzle(const VkComponentMapping *format, const
         apply(swz_comp(sw[2]),format,VK_COMPONENT_SWIZZLE_B),
         apply(swz_comp(sw[3]),format,VK_COMPONENT_SWIZZLE_A)};
 }
-__thread VkFormat vk_view_fmt; __thread uint32_t vk_view_layers;
+__thread VkFormat vk_view_fmt; __thread uint32_t vk_view_layers; __thread VkImageUsageFlags vk_view_usage;
 VkImageView vk_tex_view(const tex_t *t, const view_t *vw, int dim, int arrayed, int as_attachment, vkimg_t **img_out) {
     return vk_tex_view_as(t, vw, dim, arrayed, as_attachment, img_out, 0);
 }
@@ -647,7 +668,7 @@ VkImageView vk_tex_view_as(const tex_t *t, const view_t *vw, int dim, int arraye
     pthread_mutex_lock(&g_view_mu);
     vview *head = nvn_hm_get(&g_views, &im);
     for (vview *v = head; v; v = v->next)
-        if (v->type == type && v->fmt == fmt && v->lv0 == lv0 && v->nlv == nlv && v->ly0 == ly0 && v->nly == nly && v->aspect == aspect && v->attach == (as_attachment != 0) && !memcmp(&v->swz, &swz, sizeof swz)) { pthread_mutex_unlock(&g_view_mu); vk_view_fmt = fmt; vk_view_layers = nly; return v->v; }
+        if (v->type == type && v->fmt == fmt && v->lv0 == lv0 && v->nlv == nlv && v->ly0 == ly0 && v->nly == nly && v->aspect == aspect && v->attach == (as_attachment != 0) && !memcmp(&v->swz, &swz, sizeof swz)) { pthread_mutex_unlock(&g_view_mu); vk_view_fmt = fmt; vk_view_layers = nly; vk_view_usage = v->usage; return v->v; }
     VkImageViewUsageCreateInfo uci = {VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO, NULL, 0};
     VkFormatProperties fp; vkGetPhysicalDeviceFormatProperties(V.pd, fmt, &fp);
     uci.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
@@ -656,10 +677,10 @@ VkImageView vk_tex_view_as(const tex_t *t, const view_t *vw, int dim, int arraye
     VkImageViewCreateInfo ci = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, &uci, 0, im->img, type, fmt, swz, {aspect, lv0, nlv, ly0, nly}};
     VkImageView view; VkResult r = vkCreateImageView(V.dev, &ci, NULL, &view);
     if (r) { pthread_mutex_unlock(&g_view_mu); VKRED_ONCE(15, "vkCreateImageView failed (%d): type %d format %d levels %u+%u layers %u+%u of image %ux%ux%u", r, type, fmt, lv0, nlv, ly0, nly, im->w, im->h, im->layers); return VK_NULL_HANDLE; }
-    vview *nv = calloc(1, sizeof *nv); *nv = (vview){view, type, fmt, lv0, nlv, ly0, nly, swz, aspect, as_attachment != 0, head};
+    vview *nv = calloc(1, sizeof *nv); *nv = (vview){view, type, fmt, lv0, nlv, ly0, nly, swz, aspect, as_attachment != 0, uci.usage, head};
     nvn_hm_put(&g_views, &im, nv);
     pthread_mutex_unlock(&g_view_mu);
-    vk_view_fmt = fmt; vk_view_layers = nly;
+    vk_view_fmt = fmt; vk_view_layers = nly; vk_view_usage = uci.usage;
     return view;
 }
 

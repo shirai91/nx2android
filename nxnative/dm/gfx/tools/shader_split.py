@@ -409,6 +409,39 @@ def pkz_shaders(path, rel, ents, out):
             if len(d) != usz: red(f'/{rel}/{name}: {len(d)} bytes decoded, the entry says {usz}')
             scan_blob(d, f'/{rel}/{name}', out)
 
+# CPK and binding-table readers adapted from seedds/nxnative's shader_split.py.
+# The local NieR 1.0.3 DAT census matches its 1,371 objects / 1,225 distinct keys.
+CPK = b'CPK '
+def cpk_jobs(files, parts=64):
+    """Every entry of every CRI CPK archive in ranges of about equal length (Bayonetta 2: six in the RomFS root, 9.5 GB, 6,091 files, 12 GB of them CRILAYLA-compressed; its shaders are BNSH
+    files in shader.dat, shader2.dat and shadereff.dat, but no file name is relied on). → ([(path, rel, entries), …], the CPK paths)"""
+    import cpk
+    with_head = []
+    for p, r in files:
+        if p.lower().endswith('.cpk'):
+            with open(p, 'rb') as f: h = f.read(4)
+            if h != CPK: continue
+            try: with_head.append((p, r, cpk.files(p)))
+            except (ValueError, struct.error, KeyError, UnicodeDecodeError) as e:   # a layout cpk.py does not read: scanned as a loose file, as before CPKs were read (13 Sentinels and Catherine: Full Body were not checked)
+                print(f'[RED] /{r}: the CPK cannot be read ({e}); scanned as one file', flush=True)
+    jobs, step = [], sum(e[3] for _, _, es in with_head for e in es) / parts
+    for p, r, es in with_head:
+        cur, size = [], 0
+        for e in es:
+            cur.append(e); size += e[3]
+            if size >= step: jobs.append((p, r, tuple(cur))); cur, size = [], 0
+        if cur: jobs.append((p, r, tuple(cur)))
+    return jobs, {p for p, _, _ in with_head}
+
+def cpk_shaders(path, rel, ents, out):
+    """A range of CPK entries (cpk_jobs), each decoded (CRILAYLA or stored) and scanned like a loose file"""
+    import cpk
+    for e in ents:
+        try: d = cpk.read(path, e)
+        except (ValueError, IndexError) as x:   # a compression cpk.py does not decode: the entry is left out, and the split goes on
+            print(f'[RED] /{rel}/{e[0]}: {x}; not scanned', flush=True); continue
+        scan_blob(d, f'/{rel}/{e[0]}', out)
+
 def pgdat_members(d, label):
     """A PlatinumGames DAT archive: 'DAT\\0', u32 file count, then the offsets of five tables: file offsets (u32 each), extensions (4 bytes each), names (u32 name length, then one name of that
     length each), file lengths (u32 each), a name hash map. Members may be DAT archives again. → [(name, data)], or None when the tables do not fit the data (another game's file that only starts
@@ -431,6 +464,25 @@ def pg_shader(d, label):
     ctl, code = d[octl:octl + nctl], d[ocode:ocode + ncode]
     why = check(label, st, ctl, code)
     if not why and st != 'cs' and sph_stage(code) != st: why = f'the SPH stage {sph_stage(code)} does not match the object\'s magic'
+    if why: red(f'{label} ({st}): {why}')
+    return [(f'{label}#PGSO', st, ctl, code)]
+
+def pg_sized_shader(d, label):
+    """PlatinumGames' binding-table form: u32 prefix length (including itself), bindings, u32 code length, code, u32 control length, control. NieR:Automata's 1,371 objects in five DATs
+    all have a 0x88-byte prefix and 0x880 control bytes; keys match the objects passed to NVN at boot. Recognize the section boundaries and NVN magics, without relying on a title or filename."""
+    if len(d) < 12: return []
+    prefix = struct.unpack_from('<I', d)[0]
+    if prefix < 4 or prefix & 3 or prefix + 8 > len(d): return []
+    ncode = struct.unpack_from('<I', d, prefix)[0]
+    codeoff, ctlsize = prefix + 4, prefix + 4 + ncode
+    if ncode < 0x80 or ctlsize + 4 > len(d) or d[codeoff:codeoff + 4] not in (GFX_MAGIC, CS_MAGIC): return []
+    nctl = struct.unpack_from('<I', d, ctlsize)[0]
+    ctloff = ctlsize + 4
+    if nctl < 0x760 or ctloff + nctl != len(d) or d[ctloff:ctloff + 4] != CTL_MAGIC: return []
+    ctl, code = d[ctloff:], d[codeoff:ctlsize]
+    st = 'cs' if code[:4] == CS_MAGIC else sph_stage(code)
+    if st is None: red(f'{label}: binding-table shader has an unknown SPH stage')
+    why = check(label, st, ctl, code)
     if why: red(f'{label} ({st}): {why}')
     return [(f'{label}#PGSO', st, ctl, code)]
 
@@ -1316,6 +1368,7 @@ def scan_blob(d, label, out):
         for nm, m in mem: scan_blob(m, f'{label}/{nm}', out)
         return
     if d[:4] in PG_STAGES and len(d) >= 0x18 and d[(o := struct.unpack_from('<I', d, 0xc)[0]):o + 4] == CTL_MAGIC: out.extend(pg_shader(d, label)); return
+    if pg := pg_sized_shader(d, label): out.extend(pg); return
     for m in re.finditer(b'BNSH\0\0\0\0', d):
         size = struct.unpack_from('<I', d, m.start() + 0x1c)[0]
         if m.start() + size <= len(d) and d[m.start() + 0x60:m.start() + 0x64] == b'grsc': out.extend(bnsh_shaders(d, m.start(), label))
@@ -1407,6 +1460,9 @@ def scan_file(args):
         return rel, uniq_keys(found), var_pairs(found), trees
     if len(args) > 2 and args[2][0] == UE_LEGACY:   # files of a legacy Unreal pak (ue_legacy_jobs)
         ue_legacy_shaders(path, rel, args[2][1], found)
+        return rel, uniq_keys(found), var_pairs(found), trees
+    if len(args) > 2 and head[:4] == CPK:   # entries of a CRI CPK (cpk_jobs)
+        cpk_shaders(path, rel, args[2], found)
         return rel, uniq_keys(found), var_pairs(found), trees
     if len(args) > 2 and head[:4] == PKZL:   # entries of a PlatinumGames PKZ (pkz_jobs)
         pkz_shaders(path, rel, args[2], found)
@@ -1517,8 +1573,9 @@ def main():
     arc_jobs, arcs = smash_arc_jobs(files)   # Super Smash Bros. Ultimate's data.arc: its current files, in ranges
     pz_jobs, pkzs = pkz_jobs(files)   # Bayonetta 3's PKZ archives, Oodle Kraken decoded by the game's own decoder in the Mac host
     ar_jobs, ards = ard_jobs(files)   # Xenoblade Chronicles 3's archive (bf3.arh / bf3.ard)
-    big += pak_jobs + tr_jobs + ue_jobs + bd_jobs + arc_jobs + pz_jobs + ar_jobs
-    files = [(p, r) for p, r in files if not linkdata_jobs(p, r) and p not in paks and p not in trp and p not in uep and p not in bdts and p not in arcs and p not in pkzs and p not in ards]
+    cp_jobs, cpks = cpk_jobs(files)   # CRI CPK entries, decoded and scanned recursively (PlatinumGames DATs)
+    big += cp_jobs + pak_jobs + tr_jobs + ue_jobs + bd_jobs + arc_jobs + pz_jobs + ar_jobs
+    files = [(p, r) for p, r in files if not linkdata_jobs(p, r) and p not in paks and p not in trp and p not in uep and p not in bdts and p not in arcs and p not in pkzs and p not in ards and p not in cpks]
     with cf.ProcessPoolExecutor(J, initializer=_pool_init, initargs=(common, {}, zdicts)) as ex:
         results += list(ex.map(scan_file, big)) + list(ex.map(scan_file, files, chunksize=16))
     trees, defer = {}, []

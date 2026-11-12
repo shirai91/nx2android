@@ -1,0 +1,42 @@
+# NieR:Automata The End of YoRHa Edition 1.0.3, SDK 12.3.9, PlatinumGames / NVN.
+# Survey values checked against this build and the upstream memory/texture evidence.
+# Android bring-up and current rendering gaps: docs/NIER_AUTOMATA_ANDROID_PORT.md at the checkout root.
+
+# ---- Identity ----
+title_id	010056B015FE8000
+program_id	010056B015FE8000
+
+# ---- App ----
+name	NieR:Automata The End of YoRHa Edition
+ipa	NieRAutomataTheEndOfYoRHaEdition.ipa
+app_category	public.app-category.games
+
+# ---- Versions ----
+build	v131072	1.0.3	main=3c10ec35c5ef4c3686b4053afb0e58e7	subsdk0=be1ee79a9968a35a6b63fc8f1036a6d4	sdk=e8cdceb1e77a8465fe20f21928e8d296
+package	v131072
+shader_versions	v131072
+
+# ---- Files ----
+# every module main imports from
+modules	main subsdk0 sdk
+romfs_marker	data014.cpk
+zip_store	.bnk:.cpk:.usm:.wem:.wsp:.metallib
+
+# ---- Memory ----
+# the NPDM declares 16 MB of system resource (virtual address memory) and main never sets a heap: a 5 GB block with a 4.375 GB alias region, where the game maps its memory itself
+mem_reserve	0x140000000
+mem_alias	0x118000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+# the NPDM declares 16 MB of system resource
+sys_resource	0x1000000
+
+# ---- Shader split ----
+shader_groups	/Enlighten/=enlighten /movie/=movie /sound/=sound /movie_logo/=movielogo
+shader_note	NieR:Automata The End of YoRHa Edition shaders
+
+# Matching 1.0.3 upstream evidence: both sticks, CPU-filled and later unflushed texture storage.
+# https://github.com/seedds/nxnative/blob/main/dm/games/010056B015FE8000/README.md
+pad_layout	full
+tex_flush_upload	on
+tex_dirty_upload	on

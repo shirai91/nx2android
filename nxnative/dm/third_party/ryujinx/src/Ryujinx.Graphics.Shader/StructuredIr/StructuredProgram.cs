@@ -18,9 +18,10 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
             ShaderDefinitions definitions,
             ResourceManager resourceManager,
             TargetLanguage targetLanguage,
+            bool nativeGeometryPassthrough,
             bool debugMode)
         {
-            StructuredProgramContext context = new(attributeUsage, definitions, resourceManager, debugMode);
+            StructuredProgramContext context = new(attributeUsage, definitions, resourceManager, nativeGeometryPassthrough, debugMode);
 
             for (int funcIndex = 0; funcIndex < functions.Count; funcIndex++)
             {
