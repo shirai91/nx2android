@@ -22,6 +22,11 @@
 # A further run of 9,300 frames with the same switches (the sampling profiler on too), around the Great Plateau's ruins: 95 to 100% of the frames held one vsync (1,800 /
 # 1,738 / 1,768 / 1,708 of each 1,800, none three), 3,600-4,500 draws, replay 10.3-11.1 ms, GPU p50 10.6-13.4 ms, 40 to 60 late frames in each 1,800: 60 fps with slight
 # stutters, the player said, with SOC at 67 C in that run's screenshot.
+# DM_VK_X_CUTANY=1 + DM_VK_CB_DRAWS=32 (the command buffer cut every 32 draws, before any pass, so that the GPU starts on the frame while the replay still records), at the
+# player's request after a run with them: 1,769 of 1,800 frames held one vsync, twice (98%), and the player reported a consistent 60 fps with SOC in the 70s (and no picture
+# fault). That run was on a build with replay changes proposed separately (heap copies of deferred uniform updates, a wider pool lookup cache: the replay 11.7 -> 8.1 ms a
+# frame in the woods), not on main, and the two were not switched within a run: its replay (9.3-10.1 ms at 4,000-4,300 draws) and the GPU's tail after it (3.8-4.0 ms) read as
+# in the run before without them. Cutting before any pass is the rule that made Adreno's LRZ flicker on Qualcomm's driver; it was run here with Turnip alone.
 # Turnip's release notes name a glitchy picture on the Adreno 830 in its GMEM mode and TU_DEBUG=sysmem against it; the player was told to add it to env.txt, the log does
 # not show whether the driver took it, and the picture was right.
 # Open: the fight had GPU frames of 40-100 ms and one of 221 ms (38 frames held three vsyncs), as Tears of the Kingdom's fights have; 60 fps held on the plateau (a frame
@@ -37,3 +42,5 @@ env	DM_VK_FDZ=0
 env	DM_NVN_ASYNC=1
 env	DM_PIN_REPLAY=prime
 env	DM_GPU_TURBO=1
+env	DM_VK_X_CUTANY=1
+env	DM_VK_CB_DRAWS=32
