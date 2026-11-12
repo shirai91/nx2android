@@ -37,7 +37,7 @@ def _parser():
                          '(DM_VK_DRIVER in env.txt); the app falls back to the device\'s driver when the library does not load. A library not named lib*.so '
                          '(vulkan.purple.so) is packed as lib<name>, the only names Android extracts')
     po.add_argument('--shared-font', default=None, metavar='FILE',
-                    help='a TrueType font (.ttf, one font, not a collection) to pack as the system font the game asks for, instead of the device\'s Roboto: one with CJK '
+                    help='a TrueType font (.ttf, one font, not a collection) to pack as the system font the game asks for, instead of the device\'s own font: one with CJK'
                          'characters shows the Chinese and Korean text of a game that draws it with the system font (DM_SHARED_FONT in env.txt); never shipped with the tool')
     po.add_argument('--firmware', default=None, metavar='DIR',
                     help="a folder of your console's system content files (.nca: its firmware dump, NAND SYSTEM Contents/registered) for a game that reads system data "
