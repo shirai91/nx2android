@@ -555,29 +555,86 @@ static int pool_zero_copy(vkpool_t *p, uint8_t *mem, uint64_t size) {
     p->ahb = ahb; p->zero_copy = 1;
     return 0;
 }
-// A zero-copy pool's dma-buf mapped again over [mem, mem+len) in one piece per chunk, read-only (nvn_dirty_defrag: the mappings its protection split never merge). 0 = done
+// Pools inside pools. A game may make a pool over memory that lies inside another of its pools: Kirby and the Forgotten Land keeps its resource heap (1.4 GB) in one
+// pool, loads each model file into it and makes a small pool over the file's vertex data, and its movie player's textures come and go the same way. The inner pool's pages
+// are its own buffer's while it lives, and the outer buffer's again when it goes (pool_copy_back): left as anonymous memory, they were no longer the outer buffer's, and
+// the next vk_pool_remap_ro of the outer pool put the buffer's pages back there with what they held when the inner pool was made. The game then found files it had loaded
+// since in an older state (a model file relocated twice, or not relocated after ResCast: a hang in the SDK's relocation loop, crashes at main+0x506c30 and others, each
+// shortly after a movie, whose frames' uploads bring the mprotect count to the defragmenting's threshold). A live inner pool lost its pages the same way, so the outer
+// pool is mapped again only around them.
+// g_nest_mu: an inner pool is made (its pages mapped, then the entry added) and dropped (the entry removed, then its pages given back) as one step against the outer
+// pool's remap. Taken before g_pool_mu; nothing waits on the dirty-page tracking under it (nvn_dirty_defrag calls the remap with its pages busy)
+static pthread_mutex_t g_nest_mu = PTHREAD_MUTEX_INITIALIZER;
+static int pool_within(const vkpool_t *q, const vkpool_t *p) {   // q: a chunk of a zero-copy pool that overlaps p and belongs to a smaller pool than p's
+    return q->zero_copy && q->base != p->base && q->end - q->base < p->end - p->base && q->lo < p->hi && q->hi > p->lo;
+}
+// The dma-buf behind a zero-copy pool's pages, whose offset p->boff is p->lo's: a slab's file, or the hardware buffer's (*own: the caller closes it). -1: none
+static int pool_fd(const vkpool_t *p, int *own) {
+    *own = 0;
+    if (!p->zero_copy) return -1;
+    if (p->slab) return ((slab_t *)p->slab)->fd;
+    int sv[2], fds[16], nfd = -1; if (!p->ahb || socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sv)) return -1;
+    if (!AHardwareBuffer_sendHandleToUnixSocket(p->ahb, sv[0])) nfd = recv_fds(sv[1], fds, 16);
+    close(sv[0]); close(sv[1]);
+    for (int k = 1; k < nfd; k++) close(fds[k]);
+    if (nfd < 1) return -1;
+    *own = 1; return fds[0];
+}
+// A zero-copy pool's dma-buf mapped again over [mem, mem+len) in one piece per chunk, read-only (nvn_dirty_defrag: the mappings its protection split never merge), but for
+// the pools inside it, whose pages stay their own. 0 = done
 int vk_pool_remap_ro(void *mem, size_t len) {
     int rc = 0; uint64_t done = 0;
+    pthread_mutex_lock(&g_nest_mu);
     pthread_rwlock_rdlock(&g_pool_mu);
     for (int i = 0; i < g_npool && !rc; i++) {
         vkpool_t *p = &g_pool[i]; if (p->base != (uint64_t)(uintptr_t)mem || p->end - p->base != len) continue;
         if (!p->zero_copy) { if (!p->shadow) { rc = -1; break; } done += p->hi - p->lo; continue; }   // a copied pool: nothing to map again (its protection stays as it is), and done, so defrag stops taking its pages busy
-        if (p->slab) { void *at = (void *)(uintptr_t)p->lo; rc = mmap(at, p->hi - p->lo, PROT_READ, MAP_SHARED | MAP_FIXED, ((slab_t *)p->slab)->fd, (off_t)p->boff) == at ? 0 : -1; if (!rc) done += p->hi - p->lo; continue; }   // a slab's slot
-        int sv[2], fds[16], nfd = -1; if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sv)) { rc = -1; break; }
-        if (!AHardwareBuffer_sendHandleToUnixSocket(p->ahb, sv[0])) nfd = recv_fds(sv[1], fds, 16);
-        close(sv[0]); close(sv[1]);
-        void *at = (void *)(uintptr_t)p->lo; rc = nfd >= 1 && mmap(at, p->hi - p->lo, PROT_READ, MAP_SHARED | MAP_FIXED, fds[0], 0) == at ? 0 : -1;
-        for (int k = 0; k < nfd; k++) close(fds[k]);
+        int own, fd = pool_fd(p, &own); if (fd < 0) { rc = -1; break; }
+        for (uint64_t a = p->lo; a < p->hi && !rc; ) {   // [a, lo): the piece up to the next inner pool [lo, hi)
+            uint64_t lo = p->hi, hi = p->hi;
+            for (int j = 0; j < g_npool; j++) {
+                const vkpool_t *q = &g_pool[j]; if (!pool_within(q, p) || q->hi <= a) continue;
+                uint64_t ql = q->lo > a ? q->lo : a, qh = q->hi < p->hi ? q->hi : p->hi;
+                if (ql < lo) { lo = ql; hi = qh; } else if (ql == lo && qh > hi) hi = qh;
+            }
+            if (lo > a) { void *at = (void *)(uintptr_t)a; rc = mmap(at, lo - a, PROT_READ, MAP_SHARED | MAP_FIXED, fd, (off_t)(a - p->lo + p->boff)) == at ? 0 : -1; }
+            a = hi;
+        }
+        if (own) close(fd);
         if (!rc) done += p->hi - p->lo;
     }
     pthread_rwlock_unlock(&g_pool_mu);
+    pthread_mutex_unlock(&g_nest_mu);
     return !rc && done == len ? 0 : -1;
 }
-static void pool_copy_back(vkpool_t *p) {   // the pages go back to anonymous memory with the buffer's contents (the game may reuse the memory)
-    uint64_t size = p->hi - p->lo; uint8_t *mem = (uint8_t *)(uintptr_t)p->lo;
-    uint8_t *save = malloc(size); if (save) memcpy(save, mem, size);
-    mmap(mem, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
-    if (save) { memcpy(mem, save, size); free(save); }
+// A pool that goes: its pages take the buffer's contents with them (the game may reuse the memory), as the pages of the pool they lie inside (see "Pools inside pools":
+// written into that pool's buffer first, then mapped from it, so the bytes are there at every moment) or else as anonymous memory. p has left the table
+static void pool_copy_back(vkpool_t *p) {
+    for (uint64_t a = p->lo; a < p->hi; ) {
+        uint8_t *mem = (uint8_t *)(uintptr_t)a; uint64_t e = p->hi, next = p->hi; int fd = -1, own = 0; off_t off = 0;
+        pthread_rwlock_rdlock(&g_pool_mu);
+        const vkpool_t *o = NULL;   // the smallest pool around a
+        for (int j = 0; j < g_npool; j++) {
+            const vkpool_t *q = &g_pool[j]; if (!pool_within(p, q)) continue;
+            if (q->lo > a) { if (q->lo < next) next = q->lo; }
+            else if (q->hi > a && (!o || q->end - q->base < o->end - o->base)) o = q;
+        }
+        if (o) { if (o->hi < e) e = o->hi; fd = pool_fd(o, &own); off = (off_t)(a - o->lo + o->boff); } else e = next;
+        pthread_rwlock_unlock(&g_pool_mu);
+        uint64_t n = e - a; int ok = 0;
+        if (fd >= 0) {
+            uint8_t *tmp = mmap(NULL, n, PROT_READ | PROT_WRITE, MAP_SHARED, fd, off);
+            if (tmp != MAP_FAILED) { memcpy(tmp, mem, n); munmap(tmp, n); ok = mmap(mem, n, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, off) == mem; }
+            if (own) close(fd);
+            if (!ok) { static int said; if (!said++) VKLOG("[RED] memory pool %p +%#llx inside another pool: its pages could not go back to that pool's buffer (errno %d): anonymous memory, which the outer pool's next remap replaces", (void *)mem, (unsigned long long)n, errno); }
+        }
+        if (!ok) {
+            uint8_t *save = malloc(n); if (save) memcpy(save, mem, n);
+            mmap(mem, n, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+            if (save) { memcpy(mem, save, n); free(save); }
+        }
+        a = e;
+    }
 }
 // Pools over ZC_CHUNK are made of chunks of at most that size, each a pool entry with an AHardwareBuffer of its own: the Adreno 830's gralloc allocator service
 // (vendor.qti.hardware.display.allocator-service, snapalloc) aborts on a BLOB of 812 MB ("ubsan: mul-overflow" in SnapConstraintManager::AlignmentToAlignedConstraints),
@@ -623,6 +680,12 @@ static void pool_add_one(const void *mem, uint64_t size, uint64_t base, uint64_t
     uint64_t t0 = pool_ns();
     vkpool_t q, *p = &q; memset(p, 0, sizeof *p);
     p->lo = (uint64_t)(uintptr_t)mem; p->hi = p->lo + size; p->base = base; p->end = end;
+    int inner = 0;   // inside another pool: made as one step against that pool's remap (see "Pools inside pools")
+    pthread_mutex_lock(&g_nest_mu);
+    pthread_rwlock_rdlock(&g_pool_mu);
+    for (int j = 0; j < g_npool && !inner; j++) inner = g_pool[j].zero_copy && g_pool[j].base != base && g_pool[j].lo < p->hi && g_pool[j].hi > p->lo;
+    pthread_rwlock_unlock(&g_pool_mu);
+    if (!inner) pthread_mutex_unlock(&g_nest_mu);
     int zc = ((uintptr_t)mem & 0xfff) || (size & 0xfff) ? -3 : getenv("DM_VK_NO_ZEROCOPY") ? -4 : zc_over(end - base) ? -5 : pool_zero_copy(p, (uint8_t *)mem, size);
     if (zc) {
         static int said; if (!said++) VKLOG("[RED] memory pool %p +%#llx could not be zero-copy (%d): a GPU copy is refreshed before each submission (slow)", mem, (unsigned long long)size, zc);
@@ -641,6 +704,7 @@ static void pool_add_one(const void *mem, uint64_t size, uint64_t base, uint64_t
     g_pool[g_npool] = q; pool_ord_insert(g_npool++); __atomic_fetch_add(&g_pool_gen, 1, __ATOMIC_RELEASE);
     int np = g_npool;
     pthread_rwlock_unlock(&g_pool_mu);
+    if (inner) pthread_mutex_unlock(&g_nest_mu);
     if (np >= 1024 && !(np & (np - 1))) VKLOG("%d memory pools live", np);
     static uint64_t zc_bytes, cp_bytes; if (zc) cp_bytes += size; else zc_bytes += size;
     static int nlog; if (nlog++ < 24) VKLOG("memory pool %p +%#llx: %s (zero-copy %.1f MB, copied %.1f MB)", mem, (unsigned long long)size, zc ? "copied" : "zero-copy", zc_bytes / 1048576.0, cp_bytes / 1048576.0);
@@ -648,13 +712,17 @@ static void pool_add_one(const void *mem, uint64_t size, uint64_t base, uint64_t
 }
 void mtl_pool_del(const void *mem) {
     for (;;) {   // every chunk of the pool
+        pthread_mutex_lock(&g_nest_mu);
         pthread_rwlock_wrlock(&g_pool_mu);
         int i = 0; while (i < g_npool && g_pool[i].base != (uint64_t)(uintptr_t)mem) i++;
-        if (i == g_npool) { pthread_rwlock_unlock(&g_pool_mu); return; }
+        if (i == g_npool) { pthread_rwlock_unlock(&g_pool_mu); pthread_mutex_unlock(&g_nest_mu); return; }
         vkpool_t p = g_pool[i]; g_pool[i] = g_pool[--g_npool]; pool_ord_remove(i); __atomic_fetch_add(&g_pool_gen, 1, __ATOMIC_RELEASE);
+        int inner = 0; for (int j = 0; j < g_npool && !inner; j++) inner = p.zero_copy && pool_within(&p, &g_pool[j]);   // its pages go back to the pool around it, as one step against that pool's remap
         pthread_rwlock_unlock(&g_pool_mu);
+        if (!inner) pthread_mutex_unlock(&g_nest_mu);
         uint64_t t0 = pool_ns();
         if (p.zero_copy) pool_copy_back(&p);
+        if (inner) pthread_mutex_unlock(&g_nest_mu);
         free(p.baseline);
         { void vk_tbuf_drop_pool(uint64_t); vk_tbuf_drop_pool(p.serial); }   // the texel buffer views over its buffer (gfx_vk_tex.c), before the buffer itself goes or is kept
         if (p.slab) slab_give(p.slab, p.slot, mtl_last_fence() + 1);   // the slot goes back to its slab (the GPU may still read it until that submission is done)

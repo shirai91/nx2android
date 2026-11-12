@@ -260,3 +260,19 @@ requires successful writes and synchronization; failed or incomplete snapshots a
 pending legacy migrations remain eligible for retry. `DM_VK_NOPCACHE` still means
 start empty, while allowing newly built pipelines to be saved. Bump `PCACHE_ABI`
 when changing the renderer's persistent cache contract.
+
+## Optional native keyboard
+
+`python -m porter port <folder> --native-keyboard` packages `org.nx2a.GameActivity` and its Unicode EditText dialog. Combine it with `--external-display` to select `org.nx2a.KeyboardExternalActivity`; external display alone keeps its controller keyboard. These opt-in activities require JDK `javac` plus SDK platform and build-tools; ordinary NativeActivity builds remain code-less and keep the controller keyboard. Installation and save requests resolve the installed package's launcher activity, including ports built before this option existed.
+
+JNI passes ordinary UTF-8 byte arrays, which preserve supplementary characters. The guest's minimum and maximum lengths are UTF-16 units, and native output truncation preserves complete UTF-8 code points. The guest passes its request-local minimum length to a host pthread and joins it. That worker attaches to the VM, looks up and calls the Java method, and detaches on its own pthread stack. The bridge caches method presence or absence for the activity class. When the optional method is absent, the guest uses the overlay keyboard after the worker exits.
+
+Cancel, pause and destruction release waiting callers without accepting text. Requests are serialized, and a concurrent request is cancelled with a log line. The native dialog takes activity window focus, so the regular Android window-focus callback reports the transition to the guest. The bridge supports text entry. Additional guest keyboard modes and candidate/update callbacks are outside its scope.
+
+Run the asset-free emulator contract probe with:
+
+```sh
+python tests/android/keyboard_smoke.py --sdk "$ANDROID_HOME" --ndk "$ANDROID_NDK_HOME" --serial emulator-5554 --out /tmp/nx2a-keyboard
+```
+
+It builds through the production Java/dex packager, uses the real guest keyboard conversion and JNI bridge, and checks Unicode/UTF-16 output, minimum length, cancel, background/resume, repeated requests and bounded UTF-8 output. Add `--without-java` to verify the default APK's fallback. The probe installs only `org.nx2a.keyboardtest` and uninstalls it afterward; run it on a dedicated emulator. No game dump is needed. This probe does not qualify the combined external-display keyboard or physical-device gameplay.
