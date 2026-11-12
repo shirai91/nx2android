@@ -1,0 +1,44 @@
+# Pokémon Mystery Dungeon Rescue Team DX 1.0.2 (update v131072): Unity 2018.3.12f1 IL2CPP with FMOD on SDK 7.4.0, NVN; subsdk0 is NintendoSDK_movie. Started from porter's
+# provisional profile (dm/games/profile_guess.py) and checked by hand against the survey; Android testing is in android.tsv.
+# patches.py: Unity 2018.3's render command stream (ThreadedStreamBuffer) wakes its reader and writer with a flag and a store-release, then a plain load: the main thread and
+# UnityGfxDeviceWorker each slept waiting for the other within seconds of every launch (a black screen); the cuts make those loads ldar.
+
+# ---- Identity ----
+title_id	01003D200BAA2000
+program_id	01003D200BAA2000
+
+# ---- App ----
+name	Pokémon Mystery Dungeon Rescue Team DX
+ipa	PokMonMysteryDungeonRescueTeamDx.ipa
+app_category	public.app-category.games
+
+# ---- Versions ----
+build	v131072	1.0.2	main=3ab632dee82d59448599b2291f30994a	subsdk0=baee264d3658fc6b6b581e5cbb662e3a	sdk=e30d2170165e907aba457c79fd83383d
+package	v131072
+shader_versions	v131072
+
+# ---- Files ----
+# every module main imports from
+modules	main subsdk0 sdk
+romfs_marker	Data/StreamingAssets/ab/se_ev.ab
+zip_store	.ab:.assets:.dat:.ress:.metallib
+
+# ---- Memory ----
+# the NPDM declares 16 MB of system resource (virtual address memory) and main sets a heap: a 5 GB block with a large alias region (the layout of the other Unity 2018 games,
+# Lonely Mountains: Downhill). No heap check was run (it boots the game on the Mac host): the guessed keys held through the opening and Tiny Woods (footprint about 1.7 GB)
+mem_reserve	0x140000000
+mem_alias	0x118000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+# the NPDM declares 16 MB of system resource
+sys_resource	0x1000000
+
+# ---- Frame rate ----
+# 60 fps (30 on the Switch): the game asks for present interval 2 (Unity's vSyncCount), which display mode ignores, and nothing else holds it at 30 (frame work about 3 ms on an
+# Adreno 740). The dungeon steps by the time that really passed: on the Odin 2, holding up for 1 s at 60 fps and then down for 1 s pinned at 30 (DM_FPS_PIN, one run) walked back
+# to the same tile, one belly point a step both ways; frame counting would have walked twice as far up. DM_PRESENT_INTERVAL=game in env.txt keeps 30 and saves power
+present_interval	display
+
+# ---- Shader split ----
+shader_groups	/Data/=data
+shader_note	Pokémon Mystery Dungeon Rescue Team DX shaders
