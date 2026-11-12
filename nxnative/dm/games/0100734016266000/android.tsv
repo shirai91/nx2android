@@ -1,0 +1,15 @@
+# Mega Man Battle Network Legacy Collection Vol. 2 on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# A GBA emulator collection (Battle Network 4 Red Sun / Blue Moon, 5 Team ProtoMan / Team Colonel, 6 Cybeast Gregar / Falzar) with the NoesisGUI launcher of Vol. 1 (010038E016264000),
+# SDK 13.3.5, NVN, Wwise; subsdk1 is NintendoSDK_movie. Update v196608 (1.0.3).
+# Tested 2026-11-12 on an AYN Odin 2 (QCS8550, Adreno 740, Android 13) with Mesa Turnip (--vulkan-driver), driven with DM_CTL: the intro movies, the title, the main menu,
+# Battle Network 4 Red Sun started from it, its title and opening scene (dialogue), the in-game options overlay and Quit back to the main menu; no crash, no red log line.
+# 60 fps without a cap to remove: the collection presents every frame (interval 1); BN4's opening p99 16.67 ms, 0 dropped frames in 300, footprint 1.4 GB.
+# It needed nothing beyond Vol. 1's core fixes (sync_replay_fence: the replay skips the movie syncs the game frees when each intro movie ends, which crashed the next allocation;
+# nvnDeviceGetWindowOriginMode), with which it ran on the first try.
+# Known gaps: the launcher builds shaders in memory that are in no game file, the same 13 keys as Vol. 1's; the first run captures them (black menu backgrounds until then) and
+# the next port with --install translates them (docs/ARCHITECTURE.md, shaders captured on the device). Qualcomm's own Odin 2 driver crashed Vol. 1 in vkCmdBeginRenderPass and
+# ran it at 30 fps with DM_VK_RP=0 (the game then runs at half speed): port with Turnip. Not tested yet: an in-game save, battles, Battle Network 5 and 6, the gallery.
+status	wip
+tested	v196608 (1.0.3) AYN Odin 2 (QCS8550, Adreno 740, Android 13, Turnip), 2026-11-12
+package	org.nx2a.mmbnlc2
+orientation	landscape
