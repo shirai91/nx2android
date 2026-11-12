@@ -530,6 +530,9 @@ static int cpu_content_tex(const tex_t *t, const vkfmt_t *f) {
     // CPU-filled 2D tables need the same first upload as compressed/3D textures. NieR's
     // 256x16 RGBA8 LUT had 16,384 nonzero storage bytes but an all-black GPU image; its
     // final colour pass consequently erased an otherwise correct title image.
+    // Off unless the profile sets DM_NVN_CPU_TEX2D_FIRST_USE=1: the alias walk and a wrong upload over render-target content stay out of other games.
+    static int tex2d = -1; if (tex2d < 0) { const char *e = getenv("DM_NVN_CPU_TEX2D_FIRST_USE"); tex2d = e && atoi(e) != 0; }
+    if (!f->compressed && t->d.target != 2 && !tex2d) return 0;
     if (!f->compressed && t->d.target != 2 &&
         (f->depth || f->stencil || (t->pool->flags & NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS) ||
          (t->d.flags & (NVN_TEXTURE_FLAGS_DISPLAY | NVN_TEXTURE_FLAGS_VIDEO_DECODE)) || cpu_storage_gpu_written(t))) return 0;

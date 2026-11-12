@@ -72,8 +72,11 @@ the GS buffers must not overlap vertex/index fetch or the VS's direct buffer rea
 and VS textures or indirect handles conservatively retain the original path.
 PPE3 invalidates older prewarm records. The effects shader writes PointSize, and
 discarded pipelines invalidate cached stencil state before the next raster draw.
-`DM_VK_GS_SPLIT=0` restores the original path live for diagnosis. Other vendors keep
-the original default; other Adreno games still need rendering regression coverage.
+The split is off unless a profile sets `env DM_VK_GS_SPLIT=1` (NieR:Automata), and runs only on
+Adreno (vendor 0x5143, Qualcomm's driver or Turnip); `DM_VK_GS_SPLIT=0` restores the original path live
+for diagnosis. Likewise the first-use upload of CPU-filled uncompressed 2D textures (`gfx_vk_tex.c`
+`cpu_content_tex`, which also checks the pool for GPU-written aliases) needs `env DM_NVN_CPU_TEX2D_FIRST_USE=1`;
+without it only compressed and 3D textures are uploaded, as before.
 
 ## Game profiles on Android
 

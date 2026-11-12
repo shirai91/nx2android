@@ -84,6 +84,7 @@ uint64_t vk_replay_ns(void) { return g_vkst.ns_exec; }   // the replay time so f
 // uniform updates land at each cut, DM_VK_X_NOKEEP no pass kept for the same targets, DM_VK_X_NOSHC no shadow reuse
 static int g_fdz = 1;  // DM_VK_FDZ (live): fragment-depth variants for draws on depth written by fragment shaders (pipeline key fdz)
 static int g_gs_split_mode; // 1: discarded, single-output memory pass; 2: pure rasterization
+static int g_gs_split;      // DM_VK_GS_SPLIT=1 (a profile env row; live, read in x_read): the split below on Adreno; off by default
 enum { LRZ_READ = 2, LRZ_SWITCH = 4, LRZ_CUT = 8, LRZ_ALL = 14, LRZ_CUT_RD = 16, LRZ_CORNER = 32 };   /* LRZ_CUT_RD: only read at a cut; LRZ_CORNER: the last texel, not the first (tests) */   // DM_VK_LRZ_TOUCH bits: the read before a load pass, the write-back on a depth switch, the write-back at a cut
 static int g_x_nosetc, g_x_nodrvc, g_x_landcut, g_x_nokeep, g_x_nobc, g_x_cutany, g_lrz_touch, g_xfb_on = 1, g_x_nogs, g_spv_alt, g_x_nodispbar; int g_x_noshc;   // g_xfb_on: DM_VK_XFB=0 captures no transform feedback (A/B)
 static int g_x_nosetmemo, g_x_setverify;   // DM_VK_X_NOSETMEMO=1 (live, A/B): no per-stage set memo; DM_VK_X_SETVERIFY=1 (live): one memo hit in 64 checked (see stage_set)
@@ -173,7 +174,7 @@ static void x_read(void) { const char *c = getenv("DM_VK_CB_DRAWS"); g_x_cbdraws
     g_x_nokeep = (e = getenv("DM_VK_X_NOKEEP")) && atoi(e); g_x_nobc = (e = getenv("DM_VK_X_NOBC")) && atoi(e); g_x_noshc = (e = getenv("DM_VK_X_NOSHC")) && atoi(e); g_x_cutany = (e = getenv("DM_VK_X_CUTANY")) && atoi(e); g_x_nogs = (e = getenv("DM_VK_X_NOGS")) && atoi(e); g_spv_alt = (e = getenv("DM_VK_SPV_ALT")) && atoi(e); g_rd_touch = !((e = getenv("DM_VK_RD_TOUCH")) && !atoi(e));
     g_lrz_touch = (e = getenv("DM_VK_LRZ_TOUCH")) ? atoi(e) : 1; if (g_lrz_touch == 1) g_lrz_touch = LRZ_ALL;   /* 0 none, 1 all, else LRZ_* bits */ g_fdz = !((e = getenv("DM_VK_FDZ")) && !atoi(e)); g_xfb_on = !((e = getenv("DM_VK_XFB")) && !atoi(e));
     g_psplit = (e = getenv("DM_VK_PASS_SPLIT")) ? atoi(e) : 0; g_setsplit = (e = getenv("DM_VK_SETSPLIT")) && atoi(e); g_psplit_depth = (e = getenv("DM_VK_PASS_SPLIT_DEPTH")) && atoi(e);
-    g_x_rdkeep = (e = getenv("DM_VK_X_RDKEEP")) && atoi(e); g_vbound = !((e = getenv("DM_VK_VBOUND")) && !atoi(e)); g_x_logfs = (e = getenv("DM_VK_LOG_FS")) ? strtoull(e, NULL, 16) : 0; g_x_nflat = 0; if ((e = getenv("DM_VK_X_FLAT_VS"))) for (char *q = (char *)e; *q && g_x_nflat < 8; ) { char *nx; uint64_t v = strtoull(q, &nx, 16); if (nx == q) break; int m = 7; if (*nx == ':') m = (int)strtol(nx + 1, &nx, 10); g_x_flat_mode[g_x_nflat] = m; g_x_flat[g_x_nflat++] = v; q = *nx ? nx + 1 : nx; } g_samp_snap = !((e = getenv("DM_NVN_SAMP_SNAP")) && !atoi(e)); g_lin_back = !((e = getenv("DM_VK_LIN_BACK")) && !atoi(e)); g_async_pipe = !((e = getenv("DM_VK_ASYNC_PIPE")) && !atoi(e)); g_prof_on = (e = getenv("DM_VK_PROF_SLOW")) && atoi(e); { extern volatile int g_vk_samp_log; if ((e = getenv("DM_VK_SAMP_LOG")) && atoi(e) > 0) { g_vk_samp_log = atoi(e); setenv("DM_VK_SAMP_LOG", "0", 1); } } g_x_nosetmemo = (e = getenv("DM_VK_X_NOSETMEMO")) && atoi(e); g_x_setverify = (e = getenv("DM_VK_X_SETVERIFY")) && atoi(e);
+    g_x_rdkeep = (e = getenv("DM_VK_X_RDKEEP")) && atoi(e); g_vbound = !((e = getenv("DM_VK_VBOUND")) && !atoi(e)); g_x_logfs = (e = getenv("DM_VK_LOG_FS")) ? strtoull(e, NULL, 16) : 0; g_x_nflat = 0; if ((e = getenv("DM_VK_X_FLAT_VS"))) for (char *q = (char *)e; *q && g_x_nflat < 8; ) { char *nx; uint64_t v = strtoull(q, &nx, 16); if (nx == q) break; int m = 7; if (*nx == ':') m = (int)strtol(nx + 1, &nx, 10); g_x_flat_mode[g_x_nflat] = m; g_x_flat[g_x_nflat++] = v; q = *nx ? nx + 1 : nx; } g_samp_snap = !((e = getenv("DM_NVN_SAMP_SNAP")) && !atoi(e)); g_lin_back = !((e = getenv("DM_VK_LIN_BACK")) && !atoi(e)); g_async_pipe = !((e = getenv("DM_VK_ASYNC_PIPE")) && !atoi(e)); g_prof_on = (e = getenv("DM_VK_PROF_SLOW")) && atoi(e); { extern volatile int g_vk_samp_log; if ((e = getenv("DM_VK_SAMP_LOG")) && atoi(e) > 0) { g_vk_samp_log = atoi(e); setenv("DM_VK_SAMP_LOG", "0", 1); } } g_x_nosetmemo = (e = getenv("DM_VK_X_NOSETMEMO")) && atoi(e); g_x_setverify = (e = getenv("DM_VK_X_SETVERIFY")) && atoi(e); g_gs_split = (e = getenv("DM_VK_GS_SPLIT")) && atoi(e);
     g_x_nskipvs = 0; for (const char *q = getenv("DM_VK_X_SKIPVS"); q && *q && g_x_nskipvs < 8;) { char *n; uint64_t v = strtoull(q, &n, 16); if (n == q) break; if (v) g_x_skipvs[g_x_nskipvs++] = v; q = *n ? n + 1 : n; } }
 // ---------------- conditional rendering (profile render_cond) ----------------
 // As nvn_mtl.m (OP_RENDER_COND): SetRenderEnableConditional draws while the 64-bit counters of the reports at addr and addr + 16 are equal / differ, until SetRenderEnable(true).
@@ -2005,7 +2006,8 @@ static int mdi_group(uint64_t cnt, uint64_t ind, int i, int max, int stride, int
 // builders this changed three copies of each triangle to one and recovered the
 // colour pass without changing depth comparisons. Indirect arguments, XFB, user
 // UBO/image aliases and VS memory effects stay on the original path.
-// DM_VK_GS_SPLIT=0 (live) restores the original path for an A/B comparison.
+// Off unless a profile sets DM_VK_GS_SPLIT=1 (NieR:Automata): each split draw ends the pass and adds a barrier.
+// The switch is read with the other live ones (x_read); DM_VK_GS_SPLIT=0 restores the original path for an A/B.
 static int gs_ranges_overlap(uint64_t a, uint64_t n, uint64_t b, uint64_t m) {
     return a && b && n && m && (a >= b ? a - b < m : b - a < n);
 }
@@ -2038,9 +2040,8 @@ static int gs_split_inputs_safe(vkshader_t *gs, uint64_t ibuf, uint64_t in) {
     return 1;
 }
 static int gs_split_draw(int prim, uint64_t indirect, uint64_t ibuf, uint64_t in) {
-    const char *e = getenv("DM_VK_GS_SPLIT");
-    int on = e ? atoi(e) != 0 : V.props.vendorID == 0x5143;
-    if (!on || g_gs_split_mode || indirect || g_tf_on || g_bc_slot >= 0 || !S.sh[2] || !S.sh[0] || S.sh[0]->xfb || shader_wmem(S.sh[0]) || g_spv_alt) return 0;
+    if (!S.sh[2] || !g_gs_split || V.props.vendorID != 0x5143) return 0;
+    if (g_gs_split_mode || indirect || g_tf_on || g_bc_slot >= 0 || !S.sh[0] || S.sh[0]->xfb || shader_wmem(S.sh[0]) || g_spv_alt) return 0;
     vkshader_t *gs = vk_shader_gs_topo(S.sh[2], topo(prim == 7 ? 4 : prim));
     if (!gs || (S.sh[1] && (S.sh[1]->in_locs & ~gs->out_locs))) return 0;
     return vk_shader_gs_split_ready(gs) && gs_split_inputs_safe(gs, ibuf, in);
