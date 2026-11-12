@@ -1,0 +1,15 @@
+# Burnout Paradise Remastered (0100DBF01000A000), base game v0: Criterion's engine on Nintendo SDK 9, NVN.
+# Verified 2026-11-09/11 on a Retroid Pocket Nova (Adreno 740) through the title, the loading screen, the junkyard tutorial and driving in the city, at about 60 fps
+# (frame time p50 16.8 ms, GPU 8-18 ms). patches.py skips the boot videos (about 25-30 s). The loading screen's JPEG needs the host's nn::image::JpegDecoder
+# (dm/host/hle_image.c). Not played through end to end.
+# The triangle winding: the host's front-face rule for upper-left-origin games (gfx_vk_exec.c, written for NEO) culled this game's front faces, so its one-sided
+# ground and road meshes never rasterized and closed meshes (cars, signs, buildings) showed their back faces. DM_VK_FRONT=2 (below) inverts that rule's front face.
+# World textures (WORLDTEX0-3.BIN, 1,489 Texture resources): bnd2 block 0 is 0x60 bytes of metadata (DXGI format id at +0x2C, width +0x34, height +0x36, mip count
+# +0x3D, pixel data length +0x4C), block 1 the pixels (BC1 1,428, BC3 37, RGBA8 24; 1-13 mips; up to 4096x2048); every level padded to 512 bytes, as nvn_tex_layout
+# lays them out.
+status	wip
+tested	v0 Retroid Pocket Nova RPN (Snapdragon 8 Gen 2 / QCS8550, Adreno 740, Android 16)
+package	org.nx2a.burnoutparadiseremastered
+orientation	landscape
+# Burnout's meshes are wound the other way from what the host's upper-left-origin rule assumes (see the header)
+env	DM_VK_FRONT=2
