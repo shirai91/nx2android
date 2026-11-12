@@ -50,6 +50,6 @@ class VertexSignedness(unittest.TestCase):
     @unittest.skipUnless(shutil.which('cc'), 'a host C compiler is required; also exercised on Android with the NDK')
     def test_fetch_bits_preserved(self):
         with tempfile.TemporaryDirectory() as tmp:
-            p=Path(tmp); (p/'test.c').write_text(SOURCE)
+            p=Path(tmp); (p/'test.c').write_text(SOURCE,encoding='utf-8')
             subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror','-I'+str(ROOT/'nxnative/dm/android'),str(p/'test.c'),'-o',str(p/'test')],check=True)
             subprocess.run([str(p/'test')],check=True)

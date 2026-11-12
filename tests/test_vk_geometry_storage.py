@@ -80,6 +80,6 @@ class GeometryStorage(unittest.TestCase):
     def test_geometry_driver_segment_contains_bound_addresses(self):
         with tempfile.TemporaryDirectory(prefix='nx2a_gs_') as tmp:
             src, exe = Path(tmp) / 'test.c', Path(tmp) / 'test'
-            src.write_text(driver_source())
+            src.write_text(driver_source(), encoding='utf-8')
             subprocess.run(['cc', str(src), '-o', str(exe)], check=True, capture_output=True)
             subprocess.run([str(exe)], check=True, capture_output=True)
