@@ -3,7 +3,7 @@
 # the rewrite for DM_TARGET=android, the Vulkan shader bundle, the host built with the player's NDK, the APK, the data pack and the install.
 # Work files go where upstream's NSP script puts them, <game folder>/<title ID>_build/ (extract/, aoc/, shader/, logs/ are shared with an iOS build of the same folder),
 # with the Android ones in its android/ folder.
-import hashlib, importlib.util, json, os, re, shutil, sys, traceback
+import hashlib, importlib.util, json, os, re, shutil, subprocess, sys, traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -46,6 +46,7 @@ class Options:
     mt_replay: bool = False            # multithread replay: DM_VK_MT_REPLAY=1 in env.txt (dm/android/gfx_vk_dq.c), after the profile's env rows
     touch: bool = False                # a game played by touch: the on-screen gamepad starts hidden (TOUCH_SETTINGS), so it takes none of the game's touches
     native_keyboard: bool = False      # optional Unicode Android IME (requires SDK/JDK)
+    no_java: bool = False              # a code-less APK even when the app's Java can be built (java_bridge): no save file directory, saves as folders in the files folder
     external_display: bool = False     # compile the optional external-screen activity with the Android SDK
     vercode_offset: int = 0            # added to the APK's versionCode: a rebuild of the same game version installs over a build with a higher one (version_code)
     alias_headroom: int = None         # GB more alias region (alias_headroom); None: ALIAS_HEADROOM for a version the profile was not brought up on, none for one it was
@@ -171,6 +172,52 @@ def inspect(folder, keys=None):
     if pack not in builds:
         info['reason'] = (info['reason'] + '; ' if info['reason'] else '') + f'{pack} is not a version the profile was brought up on ({", ".join(builds)}): it is packed from a derived profile, without that version\'s fixes'
     return info
+
+
+PREBUILT_DEX = DM / 'android/java/classes.dex'   # the app's Java, compiled into a release bundle (packaging/build_bundle.py on GitHub's runners): a player needs no JDK or SDK
+
+
+def java_tools():
+    """javac, the newest android.jar and d8 of the Android SDK (ANDROID_HOME, ANDROID_SDK_ROOT or the usual folder), or None when one is missing"""
+    javac, roots = shutil.which('javac'), toolchain._sdk_roots()
+    platforms = [p for root in roots for p in (root / 'platforms').glob('android-*/android.jar')]
+    d8s = [p for root in roots for p in (root / 'build-tools').glob('*/d8' + ('.bat' if os.name == 'nt' else ''))]
+    def version(p): return tuple(int(x) for x in re.findall(r'\d+', p.parent.name))
+    if not javac or not platforms or not d8s: return None
+    return javac, max(platforms, key=version), max(d8s, key=version)
+
+
+def _run_java(cmd, log, env):   # a Java tool, its output in log; BuildError on failure (without nsp.run's failed stage: a port without --native-keyboard goes on)
+    log.parent.mkdir(parents=True, exist_ok=True)
+    r = subprocess.run([str(c) for c in cmd], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='replace')
+    log.write_text(r.stdout, encoding='utf-8')
+    if r.returncode: raise BuildError(f'{Path(str(cmd[0])).name} exit code {r.returncode} (full output: {log})')
+
+
+def _jdk_env(javac, env):
+    """env with JAVA_HOME (and PATH) at javac's own JDK: d8 runs on JAVA_HOME's java, and a JAVA_HOME left at an older JRE (Java 8, here beside a JDK 11) refused
+    d8's classes (UnsupportedClassVersionError)"""
+    env = dict(os.environ if env is None else env)
+    try: out = subprocess.run([javac, '-J-XshowSettings:properties', '-version'], capture_output=True, text=True, errors='replace', timeout=60)
+    except (OSError, subprocess.SubprocessError): return env
+    home = next((l.split('=', 1)[1].strip() for l in (out.stdout + out.stderr).splitlines() if l.strip().startswith('java.home =')), None)
+    if home and Path(home).is_dir(): env['JAVA_HOME'] = home; env['PATH'] = str(Path(home) / 'bin') + os.pathsep + env.get('PATH', '')
+    return env
+
+
+def compile_java(out, logs, env=None):
+    """The app's Java (dm/android/java/org/nx2a) as out/dex/classes.dex, or None when javac or the SDK is missing; BuildError when they fail. The sources are
+    UTF-8 (javac takes the system's code page without -encoding: on a Japanese Windows, windows-31j refused ExternalActivity.java's arrows)"""
+    tools = java_tools()
+    if not tools: return None
+    javac, platform, d8 = tools
+    classes, dex = out / 'classes', out / 'dex'
+    shutil.rmtree(out, ignore_errors=True); classes.mkdir(parents=True); dex.mkdir()
+    sources = sorted((DM / 'android/java/org/nx2a').glob('*.java'))
+    env = _jdk_env(javac, env)
+    _run_java([javac, '-encoding', 'UTF-8', '-source', '8', '-target', '8', '-classpath', platform, '-d', classes, *sources], logs / 'android_external_java.log', env)
+    _run_java([d8, '--min-api', '29', '--lib', platform, '--output', dex, *sorted(classes.rglob('*.class'))], logs / 'android_external_dex.log', env)
+    return dex / 'classes.dex'
 
 
 class Port:
@@ -758,7 +805,7 @@ class Port:
         icon = self.icon()
         code = version_code(self.pkg_ver, self.o.vercode_offset)
         if self.o.vercode_offset: say(f'versionCode {code} ({self.pkg_ver} + 1 + offset {self.o.vercode_offset})')
-        external = self.external_activity() if self.o.external_display or self.o.native_keyboard else []
+        external = self.java_bridge()
         driver = self.o.vulkan_driver
         if driver and driver.name != driver_lib_name(driver):   # packed under a lib*.so name (driver_lib_name), copied beside the host library
             driver = self.so.parent / driver_lib_name(driver); shutil.copyfile(self.o.vulkan_driver, driver)
@@ -771,22 +818,25 @@ class Port:
         self.result['apk'] = str(self.apk_path)
         PROG.end(f'{self.apk_path.name}, {self.apk_path.stat().st_size / 2**20:.1f} MB')
 
-    def external_activity(self):
-        javac = shutil.which('javac')
-        roots = toolchain._sdk_roots()
-        platforms = [p for root in roots for p in (root / 'platforms').glob('android-*/android.jar')]
-        d8s = [p for root in roots for p in (root / 'build-tools').glob('*/d8' + ('.bat' if os.name == 'nt' else ''))]
-        def version(p): return tuple(int(x) for x in re.findall(r'\d+', p.parent.name))
-        if not javac or not platforms or not d8s:
-            raise BuildError('--external-display / --native-keyboard needs javac and an Android SDK with a platform and build-tools (set ANDROID_HOME)')
-        platform, d8 = max(platforms, key=version), max(d8s, key=version)
-        out = self.aw / 'external-activity'; classes, dex = out / 'classes', out / 'dex'
-        shutil.rmtree(out, ignore_errors=True); classes.mkdir(parents=True); dex.mkdir()
-        sources = sorted((DM / 'android/java/org/nx2a').glob('*.java'))
-        nsp.run([javac, '-source', '8', '-target', '8', '-classpath', platform, '-d', classes, *sources], self.logs / 'android_external_java.log', env=self.env)
-        nsp.run([d8, '--min-api', '29', '--lib', platform, '--output', dex, *sorted(classes.rglob('*.class'))], self.logs / 'android_external_dex.log', env=self.env)
-        activity = 'KeyboardExternalActivity' if self.o.native_keyboard else 'ExternalActivity'
-        return ['--dex', dex / 'classes.dex', '--activity', 'org.nx2a.' + activity if self.o.external_display else 'org.nx2a.GameActivity']
+    def java_bridge(self):
+        """The app's Java for mkapk.py (--dex, --activity): GameActivity, NativeActivity with the save manager's system pickers (SaveBridge.java: the pause menu's
+        save file directory, and saves exported and imported as .zip files); KeyboardGameActivity with --native-keyboard; (Keyboard)ExternalActivity with
+        --external-display. Compiled with javac and the Android SDK when this PC has them, else a release bundle's prebuilt classes.dex (PREBUILT_DEX); with
+        neither (or --no-java) the APK stays code-less and its menu keeps its own save manager, and the two options that need Java refuse to build"""
+        need, failed = self.o.external_display or self.o.native_keyboard, None
+        try: dex = None if (self.o.no_java and not need) or not java_tools() else compile_java(self.aw / 'external-activity', self.logs, self.env)
+        except BuildError as e:   # (a port that does not ask for Java goes on without it, as it did before the save bridge)
+            if need and not PREBUILT_DEX.is_file(): raise
+            dex, failed = None, str(e); say(f'[RED] the app\'s Java did not build: {e}')
+        if not dex and PREBUILT_DEX.is_file() and (need or not self.o.no_java): dex = PREBUILT_DEX; say(f"the app's Java: the bundle's prebuilt {PREBUILT_DEX.name}")
+        if not dex:
+            if need: raise BuildError('--external-display / --native-keyboard needs javac and an Android SDK with a platform and build-tools (set ANDROID_HOME)')
+            say('a code-less APK (' + ('--no-java' if self.o.no_java else 'its Java failed to build' if failed else 'no javac and Android SDK with a platform and build-tools, and no prebuilt classes.dex') +
+                "): the pause menu has no save file directory, and exports and imports saves as folders in the app's files folder")
+            return []
+        activity = ('KeyboardExternalActivity' if self.o.native_keyboard else 'ExternalActivity') if self.o.external_display else 'KeyboardGameActivity' if self.o.native_keyboard else 'GameActivity'
+        self.result['java'] = activity
+        return ['--dex', dex, '--activity', 'org.nx2a.' + activity]
 
     def theme(self):
         """The on-screen gamepad's theme: only the game's own pack goes in the APK (dm/android/themes/themes.tsv maps title IDs to packs; a game with no row

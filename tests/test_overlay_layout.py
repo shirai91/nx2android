@@ -81,8 +81,16 @@ int main(void) {
     assert(ov_drag_pos(1100, 600, 1013, 50) == 506.5f);
     assert(ov_drag_pos(1100, 505, 1013, 50) == 508);
 
-    // the Gamepad tab's last row is the face buttons' (front_android.c pad_labels); the Game tab has no row there, and the controller's up and down skip it
-    assert(ov_menu_item(0, OVM_ROWS - 2) == OVM_PAD && ov_menu_item(1, OVM_ROWS - 2) < 0 && ov_menu_item(1, OVM_ROWS - 1) == OVM_RESUME);
+    // the Gamepad tab's last row is the face buttons' (front_android.c pad_labels); the Game tab has four rows in a code-less app, six with the save folder's
+    // (its title, which a controller skips, then Browse); the highlight's numbers: 0 the tabs, k + 1 a row, OVM_HI_RESUME Resume
+    assert(ov_menu_count(0, 0) == 5 && ov_menu_count(0, 1) == 5 && ov_menu_count(1, 0) == 4 && ov_menu_count(1, 1) == 6);
+    assert(ov_menu_item(0, 5, 5) == OVM_PAD && ov_menu_item(1, 5, 4) < 0 && ov_menu_item(1, OVM_HI_RESUME, 4) == OVM_RESUME && ov_menu_item(1, 0, 6) == OVM_TAB);
+    assert(ov_menu_item(1, 5, 6) == OVM_FOLDER_LABEL && !ov_menu_selectable(OVM_FOLDER_LABEL) && ov_menu_item(1, 6, 6) == OVM_FOLDER && ov_menu_selectable(OVM_FOLDER));
+    assert(OVM_HI_RESUME + 1 <= 15);   // (bits 4..7 of dm_menu_state)
+    // the scroll: none for five rows; a sixth scrolls by a row, and the controller's choice is brought into view
+    assert(ov_menu_scroll_max(5) == 0 && ov_menu_scroll_max(6) == OVM_SCROLL_STEPS && ov_menu_scroll_max(6) <= 127);   // (bits 9..15)
+    assert(ov_menu_scroll_to(5, 0, 6) == OVM_SCROLL_STEPS && ov_menu_scroll_to(0, OVM_SCROLL_STEPS, 6) == 0 && ov_menu_scroll_to(2, 7, 6) == 7);
+    assert(ov_menu_scroll_clamp(-3, 6) == 0 && ov_menu_scroll_clamp(99, 6) == OVM_SCROLL_STEPS && ov_menu_scroll_clamp(5, 4) == 0);
     const float screens[][2] = {{915, 412}, {1216, 760}, {2400, 1080}, {1080, 2400}};
     for (unsigned s = 0; s < sizeof screens / sizeof screens[0]; s++) {
         float W = screens[s][0], H = screens[s][1], step = H / OVE_GRID_ROWS, p[4];
@@ -91,6 +99,14 @@ int main(void) {
             float r[4]; ov_menu_rowrect(p, row, r);
             assert(ov_menu_row_at(r[0] + r[2] / 2, r[1] + r[3] / 2, W, H) == row);
         }
+        // a scrolled row is hit where it is drawn (ov_menu_item_y), and only inside the shown rows; the scrollbar's thumb stays in its track, in the margin
+        for (int s = 0; s <= ov_menu_scroll_max(6); s += 4) for (int k = 0; k < 6; k++) {
+            float r1[4], l[4]; ov_menu_rowrect(p, 1, r1); ov_menu_listrect(p, l); float y = ov_menu_item_y(p, k, s) + r1[3] / 2;
+            assert(ov_menu_index_at(y, p, s, 6) == (y >= l[1] && y < l[1] + l[3] ? k : -1));
+            float tr[4], tb[4]; ov_menu_scrollbar(p, s, 6, tr, tb);
+            assert(tb[1] >= tr[1] - 0.01f && tb[1] + tb[3] <= tr[1] + tr[3] + 0.01f && tr[0] >= l[0] + l[2] && tr[0] + tr[2] <= p[0] + p[2]);
+        }
+        { float l[4]; ov_menu_listrect(p, l); assert(ov_menu_index_at(l[1] + l[3] - 1, p, 0, 4) == -1 && ov_menu_index_at(l[1] + l[3] - 1, p, 0, 5) == 4); }
         for (int axis = 0; axis < 2; axis++) for (int i = -10; i <= 110; i++) {
             float extent = screens[s][axis], half = H * 0.12f;
             float pos = ov_drag_pos(extent * i / 100, half, extent, step);

@@ -28,6 +28,15 @@ def main():
     for src, dst in (('packaging/INSTALL.md', 'INSTALL.md'), ('README.md', 'README.md'), ('docs/ARCHITECTURE.md', 'docs/ARCHITECTURE.md'), ('docs/DEVELOPMENT_GUIDE.md', 'docs/DEVELOPMENT_GUIDE.md'), ('nxnative/LICENSE', 'LICENSE')):
         (APP / dst).parent.mkdir(parents=True, exist_ok=True); shutil.copy2(ROOT / src, APP / dst)
     shutil.copytree(ROOT / 'docs/images', APP / 'docs/images', dirs_exist_ok=True)   # the README's games table
+    # the app's Java (the save bridge: the pause menu's save file directory, zip export and import), compiled here so a player's port needs no JDK or SDK
+    # (porter/pipeline.py PREBUILT_DEX); GitHub's runners have both. Without them the bundle still works, its ports code-less unless the player has them
+    sys.path.insert(0, str(ROOT)); from porter import pipeline
+    work = WORK / 'java'; work.mkdir(parents=True, exist_ok=True)
+    dex = pipeline.compile_java(work / 'out', work)
+    dest = APP / pipeline.PREBUILT_DEX.relative_to(ROOT)
+    if dex: shutil.copy2(dex, dest); print(f'the app\'s Java: {dest.relative_to(DIST)}')
+    else: print('[RED] no javac and Android SDK (platform, build-tools; ANDROID_HOME): the bundle has no prebuilt classes.dex, so its ports have no save file directory '
+                'unless the player has them')
     ver = subprocess.run(['git', '-C', str(ROOT), 'describe', '--always', '--dirty'], capture_output=True, text=True).stdout.strip() or 'dev'
     (APP / 'VERSION').write_text(ver + '\n', encoding='utf-8')   # which commit the bundle was built from
     z = DIST / f'nx2android-{ver}-{PLATFORM}.zip'; z.unlink(missing_ok=True)

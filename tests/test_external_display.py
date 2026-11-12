@@ -42,10 +42,10 @@ class ExternalDisplayTest(unittest.TestCase):
         self.assertTrue(cli._parser().parse_args(['port', '/game', '--external-display']).external_display)
         with tempfile.TemporaryDirectory() as t:
             root = pathlib.Path(t); platform = root / 'platforms/android-36/android.jar'; platform.parent.mkdir(parents=True); platform.touch()
-            d8 = root / 'build-tools/36.0.0' / ('d8.bat' if os.name == 'nt' else 'd8'); d8.parent.mkdir(parents=True); d8.touch()   # what external_activity looks for
+            d8 = root / 'build-tools/36.0.0' / ('d8.bat' if os.name == 'nt' else 'd8'); d8.parent.mkdir(parents=True); d8.touch()   # what java_tools looks for
             port = pipeline.Port(pipeline.Options(folder=root, external_display=True)); port.aw = root / 'out'; port.logs = root / 'logs'; port.env = {}
-            with mock.patch.object(pipeline.toolchain, '_sdk_roots', return_value=[root]), mock.patch.object(pipeline.shutil, 'which', return_value='/usr/bin/javac'), mock.patch.object(pipeline.nsp, 'run') as run:
-                args = port.external_activity()
+            with mock.patch.object(pipeline.toolchain, '_sdk_roots', return_value=[root]), mock.patch.object(pipeline.shutil, 'which', return_value='/usr/bin/javac'),                  mock.patch.object(pipeline, '_jdk_env', side_effect=lambda javac, env: dict(env or {})), mock.patch.object(pipeline, '_run_java') as run:
+                args = port.java_bridge()
             self.assertEqual(run.call_count, 2)
             self.assertEqual(args[-1], 'org.nx2a.ExternalActivity')
             self.assertEqual(args[0], '--dex')

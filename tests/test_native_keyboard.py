@@ -19,9 +19,9 @@ class NativeKeyboard(unittest.TestCase):
             for external in (False,True):
                 port=pipeline.Port(pipeline.Options(folder=root,native_keyboard=True,external_display=external))
                 port.aw=root/'out'; port.logs=root/'logs'; port.env={}
-                with mock.patch.object(pipeline.toolchain,'_sdk_roots',return_value=[root]), mock.patch.object(pipeline.shutil,'which',return_value='javac'), mock.patch.object(pipeline.nsp,'run') as run:
-                    args=port.external_activity()
-                self.assertEqual(args[-1], 'org.nx2a.KeyboardExternalActivity' if external else 'org.nx2a.GameActivity')
+                with mock.patch.object(pipeline.toolchain,'_sdk_roots',return_value=[root]), mock.patch.object(pipeline.shutil,'which',return_value='javac'),                      mock.patch.object(pipeline,'_jdk_env',side_effect=lambda javac,env:dict(env or {})), mock.patch.object(pipeline,'_run_java') as run:
+                    args=port.java_bridge()
+                self.assertEqual(args[-1], 'org.nx2a.KeyboardExternalActivity' if external else 'org.nx2a.KeyboardGameActivity')
                 sources=[str(x) for x in run.call_args_list[0].args[0]]
                 self.assertTrue(any(x.endswith('GameKeyboard.java') for x in sources))
                 self.assertEqual(args[0],'--dex')
@@ -29,8 +29,8 @@ class NativeKeyboard(unittest.TestCase):
 
     def test_requested_keyboard_requires_available_sdk(self):
         port=pipeline.Port(pipeline.Options(folder=Path('/game'),native_keyboard=True))
-        with mock.patch.object(pipeline.toolchain,'_sdk_roots',return_value=[]), mock.patch.object(pipeline.shutil,'which',return_value=None):
-            with self.assertRaisesRegex(pipeline.BuildError,'native-keyboard'): port.external_activity()
+        with mock.patch.object(pipeline.toolchain,'_sdk_roots',return_value=[]), mock.patch.object(pipeline.shutil,'which',return_value=None),              mock.patch.object(pipeline,'PREBUILT_DEX',Path('/no/prebuilt/classes.dex')):
+            with self.assertRaisesRegex(pipeline.BuildError,'native-keyboard'): port.java_bridge()
 
     def test_external_display_without_keyboard_keeps_native_activity(self):
         source = pipeline.DM / 'android/java/org/nx2a/ExternalActivity.java'
