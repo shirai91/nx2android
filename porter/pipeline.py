@@ -41,7 +41,7 @@ class Options:
     package: str = ''                  # the app's package instead of the profile's (a test install beside another build of the game)
     fps60: bool = False                # 60 fps: the profile's own frame-rate cap, else the build's FPSLocker-Warehouse config (porter/fpslocker.py)
     vulkan_driver: Path = None         # an arm64 Vulkan driver (Mesa's Turnip) packed in the APK and used instead of the system's (DM_VK_DRIVER, dm/android/gfx_vk_core.c)
-    shared_font: Path = None           # a TrueType font packed as the system's shared fonts, instead of the device's Roboto (DM_SHARED_FONT, dm/host/hle_sdk16.c)
+    shared_font: Path = None           # a TrueType font packed as the system's shared fonts, instead of the device's own font (DM_SHARED_FONT, dm/host/hle_sdk16.c)
     firmware: Path = None              # the player's system content files (.nca), for the profile's sysdata titles (extract_sysdata; DM_SYSDATA, dm/host/hle_fs.c)
     mt_replay: bool = False            # multithread replay: DM_VK_MT_REPLAY=1 in env.txt (dm/android/gfx_vk_dq.c), after the profile's env rows
     touch: bool = False                # a game played by touch: the on-screen gamepad starts hidden (TOUCH_SETTINGS), so it takes none of the game's touches

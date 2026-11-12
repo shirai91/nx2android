@@ -88,7 +88,7 @@ class PortTab(QWidget):
         self.driver.setToolTip('A Vulkan driver library (.so) to pack in the APK and use instead of the device\'s own,\n'
                                'such as Mesa\'s Turnip for Adreno GPUs. Empty: the device\'s driver.\n'
                                'If the library does not load on the device, the app uses the device\'s driver.')
-        self.shared_font = QLineEdit(); self.shared_font.setPlaceholderText('the device\'s Roboto')   # porter port --shared-font
+        self.shared_font = QLineEdit(); self.shared_font.setPlaceholderText('the device\'s own font')   # porter port --shared-font
         self.shared_font.setToolTip('A TrueType font (.ttf) to pack as the system font the game asks for.\n'
                                     'One with CJK characters shows the Chinese and Korean text of a game that draws it with the system font.')
         self.mt_replay = QCheckBox('Multithread replay: record the game\'s Vulkan commands on a thread of their own (faster in busy scenes; port again to turn it off)')   # porter port --mt-replay
