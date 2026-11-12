@@ -5,7 +5,7 @@
 #   Games  the game profiles (porter profiles --all)
 #   Saves  a ported game's save between the device and the PC (porter saves): the save folders on the device, a fresh export to a folder here, an import of a
 #          folder or .zip (a console's save, or an export)
-import os, subprocess, sys, time
+import html, os, subprocess, sys, time
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, QUrl
@@ -159,12 +159,15 @@ class PortTab(QWidget):
         if not d: return
         if not Path(d).is_dir(): self.card.setText(f'<span style="color:#c62828">Not a folder: {d}</span>'); return
         self.card.setText('Reading the game folder…')
-        call_json(self, ['inspect', d, '--json'], self.on_inspect)
+        def failed(message, code): self.on_inspect({'error': 'Could not inspect the game folder:\n' + message}, code)
+        call_json(self, ['inspect', d, '--json'], self.on_inspect, failed=failed)
 
     def on_inspect(self, info, code):
         err = info
         self.info = info = None if info and info.get('error') else info
-        if not info: self.card.setText('<span style="color:#c62828">' + ((err or {}).get('error') or 'No game found in this folder (an NSP, XCI, NSZ or XCZ with a title ID).') + '</span>'); return
+        if not info:
+            message = (err or {}).get('error') or 'No game found in this folder (an NSP, XCI, NSZ or XCZ with a title ID).'
+            self.card.setText('<span style="color:#c62828">' + html.escape(message).replace('\n', '<br>') + '</span>'); return
         a = info.get('android') or {}
         st = a.get('status', 'ios only' if info.get('profile') else 'not supported')
         col = STATUS_COLOUR.get(st, '#c62828')
