@@ -19,11 +19,15 @@
 # is at that camp's fire with SOC at 55 C. Whether that is the camp's fire and smoke or the phone limiting its GPU is not known. Tears of the Kingdom's profile leaves the
 # turbo out for that heat; here the plateau is 20 fps without it and 30 with it at worst. A player who wants a cooler phone deletes the row from env.txt on the device, or
 # adds DM_FPS_TARGET=30.
+# A further run of 9,300 frames with the same switches (the sampling profiler on too), around the Great Plateau's ruins: 95 to 100% of the frames held one vsync (1,800 /
+# 1,738 / 1,768 / 1,708 of each 1,800, none three), 3,600-4,500 draws, replay 10.3-11.1 ms, GPU p50 10.6-13.4 ms, 40 to 60 late frames in each 1,800: 60 fps with slight
+# stutters, the player said, with SOC at 67 C in that run's screenshot.
 # Turnip's release notes name a glitchy picture on the Adreno 830 in its GMEM mode and TU_DEBUG=sysmem against it; the player was told to add it to env.txt, the log does
 # not show whether the driver took it, and the picture was right.
 # Open: the fight had GPU frames of 40-100 ms and one of 221 ms (38 frames held three vsyncs), as Tears of the Kingdom's fights have; 60 fps held on the plateau (a frame
 # costs 0.9-1.1 vsyncs in its wide views: replay 10-12 ms, GPU 13-15 ms); the yield watchdog names PlacementMgr and RadarMgr once a run (about 40,000 yields a second for 30 s
-# at sdk+0xc83180); "BufferInitialize: past the end of the pool (offset 0 size 0x40000 pool 0x24000)" in three of five runs (twice in one), with nothing seen wrong.
+# at sdk+0xc83180); "BufferInitialize: past the end of the pool (offset 0 size 0x40000 pool 0x24000)" in four of six runs (six times in one), with nothing seen wrong;
+# "two-stage replay: a drain waits over 1 s" once, early in a run.
 status	experimental
 tested	v1114112 Samsung Galaxy S25 Ultra (Snapdragon 8 Elite for Galaxy, Adreno 830); Turnip 26.2.3
 package	org.nx2a.zeldabreathofthewild
