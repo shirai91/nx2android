@@ -135,7 +135,9 @@ static void shake_sensor(int on);   // the accelerometer, off in the background 
 static void go_background(void) { if (!atomic_load(&g_running) || atomic_exchange(&g_bg, 1)) return; dm_focus_set(2); dm_focus_set(3);   // through OutOfFocus, as a game sees HOME and then the suspension (front_mac.m does the same)
     hold_sync(); dm_gfx_suspend(1); shake_sensor(0); }
 static void go_foreground(void) { if (!atomic_load(&g_running) || !atomic_exchange(&g_bg, 0)) return; dm_gfx_suspend(0); hold_sync(); dm_focus_set(2); shake_sensor(1); }
-static void on_pause(ANativeActivity *a) { (void)a; go_background(); }
+// Leaving the game (HOME, another app, the recents list, the screen off) is where the save folder is brought up to date (saves_android.c): Android may end a
+// process in the background without another word, so a close is not waited for. Only a committed save is copied, never one the game is writing
+static void on_pause(ANativeActivity *a) { (void)a; go_background(); dm_saves_folder_sync(0); }
 // Back in front, the game is out of focus until the window has the input focus again (Android sends it after onResume): without this it stayed OutOfFocus for good,
 // and Blasphemous 2's Unity, which asks for focus notifications, kept its title paused and ignored every press after a trip to another app. A window losing focus while in
 // front (a system dialog, the notification shade) is OutOfFocus as on the Switch's HOME overlay
@@ -149,7 +151,7 @@ static void act_finish(ANativeActivity *a) {
     if (!m || (*E)->ExceptionCheck(E)) { (*E)->ExceptionClear(E); LOG("[RED] Activity.finish() failed: the app ends itself"); _exit(0); }
 }
 static void on_resume(ANativeActivity *a) { if (g_quit) { act_finish(a); return; } go_foreground(); }
-static void on_destroy(ANativeActivity *a) { (void)a; _exit(0); }   // one game per process
+static void on_destroy(ANativeActivity *a) { (void)a; dm_saves_folder_sync(1); _exit(0); }   // one game per process (the save folder updated first)
 
 // ---- input ----
 static AInputQueue *g_queue; static ALooper *g_ilooper;
@@ -446,8 +448,11 @@ static void *temp_watch(void *a) {
 // ---- the pause menu: the game is held while it is open; touches and a controller's keys go to it. Two tabs (overlay_layout.h OVM_TAB_ITEMS): the gamepad's
 // settings (shown, opacity, the layout editor, rumble, a controller's face buttons) and the game's (the frame rate counter, the mode, exporting and importing the save);
 // Resume under them ----
-static _Atomic int g_menu_hi = -1, g_menu_tab;   // the highlighted row (a controller's selection, or the row a finger is on), -1 none; the open tab
-static int g_menu_ptr = -1, g_menu_row = -2;   // the pointer pressing in the menu, and the row it went down on (-3 the menu button)
+static _Atomic int g_menu_hi = -1, g_menu_tab;   // the highlighted row (overlay_layout.h OVM_HI_RESUME: a controller's selection, or the row a finger is on), -1 none;
+                                                 // the open tab
+static _Atomic int g_menu_scroll[OVM_TABS];       // each tab's scroll (overlay_layout.h OVM_SCROLL_STEPS), 0 when the menu opens
+static int g_menu_ptr = -1, g_menu_row = -2;   // the pointer pressing in the menu, and the row it went down on (g_menu_hi's numbers; -2 outside the panel, -3 the menu button)
+static float g_menu_y0; static int g_menu_s0, g_menu_drag;   // where that pointer went down, the scroll then, and whether it drags the tab's rows (no row is done then)
 static _Atomic int g_tx_ver;   // the text entry's edit count: the panel is drawn again when it changes
 static _Atomic int g_ed_st;    // the layout editor's state for dm_menu_state (overlay_layout.h OVE_ST)
 static _Atomic int g_sp_on, g_sp_hi = -1, g_sp_ver;   // the save picker (below): open, its highlighted row, its edit count
@@ -458,12 +463,24 @@ int dm_menu_state(void) {
     if (atomic_load(&g_edit)) return OVE_ST | atomic_load(&g_ed_st);
     if (atomic_load(&g_sp_on)) return OVS_ST | (atomic_load(&g_sp_hi) + 1) << 4 | (atomic_load(&g_sp_ver) & 255) << 20;
     return atomic_load(&g_set_overlay) | atomic_load(&g_set_rumble) << 1 | (dm_opmode() != 0) << 2 | atomic_load(&g_set_fps) << 3 | (atomic_load(&g_menu_hi) + 1) << 4 |
-           atomic_load(&g_menu_tab) << 8 | atomic_load(&g_set_opacity) << 9 | atomic_load(&g_sv_st) << 20 | (atomic_load(&g_sv_n) & 15) << 24 | pad_labels() << 28;
+           atomic_load(&g_menu_tab) << 8 | (atomic_load(&g_menu_tab) ? atomic_load(&g_menu_scroll[1]) & 127 : atomic_load(&g_set_opacity)) << 9 | atomic_load(&g_sv_st) << 20 |
+           (atomic_load(&g_sv_n) & 15) << 24 | pad_labels() << 28;
+}
+static int menu_n(int tab) { return ov_menu_count(tab, dm_saves_java()); }   // the tab's rows (the Game tab's save folder rows need the Java save bridge)
+static int menu_hit(float x, float y, float W, float H) {   // what is under (x, y), in g_menu_hi's numbers: 0 the tabs, 1..n a row, OVM_HI_RESUME; -1 the panel elsewhere, -2 outside
+    int row = ov_menu_row_at(x, y, W, H); if (row < 0) return row;
+    if (row == 0) return 0; if (row == OVM_ROWS - 1) return OVM_HI_RESUME;
+    float p[4]; ov_menu_rect(W, H, p); int tab = atomic_load(&g_menu_tab), k = ov_menu_index_at(y, p, atomic_load(&g_menu_scroll[tab & 1]), menu_n(tab));
+    return k >= 0 ? k + 1 : -1;
+}
+static void menu_show(int hi) {   // the tab scrolled so the highlighted row shows whole
+    int tab = atomic_load(&g_menu_tab) & 1, n = menu_n(tab);
+    if (hi >= 1 && hi <= n) atomic_store(&g_menu_scroll[tab], ov_menu_scroll_to(hi - 1, atomic_load(&g_menu_scroll[tab]), n));
 }
 int dm_overlay_fps(void) { return atomic_load(&g_set_fps) && !atomic_load(&g_menu); }   // gfx_vk_present.c draws the counter (not while the menu holds the game)
 static void menu_open(int hi) {
     if (!atomic_load(&g_running) || atomic_exchange(&g_menu, 1)) return;
-    atomic_store(&g_menu_hi, hi); g_menu_ptr = -1;
+    atomic_store(&g_menu_hi, hi); g_menu_ptr = -1; g_menu_drag = 0; for (int t = 0; t < OVM_TABS; t++) atomic_store(&g_menu_scroll[t], 0);
     if (atomic_load(&g_sv_st) != OVX_BUSY) atomic_store(&g_sv_st, OVX_IDLE);   // the last export's note goes (one still copying stays)
     dm_input_set(0, 0, 0, 0, 0); dm_touch_set(NULL, 0); atomic_store(&g_touch_btn, 0);   // nothing stays pressed in the game
     for (int i = 0; i < 16; i++) atomic_store(&g_press_t[i], 0);
@@ -500,50 +517,73 @@ static void menu_do(int item) {
     else if (item == OVM_EDIT) { dm_haptics_android_tap(); ed_open(); return; }
     else if (item == OVM_OPACITY) return;   // (the slider is dragged, or stepped with left and right)
     else if (item == OVM_EXPORT) { if (atomic_load(&g_sv_st) == OVX_BUSY) return; save_export(); }
-    else if (item == OVM_IMPORT) { dm_haptics_android_tap(); sp_open(); return; }
+    else if (item == OVM_IMPORT) {   // the system's picker for a .zip (SaveBridge.java), or in a code-less app the picker of saves/ in the menu's panel
+        dm_haptics_android_tap();
+        if (!dm_saves_java()) sp_open(); else if (dm_saves_import_zip()) LOG("[saves] the zip picker is busy (another picker is open)");
+        return;
+    }
+    else if (item == OVM_FOLDER) { dm_haptics_android_tap(); if (dm_saves_folder_pick()) LOG("[saves] the folder picker is busy (another picker is open)"); return; }
+    else if (item == OVM_FOLDER_LABEL) return;   // (a title)
     if (item >= 0 && item < OVM_N) dm_haptics_android_tap();
     if (item == OVM_RESUME) menu_close(); else dm_overlay_redraw();
 }
-static void menu_touch(AInputEvent *e, float W, float H) {   // a press on a row does it when it lifts there; a tap outside the panel or on the menu button closes
+// A press on a row does it when it lifts there; a finger that moves on the rows of a tab that scrolls drags them instead (and does nothing when it lifts); a tap
+// outside the panel or on the menu button closes
+static void menu_touch(AInputEvent *e, float W, float H) {
     int act = AMotionEvent_getAction(e) & AMOTION_EVENT_ACTION_MASK, ai = AMotionEvent_getAction(e) >> AMOTION_EVENT_ACTION_POINTER_INDEX_SHIFT;
     int i = act == AMOTION_EVENT_ACTION_DOWN || act == AMOTION_EVENT_ACTION_UP ? 0 : ai, id = AMotionEvent_getPointerId(e, (size_t)i) & 31;
-    float x = AMotionEvent_getX(e, (size_t)i), y = AMotionEvent_getY(e, (size_t)i), p[4]; ov_menu_rect(W, H, p);
-    int c = ctl_at(x, y, W, H), row = c >= 0 && OV_CTLS[c].kind == OV_MENU ? -3 : ov_menu_row_at(x, y, W, H), tab = atomic_load(&g_menu_tab);
-    int item = row >= 0 ? ov_menu_item(tab, row) : -1;
+    float x = AMotionEvent_getX(e, (size_t)i), y = AMotionEvent_getY(e, (size_t)i), p[4], r1[4]; ov_menu_rect(W, H, p); ov_menu_rowrect(p, 1, r1);
+    int c = ctl_at(x, y, W, H), hit = c >= 0 && OV_CTLS[c].kind == OV_MENU ? -3 : menu_hit(x, y, W, H), tab = atomic_load(&g_menu_tab), n = menu_n(tab);
+    int item = hit >= 0 ? ov_menu_item(tab, hit, n) : -1;
     if (act == AMOTION_EVENT_ACTION_DOWN || act == AMOTION_EVENT_ACTION_POINTER_DOWN) {
         if (g_menu_ptr >= 0) return;
-        g_menu_ptr = id; g_menu_row = row;
+        g_menu_ptr = id; g_menu_row = hit; g_menu_y0 = y; g_menu_s0 = atomic_load(&g_menu_scroll[tab & 1]); g_menu_drag = 0;
         if (item == OVM_TAB) menu_tab(ov_menu_tab_at(x, p));   // a tab opens as the finger touches it
-        else if (item == OVM_OPACITY) menu_opacity(ov_menu_track_value(x, p, row));
-        if (row >= 0) { atomic_store(&g_menu_hi, item >= 0 ? row : -1); dm_overlay_redraw(); }
-    } else if (act == AMOTION_EVENT_ACTION_MOVE && g_menu_ptr >= 0 && g_menu_row >= 0) {   // the slider follows the finger; another row's highlight follows it off the row and back
-        for (size_t k = 0; k < AMotionEvent_getPointerCount(e); k++) if ((AMotionEvent_getPointerId(e, k) & 31) == g_menu_ptr) {
+        else if (item == OVM_OPACITY) menu_opacity(ov_menu_track_value(x, p, hit));
+        if (hit >= 0) { atomic_store(&g_menu_hi, ov_menu_selectable(item) ? hit : -1); dm_overlay_redraw(); }
+    } else if (act == AMOTION_EVENT_ACTION_MOVE && g_menu_ptr >= 0 && g_menu_row >= 0) {   // the slider follows the finger; the rows follow a dragging one; another row's
+        for (size_t k = 0; k < AMotionEvent_getPointerCount(e); k++) if ((AMotionEvent_getPointerId(e, k) & 31) == g_menu_ptr) {   // highlight follows it off the row and back
             float kx = AMotionEvent_getX(e, k), ky = AMotionEvent_getY(e, k);
-            if (ov_menu_item(tab, g_menu_row) == OVM_OPACITY) { menu_opacity(ov_menu_track_value(kx, p, g_menu_row)); continue; }
-            int r = ov_menu_row_at(kx, ky, W, H), hi = r == g_menu_row && ov_menu_item(tab, r) >= 0 ? r : -1;
+            if (ov_menu_item(tab, g_menu_row, n) == OVM_OPACITY) { menu_opacity(ov_menu_track_value(kx, p, g_menu_row)); continue; }
+            if (g_menu_row >= 1 && g_menu_row <= n && ov_menu_scroll_max(n)) {
+                if (!g_menu_drag && fabsf(ky - g_menu_y0) > OV_DRAG_SLOP * H) { g_menu_drag = 1; atomic_store(&g_menu_hi, -1); dm_overlay_redraw(); }
+                if (g_menu_drag) {
+                    int s = ov_menu_scroll_clamp(g_menu_s0 + (int)lroundf((g_menu_y0 - ky) / r1[3] * OVM_SCROLL_STEPS), n);
+                    if (atomic_exchange(&g_menu_scroll[tab & 1], s) != s) dm_overlay_redraw();
+                    continue;
+                }
+            }
+            int h = menu_hit(kx, ky, W, H), hi = h == g_menu_row && ov_menu_selectable(ov_menu_item(tab, h, n)) ? h : -1;
             if (atomic_exchange(&g_menu_hi, hi) != hi) dm_overlay_redraw();
         }
     } else if ((act == AMOTION_EVENT_ACTION_UP || act == AMOTION_EVENT_ACTION_POINTER_UP) && id == g_menu_ptr) {
-        int down = g_menu_row; g_menu_ptr = -1; atomic_store(&g_menu_hi, -1);
-        if (down >= 0 && ov_menu_item(tab, down) == OVM_OPACITY) { settings_save(); dm_overlay_redraw(); }
-        else if (row == down && item >= 0 && item != OVM_TAB) menu_do(item);
-        else if (row == down && (row == -2 || row == -3)) { dm_haptics_android_tap(); menu_close(); }
+        int down = g_menu_row, drag = g_menu_drag; g_menu_ptr = -1; g_menu_drag = 0; atomic_store(&g_menu_hi, -1);
+        if (down >= 0 && ov_menu_item(tab, down, n) == OVM_OPACITY) { settings_save(); dm_overlay_redraw(); }
+        else if (drag) dm_overlay_redraw();
+        else if (hit == down && item >= 0 && item != OVM_TAB) menu_do(item);
+        else if (hit == down && (hit == -2 || hit == -3)) { dm_haptics_android_tap(); menu_close(); }
         else dm_overlay_redraw();
-    } else if (act == AMOTION_EVENT_ACTION_CANCEL) { g_menu_ptr = -1; atomic_store(&g_menu_hi, -1); dm_overlay_redraw(); }
+    } else if (act == AMOTION_EVENT_ACTION_CANCEL) { g_menu_ptr = -1; g_menu_drag = 0; atomic_store(&g_menu_hi, -1); dm_overlay_redraw(); }
 }
 static void ed_key(uint64_t bit); static void sp_key(uint64_t bit);
-static void menu_key(uint64_t bit) {   // a controller key pressed while the menu is open: up and down go through the rows, left and right change the tab or the
-    if (atomic_load(&g_edit)) { ed_key(bit); return; }   // opacity on their rows, L and R change the tab anywhere, A does the row, B and + close
-    if (atomic_load(&g_sp_on)) { sp_key(bit); return; }
-    int hi = atomic_load(&g_menu_hi), tab = atomic_load(&g_menu_tab), item = hi >= 0 ? ov_menu_item(tab, hi) : -1;
-    if (bit == DM_BTN_UP || bit == DM_BTN_DOWN) {
-        for (int k = 0; k < OVM_ROWS; k++) { hi = hi < 0 ? (bit == DM_BTN_UP ? OVM_ROWS - 1 : 1) : (hi + (bit == DM_BTN_UP ? OVM_ROWS - 1 : 1)) % OVM_ROWS; if (ov_menu_item(tab, hi) >= 0) break; }
-        atomic_store(&g_menu_hi, hi); dm_overlay_redraw();
-    } else if ((bit == DM_BTN_LEFT || bit == DM_BTN_RIGHT) && item == OVM_OPACITY) { menu_opacity(atomic_load(&g_set_opacity) + (bit == DM_BTN_LEFT ? -5 : 5)); settings_save(); }
+static int menu_step(int hi, int d, int tab, int n) {   // the next row a controller can choose, up (d -1) or down (d 1): the tabs, the tab's rows, Resume, round again
+    int m = n + 2, pos = hi < 0 ? (d > 0 ? 0 : m) : hi == OVM_HI_RESUME ? n + 1 : hi;   // (from none: down to the first row, up to Resume)
+    for (int k = 0; k < m; k++) { pos = ((pos + d) % m + m) % m; int h = pos == n + 1 ? OVM_HI_RESUME : pos; if (ov_menu_selectable(ov_menu_item(tab, h, n))) return h; }
+    return hi;
+}
+static void menu_key(uint64_t bit) {   // a controller key pressed while the menu is open: up and down go through the rows (the tab scrolls to show the chosen one),
+    if (atomic_load(&g_edit)) { ed_key(bit); return; }   // left and right change the tab or the opacity on their rows, L and R change the tab anywhere, A does
+    if (atomic_load(&g_sp_on)) { sp_key(bit); return; }  // the row, B and + close
+    int hi = atomic_load(&g_menu_hi), tab = atomic_load(&g_menu_tab), n = menu_n(tab), item = hi >= 0 ? ov_menu_item(tab, hi, n) : -1;
+    if (bit == DM_BTN_UP || bit == DM_BTN_DOWN) { hi = menu_step(hi, bit == DM_BTN_UP ? -1 : 1, tab, n); atomic_store(&g_menu_hi, hi); menu_show(hi); dm_overlay_redraw(); }
+    else if ((bit == DM_BTN_LEFT || bit == DM_BTN_RIGHT) && item == OVM_OPACITY) { menu_opacity(atomic_load(&g_set_opacity) + (bit == DM_BTN_LEFT ? -5 : 5)); settings_save(); }
     else if ((bit == DM_BTN_LEFT || bit == DM_BTN_RIGHT) && item == OVM_TAB) menu_tab(tab + (bit == DM_BTN_LEFT ? -1 : 1));
     else if (bit == DM_BTN_L || bit == DM_BTN_ZL || bit == DM_BTN_R || bit == DM_BTN_ZR) {
         menu_tab(tab + (bit == DM_BTN_L || bit == DM_BTN_ZL ? -1 : 1));
-        if (hi > 0 && ov_menu_item(atomic_load(&g_menu_tab), hi) < 0) atomic_store(&g_menu_hi, OVM_ROWS - 1);   // (the other tab has fewer rows)
+        int t = atomic_load(&g_menu_tab), m = menu_n(t);
+        if (hi > 0 && hi != OVM_HI_RESUME && !ov_menu_selectable(ov_menu_item(t, hi, m))) atomic_store(&g_menu_hi, OVM_HI_RESUME);   // (the other tab has fewer rows)
+        else menu_show(hi);
+        dm_overlay_redraw();
     }
     else if (bit == DM_BTN_A) menu_do(hi < 0 ? OVM_RESUME : item);
     else if (bit == DM_BTN_B || bit == DM_BTN_PLUS) menu_close();
@@ -552,15 +592,20 @@ static void menu_key(uint64_t bit) {   // a controller key pressed while the men
 // ---- the save manager (saves_android.c): Export save copies the game's committed save to the files folder's saves/ on a thread of its own (the row shows it
 // copying, then the export's name); Import save opens the picker, in the menu's panel (overlay_layout.h OVS_*): the saves there newest first, a page of
 // OVM_ROWS - 2 (left and right, L and R page), Back. A save chosen asks first; the import then waits for the next start (the save is not touched while the
-// game runs) and the app ends, as the panel says. A controller: up and down choose, A does, B goes back; a finger taps a row, or outside the panel to go back ----
+// game runs) and the app ends, as the panel says. A controller: up and down choose, A does, B goes back; a finger taps a row, or outside the panel to go back.
+// In an app with the Java save bridge (SaveBridge.java) the system's pickers take their place: Export save makes the export, then zips it where the player says
+// (the row shows it exporting, then its button again); Import save takes a .zip (SaveBridge asks first, and refuses another game's) and then ends the app as above; the save file
+// directory's Browse picks the folder the save is mirrored to (dm_saves_event has their answers) ----
 #define SP_MAX 64
 #define SP_PER (OVM_ROWS - 2)
 static pthread_mutex_t g_sp_mu = PTHREAD_MUTEX_INITIALIZER;   // the picker's list and the export's note
 static struct { int n, page, confirm, closing, ptr, row; dm_save_entry e[SP_MAX], pick; } g_sp = {.ptr = -1};
-static char g_sv_note[96];
+static char g_sv_note[160], g_sp_folder[512];   // (and the save folder whose save the next start loads: sp_closing)
 int dm_save_note(char *out, int cap) { pthread_mutex_lock(&g_sp_mu); snprintf(out, (size_t)cap, "%s", g_sv_note); pthread_mutex_unlock(&g_sp_mu); return atomic_load(&g_sv_st); }
 static void *export_run(void *a) {
-    (void)a; char name[64], err[600]; int r = dm_saves_export("", name, sizeof name, err, sizeof err);
+    (void)a; char name[64] = "", err[600]; int r;
+    if (!dm_saves_java()) r = dm_saves_export("", name, sizeof name, err, sizeof err);
+    else if (!(r = dm_saves_export_zip(err, sizeof err))) return NULL;   // the zip's picker is open: its answer ends the export (dm_saves_event)
     pthread_mutex_lock(&g_sp_mu); snprintf(g_sv_note, sizeof g_sv_note, "%s", r ? err : name); pthread_mutex_unlock(&g_sp_mu);
     atomic_store(&g_sv_st, !r ? OVX_DONE : r == -ENOENT ? OVX_NOSAVE : OVX_FAILED); atomic_fetch_add(&g_sv_n, 1); dm_overlay_redraw();
     return NULL;
@@ -591,8 +636,29 @@ static void sp_back(void) {   // the confirmation → the list → the menu (not
     atomic_store(&g_sp_on, 0); atomic_store(&g_menu_hi, -1); dm_overlay_redraw();
 }
 static void *sp_end(void *a) {   // the panel's note shows for a moment, then the app ends; the next start imports the save (saves_android.c dm_saves_start)
-    (void)a; sleep(3); LOG("[saves] the app ends for the import"); _exit(0);
+    (void)a; sleep(3); LOG("[saves] the app ends: the next start %s", g_sp.closing == 2 ? "loads the save folder's save" : "imports the save"); _exit(0);
 }
+// The panel's note that the game closes, then the app ends: an import (a zip unpacked into saves/ as name), or the save folder name chosen whose save the next
+// start loads (folder 1)
+static void sp_closing(const char *name, int folder) {
+    menu_open(-1);
+    pthread_mutex_lock(&g_sp_mu);
+    memset(&g_sp.pick, 0, sizeof g_sp.pick); snprintf(g_sp.pick.name, sizeof g_sp.pick.name, "%s", name); snprintf(g_sp_folder, sizeof g_sp_folder, "%s", folder ? name : "");
+    if (!folder) { g_sp.n = dm_saves_list(g_sp.e, SP_MAX); for (int k = 0; k < g_sp.n; k++) if (!strcmp(g_sp.e[k].name, name)) g_sp.pick = g_sp.e[k]; }
+    g_sp.closing = 1 + folder; g_sp.confirm = 0; g_sp.ptr = -1;
+    pthread_mutex_unlock(&g_sp_mu);
+    atomic_store(&g_sp_hi, -1); atomic_store(&g_sp_on, 1); sp_changed();
+    pthread_t t; if (pthread_create(&t, NULL, sp_end, NULL)) sp_end(NULL); else pthread_detach(t);
+}
+void dm_saves_event(int kind, int code, const char *message) {   // (saves_android.c, on a thread of Java's)
+    if (kind == DM_SAVES_EXPORT) {   // the Export button is back at once, for the next export: the zip's name is the save dialog's (and the log's), a failure SaveBridge's
+        pthread_mutex_lock(&g_sp_mu); snprintf(g_sv_note, sizeof g_sv_note, "%s", message); pthread_mutex_unlock(&g_sp_mu);   // dialog explains
+        atomic_store(&g_sv_st, OVX_IDLE);
+    } else if (kind == DM_SAVES_IMPORT && code == DM_SAVES_OK) { if (!dm_saves_request_import(message)) sp_closing(message, 0); }
+    else if (kind == DM_SAVES_FOLDER && code == DM_SAVES_LOAD) sp_closing(message, 1);
+    atomic_fetch_add(&g_sv_n, 1); dm_overlay_redraw();   // (the save rows change: the export's note, the folder's path)
+}
+int dm_menu_folder(char *out, int cap) { if (!dm_saves_java()) { if (cap > 0) out[0] = 0; return 0; } dm_saves_folder_label(out, cap); return 1; }   // (gfx_vk_present.c)
 static void sp_do(int row) {
     if (!sp_selectable(row)) return;
     dm_haptics_android_tap();
@@ -646,8 +712,12 @@ int dm_save_rows(ov_srow rows[OVM_ROWS]) {   // (gfx_vk_present.c ov_save_panel)
     if (!atomic_load(&g_sp_on)) return 0;
     memset(rows, 0, sizeof(ov_srow) * OVM_ROWS);
     pthread_mutex_lock(&g_sp_mu);
-    if (g_sp.closing) {
-        SP_ROW(0, OVS_TITLE, "Importing the save"); SP_ROW(1, OVS_ITEM, "%s", g_sp.pick.name); sp_size(rows[1].right, sizeof rows[1].right, &g_sp.pick);
+    if (g_sp.closing == 2) {   // the save folder's save (sp_closing): its path's end when it is long
+        size_t L = strlen(g_sp_folder);
+        SP_ROW(0, OVS_TITLE, "Loading the folder's save"); SP_ROW(1, OVS_ITEM, "%s%s", L > 56 ? "..." : "", g_sp_folder + (L > 56 ? L - 53 : 0));
+        SP_ROW(2, OVS_NOTE, "The game closes now. Open it again:"); SP_ROW(3, OVS_NOTE, "the folder's save is loaded as it starts.");
+    } else if (g_sp.closing) {
+        SP_ROW(0, OVS_TITLE, "Importing the save"); SP_ROW(1, OVS_ITEM, "%s", g_sp.pick.name); if (g_sp.pick.files) sp_size(rows[1].right, sizeof rows[1].right, &g_sp.pick);
         SP_ROW(2, OVS_NOTE, "The game closes now. Open it again:"); SP_ROW(3, OVS_NOTE, "the save is imported as it starts.");
     } else if (g_sp.confirm) {
         SP_ROW(0, OVS_TITLE, "Import this save?"); SP_ROW(1, OVS_ITEM, "%s", g_sp.pick.name); sp_size(rows[1].right, sizeof rows[1].right, &g_sp.pick);
@@ -1147,6 +1217,7 @@ static void *host_thread(void *a) {
     atomic_store(&g_running, 1);
     int rc = main(2, argv);
     LOG("host returned %d", rc);
+    dm_saves_folder_sync(1);   // the game ended itself: its last save goes to the save folder
     _exit(rc);
 }
 static void env_file(const char *path) {   // KEY=VALUE per line (# comments): switches without rebuilding, as the iOS app's Documents/env.txt
@@ -1228,7 +1299,9 @@ __attribute__((visibility("default"))) void ANativeActivity_onCreate(ANativeActi
 #ifdef DM_RELEASE
     unsetenv("DM_CTL");   // a release build takes no remote key presses (the control file is a development tool)
 #endif
-    // the save manager's requests (saves_android.c), before the host mounts the save: an import chosen in the menu or pushed by porter, an export porter asks for
+    // the save manager's requests (saves_android.c), before the host mounts the save: an import chosen in the menu or pushed by porter, an export porter asks for,
+    // then the save folder's save (its Java bridge first: the save folder and the zip pickers are there only in an app porter built Java for)
+    dm_saves_bridge(act->vm, act->clazz);
     if (dm_saves_start(g_root)) { LOG("[saves] the request asked the app to end: the game is not started"); g_quit = 1; return; }
     if (!romfs_readable(act, sdk)) { g_quit = 1; return; }   // after the save manager's requests, which need no RomFS
     settings_load(); dm_haptics_android_start(act, atomic_load(&g_set_rumble)); dm_lan_android_start(act);
