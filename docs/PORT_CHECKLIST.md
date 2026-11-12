@@ -6,7 +6,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 
 "Profile here": `nxnative/dm/games/<title ID>/` has the game's profile from nxnative. "Upstream profile": only seedds/nxnative has one, to read as a reference or starter, not to pull. "60 fps with X" is upstream's note: they run that update at 60 fps (30 on the Switch).
 
-**43 / 102 ported**
+**44 / 103 ported**
 
 - [x] 13 Sentinels: Aegis Rim · `01003FC01670C000`
 - [ ] Ace Attorney Investigations Collection · `010005501E68C000` · profile here
@@ -96,7 +96,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [ ] Taiko Risshiden V DX · `0100346017304000` · profile here · Japanese · played by touch
 - [x] Tales of Eternia Remastered · `010006E0230AC000`
 - [ ] The Great Ace Attorney Chronicles · `010036E00FB20000` · profile here
-- [ ] The Legend of Zelda: Breath of the Wild · `01007EF00011E000` · profile here · 60 fps with 1.9.0
+- [x] The Legend of Zelda: Breath of the Wild · `01007EF00011E000` · Galaxy S25 Ultra / Turnip; tested in the opening and on the Great Plateau
 - [x] The Legend of Zelda: Echoes of Wisdom · `01008CF01BAAC000` · Retroid Pocket 6 / PurpleVK; playable with minor transparency artifacts around rifts
 - [ ] The Legend of Zelda: Link's Awakening · `01006BB00C6F0000` · profile here
 - [x] The Legend of Zelda: Tears of the Kingdom · `0100F2C0115B6000`
