@@ -6,7 +6,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 
 "Profile here": `nxnative/dm/games/<title ID>/` has the game's profile from nxnative. "Upstream profile": only seedds/nxnative has one, to read as a reference or starter, not to pull. "60 fps with X" is upstream's note: they run that update at 60 fps (30 on the Switch).
 
-**43 / 102 ported**
+**44 / 104 ported**
 
 - [x] 13 Sentinels: Aegis Rim · `01003FC01670C000`
 - [ ] Ace Attorney Investigations Collection · `010005501E68C000` · profile here
@@ -24,6 +24,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [ ] Big Brain Academy: Brain vs. Brain · `0100620012D6E000` · profile here
 - [x] Blasphemous 2 · `010040801A4C8000`
 - [ ] Brain Memory Training Academy · `0100F5D01DA3A000` · profile here
+- [x] Burnout Paradise Remastered · `0100DBF01000A000` · work in progress: city driving tested, not played through
 - [x] Captain Toad: Treasure Tracker · `01009BF0072D4000`
 - [x] Castlevania: Belmont's Curse · `0100BA4026E94000`
 - [ ] Catherine: Full Body · `0100BF00112C0000` · profile here
