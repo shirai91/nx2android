@@ -1,0 +1,39 @@
+# DEAD OR ALIVE Xtreme 3 Scarlet (Team NINJA, SDK 6.4.2, NVN; GLSLC in subsdk0, movies in subsdk1). Started from the NSP script's provisional profile
+# (dm/games/profile_guess.py) and checked against 01009CC00C97C000_survey/survey.md; the heap keys stay the survey's guesses (the heap check needs a Mac host).
+
+# ---- Identity ----
+title_id	01009CC00C97C000
+program_id	01009CC00C97C000
+
+# ---- App ----
+name	DEAD OR ALIVE Xtreme 3 Scarlet
+ipa	DeadOrAliveXtreme3Scarlet.ipa
+app_category	public.app-category.games
+
+# ---- Versions ----
+build	v393216	1.0.6	main=71102550c57d57db950d16f3eb5af72e	subsdk0=8d073b25b9abda677e6967cef9ef6070	subsdk1=16577266bb9797abf6029f85025f6d35	sdk=184751379007f9c50fc96ba4d26a5dca
+package	v393216
+shader_versions	v393216
+
+# ---- Files ----
+# every module main imports from
+modules	main subsdk0 subsdk1 sdk
+romfs_marker	00/data_00.lnk
+zip_store	.lnk:.mp4:.xhs:.metallib
+
+# ---- Memory ----
+# main sets a heap of at most the pool − 64 MB: a 3328 MB heap region
+mem_reserve	0x100000000
+mem_alias	0x10000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+# the NPDM declares 0 MB of system resource: IsVirtualAddressMemoryEnabled is false, as on Horizon (Big Brain Academy: Brain vs. Brain sets a heap only then)
+sys_resource	0x0
+
+# ---- Shader split ----
+shader_groups	/00/=00 /02/=02 /04/=04 /05/=05 /01/=01 /03/=03 /06/=06
+shader_note	DEAD OR ALIVE Xtreme 3 Scarlet shaders
+
+# ---- After the rewrite ----
+# the rewritten modules are larger than the default 64 MB of used memory (Age of Calamity: 66.6 MB → 72 MB)
+mem_used	0x4800000

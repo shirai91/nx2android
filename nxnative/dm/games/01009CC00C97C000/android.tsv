@@ -1,0 +1,10 @@
+# DEAD OR ALIVE Xtreme 3 Scarlet (01009CC00C97C000), update 1.0.6 (v393216), JPN free-to-play edition: Team NINJA's KTGL on NVN, SDK 6.4.2 (subsdk1 = NintendoSDK_movie;
+# subsdk0 = GLSLC). Brought up 2026-11-11/12 on a Retroid Pocket Nova (Snapdragon 8 Gen 2, Adreno 740, Android 16): boots to the title at 30 fps (interval 2, the game's own),
+# audio plays, the title's flyover renders lit and textured and the vacation's hotel scene draws the girls textured. 7 of its shaders are compiled at run time by the game's
+# own GLSLC (hle_glslc.c) and the rest are GLSLC outputs in main; the run-time programs are captured on the device as they draw and go into the bundle by porting again with
+# --install. Needs the Vulkan backend's 2D-row texture buffers (deferred lighting: otherwise every deferred surface is black) and shader_vk.py's raw-move rule for vertex
+# inputs (otherwise the sea is black). Not yet played: volleyball, gravure, casino; saving beyond the first autosave.
+status	boots
+tested	v393216 Retroid Pocket Nova RPN (Snapdragon 8 Gen 2, Adreno 740, Android 16)
+package	org.nx2a.t01009cc00c97c000
+orientation	landscape
