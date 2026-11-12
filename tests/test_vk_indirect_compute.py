@@ -39,7 +39,7 @@ def production():
     indirect = replay[replay.index('static void compute_warm_start(void) {'):replay.index('// ---------------- copies and clears')]
     indirect = indirect[indirect.index('\n}') + 2:]
     ubd = core[core.index('typedef struct { uint64_t lo, hi; VkBuffer sb;'):core.index('// the draw bisection')]
-    infl = core[core.index('typedef struct { uint64_t lo, hi, fence; const uint8_t *data; }'):core.index('int vk_ubd_overlaps')]
+    infl = core[core.index('typedef struct { uint64_t lo, hi, fence; const uint8_t *data; uint8_t *own; }'):core.index('int vk_ubd_overlaps')]
     functions = ''.join(function(core, sig) for sig in [
         'vkpool_t *vk_pool_of(', 'uint32_t vk_pool_gen(', 'int vk_buf_at(',
         'static vksub_t *cur(', 'void *vk_scratch(', 'void vk_img_barrier_all('])

@@ -734,10 +734,14 @@ void mtl_pool_del(const void *mem) {
     }
 }
 vkpool_t *vk_pool_of(uint64_t addr, uint64_t len) {
-    // the last pools this thread found, while none was added or removed: the replay looks up every buffer binding of every draw, and the read lock alone was ~6% of it
-    static __thread struct { uint32_t gen; vkpool_t *p[4]; } c;   // gen: g_pool_gen + 1 (0: empty)
-    uint32_t g = __atomic_load_n(&g_pool_gen, __ATOMIC_ACQUIRE) + 1;
-    if (c.gen == g) for (int i = 0; i < 4; i++) { vkpool_t *p = c.p[i]; if (p && addr >= p->lo && addr + len <= p->hi) return p; }
+    // the pools this thread found, while none was added or removed: the replay looks up every buffer binding of every draw, and the read lock alone was ~6% of it.
+    // One slot per hash of the address's 4 KB page (a hit is checked against the pool's range, so a slot shared by two pages only costs a miss). The last four
+    // pools found, tried in turn, were too few for Breath of the Wild: it keeps over 4,096 pools live and a frame's draws bind buffers in hundreds of them, so
+    // most lookups took the lock and the search: 13% of a Galaxy S25 Ultra's replay thread (DM_VK_PROF: 9% in the lock calls, 4% in the function) and 4% with
+    // these slots; the replay of 4,850 draws in its woods went from 11.3 to 8.1 ms a frame, and that spot from 30 fps to 60
+    enum { PC = 512 }; static __thread struct { uint32_t gen; vkpool_t *p[PC]; } c;   // gen: g_pool_gen + 1 (0: empty)
+    uint32_t g = __atomic_load_n(&g_pool_gen, __ATOMIC_ACQUIRE) + 1; unsigned ck = (unsigned)(((addr >> 12) * 0x9E3779B97F4A7C15ull) >> 55);   // (9 bits)
+    if (c.gen == g) { vkpool_t *p = c.p[ck]; if (p && addr >= p->lo && addr + len <= p->hi) return p; }
     vkpool_t *r = NULL; int across = 0;
     pthread_rwlock_rdlock(&g_pool_mu);
     int lo = 0, hi = g_npool;   // the last pool by lo that starts at or below addr
@@ -747,7 +751,7 @@ vkpool_t *vk_pool_of(uint64_t addr, uint64_t len) {
         for (int i = 0; i < g_npool; i++) if (addr >= g_pool[i].lo && addr + len <= g_pool[i].hi) { r = &g_pool[i]; break; }
                                            else if (addr >= g_pool[i].lo && addr < g_pool[i].hi && addr + len <= g_pool[i].end) across = 1;
     pthread_rwlock_unlock(&g_pool_mu);
-    if (r) { if (c.gen != g) { memset(&c, 0, sizeof c); c.gen = g; } memmove(&c.p[1], &c.p[0], 3 * sizeof *c.p); c.p[0] = r; }
+    if (r) { if (c.gen != g) { memset(&c, 0, sizeof c); c.gen = g; } c.p[ck] = r; }
     if (!r && across) { static uint64_t n; uint64_t k = ++n; if (!(k & (k - 1))) LOG("[RED] [vk] %llu ranges across two chunks of a memory pool (ZC_CHUNK; this one %#llx +%#llx): no buffer for them", (unsigned long long)k, (unsigned long long)addr, (unsigned long long)len); }
     return r;
 }
@@ -1246,9 +1250,9 @@ void mtl_sub_fill(uint64_t dst, uint64_t n, uint32_t value) {
 // before nearly every draw: NEO had about 145 passes for 148 draws a frame). NVN applies the update in command order, so a draw after it whose uniform
 // binding overlaps it reads a shadow: memory with the deferred updates applied in order (vk_ubd_shadow). The real copies are made in order when a pass
 // ends anyway, and at the end of the submission (vk_ubd_land), so later passes, copies, dispatches and the CPU see them as before.
-typedef struct { uint64_t lo, hi; VkBuffer sb; VkDeviceSize so; const uint8_t *p; } ubd_t;
+typedef struct { uint64_t lo, hi; VkBuffer sb; VkDeviceSize so; const uint8_t *p; uint8_t *own; } ubd_t;   // p: the bytes for CPU readers (own, or the scratch copy); own: their heap copy, freed with the entry
 enum { UBD_MAX = 512 };
-static ubd_t g_ubd[UBD_MAX]; static int g_nubd; uint64_t g_ubd_gen = 1, g_ubd_landed, g_ubd_shadows, g_ubd_bytes, g_ns_submit, g_ubd_superseded;
+static ubd_t g_ubd[UBD_MAX]; static int g_nubd; extern int g_ubd_heap; uint64_t g_ubd_gen = 1, g_ubd_landed, g_ubd_shadows, g_ubd_bytes, g_ns_submit, g_ubd_superseded;
 void vk_end_pass_land(void);
 void vk_sub_update(uint64_t dst, const void *data, uint64_t n) {
     VkBuffer db, sb; VkDeviceSize dof, so;
@@ -1256,10 +1260,18 @@ void vk_sub_update(uint64_t dst, const void *data, uint64_t n) {
     if (!vk_buf_at(dst, n, &db, &dof)) { VKRED_ONCE(3, "uniform update outside the memory pools"); return; }
     // an update of exactly the range of a deferred one supersedes it: the older one goes (Unity rewrites the same few constant buffers before every draw,
     // so the list keeps about one entry per buffer region, which keeps the landing to a few copies and the shadows cheap to build)
-    for (int i = g_nubd - 1; i >= 0; i--) if (g_ubd[i].lo == dst && g_ubd[i].hi == dst + n) { memmove(&g_ubd[i], &g_ubd[i + 1], sizeof *g_ubd * (size_t)(g_nubd - i - 1)); g_nubd--; g_ubd_superseded++; break; }
+    for (int i = g_nubd - 1; i >= 0; i--) if (g_ubd[i].lo == dst && g_ubd[i].hi == dst + n) { free(g_ubd[i].own); memmove(&g_ubd[i], &g_ubd[i + 1], sizeof *g_ubd * (size_t)(g_nubd - i - 1)); g_nubd--; g_ubd_superseded++; break; }
     if (g_nubd == UBD_MAX) vk_end_pass_land();   // too many distinct ranges: they land now
     uint8_t *p = vk_scratch(n, 4, &sb, &so); memcpy(p, data, n);
-    g_ubd[g_nubd++] = (ubd_t){dst, dst + n, sb, so, p}; g_ubd_gen++;
+    // The shadows read the update's bytes again (vk_ubd_read), and the scratch copy is the wrong place to read them from: it is mapped GPU memory, host-visible and
+    // coherent but on Adreno not cached (write-combined), where a read costs many times a write. Breath of the Wild rewrites the same 64 bytes of a block about 460
+    // times a frame and builds about 280 shadows from them: the memcpy calls that read those bytes back were 17 to 33% of a Galaxy S25 Ultra's replay thread
+    // (DM_VK_PROF: 12-27% for the in-flight list, 5-6% for this one), against 3-4% for the 18 MB a frame of bindings copied out of pool memory. An update of up
+    // to 4 KB keeps a copy in ordinary memory for them, freed with its entry; a larger one is read from scratch as before (its second copy would cost more than its
+    // few reads). Switched within one run, standing in that game's woods (4,850 draws, Turnip 26.2.3): descriptor sets 7.0 -> 4.7 ms a frame, the replay 12.8 ->
+    // 11.3 ms, vk_ubd_read 25-39% -> 6% of the samples. DM_VK_UBD_HEAP=0 (live): none, as before
+    uint8_t *own = g_ubd_heap && n <= 4096 ? malloc(n) : NULL; if (own) memcpy(own, data, n);
+    g_ubd[g_nubd++] = (ubd_t){dst, dst + n, sb, so, own ? own : p, own}; g_ubd_gen++;
 }
 // the draw bisection (gfx_vk_exec.c draw_allowed): the outcome of this submission
 extern int g_bis_on, g_bis_lo, g_bis_hi, g_bis_trace, g_bis_var; void vk_bisect_reset_count(void);
@@ -1278,25 +1290,32 @@ static void vk_bisect_result(int ok) {
     if (g_bis_hi - g_bis_lo <= 1) { done = 1; g_bis_on = 0; g_bis_trace = g_bis_lo; VKLOG("bisection: draw %d of %d is the first the driver refuses (traced in the next submission)", g_bis_lo, draws_seen); }
     vk_bisect_reset_count();
 }
-void vk_ubd_land_drop(void) { g_nubd = 0; g_ubd_gen++; }
+void vk_ubd_land_drop(void) { for (int i = 0; i < g_nubd; i++) free(g_ubd[i].own); g_nubd = 0; g_ubd_gen++; }
 // Landed updates still in flight: their copies are queued but the GPU may not have run them, so memory may not hold them yet; a shadow built on the
 // CPU (vk_ubd_read) applies them over memory until their submission completes. Without this a shadow mixed the newest update with the frame before's
 // memory (shadows detached from moving characters, far pedestrians flickering).
-typedef struct { uint64_t lo, hi, fence; const uint8_t *data; } ubd_infl_t;   // data: the update's bytes in its submission's scratch memory, which is not reused before that submission completes
+typedef struct { uint64_t lo, hi, fence; const uint8_t *data; uint8_t *own; } ubd_infl_t;   // data: the update's bytes: its heap copy (own, freed when the entry goes), or its submission's scratch memory, which is not reused before that submission completes
 static ubd_infl_t *g_infl; static int g_ninfl, g_capinfl;
 static void infl_prune(void) {
     uint64_t done = vk_fence_done(); int o = 0;
-    for (int i = 0; i < g_ninfl; i++) if (g_infl[i].fence > done) g_infl[o++] = g_infl[i];
+    for (int i = 0; i < g_ninfl; i++) if (g_infl[i].fence > done) g_infl[o++] = g_infl[i]; else free(g_infl[i].own);
     g_ninfl = o;
 }
 static void sub_gpu_wrote(uint64_t a, uint64_t n);
+extern int g_x_inflkeep;
 void vk_ubd_land(VkCommandBuffer cb) {   // outside a render pass
     if (!g_nubd) return;
     infl_prune();
     for (int i = 0; i < g_nubd; i++) {
         if (g_ninfl == g_capinfl) { g_capinfl = g_capinfl ? 2 * g_capinfl : 256; g_infl = realloc(g_infl, sizeof *g_infl * (size_t)g_capinfl); }
         // (the bytes used to be copied into the heap here: a malloc, memcpy and free of up to 64 KB per update, for bytes the scratch memory keeps anyway)
-        g_infl[g_ninfl++] = (ubd_infl_t){g_ubd[i].lo, g_ubd[i].hi, g_fence + 1, g_ubd[i].p};   // the fence of the submission being recorded
+        // An in-flight update of exactly this range goes: this one is applied after it and covers all of it, and completes no earlier, so no reader sees the older
+        // one again (at most one such entry, as every landing does this). Breath of the Wild lands the same ranges of one 64 KB block at each pass's end, about 55
+        // updates a frame, and they stayed listed until their submissions completed: vk_ubd_read copied every one of them over each shadow it built, 27% of a
+        // Galaxy S25 Ultra's replay thread in that loop's memcpy calls and 12% with this (DM_VK_PROF; before vk_sub_update's heap copies, which took most of the
+        // rest: switched within one run the replay was 12.9 ms with this and 13.1 without). DM_VK_UBD_KEEP=1 (live): all kept, as before
+        for (int k = g_x_inflkeep ? -1 : g_ninfl - 1; k >= 0; k--) if (g_infl[k].lo == g_ubd[i].lo && g_infl[k].hi == g_ubd[i].hi) { free(g_infl[k].own); memmove(&g_infl[k], &g_infl[k + 1], sizeof *g_infl * (size_t)(g_ninfl - k - 1)); g_ninfl--; break; }
+        g_infl[g_ninfl++] = (ubd_infl_t){g_ubd[i].lo, g_ubd[i].hi, g_fence + 1, g_ubd[i].p, g_ubd[i].own};   // the fence of the submission being recorded; the heap copy goes with it
     }
     vk_img_barrier_all(cb);
     for (int i = 0; i < g_nubd; i++) { VkBuffer db; VkDeviceSize dof; if (vk_buf_at(g_ubd[i].lo, g_ubd[i].hi - g_ubd[i].lo, &db, &dof)) {
