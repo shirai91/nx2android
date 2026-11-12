@@ -1,22 +1,16 @@
 package org.nx2a;
 
 import android.app.NativeActivity;
-import java.nio.charset.StandardCharsets;
+import android.content.Intent;
 
-/** Optional Java text entry; the ordinary NativeActivity APK remains code-less. */
+/** The game's activity when porter could build the app's Java (pipeline.py java_bridge): NativeActivity with the save manager's pickers (SaveBridge).
+ *  --native-keyboard adds the text entry (KeyboardGameActivity); without any Java the APK stays code-less and the menu keeps its own save manager. */
 public class GameActivity extends NativeActivity {
-    private final GameKeyboard keyboard = new GameKeyboard(this);
+    private final SaveBridge saves = new SaveBridge(this);
 
-    private static String text(byte[] value) {
-        return value == null ? "" : new String(value, StandardCharsets.UTF_8);
+    public SaveBridge saveBridge() { return saves; }   // saves_android.c looks it up: its absence means a code-less app
+
+    @Override protected void onActivityResult(int request, int result, Intent data) {
+        if (!saves.onActivityResult(request, result, data)) super.onActivityResult(request, result, data);
     }
-
-    // Guest callers wait off the UI thread. Ordinary UTF-8, not JNI modified UTF-8.
-    public byte[] readKeyboard(byte[] title, byte[] subtitle, byte[] guide, byte[] initial, int min, int max) {
-        return keyboard.read(text(title), text(subtitle), text(guide), text(initial), min, max);
-    }
-
-    @Override protected void onResume() { super.onResume(); keyboard.pause(false); }
-    @Override protected void onPause() { keyboard.pause(true); super.onPause(); }
-    @Override protected void onDestroy() { keyboard.pause(true); super.onDestroy(); }
 }
