@@ -4,8 +4,13 @@
 and always treated decoded luma as limited range. A 64-line BT.709 stream therefore
 got the BT.601 matrix; a full-range movie got incorrect contrast. The adapter now
 reads `color-standard` / `color-range` and retains them with each queued picture.
-The conversion follows the tested nxnative `movie_avc_android.inc` path, adapted
-to nx2android's existing picture queue and timestamp handling.
+The conversion and per-picture metadata handling adapt `dm/host/movie_avc_android.inc`
+from the public `thehobbit85/nxnative` fork at
+`1f01e28c87da5233dfa14fb31fabf1535df33013`. Git credits that source to seedds.
+It uses the MIT license with `Copyright (c) 2026 seedds`, already retained in
+`nxnative/LICENSE`. The adaptation uses nx2android's existing picture queue and
+timestamp handling. [Source](https://github.com/thehobbit85/nxnative/blob/1f01e28c87da5233dfa14fb31fabf1535df33013/dm/host/movie_avc_android.inc)
+and [license](https://github.com/thehobbit85/nxnative/blob/1f01e28c87da5233dfa14fb31fabf1535df33013/LICENSE).
 
 Known standards are Android 1 (BT.709), 2/4 (BT.601), and 6 (BT.2020 non-constant
 luminance). Missing or unknown standards retain the old height heuristic; only
@@ -19,6 +24,15 @@ reported Android value, or 0 when absent) and `full-range` (1 for full, otherwis
 some decoders supply size-based defaults, and the codec is initially configured
 at 1920x1080 before reporting the actual picture dimensions. The synthetic
 tagged-stream checks below do not establish those defaults for a physical device.
+
+The maintainer reported a Lenovo Legion Y700 (TB322FC, SM8750P) check with
+`c2.qti.avc.decoder` on 13 Sentinels: Aegis Rim's 1024x576 intro movie.
+The decoder reported `color-standard 1 full-range 0` for this untagged stream,
+which selects BT.709 instead of the previous sub-720p BT.601 heuristic.
+The game used raw NV12 output (`output 4 mode 1`), so the check found no
+regression while leaving the RGBA conversion unexercised. A physical-device
+check using RGBA texture output with an SD or untagged stream remains pending.
+[Maintainer's device report](https://github.com/shirai91/nx2android/pull/174#issuecomment-6788771842)
 
 ## Host regression
 

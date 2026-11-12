@@ -195,6 +195,8 @@ static void finish(mavc *a) {
     close_codec(a); a->eos_sent = 1;
 }
 // NV12 → RGBA using the picture's matrix/range. Android standards: 1=709, 2/4=601, 6=2020.
+// Matrix/range conversion adapted from dm/host/movie_avc_android.inc in
+// thehobbit85/nxnative at 1f01e28c87da (MIT, see nxnative/LICENSE).
 static void nv12_rgba(const uint8_t *y, const uint8_t *uv, int pw, int ph, uint8_t *dst, int w, int h, int standard, int full) {
     int cw = pw < w ? pw : w, chh = ph < h ? ph : h;
     int rv = 409, gu = 100, gv = 208, bu = 516;   // ×256, 8-bit video range (luma × 298)
