@@ -1,0 +1,16 @@
+# Need For Speed Hot Pursuit Remastered (010029B0118E8000), update 1.0.3 (v196608): Criterion's engine on NVN, SDK 10.4.1.
+# Tested 2026-11-10/11 on a Retroid Pocket Nova (Snapdragon 8 Gen 2 / QCS8550, Adreno 740, Android 16): title, EULA and privacy pages, the race map, event, car and colour
+# selection, and the start of a race in Grand Ocean Coast (driving itself not exercised); audio plays; 60 fps with the limiter cut (patches.py) and
+# DM_PRESENT_INTERVAL=display: adaptive frame rate 60 fps, frame work p50 16.7 ms. Shaders: 2,112 GLSLC outputs in SHADERS.BNDL (Criterion Bundle 2, bnd2_shaders)
+# plus 89 in main. Open: the race intro and the rear-view mirror are washed out white; nvnDeviceGetInteger items 0x60 / 0x61 are answered 0.
+status	wip
+tested	v196608 Retroid Pocket Nova RPN (Snapdragon 8 Gen 2, Adreno 740, Android 16)
+package	org.nx2a.t010029b0118e8000
+orientation	landscape
+# the 60 fps limiter cut: present every display frame so the game's 60 fps logic and the panel's 60 Hz agree (the stock game asks for interval 2)
+env	DM_PRESENT_INTERVAL=display
+# a view of format 37 over an image listed with format 41 (UBWC): this game wants =2 (gfx_vk_tex.c)
+env	DM_VK_UBWC=2
+# the host's upper-left-origin front-face rule gives this game the wrong winding (cars drew black, back faces), as for Burnout Paradise; it uses both NVN fronts,
+# so the rule is inverted (=2), not forced (=1 culled the car outright)
+env	DM_VK_FRONT=2
