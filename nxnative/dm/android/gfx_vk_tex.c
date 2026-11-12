@@ -907,6 +907,90 @@ VkBufferView vk_tbuf_view(const tex_t *t, int storage) {
     pthread_mutex_unlock(&g_tbuf_mu);
     return v;
 }
+// A texture buffer a shader reads with wrapped 1D fetches (fetch1d, shader_vk.py: translated as 2D reads of x & 0x3FFF / x >> 14 over rows of NVN_TBUF_ROW texels;
+// nvn_mtl.m tbuf_as_2d aliases the buffer's bytes as those rows, which no Vulkan image can). The rows are materialised as an image of the texture's own format,
+// its content copied in from the pool at each bind (the bytes the CPU sees then, vk_ubd_read: in-flight GPU writes and deferred updates folded in): the buffer texture
+// itself has no image (vk_tex_, above). Dead or Alive Xtreme 3 Scarlet's deferred-lighting compute reads its light parameters from an 8192-element R32G32B32A32
+// strip; the slot read the zero dummy before, and every deferred surface came out lit black
+typedef struct { VkImage img; VkDeviceMemory mem; VkImageView view; uint32_t w, h; } f1ent;
+static nvn_hmap g_f1_cache = {.klen = sizeof(tbkey)}; static pthread_mutex_t g_f1_mu = PTHREAD_MUTEX_INITIALIZER;
+static uint64_t g_f1_made, g_f1_binds, g_f1_fail;
+VkImageView vk_tbuf_as_2d(const tex_t *t) {
+    const vkfmt_t *f = vk_fmt(t->d.format);
+    uint32_t w, h, row;
+    if (!f || !f->bpb || f->bw != 1 || f->bh != 1 || f->compressed || f->depth || f->stencil || !t->mem || !nvn_tbuf_rows(t->d.width, f->bpb, 1, &w, &h, &row) ||
+        w > V.props.limits.maxImageDimension2D || h > V.props.limits.maxImageDimension2D) {
+        if (g_f1_fail++ < 8) VKLOG("[RED] texture buffer (nvn format %#x, %u elements at %#llx) has no 2D-row form for a wrapped 1D fetch: the slot reads 0",
+                                  t->d.format, t->d.width, (unsigned long long)(uintptr_t)t->mem);
+        return VK_NULL_HANDLE;
+    }
+    vkpool_t *pl = vk_pool_of((uint64_t)(uintptr_t)t->mem, 1);
+    tbkey k = {(uint64_t)(uintptr_t)t->mem, pl ? pl->serial : 0, (uint32_t)t->d.format, t->d.width};
+    pthread_mutex_lock(&g_f1_mu);
+    f1ent *e = nvn_hm_get(&g_f1_cache, &k);
+    pthread_mutex_unlock(&g_f1_mu);
+    int fresh = !e;
+    if (fresh) {
+        e = calloc(1, sizeof *e);
+        VkResult r;
+        VkImageCreateInfo ii = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, NULL, 0, VK_IMAGE_TYPE_2D, f->vk, {w, h, 1}, 1, 1, VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_TILING_OPTIMAL,
+                                VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_SHARING_MODE_EXCLUSIVE, 0, NULL, VK_IMAGE_LAYOUT_UNDEFINED};
+        if ((r = vkCreateImage(V.dev, &ii, NULL, &e->img))) { VKRED_ONCE(88, "2D-row form of a texture buffer not made (vkCreateImage %d: %ux%u format %#x)", r, w, h, t->d.format); g_f1_fail++; return VK_NULL_HANDLE; }
+        VkMemoryRequirements rq; vkGetImageMemoryRequirements(V.dev, e->img, &rq);
+        VkMemoryAllocateInfo ai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, rq.size, vk_mem_type(rq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0)};
+        if ((r = vkAllocateMemory(V.dev, &ai, NULL, &e->mem))) { VKRED_ONCE(89, "2D-row form of a texture buffer not made (vkAllocateMemory %d, %llu bytes)", r, (unsigned long long)rq.size); vkDestroyImage(V.dev, e->img, NULL); g_f1_fail++; return VK_NULL_HANDLE; }
+        VKCHK(vkBindImageMemory(V.dev, e->img, e->mem, 0));
+        VkImageViewCreateInfo vi = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, NULL, 0, e->img, VK_IMAGE_VIEW_TYPE_2D, f->vk, {VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
+                                VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY}, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+        VKCHK(vkCreateImageView(V.dev, &vi, NULL, &e->view));
+        e->w = w; e->h = h;
+        pthread_mutex_lock(&g_f1_mu); nvn_hm_put(&g_f1_cache, &k, e); pthread_mutex_unlock(&g_f1_mu);
+        { uint64_t m = ++g_f1_made; if (m <= 4 || m % 600 == 0)
+            VKLOG("texture buffer read by wrapped 1D fetches: bound as %ux%u rows of %u texels (nvn format %#x, %u elements)", w, h, NVN_TBUF_ROW, t->d.format, t->d.width); }
+    }
+    g_f1_binds++;
+    // the buffer's elements, whole rows then the partial last one, read as the CPU sees them into scratch memory (row pitch == w * bpb: nvn_tbuf_rows asserts the rows lie back to back)
+    uint64_t elem = t->d.width, np = (uint64_t)t->L.size / f->bpb;
+    if (np < elem) elem = np;   // the pool's last row runs short: what lies past it in the image keeps the clear below
+    uint64_t full = h > 1 ? (elem / w) * w : 0, last = elem - full;
+    if (!full && !last) return e->view;
+    VkDeviceSize n = (VkDeviceSize)(full + last) * f->bpb, so; VkBuffer sb;
+    uint8_t *p = vk_scratch(n, f->bpb, &sb, &so);
+    void vk_ubd_read(uint64_t a, uint64_t n, uint8_t *dst);
+    vk_ubd_read((uint64_t)(uintptr_t)t->mem, n, p);
+    VkCommandBuffer cb = vk_cmd(); vk_img_barrier_all(cb);
+    if (fresh) {   // a new image starts as zeros (a Switch buffer's tail would read on into its pool; what the elements do not cover reads 0 here)
+        VkImageMemoryBarrier b = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL, 0, VK_ACCESS_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+                                  VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, e->img, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+        vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &b);
+        VkClearColorValue z = {{{0, 0, 0, 0}}}; VkImageSubresourceRange rg = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        vkCmdClearColorImage(cb, e->img, VK_IMAGE_LAYOUT_GENERAL, &z, 1, &rg);
+    }
+    if (full) { uint32_t rowsA = (uint32_t)(full / w); VkBufferImageCopy c = {so, 0, 0, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {w, rowsA, 1}}; vkCmdCopyBufferToImage(cb, sb, e->img, VK_IMAGE_LAYOUT_GENERAL, 1, &c); }
+    if (last) { VkBufferImageCopy c = {so + (VkDeviceSize)full * f->bpb, 0, 0, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, (uint32_t)(full / w), 0}, {(uint32_t)last, 1, 1}};
+                vkCmdCopyBufferToImage(cb, sb, e->img, VK_IMAGE_LAYOUT_GENERAL, 1, &c); }
+    VkImageMemoryBarrier b = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL,
+                              VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, e->img, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &b);
+    return e->view;
+}
+// its images when a pool goes (vk_tbuf_drop_pool's caller destroys the views over its buffer likewise)
+void vk_f1_drop_pool(uint64_t serial) {
+    for (int n = 64; n == 64;) {   // 64 keys a pass (nvn_hm_del rehashes); n < 64 means the scan saw every key
+        f1ent *es[64]; int nv = 0;
+        pthread_mutex_lock(&g_f1_mu);
+        for (uint32_t i = 0; i < g_f1_cache.cap && nv < 64; i++) {
+            if (!g_f1_cache.vals[i]) continue;
+            tbkey k2; memcpy(&k2, g_f1_cache.keys + (size_t)i * g_f1_cache.klen, sizeof k2);
+            if (k2.pool != serial) continue;
+            f1ent *e2 = nvn_hm_del(&g_f1_cache, &k2);
+            if (e2) es[nv++] = e2;
+        }
+        n = nv;
+        pthread_mutex_unlock(&g_f1_mu);
+        for (int j = 0; j < nv; j++) { vk_defer_free_view(es[j]->view); vk_defer_free_image(es[j]->img, es[j]->mem); free(es[j]); }
+    }
+}
 // CPU readback of texels (ReadTexels): the image copied to scratch memory by a submission of its own, waited for
 void mtl_read_texels(const tex_t *t, unsigned level, unsigned layer0, const NVNcopyRegion *r, uint8_t *dst, size_t row, size_t img) {
     void mtl_sub_begin(void); uint64_t mtl_sub_commit(void); int mtl_wait(uint64_t, uint64_t);
