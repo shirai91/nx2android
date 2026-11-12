@@ -55,6 +55,14 @@ typedef struct { uint32_t magic; samp_par p; } samp_t;                          
 typedef struct { uint32_t magic, nstage; NVNshaderData sd[6]; uint64_t serial; } prog_t;     FITS(prog_t, NVNprogram);   // serial: table key for the replay layer's resolved result
 
 typedef struct { uint32_t magic, fenced; uint64_t fence; } sync_t;                            FITS(sync_t, NVNsync);
+// A fence recorded in a command buffer (CommandBufferFenceSync → OP_FENCE_SYNC) fences its sync object when the replay reaches it, which can be after the game has finalized the object and
+// freed its memory: on hardware the GPU signals the driver's semaphore, never the NVNsync the game owns, so a game may let a sync go while a fence on it is still queued. Only a live sync
+// (its magic intact; nvnSyncFinalize clears it, and the allocator's free-list word overwrites it) is written. Mega Man Battle Network Legacy Collection Vol. 1 frees its movie syncs at the end
+// of each movie: fenced = 1 landed in the high half of a freed 64-byte block's free-list word, and the next 64-byte allocation (movie::NnMediaData::SetBuffer) crashed in TlsHeapCache
+static inline int sync_replay_fence(sync_t *s, uint64_t fence) {
+    if (!s || s->magic != MAGIC('S', 'Y', 'N', 'C')) return 0;
+    s->fence = fence; s->fenced = 1; return 1;
+}
 typedef struct { const pool_t *pool; int64_t off; } ev_builder_t;                             FITS(ev_builder_t, NVNeventBuilder);
 typedef struct { uint32_t magic; volatile uint32_t *val; } ev_t;                              FITS(ev_t, NVNevent);
 
