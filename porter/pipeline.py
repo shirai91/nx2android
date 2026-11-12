@@ -438,8 +438,8 @@ class Port:
         return out
 
     def check_graphics(self):
-        """What the Android host can run: NVN games whose shaders are all in their files. The other kinds need a step upstream runs on a Mac (booting the game in the Mac host)
-        or a graphics layer the Android host does not have yet"""
+        """What the Android host can run: NVN games (whose shaders their files hold, or that they compile at run time with their own GLSLC) and OpenGL ES games. The other kinds
+        need a step upstream runs on a Mac (booting the game in the Mac host) or a graphics layer the Android host does not have yet"""
         src = profile_guess.build_sources(self.game / 'ExeFS', self.game / 'RomFS', self.g.words('modules'))
         gfx = src['graphics'][0]
         # OpenGL ES: the device's own GL driver runs it (dm/android/gl_android.c); no shaders to translate, the game compiles its GLSL ES at run time
@@ -458,7 +458,12 @@ class Port:
             try: Adb(self.tools['adb'], self.o.device or self.cfg.get('device'), log=say).pick()
             except (AdbError, KeyError) as e: raise BuildError(f"{self.app_name}'s shaders are in Oodle-compressed archives ({why}): the port decodes them with the game's own decoder on "
                                                                f'the Android device, so connect it (adb) and port again ({e})') from e
-        for k in ('glslc_capture', 'ue_legacy') + (() if self.ue_why else ('ue_decode',)) + (() if self.oodle_why else ('oodle_packs',)):
+        # GLSLC at run time (Fire Emblem: Three Houses, DEAD OR ALIVE Xtreme 3 Scarlet: 7 GLSL sources in main, 276 whole GLSLC outputs also in main): the host runs the game's own
+        # compiler on the device (hle_glslc.c), so the bundle ships the outputs the game files hold and the app captures a program a draw needs that it lacks (gfx_vk_shader.c),
+        # translated into the bundle by porting again with --install (Xenoblade Chronicles 3: run-time shader capture); no Mac host is needed
+        if src['glslc_capture'][0]: say(f'{self.app_name} compiles some shaders at run time with its own GLSLC ({src["glslc_capture"][1].split(":")[0]}): the host runs the compiler on the device, '
+                                        'and programs the bundle lacks are captured as they draw and translated by porting again with --install')
+        for k in ('ue_legacy',) + (() if self.ue_why else ('ue_decode',)) + (() if self.oodle_why else ('oodle_packs',)):
             if src[k][0]: raise BuildError(f'{self.app_name} needs a step that boots the game in the Mac host ({src[k][1]}), which the Android port cannot run yet')
 
     # ---- the game's own Oodle decoder on the device, for the shader split (Pokémon Legends: Arceus's GFPAKs, Pokémon Legends: Z-A's Trinity packs) ----
