@@ -54,8 +54,8 @@ stability are not validated. This is an experimental bring-up, not a playable cl
   discarded, single-point memory pass from a pure raster pass, with a barrier
   between them. Scalarize guest subgroup operations only in the effects pass.
   A conservative data-flow check requires raster outputs and control flow to be
-  independent of mutable buffers. Direct eligible draws use the workaround by
-  default on Adreno; `DM_VK_GS_SPLIT=0` provides a live A/B. Original depth
+  independent of mutable buffers. Off by default: this profile's `env
+  DM_VK_GS_SPLIT=1` enables it on Adreno only; `DM_VK_GS_SPLIT=0` provides a live A/B. Original depth
   comparisons and the shader bundle are retained.
 
 The profile is data only. Runtime fixes follow shared NVN/Vulkan rules, with
@@ -181,6 +181,39 @@ all gameplay remain at normal speed. The original lasts 180.06 s.
 |---|---|---|
 | Same camera, live toggle | ![Missing triangles with split disabled](images/nier-automata/geometry-before.jpg) | ![Recovered geometry with split enabled](images/nier-automata/geometry-after.jpg) |
 
+### Cross-game Adreno check, 2026-11-12
+
+Device: Xiaomi POCO F5 23049PCD8G, Snapdragon 7+ Gen 2 (SM7475), Adreno 725,
+Android 15, Qualcomm's own driver (V@0615.95) for both games. Each game was ported
+from `main` (plus only the Windows response-file build fix, without which `main`
+does not link on this PC) and from this branch, installed under a test package
+over the same saves, and played by hand over the same scenes. Frame statistics are
+the host's 300-frame windows; runs of different length and scenes are only roughly
+comparable.
+
+| Game | Build | Windows | ~60 / ~30 / slower fps | Frame p50 mean | GPU p50 mean | `[RED]` lines |
+|---|---|---|---|---|---|---|
+| 13 Sentinels: Aegis Rim 1.10 (CPK) | `main` | 108 | 29 / 78 / 1 | 27.4 ms | 11.5 ms | 0 |
+| 13 Sentinels: Aegis Rim 1.10 (CPK) | this branch | 49 | 13 / 35 / 1 | 27.4 ms | 11.8 ms | 0 |
+| Xenoblade Chronicles 3 2.2.1 | `main` | 41 | 0 / 34 / 7 | 36.4 ms | 24.5 ms | 2 yield-watchdog |
+| Xenoblade Chronicles 3 2.2.1 | this branch | 14 | 0 / 9 / 5 | 37.1 ms | 22.5 ms | 3 yield-watchdog |
+
+13 Sentinels covered the title, prologue and the first battles; Xenoblade
+Chronicles 3 the title, the opening and the first battle. The tester reported no
+new problem on this branch. Xenoblade Chronicles 3 draws characters and the
+title dragon as black silhouettes on this device with **both** builds (no shader
+missing from the bundle): a pre-existing problem of this device/driver or of the
+derived profile for update 2.2.1 (the profile registers 2.2.0), not a regression.
+
+Vulkan validation, Xenoblade Chronicles 3 to frame 2,700 (title and attract
+scenes, 14 geometry-shader log lines including its transform-feedback particles),
+same device and driver: `main` and this branch report the **same** four messages,
+three times each, and no stage-interface (`gl_PerVertex`) error:
+`VkGraphicsPipelineCreateInfo-Input-08733` (a UINT vertex attribute read as
+float at location 1), `vkCmdCopyBuffer-srcBuffer-00118`,
+`vkCmdDrawIndexed-format-07753` (an R32UI storage image over an RGB10A2 view) and
+`vkCmdDrawIndexed-magFilter-04553` (linear filtering of R32_SFLOAT).
+
 ## Regression risk for other games
 
 These changes affect shared code, so cross-game regression risk remains.
@@ -189,13 +222,14 @@ These changes affect shared code, so cross-game regression risk remains.
 |---|---|---|
 | CPK reader | CPKs are selected by extension and magic; unsupported TOCs fall back to loose scanning; section-boundary checks reject unrelated shader objects | Other CRI/PlatinumGames titles can expose unhandled entries or compression; a per-entry decode failure is logged and that entry is skipped |
 | Shader translator | Native capability defaults and actual clip IO are retained; fragment consumer masks apply only to non-XFB geometry jobs | Other games' clipping, passthrough and transform-feedback combinations need rendering checks; source rebuilds can change other shaders |
-| CPU texture upload | Avoids known GPU-written overlapping images and excludes unsuitable texture kinds | Ownership/aliasing in other engines is not proven by the synthetic harness; first-use image-table scans can add CPU work |
+| CPU texture upload | Uncompressed 2D textures only with this profile's `DM_NVN_CPU_TEX2D_FIRST_USE=1`; avoids known GPU-written overlapping images and excludes unsuitable texture kinds | Ownership/aliasing in other engines is not proven by the synthetic harness; first-use image-table scans can add CPU work |
 | Vertex signedness | Only mismatched integer fetch inputs are retyped; values are bitcast back and signed/unsigned/component-load cases are tested | Unusual SPIR-V pointer shapes and combinations with other shader variants need broader coverage |
 | Framebuffers and geometry buffers | Carries the view's usage, preserves format lists, and keeps stage-specific address tables | Other drivers, attachment aliases and geometry writers require device coverage |
-| Adreno geometry effects | Conservative independence analysis, direct draws only, separate cached phases; other vendors keep their original default | Other Adreno titles, geometry queries, unusual buffer aliases and long sessions need rendering coverage; extra passes have a cost |
+| Adreno geometry effects | Only with this profile's `DM_VK_GS_SPLIT=1`; conservative independence analysis, direct draws only, separate cached phases | Other Adreno titles, geometry queries, unusual buffer aliases and long sessions need rendering coverage; extra passes have a cost |
 | Windows response files | Applied only on Windows; quoting is explicit and a host build linked from a path with spaces | Other toolchain versions and executable-link configurations are not exhaustively tested |
 
-NEO, Viractal and other supported games were not re-tested. No claim of zero
+Xenoblade Chronicles 3 and 13 Sentinels were checked above on one Adreno 725 device;
+NEO, Viractal and the other supported games were not re-tested. No claim of zero
 regressions or cross-game performance improvement is made. Before treating this
 as broadly validated, exercise those games' rendering, clipping, GPU-written
 texture aliases and integer vertex inputs, plus an appropriate Apple chain
