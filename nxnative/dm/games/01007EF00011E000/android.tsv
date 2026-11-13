@@ -35,6 +35,11 @@
 # costs 0.9-1.1 vsyncs in its wide views: replay 10-12 ms, GPU 13-15 ms); the yield watchdog names PlacementMgr and RadarMgr once a run (about 40,000 yields a second for 30 s
 # at sdk+0xc83180); "BufferInitialize: past the end of the pool (offset 0 size 0x40000 pool 0x24000)" in four of six runs (six times in one), with nothing seen wrong;
 # "two-stage replay: a drain waits over 1 s" once, early in a run.
+# DM_VK_WINDOW_GAME_RATE=1: the window keeps asking for 60 fps while the frame step holds 2 vsyncs. Without it the window asked for 30 after 60 held presents, the display
+# went to 30 Hz (display timing: refresh 33.3 ms), every trial back to 60 showed its first frames late on that display and failed within 5 presents (1-2 ms of GPU work a
+# frame on the title screen), and the run stayed at 30 fps: the display reached 30 Hz in each of four 30 fps runs, and not in the runs that held 60. With it, a run of
+# 4,500 presents kept the window at 60 and the display at 120 / 60 Hz throughout, and came back to 60 fps after each heavy scene. Scenes of 3,800-4,300 draws (a village)
+# still hold 2 vsyncs: their GPU time is 15-17 ms a frame (p95 18-20), with the GPU at its highest clock too (DM_GPU_TURBO=1)
 # DM_VK_BC_DRAW=1: the game makes a 32x32x32 BC4 noise on the GPU at start-up, drawing each depth slice of each level through an RGBA16UI view. Drawn into directly it
 # read back as zeros on Adreno 830 with Turnip 26.2.3, and Link vanished at once in a teleport, where the shaders dissolve him by that noise; with the stand-in it holds
 # noise (18,542 of its 18,744 bytes not zero) and he dissolves and comes back gradually
@@ -48,4 +53,5 @@ env	DM_NVN_ASYNC=1
 env	DM_PIN_REPLAY=prime
 env	DM_VK_X_CUTANY=1
 env	DM_VK_CB_DRAWS=32
+env	DM_VK_WINDOW_GAME_RATE=1
 env	DM_VK_BC_DRAW=1
