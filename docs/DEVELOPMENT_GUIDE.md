@@ -127,6 +127,14 @@ platform's protection-fault signal. The zero-copy diagnostics fixture forces
 slab and reuse-cache misses to exercise allocation/import failure cleanup; it
 does not validate the slab or reuse-cache implementations.
 
+`test_gui_inspect` runs real Qt event loops and synthetic child processes with
+PySide6's offscreen platform (skipped when PySide6 is not installed). It checks
+that inspection shows stderr for missing/invalid JSON, completes a failed launch,
+escapes diagnostic text, and preserves structured errors, unsupported-title
+results and list callers. Process callbacks run once and release the process.
+These tests need no game files, keys, devices or browser, and do not identify the
+cause of a particular player's inspection failure.
+
 `test_descriptor_hash` exercises the Vulkan descriptor hash and reuse path with
 different C padding bytes but identical image fields. Image keys include each
 array element's sampler, view and layout as explicit words; padding cannot force

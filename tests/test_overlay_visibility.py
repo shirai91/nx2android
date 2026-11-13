@@ -38,6 +38,7 @@ float dm_overlay_scale(void) { return 1; }
 int dm_overlay_custom(int l, int c, float *x, float *y, float *s) {
     (void)l; (void)c; (void)x; (void)y; *s = 1; return 0;
 }
+int dm_overlay_off(int l, int c) { (void)l; (void)c; return 0; }
 static void settings_save(void) { saves++; }
 static void dm_haptics_android_set(int on) { (void)on; }
 static void dm_haptics_android_tap(void) {}
@@ -48,6 +49,7 @@ static void menu_tab(int tab) { (void)tab; }
 static void ed_open(void) {}
 static void sp_open(void) {}
 static void save_export(void) {}
+static void menu_audio(void) {}
 static void menu_close(void) {}
 static void dm_overlay_redraw(void) {}
 ''' + visible + hit + menu + r'''
@@ -65,7 +67,8 @@ enum { AMOTION_EVENT_AXIS_X, AMOTION_EVENT_AXIS_Y, AMOTION_EVENT_AXIS_Z, AMOTION
 typedef struct { int source, type, action, key, device; float x, y, axis[10]; } AInputEvent;
 typedef int ANativeWindow;
 static int width, height, window, vibration = -1, touches, menu_opens, pad_publications, g_pad_used;
-static uint64_t g_btn, g_touch_btn, touch_buttons;
+static uint64_t g_btn, touch_buttons;
+static _Atomic uint64_t g_touch_btn;   // as in front_android.c: the touch handler swaps it with atomic_exchange
 static float g_ax[8];
 static int32_t pad_sticks[4];
 static uint64_t pad_buttons;

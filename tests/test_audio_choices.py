@@ -20,7 +20,7 @@ class AudioChoicesTest(unittest.TestCase):
   if(!"HUAWEI FreeClip".equals(AudioChoices.name(new AudioDeviceInfo(26,"HUAWEI FreeClip")))) throw new AssertionError("BLE name");
   if(!"Bluetooth audio".equals(AudioChoices.name(new AudioDeviceInfo(8," ")))) throw new AssertionError("empty name");
   if(!"Phone speaker".equals(AudioChoices.name(new AudioDeviceInfo(2,"speaker")))) throw new AssertionError("speaker");
-  if(!"External audio · Monitor".equals(AudioChoices.name(new AudioDeviceInfo(9,"Monitor")))) throw new AssertionError("HDMI");
+  if(!"External audio \\u00B7 Monitor".equals(AudioChoices.name(new AudioDeviceInfo(9,"Monitor")))) throw new AssertionError("HDMI");
  }}'''
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)

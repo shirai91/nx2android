@@ -13,7 +13,7 @@ final class AudioChoices {
             return product == null || product.toString().trim().isEmpty() ? "Bluetooth audio" : product.toString();
         }
         if (type == AudioDeviceInfo.TYPE_HDMI || type == AudioDeviceInfo.TYPE_HDMI_ARC || type == AudioDeviceInfo.TYPE_USB_DEVICE || type == AudioDeviceInfo.TYPE_USB_HEADSET)
-            return "External audio · " + device.getProductName();
+            return "External audio \u00B7 " + device.getProductName();
         return null;
     }
 }

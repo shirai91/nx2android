@@ -16,8 +16,9 @@ pad_layout	full
 
 # ---- Versions ----
 build	v393216	1.4.0	main=3cfd457814dd647f4cd0f0ae9f9454d2	sdk=d83a56a5558798414c78ec722867a7da
-package	v393216
-shader_versions	v393216
+build	v524288	1.5.1	main=ace351a145c07a51f8e239666640a0d8	sdk=d83a56a5558798414c78ec722867a7da
+package	v524288
+shader_versions	v524288
 
 # ---- Files ----
 # load order as on Horizon: main, sdk; not loaded, main takes nothing from it the host does not supply: subsdk0 (NintendoSDK_OpenGL)

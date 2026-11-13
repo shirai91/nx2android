@@ -1,0 +1,13 @@
+# Pokémon Shield on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Game Freak's engine on SDK 7.3.2, update 1.3.2 (v458752): Pokémon Sword's twin (0100ABF008968000/android.tsv has the details). Same game.tsv values, its own main
+# build, and Sword's title-screen cuts carried over in patches.py. NintendoWare Vfx's run-time effect programs are the same as Sword's: the 46 Sword's port captured,
+# put in this game's <build folder>/android/captured_shaders before its port, covered the whole opening (0 draws without a program); a port without them captures
+# them on the device the first time and translates them at the next port with --install.
+# On the AYN Odin 2 (Snapdragon 8 Gen 2, Adreno 740, Android 13, Turnip, 2026-11-13), driven with DM_CTL: the first-launch screens, the opening broadcast with empty
+# pipeline caches, the house, the bag, a save and Continue from it (12 cold boots, 0 crashes), the door fade (frame shots: upright), Postwick. 30 fps as on the
+# Switch; 60 runs the game twice as fast, as in Sword. A 15-minute soak in Postwick kept one process at 33 ms a frame with no red line; the footprint settled at
+# about 1.09 GB and crept 2-3 MiB a minute. Battles, the Wild Area and local wireless are not checked yet.
+status	playable
+tested	v458752 AYN Odin 2 (Snapdragon 8 Gen 2, Adreno 740, Android 13)
+package	org.nx2a.t01008db008c2c000
+orientation	landscape
