@@ -121,6 +121,16 @@ axis preservation, not game recognition or device behavior.
 
 ## Tests
 
+`DM_VK_PIXEL_HISTORY=WxH:X,Y` traces a single pixel of matching single-sample
+B10G11R11 target 0 for one frame, bounded to 4096 logical draw/clear events. It
+records packed HDR/depth values and draw identity/state in `pixel_history.tsv`.
+The 64 KiB transfer buffer stays alive until its completion fence, then is
+invalidated before host reads. Default off; excludes concurrent ordinary pass
+dumps. Per-draw pass cuts and copies can hide driver hazards and are unsuitable
+for timing. Check that the original final pixel survives the instrumentation.
+`test_vk_pixel_history` exercises production ROI/HDR helpers and mocked Vulkan
+capture/fence/resource behavior; its harness also runs natively on Android.
+
 ```
 python -m unittest discover tests
 ```
