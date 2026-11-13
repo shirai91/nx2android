@@ -26,8 +26,11 @@ is opaque black; NV12 padding uses Y=0 for full or Y=16 for limited, with UV=128
 This is 8-bit Y'CbCr conversion, not HDR tone mapping or display-gamut conversion.
 
 The existing `[movie] AVC: output` diagnostic includes `color-standard` (the
-reported Android value, or 0 when absent) and `full-range` (1 for full, otherwise
-0). Capture this line on the target device when checking untagged streams:
+reported Android value, or 0 when absent), `full-range` (1 for full, otherwise
+0), and the `declared` mask of usable SPS declarations. Range contributes 1,
+and a specified color matrix contributes 2. A value of 0 identifies the height
+heuristic and limited range even when `color-standard` reports a decoder default.
+Capture this line on the target device when checking untagged streams:
 some decoders supply size-based defaults, and the codec is initially configured
 at 1920x1080 before reporting the actual picture dimensions. The synthetic
 tagged-stream checks below do not establish those defaults for a physical device.
@@ -88,8 +91,8 @@ qualification is implied.
 The emulator's Goldfish decoder is known to rescale full-range samples while
 still labeling them full. This PR retains production codec selection: the probe
 defaults to AOSP's software decoder to test full-range conversion without that
-driver behavior. Source-side SPS parsing and the targeted Goldfish workaround
-remain separate work. `--codec default --ranges full` can expose that limitation.
+driver behavior. The targeted Goldfish workaround remains separate work.
+`--codec default --ranges full` can expose that limitation.
 
 The guest raw-NV12 metadata interface is unchanged; this fix covers CPU RGBA
 conversion and padding, not propagation of color metadata through the guest API.
