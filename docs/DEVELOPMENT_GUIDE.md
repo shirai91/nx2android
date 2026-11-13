@@ -10,10 +10,11 @@ Install [Python](https://www.python.org) 3.11 or later and `python -m pip instal
 - Android [platform-tools](https://developer.android.com/tools/releases/platform-tools) (adb), to install from the tool
 - your own `prod.keys`, dumped from your Switch
 
-On arm64 Linux the NDK has x86_64 host tools only. `dm/android/build.py` then uses `<NDK>/toolchains/llvm/prebuilt/linux-aarch64/bin` instead. Make that folder yourself:
+On arm64 Linux the NDK has x86_64 host tools only. `dm/android/build.py` uses `<NDK>/toolchains/llvm/prebuilt/linux-aarch64/bin` instead when that folder holds a `clang`, and `linux-x86_64` otherwise (so qemu-user or box64 setups work as before). Make the folder yourself:
 - link `sysroot` beside `bin` to `../linux-x86_64/sysroot`;
-- put in `bin` a wrapper `clang` (and `clang++`) running an arm64 LLVM 18 build with `--sysroot` set to that `sysroot`;
-- link `ld.lld` and the `llvm-*` tools to the same LLVM.
+- put in `bin` a wrapper `clang` (and `clang++`) running an arm64 LLVM 18 build with `--sysroot` set to that `sysroot` and nothing else: the wrapper passes no `-resource-dir`, so that LLVM's own `lib/clang/18/lib/linux/` must hold `libclang_rt.builtins-aarch64-android.a` (Linaro's LLVM 18.1.8 does; check with `ls`; a stock LLVM build that lacks it needs `-resource-dir` pointing at the NDK's `linux-x86_64/lib/clang/18`, which has the builtins and `libunwind.a`);
+- link `ld.lld` and the `llvm-*` tools to the same LLVM;
+- for the backend's own shaders, link `<NDK>/shader-tools/linux-aarch64/glslc` to a native `glslc` (Arch: `shaderc`, `/usr/bin/glslc`).
 
 ## Port a game
 

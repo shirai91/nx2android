@@ -25,9 +25,14 @@ ap.add_argument('--adrenotools', action='store_true', help='also libadrenotools.
 a = ap.parse_args()
 if not (a.exe or a.lib): a.exe = a.lib = True
 
-# arm64 Linux: the NDK ships only x86_64 host tools, so its prebuilt/linux-aarch64 holds an arm64 clang beside the NDK's sysroot (a native build, not emulation)
-host = ('windows-x86_64' if os.name == 'nt' else 'linux-aarch64' if sys.platform.startswith('linux') and platform.machine() in ('aarch64', 'arm64') else
-        'linux-x86_64' if sys.platform.startswith('linux') else 'darwin-x86_64')
+def host_dir(base, tool):
+    """The NDK's host folder for a tool under base. On arm64 Linux the NDK ships x86_64 host tools only, so a folder named linux-aarch64 with an arm64 build of the tool beside the NDK's sysroot
+    (see docs/DEVELOPMENT_GUIDE.md) is used when it holds the tool; otherwise linux-x86_64, as before (an x86_64 machine, or arm64 with qemu-user / box64), so a missing folder fails as it did"""
+    if os.name == 'nt': return 'windows-x86_64'
+    if not sys.platform.startswith('linux'): return 'darwin-x86_64'
+    if platform.machine() in ('aarch64', 'arm64') and (Path(a.ndk) / base / 'linux-aarch64' / tool).exists(): return 'linux-aarch64'
+    return 'linux-x86_64'
+host = host_dir('toolchains/llvm/prebuilt', 'bin/clang')
 bin_ = Path(a.ndk) / 'toolchains/llvm/prebuilt' / host / 'bin'
 CC = str(bin_ / ('clang.exe' if os.name == 'nt' else 'clang'))
 TARGET = f'--target=aarch64-linux-android{a.api}'
@@ -41,7 +46,7 @@ subprocess.run([sys.executable, str(DM / 'games/game.py'), 'header', a.game, str
 subprocess.run([sys.executable, str(DM / 'android/tools/android_profile.py'), 'header', a.game, str(gen / a.game / 'android_profile.h')], check=True)
 
 # the backend's own small shaders (dm/android/shaders): compiled with the NDK's glslc, embedded as gen/<name>_<stage>.spv.h
-GLSLC = Path(a.ndk) / 'shader-tools' / host / ('glslc.exe' if os.name == 'nt' else 'glslc')
+GLSLC = Path(a.ndk) / 'shader-tools' / host_dir('shader-tools', 'glslc') / ('glslc.exe' if os.name == 'nt' else 'glslc')
 for sh in sorted((DM / 'android/shaders').glob('*.*')):
     hdr = gen / a.game / f'{sh.stem}_{sh.suffix[1:]}.spv.h'
     if hdr.exists() and hdr.stat().st_mtime >= sh.stat().st_mtime: continue
