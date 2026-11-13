@@ -1,5 +1,5 @@
 """Exercise production storage-key construction using the real NVN object types."""
-import os, shutil, subprocess, tempfile, unittest
+import os, re, shutil, subprocess, tempfile, unittest
 from pathlib import Path
 W=Path(__file__).resolve().parents[1]
 class TextureFormatAliases(unittest.TestCase):
@@ -12,11 +12,14 @@ class TextureFormatAliases(unittest.TestCase):
             helper=src[begin:end]
         begin=src.index('akey k; memset(');end=src.index('    pthread_mutex_lock(&g_img_mu);',begin)
         key=src[begin:end]
+        key_type=re.search(r"typedef struct \{ uint64_t pool; int64_t off; nvn_texdesc d;[^\n]* akey;",src).group()
         code=r'''#include "nvn_obj.h"
 #include <assert.h>
 #include <stdio.h>
-typedef struct { uint64_t pool; int64_t off; nvn_texdesc d; } akey;
+'''+key_type+r'''
 typedef struct { int depth,stencil; } vkfmt_t;
+static unsigned packaged;
+static int packaged_tex(const tex_t *t) { return (packaged & (1u << (t->serial-1))) || t->has_layout || (t->d.flags & NVN_TEXTURE_FLAGS_LINEAR); }
 '''+helper+r'''
 static akey key_of(const tex_t *t) { vkfmt_t fmt={0};const vkfmt_t *f=&fmt;
 '''+key+r'''
@@ -24,7 +27,7 @@ return k; }
 static int same(tex_t a,tex_t b) { akey x=key_of(&a),y=key_of(&b);return !memcmp(&x,&y,sizeof x); }
 int main(void) {
     char memory[1];pool_t pool={.mem=(void*)memory};
-    tex_t a={.pool=&pool,.mem=(void*)memory,.d={.width=8,.height=8,.depth=1,.levels=1,.target=NVN_TEXTURE_TARGET_2D,.format=NVN_FORMAT_RGBA8}},b=a;
+    tex_t a={.serial=1,.pool=&pool,.mem=(void*)memory,.d={.width=8,.height=8,.depth=1,.levels=1,.target=NVN_TEXTURE_TARGET_2D,.format=NVN_FORMAT_RGBA8}},b=a;b.serial=2;
     const NVNformat rgba[]={NVN_FORMAT_RGBA8,NVN_FORMAT_RGBA8_SRGB,NVN_FORMAT_RGBX8,NVN_FORMAT_RGBX8_SRGB};
     const NVNformat bgra[]={NVN_FORMAT_BGRA8,NVN_FORMAT_BGRA8_SRGB,NVN_FORMAT_BGRX8,NVN_FORMAT_BGRX8_SRGB};
     for(int family=0;family<2;family++)for(int array=0;array<2;array++)for(int i=0;i<4;i++)for(int j=0;j<4;j++) {
@@ -32,6 +35,8 @@ int main(void) {
         a.d.format=(family?bgra:rgba)[i];b.d.format=(family?bgra:rgba)[j];assert(same(a,b));
     }
     a.d.target=b.d.target=NVN_TEXTURE_TARGET_2D;a.d.format=NVN_FORMAT_RGBA8;b.d.format=NVN_FORMAT_RGBA8_SRGB;
+    for(packaged=1;packaged<=3;packaged++)assert(!same(a,b));packaged=0;
+    a.d.flags=b.d.flags=NVN_TEXTURE_FLAGS_LINEAR;assert(!same(a,b));a.d.flags=b.d.flags=0;
     b.d.flags=NVN_TEXTURE_FLAGS_IMAGE;assert(!same(a,b));b.d.flags=0;
     b.d.width=16;assert(!same(a,b));b.d.width=8;
     b.d.format=NVN_FORMAT_BGRA8;assert(!same(a,b));b.d.format=NVN_FORMAT_RGBA8_SRGB;
@@ -42,7 +47,7 @@ int main(void) {
     a.d.samples=b.d.samples=4;assert(!same(a,b));a.d.samples=b.d.samples=0;
     a.d.target=b.d.target=NVN_TEXTURE_TARGET_3D;assert(!same(a,b));
     a.d.target=b.d.target=NVN_TEXTURE_TARGET_CUBEMAP;assert(!same(a,b));
-    puts("64 canonical family pairs and 9 exclusion cases passed");
+    puts("64 canonical family pairs and 13 exclusion cases passed");
 }
 '''
         cc=os.environ.get('CC') or shutil.which('clang')
