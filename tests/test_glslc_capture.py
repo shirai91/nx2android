@@ -93,6 +93,16 @@ class GlslcCapture(unittest.TestCase):
         self.port.check_graphics(); self.port.device_glslc()
         self.adb_class.assert_not_called(); self.build.assert_not_called()
 
+    def test_reused_capture_filters_truncated_extra_without_device(self):
+        cap = self.capture(); (cap / 'broken.glslc').write_bytes(b'truncated')
+        (cap / 'notes.txt').write_text('keep non-shader notes')
+        self.port.tools.pop('adb')
+        self.port.check_graphics(); self.port.device_glslc()
+        self.assertFalse((cap / 'broken.glslc').exists())
+        self.assertEqual((cap / NAME).read_bytes(), output())
+        self.assertTrue((cap / 'notes.txt').exists())
+        self.adb_class.assert_not_called(); self.build.assert_not_called()
+
     def test_missing_capture_needs_adb_even_without_install(self):
         self.port.tools.pop('adb')
         with self.assertRaisesRegex(pipeline.BuildError, 'adb'):
@@ -141,6 +151,24 @@ class GlslcCapture(unittest.TestCase):
         with self.assertRaises(pipeline.AdbError): self.port.device_glslc()
         self.assertEqual((old / NAME).read_bytes(), b'previous')
         self.assertTrue(self.adb.calls[-1][1].startswith('rm -rf /data/local/tmp/nx2a-glslc-'))
+
+    def test_transport_failure_recovers_log_before_cleanup(self):
+        log = self.port.logs / 'android_glslc.log'; log.write_text('previous attempt')
+        self.adb.fail = True
+        with self.assertRaisesRegex(pipeline.AdbError, 'device disconnected'): self.port.device_glslc()
+        self.assertEqual(log.read_text(), 'fixture guest compiled shaders\n')
+        pull_index = next(i for i, c in enumerate(self.adb.calls) if c[0] == 'pull' and c[1].endswith('/run.log'))
+        cleanup_index = next(i for i, c in enumerate(self.adb.calls) if c[0] == 'shell' and c[1].startswith('rm -rf '))
+        self.assertLess(pull_index, cleanup_index)
+        self.assertEqual(self.adb.calls[pull_index][3]['retries'], 1)
+
+    def test_failed_log_recovery_preserves_error_and_marks_old_log_stale(self):
+        log = self.port.logs / 'android_glslc.log'; log.write_text('previous attempt')
+        self.adb.fail = True
+        with patch.object(self.adb, 'run', side_effect=pipeline.AdbError('log unavailable')):
+            with self.assertRaisesRegex(pipeline.AdbError, 'device disconnected'): self.port.device_glslc()
+        self.assertNotIn('previous attempt', log.read_text())
+        self.assertIn('not retrieved', log.read_text())
 
     def test_concurrent_runs_get_distinct_remote_directories(self):
         self.port.device_glslc()
