@@ -36,6 +36,10 @@ between recording and submission to verify the existing sampler history rules.
 A second public command list draws with an ordinary guest shader before and after
 DrawTexture and checks that both targets, channel masks, viewport and uniform
 binding survive. Only the synthetic guest shader keys bypass binary lookup.
+A mixed-layout capacity check fills a pool with 65,536 combined sampler descriptors
+using 171 sets, then verifies the utility draw switches pools before allocating
+another descriptor. Driver entry-point observers count the actual layout sizes;
+the production allocator and real Vulkan allocations still run.
 The runner links the remaining production host objects, including the public
 NVN lookup thunks and real Vulkan command replay. Its entry installs the normal
 host dirty-page fault handler.

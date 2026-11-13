@@ -35,4 +35,4 @@ obj=D/'draw_texture_replay.o'
 subprocess.run([str(cc),'--target=aarch64-linux-android31','-O2','-g','-DDM_ANDROID=1','-D_GNU_SOURCE',*inc,'-c',str(W/'tests/vk_draw_texture_replay.c'),'-o',str(obj)],check=True)
 objs=[p for p in (a.host_build/'obj').glob('*.o') if p.name != 'gfx_nvn_hle_nvn.c.o']
 if not objs: raise SystemExit('Build the production Vulkan host first with dm/android/build.py')
-subprocess.run([str(cc),'--target=aarch64-linux-android31','-fuse-ld=lld','-pie','-Wl,--wrap=main','-Wl,--wrap=prog_key','-o',str(D/'draw-texture-replay'),str(obj),*map(str,objs),'-landroid','-llog','-lvulkan','-laaudio','-lnativewindow','-lmediandk','-lz','-lm','-ldl'],check=True)
+subprocess.run([str(cc),'--target=aarch64-linux-android31','-fuse-ld=lld','-pie','-Wl,--wrap=main','-Wl,--wrap=vk_alloc_set','-Wl,--wrap=prog_key','-o',str(D/'draw-texture-replay'),str(obj),*map(str,objs),'-landroid','-llog','-lvulkan','-laaudio','-lnativewindow','-lmediandk','-lz','-lm','-ldl'],check=True)

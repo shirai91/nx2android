@@ -28,6 +28,8 @@ static VkPipeline dt_pipeline(uint32_t mask) {
         VkDescriptorSetLayoutBinding binding = {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL};
         VkDescriptorSetLayoutCreateInfo di = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, NULL, 0, 1, &binding};
         if (vkCreateDescriptorSetLayout(V.dev, &di, NULL, &g_dt.dsl)) { g_dt.bad = 1; return VK_NULL_HANDLE; }
+        void vk_dsl_register(VkDescriptorSetLayout, const VkDescriptorSetLayoutBinding *, uint32_t);
+        vk_dsl_register(g_dt.dsl, &binding, 1);
         VkPipelineLayoutCreateInfo li = {VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, NULL, 0, 1, &g_dt.dsl, 1, &pr};
         VkShaderModuleCreateInfo vi = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, NULL, 0, sizeof maskclear_vert_spv, maskclear_vert_spv}, fi = vi;
         fi.codeSize = sizeof draw_texture_frag_spv; fi.pCode = draw_texture_frag_spv;
