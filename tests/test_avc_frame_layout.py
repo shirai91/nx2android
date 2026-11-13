@@ -17,9 +17,9 @@ def function(text, signature):
 class AVCFrameLayout(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        source=SOURCE.read_text()
-        at=source.index('struct mavc {')
-        state=source[at:source.index('\n};',at)+3]
+        source=SOURCE.read_text(encoding='utf-8')
+        # Include production declarations and SPS helpers when color metadata lands.
+        state=source[source.index('#define QMAX'):source.index('mavc *mavc_new(')]
         code=r'''
 #include <assert.h>
 #include <stdbool.h>
@@ -29,9 +29,7 @@ class AVCFrameLayout(unittest.TestCase):
 #include <stdio.h>
 #include <stdarg.h>
 #include <sys/types.h>
-#define QMAX 16
-#define COLOR_YUV420_PLANAR 19
-#define LOG(...) ((void)0)
+#define LOG(...) (fprintf(stderr,__VA_ARGS__),fputc(10,stderr))
 typedef struct AMediaCodec AMediaCodec;
 typedef struct mavc mavc;
 static void die(const char *fmt,...) {(void)fmt;abort();}
@@ -72,6 +70,7 @@ static void cropped(int layout,int rgba) {
     for(int y=0;y<2;y++)for(int x=0;x<2;x++){src[u+y*cs+x*step]=up[y*2+x];src[v+y*cs+x*step]=vp[y*2+x];}
     mavc a=format(layout);a.rgba=rgba;
     keep_picture(&a,src,v+cs+step,42);assert(!a.nq); // missing exactly the final V byte
+    keep_picture(&a,src,v+cs+step,42);assert(!a.nq); // repeated drop logs only once
     keep_picture(&a,src,v+cs+step+1,42);assert(a.nq==1 && a.q[0].w==3 && a.q[0].h==3);
     int64_t pts=0;assert(mavc_take(&a,0,out,6,4,&pts) && pts==42 && !a.nq);
     assert(out[rgba?96:36]==0xbb);
@@ -92,9 +91,10 @@ static void invalid(int which) {
     switch(which){
     case 0:a.cl=-2;break;case 1:a.ct=-2;break;case 2:a.cl=1;break;case 3:a.ct=1;break;
     case 4:a.cr=6;break;case 5:a.cb=6;break;case 6:a.fstride=4;break;case 7:a.fslice=4;break;
-    case 8:a.fstride=32769;break;case 9:a.fslice=32769;break;case 10:a.fcolor=0x1234;break;
+    case 8:a.fstride=32769;break;case 9:a.fslice=32769;break;case 10:a.fw=INT32_MAX;break;
     case 11:a.fw=0;break;case 12:a.fh=0;break;case 13:a.cr=1;break;case 14:a.cb=1;break;
     }
+    keep_picture(&a,src,sizeof src,0);assert(!a.nq);
     keep_picture(&a,src,sizeof src,0);assert(!a.nq);
 }
 static void odd_planar_stride(void) {
@@ -115,11 +115,22 @@ static void metadata_case(int mode) {
     case 34:metadata.has_stride=1;break;
     case 35:metadata.width=INT32_MIN;break;
     case 36:metadata.has_slice=1;metadata.slice=-1;break;
+    case 37:metadata.has_crop=1;metadata.r=6;metadata.b=5;break;
+    case 38:metadata.has_crop=1;metadata.l=-2;metadata.r=5;metadata.b=5;break;
+    case 39:metadata.has_stride=metadata.has_slice=1;metadata.stride=metadata.slice=4;break;
     }
-    mavc a={0};uint8_t bytes[96]={0};read_format(&a);keep_picture(&a,bytes,sizeof bytes,0);
-    assert(a.nq==(mode<=31));if(a.nq)free(a.q[0].nv12);
+    mavc a={0};uint8_t bytes[54];for(int i=0;i<54;i++)bytes[i]=(uint8_t)i;
+    read_format(&a);keep_picture(&a,bytes,sizeof bytes,0);
+    assert(a.nq==(mode!=32 && mode!=35));
+    if(a.nq){
+        assert(a.fstride==6 && a.fslice==6 && a.q[0].w==6 && a.q[0].h==6);
+        for(int i=0;i<36;i++)assert(a.q[0].nv12[i]==i);
+        for(int i=0;i<9;i++){assert(a.q[0].nv12[36+2*i]==36+i);assert(a.q[0].nv12[37+2*i]==45+i);}
+        free(a.q[0].nv12);
+    }
 }
 int main(int argc,char **argv){assert(argc==2);int mode=atoi(argv[1]);
+    if(mode>=40){cropped(mode==40?0x7f420888:mode==41?0x1234:0,0);return 0;}
     if(mode>=30){metadata_case(mode);return 0;}
     if(mode<6)cropped(mode/2==0?19:mode/2==1?21:0x7fa30c04,mode%2);
     else if(mode==6)odd_planar_stride();else invalid(mode-7);
@@ -127,26 +138,43 @@ int main(int argc,char **argv){assert(argc==2);int mode=atoi(argv[1]);
 '''
         cls.temp=tempfile.TemporaryDirectory(prefix='nx2a-avc-layout-')
         cls.addClassCleanup(cls.temp.cleanup)
-        c=Path(cls.temp.name)/'test.c';cls.binary=c.with_suffix('');c.write_text(code)
+        c=Path(cls.temp.name)/'test.c';cls.binary=c.with_suffix('.exe' if os.name=='nt' else '');c.write_text(code,encoding='utf-8')
         flags=['-fsanitize=address,undefined','-fno-omit-frame-pointer'] if os.getenv('NX2A_TEST_SANITIZE') else []
         subprocess.run(['cc','-std=c11','-O1','-Wall','-Werror','-Wno-unused-function',*flags,str(c),'-o',str(cls.binary)],check=True,capture_output=True,text=True)
 
     def run_case(self,case):
         r=subprocess.run([str(self.binary),str(case)],capture_output=True,text=True)
         self.assertEqual(r.returncode,0,r.stderr)
+        return r.stderr
 
     def test_cropped_i420_nv12_and_venus_last_byte_and_odd_visible_extent(self):
         for mode in range(6):
-            with self.subTest(mode=mode):self.run_case(mode)
+            with self.subTest(mode=mode):
+                log=self.run_case(mode)
+                self.assertEqual(log.count('[RED]'),1,log)
+                for field in ('bytes','stride 8','slice height 8','crop 2,2-4,4'):
+                    self.assertIn(field,log)
+
+    def test_unknown_formats_keep_nv12_fallback_and_log_once_beside_drop(self):
+        for mode in (40,41,42):
+            with self.subTest(mode=mode):
+                log=self.run_case(mode)
+                self.assertEqual(log.count('[RED]'),2,log)
+                self.assertEqual(log.count('NV12'),1,log)
+                self.assertIn('crop 2,2-4,4',log)
 
     def test_odd_planar_stride_and_plane_height(self):self.run_case(6)
 
-    def test_format_defaults_and_invalid_metadata_reach_copy_validation(self):
-        for mode in range(30,37):
+    def test_format_defaults_and_crop_stride_slice_fallbacks(self):
+        for mode in range(30,40):
             with self.subTest(mode=mode):self.run_case(mode)
 
-    def test_rejects_invalid_geometry_and_unknown_layouts(self):
+    def test_rejects_invalid_geometry_with_one_diagnostic(self):
         for mode in range(7,22):
-            with self.subTest(mode=mode):self.run_case(mode)
+            with self.subTest(mode=mode):
+                log=self.run_case(mode)
+                self.assertEqual(log.count('[RED]'),1,log)
+                for field in ('bytes','stride','slice height','crop'):
+                    self.assertIn(field,log)
 
 if __name__=='__main__':unittest.main()

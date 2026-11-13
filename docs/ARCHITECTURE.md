@@ -60,6 +60,17 @@ Copied pools can opt into host-cached memory with `DM_VK_POOL_CACHED=1` (off by 
 
 Vulkan indirect compute dispatches copy their three GPU-written group counts into submission scratch memory in command order. A shader that reads c0 gets a private driver segment, outside the immutable segment cache, with the counts at `c0 + 0x200`; the dispatch reads that same record. Without c0, only a 12-byte record is allocated. Argument records may cross chunks of the same pool, with each chunk's buffer offset preserved. All words are validated before any argument copy, and a transfer barrier makes the record visible to both uniform reads and indirect dispatch. Scratch storage is retained until the submission completes. Direct compute dispatches and other driver segments retain their existing content caching.
 
+Android AVC output is copied from MediaCodec into compact NV12 pictures with
+ceil-sized chroma planes, preserving odd visible dimensions. Format 19 is I420;
+other formats keep the existing NV12 interpretation, with one warning for an
+unknown format. Missing/undersized stride and slice height use the frame size,
+and invalid crop bounds use the full frame. Layout and last-byte checks still
+precede the copy; unsafe geometry and short buffers produce a once-only drop
+diagnostic. Codec-config buffers are excluded and buffer offsets/lengths are
+checked before pointer formation. These checks do not change the decoder choice
+or timestamp/queue policy. The manual [AVC probe](../probes/avc_frame_layout.md)
+checks synthetic planes and padding; physical-device qualification is separate.
+
 ## Game profiles on Android
 
 A profile is offered for Android when it has an `android.tsv`; the profiles without one (52 of the 54 today, upstream's iOS games) show as "ios only": an experimental port can still try them. `android.tsv` holds, one `key<TAB>value` row each:

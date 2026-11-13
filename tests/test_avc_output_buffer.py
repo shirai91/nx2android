@@ -1,5 +1,6 @@
 """Existing donor media_drain bounds and codec-config behavior at the codec seam."""
 from pathlib import Path
+import os
 import shutil
 import subprocess
 import tempfile
@@ -11,7 +12,7 @@ ROOT=Path(__file__).resolve().parents[1]
 class AVCOutputBuffer(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        source=(ROOT/'nxnative/dm/android/movie_avc.c').read_text()
+        source=(ROOT/'nxnative/dm/android/movie_avc.c').read_text(encoding='utf-8')
         at=source.index('static int drain(')
         production=source[at:source.index('\n}',at)+2]
         code=r'''
@@ -58,7 +59,7 @@ int main(int argc,char **argv){assert(argc==2);int mode=atoi(argv[1]);
 }
 '''
         cls.temp=tempfile.TemporaryDirectory(prefix='nx2a-avc-buffer-');cls.addClassCleanup(cls.temp.cleanup)
-        c=Path(cls.temp.name)/'test.c';cls.binary=c.with_suffix('');c.write_text(code)
+        c=Path(cls.temp.name)/'test.c';cls.binary=c.with_suffix('.exe' if os.name=='nt' else '');c.write_text(code,encoding='utf-8')
         subprocess.run(['cc','-std=c11','-O1','-Wall','-Werror',str(c),'-o',str(cls.binary)],check=True,capture_output=True,text=True)
 
     def test_valid_buffers_include_exact_capacity_end(self):

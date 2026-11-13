@@ -1,4 +1,4 @@
-// Adapted from nxnative 1f01e28c t_android_avc: one six-frame sequence per flush.
+// Adapted from thehobbit85/nxnative 1f01e28c t_android_avc: one six-frame sequence per flush.
 // Six synthetic access units with B pictures. Check planes and black padding;
 // the target timestamp/reordering policy is outside this layout-only port.
 #include <assert.h>
@@ -9,7 +9,7 @@
 #include "hle_movie_avc.h"
 #include <stdarg.h>
 void die(const char *fmt,...) {va_list ap;va_start(ap,fmt);vfprintf(stderr,fmt,ap);va_end(ap);abort();}
-#include "fixtures/h264_synthetic.h"
+#include "../tests/fixtures/h264_synthetic.h"
 static void stream(mavc *a, int rgba) {
     enum { width = 68, height = 66, guard = 16 };
     uint8_t frame[width * height * 4 + 2 * guard];

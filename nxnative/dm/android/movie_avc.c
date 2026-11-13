@@ -13,7 +13,7 @@
 #include <media/NdkMediaFormat.h>
 
 #define QMAX 16
-#define COLOR_YUV420_PLANAR 19   // I420; 21 and the existing Qualcomm Venus format are NV12
+#define COLOR_YUV420_PLANAR 19   // I420; all other formats retain the existing bounded NV12 fallback
 struct mavc {
     uint8_t sps[512], pps[512]; int nsps, npps, dirty;
     AMediaCodec *mc; int eos_sent;
@@ -21,6 +21,7 @@ struct mavc {
     long nin, nout;                                        // inputs queued and pictures out since the codec started (or was flushed)
     struct { uint8_t *nv12; int w, h; int64_t pts; } q[QMAX]; int nq;
     uint8_t *au; size_t aucap;   // Annex B copy of the access unit being decoded
+    int unknown_format_logged, dropped_picture_logged; // once per decoder, independently of other errors
     int red, rgba;               // rgba: pictures as 4-byte RGBA (native texture mode) instead of NV12
     // The codec's timestamps: the game's while they increase, else the last one + 1 µs, each mapped back to the game's on output (pmap). 13 Sentinels: Aegis Rim sends every
     // packet of its 1024x576 movies with time 0, and c2.qti.avc.decoder gave no picture for 81 packets and then took no more input. With made-up timestamps the codec's
@@ -99,12 +100,11 @@ static int open_codec(mavc *a) {
 static void read_format(mavc *a) {
     AMediaFormat *f = AMediaCodec_getOutputFormat(a->mc); int32_t v;
     a->fw = AMediaFormat_getInt32(f, AMEDIAFORMAT_KEY_WIDTH, &v) ? v : 0; a->fh = AMediaFormat_getInt32(f, AMEDIAFORMAT_KEY_HEIGHT, &v) ? v : 0;
-    a->fstride = AMediaFormat_getInt32(f, AMEDIAFORMAT_KEY_STRIDE, &v) ? v : a->fw;
-    a->fslice = AMediaFormat_getInt32(f, AMEDIAFORMAT_KEY_SLICE_HEIGHT, &v) ? v : a->fh;
-    if (!a->fslice) a->fslice = a->fh; // donor: unspecified slice height
+    a->fstride = AMediaFormat_getInt32(f, AMEDIAFORMAT_KEY_STRIDE, &v) && v >= a->fw ? v : a->fw;
+    a->fslice = AMediaFormat_getInt32(f, AMEDIAFORMAT_KEY_SLICE_HEIGHT, &v) && v >= a->fh ? v : a->fh;
     a->fcolor = AMediaFormat_getInt32(f, AMEDIAFORMAT_KEY_COLOR_FORMAT, &v) ? v : 0;
     int32_t l, t, r, b;
-    if (AMediaFormat_getRect(f, AMEDIAFORMAT_KEY_DISPLAY_CROP, &l, &t, &r, &b)) { a->cl = l; a->ct = t; a->cr = r; a->cb = b; }
+    if (AMediaFormat_getRect(f, AMEDIAFORMAT_KEY_DISPLAY_CROP, &l, &t, &r, &b) && l >= 0 && t >= 0 && r >= l && b >= t && r < a->fw && b < a->fh) { a->cl = l; a->ct = t; a->cr = r; a->cb = b; }
     else { a->cl = a->ct = 0; a->cr = a->fw > 0 ? a->fw - 1 : -1; a->cb = a->fh > 0 ? a->fh - 1 : -1; }
     LOG("[movie] AVC: output %dx%d stride %d slice height %d colour format %#x crop %d,%d-%d,%d", a->fw, a->fh, a->fstride, a->fslice, a->fcolor, a->cl, a->ct, a->cr, a->cb);
     AMediaFormat_delete(f);
@@ -115,20 +115,34 @@ static void keep_picture(mavc *a, const uint8_t *src, size_t n, int64_t pts) {
     // the layout and last byte actually read before copying any planes.
     int cw=a->fw, ch=a->fh, stride=a->fstride, slice=a->fslice;
     int cf=a->fcolor;
-    if (cf == 0x7fa30c04) cf=21; // preserve nx2android's known Venus NV12 format
-    if (cf != 19 && cf != 21) {
-        if (!a->red++) LOG("[RED] movie: MediaCodec AVC output colour format %#x has no explicit I420 or NV12 layout",cf);
-        return;
+    if (cf != COLOR_YUV420_PLANAR) {
+        if (cf != 21 && cf != 0x7fa30c04 && !a->unknown_format_logged) {
+            a->unknown_format_logged = 1;
+            LOG("[RED] movie: MediaCodec AVC output colour format %#x, using NV12 fallback", cf);
+        }
+        cf = 21; // keep the existing NV12 interpretation, including Qualcomm Venus
     }
     int l=a->cl, t=a->ct, r=a->cr, b=a->cb;
     if (cw <= 0 || ch <= 0 || stride < cw || slice < ch || stride > 32768 || slice > 32768 ||
-        l < 0 || t < 0 || r < l || b < t || r >= cw || b >= ch || ((l | t) & 1)) return;
+        l < 0 || t < 0 || r < l || b < t || r >= cw || b >= ch || ((l | t) & 1)) {
+        if (!a->dropped_picture_logged) {
+            a->dropped_picture_logged = 1;
+            LOG("[RED] movie: AVC picture dropped: invalid layout, %zu bytes, %dx%d, stride %d, slice height %d, crop %d,%d-%d,%d", n, cw, ch, stride, slice, l, t, r, b);
+        }
+        return;
+    }
     int w = r-l+1, h = b-t+1, uvw = (w+1)/2, uvh = (h+1)/2;
     size_t ysize = (size_t)stride*slice, cs = cf == 19 ? (stride+1)/2 : stride;
     size_t cbase = ysize + (size_t)(t/2)*cs + (cf == 19 ? l/2 : l);
     size_t vbase = cf == 19 ? cbase + cs*((slice+1)/2) : cbase+1;
     size_t step = cf == 19 ? 1 : 2;
-    if ((size_t)b * stride + r >= n || vbase + (uvh-1)*cs + (uvw-1)*step >= n) return;
+    if ((size_t)b * stride + r >= n || vbase + (uvh-1)*cs + (uvw-1)*step >= n) {
+        if (!a->dropped_picture_logged) {
+            a->dropped_picture_logged = 1;
+            LOG("[RED] movie: AVC picture dropped: short buffer, %zu bytes, %dx%d, stride %d, slice height %d, crop %d,%d-%d,%d", n, cw, ch, stride, slice, l, t, r, b);
+        }
+        return;
+    }
     uint8_t *o = malloc((size_t)w*h + (size_t)uvw*2*uvh);
     if (!o) return;
     for (int y = 0; y < h; y++) memcpy(o + (size_t)y*w, src + (size_t)(t+y)*stride + l, w);
