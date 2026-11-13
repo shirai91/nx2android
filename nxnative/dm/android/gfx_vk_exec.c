@@ -202,14 +202,17 @@ static void render_cond(const p_render_cond *rc) {
     g_rc_skip = known && (rc->mode ? x == y : x != y);
 }
 
-void vk_exec_reset(void) {   // a new submission: NVN state does not carry over between command buffers, the replay starts from the defaults
+static void exec_begin(int continuing) {   // a new submission: NVN state does not carry over between command buffers, the replay starts from the defaults
     static int inited; if (!inited) { inited = 1; state_reset(); crash_add_note_hook(build_dump); prewarm_start(); compute_warm_start(); }
-    g_rc_npend = 0; g_rc_skip = 0;
+    if (!continuing) { g_rc_npend = 0; g_rc_skip = 0; }
     { void vk_tex_release_drain(void); vk_tex_release_drain(); }   // Finalized textures' CPU-written marks that no queued job needs any more (gfx_vk_tex.c)
     S.pass_open = 0; S.bound_pipe = VK_NULL_HANDLE; g_cb_draws = 0; g_ord_parts = 0; g_psplit_now = 0; g_set_epoch++; x_read();
     if (g_prof_on) { extern uint64_t g_pkg_ns, g_pkg_n; memset(g_prof_ns, 0, sizeof g_prof_ns); g_prof_t0 = tick(); g_prof_pkg0 = g_pkg_ns; g_prof_npkg0 = g_pkg_n; g_prof_pipes0 = g_vkst.pipes_built; }
     { extern volatile int g_vk_samp_log; if (g_vk_samp_log > 0) VKLOG("submission begins (present %llu, thread %d)", (unsigned long long)g_tex_frame, (int)gettid()); }
 }
+
+void vk_exec_reset(void) { exec_begin(0); }
+void vk_exec_resume(void) { exec_begin(1); }
 
 // ---------------- render passes ----------------
 // A pass is begun lazily: begin_pass() only sets it up (pass_open 2), and the first command that must run inside it begins it (pass_commit, pass_open 1).
@@ -1103,6 +1106,44 @@ static uint64_t c2_handle(int st, int off) {   // the driver's handle table c2, 
     if (off >= 0x568 && off < 0x968) return S.samp[st][(off - 0x568) / 8];
     return 0;
 }
+// nxnative shader_cpu_ready/uniform_ready: finish CPU-decoded descriptor
+// dependencies before this command can allocate scratch or descriptor sets.
+static void cpu_ready(uint64_t addr, uint64_t size) {
+    if (!size || addr > UINT64_MAX - size) return;
+    for (int i = 0; S.pass_open && g_lin_back && (g_pass_draws || P_cleared) && i < S.ncol && i < 8; i++) {
+        const tex_t *t = S.rt_has_col[i] ? &S.rt_col[i] : NULL;
+        if (!t || !t->mem || !(t->d.flags & NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET)) continue;
+        uint64_t base = (uintptr_t)t->mem;
+        if (addr < base ? base - addr < size : addr - base < t->L.size) { vk_end_pass(); break; }
+    }
+    vk_cpu_ready(addr, size);
+}
+static void uniform_ready(int stage, int reg, int64_t off, uint32_t count) {
+    if (stage < 0 || stage >= 6 || reg < 0 || reg >= 16 || off < 0 || !count) return;
+    const p_bind_buf *u = &S.ubo[stage][reg];
+    uint64_t extent = u->size ? u->size : 4;   // target ubo_word treats size zero as one word
+    if (!u->addr || (uint64_t)off >= extent || u->addr > UINT64_MAX - (uint64_t)off) return;
+    uint64_t size = 8ull * (count - 1) + 4;
+    if (size > extent - (uint64_t)off) size = extent - (uint64_t)off;
+    cpu_ready(u->addr + off, size);
+}
+static void shader_cpu_ready(const vkshader_t *s, int stage) {
+    if (!s) return;
+    for (int i = 0; i < s->nbind; i++) {
+        const dmsv_bind *b = &s->b[i];
+        if (b->kind == RK_TEX_UBO || b->kind == RK_TBUF_UBO || b->kind == RK_IMG_UBO)
+            uniform_ready(stage, b->reg, b->off, b->count ? b->count : b->kind == RK_TEX_UBO ? 32 : 1);
+        if (b->kind == RK_SBUF_UBO) {
+            if (stage < 0 || stage >= 6 || b->reg < 0 || b->reg >= 16 || b->off < 0) continue;
+            const p_bind_buf *u = &S.ubo[stage][b->reg];
+            uint64_t extent = u->size ? u->size : 4;
+            if (u->addr && extent >= 4 && (uint64_t)b->off <= extent - 4 && u->addr <= UINT64_MAX - (uint64_t)b->off - 8)
+                cpu_ready(u->addr + b->off, extent - (uint64_t)b->off >= 8 ? 8 : 4);
+        }
+        if (b->samp == RS_UBO) uniform_ready(stage, b->samp_arg & 0xff, b->samp_arg >> 8, 1);
+    }
+}
+static void graphics_cpu_ready(void) { for (int st = 0; st < 3; st++) shader_cpu_ready(S.sh[st], st); }
 static uint32_t ubo_word(int st, int reg, int off) {
     const p_bind_buf *u = reg >= 0 && reg < 16 ? &S.ubo[st][reg] : NULL; uint32_t v = 0;
     if (u && u->addr && off >= 0 && (uint64_t)off + 4 <= (u->size ? u->size : 4) && vk_pool_of(u->addr + off, 4)) vk_ubd_read(u->addr + off, 4, (uint8_t *)&v);   // with the deferred updates
@@ -1980,6 +2021,7 @@ static int mdi_group(uint64_t cnt, uint64_t ind, int i, int max, int stride, int
     return 0;
 }
 static void draw(const p_draw *d) {
+    graphics_cpu_ready();
     VkBuffer mcb = VK_NULL_HANDLE; VkDeviceSize mco = 0; if (mdi_group(d->mdi_cnt, d->ind, d->mdi_i, d->mdi_max, d->mdi_stride, 16, &mcb, &mco)) return;
     int prim = d->prim;
     // before prepare_draw, whose driver segment carries it (c0 + 0x644): set after it, each draw's segment had the draw before's. An indirect draw's is in GPU memory: 0
@@ -2025,6 +2067,7 @@ static void draw(const p_draw *d) {
     if (!(dbg_draw() & 1) && g_ok) { int xf = xfb_begin(cb); vkCmdDraw(cb, (uint32_t)d->count, inst, (uint32_t)d->first, (uint32_t)d->base_instance); if (xf) xfb_end(cb, prim, (uint32_t)d->count, inst, xf); }
 }
 static void draw_idx(const p_draw_idx *d) {
+    graphics_cpu_ready();
     VkBuffer mcb = VK_NULL_HANDLE; VkDeviceSize mco = 0; if (mdi_group(d->mdi_cnt, d->ind, d->mdi_i, d->mdi_max, d->mdi_stride, 20, &mcb, &mco)) return;
     int prim = d->prim;
     g_draw_binst = d->ind ? 0 : (uint32_t)d->base_instance;   // before prepare_draw (see draw)
@@ -2134,6 +2177,7 @@ static int dispatch_indirect_spans(uint64_t addr, VkBuffer src[3], VkBufferCopy 
 static void dispatch(const p_dispatch *d) {
     vkshader_t *cs = S.sh[5];
     if (!cs) { VKRED_ONCE(60, "dispatch with no compute shader in the bundle: skipped"); return; }
+    shader_cpu_ready(cs, 5);
     VkBuffer src[3]; VkBufferCopy spans[3]; int nspans = 0;
     if (d->ind && !(nspans = dispatch_indirect_spans(d->ind, src, spans))) { VKRED_ONCE(61, "indirect dispatch arguments are not a valid aligned memory pool range: %#llx", (unsigned long long)d->ind); return; }
     g_vkst.dispatches++;
