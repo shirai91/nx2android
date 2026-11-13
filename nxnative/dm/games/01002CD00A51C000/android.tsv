@@ -1,0 +1,9 @@
+# Baba Is You on Android: source-audited candidate, not device tested.
+# Audited build: 1.0.12 (v786432); compatibility evidence and test plan: ANDROID.md.
+status	experimental
+package	org.nx2a.t01002cd00a51c000
+orientation	landscape
+requires	bcn
+setting	docked=1
+setting	overlay=1
+setting	rumble=1
