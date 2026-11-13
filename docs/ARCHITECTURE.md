@@ -117,6 +117,12 @@ checked before pointer formation. These checks do not change the decoder choice
 or timestamp/queue policy. The manual [AVC probe](../probes/avc_frame_layout.md)
 checks synthetic planes and padding; physical-device qualification is separate.
 
+The Android AVC adapter snapshots matrix and range with each queued picture.
+MediaCodec color metadata is accepted only for fields declared in the stream's
+SPS VUI. Without a colour description with a specified matrix it uses BT.709 at 720 lines and above,
+BT.601 below. Without a video signal type it uses limited range. Malformed or
+unsupported SPS data uses both defaults.
+
 The shader translator's existing native-perspective compensation rule accepts either outer operand order in `(input * FragCoord.w) * (1 / FragCoord.w)`. Both alpha depth and material variants must reach the same native interpolated input; leaving the multiply/divide round trip in only one variant can change alpha coverage and retain old HDR colour. The FP32, input-load, FragCoord.w and constant-one guards remain in place.
 
 Opaque NVN sampler objects keep all sampler parameters after an eight-byte header, within the smallest public object's storage. Engines may hash the bytes after that header before calling `SamplerCompare`. Putting filtering or wrap parameters in the skipped header makes different sampler states collide, defeats cache reuse and can exhaust the game's descriptor pool. In Odyssey, duplicate entries accumulated during extended play and repeated scene loads, exhausted the sampler pool and returned sampler ID 0, producing ground grid artifacts. The builder, initializer, comparison, getters and both graphics backends share the same parameter structure; this layout rule does not change filtering defaults.
@@ -172,12 +178,6 @@ The command replay is one translation unit, `gfx_vk_exec.c`, kept in one file a 
 How a game's frames are paced is decided in one module, `nxnative/dm/host/dm_pacing.c`: the frame-rate target (`game.tsv` `fps_target`, `DM_FPS_TARGET`), the 30 fps ceiling (`fps_ceiling`, `DM_FPS_CEILING`), the frame step's hold (`fps_hold`, `DM_FPS_HOLD`), presents on the display's ticks (`present_interval`, `DM_PRESENT_INTERVAL`), the Android governor (`DM_ADAPTIVE_FPS`, `DM_FPS_PIN`, `DM_ADAPT_UP_PCT`), the window's rate vote (`DM_VK_WINDOW_GAME_RATE`) and GPU turbo (`DM_GPU_TURBO`). The mechanisms stay where they run (the frame step in `loader.c` and `nvn_fstep.h`, the 60 fps writes in `hle_fpslock.c`, the present interval in `hle_nvn.c`, presents and the rate vote in `gfx_vk_present.c`, the governor in `perf_android.c`) and ask it. At start-up the log has the whole policy in one line (`pacing: target 60 fps (game profile fps_target), ceiling 0, hold on ...`). A profile chooses its policy with one `android.tsv` row, `pacing <preset>` (below). Test harnesses that cut the governor out of `perf_android.c` compile the real `dm_pacing.c` with it (`tests/csrc.py` `pacing_files`).
 
 ## Game profiles on Android
-
-The Android AVC adapter snapshots matrix and range with each queued picture.
-MediaCodec color metadata is accepted only for fields declared in the stream's
-SPS VUI. Without a colour description with a specified matrix it uses BT.709 at 720 lines and above,
-BT.601 below. Without a video signal type it uses limited range. Malformed or
-unsupported SPS data uses both defaults.
 
 A profile is offered for Android when it has an `android.tsv`; the profiles without one (52 of the 54 today, upstream's iOS games) show as "ios only": an experimental port can still try them. `android.tsv` holds, one `key<TAB>value` row each:
 
