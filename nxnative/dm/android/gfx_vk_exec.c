@@ -1226,7 +1226,12 @@ static int tex_desc_for(int st, const dmsv_bind *b, uint64_t h, VkDescriptorImag
 // view, sampler and texel buffer view written), and driver segments by their bytes. Unity draws many times with the same bindings, and every new set
 // is an allocation and a vkUpdateDescriptorSets; the driver segment's copy is shared so that a set using it can match.
 enum { SETC = 8192, DRVC = 1024 };
-static struct { uint64_t h, epoch; VkDescriptorSetLayout l; VkDescriptorSet set; } g_setc[SETC];
+static struct { uint64_t h, epoch; VkDescriptorSetLayout l; VkDescriptorSet set; size_t off, n; } g_setc[SETC];
+// A hash collision must not reuse different descriptors (#2). Keys own explicit Vulkan fields, never scratch pointers or C padding.
+// The CPU arena is bounded at 16 MiB and reused at the next submission. When full, new sets simply stay uncached.
+enum { SET_KEY_WORDS = 2048, SET_KEY_ARENA_WORDS = 2 * 1024 * 1024 };
+static uint64_t g_set_keys[SET_KEY_ARENA_WORDS], g_set_key_epoch;
+static size_t g_set_key_used;
 // Keep equality bytes in ordinary CPU memory: mapped scratch may be uncached.
 // The maximum live prefix is c2's 0x968 bytes; bytes beyond each prefix are zero.
 // GPU-written segments must stay outside this immutable cache.
@@ -1238,6 +1243,23 @@ static inline uint64_t fnv(uint64_t h, const void *p, size_t n) {
     for (; i + 8 <= n; i += 8) { uint64_t w; memcpy(&w, b + i, 8); h = (h ^ w) * 0x9E3779B97F4A7C15ull; h ^= h >> 29; }
     for (; i < n; i++) { h ^= b[i]; h *= 0x100000001b3ull; }
     return h;
+}
+// Static descriptor content only: stage_set has already moved dynamic buffer offsets to the bind.
+// 2048 words cover its 96 writes, 384 image entries and 96 buffer/texel entries; larger keys bypass caching.
+static size_t set_key(uint64_t key[SET_KEY_WORDS], VkDescriptorSetLayout layout, const VkWriteDescriptorSet *w, uint32_t nw) {
+    size_t n = 0; key[n++] = (uint64_t)layout; key[n++] = nw;
+    for (uint32_t i = 0; i < nw; i++) {
+        const VkWriteDescriptorSet *x = &w[i]; unsigned kind = x->pBufferInfo ? 1 : x->pImageInfo ? 2 : x->pTexelBufferView ? 3 : 0;
+        size_t stride = kind == 3 ? 1 : kind ? 3 : 0;
+        if (!kind || SET_KEY_WORDS - n < 5 || x->descriptorCount > (SET_KEY_WORDS - n - 5) / stride) return 0;
+        key[n++] = x->dstBinding; key[n++] = x->dstArrayElement; key[n++] = (uint64_t)x->descriptorType; key[n++] = x->descriptorCount; key[n++] = kind;
+        for (uint32_t j = 0; j < x->descriptorCount; j++) {
+            if (kind == 1) { const VkDescriptorBufferInfo *b = &x->pBufferInfo[j]; key[n++] = (uint64_t)b->buffer; key[n++] = b->offset; key[n++] = b->range; }
+            else if (kind == 2) { const VkDescriptorImageInfo *im = &x->pImageInfo[j]; key[n++] = (uint64_t)im->sampler; key[n++] = (uint64_t)im->imageView; key[n++] = (uint64_t)im->imageLayout; }
+            else key[n++] = (uint64_t)x->pTexelBufferView[j];
+        }
+    }
+    return n;
 }
 static void drv_shared(int st, int bank, VkBuffer *buf, VkDeviceSize *off, int dyn) {   // the driver segment: built, then one copy per distinct content in the submission
     uint8_t d[0x1000]; drv_segment(st, bank, d, dyn);
@@ -1462,25 +1484,22 @@ static VkDescriptorSet stage_set(int st, vkshader_t *s, uint32_t *dofs, VkDescri
     }
     // the set's content, then an earlier identical set of this submission or a new one
     uint64_t tb1 = tick(); g_ns_set_build += tb1 - tb0;
-    uint64_t h = fnv(0xcbf29ce484222325ull, &s->dsl, sizeof s->dsl);
-    for (uint32_t i = 0; i < nw; i++) {
-        const VkWriteDescriptorSet *x = &w[i]; h = fnv(h, &x->dstBinding, 4); h = fnv(h, &x->descriptorType, 4); h = fnv(h, &x->descriptorCount, 4);
-        if (x->pBufferInfo) h = fnv(h, x->pBufferInfo, sizeof *x->pBufferInfo);
-        else if (x->pImageInfo) for (uint32_t j = 0; j < x->descriptorCount; j++) {
-            const VkDescriptorImageInfo *im = &x->pImageInfo[j];
-            // Vulkan fields only: imageLayout can be followed by uninitialized C padding.
-            // Three whole words retain the fast hash path without depending on those bytes.
-            uint64_t fields[] = {(uint64_t)im->sampler, (uint64_t)im->imageView, (uint64_t)im->imageLayout};
-            h = fnv(h, fields, sizeof fields);
-        }
-        else if (x->pTexelBufferView) h = fnv(h, x->pTexelBufferView, sizeof *x->pTexelBufferView);
-    }
+    uint64_t key[SET_KEY_WORDS]; size_t nk = set_key(key, s->dsl, w, nw);
+    uint64_t h = fnv(0xcbf29ce484222325ull, key, nk * sizeof *key);
+    if (g_set_key_epoch != g_set_epoch) { g_set_key_used = 0; g_set_key_epoch = g_set_epoch; }
     unsigned k = (unsigned)(h % SETC); uint64_t tb2 = tick(); g_ns_set_hash += tb2 - tb1;
-    if (g_setc[k].epoch == g_set_epoch && g_setc[k].h == h && g_setc[k].l == s->dsl && !g_tracing && !g_x_nosetc) { g_set_hits++; set = g_setc[k].set; }
+    int cacheable = nk && !g_tracing && !g_x_nosetc;
+    if (cacheable && g_setc[k].epoch == g_set_epoch && g_setc[k].h == h && g_setc[k].l == s->dsl && g_setc[k].n == nk &&
+        !memcmp(g_set_keys + g_setc[k].off, key, nk * sizeof *key)) { g_set_hits++; set = g_setc[k].set; }
     else { set = vk_alloc_set(s->dsl); g_set_new++;
         for (uint32_t i = 0; i < nw; i++) w[i].dstSet = set;
         vkUpdateDescriptorSets(V.dev, nw, w, 0, NULL);
-        g_setc[k].h = h; g_setc[k].epoch = g_set_epoch; g_setc[k].l = s->dsl; g_setc[k].set = set; g_ns_set_new += tick() - tb2; }
+        if (cacheable && nk <= SET_KEY_ARENA_WORDS - g_set_key_used) {
+            memcpy(g_set_keys + g_set_key_used, key, nk * sizeof *key);
+            g_setc[k].h = h; g_setc[k].epoch = g_set_epoch; g_setc[k].l = s->dsl; g_setc[k].set = set; g_setc[k].off = g_set_key_used; g_setc[k].n = nk;
+            g_set_key_used += nk;
+        }
+        g_ns_set_new += tick() - tb2; }
     // verify: the same content (hash), integer-texel bindings and dynamic offsets as the memo gave. A lone difference in dofs alone can be a driver segment
     // copied again after its g_drvc entry was taken by another (the memo's copy is as good); anything repeated is a dependency the memo misses
     if (verify && (h != g_smemo[st].h || g_num_um != vum || g_num_im != vim || memcmp(vd, dofs, sizeof *dofs * (size_t)s->ndyn))) { g_set_memo_bad++; static int n;

@@ -44,6 +44,14 @@ scratch array before writing it. A binding that would exceed capacity stops the
 host with a diagnostic; valid arrays keep their full reflected counts, including
 the existing 32-entry default for a zero count.
 
+Vulkan descriptor sets are reused within one submission only when their hash and
+complete static key match. The key owns explicit layout, binding, array position,
+descriptor type/count and every buffer, image and texel-view field, without C
+padding. Dynamic buffer offsets stay in the bind command. A bounded 16 MiB CPU
+arena holds these keys and resets at the next submission epoch; exhausted storage
+or an oversized key bypasses reuse and allocates/updates a fresh set. No pointer
+into descriptor-building scratch is retained, and no device speedup is claimed.
+
 Immutable Vulkan driver segments share submission scratch only when both their
 hash and exact content match in the current epoch. Equality reads a CPU snapshot
 of the live c0/c2 prefix (0x648/0x968 bytes), avoiding reads from mapped GPU memory.
