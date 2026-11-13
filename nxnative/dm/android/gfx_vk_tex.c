@@ -147,6 +147,18 @@ static VkImageViewType vtype_of(int target) {
     }
 }
 // storage key: textures with the same pool, offset and description share one image
+// Keep a storage-capable linear allocation for each mutable-format family.
+// X and A formats have identical storage; each descriptor retains its own
+// sampled alpha mapping and linear/sRGB conversion in its image view.
+static NVNformat texture_backing_format(NVNformat format) {
+    switch (format) {
+        case NVN_FORMAT_RGBX8: case NVN_FORMAT_RGBX8_SRGB: case NVN_FORMAT_RGBA8_SRGB:
+            return NVN_FORMAT_RGBA8;
+        case NVN_FORMAT_BGRX8: case NVN_FORMAT_BGRX8_SRGB: case NVN_FORMAT_BGRA8_SRGB:
+            return NVN_FORMAT_BGRA8;
+        default: return format;
+    }
+}
 typedef struct { uint64_t pool; int64_t off; nvn_texdesc d; } akey;
 static nvn_hmap g_by_key = {.klen = sizeof(akey)};     // akey → vkimg_t*
 static nvn_hmap g_by_serial = {.klen = sizeof(uint64_t)};  // serial → vkimg_t* (images with no storage key: no pool memory)
@@ -373,11 +385,16 @@ static vkimg_t *vk_tex_(const tex_t *t) {
     // in the key for colour formats (it gives the image storage usage), not for depth and stencil, which cannot be storage images
     k.d.flags &= NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_SPARSE | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET | NVN_TEXTURE_FLAGS_MINIMAL_LAYOUT | (f->depth || f->stencil ? 0 : NVN_TEXTURE_FLAGS_IMAGE);
     int keyed = t->pool != NULL;
+    // Existing Android parity family matching. Keep target IMAGE usage in the
+    // key; packaged layouts, virtual pools and other shapes retain their keys.
+    if (keyed && t->mem && !t->has_layout && !(t->pool->flags & NVN_MEMORY_POOL_FLAGS_VIRTUAL) && t->d.samples <= 1 &&
+        (t->d.target == NVN_TEXTURE_TARGET_2D || t->d.target == NVN_TEXTURE_TARGET_2D_ARRAY))
+        k.d.format = texture_backing_format(t->d.format);
     pthread_mutex_lock(&g_img_mu);
     vkimg_t *im = keyed ? nvn_hm_get(&g_by_key, &k) : nvn_hm_get(&g_by_serial, &t->serial);
     if (!im) {
         if (keyed) evict_overlaps(k.pool, t->off, (int64_t)t->L.size);
-        im = img_new(t, f); if (!im) { pthread_mutex_unlock(&g_img_mu); return NULL; }
+        im = img_new(t, vk_fmt(k.d.format)); if (!im) { pthread_mutex_unlock(&g_img_mu); return NULL; }
         im->pool = k.pool; im->off = t->off; im->size = (int64_t)t->L.size; im->flags = t->d.flags; g_img_n++; g_img_bytes += t->L.size;
         if (keyed) { alias_link(im); nvn_hm_put(&g_by_key, &k, im); } else nvn_hm_put(&g_by_serial, &t->serial, im);
     }
