@@ -20,6 +20,7 @@ class OverlayVisibility(unittest.TestCase):
         front = (ROOT / 'nxnative/dm/android/front_android.c').read_text(encoding='utf-8')
         pad = front[front.index('static int32_t axis('):front.index('// ---- the on-screen gamepad')]
         visible = front[front.index('int dm_overlay_visible(void)'):front.index('int dm_overlay_layout(void)')]
+        hidden = front[front.index('int dm_overlay_hidden('):front.index('float dm_overlay_opacity(')]
         hit = front[front.index('static int ctl_at('):front.index('// dragging the menu button:')]
         menu = front[front.index('static void menu_do('):front.index('static void menu_touch(')]
         events = front[front.index('static void touch_event(AInputEvent *e) {'):front.index('static int on_input(')]
@@ -31,6 +32,7 @@ class OverlayVisibility(unittest.TestCase):
 #include "front.h"
 #include "overlay_layout.h"
 static _Atomic int g_set_overlay, g_overlay, g_pads, g_edit;
+static _Atomic int g_cust[2][2][OV_N][4];
 static _Atomic int g_set_rumble, g_set_fps, g_set_labels, g_menu_tab, g_sv_st;
 static int layout, saves;
 int dm_overlay_layout(void) { return layout; }
@@ -52,7 +54,7 @@ static void save_export(void) {}
 static void menu_audio(void) {}
 static void menu_close(void) {}
 static void dm_overlay_redraw(void) {}
-''' + visible + hit + menu + r'''
+''' + visible + hidden + hit + menu + r'''
 // Synthetic Android events. The production dispatch and touch handlers below consume them.
 enum { AINPUT_SOURCE_TOUCHSCREEN = 1, AINPUT_SOURCE_GAMEPAD = 2, AINPUT_SOURCE_JOYSTICK = 4 };
 enum { AINPUT_EVENT_TYPE_KEY = 1, AINPUT_EVENT_TYPE_MOTION };
@@ -224,8 +226,27 @@ static void controls(int shown) {
     assert(ctl_at(m[0], m[1], W, H) == menu);
     assert(ctl_at(W * 0.5f, H * 0.5f, W, H) == -1);
 }
+static void hidden_controls(void) {
+    atomic_store(&g_set_overlay, 1); atomic_store(&g_overlay, 1);
+    int button = -1;
+    for (int i = 0; i < OV_N; i++) if (OV_CTLS[i].btn == DM_BTN_A) button = i;
+    assert(button >= 0);
+    controls(1);
+    atomic_store(&g_cust[0][layout][button][3], 1);
+    assert(dm_overlay_hidden(layout, button) && dm_overlay_off(layout, button));
+    assert(!dm_overlay_hidden(1 - layout, button));
+    assert(!dm_overlay_hidden(-1, button) && !dm_overlay_hidden(layout, OV_N));
+    controls(0);
+    // Hidden controls remain selectable while editing either stored layout.
+    atomic_store(&g_cust[1][layout][button][3], 1); atomic_store(&g_edit, 1);
+    assert(dm_overlay_hidden(layout, button) && !dm_overlay_off(layout, button));
+    controls(1);
+    atomic_store(&g_edit, 0); atomic_store(&g_cust[0][layout][button][3], 0);
+    controls(1);
+}
 int main(int argc, char **argv) {
     assert(argc == 2); int test = atoi(argv[1]);
+    if (test == 8) { for (layout = 0; layout < 2; layout++) hidden_controls(); return 0; }
     if (test == 7) { for (layout = 0; layout < 2; layout++) motion_handoff(); return 0; }
     if (test >= 4) { for (layout = 0; layout < 2; layout++) input_handoff(test); return 0; }
     for (layout = 0; layout < 2; layout++) for (int pads = 0; pads < 3; pads++) for (int touch = 0; touch < 2; touch++) {
@@ -269,6 +290,9 @@ int main(int argc, char **argv) {
     def run_case(self, case):
         result = subprocess.run([str(self.exe), str(case)], capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_hidden_controls_are_omitted_in_play_and_selectable_in_editor(self):
+        self.run_case(8)
 
     def test_visibility_follows_last_input_when_enabled(self):
         self.run_case(1)
