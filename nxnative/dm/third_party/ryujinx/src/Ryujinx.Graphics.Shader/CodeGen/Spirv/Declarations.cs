@@ -175,6 +175,12 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
                         _ => throw new InvalidOperationException($"Invalid sampler type \"{sampler.Type & SamplerType.Mask}\"."),
                     };
 
+                    // nxnative: a 1D query alone still declares a sampled 1D image.
+                    if (dim == Dim.Dim1D)
+                    {
+                        context.AddCapability(Capability.Sampled1D);
+                    }
+
                     imageType = context.TypeImage(
                         context.TypeFP32(),
                         dim,

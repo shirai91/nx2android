@@ -1555,6 +1555,14 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
                     dimensions++;
                 }
 
+                // nxnative: bindless TXQ initially assumes 3D when Z is requested.
+                // The resolved descriptor can have fewer dimensions; those
+                // result components are zero, not an out-of-range extraction.
+                if (texOp.Index >= dimensions)
+                {
+                    return new OperationResult(AggregateType.S32, context.Constant(context.TypeS32(), 0));
+                }
+
                 SpvInstruction resultType = dimensions == 1 ? context.TypeS32() : context.TypeVector(context.TypeS32(), dimensions);
 
                 SpvInstruction result;
