@@ -334,8 +334,8 @@ def int_inputs(spv):
     into a float input (undefined in Vulkan) before the bit casts: Dark Souls Remastered's scene vertex shaders read their RGBA16I attribute (loc 5) only through bit casts.
     Declared an integer (signed when a cast is to a signed type), the pipeline takes the integer format of the same layout (gfx_vk_exec.c vertex_format).
     A cast whose integer only goes back to float (through the translator's register variables) is a raw move, not an integer use: Dead or Alive Xtreme 3 Scarlet's ocean
-    vertex shader 6548b85b2c1cb7cf copies its RGBA8 UNORM attribute (loc 6) into a register that also takes an integer constant and from there to an output; declared uint, it
-    was fed RGBA8_UINT, the output carried 0..255 as denormal float bits instead of 0..1, and the foam pass 40782b7bec1449db turned them into NaN: the whole sea drew black"""
+    vertex shader 6548b85b2c1cb7cf copies its RGBA8 UNORM attribute (loc 6) into a register that also takes an integer constant and from there to an output; declared sint (the
+    register is a signed int), it was fed R8G8B8A8_SINT, whose bytes >= 0x80 are NaN bit patterns where 0..1 floats belong, and the foam pass 40782b7bec1449db carried them on: the whole sea drew black"""
     w = struct.unpack(f'<{len(spv) // 4}I', spv); i = 5; loc, inputs, chain, loads, uses, other = {}, set(), {}, {}, collections.defaultdict(int), set()
     ins, signed, sint, floats, fvars, users = [], {}, set(), set(), set(), collections.defaultdict(list)
     while i < len(w):
@@ -357,12 +357,14 @@ def int_inputs(spv):
     fvar_loads = collections.defaultdict(list)
     for op, a in ins:
         if op == 61 and a[2] in fvars: fvar_loads[a[2]].append(a[1])
+    def plain(var):   # a register whose every user is an OpLoad or an OpStore to it: an access chain or a call argument would use it where the loads do not show
+        return all(op == 61 or op == 62 and a[0] == var for op, a in users[var])
     def raw(x, seen):   # every use of x ends in a cast to float, directly or through stores to register variables and their loads
         if x in seen: return True
         seen.add(x)
         for op, a in users[x]:
             if op == 124 and a[0] in floats: continue                                  # OpBitcast to float
-            if op == 62 and a[1] == x and a[0] in fvars and all(raw(l, seen) for l in fvar_loads[a[0]]): continue   # OpStore into a register
+            if op == 62 and a[1] == x and a[0] in fvars and plain(a[0]) and all(raw(l, seen) for l in fvar_loads[a[0]]): continue   # OpStore into a register
             return False
         return True
     for op, a in ins:

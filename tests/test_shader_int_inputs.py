@@ -70,6 +70,12 @@ class IntInputs(unittest.TestCase):
                                     (LOAD, [1, 25, 11]), (IADD, [1, 26, 25, 8])])
         self.assertEqual(self.int_inputs(spv), {'6': 'sint'})
 
+    def test_register_reaching_an_access_chain_keeps_the_input_integer(self):
+        # the register's pointer also goes into an access chain, where an integer use of it would not show as an OpLoad: not provably a raw move
+        spv = module(LOAD_AS_INT + [(STORE, [11, 21]), (LOAD, [1, 22, 11]), (BITCAST, [2, 23, 22]), (STORE, [12, 23]),
+                                    (ACCESS_CHAIN, [6, 27, 11, 8])])
+        self.assertEqual(self.int_inputs(spv), {'6': 'sint'})
+
     def test_float_use_keeps_a_float_input(self):
         spv = module([(ACCESS_CHAIN, [5, 20, 10, 8]), (LOAD, [2, 30, 20]), (STORE, [12, 30])])
         self.assertEqual(self.int_inputs(spv), {})
