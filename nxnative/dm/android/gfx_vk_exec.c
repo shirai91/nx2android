@@ -1672,9 +1672,13 @@ static int prepare_draw(int prim, int indexed) {
     k.ncol = (uint32_t)S.ncol; k.dfmt = S.dfmt; k.samples = S.samples ? S.samples : 1; k.a2c = S.ms.a2c;
     k.logic_en = S.color.logic_op != 3 && S.color.logic_op != 0 && 0;   // logic ops: not on mobile render targets in version 1
     k.logic_op = S.color.logic_op;
+    uint32_t outputs = S.sh[1] ? ((k.debug_mode & 1) ? 1u : S.sh[1]->out_locs) : 0;
     for (int i = 0; i < S.ncol; i++) {
         k.cfmt[i] = S.cfmt[i];
         k.wmask[i] = S.cfmt[i] && S.sh[1] ? (S.chmask.mask >> (4 * i)) & 0xf : 0;   // no fragment shader: no colour written
+        // Existing Android parity color_operations (742318ae5): Maxwell
+        // leaves attachments outside the fragment output map untouched.
+        if (!(outputs & (1u << i))) { k.wmask[i] = 0; continue; }
         const vkfmt_t *f = S.rt_has_col[i] ? vk_fmt(S.rt_col[i].d.format) : NULL;
         if (((S.color.blend_en >> i) & 1) && f && !f->is_int) {
             k.blend_en |= 1u << i;
