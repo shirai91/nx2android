@@ -6,7 +6,7 @@ A profile is data only: `nxnative/dm/games/<base game's title ID>/` with upstrea
 
 Run `python -m porter inspect "<game folder>"`. The port refuses:
 - a game whose `main` renders with Vulkan or OpenGL (the Android host replays NVN only);
-- one whose shaders need a step upstream runs by booting the game on a Mac (GLSLC capture, Unreal / Oodle decoding).
+- one whose shaders need a step upstream runs by booting the game on a Mac (legacy Unreal paks, PKZ archives). A game that compiles shaders at run time with its own GLSLC ports: the device runs the compiler, and the programs the bundle lacks are captured on the device and added by porting again with `--install`.
 The game folder for any port, test or check is `.gamedump/<App>/` in the main checkout (git-ignored; `<App>` is the APK's name, e.g. `HadesII`), also from a worktree, and never a folder elsewhere on the PC: hard-link the downloaded NSP / NSZ / XCI files into it (`ln`, no copy; porter decompresses NSZ and XCZ itself), and never write into the downloaded game's folder. The port's `_build`/`_survey` folders, APK and data pack then land there too, and the folder is deleted when the work is done (§5). If the game has an iOS profile in `dm/games/` (52 do), its constants are already proven: start from it.
 
 ## 1. Experimental port
