@@ -36,6 +36,12 @@ def production():
     drvs = replay[replay.index('static uint32_t g_dispatch'):replay.index('// vk_samp_by_id without')]
     cache = replay[replay.index('enum { SETC'):replay.index('// A binding that runs past')]
     memo = replay[replay.index('enum { MEMO_CB'):replay.index('// ---------------- draws')]
+    # Descriptor pool runtime is an unrelated service in this indirect-buffer fixture.
+    memo = memo.replace('#include "gfx_vk_resource_exec.inc"', '\n'.join([
+        '#include "gfx_vk_resource_pool.h"',
+        'static vk_resource_table *resource_tables[6][96];',
+        'static int prepare_resource_pools(int st,vkshader_t **s){assert(!(*s)->has_pools);return 1;}',
+        'static void write_resource_pool(VkDescriptorSet set,int st,const dmsv_bind *b){abort();}']))
     indirect = replay[replay.index('static void compute_warm_start(void) {'):replay.index('// ---------------- copies and clears')]
     indirect = indirect[indirect.index('\n}') + 2:]
     ubd = core[core.index('typedef struct { uint64_t lo, hi; VkBuffer sb;'):core.index('// the draw bisection')]

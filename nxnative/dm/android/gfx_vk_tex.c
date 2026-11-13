@@ -704,12 +704,18 @@ void mtl_reg_tex(int tid, const tex_t *t, const view_t *v) {
 }
 void mtl_set_tex_pool_n(int n) { (void)n; }
 static __thread treg_ver t_treg;   // the version a lookup found, copied (the table may be rewritten or grow meanwhile)
-vkimg_t *vk_tex_by_id(int tid, const view_t **view_out, const tex_t **tex_out) {
-    uint64_t job = nvn_replaying_job();
-    pthread_mutex_lock(&g_rmu);
+static const treg_ver *treg_at(int tid,uint64_t job) {
     const treg_ver *r = tid > 0 && tid < g_ntreg ? &g_treg[tid].cur : NULL;
     if (r && job && r->seq >= job && g_treg[tid].old)   // registered after this job was queued: the newest earlier one
         for (int k = 0; k < TREG_OLD; k++) { const treg_ver *o = &g_treg[tid].old[k]; if (!o->ok) break; r = o; if (o->seq < job) break; }
+    return r;
+}
+#include "gfx_vk_resource_pool.h"
+#include "gfx_vk_resource_pool.inc"
+vkimg_t *vk_tex_by_id(int tid, const view_t **view_out, const tex_t **tex_out) {
+    uint64_t job = nvn_replaying_job();
+    pthread_mutex_lock(&g_rmu);
+    const treg_ver *r = treg_at(tid,job);
     int ok = r && r->ok; if (ok) t_treg = *r;
     pthread_mutex_unlock(&g_rmu);
     if (!ok) return NULL;

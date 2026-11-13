@@ -78,7 +78,7 @@ class ExportChecks(unittest.TestCase):
         try: products = importlib.import_module('shader_products')
         except ModuleNotFoundError: products = None
         numeric = {}
-        for name in ('spv_half', 'spv_precise', 'spv_texture_offsets'):
+        for name in ('spv_half', 'spv_precise', 'spv_texture_offsets', 'spv_pool'):
             try: numeric[name] = importlib.import_module(name)
             except ModuleNotFoundError: numeric[name] = None
         env = dict(**numeric, collections=collections, cf=cf, os=os, json=json, struct=struct,
@@ -94,7 +94,7 @@ class ExportChecks(unittest.TestCase):
                    refl_bin=lambda cl,c1,hdr: struct.pack('<5I', 0, 0, *hdr),
                    classify=lambda *args: None)
         source = TOOLS / 'shader_vk.py'; tree = ast.parse(source.read_text())
-        nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'main']
+        nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in ('main', 'lower_resource_pools')]
         exec(compile(ast.Module(body=nodes, type_ignores=[]), str(source), 'exec'), env)
         with mock.patch.dict(os.environ, {'WORK': str(self.root)}), mock.patch.object(subprocess, 'run', side_effect=self.translate), contextlib.redirect_stdout(self.log):
             env['main']()

@@ -187,7 +187,7 @@ class HostReader(unittest.TestCase):   # native bundle reader and vk_shader_q th
         cls.d = Path(tempfile.mkdtemp(prefix='nx2a_test_dmsv_c_')); src = (REPO / 'nxnative/dm/android/gfx_vk_shader.c').read_text(encoding='utf-8')
         body = src[src.index('// spv_size: 0 ='):src.index('// Run-time capture:')]
         lookup_start = src.index('static vkshader_t *vk_shader_q(uint64_t key, int stage, int quiet) {')
-        lookup = src[lookup_start:src.index("    // SPIR-V with the stage's set", lookup_start)]
+        lookup = src[lookup_start:src.index("    if (s->nbind>96 || !resource_pool_spv", lookup_start)]
         header = (REPO / 'nxnative/dm/android/gfx_vk.h').read_text(encoding='utf-8')
         types = header[header.index('typedef struct __attribute__((packed))'):header.index('} vkshader_t;') + len('} vkshader_t;')]
         set_start = src.index('static int set_of(')

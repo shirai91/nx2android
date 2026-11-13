@@ -14,7 +14,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 TOOLS = HERE.parent.parent / 'gfx/tools'
 sys.path[:0] = [str(TOOLS), str(HERE)]
-import dmsh_facts, dmsh_chain, dmsv, shader_products, spv_half, spv_precise, spv_texture_offsets   # noqa: E402  (DM_GAME picks the profile)
+import dmsh_facts, dmsh_chain, dmsv, shader_products, spv_half, spv_precise, spv_texture_offsets, spv_pool   # noqa: E402  (DM_GAME picks the profile)
 from shader_split import glslc_stage   # the package reader also recognizes headerless compute code
 
 ap = argparse.ArgumentParser()
@@ -117,6 +117,7 @@ def job_for(key, stage, rec, w):   # dmsh_build.py job_for; transform feedback i
     cp = os.path.join(w, key + '.bin'); open(cp, 'wb').write(code)
     xfb = xfb_layout(key, rec[ci:]) if stage in ('vs', 'gs') else None   # a geometry shader captures what it emits (Xenoblade Chronicles 3's particle update, 293ecebc0136519b)
     j = {'key': key, 'stage': stage, 'code': cp, 'tex': {}, 'img': {}, 'attr': {}, 'fout': {}, 'c1': c1.hex(), 'debug': False, 'reduced': True, 'sb_align': SB_ALIGN, 'subgroup': SUBGROUP, 'gather_bias': GATHER_BIAS, 'gs_passthrough': False, 'draw_parameters': True, **({'xfb': xfb} if xfb else {})}
+    j['full_resource_pools'] = GAME.get('android_dynamic_slots', 'off') != 'on'
     if stage == 'cs':   # Runtime captures have no facts-table row; their control section still declares the workgroup.
         x, y, z, shared = struct.unpack_from('<4I', rec, ci + 0x748)
         j.update(local=[x, y, z], shared=(shared + 15) // 16 * 16)
@@ -196,6 +197,10 @@ TEX_BASE, IMG_BASE, IMG_SLOTS, SEPTEX_BASE, SEPTEX_SLOT0, SAMP_BASE = 0x20, 0x12
 SSBO = {'vs': 0x110, 'cs': 0x310, 'ps': 0x510}
 def classify(stage, b, res):
     nm = b['name']; e = dict(b)
+    if b['type'] in ('image', 'sampler') and re.fullmatch(r'[a-z]+_[ts]\w*_cb0_40000000', nm):
+        kind = 'tex_pool' if b['type'] == 'image' else 'samp_pool'
+        if b['count'] == 1 << (20 if kind == 'tex_pool' else 12):
+            e.update(kind=kind); return e
     # Dynamic pool arrays use driver c2 slot indices (as the Metal backend).
     if GAME.get('android_dynamic_slots', 'off') == 'on' and b['type'] in ('image', 'sampler') and b['count'] == 32 and re.fullmatch(r'[a-z]+_[ts]\w*_cb0_40000000', nm):
         e.update(kind='texd' if b['type'] == 'image' else 'sampd'); return e
@@ -255,7 +260,7 @@ def classify(stage, b, res):
 # binding: u8 kind, u8 desc (descriptor type), u8 dim (SPIR-V Dim, 0xff none), u8 flags (1 arrayed, 2 multisampled, 4 written), u16 binding, u16 count,
 #          i16 reg, u8 samp (sampler source), u8 fmt (SPIR-V image format), i32 off, i32 samp_arg
 KIND = {'support': 0, 'cbuf': 1, 'c1': 2, 'drvcb': 3, 'sbuf': 4, 'ubo_ptr': 5, 'sbuf_ubo': 6, 'tex': 7, 'tbuf': 8, 'img': 9, 'img_tbuf': 10, 'tex_c2a': 11,
-        'tex_ubo': 12, 'tbuf_ubo': 13, 'img_ubo': 14, 'texd': 15, 'sampd': 16, '?': 255}
+        'tex_ubo': 12, 'tbuf_ubo': 13, 'img_ubo': 14, 'texd': 15, 'sampd': 16, 'tex_pool': 17, 'samp_pool': 18, 'pool_bounds': 19, '?': 255}
 DESC = {'ubo': 0, 'ssbo': 1, 'sampled': 2, 'storage': 3, 'tbuf': 4, 'storage_tbuf': 5, 'image': 6, 'sampler': 7, '?': 255}
 SAMP_NONE, SAMP_TEX, SAMP_SLOT, SAMP_ID, SAMP_UBO = 0, 1, 2, 3, 4
 kinds_all = collections.Counter()
@@ -275,6 +280,25 @@ def refl_bin(binds, c1, local):
         out.append(struct.pack('<BBBBHHhBBii', kind, DESC.get(e['type'], 255), 0xff if e.get('dim') is None else e['dim'], flags, e['binding'], e['count'],
                                reg, samp, e.get('fmt') or 0, off, sarg))
     return b''.join(out) + bytes(c1)
+
+def lower_resource_pools(spv, bindings):
+    """Adapt the donor's runtime pool reflection to our 20-byte DMSV records."""
+    if not any(b['kind'] in ('tex_pool', 'samp_pool') for b in bindings): return spv, bindings
+    reflection = {'bindings': [dict(b, msl_name=b['name'], type={'image': 'tex', 'sampler': 'samp'}.get(b['type'], b['type'])) for b in bindings]}
+    spv, reflection = spv_pool.lower(spv, reflection)
+    sources = {b['msl_name']: b for b in reflection['bindings']}
+    actual, _, _ = spirv_bindings(spv)
+    out = []
+    for b in actual:
+        source = dict(sources[b['name']])
+        # Helper records acquire descriptor shape from the transformed module.
+        if source['kind'] == 'pool_bounds': source.update(type=b['type'], count=b['count'])
+        spv_pool.fields(source)
+        e = dict(source); e.update(b); e.pop('msl_name')
+        if source['kind'] in ('tex_pool', 'samp_pool'):
+            e.update(count=1, reg=source['pool_slot'], off=source['pool_count'])
+        out.append(e)
+    return spv, out
 
 def remap_handles(spv, source, target, expected):
     """Remap a packed handle at stores feeding both texture and sampler array indices."""
@@ -451,6 +475,7 @@ def main():
                 spv = remap_handles(spv, *handle_remaps[k])
             st = stages[k]
             cl = [classify(st, b, res) for b in binds]
+            spv, cl = lower_resource_pools(spv, cl)
             for e in cl: kinds_all[e['kind']] += 1
             # header words 2-4: a compute shader's local size; a vertex shader's input locations (all, signed int, unsigned int); a pixel shader's output locations
             hdr3 = (local or jobs[k].get('local') or [1, 1, 1]) if st == 'cs' else io[1] if st == 'vs' else io[3] if st == 'ps' else [0, 0, 0]

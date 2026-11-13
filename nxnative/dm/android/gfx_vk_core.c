@@ -232,6 +232,11 @@ void vk_init(void) {
     VkPhysicalDeviceVulkan11Features f11 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES, &f12};
     VkPhysicalDeviceFeatures2 ff = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, v12 ? (void *)&f11 : xs};
     vkGetPhysicalDeviceFeatures2(V.pd, &ff);
+    V.has_resource_pools = v12 && f12.runtimeDescriptorArray && f12.shaderSampledImageArrayNonUniformIndexing;
+    if (!v12) for (int i=0;i<nxf;i++) if (xf[i].h.sType==VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES) {
+        const VkPhysicalDeviceDescriptorIndexingFeatures *f=(const void *)&xf[i];
+        V.has_resource_pools=f->runtimeDescriptorArray && f->shaderSampledImageArrayNonUniformIndexing;
+    }
     // without timeline semaphores (Vulkan 1.1 drivers: the Adreno 618 / 619 of 2021, 512.530) each submission signals a fence of a ring instead (slots_init).
     // DM_VK_X_FENCES=1 (start-up): the fences on a device that has them; with DM_VK_X_BC_CPU=1 below, a device of today stands in for those drivers
     { const char *e = getenv("DM_VK_X_FENCES");
@@ -852,7 +857,7 @@ struct vksub {
     uint64_t fence;   // the fence this slot last committed with (0 = never)
     int ncq;          // timestamp counter queries used in this submission (g_cq)
     scratch_blk *blk; int nblk, capblk;
-    VkDescriptorPool *dp; int ndp, capdp, dp_cur;
+    VkDescriptorPool *dp; uint32_t (*dp_capacity)[9]; int ndp, capdp, dp_cur;
     uint32_t dp_used[9], dp_sets; int dp_counted; int no_ts;   // what pool dp_cur has given out (vk_alloc_set)
     dfree_t *df; int ndf, capdf;
     post_op *post; int npost, cappost;
@@ -1153,14 +1158,15 @@ VkDescriptorSet vk_alloc_set(VkDescriptorSetLayout l) {
     for (;;) {
         if (s->dp_cur == s->ndp) {
             VkDescriptorPoolSize sz[9]; uint32_t nz = 0;
-            for (int t = 0; t < 9; t++) if (DP_CAP[t]) sz[nz++] = (VkDescriptorPoolSize){(VkDescriptorType)t, DP_CAP[t]};
+            for (int t = 0; t < 9; t++) if (DP_CAP[t]) sz[nz++] = (VkDescriptorPoolSize){(VkDescriptorType)t, need && need[t]>DP_CAP[t] ? need[t] : DP_CAP[t]};
             VkDescriptorPoolCreateInfo pi = {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, NULL, 0, DP_SETS, nz, sz};
-            if (s->ndp == s->capdp) { s->capdp = s->capdp ? 2 * s->capdp : 4; s->dp = realloc(s->dp, s->capdp * sizeof *s->dp); }
+            if (s->ndp == s->capdp) { s->capdp = s->capdp ? 2 * s->capdp : 4; s->dp = realloc(s->dp, s->capdp * sizeof *s->dp); s->dp_capacity = realloc(s->dp_capacity, s->capdp * sizeof *s->dp_capacity); if (!s->dp || !s->dp_capacity) die("[vk] cannot track descriptor pools"); }
+            for (int t=0;t<9;t++) s->dp_capacity[s->ndp][t]=need && need[t]>DP_CAP[t] ? need[t] : DP_CAP[t];
             VKCHK(vkCreateDescriptorPool(V.dev, &pi, NULL, &s->dp[s->ndp++]));
         }
         if (s->dp_cur != s->dp_counted) { memset(s->dp_used, 0, sizeof s->dp_used); s->dp_sets = 0; s->dp_counted = s->dp_cur; }
         int fits = s->dp_sets < DP_SETS;
-        if (need) for (int t = 0; t < 9 && fits; t++) if (need[t] && s->dp_used[t] + need[t] > DP_CAP[t]) fits = 0;
+        if (need) for (int t = 0; t < 9 && fits; t++) if (need[t] && s->dp_used[t] + need[t] > s->dp_capacity[s->dp_cur][t]) fits = 0;
         if (!fits) { s->dp_cur++; continue; }
         VkDescriptorSetAllocateInfo ai = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, NULL, s->dp[s->dp_cur], 1, &l};
         VkDescriptorSet set; VkResult r = vkAllocateDescriptorSets(V.dev, &ai, &set);

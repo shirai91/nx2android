@@ -26,7 +26,7 @@ static int g_x_tracepass = -1, g_sub_pass, g_prof_on, g_prereset = 1;
 static uint64_t g_prof_ns[8], g_fence;
 static long long g_td_off = -1;
 static struct { uint64_t dispatches; } g_vkst;
-static nvn_hmap g_cpipes = {.klen = 24};
+static nvn_hmap g_cpipes = {.klen = 32};
 static pthread_mutex_t g_cpipe_mu = PTHREAD_MUTEX_INITIALIZER;
 static uint64_t tick(void) { return 0; }
 static VkPipeline compute_build(vkshader_t *s, uint64_t u, uint64_t i) { return (VkPipeline)2; }
