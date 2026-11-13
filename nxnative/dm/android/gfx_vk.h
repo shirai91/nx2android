@@ -176,7 +176,8 @@ typedef struct {
     int xfb; uint32_t xfb_stride[4];    // a vertex shader that captures transform feedback (its SPIR-V has the Xfb execution mode), and each buffer's stride
     uint32_t *spv, nspv;                // its SPIR-V as the module was made from it, for the variants below
     struct { uint64_t um, im; uint32_t xo; int fd; VkShaderModule mod; uint64_t vi; } var[8]; int nvar;   // variants whose sampled bindings (bit = index in b) of an integer view read uint (um) / int (im) texels,
-                                                                                    // that declare the vec4 outputs xo (bit = location) the next stage reads, and (fd) that write gl_FragDepth = gl_FragCoord.z
+                                                                                    // that declare the vec4 outputs xo (bit = location) the next stage reads, and fd flags: bit 0 fragment depth, bit 1 dual source, bit 2 alpha test
+    int alpha_float;                    // fragment output 0 has float alpha, eligible for the ported NVN alpha test
     int depth_repl;                     // a fragment shader that writes gl_FragDepth (DepthReplacing / DepthGreater / DepthLess)
     uint32_t in_locs, out_locs;         // the vec4 (or per-vertex vec4) inputs and outputs it declares, by location
     int setmemo;                        // gfx_vk_exec.c stage_set: 1 its set may be memoized per stage, 2 not (it reads handles or addresses from uniform buffer memory), 0 not known yet

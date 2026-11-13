@@ -173,6 +173,7 @@ static void exec_ops(const uint8_t *p) {
             break; }
         case OP_POLY_OFFSET: S.pofs = *(const p_poly_offset *)a; break;
         case OP_BLEND_COLOR: memcpy(S.blendc, ((const p_blend_color *)a)->rgba, 16); break;
+        case OP_ALPHA_REF: S.alpha_ref = ((const p_alpha_ref *)a)->ref; break;
         case OP_DEPTH_CLAMP: S.depth_clamp = ((const p_depth_clamp *)a)->on; break;
         case OP_RAST_DISCARD: S.rast_discard = ((const p_rast_discard *)a)->on; break;
         case OP_PRIM_RESTART: S.prim_restart = ((const p_prim_restart *)a)->on; break;

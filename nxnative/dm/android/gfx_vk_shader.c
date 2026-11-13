@@ -3,6 +3,7 @@
 // shader and its binary reflection. Version 2 stores each SPIR-V module as one zstd frame (dm/third_party/zstd), decompressed when the shader is first made (bundle_spv).
 // The translator numbers every stage's bindings from 0 in set 0; at module creation each stage's bindings move to a set of its own (vertex 0, fragment 1,
 // geometry 2, tessellation 3 / 4; compute 0) by rewriting the DescriptorSet decorations, so a program's stages never collide.
+#include "spv_alpha.h"
 #include "gfx_vk.h"
 #include "nvn_hmap.h"
 #include "zstd.h"
@@ -150,10 +151,12 @@ static VkDescriptorType desc_type(int d) {
 static int spv_is_vec4(const uint32_t *w, uint32_t fn, uint32_t t) {   // a vec4 of 32-bit floats, or an array of them (per-vertex inputs)
     for (int depth = 0; depth < 3; depth++) { uint32_t i = 5, found = 0;
         while (i < fn) { uint32_t n = w[i] >> 16; if (!n) return 0; if (w[i + 1] == t && ((w[i] & 0xffff) == 23 || (w[i] & 0xffff) == 28 || (w[i] & 0xffff) == 32)) { found = i; break; } i += n; }
-        if (!found) return 0; uint32_t op = w[found] & 0xffff;
+        if (!found) return 0;
+        uint32_t op = w[found] & 0xffff;
         if (op == 32) { t = w[found + 3]; continue; }   // OpTypePointer
         if (op == 28) { t = w[found + 2]; continue; }   // OpTypeArray
-        if (w[found + 3] != 4) return 0; for (i = 5; i < fn;) { if ((w[i] & 0xffff) == 22 && w[i + 1] == w[found + 2]) return w[i + 2] == 32; i += w[i] >> 16; } return 0; }
+        if (w[found + 3] != 4) return 0;
+        for (i = 5; i < fn;) { if ((w[i] & 0xffff) == 22 && w[i + 1] == w[found + 2]) return w[i + 2] == 32; i += w[i] >> 16; } return 0; }
     return 0;
 }
 static void spv_io_locs(const uint32_t *w, uint32_t nw, uint32_t *in, uint32_t *out) {
@@ -190,7 +193,8 @@ static uint32_t *spv_vs_init(const uint32_t *w, uint32_t nw, uint32_t *onw) {
     uint32_t at = 0;   // the entry point's first block, after its OpVariables
     for (uint32_t i = fn; i < nw;) { uint32_t n = w[i] >> 16, op = w[i] & 0xffff; if (!n) goto fail;
         if (op == 54 && w[i + 2] == ep) { uint32_t j = i + n; while (j < nw && (w[j] & 0xffff) != 248) j += w[j] >> 16; j += 2;
-            while (j < nw && ((w[j] & 0xffff) == 59 || (w[j] & 0xffff) == 8 || (w[j] & 0xffff) == 317)) j += w[j] >> 16; at = j; break; }
+            while (j < nw && ((w[j] & 0xffff) == 59 || (w[j] & 0xffff) == 8 || (w[j] & 0xffff) == 317)) j += w[j] >> 16;
+            at = j; break; }
         i += n; }
     if (!at || at >= nw) goto fail;
     uint32_t dec[16], nd = 0, id = bound;
@@ -210,7 +214,8 @@ fail:
 static uint32_t *spv_add_outputs(const uint32_t *w, uint32_t nw, uint32_t mask, uint32_t *onw) {
     uint32_t fn = nw, ep = 0, lastdec = 0, bound = w[3], f32 = 0, v4 = 0, pv4 = 0;
     for (uint32_t i = 5; i < nw;) { uint32_t n = w[i] >> 16, op = w[i] & 0xffff; if (!n) return NULL; if (op == 54) { fn = i; break; }
-        if (op == 15 && !ep) ep = i; if (op == 71 || op == 72) lastdec = i + n;
+        if (op == 15 && !ep) ep = i;
+        if (op == 71 || op == 72) lastdec = i + n;
         if (op == 22 && w[i + 2] == 32) f32 = w[i + 1];
         i += n; }
     if (!ep || !lastdec || !f32) return NULL;
@@ -356,6 +361,7 @@ static vkshader_t *vk_shader_q(uint64_t key, int stage, int quiet) {
               if (*x == 37) *x = 79; else if (*x == 40) *x = 80; else if (*x == 43) *x = 81; }
           i += n; } }
     spv_io_locs(w, nw, &s->in_locs, &s->out_locs);
+    s->alpha_float = stage == 1 && spv_fragment_outputs(w, nw).alpha_var != 0;
     VkShaderModuleCreateInfo ci = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, NULL, 0, (size_t)nw * 4, w};
     VkResult vr = vkCreateShaderModule(V.dev, &ci, NULL, &s->mod); s->spv = w; s->nspv = nw;
     if (vr) { VKLOG("[RED] shader %016llx: vkCreateShaderModule %d", (unsigned long long)key, vr); free(w); free(s); nvn_hm_put(&g_shaders, &hk, (void *)1); pthread_mutex_unlock(&g_sh_mu); return NULL; }
@@ -528,12 +534,17 @@ int vk_shader_gs_split_ready(vkshader_t *s) {
 
 // DM_VK_SPV_DIR=<dir> with DM_VK_SPV_ALT=1 (live, debugging): pipelines made while it is on use <dir>/<key>.spv in place of the bundle's code where the file
 // exists (same bindings), so two compilations of a shader can be compared in one run: the translator's module through spirv-opt, its GLSL through glslc...
-static VkShaderModule alt_module(vkshader_t *s) {
+static VkShaderModule alt_module(vkshader_t *s, int alpha) {
     const char *dir = getenv("DM_VK_SPV_DIR"); char path[512]; if (!dir) return s->mod;
     snprintf(path, sizeof path, "%s/%016llx.spv", dir, (unsigned long long)s->key); FILE *f = fopen(path, "rb"); if (!f) return s->mod;
     fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET); uint32_t *w = n > 20 && !(n & 3) ? malloc((size_t)n) : NULL; VkShaderModule m = s->mod;
     if (w && fread(w, 1, (size_t)n, f) == (size_t)n) { VkShaderModuleCreateInfo ci = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, NULL, 0, (size_t)n, w};
         for (uint32_t i = 5, nw = (uint32_t)(n / 4); i < nw;) { uint32_t k = w[i] >> 16; if (!k) break; if ((w[i] & 0xffff) == 71 && k >= 4 && w[i + 2] == 34) w[i + 3] = (uint32_t)s->set; i += k; }   // the stage's set, as at load
+        if (alpha) {
+            size_t count=0; const char *why=NULL; uint32_t *tested=spv_alpha(w,(size_t)n/4,&count,&why);
+            if (!tested) { VKLOG("[RED] shader %016llx: alternative alpha test unavailable (%s)",(unsigned long long)s->key,why); free(w); fclose(f); return s->mod; }
+            free(w); w=tested; ci.pCode=w; ci.codeSize=count*4;
+        }
         if (vkCreateShaderModule(V.dev, &ci, NULL, &m)) m = s->mod; else VKLOG("shader %016llx: alternative code from %s", (unsigned long long)s->key, path); }
     free(w); fclose(f); return m;
 }
@@ -560,16 +571,21 @@ static VkShaderModule vk_shader_module_(vkshader_t *s, uint64_t um, uint64_t im,
 VkShaderModule vk_shader_module(vkshader_t *s, uint64_t um, uint64_t im, uint32_t xo, int fd, uint64_t vi) { extern int g_prof_on; extern uint64_t g_prof_ns[8]; struct timespec a, b; if (g_prof_on) clock_gettime(CLOCK_MONOTONIC, &a);
     VkShaderModule m = vk_shader_module_(s, um, im, xo, fd, vi); if (g_prof_on) { clock_gettime(CLOCK_MONOTONIC, &b); g_prof_ns[3] += (uint64_t)((b.tv_sec - a.tv_sec) * 1000000000ll + (b.tv_nsec - a.tv_nsec)); } return m; }
 static VkShaderModule vk_shader_module_(vkshader_t *s, uint64_t um, uint64_t im, uint32_t xo, int fd, uint64_t vi) {
-    int dual = fd >> 1 & 1; fd &= 1;   // fd bit 1: the dual-source variant
+    int dual = fd >> 1 & 1, alpha = fd >> 2 & 1; fd &= 1;   // bits 1/2: dual-source / alpha-test variants
     if (fd && (s->stage != 1 || s->depth_repl)) fd = 0;
     if (dual && s->stage != 1) dual = 0;
-    if (!(um | im | xo | (uint64_t)fd | (uint64_t)dual | vi) || !s->spv) return s->mod;
+    if (alpha && s->stage != 1) alpha = 0;
+    if (!(um | im | xo | (uint64_t)fd | (uint64_t)dual | (uint64_t)alpha | vi) || !s->spv) return s->mod;
     if (xo == 1u << 31) {   // DM_VK_SPV_ALT
-        pthread_mutex_lock(&g_sh_mu); for (int i = 0; i < s->nvar; i++) if (s->var[i].um == 0 && s->var[i].im == 0 && s->var[i].xo == xo) { VkShaderModule m = s->var[i].mod; pthread_mutex_unlock(&g_sh_mu); return m; }
-        VkShaderModule m = alt_module(s); if (s->nvar < 8) s->var[s->nvar++] = (typeof(s->var[0])){0, 0, xo, 0, m}; pthread_mutex_unlock(&g_sh_mu); return m; }
+        pthread_mutex_lock(&g_sh_mu); for (int i = 0; i < s->nvar; i++) if (s->var[i].um == 0 && s->var[i].im == 0 && s->var[i].xo == xo && s->var[i].fd == (alpha << 2)) { VkShaderModule m = s->var[i].mod; pthread_mutex_unlock(&g_sh_mu); return m; }
+        VkShaderModule m = alt_module(s, alpha);
+        if (m != s->mod || !alpha) { if (s->nvar < 8) s->var[s->nvar++] = (typeof(s->var[0])){0, 0, xo, alpha << 2, m}; pthread_mutex_unlock(&g_sh_mu); return m; }
+        // Missing or unusable debug replacement: keep the ordinary shader's alpha test.
+        pthread_mutex_unlock(&g_sh_mu);
+    }
     xo &= ~(1u << 31);
     pthread_mutex_lock(&g_sh_mu);
-    for (int i = 0; i < s->nvar; i++) if (s->var[i].um == um && s->var[i].im == im && s->var[i].xo == xo && s->var[i].fd == (fd | dual << 1) && s->var[i].vi == vi) { VkShaderModule m = s->var[i].mod; pthread_mutex_unlock(&g_sh_mu); return m; }
+    for (int i = 0; i < s->nvar; i++) if (s->var[i].um == um && s->var[i].im == im && s->var[i].xo == xo && s->var[i].fd == (fd | dual << 1 | alpha << 2) && s->var[i].vi == vi) { VkShaderModule m = s->var[i].mod; pthread_mutex_unlock(&g_sh_mu); return m; }
     uint16_t bind[64]; uint8_t kind[64]; int nb = 0;
     for (int i = 0; i < s->nbind && i < 64; i++) if ((um | im) >> i & 1) { bind[nb] = s->b[i].binding; kind[nb++] = um >> i & 1 ? 1 : 2; }
     uint32_t nw = s->nspv, *w = nb ? spv_int_images(s->spv, s->nspv, bind, kind, nb, &nw) : NULL; VkShaderModule m = s->mod;
@@ -577,13 +593,18 @@ static VkShaderModule vk_shader_module_(vkshader_t *s, uint64_t um, uint64_t im,
         if (w && s->stage == 0) { uint32_t n3 = 0, *w3 = spv_vs_init(w, nw, &n3); if (w3) { free(w); w = w3; nw = n3; } } }   // the added outputs start as (0, 0, 0, 1) too
     if (fd && (w || !(nb || xo))) { uint32_t n2 = 0, *w2 = spv_frag_depth(w ? w : s->spv, nw, &n2); free(w); w = w2; nw = n2; }
     if (dual && (w || !(nb || xo || fd))) { uint32_t n2 = 0, *w2 = spv_dual(w ? w : s->spv, nw, &n2); free(w); w = w2; nw = n2; }
+    if (alpha && (w || !(nb || xo || fd || dual))) {
+        size_t n2=0; const char *why=NULL; uint32_t *w2=spv_alpha(w ? w : s->spv,nw,&n2,&why);
+        if (!w2) VKLOG("[RED] shader %016llx: alpha test unavailable (%s)",(unsigned long long)s->key,why);
+        free(w); w=w2; nw=(uint32_t)n2;
+    }
     if (vi) { uint32_t n2 = 0, *w2 = spv_vertex_signedness(w ? w : s->spv, nw, vi, &n2); free(w); w = w2; nw = n2; }
     if (w) { VkShaderModuleCreateInfo ci = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, NULL, 0, (size_t)nw * 4, w};
-        if (vkCreateShaderModule(V.dev, &ci, NULL, &m)) { m = s->mod; VKLOG("[RED] shader %016llx: its variant was refused (bindings %#llx / %#llx, outputs %#x, fragment depth %d, dual source %d)", (unsigned long long)s->key, (unsigned long long)um, (unsigned long long)im, xo, fd, dual); }
-        else VKLOG("shader %016llx: variant for bindings %#llx (uint texels) %#llx (int texels), outputs added %#x, fragment depth written %d, dual source %d", (unsigned long long)s->key, (unsigned long long)um, (unsigned long long)im, xo, fd, dual);
+        if (vkCreateShaderModule(V.dev, &ci, NULL, &m)) { m = s->mod; VKLOG("[RED] shader %016llx: its variant was refused (bindings %#llx / %#llx, outputs %#x, fragment depth %d, dual source %d, alpha test %d)", (unsigned long long)s->key, (unsigned long long)um, (unsigned long long)im, xo, fd, dual, alpha); }
+        else VKLOG("shader %016llx: variant for bindings %#llx (uint texels) %#llx (int texels), outputs added %#x, fragment depth written %d, dual source %d, alpha test %d", (unsigned long long)s->key, (unsigned long long)um, (unsigned long long)im, xo, fd, dual, alpha);
         free(w); }
     else VKLOG("[RED] shader %016llx: no variant could be made (bindings %#llx / %#llx, outputs %#x, fragment depth %d, dual source %d)", (unsigned long long)s->key, (unsigned long long)um, (unsigned long long)im, xo, fd, dual);
-    if (s->nvar < 8) s->var[s->nvar++] = (typeof(s->var[0])){um, im, xo, fd | dual << 1, m, vi};
+    if (s->nvar < 8) s->var[s->nvar++] = (typeof(s->var[0])){um, im, xo, fd | dual << 1 | alpha << 2, m, vi};
     pthread_mutex_unlock(&g_sh_mu);
     return m;
 }
@@ -628,7 +649,8 @@ VkPipelineLayout vk_pipeline_layout(VkDescriptorSetLayout sets[5], int nsets) {
     VkDescriptorSetLayout k[5]; for (int i = 0; i < 5; i++) { k[i] = i < nsets && sets[i] ? sets[i] : (i < nsets ? empty : VK_NULL_HANDLE); if (i < nsets) sets[i] = k[i]; }   // absent stages get the empty layout (the caller allocates their sets from it)
     VkPipelineLayout pl = nvn_hm_get(&cache, k);
     if (!pl) {
-        VkPipelineLayoutCreateInfo ci = {VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, NULL, 0, (uint32_t)nsets, k};
+        VkPushConstantRange alpha = {VK_SHADER_STAGE_FRAGMENT_BIT, DM_VK_ALPHA_PUSH_OFFSET, DM_VK_ALPHA_PUSH_BYTES};
+        VkPipelineLayoutCreateInfo ci = {VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, NULL, 0, (uint32_t)nsets, k, 1, &alpha};
         VKCHK(vkCreatePipelineLayout(V.dev, &ci, NULL, &pl)); nvn_hm_put(&cache, k, pl);
     }
     pthread_mutex_unlock(&mu);
