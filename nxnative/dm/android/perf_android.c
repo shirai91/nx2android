@@ -64,7 +64,7 @@ static int turbo_auto(int on) {
     off_at = now; LOG("[perf] DM_GPU_TURBO=auto: off (GPU %.1f ms at the highest clock)", g_gpu_mean / 1e6); return 0;
 }
 // The KGSL property is device-wide and outlives the app, so the power control goes back to the governor when the app pauses or ends (front_android.c
-// on_pause, on_destroy); the next presents set it again. A device without KGSL (Mali, Xclipse) or one that refuses the ioctl is tried once and then left alone.
+// on_pause, on_destroy, host_thread when the game ends itself); the next presents set it again. A device without KGSL (Mali, Xclipse) or one that refuses the ioctl is tried once and then left alone.
 static pthread_mutex_t g_turbo_mu = PTHREAD_MUTEX_INITIALIZER;
 static int g_turbo_on, g_turbo_dead;   // what was last set; the property could not be set
 static int turbo_set(int want) {

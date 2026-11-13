@@ -57,6 +57,7 @@ static class IntegrityFixture {
         Set("g_allow", mode == "nca-allow");
         var ncas = (System.Collections.ICollection)Call("OpenNsp", new KeySet(), input);
         return ncas.Count == 1 ? 0 : 92;
+    }
     static byte[] Container(string magic, string name, byte[] data) {
         using var stream = new MemoryStream(); using var w = new BinaryWriter(stream);
         byte[] names = System.Text.Encoding.ASCII.GetBytes(name + "\0");
