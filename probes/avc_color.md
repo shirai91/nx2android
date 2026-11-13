@@ -4,6 +4,11 @@
 and always treated decoded luma as limited range. A 64-line BT.709 stream therefore
 got the BT.601 matrix; a full-range movie got incorrect contrast. The adapter now
 reads `color-standard` / `color-range` and retains them with each queued picture.
+It accepts the decoder's standard only when the SPS VUI declares a colour
+description, and its range only when the SPS VUI declares a video signal type.
+An absent, malformed or unsupported SPS retains the height heuristic and limited
+range. A bounded SPS reader follows H.264 sections 7.3.2.1.1 and E.1.1, including
+emulation-prevention bytes, scaling lists, POC modes and optional VUI fields.
 The conversion and per-picture metadata handling adapt `dm/host/movie_avc_android.inc`
 from the public `thehobbit85/nxnative` fork at
 `1f01e28c87da5233dfa14fb31fabf1535df33013`. Git credits that source to seedds.
@@ -27,8 +32,9 @@ tagged-stream checks below do not establish those defaults for a physical device
 
 The maintainer reported a Lenovo Legion Y700 (TB322FC, SM8750P) check with
 `c2.qti.avc.decoder` on 13 Sentinels: Aegis Rim's 1024x576 intro movie.
-The decoder reported `color-standard 1 full-range 0` for this untagged stream,
-which selects BT.709 instead of the previous sub-720p BT.601 heuristic.
+The decoder reported `color-standard 1 full-range 0` for this untagged stream.
+The earlier revision trusted that BT.709 default. With SPS declaration gating,
+the same untagged stream retains the sub-720p BT.601 heuristic.
 The game used raw NV12 output (`output 4 mode 1`), so the check found no
 regression while leaving the RGBA conversion unexercised. A physical-device
 check using RGBA texture output with an SD or untagged stream remains pending.

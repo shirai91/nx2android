@@ -188,6 +188,12 @@ How a game's frames are paced is decided in one module, `nxnative/dm/host/dm_pac
 
 ## Game profiles on Android
 
+The Android AVC adapter snapshots matrix and range with each queued picture.
+MediaCodec color metadata is accepted only for fields declared in the stream's
+SPS VUI. Without a colour description it uses BT.709 at 720 lines and above,
+BT.601 below. Without a video signal type it uses limited range. Malformed or
+unsupported SPS data uses both defaults.
+
 A profile is offered for Android when it has an `android.tsv`; the profiles without one (52 of the 54 today, upstream's iOS games) show as "ios only": an experimental port can still try them. `android.tsv` holds, one `key<TAB>value` row each:
 
 | Key | Meaning |
