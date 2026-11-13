@@ -390,7 +390,8 @@ static vkimg_t *vk_tex_(const tex_t *t) {
     // otherwise only a later nvn_ft_poll pass finds it, and its first draws read zeros
     int nvn_ft_written(const tex_t *);
     if (t->mem && lin_copy(im, t, f)) {}
-    else if (t->mem && (im->packaged || packaged_tex(t) || (first && (nvn_ft_written(t) || cpu_content_tex(t, f))))) {
+    // A key hit can reuse a packaged image for another texture over the same storage. Refresh it only before GPU writes have made the image authoritative.
+    else if (t->mem && (packaged_tex(t) || (im->packaged && !im->gpu_w) || (first && (nvn_ft_written(t) || cpu_content_tex(t, f))))) {
         im->pkg_used = g_tex_frame;
         if (!im->packaged) { im->packaged = 1; pkg_upload(im, t, f); }
         else {

@@ -1344,12 +1344,18 @@ static int set_memo_ok(vkshader_t *s) {
     return s->setmemo == 1;
 }
 static int shader_wmem(vkshader_t *s);
-enum { SPARSE_SBUF_CACHE = 32 };
+enum { SPARSE_SBUF_CACHE = 32, SPARSE_SBUF_COPY_CAP = 32 * 1024 * 1024 };   // AA456's exhibit shader reads a 24 MiB sparse SSBO; larger snapshots fall back to the zero buffer
 static struct { uint64_t a, n, epoch, gen; VkBuffer buf; VkDeviceSize off; } g_sparse_sbuf[SPARSE_SBUF_CACHE];
 static int sparse_sbuf_desc(uint64_t a, uint64_t n, VkDescriptorBufferInfo *bi) {
     if (!a || !n || n > UINT64_MAX - a) return 0;
     uint64_t base = a & ~((uint64_t)SB_ALIGN - 1), size = a + n - base;
-    if (size > V.props.limits.maxStorageBufferRange || !nvn_sparse_address_pool(a, n)) return 0;
+    if (!nvn_sparse_address_pool(a, n)) return 0;
+    if (size > SPARSE_SBUF_COPY_CAP) {
+        static int noted; if (!noted++) VKLOG("[RED] sparse storage buffer snapshot %#llx + %#llx exceeds the %d-byte cap; using the zero buffer",
+            (unsigned long long)base, (unsigned long long)size, SPARSE_SBUF_COPY_CAP);
+        return 0;
+    }
+    if (size > V.props.limits.maxStorageBufferRange) return 0;
     uint64_t gen = nvn_sparse_gen(); unsigned k = (unsigned)((a >> 8) ^ (n >> 4)) % SPARSE_SBUF_CACHE;
     if (g_sparse_sbuf[k].a == base && g_sparse_sbuf[k].n == size && g_sparse_sbuf[k].epoch == g_set_epoch && g_sparse_sbuf[k].gen == gen) {
         *bi = (VkDescriptorBufferInfo){g_sparse_sbuf[k].buf, g_sparse_sbuf[k].off, size}; return 1;
