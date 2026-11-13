@@ -12,7 +12,7 @@ python -m porter port "<game folder>" --debug --install --package $PKG --device 
 
 - `--debug`: debuggable, debug info, and DM_CTL (a release build ignores it).
 - The installer starts the app once before pushing (Android gives the files folder the app's group only when the app creates it; a shell-made folder leaves pushed files unreadable: "FATAL open …/mods/main.fixups.tsv"), pushes only changed files, and stages paths over 260 characters through short hard links.
-- Each install **rewrites `env.txt`** (it keeps only its own `--romfs-at` row, the folder the app reads its RomFS from: docs/ARCHITECTURE.md): add debug lines after installing.
+- Each install **merges `env.txt`** with the device's (docs/ARCHITECTURE.md): the pack's rows win for their keys, your own debug rows and comments stay, and the installer's `--romfs-at` row is rewritten. A device whose manifest has no `env_keys` (a pack installed before the merge) gets the pack's env.txt alone, once. A debug row for a key the pack defines (`DM_LANG`, `DM_FPS_TARGET`…) is overwritten by the pack's.
 
 ```
 $ADB shell "am force-stop $PKG; echo DM_CTL=$F/ctl.txt >> $F/env.txt; : > $F/ctl.txt; am start -n $PKG/android.app.NativeActivity"

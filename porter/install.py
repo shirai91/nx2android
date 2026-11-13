@@ -47,33 +47,34 @@ def env_with_romfs(pack_env, folder):   # the pack's env.txt with the installer'
     return pack_env.rstrip('\n') + f'\n{ROMFS_MARK}: the game\'s RomFS is read from this folder (later installs keep it; --romfs-at app moves it into the files folder)\nDM_ROMFS={folder}\n'
 
 
-def manifest_env_keys(manifest_text):   # the env.txt keys the pack already on the device defined (its nx2a-data.json's env_keys, datapack.build), () when unknown (no manifest there, not JSON, no list)
+def manifest_env_keys(manifest_text):   # the env.txt keys the pack already on the device defined (its nx2a-data.json's env_keys, datapack.build), None when unknown (no manifest there, not JSON, no list: a pack from before env_keys)
     try: m = json.loads(manifest_text)
-    except ValueError: return ()
+    except ValueError: return None
     keys = m.get('env_keys') if isinstance(m, dict) else None
-    return [k for k in keys if isinstance(k, str)] if isinstance(keys, list) else ()
+    return [k for k in keys if isinstance(k, str)] if isinstance(keys, list) else None
 
 
-def merge_env(pack_env, device_env, romfs=None, prev_pack_keys=()):
+def merge_env(pack_env, device_env, romfs=None, prev_pack_keys=None):
     """The pack's env.txt merged with the device's, which an install writes in its place (the pack's own env.txt is not changed): the pack's rows win for the keys they
     define (the app applies the rows in order, the last wins), and the device's rows for keys the pack does not define are kept verbatim after them, in their order, comments
     and blank lines too (one the pack already has is not kept twice, so a reinstall changes nothing). prev_pack_keys: the keys the pack previously on the device defined
     (the manifest's env_keys) — a device row with one of those keys that this pack no longer defines was the pack's, not the player's (a diagnostic switch since removed), and
-    is dropped; () when unknown (no manifest on the device, or one from before env_keys): every row the pack does not define is then kept, as before. A DM_ROMFS row is
-    dropped only when it is the installer's own (the line before it is ROMFS_MARK) or when a new one replaces it (romfs: appended last; None: none, --romfs-at app) — a
-    hand-written one is the player's and is kept"""
+    is dropped. None when unknown (no manifest on the device, or one from before env_keys): nothing says which rows were the old pack's, so env.txt is replaced as before
+    this merge existed, the pack's rows alone; merging would keep the old pack's dropped rows for good (the new manifest does not list them). Either way the device's DM_ROMFS
+    row goes, with its mark: it is the installer's row by design (device_romfs reads only the marked one, and the RomFS folder is checked and granted only for it), and the new one
+    is appended last (romfs; None: none, --romfs-at app)"""
+    if prev_pack_keys is None: return env_with_romfs(pack_env, romfs) if romfs else pack_env
     pack_lines = pack_env.splitlines()
     keys = {k for ln in pack_lines if (k := datapack.env_key(ln)) is not None}
     have = set(pack_lines)
     prev_keys = set(prev_pack_keys)
-    kept, prev = [], ''
+    kept = []
     for ln in device_env.splitlines():
         k = datapack.env_key(ln)
         drop = ln.startswith(ROMFS_MARK)   # the installer's comment goes with its row
-        if k is not None and (k in keys or k in prev_keys or (k == 'DM_ROMFS' and (prev.startswith(ROMFS_MARK) or romfs is not None))): drop = True
+        if k is not None and (k in keys or k in prev_keys or k == 'DM_ROMFS'): drop = True
         elif k is None and ln in have: drop = True   # a comment or blank line the pack already has
         if not drop: kept.append(ln)
-        prev = ln
     out = pack_env.rstrip('\n') + '\n' + ('\n'.join(kept) + '\n' if kept else '')
     return env_with_romfs(out, romfs) if romfs else out
 
