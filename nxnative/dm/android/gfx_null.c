@@ -122,3 +122,8 @@ void mtl_read_texels(const tex_t *t, unsigned level, unsigned layer0, const NVNc
     if (r && dst) for (int z = 0; z < (r->depth ? r->depth : 1); z++) for (int y = 0; y < r->height; y++) memset(dst + (size_t)z * img + (size_t)y * row, 0, row);
 }
 
+
+// ---------------- the OpenGL ES path's window images (gl_android.c): no Vulkan here, so no image; a GL game's frames are then dropped, as nothing is shown anyway ----------------
+struct vkimg; struct AHardwareBuffer;
+struct vkimg *vk_image_from_ahb(struct AHardwareBuffer *ahb, uint32_t w, uint32_t h) { (void)ahb; (void)w; (void)h; return NULL; }
+uint64_t vk_present_vkimg(struct vkimg *im, double period) { (void)im; (void)period; return 0; }

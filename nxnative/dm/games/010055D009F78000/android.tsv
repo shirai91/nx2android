@@ -1,0 +1,17 @@
+# Fire Emblem: Three Houses 1.2.0 (update v327680): Koei Tecmo's KTGL on NVN, SDK 6.5.0; 1,380 shaders, all translated (9 of them compiled by the game at run time with its own GLSLC:
+# porter captures them by booting the game headless on the Android device, the GLSLC capture stage; on the Mac the NSP script does it in the Mac host).
+# Tested 2026-11-13 on the AYN Odin 2 (Snapdragon 8 Gen 2, Adreno 740) with two Turnip builds (vulkan.ad07xx.so; MrPurple's, which halves the GPU time: 7.7 against 16 ms a frame):
+# boot, title, new game menus, the opening movies, the Sothis scene, the form picker and its scene with both forms, the prologue battle and its combat (played by hand by the user),
+# a save. 30 fps by default (the game's own: frame time p50 33.3 ms, 0 of 300 dropped, process CPU 37% of one core, GPU 10 ms with both forms on screen); with porter port --fps60 the CUTS_FPS60
+# give 60 (frame p50 16.9 ms, 1-2 of 300 dropped, CPU 45%, GPU 7.4 ms in the same scene, measured before the male form was drawn).
+# env DM_VK_X_FENCES=1: with Turnip a submission that signals a timeline semaphore blocked in vkQueueSubmit for about a frame (13.9-17.5 ms) and 60 fps fell to 40-45; with the fence ring
+#   the submit takes 0.05 ms (no effect at 30 fps beyond freeing the render thread).
+# env DM_VK_POOL_INNERMOST=1: the game's loader makes small memory pools inside its 1.5 GB resource pool and loads models into them; buffer lookups returned the outer pool, whose GPU buffer
+#   kept stale pages there, so the male Byleth was never drawn (every triangle at one point). The innermost pool's buffer holds the pages (gfx_vk_core.c vk_pool_of).
+# Not checked: the monastery, later chapters, DLC, a controller by hand, the device's own Qualcomm driver at length.
+status	playable
+tested	1.2.0 AYN Odin 2 (Adreno 740, Turnip)
+package	org.nx2a.fireemblemthreehouses
+orientation	landscape
+env	DM_VK_X_FENCES=1
+env	DM_VK_POOL_INNERMOST=1
