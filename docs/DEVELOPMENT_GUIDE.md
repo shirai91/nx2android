@@ -121,6 +121,13 @@ axis preservation, not game recognition or device behavior.
 
 ## Tests
 
+`test_nvn_sampler_cache` exercises the production sampler initializer, finalizer,
+comparison and object layout. It checks that all four formerly skipped filter/wrap
+fields participate in an opaque-object CRC, preserves guard bytes beyond the
+smallest public object, and models hash lookup followed by semantic comparison:
+10,000 alternating requests must retain two entries. Its C harness can also run
+natively on Android; the cache model is separate from gameplay validation.
+
 ```
 python -m unittest discover tests
 ```

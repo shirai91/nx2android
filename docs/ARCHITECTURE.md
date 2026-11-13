@@ -60,6 +60,8 @@ Copied pools can opt into host-cached memory with `DM_VK_POOL_CACHED=1` (off by 
 
 Vulkan indirect compute dispatches copy their three GPU-written group counts into submission scratch memory in command order. A shader that reads c0 gets a private driver segment, outside the immutable segment cache, with the counts at `c0 + 0x200`; the dispatch reads that same record. Without c0, only a 12-byte record is allocated. Argument records may cross chunks of the same pool, with each chunk's buffer offset preserved. All words are validated before any argument copy, and a transfer barrier makes the record visible to both uniform reads and indirect dispatch. Scratch storage is retained until the submission completes. Direct compute dispatches and other driver segments retain their existing content caching.
 
+Opaque NVN sampler objects keep all sampler parameters after an eight-byte header, within the smallest public object's storage. Engines may hash the bytes after that header before calling `SamplerCompare`. Putting filtering or wrap parameters in the skipped header makes different sampler states collide, defeats cache reuse and can exhaust the game's descriptor pool. The builder, initializer, comparison, getters and both graphics backends share the same parameter structure; this layout rule does not change filtering defaults.
+
 ## Game profiles on Android
 
 A profile is offered for Android when it has an `android.tsv`; the profiles without one (52 of the 54 today, upstream's iOS games) show as "ios only": an experimental port can still try them. `android.tsv` holds, one `key<TAB>value` row each:
