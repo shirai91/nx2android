@@ -62,6 +62,31 @@ class HeapsShaders(unittest.TestCase):
                 d = pak(folder('', [entry('a', pos, size, wide)]), b'x')
                 self.assertIsNone(self.s.heaps_pak_files(io.BytesIO(d)))
 
+    def test_wide_member_uses_real_file_end_not_signed_data_size(self):
+        offset = (1 << 31) + 123
+        header = pak(folder('', [entry('shaders.cache.nx', offset, 7, True)]), b'')
+        class LargeArchive(io.BytesIO):
+            def __init__(self, data, end):
+                super().__init__(data)
+                self.end = end
+            def seek(self, offset, whence=os.SEEK_SET):
+                if whence == os.SEEK_END:
+                    return super().seek(self.end + offset)
+                return super().seek(offset, whence)
+        end = len(header) + offset + 7
+        for hint in (-2147483648, -1, 0, 2147483647):
+            data = bytearray(header)
+            struct.pack_into('<i', data, 8, hint)
+            with self.subTest(data_size_hint=hint):
+                self.assertEqual(self.s.heaps_pak_files(LargeArchive(data, end)),
+                                 [('/shaders.cache.nx', len(header) + offset, 7)])
+                self.assertIsNone(self.s.heaps_pak_files(LargeArchive(data, end - 1)))
+
+    def test_data_size_hint_cannot_reject_a_bounded_member(self):
+        data = bytearray(pak(folder('', [entry('a', 0, 1)]), b'x'))
+        struct.pack_into('<i', data, 8, 2147483647)
+        self.assertEqual(self.s.heaps_pak_files(io.BytesIO(data)), [('/a', len(data) - 1, 1)])
+
     def test_each_cache_comment_uses_the_real_decoder(self):
         found = self.s.heaps_shaders(self.cache + b'GLSL without a binary\n' + self.cache, '/shaders.cache.nx')
         self.assertEqual([x[1:] for x in found], [('cs', self.ctl, self.code)] * 2)

@@ -1365,10 +1365,10 @@ def heaps_pak_files(f):
     An entry: u8 name length, name, u8 flags; a folder (bit 0) has i32 child count and its children, a file has its position in the data (f64 with bit 1, else i32), i32 size, i32 checksum"""
     head = f.read(12)
     if len(head) < 12 or head[:3] != b'PAK' or head[3] > 1: return None
-    size, dsize = struct.unpack_from('<ii', head, 4)
-    if not 12 < size <= 1 << 28 or dsize < 0: return None
+    size, _dsize = struct.unpack_from('<ii', head, 4)   # signed data size is only a hint; wide offsets can exceed it
+    if not 12 < size <= 1 << 28: return None
     f.seek(0, os.SEEK_END); end = f.tell(); f.seek(12)
-    if size + dsize > end: return None
+    if size > end: return None
     h = f.read(size - 12); out = []
     if len(h) != size - 12: return None
     def entry(p, path):
@@ -1383,12 +1383,12 @@ def heaps_pak_files(f):
         pos = struct.unpack_from('<d', h, p)[0] if fl & 2 else struct.unpack_from('<i', h, p)[0]; p += 8 if fl & 2 else 4
         n, _ = struct.unpack_from('<iI', h, p)
         offset = int(pos)   # rejects NaN/infinity before seeking
-        if offset != pos or offset < 0 or n < 0 or offset + n > dsize: raise ValueError('invalid file range')
+        if offset != pos or offset < 0 or n < 0 or size + offset + n > end: raise ValueError('invalid file range')
         out.append((path, size + offset, n))
         return p + 8
-    try: end = entry(64 if head[3] else 0, '')
+    try: header_end = entry(64 if head[3] else 0, '')
     except (IndexError, struct.error, ValueError, OverflowError, RecursionError): return None
-    return out if h[end:end + 4] == b'DATA' else None
+    return out if h[header_end:header_end + 4] == b'DATA' else None
 
 def heaps_shaders(d, label):
     """Heaps' hxsl.CacheFile for the Switch (Dead Cells' shaders.cache.nx): a table of programs, then each stage's GLSL; a GLSL that was compiled ends with a comment holding the base64 of its
