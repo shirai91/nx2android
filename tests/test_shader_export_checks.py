@@ -49,7 +49,7 @@ class ExportChecks(unittest.TestCase):
         self.report = self.root / 'report.json'; self.stage = 'cs'; self.calls = 0
         self.behavior = 'ok'; self.reflect = True; self.second_shader = False; self.bad_resource = None
         self.jobs = 1; self.bad_key = None; self.log = io.StringIO(); self.bindings = []
-        self.shader_count = 0; self.extra_spv = b''; self.spv_override = None
+        self.shader_count = 0; self.extra_spv = b''; self.spv_override = None; self.overrides = {}
         (self.root / 'pkg').mkdir()
 
     def translate(self, argv, **kwargs):
@@ -80,14 +80,14 @@ class ExportChecks(unittest.TestCase):
         try: products = importlib.import_module('shader_products')
         except ModuleNotFoundError: products = None
         numeric = {}
-        for name in ('spv_half', 'spv_precise', 'spv_texture_offsets'):
+        for name in ('spv_half', 'spv_precise', 'spv_texture_offsets', 'spv_pool', 'spv_warp'):
             try: numeric[name] = importlib.import_module(name)
             except ModuleNotFoundError: numeric[name] = None
         env = dict(**numeric, collections=collections, cf=cf, os=os, json=json, struct=struct,
                    tempfile=tempfile, subprocess=subprocess, dmsv=dmsv, Path=Path, re=re,
                    shader_products=products, GAME=game, MAP=str(table), XLATE_DLL='translator.dll',
                    a=SimpleNamespace(pkg=str(self.root/'pkg'), out=str(self.out), capture=None, keys='',
-                                     jobs=self.jobs, dotnet='dotnet', zstd=0, report=str(self.report)),
+                                     jobs=self.jobs, dotnet='dotnet', zstd=0, report=str(self.report), spirv_opt=None),
                    STAGES={'vs': 0, 'cs': 5}, kinds_all=collections.Counter(),
                    captured=lambda _: {}, records=lambda _: [b'fixture'],
                    job_for=lambda key, stage, rec, w: ({'key': key, 'attr': {}}, b''),
@@ -96,8 +96,9 @@ class ExportChecks(unittest.TestCase):
                    refl_bin=lambda cl,c1,hdr: struct.pack('<5I', 0, 0, *hdr),
                    classify=lambda *args: None)
         source = TOOLS / 'shader_vk.py'; tree = ast.parse(source.read_text())
-        nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in ('main', 'remap_handles')]
+        nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in ('main', 'lower_resource_pools', 'remap_handles')]
         exec(compile(ast.Module(body=nodes, type_ignores=[]), str(source), 'exec'), env)
+        env.update(self.overrides)
         with mock.patch.dict(os.environ, {'WORK': str(self.root)}), mock.patch.object(subprocess, 'run', side_effect=self.translate), contextlib.redirect_stdout(self.log):
             env['main']()
 
@@ -109,6 +110,38 @@ class ExportChecks(unittest.TestCase):
         with dmsv.Bundle(self.out) as bundle: exported=bytes(bundle.spv(bundle.entries[0]))
         result=subprocess.run(['spirv-val','--target-env','vulkan1.1','-'],input=exported,capture_output=True)
         self.assertEqual(result.returncode,0,result.stderr.decode())
+
+    @unittest.skipUnless(shutil.which('spirv-as') and shutil.which('spirv-val'), 'requires SPIR-V tools')
+    def test_compute_warp_reaches_published_bundle(self):
+        # Independent assembly: a shuffle from lane31 must become a logical32 exchange.
+        source = """OpCapability Shader
+OpCapability GroupNonUniformShuffle
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %main "main" %lane
+OpExecutionMode %main LocalSize 64 1 1
+OpDecorate %lane BuiltIn SubgroupLocalInvocationId
+%void = OpTypeVoid
+%uint = OpTypeInt 32 0
+%fn = OpTypeFunction %void
+%input = OpTypePointer Input %uint
+%lane = OpVariable %input Input
+%scope = OpConstant %uint 3
+%last = OpConstant %uint 31
+%main = OpFunction %void None %fn
+%entry = OpLabel
+%id = OpLoad %uint %lane
+%value = OpGroupNonUniformShuffle %uint %scope %id %last
+OpReturn
+OpFunctionEnd
+"""
+        raw = subprocess.check_output(['spirv-as', '--target-env', 'vulkan1.1', '-', '-o', '-'], input=source.encode())
+        with mock.patch(__name__ + '.module', return_value=raw): self.run_export()
+        with dmsv.Bundle(self.out) as bundle: exported = bytes(bundle.spv(bundle.entries[0]))
+        from spv_module import decode, opcode
+        ops = list(map(opcode, decode(exported)[1]))
+        self.assertNotIn(345, ops)
+        self.assertEqual(ops.count(224), 2)
+        subprocess.run(['spirv-val', '--target-env', 'vulkan1.1', '-'], input=exported, check=True)
 
     def test_numeric_failure_omits_only_affected_shader(self):
         self.second_shader = True
@@ -255,6 +288,17 @@ void main(){d.smallest=min(d.a.x,d.a.y);d.packed=packHalf2x16(d.a);}
             self.assertEqual(struct.unpack_from('<I', spv, 12)[0], 36)
         translated = next(self.root.glob('shvk_*/0000000000000001.spv'))
         self.assertEqual(translated.read_bytes(), self.spv_override)
+
+    def test_file_backed_export_keeps_pool_lowering(self):
+        # The bundle reads modules back from disk: the module the pool lowering
+        # returns must be the one written, not the translator's file.
+        lowered = module(self.stage) + struct.pack('<I', 1 << 16)   # one OpNop
+        self.overrides['lower_resource_pools'] = lambda spv, cl: (lowered, cl)
+        self.run_export()
+        with dmsv.Bundle(self.out) as b:
+            self.assertEqual(b.spv(b.entries[0]), lowered)
+        translated = next(self.root.glob('shvk_*/0000000000000001.spv'))
+        self.assertEqual(translated.read_bytes(), module(self.stage))
 
 
 class ProductValidation(unittest.TestCase):

@@ -4,6 +4,7 @@ Source: nxnative 1f01e28c, dm/android/tools/spv_capture.py.
 Geometry/output-capture methods are deliberately not part of this port.
 """
 import collections
+import struct
 from spv_module import decode, opcode
 
 
@@ -53,3 +54,17 @@ class Module:
 
     def decorate(self, key, decoration, *args):
         self.annotations.append(instruction(71, key, decoration, *args))
+
+    def aggregate(self, op, *args):
+        # Aggregates own their layout decorations; do not reuse an existing
+        # array or block that may carry a different stride or member layout.
+        key = self.ident(); value = instruction(op, key, *args)
+        self.types[key] = value; self.declarations.append(value)
+        return key
+
+    def variable(self, ty, storage, name=None):
+        key = self.ident(); self.declarations.append(instruction(59, self.ty(32, storage, ty), key, storage))
+        if name:
+            data = name.encode() + b'\0'; data += b'\0' * (-len(data) % 4)
+            self.names.append(instruction(5, key, *struct.unpack(f'<{len(data) // 4}I', data)))
+        return key
