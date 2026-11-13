@@ -1,0 +1,2 @@
+Source: https://github.com/nothings/stb `stb_image.h` at commit 9f755b6 (version 2.32), unmodified. SHA-256 of the file as fetched: `deb4f18c9ca21b751a1323019031c94c0bf5ca1d2929ef5913cc56f00aab6e91`. License in LICENSE (MIT or public domain, your choice; the same text ends the header).
+Use: the host decodes the JPEGs of `nn::image::JpegDecoder` with it (`dm/host/hle_image.c`, `STBI_ONLY_JPEG`). The FLIP tool keeps its own older copy in `flip/tool/`.

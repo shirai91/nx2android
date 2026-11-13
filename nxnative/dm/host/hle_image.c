@@ -1,6 +1,6 @@
 // nn::image::JpegDecoder (Burnout Paradise Remastered, SDK 9): on the device the game decodes its loading-screen JPEG through this class (main+0x410b0c..0x410b54: ctor, SetImageData, SetPixelFormat(0), Analyze, GetAnalyzedDimension, Decode(dst, 0x40000, 4, work, 0x40000)).
 // In the port the SDK's own Analyze fails: it forwards through a function-pointer table thunk (sdk+0x39398 bl 0x521320 -> [0x11d8d88] -> 0x520680 -> [0x11d8740]) whose entries the runtime never fills, so the helper returns an error, Analyze leaves the status at 1 (sdk+0x3939c: cbz w0, ... else ret with status unchanged), and Decode then hits its assert on the status — sdk+0x3948c/0x39494: "ldr w9,[x0,#8]; cmp w9,#1; b.le <nn::diag::Abort>" — which is the observed Break at sdk+0xfc4d0 with the game's return address main+0x410b58.
-// Host: decode with stb_image (third_party/flip/tool/stb_image.h, 2.23 (see third_party/README.md); GetAnalyzedDimension is the SDK's own getter, "ldr x0,[x0,#0x28]", and is not taken over). The guest object keeps the SDK's layout, only the host keeps extra state (objmap, keyed by the game's decoder pointer, like hle_codec's software Opus state):
+// Host: decode with stb_image (third_party/stb_image/; GetAnalyzedDimension is the SDK's own getter, "ldr x0,[x0,#0x28]", and is not taken over). The guest object keeps the SDK's layout, only the host keeps extra state (objmap, keyed by the game's decoder pointer, like hle_codec's software Opus state):
 //   +0x00 vtable (ctor stores _ZTV+0x10: sdk+0x392bc "add x8,x8,#0x10; str x8,[x0]"), +0x08 u32 status (0 unregistered / 1 registered / 2 analyzed),
 //   +0x10 image ptr, +0x18 image size (SetImageData: "stp x1,x2,[x0,#0x10]"), +0x20 u32 resolution denominator (ctor stores the u64 1 there), +0x24 u32 pixel format,
 //   +0x28 u64 analyzed dimension = width | height<<32 (Analyze: "stp x9,x8,[x19,#0x28]"; GetAnalyzedDimension: "ldr x0,[x0,#0x28]" — a { s32 width; s32 height; } returned packed in x0),
@@ -10,7 +10,7 @@
 
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ONLY_JPEG
-#include "../third_party/flip/tool/stb_image.h"
+#include "../third_party/stb_image/stb_image.h"
 #define JDEC_MAX_RGBA (256ull << 20)   // the largest RGBA decode the host makes for a guest
 
 // The game's JpegDecoder object, overlaid on the guest memory (the sdk's own field use above)
