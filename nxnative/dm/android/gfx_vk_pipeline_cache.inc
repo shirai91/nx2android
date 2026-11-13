@@ -7,7 +7,7 @@
 #include <stddef.h>
 #include <fcntl.h>
 
-enum { PCACHE_ABI=1, PCACHE_MAX_BYTES=256<<20 };
+enum { PCACHE_ABI=2, PCACHE_MAX_BYTES=256<<20 };
 typedef struct {
     char magic[8];
     uint32_t schema,abi,vendor,device,driver,api;
