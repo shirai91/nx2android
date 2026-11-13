@@ -1,0 +1,9 @@
+# Absolum on Android: source-audited candidate, not device tested.
+# Audited build: 1.1.1 (v393216); compatibility evidence and test plan: ANDROID.md.
+status	experimental
+package	org.nx2a.t0100a83022a22000
+orientation	landscape
+requires	bcn
+setting	docked=1
+setting	overlay=1
+setting	rumble=1
