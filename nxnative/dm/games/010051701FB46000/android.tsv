@@ -1,0 +1,9 @@
+# Monster Train 2 on Android: source-audited candidate, not device tested.
+# Audited build: 1.1.1 (v131072); compatibility evidence and test plan: ANDROID.md.
+status	experimental
+package	org.nx2a.t010051701fb46000
+orientation	landscape
+requires	bcn
+setting	docked=1
+setting	overlay=1
+setting	rumble=1
