@@ -82,7 +82,7 @@ def function(source, name):
 
 class GameMode(unittest.TestCase):
     def compile_run(self, source, includes=()):
-        cc = shutil.which('clang') or shutil.which('cc')
+        cc = shutil.which('cc') or shutil.which('clang')
         if not cc: self.skipTest('C compiler required')
         with tempfile.TemporaryDirectory(prefix='nx2a_game_mode_') as temp:
             c = Path(temp) / 'test.c'; exe = Path(temp) / 'test'; c.write_text(source, encoding='utf-8')
@@ -169,26 +169,60 @@ class GameMode(unittest.TestCase):
 static int setenv(const char *k, const char *v, int o) { char s[256]; (void)o; snprintf(s, sizeof s, "%s=%s", k, v); return _putenv(s); }
 static int unsetenv(const char *k) { char s[256]; snprintf(s, sizeof s, "%s=", k); return _putenv(s); }
 #endif
+static int allow_env, env_reads;
+static char *policy_getenv(const char *key) {
+    assert(allow_env && "environment read outside presenting-thread sync");
+    env_reads++;
+    return getenv(key);
+}
+#define getenv policy_getenv
 ''' + code + r'''
+#undef getenv
+static void sync_frame(void) {
+    allow_env=1; game_mode_sync(); allow_env=0;
+}
+static void refresh_overrides(void) {
+    int before=env_reads;
+    for (int i=0;i<30;i++) sync_frame();
+    assert(env_reads-before==2);
+}
 int main(void) {
     unsetenv("DM_ADAPTIVE_FPS"); unsetenv("DM_FPS_PIN");
+    // Acquiring a frame may run on the guest thread, before the first present.
     g_step=2; assert(dm_present_period_adapt(16666667)==33333333);
-    dm_perf_game_mode(2); assert(dm_present_period_adapt(16666667)==16666667);
-    assert(dm_present_period_adapt(33333333)==33333333); assert(dm_present_period_adapt(0)==0);
+    dm_perf_game_mode(2); sync_frame();
+    assert(env_reads==2 && dm_present_period_adapt(16666667)==16666667);
+    assert(dm_present_period_adapt(33333333)==33333333 && dm_present_period_adapt(0)==0);
     assert(!adaptive_enabled());
-    for (int i=0;i<100;i++) adapt_frame(50000000, 9000000000LL+i);
-    assert(g_step==0 && g_nwork==0);
-    dm_perf_game_mode(1); game_mode_sync(); assert(dm_present_period_adapt(16666667)==16666667); assert(adaptive_enabled());
+    for (int i=0;i<29;i++) sync_frame();
+    assert(env_reads==2);
+    sync_frame(); assert(env_reads==4);
+    g_nwork=7; g_step=2;
+    dm_perf_game_mode(1); sync_frame();
+    assert(env_reads==4 && g_nwork==0 && g_step==0 && adaptive_enabled());
     g_step=1; assert(dm_present_period_adapt(16666667)==25000000);
-    adapt_frame(50000000, 9000000000LL); assert(g_nwork==1);
-    dm_perf_game_mode(99); assert(adaptive_enabled());
-    setenv("DM_ADAPTIVE_FPS","1",1); g_adapt=-1; dm_perf_game_mode(2); game_mode_sync();
-    assert(adaptive_enabled()); g_step=2; assert(dm_present_period_adapt(16666667)==33333333);
-    setenv("DM_ADAPTIVE_FPS","0",1); g_adapt=-1; dm_perf_game_mode(1);
-    assert(dm_present_period_adapt(16666667)==16666667); assert(!adaptive_enabled());
-    unsetenv("DM_ADAPTIVE_FPS"); setenv("DM_FPS_PIN","40",1); g_adapt=-1; dm_perf_game_mode(2);
+    // Mode changes use the cached overrides immediately, between environment polls.
+    dm_perf_game_mode(2); sync_frame(); assert(!adaptive_enabled() && env_reads==4);
+    for (int i=0;i<100;i++) { sync_frame(); adapt_frame(50000000, 9000000000LL+i); }
+    assert(g_step==0 && g_nwork==0);
+    setenv("DM_ADAPTIVE_FPS","1",1); refresh_overrides();
     assert(adaptive_enabled());
-    setenv("DM_FPS_PIN","garbage",1); assert(!adaptive_enabled());
+    g_step=2; assert(dm_present_period_adapt(16666667)==33333333);
+    setenv("DM_ADAPTIVE_FPS","0",1); refresh_overrides();
+    assert(!adaptive_enabled() && dm_present_period_adapt(16666667)==16666667);
+    unsetenv("DM_ADAPTIVE_FPS");
+    for (int pin=0;pin<3;pin++) {
+        const char *values[]={"60","40","30"};
+        const uint64_t periods[]={16666667,25000000,33333333};
+        setenv("DM_FPS_PIN",values[pin],1); refresh_overrides();
+        assert(adaptive_enabled());
+        adapt_frame(50000000, 9000000000LL);
+        assert(dm_present_period_adapt(16666667)==periods[pin]);
+    }
+    setenv("DM_FPS_PIN","garbage",1); refresh_overrides();
+    assert(!adaptive_enabled());
+    dm_perf_game_mode(99); sync_frame(); assert(adaptive_enabled());
+
     return 0;
 }
 ''')

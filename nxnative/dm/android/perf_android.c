@@ -198,26 +198,30 @@ static int64_t g_work_start;
 // (60 → 40 → 30 fps; 40 asks the display for 120 Hz), and back when they fit the shorter one with room; a steady rate instead of alternating
 // one-vsync and two-vsync frames. DM_ADAPTIVE_FPS=0 keeps the game's own period.
 static const int64_t STEPS[] = {16666667, 25000000, 33333333};   // 60, 40, 30 fps
-static int g_step = 0, g_adapt = -1; static int64_t g_work_hist[64]; static int g_nwork;
+static int g_step = 0; static _Atomic int g_adapt = 1; static int64_t g_work_hist[64]; static int g_nwork;
 static int64_t g_last_change, g_last_up, g_up_hold = 2000000000; static int g_ok_frames; static uint64_t g_game_period;   // the period the game asks for, before the adaptive step
 static int g_nshown;
-static _Atomic int g_android_game_mode;
+static _Atomic int g_android_game_mode, g_game_mode_performance;
+static int g_fps_pin = -1;
 void dm_perf_game_mode(int mode) { atomic_store(&g_android_game_mode, mode); }   // main-thread onResume; policy changes stay on the presenting thread
-static int game_mode_performance(void) {
-    const char *e = getenv("DM_ADAPTIVE_FPS"); int explicit_adapt = e && *e;
-    e = getenv("DM_FPS_PIN"); int pin = e ? atoi(e) : 0;
-    // #294: the selected Performance mode keeps the game's own period, unless a profile/player explicitly chose a pacing policy.
-    return atomic_load(&g_android_game_mode) == 2 && !explicit_adapt && pin != 30 && pin != 40 && pin != 60;
-}
 static int adaptive_enabled(void) {
-    if (g_adapt < 0) { const char *e = getenv("DM_ADAPTIVE_FPS"); g_adapt = !(e && !atoi(e)); }
-    return g_adapt && !game_mode_performance();
+    return atomic_load(&g_adapt) && !atomic_load(&g_game_mode_performance);
 }
-static void game_mode_sync(void) {   // presenting thread only: acquiring a frame must not reset the history while it is being written
-    static int performance; int want = game_mode_performance();
-    if (want != performance) {
-        performance = want; g_step = 0; g_nwork = g_nshown = g_ok_frames = 0;
+static void game_mode_sync(void) {   // presenting thread only: publish cached policy to guest acquire without environment reads there
+    static unsigned frames; static int explicit_override;
+    if (frames++ % 30 == 0) {
+        const char *e = getenv("DM_ADAPTIVE_FPS");
+        explicit_override = e && *e;
+        atomic_store(&g_adapt, !(e && !atoi(e)));
+        e = getenv("DM_FPS_PIN"); int v = e ? atoi(e) : 0;
+        int pin = v == 60 ? 0 : v == 40 ? 1 : v == 30 ? 2 : -1;
+        if (pin != g_fps_pin) { g_fps_pin = pin; LOG("[perf] adaptive frame rate %s", pin < 0 ? "free again" : "pinned"); }
+    }
+    int want = atomic_load(&g_android_game_mode) == 2 && !explicit_override && g_fps_pin < 0;
+    if (want != atomic_load(&g_game_mode_performance)) {
+        g_step = 0; g_nwork = g_nshown = g_ok_frames = 0;
         g_last_change = g_last_up = 0; g_up_hold = 2000000000;
+        atomic_store(&g_game_mode_performance, want);
         LOG("[perf] Android Game Mode: %s", want ? "performance (game's own period)" : "default pacing policy");
     }
 }
@@ -246,12 +250,7 @@ uint64_t dm_present_period_adapt(uint64_t period) {
     int64_t want = STEPS[g_step];
     return (uint64_t)want > period ? (uint64_t)want : period;   // never faster than the game asks
 }
-static int fps_pin(void) {   // a DM_CTL "env DM_FPS_PIN=40" line holds that step (60, 40 or 30; anything else lets the rate adapt again): tests
-    static unsigned k; static int pin = -1; if (k++ % 30) return pin;
-    const char *e = getenv("DM_FPS_PIN"); int v = e ? atoi(e) : 0, st = v == 60 ? 0 : v == 40 ? 1 : v == 30 ? 2 : -1;
-    if (st != pin) { pin = st; LOG("[perf] adaptive frame rate %s", st < 0 ? "free again" : "pinned"); }
-    return pin;
-}
+static int fps_pin(void) { return g_fps_pin; }   // the presenting thread refreshes DM_FPS_PIN every 30 frames in game_mode_sync
 // The frame's replay and GPU time (gfx_vk_present.c, before dm_perf_frame): the rate is judged on the largest of them and the presenting thread's work. With the
 // replay on a thread of its own (DM_NVN_ASYNC) Xenoblade Chronicles 3's presenting thread worked ~8 ms a frame, the rate stepped up to 40 fps for frames
 // of ~24 ms GPU time, and the display's switch to 120 Hz and the missed frames made 80-550 ms frames
@@ -301,7 +300,6 @@ static int shown_late(void) {   // of the last 64 frames on screen, how many mis
     return m * 64 / n;
 }
 static void adapt_frame(int64_t work, int64_t now) {
-    game_mode_sync();
     if (!adaptive_enabled()) return;
     // A long frame in which the replay and the GPU did next to nothing is a load (a loading screen, the game reading files on its main thread), not a frame the
     // rate could fit: it is not judged. Hades II's room changes gave ~10 frames of 28-680 ms with 0.3-0.4 ms of GPU work, the rate stepped down to 40 fps,
