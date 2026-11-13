@@ -21,7 +21,12 @@ import android.view.Surface;
 import android.view.View;
 import android.view.ViewGroup;
 import android.media.AudioDeviceInfo;
+import android.media.AudioDeviceCallback;
 import android.media.AudioManager;
+import android.os.Handler;
+import android.os.Looper;
+import android.widget.ArrayAdapter;
+import android.widget.ListView;
 import java.util.ArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -36,6 +41,7 @@ public class ExternalActivity extends NativeActivity implements ExternalDisplay.
     private static native void externalSurface(Surface surface);
     private static native void externalInput(long buttons, int lx, int ly, int rx, int ry, boolean menu);
     private static native void externalAudio(int deviceId);
+    private static native int externalAudioSelected();
     private static native void externalHaptic();
     private static native boolean externalTouch(MotionEvent event);
     private static native boolean externalControllerKey(KeyEvent event);
@@ -46,6 +52,7 @@ public class ExternalActivity extends NativeActivity implements ExternalDisplay.
     private ExternalDisplay external;
     private View pad;
     private Dialog phonePad;
+    private AlertDialog audioDialog;
     private final ExecutorService audioExecutor = Executors.newSingleThreadExecutor();
 
     @Override protected void onCreate(Bundle state) {
@@ -76,6 +83,7 @@ public class ExternalActivity extends NativeActivity implements ExternalDisplay.
     @Override protected void onDestroy() {
         if (external != null) external.stop();
         if (phonePad != null) phonePad.dismiss();
+        if (audioDialog != null) audioDialog.dismiss();
         audioExecutor.shutdown();
         super.onDestroy();
     }
@@ -102,24 +110,43 @@ public class ExternalActivity extends NativeActivity implements ExternalDisplay.
         else if (pad instanceof OriginalPad) ((OriginalPad)pad).release();
     }
 
+    public void openAudioMenu() { runOnUiThread(this::showAudioMenu); }
     private void showAudioMenu() {
         AudioManager manager = (AudioManager)getSystemService(Context.AUDIO_SERVICE);
         if (manager == null) return;
+        if (audioDialog != null && audioDialog.isShowing()) return;
         ArrayList<String> names = new ArrayList<>(); ArrayList<Integer> ids = new ArrayList<>();
-        names.add("System default"); ids.add(0);
-        for (AudioDeviceInfo device : manager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)) {
-            int type = device.getType(); String name;
-            if (type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) name = "Phone speaker";
-            else if (type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO) name = "Bluetooth call · " + device.getProductName();
-            else if (type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP || type == AudioDeviceInfo.TYPE_BLE_HEADSET || type == AudioDeviceInfo.TYPE_BLE_SPEAKER) name = "Bluetooth media · " + device.getProductName();
-            else if (type == AudioDeviceInfo.TYPE_HDMI || type == AudioDeviceInfo.TYPE_HDMI_ARC || type == AudioDeviceInfo.TYPE_USB_DEVICE || type == AudioDeviceInfo.TYPE_USB_HEADSET) name = "External audio · " + device.getProductName();
-            else continue;
-            names.add(name); ids.add(device.getId());
-        }
+        ArrayAdapter<String> adapter = new ArrayAdapter<>(this, android.R.layout.simple_list_item_single_choice, names);
         AlertDialog dialog = new AlertDialog.Builder(this).setTitle("Audio output")
-            .setItems(names.toArray(new String[0]), (d, which) -> audioExecutor.execute(() -> externalAudio(ids.get(which))))
+            .setSingleChoiceItems(adapter, -1, (d, which) -> {
+                if (which < 0 || which >= ids.size()) return;
+                int id = ids.get(which); d.dismiss(); audioExecutor.execute(() -> externalAudio(id));
+            })
             .setNegativeButton("Cancel", null).create();
-        dialog.setOnShowListener(d -> dialog.getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND));
+        Runnable refresh = () -> {
+            if (!dialog.isShowing()) return;
+            ArrayList<String> updated = new ArrayList<>();
+            ids.clear(); updated.add("System default"); ids.add(0);
+            for (AudioDeviceInfo device : manager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)) {
+                String name = AudioChoices.name(device);
+                if (name != null) { updated.add(name); ids.add(device.getId()); }
+            }
+            adapter.clear(); adapter.addAll(updated);
+            ListView list = dialog.getListView(); list.clearChoices();
+            int selected = ids.indexOf(externalAudioSelected());
+            if (selected >= 0) list.setItemChecked(selected, true);
+        };
+        AudioDeviceCallback callback = new AudioDeviceCallback() {
+            @Override public void onAudioDevicesAdded(AudioDeviceInfo[] devices) { refresh.run(); }
+            @Override public void onAudioDevicesRemoved(AudioDeviceInfo[] devices) { refresh.run(); }
+        };
+        dialog.setOnShowListener(d -> {
+            dialog.getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+            refresh.run();
+            manager.registerAudioDeviceCallback(callback, new Handler(Looper.getMainLooper()));
+        });
+        dialog.setOnDismissListener(d -> { manager.unregisterAudioDeviceCallback(callback); if (audioDialog == dialog) audioDialog = null; });
+        audioDialog = dialog;
         dialog.show();
     }
 
@@ -129,7 +156,6 @@ public class ExternalActivity extends NativeActivity implements ExternalDisplay.
         private final OverlayTheme[] themes = new OverlayTheme[2];
         private final Bitmap[] atlases = new Bitmap[2];
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
-        private boolean audioPress;
         private int menuState = -1, rasterState = -2, rasterWidth, rasterHeight;
         private Bitmap menuRaster;
 
@@ -182,10 +208,6 @@ public class ExternalActivity extends NativeActivity implements ExternalDisplay.
                 sprite(canvas, theme, atlas, s, data, ctl, dx, dy);
             }
             if (edit) drawEditor(canvas, data, menu);
-            else {
-                paint.setAlpha(255); paint.setColor(Color.WHITE); paint.setTextAlign(Paint.Align.CENTER);
-                paint.setTextSize(getHeight() * .035f); canvas.drawText("Audio", getWidth() * .62f, getHeight() * .06f, paint);
-            }
             postInvalidateDelayed(33);
         }
         private Bitmap menuRaster(int state) {
@@ -200,13 +222,13 @@ public class ExternalActivity extends NativeActivity implements ExternalDisplay.
         }
         private void drawMenu(Canvas c, float[] data) {
             Bitmap bitmap = menuRaster(menuState); if (bitmap == null) return;
-            float W = getWidth(), H = getHeight(), scale = Math.min(data[1], .92f / (6 * .115f + 2 * .03f));
-            float w = Math.min(.95f * H * scale, W * .96f), h = (6 * .115f + 2 * .03f) * H * scale;
+            float W = getWidth(), H = getHeight(), scale = Math.min(data[1], .92f / (7 * .115f + 2 * .03f));
+            float w = Math.min(.95f * H * scale, W * .96f), h = (7 * .115f + 2 * .03f) * H * scale;
             paint.setAlpha(255); c.drawBitmap(bitmap, null, new RectF((W-w)/2, (H-h)/2, (W+w)/2, (H+h)/2), paint);
         }
         private void drawEditor(Canvas c, float[] data, int state) {
             Bitmap bitmap = menuRaster(state); if (bitmap == null) return;
-            float W = getWidth(), H = getHeight(), scale = Math.min(data[1], .92f / (6 * .115f + 2 * .03f));
+            float W = getWidth(), H = getHeight(), scale = Math.min(data[1], .92f / (7 * .115f + 2 * .03f));
             if ((state & 4) != 0) {
                 paint.setStyle(Paint.Style.STROKE); paint.setStrokeWidth(Math.max(1, H*.001f)); paint.setColor(Color.argb(51,255,255,255));
                 float step=H/20; for(float x=step;x<W;x+=step)c.drawLine(x,0,x,H,paint); for(float y=step;y<H;y+=step)c.drawLine(0,y,W,y,paint);
@@ -229,14 +251,11 @@ public class ExternalActivity extends NativeActivity implements ExternalDisplay.
             }
         }
         @Override public boolean onTouchEvent(MotionEvent event) {
-            int action=event.getActionMasked();
-            if (menuState < 0 && action==MotionEvent.ACTION_DOWN && event.getX() > getWidth()*.58f && event.getX() < getWidth()*.66f && event.getY() < getHeight()*.10f) { audioPress=true; return true; }
-            if (audioPress) { if (action==MotionEvent.ACTION_UP) { audioPress=false; showAudioMenu(); } else if (action==MotionEvent.ACTION_CANCEL) audioPress=false; return true; }
             boolean ok = externalTouch(event); invalidate(); return ok;
         }
         void release() {
             long now=android.os.SystemClock.uptimeMillis(); MotionEvent cancel=MotionEvent.obtain(now,now,MotionEvent.ACTION_CANCEL,0,0,0);
-            externalTouch(cancel); cancel.recycle(); audioPress=false;
+            externalTouch(cancel); cancel.recycle();
         }
     }
 
