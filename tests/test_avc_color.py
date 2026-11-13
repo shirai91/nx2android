@@ -216,6 +216,11 @@ int exercise(const int *frames, int n, const uint8_t *sps_data, const int *sps_l
         out, _ = self.run_frames([frame], parameter_sets=[sps(colour=False, full=True)])
         self.assert_pixel(out[0][:4], reference(128, 70, 190, 4, True))
 
+    def test_unspecified_sps_matrix_does_not_enable_decoder_default(self):
+        frame = (1, 1, 21, 2, 128, 70, 190, 1)
+        out, _ = self.run_frames([frame], parameter_sets=[sps(standard=99, full=True)])
+        self.assert_pixel(out[0][:4], reference(128, 70, 190, 4, True))
+
     def test_truncated_sps_cannot_enable_decoder_defaults(self):
         for timing in (False, True):
             tagged = sps(full=True, timing=timing)
