@@ -1,0 +1,9 @@
+# Taiko Risshiden V DX on Android: source-audited candidate, not device tested.
+# Audited build: 1.1.1 (v131072); compatibility evidence and test plan: ANDROID.md.
+status	experimental
+package	org.nx2a.t0100346017304000
+orientation	landscape
+requires	bcn
+setting	docked=0
+setting	overlay=0
+setting	rumble=1
