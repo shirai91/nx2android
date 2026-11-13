@@ -95,7 +95,7 @@ captures and translator. The new receipt format rebuilds existing ports once.
 
 | Stage | What | Output (in `<game folder>/<title ID>_build/`) |
 |---|---|---|
-| inputs | Find the base game, updates and DLC (NSP / XCI / NSZ / XCZ), match the profile, pick the version; check the game folder's drive has room (about twice the game files, NSZ / XCZ counted decompressed and once more for their NSP, less an earlier port's build folder) | |
+| inputs | Find the base game, updates and DLC (NSP / XCI / NSZ / XCZ files, regardless of extension case), match the profile, pick the version; check the game folder's drive has room (about twice the game files, NSZ / XCZ counted decompressed and once more for their NSP, less an earlier port's build folder) | |
 | decompress | Only with NSZ / XCZ files that a stage below will read (a reused extraction reads none): each becomes an NSP (an XCZ: an NSP of its secure partition), its NCZs expanded and encrypted again with the keys their section tables carry, every NCA checked against its SHA-256 name (`porter/dumps.py`). Deleted once the DLC are extracted, or when the port fails | `tmp/dumps/` (temporary) |
 | extract | `nx_extract` (built with the .NET SDK) | `extract/<version>/{ExeFS,RomFS}`, `aoc/` |
 | system data | Only for a profile with `sysdata` and a `--firmware` folder (the player's own system content files, `.nca`): `nx_extract --sysdata` writes each title's RomFS; without the folder the port says so in red and the host's stand-in is used | `sysdata/<title ID>/` |
