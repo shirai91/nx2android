@@ -49,6 +49,7 @@ static void menu_tab(int tab) { (void)tab; }
 static void ed_open(void) {}
 static void sp_open(void) {}
 static void save_export(void) {}
+static void menu_audio(void) {}
 static void menu_close(void) {}
 static void dm_overlay_redraw(void) {}
 ''' + visible + hit + menu + r'''

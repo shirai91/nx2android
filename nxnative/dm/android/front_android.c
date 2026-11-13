@@ -47,6 +47,8 @@ void front_screen_match(int fps) { (void)fps; }
 
 // ---------------- the app ----------------
 static ANativeActivity *g_act;
+static jmethodID g_audio_menu_method;
+int dm_menu_audio_available(void) { return g_audio_menu_method != NULL; }
 AAssetManager *dm_front_assets(void) { return g_act ? g_act->assetManager : NULL; }   // the APK's assets (overlay_theme.c: the gamepad's theme)
 static pthread_mutex_t g_win_mu = PTHREAD_MUTEX_INITIALIZER;
 static ANativeWindow *g_win, *g_external_win;
@@ -198,7 +200,9 @@ JNIEXPORT jboolean JNICALL Java_org_nx2a_ExternalActivity_externalTouch(JNIEnv *
 JNIEXPORT jboolean JNICALL Java_org_nx2a_ExternalActivity_externalControllerKey(JNIEnv *env, jclass cls, jobject event) { (void)cls; return external_event(env, event, 1, 0); }
 JNIEXPORT jboolean JNICALL Java_org_nx2a_ExternalActivity_externalControllerMotion(JNIEnv *env, jclass cls, jobject event) { (void)cls; return external_event(env, event, 0, 0); }
 void dm_audio_route_device(int32_t id);
+int32_t dm_aaudio_get_device(void);
 JNIEXPORT void JNICALL Java_org_nx2a_ExternalActivity_externalAudio(JNIEnv *env, jclass cls, jint id) { (void)env; (void)cls; dm_audio_route_device(id); }
+JNIEXPORT jint JNICALL Java_org_nx2a_ExternalActivity_externalAudioSelected(JNIEnv *env, jclass cls) { (void)env; (void)cls; return dm_aaudio_get_device(); }
 JNIEXPORT void JNICALL Java_org_nx2a_ExternalActivity_externalHaptic(JNIEnv *env, jclass cls) { (void)env; (void)cls; dm_haptics_android_tap(); }
 JNIEXPORT void JNICALL Java_org_nx2a_ExternalActivity_externalInput(JNIEnv *env, jclass cls, jlong buttons, jint lx, jint ly, jint rx, jint ry, jboolean menu) {
     (void)env; (void)cls;
@@ -498,6 +502,17 @@ static void menu_opacity(int v) {   // the slider: a new value is drawn at once 
 }
 static void menu_tab(int t) { t = (t % OVM_TABS + OVM_TABS) % OVM_TABS; if (atomic_exchange(&g_menu_tab, t) != t) dm_haptics_android_tap(); dm_overlay_redraw(); }
 static void ed_open(void); static void sp_open(void); static void save_export(void);
+static void menu_audio(void) {
+    if (!g_act || !g_act->vm || !g_act->clazz || !g_audio_menu_method) return;
+    JNIEnv *e = NULL; int attached = 0;
+    if ((*g_act->vm)->GetEnv(g_act->vm, (void **)&e, JNI_VERSION_1_6) != JNI_OK) {
+        if ((*g_act->vm)->AttachCurrentThread(g_act->vm, &e, NULL) != JNI_OK) return;
+        attached = 1;
+    }
+    (*e)->CallVoidMethod(e, g_act->clazz, g_audio_menu_method);
+    if ((*e)->ExceptionCheck(e)) { (*e)->ExceptionClear(e); LOG("[menu] audio selection is unavailable"); }
+    if (attached) (*g_act->vm)->DetachCurrentThread(g_act->vm);
+}
 static void menu_do(int item) {
     if (item == OVM_OVERLAY) { atomic_store(&g_set_overlay, !atomic_load(&g_set_overlay)); atomic_store(&g_overlay, 1); settings_save(); }
     else if (item == OVM_RUMBLE) { int on = !atomic_load(&g_set_rumble); atomic_store(&g_set_rumble, on); dm_haptics_android_set(on); settings_save(); }
@@ -509,6 +524,7 @@ static void menu_do(int item) {
     else if (item == OVM_OPACITY) return;   // (the slider is dragged, or stepped with left and right)
     else if (item == OVM_EXPORT) { if (atomic_load(&g_sv_st) == OVX_BUSY) return; save_export(); }
     else if (item == OVM_IMPORT) { dm_haptics_android_tap(); sp_open(); return; }
+    else if (item == OVM_AUDIO) { menu_audio(); }
     if (item >= 0 && item < OVM_N) dm_haptics_android_tap();
     if (item == OVM_RESUME) menu_close(); else dm_overlay_redraw();
 }
@@ -1229,6 +1245,11 @@ __attribute__((visibility("default"))) void ANativeActivity_onCreate(ANativeActi
     act->callbacks->onPause = on_pause; act->callbacks->onResume = on_resume; act->callbacks->onWindowFocusChanged = on_window_focus; act->callbacks->onDestroy = on_destroy;
     ANativeActivity_setWindowFlags(act, AWINDOW_FLAG_KEEP_SCREEN_ON | AWINDOW_FLAG_FULLSCREEN, 0);
     static int started; if (started++) return;   // a second onCreate (configuration change) keeps the running game
+    JNIEnv *env = act->env;
+    jclass activity_class = (*env)->GetObjectClass(env, act->clazz);
+    if (activity_class) g_audio_menu_method = (*env)->GetMethodID(env, activity_class, "openAudioMenu", "()V");
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+    if (activity_class) (*env)->DeleteLocalRef(env, activity_class);
     snprintf(g_root, sizeof g_root, "%s", act->externalDataPath ? act->externalDataPath : act->internalDataPath);
     char p[700];
     snprintf(p, sizeof p, "%s/log.txt", g_root); char prev[720]; snprintf(prev, sizeof prev, "%s/log.prev.txt", g_root); rename(p, prev);
