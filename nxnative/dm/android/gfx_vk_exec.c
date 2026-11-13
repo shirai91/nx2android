@@ -588,20 +588,17 @@ void vk_end_pass_land(void) { vk_end_pass(); if (vk_sub_open()) vk_ubd_land(vk_c
 static int pass_whole(VkRect2D r) { return !r.offset.x && !r.offset.y && r.extent.width >= S.pass_w && r.extent.height >= S.pass_h; }
 // Adreno 8xx and an empty colour slot 0 (DM_VK_SLOT0_FILL). A pass whose colour attachments start past slot 0 (slot 0 a null view, VK_ATTACHMENT_UNUSED in a render
 // pass) hung the GPU of an Adreno 830 and lost the device every frame: a OnePlus Pad 3 (driver 0x8032004a) whose pass bound a target in slot 5 with slots 0-4 empty, which a
-// later pass drew into as slot 0; a scratch target in slot 0 alone fixed it (droidplay-core 87bd41d62, the idea). Preventive here: no such hang is known on the Odin 3's
-// driver (512.800). Slot 0 of such a pass gets a scratch RGBA8 image at least the pass's size (one, grown when a pass is larger; the old ones stay: submissions in flight
-// name their views), loaded and stored DONT_CARE (on a tiler it never leaves tile memory), and the pipelines write nothing to it (prepare_draw: write mask 0 where
-// P_att[0] is the scratch). Single-sample, single-layer passes only. DM_VK_SLOT0_FILL=1 / 0 (start-up): on / off whatever the GPU; by default on for the Adreno 8xx
-// (named "Adreno (TM) 8nn" by Qualcomm's driver and by Turnip), off elsewhere
+// later pass drew into as slot 0; a scratch target in slot 0 alone fixed it (droidplay-core 87bd41d62, the idea). Not reproduced with nx2android: no such hang is known on
+// the Odin 3 (Adreno 830, Qualcomm's driver 512.800), so it is opt-in. Slot 0 of such a pass gets a scratch RGBA8 image at least the pass's size (one, grown when a pass
+// is larger; the one before goes to vk_defer_free_*, destroyed once the GPU is past the submissions that name it), loaded and stored DONT_CARE, a transient attachment
+// in lazily allocated memory where the device has such a type (on a tiler it never leaves tile memory), and the pipelines write nothing to it (prepare_draw: write
+// mask 0 where P_att[0] is the scratch). Single-sample, single-layer passes only. DM_VK_SLOT0_FILL=1 (start-up): on; off by default
 static vkimg_t g_s0_image; static VkImageView g_s0_view; static uint64_t g_s0_passes; static int g_s0_failed;
-static int adreno_model(const VkPhysicalDeviceProperties *p) {   // 830 for "Adreno (TM) 830" (Qualcomm's vendor ID), 0 for any other GPU
-    const char *n = p->vendorID == 0x5143 ? strstr(p->deviceName, "Adreno (TM) ") : NULL; return n ? atoi(n + 12) : 0;
-}
 static int slot0_fill_on(void) {
     static int on = -1;
-    if (on < 0) { const char *e = getenv("DM_VK_SLOT0_FILL"); int m = adreno_model(&V.props);
-        on = e && *e ? atoi(e) != 0 : m >= 800 && m < 900;
-        VKLOG("empty colour slot 0: %s (DM_VK_SLOT0_FILL%s; %s)", on ? "a scratch target there in multi-target passes" : "left empty", e && *e ? "" : " default", V.props.deviceName); }
+    if (on < 0) { const char *e = getenv("DM_VK_SLOT0_FILL");
+        on = e && *e && atoi(e) != 0;
+        VKLOG("empty colour slot 0: %s (DM_VK_SLOT0_FILL%s; %s)", on ? "a scratch target there in multi-target passes" : "left empty", e && *e ? "" : " default off", V.props.deviceName); }
     return on;
 }
 // whether a pass of ncol colour slots, slot 0 without a view, gets the scratch there
@@ -612,10 +609,14 @@ static int slot0_scratch(uint32_t w, uint32_t h) {   // the scratch image, at le
     vkimg_t im = {0}; VkImageView v = VK_NULL_HANDLE;
     im.w = w > g_s0_image.w ? w : g_s0_image.w; im.h = h > g_s0_image.h ? h : g_s0_image.h;
     VkImageCreateInfo ci = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, NULL, 0, VK_IMAGE_TYPE_2D, VK_FORMAT_R8G8B8A8_UNORM, {im.w, im.h, 1}, 1, 1, VK_SAMPLE_COUNT_1_BIT,
-                            VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, VK_SHARING_MODE_EXCLUSIVE, 0, NULL, VK_IMAGE_LAYOUT_UNDEFINED};
+                            VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT, VK_SHARING_MODE_EXCLUSIVE, 0, NULL,
+                            VK_IMAGE_LAYOUT_UNDEFINED};   // (transient: only ever an attachment, never loaded or stored)
     if (vkCreateImage(V.dev, &ci, NULL, &im.img)) goto fail;
     VkMemoryRequirements mr; vkGetImageMemoryRequirements(V.dev, im.img, &mr);
-    VkMemoryAllocateInfo ai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, mr.size, vk_mem_type(mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0)};
+    uint32_t mt = vk_mem_type(mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT, 0);   // lazily allocated where there is such a type
+    if (mt == UINT32_MAX) mt = vk_mem_type(mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0);                                 // else device-local, as any target
+    if (mt == UINT32_MAX) goto fail;
+    VkMemoryAllocateInfo ai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, mr.size, mt};
     VkResult r = vkAllocateMemory(V.dev, &ai, NULL, &im.mem);
     if (r || vkBindImageMemory(V.dev, im.img, im.mem, 0)) goto fail;
     VkImageViewCreateInfo vi = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, NULL, 0, im.img, VK_IMAGE_VIEW_TYPE_2D, ci.format, {0, 0, 0, 0}, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
@@ -624,8 +625,9 @@ static int slot0_scratch(uint32_t w, uint32_t h) {   // the scratch image, at le
                               VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, im.img, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
     vkCmdPipelineBarrier(vk_cmd(), VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, NULL, 0, NULL, 1, &b);
     im.fmt = ci.format; im.usage = ci.usage; im.aspect = VK_IMAGE_ASPECT_COLOR_BIT; im.d = im.layers = im.levels = im.samples = 1; im.vtype = VK_IMAGE_VIEW_TYPE_2D; im.layout = VK_IMAGE_LAYOUT_GENERAL;
-    VKLOG("empty colour slot 0: scratch target %ux%u (DM_VK_SLOT0_FILL)", im.w, im.h);
-    g_s0_image = im; g_s0_view = v; return 1;   // (the one before stays: a submission in flight may still name its view)
+    VKLOG("empty colour slot 0: scratch target %ux%u%s (DM_VK_SLOT0_FILL)", im.w, im.h, V.mem.memoryTypes[mt].propertyFlags & VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT ? ", lazily allocated" : "");
+    if (g_s0_view) { vk_defer_free_view(g_s0_view); vk_defer_free_image(g_s0_image.img, g_s0_image.mem); }   // the smaller one: once the GPU is past the submissions that name it
+    g_s0_image = im; g_s0_view = v; return 1;
 fail:
     VKLOG("[RED] empty colour slot 0: no scratch target %ux%u could be made: such passes keep it empty from here", im.w, im.h); g_s0_failed = 1;
     if (v) vkDestroyImageView(V.dev, v, NULL);

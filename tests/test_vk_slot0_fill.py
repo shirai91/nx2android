@@ -1,4 +1,4 @@
-"""DM_VK_SLOT0_FILL (gfx_vk_exec.c): which GPUs and passes get a scratch target in an empty colour slot 0, and the render pass's store op for it, cut from the source."""
+"""DM_VK_SLOT0_FILL (gfx_vk_exec.c): which passes get a scratch target in an empty colour slot 0, and the render pass's store op for it, cut from the source."""
 import os
 from pathlib import Path
 import shutil
@@ -40,19 +40,13 @@ static int wanted(const char *name, uint32_t vendor, const char *env, int ncol, 
 }
 int main(int argc, char **argv) {
     (void)argc; int mode = atoi(argv[1]);
-    VkPhysicalDeviceProperties p = {0}; p.vendorID = 0x5143;
-    snprintf(p.deviceName, sizeof p.deviceName, "Adreno (TM) 830"); assert(adreno_model(&p) == 830);
-    snprintf(p.deviceName, sizeof p.deviceName, "Turnip Adreno (TM) 830"); assert(adreno_model(&p) == 830);
-    snprintf(p.deviceName, sizeof p.deviceName, "Adreno (TM) 750"); assert(adreno_model(&p) == 750);
-    snprintf(p.deviceName, sizeof p.deviceName, "Mali-G715"); assert(adreno_model(&p) == 0);
-    p.vendorID = 0x13B5; snprintf(p.deviceName, sizeof p.deviceName, "Adreno (TM) 830"); assert(adreno_model(&p) == 0);
     // the switch is read once a run: each mode is a run of its own
-    if (mode == 0) {   // an Adreno 830 by default: multi-target, single-sample, single-layer passes with slot 0 empty only
-        assert(wanted("Adreno (TM) 830", 0x5143, NULL, 6, 0, 1, 1) && strstr(last, "a scratch target there") && strstr(last, "default"));
+    if (mode == 0) {   // switched on: multi-target, single-sample, single-layer passes with slot 0 empty only
+        assert(wanted("Adreno (TM) 830", 0x5143, "1", 6, 0, 1, 1) && strstr(last, "a scratch target there"));
         assert(!slot0_fill_wanted(1, 0, 1, 1) && !slot0_fill_wanted(6, 1, 1, 1) && !slot0_fill_wanted(6, 0, 4, 1) && !slot0_fill_wanted(6, 0, 1, 6));
-    } else if (mode == 1) assert(!wanted("Adreno (TM) 750", 0x5143, NULL, 6, 0, 1, 1) && strstr(last, "left empty"));   // an Adreno 7xx: off
+    } else if (mode == 1) assert(!wanted("Adreno (TM) 830", 0x5143, NULL, 6, 0, 1, 1) && strstr(last, "left empty") && strstr(last, "default off"));   // off by default, an Adreno 8xx too
     else if (mode == 2) assert(!wanted("Adreno (TM) 830", 0x5143, "0", 6, 0, 1, 1));   // switched off
-    else if (mode == 3) assert(wanted("Mali-G715", 0x13B5, "1", 2, 0, 1, 1));           // forced on elsewhere
+    else if (mode == 3) assert(wanted("Mali-G715", 0x13B5, "1", 2, 0, 1, 1));           // on for any GPU
     else {   // the render pass: slot 0's scratch is not stored; the others are, as before (cstore 0 from memset)
         rpkey k; memset(&k, 0, sizeof k); k.ncol = 3; k.samples = 1;
         k.cfmt[0] = VK_FORMAT_R8G8B8A8_UNORM; k.cload[0] = VK_ATTACHMENT_LOAD_OP_DONT_CARE; k.cstore[0] = VK_ATTACHMENT_STORE_OP_DONT_CARE;
@@ -72,15 +66,15 @@ class Slot0Fill(unittest.TestCase):
         headers = next(ndk.glob('toolchains/llvm/prebuilt/*/sysroot/usr/include'), None) if ndk else None
         if not headers:
             self.skipTest('NDK Vulkan headers are required')
-        src = EXEC.read_text()
+        src = EXEC.read_text(encoding='utf-8')
         rpkey = next(line for line in src.splitlines() if '} rpkey;' in line)
         def cut(start, end_marker):
             a = src.index(start); return src[a:src.index(end_marker, a)]
         cuts = ('static int fmt_has_depth' + cut('static int fmt_has_depth', 'static VkRenderPass rp_compat(')[len('static int fmt_has_depth'):]
-                + cut('static int adreno_model(', 'static int slot0_scratch('))
+                + cut('static int slot0_fill_on(', 'static int slot0_scratch('))
         with tempfile.TemporaryDirectory(prefix='nx2a-slot0-') as tmp:
             c, exe = Path(tmp) / 'check.c', Path(tmp) / 'check'
-            c.write_text(HARNESS.replace('RPKEY', rpkey).replace('CUTS', cuts))
+            c.write_text(HARNESS.replace('RPKEY', rpkey).replace('CUTS', cuts), encoding='utf-8')
             subprocess.run(['cc', '-std=gnu11', '-Wall', '-Wextra', '-Werror', '-Wno-unused-function', '-Wno-missing-field-initializers', '-pthread',
                             '-I', str(EXEC.parents[1] / 'gfx/nvn'), '-idirafter', str(headers), str(c), '-o', str(exe)], check=True)
             for mode in range(5):
