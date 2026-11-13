@@ -41,3 +41,9 @@ shader_note	Cardfight!! Vanguard Dear Days 2 shaders (provisional profile)
 # making them, its UI label atlas (1024x512 RGBA8; the card data screen's "Activated Ability" tabs) before. Their GPU copies stayed zeros (texture dumps on the Odin 2) while
 # guest memory held them: no text anywhere, and dark corners on the card data boxes. tex_cpu_uncached takes the data in both cases (gfx_vk_tex.c, hle_nvn.c)
 tex_cpu_uncached	on
+
+# ---- Frame rate ----
+# The game presents at interval 1 (60 fps on the Switch) and steps by the time that really passed: its frame loop (main+0x40d120) adds the time since its last call to an
+# accumulator of frames and runs as many fixed updates as it holds. Its boot screens changed every 3.0 s at 60 and at 30 fps alike (screen recordings on the Odin 2).
+# 30 fps by default, half the work of 60; porter's --fps60 lifts the ceiling
+fps_ceiling	30

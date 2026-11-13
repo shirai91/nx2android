@@ -8,6 +8,7 @@
 # Text and the card data screen's ability labels need game.tsv's tex_cpu_uncached (the game fills its textures in CPU-uncached pools, with COMPRESSIBLE on all of them).
 # The game's frame limiter busy-waited on yields (one big core at 100%, the fan at full speed): patches.py turns its yield into a 0.52 ms sleep. The whole game at 60 fps on
 # the title screen: 1.27 of a core before, 0.27 after; the boot screens keep their 3.0 s, so the game's speed is the same.
+# 30 fps by default (game.tsv fps_ceiling), 60 with porter's --fps60: the whole game took 0.14 of a core at 30 fps on the title screen.
 # Known gaps: shaders the game patches or builds at run time (14 in the tutorial fight: its card and board shaders) are captured on the device and need a port again
 # with --install to be drawn (docs/ARCHITECTURE.md, captured shaders); online features are not available.
 status	playable
