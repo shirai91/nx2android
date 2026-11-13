@@ -6,7 +6,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 
 "Profile here": `nxnative/dm/games/<title ID>/` has the game's profile from nxnative. "Upstream profile": only seedds/nxnative has one, to read as a reference or starter, not to pull. "60 fps with X" is upstream's note: they run that update at 60 fps (30 on the Switch).
 
-**51 / 106 ported**
+**52 / 106 ported**
 
 - [x] 13 Sentinels: Aegis Rim · `01003FC01670C000`
 - [ ] Ace Attorney Investigations Collection · `010005501E68C000` · profile here
@@ -82,7 +82,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [x] Pokémon Sword · `0100ABF008968000`
 - [ ] Portal · `01007BB017812000` · upstream profile · Android only on NVIDIA Shield TV
 - [ ] Return of the Obra Dinn · `010032E00E6E2000` · upstream profile
-- [ ] Rhythm Heaven Groove · `0100D9F01D474000` · profile here
+- [x] Rhythm Heaven Groove · `0100D9F01D474000`
 - [ ] ROMANCE OF THE THREE KINGDOMS 8 REMAKE · `0100C2A01A730000` · profile here · controller only
 - [ ] SHIN MEGAMI TENSEI V: Vengeance · `010069C01AB82000` · upstream profile · 60 fps with 1.0.3
 - [ ] Silver Pines · `0100D5B026844000` · upstream profile
