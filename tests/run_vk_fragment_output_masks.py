@@ -8,15 +8,17 @@ ap.add_argument('--host-build',type=Path,required=True)
 ap.add_argument('--out',type=Path,required=True)
 ap.add_argument('--game',default='0100000000010000')
 a=ap.parse_args(); D=a.out.resolve(); D.mkdir(parents=True,exist_ok=True); ndk=a.ndk
-host={'Darwin':'darwin-x86_64','Linux':'linux-x86_64'}[platform.system()]
+system=platform.system()
+host={'Darwin':'darwin-x86_64','Linux':'linux-x86_64','Windows':'windows-x86_64'}[system]
+exe='.exe' if system=='Windows' else ''
 
-cc=ndk/'toolchains/llvm/prebuilt'/host/'bin/clang'; glslc=ndk/'shader-tools'/host/'glslc'
+cc=ndk/'toolchains/llvm/prebuilt'/host/'bin'/('clang'+exe); glslc=ndk/'shader-tools'/host/('glslc'+exe)
 entries=[]
-sources=[('vertex',0,0x52,(dm/'android/shaders/maskclear.vert').read_text()),
+sources=[('vertex',0,0x52,(dm/'android/shaders/maskclear.vert').read_text(encoding='utf-8')),
          ('even',1,0x61,'#version 450\nlayout(location=0)out vec4 a;layout(location=2)out vec4 b;void main(){a=vec4(1,0,0,1);b=vec4(0,1,0,1);}\n'),
          ('odd',1,0x62,'#version 450\nlayout(location=1)out float a;layout(location=3)out float b;void main(){a=b=1;}\n')]
 for name,stage,key,text in sources:
-    src=D/(name+('.vert' if stage==0 else '.frag'));src.write_text(text);out=src.with_suffix('.spv')
+    src=D/(name+('.vert' if stage==0 else '.frag'));src.write_text(text, encoding='utf-8');out=src.with_suffix('.spv')
     subprocess.run([str(glslc),'--target-env=vulkan1.1',str(src),'-o',str(out)],check=True)
     entries.append((key,stage,out.read_bytes(),struct.pack('<5I',0,0,0,0,0)))
 offset=12+32*len(entries);table=[];data=[]

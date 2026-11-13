@@ -1,5 +1,5 @@
 // Donor 742318ae5 tests/logic.inc sparse_mrt_outputs: seeded MRT holes survive.
-// Target adaptation uses COPY (logic operations are a separate missing port).
+// Target adaptation uses COPY to isolate fragment-output eligibility.
 #include "hle.h"
 #include "nvn_obj.h"
 #include "nvn_mtl.h"
@@ -47,7 +47,7 @@ int __wrap_main(void) {
     }
     int flat=getenv("DM_VK_X_FLAT_VS")!=NULL;
     for(unsigned pass=0;pass<4;pass++) {
-        unsigned index=pass==3?0:pass;expected_outputs=index==2?0:flat?1:index==0?5:10;
+        unsigned index=pass==3?0:pass;expected_outputs=index==2?0:flat?15:index==0?5:10;
         memset(result-4,0xa5,24*sizeof *result);list_t list={0};
         for(unsigned i=0;i<4;i++)RECORD(OP_COPY_B2T,p_copy_b2t,.tex=&rt[i],.src=(uintptr_t)seed[i],.r={.width=4,.height=1,.depth=1});
         RECORD(OP_SET_RT,p_set_rt,.n=4,.color={&rt[0],&rt[1],&rt[2],&rt[3]});
@@ -64,7 +64,7 @@ int __wrap_main(void) {
         for(unsigned i=0;i<4;i++)RECORD(OP_COPY_T2B,p_copy_b2t,.tex=&rt[i],.src=(uintptr_t)(result+4*i),.r={.width=4,.height=1,.depth=1});
         put(&list,OP_END,NULL,0);mtl_sub_begin();mtl_exec(list.bytes);assert(mtl_wait(mtl_sub_commit(),UINT64_MAX));
         for(unsigned i=0;i<4;i++)for(unsigned x=0;x<4;x++) {
-            uint32_t want=seed[i][x];if((expected_outputs>>i&1) && x>=1 && x<=2)want=flat?0xffff00ff:i%2?0x3f800000:i==0?0xff0000ff:0xff00ff00;
+            uint32_t want=seed[i][x];if((expected_outputs>>i&1) && x>=1 && x<=2)want=i%2?0x3f800000:flat?0xffff00ff:i==0?0xff0000ff:0xff00ff00;
             if(result[4*i+x]!=want)die("MRT pass%u target%u pixel%u got%#x expected%#x",pass,i,x,result[4*i+x],want);
         }
         for(unsigned x=0;x<4;x++)assert(result[-4+(int)x]==0xa5a5a5a5 && result[16+x]==0xa5a5a5a5);
