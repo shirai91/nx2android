@@ -66,9 +66,9 @@ int main(void) {
         headers = next(ndk.glob('toolchains/llvm/prebuilt/*/sysroot/usr/include'), None) if ndk else None
         if not headers:
             self.skipTest('NDK Vulkan headers are required')
-        src = (Path(__file__).resolve().parents[1] / 'nxnative/dm/android/gfx_vk_core.c').read_text()
+        src = (Path(__file__).resolve().parents[1] / 'nxnative/dm/android/gfx_vk_core.c').read_text(encoding='utf-8')
         helpers = src[src.index('// DM_VK_MEM_DIAG'):src.index('\nuint32_t vk_mem_type')]
-        start = src.index('typedef struct { int fd; uint64_t off; uint8_t *map; int prot; } zcfill_t;')   # zc_fill, zc_place, pool_zero_copy
+        start = src.index('typedef struct { const uint64_t *r; int n; } zcin_t;')   # zc_next_in, zc_fill, zc_place, zc_anon_fill, zc_unplace, pool_zero_copy
         function = src[start:src.index('\n}\n', src.index('static int pool_zero_copy(')) + 3]
         harness = r'''
 #define _GNU_SOURCE
@@ -187,7 +187,7 @@ int main(void) {
     for (failure = 0; failure <= 10; failure++) {
         for (int repeat = 0; repeat < 2; repeat++) {
             vkpool_t p = {0}; released = closed = destroyed = freed = anon = 0;
-            assert(pool_zero_copy(&p, memory, failure == 0 ? 0x100000000ull : 64, 0) == (failure < 7 ? -1 : -2));
+            assert(pool_zero_copy(&p, memory, failure == 0 ? 0x100000000ull : 64, 0, NULL) == (failure < 7 ? -1 : -2));
             assert(!p.zero_copy && !p.left);
             assert(released == (failure >= 2));
             assert(closed == (failure < 3 ? 0 : failure < 5 ? 2 : 3));
@@ -199,37 +199,37 @@ int main(void) {
         }
     }
     failure = -1; released = closed = destroyed = 0; vkpool_t p = {0};
-    assert(pool_zero_copy(&p, memory, 64, 0) == 0 && p.zero_copy && p.ahb);
+    assert(pool_zero_copy(&p, memory, 64, 0, NULL) == 0 && p.zero_copy && p.ahb);
     assert(closed == 3 && released == 0 && destroyed == 0 && memcmp(memory, temporary, 64) == 0 && !swaps);
     // a lazy pool backed while the game runs: the pages replaced under the tracker and mapped read-only for it; pages it does not hold are left alone
     fixed_prot = PROT_READ; released = closed = 0; memset(memory, 41, sizeof memory); vkpool_t l = {0};
-    assert(pool_zero_copy(&l, memory, 64, 1) == 0 && l.zero_copy && swaps == 1 && closed == 3 && !released && memcmp(memory, temporary, 64) == 0);
+    assert(pool_zero_copy(&l, memory, 64, 1, NULL) == 0 && l.zero_copy && swaps == 1 && closed == 3 && !released && memcmp(memory, temporary, 64) == 0);
     swap_rc[0] = 1; nq = 1; released = closed = 0; vkpool_t u = {0};
-    assert(pool_zero_copy(&u, memory, 64, 1) == 1 && !u.zero_copy && !u.buf && swaps == 2 && closed == 3 && released == 1);
+    assert(pool_zero_copy(&u, memory, 64, 1, NULL) == 1 && !u.zero_copy && !u.buf && swaps == 2 && closed == 3 && released == 1);
     swap_rc[0] = -1; nq = 1; released = 0; vkpool_t b = {0};
-    assert(pool_zero_copy(&b, memory, 64, 1) == -1 && !b.zero_copy && released == 1 && swaps == 3);
+    assert(pool_zero_copy(&b, memory, 64, 1, NULL) == -1 && !b.zero_copy && released == 1 && swaps == 3);
     // written by the host lately: nothing swapped, try later (2), nothing to put back
     swap_rc[0] = 2; nq = 1; released = anon = 0; vkpool_t w = {0};
-    assert(pool_zero_copy(&w, memory, 64, 1) == 2 && !w.zero_copy && !w.left && released == 1 && swaps == 4 && !anon);
+    assert(pool_zero_copy(&w, memory, 64, 1, NULL) == 2 && !w.zero_copy && !w.left && released == 1 && swaps == 4 && !anon);
     // a swap failing after its first 32 bytes: those go back to anonymous pages under the tracker (a second swap with zc_anon_fill), then the buffer is dropped
     memset(memory, 57, sizeof memory); swap_rc[0] = -6; swap_done[0] = 32; nq = 1; released = anon = moved = 0; vkpool_t h = {0};
-    assert(pool_zero_copy(&h, memory, 64, 1) == -1 && !h.zero_copy && !h.left && swaps == 6 && anon == 1 && moved == 1 && released == 1);
+    assert(pool_zero_copy(&h, memory, 64, 1, NULL) == -1 && !h.zero_copy && !h.left && swaps == 6 && anon == 1 && moved == 1 && released == 1);
     for (int i = 0; i < 64; i++) assert(memory[i] == 57);
     // and when that cannot be done now (the host wrote into the pool meanwhile): left says how much stays on the dropped buffer's pages
     swap_rc[0] = -6; swap_done[0] = 32; swap_rc[1] = 2; swap_done[1] = 0; nq = 2; released = anon = moved = 0; vkpool_t k = {0};
-    assert(pool_zero_copy(&k, memory, 64, 1) == -1 && k.left == 32 && swaps == 8 && !moved && released == 1);
+    assert(pool_zero_copy(&k, memory, 64, 1, NULL) == -1 && k.left == 32 && swaps == 8 && !moved && released == 1);
     // the put-back itself stopping part way (16 of the 48 bytes back): left is a length from mem, so it covers the 32 still on the buffer's pages (copy_back reads it from mem)
     swap_rc[0] = -6; swap_done[0] = 48; swap_rc[1] = -6; swap_done[1] = 16; nq = 2; released = 0; vkpool_t s = {0};
-    assert(pool_zero_copy(&s, memory, 64, 1) == -1 && s.left == 48 && swaps == 10 && released == 1);
+    assert(pool_zero_copy(&s, memory, 64, 1, NULL) == -1 && s.left == 48 && swaps == 10 && released == 1);
     // the tracker says try later (the host wrote into the pool lately) or that it does not hold the pages: answered before any slot, kept buffer or allocation is taken
     quiet_rc = 2; released = allocs = closed = 0; int q0 = quiets; vkpool_t lt = {0};
-    assert(pool_zero_copy(&lt, memory, 64, 1) == 2 && quiets == q0 + 1 && !allocs && !released && !closed && swaps == 10 && !lt.left && !lt.zero_copy);
+    assert(pool_zero_copy(&lt, memory, 64, 1, NULL) == 2 && quiets == q0 + 1 && !allocs && !released && !closed && swaps == 10 && !lt.left && !lt.zero_copy);
     quiet_rc = 1; vkpool_t un = {0};
-    assert(pool_zero_copy(&un, memory, 64, 1) == 1 && !allocs && !released && swaps == 10);
+    assert(pool_zero_copy(&un, memory, 64, 1, NULL) == 1 && !allocs && !released && swaps == 10);
     quiet_rc = 0;
     // an import failing after a lazy pool's swap: the whole pool goes back the same way
     failure = 10; released = anon = moved = freed = 0; vkpool_t f = {0};
-    assert(pool_zero_copy(&f, memory, 64, 1) == -2 && !f.left && freed == 1 && moved == 1 && swaps == 12 && released == 1);
+    assert(pool_zero_copy(&f, memory, 64, 1, NULL) == -2 && !f.left && freed == 1 && moved == 1 && swaps == 12 && released == 1);
     failure = -1;
     uint64_t t = mem_diag_ns(); mem_diag_note(1, t, 1048576);
     assert(strstr(last, "cpu-to-gpu: last 1.00 ms / 1.00 MiB, mean 1.00 ms / 1.00 MiB (1 calls)"));
