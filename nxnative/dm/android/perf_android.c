@@ -8,6 +8,7 @@
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -199,6 +200,27 @@ static int64_t g_work_start;
 static const int64_t STEPS[] = {16666667, 25000000, 33333333};   // 60, 40, 30 fps
 static int g_step = 0, g_adapt = -1; static int64_t g_work_hist[64]; static int g_nwork;
 static int64_t g_last_change, g_last_up, g_up_hold = 2000000000; static int g_ok_frames; static uint64_t g_game_period;   // the period the game asks for, before the adaptive step
+static int g_nshown;
+static _Atomic int g_android_game_mode;
+void dm_perf_game_mode(int mode) { atomic_store(&g_android_game_mode, mode); }   // main-thread onResume; policy changes stay on the presenting thread
+static int game_mode_performance(void) {
+    const char *e = getenv("DM_ADAPTIVE_FPS"); int explicit_adapt = e && *e;
+    e = getenv("DM_FPS_PIN"); int pin = e ? atoi(e) : 0;
+    // #294: the selected Performance mode keeps the game's own period, unless a profile/player explicitly chose a pacing policy.
+    return atomic_load(&g_android_game_mode) == 2 && !explicit_adapt && pin != 30 && pin != 40 && pin != 60;
+}
+static int adaptive_enabled(void) {
+    if (g_adapt < 0) { const char *e = getenv("DM_ADAPTIVE_FPS"); g_adapt = !(e && !atoi(e)); }
+    return g_adapt && !game_mode_performance();
+}
+static void game_mode_sync(void) {   // presenting thread only: acquiring a frame must not reset the history while it is being written
+    static int performance; int want = game_mode_performance();
+    if (want != performance) {
+        performance = want; g_step = 0; g_nwork = g_nshown = g_ok_frames = 0;
+        g_last_change = g_last_up = 0; g_up_hold = 2000000000;
+        LOG("[perf] Android Game Mode: %s", want ? "performance (game's own period)" : "default pacing policy");
+    }
+}
 static int64_t work_pct(int q) {   // the q-th percentile of the last 64 frames' work
     int n = g_nwork < 64 ? g_nwork : 64; if (n < 16) return 0;
     int64_t v[64]; memcpy(v, g_work_hist, sizeof(int64_t) * (size_t)n);
@@ -217,10 +239,9 @@ static int fps_cap_step(void) {
     return s;
 }
 uint64_t dm_present_period_adapt(uint64_t period) {
-    if (g_adapt < 0) { const char *e = getenv("DM_ADAPTIVE_FPS"); g_adapt = !(e && !atoi(e)); }
-    if (!period) return period;
-    if (!g_adapt) return fps_cap_step() && (uint64_t)STEPS[2] > period ? (uint64_t)STEPS[2] : period;
     g_game_period = period;
+    if (!period) return period;
+    if (!adaptive_enabled()) return fps_cap_step() && (uint64_t)STEPS[2] > period ? (uint64_t)STEPS[2] : period;
     if (g_step < fps_cap_step() && fps_pin() < 0) g_step = fps_cap_step();
     int64_t want = STEPS[g_step];
     return (uint64_t)want > period ? (uint64_t)want : period;   // never faster than the game asks
@@ -260,7 +281,7 @@ static void hint_report(int64_t w, int64_t pq, int64_t pace, int64_t now, int64_
 // or discarded, missed the display. Work over the period alone does not mean that: the swapchain holds a frame or two, so a frame a little over the period
 // still reaches its vsync. Viractal at 60 fps (FPSLocker's unlock) stepped down to 40 on p90 work of 17.5-17.7 ms while it dropped 0-10 of 300 frames on
 // screen at 60 with the rate held (DM_ADAPTIVE_FPS=0; work p50 6 ms, GPU 5-11 ms), and the player saw the counter fall into the 30s whenever the pieces moved
-static uint8_t g_late[64]; static int g_nshown; static unsigned g_held_back;
+static uint8_t g_late[64]; static unsigned g_held_back;
 // With display times (vk_refresh_ms) the intervals are whole vsyncs, and 1.5 periods sat on a vsync boundary at 60 fps on 120 Hz (25.0 ms against 25.0): the limit
 // moves a quarter refresh past it, so the same frames count as with the hand-over times before. A stricter period + half a refresh counted every one-vsync miss:
 // Unicorn Overlord's opening then showed 70-157 of 300 frames at 25 ms and stepped to 40 fps, where it had held 60 (about 50-54 fps on screen)
@@ -280,12 +301,13 @@ static int shown_late(void) {   // of the last 64 frames on screen, how many mis
     return m * 64 / n;
 }
 static void adapt_frame(int64_t work, int64_t now) {
+    game_mode_sync();
+    if (!adaptive_enabled()) return;
     // A long frame in which the replay and the GPU did next to nothing is a load (a loading screen, the game reading files on its main thread), not a frame the
     // rate could fit: it is not judged. Hades II's room changes gave ~10 frames of 28-680 ms with 0.3-0.4 ms of GPU work, the rate stepped down to 40 fps,
     // and each fight began at 40 until it climbed back 4 s later
     if (g_frame_cost > 0 && g_frame_cost < 1500000 && work > STEPS[g_step]) return;
     if (g_frame_cost > work) work = g_frame_cost;
-    if (!g_adapt) return;
     g_work_hist[g_nwork++ % 64] = work;
     { static unsigned k; if (++k % 600 == 0) LOG("[perf] adaptive frame rate: %.0f fps, frame work p50 %.1f / p90 %.1f / p95 %.1f ms (last %.1f ms); late on screen %d of 64, step-downs held back %u", 1e9 / STEPS[g_step], work_pct(50) / 1e6, work_pct(90) / 1e6, work_p95() / 1e6, work / 1e6, shown_late(), g_held_back); }
     int pin = fps_pin(); if (pin >= 0) { if (g_step != pin) { g_step = pin; g_last_change = now; g_nshown = 0; } return; }
@@ -323,6 +345,7 @@ static int64_t g_prev_present, g_pace, g_pq;
 void dm_perf_frame_start(uint64_t pace_ns, uint64_t pq_ns) { g_work_start = perf_now(); g_pace = (int64_t)pace_ns; g_pq = (int64_t)pq_ns; }
 // Called on the presenting thread right before a present; period in seconds (1/60, 1/30, ...).
 void dm_perf_frame(double period) {
+    game_mode_sync();   // reset the step before deciding which part of the previous wait was adaptive pacing
     int64_t p = period > 0 && period < 1 ? (int64_t)(period * 1e9) : 16666667, t = perf_now();
     // the CPU hint's target is the game's own period, not the adaptive one: with the longer target the CPU clocks drop until the work fills it,
     // and the work then never shows the room to step back up (NEO stayed at 30 fps with frames of 31 to 48 ms)

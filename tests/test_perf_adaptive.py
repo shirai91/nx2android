@@ -21,6 +21,7 @@ class AdaptiveFrameRate(unittest.TestCase):
         harness = r'''
 #include <assert.h>
 #include <stdint.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
