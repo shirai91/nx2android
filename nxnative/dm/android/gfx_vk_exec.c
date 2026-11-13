@@ -196,7 +196,11 @@ static int rc_occ_has(uint64_t a) { return nvn_hm_get(&g_rc_occ, &a) != NULL; }
 static void rc_note(uint64_t a, int kind) {
     if (kind == 2) rc_occ_add(a);
     for (int i = 0; i < g_rc_npend; i++) if (g_rc_pend[i].addr == a) { g_rc_pend[i].kind = kind; return; }
+    if (kind == 2) return;   // (g_rc_occ holds it. Appended here too, a submission's occlusion reports filled the table and a timestamp report after them was not noted, so a
+                             // condition on it read memory, not yet written, instead of its known counter 0. Ocarina of Time (DeathKhan/nx2android) clears its 768x432 target under
+                             // such a condition at each bind and reports once: the later clears wiped the scene copy, opaque water)
     if (g_rc_npend < RC_PEND) { g_rc_pend[g_rc_npend].addr = a; g_rc_pend[g_rc_npend++].kind = kind; }
+    else { static int said; if (!said) { said = 1; VKLOG("render conditions: more than %d timestamp reports in a submission, the rest read memory", RC_PEND); } }
 }
 static int rc_value(uint64_t a, uint64_t *v) {   // 0 = unknown at replay time
     if (rc_occ_has(a)) return 0;
@@ -207,6 +211,9 @@ static void render_cond(const p_render_cond *rc) {
     if (rc->mode >= 2) { g_rc_skip = rc->mode == 3; return; }
     uint64_t x = 0, y = 0; int known = rc_value(rc->addr, &x) & rc_value(rc->addr + 16, &y);
     g_rc_skip = known && (rc->mode ? x == y : x != y);
+    if (g_x_tracepass == -2) { int k0 = -1, k1 = -1; for (int i = 0; i < g_rc_npend; i++) { if (g_rc_pend[i].addr == rc->addr) k0 = g_rc_pend[i].kind; if (g_rc_pend[i].addr == rc->addr + 16) k1 = g_rc_pend[i].kind; }
+        VKLOG("--- render condition mode %d at %#llx: %s (%s), memory %llu / %llu, occlusion-written %d / %d, pending kind %d / %d", rc->mode, (unsigned long long)rc->addr, g_rc_skip ? "skip" : "draw", known ? "known" : "unknown",
+            (unsigned long long)*(const volatile uint64_t *)(uintptr_t)rc->addr, (unsigned long long)*(const volatile uint64_t *)(uintptr_t)(rc->addr + 16), rc_occ_has(rc->addr), rc_occ_has(rc->addr + 16), k0, k1); }
 }
 
 void vk_exec_reset(void) {   // a new submission: NVN state does not carry over between command buffers, the replay starts from the defaults
@@ -2452,7 +2459,7 @@ static void exec_ops(const uint8_t *p) {
         case OP_JUMP: { const uint8_t *t; memcpy(&t, a, 8); p = t; continue; }
         case OP_CALL: { uint64_t t; memcpy(&t, a, 8); exec_ops((const uint8_t *)(uintptr_t)t); break; }
         case OP_SIGNAL_EVENT: { volatile uint32_t *val; uint32_t m, v; memcpy(&val, a, 8); memcpy(&m, a + 8, 4); memcpy(&v, a + 12, 4); mtl_sub_event(val, m, v); break; }
-        case OP_REPORT_COUNTER: { uint64_t t, ad; memcpy(&t, a, 8); memcpy(&ad, a + 8, 8); if (DM_GAME_RENDER_COND) rc_note(ad, t == 0 || t == 0x10 ? 1 : 2); mtl_sub_counter(ad, (uint32_t)t); break; }
+        case OP_REPORT_COUNTER: { uint64_t t, ad; memcpy(&t, a, 8); memcpy(&ad, a + 8, 8); if (DM_GAME_RENDER_COND) rc_note(ad, t == 0 || t == 0x10 ? 1 : 2); if (g_x_tracepass == -2) VKLOG("--- report counter type %#llx to %#llx", (unsigned long long)t, (unsigned long long)ad); mtl_sub_counter(ad, (uint32_t)t); break; }
         case OP_RESET_COUNTER: break;
         case OP_FENCE_SYNC: { sync_t *s; memcpy(&s, a, 8);
             if (!sync_replay_fence(s, mtl_last_fence() + 1)) { static int n; if (n++ < 4) VKLOG("fence on sync %p skipped: the game has finalized or freed it (nvn_obj.h sync_replay_fence)", (void *)s); }
