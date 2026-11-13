@@ -302,3 +302,5 @@ static void clear_tex(const p_clear_tex *c) {
     vk_img_barrier_all(cb);
 }
 
+
+/* NX2A_SECTION gfx_vk_exec_walker.inc */

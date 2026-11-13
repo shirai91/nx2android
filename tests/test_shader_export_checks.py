@@ -49,7 +49,7 @@ class ExportChecks(unittest.TestCase):
         self.report = self.root / 'report.json'; self.stage = 'cs'; self.calls = 0
         self.behavior = 'ok'; self.reflect = True; self.second_shader = False; self.bad_resource = None
         self.jobs = 1; self.bad_key = None; self.log = io.StringIO(); self.bindings = []
-        self.shader_count = 0; self.extra_spv = b''; self.spv_override = None
+        self.shader_count = 0; self.extra_spv = b''; self.spv_override = None; self.overrides = {}
         (self.root / 'pkg').mkdir()
 
     def translate(self, argv, **kwargs):
@@ -80,7 +80,7 @@ class ExportChecks(unittest.TestCase):
         try: products = importlib.import_module('shader_products')
         except ModuleNotFoundError: products = None
         numeric = {}
-        for name in ('spv_half', 'spv_precise', 'spv_texture_offsets'):
+        for name in ('spv_half', 'spv_precise', 'spv_texture_offsets', 'spv_pool'):
             try: numeric[name] = importlib.import_module(name)
             except ModuleNotFoundError: numeric[name] = None
         env = dict(**numeric, collections=collections, cf=cf, os=os, json=json, struct=struct,
@@ -96,8 +96,9 @@ class ExportChecks(unittest.TestCase):
                    refl_bin=lambda cl,c1,hdr: struct.pack('<5I', 0, 0, *hdr),
                    classify=lambda *args: None)
         source = TOOLS / 'shader_vk.py'; tree = ast.parse(source.read_text())
-        nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in ('main', 'remap_handles')]
+        nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in ('main', 'lower_resource_pools', 'remap_handles')]
         exec(compile(ast.Module(body=nodes, type_ignores=[]), str(source), 'exec'), env)
+        env.update(self.overrides)
         with mock.patch.dict(os.environ, {'WORK': str(self.root)}), mock.patch.object(subprocess, 'run', side_effect=self.translate), contextlib.redirect_stdout(self.log):
             env['main']()
 
@@ -255,6 +256,17 @@ void main(){d.smallest=min(d.a.x,d.a.y);d.packed=packHalf2x16(d.a);}
             self.assertEqual(struct.unpack_from('<I', spv, 12)[0], 36)
         translated = next(self.root.glob('shvk_*/0000000000000001.spv'))
         self.assertEqual(translated.read_bytes(), self.spv_override)
+
+    def test_file_backed_export_keeps_pool_lowering(self):
+        # The bundle reads modules back from disk: the module the pool lowering
+        # returns must be the one written, not the translator's file.
+        lowered = module(self.stage) + struct.pack('<I', 1 << 16)   # one OpNop
+        self.overrides['lower_resource_pools'] = lambda spv, cl: (lowered, cl)
+        self.run_export()
+        with dmsv.Bundle(self.out) as b:
+            self.assertEqual(b.spv(b.entries[0]), lowered)
+        translated = next(self.root.glob('shvk_*/0000000000000001.spv'))
+        self.assertEqual(translated.read_bytes(), module(self.stage))
 
 
 class ProductValidation(unittest.TestCase):
