@@ -710,6 +710,7 @@ static VkPipeline mc_pipeline(uint32_t mask) {
     g_mc.k[g_mc.n] = k; g_mc.p[g_mc.n++] = p; return p;
 }
 static int g_bc_stale;
+#include "gfx_vk_draw_texture.inc"
 static int clear_masked(const p_clear_color *c, VkRect2D r) {   // 1 = done
     const vkfmt_t *f = vk_fmt(S.rt_col[c->index].d.format);
     if (c->index != 0 || (f && f->is_int)) return 0;
