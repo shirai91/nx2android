@@ -736,6 +736,7 @@ static VkPipeline mc_pipeline(uint32_t mask) {
     g_mc.k[g_mc.n] = k; g_mc.p[g_mc.n++] = p; return p;
 }
 static int g_bc_stale;
+#include "gfx_vk_draw_texture.inc"
 static int clear_masked(const p_clear_color *c, VkRect2D r) {   // 1 = done
     const vkfmt_t *f = vk_fmt(S.rt_col[c->index].d.format);
     if (c->index != 0 || (f && f->is_int)) return 0;
@@ -2506,6 +2507,7 @@ static void exec_ops(const uint8_t *p) {
         case OP_COPY_T2T: copy_t2t((const p_copy_t2t *)a); break;
         case OP_CLEAR_TEX: clear_tex((const p_clear_tex *)a); break;
         case OP_RENDER_COND: render_cond((const p_render_cond *)a); break;   // recorded only with the profile key render_cond (hle_nvn.c)
+        case OP_DRAW_TEX: if (!g_rc_skip) draw_texture((const p_draw_tex *)a); break;
         case OP_DRAW_TF: if (!g_rc_skip) draw_tf((const p_draw_tf *)a); break;
         case OP_TF_BIND: { const p_tf_bind *b = (const p_tf_bind *)a; if (b->index >= 0 && b->index < 4) g_tf[b->index] = *b; break; }
         case OP_TF_STATE: if (!V.has_xfb) VKRED_ONCE(80, "transform feedback: the device has none, its draws write nothing"); tf_state((const p_tf_state *)a); break;

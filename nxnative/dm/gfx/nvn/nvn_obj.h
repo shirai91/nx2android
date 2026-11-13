@@ -168,7 +168,7 @@ typedef struct { const tex_t *tex; view_t view; uint8_t has_view, is_uint; NVNco
 typedef struct { int64_t stride; int image; } p_copy_stride;   // image: SetCopyImageStride (bytes per layer / depth slice) instead of SetCopyRowStride
 typedef struct { uint64_t addr, size; uint32_t value, _pad; } p_clear_buf;   // buffer filled with a 32-bit value (ClearBuffer)
 typedef struct { float rgba[4]; } p_blend_color;
-typedef struct { uint64_t h; NVNdrawTextureRegion d, s; } p_draw_tex;   // nvnCommandBufferDrawTexture: texture handle, destination (pixels) and source (texels) regions
+typedef struct { uint64_t h; NVNdrawTextureRegion d, s; uint64_t sseq; } p_draw_tex;   // nvnCommandBufferDrawTexture: texture handle, destination (pixels) and source (texels) regions
 typedef struct { int32_t index, pad; uint64_t addr, size; } p_tf_bind;   // BindTransformFeedbackBuffer(s): one record per buffer (index 0-3)
 typedef struct { int32_t what, pad; uint64_t ctl; } p_tf_state;          // what: 0 begin, 1 end, 2 pause, 3 resume; ctl = the game's 32-byte control buffer
 typedef struct { int32_t on; } p_rast_discard;

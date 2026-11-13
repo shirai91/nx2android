@@ -663,6 +663,45 @@ VkImageView vk_tex_view_as(const tex_t *t, const view_t *vw, int dim, int arraye
     return view;
 }
 
+// nxnative 1134e0e75 sampled_snapshot / draw_texture_source, using this
+// backend's cached view metadata, image allocator and deferred destruction.
+VkImageView vk_tex_sampled_snapshot(vkimg_t *im, VkImageView source) {
+    vview view = {0};
+    pthread_mutex_lock(&g_view_mu);
+    for (vview *v = nvn_hm_get(&g_views, &im); v; v = v->next) if (v->v == source) { view = *v; break; }
+    pthread_mutex_unlock(&g_view_mu);
+    if (!view.v || view.type != VK_IMAGE_VIEW_TYPE_2D || view.nly != 1) return VK_NULL_HANDLE;
+    uint32_t w = im->w >> view.lv0 ? im->w >> view.lv0 : 1, h = im->h >> view.lv0 ? im->h >> view.lv0 : 1;
+    VkImageCreateInfo ii = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, NULL, VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT,
+        VK_IMAGE_TYPE_2D, im->fmt, {w,h,1}, view.nlv, 1, im->samples, VK_IMAGE_TILING_OPTIMAL,
+        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_SHARING_MODE_EXCLUSIVE, 0, NULL, VK_IMAGE_LAYOUT_UNDEFINED};
+    VkImage img; VkImageView result = VK_NULL_HANDLE;
+    if (vkCreateImage(V.dev, &ii, NULL, &img)) return VK_NULL_HANDLE;
+    VkMemoryRequirements mr; vkGetImageMemoryRequirements(V.dev, img, &mr);
+    VkDeviceSize off = 0; void *sub = NULL;
+    VkDeviceMemory mem = vk_image_memory(&mr, vk_mem_type(mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0), &off, &sub);
+    if (mem && !vkBindImageMemory(V.dev, img, mem, off)) {
+        VkImageViewCreateInfo ci = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, NULL, 0, img, VK_IMAGE_VIEW_TYPE_2D,
+            view.fmt, view.swz, {view.aspect,0,view.nlv,0,1}};
+        if (!vkCreateImageView(V.dev, &ci, NULL, &result)) {
+            VkCommandBuffer cb = vk_cmd();
+            VkImageMemoryBarrier barrier = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL, 0, VK_ACCESS_TRANSFER_WRITE_BIT,
+                VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, img, {view.aspect,0,view.nlv,0,1}};
+            vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &barrier);
+            for (uint32_t l = 0; l < view.nlv; ++l) {
+                VkImageCopy copy = {{view.aspect,view.lv0+l,view.ly0,1},{0,0,0},{view.aspect,l,0,1},{0,0,0},{w,h,1}};
+                vkCmdCopyImage(cb, im->img, VK_IMAGE_LAYOUT_GENERAL, img, VK_IMAGE_LAYOUT_GENERAL, 1, &copy);
+                if (w > 1) w >>= 1;
+                if (h > 1) h >>= 1;
+            }
+            vk_img_barrier_all(cb);
+            vk_defer_free_view(result);
+        }
+    }
+    if (sub) vk_defer_free_image_sub(img, sub); else vk_defer_free_image(img, mem);
+    return result;
+}
+
 // ---------------- texture / sampler ID tables ----------------
 // A registration as the replay of each submission sees it. NVN's texture pool is memory the GPU reads as it runs, and a game rewrites an ID once the work
 // that used it is done; with the replay on its own thread (DM_NVN_ASYNC) a submission is replayed after the game has gone on, and Xenoblade Chronicles 3

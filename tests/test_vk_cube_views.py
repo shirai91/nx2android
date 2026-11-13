@@ -88,7 +88,7 @@ static VkImageView vk_dummy_view(int dim, int arr, int ms, int storage, int is_i
         # allocation/upload is outside this host-only compatibility regression.
         setup = between(tex, 'static vkimg_t *img_new(', '    VkResult r = vkCreateImage(')
         code += setup + '    return im;\n}\n'
-        code += between(tex, 'typedef struct vview', '// ---------------- texture / sampler ID tables')
+        code += between(tex, 'typedef struct vview', '// nxnative 1134e0e75 sampled_snapshot')
         code += between(exe, 'enum { TVC =', 'static uint64_t g_num_um')
         code += between(exe, 'static int tex_desc_for(', '// Reuse within a submission')
         code += r'''
