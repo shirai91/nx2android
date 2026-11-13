@@ -15,6 +15,6 @@ This is code written by others, shipped with the repository so there is nothing 
 
 A few more notes:
 
-- `flip/tool/` also carries three single-header libraries used by the FLIP command-line tool: `stb_image.h` (2.23), `stb_image_write.h` (1.13) and `tinyexr.h`. Their license notices are in the files themselves.
+- `flip/tool/` also carries three single-header libraries used by the FLIP command-line tool: `stb_image.h` (2.23), `stb_image_write.h` (1.13) and `tinyexr.h`. Their license notices are in the files themselves. The host also compiles `stb_image.h` (JPEG only, `STBI_ONLY_JPEG`) into `dm/host/hle_image.c`, which decodes the games' `nn::image::JpegDecoder` JPEGs.
 - `bcdec/README.md`, `libvpx/README.md`, `stb_vorbis/README.md`, `ryujinx/README.md`, `vulkan-headers/README.md` and `zstd/README.md` record where each came from and what it is used for.
 - Four pieces of third-party code live outside this directory: `dm/gfx/nvn/include/nvn.h` (MIT, author named in the file header), the layout size algorithm in `dm/gfx/nvn/nvn_tex.c`, ported from deko3d (zlib license), and two adapted from MacNativeGames (MIT, license text in `macnativegames/LICENSE`): in `dm/gfx/nvn/nvn_mtl.m` the GPU widening of 8-bit indices (`wide_*`) and the in-pass clear triangles (`clear_color_tri` / `clear_ds_tri`), from its `widen_u8_gpu` and `clear_quad` / `clear_ds_quad`, and the Tears of the Kingdom visibility-counter lowering in `dm/gfx/tools/dmsh_xlate/Program.cs` (`VertexCounterLowering`).

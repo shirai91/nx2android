@@ -1,6 +1,6 @@
 // nn::image::JpegDecoder (Burnout Paradise Remastered, SDK 9): on the device the game decodes its loading-screen JPEG through this class (main+0x410b0c..0x410b54: ctor, SetImageData, SetPixelFormat(0), Analyze, GetAnalyzedDimension, Decode(dst, 0x40000, 4, work, 0x40000)).
 // In the port the SDK's own Analyze fails: it forwards through a function-pointer table thunk (sdk+0x39398 bl 0x521320 -> [0x11d8d88] -> 0x520680 -> [0x11d8740]) whose entries the runtime never fills, so the helper returns an error, Analyze leaves the status at 1 (sdk+0x3939c: cbz w0, ... else ret with status unchanged), and Decode then hits its assert on the status — sdk+0x3948c/0x39494: "ldr w9,[x0,#8]; cmp w9,#1; b.le <nn::diag::Abort>" — which is the observed Break at sdk+0xfc4d0 with the game's return address main+0x410b58.
-// Host: decode with stb_image (third_party/flip/tool). The guest object keeps the SDK's layout, only the host keeps extra state (objmap, keyed by the game's decoder pointer, like hle_codec's software Opus state):
+// Host: decode with stb_image (third_party/flip/tool/stb_image.h, 2.23 (see third_party/README.md); GetAnalyzedDimension is the SDK's own getter, "ldr x0,[x0,#0x28]", and is not taken over). The guest object keeps the SDK's layout, only the host keeps extra state (objmap, keyed by the game's decoder pointer, like hle_codec's software Opus state):
 //   +0x00 vtable (ctor stores _ZTV+0x10: sdk+0x392bc "add x8,x8,#0x10; str x8,[x0]"), +0x08 u32 status (0 unregistered / 1 registered / 2 analyzed),
 //   +0x10 image ptr, +0x18 image size (SetImageData: "stp x1,x2,[x0,#0x10]"), +0x20 u32 resolution denominator (ctor stores the u64 1 there), +0x24 u32 pixel format,
 //   +0x28 u64 analyzed dimension = width | height<<32 (Analyze: "stp x9,x8,[x19,#0x28]"; GetAnalyzedDimension: "ldr x0,[x0,#0x28]" — a { s32 width; s32 height; } returned packed in x0),
@@ -11,6 +11,7 @@
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ONLY_JPEG
 #include "../third_party/flip/tool/stb_image.h"
+#define JDEC_MAX_RGBA (256ull << 20)   // the largest RGBA decode the host makes for a guest
 
 // The game's JpegDecoder object, overlaid on the guest memory (the sdk's own field use above)
 typedef struct {
@@ -40,10 +41,23 @@ typedef struct {
     uint8_t *rgba;               // stb's decode, width*height*4, filled on the first Decode
 } jdec_state;
 
+// The host state of a decoder object. A game that builds the object through the complete-object ctor C2 or an inlined ctor never reaches h_img_Ctor: its object then has the SDK's own
+// field values (the guest-side fields are the truth), so the state is made here from them and the call decodes normally
 static jdec_state *jdec_st(const void *self) {
-    void *s = objmap_get(self);
-    if (!s) die("JpegDecoder %p was not constructed by the host", self);
+    jdec_state *s = objmap_get(self);
+    if (s) return s;
+    const jdec_guest *d = self;
+    s = calloc(1, sizeof *s);
+    if (!s) die("JpegDecoder state for %p", self);
+    s->img = d->img; s->img_size = (size_t)d->img_size; s->fmt = d->fmt < 2 ? (int)d->fmt : 0;
+    objmap_put(self, s);
+    static int once;
+    if (!once++) LOG("JpegDecoder %p was not constructed through the host's ctor (C1): host state made from the object's fields", self);
     return s;
+}
+static void jdec_free(void *self) {
+    jdec_state *s = objmap_del(self);
+    if (s) { if (s->rgba) stbi_image_free(s->rgba); free(s); }
 }
 static void jdec_write(const void *addr, size_t len) { dm_guest_write_prepare((void *)addr, len); }
 
@@ -51,8 +65,7 @@ HLE_FORCE("_ZN2nn5image11JpegDecoderC1Ev", "nn::image::JpegDecoder: the sdk's an
           void, h_img_Ctor, void *self) {
     void *vt = guest_sym("_ZTVN2nn5image11JpegDecoderE");
     if (!vt) die("sdk lacks _ZTVN2nn5image11JpegDecoderE");
-    jdec_state *old = objmap_del(self);
-    if (old) { free(old->rgba); free(old); }
+    jdec_free(self);
     jdec_guest *d = self;
     jdec_write(&d->vt, 0x50);
     d->vt = (char *)vt + 0x10;   // sdk+0x392bc: add x8,x8,#0x10; str x8,[x0]
@@ -64,9 +77,13 @@ HLE_FORCE("_ZN2nn5image11JpegDecoderC1Ev", "nn::image::JpegDecoder: the sdk's an
     objmap_put(self, s);
 }
 
-HLE_FORCE("_ZN2nn5image11JpegDecoderD1Ev", "nn::image::JpegDecoder: host state released (the sdk's dtor is a bare ret)", void, h_img_Dtor, void *self) {
-    jdec_state *s = objmap_del(self);
-    if (s) { free(s->rgba); free(s); }
+HLE_FORCE("_ZN2nn5image11JpegDecoderD1Ev", "nn::image::JpegDecoder: host state released (the sdk's dtor is a bare ret)", void, h_img_Dtor, void *self) { jdec_free(self); }
+HLE_FORCE("_ZN2nn5image11JpegDecoderD2Ev", "nn::image::JpegDecoder: host state released (base-object destructor)", void, h_img_DtorD2, void *self) { jdec_free(self); }
+// deleting destructor (the class has a vtable): the host state, then the object through the game's operator delete, as hle_movie.c does for movie::Decoder
+HLE_FORCE("_ZN2nn5image11JpegDecoderD0Ev", "nn::image::JpegDecoder: deleting destructor: host state released, then the object with operator delete", void, h_img_DtorD0, void *self) {
+    jdec_free(self);
+    static void (*del)(void *); if (!del) del = (void (*)(void *))guest_sym("_ZdlPv");
+    if (del) del(self); else LOG("[RED] JpegDecoder: no operator delete in the game; the decoder object is not freed");
 }
 
 HLE_FORCE("_ZN2nn5image11JpegDecoder12SetImageDataEPKvm", "nn::image::JpegDecoder: image bytes kept in the host's per-decoder state", void, h_img_SetImageData,
@@ -76,7 +93,8 @@ HLE_FORCE("_ZN2nn5image11JpegDecoder12SetImageDataEPKvm", "nn::image::JpegDecode
     jdec_write(d, sizeof *d);           // the whole object: the status at +0x08 is written below too
     d->img = img; d->img_size = size;   // sdk+0x392f4: stp x1,x2,[x0,#0x10]
     d->status = 1;                      // sdk+0x392f8: str w8(1),[x0,#8]
-    free(s->rgba); s->rgba = NULL; s->img = img; s->img_size = size; s->width = s->height = 0;
+    if (s->rgba) stbi_image_free(s->rgba);
+    s->rgba = NULL; s->img = img; s->img_size = size; s->width = s->height = 0;
     d->dim = 0; d->work = 0;
 }
 
@@ -129,9 +147,18 @@ HLE_FORCE("_ZN2nn5image11JpegDecoder6DecodeEPvmiS2_m", "nn::image::JpegDecoder::
         LOG("JpegDecoder::Decode: status %u, image not analyzed", d->status);
         return RES_FAIL;
     }
+    if (d->denom != 1) { static int once; if (!once++) LOG("JpegDecoder::Decode: resolution denominator %u: not applied (the image decodes at full size)", d->denom); }
     if (!s->rgba) {
         if (s->img_size > 0x7fffffff) return RES_FAIL;
+        // refuse before stb allocates: it accepts any JPEG up to about 2 GB of output. The rows that fit in dstSize are all Decode can write, so an image whose texels do not fit, or that is
+        // over a fixed cap, is an error here (the sdk's stub drops dstSize and would write past the buffer)
         int w, h, comp;
+        if (!stbi_info_from_memory(s->img, (int)s->img_size, &w, &h, &comp)) { LOG("JpegDecoder::Decode: %zu bytes are not a JPEG", s->img_size); return RES_FAIL; }
+        uint64_t texels = (uint64_t)w * (uint64_t)h, outb = texels * (uint64_t)(s->fmt == 1 ? 3 : 4);
+        if (outb > dst_size || texels * 4 > JDEC_MAX_RGBA) {
+            LOG("JpegDecoder::Decode: %dx%d (%llu bytes at format %d) does not fit dstSize %zu or the host's %llu byte cap: refused", w, h, (unsigned long long)outb, s->fmt, dst_size, (unsigned long long)JDEC_MAX_RGBA);
+            return RES_FAIL;
+        }
         s->rgba = stbi_load_from_memory(s->img, (int)s->img_size, &w, &h, &comp, 4);
         if (!s->rgba) { LOG("JpegDecoder::Decode: stb_image failed on %zu bytes", s->img_size); return RES_FAIL; }
         s->width = w; s->height = h;
@@ -162,12 +189,7 @@ HLE_FORCE("_ZN2nn5image11JpegDecoder6DecodeEPvmiS2_m", "nn::image::JpegDecoder::
             if (bpp == 4) o[3] = 0xff;                   // sdk+0x39790: strb w24(0xff)
         }
     }
+    stbi_image_free(s->rgba); s->rgba = NULL;   // the full RGBA copy is not kept: a second Decode decodes again
     LOG("JpegDecoder::Decode: %dx%d -> %p (%zu of %zu bytes, pitch %llu px, format %d)", width, height, dst, rows * row_bytes, need, (unsigned long long)pitch, s->fmt);
     return RES_OK;
-}
-
-HLE_FORCE("_ZNK2nn5image11JpegDecoder20GetAnalyzedDimensionEv", "nn::image::JpegDecoder: the packed dimension at +0x28 (width | height<<32) returned in x0", uint64_t, h_img_GetDim,
-          const void *self) {
-    const jdec_guest *d = self;
-    return d->dim;   // sdk+0x39440: ldr x0,[x0,#0x28]; ret
 }
