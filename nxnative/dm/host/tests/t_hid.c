@@ -91,6 +91,7 @@ static void t_npads(void) {
     CHECK(h_hid_GetStyle(&(uint32_t){1}) == STYLE_FULLKEY, "player 2 is a full-key controller on No2");
     dm_pad_set_player(1, DM_BTN_B, 300, 0, 0, 0); dm_pad_set(DM_BTN_Y, 0, 0, 0, 0);
     CHECK(buttons_of(1, STYLE_FULLKEY) == DM_BTN_B && lx_of(1) == 300, "player 2 reads its own controller");
+    CHECK(dm_player_seen_as(0) == 0 && dm_player_seen_as(1) == 1 && dm_player_seen_as(-1) == -1, "a game for several players sees player 2 as player 2; no player is none");
     CHECK(buttons_of(0, STYLE_FULLKEY) == DM_BTN_Y && lx_of(0) == 0, "player 1 does not see player 2");
     CHECK(buttons_of(1, STYLE_HANDHELD) == 0, "player 2 is not a handheld controller");
     CHECK(h_hid_Led(&(uint32_t){0}) == 0x1 && h_hid_Led(&(uint32_t){1}) == 0x3 && h_hid_Led(&(uint32_t){7}) == 0x6, "player LED patterns");
@@ -105,6 +106,7 @@ static void t_npads(void) {
     CHECK(g_signals == 1 && g_signalled == ev1, "No2's style event signalled when the game stops supporting it");
     CHECK(h_hid_GetStyle(&(uint32_t){1}) == 0 && buttons_of(1, STYLE_FULLKEY) == 0, "No2 not reported");
     CHECK(buttons_of(0, STYLE_FULLKEY) == (DM_BTN_Y | DM_BTN_B) && lx_of(0) == 300, "player 2's controller feeds player 1");
+    CHECK(dm_player_seen_as(1) == 0 && dm_player_seen_as(5) == 0, "a one-player game sees every player as player 1, also one whose controller is not reported yet");
     h_hid_ShowCtrl(info, NULL);
     CHECK(info[0] == 1, "the applet reports one player");
 
@@ -113,6 +115,7 @@ static void t_npads(void) {
     dm_pad_players(0x1f); dm_pad_set_player(4, DM_BTN_ZR, 0, 0, 0, 0);
     CHECK(h_hid_GetStyle(&(uint32_t){3}) == STYLE_FULLKEY && h_hid_GetStyle(&(uint32_t){4}) == 0, "players 1..4 reported, player 5 not");
     CHECK(!(buttons_of(0, STYLE_FULLKEY) & DM_BTN_ZR), "player 5 does not feed player 1 in a game for four");
+    CHECK(dm_player_seen_as(3) == 3 && dm_player_seen_as(4) == -1, "a game for four sees player 4 as itself and does not use player 5");
     h_hid_ShowCtrl(info, NULL);
     CHECK(info[0] == 4, "the applet reports four players");
 

@@ -196,6 +196,14 @@ static uint32_t unsupported_players(void) {
 }
 static int one_player(void) { return !(atomic_load(&g_ids_supported) & ((1u << DM_PLAYERS) - 2)); }
 static uint32_t merged_players(void) { return one_player() ? unsupported_players() : 0; }
+// The player the game sees player p + 1's controller as, by the npads it supports: 0 for player 1 itself and for every player of a one-player game (merged_players), p when
+// the game supports No p, -1 when it does not use that player (a fifth controller in a four-player game) or for no player (p < 0). Not from dm_pad_players' mask, so a controller
+// taking its player with the input being asked about counts already (Android's pad_mark_used runs before the front end reports the new player)
+int dm_player_seen_as(int p) {
+    if (p < 0) return -1;
+    if (p == 0 || one_player()) return 0;
+    return atomic_load(&g_ids_supported) & id_bit((uint32_t)p) ? p : -1;
+}
 static int player_of(uint32_t id) {   // the reported player on npad id; -1 when none
     if (id == connected_id()) return 0;
     return id > 0 && id < DM_PLAYERS && reported((int)id) ? (int)id : -1;

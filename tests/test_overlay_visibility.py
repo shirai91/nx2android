@@ -121,6 +121,8 @@ static int tx_key(AInputEvent *e) { (void)e; return 1; }
 static void tx_changed(void) {}
 void dm_pad_players(uint32_t n) { assert(n & 1); players_mask = n; }
 uint32_t dm_player_npad(int p) { return (uint32_t)p; }
+static int one_player_game;   // hle_hid.c: a one-player game merges every player into player 1
+int dm_player_seen_as(int p) { return p < 0 ? -1 : one_player_game ? 0 : p; }
 void dm_pad_set_player(int p, uint64_t b, int32_t lx, int32_t ly, int32_t rx, int32_t ry) {
     assert(p >= 0 && p < DM_PLAYERS);
     pad_buttons[p] = b;
@@ -266,6 +268,10 @@ static void players(void) {
     tap.action = AMOTION_EVENT_ACTION_UP; assert(handle_event(&tap) == 1);
     pad.device = 45; assert(handle_event(&pad) == 1 && pad_buttons[1] == DM_BTN_A && dm_overlay_visible() == 1 && vibration == -1);   // player 2's press leaves player 1's controls up
     stick.device = 45; assert(handle_event(&stick) == 1 && pad_sticks[1][0] > 0 && dm_overlay_visible() == 1);   // and so does player 2's stick
+    one_player_game = 1;   // in a one-player game player 2's slot plays as player 1 (hle_hid.c merged_players): its press hides the controls and takes the rumble, as on main
+    pad.device = 45; assert(handle_event(&pad) == 1 && pad_slot_of(&g_slots, pad_owner(45)) == 1 && dm_overlay_visible() == 2 && vibration == 45);
+    one_player_game = 0; tap.action = AMOTION_EVENT_ACTION_DOWN;
+    assert(handle_event(&tap) == 1 && dm_overlay_visible() == 1); tap.action = AMOTION_EVENT_ACTION_UP; assert(handle_event(&tap) == 1);
     pad.device = 48; assert(handle_event(&pad) == 1 && pad_slot_of(&g_slots, pad_owner(48)) == 0 && vibration == 48 && dm_overlay_visible() == 2);   // the next player 1 takes it (and the rumble) at its input
 }
 

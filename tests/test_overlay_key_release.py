@@ -47,6 +47,7 @@ static struct { int unused; } g_slots;
 static uint32_t pad_slot_mask(const void *s) { (void)s; return 0; }
 static int takes = -1;   // what the last pad_player call asked: 1 take a player, 0 not
 static int pad_player(int id, int src, int take) { (void)id; (void)src; takes = take; return 0; }
+static int dm_player_seen_as(int p) { return p; }   // hle_hid.c: the player the game sees (one player here)
 static void dm_haptics_android_device(int d) { vibration = d; }
 static int tx_key(AInputEvent *e) { (void)e; return 1; }
 static void menu_open(int tab) { (void)tab; }
