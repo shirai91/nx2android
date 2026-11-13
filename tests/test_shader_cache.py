@@ -75,7 +75,7 @@ class ShaderCache(unittest.TestCase):
 
     def test_numeric_pass_sources_invalidate_export_receipt(self):
         tools = self.root / 'dm/android/tools'; tools.mkdir(parents=True)
-        names = ('spv_module.py', 'spv_builder.py', 'spv_half.py', 'spv_precise.py', 'spv_texture_offsets.py')
+        names = ('spv_module.py', 'spv_builder.py', 'spv_half.py', 'spv_precise.py', 'spv_texture_offsets.py', 'spv_gather.py')
         for name in names: (tools / name).write_text('initial ' + name)
         with mock.patch.object(pipeline, 'DM', self.root / 'dm'):
             self.export()
