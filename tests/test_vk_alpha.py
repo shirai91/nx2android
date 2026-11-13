@@ -275,7 +275,8 @@ int main(void) {
         headers = next(ndk.glob('toolchains/llvm/prebuilt/*/sysroot/usr/include'), None) if ndk else None
         if not headers: self.skipTest('NDK Vulkan headers required')
         src = (DM / 'android/gfx_vk_exec.c').read_text()
-        helpers = src[src.index('enum clear_type {'):src.index('static int prepare_draw(')]
+        helpers = src[src.index('enum clear_type {'):src.index('static int alpha_enabled(')]
+        helpers += function(src, 'static int alpha_enabled(') + function(src, 'static void alpha_push(')
         self.run_c(r'''
 #include <assert.h>
 #include <math.h>

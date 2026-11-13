@@ -19,6 +19,7 @@ class FragmentOutputMasks(unittest.TestCase):
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+typedef unsigned VkFormat;
 typedef struct {int is_int;} vkfmt_t;
 static const vkfmt_t formats[]={{0},{0},{1}};
 static const vkfmt_t *vk_fmt(unsigned f){return &formats[f];}
@@ -27,8 +28,10 @@ static struct {int ncol;uint32_t cfmt[8],dfmt,samples;struct {int a2c;} ms;
     struct {unsigned logic_op,blend_en;} color;struct {unsigned mask;} chmask;
     shader *sh[3];int rt_has_col[8];struct {struct {unsigned format;} d;} rt_col[8];
     struct {int src_rgb,dst_rgb,src_a,dst_a,eq_rgb,eq_a;} blend[8];} S;
-static struct {unsigned debug_mode,ncol,dfmt,samples,a2c,logic_en,logic_op,cfmt[8],wmask[8],blend_en;
+static struct {unsigned debug_mode,alpha,raster_discard,ncol,dfmt,samples,a2c,logic_en,logic_op,cfmt[8],wmask[8],blend_en;
     struct {int src,dst,srca,dsta,eq,eqa;} bl[8];} k;
+static int alpha_enabled(void *fs,unsigned format,int discard){(void)fs;(void)format;(void)discard;return 0;}
+static void color_logic(void *key){(void)key;}
 static void prepare(void){
 ''' + source[begin:end] + r'''
 }

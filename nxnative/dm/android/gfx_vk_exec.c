@@ -1605,6 +1605,7 @@ static void alpha_push(VkCommandBuffer cb, VkPipelineLayout layout) {
     vkCmdPushConstants(cb,layout,VK_SHADER_STAGE_FRAGMENT_BIT,DM_VK_ALPHA_PUSH_OFFSET,sizeof alpha,&alpha);
 }
 
+#include "gfx_vk_logic.inc"
 static int prepare_draw(int prim, int indexed) {
     // DM_VK_CB_DRAWS (read every submission, default 128, 0 = never): the replay is cut every that many draws and what is recorded goes to the GPU at once
     // (vk_cmd_split), so the GPU works on the frame while the rest is replayed instead of after all of it: NEO's Scramble Crossing 36.7 → 15.7 ms a frame
@@ -1696,7 +1697,6 @@ static int prepare_draw(int prim, int indexed) {
     if (need_zero) k.bind[k.nbind++] = (typeof(k.bind[0])){16, 0, 0, 0};
     // attachments and blending
     k.ncol = (uint32_t)S.ncol; k.dfmt = S.dfmt; k.samples = S.samples ? S.samples : 1; k.a2c = S.ms.a2c;
-    k.logic_en = S.color.logic_op != 3 && S.color.logic_op != 0 && 0;   // logic ops: not on mobile render targets in version 1
     k.logic_op = S.color.logic_op;
     uint32_t outputs = S.sh[1] ? ((k.debug_mode & 1) ? 1u : S.sh[1]->out_locs) : 0;
     for (int i = 0; i < S.ncol; i++) {
@@ -1711,13 +1711,14 @@ static int prepare_draw(int prim, int indexed) {
             k.bl[i].src = S.blend[i].src_rgb; k.bl[i].dst = S.blend[i].dst_rgb; k.bl[i].srca = S.blend[i].src_a; k.bl[i].dsta = S.blend[i].dst_a; k.bl[i].eq = S.blend[i].eq_rgb; k.bl[i].eqa = S.blend[i].eq_a;
         }
     }
+    k.alpha = alpha_enabled(S.sh[1], (VkFormat)S.cfmt[0], k.raster_discard);
+    color_logic(&k);
     // Dual-source blending: NVN blends colour target 0 with the shader's output 1 as its second source (factors SRC1_*, 0x10-0x13), the translator declares that output at
     // location 1, and Vulkan takes the second source only from location 0, index 1 (with location 1 the blend reads undefined values: Pokémon Legends: Arceus's post effects,
     // shader ha_post_effects variation 4, washed the whole picture out; the validation layer named it). Such a pipeline takes the fragment shader's dual-source variant
     #define SRC1F(x) ((x) >= 0x10 && (x) <= 0x13)
     k.dual = (k.blend_en & 1) && S.sh[1] && !k.raster_discard && (SRC1F(k.bl[0].src) || SRC1F(k.bl[0].dst) || SRC1F(k.bl[0].srca) || SRC1F(k.bl[0].dsta));
     #undef SRC1F
-    k.alpha = alpha_enabled(S.sh[1], (VkFormat)S.cfmt[0], k.raster_discard);
     k.clip_neg1 = !g_depth_zero;
     // layout and pipeline
     VkDescriptorSetLayout dsl[5] = {0}; int nsets = 0;
