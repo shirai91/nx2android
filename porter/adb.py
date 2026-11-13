@@ -14,6 +14,7 @@ NO_ADB = 'adb not found: install Android platform-tools (Download missing tools)
 
 
 LONG_PATH = 240   # adb.exe is not long-path aware: it cannot open a file whose full path passes Windows' 260 characters (Viractal's Unity bundles in a deep game folder)
+HOLD_POLL = 1.0   # s between tries while another install holds the device (Adb.hold)
 TAR_MIN, TAR_FILES, TAR_BYTES = 256, 8192, 64 << 20   # push_tree: from this many small files on, tar archives of at most this many files / bytes
 
 
@@ -174,14 +175,29 @@ class Adb:
         if re.search(r'(?im)^(?:Error|Exception)', out):
             raise AdbError(f'{package}: could not start its launcher activity: {out.strip()}')
 
-    def hold(self, folder):
+    def hold(self, folder, wait=True):
         """One porter install per device at a time (two at once on one device uninstalled each other's app, and Android deleted the data and the saves with it): a lock
-        file per serial in folder, held until the returned file is closed; AdbError when another install has it. No lock where the system has no flock (Windows)"""
+        file per serial in folder, held until the returned file is closed (the system also drops it when a crashed or killed install exits). While another install
+        holds it: a message, then wait for it (wait=False: AdbError). None (no lock) on a system with neither flock nor msvcrt.locking"""
         try: import fcntl
-        except ImportError: return None
+        except ImportError: fcntl = None
+        try: import msvcrt
+        except ImportError: msvcrt = None
+        if not fcntl and not msvcrt: return None
         f = open(Path(folder) / ('install-' + re.sub(r'[^A-Za-z0-9._-]', '_', self.serial or 'device') + '.lock'), 'w')
-        try: fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError as e: f.close(); raise AdbError(f'another porter install is using {self.serial or "the device"}: wait for it to end') from e
+        def take():   # True when f now holds the lock
+            try:
+                if fcntl: fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                else: f.seek(0); msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)   # byte 0; Windows drops it when the handle closes or the process exits
+                return True
+            except OSError: return False
+        try:
+            if not take():
+                name = self.serial or 'the device'
+                if not wait: raise AdbError(f'another porter install is using {name}: wait for it to end')
+                self.log(f'another porter install is using {name}: waiting for it to end')
+                while not take(): time.sleep(HOLD_POLL)
+        except BaseException: f.close(); raise
         return f
 
     def prepare_app_files(self, package, timeout=30):
