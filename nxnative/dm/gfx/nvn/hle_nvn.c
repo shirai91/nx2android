@@ -167,9 +167,9 @@ static void nvn_api(int api[2]) {
 NVN(nvnDeviceGetInteger, void, const NVNdevice *d, NVNdeviceInfo what, int *out) {
     (void)d;
     unsigned w = (unsigned)what;
-    // 0x5F separate sampler bindings per stage and 0x60/0x61 are not in the table measured on SMO. 0x5F is 32: the driver keeps their handles after those of the 128 separate textures
-    // (c2 0x568 + 8 slot), NVN2's own constant is 32, and Frostpunk sizes its renderer's per-stage binding table (32 entries) to min(0x5E, 0x5F) and clears that many slots each frame
-    // (main+0x1aa68d4, main+0x762f50), so the old 4096 ran it 96 slots past its end into the Renderer thread's crash at main+0x1aa90ac. 0x60/0x61 report a failure and return 0
+    // 0x5F separate sampler bindings per stage is 32: nnheaders nvn_DeviceConstantsNX.h, the source of the table above, has NVN_DEVICE_SEPARATE_SAMPLER_BINDINGS_PER_STAGE 32.
+    // Frostpunk sizes its renderer's per-stage binding table (32 entries) to min(0x5E, 0x5F) and clears that many slots each frame (main+0x1aa68d4, main+0x762f50), so the old
+    // 4096 ran it 96 slots past its end into the Renderer thread's crash at main+0x1aa90ac. 0x60/0x61 are not in the table: they report a failure and return 0
     // 0x67 (SDK 19): FINAL FANTASY TACTICS - The Ivalice Chronicles reads it before every program it loads and passes it as the alignment of its copies of the shader's control section and code
     // (main+0x49800; its allocator raises anything below 8 to 8). Not measured on hardware: 256, the alignment of shader code in a memory pool; the host reads shaders by key, so any value works
     if (w == 0x67) { *out = 256; return; }
