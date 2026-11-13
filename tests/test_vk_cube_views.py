@@ -46,7 +46,7 @@ static void capture_red(const char *fmt, ...) {
 static struct { VkDevice dev; VkPhysicalDevice pd; } V;
 static uint64_t g_wseq, g_tex_gen=1, g_set_epoch=1, g_x_logfs;
 static int g_var_now, g_tracing;
-static struct { struct { uint64_t key; } *sh[2]; } S;
+static struct { struct { uint64_t key; } *sh[2]; int pass_open; } S;
 static vkimg_t image;
 static tex_t texture;
 static view_t subview;

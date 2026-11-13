@@ -909,8 +909,8 @@ VkBufferView vk_tbuf_view(const tex_t *t, int storage) {
 }
 // A texture buffer a shader reads with wrapped 1D fetches (fetch1d, shader_vk.py: translated as 2D reads of x & 0x3FFF / x >> 14 over rows of NVN_TBUF_ROW texels;
 // nvn_mtl.m tbuf_as_2d aliases the buffer's bytes as those rows, which no Vulkan image can). The rows are materialised as an image of the texture's own format,
-// its content copied in from the pool at each bind (the bytes the CPU sees then, vk_ubd_read: in-flight GPU writes and deferred updates folded in): the buffer texture
-// itself has no image (vk_tex_, above). Dead or Alive Xtreme 3 Scarlet's deferred-lighting compute reads its light parameters from an 8192-element R32G32B32A32
+// its content copied in from the pool at each bind (the bytes the CPU sees then, vk_ubd_read: deferred CPU updates folded in; a write by the GPU earlier in the same submission is not seen, where nvn_mtl.m's alias sees it): the buffer texture
+// itself has no image (vk_tex_, above). The copy is a transfer command, so it is recorded only outside a render pass (tex_desc_for in gfx_vk_exec.c). Dead or Alive Xtreme 3 Scarlet's deferred-lighting compute reads its light parameters from an 8192-element R32G32B32A32
 // strip; the slot read the zero dummy before, and every deferred surface came out lit black
 typedef struct { VkImage img; VkDeviceMemory mem; VkImageView view; uint32_t w, h; } f1ent;
 static nvn_hmap g_f1_cache = {.klen = sizeof(tbkey)}; static pthread_mutex_t g_f1_mu = PTHREAD_MUTEX_INITIALIZER;
@@ -932,13 +932,14 @@ VkImageView vk_tbuf_as_2d(const tex_t *t) {
     int fresh = !e;
     if (fresh) {
         e = calloc(1, sizeof *e);
+        if (!e) { if (g_f1_fail++ < 8) VKLOG("[RED] 2D-row form of a texture buffer not made (out of memory)"); return VK_NULL_HANDLE; }
         VkResult r;
         VkImageCreateInfo ii = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, NULL, 0, VK_IMAGE_TYPE_2D, f->vk, {w, h, 1}, 1, 1, VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_TILING_OPTIMAL,
                                 VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_SHARING_MODE_EXCLUSIVE, 0, NULL, VK_IMAGE_LAYOUT_UNDEFINED};
-        if ((r = vkCreateImage(V.dev, &ii, NULL, &e->img))) { VKRED_ONCE(88, "2D-row form of a texture buffer not made (vkCreateImage %d: %ux%u format %#x)", r, w, h, t->d.format); g_f1_fail++; return VK_NULL_HANDLE; }
+        if ((r = vkCreateImage(V.dev, &ii, NULL, &e->img))) { VKRED_ONCE(88, "2D-row form of a texture buffer not made (vkCreateImage %d: %ux%u format %#x)", r, w, h, t->d.format); g_f1_fail++; free(e); return VK_NULL_HANDLE; }
         VkMemoryRequirements rq; vkGetImageMemoryRequirements(V.dev, e->img, &rq);
         VkMemoryAllocateInfo ai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, rq.size, vk_mem_type(rq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0)};
-        if ((r = vkAllocateMemory(V.dev, &ai, NULL, &e->mem))) { VKRED_ONCE(89, "2D-row form of a texture buffer not made (vkAllocateMemory %d, %llu bytes)", r, (unsigned long long)rq.size); vkDestroyImage(V.dev, e->img, NULL); g_f1_fail++; return VK_NULL_HANDLE; }
+        if ((r = vkAllocateMemory(V.dev, &ai, NULL, &e->mem))) { VKRED_ONCE(89, "2D-row form of a texture buffer not made (vkAllocateMemory %d, %llu bytes)", r, (unsigned long long)rq.size); vkDestroyImage(V.dev, e->img, NULL); g_f1_fail++; free(e); return VK_NULL_HANDLE; }
         VKCHK(vkBindImageMemory(V.dev, e->img, e->mem, 0));
         VkImageViewCreateInfo vi = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, NULL, 0, e->img, VK_IMAGE_VIEW_TYPE_2D, f->vk, {VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
                                 VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY}, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};

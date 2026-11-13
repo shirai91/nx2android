@@ -1199,7 +1199,7 @@ static int tex_desc_for(int st, const dmsv_bind *b, uint64_t h, VkDescriptorImag
         if (g_tvc[ck].num && !storage) ii->sampler = samp_for(st, b, h, 1);
         return g_tvc[ck].num;
     }
-    int num = 0;
+    int num = 0, tb2d = 0;   // tb2d: the view is a texture buffer's 2D-row image, refilled at every bind, so not cached below
     if (tid && g_var_now != 3 && vk_tex_by_id(tid, &v, &t) && t) {
         // a storage image the shader declares as integers over a float or unorm texture of the same texel size: a view of the same image in that class, so the shader
         // reads the texels' bits (FINAL FANTASY TACTICS' UI composite loads its RGBA8 window as r32ui; through a float view its blend came out yellow and white). Integer
@@ -1209,13 +1209,17 @@ static int tex_desc_for(int st, const dmsv_bind *b, uint64_t h, VkDescriptorImag
         if (tf && !tf->compressed && !tf->dec && !tf->depth && !tf->stencil) vf = vk_int_fmt(tf->bpb, sc == 2);
         vkimg_t *im = NULL; ii->imageView = vf ? vk_tex_view_as(t, v, b->dim, b->flags & 1, 0, &im, vf) : vk_tex_view(t, v, b->dim, b->flags & 1, 0, &im); if (storage && im) im->gpu_w = 1;
         if (vf && ii->imageView && vk_view_fmt == vf) { static int once; if (!once++) VKLOG("storage image: nvn format %#x viewed as vk %d for a %s image binding", t->d.format, vf, sc == 1 ? "uint" : "int"); }
-        if (!ii->imageView && (b->flags & 8) && !storage && t->d.target == NVN_TEXTURE_TARGET_BUFFER) ii->imageView = vk_tbuf_as_2d(t);   // the only form a Vulkan shader gives a texture buffer a wrapped 1D fetch reads; other binds keep the zero dummy (gfx_vk_tex.c)
+        if (!ii->imageView && (b->flags & 8) && !storage && t->d.target == NVN_TEXTURE_TARGET_BUFFER) {   // the only form a Vulkan shader gives a texture buffer a wrapped 1D fetch reads (gfx_vk_tex.c)
+            // the copy into the 2D-row image is a transfer command, which a render pass may not hold: a graphics stage (prepare_draw has begun the pass by now) keeps the zero dummy, a dispatch (vk_end_pass_land has ended it) gets the image
+            if (!S.pass_open) { ii->imageView = vk_tbuf_as_2d(t); tb2d = ii->imageView != VK_NULL_HANDLE; }
+            else { static unsigned nt; if (nt++ < 4) VKLOG("[RED] texture buffer (nvn format %#x, %u elements) read by wrapped 1D fetches in a graphics stage: the slot reads 0 (the 2D-row copy cannot be recorded inside a render pass)", t->d.format, t->d.width); }
+        }
         if (logfs) nlogfs++;
         if (g_tracing || logfs) VKLOG("  %stexture binding %d handle %#llx id %d: %ux%u nvn format %#x target %d serial %llu pool %p+%#llx size %#llx → image %p (%ux%u fmt %d layers %u levels %u, gpu-written %d) view %p", logfs ? "logfs " : "", b->binding, (unsigned long long)h, tid, t->d.width, t->d.height, t->d.format, t->d.target,
                              (unsigned long long)t->serial, (const void *)t->pool, (unsigned long long)t->off, (unsigned long long)t->L.size, (void *)im, im ? im->w : 0, im ? im->h : 0, im ? im->fmt : 0, im ? im->layers : 0, im ? im->levels : 0, im ? (int)im->gpu_w : -1, (void *)ii->imageView);
         if (im) im->last_use = mtl_last_fence() + 1;
         if (ii->imageView) num = view_num(t, v);
-        if (ii->imageView) { g_tvc[ck].epoch = g_set_epoch; g_tvc[ck].gen = g_tex_gen; g_tvc[ck].tid = tid; g_tvc[ck].dim = b->dim; g_tvc[ck].arr = b->flags & 1; g_tvc[ck].v = ii->imageView; g_tvc[ck].im = im; g_tvc[ck].num = num; g_tvc[ck].sc = sc; }
+        if (ii->imageView && !tb2d) { g_tvc[ck].epoch = g_set_epoch; g_tvc[ck].gen = g_tex_gen; g_tvc[ck].tid = tid; g_tvc[ck].dim = b->dim; g_tvc[ck].arr = b->flags & 1; g_tvc[ck].v = ii->imageView; g_tvc[ck].im = im; g_tvc[ck].num = num; g_tvc[ck].sc = sc; }
     }
     if (num && !storage) ii->sampler = samp_for(st, b, h, 1);
     if (!ii->imageView) {
