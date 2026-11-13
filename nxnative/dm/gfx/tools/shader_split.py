@@ -43,7 +43,7 @@
 #   With an update: give RomFS and main as comma-separated lists (base game first, e.g. data/v0/RomFS,data/v327680/RomFS); the output is the union of both versions (see main())
 #   Unity type trees need Unity's common string table, which is taken from the first main
 # Pair table: (vertex key, pixel key) of every BNSH variation (every Unity program); dmsh_build uses it to give vertex shaders the outputs their pixel shaders read but they do not write (see dmsh_build.py vs_pad)
-import collections, concurrent.futures as cf, hashlib, json, os, re, struct, subprocess, sys
+import base64, collections, concurrent.futures as cf, hashlib, json, os, re, struct, subprocess, sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../games')); import game as _game
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); import uepak
 GAME = _game.load()   # the current game profile (DM_GAME, required): source group rules and the table header note
@@ -1357,6 +1357,50 @@ def separable_pairs(keys):
     return {(v, p) for v in single for p in cover}, cover
 
 SMASH_ARC = struct.pack('<Q', 0xABCDEF9876543210)   # smash_arc.MAGIC (scan_file reads only the first bytes, without importing the reader)
+HEAPS_CACHE = 'shaders.cache.nx'
+
+def heaps_pak_files(f):
+    """The files of a Heaps PAK archive, open at +0 → [(path, offset in the archive, size)], or None when it is not one (other engines' .pak files share the magic's first bytes).
+    'PAK', a version byte, i32 header size (it counts these bytes, and the file data starts there), i32 data size; version 1 then holds a 64-character hash. The root entry follows, then 'DATA'.
+    An entry: u8 name length, name, u8 flags; a folder (bit 0) has i32 child count and its children, a file has its position in the data (f64 with bit 1, else i32), i32 size, i32 checksum"""
+    head = f.read(12)
+    if len(head) < 12 or head[:3] != b'PAK' or head[3] > 1: return None
+    size, dsize = struct.unpack_from('<ii', head, 4)
+    if not 12 < size <= 1 << 28 or dsize < 0: return None
+    f.seek(0, os.SEEK_END); end = f.tell(); f.seek(12)
+    if size + dsize > end: return None
+    h = f.read(size - 12); out = []
+    if len(h) != size - 12: return None
+    def entry(p, path):
+        n = h[p]; name = h[p + 1:p + 1 + n].decode('utf-8'); fl = h[p + 1 + n]; p += n + 2
+        if fl & ~3: raise ValueError('unknown entry flags')
+        path = f'{path}/{name}' if name else path
+        if fl & 1:
+            cnt, = struct.unpack_from('<i', h, p); p += 4
+            if not 0 <= cnt <= len(h): raise ValueError('invalid child count')
+            for _ in range(cnt): p = entry(p, path)
+            return p
+        pos = struct.unpack_from('<d', h, p)[0] if fl & 2 else struct.unpack_from('<i', h, p)[0]; p += 8 if fl & 2 else 4
+        n, _ = struct.unpack_from('<iI', h, p)
+        offset = int(pos)   # rejects NaN/infinity before seeking
+        if offset != pos or offset < 0 or n < 0 or offset + n > dsize: raise ValueError('invalid file range')
+        out.append((path, size + offset, n))
+        return p + 8
+    try: end = entry(64 if head[3] else 0, '')
+    except (IndexError, struct.error, ValueError, OverflowError, RecursionError): return None
+    return out if h[end:end + 4] == b'DATA' else None
+
+def heaps_shaders(d, label):
+    """Heaps' hxsl.CacheFile for the Switch (Dead Cells' shaders.cache.nx): a table of programs, then each stage's GLSL; a GLSL that was compiled ends with a comment holding the base64 of its
+    GLSLC output, //BIN=<base64>#. Dead Cells: 1,222 of its 1,271 sources have one, the others are vertex shaders the outputs already hold, since an output is the whole program"""
+    found = []
+    for m in re.finditer(rb'//BIN=([A-Za-z0-9+/]+={0,2})#', d):
+        try: raw = base64.b64decode(m[1], validate=True)
+        except ValueError: red(f'{label}@{m.start():#x}: invalid base64 in //BIN= comment')
+        found += glslc_shaders(raw, f'{label}@{m.start():#x}', need=False)
+    if not found: red(f'{label}: no GLSLC output in //BIN= comments')
+    return found
+
 UE_TAG = {'SV': 'vs', 'SH': 'hs', 'SD': 'ds', 'SG': 'gs', 'SP': 'ps', 'SC': 'cs'}
 def main_imports(img):   # the names main imports (its dynamic symbols)
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../tools')); import nso_syms
@@ -1532,6 +1576,14 @@ def scan_file(args):
     if head[:4] == BND2:   # a Criterion Bundle 2 (Need for Speed: Hot Pursuit Remastered's SHADERS.BNDL): GLSLC outputs in its zlib resources (bnd2_shaders)
         found += bnd2_shaders(open(path, 'rb').read(), '/' + rel)
         return rel, uniq_keys(found), var_pairs(found), trees
+    if head[:3] == b'PAK':   # a Heaps PAK archive (Dead Cells): only its shader cache is read, not its 2 GB of other files (heaps_pak_files, heaps_shaders)
+        with open(path, 'rb') as f:
+            members = heaps_pak_files(f)
+            if members is not None:
+                for nm, off, n in members:
+                    if nm.endswith('/' + HEAPS_CACHE):
+                        f.seek(off); found += heaps_shaders(f.read(n), f'/{rel}{nm}')
+                return rel, uniq_keys(found), var_pairs(found), trees
     if head[:4] == SPKG or head[:4] == b'\0\0\1\0' and path.endswith('.gz'):   # Three Houses' loose shader packages and chunked zlib files (kt_shaders)
         kt_shaders(open(path, 'rb').read(), '/' + rel, found)
         return rel, uniq_keys(found), var_pairs(found), trees
