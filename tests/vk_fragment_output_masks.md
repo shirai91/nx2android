@@ -7,9 +7,10 @@ while blending and channel writes remain enabled for targets 1 and 3.
 
 The target already reflects output locations in `vkshader_t.out_locs`. This port
 uses that map to disable writes and blending for absent fragment outputs. It
-also preserves the existing flat diagnostic shader's output-zero interface.
-No new SPIR-V transformation is added, and the helper already in PR #354 is not
-duplicated. Existing attachment writeback bookkeeping is unchanged.
+also preserves all eight outputs written by the replacement `flatdbg.frag`
+diagnostic shader, matching the replacement-fragment exception in the Metal
+path's colour-attachment rule (`nvn_mtl.m`). No new SPIR-V transformation is
+added. Existing attachment writeback bookkeeping is unchanged.
 
 ```sh
 python -m unittest discover -s tests -p test_fragment_output_masks.py
@@ -31,5 +32,6 @@ the same attachments, pipeline reuse and readback guards. An observer checks the
 actual production pipeline masks and blend flags before driver creation. The old
 host fails this observer on unwritten target 1 with write mask 15 and blending on.
 
-Host regressions and all four replay modes passed on Android 15 ARM64 SwiftShader.
-Commercial gameplay and physical GPUs are not qualified by this synthetic probe.
+Flat diagnostic mode expects magenta in all four bound targets (RGBA8 or R32F,
+as appropriate). Commercial gameplay and physical GPUs are not qualified by
+this synthetic probe; results for a particular revision belong in the PR.

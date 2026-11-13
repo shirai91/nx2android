@@ -11,7 +11,7 @@ ROOT=Path(__file__).resolve().parents[1]
 class FragmentOutputMasks(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        source=(ROOT/'nxnative/dm/android/gfx_vk_exec.c').read_text()
+        source=(ROOT/'nxnative/dm/android/gfx_vk_exec.c').read_text(encoding='utf-8')
         begin=source.index('    // attachments and blending\n')
         end=source.index('    // Dual-source blending:',begin)
         code=r'''
@@ -38,14 +38,14 @@ int main(int argc,char **argv){assert(argc==2);int mode=atoi(argv[1]);
     if(mode==2){fs.out_locs=10;S.chmask.mask=0x1234;S.rt_col[3].d.format=2;}
     if(mode==3){fs.out_locs=10;k.debug_mode=1;}
     prepare();
-    unsigned masks[4][4]={{15,0,15,0},{0,0,0,0},{0,3,0,1},{15,0,0,0}};
-    unsigned blends[]={5,0,2,1};
+    unsigned masks[4][4]={{15,0,15,0},{0,0,0,0},{0,3,0,1},{15,15,15,15}};
+    unsigned blends[]={5,0,2,15};
     for(int i=0;i<4;i++)assert(k.wmask[i]==masks[mode][i]);
     assert(k.blend_en==blends[mode]);
 }
 '''
         cls.temp=tempfile.TemporaryDirectory(prefix='nx2a-output-mask-');cls.addClassCleanup(cls.temp.cleanup)
-        source=Path(cls.temp.name)/'test.c';source.write_text(code);cls.exe=source.with_suffix('')
+        source=Path(cls.temp.name)/'test.c';source.write_text(code, encoding='utf-8');cls.exe=source.with_suffix('')
         subprocess.run(['cc','-std=c11','-O1',str(source),'-o',str(cls.exe)],check=True,capture_output=True,text=True)
 
     def test_unwritten_attachments_disable_color_and_blending(self):
