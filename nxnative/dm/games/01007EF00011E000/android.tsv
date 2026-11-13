@@ -1,0 +1,53 @@
+# The Legend of Zelda: Breath of the Wild on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Nintendo EPD's engine (sead / agl / gsys / ksys) on SDK 20.5.22, update 1.9.0 (v1114112); 19,592 shaders in the bundle. The upstream profile with the frame step at 60 fps.
+# Tested 2026-11-10 to 2026-11-12 by a player on a Samsung Galaxy S25 Ultra (Snapdragon 8 Elite for Galaxy, Adreno 830, window 2340x1080), from the logs and screenshots of
+# each run: a new save's opening, the Shrine of Resurrection, the way out and the Great Plateau around the first campfire (walking, the camera, the pause menu, docked and
+# handheld) and one fight with a Bokoblin at its camp (the player's report; the controller's rumble reached the phone). Saves commit (3 in one run). Not tested: the
+# other shrines, towers, a long session, a save loaded from a console.
+# Release 0.3.0 on Qualcomm's driver (512.800.64): the terrain and Link's skin did not draw and the game stopped with "too many memory pools" at the world load on the way
+# out of the shrine, every time; the shrine ran at 20 fps (about 3,500 draws, replay 20.6 ms and GPU 38 ms a frame). On main both are gone: the pool limit is 32,768 (the game
+# keeps 4,096 or more live outdoors) and the G-buffer's duplicate colour slots share one image ("inactive colour attachment alias: slot 2 uses slot 1"); the player reported
+# everything drawn.
+# With Mesa's Turnip 26.2.3 (whitebelyash's Stable Turnip v2, porter port --vulkan-driver), porter port --mt-replay and the first three switches below: the shrine at 30 fps
+# (3,770 draws, replay 13.1 ms, GPU 23 ms), the Great Plateau at 20 (4,400-5,000 draws in about 210 passes, replay 11.5-14.5 ms, GPU 33-36 ms against the 33.3 ms of 30 fps,
+# the same docked and handheld: 33.9-36.1 against 32.8-34.5 ms), the game at 0.928 of real time. The three were on in every run with Turnip and never switched one by one.
+# DM_GPU_TURBO=1 is not in the profile; a player adds it to env.txt on the device. It holds the GPU at its highest clock (KGSL's power control off). With it on top of those
+# three, docked, at the game's own size: the Great Plateau's GPU time 11-15 ms a frame at 3,800-4,650 draws, 60 fps where a frame's cost stays under a vsync and 30 where it
+# does not (1,800 frames: 1,010 held one vsync, 790 two, none three), the game at real time. Without it a frame held two or three vsyncs lets the GPU's governor lower the
+# clock until the work fills it. DM_RENDER_SCALE=0.75 with it changed nothing that shows (GPU 12-17 ms; 289 / 1,511 / 0 frames in a run with wider views), so the profile
+# keeps the game's size. The cost is heat: the overlay's SOC row went from 50 to 67-69 and then 76 C at 60 fps. Later in two runs the GPU took 17-21 ms a frame with the same
+# draws, passes and dispatches (about 4,000 / 200 / 27) and the game held 30: in one from the fight at the Bokoblin camp on, in the other the 30 fps screenshot is at that
+# camp's fire with SOC at 55 C. Whether that is the camp's fire and smoke or the phone limiting its GPU is not known. The profile leaves it out for that heat, as Tears of the
+# Kingdom's does, at the player's request: on this version the plateau is then 20 fps, as measured above. On a build with replay changes proposed separately (heap copies of
+# deferred uniform updates, a wider pool lookup cache) a short run without it, with the two cut switches below, held 60: 1,500 frames at about 4,000 draws, frame p50 16.6 /
+# p95 20-21 ms against 17-19 with it, GPU p50 12.6-13.4 ms as with it, since at 60 the governor keeps the clock up by itself.
+# A further run of 9,300 frames with the three switches and the turbo (the sampling profiler on too), around the Great Plateau's ruins: 95 to 100% of the frames held one
+# vsync (1,800 / 1,738 / 1,768 / 1,708 of each 1,800, none three), 3,600-4,500 draws, replay 10.3-11.1 ms, GPU p50 10.6-13.4 ms, 40 to 60 late frames in each 1,800: 60 fps
+# with slight stutters, the player said, with SOC at 67 C in that run's screenshot.
+# DM_VK_X_CUTANY=1 + DM_VK_CB_DRAWS=32 (the command buffer cut every 32 draws, before any pass, so that the GPU starts on the frame while the replay still records), at the
+# player's request after a run with them and the turbo: 1,769 of 1,800 frames held one vsync, twice (98%), and the player reported a consistent 60 fps with SOC in the 70s
+# (and no picture fault). That run was on a build with replay changes proposed separately (heap copies of deferred uniform updates, a wider pool lookup cache: the replay 11.7
+# -> 8.1 ms a frame in the woods), not on main, and the two were not switched within a run: its replay (9.3-10.1 ms at 4,000-4,300 draws) and the GPU's tail after it (3.8-4.0
+# ms) read as in the run before without them. Cutting before any pass is the rule that made Adreno's LRZ flicker on Qualcomm's driver; it was run here with Turnip alone.
+# Turnip's release notes name a glitchy picture on the Adreno 830 in its GMEM mode and TU_DEBUG=sysmem against it; the player was told to add it to env.txt, the log does
+# not show whether the driver took it, and the picture was right.
+# Open: the fight had GPU frames of 40-100 ms and one of 221 ms (38 frames held three vsyncs), as Tears of the Kingdom's fights have; 60 fps held on the plateau (a frame
+# costs 0.9-1.1 vsyncs in its wide views: replay 10-12 ms, GPU 13-15 ms); the yield watchdog names PlacementMgr and RadarMgr once a run (about 40,000 yields a second for 30 s
+# at sdk+0xc83180); "BufferInitialize: past the end of the pool (offset 0 size 0x40000 pool 0x24000)" in four of six runs (six times in one), with nothing seen wrong;
+# "two-stage replay: a drain waits over 1 s" once, early in a run.
+# DM_VK_WINDOW_GAME_RATE=1: the window keeps asking for 60 fps while the frame step holds 2 vsyncs. Without it the window asked for 30 after 60 held presents, the display
+# went to 30 Hz (display timing: refresh 33.3 ms), every trial back to 60 showed its first frames late on that display and failed within 5 presents (1-2 ms of GPU work a
+# frame on the title screen), and the run stayed at 30 fps: the display reached 30 Hz in each of four 30 fps runs, and not in the runs that held 60. With it, a run of
+# 4,500 presents kept the window at 60 and the display at 120 / 60 Hz throughout, and came back to 60 fps after each heavy scene. Scenes of 3,800-4,300 draws (a village)
+# still hold 2 vsyncs: their GPU time is 15-17 ms a frame (p95 18-20), with the GPU at its highest clock too (DM_GPU_TURBO=1)
+status	experimental
+tested	v1114112 Samsung Galaxy S25 Ultra (Snapdragon 8 Elite for Galaxy, Adreno 830); Turnip 26.2.3
+package	org.nx2a.zeldabreathofthewild
+orientation	landscape
+requires	bcn
+env	DM_VK_FDZ=0
+env	DM_NVN_ASYNC=1
+env	DM_PIN_REPLAY=prime
+env	DM_VK_X_CUTANY=1
+env	DM_VK_CB_DRAWS=32
+env	DM_VK_WINDOW_GAME_RATE=1

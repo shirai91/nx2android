@@ -30,9 +30,15 @@ int64_t dm_overlay_pressed(int ctl, uint64_t bit);   // CLOCK_MONOTONIC ns of th
 // is where the layout puts it; *s is its size factor either way (1 = the layout's)
 int dm_overlay_custom(int layout, int ctl, float *x, float *y, float *s);
 int dm_overlay_custom_ver(void);   // counts the changes (the theme-less drawing is rasterized again)
+// a control the player hid in the layout editor (Hide): not drawn and not touchable in play. In the editor it is drawn and can be chosen, so it can be
+// shown again: dm_overlay_hidden says whether it is hidden, dm_overlay_off whether play leaves it out now (hidden and the editor closed). Never the menu button
+int dm_overlay_hidden(int layout, int ctl);
+int dm_overlay_off(int layout, int ctl);
+static inline int ov_off(const ov_ctl *c);   // (below: c in OV_LAYOUTS)
 float dm_overlay_opacity(void);    // the gamepad's opacity, 0.2..0.8 (the menu's Opacity slider)
 static inline int ov_index(const ov_ctl *c, int *layout) { int k = (int)(c - &OV_LAYOUTS[0][0]); *layout = k / OV_N; return k % OV_N; }   // c: in OV_LAYOUTS
 static inline float ov_cscale(const ov_ctl *c) { int l, i = ov_index(c, &l); float x, y, s = 1; dm_overlay_custom(l, i, &x, &y, &s); return s; }
+static inline int ov_off(const ov_ctl *c) { int l, i = ov_index(c, &l); return dm_overlay_off(l, i); }
 #define OV_DRAG_SLOP 0.02f   // a press on the menu button that moves this far (of the window's height) drags it instead of opening the menu
 // the controls' size factor: 1, or more on a small screen so a face button stays at least OV_MIN_MM wide (sizes follow the window's height, which on a
 // 6.7" phone made them 7 mm against 12 on an 8.8" tablet). Positions stay where they are
@@ -74,10 +80,10 @@ static inline float ov_reach(const ov_ctl *c, const float b[4], float H) {
 static inline uint64_t ov_face_combo(const ov_ctl *layout, float x, float y, float W, float H) {
     const uint64_t face = DM_BTN_A | DM_BTN_B | DM_BTN_X | DM_BTN_Y;
     for (int i = 0; i < OV_N; i++) {
-        const ov_ctl *a = &layout[i]; if (a->kind != OV_BUTTON || !(a->btn & face)) continue;
+        const ov_ctl *a = &layout[i]; if (a->kind != OV_BUTTON || !(a->btn & face) || ov_off(a)) continue;
         for (int j = i + 1; j < OV_N; j++) {
             const ov_ctl *b = &layout[j]; uint64_t pair = a->btn | b->btn;
-            if (b->kind != OV_BUTTON || !(b->btn & face) || a->btn == b->btn || pair == (DM_BTN_A | DM_BTN_Y) || pair == (DM_BTN_X | DM_BTN_B)) continue;
+            if (b->kind != OV_BUTTON || !(b->btn & face) || ov_off(b) || a->btn == b->btn || pair == (DM_BTN_A | DM_BTN_Y) || pair == (DM_BTN_X | DM_BTN_B)) continue;
             float ab[4], bb[4]; ov_box(a, W, H, ab); ov_box(b, W, H, bb);
             float distance = hypotf(ab[0] - bb[0], ab[1] - bb[1]);
             float radius = fminf(fminf(ab[2], ab[3]), fminf(bb[2], bb[3]));
@@ -107,15 +113,19 @@ void dm_overlay_theme_done(const ov_theme *t);   // the pixels are on the GPU: t
 
 // ---- the pause menu: a panel in the middle of the window: a row of tabs, the open tab's rows, and Resume. Everything is placed in a panel rectangle p
 // (x, y, width, height: the window's for touches, the raster's for drawing), so the touches and the drawing agree ----
-enum { OVM_OVERLAY, OVM_OPACITY, OVM_EDIT, OVM_RUMBLE, OVM_FPS, OVM_MODE, OVM_EXPORT, OVM_IMPORT, OVM_PAD, OVM_RESUME, OVM_TAB, OVM_N };   // OVM_TAB: the tabs' row;
+enum { OVM_OVERLAY, OVM_OPACITY, OVM_EDIT, OVM_RUMBLE, OVM_FPS, OVM_MODE, OVM_EXPORT, OVM_IMPORT, OVM_PAD, OVM_AUDIO, OVM_RESUME, OVM_TAB, OVM_N };   // OVM_TAB: the tabs' row;
             // OVM_EDIT: the layout editor; OVM_MODE: handheld (performance) or docked (resolution); OVM_EXPORT, OVM_IMPORT: the save manager (saves_android.c);
             // OVM_PAD: a controller's face buttons by their position or by their label (front_android.c pad_labels)
 #define OVM_TABS 2
 #define OVM_PER_TAB 5
-static const int OVM_TAB_ITEMS[OVM_TABS][OVM_PER_TAB] = {{OVM_OVERLAY, OVM_OPACITY, OVM_EDIT, OVM_RUMBLE, OVM_PAD}, {OVM_FPS, OVM_MODE, OVM_EXPORT, OVM_IMPORT, -1}};   // -1: no row
+static const int OVM_TAB_ITEMS[OVM_TABS][OVM_PER_TAB] = {{OVM_OVERLAY, OVM_OPACITY, OVM_EDIT, OVM_RUMBLE, OVM_PAD}, {OVM_FPS, OVM_MODE, OVM_EXPORT, OVM_IMPORT, OVM_AUDIO}};
 static const char *const OVM_TAB_NAMES[OVM_TABS] = {"Gamepad", "Game"};
 #define OVM_ROWS (OVM_PER_TAB + 2)   // the tabs, a tab's rows (as many for every tab: the panel keeps its size), Resume
-static inline int ov_menu_item(int tab, int row) { return row == 0 ? OVM_TAB : row == OVM_ROWS - 1 ? OVM_RESUME : row > 0 && row < OVM_ROWS - 1 ? OVM_TAB_ITEMS[tab & 1][row - 1] : -1; }
+int dm_menu_audio_available(void);
+static inline int ov_menu_item(int tab, int row) {
+    int item = row == 0 ? OVM_TAB : row == OVM_ROWS - 1 ? OVM_RESUME : row > 0 && row < OVM_ROWS - 1 ? OVM_TAB_ITEMS[tab & 1][row - 1] : -1;
+    return item == OVM_AUDIO && !dm_menu_audio_available() ? -1 : item;
+}
 #define OV_MENU_ROW 0.115f   // row height, of the window's height
 #define OV_MENU_W 0.95f      // panel width, of the window's height
 #define OV_MENU_PAD 0.03f
@@ -154,10 +164,12 @@ static inline int ov_menu_track_value(float x, const float p[4], int row) {   //
 // ---- the layout editor (front_android.c, from the menu's Edit layout): the game stays held; every control (the menu button too) can be dragged, and
 // resized by a pinch or the toolbar's - and + (the tapped control, or all of them when none is). A toolbar under the top edge: its hint line and buttons;
 // Cancel with changes asks first, in a prompt in the middle. Both are drawn into the menu panel's raster (gfx_vk_present.c ov_edit_panel) ----
-enum { OVE_SMALLER, OVE_BIGGER, OVE_RESET, OVE_CANCEL, OVE_SAVE, OVE_GRID, OVE_N, OVE_DISCARD = OVE_N, OVE_KEEP, OVE_ALL };
-// the editor's state in dm_menu_state: bit 17, bit 0 the prompt is open, bit 1 something changed, bit 2 grid snapping, bits 4..7 the button held + 1, bits 8..15 the chosen control + 1
+enum { OVE_SMALLER, OVE_BIGGER, OVE_RESET, OVE_CANCEL, OVE_SAVE, OVE_GRID, OVE_HIDE, OVE_N, OVE_DISCARD = OVE_N, OVE_KEEP, OVE_ALL };   // OVE_HIDE: hide / show the chosen control
+// the editor's state in dm_menu_state: bit 17, bit 0 the prompt is open, bit 1 something changed, bit 2 grid snapping, bit 3 the chosen control is hidden,
+// bits 4..7 the button held + 1, bits 8..15 the chosen control + 1
 #define OVE_ST 0x20000
 #define OVE_GRID_ON 4
+#define OVE_SEL_HIDDEN 8
 #define OVE_GRID_ROWS 20   // Snap to grid's rows; its cells are square
 #define OVE_SCALE_MIN 0.5f   // a control's size factor
 #define OVE_SCALE_MAX 2.0f
@@ -168,8 +180,8 @@ static inline void ov_ed_prompt_rect(float W, float H, float r[4]) {   // the di
     float s = ov_menu_scale(); r[2] = fminf(0.75f * H * s, W * 0.9f); r[3] = 0.30f * H * s; r[0] = (W - r[2]) / 2; r[1] = (H - r[3]) / 2;
 }
 static inline void ov_ed_button(int i, const float p[4], float b[4]) {   // button i in its panel p (the toolbar's, or the prompt's for OVE_DISCARD, OVE_KEEP)
-    static const float x0[OVE_ALL] = {0.15f, 1.30f, 2.80f, 5.25f, 7.70f, 0.15f, 0.50f, 5.20f}, w[OVE_ALL] = {1.0f, 1.0f, 2.30f, 2.30f, 2.15f, 9.70f, 4.30f, 4.30f};
-    static const float y0[OVE_ALL] = {0.28f, 0.28f, 0.28f, 0.28f, 0.28f, 0.68f, 0.50f, 0.50f}, h[OVE_ALL] = {0.34f, 0.34f, 0.34f, 0.34f, 0.34f, 0.28f, 0.36f, 0.36f};
+    static const float x0[OVE_ALL] = {0.15f, 1.30f, 2.80f, 5.25f, 7.70f, 0.15f, 7.70f, 0.50f, 5.20f}, w[OVE_ALL] = {1.0f, 1.0f, 2.30f, 2.30f, 2.15f, 7.40f, 2.15f, 4.30f, 4.30f};
+    static const float y0[OVE_ALL] = {0.28f, 0.28f, 0.28f, 0.28f, 0.28f, 0.68f, 0.68f, 0.50f, 0.50f}, h[OVE_ALL] = {0.34f, 0.34f, 0.34f, 0.34f, 0.34f, 0.28f, 0.28f, 0.36f, 0.36f};
     float u = p[2] / 10; b[0] = p[0] + x0[i] * u; b[1] = p[1] + y0[i] * p[3]; b[2] = w[i] * u; b[3] = h[i] * p[3];
 }
 static inline int ov_ed_button_at(float x, float y, const float p[4], int first, int n) {   // the button of first..first+n-1 under (x, y), -1 none

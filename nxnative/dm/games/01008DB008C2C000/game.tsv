@@ -1,0 +1,40 @@
+# Pokémon Shield: Game Freak's engine on SDK 7.3.2 (NVN, Wwise, NintendoWare Vfx), update 1.3.2; Pokémon Sword's twin (0100ABF008968000), the same values but its own main build.
+# Made from the survey (dm/games/profile_guess.py) and checked by hand against it and Sword's profile; boots on Android (2026-11-13, AYN Odin 2).
+# The rewriter's patches of 1.3.2's main are in patches.py
+
+# ---- Identity ----
+title_id	01008DB008C2C000
+program_id	01008DB008C2C000
+
+# ---- App ----
+name	Pokémon Shield
+ipa	PokMonShield.ipa
+app_category	public.app-category.games
+
+# ---- Versions ----
+build	v458752	1.3.2	main=a16802625e7826bf83b6f9708e475b91	subsdk0=93ff8252d975adf07230cb86c83301c5	subsdk1=a36dac0e0a5ed3b41482b6bb85625c73	sdk=fcf93a41b08c5193a1410d262602dc62
+package	v458752
+shader_versions	v458752
+
+# ---- Files ----
+# every module main imports from
+modules	main subsdk0 subsdk1 sdk
+romfs_marker	bin/sound/NX64/wwise/bank/Stream.pck
+zip_store	.arc:.bffnt:.bfotf:.gfbmdl:.gfpak:.mp4:.pck:.metallib
+
+# ---- Memory ----
+# main sets a heap of at most the pool − 64 MB: a 3328 MB heap region
+mem_reserve	0x100000000
+mem_alias	0x10000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+# the NPDM declares 0 MB of system resource: IsVirtualAddressMemoryEnabled is false, as on Horizon (Big Brain Academy: Brain vs. Brain sets a heap only then)
+sys_resource	0x0
+
+# ---- Shader split ----
+shader_groups	/bin/=bin /system_resource/=systemresource
+shader_note	Pokémon Shield shaders
+
+# ---- After the rewrite ----
+# the rewritten modules are larger than the default 64 MB of used memory (Age of Calamity: 66.6 MB → 72 MB)
+mem_used	0x4c00000

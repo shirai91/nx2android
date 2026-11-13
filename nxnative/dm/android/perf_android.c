@@ -45,16 +45,54 @@ static int64_t perf_now(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONI
 // DM_GPU_TURBO=1 (live, read every 60 presents): Adreno's GPU at its highest clock (thermal limits still apply) through the KGSL property libadrenotools'
 // adrenotools_set_turbo sets: power control off on /dev/kgsl-3d0; 0 gives it back. A frame held at 30 fps lets the GPU governor lower the clock until the work
 // fills the frame, so its GPU time says little about what 60 would need. Any Vulkan driver on KGSL (Qualcomm's, Turnip)
-static void gpu_turbo(void) {
-    static int on;   // what was last set
-    const char *e = getenv("DM_GPU_TURBO"); int want = e && atoi(e) > 0;
-    if (want == on) return;
+// DM_GPU_TURBO=auto: on while frames miss the display, off again when the GPU has little to do. Measured on a Galaxy Z Fold7 (Adreno 830, Super Mario Bros.
+// Wonder, no ADPF, rate held at 60): the governor gave 222-443 MHz, enough for the world map (11-16 of 300 frames dropped) but not for a course (31-115 of 300,
+// GPU 12-19 ms a frame); at the highest clock the course dropped 3-5 of 300. On: 4 or more of the last 64 frames late on screen. Off: at least the hold since
+// it went on, no frame late, and the GPU's mean frame time under AUTO_OFF_NS at the highest clock (a third of the period: room at a clock 3.5x lower). Turning
+// on again within 30 s of turning off doubles the hold (20 s to 5 min), so a scene at the edge does not swing
+#define AUTO_OFF_NS 3500000ll
+static int64_t g_gpu_mean;   // the GPU's frame time, a running mean over ~16 frames (dm_perf_frame_cost)
+static int shown_late(void);
+static int turbo_auto(int on) {
+    static int64_t since, off_at, hold = 20000000000ll; int64_t now = perf_now(); int late = shown_late();
+    if (!on) {
+        if (late < 4) return 0;
+        if (off_at && now - off_at < 30000000000ll) hold = hold * 2 > 300000000000ll ? 300000000000ll : hold * 2;
+        since = now; LOG("[perf] DM_GPU_TURBO=auto: on (%d of 64 frames late, GPU %.1f ms; held at least %.0f s)", late, g_gpu_mean / 1e6, hold / 1e9); return 1;
+    }
+    if (now - since < hold || late > 0 || g_gpu_mean <= 0 || g_gpu_mean >= AUTO_OFF_NS) return 1;
+    off_at = now; LOG("[perf] DM_GPU_TURBO=auto: off (GPU %.1f ms at the highest clock)", g_gpu_mean / 1e6); return 0;
+}
+// The KGSL property is device-wide and outlives the app, so the power control goes back to the governor when the app pauses or ends (front_android.c
+// on_pause, on_destroy, host_thread when the game ends itself); the next presents set it again. A device without KGSL (Mali, Xclipse) or one that refuses the ioctl is tried once and then left alone.
+static pthread_mutex_t g_turbo_mu = PTHREAD_MUTEX_INITIALIZER;
+static int g_turbo_on, g_turbo_dead;   // what was last set; the property could not be set
+static int turbo_set(int want) {
     struct { unsigned type; void *value; size_t size; } prop; uint32_t enable = !want;   // (kgsl.h kgsl_device_getproperty; KGSL_PROP_PWRCTRL 0xE: 0 = power control off)
     prop.type = 0xE; prop.value = &enable; prop.size = sizeof enable;
     int fd = open("/dev/kgsl-3d0", O_RDWR); int r = fd < 0 ? -1 : ioctl(fd, _IOW(0x09, 0x32, prop), &prop);   // IOCTL_KGSL_SETPROPERTY
+    int err = errno;
     if (fd >= 0) close(fd);
-    if (r) { LOG("[RED] [perf] DM_GPU_TURBO=%d: the GPU's power control could not be set (%s)", want, strerror(errno)); return; }
-    on = want; LOG("[perf] DM_GPU_TURBO=%d: %s", want, want ? "the GPU at its highest clock (power control off)" : "the GPU's own clock control again");
+    errno = err; return r;
+}
+static void gpu_turbo(void) {
+    pthread_mutex_lock(&g_turbo_mu);
+    if (g_turbo_dead) { pthread_mutex_unlock(&g_turbo_mu); return; }
+    const char *e = getenv("DM_GPU_TURBO"); int want = e && !strcmp(e, "auto") ? turbo_auto(g_turbo_on) : e && atoi(e) > 0;
+    if (want != g_turbo_on) {
+        if (turbo_set(want)) {
+            g_turbo_dead = 1;
+            LOG("[RED] [perf] DM_GPU_TURBO=%s: the GPU's power control could not be set (%s); not tried again", e ? e : "0", strerror(errno));
+        } else {
+            g_turbo_on = want; LOG("[perf] DM_GPU_TURBO=%d: %s", want, want ? "the GPU at its highest clock (power control off)" : "the GPU's own clock control again");
+        }
+    }
+    pthread_mutex_unlock(&g_turbo_mu);
+}
+void dm_perf_gpu_release(void) {
+    pthread_mutex_lock(&g_turbo_mu);
+    if (g_turbo_on && !turbo_set(0)) { g_turbo_on = 0; LOG("[perf] DM_GPU_TURBO: the GPU's own clock control again (the app paused or ended)"); }
+    pthread_mutex_unlock(&g_turbo_mu);
 }
 
 static void hint_init(int64_t target) {
@@ -171,7 +209,9 @@ static int fps_pin(void) {   // a DM_CTL "env DM_FPS_PIN=40" line holds that ste
 // replay on a thread of its own (DM_NVN_ASYNC) Xenoblade Chronicles 3's presenting thread worked ~8 ms a frame, the rate stepped up to 40 fps for frames
 // of ~24 ms GPU time, and the display's switch to 120 Hz and the missed frames made 80-550 ms frames
 static int64_t g_frame_cost, g_frame_gpu;
-void dm_perf_frame_cost(int64_t replay_ns, int64_t gpu_ns) { g_frame_cost = replay_ns > gpu_ns ? replay_ns : gpu_ns; g_frame_gpu = gpu_ns; }
+static int64_t g_gpu_mean;   // (also above, for turbo_auto; tests/test_perf_adaptive.py compiles only this part)
+void dm_perf_frame_cost(int64_t replay_ns, int64_t gpu_ns) { g_frame_cost = replay_ns > gpu_ns ? replay_ns : gpu_ns; g_frame_gpu = gpu_ns;
+    if (gpu_ns > 0) g_gpu_mean = g_gpu_mean ? g_gpu_mean + (gpu_ns - g_gpu_mean) / 16 : gpu_ns; }
 // The frame's work to the CPU hint: with the GPU's time where Android 15 takes it, and a load increase signalled (Android 16) when 3 frames in a row run over
 // the period, at most every 0.5 s: the clocks then follow the whole frame and not only its CPU half. (Super Mario Odyssey on the Red Magic Astra fell from 60
 // to 30-45 fps with the GPU at 222-443 MHz in the same scene; that device's GPU clock moved only with its FULL performance mode or its game menu, hints or not)

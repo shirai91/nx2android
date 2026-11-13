@@ -287,6 +287,16 @@ class Misc(unittest.TestCase):
         self.assertTrue(cli._parser().parse_args(['port', 'x', '--mt-replay']).mt_replay); self.assertFalse(cli._parser().parse_args(['port', 'x']).mt_replay)
         self.assertFalse(pipeline.Options(Path(".")).mt_replay)
 
+    def test_sysdata_no_firmware_text(self):   # the [RED] line without --firmware: MiiModel's wording as before; the shared fonts say what the host draws instead
+        mii = pipeline.sysdata_no_firmware('Mario Kart 8 Deluxe', [0x0100000000000802])
+        self.assertEqual(mii, 'Mario Kart 8 Deluxe reads system data from the console\'s firmware (0100000000000802); without --firmware <your firmware dump\'s system content folder> '
+                              'the host\'s stand-in is used and those parts draw nothing (MiiModel: the Mii heads)')
+        fonts = pipeline.sysdata_no_firmware('Kirby', [0x0100000000000811, 0x0100000000000810])
+        self.assertIn('(0100000000000811, 0100000000000810)', fonts); self.assertIn('--shared-font <ttf>', fonts); self.assertIn('stand-ins', fonts)
+        self.assertNotIn('MiiModel', fonts); self.assertNotIn('\n', fonts)
+        both = pipeline.sysdata_no_firmware('X', [0x0100000000000802, 0x0100000000000810])
+        self.assertIn('MiiModel: the Mii heads', both); self.assertIn('(0100000000000810)', both)
+
     def test_shared_font_option(self):   # --shared-font FILE: parsed, and a file that is not a .ttf fails before any stage
         from porter import cli
         self.assertEqual(cli._parser().parse_args(['port', 'x', '--shared-font', 'cjk.ttf']).shared_font, 'cjk.ttf')
@@ -416,7 +426,17 @@ class Dumps(unittest.TestCase):   # porter/dumps.py: NSZ / XCZ → NSP; an NCZ m
         secure = _hfs0([(self.name + '.ncz', self.block), ('0100000000aaa0000000000000000000.tik', b't' * 0x2c0)])
         root = _hfs0([('update', _hfs0([])), ('secure', secure)])
         x = bytearray(0x200); x[0x100:0x104] = b'HEAD'; x[0x130:0x138] = struct.pack('<Q', 0x200)
-        (self.d / 'g.xcz').write_bytes(bytes(x) + root); self.check(self.d / 'g.xcz')
+        for key_area in (False, True):   # identification accepts both card layouts; decompression must read the same secure partition
+            with self.subTest(key_area=key_area):
+                src = self.d / 'g.xcz'; src.write_bytes(bytes(0x1000 if key_area else 0) + bytes(x) + root)
+                app, fam = pipeline.nsp.scan_nsps(self.d, ('xcz',))
+                self.assertEqual(app, 0x0100000000AAA000); self.assertEqual(fam['base'], src)
+                self.check(src)
+
+    def test_xcz_without_card_header_is_rejected(self):
+        src = self.d / 'bad.xcz'; src.write_bytes(bytes(0x2000))
+        with self.assertRaisesRegex(pipeline.BuildError, 'no card header'): self.dumps.decompress(src, self.d / 'out.nsp')
+        self.assertFalse((self.d / 'out.nsp').exists()); self.assertFalse((self.d / 'out.nsp.partial').exists())
 
     def test_damage_is_found(self):   # a changed byte: a zstd error, or an NCA whose SHA-256 is not its name; either way a BuildError and no NSP
         for ncz, at in ((self.solid, 0x4000 + 16 + 0x80 + 40), (self.block, -1), (self.block, 0x4000 + 16 + 0x80 + 24 + 100)):

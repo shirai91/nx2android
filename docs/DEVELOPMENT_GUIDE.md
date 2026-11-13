@@ -10,6 +10,12 @@ Install [Python](https://www.python.org) 3.11 or later and `python -m pip instal
 - Android [platform-tools](https://developer.android.com/tools/releases/platform-tools) (adb), to install from the tool
 - your own `prod.keys`, dumped from your Switch
 
+On arm64 Linux the NDK has x86_64 host tools only. `dm/android/build.py` uses `<NDK>/toolchains/llvm/prebuilt/linux-aarch64/bin` instead when that folder holds a `clang`, and `linux-x86_64` otherwise (so qemu-user or box64 setups work as before). Make the folder yourself:
+- link `sysroot` beside `bin` to `../linux-x86_64/sysroot`;
+- put in `bin` a wrapper `clang` (and `clang++`) running an arm64 LLVM 18 build with `--sysroot` set to that `sysroot` and nothing else: the wrapper passes no `-resource-dir`, so that LLVM's own `lib/clang/18/lib/linux/` must hold `libclang_rt.builtins-aarch64-android.a` (Linaro's LLVM 18.1.8 does; check with `ls`; a stock LLVM build that lacks it needs `-resource-dir` pointing at the NDK's `linux-x86_64/lib/clang/18`, which has the builtins and `libunwind.a`);
+- link `ld.lld` and the `llvm-*` tools to the same LLVM;
+- for the backend's own shaders, link `<NDK>/shader-tools/linux-aarch64/glslc` to a native `glslc` (Arch: `shaderc`, `/usr/bin/glslc`).
+
 ## Port a game
 
 The app:
@@ -126,6 +132,14 @@ and a mutex/condition-variable rendezvous on macOS and Linux, handling each
 platform's protection-fault signal. The zero-copy diagnostics fixture forces
 slab and reuse-cache misses to exercise allocation/import failure cleanup; it
 does not validate the slab or reuse-cache implementations.
+
+`test_gui_inspect` runs real Qt event loops and synthetic child processes with
+PySide6's offscreen platform (skipped when PySide6 is not installed). It checks
+that inspection shows stderr for missing/invalid JSON, completes a failed launch,
+escapes diagnostic text, and preserves structured errors, unsupported-title
+results and list callers. Process callbacks run once and release the process.
+These tests need no game files, keys, devices or browser, and do not identify the
+cause of a particular player's inspection failure.
 
 `test_descriptor_hash` exercises the Vulkan descriptor hash and reuse path with
 different C padding bytes but identical image fields. Image keys include each

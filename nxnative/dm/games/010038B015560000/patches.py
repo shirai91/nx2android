@@ -12,4 +12,11 @@ CUTS = {
     (0x12554, '000040f9', '000400f9', 'job pool wake: ldr x0,[x0] → str x0,[x0,#8] (pending = nonzero: the woken worker signals once more)'),
     (0x12558, '36fc1814', 'fdffff17', 'job pool wake: b SignalEvent → b 0x1254c (ldr x0,[x0]; b SignalEvent)'),
   ],
+  # 1.5.1 (v524288) main: the same wake function at the same offsets (wait wrapper main+0x12500, signal main+0x12554 from the dispatch loops and submits main+0x13e80 /
+  # main+0x14260 / main+0x14594 / main+0x14720 / main+0x14824 / main+0x14f68); only SignalEvent moved (main+0x655b20), so only the original branch word differs.
+  # Without the cut the AYN Thor hung on a black screen 25 s after boot: workers 0x1006 / 0x1007 asleep on one event, the main thread yielding 76,573 times a second
+  'ace351a145c07a51f8e239666640a0d8': [
+    (0x12554, '000040f9', '000400f9', 'job pool wake: ldr x0,[x0] → str x0,[x0,#8] (pending = nonzero: the woken worker signals once more)'),
+    (0x12558, '720d1914', 'fdffff17', 'job pool wake: b SignalEvent → b 0x1254c (ldr x0,[x0]; b SignalEvent)'),
+  ],
 }

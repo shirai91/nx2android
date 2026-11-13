@@ -39,6 +39,11 @@ skip identical content by digest; incomplete snapshots and publication failures
 remain retryable. The legacy path cannot provide integrity guarantees absent from
 the old format.
 
+Vulkan descriptor collection checks each image binding against its 384-entry
+scratch array before writing it. A binding that would exceed capacity stops the
+host with a diagnostic; valid arrays keep their full reflected counts, including
+the existing 32-entry default for a zero count.
+
 Immutable Vulkan driver segments share submission scratch only when both their
 hash and exact content match in the current epoch. Equality reads a CPU snapshot
 of the live c0/c2 prefix (0x648/0x968 bytes), avoiding reads from mapped GPU memory.
@@ -66,7 +71,7 @@ A profile is offered for Android when it has an `android.tsv`; the profiles with
 | `package` | The app's package name (default `org.nx2a.t<title ID in lowercase>`) |
 | `orientation` | `landscape` (default) or `any` |
 | `requires` | Device features the game needs, checked by the installer: `bcn` (BC texture compression) |
-| `sysdata` | System data titles the game reads from the console's firmware, 16-digit hex title IDs (`0100000000000802`: MiiModel, the Mii heads Mario Kart 8 Deluxe builds): the port extracts each from the player's firmware dump (`--firmware`) into the data pack's `sysdata/<title ID>/`, and the host mounts it (`DM_SYSDATA`, `dm/host/hle_fs.c`) in place of its stand-in. Never shipped with the tool |
+| `sysdata` | System data titles the game reads from the console's firmware, 16-digit hex title IDs (`0100000000000802`: MiiModel, the Mii heads Mario Kart 8 Deluxe builds): the port extracts each from the player's firmware dump (`--firmware`) into the data pack's `sysdata/<title ID>/`, and the host mounts it (`DM_SYSDATA`, `dm/host/hle_fs.c`) in place of its stand-in. Titles `0100000000000811` (FontStandard) and `0100000000000810` (FontNintendoExtension) make the host serve the console's own shared fonts (`nintendo_udsg-r_std_003.bfttf`, `nintendo_ext_003.bfttf`, decoded in `hle_sdk16.c`): the standard font after `DM_SHARED_FONT` and `$DM_FONT_DIR/standard.ttf`, the extension font before porter's generated stand-in. Never shipped with the tool |
 | `setting` | `<name>=<value>`: the pause menu's defaults on first launch (`overlay`, `rumble`, `docked`, `fps`: the frame rate counter in the top left corner, off by default; `opacity`: the gamepad's, 20 to 80 percent by 5, 60 by default), written to the data pack's `settings.txt`, where the app also keeps the player's own gamepad layout from the pause menu's layout editor (`ui=` rows) and its Snap to grid (`grid`, off by default) |
 | `env` | `<KEY>=<VALUE>`: a host switch the game needs on Android, written to the data pack's `env.txt` |
 | `overlay` | `<tablet\|phone> <control> <x> <y>`: moves one on-screen control of that layout (`dm/android/overlay_default.tsv`) to x, y as fractions of the window, compiled into `android_profile.h` |
@@ -95,10 +100,10 @@ captures and translator. The new receipt format rebuilds existing ports once.
 
 | Stage | What | Output (in `<game folder>/<title ID>_build/`) |
 |---|---|---|
-| inputs | Find the base game, updates and DLC (NSP / XCI / NSZ / XCZ), match the profile, pick the version; check the game folder's drive has room (about twice the game files, NSZ / XCZ counted decompressed and once more for their NSP, less an earlier port's build folder) | |
-| decompress | Only with NSZ / XCZ files that a stage below will read (a reused extraction reads none): each becomes an NSP (an XCZ: an NSP of its secure partition), its NCZs expanded and encrypted again with the keys their section tables carry, every NCA checked against its SHA-256 name (`porter/dumps.py`). Deleted once the DLC are extracted, or when the port fails | `tmp/dumps/` (temporary) |
-| extract | `nx_extract` (built with the .NET SDK) | `extract/<version>/{ExeFS,RomFS}`, `aoc/` |
-| system data | Only for a profile with `sysdata` and a `--firmware` folder (the player's own system content files, `.nca`): `nx_extract --sysdata` writes each title's RomFS; without the folder the port says so in red and the host's stand-in is used | `sysdata/<title ID>/` |
+| inputs | Find the base game, updates and DLC (NSP / XCI / NSZ / XCZ files, regardless of extension case), match the profile, pick the version; check the game folder's drive has room (about twice the game files, NSZ / XCZ counted decompressed and once more for their NSP, less an earlier port's build folder) | |
+| decompress | Only with NSZ / XCZ files that a stage below will read (a reused extraction reads none): each becomes an NSP (an XCZ: an NSP of its secure partition, with or without the leading 0x1000-byte card key area), its NCZs expanded and encrypted again with the keys their section tables carry, every NCA checked against its SHA-256 name (`porter/dumps.py`). Deleted once the DLC are extracted, or when the port fails | `tmp/dumps/` (temporary) |
+| extract | `nx_extract` (built with the .NET SDK); XCI cards may also retain their leading 0x1000-byte key area, and an NSP's PFS0 header takes precedence over card-magic bytes in its payload | `extract/<version>/{ExeFS,RomFS}`, `aoc/` |
+| system data | Only for a profile with `sysdata` and a `--firmware` folder (the player's own system content files, `.nca`): `nx_extract --sysdata` writes each title's RomFS; without the folder the port says so in red and the host's stand-in is used (for the font titles, the host's own stand-in fonts) | `sysdata/<title ID>/` |
 | 60 fps | Only with `--fps60` (below): the profile's own cap, or the build's FPSLocker-Warehouse config converted for the host | `android/fpslock/{fpslock.tsv,patches.py,<build ID>.yaml}` |
 | rewrite | `patch_nso.py` with `DM_TARGET=android` | `android/patched_<version>/` |
 | shaders | `shader_split.py` (the DLC's own shaders too, `aoc/` given as `DM_SPLIT_AOC`), then `shader_vk.py` (SPIR-V, each module zstd-compressed in the bundle: 3.5x smaller, about 2 s more for the largest bundle; uncompressed in a Python without zstd) with the translator built from the repository's source (`dm/gfx/tools/dmsh_xlate` over `dm/third_party/ryujinx`, once per player in their nx2android folder), plus the shaders captured on the device (below) | `shader/pkg`, `android/shaders.dmsv`, `android/captured_shaders/` |
@@ -106,6 +111,12 @@ captures and translator. The new receipt format rebuilds existing ports once.
 | apk | `dm/android/apk/mkapk.py`, signed with the player's own key, with the game's gamepad theme only (`dm/android/themes/themes.tsv`: its pack, else the ergo pack) as `assets/overlay/`, and the overlay's font with its licenses (`dm/third_party/fusion-pixel-font`) as `assets/font/` | `<out>/<App>.apk` |
 | data | The files the app reads from `/sdcard/Android/data/<package>/files` | `<out>/<App>-data/{mods,RomFS,aoc,sysdata,shaders.dmsv,nintendo_ext.ttf,env.txt,settings.txt,nx2a-data.json}` (+ `fpslock.tsv` with `--fps60`); the button-icon font is made in `android/font/` |
 | install | `adb install`, the profile's `requires` checked against the device, the data pack pushed (optional); `--romfs-at`: the RomFS read from a folder already on the device (below) | |
+
+An NSP or XCI contains NCA entries. If LibHac cannot open an entry's header,
+`nx_extract` names both the input container and the NCA entry, includes LibHac's
+reason, and stops with exit code 4. This diagnostic does not establish whether
+the input or the keys caused the rejection. `--allow-damaged` does not bypass
+header failures; filesystem integrity errors keep their existing handling.
 
 RomFS in the data pack is hard-linked to the extraction when the volume allows it, so it takes no extra space.
 
@@ -180,7 +191,7 @@ Events: with `--progress json`, every line on stdout is one JSON object, the pro
 
 ## Android input
 
-**Show gamepad** is saved in `settings.txt`. When enabled, the on-screen controls hide on a mapped controller button event or when stick, D-pad or trigger motion reaches the same activation thresholds as gameplay. A touch restores the controls for the next press, including while a controller is still attached. The last used controller disconnecting also restores the controls. When **Show gamepad** is off, only the draggable menu button is visible and all other touches go to the game. The menu button stays available in either mode. The controller count (`pad_watch`) is used for vibration routing.
+**Show gamepad** is saved in `settings.txt`. When enabled, the on-screen controls hide on a mapped controller button press or when stick, D-pad or trigger motion reaches the same activation thresholds as gameplay. A touch restores the controls for the next press, including while a controller is still attached. Button releases still reach the game but leave the restored touch controls visible. The last used controller disconnecting also restores the controls. When **Show gamepad** is off, only the draggable menu button is visible and all other touches go to the game. The menu button stays available in either mode. The controller count (`pad_watch`) is used for vibration routing.
 
 ## What the player installs
 
