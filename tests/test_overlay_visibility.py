@@ -261,7 +261,12 @@ static void players(void) {
     assert(handle_event(&pad) == 1 && pad_slot_of(&g_slots, pad_owner(47)) == 5 && key_reads == reads && !strcmp(g_slots.last[5], "learned"));
     assert(vibration == 42);   // the players that went were not player 1: its controller keeps the rumble
     pad_gone(42); assert(vibration == -1 && pad_slot_of(&g_slots, pad_owner(45)) == 1);   // player 1's went while player 2's is in use: the rumble back to the phone
-    pad.device = 48; assert(handle_event(&pad) == 1 && pad_slot_of(&g_slots, pad_owner(48)) == 0 && vibration == 48);   // the next player 1 takes it at its input
+    AInputEvent tap = {.source = AINPUT_SOURCE_TOUCHSCREEN, .type = AINPUT_EVENT_TYPE_MOTION, .action = AMOTION_EVENT_ACTION_DOWN, .x = width * 0.5f, .y = height * 0.5f};
+    assert(handle_event(&tap) == 1 && dm_overlay_visible() == 1);   // player 1 plays on touch now
+    tap.action = AMOTION_EVENT_ACTION_UP; assert(handle_event(&tap) == 1);
+    pad.device = 45; assert(handle_event(&pad) == 1 && pad_buttons[1] == DM_BTN_A && dm_overlay_visible() == 1 && vibration == -1);   // player 2's press leaves player 1's controls up
+    stick.device = 45; assert(handle_event(&stick) == 1 && pad_sticks[1][0] > 0 && dm_overlay_visible() == 1);   // and so does player 2's stick
+    pad.device = 48; assert(handle_event(&pad) == 1 && pad_slot_of(&g_slots, pad_owner(48)) == 0 && vibration == 48 && dm_overlay_visible() == 2);   // the next player 1 takes it (and the rumble) at its input
 }
 
 static void controls(int shown) {

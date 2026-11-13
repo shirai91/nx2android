@@ -1054,10 +1054,13 @@ static void touch_event(AInputEvent *e) {
     if (open) menu_open(-1);
 }
 static void pad_mark_used(int32_t device, int p) {   // p: the player its input goes to (pad_player)
-    atomic_store(&g_overlay, 0);
     g_pad_used = 1;
     atomic_store(&g_pad_in, device);
-    if (p == 0) dm_haptics_android_device(device);   // the game's rumble goes to player 1's controller
+    // The touch gamepad and the game's rumble are player 1's: another player's input (or a controller's with no player) leaves them as they are. After player 1's
+    // controller went, player 1 plays on touch, and player 2's presses used to hide those controls (PR #238 review)
+    if (p != 0) return;
+    atomic_store(&g_overlay, 0);
+    dm_haptics_android_device(device);   // the game's rumble goes to player 1's controller
 }
 static int handle_event(AInputEvent *e) {
     int32_t src = AInputEvent_getSource(e), type = AInputEvent_getType(e);
