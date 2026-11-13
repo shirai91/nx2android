@@ -256,6 +256,9 @@ static void players(void) {
     assert(handle_event(&pad) == 1 && pad_slot_of(&g_slots, pad_owner(46)) == 4 && pad_slot_of(&g_slots, pad_owner(42)) == 0);
     pad_gone(103); pad_learn(47, "learned"); reads = key_reads; pad.device = 47;   // a descriptor pad_watch learned is not read again
     assert(handle_event(&pad) == 1 && pad_slot_of(&g_slots, pad_owner(47)) == 5 && key_reads == reads && !strcmp(g_slots.last[5], "learned"));
+    assert(vibration == 42);   // the players that went were not player 1: its controller keeps the rumble
+    pad_gone(42); assert(vibration == -1 && pad_slot_of(&g_slots, pad_owner(45)) == 1);   // player 1's went while player 2's is in use: the rumble back to the phone
+    pad.device = 48; assert(handle_event(&pad) == 1 && pad_slot_of(&g_slots, pad_owner(48)) == 0 && vibration == 48);   // the next player 1 takes it at its input
 }
 
 static void controls(int shown) {

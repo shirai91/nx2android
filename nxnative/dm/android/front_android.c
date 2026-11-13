@@ -335,6 +335,9 @@ static void pad_gone(int id) {   // pad_watch: the device went; its player is fr
     int p = pad_slot_free(&g_slots, pad_owner(id));
     for (int i = 0; i < g_nnoslot; ) if (g_noslot[i].id == id) g_noslot[i] = g_noslot[--g_nnoslot]; else { if (p >= 0 && g_noslot[i].st == 2) g_noslot[i].st = 1; i++; }
     if (p >= 0) { g_btn[p] = 0; memset(g_ax[p], 0, sizeof g_ax[p]); pad_publish(p); dm_pad_players(pad_slot_mask(&g_slots) | 1); LOG("[input] player %d is free", p + 1); }
+    // player 1's controller went: its rumble back to the phone until the next player 1 sends input (pad_mark_used); pad_watch hands it back only when no controller is
+    // in use, so with player 2's still in use the game's rumble went to a device that was gone. (Under the lock: a controller taking player 1 next routes it after this)
+    if (p == 0) dm_haptics_android_device(-1);
     pthread_mutex_unlock(&g_slot_mu);
 }
 // ---- the on-screen gamepad (overlay_layout.h): a pointer that goes down on a control keeps it until it lifts; every other pointer is the game's touch screen ----
