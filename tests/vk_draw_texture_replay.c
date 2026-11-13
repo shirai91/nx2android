@@ -1,5 +1,62 @@
 // Public fixture from nxnative 1134e0e75; target host supplies its runtime.
 #include "../nxnative/dm/gfx/nvn/hle_nvn.c"
+#include "../nxnative/dm/android/gfx_vk.h"
+// Verify the production pool allocator switches before the driver's capacity,
+// even if a driver would accept an excessive allocation (the Adreno failure).
+static PFN_vkCreateDescriptorSetLayout real_create_layout;
+static PFN_vkAllocateDescriptorSets real_allocate_sets;
+static PFN_vkResetDescriptorPool real_reset_pool;
+static struct { VkDescriptorSetLayout layout; unsigned samplers; } budgets[32];
+static struct { VkDescriptorPool pool; unsigned used; } pool_budgets[32];
+static unsigned nbudgets,npool_budgets;
+static VkResult checked_create_layout(VkDevice dev,const VkDescriptorSetLayoutCreateInfo *info,const VkAllocationCallbacks *allocator,VkDescriptorSetLayout *out) {
+    VkResult r=real_create_layout(dev,info,allocator,out);
+    if(!r) {
+        unsigned cost=0; for(unsigned i=0;i<info->bindingCount;i++)
+            if(info->pBindings[i].descriptorType==VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) cost+=info->pBindings[i].descriptorCount;
+        unsigned i=0;while(i<nbudgets && budgets[i].layout!=*out)i++;
+        assert(i<32);if(i==nbudgets)nbudgets++;
+        budgets[i].layout=*out;budgets[i].samplers=cost;
+    }
+    return r;
+}
+static VkResult checked_allocate_sets(VkDevice dev,const VkDescriptorSetAllocateInfo *info,VkDescriptorSet *sets) {
+    unsigned cost=0;
+    for(unsigned i=0;i<info->descriptorSetCount;i++) for(unsigned j=0;j<nbudgets;j++)
+        if(info->pSetLayouts[i]==budgets[j].layout) cost+=budgets[j].samplers;
+    unsigned i=0;while(i<npool_budgets && pool_budgets[i].pool!=info->descriptorPool)i++;
+    assert(i<32);if(i==npool_budgets){npool_budgets++;pool_budgets[i].pool=info->descriptorPool;}
+    if(pool_budgets[i].used+cost>65536) die("DrawTexture exceeded a mixed descriptor pool: %u + %u",pool_budgets[i].used,cost);
+    VkResult r=real_allocate_sets(dev,info,sets);if(!r)pool_budgets[i].used+=cost;return r;
+}
+static VkResult checked_reset_pool(VkDevice dev,VkDescriptorPool pool,VkDescriptorPoolResetFlags flags) {
+    VkResult r=real_reset_pool(dev,pool,flags);
+    if(!r)for(unsigned i=0;i<npool_budgets;i++)if(pool_budgets[i].pool==pool)pool_budgets[i].used=0;
+    return r;
+}
+static VkDescriptorSetLayout padding_layouts[2];
+VkDescriptorSet __real_vk_alloc_set(VkDescriptorSetLayout layout);
+VkDescriptorSet __wrap_vk_alloc_set(VkDescriptorSetLayout layout) {
+    static int primed;
+    if(!primed++) {
+        void vk_dsl_register(VkDescriptorSetLayout,const VkDescriptorSetLayoutBinding *,uint32_t);
+        for(unsigned j=0;j<2;j++) {
+            VkDescriptorSetLayoutBinding b={0,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,j?256:384,VK_SHADER_STAGE_FRAGMENT_BIT,NULL};
+            VkDescriptorSetLayoutCreateInfo info={VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,NULL,0,1,&b};
+            assert(!vkCreateDescriptorSetLayout(V.dev,&info,NULL,&padding_layouts[j]));
+            vk_dsl_register(padding_layouts[j],&b,1);
+            for(unsigned k=0;k<(j?1:170);k++)assert(__real_vk_alloc_set(padding_layouts[j]));
+        }
+        // 170*384+256 = 65536 combined samplers, only 171/4096 sets.
+    }
+    return __real_vk_alloc_set(layout);
+}
+static void check_descriptor_budgets(void) {
+    mtl_init();
+    real_create_layout=vkCreateDescriptorSetLayout;vkCreateDescriptorSetLayout=checked_create_layout;
+    real_allocate_sets=vkAllocateDescriptorSets;vkAllocateDescriptorSets=checked_allocate_sets;
+    real_reset_pool=vkResetDescriptorPool;vkResetDescriptorPool=checked_reset_pool;
+}
 // Reuse of a sampler slot between recording and submission must keep the
 // same existing nx2android sampler history semantics as ordinary texture binds.
 static NVNsamplerPool *first_sampler_pool;
@@ -88,6 +145,7 @@ static void check_guest_draw_after_texture(NVNdevice *device, NVNqueue *queue) {
 int __wrap_main(void) {
     void crash_install(void); crash_install();
     setenv("DM_VK_ASYNC_PIPE","0",1); setenv("DM_VK_NOPREWARM","1",1);
+    check_descriptor_budgets();
     NVNdevice device;
     NVNdeviceBuilder db;
     API(nvnDeviceBuilderSetDefaults)(&db);
