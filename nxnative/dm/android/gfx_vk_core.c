@@ -753,8 +753,10 @@ vkpool_t *vk_pool_of(uint64_t addr, uint64_t len) {
 }
 uint32_t vk_pool_gen(void) { return __atomic_load_n(&g_pool_gen, __ATOMIC_ACQUIRE); }   // pools added or removed (gfx_vk_exec.c's descriptor set memo: vk_pool_of's results hold while it is unchanged)
 int vk_buf_at(uint64_t addr, uint64_t len, VkBuffer *buf, VkDeviceSize *off) {
-    vkpool_t *p = vk_pool_of(addr, len ? len : 1);
-    if (!p) { uint64_t physical; if (nvn_sparse_address_translate(addr, len ? len : 1, &physical)) { p = vk_pool_of(physical, len ? len : 1); if (p) addr = physical; } }
+    if (!len) len = 1;
+    if (len > UINT64_MAX - addr) return 0;
+    vkpool_t *p = vk_pool_of(addr, len);
+    if (!p) { uint64_t physical; if (nvn_sparse_address_translate(addr, len, &physical)) { p = vk_pool_of(physical, len); if (p) addr = physical; } }
     if (!p) return 0;
     *buf = p->buf; *off = addr - p->lo + p->boff; return 1;
 }
@@ -1300,8 +1302,13 @@ void vk_ubd_land(VkCommandBuffer cb) {   // outside a render pass
         g_infl[g_ninfl++] = (ubd_infl_t){g_ubd[i].lo, g_ubd[i].hi, g_fence + 1, g_ubd[i].p};   // the fence of the submission being recorded
     }
     vk_img_barrier_all(cb);
-    for (int i = 0; i < g_nubd; i++) { VkBuffer db; VkDeviceSize dof; if (vk_buf_at(g_ubd[i].lo, g_ubd[i].hi - g_ubd[i].lo, &db, &dof)) {
-        VkBufferCopy r = {g_ubd[i].so, dof, g_ubd[i].hi - g_ubd[i].lo}; vkCmdCopyBuffer(cb, g_ubd[i].sb, db, 1, &r); sub_gpu_wrote(g_ubd[i].lo, g_ubd[i].hi - g_ubd[i].lo); } }
+    for (int i = 0; i < g_nubd; i++) {
+        uint64_t dst = g_ubd[i].lo, n = g_ubd[i].hi - dst; VkBuffer db; VkDeviceSize dof;
+        if (nvn_sparse_address_pool(dst, n) && !nvn_sparse_address_translate(dst, n, &dst)) { vk_readback_unknown(); continue; }
+        if (vk_buf_at(dst, n, &db, &dof)) {
+            VkBufferCopy r = {g_ubd[i].so, dof, n}; vkCmdCopyBuffer(cb, g_ubd[i].sb, db, 1, &r); sub_gpu_wrote(dst, n);
+        }
+    }
     vk_img_barrier_all(cb);
     g_ubd_landed += (uint64_t)g_nubd; g_nubd = 0; g_ubd_gen++;
 }

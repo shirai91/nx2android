@@ -22,7 +22,7 @@ class ReadbackRanges(unittest.TestCase):
         # The gate must execute before descriptor memo/cache returns.
         self.assertIn('vk_readback_ranges()', gate)
         for marker in ['vk_gpu_wrote((uint64_t)(uintptr_t)t->mem, len); vk_readback_unknown();',
-                       'vk_gpu_wrote(c->src, p ? p->hi - c->src : 1); vk_readback_unknown();',
+                       'vk_gpu_wrote(c->src, span); vk_readback_unknown();',
                        'vk_readback_unknown();   // capture extents']:
             self.assertIn(marker, exec_src)
         harness = r'''

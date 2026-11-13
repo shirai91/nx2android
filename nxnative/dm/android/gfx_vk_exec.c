@@ -8,6 +8,7 @@
 #include "nvn_hmap.h"
 #include "game_profile.h"
 #include <math.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/resource.h>
 #include <unistd.h>
@@ -1817,7 +1818,7 @@ static int prepare_draw(int prim, int indexed) {
     for (uint32_t i = 0; i < k.nbind; i++) {
         uint32_t b = k.bind[i].binding; VkBuffer buf; VkDeviceSize off;
         if (b == 16) { buf = vk_zero_buffer(); off = 0; }
-        else if (!vk_buf_at(S.vbuf[b].address, 1, &buf, &off)) { buf = vk_zero_buffer(); off = 0; VKRED_ONCE(51, "vertex buffer outside the memory pools"); }
+        else if (!vk_buf_at(S.vbuf[b].address, S.vbuf[b].size ? S.vbuf[b].size : 1, &buf, &off)) { buf = vk_zero_buffer(); off = 0; VKRED_ONCE(51, "vertex buffer outside the memory pools"); }
         else if (S.vbuf[b].size) { vkpool_t *vp = vk_pool_of(S.vbuf[b].address, 1); if (vp && S.vbuf[b].address + S.vbuf[b].size > vp->hi && vp->hi < vp->end) vk_cross(2, S.vbuf[b].address, S.vbuf[b].size, vp); }
         if (g_var_now == 5) { buf = vk_zero_buffer(); off = 0; }
         if (!(dbg_draw() & 2) && b < 17) { int fresh = bc_fresh(); if (fresh || g_bc.vb[b] != buf || g_bc.vo[b] != off) { vkCmdBindVertexBuffers(cb, b, 1, &buf, &off); g_bc.vb[b] = buf; g_bc.vo[b] = off; } }
@@ -2090,12 +2091,16 @@ static void draw_idx(const p_draw_idx *d) {
     int prim = d->prim;
     g_draw_binst = d->ind ? 0 : (uint32_t)d->base_instance;   // before prepare_draw (see draw)
     if (!prepare_draw(prim == 7 ? 4 : prim, 1)) return;
+    if (!d->ind && d->count < 0) { VKRED_ONCE(99, "indexed draw with a negative index count: skipped"); return; }
+    uint32_t isz = d->itype == 0 ? 1 : d->itype == 1 ? 2 : 4;
+    uint32_t index_count = d->count > 0 ? (uint32_t)d->count : 0;
+    uint64_t index_bytes = d->ind || !index_count ? 1 : (uint64_t)index_count * isz;
     VkCommandBuffer cb = vk_cmd();
     int g_ok = draw_allowed(); if (g_ok == 2 || (g_tracing && g_x_tracepass >= 0)) trace_draw("indexed draw", d->prim, (uint32_t)d->count, (uint32_t)d->instances, d->itype);
     if (d->ind && g_tracing && g_x_tracepass >= 0) { uint32_t w[5]; vk_ubd_read(d->ind, 20, (uint8_t *)w);   // the arguments as the CPU sees them now (a GPU writer's last merged copy)
         VKLOG("  indirect arguments at %#llx: count %u instances %u first index %u base vertex %d base instance %u", (unsigned long long)d->ind, w[0], w[1], w[2], (int)w[3], w[4]); }
     if (g_tracing && g_x_tracepass >= 0 && !d->ind && S.vbuf[0].address && d->ibuf) {   // the vertices of the first indices, stream 0, every word as a float (as draw does)
-        uint32_t st = S.vstream[0].stride ? S.vstream[0].stride : 16, nw = st / 4 < 16 ? st / 4 : 16, isz = d->itype == 0 ? 1 : d->itype == 1 ? 2 : 4;
+        uint32_t st = S.vstream[0].stride ? S.vstream[0].stride : 16, nw = st / 4 < 16 ? st / 4 : 16;
         for (uint32_t i = 0; i < (uint32_t)d->count && i < 6; i++) { uint8_t ix[4] = {0}; vk_ubd_read(d->ibuf + (uint64_t)i * isz, isz, ix);
             uint32_t v = isz == 1 ? ix[0] : isz == 2 ? (uint32_t)(ix[0] | ix[1] << 8) : (uint32_t)(ix[0] | ix[1] << 8 | ix[2] << 16 | (uint32_t)ix[3] << 24);
             uint64_t o = (uint64_t)((int64_t)v + d->base_vertex) * st; if (o + nw * 4 > S.vbuf[0].size) break;
@@ -2103,32 +2108,37 @@ static void draw_idx(const p_draw_idx *d) {
             VKLOG("  index %u → vertex %u of stream 0 (+%llu):%s", i, v, (unsigned long long)o, t); } }
     if (g_var_now == 11) g_ok = 0;
     VkIndexType it = d->itype == 0 ? VK_INDEX_TYPE_UINT8_EXT : d->itype == 1 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32;
-    uint32_t isz = d->itype == 0 ? 1 : d->itype == 1 ? 2 : 4;
     VkBuffer ib; VkDeviceSize io;
-    if (!vk_buf_at(d->ibuf, 1, &ib, &io)) { VKRED_ONCE(56, "index buffer outside the memory pools"); return; }
-    if (!d->ind) { vkpool_t *ip = vk_pool_of(d->ibuf, 1); uint64_t in = (uint64_t)d->count * isz; if (ip && d->ibuf + in > ip->hi && ip->hi < ip->end) vk_cross(3, d->ibuf, in, ip); }
+    if (d->ind && nvn_sparse_address_pool(d->ibuf, 1)) { VKRED_ONCE(98, "indexed indirect draw with a sparse index buffer has no bounded index extent: skipped"); return; }
+    if (!vk_buf_at(d->ibuf, index_bytes, &ib, &io)) { VKRED_ONCE(56, "index buffer outside the memory pools"); return; }
+    if (!d->ind) { vkpool_t *ip = vk_pool_of(d->ibuf, 1); if (ip && d->ibuf + index_bytes > ip->hi && ip->hi < ip->end) vk_cross(3, d->ibuf, index_bytes, ip); }
     if (g_ubolog_key && S.sh[0] && S.sh[0]->key == g_ubolog_key && g_ubolog_n > 0) {   // DM_VK_UBO_LOG: the index data the draw reads (CPU view at replay)
-        const uint8_t *ix = (const uint8_t *)(uintptr_t)d->ibuf; uint64_t h = 1469598103934665603ull; uint32_t mn = ~0u, mx = 0;
-        for (uint32_t i = 0; i < (uint32_t)d->count; i++) { uint32_t v = isz == 1 ? ix[i] : isz == 2 ? ((const uint16_t *)ix)[i] : ((const uint32_t *)ix)[i]; h = (h ^ v) * 1099511628211ull; if (v < mn) mn = v; if (v > mx) mx = v; }
+        uint64_t h = 1469598103934665603ull; uint32_t mn = ~0u, mx = 0;
+        for (uint32_t i = 0; i < index_count; i++) { uint8_t ix[4] = {0}; vk_ubd_read(d->ibuf + (uint64_t)i * isz, isz, ix);
+            uint32_t v = isz == 1 ? ix[0] : isz == 2 ? (uint32_t)(ix[0] | (uint32_t)ix[1] << 8) : (uint32_t)(ix[0] | (uint32_t)ix[1] << 8 | (uint32_t)ix[2] << 16 | (uint32_t)ix[3] << 24);
+            h = (h ^ v) * 1099511628211ull; if (v < mn) mn = v; if (v > mx) mx = v; }
         VKLOG("ubo: present %llu index buffer %#llx count %d base vertex %d indirect %#llx hash %016llx range %u..%u", (unsigned long long)g_tex_frame, (unsigned long long)d->ibuf, d->count, d->base_vertex,
               (unsigned long long)d->ind, (unsigned long long)h, mn, mx);
         if (S.vbuf[0].address && mn != ~0u) { uint32_t st = S.vstream[0].stride ? S.vstream[0].stride : 12; uint64_t v0 = (uint64_t)(int64_t)d->base_vertex + mn;   // the first vertex this draw reads, every word
-            if ((v0 + 1) * st <= S.vbuf[0].size) { const float *vf = (const float *)(uintptr_t)(S.vbuf[0].address + v0 * st); char t[512]; int k = 0;
-                for (uint32_t i = 0; i < st / 4 && i < 24; i++) k += snprintf(t + k, sizeof t - k, " %g", vf[i]);
+            if ((v0 + 1) * st <= S.vbuf[0].size) { float vf[24]; uint32_t nw = st / 4 < 24 ? st / 4 : 24; vk_ubd_read(S.vbuf[0].address + v0 * st, nw * 4, (uint8_t *)vf); char t[512]; int k = 0;
+                for (uint32_t i = 0; i < nw; i++) k += snprintf(t + k, sizeof t - k, " %g", vf[i]);
                 VKLOG("ubo: present %llu first vertex read (%llu):%s", (unsigned long long)g_tex_frame, (unsigned long long)v0, t); } }
-        static uint64_t dumped; if (dumped != h && S.vbuf[0].address && d->count <= 4096) { dumped = h; char t[1024]; int k = 0; uint32_t i0 = 0;   // once per index data: every index,
-            for (uint32_t i = 0; i < (uint32_t)d->count; i++) { uint32_t v = isz == 1 ? ix[i] : isz == 2 ? ((const uint16_t *)ix)[i] : ((const uint32_t *)ix)[i];   // then every word of stream 0's vertices
+        static uint64_t dumped; if (dumped != h && S.vbuf[0].address && index_count <= 4096) { dumped = h; char t[1024]; int k = 0; uint32_t i0 = 0;   // once per index data: every index,
+            for (uint32_t i = 0; i < index_count; i++) { uint8_t ix[4] = {0}; vk_ubd_read(d->ibuf + (uint64_t)i * isz, isz, ix);
+                uint32_t v = isz == 1 ? ix[0] : isz == 2 ? (uint32_t)(ix[0] | (uint32_t)ix[1] << 8) : (uint32_t)(ix[0] | (uint32_t)ix[1] << 8 | (uint32_t)ix[2] << 16 | (uint32_t)ix[3] << 24);   // then every word of stream 0's vertices
                 k += snprintf(t + k, sizeof t - k, " %u", v); if (k > 900 || i + 1 == (uint32_t)d->count) { VKLOG("ubo: indices from %u:%s", i0, t); k = 0; i0 = i + 1; } }
             uint32_t st = S.vstream[0].stride ? S.vstream[0].stride : 12, nv = (uint32_t)(S.vbuf[0].size / st);
-            for (uint32_t i = 0; i < nv && i <= mx; i++) { const float *vf = (const float *)(uintptr_t)(S.vbuf[0].address + (uint64_t)i * st);   // every word of stream 0's vertex (up to 8)
-                for (uint32_t w = 0; w < st / 4 && w < 8; w++) k += snprintf(t + k, sizeof t - k, "%s%g", w ? "," : " ", vf[w]);
+            for (uint32_t i = 0; i < nv && i <= mx; i++) { float vf[8]; uint32_t nw = st / 4 < 8 ? st / 4 : 8; vk_ubd_read(S.vbuf[0].address + (uint64_t)i * st, nw * 4, (uint8_t *)vf);   // every word of stream 0's vertex (up to 8)
+                for (uint32_t w = 0; w < nw; w++) k += snprintf(t + k, sizeof t - k, "%s%g", w ? "," : " ", vf[w]);
                 if (k > 800 || i + 1 == nv || i == mx) { VKLOG("ubo: vertices to %u:%s", i, t); k = 0; } } } }
     uint32_t inst = d->instances ? (uint32_t)d->instances : 1;
     { static int n; if (n < 12 && (d->itype == 0 || d->ind || (uint32_t)d->count > (1u << 20) || inst > (1u << 16))) { n++;
         VKLOG("unusual indexed draw: itype %d count %u instances %u indirect %#llx prim %d base vertex %d", d->itype, (unsigned)d->count, inst, (unsigned long long)d->ind, d->prim, d->base_vertex); } }
     if (d->ind) { VkBuffer b; VkDeviceSize o; bc_index(cb, ib, io, it); if (!vk_buf_at(d->ind, mcb ? (uint64_t)d->mdi_stride * (uint64_t)d->mdi_max : 20, &b, &o)) VKRED_ONCE(97, "indexed indirect draw arguments outside the memory pools");
         else if (!(dbg_draw() & 1) && g_ok) { if (mcb) vkCmdDrawIndexedIndirectCount(cb, b, o, mcb, mco, (uint32_t)d->mdi_max, (uint32_t)d->mdi_stride); else vkCmdDrawIndexedIndirect(cb, b, o, 1, 20); } return; }
-    if (prim == 7) { VkBuffer b; VkDeviceSize o; int n = quad_indices((uint32_t)d->count, (const uint8_t *)(uintptr_t)d->ibuf, d->itype, 0, &b, &o); if (!n) return;
+    if (prim == 7) { uint32_t nq = index_count / 4; if (nq > QUAD_MAX) nq = QUAD_MAX; if (!nq) return;
+        uint64_t raw_n = (uint64_t)nq * 4 * isz; VkBuffer raw_b; VkDeviceSize raw_o; uint8_t *raw = vk_scratch(raw_n, 4, &raw_b, &raw_o); vk_ubd_read(d->ibuf, raw_n, raw);
+        VkBuffer b; VkDeviceSize o; int n = quad_indices(nq * 4, raw, d->itype, 0, &b, &o); if (!n) return;
         bc_index(cb, b, o, VK_INDEX_TYPE_UINT32); if (!(dbg_draw() & 1) && g_ok) vkCmdDrawIndexed(cb, (uint32_t)n, inst, 0, d->base_vertex, (uint32_t)d->base_instance); return; }
     if (io % isz) { VKRED_ONCE(57, "index buffer offset not aligned to its index size"); return; }
     bc_index(cb, ib, io, it);
@@ -2245,32 +2255,73 @@ static VkImageSubresourceLayers sub_of(vkimg_t *im, const view_t *v, int has_v, 
     int layered = im->layers > 1;
     return (VkImageSubresourceLayers){im->aspect & VK_IMAGE_ASPECT_COLOR_BIT ? VK_IMAGE_ASPECT_COLOR_BIT : (im->aspect & VK_IMAGE_ASPECT_DEPTH_BIT ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_STENCIL_BIT), lv, ly + (layered ? (uint32_t)z : 0), 1};
 }
+static int copy_span_bytes(uint64_t row_bytes, uint64_t pitch, uint64_t slice, uint64_t rows, uint64_t slices, uint64_t *span) {
+    if (!row_bytes || !pitch || !rows || !slices || pitch < row_bytes || rows - 1 > (UINT64_MAX - row_bytes) / pitch) return 0;
+    uint64_t image = (rows - 1) * pitch + row_bytes, prior = slices - 1;
+    if (prior && (!slice || slice < image || prior > (UINT64_MAX - image) / slice)) return 0;
+    *span = prior * slice + image; return 1;
+}
+static int copy_buffer_span(const VkBufferImageCopy *r, const vkfmt_t *f, uint32_t slices, uint64_t *span) {
+    uint64_t bw = f->bw ? f->bw : 1, bh = f->bh ? f->bh : 1, bpb = f->bpb;
+    uint64_t w = r->imageExtent.width, h = r->imageExtent.height;
+    uint64_t cols = (w + bw - 1) / bw, rows = (h + bh - 1) / bh;
+    uint64_t row_blocks = (r->bufferRowLength ? r->bufferRowLength : w) + bw - 1;
+    uint64_t image_rows = (r->bufferImageHeight ? r->bufferImageHeight : h) + bh - 1;
+    row_blocks /= bw; image_rows /= bh;
+    if (!bpb || !cols || !rows || row_blocks < cols || image_rows < rows || cols > UINT64_MAX / bpb || row_blocks > UINT64_MAX / bpb) return 0;
+    uint64_t tight = cols * bpb, pitch = row_blocks * bpb;
+    if (image_rows > UINT64_MAX / pitch) return 0;
+    return copy_span_bytes(tight, pitch, pitch * image_rows, rows, slices, span);
+}
 static void copy_b2t(const p_copy_b2t *c, int to_texture) {
     vk_end_pass_land();
     vkimg_t *im = vk_tex(c->tex); const vkfmt_t *f = vk_fmt(c->tex->d.format);
     if (!im || !f) return;
-    VkBuffer b; VkDeviceSize o;
-    if (!vk_buf_at(c->src, 1, &b, &o)) { VKRED_ONCE(70, "buffer of a buffer ↔ texture copy outside the memory pools"); return; }
-    VkCommandBuffer cb = vk_cmd(); vk_tex_prepare(cb, im); vk_img_barrier_all(cb);
+    if (c->r.width <= 0 || c->r.height < 0 || c->r.depth < 0) { VKRED_ONCE(72, "buffer ↔ texture copy with an invalid extent: skipped"); return; }
     unsigned bw = f->bw ? f->bw : 1, bh = f->bh ? f->bh : 1;
-    uint32_t rowlen = S.row_stride > 0 && f->bpb ? (uint32_t)(S.row_stride / f->bpb) * bw : 0;
-    uint32_t imgh = S.image_stride > 0 && S.row_stride > 0 ? (uint32_t)(S.image_stride / S.row_stride) * bh : 0;
-    int layered = im->layers > 1, depth = c->r.depth ? c->r.depth : 1;
-    VkBufferImageCopy r = {o, rowlen, imgh, sub_of(im, &c->view, c->has_view, c->r.zoffset), {c->r.xoffset, c->r.yoffset, layered ? 0 : c->r.zoffset},
-                           {(uint32_t)c->r.width, (uint32_t)(c->r.height ? c->r.height : 1), layered ? 1 : (uint32_t)depth}};
-    if (layered) r.imageSubresource.layerCount = (uint32_t)depth;
-    if (f->dec) {   // a BC format the device lacks (gfx_vk_tex.c bc_decode): the blocks decoded on the CPU from the buffer's memory as the replay reaches the copy
-        if (!to_texture) { VKRED_ONCE(71, "copy of a BC texture decoded on the CPU into a buffer: skipped"); return; }
-        uint32_t w = (uint32_t)c->r.width, h = (uint32_t)(c->r.height ? c->r.height : 1), nz = (uint32_t)depth;
-        size_t pitch = S.row_stride > 0 ? (size_t)S.row_stride : (size_t)((w + 3) / 4) * f->bpb, slice = S.image_stride > 0 ? (size_t)S.image_stride : pitch * ((h + 3) / 4), out = (size_t)w * h * f->dbpp;
-        VkBuffer sb; VkDeviceSize so; uint8_t *p = vk_scratch(out * nz, 16, &sb, &so);
-        for (uint32_t z = 0; z < nz; z++) vk_bc_decode(f, (const uint8_t *)(uintptr_t)c->src + z * slice, pitch, w, h, 1, p + z * out);
-        b = sb; r.bufferOffset = so; r.bufferRowLength = 0; r.bufferImageHeight = 0;
-    }
+    uint32_t w = (uint32_t)c->r.width, h = (uint32_t)(c->r.height ? c->r.height : 1), depth = (uint32_t)(c->r.depth ? c->r.depth : 1);
+    uint64_t rowlen64 = 0, imgh64 = 0;
+    if (S.row_stride > 0 && f->bpb) { uint64_t blocks = (uint64_t)S.row_stride / f->bpb; if (blocks > UINT64_MAX / bw) { VKRED_ONCE(73, "buffer ↔ texture copy stride exceeds Vulkan's range: skipped"); return; } rowlen64 = blocks * bw; }
+    if (S.image_stride > 0 && S.row_stride > 0) { uint64_t images = (uint64_t)S.image_stride / (uint64_t)S.row_stride; if (images > UINT64_MAX / bh) { VKRED_ONCE(73, "buffer ↔ texture copy stride exceeds Vulkan's range: skipped"); return; } imgh64 = images * bh; }
+    if (rowlen64 > UINT32_MAX || imgh64 > UINT32_MAX) { VKRED_ONCE(73, "buffer ↔ texture copy stride exceeds Vulkan's range: skipped"); return; }
+    uint32_t rowlen = (uint32_t)rowlen64, imgh = (uint32_t)imgh64;
+    int layered = im->layers > 1;
+    VkBufferImageCopy r = {0, rowlen, imgh, sub_of(im, &c->view, c->has_view, c->r.zoffset), {c->r.xoffset, c->r.yoffset, layered ? 0 : c->r.zoffset},
+                           {w, h, layered ? 1 : depth}};
+    if (layered) r.imageSubresource.layerCount = depth;
+    uint64_t span;
+    if (!copy_buffer_span(&r, f, depth, &span) || span > UINT64_MAX - c->src) { VKRED_ONCE(74, "buffer ↔ texture copy extent overflows: skipped"); return; }
+    int decode = f->dec && to_texture;
+    if (f->dec && !to_texture) { VKRED_ONCE(71, "copy of a BC texture decoded on the CPU into a buffer: skipped"); return; }
+    VkBuffer b = VK_NULL_HANDLE; VkDeviceSize o = 0;
+    if (decode) {
+        uint64_t cols = ((uint64_t)w + bw - 1) / bw, rows = ((uint64_t)h + bh - 1) / bh;
+        if (!f->bpb || cols > UINT64_MAX / f->bpb) { VKRED_ONCE(74, "BC buffer ↔ texture copy extent overflows: skipped"); return; }
+        uint64_t tight = cols * f->bpb, pitch = S.row_stride > 0 ? (uint64_t)S.row_stride : tight, slice;
+        if (S.image_stride > 0) slice = (uint64_t)S.image_stride;
+        else { if (rows > UINT64_MAX / pitch) { VKRED_ONCE(74, "BC buffer ↔ texture copy extent overflows: skipped"); return; } slice = pitch * rows; }
+        if (!copy_span_bytes(tight, pitch, slice, rows, depth, &span) || span > UINT64_MAX - c->src) { VKRED_ONCE(74, "BC buffer ↔ texture copy extent overflows: skipped"); return; }
+        if (!nvn_sparse_address_pool(c->src, span) && !vk_buf_at(c->src, span, &b, &o)) { VKRED_ONCE(70, "buffer of a buffer ↔ texture copy outside the memory pools"); return; }
+    } else if (!vk_buf_at(c->src, span, &b, &o)) { VKRED_ONCE(70, "buffer of a buffer ↔ texture copy outside the memory pools"); return; }
+    if (decode) {   // BC formats the device lacks: stage through sparse-aware CPU reads before decoding
+        if (h > UINT64_MAX / w) { VKRED_ONCE(74, "BC buffer ↔ texture copy is too large to decode: skipped"); return; }
+        uint64_t pixels = (uint64_t)w * h;
+        if (!f->dbpp || pixels > UINT64_MAX / f->dbpp) { VKRED_ONCE(74, "BC buffer ↔ texture copy is too large to decode: skipped"); return; }
+        uint64_t out64 = pixels * f->dbpp;
+        if (!f->dbpp || out64 > SIZE_MAX || depth > SIZE_MAX / out64 || span > SIZE_MAX) { VKRED_ONCE(74, "BC buffer ↔ texture copy is too large to decode: skipped"); return; }
+        size_t out = (size_t)out64, pitch = S.row_stride > 0 ? (size_t)S.row_stride : (size_t)(((uint64_t)w + bw - 1) / bw) * f->bpb;
+        size_t slice = S.image_stride > 0 ? (size_t)S.image_stride : pitch * (((size_t)h + bh - 1) / bh);
+        uint8_t *raw = malloc((size_t)span); if (!raw) { VKRED_ONCE(75, "BC buffer ↔ texture copy could not allocate a CPU snapshot: skipped"); return; }
+        vk_ubd_read(c->src, span, raw);
+        VkBuffer sb; VkDeviceSize so; uint8_t *p = vk_scratch(out * depth, 16, &sb, &so);
+        for (uint32_t z = 0; z < depth; z++) vk_bc_decode(f, raw + (size_t)z * slice, pitch, w, h, 1, p + (size_t)z * out);
+        free(raw); b = sb; r.bufferOffset = so; r.bufferRowLength = 0; r.bufferImageHeight = 0;
+    } else r.bufferOffset = o;
+    VkCommandBuffer cb = vk_cmd(); vk_tex_prepare(cb, im); vk_img_barrier_all(cb);
     if (g_watch_off >= 0) { char w[96]; snprintf(w, sizeof w, "buffer copy %s (buffer %#llx, %dx%d)", to_texture ? "destination" : "source", (unsigned long long)c->src, c->r.width, c->r.height); vk_watch(im, w); }
     if (to_texture) { vkCmdCopyBufferToImage(cb, b, im->img, VK_IMAGE_LAYOUT_GENERAL, 1, &r); im->gpu_w = 1; }
     else { vkCmdCopyImageToBuffer(cb, im->img, VK_IMAGE_LAYOUT_GENERAL, b, 1, &r);
-        void vk_gpu_wrote(uint64_t a, uint64_t n); vkpool_t *p = vk_pool_of(c->src, 1); vk_gpu_wrote(c->src, p ? p->hi - c->src : 1); vk_readback_unknown(); }   // (to the pool's end: the copy's extent in memory is not worked out here)
+        void vk_gpu_wrote(uint64_t a, uint64_t n); vk_gpu_wrote(c->src, span); vk_readback_unknown(); }
     vk_img_barrier_all(cb);
 }
 // Scaled copies of depth and stencil: Adreno blits no depth-stencil format (Pokémon Legends: Arceus copies its 1920x1080 D24S8 depth to a 480x270 one, which stayed unwritten), so each
