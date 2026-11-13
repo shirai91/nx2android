@@ -1,0 +1,12 @@
+# Rhythm Heaven Groove on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Nintendo's own engine on SDK 21.4.0, NVN; one BNSH, 35 shaders (2 vertex, 33 pixel), all 2D.
+# The game reads each texture file into a CPU_NO_ACCESS pool. Its BC7 textures carry NVN_TEXTURE_FLAGS_IMAGE, which kept the
+# Android port from uploading their content (the title background and the in-game backgrounds drew black); the first-use upload
+# from storage in gfx_vk_tex.c matches tex_init_fill in nvn_mtl.m, the way the iOS app already did it.
+# Tested 2026-11-13 on a Xiaomi 15 (Snapdragon 8 Elite, Adreno 830, Android 16) with base game v0 1.0.0, built from main:
+# from boot through the setup into two rhythm games at 60 fps, no audio underrun, no red log line. Not tested yet: the games past the second.
+status	playable
+tested	v0 Xiaomi 15 (Snapdragon 8 Elite, Adreno 830, Android 16)
+package	org.nx2a.t0100d9f01d474000
+orientation	landscape
+requires	bcn
