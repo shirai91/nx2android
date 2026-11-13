@@ -1343,6 +1343,24 @@ static int set_memo_ok(vkshader_t *s) {
         s->setmemo = ok && ncb <= MEMO_CB ? 1 : 2; }
     return s->setmemo == 1;
 }
+static int shader_wmem(vkshader_t *s);
+enum { SPARSE_SBUF_CACHE = 32 };
+static struct { uint64_t a, n, epoch, gen; VkBuffer buf; VkDeviceSize off; } g_sparse_sbuf[SPARSE_SBUF_CACHE];
+static int sparse_sbuf_desc(uint64_t a, uint64_t n, VkDescriptorBufferInfo *bi) {
+    if (!a || !n || n > UINT64_MAX - a) return 0;
+    uint64_t base = a & ~((uint64_t)SB_ALIGN - 1), size = a + n - base;
+    if (size > V.props.limits.maxStorageBufferRange || !nvn_sparse_address_pool(a, n)) return 0;
+    uint64_t gen = nvn_sparse_gen(); unsigned k = (unsigned)((a >> 8) ^ (n >> 4)) % SPARSE_SBUF_CACHE;
+    if (g_sparse_sbuf[k].a == base && g_sparse_sbuf[k].n == size && g_sparse_sbuf[k].epoch == g_set_epoch && g_sparse_sbuf[k].gen == gen) {
+        *bi = (VkDescriptorBufferInfo){g_sparse_sbuf[k].buf, g_sparse_sbuf[k].off, size}; return 1;
+    }
+    VkBuffer buf; VkDeviceSize off; uint8_t *dst = vk_scratch(size, SB_ALIGN, &buf, &off);
+    uint64_t miss = nvn_sparse_address_copy(base, dst, size);
+    static unsigned notes; if (notes++ < 8) VKLOG("sparse storage buffer snapshot: %#llx + %#llx -> %llu bytes (%llu unmapped), generation %llu",
+        (unsigned long long)base, (unsigned long long)size, (unsigned long long)size, (unsigned long long)miss, (unsigned long long)gen);
+    g_sparse_sbuf[k] = (typeof(g_sparse_sbuf[0])){base, size, g_set_epoch, gen, buf, off};
+    *bi = (VkDescriptorBufferInfo){buf, off, size}; return 1;
+}
 static int set_memo_get(int st, vkshader_t *s, uint32_t *dofs) {
     set_memo_t *m = &g_smemo[st];
     if (m->s != s || m->epoch != g_set_epoch || m->bind != g_bind_gen[st] || m->tex != g_tex_gen || m->samp != __atomic_load_n(&g_samp_gen, __ATOMIC_ACQUIRE) || m->pool != vk_pool_gen() || m->binst != g_draw_binst) return 0;
@@ -1399,13 +1417,15 @@ static VkDescriptorSet stage_set(int st, vkshader_t *s, uint32_t *dofs, VkDescri
             if (b->kind == RK_SBUF && b->reg >= 0 && b->reg < 16) { a = S.ssbo[st][b->reg].addr; n = S.ssbo[st][b->reg].size; }
             else if (b->kind == RK_UBO_PTR && b->reg >= 0 && b->reg < 16) { a = S.ubo[st][b->reg].addr; n = S.ubo[st][b->reg].size; }
             else if (b->kind == RK_SBUF_UBO) { a = (uint64_t)ubo_word(st, b->reg, b->off) | (uint64_t)ubo_word(st, b->reg, b->off + 4) << 32; }
-            vkpool_t *p = a ? vk_pool_of(a, 1) : NULL;
+            uint64_t guest_a = a, physical = 0; vkpool_t *p = a ? vk_pool_of(a, 1) : NULL;
+            if (!p && a && n && nvn_sparse_address_translate(a, n, &physical)) { p = vk_pool_of(physical, n); if (p) a = physical; }
             if (p) { buf = p->buf; off = a - p->lo; if (n && off + n > p->hi - p->lo && p->hi < p->end) vk_cross(1, a, n, p); if (!n || off + n > p->hi - p->lo) n = p->hi - p->lo - off;
                 // bound from the 256-byte boundary below it, the boundary the translator offsets every access from (shader_vk.py SB_ALIGN; a multiple of any device's minimum alignment)
                 const VkDeviceSize al = SB_ALIGN; if (V.props.limits.minStorageBufferOffsetAlignment > al) VKRED_ONCE(41, "storage buffer alignment %llu above %llu", (unsigned long long)V.props.limits.minStorageBufferOffsetAlignment, (unsigned long long)al);
                 bi[nw] = (VkDescriptorBufferInfo){buf, p->boff + off - off % al, n + off % al};
                 if (st == 5 && b->kind != RK_UBO_PTR) { void vk_gpu_wrote(uint64_t a, uint64_t n); vk_gpu_wrote(a, n); }   // a dispatch's storage buffers: taken as written
-            } else bi[nw] = (VkDescriptorBufferInfo){vk_zero_buffer(), 0, 65536};
+            } else if (b->kind == RK_SBUF && st != 5 && !shader_wmem(s) && sparse_sbuf_desc(guest_a, n, &bi[nw])) { /* read-only sparse storage: snapshot into this submission */ }
+            else bi[nw] = (VkDescriptorBufferInfo){vk_zero_buffer(), 0, 65536};
             break; }
         case RK_TEX: case RK_TEX_UBO: case RK_TEX_C2A: {
             int cnt = b->count ? b->count : 32;

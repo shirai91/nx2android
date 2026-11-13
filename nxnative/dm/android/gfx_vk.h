@@ -68,6 +68,10 @@ void vk_init(void);   // once, from mtl_init or the first use
 typedef struct { uint64_t lo, hi; VkBuffer buf; VkDeviceMemory mem; void *ahb; int zero_copy, noncoherent; uint8_t *shadow, *baseline; uint64_t serial, base, end; int flags, synced, baseline_complete; uint64_t stamp, stamp0; const void *span; uint64_t boff; void *slab; uint32_t slot; } vkpool_t;   // boff: [lo, hi) is at this offset of buf (a slab slot; 0 otherwise); serial: unique per pool made (caches of views over a pool's buffer key on it); [base, end): the game's pool, of which [lo, hi) is one chunk (ZC_CHUNK); flags: the NVN pool's (vk_pool_set_flags); baseline: last synchronized GPU-copy contents; baseline_complete: refreshed by a full completion merge, consumed by the next sync; synced, stamp, stamp0, span: a copied pool's incremental sync
 vkpool_t *vk_pool_of(uint64_t addr, uint64_t len);   // the pool containing [addr, addr+len), NULL if none
 int vk_buf_at(uint64_t addr, uint64_t len, VkBuffer *buf, VkDeviceSize *off);   // GPU buffer + offset of a pool address range
+const void *nvn_sparse_address_pool(uint64_t addr, uint64_t len);   // sparse virtual pool containing a guest address range
+uint64_t nvn_sparse_gen(void);   // mapping generation shared by sparse pools
+int nvn_sparse_address_translate(uint64_t addr, uint64_t len, uint64_t *physical);   // contiguous mapped guest range → physical pool address
+uint64_t nvn_sparse_address_copy(uint64_t addr, void *dst, uint64_t len);   // copy sparse guest bytes through the page table; unmapped pages are zero
 // Pools that could not be made zero-copy keep a GPU copy refreshed before each submission (vk_pools_sync, called from mtl_sub_begin)
 void vk_pools_sync(VkCommandBuffer cb);
 

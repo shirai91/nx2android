@@ -2500,8 +2500,45 @@ static struct vpool *vpool_at(const void *pool, uint64_t a) {   // caller holds 
     struct vpool *v = vpool_live(pool);
     return v && a >= (uint64_t)(uintptr_t)v->base && a < (uint64_t)(uintptr_t)v->base + v->size ? v : NULL;
 }
+static struct vpool *vpool_address(uint64_t a, uint64_t n) {   // caller holds g_vp_mu; a whole guest range in one virtual pool
+    for (int k = 0; k < g_nvp; k++) {
+        struct vpool *v = g_vp[k]; uint64_t base = (uint64_t)(uintptr_t)v->base;
+        if (a >= base && a - base <= v->len && n <= v->len - (a - base)) return v;
+    }
+    return NULL;
+}
 int nvn_sparse_pool(const void *pool) { return vpool_live(pool) != NULL; }   // no lock: set at Initialize, cleared at the first mapping (an aliased pool) or Finalize; called per texture lookup
 uint64_t nvn_sparse_gen(void) { return atomic_load(&g_vp_gen); }
+const void *nvn_sparse_address_pool(uint64_t a, uint64_t n) {
+    if (!n) n = 1;
+    pthread_mutex_lock(&g_vp_mu); struct vpool *v = vpool_address(a, n); const void *pool = v ? v->pool : NULL; pthread_mutex_unlock(&g_vp_mu);
+    return pool;
+}
+int nvn_sparse_address_translate(uint64_t a, uint64_t n, uint64_t *physical) {   // → a contiguous host address only when every guest page is backed contiguously
+    if (!n || n > UINT64_MAX - a || !physical) return 0;
+    pthread_mutex_lock(&g_vp_mu); struct vpool *v = vpool_address(a, n); int ok = v != NULL; uint64_t first = 0;
+    for (uint64_t done = 0, o = v ? a - (uint64_t)(uintptr_t)v->base : 0; ok && done < n;) {
+        uint64_t at = o + done, part = 0x1000 - (at & 0xfff); if (part > n - done) part = n - done;
+        const vpte *e = at < v->size ? vpt_get(v, at) : NULL;
+        if (!e || !e->phys) { ok = 0; break; }
+        uint64_t p = (uint64_t)(uintptr_t)e->phys + (at & 0xfff);
+        if (!done) first = p; else if (p != first + done) { ok = 0; break; }
+        done += part;
+    }
+    pthread_mutex_unlock(&g_vp_mu); if (ok) *physical = first; return ok;
+}
+uint64_t nvn_sparse_address_copy(uint64_t a, void *dst, uint64_t n) {   // as nvn_sparse_copy, locating the virtual pool by guest address
+    pthread_mutex_lock(&g_vp_mu); struct vpool *v = vpool_address(a, n); uint64_t miss = 0;
+    if (!v) { pthread_mutex_unlock(&g_vp_mu); memset(dst, 0, n); return n; }
+    for (uint64_t done = 0, o = a - (uint64_t)(uintptr_t)v->base; done < n;) {
+        uint64_t at = o + done, part = 0x1000 - (at & 0xfff); if (part > n - done) part = n - done;
+        const vpte *e = at < v->size ? vpt_get(v, at) : NULL;
+        if (e && e->phys) memcpy((uint8_t *)dst + done, e->phys + (at & 0xfff), part);
+        else { memset((uint8_t *)dst + done, 0, part); miss += part; }
+        done += part;
+    }
+    pthread_mutex_unlock(&g_vp_mu); return miss;
+}
 uint64_t nvn_sparse_copy(const void *pool, void *dst, uint64_t a, uint64_t n) {
     pthread_mutex_lock(&g_vp_mu); struct vpool *v = vpool_at(pool, a); uint64_t miss = 0;
     if (!v) { pthread_mutex_unlock(&g_vp_mu); memset(dst, 0, n); return n; }
