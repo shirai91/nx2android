@@ -736,7 +736,7 @@ static VkSampler make_sampler(const samp_par *p) {
     // DM_VK_MIP_MAX=<level> (A/B): cap every sampler's chosen mip at this level (0 = always level 0). A ground plane seen at a shallow angle picks a very high mip;
     // if a material reads flat while its neighbours are detailed, this says whether the mip choice or the texture/UVs is at fault
     { static int mm = -1; if (mm < 0) { const char *e = getenv("DM_VK_MIP_MAX"); mm = e && *e ? atoi(e) : -1; }
-      if (mm >= 0) { ci.maxLod = (float)mm; if (ci.mipLodBias < 0) ci.mipLodBias = 0; } }
+      if (mm >= 0) { ci.maxLod = (float)mm; if (ci.minLod > ci.maxLod) ci.minLod = ci.maxLod; if (ci.mipLodBias < 0) ci.mipLodBias = 0; } }   // (maxLod < minLod is invalid Vulkan usage)
     int border = ci.addressModeU == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER || ci.addressModeV == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER || ci.addressModeW == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
     ci.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
     if (border) {
@@ -756,9 +756,10 @@ static VkSampler make_sampler(const samp_par *p) {
     return s;
 }
 volatile int g_vk_samp_log;   // DM_VK_SAMP_LOG=<n> (live, gfx_vk_exec.c x_read): the next n sampler registrations, in time order with the replay's lines
+volatile int g_vk_samp_log_boot;   // the start-up value mtl_reg_samp took below, which x_read's first read must not arm a second time
 void mtl_reg_samp(int sid, const samp_par *sp) {
     if (sid < 0) return;
-    { static int once; if (!once) { once = 1; const char *e = getenv("DM_VK_SAMP_LOG"); if (e && atoi(e) > 0) g_vk_samp_log = atoi(e); } }   // (games register samplers at start, before the replay's live switches are read)
+    { static int once; if (!once) { once = 1; const char *e = getenv("DM_VK_SAMP_LOG"); if (e && atoi(e) > 0) g_vk_samp_log_boot = g_vk_samp_log = atoi(e); } }   // (games register samplers at start, before the replay's live switches are read)
     if (g_vk_samp_log > 0) { extern uint64_t g_tex_frame; g_vk_samp_log--; LOG("[vk] sampler registered: id %d lod %g..%g min %d wrap %d/%d/%d aniso %.1f compare %d border %.2f,%.2f,%.2f,%.2f (present %llu, thread %d)",
         sid, sp->lod_min, sp->lod_max, sp->minf, sp->ws, sp->wt, sp->wr, sp->aniso, sp->cmp_mode, sp->border[0], sp->border[1], sp->border[2], sp->border[3], (unsigned long long)g_tex_frame, (int)gettid()); }
     pthread_mutex_lock(&g_rmu);
