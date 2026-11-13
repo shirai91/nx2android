@@ -7,6 +7,12 @@
 #include <sys/mman.h>
 static uint8_t *memory;
 static int logic_supported;
+static PFN_vkCreateGraphicsPipelines real_create;
+static VkResult checked_create(VkDevice device,VkPipelineCache cache,uint32_t count,const VkGraphicsPipelineCreateInfo *infos,const VkAllocationCallbacks *allocator,VkPipeline *pipelines) {
+    for(unsigned i=0;i<count;i++) if(infos[i].pColorBlendState && infos[i].pColorBlendState->logicOpEnable && !logic_supported)
+        die("persisted logic pipeline requested a disabled device feature");
+    return real_create(device,cache,count,infos,allocator,pipelines);
+}
 static prog_t logic_program[2]={{.nstage=2,.serial=1},{.nstage=2,.serial=2}},sparse_mrt_program={.nstage=2,.serial=3};
 int __wrap_prog_key(const prog_t *p,unsigned stage,uint8_t key[8]) {
  if(stage>=2)return 0;memset(key,0,8);key[7]=stage?(p==&sparse_mrt_program?0x63:p==&logic_program[1]?0x62:0x61):0x52;return 1;
@@ -118,8 +124,9 @@ static void sparse_mrt_outputs(void) {
 }
 
 int __wrap_main(void) {
- setbuf(stdout,NULL);setenv("DM_VK_NOPREWARM","1",1);setenv("DM_VK_ASYNC_PIPE","0",1);
+ setbuf(stdout,NULL);if(getenv("NX2A_LOGIC_PREWARM"))unsetenv("DM_VK_NOPREWARM");else setenv("DM_VK_NOPREWARM","1",1);setenv("DM_VK_ASYNC_PIPE","0",1);
  mtl_init();logic_supported=V.has_logic_op;printf("Native logicOp available: %s\n",logic_supported?"yes":"no; validating donor COPY fallback");mtl_set_depth_zero(1);mtl_set_origin_lower_left(0);
+ real_create=vkCreateGraphicsPipelines;vkCreateGraphicsPipelines=checked_create;
  memory=mmap(NULL,65536,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS,-1,0);assert(memory!=MAP_FAILED);mtl_pool_add(memory,65536);
- logic_operations();sparse_mrt_outputs();mtl_finish();mtl_pool_del(memory);munmap(memory,65536);return 0;
+ logic_operations();sparse_mrt_outputs();mtl_finish();if(getenv("NX2A_LOGIC_PREWARM"))usleep(500000);mtl_pool_del(memory);munmap(memory,65536);return 0;
 }

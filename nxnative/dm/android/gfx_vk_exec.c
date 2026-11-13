@@ -975,6 +975,8 @@ static void *prewarm_thread(void *arg) {
     for (;;) {
         size_t i = __atomic_fetch_add(&g_pw_next, 1, __ATOMIC_RELAXED); if (i >= g_pw_n) break;
         const pkey *k = &g_pw[i];
+        // Persisted keys may come from a device/run with logicOp enabled.
+        if (k->logic_en && !V.has_logic_op) continue;
         pthread_mutex_lock(&g_pipe_mu); int have = nvn_hm_get(&g_pipes, k) != NULL; pthread_mutex_unlock(&g_pipe_mu);
         if (have) continue;
         vkshader_t *stg[3] = {0}; int ok = 1;
