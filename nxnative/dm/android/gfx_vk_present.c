@@ -1122,5 +1122,14 @@ int mtl_link_wait_tick(int vsyncs, uint64_t timeout_ns) { (void)vsyncs; (void)ti
 int mtl_has_window(void) { return dm_front_window() != NULL; }
 int mtl_display_hz(void) { return 60; }
 int mtl_fps_target(void) { return DM_GAME_FPS_TARGET > 0 ? DM_GAME_FPS_TARGET : 60; }
+// The adaptive frame rate's ceiling (perf_android.c fps_cap_step): the profile's fps_ceiling (30, or 0 for none; only Cardfight!! Vanguard Dear Days 2 sets it), which
+// DM_FPS_CEILING overrides (porter's --fps60 writes 0). A game whose host frame step is on (the rewriter's state page, loader.c dm_fps_state) gets none whatever the key says:
+// its holds are the frame step's (Breath of the Wild's VFR override fixes its step at one vsync, which a 30 fps ceiling would run at half speed)
+extern uint8_t *dm_fps_state;
+int dm_fps_ceiling(void) {
+    static int c = -1;
+    if (c < 0) { const char *e = getenv("DM_FPS_CEILING"); c = e ? atoi(e) : DM_GAME_FPS_CEILING; if (c != 30 || dm_fps_state) c = 0; }
+    return c;
+}
 void mtl_xv_window_tex(uint64_t serial) { (void)serial; }
 void mtl_prog_release(prog_t *p) { (void)p; }
