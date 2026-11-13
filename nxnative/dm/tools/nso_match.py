@@ -20,6 +20,10 @@ class MatchError(ValueError):
     pass
 
 
+class AmbiguousMatchError(MatchError):
+    """A candidate cannot be selected uniquely; no alternative may override this."""
+
+
 TRAP_WORD, BRK = 0xe7ffdefe, 0xd4200000  # the word some compilers leave after a call that does not return, which Capstone cannot decode; brk #0
 
 
@@ -178,7 +182,8 @@ class Image:
             try: digest = self.fingerprint(start)
             except MatchError: continue
             if digest in rule['fingerprints']: matches.append(start)
-        if len(matches) != 1: raise MatchError(f'{len(matches)} matching functions (need exactly one)')
+        if len(matches) > 1: raise AmbiguousMatchError(f'{len(matches)} matching functions (need exactly one)')
+        if not matches: raise MatchError('0 matching functions (need exactly one)')
         start, = matches
         cuts = []
         for delta, old, new, reason in rule['cuts']:
@@ -193,14 +198,18 @@ class Image:
         validate(rule)
         if 'functions' not in rule: return self.match(rule)
         cuts, starts, misses, n = [], set(), [], len(rule['functions'])
+        ambiguous = False
         for i, fn in enumerate(rule['functions'], 1):
             try: got = self.match(dict(fn, name=rule['name']))
             except MatchError as e:
+                ambiguous |= isinstance(e, AmbiguousMatchError)
                 misses.append(f'function {i} of {n} ({fn["size"]} bytes): {e}'); continue
             start = got[0][0] - fn['cuts'][0][0]
-            if start in starts: misses.append(f'function {i} of {n} matched a function another one did')
+            if start in starts:
+                ambiguous = True
+                misses.append(f'function {i} of {n} matched a function another one did')
             starts.add(start); cuts += got
-        if misses: raise MatchError('; '.join(misses) + (f'; the other {n - len(misses)} matched' if len(misses) < n else ''))
+        if misses: raise (AmbiguousMatchError if ambiguous else MatchError)('; '.join(misses) + (f'; the other {n - len(misses)} matched' if len(misses) < n else ''))
         return cuts
 
 
@@ -250,10 +259,15 @@ def resolve(image, text_end, rules, report=print, outcomes=None, red=True):
         return []
     cuts = []
     for name, alternatives in groups.items():
-        found, misses = [], []
+        found, misses, ambiguous = [], [], False
         for i, rule in enumerate(alternatives, 1):
             try: found.append((i, module.match_patch(rule)))
-            except MatchError as e: misses.append(str(e))
+            except MatchError as e:
+                ambiguous |= isinstance(e, AmbiguousMatchError)
+                misses.append(str(e))
+        if ambiguous:
+            missed(name, '; '.join(misses))
+            continue
         if len(found) != 1:
             missed(name, f'{len(found)} implementations match (need exactly one)' if found else '; '.join(misses))
             continue
