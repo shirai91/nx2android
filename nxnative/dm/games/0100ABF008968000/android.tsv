@@ -1,0 +1,15 @@
+# Pokémon Sword on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Game Freak's engine on SDK 7.3.2, update 1.3.2 (v458752); game.tsv and the shader tables come from the survey, checked by hand. Its GFPAK archives are LZ4 (no Oodle):
+# a port needs no device for the shaders. NintendoWare Vfx builds some effect programs at run time (46 in the opening, in no game file): the app captures them
+# the first time it meets them (captured_shaders/) and the next port with --install translates them in; until then the draws that need them are left out, which in the
+# opening showed the old shot frozen under the new one's flares and text, and an 80% dynamic-resolution frame in a corner.
+# On the AYN Odin 2 (Snapdragon 8 Gen 2, Adreno 740, Android 13, Turnip, 2026-11-13), driven with DM_CTL and played by hand: the language, photo and name screens (the
+# overlay keyboard), the opening broadcast, the house, Postwick, door fades, the X menu, a save and Continue from it, the Odin's own controls. 30 fps as on the Switch
+# (frame work about 12-14 ms); with DM_PRESENT_INTERVAL=display it renders 60 but the game steps its logic per frame and runs twice as fast, so there is no 60 fps option.
+# A 15-minute soak in Postwick (devtools/soak.sh) kept one process at 33 ms a frame with no red line; the footprint settled at about 1.1 GB and crept 2-3 MiB a minute.
+# With a save, the title screen crashed in 2 of 12 cold boots before patches.py (an outfit part not loaded yet); 0 of 12 with it.
+# Battles, the Wild Area and local wireless are not checked yet.
+status	playable
+tested	v458752 AYN Odin 2 (Snapdragon 8 Gen 2, Adreno 740, Android 13)
+package	org.nx2a.t0100abf008968000
+orientation	landscape
