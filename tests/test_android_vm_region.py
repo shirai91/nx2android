@@ -37,7 +37,7 @@ int main(void) {
     // an untagged pointer into the middle line: the whole run of three lines, not the read-only page after it
     assert(region((uint64_t)(uintptr_t)(b + pg + 8), &at, &sz, &prot));
     assert(at <= (uint64_t)(uintptr_t)b && at + sz == (uint64_t)(uintptr_t)(b + 3 * pg) && prot == (VM_PROT_READ | VM_PROT_WRITE));
-    // the same with the top byte tagged: found, and given back with the tag, so the tagged range compares inside it (hle_uemalloc.c dm_ue_heap_owns)
+    // the same with the top byte tagged: found, and given back with the tag, so the tagged range compares inside it
     uint64_t a = (uint64_t)(uintptr_t)(b + pg + 8) | TAG, n = 2 * pg - 16;
     assert(region(a, &at, &sz, &prot)); assert((at & ~0x00ffffffffffffffull) == TAG && at <= a && a + n <= at + sz);
     // the read-only page is a region of its own; the page after it starts another
@@ -58,11 +58,11 @@ int main(void) {
 @unittest.skipUnless(Path('/proc/self/maps').exists(), 'Linux /proc/self/maps is required')
 class AndroidVmRegion(unittest.TestCase):
     def test_tagged_and_split(self):
-        src = (COMPAT / 'darwin_compat.c').read_text()
+        src = (COMPAT / 'darwin_compat.c').read_text(encoding='utf-8')
         cut = src[src.index('static int prot_of('):src.index('kern_return_t mach_vm_region(')]
         with tempfile.TemporaryDirectory(prefix='nx2a-vmregion-') as tmp:
             c, exe = Path(tmp) / 'check.c', Path(tmp) / 'check'
-            c.write_text(HARNESS.replace('CUT', cut))
+            c.write_text(HARNESS.replace('CUT', cut), encoding='utf-8')
             subprocess.run(['cc', '-std=gnu11', '-Wall', '-Wextra', '-Werror', '-I', str(COMPAT / 'include'), str(c), '-o', str(exe)], check=True)
             out = subprocess.run([str(exe)], capture_output=True, text=True, timeout=60)
             self.assertEqual(out.returncode, 0, out.stderr)

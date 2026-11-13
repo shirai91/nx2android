@@ -61,8 +61,8 @@ static int prot_of(const char *perm) { return (perm[0] == 'r' ? VM_PROT_READ : 0
 //   lay above every line, so the call failed for any malloc'd pointer: the address is compared without its top byte (vm_region_64 puts it back on the region's start)
 // - Scudo maps one allocation's memory as several adjacent lines (its secondary's header and guard pages apart, the blocks of a primary region), and the kernel keeps
 //   neighbouring mappings of other origins apart: the region is the run of directly adjacent lines with the same permissions and sharing around the address, so a range
-//   inside one allocation lies inside one region. Unreal's FMemory stacks, which nn::os moves with svcMapMemory (hle_uemalloc.c dm_ue_heap_owns), are such allocations:
-//   droidplay-core's FINAL FANTASY RESONANCE aborted in MapAliasStack (MapMemory refused, 0xd401) before its 794555cfe, whose idea this is
+//   inside one allocation lies inside one region
+// The callers on Android are hle_fs.c's EFAULT diagnostic (the protection of a ReadFile destination) and probe.c's DM_PROBE_WATCH arming (through mach_vm_region)
 #define DM_ADDR_UNTAGGED 0x00ffffffffffffffull
 static int region_at(uint64_t addr, uint64_t *lo, uint64_t *hi, int *prot, int *shared) {
     FILE *f = fopen("/proc/self/maps", "re"); if (!f) return -1;
