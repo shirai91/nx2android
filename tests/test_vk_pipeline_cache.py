@@ -120,6 +120,9 @@ int main(int argc,char **argv) {
         for (int i=0;i<200 && renames==prior+1;i++) usleep(10000);
         assert(renames==prior+2);
         pthread_mutex_lock(&g_pcache_io); pthread_mutex_unlock(&g_pcache_io);   // (the save thread done)
+        // the gap grows with the cache: one step up to 32 MB, one per 16 MB above, at most 8 steps
+        g_pcache_gap_ns=15000000000ll; size_t sizes[]={0,1u<<20,(32u<<20)-1,32u<<20,54u<<20,138u<<20,256u<<20}; int64_t steps[]={1,1,1,2,3,8,8};
+        for (int i=0;i<7;i++) { atomic_store(&g_pcache_size,sizes[i]); assert(pcache_gap()==steps[i]*15000000000ll); }
         return 0;
     }
     if (mode==4) {
