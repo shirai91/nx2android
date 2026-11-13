@@ -730,7 +730,9 @@ static VkSampler make_sampler(const samp_par *p) {
     ci.minFilter = p->minf == 1 || p->minf == 3 || p->minf == 5 ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
     ci.mipmapMode = p->minf == 4 || p->minf == 5 ? VK_SAMPLER_MIPMAP_MODE_LINEAR : VK_SAMPLER_MIPMAP_MODE_NEAREST;
     ci.addressModeU = wrap(p->ws); ci.addressModeV = wrap(p->wt); ci.addressModeW = wrap(p->wr);
-    // Existing Android parity sampler limits (nxnative bbd6424db).
+    // Vulkan requires |mipLodBias| <= maxSamplerLodBias, maxLod >= minLod,
+    // and the samplerAnisotropy feature for anisotropy (gated by V.max_aniso).
+    // NVN's bias range is -16..15.99; no mipmap filter: level 0 only (GL's rule).
     float bias_limit = V.props.limits.maxSamplerLodBias;
     ci.mipLodBias = fminf(fminf(15.99f, bias_limit), fmaxf(fmaxf(-16, -bias_limit), p->lod_bias));
     ci.maxAnisotropy = fminf(V.max_aniso, fmaxf(1, floorf(p->aniso)));

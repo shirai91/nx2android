@@ -11,12 +11,12 @@ DM = ROOT / 'nxnative/dm'
 
 
 def production_header():
-    source = (DM / 'android/gfx_vk_tex.c').read_text()
+    source = (DM / 'android/gfx_vk_tex.c').read_text(encoding='utf-8')
     begin = source.index('static VkSamplerAddressMode wrap(')
     end = source.index('\nvolatile int g_vk_samp_log', begin)
-    obj = (DM / 'gfx/nvn/nvn_obj.h').read_text()
+    obj = (DM / 'gfx/nvn/nvn_obj.h').read_text(encoding='utf-8')
     params = next(line.split('//')[0] for line in obj.splitlines() if '} samp_par;' in line)
-    core = (DM / 'android/gfx_vk_core.c').read_text()
+    core = (DM / 'android/gfx_vk_core.c').read_text(encoding='utf-8')
     assignment = re.search(r'V\.max_aniso\s*=.*?;', core).group()
     return params + '\nstatic void init_limits(void) { ' + assignment + ' }\n' + source[begin:end]
 
@@ -28,7 +28,7 @@ class SamplerLimits(unittest.TestCase):
         cls.tmp = tempfile.TemporaryDirectory(prefix='nx2a-sampler-')
         cls.addClassCleanup(cls.tmp.cleanup)
         work = Path(cls.tmp.name)
-        (work / 'sampler_production.h').write_text(production_header())
+        (work / 'sampler_production.h').write_text(production_header(), encoding='utf-8')
         cls.binary = work / 'sampler-limits'
         subprocess.run(['cc', '-std=gnu11', '-O2', '-I' + str(work),
                         '-I' + str(DM / 'third_party/vulkan-headers/include'),

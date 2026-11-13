@@ -20,6 +20,8 @@ static VkResult capture_sampler(VkDevice dev,const VkSamplerCreateInfo *info,con
 #endif
 }
 #define vkCreateSampler capture_sampler
+#define VKRED_ONCE(...) ((void)0)
+#define LOG(...) ((void)0)
 #include "sampler_production.h"
 #undef vkCreateSampler
 static void check(const char *what,float got,float want) {
