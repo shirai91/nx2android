@@ -49,7 +49,10 @@ _Static_assert(sizeof(view_t) <= 16, "view_t exceeds the newer SDKs' NVNtextureV
 // Sampler parameters (one copy shared by builder and object)
 typedef struct { uint8_t minf, magf, ws, wt, wr, cmp_mode, cmp_func, reduction; float lod_min, lod_max, lod_bias, aniso, border[4]; } samp_par;   // Enum values are all < 256; reduction takes the padding byte
 typedef struct { NVNdevice *dev; samp_par p; } samp_builder_t;                                FITS(samp_builder_t, NVNsamplerBuilder);
-typedef struct { uint32_t magic; samp_par p; } samp_t;                                        FITS(samp_t, NVNsampler);
+// Keep all sampler state after the opaque eight-byte header: engines hash the object after that header.
+// Odyssey's sampler cache skipped min/mag/S/T at offsets 4..7, repeatedly allocated equal samplers, then exhausted its pool and bound ID 0 (ground grids).
+typedef struct { uint64_t magic; samp_par p; } samp_t;                                        FITS(samp_t, NVNsampler);
+_Static_assert(offsetof(samp_t, p) == 8, "sampler state must participate in opaque-object hashes");
 
 // The per-stage shader keys are not kept in prog_t: the game's real NVNprogram may be smaller than the header's 0xC0 (growing prog_t corrupted the adjacent object in Mario); see prog_keys in hle_nvn.c
 typedef struct { uint32_t magic, nstage; NVNshaderData sd[6]; uint64_t serial; } prog_t;     FITS(prog_t, NVNprogram);   // serial: table key for the replay layer's resolved result
@@ -86,6 +89,10 @@ typedef struct {
     uint64_t used;                       // Bytes written since the game last added command memory, across recordings and host segments, including segment-switch JUMPs (returned by GetCommandMemoryUsed)
     int32_t tex_base, samp_base;         // Host-table bases of the texture / sampler pool this command buffer last bound (hle_nvn.c dpool_add; 0 = the first pool of its kind)
     size_t cmd_size;                     // GetCommandMemorySize: the byte count the game last passed to AddCommandMemory with a pool (records and host-lent segments leave it)
+    uint8_t *ctl_mem, *ctl_end;           // Guest control storage owns handles even when there is no GPU command pool
+    uint64_t ctl_used;                   // Bytes reserved for lifetime anchors in the last control grant
+    uintptr_t ctl_anchor;                // This recording's reserved control bytes; CPU replay records stay in host storage
+    uint32_t host_control, host_sz;       // Empty GPU command pool with control-owned host storage; initial segment size
 } cmd_t;                                                                                   FITS(cmd_t, NVNcommandBuffer);
 
 // ---------- State objects (defaults follow the NVN / GL defaults) ----------

@@ -97,6 +97,9 @@ static uint64_t g_x_flat[8]; static int g_x_flat_mode[8], g_x_nflat;   // DM_VK_
 // Additional diagnostic bits: 8 no alpha coverage, 16 no depth bias, 32 no depth test/write, 64 no stencil. The mode is part of the pipeline key so live changes take effect.
 static uint64_t g_x_logfs;   // DM_VK_LOG_FS=<fragment shader key> (live): one line per draw with it, with its samplers as the draw sees them
 static int g_rd_touch = 1, g_x_rdkeep, g_x_nskipvs; static uint64_t g_x_skipvs[8];   // DM_VK_RD_TOUCH, DM_VK_X_RDKEEP, DM_VK_X_SKIPVS (see prepare_draw)
+static int g_x_nskipfs; static uint64_t g_x_skipfs[16];   // DM_VK_X_SKIPFS: bounded live fragment-shader bisection
+static uint64_t g_x_cutfs, g_prev_fs;   // DM_VK_X_CUTFS: isolate a fragment shader between pass dumps
+static uint64_t g_list_vs, g_list_fs;
 static char g_x_tracesize[40], g_x_traceframe[40]; static int g_x_traceframe_on;
 // DM_VK_WATCH=<pool offset, hex>[#n] (live): log the next n (20) uses of images at that offset of their pool (attachment, sampled, copy), with the pass and present
 // numbers, to find what fills a texture a pass reads
@@ -173,7 +176,9 @@ static void x_read(void) { const char *c = getenv("DM_VK_CB_DRAWS"); g_x_cbdraws
     g_lrz_touch = (e = getenv("DM_VK_LRZ_TOUCH")) ? atoi(e) : 1; if (g_lrz_touch == 1) g_lrz_touch = LRZ_ALL;   /* 0 none, 1 all, else LRZ_* bits */ g_fdz = !((e = getenv("DM_VK_FDZ")) && !atoi(e)); g_xfb_on = !((e = getenv("DM_VK_XFB")) && !atoi(e));
     g_psplit = (e = getenv("DM_VK_PASS_SPLIT")) ? atoi(e) : 0; g_setsplit = (e = getenv("DM_VK_SETSPLIT")) && atoi(e); g_psplit_depth = (e = getenv("DM_VK_PASS_SPLIT_DEPTH")) && atoi(e);
     g_x_rdkeep = (e = getenv("DM_VK_X_RDKEEP")) && atoi(e); g_vbound = !((e = getenv("DM_VK_VBOUND")) && !atoi(e)); g_x_logfs = (e = getenv("DM_VK_LOG_FS")) ? strtoull(e, NULL, 16) : 0; g_x_nflat = 0; if ((e = getenv("DM_VK_X_FLAT_VS"))) for (char *q = (char *)e; *q && g_x_nflat < 8; ) { char *nx; uint64_t v = strtoull(q, &nx, 16); if (nx == q) break; int m = 7; if (*nx == ':') m = (int)strtol(nx + 1, &nx, 10); g_x_flat_mode[g_x_nflat] = m; g_x_flat[g_x_nflat++] = v; q = *nx ? nx + 1 : nx; } g_samp_snap = !((e = getenv("DM_NVN_SAMP_SNAP")) && !atoi(e)); g_lin_back = !((e = getenv("DM_VK_LIN_BACK")) && !atoi(e)); g_async_pipe = !((e = getenv("DM_VK_ASYNC_PIPE")) && !atoi(e)); g_prof_on = (e = getenv("DM_VK_PROF_SLOW")) && atoi(e); { extern volatile int g_vk_samp_log; if ((e = getenv("DM_VK_SAMP_LOG")) && atoi(e) > 0) { g_vk_samp_log = atoi(e); setenv("DM_VK_SAMP_LOG", "0", 1); } } g_x_nosetmemo = (e = getenv("DM_VK_X_NOSETMEMO")) && atoi(e); g_x_setverify = (e = getenv("DM_VK_X_SETVERIFY")) && atoi(e);
-    g_x_nskipvs = 0; for (const char *q = getenv("DM_VK_X_SKIPVS"); q && *q && g_x_nskipvs < 8;) { char *n; uint64_t v = strtoull(q, &n, 16); if (n == q) break; if (v) g_x_skipvs[g_x_nskipvs++] = v; q = *n ? n + 1 : n; } }
+    g_x_nskipvs = 0; for (const char *q = getenv("DM_VK_X_SKIPVS"); q && *q && g_x_nskipvs < 8;) { char *n; uint64_t v = strtoull(q, &n, 16); if (n == q) break; if (v) g_x_skipvs[g_x_nskipvs++] = v; q = *n ? n + 1 : n; }
+    g_x_nskipfs = 0; for (const char *q = getenv("DM_VK_X_SKIPFS"); q && *q && g_x_nskipfs < 16;) { char *n; uint64_t v = strtoull(q, &n, 16); if (n == q) break; if (v) g_x_skipfs[g_x_nskipfs++] = v; q = *n ? n + 1 : n; }
+    g_x_cutfs = (e = getenv("DM_VK_X_CUTFS")) ? strtoull(e, NULL, 16) : 0; }
 // ---------------- conditional rendering (profile render_cond) ----------------
 // As nvn_mtl.m (OP_RENDER_COND): SetRenderEnableConditional draws while the 64-bit counters of the reports at addr and addr + 16 are equal / differ, until SetRenderEnable(true).
 // Evaluated on the CPU at replay from the records in memory: a report replayed earlier in this submission is not written yet (that happens when the GPU completes), so a timestamp
@@ -366,7 +371,7 @@ static int pass_commit(void) {
         const char *h = strchr(g_x_tracesize, '#'); size_t l = h ? (size_t)(h - g_x_tracesize) : strlen(g_x_tracesize);   // #n: the (n+1)th such pass
         if (!strncmp(b, g_x_tracesize, l)) { if (h && atoi(h + 1) > 0) { snprintf(g_x_tracesize + l, sizeof g_x_tracesize - l, "#%d", atoi(h + 1) - 1); setenv("DM_VK_TRACE_SIZE", g_x_tracesize, 1); }
             else { g_x_tracepass = g_sub_pass - 1; g_x_tracesize[0] = 0; setenv("DM_VK_TRACE_SIZE", "", 1); } } }
-    if (g_x_tracepass >= 0 && g_sub_pass - 1 == g_x_tracepass) VKLOG("=== traced pass %d: %ux%u, colour formats %d %d, depth format %d", g_x_tracepass, S.pass_w, S.pass_h, S.cfmt[0], S.cfmt[1], S.dfmt); g_pass_draws = 0; g_pass_bb[0] = g_pass_bb[1] = INT32_MAX; g_pass_bb[2] = g_pass_bb[3] = INT32_MIN;
+    if (g_x_tracepass >= 0 && g_sub_pass - 1 == g_x_tracepass) VKLOG("=== traced pass %d: %ux%u, colour formats %d %d, depth format %d", g_x_tracepass, S.pass_w, S.pass_h, S.cfmt[0], S.cfmt[1], S.dfmt); g_pass_draws = 0; g_list_vs = g_list_fs = 0; g_pass_bb[0] = g_pass_bb[1] = INT32_MAX; g_pass_bb[2] = g_pass_bb[3] = INT32_MIN;
     return 1;
 }
 void vk_ubd_land(VkCommandBuffer cb); int vk_ubd_shadow(uint64_t a, uint64_t n, VkBuffer *buf, VkDeviceSize *off); void vk_ubd_read(uint64_t a, uint64_t n, uint8_t *dst);
@@ -384,6 +389,7 @@ static void pass_dump_depth(void);
 static void texdump_flush(void);
 static void pass_dump(void) {
     texdump_flush();
+    { const char *fs = getenv("DM_VK_PASSDUMP_FS"); if (g_pd_state == 1 && fs && *fs) { int hit = 0; for (const char *q = fs; *q;) { char *e; uint64_t key = strtoull(q, &e, 16); if (e == q) break; if (key == g_prev_fs && g_pass_draws) hit = 1; q = *e ? e + 1 : e; } if (!hit) return; } }
     if (g_pd_state == 1 && g_sub_pass - 1 < g_pd_skip) return;   // (a submission with fewer passes dumps nothing, and the next one is tried)
     { const char *pp = getenv("DM_VK_PASSDUMP_PASS"); if (g_pd_state == 1 && pp && *pp) {   // DM_VK_PASSDUMP_PASS=n[,n...] (live): only these pass numbers of each submission,
         int hit = 0; for (const char *q = pp; *q;) { char *e; long v = strtol(q, &e, 10); if (e == q) break; if (v == g_sub_pass - 1) hit = 1; q = *e ? e + 1 : e; }   // to follow a few passes
@@ -404,6 +410,8 @@ static void pass_dump(void) {
     const view_t *cv = S.rt_has_cview[ci] ? &S.rt_cview[ci] : NULL;   // the view's level and layer (a cube face of an array, a mip)
     uint32_t lv = cv && cv->set_levels ? cv->base_level : 0, ly = cv && cv->set_layers ? cv->min_layer : 0, w = im->w >> lv ? im->w >> lv : 1, h = im->h >> lv ? im->h >> lv : 1;
     if (lv >= im->levels || ly >= im->layers) lv = ly = 0, w = im->w, h = im->h;
+    uint32_t ox = 0, oy = 0; const char *crop = getenv("DM_VK_PASSDUMP_CROP"); unsigned cx, cy, cw, ch;
+    if (crop && sscanf(crop, "%u,%u,%u,%u", &cx, &cy, &cw, &ch) == 4 && cx < w && cy < h && cw && ch) { ox = cx; oy = cy; w = cw < w - cx ? cw : w - cx; h = ch < h - cy ? ch : h - cy; VKLOG("pass dump crop: image %ux%u, origin %u,%u, size %ux%u", im->w, im->h, ox, oy, w, h); }
     uint32_t bpp = im->fmt == VK_FORMAT_R16G16B16A16_SFLOAT ? 8 : im->fmt == VK_FORMAT_R16_SFLOAT ? 2 : im->fmt == VK_FORMAT_R8_UNORM ? 1 : 4; VkDeviceSize n = (VkDeviceSize)w * h * bpp;
     pdump_t *d = &g_pd[g_npd++]; d->w = w; d->h = h; d->f = im->fmt; d->pass = g_sub_pass - 1; d->present = g_tex_frame;
     VkBufferCreateInfo bi = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, NULL, 0, n, VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_SHARING_MODE_EXCLUSIVE};
@@ -411,7 +419,7 @@ static void pass_dump(void) {
     VkMemoryAllocateInfo ai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, rq.size, vk_mem_type(rq.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT, 0)};
     VKCHK(vkAllocateMemory(V.dev, &ai, NULL, &d->m)); VKCHK(vkBindBufferMemory(V.dev, d->b, d->m, 0)); VKCHK(vkMapMemory(V.dev, d->m, 0, VK_WHOLE_SIZE, 0, &d->p));
     VkCommandBuffer cb = vk_cmd(); vk_img_barrier_all(cb);
-    VkBufferImageCopy c = {0, 0, 0, {VK_IMAGE_ASPECT_COLOR_BIT, lv, ly, 1}, {0, 0, 0}, {w, h, 1}};
+    VkBufferImageCopy c = {0, 0, 0, {VK_IMAGE_ASPECT_COLOR_BIT, lv, ly, 1}, {(int32_t)ox, (int32_t)oy, 0}, {w, h, 1}};
     vkCmdCopyImageToBuffer(cb, im->img, VK_IMAGE_LAYOUT_GENERAL, d->b, 1, &c); vk_img_barrier_all(cb);
 }
 static void texdump_flush(void) {   // DM_VK_TEXDUMP: outside a render pass (pass_dump runs after its end)
@@ -458,7 +466,11 @@ static void pass_dump_depth(void) {   // the pass's depth (D24S8 / D32 / D16) as
 static inline float half2f(uint16_t h) { uint32_t s = (uint32_t)(h >> 15) << 31, e = (h >> 10) & 31, m = h & 1023, f;
     if (!e) { if (!m) f = s; else { e = 1; while (!(m & 1024)) { m <<= 1; e--; } m &= 1023; f = s | ((e + 112) << 23) | (m << 13); } } else if (e == 31) f = s | 0x7f800000 | (m << 13); else f = s | ((e + 112) << 23) | (m << 13);
     float r; memcpy(&r, &f, 4); return r; }
+static void pixel_history_poll(uint64_t done_fence);
+static int pixel_history_busy(void);
 void vk_pass_dump_poll(uint64_t done_fence) {   // gfx_vk_present.c, every present: start on the switch, write once the GPU finished
+    pixel_history_poll(done_fence);
+    if (pixel_history_busy()) return;
     const char *e = getenv("DM_VK_PASSDUMP");
     if (g_pd_state == 0 && e && atoi(e) > 1) { char n[16]; snprintf(n, sizeof n, "%d", atoi(e) - 1); setenv("DM_VK_PASSDUMP", n, 1); return; }   // =N: the frame after N - 1 more presents
     if (g_pd_state == 0 && e && atoi(e)) { const char *sk = getenv("DM_VK_PASSDUMP_SKIP"); g_pd_skip = sk && !strchr(sk, 'x') ? atoi(sk) : 0;
@@ -472,10 +484,12 @@ void vk_pass_dump_poll(uint64_t done_fence) {   // gfx_vk_present.c, every prese
     if (g_pd_state != 2 || !g_npd || done_fence < g_pd[g_npd - 1].fence) return;
     const char *root = getenv("DM_ROOT");
     for (int i = 0; i < g_npd; i++) {
-        pdump_t *d = &g_pd[i]; char path[1024]; snprintf(path, sizeof path, "%s/pass_%02d.ppm", root ? root : ".", i);
+        pdump_t *d = &g_pd[i]; VkMappedMemoryRange mr = {VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, NULL, d->m, 0, VK_WHOLE_SIZE};
+        VKCHK(vkInvalidateMappedMemoryRanges(V.dev, 1, &mr));
+        char path[1024]; snprintf(path, sizeof path, "%s/pass_%02d.ppm", root ? root : ".", i);
         VKLOG("pass dump %02d is the submission's pass %d (present %llu)", i, d->pass, (unsigned long long)d->present);
         FILE *f = fopen(path, "wb"); if (!f) continue; fprintf(f, "P6\n%u %u\n255\n", d->w, d->h);
-        uint8_t *row = malloc((size_t)d->w * 3); uint64_t bad = 0; float mx = 0, mn = 0; double sum = 0;
+        uint8_t *row = malloc((size_t)d->w * 3); uint64_t bad = 0, n_nan = 0, n_inf = 0, n_finite = 0; float mx = 0, mn = 0; double sum = 0;
         if (d->f == VK_FORMAT_D24_UNORM_S8_UINT || d->f == VK_FORMAT_D32_SFLOAT || d->f == VK_FORMAT_D32_SFLOAT_S8_UINT || d->f == VK_FORMAT_D16_UNORM || d->f == VK_FORMAT_X8_D24_UNORM_PACK32) {
             size_t np = (size_t)d->w * d->h; float lo = 1e30f, hi = -1e30f; float *v = malloc(np * sizeof *v);
             for (size_t k = 0; k < np; k++) { float x;
@@ -498,20 +512,27 @@ void vk_pass_dump_poll(uint64_t done_fence) {   // gfx_vk_present.c, every prese
             free(v); free(row); fclose(f); VKLOG("pass dump %02d: %ux%u RG16F, values %.3f .. %.3f, nonzero texels %llu → %s", i, d->w, d->h, lo, hi, (unsigned long long)nz, path);
             vkDestroyBuffer(V.dev, d->b, NULL); vkFreeMemory(V.dev, d->m, NULL); continue;
         }
+        const char *raw_env = getenv("DM_VK_PASSDUMP_RAW"); float *raw = raw_env && atoi(raw_env) && (d->f == VK_FORMAT_R16G16B16A16_SFLOAT || d->f == VK_FORMAT_B10G11R11_UFLOAT_PACK32 || d->f == VK_FORMAT_R16_SFLOAT) ? malloc((size_t)d->w * d->h * 3 * sizeof(float)) : NULL;
         for (uint32_t y = 0; y < d->h; y++) { for (uint32_t x = 0; x < d->w; x++) {
             if (d->f == VK_FORMAT_R16G16B16A16_SFLOAT || d->f == VK_FORMAT_B10G11R11_UFLOAT_PACK32 || d->f == VK_FORMAT_R16_SFLOAT) { float v3[3];
                 if (d->f == VK_FORMAT_R16G16B16A16_SFLOAT) { const uint16_t *p = (const uint16_t *)d->p + ((size_t)y * d->w + x) * 4; for (int c = 0; c < 3; c++) v3[c] = half2f(p[c]); }
                 else if (d->f == VK_FORMAT_R16_SFLOAT) v3[0] = v3[1] = v3[2] = half2f(((const uint16_t *)d->p)[(size_t)y * d->w + x]);
                 else { uint32_t w = ((const uint32_t *)d->p)[(size_t)y * d->w + x];   // 11-bit and 10-bit floats: a half's exponent and top mantissa bits
                     v3[0] = half2f((uint16_t)((w & 0x7ff) << 4)); v3[1] = half2f((uint16_t)((w >> 11 & 0x7ff) << 4)); v3[2] = half2f((uint16_t)((w >> 22 & 0x3ff) << 5)); }
-                for (int c = 0; c < 3; c++) { float v = v3[c]; if (v != v || v > 65000.f || v < -65000.f) { bad++; v = 1; } if (v > mx) mx = v; if (v < mn) mn = v; sum += v; row[3 * x + c] = (uint8_t)(v <= 0 ? 0 : v >= 1 ? 255 : v * 255 + .5f); } }
+                for (int c = 0; c < 3; c++) { float v = v3[c]; uint32_t bits; memcpy(&bits, &v, 4); if (raw) raw[3 * ((size_t)y * d->w + x) + c] = v;
+                    if ((bits & 0x7f800000u) == 0x7f800000u) { bad++; if (bits & 0x7fffffu) n_nan++; else n_inf++; v = 1; }
+                    else { if (!n_finite || v > mx) mx = v; if (!n_finite || v < mn) mn = v; sum += v; n_finite++; }
+                    row[3 * x + c] = (uint8_t)(v <= 0 ? 0 : v >= 1 ? 255 : v * 255 + .5f); } }
             else if (d->f == VK_FORMAT_R8_UNORM) row[3 * x] = row[3 * x + 1] = row[3 * x + 2] = ((const uint8_t *)d->p)[(size_t)y * d->w + x];
             else if (d->f == VK_FORMAT_A2B10G10R10_UNORM_PACK32) { uint32_t w = ((const uint32_t *)d->p)[(size_t)y * d->w + x]; for (int c = 0; c < 3; c++) row[3 * x + c] = (uint8_t)((w >> (10 * c) & 0x3ff) >> 2); }
             else { const uint8_t *p = (const uint8_t *)d->p + ((size_t)y * d->w + x) * 4; int bgr = d->f == VK_FORMAT_B8G8R8A8_UNORM; row[3 * x] = p[bgr ? 2 : 0]; row[3 * x + 1] = p[1]; row[3 * x + 2] = p[bgr ? 0 : 2]; } }
             fwrite(row, 1, (size_t)d->w * 3, f); }
         free(row); fclose(f);
+        if (raw) { char rp[1100]; snprintf(rp, sizeof rp, "%s.f32", path); FILE *rf = fopen(rp, "wb"); if (rf) { fwrite(raw, sizeof(float), (size_t)d->w * d->h * 3, rf); fclose(rf); } free(raw); }
         VKLOG("pass dump %02d: %ux%u format %d → %s%s", i, d->w, d->h, d->f, path, d->f == VK_FORMAT_R16G16B16A16_SFLOAT ? "" : "");
-        if (d->f == VK_FORMAT_R16G16B16A16_SFLOAT || d->f == VK_FORMAT_B10G11R11_UFLOAT_PACK32 || d->f == VK_FORMAT_R16_SFLOAT) VKLOG("   NaN/inf channels %llu, finite values %.3f .. %.3f, mean %.5f", (unsigned long long)bad, mn, mx, sum / (3.0 * d->w * d->h));
+        if (d->f == VK_FORMAT_R16G16B16A16_SFLOAT || d->f == VK_FORMAT_B10G11R11_UFLOAT_PACK32 || d->f == VK_FORMAT_R16_SFLOAT) {
+            if (n_finite) VKLOG("   NaN/inf channels %llu (NaN %llu, inf %llu), finite values %.3f .. %.3f, mean %.5f", (unsigned long long)bad, (unsigned long long)n_nan, (unsigned long long)n_inf, mn, mx, sum / (double)n_finite);
+            else VKLOG("   NaN/inf channels %llu (NaN %llu, inf %llu), no finite values", (unsigned long long)bad, (unsigned long long)n_nan, (unsigned long long)n_inf); }
         if (d->f == VK_FORMAT_B10G11R11_UFLOAT_PACK32 && d->w * d->h <= 4) { char t[200]; int k = 0;   // a tiny target (an exposure value): every texel
             for (uint32_t q = 0; q < d->w * d->h; q++) { uint32_t w = ((const uint32_t *)d->p)[q];
                 k += snprintf(t + k, sizeof t - k, " (%g %g %g)", half2f((uint16_t)((w & 0x7ff) << 4)), half2f((uint16_t)((w >> 11 & 0x7ff) << 4)), half2f((uint16_t)((w >> 22 & 0x3ff) << 5))); }
@@ -584,6 +605,81 @@ void vk_end_pass(void) {
 }
 // a pass end before something that reads or writes pool memory other than through a uniform binding (copies, fills, dispatches, buffer ↔ texture
 // copies, the submission's end): the deferred uniform updates land first (draws read them through their shadows, so ordinary pass ends keep them)
+#include "gfx_vk_pixel_history.h"
+// DM_VK_PIXEL_HISTORY=WxH:X,Y (live, one frame): trace retained HDR colour and its depth after each logical draw/clear. Persistent non-finite HDR pixels
+// survived pass-level captures and a late-depth probe; identify their depth writer and matching material before changing rendering. The per-draw pass cuts
+// and transfer reads are intrusive and can hide driver hazards: compare the final colour with an ordinary capture. Never use this mode for performance.
+enum { PH_MAX = 4096 };
+typedef struct { uint64_t frame, vs, fs, vb, ib, ubo[16]; int pass, draw, kind, prepared, count, instances, base, dt, dw, df, dfmt, sc[5]; uint32_t mask, blend, attr, stride, poly[4]; float bias[3], vp[4], range[2]; } phrow_t;
+static struct { int state, n, truncated; uint32_t area[4]; uint64_t fence; VkBuffer b; VkDeviceMemory mem; uint8_t *map; phrow_t *rows; } g_ph;
+static int pixel_history_busy(void) { return g_ph.state != 0; }
+static void pixel_history_record(int kind, int draw_id, int prepared, int count, int instances, uint64_t ib, int base) {
+    if (g_ph.state != 1 || S.pass_w != g_ph.area[0] || S.pass_h != g_ph.area[1] || S.pass_open == 0 || !S.rt_has_col[0]) return;
+    vkimg_t *im = P_att[0].im, *dep = (S.daspect & VK_IMAGE_ASPECT_DEPTH_BIT) ? P_att[8].im : NULL;
+    if (!im || im->fmt != VK_FORMAT_B10G11R11_UFLOAT_PACK32 || im->samples != VK_SAMPLE_COUNT_1_BIT) return;
+    uint32_t lv = S.rt_has_cview[0] && S.rt_cview[0].set_levels ? S.rt_cview[0].base_level : 0;
+    uint32_t ly = S.rt_has_cview[0] && S.rt_cview[0].set_layers ? S.rt_cview[0].min_layer : 0;
+    uint32_t x = g_ph.area[2], y = g_ph.area[3];
+    if (lv >= im->levels || ly >= im->layers || x >= (im->w >> lv) || y >= (im->h >> lv)) return;
+    if (g_ph.n == PH_MAX) { g_ph.truncated = 1; return; }
+    if (S.pass_open == 2 && !pass_commit()) return;
+    uint32_t dlv = S.rt_has_dview && S.rt_dview.set_levels ? S.rt_dview.base_level : 0;
+    uint32_t dly = S.rt_has_dview && S.rt_dview.set_layers ? S.rt_dview.min_layer : 0;
+    if (dep && (dep->samples != VK_SAMPLE_COUNT_1_BIT || dlv >= dep->levels || dly >= dep->layers || x >= (dep->w >> dlv) || y >= (dep->h >> dlv))) dep = NULL;
+    va_st a; memcpy(&a, &S.vattr[0], sizeof a);
+    phrow_t *r = &g_ph.rows[g_ph.n]; *r = (phrow_t){.frame = g_tex_frame, .vs = S.sh[0] ? S.sh[0]->key : 0, .fs = S.sh[1] ? S.sh[1]->key : 0,
+        .vb = a.stream < 16 ? S.vbuf[a.stream].address : 0, .ib = ib, .pass = g_sub_pass - 1, .draw = draw_id, .kind = kind, .prepared = prepared,
+        .count = count, .instances = instances, .base = base, .dt = S.ds.dt, .dw = S.ds.dw, .df = S.ds.df, .dfmt = dep ? (int)dep->fmt : 0,
+        .mask = S.chmask.mask, .blend = S.color.blend_en, .attr = S.vattr[0], .stride = a.stream < 16 ? S.vstream[a.stream].stride : 0,
+        .bias = {S.pofs.factor, S.pofs.units, S.pofs.clamp}, .sc = {S.sc_set, S.sc.x, S.sc.y, S.sc.w, S.sc.h},
+        .poly = {S.poly.cull, S.poly.front, S.poly.mode, S.poly.offset_en}, .range = {S.dnear, S.dfar}};
+    memcpy(r->vp, S.vp[0], sizeof r->vp);
+    for (int i = 0; i < 16; i++) r->ubo[i] = S.ubo[0][i].addr;
+    VkDeviceSize off = (VkDeviceSize)g_ph.n++ * 16;
+    vk_end_pass(); VkCommandBuffer cb = vk_cmd(); vk_img_barrier_all(cb);
+    VkBufferImageCopy copy = {off, 0, 0, {VK_IMAGE_ASPECT_COLOR_BIT, lv, ly, 1}, {(int32_t)x, (int32_t)y, 0}, {1, 1, 1}};
+    vkCmdCopyImageToBuffer(cb, im->img, VK_IMAGE_LAYOUT_GENERAL, g_ph.b, 1, &copy);
+    if (dep) { copy.bufferOffset = off + 4; copy.imageSubresource = (VkImageSubresourceLayers){VK_IMAGE_ASPECT_DEPTH_BIT, dlv, dly, 1};
+        vkCmdCopyImageToBuffer(cb, dep->img, VK_IMAGE_LAYOUT_GENERAL, g_ph.b, 1, &copy); }
+    vk_img_barrier_all(cb);
+    VkMemoryBarrier mb = {VK_STRUCTURE_TYPE_MEMORY_BARRIER, NULL, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT};
+    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &mb, 0, NULL, 0, NULL);
+}
+static void pixel_history_poll(uint64_t done_fence) {
+    if (g_ph.state == 1) { g_ph.state = 2; g_ph.fence = mtl_last_fence() + 1; return; }
+    if (g_ph.state == 2) {
+        if (done_fence < g_ph.fence) return;
+        VkMappedMemoryRange mr = {VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE, NULL, g_ph.mem, 0, VK_WHOLE_SIZE}; VKCHK(vkInvalidateMappedMemoryRanges(V.dev, 1, &mr));
+        const char *root = getenv("DM_ROOT"); char path[1024]; snprintf(path, sizeof path, "%s/pixel_history.tsv", root ? root : "."); FILE *f = fopen(path, "w");
+        if (f) { fprintf(f, "# pixel history %ux%u:%u,%u; intrusive pass cuts/copies; logical draws, prepared does not prove a GPU draw was issued; truncated=%d\n", g_ph.area[0], g_ph.area[1], g_ph.area[2], g_ph.area[3], g_ph.truncated);
+            fprintf(f, "event\tframe\tpass\tdraw\tkind\tprepared\tvs\tfs\tcount\tinstances\tbase\tvb\tib\tattr0\tstride\tdt\tdw\tdf\tbias_factor\tbias_units\tbias_clamp\tmask\tblend\thdr_word\tdepth_word\tdepth_format\tr\tg\tb\tdepth");
+            fprintf(f, "\tsc_set\tsc_x\tsc_y\tsc_w\tsc_h\tpoly_cull\tpoly_front\tpoly_mode\tpoly_bias_mask\tvp_x\tvp_y\tvp_w\tvp_h\tz_near\tz_far");
+            for (int i = 0; i < 16; i++) fprintf(f, "\tvs_ubo%d", i); fputc('\n', f);
+            for (int i = 0; i < g_ph.n; i++) { phrow_t *r = &g_ph.rows[i]; uint32_t c, d = 0; memcpy(&c, g_ph.map + 16 * i, 4); if (r->dfmt) memcpy(&d, g_ph.map + 16 * i + 4, 4); float z = NAN;
+                if (r->dfmt == VK_FORMAT_D16_UNORM) z = (d & 65535u) / 65535.f;
+                else if (r->dfmt == VK_FORMAT_D32_SFLOAT || r->dfmt == VK_FORMAT_D32_SFLOAT_S8_UINT) memcpy(&z, &d, 4);
+                else if (r->dfmt == VK_FORMAT_D24_UNORM_S8_UINT || r->dfmt == VK_FORMAT_X8_D24_UNORM_PACK32) z = (d & 0xffffffu) / 16777215.f;
+                fprintf(f, "%d\t%llu\t%d\t%d\t%d\t%d\t%016llx\t%016llx\t%d\t%d\t%d\t%llx\t%llx\t%x\t%u\t%d\t%d\t%d\t%.9g\t%.9g\t%.9g\t%x\t%x\t%08x\t%08x\t%d\t%.9g\t%.9g\t%.9g\t%.9g",
+                    i, (unsigned long long)r->frame, r->pass, r->draw, r->kind, r->prepared, (unsigned long long)r->vs, (unsigned long long)r->fs, r->count, r->instances, r->base,
+                    (unsigned long long)r->vb, (unsigned long long)r->ib, r->attr, r->stride, r->dt, r->dw, r->df, r->bias[0], r->bias[1], r->bias[2], r->mask, r->blend, c, d, r->dfmt,
+                    vk_pixel_history_ufloat(c & 2047u, 6), vk_pixel_history_ufloat(c >> 11 & 2047u, 6), vk_pixel_history_ufloat(c >> 22, 5), z);
+                for (int j = 0; j < 5; j++) fprintf(f, "\t%d", r->sc[j]); for (int j = 0; j < 4; j++) fprintf(f, "\t%u", r->poly[j]);
+                for (int j = 0; j < 4; j++) fprintf(f, "\t%.9g", r->vp[j]); fprintf(f, "\t%.9g\t%.9g", r->range[0], r->range[1]);
+                for (int j = 0; j < 16; j++) fprintf(f, "\t%llx", (unsigned long long)r->ubo[j]); fputc('\n', f); }
+            fclose(f); VKLOG("pixel history: %d events%s at %u,%u -> %s", g_ph.n, g_ph.truncated ? " (truncated)" : "", g_ph.area[2], g_ph.area[3], path);
+        } else VKLOG("[RED] cannot write pixel history %s", path);
+        vkDestroyBuffer(V.dev, g_ph.b, NULL); vkFreeMemory(V.dev, g_ph.mem, NULL); free(g_ph.rows); memset(&g_ph, 0, sizeof g_ph);
+    }
+    const char *e = getenv("DM_VK_PIXEL_HISTORY"); if (!e || !*e || !strcmp(e, "0")) return;
+    uint32_t area[4]; int ok = vk_pixel_history_parse(e, area); setenv("DM_VK_PIXEL_HISTORY", "", 1);
+    if (!ok || g_pd_state) { VKLOG("[RED] pixel history: need WxH:X,Y in bounds, with ordinary pass dumps inactive"); return; }
+    VkBufferCreateInfo bi = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, NULL, 0, PH_MAX * 16, VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_SHARING_MODE_EXCLUSIVE};
+    VKCHK(vkCreateBuffer(V.dev, &bi, NULL, &g_ph.b)); VkMemoryRequirements rq; vkGetBufferMemoryRequirements(V.dev, g_ph.b, &rq);
+    VkMemoryAllocateInfo ai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, rq.size, vk_mem_type(rq.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, 0)};
+    VKCHK(vkAllocateMemory(V.dev, &ai, NULL, &g_ph.mem)); VKCHK(vkBindBufferMemory(V.dev, g_ph.b, g_ph.mem, 0)); VKCHK(vkMapMemory(V.dev, g_ph.mem, 0, VK_WHOLE_SIZE, 0, (void **)&g_ph.map));
+    g_ph.rows = calloc(PH_MAX, sizeof *g_ph.rows); if (!g_ph.rows) { vkDestroyBuffer(V.dev, g_ph.b, NULL); vkFreeMemory(V.dev, g_ph.mem, NULL); memset(&g_ph, 0, sizeof g_ph); VKLOG("[RED] pixel history: metadata allocation failed"); return; }
+    memcpy(g_ph.area, area, sizeof area); g_ph.state = 1; VKLOG("pixel history: next frame at %ux%u:%u,%u (intrusive, at most %d events)", area[0], area[1], area[2], area[3], PH_MAX);
+}
 void vk_end_pass_land(void) { vk_end_pass(); if (vk_sub_open()) vk_ubd_land(vk_cmd()); }
 static int pass_whole(VkRect2D r) { return !r.offset.x && !r.offset.y && r.extent.width >= S.pass_w && r.extent.height >= S.pass_h; }
 static int begin_pass(void) {
@@ -773,6 +869,8 @@ static void clear_color(const p_clear_color *c) {
 }
 static void clear_ds(const p_clear_ds *c) {
     if (!begin_pass() || !S.daspect) return;
+    // Diagnostic only: test whether bad colour depends on data surviving a frame's depth clear.
+    const char *cc = getenv("DM_VK_X_DEPTH_CLEAR_COLOR"); if (cc && atoi(cc) && c->depth_mask && S.ncol && S.cfmt[0] == VK_FORMAT_B10G11R11_UFLOAT_PACK32) { p_clear_color z = {0}; z.mask = 0xf; clear_color(&z); }
     VkImageAspectFlags as = (c->depth_mask ? VK_IMAGE_ASPECT_DEPTH_BIT : 0) | (c->stencil_mask && (S.daspect & VK_IMAGE_ASPECT_STENCIL_BIT) ? VK_IMAGE_ASPECT_STENCIL_BIT : 0);
     as &= S.daspect; if (!as) return;
     VkClearAttachment a = {as, 0, {.depthStencil = {c->depth, (uint32_t)c->stencil}}};
@@ -1593,6 +1691,7 @@ static int prepare_draw(int prim, int indexed) {
     if (!S.sh[0]) { g_vkst.skip_prog++; VKRED_ONCE(50, "draw with a program whose shaders are not in the bundle: skipped"); return 0; }
     if (g_x_nogs && S.sh[2]) return 0;   // DM_VK_X_NOGS=1 (live, A/B): draws with a geometry shader are left out
     for (int i = 0; i < g_x_nskipvs; i++) if (S.sh[0]->key == g_x_skipvs[i]) return 0;   // DM_VK_X_SKIPVS=<key>[,<key>...] (live, up to 8): draws with these vertex shaders are left out
+    for (int i = 0; i < g_x_nskipfs; i++) if (S.sh[1] && S.sh[1]->key == g_x_skipfs[i]) return 0;
     // A run of draws with rasterizer discard gets a pass of its own: the pass ends where such a run begins and where it ends (and begin_pass puts a barrier
     // before the next). They are vertex shaders that write memory the later draws read: Xenoblade Chronicles 3 transforms its meshes with point draws
     // (724ddce6 then 37d04447, cf66cef4), which share passes with its G-buffer draws. NVN's GPU runs draws in order; Adreno, a tiled GPU, runs the vertex
@@ -1623,6 +1722,7 @@ static int prepare_draw(int prim, int indexed) {
         int vk_cmd_parts_left(void); if (vk_cmd_parts_left() > 0) { { static int n; if (n++ < 3) VKLOG("pass split: pass %d (%ux%u) after %llu draws, depth %d", g_sub_pass - 1, S.pass_w, S.pass_h, (unsigned long long)g_pass_draws, S.dfmt); }
             vk_end_pass(); g_psplit_now = 1; } }
     else if (g_psplit > 0 && S.pass_open == 1 && g_pass_draws == (uint64_t)g_psplit && S.daspect && !g_psplit_depth) { static int n; if (n++ < 3) VKLOG("pass split: pass %d (%ux%u) has depth (format %d): not split", g_sub_pass - 1, S.pass_w, S.pass_h, S.dfmt); }
+    { uint64_t fs = S.sh[1] ? S.sh[1]->key : 0; if (g_x_cutfs && S.pass_open == 1 && (fs == g_x_cutfs || g_prev_fs == g_x_cutfs)) vk_end_pass(); g_prev_fs = fs; }
     if (g_order_pending) { g_order_pending = 0; g_order_check = S.pass_open == 1; }   // an order-only barrier kept the pass open: decided below, once the draw's images are known
     if (!begin_pass() || !pass_commit()) { g_vkst.skip_rt++; return 0; }
     if (g_x_tracepass >= 0 && g_sub_pass - 1 == g_x_tracepass) g_tracing = 1;
@@ -1631,6 +1731,9 @@ static int prepare_draw(int prim, int indexed) {
     if (g_no_cull < 0) g_no_cull = getenv("DM_VK_NOCULL") != NULL;
     pkey k; memset(&k, 0, sizeof k);
     for (int i = 0; i < 3; i++) k.key[i] = S.sh[i] ? S.sh[i]->key : 0;
+    if (g_x_listpasses && (g_list_vs != k.key[0] || g_list_fs != k.key[1])) {
+        VKLOG("    shaders at draw %llu: vs %016llx fs %016llx", (unsigned long long)g_pass_draws, (unsigned long long)k.key[0], (unsigned long long)k.key[1]); g_list_vs = k.key[0]; g_list_fs = k.key[1];
+    }
     for (int i = 0; i < g_x_nflat; i++) if (k.key[0] == g_x_flat[i]) k.debug_mode = (uint32_t)g_x_flat_mode[i];
     k.topo = topo(prim); k.restart = S.prim_restart && (k.topo == VK_PRIMITIVE_TOPOLOGY_LINE_STRIP || k.topo == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP || k.topo == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN) && indexed;
     k.raster_discard = S.rast_discard; k.alt = (uint32_t)g_spv_alt; k.cull = g_no_cull ? 0 : S.poly.cull;
@@ -1662,7 +1765,7 @@ static int prepare_draw(int prim, int indexed) {
         if (!(in_mask >> loc & 1)) continue;
         va_st a; memcpy(&a, &S.vattr[loc], 4);
         VkFormat f = a.fmt ? vertex_format(a.fmt, int_mask >> loc & 1, sint_mask >> loc & 1) : VK_FORMAT_UNDEFINED;
-        if (f == VK_FORMAT_UNDEFINED || !S.vbuf[a.stream].address) { k.attr[k.nattr++] = (typeof(k.attr[0])){(uint32_t)loc, 16, int_mask >> loc & 1 ? VK_FORMAT_R32G32B32A32_UINT : VK_FORMAT_R32G32B32A32_SFLOAT, 0}; need_zero = 1; continue; }
+        if (f == VK_FORMAT_UNDEFINED || !S.vbuf[a.stream].address) { k.attr[k.nattr++] = (typeof(k.attr[0])){(uint32_t)loc, 16, int_mask >> loc & 1 ? (sint_mask >> loc & 1 ? VK_FORMAT_R32G32B32A32_SINT : VK_FORMAT_R32G32B32A32_UINT) : VK_FORMAT_R32G32B32A32_SFLOAT, a.fmt ? 16u : 0u}; need_zero = 1; continue; }   // disabled format: (0,0,0,1); invalid/unbacked enabled input: zero fallback in the next 16 bytes
         k.attr[k.nattr++] = (typeof(k.attr[0])){(uint32_t)loc, a.stream, f, a.offset};
         used_streams |= 1u << a.stream;
     }
@@ -1755,7 +1858,7 @@ static int prepare_draw(int prim, int indexed) {
     // vertex buffers
     for (uint32_t i = 0; i < k.nbind; i++) {
         uint32_t b = k.bind[i].binding; VkBuffer buf; VkDeviceSize off;
-        if (b == 16) { buf = vk_zero_buffer(); off = 0; }
+        if (b == 16) { buf = vk_default_attribute_buffer(); off = 0; }
         else if (!vk_buf_at(S.vbuf[b].address, 1, &buf, &off)) { buf = vk_zero_buffer(); off = 0; VKRED_ONCE(51, "vertex buffer outside the memory pools"); }
         else if (S.vbuf[b].size) { vkpool_t *vp = vk_pool_of(S.vbuf[b].address, 1); if (vp && S.vbuf[b].address + S.vbuf[b].size > vp->hi && vp->hi < vp->end) vk_cross(2, S.vbuf[b].address, S.vbuf[b].size, vp); }
         if (g_var_now == 5) { buf = vk_zero_buffer(); off = 0; }
@@ -2458,8 +2561,8 @@ static void exec_ops(const uint8_t *p) {
         case OP_UPDATE_UB: { uint64_t d, n; memcpy(&d, a, 8); memcpy(&n, a + 8, 8); vk_sub_update(d, a + 16, n);
             if (g_x_tracepass == -2) VKLOG("--- uniform update %#llx, %llu bytes, after pass %d", (unsigned long long)d, (unsigned long long)n, g_sub_pass - 1); break; }
         case OP_SET_RT: set_rt((const p_set_rt *)a); break;
-        case OP_CLEAR_COLOR: if (!g_rc_skip) clear_color((const p_clear_color *)a); break;
-        case OP_CLEAR_DS: if (!g_rc_skip) clear_ds((const p_clear_ds *)a); break;
+        case OP_CLEAR_COLOR: if (!g_rc_skip) { clear_color((const p_clear_color *)a); pixel_history_record(1, -1, 0, 0, 0, 0, 0); } break;
+        case OP_CLEAR_DS: if (!g_rc_skip) { clear_ds((const p_clear_ds *)a); pixel_history_record(2, -1, 0, 0, 0, 0, 0); } break;
         case OP_VIEWPORTS: { const p_viewports *v = (const p_viewports *)a; for (int i = 0; i < v->n && v->first + i < 16; i++) memcpy(S.vp[v->first + i], v->v[i], 16); break; }
         case OP_SCISSOR: S.sc = *(const p_scissor *)a; S.sc_set = 1; break;
         case OP_DEPTH_RANGE: { const p_depth_range *d = (const p_depth_range *)a; S.dnear = d->n; S.dfar = d->f; break; }
@@ -2488,8 +2591,10 @@ static void exec_ops(const uint8_t *p) {
         case OP_DEPTH_CLAMP: S.depth_clamp = ((const p_depth_clamp *)a)->on; break;
         case OP_RAST_DISCARD: S.rast_discard = ((const p_rast_discard *)a)->on; break;
         case OP_PRIM_RESTART: S.prim_restart = ((const p_prim_restart *)a)->on; break;
-        case OP_DRAW: { if (g_rc_skip) break; p_draw t; draw(draw_rec(a, h.size, &t)); break; }
-        case OP_DRAW_IDX: { if (g_rc_skip) break; p_draw_idx t; draw_idx(draw_idx_rec(a, h.size, &t)); break; }
+        case OP_DRAW: { if (g_rc_skip) break; p_draw t; const p_draw *d = draw_rec(a, h.size, &t); uint64_t before = g_vkst.draws; draw(d);
+            pixel_history_record(3, g_draw_i - 1, g_vkst.draws != before, d->count, d->instances, 0, d->first); break; }
+        case OP_DRAW_IDX: { if (g_rc_skip) break; p_draw_idx t; const p_draw_idx *d = draw_idx_rec(a, h.size, &t); uint64_t before = g_vkst.draws; draw_idx(d);
+            pixel_history_record(4, g_draw_i - 1, g_vkst.draws != before, d->count, d->instances, d->ibuf, d->base_vertex); break; }
         case OP_DISPATCH: dispatch((const p_dispatch *)a); break;
         case OP_BARRIER: {   // the pass ends at every barrier: kept across XC3's fragment- and primitive-order barriers (0x1 0x2 0x4) its characters drew torn in some frames
             int32_t bits = *(const int32_t *)a;
