@@ -517,13 +517,15 @@ NVN(nvnTextureInitialize, NVNboolean, NVNtexture *t, const NVNtextureBuilder *b)
     // issue #80). Such a texture is CPU-written (uploaded from memory at its first use) when its storage holds anything; render targets, images, video, display, linear and
     // sparse textures are left out, so are virtual pools (their pages exist only where mapped, and their content is the mapping's), and so is memory that looks all zero (a
     // texture the GPU fills later). The look reads the first 64 KB and then 64 bytes of each 4 KB page: a texture that is all zero, re-initialized every frame, stays cheap
-    if (!o->has_layout && !s->pkg_data && o->mem && o->pool && (o->pool->flags & NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS) && !(o->pool->flags & NVN_MEMORY_POOL_FLAGS_VIRTUAL) &&
+    // With the profile's tex_cpu_uncached, a CPU-uncached pool counts too: the CPU writes it with no flush to see, so data there at creation is the CPU's as well. Cardfight!!
+    // Vanguard Dear Days 2 fills its UI label atlas (1024x512 RGBA8, flags 0) before making the texture over it: as a GPU texture of zeros, every card's ability tabs were missing
+    if (!o->has_layout && !s->pkg_data && o->mem && o->pool && ((o->pool->flags & NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS) || (DM_GAME_TEX_CPU_UNCACHED && (o->pool->flags & NVN_MEMORY_POOL_FLAGS_CPU_UNCACHED))) && !(o->pool->flags & NVN_MEMORY_POOL_FLAGS_VIRTUAL) &&
         o->d.target != NVN_TEXTURE_TARGET_BUFFER && !(o->d.flags & (NVN_TEXTURE_FLAGS_DISPLAY | NVN_TEXTURE_FLAGS_VIDEO_DECODE | NVN_TEXTURE_FLAGS_IMAGE | NVN_TEXTURE_FLAGS_COMPRESSIBLE |
                                                                    NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_SPARSE | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET))) {
         size_t i = 0, n = o->L.size, head = n < 65536 ? n : 65536; int data = 0;
         for (; i < head && !data; i++) data = o->mem[i] != 0;
         for (size_t pg = head; pg < n && !data; pg += 4096) for (size_t k = pg; k < pg + 64 && k < n && !data; k++) data = o->mem[k] != 0;
-        if (data) { mtl_tex_cpu_written(o); static int nl; if (nl++ < 8) LOG("[nvn] texture %ux%ux%u format %#x target %d (no packaged layout) holds data at creation in a CPU-inaccessible pool: uploaded from memory", o->d.width, o->d.height, o->d.depth, o->d.format, o->d.target); }
+        if (data) { mtl_tex_cpu_written(o); static int nl; if (nl++ < 8) LOG("[nvn] texture %ux%ux%u format %#x target %d (no packaged layout) holds data at creation in a pool %s: uploaded from memory", o->d.width, o->d.height, o->d.depth, o->d.format, o->d.target, (o->pool->flags & NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS) ? "the CPU cannot access" : "the CPU writes uncached (tex_cpu_uncached)"); }
     }
     OLOG("Texture %p %ux%ux%u lv%u fmt=%#x tgt=%d flags=%#x size=%#llx", (void *)t, o->d.width, o->d.height, o->d.depth,
          o->d.levels, o->d.format, o->d.target, o->d.flags, o->L.size);
