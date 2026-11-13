@@ -141,11 +141,15 @@ results and list callers. Process callbacks run once and release the process.
 These tests need no game files, keys, devices or browser, and do not identify the
 cause of a particular player's inspection failure.
 
-`test_descriptor_hash` exercises the Vulkan descriptor hash and reuse path with
-different C padding bytes but identical image fields. Image keys include each
-array element's sampler, view and layout as explicit words; padding cannot force
-another descriptor allocation. Reuse still compares the hash, layout and
-submission epoch, without a full-content collision check.
+`test_descriptor_hash` exercises the Vulkan descriptor-content cache (`g_setc`)
+with owned static keys, including every buffer, image and texel-view field.
+Different C padding bytes do not prevent reuse; dynamic offsets stay outside the
+static key. Constant-hash cases verify exact equality under forced collisions,
+source mutation, replacement and submission epochs. Bounded-arena exhaustion
+bypasses new cache entries while retaining existing hits and counting capacity
+bypasses; oversized keys and explicitly disabled caching remain uncached. The
+separate per-stage memo uses generation counters. These host checks do not
+establish a natural collision, game symptom or device performance result.
 
 `test_dmsv` checks both shader-bundle versions and the native reader. Publication
 uses a unique staging directory beside the destination, flushes the file, verifies

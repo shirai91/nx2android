@@ -45,8 +45,8 @@ host with a diagnostic; valid arrays keep their full reflected counts, including
 the existing 32-entry default for a zero count.
 
 The Vulkan descriptor-content cache (`g_setc`) reuses a set within one submission
-only when its hash and complete static key match. The key owns explicit layout, binding, array position,
-descriptor type/count and every buffer, image and texel-view field, without C
+only when its hash and complete static key match. The key owns explicit layout,
+binding, array position, descriptor type/count and every buffer, image and texel-view field, without C
 padding. Dynamic buffer offsets stay in the bind command. A bounded 16 MiB CPU
 arena holds these keys and resets at the next submission epoch; exhausted storage
 or an oversized key bypasses reuse and allocates/updates a fresh set. No pointer
