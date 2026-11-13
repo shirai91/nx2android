@@ -6,7 +6,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 
 "Profile here": `nxnative/dm/games/<title ID>/` has the game's profile from nxnative. "Upstream profile": only seedds/nxnative has one, to read as a reference or starter, not to pull. "60 fps with X" is upstream's note: they run that update at 60 fps (30 on the Switch).
 
-**50 / 106 ported**
+**51 / 106 ported**
 
 - [x] 13 Sentinels: Aegis Rim · `01003FC01670C000`
 - [ ] Ace Attorney Investigations Collection · `010005501E68C000` · profile here
@@ -78,7 +78,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [x] Pokémon Legends: Z-A · `0100F43008C44000`
 - [x] Pokémon Mystery Dungeon Rescue Team DX · `01003D200BAA2000`
 - [x] Pokémon Scarlet · `0100A3D008C5C000`
-- [ ] Pokémon Shield · `01008DB008C2C000` · upstream profile
+- [x] Pokémon Shield · `01008DB008C2C000`
 - [x] Pokémon Sword · `0100ABF008968000`
 - [ ] Portal · `01007BB017812000` · upstream profile · Android only on NVIDIA Shield TV
 - [ ] Return of the Obra Dinn · `010032E00E6E2000` · upstream profile
