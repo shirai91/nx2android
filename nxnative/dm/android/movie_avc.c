@@ -29,6 +29,122 @@ struct mavc {
     int64_t last_in; int synth; struct { int64_t c, g; } pmap[64]; int npmap;
 };
 
+typedef struct { uint8_t data[512]; size_t end, bit; int bad; } sps_bits;
+static unsigned sps_u(sps_bits *b, unsigned count) {
+    if (count > 32 || count > b->end - b->bit) { b->bad = 1; return 0; }
+    unsigned value = 0;
+    while (count--) {
+        value = (value << 1) | ((b->data[b->bit / 8] >> (7 - b->bit % 8)) & 1);
+        b->bit++;
+    }
+    return value;
+}
+static unsigned sps_ue(sps_bits *b) {
+    unsigned zeros = 0;
+    while (!b->bad && !sps_u(b, 1)) {
+        if (++zeros > 30) { b->bad = 1; return 0; }
+    }
+    return b->bad ? 0 : ((1u << zeros) - 1) + sps_u(b, zeros);
+}
+static void sps_scaling_list(sps_bits *b, unsigned count) {
+    int last = 8, next = 8;
+    for (unsigned i = 0; i < count && !b->bad; i++) {
+        if (next) {
+            unsigned code = sps_ue(b);
+            int delta = code & 1 ? (int)((code + 1) / 2) : -(int)(code / 2);
+            next = (last + delta) & 255;
+        }
+        if (next) last = next;
+    }
+}
+static void sps_hrd(sps_bits *b) {
+    unsigned cpb = sps_ue(b);
+    if (cpb > 31) { b->bad = 1; return; }
+    sps_u(b, 4); sps_u(b, 4);
+    for (unsigned i = 0; i <= cpb && !b->bad; i++) {
+        sps_ue(b); sps_ue(b); sps_u(b, 1);
+    }
+    for (unsigned i = 0; i < 4; i++) sps_u(b, 5);
+}
+enum { SPS_RANGE_DECLARED = 1, SPS_COLOR_DECLARED = 2 };
+// H.264 7.3.2.1.1 and E.1.1: validate the base SPS and locate its VUI colour fields.
+// A decoder's size-based defaults are not stream declarations. Malformed SPS enables neither field.
+static unsigned sps_color_flags(const uint8_t *nal, size_t n) {
+    if (n < 4 || n > 512 || (nal[0] & 0x9f) != 7) return 0;
+    sps_bits b = {0}; size_t bytes = 0; unsigned zeros = 0;
+    for (size_t i = 1; i < n; i++) {
+        if (zeros == 2 && nal[i] == 3) {
+            if (i + 1 == n || nal[i + 1] > 3) return 0;
+            zeros = 0;
+            continue;
+        }
+        b.data[bytes++] = nal[i];
+        zeros = nal[i] == 0 ? zeros + 1 : 0;
+    }
+    b.end = bytes * 8;
+    // Exclude rbsp_stop_one_bit and alignment so truncation cannot turn the stop bit into a flag.
+    while (b.end && !(b.data[(b.end - 1) / 8] & (1u << (7 - (b.end - 1) % 8)))) b.end--;
+    if (!b.end) return 0;
+    b.end--;
+    unsigned profile = sps_u(&b, 8);
+    if (sps_u(&b, 8) & 3) return 0; // reserved_zero_2bits
+    sps_u(&b, 8); // level_idc
+    if (sps_ue(&b) > 31) return 0;
+    switch (profile) {
+    case 44: case 83: case 86: case 100: case 110: case 118: case 122:
+    case 128: case 134: case 135: case 138: case 139: case 244: {
+        unsigned chroma = sps_ue(&b);
+        if (chroma > 3) return 0;
+        if (chroma == 3) sps_u(&b, 1);
+        if (sps_ue(&b) > 6 || sps_ue(&b) > 6) return 0; // bit depths minus eight
+        sps_u(&b, 1); // qpprime_y_zero_transform_bypass_flag
+        if (sps_u(&b, 1)) for (unsigned i = 0; i < (chroma == 3 ? 12u : 8u) && !b.bad; i++) {
+            if (sps_u(&b, 1)) sps_scaling_list(&b, i < 6 ? 16 : 64);
+        }
+        break;
+    }
+    case 66: case 77: case 88: break;
+    default: return 0;
+    }
+    if (sps_ue(&b) > 12) return 0; // log2_max_frame_num_minus4
+    unsigned poc = sps_ue(&b);
+    if (poc == 0) { if (sps_ue(&b) > 12) return 0; }
+    else if (poc == 1) {
+        sps_u(&b, 1); sps_ue(&b); sps_ue(&b);
+        unsigned cycle = sps_ue(&b);
+        if (cycle > 255) return 0;
+        for (unsigned i = 0; i < cycle && !b.bad; i++) sps_ue(&b);
+    } else if (poc != 2) return 0;
+    sps_ue(&b); sps_u(&b, 1); sps_ue(&b); sps_ue(&b); // reference frames, gaps, picture dimensions
+    if (!sps_u(&b, 1)) sps_u(&b, 1); // field coding
+    sps_u(&b, 1); // direct_8x8_inference_flag
+    if (sps_u(&b, 1)) for (unsigned i = 0; i < 4; i++) sps_ue(&b); // crop offsets
+    if (!sps_u(&b, 1)) return 0; // vui_parameters_present_flag
+    if (sps_u(&b, 1) && sps_u(&b, 8) == 255) { sps_u(&b, 16); sps_u(&b, 16); }
+    if (sps_u(&b, 1)) sps_u(&b, 1); // overscan
+    if (!sps_u(&b, 1)) return 0; // video_signal_type_present_flag
+    sps_u(&b, 3); sps_u(&b, 1); // video_format, video_full_range_flag
+    unsigned flags = SPS_RANGE_DECLARED;
+    if (sps_u(&b, 1)) {
+        sps_u(&b, 8); sps_u(&b, 8); sps_u(&b, 8);
+        flags |= SPS_COLOR_DECLARED;
+    }
+    // Check the remaining VUI too, so a later truncation cannot retain declarations.
+    if (sps_u(&b, 1)) { sps_ue(&b); sps_ue(&b); } // chroma location
+    if (sps_u(&b, 1)) { sps_u(&b, 32); sps_u(&b, 32); sps_u(&b, 1); } // timing
+    unsigned nal_hrd = sps_u(&b, 1);
+    if (nal_hrd) sps_hrd(&b);
+    unsigned vcl_hrd = sps_u(&b, 1);
+    if (vcl_hrd) sps_hrd(&b);
+    if (nal_hrd || vcl_hrd) sps_u(&b, 1);
+    sps_u(&b, 1); // pic_struct_present_flag
+    if (sps_u(&b, 1)) {
+        sps_u(&b, 1);
+        for (unsigned i = 0; i < 6; i++) sps_ue(&b);
+    }
+    return b.bad || b.bit != b.end ? 0 : flags;
+}
+
 mavc *mavc_new(void) { mavc *a = calloc(1, sizeof *a); if (!a) die("movie: AVC decoder allocation failed"); a->last_in = INT64_MIN; return a; }
 static void close_codec(mavc *a) { if (a->mc) { AMediaCodec_stop(a->mc); AMediaCodec_delete(a->mc); a->mc = NULL; } a->nin = a->nout = 0; a->eos_sent = 0; a->last_in = INT64_MIN; a->npmap = 0; }
 void mavc_drop(mavc *a) {
@@ -103,12 +219,14 @@ static void read_format(mavc *a) {
     a->fstride = AMediaFormat_getInt32(f, AMEDIAFORMAT_KEY_STRIDE, &v) && v >= a->fw ? v : a->fw;
     a->fslice = AMediaFormat_getInt32(f, AMEDIAFORMAT_KEY_SLICE_HEIGHT, &v) && v >= a->fh ? v : a->fh;
     a->fcolor = AMediaFormat_getInt32(f, AMEDIAFORMAT_KEY_COLOR_FORMAT, &v) ? v : 0;
-    a->fstandard = AMediaFormat_getInt32(f, "color-standard", &v) ? v : 0;
-    a->ffull = AMediaFormat_getInt32(f, "color-range", &v) && v == 1;
+    unsigned declared = sps_color_flags(a->sps, (size_t)a->nsps);
+    int reported_standard = AMediaFormat_getInt32(f, "color-standard", &v) ? v : 0;
+    a->fstandard = declared & SPS_COLOR_DECLARED ? reported_standard : 0;
+    a->ffull = AMediaFormat_getInt32(f, "color-range", &v) && v == 1 && (declared & SPS_RANGE_DECLARED);
     int32_t l, t, r, b;
     if (AMediaFormat_getRect(f, AMEDIAFORMAT_KEY_DISPLAY_CROP, &l, &t, &r, &b) && r >= l && b >= t && r < a->fw && b < a->fh) { a->cl = l; a->ct = t; a->cr = r; a->cb = b; }
     else { a->cl = a->ct = 0; a->cr = a->fw - 1; a->cb = a->fh - 1; }
-    LOG("[movie] AVC: output %dx%d stride %d slice height %d colour format %#x crop %d,%d-%d,%d color-standard %d full-range %d", a->fw, a->fh, a->fstride, a->fslice, a->fcolor, a->cl, a->ct, a->cr, a->cb, a->fstandard, a->ffull);
+    LOG("[movie] AVC: output %dx%d stride %d slice height %d colour format %#x crop %d,%d-%d,%d color-standard %d full-range %d", a->fw, a->fh, a->fstride, a->fslice, a->fcolor, a->cl, a->ct, a->cr, a->cb, reported_standard, a->ffull);
     AMediaFormat_delete(f);
 }
 // one output buffer → a compact NV12 picture of the crop rectangle, queued in presentation order

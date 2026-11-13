@@ -105,6 +105,12 @@ axis preservation, not game recognition or device behavior.
 
 ## Tests
 
+`test_avc_color` exercises the Android AVC format reader, SPS declarations,
+picture queue and output conversion on the host. Synthetic SPS cases cover
+untagged decoder defaults, independently declared range, parameter changes,
+byte-prefix truncation, emulation prevention and optional SPS/VUI syntax.
+`probes/avc_color.md` describes the decoder probes and remaining RGBA device check.
+
 ```
 python -m unittest discover tests
 ```
