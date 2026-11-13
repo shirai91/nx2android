@@ -5,7 +5,9 @@ and always treated decoded luma as limited range. A 64-line BT.709 stream theref
 got the BT.601 matrix; a full-range movie got incorrect contrast. The adapter now
 reads `color-standard` / `color-range` and retains them with each queued picture.
 It accepts the decoder's standard only when the SPS VUI declares a colour
-description, and its range only when the SPS VUI declares a video signal type.
+description with a specified matrix, and its range only when the SPS VUI declares
+a video signal type. A signalled `matrix_coefficients=2` remains unspecified and
+retains the height heuristic, independently of a declared range.
 An absent, malformed or unsupported SPS retains the height heuristic and limited
 range. A bounded SPS reader follows H.264 sections 7.3.2.1.1 and E.1.1, including
 emulation-prevention bytes, scaling lists, POC modes and optional VUI fields.

@@ -126,8 +126,8 @@ static unsigned sps_color_flags(const uint8_t *nal, size_t n) {
     sps_u(&b, 3); sps_u(&b, 1); // video_format, video_full_range_flag
     unsigned flags = SPS_RANGE_DECLARED;
     if (sps_u(&b, 1)) {
-        sps_u(&b, 8); sps_u(&b, 8); sps_u(&b, 8);
-        flags |= SPS_COLOR_DECLARED;
+        sps_u(&b, 8); sps_u(&b, 8); // colour_primaries, transfer_characteristics
+        if (sps_u(&b, 8) != 2) flags |= SPS_COLOR_DECLARED; // matrix_coefficients=2 is unspecified
     }
     // Check the remaining VUI too, so a later truncation cannot retain declarations.
     if (sps_u(&b, 1)) { sps_ue(&b); sps_ue(&b); } // chroma location

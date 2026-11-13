@@ -42,7 +42,7 @@ Vulkan indirect compute dispatches copy their three GPU-written group counts int
 
 The Android AVC adapter snapshots matrix and range with each queued picture.
 MediaCodec color metadata is accepted only for fields declared in the stream's
-SPS VUI. Without a colour description it uses BT.709 at 720 lines and above,
+SPS VUI. Without a colour description with a specified matrix it uses BT.709 at 720 lines and above,
 BT.601 below. Without a video signal type it uses limited range. Malformed or
 unsupported SPS data uses both defaults.
 
