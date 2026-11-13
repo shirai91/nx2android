@@ -1394,10 +1394,11 @@ def heaps_shaders(d, label):
     """Heaps' hxsl.CacheFile for the Switch (Dead Cells' shaders.cache.nx): a table of programs, then each stage's GLSL; a GLSL that was compiled ends with a comment holding the base64 of its
     GLSLC output, //BIN=<base64>#. Dead Cells: 1,222 of its 1,271 sources have one, the others are vertex shaders the outputs already hold, since an output is the whole program"""
     found = []
-    for m in re.finditer(rb'//BIN=([A-Za-z0-9+/]+={0,2})#', d):
+    for m in re.finditer(rb'//BIN=([^#\r\n]*)(#|[\r\n]|$)', d):
+        if m[2] != b'#': red(f'{label}@{m.start():#x}: unterminated //BIN= comment')
         try: raw = base64.b64decode(m[1], validate=True)
         except ValueError: red(f'{label}@{m.start():#x}: invalid base64 in //BIN= comment')
-        found += glslc_shaders(raw, f'{label}@{m.start():#x}', need=False)
+        found += glslc_shaders(raw, f'{label}@{m.start():#x}')
     if not found: red(f'{label}: no GLSLC output in //BIN= comments')
     return found
 

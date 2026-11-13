@@ -72,6 +72,31 @@ class HeapsShaders(unittest.TestCase):
             with self.subTest(data=d), self.assertRaisesRegex(SystemExit, 'shaders.cache.nx'):
                 self.s.heaps_shaders(d, '/res.pak/shaders.cache.nx')
 
+    def test_bad_comment_cannot_hide_behind_a_valid_program(self):
+        for bad in (b'//BIN=AA!A#', b'//BIN=AAAA#', b'//BIN=#', b'//BIN=AAAA'):
+            with self.subTest(data=bad), self.assertRaisesRegex(SystemExit, 'shaders.cache.nx'):
+                self.s.heaps_shaders(self.cache + bad, '/res.pak/shaders.cache.nx')
+
+    def test_scan_pairs_and_deduplicates_multistage_programs(self):
+        h = bytearray(0x90 * 3); h[:4] = bytes.fromhex('91688619')
+        struct.pack_into('<I', h, 0x4c, 2)
+        payload, expected = bytearray(), []
+        for i, stage in enumerate((1, 5)):
+            code = bytearray(self.code); code[:4] = self.s.GFX_MAGIC
+            struct.pack_into('<I', code, 0x30, (stage << 10) | 0x61)
+            part = self.ctl + code
+            at = 0x90 * (i + 1)
+            struct.pack_into('<3I', h, at, len(part), len(h) + len(payload), 0)
+            struct.pack_into('<4I', h, at + 0x30, 0, len(self.ctl), len(code), len(self.ctl))
+            payload += part; expected.append(self.s.skey(self.ctl, code))
+        struct.pack_into('<I', h, 0x44, len(h) + len(payload))
+        cache = b'//BIN=' + base64.b64encode(h + payload) + b'#'
+        archive = pak(folder('', [entry('shaders.cache.nx', 0, len(cache) * 2)]), cache * 2)
+        with patch('builtins.open', side_effect=lambda *a, **k: io.BytesIO(archive)):
+            _, shaders, pairs, _ = self.s.scan_file(('res.pak', 'res.pak'))
+        self.assertEqual(list(shaders), expected)
+        self.assertEqual(pairs, {tuple(expected)})
+
     def test_scan_reads_only_header_and_shader_cache(self):
         data = bytes(1 << 20) + self.cache
         root = folder('', [entry('unrelated.bin', 0, 1 << 20), folder('sub', [entry('shaders.cache.nx', 1 << 20, len(self.cache), True)])])
