@@ -387,11 +387,14 @@ static vkimg_t *vk_tex_(const tex_t *t) {
     int keyed = t->pool != NULL;
     // Donor alias and packaged tables are separate. A family bit preserves
     // that separation in this cache, including packaged data without a layout.
+    // Only initialization state belongs here: first-touch, WriteTexels and flushes
+    // can mark a serial CPU-written later without changing its storage identity.
     // Keep target IMAGE usage in the key because it controls storage usage.
     if (keyed && t->mem && !(t->pool->flags & NVN_MEMORY_POOL_FLAGS_VIRTUAL) && t->d.samples <= 1 &&
         (t->d.target == NVN_TEXTURE_TARGET_2D || t->d.target == NVN_TEXTURE_TARGET_2D_ARRAY)) {
         NVNformat backing = texture_backing_format(t->d.format);
-        if ((backing == NVN_FORMAT_RGBA8 || backing == NVN_FORMAT_BGRA8) && !packaged_tex(t)) {
+        if ((backing == NVN_FORMAT_RGBA8 || backing == NVN_FORMAT_BGRA8) && !t->has_layout && !t->has_pkg_data &&
+            !(t->d.flags & (NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET))) {
             k.family = 1; k.d.format = backing;
         }
     }

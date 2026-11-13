@@ -8,13 +8,14 @@ ap.add_argument('--host-build',type=Path,required=True)
 ap.add_argument('--out',type=Path,required=True)
 ap.add_argument('--game',default='0100000000010000')
 a=ap.parse_args(); D=a.out.resolve(); D.mkdir(parents=True,exist_ok=True); ndk=a.ndk
-host={'Darwin':'darwin-x86_64','Linux':'linux-x86_64'}[platform.system()]
+host={'Darwin':'darwin-x86_64','Linux':'linux-x86_64','Windows':'windows-x86_64'}[platform.system()]
+exe='.exe' if platform.system()=='Windows' else ''
 
-cc=ndk/'toolchains/llvm/prebuilt'/host/'bin/clang'; glslc=ndk/'shader-tools'/host/'glslc'
+cc=ndk/'toolchains/llvm/prebuilt'/host/'bin'/('clang'+exe); glslc=ndk/'shader-tools'/host/('glslc'+exe)
 # Ordinary target draw adapter for the donor's constant-color alias oracle.
 vertex=D/'guest.vert';fragment=D/'guest.frag'
-vertex.write_text((dm/'android/shaders/maskclear.vert').read_text())
-fragment.write_text('#version 450\nlayout(set=1,binding=0) uniform sampler2D image;layout(location=0)out vec4 color;void main(){color=texture(image,vec2(0.5));}\n')
+vertex.write_text((dm/'android/shaders/maskclear.vert').read_text(encoding='utf-8'),encoding='utf-8')
+fragment.write_text('#version 450\nlayout(set=1,binding=0) uniform sampler2D image;layout(location=0)out vec4 color;void main(){color=texture(image,vec2(0.5));}\n',encoding='utf-8')
 entries=[]
 for src,stage,key in [(vertex,0,0x71),(fragment,1,0x72)]:
     spv=src.with_suffix('.spv')

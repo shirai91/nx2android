@@ -25,14 +25,14 @@ int main(void) {
 '''
 
 
-def _builds(code, *flags):
-    if not shutil.which('cc'):
+def _builds(code, *flags, compiler='cc'):
+    if not shutil.which(compiler):
         return False
     with tempfile.TemporaryDirectory() as d:
         c = Path(d) / 'probe.c'
-        c.write_text(code)
+        c.write_text(code, encoding='utf-8')
         try:
-            return subprocess.run(['cc', *flags, str(c), '-o', str(Path(d) / 'probe')], capture_output=True, timeout=60).returncode == 0
+            return subprocess.run([compiler, *flags, str(c), '-o', str(Path(d) / 'probe')], capture_output=True, timeout=60).returncode == 0
         except (OSError, subprocess.SubprocessError):
             return False
 
@@ -47,3 +47,10 @@ def posix():
 def ubsan():
     """cc links -fsanitize=undefined."""
     return _builds('int main(void) { return 0; }\n', '-std=c11', '-fsanitize=undefined', '-fno-sanitize-recover=all')
+
+
+@functools.lru_cache(maxsize=None)
+def asan_ubsan(compiler):
+    """The selected compiler links the texture-key harness's ASan/UBSan flags."""
+    return _builds('int main(void) { return 0; }\n', '-std=c11',
+                   '-fsanitize=address,undefined', compiler=compiler)

@@ -127,6 +127,15 @@ python -m unittest discover tests
 
 The Vulkan-header harnesses need a discoverable NDK; set `ANDROID_NDK_HOME`
 when it is not found automatically. They skip if no NDK headers are found.
+`test_texture_format_aliases` compiles the production storage key and NVN texture
+initializer under ASan/UBSan, including late CPU-write marks and packaged data
+without a layout. It probes the selected compiler's sanitizer link support and
+skips explicitly when unavailable. `test_texture_transfers` captures the actual
+Vulkan copy, resolve, blit and clear commands with NDK headers; it checks format,
+subresource and sRGB clear semantics without running a GPU. The manual Android
+fixture builder supports macOS, Linux and Windows; see
+[texture-family validation](../tests/vk_texture_aliases.md).
+
 The protected-pool harness uses real page protection
 and a mutex/condition-variable rendezvous on macOS and Linux, handling each
 platform's protection-fault signal. The zero-copy diagnostics fixture forces
