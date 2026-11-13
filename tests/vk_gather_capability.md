@@ -33,24 +33,46 @@ python tests/shader_gather_fixture.py /tmp/gather /path/to/dmsh_xlate.dll
 ```
 
 On an authorized test device, copy the runner and bundles; invoke
-`gather-runner clean.dmsv VARIANT`. Positive variants are
-`0 1 2 3 4 6 8 9 10 13 16 19 22`, with 144 independently checked cases each.
-The runner writes binary result/guard records to stdout; redirect it to a file.
-Control variants 0 and 10 must exit 77 with `control.dmsv`.
-Required-capability variants `11 12 14 15 17 18 20 21` must exit 77 with `clean.dmsv`.
+`gather-runner clean.dmsv VARIANT` for variants 0 through 23 (144 independently
+checked cases each). The runner writes binary result/guard records to stdout;
+redirect it to a file. Control variants 0 and 10 must exit 77 with `control.dmsv`.
+They are explicit test-loader rejection, not a Vulkan-driver rejection check.
 
-Validation on the owned Android API 35 Lavapipe emulator: 13 × 144 = 1,872 cases,
-7,488 result words plus surrounding guards; two uncleaned negative controls and
-eight retained-requirement controls. Every executed module passes SPIR-V validation.
-This demonstrates feature-disabled execution on Lavapipe, not qualification on a
-physical GPU without the feature and not game playability.
+## Follow-up texture translation port
 
-## Preserved baseline limits
+The follow-up to #372 copies nxnative's existing texture translation fixes:
 
-Variants 5 and 7 have a pre-existing invalid dynamic `Offset` on `OpImageFetch`;
-variant 23 has a pre-existing out-of-bounds full 2D query extract. The generator
-checks that both pre-cleanup and cleaned modules fail for these same reasons.
-They are not executed. These translation fixes are outside this capability port.
-Modes 1–7 of the copied donor oracle are retained but were not used for this
-capability check. Production native code is unchanged; no new engine build is
-claimed.
+- `0dff2e865`: full size queries return zero for axes absent from the resolved
+  descriptor and retain real dimensions, array layers and mip counts. Sampled
+  1D declarations carry their required capability.
+- `759594122`, `4255c6ad3`, `ea6dcf3f7`: Vulkan jobs select Ryujinx's existing
+  fetch/gather offset lowering while preserving sample offsets for the existing
+  exact downstream pass. The final donor accessor/interface and TexturePass
+  condition are copied unchanged. The target exporter sets `host_target=vulkan`.
+
+All 24 copied Maxwell variants now pass Vulkan 1.1 validation. The previously
+invalid variants 5/7 (dynamic integer fetch offsets) and 23 (full 2D size query)
+are included, with no exclusions. The copied donor CPU oracle is unchanged.
+Dynamic gathers now use the existing donor lowering and need no extended-gather
+feature for this corpus; synthetic direct Offset/ConstOffsets unit tests still
+verify retention when those operands actually remain in a module.
+
+Validation on the owned Android API 35 Lavapipe emulator: 24 × 144 = 3,456 cases,
+13,824 result words plus surrounding guards, with the feature deliberately disabled.
+The two uncleaned capability controls still exit 77. This demonstrates execution
+on Lavapipe, not physical unsupported-GPU qualification or game playability.
+
+Additional donor tests check seven resolved query shapes in both default/Metal
+and Vulkan job modes, and fragment implicit/bias offsets: one original sample
+becomes 256 native constant-offset samples with no LOD query or varying branch
+that would change derivatives. Set `DMSH_TEST_XLATE` to this branch's freshly built
+`dmsh_xlate.dll` and put dotnet plus the NDK SPIR-V tools on PATH:
+
+```sh
+PYTHONPATH=tests python -m unittest test_shader_query_dimensions test_shader_fragment_offsets test_shader_texture_target
+```
+
+The chain header is refreshed, and the Android runtime builds all 192 sources.
+Modes 1–7 of the copied device oracle remain available but were not used for
+this follow-up. Their filtering/driver behavior and physical-device gameplay
+remain outside the qualification claimed here.

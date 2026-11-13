@@ -147,6 +147,10 @@ static class SwshXlate
         }
         public int QueryTransformFeedbackStride(int bufferIndex) => Xfb(bufferIndex)?["stride"] is JsonNode s ? (int)s : 0;
         public bool QueryHostSupportsTextureShadowLod() => true;
+        // Vulkan keeps exact sample offsets for the Android exporter's
+        // bounded constant-offset selection. Fetch/gather use the shared pass.
+        public bool QueryHostSupportsNonConstantTextureOffset() => (string)_job["host_target"] != "vulkan";
+        public bool QueryHostPreservesTextureSampleOffsets() => (string)_job["host_target"] == "vulkan";
         public bool QueryHostSupportsDepthClipControl() => false;   // Metal has no -1..1 clip control; the depth convention is not left to the translator, the rewrite is added per entry point in the MSL (see the file header)
         // Job reduced = true: relaxed precision - the translator marks NoContraction only on operations that must be exact (the default marks all: keeps the bit-exact results of Maxwell's separate rounding, at the cost of many optimization-disabled spvFMul etc. in the MSL)
         public bool QueryHostReducedPrecision() => _job["reduced"] is JsonNode n && (bool)n;
