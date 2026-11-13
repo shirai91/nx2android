@@ -180,7 +180,7 @@ Events: with `--progress json`, every line on stdout is one JSON object, the pro
 
 ## Android input
 
-**Show gamepad** is saved in `settings.txt`. When enabled, the on-screen controls hide on a mapped controller button event or when stick, D-pad or trigger motion reaches the same activation thresholds as gameplay. A touch restores the controls for the next press, including while a controller is still attached. The last used controller disconnecting also restores the controls. When **Show gamepad** is off, only the draggable menu button is visible and all other touches go to the game. The menu button stays available in either mode. The controller count (`pad_watch`) is used for vibration routing.
+**Show gamepad** is saved in `settings.txt`. When enabled, the on-screen controls hide on a mapped controller button press or when stick, D-pad or trigger motion reaches the same activation thresholds as gameplay. A touch restores the controls for the next press, including while a controller is still attached. Button releases still reach the game but leave the restored touch controls visible. The last used controller disconnecting also restores the controls. When **Show gamepad** is off, only the draggable menu button is visible and all other touches go to the game. The menu button stays available in either mode. The controller count (`pad_watch`) is used for vibration routing.
 
 ## What the player installs
 
