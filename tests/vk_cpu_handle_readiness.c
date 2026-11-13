@@ -8,9 +8,10 @@ static prog_t groups={.nstage=1,.serial=0xfeed6000};
 static prog_t bindless_program={.nstage=2,.serial=0xfeed6001};
 static prog_t consumer={.nstage=1,.serial=0xfeed6002};
 static prog_t writer={.nstage=2,.serial=0xfeed6003};
+static prog_t feedback={.nstage=1,.serial=0xfeed6004};
 static dpool_t texture_pool,alternate_texture_pool,sampler_pool,alternate_sampler_pool;
 int __wrap_nvn_dpool_base(const void *p,int texture){(void)texture;return p==&texture_pool?2048:p==&alternate_texture_pool?4096:p==&sampler_pool?256:512;}
-int __wrap_prog_key(const prog_t *p,unsigned stage,uint8_t key[8]){if(stage>=((p==&bindless_program||p==&writer)?2u:1u))return 0;uint64_t v=p==&writer?(stage?0xfeed6003:0x52):p==&bindless_program?(stage?0xfeed6001:0x52):p==&consumer?0xfeed6002:0xfeed6000;for(unsigned i=0;i<8;i++)key[7-i]=(uint8_t)(v>>(8*i));return 1;}
+int __wrap_prog_key(const prog_t *p,unsigned stage,uint8_t key[8]){if(stage>=((p==&bindless_program||p==&writer)?2u:1u))return 0;uint64_t v=p==&feedback?0xfeed6004:p==&writer?(stage?0xfeed6003:0x52):p==&bindless_program?(stage?0xfeed6001:0x52):p==&consumer?0xfeed6002:0xfeed6000;for(unsigned i=0;i<8;i++)key[7-i]=(uint8_t)(v>>(8*i));return 1;}
 typedef struct {uint8_t bytes[16384];size_t used;} list_t;
 static void put(list_t *l,unsigned op,const void *p,size_t n){size_t size=(sizeof(op_hdr)+n+7)&~7;assert(l->used+size<=sizeof l->bytes);op_hdr h={op,(uint32_t)size};memcpy(l->bytes+l->used,&h,sizeof h);if(n)memcpy(l->bytes+l->used+sizeof h,p,n);l->used+=size;}
 #define RECORD(op,T,...) do{T value={__VA_ARGS__};put(&list,op,&value,sizeof value);}while(0)
@@ -41,7 +42,7 @@ static void uniform_texture_array(void) {
     uint8_t expected[][4] = {{0,255,0,255}, {0,0,255,255}, {0,0,0,0},
                                    {255,255,255,255}, {0,0,0,0}, {0,0,0,0}, {0,0,255,255}, {255,255,255,255}};
 
-    for(int compute=0;compute<2;compute++) for (int gpu=0;gpu<(compute?6:4);gpu++) for (int pass = 0; pass < 8; ++pass) {
+    for(int compute=0;compute<2;compute++) for (int gpu=0;gpu<(compute?7:4);gpu++) for (int pass = 0; pass < 8; ++pass) {
         if(getenv("NX2A_HANDLE_CASE") && atoi(getenv("NX2A_HANDLE_CASE"))!=compute*10+gpu)continue;
         if(pass==4)continue; // Target incompatible 2D-to-3D views are a separate gap.
         printf("case compute%d gpu%d pass%d\n",compute,gpu,pass);fflush(stdout);
@@ -101,13 +102,27 @@ static void uniform_texture_array(void) {
             RECORD(OP_BIND_SSBO,p_bind_buf,.stage=5,.index=0,.addr=(uintptr_t)pointer,.size=8);
             RECORD(OP_DISPATCH,p_dispatch,.x=1,.y=1,.z=1);
         }
-        if(compute && gpu==5) {
+        if(compute && gpu>=5) {
             handles[51]=0;producer[0]=0;producer[1]=(uint32_t)update.value;
-            RECORD(OP_SET_RT,p_set_rt,.n=1,.color={&linear});
+            // The older inline bytes must land BEFORE the draw overwrites
+            // them, and may not cover the newer GPU dependency afterward.
+            struct {uint64_t address,size,value;} older={(uintptr_t)&handles[51],8,0};
+            put(&list,OP_UPDATE_UB,&older,sizeof older);
+            RECORD(OP_SET_RT,p_set_rt,.n=1,.color={gpu==5?&linear:&output});
             RECORD(OP_VIEWPORTS,p_viewports,.n=1,.v={{0,0,1,1}});RECORD(OP_SCISSOR,p_scissor,.w=1,.h=1);
-            RECORD(OP_BIND_PROGRAM,p_bind_program,.prog=&writer,.stages=3);
-            RECORD(OP_BIND_UBO,p_bind_buf,.stage=1,.index=0,.addr=(uintptr_t)producer,.size=16);
-            RECORD(OP_DRAW,p_draw,.prim=NVN_DRAW_PRIMITIVE_TRIANGLES,.count=3,.instances=1);
+            RECORD(OP_BIND_PROGRAM,p_bind_program,.prog=gpu==5?&writer:&feedback,.stages=3);
+            RECORD(OP_BIND_UBO,p_bind_buf,.stage=gpu==5?1:0,.index=0,.addr=(uintptr_t)producer,.size=16);
+            if(gpu==6) {
+                assert(V.has_xfb);
+                RECORD(OP_TF_BIND,p_tf_bind,.index=0,.addr=(uintptr_t)&handles[51],.size=4);
+                RECORD(OP_TF_STATE,p_tf_state,.what=0,.ctl=(uintptr_t)(pointer+64));
+                int discard=1;put(&list,OP_RAST_DISCARD,&discard,sizeof discard);
+            }
+            RECORD(OP_DRAW,p_draw,.prim=gpu==5?NVN_DRAW_PRIMITIVE_TRIANGLES:NVN_DRAW_PRIMITIVE_POINTS,.count=gpu==5?3:1,.instances=1);
+            if(gpu==6) {
+                RECORD(OP_TF_STATE,p_tf_state,.what=1,.ctl=(uintptr_t)(pointer+64));
+                int discard=0;put(&list,OP_RAST_DISCARD,&discard,sizeof discard);
+            }
         }
         if(!compute) RECORD(OP_SET_RT, p_set_rt, .n = 1, .color = {&output});
         RECORD(OP_BIND_PROGRAM, p_bind_program, .prog = compute?&consumer:&bindless_program, .stages = compute?0x20:3);

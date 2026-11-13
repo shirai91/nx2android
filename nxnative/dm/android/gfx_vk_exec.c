@@ -202,7 +202,7 @@ static void render_cond(const p_render_cond *rc) {
     g_rc_skip = known && (rc->mode ? x == y : x != y);
 }
 
-static void exec_begin(int continuing) {   // a new submission: NVN state does not carry over between command buffers, the replay starts from the defaults
+static void exec_begin(int continuing) {   // internal segments retain the current logical NVN and conditional state
     static int inited; if (!inited) { inited = 1; state_reset(); crash_add_note_hook(build_dump); prewarm_start(); compute_warm_start(); }
     if (!continuing) { g_rc_npend = 0; g_rc_skip = 0; }
     { void vk_tex_release_drain(void); vk_tex_release_drain(); }   // Finalized textures' CPU-written marks that no queued job needs any more (gfx_vk_tex.c)
@@ -1862,6 +1862,20 @@ static int tfc_ready(void) {
     VKLOG("transform feedback from a geometry shader: counter buffer of %d slots", TFC); return 1;
 }
 static vkshader_t *xfb_shader(void) { return S.sh[2] && S.sh[2]->xfb ? S.sh[2] : S.sh[0]; }   // the last stage before rasterization captures
+// Preserve the donor's known-write / GPU-producer order. Unlike copies and
+// dispatches, a draw can otherwise leave an older UpdateUniformBuffer deferred
+// until after its transform-feedback or linear-target writeback. Land those
+// overlapping bytes before the draw, while no per-draw allocation exists.
+static void graphics_updates_ready(void) {
+    if (g_lin_back) for (int i = 0; i < S.rt_n && i < 8; i++) {
+        const tex_t *t = S.rt_has_col[i] ? &S.rt_col[i] : NULL;
+        if (t && t->mem && (t->d.flags & NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET) &&
+                vk_ubd_overlaps((uintptr_t)t->mem, t->L.size)) { vk_end_pass_land(); return; }
+    }
+    const vkshader_t *s = xfb_shader();
+    if (g_tf_on && V.has_xfb && g_xfb_on && s && s->xfb) for (int i = 0; i < 4; i++)
+        if (s->xfb_stride[i] && g_tf[i].addr && vk_ubd_overlaps(g_tf[i].addr, g_tf[i].size)) { vk_end_pass_land(); return; }
+}
 static int xfb_begin(VkCommandBuffer cb) {   // inside the pass, after the pipeline is bound; 1 when a capture began, 2 when it counts on the GPU (a geometry shader)
     vkshader_t *vs = xfb_shader();
     if (!g_tf_on || !V.has_xfb || !vs || !vs->xfb || !g_xfb_on) return 0;
@@ -1918,6 +1932,7 @@ static void tf_state(const p_tf_state *t) {
         int i = tf_ctl_slot(t->ctl, 1); g_tf_ctl[i].ctl = t->ctl; g_tf_ctl[i].verts = g_tf_verts;
         if (g_tf_ctl[i].gs && g_tf_ctl[i].dirty) {   // a counted capture: its bytes into the game's control buffer too (+0, one u32 a feedback buffer), for anything that reads it there
             VkBuffer b; VkDeviceSize o; g_tf_ctl[i].dirty = 0;
+            if (vk_ubd_overlaps(t->ctl, 16)) vk_end_pass_land();
             if (vk_buf_at(t->ctl, 16, &b, &o)) { VkCommandBuffer cb = vk_cmd(); VkBufferCopy c = {(VkDeviceSize)i * 16, o, 16};
                 VkMemoryBarrier mb = {VK_STRUCTURE_TYPE_MEMORY_BARRIER, NULL, VK_ACCESS_MEMORY_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT};
                 vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &mb, 0, NULL, 0, NULL); vkCmdCopyBuffer(cb, g_tfc_buf, b, 1, &c);
@@ -2021,6 +2036,7 @@ static int mdi_group(uint64_t cnt, uint64_t ind, int i, int max, int stride, int
     return 0;
 }
 static void draw(const p_draw *d) {
+    graphics_updates_ready();
     graphics_cpu_ready();
     VkBuffer mcb = VK_NULL_HANDLE; VkDeviceSize mco = 0; if (mdi_group(d->mdi_cnt, d->ind, d->mdi_i, d->mdi_max, d->mdi_stride, 16, &mcb, &mco)) return;
     int prim = d->prim;
@@ -2067,6 +2083,7 @@ static void draw(const p_draw *d) {
     if (!(dbg_draw() & 1) && g_ok) { int xf = xfb_begin(cb); vkCmdDraw(cb, (uint32_t)d->count, inst, (uint32_t)d->first, (uint32_t)d->base_instance); if (xf) xfb_end(cb, prim, (uint32_t)d->count, inst, xf); }
 }
 static void draw_idx(const p_draw_idx *d) {
+    graphics_updates_ready();
     graphics_cpu_ready();
     VkBuffer mcb = VK_NULL_HANDLE; VkDeviceSize mco = 0; if (mdi_group(d->mdi_cnt, d->ind, d->mdi_i, d->mdi_max, d->mdi_stride, 20, &mcb, &mco)) return;
     int prim = d->prim;

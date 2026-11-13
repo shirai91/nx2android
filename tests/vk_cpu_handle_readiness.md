@@ -22,7 +22,7 @@ and the target's zero-size-as-one-word uniform convention.
 
 The manual device fixture adapts `uniform_texture_array(table=0)` from donor
 `dm/gfx/nvn/vulkan/tests/t_replay.c`. Its independent color expectations are
-unchanged for the seven applicable passes. It runs 70 cases / 1120 sampled
+unchanged for the seven applicable passes. It runs 77 cases / 1232 sampled
 pixels plus output guards and conditional-clear checks through the production
 NVN replay and real Vulkan:
 
@@ -31,6 +31,8 @@ NVN replay and real Vulkan:
 - graphics and compute consumers, pool rebasing, holes, short bindings;
 - an independently GPU-written 64-bit storage pointer;
 - a still-open linear R32UI render target producing the handle;
+- older inline updates followed by linear or transform-feedback GPU writes,
+  checked independently against the pre-fix host;
 - disabled rendering surviving a compute-triggered internal submission cut.
 
 Target adapters use aligned registered memory pools, recorded UBO updates in
@@ -52,11 +54,16 @@ On an explicitly selected test device, put `cpu-handle-readiness` and
 `shaders.dmsv` in a dedicated scratch directory. Run with `DM_ROOT` pointing
 there and `DM_VK_NO_ZEROCOPY=1`, once each with `DM_VK_RP=0` and `1`.
 `NX2A_HANDLE_CASE=15` selects the linear producer; `14` the pointer producer;
-`1` the current compute producer with a graphics consumer.
+`1` the current compute producer with a graphics consumer; `16` the
+transform-feedback producer.
 
 Validated on the task-owned Android 15 ARM64 emulator with Lavapipe. Baseline
 current-compute and linear-producer cases return zero instead of green; the
-port passes both render-pass modes. The baseline includes only unrelated
+port passes both render-pass modes. Independent review found that graphics
+producers could leave an older overlapping update deferred; the real linear
+and transform-feedback regressions failed before the fix. The target now
+lands those older overlapping updates before the producing draw (and before
+transform-feedback control-buffer copies), preserving donor write order. The baseline includes only unrelated
 PR #361 output-mask changes; its readiness paths match main.
 
 Limits: this covers CPU-decoded descriptors using producers already tracked

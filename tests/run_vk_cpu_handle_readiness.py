@@ -21,6 +21,7 @@ fixtures=[('vertex',0,0x52,(dm/'android/shaders/maskclear.vert').read_text(),ref
 ('producer',5,0xfeed6000,'#version 450\nlayout(local_size_x=1)in;layout(binding=0)buffer Output{uint words[];}o;layout(binding=1)uniform Input{uvec4 p;}i;void main(){o.words[i.p.x]=i.p.y;o.words[i.p.x+1]=i.p.z;}',refl([bind(4,1,0),bind(1,0,1)],(1,1,1)))]
 fixtures.append(('consumer',5,0xfeed6002,'#version 450\nlayout(local_size_x=16)in;layout(binding=0)uniform sampler3D images[32];layout(binding=1)uniform Params{uint index;float coordinate;}p;layout(binding=2)buffer Output{uint colors[];}o;void main(){o.colors[gl_LocalInvocationIndex]=packUnorm4x8(textureLod(images[p.index],vec3(p.coordinate,.5,.5),0));}',refl([bind(12,2,0,7,32,2,352,4,8|((128+8*7)<<8)),bind(1,0,1,9),bind(6,1,2,10)],(16,1,1))))
 fixtures.append(('writer',1,0xfeed6003,'#version 450\nlayout(location=0)out uint handle;layout(binding=0)uniform Input{uvec4 p;}i;void main(){handle=i.p.y;}',refl([bind(1,0,0,0)],(1,0,0))))
+fixtures.append(('feedback',0,0xfeed6004,'#version 450\nlayout(location=0,xfb_buffer=0,xfb_offset=0,xfb_stride=4)out uint handle;layout(binding=0)uniform Input{uvec4 p;}i;void main(){gl_Position=vec4(0,0,0,1);gl_PointSize=1;handle=i.p.y;}',refl([bind(1,0,0,0)])))
 for name,stage,key,source,reflection in fixtures:
     src=D/(name+{0:'.vert',1:'.frag',5:'.comp'}[stage]);out=src.with_suffix('.spv');src.write_text(source)
     subprocess.run([str(glslc),'--target-env=vulkan1.1',str(src),'-o',str(out)],check=True)
