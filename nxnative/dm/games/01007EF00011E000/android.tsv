@@ -38,6 +38,9 @@
 # DM_VK_WINDOW_GAME_RATE=1: the window keeps asking for 60 fps while the frame step holds 2 vsyncs. Without it the window asked for 30 after 60 held presents, the display
 # went to 30 Hz (display timing: refresh 33.3 ms), every trial back to 60 showed its first frames late on that display and failed within 5 presents (1-2 ms of GPU work a
 # frame on the title screen), and the run stayed at 30 fps: the display reached 30 Hz in each of four 30 fps runs (the village included), and not in the runs that held 60
+# DM_VK_BC_DRAW=1: the game makes a 32x32x32 BC4 noise on the GPU at start-up, drawing each depth slice of each level through an RGBA16UI view. Drawn into directly it
+# read back as zeros on Adreno 830 with Turnip 26.2.3, and Link vanished at once in a teleport, where the shaders dissolve him by that noise; with the stand-in it holds
+# noise (18,542 of its 18,744 bytes not zero) and he dissolves and comes back gradually
 status	experimental
 tested	v1114112 Samsung Galaxy S25 Ultra (Snapdragon 8 Elite for Galaxy, Adreno 830); Turnip 26.2.3
 package	org.nx2a.zeldabreathofthewild
@@ -49,3 +52,4 @@ env	DM_PIN_REPLAY=prime
 env	DM_VK_X_CUTANY=1
 env	DM_VK_CB_DRAWS=32
 env	DM_VK_WINDOW_GAME_RATE=1
+env	DM_VK_BC_DRAW=1
