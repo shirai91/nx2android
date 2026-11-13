@@ -349,7 +349,8 @@ extern uint64_t g_tex_frame;   // presents so far, for the packaged textures' la
 // last EVICT_KEEP presents go (their memory now holds another texture; one drawn again is made and filled again). Called with g_img_mu held
 enum { EVICT_KEEP = 60 };
 static uint64_t g_img_n, g_img_bytes, g_img_evicted;   // live images and their bytes, images evicted so far (vk_tex_sweep's line)
-static void img_drop(vkimg_t *im) { vk_lrz_forget(im); if (im->lin_mem) nvn_dirty_release(im->lin_mem, im->lin_len); if (im->packaged && !im->pkg_released && im->pkg_mem) nvn_dirty_release(im->pkg_mem, im->pkg_len); g_img_n--; g_img_bytes -= im->size > 0 ? (uint64_t)im->size : 0; alias_unlink(im); vk_tex_view_drop_all(im); if (im->sub) vk_defer_free_image_sub(im->img, im->sub); else vk_defer_free_image(im->img, im->mem); free(im); }
+static void img_drop(vkimg_t *im) { if (im->bc_draw) { vkimg_t *d = im->bc_draw; vk_lrz_forget(d); vk_tex_view_drop_all(d); if (d->sub) vk_defer_free_image_sub(d->img, d->sub); else vk_defer_free_image(d->img, d->mem); free(d); }
+    vk_lrz_forget(im); if (im->lin_mem) nvn_dirty_release(im->lin_mem, im->lin_len); if (im->packaged && !im->pkg_released && im->pkg_mem) nvn_dirty_release(im->pkg_mem, im->pkg_len); g_img_n--; g_img_bytes -= im->size > 0 ? (uint64_t)im->size : 0; alias_unlink(im); vk_tex_view_drop_all(im); if (im->sub) vk_defer_free_image_sub(im->img, im->sub); else vk_defer_free_image(im->img, im->mem); free(im); }
 static void evict_overlaps(uint64_t pool, int64_t off, int64_t size) {
     akey ks[64]; int n = 0;
     for (uint32_t i = 0; i < g_by_key.cap && n < 64; i++) {
@@ -610,6 +611,25 @@ VkImageView vk_tex_view_as(const tex_t *t, const view_t *vw, int dim, int arraye
     uint32_t nlay = as_attachment && im->vtype == VK_IMAGE_VIEW_TYPE_3D ? (im->d >> lv0 ? im->d >> lv0 : 1) : im->layers;
     uint32_t ly0 = vw && vw->set_layers ? vw->min_layer : 0, nly = vw && vw->set_layers ? vw->nlayers : nlay - ly0;
     if (ly0 >= nlay) ly0 = nlay - 1; if (!nly || ly0 + nly > nlay) nly = nlay - ly0;
+    // A block-compressed image drawn into through an uncompressed view of its block size (the game compresses on the GPU: one texel a block). Breath of the Wild
+    // makes its 32x32x32 BC4 noise this way, each depth slice of each level through an RGBA16UI view; on Adreno 830 with Turnip 26.2.3 the image read back as zeros
+    // in every slice and level afterwards, and the shaders that dissolve Link in a teleport by that noise discarded every pixel at once. With the stand-in it
+    // holds noise (18,542 of its 18,744 bytes not zero) and he dissolves and comes back gradually. So such a pass draws into a stand-in in the view's format, the image's size in blocks, and gfx_vk_exec.c bc_draw_back copies what it drew into the
+    // image as blocks, through a buffer, as an upload does. DM_VK_BC_DRAW (start-up): 0 draws into the image itself as before, 1 (default) stands in for 3D
+    // images, 2 for every block-compressed image
+    { static int mode = -1; if (mode < 0) { const char *e = getenv("DM_VK_BC_DRAW"); mode = e ? atoi(e) : 1; }
+      const vkfmt_t *cf = vk_fmt(im->nvn_format);
+      if (as_attachment && mode && (mode > 1 || im->vtype == VK_IMAGE_VIEW_TYPE_3D) && cf && cf->compressed && !cf->dec && !f->compressed && cf->bw && cf->bh && cf->bpb == f->bpb && vw && vw->set_format && im->samples <= 1) {
+          if (!im->bc_draw) {
+              uint32_t bw = (im->w + cf->bw - 1) / cf->bw, bh = (im->h + cf->bh - 1) / cf->bh; int same = 1;   // every level's size in blocks is the stand-in's level size
+              for (uint32_t l = 0; l < im->levels; l++) { uint32_t w = im->w >> l ? im->w >> l : 1, h = im->h >> l ? im->h >> l : 1;
+                  same &= (w + cf->bw - 1) / cf->bw == (bw >> l ? bw >> l : 1) && (h + cf->bh - 1) / cf->bh == (bh >> l ? bh >> l : 1); }
+              tex_t ct = *t; ct.d.format = vw->format; ct.d.width = (int)bw; ct.d.height = (int)bh;
+              vkimg_t *d = same ? img_new(&ct, f) : NULL;
+              if (d) { d->bc_of = im; im->bc_draw = d; }
+              static int n; if (n++ < 8) VKLOG("block-compressed image %ux%ux%u (nvn format %#x) drawn into through views of format %#x: %s", im->w, im->h, im->d, im->nvn_format, vw->format,
+                                               d ? "its passes draw into a stand-in in blocks, copied into it after each (DM_VK_BC_DRAW)" : "no stand-in (its levels are not whole in blocks, or the image could not be made): drawn into itself"); }
+          if (im->bc_draw) { im = im->bc_draw; im->bc_lv = lv0; im->bc_ly = ly0; im->bc_nly = nly; im->gpu_w = 1; if (img_out) *img_out = im; } } }
     int target = vw && vw->set_target ? vw->target : im->target;
     VkImageViewType type = vtype_of(target);
     // what the shader declares wins over the object's target (a 2D render target sampled as an array, a cube face read as 2D)

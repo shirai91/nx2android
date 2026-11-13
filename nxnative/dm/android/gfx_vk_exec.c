@@ -292,7 +292,7 @@ static VkFramebuffer fb_get(const fbkey *k) {
     pthread_mutex_unlock(&g_rp_mu); return fb;
 }
 // the attachments begin_pass found, for the render pass begin: each colour slot's (and the depth's) image, view, view format and layers, size at the view's level
-static struct { vkimg_t *im; VkImageView v; uint32_t fmt, layers, w, h; } P_att[9];
+static struct { vkimg_t *im; VkImageView v; uint32_t fmt, layers, w, h, bc_lv, bc_ly, bc_nly; } P_att[9];   // (bc_*: a block-compressed image's stand-in, the level and layers this pass draws)
 
 // Before a pass that goes on with a depth buffer (loads it), one texel of its depth is copied out: a transfer read makes Adreno's driver drop the buffer's
 // low-resolution depth (LRZ), which it otherwise kept from earlier passes even within one command buffer. NEO's menu → field wipe drew whole 32x32 squares of
@@ -577,10 +577,25 @@ static void lin_back(void) {
         { static int n; if (n++ < 4) VKLOG("linear render target %ux%u (nvn format %#x, stride %zu) copied back to its storage %p", im->w, im->h, t->d.format, stride, (void *)t->mem); }
     }
 }
+// After a pass that drew into a block-compressed image's stand-in (gfx_vk_tex.c vk_tex_view_as): the level and layers it drew, copied into the image as blocks
+// through scratch memory (image → buffer → image, the second copy as an upload's)
+static void bc_draw_back(void) {
+    for (int i = 0; i < 8; i++) { vkimg_t *d = P_att[i].im; if (!d || !d->bc_of) continue;
+        vkimg_t *p = d->bc_of; const vkfmt_t *uf = vk_fmt(d->nvn_format); if (!uf) continue;
+        uint32_t lv = P_att[i].bc_lv, ly = P_att[i].bc_ly, n = P_att[i].bc_nly ? P_att[i].bc_nly : 1; int is3d = p->vtype == VK_IMAGE_VIEW_TYPE_3D;
+        uint32_t bw = d->w >> lv ? d->w >> lv : 1, bh = d->h >> lv ? d->h >> lv : 1, pw = p->w >> lv ? p->w >> lv : 1, ph = p->h >> lv ? p->h >> lv : 1;
+        VkBuffer sb; VkDeviceSize so; if (!vk_scratch((VkDeviceSize)bw * bh * uf->bpb * n, 16, &sb, &so)) continue;
+        VkCommandBuffer cb = vk_cmd(); vk_tex_prepare(cb, p); vk_img_barrier_all(cb);
+        VkBufferImageCopy r = {so, 0, 0, {VK_IMAGE_ASPECT_COLOR_BIT, lv, is3d ? 0 : ly, is3d ? 1 : n}, {0, 0, is3d ? (int32_t)ly : 0}, {bw, bh, is3d ? n : 1}};
+        vkCmdCopyImageToBuffer(cb, d->img, VK_IMAGE_LAYOUT_GENERAL, sb, 1, &r); vk_img_barrier_all(cb);
+        r.imageExtent.width = pw; r.imageExtent.height = ph;
+        vkCmdCopyBufferToImage(cb, sb, p->img, VK_IMAGE_LAYOUT_GENERAL, 1, &r); vk_img_barrier_all(cb);
+        p->gpu_w = 1; }
+}
 void vk_end_pass(void) {
     if (g_x_listpasses && S.pass_open == 1) { Dl_info di; void *ra = __builtin_return_address(0); uintptr_t base = dladdr((void *)vk_end_pass, &di) ? (uintptr_t)di.dli_fbase : 0; VKLOG("    ended from %#llx (%llu draws)", (unsigned long long)((uintptr_t)ra - base), (unsigned long long)g_pass_draws); list_reads("it"); }   // (DM_VK_TRACE_PASS=-2: who ends each pass)
     if (S.pass_open == 2 && P_cleared) (void)pass_commit();   // only clears: the pass still runs, for its load ops
-    if (S.pass_open == 1) { if (S.rp_pass) vkCmdEndRenderPass(vk_cmd()); else vkCmdEndRendering(vk_cmd()); void vk_pass_ts(int end, uint32_t w, uint32_t h, uint32_t fmt, uint32_t draws); vk_pass_ts(1, S.pass_w, S.pass_h, (uint32_t)S.cfmt[0], (uint32_t)g_pass_draws | (g_pass_draws ? (uint32_t)((g_pass_bb[2] - g_pass_bb[0]) & 0xffff) << 16 : 0));  pass_dump(); if (g_x_tracepass >= 0 && g_sub_pass - 1 == g_x_tracepass) { setenv("DM_VK_TRACE_PASS", "-1", 1); g_x_tracepass = -1; } }
+    if (S.pass_open == 1) { if (S.rp_pass) vkCmdEndRenderPass(vk_cmd()); else vkCmdEndRendering(vk_cmd()); bc_draw_back(); void vk_pass_ts(int end, uint32_t w, uint32_t h, uint32_t fmt, uint32_t draws); vk_pass_ts(1, S.pass_w, S.pass_h, (uint32_t)S.cfmt[0], (uint32_t)g_pass_draws | (g_pass_draws ? (uint32_t)((g_pass_bb[2] - g_pass_bb[0]) & 0xffff) << 16 : 0));  pass_dump(); if (g_x_tracepass >= 0 && g_sub_pass - 1 == g_x_tracepass) { setenv("DM_VK_TRACE_PASS", "-1", 1); g_x_tracepass = -1; } }
     if (S.pass_open == 1 && g_lin_back && g_pass_draws) lin_back();
     if (S.pass_open == 1) crumb_mark(0);
     S.pass_open = 0; S.bound_pipe = VK_NULL_HANDLE; g_tf_in_pass = 0;
@@ -609,11 +624,12 @@ static int begin_pass(void) {
         // a block-compressed texture drawn into through an uncompressed view (RGBA32UI over BC3: one texel per 4x4 block, Mario Kart 8 Deluxe compressing its
         // reflection cubemaps on the GPU) is that view's size in blocks: with the texel size the render area was 16 times the attachment, which Vulkan does not allow (the render area must lie within every attachment view)
         { const vkfmt_t *tf = vk_fmt(S.rt_col[i].d.format), *vf = S.rt_has_cview[i] && S.rt_cview[i].set_format ? vk_fmt(S.rt_cview[i].format) : tf;
-          if (tf && vf && tf->compressed && !tf->dec && !vf->compressed && tf->bw && tf->bh) { iw = (iw + tf->bw - 1) / tf->bw; ih = (ih + tf->bh - 1) / tf->bh;
+          if (tf && vf && tf->compressed && !tf->dec && !vf->compressed && tf->bw && tf->bh) { if (!im->bc_of) { iw = (iw + tf->bw - 1) / tf->bw; ih = (ih + tf->bh - 1) / tf->bh; }   // (a stand-in is in blocks already: vk_tex_view_as)
               static int said; if (!said++) VKLOG("colour target: block-compressed format %#x drawn through view format %#x: pass in blocks, %ux%u", S.rt_col[i].d.format, S.rt_cview[i].format, iw, ih); } }
         if (iw < w) w = iw; if (ih < h) h = ih; samples = im->samples; have = 1;
         ca[i].imageView = v; S.cfmt[i] = vk_view_fmt; ncol = i + 1; P_att[i].im = im;   // (the view's format: a render pass's attachment and its pipelines take it)
         P_att[i].fmt = vk_view_fmt; P_att[i].layers = vk_view_layers ? vk_view_layers : 1; P_att[i].w = iw; P_att[i].h = ih;
+        P_att[i].bc_lv = im->bc_lv; P_att[i].bc_ly = im->bc_ly; P_att[i].bc_nly = im->bc_nly;
         if (P_att[i].layers < layers) layers = P_att[i].layers;
     }
     for (int i=0;i<8;i++) P_alias_views[i]=ca[i].imageView;
