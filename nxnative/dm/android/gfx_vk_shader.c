@@ -533,7 +533,11 @@ static VkShaderModule vk_shader_module_(vkshader_t *s, uint64_t um, uint64_t im,
     if (!(um | im | xo | (uint32_t)fd | (uint32_t)dual | (uint32_t)alpha) || !s->spv) return s->mod;
     if (xo == 1u << 31) {   // DM_VK_SPV_ALT
         pthread_mutex_lock(&g_sh_mu); for (int i = 0; i < s->nvar; i++) if (s->var[i].um == 0 && s->var[i].im == 0 && s->var[i].xo == xo && s->var[i].fd == (alpha << 2)) { VkShaderModule m = s->var[i].mod; pthread_mutex_unlock(&g_sh_mu); return m; }
-        VkShaderModule m = alt_module(s, alpha); if (s->nvar < 8) s->var[s->nvar++] = (typeof(s->var[0])){0, 0, xo, alpha << 2, m}; pthread_mutex_unlock(&g_sh_mu); return m; }
+        VkShaderModule m = alt_module(s, alpha);
+        if (m != s->mod || !alpha) { if (s->nvar < 8) s->var[s->nvar++] = (typeof(s->var[0])){0, 0, xo, alpha << 2, m}; pthread_mutex_unlock(&g_sh_mu); return m; }
+        // Missing or unusable debug replacement: keep the ordinary shader's alpha test.
+        pthread_mutex_unlock(&g_sh_mu);
+    }
     xo &= ~(1u << 31);
     pthread_mutex_lock(&g_sh_mu);
     for (int i = 0; i < s->nvar; i++) if (s->var[i].um == um && s->var[i].im == im && s->var[i].xo == xo && s->var[i].fd == (fd | dual << 1 | alpha << 2)) { VkShaderModule m = s->var[i].mod; pthread_mutex_unlock(&g_sh_mu); return m; }

@@ -1590,7 +1590,7 @@ static enum clear_type clear_color_type(VkFormat format) {
         case VK_FORMAT_R8_SINT: case VK_FORMAT_R16_SINT: case VK_FORMAT_R32_SINT:
         case VK_FORMAT_R8G8_SINT: case VK_FORMAT_R16G16_SINT: case VK_FORMAT_R32G32_SINT:
         case VK_FORMAT_R8G8B8A8_SINT: case VK_FORMAT_R16G16B16A16_SINT: case VK_FORMAT_R32G32B32A32_SINT:
-            return CLEAR_SINT;
+        case VK_FORMAT_A2B10G10R10_SINT_PACK32: return CLEAR_SINT;
         default: return CLEAR_FLOAT;
     }
 }

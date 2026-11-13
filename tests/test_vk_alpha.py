@@ -144,21 +144,20 @@ void main(){color=texture(tex,vec2(.5));secondary=vec4(.25);}
 #include "spv_alpha.h"
 static pthread_mutex_t g_sh_mu=PTHREAD_MUTEX_INITIALIZER;
 vkdev_t V;
-static unsigned created;
+static unsigned created, expected_kills=1;
 static char *folder;
 #undef VKLOG
 #define VKLOG(...) ((void)0)
-static VkShaderModule alt_module(vkshader_t *s, int alpha) { (void)alpha; return s->mod; }
 static VkResult create(VkDevice d,const VkShaderModuleCreateInfo *c,const VkAllocationCallbacks *a,VkShaderModule *out) {
     (void)d;(void)a;unsigned kills=0;
     for (size_t i=5;i<c->codeSize/4;i+=c->pCode[i]>>16) kills+=(c->pCode[i]&0xffff)==252;
-    assert(kills==1);
+    assert(kills==expected_kills);
     char path[2048];snprintf(path,sizeof path,"%s/variant-%u.spv",folder,created);
     FILE *f=fopen(path,"wb");assert(f && fwrite(c->pCode,1,c->codeSize,f)==c->codeSize && !fclose(f));
     *out=(VkShaderModule)(uintptr_t)(2+created++);return VK_SUCCESS;
 }
 PFN_vkCreateShaderModule vkCreateShaderModule=create;
-''' + integer + helpers + variant + r'''
+''' + integer + helpers + function(src, 'static VkShaderModule alt_module(') + variant + r'''
 int main(int argc,char **argv) {
     assert(argc==3);folder=argv[2];FILE *f=fopen(argv[1],"rb");assert(f);
     fseek(f,0,SEEK_END);long bytes=ftell(f);rewind(f);uint32_t *w=malloc((size_t)bytes);
@@ -172,7 +171,27 @@ int main(int argc,char **argv) {
     }
     n=0;
     for (unsigned um=0;um<2;um++) for (int flags=4;flags<8;flags++) assert(vk_shader_module_(&s,um,0,0,flags)==saved[n++]);
-    assert(created==8 && vk_shader_module_(&s,0,0,0,0)==s.mod);free(w);
+    assert(created==8 && vk_shader_module_(&s,0,0,0,0)==s.mod);
+    vkshader_t alt=s;alt.key=99;alt.nvar=0;
+    unsetenv("DM_VK_SPV_DIR");
+    VkShaderModule fallback=vk_shader_module_(&alt,0,0,1u<<31,4);
+    assert(fallback!=s.mod && created==9);
+    assert(vk_shader_module_(&alt,0,0,1u<<31,4)==fallback && created==9);
+    setenv("DM_VK_SPV_DIR",folder,1);
+    assert(vk_shader_module_(&alt,0,0,1u<<31,4)==fallback); // missing optional file
+    char path[2048];snprintf(path,sizeof path,"%s/%016llx.spv",folder,(unsigned long long)alt.key);
+    f=fopen(path,"wb");assert(f && fwrite(w,1,(size_t)bytes,f)==(size_t)bytes && !fclose(f));
+    VkShaderModule replacement=vk_shader_module_(&alt,0,0,1u<<31,4);
+    assert(replacement!=fallback && replacement!=s.mod && created==10);
+    assert(vk_shader_module_(&alt,0,0,1u<<31,4)==replacement && created==10);
+    expected_kills=0;
+    VkShaderModule untested=vk_shader_module_(&alt,0,0,1u<<31,0);
+    assert(untested!=replacement && untested!=s.mod && created==11);
+    assert(vk_shader_module_(&alt,0,0,1u<<31,0)==untested && created==11);
+    // A short replacement also falls through to the ordinary alpha variant.
+    f=fopen(path,"wb");assert(f && fputc(0,f)!=EOF && !fclose(f));alt.nvar=0;expected_kills=1;
+    assert(vk_shader_module_(&alt,0,0,1u<<31,4)!=s.mod && created==12);
+    free(w);
 }
 ''')
         (self.d / 'runtime.h').write_text(runtime)
@@ -294,7 +313,8 @@ int main(void) {
         }
     }
     assert(calls==63);S.color.alpha_func=NVN_ALPHA_FUNC_NEVER;
-    for (unsigned i=0;i<2;i++) assert(!alpha_enabled(&fs,i?VK_FORMAT_R32_SINT:VK_FORMAT_R32_UINT,0));
+    const VkFormat integer[]={VK_FORMAT_R32_SINT,VK_FORMAT_R32_UINT,VK_FORMAT_A2B10G10R10_SINT_PACK32};
+    for (unsigned i=0;i<sizeof integer/sizeof *integer;i++) assert(!alpha_enabled(&fs,integer[i],0));
     assert(alpha_enabled(&fs,VK_FORMAT_UNDEFINED,0)); // depth-only draw still has a fragment output
     fs.alpha_float=0;assert(!alpha_enabled(&fs,VK_FORMAT_R8G8B8A8_UNORM,0));
 }
