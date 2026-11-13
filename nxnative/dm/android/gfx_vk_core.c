@@ -724,7 +724,7 @@ void mtl_pool_del(const void *mem) {
         if (p.zero_copy) pool_copy_back(&p);
         if (inner) pthread_mutex_unlock(&g_nest_mu);
         free(p.baseline);
-        { void vk_tbuf_drop_pool(uint64_t); vk_tbuf_drop_pool(p.serial); }   // the texel buffer views over its buffer (gfx_vk_tex.c), before the buffer itself goes or is kept
+        { void vk_tbuf_drop_pool(uint64_t), vk_f1_drop_pool(uint64_t); vk_tbuf_drop_pool(p.serial); vk_f1_drop_pool(p.serial); }   // the texel buffer views and 2D-row fetch images over its buffer (gfx_vk_tex.c), before the buffer itself goes or is kept
         if (p.slab) slab_give(p.slab, p.slot, mtl_last_fence() + 1);   // the slot goes back to its slab (the GPU may still read it until that submission is done)
         else if (!(p.zero_copy && p.ahb && zcf_put(p.ahb, p.buf, p.mem, p.hi - p.lo))) {   // (kept for the next pool of its size)
             vk_defer_free_buffer(p.buf, p.mem);   // the AHardwareBuffer goes with the imported memory's last reference

@@ -63,6 +63,7 @@ VkImageView vk_tex_view_as(const tex_t *t, const view_t *vw, int dim, int arraye
 static void vk_watch(const vkimg_t *im, const char *s) { (void)im; (void)s; }
 void vk_texdump_note(vkimg_t *im) { (void)im; }
 static void vk_defer_free_view(VkImageView v) { (void)v; }
+static VkImageView vk_tbuf_as_2d(const tex_t *t) { (void)t; return VK_NULL_HANDLE; }   // texture buffers' wrapped 1D fetches: not the views tested here
 static void vkGetPhysicalDeviceFormatProperties(VkPhysicalDevice p, VkFormat f, VkFormatProperties *out) {
     (void)p; (void)f; *out=(VkFormatProperties){.optimalTilingFeatures=VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT|VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT};
 }
