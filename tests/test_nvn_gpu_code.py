@@ -12,10 +12,10 @@ ROOT = Path(__file__).resolve().parents[1]
 @unittest.skipUnless(shutil.which('cc'), 'a host C compiler is required')
 class GpuCodeVersion(unittest.TestCase):
     def test_precompiled_shader_range_and_runtime_compiler_floor(self):
-        source = (ROOT / 'nxnative/dm/gfx/nvn/hle_nvn.c').read_text()
+        source = (ROOT / 'nxnative/dm/gfx/nvn/hle_nvn.c').read_text(encoding='utf-8')
         table = source[source.index('static const int g_devinfo[]'):source.index('// The NVN API version')]
         funcs = source[source.index('static void nvn_api('):source.index('NVN(nvnDeviceGetImageHandle,')]
-        sdk_define = next(line for line in (ROOT / 'nxnative/dm/host/dm.h').read_text().splitlines() if line.startswith('#define DM_SDK_OLD('))
+        sdk_define = next(line for line in (ROOT / 'nxnative/dm/host/dm.h').read_text(encoding='utf-8').splitlines() if line.startswith('#define DM_SDK_OLD('))
         harness = r'''
 #include <assert.h>
 #include <stdio.h>
@@ -56,7 +56,7 @@ int main(int argc, char **argv) {
 '''.replace('SDK_DEFINE', sdk_define).replace('TABLE', table).replace('FUNCTIONS', funcs)
         with tempfile.TemporaryDirectory(prefix='nx2a-nvn-code-') as tmp:
             c, exe = Path(tmp) / 'query.c', Path(tmp) / 'query'
-            c.write_text(harness)
+            c.write_text(harness, encoding='utf-8')
             subprocess.run(['cc', '-std=c11', '-Wall', '-Wextra', '-Werror', '-I', str(ROOT), str(c), '-o', str(exe)], check=True)
             for sdk in (6, 7, 8, 10, 11, 13, 20, 0):
                 with self.subTest(sdk=sdk):
