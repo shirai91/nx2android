@@ -1,10 +1,11 @@
 """Descriptor collection rejects a full image array before writing past it."""
 from pathlib import Path
 import os
-import shutil
 import subprocess
 import tempfile
 import unittest
+
+import host_cc
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -14,12 +15,12 @@ def between(text, start, end):
     return text[at:text.index(end, at)]
 
 
-@unittest.skipUnless(shutil.which('cc'), 'host C compiler required')
+@unittest.skipUnless(host_cc.posix(), 'a POSIX host C compiler is required')
 class DescriptorCapacity(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        source = (ROOT / 'nxnative/dm/android/gfx_vk_exec.c').read_text()
-        header = (ROOT / 'nxnative/dm/android/gfx_vk.h').read_text()
+        source = (ROOT / 'nxnative/dm/android/gfx_vk_exec.c').read_text(encoding='utf-8')
+        header = (ROOT / 'nxnative/dm/android/gfx_vk.h').read_text(encoding='utf-8')
         stage = source[source.index('static VkDescriptorSet stage_set('):]
         declarations = next(line for line in stage.splitlines()
                             if line.strip().startswith('VkWriteDescriptorSet w[96];'))
@@ -157,7 +158,7 @@ int main(int argc, char **argv) {
         cls.addClassCleanup(cls.tmp.cleanup)
         src = Path(cls.tmp.name) / 'test.c'
         cls.exe = Path(cls.tmp.name) / 'test'
-        src.write_text(code)
+        src.write_text(code, encoding='utf-8')
         flags = ['-fsanitize=address,undefined', '-fno-omit-frame-pointer'] if os.getenv('NX2A_TEST_SANITIZE') else []
         subprocess.run(['cc', '-std=c11', '-O1', '-Wall', '-Wextra', '-Werror', *flags,
                         '-I', str(ROOT), '-I', str(ROOT / 'nxnative/dm/gfx/nvn/include'),
