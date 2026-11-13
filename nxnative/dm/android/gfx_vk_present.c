@@ -1059,6 +1059,14 @@ uint64_t mtl_present(const tex_t *t, double period, const int crop[4]) {
         void vk_pipeline_cache_save(void); pthread_t th; pthread_attr_t a; pthread_attr_init(&a); pthread_attr_setdetachstate(&a, PTHREAD_CREATE_DETACHED);
         pthread_create(&th, &a, (void *(*)(void *))(void *)vk_pipeline_cache_save, NULL); pthread_attr_destroy(&a);
     }
+    // A game that crops its layer through vi (hle_vi.c) and not through its NVN window: The Legend of Zelda: Link's Awakening in handheld mode keeps a 1920x1080
+    // window texture, draws into its 1280x720 corner and calls vi::SetLayerCrop 0,0 1280x720. Without the window's own crop the whole texture was shown and the picture
+    // sat at its own size in one corner of the screen. The vi crop stands in only when the window has none and it lies inside the image
+    int vcrop[4];
+    if (im && !(crop && crop[2] > 0 && crop[3] > 0)) {
+        void dm_vi_layer_crop(int c[4]); dm_vi_layer_crop(vcrop);
+        if (vcrop[2] > 0 && vcrop[3] > 0 && vcrop[0] + vcrop[2] <= (int)im->w && vcrop[1] + vcrop[3] <= (int)im->h) crop = vcrop;
+    }
     return present_enqueue(im, crop, n, period);
 }
 // OpenGL ES games (gl_android.c): their frames are AHardwareBuffers the device's GL driver drew, imported as images and shown as an NVN window texture is
