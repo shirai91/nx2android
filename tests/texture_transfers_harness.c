@@ -9,7 +9,8 @@
 #include "nxnative/dm/gfx/nvn/nvn_obj.h"
 /* TYPES */
 #define VKCHK(x) assert((x)==VK_SUCCESS)
-#define VKRED_ONCE(...) ((void)0)
+static int red_calls;
+#define VKRED_ONCE(...) ((void)red_calls++)
 static struct { VkDevice dev; VkPhysicalDevice pd; } V;
 static uint64_t g_tex_frame;
 static tex_t src, dst;
@@ -23,12 +24,14 @@ static VkImage last_copy_src, last_copy_dst, last_resolve_src, last_resolve_dst;
 static VkFormat blit_src_fmt, blit_dst_fmt;
 static vkimg_t *by_handle(VkImage h) { uintptr_t n=(uintptr_t)h; assert(n>0 && n<=(uintptr_t)nimages); return &images[n-1]; }
 static const vkfmt_t *vk_fmt(int n) {
-    static const vkfmt_t f[]={{.vk=VK_FORMAT_R8G8B8A8_UNORM},{.vk=VK_FORMAT_R8G8B8A8_SRGB}, {.vk=VK_FORMAT_B8G8R8A8_UNORM},{.vk=VK_FORMAT_B8G8R8A8_SRGB}};
+    static const vkfmt_t f[]={{.vk=VK_FORMAT_R8G8B8A8_UNORM},{.vk=VK_FORMAT_R8G8B8A8_SRGB}, {.vk=VK_FORMAT_B8G8R8A8_UNORM},{.vk=VK_FORMAT_B8G8R8A8_SRGB},{.vk=VK_FORMAT_D32_SFLOAT},{.vk=VK_FORMAT_D16_UNORM}};
     switch(n) {
     case NVN_FORMAT_RGBA8: case NVN_FORMAT_RGBX8:return &f[0];
     case NVN_FORMAT_RGBA8_SRGB:case NVN_FORMAT_RGBX8_SRGB:return &f[1];
     case NVN_FORMAT_BGRA8:case NVN_FORMAT_BGRX8:return &f[2];
     case NVN_FORMAT_BGRA8_SRGB:case NVN_FORMAT_BGRX8_SRGB:return &f[3];
+    case NVN_FORMAT_DEPTH32F:return &f[4];
+    case NVN_FORMAT_DEPTH16:return &f[5];
     default:abort();
     }
 }
@@ -70,7 +73,7 @@ static void vkCmdClearColorImage(VkCommandBuffer cb,VkImage im,VkImageLayout l,c
 static void vkCmdClearDepthStencilImage(VkCommandBuffer cb,VkImage im,VkImageLayout l,const VkClearDepthStencilValue *v,uint32_t n,const VkImageSubresourceRange *r) {(void)cb;(void)im;(void)l;(void)v;(void)n;(void)r;abort();}
 /* FUNCTIONS */
 static p_copy_t2t setup(int fmt,VkFormat sf,VkFormat df) {
-    src=(tex_t){.d={.format=fmt}};dst=src;nimages=2;copies=blits=resolves=retired=barriers=same_image=0;
+    src=(tex_t){.d={.format=fmt}};dst=src;nimages=2;copies=blits=resolves=retired=barriers=same_image=red_calls=0;
     images[0]=(vkimg_t){.img=(VkImage)(uintptr_t)1,.fmt=sf,.w=32,.h=32,.d=1,.levels=2,.layers=4,.samples=1,.aspect=VK_IMAGE_ASPECT_COLOR_BIT};
     images[1]=images[0];images[1].img=(VkImage)(uintptr_t)2;images[1].fmt=df;
     return (p_copy_t2t){.src=&src,.dst=&dst,.sr={1,2,1,4,4,1},.dr={3,4,2,4,4,1},.has_sv=1,.has_dv=1,.sv={.set_levels=1,.base_level=1},.dv={.set_levels=1,.base_level=1}};
@@ -79,6 +82,17 @@ int main(int argc,char **argv) {
     assert(argc==2);
     const int fmt[]={NVN_FORMAT_RGBA8_SRGB,NVN_FORMAT_RGBX8_SRGB,NVN_FORMAT_BGRA8_SRGB,NVN_FORMAT_BGRX8_SRGB};
     const VkFormat srgb[]={VK_FORMAT_R8G8B8A8_SRGB,VK_FORMAT_B8G8R8A8_SRGB}, unorm[]={VK_FORMAT_R8G8B8A8_UNORM,VK_FORMAT_B8G8R8A8_UNORM};
+    if(!strcmp(argv[1],"resolve_invalid")) for(int invalid=0;invalid<3;invalid++) {
+        p_copy_t2t c=setup(NVN_FORMAT_RGBA8_SRGB,VK_FORMAT_R8G8B8A8_SRGB,VK_FORMAT_B8G8R8A8_UNORM);
+        images[0].samples=4;c.flags=DM_COPY_RESOLVE;c.sv.base_level=0;
+        if(invalid==0)dst.d.format=NVN_FORMAT_BGRA8_SRGB; // different logical families
+        if(invalid==2) { // a depth resolve cannot use a color temporary or a format-changing raw copy
+            src.d.format=NVN_FORMAT_DEPTH32F;dst.d.format=NVN_FORMAT_DEPTH16;
+            images[0].fmt=VK_FORMAT_D32_SFLOAT;images[1].fmt=VK_FORMAT_D16_UNORM;
+            images[0].aspect=images[1].aspect=VK_IMAGE_ASPECT_DEPTH_BIT;
+        }
+        copy_t2t(&c);assert(!copies && !resolves && !blits && !retired && nimages==2 && red_calls==1);
+    }
     for(int f=0;f<4;f++) {
         if(!strcmp(argv[1],"copy")) for(int reverse=0;reverse<2;reverse++) {
             p_copy_t2t c=setup(fmt[f],reverse?unorm[f/2]:srgb[f/2],reverse?srgb[f/2]:unorm[f/2]);copy_t2t(&c);
@@ -89,6 +103,16 @@ int main(int argc,char **argv) {
             p_copy_t2t c=setup(fmt[f],srgb[f/2],shared?unorm[f/2]:srgb[f/2]);images[0].samples=4;c.sv.base_level=0;c.flags=DM_COPY_RESOLVE;copy_t2t(&c);
             assert(resolves==1 && !blits && copies==shared && retired==shared);assert(last_resolve_src==images[0].img && last_resolve.srcSubresource.baseArrayLayer==1);
             if(shared) {assert(last_resolve.dstSubresource.mipLevel==0 && last_resolve.dstSubresource.baseArrayLayer==0);assert(last_copy_src==last_resolve_dst && last_copy_dst==images[1].img);assert(last_copy.dstSubresource.mipLevel==1 && last_copy.dstSubresource.baseArrayLayer==2);assert(last_copy.dstOffset.x==3 && last_copy.dstOffset.y==4);}
+        }
+        if(!strcmp(argv[1],"clear_view")) for(int srgb_view=0;srgb_view<2;srgb_view++) {
+            setup(fmt[f],srgb[f/2],unorm[f/2]);
+            int linear=f<2?NVN_FORMAT_RGBA8:NVN_FORMAT_BGRA8;
+            dst.d.format=srgb_view?linear:fmt[f];
+            p_clear_tex c={.tex=&dst,.r={0,0,0,32,32,1},.c.f={0.5f,0.25f,0.75f,0.25f},.has_view=1,.view={.set_format=1,.format=srgb_view?fmt[f]:linear}};
+            clear_tex(&c);assert(fabsf(last_clear.float32[0]-(srgb_view?0.73535698f:0.5f))<0.00001f && last_clear.float32[3]==0.25f);
+            // A dormant view format must not override the texture's format.
+            c.view.set_format=0;clear_tex(&c);assert(fabsf(last_clear.float32[0]-(srgb_view?0.5f:0.73535698f))<0.00001f);
+            c.view.set_format=1;c.has_view=0;clear_tex(&c);assert(fabsf(last_clear.float32[0]-(srgb_view?0.5f:0.73535698f))<0.00001f);
         }
         if(!strcmp(argv[1],"clear")) for(int shared=0;shared<2;shared++) {
             setup(fmt[f],srgb[f/2],shared?unorm[f/2]:srgb[f/2]);

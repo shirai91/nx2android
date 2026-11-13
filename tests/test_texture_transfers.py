@@ -49,6 +49,12 @@ class TextureTransfers(unittest.TestCase):
     def test_resolve_uses_equal_image_formats(self):
         self.check_case('resolve')
 
+    def test_unsupported_resolve_formats_are_rejected(self):
+        self.check_case('resolve_invalid')
+
+    def test_clear_view_overrides_texture_encoding(self):
+        self.check_case('clear_view')
+
     def test_clear_encodes_rgb_once_and_preserves_alpha(self):
         self.check_case('clear')
 

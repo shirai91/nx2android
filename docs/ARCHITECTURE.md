@@ -39,8 +39,10 @@ storage key. Each image view keeps the texture's format and alpha mapping.
 Texture transfers use the logical texture format: equal-format copies preserve
 bytes, sRGB MSAA resolves use a matching-format temporary image before copying
 into shared backing, and blits use logical-format temporaries where needed.
-Those temporaries live until the submission completes. Full sRGB texture clears
-encode RGB before clearing UNORM backing; alpha remains linear.
+Those temporaries live until the submission completes. Full clears of shared
+backing use the format override when a view supplies one: sRGB clears encode RGB before
+clearing UNORM backing; alpha remains linear. Unsupported resolve format
+mismatches are diagnosed and skipped.
 
 The Vulkan pipeline cache is a writable driver product under `DM_ROOT`, separate
 from portable shader assets. Its envelope validates renderer ABI, device/driver
