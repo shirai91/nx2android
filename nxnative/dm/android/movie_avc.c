@@ -13,7 +13,7 @@
 #include <media/NdkMediaFormat.h>
 
 #define QMAX 16
-#define COLOR_YUV420_PLANAR 19   // MediaCodecInfo.CodecCapabilities: I420 (the software decoder's); every other format is read as semi-planar (21, Qualcomm's 0x7fa30c04 venus NV12)
+#define COLOR_YUV420_PLANAR 19   // I420; 21 and the existing Qualcomm Venus format are NV12
 struct mavc {
     uint8_t sps[512], pps[512]; int nsps, npps, dirty;
     AMediaCodec *mc; int eos_sent;
@@ -99,32 +99,44 @@ static int open_codec(mavc *a) {
 static void read_format(mavc *a) {
     AMediaFormat *f = AMediaCodec_getOutputFormat(a->mc); int32_t v;
     a->fw = AMediaFormat_getInt32(f, AMEDIAFORMAT_KEY_WIDTH, &v) ? v : 0; a->fh = AMediaFormat_getInt32(f, AMEDIAFORMAT_KEY_HEIGHT, &v) ? v : 0;
-    a->fstride = AMediaFormat_getInt32(f, AMEDIAFORMAT_KEY_STRIDE, &v) && v >= a->fw ? v : a->fw;
-    a->fslice = AMediaFormat_getInt32(f, AMEDIAFORMAT_KEY_SLICE_HEIGHT, &v) && v >= a->fh ? v : a->fh;
+    a->fstride = AMediaFormat_getInt32(f, AMEDIAFORMAT_KEY_STRIDE, &v) ? v : a->fw;
+    a->fslice = AMediaFormat_getInt32(f, AMEDIAFORMAT_KEY_SLICE_HEIGHT, &v) ? v : a->fh;
+    if (!a->fslice) a->fslice = a->fh; // donor: unspecified slice height
     a->fcolor = AMediaFormat_getInt32(f, AMEDIAFORMAT_KEY_COLOR_FORMAT, &v) ? v : 0;
     int32_t l, t, r, b;
-    if (AMediaFormat_getRect(f, AMEDIAFORMAT_KEY_DISPLAY_CROP, &l, &t, &r, &b) && r >= l && b >= t && r < a->fw && b < a->fh) { a->cl = l; a->ct = t; a->cr = r; a->cb = b; }
-    else { a->cl = a->ct = 0; a->cr = a->fw - 1; a->cb = a->fh - 1; }
+    if (AMediaFormat_getRect(f, AMEDIAFORMAT_KEY_DISPLAY_CROP, &l, &t, &r, &b)) { a->cl = l; a->ct = t; a->cr = r; a->cb = b; }
+    else { a->cl = a->ct = 0; a->cr = a->fw > 0 ? a->fw - 1 : -1; a->cb = a->fh > 0 ? a->fh - 1 : -1; }
     LOG("[movie] AVC: output %dx%d stride %d slice height %d colour format %#x crop %d,%d-%d,%d", a->fw, a->fh, a->fstride, a->fslice, a->fcolor, a->cl, a->ct, a->cr, a->cb);
     AMediaFormat_delete(f);
 }
 // one output buffer → a compact NV12 picture of the crop rectangle, queued in presentation order
 static void keep_picture(mavc *a, const uint8_t *src, size_t n, int64_t pts) {
-    int w = (a->cr - a->cl + 1) & ~1, h = (a->cb - a->ct + 1) & ~1, s = a->fstride;
-    size_t uvoff = (size_t)s * a->fslice;
-    int planar = a->fcolor == COLOR_YUV420_PLANAR;
-    size_t need = planar ? uvoff + uvoff / 2 : uvoff + (size_t)s * (a->fslice / 2);
-    if (w <= 0 || h <= 0 || n < need - (size_t)(s - a->fw)) { if (!a->red++) LOG("[RED] movie: AVC output buffer of %zu bytes is smaller than its %dx%d picture (stride %d, slice height %d)", n, a->fw, a->fh, s, a->fslice); return; }
-    uint8_t *o = malloc((size_t)w * h * 3 / 2); if (!o) die("movie: AVC picture allocation failed");
-    for (int r = 0; r < h; r++) memcpy(o + (size_t)r * w, src + (size_t)(a->ct + r) * s + a->cl, (size_t)w);
-    uint8_t *ouv = o + (size_t)w * h;
-    if (planar) {   // I420: U plane then V plane, half stride
-        const uint8_t *u = src + uvoff, *v = u + (size_t)(s / 2) * (a->fslice / 2);
-        for (int r = 0; r < h / 2; r++) {
-            const uint8_t *ur = u + (size_t)(a->ct / 2 + r) * (s / 2) + a->cl / 2, *vr = v + (size_t)(a->ct / 2 + r) * (s / 2) + a->cl / 2; uint8_t *d = ouv + (size_t)r * w;
-            for (int x = 0; x < w / 2; x++) { d[2 * x] = ur[x]; d[2 * x + 1] = vr[x]; }
-        }
-    } else for (int r = 0; r < h / 2; r++) memcpy(ouv + (size_t)r * w, src + uvoff + (size_t)(a->ct / 2 + r) * s + (a->cl & ~1), (size_t)w);
+    // Existing Android-parity copy_picture (nxnative 1f01e28c): validate
+    // the layout and last byte actually read before copying any planes.
+    int cw=a->fw, ch=a->fh, stride=a->fstride, slice=a->fslice;
+    int cf=a->fcolor;
+    if (cf == 0x7fa30c04) cf=21; // preserve nx2android's known Venus NV12 format
+    if (cf != 19 && cf != 21) {
+        if (!a->red++) LOG("[RED] movie: MediaCodec AVC output colour format %#x has no explicit I420 or NV12 layout",cf);
+        return;
+    }
+    int l=a->cl, t=a->ct, r=a->cr, b=a->cb;
+    if (cw <= 0 || ch <= 0 || stride < cw || slice < ch || stride > 32768 || slice > 32768 ||
+        l < 0 || t < 0 || r < l || b < t || r >= cw || b >= ch || ((l | t) & 1)) return;
+    int w = r-l+1, h = b-t+1, uvw = (w+1)/2, uvh = (h+1)/2;
+    size_t ysize = (size_t)stride*slice, cs = cf == 19 ? (stride+1)/2 : stride;
+    size_t cbase = ysize + (size_t)(t/2)*cs + (cf == 19 ? l/2 : l);
+    size_t vbase = cf == 19 ? cbase + cs*((slice+1)/2) : cbase+1;
+    size_t step = cf == 19 ? 1 : 2;
+    if ((size_t)b * stride + r >= n || vbase + (uvh-1)*cs + (uvw-1)*step >= n) return;
+    uint8_t *o = malloc((size_t)w*h + (size_t)uvw*2*uvh);
+    if (!o) return;
+    for (int y = 0; y < h; y++) memcpy(o + (size_t)y*w, src + (size_t)(t+y)*stride + l, w);
+    uint8_t *uv = o + (size_t)w*h;
+    for (int y = 0; y < uvh; y++) for (int x = 0; x < uvw; x++) {
+        size_t at = (size_t)y*cs + x*step;
+        *uv++ = src[cbase+at]; *uv++ = src[vbase+at];
+    }
     if (a->nq == QMAX) { if (!a->red++) LOG("[RED] movie: AVC picture queue full, dropping the oldest picture"); free(a->q[0].nv12); memmove(a->q, a->q + 1, --a->nq * sizeof a->q[0]); }
     for (int m = 0; m < a->npmap; m++) if (a->pmap[m].c == pts) { pts = a->pmap[m].g; a->pmap[m] = a->pmap[--a->npmap]; break; }   // the game's own timestamp
     int k = a->nq; while (!a->synth && k > 0 && a->q[k - 1].pts > pts) { a->q[k] = a->q[k - 1]; k--; }
@@ -139,7 +151,14 @@ static int drain(mavc *a, int64_t wait_us) {
         if (i < 0) return 0;   // AMEDIACODEC_INFO_TRY_AGAIN_LATER
         if (!a->fw) read_format(a);
         size_t n = 0; uint8_t *b = AMediaCodec_getOutputBuffer(a->mc, (size_t)i, &n);
-        if (b && bi.size > 0) { keep_picture(a, b + bi.offset, (size_t)bi.size, bi.presentationTimeUs); a->nout++; }
+        if (b && bi.size > 0 && !(bi.flags & AMEDIACODEC_BUFFER_FLAG_CODEC_CONFIG)) {
+            // Existing movie_mediacodec.h bounds: form the source pointer only
+            // after MediaCodec's offset and length fit its actual output buffer.
+            if (bi.offset >= 0 && (size_t)bi.offset <= n && (size_t)bi.size <= n - bi.offset)
+                keep_picture(a, b + bi.offset, (size_t)bi.size, bi.presentationTimeUs);
+            else if (!a->red++) LOG("[RED] movie: AVC output offset/size exceeds its codec buffer");
+            a->nout++;
+        }
         AMediaCodec_releaseOutputBuffer(a->mc, (size_t)i, false);
         if (bi.flags & AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM) return 1;
         wait_us = 0;
@@ -193,7 +212,7 @@ static void nv12_rgba(const uint8_t *y, const uint8_t *uv, int pw, int ph, uint8
     int rv = hd ? 459 : 409, gu = hd ? 55 : 100, gv = hd ? 136 : 208, bu = hd ? 541 : 516;   // ×256, 8-bit video range (luma × 298)
     if (cw < w || chh < h) for (size_t i = 0; i < (size_t)w * h; i++) ((uint32_t *)dst)[i] = 0xff000000u;
     for (int r = 0; r < chh; r++) {
-        const uint8_t *yr = y + (size_t)r * pw, *cr = uv + (size_t)(r / 2) * pw; uint8_t *o = dst + (size_t)r * w * 4;
+        const uint8_t *yr = y + (size_t)r * pw, *cr = uv + (size_t)(r / 2) * ((pw + 1) & ~1); uint8_t *o = dst + (size_t)r * w * 4;
         for (int x = 0; x < cw; x++) {
             int c = 298 * (yr[x] - 16), u = cr[x & ~1] - 128, v = cr[(x & ~1) + 1] - 128;
             int R = (c + rv * v + 128) >> 8, G = (c - gu * u - gv * v + 128) >> 8, B = (c + bu * u + 128) >> 8;
@@ -213,7 +232,9 @@ int mavc_take(mavc *a, int flush, uint8_t *dst, int w, int h, int64_t *pts_us) {
         int cw = pw < w ? pw : w, chh = ph < h ? ph : h;
         if (cw < w || chh < h) { memset(dst, 16, (size_t)w * h); memset(dst + (size_t)w * h, 128, (size_t)w * h / 2); }
         for (int r = 0; r < chh; r++) memcpy(dst + (size_t)r * w, pic + (size_t)r * pw, (size_t)cw);
-        for (int r = 0; r < chh / 2 && r < h / 2; r++) memcpy(dst + (size_t)w * h + (size_t)r * w, uv + (size_t)r * pw, (size_t)cw);
+        int cs = (pw + 1) & ~1, copied = (cw + 1) & ~1;
+        if (copied > w) copied = w;
+        for (int r = 0; r < (chh + 1) / 2 && r < h / 2; r++) memcpy(dst + (size_t)w * h + (size_t)r * w, uv + (size_t)r * cs, (size_t)copied);
     }
     free(pic);
     return 1;
