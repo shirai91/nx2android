@@ -60,6 +60,8 @@ Copied pools can opt into host-cached memory with `DM_VK_POOL_CACHED=1` (off by 
 
 Vulkan indirect compute dispatches copy their three GPU-written group counts into submission scratch memory in command order. A shader that reads c0 gets a private driver segment, outside the immutable segment cache, with the counts at `c0 + 0x200`; the dispatch reads that same record. Without c0, only a 12-byte record is allocated. Argument records may cross chunks of the same pool, with each chunk's buffer offset preserved. All words are validated before any argument copy, and a transfer barrier makes the record visible to both uniform reads and indirect dispatch. Scratch storage is retained until the submission completes. Direct compute dispatches and other driver segments retain their existing content caching.
 
+The Vulkan backend supplies disabled generic vertex attributes as Maxwell's `(0, 0, 0, 1)`, keeping the float register bit pattern when a shader reads integers. This has separate storage from zero-filled unbound uniform buffers. Enabled attributes with an invalid format or missing buffer retain the conservative zero fallback. The distinction matters when a depth pre-pass uses an absent attribute's W as a displacement weight: a zero weight can disagree with the material pass, fail depth equality and retain colour from older frames.
+
 ## Game profiles on Android
 
 A profile is offered for Android when it has an `android.tsv`; the profiles without one (52 of the 54 today, upstream's iOS games) show as "ios only": an experimental port can still try them. `android.tsv` holds, one `key<TAB>value` row each:
