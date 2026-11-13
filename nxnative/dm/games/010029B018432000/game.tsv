@@ -1,0 +1,24 @@
+# Ghost Trick: Phantom Detective: Switch 1 profile, Android execution not yet tested.
+# Build and shader metadata reference: seedds/nxnative 3084f7a205bcb3a9cb74cf26180dabcc01c7abca.
+# See ANDROID.md for the source audit, exact version and required validation.
+title_id	010029B018432000
+program_id	010029B018432000
+name	Ghost Trick: Phantom Detective
+ipa	GhostTrickPhantomDetective.ipa
+app_category	public.app-category.games
+build	v0	1.0.0	main=9f52de8549d91cfe840e6d1094f5e3b4	subsdk0=7e9f31f59e001cf5d9b546ffb233f480	sdk=2bf3519216f5b9d3e8ce26863c2e98b6
+package	v0
+shader_versions	v0
+modules	main subsdk0 sdk
+romfs_marker	re_chunk_000.pak
+zip_store	.pak:.metallib
+mem_reserve	0x100000000
+mem_alias	0x10000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+sys_resource	0x0
+tex_flush_upload	on
+tex_dirty_upload	on
+shader_groups	/natives/=natives
+shader_note	Ghost Trick: Phantom Detective shaders
+mem_used	0x87bc000
