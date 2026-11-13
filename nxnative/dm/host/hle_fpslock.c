@@ -33,6 +33,10 @@ static const struct { const char *build, *what; uint64_t ptr_off; uint32_t field
     // (main+0x2ca6524, main+0x1026e54; RegisterConsoleVariable, then AsVariableFloat / AsVariableInt stored at +0x10)
     { "9fe60a212cff9b9a3656ab63d4f882e5", "Unreal t.MaxFPS", 0x7c738d0 + 0x10, 0, FPS_F32, 2 },
     { "9fe60a212cff9b9a3656ab63d4f882e5", "Unreal rhi.SyncInterval", 0x7b32690 + 0x10, 0, VSYNCS_I32, 2 },
+    // Octopath Traveler 0 1.0.5 (Chinese release): the same engine and the same console variables as the rows above, in its own main build (the engine's data 0x3000 bytes higher): t.MaxFPS
+    // (main+0x7c768d0) and rhi.SyncInterval (main+0x7b35690). Found from the names' references (UTF-16) in the same static constructors (main+0x2ca6524, main+0x1026e54)
+    { "e3e401c28d9fd3b1f9e033bb7bb31d42", "Unreal t.MaxFPS", 0x7c768d0 + 0x10, 0, FPS_F32, 2 },
+    { "e3e401c28d9fd3b1f9e033bb7bb31d42", "Unreal rhi.SyncInterval", 0x7b35690 + 0x10, 0, VSYNCS_I32, 2 },
     // DRAGON QUEST XI S 1.0.4: Unreal Engine 4.18's t.MaxFPS and nvn.SyncInterval (the Switch RHI's present interval), the same TAutoConsoleVariable layout. The game's config sets
     // FrameRateLimit=30 (DefaultGameUserSettings.ini) and nvn.SyncInterval=2 (JackGame/Config/Switch/SwitchEngine.ini). Found from the names' references (UTF-32, as the engine's TCHAR on
     // the Switch) in the static constructors: main+0x1e7f98 (TAutoConsoleVariable<float> constructor main+0x6ee0e0, AsVariableFloat stored at +0x10) and main+0x21c00c

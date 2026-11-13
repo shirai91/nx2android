@@ -1,0 +1,12 @@
+# OCTOPATH TRAVELER 0 (Chinese release) on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Square Enix, Unreal Engine 5 on SDK 19.0.0, update 1.0.5; 10,324 shaders, all translated. The profile is the one here as it was, no core change needed.
+# Tested 2026-11-13 on the Xiaomi 23117RK66C (Android 16, Adreno) with the system's own driver: town gameplay at 60 fps for about 14 minutes (42,000 frames), frame work
+# p50 13-15 / p90 18 / p95 20 ms; the host's governor steps down to 40 fps in the heavier scenes (82 frames late of 4,864), no crash, no audio underrun, the game's own
+# Simplified Chinese text draws with the shared font. About 1.9 GB resident. The one red line is the window surface's format (its picture is lighter).
+status	playable
+tested	v327680 Xiaomi 23117RK66C (Android 16)
+package	org.nx2a.t01001300232f4000
+orientation	landscape
+requires	bcn
+# the release's own languages are Korean, Traditional Chinese and Simplified Chinese; the port picks the first one (Korean), this row asks for the Simplified Chinese
+env	DM_LANG=zh-Hans
