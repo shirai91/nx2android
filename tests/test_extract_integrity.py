@@ -68,8 +68,26 @@ class ExtractIntegrity(unittest.TestCase):
                 self.assertNotIn('UNHANDLED', r.stderr)
                 self.assertFalse(out.exists())
 
+    def test_nca_header_failure_names_input_and_entry_even_with_allow_damaged(self):
+        for mode in ('nca-bad', 'nca-allow'):
+            with self.subTest(mode=mode):
+                r, out = self.run_case(mode)
+                self.assertEqual(r.returncode, 4, r.stderr)
+                self.assertIn('[RED]', r.stderr)
+                self.assertIn(str(self.work / (mode + " container's sample.nsp")), r.stderr)
+                self.assertIn('header-entry.nca', r.stderr)
+                self.assertIn('Unable to decrypt NCA header.', r.stderr)
+                self.assertNotIn('UNHANDLED', r.stderr)
+                self.assertNotIn('filesystem integrity check', r.stderr)
+                self.assertFalse(out.exists())
+
+    def test_readable_nca_header_is_still_opened(self):
+        r, _ = self.run_case('nca-readable')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stderr, '')
+
     def test_unrelated_exceptions_are_not_reclassified(self):
-        for mode, kind in (('io', 'System.IO.IOException'), ('other-result', 'HorizonResultException'),
+        for mode, kind in (('invalid-data', 'System.IO.InvalidDataException'), ('io', 'System.IO.IOException'), ('other-result', 'HorizonResultException'),
                            ('other-module', 'HorizonResultException'), ('outside-range', 'HorizonResultException')):
             with self.subTest(mode=mode):
                 r, _ = self.run_case(mode)
@@ -85,6 +103,15 @@ class ExtractIntegrity(unittest.TestCase):
         r, _ = self.run_case('usage')
         self.assertEqual(r.returncode, 2, r.stderr)
         self.assertIn('usage: nx_extract', r.stderr)
+
+    def test_card_prefix_and_nsp_header_detection(self):
+        for mode in ('card', 'card-prefix', 'card-nsp', 'card-small-nsp'):
+            with self.subTest(mode=mode):
+                r, _ = self.run_case(mode)
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        r, _ = self.run_case('card-short')
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertIn('2002-4644', r.stderr)   # an invalid PFS0, never an out-of-range optional card-header read
 
     def test_file_data_integrity_keeps_existing_allow_damaged_behavior(self):
         r, out = self.run_case('copy-bad')

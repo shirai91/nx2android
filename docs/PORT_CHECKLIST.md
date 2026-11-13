@@ -6,7 +6,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 
 "Profile here": `nxnative/dm/games/<title ID>/` has the game's profile from nxnative. "Upstream profile": only seedds/nxnative has one, to read as a reference or starter, not to pull. "60 fps with X" is upstream's note: they run that update at 60 fps (30 on the Switch).
 
-**44 / 103 ported**
+**51 / 106 ported**
 
 - [x] 13 Sentinels: Aegis Rim · `01003FC01670C000`
 - [ ] Ace Attorney Investigations Collection · `010005501E68C000` · profile here
@@ -40,7 +40,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [x] FINAL FANTASY RESONANCE · `0100606026F12000`
 - [ ] FINAL FANTASY TACTICS - The Ivalice Chronicles · `010038B015560000` · profile here
 - [ ] FINAL FANTASY X/X-2 HD Remaster · `0100BC300CB48000` · upstream profile
-- [ ] Fire Emblem Engage · `0100A6301214E000` · profile here · 60 fps with 2.0.0
+- [x] Fire Emblem Engage · `0100A6301214E000`
 - [ ] Fire Emblem: Three Houses · `010055D009F78000` · profile here · 60 fps with 1.2.0
 - [x] FM24 Touch · `01008B101B87A000`
 - [x] Football Manager 26 Touch · `0100D4A023450000`
@@ -56,6 +56,8 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [ ] Mario + Rabbids Sparks of Hope · `0100317013770000` · upstream profile
 - [ ] Mario Kart 8 Deluxe · `0100152000022000` · profile here · no Mii heads
 - [x] Mario vs. Donkey Kong · `0100B99019412000`
+- [x] Mega Man Battle Network Legacy Collection Vol. 1 · `010038E016264000` · work in progress: tested to Battle Network 1's opening
+- [x] Mega Man Battle Network Legacy Collection Vol. 2 · `0100734016266000` · work in progress: tested to Battle Network 4's opening
 - [x] Metroid Dread · `010093801237C000`
 - [ ] Monster Hunter Rise · `0100B04011742000` · profile here · 60 fps with 16.0.2
 - [ ] Monster Train 2 · `010051701FB46000` · profile here · 60 fps with 1.1.1 · only the first Monster Train is on mobile
@@ -71,12 +73,13 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [ ] Persona 5 Royal · `01005CA01580E000` · upstream profile
 - [x] Picross S+ · `0100D7B01AE58000` · update 1.0.1; RP6 / PurpleVK only; Pixel rendering issues
 - [ ] Pikmin 4 · `0100B7C00933A000` · upstream profile
-- [ ] Pokémon Brilliant Diamond · `0100000011D90000` · upstream profile · 60 fps with 1.3.0
+- [x] Pokémon Brilliant Diamond · `0100000011D90000`
 - [x] Pokémon Legends: Arceus · `01001F5010DFA000`
 - [x] Pokémon Legends: Z-A · `0100F43008C44000`
+- [x] Pokémon Mystery Dungeon Rescue Team DX · `01003D200BAA2000`
 - [x] Pokémon Scarlet · `0100A3D008C5C000`
-- [ ] Pokémon Shield · `01008DB008C2C000` · upstream profile
-- [ ] Pokémon Sword · `0100ABF008968000` · upstream profile
+- [x] Pokémon Shield · `01008DB008C2C000`
+- [x] Pokémon Sword · `0100ABF008968000`
 - [ ] Portal · `01007BB017812000` · upstream profile · Android only on NVIDIA Shield TV
 - [ ] Return of the Obra Dinn · `010032E00E6E2000` · upstream profile
 - [ ] Rhythm Heaven Groove · `0100D9F01D474000` · profile here

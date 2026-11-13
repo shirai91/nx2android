@@ -1,0 +1,12 @@
+# Pokémon Mystery Dungeon Rescue Team DX 1.0.2 (update v131072): Unity 2018.3.12f1 IL2CPP with FMOD on SDK 7.4.0, NVN; subsdk0 is NintendoSDK_movie. 9,837 shaders, all translated.
+# Before this profile an experimental port showed a black screen: Unity's render command stream lost a wake-up within seconds of every launch (patches.py; game.tsv's header).
+# Tested 2026-11-12 on the AYN Odin 2 (Snapdragon 8 Gen 2, Adreno 740) with a Turnip driver (Mesa 26.0, Vulkan 1.4.335; porter port --vulkan-driver vulkan.ad07xx.so),
+# driven with DM_CTL: language choice, title, a new game (the personality quiz, the partner choice, both nicknames on the game's own keyboard), the opening cutscenes,
+# Tiny Woods B1F (walking, the move tutorial, the game's menu), the dungeon save and Resume from Dungeon after a restart, the pause menu. 60 fps (game.tsv present_interval
+# display), frame work about 3 ms; a 6-minute soak (devtools/soak.sh) in Tiny Woods kept one process, frame p50 16.67 / p95 17.2 ms, 0 [RED] lines, and about 0.5% single
+# frames of 19-28 ms (the game's own work: no new pipelines or texture uploads in them). 8 cold launches of 8 reached the game.
+# Not checked: the rest of the story, Pokémon Square's shops, rescue missions online, a controller by hand, the device's own Qualcomm driver.
+status	playable
+tested	1.0.2 AYN Odin 2 (Adreno 740, Turnip)
+package	org.nx2a.pokemonmysterydungeondx
+orientation	landscape

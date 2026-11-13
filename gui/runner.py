@@ -60,13 +60,31 @@ class Porter(QObject):
         else: os.killpg(self.p.processId(), signal.SIGKILL)
 
 
-def call_json(parent, args, done):
-    """A short porter command that prints one JSON document: done(obj or None, exit code)"""
+def call_json(parent, args, done, *, failed=None):
+    """One JSON document: done(obj or None, code); optionally failed(message, code) for process/output errors.
+
+    Valid JSON, including structured errors and unsupported inspect results (exit 2), always reaches done.
+    """
     p = _porter(parent, args)
-    def fin(code, _status):
+    completed = False
+    def finish(obj, code, error=None):
+        nonlocal completed
+        if completed: return
+        completed = True
+        try:
+            if error is not None and failed: failed(error, code)
+            else: done(obj, code)
+        finally: p.deleteLater()
+    def fin(code, status):
+        if completed: return
         out = bytes(p.readAllStandardOutput()).decode('utf-8', 'replace')
+        err = bytes(p.readAllStandardError()).decode('utf-8', 'replace').strip()
         try: obj = json.loads(out)
-        except ValueError: obj = None
-        done(obj, code); p.deleteLater()
-    p.finished.connect(fin); p.start()
+        except ValueError:
+            reason = 'porter crashed' if status == QProcess.CrashExit else f'porter exited with code {code}' if code else 'porter returned invalid or empty JSON'
+            finish(None, code, reason + (':\n' + err if err else '.'))
+        else: finish(obj, code)
+    def error(kind):
+        if kind == QProcess.FailedToStart: finish(None, -1, 'Could not start porter: ' + p.errorString())
+    p.errorOccurred.connect(error); p.finished.connect(fin); p.start()
     return p

@@ -1,0 +1,33 @@
+# kind: evidence  MEGAMAN BATTLE NETWORK LEGACY COLLECTION Vol.1 shaders (provisional profile) (GLSLC in RomFS + main) → control section + code area keys (dm/gfx/tools/shader_split.py)
+# column 5 records where each key first appears; this game has no PC version to pair with
+package	index	stage	dm_ctl_sha16	source
+ps_data.bin	0	pixel	f83d76223e66fdd0	/data/ps_bgs_rtc.bnsh#GLSLC@0x0
+ps_data.bin	1	pixel	129a390241ece067	/data/ps_bgs_rti.bnsh#GLSLC@0x0
+ps_data.bin	2	pixel	47e40b96842fe8c8	/data/ps_bypass.bnsh#GLSLC@0x0
+ps_data.bin	3	pixel	af241892311c10ea	/data/ps_cb.bnsh#GLSLC@0x0
+ps_data.bin	4	pixel	a9ba815b13ee4ee7	/data/ps_cb_ms.bnsh#GLSLC@0x0
+ps_data.bin	5	pixel	b73bb814ca2f3250	/data/ps_common.bnsh#GLSLC@0x0
+ps_data.bin	6	pixel	e111e228d27048e0	/data/ps_effect.bnsh#GLSLC@0x0
+ps_data.bin	7	pixel	a90c99a491ca3db3	/data/ps_fb.bnsh#GLSLC@0x0
+ps_data.bin	8	pixel	2f7d2037e3919540	/data/ps_fb_ms.bnsh#GLSLC@0x0
+ps_data.bin	9	pixel	32ef6b1fcd14aeaf	/data/ps_fxaa.bnsh#GLSLC@0x0
+ps_data.bin	10	pixel	52de1bebaaecc3e2	/data/ps_hq2x.bnsh#GLSLC@0x0
+ps_data.bin	11	pixel	ceb69a08686aa139	/data/ps_hq3x.bnsh#GLSLC@0x0
+ps_data.bin	12	pixel	7ab55b5957941d4c	/data/ps_hq4x.bnsh#GLSLC@0x0
+ps_data.bin	13	pixel	b7d79ba07491b41c	/data/ps_ms.bnsh#GLSLC@0x0
+ps_data.bin	14	pixel	ae98cbbea6179b67	/data/ps_obj_rtc.bnsh#GLSLC@0x0
+ps_data.bin	15	pixel	5399888238640549	/data/ps_obj_rti.bnsh#GLSLC@0x0
+ps_data.bin	16	pixel	f526a37865a040e2	/data/ps_panel.bnsh#GLSLC@0x0
+ps_data.bin	17	pixel	e3126460989d8a35	/data/ps_rim_blend.bnsh#GLSLC@0x0
+ps_data.bin	18	pixel	b147182c1e470841	/data/ps_rim_blur.bnsh#GLSLC@0x0
+ps_data.bin	19	pixel	9bb4321ac38e08e3	/data/ps_rim_mask.bnsh#GLSLC@0x0
+ps_data.bin	20	pixel	e4191016d69d6d35	/data/ps_skin.bnsh#GLSLC@0x0
+ps_data.bin	21	pixel	7593c4e5cf3b2b3e	/data/ps_skin_ol.bnsh#GLSLC@0x0
+ps_data.bin	22	pixel	0766ebd0f4914c3e	/data/ps_skin_z.bnsh#GLSLC@0x0
+ps_data.bin	23	pixel	d138c9301167a628	/data/ps_test.bnsh#GLSLC@0x0
+vs_data.bin	0	vertex	1227ee4bd025ba9f	/data/vs_common.bnsh#GLSLC@0x0
+vs_data.bin	1	vertex	bcf76be08ce14cf8	/data/vs_effect.bnsh#GLSLC@0x0
+vs_data.bin	2	vertex	5916d3949a0fcfbd	/data/vs_panel.bnsh#GLSLC@0x0
+vs_data.bin	3	vertex	c511e7409844b161	/data/vs_quad.bnsh#GLSLC@0x0
+vs_data.bin	4	vertex	a012f73db6804dda	/data/vs_skin.bnsh#GLSLC@0x0
+vs_data.bin	5	vertex	4b36469763a3a376	/data/vs_skin_uv.bnsh#GLSLC@0x0

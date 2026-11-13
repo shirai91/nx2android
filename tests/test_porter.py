@@ -416,7 +416,17 @@ class Dumps(unittest.TestCase):   # porter/dumps.py: NSZ / XCZ → NSP; an NCZ m
         secure = _hfs0([(self.name + '.ncz', self.block), ('0100000000aaa0000000000000000000.tik', b't' * 0x2c0)])
         root = _hfs0([('update', _hfs0([])), ('secure', secure)])
         x = bytearray(0x200); x[0x100:0x104] = b'HEAD'; x[0x130:0x138] = struct.pack('<Q', 0x200)
-        (self.d / 'g.xcz').write_bytes(bytes(x) + root); self.check(self.d / 'g.xcz')
+        for key_area in (False, True):   # identification accepts both card layouts; decompression must read the same secure partition
+            with self.subTest(key_area=key_area):
+                src = self.d / 'g.xcz'; src.write_bytes(bytes(0x1000 if key_area else 0) + bytes(x) + root)
+                app, fam = pipeline.nsp.scan_nsps(self.d, ('xcz',))
+                self.assertEqual(app, 0x0100000000AAA000); self.assertEqual(fam['base'], src)
+                self.check(src)
+
+    def test_xcz_without_card_header_is_rejected(self):
+        src = self.d / 'bad.xcz'; src.write_bytes(bytes(0x2000))
+        with self.assertRaisesRegex(pipeline.BuildError, 'no card header'): self.dumps.decompress(src, self.d / 'out.nsp')
+        self.assertFalse((self.d / 'out.nsp').exists()); self.assertFalse((self.d / 'out.nsp.partial').exists())
 
     def test_damage_is_found(self):   # a changed byte: a zstd error, or an NCA whose SHA-256 is not its name; either way a BuildError and no NSP
         for ncz, at in ((self.solid, 0x4000 + 16 + 0x80 + 40), (self.block, -1), (self.block, 0x4000 + 16 + 0x80 + 24 + 100)):

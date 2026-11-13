@@ -74,6 +74,8 @@ __attribute__((weak)) int dm_save_note(char *out, int cap) { if (cap > 0) out[0]
 __attribute__((weak)) int dm_save_rows(ov_srow rows[OVM_ROWS]) { (void)rows; return 0; }
 __attribute__((weak)) int dm_overlay_custom(int layout, int ctl, float *x, float *y, float *s) { (void)layout; (void)ctl; (void)x; (void)y; *s = 1; return 0; }
 __attribute__((weak)) int dm_overlay_custom_ver(void) { return 0; }
+__attribute__((weak)) int dm_overlay_hidden(int layout, int ctl) { (void)layout; (void)ctl; return 0; }
+__attribute__((weak)) int dm_overlay_off(int layout, int ctl) { (void)layout; (void)ctl; return 0; }
 __attribute__((weak)) float dm_overlay_opacity(void) { return 0.6f; }
 __attribute__((weak)) int dm_overlay_layout(void) { return 0; }
 __attribute__((weak)) int dm_text_entry(char *title, int tcap, char *text, int xcap, int *sel, int *shift) { (void)title; (void)tcap; (void)text; (void)xcap; (void)sel; (void)shift; return 0; }
@@ -446,15 +448,18 @@ static const char *ov_ctl_name(const ov_ctl *c) {
 static void ov_edit_panel(const ov_canvas *cv, int st, float W, float H) {
     float tb[4], pr[4]; ov_ed_rects_for(W, H, (float)cv->w, (float)cv->h, tb, pr);
     int held = (st >> 4 & 15) - 1, sel = (st >> 8 & 255) - 1;
-    static const char *const words[OVE_ALL] = {"-", "+", "Reset", "Cancel", "Save", "Snap to grid: Off", "Discard", "Keep editing"};
+    static const char *const words[OVE_ALL] = {"-", "+", "Reset", "Cancel", "Save", "Snap to grid: Off", "Hide", "Discard", "Keep editing"};
     cv_rrect(cv, tb[0], tb[1], tb[0] + tb[2], tb[1] + tb[3], tb[3] * 0.14f, C_BG);
-    char hint[96];
-    if (sel >= 0 && sel < OV_N) snprintf(hint, sizeof hint, "%s: drag, pinch, - +", ov_ctl_name(&OV_CTLS[sel]));   // (short: 2x-scale letters on a phone)
+    char hint[96]; int hid = (st & OVE_SEL_HIDDEN) != 0, can_hide = sel >= 0 && sel < OV_N && OV_CTLS[sel].kind != OV_MENU;
+    if (sel >= 0 && sel < OV_N && hid) snprintf(hint, sizeof hint, "%s: hidden, Show", ov_ctl_name(&OV_CTLS[sel]));
+    else if (sel >= 0 && sel < OV_N) snprintf(hint, sizeof hint, "%s: drag, pinch, - +", ov_ctl_name(&OV_CTLS[sel]));   // (short: 2x-scale letters on a phone)
     else snprintf(hint, sizeof hint, "Drag to move, pinch to resize");
     int hs = (int)fmaxf(1, roundf(tb[3] * 0.11f / PF_CAP)); while (hs > 1 && cv_text_w(hint, hs) > tb[2] * 0.94f) hs--;
     cv_text(cv, tb[0] + (tb[2] - cv_text_w(hint, hs)) / 2, tb[1] + tb[3] * 0.14f, hint, hs, sel >= 0 ? C_WHITE : C_DIM);
     for (int i = 0; i < OVE_N; i++) { float b[4]; ov_ed_button(i, tb, b); int grid = i == OVE_GRID && (st & OVE_GRID_ON);
-        cv_button(cv, b, grid ? "Snap to grid: On" : words[i], i == OVE_SAVE || grid, i == held); }
+        if (i == OVE_HIDE && !can_hide) { cv_rrect(cv, b[0], b[1], b[0] + b[2], b[1] + b[3], b[3] * 0.3f, C_OFF); int ws = (int)fmaxf(1, roundf(b[3] * 0.45f / 7));
+            while (ws > 1 && cv_text_w(words[i], ws) > b[2] * 0.9f) ws--; cv_text(cv, b[0] + (b[2] - cv_text_w(words[i], ws)) / 2, b[1] + b[3] / 2, words[i], ws, C_DIM); continue; }   // nothing to hide
+        cv_button(cv, b, i == OVE_HIDE && hid ? "Show" : grid ? "Snap to grid: On" : words[i], i == OVE_SAVE || grid || (i == OVE_HIDE && hid), i == held); }
     if (!(st & 1)) return;
     cv_rrect(cv, pr[0], pr[1], pr[0] + pr[2], pr[1] + pr[3], pr[3] * 0.10f, C_BG);
     const char *q = "Discard your changes?"; int qs = (int)fmaxf(1, roundf(pr[3] * 0.13f / PF_CAP)); while (qs > 1 && cv_text_w(q, qs) > pr[2] * 0.9f) qs--;
@@ -519,7 +524,7 @@ static void ov_raster(uint8_t *px, uint32_t w, uint32_t h, uint32_t sh) {
     int ts = h > 600 ? 3 : 2;
     for (int i = 0; i < OV_N && g_tt[g_ov.lay].ready != 1; i++) {   // (with a theme the controls are its sprites: the static layer stays empty)
         const ov_ctl *c = &OV_CTLS[i]; float b[4]; ov_box(c, (float)w, (float)h, b);
-        if (c->kind == OV_MENU) continue;   // a sprite only
+        if (c->kind == OV_MENU || ov_off(c)) continue;   // a sprite only; hidden by the player (the editor's open and close rasterize again)
         if (c->kind == OV_DPAD) {
             for (int k = 0; k < 4; k++) { float ox, oy, dr; ov_dpad_dir(k, &ox, &oy, &dr); ov_circle(px, w, h, b[0] + ox * b[2], b[1] + oy * b[2], dr * b[2], 2.5f); }
             continue;
@@ -597,9 +602,9 @@ static void ov_fps(VkCommandBuffer cb, int64_t now) {   // one value a row: FPS,
 }
 static void ov_theme_draw(VkCommandBuffer cb, const ov_theme *t, float alpha) {   // (alpha: the player's opacity; each control at its own size factor)
     float W = (float)g_sext.width, H = (float)g_sext.height, k = H / t->dh * dm_overlay_scale(), b[4]; const ov_ctl *L = OV_LAYOUTS[t->layout];
-    for (int j = 0; j < t->n; j++) if (t->sp[j].state == OVT_DECOR) { const ov_ctl *c = &L[t->sp[j].ctl]; ov_box(c, W, H, b); ov_tsp(cb, t, &t->sp[j], b[0], b[1], k * ov_cscale(c), alpha); }
+    for (int j = 0; j < t->n; j++) if (t->sp[j].state == OVT_DECOR) { const ov_ctl *c = &L[t->sp[j].ctl]; if (ov_off(c)) continue; ov_box(c, W, H, b); ov_tsp(cb, t, &t->sp[j], b[0], b[1], k * ov_cscale(c), alpha); }
     for (int i = 0; i < OV_N; i++) {
-        const ov_ctl *c = &L[i]; if (c->kind == OV_MENU) continue;
+        const ov_ctl *c = &L[i]; if (c->kind == OV_MENU || ov_off(c)) continue;
         ov_box(c, W, H, b); float kc = k * ov_cscale(c); int stick = c->kind == OV_STICK_L || c->kind == OV_STICK_R, held = c->kind != OV_DPAD && dm_overlay_pressed(i, 0) != 0;
         float kx = 0, ky = 0; if (stick) { dm_overlay_knob(c->kind == OV_STICK_R, &kx, &ky); kx *= t->travel * kc; ky *= t->travel * kc; }
         for (int j = 0; j < t->n; j++) {
@@ -647,7 +652,7 @@ static void ov_render(VkCommandBuffer cb, int mode, int menu, int fps) {
     } else if ((menu < 0 || edit) && mode == 1) {   // without a theme: the outlines (their opacity: 60% looks as they always did), the knobs and the glows
         float fo = fminf(1, op / 0.6f);
         ov_rect(cb, 0, 0, W, H, 0, 0, (float)g_ov.w, (float)g_ov.h, fo);
-        for (int i = 0; i < OV_N; i++) { const ov_ctl *c = &OV_CTLS[i]; float b[4]; ov_box(c, W, H, b);
+        for (int i = 0; i < OV_N; i++) { const ov_ctl *c = &OV_CTLS[i]; float b[4]; ov_box(c, W, H, b); if (ov_off(c)) continue;
             if (c->kind == OV_STICK_L || c->kind == OV_STICK_R) {
                 float dx, dy; dm_overlay_knob(c->kind == OV_STICK_R, &dx, &dy); float travel = b[2] * (1 - OV_KNOB);   // the knob's edge reaches the ring
                 ov_sprite(cb, i, b[0] + dx * travel, b[1] + dy * travel, b[2] * OV_KNOB, fo);
@@ -670,7 +675,9 @@ static void ov_render(VkCommandBuffer cb, int mode, int menu, int fps) {
     if (tbound) vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_ov.layout, 0, 1, &g_ov.set, 0, NULL);   // the rest is the procedural texture's
     if (edit) {   // every control's box faintly, the chosen one in the accent colour; the toolbar; the prompt over a darker frame
         int sel = (menu >> 8 & 255) - 1; float t = fmaxf(2, H * 0.003f);
-        for (int i = 0; i < OV_N; i++) { float b[4]; ov_box(&OV_CTLS[i], W, H, b); if (i == sel) ov_frame(cb, SP_ACCENT, b, 2 * t, 1); else ov_frame(cb, SP_WHITE, b, t, 0.35f); }
+        for (int i = 0; i < OV_N; i++) { float b[4]; ov_box(&OV_CTLS[i], W, H, b);
+            if (dm_overlay_hidden(dm_overlay_layout(), i)) ov_block(cb, SP_BLACK, b[0] - b[2], b[1] - b[3], b[0] + b[2], b[1] + b[3], 0.60f);   // hidden in play: darkened here
+            if (i == sel) ov_frame(cb, SP_ACCENT, b, 2 * t, 1); else ov_frame(cb, SP_WHITE, b, t, 0.35f); }
         float tb[4], pr[4], a[4], p[4], y0 = (float)(g_ov.h + g_ov.sh); ov_ed_rects(tb, pr); ov_ed_rect(W, H, a); ov_ed_prompt_rect(W, H, p);
         ov_rect(cb, a[0], a[1], a[0] + a[2], a[1] + a[3], tb[0], y0 + tb[1], tb[0] + tb[2], y0 + tb[1] + tb[3], 1);
         if (menu & 1) {
@@ -1051,6 +1058,14 @@ uint64_t mtl_present(const tex_t *t, double period, const int crop[4]) {
     if (n % 1800 == 0) {   // every ~30 s: the pipeline cache to disk on a thread of its own (an Android app can be killed without any exit path)
         void vk_pipeline_cache_save(void); pthread_t th; pthread_attr_t a; pthread_attr_init(&a); pthread_attr_setdetachstate(&a, PTHREAD_CREATE_DETACHED);
         pthread_create(&th, &a, (void *(*)(void *))(void *)vk_pipeline_cache_save, NULL); pthread_attr_destroy(&a);
+    }
+    // A game that crops its layer through vi (hle_vi.c) and not through its NVN window: The Legend of Zelda: Link's Awakening in handheld mode keeps a 1920x1080
+    // window texture, draws into its 1280x720 corner and calls vi::SetLayerCrop 0,0 1280x720. Without the window's own crop the whole texture was shown and the picture
+    // sat at its own size in one corner of the screen. The vi crop stands in only when the window has none and it lies inside the image
+    int vcrop[4];
+    if (im && !(crop && crop[2] > 0 && crop[3] > 0)) {
+        void dm_vi_layer_crop(int c[4]); dm_vi_layer_crop(vcrop);
+        if (vcrop[2] > 0 && vcrop[3] > 0 && vcrop[0] + vcrop[2] <= (int)im->w && vcrop[1] + vcrop[3] <= (int)im->h) crop = vcrop;
     }
     return present_enqueue(im, crop, n, period);
 }

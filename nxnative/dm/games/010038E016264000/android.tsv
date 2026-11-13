@@ -1,0 +1,16 @@
+# Mega Man Battle Network Legacy Collection Vol. 1 on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# A GBA emulator collection (Battle Network 1, 2, 3 White and 3 Blue) with a NoesisGUI launcher, SDK 13.3.5, NVN, Wwise; subsdk1 is NintendoSDK_movie. Update v131072 (1.0.2).
+# Tested 2026-11-12 on an AYN Odin 2 (QCS8550, Adreno 740, Android 13) with Mesa Turnip (--vulkan-driver), driven with DM_CTL: the intro movies, the title, the main menu,
+# Battle Network 1 started from it, its title and opening (dialogue, walking Lan's room), the in-game options overlay, Return to the Title Screen and Quit back to the main menu.
+# 60 fps without a cap to remove: the collection presents every frame (interval 1); BN1's opening p99 16.67 ms, 0 dropped frames in 300, footprint 1.35 GB, no audio underrun.
+# What it needed from the core: the replay fenced NVNsync objects the game had already freed at the end of each intro movie (sync_replay_fence, nvn_obj.h), which corrupted the
+# heap's free list and crashed the next allocation (TlsHeapCache, from movie::NnExtractor::GetTrackFormat) about 15 s in, the crash an experimental port hit before this profile;
+# and nvnDeviceGetWindowOriginMode, whose unimplemented 0 (lower left) drew a mirrored copy of the launcher's menu over the top of the screen.
+# Known gaps: the launcher builds shaders in memory that are in no game file (whole GLSLC outputs in the heap, not from glslcCompile or any RomFS file; 13 seen up to BN1's
+# opening); the first run captures them (black menu backgrounds until then) and the next port with --install translates them (docs/ARCHITECTURE.md, shaders captured on the device).
+# Qualcomm's own driver on the Odin 2 (512.676, Vulkan 1.3.128) crashes in vkCmdBeginRenderPass on the first pass after the intro movie; with DM_VK_RP=0 (dynamic rendering) it
+# runs, at 30 fps (frame work p50 24 ms): port with Turnip. Not tested yet: an in-game save (the PET's Save), battles, Battle Network 2 and 3, the gallery.
+status	wip
+tested	v131072 (1.0.2) AYN Odin 2 (QCS8550, Adreno 740, Android 13, Turnip), 2026-11-12
+package	org.nx2a.mmbnlc1
+orientation	landscape
