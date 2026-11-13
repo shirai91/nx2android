@@ -129,6 +129,23 @@ class Matching(unittest.TestCase):
         missing = image({0x100: caller(0x100, 0x500)})
         with self.assertRaisesRegex(MatchError, '0 matching'): Image(missing, 0x2000).match(self.rule)
 
+    def test_ambiguous_alternative_refuses_the_whole_named_patch(self):
+        a, b, common = [MOV, RET], [MOV, NOP, RET], [NOP, RET]
+        for multi in (False, True):
+            with self.subTest(multi=multi):
+                def recipe(words):
+                    module = Image(image({0x100: words, 0x600: common}), 0x2000)
+                    cuts = [(0x100, 'e00317aa', 'e0124091', 'size')]
+                    if multi: cuts.append((0x600, '1f2003d5', '1f2003d5', 'bound'))
+                    return module.patch_recipe(cuts, 'region')
+                rules = [recipe(a), recipe(b)]
+                ambiguous = image({0x100: a, 0x200: a, 0x300: b, 0x600: common})
+                before, messages, outcomes = bytes(ambiguous), [], []
+                self.assertEqual(resolve(ambiguous, 0x2000, rules, messages.append, outcomes), [])
+                self.assertEqual(bytes(ambiguous), before)
+                self.assertIn('2 matching functions', messages[0])
+                self.assertEqual(outcomes[0][:2], ('region', None))
+
     def test_original_bytes_still_required(self):
         rule = copy.deepcopy(self.rule); rule['cuts'][0] = (8, '00000000', 'e0124091', 'heap')
         with self.assertRaisesRegex(MatchError, 'original bytes differ'): Image(self.original, 0x2000).match(rule)
