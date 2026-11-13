@@ -36,6 +36,9 @@ def shader(*parts):
         words.append(inst)
     return struct.pack('<%dQ' % len(words), *words)
 
+def keep(reg):                                                  # SUATOM.ADD on image slot 0: uses the register, so its read stays
+    return base('Suatom') | (0x48 << 36) | (3 << 33) | (reg << 20) | (7 << 16) | 255
+
 VARIANTS = ([dict(op=op, lod=lod, offset=offset) for op in ('sample', 'fetch')
              for lod in (0, 1) for offset in (0, 1)] +
             [dict(op='gradient', offset=offset) for offset in (0, 1)] +
@@ -99,16 +102,11 @@ def generate(work, translator):
         refl = env['refl_bin']([env['classify']('cs', b, res) for b in binds], b'', local)
         before.append((int(key, 16), 5, control, refl)); after.append((int(key, 16), 5, clean, refl))
         (work / (key + '.clean.spv')).write_bytes(clean)
-    # These translator failures predate capability cleanup. Keep them visible
-    # in the copied corpus, but never execute the invalid modules.
-    known_invalid = {5: 'Image Operand Offset', 7: 'Image Operand Offset', 23: 'Vector access is out of bounds'}
     for index, (control, cleaned) in enumerate(zip(before, after)):
+        # Raw control retains capability 25, but every operation must be valid.
         for label, entry in (('control', control), ('clean', cleaned)):
             result = subprocess.run(['spirv-val', '--target-env', 'vulkan1.1', '-'], input=entry[2], capture_output=True)
-            if index in known_invalid:
-                if result.returncode == 0 or known_invalid[index] not in result.stderr.decode():
-                    raise ValueError(f'baseline expectation changed: {label} variant {index}: {result.stderr!r}')
-            elif result.returncode:
+            if result.returncode:
                 raise ValueError(f'{label} variant {index}: {result.stderr.decode()}')
     dmsv.write(work / 'control.dmsv', before, level=0)
     dmsv.write(work / 'clean.dmsv', after, level=0)
