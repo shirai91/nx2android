@@ -28,6 +28,12 @@ void main(){uint h=fp_c3.values[8+uint(gl_FragCoord.x)].x;color=textureLod(sampl
     data=out.read_bytes();env=pool_exporter();bindings,_,_=env['spirv_bindings'](data)
     data,bindings=env['lower_resource_pools'](data,[env['classify']('vs' if stage==0 else 'ps',b,{}) for b in bindings])
     entries.append((key,stage,data,env['refl_bin'](bindings,b'',(0,0,0))))
+# Internal map records are never an exported ABI; exercise loader rejection.
+key,stage,data,reflection=entries[0]
+bad_map=struct.pack('<BBBBHHhBBii',20,1,255,0,90,1,95,0,0,0,0)
+entries.append((0xfeed6020,stage,data,struct.pack('<5I',1,0,8,1,1)+bad_map))
+header=list(struct.unpack_from('<5I',reflection));header[0]+=1
+entries.append((0xfeed6021,stage,data,struct.pack('<5I',*header)+reflection[20:]+bad_map))
 entries.sort(key=lambda entry:entry[0])
 offset=12+32*len(entries);table=[];data=[]
 for key,stage,spv,reflection in entries:

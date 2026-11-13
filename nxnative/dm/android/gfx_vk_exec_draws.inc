@@ -272,7 +272,14 @@ static int prepare_draw(int prim, int indexed) {
     k.dual = (k.blend_en & 1) && S.sh[1] && !k.raster_discard && (SRC1F(k.bl[0].src) || SRC1F(k.bl[0].dst) || SRC1F(k.bl[0].srca) || SRC1F(k.bl[0].dsta));
     #undef SRC1F
     k.clip_neg1 = !g_depth_zero;
-    // layout and pipeline    if(g_pool_gs_source && g_pool_gs_source->has_pools)S.sh[2]=vk_shader_gs_topo(g_pool_gs_source,(VkPrimitiveTopology)k.topo);
+    // layout and pipeline
+    if(g_pool_gs_source) {
+        vkshader_t *gs=vk_shader_gs_topo(g_pool_gs_source,(VkPrimitiveTopology)k.topo);
+        // Topology variants can have different optimized resource interfaces.
+        // Resolve from the bound original on every draw, including no-pool variants.
+        if(gs->has_pools || g_pool_gs_source->has_pools) {S.sh[2]=gs;k.pool_gs=k.has_pools=1;}
+        else S.sh[2]=g_pool_gs_source;
+    }
     for(int st=0;st<3;st++)if(S.sh[st] && !(st==1 && k.raster_discard)) {
         if(!prepare_resource_pools(st,&S.sh[st]))return 0;
         k.key[st]=S.sh[st]->key;k.pool_variant[st]=S.sh[st]->pool_variant;k.has_pools|=S.sh[st]->has_pools;
