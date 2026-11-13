@@ -36,7 +36,8 @@ class DrawTexture(unittest.TestCase):
 #include <stdlib.h>
 #include <string.h>
 #include "nvn_obj.h"
-_Static_assert(sizeof(NVNdrawTextureRegion)==16 && sizeof(p_draw_tex)==40,"DrawTexture ABI");
+_Static_assert(sizeof(NVNdrawTextureRegion)==16 && sizeof(p_draw_tex)==48,"DrawTexture ABI");
+static uint64_t mtl_samp_seq(void) { return 1234; }
 static p_draw_tex recorded;
 static unsigned calls;
 static void *record(NVNcommandBuffer *c,unsigned op,size_t n) {
@@ -55,7 +56,7 @@ int main(void) {
         assert(recorded.h==((tex?517:0) | (uint64_t)(samp?131:0)<<20));
         assert(!memcmp(&recorded.d,&dst,sizeof dst) && !memcmp(&recorded.s,&src,sizeof src));
     }
-    assert(calls==4);memset(&dst,0,sizeof dst);memset(&src,0,sizeof src);
+    assert(calls==4 && recorded.sseq==1234);memset(&dst,0,sizeof dst);memset(&src,0,sizeof src);
     assert(recorded.d.x0==7.25f && recorded.s.x1==3.75f);
     assert(OP_DRAW_TEX>OP_DRAW_TF);
 }
