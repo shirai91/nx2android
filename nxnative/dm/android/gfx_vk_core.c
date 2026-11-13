@@ -581,9 +581,10 @@ static int pool_fd(const vkpool_t *p, int *own) {
     *own = 1; return fds[0];
 }
 // A zero-copy pool's dma-buf mapped again over [mem, mem+len) in one piece per chunk, read-only (nvn_dirty_defrag: the mappings its protection split never merge), but for
-// the pools inside it, whose pages stay their own. 0 = done
+// the pools inside it, whose pages stay their own. 0 = done; 1 = nothing mapped (no pool is exactly [mem, mem+len): a pool not whole host pages, whose tracked range is
+// rounded up to them; or the first mmap failed); -1 = failed after mapping a part read-only (nvn_dirty_defrag makes the writable pages writable again)
 int vk_pool_remap_ro(void *mem, size_t len) {
-    int rc = 0; uint64_t done = 0;
+    int rc = 0, mapped = 0; uint64_t done = 0;
     pthread_mutex_lock(&g_nest_mu);
     pthread_rwlock_rdlock(&g_pool_mu);
     for (int i = 0; i < g_npool && !rc; i++) {
@@ -597,7 +598,7 @@ int vk_pool_remap_ro(void *mem, size_t len) {
                 uint64_t ql = q->lo > a ? q->lo : a, qh = q->hi < p->hi ? q->hi : p->hi;
                 if (ql < lo) { lo = ql; hi = qh; } else if (ql == lo && qh > hi) hi = qh;
             }
-            if (lo > a) { void *at = (void *)(uintptr_t)a; rc = mmap(at, lo - a, PROT_READ, MAP_SHARED | MAP_FIXED, fd, (off_t)(a - p->lo + p->boff)) == at ? 0 : -1; }
+            if (lo > a) { void *at = (void *)(uintptr_t)a; rc = mmap(at, lo - a, PROT_READ, MAP_SHARED | MAP_FIXED, fd, (off_t)(a - p->lo + p->boff)) == at ? 0 : -1; mapped |= !rc; }
             a = hi;
         }
         if (own) close(fd);
@@ -605,7 +606,7 @@ int vk_pool_remap_ro(void *mem, size_t len) {
     }
     pthread_rwlock_unlock(&g_pool_mu);
     pthread_mutex_unlock(&g_nest_mu);
-    return !rc && done == len ? 0 : -1;
+    return !rc && done == len ? 0 : mapped ? -1 : 1;
 }
 // A pool that goes: its pages take the buffer's contents with them (the game may reuse the memory), as the pages of the pool they lie inside (see "Pools inside pools":
 // written into that pool's buffer first, then mapped from it, so the bytes are there at every moment) or else as anonymous memory. p has left the table
