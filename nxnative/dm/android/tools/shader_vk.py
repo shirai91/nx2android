@@ -348,15 +348,45 @@ def int_inputs(spv):
         if op == 65 and a[2] in inputs: chain[a[1]] = a[2]                     # OpAccessChain into an input
     for op, a in ins:
         if op == 61 and (a[2] in inputs or a[2] in chain): loads[a[1]] = a[2] if a[2] in inputs else chain[a[2]]   # OpLoad
+    # A shared address expression can keep the raw input in a Function temporary
+    # before several integer bitcasts. Follow identity copies through those cells;
+    # direct-use-only inference otherwise changes the input format after CSE.
+    origins = {v: {root} for v, root in loads.items()}
+    cells = {a[1]: set() for op, a in ins if op == OP_VARIABLE and a[2] == 7}
+    changed = True
+    while changed:
+        changed = False
+        for op, a in ins:
+            target, source = None, ()
+            if op == 62 and a[0] in cells: target, source = cells[a[0]], origins.get(a[1], ())  # OpStore
+            elif op == 61 and a[2] in cells: target, source = origins.setdefault(a[1], set()), cells[a[2]]
+            elif op == 83: target, source = origins.setdefault(a[1], set()), origins.get(a[2], ())  # OpCopyObject
+            elif op in (79, 80, 81, 82):  # shuffle, construct, extract and insert preserve component bits
+                operands = a[2:4] if op in (79, 82) else a[2:] if op == 80 else a[2:3]
+                target, source = origins.setdefault(a[1], set()), set().union(*(origins.get(x, ()) for x in operands))
+            if target is not None and not target.issuperset(source):
+                target.update(source); changed = True
+    in_function = False
     for op, a in ins:
-        if op in (5, 6, 61, 65, 71, 72): continue   # names, decorations, the loads and chains themselves
-        ops = a[2:] if op == 124 else a   # OpBitcast: result type, result, operand
+        if op == 54: in_function = True
+        if op == 56: in_function = False
+        if not in_function or op in (5, 6, 8, 59, 71, 72, 317): continue
+        # A cell whose pointer escapes the supported load/store path is unknown.
+        operands = a[:3] + a[4:] if op == 12 else a  # OpExtInst's instruction number is a literal, not an id.
+        for i, x in enumerate(operands):
+            if x in cells and not (op == 61 and i == 2 or op == 62 and i == 0): other.update(cells[x])
+        if op in (61, 65, 79, 80, 81, 82, 83): continue
+        if op == 62:
+            if a[0] not in cells: other.update(origins.get(a[1], ()))
+            continue
+        ops = a[2:] if op == 124 else a
         for x in ops:
-            if x not in loads: continue
-            if op == 124:
-                uses[loads[x]] += 1
-                if signed.get(a[0]): sint.add(loads[x])   # cast to a signed type: declared int, so a SINT format's fetch matches the input's numeric type
-            else: other.add(loads[x])
+            roots = origins.get(x, ())
+            if op == 124 and a[0] in signed:
+                for root in roots:
+                    uses[root] += 1
+                    if signed[a[0]]: sint.add(root)
+            else: other.update(roots)
     return {str(loc[v]): 'sint' if v in sint else 'uint' for v in uses if v not in other and v in loc}
 
 def main():

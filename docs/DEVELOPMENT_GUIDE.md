@@ -121,6 +121,15 @@ axis preservation, not game recognition or device behavior.
 
 ## Tests
 
+`test_shader_constant_buffer_address` executes the production SSA rule through
+a .NET 10 reflection harness. It checks wrapping, truncation, carry bounds, signed
+shifts, near matches, block-local sharing and idempotence across generated graphs.
+SDK, reference-pack and runtime prerequisites are checked before building; missing
+prerequisites skip rather than fail release runners. `test_shader_integer_input_flow`
+checks integer-input inference through identity temporaries, vector operations,
+mixed consumers and pointer escapes without invoking an external compiler.
+
+
 ```
 python -m unittest discover tests
 ```
