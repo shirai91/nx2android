@@ -36,7 +36,10 @@ class ShaderCache(unittest.TestCase):
         p.versions = ['v0']; p.dirs = {'v0': self.root / 'extracted'}
         p.g = pipeline.game.load('010043B013C5C000')
         p.env = dict(os.environ); p.derived = p.provisional = False; p.oodle_why = ''; p.aoc = []
-        p.o = pipeline.Options(self.root, jobs=1); p.tools = {'dotnet': sys.executable}
+        p.o = pipeline.Options(self.root, jobs=1); p.tools = {'dotnet': sys.executable, 'ndk': self.root / 'ndk'}
+        tag = {'darwin':'darwin-x86_64', 'win32':'windows-x86_64'}.get(sys.platform, 'linux-x86_64')
+        self.optimizer = p.tools['ndk'] / 'shader-tools' / tag / ('spirv-opt.exe' if os.name == 'nt' else 'spirv-opt')
+        self.optimizer.parent.mkdir(parents=True); self.optimizer.write_bytes(b'optimizer')
         self.dll = self.root / 'translator/dmsh_xlate.dll'; self.dll.parent.mkdir(); self.dll.write_bytes(b'translator')
         self.exports = self.builds = 0; self.partial = self.empty = False; self.during_export = None
         self.addCleanup(mock.patch.stopall)
@@ -53,6 +56,7 @@ class ShaderCache(unittest.TestCase):
             (out / 'dependency.dll').write_bytes(b'dependency')
             (out / 'dmsh_xlate.runtimeconfig.json').write_text('{}')
             return
+        self.last_export = argv
         self.exports += 1
         out = Path(argv[3])
         entries = [] if self.empty else [(1, 5, SPV, REFL)]
@@ -75,7 +79,7 @@ class ShaderCache(unittest.TestCase):
 
     def test_numeric_pass_sources_invalidate_export_receipt(self):
         tools = self.root / 'dm/android/tools'; tools.mkdir(parents=True)
-        names = ('spv_module.py', 'spv_builder.py', 'spv_half.py', 'spv_precise.py', 'spv_texture_offsets.py')
+        names = ('spv_module.py', 'spv_builder.py', 'spv_half.py', 'spv_precise.py', 'spv_texture_offsets.py', 'spv_warp.py', 'spv_warp_flow.py', 'spv_warp_masks.py', 'spv_warp_predicated.py')
         for name in names: (tools / name).write_text('initial ' + name)
         with mock.patch.object(pipeline, 'DM', self.root / 'dm'):
             self.export()
@@ -84,6 +88,14 @@ class ShaderCache(unittest.TestCase):
                     (tools / name).write_text('changed ' + name)
                     self.export()
                     self.assertEqual(self.exports, number)
+
+    def test_selected_ndk_optimizer_is_used_and_invalidates_receipt(self):
+        self.export()
+        self.assertIn('--spirv-opt', self.last_export)
+        self.assertEqual(Path(self.last_export[self.last_export.index('--spirv-opt') + 1]), self.optimizer)
+        self.optimizer.write_bytes(b'new optimizer')
+        self.export()
+        self.assertEqual(self.exports, 2)
 
     def test_unchanged_bundle_reused(self):
         self.export(); first = self.p.dmsv.read_bytes()
