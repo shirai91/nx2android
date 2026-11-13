@@ -1,0 +1,9 @@
+# BALL x PIT: 1.293 (v393216), SDK 20.5.19, NVN.
+# Source-audited only. No game build or device test; see ANDROID.md.
+status	experimental
+package	org.nx2a.t010086a022444000
+orientation	landscape
+requires	bcn
+setting	docked=1
+setting	overlay=1
+setting	rumble=1
