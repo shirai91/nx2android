@@ -918,14 +918,14 @@ static uint64_t g_f1_made, g_f1_binds, g_f1_fail;
 VkImageView vk_tbuf_as_2d(const tex_t *t) {
     const vkfmt_t *f = vk_fmt(t->d.format);
     uint32_t w, h, row;
-    if (!f || !f->bpb || f->bw != 1 || f->bh != 1 || f->compressed || f->depth || f->stencil || !t->mem || !nvn_tbuf_rows(t->d.width, f->bpb, 1, &w, &h, &row) ||
+    vkpool_t *pl = t->mem ? vk_pool_of((uint64_t)(uintptr_t)t->mem, 1) : NULL;   // an address in no pool has no serial to drop the image with, and vk_ubd_read has nothing to read there
+    if (!f || !f->bpb || f->bw != 1 || f->bh != 1 || f->compressed || f->depth || f->stencil || !t->mem || !pl || !nvn_tbuf_rows(t->d.width, f->bpb, 1, &w, &h, &row) ||
         w > V.props.limits.maxImageDimension2D || h > V.props.limits.maxImageDimension2D) {
-        if (g_f1_fail++ < 8) VKLOG("[RED] texture buffer (nvn format %#x, %u elements at %#llx) has no 2D-row form for a wrapped 1D fetch: the slot reads 0",
+        if (g_f1_fail++ < 8) VKLOG("[RED] texture buffer (nvn format %#x, %u elements at %#llx) has no 2D-row form for a wrapped 1D fetch (no pool holds it, or its format or size does not fit): the slot reads 0",
                                   t->d.format, t->d.width, (unsigned long long)(uintptr_t)t->mem);
         return VK_NULL_HANDLE;
     }
-    vkpool_t *pl = vk_pool_of((uint64_t)(uintptr_t)t->mem, 1);
-    tbkey k = {(uint64_t)(uintptr_t)t->mem, pl ? pl->serial : 0, (uint32_t)t->d.format, t->d.width};
+    tbkey k = {(uint64_t)(uintptr_t)t->mem, pl->serial, (uint32_t)t->d.format, t->d.width};
     pthread_mutex_lock(&g_f1_mu);
     f1ent *e = nvn_hm_get(&g_f1_cache, &k);
     pthread_mutex_unlock(&g_f1_mu);
@@ -964,7 +964,7 @@ VkImageView vk_tbuf_as_2d(const tex_t *t) {
         VkImageMemoryBarrier b = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL, 0, VK_ACCESS_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
                                   VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, e->img, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
         vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &b);
-        VkClearColorValue z = {{{0, 0, 0, 0}}}; VkImageSubresourceRange rg = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        VkClearColorValue z = {{0, 0, 0, 0}}; VkImageSubresourceRange rg = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
         vkCmdClearColorImage(cb, e->img, VK_IMAGE_LAYOUT_GENERAL, &z, 1, &rg);
     }
     if (full) { uint32_t rowsA = (uint32_t)(full / w); VkBufferImageCopy c = {so, 0, 0, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {w, rowsA, 1}}; vkCmdCopyBufferToImage(cb, sb, e->img, VK_IMAGE_LAYOUT_GENERAL, 1, &c); }
@@ -977,17 +977,15 @@ VkImageView vk_tbuf_as_2d(const tex_t *t) {
 }
 // its images when a pool goes (vk_tbuf_drop_pool's caller destroys the views over its buffer likewise)
 void vk_f1_drop_pool(uint64_t serial) {
-    for (int n = 64; n == 64;) {   // 64 keys a pass (nvn_hm_del rehashes); n < 64 means the scan saw every key
-        f1ent *es[64]; int nv = 0;
+    for (int n = 64; n == 64;) {   // 64 keys a pass; n < 64 means the scan saw every key. The keys are collected first and deleted after the scan, as vk_tbuf_drop_pool does: nvn_hm_del shifts later
+        tbkey ks[64]; f1ent *es[64]; int nv = 0; n = 0;   // entries of a probe chain back into the slot being scanned, which the scan would then step over
         pthread_mutex_lock(&g_f1_mu);
-        for (uint32_t i = 0; i < g_f1_cache.cap && nv < 64; i++) {
+        for (uint32_t i = 0; i < g_f1_cache.cap && n < 64; i++) {
             if (!g_f1_cache.vals[i]) continue;
-            tbkey k2; memcpy(&k2, g_f1_cache.keys + (size_t)i * g_f1_cache.klen, sizeof k2);
-            if (k2.pool != serial) continue;
-            f1ent *e2 = nvn_hm_del(&g_f1_cache, &k2);
-            if (e2) es[nv++] = e2;
+            memcpy(&ks[n], g_f1_cache.keys + (size_t)i * g_f1_cache.klen, sizeof ks[n]);
+            if (ks[n].pool == serial) n++;
         }
-        n = nv;
+        for (int j = 0; j < n; j++) { f1ent *e2 = nvn_hm_del(&g_f1_cache, &ks[j]); if (e2) es[nv++] = e2; }
         pthread_mutex_unlock(&g_f1_mu);
         for (int j = 0; j < nv; j++) { vk_defer_free_view(es[j]->view); vk_defer_free_image(es[j]->img, es[j]->mem); free(es[j]); }
     }
