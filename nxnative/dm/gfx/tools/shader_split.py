@@ -379,13 +379,14 @@ PG_STAGES = {b'VSO\0': 'vs', b'HSO\0': 'hs', b'DSO\0': 'ds', b'GSO\0': 'gs', b'P
 def pkz_entries(path):
     """A PlatinumGames PKZ archive (Bayonetta 3: 72 in the RomFS root, 14 GB): 'pkzl', u32 version 0x20000, u64 archive length, u32 file count, u32 entry table offset (0x20), u32 name table length,
     u32 alignment (0x1000); then one 0x20-byte entry per file {u32 name offset, u32 compression name offset (both into the name table right after the entries), u64 length, u64 offset,
-    u64 stored length}. The compression is named per entry: 'OodleKraken' (main+0xcbdf80 maps it to 0xc9 and reads it through Oodle's streaming decoder), 'ZStandard' (0x65) or 'None'.
+    u64 stored length}. ASTRAL CHAIN's version 0x10000 uses the same layout (82 archives, 8,556 ZStandard entries); its last header word is zero instead of the v2 alignment.
+    The compression is named per entry: 'OodleKraken' (main+0xcbdf80 maps it to 0xc9 and reads it through Oodle's streaming decoder), 'ZStandard' (0x65) or 'None'.
     → [(name, compression, offset, stored length, length)], or None when path is no PKZ"""
     with open(path, 'rb') as f:
         h = f.read(0x20)
         if h[:4] != PKZL: return None
         ver, _, n, eo, nl = struct.unpack_from('<IQIII', h, 4)
-        if ver != 0x20000: red(f'{path}: PKZ version {ver:#x}: only 0x20000 is known')
+        if ver not in (0x10000, 0x20000): red(f'{path}: PKZ version {ver:#x}: only 0x10000 and 0x20000 are known')
         f.seek(eo); t = f.read(0x20 * n + nl)
     nm = lambda o: t[0x20 * n + o:t.index(b'\0', 0x20 * n + o)].decode()
     return [(nm(a), nm(c), off, csz, usz) for a, c, usz, off, csz in struct.iter_unpack('<IIQQQ', t[:0x20 * n])]
