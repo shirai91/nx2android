@@ -61,6 +61,8 @@ Chinese or Korean text drawn as `???`: choose a TrueType font with those charact
 
 A game that reads system data from the console's firmware (`sysdata` in its profile; Mario Kart 8 Deluxe builds its Mii heads from MiiModel, title 0100000000000802) needs your console's own system content files, which the tool cannot ship. Copy them (`.nca`, for example NAND SYSTEM `Contents/registered` in DBI's MTP mode) to a folder on the PC and give it with `--firmware <folder>` (or `porter config firmware <folder>` once). Without it the host's empty stand-in is used.
 
+A game whose profile lists the shared font titles (`0100000000000811` and `0100000000000810`) needs the same `--firmware` folder for its text and button icons; without it the host uses Android's own font and generated icons, and a game that needs a glyph those lack can fail at start. `--shared-font <ttf>` still wins for the standard font.
+
 A game slowed by its draw calls in busy scenes: tick **Multithread replay** on the Port tab (`--mt-replay`). The game's Vulkan commands are then recorded on a thread of their own. It stays on until you port the game again without it.
 
 When **Show gamepad** is enabled, using a controller hides the on-screen controls. Touch the screen to bring them back. The draggable menu button stays available even with **Show gamepad** off.
