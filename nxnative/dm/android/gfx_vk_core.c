@@ -234,6 +234,8 @@ void vk_init(void) {
     vkGetPhysicalDeviceFeatures2(V.pd, &ff);
     // without timeline semaphores (Vulkan 1.1 drivers: the Adreno 618 / 619 of 2021, 512.530) each submission signals a fence of a ring instead (slots_init).
     // DM_VK_X_FENCES=1 (start-up): the fences on a device that has them; with DM_VK_X_BC_CPU=1 below, a device of today stands in for those drivers
+    // Fire Emblem: Three Houses sets DM_VK_X_FENCES=1 in its profile (android.tsv env): with Mesa's Turnip on the Odin 2 a submission that signals a timeline semaphore blocked in
+    // vkQueueSubmit for about a frame (13.9-17.5 ms; 60 fps fell to 40-45 with 100 of 300 frames dropped); with the fence ring it took 0.05 ms and 60 held (2 of 300 dropped)
     { const char *e = getenv("DM_VK_X_FENCES");
       V.has_timeline = (v12 ? f12.timelineSemaphore : featx(xf, nxf, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES)[0]) && !(e && atoi(e)); }
     if (!V.has_timeline) VKLOG("no timeline semaphores (Vulkan 1.2 or VK_KHR_timeline_semaphore): submissions signal fences");
@@ -701,6 +703,7 @@ static void pool_add_one(const void *mem, uint64_t size, uint64_t base, uint64_t
     pthread_rwlock_wrlock(&g_pool_mu);
     if (g_npool == MAXPOOL) { pthread_rwlock_unlock(&g_pool_mu); die("[vk] too many memory pools"); }
     { static uint64_t ser; p->serial = ++ser; }
+    if (inner) for (int j = 0; j < g_npool; j++) if (g_pool[j].base != base && g_pool[j].lo < q.hi && g_pool[j].hi > q.lo && g_pool[j].end - g_pool[j].base > end - base) g_pool[j].outer = 1;
     g_pool[g_npool] = q; pool_ord_insert(g_npool++); __atomic_fetch_add(&g_pool_gen, 1, __ATOMIC_RELEASE);
     int np = g_npool;
     pthread_rwlock_unlock(&g_pool_mu);
@@ -733,18 +736,24 @@ void mtl_pool_del(const void *mem) {
         pool_note(1, p.hi - p.lo, pool_ns() - t0);
     }
 }
+// DM_VK_POOL_INNERMOST=1 (start-up; a profile env key, off by default): a range inside pools made inside other pools resolves to the innermost pool, whose buffer holds its
+// pages. Fire Emblem: Three Houses' loader makes small pools inside its 1.5 GB resource pool and loads models into them: the thread's cache of the last pools found and the scan
+// below both returned the outer pool, whose buffer kept the pages from before the inner pool was made, so the male Byleth's index and vertex data read stale on the GPU
+// (every triangle at one point: the model was never seen; /proc/<pid>/maps showed his buffers in a dma-buf of their own inside the outer pool's)
+static int pool_innermost(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_VK_POOL_INNERMOST"); v = e && atoi(e); } return v; }
 vkpool_t *vk_pool_of(uint64_t addr, uint64_t len) {
     // the last pools this thread found, while none was added or removed: the replay looks up every buffer binding of every draw, and the read lock alone was ~6% of it
     static __thread struct { uint32_t gen; vkpool_t *p[4]; } c;   // gen: g_pool_gen + 1 (0: empty)
     uint32_t g = __atomic_load_n(&g_pool_gen, __ATOMIC_ACQUIRE) + 1;
-    if (c.gen == g) for (int i = 0; i < 4; i++) { vkpool_t *p = c.p[i]; if (p && addr >= p->lo && addr + len <= p->hi) return p; }
+    int inm = pool_innermost();
+    if (c.gen == g) for (int i = 0; i < 4; i++) { vkpool_t *p = c.p[i]; if (p && !(inm && p->outer) && addr >= p->lo && addr + len <= p->hi) return p; }
     vkpool_t *r = NULL; int across = 0;
     pthread_rwlock_rdlock(&g_pool_mu);
     int lo = 0, hi = g_npool;   // the last pool by lo that starts at or below addr
     while (lo < hi) { int m = (lo + hi) / 2; if (g_pool[g_pool_ord[m]].lo <= addr) lo = m + 1; else hi = m; }
     if (lo > 0) { vkpool_t *p = &g_pool[g_pool_ord[lo - 1]]; if (addr + len <= p->hi) r = p; }
     if (!r)   // not in that one: the scan as before (pools over the same memory, and the range across two chunks it reports)
-        for (int i = 0; i < g_npool; i++) if (addr >= g_pool[i].lo && addr + len <= g_pool[i].hi) { r = &g_pool[i]; break; }
+        for (int i = 0; i < g_npool; i++) if (addr >= g_pool[i].lo && addr + len <= g_pool[i].hi) { if (!inm) { r = &g_pool[i]; break; } if (!r || g_pool[i].hi - g_pool[i].lo < r->hi - r->lo) r = &g_pool[i]; }
                                            else if (addr >= g_pool[i].lo && addr < g_pool[i].hi && addr + len <= g_pool[i].end) across = 1;
     pthread_rwlock_unlock(&g_pool_mu);
     if (r) { if (c.gen != g) { memset(&c, 0, sizeof c); c.gen = g; } memmove(&c.p[1], &c.p[0], 3 * sizeof *c.p); c.p[0] = r; }

@@ -886,7 +886,7 @@ def rewrite(py, repo, exe_dir, out, env, logs, g):
     kf = out.with_name(out.name + '.key')
     extra = [Path(p) for p in env.get('DM_PATCHES_EXTRA', '').split(os.pathsep) if p]   # cuts from outside the repository (patch_nso.py DM_PATCHES_EXTRA: an Android port's 60 fps code bytes)
     key = fingerprint(('files', [repo / 'dm/tools' / f for f in ('patch_nso.py', 'nso_code.py', 'nso_asm.py')] + patch_files(repo, exe_dir, mods) + extra + list(src.values()) + ([manifest] if manifest.is_file() else [])), names, capstone.__version__,
-                      {k: env.get(k) for k in ('DM_PATCH_FRONT',)})
+                      {k: env.get(k) for k in ('DM_PATCH_FRONT',)} | ({'DM_FPS60': env['DM_FPS60']} if env.get('DM_FPS60') else {}))   # DM_FPS60 (a profile with CUTS_FPS60, patch_nso.py): in the key only when set, so other games' keys stay as they were
     if all((out / f'{m}.patched.bin').is_file() for m in names) and reused(kf, key) is not None:
         PROG.end(f'{", ".join(mods)}{f" and {len(nros)} NROs" if nros else ""}, reused (inputs unchanged)'); return
     tmp = out.with_name(out.name + '.partial'); rmtree(tmp); tmp.mkdir(parents=True); logs.mkdir(parents=True, exist_ok=True)
