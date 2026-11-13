@@ -33,7 +33,7 @@ static void bind_program(const p_bind_program *bp) {
     S.prog_ok = S.sh[0] || S.sh[5];   // a vertex-only program draws depth only (prepare_draw)
 }
 typedef struct {
-    uint64_t key[3]; uint32_t pool_variant[3], has_pools; uint32_t topo, restart, raster_discard, cull, front, mode, depth_clamp, bias_en, debug_mode;
+    uint64_t key[3]; uint32_t pool_variant[3], has_pools, pool_gs; uint32_t topo, restart, raster_discard, cull, front, mode, depth_clamp, bias_en, debug_mode;
     uint32_t dt, dw, df, st, sf[2], sfail[2], szfail[2], szpass[2];
     uint32_t nattr; struct { uint32_t loc, binding, fmt, off; } attr[16];
     uint32_t nbind; struct { uint32_t binding, stride, rate, divisor; } bind[17];
@@ -236,7 +236,7 @@ static VkPipeline build_pipeline(const pkey *k, VkPipelineLayout layout, vkshade
         VKLOG("pipeline %d: shaders %016llx %016llx %016llx topo %u cull %u front %u mode %u depth test %u write %u func %u stencil %u | colour targets %u (formats %u %u %u %u) depth format %u | samples %u a2c %u blend %u logic %u/%u | attrs %u binds %u",
               n, (unsigned long long)k->key[0], (unsigned long long)k->key[1], (unsigned long long)k->key[2], k->topo, k->cull, k->front, k->mode,
               k->dt, k->dw, k->df, k->st, k->ncol, k->cfmt[0], k->cfmt[1], k->cfmt[2], k->cfmt[3], k->dfmt, k->samples, k->a2c, k->blend_en, k->logic_en, k->logic_op, k->nattr, k->nbind); } }
-    VkPipeline p; vkshader_t *stg[3] = {stg_in[0], stg_in[1], stg_in[2] ? (stg_in[2]->has_pools ? stg_in[2] : vk_shader_gs_topo(stg_in[2], (VkPrimitiveTopology)k->topo)) : NULL};
+    VkPipeline p; vkshader_t *stg[3] = {stg_in[0], stg_in[1], stg_in[2] ? (k->pool_gs ? stg_in[2] : vk_shader_gs_topo(stg_in[2], (VkPrimitiveTopology)k->topo)) : NULL};
     if (k->gs_split && (k->gs_split > 2 || !stg[2] || !vk_shader_gs_split_ready(stg[2]))) return (VkPipeline)1;
     int bs = build_begin();
     if (bs >= 0) { snprintf(g_build[bs].what, sizeof g_build[bs].what, "graphics pipeline, shaders %016llx %016llx %016llx; topology %u, polygon mode %u, samples %u, "
