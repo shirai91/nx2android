@@ -27,6 +27,7 @@ class OverlayKeyRelease(unittest.TestCase):
 #include <stdint.h>
 #include <stdatomic.h>
 #include <stdlib.h>
+#include <pthread.h>
 enum { AINPUT_EVENT_TYPE_KEY = 1, AKEY_EVENT_ACTION_DOWN = 0,
        AKEY_EVENT_ACTION_UP = 1, AINPUT_SOURCE_GAMEPAD = 2,
        AKEYCODE_BACK = 1, AKEYCODE_BUTTON_MODE, AKEYCODE_MENU, TEST_A };
@@ -40,7 +41,12 @@ typedef struct { int source, type, key, action, device; } AInputEvent;
 #define LOG(...) ((void)0)
 static _Atomic int g_set_overlay = 1, g_overlay = 1, g_pad_in = -1, g_tx_on, g_menu;
 static int g_pad_used, vibration = -1, publications;
-static uint64_t g_btn;
+static uint64_t g_btn[1];   // per player (PR #238); the device here is player 1's
+static pthread_mutex_t g_slot_mu = PTHREAD_MUTEX_INITIALIZER;
+static struct { int unused; } g_slots;
+static uint32_t pad_slot_mask(const void *s) { (void)s; return 0; }
+static int takes = -1;   // what the last pad_player call asked: 1 take a player, 0 not
+static int pad_player(int id, int src, int take) { (void)id; (void)src; takes = take; return 0; }
 static void dm_haptics_android_device(int d) { vibration = d; }
 static int tx_key(AInputEvent *e) { (void)e; return 1; }
 static void menu_open(int tab) { (void)tab; }
@@ -48,7 +54,7 @@ static void menu_close(void) {}
 static void menu_key(uint64_t bit) { (void)bit; }
 static uint64_t key_bit(int k) { return k == TEST_A ? 1 : 0; }
 static void dm_pad_players(int n) { assert(n == 1); }
-static void pad_publish(void) { publications++; }
+static void pad_publish(int p) { assert(p == 0); publications++; }
 ''' + visible + mark + keys + r'''
     return 0;
 }
@@ -62,11 +68,12 @@ int main(int argc, char **argv) {
         key.action = AKEY_EVENT_ACTION_UP;
         assert(handle_event(&key) == 1);
         assert(dm_overlay_visible() == 1 && !g_pad_used);
-        assert(g_pad_in == -1 && vibration == -1 && g_btn == 0 && publications == 1);
+        assert(g_pad_in == -1 && vibration == -1 && g_btn[0] == 0 && publications == 1);
+        assert(takes == 0);  // and it takes no player
     } else {
         assert(handle_event(&key) == 1);
-        assert(dm_overlay_visible() == 2 && g_pad_used && g_btn == 1);
-        assert(g_pad_in == 17 && vibration == 17 && publications == 1);
+        assert(dm_overlay_visible() == 2 && g_pad_used && g_btn[0] == 1);
+        assert(g_pad_in == 17 && vibration == 17 && publications == 1 && takes == 1);
         if (test == 2) {
             // The state after touch_event restores the overlay while A is held.
             atomic_store(&g_overlay, 1);
@@ -74,12 +81,12 @@ int main(int argc, char **argv) {
         }
         key.action = AKEY_EVENT_ACTION_UP;
         assert(handle_event(&key) == 1);
-        assert(g_btn == 0 && publications == 2);  // A still reaches the guest as released.
+        assert(g_btn[0] == 0 && publications == 2 && takes == 0);  // A still reaches the guest as released.
         assert(dm_overlay_visible() == (test == 2 ? 1 : 2));
         assert(g_pad_in == 17 && vibration == 17);
         key.action = AKEY_EVENT_ACTION_DOWN;
         assert(handle_event(&key) == 1);
-        assert(dm_overlay_visible() == 2 && g_btn == 1 && publications == 3);
+        assert(dm_overlay_visible() == 2 && g_btn[0] == 1 && publications == 3);
     }
     return 0;
 }
@@ -90,7 +97,7 @@ int main(int argc, char **argv) {
         source, cls.exe = tmp / 'keys.c', tmp / 'keys'
         source.write_text(harness, encoding='utf-8')
         result = subprocess.run([cc, '-std=c11', '-Wall', '-Wextra', '-Werror',
-                                 str(source), '-o', str(cls.exe)],
+                                 str(source), '-pthread', '-o', str(cls.exe)],
                                 capture_output=True, text=True, timeout=60)
         if result.returncode:
             raise AssertionError(result.stdout + result.stderr)

@@ -235,6 +235,9 @@ static void players(void) {
     assert(handle_event(&key) == 1 && pad_buttons[0] == DM_BTN_A && pad_slot_mask(&g_slots) == 0);   // `adb shell input keyevent`: player 1's
     key.action = AKEY_EVENT_ACTION_UP; assert(handle_event(&key) == 1 && !pad_buttons[0]);
     AInputEvent pad = {.source = AINPUT_SOURCE_GAMEPAD, .type = AINPUT_EVENT_TYPE_KEY, .key = TEST_PAD_KEY, .action = AKEY_EVENT_ACTION_DOWN, .device = 42};
+    pad.action = AKEY_EVENT_ACTION_UP; int pubs = pad_publications;
+    assert(handle_event(&pad) == 1 && pad_slot_mask(&g_slots) == 0 && pad_publications == pubs && vibration != 42);   // a release takes no player (and, as #296, is no new input)
+    pad.action = AKEY_EVENT_ACTION_DOWN;
     assert(handle_event(&pad) == 1 && pad_slot_of(&g_slots, pad_owner(42)) == 0 && vibration == 42);
     pad.device = 44;
     assert(handle_event(&pad) == 1 && pad_slot_of(&g_slots, pad_owner(44)) == 1 && pad_buttons[1] == DM_BTN_A && players_mask == 3 && vibration == 42);
