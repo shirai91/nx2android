@@ -597,6 +597,19 @@ __thread VkFormat vk_view_fmt; __thread uint32_t vk_view_layers;
 VkImageView vk_tex_view(const tex_t *t, const view_t *vw, int dim, int arrayed, int as_attachment, vkimg_t **img_out) {
     return vk_tex_view_as(t, vw, dim, arrayed, as_attachment, img_out, 0);
 }
+// Whether a block-compressed image drawn into through a view of format vf (one texel a block) takes a stand-in (vk_tex_view_as, DM_VK_BC_DRAW = mode), and the
+// stand-in's size in blocks. Only where every level is whole in blocks of the stand-in's own chain, and its levels fit that chain: a 32x32x16 BC4 image of 6 levels
+// is an 8x8x16 stand-in of 5 at most (Vulkan's mipLevels limit, max(width, height, depth)), so it keeps the direct path
+static int bc_standin_ok(const vkimg_t *im, const vkfmt_t *cf, const vkfmt_t *vf, int mode, uint32_t *bw_out, uint32_t *bh_out) {
+    if (!mode || !(mode > 1 || im->vtype == VK_IMAGE_VIEW_TYPE_3D) || !cf || !vf || !cf->compressed || cf->dec || vf->compressed || !cf->bw || !cf->bh || cf->bpb != vf->bpb || im->samples > 1) return 0;
+    uint32_t bw = (im->w + cf->bw - 1) / cf->bw, bh = (im->h + cf->bh - 1) / cf->bh;
+    for (uint32_t l = 0; l < im->levels; l++) { uint32_t w = im->w >> l ? im->w >> l : 1, h = im->h >> l ? im->h >> l : 1;
+        if ((w + cf->bw - 1) / cf->bw != (bw >> l ? bw >> l : 1) || (h + cf->bh - 1) / cf->bh != (bh >> l ? bh >> l : 1)) return 0; }
+    uint32_t m = bw > bh ? bw : bh, full = 1; if (im->vtype == VK_IMAGE_VIEW_TYPE_3D && im->d > m) m = im->d;
+    while (m >> full) full++;
+    if (im->levels > full) return 0;
+    *bw_out = bw; *bh_out = bh; return 1;
+}
 VkImageView vk_tex_view_as(const tex_t *t, const view_t *vw, int dim, int arrayed, int as_attachment, vkimg_t **img_out, VkFormat vfmt) {
     vkimg_t *im = vk_tex(t); if (img_out) *img_out = im;
     if (!im) return VK_NULL_HANDLE;
@@ -614,21 +627,21 @@ VkImageView vk_tex_view_as(const tex_t *t, const view_t *vw, int dim, int arraye
     // A block-compressed image drawn into through an uncompressed view of its block size (the game compresses on the GPU: one texel a block). Breath of the Wild
     // makes its 32x32x32 BC4 noise this way, each depth slice of each level through an RGBA16UI view; on Adreno 830 with Turnip 26.2.3 the image read back as zeros
     // in every slice and level afterwards, and the shaders that dissolve Link in a teleport by that noise discarded every pixel at once. With the stand-in it
-    // holds noise (18,542 of its 18,744 bytes not zero) and he dissolves and comes back gradually. So such a pass draws into a stand-in in the view's format, the image's size in blocks, and gfx_vk_exec.c bc_draw_back copies what it drew into the
-    // image as blocks, through a buffer, as an upload does. DM_VK_BC_DRAW (start-up): 0 draws into the image itself as before, 1 (default) stands in for 3D
-    // images, 2 for every block-compressed image
-    { static int mode = -1; if (mode < 0) { const char *e = getenv("DM_VK_BC_DRAW"); mode = e ? atoi(e) : 1; }
-      const vkfmt_t *cf = vk_fmt(im->nvn_format);
-      if (as_attachment && mode && (mode > 1 || im->vtype == VK_IMAGE_VIEW_TYPE_3D) && cf && cf->compressed && !cf->dec && !f->compressed && cf->bw && cf->bh && cf->bpb == f->bpb && vw && vw->set_format && im->samples <= 1) {
-          if (!im->bc_draw) {
-              uint32_t bw = (im->w + cf->bw - 1) / cf->bw, bh = (im->h + cf->bh - 1) / cf->bh; int same = 1;   // every level's size in blocks is the stand-in's level size
-              for (uint32_t l = 0; l < im->levels; l++) { uint32_t w = im->w >> l ? im->w >> l : 1, h = im->h >> l ? im->h >> l : 1;
-                  same &= (w + cf->bw - 1) / cf->bw == (bw >> l ? bw >> l : 1) && (h + cf->bh - 1) / cf->bh == (bh >> l ? bh >> l : 1); }
+    // holds noise (18,542 of its 18,744 bytes not zero) and he dissolves and comes back gradually. So such a pass draws into a stand-in in the view's format, the
+    // image's size in blocks (bc_standin_ok): gfx_vk_exec.c bc_fill copies the level and layers it draws from the image into it before the pass, and bc_draw_back
+    // copies them back as blocks after it, each through a buffer. DM_VK_BC_DRAW (start-up): 0 (default) draws into the image itself as before, 1 stands in for
+    // 3D images, 2 for every block-compressed image. The same encoder is in other games (Super Mario 3D World + Bowser's Fury, Animal Crossing: New Horizons,
+    // Captain Toad), so a profile turns it on where it was seen to help (Breath of the Wild's android.tsv); a player can try it on another with an env.txt line
+    { static int mode = -1; if (mode < 0) { const char *e = getenv("DM_VK_BC_DRAW"); mode = e ? atoi(e) : 0; }
+      const vkfmt_t *cf = vk_fmt(im->nvn_format); uint32_t bw = 0, bh = 0;
+      if (as_attachment && vw && vw->set_format && bc_standin_ok(im, cf, f, mode, &bw, &bh)) {
+          if (!im->bc_draw && !im->bc_tried) {
+              im->bc_tried = 1;
               tex_t ct = *t; ct.d.format = vw->format; ct.d.width = (int)bw; ct.d.height = (int)bh;
-              vkimg_t *d = same ? img_new(&ct, f) : NULL;
+              vkimg_t *d = img_new(&ct, f);
               if (d) { d->bc_of = im; im->bc_draw = d; }
-              static int n; if (n++ < 8) VKLOG("block-compressed image %ux%ux%u (nvn format %#x) drawn into through views of format %#x: %s", im->w, im->h, im->d, im->nvn_format, vw->format,
-                                               d ? "its passes draw into a stand-in in blocks, copied into it after each (DM_VK_BC_DRAW)" : "no stand-in (its levels are not whole in blocks, or the image could not be made): drawn into itself"); }
+              static int n; if (n++ < 8) VKLOG("block-compressed image %ux%ux%u, %u levels (nvn format %#x), drawn into through views of format %#x: %s", im->w, im->h, im->d, im->levels, im->nvn_format, vw->format,
+                                               d ? "its passes draw into a stand-in in blocks, filled from it before each and copied into it after (DM_VK_BC_DRAW)" : "the stand-in could not be made: drawn into itself"); }
           if (im->bc_draw) { im = im->bc_draw; im->bc_lv = lv0; im->bc_ly = ly0; im->bc_nly = nly; im->gpu_w = 1; if (img_out) *img_out = im; } } }
     int target = vw && vw->set_target ? vw->target : im->target;
     VkImageViewType type = vtype_of(target);

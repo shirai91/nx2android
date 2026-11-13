@@ -574,19 +574,36 @@ static void lin_back(void) {
         { static int n; if (n++ < 4) VKLOG("linear render target %ux%u (nvn format %#x, stride %zu) copied back to its storage %p", im->w, im->h, t->d.format, stride, (void *)t->mem); }
     }
 }
-// After a pass that drew into a block-compressed image's stand-in (gfx_vk_tex.c vk_tex_view_as): the level and layers it drew, copied into the image as blocks
-// through scratch memory (image → buffer → image, the second copy as an upload's)
+// A block-compressed image's stand-in (gfx_vk_tex.c vk_tex_view_as) and the image: the region of one level and its layers (a 3D image's depth slices), in blocks
+// for the stand-in and in texels for the image, for the copies through a buffer in either direction. The buffer holds the blocks row by row as both read them
+static int bc_region(const vkimg_t *d, uint32_t lv, uint32_t ly, uint32_t n, VkBufferImageCopy *rd, VkBufferImageCopy *rp, VkDeviceSize *bytes) {
+    const vkimg_t *p = d->bc_of; const vkfmt_t *uf = vk_fmt(d->nvn_format); if (!p || !uf) return 0;
+    int is3d = p->vtype == VK_IMAGE_VIEW_TYPE_3D; if (!n) n = 1;
+    uint32_t bw = d->w >> lv ? d->w >> lv : 1, bh = d->h >> lv ? d->h >> lv : 1, pw = p->w >> lv ? p->w >> lv : 1, ph = p->h >> lv ? p->h >> lv : 1;
+    *rd = (VkBufferImageCopy){0, 0, 0, {VK_IMAGE_ASPECT_COLOR_BIT, lv, is3d ? 0 : ly, is3d ? 1 : n}, {0, 0, is3d ? (int32_t)ly : 0}, {bw, bh, is3d ? n : 1}};
+    *rp = *rd; rp->imageExtent.width = pw; rp->imageExtent.height = ph;
+    *bytes = (VkDeviceSize)bw * bh * uf->bpb * n; return 1;
+}
+// Before a pass that draws into a stand-in: the level and layers it draws, copied from the image (image → buffer → stand-in), so that what the pass does not cover
+// keeps the image's blocks when bc_draw_back copies them back. A new image (never used: its blocks undefined) leaves the stand-in as it is
+static void bc_fill(vkimg_t *d, uint32_t lv, uint32_t ly, uint32_t n) {
+    vkimg_t *p = d->bc_of; VkBufferImageCopy rd, rp; VkDeviceSize bytes; VkBuffer sb; VkDeviceSize so;
+    if (!p || p->layout == VK_IMAGE_LAYOUT_UNDEFINED || !bc_region(d, lv, ly, n, &rd, &rp, &bytes) || !vk_scratch(bytes, 16, &sb, &so)) return;
+    rd.bufferOffset = rp.bufferOffset = so;
+    VkCommandBuffer cb = vk_cmd(); vk_img_barrier_all(cb);
+    vkCmdCopyImageToBuffer(cb, p->img, VK_IMAGE_LAYOUT_GENERAL, sb, 1, &rp); vk_img_barrier_all(cb);
+    vkCmdCopyBufferToImage(cb, sb, d->img, VK_IMAGE_LAYOUT_GENERAL, 1, &rd); vk_img_barrier_all(cb);
+}
+// After a pass that drew into a stand-in: the level and layers it drew, copied into the image as blocks through scratch memory (stand-in → buffer → image, the
+// second copy as an upload's)
 static void bc_draw_back(void) {
     for (int i = 0; i < 8; i++) { vkimg_t *d = P_att[i].im; if (!d || !d->bc_of) continue;
-        vkimg_t *p = d->bc_of; const vkfmt_t *uf = vk_fmt(d->nvn_format); if (!uf) continue;
-        uint32_t lv = P_att[i].bc_lv, ly = P_att[i].bc_ly, n = P_att[i].bc_nly ? P_att[i].bc_nly : 1; int is3d = p->vtype == VK_IMAGE_VIEW_TYPE_3D;
-        uint32_t bw = d->w >> lv ? d->w >> lv : 1, bh = d->h >> lv ? d->h >> lv : 1, pw = p->w >> lv ? p->w >> lv : 1, ph = p->h >> lv ? p->h >> lv : 1;
-        VkBuffer sb; VkDeviceSize so; if (!vk_scratch((VkDeviceSize)bw * bh * uf->bpb * n, 16, &sb, &so)) continue;
+        vkimg_t *p = d->bc_of; VkBufferImageCopy rd, rp; VkDeviceSize bytes; VkBuffer sb; VkDeviceSize so;
+        if (!bc_region(d, P_att[i].bc_lv, P_att[i].bc_ly, P_att[i].bc_nly, &rd, &rp, &bytes) || !vk_scratch(bytes, 16, &sb, &so)) continue;
+        rd.bufferOffset = rp.bufferOffset = so;
         VkCommandBuffer cb = vk_cmd(); vk_tex_prepare(cb, p); vk_img_barrier_all(cb);
-        VkBufferImageCopy r = {so, 0, 0, {VK_IMAGE_ASPECT_COLOR_BIT, lv, is3d ? 0 : ly, is3d ? 1 : n}, {0, 0, is3d ? (int32_t)ly : 0}, {bw, bh, is3d ? n : 1}};
-        vkCmdCopyImageToBuffer(cb, d->img, VK_IMAGE_LAYOUT_GENERAL, sb, 1, &r); vk_img_barrier_all(cb);
-        r.imageExtent.width = pw; r.imageExtent.height = ph;
-        vkCmdCopyBufferToImage(cb, sb, p->img, VK_IMAGE_LAYOUT_GENERAL, 1, &r); vk_img_barrier_all(cb);
+        vkCmdCopyImageToBuffer(cb, d->img, VK_IMAGE_LAYOUT_GENERAL, sb, 1, &rd); vk_img_barrier_all(cb);
+        vkCmdCopyBufferToImage(cb, sb, p->img, VK_IMAGE_LAYOUT_GENERAL, 1, &rp); vk_img_barrier_all(cb);
         p->gpu_w = 1; }
 }
 void vk_end_pass(void) {
@@ -627,6 +644,7 @@ static int begin_pass(void) {
         ca[i].imageView = v; S.cfmt[i] = vk_view_fmt; ncol = i + 1; P_att[i].im = im;   // (the view's format: a render pass's attachment and its pipelines take it)
         P_att[i].fmt = vk_view_fmt; P_att[i].layers = vk_view_layers ? vk_view_layers : 1; P_att[i].w = iw; P_att[i].h = ih;
         P_att[i].bc_lv = im->bc_lv; P_att[i].bc_ly = im->bc_ly; P_att[i].bc_nly = im->bc_nly;
+        if (im->bc_of) bc_fill(im, im->bc_lv, im->bc_ly, im->bc_nly);   // (before the pass begins: what it does not cover keeps the image's blocks)
         if (P_att[i].layers < layers) layers = P_att[i].layers;
     }
     for (int i=0;i<8;i++) P_alias_views[i]=ca[i].imageView;
