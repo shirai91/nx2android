@@ -484,6 +484,11 @@ class Port:
         import tempfile
         import uuid
         want, todo = self.glslc_todo()
+        for v in self.versions:
+            if v in todo: continue
+            cached = self.dirs[v] / 'glslc_capture'; valid = nsp.glslc_done(cached)
+            for p in cached.glob('*.glslc'):
+                if p.name not in valid: nsp.rmtree(p)   # shader_split reads every GLSLC file, including incomplete extras
         if not todo: return
         PROG.add(1); PROG.stage('GLSLC capture', step='building the headless Android host')
         adb = Adb(self.tools['adb'], self.o.device or self.cfg.get('device'), log=say); adb.pick()
@@ -495,6 +500,7 @@ class Port:
         staging = Path(tempfile.mkdtemp(prefix='.glslc-', dir=d))
         cap, backup, dst = staging / 'capture', staging / 'previous', d / 'glslc_capture'
         log = self.logs / 'android_glslc.log'
+        log.write_text('Android shader capture started; complete device log not retrieved.\n', encoding='utf-8')
         try:
             adb.shell(f'mkdir -p {dev}/mods {dev}/RomFS {dev}/save {dev}/temp {dev}/capture', retries=1)
             PROG.set(step='copying the game for its compiler')
@@ -508,8 +514,14 @@ class Port:
             PROG.set(step='capturing run-time shaders')
             say(f'booting {self.app_name} on the Android device to capture its run-time shaders (up to {self.GLSLC_SECS} seconds)')
             # The device's deadline also applies if adb disconnects. Never retry a guest execution after a transport error.
-            result = adb.shell(f'cd {dev} && chmod 755 dmhost && {command} timeout -k 5 {self.GLSLC_SECS} ./dmhost mods > run.log 2>&1; '
-                               'echo "NX2A_GLSLC_EXIT=$?"', timeout=self.GLSLC_SECS + 30, retries=1)
+            try:
+                result = adb.shell(f'cd {dev} && chmod 755 dmhost && {command} timeout -k 5 {self.GLSLC_SECS} ./dmhost mods > run.log 2>&1; '
+                                   'echo "NX2A_GLSLC_EXIT=$?"', timeout=self.GLSLC_SECS + 30, retries=1)
+            except BaseException:
+                # A transient transport failure can recover before cleanup; save its diagnostic log without retrying the guest or replacing the original error.
+                try: adb.run('pull', f'{dev}/run.log', str(log), timeout=15, retries=1)
+                except (AdbError, OSError): pass
+                raise
             adb.run('pull', f'{dev}/run.log', str(log), retries=1)
             adb.run('pull', f'{dev}/capture', str(cap), retries=1)
             got = nsp.glslc_done(cap)
