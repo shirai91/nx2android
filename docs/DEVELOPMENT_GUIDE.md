@@ -290,3 +290,9 @@ python tests/android/keyboard_smoke.py --sdk "$ANDROID_HOME" --ndk "$ANDROID_NDK
 ```
 
 It builds through the production Java/dex packager, uses the real guest keyboard conversion and JNI bridge, and checks Unicode/UTF-16 output, minimum length, cancel, background/resume, repeated requests and bounded UTF-8 output. Add `--without-java` to verify the default APK's fallback. The probe installs only `org.nx2a.keyboardtest` and uninstalls it afterward; run it on a dedicated emulator. No game dump is needed. This probe does not qualify the combined external-display keyboard or physical-device gameplay.
+
+## SDK memory patches across builds
+
+The rewriter retains every registered `sdk_patches.py` `CUTS` entry, including explicit empty entries. For an `sdk` build with no registered entry, it can apply the SDK-wide `MATCH_CUTS` rules for the address-region node area and placement alignment. These original-Switch rules match reviewed implementations using complete unwind-function fingerprints, direct-callee identity, constants, registers and exact original bytes. Missing or ambiguous matches keep the original instructions and explain the skip in `rewrite_sdk.log`. Applied cuts appear in `sdk.cuts.tsv` with `[function match]`.
+
+This fallback does not enable profile-level function patches. `DM_PATCHES_EXTRA` cuts still append and overlapping replacements fail their original-byte checks. Matcher and SDK-rule inputs participate in rewrite cache keys and source provenance, including for previously unregistered builds. The matcher tests use synthetic AArch64 code and unwind tables: `python -m unittest discover -s tests -p test_sdk_matching.py`; registry checks remain in `nxnative/dm/tools/tests/test_patches.py`.
