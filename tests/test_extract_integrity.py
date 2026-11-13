@@ -86,6 +86,15 @@ class ExtractIntegrity(unittest.TestCase):
         self.assertEqual(r.returncode, 2, r.stderr)
         self.assertIn('usage: nx_extract', r.stderr)
 
+    def test_card_prefix_and_nsp_header_detection(self):
+        for mode in ('card', 'card-prefix', 'card-nsp', 'card-small-nsp'):
+            with self.subTest(mode=mode):
+                r, _ = self.run_case(mode)
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        r, _ = self.run_case('card-short')
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertIn('2002-4644', r.stderr)   # an invalid PFS0, never an out-of-range optional card-header read
+
     def test_file_data_integrity_keeps_existing_allow_damaged_behavior(self):
         r, out = self.run_case('copy-bad')
         self.assertEqual(r.returncode, 3, r.stderr)
