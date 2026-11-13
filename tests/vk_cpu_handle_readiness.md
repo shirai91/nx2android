@@ -76,10 +76,53 @@ transform-feedback control-buffer copies), preserving donor write order. The bas
 PR #361 output-mask changes; its readiness paths match main.
 
 Limits: this covers CPU-decoded descriptors using producers already tracked
-by this backend. It does not add 8192-entry uniform tables, general CPU/index
-readiness, additional graphics-storage write tracking, or clear-only linear
+by this backend. It does not add 8192-entry uniform tables, general CPU
+readiness or indirect index conversion, additional graphics-storage write tracking, or clear-only linear
 attachment writeback. Fills and landed updates can cause a conservative wait;
 the donor's known-fill snapshot optimization is not part of this port. Existing
 `vk_ubd_read` diagnostics still log covered writes as pending even when the
 later inline bytes make the descriptor read safe. No physical-GPU performance,
 gameplay, new playable-game count or Switch 2 support is claimed.
+
+
+## Indexed-quad follow-up
+
+Depends on #369 and #368. nxnative's pinned
+`1f01e28c87da5233dfa14fb31fabf1535df33013` calls `cpu_ready` before its
+CPU index conversion (`nvn_vk.c:3686`); `cpu_access_ready` also materializes
+later known writes. This follow-up applies that existing contract to the
+target's direct indexed-quad CPU conversion.
+
+Preflight checks the complete declared index range and waits before any
+draw-specific descriptors or scratch allocations. Native GPU-index draws
+and indirect draws keep their existing path. After preflight, the adapter
+uses the target's existing uniform-shadow snapshot pattern
+(`vk_scratch` + `vk_ubd_read`) once for the input range. Conversion reads
+the snapshot using the donor's byte-copy index load, retaining the existing
+quad triangle pattern and supporting unaligned 8-, 16-, and 32-bit input.
+
+The snapshot costs one transient input-sized scratch allocation/copy per
+indexed-quad draw; it avoids scanning GPU/deferred-write records for every
+expanded index. Physical-device performance is unmeasured.
+
+The focused ASan/UBSan host test checks all index widths, unaligned reads,
+deferred bytes, full-span bounds/overflow, ignored non-quad/indirect paths,
+and unchanged generated nonindexed quads. Device fixtures reuse the existing
+producer and independent color expectations. Six modes cover CPU memory,
+CPU deferred updates, current/prior GPU writes, and later full/partial known
+overwrites. Each runs three widths, two base-vertex arrangements, and enabled/
+disabled rendering, with two instances and a nonzero base instance recorded.
+
+The parent passes CPU memory/prior-GPU controls but fails the other four
+modes with red pixels instead of green. The follow-up passes all 72 cases
+(1,152 pixels plus guards) in each rendering mode, alongside the original
+84 descriptor cases. Both DM_VK_RP=0 and 1 pass: 312 total cases, 4,992 pixels,
+plus guards and conditional-state checks. The normal native build compiles
+192 sources; the changed replay source is rebuilt after the final adapter.
+
+`NX2A_INDEX_ONLY=1` selects the new cases; `NX2A_INDEX_CASE=0..5` selects
+one producer mode. The same build/run commands above apply.
+
+This does not add new primitive conversion, custom restart, 8-bit index
+fallback, indirect quad conversion, new GPU-write producer tracking, or a
+game-specific workaround. There is no physical-GPU or gameplay qualification.
