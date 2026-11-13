@@ -39,27 +39,46 @@ static inline float ov_cscale(const ov_ctl *c) { int l, i = ov_index(c, &l); flo
 // spacing; the factor stops where they would leave the window (ov_fit_scale). Grown around their own centres, the Odin 3's x1.45 made eleven pairs overlap
 #define OV_MIN_MM 10.0f
 float dm_overlay_scale(void);
+// the top strip of layout L at scale 1: down to the menu button's bottom edge (the middle's controls), where the frame rate counter also sits. A side
+// control whose top edge is above it sits beside the menu button (the phone's - and +), the others below it
+static inline float ov_strip(const ov_ctl *L) { float top = 0; for (int i = 0; i < OV_N; i++) if (L[i].ax == 0.5f) top = fmaxf(top, L[i].y + L[i].h / 2); return top; }
+static inline int ov_beside(const ov_ctl *L, const ov_ctl *c) { return c->ax != 0.5f && c->y - c->h / 2 < ov_strip(L); }
 // where a control is now, in window pixels: its centre x, y and half its width and height. A side's control (anchored to the left or the right edge) is
 // x window heights from its edge and 1 - y up from the bottom at scale 1; at scale s both distances are s times as far, so the whole side scales about
-// its bottom corner. The menu button (anchored to the middle) stays at the top middle, growing down from the top edge
+// its bottom corner. The menu button (anchored to the middle) stays at the top middle, growing down from the top edge, and so do the controls beside it
+// (ov_beside: they scale about their side's top corner, y down from the top edge)
 static inline void ov_box(const ov_ctl *c, float W, float H, float b[4]) {   // (c: in OV_LAYOUTS, whose index finds the player's own place and size)
     int l, i = ov_index(c, &l); float s = dm_overlay_scale(), mx, my, cs = 1;
     if (dm_overlay_custom(l, i, &mx, &my, &cs)) { b[0] = mx * W; b[1] = my * H; }
     else if (c->ax == 0.5f) { b[0] = c->ax * W + c->x * H; b[1] = c->y * H * s; }
+    else if (ov_beside(OV_LAYOUTS[l], c)) { b[0] = c->ax * W + c->x * H * s; b[1] = c->y * H * s; }
     else { b[0] = c->ax * W + c->x * H * s; b[1] = H - (1 - c->y) * H * s; }
     b[2] = c->w * H * s * cs / 2; b[3] = c->h * H * s * cs / 2;
 }
-// the largest scale up to s (and at least 1) at which every side control of layout L, grown out from its bottom corner (ov_box), stays inside its half
-// of a W x H window's width (the two sides never meet) and below the top strip: down to the menu button's bottom edge, grown as it grows, where the
-// frame rate counter also sits (on the Odin 3, x1.30 put - under the counter in the top left corner)
+// the largest scale up to s (and at least 1) at which the side controls of layout L, grown as ov_box places them, stay on a W x H window and apart:
+// - a control below the top strip stays inside its half of the width (the two sides never meet) and below the strip, which reaches down to the menu
+//   button's bottom edge and the bottom edges of the controls beside it, grown as they grow (on the Odin 3, x1.30 put - under the counter in the top left)
+// - a control beside the strip (the phone's - and +) stays clear of the menu button and on the screen; growing out from its side's top corner, it only
+//   moves away from that corner, so the frame rate counter there that it clears at x1 it clears at any scale
 static inline float ov_fit_scale(const ov_ctl *L, float W, float H, float s) {
     if (W <= 0 || H <= 0) return s;
-    float top = 0; for (int i = 0; i < OV_N; i++) if (L[i].ax == 0.5f) top = fmaxf(top, L[i].y + L[i].h / 2);
+    float top = ov_strip(L), strip = top, mid = 0;
+    for (int i = 0; i < OV_N; i++) {
+        const ov_ctl *c = &L[i];
+        if (c->ax == 0.5f) mid = fmaxf(mid, fabsf(c->x) + c->w / 2);
+        else if (c->y - c->h / 2 < top) strip = fmaxf(strip, c->y + c->h / 2);
+    }
     for (int i = 0; i < OV_N; i++) {
         const ov_ctl *c = &L[i]; if (c->ax == 0.5f) continue;
-        float up = 1 - c->y + c->h / 2, out = fabsf(c->x) + c->w / 2;
-        if (up + top > 0) s = fminf(s, 1 / (up + top));
-        if (out > 0) s = fminf(s, W / H / 2 / out);
+        float out = fabsf(c->x) + c->w / 2;
+        if (c->y - c->h / 2 < top) {
+            if (c->y + c->h / 2 > 0) s = fminf(s, 1 / (c->y + c->h / 2));
+            if (out + mid > 0) s = fminf(s, W / H / 2 / (out + mid));
+        } else {
+            float up = 1 - c->y + c->h / 2;
+            if (up + strip > 0) s = fminf(s, 1 / (up + strip));
+            if (out > 0) s = fminf(s, W / H / 2 / out);
+        }
     }
     return fmaxf(s, 1);
 }

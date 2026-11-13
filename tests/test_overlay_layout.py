@@ -143,7 +143,7 @@ static float gap(const ov_ctl *a, const float p[4], const ov_ctl *b, const float
     return fmaxf(dx - p[2] - q[2], dy - p[3] - q[3]);
 }
 int main(void) {
-    const float screens[][3] = {{1920, 1080, 1}, {1920, 1080, 1.45f}, {2400, 1080, 1}, {2400, 1080, 1.45f}, {1280, 800, 1.45f}, {2560, 1600, 1.2f}, {2340, 1080, 1.45f}};
+    const float screens[][3] = {{1920, 1080, 1}, {1920, 1080, 1.45f}, {2400, 1080, 1}, {2400, 1080, 1.45f}, {1280, 800, 1.45f}, {2560, 1600, 1.2f}, {2340, 1080, 1.45f}, {2340, 1080, 1.064f}, {2160, 1080, 1.45f}};
     for (unsigned k = 0; k < sizeof screens / sizeof screens[0]; k++) {
         float W = screens[k][0], H = screens[k][1]; int l = ov_layout_for_size((int)W, (int)H); const ov_ctl *L = OV_LAYOUTS[l];
         g_s = ov_fit_scale(L, W, H, screens[k][2]);
@@ -154,14 +154,27 @@ int main(void) {
             if (!(b[i][0] - b[i][2] >= -0.5f && b[i][0] + b[i][2] <= W + 0.5f && b[i][1] - b[i][3] >= -0.5f && b[i][1] + b[i][3] <= H + 0.5f)) {
                 fprintf(stderr, "%gx%g x%.2f: %s leaves the window\n", W, H, g_s, L[i].name); return 1; }
         }
-        float strip = 0; for (int i = 0; i < OV_N; i++) if (L[i].kind == OV_MENU) strip = b[i][1] + b[i][3];   // the top strip: the menu button and the frame rate counter
-        for (int i = 0; i < OV_N; i++) if (L[i].kind != OV_MENU && b[i][1] - b[i][3] < strip - 0.5f && g_s > 1) {
+        // the top strip: the menu button (the frame rate counter sits beside it) and the controls beside it (the phone's - and +), which grow down from
+        // the top edge, away from the counter's corner; every other control stays below it
+        float strip = 0; for (int i = 0; i < OV_N; i++) if (L[i].kind == OV_MENU || ov_beside(L, &L[i])) strip = fmaxf(strip, b[i][1] + b[i][3]);
+        for (int i = 0; i < OV_N; i++) if (L[i].kind != OV_MENU && !ov_beside(L, &L[i]) && b[i][1] - b[i][3] < strip - 0.5f) {
             fprintf(stderr, "%gx%g x%.2f: %s reaches into the top strip\n", W, H, g_s, L[i].name); return 1; }
+        for (int i = 0; i < OV_N; i++) if (ov_beside(L, &L[i])) {
+            float edge0 = fabsf(L[i].x) * H - L[i].w * H / 2, edge = L[i].ax == 0 ? b[i][0] - b[i][2] : W - b[i][0] - b[i][2];
+            if (edge < edge0 - 0.5f || b[i][1] - b[i][3] < L[i].y * H - L[i].h * H / 2 - 0.5f) {
+                fprintf(stderr, "%gx%g x%.2f: %s moves towards its top corner\n", W, H, g_s, L[i].name); return 1; }
+        }
         for (int i = 0; i < OV_N; i++) for (int j = i + 1; j < OV_N; j++) if (gap(&L[i], b[i], &L[j], b[j]) < 0) {
             fprintf(stderr, "%gx%g x%.2f: %s and %s overlap by %.0f px\n", W, H, g_s, L[i].name, L[j].name, -gap(&L[i], b[i], &L[j], b[j])); return 1; }
     }
     g_s = ov_fit_scale(OV_LAYOUTS[0], 1920, 1080, 1.45f);   // the Odin 3 still gets bigger controls, only not as far as x1.45
     assert(g_s > 1.15f && g_s < 1.45f);
+    // a phone grows too: - and + beside the menu button do not hold it at x1
+    assert(ov_fit_scale(OV_LAYOUTS[1], 2400, 1080, 1.2f) > 1);
+    // 2340x1080 at 425 dpi: A is 9.4 mm, so front_android.c dm_overlay_scale asks for x1.06 (as on main), and all of it fits
+    float face = 0; for (int i = 0; i < OV_N; i++) if (OV_LAYOUTS[1][i].btn == DM_BTN_A) face = OV_LAYOUTS[1][i].w;
+    float want = OV_MIN_MM / (face * 1080 / 425.0f * 25.4f);
+    assert(want > 1.05f && want < 1.07f && ov_fit_scale(OV_LAYOUTS[1], 2340, 1080, want) == want);
     return 0;
 }
 """
