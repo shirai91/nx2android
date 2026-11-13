@@ -1,0 +1,8 @@
+# Apollo Justice: Ace Attorney Trilogy on Android, RE Engine, SDK 15.
+# OnePlus 8: launched the first game, loaded a save and inspected the badge and bottle.
+# Their 3D models and textures survive repeated switches between the two exhibits.
+# The rest of the trilogy and other devices have not yet been checked.
+status	wip
+tested	v0 OnePlus 8 IN2010 (Snapdragon 865, Adreno 650)
+package	org.nx2a.aa456
+orientation	landscape
