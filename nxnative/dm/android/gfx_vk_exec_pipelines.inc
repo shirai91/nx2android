@@ -37,7 +37,7 @@ typedef struct {
     uint32_t nbind; struct { uint32_t binding, stride, rate, divisor; } bind[17];
     uint32_t ncol, cfmt[8], dfmt, samples, a2c, blend_en, logic_en, logic_op, wmask[8];
     struct { uint32_t src, dst, srca, dsta, eq, eqa; } bl[8];
-    uint32_t clip_neg1, alt, fdz, dual, gs_split;   // fdz: fragment depth; dual: dual-source blending; gs_split: separated geometry effects/rasterization
+    uint32_t clip_neg1, alt, fdz, dual, gs_split, alpha;   // fdz: fragment depth; dual: dual-source blending; gs_split: separated geometry effects/rasterization
     uint64_t um[3], im[3];   // each stage's sampled bindings given integer views (vk_shader_module)
 } pkey;
 static nvn_hmap g_pipes = {.klen = sizeof(pkey)}; static pthread_mutex_t g_pipe_mu = PTHREAD_MUTEX_INITIALIZER;   // the replay thread and the prewarm threads
@@ -110,7 +110,7 @@ static VkPipeline graphics_pipeline(const pkey *k, VkPipelineLayout layout) {
 // ---- pipeline prewarm: every pipeline the game needed is recorded (DM_ROOT/vk_pipelines.bin) and made again at the next boot on background
 // threads, before the game reaches it, so a scene seen once never stalls a frame on a pipeline compile again (the driver's compile, not the
 // pipeline cache's lookup, is the cost: tens of milliseconds per pipeline on Adreno). DM_VK_NOPREWARM=1 turns it off.
-#define PIPE_MAGIC 0x33455050u   // "PPE3"; geometry effects/rasterization now have separate pipeline keys
+#define PIPE_MAGIC 0x34455050u   // "PPE4"; alpha testing joins the separate geometry effects/rasterization keys
 // debug_mode shifted the key's fields without changing its padded size; PPE1 prewarm records otherwise decoded as 76 colour targets and crashed Adreno at startup.
 static FILE *g_prec;
 // The records are written by a thread of their own: a flush to the app's files folder (FUSE) took tens of milliseconds, and made under g_pipe_mu it held up the replay's
@@ -140,6 +140,8 @@ static void *prewarm_thread(void *arg) {
     for (;;) {
         size_t i = __atomic_fetch_add(&g_pw_next, 1, __ATOMIC_RELAXED); if (i >= g_pw_n) break;
         const pkey *k = &g_pw[i];
+        // Persisted keys may come from a device/run with logicOp enabled.
+        if (k->logic_en && !V.has_logic_op) continue;
         pthread_mutex_lock(&g_pipe_mu); int have = nvn_hm_get(&g_pipes, k) != NULL; pthread_mutex_unlock(&g_pipe_mu);
         if (have) continue;
         vkshader_t *stg[3] = {0}; int ok = 1;
@@ -256,7 +258,7 @@ static VkPipeline build_pipeline(const pkey *k, VkPipelineLayout layout, vkshade
     }
     for (int i = 0; i < 3; i++) if (stg[i] && !(i == 1 && k->raster_discard)) {
         VkShaderModule mod = i == 2 && k->gs_split ? stg[i]->gs_mod[k->gs_split - 1] :
-            vk_shader_module(stg[i], k->um[i], k->im[i], k->alt && !k->um[i] && !k->im[i] && !xo[i] ? 1u << 31 : xo[i], i == 1 ? (k->fdz ? 1 : 0) | (k->dual ? 2 : 0) : 0, i == 0 ? vi_flip : 0);
+            vk_shader_module(stg[i], k->um[i], k->im[i], k->alt && !k->um[i] && !k->im[i] && !xo[i] ? 1u << 31 : xo[i], i == 1 ? (k->fdz ? 1 : 0) | (k->dual ? 2 : 0) | (k->alpha ? 4 : 0) : 0, i == 0 ? vi_flip : 0);
         if (i == 0 && vi_scaled && mod == stg[0]->mod) {   // no vertex variant could be made (vk_shader_module fell back to the original): the integer fetch chosen above
             // would feed a float input, which Vulkan leaves undefined. Skip the pipeline, as for a format with no fallback
             static atomic_uchar noted_var; if (!atomic_exchange(&noted_var, 1))

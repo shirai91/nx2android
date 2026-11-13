@@ -7,7 +7,7 @@ static struct {
     uint32_t vattr[16]; vs_st vstream[16]; NVNbufferRange vbuf[16];
     float vp[16][4]; float dnear, dfar; p_scissor sc; int sc_set; uint8_t vp_sw[16][4];   // vp_sw: viewport swizzles XOR the identity (p_vp_swizzle)
     int sref[2], smask[2], swmask[2];
-    p_poly_offset pofs; float blendc[4]; int depth_clamp, rast_discard, prim_restart;
+    p_poly_offset pofs; float blendc[4], alpha_ref; int depth_clamp, rast_discard, prim_restart;
     tex_t rt_col[8], rt_dep; view_t rt_cview[8], rt_dview; uint8_t rt_has_col[8], rt_has_cview[8], rt_has_dep, rt_has_dview; int rt_n; uint32_t rt_bad[8];   // rt_bad: the first word of a colour slot that is not a texture object (traces)
     int64_t row_stride, image_stride;
     // the open render pass

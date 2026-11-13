@@ -3,6 +3,7 @@
 // stage, filled from the shader's reflection: uniform slots, the shader's c1, the driver's c0 / c2 segments, textures and samplers by handle, images, storage
 // buffers) and the draw. Render passes open lazily at the first draw or clear after SetRenderTargets and close before anything that is not drawing.
 // Version 1 orders everything with whole-pipeline barriers around passes, copies and dispatches.
+#include "spv_alpha.h"
 #include "gfx_vk.h"
 #include "gfx_vk_slot.h"
 #include "nvn_hmap.h"
