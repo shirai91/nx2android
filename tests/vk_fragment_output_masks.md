@@ -26,7 +26,8 @@ magenta diagnostic shader. The runner builds fixtures only; it never contacts a
 device. The native host build is the usual Vulkan `dm/android/build.py --exe`.
 
 The replay adapts the donor's seeded-attachment oracle to four attachments and
-COPY, since native logic operations remain a separate gap. It checks 64 pixels,
+COPY to isolate fragment-output eligibility. Native logic operations have a
+[separate replay](vk_logic_operations.md). This fixture checks 64 pixels,
 float attachments left untouched, scissor boundaries, output-map changes with
 the same attachments, pipeline reuse and readback guards. An observer checks the
 actual production pipeline masks and blend flags before driver creation. The old

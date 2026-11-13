@@ -1,5 +1,5 @@
 // Donor 742318ae5 tests/logic.inc sparse_mrt_outputs: seeded MRT holes survive.
-// Target adaptation uses COPY (logic operations are a separate missing port).
+// Target adaptation uses COPY to isolate fragment-output eligibility.
 #include "hle.h"
 #include "nvn_obj.h"
 #include "nvn_mtl.h"
