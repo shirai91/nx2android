@@ -49,4 +49,43 @@ int main(void) {
    result=subprocess.run([cc,'-std=c11','-O1','-fsanitize=address,undefined',str(p/'test.c'),'-o',str(p/'test')],capture_output=True,text=True)
    self.assertEqual(result.returncode,0,result.stdout+result.stderr)
    result=subprocess.run([str(p/'test')],capture_output=True,text=True);self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+ def test_persisted_enabled_keys_respect_current_device(self):
+  source=(W/'nxnative/dm/android/gfx_vk_exec.c').read_text()
+  a=source.index('static void *prewarm_thread(');b=source.index('\n}',a)+2
+  code=r'''#include <assert.h>
+#include <stdint.h>
+#include <stddef.h>
+#include <pthread.h>
+#define pthread_setname_np(...) ((void)0)
+#define setpriority(...) ((void)0)
+#define VKLOG(...) ((void)0)
+typedef void *VkPipeline;typedef void *VkPipelineLayout;typedef void *VkDescriptorSetLayout;
+typedef struct {uint64_t key[3];unsigned logic_en,raster_discard;} pkey;
+typedef struct {unsigned set;VkDescriptorSetLayout dsl;} vkshader_t;
+static pkey saved[2]={{.key={1},.logic_en=1},{.key={2}}},*g_pw=saved;
+static size_t g_pw_n=2,g_pw_next,g_pw_done;
+static int g_pipes,built,looked;static pthread_mutex_t g_pipe_mu=PTHREAD_MUTEX_INITIALIZER;
+static struct {int has_logic_op;void *dev;} V;
+static void *nvn_hm_get(void *map,const void *key){(void)map;(void)key;return NULL;}
+static void nvn_hm_put(void *map,const void *key,void *value){(void)map;(void)key;(void)value;}
+static vkshader_t *vk_shader(uint64_t key,int stage){(void)key;(void)stage;static vkshader_t s={0,(void*)1};looked++;return &s;}
+static VkPipelineLayout vk_pipeline_layout(VkDescriptorSetLayout *sets,int n){(void)sets;(void)n;return (void*)2;}
+static VkPipeline build_pipeline(const pkey *k,VkPipelineLayout layout,vkshader_t *const *stages){
+ (void)layout;(void)stages;assert(V.has_logic_op || !k->logic_en);built++;return (void*)3;
+}
+static void vkDestroyPipeline(void *dev,VkPipeline p,void *a){(void)dev;(void)p;(void)a;assert(0);}
+'''+source[a:b]+r'''
+int main(void){
+ prewarm_thread(NULL);assert(built==1 && looked==1);
+ V.has_logic_op=1;built=looked=0;g_pw_next=g_pw_done=0;
+ prewarm_thread(NULL);assert(built==2 && looked==2);
+}
+'''
+  cc=shutil.which('clang')
+  if not cc:self.skipTest('clang required')
+  with tempfile.TemporaryDirectory() as d:
+   p=Path(d);(p/'test.c').write_text(code)
+   result=subprocess.run([cc,'-std=c11','-O1','-fsanitize=address,undefined',str(p/'test.c'),'-o',str(p/'test')],capture_output=True,text=True)
+   self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+   result=subprocess.run([str(p/'test')],capture_output=True,text=True);self.assertEqual(result.returncode,0,result.stdout+result.stderr)
 if __name__=='__main__':unittest.main()
