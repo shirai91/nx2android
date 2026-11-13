@@ -43,6 +43,10 @@ class DescriptorCapacity(unittest.TestCase):
 ''' + between(header, 'enum { RK_SUPPORT', '_Static_assert(sizeof(dmsv_bind)') + r'''
 static struct { uint64_t tex[6][256], img[6][32], samp[6][32], tex_sseq[6][256]; } S;
 static uint64_t g_tex_sseq, g_num_um, g_num_im;
+// GCC: the harness keeps the address of stage_set's scratch array to check the writes into it, and reads it only while that call runs
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic ignored "-Wdangling-pointer"
+#endif
 static VkDescriptorImageInfo *images;
 static uint32_t image_capacity, prefix;
 static int expect_reject, rejected;
