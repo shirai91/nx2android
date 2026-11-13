@@ -1140,7 +1140,10 @@ static void shader_cpu_ready(const vkshader_t *s, int stage) {
             if (u->addr && extent >= 4 && (uint64_t)b->off <= extent - 4 && u->addr <= UINT64_MAX - (uint64_t)b->off - 8)
                 cpu_ready(u->addr + b->off, extent - (uint64_t)b->off >= 8 ? 8 : 4);
         }
-        if (b->samp == RS_UBO) uniform_ready(stage, b->samp_arg & 0xff, b->samp_arg >> 8, 1);
+        if (b->samp == RS_UBO) {
+            uint32_t count = b->kind == RK_TEX || b->kind == RK_TEX_UBO || b->kind == RK_TEX_C2A ? (b->count ? b->count : 32) : 1;
+            uniform_ready(stage, b->samp_arg & 0xff, b->samp_arg >> 8, count);
+        }
     }
 }
 static void graphics_cpu_ready(void) { for (int st = 0; st < 3; st++) shader_cpu_ready(S.sh[st], st); }
@@ -1360,6 +1363,17 @@ static int set_memo_get(int st, vkshader_t *s, uint32_t *dofs) {
     memcpy(dofs, m->dofs, sizeof *dofs * (size_t)s->ndyn); g_num_um = m->um; g_num_im = m->im;
     return 1;
 }
+// nxnative a603c9954 sampled_handle: independent UBO sampler element k
+// comes from soff + 8*k. Fixed slots/IDs and same-word handles stay unchanged.
+// The target stores source register and offset together in signed samp_arg.
+static dmsv_bind sampler_element(const dmsv_bind *b, uint32_t element) {
+    dmsv_bind out = *b;
+    if (b->samp == RS_UBO) {
+        int64_t packed = (int64_t)b->samp_arg + 8ll * element * 256;
+        out.samp_arg = b->samp_arg < 0 || packed > INT32_MAX ? -1 : (int32_t)packed;
+    }
+    return out;
+}
 // dofs (at least s->ndyn entries): the dynamic offsets of the set's dynamic uniform buffers, in binding order as vkCmdBindDescriptorSets takes them
 // indirect_c0 (compute only): a fresh segment for this dispatch's GPU-written counts; never put mutable bytes in drv_shared's content cache.
 static VkDescriptorSet stage_set(int st, vkshader_t *s, uint32_t *dofs, VkDescriptorBufferInfo *indirect_c0) {
@@ -1421,7 +1435,8 @@ static VkDescriptorSet stage_set(int st, vkshader_t *s, uint32_t *dofs, VkDescri
                 uint64_t h = b->kind == RK_TEX ? vk_tex_slot_handle(S.tex[st], S.img[st], (unsigned)b->reg) :
                              b->kind == RK_TEX_UBO ? mem_handle(ubo_word(st, b->reg, b->off + 8 * k)) : (b->off >= 0 ? c2_handle(st, b->off + 8 * k) : 0);
                 g_tex_sseq = b->kind == RK_TEX && b->reg >= 0 && b->reg < 256 ? S.tex_sseq[st][b->reg] : 0;
-                int num = tex_desc_for(st, b, h, &ii[nii + k], 0);
+                dmsv_bind element = sampler_element(b, (uint32_t)k);
+                int num = tex_desc_for(st, &element, h, &ii[nii + k], 0);
                 if (num && i < 64) { if (num == 1) g_num_um |= 1ull << i; else g_num_im |= 1ull << i; }
             }
             wr->pImageInfo = &ii[nii]; nii += (uint32_t)cnt; wr->descriptorCount = (uint32_t)cnt; wr->descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; nw++;

@@ -60,7 +60,7 @@ int main(void){
  S.ubo[1][7].size=352;shader_cpu_ready(&s,1);assert(reads==before);
  b.off=0;b.count=1;S.ubo[1][7].size=0;shader_cpu_ready(&s,1);assert(reads==before+1&&address==0x10000&&length==4);
  b=(dmsv_bind){.kind=RK_SBUF_UBO,.reg=2,.off=16};S.ubo[5][2]=(p_bind_buf){0x20000,32};shader_cpu_ready(&s,5);assert(address==0x20010&&length==8);
- b=(dmsv_bind){.kind=RK_TEX_UBO,.reg=-1,.samp=RS_UBO,.samp_arg=3|(64<<8)};S.ubo[0][3]=(p_bind_buf){0x30000,80};shader_cpu_ready(&s,0);assert(address==0x30040&&length==4);
+ b=(dmsv_bind){.kind=RK_TEX_UBO,.reg=-1,.count=1,.samp=RS_UBO,.samp_arg=3|(64<<8)};S.ubo[0][3]=(p_bind_buf){0x30000,80};shader_cpu_ready(&s,0);assert(address==0x30040&&length==4);
  before=reads;shader_cpu_ready(&s,-1);shader_cpu_ready(&s,6);S.ubo[0][3].addr=UINT64_MAX-8;shader_cpu_ready(&s,0);assert(reads==before);
  puts("GPU readiness current/prior/coverage/pressure and descriptor bounds PASS");
 }
