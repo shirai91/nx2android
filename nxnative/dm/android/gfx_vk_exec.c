@@ -183,9 +183,16 @@ static void x_read(void) { const char *c = getenv("DM_VK_CB_DRAWS"); g_x_cbdraws
 static int g_rc_skip;   // a render-enable block evaluated false is active
 #define RC_PEND 256
 static struct { uint64_t addr; int kind; } g_rc_pend[RC_PEND]; static int g_rc_npend;   // reports replayed in this submission: kind 1 = timestamp (counter 0), 2 = another counter (unknown)
-static uint64_t g_rc_occ[4096];   // addresses ever written by a non-timestamp report (open addressing): conditions on them keep drawing
-static void rc_occ_add(uint64_t a) { for (uint32_t i = (uint32_t)(a >> 4) & 4095, k = 0; k < 4096; k++, i = (i + 1) & 4095) { if (g_rc_occ[i] == a) return; if (!g_rc_occ[i]) { g_rc_occ[i] = a; return; } } }
-static int rc_occ_has(uint64_t a) { for (uint32_t i = (uint32_t)(a >> 4) & 4095, k = 0; k < 4096; k++, i = (i + 1) & 4095) { if (g_rc_occ[i] == a) return 1; if (!g_rc_occ[i]) return 0; } return 0; }
+// Addresses ever written by a non-timestamp report: conditions on them keep drawing. A set that grows: the fixed 4096-slot table this was filled up in The Legend of
+// Zelda: Ocarina of Time (its reports move through their buffer as the camera turns), after which every report and every condition walked all 4096 slots (0.9 s of the
+// replay thread's 4.4 s over 8 s of camera turns, Odin 3) and new addresses were no longer recorded. Replay thread only
+static nvn_hmap g_rc_occ = {.klen = 8};
+static void rc_occ_add(uint64_t a) {
+    if (nvn_hm_get(&g_rc_occ, &a)) return;
+    nvn_hm_put(&g_rc_occ, &a, (void *)1);
+    if (g_rc_occ.n >= 4096 && !(g_rc_occ.n & (g_rc_occ.n - 1))) VKLOG("render conditions: %u addresses written by occlusion reports so far", g_rc_occ.n);
+}
+static int rc_occ_has(uint64_t a) { return nvn_hm_get(&g_rc_occ, &a) != NULL; }
 static void rc_note(uint64_t a, int kind) {
     if (kind == 2) rc_occ_add(a);
     for (int i = 0; i < g_rc_npend; i++) if (g_rc_pend[i].addr == a) { g_rc_pend[i].kind = kind; return; }
