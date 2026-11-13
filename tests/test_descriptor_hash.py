@@ -29,7 +29,7 @@ class DescriptorHash(unittest.TestCase):
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-static uint64_t g_set_epoch = 1, g_set_hits, g_set_new, g_ns_set_hash, g_ns_set_new;
+static uint64_t g_set_epoch = 1, g_set_hits, g_set_new, g_set_key_bypass, g_ns_set_hash, g_ns_set_new;
 static int g_tracing, g_x_nosetc, updates, force_collision;
 static struct { VkDevice dev; } V;
 static uint64_t tick(void) { return 0; }
@@ -55,7 +55,7 @@ static VkDescriptorSet cached(VkDescriptorSetLayout layout, VkWriteDescriptorSet
 }
 static void reset(void) {
     memset(g_setc, 0, sizeof g_setc);
-    g_set_epoch++; g_set_hits = g_set_new = updates = 0;
+    g_set_epoch++; g_set_hits = g_set_new = g_set_key_bypass = updates = 0;
     g_tracing = g_x_nosetc = 0;
 }
 static void image_padding(VkDescriptorImageInfo *info, unsigned char byte) {
@@ -146,6 +146,7 @@ static void ownership_and_modes(void) {
         assert(a != b); g_tracing = g_x_nosetc = 0;
     }
     g_set_epoch++; assert(cached(VK_NULL_HANDLE, &w, 1) != restored);
+    assert(g_set_key_bypass == 0);
 }
 static VkDescriptorSet normalized_set(VkDescriptorBufferInfo value, uint32_t *offset) {
     struct { int dyn[1]; } shader = {{1}}, *s = &shader;
@@ -194,16 +195,26 @@ static void exhausted_storage(void) {
         if (same != a) { bypassed = 1; break; }
         previous = a;
     }
-    assert(bypassed);
+    assert(bypassed && g_set_key_bypass == 2);
+    // A retained entry still hits even after later misses exhaust the arena.
+    b.offset -= 256;
+    assert(cached(VK_NULL_HANDLE, &w, 1) == previous && g_set_key_bypass == 2);
+    b.offset += 256;
     VkDescriptorSet a = cached(VK_NULL_HANDLE, &w, 1); assert(cached(VK_NULL_HANDLE, &w, 1) != a);
+    assert(g_set_key_bypass == 4);
+    // Explicitly disabled caching is not an arena-capacity bypass.
+    g_x_nosetc = 1; cached(VK_NULL_HANDLE, &w, 1); g_x_nosetc = 0;
+    g_tracing = 1; cached(VK_NULL_HANDLE, &w, 1); g_tracing = 0;
+    assert(g_set_key_bypass == 4);
     g_set_epoch++; a = cached(VK_NULL_HANDLE, &w, 1);
-    assert(cached(VK_NULL_HANDLE, &w, 1) == a);
+    assert(cached(VK_NULL_HANDLE, &w, 1) == a && g_set_key_bypass == 4);
 }
 static void oversized_key(void) {
     reset(); VkDescriptorImageInfo images[4096];
     VkWriteDescriptorSet w = image_write(images, 4096);
     VkDescriptorSet a = cached(VK_NULL_HANDLE, &w, 1);
     assert(cached(VK_NULL_HANDLE, &w, 1) != a); // unrepresentable key: allocate, never trust hash alone
+    assert(g_set_key_bypass == 0);
     w.descriptorCount = 32; a = cached(VK_NULL_HANDLE, &w, 1);
     assert(cached(VK_NULL_HANDLE, &w, 1) == a);
 }

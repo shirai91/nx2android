@@ -1236,6 +1236,7 @@ static size_t g_set_key_used;
 // The maximum live prefix is c2's 0x968 bytes; bytes beyond each prefix are zero.
 // GPU-written segments must stay outside this immutable cache.
 static struct { uint64_t h, epoch; VkBuffer b; VkDeviceSize o; size_t n; uint8_t data[0x968]; } g_drvc[DRVC];
+uint64_t g_set_key_bypass;   // cacheable misses left uncached because the per-submission key arena is full
 uint64_t g_set_hits, g_set_new, g_ns_set_build, g_ns_set_hash, g_ns_set_new;   // descriptor sets: reused, new; time collecting their descriptors, hashing them, allocating and writing new ones
 // content hash of descriptor sets and driver segments: 8 bytes a step (a set with 32-slot texture arrays is several KB, which byte-wise FNV took milliseconds a frame over)
 static inline uint64_t fnv(uint64_t h, const void *p, size_t n) {
@@ -1498,7 +1499,7 @@ static VkDescriptorSet stage_set(int st, vkshader_t *s, uint32_t *dofs, VkDescri
             memcpy(g_set_keys + g_set_key_used, key, nk * sizeof *key);
             g_setc[k].h = h; g_setc[k].epoch = g_set_epoch; g_setc[k].l = s->dsl; g_setc[k].set = set; g_setc[k].off = g_set_key_used; g_setc[k].n = nk;
             g_set_key_used += nk;
-        }
+        } else if (cacheable) g_set_key_bypass++;
         g_ns_set_new += tick() - tb2; }
     // verify: the same content (hash), integer-texel bindings and dynamic offsets as the memo gave. A lone difference in dofs alone can be a driver segment
     // copied again after its g_drvc entry was taken by another (the memo's copy is as good); anything repeated is a dependency the memo misses

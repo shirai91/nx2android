@@ -275,6 +275,13 @@ pending legacy migrations remain eligible for retry. `DM_VK_NOPCACHE` still mean
 start empty, while allowing newly built pipelines to be saved. Bump `PCACHE_ABI`
 when changing the renderer's persistent cache contract.
 
+The replay statistics printed every 600 presents include cumulative descriptor
+sets reused, new sets and `key arena bypasses`. A bypass counts each otherwise
+cacheable miss whose owned key does not fit in the current submission's bounded
+arena. Existing entries can still hit after exhaustion. Tracing, explicitly
+disabled caching and oversized keys do not increment this counter. The arena
+resets each submission; the counter remains cumulative for the host process.
+
 ## Optional native keyboard
 
 `python -m porter port <folder> --native-keyboard` packages `org.nx2a.GameActivity` and its Unicode EditText dialog. Combine it with `--external-display` to select `org.nx2a.KeyboardExternalActivity`; external display alone keeps its controller keyboard. These opt-in activities require JDK `javac` plus SDK platform and build-tools; ordinary NativeActivity builds remain code-less and keep the controller keyboard. Installation and save requests resolve the installed package's launcher activity, including ports built before this option existed.
