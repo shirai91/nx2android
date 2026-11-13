@@ -78,14 +78,14 @@ class ExportChecks(unittest.TestCase):
         try: products = importlib.import_module('shader_products')
         except ModuleNotFoundError: products = None
         numeric = {}
-        for name in ('spv_half', 'spv_precise', 'spv_texture_offsets', 'spv_pool'):
+        for name in ('spv_half', 'spv_precise', 'spv_texture_offsets', 'spv_pool', 'spv_warp'):
             try: numeric[name] = importlib.import_module(name)
             except ModuleNotFoundError: numeric[name] = None
         env = dict(**numeric, collections=collections, cf=cf, os=os, json=json, struct=struct,
                    tempfile=tempfile, subprocess=subprocess, dmsv=dmsv, Path=Path, re=re,
                    shader_products=products, GAME=game, MAP=str(table), XLATE_DLL='translator.dll',
                    a=SimpleNamespace(pkg=str(self.root/'pkg'), out=str(self.out), capture=None, keys='',
-                                     jobs=self.jobs, dotnet='dotnet', zstd=0, report=str(self.report)),
+                                     jobs=self.jobs, dotnet='dotnet', zstd=0, report=str(self.report), spirv_opt=None),
                    STAGES={'vs': 0, 'cs': 5}, kinds_all=collections.Counter(),
                    captured=lambda _: {}, records=lambda _: [b'fixture'],
                    job_for=lambda key, stage, rec, w: ({'key': key, 'attr': {}}, b''),
@@ -107,6 +107,38 @@ class ExportChecks(unittest.TestCase):
         with dmsv.Bundle(self.out) as bundle: exported=bytes(bundle.spv(bundle.entries[0]))
         result=subprocess.run(['spirv-val','--target-env','vulkan1.1','-'],input=exported,capture_output=True)
         self.assertEqual(result.returncode,0,result.stderr.decode())
+
+    @unittest.skipUnless(shutil.which('spirv-as') and shutil.which('spirv-val'), 'requires SPIR-V tools')
+    def test_compute_warp_reaches_published_bundle(self):
+        # Independent assembly: a shuffle from lane31 must become a logical32 exchange.
+        source = """OpCapability Shader
+OpCapability GroupNonUniformShuffle
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %main "main" %lane
+OpExecutionMode %main LocalSize 64 1 1
+OpDecorate %lane BuiltIn SubgroupLocalInvocationId
+%void = OpTypeVoid
+%uint = OpTypeInt 32 0
+%fn = OpTypeFunction %void
+%input = OpTypePointer Input %uint
+%lane = OpVariable %input Input
+%scope = OpConstant %uint 3
+%last = OpConstant %uint 31
+%main = OpFunction %void None %fn
+%entry = OpLabel
+%id = OpLoad %uint %lane
+%value = OpGroupNonUniformShuffle %uint %scope %id %last
+OpReturn
+OpFunctionEnd
+"""
+        raw = subprocess.check_output(['spirv-as', '--target-env', 'vulkan1.1', '-', '-o', '-'], input=source.encode())
+        with mock.patch(__name__ + '.module', return_value=raw): self.run_export()
+        with dmsv.Bundle(self.out) as bundle: exported = bytes(bundle.spv(bundle.entries[0]))
+        from spv_module import decode, opcode
+        ops = list(map(opcode, decode(exported)[1]))
+        self.assertNotIn(345, ops)
+        self.assertEqual(ops.count(224), 2)
+        subprocess.run(['spirv-val', '--target-env', 'vulkan1.1', '-'], input=exported, check=True)
 
     def test_numeric_failure_omits_only_affected_shader(self):
         self.second_shader = True
