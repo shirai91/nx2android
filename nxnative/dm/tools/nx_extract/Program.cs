@@ -141,9 +141,18 @@ static class P {
     // Open an NSP (PFS0) or the secure partition of an XCI, import the common tickets, list all NCAs
     static List<Nca> OpenNsp(KeySet ks, string path) {
         IFileSystem pfs; var st0 = new LocalStorage(path, FileAccess.Read);
-        byte[] magic = new byte[4]; st0.Read(0x100, magic).ThrowIfFailure();
-        if (System.Text.Encoding.ASCII.GetString(magic) == "HEAD") {   // XCI: the card header's magic at 0x100
-            var xci = new Xci(ks, st0);
+        byte[] magic = new byte[4]; st0.Read(0, magic).ThrowIfFailure();
+        st0.GetSize(out long size).ThrowIfFailure(); long card = -1;
+        if (System.Text.Encoding.ASCII.GetString(magic) != "PFS0") {   // an NSP's payload may contain HEAD too
+            foreach (long at in new long[] { 0, 0x1000 }) {   // as identification's dump_files: a card dump may retain its key area
+                if (size < at + 0x104) continue;
+                st0.Read(at + 0x100, magic).ThrowIfFailure();
+                if (System.Text.Encoding.ASCII.GetString(magic) == "HEAD") { card = at; break; }
+            }
+        }
+        if (card >= 0) {
+            // The returned NCAs still read this storage: keep the borrowed view and its base alive, as for an ordinary card.
+            var xci = new Xci(ks, card == 0 ? st0 : new SubStorage(st0, card, size - card));
             if (!xci.HasPartition(XciPartitionType.Secure)) throw new Exception($"no secure partition in {path}");
             pfs = xci.OpenPartition(XciPartitionType.Secure);
         } else {
