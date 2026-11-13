@@ -66,7 +66,8 @@ enum { AMOTION_EVENT_AXIS_X, AMOTION_EVENT_AXIS_Y, AMOTION_EVENT_AXIS_Z, AMOTION
 typedef struct { int source, type, action, key, device; float x, y, axis[10]; } AInputEvent;
 typedef int ANativeWindow;
 static int width, height, window, vibration = -1, touches, menu_opens, pad_publications, g_pad_used;
-static uint64_t g_btn, g_touch_btn, touch_buttons;
+static uint64_t g_btn, touch_buttons;
+static _Atomic uint64_t g_touch_btn;   // as in front_android.c: the touch handler swaps it with atomic_exchange
 static float g_ax[8];
 static int32_t pad_sticks[4];
 static uint64_t pad_buttons;
