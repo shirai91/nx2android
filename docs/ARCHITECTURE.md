@@ -107,6 +107,12 @@ captures and translator. The new receipt format rebuilds existing ports once.
 | data | The files the app reads from `/sdcard/Android/data/<package>/files` | `<out>/<App>-data/{mods,RomFS,aoc,sysdata,shaders.dmsv,nintendo_ext.ttf,env.txt,settings.txt,nx2a-data.json}` (+ `fpslock.tsv` with `--fps60`); the button-icon font is made in `android/font/` |
 | install | `adb install`, the profile's `requires` checked against the device, the data pack pushed (optional); `--romfs-at`: the RomFS read from a folder already on the device (below) | |
 
+An NSP or XCI contains NCA entries. If LibHac cannot open an entry's header,
+`nx_extract` names both the input container and the NCA entry, includes LibHac's
+reason, and stops with exit code 4. This diagnostic does not establish whether
+the input or the keys caused the rejection. `--allow-damaged` does not bypass
+header failures; filesystem integrity errors keep their existing handling.
+
 RomFS in the data pack is hard-linked to the extraction when the volume allows it, so it takes no extra space.
 
 `--vulkan-driver <lib.so>` packs a Vulkan driver (Mesa's Turnip) in the APK under a `lib*.so` name, beside libadrenotools and its hook libraries, and the data pack's `env.txt` names it (`DM_VK_DRIVER`; `gfx_vk_core.c` loads it through adrenotools, and falls back to the device's driver when it does not load). `python -m porter driver <lib.so> [--package …]` changes the driver of a port already on the device without the game's files (`porter/driver.py`): the installed APK is pulled, written again by `dm/android/apk/apkdriver.py` with the new library in place of the old (every other entry kept, page-aligned and signed again with the player's key by `apksign.py`, the ZIP writer and v2 signer `mkapk.py` uses), installed over the app (its saves stay), and `env.txt`'s `DM_VK_DRIVER` row names it; `--system` drops the library and the row (the device's driver). An APK ported without `--vulkan-driver` has no libadrenotools and is refused: it needs one port with a driver first.
