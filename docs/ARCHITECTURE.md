@@ -60,6 +60,8 @@ Copied pools can opt into host-cached memory with `DM_VK_POOL_CACHED=1` (off by 
 
 Vulkan indirect compute dispatches copy their three GPU-written group counts into submission scratch memory in command order. A shader that reads c0 gets a private driver segment, outside the immutable segment cache, with the counts at `c0 + 0x200`; the dispatch reads that same record. Without c0, only a 12-byte record is allocated. Argument records may cross chunks of the same pool, with each chunk's buffer offset preserved. All words are validated before any argument copy, and a transfer barrier makes the record visible to both uniform reads and indirect dispatch. Scratch storage is retained until the submission completes. Direct compute dispatches and other driver segments retain their existing content caching.
 
+The shader translator's existing native-perspective compensation rule accepts either outer operand order in `(input * FragCoord.w) * (1 / FragCoord.w)`. Both alpha depth and material variants must reach the same native interpolated input; leaving the multiply/divide round trip in only one variant can change alpha coverage and retain old HDR colour. The FP32, input-load, FragCoord.w and constant-one guards remain in place.
+
 ## Game profiles on Android
 
 A profile is offered for Android when it has an `android.tsv`; the profiles without one (52 of the 54 today, upstream's iOS games) show as "ios only": an experimental port can still try them. `android.tsv` holds, one `key<TAB>value` row each:

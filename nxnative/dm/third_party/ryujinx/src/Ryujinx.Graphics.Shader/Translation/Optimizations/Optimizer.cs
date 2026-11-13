@@ -320,6 +320,15 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
             Operand lhs = operation.GetSource(0);
             Operand rhs = operation.GetSource(1);
 
+            // nxnative: explicit FMUL can put the reciprocal first. Missing that order left the
+            // perspective round trip in Odyssey's alpha depth pass but not its material pass;
+            // their alpha coverage disagreed and retained HDR colour overflowed across frames.
+            if (lhs.AsgOp is Operation lhsOp && lhsOp.Inst == (Instruction.FP32 | Instruction.Divide) &&
+                rhs.AsgOp is Operation rhsOp && rhsOp.Inst == (Instruction.FP32 | Instruction.Multiply))
+            {
+                (lhs, rhs) = (rhs, lhs);
+            }
+
             // Check LHS of the main multiplication operation. We expect an input being multiplied by gl_FragCoord.w.
             if (lhs.AsgOp is not Operation attrMulOp || attrMulOp.Inst != (Instruction.FP32 | Instruction.Multiply))
             {
