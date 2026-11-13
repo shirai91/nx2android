@@ -735,8 +735,8 @@ static VkSampler make_sampler(const samp_par *p) {
     ci.minLod = p->lod_min; ci.maxLod = p->minf <= 1 ? 0.25f : p->lod_max;   // no mipmap filter: level 0 only (GL's rule)
     // DM_VK_MIP_MAX=<level> (A/B): cap every sampler's chosen mip at this level (0 = always level 0). A ground plane seen at a shallow angle picks a very high mip;
     // if a material reads flat while its neighbours are detailed, this says whether the mip choice or the texture/UVs is at fault
-    { static int mm = -1; if (mm < 0) { const char *e = getenv("DM_VK_MIP_MAX"); mm = e && *e ? atoi(e) : -1; }
-      if (mm >= 0) { ci.maxLod = (float)mm; if (ci.minLod > ci.maxLod) ci.minLod = ci.maxLod; if (ci.mipLodBias < 0) ci.mipLodBias = 0; } }   // (maxLod < minLod is invalid Vulkan usage)
+    { static int mm = -2; if (mm < -1) { const char *e = getenv("DM_VK_MIP_MAX"); mm = e && *e ? atoi(e) : -1; }   // -2: not read, -1: unset
+      if (mm >= 0) { if (ci.maxLod > (float)mm) ci.maxLod = (float)mm; if (ci.minLod > ci.maxLod) ci.minLod = ci.maxLod; if (ci.mipLodBias < 0) ci.mipLodBias = 0; } }   // (maxLod < minLod is invalid Vulkan usage)
     int border = ci.addressModeU == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER || ci.addressModeV == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER || ci.addressModeW == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
     ci.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
     if (border) {

@@ -1712,7 +1712,8 @@ static int prepare_draw(int prim, int indexed) {
     // counter-clockwise front faces in Vulkan's framebuffer: Vulkan's clip space has y down, Metal's up (nvn_mtl.m: CCW when (front == CCW) != lower left), and the
     // lower-left origin mode flips the viewport again, so CCW when (front == CCW) == lower left. Taken as given, upper-left games (NEO) culled their ground and walls
     k.front = g_front_ovr == 0 || g_front_ovr == 1 ? (uint32_t)g_front_ovr : (((S.poly.front == NVN_FRONT_FACE_CCW) == (g_lower_left != 0)) != (g_flipy != 0)) ^ (g_front_ovr == 2);
-    { static int n; if (n < 16) { static int seen[16]; int b = (S.poly.cull & 3) << 2 | (S.poly.front & 1) << 1 | (g_lower_left != 0); if (!seen[b]) { seen[b] = 1; n++;
+    static int plog = -1; if (plog < 0) plog = getenv("DM_VK_PIPE_LOG") ? atoi(getenv("DM_VK_PIPE_LOG")) > 0 : 0;   // the polygon-state lines come with DM_VK_PIPE_LOG: unset costs one branch per draw
+    if (plog) { static int n; if (n < 16) { static int seen[16]; int b = (S.poly.cull & 3) << 2 | (S.poly.front & 1) << 1 | (g_lower_left != 0); if (!seen[b]) { seen[b] = 1; n++;
         VKLOG("polygon state: cull %d, front %d, lower-left origin %d, flipy %d → Vulkan cull %u front %u (DM_VK_FRONT=%d, DM_VK_NOCULL=%d)",
               (int)S.poly.cull, (int)S.poly.front, g_lower_left != 0, g_flipy != 0, k.cull, k.front, g_front_ovr, g_no_cull); } } }
     k.mode = S.poly.mode; k.depth_clamp = S.depth_clamp;
