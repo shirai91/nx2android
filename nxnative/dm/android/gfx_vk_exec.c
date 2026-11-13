@@ -867,7 +867,7 @@ static void bind_program(const p_bind_program *bp) {
     S.prog_ok = S.sh[0] || S.sh[5];   // a vertex-only program draws depth only (prepare_draw)
 }
 typedef struct {
-    uint64_t key[3]; uint32_t pool_variant[3], has_pools; uint32_t topo, restart, raster_discard, cull, front, mode, depth_clamp, bias_en, debug_mode;
+    uint64_t key[3]; uint32_t pool_variant[3], has_pools, pool_gs; uint32_t topo, restart, raster_discard, cull, front, mode, depth_clamp, bias_en, debug_mode;
     uint32_t dt, dw, df, st, sf[2], sfail[2], szfail[2], szpass[2];
     uint32_t nattr; struct { uint32_t loc, binding, fmt, off; } attr[16];
     uint32_t nbind; struct { uint32_t binding, stride, rate, divisor; } bind[17];
@@ -1028,7 +1028,7 @@ static void build_dump(void) {   // (the crash handler: no locks, no allocation)
     if (!n) fprintf(stderr, "[dm] [vk] no pipeline was being built\n");
 }
 static VkPipeline build_pipeline(const pkey *k, VkPipelineLayout layout, vkshader_t *const stg_in[3]) {
-    VkPipeline p; vkshader_t *stg[3] = {stg_in[0], stg_in[1], stg_in[2] ? (stg_in[2]->has_pools ? stg_in[2] : vk_shader_gs_topo(stg_in[2], (VkPrimitiveTopology)k->topo)) : NULL};
+    VkPipeline p; vkshader_t *stg[3] = {stg_in[0], stg_in[1], stg_in[2] ? (k->pool_gs ? stg_in[2] : vk_shader_gs_topo(stg_in[2], (VkPrimitiveTopology)k->topo)) : NULL};
     int bs = build_begin();
     if (bs >= 0) { snprintf(g_build[bs].what, sizeof g_build[bs].what, "graphics pipeline, shaders %016llx %016llx %016llx; topology %u, polygon mode %u, samples %u, "
             "%u colour targets (formats %u %u %u %u), depth format %u; raster discard %u, fragment depth variant %u, dual source %u, transform feedback %d, logic op %u, "
@@ -1702,7 +1702,14 @@ static int prepare_draw(int prim, int indexed) {
     k.dual = (k.blend_en & 1) && S.sh[1] && !k.raster_discard && (SRC1F(k.bl[0].src) || SRC1F(k.bl[0].dst) || SRC1F(k.bl[0].srca) || SRC1F(k.bl[0].dsta));
     #undef SRC1F
     k.clip_neg1 = !g_depth_zero;
-    // layout and pipeline    if(g_pool_gs_source && g_pool_gs_source->has_pools)S.sh[2]=vk_shader_gs_topo(g_pool_gs_source,(VkPrimitiveTopology)k.topo);
+    // layout and pipeline
+    if(g_pool_gs_source) {
+        vkshader_t *gs=vk_shader_gs_topo(g_pool_gs_source,(VkPrimitiveTopology)k.topo);
+        // Topology variants can have different optimized resource interfaces.
+        // Resolve from the bound original on every draw, including no-pool variants.
+        if(gs->has_pools || g_pool_gs_source->has_pools) {S.sh[2]=gs;k.pool_gs=k.has_pools=1;}
+        else S.sh[2]=g_pool_gs_source;
+    }
     for(int st=0;st<3;st++)if(S.sh[st] && !(st==1 && k.raster_discard)) {
         if(!prepare_resource_pools(st,&S.sh[st]))return 0;
         k.key[st]=S.sh[st]->key;k.pool_variant[st]=S.sh[st]->pool_variant;k.has_pools|=S.sh[st]->has_pools;

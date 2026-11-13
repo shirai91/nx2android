@@ -22,18 +22,30 @@ static VkImageView resource_pool_view(const dmsv_bind *b,uint64_t handle) {
     const tex_t *t=NULL;const view_t *v=NULL;unsigned id=(unsigned)(handle&0xfffff);
     if(!id || !vk_tex_by_id((int)id,&v,&t) || !t || t->d.target==NVN_TEXTURE_TARGET_BUFFER)return dummy;
     vkimg_t *im=vk_tex(t);if(!im)return dummy;
-    if(b->dim==0 || (t->d.target==NVN_TEXTURE_TARGET_3D)!=(b->dim==2) || !!(b->flags&2)!=(im->samples>1) ||
+    if(b->dim==0 || im->vtype==VK_IMAGE_VIEW_TYPE_1D || im->vtype==VK_IMAGE_VIEW_TYPE_1D_ARRAY ||
+       (im->vtype==VK_IMAGE_VIEW_TYPE_3D)!=(b->dim==2) || !!(b->flags&2)!=(im->samples>1) ||
        (b->dim==3 && (im->layers<6 || im->w!=im->h || im->samples!=VK_SAMPLE_COUNT_1_BIT)))return dummy;
-    VkFormat fit=VK_FORMAT_UNDEFINED;
+    if(v && v->set_target && (v->target==NVN_TEXTURE_TARGET_1D || v->target==NVN_TEXTURE_TARGET_1D_ARRAY ||
+       (b->dim==2 && v->target!=NVN_TEXTURE_TARGET_3D)))return dummy;
+    NVNformat fit=NVN_FORMAT_NONE;
     const vkfmt_t *f=vk_fmt(v && v->set_format?v->format:t->d.format);
     if(f)switch(f->vk) {
-        case VK_FORMAT_R32_UINT:case VK_FORMAT_R32_SINT:fit=VK_FORMAT_R32_SFLOAT;break;
-        case VK_FORMAT_R32G32_UINT:case VK_FORMAT_R32G32_SINT:fit=VK_FORMAT_R32G32_SFLOAT;break;
-        case VK_FORMAT_R32G32B32A32_UINT:case VK_FORMAT_R32G32B32A32_SINT:fit=VK_FORMAT_R32G32B32A32_SFLOAT;break;
+        case VK_FORMAT_R32_UINT:case VK_FORMAT_R32_SINT:fit=NVN_FORMAT_R32F;break;
+        case VK_FORMAT_R32G32_UINT:case VK_FORMAT_R32G32_SINT:fit=NVN_FORMAT_RG32F;break;
+        case VK_FORMAT_R32G32B32A32_UINT:case VK_FORMAT_R32G32B32A32_SINT:fit=NVN_FORMAT_RGBA32F;break;
         default:break;
     }
     if(f && f->is_int && !fit) { VKRED_ONCE(98,"resource pool integer format requires a separate typed-view port");return dummy; }
-    VkImageView view=vk_tex_view_as(t,v,b->dim,b->flags&1,0,&im,fit);
+    if(!f)return dummy;
+    // Donor tex_slot changes the sampled view's NVN format, retaining both
+    // texture and explicit view swizzles. The storage override erases them.
+    view_t adjusted=v?*v:(view_t){0};
+    if(fit){adjusted.set_format=1;adjusted.format=(uint16_t)fit;}
+    VkFormat expected=fit?vk_fmt(fit)->vk:f->vk;
+    VkImageView view=vk_tex_view(t,&adjusted,b->dim,b->flags&1,0,&im);
+    // A format-listed allocation can refuse reinterpretation and return its
+    // original integer format. It cannot be sampled by this float interface.
+    if(view && vk_view_fmt!=expected)return dummy;
     if(im){im->last_use=mtl_last_fence()+1;vk_texdump_note(im);}
     return view?view:dummy;
 }

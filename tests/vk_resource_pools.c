@@ -100,7 +100,56 @@ static void allocation_limits(void) {
     for(unsigned frame=0;frame<4;frame++){mtl_sub_begin();assert(vk_alloc_set(l));assert(mtl_wait(mtl_sub_commit(),UINT64_MAX));}
     vkCreateDescriptorPool=real_pool_create;puts("oversized descriptor pool allocation and submission reuse PASS");
 }
+static PFN_vkCreateImageView original_view_create;
+static PFN_vkUpdateDescriptorSets original_descriptor_update;
+static struct{VkImageView view;VkImage image;VkFormat format;VkImageViewType type;VkComponentMapping components;}views[512];
+static unsigned view_count;static VkImage observed_image;static unsigned observed_descriptor;
+static VkResult inspect_view_create(VkDevice device,const VkImageViewCreateInfo *ci,const VkAllocationCallbacks *a,VkImageView *view){
+    VkResult r=original_view_create(device,ci,a,view);if(!r){assert(view_count<512);views[view_count++]=(typeof(views[0])){*view,ci->image,ci->format,ci->viewType,ci->components};}return r;
+}
+static void inspect_descriptor_update(VkDevice d,uint32_t n,const VkWriteDescriptorSet *w,uint32_t nc,const VkCopyDescriptorSet *c){
+    for(unsigned i=0;i<n;i++)if(w[i].descriptorType==VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE)for(unsigned j=0;j<w[i].descriptorCount;j++){
+        VkImageView view=w[i].pImageInfo[j].imageView;
+        for(unsigned k=0;k<view_count;k++)if(views[k].view==view && views[k].image==observed_image){
+            assert(views[k].type==VK_IMAGE_VIEW_TYPE_2D);assert(views[k].format==VK_FORMAT_R32_SFLOAT);
+            assert(views[k].components.r==VK_COMPONENT_SWIZZLE_ONE);observed_descriptor++;
+        }
+    }
+    original_descriptor_update(d,n,w,nc,c);
+}
+static void sampled_view_adapters(void){
+    original_view_create=vkCreateImageView;vkCreateImageView=inspect_view_create;
+    original_descriptor_update=vkUpdateDescriptorSets;vkUpdateDescriptorSets=inspect_descriptor_update;
+    _Alignas(4096) uint32_t uniform[256]={0},handles[8],output[256];
+    mtl_pool_add(uniform,sizeof uniform);mtl_pool_add(handles,sizeof handles);mtl_pool_add(output,sizeof output);
+    uint64_t input=(uintptr_t)handles,result=(uintptr_t)(output+64);memcpy(uniform,&input,8);memcpy(uniform+14,&result,8);uniform[4]=0x3f000000;
+    for(unsigned i=0;i<8;i++)handles[i]=1|(1<<20);
+    samp_par sampler={0};mtl_reg_samp(257,&sampler);
+    int listed=getenv("DM_VK_UBWC") && atoi(getenv("DM_VK_UBWC"));
+    for(unsigned test=0;test<3;test++){
+        if(getenv("NX2A_POOL_VIEW_CASE") && test!=(unsigned)atoi(getenv("NX2A_POOL_VIEW_CASE")))continue;
+        tex_t texture={.magic=MAGIC('T','E','X',0),.serial=0x18200+test,.set_swz=1,.swz=1|(3<<3)|(4<<6)|(5<<9),
+            .d={.width=1,.height=1,.depth=1,.levels=1,.target=test==2?NVN_TEXTURE_TARGET_1D:NVN_TEXTURE_TARGET_2D,.format=NVN_FORMAT_R32UI}};
+        view_t view={.set_swizzle=1,.swz={1,3,4,5}};
+        if(test==1)texture.swz=0|(3<<3)|(4<<6)|(5<<9);
+        nvn_tex_layout(&texture.d,&texture.L);list_t list={0};
+        RECORD(OP_CLEAR_TEX,p_clear_tex,.tex=&texture,.r={.width=1,.height=1,.depth=1},.mask=15,.is_uint=1,.c.u={0x3f000000});
+        put(&list,OP_END,NULL,0);mtl_sub_begin();mtl_exec(list.bytes);observed_image=vk_tex(&texture)->img;assert(mtl_wait(mtl_sub_commit(),UINT64_MAX));
+        observed_descriptor=0;mtl_reg_tex(2049,&texture,test==1?&view:NULL);memset(output,0xcc,sizeof output);list=(list_t){0};
+        RECORD(OP_SET_TEX_POOL,p_set_pool,.pool=&texture_pool);RECORD(OP_SET_SAMP_POOL,p_set_pool,.pool=&sampler_pool);
+        RECORD(OP_BIND_UBO,p_bind_buf,.stage=5,.index=0,.addr=(uintptr_t)uniform,.size=sizeof uniform);
+        RECORD(OP_BIND_PROGRAM,p_bind_program,.prog=&resource_pool_program,.stages=0x20);RECORD(OP_DISPATCH,p_dispatch,.x=1,.y=1,.z=1);
+        put(&list,OP_END,NULL,0);mtl_sub_begin();mtl_exec(list.bytes);assert(mtl_wait(mtl_sub_commit(),UINT64_MAX));
+        uint32_t expected=test==2 || listed?0:0x3f800000;
+        for(unsigned i=0;i<256;i++)assert(output[i]==(i>=64 && i<72?expected:0xcccccccc));
+        assert(observed_descriptor==(expected?1:0));mtl_reg_tex(2049,NULL,NULL);mtl_tex_release(&texture);
+    }
+    mtl_pool_del(uniform);mtl_pool_del(handles);mtl_pool_del(output);puts("integer texture/view swizzles, listed-format fallback and 1D mismatch PASS");
+}
+
 int __wrap_main(void){setenv("DM_VK_NOPREWARM","1",1);mtl_init();
+if(getenv("NX2A_POOL_VIEW_ONLY")){sampled_view_adapters();return 0;}
+if(getenv("NX2A_POOL_MAP_ONLY")){vkshader_t *a=vk_shader(0xfeed6020,5),*b=vk_shader(0xfeed6021,5);assert(!a && !b);puts("serialized internal maps rejected PASS");return 0;}
 if(getenv("NX2A_POOL_ALLOC_ONLY")){allocation_limits();return 0;}
 if(getenv("NX2A_POOL_LIMIT_ONLY")){V.props.limits.maxPerStageDescriptorStorageBuffers=3;assert(!vk_shader(0xfeed6000,5));puts("base pool map descriptor limit rejected PASS");return 0;}
 if(getenv("NX2A_POOL_FEATURE_ONLY")){V.has_resource_pools=0;assert(!vk_shader(0xfeed6000,5));puts("unsupported pool feature rejected PASS");return 0;}

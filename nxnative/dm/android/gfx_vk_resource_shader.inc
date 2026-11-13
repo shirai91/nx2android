@@ -5,6 +5,7 @@ static int resource_pool_spv(vkshader_t *s,uint32_t **words,uint32_t *nw) {
     unsigned pools=0,bounds=0,bounds_slots=0; uint32_t next=0; uint8_t slots[96]={0};
     for (int i=0;i<s->nbind;i++) {
         const dmsv_bind *b=&s->b[i];
+        if (b->kind==RK_POOL_MAP) return 0; // runtime-only: never trust serialized map slots
         if (b->binding>=next) next=(uint32_t)b->binding+1;
         if (resource_pool_binding(b)) {
             if (b->reg<0 || b->reg>=95 || slots[b->reg] || b->count!=1 ||
