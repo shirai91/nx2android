@@ -24,6 +24,7 @@ static uint64_t g_set_epoch = 1, g_tex_gen, g_samp_gen, g_num_um, g_num_im, g_ub
 static int g_x_nosetmemo, g_tracing, g_var_now, g_x_nosetc, g_x_nodrvc, g_x_setverify, g_x_nodispbar;
 int g_x_inflkeep;   // gfx_vk_exec.c's (vk_ubd_land reads it)
 int g_ubd_heap = 1;   // gfx_vk_exec.c's (vk_sub_update reads it)
+int g_pool_slots = 1;   // gfx_vk_exec.c's (vk_pool_of reads it)
 static int g_x_tracepass = -1, g_sub_pass, g_prof_on, g_prereset = 1;
 static uint64_t g_prof_ns[8], g_fence;
 static long long g_td_off = -1;

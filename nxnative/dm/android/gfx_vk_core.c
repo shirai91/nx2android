@@ -733,15 +733,21 @@ void mtl_pool_del(const void *mem) {
         pool_note(1, p.hi - p.lo, pool_ns() - t0);
     }
 }
+extern int g_pool_slots;   // gfx_vk_exec.c: DM_VK_POOL_SLOTS (live)
 vkpool_t *vk_pool_of(uint64_t addr, uint64_t len) {
     // the pools this thread found, while none was added or removed: the replay looks up every buffer binding of every draw, and the read lock alone was ~6% of it.
     // One slot per hash of the address's 4 KB page (a hit is checked against the pool's range, so a slot shared by two pages only costs a miss). The last four
     // pools found, tried in turn, were too few for Breath of the Wild: it keeps over 4,096 pools live and a frame's draws bind buffers in hundreds of them, so
     // most lookups took the lock and the search: 13% of a Galaxy S25 Ultra's replay thread (DM_VK_PROF: 9% in the lock calls, 4% in the function) and 4% with
-    // these slots; the replay of 4,850 draws in its woods went from 11.3 to 8.1 ms a frame, and that spot from 30 fps to 60
-    enum { PC = 512 }; static __thread struct { uint32_t gen; vkpool_t *p[PC]; } c;   // gen: g_pool_gen + 1 (0: empty)
+    // these slots; the replay of 4,850 draws in its woods went from 11.3 to 8.1 ms a frame, and that spot from 30 fps to 60. Pages of different pools that hash to
+    // one slot evict each other, so a slot miss tries the last four pools found, as before the slots, before it takes the lock: a game with a few hot pools and
+    // more than 512 pages bound a frame loses nothing to them. DM_VK_POOL_SLOTS=0 (live): the last four alone, for A/B runs against `replay per frame`
+    enum { PC = 512 }; static __thread struct { uint32_t gen; vkpool_t *p[PC], *last[4]; } c;   // gen: g_pool_gen + 1 (0: empty)
     uint32_t g = __atomic_load_n(&g_pool_gen, __ATOMIC_ACQUIRE) + 1; unsigned ck = (unsigned)(((addr >> 12) * 0x9E3779B97F4A7C15ull) >> 55);   // (9 bits)
-    if (c.gen == g) { vkpool_t *p = c.p[ck]; if (p && addr >= p->lo && addr + len <= p->hi) return p; }
+    if (c.gen == g) {
+        if (g_pool_slots) { vkpool_t *p = c.p[ck]; if (p && addr >= p->lo && addr + len <= p->hi) return p; }
+        for (int i = 0; i < 4; i++) { vkpool_t *p = c.last[i]; if (p && addr >= p->lo && addr + len <= p->hi) { c.p[ck] = p; return p; } }
+    }
     vkpool_t *r = NULL; int across = 0;
     pthread_rwlock_rdlock(&g_pool_mu);
     int lo = 0, hi = g_npool;   // the last pool by lo that starts at or below addr
@@ -751,7 +757,7 @@ vkpool_t *vk_pool_of(uint64_t addr, uint64_t len) {
         for (int i = 0; i < g_npool; i++) if (addr >= g_pool[i].lo && addr + len <= g_pool[i].hi) { r = &g_pool[i]; break; }
                                            else if (addr >= g_pool[i].lo && addr < g_pool[i].hi && addr + len <= g_pool[i].end) across = 1;
     pthread_rwlock_unlock(&g_pool_mu);
-    if (r) { if (c.gen != g) { memset(&c, 0, sizeof c); c.gen = g; } c.p[ck] = r; }
+    if (r) { if (c.gen != g) { memset(&c, 0, sizeof c); c.gen = g; } c.p[ck] = r; memmove(&c.last[1], &c.last[0], 3 * sizeof *c.last); c.last[0] = r; }
     if (!r && across) { static uint64_t n; uint64_t k = ++n; if (!(k & (k - 1))) LOG("[RED] [vk] %llu ranges across two chunks of a memory pool (ZC_CHUNK; this one %#llx +%#llx): no buffer for them", (unsigned long long)k, (unsigned long long)addr, (unsigned long long)len); }
     return r;
 }

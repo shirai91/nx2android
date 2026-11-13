@@ -1,5 +1,8 @@
 """In-flight uniform updates (gfx_vk_core.c vk_ubd_land / vk_ubd_read): an update that lands over exactly the range
-of one still in flight replaces it in the list. A reader must get the same bytes as with every update kept."""
+of one still in flight replaces it in the list. A reader must get the same bytes as with every update kept.
+Half of the updates own a heap copy, as vk_sub_update's do: each is handed from the pending list to the in-flight
+one and freed once, where it is superseded, replaced or pruned. A second free stops the run, a freed copy reads
+as other bytes, and at the end the copies not freed are the ones the two lists still hold."""
 from pathlib import Path
 import shutil
 import subprocess
@@ -23,6 +26,16 @@ static int vk_gpu_pending(uint64_t a, uint64_t n) { (void)a; (void)n; return 0; 
 @INFL@
 static ubd_infl_t *g_infl; static int g_ninfl, g_capinfl;
 @READ@
+// the heap copies: a header in front says whether one is live. Freed, it is overwritten and kept, so a read of it differs from the reference and a second free is seen
+static long g_owned, g_freed;
+static uint8_t *own_new(uint32_t n) { uint32_t *h = malloc(8 + n); h[0] = 0x4c495645; h[1] = n; g_owned++; return (uint8_t *)(h + 2); }
+static void own_free(void *p) {
+    if (!p) return;
+    uint32_t *h = (uint32_t *)p - 2; if (h[0] != 0x4c495645) { printf("a heap copy freed twice (or never made)\n"); exit(1); }
+    h[0] = 0x44454144; memset(p, 0xee, h[1]); g_freed++;
+}
+#define free own_free
+@PRUNE@
 // every landed update, never dropped: what a reader saw before
 static ubd_infl_t *g_all; static int g_nall, g_capall;
 static void ref_read(uint64_t a, uint64_t n, uint8_t *dst) {
@@ -33,15 +46,18 @@ static void ref_read(uint64_t a, uint64_t n, uint8_t *dst) {
         if (lo < hi) memcpy(dst + (lo - a), g_ubd[i].p + (lo - g_ubd[i].lo), hi - lo); }
 }
 static void land(void) {   // vk_ubd_land's list part
+    infl_prune();
     for (int i = 0; i < g_nubd; i++) {
         if (g_nall == g_capall) { g_capall = g_capall ? 2 * g_capall : 256; g_all = realloc(g_all, sizeof *g_all * (size_t)g_capall); }
-        g_all[g_nall++] = (ubd_infl_t){g_ubd[i].lo, g_ubd[i].hi, g_fence + 1, g_ubd[i].p, NULL};
+        uint64_t n = g_ubd[i].hi - g_ubd[i].lo; uint8_t *keep = malloc(n); memcpy(keep, g_ubd[i].p, n);   // the reference's own bytes: the lists' copies are freed
+        g_all[g_nall++] = (ubd_infl_t){g_ubd[i].lo, g_ubd[i].hi, g_fence + 1, keep, NULL};
         if (g_ninfl == g_capinfl) { g_capinfl = g_capinfl ? 2 * g_capinfl : 256; g_infl = realloc(g_infl, sizeof *g_infl * (size_t)g_capinfl); }
         @DEDUPE@
-        g_infl[g_ninfl++] = (ubd_infl_t){g_ubd[i].lo, g_ubd[i].hi, g_fence + 1, g_ubd[i].p, NULL};
+        @APPEND@
     }
     g_nubd = 0;
 }
+#undef free
 static uint32_t rs = 12345; static uint32_t rnd(void) { rs = rs * 1664525u + 1013904223u; return rs >> 8; }
 int main(void) {
     enum { MEM = 1024 }; static uint8_t mem[MEM]; uint64_t base = (uint64_t)(uintptr_t)mem; int most = 0, reads = 0;
@@ -51,10 +67,11 @@ int main(void) {
         uint32_t op = rnd() % 16;
         if (op < 7) {   // an update: one of the same range goes first, as vk_sub_update does
             uint32_t r = rnd() % (sizeof R / sizeof R[0]); uint64_t lo = base + R[r].o, hi = lo + R[r].n;
-            for (int i = g_nubd - 1; i >= 0; i--) if (g_ubd[i].lo == lo && g_ubd[i].hi == hi) { memmove(&g_ubd[i], &g_ubd[i + 1], sizeof *g_ubd * (size_t)(g_nubd - i - 1)); g_nubd--; break; }
+            for (int i = g_nubd - 1; i >= 0; i--) if (g_ubd[i].lo == lo && g_ubd[i].hi == hi) { own_free(g_ubd[i].own); memmove(&g_ubd[i], &g_ubd[i + 1], sizeof *g_ubd * (size_t)(g_nubd - i - 1)); g_nubd--; break; }
             if (g_nubd == 64) land();
-            uint8_t *p = malloc(R[r].n); for (uint32_t k = 0; k < R[r].n; k++) p[k] = (uint8_t)rnd();   // (never freed: the lists keep pointing at it)
-            g_ubd[g_nubd++] = (ubd_t){lo, hi, p, NULL};
+            // half own a heap copy that the lists read (vk_sub_update's own), half point at memory nobody frees (its scratch)
+            uint8_t *own = rnd() & 1 ? own_new(R[r].n) : NULL, *p = own ? own : malloc(R[r].n); for (uint32_t k = 0; k < R[r].n; k++) p[k] = (uint8_t)rnd();
+            g_ubd[g_nubd++] = (ubd_t){lo, hi, p, own};
         } else if (op < 10) land();
         else if (op == 10) g_fence++;                                   // the submission ends: later landings carry the next fence
         else if (op == 11 && g_done < g_fence) g_done++;                // one more submission completes
@@ -66,6 +83,9 @@ int main(void) {
     }
     // the list holds one entry a range at most, however many landed
     if (most > (int)(sizeof R / sizeof R[0]) || g_nall < 1000 || reads < 1000) { printf("most in flight %d, landed %d, reads %d\n", most, g_nall, reads); return 1; }
+    // every heap copy was freed once, but those the two lists still hold
+    long held = 0; for (int i = 0; i < g_nubd; i++) held += g_ubd[i].own != NULL; for (int i = 0; i < g_ninfl; i++) held += g_infl[i].own != NULL;
+    if (g_owned < 1000 || g_freed < 1000 || g_owned - g_freed != held) { printf("heap copies: %ld made, %ld freed, %ld still held by the lists\n", g_owned, g_freed, held); return 1; }
     return 0;
 }
 '''
@@ -78,7 +98,9 @@ class UbdInflight(unittest.TestCase):
         a = src.index('typedef struct { uint64_t lo, hi, fence; const uint8_t *data; uint8_t *own; } ubd_infl_t;'); infl = src[a:src.index('\n', a)]
         a = src.index('void vk_ubd_read(uint64_t a, uint64_t n, uint8_t *dst) {'); read = 'static ' + src[a:src.index('\n}\n', a) + 3]
         a = src.index('for (int k = g_x_inflkeep ? -1 : g_ninfl - 1; k >= 0; k--) if (g_infl[k].lo == g_ubd[i].lo'); dedupe = src[a:src.index('\n', a)]
-        code = HARNESS.replace('@INFL@', infl).replace('@READ@', read).replace('@DEDUPE@', dedupe)
+        a = src.index('g_infl[g_ninfl++] = (ubd_infl_t){g_ubd[i].lo, g_ubd[i].hi, g_fence + 1, g_ubd[i].p, g_ubd[i].own};'); append = src[a:src.index('\n', a)]   # the copy goes with the entry
+        a = src.index('static void infl_prune(void) {'); prune = src[a:src.index('\n}\n', a) + 3]
+        code = HARNESS.replace('@INFL@', infl).replace('@READ@', read).replace('@DEDUPE@', dedupe).replace('@APPEND@', append).replace('@PRUNE@', prune)
         with tempfile.TemporaryDirectory(prefix='nx2a_ubd_inflight_') as d:
             c = Path(d) / 't.c'; c.write_text(code, encoding='utf-8')
             exe = Path(d) / ('t.exe' if shutil.which('cc').lower().endswith('.exe') else 't')
