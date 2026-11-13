@@ -1023,9 +1023,16 @@ uint64_t mtl_present(const tex_t *t, double period, const int crop[4]) {
     // A longer period goes to the window only once it has held for 60 presents; a shorter one at once. Super Mario Bros. Wonder's own controller (main+0xcfd24) asks
     // for interval 2 for a frame or a few and then 1 again: each ask was a vote (176 in 3 minutes of its first level on the Y700, 27-60 a run in issue #64's log of an
     // Adreno 750 phone with a 60 Hz display), and where the display changes its mode for a vote, the switch itself lengthens the next frames (issue #45: 30-40 fps)
+    // DM_VK_WINDOW_GAME_RATE=1 (live, read every 60 presents): the window asks for the game's own rate (nvn_game_fps), not the period a frame-step hold or the adaptive
+    // rate lengthened. Held at 2 vsyncs for 60 presents, Breath of the Wild's window asked for 30 fps and a Galaxy S25 Ultra's display went to 30 Hz (refresh 33.3 ms);
+    // every trial back to 60 then ran its first frames on that 30 Hz display, showed them late and failed within 5 presents, at 1-2 ms of GPU work a frame on its
+    // title screen, and the game stayed at 30 fps for the run (the display at 30 Hz in each of four 30 fps runs, never in the runs that held 60)
+    static int game_rate = -1; static uint64_t game_rate_at; double wperiod = period;
+    if (game_rate < 0 || g_presents - game_rate_at >= 60) { const char *e = getenv("DM_VK_WINDOW_GAME_RATE"); game_rate = e && atoi(e) != 0; game_rate_at = g_presents; }
+    if (game_rate) { int nvn_game_fps(void); int gf = nvn_game_fps(); if (gf > 0 && 1.0 / gf < wperiod) wperiod = 1.0 / gf; }
     static ANativeWindow *rate_win; static double rate_period, want_period; static uint64_t want_since;
-    if (period != want_period) { want_period = period; want_since = g_presents; }
-    if (g_win && (g_win != rate_win || (period != rate_period && (period < rate_period || g_presents - want_since >= 60)))) { rate_win = g_win; rate_period = period; dm_perf_window(g_win, period > 0 ? 1.0 / period : 60); }
+    if (wperiod != want_period) { want_period = wperiod; want_since = g_presents; }
+    if (g_win && (g_win != rate_win || (wperiod != rate_period && (wperiod < rate_period || g_presents - want_since >= 60)))) { rate_win = g_win; rate_period = wperiod; dm_perf_window(g_win, wperiod > 0 ? 1.0 / wperiod : 60); }
     uint64_t n = ++g_presents;
     // without display times (no VK_GOOGLE_display_timing, no window, or none came back) the hand-over time stands in, as before: the governor's late check needs readings
     { int disp = V.has_dtiming && dm_front_window() && (n <= 240 || g_pres_recorded); struct timespec ts; if (!disp) clock_gettime(CLOCK_MONOTONIC, &ts);
