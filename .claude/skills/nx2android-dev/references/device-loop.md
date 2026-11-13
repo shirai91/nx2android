@@ -15,7 +15,7 @@ python -m porter port "<game folder>" --debug --install --package $PKG --device 
 - Each install **merges `env.txt`** with the device's (docs/ARCHITECTURE.md): the pack's rows win for their keys, your own debug rows and comments stay, and the installer's `--romfs-at` row is rewritten. A device whose manifest has no `env_keys` (a pack installed before the merge) gets the pack's env.txt alone, once. A debug row for a key the pack defines (`DM_LANG`, `DM_FPS_TARGET`…) is overwritten by the pack's.
 
 ```
-$ADB shell "am force-stop $PKG; echo DM_CTL=$F/ctl.txt >> $F/env.txt; : > $F/ctl.txt; am start -n $PKG/android.app.NativeActivity"
+$ADB shell "am force-stop $PKG; grep -q '^DM_CTL=' $F/env.txt || echo DM_CTL=$F/ctl.txt >> $F/env.txt; : > $F/ctl.txt; am start -n $PKG/android.app.NativeActivity"
 ```
 
 ## Read what happened
