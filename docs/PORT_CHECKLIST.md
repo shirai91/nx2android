@@ -56,7 +56,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [ ] Mario + Rabbids Sparks of Hope · `0100317013770000` · upstream profile
 - [ ] Mario Kart 8 Deluxe · `0100152000022000` · profile here · no Mii heads
 - [x] Mario vs. Donkey Kong · `0100B99019412000`
-- [x] Mega Man Battle Network Legacy Collection Vol. 1 · `010038E016264000` · work in progress: tested to Battle Network 1's opening
+- [x] Mega Man Battle Network Legacy Collection Vol. 1 · `010038E016264000`
 - [x] Mega Man Battle Network Legacy Collection Vol. 2 · `0100734016266000` · work in progress: tested to Battle Network 4's opening
 - [x] Metroid Dread · `010093801237C000`
 - [ ] Monster Hunter Rise · `0100B04011742000` · profile here · 60 fps with 16.0.2
