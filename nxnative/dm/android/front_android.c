@@ -83,7 +83,7 @@ static const char *const LAYOUT_NAMES[2] = {"tablet", "phone"};
 static int ctl_named(const char *n) { for (int i = 0; i < OV_N; i++) if (!strcmp(OV_LAYOUTS[0][i].name, n)) return i; return -1; }
 int dm_opmode(void); void dm_set_opmode(int m);   // hle_oe.c: 0 handheld, 1 docked; a change reaches the game as the Switch's operation mode notification
 static void settings_load(void) {
-    char p[600]; snprintf(p, sizeof p, "%s/settings.txt", g_root); FILE *f = fopen(p, "r"); char line[128];
+    char p[600], buf[16]; snprintf(p, sizeof p, "%s/settings.txt", g_root); FILE *f = fopen(p, "r"); char line[128];
     if (!f) return;
     while (fgets(line, sizeof line, f)) { int v; if (sscanf(line, "overlay=%d", &v) == 1) atomic_store(&g_set_overlay, v != 0); else if (sscanf(line, "rumble=%d", &v) == 1) atomic_store(&g_set_rumble, v != 0);
         else if (sscanf(line, "fps=%d", &v) == 1) atomic_store(&g_set_fps, v != 0);
@@ -91,6 +91,7 @@ static void settings_load(void) {
         else if (sscanf(line, "opacity=%d", &v) == 1) atomic_store(&g_set_opacity, v < OV_OPACITY_MIN ? OV_OPACITY_MIN : v > OV_OPACITY_MAX ? OV_OPACITY_MAX : v);
         else if (sscanf(line, "grid=%d", &v) == 1) atomic_store(&g_set_grid, v != 0);
         else if (sscanf(line, "labels=%d", &v) == 1) atomic_store(&g_set_labels, v != 0);
+        else if (sscanf(line, "abxy=%15s", buf) == 1 && !strcmp(buf, "label")) atomic_store(&g_set_labels, 1);   // the game profile's key (android_profile.py): face buttons by their label (Retroid Pocket Nova)
         else if (!strncmp(line, "ui=", 3)) {   // ui=<layout>,<control>,<x>,<y>,<size>: x, y in 1/10000 of the window (-1 the layout's place), size in 1/1000
             char lay[16], name[32]; int x, y, z, l, i;
             if (sscanf(line + 3, "%15[^,],%31[^,],%d,%d,%d", lay, name, &x, &y, &z) != 5 || (i = ctl_named(name)) < 0) continue;
