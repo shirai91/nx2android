@@ -165,9 +165,10 @@ static void hint_threads_scan(int32_t self) {
 // DM_PIN_REPLAY (start-up): the replay thread (DM_NVN_ASYNC, hle_nvn.c replay_main) kept to the fastest cores. prime: the cores of the highest maximum clock
 // (a Snapdragon 8+ Gen 1's Cortex-X2), big: every core above the lowest maximum clock. Left to the scheduler, Unicorn Overlord's battle map replay took
 // 13 to 20 ms a frame from run to run with the same ~3,500 draws.
-// The replay thread calls this at its start and again before each present. The kernel refuses a set of cores it holds paused at that moment: a Galaxy S25
-// Ultra (Snapdragon 8 Elite, prime cores 6 and 7) refused it at the start of two runs in four of Breath of the Wild, with all eight cores online and allowed
-// to the app a little later, and those runs stayed slower. So a refusal is tried again, every 120 presents for up to 60 tries, and the log says which try held
+// The replay thread calls this at its start and again before each present. A Galaxy S25 Ultra (Snapdragon 8 Elite, prime cores 6 and 7) refused it at the
+// start of 3 of about 30 runs of Breath of the Wild, and those runs stayed slower; all eight cores were online and allowed to the app when read during a run,
+// so the refusal seems to come while the app is still being moved into its foreground core group (a guess, not seen directly). So a refusal is tried again,
+// every 120 presents for up to 60 tries, and the log says which try held
 void dm_perf_replay_thread(void) {
     static int state, tries, calls;   // state: 0 not asked yet, 1 settled (pinned, not wanted or given up), 2 refused so far
     if (state == 1 || (state == 2 && ++calls % 120)) return;
