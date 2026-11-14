@@ -28,6 +28,7 @@ class TextureFormatAliases(unittest.TestCase):
 #define TX(t) ((tex_t *)(t))
 #define LOG(...) ((void)0)
 #define OLOG(...) ((void)0)
+#define DM_GAME_TEX_CPU_UNCACHED 0 // Default generated profile value.
 static int marks, releases;
 static void ft_del(uint64_t serial) {(void)serial;}
 static void ft_add(const tex_t *t) {(void)t;}

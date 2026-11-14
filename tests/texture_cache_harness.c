@@ -17,6 +17,7 @@ typedef struct vkimg {
     int64_t off,size; int flags,looked,packaged,pkg_sparse,pkg_released,gpu_w;
     const void *pkg_span,*pkg_mem,*lin_mem;size_t pkg_len,lin_len;
     void *img,*mem,*sub;
+    struct vkimg *bc_draw; // No compressed-format stand-in in this family fixture.
     unsigned family_formats,family_closed;
     int format,content;
 } vkimg_t;
