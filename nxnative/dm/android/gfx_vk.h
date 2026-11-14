@@ -99,6 +99,7 @@ struct vkimg {
     VkImage img; VkDeviceMemory mem; void *sub; VkFormat fmt; VkImageViewType vtype; VkImageAspectFlags aspect;
     uint32_t w, h, d, layers, levels, samples; int target, nvn_format;
     VkImageLayout layout;           // version 1 keeps every image in GENERAL after its first use
+    uint8_t family_formats, family_closed;   // logical family members already shared; packaged metadata prevents adding new formats
     int packaged;                   // filled from guest memory (deswizzled upload), re-uploaded when its pages change
     uint64_t pkg_stamp; const void *pkg_span; uint64_t pkg_seen;
     uint64_t pkg_hash;              // hash of the guest bytes it was last uploaded from: pages written around it with its own bytes unchanged keep what the GPU wrote (gfx_vk_tex.c vk_tex)
