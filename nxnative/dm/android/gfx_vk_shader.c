@@ -60,6 +60,7 @@ int vk_shader_stage(uint64_t key) { bundle_auto(); const bent *e = g_bundle ? fi
 // A shader's SPIR-V as the host's own copy (patched at module creation, then kept for the variants: vkshader_t spv), copied out of the mapping or decompressed from its zstd
 // frame. Called outside g_sh_mu: the replay thread looks its shaders up under that lock while the prewarm threads make theirs. Decompression contexts (94 KB each) are kept
 // for the next shader, one per thread decompressing at once. NULL, logged, when the module is not SPIR-V of its entry's length
+uint64_t g_spv_n, g_spv_bytes;   // shaders made and the SPIR-V they keep for their variants (gfx_vk_core.c's [mem] line)
 static ZSTD_DCtx *g_dctx[8]; static int g_ndctx; static pthread_mutex_t g_dctx_mu = PTHREAD_MUTEX_INITIALIZER;
 static uint64_t g_unz_n, g_unz_bytes, g_unz_ns;   // modules decompressed, their bytes, the time it took (the log line at 64, 128, 256 ...)
 static uint32_t *bundle_spv(const bent *e, uint32_t *nw) {
@@ -351,6 +352,7 @@ static vkshader_t *vk_shader_q(uint64_t key, int stage, int quiet) {
     spv_io_locs(w, nw, &s->in_locs, &s->out_locs);
     VkShaderModuleCreateInfo ci = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, NULL, 0, (size_t)nw * 4, w};
     VkResult vr = vkCreateShaderModule(V.dev, &ci, NULL, &s->mod); s->spv = w; s->nspv = nw;
+    if (!vr) { __atomic_fetch_add(&g_spv_n, 1, __ATOMIC_RELAXED); __atomic_fetch_add(&g_spv_bytes, (uint64_t)nw * 4, __ATOMIC_RELAXED); }
     if (vr) { VKLOG("[RED] shader %016llx: vkCreateShaderModule %d", (unsigned long long)key, vr); free(w); free(s); nvn_hm_put(&g_shaders, &hk, (void *)1); pthread_mutex_unlock(&g_sh_mu); return NULL; }
     // descriptor set layout: one entry per binding
     // The game's constant buffers and the driver segment are dynamic uniform buffers: their offset is given when the set is bound, so a set matches any draw's

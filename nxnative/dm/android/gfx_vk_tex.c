@@ -228,6 +228,7 @@ static vkimg_t *img_new(const tex_t *t, const vkfmt_t *f) {
         ci.usage &= ~(VkImageUsageFlags)VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT; im->usage = ci.usage; r = vkCreateImage(V.dev, &ci, NULL, &im->img); }
     if (r) { VKRED_ONCE(10, "vkCreateImage failed (%d): %ux%ux%u format %#x (vk %d) target %d levels %u layers %u samples %u", r, im->w, im->h, im->d, d->format, f->vk, d->target, im->levels, im->layers, im->samples); free(im); return NULL; }
     VkMemoryRequirements req; vkGetImageMemoryRequirements(V.dev, im->img, &req);
+    im->vk_bytes = req.size;
     if ((ci.usage & (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT)) && im->w >= 256) { static int n; if (n++ < 16)   // UBWC check: a compressed target takes room for its metadata
         VKLOG("target %ux%u format %d%s: %llu bytes", im->w, im->h, f->vk, im->fixed_fmt ? " (format-listed)" : "", (unsigned long long)req.size); }
     VkDeviceSize moff;
@@ -330,8 +331,8 @@ extern uint64_t g_tex_frame;   // presents so far, for the packaged textures' la
 // after 20 minutes) and Android's low-memory killer ended the game. A new image takes over: the images of the same pool over its memory that were not looked up in the
 // last EVICT_KEEP presents go (their memory now holds another texture; one drawn again is made and filled again). Called with g_img_mu held
 enum { EVICT_KEEP = 60 };
-static uint64_t g_img_n, g_img_bytes, g_img_evicted;   // live images and their bytes, images evicted so far (vk_tex_sweep's line)
-static void img_drop(vkimg_t *im) { vk_lrz_forget(im); if (im->lin_mem) nvn_dirty_release(im->lin_mem, im->lin_len); if (im->packaged && !im->pkg_released && im->pkg_mem) nvn_dirty_release(im->pkg_mem, im->pkg_len); g_img_n--; g_img_bytes -= im->size > 0 ? (uint64_t)im->size : 0; alias_unlink(im); vk_tex_view_drop_all(im); if (im->sub) vk_defer_free_image_sub(im->img, im->sub); else vk_defer_free_image(im->img, im->mem); free(im); }
+static uint64_t g_img_n, g_img_bytes, g_img_evicted, g_img_vk;   // live images and their bytes, images evicted so far (vk_tex_sweep's line), their memory (vk_tex_mem)
+static void img_drop(vkimg_t *im) { g_img_vk -= im->vk_bytes; vk_lrz_forget(im); if (im->lin_mem) nvn_dirty_release(im->lin_mem, im->lin_len); if (im->packaged && !im->pkg_released && im->pkg_mem) nvn_dirty_release(im->pkg_mem, im->pkg_len); g_img_n--; g_img_bytes -= im->size > 0 ? (uint64_t)im->size : 0; alias_unlink(im); vk_tex_view_drop_all(im); if (im->sub) vk_defer_free_image_sub(im->img, im->sub); else vk_defer_free_image(im->img, im->mem); free(im); }
 static void evict_overlaps(uint64_t pool, int64_t off, int64_t size) {
     akey ks[64]; int n = 0;
     for (uint32_t i = 0; i < g_by_key.cap && n < 64; i++) {
@@ -360,7 +361,7 @@ static vkimg_t *vk_tex_(const tex_t *t) {
     if (!im) {
         if (keyed) evict_overlaps(k.pool, t->off, (int64_t)t->L.size);
         im = img_new(t, f); if (!im) { pthread_mutex_unlock(&g_img_mu); return NULL; }
-        im->pool = k.pool; im->off = t->off; im->size = (int64_t)t->L.size; im->flags = t->d.flags; g_img_n++; g_img_bytes += t->L.size;
+        im->pool = k.pool; im->off = t->off; im->size = (int64_t)t->L.size; im->flags = t->d.flags; g_img_n++; g_img_bytes += t->L.size; g_img_vk += im->vk_bytes;
         if (keyed) { alias_link(im); nvn_hm_put(&g_by_key, &k, im); } else nvn_hm_put(&g_by_serial, &t->serial, im);
     }
     im->used = g_tex_frame;
@@ -431,6 +432,29 @@ void vk_tex_sweep(void) {
     if (g_tex_frame % 3000 == 0) VKLOG("images: %llu live, %.0f MB of textures, %llu evicted so far (a newer texture over their memory)", (unsigned long long)g_img_n, g_img_bytes / 1048576.0, (unsigned long long)g_img_evicted);
     if ((idle || lru) && (g_tex_frame % 3000 == 0 || lru)) VKLOG("packaged textures: %llu not drawn for %d presents and %llu least recently drawn released their write protection (%llu pages; %llu so far); %d protected runs",
                     (unsigned long long)idle, PKG_IDLE, (unsigned long long)lru, (unsigned long long)(nvn_dirty_released() - before), (unsigned long long)total, runs);
+}
+// Uploaded images the game has not looked up for idle presents (the replay thread, at a submission: gfx_vk_core.c vk_mem_tick, as evict_overlaps drops images inside a
+// lookup there): their texels are still in their storage, and one drawn again is made and uploaded from it at its next lookup (vk_tex: it is CPU-written, or packaged).
+// Images kept their memory until their pool went, and pools of loaded areas live for good: Super Mario Odyssey held 493 images (270 MB) beside its pools, on an 8 GB
+// AYN Thor that Android's low-memory killer ended it on. Images the GPU wrote (gpu_w), linear copies (lin_mem) and images with no storage key stay: their memory alone
+// holds what they show
+static int idle_img(const vkimg_t *im, uint64_t idle) { return im->packaged && !im->gpu_w && !im->lin_mem && im->looked && g_tex_frame - im->used >= idle; }
+uint64_t vk_tex_drop_idle(uint64_t idle, uint64_t *n_out) {
+    uint64_t bytes = 0, n = 0;
+    pthread_mutex_lock(&g_img_mu);
+    for (int k = 64; k == 64;) {
+        akey ks[64]; k = 0;
+        for (uint32_t i = 0; i < g_by_key.cap && k < 64; i++) { vkimg_t *im = g_by_key.vals[i]; if (im && idle_img(im, idle)) memcpy(&ks[k++], g_by_key.keys + (size_t)i * g_by_key.klen, sizeof ks[0]); }
+        for (int j = 0; j < k; j++) { vkimg_t *im = nvn_hm_get(&g_by_key, &ks[j]); if (!im) continue; nvn_hm_del(&g_by_key, &ks[j]); bytes += im->vk_bytes; n++; img_drop(im); }
+    }
+    pthread_mutex_unlock(&g_img_mu);
+    *n_out = n; return bytes;
+}
+void vk_tex_mem(uint64_t idle, uint64_t *n, uint64_t *bytes, uint64_t *n_idle, uint64_t *idle_bytes) {
+    pthread_mutex_lock(&g_img_mu);
+    *n = g_img_n; *bytes = g_img_vk; *n_idle = *idle_bytes = 0;
+    for (uint32_t i = 0; i < g_by_key.cap; i++) { vkimg_t *im = g_by_key.vals[i]; if (im && idle_img(im, idle)) { ++*n_idle; *idle_bytes += im->vk_bytes; } }
+    pthread_mutex_unlock(&g_img_mu);
 }
 // The keys are gathered first, 64 a pass, then deleted (a delete rehashes the table): a rescan from the start after each delete went over the whole table once per image,
 // under the lock the replay's texture lookups take, for each of the pools Pokémon Scarlet drops while a capture loads

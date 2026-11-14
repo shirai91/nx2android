@@ -13,6 +13,7 @@
 #include <android/hardware_buffer.h>
 #include <dlfcn.h>
 #include <errno.h>
+#include <malloc.h>
 #include <stdatomic.h>
 #include <string.h>
 #include <sys/mman.h>
@@ -619,6 +620,7 @@ static void pool_note(int kind, uint64_t bytes, uint64_t ns) {   // kind 0: made
 // into it and the driver's import take milliseconds each, and every lookup waits on the lock (vk_pool_of: each buffer binding of each draw on the replay thread, and the
 // game threads' mtl_addr, once a pool was added or removed). Pokémon Scarlet makes and drops pools on three threads at once while a thrown ball flies (its capture assets,
 // ~180 MB read in 1.5 s): the replay thread stood almost still for a second with the GPU idle (simpleperf), in frames of 100-580 ms
+static uint64_t g_pool_live[3];   // pools' bytes now: [0] a hardware buffer of their own, [1] a slab's slot, [2] copied (the [mem] line, vk_mem_tick)
 static void pool_add_one(const void *mem, uint64_t size, uint64_t base, uint64_t end) {
     uint64_t t0 = pool_ns();
     vkpool_t q, *p = &q; memset(p, 0, sizeof *p);
@@ -643,6 +645,7 @@ static void pool_add_one(const void *mem, uint64_t size, uint64_t base, uint64_t
     pthread_rwlock_unlock(&g_pool_mu);
     if (np >= 1024 && !(np & (np - 1))) VKLOG("%d memory pools live", np);
     static uint64_t zc_bytes, cp_bytes; if (zc) cp_bytes += size; else zc_bytes += size;
+    __atomic_fetch_add(&g_pool_live[zc ? 2 : q.slab ? 1 : 0], size, __ATOMIC_RELAXED);
     static int nlog; if (nlog++ < 24) VKLOG("memory pool %p +%#llx: %s (zero-copy %.1f MB, copied %.1f MB)", mem, (unsigned long long)size, zc ? "copied" : "zero-copy", zc_bytes / 1048576.0, cp_bytes / 1048576.0);
     pool_note(0, size, pool_ns() - t0);
 }
@@ -653,6 +656,7 @@ void mtl_pool_del(const void *mem) {
         if (i == g_npool) { pthread_rwlock_unlock(&g_pool_mu); return; }
         vkpool_t p = g_pool[i]; g_pool[i] = g_pool[--g_npool]; pool_ord_remove(i); __atomic_fetch_add(&g_pool_gen, 1, __ATOMIC_RELEASE);
         pthread_rwlock_unlock(&g_pool_mu);
+        __atomic_fetch_sub(&g_pool_live[!p.zero_copy ? 2 : p.slab ? 1 : 0], p.hi - p.lo, __ATOMIC_RELAXED);
         uint64_t t0 = pool_ns();
         if (p.zero_copy) pool_copy_back(&p);
         free(p.baseline);
@@ -932,9 +936,17 @@ static void slot_recycle(vksub_t *s) {   // the GPU has passed this slot's last 
         else if (d->kind == 4) { void img_sub_free_(void *); vkDestroyImage(V.dev, (VkImage)d->a, NULL); img_sub_free_(d->b); }
         else if (d->kind == 2) vkDestroyImageView(V.dev, (VkImageView)d->a, NULL);
         else if (d->kind == 3) vkDestroyBufferView(V.dev, (VkBufferView)d->a, NULL);
+        else if (d->kind == 5) vkDestroyPipeline(V.dev, (VkPipeline)d->a, NULL);
     }
     free(df);
-    for (int i = 0; i < s->nblk; i++) s->blk[i].used = 0;
+    // Scratch blocks the slot's last submission did not touch go (the first stays): a long submission grows its slot's scratch, which was kept for good, so one loading
+    // frame's worth stayed with the slot (Super Mario Odyssey's first kingdom loads in one 3.3 s submission sent in parts). DM_VK_SCRATCH_KEEP=1 (start-up): kept, as before
+    { static int keep = -1; if (keep < 0) { const char *e = getenv("DM_VK_SCRATCH_KEEP"); keep = e && atoi(e); }
+      int o = 0;
+      for (int i = 0; i < s->nblk; i++) { scratch_blk *b = &s->blk[i];
+          if (!keep && !b->used && o) { vkDestroyBuffer(V.dev, b->b, NULL); vkFreeMemory(V.dev, b->m, NULL); continue; }
+          b->used = 0; s->blk[o++] = *b; }
+      s->nblk = o; }
     for (int i = 0; i < s->ndp; i++) vkResetDescriptorPool(V.dev, s->dp[i], 0);
     s->dp_cur = 0; s->dp_counted = -1;
     // The pool is not reset: each command buffer is reset as it is begun again (the pool allows it). A reset of the transient pool made Adreno's driver free the
@@ -1021,6 +1033,7 @@ static void df_add(int kind, void *a, void *b) {
         else if (kind == 1) { vkDestroyImage(V.dev, (VkImage)a, NULL); if (b) vkFreeMemory(V.dev, (VkDeviceMemory)b, NULL); }
         else if (kind == 4) { void img_sub_free_(void *); vkDestroyImage(V.dev, (VkImage)a, NULL); img_sub_free_(b); }
         else if (kind == 2) vkDestroyImageView(V.dev, (VkImageView)a, NULL);
+        else if (kind == 5) vkDestroyPipeline(V.dev, (VkPipeline)a, NULL);
         else vkDestroyBufferView(V.dev, (VkBufferView)a, NULL);
     }
 }
@@ -1065,6 +1078,7 @@ void img_sub_free_(void *s) { img_sub_free((imgsub *)s); }
 void vk_defer_free_image(VkImage i, VkDeviceMemory m) { df_add(1, (void *)i, (void *)m); }
 void vk_defer_free_view(VkImageView v) { df_add(2, (void *)v, NULL); }
 void vk_defer_free_bview(VkBufferView v) { df_add(3, (void *)v, NULL); }
+void vk_defer_free_pipeline(VkPipeline p) { df_add(5, (void *)p, NULL); }
 // Descriptor pools: the allocator counts what each set takes and moves to a new pool before any count runs out. Adreno's driver does not refuse an
 // allocation past a pool's sizes: it succeeds and the submission then fails as a whole at vkEndCommandBuffer (VK_ERROR_OUT_OF_HOST_MEMORY; NEO's
 // handheld frames with 32-slot texture arrays crossed the old 8192 combined-sampler limit at about the 712th draw)
@@ -1412,3 +1426,103 @@ int mtl_wait(uint64_t fence, uint64_t timeout_ns) {
 }
 void mtl_finish(void) { mtl_wait(g_fence, ~0ull); }
 void mtl_drain(void) { mtl_finish(); vk_pipeline_cache_save(); }
+
+// ---------------- memory: what the backend holds, and giving it back ----------------
+// Super Mario Odyssey on an 8 GB AYN Thor (7.3 GB, about 4.7 GB free with the launcher, Google's services and the keyboard running) was ended by Android's low-memory
+// killer within one to two minutes of play, and the launchers it killed on the way (Cocoon, iiSU) restarted into their safe mode: the game's process held about 3.0 GB
+// (1.55 GB of it GPU memory: the zero-copy pools, which no swap can take, and the images) with 1.1 GB more swapped out. The game's own memory is what the Switch gives it;
+// what the backend adds on top is what it can give back. vk_mem_tick, on the replay thread at each submission (vk_exec_reset), where an image can go as evict_overlaps
+// drops them: every TICK_IDLE presents the uploaded images not drawn for DM_VK_TEX_IDLE presents go (made and uploaded again when drawn: vk_tex), and the image blocks
+// left empty beyond one a class; when Android says it is low on memory (onLowMemory: vk_mem_low) or MemAvailable is under DM_MEM_TRIM_MB, at most once every TICK_IDLE
+// presents, also the uploaded images not drawn for TICK_IDLE presents, every empty image block, the freed pools' hardware buffers kept for reuse, and the allocator's
+// free pages, and the graphics pipelines not used for DM_VK_PIPE_IDLE presents (gfx_vk_exec.c vk_pipes_drop_idle: on Adreno each holds GPU memory of its own) (DM_MEM_TRIM_MB=0:
+// none of this). The [mem] line, every TICK_LINE presents and after a trim, says where the process's memory is
+enum { TICK_AVAIL = 60, TICK_IDLE = 300, TICK_LINE = 1800 };   // presents: ~1-2 s, ~5-10 s, ~30-60 s at 60 and 30 fps
+static _Atomic int g_mem_low_req;
+void vk_mem_low(void) { atomic_store(&g_mem_low_req, 1); }
+static uint64_t env_u64(const char *k, uint64_t dflt) { const char *e = getenv(k); return e && *e ? strtoull(e, NULL, 10) : dflt; }
+static uint64_t tex_idle(void) { static uint64_t v = ~0ull; if (v == ~0ull) v = env_u64("DM_VK_TEX_IDLE", 1800); return v; }   // presents; 0: images are kept, as before
+static uint64_t trim_mb(void) { static uint64_t v = ~0ull; if (v == ~0ull) v = env_u64("DM_MEM_TRIM_MB", 800); return v; }    // MB of MemAvailable; 0: no trim at all
+static uint64_t pipe_idle(void) { static uint64_t v = ~0ull; if (v == ~0ull) v = env_u64("DM_VK_PIPE_IDLE", 1800); return v; }   // presents; 0: pipelines are kept
+static long long meminfo_mb(const char *path, const char *key) {   // a "Key: n kB" row of /proc/meminfo or /proc/self/status, in MB; -1 when there is none
+    FILE *f = fopen(path, "r"); char l[160]; size_t kl = strlen(key); long long v = -1;
+    if (!f) return -1;
+    while (fgets(l, sizeof l, f)) if (!strncmp(l, key, kl) && l[kl] == ':') { v = strtoll(l + kl + 1, NULL, 10) >> 10; break; }
+    fclose(f); return v;
+}
+static long long gpu_mb(void) {   // the process's GPU memory as the Adreno kernel driver counts it (mapped and unmapped allocations), -1 elsewhere
+    long long t = 0; char p[96];
+    for (int i = 0; i < 2; i++) { snprintf(p, sizeof p, "/sys/class/kgsl/kgsl/proc/%d/gpumem_%smapped", (int)getpid(), i ? "un" : ""); FILE *f = fopen(p, "r"); unsigned long long v = 0;
+        if (!f) return -1; if (fscanf(f, "%llu", &v) != 1) v = 0; fclose(f); t += (long long)v; }
+    return t >> 20;
+}
+static uint64_t imgblk_trim(int keep) {   // empty image blocks beyond keep a class go (an empty block holds no image, and its slots' images were freed after the GPU was done)
+    uint64_t freed = 0;
+    pthread_mutex_lock(&g_imgblk_mu);
+    for (int c = 0; c < IMG_CLASSES; c++) { int kept = 0;
+        for (imgblk **pb = &g_imgblk[c]; *pb;) { imgblk *b = *pb;
+            if (b->nfree != b->nslot || kept++ < keep) { pb = &b->next; continue; }
+            *pb = b->next; vkFreeMemory(V.dev, b->m, NULL); freed += (uint64_t)b->nslot * img_class_size(c); free(b); } }
+    pthread_mutex_unlock(&g_imgblk_mu);
+    return freed;
+}
+static uint64_t zcf_trim(void) {   // the kept hardware buffers of freed pools the GPU is done with
+    uint64_t done = vk_fence_done(), freed = 0; zcfree_t old[ZCF_N]; int nold = 0;
+    pthread_mutex_lock(&g_zcf_mu);
+    for (int i = 0; i < g_nzcf;) { if (g_zcf[i].fence > done) { i++; continue; }
+        old[nold++] = g_zcf[i]; g_zcf_bytes -= g_zcf[i].size; memmove(g_zcf + i, g_zcf + i + 1, (size_t)(g_nzcf - i - 1) * sizeof *g_zcf); g_nzcf--; }
+    pthread_mutex_unlock(&g_zcf_mu);
+    for (int i = 0; i < nold; i++) { freed += old[i].size; zcf_free_now(&old[i]); }
+    return freed;
+}
+long long vk_mem_avail_mb(void) { return meminfo_mb("/proc/meminfo", "MemAvailable"); }
+static void mem_line(const char *why, long long avail) {
+    uint64_t n = 0, b = 0, ni = 0, bi = 0, blk = 0, blk_free = 0, slab_free = 0, slabs, kept;
+    vk_tex_mem(tex_idle() ? tex_idle() : TICK_LINE, &n, &b, &ni, &bi);
+    pthread_mutex_lock(&g_imgblk_mu);
+    for (int c = 0; c < IMG_CLASSES; c++) for (imgblk *k = g_imgblk[c]; k; k = k->next) { blk += (uint64_t)k->nslot * img_class_size(c); blk_free += (uint64_t)k->nfree * img_class_size(c); }
+    pthread_mutex_unlock(&g_imgblk_mu);
+    pthread_mutex_lock(&g_slab_mu); slabs = g_slab_bytes;
+    for (int c = 0; c < SLAB_NCLS; c++) for (slab_t *s = g_slab[c]; s; s = s->next) slab_free += (uint64_t)s->nfree * s->slot_bytes;
+    pthread_mutex_unlock(&g_slab_mu);
+    pthread_mutex_lock(&g_zcf_mu); kept = g_zcf_bytes; pthread_mutex_unlock(&g_zcf_mu);
+    extern uint64_t g_spv_bytes, g_spv_n;   // gfx_vk_shader.c
+    int ndp = 0; uint64_t scratch = 0;   // (the replay thread: the slots' scratch blocks change only there and at slot_recycle, which it waits for)
+    for (int i = 0; i < NSLOT; i++) { ndp += g_slot[i].ndp; for (int j = 0; j < g_slot[i].nblk; j++) scratch += g_slot[i].blk[j].size; }
+    struct mallinfo mi = mallinfo();
+    VKLOG("[mem] %s: process %lld MB resident, %lld MB swapped, GPU %lld MB, native heap %.0f MB; images %llu (%.0f MB, %llu uploaded ones idle: %.0f MB), image blocks %.0f MB "
+          "(%.0f MB free), pipelines %llu, submission scratch %.0f MB, descriptor pools %d; pools %.0f MB own buffers, %.0f MB in slabs (slabs %.0f MB, %.0f MB free), %.0f MB copied, %.0f MB kept for reuse; shaders %llu (%.1f MB of SPIR-V); "
+          "MemAvailable %lld MB", why, meminfo_mb("/proc/self/status", "VmRSS"), meminfo_mb("/proc/self/status", "VmSwap"), gpu_mb(), (double)mi.uordblks / 1048576.0,
+          (unsigned long long)n, b / 1048576.0, (unsigned long long)ni, bi / 1048576.0, blk / 1048576.0, blk_free / 1048576.0,
+          (unsigned long long)vk_pipes_live(), scratch / 1048576.0, ndp,
+          __atomic_load_n(&g_pool_live[0], __ATOMIC_RELAXED) / 1048576.0, __atomic_load_n(&g_pool_live[1], __ATOMIC_RELAXED) / 1048576.0, slabs / 1048576.0, slab_free / 1048576.0,
+          __atomic_load_n(&g_pool_live[2], __ATOMIC_RELAXED) / 1048576.0, kept / 1048576.0, (unsigned long long)__atomic_load_n(&g_spv_n, __ATOMIC_RELAXED),
+          __atomic_load_n(&g_spv_bytes, __ATOMIC_RELAXED) / 1048576.0, avail);
+}
+void vk_mem_tick(void) {
+    extern uint64_t g_tex_frame; static uint64_t t_avail, t_idle, t_line, t_trim;
+    uint64_t now = __atomic_load_n(&g_tex_frame, __ATOMIC_RELAXED); int asked = atomic_exchange(&g_mem_low_req, 0);
+    long long avail = -2;   // -2: not read this time
+    int low = asked && trim_mb();
+    static long long gpu_said;   // the GPU memory at the last [mem] line: a line too when it grew by 256 MB since (a load; Odyssey's jumped 1.7 GB in one submission)
+    if (now - t_avail >= TICK_AVAIL) { t_avail = now; avail = meminfo_mb("/proc/meminfo", "MemAvailable"); low = low || (trim_mb() && avail >= 0 && (uint64_t)avail < trim_mb());
+        long long g = gpu_mb(); if (g >= 0 && g - gpu_said >= 256) { gpu_said = g; mem_line("the GPU memory grew", avail); } }
+    if (low && t_trim && now - t_trim < TICK_IDLE) low = 0;   // a trim at most every TICK_IDLE presents: the images it takes are not drawn again at once
+    if (low) {
+        t_trim = now ? now : 1; t_idle = now;
+        uint64_t ni = 0, bi = vk_tex_drop_idle(TICK_IDLE, &ni), np = pipe_idle() ? vk_pipes_drop_idle(pipe_idle()) : 0, bk = imgblk_trim(0), bz = zcf_trim();
+        size_t before = mallinfo().uordblks;
+#ifdef M_PURGE
+        mallopt(M_PURGE, 0);
+#endif
+        if (avail == -2) avail = meminfo_mb("/proc/meminfo", "MemAvailable");
+        VKLOG("[mem] %s: %llu uploaded images not drawn for %d presents went (%.0f MB), %llu pipelines not used for %llu presents, empty image blocks %.0f MB, kept pool buffers "
+              "%.0f MB; native heap %.0f MB before the purge", asked ? "Android is low on memory (onLowMemory)" : "MemAvailable is low", (unsigned long long)ni, TICK_IDLE, bi / 1048576.0,
+              (unsigned long long)np, (unsigned long long)pipe_idle(), bk / 1048576.0, bz / 1048576.0, (double)before / 1048576.0);
+        mem_line("after the trim", avail); gpu_said = gpu_mb(); t_line = now; return;
+    }
+    if (tex_idle() && now - t_idle >= TICK_IDLE) { t_idle = now;
+        uint64_t ni = 0, bi = vk_tex_drop_idle(tex_idle(), &ni), bk = imgblk_trim(1);
+        static int nl; if ((ni || bk) && nl++ < 40) VKLOG("[mem] %llu uploaded images not drawn for %llu presents went (%.0f MB), empty image blocks %.0f MB", (unsigned long long)ni, (unsigned long long)tex_idle(), bi / 1048576.0, bk / 1048576.0); }
+    if (now - t_line >= TICK_LINE) { t_line = now; mem_line("every 1800 presents", avail == -2 ? meminfo_mb("/proc/meminfo", "MemAvailable") : avail); gpu_said = gpu_mb(); }
+}
