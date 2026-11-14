@@ -677,7 +677,12 @@ VkImageView vk_tex_view_as(const tex_t *t, const view_t *vw, int dim, int arraye
     VkComponentMapping swz = sample_swizzle(&f->swz,t,vw,as_attachment);
     VkFormat fmt = f->vk;
     const vkfmt_t *imf = vk_fmt(im->nvn_format);   // (a BC format decoded on the CPU counts as compressed: its view keeps the decoded image's format)
-    if ((im->aspect & ~VK_IMAGE_ASPECT_COLOR_BIT) || (f->compressed || f->dec) != (imf->compressed || imf->dec) || (f->dec && f->dbpp != imf->dbpp)) fmt = im->fmt;   // depth views and block-size changes keep the image's format
+    // A block-compressed image drawn into through an uncompressed view of its block size (RGBA32UI over BC3: Mario Kart 8 Deluxe's reflection cubes, Tomodachi Life's Mii
+    // face pictures) keeps the view's format: the image is BLOCK_TEXEL_VIEW_COMPATIBLE (img_new) for exactly that, one level and one layer a view. Given the image's own
+    // BC3 format by the rule below, the attachment was a compressed view, which nothing can draw into: the Mii maker's alternative-face tiles stayed blank (Odin 3, 2026-11-14)
+    int block_view = as_attachment && (im->cflags & VK_IMAGE_CREATE_BLOCK_TEXEL_VIEW_COMPATIBLE_BIT) && imf && imf->compressed && !imf->dec &&
+                     !f->compressed && !f->dec && f->bpb == imf->bpb && nlv == 1 && nly == 1;
+    if (!block_view && ((im->aspect & ~VK_IMAGE_ASPECT_COLOR_BIT) || (f->compressed || f->dec) != (imf->compressed || imf->dec) || (f->dec && f->dbpp != imf->dbpp))) fmt = im->fmt;   // depth views and block-size changes keep the image's format
     // a storage view in the integer class of the shader's declaration (vfmt, the caller's texel size): identity swizzle, as an image takes no channel mapping. Only where the
     // image allows it: its format list (fixed_fmt) names it, else the image is MUTABLE_FORMAT
     if (vfmt && !as_attachment && im->aspect == VK_IMAGE_ASPECT_COLOR_BIT && (!im->fixed_fmt || vfmt == im->fmt_cls[0] || vfmt == im->fmt_cls[1])) { fmt = vfmt; swz = (VkComponentMapping){0}; }
