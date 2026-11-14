@@ -112,7 +112,7 @@ const ov_theme *dm_overlay_theme(int layout);   // the theme's sprites for a lay
 void dm_overlay_theme_done(const ov_theme *t);   // the pixels are on the GPU: their memory can go
 
 // ---- the frame rate counter's options (settings.txt fps_rows, fps_pos, fps_colour, fps_outline, fps_size), packed in one int for the backend (dm_fps_opts) ----
-enum { FPSO_FPS = 1, FPSO_SOC = 2, FPSO_BAT = 4, FPSO_DRV = 8, FPSO_ALL = 15 };   // fps_rows: the rows shown, a bit each (the driver row: the Vulkan driver in use)
+enum { FPSO_FPS = 1, FPSO_SOC = 2, FPSO_BAT = 4, FPSO_DRV = 8, FPSO_GRAPH = 16, FPSO_ALL = 31 };   // fps_rows: the rows shown, a bit each (the driver row: the Vulkan driver in use; the graph: the frame times, one bar a frame)
 enum { FPSO_TL, FPSO_TR, FPSO_BL, FPSO_BR, FPSO_POS_N };   // fps_pos: the corner (top left, top right, bottom left, bottom right)
 enum { FPSO_WHITE, FPSO_YELLOW, FPSO_GREEN, FPSO_CYAN, FPSO_MAGENTA, FPSO_COLOUR_N };   // fps_colour: the text (a temperature too hot stays red)
 enum { FPSO_BOX, FPSO_NONE, FPSO_THIN, FPSO_MEDIUM, FPSO_THICK, FPSO_OUTLINE_N };   // fps_outline: the dark block behind the rows; nothing; a black outline round each letter, 1, 2 or 3 font texels
@@ -122,25 +122,25 @@ static const char *const FPSO_COLOUR_NAMES[FPSO_COLOUR_N] = {"White", "Yellow", 
 static const char *const FPSO_OUTLINE_NAMES[FPSO_OUTLINE_N] = {"Box", "None", "Thin", "Medium", "Thick"};
 static const char *const FPSO_SIZE_NAMES[FPSO_SIZE_N] = {"Small", "Normal", "Large", "Extra large"};
 static const uint8_t FPSO_RGB[FPSO_COLOUR_N][3] = {{255, 255, 255}, {255, 220, 0}, {64, 255, 96}, {0, 230, 255}, {255, 64, 255}};
-#define FPSO_DEFAULT (FPSO_ALL | FPSO_TL << 4 | FPSO_WHITE << 6 | FPSO_BOX << 9 | FPSO_NORMAL << 12)
-static inline int fpso_rows(int o) { return o & 15; }
-static inline int fpso_pos(int o) { return o >> 4 & 3; }
-static inline int fpso_colour(int o) { return o >> 6 & 7; }
-static inline int fpso_outline(int o) { return o >> 9 & 7; }
-static inline int fpso_size(int o) { return o >> 12 & 3; }
-static inline int fpso_pack(int rows, int pos, int colour, int outline, int size) { return rows | pos << 4 | colour << 6 | outline << 9 | size << 12; }
+#define FPSO_DEFAULT (FPSO_ALL | FPSO_TL << 5 | FPSO_WHITE << 7 | FPSO_BOX << 10 | FPSO_NORMAL << 13)
+static inline int fpso_rows(int o) { return o & 31; }
+static inline int fpso_pos(int o) { return o >> 5 & 3; }
+static inline int fpso_colour(int o) { return o >> 7 & 7; }
+static inline int fpso_outline(int o) { return o >> 10 & 7; }
+static inline int fpso_size(int o) { return o >> 13 & 3; }
+static inline int fpso_pack(int rows, int pos, int colour, int outline, int size) { return rows | pos << 5 | colour << 7 | outline << 10 | size << 13; }
 static inline int fpso_scale(int base, int size) { return size == FPSO_SMALL ? (base > 1 ? base - 1 : 1) : size == FPSO_LARGE ? base + 1 : size == FPSO_XL ? 2 * base : base; }
 // ---- the pause menu: a panel in the middle of the window: a row of tabs, the open tab's rows, and Resume. Everything is placed in a panel rectangle p
 // (x, y, width, height: the window's for touches, the raster's for drawing), so the touches and the drawing agree ----
 enum { OVM_OVERLAY, OVM_OPACITY, OVM_EDIT, OVM_RUMBLE, OVM_FPS, OVM_MODE, OVM_EXPORT, OVM_IMPORT, OVM_PAD, OVM_AUDIO,
-       OVM_ROW_FPS, OVM_ROW_SOC, OVM_ROW_BAT, OVM_ROW_DRV, OVM_POS, OVM_COLOUR, OVM_OUTLINE, OVM_SIZE, OVM_RESUME, OVM_TAB, OVM_N };   // OVM_TAB: the tabs' row;
+       OVM_ROW_FPS, OVM_ROW_SOC, OVM_ROW_BAT, OVM_ROW_DRV, OVM_ROW_GRAPH, OVM_POS, OVM_COLOUR, OVM_OUTLINE, OVM_SIZE, OVM_RESUME, OVM_TAB, OVM_N };   // OVM_TAB: the tabs' row;
             // OVM_ROW_*: the counter's rows on or off; OVM_POS .. OVM_SIZE: its corner, colour, outline and size, one value on with each press (fpso_step below);
             // OVM_EDIT: the layout editor; OVM_MODE: handheld (performance) or docked (resolution); OVM_EXPORT, OVM_IMPORT: the save manager (saves_android.c);
             // OVM_PAD: a controller's face buttons by their position or by their label (front_android.c pad_labels)
 #define OVM_TABS 4   // (a power of two: ov_menu_item masks the tab)
 #define OVM_PER_TAB 5
 static const int OVM_TAB_ITEMS[OVM_TABS][OVM_PER_TAB] = {{OVM_OVERLAY, OVM_OPACITY, OVM_EDIT, OVM_RUMBLE, OVM_PAD}, {OVM_FPS, OVM_MODE, OVM_EXPORT, OVM_IMPORT, OVM_AUDIO},
-                                                         {OVM_ROW_FPS, OVM_ROW_SOC, OVM_ROW_BAT, OVM_ROW_DRV, -1}, {OVM_POS, OVM_COLOUR, OVM_OUTLINE, OVM_SIZE, -1}};
+                                                         {OVM_ROW_FPS, OVM_ROW_SOC, OVM_ROW_BAT, OVM_ROW_DRV, OVM_ROW_GRAPH}, {OVM_POS, OVM_COLOUR, OVM_OUTLINE, OVM_SIZE, -1}};
 static const char *const OVM_TAB_NAMES[OVM_TABS] = {"Gamepad", "Game", "Counter", "Style"};
 #define OVM_ROWS (OVM_PER_TAB + 2)   // the tabs, a tab's rows (as many for every tab: the panel keeps its size), Resume
 static inline int fpso_step(int o, int item) {   // the options after a press on a menu item: a row's bit flips, the others go to their next value (and round)
@@ -150,6 +150,7 @@ static inline int fpso_step(int o, int item) {   // the options after a press on
     case OVM_ROW_SOC: r ^= FPSO_SOC; break;
     case OVM_ROW_BAT: r ^= FPSO_BAT; break;
     case OVM_ROW_DRV: r ^= FPSO_DRV; break;
+    case OVM_ROW_GRAPH: r ^= FPSO_GRAPH; break;
     case OVM_POS: p = (p + 1) % FPSO_POS_N; break;
     case OVM_COLOUR: c = (c + 1) % FPSO_COLOUR_N; break;
     case OVM_OUTLINE: l = (l + 1) % FPSO_OUTLINE_N; break;

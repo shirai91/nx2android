@@ -85,7 +85,7 @@ static _Atomic int g_cust[2][2][DM_AOV_N][CUST_K], g_cust_ver, g_edit;
 static const char *const LAYOUT_NAMES[2] = {"tablet", "phone"};
 static int ctl_named(const char *n) { for (int i = 0; i < OV_N; i++) if (!strcmp(OV_LAYOUTS[0][i].name, n)) return i; return -1; }
 int dm_opmode(void); void dm_set_opmode(int m);   // hle_oe.c: 0 handheld, 1 docked; a change reaches the game as the Switch's operation mode notification
-// ---- the frame rate counter's options (overlay_layout.h fpso_*): settings.txt fps_rows (a bit a row: 1 FPS, 2 SOC, 4 BAT, 8 driver), fps_pos (0 top left, 1 top right,
+// ---- the frame rate counter's options (overlay_layout.h fpso_*): settings.txt fps_rows (a bit a row: 1 FPS, 2 SOC, 4 BAT, 8 driver, 16 graph), fps_pos (0 top left, 1 top right,
 // 2 bottom left, 3 bottom right), fps_colour (0 white, 1 yellow, 2 green, 3 cyan, 4 magenta), fps_outline (0 box, 1 none, 2 thin, 3 medium, 4 thick), fps_size (0 small,
 // 1 normal, 2 large, 3 extra large). A value out of range is the default. g_fps_ver counts the changes (dm_menu_state: the panel is drawn again)
 static _Atomic int g_fps_opts = FPSO_DEFAULT, g_fps_ver;

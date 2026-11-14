@@ -68,7 +68,7 @@ A game slowed by its draw calls in busy scenes: tick **Multithread replay** on t
 
 When **Show gamepad** is enabled, using a controller hides the on-screen controls. Touch the screen to bring them back. The draggable menu button stays available even with **Show gamepad** off.
 
-The frame rate counter (**Game → Show FPS**) has two more tabs in the pause menu. **Counter** chooses its rows (FPS, SOC and BAT temperatures, the Vulkan driver in use); **Style** chooses its corner, text colour, outline or background box, and size. Both show the counter while they are open.
+The frame rate counter (**Game → Show FPS**) has two more tabs in the pause menu. **Counter** chooses its rows (FPS, SOC and BAT temperatures, the Vulkan driver in use, and a frame-time graph: one bar per presented frame, green on time, amber a little late, red a dropped frame, a grey line at the target); **Style** chooses its corner, text colour, outline or background box, and size. Both show the counter while they are open.
 
 To arrange the on-screen controls, open the pause menu's **Gamepad** tab and choose **Edit layout**: drag a control to move it, pinch or use **− / +** to resize it. **Save** keeps the layout for the next launch and **Cancel** discards your edits. **Snap to grid** (off at first, and remembered) shows a square grid and snaps each control's center to it as you drag.
 
