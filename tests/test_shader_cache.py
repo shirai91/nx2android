@@ -73,6 +73,18 @@ class ShaderCache(unittest.TestCase):
         with mock.patch.object(pipeline.Port, 'translator', return_value=(self.dll, 'source-key')):
             with contextlib.redirect_stdout(io.StringIO()): self.p.shaders()
 
+    def test_numeric_pass_sources_invalidate_export_receipt(self):
+        tools = self.root / 'dm/android/tools'; tools.mkdir(parents=True)
+        names = ('spv_module.py', 'spv_builder.py', 'spv_half.py', 'spv_precise.py', 'spv_texture_offsets.py', 'spv_gather.py')
+        for name in names: (tools / name).write_text('initial ' + name)
+        with mock.patch.object(pipeline, 'DM', self.root / 'dm'):
+            self.export()
+            for number, name in enumerate(names, 2):
+                with self.subTest(name=name):
+                    (tools / name).write_text('changed ' + name)
+                    self.export()
+                    self.assertEqual(self.exports, number)
+
     def test_unchanged_bundle_reused(self):
         self.export(); first = self.p.dmsv.read_bytes()
         self.export()

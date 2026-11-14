@@ -13,3 +13,5 @@ Three projects from Ryujinx 1.3.2: `Ryujinx.Graphics.Shader`, `Ryujinx.Common` a
 
 The shader translation tool in `dm/gfx/tools/dmsh_xlate` references them to translate the original Switch shaders to SPIR-V.
 License: MIT, see `LICENSE.txt`. Upstream: <https://github.com/Ryubing>.
+
+Android texture parity ports from nxnative: `0dff2e865` preserves resolved query dimensions and declares Sampled1D; `759594122`, `4255c6ad3` and `ea6dcf3f7` select existing fetch/gather offset emulation while retaining sample offsets for exact downstream lowering. The accessor and TexturePass conditions are copied from pinned `1f01e28c87da5233dfa14fb31fabf1535df33013`.
