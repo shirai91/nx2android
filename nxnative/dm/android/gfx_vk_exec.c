@@ -172,7 +172,8 @@ static void x_read(void) { const char *c = getenv("DM_VK_CB_DRAWS"); g_x_cbdraws
     g_x_nokeep = (e = getenv("DM_VK_X_NOKEEP")) && atoi(e); g_x_nobc = (e = getenv("DM_VK_X_NOBC")) && atoi(e); g_x_noshc = (e = getenv("DM_VK_X_NOSHC")) && atoi(e); g_x_cutany = (e = getenv("DM_VK_X_CUTANY")) && atoi(e); g_x_nogs = (e = getenv("DM_VK_X_NOGS")) && atoi(e); g_spv_alt = (e = getenv("DM_VK_SPV_ALT")) && atoi(e); g_rd_touch = !((e = getenv("DM_VK_RD_TOUCH")) && !atoi(e));
     g_lrz_touch = (e = getenv("DM_VK_LRZ_TOUCH")) ? atoi(e) : 1; if (g_lrz_touch == 1) g_lrz_touch = LRZ_ALL;   /* 0 none, 1 all, else LRZ_* bits */ g_fdz = !((e = getenv("DM_VK_FDZ")) && !atoi(e)); g_xfb_on = !((e = getenv("DM_VK_XFB")) && !atoi(e));
     g_psplit = (e = getenv("DM_VK_PASS_SPLIT")) ? atoi(e) : 0; g_setsplit = (e = getenv("DM_VK_SETSPLIT")) && atoi(e); g_psplit_depth = (e = getenv("DM_VK_PASS_SPLIT_DEPTH")) && atoi(e);
-    g_x_rdkeep = (e = getenv("DM_VK_X_RDKEEP")) && atoi(e); g_vbound = !((e = getenv("DM_VK_VBOUND")) && !atoi(e)); g_x_logfs = (e = getenv("DM_VK_LOG_FS")) ? strtoull(e, NULL, 16) : 0; g_x_nflat = 0; if ((e = getenv("DM_VK_X_FLAT_VS"))) for (char *q = (char *)e; *q && g_x_nflat < 8; ) { char *nx; uint64_t v = strtoull(q, &nx, 16); if (nx == q) break; int m = 7; if (*nx == ':') m = (int)strtol(nx + 1, &nx, 10); g_x_flat_mode[g_x_nflat] = m; g_x_flat[g_x_nflat++] = v; q = *nx ? nx + 1 : nx; } g_samp_snap = !((e = getenv("DM_NVN_SAMP_SNAP")) && !atoi(e)); g_lin_back = !((e = getenv("DM_VK_LIN_BACK")) && !atoi(e)); g_async_pipe = !((e = getenv("DM_VK_ASYNC_PIPE")) && !atoi(e)); g_prof_on = (e = getenv("DM_VK_PROF_SLOW")) && atoi(e); { extern volatile int g_vk_samp_log; if ((e = getenv("DM_VK_SAMP_LOG")) && atoi(e) > 0) { g_vk_samp_log = atoi(e); setenv("DM_VK_SAMP_LOG", "0", 1); } } g_x_nosetmemo = (e = getenv("DM_VK_X_NOSETMEMO")) && atoi(e); g_x_setverify = (e = getenv("DM_VK_X_SETVERIFY")) && atoi(e);
+    g_x_rdkeep = (e = getenv("DM_VK_X_RDKEEP")) && atoi(e); g_vbound = !((e = getenv("DM_VK_VBOUND")) && !atoi(e)); g_x_logfs = (e = getenv("DM_VK_LOG_FS")) ? strtoull(e, NULL, 16) : 0; g_x_nflat = 0; if ((e = getenv("DM_VK_X_FLAT_VS"))) for (char *q = (char *)e; *q && g_x_nflat < 8; ) { char *nx; uint64_t v = strtoull(q, &nx, 16); if (nx == q) break; int m = 7; if (*nx == ':') m = (int)strtol(nx + 1, &nx, 10); g_x_flat_mode[g_x_nflat] = m; g_x_flat[g_x_nflat++] = v; q = *nx ? nx + 1 : nx; } g_samp_snap = !((e = getenv("DM_NVN_SAMP_SNAP")) && !atoi(e)); g_lin_back = !((e = getenv("DM_VK_LIN_BACK")) && !atoi(e)); g_async_pipe = !((e = getenv("DM_VK_ASYNC_PIPE")) && !atoi(e)); g_prof_on = (e = getenv("DM_VK_PROF_SLOW")) && atoi(e); { extern volatile int g_vk_samp_log, g_vk_samp_log_boot; static int first = 1;   // the first read sees the start-up value, which mtl_reg_samp (game threads, no setenv there) may have taken already: not armed twice
+      if ((e = getenv("DM_VK_SAMP_LOG")) && atoi(e) > 0) { if (!(first && atoi(e) == g_vk_samp_log_boot)) g_vk_samp_log = atoi(e); setenv("DM_VK_SAMP_LOG", "0", 1); } first = 0; } g_x_nosetmemo = (e = getenv("DM_VK_X_NOSETMEMO")) && atoi(e); g_x_setverify = (e = getenv("DM_VK_X_SETVERIFY")) && atoi(e);
     g_x_nskipvs = 0; for (const char *q = getenv("DM_VK_X_SKIPVS"); q && *q && g_x_nskipvs < 8;) { char *n; uint64_t v = strtoull(q, &n, 16); if (n == q) break; if (v) g_x_skipvs[g_x_nskipvs++] = v; q = *n ? n + 1 : n; } }
 // ---------------- conditional rendering (profile render_cond) ----------------
 // As nvn_mtl.m (OP_RENDER_COND): SetRenderEnableConditional draws while the 64-bit counters of the reports at addr and addr + 16 are equal / differ, until SetRenderEnable(true).
@@ -1060,6 +1061,13 @@ static void build_dump(void) {   // (the crash handler: no locks, no allocation)
     if (!n) fprintf(stderr, "[dm] [vk] no pipeline was being built\n");
 }
 static VkPipeline build_pipeline(const pkey *k, VkPipelineLayout layout, vkshader_t *const stg_in[3]) {
+    // DM_VK_PIPE_LOG: one line per pipeline built, with the state that decides how a material is drawn (shaders, cull/front, depth test/write/func,
+    // colour formats, blend). For a game where some materials render wrong and others do not, the lines of the wrong material name the state to compare.
+    { static int on = -1; if (on < 0) on = getenv("DM_VK_PIPE_LOG") ? atoi(getenv("DM_VK_PIPE_LOG")) : 0;
+      if (on > 0) { static int n; if (n++ < 600)
+        VKLOG("pipeline %d: shaders %016llx %016llx %016llx topo %u cull %u front %u mode %u depth test %u write %u func %u stencil %u | colour targets %u (formats %u %u %u %u) depth format %u | samples %u a2c %u blend %u logic %u/%u | attrs %u binds %u",
+              n, (unsigned long long)k->key[0], (unsigned long long)k->key[1], (unsigned long long)k->key[2], k->topo, k->cull, k->front, k->mode,
+              k->dt, k->dw, k->df, k->st, k->ncol, k->cfmt[0], k->cfmt[1], k->cfmt[2], k->cfmt[3], k->dfmt, k->samples, k->a2c, k->blend_en, k->logic_en, k->logic_op, k->nattr, k->nbind); } }
     VkPipeline p; vkshader_t *stg[3] = {stg_in[0], stg_in[1], stg_in[2] ? vk_shader_gs_topo(stg_in[2], (VkPrimitiveTopology)k->topo) : NULL};
     int bs = build_begin();
     if (bs >= 0) { snprintf(g_build[bs].what, sizeof g_build[bs].what, "graphics pipeline, shaders %016llx %016llx %016llx; topology %u, polygon mode %u, samples %u, "
@@ -1242,6 +1250,25 @@ static int tex_desc_for(int st, const dmsv_bind *b, uint64_t h, VkDescriptorImag
         if (tf && !tf->compressed && !tf->dec && !tf->depth && !tf->stencil) vf = vk_int_fmt(tf->bpb, sc == 2);
         vkimg_t *im = NULL; ii->imageView = vf ? vk_tex_view_as(t, v, b->dim, b->flags & 1, 0, &im, vf) : vk_tex_view(t, v, b->dim, b->flags & 1, 0, &im); if (storage && im) im->gpu_w = 1;
         if (vf && ii->imageView && vk_view_fmt == vf) { static int once; if (!once++) VKLOG("storage image: nvn format %#x viewed as vk %d for a %s image binding", t->d.format, vf, sc == 1 ? "uint" : "int"); }
+        // DM_VK_BIND_DUMP=<pixel shader key hex>:<binding>: write the storage of the texture that binding really resolved to (slots alone are polluted by stale
+        // entries from earlier draws and say nothing about which binding reads which); deswizzle it offline with the dimensions in the line
+        { static int bd_read; static const char *bd; if (!bd_read) { bd = getenv("DM_VK_BIND_DUMP"); bd_read = 1; }   // read once: this runs for every texture binding of every game
+          if (bd && S.sh[1] && t->mem && t->L.size) {
+              char want[64]; snprintf(want, sizeof want, "%016llx:%d", (unsigned long long)S.sh[1]->key, (int)b->binding);
+              size_t wl = strlen(want);
+              if (!strncmp(bd, want, wl) && (bd[wl] == 0 || bd[wl] == ':' || bd[wl] == ',')) {
+                  static char done[8][64]; static int nd; int seen = 0;
+                  for (int i = 0; i < nd; i++) if (!strcmp(done[i], want)) seen = 1;
+                  const char *root = getenv("DM_ROOT"); char path[1024];
+                  if (!seen && nd < 8) {
+                      snprintf(path, sizeof path, "%s/bind_%016llx_b%d_%ux%u_f%x_s%llu.bin", root ? root : ".", (unsigned long long)S.sh[1]->key, (int)b->binding,
+                               t->d.width, t->d.height, t->d.format, (unsigned long long)t->serial);
+                      FILE *f = fopen(path, "wb");
+                      if (f) { fwrite(t->mem, 1, t->L.size, f); fclose(f); snprintf(done[nd++], sizeof done[0], "%s", want);
+                               VKLOG("bind dump: %s: %ux%u nvn format %#x levels %u, %llu bytes", path, t->d.width, t->d.height, t->d.format, t->d.levels, (unsigned long long)t->L.size); }
+                  }
+              }
+          } }
         if (logfs) nlogfs++;
         if (g_tracing || logfs) VKLOG("  %stexture binding %d handle %#llx id %d: %ux%u nvn format %#x target %d serial %llu pool %p+%#llx size %#llx (mem %p, flags %#x, pool flags %#x, packaged layout %d) → image %p (%ux%u fmt %d layers %u levels %u, gpu-written %d) view %p", logfs ? "logfs " : "", b->binding, (unsigned long long)h, tid, t->d.width, t->d.height, t->d.format, t->d.target,
                              (unsigned long long)t->serial, (const void *)t->pool, (unsigned long long)t->off, (unsigned long long)t->L.size, (const void *)t->mem, (unsigned)t->d.flags, t->pool ? (unsigned)t->pool->flags : 0u, (int)t->has_layout, (void *)im, im ? im->w : 0, im ? im->h : 0, im ? im->fmt : 0, im ? im->layers : 0, im ? im->levels : 0, im ? (int)im->gpu_w : -1, (void *)ii->imageView);
@@ -1589,7 +1616,8 @@ static void set_dynamic(VkCommandBuffer cb) {
     if (!BC_SAME(po, S.pofs)) { vkCmdSetDepthBias(cb, S.pofs.units, S.pofs.clamp, S.pofs.factor); g_bc.po = S.pofs; }
     if (fresh || !g_bc.line) { vkCmdSetLineWidth(cb, 1.0f); g_bc.line = 1; }
 }
-static int g_no_cull = -1;
+static int g_no_cull = -1, g_front_ovr = -2;   // DM_VK_FRONT=0|1 forces the Vulkan front face for every draw (0 = clockwise, 1 = counter-clockwise: k.front, build_pipeline); =2 inverts the rule below for every draw (Criterion's games: Burnout
+// Paradise culled its ground and showed cars' back faces, NFS Hot Pursuit drew its cars black; the rule suits NEO). -2: not read
 // When the driver refuses a submission (vkEndCommandBuffer), the next ones find the draw it refuses: only draws below a limit are recorded, the limit
 // bisected between a submission that passed and one that failed; the draw found is logged with its whole state (vk_bisect_result, gfx_vk_core.c)
 int g_bis_on, g_bis_lo, g_bis_hi, g_bis_trace = -1, g_bis_var; static int g_draw_i;   // g_bis_var: the change tried on the found draw (1 depth bias values 0, 2 no depth bias, 3 dummy textures, 4 vertex offset 0, 5 zero vertex buffer, 6 a new pass)
@@ -1633,6 +1661,57 @@ static int order_feedback(int nst) {   // a stage of the draw samples one of the
             if (im && im->pool == g_stimg[st][j].pool && g_stimg[st][j].off < im->off + im->size && im->off < g_stimg[st][j].off + g_stimg[st][j].size) return 1; }
     }
     return 0;
+}
+// DM_VK_TEXBIND=<shader key>[,<key>...]: once per matching pipeline, every texture the draw has bound, with the memory it lives in. vk_tex_by_id answers
+// whether a texture is registered and fills the descriptor; the image itself is not made here (making one would upload it): the pool and offset in the
+// descriptor are what DM_VK_TEXDUMP=<pool>+<off> takes to write the texture's content out.
+static void texbind(const pkey *k) {
+    // DM_VK_TEXBIND=<shader key>[,<key>...]  or  DM_VK_TEXBIND=all (every draw that samples something, one group per pixel shader).
+    // The handles in the slots are what the draw bound; vk_tex_by_id answers whether a texture is registered and fills its descriptor, without making the
+    // image (making one would upload it). The descriptor's pool and offset are what DM_VK_TEXDUMP=<pool>+<off> takes to write the texture's content out.
+    static int on = -1, all, nk, nd; static uint64_t keys[8], done[48];
+    if (on < 0) {
+        on = 0; const char *e = getenv("DM_VK_TEXBIND");
+        if (e && (!strcmp(e, "all") || !strcmp(e, "ALL"))) all = on = 1;
+        else if (e) { for (char *q = (char *)e; *q && nk < 8; ) { char *nx; uint64_t v = strtoull(q, &nx, 16); if (nx == q) break; keys[nk++] = v; q = *nx == ',' ? nx + 1 : nx; } on = nk > 0; }
+        if (on) VKLOG("texbind: %s, first draw's shaders %016llx %016llx", all ? "every draw with textures" : "the named shaders", (unsigned long long)k->key[0], (unsigned long long)k->key[1]);
+    }
+    if (!on) return;
+    if (!all) {
+        int hit = 0; for (int i = 0; i < nk; i++) if (keys[i] == k->key[0] || keys[i] == k->key[1]) hit = 1; if (!hit) return;
+    } else {   // a draw that samples nothing, or only single-level render targets, is post-process or UI, not a material: skip it, so the groups are the game's textures
+        int mipped = 0;
+        for (int st = 0; st < 3 && !mipped; st++) for (int slot = 0; slot < 256 && !mipped; slot++) {
+            uint64_t h = vk_tex_slot_handle(S.tex[st], S.img[st], (unsigned)slot); if (!h) continue;
+            int tid = (int)(h & 0xfffff); const view_t *v = NULL; const tex_t *t = NULL;
+            if (tid && vk_tex_by_id(tid, &v, &t) && t && t->d.levels > 1) mipped = 1;
+        }
+        if (!mipped) return;
+    }
+    uint64_t sig = k->key[1] ? k->key[1] : k->key[0];   // one group per pixel shader (per vertex shader for a depth-only draw)
+    for (int i = 0; i < nd; i++) if (done[i] == sig) return;
+    if (nd >= 48) return; done[nd++] = sig;
+    // DM_VK_TEXBIND_DUMP=<group>: write that group's first mipmapped texture's storage, block-linear as the GPU has it. The pool pointer changes every launch, so
+    // DM_VK_TEXDUMP=<pool>+<off> cannot be aimed at a texture seen in an earlier run; this and the descriptor in the log let it be deswizzled offline
+    const char *de = getenv("DM_VK_TEXBIND_DUMP"); int dump_group = de && *de ? atoi(de) : -1, dumped = 0;
+    for (int st = 0; st < 3; st++) for (int slot = 0; slot < 256; slot++) {
+        uint64_t h = vk_tex_slot_handle(S.tex[st], S.img[st], (unsigned)slot); if (!h) continue;
+        int tid = (int)(h & 0xfffff); const view_t *v = NULL; const tex_t *t = NULL;
+        if (!tid || !vk_tex_by_id(tid, &v, &t) || !t) { VKLOG("texbind %016llx/%016llx stage %d slot %d: handle %#llx, not registered", (unsigned long long)k->key[0], (unsigned long long)k->key[1], st, slot, (unsigned long long)h); continue; }
+        VKLOG("texbind %016llx/%016llx stage %d slot %d id %d: %ux%u nvn format %#x target %d levels %u flags %#x stride %u serial %llu pool %p+%#llx size %#llx",
+              (unsigned long long)k->key[0], (unsigned long long)k->key[1], st, slot, tid, t->d.width, t->d.height, t->d.format, t->d.target,
+              t->d.levels, t->d.flags, t->d.stride, (unsigned long long)t->serial, t->pool, (unsigned long long)t->off, (unsigned long long)t->L.size);
+        int dump_this = de && (!strcmp(de, "all") ? (slot < 6) : ((int)nd - 1 == dump_group && t->d.levels > 1));
+        if (dump_this && t->mem && t->L.size && !(de && strcmp(de, "all") && dumped)) {
+            const char *root = getenv("DM_ROOT"); char path[1024];
+            snprintf(path, sizeof path, "%s/texbind_%016llx_%016llx_s%d.bin", root ? root : ".", (unsigned long long)k->key[0], (unsigned long long)k->key[1], slot);
+            FILE *df = fopen(path, "wb");
+            if (df) { fwrite(t->mem, 1, t->L.size, df); fclose(df);
+                VKLOG("texbind dump: %s: %llu bytes, %ux%u nvn format %#x levels %u flags %#x (deswizzle block-linear with these)", path, (unsigned long long)t->L.size, t->d.width, t->d.height, t->d.format, t->d.levels, t->d.flags); }
+            else VKLOG("texbind dump: cannot write %s", path);
+            dumped = 1;   // (single-texture mode: one per group)
+        }
+    }
 }
 static int prepare_draw(int prim, int indexed) {
     // DM_VK_CB_DRAWS (read every submission, default 128, 0 = never): the replay is cut every that many draws and what is recorded goes to the GPU at once
@@ -1688,10 +1767,16 @@ static int prepare_draw(int prim, int indexed) {
     for (int i = 0; i < 3; i++) k.key[i] = S.sh[i] ? S.sh[i]->key : 0;
     for (int i = 0; i < g_x_nflat; i++) if (k.key[0] == g_x_flat[i]) k.debug_mode = (uint32_t)g_x_flat_mode[i];
     k.topo = topo(prim); k.restart = S.prim_restart && (k.topo == VK_PRIMITIVE_TOPOLOGY_LINE_STRIP || k.topo == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP || k.topo == VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN) && indexed;
+    if (g_front_ovr < -1) { const char *e = getenv("DM_VK_FRONT"); g_front_ovr = e ? (atoi(e) == 2 ? 2 : atoi(e) ? 1 : 0) : -1; }   // =2: the rule's answer inverted (a game that uses both windings)
     k.raster_discard = S.rast_discard; k.alt = (uint32_t)g_spv_alt; k.cull = g_no_cull ? 0 : S.poly.cull;
     // counter-clockwise front faces in Vulkan's framebuffer: Vulkan's clip space has y down, Metal's up (nvn_mtl.m: CCW when (front == CCW) != lower left), and the
     // lower-left origin mode flips the viewport again, so CCW when (front == CCW) == lower left. Taken as given, upper-left games (NEO) culled their ground and walls
-    k.front = ((S.poly.front == NVN_FRONT_FACE_CCW) == (g_lower_left != 0)) != (g_flipy != 0); k.mode = S.poly.mode; k.depth_clamp = S.depth_clamp;
+    k.front = g_front_ovr == 0 || g_front_ovr == 1 ? (uint32_t)g_front_ovr : (((S.poly.front == NVN_FRONT_FACE_CCW) == (g_lower_left != 0)) != (g_flipy != 0)) ^ (g_front_ovr == 2);
+    static int plog = -1; if (plog < 0) plog = getenv("DM_VK_PIPE_LOG") ? atoi(getenv("DM_VK_PIPE_LOG")) > 0 : 0;   // the polygon-state lines come with DM_VK_PIPE_LOG: unset costs one branch per draw
+    if (plog) { static int n; if (n < 16) { static int seen[16]; int b = (S.poly.cull & 3) << 2 | (S.poly.front & 1) << 1 | (g_lower_left != 0); if (!seen[b]) { seen[b] = 1; n++;
+        VKLOG("polygon state: cull %d, front %d, lower-left origin %d, flipy %d → Vulkan cull %u front %u (DM_VK_FRONT=%d, DM_VK_NOCULL=%d)",
+              (int)S.poly.cull, (int)S.poly.front, g_lower_left != 0, g_flipy != 0, k.cull, k.front, g_front_ovr, g_no_cull); } } }
+    k.mode = S.poly.mode; k.depth_clamp = S.depth_clamp;
     k.bias_en = (S.poly.offset_en & (S.poly.mode == 0 ? 1 : S.poly.mode == 1 ? 2 : 4)) != 0;
     if (var == 2) k.bias_en = 0;
     if (var == 8) k.raster_discard = 1;   // no fragment shader in the pipeline
@@ -1713,6 +1798,13 @@ static int prepare_draw(int prim, int indexed) {
     // vertex input: every location the vertex shader reads
     vkshader_t *vsh = S.sh[0]; uint32_t in_mask = vsh ? vsh->local[0] : 0, int_mask = vsh ? vsh->local[1] | vsh->local[2] : 0, sint_mask = vsh ? vsh->local[1] : 0;
     uint32_t used_streams = 0; int need_zero = 0;
+    { static int vl_read, done; static uint64_t vl_key;   // DM_VK_VATTR_LOG=<vertex shader key>: once, the vertex inputs the draw really has. Read once (start-up): one branch per draw when unset
+      if (!vl_read) { const char *vl = getenv("DM_VK_VATTR_LOG"); vl_key = vl && *vl ? strtoull(vl, NULL, 16) : 0; vl_read = 1; }
+      if (vl_key && !done && S.sh[0] && S.sh[0]->key == vl_key) { done = 1;
+          VKLOG("vattr: VS %016llx reads locations %#x", (unsigned long long)S.sh[0]->key, in_mask);
+          for (int loc = 0; loc < 16; loc++) { if (!(in_mask >> loc & 1)) continue; va_st a; memcpy(&a, &S.vattr[loc], 4);
+              VKLOG("vattr: loc %d fmt %#x stream %d offset %u | stream stride %u divisor %u | buffer %p", loc, a.fmt, a.stream, a.offset,
+                    S.vstream[a.stream].stride, S.vstream[a.stream].divisor, (void *)(uintptr_t)S.vbuf[a.stream].address); } } }
     for (int loc = 0; loc < 16; loc++) {
         if (!(in_mask >> loc & 1)) continue;
         va_st a; memcpy(&a, &S.vattr[loc], 4);
@@ -1784,6 +1876,7 @@ static int prepare_draw(int prim, int indexed) {
     VkPipeline p = graphics_pipeline(&k, layout);
     uint64_t t1 = tick(); g_vkst.ns_pipe += t1 - t0 - tdesc;
     if (!p) { g_vkst.skip_pipe++; return 0; }
+    texbind(&k);
     if (g_ubolog_key && g_ubolog_n > 0 && S.sh[0] && S.sh[0]->key == g_ubolog_key) {   // DM_VK_UBO_LOG: the pipeline the draw got, and its key's hash
         uint64_t kh = fnv(1469598103934665603ull, &k, sizeof k); VKLOG("ubo: present %llu pipeline %p key %016llx um %llx/%llx im %llx/%llx", (unsigned long long)g_tex_frame, (void *)p, (unsigned long long)kh,
               (unsigned long long)k.um[0], (unsigned long long)k.um[1], (unsigned long long)k.im[0], (unsigned long long)k.im[1]); }
