@@ -2280,13 +2280,20 @@ enum { CF_MIRROR_X = 4, CF_MIRROR_Y = 8 };   // NVNcopyFlags (copy_t2t)
 static VkImage transfer_image(VkCommandBuffer cb, VkFormat fmt, uint32_t w, uint32_t h) {
     VkImageCreateInfo ci = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, NULL, 0, VK_IMAGE_TYPE_2D, fmt, {w, h, 1}, 1, 1, VK_SAMPLE_COUNT_1_BIT,
         VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_SHARING_MODE_EXCLUSIVE, 0, NULL, VK_IMAGE_LAYOUT_UNDEFINED};
-    VkImage im; VKCHK(vkCreateImage(V.dev, &ci, NULL, &im)); VkMemoryRequirements rq; vkGetImageMemoryRequirements(V.dev, im, &rq);
-    VkMemoryAllocateInfo ma = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, rq.size, vk_mem_type(rq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0)};
-    VkDeviceMemory mem; VKCHK(vkAllocateMemory(V.dev, &ma, NULL, &mem)); VKCHK(vkBindImageMemory(V.dev, im, mem, 0));
+    VkImage im; VkResult r = vkCreateImage(V.dev, &ci, NULL, &im);
+    if (r == VK_ERROR_DEVICE_LOST) VKCHK(r);
+    if (r) { VKRED_ONCE(108, "transfer image creation failed (%d): %ux%u format %d, copy skipped", r, w, h, fmt); return VK_NULL_HANDLE; }
+    VkMemoryRequirements rq; vkGetImageMemoryRequirements(V.dev, im, &rq);
+    VkDeviceSize off; void *sub;
+    VkDeviceMemory mem = vk_image_memory(&rq, vk_mem_type(rq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT), &off, &sub);
+    if (!mem) { VKRED_ONCE(109, "transfer image allocation failed (%llu bytes): copy skipped", (unsigned long long)rq.size); vkDestroyImage(V.dev, im, NULL); return VK_NULL_HANDLE; }
+    r = vkBindImageMemory(V.dev, im, mem, off);
+    if (sub) vk_defer_free_image_sub(im, sub); else vk_defer_free_image(im, mem);
+    if (r == VK_ERROR_DEVICE_LOST) VKCHK(r);
+    if (r) { VKRED_ONCE(110, "transfer image memory binding failed (%d): copy skipped", r); return VK_NULL_HANDLE; }
     VkImageMemoryBarrier b = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL, 0, VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
         VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, im, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
     vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &b);
-    vk_defer_free_image(im, mem);
     return im;
 }
 static void copy_t2t(const p_copy_t2t *c) {
@@ -2338,7 +2345,7 @@ static void copy_t2t(const p_copy_t2t *c) {
                 VKRED_ONCE(107, "texture resolve between incompatible image formats %d -> %d (texture formats %d -> %d): skipped", s->fmt, d->fmt, sf->vk, df->vk);
                 vk_img_barrier_all(cb); return;
             }
-            VkImage tmp = transfer_image(cb, s->fmt, r.extent.width, r.extent.height);
+            VkImage tmp = transfer_image(cb, s->fmt, r.extent.width, r.extent.height); if (!tmp) return;
             VkImageCopy cp = {{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, ds, r.dstOffset, r.extent};
             r.dstSubresource = cp.srcSubresource; r.dstOffset = cp.srcOffset;
             vkCmdResolveImage(cb, s->img, VK_IMAGE_LAYOUT_GENERAL, tmp, VK_IMAGE_LAYOUT_GENERAL, 1, &r); vk_img_barrier_all(cb);
@@ -2354,13 +2361,13 @@ static void copy_t2t(const p_copy_t2t *c) {
         VkImage si = s->img, di = d->img;
         VkImageCopy back = {{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, ds, r.dstOffsets[0], {(uint32_t)c->dr.width, (uint32_t)c->dr.height, 1}};
         if (s->fmt != sf->vk) {
-            si = transfer_image(cb, sf->vk, (uint32_t)c->sr.width, (uint32_t)c->sr.height);
+            si = transfer_image(cb, sf->vk, (uint32_t)c->sr.width, (uint32_t)c->sr.height); if (!si) return;
             VkImageCopy cp = {ss, r.srcOffsets[0], {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {(uint32_t)c->sr.width, (uint32_t)c->sr.height, 1}};
             vkCmdCopyImage(cb, s->img, VK_IMAGE_LAYOUT_GENERAL, si, VK_IMAGE_LAYOUT_GENERAL, 1, &cp); vk_img_barrier_all(cb);
             r.srcSubresource = cp.dstSubresource; r.srcOffsets[0] = cp.dstOffset; r.srcOffsets[1] = (VkOffset3D){c->sr.width, c->sr.height, 1};
         }
         if (d->fmt != df->vk) {
-            di = transfer_image(cb, df->vk, (uint32_t)c->dr.width, (uint32_t)c->dr.height);
+            di = transfer_image(cb, df->vk, (uint32_t)c->dr.width, (uint32_t)c->dr.height); if (!di) return;
             r.dstSubresource = back.srcSubresource; r.dstOffsets[0] = back.srcOffset; r.dstOffsets[1] = (VkOffset3D){c->dr.width, c->dr.height, 1};
         }
         if (mir & CF_MIRROR_X) { int32_t x = r.dstOffsets[0].x; r.dstOffsets[0].x = r.dstOffsets[1].x; r.dstOffsets[1].x = x; }

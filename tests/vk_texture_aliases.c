@@ -16,22 +16,32 @@ static void check_packaged_identity(NVNdevice *device) {
     NVNtextureBuilder tb;NVNtexture objects[3];
     API(nvnTextureBuilderSetDefaults)(&tb);API(nvnTextureBuilderSetDevice)(&tb,device);
     API(nvnTextureBuilderSetTarget)(&tb,NVN_TEXTURE_TARGET_2D);API(nvnTextureBuilderSetSize2D)(&tb,8,8);
-    API(nvnTextureBuilderSetStorage)(&tb,&pool,0);
-    for(int first=0;first<2;first++) {
-        API(nvnTextureBuilderSetFormat)(&tb,first?NVN_FORMAT_RGBA8_SRGB:NVN_FORMAT_RGBA8);
+    for(int first=0;first<2;first++) for(int plain_first=0;plain_first<2;plain_first++) {
+        // Separate storage keeps each creation/lookup order independent.
+        API(nvnTextureBuilderSetStorage)(&tb,&pool,(first*2+plain_first)*0x4000);
+        NVNformat aformat=first?NVN_FORMAT_RGBA8_SRGB:NVN_FORMAT_RGBA8;
+        NVNformat bformat=first?NVN_FORMAT_RGBA8:NVN_FORMAT_RGBA8_SRGB;
+        if(plain_first) {
+            API(nvnTextureBuilderSetFormat)(&tb,bformat);
+            API(nvnTextureBuilderSetPackagedTextureData)(&tb,NULL);assert(API(nvnTextureInitialize)(&objects[2],&tb));
+        }
+        API(nvnTextureBuilderSetFormat)(&tb,aformat);
         API(nvnTextureBuilderSetPackagedTextureData)(&tb,seed);assert(API(nvnTextureInitialize)(&objects[0],&tb));
-        API(nvnTextureBuilderSetFormat)(&tb,first?NVN_FORMAT_RGBA8:NVN_FORMAT_RGBA8_SRGB);
-        assert(API(nvnTextureInitialize)(&objects[1],&tb));
-        API(nvnTextureBuilderSetPackagedTextureData)(&tb,NULL);assert(API(nvnTextureInitialize)(&objects[2],&tb));
+        API(nvnTextureBuilderSetFormat)(&tb,bformat);assert(API(nvnTextureInitialize)(&objects[1],&tb));
+        if(!plain_first) {
+            API(nvnTextureBuilderSetPackagedTextureData)(&tb,NULL);assert(API(nvnTextureInitialize)(&objects[2],&tb));
+        }
         assert(!((tex_t*)&objects[0])->has_layout && !((tex_t*)&objects[1])->has_layout);
         mtl_sub_begin();
-        vkimg_t *a=vk_tex((tex_t*)&objects[0]),*b=vk_tex((tex_t*)&objects[1]),*gpu=vk_tex((tex_t*)&objects[2]);
-        assert(a && b && gpu && a!=b && a!=gpu);
+        vkimg_t *gpu=plain_first?vk_tex((tex_t*)&objects[2]):NULL;
+        vkimg_t *a=vk_tex((tex_t*)&objects[0]),*b=vk_tex((tex_t*)&objects[1]);
+        if(!plain_first)gpu=vk_tex((tex_t*)&objects[2]);
+        assert(a && b && gpu && a!=b && b==gpu);
         assert(mtl_wait(mtl_sub_commit(),UINT64_MAX));
         for(int i=0;i<3;i++)API(nvnTextureFinalize)(&objects[i]);
     }
     API(nvnMemoryPoolFinalize)(&pool);
-    puts("PASS: packaged data without explicit layouts retain exact format identity in both orders");
+    puts("PASS: packaged/plain same-format peers share in both creation orders; new format peers stay separate");
 }
 int __wrap_main(void) {
     void crash_install(void);crash_install();

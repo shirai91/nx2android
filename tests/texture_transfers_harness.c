@@ -10,6 +10,9 @@
 /* TYPES */
 #define VKCHK(x) assert((x)==VK_SUCCESS)
 static int red_calls;
+static int fail_alloc, dedicated, direct_allocs, pool_calls, pooled_retired, direct_retired, destroyed;
+static VkDeviceSize bound_offset;
+static int slot_cookie, create_calls, fail_n;
 #define VKRED_ONCE(...) ((void)red_calls++)
 static struct { VkDevice dev; VkPhysicalDevice pd; } V;
 static uint64_t g_tex_frame;
@@ -46,18 +49,24 @@ static void vkGetPhysicalDeviceFormatProperties(VkPhysicalDevice p,VkFormat f,Vk
     (void)p;(void)f;*o=(VkFormatProperties){.optimalTilingFeatures=VK_FORMAT_FEATURE_BLIT_SRC_BIT|VK_FORMAT_FEATURE_BLIT_DST_BIT|VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT};
 }
 static VkResult vkCreateImage(VkDevice dev,const VkImageCreateInfo *ci,const VkAllocationCallbacks *a,VkImage *out) {
-    (void)dev;(void)a; assert(nimages<16);assert(ci->samples==VK_SAMPLE_COUNT_1_BIT);
+    (void)dev;(void)a; if(++create_calls==fail_n && fail_alloc==1)return VK_ERROR_OUT_OF_DEVICE_MEMORY;assert(nimages<16);assert(ci->samples==VK_SAMPLE_COUNT_1_BIT);
     assert(ci->usage==(VK_IMAGE_USAGE_TRANSFER_SRC_BIT|VK_IMAGE_USAGE_TRANSFER_DST_BIT));
     assert(ci->imageType==VK_IMAGE_TYPE_2D && ci->arrayLayers==1 && ci->mipLevels==1);
     *out=(VkImage)(uintptr_t)(nimages+1); images[nimages++]=(vkimg_t){.img=*out,.fmt=ci->format,.w=ci->extent.width,.h=ci->extent.height,.d=1,.layers=1,.levels=1,.samples=1};return VK_SUCCESS;
 }
 static void vkGetImageMemoryRequirements(VkDevice d,VkImage im,VkMemoryRequirements *r) {(void)d;(void)im;*r=(VkMemoryRequirements){.size=4096,.memoryTypeBits=1};}
-static VkResult vkAllocateMemory(VkDevice d,const VkMemoryAllocateInfo *a,const VkAllocationCallbacks *p,VkDeviceMemory *out) {(void)d;(void)a;(void)p;*out=(VkDeviceMemory)(uintptr_t)1;return VK_SUCCESS;}
-static VkResult vkBindImageMemory(VkDevice d,VkImage i,VkDeviceMemory m,VkDeviceSize off) {(void)d;(void)i;(void)m;assert(!off);return VK_SUCCESS;}
+static VkResult vkAllocateMemory(VkDevice d,const VkMemoryAllocateInfo *a,const VkAllocationCallbacks *p,VkDeviceMemory *out) {(void)d;(void)a;(void)p;direct_allocs++;if(fail_alloc==2 && create_calls==fail_n)return VK_ERROR_OUT_OF_DEVICE_MEMORY;*out=(VkDeviceMemory)(uintptr_t)1;return VK_SUCCESS;}
+static VkResult vkBindImageMemory(VkDevice d,VkImage i,VkDeviceMemory m,VkDeviceSize off) {(void)d;(void)i;(void)m;bound_offset=off;return fail_alloc==3 && create_calls==fail_n?VK_ERROR_OUT_OF_DEVICE_MEMORY:VK_SUCCESS;}
 static void vkCmdPipelineBarrier(VkCommandBuffer cb,VkPipelineStageFlags srcstage,VkPipelineStageFlags dststage,VkDependencyFlags flags,uint32_t nm,const VkMemoryBarrier *mb,uint32_t nb,const VkBufferMemoryBarrier *bb,uint32_t ni,const VkImageMemoryBarrier *ib) {
     (void)cb;(void)srcstage;(void)dststage;(void)flags;(void)nm;(void)mb;(void)nb;(void)bb;assert(ni==1);assert(ib->oldLayout==VK_IMAGE_LAYOUT_UNDEFINED && ib->newLayout==VK_IMAGE_LAYOUT_GENERAL);barriers++;
 }
-static void vk_defer_free_image(VkImage im,VkDeviceMemory m) {assert((uintptr_t)im>2 && m);retired++;}
+static VkDeviceMemory vk_image_memory(const VkMemoryRequirements *r,uint32_t type,VkDeviceSize *off,void **sub) {
+    (void)r;(void)type;pool_calls++;*off=0;*sub=NULL;if(fail_alloc==2 && create_calls==fail_n)return VK_NULL_HANDLE;
+    if(!dedicated){*off=4096;*sub=&slot_cookie;}return (VkDeviceMemory)(uintptr_t)1;
+}
+static void vkDestroyImage(VkDevice dev,VkImage im,const VkAllocationCallbacks *a) {(void)dev;(void)a;assert((uintptr_t)im>2);destroyed++;}
+static void vk_defer_free_image(VkImage im,VkDeviceMemory m) {assert((uintptr_t)im>2 && m);retired++;direct_retired++;}
+static void vk_defer_free_image_sub(VkImage im,void *sub) {assert((uintptr_t)im>2 && sub==&slot_cookie);retired++;pooled_retired++;}
 static int depth_scale(VkCommandBuffer cb,vkimg_t *s,vkimg_t *d,VkImageSubresourceLayers ss,VkImageSubresourceLayers ds,const p_copy_t2t *c) {(void)cb;(void)s;(void)d;(void)ss;(void)ds;(void)c;abort();}
 static void vkCmdCopyImage(VkCommandBuffer cb,VkImage s,VkImageLayout sl,VkImage d,VkImageLayout dl,uint32_t n,const VkImageCopy *r) {
     (void)cb;(void)sl;(void)dl;assert(n==1);copies++;last_copy=*r;last_copy_src=s;last_copy_dst=d;
@@ -73,13 +82,33 @@ static void vkCmdClearColorImage(VkCommandBuffer cb,VkImage im,VkImageLayout l,c
 static void vkCmdClearDepthStencilImage(VkCommandBuffer cb,VkImage im,VkImageLayout l,const VkClearDepthStencilValue *v,uint32_t n,const VkImageSubresourceRange *r) {(void)cb;(void)im;(void)l;(void)v;(void)n;(void)r;abort();}
 /* FUNCTIONS */
 static p_copy_t2t setup(int fmt,VkFormat sf,VkFormat df) {
-    src=(tex_t){.d={.format=fmt}};dst=src;nimages=2;copies=blits=resolves=retired=barriers=same_image=red_calls=0;
+    src=(tex_t){.d={.format=fmt}};dst=src;nimages=2;copies=blits=resolves=retired=barriers=same_image=red_calls=0;fail_alloc=dedicated=direct_allocs=pool_calls=pooled_retired=direct_retired=destroyed=0;bound_offset=0;create_calls=0;fail_n=1;
     images[0]=(vkimg_t){.img=(VkImage)(uintptr_t)1,.fmt=sf,.w=32,.h=32,.d=1,.levels=2,.layers=4,.samples=1,.aspect=VK_IMAGE_ASPECT_COLOR_BIT};
     images[1]=images[0];images[1].img=(VkImage)(uintptr_t)2;images[1].fmt=df;
     return (p_copy_t2t){.src=&src,.dst=&dst,.sr={1,2,1,4,4,1},.dr={3,4,2,4,4,1},.has_sv=1,.has_dv=1,.sv={.set_levels=1,.base_level=1},.dv={.set_levels=1,.base_level=1}};
 }
 int main(int argc,char **argv) {
     assert(argc==2);
+    if(!strcmp(argv[1],"memory")) for(int own=0;own<2;own++) {
+        setup(NVN_FORMAT_RGBA8_SRGB,VK_FORMAT_R8G8B8A8_SRGB,VK_FORMAT_R8G8B8A8_UNORM);dedicated=own;
+        assert(transfer_image(vk_cmd(),VK_FORMAT_R8G8B8A8_SRGB,8,8));
+        assert(pool_calls==1 && direct_allocs==0 && retired==1 && !destroyed);
+        assert(bound_offset==(own?0:4096) && pooled_retired==!own && direct_retired==own);
+    }
+    if(!strcmp(argv[1],"memory_failure")) for(int failure=1;failure<=3;failure++) for(int path=0;path<3;path++) {
+        p_copy_t2t c=setup(NVN_FORMAT_RGBA8_SRGB,path==1?VK_FORMAT_R8G8B8A8_UNORM:VK_FORMAT_R8G8B8A8_SRGB,path==1?VK_FORMAT_R8G8B8A8_SRGB:VK_FORMAT_R8G8B8A8_UNORM);
+        fail_alloc=failure;if(path==0){images[0].samples=4;c.flags=DM_COPY_RESOLVE;c.sv.base_level=0;}else{c.dr.width=c.dr.height=8;}
+        copy_t2t(&c);assert(!copies && !blits && !resolves && red_calls==1);
+        assert(destroyed==(failure==2) && retired==(failure==3));
+    }
+    if(!strcmp(argv[1],"memory_failure")) for(int failure=1;failure<=3;failure++) {
+        p_copy_t2t c=setup(NVN_FORMAT_RGBA8_SRGB,VK_FORMAT_R8G8B8A8_UNORM,VK_FORMAT_R8G8B8A8_UNORM);
+        fail_alloc=failure;fail_n=2;c.dr.width=c.dr.height=8;copy_t2t(&c);
+        // The source staging copy may exist, but a failed second temporary must
+        // not blit or write the destination; both allocated images retire safely.
+        assert(copies==1 && last_copy_dst!=images[1].img && !blits && !resolves && red_calls==1);
+        assert(destroyed==(failure==2) && retired==1+(failure==3));
+    }
     const int fmt[]={NVN_FORMAT_RGBA8_SRGB,NVN_FORMAT_RGBX8_SRGB,NVN_FORMAT_BGRA8_SRGB,NVN_FORMAT_BGRX8_SRGB};
     const VkFormat srgb[]={VK_FORMAT_R8G8B8A8_SRGB,VK_FORMAT_B8G8R8A8_SRGB}, unorm[]={VK_FORMAT_R8G8B8A8_UNORM,VK_FORMAT_B8G8R8A8_UNORM};
     if(!strcmp(argv[1],"resolve_invalid")) for(int invalid=0;invalid<3;invalid++) {

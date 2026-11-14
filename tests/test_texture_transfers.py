@@ -18,7 +18,7 @@ def between(text, start, end):
 class TextureTransfers(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.cc = os.environ.get('CC') or shutil.which('clang') or shutil.which('cc')
+        cls.cc = os.environ.get('CC') or shutil.which('cc') or shutil.which('clang')
         if not cls.cc:
             raise unittest.SkipTest('host C compiler required')
         ndk, _ = find_ndk()
@@ -60,3 +60,9 @@ class TextureTransfers(unittest.TestCase):
 
     def test_scaled_mirrored_and_converting_blits(self):
         self.check_case('blit')
+
+    def test_temporaries_use_pooled_and_dedicated_retirement(self):
+        self.check_case('memory')
+
+    def test_temporary_allocation_failures_skip_transfers(self):
+        self.check_case('memory_failure')
