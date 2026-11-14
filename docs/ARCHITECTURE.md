@@ -39,6 +39,12 @@ skip identical content by digest; incomplete snapshots and publication failures
 remain retryable. The legacy path cannot provide integrity guarantees absent from
 the old format.
 
+Vulkan colour attachments outside the fragment shader's reflected output map
+have writes and blending disabled, so undefined outputs cannot overwrite them.
+The replacement flat diagnostic fragment shader writes all eight outputs and
+keeps those targets eligible; guest channel masks still apply. A draw without a
+fragment shader writes no colour.
+
 Vulkan descriptor collection checks each image binding against its 384-entry
 scratch array before writing it. A binding that would exceed capacity stops the
 host with a diagnostic; valid arrays keep their full reflected counts, including
