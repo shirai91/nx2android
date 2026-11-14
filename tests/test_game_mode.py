@@ -227,6 +227,52 @@ int main(void) {
 }
 ''')
 
+    def test_profile_ceiling_survives_performance_mode(self):
+        source = (ANDROID/'perf_android.c').read_text(encoding='utf-8')
+        start = source.index('static const int64_t STEPS[]')
+        code = source[start:source.index('// The frame\'s replay', start)]
+        # The linked presentation backend supplies this weak hook from the profile.
+        code = code.replace('__attribute__((weak)) int dm_fps_ceiling(void) { return 0; }',
+                            'int dm_fps_ceiling(void) { return PROFILE_CEILING; }')
+        code += '\nstatic int64_t g_frame_cost; static unsigned g_held_back;\nstatic int shown_late(void) { return -1; }\n'
+        code += function(source, 'adapt_frame')
+        for ceiling in (0, 30):
+            with self.subTest(ceiling=ceiling):
+                self.compile_run(f'#define PROFILE_CEILING {ceiling}\n' + r'''#include <assert.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include <stdatomic.h>
+#define LOG(...) ((void)0)
+#ifdef _WIN32
+static int setenv(const char *k, const char *v, int o) { char s[256]; (void)o; snprintf(s, sizeof s, "%s=%s", k, v); return _putenv(s); }
+static int unsetenv(const char *k) { char s[256]; snprintf(s, sizeof s, "%s=", k); return _putenv(s); }
+#endif
+''' + code + r'''
+static void refresh(void) { for (int i=0;i<30;i++) game_mode_sync(); }
+int main(void) {
+    uint64_t expected = PROFILE_CEILING == 30 ? 33333333 : 16666667;
+    unsetenv("DM_ADAPTIVE_FPS"); unsetenv("DM_FPS_PIN");
+    game_mode_sync();
+    assert(dm_present_period_adapt(16666667)==expected);
+    dm_perf_game_mode(2); game_mode_sync();
+    assert(!adaptive_enabled());
+    assert(dm_present_period_adapt(16666667)==expected);
+    assert(dm_present_period_adapt(50000000)==50000000);
+    assert(dm_present_period_adapt(0)==0);
+    dm_perf_game_mode(1); game_mode_sync();
+    assert(adaptive_enabled() && dm_present_period_adapt(16666667)==expected);
+    setenv("DM_ADAPTIVE_FPS","0",1); refresh();
+    assert(!adaptive_enabled() && dm_present_period_adapt(16666667)==expected);
+    // Preserve main's explicit diagnostic pin precedence while adaptation is enabled.
+    unsetenv("DM_ADAPTIVE_FPS"); setenv("DM_FPS_PIN","60",1); refresh();
+    adapt_frame(50000000,9000000000LL);
+    assert(dm_present_period_adapt(16666667)==16666667);
+    return 0;
+}
+''')
+
     def test_resume_queries_mode_and_recovers_from_service_failures(self):
         source = (ANDROID/'front_android.c').read_text(encoding='utf-8')
         query = function(source, 'activity_game_mode'); resume = function(source, 'on_resume')
