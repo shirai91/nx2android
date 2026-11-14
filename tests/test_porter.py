@@ -47,6 +47,16 @@ class AndroidProfiles(unittest.TestCase):
         for v in ('10', '85', '42'):
             with self.assertRaises(android_profile.ProfileError, msg=v): android_profile.load(profile_dir([('status', 'boots'), ('setting', f'opacity={v}')]).name)
 
+    def test_sharpness_setting(self):   # super resolution's Sharpness slider, 0..100 by 25 (front_android.c settings_load sharpness=)
+        d = profile_dir([('status', 'boots'), ('setting', 'sharpness=75')])
+        self.assertEqual(android_profile.load(d.name).settings, {'sharpness': '75'})
+        with self.assertRaises(android_profile.ProfileError): android_profile.load(profile_dir([('status', 'boots'), ('setting', 'sharpness=60')]).name)
+
+    def test_sr_setting(self):   # super resolution, off or on (the pause menu's row, front_android.c settings_load sr=)
+        d = profile_dir([('status', 'boots'), ('setting', 'sr=1')])
+        self.assertEqual(android_profile.load(d.name).settings, {'sr': '1'})
+        with self.assertRaises(android_profile.ProfileError): android_profile.load(profile_dir([('status', 'boots'), ('setting', 'sr=2')]).name)
+
     def test_default_package(self):
         d = profile_dir([('status', 'boots')])
         self.assertEqual(android_profile.load(d.name).package, 'org.nx2a.t0100000000aaa000')

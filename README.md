@@ -68,6 +68,8 @@ A game slowed by its draw calls in busy scenes: tick **Multithread replay** on t
 
 When **Show gamepad** is enabled, using a controller hides the on-screen controls. Touch the screen to bring them back. The draggable menu button stays available even with **Show gamepad** off.
 
+A game whose picture is smaller than the screen (a Switch game's 720p or 1080p on a tablet's 2560x1600 panel) can be upscaled by Snapdragon Game Super Resolution 1.0: the pause menu's **Game** tab has **Super resolution** (off at first, and remembered). It draws the game's picture into the window through SGSR's edge-direction filter in one pass, so edges stay sharp instead of bilinear and the frame is not written out and read back. It costs a little GPU time per frame; turn it off if a game runs cooler without it. **Sharpness** under it (0 to 100 percent by 25, 0 at first) lowers the filter's edge threshold and widens its sharpen step: 0 is the shader as published, high values make cloth and ground detail pop at the cost of ringing around hard edges.
+
 To arrange the on-screen controls, open the pause menu's **Gamepad** tab and choose **Edit layout**: drag a control to move it, pinch or use **− / +** to resize it. **Save** keeps the layout for the next launch and **Cancel** discards your edits. **Snap to grid** (off at first, and remembered) shows a square grid and snaps each control's center to it as you drag.
 
 A controller whose A is the bottom button (Xbox labels, most Android devices' built-in controls) can have its face buttons follow their labels: the **Gamepad** tab's **Face buttons** row switches between **Position** (the Switch's layout, the default) and **Label**. It applies at once, also to the pause menu's own A and B, and each device keeps its own choice.
