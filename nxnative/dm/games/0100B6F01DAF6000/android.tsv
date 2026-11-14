@@ -9,9 +9,11 @@
 # The game's frame limiter busy-waited on yields (one big core at 100%, the fan at full speed): patches.py turns its yield into a 0.52 ms sleep. The whole game at 60 fps on
 # the title screen: 1.27 of a core before, 0.27 after; the boot screens keep their 3.0 s, so the game's speed is the same.
 # 30 fps by default (game.tsv fps_ceiling), 60 with porter's --fps60: the whole game took 0.14 of a core at 30 fps on the title screen.
+# romfs zstd: its RomFS is 30.6 GB extracted against 21 GB of XCI and update; packed, 19.7 GB on the device (7,456 of 40,848 files), boot, saves and fights read from it.
 # Known gaps: shaders the game patches or builds at run time (14 in the tutorial fight: its card and board shaders) are captured on the device and need a port again
 # with --install to be drawn (docs/ARCHITECTURE.md, captured shaders); online features are not available.
 status	playable
 tested	v1441792 AYN Odin 2 (Snapdragon 8 Gen 2, Adreno 740, Android 13)
 package	org.nx2a.vanguarddeardays2
 orientation	landscape
+romfs	zstd
