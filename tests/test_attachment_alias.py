@@ -29,6 +29,7 @@ static struct {int pass_open,ncol;struct {uint32_t mask;} chmask;VkFormat cfmt[8
 static VkImageView P_alias_views[8];static uint8_t P_alias[8];
 static VkRenderingAttachmentInfo P_ca[8];static VkRenderingInfo P_ri;static int P_cleared,ended,clears;static uint32_t cleared_slot;
 static struct {unsigned folded;} g_vkst;
+typedef struct {int w;} vkimg_t;static vkimg_t g_s0_image;static struct {vkimg_t *im;} P_att[8];
 static void vk_end_pass(void) {ended++;S.pass_open=0;}
 static int begin_pass(void) {return 1;}
 static int pass_commit(void) {return 1;}
@@ -69,6 +70,7 @@ int main(void) {
  assert(P_cleared && g_vkst.folded==1 && clears==0 && c.index==4);
  S.pass_open=1;clear_color(&c);assert(clears==1 && cleared_slot==3);
  c.index=-1;clear_color(&c);c.index=8;clear_color(&c);assert(clears==1);
+ P_att[3].im=&g_s0_image;c.index=4;clear_color(&c);assert(clears==1);P_att[3].im=NULL;clear_color(&c);assert(clears==2);
  return 0;
 }
 '''
