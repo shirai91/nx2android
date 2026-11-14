@@ -79,13 +79,34 @@ def clean_env():   # the environment without DM_GAMES_DIR / DM_GAMES_FIRST: the 
     return {k: v for k, v in os.environ.items() if k not in ('DM_GAMES_DIR', 'DM_GAMES_FIRST')}
 
 
-def profile_hash(title_id):
-    """sha256 of the game_profile.h the repository's profile of title_id makes (dm/games/game.py header, as dm/android/build.py makes it)"""
+def profile_header(title_id):
+    """the game_profile.h (bytes) the repository's profile of title_id makes (dm/games/game.py header, as dm/android/build.py makes it)"""
     with tempfile.TemporaryDirectory(prefix='nx2a_profile_') as t:
         h = Path(t) / 'game_profile.h'
         r = subprocess.run([sys.executable, str(DM / 'games/game.py'), 'header', title_id, str(h)], capture_output=True, text=True, errors='replace', env=clean_env())
         if r.returncode or not h.is_file(): raise BuildError(f'{title_id}: the profile header did not build: ' + ((r.stderr.strip() or r.stdout.strip()).splitlines() or ['no output'])[-1])
-        return hashlib.sha256(h.read_bytes()).hexdigest()
+        return h.read_bytes()
+
+
+def profile_hash(title_id):
+    """sha256 of the game_profile.h the repository's profile of title_id makes"""
+    return hashlib.sha256(profile_header(title_id)).hexdigest()
+
+
+# Header defines added to dm/games/game.py after profile_h began to be recorded, in the order they were added, each with its value when the key is off. They change no layout:
+# a port made before one was added and a profile that leaves it off differ only by that line, so check_profile accepts the older hash. A new define that is off by default is appended here.
+ADDED_DEFINES = (('DM_GAME_TEX_CPU_UNCACHED', '0'), ('DM_GAME_FPS_CEILING', '0'))
+
+
+def older_hashes(header):
+    """[(names, sha256)] of header without the k most recently added defines (k = 1, 2, ...), as long as each of those is at its default value in header"""
+    lines, out = header.splitlines(keepends=True), []
+    for k in range(1, len(ADDED_DEFINES) + 1):
+        names = ADDED_DEFINES[-k:]
+        drop = {f'#define {n} {v}'.encode() for n, v in names}
+        if not all(any(ln.strip() == d for ln in lines) for d in drop): break
+        out.append(([n for n, _ in names], hashlib.sha256(b''.join(ln for ln in lines if ln.strip() not in drop)).hexdigest()))
+    return out
 
 
 def check_profile(package, manifest, title_id):
@@ -100,9 +121,14 @@ def check_profile(package, manifest, title_id):
                          f'with its own alias region; port the game again')
     if not manifest.get('profile_h'):
         raise BuildError(f'{package}: no profile_h in nx2a-data.json (a data pack made before nx2android recorded the profile the host was built from): port the game again')
-    if manifest['profile_h'] != profile_hash(title_id):
-        raise BuildError(f'{package}: the host on the device was built from another profile of {title_id} than this checkout\'s (another layout, --alias-headroom or a derived profile): '
-                         f'port the game again')
+    header = profile_header(title_id)
+    if manifest['profile_h'] == hashlib.sha256(header).hexdigest(): return
+    for names, h in older_hashes(header):
+        if manifest['profile_h'] == h:
+            say(f'{package}: the host on the device was built before {", ".join(names)} existed in the profile header; they are off (default) in this checkout\'s profile of {title_id}, so the update goes on')
+            return
+    raise BuildError(f'{package}: the host on the device was built from another profile of {title_id} than this checkout\'s (another layout, --alias-headroom or a derived profile): '
+                     f'port the game again')
 
 
 def update(adb, package, jobs=os.cpu_count() or 8):
