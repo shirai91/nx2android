@@ -6,6 +6,7 @@ Source: [`thehobbit85/nxnative` at `1f01e28c87da5233dfa14fb31fabf1535df33013`](h
 The crop/padding oracle and synthetic H.264 stream come from
 `t_android_avc_metadata.c`, `t_android_avc.c`, and `h264_synthetic.h` there.
 The donor is the fork; this does not attribute that revision to `seedds/nxnative`.
+The adapted fork code is licensed under the MIT License, retained in [`nxnative/LICENSE`](../nxnative/LICENSE).
 
 The port validates I420/NV12 dimensions, aligned crop origins and the last plane
 byte actually read. It keeps odd visible dimensions and ceil-sized chroma planes.
