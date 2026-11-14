@@ -150,7 +150,11 @@ void vk_watch(const vkimg_t *im, const char *what) {
     g_watch_n--; VKLOG("watch: present %llu pass %d (%ux%u): %s %ux%u fmt %d pool %#llx+%#llx (image %p, nvn flags %#x, %d overlapping)", (unsigned long long)g_tex_frame, g_sub_pass - 1, S.pass_w, S.pass_h, what, im->w, im->h, im->fmt,
                        (unsigned long long)im->pool, (unsigned long long)im->off, (const void *)im, im->flags, im->novl);
 }
-static void x_read(void) { const char *c = getenv("DM_VK_CB_DRAWS"); g_x_cbdraws = c ? atoi(c) : 128; g_sub_pass = 0;
+static void cpu_ready_config(void) {
+    const char *e = getenv("DM_VK_CPU_READY");
+    g_vk_cpu_ready = !(e && !atoi(e));   // live A/B: =0 leaves CPU reads unsynchronized
+}
+static void x_read(void) { cpu_ready_config(); const char *c = getenv("DM_VK_CB_DRAWS"); g_x_cbdraws = c ? atoi(c) : 128; g_sub_pass = 0;
     const char *fy = getenv("DM_VK_FLIPY"); g_flipy = !(fy && !atoi(fy));   // on unless DM_VK_FLIPY=0
     if (g_x_listpasses) { g_x_listpasses = 0; setenv("DM_VK_TRACE_PASS", "-1", 1); }
     const char *tp = getenv("DM_VK_TRACE_PASS"); g_x_tracepass = tp ? atoi(tp) : -1;
@@ -1109,7 +1113,7 @@ static uint64_t c2_handle(int st, int off) {   // the driver's handle table c2, 
 // nxnative shader_cpu_ready/uniform_ready: finish CPU-decoded descriptor
 // dependencies before this command can allocate scratch or descriptor sets.
 static void cpu_ready(uint64_t addr, uint64_t size) {
-    if (!size || addr > UINT64_MAX - size) return;
+    if (!g_vk_cpu_ready || !size || addr > UINT64_MAX - size) return;
     for (int i = 0; S.pass_open && g_lin_back && (g_pass_draws || P_cleared) && i < S.ncol && i < 8; i++) {
         const tex_t *t = S.rt_has_col[i] ? &S.rt_col[i] : NULL;
         if (!t || !t->mem || !(t->d.flags & NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET)) continue;
@@ -1845,7 +1849,8 @@ static int quad_index_ready(const p_draw_idx *d) {
     if (d->prim != NVN_DRAW_PRIMITIVE_QUADS || d->ind) return 1;
     if (d->count < 4 || (unsigned)d->itype > 2) return 0;
     uint64_t n = (uint64_t)(uint32_t)d->count * (1u << d->itype);
-    if (d->ibuf > UINT64_MAX - n || !vk_pool_of(d->ibuf, n)) return 0;
+    // Match draw eligibility: the CPU index span may cross registered pool chunks.
+    if (d->ibuf > UINT64_MAX - n || !vk_pool_of(d->ibuf, 1)) return 0;
     cpu_ready(d->ibuf, n);
     return 1;
 }
@@ -1853,10 +1858,16 @@ static int quad_indices(uint32_t count, const uint8_t *src, int itype, int32_t f
     uint32_t nq = count / 4; if (!nq) return 0;
     unsigned bytes = itype == 0 ? 1 : itype == 1 ? 2 : 4;
     if (src) {
-        // Donor cpu_access_ready materializes known bytes once. Reuse the
-        // target's uniform-shadow snapshot pattern, not a tracker scan per index.
-        VkBuffer snapshot_buffer; VkDeviceSize snapshot_offset, n = (VkDeviceSize)count * bytes;
-        uint8_t *snapshot = vk_scratch(n, 4, &snapshot_buffer, &snapshot_offset);
+        // Replay-thread-owned CPU storage: repeated reads must not hit possibly
+        // uncached Vulkan scratch. Retain the largest input until process exit.
+        static uint8_t *snapshot; static size_t capacity;
+        uint64_t n = (uint64_t)count * bytes;
+        if (n > SIZE_MAX) die("[vk] quad index snapshot size overflow");
+        if (n > capacity) {
+            uint8_t *next = realloc(snapshot, (size_t)n);
+            if (!next) die("[vk] cannot allocate quad index snapshot");
+            snapshot = next; capacity = (size_t)n;
+        }
         vk_ubd_read((uintptr_t)src, n, snapshot);
         src = snapshot;
     }

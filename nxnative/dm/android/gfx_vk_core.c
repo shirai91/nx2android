@@ -1311,6 +1311,7 @@ int vk_ubd_overlaps(uint64_t a, uint64_t n) { for (int i = 0; i < g_nubd; i++) i
 // until it has, a CPU read of that memory (vk_ubd_read: a shadow, a handle in a uniform buffer) may see the bytes from before them or after them
 typedef struct { uint64_t lo, hi, fence; } gpuw_t;
 static gpuw_t *g_gw; static size_t g_ngw, g_cgw; uint64_t g_ubd_racy;
+int g_vk_cpu_ready = 1;   // refreshed by replay at each submission (DM_VK_CPU_READY)
 static void sub_gpu_wrote(uint64_t a, uint64_t n) {   // into the open submission's list (pools_copy_back)
     if (g_cur < 0 || !n) return;
     vksub_t *s = &g_slot[g_cur]; uint64_t lo = a, hi = a + n, bd = ~0ull; int best = -1;
@@ -1342,7 +1343,7 @@ void vk_gpu_wrote(uint64_t a, uint64_t n) {
 int vk_gpu_pending(uint64_t a, uint64_t n) {
     if (!g_ngw) return 0;
     uint64_t done = vk_fence_done();
-    for (size_t i = g_ngw; i-- > 0;) if (g_gw[i].fence > done && g_gw[i].lo < a + n && a < g_gw[i].hi) return 1;
+    for (size_t i = g_ngw; i-- > 0 && g_gw[i].fence > done;) if (g_gw[i].lo < a + n && a < g_gw[i].hi) return 1;
     return 0;
 }
 // Port of nxnative 26c898e4e / 1f01e28c cpu_access_ready and gw_wait_prior.
@@ -1352,30 +1353,29 @@ int vk_gpu_pending(uint64_t a, uint64_t n) {
 // them first), so they are the donor's later cpu_known ranges. Fills and
 // already-landed updates conservatively retain the GPU wait on this backend.
 void vk_cpu_ready(uint64_t a, uint64_t n) {
-    if (!n || a > UINT64_MAX - n) return;
-    uint64_t wait = 0, done = vk_fence_done();
-    for (size_t i = 0; i < g_ngw; i++) if (g_gw[i].fence > done && g_gw[i].fence <= g_fence &&
-            g_gw[i].lo < a + n && a < g_gw[i].hi && g_gw[i].fence > wait) wait = g_gw[i].fence;
-    if (wait) mtl_wait(wait, UINT64_MAX);
-    done = vk_fence_done();
-    int gpu = 0;
-    for (size_t i = 0; i < g_ngw && !gpu; i++) {
+    if (!g_vk_cpu_ready || !n || a > UINT64_MAX - n) return;
+    uint64_t done = vk_fence_done();
+    // Appends and compaction preserve fence order. Only the live suffix matters;
+    // waiting for its newest uncovered overlap also completes every older one.
+    for (size_t i = g_ngw; i-- > 0 && g_gw[i].fence > done;) {
         const gpuw_t *w = &g_gw[i];
-        if (w->fence <= done || w->lo >= a + n || a >= w->hi) continue;
+        if (w->lo >= a + n || a >= w->hi) continue;
         uint64_t at = a > w->lo ? a : w->lo;
         uint64_t end = a + n < w->hi ? a + n : w->hi;
         while (at < end) {
-            uint64_t covered = 0;
+            uint64_t covered = at;
             for (int j = 0; j < g_nubd; j++) {
                 const ubd_t *k = &g_ubd[j];
-                if (at >= k->lo && at < k->hi && k->hi - at > covered) covered = k->hi - at;
+                if (at >= k->lo && at < k->hi && k->hi > covered) covered = k->hi;
             }
-            if (!covered) { gpu = 1; break; }
-            if (covered >= end - at) break;
-            at += covered;
+            if (covered == at) break;
+            at = covered < end ? covered : end;
         }
+        if (at == end) continue;   // deferred bytes cover prior and open producers alike
+        if (w->fence <= g_fence) mtl_wait(w->fence, UINT64_MAX);
+        else { mtl_wait(mtl_sub_commit(), UINT64_MAX); vk_sub_resume(); }
+        return;
     }
-    if (gpu) { mtl_wait(mtl_sub_commit(), UINT64_MAX); vk_sub_resume(); }
 }
 // what a GPU read of [a, a + n) sees at this point of the command stream, into dst (memory, then the deferred updates in order)
 void vk_ubd_read(uint64_t a, uint64_t n, uint8_t *dst) {

@@ -13,9 +13,12 @@ includes completion-thread readback into copied guest pools. Internal segment
 restart invalidates transient Vulkan state and preserves logical NVN bindings
 and conditional rendering. Live dependencies are never evicted at the former
 1024-entry diagnostic limit. Later deferred inline updates can cover an earlier
-GPU write without a submission cut.
+GPU write without a fence wait or submission cut, including writes in prior
+submissions. Checks scan the live fence-ordered suffix newest first and wait
+only the newest uncovered dependency.
 
-The host test runs the production tracking/preflight under ASan and UBSan,
+The host test runs the production tracking/preflight under UBSan (plus ASan when
+`NX2A_TEST_SANITIZE=1`),
 covering current/prior producers, disjoint/partial/full overwrite coverage,
 2049 live writes, bounds/overflow, texture/sampler words, storage pointers,
 and the target's zero-size-as-one-word uniform convention.
@@ -59,6 +62,16 @@ python nxnative/dm/android/build.py --game 0100000000010000 --ndk "$NDK" --out "
 python tests/run_vk_cpu_handle_readiness.py --ndk "$NDK" --host-build "$HOST_BUILD" --out "$FIXTURE"
 ```
 
+The runner selects NDK Windows tools with their `.exe` suffixes as well as
+macOS/Linux tools. Source text is read and written as UTF-8.
+
+For a live diagnostic A/B, `DM_VK_CPU_READY=0` disables the readiness waits
+and linear-target pass endings; `1` restores them (the default). The value
+is refreshed at each submission, including after a `DM_CTL` `env` update.
+The disabled path may decode stale handles; it is a diagnostic control, not
+a performance recommendation. Real-game racy-read, cut/wait and timing counts
+still require a physical-device run.
+
 On an explicitly selected test device, put `cpu-handle-readiness` and
 `shaders.dmsv` in a dedicated scratch directory. Run with `DM_ROOT` pointing
 there and `DM_VK_NO_ZEROCOPY=1`, once each with `DM_VK_RP=0` and `1`.
@@ -66,14 +79,15 @@ there and `DM_VK_NO_ZEROCOPY=1`, once each with `DM_VK_RP=0` and `1`.
 `1` the current compute producer with a graphics consumer; `16` the
 transform-feedback producer; `17` the sampler-only producer.
 
-Validated on the task-owned Android 15 ARM64 emulator with Lavapipe. Baseline
+Historical validation before this follow-up used an Android 15 ARM64 emulator
+with Lavapipe. Current follow-up validation is limited to host regressions and
+NDK host/fixture builds; the emulator/device cases below were not rerun. Baseline
 current-compute and linear-producer cases return zero instead of green; the
 port passes both render-pass modes. Independent review found that graphics
 producers could leave an older overlapping update deferred; the real linear
 and transform-feedback regressions failed before the fix. The target now
 lands those older overlapping updates before the producing draw (and before
-transform-feedback control-buffer copies), preserving donor write order. The baseline includes only unrelated
-PR #361 output-mask changes; its readiness paths match main.
+transform-feedback control-buffer copies), preserving donor write order. The baseline readiness paths match the original Android implementation.
 
 Limits: this covers CPU-decoded descriptors using producers already tracked
 by this backend. It does not add 8192-entry uniform tables, general CPU
@@ -87,38 +101,45 @@ gameplay, new playable-game count or Switch 2 support is claimed.
 
 ## Indexed-quad follow-up
 
-Depends on #369 and #368. nxnative's pinned
+Building on descriptor and independent sampler-array readiness, nxnative's pinned
 `1f01e28c87da5233dfa14fb31fabf1535df33013` calls `cpu_ready` before its
 CPU index conversion (`nvn_vk.c:3686`); `cpu_access_ready` also materializes
 later known writes. This follow-up applies that existing contract to the
 target's direct indexed-quad CPU conversion.
 
-Preflight checks the complete declared index range and waits before any
-draw-specific descriptors or scratch allocations. Native GPU-index draws
-and indirect draws keep their existing path. After preflight, the adapter
-uses the target's existing uniform-shadow snapshot pattern
-(`vk_scratch` + `vk_ubd_read`) once for the input range. Conversion reads
-the snapshot using the donor's byte-copy index load, retaining the existing
-quad triangle pattern and supporting unaligned 8-, 16-, and 32-bit input.
+Preflight retains the draw path's first-byte pool eligibility: a CPU index
+span may cross registered pool chunks. It checks arithmetic overflow and waits
+for the complete declared range before any draw-specific descriptors or scratch
+allocations. Native GPU-index draws and indirect draws keep their existing path.
+After preflight, `vk_ubd_read` fills one replay-thread-owned CPU heap snapshot.
+Conversion reads that cached memory using the donor's byte-copy index load,
+retaining the existing triangle pattern and unaligned 8-, 16-, and 32-bit input.
+Only the expanded output indices use Vulkan scratch.
 
-The snapshot costs one transient input-sized scratch allocation/copy per
-indexed-quad draw; it avoids scanning GPU/deferred-write records for every
-expanded index. Physical-device performance is unmeasured.
+The heap snapshot grows to the largest input seen and is retained until process
+exit, costing that peak input size in CPU memory. Each conversion still copies
+the full input once; it avoids repeated reads from potentially uncached mapped
+Vulkan memory and GPU/deferred-write tracking scans per expanded index.
+Physical-device performance is unmeasured.
 
-The focused ASan/UBSan host test checks all index widths, unaligned reads,
-deferred bytes, full-span bounds/overflow, ignored non-quad/indirect paths,
-and unchanged generated nonindexed quads. Device fixtures reuse the existing
+The focused UBSan host test (also ASan with `NX2A_TEST_SANITIZE=1`) checks
+all index widths, unaligned/deferred bytes, cross-chunk first-byte eligibility,
+full-range readiness, arithmetic overflow, snapshot growth/reuse and one GPU
+scratch output allocation, ignored non-quad/indirect paths, and unchanged
+generated nonindexed quads. Device fixtures reuse the existing
 producer and independent color expectations. Six modes cover CPU memory,
 CPU deferred updates, current/prior GPU writes, and later full/partial known
 overwrites. Each runs three widths, two base-vertex arrangements, and enabled/
 disabled rendering, with two instances and a nonzero base instance recorded.
 
-The parent passes CPU memory/prior-GPU controls but fails the other four
+Historical emulator validation before this follow-up found that the parent
+passes CPU memory/prior-GPU controls but fails the other four
 modes with red pixels instead of green. The follow-up passes all 72 cases
 (1,152 pixels plus guards) in each rendering mode, alongside the original
 84 descriptor cases. Both DM_VK_RP=0 and 1 pass: 312 total cases, 4,992 pixels,
 plus guards and conditional-state checks. The normal native build compiles
-192 sources; the changed replay source is rebuilt after the final adapter.
+192 sources. These device cases were not rerun for the current follow-up;
+its fresh validation consists of host tests and NDK host/fixture builds.
 
 `NX2A_INDEX_ONLY=1` selects the new cases; `NX2A_INDEX_CASE=0..5` selects
 one producer mode. The same build/run commands above apply.
