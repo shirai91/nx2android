@@ -127,7 +127,8 @@ python -m unittest discover tests
 
 `test_avc_frame_layout` and `test_avc_output_buffer` compile extracted production
 MediaCodec layout and drain code on the host. They cover bounded plane copies,
-metadata fallbacks, unknown-format NV12 compatibility and once-only drop logs;
+metadata fallbacks, unknown-format NV12 compatibility, once-only drop logs and
+fatal picture-allocation failure. The layout harness selects C99 stdio on MinGW;
 `NX2A_TEST_SANITIZE=1` enables ASan/UBSan for the layout harness. The optional
 [AVC MediaCodec probe](../probes/avc_frame_layout.md) lives beside the AAC probes
 and builds with a macOS, Linux or Windows NDK. Host tests do not qualify a

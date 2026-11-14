@@ -144,7 +144,7 @@ static void keep_picture(mavc *a, const uint8_t *src, size_t n, int64_t pts) {
         return;
     }
     uint8_t *o = malloc((size_t)w*h + (size_t)uvw*2*uvh);
-    if (!o) return;
+    if (!o) die("movie: AVC picture allocation failed");
     for (int y = 0; y < h; y++) memcpy(o + (size_t)y*w, src + (size_t)(t+y)*stride + l, w);
     uint8_t *uv = o + (size_t)w*h;
     for (int y = 0; y < uvh; y++) for (int x = 0; x < uvw; x++) {

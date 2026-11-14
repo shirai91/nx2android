@@ -21,6 +21,7 @@ class AVCFrameLayout(unittest.TestCase):
         # Include production declarations and SPS helpers when color metadata lands.
         state=source[source.index('#define QMAX'):source.index('mavc *mavc_new(')]
         code=r'''
+#define __USE_MINGW_ANSI_STDIO 1
 #include <assert.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -32,7 +33,11 @@ class AVCFrameLayout(unittest.TestCase):
 #define LOG(...) (fprintf(stderr,__VA_ARGS__),fputc(10,stderr))
 typedef struct AMediaCodec AMediaCodec;
 typedef struct mavc mavc;
-static void die(const char *fmt,...) {(void)fmt;abort();}
+static void die(const char *fmt,...) {
+    va_list ap;va_start(ap,fmt);vfprintf(stderr,fmt,ap);va_end(ap);fputc(10,stderr);exit(77);
+}
+static int fail_picture_allocation;
+static void *picture_malloc(size_t n) {return fail_picture_allocation?NULL:malloc(n);}
 ''' + state + r'''
 #define AMEDIAFORMAT_KEY_WIDTH "width"
 #define AMEDIAFORMAT_KEY_HEIGHT "height"
@@ -47,13 +52,15 @@ static bool AMediaFormat_getInt32(AMediaFormat *f,const char *key,int32_t *value
     if(!strcmp(key,"width"))*value=f->width;else if(!strcmp(key,"height"))*value=f->height;
     else if(!strcmp(key,"stride")){if(!f->has_stride)return false;*value=f->stride;}
     else if(!strcmp(key,"slice-height")){if(!f->has_slice)return false;*value=f->slice;}
-    else if(!strcmp(key,"color-format"))*value=f->color;else return false;return true;
+    else if(!strcmp(key,"color-format"))*value=f->color;
+    else return false;
+    return true;
 }
 static bool AMediaFormat_getRect(AMediaFormat *f,const char *key,int32_t *l,int32_t *t,int32_t *r,int32_t *b) {
     (void)key;if(!f->has_crop)return false;*l=f->l;*t=f->t;*r=f->r;*b=f->b;return true;
 }
 static void AMediaFormat_delete(AMediaFormat *f) {(void)f;}
-''' + function(source,'static void read_format(') + function(source,'static void keep_picture(') + function(source,'static void nv12_rgba(') + r'''
+''' + function(source,'static void read_format(') + '#define malloc picture_malloc\n' + function(source,'static void keep_picture(') + '#undef malloc\n' + function(source,'static void nv12_rgba(') + r'''
 static void finish(mavc *a) {(void)a;}
 static int drain(mavc *a,int64_t wait) {(void)a;(void)wait;return 0;}
 ''' + function(source,'int mavc_take(') + r'''
@@ -130,6 +137,7 @@ static void metadata_case(int mode) {
     }
 }
 int main(int argc,char **argv){assert(argc==2);int mode=atoi(argv[1]);
+    if(mode==50){uint8_t bytes[96]={0};mavc a=format(19);fail_picture_allocation=1;keep_picture(&a,bytes,sizeof bytes,0);return 0;}
     if(mode>=40){cropped(mode==40?0x7f420888:mode==41?0x1234:0,0);return 0;}
     if(mode>=30){metadata_case(mode);return 0;}
     if(mode<6)cropped(mode/2==0?19:mode/2==1?21:0x7fa30c04,mode%2);
@@ -162,6 +170,11 @@ int main(int argc,char **argv){assert(argc==2);int mode=atoi(argv[1]);
                 self.assertEqual(log.count('[RED]'),2,log)
                 self.assertEqual(log.count('NV12'),1,log)
                 self.assertIn('crop 2,2-4,4',log)
+
+    def test_picture_allocation_failure_stops_with_diagnostic(self):
+        r=subprocess.run([str(self.binary),'50'],capture_output=True,text=True)
+        self.assertEqual(r.returncode,77,'failed picture allocation did not call die(): '+r.stderr)
+        self.assertIn('movie: AVC picture allocation failed',r.stderr)
 
     def test_odd_planar_stride_and_plane_height(self):self.run_case(6)
 

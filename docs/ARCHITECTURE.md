@@ -66,7 +66,8 @@ other formats keep the existing NV12 interpretation, with one warning for an
 unknown format. Missing/undersized stride and slice height use the frame size,
 and invalid crop bounds use the full frame. Layout and last-byte checks still
 precede the copy; unsafe geometry and short buffers produce a once-only drop
-diagnostic. Codec-config buffers are excluded and buffer offsets/lengths are
+diagnostic. Picture-allocation failure stops with the AVC allocation diagnostic.
+Codec-config buffers are excluded and buffer offsets/lengths are
 checked before pointer formation. These checks do not change the decoder choice
 or timestamp/queue policy. The manual [AVC probe](../probes/avc_frame_layout.md)
 checks synthetic planes and padding; physical-device qualification is separate.
