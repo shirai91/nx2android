@@ -2137,9 +2137,11 @@ static void draw_idx(const p_draw_idx *d) {
         VKLOG("unusual indexed draw: itype %d count %u instances %u indirect %#llx prim %d base vertex %d", d->itype, (unsigned)d->count, inst, (unsigned long long)d->ind, d->prim, d->base_vertex); } }
     if (d->ind) { VkBuffer b; VkDeviceSize o; bc_index(cb, ib, io, it); if (!vk_buf_at(d->ind, mcb ? (uint64_t)d->mdi_stride * (uint64_t)d->mdi_max : 20, &b, &o)) VKRED_ONCE(97, "indexed indirect draw arguments outside the memory pools");
         else if (!(dbg_draw() & 1) && g_ok) { if (mcb) vkCmdDrawIndexedIndirectCount(cb, b, o, mcb, mco, (uint32_t)d->mdi_max, (uint32_t)d->mdi_stride); else vkCmdDrawIndexedIndirect(cb, b, o, 1, 20); } return; }
-    if (prim == 7) { uint32_t nq = index_count / 4; if (nq > QUAD_MAX) nq = QUAD_MAX; if (!nq) return;
-        uint64_t raw_n = (uint64_t)nq * 4 * isz; VkBuffer raw_b; VkDeviceSize raw_o; uint8_t *raw = vk_scratch(raw_n, 4, &raw_b, &raw_o); vk_ubd_read(d->ibuf, raw_n, raw);
-        VkBuffer b; VkDeviceSize o; int n = quad_indices(nq * 4, raw, d->itype, 0, &b, &o); if (!n) return;
+    if (prim == 7) { uint32_t nq = index_count / 4; if (!nq) return;
+        uint64_t raw_n = (uint64_t)nq * 4 * isz; if (raw_n > SIZE_MAX) { VKRED_ONCE(100, "indexed quad draw of %u quads exceeds the host address range: skipped", nq); return; }
+        uint8_t *raw = malloc((size_t)raw_n); if (!raw) { VKRED_ONCE(101, "indexed quad draw of %u quads could not allocate its CPU index snapshot: skipped", nq); return; }
+        vk_ubd_read(d->ibuf, raw_n, raw);
+        VkBuffer b; VkDeviceSize o; int n = quad_indices(nq * 4, raw, d->itype, 0, &b, &o); free(raw); if (!n) return;
         bc_index(cb, b, o, VK_INDEX_TYPE_UINT32); if (!(dbg_draw() & 1) && g_ok) vkCmdDrawIndexed(cb, (uint32_t)n, inst, 0, d->base_vertex, (uint32_t)d->base_instance); return; }
     if (io % isz) { VKRED_ONCE(57, "index buffer offset not aligned to its index size"); return; }
     bc_index(cb, ib, io, it);
