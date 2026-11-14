@@ -188,13 +188,24 @@ static void x_read(void) { cpu_ready_config(); const char *c = getenv("DM_VK_CB_
 static int g_rc_skip;   // a render-enable block evaluated false is active
 #define RC_PEND 256
 static struct { uint64_t addr; int kind; } g_rc_pend[RC_PEND]; static int g_rc_npend;   // reports replayed in this submission: kind 1 = timestamp (counter 0), 2 = another counter (unknown)
-static uint64_t g_rc_occ[4096];   // addresses ever written by a non-timestamp report (open addressing): conditions on them keep drawing
-static void rc_occ_add(uint64_t a) { for (uint32_t i = (uint32_t)(a >> 4) & 4095, k = 0; k < 4096; k++, i = (i + 1) & 4095) { if (g_rc_occ[i] == a) return; if (!g_rc_occ[i]) { g_rc_occ[i] = a; return; } } }
-static int rc_occ_has(uint64_t a) { for (uint32_t i = (uint32_t)(a >> 4) & 4095, k = 0; k < 4096; k++, i = (i + 1) & 4095) { if (g_rc_occ[i] == a) return 1; if (!g_rc_occ[i]) return 0; } return 0; }
+// Addresses ever written by a non-timestamp report: conditions on them keep drawing. A set that grows: the fixed 4096-slot table this was filled up in The Legend of
+// Zelda: Ocarina of Time (its reports move through their buffer as the camera turns), after which every report and every condition walked all 4096 slots (0.9 s of the
+// replay thread's 4.4 s over 8 s of camera turns, Odin 3) and new addresses were no longer recorded. Replay thread only
+static nvn_hmap g_rc_occ = {.klen = 8};
+static void rc_occ_add(uint64_t a) {
+    if (nvn_hm_get(&g_rc_occ, &a)) return;
+    nvn_hm_put(&g_rc_occ, &a, (void *)1);
+    if (g_rc_occ.n >= 4096 && !(g_rc_occ.n & (g_rc_occ.n - 1))) VKLOG("render conditions: %u addresses written by occlusion reports so far", g_rc_occ.n);
+}
+static int rc_occ_has(uint64_t a) { return nvn_hm_get(&g_rc_occ, &a) != NULL; }
 static void rc_note(uint64_t a, int kind) {
     if (kind == 2) rc_occ_add(a);
     for (int i = 0; i < g_rc_npend; i++) if (g_rc_pend[i].addr == a) { g_rc_pend[i].kind = kind; return; }
+    if (kind == 2) return;   // (g_rc_occ holds it. Appended here too, a submission's occlusion reports filled the table and a timestamp report after them was not noted, so a
+                             // condition on it read memory, not yet written, instead of its known counter 0. Ocarina of Time (DeathKhan/nx2android) clears its 768x432 target under
+                             // such a condition at each bind and reports once: the later clears wiped the scene copy, opaque water)
     if (g_rc_npend < RC_PEND) { g_rc_pend[g_rc_npend].addr = a; g_rc_pend[g_rc_npend++].kind = kind; }
+    else { static int said; if (!said) { said = 1; VKLOG("render conditions: more than %d timestamp reports in a submission, the rest read memory", RC_PEND); } }
 }
 static int rc_value(uint64_t a, uint64_t *v) {   // 0 = unknown at replay time
     if (rc_occ_has(a)) return 0;
@@ -205,6 +216,9 @@ static void render_cond(const p_render_cond *rc) {
     if (rc->mode >= 2) { g_rc_skip = rc->mode == 3; return; }
     uint64_t x = 0, y = 0; int known = rc_value(rc->addr, &x) & rc_value(rc->addr + 16, &y);
     g_rc_skip = known && (rc->mode ? x == y : x != y);
+    if (g_x_tracepass == -2) { int k0 = -1, k1 = -1; for (int i = 0; i < g_rc_npend; i++) { if (g_rc_pend[i].addr == rc->addr) k0 = g_rc_pend[i].kind; if (g_rc_pend[i].addr == rc->addr + 16) k1 = g_rc_pend[i].kind; }
+        VKLOG("--- render condition mode %d at %#llx: %s (%s), memory %llu / %llu, occlusion-written %d / %d, pending kind %d / %d", rc->mode, (unsigned long long)rc->addr, g_rc_skip ? "skip" : "draw", known ? "known" : "unknown",
+            (unsigned long long)*(const volatile uint64_t *)(uintptr_t)rc->addr, (unsigned long long)*(const volatile uint64_t *)(uintptr_t)(rc->addr + 16), rc_occ_has(rc->addr), rc_occ_has(rc->addr + 16), k0, k1); }
 }
 
 static void exec_begin(int continuing) {   // internal segments retain the current logical NVN and conditional state
@@ -2664,7 +2678,7 @@ static void exec_ops(const uint8_t *p) {
         case OP_JUMP: { const uint8_t *t; memcpy(&t, a, 8); p = t; continue; }
         case OP_CALL: { uint64_t t; memcpy(&t, a, 8); exec_ops((const uint8_t *)(uintptr_t)t); break; }
         case OP_SIGNAL_EVENT: { volatile uint32_t *val; uint32_t m, v; memcpy(&val, a, 8); memcpy(&m, a + 8, 4); memcpy(&v, a + 12, 4); mtl_sub_event(val, m, v); break; }
-        case OP_REPORT_COUNTER: { uint64_t t, ad; memcpy(&t, a, 8); memcpy(&ad, a + 8, 8); if (DM_GAME_RENDER_COND) rc_note(ad, t == 0 || t == 0x10 ? 1 : 2); mtl_sub_counter(ad, (uint32_t)t); break; }
+        case OP_REPORT_COUNTER: { uint64_t t, ad; memcpy(&t, a, 8); memcpy(&ad, a + 8, 8); if (DM_GAME_RENDER_COND) rc_note(ad, t == 0 || t == 0x10 ? 1 : 2); if (g_x_tracepass == -2) VKLOG("--- report counter type %#llx to %#llx", (unsigned long long)t, (unsigned long long)ad); mtl_sub_counter(ad, (uint32_t)t); break; }
         case OP_RESET_COUNTER: break;
         case OP_FENCE_SYNC: { sync_t *s; memcpy(&s, a, 8);
             if (!sync_replay_fence(s, mtl_last_fence() + 1)) { static int n; if (n++ < 4) VKLOG("fence on sync %p skipped: the game has finalized or freed it (nvn_obj.h sync_replay_fence)", (void *)s); }
