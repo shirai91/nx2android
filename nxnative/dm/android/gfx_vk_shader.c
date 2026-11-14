@@ -251,6 +251,7 @@ static VkDescriptorSetLayout shader_layout(const VkDescriptorSetLayoutBinding *b
     }
     return layout;
 }
+#include "gfx_vk_resource_shader.inc"
 static vkshader_t *vk_shader_q(uint64_t key, int stage, int quiet);
 vkshader_t *vk_shader(uint64_t key, int stage) { return vk_shader_q(key, stage, 0); }
 // A geometry shader's input primitive is fixed when it is translated, and Maxwell's shader header doesn't give it: shader_vk.py translates each geometry shader for
@@ -296,6 +297,10 @@ static vkshader_t *vk_shader_q(uint64_t key, int stage, int quiet) {
     s = calloc(1, sizeof *s); s->key = key; s->stage = stage; s->set = set_of(stage);
     s->nbind = (int)hdr[0]; s->c1_len = hdr[1]; memcpy(s->local, hdr + 2, 12);
     s->b = (const dmsv_bind *)(r + 20); s->c1 = r + 20 + (size_t)20 * s->nbind;
+    if (s->nbind>96 || !resource_pool_spv(s,&w,&nw)) {
+        VKLOG("[RED] shader %016llx: invalid or unsupported resource pools",(unsigned long long)key);
+        free(w);if(s->has_pools)free((void *)s->b);free(s);nvn_hm_put(&g_shaders,&hk,(void *)1);pthread_mutex_unlock(&g_sh_mu);return NULL;
+    }
     // SPIR-V with the stage's set
     int f64_used = 0; uint32_t xb = 4;
     for (uint32_t i = 5; i < nw;) { uint32_t n = w[i] >> 16, op = w[i] & 0xffff; if (!n) break; if (op == 71 && n >= 4 && w[i + 2] == 34) w[i + 3] = (uint32_t)s->set;   // OpDecorate DescriptorSet
@@ -351,7 +356,7 @@ static vkshader_t *vk_shader_q(uint64_t key, int stage, int quiet) {
     spv_io_locs(w, nw, &s->in_locs, &s->out_locs);
     VkShaderModuleCreateInfo ci = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, NULL, 0, (size_t)nw * 4, w};
     VkResult vr = vkCreateShaderModule(V.dev, &ci, NULL, &s->mod); s->spv = w; s->nspv = nw;
-    if (vr) { VKLOG("[RED] shader %016llx: vkCreateShaderModule %d", (unsigned long long)key, vr); free(w); free(s); nvn_hm_put(&g_shaders, &hk, (void *)1); pthread_mutex_unlock(&g_sh_mu); return NULL; }
+    if (vr) { VKLOG("[RED] shader %016llx: vkCreateShaderModule %d", (unsigned long long)key, vr); free(w); if(s->has_pools)free((void *)s->b); free(s); nvn_hm_put(&g_shaders, &hk, (void *)1); pthread_mutex_unlock(&g_sh_mu); return NULL; }
     // descriptor set layout: one entry per binding
     // The game's constant buffers and the driver segment are dynamic uniform buffers: their offset is given when the set is bound, so a set matches any draw's
     // with the same buffers (Unity updates a constant buffer before nearly every draw, and each update is a shadow at a new offset: NEO made a new set for

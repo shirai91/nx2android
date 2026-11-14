@@ -684,8 +684,10 @@ class Port:
         PROG.stage('Vulkan shaders', step='building the translator')
         xlate, xkey = self.translator()
         PROG.set(step='checking the inputs')
+        shader_host = {'darwin': 'darwin-x86_64', 'win32': 'windows-x86_64'}.get(sys.platform, 'linux-x86_64')
+        optimizer = self.tools['ndk'] / 'shader-tools' / shader_host / ('spirv-opt.exe' if os.name == 'nt' else 'spirv-opt')
         def input_key():
-            return nsp.fingerprint(nsp.package_key(pkg), ('files', [DM / 'android/tools' / name for name in ('shader_vk.py', 'dmsv.py', 'shader_products.py')] + nsp.tool_files(NXNATIVE)),
+            return nsp.fingerprint(nsp.package_key(pkg), ('files', [DM / 'android/tools' / name for name in ('shader_vk.py', 'dmsv.py', 'shader_products.py', 'spv_module.py', 'spv_builder.py', 'spv_half.py', 'spv_precise.py', 'spv_texture_offsets.py', 'spv_pool.py', 'spv_warp.py', 'spv_warp_flow.py', 'spv_warp_masks.py', 'spv_warp_predicated.py')] + [optimizer] + nsp.tool_files(NXNATIVE)),
                                    ('files', nsp.profile_files(self.g)), xkey, product_cache.inventory(Path(xlate).parent),
                                    ('files', sorted(cap.glob('*.bin'))))
         key = input_key()
@@ -697,7 +699,7 @@ class Port:
         def line(s):
             if m := re.match(r'(translating|compressing) (\d+) shaders', s): PROG.set(step=f'{m.group(1)} {int(m.group(2)):,} shaders')   # compressing: the bundle's SPIR-V (dmsv.py)
             elif s.startswith('[RED] '): say(s)
-        nsp.run([PY, DM / 'android/tools/shader_vk.py', pkg, tmp, '--jobs', str(self.o.jobs), '--dotnet', self.tools['dotnet'], '--xlate', xlate, '--capture', cap, '--report', report],
+        nsp.run([PY, DM / 'android/tools/shader_vk.py', pkg, tmp, '--jobs', str(self.o.jobs), '--dotnet', self.tools['dotnet'], '--xlate', xlate, '--capture', cap, '--report', report, '--spirv-opt', optimizer],
                 self.logs / 'android_shaders.log', env=self.env, on_line=line)
         import shader_products
         try:
