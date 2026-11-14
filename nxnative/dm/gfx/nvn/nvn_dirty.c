@@ -127,7 +127,7 @@ static void release_pages(range_t *r, uintptr_t p, uintptr_t q, _Atomic uint64_t
             if (mp(r->base + (run << g_shift), (i - run) << g_shift, PROT_READ | PROT_WRITE)) {
                 // A failed mprotect may change only part of the run; neither writable states nor a retry are safe. Also called from the fault handler.
                 static const char msg[] = "[dm] [RED] dirty-page tracking: cannot make guest memory writable; stopping\n";
-                (void)write(STDERR_FILENO, msg, sizeof msg - 1); _exit(1);
+                ssize_t w = write(STDERR_FILENO, msg, sizeof msg - 1); (void)w; _exit(1);   // (glibc's write is warn_unused_result, which a (void) cast does not quiet in gcc)
             }
             for (uintptr_t k = run; k < i; k++) { stamp_page(r, k); atomic_store(&r->state[k], PG_NONE); }
             if (count) atomic_fetch_add(count, i - run);
