@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # Android shader build: a game's Switch shaders (the package directory shader_split.py writes) → Vulkan SPIR-V + replay reflection, packed into one bundle.
 # The same translator as the Apple chain (dm/gfx/tools/dmsh_xlate_bin, Ryujinx's translator with TargetApi.Vulkan) and the same jobs as dmsh_build.py
-# (control section / code area / c1 split, the VertexA + VertexB merge, the profile's answer table), but no MSL: Vulkan takes the SPIR-V as it is.
+# (control section / code area / c1 split, the VertexA + VertexB merge, the profile's answer table), but no MSL: Vulkan receives SPIR-V with the existing parity offset and numeric passes.
 # Geometry shaders are translated as Vulkan geometry shaders (the Apple chain emulates them in compute kernels).
 #   DM_GAME=<id> shader_vk.py <package dir> <out bundle> [--jobs N] [--keys k1,k2] [--xlate <dmsh_xlate.dll>] [--capture <dir>] [--zstd <level>]
 # --capture: shaders whose code no game file holds, saved on the device by the Vulkan backend (gfx_vk_shader.c vk_shader_missing: <key>.bin = "DMSC", u32 control length, u32 code length,
@@ -14,7 +14,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 TOOLS = HERE.parent.parent / 'gfx/tools'
 sys.path[:0] = [str(TOOLS), str(HERE)]
-import dmsh_facts, dmsh_chain, dmsv, shader_products   # noqa: E402  (DM_GAME picks the profile)
+import dmsh_facts, dmsh_chain, dmsv, shader_products, spv_half, spv_precise, spv_texture_offsets   # noqa: E402  (DM_GAME picks the profile)
 from shader_split import glslc_stage   # the package reader also recognizes headerless compute code
 
 ap = argparse.ArgumentParser()
@@ -444,6 +444,7 @@ def main():
             product = shader_products.output(w, k, STAGES[stages[k]])
             if product is None: raise ValueError(batch_errors[k] or 'no output')
             spv, res = product
+            spv = spv_precise.lower(spv_half.lower(spv_texture_offsets.lower(spv)))
             binds, local, io = spirv_bindings(spv)
             shader_products.validate_bindings(binds, res)
             if k in handle_remaps:
