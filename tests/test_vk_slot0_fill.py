@@ -84,6 +84,18 @@ class Slot0Fill(unittest.TestCase):
                     self.assertEqual(out.returncode, 0, out.stderr)
                     self.assertIn('slot0 ok', out.stdout)
 
+    def test_scratch_is_not_read_as_the_games_target(self):
+        # Where slot 0 holds the scratch, S.rt_col[0] is still the target the game bound there earlier (or an alias's): the sample-count check,
+        # the linear target copy-back and the colour clear must each leave that slot out
+        src = EXEC.read_text(encoding='utf-8')
+        self.assertLess(src.index('static vkimg_t g_s0_image;'), src.index('static void lin_back(void)'))
+        def body(start, end_marker):
+            a = src.index(start); return src[a:src.index(end_marker, a)]
+        self.assertIn('im == &g_s0_image ||', body('static void lin_back(void)', '\n}\n'))
+        self.assertIn('P_att[c->index].im == &g_s0_image', body('static void clear_color(', 'VkClearAttachment a ='))
+        count = next(line for line in src.splitlines() if 'cs[i] = im2 ? im2->samples : 0' in line)
+        self.assertIn('if (ca[i].imageView && P_att[i].im != &g_s0_image)', count)
+
 
 if __name__ == '__main__':
     unittest.main()

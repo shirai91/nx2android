@@ -561,10 +561,11 @@ void vk_prof_end(void) {
 // the drawing and the pool memory kept what it held before. Super Mario Odyssey's fluid surface (al::FluidSimulateWave: the Cap Kingdom ground fog's wave solver ends in a
 // 128x128 RGBA16F linear target that the fog's vertex shader samples, and a 256x128 R32F one) is such a target. So a pass that drew into one copies each such colour
 // target back to its storage, at its stride, marked as written by the GPU (the pools' copy-back carries it to the CPU). DM_VK_LIN_BACK=0 (live, A/B): not
+static vkimg_t g_s0_image;   // slot 0's scratch target (DM_VK_SLOT0_FILL, below): where P_att[0].im is this, S.rt_col[0] is not the pass's target (the game's earlier one, or an alias's)
 static void lin_back(void) {
     for (int i = 0; i < S.ncol && i < 8; i++) {
         vkimg_t *im = P_att[i].im; const tex_t *t = S.rt_has_col[i] ? &S.rt_col[i] : NULL; const vkfmt_t *f = t ? vk_fmt(t->d.format) : NULL;
-        if (!im || !t || !t->mem || !(t->d.flags & NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET) || !f || !f->bpb || f->bw > 1 || im->levels != 1 || im->layers != 1 || im->d != 1) continue;
+        if (!im || im == &g_s0_image || !t || !t->mem || !(t->d.flags & NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET) || !f || !f->bpb || f->bw > 1 || im->levels != 1 || im->layers != 1 || im->d != 1) continue;
         size_t stride = t->d.stride ? t->d.stride : (size_t)im->w * f->bpb, len = stride * (im->h - 1) + (size_t)im->w * f->bpb; VkBuffer b; VkDeviceSize o;
         if (stride % f->bpb || stride < (size_t)im->w * f->bpb || !vk_buf_at((uint64_t)(uintptr_t)t->mem, len, &b, &o) || o % f->bpb) continue;
         VkCommandBuffer cb = vk_cmd(); vk_img_barrier_all(cb);
@@ -586,14 +587,14 @@ void vk_end_pass(void) {
 // copies, the submission's end): the deferred uniform updates land first (draws read them through their shadows, so ordinary pass ends keep them)
 void vk_end_pass_land(void) { vk_end_pass(); if (vk_sub_open()) vk_ubd_land(vk_cmd()); }
 static int pass_whole(VkRect2D r) { return !r.offset.x && !r.offset.y && r.extent.width >= S.pass_w && r.extent.height >= S.pass_h; }
-// Adreno 8xx and an empty colour slot 0 (DM_VK_SLOT0_FILL). A pass whose colour attachments start past slot 0 (slot 0 a null view, VK_ATTACHMENT_UNUSED in a render
+// An empty colour slot 0 (DM_VK_SLOT0_FILL; opt-in, any GPU). A pass whose colour attachments start past slot 0 (slot 0 a null view, VK_ATTACHMENT_UNUSED in a render
 // pass) hung the GPU of an Adreno 830 and lost the device every frame: a OnePlus Pad 3 (driver 0x8032004a) whose pass bound a target in slot 5 with slots 0-4 empty, which a
 // later pass drew into as slot 0; a scratch target in slot 0 alone fixed it (droidplay-core 87bd41d62, the idea). Not reproduced with nx2android: no such hang is known on
 // the Odin 3 (Adreno 830, Qualcomm's driver 512.800), so it is opt-in. Slot 0 of such a pass gets a scratch RGBA8 image at least the pass's size (one, grown when a pass
 // is larger; the one before goes to vk_defer_free_*, destroyed once the GPU is past the submissions that name it), loaded and stored DONT_CARE, a transient attachment
 // in lazily allocated memory where the device has such a type (on a tiler it never leaves tile memory), and the pipelines write nothing to it (prepare_draw: write
 // mask 0 where P_att[0] is the scratch). Single-sample, single-layer passes only. DM_VK_SLOT0_FILL=1 (start-up): on; off by default
-static vkimg_t g_s0_image; static VkImageView g_s0_view; static uint64_t g_s0_passes; static int g_s0_failed;
+static VkImageView g_s0_view; static uint64_t g_s0_passes; static int g_s0_failed;
 static int slot0_fill_on(void) {
     static int on = -1;
     if (on < 0) { const char *e = getenv("DM_VK_SLOT0_FILL");
@@ -699,7 +700,7 @@ static int begin_pass(void) {
         S.dfmt = VK_FORMAT_UNDEFINED; S.daspect = 0;
         static int said; if (!said++) VKLOG("draw with no render target: attachment-less pass %ux%u", w, h);
     }
-    if (have && slot0_fill_wanted(ncol, ca[0].imageView != VK_NULL_HANDLE, samples, layers) && slot0_scratch(w, h)) {   // an Adreno 8xx's empty slot 0 (DM_VK_SLOT0_FILL, above)
+    if (have && slot0_fill_wanted(ncol, ca[0].imageView != VK_NULL_HANDLE, samples, layers) && slot0_scratch(w, h)) {   // an empty slot 0 gets the scratch (DM_VK_SLOT0_FILL, opt-in; above)
         ca[0] = (VkRenderingAttachmentInfo){VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, NULL, g_s0_view, VK_IMAGE_LAYOUT_GENERAL, 0, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED,
                                             VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE};
         S.cfmt[0] = VK_FORMAT_R8G8B8A8_UNORM; P_att[0].im = &g_s0_image; P_att[0].fmt = VK_FORMAT_R8G8B8A8_UNORM; P_att[0].layers = 1; P_att[0].w = g_s0_image.w; P_att[0].h = g_s0_image.h;
@@ -724,7 +725,7 @@ static int begin_pass(void) {
     }
     if (dim) { cut_touch = (g_lrz_touch & (LRZ_CUT | LRZ_CUT_RD)) && dim->depth_sub == g_set_epoch && dim->depth_cut != g_cuts; dim->depth_sub = g_set_epoch; dim->depth_cut = g_cuts; }
     { static int n; uint32_t cs[9] = {0}; int any = 0, mis = 0; uint32_t s0 = 0;   // multisampled passes: every attachment's sample count (they must agree)
-      for (int i = 0; i < ncol; i++) if (ca[i].imageView) { vkimg_t *im2; vk_tex_view(&S.rt_col[i], S.rt_has_cview[i] ? &S.rt_cview[i] : NULL, 0xff, 0, 1, &im2); cs[i] = im2 ? im2->samples : 0; if (cs[i] > 1) any = 1; if (!s0) s0 = cs[i]; else if (cs[i] != s0) mis = 1; }
+      for (int i = 0; i < ncol; i++) if (ca[i].imageView && P_att[i].im != &g_s0_image) { vkimg_t *im2; vk_tex_view(&S.rt_col[i], S.rt_has_cview[i] ? &S.rt_cview[i] : NULL, 0xff, 0, 1, &im2); cs[i] = im2 ? im2->samples : 0; if (cs[i] > 1) any = 1; if (!s0) s0 = cs[i]; else if (cs[i] != s0) mis = 1; }
       if (da.imageView) { vkimg_t *im2; vk_tex_view(&S.rt_dep, S.rt_has_dview ? &S.rt_dview : NULL, 0xff, 0, 1, &im2); cs[8] = im2 ? im2->samples : 0; if (cs[8] > 1) any = 1; if (s0 && cs[8] != s0) mis = 1; }
       if ((any || mis) && n < 10) { n++; VKLOG("pass %ux%u samples: colour %u %u %u %u, depth %u%s", w, h, cs[0], cs[1], cs[2], cs[3], cs[8], mis ? " MISMATCH" : ""); } }
     if (!g_x_nobar) vk_img_barrier_all(cb);
@@ -808,7 +809,7 @@ static void clear_color(const p_clear_color *c) {
     if (!begin_pass()) return;
     if (c->index < 0 || c->index >= S.ncol) return;
     p_clear_color mapped=*c;mapped.index=P_alias[c->index];c=&mapped;
-    if (S.cfmt[c->index] == VK_FORMAT_UNDEFINED || !c->mask) return;
+    if (S.cfmt[c->index] == VK_FORMAT_UNDEFINED || P_att[c->index].im == &g_s0_image || !c->mask) return;   // (slot 0's scratch is the game's empty slot: nothing to clear)
     if ((c->mask & 0xf) != 0xf) { VkRect2D r = scissor_rect(); if (!r.extent.width || !r.extent.height) return;
         if (clear_masked(c, r)) return;
         VKRED_ONCE(31, "partial channel clear mask %#x cleared in full", c->mask); }
