@@ -136,6 +136,7 @@ VkImageView vk_tex_view_as(const tex_t *t, const view_t *v, int dim, int arrayed
 VkFormat vk_int_fmt(uint32_t bytes, int sint);   // the uint (or sint) format of a texel size (1, 2, 4, 8, 16 bytes) that can be stored into; VK_FORMAT_UNDEFINED when none (gfx_vk_tex.c)
 void vk_watch(const vkimg_t *im, const char *what);   // DM_VK_WATCH (gfx_vk_exec.c)
 vkimg_t *vk_tex_by_id(int tid, const view_t **view_out, const tex_t **tex_out);   // registered texture ID → image (NULL if none)
+VkImageView vk_tex_sampled_snapshot(vkimg_t *im, VkImageView source); // visible 2D mips; deferred until submission completes
 VkSampler vk_samp_by_id(int sid);
 extern __thread VkFormat vk_view_fmt; extern __thread uint32_t vk_view_layers;   // the format and layer count of the view vk_tex_view last returned on this thread
 VkImageView vk_dummy_view(int dim, int arrayed, int ms, int storage, int is_int);
