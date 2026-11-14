@@ -66,17 +66,21 @@ else:
 #   OBS = {build ID: [(offset, number, original instruction word, reason)]}: observation gates. Numbers match OBS_* in the host's hle.h; the original instruction must be position
 #     independent (no PC-relative / branch / anything involving x18 or tpidr), asserted offline; when the host has no callback attached the gate block goes in and out once and returns
 #   FRAME_STEP = {build ID: function(ctx)}: the frame step stubs of a main ("Frame step in whole vsyncs" below)
+#   sdk_patches.py MATCH_CUTS: SDK-wide fallback rules matched by whole functions for sdk builds without registered CUTS (an explicit empty CUTS row also suppresses matching).
+#     Missing or ambiguous matches retain original code and are logged; profile MATCH_CUTS are not enabled here.
 #   DM_PATCHES_EXTRA (os.pathsep-separated files outside the repository): CUTS only, added after the registered ones of the same build (an Android port's 60 fps code bytes from a
 #     FPSLocker config, porter/fpslocker.py); an overlap with a registered cut fails that cut's original-bytes assert
 PATCH_FILES = [os.path.join(os.path.dirname(os.path.abspath(__file__)), 'sdk_patches.py')] + sorted(glob.glob(os.path.join(os.path.dirname(os.path.abspath(__file__)), '../games/*/patches.py')))
 EXTRA_PATCH_FILES = [p for p in os.environ.get('DM_PATCHES_EXTRA', '').split(os.pathsep) if p]
 def load_patches():
-    tables, where = {'CUTS': {}, 'OBS': {}, 'FRAME_STEP': {}}, {}
+    tables, where = {'CUTS': {}, 'OBS': {}, 'FRAME_STEP': {}, 'SDK_MATCH_CUTS': {}}, {}
     for n, path in enumerate(PATCH_FILES + EXTRA_PATCH_FILES):
         spec = importlib.util.spec_from_file_location(f'patches_{n}', path); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
         extra = path in EXTRA_PATCH_FILES
+        if path == PATCH_FILES[0]: tables['SDK_MATCH_CUTS'] = getattr(m, 'MATCH_CUTS', {})
         assert not extra or not getattr(m, 'OBS', None) and not getattr(m, 'FRAME_STEP', None), f'{path}: DM_PATCHES_EXTRA files hold CUTS only'
         for kind, table in tables.items():
+            if kind == 'SDK_MATCH_CUTS': continue
             for bid, v in getattr(m, kind, {}).items():
                 if extra: table[bid] = list(table.get(bid, [])) + list(v); continue
                 assert bid not in table, f'{kind} of build {bid} in both {where[kind, bid]} and {path}'
@@ -88,7 +92,11 @@ FS_STATE_OFF = 0
 if BUILD_ID in PATCHES['FRAME_STEP'] and NAME == 'main':
     FS_STATE_OFF = KEY_PAGE_OFF + 0x4000
     PATCH_OFF = max(PATCH_OFF, (FS_STATE_OFF + 0x4000 + 0xFFFF) & ~0xFFFF)
-cuts = list(PATCHES['CUTS'].get(BUILD_ID, []))
+cuts = []
+if NAME == 'sdk' and ('CUTS', BUILD_ID) not in PATCH_WHERE:
+    from nso_match import resolve
+    cuts = resolve(IMG, TEXT_END, PATCHES['SDK_MATCH_CUTS'].get('sdk', []), red=False)
+cuts += list(PATCHES['CUTS'].get(BUILD_ID, []))   # external extra cuts still append, with the same original-byte/overlap checks
 for off, ob, nb, why in cuts:
     ob, nb = bytes.fromhex(ob), bytes.fromhex(nb)
     assert len(ob) == len(nb) and IMG[off:off + len(ob)] == ob, f'cut original bytes mismatch {off:#x}: {bytes(IMG[off:off + len(ob)]).hex()}'
@@ -1147,7 +1155,7 @@ else:
     open(P('patched.bin'), 'wb').write(IMG + bytearray(PATCH_OFF - len(IMG)) + patch)
 import hashlib
 with open(os.path.join(outdir, 'build_src.sha256'), 'w') as f:   # the same for every module: the rewriter and every patch file, by path from dm/tools
-    for src_ in (os.path.abspath(__file__), nso_code.__file__, nso_asm.__file__, *PATCH_FILES): f.write(hashlib.sha256(open(src_, 'rb').read()).hexdigest() + f'  {os.path.relpath(os.path.abspath(src_), os.path.dirname(os.path.abspath(__file__)))}\n')
+    for src_ in (os.path.abspath(__file__), nso_code.__file__, nso_asm.__file__, os.path.join(os.path.dirname(__file__), 'nso_match.py'), *PATCH_FILES): f.write(hashlib.sha256(open(src_, 'rb').read()).hexdigest() + f'  {os.path.relpath(os.path.abspath(src_), os.path.dirname(os.path.abspath(__file__)))}\n')
 with open(P('fixups.tsv'), 'w') as f:
     f.write(f'# PATCH_OFF\t{PATCH_OFF:#x}\n# KEY_PAGE_OFF\t{KEY_PAGE_OFF:#x}\n# KEY_PAGE_SIZE\t0x4000\n# TEXT_END\t{TEXT_END:#x}\n# RO_OFF\t{RO_OFF:#x}\n# DATA_OFF\t{DATA_OFF:#x}\n')
     if FAR: f.write(f'# IMAGE_SIZE\t{IMAGE_SIZE:#x}\n# FILE_IMAGE_LEN\t{FILE_IMAGE_LEN:#x}\n')   # patch area before the base (negative PATCH_OFF): whole image size, length of the image part of the file
