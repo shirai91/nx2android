@@ -48,6 +48,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '../
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); import uepak
 GAME = _game.load()   # the current game profile (DM_GAME, required): source group rules and the table header note
 GROUPS, NOTE = GAME.pairs('shader_groups'), GAME.get('shader_note')
+LOOSE_MONO = tuple(GAME.words('shader_loose_monolith', ''))   # extensions of loose Monolith files that carry HCPS shader archives (Xenoblade Chronicles: Definitive Edition: .wishp .wismt .wismda .wiefb .wimdo); empty: none are scanned
 # The sources are what the game files hold, with no profile switch: GLSLC outputs in main (glslc_shaders), the outputs the game compiles at run time when a capture is there (DM_GLSLC_CAPTURE,
 # hle_glslc.c), the shader code archives of Unreal paks once decoded on the Mac (uepak.py, DM_OODLE_JOB, hle_oodle.c); the NSP script decides from the files which of the last two to make
 
@@ -1048,7 +1049,7 @@ def slct_programs(s, xv4, xc, ctls, uc, label, strict):
         for si, co, cl, to, tl in (struct.unpack_from('<5I', nv, eo + 20 * i) for i in range(en)):
             if not cl: continue
             code, ctl = xv4[xc + co:xc + co + cl], ctls[uc + to:uc + to + tl]
-            st = 'cs' if code[:4] == CS_MAGIC else sph_stage(code) if code[:4] == GFX_MAGIC else None
+            st = 'cs' if code[:4] == CS_MAGIC else sph_stage(code) if code[:4] == GFX_MAGIC else 'cs' if LOOSE_MONO and si == 5 else None   # stage 5 is compute: Xenoblade Chronicles: Definitive Edition's has no code header (shd_lgt / shd_post.wishp)
             why = 'no code area header' if not st else check(label, st, ctl, code)
             if why and strict: red(f'{label} program {p} stage {si}: {why}')
             if why: return None
@@ -1563,6 +1564,9 @@ def scan_file(args):
     if ext in ('.data', '.patch', '.debug', '.nxpc') and os.path.exists(stem + '.dict'): return rel, {}, set(), {}   # read through its Next Level Games index (nlg_shaders)
     with open(path, 'rb') as f: head = f.read(16)
     found = []; trees = {}
+    if LOOSE_MONO and ext in LOOSE_MONO and not (len(args) > 2):   # a loose Monolith file (.wishp, .wismt, .wismda …): HCPS archives in the file itself or in its xbc1 streams (mono_shaders)
+        mono_shaders(open(path, 'rb').read(), '/' + rel, found)
+        return rel, uniq_keys(found), var_pairs(found), trees
     if head[:4] == NLG_DICT:
         nlg_shaders(path, '/' + rel, found)
         return rel, uniq_keys(found), var_pairs(found), trees
