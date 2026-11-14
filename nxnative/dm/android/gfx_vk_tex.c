@@ -9,6 +9,7 @@
 #include "../gfx/tex/nvn_deswizzle.h"
 #include "nvn_hmap.h"
 #include <string.h>
+#include <math.h>
 #include "../gfx/tex/nvn_bc.h"
 
 int nvn_dirty_since_span(const void *span, const void *addr, size_t len, uint64_t stamp);
@@ -767,10 +768,16 @@ static VkSampler make_sampler(const samp_par *p) {
     ci.minFilter = p->minf == 1 || p->minf == 3 || p->minf == 5 ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
     ci.mipmapMode = p->minf == 4 || p->minf == 5 ? VK_SAMPLER_MIPMAP_MODE_LINEAR : VK_SAMPLER_MIPMAP_MODE_NEAREST;
     ci.addressModeU = wrap(p->ws); ci.addressModeV = wrap(p->wt); ci.addressModeW = wrap(p->wr);
-    ci.mipLodBias = p->lod_bias;
-    ci.anisotropyEnable = p->aniso > 1.0f; ci.maxAnisotropy = p->aniso > V.max_aniso ? V.max_aniso : p->aniso;
+    // Vulkan requires |mipLodBias| <= maxSamplerLodBias, maxLod >= minLod,
+    // and the samplerAnisotropy feature for anisotropy (gated by V.max_aniso).
+    // NVN's bias range is -16..15.99; no mipmap filter: level 0 only (GL's rule).
+    float bias_limit = V.props.limits.maxSamplerLodBias;
+    ci.mipLodBias = fminf(fminf(15.99f, bias_limit), fmaxf(fmaxf(-16, -bias_limit), p->lod_bias));
+    ci.maxAnisotropy = fminf(V.max_aniso, fmaxf(1, floorf(p->aniso)));
+    ci.anisotropyEnable = ci.maxAnisotropy > 1;
     ci.compareEnable = p->cmp_mode == 1; ci.compareOp = cmp_op(p->cmp_func);
-    ci.minLod = p->lod_min; ci.maxLod = p->minf <= 1 ? 0.25f : p->lod_max;   // no mipmap filter: level 0 only (GL's rule)
+    ci.minLod = p->minf >= 2 ? fmaxf(0, p->lod_min) : 0;
+    ci.maxLod = p->minf >= 2 ? fmaxf(ci.minLod, p->lod_max) : 0.25f;
     int border = ci.addressModeU == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER || ci.addressModeV == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER || ci.addressModeW == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
     ci.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
     if (border) {

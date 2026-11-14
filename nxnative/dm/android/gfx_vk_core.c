@@ -15,6 +15,7 @@
 #include <errno.h>
 #include <stdatomic.h>
 #include <string.h>
+#include <math.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
 #include <time.h>
@@ -262,7 +263,7 @@ void vk_init(void) {
     V.has_dtiming = has_ext(ex, ne, "VK_GOOGLE_display_timing");   // frame pacing on the display (gfx_vk_present.c pace_*)
     V.has_bc = ff.features.textureCompressionBC; V.has_astc = ff.features.textureCompressionASTC_LDR; V.has_gs = ff.features.geometryShader;
     { const char *e = getenv("DM_VK_X_BC_CPU"); if (e && atoi(e)) V.has_bc = 0; }   // (start-up) BC textures decoded on the CPU as on a device without them (gfx_vk_tex.c bc_decode)
-    V.max_aniso = V.props.limits.maxSamplerAnisotropy;
+    V.max_aniso = ff.features.samplerAnisotropy ? fminf(16, V.props.limits.maxSamplerAnisotropy) : 1;
     // subgroups: where the shaders' votes, ballots and shuffles may run; a module whose stage lacks them runs as subgroups of one invocation (gfx_vk_shader.c, spv_one_lane).
     // Turnip lists graphics stages and quad operations only on a GPU with getfiberid (tu_device.cc): the Adreno 7xx have it, the Adreno 650 (a6xx gen3) not (compute alone).
     // DM_VK_SUBGROUP_PIN=<lanes> (start-up): game pipelines' fragment and compute stages run at that subgroup size (VkPipelineShaderStageRequiredSubgroupSizeCreateInfo)
