@@ -74,6 +74,8 @@ Vulkan indirect compute dispatches copy their three GPU-written group counts int
 
 The Vulkan backend supplies disabled generic vertex attributes as Maxwell's `(0, 0, 0, 1)`, keeping the float register bit pattern when a shader reads integers. This has separate storage from zero-filled unbound uniform buffers. Enabled attributes with an invalid format or missing buffer retain the conservative zero fallback. The distinction matters when a depth pre-pass uses an absent attribute's W as a displacement weight: a zero weight can disagree with the material pass, fail depth equality and retain colour from older frames.
 
+NVN CPU replay records normally occupy guest command memory. A recording with an empty GPU command pool can reserve a distinct 16-byte lifetime identity in the guest's control storage; its records and opaque handle stay in host storage, and command-byte accounting remains unchanged. Reserved control bytes are reported separately, so the game does not re-grant another live handle's identity. Overflow segments inherit the recording's guest range or control identity and are reused only when the game grants overlapping storage again. Cached handles remain valid after their command-buffer object is finalized; frame age is not a reclamation rule. Control-owned recordings start at 4 KiB even for zero-byte requests and grow only when required by the request or recorded commands.
+
 ## Game profiles on Android
 
 A profile is offered for Android when it has an `android.tsv`; the profiles without one (52 of the 54 today, upstream's iOS games) show as "ios only": an experimental port can still try them. `android.tsv` holds, one `key<TAB>value` row each:
