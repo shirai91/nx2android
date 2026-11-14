@@ -24,6 +24,7 @@
 VK_FNS(VK_DEF) VK_DEV_FNS(VK_DEF)
 static PFN_vkGetInstanceProcAddr p_vkGetInstanceProcAddr;
 vkdev_t V;
+char g_vk_driver[32] = "VULKAN";   // (gfx_vk.h)
 #include "gfx_vk_pipeline_cache.inc"
 pthread_mutex_t g_vk_queue_mu = PTHREAD_MUTEX_INITIALIZER;   // VkQueue access is externally synchronized: submissions and presents
 
@@ -180,7 +181,18 @@ void vk_init(void) {
     // driver: as Qualcomm encodes it (VK_MAKE_VERSION: 512.530.0), with the raw value for other vendors
     { uint32_t d = V.props.driverVersion;
       VKLOG("GPU %s (vendor %#x, device %#x), Vulkan %u.%u.%u, driver %u.%u.%u (%#x)", V.props.deviceName, V.props.vendorID, V.props.deviceID, VK_API_VERSION_MAJOR(V.props.apiVersion),
-            VK_API_VERSION_MINOR(V.props.apiVersion), VK_API_VERSION_PATCH(V.props.apiVersion), d >> 22, d >> 12 & 0x3ff, d & 0xfff, d); }
+            VK_API_VERSION_MINOR(V.props.apiVersion), VK_API_VERSION_PATCH(V.props.apiVersion), d >> 22, d >> 12 & 0x3ff, d & 0xfff, d);
+      // the counter's driver row: Mesa's Turnip names itself in deviceName, Qualcomm's own driver is vendor 0x5143, others by a short name or their vendor id
+      unsigned vid = V.props.vendorID;
+      VkPhysicalDeviceDriverProperties dp = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};   // driverName / driverInfo (Vulkan 1.2; empty where the driver has none)
+      if (V.props.apiVersion >= VK_API_VERSION_1_1) { VkPhysicalDeviceProperties2 p2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &dp}; vkGetPhysicalDeviceProperties2(V.pd, &p2); }
+      VKLOG("driver \"%.*s\", info \"%.*s\"", (int)sizeof dp.driverName, dp.driverName, (int)sizeof dp.driverInfo, dp.driverInfo);
+      unsigned mj, mn, pt; int tu = 0;   // Turnip: its driverInfo ("Mesa 27.0.0-devel (git-2648b2059f)") has the release; the numeric version (26.99.99) is Mesa's encoding of a development build
+      const char *nm = !strncmp(V.props.deviceName, "Turnip", 6) ? "TURNIP" : vid == 0x5143 ? "QCOM" : vid == 0x13B5 ? "ARM" : vid == 0x1010 ? "IMG" : vid == 0x10DE ? "NVIDIA" : vid == 0x1002 ? "AMD" : vid == 0x8086 ? "INTEL" : NULL;
+      if (nm && !strcmp(nm, "TURNIP")) for (const char *c = dp.driverInfo; *c && !tu; c++) if (*c >= '0' && *c <= '9' && (c == dp.driverInfo || c[-1] < '0' || c[-1] > '9') && sscanf(c, "%u.%u.%u", &mj, &mn, &pt) == 3) tu = 1;
+      if (tu) snprintf(g_vk_driver, sizeof g_vk_driver, "TURNIP %u.%u.%u", mj, mn, pt);
+      else if (nm) snprintf(g_vk_driver, sizeof g_vk_driver, "%s %u.%u.%u", nm, d >> 22, d >> 12 & 0x3ff, d & 0xfff);
+      else snprintf(g_vk_driver, sizeof g_vk_driver, "ID %04X %u.%u.%u", vid & 0xffff, d >> 22, d >> 12 & 0x3ff, d & 0xfff); }
     uint32_t qn = 0; vkGetPhysicalDeviceQueueFamilyProperties(V.pd, &qn, NULL);
     VkQueueFamilyProperties qp[16]; if (qn > 16) qn = 16; vkGetPhysicalDeviceQueueFamilyProperties(V.pd, &qn, qp);
     V.qf = 0; while (V.qf < qn && (qp[V.qf].queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) != (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) V.qf++;

@@ -46,6 +46,7 @@ static int dm_opmode(void) { return 0; }
 static void dm_set_opmode(int mode) { (void)mode; }
 static int pad_labels(void) { return 0; }
 static void menu_tab(int tab) { (void)tab; }
+static int fps_opt_press(int item) { (void)item; return 0; }
 static void ed_open(void) {}
 static void sp_open(void) {}
 static void save_export(void) {}

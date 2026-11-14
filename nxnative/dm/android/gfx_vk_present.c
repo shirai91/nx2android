@@ -70,6 +70,7 @@ __attribute__((weak)) void dm_overlay_knob(int stick, float *dx, float *dy) { (v
 __attribute__((weak)) int64_t dm_overlay_pressed(int ctl, uint64_t bit) { (void)ctl; (void)bit; return 0; }
 __attribute__((weak)) int dm_menu_state(void) { return -1; }
 __attribute__((weak)) int dm_menu_audio_available(void) { return 0; }
+__attribute__((weak)) int dm_fps_opts(void) { return FPSO_DEFAULT; }   // front_android.c: the counter's options, packed (overlay_layout.h fpso_*)
 __attribute__((weak)) int dm_overlay_fps(void) { return 0; }   // front_android.c: the pause menu's Show FPS
 __attribute__((weak)) int dm_save_note(char *out, int cap) { if (cap > 0) out[0] = 0; return OVX_IDLE; }   // front_android.c: the save manager's rows
 __attribute__((weak)) int dm_save_rows(ov_srow rows[OVM_ROWS]) { (void)rows; return 0; }
@@ -217,9 +218,9 @@ static void barrier(VkCommandBuffer cb, VkImage img, VkImageLayout from, VkImage
 // With a theme in the APK (overlay_theme.c), the gamepad is its sprites instead: an atlas per layout in a texture of its own (g_tt), uploaded once, every
 // control drawn from it on each present; the procedural layer is then only the menu's panel, the dimming and the counter.
 enum { SP_DISC = OV_N, SP_BLACK, SP_WHITE, SP_ACCENT, SP_N };   // (black, white, accent: solid blocks, the dimming and the layout editor's frames)
-#define OV_FPS_CHARS "0123456789 FPS-CBATO"   // (the temperature rows: "SOC 52C", "BAT 38C")
+#define OV_FPS_CHARS "0123456789 FPS-CBATOURNIQM.DELGV"   // (the temperature rows: "SOC 52C", "BAT 38C"; the driver row: "TURNIP 26.99.99", "QCOM 512.676.53", "NVIDIA ...", "ID 1AB2 ...")
 static struct { VkImage img; VkDeviceMemory mem; VkImageView view; VkSampler samp; VkDescriptorSetLayout dsl; VkPipelineLayout layout; VkDescriptorPool pool; VkDescriptorSet set;
-                VkPipeline pipe; VkFormat pfmt; uint32_t w, h, sh, pw, ph, gh, gs; VkBuffer up; VkDeviceMemory upm; uint8_t *px; int uploaded, panel, lay, cver; float sp[SP_N][4];
+                VkPipeline pipe; VkFormat pfmt; uint32_t w, h, sh, pw, ph, gh, gs, gl, cpr, pad; int fk; VkBuffer up; VkDeviceMemory upm; uint8_t *px; int uploaded, panel, lay, cver; float sp[SP_N][4];
                 VkRenderPass rp; VkFramebuffer fb[8]; VkImageView fbview[8]; VkExtent2D fbext[8]; } g_ov;
 static struct { const ov_theme *t; VkImage img; VkDeviceMemory mem; VkImageView view; VkDescriptorSet set; VkBuffer up; VkDeviceMemory upm; uint32_t upk; int ready; } g_tt[2];   // per layout
 // Without dynamic rendering (a Vulkan 1.1 / 1.2 device, V.has_dynrender) the overlay draws in a render pass object over the swapchain image: one pass for the swapchain's
@@ -374,22 +375,32 @@ static void cv_button(const ov_canvas *cv, const float b[4], const char *l, int 
 }
 // The pause menu (overlay_layout.h: the rows, the tabs, the slider's track), in the raster's panel rectangle. Its letters are as large as a row allows (0.30 of
 // its height, about 2.7 mm on a 6.7" phone and 3.6 mm on the 8.8" tablet) and smaller only when the widest row would not fit beside its control
-static const char *const OVM_LABELS[OVM_N] = {"Show gamepad", "Opacity", "Edit layout", "Rumble", "Show FPS", "Mode", "Export save", "Import save", "Face buttons", "Audio output", "Resume", ""};
+static const char *const OVM_LABELS[OVM_N] = {"Show gamepad", "Opacity", "Edit layout", "Rumble", "Show FPS", "Mode", "Export save", "Import save", "Face buttons", "Audio output",
+                                        "FPS row", "SOC row", "BAT row", "Driver row", "Position", "Colour", "Outline", "Size", "Resume", ""};
 static const char *const OVM_BUTTONS[OVM_N] = {[OVM_EDIT] = "Edit", [OVM_EXPORT] = "Export", [OVM_IMPORT] = "Import", [OVM_AUDIO] = "Select"};   // the rows that are a button: its word
 static const char *const OVM_MODES[2] = {"Handheld", "Docked"};
 static const char *const OVM_PADS[2] = {"Position", "Label"};   // a controller's face buttons (front_android.c pad_labels)
+static int ov_val_n(int it) { return it == OVM_POS ? FPSO_POS_N : it == OVM_COLOUR ? FPSO_COLOUR_N : it == OVM_OUTLINE ? FPSO_OUTLINE_N : it == OVM_SIZE ? FPSO_SIZE_N : 0; }   // the choice rows' values
+static const char *ov_val_name(int it, int v) {
+    return it == OVM_POS ? FPSO_POS_NAMES[v] : it == OVM_COLOUR ? FPSO_COLOUR_NAMES[v] : it == OVM_OUTLINE ? FPSO_OUTLINE_NAMES[v] : FPSO_SIZE_NAMES[v];
+}
+static int ov_val_cur(int it, int o) { return it == OVM_POS ? fpso_pos(o) : it == OVM_COLOUR ? fpso_colour(o) : it == OVM_OUTLINE ? fpso_outline(o) : fpso_size(o); }
+static float ov_val_w(int it, int is) {   // the widest value's width
+    float w = 0; for (int v = 0; v < ov_val_n(it); v++) w = fmaxf(w, cv_text_w(ov_val_name(it, v), is)); return w;
+}
 static void ov_menu_panel(const ov_canvas *cv, int st) {
     float p[4] = {0, 0, (float)cv->w, (float)cv->h}, r[4]; ov_menu_rowrect(p, 0, r);
     float rh = r[3], rw = r[2], gap = rh * 0.35f, sh = rh * 0.40f, sw = sh * 1.85f;
-    int tab = st >> 8 & 1, sel = (st >> 4 & 15) - 1, op = st >> 9 & 127;
+    int tab = (st >> 8 & 1) | (st >> 19 & 1) << 1, sel = (st >> 4 & 15) - 1, op = st >> 9 & 127, fo = dm_fps_opts();
     int is = (int)fmaxf(1, roundf(rh * 0.30f / PF_CAP));
     for (; is > 1; is--) {   // the widest row: its label, a gap and its control
         float need = 0;
         for (int i = 0; i < OVM_RESUME; i++) {
-            float lw = cv_text_w(OVM_LABELS[i], is), cw = i == OVM_MODE ? 2 * (cv_text_w(OVM_MODES[0], is) + sh) : i == OVM_PAD ? 2 * (cv_text_w(OVM_PADS[0], is) + sh) : OVM_BUTTONS[i] ? cv_text_w(OVM_BUTTONS[i], is) + 2 * sh : sw + gap + cv_text_w("OFF", is);
+            float lw = cv_text_w(OVM_LABELS[i], is), cw = ov_val_n(i) ? ov_val_w(i, is) + 2 * sh : i == OVM_MODE ? 2 * (cv_text_w(OVM_MODES[0], is) + sh) : i == OVM_PAD ? 2 * (cv_text_w(OVM_PADS[0], is) + sh) : OVM_BUTTONS[i] ? cv_text_w(OVM_BUTTONS[i], is) + 2 * sh : sw + gap + cv_text_w("OFF", is);
             need = fmaxf(need, i == OVM_OPACITY ? fmaxf(lw / 0.38f, cv_text_w("80%", is) / 0.14f) : lw + gap + cw + rh * 0.3f);
         }
-        if (need <= rw && cv_text_w(OVM_TAB_NAMES[0], is) < rw / 2 - sh) break;
+        float tabw = 0; for (int k = 0; k < OVM_TABS; k++) tabw = fmaxf(tabw, cv_text_w(OVM_TAB_NAMES[k], is));
+        if (need <= rw && tabw < rw / OVM_TABS - sh) break;
     }
     cv_rrect(cv, 0, 0, p[2], p[3], rh * 0.18f, C_BG);
     for (int row = 0; row < OVM_ROWS; row++) {
@@ -418,6 +429,11 @@ static void ov_menu_panel(const ov_canvas *cv, int st) {
             snprintf(v, sizeof v, "%s", x == OVX_BUSY ? "Exporting..." : x == OVX_DONE ? nm : x == OVX_NOSAVE ? "No save yet" : "Failed");
             while (vs > 1 && cv_text_w(v, vs) > rw - cv_text_w(OVM_LABELS[it], is) - gap - rh * 0.3f) vs--;
             cv_text(cv, x1 - cv_text_w(v, vs), cy, v, vs, x == OVX_FAILED ? C_ACCENT : C_WHITE);
+        } else if (ov_val_n(it)) {   // the counter's corner, colour, outline and size: the value in a pill
+            int cur = ov_val_cur(it, fo); const char *nm = ov_val_name(it, cur); float pw = ov_val_w(it, is) + 2 * sh, hh = rh * 0.46f;
+            cv_rrect(cv, x1 - pw, cy - hh / 2, x1, cy + hh / 2, hh / 2, C_OFF);
+            const uint8_t *tc = C_WHITE, rgb[4] = {FPSO_RGB[fpso_colour(fo)][0], FPSO_RGB[fpso_colour(fo)][1], FPSO_RGB[fpso_colour(fo)][2], 255};
+            cv_text(cv, x1 - pw + (pw - cv_text_w(nm, is)) / 2, cy, nm, is, it == OVM_COLOUR ? rgb : tc);
         } else if (OVM_BUTTONS[it]) {   // a button
             float bw = cv_text_w(OVM_BUTTONS[it], is) + 2 * sh, b[4] = {x1 - bw, cy - rh * 0.30f, bw, rh * 0.60f}; cv_button(cv, b, OVM_BUTTONS[it], 0, 0);
         } else if (it == OVM_MODE || it == OVM_PAD) {   // two segments, the current one filled: handheld (performance) | docked (resolution); by position | by label
@@ -427,7 +443,7 @@ static void ov_menu_panel(const ov_canvas *cv, int st) {
             cv_rrect(cv, x0 + cur * segw, cy - hh / 2, x0 + (cur + 1) * segw, cy + hh / 2, hh / 2, C_ACCENT);
             for (int k = 0; k < 2; k++) cv_text(cv, x0 + k * segw + (segw - cv_text_w(seg[k], is)) / 2, cy, seg[k], is, k == cur ? C_WHITE : C_DIM);
         } else {   // a switch
-            int on = st >> (it == OVM_OVERLAY ? 0 : it == OVM_RUMBLE ? 1 : 3) & 1; float sx0 = x1 - sw;
+            int on = it >= OVM_ROW_FPS && it <= OVM_ROW_DRV ? fpso_rows(fo) >> (it - OVM_ROW_FPS) & 1 : st >> (it == OVM_OVERLAY ? 0 : it == OVM_RUMBLE ? 1 : 3) & 1; float sx0 = x1 - sw;
             cv_rrect(cv, sx0, cy - sh / 2, x1, cy + sh / 2, sh / 2, on ? C_ACCENT : C_OFF);
             cv_disc(cv, on ? x1 - sh / 2 : sx0 + sh / 2, cy, sh / 2 - fmaxf(2, sh * 0.1f), on ? C_WHITE : C_KNOB_OFF);
             const char *word = on ? "ON" : "OFF"; cv_text(cv, sx0 - gap - cv_text_w(word, is), cy, word, is, on ? C_WHITE : C_DIM);
@@ -566,40 +582,78 @@ static float ov_glow(int64_t t, int64_t now) {   // a held button's glow: bright
     if (!t) return 0;
     float f = (float)(now - t) / OV_FLASH_NS; return f >= 1 ? 0.22f : 0.22f + 0.48f * (1 - f) * (1 - f);
 }
-// The frame rate counter: the game's frames shown per second, measured over half a second, in the window's top left corner on a dark block
-static float ov_fps_cell(void) {   // a character cell's width in texels: the widest advance of OV_FPS_CHARS (8 columns: A, O, T), a clear texel each side
+// The frame rate counter: the game's frames shown per second, measured over half a second, with the chip's and the battery's temperature and the Vulkan driver
+// in use, in a corner of the window (the pause menu's Counter and Style tabs, overlay_layout.h fpso_*: the rows, the corner, the colour, the outline or a dark block
+// behind, the letters' size). The rows are put together from the characters of OV_FPS_CHARS on every present, so a changing number needs no upload. The characters are
+// rasterized in the current size: three sets (the colour, red for a temperature too hot, black for the outline), wrapped into rows of the atlas
+static int ov_fps_wmax(void) {   // the widest advance of OV_FPS_CHARS, in font columns
     static int adv;
     if (!adv) for (const char *c = OV_FPS_CHARS; *c; c++) { char one[2] = {*c, 0}; int a = pf_width(dm_overlay_font(), one); if (a > adv) adv = a; }
-    return (float)adv * g_ov.gs + 2;
+    return adv;
+}
+static float ov_fps_cell(void) { return (float)ov_fps_wmax() * g_ov.gs + 2 + 2 * g_ov.pad; }   // an atlas cell's width in texels: the widest character, a clear texel each side, and the outline's room (pad)
+static float ov_fps_adv(char c) {   // a character's advance in texels: digits and the space all as wide as the widest digit (the numbers do not jitter), the rest as wide as they are
+    static int dig;
+    if (!dig) for (char d = '0'; d <= '9'; d++) { char one[2] = {d, 0}; int a = pf_width(dm_overlay_font(), one); if (a > dig) dig = a; }
+    char one[2] = {c, 0}; int a = c >= '0' && c <= '9' || c == ' ' ? dig : pf_width(dm_overlay_font(), one);
+    return (float)a * g_ov.gs + 2;
+}
+static int ov_fps_key(void) { int o = dm_fps_opts(); int ol = fpso_outline(o); return fpso_colour(o) << 8 | fpso_size(o) << 4 | (ol >= FPSO_THIN ? ol : 0); }   // what the atlas holds (a change rasterizes it again: overlay_ready)
+static void ov_fps_dims(uint32_t w, uint32_t h) {   // the letters' scale for the size chosen, the outline's room and the atlas rows (g_ov.gs, pad, gl, cpr, gh)
+    int n = (int)strlen(OV_FPS_CHARS), base = (int)fmaxf(2, roundf(h * 0.022f / PF_CAP)), o = dm_fps_opts(), s = fpso_scale(base, fpso_size(o)), ol = fpso_outline(o);
+    for (;; s--) {
+        g_ov.gs = (uint32_t)s; g_ov.pad = ol >= FPSO_THIN ? (uint32_t)((ol - FPSO_NONE) * s) : 0; g_ov.cpr = (uint32_t)(w / ov_fps_cell());
+        if (g_ov.cpr >= 1 || s <= 1) break;   // (a window too narrow for a single character: not seen)
+    }
+    if (!g_ov.cpr) g_ov.cpr = 1;
+    g_ov.gl = PF_CAP * g_ov.gs + 4 + 2 * g_ov.pad; g_ov.gh = g_ov.gl * ((3 * n + g_ov.cpr - 1) / g_ov.cpr);
 }
 static void ov_fps_glyphs(void) {   // the characters into the rows under the panel
     ov_canvas cv = {g_ov.px, g_ov.w, 0, g_ov.h + g_ov.sh + g_ov.ph, g_ov.w, g_ov.gh};
-    int n = (int)strlen(OV_FPS_CHARS);   // white, then the same characters in red (a temperature too hot: ov_fps) after them
-    for (int i = 0; i < 2 * n; i++) { char one[2] = {OV_FPS_CHARS[i % n], 0}; cv_text(&cv, i * ov_fps_cell() + 1 + g_ov.gs * 0.5f, g_ov.gh / 2.0f, one, (int)g_ov.gs, i < n ? C_WHITE : C_HOT); }
+    int n = (int)strlen(OV_FPS_CHARS), o = dm_fps_opts(), c = fpso_colour(o), pad = (int)g_ov.pad;
+    const uint8_t ink[4] = {FPSO_RGB[c][0], FPSO_RGB[c][1], FPSO_RGB[c][2], 255}, black[4] = {0, 0, 0, 255};
+    for (int id = 0; id < 3 * n; id++) {   // the colour, then the same characters in red (a temperature too hot: ov_fps), then in black
+        char one[2] = {OV_FPS_CHARS[id % n], 0};
+        float x = (id % (int)g_ov.cpr) * ov_fps_cell() + pad + 1 + g_ov.gs * 0.5f, cy = (id / (int)g_ov.cpr) * (float)g_ov.gl + g_ov.gl / 2.0f;
+        if (id < 2 * n) cv_text(&cv, x, cy, one, (int)g_ov.gs, id < n ? ink : C_HOT);
+        else for (int dy = -pad; dy <= pad; dy++) for (int dx = -pad; dx <= pad; dx++) if (dx || dy || !pad) cv_text(&cv, x + dx, cy + dy, one, (int)g_ov.gs, black);   // the glyph's shape grown by pad texels every way
+    }
 }
 __attribute__((weak)) void dm_android_temps(int *soc, int *bat) { (void)soc; (void)bat; }   // (front_android.c; absent in other builds)
-static void ov_fps(VkCommandBuffer cb, int64_t now) {   // one value a row: FPS, then the chip's and the battery's temperature where the device gives them
+static float ov_fps_len(const char *s, float k) { float w = 0; for (; *s; s++) w += ov_fps_adv(*s) * k; return w; }
+static void ov_fps_text(VkCommandBuffer cb, int set, const char *s, float x, float y, float k) {   // a row's characters from the atlas' set (0 colour, 1 red, 2 black); (x, y): its top left
+    int n = (int)strlen(OV_FPS_CHARS); float gy = (float)(g_ov.h + g_ov.sh + g_ov.ph), pd = (float)g_ov.pad * k;
+    for (int i = 0; s[i]; x += ov_fps_adv(s[i]) * k, i++) {
+        const char *c = strchr(OV_FPS_CHARS, s[i]); if (!c || s[i] == ' ') continue;
+        int id = set * n + (int)(c - OV_FPS_CHARS); float u = (float)(id % (int)g_ov.cpr) * ov_fps_cell(), v = gy + (float)(id / (int)g_ov.cpr) * (float)g_ov.gl;
+        ov_rect(cb, x - pd, y - pd, x - pd + ov_fps_cell() * k, y - pd + g_ov.gl * k, u, v, u + ov_fps_cell(), v + g_ov.gl, 1);
+    }
+}
+static void ov_fps(VkCommandBuffer cb, int64_t now) {   // one value a row: FPS, then the chip's and the battery's temperature where the device gives them, the driver
     static uint64_t n0; static int64_t t0; static int fps = -1;
     uint64_t n = atomic_load(&g_fps_frames);
     if (!t0 || now - t0 > 2000000000ll) { t0 = now; n0 = n; fps = -1; }   // the first frame, or after a pause in the presents (the menu, the background): measure anew
     else if (now - t0 >= 500000000ll) { fps = (int)((double)(n - n0) * 1e9 / (double)(now - t0) + 0.5); t0 = now; n0 = n; }
-    char rows[3][16]; int nr = 0, hot[3] = {0};
-    if (fps < 0) snprintf(rows[nr++], 16, "FPS --"); else snprintf(rows[nr++], 16, "FPS %d", fps > 999 ? 999 : fps);
-    int soc = -1000, bat = -1000; dm_android_temps(&soc, &bat);   // front_android.c: the chip's hottest CPU / GPU zone and the battery, whole degrees C (-1000: not known)
+    int o = dm_fps_opts(), want = fpso_rows(o);
+    char rows[4][32]; int nr = 0, hot[4] = {0};
+    if (want & FPSO_FPS) { if (fps < 0) snprintf(rows[nr++], 32, "FPS --"); else snprintf(rows[nr++], 32, "FPS %d", fps > 999 ? 999 : fps); }
+    int soc = -1000, bat = -1000; if (want & (FPSO_SOC | FPSO_BAT)) dm_android_temps(&soc, &bat);   // front_android.c: the chip's hottest CPU / GPU zone and the battery, whole degrees C (-1000: not known)
     // red from where it is dangerously hot: the chip at 80 C (phones throttle hard in the high 80s), the battery at 45 C (Android's warnings and charging limits)
-    if (soc > -100 && soc < 1000) { hot[nr] = soc >= 80; snprintf(rows[nr++], 16, "SOC %dC", soc); }
-    if (bat > -100 && bat < 1000) { hot[nr] = bat >= 45; snprintf(rows[nr++], 16, "BAT %dC", bat); }
-    float k = (float)g_sext.width / g_ov.w, cw = ov_fps_cell() * k, ch = (float)g_ov.gh * k, m = (float)g_sext.height * 0.02f, pad = ch * 0.2f, lh = ch * 1.1f;
-    float bx = g_ov.sp[SP_BLACK][0], by = g_ov.sp[SP_BLACK][1], gy = (float)(g_ov.h + g_ov.sh + g_ov.ph); size_t wmax = 0;
-    for (int r = 0; r < nr; r++) if (strlen(rows[r]) > wmax) wmax = strlen(rows[r]);
-    ov_rect(cb, m, m, m + ch * 0.5f + wmax * cw, m + 2 * pad + ch + (nr - 1) * lh, bx - 2, by - 2, bx + 2, by + 2, 0.45f);
-    for (int r = 0; r < nr; r++) {
-        float x = m + ch * 0.25f, y = m + pad + r * lh;
-        for (int i = 0; rows[r][i]; i++, x += cw) {
-            const char *c = strchr(OV_FPS_CHARS, rows[r][i]); if (!c || rows[r][i] == ' ') continue;
-            float u = (float)(c - OV_FPS_CHARS + (hot[r] ? (int)strlen(OV_FPS_CHARS) : 0)) * ov_fps_cell(); ov_rect(cb, x, y, x + cw, y + ch, u, gy, u + ov_fps_cell(), gy + g_ov.gh, 1);
+    if ((want & FPSO_SOC) && soc > -100 && soc < 1000) { hot[nr] = soc >= 80; snprintf(rows[nr++], 32, "SOC %dC", soc); }
+    if ((want & FPSO_BAT) && bat > -100 && bat < 1000) { hot[nr] = bat >= 45; snprintf(rows[nr++], 32, "BAT %dC", bat); }
+    if (want & FPSO_DRV) snprintf(rows[nr++], 32, "%s", g_vk_driver);
+    if (!nr) return;
+    float W = (float)g_sext.width, H = (float)g_sext.height, k = W / g_ov.w, ch = (float)(PF_CAP * g_ov.gs + 4) * k, m = H * 0.02f, pad = ch * 0.2f, lh = ch * 1.1f;
+    float bx = g_ov.sp[SP_BLACK][0], by = g_ov.sp[SP_BLACK][1], wmax = 0;
+    for (int r = 0; r < nr; r++) wmax = fmaxf(wmax, ov_fps_len(rows[r], k));
+    float bw = ch * 0.5f + wmax, bh = 2 * pad + ch + (nr - 1) * lh, left = fpso_pos(o) & 1 ? W - m - bw : m, top = fpso_pos(o) & 2 ? H - m - bh : m;   // the block, in its corner
+    int ol = fpso_outline(o);
+    if (ol == FPSO_BOX) ov_rect(cb, left, top, left + bw, top + bh, bx - 2, by - 2, bx + 2, by + 2, 0.45f);
+    for (int pass = ol >= FPSO_THIN ? 0 : 1; pass < 2; pass++)   // the outline (the black set: the glyphs grown by 1, 2 or 3 font texels) under the colour
+        for (int r = 0; r < nr; r++) {
+            float x = fpso_pos(o) & 1 ? left + bw - ch * 0.25f - ov_fps_len(rows[r], k) : left + ch * 0.25f, y = top + pad + r * lh;   // (the right corners: the rows end at the block's right edge)
+            ov_fps_text(cb, pass ? (hot[r] ? 1 : 0) : 2, rows[r], x, y, k);
         }
-    }
 }
 static void ov_theme_draw(VkCommandBuffer cb, const ov_theme *t, float alpha) {   // (alpha: the player's opacity; each control at its own size factor)
     float W = (float)g_sext.width, H = (float)g_sext.height, k = H / t->dh * dm_overlay_scale(), b[4]; const ov_ctl *L = OV_LAYOUTS[t->layout];
@@ -636,6 +690,7 @@ static void ov_render(VkCommandBuffer cb, int mode, int menu, int fps) {
     float bx = g_ov.sp[SP_BLACK][0], by = g_ov.sp[SP_BLACK][1];
     if (menu >= 0 && !edit) {   // paused: the frame dimmed, the panel, and the menu button (which closes it)
         ov_rect(cb, 0, 0, W, H, bx - 2, by - 2, bx + 2, by + 2, 0.55f);
+        if (fps) ov_fps(cb, now);   // (the counter's preview on the Counter and Style tabs: under the panel, which stays readable)
         float r[4]; ov_menu_rect(W, H, r);
         ov_rect(cb, r[0], r[1], r[0] + r[2], r[1] + r[3], 0, (float)(g_ov.h + g_ov.sh), (float)g_ov.pw, (float)(g_ov.h + g_ov.sh + g_ov.ph), 1);
     } else if (edit) {
@@ -765,13 +820,13 @@ static int overlay_ready(VkCommandBuffer cb, uint32_t k, int menu) {   // k: thi
         g_ov.pfmt = g_sfmt;
     }
     ov_theme_upload(cb, k, lay);
-    if (g_ov.w != w || g_ov.h != h || g_ov.lay != lay || (g_tt[lay].ready != 1 && g_ov.cver != dm_overlay_custom_ver())) {   // (re)rasterize for this window size and layout
+    if (g_ov.w != w || g_ov.h != h || g_ov.lay != lay || g_ov.fk != ov_fps_key() || (g_tt[lay].ready != 1 && g_ov.cver != dm_overlay_custom_ver())) {   // (re)rasterize for this window size and layout
         g_ov.cver = dm_overlay_custom_ver();   // (and, without a theme, the player's own layout: the outlines are in the static layer)
         vkDeviceWaitIdle(V.dev);
         if (g_ov.view) { vkDestroyImageView(V.dev, g_ov.view, NULL); vkDestroyImage(V.dev, g_ov.img, NULL); vkFreeMemory(V.dev, g_ov.mem, NULL); vkDestroyBuffer(V.dev, g_ov.up, NULL); vkFreeMemory(V.dev, g_ov.upm, NULL); }
         g_ov.lay = lay; uint32_t sh = ov_layout_sprites(w, h); float mr[4]; ov_menu_rect((float)g_sext.width, (float)g_sext.height, mr);
         g_ov.pw = (uint32_t)(mr[2] / 2) + 1; g_ov.ph = (uint32_t)(mr[3] / 2) + 1; if (g_ov.pw > w) g_ov.pw = w;
-        g_ov.gs = (uint32_t)fmaxf(2, roundf(h * 0.022f / PF_CAP)); g_ov.gh = PF_CAP * g_ov.gs + 4;   // the counter's characters: 2.2% of the window's height
+        ov_fps_dims(w, h); g_ov.fk = ov_fps_key();   // the counter's characters: 2.2% of the window's height, at the size chosen
         uint32_t th = h + sh + g_ov.ph + g_ov.gh;
         VkImageCreateInfo ic = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, NULL, 0, VK_IMAGE_TYPE_2D, VK_FORMAT_R8G8B8A8_UNORM, {w, th, 1}, 1, 1, VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_TILING_OPTIMAL,
             VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_SHARING_MODE_EXCLUSIVE, 0, NULL, VK_IMAGE_LAYOUT_UNDEFINED};
