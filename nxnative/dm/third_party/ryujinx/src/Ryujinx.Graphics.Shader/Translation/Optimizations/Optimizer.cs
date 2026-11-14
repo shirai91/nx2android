@@ -50,6 +50,14 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
             }
 
             // Run optimizations one last time to remove any code that is now optimizable after above passes.
+            if (context.Stage == ShaderStage.Vertex)
+            {
+                foreach (BasicBlock block in context.Blocks)
+                {
+                    ConstantBufferAddress.RunPass(block);
+                }
+            }
+
             RunOptimizationPasses(context.Blocks, context.ResourceManager);
         }
 

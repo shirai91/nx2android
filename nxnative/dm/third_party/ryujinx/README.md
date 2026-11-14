@@ -11,5 +11,16 @@ Three projects from Ryujinx 1.3.2: `Ryujinx.Graphics.Shader`, `Ryujinx.Common` a
 
 - `Ryujinx.Graphics.Shader/StructuredIr/AstOptimizer.cs`, `Optimize` / `UsedByCall`: a local that a call takes as an argument is not propagated. For SPIR-V, `StructuredProgram` copies every call argument into a local (SPIR-V passes them by pointer); propagating that local's expression into the call and removing the local left the call with a local no declaration made, and `CodeGen/Spirv` `GetLocalPointer` threw `KeyNotFoundException`: 1,894 of Viractal's 25,464 shaders, nearly all pixel shaders, did not translate (2026-10-25, the Android port). Marked `nxnative:` in the code. Not yet in `dm/gfx/tools/dmsh_xlate_bin`, which is rebuilt on a Mac with `dmsh_chain.py --update-lock`; the Android port builds the translator from this source.
 
+- `Ryujinx.Graphics.Shader/Translation/Optimizations/ConstantBufferAddress.cs`,
+  called by `Optimizer` for vertex shaders: simplify constant-buffer integer
+  indices whose vec4 lane is provably constant. A bounded affine analysis retains
+  32-bit wrapping and reduced-width masks; additions after truncation require a
+  no-carry bound. Unknown operations remain opaque roots, signed shifts require
+  nonnegative values, and floating-point operations are not reassociated.
+  Equivalent addresses share temporaries within a block only. This removes
+  dynamic component-selection ladders found in Turnip matrix loads without
+  shader hashes or uniform specialization. Marked `nxnative:` in the code.
+  Not yet in `dm/gfx/tools/dmsh_xlate_bin`; Android builds from this source.
+
 The shader translation tool in `dm/gfx/tools/dmsh_xlate` references them to translate the original Switch shaders to SPIR-V.
 License: MIT, see `LICENSE.txt`. Upstream: <https://github.com/Ryubing>.
