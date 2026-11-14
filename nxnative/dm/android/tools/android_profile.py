@@ -25,7 +25,9 @@ import game   # noqa: E402  (the profile folders, DM_GAMES_DIR included)
 
 STATUS = ('playable', 'wip', 'boots', 'experimental')
 SETTINGS = {'overlay': ('0', '1'), 'rumble': ('0', '1'), 'docked': ('0', '1'), 'fps': ('0', '1'),   # the pause menu's settings (front_android.c settings_load)
-            'opacity': tuple(str(v) for v in range(20, 81, 5))}                                    # the gamepad's, percent (overlay_layout.h OV_OPACITY_MIN..MAX)
+            'opacity': tuple(str(v) for v in range(20, 81, 5)),                                    # the gamepad's, percent (overlay_layout.h OV_OPACITY_MIN..MAX)
+            'fps_rows': tuple(str(v) for v in range(32)), 'fps_pos': tuple('0123'), 'fps_colour': tuple('01234'),   # the frame rate counter's rows (a bit each: 1 FPS, 2 SOC, 4 BAT,
+            'fps_outline': tuple('01234'), 'fps_size': tuple('0123')}                                               # 8 driver, 16 graph), corner, colour, outline and size (overlay_layout.h fpso_*)
 REQUIRES = ('bcn',)
 KINDS = {'stick_l': 'OV_STICK_L', 'stick_r': 'OV_STICK_R', 'button': 'OV_BUTTON', 'dpad': 'OV_DPAD', 'menu': 'OV_MENU'}
 SINGLE = ('status', 'tested', 'package', 'orientation', 'requires', 'sysdata')
