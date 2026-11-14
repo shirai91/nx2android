@@ -630,6 +630,8 @@ class Port:
         self.env.pop('DM_PATCHES_EXTRA', None)
         if not self.o.fps60: return
         PROG.stage('60 fps', step='the game profile')
+        if self.g.get('fps_ceiling', '0') != '0':   # a game that runs at 60 on the Switch, held at 30 by default: the ceiling lifted (android/gfx_vk_present.c dm_fps_ceiling)
+            self.fps_env = ['DM_FPS_CEILING=0']; PROG.end('the game profile\'s 30 fps ceiling lifted (fps_ceiling)'); return
         if self.g.get('fps_target', '0') != '0':
             self.fps_env = ['DM_FPS_TARGET=60']; PROG.end('the game profile\'s own frame-rate cap (fps_target), at 60'); return
         img, bid = fpslocker.nso_image(self.game / 'ExeFS/main')

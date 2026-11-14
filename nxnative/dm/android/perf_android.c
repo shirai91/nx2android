@@ -206,10 +206,22 @@ static int64_t work_pct(int q) {   // the q-th percentile of the last 64 frames'
     return v[(n * q) / 100];
 }
 static int64_t work_p95(void) { return work_pct(95); }
+// The ceiling of the steps (gfx_vk_present.c dm_fps_ceiling: the profile's fps_ceiling, 30 or 0 for none) holds presentation at 30 fps whatever interval the game asks for.
+// Cardfight!! Vanguard Dear Days 2 presents at interval 1 (60 fps on the Switch) and steps by the time that really passed: its boot screens changed every 3.0 s at 60 and at
+// 30 fps alike (screen recordings on the Odin 2), so a 30 cap halves the work without slowing the game
+__attribute__((weak)) int dm_fps_ceiling(void) { return 0; }
+static int fps_pin(void);
+static int fps_cap_step(void) {
+    static int s = -1;
+    if (s < 0) { s = dm_fps_ceiling() == 30 ? 2 : 0; if (s) LOG("[perf] frame rate capped at 30 fps (the profile's fps_ceiling; porter's --fps60 lifts it)"); }
+    return s;
+}
 uint64_t dm_present_period_adapt(uint64_t period) {
     if (g_adapt < 0) { const char *e = getenv("DM_ADAPTIVE_FPS"); g_adapt = !(e && !atoi(e)); }
-    if (!g_adapt || !period) return period;
+    if (!period) return period;
+    if (!g_adapt) return fps_cap_step() && (uint64_t)STEPS[2] > period ? (uint64_t)STEPS[2] : period;
     g_game_period = period;
+    if (g_step < fps_cap_step() && fps_pin() < 0) g_step = fps_cap_step();
     int64_t want = STEPS[g_step];
     return (uint64_t)want > period ? (uint64_t)want : period;   // never faster than the game asks
 }
@@ -297,7 +309,7 @@ static void adapt_frame(int64_t work, int64_t now) {
     // Unicorn Overlord's opening held 60 fps with 1-2 of 64 frames late, but once a load stepped it down to 40 its p90 stayed at 21-25 ms and it never went back
     // up (p50 14-15 ms). With 50 it tries the shorter period again; a try that does not fit misses the display and steps back down, and the next waits twice as long
     static int up_pct = -1; if (up_pct < 0) { const char *e = getenv("DM_ADAPT_UP_PCT"); up_pct = e && atoi(e) > 0 && atoi(e) < 100 ? atoi(e) : 90; }
-    if (g_step > 0 && (up_pct == 90 ? p90 : work_pct(up_pct)) < STEPS[g_step - 1]) { if (++g_ok_frames > 120 && now - g_last_change >= g_up_hold) { g_step--; g_last_change = g_last_up = now; g_nwork = 0; g_nshown = 0; g_ok_frames = 0; LOG("[perf] adaptive frame rate: %.0f fps (frames p90 %.1f ms)", 1e9 / STEPS[g_step], p90 / 1e6); } }
+    if (g_step > fps_cap_step() && (up_pct == 90 ? p90 : work_pct(up_pct)) < STEPS[g_step - 1]) { if (++g_ok_frames > 120 && now - g_last_change >= g_up_hold) { g_step--; g_last_change = g_last_up = now; g_nwork = 0; g_nshown = 0; g_ok_frames = 0; LOG("[perf] adaptive frame rate: %.0f fps (frames p90 %.1f ms)", 1e9 / STEPS[g_step], p90 / 1e6); } }
     else g_ok_frames = 0;
 }
 // hle_nvn.c, the first acquire after a present, right after its pacing wait. A frame's work is the time between two presents less that wait: what the
