@@ -125,6 +125,14 @@ axis preservation, not game recognition or device behavior.
 python -m unittest discover tests
 ```
 
+`test_fragment_output_masks` compiles the production attachment-state loop and
+checks sparse output maps, absent fragment shaders, channel masks, integer
+formats and the flat diagnostic shader's all-target output. The optional
+[fragment-output replay](../tests/vk_fragment_output_masks.md) adds pipeline
+observations and pixel checks; its build script supports Windows, macOS and
+Linux NDK hosts and does not contact a device. Host checks do not qualify
+physical GPU rendering.
+
 The Vulkan-header harnesses need a discoverable NDK; set `ANDROID_NDK_HOME`
 when it is not found automatically. They skip if no NDK headers are found.
 The protected-pool harness uses real page protection
