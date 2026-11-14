@@ -9,7 +9,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 **52 / 106 ported**
 
 - [x] 13 Sentinels: Aegis Rim · `01003FC01670C000`
-- [ ] Ace Attorney Investigations Collection · `010005501E68C000` · profile here
+- [x] Ace Attorney Investigations Collection · `010005501E68C000` · profile here
 - [x] Advance Wars 1+2: Re-Boot Camp · `0100300012F2A000`
 - [ ] AI: THE SOMNIUM FILES · `010089B00D09C000` · profile here
 - [ ] AI: THE SOMNIUM FILES - nirvanA Initiative · `0100713016CCC000` · profile here
