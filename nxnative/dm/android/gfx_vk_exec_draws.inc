@@ -374,7 +374,8 @@ static int quad_index_ready(const p_draw_idx *d) {
     if (d->prim != NVN_DRAW_PRIMITIVE_QUADS || d->ind) return 1;
     if (d->count < 4 || (unsigned)d->itype > 2) return 0;
     uint64_t n = (uint64_t)(uint32_t)d->count * (1u << d->itype);
-    if (d->ibuf > UINT64_MAX - n || !vk_pool_of(d->ibuf, n)) return 0;
+    // Match draw eligibility: the CPU index span may cross registered pool chunks.
+    if (d->ibuf > UINT64_MAX - n || !vk_pool_of(d->ibuf, 1)) return 0;
     cpu_ready(d->ibuf, n);
     return 1;
 }
@@ -382,10 +383,16 @@ static int quad_indices(uint32_t count, const uint8_t *src, int itype, int32_t f
     uint32_t nq = count / 4; if (!nq) return 0;
     unsigned bytes = itype == 0 ? 1 : itype == 1 ? 2 : 4;
     if (src) {
-        // Donor cpu_access_ready materializes known bytes once. Reuse the
-        // target's uniform-shadow snapshot pattern, not a tracker scan per index.
-        VkBuffer snapshot_buffer; VkDeviceSize snapshot_offset, n = (VkDeviceSize)count * bytes;
-        uint8_t *snapshot = vk_scratch(n, 4, &snapshot_buffer, &snapshot_offset);
+        // Replay-thread-owned CPU storage: repeated reads must not hit possibly
+        // uncached Vulkan scratch. Retain the largest input until process exit.
+        static uint8_t *snapshot; static size_t capacity;
+        uint64_t n = (uint64_t)count * bytes;
+        if (n > SIZE_MAX) die("[vk] quad index snapshot size overflow");
+        if (n > capacity) {
+            uint8_t *next = realloc(snapshot, (size_t)n);
+            if (!next) die("[vk] cannot allocate quad index snapshot");
+            snapshot = next; capacity = (size_t)n;
+        }
         vk_ubd_read((uintptr_t)src, n, snapshot);
         src = snapshot;
     }

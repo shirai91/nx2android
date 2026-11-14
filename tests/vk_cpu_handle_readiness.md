@@ -101,38 +101,45 @@ gameplay, new playable-game count or Switch 2 support is claimed.
 
 ## Indexed-quad follow-up
 
-Depends on #369 and #368. nxnative's pinned
+Building on descriptor and independent sampler-array readiness, nxnative's pinned
 `1f01e28c87da5233dfa14fb31fabf1535df33013` calls `cpu_ready` before its
 CPU index conversion (`nvn_vk.c:3686`); `cpu_access_ready` also materializes
 later known writes. This follow-up applies that existing contract to the
 target's direct indexed-quad CPU conversion.
 
-Preflight checks the complete declared index range and waits before any
-draw-specific descriptors or scratch allocations. Native GPU-index draws
-and indirect draws keep their existing path. After preflight, the adapter
-uses the target's existing uniform-shadow snapshot pattern
-(`vk_scratch` + `vk_ubd_read`) once for the input range. Conversion reads
-the snapshot using the donor's byte-copy index load, retaining the existing
-quad triangle pattern and supporting unaligned 8-, 16-, and 32-bit input.
+Preflight retains the draw path's first-byte pool eligibility: a CPU index
+span may cross registered pool chunks. It checks arithmetic overflow and waits
+for the complete declared range before any draw-specific descriptors or scratch
+allocations. Native GPU-index draws and indirect draws keep their existing path.
+After preflight, `vk_ubd_read` fills one replay-thread-owned CPU heap snapshot.
+Conversion reads that cached memory using the donor's byte-copy index load,
+retaining the existing triangle pattern and unaligned 8-, 16-, and 32-bit input.
+Only the expanded output indices use Vulkan scratch.
 
-The snapshot costs one transient input-sized scratch allocation/copy per
-indexed-quad draw; it avoids scanning GPU/deferred-write records for every
-expanded index. Physical-device performance is unmeasured.
+The heap snapshot grows to the largest input seen and is retained until process
+exit, costing that peak input size in CPU memory. Each conversion still copies
+the full input once; it avoids repeated reads from potentially uncached mapped
+Vulkan memory and GPU/deferred-write tracking scans per expanded index.
+Physical-device performance is unmeasured.
 
-The focused ASan/UBSan host test checks all index widths, unaligned reads,
-deferred bytes, full-span bounds/overflow, ignored non-quad/indirect paths,
-and unchanged generated nonindexed quads. Device fixtures reuse the existing
+The focused UBSan host test (also ASan with `NX2A_TEST_SANITIZE=1`) checks
+all index widths, unaligned/deferred bytes, cross-chunk first-byte eligibility,
+full-range readiness, arithmetic overflow, snapshot growth/reuse and one GPU
+scratch output allocation, ignored non-quad/indirect paths, and unchanged
+generated nonindexed quads. Device fixtures reuse the existing
 producer and independent color expectations. Six modes cover CPU memory,
 CPU deferred updates, current/prior GPU writes, and later full/partial known
 overwrites. Each runs three widths, two base-vertex arrangements, and enabled/
 disabled rendering, with two instances and a nonzero base instance recorded.
 
-The parent passes CPU memory/prior-GPU controls but fails the other four
+Historical emulator validation before this follow-up found that the parent
+passes CPU memory/prior-GPU controls but fails the other four
 modes with red pixels instead of green. The follow-up passes all 72 cases
 (1,152 pixels plus guards) in each rendering mode, alongside the original
 84 descriptor cases. Both DM_VK_RP=0 and 1 pass: 312 total cases, 4,992 pixels,
 plus guards and conditional-state checks. The normal native build compiles
-192 sources; the changed replay source is rebuilt after the final adapter.
+192 sources. These device cases were not rerun for the current follow-up;
+its fresh validation consists of host tests and NDK host/fixture builds.
 
 `NX2A_INDEX_ONLY=1` selects the new cases; `NX2A_INDEX_CASE=0..5` selects
 one producer mode. The same build/run commands above apply.
