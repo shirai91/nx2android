@@ -375,6 +375,8 @@ For live A/B testing, use a `DM_CTL` env update with `DM_VK_CPU_READY=0`, then r
 
 `test_sampler_array_elements.py` checks independent sampler offsets, the packed binding ABI, fixed sources, overflow and full-array readiness with the same UBSan capability gate and optional ASan setting. The manual readiness fixture includes a sampler-only GPU producer at element 7; physical-device checks remain separate. The first independent UBO sampler array with more than one effective element logs `independent UBO sampler array: N elements, cbuf R +O` once per process. Scalars and fixed sampler arrays do not consume that marker; it identifies path use, not correct rendering or a verified game scene.
 
+`test_indexed_quad_readiness.py` uses the same UBSan capability gate and optional ASan setting. It covers byte-aligned input of each index width, deferred bytes, index spans crossing a registered pool chunk, full-range readiness, cached heap snapshot reuse/growth and output-only Vulkan scratch allocation. The heap retains the largest input until process exit. These host checks do not qualify physical-GPU behavior or performance.
+
 ## Runtime GLSLC shader preparation
 
 Some NVN games compile shaders with their own GLSLC at startup (for example, Fire Emblem: Three Houses and Catherine: Full Body). The porter captures these outputs before the offline shader split. If the extraction already contains every complete `glslc_capture/*.glslc` output named by the profile, it reuses them without a device. Otherwise, connect an ARM64 Android device with USB debugging and configure `adb`, even when building without `--install`.
