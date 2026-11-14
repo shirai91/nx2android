@@ -15,4 +15,4 @@
 
   The translator is `dm/gfx/tools/dmsh_xlate_bin`, which matches `dmsh_chain.lock`; a fresh `dotnet publish` does not.
 - iOS builds are unsigned IPAs that the user sideloads and tests; diagnostics come back as the app's `Documents/log.txt`. Do not sign or install builds on the user's devices.
-- Commit only when asked, with `git -c user.name=seedds -c user.email=seedds@gmail.com commit`.
+- Commit only when asked, with a plain `git commit`: the git identity of the person you work for, never another person's name or email (this is nx2android, a separate fork of seedds/nxnative). Commit headers follow Conventional Commits (`.githooks/commit_msg.py`).
