@@ -596,6 +596,7 @@ def jump_offsets(insl, j, copy_first=False, far_base=False):
         if lo is None and far_base:   # nothing writes the base in the window
             tb = table_base(insl, k, rb, far=True)
             if tb is None: tb = copied_base(insl, k, rb)   # built further back and copied on its way (below)
+            if tb is None: tb = sole_base(insl, rb)   # built after the br in address order, on a loop's way in (sole_base)
             if tb is None or tb + 4 * n > len(IMG): return None
             t = [tb + struct.unpack_from('<i', IMG, tb + 4 * i)[0] for i in range(n)]
             fa, fb = insl[0].address, insl[-1].address + 4
@@ -672,6 +673,12 @@ def jump_adr_offsets(insl, j):
         ok = [tb for tb in table_cands(insl, tb_reg) if (t := targets(tb)) and all(fa <= x < fb and x % 4 == 0 for x in t)]
         return targets(ok[0]) if len(ok) == 1 else None
     return None
+def sole_base(insl, rb):
+    """Address rb holds anywhere in the function when its only writers are one adrp rb + add rb,rb,#lo pair: APE OUT (Unity 2018.2) main+0x85f4ac dispatches through x15 (and x13)
+    built at +0x85f4d0, after the br in address order, by the block a backward branch enters the dispatch loop from, so no walk back reaches it; None otherwise"""
+    w = [p for p in insl if any(p.reg_name(r) == rb for r in p.regs_access()[1])]
+    c = table_cands(insl, rb)
+    return c[0] if len(c) == 1 and len(w) == 2 and [p.mnemonic for p in w] == ['adrp', 'add'] else None
 def table_cands(insl, rb):
     """Every address an adrp rb + add rb,rb,#lo pair in the function builds, sorted"""
     cands = set()

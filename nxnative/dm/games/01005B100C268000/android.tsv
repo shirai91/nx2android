@@ -1,0 +1,6 @@
+# APE OUT (01005B100C268000), 1.0.4 (v262144): Unity 2018.2.21f1 IL2CPP, SDK 6.4.0. Boots to the title, the menus and the first level on a Retroid Pocket Nova
+# (Adreno 740), 2026-10-31, at 40 fps (adaptive), with no [RED] lines. Not played further.
+status	experimental
+tested	v262144 Retroid Pocket Nova RPN (Snapdragon 8 Gen 2, Adreno 740, Android 16)
+package	org.nx2a.t01005b100c268000
+orientation	landscape
