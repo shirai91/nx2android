@@ -210,6 +210,24 @@ class HostTest(unittest.TestCase):   # porter host's update(): its refusals, the
         f = self.files(); f['mods/build_src.sha256'] = ''
         self.refused(f, 'no mods/build_src.sha256')
 
+    def test_profile_header_keys(self):   # defines added after profile_h was recorded, off: the older hash is accepted
+        import hashlib
+        from unittest import mock
+        def sha(b): return hashlib.sha256(b).hexdigest()
+        cur = b'#define A 1\n#define DM_GAME_TEX_CPU_UNCACHED 0\n#define B 2\n#define DM_GAME_FPS_CEILING 0\n#define C 3\n'
+        no_fc = cur.replace(b'#define DM_GAME_FPS_CEILING 0\n', b'')
+        old = no_fc.replace(b'#define DM_GAME_TEX_CPU_UNCACHED 0\n', b'')
+        def check(header, h):
+            with mock.patch.object(self.host, 'profile_header', return_value=header): self.host.check_profile(PKG, dict(version='v393216', profile_h=h), self.BDSP)
+        for h in (sha(cur), sha(no_fc), sha(old)): check(cur, h)
+        check(no_fc, sha(no_fc))                                  # a header that has no FPS_CEILING line yet
+        live = cur.replace(b'FPS_CEILING 0', b'FPS_CEILING 30')   # fps_ceiling 30: a different behaviour, so the older port is refused
+        check(live, sha(live))
+        for h in (sha(old), sha(no_fc), '0' * 64):
+            with self.assertRaises(BuildError) as e: check(live, h)
+            self.assertIn('another profile', str(e.exception))
+        with self.assertRaises(BuildError): check(cur, sha(old.replace(b'#define B 2\n', b'#define B 3\n')))   # another layout value
+
     def test_update(self):
         for debuggable in (False, True):
             self.builds.clear()

@@ -91,6 +91,7 @@ def header(g):
     vers = ', '.join('{' + q(b['main']) + ', ' + q(b['display']) + '}' for b in g.builds().values() if 'main' in b)
     pi = g.get('present_interval', 'game')   # present interval: game = as the game sets it (as on the Switch), display = one frame per display tick
     if pi not in ('game', 'display'): sys.exit(f'{g.id}: present_interval must be game or display: {pi}')
+    # a new define that is off by default must be appended to ADDED_DEFINES in porter/host.py, or `porter host` refuses every port made before it
     fc = g.get('fps_ceiling', '0')   # Android: the adaptive frame rate never above 30 fps, for a game that presents at 60 and steps by the time that passed (android/gfx_vk_present.c dm_fps_ceiling): 0 / 30
     if fc not in ('0', '30'): sys.exit(f'{g.id}: fps_ceiling must be 0 or 30: {fc}')
     ft = g.get('fps_target', '0')   # frame rate cap of the rewriter's frame step (FRAME_STEP in the profile's patches.py: Tears of the Kingdom 1.4.3, Breath of the Wild 1.9.0) or of the engine's own frame limit (hle_fpslock.c): 0 = the game's own step, 30 / 60
