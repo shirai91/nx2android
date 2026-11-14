@@ -1818,7 +1818,7 @@ static int prepare_draw(int prim, int indexed) {
     for (uint32_t i = 0; i < k.nbind; i++) {
         uint32_t b = k.bind[i].binding; VkBuffer buf; VkDeviceSize off;
         if (b == 16) { buf = vk_zero_buffer(); off = 0; }
-        else if (!vk_buf_at(S.vbuf[b].address, S.vbuf[b].size ? S.vbuf[b].size : 1, &buf, &off)) { buf = vk_zero_buffer(); off = 0; VKRED_ONCE(51, "vertex buffer outside the memory pools"); }
+        else if (!vk_buf_at(S.vbuf[b].address, S.vbuf[b].size && nvn_sparse_address_pool(S.vbuf[b].address, 1) ? S.vbuf[b].size : 1, &buf, &off)) { buf = vk_zero_buffer(); off = 0; VKRED_ONCE(51, "vertex buffer outside the memory pools"); }
         else if (S.vbuf[b].size) { vkpool_t *vp = vk_pool_of(S.vbuf[b].address, 1); if (vp && S.vbuf[b].address + S.vbuf[b].size > vp->hi && vp->hi < vp->end) vk_cross(2, S.vbuf[b].address, S.vbuf[b].size, vp); }
         if (g_var_now == 5) { buf = vk_zero_buffer(); off = 0; }
         if (!(dbg_draw() & 2) && b < 17) { int fresh = bc_fresh(); if (fresh || g_bc.vb[b] != buf || g_bc.vo[b] != off) { vkCmdBindVertexBuffers(cb, b, 1, &buf, &off); g_bc.vb[b] = buf; g_bc.vo[b] = off; } }
@@ -2095,6 +2095,7 @@ static void draw_idx(const p_draw_idx *d) {
     uint32_t isz = d->itype == 0 ? 1 : d->itype == 1 ? 2 : 4;
     uint32_t index_count = d->count > 0 ? (uint32_t)d->count : 0;
     uint64_t index_bytes = d->ind || !index_count ? 1 : (uint64_t)index_count * isz;
+    uint64_t index_lookup = !d->ind && nvn_sparse_address_pool(d->ibuf, 1) ? index_bytes : 1;
     VkCommandBuffer cb = vk_cmd();
     int g_ok = draw_allowed(); if (g_ok == 2 || (g_tracing && g_x_tracepass >= 0)) trace_draw("indexed draw", d->prim, (uint32_t)d->count, (uint32_t)d->instances, d->itype);
     if (d->ind && g_tracing && g_x_tracepass >= 0) { uint32_t w[5]; vk_ubd_read(d->ind, 20, (uint8_t *)w);   // the arguments as the CPU sees them now (a GPU writer's last merged copy)
@@ -2110,7 +2111,7 @@ static void draw_idx(const p_draw_idx *d) {
     VkIndexType it = d->itype == 0 ? VK_INDEX_TYPE_UINT8_EXT : d->itype == 1 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32;
     VkBuffer ib; VkDeviceSize io;
     if (d->ind && nvn_sparse_address_pool(d->ibuf, 1)) { VKRED_ONCE(98, "indexed indirect draw with a sparse index buffer has no bounded index extent: skipped"); return; }
-    if (!vk_buf_at(d->ibuf, index_bytes, &ib, &io)) { VKRED_ONCE(56, "index buffer outside the memory pools"); return; }
+    if (!vk_buf_at(d->ibuf, index_lookup, &ib, &io)) { VKRED_ONCE(56, "index buffer outside the memory pools"); return; }
     if (!d->ind) { vkpool_t *ip = vk_pool_of(d->ibuf, 1); if (ip && d->ibuf + index_bytes > ip->hi && ip->hi < ip->end) vk_cross(3, d->ibuf, index_bytes, ip); }
     if (g_ubolog_key && S.sh[0] && S.sh[0]->key == g_ubolog_key && g_ubolog_n > 0) {   // DM_VK_UBO_LOG: the index data the draw reads (CPU view at replay)
         uint64_t h = 1469598103934665603ull; uint32_t mn = ~0u, mx = 0;
@@ -2301,7 +2302,8 @@ static void copy_b2t(const p_copy_b2t *c, int to_texture) {
         if (S.image_stride > 0) slice = (uint64_t)S.image_stride;
         else { if (rows > UINT64_MAX / pitch) { VKRED_ONCE(74, "BC buffer ↔ texture copy extent overflows: skipped"); return; } slice = pitch * rows; }
         if (!copy_span_bytes(tight, pitch, slice, rows, depth, &span) || span > UINT64_MAX - c->src) { VKRED_ONCE(74, "BC buffer ↔ texture copy extent overflows: skipped"); return; }
-        if (!nvn_sparse_address_pool(c->src, span) && !vk_buf_at(c->src, span, &b, &o)) { VKRED_ONCE(70, "buffer of a buffer ↔ texture copy outside the memory pools"); return; }
+        uint64_t lookup = nvn_sparse_address_pool(c->src, 1) ? span : 1;
+        if (!nvn_sparse_address_pool(c->src, lookup) && !vk_buf_at(c->src, lookup, &b, &o)) { VKRED_ONCE(70, "buffer of a buffer ↔ texture copy outside the memory pools"); return; }
     } else if (!vk_buf_at(c->src, span, &b, &o)) { VKRED_ONCE(70, "buffer of a buffer ↔ texture copy outside the memory pools"); return; }
     if (decode) {   // BC formats the device lacks: stage through sparse-aware CPU reads before decoding
         if (h > UINT64_MAX / w) { VKRED_ONCE(74, "BC buffer ↔ texture copy is too large to decode: skipped"); return; }

@@ -23,13 +23,16 @@ def function_source(source, name):
 class SparseBufferRanges(unittest.TestCase):
     def test_callers_validate_the_extent_the_gpu_can_access(self):
         dm = Path(__file__).resolve().parents[1] / 'nxnative/dm/android'
-        core = (dm / 'gfx_vk_core.c').read_text()
-        exec_src = (dm / 'gfx_vk_exec.c').read_text()
+        core = (dm / 'gfx_vk_core.c').read_text(encoding='utf-8')
+        exec_src = (dm / 'gfx_vk_exec.c').read_text(encoding='utf-8')
 
-        self.assertIn('S.vbuf[b].size ? S.vbuf[b].size : 1', exec_src)
-        self.assertIn('vk_buf_at(d->ibuf, index_bytes, &ib, &io)', exec_src)
+        self.assertIn('S.vbuf[b].size && nvn_sparse_address_pool(S.vbuf[b].address, 1) ? S.vbuf[b].size : 1', exec_src)
+        self.assertIn('nvn_sparse_address_pool(d->ibuf, 1) ? index_bytes : 1', exec_src)
+        self.assertIn('vk_buf_at(d->ibuf, index_lookup, &ib, &io)', exec_src)
         self.assertIn('copy_buffer_span(&r, f, depth, &span)', exec_src)
-        self.assertIn('vk_buf_at(c->src, span, &b, &o)', exec_src)
+        self.assertIn('nvn_sparse_address_pool(c->src, 1) ? span : 1', exec_src)
+        self.assertIn('vk_buf_at(c->src, lookup, &b, &o)', exec_src)
+        self.assertIn('else if (!vk_buf_at(c->src, span, &b, &o))', exec_src)
         self.assertIn('vk_ubd_read(d->ibuf, raw_n, raw)', exec_src)
         self.assertIn('quad_indices(nq * 4, raw,', exec_src)
         self.assertIn('vk_ubd_read(c->src, span, raw)', exec_src)
@@ -39,7 +42,7 @@ class SparseBufferRanges(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which('cc'), 'a host C compiler is required')
     def test_transfer_span_includes_row_and_image_strides(self):
-        source = (Path(__file__).resolve().parents[1] / 'nxnative/dm/android/gfx_vk_exec.c').read_text()
+        source = (Path(__file__).resolve().parents[1] / 'nxnative/dm/android/gfx_vk_exec.c').read_text(encoding='utf-8')
         helpers = '\n'.join(function_source(source, name) for name in ('copy_span_bytes', 'copy_buffer_span'))
         harness = r'''
 #include <assert.h>
@@ -75,7 +78,7 @@ int main(void) {
 '''.replace('HELPERS', helpers)
         with tempfile.TemporaryDirectory(prefix='nx2a-sparse-buffer-ranges-') as tmp:
             c, exe = Path(tmp) / 'check.c', Path(tmp) / 'check'
-            c.write_text(harness)
+            c.write_text(harness, encoding='utf-8')
             subprocess.run(['cc', '-std=c11', '-Wall', '-Wextra', '-Werror', str(c), '-o', str(exe)], check=True)
             subprocess.run([str(exe)], check=True, timeout=15)
 
