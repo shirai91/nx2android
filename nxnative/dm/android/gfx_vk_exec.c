@@ -150,7 +150,11 @@ void vk_watch(const vkimg_t *im, const char *what) {
     g_watch_n--; VKLOG("watch: present %llu pass %d (%ux%u): %s %ux%u fmt %d pool %#llx+%#llx (image %p, nvn flags %#x, %d overlapping)", (unsigned long long)g_tex_frame, g_sub_pass - 1, S.pass_w, S.pass_h, what, im->w, im->h, im->fmt,
                        (unsigned long long)im->pool, (unsigned long long)im->off, (const void *)im, im->flags, im->novl);
 }
-static void x_read(void) { const char *c = getenv("DM_VK_CB_DRAWS"); g_x_cbdraws = c ? atoi(c) : 128; g_sub_pass = 0;
+static void cpu_ready_config(void) {
+    const char *e = getenv("DM_VK_CPU_READY");
+    g_vk_cpu_ready = !(e && !atoi(e));   // live A/B: =0 leaves CPU reads unsynchronized
+}
+static void x_read(void) { cpu_ready_config(); const char *c = getenv("DM_VK_CB_DRAWS"); g_x_cbdraws = c ? atoi(c) : 128; g_sub_pass = 0;
     const char *fy = getenv("DM_VK_FLIPY"); g_flipy = !(fy && !atoi(fy));   // on unless DM_VK_FLIPY=0
     if (g_x_listpasses) { g_x_listpasses = 0; setenv("DM_VK_TRACE_PASS", "-1", 1); }
     const char *tp = getenv("DM_VK_TRACE_PASS"); g_x_tracepass = tp ? atoi(tp) : -1;
@@ -202,14 +206,17 @@ static void render_cond(const p_render_cond *rc) {
     g_rc_skip = known && (rc->mode ? x == y : x != y);
 }
 
-void vk_exec_reset(void) {   // a new submission: NVN state does not carry over between command buffers, the replay starts from the defaults
+static void exec_begin(int continuing) {   // internal segments retain the current logical NVN and conditional state
     static int inited; if (!inited) { inited = 1; state_reset(); crash_add_note_hook(build_dump); prewarm_start(); compute_warm_start(); }
-    g_rc_npend = 0; g_rc_skip = 0;
+    if (!continuing) { g_rc_npend = 0; g_rc_skip = 0; }
     { void vk_tex_release_drain(void); vk_tex_release_drain(); }   // Finalized textures' CPU-written marks that no queued job needs any more (gfx_vk_tex.c)
     S.pass_open = 0; S.bound_pipe = VK_NULL_HANDLE; g_cb_draws = 0; g_ord_parts = 0; g_psplit_now = 0; g_set_epoch++; x_read();
     if (g_prof_on) { extern uint64_t g_pkg_ns, g_pkg_n; memset(g_prof_ns, 0, sizeof g_prof_ns); g_prof_t0 = tick(); g_prof_pkg0 = g_pkg_ns; g_prof_npkg0 = g_pkg_n; g_prof_pipes0 = g_vkst.pipes_built; }
     { extern volatile int g_vk_samp_log; if (g_vk_samp_log > 0) VKLOG("submission begins (present %llu, thread %d)", (unsigned long long)g_tex_frame, (int)gettid()); }
 }
+
+void vk_exec_reset(void) { exec_begin(0); }
+void vk_exec_resume(void) { exec_begin(1); }
 
 // ---------------- render passes ----------------
 // A pass is begun lazily: begin_pass() only sets it up (pass_open 2), and the first command that must run inside it begins it (pass_commit, pass_open 1).
@@ -1137,6 +1144,47 @@ static uint64_t c2_handle(int st, int off) {   // the driver's handle table c2, 
     if (off >= 0x568 && off < 0x968) return S.samp[st][(off - 0x568) / 8];
     return 0;
 }
+// nxnative shader_cpu_ready/uniform_ready: finish CPU-decoded descriptor
+// dependencies before this command can allocate scratch or descriptor sets.
+static void cpu_ready(uint64_t addr, uint64_t size) {
+    if (!g_vk_cpu_ready || !size || addr > UINT64_MAX - size) return;
+    for (int i = 0; S.pass_open && g_lin_back && (g_pass_draws || P_cleared) && i < S.ncol && i < 8; i++) {
+        const tex_t *t = S.rt_has_col[i] ? &S.rt_col[i] : NULL;
+        if (!t || !t->mem || !(t->d.flags & NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET)) continue;
+        uint64_t base = (uintptr_t)t->mem;
+        if (addr < base ? base - addr < size : addr - base < t->L.size) { vk_end_pass(); break; }
+    }
+    vk_cpu_ready(addr, size);
+}
+static void uniform_ready(int stage, int reg, int64_t off, uint32_t count) {
+    if (stage < 0 || stage >= 6 || reg < 0 || reg >= 16 || off < 0 || !count) return;
+    const p_bind_buf *u = &S.ubo[stage][reg];
+    uint64_t extent = u->size ? u->size : 4;   // target ubo_word treats size zero as one word
+    if (!u->addr || (uint64_t)off >= extent || u->addr > UINT64_MAX - (uint64_t)off) return;
+    uint64_t size = 8ull * (count - 1) + 4;
+    if (size > extent - (uint64_t)off) size = extent - (uint64_t)off;
+    cpu_ready(u->addr + off, size);
+}
+static void shader_cpu_ready(const vkshader_t *s, int stage) {
+    if (!s) return;
+    for (int i = 0; i < s->nbind; i++) {
+        const dmsv_bind *b = &s->b[i];
+        if (b->kind == RK_TEX_UBO || b->kind == RK_TBUF_UBO || b->kind == RK_IMG_UBO)
+            uniform_ready(stage, b->reg, b->off, b->count ? b->count : b->kind == RK_TEX_UBO ? 32 : 1);
+        if (b->kind == RK_SBUF_UBO) {
+            if (stage < 0 || stage >= 6 || b->reg < 0 || b->reg >= 16 || b->off < 0) continue;
+            const p_bind_buf *u = &S.ubo[stage][b->reg];
+            uint64_t extent = u->size ? u->size : 4;
+            if (u->addr && extent >= 4 && (uint64_t)b->off <= extent - 4 && u->addr <= UINT64_MAX - (uint64_t)b->off - 8)
+                cpu_ready(u->addr + b->off, extent - (uint64_t)b->off >= 8 ? 8 : 4);
+        }
+        if (b->samp == RS_UBO) {
+            uint32_t count = b->kind == RK_TEX || b->kind == RK_TEX_UBO || b->kind == RK_TEX_C2A ? (b->count ? b->count : 32) : 1;
+            uniform_ready(stage, b->samp_arg & 0xff, b->samp_arg >> 8, count);
+        }
+    }
+}
+static void graphics_cpu_ready(void) { for (int st = 0; st < 3; st++) shader_cpu_ready(S.sh[st], st); }
 static uint32_t ubo_word(int st, int reg, int off) {
     const p_bind_buf *u = reg >= 0 && reg < 16 ? &S.ubo[st][reg] : NULL; uint32_t v = 0;
     if (u && u->addr && off >= 0 && (uint64_t)off + 4 <= (u->size ? u->size : 4) && vk_pool_of(u->addr + off, 4)) vk_ubd_read(u->addr + off, 4, (uint8_t *)&v);   // with the deferred updates
@@ -1354,6 +1402,17 @@ static int set_memo_get(int st, vkshader_t *s, uint32_t *dofs) {
     memcpy(dofs, m->dofs, sizeof *dofs * (size_t)s->ndyn); g_num_um = m->um; g_num_im = m->im;
     return 1;
 }
+// nxnative a603c9954 sampled_handle: independent UBO sampler element k
+// comes from soff + 8*k. Fixed slots/IDs and same-word handles stay unchanged.
+// The target stores source register and offset together in signed samp_arg.
+static dmsv_bind sampler_element(const dmsv_bind *b, uint32_t element) {
+    dmsv_bind out = *b;
+    if (b->samp == RS_UBO) {
+        int64_t packed = (int64_t)b->samp_arg + 8ll * element * 256;
+        out.samp_arg = b->samp_arg < 0 || packed > INT32_MAX ? -1 : (int32_t)packed;
+    }
+    return out;
+}
 // dofs (at least s->ndyn entries): the dynamic offsets of the set's dynamic uniform buffers, in binding order as vkCmdBindDescriptorSets takes them
 // indirect_c0 (compute only): a fresh segment for this dispatch's GPU-written counts; never put mutable bytes in drv_shared's content cache.
 static VkDescriptorSet stage_set(int st, vkshader_t *s, uint32_t *dofs, VkDescriptorBufferInfo *indirect_c0) {
@@ -1415,7 +1474,8 @@ static VkDescriptorSet stage_set(int st, vkshader_t *s, uint32_t *dofs, VkDescri
                 uint64_t h = b->kind == RK_TEX ? vk_tex_slot_handle(S.tex[st], S.img[st], (unsigned)b->reg) :
                              b->kind == RK_TEX_UBO ? mem_handle(ubo_word(st, b->reg, b->off + 8 * k)) : (b->off >= 0 ? c2_handle(st, b->off + 8 * k) : 0);
                 g_tex_sseq = b->kind == RK_TEX && b->reg >= 0 && b->reg < 256 ? S.tex_sseq[st][b->reg] : 0;
-                int num = tex_desc_for(st, b, h, &ii[nii + k], 0);
+                dmsv_bind element = sampler_element(b, (uint32_t)k);
+                int num = tex_desc_for(st, &element, h, &ii[nii + k], 0);
                 if (num && i < 64) { if (num == 1) g_num_um |= 1ull << i; else g_num_im |= 1ull << i; }
             }
             wr->pImageInfo = &ii[nii]; nii += (uint32_t)cnt; wr->descriptorCount = (uint32_t)cnt; wr->descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; nw++;
@@ -1856,6 +1916,20 @@ static int tfc_ready(void) {
     VKLOG("transform feedback from a geometry shader: counter buffer of %d slots", TFC); return 1;
 }
 static vkshader_t *xfb_shader(void) { return S.sh[2] && S.sh[2]->xfb ? S.sh[2] : S.sh[0]; }   // the last stage before rasterization captures
+// Preserve the donor's known-write / GPU-producer order. Unlike copies and
+// dispatches, a draw can otherwise leave an older UpdateUniformBuffer deferred
+// until after its transform-feedback or linear-target writeback. Land those
+// overlapping bytes before the draw, while no per-draw allocation exists.
+static void graphics_updates_ready(void) {
+    if (g_lin_back) for (int i = 0; i < S.rt_n && i < 8; i++) {
+        const tex_t *t = S.rt_has_col[i] ? &S.rt_col[i] : NULL;
+        if (t && t->mem && (t->d.flags & NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET) &&
+                vk_ubd_overlaps((uintptr_t)t->mem, t->L.size)) { vk_end_pass_land(); return; }
+    }
+    const vkshader_t *s = xfb_shader();
+    if (g_tf_on && V.has_xfb && g_xfb_on && s && s->xfb) for (int i = 0; i < 4; i++)
+        if (s->xfb_stride[i] && g_tf[i].addr && vk_ubd_overlaps(g_tf[i].addr, g_tf[i].size)) { vk_end_pass_land(); return; }
+}
 static int xfb_begin(VkCommandBuffer cb) {   // inside the pass, after the pipeline is bound; 1 when a capture began, 2 when it counts on the GPU (a geometry shader)
     vkshader_t *vs = xfb_shader();
     if (!g_tf_on || !V.has_xfb || !vs || !vs->xfb || !g_xfb_on) return 0;
@@ -1912,6 +1986,7 @@ static void tf_state(const p_tf_state *t) {
         int i = tf_ctl_slot(t->ctl, 1); g_tf_ctl[i].ctl = t->ctl; g_tf_ctl[i].verts = g_tf_verts;
         if (g_tf_ctl[i].gs && g_tf_ctl[i].dirty) {   // a counted capture: its bytes into the game's control buffer too (+0, one u32 a feedback buffer), for anything that reads it there
             VkBuffer b; VkDeviceSize o; g_tf_ctl[i].dirty = 0;
+            if (vk_ubd_overlaps(t->ctl, 16)) vk_end_pass_land();
             if (vk_buf_at(t->ctl, 16, &b, &o)) { VkCommandBuffer cb = vk_cmd(); VkBufferCopy c = {(VkDeviceSize)i * 16, o, 16};
                 VkMemoryBarrier mb = {VK_STRUCTURE_TYPE_MEMORY_BARRIER, NULL, VK_ACCESS_MEMORY_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT};
                 vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &mb, 0, NULL, 0, NULL); vkCmdCopyBuffer(cb, g_tfc_buf, b, 1, &c);
@@ -2015,6 +2090,8 @@ static int mdi_group(uint64_t cnt, uint64_t ind, int i, int max, int stride, int
     return 0;
 }
 static void draw(const p_draw *d) {
+    graphics_updates_ready();
+    graphics_cpu_ready();
     VkBuffer mcb = VK_NULL_HANDLE; VkDeviceSize mco = 0; if (mdi_group(d->mdi_cnt, d->ind, d->mdi_i, d->mdi_max, d->mdi_stride, 16, &mcb, &mco)) return;
     int prim = d->prim;
     // before prepare_draw, whose driver segment carries it (c0 + 0x644): set after it, each draw's segment had the draw before's. An indirect draw's is in GPU memory: 0
@@ -2060,6 +2137,8 @@ static void draw(const p_draw *d) {
     if (!(dbg_draw() & 1) && g_ok) { int xf = xfb_begin(cb); vkCmdDraw(cb, (uint32_t)d->count, inst, (uint32_t)d->first, (uint32_t)d->base_instance); if (xf) xfb_end(cb, prim, (uint32_t)d->count, inst, xf); }
 }
 static void draw_idx(const p_draw_idx *d) {
+    graphics_updates_ready();
+    graphics_cpu_ready();
     VkBuffer mcb = VK_NULL_HANDLE; VkDeviceSize mco = 0; if (mdi_group(d->mdi_cnt, d->ind, d->mdi_i, d->mdi_max, d->mdi_stride, 20, &mcb, &mco)) return;
     int prim = d->prim;
     g_draw_binst = d->ind ? 0 : (uint32_t)d->base_instance;   // before prepare_draw (see draw)
@@ -2169,6 +2248,7 @@ static int dispatch_indirect_spans(uint64_t addr, VkBuffer src[3], VkBufferCopy 
 static void dispatch(const p_dispatch *d) {
     vkshader_t *cs = S.sh[5];
     if (!cs) { VKRED_ONCE(60, "dispatch with no compute shader in the bundle: skipped"); return; }
+    shader_cpu_ready(cs, 5);
     VkBuffer src[3]; VkBufferCopy spans[3]; int nspans = 0;
     if (d->ind && !(nspans = dispatch_indirect_spans(d->ind, src, spans))) { VKRED_ONCE(61, "indirect dispatch arguments are not a valid aligned memory pool range: %#llx", (unsigned long long)d->ind); return; }
     g_vkst.dispatches++;
