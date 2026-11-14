@@ -1,0 +1,19 @@
+# Xenoblade Chronicles: Definitive Edition on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Monolith Soft's engine on SDK 9.3.1, update 2.0.0 (v262144); 15,328 shaders in the bundle, split from the loose Monolith archives (game.tsv shader_loose_monolith).
+# Tested 2026-11-14 on the Odin 2 (Snapdragon 8 Gen 2, Adreno 740, Turnip from the profile's vulkan.ad07xx.so), driven with DM_CTL: boot, the title, a new game, the
+# Bionis / Mechonis opening, Colony 9's battle area and the first fights with Mechon M72 (arts, effects, damage numbers, audio), turning the camera in battle.
+# 30 fps native; no 60 fps option (the FPSLocker config needs code the host has no buffer for, and the game speed at 60 was not checked).
+# Speed in the first fight (about 2,000 draws and 490 render passes a frame at 1280x720): the replay on its own thread (DM_NVN_ASYNC) took frame p95 from 40.7 to
+# 33.5-36 ms; pinned to the prime core (DM_PIN_REPLAY) its replay went from 19.7-21.1 to 15.4-17.0 ms a frame at the same draws (GPU 25-27 ms). The task-wait cut
+# in patches.py took the main thread at the title from 83% to 39% of a core, with the New Game load unchanged (13.8-14.0 s with and without it). Most passes end
+# at real dependencies (render target changes, mip chains, shader-memory barriers 0x21), so order_keep keeps 1-2 a frame and stays off. The GPU was at its top
+# clock (680 MHz, 86-92% busy) in fights; the GPU load margin in patches.py lets the game's own dynamic resolution draw heavy scenes at 896x504 (UI at 1280x720):
+# GPU at 475-615 MHz, 71-80% busy, 30 fps held; the title stays 1280x720. The dithered dark streaks near the camera in fights look the same with and without
+# DM_NVN_ASYNC. 30 minutes in the battle area (walking, the camera, fights): one process, frame p95 33.5-34.1 ms, memory flat at 1.2 GB, no audio underruns.
+# Open: one crash in about 35 boots, at frame 2 (nn::os::FlushDataCache from main+0x619e78 with a size of 0x7d7c7d7e, while resource_creater started); 0 in a 10-boot loop
+status	playable
+tested	v262144 AYN Odin 2 (Snapdragon 8 Gen 2, Adreno 740, Android 13); Turnip (vulkan.ad07xx.so)
+package	org.nx2a.xenobladechroniclesde
+orientation	landscape
+env	DM_NVN_ASYNC=1
+env	DM_PIN_REPLAY=prime

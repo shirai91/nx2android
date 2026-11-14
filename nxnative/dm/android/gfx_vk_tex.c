@@ -9,6 +9,7 @@
 #include "../gfx/tex/nvn_deswizzle.h"
 #include "nvn_hmap.h"
 #include <string.h>
+#include <math.h>
 #include "../gfx/tex/nvn_bc.h"
 
 int nvn_dirty_since_span(const void *span, const void *addr, size_t len, uint64_t stamp);
@@ -349,7 +350,8 @@ extern uint64_t g_tex_frame;   // presents so far, for the packaged textures' la
 // last EVICT_KEEP presents go (their memory now holds another texture; one drawn again is made and filled again). Called with g_img_mu held
 enum { EVICT_KEEP = 60 };
 static uint64_t g_img_n, g_img_bytes, g_img_evicted;   // live images and their bytes, images evicted so far (vk_tex_sweep's line)
-static void img_drop(vkimg_t *im) { vk_lrz_forget(im); if (im->lin_mem) nvn_dirty_release(im->lin_mem, im->lin_len); if (im->packaged && !im->pkg_released && im->pkg_mem) nvn_dirty_release(im->pkg_mem, im->pkg_len); g_img_n--; g_img_bytes -= im->size > 0 ? (uint64_t)im->size : 0; alias_unlink(im); vk_tex_view_drop_all(im); if (im->sub) vk_defer_free_image_sub(im->img, im->sub); else vk_defer_free_image(im->img, im->mem); free(im); }
+static void img_drop(vkimg_t *im) { if (im->bc_draw) { vkimg_t *d = im->bc_draw; vk_lrz_forget(d); vk_tex_view_drop_all(d); if (d->sub) vk_defer_free_image_sub(d->img, d->sub); else vk_defer_free_image(d->img, d->mem); free(d); }
+    vk_lrz_forget(im); if (im->lin_mem) nvn_dirty_release(im->lin_mem, im->lin_len); if (im->packaged && !im->pkg_released && im->pkg_mem) nvn_dirty_release(im->pkg_mem, im->pkg_len); g_img_n--; g_img_bytes -= im->size > 0 ? (uint64_t)im->size : 0; alias_unlink(im); vk_tex_view_drop_all(im); if (im->sub) vk_defer_free_image_sub(im->img, im->sub); else vk_defer_free_image(im->img, im->mem); free(im); }
 static void evict_overlaps(uint64_t pool, int64_t off, int64_t size) {
     akey ks[64]; int n = 0;
     for (uint32_t i = 0; i < g_by_key.cap && n < 64; i++) {
@@ -514,7 +516,10 @@ static int cpu_content_tex(const tex_t *t, const vkfmt_t *f) {
     static int on = -1; if (on < 0) { const char *e = getenv("DM_NVN_STORAGE_FIRST_USE"); on = !e || atoi(e) != 0; }
     if (!on || !t->pool || t->has_layout || !(f->compressed || t->d.target == 2) || t->d.samples > 1) return 0;
     if (t->pool->flags & NVN_MEMORY_POOL_FLAGS_VIRTUAL) return 0;
-    if (t->d.flags & (NVN_TEXTURE_FLAGS_COMPRESSIBLE | NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET | NVN_TEXTURE_FLAGS_SPARSE)) return 0;
+    // COMPRESSIBLE leaves out what the GPU may render into, which a block-compressed format never is: there the flag says nothing about who wrote the storage. With the
+    // profile's tex_cpu_uncached it does not leave such a texture out: Cardfight!! Vanguard Dear Days 2 sets the flag on every texture and copies its BC7 font arrays
+    // (1024x1024, 4 to 18 layers) into CPU-uncached pools with no flush; left out, they were images of zeros and no text was drawn anywhere
+    if (t->d.flags & ((DM_GAME_TEX_CPU_UNCACHED && f->compressed ? 0 : NVN_TEXTURE_FLAGS_COMPRESSIBLE) | NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET | NVN_TEXTURE_FLAGS_SPARSE)) return 0;
     // IMAGE (a render target or storage image) does not exclude a compressed texture: BC and ASTC are neither, so its bytes at first use are the CPU's.
     if (!f->compressed && (t->d.flags & NVN_TEXTURE_FLAGS_IMAGE)) return 0;
     if (!mem_any(t->mem, t->L.size)) return 0;
@@ -598,6 +603,19 @@ __thread VkFormat vk_view_fmt; __thread uint32_t vk_view_layers;
 VkImageView vk_tex_view(const tex_t *t, const view_t *vw, int dim, int arrayed, int as_attachment, vkimg_t **img_out) {
     return vk_tex_view_as(t, vw, dim, arrayed, as_attachment, img_out, 0);
 }
+// Whether a block-compressed image drawn into through a view of format vf (one texel a block) takes a stand-in (vk_tex_view_as, DM_VK_BC_DRAW = mode), and the
+// stand-in's size in blocks. Only where every level is whole in blocks of the stand-in's own chain, and its levels fit that chain: a 32x32x16 BC4 image of 6 levels
+// is an 8x8x16 stand-in of 5 at most (Vulkan's mipLevels limit, max(width, height, depth)), so it keeps the direct path
+static int bc_standin_ok(const vkimg_t *im, const vkfmt_t *cf, const vkfmt_t *vf, int mode, uint32_t *bw_out, uint32_t *bh_out) {
+    if (!mode || !(mode > 1 || im->vtype == VK_IMAGE_VIEW_TYPE_3D) || !cf || !vf || !cf->compressed || cf->dec || vf->compressed || !cf->bw || !cf->bh || cf->bpb != vf->bpb || im->samples > 1) return 0;
+    uint32_t bw = (im->w + cf->bw - 1) / cf->bw, bh = (im->h + cf->bh - 1) / cf->bh;
+    for (uint32_t l = 0; l < im->levels; l++) { uint32_t w = im->w >> l ? im->w >> l : 1, h = im->h >> l ? im->h >> l : 1;
+        if ((w + cf->bw - 1) / cf->bw != (bw >> l ? bw >> l : 1) || (h + cf->bh - 1) / cf->bh != (bh >> l ? bh >> l : 1)) return 0; }
+    uint32_t m = bw > bh ? bw : bh, full = 1; if (im->vtype == VK_IMAGE_VIEW_TYPE_3D && im->d > m) m = im->d;
+    while (m >> full) full++;
+    if (im->levels > full) return 0;
+    *bw_out = bw; *bh_out = bh; return 1;
+}
 VkImageView vk_tex_view_as(const tex_t *t, const view_t *vw, int dim, int arrayed, int as_attachment, vkimg_t **img_out, VkFormat vfmt) {
     vkimg_t *im = vk_tex(t); if (img_out) *img_out = im;
     if (!im) return VK_NULL_HANDLE;
@@ -612,6 +630,25 @@ VkImageView vk_tex_view_as(const tex_t *t, const view_t *vw, int dim, int arraye
     uint32_t nlay = as_attachment && im->vtype == VK_IMAGE_VIEW_TYPE_3D ? (im->d >> lv0 ? im->d >> lv0 : 1) : im->layers;
     uint32_t ly0 = vw && vw->set_layers ? vw->min_layer : 0, nly = vw && vw->set_layers ? vw->nlayers : nlay - ly0;
     if (ly0 >= nlay) ly0 = nlay - 1; if (!nly || ly0 + nly > nlay) nly = nlay - ly0;
+    // A block-compressed image drawn into through an uncompressed view of its block size (the game compresses on the GPU: one texel a block). Breath of the Wild
+    // makes its 32x32x32 BC4 noise this way, each depth slice of each level through an RGBA16UI view; on Adreno 830 with Turnip 26.2.3 the image read back as zeros
+    // in every slice and level afterwards, and the shaders that dissolve Link in a teleport by that noise discarded every pixel at once. With the stand-in it
+    // holds noise (18,542 of its 18,744 bytes not zero) and he dissolves and comes back gradually. So such a pass draws into a stand-in in the view's format, the
+    // image's size in blocks (bc_standin_ok): gfx_vk_exec.c bc_fill copies the level and layers it draws from the image into it before the pass, and bc_draw_back
+    // copies them back as blocks after it, each through a buffer. DM_VK_BC_DRAW (start-up): 0 (default) draws into the image itself as before, 1 stands in for
+    // 3D images, 2 for every block-compressed image. The same encoder is in other games (Super Mario 3D World + Bowser's Fury, Animal Crossing: New Horizons,
+    // Captain Toad), so a profile turns it on where it was seen to help (Breath of the Wild's android.tsv); a player can try it on another with an env.txt line
+    { static int mode = -1; if (mode < 0) { const char *e = getenv("DM_VK_BC_DRAW"); mode = e ? atoi(e) : 0; }
+      const vkfmt_t *cf = vk_fmt(im->nvn_format); uint32_t bw = 0, bh = 0;
+      if (as_attachment && vw && vw->set_format && bc_standin_ok(im, cf, f, mode, &bw, &bh)) {
+          if (!im->bc_draw && !im->bc_tried) {
+              im->bc_tried = 1;
+              tex_t ct = *t; ct.d.format = vw->format; ct.d.width = (int)bw; ct.d.height = (int)bh;
+              vkimg_t *d = img_new(&ct, f);
+              if (d) { d->bc_of = im; im->bc_draw = d; }
+              static int n; if (n++ < 8) VKLOG("block-compressed image %ux%ux%u, %u levels (nvn format %#x), drawn into through views of format %#x: %s", im->w, im->h, im->d, im->levels, im->nvn_format, vw->format,
+                                               d ? "its passes draw into a stand-in in blocks, filled from it before each and copied into it after (DM_VK_BC_DRAW)" : "the stand-in could not be made: drawn into itself"); }
+          if (im->bc_draw) { im = im->bc_draw; im->bc_lv = lv0; im->bc_ly = ly0; im->bc_nly = nly; im->gpu_w = 1; if (img_out) *img_out = im; } } }
     int target = vw && vw->set_target ? vw->target : im->target;
     VkImageViewType type = vtype_of(target);
     // what the shader declares wins over the object's target (a 2D render target sampled as an array, a cube face read as 2D)
@@ -731,10 +768,20 @@ static VkSampler make_sampler(const samp_par *p) {
     ci.minFilter = p->minf == 1 || p->minf == 3 || p->minf == 5 ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
     ci.mipmapMode = p->minf == 4 || p->minf == 5 ? VK_SAMPLER_MIPMAP_MODE_LINEAR : VK_SAMPLER_MIPMAP_MODE_NEAREST;
     ci.addressModeU = wrap(p->ws); ci.addressModeV = wrap(p->wt); ci.addressModeW = wrap(p->wr);
-    ci.mipLodBias = p->lod_bias;
-    ci.anisotropyEnable = p->aniso > 1.0f; ci.maxAnisotropy = p->aniso > V.max_aniso ? V.max_aniso : p->aniso;
+    // Vulkan requires |mipLodBias| <= maxSamplerLodBias, maxLod >= minLod,
+    // and the samplerAnisotropy feature for anisotropy (gated by V.max_aniso).
+    // NVN's bias range is -16..15.99; no mipmap filter: level 0 only (GL's rule).
+    float bias_limit = V.props.limits.maxSamplerLodBias;
+    ci.mipLodBias = fminf(fminf(15.99f, bias_limit), fmaxf(fmaxf(-16, -bias_limit), p->lod_bias));
+    ci.maxAnisotropy = fminf(V.max_aniso, fmaxf(1, floorf(p->aniso)));
+    ci.anisotropyEnable = ci.maxAnisotropy > 1;
     ci.compareEnable = p->cmp_mode == 1; ci.compareOp = cmp_op(p->cmp_func);
-    ci.minLod = p->lod_min; ci.maxLod = p->minf <= 1 ? 0.25f : p->lod_max;   // no mipmap filter: level 0 only (GL's rule)
+    ci.minLod = p->minf >= 2 ? fmaxf(0, p->lod_min) : 0;
+    ci.maxLod = p->minf >= 2 ? fmaxf(ci.minLod, p->lod_max) : 0.25f;
+    // DM_VK_MIP_MAX=<level> (A/B): cap every sampler's chosen mip at this level (0 = always level 0). A ground plane seen at a shallow angle picks a very high mip;
+    // if a material reads flat while its neighbours are detailed, this says whether the mip choice or the texture/UVs is at fault
+    { static int mm = -2; if (mm < -1) { const char *e = getenv("DM_VK_MIP_MAX"); mm = e && *e ? atoi(e) : -1; }   // -2: not read, -1: unset
+      if (mm >= 0) { if (ci.maxLod > (float)mm) ci.maxLod = (float)mm; if (ci.minLod > ci.maxLod) ci.minLod = ci.maxLod; if (ci.mipLodBias < 0) ci.mipLodBias = 0; } }   // (maxLod < minLod is invalid Vulkan usage)
     int border = ci.addressModeU == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER || ci.addressModeV == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER || ci.addressModeW == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
     ci.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
     if (border) {
@@ -746,13 +793,20 @@ static VkSampler make_sampler(const samp_par *p) {
             cb.pNext = (void *)ci.pNext; ci.pNext = &cb;
         }
     }
-    VkSampler s; if (vkCreateSampler(V.dev, &ci, NULL, &s)) return VK_NULL_HANDLE;
+    VkSampler s; VkResult sr = vkCreateSampler(V.dev, &ci, NULL, &s);
+    if (sr) {   // silent before: a sampler the driver refuses made the material that uses it sample with whatever the default binding gives (a flat colour)
+        VKRED_ONCE(90, "vkCreateSampler failed (%d): filters %d/%d, mip %d, wrap %d/%d/%d, border %d, custom border %d, aniso %.1f (max %.1f), compare %d, lod %g..%g bias %g",
+                   sr, ci.magFilter, ci.minFilter, ci.mipmapMode, ci.addressModeU, ci.addressModeV, ci.addressModeW, ci.borderColor, ci.pNext == &cb, p->aniso, V.max_aniso, ci.compareOp, ci.minLod, ci.maxLod, ci.mipLodBias);
+        return VK_NULL_HANDLE; }
     return s;
 }
 volatile int g_vk_samp_log;   // DM_VK_SAMP_LOG=<n> (live, gfx_vk_exec.c x_read): the next n sampler registrations, in time order with the replay's lines
+volatile int g_vk_samp_log_boot;   // the start-up value mtl_reg_samp took below, which x_read's first read must not arm a second time
 void mtl_reg_samp(int sid, const samp_par *sp) {
     if (sid < 0) return;
-    if (g_vk_samp_log > 0) { extern uint64_t g_tex_frame; g_vk_samp_log--; LOG("[vk] sampler registered: id %d lod %g..%g min %d (present %llu, thread %d)", sid, sp->lod_min, sp->lod_max, sp->minf, (unsigned long long)g_tex_frame, (int)gettid()); }
+    { static int once; if (!once) { once = 1; const char *e = getenv("DM_VK_SAMP_LOG"); if (e && atoi(e) > 0) g_vk_samp_log_boot = g_vk_samp_log = atoi(e); } }   // (games register samplers at start, before the replay's live switches are read)
+    if (g_vk_samp_log > 0) { extern uint64_t g_tex_frame; g_vk_samp_log--; LOG("[vk] sampler registered: id %d lod %g..%g min %d wrap %d/%d/%d aniso %.1f compare %d border %.2f,%.2f,%.2f,%.2f (present %llu, thread %d)",
+        sid, sp->lod_min, sp->lod_max, sp->minf, sp->ws, sp->wt, sp->wr, sp->aniso, sp->cmp_mode, sp->border[0], sp->border[1], sp->border[2], sp->border[3], (unsigned long long)g_tex_frame, (int)gettid()); }
     pthread_mutex_lock(&g_rmu);
     if (sid >= g_nsreg) { int n = sid + 256; g_sreg = realloc(g_sreg, n * sizeof *g_sreg); g_sreg_ok = realloc(g_sreg_ok, n); g_samp = realloc(g_samp, n * sizeof *g_samp);
         g_sseq = realloc(g_sseq, n * sizeof *g_sseq); g_sold = realloc(g_sold, (size_t)n * SREG_OLD * sizeof *g_sold);

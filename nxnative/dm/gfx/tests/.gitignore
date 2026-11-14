@@ -48,6 +48,8 @@ t_geometry
 t_geometry.dSYM/
 t_dirty_race
 t_dirty_race.dSYM/
+t_dirty_defrag
+t_dirty_defrag.dSYM/
 t_vin
 t_vin.dSYM/
 t_tbuf2d

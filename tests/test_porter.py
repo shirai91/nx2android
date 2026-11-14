@@ -1,6 +1,7 @@
 # Unit tests of the port pipeline's own parts (python -m unittest discover tests). They need no game files, toolchains or device.
 import hashlib, importlib.util, json, os, random, re, shutil, struct, sys, tempfile, unittest
 from pathlib import Path
+from unittest import mock
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
@@ -583,6 +584,94 @@ class Saves(unittest.TestCase):   # porter/saves.py: the save folders on the dev
         u = Path(tempfile.mkdtemp(dir=t)); self.assertEqual(sorted(p.name for p in saves._unpacked(t / 'loose.zip', u).iterdir()), ['main.dat', 'other.dat'])
         with self.assertRaises(BuildError): saves._unpacked(t / 'bad.zip', Path(tempfile.mkdtemp(dir=t)))
         self.assertEqual(saves._unpacked(t, None), t)   # a folder: as it is
+
+
+class UnrealShaders(unittest.TestCase):
+    """porter/pipeline.py device_ue: the Unreal shader code archives decoded with the game's own Oodle decoder, in rounds"""
+
+    class FakePort:
+        """the parts of Port.device_ue it uses"""
+        UE_ROUNDS = 4
+        def __init__(self, root, answers):
+            self.versions, self.dirs = ['v1'], {'v1': root / 'extract' / 'v1'}
+            self.work, self.logs = root / 'work', root / 'logs'
+            self.answers, self.asked = answers, []   # answers: the raw bytes each stream decodes to (missing: the decoder fails)
+            for d in (self.dirs['v1'] / 'RomFS', self.dirs['v1'] / 'ExeFS', self.logs): d.mkdir(parents=True, exist_ok=True)
+        def device_oodle_job(self, job, out, bnsh=False):
+            """the game's own Oodle decoder: the job's streams, decoded (a stream it fails on comes back with no bytes)"""
+            b = job.read_bytes(); n = struct.unpack_from('<I', b, 4)[0]; o = 8; recs = []
+            for _ in range(n):
+                ln, raw = struct.unpack_from('<II', b, o); o += 8
+                recs.append((b[o:o + ln], raw)); o += ln
+            self.asked.append([c for c, _ in recs])
+            ans = b'DMOR' + struct.pack('<I', n)
+            for comp, raw in recs:
+                got = self.answers.get(comp, b'')
+                ans += struct.pack('<I', len(got)) + got
+            out.write_bytes(ans)
+
+    def uepak_job(self, rounds):
+        """what uepak.job does: it asks its decoder for the streams of this round (rounds: a list of stream lists, one per round) and it lists the archives"""
+        state = {'n': 0}
+        def job(romfs, main, jd, decode=None):
+            (Path(jd) / 'archives').mkdir(parents=True, exist_ok=True)   # the real job writes the archives here
+            i = state['n']; state['n'] += 1
+            for comp, raw in rounds[min(i, len(rounds) - 1)]: decode(comp, raw)
+            return [{'name': 'ShaderArchive-Global', 'shaders': 2, 'compressed': 1, 'compression': 'Oodle'}], 0
+        return job
+
+    def uepak_finish(self, jd, out):
+        """what uepak.finish does: the decoded archives land in out"""
+        Path(out).mkdir(parents=True, exist_ok=True)
+        (Path(out) / 'ShaderArchive-Global.ushaderbytecode').write_bytes(b'shaders')
+
+    def port(self, rounds, answers, stamp_size=None):
+        """a port with the fake decoder and the fake archives"""
+        root = Path(tempfile.mkdtemp(prefix='nx2a_test_ue_'))
+        self.addCleanup(shutil.rmtree, root, True)
+        p = self.FakePort(root, answers)
+        (p.dirs['v1'] / 'RomFS' / 'Content').mkdir(parents=True, exist_ok=True)
+        (p.dirs['v1'] / 'RomFS' / 'Content' / 'pakchunk0-Switch.pak').write_bytes(b'pak')
+        p.stamp = pipeline.nsp.ue_stamp(p.dirs['v1'])   # what the version's archives were made from: its paks (the path is the platform's own)
+        if stamp_size is not None:
+            (p.dirs['v1'] / 'ue_shaders').mkdir(parents=True, exist_ok=True)
+            (p.dirs['v1'] / 'ue_shaders' / 'stamp').write_text(p.stamp.rsplit('\t', 1)[0] + f'\t{stamp_size}\n', encoding='utf-8')
+        patches = [mock.patch.object(pipeline.uepak, 'job', self.uepak_job(rounds)),
+                   mock.patch.object(pipeline.uepak, 'finish', self.uepak_finish)]
+        for q in patches: q.start()
+        self.addCleanup(lambda: [q.stop() for q in patches])
+        return p
+
+    def test_the_rounds_advance_until_nothing_is_left(self):   # the same stream again is a cache hit: the round asks for nothing and the decode is done
+        p = self.port([[(b'one', 6)]], {b'one': b'123456'})
+        pipeline.Port.device_ue(p)
+        self.assertEqual(p.asked, [[b'one']])   # the decoder was asked once: the second round wanted nothing
+        self.assertEqual((p.dirs['v1'] / 'ue_shaders' / 'ShaderArchive-Global.ushaderbytecode').read_bytes(), b'shaders')
+        self.assertEqual((p.dirs['v1'] / 'ue_shaders' / 'stamp').read_text(), p.stamp)
+
+    def test_a_stream_the_decoder_fails_on_is_asked_again(self):   # the round that decodes none of them says so
+        from porter.upstream import BuildError
+        p = self.port([[(b'one', 6), (b'two', 4)]], {b'one': b'123456'})
+        with self.assertRaises(BuildError) as e: pipeline.Port.device_ue(p)
+        self.assertIn('decoded none of 1 streams', str(e.exception))
+        self.assertEqual(p.asked, [[b'one', b'two'], [b'two']])   # the stream that failed is asked for again, the decoded one is not
+
+    def test_the_rounds_end_with_an_error(self):   # a new stream every round: the rounds run out
+        from porter.upstream import BuildError
+        rounds = [[(f'stream {i}'.encode(), 4)] for i in range(8)]
+        p = self.port(rounds, {f'stream {i}'.encode(): b'1234' for i in range(8)})
+        with self.assertRaises(BuildError) as e: pipeline.Port.device_ue(p)
+        self.assertIn('still need Oodle streams after 4 rounds', str(e.exception))
+        self.assertEqual(len(p.asked), 4)
+
+    def test_a_stamped_decode_is_not_done_again(self):   # the stamp of a version whose archives are decoded: it is left alone
+        p = self.port([[(b'one', 6)]], {b'one': b'123456'}, stamp_size=3)   # the stamp of this version's paks
+        pipeline.Port.device_ue(p)
+        self.assertEqual(p.asked, [])
+        self.assertFalse((p.dirs['v1'] / 'ue_shaders' / 'ShaderArchive-Global.ushaderbytecode').exists())
+        p = self.port([[(b'one', 6)]], {b'one': b'123456'}, stamp_size=9)   # another pak: the stamp is not the one
+        pipeline.Port.device_ue(p)
+        self.assertEqual(p.asked, [[b'one']])
 
 
 if __name__ == '__main__':

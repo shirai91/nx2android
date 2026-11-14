@@ -1,0 +1,15 @@
+# Kirby’s Return to Dream Land Deluxe on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# HAL Laboratory's engine on SDK 13.3.5, base game 1.0.0 (v0): a relative of Kirby and the Forgotten Land (01004D300C5AE000/android.tsv). 47,099 shaders, all translated.
+# The game looks up U+25A1 in the standard shared font at start and uses the null it gets from a font without that glyph: with Android's own font it crashed 2 s after
+# launch (main+0x4a78c8, address 0x38). So the profile takes the console's own shared fonts as system data (sysdata: FontStandard and FontNintendoExtension, --firmware
+# at the port). Without the firmware, --shared-font with a TTF that has U+25A1 starts it too.
+# On the AYN Thor (Snapdragon 8 Gen 2, Adreno 740, Android 13, Turnip, 2026-11-13), played with an Xbox Wireless Controller: the title screen, a new save file, the first
+# stage, the Lor Starcutter map, a save and the pause menu. A 6-minute session held 60 fps (no frame dropped in its last 300, footprint 1.7 GB); no crash in the three
+# runs logged with the console's fonts.
+# Open: the yield watchdog names the main thread once a run (85,000 to 440,000 yields a second for 30 s at sdk+0xe3b110, from start-up), and a run can sit at 40 fps for
+# some seconds around it. Movies, multiplayer, the sub-games and amiibo are not checked yet.
+status	playable
+tested	v0 AYN Thor (Snapdragon 8 Gen 2, Adreno 740, Android 13)
+package	org.nx2a.t01006b601380e000
+orientation	landscape
+sysdata	0100000000000811 0100000000000810

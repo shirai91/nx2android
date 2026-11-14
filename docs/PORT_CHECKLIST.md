@@ -6,7 +6,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 
 "Profile here": `nxnative/dm/games/<title ID>/` has the game's profile from nxnative. "Upstream profile": only seedds/nxnative has one, to read as a reference or starter, not to pull. "60 fps with X" is upstream's note: they run that update at 60 fps (30 on the Switch).
 
-**52 / 106 ported**
+**57 / 110 ported**
 
 - [x] 13 Sentinels: Aegis Rim · `01003FC01670C000`
 - [ ] Ace Attorney Investigations Collection · `010005501E68C000` · profile here
@@ -25,6 +25,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [x] Blasphemous 2 · `010040801A4C8000`
 - [ ] Brain Memory Training Academy · `0100F5D01DA3A000` · profile here
 - [x] Captain Toad: Treasure Tracker · `01009BF0072D4000`
+- [x] Cardfight!! Vanguard Dear Days 2 · `0100B6F01DAF6000`
 - [x] Castlevania: Belmont's Curse · `0100BA4026E94000`
 - [ ] Catherine: Full Body · `0100BF00112C0000` · profile here
 - [x] Celeste · `01002B30028F6000`
@@ -50,13 +51,14 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [x] Hollow Knight: Silksong · `010013C00E930000`
 - [ ] Hyrule Warriors: Age of Calamity · `01002B00111A2000` · profile here · 60 fps with 1.3.0
 - [x] Kirby and the Forgotten Land · `01004D300C5AE000`
+- [x] Kirby's Return to Dream Land Deluxe · `01006B601380E000` · needs the console's firmware for its fonts
 - [x] Lonely Mountains: Downhill · `0100A0C00E0DE000` · Retroid Pocket 6 / PurpleVK; brief visual glitches
 - [ ] Luigi's Mansion 3 · `0100DCA0064A6000` · profile here · 60 fps with 1.4.0
 - [ ] Mario + Rabbids Kingdom Battle · `010067300059A000` · upstream profile
 - [ ] Mario + Rabbids Sparks of Hope · `0100317013770000` · upstream profile
 - [ ] Mario Kart 8 Deluxe · `0100152000022000` · profile here · no Mii heads
 - [x] Mario vs. Donkey Kong · `0100B99019412000`
-- [x] Mega Man Battle Network Legacy Collection Vol. 1 · `010038E016264000` · work in progress: tested to Battle Network 1's opening
+- [x] Mega Man Battle Network Legacy Collection Vol. 1 · `010038E016264000`
 - [x] Mega Man Battle Network Legacy Collection Vol. 2 · `0100734016266000` · work in progress: tested to Battle Network 4's opening
 - [x] Metroid Dread · `010093801237C000`
 - [ ] Monster Hunter Rise · `0100B04011742000` · profile here · 60 fps with 16.0.2
@@ -65,6 +67,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [ ] NieR:Automata The End of YoRHa Edition · `010056B015FE8000` · upstream profile · 60 fps with 1.0.3
 - [ ] OCTOPATH TRAVELER · `010057D006492000` · profile here
 - [x] Octopath Traveler 0 · `01005270232F2000`
+- [x] Octopath Traveler 0 (Chinese release) · `01001300232F4000`
 - [ ] Octopath Traveler II · `0100A3501946E000` · upstream profile · 60 fps with 1.1.1
 - [x] Paper Mario: The Origami King · `0100A3900C3E2000`
 - [x] Paper Mario: The Thousand-Year Door · `0100ECD018EBE000`
@@ -105,6 +108,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [x] The Legend of Zelda: Tears of the Kingdom · `0100F2C0115B6000`
 - [x] The World Ends with You -Final Remix- · `0100C1500B82E000`
 - [x] Tomodachi Life: Living the Dream · `010051F0207B2000`
+- [x] Ultra Kaiju Monster Rancher · `01008E0019388000` · AYN Odin 2 / Turnip; tested through the tutorials and battles
 - [x] UNDER NIGHT IN-BIRTH Exe:Late[cl-r] · `010038C00EC34000`
 - [x] UNDER NIGHT IN-BIRTH II Sys:Celes · `0100BD401D18A000`
 - [x] Unicorn Overlord · `010069401ADB8000` · boots; saving and a full battle not tested yet
@@ -112,5 +116,5 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [x] Viractal: Will You Trust Your Party? · `0100FD501F95A000`
 - [ ] Xenoblade Chronicles 2 · `0100E95004038000` · upstream profile
 - [x] Xenoblade Chronicles 3 · `010074F013262000` · work in progress: some effects and models don't draw yet
-- [ ] Xenoblade Chronicles: Definitive Edition · `0100FF500E34A000` · upstream profile
+- [x] Xenoblade Chronicles: Definitive Edition · `0100FF500E34A000` · 30 fps; boots rarely crash (1 in ~35), saving and later maps not tested yet
 - [ ] Yoshi's Crafted World · `01006000040C2000` · upstream profile

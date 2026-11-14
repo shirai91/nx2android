@@ -1,0 +1,17 @@
+# Cardfight!! Vanguard Dear Days 2 on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Lancarse's own engine on SDK 17.5.3, update 1.7.2; game.tsv started as upstream's provisional profile and was checked by hand.
+# Why the guessed profile crashed at launch: its 4.375 GB alias region left a 128 MB heap region, and nninitStartup asks for 2.89 GB (SetHeapSize 0xb9400000, abort 0xd401).
+# On the AYN Odin 2 (Snapdragon 8 Gen 2, Adreno 740, Android 13, Mesa Turnip through --vulkan-driver) on 2026-11-13, driven by controller keys and DM_CTL: the first-boot
+# language and brightness setup, the title, a new game's opening story (dialogue, skip), the tutorial fight (draw, redraw, ride, call, boost, attack, drive check, damage),
+# the app sent to the background and back, the hub map, the shop (a deck bought), the deck list and card data screens, a story fight against the AI, saves (autosave, then
+# Load Game after a restart), a 15-minute run in the hub (same process, steady frame times, the SoC at 50 C).
+# Text and the card data screen's ability labels need game.tsv's tex_cpu_uncached (the game fills its textures in CPU-uncached pools, with COMPRESSIBLE on all of them).
+# The game's frame limiter busy-waited on yields (one big core at 100%, the fan at full speed): patches.py turns its yield into a 0.52 ms sleep. The whole game at 60 fps on
+# the title screen: 1.27 of a core before, 0.27 after; the boot screens keep their 3.0 s, so the game's speed is the same.
+# 30 fps by default (game.tsv fps_ceiling), 60 with porter's --fps60: the whole game took 0.14 of a core at 30 fps on the title screen.
+# Known gaps: shaders the game patches or builds at run time (14 in the tutorial fight: its card and board shaders) are captured on the device and need a port again
+# with --install to be drawn (docs/ARCHITECTURE.md, captured shaders); online features are not available.
+status	playable
+tested	v1441792 AYN Odin 2 (Snapdragon 8 Gen 2, Adreno 740, Android 13)
+package	org.nx2a.vanguarddeardays2
+orientation	landscape

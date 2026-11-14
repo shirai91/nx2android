@@ -250,6 +250,24 @@ HLE_FORCE("_ZN2nn3nfp13GetCommonInfoEPNS0_10CommonInfoERKNS0_12DeviceHandleE", "
 HLE_FORCE("_ZN2nn3nfp15GetRegisterInfoEPNS0_12RegisterInfoERKNS0_12DeviceHandleE", "register info: no tag", Result, h_nfp_RegInfo, void *out, const NfpDeviceHandle *h) { (void)out; (void)h; return nfp_no_tag("GetRegisterInfo"); }
 HLE_FORCE("_ZN2nn3nfp8GetStateEv", "amiibo library state: initialized (1)", int, h_nfp_LibState, void) { return 1; }
 HLE_FORCE("_ZN2nn3nfp8FinalizeEv", "amiibo library finalize; the host has no session", void, h_nfp_Fini, void) {}
+// nn::nfc, the general NFC reader library (Ultra Kaiju Monster Rancher's "Memory Boards" scan transit cards and ID cards with it). Its Initialize connects to nfc:user, which the host does not serve, and the
+//   game then died on the SDK's Break (Result 0xe15 at sdk+0x3cd350, after "[RED] sf: the game connects to service nfc:user itself"). The host has no NFC reader: the library starts, lists no device, so a
+//   game that scans offers no scan; nothing that needs a device or a tag can be reached. Only a game that imports nn::nfc is touched (nn::nfp, the amiibo library, is above).
+HLE_FORCE("_ZN2nn3nfc10InitializeEv", "NFC reader library init; the host has no NFC reader (no nfc:user session)", void, h_nfc_Init, void) { LOG("nfc::Initialize: the host has no NFC reader, no device is listed"); }
+HLE_FORCE("_ZN2nn3nfc8FinalizeEv", "NFC reader library finalize; the host has no session", void, h_nfc_Fini, void) {}
+HLE_FORCE("_ZN2nn3nfc8GetStateEv", "NFC reader library state: initialized (1)", int, h_nfc_LibState, void) { return 1; }
+HLE_FORCE("_ZN2nn3nfc11ListDevicesEPNS0_12DeviceHandleEPii", "NFC device list: none", Result, h_nfc_List, void *out, int *n, int max) { (void)out; (void)max; *n = 0; return RES_OK; }
+HLE_FORCE("_ZN2nn3nfc29AttachAvailabilityChangeEventEPNS_2os15SystemEventTypeE", "NFC availability change event; bound to a kernel event, never signalled", void, h_nfc_AttachAvail, void *ev) { hle_bind_system_event(ev, 0); }
+HLE_FORCE("_ZN2nn3nfc19AttachActivateEventEPNS_2os15SystemEventTypeERKNS0_12DeviceHandleE", "tag placed event; bound to a kernel event, never signalled", Result, h_nfc_AttachAct, void *ev, const void *h) { (void)h; hle_bind_system_event(ev, 0); return RES_OK; }
+HLE_FORCE("_ZN2nn3nfc21AttachDeactivateEventEPNS_2os15SystemEventTypeERKNS0_12DeviceHandleE", "tag removed event; bound to a kernel event, never signalled", Result, h_nfc_AttachDeact, void *ev, const void *h) { (void)h; hle_bind_system_event(ev, 0); return RES_OK; }
+HLE_FORCE("_ZN2nn3nfc9GetNpadIdEPjRKNS0_12DeviceHandleE", "controller the NFC device is on: the one connected now", Result, h_nfc_NpadId, uint32_t *out, const void *h) { (void)h; *out = hle_hid_connected_npad(); return RES_OK; }
+HLE_FORCE("_ZN2nn3nfc14GetDeviceStateERKNS0_12DeviceHandleE", "device state: none (0)", int, h_nfc_State, const void *h) { (void)h; return 0; }
+HLE_FORCE("_ZN2nn3nfc14StartDetectionERKNS0_12DeviceHandleENS0_11NfcProtocolE", "start tag detection: no device", Result, h_nfc_Start, const void *h, int proto) { (void)h; (void)proto; return RES_FAIL; }
+HLE_FORCE("_ZN2nn3nfc13StopDetectionERKNS0_12DeviceHandleE", "stop tag detection: no device", Result, h_nfc_Stop, const void *h) { (void)h; return RES_FAIL; }
+HLE_FORCE("_ZN2nn3nfc10GetTagInfoEPNS0_7TagInfoERKNS0_12DeviceHandleE", "tag info: no tag", Result, h_nfc_TagInfo, void *out, const void *h) { (void)out; (void)h; return RES_FAIL; }
+HLE_FORCE("_ZN2nn3nfc22KeepPassThroughSessionERKNS0_12DeviceHandleE", "pass-through session: no device", Result, h_nfc_Keep, const void *h) { (void)h; return RES_FAIL; }
+HLE_FORCE("_ZN2nn3nfc25ReleasePassThroughSessionERKNS0_12DeviceHandleE", "pass-through session: no device", Result, h_nfc_Release, const void *h) { (void)h; return RES_FAIL; }
+HLE_FORCE("_ZN2nn3nfc24SendCommandByPassThroughEPvPmRKNS0_12DeviceHandleEPKvmmNS_8TimeSpanE", "pass-through command: no device", Result, h_nfc_Send, void *rsp, uint64_t *rsz, const void *h, const void *cmd, uint64_t csz, uint64_t rmax, int64_t t) { (void)rsp; (void)h; (void)cmd; (void)csz; (void)rmax; (void)t; if (rsz) *rsz = 0; return RES_FAIL; }
 HLE_FORCE("_ZN2nn3nfp5FlushERKNS0_12DeviceHandleE", "flush tag: no tag", Result, h_nfp_Flush, const NfpDeviceHandle *h) { (void)h; return nfp_no_tag("Flush"); }
 HLE_FORCE("_ZN2nn3nfp19OpenApplicationAreaERKNS0_12DeviceHandleEj", "open application area: no tag", Result, h_nfp_OpenArea, const NfpDeviceHandle *h, uint32_t id) { (void)h; (void)id; return nfp_no_tag("OpenApplicationArea"); }
 HLE_FORCE("_ZN2nn3nfp18GetApplicationAreaEPvPmRKNS0_12DeviceHandleEm", "read application area: no tag", Result, h_nfp_GetArea, void *buf, uint64_t *n, const NfpDeviceHandle *h, uint64_t sz) { (void)buf; (void)h; (void)sz; if (n) *n = 0; return nfp_no_tag("GetApplicationArea"); }

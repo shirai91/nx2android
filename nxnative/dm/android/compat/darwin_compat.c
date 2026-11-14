@@ -56,23 +56,35 @@ kern_return_t vm_allocate(task_t task, vm_address_t *addr, vm_size_t size, int f
 }
 kern_return_t vm_deallocate(task_t task, vm_address_t addr, vm_size_t size) { (void)task; return munmap((void *)addr, size) ? KERN_INVALID_ADDRESS : KERN_SUCCESS; }
 static int prot_of(const char *perm) { return (perm[0] == 'r' ? VM_PROT_READ : 0) | (perm[1] == 'w' ? VM_PROT_WRITE : 0) | (perm[2] == 'x' ? VM_PROT_EXECUTE : 0); }
-// the region containing addr, or the next one above it (as Mach answers), from /proc/self/maps
+// the region containing addr, or the next one above it (as Mach answers), from /proc/self/maps. Two things differ from Mach there:
+// - Android tags heap pointers (apps targeting API 30 and later: the top byte, 0xb4 for Scudo's), and the maps list untagged addresses. A tagged address compared as it is
+//   lay above every line, so the call failed for any malloc'd pointer: the address is compared without its top byte (vm_region_64 puts it back on the region's start)
+// - Scudo maps one allocation's memory as several adjacent lines (its secondary's header and guard pages apart, the blocks of a primary region), and the kernel keeps
+//   neighbouring mappings of other origins apart: the region is the run of directly adjacent lines with the same permissions and sharing around the address, so a range
+//   inside one allocation lies inside one region
+// The callers on Android are hle_fs.c's EFAULT diagnostic (the protection of a ReadFile destination) and probe.c's DM_PROBE_WATCH arming (through mach_vm_region)
+#define DM_ADDR_UNTAGGED 0x00ffffffffffffffull
 static int region_at(uint64_t addr, uint64_t *lo, uint64_t *hi, int *prot, int *shared) {
     FILE *f = fopen("/proc/self/maps", "re"); if (!f) return -1;
-    char line[512]; int found = -1;
+    char line[512], run_perm[8] = ""; int found = -1; uint64_t run_lo = 0, run_hi = 0;
+    addr &= DM_ADDR_UNTAGGED;
     while (fgets(line, sizeof line, f)) {
         unsigned long long a, b; char perm[8];
-        if (sscanf(line, "%llx-%llx %7s", &a, &b, perm) != 3 || b <= addr) continue;
-        *lo = a; *hi = b; *prot = prot_of(perm); *shared = perm[3] == 's'; found = 0; break;
+        if (sscanf(line, "%llx-%llx %7s", &a, &b, perm) != 3) continue;
+        int joins = a == run_hi && !strcmp(perm, run_perm);   // directly after the run, alike
+        if (!found) { if (!joins) break; *hi = b; run_hi = b; continue; }   // the region found goes on
+        if (joins) run_hi = b; else { run_lo = a; run_hi = b; snprintf(run_perm, sizeof run_perm, "%s", perm); }
+        if (b <= addr) continue;
+        *lo = run_lo; *hi = b; *prot = prot_of(perm); *shared = perm[3] == 's'; found = 0;
     }
     fclose(f); return found;
 }
 kern_return_t vm_region_64(task_t task, vm_address_t *addr, vm_size_t *size, vm_region_flavor_t flavor, vm_region_info_t info, mach_msg_type_number_t *count, mach_port_t *obj) {
-    (void)task; (void)count; uint64_t lo, hi; int prot, shared;
+    (void)task; (void)count; uint64_t lo, hi, tag = (uint64_t)*addr & ~DM_ADDR_UNTAGGED; int prot, shared;
     if (flavor != VM_REGION_BASIC_INFO_64 || region_at(*addr, &lo, &hi, &prot, &shared)) return KERN_INVALID_ADDRESS;
     vm_region_basic_info_data_64_t *bi = (vm_region_basic_info_data_64_t *)info; memset(bi, 0, sizeof *bi);
     bi->protection = prot; bi->max_protection = VM_PROT_READ | VM_PROT_WRITE | VM_PROT_EXECUTE; bi->shared = shared;
-    *addr = (vm_address_t)lo; *size = (vm_size_t)(hi - lo); if (obj) *obj = 0;
+    *addr = (vm_address_t)(lo | tag); *size = (vm_size_t)(hi - lo); if (obj) *obj = 0;   // (with the caller's tag: its pointer compares inside the region)
     return KERN_SUCCESS;
 }
 kern_return_t mach_vm_region(task_t task, mach_vm_address_t *addr, mach_vm_size_t *size, vm_region_flavor_t flavor, vm_region_info_t info, mach_msg_type_number_t *count, mach_port_t *obj) {

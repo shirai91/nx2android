@@ -8,8 +8,15 @@
 # (frame work about 12-14 ms); with DM_PRESENT_INTERVAL=display it renders 60 but the game steps its logic per frame and runs twice as fast, so there is no 60 fps option.
 # A 15-minute soak in Postwick (devtools/soak.sh) kept one process at 33 ms a frame with no red line; the footprint settled at about 1.1 GB and crept 2-3 MiB a minute.
 # With a save, the title screen crashed in 2 of 12 cold boots before patches.py (an outfit part not loaded yet); 0 of 12 with it.
-# Battles, the Wild Area and local wireless are not checked yet.
+# 2026-11-14, same device, in the Wild Area (Rolling Fields) from a save: wild encounters by the left stick in tall grass, the battle, Run and the fade back. One
+# encounter right after launch had one 273 ms frame as its "!" began (CPU in the submission); later ones none, and the player saw no freeze in the transition.
+# Standing there docked, 30 fps: CPU 0.68 of a core (three game threads, 27/19/14%), GPU 22-23 ms a frame at 401 MHz (75% busy); 263 passes, 1138 draws. The game's own
+# work: the main 3D pass 7.3 ms (its 80% resolution, 1536 wide), two 1024x1024 shadow passes 3.4 ms, 24 environment maps each filtered down 9 levels every frame.
+# No switch saves without a cost in picture: handheld 17.5 ms GPU (-22%, CPU the same); DM_SVC_SPIN=0, DM_NO_ADPF=1, DM_FPS_PIN=30 the same; DM_VK_CB_DRAWS
+# 0 or 512 1 ms more GPU. Depth not loaded or stored (DM_VK_X_DEPTH, draws wrong) saved 3.1 ms: six of the passes only clear a 1080p depth buffer (0.22 ms each).
+# Handheld (DM_OPMODE=0) is not fixed: the 3D draws at 1280x720 but the title and the fields come out blurred all over (a depth-of-field-like blur, its chain mixes
+# 720p and 1080p buffer sizes); docked is the default and correct. Local wireless is not checked yet.
 status	playable
 tested	v458752 AYN Odin 2 (Snapdragon 8 Gen 2, Adreno 740, Android 13)
-package	org.nx2a.t0100abf008968000
+package	org.nx2a.pokemonsword
 orientation	landscape

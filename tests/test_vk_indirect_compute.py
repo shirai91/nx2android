@@ -41,10 +41,10 @@ def production():
     ubd = core[core.index('typedef struct { uint64_t lo, hi; VkBuffer sb;'):core.index('// the draw bisection')]
     infl = core[core.index('typedef struct { uint64_t lo, hi, fence; const uint8_t *data; uint8_t *own; }'):core.index('int vk_ubd_overlaps')]
     functions = ''.join(function(core, sig) for sig in [
-        'vkpool_t *vk_pool_of(', 'uint32_t vk_pool_gen(', 'int vk_buf_at(',
+        'static vkpool_t *pool_find(', 'vkpool_t *vk_pool_of(', 'uint32_t vk_pool_gen(', 'int vk_buf_at(',
         'static vksub_t *cur(', 'void *vk_scratch(', 'void vk_img_barrier_all('])
     # Single-line production functions need their line, not the next function.
-    for sig in ['uint32_t vk_pool_gen(', 'static vksub_t *cur(']:
+    for sig in ['vkpool_t *vk_pool_of(', 'uint32_t vk_pool_gen(', 'static vksub_t *cur(']:
         functions = functions.replace(function(core, sig), next(x for x in core.splitlines() if x.startswith(sig)) + '\n')
     driver = function(replay, 'static uint64_t c2_handle(') + drvs + cache + memo + indirect
     lifecycle = function(core, 'static void slot_recycle(')

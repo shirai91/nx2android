@@ -86,6 +86,10 @@ typedef struct {
     uint64_t used;                       // Bytes written since the game last added command memory, across recordings and host segments, including segment-switch JUMPs (returned by GetCommandMemoryUsed)
     int32_t tex_base, samp_base;         // Host-table bases of the texture / sampler pool this command buffer last bound (hle_nvn.c dpool_add; 0 = the first pool of its kind)
     size_t cmd_size;                     // GetCommandMemorySize: the byte count the game last passed to AddCommandMemory with a pool (records and host-lent segments leave it)
+    uint8_t *ctl_mem, *ctl_end;           // Guest control storage owns handles even when there is no GPU command pool
+    uint64_t ctl_used;                   // Bytes reserved for lifetime anchors in the last control grant
+    uintptr_t ctl_anchor;                // This recording's reserved control bytes; CPU replay records stay in host storage
+    uint32_t host_control, host_sz;       // Empty GPU command pool with control-owned host storage; initial segment size
 } cmd_t;                                                                                   FITS(cmd_t, NVNcommandBuffer);
 
 // ---------- State objects (defaults follow the NVN / GL defaults) ----------
