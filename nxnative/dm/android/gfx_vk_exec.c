@@ -1717,7 +1717,7 @@ static int prepare_draw(int prim, int indexed) {
         if (!(in_mask >> loc & 1)) continue;
         va_st a; memcpy(&a, &S.vattr[loc], 4);
         VkFormat f = a.fmt ? vertex_format(a.fmt, int_mask >> loc & 1, sint_mask >> loc & 1) : VK_FORMAT_UNDEFINED;
-        if (f == VK_FORMAT_UNDEFINED || !S.vbuf[a.stream].address) { k.attr[k.nattr++] = (typeof(k.attr[0])){(uint32_t)loc, 16, int_mask >> loc & 1 ? VK_FORMAT_R32G32B32A32_UINT : VK_FORMAT_R32G32B32A32_SFLOAT, 0}; need_zero = 1; continue; }
+        if (f == VK_FORMAT_UNDEFINED || !S.vbuf[a.stream].address) { k.attr[k.nattr++] = (typeof(k.attr[0])){(uint32_t)loc, 16, int_mask >> loc & 1 ? (sint_mask >> loc & 1 ? VK_FORMAT_R32G32B32A32_SINT : VK_FORMAT_R32G32B32A32_UINT) : VK_FORMAT_R32G32B32A32_SFLOAT, a.fmt ? 16u : 0u}; need_zero = 1; continue; }   // disabled format: (0,0,0,1); invalid/unbacked enabled input: zero fallback in the next 16 bytes
         k.attr[k.nattr++] = (typeof(k.attr[0])){(uint32_t)loc, a.stream, f, a.offset};
         used_streams |= 1u << a.stream;
     }
@@ -1810,7 +1810,7 @@ static int prepare_draw(int prim, int indexed) {
     // vertex buffers
     for (uint32_t i = 0; i < k.nbind; i++) {
         uint32_t b = k.bind[i].binding; VkBuffer buf; VkDeviceSize off;
-        if (b == 16) { buf = vk_zero_buffer(); off = 0; }
+        if (b == 16) { buf = vk_default_attribute_buffer(); off = 0; }
         else if (!vk_buf_at(S.vbuf[b].address, 1, &buf, &off)) { buf = vk_zero_buffer(); off = 0; VKRED_ONCE(51, "vertex buffer outside the memory pools"); }
         else if (S.vbuf[b].size) { vkpool_t *vp = vk_pool_of(S.vbuf[b].address, 1); if (vp && S.vbuf[b].address + S.vbuf[b].size > vp->hi && vp->hi < vp->end) vk_cross(2, S.vbuf[b].address, S.vbuf[b].size, vp); }
         if (g_var_now == 5) { buf = vk_zero_buffer(); off = 0; }

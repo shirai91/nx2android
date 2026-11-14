@@ -174,6 +174,7 @@ VkShaderModule vk_shader_module(vkshader_t *s, uint64_t um, uint64_t im, uint32_
 void vk_shaders_open(const char *path);
 VkBuffer vk_support_buffer(void);
 VkBuffer vk_zero_buffer(void);
+VkBuffer vk_default_attribute_buffer(void);
 
 // ---- replay (gfx_vk_exec.c) ----
 void vk_exec_reset(void);   // per submission
