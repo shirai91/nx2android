@@ -70,7 +70,9 @@ there and `DM_VK_NO_ZEROCOPY=1`, once each with `DM_VK_RP=0` and `1`.
 `1` the current compute producer with a graphics consumer; `16` the
 transform-feedback producer.
 
-Validated on the task-owned Android 15 ARM64 emulator with Lavapipe. Baseline
+Historical validation before this follow-up used an Android 15 ARM64 emulator
+with Lavapipe. Current follow-up validation is limited to host regressions and
+NDK host/fixture builds; the emulator/device cases below were not rerun. Baseline
 current-compute and linear-producer cases return zero instead of green; the
 port passes both render-pass modes. Independent review found that graphics
 producers could leave an older overlapping update deferred; the real linear
