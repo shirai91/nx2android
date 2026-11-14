@@ -126,7 +126,7 @@ int main(void) {
         """On a small screen the controls grow so a face button stays 10 mm wide (front_android.c dm_overlay_scale). Each side grows out from its bottom
         corner and no further than fits (overlay_layout.h ov_box, ov_fit_scale): no two controls overlap and none leaves the window. Grown around their
         own centres, the Odin 3's 1920x1080 at x1.45 made eleven pairs overlap and pushed ZL, ZR and the menu button off the screen. The top strip (the
-        menu button and the frame rate counter) stays clear"""
+        menu button and the frame rate counter's FPS row; its temperature rows are not kept clear: overlay_layout.h ov_strip) stays clear"""
         cc = shutil.which('cc') or shutil.which('clang')
         if not cc:
             self.skipTest('a C compiler is needed for the layout geometry check')

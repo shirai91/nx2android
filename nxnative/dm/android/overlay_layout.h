@@ -39,8 +39,11 @@ static inline float ov_cscale(const ov_ctl *c) { int l, i = ov_index(c, &l); flo
 // spacing; the factor stops where they would leave the window (ov_fit_scale). Grown around their own centres, the Odin 3's x1.45 made eleven pairs overlap
 #define OV_MIN_MM 10.0f
 float dm_overlay_scale(void);
-// the top strip of layout L at scale 1: down to the menu button's bottom edge (the middle's controls), where the frame rate counter also sits. A side
-// control whose top edge is above it sits beside the menu button (the phone's - and +), the others below it
+// the top strip of layout L at scale 1: down to the menu button's bottom edge (the middle's controls), where the frame rate counter's FPS row also sits
+// (gfx_vk_present.c ov_fps: to about 0.06 of the height). A side control whose top edge is above it sits beside the menu button (the phone's - and +), the
+// others below it. The counter's temperature rows are not part of the strip: with them the counter reaches 0.09 (one row) or 0.12 (both) of the height,
+// and on the tablet layout a grown - starts under them (the Odin 3 at x1.20: - from 0.079, so the rows cover its top; the counter takes no touches).
+// Keeping all three rows clear would hold the Odin 3 at about x1.12, smaller controls for every player for a diagnostic few turn on
 static inline float ov_strip(const ov_ctl *L) { float top = 0; for (int i = 0; i < OV_N; i++) if (L[i].ax == 0.5f) top = fmaxf(top, L[i].y + L[i].h / 2); return top; }
 static inline int ov_beside(const ov_ctl *L, const ov_ctl *c) { return c->ax != 0.5f && c->y - c->h / 2 < ov_strip(L); }
 // where a control is now, in window pixels: its centre x, y and half its width and height. A side's control (anchored to the left or the right edge) is
@@ -57,7 +60,7 @@ static inline void ov_box(const ov_ctl *c, float W, float H, float b[4]) {   // 
 }
 // the largest scale up to s (and at least 1) at which the side controls of layout L, grown as ov_box places them, stay on a W x H window and apart:
 // - a control below the top strip stays inside its half of the width (the two sides never meet) and below the strip, which reaches down to the menu
-//   button's bottom edge and the bottom edges of the controls beside it, grown as they grow (on the Odin 3, x1.30 put - under the counter in the top left)
+//   button's bottom edge and the bottom edges of the controls beside it, grown as they grow (on the Odin 3, x1.30 put - under the counter's FPS row in the top left)
 // - a control beside the strip (the phone's - and +) stays clear of the menu button and on the screen; growing out from its side's top corner, it only
 //   moves away from that corner, so the frame rate counter there that it clears at x1 it clears at any scale
 static inline float ov_fit_scale(const ov_ctl *L, float W, float H, float s) {
