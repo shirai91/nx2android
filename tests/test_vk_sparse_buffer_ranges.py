@@ -44,6 +44,21 @@ class SparseBufferRanges(unittest.TestCase):
         self.assertNotIn('(const uint8_t *)(uintptr_t)c->src', exec_src)
         self.assertIn('sub_gpu_wrote(dst, n)', core)
 
+    def test_sparse_paths_keep_common_case_fast_and_bound_snapshots(self):
+        dm = Path(__file__).resolve().parents[1] / 'nxnative/dm'
+        nvn = (dm / 'gfx/nvn/hle_nvn.c').read_text(encoding='utf-8')
+        tex = (dm / 'android/gfx_vk_tex.c').read_text(encoding='utf-8')
+        exec_src = (dm / 'android/gfx_vk_exec.c').read_text(encoding='utf-8')
+
+        self.assertIn('static _Atomic int g_vp_count', nvn)
+        self.assertIn('atomic_fetch_add_explicit(&g_vp_count, 1', nvn)
+        self.assertIn('atomic_fetch_sub_explicit(&g_vp_count, 1', nvn)
+        pool_lookup = nvn.split('const void *nvn_sparse_address_pool(', 1)[1].split('\n}', 1)[0]
+        self.assertLess(pool_lookup.index('if (!vpool_any()) return NULL;'), pool_lookup.index('pthread_mutex_lock(&g_vp_mu)'))
+        self.assertIn('(im->packaged && !im->gpu_w)', tex)
+        self.assertIn('SPARSE_SBUF_COPY_CAP = 32 * 1024 * 1024', exec_src)
+        self.assertLess(exec_src.index('if (size > SPARSE_SBUF_COPY_CAP)'), exec_src.index('vk_scratch(size, SB_ALIGN'))
+
     @unittest.skipUnless(shutil.which('cc'), 'a host C compiler is required')
     def test_transfer_span_includes_row_and_image_strides(self):
         source = (Path(__file__).resolve().parents[1] / 'nxnative/dm/android/gfx_vk_exec.c').read_text(encoding='utf-8')
