@@ -753,7 +753,10 @@ vkpool_t *vk_pool_of(uint64_t addr, uint64_t len) {
 }
 uint32_t vk_pool_gen(void) { return __atomic_load_n(&g_pool_gen, __ATOMIC_ACQUIRE); }   // pools added or removed (gfx_vk_exec.c's descriptor set memo: vk_pool_of's results hold while it is unchanged)
 int vk_buf_at(uint64_t addr, uint64_t len, VkBuffer *buf, VkDeviceSize *off) {
-    vkpool_t *p = vk_pool_of(addr, len ? len : 1);
+    if (!len) len = 1;
+    if (len > UINT64_MAX - addr) return 0;
+    vkpool_t *p = vk_pool_of(addr, len);
+    if (!p) { uint64_t physical; if (nvn_sparse_address_translate(addr, len, &physical)) { p = vk_pool_of(physical, len); if (p) addr = physical; } }
     if (!p) return 0;
     *buf = p->buf; *off = addr - p->lo + p->boff; return 1;
 }
@@ -1299,8 +1302,13 @@ void vk_ubd_land(VkCommandBuffer cb) {   // outside a render pass
         g_infl[g_ninfl++] = (ubd_infl_t){g_ubd[i].lo, g_ubd[i].hi, g_fence + 1, g_ubd[i].p};   // the fence of the submission being recorded
     }
     vk_img_barrier_all(cb);
-    for (int i = 0; i < g_nubd; i++) { VkBuffer db; VkDeviceSize dof; if (vk_buf_at(g_ubd[i].lo, g_ubd[i].hi - g_ubd[i].lo, &db, &dof)) {
-        VkBufferCopy r = {g_ubd[i].so, dof, g_ubd[i].hi - g_ubd[i].lo}; vkCmdCopyBuffer(cb, g_ubd[i].sb, db, 1, &r); sub_gpu_wrote(g_ubd[i].lo, g_ubd[i].hi - g_ubd[i].lo); } }
+    for (int i = 0; i < g_nubd; i++) {
+        uint64_t dst = g_ubd[i].lo, n = g_ubd[i].hi - dst; VkBuffer db; VkDeviceSize dof;
+        if (nvn_sparse_address_pool(dst, n) && !nvn_sparse_address_translate(dst, n, &dst)) { vk_readback_unknown(); continue; }
+        if (vk_buf_at(dst, n, &db, &dof)) {
+            VkBufferCopy r = {g_ubd[i].so, dof, n}; vkCmdCopyBuffer(cb, g_ubd[i].sb, db, 1, &r); sub_gpu_wrote(dst, n);
+        }
+    }
     vk_img_barrier_all(cb);
     g_ubd_landed += (uint64_t)g_nubd; g_nubd = 0; g_ubd_gen++;
 }
@@ -1317,6 +1325,11 @@ static void sub_gpu_wrote(uint64_t a, uint64_t n) {   // into the open submissio
     else { s->gw[s->ngw].lo = lo; s->gw[s->ngw].hi = hi; s->ngw++; }
 }
 void vk_gpu_wrote(uint64_t a, uint64_t n) {
+    if (n && nvn_sparse_address_pool(a, n)) {
+        uint64_t physical;
+        if (nvn_sparse_address_translate(a, n, &physical)) a = physical;
+        else { vk_readback_unknown(); return; }   // a fragmented sparse write cannot be narrowed to one physical interval
+    }
     uint64_t f = g_fence + 1;
     for (int i = g_ngw - 1; i >= 0 && g_gw[i].fence == f; i--) if (g_gw[i].lo <= a && a + n <= g_gw[i].hi) return;
     if (g_ngw == GW_MAX) { uint64_t done = vk_fence_done(); int o = 0; for (int i = 0; i < g_ngw; i++) if (g_gw[i].fence > done) g_gw[o++] = g_gw[i]; g_ngw = o; }
@@ -1334,7 +1347,8 @@ int vk_gpu_pending(uint64_t a, uint64_t n) {
 void vk_ubd_read(uint64_t a, uint64_t n, uint8_t *dst) {
     if (vk_gpu_pending(a, n)) { static int k; g_ubd_racy++; if (k < 20) { k++; int cov = 0; for (int i = 0; i < g_nubd; i++) if (g_ubd[i].lo <= a && a + n <= g_ubd[i].hi) cov = 1;
         VKLOG("[RED] a CPU read of %#llx +%llu (%s) overlaps a GPU write not known to be complete", (unsigned long long)a, (unsigned long long)n, cov ? "covered by a deferred update" : "partly from memory"); } }
-    memcpy(dst, (const void *)(uintptr_t)a, n);
+    if (nvn_sparse_address_pool(a, n)) nvn_sparse_address_copy(a, dst, n);
+    else memcpy(dst, (const void *)(uintptr_t)a, n);
     if (g_ninfl) { uint64_t done = vk_fence_done();
         for (int i = 0; i < g_ninfl; i++) { if (g_infl[i].fence <= done) continue; uint64_t lo = g_infl[i].lo > a ? g_infl[i].lo : a, hi = g_infl[i].hi < a + n ? g_infl[i].hi : a + n;
             if (lo < hi) memcpy(dst + (lo - a), g_infl[i].data + (lo - g_infl[i].lo), hi - lo); } }
