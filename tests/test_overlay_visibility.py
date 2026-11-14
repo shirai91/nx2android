@@ -30,6 +30,7 @@ class OverlayVisibility(unittest.TestCase):
 #include <string.h>
 #include "front.h"
 #include "overlay_layout.h"
+#include "pad_slots.h"
 static _Atomic int g_set_overlay, g_overlay, g_pads, g_edit;
 static _Atomic int g_set_rumble, g_set_fps, g_set_labels, g_menu_tab, g_sv_st;
 static int layout, saves;
@@ -54,7 +55,7 @@ static void menu_close(void) {}
 static void dm_overlay_redraw(void) {}
 ''' + visible + hit + menu + r'''
 // Synthetic Android events. The production dispatch and touch handlers below consume them.
-enum { AINPUT_SOURCE_TOUCHSCREEN = 1, AINPUT_SOURCE_GAMEPAD = 2, AINPUT_SOURCE_JOYSTICK = 4 };
+enum { AINPUT_SOURCE_TOUCHSCREEN = 1, AINPUT_SOURCE_GAMEPAD = 2, AINPUT_SOURCE_JOYSTICK = 4, AINPUT_SOURCE_KEYBOARD = 8 };
 enum { AINPUT_EVENT_TYPE_KEY = 1, AINPUT_EVENT_TYPE_MOTION };
 enum { AKEYCODE_BACK = 1, AKEYCODE_BUTTON_MODE, AKEYCODE_MENU, TEST_PAD_KEY };
 enum { AKEY_EVENT_ACTION_DOWN, AKEY_EVENT_ACTION_UP };
@@ -67,11 +68,20 @@ enum { AMOTION_EVENT_AXIS_X, AMOTION_EVENT_AXIS_Y, AMOTION_EVENT_AXIS_Z, AMOTION
 typedef struct { int source, type, action, key, device; float x, y, axis[10]; } AInputEvent;
 typedef int ANativeWindow;
 static int width, height, window, vibration = -1, touches, menu_opens, pad_publications, g_pad_used;
-static uint64_t g_btn, touch_buttons;
+static uint64_t g_btn[DM_PLAYERS], touch_buttons;
 static _Atomic uint64_t g_touch_btn;   // as in front_android.c: the touch handler swaps it with atomic_exchange
-static float g_ax[8];
-static int32_t pad_sticks[4];
-static uint64_t pad_buttons;
+static float g_ax[DM_PLAYERS][8];
+static int32_t pad_sticks[DM_PLAYERS][4];
+static uint64_t pad_buttons[DM_PLAYERS];
+static uint32_t players_mask;
+// The players (each controller its own): the slots, and the Java side stubbed. Devices 7 (a keyboard) and -1 (`adb shell input`'s virtual one) are not
+// controllers; every other id is one, until the test marks it gone. Device 45 is device 44 back under a new id, 46 another controller with 42's name
+static pad_slots g_slots;
+static int g_pad_merge = -1, g_slot_mu, g_ndev_key, key_reads, log_taken, dev_gone[256];
+static struct { int id; char key[64]; } g_dev_key[16];
+static int pad_dev_kind(int id) { return id == 7 || id == -1 ? 0 : id >= 0 && id < 256 && dev_gone[id] ? -1 : 1; }
+static void pad_key_now(int id, char *out, size_t n) { key_reads++; snprintf(out, n, "pad-%d", id == 45 ? 44 : id == 46 ? 42 : id); }
+static void log_line(const char *f, ...) { if (strstr(f, "are taken")) log_taken++; }
 static int g_ptr_ctl[32];
 static struct { int id, moved; } g_drag = {-1, 0};
 static _Atomic int g_menu, g_sp_on, g_tx_on, g_pad_in, g_knob[2][2];
@@ -80,7 +90,7 @@ static struct { int sel; } g_tx;
 static int g_tx_mu;
 #define pthread_mutex_lock(m) ((void)(m))
 #define pthread_mutex_unlock(m) ((void)(m))
-#define LOG(...) ((void)0)
+#define LOG(...) log_line(__VA_ARGS__)
 #define AInputEvent_getSource(e) ((e)->source)
 #define AInputEvent_getType(e) ((e)->type)
 #define AInputEvent_getDeviceId(e) ((e)->device)
@@ -109,10 +119,14 @@ static void menu_key(uint64_t bit) { (void)bit; }
 static uint64_t key_bit(int code) { return code == TEST_PAD_KEY ? DM_BTN_A : 0; }
 static int tx_key(AInputEvent *e) { (void)e; return 1; }
 static void tx_changed(void) {}
-void dm_pad_players(uint32_t n) { assert(n == 1); }
-void dm_pad_set(uint64_t b, int32_t lx, int32_t ly, int32_t rx, int32_t ry) {
-    pad_buttons = b;
-    pad_sticks[0] = lx; pad_sticks[1] = ly; pad_sticks[2] = rx; pad_sticks[3] = ry;
+void dm_pad_players(uint32_t n) { assert(n & 1); players_mask = n; }
+uint32_t dm_player_npad(int p) { return (uint32_t)p; }
+static int one_player_game;   // hle_hid.c: a one-player game merges every player into player 1
+int dm_player_seen_as(int p) { return p < 0 ? -1 : one_player_game ? 0 : p; }
+void dm_pad_set_player(int p, uint64_t b, int32_t lx, int32_t ly, int32_t rx, int32_t ry) {
+    assert(p >= 0 && p < DM_PLAYERS);
+    pad_buttons[p] = b;
+    pad_sticks[p][0] = lx; pad_sticks[p][1] = ly; pad_sticks[p][2] = rx; pad_sticks[p][3] = ry;
     pad_publications++;
 }
 void dm_input_set(uint64_t b, int32_t lx, int32_t ly, int32_t rx, int32_t ry) {
@@ -131,7 +145,7 @@ static void input_handoff(int test) {
                        .key = TEST_PAD_KEY, .action = AKEY_EVENT_ACTION_DOWN, .device = 42};
     int before = pad_publications;
     assert(handle_event(&pad) == 1);
-    assert(g_btn & DM_BTN_A);
+    assert(g_btn[0] & DM_BTN_A);
     assert(pad_publications == before + 1 && vibration == 42);
     assert(dm_overlay_visible() == 2); controls(0);
     AInputEvent tap = {.source = AINPUT_SOURCE_TOUCHSCREEN, .type = AINPUT_EVENT_TYPE_MOTION,
@@ -143,7 +157,7 @@ static void input_handoff(int test) {
     pad = (AInputEvent){.source = AINPUT_SOURCE_JOYSTICK, .type = AINPUT_EVENT_TYPE_MOTION, .device = 42};
     pad.axis[AMOTION_EVENT_AXIS_X] = 0.7f;
     assert(handle_event(&pad) == 1);
-    assert(g_ax[0] == 0.7f && pad_publications == before + 2 && vibration == 42);
+    assert(g_ax[0][0] == 0.7f && pad_publications == before + 2 && vibration == 42);
     assert(dm_overlay_visible() == 2); controls(0);
     for (int i = 0; i < OV_N; i++) if (OV_CTLS[i].kind == OV_MENU) {
         float b[4]; ov_box(&OV_CTLS[i], width, height, b);
@@ -161,7 +175,7 @@ static void motion_handoff(void) {
     atomic_store(&g_overlay, 1);
     atomic_store(&g_pads, 0);
     atomic_store(&g_pad_in, -1);
-    g_pad_used = 0; g_btn = 0; vibration = -1;
+    g_pad_used = 0; memset(g_btn, 0, sizeof g_btn); vibration = -1;
     AInputEvent idle = {.source = AINPUT_SOURCE_JOYSTICK, .type = AINPUT_EVENT_TYPE_MOTION, .device = 43};
     assert(handle_event(&idle) == 1);
     assert(dm_overlay_visible() == 1 && !g_pad_used && atomic_load(&g_pad_in) == -1 && vibration == -1);
@@ -185,8 +199,8 @@ static void motion_handoff(void) {
         pad.axis[code] = cases[i].active;
         assert(handle_event(&pad) == 1);
         assert(dm_overlay_visible() == 2 && g_pad_used && atomic_load(&g_pad_in) == 42 && vibration == 42);
-        assert(pad_buttons == cases[i].button);
-        if (stick >= 0) assert(pad_sticks[stick] == (int32_t)(0.12f * DM_STICK_MAX));
+        assert(pad_buttons[0] == cases[i].button);
+        if (stick >= 0) assert(pad_sticks[0][stick] == (int32_t)(0.12f * DM_STICK_MAX));
 
         atomic_store(&g_pads, 1);
         AInputEvent tap = {.source = AINPUT_SOURCE_TOUCHSCREEN, .type = AINPUT_EVENT_TYPE_MOTION,
@@ -198,9 +212,9 @@ static void motion_handoff(void) {
         int before = pad_publications;
         pad.axis[code] = cases[i].idle;
         assert(handle_event(&pad) == 1);
-        assert(handle_event(&idle) == 1);
-        assert(pad_publications == before + 2 && !pad_buttons);
-        for (int j = 0; j < 4; j++) assert(pad_sticks[j] == 0);
+        assert(handle_event(&idle) == 1);   // (device 43 holds no player: nothing of its idle report is published)
+        assert(pad_publications == before + 1 && !pad_buttons[0]);
+        for (int j = 0; j < 4; j++) assert(pad_sticks[0][j] == 0);
         assert(dm_overlay_visible() == 1 && atomic_load(&g_pad_in) == 42 && vibration == 42);
 
         tap.x = a[0]; tap.y = a[1]; tap.action = AMOTION_EVENT_ACTION_DOWN;
@@ -208,6 +222,57 @@ static void motion_handoff(void) {
         tap.action = AMOTION_EVENT_ACTION_UP;
         assert(handle_event(&tap) == 1 && !touch_buttons);
     }
+}
+
+// Each controller a player of its own (PR #238 review): only controllers take players, and only on input that counts; a refused one is logged once
+static void players(void) {
+    width = 1920; height = 1080; layout = 0;
+    atomic_store(&g_set_overlay, 1); atomic_store(&g_overlay, 1);
+    AInputEvent idle = {.source = AINPUT_SOURCE_JOYSTICK, .type = AINPUT_EVENT_TYPE_MOTION, .device = 43};
+    assert(handle_event(&idle) == 1 && pad_slot_mask(&g_slots) == 0 && pad_publications == 0);   // an idle report takes no player (issue #210)
+    AInputEvent key = {.source = AINPUT_SOURCE_KEYBOARD, .type = AINPUT_EVENT_TYPE_KEY, .key = TEST_PAD_KEY, .action = AKEY_EVENT_ACTION_DOWN, .device = 7};
+    assert(handle_event(&key) == 1 && (g_btn[0] & DM_BTN_A) && pad_buttons[0] == DM_BTN_A && pad_slot_mask(&g_slots) == 0 && players_mask == 1);   // a keyboard: player 1's
+    key.action = AKEY_EVENT_ACTION_UP; assert(handle_event(&key) == 1 && !pad_buttons[0]);
+    key.device = -1; key.action = AKEY_EVENT_ACTION_DOWN;
+    assert(handle_event(&key) == 1 && pad_buttons[0] == DM_BTN_A && pad_slot_mask(&g_slots) == 0);   // `adb shell input keyevent`: player 1's
+    key.action = AKEY_EVENT_ACTION_UP; assert(handle_event(&key) == 1 && !pad_buttons[0]);
+    AInputEvent pad = {.source = AINPUT_SOURCE_GAMEPAD, .type = AINPUT_EVENT_TYPE_KEY, .key = TEST_PAD_KEY, .action = AKEY_EVENT_ACTION_DOWN, .device = 42};
+    pad.action = AKEY_EVENT_ACTION_UP; int pubs = pad_publications;
+    assert(handle_event(&pad) == 1 && pad_slot_mask(&g_slots) == 0 && pad_publications == pubs && vibration != 42);   // a release takes no player (and, as #296, is no new input)
+    pad.action = AKEY_EVENT_ACTION_DOWN;
+    assert(handle_event(&pad) == 1 && pad_slot_of(&g_slots, pad_owner(42)) == 0 && vibration == 42);
+    pad.device = 44;
+    assert(handle_event(&pad) == 1 && pad_slot_of(&g_slots, pad_owner(44)) == 1 && pad_buttons[1] == DM_BTN_A && players_mask == 3 && vibration == 42);
+    AInputEvent stick = {.source = AINPUT_SOURCE_JOYSTICK, .type = AINPUT_EVENT_TYPE_MOTION, .device = 42};
+    stick.axis[AMOTION_EVENT_AXIS_X] = 0.7f;
+    assert(handle_event(&stick) == 1 && pad_sticks[0][0] > 0);
+    assert(handle_event(&idle) == 1 && pad_sticks[0][0] > 0 && pad_slot_of(&g_slots, pad_owner(43)) < 0);   // it does not let go of player 1's stick either
+    for (int d = 0; d < DM_PLAYERS - 2; d++) { pad.device = 100 + d; assert(handle_event(&pad) == 1 && pad_slot_of(&g_slots, pad_owner(100 + d)) == 2 + d); }
+    assert(pad_slot_mask(&g_slots) == (1u << DM_PLAYERS) - 1);
+    int reads = key_reads; pad.device = 200;
+    for (int i = 0; i < 3; i++) assert(handle_event(&pad) == 1);
+    assert(log_taken == 1 && key_reads == reads + 1 && pad_slot_of(&g_slots, pad_owner(200)) < 0);   // refused: logged once, its descriptor read once
+    pad_gone(101);
+    assert(handle_event(&pad) == 1 && pad_slot_of(&g_slots, pad_owner(200)) == 3);   // a player went: the refused controller takes it at its next input
+    dev_gone[44] = 1; pad.device = 45;   // player 2's controller back as device 45 before pad_watch saw 44 go
+    assert(handle_event(&pad) == 1 && pad_slot_of(&g_slots, pad_owner(45)) == 1 && pad_slot_of(&g_slots, pad_owner(44)) < 0);
+    pad_gone(44); assert(pad_slot_of(&g_slots, pad_owner(45)) == 1);   // pad_watch's later word on 44 changes nothing
+    pad_gone(102); pad.device = 46;   // a controller with 42's name while 42 is still there: a player of its own
+    assert(handle_event(&pad) == 1 && pad_slot_of(&g_slots, pad_owner(46)) == 4 && pad_slot_of(&g_slots, pad_owner(42)) == 0);
+    pad_gone(103); pad_learn(47, "learned"); reads = key_reads; pad.device = 47;   // a descriptor pad_watch learned is not read again
+    assert(handle_event(&pad) == 1 && pad_slot_of(&g_slots, pad_owner(47)) == 5 && key_reads == reads && !strcmp(g_slots.last[5], "learned"));
+    assert(vibration == 42);   // the players that went were not player 1: its controller keeps the rumble
+    pad_gone(42); assert(vibration == -1 && pad_slot_of(&g_slots, pad_owner(45)) == 1);   // player 1's went while player 2's is in use: the rumble back to the phone
+    AInputEvent tap = {.source = AINPUT_SOURCE_TOUCHSCREEN, .type = AINPUT_EVENT_TYPE_MOTION, .action = AMOTION_EVENT_ACTION_DOWN, .x = width * 0.5f, .y = height * 0.5f};
+    assert(handle_event(&tap) == 1 && dm_overlay_visible() == 1);   // player 1 plays on touch now
+    tap.action = AMOTION_EVENT_ACTION_UP; assert(handle_event(&tap) == 1);
+    pad.device = 45; assert(handle_event(&pad) == 1 && pad_buttons[1] == DM_BTN_A && dm_overlay_visible() == 1 && vibration == -1);   // player 2's press leaves player 1's controls up
+    stick.device = 45; assert(handle_event(&stick) == 1 && pad_sticks[1][0] > 0 && dm_overlay_visible() == 1);   // and so does player 2's stick
+    one_player_game = 1;   // in a one-player game player 2's slot plays as player 1 (hle_hid.c merged_players): its press hides the controls and takes the rumble, as on main
+    pad.device = 45; assert(handle_event(&pad) == 1 && pad_slot_of(&g_slots, pad_owner(45)) == 1 && dm_overlay_visible() == 2 && vibration == 45);
+    one_player_game = 0; tap.action = AMOTION_EVENT_ACTION_DOWN;
+    assert(handle_event(&tap) == 1 && dm_overlay_visible() == 1); tap.action = AMOTION_EVENT_ACTION_UP; assert(handle_event(&tap) == 1);
+    pad.device = 48; assert(handle_event(&pad) == 1 && pad_slot_of(&g_slots, pad_owner(48)) == 0 && vibration == 48 && dm_overlay_visible() == 2);   // the next player 1 takes it (and the rumble) at its input
 }
 
 static void controls(int shown) {
@@ -226,6 +291,7 @@ static void controls(int shown) {
 }
 int main(int argc, char **argv) {
     assert(argc == 2); int test = atoi(argv[1]);
+    if (test == 8) { players(); return 0; }
     if (test == 7) { for (layout = 0; layout < 2; layout++) motion_handoff(); return 0; }
     if (test >= 4) { for (layout = 0; layout < 2; layout++) input_handoff(test); return 0; }
     for (layout = 0; layout < 2; layout++) for (int pads = 0; pads < 3; pads++) for (int touch = 0; touch < 2; touch++) {
@@ -290,6 +356,9 @@ int main(int argc, char **argv) {
 
     def test_idle_controller_motion_leaves_touch_controls_usable(self):
         self.run_case(7)
+
+    def test_each_controller_is_a_player_of_its_own(self):
+        self.run_case(8)
 
 
 if __name__ == '__main__':

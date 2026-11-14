@@ -1,12 +1,19 @@
 // Players and controllers (GitHub issue #74): the Mac front end's slot assignment (pad_slots.h) and the npads hle_hid.c reports for each player, docked and handheld, with the
 // game's supported npad ids; no controller, window or guest exists in this test (the hid take-overs are called directly, events are recorded by the stubs)
+#include <time.h>
+static int hid_clock_gettime(clockid_t clock, struct timespec *ts);
+#define clock_gettime hid_clock_gettime
 #include "../hle_hid.c"
+#undef clock_gettime
 #include "../pad_slots.h"
 
 static int checks, fails, g_mode = 1, g_signals;
 static void *g_signalled;
+static time_t rumble_second = 1;
+static int hid_clock_gettime(clockid_t clock, struct timespec *ts) { (void)clock; *ts = (struct timespec){.tv_sec = rumble_second}; return 0; }
 #define CHECK(c, msg) do { checks++; if (!(c)) { fails++; fprintf(stderr, "FAIL: %s (line %d)\n", msg, __LINE__); } } while (0)
-int dm_opmode(void) { return g_mode; }
+static int g_mode_flip;   // > 0: the operation mode flips right after that many more dm_opmode calls (t_one_lookup)
+int dm_opmode(void) { int m = g_mode; if (g_mode_flip > 0 && !--g_mode_flip) g_mode = !g_mode; return m; }
 uint64_t guest_ns(void) { return 1000000000ull; }
 uint64_t now_ns(void) { return 1000000000ull; }
 uint64_t dm_guest_frame(void) { return 0; }
@@ -36,7 +43,7 @@ static void ids(const uint32_t *v, uint64_t n) { h_hid_SetIds(v, n); }
 
 static void t_slots(void) {
     pad_slots s; memset(&s, 0, sizeof s);
-    static char a, b, c, d, b2, kbd;   // controllers stand in as distinct addresses
+    static char a, b, c, d, b2, a2, kbd;   // controllers stand in as distinct addresses
     CHECK(pad_slot_take(&s, &a, "Xbox Wireless Controller") == 0, "the first controller is player 1");
     CHECK(pad_slot_take(&s, &b, "DualSense Wireless Controller") == 1, "the second controller is player 2");
     CHECK(pad_slot_take(&s, &a, "Xbox Wireless Controller") == 0, "taking again keeps the slot");
@@ -54,6 +61,16 @@ static void t_slots(void) {
     CHECK(pad_slot_take(&s, NULL, "x") == -1 && pad_slot_free(&s, NULL) == -1, "no owner, no slot");
     memset(&s, 0, sizeof s);   // DM_KBD_PLAYER=own: the keyboard holds player 1 for good
     CHECK(pad_slot_take(&s, &kbd, "keyboard") == 0 && pad_slot_take(&s, &a, "Xbox Wireless Controller") == 1, "with the keyboard on its own the first controller is player 2");
+    // Android: a controller back under a new id while its old id still holds the slot (pad_watch has not seen it go): the front end finds the slot by name,
+    // frees it once the old device is gone, and the new id takes it, not the next free player
+    memset(&s, 0, sizeof s);
+    CHECK(pad_slot_take(&s, &a, "desc-a") == 0 && pad_slot_take(&s, &b, "desc-b") == 1, "two controllers");
+    CHECK(pad_slot_named(&s, "desc-a") == 0 && pad_slot_named(&s, "desc-b") == 1, "a held slot is found by its holder's name");
+    CHECK(pad_slot_named(&s, "desc-c") == -1 && pad_slot_named(&s, "") == -1 && pad_slot_named(&s, NULL) == -1, "no slot for an unknown or empty name");
+    CHECK(pad_slot_free(&s, &a) == 0 && pad_slot_named(&s, "desc-a") == -1, "a free slot is not a held one");
+    CHECK(pad_slot_take(&s, &a, "desc-a") == 0, "it comes back to player 1");
+    int q = pad_slot_named(&s, "desc-a");
+    CHECK(q == 0 && pad_slot_free(&s, s.owner[q]) == 0 && pad_slot_take(&s, &a2, "desc-a") == 0, "the same controller under a new id keeps player 1, not player 3");
 }
 
 static void t_npads(void) {
@@ -74,6 +91,7 @@ static void t_npads(void) {
     CHECK(h_hid_GetStyle(&(uint32_t){1}) == STYLE_FULLKEY, "player 2 is a full-key controller on No2");
     dm_pad_set_player(1, DM_BTN_B, 300, 0, 0, 0); dm_pad_set(DM_BTN_Y, 0, 0, 0, 0);
     CHECK(buttons_of(1, STYLE_FULLKEY) == DM_BTN_B && lx_of(1) == 300, "player 2 reads its own controller");
+    CHECK(dm_player_seen_as(0) == 0 && dm_player_seen_as(1) == 1 && dm_player_seen_as(-1) == -1, "a game for several players sees player 2 as player 2; no player is none");
     CHECK(buttons_of(0, STYLE_FULLKEY) == DM_BTN_Y && lx_of(0) == 0, "player 1 does not see player 2");
     CHECK(buttons_of(1, STYLE_HANDHELD) == 0, "player 2 is not a handheld controller");
     CHECK(h_hid_Led(&(uint32_t){0}) == 0x1 && h_hid_Led(&(uint32_t){1}) == 0x3 && h_hid_Led(&(uint32_t){7}) == 0x6, "player LED patterns");
@@ -88,6 +106,7 @@ static void t_npads(void) {
     CHECK(g_signals == 1 && g_signalled == ev1, "No2's style event signalled when the game stops supporting it");
     CHECK(h_hid_GetStyle(&(uint32_t){1}) == 0 && buttons_of(1, STYLE_FULLKEY) == 0, "No2 not reported");
     CHECK(buttons_of(0, STYLE_FULLKEY) == (DM_BTN_Y | DM_BTN_B) && lx_of(0) == 300, "player 2's controller feeds player 1");
+    CHECK(dm_player_seen_as(1) == 0 && dm_player_seen_as(5) == 0, "a one-player game sees every player as player 1, also one whose controller is not reported yet");
     h_hid_ShowCtrl(info, NULL);
     CHECK(info[0] == 1, "the applet reports one player");
 
@@ -96,6 +115,7 @@ static void t_npads(void) {
     dm_pad_players(0x1f); dm_pad_set_player(4, DM_BTN_ZR, 0, 0, 0, 0);
     CHECK(h_hid_GetStyle(&(uint32_t){3}) == STYLE_FULLKEY && h_hid_GetStyle(&(uint32_t){4}) == 0, "players 1..4 reported, player 5 not");
     CHECK(!(buttons_of(0, STYLE_FULLKEY) & DM_BTN_ZR), "player 5 does not feed player 1 in a game for four");
+    CHECK(dm_player_seen_as(3) == 3 && dm_player_seen_as(4) == -1, "a game for four sees player 4 as itself and does not use player 5");
     h_hid_ShowCtrl(info, NULL);
     CHECK(info[0] == 4, "the applet reports four players");
 
@@ -121,7 +141,21 @@ static void t_vibration(void) {
     g_mode = 1; ids((uint32_t[]){0, 1, NPAD_HANDHELD}, 3); dm_pad_players(3);
     CHECK(!h_hid_VibPermit() && !h_hid_VibHandles(h, 2, &id, STYLE_FULLKEY), "no sink: no vibration devices");
     CHECK(!h_hid_VibMounted(&h[0]), "no routed output: device not mounted");
-    dm_haptics_init(vibration_sink, 1); dm_haptics_route(0, 1); dm_haptics_route(1, 1);
+    dm_haptics_init(vibration_sink, 1);
+    CHECK(!h_hid_VibPermit() && h_hid_VibHandles(h, 2, &id, STYLE_FULLKEY) == 2,
+          "startup handles do not wait for a routed haptics output");
+    h_hid_SendVib(&h[0], &v);
+    CHECK(dm_haptics_actual(0, 0).amplitude_low == 0, "a value before routing is not retained");
+    // The Android front end routes only player 1's rumble (haptics_android.c): players 2 and up, each controller a player of its own (front_android.c), still get their handles, as on a
+    // Switch, where they follow the npad id and style alone, and what the game sends them reaches no output
+    dm_haptics_route(0, 1);
+    uint32_t h2[2] = {0};
+    CHECK(h_hid_VibHandles(h2, 2, &(uint32_t){1}, STYLE_FULLKEY) == 2 && h2[0] == 0x103 && h2[1] == 0x10103, "player 2 with no routed output (Android) still gets its handles");
+    vibration_calls = 0; h_hid_SendVib(&h2[0], &v);
+    CHECK(!vibration_calls && dm_haptics_actual(0, 0).amplitude_low == 0 && !h_hid_VibMounted(&h2[0]), "a value for player 2 reaches no output, leaves player 1 alone, and its device is not mounted");
+    dm_haptics_route(1, 1);
+    h_hid_SendVib(&h[0], &v);
+    CHECK(!memcmp(&vibration[0].motor[0], &v, sizeof v), "cached startup handles reach an output routed later");
     CHECK(h_hid_VibPermit() && h_hid_VibHandles(h, 2, &id, STYLE_FULLKEY) == 2, "two vibration motors available");
     CHECK(h[0] == 3 && h[1] == 0x10003, "SDK vibration handle bytes: style 3, npad 0, motors 0 and 1");
     CHECK(!h_hid_VibHandles(h, 2, &id, STYLE_HANDHELD), "wrong controller style gets no motors");
@@ -154,6 +188,53 @@ static void t_vibration(void) {
     CHECK(!h_hid_VibMounted(&(uint32_t){3}) && h_hid_VibMounted(&h[0]), "mounted follows the connected controller's style");
     dm_haptics_route(1, 0);
     CHECK(!h_hid_VibPermit(), "disconnecting the last output disables vibration");
+    dm_haptics_init(vibration_sink, 0); dm_haptics_route(0, 1);
+    CHECK(!h_hid_VibPermit() && !h_hid_VibHandles(h, 2, &id, STYLE_HANDHELD), "rumble disabled: no vibration devices");
+}
+
+static void *vibration_sender(void *arg) {
+    (void)arg;
+    const uint32_t handles[] = {3, 0};
+    const dm_vibration values[] = {{0.25, 160, 0, 320}, {0.8, 160, 0, 320}};
+    for (int i = 0; i < 1000; i++) h_hid_SendVibs(handles, values, 2);
+    return NULL;
+}
+static void t_rumble_log(void) {
+    g_mode = 1; ids((uint32_t[]){0}, 1); dm_pad_players(1);
+    dm_haptics_init(vibration_sink, 1); dm_haptics_route(0, 1);
+    FILE *capture = tmpfile(); int saved = dup(STDERR_FILENO);
+    CHECK(capture && saved >= 0, "capture rumble diagnostics");
+    if (!capture || saved < 0) {
+        if (capture) fclose(capture);
+        if (saved >= 0) close(saved);
+        unsetenv("DM_RUMBLE_LOG"); return;
+    }
+    fflush(stderr); int redirected = dup2(fileno(capture), STDERR_FILENO);
+    CHECK(redirected >= 0, "redirect rumble diagnostics");
+    if (redirected >= 0) {
+        // Start a reporting interval, then send a batch with one routed and one invalid handle.
+        rumble_second++;
+        h_hid_SendVib(&(uint32_t){3}, &(dm_vibration){0, 160, 0, 320});
+        rumble_second++;
+        vibration_sender(NULL);
+        rumble_second++;
+        h_hid_SendVib(&(uint32_t){3}, &(dm_vibration){0, 160, 0, 320});
+        fflush(stderr); dup2(saved, STDERR_FILENO);
+        rewind(capture); char log[1024]; size_t n = fread(log, 1, sizeof log - 1, capture); log[n] = 0;
+        CHECK(strstr(log, "2 values sent, 1 with no output, peak amplitude 0.80") != NULL,
+              "a mixed batch counts unroutable values individually");
+        CHECK(strstr(log, "1999 values sent, 999 with no output, peak amplitude 0.80") != NULL,
+              "diagnostic totals reset once per second and retain the interval peak");
+    }
+    close(saved); fclose(capture);
+    // Game threads may send independently; ThreadSanitizer also covers the logger's shared totals.
+    pthread_t threads[4]; int started = 0;
+    for (int i = 0; i < 4; i++) {
+        int rc = pthread_create(&threads[started], NULL, vibration_sender, NULL);
+        CHECK(!rc, "start concurrent vibration sender"); if (!rc) started++;
+    }
+    for (int i = 0; i < started; i++) pthread_join(threads[i], NULL);
+    unsetenv("DM_RUMBLE_LOG");
 }
 
 // The operation mode switched while the game runs (the pause menu's Handheld / Docked row, hle_oe.c dm_set_opmode): player 1 moves between Handheld and No1, and both npads'
@@ -176,10 +257,29 @@ static void t_opmode(void) {
     dm_pad_set_player(0, 0, 0, 0, 0, 0); g_mode = 1;
 }
 
+// seedds/nxnative issue #424: fill and vib_targets take the style and the player from one lookup. Here the operation mode flips right after the first lookup (g_mode_flip), as
+// the pause menu's Handheld / Docked row or a controller that leaves can between two lookups on another thread. With two lookups the second found no player (-1) and the
+// state or the value went to 1u << -1: no buttons on a connected npad, rumble lost
+static void t_one_lookup(void) {
+    g_mode = 1; ids((uint32_t[]){0, 1, NPAD_HANDHELD}, 3); dm_pad_players(1);
+    dm_pad_set_player(0, DM_BTN_A, 0, 0, 0, 0);
+    g_mode_flip = 1;
+    CHECK(buttons_of(NPAD_NO1, STYLE_FULLKEY) == DM_BTN_A, "the mode changes during a read: the state is that of the player the lookup found (player 1's A)");
+    g_mode = 1; g_mode_flip = 0;
+    dm_haptics_init(vibration_sink, 1); dm_haptics_route(0, 1);
+    dm_vibration v = {0.25, 160, 0.5, 320};
+    g_mode_flip = 1; h_hid_SendVib(&(uint32_t){3}, &v);
+    CHECK(dm_haptics_actual(0, 0).amplitude_low == 0.25f, "the mode changes during a send: the value reaches the player the lookup found");
+    g_mode = 1; g_mode_flip = 0; dm_pad_set_player(0, 0, 0, 0, 0, 0);
+}
+
 int main(void) {
+    CHECK(setenv("DM_RUMBLE_LOG", "1", 1) == 0, "enable rumble diagnostics");
     t_slots();
     t_npads();
     t_vibration();
+    t_rumble_log();
+    t_one_lookup();
     t_opmode();
     printf("hid players: %d checks, %d failed\n", checks, fails);
     return fails != 0;

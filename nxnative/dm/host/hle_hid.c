@@ -196,11 +196,23 @@ static uint32_t unsupported_players(void) {
 }
 static int one_player(void) { return !(atomic_load(&g_ids_supported) & ((1u << DM_PLAYERS) - 2)); }
 static uint32_t merged_players(void) { return one_player() ? unsupported_players() : 0; }
+// The player the game sees player p + 1's controller as, by the npads it supports: 0 for player 1 itself and for every player of a one-player game (merged_players), p when
+// the game supports No p, -1 when it does not use that player (a fifth controller in a four-player game) or for no player (p < 0). Not from dm_pad_players' mask, so a controller
+// taking its player with the input being asked about counts already (Android's pad_mark_used runs before the front end reports the new player)
+int dm_player_seen_as(int p) {
+    if (p < 0) return -1;
+    if (p == 0 || one_player()) return 0;
+    return atomic_load(&g_ids_supported) & id_bit((uint32_t)p) ? p : -1;
+}
 static int player_of(uint32_t id) {   // the reported player on npad id; -1 when none
     if (id == connected_id()) return 0;
     return id > 0 && id < DM_PLAYERS && reported((int)id) ? (int)id : -1;
 }
-static uint32_t style_of(uint32_t id) { return player_of(id) < 0 ? 0 : id == NPAD_HANDHELD ? STYLE_HANDHELD : STYLE_FULLKEY; }
+// The style and the player of one npad come from one player_of: a controller that leaves (dm_pad_players, from the front end's thread) or an operation mode change between two
+// lookups made the second -1, and fill and vib_targets shifted 1u by it (clang's static analyzer, seedds/nxnative issue #424). Each Android controller is a player of its own
+// (front_android.c), so players come and go while the game reads them
+static uint32_t style_for_player(uint32_t id, int p) { return p < 0 ? 0 : id == NPAD_HANDHELD ? STYLE_HANDHELD : STYLE_FULLKEY; }
+static uint32_t style_of(uint32_t id) { return style_for_player(id, player_of(id)); }
 static int32_t ax(uint64_t v, int i) { return (int16_t)(v >> (16 * i)); }
 static int32_t pick(int32_t a, int32_t b) { return (a < 0 ? -a : a) >= (b < 0 ? -b : b) ? a : b; }   // whichever of two sources is deflected more
 
@@ -235,9 +247,10 @@ void dm_pad_players(uint32_t mask) {
 static void fill(NpadState *s, uint32_t id, uint32_t style) {
     memset(s, 0, sizeof *s);
     s->sampling = atomic_fetch_add(&g_sampling, 1) + 1;
-    if (!(style_of(id) & style)) return;   // no controller of this id / style: attributes = 0
+    int pl = player_of(id);
+    if (!(style_for_player(id, pl) & style)) return;   // no controller of this id / style: attributes = 0
     // Player 1: the keyboard / touch path, its controller path and those of the players merged into it; another player: its own controller path
-    int pl = player_of(id); uint32_t src = pl ? 1u << pl : 1u | merged_players();
+    uint32_t src = pl ? 1u << pl : 1u | merged_players();
     uint64_t b = 0; int32_t a[4] = {0};
     if (!pl) { b = atomic_load(&g_btn) | atomic_exchange(&g_latch, 0); uint64_t k = atomic_load(&g_axes); for (int i = 0; i < 4; i++) a[i] = ax(k, i); }
     for (int p = 0; p < DM_PLAYERS; p++) if (src >> p & 1) {
@@ -406,16 +419,17 @@ HLE_FORCE("_ZN2nn3hid22GetSixAxisSensorStatesEPNS0_18SixAxisSensorStateEiRKNS0_1
 static uint32_t vib_targets(uint32_t h) {
     unsigned type = h & 0xff, id = h >> 8 & 0xff, motor = h >> 16 & 0xff;
     if (h >> 24 || motor > 1 || (type != 3 && type != 4)) return 0;
-    if (style_of(id) != (1u << (type - 3))) return 0;
     int p = player_of(id);
+    if (style_for_player(id, p) != (1u << (type - 3))) return 0;
     return dm_haptics_available() & (p == 0 ? 1u | merged_players() : 1u << p);
 }
 static void vib_send(const uint32_t *handles, const dm_vibration *values, int n) {
     if (!handles || !values || n <= 0) return;
     dm_vibration_update updates[DM_PLAYERS * 2];
-    uint32_t used = 0;
+    uint32_t used = 0; int unrouted = 0;
     for (int i = 0; i < n; i++) {
         uint32_t targets = vib_targets(handles[i]);
+        if (!targets) unrouted++;
         for (int p = 0; p < DM_PLAYERS; p++) if (targets >> p & 1) {
             int m = handles[i] >> 16 & 1, k = p * 2 + m;
             updates[k] = (dm_vibration_update){p, m, values[i]}; used |= 1u << k;
@@ -423,16 +437,33 @@ static void vib_send(const uint32_t *handles, const dm_vibration *values, int n)
     }
     int count = 0;
     for (int k = 0; k < DM_PLAYERS * 2; k++) if (used >> k & 1) updates[count++] = updates[k];
+    if (getenv("DM_RUMBLE_LOG")) {   // Count input values before deduplicating motors, including partially routed batches.
+        static pthread_mutex_t log_lock = PTHREAD_MUTEX_INITIALIZER;
+        static uint64_t sends, dropped, t0; static float peak; struct timespec ts;
+        pthread_mutex_lock(&log_lock);   // SDK sends can arrive from several game threads.
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        uint64_t now = ts.tv_sec; sends += n; dropped += unrouted;
+        for (int i = 0; i < n; i++) peak = fmaxf(peak, fmaxf(values[i].amplitude_low, values[i].amplitude_high));
+        if (now != t0) { LOG("rumble: %llu values sent, %llu with no output, peak amplitude %.2f, handle %#x", sends, dropped, peak, handles[0]); sends = dropped = 0; peak = 0; t0 = now; }
+        pthread_mutex_unlock(&log_lock);
+    }
     dm_haptics_send(updates, count);
 }
 HLE_FORCE("_ZN2nn3hid20IsVibrationPermittedEv", "vibration permission: enabled and an output available", unsigned, h_hid_VibPermit, void) { return dm_haptics_available() != 0; }
+// Games can cache handles once at startup, before the front end routes the pad's haptics (GameController on the Mac; seedds/nxnative PR #246: Unicorn Overlord kept an empty
+// answer and sent every value to handle 0). The Android front end routes only player 1's rumble (haptics_android.c), so players 2 and up (each controller a player of its own, front_android.c) never had handles there.
+// On Horizon handles are computed from npad id and style (libnx _hidGetVibrationDeviceHandles); vib_send checks for an output at each send. DM_RUMBLE_LOG=1 logs the handle
+// requests and, once a second, the values sent, those with no routed output and the peak amplitude.
 HLE_FORCE("_ZN2nn3hid25GetVibrationDeviceHandlesEPNS0_21VibrationDeviceHandleEiRKjNS_4util10BitFlagSetILi32ENS0_12NpadStyleTagEEE", "vibration devices of the connected controller",
           int, h_hid_VibHandles, uint32_t *h, int n, const uint32_t *id, uint32_t style) {
-    if (!h || !id || n <= 0 || !(style & style_of(*id))) return 0;
+    if (!h || !id || n <= 0 || !(style & style_of(*id)) || !dm_haptics_enabled()) {
+        if (getenv("DM_RUMBLE_LOG") && id) LOG("rumble: game asked for vibration handles of npad %u style %#x: none (connected style %#x, rumble %s)", *id, style, style_of(*id), dm_haptics_enabled() ? "on" : "off");
+        return 0;
+    }
     uint32_t base = (*id << 8) | (*id == NPAD_HANDHELD ? 4u : 3u);
-    if (!vib_targets(base)) return 0;
     int count = n < 2 ? n : 2;
     for (int i = 0; i < count; i++) h[i] = base | (uint32_t)i << 16;
+    if (getenv("DM_RUMBLE_LOG")) LOG("rumble: game asked for vibration handles of npad %u style %#x: %d, first %#x", *id, style, count, h[0]);
     return count;
 }
 HLE_FORCE("_ZN2nn3hid25InitializeVibrationDeviceERKNS0_21VibrationDeviceHandleE", "vibration: initialize one channel", void, h_hid_InitVib, const uint32_t *h) {
