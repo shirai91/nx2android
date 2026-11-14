@@ -662,6 +662,7 @@ static void ov_fps_graph(VkCommandBuffer cb, float x0, float x1, float y0, float
         float hh = fmaxf(1, fminf(ms[i], 3 * tg) / (3 * tg) * gh);
         ov_fps_blk(cb, ms[i] <= tg * 1.15f ? SP_GREEN : ms[i] <= tg * 1.6f ? SP_AMBER : SP_RED, x1 - (i + 1) * sw, y1 - hh, x1 - i * sw, y1, 0.95f);
     }
+    ov_fps_blk(cb, SP_GREY, x0, y1 - 1, x1, y1, 0.35f);   // (a baseline: the graph's extent shows before it has filled)
     float t = fmaxf(1, gh * 0.025f), ly = y1 - gh / 3;   // (the target at a third of the height: the tallest bar is 3 x the target)
     ov_fps_blk(cb, SP_GREY, x0, ly - t / 2, x1, ly + t / 2, 0.85f);
 }
@@ -683,18 +684,22 @@ static void ov_fps(VkCommandBuffer cb, int64_t now) {   // one value a row: FPS,
     float W = (float)g_sext.width, H = (float)g_sext.height, k = W / g_ov.w, ch = (float)(PF_CAP * g_ov.gs + 4) * k, m = H * 0.02f, pad = ch * 0.2f, lh = ch * 1.1f;
     float bx = g_ov.sp[SP_BLACK][0], by = g_ov.sp[SP_BLACK][1], wmax = 0;
     for (int r = 0; r < nr; r++) wmax = fmaxf(wmax, ov_fps_len(rows[r], k));
-    float bw = ch * 0.5f + wmax, bh_t = nr ? 2 * pad + ch + (nr - 1) * lh : pad, gh = gr ? 2.5f * lh : 0;
-    if (gr) bw = fmaxf(bw, ch * 0.5f + 24 * ov_fps_adv('0') * k);
+    float bw = ch * 0.5f + wmax, bh_t = nr ? 2 * pad + ch + (nr - 1) * lh : pad, gh = 0, gw = 0;
+    if (gr) {   // the graph: 24 digits wide, but at most a quarter of the window (the letters of a large size grow, the graph does not), its height in proportion (2.5 text lines at 24 digits)
+        float full = 24 * ov_fps_adv('0') * k, f = fminf(1, W * 0.25f / full); gw = full * f; gh = 2.5f * lh * f;
+        bw = fmaxf(bw, ch * 0.5f + gw);
+    }
     float bh = bh_t + (gr ? gh + pad : 0), left = fpso_pos(o) & 1 ? W - m - bw : m, top = fpso_pos(o) & 2 ? H - m - bh : m;   // the block, in its corner
     int ol = fpso_outline(o);
     if (ol == FPSO_BOX) ov_rect(cb, left, top, left + bw, top + bh, bx - 2, by - 2, bx + 2, by + 2, 0.45f);
-    else if (gr) ov_rect(cb, left + ch * 0.25f, top + bh_t, left + bw - ch * 0.25f, top + bh_t + gh, bx - 2, by - 2, bx + 2, by + 2, 0.45f);   // (without the block: a backdrop for the bars alone)
+    float gx0 = fpso_pos(o) & 1 ? left + bw - ch * 0.25f - gw : left + ch * 0.25f, gx1 = gx0 + gw;   // (the graph in the block's corner side)
+    if (ol != FPSO_BOX && gr) ov_rect(cb, gx0, top + bh_t, gx1, top + bh_t + gh, bx - 2, by - 2, bx + 2, by + 2, 0.45f);   // (without the block: a backdrop for the bars alone)
     for (int pass = ol >= FPSO_THIN ? 0 : 1; pass < 2; pass++)   // the outline (the black set: the glyphs grown by 1, 2 or 3 font texels) under the colour
         for (int r = 0; r < nr; r++) {
             float x = fpso_pos(o) & 1 ? left + bw - ch * 0.25f - ov_fps_len(rows[r], k) : left + ch * 0.25f, y = top + pad + r * lh;   // (the right corners: the rows end at the block's right edge)
             ov_fps_text(cb, pass ? (hot[r] ? 1 : 0) : 2, rows[r], x, y, k);
         }
-    if (gr) ov_fps_graph(cb, left + ch * 0.25f, left + bw - ch * 0.25f, top + bh_t, top + bh_t + gh);
+    if (gr) ov_fps_graph(cb, gx0, gx1, top + bh_t, top + bh_t + gh);
 }
 static void ov_theme_draw(VkCommandBuffer cb, const ov_theme *t, float alpha) {   // (alpha: the player's opacity; each control at its own size factor)
     float W = (float)g_sext.width, H = (float)g_sext.height, k = H / t->dh * dm_overlay_scale(), b[4]; const ov_ctl *L = OV_LAYOUTS[t->layout];
