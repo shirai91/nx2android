@@ -150,7 +150,11 @@ void vk_watch(const vkimg_t *im, const char *what) {
     g_watch_n--; VKLOG("watch: present %llu pass %d (%ux%u): %s %ux%u fmt %d pool %#llx+%#llx (image %p, nvn flags %#x, %d overlapping)", (unsigned long long)g_tex_frame, g_sub_pass - 1, S.pass_w, S.pass_h, what, im->w, im->h, im->fmt,
                        (unsigned long long)im->pool, (unsigned long long)im->off, (const void *)im, im->flags, im->novl);
 }
-static void x_read(void) { const char *c = getenv("DM_VK_CB_DRAWS"); g_x_cbdraws = c ? atoi(c) : 128; g_sub_pass = 0;
+static void cpu_ready_config(void) {
+    const char *e = getenv("DM_VK_CPU_READY");
+    g_vk_cpu_ready = !(e && !atoi(e));   // live A/B: =0 leaves CPU reads unsynchronized
+}
+static void x_read(void) { cpu_ready_config(); const char *c = getenv("DM_VK_CB_DRAWS"); g_x_cbdraws = c ? atoi(c) : 128; g_sub_pass = 0;
     const char *fy = getenv("DM_VK_FLIPY"); g_flipy = !(fy && !atoi(fy));   // on unless DM_VK_FLIPY=0
     if (g_x_listpasses) { g_x_listpasses = 0; setenv("DM_VK_TRACE_PASS", "-1", 1); }
     const char *tp = getenv("DM_VK_TRACE_PASS"); g_x_tracepass = tp ? atoi(tp) : -1;
@@ -1109,7 +1113,7 @@ static uint64_t c2_handle(int st, int off) {   // the driver's handle table c2, 
 // nxnative shader_cpu_ready/uniform_ready: finish CPU-decoded descriptor
 // dependencies before this command can allocate scratch or descriptor sets.
 static void cpu_ready(uint64_t addr, uint64_t size) {
-    if (!size || addr > UINT64_MAX - size) return;
+    if (!g_vk_cpu_ready || !size || addr > UINT64_MAX - size) return;
     for (int i = 0; S.pass_open && g_lin_back && (g_pass_draws || P_cleared) && i < S.ncol && i < 8; i++) {
         const tex_t *t = S.rt_has_col[i] ? &S.rt_col[i] : NULL;
         if (!t || !t->mem || !(t->d.flags & NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET)) continue;

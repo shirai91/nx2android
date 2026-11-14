@@ -173,6 +173,7 @@ VkBuffer vk_zero_buffer(void);
 // ---- replay (gfx_vk_exec.c) ----
 void vk_exec_reset(void);
 void vk_exec_resume(void);   // new internal segment, retaining conditional state
+extern int g_vk_cpu_ready;   // live diagnostic switch; default on
 void vk_cpu_ready(uint64_t addr, uint64_t size);
 int vk_ubd_overlaps(uint64_t addr, uint64_t size);
 void vk_sub_resume(void);   // per submission

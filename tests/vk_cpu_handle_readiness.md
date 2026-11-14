@@ -13,9 +13,12 @@ includes completion-thread readback into copied guest pools. Internal segment
 restart invalidates transient Vulkan state and preserves logical NVN bindings
 and conditional rendering. Live dependencies are never evicted at the former
 1024-entry diagnostic limit. Later deferred inline updates can cover an earlier
-GPU write without a submission cut.
+GPU write without a fence wait or submission cut, including writes in prior
+submissions. Checks scan the live fence-ordered suffix newest first and wait
+only the newest uncovered dependency.
 
-The host test runs the production tracking/preflight under ASan and UBSan,
+The host test runs the production tracking/preflight under UBSan (plus ASan when
+`NX2A_TEST_SANITIZE=1`),
 covering current/prior producers, disjoint/partial/full overwrite coverage,
 2049 live writes, bounds/overflow, texture/sampler words, storage pointers,
 and the target's zero-size-as-one-word uniform convention.
@@ -50,6 +53,16 @@ python nxnative/dm/android/build.py --game 0100000000010000 --ndk "$NDK" --out "
 python tests/run_vk_cpu_handle_readiness.py --ndk "$NDK" --host-build "$HOST_BUILD" --out "$FIXTURE"
 ```
 
+The runner selects NDK Windows tools with their `.exe` suffixes as well as
+macOS/Linux tools. Source text is read and written as UTF-8.
+
+For a live diagnostic A/B, `DM_VK_CPU_READY=0` disables the readiness waits
+and linear-target pass endings; `1` restores them (the default). The value
+is refreshed at each submission, including after a `DM_CTL` `env` update.
+The disabled path may decode stale handles; it is a diagnostic control, not
+a performance recommendation. Real-game racy-read, cut/wait and timing counts
+still require a physical-device run.
+
 On an explicitly selected test device, put `cpu-handle-readiness` and
 `shaders.dmsv` in a dedicated scratch directory. Run with `DM_ROOT` pointing
 there and `DM_VK_NO_ZEROCOPY=1`, once each with `DM_VK_RP=0` and `1`.
@@ -63,8 +76,7 @@ port passes both render-pass modes. Independent review found that graphics
 producers could leave an older overlapping update deferred; the real linear
 and transform-feedback regressions failed before the fix. The target now
 lands those older overlapping updates before the producing draw (and before
-transform-feedback control-buffer copies), preserving donor write order. The baseline includes only unrelated
-PR #361 output-mask changes; its readiness paths match main.
+transform-feedback control-buffer copies), preserving donor write order. The baseline readiness paths match the original Android implementation.
 
 Limits: this covers CPU-decoded descriptors using producers already tracked
 by this backend. It does not add 8192-entry uniform tables, general CPU/index
