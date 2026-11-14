@@ -158,7 +158,11 @@ uint64_t nvn_dirty_released(void) { return atomic_load(&g_released); }
 // all after 25 minutes of walking, toward the kernel's limit of 65,530). A range with more than DEFRAG_MP mprotect calls since the last time is mapped again in one piece:
 // every page is made BUSY (a game write faulting on one waits), remap() maps the whole range read-only in one call, the runs that were writable are made writable again
 // (and stamped as written, so a write that waited is the module's to let through), and the protected pages keep their protection. The mappings are then about twice the
-// runs. Run on the thread that protects textures (the replay's); remap() returns 0 when it mapped the range.
+// runs. Run on the thread that protects textures (the replay's); remap() returns 0 when it mapped the range, 1 when it mapped nothing (no protection changed: the
+// pages keep their states, as a range remap() cannot take, such as a pool not whole host pages, whose range is rounded up to them), -1 when it failed after mapping a
+// part read-only: the runs that were writable are then made writable again as after a success. A run that cannot be made writable again (mprotect fails, likely
+// for the same reason the remap did: the mapping limit) stays read-only and is kept as protected (its next write faults and is let through), as nvn_dirty_swap does,
+// so a page whose state is NONE is never read-only.
 // A range the host prepared a write into in the last DEFRAG_QUIET_MS is left for later: the host's own writes (a file read into a pool, which the game does for its
 // streaming) are system calls the kernel fails with EFAULT on a page made read-only under them; Xenoblade Chronicles 3 then inflated a short read and crashed in zlib
 enum { DEFRAG_MP = 4000, DEFRAG_QUIET_MS = 1000 };
@@ -175,18 +179,20 @@ int nvn_dirty_defrag(int (*remap)(void *mem, size_t len)) {
                 if (st == PG_BUSY) { if (!busy_wait(r, p)) break; continue; }
                 if (atomic_compare_exchange_strong(&r->state[p], &st, PG_BUSY)) { was[p] = st; break; } }
         }
-        int ok = remap((void *)r->base, r->end - r->base) == 0;
-        for (size_t p = 0; ok && p < np; ) {   // the pages that were writable, a run at a time
-            if (was[p] != PG_NONE) { p++; continue; }
-            size_t q = p; while (q < np && was[q] == PG_NONE) q++;
-            mp(r->base + (p << g_shift), (q - p) << g_shift, PROT_READ | PROT_WRITE); p = q;
+        int rm = remap((void *)r->base, r->end - r->base), ok = rm == 0;
+        if (rm > 0) { for (size_t p = 0; p < np; p++) atomic_store(&r->state[p], was[p]); free(was); atomic_store(&r->nmp, 0); continue; }   // nothing mapped: as it was
+        for (size_t p = 0; p < np; ) {   // the pages that were writable, a run at a time (also after a remap that failed after it mapped a part read-only)
+            if (was[p] == PG_PROT) { p++; continue; }
+            size_t q = p; while (q < np && was[q] != PG_PROT) q++;
+            if (mp(r->base + (p << g_shift), (q - p) << g_shift, PROT_READ | PROT_WRITE)) memset(was + p, PG_PROT, q - p);   // left read-only: kept as protected
+            p = q;
         }
         for (size_t p = 0; p < np; p++) {
-            if (!ok || was[p] == PG_PROT) { atomic_store(&r->state[p], was[p]); continue; }
-            stamp_page(r, p); atomic_store(&r->state[p], PG_NONE);
+            if (was[p] == PG_PROT) { atomic_store(&r->state[p], PG_PROT); continue; }
+            stamp_page(r, p); atomic_store(&r->state[p], PG_NONE);   // (a write that waited on a writable page is let through, after a failed remap too)
         }
         free(was);
-        if (ok) { atomic_store(&r->nmp, 0); done++; }
+        atomic_store(&r->nmp, 0); if (ok) done++;   // a range that could not be mapped again is tried after another DEFRAG_MP calls, not at every sweep
     }
     return done;
 }

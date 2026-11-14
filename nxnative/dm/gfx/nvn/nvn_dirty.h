@@ -11,7 +11,7 @@ void nvn_dirty_protect(const void *addr, size_t len);              // Set the co
 void nvn_dirty_release(const void *addr, size_t len);              // Make the covered pages writable again and stamp them as written (a span no longer watched)
 uint64_t nvn_dirty_released(void);                                 // Cumulative: pages unprotected by nvn_dirty_release
 int nvn_dirty_runs(void);                                          // Runs of protected pages now (each a mapping of the process)
-int nvn_dirty_defrag(int (*remap)(void *mem, size_t len));         // Map the most fragmented ranges again in one piece (remap: read-only, 0 = done); number of ranges done
+int nvn_dirty_defrag(int (*remap)(void *mem, size_t len));         // Map the most fragmented ranges again in one piece (remap: read-only, 0 = done, 1 = nothing mapped, -1 = failed after mapping a part); number of ranges done
 int nvn_dirty_quiet(const void *mem, size_t len);                  // nvn_dirty_swap's answer before it touches a page: 0 = go ahead, 1 = untracked span, 2 = written by the host lately (try later), -1 = not whole host pages
 int nvn_dirty_swap(void *mem, size_t len, int (*fill)(void *at, size_t n, size_t off, void *ctx), void *ctx, size_t *done);   // New pages under a span, no write lost, a slice at a time (fill: copy, map read-only, 0 = done); 1 = untracked span, 2 = written by the host lately (try later); done: bytes swapped
 uint64_t nvn_dirty_now(void);                                      // Current generation: taken before upload, as the stamp of that content
