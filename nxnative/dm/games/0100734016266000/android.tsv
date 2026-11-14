@@ -12,10 +12,10 @@
 # Known gaps: the launcher builds shaders in memory that are in no game file, the same 13 keys as Vol. 1's. A shader is captured on the device the first time a draw needs it,
 # and only a port with --install pulls the captures into the game folder's build folder, which keeps them: a port into a new folder (or after its build folder was deleted)
 # shows black menu backgrounds until a run and one more port with --install; neither the device nor Turnip is the cause. Qualcomm's own Odin 2 driver crashed Vol. 1 in
-# vkCmdBeginRenderPass and ran it at 30 fps with DM_VK_RP=0 (the game then runs at half speed): port with Turnip. Not tested yet: an in-game save, battles, Battle Network 5
-# and 6, the gallery.
-status	wip
-tested	v196608 (1.0.3) AYN Odin 2 (QCS8550, Adreno 740, Android 13, Turnip), 2026-11-12
+# vkCmdBeginRenderPass and ran it at 30 fps with DM_VK_RP=0 (the game then runs at half speed): port with Turnip.
+# Played afterwards on the same Odin 2: Battle Network 4, 5 and 6, with saving, loading, battles and the gallery; no problem found.
+status	playable
+tested	v196608 (1.0.3) AYN Odin 2 (QCS8550, Adreno 740, Android 13, Turnip), 2026-11-13
 package	org.nx2a.mmbnlc2
 orientation	landscape
 env	DM_ADAPTIVE_FPS=0

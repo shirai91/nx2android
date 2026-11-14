@@ -59,7 +59,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [ ] Mario Kart 8 Deluxe · `0100152000022000` · profile here · no Mii heads
 - [x] Mario vs. Donkey Kong · `0100B99019412000`
 - [x] Mega Man Battle Network Legacy Collection Vol. 1 · `010038E016264000`
-- [x] Mega Man Battle Network Legacy Collection Vol. 2 · `0100734016266000` · work in progress: tested to Battle Network 4's opening
+- [x] Mega Man Battle Network Legacy Collection Vol. 2 · `0100734016266000`
 - [x] Metroid Dread · `010093801237C000`
 - [ ] Monster Hunter Rise · `0100B04011742000` · profile here · 60 fps with 16.0.2
 - [ ] Monster Train 2 · `010051701FB46000` · profile here · 60 fps with 1.1.1 · only the first Monster Train is on mobile
@@ -116,5 +116,5 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [x] Viractal: Will You Trust Your Party? · `0100FD501F95A000`
 - [ ] Xenoblade Chronicles 2 · `0100E95004038000` · upstream profile
 - [x] Xenoblade Chronicles 3 · `010074F013262000` · work in progress: some effects and models don't draw yet
-- [x] Xenoblade Chronicles: Definitive Edition · `0100FF500E34A000` · 30 fps; boots rarely crash (1 in ~35), saving and later maps not tested yet
+- [x] Xenoblade Chronicles: Definitive Edition · `0100FF500E34A000` · 30 fps; boots rarely crash (1 in ~35), tested to Colony 9 with the pause menu and saving, later maps not tested yet
 - [ ] Yoshi's Crafted World · `01006000040C2000` · upstream profile
