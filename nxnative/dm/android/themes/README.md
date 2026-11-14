@@ -18,7 +18,7 @@ the old way, as outlines.
 
 Every pack shares one layout per form factor, the ergonomic one ([../overlay_default.tsv](../overlay_default.tsv)); a pack only changes how the
 controls look. The app takes the phone layout when its window is at least 1.9 times as wide as it is high (a 20:9 phone), the tablet one otherwise, and
-places each sprite at its offset from its control's centre, scaled by the window's height over the design's. The player can move and resize any control in the pause menu's layout editor (Gamepad tab, Edit layout) and set the controls' opacity there (20 to 80%); the theme's sprites follow, at each control's own size.
+places each sprite at its offset from its control's centre, scaled by the window's height over the design's. On a small screen the controls grow so a face button stays about 10 mm wide; each side then grows out from its bottom corner, and no further than every control still fits the window (`overlay_layout.h` `ov_box`, `ov_fit_scale`). The player can move and resize any control in the pause menu's layout editor (Gamepad tab, Edit layout) and set the controls' opacity there (20 to 80%); the theme's sprites follow, at each control's own size.
 
 ## Making or changing a theme
 
