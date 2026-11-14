@@ -262,14 +262,15 @@ def idrk_shaders(path, label, out):
             if idrk_data(d, a, b, flags, 4) in (b'_S2G', b'_DOK'): out.extend(glslc_shaders(idrk_data(d, a, b, flags), f'{label}#IDRK@{a:#x}', need=False))
 
 G2S, SPKG = b'_S2G3000', b'SPKG'
-def kt_gz(d):
-    """Koei Tecmo's older chunked zlib (Fire Emblem: Three Houses: the compressed entries of DATA1.bin and the patch*/…/*.gz files): u32 chunk size (0x10000), u32 chunk count, u32 inflated length,
+def kt_gz(d, chunk=0x10000):
+    """Koei Tecmo's older chunked zlib (Fire Emblem: Three Houses: the compressed entries of DATA1.bin and the patch*/…/*.gz files; Ultra Kaiju Monster Rancher: its RomFS *.gz files, among them
+    shader/*Shader.lnkbin.gz, shader/ScreenLayoutShader.g1s.gz and stage/stage_terrain_shader.lnkbin.gz): u32 chunk size (0x10000 in Three Houses, 0x20000 in Ultra Kaiju), u32 chunk count, u32 inflated length,
     u32 stored length of each chunk, then the chunks at 0x80 alignment, each a u32 length + one zlib stream, or the plain bytes when the stored length equals the chunk's inflated length (a short last
     chunk, or one that does not compress). → the inflated data, or None when d is not in that form"""
     import zlib
     if len(d) < 16: return None
     cs, n, tot = struct.unpack_from('<III', d)
-    if cs != 0x10000 or not n or n != (tot + cs - 1) // cs or 12 + 4 * n > len(d): return None
+    if cs != chunk or not n or n != (tot + cs - 1) // cs or 12 + 4 * n > len(d): return None
     sizes = struct.unpack_from(f'<{n}I', d, 12); o = (12 + 4 * n + 0x7f) & ~0x7f; out = []
     for i, s in enumerate(sizes):
         if o + s > len(d): return None
@@ -1606,6 +1607,9 @@ def scan_file(args):
                 return rel, uniq_keys(found), var_pairs(found), trees
     if head[:4] == SPKG or head[:4] == b'\0\0\1\0' and path.endswith('.gz'):   # Three Houses' loose shader packages and chunked zlib files (kt_shaders)
         kt_shaders(open(path, 'rb').read(), '/' + rel, found)
+        return rel, uniq_keys(found), var_pairs(found), trees
+    if head[:4] == b'\0\0\2\0' and path.endswith('.gz') and (z := kt_gz(open(path, 'rb').read(), 0x20000)) is not None:   # Ultra Kaiju Monster Rancher's chunked zlib files (128 KB chunks): taken only when the whole file parses as one; anything else reads raw as before
+        kt_shaders(z, '/' + rel, found)
         return rel, uniq_keys(found), var_pairs(found), trees
     if head[:4] == MTARC:   # an MT Framework archive (mtarc_members): its shader package
         mtarc_shaders(open(path, 'rb').read(), '/' + rel, found)
