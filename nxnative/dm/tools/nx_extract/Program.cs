@@ -180,8 +180,20 @@ static class P {
     // title ID …0001, beside the game's patch, …0000): with no title ID the lowest one (program index 0, the game), else the NCA of that title ID
     static Nca Pick(List<Nca> l, NcaContentType t, ulong? id = null) {
         Nca r = null;
-        foreach (Nca n in l) if (n.Header.ContentType == t && (id == null ? r == null || n.Header.TitleId < r.Header.TitleId : n.Header.TitleId == id)) r = n;
+        foreach (Nca n in l) {
+            if (n.Header.ContentType != t || (id != null && n.Header.TitleId != id)) continue;
+            if (id != null) { r = n; continue; }   // a title ID names one NCA per content type: the last one wins, as before
+            if (r == null) { r = n; continue; }
+            bool np = !IsPatch(n), rp = !IsPatch(r);   // the base game: a merged XCI ("1G+1U+1D") holds the update's Program NCA, a patch NCA, beside the base game's with the same title ID
+            if (np != rp) { if (np) r = n; continue; }
+            if (n.Header.TitleId < r.Header.TitleId) r = n;   // multi-program: the lowest title ID (program index 0)
+        }
         return r;
+    }
+    // A patch NCA (an update's Program NCA: its data section is BKTR / Aes128CtrEx) is layered over its base NCA, never used as the base
+    static bool IsPatch(Nca n) {
+        for (int i = 0; i < 4; i++) if (n.Header.IsSectionEnabled(i) && n.Header.GetFsHeader(i).IsPatchSection()) return true;
+        return false;
     }
 
     // Icon: the control data holds one 256x256 JPEG per language (/icon_<language>.dat). Use the English one (American, then British); if neither exists, take the first in NACP language order

@@ -34,7 +34,7 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
                     BindlessToArray.RunPass(context.Blocks[blkIndex], context.ResourceManager, context.GpuAccessor);
                 }
 
-                BindlessElimination.RunPass(context.Blocks[blkIndex], context.ResourceManager, context.GpuAccessor);
+                BindlessElimination.RunPass(context.Blocks[blkIndex], context.ResourceManager, context.GpuAccessor, deferSeveral: true);
 
                 // FragmentCoord only exists on fragment shaders, so we don't need to check other stages.
                 if (context.Stage == ShaderStage.Fragment)
@@ -47,6 +47,12 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
                 {
                     DoubleToFloat.RunPass(context.Hfm, context.Blocks[blkIndex]);
                 }
+            }
+
+            // nxnative: the reads whose handle merges several c[2] handles, once every other read has registered its texture (BindlessElimination.TryTableHandle)
+            for (int blkIndex = 0; blkIndex < context.Blocks.Length; blkIndex++)
+            {
+                BindlessElimination.RunPass(context.Blocks[blkIndex], context.ResourceManager, context.GpuAccessor);
             }
 
             // Run optimizations one last time to remove any code that is now optimizable after above passes.
@@ -384,7 +390,17 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
                     if (src.UseOps.Remove(node) && src.UseOps.Count == 0)
                     {
                         Debug.Assert(src.AsgOp != null);
-                        nodes.Enqueue(src.AsgOp);
+
+                        // nxnative (from MacNativeGames' translator patch 0002, after Ryujinx 01a1e37f; MIT, dm/third_party/macnativegames/LICENSE and dm/third_party/README.md):
+                        // follow only into a producer that will be removed itself. One with side effects (an atomic, a call) stays in the block when its result is unused, so its
+                        // sources are still live; dropping their uses here let the next dead-code pass delete the chain that feeds it, and the atomic then read undefined values.
+                        // The same holds for a producer with another destination still in use: an image read whose .x is dead but whose .y is not stays, and following it lost its
+                        // coordinate. 3 of FINAL FANTASY RESONANCE's 73,512 shaders translate differently without it (the chain version of dm/gfx/tools/dmsh_chain.py does not
+                        // cover this file: Android keys the translator on these sources, porter/pipeline.py translator; the Mac chain keeps its prebuilt dmsh_xlate_bin until rebuilt).
+                        if (!HasSideEffects(src.AsgOp) && DestHasNoUses(src.AsgOp))
+                        {
+                            nodes.Enqueue(src.AsgOp);
+                        }
                     }
                 }
             }
