@@ -143,6 +143,7 @@ static void *ctl_main(void *arg) {
                 if (!strcmp(line, "yields")) { void dm_yield_top(char *out, size_t n); char yt[256]; dm_yield_top(yt, sizeof yt); LOG("DM_CTL: top yielders since the last call: %s", yt); continue; }
                 if (!strncmp(line, "hlecount ", 9)) { void hlecount_dump(const char *path); hlecount_dump(line + 9); continue; }   // HLE call counts so far (DM_HLECOUNT)
                 if (!strcmp(line, "threads")) { void svc_thread_dump(void); LOG("DM_CTL: guest threads"); svc_thread_dump(); continue; }   // every guest thread: its wait and backtrace
+                if (!strncmp(line, "motion ", 7)) { void dm_ctl_motion(const char *args); dm_ctl_motion(line + 7); continue; }   // made-up device motion (the six-axis section below)
                 if (!strncmp(line, "texlist ", 8)) { void dm_gfx_texlist(int target); dm_gfx_texlist(atoi(line + 8)); continue; }
                 if (!strncmp(line, "texraw ", 7)) { void dm_gfx_texraw(uint64_t serial, const char *path); char *e2; uint64_t s = strtoull(line + 7, &e2, 10); while (*e2 == ' ') e2++; dm_gfx_texraw(s, e2); continue; }
                 if (!strncmp(line, "pokei ", 6)) { void dm_ctl_poke_i32(uint64_t a, int32_t v); char *e2; uint64_t a = strtoull(line + 6, &e2, 16); dm_ctl_poke_i32(a, (int32_t)strtol(e2, NULL, 0)); continue; }
@@ -319,16 +320,33 @@ static int shaking(uint64_t t) { return t >= atomic_load(&g_shake_t0) && t < ato
 enum { MO_RING = 16 };
 typedef struct { int64_t samp; float acc[3], gyro[3], angle[3], dir[9]; } motion_sample;
 static pthread_mutex_t g_mo_mu = PTHREAD_MUTEX_INITIALIZER;
-static motion_sample g_mo[MO_RING]; static int g_mo_n; static int64_t g_mo_t; static double g_mo_q[4] = {1, 0, 0, 0}, g_mo_ang[3];   // under g_mo_mu
+static motion_sample g_mo[MO_RING]; static int g_mo_n, g_mo_fuse; static int64_t g_mo_t; static float g_mo_last_acc[3]; static double g_mo_q[4] = {1, 0, 0, 0}, g_mo_ang[3];   // under g_mo_mu (g_mo_fuse: samples fused)
 static _Atomic int g_mo_on; static _Atomic uint64_t g_mo_moved;   // fed at least once; the guest time the device last turned faster than MO_REST_REV
 #define MO_REST_REV 0.01   // revolutions / s (3.6 degrees / s): slower is at rest (IsSixAxisSensorAtRest)
-void dm_motion_set(const float acc[3], const float gyro[3], int64_t t_ns) {
+static _Atomic int g_mo_inject;   // DM_CTL "motion" lines feed made-up motion: the front end's samples are left out until "motion release"
+static void mo_set(const float acc[3], const float gyro[3], int64_t t_ns);
+void dm_motion_set(const float acc[3], const float gyro[3], int64_t t_ns) { if (!atomic_load(&g_mo_inject)) mo_set(acc, gyro, t_ns); }
+static void mo_set(const float acc[3], const float gyro[3], int64_t t_ns) {
     pthread_mutex_lock(&g_mo_mu);
     double dt = g_mo_n && t_ns > g_mo_t ? (double)(t_ns - g_mo_t) / 1e9 : 0; if (dt > 0.05) dt = 0.05;   // a gap (the app in the background) is not one long turn
-    g_mo_t = t_ns;
+    g_mo_t = t_ns; memcpy(g_mo_last_acc, acc, sizeof g_mo_last_acc);
     for (int i = 0; i < 3; i++) g_mo_ang[i] += gyro[i] * dt;
     // q (controller to world) turns by the body-frame angular velocity w (radians): q' = q (x) (0, w) / 2, then normalized
     double w[3] = {2 * M_PI * gyro[0], 2 * M_PI * gyro[1], 2 * M_PI * gyro[2]}, *q = g_mo_q, h = dt / 2;
+    // Sensor fusion, as the Switch's own: the gyroscope alone drifted, and Breath of the Wild aims its Sheikah Slate viewfinder by the direction, so a tilt up
+    // moved the view diagonally and a turn barely moved it once the direction had wandered from the device's real attitude (on an AYN Thor, after a while
+    // of play; a made-up 90-degree roll with gravity unchanged did the same). Gravity pulls it back (Mahony's complementary filter): the measured down (the
+    // acceleration, in G, gravity's direction in the controller's frame) against q's down (R^T (0, 0, -1)), their cross product added to w as a rate. Only
+    // when the acceleration is near 1 G (a hand's jerk is not gravity); the first 0.5 s at a high gain, so the direction starts at the device's tilt rather
+    // than lying flat. The yaw has no reference, as on the console
+    double am = sqrt((double)acc[0] * acc[0] + (double)acc[1] * acc[1] + (double)acc[2] * acc[2]);
+    if (am > 0.75 && am < 1.25) {
+        double d[3] = {acc[0] / am, acc[1] / am, acc[2] / am}, a = q[0], b = q[1], c = q[2], e = q[3];
+        double p[3] = {-2 * (b * e - a * c), -2 * (c * e + a * b), -(1 - 2 * (b * b + c * c))};   // q's down in the controller's frame
+        double k = g_mo_fuse < 100 ? 10.0 : 1.0; g_mo_fuse++;   // per second
+        w[0] += k * (d[1] * p[2] - d[2] * p[1]); w[1] += k * (d[2] * p[0] - d[0] * p[2]); w[2] += k * (d[0] * p[1] - d[1] * p[0]);
+        if (!dt) dt = 0.005, h = dt / 2;   // the first sample turns q toward gravity too
+    }
     double n0 = q[0] - h * (q[1] * w[0] + q[2] * w[1] + q[3] * w[2]), n1 = q[1] + h * (q[0] * w[0] + q[2] * w[2] - q[3] * w[1]),
            n2 = q[2] + h * (q[0] * w[1] + q[3] * w[0] - q[1] * w[2]), n3 = q[3] + h * (q[0] * w[2] + q[1] * w[1] - q[2] * w[0]), m = sqrt(n0 * n0 + n1 * n1 + n2 * n2 + n3 * n3);
     q[0] = n0 / m; q[1] = n1 / m; q[2] = n2 / m; q[3] = n3 / m;
@@ -395,6 +413,31 @@ HLE_FORCE("_ZN2nn3hid23GetSixAxisSensorHandlesEPNS0_19SixAxisSensorHandleEiRKjNS
 HLE_FORCE("_ZN2nn3hid18StartSixAxisSensorERKNS0_19SixAxisSensorHandleE", "six-axis sensor; always sampling on the host", void, h_hid_SixStart, const uint32_t *h) { (void)h; }
 HLE_FORCE("_ZN2nn3hid22GetSixAxisSensorStatesEPNS0_18SixAxisSensorStateEiRKNS0_19SixAxisSensorHandleE", "six-axis sensor states: every requested entry, newest first",
           int, h_hid_SixStates, SixAxisState *out, int n, const uint32_t *h) { return six_states(out, n, *h); }
+// DM_CTL "motion <gx> <gy> <gz> [<ax> <ay> <az> [<seconds>]]": that angular velocity (revolutions / s, the controller's frame) from that acceleration (G; default the last one
+// fed, else 0 0 -1, lying flat) at 200 Hz for the time (default 1 s), as if the device moved so, then held in that pose: the device's own motion stays out until
+// "motion release" (a series of turns goes on from where the last left it). "motion reset" puts the integrated orientation back at rest. For finding which axes a game turns its
+// camera by (Breath of the Wild's Sheikah Slate viewfinder) without moving the device
+static void mo_ctl(const char *args) {
+    if (!strncmp(args, "release", 7)) { atomic_store(&g_mo_inject, 0); LOG("DM_CTL: motion released: the device's own motion again"); return; }
+    if (!strncmp(args, "reset", 5)) { pthread_mutex_lock(&g_mo_mu); g_mo_q[0] = 1; g_mo_q[1] = g_mo_q[2] = g_mo_q[3] = 0; g_mo_ang[0] = g_mo_ang[1] = g_mo_ang[2] = 0; g_mo_fuse = 0; pthread_mutex_unlock(&g_mo_mu); LOG("DM_CTL: motion reset"); return; }
+    float g[3] = {0}, a[3] = {0, 0, -1}, s = 1;
+    int k = sscanf(args, "%f %f %f %f %f %f %f", &g[0], &g[1], &g[2], &a[0], &a[1], &a[2], &s);
+    if (k < 3) { LOG("[RED] DM_CTL motion wants gx gy gz [ax ay az [seconds]] or reset"); return; }
+    if (k < 6) { pthread_mutex_lock(&g_mo_mu); if (g_mo_n) memcpy(a, g_mo_last_acc, sizeof a); else { a[0] = 0; a[1] = 0; a[2] = -1; } pthread_mutex_unlock(&g_mo_mu); }
+    if (!(a[0] * a[0] + a[1] * a[1] + a[2] * a[2] > 0.01f)) { a[0] = 0; a[1] = 0; a[2] = -1; }   // no gravity (or not a number): lying flat (a turn of a zero vector made NaNs)
+    LOG("DM_CTL: motion gyro %+.3f %+.3f %+.3f rev/s, acceleration %+.2f %+.2f %+.2f G, %.2f s", g[0], g[1], g[2], a[0], a[1], a[2], s);
+    atomic_store(&g_mo_inject, 1);
+    // gravity turns with the controller, as in a real turn (a fixed world vector seen from the turning frame: dv/dt = v x w); held fixed, the fusion rightly pulled
+    // against every tilt and a pitch up and back did not come back
+    struct timespec t; for (int i = 0, n = (int)(s * 200); i < n; i++) { clock_gettime(CLOCK_MONOTONIC, &t); mo_set(a, g, (int64_t)t.tv_sec * 1000000000ll + t.tv_nsec);
+        double w0 = 2 * M_PI * g[0] * 0.005, w1 = 2 * M_PI * g[1] * 0.005, w2 = 2 * M_PI * g[2] * 0.005, m0 = sqrt((double)a[0] * a[0] + (double)a[1] * a[1] + (double)a[2] * a[2]);
+        float n0 = (float)(a[0] + (a[1] * w2 - a[2] * w1)), n1 = (float)(a[1] + (a[2] * w0 - a[0] * w2)), n2 = (float)(a[2] + (a[0] * w1 - a[1] * w0));
+        double m1 = sqrt((double)n0 * n0 + (double)n1 * n1 + (double)n2 * n2); a[0] = (float)(n0 * m0 / m1); a[1] = (float)(n1 * m0 / m1); a[2] = (float)(n2 * m0 / m1);
+        usleep(5000); }
+    float z[3] = {0}; clock_gettime(CLOCK_MONOTONIC, &t); mo_set(a, z, (int64_t)t.tv_sec * 1000000000ll + t.tv_nsec);   // at rest at the end, in the same pose
+    LOG("DM_CTL: motion done, acceleration now %+.2f %+.2f %+.2f G (held until \"motion release\")", a[0], a[1], a[2]);
+}
+void dm_ctl_motion(const char *args) { mo_ctl(args); }   // (the DM_CTL reader, above)
 // Vibration handles: byte 0 = SDK style index (FullKey 3, Handheld 4), byte 1 = npad id, byte 2 = motor.
 // See libnx hid.c _hidGetVibrationDeviceHandles. Only the styles this host connects are exposed.
 static uint32_t vib_targets(uint32_t h) {
