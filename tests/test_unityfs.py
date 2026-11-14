@@ -79,4 +79,36 @@ class ComputeVariants(unittest.TestCase):
             list(unityfs.serialized_objects(serialized(compute_object(), bytes(16)), {}, {72}, {(72, COMPUTE_HASH): tree}))
 
 
+COMPUTE_2017_HASH = bytes.fromhex('20291e020d10074c35d8286f5191593f')
+SHADER_2017_HASH = bytes.fromhex('266d53113fa30d2b858f2768f92eaa14')
+
+
+def resource_2017(name): return text(name) + text('generated') + struct.pack('<3i', 5, 6, 16)   # bindPoint, then the buffer counter {bindpoint, offset}
+
+
+class Unity2017(unittest.TestCase):
+    """Hollow Knight (Unity 2017.4.10f1): stripped files, no bundles, so the layouts come from KNOWN_TREES"""
+    def test_compute_kernel_with_buffer_counters(self):
+        # one variant, one kernel: name, cbs, textures, builtin samplers (8-byte records), in/out buffers, code, thread group size; no constant buffers
+        kernel = (text('CSMain') + words(1) + resource_2017('Params') + words(0) + words(1, 3, 2) + words(0) + words(1) + resource_2017('Result')
+                  + words(5) + b'12345' + bytes(3) + words(3, 8, 8, 1))
+        data = text('Blur') + words(1) + words(20, 50, 1) + kernel + words(0) + b'\1\0\0\0'
+        reader = unityfs.Reader(data, True)
+        obj = unityfs._read(reader, unityfs.known_tree(72, COMPUTE_2017_HASH))
+        self.assertEqual(reader.p, len(data))
+        [k] = obj['variants'][0]['kernels']
+        self.assertEqual((k['name'], k['code'], k['threadGroupSize']), ('CSMain', b'12345', [8, 8, 1]))
+        self.assertEqual(k['outBuffers'], [{'name': 'Result', 'generatedName': 'generated', 'bindPoint': 5, 'counter': {'bindpoint': 6, 'offset': 16}}])
+        self.assertEqual(k['builtinSamplers'], [{'sampler': 3, 'bindPoint': 2}])
+        self.assertTrue(obj['variants'][0]['resourcesResolved'])
+
+    def test_shader_pass_has_no_procedural_instancing_or_nonmodifiable_textures(self):
+        def names(n): return [n.name] + [x for k in n.kids for x in names(k)]
+        tree = unityfs.known_tree(48, SHADER_2017_HASH)
+        self.assertNotIn('m_HasProceduralInstancingVariant', names(tree))
+        self.assertEqual([k.name for k in tree.kids][-3:], ['compressedBlob', 'm_Dependencies', 'm_ShaderIsBaked'])
+        def find(n, name): return n if n.name == name else next((x for k in n.kids if (x := find(k, name))), None)
+        self.assertTrue(find(tree, 'm_HasInstancingVariant').flags & 0x4000)   # aligned after it, as the procedural flag was in 2018.3
+
+
 if __name__ == '__main__': unittest.main()
