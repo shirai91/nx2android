@@ -31,7 +31,7 @@ def _parser():
                          'the first launch\'s default: the app keeps the player\'s own settings)')
     po.add_argument('--mt-replay', action='store_true',
                     help='multithread replay: the game\'s Vulkan commands are recorded on a thread of their own (DM_VK_MT_REPLAY=1 in env.txt), for a game whose replay '
-                         'thread holds its frame rate back; it needs a port again (or env.txt edited) to turn off')
+                         'thread holds its frame rate back; to turn it off, port again without it and install (or edit env.txt)')
     po.add_argument('--vulkan-driver', default=None, metavar='FILE',
                     help='an arm64 Vulkan driver library (.so, such as Mesa\'s Turnip for Adreno) to pack in the APK and use instead of the device\'s own driver '
                          '(DM_VK_DRIVER in env.txt); the app falls back to the device\'s driver when the library does not load. A library not named lib*.so '

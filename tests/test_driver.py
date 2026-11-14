@@ -33,7 +33,7 @@ class Device(Adb):
     def __init__(self, apk, env):
         super().__init__('adb'); self.serial = 'dev'; self.apk, self.env_text, self.ops, self.installed_apk = apk, env, [], None
     def pick(self): return 'dev'
-    def run(self, *a, timeout=None, check=True, retries=3):
+    def run(self, *a, timeout=None, check=True, retries=3, encoding=None):
         a = [str(x) for x in a]; self.ops.append(a[0])
         if a[0] == 'pull': shutil.copyfile(self.apk, a[2]); return ''
         if a[0] == 'push': self.env_text = Path(a[1]).read_text(encoding='utf-8'); return ''
@@ -148,7 +148,7 @@ class HostDevice(Adb):   # porter host's made-up device: a port's data pack (nx2
     def __init__(self, apk, files, debuggable=False):
         super().__init__('adb'); self.serial = 'dev'; self.apk, self.files, self.debuggable, self.ops, self.installed_apk = apk, files, debuggable, [], None
     def pick(self): return 'dev'
-    def run(self, *a, timeout=None, check=True, retries=3):
+    def run(self, *a, timeout=None, check=True, retries=3, encoding=None):
         a = [str(x) for x in a]; self.ops.append(a[0] if a[0] != 'shell' else a[1].split()[0])
         if a[0] == 'pull': shutil.copyfile(self.apk, a[2]); return ''
         if a[0] == 'install': self.installed_apk = Path(a[-1]).read_bytes(); return 'Success'

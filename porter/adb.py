@@ -47,11 +47,11 @@ class Adb:
     def cmd(self, *a):
         return [self.exe] + (['-s', self.serial] if self.serial else []) + [str(x) for x in a]
 
-    def run(self, *a, timeout=None, check=True, retries=3):
+    def run(self, *a, timeout=None, check=True, retries=3, encoding=None):   # encoding: how to decode the output (None: the platform's, the ANSI code page on Windows)
         err = ''
         for attempt in range(retries):
             try:
-                r = subprocess.run(self.cmd(*a), capture_output=True, text=True, errors='replace', timeout=timeout or self.timeout, env=self.env)
+                r = subprocess.run(self.cmd(*a), capture_output=True, text=True, encoding=encoding, errors='replace', timeout=timeout or self.timeout, env=self.env)
                 if r.returncode == 0 or not check: return r.stdout
                 err = (r.stderr.strip() or r.stdout.strip())[-400:]   # adb's reason is on stderr; stdout has the files that went
                 if a and a[0] == 'install': break   # an install failure is an answer, not a dropped link
@@ -109,8 +109,8 @@ class Adb:
         out = self.shell('for p in ' + ' '.join(shlex.quote(x) for x in (a, b)) + '; do while [ ! -e "$p" ]; do p=$(dirname "$p"); done; stat -L -c %d "$p"; done', check=False).split()
         return len(out) == 2 and out[0] == out[1]
 
-    def read_text(self, path):   # a small text file on the device, '' when it is not there
-        return self.shell(f'cat {shlex.quote(path)} 2>/dev/null; true', check=False)
+    def read_text(self, path):   # a small text file on the device, '' when it is not there. Read as UTF-8, which the files hold (env.txt: a game's name in its header, a player's path), not the PC's code page
+        return self.shell(f'cat {shlex.quote(path)} 2>/dev/null; true', check=False, encoding='utf-8')
 
     def sdk(self):   # the device's API level (29: Android 10), 0 when unknown
         v = self.prop('ro.build.version.sdk')
