@@ -1,0 +1,11 @@
+# Sky Force Reloaded on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Unity 2017.4.4f1 IL2CPP on SDK 4.5.0, update 1.1.1; 3,050 shaders, all translated.
+# Tested 2026-11-14 on a Xiaomi 14 (Snapdragon 8 Gen 3, Adreno 750) with the Mr Purple T30 Turnip driver (--vulkan-driver) and multithreaded replay (--mt-replay):
+# the menus, the campaign's first levels, the on-screen gamepad. 60 fps (frame work p50 3.7 to 7.4 ms), no crash, no red log line.
+# Not tried: the later levels, saving and continuing, the system's own Adreno driver.
+# It crashed at boot until nn::account::AsyncContext's constructor stopped being taken over by the host (hle_account.c): the stub left the vtable pointer 0 and the
+# game's release path jumped through NULL+8 (sig=11 addr=0x8 pc=main+0x1deb748). Its shaders needed a type tree for Unity 2017 (unityfs.py), the two fixes this game found.
+status	playable
+tested	v1 Xiaomi 14 (Snapdragon 8 Gen 3, Adreno 750)
+package	org.nx2a.t01006fe005b6e000
+orientation	landscape
