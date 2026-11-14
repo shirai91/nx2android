@@ -1,0 +1,46 @@
+# Game profile of Sky Force Reloaded (Switch, base game v0 + update 1.1.1 = v1). Plays on Android (android.tsv)
+# Format: see dm/games/README.md
+# Infinite Dreams' Unity game (player 2017.4.4f1, IL2CPP) on NintendoWare NVN, FMOD for sound, SDK 4.5.0; subsdk0 is the SDK's movie library (the opening movie).
+# Checked on the device: the build IDs of the three modules, the NPDM's system resource (none) and the RomFS (111 files, 0.73 GB: the UnityFS bundles and
+# data.unity3d under Data/, plus Data/Managed and Data/Resources)
+
+# ---- Identity ----
+title_id	01006FE005B6E000
+program_id	01006FE005B6E000
+
+# ---- App ----
+name	Sky Force Reloaded
+ipa	SkyForceReloaded.ipa
+app_category	public.app-category.games
+
+# ---- Versions ----
+build	v1	1.1.1	main=f35d3df7cc780649936627e857327153	subsdk0=73f98f5f7a34d4c520bda7c1a19cd9bd	sdk=d95547528dcd684e2813ec83d338a472
+package	v1
+shader_versions	v1
+
+# ---- Files ----
+# load order as on Horizon: main, subsdk0 (the movie library, which main imports from), sdk
+modules	main subsdk0 sdk
+# the largest RomFS file
+romfs_marker	Data/level20
+zip_store	.assets:.dat:.png:.resource:.ress:.metallib
+
+# ---- Memory ----
+# The NPDM declares no system resource, so the game has no virtual address memory: Unity sets a heap of the pool less 64 MB of used memory, 3.3 GB, in the 3.25 GB
+# heap region of a 4 GB block. The application pool is the Switch's 3285 MB
+mem_reserve	0x100000000
+mem_alias	0x10000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+sys_resource	0x0
+
+# ---- Shader split ----
+# 3,050 shaders, Shader objects in the UnityFS bundles and data.unity3d under Data/. Unity 2017 writes no type trees, so the split needs unityfs.py's tree for the
+# type hash these objects carry (266d5311...): without it the split stops at "without type trees" and none of them is translated. The ComputeShader objects in
+# 'unity default resources' carry a 2017 hash unityfs.py has no layout for yet: the split says so in red and leaves their kernels out (the game plays without them)
+shader_groups	/Data/=data
+shader_note	Sky Force Reloaded shaders (Unity 2017)
+
+# ---- After the rewrite ----
+# the rewritten modules need more than the default 64 MB of used memory (74 MB)
+mem_used	0x4a00000
