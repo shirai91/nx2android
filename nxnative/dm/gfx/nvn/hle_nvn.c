@@ -691,12 +691,19 @@ NVN(nvnSyncInitialize, NVNboolean, NVNsync *s, NVNdevice *d) { (void)d; *(sync_t
 NVN(nvnSyncFinalize, void, NVNsync *s) { ((sync_t *)s)->magic = 0; }
 NVN(nvnSyncSetDebugLabel, void, NVNsync *s, const char *l) { (void)s; (void)l; }
 // Fence = "all commands previously submitted to the queue have completed": record the fence value of the most recent submit
-static uint64_t nvn_fence_now(void); static int nvn_fence_wait(uint64_t f, uint64_t timeout_ns);
+static uint64_t nvn_fence_now(void); static int nvn_fence_wait(uint64_t f, uint64_t timeout_ns); static int job_wait(uint64_t id, uint64_t timeout_ns);
+static int ahead_on(void); static void ahead_note_end(uint64_t h); static void ahead_try(const char *where); static void ahead_presented(void);   // replay ahead (DM_NVN_AHEAD, below)
 static uint64_t g_frame;
 // DM_NVN_SEQ=N (live, a DM_CTL env line): the next N frames' submissions, fences, acquires, sync waits and presents in order, with thread and time
 // (how Xenoblade Chronicles 3's render thread was found waiting in SyncWait on the acquire sync for its whole frame's GPU work)
-static int seq_on(void) { static uint64_t until; const char *e = getenv("DM_NVN_SEQ"); if (e && atoi(e)) { until = g_frame + (uint64_t)atoi(e); setenv("DM_NVN_SEQ", "0", 1); } return g_frame < until; }
+// The variable is read once a frame: end recording traces too, which games call hundreds of times a frame
+static int seq_on(void) { static uint64_t until, read_at = ~0ull; uint64_t f = g_frame;
+    if (f != read_at) { read_at = f; const char *e = getenv("DM_NVN_SEQ"); if (e && atoi(e)) { until = f + (uint64_t)atoi(e); setenv("DM_NVN_SEQ", "0", 1); } }
+    return f < until; }
 #define SEQ(...) do { if (seq_on()) { char sb_[256]; snprintf(sb_, sizeof sb_, __VA_ARGS__); LOG("[seq] f%llu t%lx %.3f %s", (unsigned long long)g_frame, (unsigned long)(uintptr_t)pthread_self(), now_ns() / 1e6, sb_); } } while (0)
+// The graphics backend's own threads in the same trace (the Vulkan completion and present threads): when the GPU is seen done, the swapchain's waits
+int nvn_seq_active(void) { return seq_on(); }
+void nvn_seq_note(const char *s) { SEQ("%s", s); }
 NVN(nvnQueueFenceSync, void, NVNqueue *q, NVNsync *s, NVNsyncCondition c, int f) { (void)q; (void)c; (void)f; ((sync_t *)s)->fenced = 1; ((sync_t *)s)->fence = nvn_fence_now(); SEQ("fence %p", (void *)s); }
 // A sync object that was never fenced waits until timeout, as on a real device; a fenced one is released only after the GPU has actually completed up to that fence value
 // A GPU-side wait on a sync: the host has a single Metal queue that executes submissions in order, so commands before the fence are always done first and nothing needs waiting. A sync not fenced yet (fenced later by another thread) is not waited for here; logged once
@@ -704,10 +711,21 @@ NVN(nvnQueueWaitSync, NVNboolean, NVNqueue *q, const NVNsync *s) { (void)q; stat
 // ZCull data: the host does no ZCull, so there is nothing to save / restore
 NVN(nvnCommandBufferRestoreZCullData, void, NVNcommandBuffer *c, NVNbufferAddress a, size_t n) { (void)c; (void)a; (void)n; }
 NVN(nvnCommandBufferSaveZCullData, void, NVNcommandBuffer *c, NVNbufferAddress a, size_t n) { (void)c; (void)a; (void)n; }
+// DM_NVN_FENCE_EARLY=1 (live, an experiment, off by default): a CPU wait on a queue fence (not a window acquire's) returns once the work before the fence is replayed
+// and sent to the GPU, not once the GPU has done it. Breath of the Wild waits for each frame's GPU work before it submits the next, so its replay (~13 ms) never
+// overlapped the GPU (~18 ms) and every frame took both (Great Plateau, DM_FPS_HOLD=off, Thor with Turnip: 31.5 ms docked, 26.8 handheld). With it: 25.4 and 21.0 ms,
+// and then the GPU was the limit (frames followed DM_RENDER_SCALE: 17.4 ms at 0.5) while Turnip blocked ~10.7 ms a frame in vkQueueSubmit (in vkQueuePresentKHR with
+// DM_VK_X_FENCES=1). Unsafe in general: the game may then write memory the GPU still reads; the safe form is replaying a frame before its submission
+static int fence_early(void) { static uint64_t at = ~0ull; static int on; if (g_frame != at) { at = g_frame; const char *e = getenv("DM_NVN_FENCE_EARLY"); on = e && atoi(e); } return on; }
 NVN(nvnSyncWait, NVNsyncWaitResult, const NVNsync *s, uint64_t timeout) {
     const sync_t *o = (const sync_t *)s;
     if (!o->fenced) { SEQ("syncwait %p unfenced", (void *)s); return NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED; }
+    if (o->fenced == 1 && fence_early()) {
+        if (o->fence >> 63) job_wait(o->fence & ~(1ull << 63), timeout);   // (ASYNC_FENCE) the job's replay, not its GPU work
+        SEQ("syncwait %p kind 1 early", (void *)s); return NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED;
+    }
     if (nvn_fence_wait(o->fence, 0)) { SEQ("syncwait %p kind %u already", (void *)s, o->fenced); return NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED; }
+    if (o->fenced == 1 && timeout && ahead_on()) ahead_try("a sync wait");   // the GPU is still busy with the last frame: replay the next one meanwhile, if the acquire could not
     uint64_t t0 = now_ns(); int r = nvn_fence_wait(o->fence, timeout);
     SEQ("syncwait %p kind %u timeout %llu waited %.2f ms -> %d", (void *)s, o->fenced, (unsigned long long)timeout, (now_ns() - t0) / 1e6, r);
     return r ? NVN_SYNC_WAIT_RESULT_CONDITION_SATISFIED : NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED;
@@ -886,6 +904,8 @@ NVN(nvnCommandBufferEndRecording, NVNcommandHandle, NVNcommandBuffer *c) {
     cmd_t *o = CB(c);
     uint8_t *p = cmd_alloc_keep(o, 8, 0); put_hdr(p, OP_END, 8);   // nothing follows: the END may take the segment's last bytes
     o->recording = 0;
+    SEQ("end recording %#llx (%llu bytes since the buffer's last reset)", (unsigned long long)(uintptr_t)o->begin, (unsigned long long)o->used);   // when a frame's commands are ready, against its submission
+    if (ahead_on()) ahead_note_end((uint64_t)(uintptr_t)o->begin);
     return (NVNcommandHandle)o->begin;
 }
 NVN(nvnCommandBufferIsRecording, NVNboolean, const NVNcommandBuffer *c) { return ((const cmd_t *)c)->recording != 0; }
@@ -1330,24 +1350,275 @@ static uint64_t rec_copy(uint64_t h) {
     size_t at = rec_flat(p, c, 0, n - 8, 0); op_hdr e = {OP_END, 8}; memcpy(c + at, &e, 8);
     g_flat_bytes += n; return (uint64_t)(uintptr_t)c;
 }
+
+// ---------- Replay ahead (DM_NVN_AHEAD=1, start-up; off by default) ----------
+// Breath of the Wild waits for frame N's GPU work before it submits frame N+1 (nvnSyncWait on the frame's fence), so N+1's replay (~13 ms) never overlapped the
+// GPU (~18 ms) and every frame took both: 31.5 ms docked on the AYN Thor, of 33.3 at 30 fps. Its commands are ready long before: the frame is one small top-level
+// handle, recorded just before the submit, that calls a body a worker recorded during N's replay (3,356 of ~3,600 draws in one recording, with nothing the CPU
+// sees: no counters, events or fences), a 72-draw recording and a few small ones. So the opening (the records before the body's CALL, predicted from the frames
+// before) and the body are replayed at the window acquire after N's present, in the pacing wait or during N's GPU work, and the submission is paused
+// (gfx_vk_core.c mtl_sub_pause: nothing goes to the GPU before the game's submit). At the submit the opening must match the prediction record for record, counter
+// reports aside (their addresses are the live ones), and the body must be unchanged (a hash of its records and of the handles its deferred binds read); then only
+// the rest is replayed. A miss commits what was replayed ahead as it is and replays the submission in full; so does any other submission meanwhile. It starts after
+// 30 submissions in a row of one handle whose largest call holds 2,000+ records
+__attribute__((weak)) int mtl_sub_ahead_supported(void) { return 0; }   // the backend's side (gfx_vk_core.c); none in the others
+__attribute__((weak)) int mtl_sub_pause(void) { return 0; }
+__attribute__((weak)) void mtl_sub_resume(void) {}
+__attribute__((weak)) void mtl_sub_hold_parts(int on) { (void)on; }
+__attribute__((weak)) int mtl_sub_post_count(void) { return -1; }
+__attribute__((weak)) void mtl_sub_post_addr(int i, uint64_t addr) { (void)i; (void)addr; }
+enum { AH_ENDS = 512, AH_STABLE = 30, AH_BODY_RECS = 2000, AH_OPEN_MAX = 65536 };
+static struct {   // all but the ring under g_sub_mu (the learning at each submit, the replay ahead and the resume all hold it)
+    pthread_mutex_t mu;   // the ring alone: the game's threads add to it as they end recordings; taken after g_sub_mu where both are held
+    pthread_cond_t cv;    // signalled at each end (the ahead thread waits on it)
+    struct { uint64_t h, seq; unsigned recs; } ends[AH_ENDS]; uint64_t nend;   // recordings ended, a ring (ahead_note_end); recs: their records, 0 until counted
+    uint64_t sub_seq;                       // nend at the last submit: later ends belong to the next frame (under mu)
+    uint8_t *tmpl[2]; size_t ntmpl[2];      // their openings, flattened (CALLs inlined, ended with OP_END), [0] the latest
+    int stable;                             // submissions in a row that fit
+    unsigned body_recs;                     // the last body's records: a candidate needs 70% of them (one the body calls, ended before it, has fewer)
+    uint64_t tops[2];                       // the last two top-level handles: never a body (one calls the body, so it outnumbers it; BotW records it at one address)
+    int open, post0, npost; uint64_t body, body_hash; const uint8_t *pred; size_t npred;   // the paused submission
+    _Atomic uint64_t presents; uint64_t sub_presents;   // presents so far, and at the last submit: nothing is replayed ahead before the frame's present (its path looks up
+                                                       // textures outside a submission on the game's thread)
+    uint64_t hits, misses, none, n_sub; uint64_t ns_ahead, ns_rest;   // for the log line
+} A = {.mu = PTHREAD_MUTEX_INITIALIZER, .cv = PTHREAD_COND_INITIALIZER};
+static void ahead_presented(void) { if (ahead_on()) { atomic_fetch_add(&A.presents, 1); pthread_mutex_lock(&A.mu); pthread_cond_signal(&A.cv); pthread_mutex_unlock(&A.mu); } }   // (a body ended before the present is replayed at once)
+// Live: env DM_NVN_AHEAD=0 pauses replay ahead (=1 resumes it) in a run started with it, for A/B in one scene (read once a frame)
+static int ahead_live(void) { static uint64_t at = ~0ull; static int on = 1; if (g_frame != at) { at = g_frame; const char *e = getenv("DM_NVN_AHEAD"); on = !e || atoi(e) != 0; } return on; }
+// The ahead thread: woken at each end of a recording, it replays the next frame ahead once a body-sized recording has ended after the frame's present. Not at the
+// acquire: the body is recorded after the submit, so with the replay out of the submit (0.6 ms) the body of the next frame ended 5-10 ms after the acquire,
+// every other frame was replayed at its submit in full, and those came out 46-48 ms at 30 fps (p95 47 ms against 35.5 without replay ahead)
+static void *ahead_main(void *arg) {
+    (void)arg; pthread_setname_np(pthread_self(), "nvn ahead"); dm_perf_replay_thread();   // (DM_PIN_REPLAY=prime / big keeps it to the fastest cores, as the replay thread)
+    for (;;) {
+        pthread_mutex_lock(&A.mu); struct timespec dl; clock_gettime(CLOCK_REALTIME, &dl); dl.tv_nsec += 20000000; if (dl.tv_nsec >= 1000000000L) { dl.tv_sec++; dl.tv_nsec -= 1000000000L; }
+        pthread_cond_timedwait(&A.cv, &A.mu, &dl); pthread_mutex_unlock(&A.mu);
+        ahead_try("a recording's end");
+    }
+    return NULL;
+}
+static int ahead_on(void) {
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("DM_NVN_AHEAD"), *mt = getenv("DM_VK_MT_REPLAY");
+        on = e && atoi(e) && mtl_sub_ahead_supported() && !nvn_async() && !(mt && atoi(mt));
+        if (e && atoi(e)) LOG("[nvn] replay ahead %s", on ? "on (DM_NVN_AHEAD)" : "asked for, but off: it needs the Vulkan backend, and neither DM_NVN_ASYNC nor DM_VK_MT_REPLAY");
+        if (on) { pthread_t t; pthread_attr_t a; pthread_attr_init(&a); pthread_attr_setstacksize(&a, 8 << 20); pthread_attr_setdetachstate(&a, PTHREAD_CREATE_DETACHED);   // (the replay's stack)
+            if (pthread_create(&t, &a, ahead_main, NULL)) on = 0; pthread_attr_destroy(&a); } }
+    return on;
+}
+static void ahead_note_end(uint64_t h) {
+    pthread_mutex_lock(&A.mu); uint64_t k = A.nend++ % AH_ENDS; A.ends[k].h = h; A.ends[k].seq = A.nend; A.ends[k].recs = 0; pthread_cond_signal(&A.cv); pthread_mutex_unlock(&A.mu);
+}
+// A recording's records (JUMPs followed, CALLs counted in), and a hash of them with the handles their deferred binds read at replay time
+static unsigned rec_count(const uint8_t *p, int depth) {
+    unsigned n = 0;
+    for (int guard = 0; guard < 4000000; guard++) {
+        op_hdr hd; memcpy(&hd, p, sizeof hd);
+        if (hd.op == OP_END || hd.size < 8 || hd.size & 7) return n;
+        if (hd.op == OP_JUMP) { memcpy(&p, p + 8, 8); continue; }
+        if (hd.op == OP_CALL && depth < 8) { uint64_t t; memcpy(&t, p + 8, 8); n += rec_count((const uint8_t *)(uintptr_t)t, depth + 1); } else n++;
+        p += hd.size;
+    }
+    return n;
+}
+static uint64_t rec_hash(const uint8_t *p, int depth, uint64_t h) {
+    for (int guard = 0; guard < 4000000; guard++) {
+        op_hdr hd; memcpy(&hd, p, sizeof hd);
+        if (hd.op == OP_END || hd.size < 8 || hd.size & 7) return h;
+        if (hd.op == OP_JUMP) { memcpy(&p, p + 8, 8); continue; }
+        if (hd.op == OP_CALL && depth < 8) { uint64_t t; memcpy(&t, p + 8, 8); h = rec_hash((const uint8_t *)(uintptr_t)t, depth + 1, h); }
+        for (uint32_t k = 0; k + 8 <= hd.size; k += 8) { uint64_t w; memcpy(&w, p + k, 8); h = (h ^ w) * 0x100000001b3ull; }
+        if ((hd.op == OP_BIND_TEX || hd.op == OP_BIND_SAMP || hd.op == OP_BIND_IMG) && hd.size >= 8 + sizeof(p_bind_handles) - sizeof(((p_bind_handles *)0)->h)) {
+            const p_bind_handles *b = (const p_bind_handles *)(p + 8);
+            if (b->defer && b->src && b->n > 0 && b->n <= 32) for (int i = 0; i < b->n; i++) { uint64_t w; memcpy(&w, (const uint8_t *)(uintptr_t)b->src + 8 * i, 8); h = (h ^ w) * 0x100000001b3ull; } }
+        p += hd.size;
+    }
+    return h;
+}
+// The opening of a top-level handle: its records up to the CALL of body, flattened into out (as rec_flat); *after = the record after that CALL. -1: no such CALL, or too long
+static size_t ahead_flat_open(uint64_t top, uint64_t body, uint8_t *out, size_t cap, const uint8_t **after) {
+    const uint8_t *p = (const uint8_t *)(uintptr_t)top; size_t at = 0;
+    for (int guard = 0; guard < 100000; guard++) {
+        op_hdr hd; memcpy(&hd, p, sizeof hd);
+        if (hd.op == OP_END || hd.size < 8 || hd.size & 7) return (size_t)-1;
+        if (hd.op == OP_JUMP) { memcpy(&p, p + 8, 8); continue; }
+        if (hd.op == OP_CALL) { uint64_t t; memcpy(&t, p + 8, 8);
+            if (t == body) { if (after) *after = p + hd.size; return at; }
+            if (at + rec_flat((const uint8_t *)(uintptr_t)t, NULL, 0, 0, 1) > cap) return (size_t)-1;
+            at = rec_flat((const uint8_t *)(uintptr_t)t, out, at, cap, 1); p += hd.size; continue; }
+        if (at + hd.size > cap) return (size_t)-1;
+        uint8_t *d = out + at; memcpy(d, p, hd.size);
+        for (uint32_t k = 8; k + 8 <= hd.size; k += 8) { uint64_t v; memcpy(&v, d + k, 8); if (v >= (uintptr_t)p && v < (uintptr_t)p + hd.size) { v += (uintptr_t)d - (uintptr_t)p; memcpy(d + k, &v, 8); } }
+        at += hd.size; p += hd.size;
+    }
+    return (size_t)-1;
+}
+// Two flattened openings the same record for record (a pointer into its own record compared as its offset); counter reports must agree in type, and the live
+// one's addresses go to addrs in order
+static int ahead_same(const uint8_t *pred, const uint8_t *live, size_t n, uint64_t *addrs, int *na) {
+    size_t at = 0; *na = 0;
+    while (at < n) {
+        op_hdr x, y; memcpy(&x, pred + at, 8); memcpy(&y, live + at, 8);
+        if (x.op != y.op || x.size != y.size || x.size < 8 || x.size & 7 || at + x.size > n) return 0;
+        if (x.op == OP_REPORT_COUNTER) { if (x.size < 24 || memcmp(pred + at + 8, live + at + 8, 8) || *na >= 32) return 0; memcpy(&addrs[(*na)++], live + at + 16, 8); }
+        else for (uint32_t k = 8; k + 8 <= x.size; k += 8) {
+            uint64_t u, v, ra = (uintptr_t)(pred + at), rb = (uintptr_t)(live + at); memcpy(&u, pred + at + k, 8); memcpy(&v, live + at + k, 8);
+            if (u >= ra && u < ra + x.size) u -= ra; if (v >= rb && v < rb + x.size) v -= rb;
+            if (u != v) return 0; }
+        at += x.size;
+    }
+    return 1;
+}
+// After each submit (under g_sub_mu): the frame's pattern for the next. The body is the top-level CALL with the most records
+static void ahead_learn(int n, const NVNcommandHandle *h, uint64_t mark, int resumed) {   // mark: the ring's count when the submit began (the next frame's body may end during this replay)
+    pthread_mutex_lock(&A.mu); A.sub_seq = mark; pthread_mutex_unlock(&A.mu);
+    A.sub_presents = atomic_load(&A.presents); A.n_sub++; if (n >= 1) { A.tops[1] = A.tops[0]; A.tops[0] = h[0]; }
+    if (!resumed && A.stable >= AH_STABLE) A.none++;   // the pattern held, but nothing was ready
+    int fits = 0;
+    if (n == 1) {
+        uint64_t body = 0; unsigned best = 0; const uint8_t *p = (const uint8_t *)(uintptr_t)h[0];
+        for (int guard = 0; guard < 100000; guard++) {
+            op_hdr hd; memcpy(&hd, p, sizeof hd);
+            if (hd.op == OP_END || hd.size < 8 || hd.size & 7) break;
+            if (hd.op == OP_JUMP) { memcpy(&p, p + 8, 8); continue; }
+            if (hd.op == OP_CALL) { uint64_t t; memcpy(&t, p + 8, 8); unsigned c = rec_count((const uint8_t *)(uintptr_t)t, 1); if (c > best) { best = c; body = t; } }
+            p += hd.size;
+        }
+        if (best >= AH_BODY_RECS) {
+            uint8_t *t = malloc(AH_OPEN_MAX + 8); size_t m = t ? ahead_flat_open(h[0], body, t, AH_OPEN_MAX, NULL) : (size_t)-1;
+            if (m != (size_t)-1) {
+                op_hdr e = {OP_END, 8}; memcpy(t + m, &e, 8);
+                free(A.tmpl[1]); A.tmpl[1] = A.tmpl[0]; A.ntmpl[1] = A.ntmpl[0]; A.tmpl[0] = t; A.ntmpl[0] = m; A.body_recs = best; fits = 1;
+            } else free(t);
+        }
+    }
+    A.stable = fits ? A.stable + 1 : 0;
+    if (A.n_sub % 600 == 0 && (A.hits || A.misses)) {
+        LOG("[nvn] replay ahead (last 600 submissions): %llu resumed (%.2f ms replayed ahead, %.2f ms at the submit, each), %llu missed, %llu replayed at the submit (no body ready in time)",
+            (unsigned long long)A.hits, A.hits ? A.ns_ahead / 1e6 / (double)A.hits : 0, A.hits ? A.ns_rest / 1e6 / (double)A.hits : 0, (unsigned long long)A.misses, (unsigned long long)A.none);
+        A.hits = A.misses = A.none = A.ns_ahead = A.ns_rest = 0;
+    }
+}
+// At the window acquire (after a present) or a sync wait that would block: replay the next frame's opening and body, then pause (takes g_sub_mu, then A.mu)
+static void ahead_try(const char *where) {
+    if (!ahead_on() || !ahead_live() || A.open || A.stable < AH_STABLE || atomic_load(&A.presents) <= A.sub_presents) return;   // (read without the lock: checked again under it)
+    pthread_mutex_lock(&g_sub_mu);
+    if (!A.open && A.stable >= AH_STABLE && A.tmpl[0] && atomic_load(&A.presents) > A.sub_presents) {
+        // the prediction: the latest opening, or the one before it when the two differ (an opening that alternates frame by frame)
+        int k = A.tmpl[1] && (A.ntmpl[1] != A.ntmpl[0] || memcmp(A.tmpl[1], A.tmpl[0], A.ntmpl[0])) ? 1 : 0;
+        // the body: of the recordings ended since the last submit began, the one with the most records (it holds the ones it calls, so it outnumbers them), if it is
+        // near the last body's size: before the body ends, the largest is one of the recordings it will call, and replaying that one ahead was a miss
+        // (each recording counted once: the ring keeps the counts, and the thread looks at every end)
+        struct { uint64_t h, seq; unsigned recs; } cand[AH_ENDS]; int nc = 0;
+        pthread_mutex_lock(&A.mu);
+        for (uint64_t i = 0; i < AH_ENDS && i < A.nend; i++) { uint64_t j = (A.nend - 1 - i) % AH_ENDS; if (A.ends[j].seq <= A.sub_seq) break;
+            cand[nc].h = A.ends[j].h; cand[nc].seq = A.ends[j].seq; cand[nc].recs = A.ends[j].recs; nc++; }
+        pthread_mutex_unlock(&A.mu);
+        uint64_t body = 0; unsigned best = 0;
+        for (int i = 0; i < nc; i++) {
+            if (!cand[i].recs) { cand[i].recs = rec_count((const uint8_t *)(uintptr_t)cand[i].h, 1) + 1;
+                pthread_mutex_lock(&A.mu); uint64_t j = (cand[i].seq - 1) % AH_ENDS; if (A.ends[j].seq == cand[i].seq) A.ends[j].recs = cand[i].recs; pthread_mutex_unlock(&A.mu); }
+            if (cand[i].recs - 1 > best && cand[i].h != A.tops[0] && cand[i].h != A.tops[1]) { best = cand[i].recs - 1; body = cand[i].h; } }
+        if (!body || best < AH_BODY_RECS || best < A.body_recs / 10 * 7) {}   // not ended yet: the next end, or the sync wait, tries again
+        else {
+            uint64_t t0 = now_ns(); gfx_enter();
+            mtl_sub_begin(); mtl_sub_hold_parts(1); ft_del_drain(); nvn_ft_poll();
+            int p0 = mtl_sub_post_count(); mtl_exec(A.tmpl[k]); int p1 = mtl_sub_post_count();
+            mtl_exec((const uint8_t *)(uintptr_t)body);
+            A.body_hash = rec_hash((const uint8_t *)(uintptr_t)body, 1, 0xcbf29ce484222325ull);
+            if (mtl_sub_pause()) { A.open = 1; A.body = body; A.pred = A.tmpl[k]; A.npred = A.ntmpl[k]; A.post0 = p0; A.npost = p1 - p0; }
+            else { mtl_sub_commit(); mtl_sub_hold_parts(0); A.stable = 0; }
+            gfx_leave(); A.ns_ahead += now_ns() - t0;
+            SEQ("replayed ahead at %s: body %#llx, opening %zu bytes (prediction %d)", where, (unsigned long long)body, A.ntmpl[k], k);
+        }
+    }
+    pthread_mutex_unlock(&g_sub_mu);
+}
+// At the submit (under g_sub_mu): 1 = the paused submission matches and is open again, *rest = where the replay goes on in the top-level handle;
+// -1 = a miss, the paused one committed as it was; 0 = nothing paused
+static int ahead_resume(int n, const NVNcommandHandle *h, const uint8_t **rest) {
+    if (!A.open) return 0;
+    static uint8_t live[AH_OPEN_MAX]; uint64_t addrs[32]; int na = 0, why = 0; const uint8_t *after = NULL;
+    size_t m = n == 1 ? ahead_flat_open(h[0], A.body, live, sizeof live, &after) : (size_t)-1;
+    if (n != 1) why = 1;
+    else if (m == (size_t)-1) why = 2;
+    else if (m != A.npred || !ahead_same(A.pred, live, m, addrs, &na)) why = 3;
+    else if (na != A.npost) why = 4;
+    else if (rec_hash((const uint8_t *)(uintptr_t)A.body, 1, 0xcbf29ce484222325ull) != A.body_hash) why = 5;
+    mtl_sub_resume(); A.open = 0;
+    if (why) {
+        static const char *whys[] = {"", "several handles", "no CALL of the body", "the opening differs", "other counter reports", "the body changed"};
+        static int nlog; if (nlog++ < 12) {
+            uint64_t real = 0; unsigned rb = 0, cn = 0; const uint8_t *p = n >= 1 ? (const uint8_t *)(uintptr_t)h[0] : NULL;   // what the game called instead: its largest call
+            for (int guard = 0; p && guard < 100000; guard++) { op_hdr hd; memcpy(&hd, p, sizeof hd); if (hd.op == OP_END || hd.size < 8 || hd.size & 7) break;
+                if (hd.op == OP_JUMP) { memcpy(&p, p + 8, 8); continue; }
+                if (hd.op == OP_CALL) { uint64_t t; memcpy(&t, p + 8, 8); unsigned c = rec_count((const uint8_t *)(uintptr_t)t, 1); cn++; if (c > rb) { rb = c; real = t; } }
+                p += hd.size; }
+            int seen = 0; pthread_mutex_lock(&A.mu); for (uint64_t i = 0; real && i < AH_ENDS && i < A.nend; i++) { uint64_t j = (A.nend - 1 - i) % AH_ENDS; if (A.ends[j].h == real) { seen = (int)(A.nend - A.ends[j].seq) + 1; break; } } pthread_mutex_unlock(&A.mu);
+            LOG("[nvn] replay ahead missed: %s (what was replayed ahead is committed as it is): replayed body %#llx (%u records), the submission's largest of %u calls %#llx (%u records, ended %d recordings ago, 0 = not seen)",
+                whys[why], (unsigned long long)A.body, rec_count((const uint8_t *)(uintptr_t)A.body, 1), cn, (unsigned long long)real, rb, seen); }
+        mtl_sub_commit(); mtl_sub_hold_parts(0); A.misses++; A.stable = 0; return -1;
+    }
+    for (int i = 0; i < na; i++) mtl_sub_post_addr(A.post0 + i, addrs[i]);
+    A.hits++; *rest = after; return 1;
+}
 NVN(nvnQueueSubmitCommands, void, NVNqueue *q, int n, const NVNcommandHandle *h) {
     if (nvn_async()) { uint64_t *c = malloc(sizeof *c * (size_t)(n > 0 ? n : 1)); for (int i = 0; i < n; i++) c[i] = rec_copy(h[i]); ((queue_t *)q)->submits++;
         static uint64_t ns, last; if (++ns % 600 == 0) { LOG("[nvn] submissions copied for the replay thread: %.2f MB each (last 600)", (g_flat_bytes - last) / 600.0 / 1048576); last = g_flat_bytes; }
         job_push((nvn_job){JOB_SUBMIT, n, c, q}); return; }
     submit_now(q, n, h);
 }
+// DM_NVN_SEQ: what a submitted handle holds: its own records (JUMPs followed), and per CALL the called recording with its records and draws (CALLs within it inlined)
+static unsigned g_seq_ops[64];   // seq_count: the ops it walked, by number
+static void seq_count(const uint8_t *p, int depth, unsigned *recs, unsigned *draws) {
+    for (int guard = 0; guard < 1000000; guard++) {
+        op_hdr hd; memcpy(&hd, p, sizeof hd);
+        if (hd.op == OP_END || hd.size < 8 || hd.size & 7) return;
+        if (hd.op == OP_JUMP) { memcpy(&p, p + 8, 8); continue; }
+        if (hd.op == OP_CALL && depth < 8) { uint64_t t; memcpy(&t, p + 8, 8); seq_count((const uint8_t *)(uintptr_t)t, depth + 1, recs, draws); }
+        else { (*recs)++; g_seq_ops[hd.op < 64 ? hd.op : 63]++; if (hd.op == OP_DRAW || hd.op == OP_DRAW_IDX) (*draws)++; }
+        p += hd.size;
+    }
+}
+static void seq_ops_line(const char *what) {   // the ops seq_count gathered, by number
+    char b[220]; int w = 0; for (int i = 0; i < 64 && w < (int)sizeof b - 12; i++) if (g_seq_ops[i]) w += snprintf(b + w, sizeof b - (size_t)w, " %d:%u", i, g_seq_ops[i]); b[w] = 0;
+    SEQ("    %s ops by number:%s", what, b); memset(g_seq_ops, 0, sizeof g_seq_ops);
+}
+static void seq_shape(uint64_t h) {
+    unsigned own = 0, calls = 0, ops[64] = {0}; const uint8_t *p = (const uint8_t *)(uintptr_t)h;
+    SEQ("submitted handle %#llx:", (unsigned long long)h);
+    for (int guard = 0; guard < 100000; guard++) {
+        op_hdr hd; memcpy(&hd, p, sizeof hd);
+        if (hd.op == OP_END || hd.size < 8 || hd.size & 7) break;
+        if (hd.op == OP_JUMP) { memcpy(&p, p + 8, 8); continue; }
+        if (hd.op == OP_CALL) { uint64_t t; memcpy(&t, p + 8, 8); unsigned r = 0, d = 0; memset(g_seq_ops, 0, sizeof g_seq_ops); seq_count((const uint8_t *)(uintptr_t)t, 1, &r, &d);
+            if (calls++ < 80) { SEQ("  after %u own records: call %#llx (%u records, %u draws)", own, (unsigned long long)t, r, d); seq_ops_line("its"); } own = 0; }
+        else { own++; ops[hd.op < 64 ? hd.op : 63]++; if (!calls) SEQ("  own record before any call: op %u, %u bytes", hd.op, hd.size); }
+        p += hd.size;
+    }
+    char b[200]; int w = 0; for (int i = 0; i < 64 && w < (int)sizeof b - 12; i++) if (ops[i]) w += snprintf(b + w, sizeof b - (size_t)w, " %d:%u", i, ops[i]); b[w] = 0;
+    SEQ("  %u calls, %u own records at the end; own ops by number:%s", calls, own, b);
+}
 static void submit_now(NVNqueue *q, int n, const NVNcommandHandle *h) {
     SEQ("submit %d handles", n);
+    if (seq_on()) for (int i = 0; i < n; i++) seq_shape(h[i]);
     gfx_enter();
     pthread_mutex_lock(&g_sub_mu);
     uint64_t t0 = now_ns(), c0 = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID), i0, y0, s0 = thr_sys_ns(); thr_counts(&i0, &y0);
     if (!nvn_async()) ((queue_t *)q)->submits++;
-    mtl_sub_begin(); ft_del_drain();
-    nvn_ft_poll();
-    mtl_sub_index((const uint64_t *)h, n);
-    for (int i = 0; i < n; i++) { mtl_exec_rest((const uint64_t *)h + i + 1, n - i - 1); mtl_exec((const uint8_t *)h[i]); }
+    uint64_t mark = 0; if (ahead_on()) { pthread_mutex_lock(&A.mu); mark = A.nend; pthread_mutex_unlock(&A.mu); }
+    const uint8_t *rest = NULL; int ahead = ahead_on() ? ahead_resume(n, h, &rest) : 0;   // replayed ahead (DM_NVN_AHEAD): 1 = only the rest of the handle is left
+    if (ahead == 1) { uint64_t r0 = now_ns(); mtl_exec(rest); A.ns_rest += now_ns() - r0; }
+    else {
+        mtl_sub_begin(); ft_del_drain();
+        nvn_ft_poll();
+        mtl_sub_index((const uint64_t *)h, n);
+        for (int i = 0; i < n; i++) { mtl_exec_rest((const uint64_t *)h + i + 1, n - i - 1); mtl_exec((const uint8_t *)h[i]); }
+    }
     mtl_exec_rest(NULL, 0);
     mtl_sub_commit();
+    if (ahead == 1) mtl_sub_hold_parts(0);
+    if (ahead_on()) ahead_learn(n, h, mark, ahead != 0);
     pthread_mutex_unlock(&g_sub_mu);
     uint64_t dw = now_ns() - t0;
     atomic_fetch_add(&g_nvn_ns, dw); atomic_fetch_add(&g_sub_wall_ns, dw);
@@ -1887,6 +2158,7 @@ static void dyn_scale_tick(uint64_t presents) {
 }
 NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
     (void)q; win_t *o = (win_t *)w; o->presents++; SEQ("present %d", idx);
+    ahead_presented();   // (DM_NVN_AHEAD: the next frame may be replayed ahead from now)
     dm_fps_lock_tick();
     if (dm_fps_state) { static int was; int c = fps_step_cap(); if (c != was) { LOG("[nvn] frame step cap %d → %d fps at present %llu%s", was, c, (unsigned long long)o->presents, c == 30 && was == 60 ? " (prerendered movie)" : ""); was = c; } }
     if (dm_fps_state) dyn_scale_tick(o->presents);

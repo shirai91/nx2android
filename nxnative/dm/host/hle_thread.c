@@ -541,6 +541,11 @@ void svc_thread_dump(void) {
         module_t *m = module_of((void *)t->last_lr);
         // Thread name: SDK ThreadType+0x1a0 is the name pointer (ThreadManager::SetInitialThreadNameUnsafe 0x34a2a4); x2 of CreateThread = ThreadType*
         char nb[32]; const char *nm = thr_name(t, nb, sizeof nb);
+#ifdef __ANDROID__
+        // The host thread takes the guest's name (15 characters), so per-thread CPU over adb (/proc/<pid>/task/*/comm) tells Breath of the Wild's main thread and
+        // workers apart: all of them were "org.nx2a.botw". A DM_CTL "threads" line names them
+        if (t->started && !t->exited && nm[0] && strcmp(nm, "?")) { char cn[16]; snprintf(cn, sizeof cn, "%s", nm); pthread_setname_np(t->pt, cn); }
+#endif
         double cpu = -1;
         if (t->mport && !t->exited) { thread_basic_info_data_t bi; mach_msg_type_number_t n = THREAD_BASIC_INFO_COUNT;
             if (thread_info(t->mport, THREAD_BASIC_INFO, (thread_info_t)&bi, &n) == KERN_SUCCESS)

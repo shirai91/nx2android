@@ -850,12 +850,14 @@ static uint64_t pace_desired(double period) {   // the frame's desired present t
 }
 static void present_window(vkimg_t *im, const int crop[4], double period, uint64_t ticket) {   // period: the game's frame period (s); < 0 for a redraw (ticket 0)
     uint32_t k = g_pi++ % 8;
+    int nvn_seq_active(void); void nvn_seq_note(const char *); int seq = nvn_seq_active(); uint64_t s0 = seq ? mono_ns() : 0;   // (DM_NVN_SEQ trace)
     vkWaitForFences(V.dev, 1, &g_pfence[k], 1, UINT64_MAX);
     VkFormat want = im->fmt == VK_FORMAT_R8G8B8A8_SRGB || im->fmt == VK_FORMAT_B8G8R8A8_SRGB || im->fmt == VK_FORMAT_A8B8G8R8_SRGB_PACK32 ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
     if (want != g_want) { g_want = want; swap_destroy(); if (!swap_make()) return; }   // once, at the first present of the other kind
     uint32_t idx; VkResult r = vkAcquireNextImageKHR(V.dev, g_swap, UINT64_MAX, g_acq[k], VK_NULL_HANDLE, &idx);
     if (r == VK_ERROR_OUT_OF_DATE_KHR) { swap_destroy(); if (!swap_make()) return; r = vkAcquireNextImageKHR(V.dev, g_swap, UINT64_MAX, g_acq[k], VK_NULL_HANDLE, &idx); }
     if (r < 0) { VKRED_ONCE(90, "vkAcquireNextImageKHR: %d", r); return; }
+    if (seq) { char t[96]; snprintf(t, sizeof t, "vk present %llu: fence and swapchain image %u took %.2f ms", (unsigned long long)ticket, idx, (mono_ns() - s0) / 1e6); nvn_seq_note(t); }
     vkResetFences(V.dev, 1, &g_pfence[k]);
     int turned = g_pre != VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;   // composed into g_rot.img, then copied turned into the swapchain image
     VkImage tgt = turned ? g_rot.img : g_simg[idx]; VkImageView tview = turned ? g_rot.view : g_sview[idx];
@@ -912,14 +914,17 @@ static void present_window(vkimg_t *im, const int crop[4], double period, uint64
     vkEndCommandBuffer(cb);
     VkPipelineStageFlags ws = VK_PIPELINE_STAGE_TRANSFER_BIT;
     VkSubmitInfo si = {VK_STRUCTURE_TYPE_SUBMIT_INFO, NULL, 1, &g_acq[k], &ws, 1, &cb, 1, &g_done_sem[k]};
-    extern pthread_mutex_t g_vk_queue_mu;
-    pthread_mutex_lock(&g_vk_queue_mu);
+    extern pthread_mutex_t g_vk_queue_mu; extern uint64_t g_ns_pq_submit, g_ns_pq_present;   // the present's queue calls, held under the queue lock (the replay line)
+    pthread_mutex_lock(&g_vk_queue_mu); uint64_t q0 = mono_ns();
     if (vkQueueSubmit(V.q, 1, &si, g_pfence[k])) { pthread_mutex_unlock(&g_vk_queue_mu); VKRED_ONCE(91, "present submit failed"); return; }
+    uint64_t q1 = mono_ns(); g_ns_pq_submit += q1 - q0;
     VkPresentInfoKHR pi = {VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, NULL, 1, &g_done_sem[k], 1, &g_swap, &idx, NULL};
     VkPresentTimeGOOGLE ptm = {++g_pace_id, period >= 0 ? pace_desired(period) : 0};
     VkPresentTimesInfoGOOGLE pti = {VK_STRUCTURE_TYPE_PRESENT_TIMES_INFO_GOOGLE, NULL, 1, &ptm};
     if (V.has_dtiming) pi.pNext = &pti;
     r = vkQueuePresentKHR(V.q, &pi);
+    g_ns_pq_present += mono_ns() - q1;
+    if (seq) { char t[96]; snprintf(t, sizeof t, "vk present %llu: blit submitted, vkQueuePresentKHR %.2f ms", (unsigned long long)ticket, (mono_ns() - q1) / 1e6); nvn_seq_note(t); }
     if (V.has_dtiming && r >= 0) present_time_map(ptm.presentID, ticket);
     pthread_mutex_unlock(&g_vk_queue_mu);
     if (r == VK_ERROR_OUT_OF_DATE_KHR) swap_destroy();
@@ -1037,6 +1042,10 @@ uint64_t mtl_present(const tex_t *t, double period, const int crop[4]) {
         VKLOG("replay per frame (last 600): %.0f draws, replay %.2f ms (descriptor sets %.2f, pipeline keys %.2f), queue submit %.2f ms, uniform shadows %.0f KB; GPU busy %.2f ms; texture uploads %.1f (%.2f MB, %.2f ms); descriptor sets reused %llu, new %llu (collecting %.2f ms, hashing %.2f, new ones %.2f), kept per stage %.0f a frame (memo differences %llu)",
               nd, (g_vkst.ns_exec - pe) / 6e8, (g_vkst.ns_desc - pd) / 6e8, (g_vkst.ns_pipe - pp) / 6e8, (g_ns_submit - ps) / 6e8, (g_ubd_bytes - pb) / 600.0 / 1024, (g_gpu_ns - pg) / 6e8, (g_pkg_n - pkn) / 600.0, (g_pkg_bytes - pkb) / 600.0 / 1048576, (g_pkg_ns - pkt) / 6e8, (unsigned long long)g_set_hits, (unsigned long long)g_set_new, (g_ns_set_build - psb) / 6e8, (g_ns_set_hash - psh) / 6e8, (g_ns_set_new - psn) / 6e8,
               (g_set_memo - psm) / 600.0, (unsigned long long)g_set_memo_bad);
+        { extern uint64_t g_ns_submit_lock, g_ns_pq_submit, g_ns_pq_present; static uint64_t pl, pqs, pqp;   // the one queue's lock: the replay's wait for it, and what the present thread does holding it
+          VKLOG("queue per frame (last 600): the replay waited %.2f ms for the queue lock; the present thread's submit %.2f ms, vkQueuePresentKHR %.2f ms", (g_ns_submit_lock - pl) / 6e8,
+                (g_ns_pq_submit - pqs) / 6e8, (g_ns_pq_present - pqp) / 6e8);
+          pl = g_ns_submit_lock; pqs = g_ns_pq_submit; pqp = g_ns_pq_present; }
         { extern uint64_t g_order_kept, g_order_ended; static uint64_t pk, pn;   // gfx_vk_exec.c g_order_keep
           if (g_order_kept + g_order_ended > pk + pn) VKLOG("order-only barriers per frame (last 600): %.1f kept inside their pass, %.1f ended it", (g_order_kept - pk) / 600.0, (g_order_ended - pn) / 600.0);
           pk = g_order_kept; pn = g_order_ended; }

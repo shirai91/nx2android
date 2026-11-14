@@ -796,6 +796,7 @@ struct vksub {
 };
 enum { GW_SUB = 64 };
 static vksub_t g_slot[NSLOT]; static int g_cur = -1; uint64_t g_cmd_gen;   // g_cmd_gen: main command buffers begun (gfx_vk_exec.c bind cache)
+static int g_paused = -1; int g_vk_hold_parts;   // a submission replayed ahead and paused (its slot), and its parts held until the commit (mtl_sub_pause)
 static pthread_mutex_t g_df_mu = PTHREAD_MUTEX_INITIALIZER;   // the slots' deferred-free lists (df, ndf, capdf): df_add says why
 static uint64_t pool_merge_back(vkpool_t *p, uint64_t lo, uint64_t hi) {
     int diag = mem_diag_on(); uint64_t t = diag ? mem_diag_ns() : 0;
@@ -927,7 +928,10 @@ static void wait_fence(uint64_t f) {
 static int g_prereset = -1;
 static void slot_recycle(vksub_t *s) {   // the GPU has passed this slot's last submission: free what it held, rewind its allocators
     if (g_prereset < 0) { const char *e = getenv("DM_VK_X_NOPRERESET"); g_prereset = !(e && atoi(e)); }
-    if (g_prereset) mtl_wait(s->fence, ~0ull); else wait_fence(s->fence);
+    { int nvn_seq_active(void); void nvn_seq_note(const char *); int seq = nvn_seq_active(); struct timespec a, b; if (seq) clock_gettime(CLOCK_MONOTONIC, &a);
+      if (g_prereset) mtl_wait(s->fence, ~0ull); else wait_fence(s->fence);
+      if (seq) { clock_gettime(CLOCK_MONOTONIC, &b); double ms = (double)((b.tv_sec - a.tv_sec) * 1000000000ll + (b.tv_nsec - a.tv_nsec)) / 1e6;   // (DM_NVN_SEQ trace)
+                 if (ms > 0.05) { char t[96]; snprintf(t, sizeof t, "vk slot wait %.2f ms for fence %llu", ms, (unsigned long long)s->fence); nvn_seq_note(t); } } }
     pthread_mutex_lock(&g_df_mu); dfree_t *df = s->df; int ndf = s->ndf; s->df = NULL; s->ndf = s->capdf = 0; pthread_mutex_unlock(&g_df_mu);   // the list taken whole: a game thread may add to it meanwhile
     for (int i = 0; i < ndf; i++) {
         dfree_t *d = &df[i];
@@ -967,7 +971,7 @@ static void vk_cmd_split_(void) {
     if (vkEndCommandBuffer(s->main) < 0) { s->cb_err = 1; static int n; if (n++ < 3) VKLOG("[RED] a part of a long submission was refused at its end (part %d)", s->nmain_used); }
     // what is recorded so far goes to the GPU now, as a submission of its own (with its uploads first): Adreno refuses a single submission past about
     // 700 draws (NEO's handheld frames: VK_ERROR_OUT_OF_HOST_MEMORY at vkEndCommandBuffer whatever the draws were, and in one command buffer or several)
-    const char *se = getenv("DM_VK_SUBMIT_SPLIT"); int send = !(se && !atoi(se));   // on unless DM_VK_SUBMIT_SPLIT=0
+    const char *se = getenv("DM_VK_SUBMIT_SPLIT"); int send = !(se && !atoi(se)) && !g_vk_hold_parts;   // on unless DM_VK_SUBMIT_SPLIT=0, or held for a submission replayed ahead
     if (send && !s->cb_err) {
         VkCommandBuffer cbs[2]; uint32_t n = 0;
         if (s->up_used) { vk_img_barrier_all(s->up); if (vkEndCommandBuffer(s->up) < 0) s->cb_err = 1; cbs[n++] = s->up; }
@@ -1131,7 +1135,8 @@ void mtl_sub_begin(void) {
     pthread_mutex_lock(&g_sub_lock);
     // the next slot of the ring (g_cur is -1 between submissions, so it cannot say where the ring is: every submission took slot 0 and waited in slot_recycle
     // for the one before to finish on the GPU, which kept the replay of a frame from overlapping the GPU work of the last)
-    static int next; g_cur = next; next = (next + 1) % NSLOT; vksub_t *s = &g_slot[g_cur];
+    static int next; if (next == g_paused) next = (next + 1) % NSLOT;   // (a paused submission keeps its slot: mtl_sub_pause)
+    g_cur = next; next = (next + 1) % NSLOT; vksub_t *s = &g_slot[g_cur];
     slot_recycle(s);
     s->npost = 0; s->up_used = 0; s->ngw = 0;
     { const char *e = getenv("DM_VK_POOL_READBACK_RANGES"); s->readback_ranges = e && atoi(e); }
@@ -1153,6 +1158,20 @@ void mtl_sub_begin(void) {
     g_npass[g_cur] = 0; if (pass_times_on()) vkCmdResetQueryPool(s->main, g_pq, (uint32_t)(g_cur * PASSQ * 2), PASSQ * 2);
     vk_exec_reset();
 }
+// Replay ahead (gfx/nvn/hle_nvn.c DM_NVN_AHEAD): a submission begun and partly replayed before the game submits, paused until it does. While paused no submission
+// is open (g_cur -1): a texel readback or a pool finalized meanwhile takes a slot of its own, and the ring skips the paused one. Its parts are held until the commit
+// (g_vk_hold_parts): nothing reaches the GPU before the game's submit, so the GPU reads the game's memory no earlier than on the console, and parts sent early one
+// by one would have gone out of order (vk_cmd_split sends only the part it ends)
+int mtl_sub_ahead_supported(void) { return 1; }
+int mtl_sub_pause(void) {
+    if (g_cur < 0) return 0;
+    void vk_end_pass_land(void); vk_end_pass_land();   // nothing stays open across the pause: the pass ends, the deferred uniform updates land
+    g_paused = g_cur; g_cur = -1; pthread_mutex_unlock(&g_sub_lock); return 1;
+}
+void mtl_sub_resume(void) { pthread_mutex_lock(&g_sub_lock); g_cur = g_paused; g_paused = -1; }
+void mtl_sub_hold_parts(int on) { g_vk_hold_parts = on; }
+int mtl_sub_post_count(void) { return g_cur >= 0 ? g_slot[g_cur].npost : -1; }
+void mtl_sub_post_addr(int i, uint64_t addr) { vksub_t *s = cur(); if (i >= 0 && i < s->npost && s->post[i].kind == 2) s->post[i].addr = addr; }   // a counter report's address (the opening replayed ahead had the prediction's)
 void mtl_sub_event(volatile uint32_t *val, uint32_t mode, uint32_t v) { post((post_op){1, val, mode, v, 0, 0, -1}); }
 void mtl_sub_counter(uint64_t addr, uint32_t type) {
     vksub_t *s = cur(); int q = -1;
@@ -1195,6 +1214,10 @@ void mtl_sub_fill(uint64_t dst, uint64_t n, uint32_t value) {
 typedef struct { uint64_t lo, hi; VkBuffer sb; VkDeviceSize so; const uint8_t *p; } ubd_t;
 enum { UBD_MAX = 512 };
 static ubd_t g_ubd[UBD_MAX]; static int g_nubd; uint64_t g_ubd_gen = 1, g_ubd_landed, g_ubd_shadows, g_ubd_bytes, g_ns_submit, g_ubd_superseded;
+uint64_t g_ns_submit_lock, g_ns_pq_submit, g_ns_pq_present;   // the replay's wait for the queue lock; the present thread's submit and vkQueuePresentKHR (gfx_vk_present.c)
+// DM_NVN_SEQ's trace (gfx/nvn/hle_nvn.c) for the completion and present threads; the graphics tests link without it
+__attribute__((weak)) int nvn_seq_active(void) { return 0; }
+__attribute__((weak)) void nvn_seq_note(const char *s) { (void)s; }
 void vk_end_pass_land(void);
 void vk_sub_update(uint64_t dst, const void *data, uint64_t n) {
     VkBuffer db, sb; VkDeviceSize dof, so;
@@ -1338,6 +1361,11 @@ static void *completion_main(void *a) {
         while (!g_ch) pthread_cond_wait(&g_ccv, &g_cmu);
         cpend *c = g_ch; pthread_mutex_unlock(&g_cmu);
         if (V.has_timeline) wait_fence(c->fence); else { VkResult r = vkWaitForFences(V.dev, 1, &g_fring[c->fence % NFRING], VK_TRUE, UINT64_MAX); if (r != VK_SUCCESS) die("[vk] GPU fence wait did not complete: %d", r); }
+        if (nvn_seq_active()) { char t[160]; uint64_t q[2] = {0, 0}, nw = gpu_ticks(); double tk = 625.0 / 12 / 1e6;   // ticks → ms (19.2 MHz, gpu_ticks' clock); began / ended: ms before now
+            if (g_tsq && c->slot >= 0) vkGetQueryPoolResults(V.dev, g_tsq, 2 * (uint32_t)c->slot, 2, sizeof q, q, 8, VK_QUERY_RESULT_64_BIT);
+            if (q[1] > q[0] && q[1] <= nw) snprintf(t, sizeof t, "vk GPU done fence %llu: its GPU work began %.2f ms and ended %.2f ms before this (span %.2f ms)", (unsigned long long)c->fence, (nw - q[0]) * tk, (nw - q[1]) * tk, (q[1] - q[0]) * tk);
+            else snprintf(t, sizeof t, "vk GPU done fence %llu (no timestamps)", (unsigned long long)c->fence);
+            nvn_seq_note(t); }
         if (g_shadow_pools && c->rslot >= 0) pools_copy_back(&g_slot[c->rslot]);
         if (g_tsq && c->slot >= 0) { uint64_t t[2]; if (vkGetQueryPoolResults(V.dev, g_tsq, 2 * (uint32_t)c->slot, 2, sizeof t, t, 8, VK_QUERY_RESULT_64_BIT) == VK_SUCCESS && t[1] > t[0])
             { uint64_t ns = (uint64_t)((double)(t[1] - t[0]) * V.props.limits.timestampPeriod); g_gpu_ns += ns; int k = (int)(c->frame % 64);
@@ -1403,9 +1431,12 @@ uint64_t mtl_sub_commit(void) {
         if (f > NFRING) mtl_wait(f - NFRING, ~0ull);
         fe = g_fring[f % NFRING]; VKCHK(vkResetFences(V.dev, 1, &fe)); si.pNext = NULL; si.signalSemaphoreCount = 0;
     }
-    struct timespec t0, t1; clock_gettime(CLOCK_MONOTONIC, &t0); pthread_mutex_lock(&g_vk_queue_mu); VkResult r = vkQueueSubmit(V.q, 1, &si, fe); pthread_mutex_unlock(&g_vk_queue_mu); clock_gettime(CLOCK_MONOTONIC, &t1); g_ns_submit += (uint64_t)((t1.tv_sec - t0.tv_sec) * 1000000000ll + (t1.tv_nsec - t0.tv_nsec));
+    struct timespec t0, tl, t1; clock_gettime(CLOCK_MONOTONIC, &t0); pthread_mutex_lock(&g_vk_queue_mu); clock_gettime(CLOCK_MONOTONIC, &tl); VkResult r = vkQueueSubmit(V.q, 1, &si, fe); pthread_mutex_unlock(&g_vk_queue_mu); clock_gettime(CLOCK_MONOTONIC, &t1); g_ns_submit += (uint64_t)((t1.tv_sec - t0.tv_sec) * 1000000000ll + (t1.tv_nsec - t0.tv_nsec));
+    g_ns_submit_lock += (uint64_t)((tl.tv_sec - t0.tv_sec) * 1000000000ll + (tl.tv_nsec - t0.tv_nsec));   // of which waiting for the queue lock (the present thread holds it through vkQueuePresentKHR)
     if (r) { void vk_crumbs_report(void); vk_crumbs_report(); die("[vk] vkQueueSubmit: %d (device lost?)", r); }
     s->fence = f;
+    { int nvn_seq_active(void); void nvn_seq_note(const char *); if (nvn_seq_active()) { char t[96]; snprintf(t, sizeof t, "vk commit fence %llu (%d parts, %d sent early), vkQueueSubmit %.2f ms", (unsigned long long)f,
+          s->nmain_used, s->nmain_sent, (double)((t1.tv_sec - t0.tv_sec) * 1000000000ll + (t1.tv_nsec - t0.tv_nsec)) / 1e6); nvn_seq_note(t); } }
     cpend *c = calloc(1, sizeof *c); c->fence = f; c->frame = __atomic_load_n(&g_cur_frame, __ATOMIC_RELAXED); c->n = s->npost; c->rslot = g_cur; c->slot = s->no_ts ? -1 : g_cur; s->no_ts = 0;
     c->npass = g_npass[g_cur]; memcpy(c->pmeta, g_pmeta[g_cur], sizeof(pass_meta) * (size_t)c->npass);
     if (s->npost) { c->ops = malloc(s->npost * sizeof *c->ops); memcpy(c->ops, s->post, s->npost * sizeof *c->ops); }
