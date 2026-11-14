@@ -1,0 +1,9 @@
+# Ghost Trick: Phantom Detective on Android: source-audited candidate, not device tested.
+# Audited build: 1.0.0 (v0); compatibility evidence and test plan: ANDROID.md.
+status	experimental
+package	org.nx2a.t010029b018432000
+orientation	landscape
+requires	bcn
+setting	docked=1
+setting	overlay=1
+setting	rumble=1
