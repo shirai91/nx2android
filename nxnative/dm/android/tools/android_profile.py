@@ -8,7 +8,7 @@
 #   requires     device features, separated by spaces: bcn (BC texture compression)
 #   sysdata      system data titles the game reads from the console's firmware, 16-digit hex title IDs separated by spaces (0100000000000802: MiiModel, the Mii heads Mario Kart 8 Deluxe builds; 0100000000000811 and 0100000000000810: the shared fonts, standard and Nintendo extension);
 #                porter extracts each from the player's firmware dump (--firmware) into the data pack, and the host mounts it in place of its stand-in (the fonts: the host decodes them)
-#   setting      <name>=<value>, one row each: the pause menu's defaults on first launch (overlay, rumble, docked, fps, opacity: 20..80 by 5)
+#   setting      <name>=<value>, one row each: the pause menu's defaults on first launch (overlay, rumble, docked, fps, sr: super resolution, sharpness: 0..100 by 25, opacity: 20..80 by 5)
 #   env          <KEY>=<VALUE>, one row each: host switches the game needs on Android (the data pack's env.txt)
 #   overlay      <tablet|phone> <control> <x> <y>: moves one control of that layout (dm/android/overlay_default.tsv) to x, y as fractions of the window
 # Usage: android_profile.py header <id> <out.h> (android_profile.h for the host: the gamepad layouts, written only when it changes); android_profile.py list;
@@ -24,8 +24,9 @@ sys.path.insert(0, str(ANDROID.parent / 'games'))
 import game   # noqa: E402  (the profile folders, DM_GAMES_DIR included)
 
 STATUS = ('playable', 'wip', 'boots', 'experimental')
-SETTINGS = {'overlay': ('0', '1'), 'rumble': ('0', '1'), 'docked': ('0', '1'), 'fps': ('0', '1'),   # the pause menu's settings (front_android.c settings_load)
-            'opacity': tuple(str(v) for v in range(20, 81, 5))}                                    # the gamepad's, percent (overlay_layout.h OV_OPACITY_MIN..MAX)
+SETTINGS = {'overlay': ('0', '1'), 'rumble': ('0', '1'), 'docked': ('0', '1'), 'fps': ('0', '1'), 'sr': ('0', '1'),   # the pause menu's settings (front_android.c settings_load)
+            'sharpness': tuple(str(v) for v in range(0, 101, 25)),                                                      # super resolution's, percent by 25
+            'opacity': tuple(str(v) for v in range(20, 81, 5))}                                                         # the gamepad's, percent (overlay_layout.h OV_OPACITY_MIN..MAX)
 REQUIRES = ('bcn',)
 KINDS = {'stick_l': 'OV_STICK_L', 'stick_r': 'OV_STICK_R', 'button': 'OV_BUTTON', 'dpad': 'OV_DPAD', 'menu': 'OV_MENU'}
 SINGLE = ('status', 'tested', 'package', 'orientation', 'requires', 'sysdata')
