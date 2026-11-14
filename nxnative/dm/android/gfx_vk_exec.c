@@ -384,6 +384,7 @@ static void pass_dump_depth(void);
 static void texdump_flush(void);
 static void pass_dump(void) {
     texdump_flush();
+    if (g_pd_state != 1) return;   // no dump armed: none of the getenv calls below (every pass end: 0.7% of Breath of the Wild's replay thread)
     if (g_pd_state == 1 && g_sub_pass - 1 < g_pd_skip) return;   // (a submission with fewer passes dumps nothing, and the next one is tried)
     { const char *pp = getenv("DM_VK_PASSDUMP_PASS"); if (g_pd_state == 1 && pp && *pp) {   // DM_VK_PASSDUMP_PASS=n[,n...] (live): only these pass numbers of each submission,
         int hit = 0; for (const char *q = pp; *q;) { char *e; long v = strtol(q, &e, 10); if (e == q) break; if (v == g_sub_pass - 1) hit = 1; q = *e ? e + 1 : e; }   // to follow a few passes
