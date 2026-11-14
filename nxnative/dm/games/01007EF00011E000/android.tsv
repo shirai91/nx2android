@@ -43,16 +43,16 @@
 # DM_VK_BC_DRAW=1: the game makes a 32x32x32 BC4 noise on the GPU at start-up, drawing each depth slice of each level through an RGBA16UI view. Drawn into directly it
 # read back as zeros on Adreno 830 with Turnip 26.2.3, and Link vanished at once in a teleport, where the shaders dissolve him by that noise; with the stand-in it holds
 # noise (18,542 of its 18,744 bytes not zero) and he dissolves and comes back gradually
-# DM_GPU_TURBO=1 in the profile, from three runs on the S25 Ultra of one build: main with #310, #370 and #375 and the replay changes proposed separately (the
-# build of the short run above that held 60 without the turbo). Without it, a run held 30 fps from the start to the end: GPU about 21 ms a frame at 3,300 draws, frame
-# p50 33.3 ms, 10-26 of 300 frames dropped. Unlike the short run above it never reached 60, and its GPU time is the governor's lowered clock (at a 2-vsync hold the
-# clock falls until the work fills the frame, and every step back to one vsync then fails). Android also refused the prime cores for that whole run (DM_PIN_REPLAY
-# refused about 14 times), so it is not yet known whether the turbo or the cores made the difference; a run without the turbo and with the replay thread pinned is to
-# come. With it, the next run took 12-13 ms of GPU at 3,200-3,700 draws and held 60 (frame p50 16.7 ms, 0-2 of 300 dropped) over 3,300 frames, the replay thread on
-# CPUs 6 7. A 10-minute run with it held 60 for about 6 minutes outside the busiest spots (4,700-5,200 draws: GPU 15-16 ms, 30 fps even then); after that the GPU
-# took about 5 ms per 1,000 draws instead of 3 with the same draws (the phone's thermal limit lowering the top clock) and the game held 30 to the end. The turbo turns
-# off while the app is paused or ends; after a crash the property stays set until the app runs and closes again or the device restarts (it outlives the process). The
-# cost is the heat noted above; a player who prefers a cooler device sets DM_GPU_TURBO=0
+# DM_GPU_TURBO=1 in the profile, from runs on the S25 Ultra with #310 and the replay changes proposed separately (the build of the short run above that held 60
+# without the turbo). About ten runs without it and with the replay thread on the prime cores (CPUs 6 7) held 60 in the lighter parts of the open world (2,000-3,300
+# draws, GPU 8-12 ms a frame) and 30 in the heavier ones (4,300-4,900 draws): there the GPU time crossed a vsync, the frame step held 2, and at that hold the GPU took
+# 15-17 ms a frame (the governor lowers the clock until the work fills the frame), so the step back to one vsync failed until the scene got lighter. With it, a
+# 10-minute run held 60 at 4,000-4,400 draws (GPU busy about 14 ms) and dropped to 30 only in the busiest spots (4,700-5,200 draws, GPU 15-16 ms) for its first 6
+# minutes; after that the GPU took about 5 ms per 1,000 draws instead of 3 with the same draws (the phone's thermal limit lowering the top clock) and it held 30 to the
+# end. So the turbo moves the line between 60 and 30 up by a few hundred draws until the phone is hot. One more run without it held 30 from start to end (GPU about 21
+# ms a frame at 3,300 draws) with the prime cores refused for its whole length (DM_PIN_REPLAY refused about 14 times): the phone limited, not the turbo's absence alone.
+# The turbo turns off while the app is paused or ends; after a crash the property stays set until the app runs and closes again or the device restarts (it outlives the
+# process). The cost is the heat noted above; a player who prefers a cooler device sets DM_GPU_TURBO=0
 status	experimental
 tested	v1114112 Samsung Galaxy S25 Ultra (Snapdragon 8 Elite for Galaxy, Adreno 830); Turnip 26.2.3
 package	org.nx2a.zeldabreathofthewild
