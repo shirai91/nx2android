@@ -273,6 +273,18 @@ int main(void) {
 }
 ''')
 
+    def test_profile_ceiling_excludes_pacing_from_load_hints(self):
+        source = (ANDROID/'perf_android.c').read_text(encoding='utf-8')
+        start = source.index('static const int64_t STEPS[]')
+        policy = source[start:source.index('// The frame\'s replay', start)]
+        policy = policy.replace('__attribute__((weak)) int dm_fps_ceiling(void) { return 0; }',
+                                'int dm_fps_ceiling(void) { return PROFILE_CEILING; }')
+        fixture = (ROOT/'tests/game_mode_hint_fixture.c').read_text(encoding='utf-8')
+        code = policy + '\n' + function(source, 'hint_report') + '\n' + function(source, 'dm_perf_frame')
+        for ceiling in (0, 30):
+            with self.subTest(ceiling=ceiling):
+                self.compile_run(f'#define PROFILE_CEILING {ceiling}\n' + fixture.replace('/* PRODUCTION */', code))
+
     def test_resume_queries_mode_and_recovers_from_service_failures(self):
         source = (ANDROID/'front_android.c').read_text(encoding='utf-8')
         query = function(source, 'activity_game_mode'); resume = function(source, 'on_resume')

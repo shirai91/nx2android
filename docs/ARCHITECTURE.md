@@ -129,7 +129,7 @@ on every resume (API 31+). Performance keeps the game's requested presentation
 period instead of the host's adaptive 60/40/30 downshift, still bounded by the
 profile's `fps_ceiling` (lifted by `--fps60`); Standard restores the
 default policy with fresh frame history. Explicit `DM_ADAPTIVE_FPS` or a valid
-`DM_FPS_PIN` takes precedence. The presenting thread samples both overrides on its first frame and every 30 frames afterward. Guest frame acquisition reads the cached atomic policy. Mode changes take effect on the next presenting frame using the cached overrides, with fresh adaptive history. ADPF hints continue as before. The mode does not
+`DM_FPS_PIN` takes precedence. The presenting thread samples both overrides on its first frame and every 30 frames afterward. Guest frame acquisition reads the cached atomic policy. Mode changes take effect on the next presenting frame using the cached overrides, with fresh adaptive history. A profile ceiling keeps its pacing step so ADPF load hints exclude the present-thread wait imposed by the cap. The mode does not
 unlock an engine cap, force GPU/CPU clocks or override thermal limits; device
 performance still needs measurement. Declaring support disables OEM interventions
 for that mode, as required by the [Android Game Mode API](https://developer.android.com/games/optimize/adpf/gamemode/gamemode-api).

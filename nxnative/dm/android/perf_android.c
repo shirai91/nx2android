@@ -202,7 +202,7 @@ static int g_step = 0; static _Atomic int g_adapt = 1; static int64_t g_work_his
 static int64_t g_last_change, g_last_up, g_up_hold = 2000000000; static int g_ok_frames; static uint64_t g_game_period;   // the period the game asks for, before the adaptive step
 static int g_nshown;
 static _Atomic int g_android_game_mode, g_game_mode_performance;
-static int g_fps_pin = -1;
+static _Atomic int g_fps_pin = -1;
 void dm_perf_game_mode(int mode) { atomic_store(&g_android_game_mode, mode); }   // main-thread onResume; policy changes stay on the presenting thread
 static int adaptive_enabled(void) {
     return atomic_load(&g_adapt) && !atomic_load(&g_game_mode_performance);
@@ -245,7 +245,10 @@ static int fps_cap_step(void) {
 uint64_t dm_present_period_adapt(uint64_t period) {
     g_game_period = period;
     if (!period) return period;
-    if (!adaptive_enabled()) return fps_cap_step() && (uint64_t)STEPS[2] > period ? (uint64_t)STEPS[2] : period;
+    if (!adaptive_enabled()) {
+        g_step = fps_cap_step();   // the ceiling's present-thread wait is pacing, not work for ADPF load hints
+        return g_step && (uint64_t)STEPS[g_step] > period ? (uint64_t)STEPS[g_step] : period;
+    }
     if (g_step < fps_cap_step() && fps_pin() < 0) g_step = fps_cap_step();
     int64_t want = STEPS[g_step];
     return (uint64_t)want > period ? (uint64_t)want : period;   // never faster than the game asks
