@@ -28,6 +28,8 @@ the Android version checks it and lets the real driver create every sampler.
 Modes cover ordinary limits, smaller advertised limits, and a device created
 with anisotropy disabled. There are no production test switches.
 
-All 27 real sampler creations passed on the task's Android 15 ARM64 SwiftShader
-emulator. This checks accepted sampler state, not filtered pixels or commercial
-gameplay; physical GPUs remain unqualified.
+Historical validation before the review follow-up: all 27 real sampler creations
+passed on the task's Android 15 ARM64 SwiftShader emulator. That run checked
+accepted sampler state, not filtered pixels or commercial gameplay. The revised
+head has host-harness and NDK build validation; the emulator run has not been
+repeated, and physical GPUs remain unqualified.
