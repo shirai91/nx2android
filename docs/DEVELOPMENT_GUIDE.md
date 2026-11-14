@@ -206,6 +206,61 @@ keep their concurrent CPU writer checks; the zero-copy failure fixture supplies
 the current allocator context while forcing cache misses to exercise every
 allocation/import failure stage.
 
+Unknown view formats retain the backing image format for both whole and partial clears, matching texture-view selection. The clear-pipeline cache marks newly attempted pipelines dirty for persistence while retaining failed-key memoization.
+
+`test_vk_texture_clear` compiles the production texture-clear dispatcher against a
+CPU write model to check rectangle/channel/subresource selection, invalid ranges
+and typed values. The optional ROM-free Vulkan probe also compiles the production
+clear pipelines and slice draw, then reads back every pixel of three mip levels:
+
+```
+python probes/vk_texture_clear.py --ndk <NDK> --out <scratch> --serial <adb-serial>
+```
+
+Use `--adb <path>` if adb is not on PATH; omit `--serial` to build only. The probe
+requires an ARM64 Android Vulkan 1.3 device/emulator with dynamic rendering. It
+checks both dynamic rendering and traditional render passes: float, unsigned and
+signed integer, UNORM and sRGB formats; all 16 masks; clipped/interior/full-mip
+rectangles; array layers, cube faces and 3D slices. It uses isolated resource and
+submission helpers, so it does not qualify the game's texture-cache integration,
+mobile-driver performance or physical devices. Unsupported partial depth/stencil,
+CPU-decoded, non-attachment and 1D clears, rejected view formats, and failed view
+or pipeline creation log a red message and retain the old whole-subresource clear.
+That fallback ignores the rectangle and color mask; for 3D images it clears the
+whole mip volume. Plain single-layer 2D images ignore the region's layer
+coordinates and clear layer zero; array and 3D ranges still reject out-of-bounds
+layers or slices. Whole MSAA clears always use the transfer path, including
+alternate-format views, with values interpreted in the backing image's format.
+Native BC1–BC7 and ASTC LDR images use constant-color encoded
+blocks and `vkCmdCopyBufferToImage`, since `vkCmdClearColorImage` forbids compressed
+formats (`VUID-vkCmdClearColorImage-image-00007`). Each compressed clear writes the
+whole selected mip and array layers; partial rectangles, nonzero partial masks,
+and view-format changes log the same compatibility warning. A zero color mask
+still does nothing. Other mip levels and array layers remain intact.
+
+Compressed colors are quantized to the block format's precision. sRGB formats
+encode linear RGB into sRGB while alpha stays linear; BC4/5 signed and BC6H HDR
+formats retain their respective ranges. The upload repeats an immutable chunk
+of at most 64 KiB (or one block row for unusually wide images) from the existing
+submission-owned scratch allocator. Copies end at the real mip edge, including
+mips smaller than one block, without a GPU wait or full-image staging allocation.
+The independent decoder tests are `tests/test_vk_compressed_clear.py`; the Vulkan
+probe also checks compressed transfers and sampled colors for supported formats.
+The optional `texture2ddecoder` Python package enables the independent ASTC
+decoder check; the BC decoder and ASTC format-layout checks need no extra package.
+
+The API35 emulator's llvmpipe reports ASTC LDR support but samples an independently
+encoded constant ASTC block incorrectly, even with no clear call. Reproduce that
+control with `--astc-seed-control`. The probe's default remains strict and fails
+on this discrepancy. `--astc-bytes-only` explicitly skips ASTC GPU color sampling
+while still checking its block transfers and preservation of other mip/layers;
+BC GPU sampling remains enabled. Results obtained with that option do not qualify
+ASTC GPU decoding or physical-device rendering.
+Whole color/depth clears keep the
+transfer path for MSAA too; a zero color mask does not suppress depth/stencil.
+The CPU fixtures check these fallback routes, selected mip/layers, typed values
+and caching failed pipeline creation.
+
 `test_vk_copy_back` exercises protected guest memory with the real dirty-page tracker: preserving independent CPU writes in the same cache line, successive submissions and snapshot initialization, cached/uncached and untracked pools, 200 partial/unaligned/overlapping range cases, and writes from another CPU thread. It also injects failed and partially successful bulk `mprotect` calls; a bulk unprotect failure stops the host with a `[RED]` message before publishing writable page states or continuing the copy. It also checks snapshot copy volume across clean and dirty 64 KB blocks, a partial tail, and full versus partial completion merges. These CPU tests do not establish correct rendering on a device.
 
 `test_vk_memory_diagnostics` also checks per-buffer cached-memory compatibility, restricted memory-type masks, diagnostics disabled, and unchanged coherent memory selection. The candidate lookup is diagnostic; cached allocation requires the separate opt-in switch. `test_vk_cached_pools` injects creation, allocation, mapping and binding failures and verifies cleanup, coherent fallback, unsupported types, missing cache functions, default-off behaviour, device-loss handling and rejecting failed/timed-out GPU waits before readback. `test_vk_copy_back` also models separate CPU-cache/device bytes to check flush before GPU use, invalidate before merging, independent CPU writes, partial merges, clean submissions and fatal cache-maintenance errors. Cache-range tests check 5,000 generated ranges for both flush and invalidate, plus explicit boundary/overflow cases and multiple cache-atom sizes. Native readback tests cover empty/non-intersecting transfers, unaligned disjoint writes with independent CPU changes in the same atom, clipping at both pool ends, subsequent uploads/baselines, and full invalidation for uncertain writers. These mocks do not emulate an actual GPU driver.

@@ -1000,6 +1000,7 @@ static void slot_recycle(vksub_t *s) {   // the GPU has passed this slot's last 
         else if (d->kind == 4) { void img_sub_free_(void *); vkDestroyImage(V.dev, (VkImage)d->a, NULL); img_sub_free_(d->b); }
         else if (d->kind == 2) vkDestroyImageView(V.dev, (VkImageView)d->a, NULL);
         else if (d->kind == 3) vkDestroyBufferView(V.dev, (VkBufferView)d->a, NULL);
+        else if (d->kind == 5) vkDestroyFramebuffer(V.dev, (VkFramebuffer)d->a, NULL);
     }
     free(df);
     for (int i = 0; i < s->nblk; i++) s->blk[i].used = 0;
@@ -1089,6 +1090,7 @@ static void df_add(int kind, void *a, void *b) {
         else if (kind == 1) { vkDestroyImage(V.dev, (VkImage)a, NULL); if (b) vkFreeMemory(V.dev, (VkDeviceMemory)b, NULL); }
         else if (kind == 4) { void img_sub_free_(void *); vkDestroyImage(V.dev, (VkImage)a, NULL); img_sub_free_(b); }
         else if (kind == 2) vkDestroyImageView(V.dev, (VkImageView)a, NULL);
+        else if (kind == 5) vkDestroyFramebuffer(V.dev, (VkFramebuffer)a, NULL);
         else vkDestroyBufferView(V.dev, (VkBufferView)a, NULL);
     }
 }
@@ -1133,6 +1135,7 @@ void img_sub_free_(void *s) { img_sub_free((imgsub *)s); }
 void vk_defer_free_image(VkImage i, VkDeviceMemory m) { df_add(1, (void *)i, (void *)m); }
 void vk_defer_free_view(VkImageView v) { df_add(2, (void *)v, NULL); }
 void vk_defer_free_bview(VkBufferView v) { df_add(3, (void *)v, NULL); }
+void vk_defer_free_framebuffer(VkFramebuffer fb) { df_add(5, (void *)fb, NULL); }
 // Descriptor pools: the allocator counts what each set takes and moves to a new pool before any count runs out. Adreno's driver does not refuse an
 // allocation past a pool's sizes: it succeeds and the submission then fails as a whole at vkEndCommandBuffer (VK_ERROR_OUT_OF_HOST_MEMORY; NEO's
 // handheld frames with 32-slot texture arrays crossed the old 8192 combined-sampler limit at about the 712th draw)
