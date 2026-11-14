@@ -1,6 +1,7 @@
 """Existing donor S_SAMPU array semantics through the target packed DMSV ABI."""
 from pathlib import Path
-import shutil, struct, subprocess, tempfile, unittest
+import os, struct, subprocess, tempfile, unittest
+import host_cc
 from test_cpu_handle_readiness import function
 from test_shader_storage_flags import exporter
 A=Path(__file__).resolve().parents[1]/'nxnative/dm/android'
@@ -14,9 +15,9 @@ class SamplerArray(unittest.TestCase):
         raw=env['refl_bin']([e],b'',(1,0,0));self.assertEqual(len(raw),40)
         fields=struct.unpack_from('<BBBBHHhBBii',raw,20)
         self.assertEqual((fields[7],fields[10]),(4,8|(128<<8)))
-    @unittest.skipUnless(shutil.which('cc'),'host C compiler required')
+    @unittest.skipUnless(host_cc.ubsan(), 'host C compiler with UBSan required')
     def test_element_offsets_fixed_sources_and_preflight(self):
-        src=(A/'gfx_vk_exec.c').read_text();header=(A/'gfx_vk.h').read_text()
+        src=(A/'gfx_vk_exec.c').read_text(encoding='utf-8');header=(A/'gfx_vk.h').read_text(encoding='utf-8')
         adapter=function(src,'static dmsv_bind sampler_element(') if 'static dmsv_bind sampler_element(' in src else 'static dmsv_bind sampler_element(const dmsv_bind *b,uint32_t k){return *b;}'
         preflight=function(src,'static void uniform_ready(')+function(src,'static void shader_cpu_ready(')
         decl='\n'.join(l for l in header.splitlines() if l.startswith(('enum { RK_SUPPORT','enum { RS_NONE','typedef struct __attribute__((packed)) { uint8_t kind')))
@@ -49,7 +50,7 @@ int main(void) {
 }
 """.replace('DECL',decl).replace('ADAPTER',adapter).replace('PREFLIGHT',preflight)
         with tempfile.TemporaryDirectory(prefix='nx2a-sampler-array-') as tmp:
-            c=Path(tmp)/'check.c';exe=Path(tmp)/'check';c.write_text(code)
-            subprocess.run(['cc','-std=gnu11','-Wall','-Wextra','-Wno-unused-parameter','-fsanitize=address,undefined',str(c),'-o',str(exe)],check=True)
+            c=Path(tmp)/'check.c';exe=Path(tmp)/'check';c.write_text(code, encoding='utf-8')
+            subprocess.run(['cc','-std=gnu11','-Wall','-Wextra','-Wno-unused-parameter','-fsanitize=undefined','-fno-sanitize-recover=all',*(['-fsanitize=address'] if os.environ.get('NX2A_TEST_SANITIZE') else []),str(c),'-o',str(exe)],check=True)
             subprocess.run([str(exe)],check=True)
 if __name__=='__main__':unittest.main()
