@@ -119,6 +119,10 @@ static void direct_dispatch(VkCommandBuffer cb, uint32_t x, uint32_t y, uint32_t
 static void indirect_dispatch(VkCommandBuffer cb, VkBuffer b, VkDeviceSize off) {
     assert(off % 4 == 0 && off + 12 <= buffer(b)->size && (buffer(b)->usage & VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT)); dispatch_event(b, off, 0, 0, 0);
 }
+// The pool lookup's lazy-pool path (gfx_vk_core.c pool_back): every pool here has its buffer, so it is never taken
+static uint64_t g_used_bytes;
+static uint64_t pool_ns(void) { return 0; }
+static int pool_back(vkpool_t *p, uint64_t serial) { (void)p; (void)serial; abort(); }
 /* CORE */
 /* REPLAY */
 /* LIFECYCLE */
