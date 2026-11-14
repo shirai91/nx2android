@@ -1850,7 +1850,8 @@ static int quad_index_ready(const p_draw_idx *d) {
     if (d->count < 4 || (unsigned)d->itype > 2) return 0;
     uint64_t n = (uint64_t)(uint32_t)d->count * (1u << d->itype);
     // Match draw eligibility: the CPU index span may cross registered pool chunks.
-    if (d->ibuf > UINT64_MAX - n || !vk_pool_of(d->ibuf, 1)) return 0;
+    if (d->ibuf > UINT64_MAX - n) return 0;
+    if (!vk_pool_of(d->ibuf, 1)) return 1;   // draw_idx keeps its existing invalid-pool diagnostic
     cpu_ready(d->ibuf, n);
     return 1;
 }
@@ -1872,14 +1873,19 @@ static int quad_indices(uint32_t count, const uint8_t *src, int itype, int32_t f
         src = snapshot;
     }
     uint32_t *d = vk_scratch((VkDeviceSize)nq * 6 * 4, 4, buf, off);
-    for (uint32_t q = 0; q < nq; q++) for (int k = 0; k < 6; k++) {
-        static const int pat[6] = {0, 1, 2, 0, 2, 3}; uint32_t i = q * 4 + (uint32_t)pat[k];
-        uint32_t value = (uint32_t)first + i;
-        if (src) {
-            value = 0;
-            memcpy(&value, src + (size_t)i * bytes, bytes); // donor source_index, including unaligned input
-        }
-        d[q * 6 + k] = value;
+    static const uint32_t pat[6] = {0, 1, 2, 0, 2, 3};
+    // Guest input may be unaligned; the heap snapshot is aligned for every width.
+    // Choose the width once, avoiding a runtime-sized memcpy per expanded index.
+    if (!src) {
+        for (uint32_t q = 0; q < nq; q++) for (int k = 0; k < 6; k++) d[q * 6 + k] = (uint32_t)first + q * 4 + pat[k];
+    } else if (bytes == 1) {
+        for (uint32_t q = 0; q < nq; q++) for (int k = 0; k < 6; k++) d[q * 6 + k] = src[q * 4 + pat[k]];
+    } else if (bytes == 2) {
+        const uint16_t *s = (const uint16_t *)src;
+        for (uint32_t q = 0; q < nq; q++) for (int k = 0; k < 6; k++) d[q * 6 + k] = s[q * 4 + pat[k]];
+    } else {
+        const uint32_t *s = (const uint32_t *)src;
+        for (uint32_t q = 0; q < nq; q++) for (int k = 0; k < 6; k++) d[q * 6 + k] = s[q * 4 + pat[k]];
     }
     return (int)(nq * 6);
 }

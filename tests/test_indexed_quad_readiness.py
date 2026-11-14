@@ -12,6 +12,9 @@ class IndexedQuadReadiness(unittest.TestCase):
         src=(A/'gfx_vk_exec.c').read_text(encoding='utf-8')
         ready=function(src,'static int quad_index_ready(') if 'static int quad_index_ready(' in src else 'static int quad_index_ready(const p_draw_idx *d){return 1;}'
         convert=function(src,'static int quad_indices(')
+        draw=function(src, 'static void draw_idx(')
+        preflight=next(line for line in draw.splitlines() if 'if (!quad_index_ready(d)) return;' in line)
+        reject=next(line for line in draw.splitlines() if 'if (!vk_buf_at(d->ibuf, 1,' in line)
         code=r"""
 #include <stdint.h>
 #include <stddef.h>
@@ -33,6 +36,16 @@ static void vk_ubd_read(uint64_t a,uint64_t n,uint8_t *out){assert(mapped(a,n));
 static void *vk_scratch(uint64_t n,unsigned align,VkBuffer *b,VkDeviceSize *o){scratch_calls++;allocated=(allocated+3)&~3u;assert(n<=sizeof scratch-allocated);output=(uint32_t*)(scratch+allocated);allocated+=(unsigned)n;*b=1;*o=0;return output;}
 static void *snapshot_realloc(void *p,size_t n){heap_grows++;heap_size=n;return realloc(p,n);}
 READY
+static int diagnostics,accepted;
+static int vk_buf_at(uint64_t a,uint64_t n,VkBuffer *b,VkDeviceSize *o){return vk_pool_of(a,n)!=NULL;}
+static void diagnostic(int code,const char *message){assert(code==56);assert(!strcmp(message,"index buffer outside the memory pools"));diagnostics++;}
+#define VKRED_ONCE(code,message) diagnostic(code,message)
+static void draw_rejection(const p_draw_idx *d){
+PREFLIGHT
+ VkBuffer ib;VkDeviceSize io;
+REJECT
+ accepted++;
+}
 #define realloc snapshot_realloc
 CONVERT
 #undef realloc
@@ -48,13 +61,15 @@ int main(void){
  assert(scratch_calls==1&&allocated==24&&heap_grows==1&&heap_size>=16);
  for(int type=0;type<3;type++){
   unsigned bytes=1u<<type;memset(memory,0,sizeof memory);memset(snapshot,0,sizeof snapshot);
-  // Non-aligned addresses must be read as bytes, as donor source_index does.
-  for(unsigned i=0;i<8;i++){uint32_t value=9+i;memcpy(snapshot+1+i*bytes,&value,bytes);}
+  // Unaligned guest input is copied to an aligned heap snapshot before typed reads.
+  const uint32_t values[]={0,UINT32_MAX,0x80008080u,0x7fff7f7fu,1,0xfffffffeu,0x81018301u,2};
+  uint32_t mask=type==0?UINT8_MAX:type==1?UINT16_MAX:UINT32_MAX;
+  for(unsigned i=0;i<8;i++)memcpy(snapshot+1+i*bytes,&values[i],bytes);
   p_draw_idx d={.prim=7,.itype=type,.count=9,.ibuf=(uintptr_t)(memory+1)};
   unsigned old=waits;assert(quad_index_ready(&d));assert(waits==old+1&&waited_size==9*bytes);
   VkBuffer b;VkDeviceSize o;unsigned before=reads,alloc_before=scratch_calls;assert(quad_indices(9,memory+1,type,0,&b,&o)==12);
   assert(reads==before+1&&scratch_calls==alloc_before+1); // One immutable snapshot; avoid tracker scans per expanded index.
-  const uint32_t expected[]={9,10,11,9,11,12,13,14,15,13,15,16};
+  const uint32_t expected[]={values[0]&mask,values[1]&mask,values[2]&mask,values[0]&mask,values[2]&mask,values[3]&mask,values[4]&mask,values[5]&mask,values[6]&mask,values[4]&mask,values[6]&mask,values[7]&mask};
   assert(!memcmp(output,expected,sizeof expected));
  }
  assert(reads>0);
@@ -65,8 +80,9 @@ int main(void){
  assert(quad_indices(4,memory+1,0,0,&reuse_buf,&reuse_off)==6);assert(heap_grows==grown+1);
 
  p_draw_idx d={.prim=7,.itype=2,.count=4,.ibuf=(uintptr_t)memory};unsigned old=waits;
- d.ibuf=UINT64_MAX-3;assert(!quad_index_ready(&d));
- d.ibuf=(uintptr_t)(memory+64);assert(!quad_index_ready(&d));
+ d.ibuf=UINT64_MAX-3;draw_rejection(&d);assert(!diagnostics&&!accepted);
+ d.ibuf=(uintptr_t)(memory+64);draw_rejection(&d);assert(diagnostics==1&&!accepted);
+ assert(waits==old); // Invalid pool addresses reach the existing rejection/log without waiting.
  d.ibuf=(uintptr_t)memory;d.count=-1;assert(!quad_index_ready(&d));
  d.count=3;assert(!quad_index_ready(&d));d.count=4;d.itype=3;assert(!quad_index_ready(&d));
  assert(waits==old);
@@ -76,7 +92,7 @@ int main(void){
  assert(quad_indices(3,NULL,0,5,&b,&o)==0);
  puts("CPU quad index widths, deferred bytes, consumed bounds and native paths PASS");
 }
-""".replace('READY',ready).replace('CONVERT',convert)
+""".replace('READY',ready).replace('CONVERT',convert).replace('PREFLIGHT',preflight).replace('REJECT',reject)
         with tempfile.TemporaryDirectory(prefix='nx2a-index-ready-') as tmp:
             c=Path(tmp)/'check.c';exe=Path(tmp)/'check';c.write_text(code, encoding='utf-8')
             subprocess.run(['cc','-std=gnu11','-Wall','-Wextra','-Wno-unused-parameter','-fsanitize=undefined','-fno-sanitize-recover=all',*(['-fsanitize=address'] if os.environ.get('NX2A_TEST_SANITIZE') else []),str(c),'-o',str(exe)],check=True)
