@@ -1398,7 +1398,7 @@ static void pools_readback_barrier(VkCommandBuffer cb) {
     VkMemoryBarrier b = {VK_STRUCTURE_TYPE_MEMORY_BARRIER, NULL, VK_ACCESS_MEMORY_WRITE_BIT, VK_ACCESS_HOST_READ_BIT};
     vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &b, 0, NULL, 0, NULL);
 }
-void mtl_sub_begin(void) {
+static void begin_segment(int continuing) {
     vk_init();
     pthread_mutex_lock(&g_sub_lock);
     // the next slot of the ring (g_cur is -1 between submissions, so it cannot say where the ring is: every submission took slot 0 and waited in slot_recycle
@@ -1423,8 +1423,10 @@ void mtl_sub_begin(void) {
     if (g_cq) vkCmdResetQueryPool(s->main, g_cq, (uint32_t)g_cur * CQ, CQ);
     s->ncq = 0;
     g_npass[g_cur] = 0; if (pass_times_on()) vkCmdResetQueryPool(s->main, g_pq, (uint32_t)(g_cur * PASSQ * 2), PASSQ * 2);
-    vk_exec_reset();
+    if (continuing) vk_exec_resume(); else vk_exec_reset();
 }
+void mtl_sub_begin(void) { begin_segment(0); }
+void vk_sub_resume(void) { begin_segment(1); }
 void mtl_sub_event(volatile uint32_t *val, uint32_t mode, uint32_t v) { post((post_op){1, val, mode, v, 0, 0, -1}); }
 void mtl_sub_counter(uint64_t addr, uint32_t type) {
     vksub_t *s = cur(); int q = -1;
@@ -1525,8 +1527,9 @@ void vk_ubd_land(VkCommandBuffer cb) {   // outside a render pass
 int vk_ubd_overlaps(uint64_t a, uint64_t n) { for (int i = 0; i < g_nubd; i++) if (g_ubd[i].lo < a + n && a < g_ubd[i].hi) return 1; return 0; }
 // GPU writes to pool memory (buffer copies and fills, texture → buffer copies, storage buffers of dispatches) whose submission may not have completed:
 // until it has, a CPU read of that memory (vk_ubd_read: a shadow, a handle in a uniform buffer) may see the bytes from before them or after them
-typedef struct { uint64_t lo, hi, fence; } gpuw_t; enum { GW_MAX = 1024 };
-static gpuw_t g_gw[GW_MAX]; static int g_ngw; uint64_t g_ubd_racy;
+typedef struct { uint64_t lo, hi, fence; } gpuw_t;
+static gpuw_t *g_gw; static size_t g_ngw, g_cgw; uint64_t g_ubd_racy;
+int g_vk_cpu_ready = 1;   // refreshed by replay at each submission (DM_VK_CPU_READY)
 static void sub_gpu_wrote(uint64_t a, uint64_t n) {   // into the open submission's list (pools_copy_back)
     if (g_cur < 0 || !n) return;
     vksub_t *s = &g_slot[g_cur]; uint64_t lo = a, hi = a + n, bd = ~0ull; int best = -1;
@@ -1535,18 +1538,62 @@ static void sub_gpu_wrote(uint64_t a, uint64_t n) {   // into the open submissio
     else { s->gw[s->ngw].lo = lo; s->gw[s->ngw].hi = hi; s->ngw++; }
 }
 void vk_gpu_wrote(uint64_t a, uint64_t n) {
+    if (!n || a > UINT64_MAX - n) return;
     uint64_t f = g_fence + 1;
-    for (int i = g_ngw - 1; i >= 0 && g_gw[i].fence == f; i--) if (g_gw[i].lo <= a && a + n <= g_gw[i].hi) return;
-    if (g_ngw == GW_MAX) { uint64_t done = vk_fence_done(); int o = 0; for (int i = 0; i < g_ngw; i++) if (g_gw[i].fence > done) g_gw[o++] = g_gw[i]; g_ngw = o; }
-    if (g_ngw == GW_MAX) { memmove(g_gw, g_gw + 1, sizeof *g_gw * (GW_MAX - 1)); g_ngw--; }
+    for (size_t i = g_ngw; i-- > 0 && g_gw[i].fence == f;) if (g_gw[i].lo <= a && a + n <= g_gw[i].hi) return;
+    if (g_ngw == g_cgw) {
+        uint64_t done = vk_fence_done(); size_t o = 0;
+        for (size_t i = 0; i < g_ngw; i++) if (g_gw[i].fence > done) g_gw[o++] = g_gw[i];
+        g_ngw = o;
+    }
+    // nxnative gw_add: never evict live writes. The old bounded diagnostic
+    // history was allowed to forget a dependency; a readiness check cannot.
+    if (g_ngw == g_cgw) {
+        if (g_cgw > SIZE_MAX / 2 / sizeof *g_gw) die("[vk] GPU write tracking size overflow");
+        size_t capacity = g_cgw ? g_cgw * 2 : 512;
+        gpuw_t *next = realloc(g_gw, capacity * sizeof *next);
+        if (!next) die("[vk] cannot track live GPU buffer writes");
+        g_gw = next; g_cgw = capacity;
+    }
     g_gw[g_ngw++] = (gpuw_t){a, a + n, f};
     sub_gpu_wrote(a, n);
 }
 int vk_gpu_pending(uint64_t a, uint64_t n) {
     if (!g_ngw) return 0;
     uint64_t done = vk_fence_done();
-    for (int i = g_ngw - 1; i >= 0; i--) if (g_gw[i].fence > done && g_gw[i].lo < a + n && a < g_gw[i].hi) return 1;
+    for (size_t i = g_ngw; i-- > 0 && g_gw[i].fence > done;) if (g_gw[i].lo < a + n && a < g_gw[i].hi) return 1;
     return 0;
+}
+// Port of nxnative 26c898e4e / 1f01e28c cpu_access_ready and gw_wait_prior.
+// Called only by replay, before this command allocates descriptors or scratch.
+// Target inline updates are already visible through vk_ubd_read. Any updates
+// still deferred are later than all tracked GPU writes (GPU producers land
+// them first), so they are the donor's later cpu_known ranges. Fills and
+// already-landed updates conservatively retain the GPU wait on this backend.
+void vk_cpu_ready(uint64_t a, uint64_t n) {
+    if (!g_vk_cpu_ready || !n || a > UINT64_MAX - n) return;
+    uint64_t done = vk_fence_done();
+    // Appends and compaction preserve fence order. Only the live suffix matters;
+    // waiting for its newest uncovered overlap also completes every older one.
+    for (size_t i = g_ngw; i-- > 0 && g_gw[i].fence > done;) {
+        const gpuw_t *w = &g_gw[i];
+        if (w->lo >= a + n || a >= w->hi) continue;
+        uint64_t at = a > w->lo ? a : w->lo;
+        uint64_t end = a + n < w->hi ? a + n : w->hi;
+        while (at < end) {
+            uint64_t covered = at;
+            for (int j = 0; j < g_nubd; j++) {
+                const ubd_t *k = &g_ubd[j];
+                if (at >= k->lo && at < k->hi && k->hi > covered) covered = k->hi;
+            }
+            if (covered == at) break;
+            at = covered < end ? covered : end;
+        }
+        if (at == end) continue;   // deferred bytes cover prior and open producers alike
+        if (w->fence <= g_fence) mtl_wait(w->fence, UINT64_MAX);
+        else { mtl_wait(mtl_sub_commit(), UINT64_MAX); vk_sub_resume(); }
+        return;
+    }
 }
 // what a GPU read of [a, a + n) sees at this point of the command stream, into dst (memory, then the deferred updates in order)
 void vk_ubd_read(uint64_t a, uint64_t n, uint8_t *dst) {
