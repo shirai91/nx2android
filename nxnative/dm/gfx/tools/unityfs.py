@@ -199,6 +199,11 @@ PPtr<Shader>: int m_FileID; SInt64 m_PathID
 PPtr<Texture>: int m_FileID; SInt64 m_PathID
 Shader: string m_Name; SerializedShader m_ParsedForm; vector<data:unsigned int> platforms; vector<data:unsigned int> offsets; vector<data:unsigned int> compressedLengths; vector<data:unsigned int> decompressedLengths; vector<data:UInt8> compressedBlob; vector<data:PPtr<Shader>> m_Dependencies; map<data:pair(string,PPtr<Texture>)>~ m_NonModifiableTextures; bool! m_ShaderIsBaked
 '''
+# The pre-2018.1 Shader (Sky Force Reloaded, player 2017.4.4f1: no bundles, its 5 built-in shaders in Data/Resources/'unity default resources', type hash 266d53113fa30d2b858f2768f92eaa14).
+# Read off 2018.3's: the one field 2017 lacks is m_NonModifiableTextures (Unity 2018.1's addition), and with it left out every one of those objects parses to exactly its recorded size
+# (4620, 24896, 5512, 5740 and 8780 bytes), its name out of m_ParsedForm and its NVN program blobs out of compressedBlob
+SHADER_2017_4 = SHADER_2018_3.replace('; map<data:pair(string,PPtr<Texture>)>~ m_NonModifiableTextures', '')
+assert 'm_NonModifiableTextures' not in SHADER_2017_4 and 'm_ShaderIsBaked' in SHADER_2017_4
 # The Unity 2019.4 Shader (Unpacking, Unity 2019.4.34f1: no bundles, its shaders in Data/*.assets and Data/Resources), from 2019.4.34f1's type tree as AssetRipper's TypeTreeDumps records it
 # (2019.4.33f1's is the same), checked node for node with the flags: 2018.3's with global and local keyword indices per subprogram, a ray tracing program per pass and, as from 2019.3,
 # several segments per platform (offsets, compressedLengths and decompressedLengths are lists per platform)
@@ -237,7 +242,8 @@ COMPUTE_2020_3 = (COMPUTE_2022_3.replace('; SInt64 requirements', '')
                   .replace('vector<data:ComputeShaderKernel> uniqueVariants; vector<data:pair(string,unsigned int)> variantIndices', 'map<data:pair(string,ComputeShaderKernel)>~ variantMap')
                   .replace('; vector<data:string> dynamicKeywords', ''))
 CLASS_COMPUTE_SHADER = 72
-KNOWN_TREES = {(CLASS_SHADER, bytes.fromhex('ea424a5fc1e48db62144df956f9e1005')): ('Shader', SHADER_2022_3),
+KNOWN_TREES = {(CLASS_SHADER, bytes.fromhex('266d53113fa30d2b858f2768f92eaa14')): ('Shader', SHADER_2017_4),
+               (CLASS_SHADER, bytes.fromhex('ea424a5fc1e48db62144df956f9e1005')): ('Shader', SHADER_2022_3),
                (CLASS_SHADER, bytes.fromhex('2ec7223dce3af4232b14ae1441bd7999')): ('Shader', SHADER_6000_0),
                (CLASS_SHADER, bytes.fromhex('a30e3dcf6c6d25153d6f64e5e41caf4e')): ('Shader', SHADER_2020_3),
                (CLASS_SHADER, bytes.fromhex('8db760073e1392061e4a36995f0735af')): ('Shader', SHADER_2018_3),
