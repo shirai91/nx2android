@@ -272,7 +272,10 @@ compatibility checks until migration. Mismatched or corrupt envelopes start empt
 a driver rejection retries empty, and failure to create that cache is logged.
 Pipeline creation marks the cache dirty even when its size stays unchanged. A
 complete snapshot with the same size and SHA-256 as the last accepted load or
-successful save skips publication. Other saves use one fixed `.tmp` file under the
+successful save skips publication. Besides the present timer, a save also starts on
+a thread of its own after 64 new pipelines, at most once per gap: 15 s for every
+whole 16 MB of cache (at least 15 s, at most 120 s), as each save rewrites the whole file.
+Other saves use one fixed `.tmp` file under the
 I/O lock, so the next write reuses an interrupted save's staging file. Publication
 requires successful writes and synchronization; failed or incomplete snapshots and
 pending legacy migrations remain eligible for retry. `DM_VK_NOPCACHE` still means
