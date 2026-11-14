@@ -110,10 +110,13 @@ target's direct indexed-quad CPU conversion.
 Preflight retains the draw path's first-byte pool eligibility: a CPU index
 span may cross registered pool chunks. It checks arithmetic overflow and waits
 for the complete declared range before any draw-specific descriptors or scratch
-allocations. Native GPU-index draws and indirect draws keep their existing path.
+allocations. Addresses outside pools skip readiness and reach the existing draw
+rejection diagnostic; arithmetic overflow is rejected during preflight. Native
+GPU-index draws and indirect draws keep their existing path.
 After preflight, `vk_ubd_read` fills one replay-thread-owned CPU heap snapshot.
-Conversion reads that cached memory using the donor's byte-copy index load,
-retaining the existing triangle pattern and unaligned 8-, 16-, and 32-bit input.
+Conversion selects the width once and uses aligned typed loads from that cached
+memory, retaining the existing triangle pattern. The snapshot copy preserves
+support for unaligned 8-, 16-, and 32-bit guest input.
 Only the expanded output indices use Vulkan scratch.
 
 The heap snapshot grows to the largest input seen and is retained until process
@@ -123,7 +126,8 @@ Vulkan memory and GPU/deferred-write tracking scans per expanded index.
 Physical-device performance is unmeasured.
 
 The focused UBSan host test (also ASan with `NX2A_TEST_SANITIZE=1`) checks
-all index widths, unaligned/deferred bytes, cross-chunk first-byte eligibility,
+all index widths and high-bit values, unaligned/deferred bytes, cross-chunk
+first-byte eligibility, invalid-pool diagnostics without a readiness wait,
 full-range readiness, arithmetic overflow, snapshot growth/reuse and one GPU
 scratch output allocation, ignored non-quad/indirect paths, and unchanged
 generated nonindexed quads. Device fixtures reuse the existing
