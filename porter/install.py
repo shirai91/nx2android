@@ -8,7 +8,7 @@
 import hashlib, posixpath, re, shlex, tempfile, zipfile
 from pathlib import Path
 
-from porter import datapack
+from porter import datapack, paths
 from porter.adb import Adb, AdbError, long_path
 from porter.upstream import BuildError, PROG, say
 
@@ -100,9 +100,9 @@ def install(apk, data, adb_exe, serial=None, replace_signer=False, romfs_at=None
     if romfs_push and not target: raise BuildError('--romfs-push needs --romfs-at <a folder on the device outside the app\'s files folder>')
     adb = Adb(adb_exe, serial, log=say)
     PROG.stage('install', step='finding the device')
-    pushing = False
+    pushing, lock = False, None
     try:
-        dev = adb.pick()
+        dev = adb.pick(); lock = adb.hold(paths.user_dir())   # one install per device at a time: released in the finally below
         model = adb.prop('ro.product.model')
         say(f'device: {model or dev} ({dev}), GPU {adb.gpu() or "unknown"}')
         if 'bcn' in man.get('requires', []):   # the profile's requires: BC-compressed textures
@@ -191,5 +191,7 @@ def install(apk, data, adb_exe, serial=None, replace_signer=False, romfs_at=None
         if gone:   # Android deletes an app's files folder with the app: a push into it then fails part-way (a size mismatch)
             raise BuildError(f'{man["package"]} was uninstalled on the device while its data was being pushed ({e})') from e
         raise BuildError(str(e)) from e
+    finally:
+        if lock: lock.close()
     PROG.end(f'{man["name"]} on {model or dev}')
     say(f'installed: open "{man["name"]}" on the device')

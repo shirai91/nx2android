@@ -43,6 +43,9 @@ void vk_gpu_wrote(uint64_t a, uint64_t n) {}
 static void sub_gpu_wrote(uint64_t a, uint64_t n) {}
 uint64_t vk_fence_done(void) { return 0; }
 static uint64_t mem_handle(uint64_t h) { abort(); }
+static void shader_cpu_ready(const vkshader_t *s,int stage) {
+    for(int i=0;i<s->nbind;i++) assert(s->b[i].kind!=RK_SBUF_UBO && s->b[i].kind!=RK_TEX_UBO && s->b[i].samp!=RS_UBO);
+}
 static uint32_t ubo_word(int a, int b, int c) { abort(); }
 static void cbuf_desc(int a, const vkshader_t *s, const dmsv_bind *b, VkDescriptorBufferInfo *d) { abort(); }
 void vk_shader_c1(vkshader_t *s, VkBuffer *b, VkDeviceSize *o, VkDeviceSize *n) { abort(); }
@@ -119,6 +122,10 @@ static void direct_dispatch(VkCommandBuffer cb, uint32_t x, uint32_t y, uint32_t
 static void indirect_dispatch(VkCommandBuffer cb, VkBuffer b, VkDeviceSize off) {
     assert(off % 4 == 0 && off + 12 <= buffer(b)->size && (buffer(b)->usage & VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT)); dispatch_event(b, off, 0, 0, 0);
 }
+// The pool lookup's lazy-pool path (gfx_vk_core.c pool_back): every pool here has its buffer, so it is never taken
+static uint64_t g_used_bytes;
+static uint64_t pool_ns(void) { return 0; }
+static int pool_back(vkpool_t *p, uint64_t serial) { (void)p; (void)serial; abort(); }
 /* CORE */
 /* REPLAY */
 /* LIFECYCLE */

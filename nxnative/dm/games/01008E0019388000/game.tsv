@@ -1,0 +1,45 @@
+# Ultra Kaiju Monster Rancher (KTGL engine on SDK 13.3.5, update 1.0.1). Started from the NSP script's profile (dm/games/profile_guess.py);
+# checked by hand against the survey: the modules (subsdk0 is the SDK's movie library), the heap and the 0 MB system resource from the NPDM.
+
+# ---- Identity ----
+title_id	01008E0019388000
+program_id	01008E0019388000
+
+# ---- App ----
+name	Ultra Kaiju Monster Rancher
+ipa	UltraKaijuMonsterRancher.ipa
+app_category	public.app-category.games
+
+# ---- Versions ----
+build	v0	1.0.1	main=53384cc3d2b4ca9f166e3afb7f7b9e21	subsdk0=d0f13015e5badf2243d60a2bc9b978dd	sdk=3644a6760469451cabc99f00c540acc2
+package	v0
+shader_versions	v0
+
+# ---- Files ----
+# every module main imports from
+modules	main subsdk0 sdk
+romfs_marker	stage/stage_farm02_texture.lnkbin
+zip_store	.bin:.g1n:.gz:.ktsl2asbin:.ktsl2stbin:.lnkbin:.mp4:.metallib
+
+# ---- Memory ----
+# main sets a heap of at most the pool − 64 MB: a 3328 MB heap region
+mem_reserve	0x100000000
+mem_alias	0x10000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+# the NPDM declares 0 MB of system resource: IsVirtualAddressMemoryEnabled is false, as on Horizon (Big Brain Academy: Brain vs. Brain sets a heap only then)
+sys_resource	0x0
+
+# ---- Mode ----
+# Handheld, the game draws its 3D views into a 960x540 viewport with a 2048x2048 shadow map; docked, 1920x1080 and 3072x3072 (it reads nn::oe::GetOperationMode, main+0x1c1aa4).
+# UI and text are 1920x1080 in both. On the AYN Odin 2 (Adreno 740), the battle's "Start Battle" screen took GPU p50 11.7 ms handheld and 17.6 ms docked at 30 fps, with
+# no frame late on screen in either; the player can switch to docked in the app's menu for the sharper 3D view
+op_mode	handheld
+
+# ---- Shader split ----
+# The shaders are GLSLC outputs in main and in the RomFS's chunked zlib files with 128 KB chunks (shader/*Shader.lnkbin.gz, shader/ScreenLayoutShader.g1s.gz,
+# stage/stage_terrain_shader.lnkbin.gz; shader_split.py kt_gz). Before the split read that form, the effects, the battle UI's text and the terrain drew only
+# after the app had captured them on the device and a second port. 30 fps only: the game steps its logic a fixed 1/30 s per frame (30.0 at 30-odd conversion
+# sites in main), so at 60 it runs twice as fast, and FPSLocker-Warehouse has no config for this build
+shader_groups	/charamodel/=charamodel /stage/=stage /screenlayout/=screenlayout /motion/=motion /sound/=sound /binary/=binary /vibration/=vibration /string/=string /movie/=movie /effect/=effect /shader/=shader /ui/=ui /font/=font /bgm/=bgm
+shader_note	Ultra Kaiju Monster Rancher shaders
