@@ -290,3 +290,13 @@ python tests/android/keyboard_smoke.py --sdk "$ANDROID_HOME" --ndk "$ANDROID_NDK
 ```
 
 It builds through the production Java/dex packager, uses the real guest keyboard conversion and JNI bridge, and checks Unicode/UTF-16 output, minimum length, cancel, background/resume, repeated requests and bounded UTF-8 output. Add `--without-java` to verify the default APK's fallback. The probe installs only `org.nx2a.keyboardtest` and uninstalls it afterward; run it on a dedicated emulator. No game dump is needed. This probe does not qualify the combined external-display keyboard or physical-device gameplay.
+
+## Runtime GLSLC shader preparation
+
+Some NVN games compile shaders with their own GLSLC at startup (for example, Fire Emblem: Three Houses and Catherine: Full Body). The porter captures these outputs before the offline shader split. If the extraction already contains every complete `glslc_capture/*.glslc` output named by the profile, it reuses them without a device. Otherwise, connect an ARM64 Android device with USB debugging and configure `adb`, even when building without `--install`.
+
+The capture builds a headless NVN host with null graphics, copies the rewritten modules and RomFS to a unique `/data/local/tmp/nx2a-glslc-*` directory, and runs the game's own compiler for up to 60 seconds. It uses fresh temporary saves, leaves installed apps alone, and removes its device directory afterward. Allow enough device space for an additional copy of the RomFS. Logs are in `<title ID>_build/logs/android_glslc.log` and `android_glslc_host.log`.
+
+Incomplete captures leave previous outputs intact. Only the packed version can be captured with its rewritten modules; if another shader-source version needs a capture, port that version separately first. A provisional profile has no expected-output list, so any complete output permits a best-effort split; this does not prove complete shader coverage or game playability. Runtime compilers inside NRO modules are not detected by this preparation stage yet.
+
+Regression tests: `python -m unittest discover -s tests -p test_glslc_capture.py`. For transport integration on a dedicated ARM64 emulator, run `python tests/android/glslc_smoke.py --ndk <NDK> --adb <adb> --serial emulator-<port> --out <scratch>`. This runs the production capture writer with synthetic compiler output through the real device deadline, transfer and publication path. It does not execute a commercial game's compiler or qualify gameplay.

@@ -60,7 +60,7 @@ for sh in sorted((DM / 'android/shaders').glob('*.*')):
 def srcs(*globs): return [p for g in globs for p in sorted(DM.glob(g))]
 HOST = [p for p in srcs('host/*.c') if p.name not in ('hle_movie_avc.c',)]   # VideoToolbox: dm/android/movie_avc.c instead
 GFX = srcs('gfx/*.c', 'gfx/nvn/*.c', 'gfx/tex/*.c')
-PORT = [p for p in srcs('android/compat/*.c', 'android/*.c') if not (p.name == 'gfx_null.c' and a.gfx != 'null') and not (p.name.startswith('gfx_vk') and a.gfx != 'vk')]   # one graphics backend
+PORT = [p for p in srcs('android/compat/*.c', 'android/*.c') if not (p.name == 'gfx_null.c' and a.gfx != 'null') and not ((p.name.startswith('gfx_vk') or p.name == 'gl_android.c') and a.gfx != 'vk')]   # one graphics backend; GLES presents through Vulkan and is not part of a null NVN tool
 ASM = srcs('host/entry.S', 'gfx/nvn/nvn_entry.S', 'gfx/nvn/nvn_thunks.S')
 VPX = srcs('third_party/libvpx/**/*.c')
 ZSTD = srcs('third_party/zstd/zstddeclib.c')   # zstd's decompressor: the shader bundle's SPIR-V (gfx_vk_shader.c bundle_spv)

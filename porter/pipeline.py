@@ -448,8 +448,7 @@ class Port:
         return out
 
     def check_graphics(self):
-        """What the Android host can run: NVN games whose shaders are all in their files. The other kinds need a step upstream runs on a Mac (booting the game in the Mac host)
-        or a graphics layer the Android host does not have yet"""
+        """Check graphics support and device requirements for shader preparation before rewriting or compiling."""
         src = profile_guess.build_sources(self.game / 'ExeFS', self.game / 'RomFS', self.g.words('modules'))
         gfx = src['graphics'][0]
         # OpenGL ES: the device's own GL driver runs it (dm/android/gl_android.c); no shaders to translate, the game compiles its GLSL ES at run time
@@ -460,16 +459,102 @@ class Port:
         self.oodle_why = src['oodle_packs'][1] if src['oodle_packs'][0] and ('GFPAK' in src['oodle_packs'][1] or 'Trinity' in src['oodle_packs'][1]) else ''
         # Unreal paks (version 11) and IoStore containers: their shader code archives are decoded with the game's own Oodle on the device too (device_ue)
         self.ue_why = src['ue_decode'][1] if src['ue_decode'][0] else ''
-        why = self.oodle_why or self.ue_why
+        self.glslc_why = src['glslc_capture'][1] if src['glslc_capture'][0] else ''
+        capture_needed = self.glslc_why and self.glslc_todo()[1]
+        why = self.oodle_why or self.ue_why or (self.glslc_why if capture_needed else '')
         if why:
             if not self.tools.get('adb'):   # adb is optional for a port that does not install (toolchain.require): this one needs it
-                raise BuildError(f"{self.app_name}'s shaders are in Oodle-compressed archives ({why}): the port decodes them with the game's own decoder on the Android "
+                raise BuildError(f"{self.app_name}'s shaders need preparation ({why}): the port runs the game's own code on the Android "
                                  f'device, so it needs adb and the device even without installing. {NO_ADB}; then connect the device (USB debugging on) and port again')
             try: Adb(self.tools['adb'], self.o.device or self.cfg.get('device'), log=say).pick()
-            except (AdbError, KeyError) as e: raise BuildError(f"{self.app_name}'s shaders are in Oodle-compressed archives ({why}): the port decodes them with the game's own decoder on "
+            except (AdbError, KeyError) as e: raise BuildError(f"{self.app_name}'s shaders need preparation ({why}): the port runs the game's own code on "
                                                                f'the Android device, so connect it (adb) and port again ({e})') from e
-        for k in ('glslc_capture', 'ue_legacy') + (() if self.ue_why else ('ue_decode',)) + (() if self.oodle_why else ('oodle_packs',)):
+        for k in ('ue_legacy',) + (() if self.ue_why else ('ue_decode',)) + (() if self.oodle_why else ('oodle_packs',)):
             if src[k][0]: raise BuildError(f'{self.app_name} needs a step that boots the game in the Mac host ({src[k][1]}), which the Android port cannot run yet')
+
+    # ---- shaders compiled by the game's GLSLC at boot, captured on the Android device ----
+    GLSLC_SECS = 60
+
+    def glslc_todo(self):
+        want = nsp.glslc_wanted(self.g)
+        todo = []
+        for v in self.versions:
+            got = nsp.glslc_done(self.dirs[v] / 'glslc_capture')
+            if not (got >= want if want else got): todo.append(v)
+        if todo and todo != [self.pkg_ver]:
+            missing = ', '.join(v for v in todo if v != self.pkg_ver)
+            raise BuildError(f'the run-time shader capture runs the packed version {self.pkg_ver}\'s code; {missing} needs a capture of its own')
+        return want, todo
+
+    def device_glslc(self):
+        """Reuse the upstream GLSLC capture format/completion checks, running the game's compiler in the Android headless host.
+        Only validated output replaces a capture. Temporary device storage and fresh saves are private to this run; installed games are untouched."""
+        import shlex
+        import tempfile
+        import uuid
+        want, todo = self.glslc_todo()
+        for v in self.versions:
+            if v in todo: continue
+            cached = self.dirs[v] / 'glslc_capture'; valid = nsp.glslc_done(cached)
+            for p in cached.glob('*.glslc'):
+                if p.name not in valid: nsp.rmtree(p)   # shader_split reads every GLSLC file, including incomplete extras
+        if not todo: return
+        PROG.add(1); PROG.stage('GLSLC capture', step='building the headless Android host')
+        adb = Adb(self.tools['adb'], self.o.device or self.cfg.get('device'), log=say); adb.pick()
+        host = self.aw / ('host-glslc-debug' if self.o.debug else 'host-glslc')
+        nsp.run([PY, DM / 'android/build.py', '--game', self.g.id, '--ndk', self.tools['ndk'], '--out', host, '--exe', '--gfx', 'null', '--jobs', str(self.o.jobs)]
+                + ([] if self.o.debug else ['--release']), self.logs / 'android_glslc_host.log', env=self.env)
+        dev = '/data/local/tmp/nx2a-glslc-' + uuid.uuid4().hex
+        d = self.dirs[self.pkg_ver]
+        staging = Path(tempfile.mkdtemp(prefix='.glslc-', dir=d))
+        cap, backup, dst = staging / 'capture', staging / 'previous', d / 'glslc_capture'
+        log = self.logs / 'android_glslc.log'
+        log.write_text('Android shader capture started; complete device log not retrieved.\n', encoding='utf-8')
+        try:
+            adb.shell(f'mkdir -p {dev}/mods {dev}/RomFS {dev}/save {dev}/temp {dev}/capture', retries=1)
+            PROG.set(step='copying the game for its compiler')
+            adb.push_file(host / 'dmhost', f'{dev}/dmhost')
+            adb.push_tree(self.patched, f'{dev}/mods')
+            adb.push_tree(d / 'RomFS', f'{dev}/RomFS')
+            # No live save data, shader bundle or installed application environment enters this boot.
+            env = {f'DM_{key}': f'{dev}/{value}' for key, value in
+                   (('ROOT', '.'), ('ROMFS', 'RomFS'), ('SAVE', 'save'), ('TEMP', 'temp'), ('GLSLC_CAPTURE', 'capture'), ('NVN_SHMAP', 'shader_map.tsv'))}
+            command = ' '.join(f'{k}={shlex.quote(v)}' for k, v in env.items())
+            PROG.set(step='capturing run-time shaders')
+            say(f'booting {self.app_name} on the Android device to capture its run-time shaders (up to {self.GLSLC_SECS} seconds)')
+            # The device's deadline also applies if adb disconnects. Never retry a guest execution after a transport error.
+            try:
+                result = adb.shell(f'cd {dev} && chmod 755 dmhost && {command} timeout -k 5 {self.GLSLC_SECS} ./dmhost mods > run.log 2>&1; '
+                                   'echo "NX2A_GLSLC_EXIT=$?"', timeout=self.GLSLC_SECS + 30, retries=1)
+            except BaseException:
+                # A transient transport failure can recover before cleanup; save its diagnostic log without retrying the guest or replacing the original error.
+                try: adb.run('pull', f'{dev}/run.log', str(log), timeout=15, retries=1)
+                except (AdbError, OSError): pass
+                raise
+            adb.run('pull', f'{dev}/run.log', str(log), retries=1)
+            adb.run('pull', f'{dev}/capture', str(cap), retries=1)
+            got = nsp.glslc_done(cap)
+            if not got or (want and not got >= want):
+                PROG.end(ok=False)
+                raise BuildError(f'captured only {len(got)} run-time shaders' + (f', the profile needs {len(want)}' if want else '') + f' (host output: {log})')
+            status = re.search(r'NX2A_GLSLC_EXIT=(\d+)', result)
+            if not status: raise BuildError(f'Android shader capture returned no exit status (host output: {log})')
+            if int(status[1]) not in (0, 124): say(f'[RED] shader capture host exited with {status[1]}; captured outputs are complete, but game startup needs investigation ({log})')
+            # A malformed extra output must not reach shader_split even when all required files are complete.
+            for p in cap.iterdir():
+                if p.name not in got: nsp.rmtree(p)
+            if dst.exists(): dst.rename(backup)
+            try: cap.rename(dst)
+            except BaseException:
+                if backup.exists(): backup.rename(dst)
+                raise
+            nsp.rmtree(backup)
+            PROG.end(f'{len(got)} run-time shader outputs')
+        finally:
+            try: adb.shell(f'rm -rf {dev}', check=False, timeout=15, retries=1)
+            except AdbError: say(f'[RED] could not remove the temporary capture directory {dev}; its guest run has a device-side deadline')
+            if backup.exists(): say(f'[RED] previous shader captures preserved at {backup}')
+            else: nsp.rmtree(staging)
 
     # ---- the game's own Oodle decoder on the device, for the shader split (Pokémon Legends: Arceus's GFPAKs, Pokémon Legends: Z-A's Trinity packs) ----
     ODEV = '/data/local/tmp/nx2a-oodle'   # dmhost, the rewritten modules and the job, removed afterwards
@@ -675,6 +760,7 @@ class Port:
         sv = self.versions
         pkg = self.work / 'shader' / 'pkg'
         try:
+            if getattr(self, 'glslc_why', ''): self.device_glslc()
             if getattr(self, "ue_why", ""): self.device_ue()   # Unreal's shader code archives, decoded on the device into <version dir>/ue_shaders before the split reads them
             nsp.split_shaders(PY, NXNATIVE, [self.dirs[v] / 'RomFS' for v in sv], [self.dirs[v] / 'ExeFS/main' for v in sv], pkg, self.env, self.logs, self.g, bool(self.derived or self.provisional),
                                oodle=self.device_oodle if self.oodle_why else None,   # Oodle-compressed archives: the game's own decoder on the device
