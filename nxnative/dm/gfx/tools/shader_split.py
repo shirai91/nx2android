@@ -1161,6 +1161,17 @@ def ue_inline_shaders(d, label, out):
         i = m.start(); n = int.from_bytes(d[i - 4:i], 'little') if i >= 4 else 0
         if 2 <= n <= len(d) - i and uepak.lslg(d[i:i + n]): take(d[i:i + n], i)
 
+def ue_modern_pack(path):
+    """Whether the file is an Unreal modern pak (version 11) or an IoStore container (.utoc / .ucas): the shaders of a modern Unreal game live in the shader code archives the decode stage
+    wrote (ue_shaders), not in the file, and these are the biggest files of its RomFS (FINAL FANTASY RESONANCE's are 8.9 GB) — reading them whole finds nothing and fills the device's
+    memory. A legacy pak (version 4) keeps its shaders inline in the cooked packages, so it is left to the legacy path"""
+    ext = os.path.splitext(path)[1].lower()
+    if ext in ('.ucas', '.utoc'): return True
+    if ext != '.pak': return False
+    try:
+        with open(path, 'rb') as f: return uepak.pak_version(f) == 11
+    except (OSError, ValueError, struct.error): return False
+
 def yaz0(s):
     """Yaz0 decompression (Super Mario 3D World + Bowser's Fury: almost all of RomFS is .szs = SARC wrapped in Yaz0). Pure Python runs at about 20–45 MB/s per core, under a minute for the whole 4.7 GB RomFS in parallel, and needs no extra dependency.
     Group header bits: 1 = one literal byte; 0 = back-reference, 2 bytes {length high nibble, 12-bit distance} (distance + 1); length 0 reads one more byte + 0x12, else + 2. Overlapping copies are expanded by their period"""
@@ -1564,6 +1575,9 @@ def scan_file(args):
     stem, ext = os.path.splitext(path)
     if ext in ('.data', '.patch', '.debug', '.nxpc') and os.path.exists(stem + '.dict'): return rel, {}, set(), {}   # read through its Next Level Games index (nlg_shaders)
     with open(path, 'rb') as f: head = f.read(16)
+    if ue_modern_pack(path):   # an Unreal modern pak or an IoStore container: its shaders are in the shader code archives (ue_shaders), not in the file — reading it whole finds nothing and fills the device's memory
+        print(f'skipped {rel}: {os.path.getsize(path):,} bytes, an Unreal modern pak or an IoStore container (the shaders are in the shader code archives)', flush=True)
+        return rel, {}, set(), {}
     found = []; trees = {}
     if LOOSE_MONO and ext in LOOSE_MONO and not (len(args) > 2):   # a loose Monolith file (.wishp, .wismt, .wismda …): HCPS archives in the file itself or in its xbc1 streams (mono_shaders)
         mono_shaders(open(path, 'rb').read(), '/' + rel, found)
