@@ -188,8 +188,9 @@ if __name__ == '__main__':
         for g in all_games(): print(f'{g.id}\t{g.title_id:016X}\t{g.get("name", "")}')
     elif len(a) == 3 and a[0] == 'header':
         out, text = Path(a[2]), header(load(a[1])); out.parent.mkdir(parents=True, exist_ok=True)
-        if not (out.exists() and out.read_text() == text):   # written only when it changes: make runs this every time (the profile folder can change under the same GAME), and an unchanged header must not rebuild the host
-            tmp = out.with_name(out.name + '.tmp'); tmp.write_text(text); tmp.replace(out)
+        data = text.encode()   # LF bytes on every OS: porter port records the sha256 of this file (nx2a-data.json profile_h) and porter host compares it with a header made again, so text mode's CRLF on Windows must not get in
+        if not (out.exists() and out.read_bytes() == data):   # written only when it changes: make runs this every time (the profile folder can change under the same GAME), and an unchanged header must not rebuild the host
+            tmp = out.with_name(out.name + '.tmp'); tmp.write_bytes(data); tmp.replace(out)
     elif len(a) == 2 and a[0] == 'dir':
         print(load(a[1]).dir)
     elif len(a) == 3 and a[0] == 'link':   # link → the profile folder (replaced when it points elsewhere)
