@@ -1,0 +1,49 @@
+# Cardfight!! Vanguard Dear Days 2 (Lancarse's own engine, SDK 17.5.3, update 1.7.2). Started from porter's provisional profile (dm/games/profile_guess.py) and checked by hand
+# on 2026-11-13 against the survey: the modules, the 16 MB system resource from the NPDM, the heap the game asks for (below). Brought up on Android (android.tsv)
+
+# ---- Identity ----
+title_id	0100B6F01DAF6000
+program_id	0100B6F01DAF6000
+
+# ---- App ----
+name	Cardfight!! Vanguard Dear Days 2
+ipa	CardfightVanguardDearDays2.ipa
+app_category	public.app-category.games
+
+# ---- Versions ----
+build	v1441792	1.7.2	main=31705d2aa09326b33eed68e95193aa3c	sdk=311deab1f062b504f3d646a49ddcd4e8
+package	v1441792
+shader_versions	v1441792
+
+# ---- Files ----
+# every module main imports from
+modules	main sdk
+romfs_marker	app/sound/VG3.bfsar
+zip_store	.bfsar:.cmp:.obj:.metallib
+
+# ---- Memory ----
+# the NPDM declares 16 MB of system resource (virtual address memory) and main sets a heap. nninitStartup asks for the pool − used memory, SetHeapSize 0xb9400000 (2.89 GB, read on
+# Android); the provisional 4.375 GB alias region left a 128 MB heap region and the game aborted there (0xd401). The heap check's rule (profile_guess.heap_signals):
+# the request rounded up to 128 MB (3 GB heap region), the alias region the rest of the 5 GB block (1.5 GB: the SDK's ~1 GB node area and 512 MB)
+mem_reserve	0x140000000
+mem_alias	0x60000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+# the NPDM declares 16 MB of system resource
+sys_resource	0x1000000
+
+# ---- Shader split ----
+shader_groups	/app/=app
+shader_note	Cardfight!! Vanguard Dear Days 2 shaders (provisional profile)
+
+# ---- Textures ----
+# The game sets COMPRESSIBLE on every texture and fills its textures from the CPU in CPU-uncached pools, with no flush: its BC7 font arrays (1024x1024, 4 to 18 layers) after
+# making them, its UI label atlas (1024x512 RGBA8; the card data screen's "Activated Ability" tabs) before. Their GPU copies stayed zeros (texture dumps on the Odin 2) while
+# guest memory held them: no text anywhere, and dark corners on the card data boxes. tex_cpu_uncached takes the data in both cases (gfx_vk_tex.c, hle_nvn.c)
+tex_cpu_uncached	on
+
+# ---- Frame rate ----
+# The game presents at interval 1 (60 fps on the Switch) and steps by the time that really passed: its frame loop (main+0x40d120) adds the time since its last call to an
+# accumulator of frames and runs as many fixed updates as it holds. Its boot screens changed every 3.0 s at 60 and at 30 fps alike (screen recordings on the Odin 2).
+# 30 fps by default, half the work of 60; porter's --fps60 lifts the ceiling
+fps_ceiling	30
