@@ -545,9 +545,9 @@ static VkShaderModule vk_shader_module_(vkshader_t *s, uint64_t um, uint64_t im,
     pthread_mutex_unlock(&g_sh_mu);
     return m;
 }
-// static buffers: Ryujinx's support buffer (render scales 1.0, nothing else set: as nvn_mtl.m support_buf) and 64 KB of zeros (unbound uniform slots, driver segments nobody reads)
+// Static support, zero and disabled-attribute buffers. Maxwell supplies (0,0,0,1) for disabled generic attributes; its register words are float bit patterns even when a shader reads them as integers.
 static VkBuffer static_buf(int which) {
-    static VkBuffer b[2]; static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
+    static VkBuffer b[3]; static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
     { VkBuffer r = __atomic_load_n(&b[which], __ATOMIC_ACQUIRE); if (r) return r; }   // made already: no lock (every draw binds them)
     pthread_mutex_lock(&mu);
     if (!b[which]) {
@@ -557,6 +557,7 @@ static VkBuffer static_buf(int which) {
         VkDeviceMemory m; VKCHK(vkAllocateMemory(V.dev, &ai, NULL, &m)); VKCHK(vkBindBufferMemory(V.dev, nb, m, 0));
         void *p; VKCHK(vkMapMemory(V.dev, m, 0, VK_WHOLE_SIZE, 0, &p)); memset(p, 0, 65536);
         if (which == 0) for (int i = 0; i < 73; i++) *(float *)((uint8_t *)p + 192 + 16 * i) = 1.0f;   // render_scale[i].x (SupportBuffer.cs layout)
+        if (which == 2) ((float *)p)[3] = 1.0f;   // Odyssey's depth pre-pass reads an absent attribute's .w as its flower displacement weight; zero disagrees with the material pass and leaves stale colour.
         __atomic_store_n(&b[which], nb, __ATOMIC_RELEASE);   // published once filled
     }
     pthread_mutex_unlock(&mu);
@@ -564,6 +565,7 @@ static VkBuffer static_buf(int which) {
 }
 VkBuffer vk_support_buffer(void) { return static_buf(0); }
 VkBuffer vk_zero_buffer(void) { return static_buf(1); }
+VkBuffer vk_default_attribute_buffer(void) { return static_buf(2); }
 // a shader's c1 constants: copied once into a buffer of their own (the bundle bytes do not change; the reflection is never compressed)
 void vk_shader_c1(vkshader_t *s, VkBuffer *buf, VkDeviceSize *off, VkDeviceSize *len) {
     if (!s->c1_len) { *buf = vk_zero_buffer(); *off = 0; *len = 65536; return; }

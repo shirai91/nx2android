@@ -154,7 +154,30 @@ static void act_finish(ANativeActivity *a) {
     if (m) (*E)->CallVoidMethod(E, a->clazz, m);
     if (!m || (*E)->ExceptionCheck(E)) { (*E)->ExceptionClear(E); LOG("[RED] Activity.finish() failed: the app ends itself"); _exit(0); }
 }
-static void on_resume(ANativeActivity *a) { if (g_quit) { act_finish(a); return; } go_foreground(); }
+// #294: Game Mode can change while the app is paused. Query on every resume, including NativeActivity without Java helpers.
+extern void dm_perf_game_mode(int mode);
+static void activity_game_mode(ANativeActivity *a) {
+    int mode = 0; JNIEnv *E = a->env;
+    if (a->sdkVersion >= 31) {
+        if ((*E)->PushLocalFrame(E, 8) < 0) (*E)->ExceptionClear(E);
+        else {
+            do {
+                jclass c = (*E)->GetObjectClass(E, a->clazz); if ((*E)->ExceptionCheck(E) || !c) break;
+                jmethodID service = (*E)->GetMethodID(E, c, "getSystemService", "(Ljava/lang/String;)Ljava/lang/Object;"); if ((*E)->ExceptionCheck(E) || !service) break;
+                jstring name = (*E)->NewStringUTF(E, "game"); if ((*E)->ExceptionCheck(E) || !name) break;
+                jobject manager = (*E)->CallObjectMethod(E, a->clazz, service, name); if ((*E)->ExceptionCheck(E) || !manager) break;
+                c = (*E)->GetObjectClass(E, manager); if ((*E)->ExceptionCheck(E) || !c) break;
+                jmethodID get = (*E)->GetMethodID(E, c, "getGameMode", "()I"); if ((*E)->ExceptionCheck(E) || !get) break;
+                int value = (*E)->CallIntMethod(E, manager, get); if ((*E)->ExceptionCheck(E)) break;
+                mode = value;
+            } while (0);
+            if ((*E)->ExceptionCheck(E)) (*E)->ExceptionClear(E);
+            (*E)->PopLocalFrame(E, NULL);
+        }
+    }
+    dm_perf_game_mode(mode);   // absent service / older Android keeps the standard policy
+}
+static void on_resume(ANativeActivity *a) { if (g_quit) { act_finish(a); return; } activity_game_mode(a); go_foreground(); }
 static void on_destroy(ANativeActivity *a) { (void)a; dm_perf_gpu_release(); _exit(0); }   // one game per process
 
 // ---- input ----
@@ -296,7 +319,7 @@ float dm_overlay_scale(void) {
     ANativeWindow *w = phone_window(); int ww = w ? ANativeWindow_getWidth(w) : 0, h = w ? ANativeWindow_getHeight(w) : 0;
     if (h != last_h || ww != last_w) { last_w = ww; last_h = h; s = 1;   // (the width picks the layout, whose buttons are sized for its form factor)
         float face = 0.1f; const ov_ctl *L = OV_CTLS; for (int i = 0; i < OV_N; i++) if (L[i].kind == OV_BUTTON && L[i].btn == DM_BTN_A) face = L[i].w;   // A's width, in window heights
-        if (h > 0 && g_dpi > 0 && g_dpi < 0xfffe) { float mm = face * (float)h / (float)g_dpi * 25.4f; s = OV_MIN_MM / mm; if (s < 1) s = 1; if (s > 1.45f) s = 1.45f; }   // (more and the face buttons touch)
+        if (h > 0 && g_dpi > 0 && g_dpi < 0xfffe) { float mm = face * (float)h / (float)g_dpi * 25.4f; s = OV_MIN_MM / mm; if (s < 1) s = 1; if (s > 1.45f) s = 1.45f; s = ov_fit_scale(OV_CTLS, (float)ww, (float)h, s); }   // (no further than the controls fit the window)
         LOG("[overlay] window %dx%d, density %d dpi: face buttons %.1f mm, controls x%.2f", ww, h, g_dpi, h > 0 && g_dpi > 0 && g_dpi < 0xfffe ? face * h / g_dpi * 25.4f : 0, s); }
     return s;
 }
