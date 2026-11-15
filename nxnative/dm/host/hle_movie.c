@@ -554,6 +554,16 @@ HLE_FORCE("_ZN5movie7DecoderC1ENS_11DecoderTypeENS_19DecoderOutputFormatENS_11De
 // SDK 4's constructor has no priority argument (Dark Souls Remastered, NintendoSDK_movie 4.5.0). Without this take-over the SDK built its own decoder and the host's Configure read it as a host one (a call through a null pointer)
 HLE_FORCE("_ZN5movie7DecoderC1ENS_11DecoderTypeENS_19DecoderOutputFormatENS_11DecoderModeE", "movie decoder (SDK 4, no priority): host implementation", void, h_movie_Decoder4,
           void **self, int type, int fmt, int mode) { h_movie_Decoder(self, type, fmt, mode, 0); }
+// An earlier SDK's constructor takes neither a mode nor a priority (Xenoblade Chronicles 2 2.1.0: movie::Decoder(DecoderType, DecoderOutputFormat), C1 and C2 both exported). Without
+// this take-over the SDK built its own decoder, the host's Configure read it as a host one and called through G.find_i32 before md_syms had run: the game closed when its first
+// prerendered movie began (after the fight with the Ardainian soldiers in chapter 1, a call through a null pointer in h_movie_Configure)
+// That SDK's video output format 3 is NV12 (4 in the later ones, where 3 became RGBA): the game's player gives the decoder 1,382,400-byte outputs for its 1280x720 VP9 movie
+// (width x height x 3 / 2) and reads them as NV12
+static int md_fmt_old(int fmt) { return fmt == 3 ? MD_FMT_NV12 : fmt; }
+HLE_FORCE("_ZN5movie7DecoderC1ENS_11DecoderTypeENS_19DecoderOutputFormatE", "movie decoder (earlier SDK, no mode or priority): host implementation", void, h_movie_Decoder2,
+          void **self, int type, int fmt) { h_movie_Decoder(self, type, md_fmt_old(fmt), 0, 0); }
+HLE_FORCE("_ZN5movie7DecoderC2ENS_11DecoderTypeENS_19DecoderOutputFormatE", "movie decoder (earlier SDK, base object constructor): host implementation", void, h_movie_Decoder2b,
+          void **self, int type, int fmt) { h_movie_Decoder(self, type, md_fmt_old(fmt), 0, 0); }
 static void md_free(void **self) {
     mdec_t *d = md_of(self); if (!d) return;
     md_defer_drop(d);

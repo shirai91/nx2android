@@ -67,7 +67,7 @@ static void ev_check(void) {
 }
 static void render_main(void *arg) {
     (void)arg;
-    void (*exec)(void *, void *) = gsym("_ZN2nn5audio29ExecuteAudioRendererRenderingENS0_19AudioRendererHandleE");
+    Result (*exec)(void *, void *) = gsym("_ZN2nn5audio29ExecuteAudioRendererRenderingENS0_19AudioRendererHandleE");
     void *out = dm_pcmout_open(2);
     static int16_t data[NBUF][FRAME_MAX * 2]; static gbuf bufs[NBUF]; gbuf *free_list[NBUF]; int nfree = NBUF;
     for (int i = 0; i < NBUF; i++) { bufs[i] = (gbuf){data[i], sizeof data[i], 0}; free_list[i] = &bufs[i]; }
@@ -91,7 +91,7 @@ static void render_main(void *arg) {
             got = g_cq_n[h % CQ]; if (got) memcpy(b->ptr, g_cq[h % CQ], (size_t)got * 4);   // (copied before the slot is handed back)
             atomic_store(&g_cq_head, h + 1); popped = 1;
         } else {   // SDK: generate commands → CPU processing (output taken in the host takeover) → signal the game's renderer event
-            ev_check(); g_frame_n = 0; exec(g_handle[0], g_handle[1]); got = g_frame_n; if (got) memcpy(b->ptr, g_frame, (size_t)got * 4);
+            ev_check(); g_frame_n = 0; Result xr = exec(g_handle[0], g_handle[1]); got = g_frame_n; { static int once; if (xr && !once++) LOG("[RED] audren: ExecuteAudioRendererRendering failed %#x: no frame rendered", xr); } if (got) memcpy(b->ptr, g_frame, (size_t)got * 4);
         }
         pthread_mutex_unlock(&g_order_mu);
         if (popped) cq_popped();
@@ -324,7 +324,7 @@ static Result render_once(uint8_t *sys, int16_t *dst, int *nout) {
         process = gsym("_ZN2nn5audio3dsp20CommandListProcessor7ProcessEv");
     }
     int md = gen20 ? *(int32_t *)(sys + 0x4c) : mode(sys), dv = gen20 ? *(int32_t *)(sys + 0x48) : device(sys);
-    if (md != 1 || dv != 1) return 0x40299;   // same as the original: manual rendering needs CPU + manual mode
+    if (md != 1 || dv != 1) { static int once; if (!once++) LOG("[RED] audren: the renderer is not in CPU + manual mode (execution mode %d, rendering device %d): nothing is rendered", md, dv); return 0x40299; }   // same as the original: manual rendering needs CPU + manual mode
     pthread_mutex_lock(&g_render_mu);
     uint64_t t0 = now_ns();
     // Command generation must exclude the game thread's RequestUpdate (AudioRenderSystem::Update, which holds the mutex at mu_off): the original system thread (SendCommandToDsp) generates under the same lock. Processing (the CPU DSP) stays outside the lock, as in the original.
@@ -343,8 +343,19 @@ static Result render_once(uint8_t *sys, int16_t *dst, int *nout) {
     pthread_mutex_unlock(&g_render_mu);
     return RES_OK;
 }
+// The AudioRenderSystem inside AudioRendererImpl: at +0x60 in SDK 16, at +0x50 in SDK 3.5.0 (Xenoblade Chronicles 2: with +0x60 the mode and device read 0, every render
+// returned 0x40299, the renderer's event was never signaled, the game updated once and stayed silent). Read off the SDK's own function, whose first add is `add xN, x0, #off`
+static size_t impl_sys_off(void) {
+    static size_t off;
+    if (!off) {
+        const uint32_t *f = guest_sym("_ZN2nn5audio6server24AudioRendererManagerImpl17AudioRendererImpl29ExecuteAudioRendererRenderingEv"); off = 0x60;
+        for (int i = 0; f && i < 12; i++) if ((f[i] & 0xffc003e0u) == 0x91000000u) { off = (f[i] >> 10) & 0xfff; break; }   // add xd, x0, #imm12
+        LOG("audren: AudioRenderSystem at +%#zx inside AudioRendererImpl", off);
+    }
+    return off;
+}
 HLE_FORCE("_ZN2nn5audio6server24AudioRendererManagerImpl17AudioRendererImpl29ExecuteAudioRendererRenderingEv", "render one frame manually: SDK generates commands + CPU processing, the host takes the DeviceSink output",
-          Result, h_ar_ImplExec, uint8_t *impl) { return render_once(impl + 0x60, g_frame, &g_frame_n); }   // the AudioRenderSystem sits at +0x60 inside AudioRendererImpl
+          Result, h_ar_ImplExec, uint8_t *impl) { return render_once(impl + impl_sys_off(), g_frame, &g_frame_n); }
 // SDK 20 (The Legend of Zelda: Breath of the Wild 1.9.0): the public ExecuteAudioRendererRendering (sdk+0x221e90) calls the AudioRendererImpl version through the vtable (sdk+0x22ca88, just x0 += 0x60 and a jump through the PLT to here),
 // so the takeover above is never reached. The original generates commands here without the update lock; with the render thread on the original and the game thread's RequestUpdate rendering catch-up frames ("nothing rendered since the last update"),
 // both sides wrote the same command buffer at once and CommandListProcessor::Process sometimes read a half-written command list and crashed (once at 60 s and once at 134 s in the shrine). Taken over here, so rendering goes through the host's locked render as well
