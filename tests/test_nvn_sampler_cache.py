@@ -50,7 +50,7 @@ static uint16_t opaque_hash(const unsigned char *object, size_t bytes) {
 }
 typedef union { uint64_t align; unsigned char data[96]; } cached_sampler;
 static cached_sampler make(const samp_par *parameters) {
-    cached_sampler object = {0};
+    cached_sampler object; memset(&object, 0, sizeof object);
     samp_builder_t builder = {0}; builder.p = *parameters;
     assert(h_nvnSamplerInitialize((NVNsampler *)object.data, (const NVNsamplerBuilder *)&builder));
     return object;
@@ -106,7 +106,7 @@ class SamplerCacheTests(unittest.TestCase):
     def test_opaque_hash_and_cache_reuse(self):
         cc = shutil.which('cc') or shutil.which('clang') or shutil.which('gcc')
         if not cc:
-            self.skipTest('Native C compiler unavailable; Android harness can run separately')
+            self.skipTest('Native C compiler unavailable')
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / 'check.c'
             exe = Path(directory) / 'check.exe'
