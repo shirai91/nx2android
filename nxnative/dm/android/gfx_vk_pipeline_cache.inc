@@ -6,6 +6,7 @@
 #include <errno.h>
 #include <stddef.h>
 #include <fcntl.h>
+#include <time.h>
 
 enum { PCACHE_ABI=1, PCACHE_MAX_BYTES=256<<20 };
 typedef struct {
@@ -25,6 +26,34 @@ static size_t g_pcache_bytes;
 static uint8_t g_pcache_digest[32];
 static int g_pcache_digest_valid,g_pcache_migrate;
 static pthread_mutex_t g_pcache_io=PTHREAD_MUTEX_INITIALIZER;
+// Saved also after a burst of new pipelines, besides gfx_vk_present.c's timer (every 1800 presents: 60-90 s at Ocarina of Time's 20-30 fps, where the first scene
+// builds most of its pipelines): once PCACHE_BURST more have been made since the last save began and the gap has passed since it, a save runs on a thread of
+// its own (vk_pipeline_cache_changed, which each pipeline built calls), so a force-kill soon after a scene's first load keeps them. The rule is droidplay-core c3c723280's.
+// Each save rewrites the whole file (vkGetPipelineCacheData, SHA-256, write and fsync), so the gap grows with the cache: 15 s for each whole PCACHE_GAP_MB of the
+// last loaded or saved cache, at least once and at most PCACHE_GAP_STEPS times (120 s), so the burst saves write about 2 MB/s at most. Caches seen on an Odin 3: 12 to 138 MB
+enum { PCACHE_BURST=64, PCACHE_GAP_MB=16, PCACHE_GAP_STEPS=8 };
+static int64_t g_pcache_gap_ns=15000000000ll;   // the gap's step (a variable: the unit test shortens it)
+static _Atomic size_t g_pcache_size;           // the cache's size at the last load or save
+static int64_t pcache_gap(void) {
+    int64_t steps=(int64_t)((atomic_load_explicit(&g_pcache_size,memory_order_relaxed)>>20)/PCACHE_GAP_MB);
+    return g_pcache_gap_ns*(steps<1 ? 1 : steps>PCACHE_GAP_STEPS ? PCACHE_GAP_STEPS : steps);
+}
+static _Atomic uint64_t g_pcache_kick_gen;      // the generation the last save began at
+static _Atomic int64_t g_pcache_kick_ns;        // and when (CLOCK_MONOTONIC; 0: none yet)
+static int64_t pcache_now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC,&t); return (int64_t)t.tv_sec*1000000000ll+t.tv_nsec; }
+void vk_pipeline_cache_save(void);
+static void *pcache_save_main(void *unused) { (void)unused; vk_pipeline_cache_save(); return NULL; }
+static void pcache_burst(uint64_t generation) {
+    uint64_t base=atomic_load_explicit(&g_pcache_kick_gen,memory_order_relaxed);
+    if (generation<base+PCACHE_BURST || !V.pcache || !g_pcache_path[0]) return;
+    int64_t now=pcache_now(),last=atomic_load_explicit(&g_pcache_kick_ns,memory_order_relaxed);
+    if (last && now-last<pcache_gap()) return;
+    if (!atomic_compare_exchange_strong(&g_pcache_kick_gen,&base,generation)) return;   // one builder starts it
+    atomic_store_explicit(&g_pcache_kick_ns,now,memory_order_relaxed);
+    pthread_t th; pthread_attr_t a; pthread_attr_init(&a); pthread_attr_setdetachstate(&a,PTHREAD_CREATE_DETACHED);
+    if (pthread_create(&th,&a,pcache_save_main,NULL)) VKLOG("vk: pipeline-cache save after %d new pipelines: no thread",PCACHE_BURST);
+    pthread_attr_destroy(&a);
+}
 
 static pcache_header pcache_identity(void) {
     pcache_header h={.magic="DMVKPC1",.schema=1,.abi=PCACHE_ABI,.vendor=V.props.vendorID,
@@ -97,16 +126,20 @@ static size_t pcache_load(void) {
     }
     if (bytes) {
         memcpy(g_pcache_digest,digest,sizeof digest);g_pcache_bytes=bytes;g_pcache_digest_valid=1;g_pcache_migrate=legacy;
+        atomic_store_explicit(&g_pcache_size,bytes,memory_order_relaxed);
     }
     if (bytes) VKLOG("vk: loaded %zu pipeline-cache bytes for this device, driver and shader chain",bytes);
     free(data);return bytes;
 }
-void vk_pipeline_cache_changed(void) { atomic_fetch_add_explicit(&g_pcache_generation,1,memory_order_relaxed); }
+void vk_pipeline_cache_changed(void) { pcache_burst(atomic_fetch_add_explicit(&g_pcache_generation,1,memory_order_relaxed)+1); }
 void vk_pipeline_cache_save(void) {
     if (!V.pcache || !g_pcache_path[0]) return;
     pthread_mutex_lock(&g_pcache_io);
     uint64_t generation=atomic_load_explicit(&g_pcache_generation,memory_order_relaxed);
     if (generation==g_pcache_saved && !g_pcache_migrate) { pthread_mutex_unlock(&g_pcache_io);return; }
+    { uint64_t k=atomic_load_explicit(&g_pcache_kick_gen,memory_order_relaxed);   // (any save, the timer's too, starts the burst count and the gap again)
+      while (k<generation && !atomic_compare_exchange_weak(&g_pcache_kick_gen,&k,generation)) {}
+      atomic_store_explicit(&g_pcache_kick_ns,pcache_now(),memory_order_relaxed); }
     size_t bytes=0;void *data=NULL;char temporary[1100]={0};FILE *file=NULL;
     if (vkGetPipelineCacheData(V.dev,V.pcache,&bytes,NULL)!=VK_SUCCESS || bytes<32 || bytes>PCACHE_MAX_BYTES) goto done;
     size_t capacity=bytes;data=malloc(bytes);if (!data) goto done;
@@ -127,7 +160,7 @@ void vk_pipeline_cache_save(void) {
     if (fclose(file)) ok=0;
     file=NULL;
     if (ok && !rename(temporary,g_pcache_path)) {
-        temporary[0]=0;g_pcache_saved=generation;g_pcache_bytes=bytes;
+        temporary[0]=0;g_pcache_saved=generation;g_pcache_bytes=bytes;atomic_store_explicit(&g_pcache_size,bytes,memory_order_relaxed);
         memcpy(g_pcache_digest,header.digest,sizeof header.digest);g_pcache_digest_valid=1;g_pcache_migrate=0;
     }
     else VKLOG("vk: pipeline-cache write was not published: %s",strerror(errno));

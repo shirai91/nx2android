@@ -100,6 +100,7 @@ struct vkimg {
     VkImage img; VkDeviceMemory mem; void *sub; VkFormat fmt; VkImageViewType vtype; VkImageAspectFlags aspect;
     uint32_t w, h, d, layers, levels, samples; int target, nvn_format;
     VkImageLayout layout;           // version 1 keeps every image in GENERAL after its first use
+    uint8_t family_formats, family_closed;   // logical family members already shared; packaged metadata prevents adding new formats
     int packaged;                   // filled from guest memory (deswizzled upload), re-uploaded when its pages change
     uint64_t pkg_stamp; const void *pkg_span; uint64_t pkg_seen;
     uint64_t pkg_hash;              // hash of the guest bytes it was last uploaded from: pages written around it with its own bytes unchanged keep what the GPU wrote (gfx_vk_tex.c vk_tex)
@@ -178,7 +179,12 @@ VkBuffer vk_zero_buffer(void);
 VkBuffer vk_default_attribute_buffer(void);
 
 // ---- replay (gfx_vk_exec.c) ----
-void vk_exec_reset(void);   // per submission
+void vk_exec_reset(void);
+void vk_exec_resume(void);   // new internal segment, retaining conditional state
+extern int g_vk_cpu_ready;   // live diagnostic switch; default on
+void vk_cpu_ready(uint64_t addr, uint64_t size);
+int vk_ubd_overlaps(uint64_t addr, uint64_t size);
+void vk_sub_resume(void);   // per submission
 void vk_end_pass(void);     // close an open render pass
 
 // ---- presentation (gfx_vk_present.c) ----

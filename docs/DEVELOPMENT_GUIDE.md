@@ -125,8 +125,38 @@ axis preservation, not game recognition or device behavior.
 python -m unittest discover tests
 ```
 
+`test_fragment_output_masks` compiles the production attachment-state loop and
+checks sparse output maps, absent fragment shaders, channel masks, integer
+formats and the flat diagnostic shader's all-target output. The optional
+[fragment-output replay](../tests/vk_fragment_output_masks.md) adds pipeline
+observations and pixel checks; its build script supports Windows, macOS and
+Linux NDK hosts and does not contact a device. Host checks do not qualify
+physical GPU rendering.
+
+`test_avc_frame_layout` and `test_avc_output_buffer` compile extracted production
+MediaCodec layout and drain code on the host. They cover bounded plane copies,
+metadata fallbacks, unknown-format NV12 compatibility, once-only drop logs and
+fatal picture-allocation failure. The layout harness selects C99 stdio on MinGW;
+`NX2A_TEST_SANITIZE=1` enables ASan/UBSan for the layout harness. The optional
+[AVC MediaCodec probe](../probes/avc_frame_layout.md) lives beside the AAC probes
+and builds with a macOS, Linux or Windows NDK. Host tests do not qualify a
+physical Android decoder or gameplay.
+
 The Vulkan-header harnesses need a discoverable NDK; set `ANDROID_NDK_HOME`
 when it is not found automatically. They skip if no NDK headers are found.
+`test_texture_format_aliases` compiles the production storage lookup, upload
+decisions, eviction, pool cleanup and NVN texture initializer under ASan/UBSan.
+It checks same-format plain/packaged peers in both orders, all orderings of two
+formats and their metadata peers, late CPU-write marks, and unique image retirement.
+A byte-store double at the GPU upload boundary checks visibility through those
+peers; it does not execute Vulkan uploads. The selected compiler is `CC`, then
+`cc`, then `clang`; a sanitizer link probe skips explicitly if unsupported.
+`test_texture_transfers` captures the actual Vulkan copy, resolve, blit and clear
+commands with NDK headers. It checks format, subresource and sRGB clear semantics,
+pooled/dedicated temporary retirement and injected allocation failures without
+running a GPU. The manual Android fixture builder supports macOS, Linux and
+Windows; see [texture-family validation](../tests/vk_texture_aliases.md).
+
 The protected-pool harness uses real page protection
 and a mutex/condition-variable rendezvous on macOS and Linux, handling each
 platform's protection-fault signal. The zero-copy diagnostics fixture forces
@@ -272,7 +302,10 @@ compatibility checks until migration. Mismatched or corrupt envelopes start empt
 a driver rejection retries empty, and failure to create that cache is logged.
 Pipeline creation marks the cache dirty even when its size stays unchanged. A
 complete snapshot with the same size and SHA-256 as the last accepted load or
-successful save skips publication. Other saves use one fixed `.tmp` file under the
+successful save skips publication. Besides the present timer, a save also starts on
+a thread of its own after 64 new pipelines, at most once per gap: 15 s for every
+whole 16 MB of cache (at least 15 s, at most 120 s), as each save rewrites the whole file.
+Other saves use one fixed `.tmp` file under the
 I/O lock, so the next write reuses an interrupted save's staging file. Publication
 requires successful writes and synchronization; failed or incomplete snapshots and
 pending legacy migrations remain eligible for retry. `DM_VK_NOPCACHE` still means
@@ -301,3 +334,9 @@ python tests/android/keyboard_smoke.py --sdk "$ANDROID_HOME" --ndk "$ANDROID_NDK
 ```
 
 It builds through the production Java/dex packager, uses the real guest keyboard conversion and JNI bridge, and checks Unicode/UTF-16 output, minimum length, cancel, background/resume, repeated requests and bounded UTF-8 output. Add `--without-java` to verify the default APK's fallback. The probe installs only `org.nx2a.keyboardtest` and uninstalls it afterward; run it on a dedicated emulator. No game dump is needed. This probe does not qualify the combined external-display keyboard or physical-device gameplay.
+
+### CPU descriptor readiness
+
+`python -m unittest discover -s tests -p test_cpu_handle_readiness.py -v` executes the production tracking, deferred-coverage, live-switch and descriptor-preflight functions. It requires `host_cc.ubsan()` and defaults to UBSan; set `NX2A_TEST_SANITIZE=1` to also use ASan on a host with that runtime. A compiler without UBSan is reported as an explicit capability skip. The manual Android build runner and physical-device procedure are in `tests/vk_cpu_handle_readiness.md`. The runner only builds artifacts. Physical-driver behavior, real-game racy-read/cut/wait counts and timing remain separate validation.
+
+For live A/B testing, use a `DM_CTL` env update with `DM_VK_CPU_READY=0`, then restore `DM_VK_CPU_READY=1`. Values take effect at a submission boundary. Disabling allows unsynchronized CPU descriptor reads; the default remains enabled.

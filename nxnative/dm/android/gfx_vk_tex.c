@@ -148,10 +148,51 @@ static VkImageViewType vtype_of(int target) {
     }
 }
 // storage key: textures with the same pool, offset and description share one image
-typedef struct { uint64_t pool; int64_t off; nvn_texdesc d; } akey;
+// Keep a storage-capable linear allocation for each mutable-format family.
+// X and A formats have identical storage; each descriptor retains its own
+// sampled alpha mapping and linear/sRGB conversion in its image view.
+static NVNformat texture_backing_format(NVNformat format) {
+    switch (format) {
+        case NVN_FORMAT_RGBX8: case NVN_FORMAT_RGBX8_SRGB: case NVN_FORMAT_RGBA8_SRGB:
+            return NVN_FORMAT_RGBA8;
+        case NVN_FORMAT_BGRX8: case NVN_FORMAT_BGRX8_SRGB: case NVN_FORMAT_BGRA8_SRGB:
+            return NVN_FORMAT_BGRA8;
+        default: return format;
+    }
+}
+typedef struct { uint64_t pool; int64_t off; nvn_texdesc d; uint8_t family; } akey;
 static nvn_hmap g_by_key = {.klen = sizeof(akey)};     // akey → vkimg_t*
 static nvn_hmap g_by_serial = {.klen = sizeof(uint64_t)};  // serial → vkimg_t* (images with no storage key: no pool memory)
 static pthread_mutex_t g_img_mu = PTHREAD_MUTEX_INITIALIZER;
+// Each owning key remains unique. Exact descriptions win, including packaged/plain
+// peers. A family admits a metadata peer only after that exact format has joined;
+// metadata then closes membership, while existing aliases keep their shared data.
+static unsigned texture_family_bit(NVNformat format) {
+    switch (format) {
+    case NVN_FORMAT_RGBA8: case NVN_FORMAT_BGRA8: return 1;
+    case NVN_FORMAT_RGBA8_SRGB: case NVN_FORMAT_BGRA8_SRGB: return 2;
+    case NVN_FORMAT_RGBX8: case NVN_FORMAT_BGRX8: return 4;
+    case NVN_FORMAT_RGBX8_SRGB: case NVN_FORMAT_BGRX8_SRGB: return 8;
+    default: return 0;
+    }
+}
+// g_img_mu held. On a miss, k selects the sole owning key of the new image.
+static vkimg_t *texture_storage_lookup(akey *k, const tex_t *t) {
+    vkimg_t *im = nvn_hm_get(&g_by_key, k); if (im) return im;
+    unsigned bit = texture_family_bit(t->d.format);
+    if (!bit || !t->mem || (t->pool->flags & NVN_MEMORY_POOL_FLAGS_VIRTUAL) || t->d.samples > 1 ||
+        (t->d.target != NVN_TEXTURE_TARGET_2D && t->d.target != NVN_TEXTURE_TARGET_2D_ARRAY) ||
+        (t->d.flags & (NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET))) return NULL;
+    akey family = *k; family.family = 1; family.d.format = texture_backing_format(t->d.format);
+    int metadata = t->has_layout || t->has_pkg_data;
+    im = nvn_hm_get(&g_by_key, &family);
+    if (im && ((im->family_formats & bit) || (!metadata && !im->family_closed))) {
+        im->family_formats |= bit; if (metadata) im->family_closed = 1;
+        return im;
+    }
+    if (!im && !metadata) *k = family;
+    return NULL;
+}
 // The sRGB / UNORM twin of a format (the one reinterpretation games make of uncompressed colour targets), VK_FORMAT_UNDEFINED when it has none
 static VkFormat srgb_twin(VkFormat f) {
     switch (f) {
@@ -375,11 +416,14 @@ static vkimg_t *vk_tex_(const tex_t *t) {
     // in the key for colour formats (it gives the image storage usage), not for depth and stencil, which cannot be storage images
     k.d.flags &= NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_SPARSE | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET | NVN_TEXTURE_FLAGS_MINIMAL_LAYOUT | (f->depth || f->stencil ? 0 : NVN_TEXTURE_FLAGS_IMAGE);
     int keyed = t->pool != NULL;
+    // CPU-write marks affect uploads below, never storage identity. Packaged
+    // initialization metadata may close a family but cannot split existing peers.
     pthread_mutex_lock(&g_img_mu);
-    vkimg_t *im = keyed ? nvn_hm_get(&g_by_key, &k) : nvn_hm_get(&g_by_serial, &t->serial);
+    vkimg_t *im = keyed ? texture_storage_lookup(&k, t) : nvn_hm_get(&g_by_serial, &t->serial);
     if (!im) {
         if (keyed) evict_overlaps(k.pool, t->off, (int64_t)t->L.size);
-        im = img_new(t, f); if (!im) { pthread_mutex_unlock(&g_img_mu); return NULL; }
+        im = img_new(t, vk_fmt(k.d.format)); if (!im) { pthread_mutex_unlock(&g_img_mu); return NULL; }
+        if (k.family) im->family_formats = texture_family_bit(t->d.format);
         im->pool = k.pool; im->off = t->off; im->size = (int64_t)t->L.size; im->flags = t->d.flags; g_img_n++; g_img_bytes += t->L.size;
         if (keyed) { alias_link(im); nvn_hm_put(&g_by_key, &k, im); } else nvn_hm_put(&g_by_serial, &t->serial, im);
     }
@@ -678,7 +722,12 @@ VkImageView vk_tex_view_as(const tex_t *t, const view_t *vw, int dim, int arraye
     VkComponentMapping swz = sample_swizzle(&f->swz,t,vw,as_attachment);
     VkFormat fmt = f->vk;
     const vkfmt_t *imf = vk_fmt(im->nvn_format);   // (a BC format decoded on the CPU counts as compressed: its view keeps the decoded image's format)
-    if ((im->aspect & ~VK_IMAGE_ASPECT_COLOR_BIT) || (f->compressed || f->dec) != (imf->compressed || imf->dec) || (f->dec && f->dbpp != imf->dbpp)) fmt = im->fmt;   // depth views and block-size changes keep the image's format
+    // A block-compressed image drawn into through an uncompressed view of its block size (RGBA32UI over BC3: Mario Kart 8 Deluxe's reflection cubes, Tomodachi Life's Mii
+    // face pictures) keeps the view's format: the image is BLOCK_TEXEL_VIEW_COMPATIBLE (img_new) for exactly that, one level and one layer a view. Given the image's own
+    // BC3 format by the rule below, the attachment was a compressed view, which nothing can draw into: the Mii maker's alternative-face tiles stayed blank (Odin 3, 2026-11-14)
+    int block_view = as_attachment && (im->cflags & VK_IMAGE_CREATE_BLOCK_TEXEL_VIEW_COMPATIBLE_BIT) && imf && imf->compressed && !imf->dec &&
+                     !f->compressed && !f->dec && f->bpb == imf->bpb && nlv == 1 && nly == 1;
+    if (!block_view && ((im->aspect & ~VK_IMAGE_ASPECT_COLOR_BIT) || (f->compressed || f->dec) != (imf->compressed || imf->dec) || (f->dec && f->dbpp != imf->dbpp))) fmt = im->fmt;   // depth views and block-size changes keep the image's format
     // a storage view in the integer class of the shader's declaration (vfmt, the caller's texel size): identity swizzle, as an image takes no channel mapping. Only where the
     // image allows it: its format list (fixed_fmt) names it, else the image is MUTABLE_FORMAT
     if (vfmt && !as_attachment && im->aspect == VK_IMAGE_ASPECT_COLOR_BIT && (!im->fixed_fmt || vfmt == im->fmt_cls[0] || vfmt == im->fmt_cls[1])) { fmt = vfmt; swz = (VkComponentMapping){0}; }
