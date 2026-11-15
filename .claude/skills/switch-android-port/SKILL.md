@@ -1,6 +1,5 @@
 ---
 name: switch-android-port
-model: sonnet
 description: Debug a Switch game running on an Android device under nx2android - crashes in the app, rendering bugs, stutter and frame rate, soak tests and play-session checks. Use when chasing a symptom on the device or measuring speed or stability there.
 ---
 
@@ -12,6 +11,7 @@ Read only when needed:
 - `references/playbook.md`: the symptom table (what each rendering, audio or crash symptom turned out to be) and the full performance playbook (frame pacing, governor, threads).
 - `references/switches.md`: every host and backend switch, and whether it changes live.
 - `references/neo-case-study.md`: NEO's bring-up, bug by bug, with numbers and dead ends.
+- `nxnative/docs/agents/03-bringup.md` and `05-debugging.md`: upstream's failure catalogue and debugging recipes. Written for Apple, but the host and rewriter parts apply here too.
 
 ## Rules for working on the device
 
