@@ -23,6 +23,9 @@ typedef struct {int is_int;} vkfmt_t;
 static const vkfmt_t formats[]={{0},{0},{1}};
 static const vkfmt_t *vk_fmt(unsigned f){return &formats[f];}
 typedef struct {uint32_t out_locs;} shader;
+typedef struct {int w;} vkimg_t;
+static vkimg_t g_s0_image;
+static struct {vkimg_t *im;} P_att[9];
 static struct {int ncol;uint32_t cfmt[8],dfmt,samples;struct {int a2c;} ms;
     struct {unsigned logic_op,blend_en;} color;struct {unsigned mask;} chmask;
     shader *sh[3];int rt_has_col[8];struct {struct {unsigned format;} d;} rt_col[8];
@@ -37,9 +40,10 @@ int main(int argc,char **argv){assert(argc==2);int mode=atoi(argv[1]);
     for(int i=0;i<4;i++){S.cfmt[i]=1;S.rt_has_col[i]=1;S.rt_col[i].d.format=1;S.blend[i].src_rgb=1;}
     if(mode==2){fs.out_locs=10;S.chmask.mask=0x1234;S.rt_col[3].d.format=2;}
     if(mode==3){fs.out_locs=10;k.debug_mode=1;}
+    if(mode==4)P_att[0].im=&g_s0_image;
     prepare();
-    unsigned masks[4][4]={{15,0,15,0},{0,0,0,0},{0,3,0,1},{15,15,15,15}};
-    unsigned blends[]={5,0,2,15};
+    unsigned masks[5][4]={{15,0,15,0},{0,0,0,0},{0,3,0,1},{15,15,15,15},{0,0,15,0}};
+    unsigned blends[]={5,0,2,15,4};
     for(int i=0;i<4;i++)assert(k.wmask[i]==masks[mode][i]);
     assert(k.blend_en==blends[mode]);
 }
@@ -49,7 +53,7 @@ int main(int argc,char **argv){assert(argc==2);int mode=atoi(argv[1]);
         subprocess.run(['cc','-std=c11','-O1',str(source),'-o',str(cls.exe)],check=True,capture_output=True,text=True)
 
     def test_unwritten_attachments_disable_color_and_blending(self):
-        for mode in range(4):
+        for mode in range(5):
             with self.subTest(mode=mode):
                 result=subprocess.run([str(self.exe),str(mode)],capture_output=True,text=True)
                 self.assertEqual(result.returncode,0,result.stderr)
