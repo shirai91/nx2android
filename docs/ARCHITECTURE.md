@@ -105,6 +105,18 @@ The Vulkan backend supplies disabled generic vertex attributes as Maxwell's `(0,
 
 NVN CPU replay records normally occupy guest command memory. A recording with an empty GPU command pool can reserve a distinct 16-byte lifetime identity in the guest's control storage; its records and opaque handle stay in host storage, and command-byte accounting remains unchanged. Reserved control bytes are reported separately, so the game does not re-grant another live handle's identity. Overflow segments inherit the recording's guest range or control identity and are reused only when the game grants overlapping storage again. Cached handles remain valid after their command-buffer object is finalized; frame age is not a reclamation rule. Control-owned recordings start at 4 KiB even for zero-byte requests and grow only when required by the request or recorded commands.
 
+Android AVC output is copied from MediaCodec into compact NV12 pictures with
+ceil-sized chroma planes, preserving odd visible dimensions. Format 19 is I420;
+other formats keep the existing NV12 interpretation, with one warning for an
+unknown format. Missing/undersized stride and slice height use the frame size,
+and invalid crop bounds use the full frame. Layout and last-byte checks still
+precede the copy; unsafe geometry and short buffers produce a once-only drop
+diagnostic. Picture-allocation failure stops with the AVC allocation diagnostic.
+Codec-config buffers are excluded and buffer offsets/lengths are
+checked before pointer formation. These checks do not change the decoder choice
+or timestamp/queue policy. The manual [AVC probe](../probes/avc_frame_layout.md)
+checks synthetic planes and padding; physical-device qualification is separate.
+
 ## Game profiles on Android
 
 A profile is offered for Android when it has an `android.tsv`; the profiles without one (52 of the 54 today, upstream's iOS games) show as "ios only": an experimental port can still try them. `android.tsv` holds, one `key<TAB>value` row each:
