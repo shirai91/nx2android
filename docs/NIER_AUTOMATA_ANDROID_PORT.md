@@ -35,8 +35,13 @@ metadata too; the compressed-image harness accepts the combined attachment type.
   package, preserving saves. Startup rendered with Vulkan validation enabled;
   four geometry shader pairs initialized and no VUID appeared in the startup
   log. The log includes an audio callback retry and the existing conditional
-  rendering warning. The user's gameplay check is pending; this does not change
-  the **boots** status or establish sustained performance or stability.
+  rendering warning.
+- The user subsequently played the rebased build on the Pad 7 and reported
+  everything working. The collected gameplay log contains no Vulkan VUIDs.
+  Specific scenes, gameplay saving and long-session stability were not reported,
+  so status remains **boots**. Validation was disabled for the next launch after
+  the test; the test package and its saves remain installed. Frame timings from
+  this validation-enabled run do not establish normal gameplay performance.
 
 ## Changes and evidence
 
