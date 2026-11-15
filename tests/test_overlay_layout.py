@@ -19,8 +19,10 @@ class OverlayLayout(unittest.TestCase):
         harness = r'''
 #include <assert.h>
 #include "overlay_layout.h"
-static int custom_faces, custom_a, custom_x, hidden_ctl = -1, audio_available;
+static int custom_faces, custom_a, custom_x, hidden_ctl = -1, audio_available, rate_available;
 int dm_menu_audio_available(void) { return audio_available; }
+int dm_menu_rate_available(void) { return rate_available; }
+int dm_menu_res_available(void) { return rate_available; }
 float dm_overlay_scale(void) { return 1; }
 int dm_overlay_off(int l, int c) { return l == 1 && c == hidden_ctl; }
 int dm_overlay_custom(int layout, int ctl, float *x, float *y, float *s) {
@@ -88,10 +90,12 @@ int main(void) {
     assert(ov_drag_pos(1100, 600, 1013, 50) == 506.5f);
     assert(ov_drag_pos(1100, 505, 1013, 50) == 508);
 
-    assert(ov_menu_item(0, OVM_ROWS - 2) == OVM_PAD && ov_menu_item(1, OVM_ROWS - 2) == -1);
-    assert(ov_menu_item(1, OVM_ROWS - 1) == OVM_RESUME);
+    assert(ov_menu_item(0, OVM_ROWS - 3) == OVM_PAD && ov_menu_item(0, OVM_ROWS - 2) == -1);   // no audio outputs: the row is left out
+    assert(ov_menu_item(1, 1) == OVM_FPS && ov_menu_item(1, 2) == OVM_MODE && ov_menu_item(1, 4) == OVM_IMPORT && ov_menu_item(1, 5) == -1 && ov_menu_item(1, OVM_ROWS - 1) == OVM_RESUME);
     audio_available = 1;
-    assert(ov_menu_item(1, OVM_ROWS - 2) == OVM_AUDIO);
+    assert(ov_menu_item(0, OVM_ROWS - 2) == OVM_AUDIO);
+    rate_available = 1;   // rows follow each other: the frame rate and resolution rows take their places
+    assert(ov_menu_item(1, 2) == OVM_RATE && ov_menu_item(1, 3) == OVM_RES && ov_menu_item(1, 4) == OVM_MODE && ov_menu_item(1, OVM_ROWS - 2) == OVM_IMPORT);
     const float screens[][2] = {{915, 412}, {1216, 760}, {2400, 1080}, {1080, 2400}};
     for (unsigned s = 0; s < sizeof screens / sizeof screens[0]; s++) {
         float W = screens[s][0], H = screens[s][1], step = H / OVE_GRID_ROWS, p[4];
