@@ -11,5 +11,13 @@ CUTS = {
   # release is used by this one vtable (main+0x1c51308 slot 7) only
   '909e904af78ac1b8deefe97ab2ccdb51': [
     (0x10cd070, '080040f9', 'c0035fd6', 'physics completion task release (calls its own destructor): ldr x8,[x0] → ret (no longer destroyed; the step function rebuilds it in place every step)'),
+    # The game targets 60 and, when a frame runs past one 16.7 ms vsync, sets present interval 2 from main+0x1144c18 (the value is the byte at the frame-pacing object +0x4e1, plus one,
+    # written through +0x812c by main+0x17838). On the tablet that byte flips after a frame of about 18 ms: one play had 196 such flips, and those windows' frame-time p95 became 32 ms
+    # while the GPU stayed at 8-14 ms. The median frame was already 16.6 ms. These two calls are the ones the 1.1.0 stable-60fps exefs patch removes (its pchtxt offsets 0x10196d8 and
+    # 0x10196f8). Both are bl on this main: main+0x10196d8 calls main+0x10411a0, main+0x10196f8 calls main+0x1019f20 (that one stores an aligned word at the pacing object +0x8128, beside
+    # the interval). NOP leaves the flag store at main+0x10196e0 and the call at main+0x10196ec in place. A frame that is still late then stays a little over 16.7 ms instead of being held
+    # for 33 ms. The 100 ms stalls while a new area is read are not this path.
+    (0x10196d8, 'b29e0094', '1f2003d5', 'dynamic drop to 30 fps: bl main+0x10411a0 → nop (the stable-60fps patch; present interval stays 1)'),
+    (0x10196f8, '0a020094', '1f2003d5', 'dynamic drop to 30 fps: bl main+0x1019f20 → nop (the stable-60fps patch; the call writes the pacing object +0x8128)'),
   ],
 }

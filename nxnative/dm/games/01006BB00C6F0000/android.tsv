@@ -1,0 +1,15 @@
+# The Legend of Zelda: Link's Awakening on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Grezzo's engine on NintendoWare, SDK 8.2.0, update 1.1.0 (v131072). The iOS profile beside this file is unchanged.
+# Shared fonts come from the console's firmware: FontStandard, FontNintendoExtension, FontChineseSimplified,
+# FontChineseTraditional and FontKorean. --firmware extracts them. A System font (--shared-font) still replaces
+# every shared font but the button icons.
+# Played on a Lenovo TB323FU (Snapdragon 8 Elite Gen 5, Adreno 840, Android 16) on 2026-11-15, docked, language
+# zh-Hans, with those firmware fonts and no System font. A stretch of play stayed up, drew without a rendering
+# fault and did not crash. The present interval stayed 1 (the two NOPs in patches.py). Calm play held 60 fps
+# (frame work about 16.6 ms, late on screen 0 of 64). Loading a new area can still stall for about 100 ms; that
+# is not the interval path. Not checked: a full playthrough, saving, traditional Chinese and Korean text.
+status	playable
+tested	v131072 Lenovo TB323FU (Snapdragon 8 Elite Gen 5, Adreno 840, Android 16)
+package	org.nx2a.t01006bb00c6f0000
+orientation	landscape
+sysdata	0100000000000811 0100000000000810 0100000000000814 0100000000000813 0100000000000812
