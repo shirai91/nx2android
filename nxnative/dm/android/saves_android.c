@@ -17,7 +17,8 @@
 // file directory, a folder the player picks (the grant to it is all the permission asked for): the committed save is mirrored into <folder>/<title ID>/ when
 // the player leaves or closes the game (dm_saves_folder_sync), and read back at the start (folder_start, before the host mounts the save), so the folder can
 // be shared with a PC or a cloud sync app. saves/folder-sync.txt keeps the save's fingerprint at the last sync, which tells a folder another device changed
-// (it wins: the app's save is exported to saves/<stamp>-before-folder first) from a session that ended before its sync (the app's save goes to the folder)
+// (it wins: the app's save is exported to saves/<stamp>-before-folder first) from a session that ended before its sync (the app's save goes to the folder).
+// The folder is also updated shortly after each in-game save (watch_run)
 #include "dm.h"
 #include "saves_android.h"
 #include <dirent.h>
@@ -327,6 +328,29 @@ void dm_saves_folder_sync(int wait) {
     pthread_t t; if (pthread_create(&t, NULL, sync_run, wait ? "the game closed" : "the player left the game")) { LOG("[RED] [saves] save folder: cannot start the sync"); return; }
     if (wait) pthread_join(t, NULL); else pthread_detach(t);
 }
+// The folder follows the game's saves: once the game has committed a save and not committed again for WATCH_QUIET_S seconds (one in-game save is a burst of
+// commits), it is mirrored, on this thread (g_sync_mu orders it with the pause's and the close's syncs, which stay: a sync that finds nothing new copies nothing).
+// So a player who swipes the app away, which gives it no closing signal, has the folder already current. A game that saves at every scene change (Pokémon Mystery
+// Dungeon) would be copied again and again, and a sync app watching the folder would upload each time: syncs are at least WATCH_GAP_S apart, and what the gap
+// held back goes at its end, or when the player leaves
+#define WATCH_QUIET_S 2
+#define WATCH_GAP_S 15
+static time_t mono_s(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec; }
+static void *watch_run(void *arg) {
+    (void)arg; uint64_t seen = dm_fs_commit_count(), tried = seen; int quiet = 0; time_t last = mono_s() - WATCH_GAP_S;
+    for (;;) {
+        sleep(1);
+        uint64_t c = dm_fs_commit_count();
+        if (c != seen) { seen = c; quiet = 0; continue; }
+        if (c == tried || ++quiet < WATCH_QUIET_S || mono_s() - last < WATCH_GAP_S) continue;
+        tried = c; last = mono_s(); sync_run("the game saved");   // one try per save: a failed one is tried again at the next save or when the player leaves
+    }
+    return NULL;
+}
+static void watch_start(void) {
+    if (!g_bridge) return;   // (no folder yet is fine: sync_run does nothing until the player picks one)
+    pthread_t t; if (pthread_create(&t, NULL, watch_run, NULL)) LOG("[RED] [saves] save folder: cannot start the watch of the game's saves"); else pthread_detach(t);
+}
 static void folder_start(int imported) {   // at the start, before the host mounts the save
     char label[512]; if (!g_bridge || !dm_saves_folder_label(label, sizeof label)) return;
     pthread_mutex_lock(&g_sync_mu);
@@ -389,6 +413,6 @@ int dm_saves_start(const char *files_root) {
         quit |= q; char out[96], err[600]; int r = dm_saves_export("", out, sizeof out, err, sizeof err);
         if (r) result(req, "result=error\nerror=%s", err); else result(req, "result=ok\nname=%s", out);
     }
-    if (!quit) folder_start(imported);   // (a request that ends the app leaves the folder alone: the game does not run)
+    if (!quit) { folder_start(imported); watch_start(); }   // (a request that ends the app leaves the folder alone: the game does not run)
     return quit;
 }
