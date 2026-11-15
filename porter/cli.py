@@ -257,13 +257,17 @@ def cmd_saves(a):
 
 def cmd_driver(a):   # porter driver and porter host: the installed APK rebuilt without the game files
     import contextlib
-    from porter import config, driver, host, saves, toolchain
+    from porter import config, driver, host, paths, saves, toolchain
     from porter.upstream import BuildError
     try:
         with contextlib.redirect_stdout(sys.stderr if a.json else sys.stdout):   # with --json, stdout is the one JSON document
             cfg = config.load(); adb = saves.connect(toolchain.find_adb(cfg), a.device or cfg.get('device'))
-            out = driver.swap(adb, saves.pick_app(adb, a.package), None if a.system else a.library) if a.cmd == 'driver' else \
-                  host.update(adb, saves.pick_app(adb, a.package), a.jobs)
+            lock = adb.hold(paths.user_dir())   # they reinstall the APK: not while porter install runs on the device
+            try:
+                out = driver.swap(adb, saves.pick_app(adb, a.package), None if a.system else a.library) if a.cmd == 'driver' else \
+                      host.update(adb, saves.pick_app(adb, a.package), a.jobs)
+            finally:
+                if lock: lock.close()
     except BuildError as e:
         if a.json: _print_json({'error': str(e)})
         else: print(e, file=sys.stderr)

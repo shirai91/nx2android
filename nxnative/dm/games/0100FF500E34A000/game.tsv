@@ -1,0 +1,36 @@
+# Xenoblade Chronicles: Definitive Edition (Monolith Soft), SDK 9.3.1, NVN, update 2.0.0. Started as the provisional profile from the survey (dm/games/profile_guess.py).
+
+# ---- Identity ----
+title_id	0100FF500E34A000
+program_id	0100FF500E34A000
+
+# ---- App ----
+name	Xenoblade Chronicles: Definitive Edition
+ipa	XenobladeChroniclesDefinitiveEdition.ipa
+app_category	public.app-category.games
+
+# ---- Versions ----
+build	v262144	2.0.0	main=7e1df8e08d60544bbdca1e333c153c97	subsdk0=5a7ada8dd7447c10aa244944f64d0aff	sdk=ad3fdfbd62a5f4b082d385ffe420d440
+package	v262144
+shader_versions	v262144
+
+# ---- Files ----
+# every module main imports from
+modules	main subsdk0 sdk
+romfs_marker	sound/jp.pck
+zip_store	.bnk:.pcbeb:.pck:.pcsmt:.webm:.wifnt:.wiidcm:.wishp:.wismda:.wismhd:.wismt:.metallib
+
+# ---- Memory ----
+# main sets a heap of at most the pool − 64 MB: a 3328 MB heap region
+mem_reserve	0x100000000
+mem_alias	0x10000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+# the NPDM declares 0 MB of system resource: IsVirtualAddressMemoryEnabled is false, as on Horizon (Big Brain Academy: Brain vs. Brain sets a heap only then)
+sys_resource	0x0
+
+# ---- Shader split ----
+shader_groups	/chr/=chr /menu/=menu /eff/=eff /script/=script /bdat/=bdat /cs/=cs /map/=map /monolib/=monolib /sound/=sound /movie/=movie /param/=param /config/=config
+# the shaders are Monolith HCPS archives in loose files: shd_*.wishp, and the .wismt model / .wismda map streams (xbc1) and .wiefb effects; main holds only 6. The split reads them only where the profile asks
+shader_loose_monolith	.wishp .wismt .wismda .wiefb .wimdo
+shader_note	Xenoblade Chronicles: Definitive Edition shaders

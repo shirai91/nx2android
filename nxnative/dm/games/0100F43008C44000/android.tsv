@@ -11,6 +11,9 @@
 # Not checked yet: the city streets past the station, battles, catching. Seen once and not reproduced: an NPC passing right beside the camera drew as a black shape
 # with blocky white noise for a moment (NPCs held close to the camera afterwards drew correctly); the game fades such characters with alpha-to-coverage dither
 # (MultisampleStateGetAlphaToCoverageDither, a2c draws on single-sample targets), the first place to look if it shows again.
+# Retroid Pocket 5 (Snapdragon 865, Adreno 650, Android 13, Turnip T30), 2026-11-05, Lumiose City at the Wild Zone 3 gate: docked, the GPU is the limit (46.5 ms
+# frames, ~21 fps, with the replay at 12 ms); handheld (env DM_OPMODE=0) holds the game's 30 fps (frame work p50 19-24 ms) once the replay reads cached pool memory
+# (gfx_vk_core.c lazy pools, automatic on that device; before them: replay 24 ms, frames 37 ms handheld and 57 ms docked).
 # FPSLocker-Warehouse's only Z-A config (1.0.1) is withdrawn; it patched the game's frame-time constants as well (ladders, rolling), so the present interval alone
 # is not enough. The stock 30 fps measurements above predate the restored 2.0.2 native timing stubs in patches.py.
 # The stubs follow the host's vsync step, gated by the main build ID and original bytes; fps_target selects 60, DM_FPS_TARGET=0 restores the game's own timing.

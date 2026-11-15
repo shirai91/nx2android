@@ -58,6 +58,84 @@ __attribute__((weak)) void front_save_failed(int err) { LOG("front_save_failed(e
 static FILE *g_fslog; static char *g_fdpath[4096]; static pthread_mutex_t g_fslog_lock = PTHREAD_MUTEX_INITIALIZER;
 static void fslog_init(void) { static int done; if (done) return; done = 1; const char *e = getenv("DM_FSLOG"); if (e && !(g_fslog = fopen(e, "w"))) die("cannot open DM_FSLOG %s", e); if (g_fslog) setvbuf(g_fslog, NULL, _IOLBF, 0); }   // line-buffered: runs end at the time-limit alarm or a crash, which never flush stdio
 
+// Packed RomFS files (Android, a profile's android.tsv romfs zstd, porter/romfs_pack.py; DM_ROMFS_ZSTD=1 in env.txt): a file of a read-only mount that starts with 'NXZR' is the original
+// file in zstd blocks: header {'NXZR', u32 1, u64 raw size, u32 block size, u32 block count n, u64 0}, u64 offsets[n + 1], then each block, stored as it is when as long as its raw
+// bytes, else one zstd frame. Its handle reads, sizes and lists as the original file; a read decompresses only the blocks it covers (the last partial block stays cached per file,
+// in a buffer made at the file's first partial-block read). Decoders and their input buffers come from a small pool (zdec_get), not from each thread: a game that starts loader
+// threads again and again would otherwise leave one of each behind per thread.
+// Cardfight!! Vanguard Dear Days 2's RomFS went from 29.9 to 19.7 GB (7,456 of its 40,848 files packed); on the Odin 2 it boots, loads saves and fights from it
+#if defined(__ANDROID__)
+#include "zstd.h"
+typedef struct { uint64_t raw; uint32_t bs, n; uint64_t *off; pthread_mutex_t mu; int64_t cblk; uint8_t *cbuf; } zfile_t;
+static zfile_t *g_zf[65536];
+static int zon(void) { static int on = -1; if (on < 0) { const char *e = getenv("DM_ROMFS_ZSTD"); on = e && atoi(e) > 0; if (on) LOG("fs: packed RomFS files read back (DM_ROMFS_ZSTD)"); } return on; }
+typedef struct { char m[4]; uint32_t ver; uint64_t raw; uint32_t bs, n; uint64_t z; } zhdr_t;
+_Static_assert(sizeof(zhdr_t) == 32, "packed RomFS header");
+static int zhdr(int fd, zhdr_t *h) {   // 1: a valid packed file's header
+    return pread(fd, h, sizeof *h, 0) == (ssize_t)sizeof *h && !memcmp(h->m, "NXZR", 4) && h->ver == 1 && h->bs >= 4096 && h->bs <= (1u << 24) && h->n == (h->raw + h->bs - 1) / h->bs;
+}
+static zfile_t *zf_open(int fd) {
+    zhdr_t h; if (!zhdr(fd, &h)) return NULL;
+    zfile_t *z = calloc(1, sizeof *z); uint64_t *off = malloc(8 * ((size_t)h.n + 1));
+    if (!z || !off || pread(fd, off, 8 * ((size_t)h.n + 1), sizeof h) != (ssize_t)(8 * ((size_t)h.n + 1))) { free(z); free(off); LOG("[RED] fs: a packed RomFS file's block table could not be read (fd %d)", fd); return NULL; }
+    z->raw = h.raw; z->bs = h.bs; z->n = h.n; z->off = off; z->cbuf = NULL; z->cblk = -1; pthread_mutex_init(&z->mu, NULL);
+    return z;
+}
+static void zf_close(int fd) { zfile_t *z = g_zf[fd & 0xffff]; if (!z) return; g_zf[fd & 0xffff] = NULL; pthread_mutex_destroy(&z->mu); free(z->off); free(z->cbuf); free(z); }
+// The decoder pool: up to ZDEC_KEEP idle decoders (a ZSTD_DCtx and an input buffer of up to one block) are kept for the next read; a read that finds none makes one, and one
+// returned beyond that is freed, so the memory stays bounded whatever the number of threads that ever read
+enum { ZDEC_KEEP = 8 };
+typedef struct { ZSTD_DCtx *dc; uint8_t *in; size_t cap; } zdec_t;
+static zdec_t g_zdec[ZDEC_KEEP]; static int g_nzdec; static pthread_mutex_t g_zdec_mu = PTHREAD_MUTEX_INITIALIZER;
+static zdec_t zdec_get(void) { zdec_t d = {0}; pthread_mutex_lock(&g_zdec_mu); if (g_nzdec) d = g_zdec[--g_nzdec]; pthread_mutex_unlock(&g_zdec_mu); return d; }
+static void zdec_put(zdec_t d) {
+    pthread_mutex_lock(&g_zdec_mu); int kept = g_nzdec < ZDEC_KEEP; if (kept) g_zdec[g_nzdec++] = d; pthread_mutex_unlock(&g_zdec_mu);
+    if (!kept) { ZSTD_freeDCtx(d.dc); free(d.in); }
+}
+static int zf_block(const zfile_t *z, int fd, uint32_t b, uint8_t *out) {   // block b's raw bytes into out (its length); 0 = done
+    uint64_t len = z->off[b + 1] - z->off[b], want = b + 1 < z->n ? z->bs : z->raw - (uint64_t)b * z->bs;
+    zdec_t d = zdec_get(); int bad = 0;
+    if (len > d.cap) { uint8_t *p = realloc(d.in, len); if (p) { d.in = p; d.cap = len; } else bad = 1; }
+    for (uint64_t got = 0; !bad && got < len;) { ssize_t r = pread(fd, d.in + got, len - got, (off_t)(z->off[b] + got)); if (r < 0 && errno == EINTR) continue; if (r <= 0) bad = 1; else got += (uint64_t)r; }
+    if (!bad && len == want) memcpy(out, d.in, want);
+    else if (!bad) {
+        if (!d.dc && !(d.dc = ZSTD_createDCtx())) bad = 1;
+        else { size_t r = ZSTD_decompressDCtx(d.dc, out, want, d.in, len); bad = ZSTD_isError(r) || r != want; }
+    }
+    zdec_put(d);
+    return bad ? -1 : 0;
+}
+static int zf_read(zfile_t *z, int fd, uint64_t off, uint8_t *dst, size_t n, size_t *got) {   // as pread, short only at the end of the file
+    *got = 0; if (off >= z->raw) return 0;
+    if (n > z->raw - off) n = (size_t)(z->raw - off);
+    while (*got < n) {
+        uint64_t p = off + *got; uint32_t b = (uint32_t)(p / z->bs); size_t bo = (size_t)(p % z->bs), blen = b + 1 < z->n ? z->bs : (size_t)(z->raw - (uint64_t)b * z->bs), take = blen - bo;
+        if (take > n - *got) take = n - *got;
+        if (!bo && take == blen) { if (zf_block(z, fd, b, dst + *got)) return -1; }   // a whole block: straight into the destination
+        else {
+            pthread_mutex_lock(&z->mu);
+            if (!z->cbuf && !(z->cbuf = malloc(z->bs))) { pthread_mutex_unlock(&z->mu); return -1; }   // the first partial-block read of this file
+            int bad = z->cblk != (int64_t)b && zf_block(z, fd, b, z->cbuf); if (!bad) { z->cblk = b; memcpy(dst + *got, z->cbuf + bo, take); } else z->cblk = -1;
+            pthread_mutex_unlock(&z->mu); if (bad) return -1;
+        }
+        *got += take;
+    }
+    return 0;
+}
+static int zf_size(int dfd, const char *name, struct stat *st) {   // a directory entry's size: the original's for a packed file (st->st_size changed)
+    if (!zon() || !S_ISREG(st->st_mode) || st->st_size < (off_t)sizeof(zhdr_t)) return 0;
+    int fd = openat(dfd, name, O_RDONLY); if (fd < 0) return 0;
+    zhdr_t h; int k = zhdr(fd, &h); close(fd);
+    if (k) st->st_size = (off_t)h.raw;
+    return k;
+}
+#define ZF(fd) g_zf[(fd) & 0xffff]
+#else   // packed files are made for Android ports only
+static inline int zon(void) { return 0; }
+static inline void zf_close(int fd) { (void)fd; }
+static inline int zf_size(int dfd, const char *name, struct stat *st) { (void)dfd; (void)name; (void)st; return 0; }
+#endif
+
 static const char *envdir(const char *var, const char *rel, char *buf, size_t n) {
     const char *v = getenv(var);
     if (v) return v;
@@ -616,8 +694,14 @@ HLE_FORCE("_ZN2nn2fs8OpenFileEPNS0_10FileHandleEPKci", "fsp-srv → open(2)", Re
     if (S_ISDIR(st.st_mode)) { close(fd); return RES_PATH_NOT_FOUND; }
     if (fd >= (int)sizeof g_fmode) die("fd beyond the table");
     g_fmode[fd] = (uint8_t)mode; *out = (uint64_t)fd;
+    int ro_mnt = 0;
     { const char *c = strchr(path, ':'); size_t ln = c ? (size_t)(c - path) : 0; g_fsave[fd] = 0;
-      for (int i = 0; c && i < g_nmnt; i++) if (strlen(g_mnt[i].name) == ln && !strncmp(g_mnt[i].name, path, ln)) g_fsave[fd] = g_mnt[i].commit[0] != 0; }
+      for (int i = 0; c && i < g_nmnt; i++) if (strlen(g_mnt[i].name) == ln && !strncmp(g_mnt[i].name, path, ln)) { g_fsave[fd] = g_mnt[i].commit[0] != 0; ro_mnt = g_mnt[i].ro; } }
+#if defined(__ANDROID__)
+    if (zon()) { zf_close(fd); if (ro_mnt && !(mode & (MODE_WRITE | MODE_APPEND))) ZF(fd) = zf_open(fd); }   // a packed RomFS file (see zf_open)
+#else
+    (void)ro_mnt;
+#endif
     fslog_init();
     if (g_fslog && fd < 4096) { pthread_mutex_lock(&g_fslog_lock); free(g_fdpath[fd]); g_fdpath[fd] = strdup(path); pthread_mutex_unlock(&g_fslog_lock); }
     if (g_flag.fs) LOG("fs open [%.2fs] %s mode=%d → fd %d", (now_ns() - g_t0_ns) / 1e9, path, mode, fd);
@@ -627,6 +711,12 @@ HLE_FORCE("_ZN2nn2fs8ReadFileEPmNS0_10FileHandleElPvm", "fsp-srv → pread(2)", 
     if (!h) { *out = 0; return RES_FAIL; }   // a file handle is an fd; 0 is stdin and never a file the game opened: the null handle the game keeps using after a failed open
     size_t got = 0; int reprep = 0;
     dm_guest_write_prepare(buf, sz);   // The destination may be a texture pool page write-protected by the graphics layer: a kernel write to a read-only page returns EFAULT instead of page-faulting, so unprotect and mark dirty first
+#if defined(__ANDROID__)
+    if (zon() && ZF(h)) {   // a packed RomFS file: decompressed in user space, so a page protected again meanwhile faults into the tracker's handler as any guest write does
+        if (zf_read(ZF(h), (int)h, (uint64_t)off, buf, sz, &got)) { LOG("[RED] fs ReadFile: packed RomFS file fd %d at %#llx+%#zx could not be read or decompressed", (int)h, (long long)off, sz); errno = EIO; return err_res("packed read", "fd"); }
+        sz = got;   // the loop below does nothing more
+    }
+#endif
     while (got < sz) {
         ssize_t r = pread((int)h, (uint8_t *)buf + got, sz - got, off + got);
         if (r < 0) { if (errno == EINTR) continue;
@@ -684,6 +774,9 @@ HLE_FORCE("_ZN2nn2fs9WriteFileENS0_10FileHandleElPKvmRKNS0_11WriteOptionE", "fsp
 }
 HLE_FORCE("_ZN2nn2fs11GetFileSizeEPlNS0_10FileHandleE", "fsp-srv → fstat(2)", Result, h_fs_GetFileSize, int64_t *out, uint64_t h) {
     if (!h) return RES_FAIL;
+#if defined(__ANDROID__)
+    if (zon() && ZF(h)) { *out = (int64_t)ZF(h)->raw; return RES_OK; }   // a packed RomFS file: the original's size
+#endif
     struct stat st; if (fstat((int)h, &st)) return err_res("fstat", "fd");
     *out = st.st_size; return RES_OK;
 }
@@ -696,7 +789,7 @@ HLE_FORCE("_ZN2nn2fs11SetFileSizeENS0_10FileHandleEl", "fsp-srv → ftruncate(2)
 HLE_FORCE("_ZN2nn2fs9FlushFileENS0_10FileHandleE", "fsp-srv; host writes are already in the page cache, flushing is a no-op", Result, h_fs_FlushFile, uint64_t h) { (void)h; return RES_OK; }
 HLE_FORCE("_ZN2nn2fs9CloseFileENS0_10FileHandleE", "fsp-srv → close(2)", void, h_fs_CloseFile, uint64_t h) {
     if (!h) return;   // the null handle after a failed open (see ReadFile): do not touch fd 0
-    g_fmode[(int)h & 0xffff] = 0; g_fsave[(int)h & 0xffff] = 0;
+    g_fmode[(int)h & 0xffff] = 0; g_fsave[(int)h & 0xffff] = 0; if (zon()) zf_close((int)h);
     close((int)h); }
 HLE_FORCE("_ZN2nn2fs15GetFileOpenModeENS0_10FileHandleE", "fsp-srv; the open mode is recorded by the host", int, h_fs_GetFileOpenMode, uint64_t h) { return g_fmode[(int)h & 0xffff]; }
 
@@ -775,7 +868,7 @@ HLE_FORCE("_ZN2nn2fs12GetEntryTypeEPNS0_18DirectoryEntryTypeEPKc", "fsp-srv → 
 }
 
 // ---------- Directories ----------
-typedef struct { DIR *d; char path[1024]; DIR *od; char opath[1024]; DirectoryEntry *snap; int64_t nsnap, psnap; int mode; } dirh_t;
+typedef struct { DIR *d; char path[1024]; DIR *od; char opath[1024]; DirectoryEntry *snap; int64_t nsnap, psnap; int mode, ro; } dirh_t;   // ro: on a read-only mount (packed files only there)
 static void dir_snapshot(dirh_t *h, const mount_t *m, const char *rest) {
     char *roots = strdup(m->overlay);
     char (*names)[0x301] = calloc(2048, sizeof *names);
@@ -805,7 +898,7 @@ static void dir_snapshot(dirh_t *h, const mount_t *m, const char *rest) {
         snprintf(rel, 2048, "%s/%s", rest, names[j]);
         if (!rom_overlay_path(m, rel, resolved, 1024)) continue;
         struct stat st;
-        if (!stat(resolved, &st)) { h->snap[j].type = S_ISDIR(st.st_mode) ? ENT_DIR : ENT_FILE; h->snap[j].size = S_ISDIR(st.st_mode) ? 0 : st.st_size; }
+        if (!stat(resolved, &st)) { if (m->ro) zf_size(AT_FDCWD, resolved, &st); h->snap[j].type = S_ISDIR(st.st_mode) ? ENT_DIR : ENT_FILE; h->snap[j].size = S_ISDIR(st.st_mode) ? 0 : st.st_size; }
     }
     free(resolved); free(rel); free(guest); free(parent); free(all); free(names); free(roots);
 }
@@ -814,8 +907,10 @@ HLE_FORCE("_ZN2nn2fs13OpenDirectoryEPNS0_15DirectoryHandleEPKci", "fsp-srv → o
     if (!d) return err_res("opendir", hp);
     dirh_t *h = calloc(1, sizeof *h); h->d = d; strlcpy(h->path, hp, sizeof h->path); h->mode = mode;
     const char *c = strchr(path, ':');
-    if (c) for (int i = 0; i < g_nmnt; i++) if (g_mnt[i].overlay[0] && strlen(g_mnt[i].name) == (size_t)(c - path) && !strncmp(g_mnt[i].name, path, (size_t)(c - path))) {
-        dir_snapshot(h, &g_mnt[i], c + 1); break;
+    if (c) for (int i = 0; i < g_nmnt; i++) if (strlen(g_mnt[i].name) == (size_t)(c - path) && !strncmp(g_mnt[i].name, path, (size_t)(c - path))) {
+        h->ro = g_mnt[i].ro;
+        if (g_mnt[i].overlay[0]) dir_snapshot(h, &g_mnt[i], c + 1);
+        break;
     }
     *out = (uint64_t)h; return RES_OK;
 }
@@ -829,7 +924,7 @@ HLE_FORCE("_ZN2nn2fs13ReadDirectoryEPlPNS0_14DirectoryEntryENS0_15DirectoryHandl
         // a directory's type comes from d_type without stat; files need a size, taken with fstatat relative to the directory fd (following links, like the old stat)
         struct stat st; int isdir;
         if (e->d_type == DT_DIR) isdir = 1;
-        else { if (fstatat(dfd, e->d_name, &st, 0)) continue; isdir = S_ISDIR(st.st_mode); }
+        else { if (fstatat(dfd, e->d_name, &st, 0)) continue; isdir = S_ISDIR(st.st_mode); if (h->ro) zf_size(dfd, e->d_name, &st); }   // packed files exist only on read-only mounts, as OpenFile reads them
         if (!(h->mode & (isdir ? DIRMODE_DIR : DIRMODE_FILE))) continue;
         DirectoryEntry *o = &ents[n++]; memset(o, 0, sizeof *o);
         if (!guest_name(h->path, e->d_name, o->name, sizeof o->name)) { char c[1280]; snprintf(c, sizeof c, "%s/%s", h->path, e->d_name); *count = n - 1; return err_res("directory name", c); }

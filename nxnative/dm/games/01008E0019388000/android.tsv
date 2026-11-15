@@ -1,0 +1,9 @@
+# Ultra Kaiju Monster Rancher on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# KTGL engine on SDK 13.3.5, update 1.0.1, 30 fps (the game steps its logic a fixed 1/30 s per frame; at 60 it runs twice as fast). On the AYN Odin 2 (2026-11-14): boot, language
+# menu, title, the terms of service, a new game, name entry, the tutorials (the Memory Boards one scans NFC cards: the host lists no reader) and battles, played by hand: about 47k frames
+# with no crash, no dropped frame and no shader missing from the bundle; GPU p50 up to 17.7 ms of the 33.3 ms frame in battle (handheld 3D resolution). Three fixes came with it: a CUT of the offline nn::ssl context (patches.py: the init failed and the teardown wrote through a null pointer), the shader
+# split of the RomFS's 128 KB chunked zlib files (shader_split.py kt_gz; the text and effect shaders were missing) and the nn::nfc hooks (hle_sdk16.c; the game died on Break 0xe15).
+status	playable
+tested	v0 AYN Odin 2 (Snapdragon 8 Gen 2, Adreno 740, Turnip driver), tutorials and battles
+package	org.nx2a.kaijumonsterrancher
+orientation	landscape

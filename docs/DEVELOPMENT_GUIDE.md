@@ -70,7 +70,7 @@ python -m porter driver --system --package org.nx2a.supermario3dworld
 python -m porter host --package org.nx2a.supermario3dworld
 ```
 
-It refuses when the game's code on the device was rewritten with other rewriter sources than this checkout's; then port the game again from its files. The data pack is not changed. How it works: [ARCHITECTURE.md](ARCHITECTURE.md#the-port).
+It refuses when the game's code on the device was rewritten with other rewriter sources than this checkout's; then port the game again from its files. It also refuses a host built from another profile header than this checkout's (another layout, `--alias-headroom` or a derived profile); a header that differs only by defines added later that are off (`ADDED_DEFINES` in `porter/host.py`) is accepted. The data pack is not changed. How it works: [ARCHITECTURE.md](ARCHITECTURE.md#the-port).
 
 ## Layout
 
@@ -132,8 +132,38 @@ natively on Android; the cache model is separate from gameplay validation.
 python -m unittest discover tests
 ```
 
+`test_fragment_output_masks` compiles the production attachment-state loop and
+checks sparse output maps, absent fragment shaders, channel masks, integer
+formats and the flat diagnostic shader's all-target output. The optional
+[fragment-output replay](../tests/vk_fragment_output_masks.md) adds pipeline
+observations and pixel checks; its build script supports Windows, macOS and
+Linux NDK hosts and does not contact a device. Host checks do not qualify
+physical GPU rendering.
+
+`test_avc_frame_layout` and `test_avc_output_buffer` compile extracted production
+MediaCodec layout and drain code on the host. They cover bounded plane copies,
+metadata fallbacks, unknown-format NV12 compatibility, once-only drop logs and
+fatal picture-allocation failure. The layout harness selects C99 stdio on MinGW;
+`NX2A_TEST_SANITIZE=1` enables ASan/UBSan for the layout harness. The optional
+[AVC MediaCodec probe](../probes/avc_frame_layout.md) lives beside the AAC probes
+and builds with a macOS, Linux or Windows NDK. Host tests do not qualify a
+physical Android decoder or gameplay.
+
 The Vulkan-header harnesses need a discoverable NDK; set `ANDROID_NDK_HOME`
 when it is not found automatically. They skip if no NDK headers are found.
+`test_texture_format_aliases` compiles the production storage lookup, upload
+decisions, eviction, pool cleanup and NVN texture initializer under ASan/UBSan.
+It checks same-format plain/packaged peers in both orders, all orderings of two
+formats and their metadata peers, late CPU-write marks, and unique image retirement.
+A byte-store double at the GPU upload boundary checks visibility through those
+peers; it does not execute Vulkan uploads. The selected compiler is `CC`, then
+`cc`, then `clang`; a sanitizer link probe skips explicitly if unsupported.
+`test_texture_transfers` captures the actual Vulkan copy, resolve, blit and clear
+commands with NDK headers. It checks format, subresource and sRGB clear semantics,
+pooled/dedicated temporary retirement and injected allocation failures without
+running a GPU. The manual Android fixture builder supports macOS, Linux and
+Windows; see [texture-family validation](../tests/vk_texture_aliases.md).
+
 The protected-pool harness uses real page protection
 and a mutex/condition-variable rendezvous on macOS and Linux, handling each
 platform's protection-fault signal. The zero-copy diagnostics fixture forces
@@ -148,11 +178,15 @@ results and list callers. Process callbacks run once and release the process.
 These tests need no game files, keys, devices or browser, and do not identify the
 cause of a particular player's inspection failure.
 
-`test_descriptor_hash` exercises the Vulkan descriptor hash and reuse path with
-different C padding bytes but identical image fields. Image keys include each
-array element's sampler, view and layout as explicit words; padding cannot force
-another descriptor allocation. Reuse still compares the hash, layout and
-submission epoch, without a full-content collision check.
+`test_descriptor_hash` exercises the Vulkan descriptor-content cache (`g_setc`)
+with owned static keys, including every buffer, image and texel-view field.
+Different C padding bytes do not prevent reuse; dynamic offsets stay outside the
+static key. Constant-hash cases verify exact equality under forced collisions,
+source mutation, replacement and submission epochs. Bounded-arena exhaustion
+bypasses new cache entries while retaining existing hits and counting capacity
+bypasses; oversized keys and explicitly disabled caching remain uncached. The
+separate per-stage memo uses generation counters. These host checks do not
+establish a natural collision, game symptom or device performance result.
 
 `test_dmsv` checks both shader-bundle versions and the native reader. Publication
 uses a unique staging directory beside the destination, flushes the file, verifies
@@ -275,12 +309,22 @@ compatibility checks until migration. Mismatched or corrupt envelopes start empt
 a driver rejection retries empty, and failure to create that cache is logged.
 Pipeline creation marks the cache dirty even when its size stays unchanged. A
 complete snapshot with the same size and SHA-256 as the last accepted load or
-successful save skips publication. Other saves use one fixed `.tmp` file under the
+successful save skips publication. Besides the present timer, a save also starts on
+a thread of its own after 64 new pipelines, at most once per gap: 15 s for every
+whole 16 MB of cache (at least 15 s, at most 120 s), as each save rewrites the whole file.
+Other saves use one fixed `.tmp` file under the
 I/O lock, so the next write reuses an interrupted save's staging file. Publication
 requires successful writes and synchronization; failed or incomplete snapshots and
 pending legacy migrations remain eligible for retry. `DM_VK_NOPCACHE` still means
 start empty, while allowing newly built pipelines to be saved. Bump `PCACHE_ABI`
 when changing the renderer's persistent cache contract.
+
+The replay statistics printed every 600 presents include cumulative descriptor
+sets reused, new sets and `key arena bypasses`. A bypass counts each otherwise
+cacheable miss whose owned key does not fit in the current submission's bounded
+arena. Existing entries can still hit after exhaustion. Tracing, explicitly
+disabled caching and oversized keys do not increment this counter. The arena
+resets each submission; the counter remains cumulative for the host process.
 
 ## Optional native keyboard
 
@@ -297,3 +341,9 @@ python tests/android/keyboard_smoke.py --sdk "$ANDROID_HOME" --ndk "$ANDROID_NDK
 ```
 
 It builds through the production Java/dex packager, uses the real guest keyboard conversion and JNI bridge, and checks Unicode/UTF-16 output, minimum length, cancel, background/resume, repeated requests and bounded UTF-8 output. Add `--without-java` to verify the default APK's fallback. The probe installs only `org.nx2a.keyboardtest` and uninstalls it afterward; run it on a dedicated emulator. No game dump is needed. This probe does not qualify the combined external-display keyboard or physical-device gameplay.
+
+### CPU descriptor readiness
+
+`python -m unittest discover -s tests -p test_cpu_handle_readiness.py -v` executes the production tracking, deferred-coverage, live-switch and descriptor-preflight functions. It requires `host_cc.ubsan()` and defaults to UBSan; set `NX2A_TEST_SANITIZE=1` to also use ASan on a host with that runtime. A compiler without UBSan is reported as an explicit capability skip. The manual Android build runner and physical-device procedure are in `tests/vk_cpu_handle_readiness.md`. The runner only builds artifacts. Physical-driver behavior, real-game racy-read/cut/wait counts and timing remain separate validation.
+
+For live A/B testing, use a `DM_CTL` env update with `DM_VK_CPU_READY=0`, then restore `DM_VK_CPU_READY=1`. Values take effect at a submission boundary. Disabling allows unsynchronized CPU descriptor reads; the default remains enabled.
