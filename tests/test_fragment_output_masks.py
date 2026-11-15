@@ -29,6 +29,10 @@ static struct {int ncol;uint32_t cfmt[8],dfmt,samples;struct {int a2c;} ms;
     struct {int src_rgb,dst_rgb,src_a,dst_a,eq_rgb,eq_a;} blend[8];} S;
 static struct {unsigned debug_mode,ncol,dfmt,samples,a2c,logic_en,logic_op,cfmt[8],wmask[8],blend_en;
     struct {int src,dst,srca,dsta,eq,eqa;} bl[8];} k;
+// begin_pass's attachments and slot 0's scratch target (DM_VK_SLOT0_FILL, #257): none here, so slot 0 is never the scratch
+typedef struct {int unused;} vkimg_t;
+static vkimg_t g_s0_image;
+static struct {vkimg_t *im;} P_att[9];
 static void prepare(void){
 ''' + source[begin:end] + r'''
 }
