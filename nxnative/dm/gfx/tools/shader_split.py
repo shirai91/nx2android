@@ -1050,7 +1050,10 @@ def slct_programs(s, xv4, xc, ctls, uc, label, strict):
         for si, co, cl, to, tl in (struct.unpack_from('<5I', nv, eo + 20 * i) for i in range(en)):
             if not cl: continue
             code, ctl = xv4[xc + co:xc + co + cl], ctls[uc + to:uc + to + tl]
-            st = 'cs' if code[:4] == CS_MAGIC else sph_stage(code) if code[:4] == GFX_MAGIC else 'cs' if LOOSE_MONO and si == 5 else None   # stage 5 is compute: Xenoblade Chronicles: Definitive Edition's has no code header (shd_lgt / shd_post.wishp)
+            # stage 5 is compute, and its code area may have no header (Xenoblade Chronicles: Definitive Edition's shd_lgt / shd_post.wishp, Xenoblade Chronicles 2's
+            # shd_effect.wishp): taken as compute when the control's thread group (+0x748) is filled, as upstream's glslc_stage
+            headerless_cs = si == 5 and code[:4] not in (CS_MAGIC, GFX_MAGIC) and len(ctl) >= 0x754 and all(struct.unpack_from('<3I', ctl, 0x748))
+            st = 'cs' if code[:4] == CS_MAGIC or headerless_cs else sph_stage(code) if code[:4] == GFX_MAGIC else 'cs' if LOOSE_MONO and si == 5 else None
             why = 'no code area header' if not st else check(label, st, ctl, code)
             if why and strict: red(f'{label} program {p} stage {si}: {why}')
             if why: return None
