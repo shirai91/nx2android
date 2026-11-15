@@ -5,7 +5,9 @@
 # every shared font but the button icons.
 # Played on a Lenovo TB323FU (Snapdragon 8 Elite Gen 5, Adreno 840, Android 16) on 2026-11-15, docked, language
 # zh-Hans, with those firmware fonts and no System font. A stretch of play stayed up, drew without a rendering
-# fault and did not crash. The present interval stayed 1 (the two NOPs in patches.py). Calm play held 60 fps
+# fault and did not crash. That build had Development build on (porter port --debug: debuggable, debug
+# information, DM_CTL). A build without it SIGSEGV at startup (main+0x1c180) and the process is gone at once.
+# The present interval stayed 1 (the two NOPs in patches.py). Calm play held 60 fps
 # (frame work about 16.6 ms, late on screen 0 of 64). A save survived leaving the app: opening it again
 # continued that progress. Loading a new area can still stall for about 100 ms; that is not the interval path.
 # Not checked: a full playthrough, traditional Chinese and Korean text.
