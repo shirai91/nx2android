@@ -56,6 +56,12 @@ finite extrema/mean and bounded example coordinates:
 Coordinates are relative to each captured image; add the logged crop origin.
 Missing/truncated HDR payloads are errors, not clean results. Non-float formats
 are skipped even if an old `.f32` exists. Keep one capture batch per directory/log.
+The analyzer also requires a matching `pass dump NN RGB32F: WxH` success marker
+from the same batch. With RAW off, or an allocation/write failure, an old float
+file can have the same format and size; it must not be treated as fresh evidence.
+Legacy logs without this marker require a fresh capture with the updated host.
+If no pass matches the ordinary dump's filters, it stays armed and pixel history
+is rejected. Adjust the live filters until it completes before requesting history.
 
 ## Capture the transition, not only the retained result
 
@@ -124,7 +130,7 @@ as an untouched frame. Never use these runs for performance comparisons.
   compile checks are not gameplay checks.
 - Reset RAW, crop, pass/FS/format/size filters, frame count and pixel history;
   restore temporary shader overrides/skips/extra clears, stop owned recorders,
-  and verify the original startup configuration. Keep evidence under `.gamedump/`.
+  and verify the original startup configuration. Keep evidence under `.gamedump/<App>/` until the debugging ends, then delete it.
 
 Odyssey case (2026-11-12): a depth alpha shader retained the perspective multiply/
 reciprocal round trip while the material used direct interpolation. The existing
@@ -133,3 +139,7 @@ depth with stale colour; a later multiply amplified it to infinity and bloom
 spread NaNs into blocks. Two natural source coordinates passed reversible tests,
 and user movement/prompt checks passed after deploying regenerated ordinary
 shaders. This does not establish a cause for unrelated ground-grid artifacts.
+
+The translator repair is [PR #316](https://github.com/shirai91/nx2android/pull/316),
+now merged into main. These diagnostic tools do not apply that repair; testing
+an older baseline requires it separately and regenerated shader data.

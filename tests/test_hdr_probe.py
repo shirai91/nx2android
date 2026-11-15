@@ -47,6 +47,7 @@ class HdrProbeTests(unittest.TestCase):
             log.write_text("pass dump 00 is the submission's pass 8 (present 123)\n"
                            "pass dump 00: 2x1 format 37 -> /files/pass_00.ppm\n"
                            "pass dump 01 is the submission's pass 30 (present 124)\n"
+                           "pass dump 01 RGB32F: 1x1 -> /files/pass_01.ppm.f32\n"
                            "pass dump 01: 1x1 format 122 -> /files/pass_01.ppm\n")
             (root/'pass_00.ppm.f32').write_bytes(b'stale and invalid')
             (root/'pass_01.ppm.f32').write_bytes(struct.pack('<3f', 1, 2, 3))
@@ -58,9 +59,20 @@ class HdrProbeTests(unittest.TestCase):
     def test_missing_hdr_payload_is_not_silently_clean(self):
         with tempfile.TemporaryDirectory() as directory:
             log = Path(directory)/'dump.log'
-            log.write_text('pass dump 00: 1x1 format 97 -> /files/pass_00.ppm\n')
+            log.write_text('pass dump 00 RGB32F: 1x1 -> /files/pass_00.ppm.f32\n'
+                           'pass dump 00: 1x1 format 97 -> /files/pass_00.ppm\n')
             with self.assertRaises(FileNotFoundError):
                 probe.analyze_dumps(log)
+
+    def test_same_format_stale_raw_needs_successful_export_marker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            log = root/'dump.log'
+            (root/'pass_00.ppm.f32').write_bytes(struct.pack('<3f', 1, 2, 3))
+            for marker in ('', 'pass dump 00 RGB32F: 2x1 -> /files/pass_00.ppm.f32\n'):
+                log.write_text(marker+'pass dump 00: 1x1 format 122 -> /files/pass_00.ppm\n')
+                with self.subTest(marker=marker), self.assertRaisesRegex(ValueError, 'successful RGB32F export'):
+                    probe.analyze_dumps(log)
 
     def test_reused_dump_index_requires_separate_capture_directory(self):
         with tempfile.TemporaryDirectory() as directory:

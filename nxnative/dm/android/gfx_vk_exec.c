@@ -43,6 +43,7 @@ void mtl_set_origin_lower_left(int on) { g_lower_left = on; }
 // and the winding had to be inverted. DM_VK_FLIPY=0 brings the old way back
 #include <dlfcn.h>
 static int g_flipy;
+static int g_x_depth_clear_color;
 // Lower-left mode then stores the window image bottom-up (GL's rows), so the present flips it as nvn_mtl.m does (Celeste's MonoGame keeps NVN's default lower-left origin)
 int vk_window_bottom_up(void) { return g_lower_left && g_flipy; }
 static void state_reset(void) {
@@ -179,6 +180,7 @@ static void x_read(void) { cpu_ready_config(); const char *c = getenv("DM_VK_CB_
     { const char *tz = getenv("DM_VK_TRACE_SIZE"); snprintf(g_x_tracesize, sizeof g_x_tracesize, "%s", tz ? tz : ""); } const char *e; g_x_nobar = (e = getenv("DM_VK_X_NOBAR")) && atoi(e); g_x_depth = (e = getenv("DM_VK_X_DEPTH")) && atoi(e); g_x_color = (e = getenv("DM_VK_X_COLOR")) && atoi(e);
     g_x_nosetc = (e = getenv("DM_VK_X_NOSETC")) && atoi(e); g_x_nodrvc = (e = getenv("DM_VK_X_NODRVC")) && atoi(e); g_x_landcut = (e = getenv("DM_VK_X_LANDCUT")) && atoi(e);
     g_x_nodispbar = (e = getenv("DM_VK_X_NODISPBAR")) && atoi(e);
+    g_x_depth_clear_color = (e = getenv("DM_VK_X_DEPTH_CLEAR_COLOR")) && atoi(e);
     g_x_nokeep = (e = getenv("DM_VK_X_NOKEEP")) && atoi(e); g_x_nobc = (e = getenv("DM_VK_X_NOBC")) && atoi(e); g_x_noshc = (e = getenv("DM_VK_X_NOSHC")) && atoi(e); g_x_cutany = (e = getenv("DM_VK_X_CUTANY")) && atoi(e); g_x_nogs = (e = getenv("DM_VK_X_NOGS")) && atoi(e); g_spv_alt = (e = getenv("DM_VK_SPV_ALT")) && atoi(e); g_rd_touch = !((e = getenv("DM_VK_RD_TOUCH")) && !atoi(e));
     g_lrz_touch = (e = getenv("DM_VK_LRZ_TOUCH")) ? atoi(e) : 1; if (g_lrz_touch == 1) g_lrz_touch = LRZ_ALL;   /* 0 none, 1 all, else LRZ_* bits */ g_fdz = !((e = getenv("DM_VK_FDZ")) && !atoi(e)); g_xfb_on = !((e = getenv("DM_VK_XFB")) && !atoi(e));
     g_psplit = (e = getenv("DM_VK_PASS_SPLIT")) ? atoi(e) : 0; g_setsplit = (e = getenv("DM_VK_SETSPLIT")) && atoi(e); g_x_inflkeep = (e = getenv("DM_VK_UBD_KEEP")) && atoi(e); g_ubd_heap = !((e = getenv("DM_VK_UBD_HEAP")) && !atoi(e)); g_pool_slots = !((e = getenv("DM_VK_POOL_SLOTS")) && !atoi(e)); g_psplit_depth = (e = getenv("DM_VK_PASS_SPLIT_DEPTH")) && atoi(e);
@@ -554,7 +556,11 @@ void vk_pass_dump_poll(uint64_t done_fence) {   // gfx_vk_present.c, every prese
             else { const uint8_t *p = (const uint8_t *)d->p + ((size_t)y * d->w + x) * 4; int bgr = d->f == VK_FORMAT_B8G8R8A8_UNORM; row[3 * x] = p[bgr ? 2 : 0]; row[3 * x + 1] = p[1]; row[3 * x + 2] = p[bgr ? 0 : 2]; } }
             fwrite(row, 1, (size_t)d->w * 3, f); }
         free(row); fclose(f);
-        if (raw) { char rp[1100]; snprintf(rp, sizeof rp, "%s.f32", path); FILE *rf = fopen(rp, "wb"); if (rf) { fwrite(raw, sizeof(float), (size_t)d->w * d->h * 3, rf); fclose(rf); } free(raw); }
+        if (raw) { char rp[1100]; snprintf(rp, sizeof rp, "%s.f32", path); FILE *rf = fopen(rp, "wb");
+            if (rf) { size_t n = (size_t)d->w * d->h * 3, written = fwrite(raw, sizeof(float), n, rf); int closed = fclose(rf);
+                if (written == n && !closed) VKLOG("pass dump %02d RGB32F: %ux%u -> %s", i, d->w, d->h, rp);
+                else VKLOG("[RED] incomplete RGB32F dump %s", rp); }
+            else VKLOG("[RED] cannot write RGB32F dump %s", rp); free(raw); }
         VKLOG("pass dump %02d: %ux%u format %d → %s%s", i, d->w, d->h, d->f, path, d->f == VK_FORMAT_R16G16B16A16_SFLOAT ? "" : "");
         if (d->f == VK_FORMAT_R16G16B16A16_SFLOAT || d->f == VK_FORMAT_B10G11R11_UFLOAT_PACK32 || d->f == VK_FORMAT_R16_SFLOAT) {
             if (n_finite) VKLOG("   NaN/inf channels %llu (NaN %llu, inf %llu), finite values %.3f .. %.3f, mean %.5f", (unsigned long long)bad, (unsigned long long)n_nan, (unsigned long long)n_inf, mn, mx, sum / (double)n_finite);
@@ -986,7 +992,7 @@ static void clear_color(const p_clear_color *c) {
 static void clear_ds(const p_clear_ds *c) {
     if (!begin_pass() || !S.daspect) return;
     // Diagnostic only: test whether bad colour depends on data surviving a frame's depth clear.
-    const char *cc = getenv("DM_VK_X_DEPTH_CLEAR_COLOR"); if (cc && atoi(cc) && c->depth_mask && S.ncol && S.cfmt[0] == VK_FORMAT_B10G11R11_UFLOAT_PACK32) { p_clear_color z = {0}; z.mask = 0xf; clear_color(&z); }
+    if (g_x_depth_clear_color && c->depth_mask && S.ncol && S.cfmt[0] == VK_FORMAT_B10G11R11_UFLOAT_PACK32) { p_clear_color z = {0}; z.mask = 0xf; clear_color(&z); }
     VkImageAspectFlags as = (c->depth_mask ? VK_IMAGE_ASPECT_DEPTH_BIT : 0) | (c->stencil_mask && (S.daspect & VK_IMAGE_ASPECT_STENCIL_BIT) ? VK_IMAGE_ASPECT_STENCIL_BIT : 0);
     as &= S.daspect; if (!as) return;
     VkClearAttachment a = {as, 0, {.depthStencil = {c->depth, (uint32_t)c->stencil}}};

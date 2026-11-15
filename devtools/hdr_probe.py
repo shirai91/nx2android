@@ -4,6 +4,8 @@
   python devtools/hdr_probe.py history path/to/pixel_history.tsv --output changes.json
 
 Raw files must sit beside the log under their logged pass_NN.ppm.f32 names.
+HDR entries require a successful RGB32F export marker in that capture's log;
+legacy logs without it cannot distinguish a fresh payload from a stale file.
 Only supported float formats in that log are read; leftover raw files belonging
 to non-float dumps are ignored. Coordinates in a cropped dump are crop-relative.
 """
@@ -19,6 +21,7 @@ import sys
 FLOAT_RGB = {76, 97, 122}  # R16_SFLOAT, R16G16B16A16_SFLOAT, B10G11R11_UFLOAT_PACK32.
 META = re.compile(r'pass dump (\d+) is the submission.s pass (-?\d+) \(present (\d+)\)')
 IMAGE = re.compile(r'pass dump (\d+): (\d+)x(\d+) format (\d+)\b')
+RAW = re.compile(r'pass dump (\d+) RGB32F: (\d+)x(\d+) -> ')
 
 
 def analyze_rgb(path, width, height, coordinate_limit=32):
@@ -64,11 +67,14 @@ def analyze_rgb(path, width, height, coordinate_limit=32):
 
 def analyze_dumps(log_path, coordinate_limit=32):
     log_path = Path(log_path)
-    metadata, entries, seen = {}, [], set()
+    metadata, raw_exports, entries, seen = {}, {}, [], set()
     for line in log_path.read_text(encoding='utf-8').splitlines():
         if match := META.search(line):
             index, render_pass, present = map(int, match.groups())
             metadata[index] = {'render_pass': render_pass, 'present': present}
+        if match := RAW.search(line):
+            index, width, height = map(int, match.groups())
+            raw_exports[index] = (width, height)
         if match := IMAGE.search(line):
             index, width, height, fmt = map(int, match.groups())
             if index in seen:
@@ -78,6 +84,9 @@ def analyze_dumps(log_path, coordinate_limit=32):
             if fmt not in FLOAT_RGB:
                 entry['status'] = 'skipped_non_hdr_format'
             else:
+                if raw_exports.get(index) != (width, height):
+                    raise ValueError(f'{log_path}: dump {index} has no matching successful RGB32F export; '
+                                     'enable DM_VK_PASSDUMP_RAW=1 and capture a fresh batch with the updated host')
                 raw = log_path.parent / f'pass_{index:02d}.ppm.f32'
                 entry.update(analyze_rgb(raw, width, height, coordinate_limit), status='analyzed')
             entries.append(entry)

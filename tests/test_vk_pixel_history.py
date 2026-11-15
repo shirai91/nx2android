@@ -122,13 +122,20 @@ int main(int argc,char **argv) {
  S.daspect=VK_IMAGE_ASPECT_STENCIL_BIT;pixel_history_record(1,-1,0,0,0,0,0);assert(copies==1&&g_ph.rows[0].dfmt==0);S.daspect=VK_IMAGE_ASPECT_DEPTH_BIT;
  S.pass_open=2;pixel_history_record(2,-1,0,0,0,0,0);assert(commits==1&&copies==3&&ends==2&&g_ph.n==2);
  S.pass_open=1;pixel_history_record(4,7,1,3,1,0x4567,0);assert(copies==5&&ends==3&&g_ph.n==3);
- g_ph.n=PH_MAX;S.pass_open=1;pixel_history_record(4,8,1,3,1,0,0);assert(g_ph.truncated&&copies==5);g_ph.n=3;
+ for (int i=3;i<PH_MAX;i++) { S.pass_open=1;pixel_history_record(4,i,1,3,1,0,0); }
+ assert(g_ph.n==PH_MAX && copies==2*PH_MAX-1);
+ S.pass_open=1;pixel_history_record(4,PH_MAX,1,3,1,0,0);assert(g_ph.truncated&&copies==2*PH_MAX-1);
  pixel_history_poll(0);assert(g_ph.state==2&&g_ph.fence==11&&!frees&&!invalidates);
  pixel_history_poll(10);assert(g_ph.state==2&&!frees&&!invalidates);
  pixel_history_poll(11);assert(!pixel_history_busy()&&frees==1&&destroys==1&&invalidates==1);
  char path[2048];snprintf(path,sizeof path,"%s/pixel_history.tsv",argv[1]);FILE *f=fopen(path,"r");assert(f);
  char output[8192];size_t n=fread(output,1,sizeof(output)-1,f);output[n]=0;fclose(f);
  assert(strstr(output,"truncated=1")&&strstr(output,"hdr_word")&&strstr(output,"\t1\t2\t0.5\t0.25"));
+ setenv("DM_VK_PIXEL_HISTORY","2x2:1,1",1);pixel_history_poll(11);
+ assert(allocations==2 && g_ph.state==1 && !g_ph.n && !g_ph.truncated);
+ S.pass_open=1;pixel_history_record(4,0,1,3,1,0,0);assert(g_ph.n==1);
+ pixel_history_poll(11);assert(g_ph.state==2 && frees==1);
+ pixel_history_poll(11);assert(!pixel_history_busy() && frees==2 && destroys==2 && invalidates==2);
  puts("pixel history lifecycle: PASS");return 0;
 }
 '''
