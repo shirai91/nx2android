@@ -13,6 +13,31 @@ rotation. Distant brightness and shadow accuracy still need reference comparison
 New Game progression, gameplay saving and long-session
 stability are not validated. This is an experimental bring-up, not a playable claim.
 
+## Rebase verification, 2026-11-15
+
+Rebased PR #237 onto `main` at `e5a4703`. The integration retains the geometry
+split and its profile switch, CPU-filled 2D texture uploads and alias protection,
+and narrowed framebuffer-view usage. It also retains main's GPU descriptor
+readiness, disabled vertex defaults, compressed-texture rules and block-image
+stand-ins. Slot 0's new scratch attachment supplies its usage to the framebuffer
+metadata too; the compressed-image harness accepts the combined attachment type.
+
+- Android host: 193 sources compiled, zero failures, linked successfully.
+- Shader translator: built successfully; all 1,241 shader variants translated.
+- Python suite on Windows: 402 tests, 243 passed, 158 skipped and one environment
+  error from the existing external-display test's `python3` command. That test
+  passed separately when the command resolved to the active Python interpreter.
+- Xiaomi Pad 7 (`2410CRP4CG`, SM7675, Turnip reporting Adreno 735): all 43 geometry
+  split cases passed, as did vertex signedness, geometry storage addresses, all
+  four combinations of 2D first-use upload and CPU-uncached texture flags, and the
+  two compressed-image stand-in / pass-copy tests compiled with the Android NDK.
+- Installed the debug APK and regenerated shader bundle into the existing test
+  package, preserving saves. Startup rendered with Vulkan validation enabled;
+  four geometry shader pairs initialized and no VUID appeared in the startup
+  log. The log includes an audio callback retry and the existing conditional
+  rendering warning. The user's gameplay check is pending; this does not change
+  the **boots** status or establish sustained performance or stability.
+
 ## Changes and evidence
 
 - **CPK shader extraction.** Read CRI UTF tables (plain or masked), stored and

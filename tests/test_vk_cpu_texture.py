@@ -34,6 +34,9 @@ static void mtl_tex_cpu_written(const tex_t *t) { (void)t; marked++; }
 int main(void) {
  uint8_t pixels[64]={1}; pool_t pool={0}; vkfmt_t rgba={0}, bc={1,0,0};
  tex_t t={.pool=&pool,.mem=pixels,.d={.target=1,.samples=1,.width=4,.height=4,.depth=1},.L={64}};
+ t.d.flags=NVN_TEXTURE_FLAGS_IMAGE; assert(cpu_content_tex(&t,&bc)==1);
+ t.d.flags=NVN_TEXTURE_FLAGS_COMPRESSIBLE; assert(cpu_content_tex(&t,&bc)==DM_GAME_TEX_CPU_UNCACHED);
+ t.d.flags=0; marked=0;
  if (!TEX2D_ON) {   /* without the profile switch an uncompressed 2D texture keeps its old path; compressed ones are still uploaded */
   assert(cpu_content_tex(&t,&rgba)==0 && marked==0); assert(cpu_content_tex(&t,&bc)==1); return 0; }
  assert(cpu_content_tex(&t,&rgba)==1 && marked==1);
@@ -56,6 +59,7 @@ class CpuTexture(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             p=Path(tmp); (p/'test.c').write_text(source(),encoding='utf-8')
             for on in (0,1):
-                exe=p/f'test{on}'
-                subprocess.run(['cc','-std=c11',f'-DTEX2D_ON={on}',str(p/'test.c'),'-o',str(exe)],check=True)
-                subprocess.run([str(exe)],check=True)
+                for uncached in (0,1):
+                    exe=p/f'test{on}_{uncached}'
+                    subprocess.run(['cc','-std=c11',f'-DTEX2D_ON={on}',f'-DDM_GAME_TEX_CPU_UNCACHED={uncached}',str(p/'test.c'),'-o',str(exe)],check=True)
+                    subprocess.run([str(exe)],check=True)
