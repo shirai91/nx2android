@@ -578,3 +578,40 @@ HLE_FORCE("_ZN2nn3hid23GetActualVibrationValueEPNS0_14VibrationValueERKNS0_21Vib
     uint32_t targets = h ? vib_targets(*h) : 0;
     *v = targets ? dm_haptics_actual(__builtin_ctz(targets), *h >> 16 & 1) : (dm_vibration){0, 160, 0, 320};
 }
+
+// Palma (the Poké Ball Plus): the SDK's Palma calls talk to the hid service themselves (nn::hid::detail::SetPalmaBoostMode connects through sm; Pokémon Sword 1.3.2 crashed at sdk+0x238eb0
+// after "[RED] sf: the game connects to service hid itself"). The host has no Poké Ball Plus: connection is allowed and boost mode accepted, no npad reports the Palma style, and every
+// call on a connection handle fails with hid's InvalidPalmaHandle (module 202, description 3302, as Ryujinx's hid ResultCode), the answer for a ball that is not there.
+// The operation-complete event is bound (a real, never signalled event) so a game that waits on it after a refused operation does not wait on an unbound one.
+#define PALMA_INVALID (202u | 3302u << 9)
+HLE_FORCE("_ZN2nn3hid17SetPalmaBoostModeEb", "Poké Ball Plus boost mode; accepted (no Poké Ball Plus on the host)", Result, h_hid_PalmaBoost, unsigned on) { (void)on; return RES_OK; }
+HLE_FORCE("_ZN2nn3hid24EnableAnyPalmaConnectionEv", "Poké Ball Plus pairing allowed; none comes", Result, h_hid_PalmaAnyOn, void) { return RES_OK; }
+HLE_FORCE("_ZN2nn3hid25DisableAnyPalmaConnectionEv", "Poké Ball Plus pairing refused", Result, h_hid_PalmaAnyOff, void) { return RES_OK; }
+HLE_FORCE("_ZN2nn3hid24GetPalmaConnectionHandleEPNS0_21PalmaConnectionHandleERKj", "Poké Ball Plus of a controller: none (InvalidPalmaHandle)", Result, h_hid_PalmaHandle, uint64_t *out, const uint32_t *id) {
+    (void)id; if (out) *out = 0; return PALMA_INVALID;
+}
+HLE_FORCE("_ZN2nn3hid31BindPalmaOperationCompleteEventERKNS0_21PalmaConnectionHandleEPNS_2os15SystemEventTypeENS4_14EventClearModeE", "Poké Ball Plus operation event: bound, never signalled",
+          Result, h_hid_PalmaBind, const uint64_t *h, void *ev, int clear) { (void)h; hle_bind_system_event(ev, clear); return RES_OK; }
+HLE_FORCE("_ZN2nn3hid21GetPalmaOperationInfoEPNS0_18PalmaOperationInfoERKNS0_21PalmaConnectionHandleE", "Poké Ball Plus operation result: none (InvalidPalmaHandle)", Result, h_hid_PalmaOpInfo,
+          void *info, const uint64_t *h) { (void)info; (void)h; return PALMA_INVALID; }
+// The rest take a connection handle the host never hands out
+#define PALMA_REFUSE(sym, what, fn) HLE_FORCE(sym, "Poké Ball Plus " what ": refused (InvalidPalmaHandle)", Result, fn, const uint64_t *h) { (void)h; return PALMA_INVALID; }
+PALMA_REFUSE("_ZN2nn3hid15InitializePalmaERKNS0_21PalmaConnectionHandleE", "initialization", h_hid_PalmaInit)
+PALMA_REFUSE("_ZN2nn3hid13ReadPalmaStepERKNS0_21PalmaConnectionHandleE", "step count read", h_hid_PalmaStepRd)
+PALMA_REFUSE("_ZN2nn3hid14ResetPalmaStepERKNS0_21PalmaConnectionHandleE", "step count reset", h_hid_PalmaStepReset)
+PALMA_REFUSE("_ZN2nn3hid15EnablePalmaStepERKNS0_21PalmaConnectionHandleEb", "step counting", h_hid_PalmaStepOn)
+PALMA_REFUSE("_ZN2nn3hid16ReadPalmaPlayLogERKNS0_21PalmaConnectionHandleERKt", "play log read", h_hid_PalmaLogRd)
+PALMA_REFUSE("_ZN2nn3hid17ResetPalmaPlayLogERKNS0_21PalmaConnectionHandleERKt", "play log reset", h_hid_PalmaLogReset)
+PALMA_REFUSE("_ZN2nn3hid17PlayPalmaActivityERKNS0_21PalmaConnectionHandleERKt", "activity", h_hid_PalmaPlay)
+PALMA_REFUSE("_ZN2nn3hid18SetPalmaFrModeTypeERKNS0_21PalmaConnectionHandleERKNS0_15PalmaFrModeTypeE", "FR mode", h_hid_PalmaFr)
+PALMA_REFUSE("_ZN2nn3hid19ReadPalmaUniqueCodeERKNS0_21PalmaConnectionHandleE", "unique code read", h_hid_PalmaCodeRd)
+PALMA_REFUSE("_ZN2nn3hid25SetPalmaUniqueCodeInvalidERKNS0_21PalmaConnectionHandleE", "unique code reset", h_hid_PalmaCodeInv)
+PALMA_REFUSE("_ZN2nn3hid19SuspendPalmaFeatureERKNS0_21PalmaConnectionHandleERKNS_4util10BitFlagSetILi32ENS0_12PalmaFeatureEEE", "feature suspension", h_hid_PalmaSuspend)
+PALMA_REFUSE("_ZN2nn3hid19WritePalmaWaveEntryERKNS0_21PalmaConnectionHandleERKNS0_12PalmaWaveSetERKtPKvmm", "sound write", h_hid_PalmaWave)
+PALMA_REFUSE("_ZN2nn3hid23WritePalmaActivityEntryERKNS0_21PalmaConnectionHandleERKtPKNS0_18PalmaActivityEntryE", "activity write", h_hid_PalmaActWr)
+PALMA_REFUSE("_ZN2nn3hid28WritePalmaRgbLedPatternEntryERKNS0_21PalmaConnectionHandleERKtPKvm", "LED pattern write", h_hid_PalmaLed)
+PALMA_REFUSE("_ZN2nn3hid27ReadPalmaApplicationSectionERKNS0_21PalmaConnectionHandleEim", "application section read", h_hid_PalmaAppRd)
+PALMA_REFUSE("_ZN2nn3hid28WritePalmaApplicationSectionERKNS0_21PalmaConnectionHandleEimRKNS0_35PalmaApplicationSectionAccessBufferE", "application section write", h_hid_PalmaAppWr)
+PALMA_REFUSE("_ZN2nn3hid37GetPalmaDataBaseIdentificationVersionERKNS0_21PalmaConnectionHandleE", "database version read", h_hid_PalmaDbRd)
+PALMA_REFUSE("_ZN2nn3hid37SetPalmaDataBaseIdentificationVersionERKNS0_21PalmaConnectionHandleEi", "database version write", h_hid_PalmaDbWr)
+PALMA_REFUSE("_ZN2nn3hid25CancelWritePalmaWaveEntryERKNS0_21PalmaConnectionHandleE", "sound write cancel", h_hid_PalmaWaveCancel)

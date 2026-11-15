@@ -246,6 +246,7 @@ static void au_go(aout *a, uint64_t now) {
 }
 #ifdef __ANDROID__
 void dm_aaudio_set_device(int32_t id);
+int dm_aaudio_route_stale(AudioUnit u);
 void dm_audio_route_device(int32_t id) {
     pthread_mutex_lock(&g_aos_lock);
     dm_aaudio_set_device(id);
@@ -271,6 +272,11 @@ static void *au_watchdog(void *p) {
         uint64_t t = now_ns(), gap = t - last; last = t;
         for (int i = 0; i < AOMAX; i++) {
             aout *a = g_aos[i]; if (!a || !a->au) continue;
+#ifdef __ANDROID__
+            if (!g_suspended && a->backend == BK_AU && dm_aaudio_route_stale(a->au)) {
+                AudioOutputUnitStop(a->au); a->backend = BK_NONE; au_go(a, t);
+            }
+#endif
             uint64_t n = atomic_load_explicit(&a->cb_n, memory_order_relaxed);
             if (a->backend != BK_AU || g_suspended || gap > 4ull * WD_TICK_MS * 1000000 || n != a->wd_n) {
                 if (a->backend == BK_AU && n != a->wd_n) a->retry_ms = 0;   // callbacks seen: a later stall starts the back-off from 1 s again

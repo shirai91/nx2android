@@ -1,0 +1,10 @@
+# Fire Emblem Engage on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Unity 2020.3.18f1 IL2CPP on SDK 12.3.7, update 2.0.0 with both DLC; the profile here as it was (patches.py's 60 fps cut on 2.0.0 main).
+# The package keeps the name the experimental port used, so a port made with this profile installs over it and keeps its saves.
+# On Qualcomm's own driver (512.676.53) an Engage Attack scene draws as white/black silhouettes (#122); a Turnip driver draws it right.
+# Tested 2026-11-11 on the AYN Thor with Turnip 27.0.0-R2: the map, menus, battles and an Engage Attack with Marth; 60 fps (a few steps to 40), 0 dropped frames,
+# footprint 1.1-1.4 GB, 0 audio underruns, no red log line.
+status	playable
+tested	v327680 AYN Thor (Snapdragon 8 Gen 2, Adreno 740, Android 13)
+package	org.nx2a.t0100a6301214e000
+orientation	landscape

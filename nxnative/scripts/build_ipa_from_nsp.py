@@ -458,7 +458,7 @@ def scan_nsps(nsp_dir, exts=('nsp', 'xci'), keys=None):
     keys: prod.keys, whose header_key reads the title ID of a dump with neither a ticket nor a [title ID] tag from its NCA headers"""
     fams, unknown = {}, []
     hk = header_key(keys) if keys else None
-    for p in sorted(p for e in exts for p in nsp_dir.glob(f'*.{e}')):   # a base game may be a cartridge dump (.xci: Monster Hunter Rise); nx_extract reads its secure partition
+    for p in sorted(p for p in nsp_dir.glob('*') if p.is_file() and p.suffix.lower()[1:] in exts):   # suffix case is accepted on every host; directories named *.nsp are not dumps
         if p.stat().st_size == 0:   # an empty file left by an incomplete download (the Zelda BotW folder holds a 0-byte DLC NSP next to the complete (1).nsp)
             say(f'skipping an empty file: {p.name}'); continue
         tid = title_of(p, hk)
