@@ -1,0 +1,42 @@
+# Mega Man Battle Network Legacy Collection Vol. 2: base v0 with update v196608 (display version 1.0.3); the DLC 0100734016267001 (Custom PET Pack Vol. 2) is a licence only, no content.
+# A GBA emulator collection with a NoesisGUI launcher (the same sdk, subsdk0 and subsdk1 builds as Vol. 1, 010038E016264000), Nintendo SDK 13.3.5, NVN, Wwise;
+# subsdk0 is GLSLC (the game never calls glslcCompile), subsdk1 NintendoSDK_movie (H.264 intro movies).
+# Started from the survey's provisional profile; identity, module build IDs and memory checked against the extraction and survey (main's 1,120 MB of bss, the 3 GB reserve
+# as the survey sized it; footprint 1.4 GB in BN4's opening). Android validation scope is recorded in android.tsv.
+
+# ---- Identity ----
+title_id	0100734016266000
+program_id	0100734016266000
+
+# ---- App ----
+name	MEGAMAN BATTLE NETWORK LEGACY COLLECTION Vol.2
+ipa	MegamanBattleNetworkLegacyCollectionVol2.ipa
+app_category	public.app-category.games
+
+# ---- Versions ----
+build	v196608	1.0.3	main=0b81857a129ed830c8cfacb4c8286fce	subsdk0=c366dfa35272b8ac489629858902568b	subsdk1=d0f13015e5badf2243d60a2bc9b978dd	sdk=3644a6760469451cabc99f00c540acc2
+package	v196608
+shader_versions	v196608
+
+# ---- Files ----
+# every module main imports from
+modules	main subsdk0 subsdk1 sdk
+romfs_marker	exe6/data/font/cht_mojiFont.fnt
+zip_store	.bnk:.fnt:.mp4:.mpak:.otf:.pak:.png:.srl:.tga:.ttf:.xtx:.metallib
+
+# ---- Memory ----
+# main sets a heap of at most the pool − 64 MB − 1119 MB of bss (counted as used memory): a 2304 MB heap region
+mem_reserve	0xc0000000
+mem_alias	0x10000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+# the NPDM declares 0 MB of system resource: IsVirtualAddressMemoryEnabled is false, as on Horizon (Big Brain Academy: Brain vs. Brain sets a heap only then)
+sys_resource	0x0
+
+# ---- Shader split ----
+shader_groups	/launcher/=launcher /data/=data /audio/=audio /exe4/=exe4 /exe6/=exe6 /exe5/=exe5 /exe6f/=exe6f /exe4b/=exe4b /exe5k/=exe5k /bg/=bg
+shader_note	Mega Man Battle Network Legacy Collection Vol. 2 shaders: the BNSH files in RomFS/data
+
+# ---- After the rewrite ----
+# the rewritten modules are larger than the default 64 MB of used memory (Age of Calamity: 66.6 MB → 72 MB)
+mem_used	0x8c14000

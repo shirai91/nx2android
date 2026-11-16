@@ -14,3 +14,13 @@ status	playable
 tested	v327680 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
 package	org.nx2a.supermariobroswonder
 orientation	landscape
+# Galaxy Z Fold7 (Adreno 830, base game v0), world map, no GPU turbo: with the ADPF session (GPU time reported) the KGSL governor held
+# the GPU at 160 MHz, its lowest clock, and frames took ~20 ms of GPU time (122 of 300 dropped at a held 60). Without ADPF it chose 222-443 MHz (GPU ~10 ms,
+# 11 of 300 dropped handheld; docked 342 MHz, 16 of 300). The adaptive rate made a loop of its own: stepped to 30 fps the GPU idles, the governor stays at
+# 160 MHz and 60 never fits again, so the rate is held at the game's 60. That was enough for the map but not for a course (31-115 of 300 dropped, GPU
+# 12-19 ms), so the GPU goes to its highest clock while frames miss the display (perf_android.c turbo_auto).
+# Opt-in for devices like the Fold7, not a default (the Legion Y700 holds 60 fps on 1.2.1 with ADPF and the adaptive rate, and weaker devices need the 40/30
+# steps): put these three lines in the app's env.txt (Android/data/org.nx2a.supermariobroswonder/files/env.txt).
+#   DM_NO_ADPF=1
+#   DM_ADAPTIVE_FPS=0
+#   DM_GPU_TURBO=auto

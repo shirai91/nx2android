@@ -40,12 +40,14 @@ def entries(path):
     """The files of a dump: [(name, offset in the file, size)]. NSP / NSZ = PFS0; XCI / XCZ = the secure partition (an HFS0 inside the root HFS0, which the card header points to)"""
     with open(path, 'rb') as f:
         if f.read(4) == b'PFS0': return _fs(f, 0, 0x18)
-        f.seek(0x100)
-        if f.read(4) != b'HEAD': raise BuildError(f'{Path(path).name} is neither an NSP (PFS0) nor an XCI (no card header)')
-        f.seek(0x130); root = struct.unpack('<Q', f.read(8))[0]
-        sec = next((o for n, o, _ in _fs(f, root, 0x40) if n == 'secure'), None)
-        if sec is None: raise BuildError(f'no secure partition in {Path(path).name}')
-        return _fs(f, sec, 0x40)
+        for card in (0, 0x1000):   # as identification's dump_files: a card image may retain its leading 0x1000-byte key area
+            f.seek(card + 0x100)
+            if f.read(4) != b'HEAD': continue
+            f.seek(card + 0x130); root = card + struct.unpack('<Q', f.read(8))[0]
+            sec = next((o for n, o, _ in _fs(f, root, 0x40) if n == 'secure'), None)
+            if sec is None: raise BuildError(f'no secure partition in {Path(path).name}')
+            return _fs(f, sec, 0x40)
+        raise BuildError(f'{Path(path).name} is neither an NSP (PFS0) nor an XCI (no card header)')
 
 
 def _fs(f, at, esize):   # a PFS0 (entries of 0x18 bytes) or HFS0 (0x40) at offset at: its files with offsets in the file

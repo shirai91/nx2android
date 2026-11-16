@@ -14,6 +14,8 @@ void front_screen_match(int fps);
 // All text is UTF-8; max_chars is the maximum character count (0 = unlimited, only a hint for the front end; truncation is done uniformly by the caller hle_swkbd.c in UTF-16 units).
 // Confirm returns 1 and writes the result into out (including the terminating 0); cancel returns 0;
 // with no window (front_metal_layer() == NULL) nothing is shown and -1 is returned.
+// Request-local minimum in UTF-16 units; -1 when there is no active swkbd request.
+extern _Thread_local int g_swkbd_min_chars;
 int front_text_input(const char *title, const char *sub, const char *guide, const char *initial, int max_chars, char *out, int out_cap);
 
 // Early start of host loading (main.c): reading the NSO / relocation / forced takeover / prefetch start are moved to a background thread, in parallel with the front end (UIKit launch chain, Metal view);

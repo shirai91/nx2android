@@ -128,6 +128,8 @@ static class SwshXlate
         // early, over the game's malloc chunks in the same pool, and the heap broke (a crash in dlmalloc after the opening movie). With an alignment given, every access takes the form
         public int QueryHostStorageBufferOffsetAlignment() => _job["sb_align"] is JsonNode n ? (int)n : 16;
         public bool QueryHasUnalignedStorageBuffer() => _job["sb_align"] != null;
+        // GPU-written indirect arguments are unavailable to the CPU driver segment (Z-A's buildings vanished on Adreno 840): use the draw's Vulkan base IDs.
+        public bool QueryHasConstantBufferDrawParameters() => _job["draw_parameters"] is JsonNode n && (bool)n;
         // Job "subgroup" (the Android chain, shader_vk.py SUBGROUP): the host's subgroup size; above 32 the translator emulates Maxwell's 32-lane warps inside it. Metal's SIMD groups are 32
         public int QueryHostSubgroupSize() => _job["subgroup"] is JsonNode n ? (int)n : 32;
         // Job "gather_bias" (the Android chain, shader_vk.py GATHER_BIAS): bits of the host's gather coordinate precision; the translator then moves gather coordinates by

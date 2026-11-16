@@ -7600,7 +7600,7 @@ void mtl_exec(const uint8_t *p) {
                     g_rc_skip = known && (rc->mode ? x == y : x != y);
                     PD("E %llu conditional render %s addr=%#llx values %llu / %llu%s%s", g_stat_pass, rc->mode ? "draw if not equal" : "draw if equal", (unsigned long long)rc->addr, (unsigned long long)x, (unsigned long long)y, known ? "" : " (unknown, drawn)", g_rc_skip ? " → not drawn" : ""); }
                 break; }
-            case OP_FENCE_SYNC: { sync_t *s; memcpy(&s, a, 8); s->fence = g_fence + 1; s->fenced = 1;   // the fence value this submission (segment) commits with
+            case OP_FENCE_SYNC: { sync_t *s; memcpy(&s, a, 8); sync_replay_fence(s, g_fence + 1);   // the fence value this submission (segment) commits with (a finalized or freed sync is left alone)
                 PD("Y fence_sync cmd=%p sync=%p fence=%llu", p, (void *)s, (unsigned long long)s->fence); break; }
             case OP_RESET_COUNTER: { uint64_t t; memcpy(&t, a, 8); g_cnt_reset[t & 31]++; PD("Q reset type=%llu cmd=%p", (unsigned long long)t, p);
                 if (t == NVN_COUNTER_TYPE_SAMPLES_PASSED) {

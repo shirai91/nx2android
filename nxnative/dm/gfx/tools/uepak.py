@@ -39,14 +39,22 @@ PAK_MAGIC, ARCHIVE_VERSION = 0x5A6F12E1, 2
 JOB_MAGIC, OUT_MAGIC = 0x4a4f4d44, 0x524f4d44   # "DMOJ", "DMOR" (hle_oodle.c)
 FREQ = {0: 'vs', 1: 'hs', 2: 'ds', 3: 'ps', 4: 'gs', 5: 'cs'}   # EShaderFrequency (the archive's frequency census: 0 vertex, 3 pixel, 5 compute)
 
-_cc = None
+_cc, _aes = None, None
 def aes_decrypt(key, data):
-    """AES-256 ECB decryption through CommonCrypto (every Mac has it; no Python package needed)"""
-    global _cc
-    if _cc is None:
-        _cc = ctypes.CDLL('/usr/lib/libSystem.B.dylib').CCCrypt
-        _cc.restype = ctypes.c_int32
-        _cc.argtypes = [ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_char_p, ctypes.c_size_t, ctypes.c_void_p, ctypes.c_char_p, ctypes.c_size_t, ctypes.c_void_p, ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t)]
+    """AES-256 ECB decryption: CommonCrypto on the Mac (every Mac has it; no Python package needed), pycryptodome elsewhere (requirements.txt; the Windows and Linux
+    bundles ship it). The porter runs where the game is, so the pak's encrypted index is read on a machine that has no CommonCrypto"""
+    global _cc, _aes
+    if _cc is None and _aes is None:
+        try:
+            _cc = ctypes.CDLL('/usr/lib/libSystem.B.dylib').CCCrypt
+            _cc.restype = ctypes.c_int32
+            _cc.argtypes = [ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_char_p, ctypes.c_size_t, ctypes.c_void_p, ctypes.c_char_p, ctypes.c_size_t, ctypes.c_void_p, ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t)]
+        except OSError:   # not a Mac: pycryptodome does the same work (pip install pycryptodome)
+            try: from Crypto.Cipher import AES as _aes
+            except ImportError:
+                try: from Cryptodome.Cipher import AES as _aes   # what some system package managers call pycryptodome
+                except ImportError: raise ValueError('AES-256 ECB decryption needs CommonCrypto (a Mac) or pycryptodome (pip install pycryptodome)') from None
+    if _aes is not None: return _aes.new(key, _aes.MODE_ECB).decrypt(data)
     out = ctypes.create_string_buffer(len(data)); moved = ctypes.c_size_t()
     if _cc(1, 0, 2, key, len(key), None, data, len(data), out, len(data), ctypes.byref(moved)): raise ValueError('CCCrypt failed')   # decrypt, AES, ECB
     return out.raw[:moved.value]

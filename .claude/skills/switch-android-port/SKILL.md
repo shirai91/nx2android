@@ -118,6 +118,8 @@ How to work a bug:
 - The GPU clock isn't readable on retail devices; infer it from GPU busy at a fixed rate.
 - `simpleperf` is refused on retail devices, and an in-process SIGPROF sampler crashed the game: use the replay's timers and per-thread `/proc` sampling.
 - Runs that reach different scenes aren't comparable.
+- A replay that is slow while no thread is near a full core (per-thread `/proc` sampling), with the profiler's samples on plain reads of op data (`DM_VK_PROF`: the first read of each op header in `exec_ops`), is reading slow memory. The `hardware buffers:` start-up line gives the CPU's read speed of a hardware buffer against malloc memory: a Retroid Pocket 5 reads every hardware buffer and every Vulkan memory type, HOST_CACHED included, write-combined, at 1.7-1.9 GB/s (`DM_VK_ZEROCOPY_LAZY`, references/switches.md).
+- On the Retroid Pocket 5 the kgsl counters (`gpubusy`, `gpu_busy_percentage`, `gpu_clock_stats`, `devfreq/gpu_load`) stand still in its High performance mode: they read the same for minutes and say nothing. The replay's `GPU` / `GPU busy` figures are a span, from a submission's first part starting on the GPU to its last part ending: with parts sent early they include the GPU's waits for the replay. To see how long the GPU itself needs, turn the early parts off (`DM_VK_SUBMIT_SPLIT=0`, live) and read the game's wait after the submission in a `DM_NVN_SEQ` trace.
 - Run analysis scripts with plain `python`, not `python -I`: they need Pillow, numpy and PyAV from user site-packages.
 
 ## Scripts in this skill

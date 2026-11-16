@@ -1,0 +1,22 @@
+# Pokémon Sword on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Game Freak's engine on SDK 7.3.2, update 1.3.2 (v458752); game.tsv and the shader tables come from the survey, checked by hand. Its GFPAK archives are LZ4 (no Oodle):
+# a port needs no device for the shaders. NintendoWare Vfx builds some effect programs at run time (46 in the opening, in no game file): the app captures them
+# the first time it meets them (captured_shaders/) and the next port with --install translates them in; until then the draws that need them are left out, which in the
+# opening showed the old shot frozen under the new one's flares and text, and an 80% dynamic-resolution frame in a corner.
+# On the AYN Odin 2 (Snapdragon 8 Gen 2, Adreno 740, Android 13, Turnip, 2026-11-13), driven with DM_CTL and played by hand: the language, photo and name screens (the
+# overlay keyboard), the opening broadcast, the house, Postwick, door fades, the X menu, a save and Continue from it, the Odin's own controls. 30 fps as on the Switch
+# (frame work about 12-14 ms); with DM_PRESENT_INTERVAL=display it renders 60 but the game steps its logic per frame and runs twice as fast, so there is no 60 fps option.
+# A 15-minute soak in Postwick (devtools/soak.sh) kept one process at 33 ms a frame with no red line; the footprint settled at about 1.1 GB and crept 2-3 MiB a minute.
+# With a save, the title screen crashed in 2 of 12 cold boots before patches.py (an outfit part not loaded yet); 0 of 12 with it.
+# 2026-11-14, same device, in the Wild Area (Rolling Fields) from a save: wild encounters by the left stick in tall grass, the battle, Run and the fade back. One
+# encounter right after launch had one 273 ms frame as its "!" began (CPU in the submission); later ones none, and the player saw no freeze in the transition.
+# Standing there docked, 30 fps: CPU 0.68 of a core (three game threads, 27/19/14%), GPU 22-23 ms a frame at 401 MHz (75% busy); 263 passes, 1138 draws. The game's own
+# work: the main 3D pass 7.3 ms (its 80% resolution, 1536 wide), two 1024x1024 shadow passes 3.4 ms, 24 environment maps each filtered down 9 levels every frame.
+# No switch saves without a cost in picture: handheld 17.5 ms GPU (-22%, CPU the same); DM_SVC_SPIN=0, DM_NO_ADPF=1, DM_FPS_PIN=30 the same; DM_VK_CB_DRAWS
+# 0 or 512 1 ms more GPU. Depth not loaded or stored (DM_VK_X_DEPTH, draws wrong) saved 3.1 ms: six of the passes only clear a 1080p depth buffer (0.22 ms each).
+# Handheld (DM_OPMODE=0) is not fixed: the 3D draws at 1280x720 but the title and the fields come out blurred all over (a depth-of-field-like blur, its chain mixes
+# 720p and 1080p buffer sizes); docked is the default and correct. Local wireless is not checked yet.
+status	playable
+tested	v458752 AYN Odin 2 (Snapdragon 8 Gen 2, Adreno 740, Android 13)
+package	org.nx2a.pokemonsword
+orientation	landscape
