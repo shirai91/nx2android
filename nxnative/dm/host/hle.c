@@ -5,6 +5,10 @@
 #include <dlfcn.h>
 #include <time.h>
 
+// The Android GL layer (dm/android/gl_android.c) hands out the device driver's GL entry points; nothing defines it on the Apple platforms, where the GL layer serves GL names through
+// eglGetProcAddress only
+extern void *dm_gl_import(const char *) __attribute__((weak));
+
 typedef struct { const char *name; void *fn; } hle_ent;
 
 // ---------- Unimplemented imports: named stubs (the statically assembled stub table in entry.S, the k-th = movz x9,#k; b unimpl_entry) ----------
@@ -35,6 +39,13 @@ uint64_t resolve_import(module_t *m, const char *name) {
         }
     // Reuse the stub if one was already allocated for the same name
     void *hlecount_wrap(const char *, const char *, void *);
+
+    // A GL entry point the game imports by name rather than through eglGetProcAddress: the device driver's, behind the layer's big-stack stubs. Layton's Mystery Journey DX imports
+    // 22 of them (glCreateShader, glGenTextures, glViewport, …); bound to unimplemented stubs, nothing was drawn (a black window) while its audio and frames went on
+    if (!strncmp(name, "gl", 2) && dm_gl_import) {
+        void *f = dm_gl_import(name);
+        if (f) { if (g_flag.imports) LOG("import %s -> GL driver", name); return (uint64_t)hlecount_wrap("HLE", name, f); }
+    }
     for (unsigned k = 0; k < g_nstub; k++)
         if (!strcmp(g_stub_name[k], name)) return (uint64_t)hlecount_wrap("STUB", name, (void *)&unimpl_stubs[k]);
     if (g_nstub >= MAX_STUB) die("stub overflow");

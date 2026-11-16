@@ -182,18 +182,58 @@ GLW(glCompressedTexImage2D, void, GLenum t, GLint l, GLenum f, GLsizei w, GLsize
 GLW_STACK(glCompressedTexImage3D, void, GLenum t, GLint l, GLenum f, GLsizei w, GLsizei h, GLsizei d, GLint b, GLsizei n, const void *p) { cup_t c = {0, 3, t, l, 0, 0, 0, w, h, d, f, n, p, b}; gl_big(cup_run, &c); }
 GLW_STACK(glCompressedTexSubImage2D, void, GLenum t, GLint l, GLint x, GLint y, GLsizei w, GLsizei h, GLenum f, GLsizei n, const void *p) { cup_t c = {1, 2, t, l, x, y, 0, w, h, 1, f, n, p, 0}; gl_big(cup_run, &c); }
 GLW_STACK(glCompressedTexSubImage3D, void, GLenum t, GLint l, GLint x, GLint y, GLint z, GLsizei w, GLsizei h, GLsizei d, GLenum f, GLsizei n, const void *p) { cup_t c = {1, 3, t, l, x, y, z, w, h, d, f, n, p, 0}; gl_big(cup_run, &c); }
-// Immutable storage in a BC format: the decoded format instead
-GLW(glTexStorage2D, void, GLenum t, GLsizei levels, GLenum f, GLsizei w, GLsizei h) { REAL(void, glTexStorage2D, GLenum, GLsizei, GLenum, GLsizei, GLsizei); bcfmt b; r_glTexStorage2D(t, levels, bc_of(f, &b) ? b.ifmt : f, w, h); }
+// Immutable storage in a BC format: the decoded format instead; a legacy unsized one as RGBA8 (see below)
+GLW(glTexStorage2D, void, GLenum t, GLsizei levels, GLenum f, GLsizei w, GLsizei h) { REAL(void, glTexStorage2D, GLenum, GLsizei, GLenum, GLsizei, GLsizei); bcfmt b; GLenum ff = bc_of(f, &b) ? b.ifmt : (f == 0x1906 || f == 0x1909 || f == 0x190A) ? GL_RGBA8 : f;
+    r_glTexStorage2D(t, levels, ff, w, h); }
 GLW(glTexStorage3D, void, GLenum t, GLsizei levels, GLenum f, GLsizei w, GLsizei h, GLsizei d) { REAL(void, glTexStorage3D, GLenum, GLsizei, GLenum, GLsizei, GLsizei, GLsizei); bcfmt b; r_glTexStorage3D(t, levels, bc_of(f, &b) ? b.ifmt : f, w, h, d); }
 // More than 8 integer arguments, passed through on the big stack
 typedef struct { uint64_t a[16]; } args_t;
 #define A(i, T) (T)x->a[i]
+// internalformat: the game asks with 0 (the Switch driver accepts it), which OpenGL ES rejects with GL_INVALID_VALUE and leaves a texture with no storage: a render target made this way
+// stays empty and every pass drawn into it is thrown away, which is a window that never shows anything. A sized format with the channel count of `format` instead
+static GLint ifmt_ok(GLint ifmt, GLenum fmt, GLenum type) {
+    int ch = 4;    switch (fmt) { case 0x1903: case 0x1909: case 0x1906: case 0x8CDF: case 0x8226: ch = 1; break;   // RED, LUMINANCE, ALPHA, RGTC1, RG
+                   case 0x8227: case 0x190A: case 0x822F: ch = 2; break;                            // RG, LUMINANCE_ALPHA
+                   case 0x1907: case 0x8225: ch = 3; break;                                         // RGB
+                   default: ch = 4; break; }
+    switch (ifmt) {   // the sized formats are fine as they are
+    case 0x8051: case 0x8058: case 0x8229: case 0x822B: case 0x8814: case 0x881A: case 0x8C43: case 0x8F94: case 0x8F95: case 0x822A: case 0x822C: case 0x8D62: case 0x822D:
+    case 0x822F: case 0x881B: case 0x822E: case 0x8230: case 0x8815: case 0x8C41:
+        return ifmt;
+    }
+    int sized = 0;   // an unsized format: the same size its channels ask for
+    switch (ifmt) { case 0x1903: case 0x8227: case 0x1907: case 0x1908: case 0x1906: case 0x1909: case 0x190A: case 0: sized = 1; break; default: break; }
+    if (!sized) return ifmt;
+    GLenum ty16 = (type == 0x140B), ty32 = (type == 0x1406);
+    if (ty16) return ch == 1 ? 0x822D : ch == 2 ? 0x822F : ch == 3 ? 0x881B : 0x881A;   // R16F, RG16F, RGB16F, RGBA16F
+    if (ty32) return ch == 1 ? 0x822E : ch == 2 ? 0x8230 : ch == 3 ? 0x8815 : 0x8814;   // R32F, RG32F, RGB32F, RGBA32F
+    { static int said; if (!said++) GLOG("internal format %#x with format %#x: a sized format instead", ifmt, fmt); }
+    return ch == 1 ? 0x8229 : ch == 2 ? 0x822B : ch == 3 ? 0x8051 : 0x8058;   // R8, RG8, RGB8, RGBA8
+}
+// GL_ALPHA / GL_LUMINANCE / GL_LUMINANCE_ALPHA have no OpenGL ES form (ES 3 removed them). Passed through as R8 / RG8 the texture's alpha reads 1: a glyph atlas uploaded as
+// GL_ALPHA then draws every glyph as a filled box, and a movie's luminance planes read as black or green (Layton DX's 4096x1024 font page is GL_ALPHA, its AVC UV plane
+// GL_LUMINANCE_ALPHA). Converted to RGBA8 with the desktop sampling semantics (alpha → 0,0,0,a; luminance → v,v,v,255; luminance-alpha → v,v,v,a) instead
+#define GL_LEGACY_FMT(f) ((f) == 0x1906 || (f) == 0x1909 || (f) == 0x190A)
+static unsigned char *legacy_rgba(GLenum f, GLsizei w, GLsizei h, const void *src) {
+    if (!src || w <= 0 || h <= 0) return NULL;
+    size_t n = (size_t)w * (size_t)h; unsigned char *d = malloc(n * 4); if (!d) return NULL;
+    const unsigned char *s = src;
+    if (f == 0x190A) for (size_t i = 0; i < n; i++) { unsigned char l = s[i * 2], a = s[i * 2 + 1]; d[i * 4] = l; d[i * 4 + 1] = l; d[i * 4 + 2] = l; d[i * 4 + 3] = a; }
+    else if (f == 0x1909) for (size_t i = 0; i < n; i++) { unsigned char l = s[i]; d[i * 4] = l; d[i * 4 + 1] = l; d[i * 4 + 2] = l; d[i * 4 + 3] = 255; }
+    else for (size_t i = 0; i < n; i++) { d[i * 4] = 0; d[i * 4 + 1] = 0; d[i * 4 + 2] = 0; d[i * 4 + 3] = s[i]; }
+    return d;
+}
 static uint64_t p_glTexImage2D(void *v) { args_t *x = v; REAL(void, glTexImage2D, GLenum, GLint, GLint, GLsizei, GLsizei, GLint, GLenum, GLenum, const void *);
-    r_glTexImage2D(A(0, GLenum), A(1, GLint), A(2, GLint), A(3, GLsizei), A(4, GLsizei), A(5, GLint), A(6, GLenum), A(7, GLenum), A(8, const void *)); return 0; }
+    GLenum t = A(0, GLenum); GLint level = A(1, GLint), ifmt = A(2, GLint); GLsizei w = A(3, GLsizei), h = A(4, GLsizei); GLenum f = A(6, GLenum), ty = A(7, GLenum);
+    GLint fixed = ifmt_ok(ifmt, f, ty); const void *px = A(8, const void *); unsigned char *conv = NULL;
+    if (ty == GL_UNSIGNED_BYTE && GL_LEGACY_FMT(f)) { if (level == 0 && px) { conv = legacy_rgba(f, w, h, px); if (conv) { fixed = GL_RGBA8; f = GL_RGBA; px = conv; } } else { fixed = GL_RGBA8; f = GL_RGBA; } }
+    r_glTexImage2D(t, level, fixed, w, h, A(5, GLint), f, ty, px); free(conv); return 0; }
 static uint64_t p_glTexSubImage2D(void *v) { args_t *x = v; REAL(void, glTexSubImage2D, GLenum, GLint, GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, const void *);
-    r_glTexSubImage2D(A(0, GLenum), A(1, GLint), A(2, GLint), A(3, GLint), A(4, GLsizei), A(5, GLsizei), A(6, GLenum), A(7, GLenum), A(8, const void *)); return 0; }
+    GLenum t = A(0, GLenum), f = A(6, GLenum), ty = A(7, GLenum); GLsizei w = A(4, GLsizei), h = A(5, GLsizei); const void *px = A(8, const void *); unsigned char *conv = NULL;
+    if (A(1, GLint) == 0 && ty == GL_UNSIGNED_BYTE && GL_LEGACY_FMT(f)) { conv = legacy_rgba(f, w, h, px); if (conv) { f = GL_RGBA; px = conv; } }
+    r_glTexSubImage2D(t, A(1, GLint), A(2, GLint), A(3, GLint), w, h, f, ty, px); free(conv); return 0; }
 static uint64_t p_glTexImage3D(void *v) { args_t *x = v; REAL(void, glTexImage3D, GLenum, GLint, GLint, GLsizei, GLsizei, GLsizei, GLint, GLenum, GLenum, const void *);
-    r_glTexImage3D(A(0, GLenum), A(1, GLint), A(2, GLint), A(3, GLsizei), A(4, GLsizei), A(5, GLsizei), A(6, GLint), A(7, GLenum), A(8, GLenum), A(9, const void *)); return 0; }
+    r_glTexImage3D(A(0, GLenum), A(1, GLint), ifmt_ok(A(2, GLint), A(7, GLenum), A(8, GLenum)), A(3, GLsizei), A(4, GLsizei), A(5, GLsizei), A(6, GLint), A(7, GLenum), A(8, GLenum), A(9, const void *)); return 0; }
 static uint64_t p_glTexSubImage3D(void *v) { args_t *x = v; REAL(void, glTexSubImage3D, GLenum, GLint, GLint, GLint, GLint, GLsizei, GLsizei, GLsizei, GLenum, GLenum, const void *);
     r_glTexSubImage3D(A(0, GLenum), A(1, GLint), A(2, GLint), A(3, GLint), A(4, GLint), A(5, GLsizei), A(6, GLsizei), A(7, GLsizei), A(8, GLenum), A(9, GLenum), A(10, const void *)); return 0; }
 static uint64_t p_glBlitFramebuffer(void *v) { args_t *x = v; REAL(void, glBlitFramebuffer, GLint, GLint, GLint, GLint, GLint, GLint, GLint, GLint, GLbitfield, GLenum);
@@ -383,4 +423,13 @@ EGLB(eglGetProcAddress, void *, const char *name) {
     if (asked % 200 == 0) GLOG("eglGetProcAddress: %d names asked, %d found (last %s)", asked, found, name);
     pthread_mutex_unlock(&mu);
     return fn;
+}
+// A GL name the game imports by name instead of fetching it through eglGetProcAddress: the loader asks here before it makes an unimplemented stub (hle.c resolve_import), and gets
+// the same pointer eglGetProcAddress would hand out. Layton's Mystery Journey DX imports 22 gl* entry points this way; bound to stubs, nothing was drawn (a black window) while its
+// audio and frames went on
+void *dm_gl_import(const char *name) {
+    if (!name || strncmp(name, "gl", 2)) return NULL;
+    for (const glw_ent *e = __start_swglw; e < __stop_swglw; e++) if (!strcmp(e->name, name)) return e->fn;
+    void *d = dev_sym(name);
+    return d ? tramp(d) : NULL;
 }
