@@ -153,24 +153,25 @@ void dm_overlay_theme_done(const ov_theme *t);   // the pixels are on the GPU: t
 
 // ---- the pause menu: a panel in the middle of the window: a row of tabs, the open tab's rows, and Resume. Everything is placed in a panel rectangle p
 // (x, y, width, height: the window's for touches, the raster's for drawing), so the touches and the drawing agree ----
-enum { OVM_OVERLAY, OVM_OPACITY, OVM_EDIT, OVM_RUMBLE, OVM_FPS, OVM_MODE, OVM_EXPORT, OVM_IMPORT, OVM_PAD, OVM_AUDIO, OVM_RATE, OVM_RES, OVM_RESUME, OVM_TAB, OVM_N };   // OVM_TAB: the tabs' row;
+enum { OVM_OVERLAY, OVM_OPACITY, OVM_EDIT, OVM_RUMBLE, OVM_FPS, OVM_MODE, OVM_EXPORT, OVM_IMPORT, OVM_PAD, OVM_AUDIO, OVM_RATE, OVM_RES, OVM_DETAIL, OVM_RESUME, OVM_TAB, OVM_N };   // OVM_TAB: the tabs' row;
             // OVM_EDIT: the layout editor; OVM_MODE: handheld (performance) or docked (resolution); OVM_EXPORT, OVM_IMPORT: the save manager (saves_android.c);
             // OVM_PAD: a controller's face buttons by their position or by their label (front_android.c pad_labels); OVM_RATE: the frame step's target, 30 or 60 fps,
             // for a game whose rewriter stubs step by the host's target (front_android.c dm_menu_rate_available); OVM_RES: the render scale of a game with a
             // render-scale stub, in three steps (front_android.c dm_menu_res_available)
 #define OVM_TABS 2
-#define OVM_PER_TAB 6
-static const int OVM_TAB_ITEMS[OVM_TABS][OVM_PER_TAB] = {{OVM_OVERLAY, OVM_OPACITY, OVM_EDIT, OVM_RUMBLE, OVM_PAD, OVM_AUDIO}, {OVM_FPS, OVM_RATE, OVM_RES, OVM_MODE, OVM_EXPORT, OVM_IMPORT}};
+#define OVM_PER_TAB 7
+static const int OVM_TAB_ITEMS[OVM_TABS][OVM_PER_TAB] = {{OVM_OVERLAY, OVM_OPACITY, OVM_EDIT, OVM_RUMBLE, OVM_PAD, OVM_AUDIO, -1}, {OVM_FPS, OVM_RATE, OVM_RES, OVM_DETAIL, OVM_MODE, OVM_EXPORT, OVM_IMPORT}};
+// OVM_DETAIL: the detail distance of a game whose culling shader takes the host's factor (front_android.c dm_menu_detail_available): 1x the game's own, 1.5x, 2x
 static const char *const OVM_TAB_NAMES[OVM_TABS] = {"Gamepad", "Game"};
 #define OVM_ROWS (OVM_PER_TAB + 2)   // the tabs, a tab's rows (as many for every tab: the panel keeps its size), Resume
-int dm_menu_audio_available(void); int dm_menu_rate_available(void); int dm_menu_res_available(void);
+int dm_menu_audio_available(void); int dm_menu_rate_available(void); int dm_menu_res_available(void); int dm_menu_detail_available(void); int dm_menu_detail_step(void);
 static inline int ov_menu_item(int tab, int row) {   // the rows a tab has follow each other: one the device or the game lacks (audio outputs, the frame rate) leaves no gap
     if (row == 0) return OVM_TAB;
     if (row == OVM_ROWS - 1) return OVM_RESUME;
     if (row < 0 || row >= OVM_ROWS) return -1;
     for (int k = 0, n = 0; k < OVM_PER_TAB; k++) {
         int it = OVM_TAB_ITEMS[tab & 1][k];
-        if (it < 0 || (it == OVM_AUDIO && !dm_menu_audio_available()) || (it == OVM_RATE && !dm_menu_rate_available()) || (it == OVM_RES && !dm_menu_res_available())) continue;
+        if (it < 0 || (it == OVM_AUDIO && !dm_menu_audio_available()) || (it == OVM_RATE && !dm_menu_rate_available()) || (it == OVM_RES && !dm_menu_res_available()) || (it == OVM_DETAIL && !dm_menu_detail_available())) continue;
         if (++n == row) return it;
     }
     return -1;

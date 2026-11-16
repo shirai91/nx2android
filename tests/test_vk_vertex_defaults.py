@@ -59,7 +59,7 @@ int main(void) {
 
 def harness_source():
     source = SOURCE.read_text(encoding='utf-8')
-    begin = source.index('static VkBuffer static_buf(int which)')
+    begin = source.index('enum { DETAIL_SLOT')   # with the detail distance factor's slot, which static_buf fills (it precedes the function)
     end = source.index("// a shader's c1 constants", begin)
     return PREFIX + source[begin:end] + SUFFIX
 

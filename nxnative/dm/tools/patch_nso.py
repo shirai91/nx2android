@@ -909,6 +909,7 @@ for off, oid, ow, why in obs:
 # A build's stubs are FRAME_STEP[build ID](ctx) in its patches.py: ctx.here() / ctx.emit(word) assemble into the patch area, ctx.site(offset, original bytes) asserts a site and that it is
 # no rewrite site, ctx.put(offset, words, reason) writes it (listed with the cuts), ctx.state is the state page's offset, and ctx.render_scale = 1 marks a render-scale stub
 FRAME_STEP = PATCHES['FRAME_STEP']
+NO_FRAME_STEP = False
 RENDER_SCALE = 0   # 1 = the build has a render-scale stub (state +0x10): the fixups table says so (RENDER_SCALE), and the iOS launcher offers the setting (dm/games/settings.tsv)
 if BUILD_ID in FRAME_STEP and NAME == 'main':
     assert not FAR and FS_STATE_OFF % 0x1000 == 0 and FS_STATE_OFF + 0x40 <= PATCH_OFF and not any(IMG[FS_STATE_OFF:]), 'frame step state page'
@@ -922,8 +923,8 @@ if BUILD_ID in FRAME_STEP and NAME == 'main':
         for i, w in enumerate(words): struct.pack_into('<I', IMG, off + 4 * i, w)
         cuts.append((off, old.hex(), bytes(IMG[off:off + 4 * len(words)]).hex(), why)); stat('frame_step')
 if FS_STATE_OFF:   # the build's stubs (FRAME_STEP of its patches.py)
-    fs = types.SimpleNamespace(here=here, emit=emit, site=fs_site, put=fs_put, state=FS_STATE_OFF, render_scale=0)
-    FRAME_STEP[BUILD_ID](fs); RENDER_SCALE = fs.render_scale
+    fs = types.SimpleNamespace(here=here, emit=emit, site=fs_site, put=fs_put, state=FS_STATE_OFF, render_scale=0, frame_step=1)
+    FRAME_STEP[BUILD_ID](fs); RENDER_SCALE = fs.render_scale; NO_FRAME_STEP = not fs.frame_step   # ctx.frame_step = 0: the build's stubs read the state page's render scale only, none steps the game by the host's target
 
 # ---- Spin waits (every module) ----
 # A guest loop that polls memory until another thread changes it fills only its own core on the Switch, where any higher-priority thread pinned there preempts it, so the
@@ -1154,6 +1155,7 @@ with open(P('fixups.tsv'), 'w') as f:
     for k in KEY_INDEX: f.write(f'# KEY_{k}_IDX\t{KEY_INDEX[k]}\n')
     if FS_STATE_OFF: f.write(f'# FPS_STATE_OFF\t{FS_STATE_OFF:#x}\n')   # frame step state page (FRAME_STEP): the loader writes the target fps there
     if RENDER_SCALE: f.write('# RENDER_SCALE\t1\n')   # a render-scale stub reads state +0x10 (the loader ignores the key; dm/games/settings.py offers the setting by it)
+    if NO_FRAME_STEP: f.write('# NO_FRAME_STEP\t1\n')   # the state page holds a render scale only: the Android pause menu does not offer its Frame rate row (loader.c dm_fps_target_has)
     f.write(f'# TARGET\t{TARGET}\n')   # the slot access differs per OS: the host refuses an image rewritten for the other one
     f.write(f'# BUILD_ID\t{BUILD_ID}\n')   # the host identifies the build by it: features with hard-coded addresses only run on the build they belong to
 with open(P('gates.tsv'), 'w') as f:
