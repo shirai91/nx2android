@@ -1404,6 +1404,7 @@ NVN(nvnWindowBuilderSetDefaults, void, NVNwindowBuilder *b) { NVNdevice *dev = W
 NVN(nvnWindowBuilderSetDevice, void, NVNwindowBuilder *b, NVNdevice *d) { WB(b)->dev = d; }
 NVN(nvnWindowBuilderSetNativeWindow, void, NVNwindowBuilder *b, NVNnativeWindow w) { WB(b)->native = w; }
 NVN(nvnWindowBuilderSetTextures, void, NVNwindowBuilder *b, int n, NVNtexture *const *t) {
+    if (getenv("DM_NVN_VLOG")) { char at[96]; crash_addr_str(at, sizeof at, (uint64_t)__builtin_return_address(0)); LOG("[nvn] WindowBuilderSetTextures %d textures (from %s)", n, at); }
     if (n < 0 || n > 4) { LOG("[RED] WindowBuilderSetTextures count %d", n); n = n < 0 ? 0 : 4; }
     WB(b)->ntex = n; for (int i = 0; i < n; i++) WB(b)->tex[i] = t[i];
 }
@@ -1425,7 +1426,19 @@ NVN(nvnWindowSetPresentInterval, void, NVNwindow *w, int v) {   // the caller in
     ((win_t *)w)->interval = v;
 }
 NVN(nvnWindowSetCrop, void, NVNwindow *w, int x, int y, int ww, int hh) {
-    win_t *o = (win_t *)w; int v[4] = {x, y, ww, hh};
+    win_t *o = (win_t *)w;
+    // A crop must name a region of the window texture: clamp it when it does not (Super Mario Bros. Wonder 1.0.1 with a 4:3 profile: its Screen object still
+    // asked for the docked 1920x1080 crop over a 1280x960 window texture, and the present read past the texture). Clamping only changes a crop the texture cannot hold.
+    if (o->ntex > 0 && o->tex[0]) {
+        const unsigned tw = CTX(o->tex[0])->d.width, th = CTX(o->tex[0])->d.height;
+        if (tw && th && (x < 0 || y < 0 || ww > (int)tw - x || hh > (int)th - y)) {
+            int cx = x < 0 ? 0 : x, cy = y < 0 ? 0 : y, cw = ww, ch = hh;
+            if (cw > (int)tw - cx) cw = (int)tw - cx; if (ch > (int)th - cy) ch = (int)th - cy;
+            LOG("[nvn] WindowCrop %d,%d %dx%d clamped to the %ux%u window texture", x, y, ww, hh, tw, th);
+            x = cx; y = cy; ww = cw; hh = ch;
+        }
+    }
+    int v[4] = {x, y, ww, hh};
     if (memcmp(o->crop, v, sizeof v)) LOG("[nvn] WindowCrop %d,%d %dx%d", x, y, ww, hh);
     memcpy(o->crop, v, sizeof v);
 }

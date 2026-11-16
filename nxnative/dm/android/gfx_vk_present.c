@@ -4,7 +4,9 @@
 // DM_VK_SHOT_DIR (default DM_ROOT), which is how a run without a screen is checked.
 #include "gfx_vk.h"
 #include <android/native_window.h>
+#ifndef DM_LINUX
 #include <jni.h>
+#endif
 #include <string.h>
 #include <math.h>
 #include <time.h>
@@ -165,8 +167,12 @@ static int swap_make(void) {
     int ww = ANativeWindow_getWidth(w), wh = ANativeWindow_getHeight(w);
     if (g_swap && ww > 0 && wh > 0 && ((uint32_t)ww != g_sext.width || (uint32_t)wh != g_sext.height)) swap_destroy();
     if (g_swap) return 1;
+#ifdef DM_LINUX
+    { int dm_front_create_surface(void *instance, void *surface_out); if (dm_front_create_surface(V.inst, &g_surf)) return 0; }   // front_linux.c (SDL)
+#else
     VkAndroidSurfaceCreateInfoKHR si = {VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR, NULL, 0, w};
     if (vkCreateAndroidSurfaceKHR(V.inst, &si, NULL, &g_surf)) return 0;
+#endif
     VkSurfaceCapabilitiesKHR caps; vkGetPhysicalDeviceSurfaceCapabilitiesKHR(V.pd, g_surf, &caps);
     uint32_t nf = 0; vkGetPhysicalDeviceSurfaceFormatsKHR(V.pd, g_surf, &nf, NULL); VkSurfaceFormatKHR sf[32]; if (nf > 32) nf = 32; vkGetPhysicalDeviceSurfaceFormatsKHR(V.pd, g_surf, &nf, sf);
     g_sfmt = sf[0].format; for (uint32_t i = 0; i < nf; i++) if (sf[i].format == VK_FORMAT_R8G8B8A8_UNORM) g_sfmt = sf[i].format;
@@ -494,6 +500,7 @@ static void ov_panel(int st) {   // the pause menu, the text entry or the layout
     else if (st & OVS_ST) ov_save_panel(&cv, st);
     else ov_menu_panel(&cv, st);
 }
+#ifndef DM_LINUX
 // The phone window uses the same menu raster as Vulkan, independently of the external swapchain.
 JNIEXPORT jint JNICALL Java_org_nx2a_ExternalActivity_externalMenuState(JNIEnv *env, jclass cls) { (void)env; (void)cls; return dm_menu_state(); }
 JNIEXPORT jintArray JNICALL Java_org_nx2a_ExternalActivity_externalMenuPixels(JNIEnv *env, jclass cls, jint W, jint H, jint st) {
@@ -517,6 +524,7 @@ JNIEXPORT jintArray JNICALL Java_org_nx2a_ExternalActivity_externalMenuPixels(JN
     if (out) (*env)->SetIntArrayRegion(env, out, 0, (jsize)(count + 2), argb);
     free(argb); free(pixels); return out;
 }
+#endif
 static void ov_raster(uint8_t *px, uint32_t w, uint32_t h, uint32_t sh) {
     memset(px, 0, (size_t)w * (h + sh) * 4);
     int ts = h > 600 ? 3 : 2;
@@ -864,7 +872,12 @@ static void present_window(vkimg_t *im, const int crop[4], double period, uint64
     VkClearColorValue black = {{0, 0, 0, 1}}; VkImageSubresourceRange rg = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     vkCmdClearColorImage(cb, tgt, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &rg);
     int cx = crop ? crop[0] : 0, cy = crop ? crop[1] : 0, cw = crop && crop[2] ? crop[2] : (int)im->w, ch = crop && crop[3] ? crop[3] : (int)im->h;
-    double s = fmin((double)g_sext.width / cw, (double)g_sext.height / ch); int dw = (int)(cw * s), dh = (int)(ch * s), dx = ((int)g_sext.width - dw) / 2, dy = ((int)g_sext.height - dh) / 2;
+    // DM_PRESENT_STRETCH: fill the window with the game's picture instead of keeping its aspect (black borders). The emulators' "Force 4:3" does this: a game
+    // whose native 4:3 mod is built for it (PyroDonkey/switch-4x3-mods: the 3D aspect and the UI layouts compensate the 16:9 frame being stretched to 4:3)
+    // only looks right when the whole frame is stretched to the panel. Read once; env.txt is read at start.
+    static int stretch = -1; if (stretch < 0) stretch = getenv("DM_PRESENT_STRETCH") != NULL;
+    double s = stretch ? 0.0 : fmin((double)g_sext.width / cw, (double)g_sext.height / ch);
+    int dw = stretch ? (int)g_sext.width : (int)(cw * s), dh = stretch ? (int)g_sext.height : (int)(ch * s), dx = ((int)g_sext.width - dw) / 2, dy = ((int)g_sext.height - dh) / 2;
     vk_pic_set((float)dx / g_sext.width, (float)dy / g_sext.height, (float)dw / g_sext.width, (float)dh / g_sext.height);
     VkImageBlit b = {{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {{cx, cy, 0}, {cx + cw, cy + ch, 1}}, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {{dx, dy, 0}, {dx + dw, dy + dh, 1}}};
     if (vk_window_bottom_up()) { b.srcOffsets[0].y = cy + ch; b.srcOffsets[1].y = cy; }   // lower-left origin: the window image is stored bottom-up (gfx_vk_exec.c)
@@ -1052,6 +1065,7 @@ uint64_t mtl_present(const tex_t *t, double period, const int crop[4]) {
     }
     return present_enqueue(im, crop, n, period);
 }
+#ifndef DM_LINUX
 // OpenGL ES games (gl_android.c): their frames are AHardwareBuffers the device's GL driver drew, imported as images and shown as an NVN window texture is
 vkimg_t *vk_image_from_ahb(AHardwareBuffer *ahb, uint32_t w, uint32_t h) {
     vk_init();
@@ -1072,6 +1086,7 @@ vkimg_t *vk_image_from_ahb(AHardwareBuffer *ahb, uint32_t w, uint32_t h) {
     VKLOG("GL frame buffer %ux%u imported (memory type %u, %llu bytes)", w, h, mt, (unsigned long long)ap.allocationSize);
     return im;
 }
+#endif
 uint64_t vk_present_vkimg(vkimg_t *im, double period) {
     vk_init();
     dm_perf_frame(period);

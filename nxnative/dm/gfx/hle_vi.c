@@ -68,7 +68,8 @@ HLE_FORCE("_ZN2nn2vi32GetDefaultDisplayPanelIdentifierEPNS0_15PanelIdentifierE",
 HLE_FORCE("_ZN2nn2vi12ListDisplaysEPNS0_11DisplayInfoEi", "list displays; the host has one, \"Default\"", int, h_vi_ListDisp, void *out, int n) {
     if (n <= 0 || !out) return 0;
     uint8_t *p = out; memset(p, 0, 0x60); strcpy((char *)p, "Default");
-    p[0x40] = 1; uint64_t lim[3] = {1, 1920, 1080}; memcpy(p + 0x48, lim, sizeof lim);
+    int w = 1920, h = 1080; dm_oe_defres(&w, &h);   // the largest layer follows the default display resolution (DM_OE_DEFRES can override it, hle_oe.c)
+    p[0x40] = 1; uint64_t lim[3] = {1, w, h}; memcpy(p + 0x48, lim, sizeof lim);
     return 1;
 }
 HLE_FORCE("_ZN2nn2vi12DestroyLayerEPNS0_5LayerE", "destroy layer; host static object", void, h_vi_DestroyLayer, void *layer) { (void)layer; }

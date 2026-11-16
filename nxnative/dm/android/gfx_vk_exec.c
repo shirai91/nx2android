@@ -15,6 +15,7 @@
 VkPipelineLayout vk_pipeline_layout(VkDescriptorSetLayout sets[5], int nsets);
 void vk_shader_c1(vkshader_t *s, VkBuffer *buf, VkDeviceSize *off, VkDeviceSize *len);
 VkBufferView vk_tbuf_view(const tex_t *t, int storage);
+VkImageView vk_tbuf_as_2d(const tex_t *t);
 void vk_sub_update(uint64_t dst, const void *data, uint64_t n);
 int prog_key(const prog_t *p, unsigned st, uint8_t key[8]);
 
@@ -1179,6 +1180,7 @@ static int tex_desc_for(int st, const dmsv_bind *b, uint64_t h, VkDescriptorImag
     int num = 0;
     if (tid && g_var_now != 3 && vk_tex_by_id(tid, &v, &t) && t) {
         vkimg_t *im = NULL; ii->imageView = vk_tex_view(t, v, b->dim, b->flags & 1, 0, &im); if (storage && im) im->gpu_w = 1;
+        if (!ii->imageView && (b->flags & 8) && !storage && t->d.target == NVN_TEXTURE_TARGET_BUFFER) ii->imageView = vk_tbuf_as_2d(t);   // the only form a Vulkan shader gives a texture buffer a wrapped 1D fetch reads; other binds keep the zero dummy (gfx_vk_tex.c)
         // DM_VK_BIND_DUMP=<pixel shader key hex>:<binding>: write the storage of the texture that binding really resolved to (slots alone are polluted by stale
         // entries from earlier draws and say nothing about which binding reads which); deswizzle it offline with the dimensions in the line
         { const char *bd = getenv("DM_VK_BIND_DUMP");

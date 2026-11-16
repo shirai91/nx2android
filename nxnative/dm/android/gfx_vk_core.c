@@ -155,14 +155,28 @@ void vk_init(void) {
         p_vkGetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)dlsym(lib, "vkGetInstanceProcAddr");
     }
     vkCreateInstance = (PFN_vkCreateInstance)p_vkGetInstanceProcAddr(NULL, "vkCreateInstance");
+#ifdef DM_LINUX
+    // the window's own instance extensions (SDL: VK_KHR_surface and the platform's), then the debug one; the validation layer count follows
+    const char *iext[16] = {0}; int dm_front_instance_exts(const char **names, int max); int nie = dm_front_instance_exts(iext, 14);
+    if (nie < 1) { iext[0] = "VK_KHR_surface"; nie = 1; }
+    iext[nie++] = "VK_EXT_debug_utils"; const uint32_t nie0 = (uint32_t)nie;
+#else
     const char *iext[] = {"VK_KHR_surface", "VK_KHR_android_surface", "VK_EXT_debug_utils"};
+#endif
     VkApplicationInfo app = {VK_STRUCTURE_TYPE_APPLICATION_INFO, NULL, "dmhost", 1, "nxnative", 1, VK_API_VERSION_1_3};
     // DM_VK_VALIDATE=1: Khronos's validation layer, which the APK carries only when built with it (mkapk.py --extra-so); its messages go to the log
     int validate = getenv("DM_VK_VALIDATE") && atoi(getenv("DM_VK_VALIDATE"));
     const char *layers[] = {"VK_LAYER_KHRONOS_validation"};
-    VkInstanceCreateInfo ici = {VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, NULL, 0, &app, validate ? 1u : 0u, layers, validate ? 3u : 2u, iext};
+#ifdef DM_LINUX
+#define INST_NEXT nie0
+#define INST_NOVAL (nie0 - 1)
+#else
+#define INST_NEXT (validate ? 3u : 2u)
+#define INST_NOVAL 2
+#endif
+    VkInstanceCreateInfo ici = {VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, NULL, 0, &app, validate ? 1u : 0u, layers, INST_NEXT, iext};
     VkResult ir = vkCreateInstance(&ici, NULL, &V.inst);
-    if (ir && validate) { VKLOG("[RED] validation layer not available (%d): running without it", ir); validate = 0; ici.enabledLayerCount = 0; ici.enabledExtensionCount = 2; ir = vkCreateInstance(&ici, NULL, &V.inst); }
+    if (ir && validate) { VKLOG("[RED] validation layer not available (%d): running without it", ir); validate = 0; ici.enabledLayerCount = 0; ici.enabledExtensionCount = INST_NOVAL; ir = vkCreateInstance(&ici, NULL, &V.inst); }
     VKCHK(ir);
     if (validate) {
         PFN_vkCreateDebugUtilsMessengerEXT mk = (PFN_vkCreateDebugUtilsMessengerEXT)p_vkGetInstanceProcAddr(V.inst, "vkCreateDebugUtilsMessengerEXT");
@@ -672,7 +686,7 @@ void mtl_pool_del(const void *mem) {
         uint64_t t0 = pool_ns();
         if (p.zero_copy) pool_copy_back(&p);
         free(p.baseline);
-        { void vk_tbuf_drop_pool(uint64_t); vk_tbuf_drop_pool(p.serial); }   // the texel buffer views over its buffer (gfx_vk_tex.c), before the buffer itself goes or is kept
+        { void vk_tbuf_drop_pool(uint64_t), vk_f1_drop_pool(uint64_t); vk_tbuf_drop_pool(p.serial); vk_f1_drop_pool(p.serial); }   // the texel buffer views and 2D-row fetch images over its buffer (gfx_vk_tex.c), before the buffer itself goes or is kept
         if (p.slab) slab_give(p.slab, p.slot, mtl_last_fence() + 1);   // the slot goes back to its slab (the GPU may still read it until that submission is done)
         else if (!(p.zero_copy && p.ahb && zcf_put(p.ahb, p.buf, p.mem, p.hi - p.lo))) {   // (kept for the next pool of its size)
             vk_defer_free_buffer(p.buf, p.mem);   // the AHardwareBuffer goes with the imported memory's last reference

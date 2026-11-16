@@ -10,7 +10,22 @@
 # The shader tables were split on Windows (/ paths since d1ad5f2), with the same 16,268 keys as upstream's. Not tested yet: later worlds, Wonder effects, multiplayer.
 # Button icons in the game's text (Press L+R, A Select, B Back, + Delete Save Data) come from the Nintendo extension shared font: the porter's data pack ships make_ext_font.py's
 # stand-in (nintendo_ext.ttf, DM_SHARED_FONT_EXT) since 2026-10-29; before, they drew as '?'
+# 2026-11-06 on the Retroid Pocket Nova (RPN, Snapdragon 8 Gen 2 / QCS8550, Adreno 740, Android 16), update 1.2.1 (v327680) with PyroDonkey/switch-4x3-mods'
+# Native 4x3 Aspect Ratio v1.1.1: 261 cuts in patches.py (aspect 4:3, hard-coded view widths, camera code caves/hooks) and the mod's 115 RomFS layouts and
+# BancMapUnit file overlaid into the build's extracted RomFS (Nintendo-derived assets, local to the build). Verified: title, user select, opening cutscene and
+# the Flower Kingdom world map at native 1280x960 4:3, no bars and no cut content, HUD and dialogue complete; 60 fps target with the usual dips in transitions.
+# DM_PRESENT_STRETCH=1 has the host fill the 4:3 panel with the game's 16:9 frame (as the emulators' Force 4:3); the mod's 3D aspect and UI compensate it.
+# The v327680 resource-heap fix is required: without it the new-game load died in nvnBufferInitialize with a null pool. Not yet played: later worlds, Wonder
+# effects, boss arenas, multiplayer (the mod's README lists its own tested range).
 status	playable
-tested	v327680 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
+tested	v327680 Retroid Pocket Nova RPN (Snapdragon 8 Gen 2, Adreno 740, Android 16)
 package	org.nx2a.supermariobroswonder
 orientation	landscape
+# the Retroid Pocket Nova's built-in pad is labelled Nintendo-style (A right, B bottom, X top, Y left) and sends the keycode of its label, so map the face
+# buttons by label: without this its physical B lands on the game's A (the default maps AKEYCODE_BUTTON_A, the bottom button, to B for Xbox pads)
+setting	abxy=label
+# hidden at launch: the player uses the device's own controls (the pause menu's Show gamepad brings it back)
+setting	overlay=0
+# 1.2.1 (v327680) packs PyroDonkey/switch-4x3-mods' Native 4x3 Aspect Ratio (see patches.py): its 3D aspect and UI layouts compensate a 16:9 frame stretched
+# to the 4:3 panel, as the emulators' Force 4:3 does. Remove this for a build that does not carry the mod.
+env	DM_PRESENT_STRETCH=1
