@@ -47,6 +47,11 @@ class Cheats(unittest.TestCase):
         with self.assertRaisesRegex(BuildError, 'no build ID'):
             cheats.build_id(FakeAdb({}), PKG)
 
+    def test_build_id_takes_the_first_16_of_the_full_nso_id(self):
+        adb = adb_with()
+        adb.files[f'{FILES}/mods/main.fixups.tsv'] = f'# BUILD_ID\t{BUILD}0123456789ABCDEF\n'.encode()
+        self.assertEqual(cheats.build_id(adb, PKG), BUILD)
+
     def test_listing_marks_this_build_and_counts_the_enabled_names(self):
         adb = adb_with((f'{BUILD}.txt', 100), (f'{OTHER}.txt', 50), (f'{BUILD}.enabled', 13))
         adb.files[f'{ROOT}/{BUILD}.enabled'] = b'Infinite money\nMax items\n'

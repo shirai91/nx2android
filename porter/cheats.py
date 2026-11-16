@@ -18,8 +18,8 @@ def build_id(adb, package):
     text = adb.read_text(f'{datapack.files_folder(package)}/mods/main.fixups.tsv')
     for line in text.splitlines():
         if line.startswith('# BUILD_ID'):
-            v = line.split('\t')[-1].strip().upper()
-            if BUILD.fullmatch(v): return v
+            v = line.split('\t')[-1].strip().upper()   # patch_nso.py writes the full 32-hex NSO ID; the host and the cheat files use its first 16
+            if len(v) >= 16 and BUILD.fullmatch(v[:16]): return v[:16]
     raise BuildError(f'{package}: no build ID in mods/main.fixups.tsv: port the game again (older ports do not name the build the host runs)')
 
 
