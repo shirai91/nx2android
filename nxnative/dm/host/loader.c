@@ -209,7 +209,6 @@ static void force_check(void) {
 }
 
 // Read the rewriter table header (segment boundaries, slot numbers); any row beyond the header means an old-format build output (code modified at load time), which is rejected
-static int g_render_scale_stub;   // a module's fixups table has RENDER_SCALE: its rewriter stubs read the state page's render scale (dm_render_scale_has)
 static void read_layout(module_t *m, const char *dir) {
     char path[1024]; snprintf(path, sizeof path, "%s/%s.fixups.tsv", dir, m->name);
     FILE *f = fopen(path, "r");
@@ -228,7 +227,6 @@ static void read_layout(module_t *m, const char *dir) {
         else if (!strcmp(key, "RO_OFF")) m->ro_off = v;
         else if (!strcmp(key, "DATA_OFF")) m->data_off = v;
         else if (!strcmp(key, "FPS_STATE_OFF")) m->fps_state_off = v;
-        else if (!strcmp(key, "RENDER_SCALE")) g_render_scale_stub = v != 0;   // the build has a render-scale stub (patch_nso.py): the Android pause menu offers its Resolution row
         else if (!strcmp(key, "BUILD_ID")) sscanf(line, "# %*s %32s", m->build_id);
         else for (int k = 0; k < KEY_N; k++) {
             size_t n = strlen(kn[k]);
@@ -273,15 +271,6 @@ void dm_fps_state_apply(void) {
     memcpy(dm_fps_state + 0x10, &sc, sizeof sc);
     char cap[32]; snprintf(cap, sizeof cap, ", capped at %d fps", t);
     LOG("%s: frame step %s%s (%s)", g_fps_mod, !t ? "as the game sets it" : "in whole vsyncs decided by the host", t ? cap : "", e ? "DM_FPS_TARGET" : "game profile fps_target");
-}
-int dm_render_scale_has(void) { return dm_fps_state != NULL && g_render_scale_stub; }
-// The target while the game runs (the Android pause menu's Frame rate row, front_android.c): the stubs and the present pacing (hle_nvn.c fps_step_cap) read the page every frame
-int dm_fps_target_has(void) { return dm_fps_state != NULL; }
-int dm_fps_target_get(void) { if (!dm_fps_state) return 0; uint32_t b = __atomic_load_n((uint32_t *)dm_fps_state, __ATOMIC_RELAXED); float f; memcpy(&f, &b, sizeof f); return (int)f; }
-void dm_fps_target_set(int t) {
-    if (!dm_fps_state || (t != 0 && t != 30 && t != 60)) return;
-    float f = (float)t; uint32_t b; memcpy(&b, &f, sizeof b); __atomic_store_n((uint32_t *)dm_fps_state, b, __ATOMIC_RELAXED);
-    LOG("%s: frame step target %d fps from now on", g_fps_mod, t);
 }
 static void install_key_page(module_t *m) {
     if (m->key_page_off + m->key_page_size > m->size) die("%s: key page out of range", m->name);
