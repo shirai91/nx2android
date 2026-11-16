@@ -246,6 +246,10 @@ static int fps_cap_step(void) {
 uint64_t dm_present_period_adapt(uint64_t period) {
     g_game_period = period;
     if (!period) return period;
+    extern int dm_user_present_hz(void) __attribute__((weak));
+    extern int dm_nvn_fps_step_cap(void) __attribute__((weak));
+    int selected = dm_user_present_hz ? dm_user_present_hz() : 0;
+    if (selected > 0 && !(dm_nvn_fps_step_cap && dm_nvn_fps_step_cap())) return period;   // the game still owns its frame-step cadence; otherwise honor the selected target
     if (!adaptive_enabled()) {
         g_step = fps_cap_step();   // the ceiling's present-thread wait is pacing, not work for ADPF load hints
         return g_step && (uint64_t)STEPS[g_step] > period ? (uint64_t)STEPS[g_step] : period;

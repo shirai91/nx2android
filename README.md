@@ -68,6 +68,8 @@ A game whose profile lists the shared font titles (`0100000000000811` and `01000
 
 A game slowed by its draw calls in busy scenes: tick **Multithread replay** on the Port tab (`--mt-replay`). The game's Vulkan commands are then recorded on a thread of their own. It stays on until you port the game again without it.
 
+The pause menu's **Game** tab has **FPS limit**: **Default**, **30**, **40**, **50**, **60**, **90** or **120**. Tap it or press A to cycle; controller left/right changes the value without wrapping. The choice takes effect when play resumes and is remembered for that game. **Default** restores profile pacing and adaptive frame rate. Games whose logic uses frame steps keep their own cadence; the selected limit is ignored for those games. Higher targets can increase heat and power use. See [behavior and validation](docs/FPS_LIMIT.md).
+
 When **Show gamepad** is enabled, using a controller hides the on-screen controls. Touch the screen to bring them back. The draggable menu button stays available even with **Show gamepad** off.
 
 To arrange the on-screen controls, open the pause menu's **Gamepad** tab and choose **Edit layout**: drag a control to move it, pinch or use **− / +** to resize it. **Save** keeps the layout for the next launch and **Cancel** discards your edits. **Snap to grid** (off at first, and remembered) shows a square grid and snaps each control's center to it as you drag.
