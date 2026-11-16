@@ -508,7 +508,7 @@ static void ov_panel(int st) {   // the pause menu, the text entry or the layout
 JNIEXPORT jint JNICALL Java_org_nx2a_ExternalActivity_externalMenuState(JNIEnv *env, jclass cls) { (void)env; (void)cls; return dm_menu_state(); }
 JNIEXPORT jintArray JNICALL Java_org_nx2a_ExternalActivity_externalMenuPixels(JNIEnv *env, jclass cls, jint W, jint H, jint st) {
     (void)cls;
-    if (W <= 0 || H <= 0 || W > 8192 || H > 8192 || st < 0) return NULL;
+    if (W <= 0 || H <= 0 || W > 8192 || H > 8192 || !ov_menu_open(st)) return NULL;
     float r[4]; ov_menu_rect((float)W, (float)H, r);
     uint32_t w = (uint32_t)(r[2] / 2) + 1, h = (uint32_t)(r[3] / 2) + 1, maxw = (uint32_t)W / 2;
     if (w > maxw) w = maxw;
@@ -638,10 +638,10 @@ static void ov_frame(VkCommandBuffer cb, int sp, const float b[4], float t, floa
 static void ov_render(VkCommandBuffer cb, int mode, int menu, int fps) {
     float W = (float)g_sext.width, H = (float)g_sext.height, op = dm_overlay_opacity();
     struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); int64_t now = (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec;
-    int edit = menu >= 0 && !(menu >> 16 & 1) && (menu & OVE_ST);   // the layout editor: the gamepad over the held frame, every control (shown or not)
+    int edit = ov_menu_open(menu) && !(menu >> 16 & 1) && (menu & OVE_ST);   // the layout editor: the gamepad over the held frame, every control (shown or not)
     if (edit) mode = 1;
     float bx = g_ov.sp[SP_BLACK][0], by = g_ov.sp[SP_BLACK][1];
-    if (menu >= 0 && !edit) {   // paused: the frame dimmed, the panel, and the menu button (which closes it)
+    if (ov_menu_open(menu) && !edit) {   // paused: the frame dimmed, the panel, and the menu button (which closes it)
         ov_rect(cb, 0, 0, W, H, bx - 2, by - 2, bx + 2, by + 2, 0.55f);
         float r[4]; ov_menu_rect(W, H, r);
         ov_rect(cb, r[0], r[1], r[0] + r[2], r[1] + r[3], 0, (float)(g_ov.h + g_ov.sh), (float)g_ov.pw, (float)(g_ov.h + g_ov.sh + g_ov.ph), 1);
@@ -654,10 +654,10 @@ static void ov_render(VkCommandBuffer cb, int mode, int menu, int fps) {
         }
     }
     const ov_theme *th = g_tt[g_ov.lay].ready == 1 ? g_tt[g_ov.lay].t : NULL; int tbound = 0;   // (the theme's texture bound)
-    if ((menu < 0 || edit) && mode == 1 && th) {
+    if ((!ov_menu_open(menu) || edit) && mode == 1 && th) {
         vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_ov.layout, 0, 1, &g_tt[g_ov.lay].set, 0, NULL); tbound = 1;
         ov_theme_draw(cb, th, op);
-    } else if ((menu < 0 || edit) && mode == 1) {   // without a theme: the outlines (their opacity: 60% looks as they always did), the knobs and the glows
+    } else if ((!ov_menu_open(menu) || edit) && mode == 1) {   // without a theme: the outlines (their opacity: 60% looks as they always did), the knobs and the glows
         float fo = fminf(1, op / 0.6f);
         ov_rect(cb, 0, 0, W, H, 0, 0, (float)g_ov.w, (float)g_ov.h, fo);
         for (int i = 0; i < OV_N; i++) { const ov_ctl *c = &OV_CTLS[i]; float b[4]; ov_box(c, W, H, b); if (ov_off(c)) continue;
@@ -673,7 +673,7 @@ static void ov_render(VkCommandBuffer cb, int mode, int menu, int fps) {
         }
     }
     for (int i = 0; i < OV_N; i++) if (OV_CTLS[i].kind == OV_MENU && mode) {   // the menu button, on top of the controls, where the player put it
-        float ma = mode == 1 && (menu < 0 || edit) ? fmaxf(op, 0.5f) : OV_MENU_ALPHA;   // (findable at any opacity)
+        float ma = mode == 1 && (!ov_menu_open(menu) || edit) ? fmaxf(op, 0.5f) : OV_MENU_ALPHA;   // (findable at any opacity)
         if (th) { if (!tbound) { vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_ov.layout, 0, 1, &g_tt[g_ov.lay].set, 0, NULL); tbound = 1; }
                   ov_theme_menu(cb, th, i, ma); continue; }
         const ov_ctl *c = &OV_CTLS[i]; float b[4], g = ov_glow(dm_overlay_pressed(i, 0), now); ov_box(c, W, H, b);
@@ -693,7 +693,7 @@ static void ov_render(VkCommandBuffer cb, int mode, int menu, int fps) {
             ov_rect(cb, p[0], p[1], p[0] + p[2], p[1] + p[3], pr[0], y0 + pr[1], pr[0] + pr[2], y0 + pr[1] + pr[3], 1);
         }
     }
-    if (fps && menu < 0) ov_fps(cb, now);
+    if (fps && !ov_menu_open(menu)) ov_fps(cb, now);
 }
 // the theme's atlas for a layout into its texture, once (overlay_theme.c reads it at the first present that shows the gamepad in that layout): copied in this
 // present's command buffer; its staging buffer goes at a later present, once the copy has run (its slot's fence signalled, or the slot came round again)
@@ -799,12 +799,12 @@ static int overlay_ready(VkCommandBuffer cb, uint32_t k, int menu) {   // k: thi
         g_ov.uploaded = 0; g_ov.panel = -1;
     }
     uint32_t y0 = 0, rows = g_ov.h + g_ov.sh + g_ov.ph + g_ov.gh;   // the rows to upload
-    if (g_ov.uploaded && menu >= 0 && menu != g_ov.panel) {   // only the panel, after the last copy out of the buffer has run
+    if (g_ov.uploaded && ov_menu_open(menu) && menu != g_ov.panel) {   // only the panel, after the last copy out of the buffer has run
         VkFence f[8]; uint32_t n = 0; for (uint32_t i = 0; i < 8; i++) if (i != k) f[n++] = g_pfence[i];
         vkWaitForFences(V.dev, n, f, 1, 1000000000ull);
         y0 = g_ov.h + g_ov.sh; rows = g_ov.ph; g_ov.uploaded = 0;
     }
-    if (menu >= 0 && menu != g_ov.panel) { ov_panel(menu); g_ov.panel = menu; }
+    if (ov_menu_open(menu) && menu != g_ov.panel) { ov_panel(menu); g_ov.panel = menu; }
     if (!g_ov.uploaded) {
         VkImageMemoryBarrier b = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL, VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, y0 ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED,
             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, g_ov.img, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
@@ -890,7 +890,7 @@ static void present_window(vkimg_t *im, const int crop[4], double period, uint64
     VkImageLayout lay = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
     int external = dm_external_active();
     int ovm = external ? 0 : dm_overlay_visible(), menu = external ? -1 : dm_menu_state(), fps = dm_overlay_fps();
-    if ((ovm || menu >= 0 || fps) && overlay_ready(cb, k, menu) && (V.has_dynrender || ov_fb(idx))) {   // without dynamic rendering, only with the image's framebuffer
+    if ((ovm || ov_menu_open(menu) || fps) && overlay_ready(cb, k, menu) && (V.has_dynrender || ov_fb(idx))) {   // without dynamic rendering, only with the image's framebuffer
         barrier(cb, tgt, lay, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL); lay = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         VkRenderingAttachmentInfo ca = {VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, NULL, tview, lay, 0, NULL, VK_IMAGE_LAYOUT_UNDEFINED, VK_ATTACHMENT_LOAD_OP_LOAD, VK_ATTACHMENT_STORE_OP_STORE};
         VkRenderingInfo ri = {VK_STRUCTURE_TYPE_RENDERING_INFO, NULL, 0, {{0, 0}, g_sext}, 1, 0, 1, &ca, NULL, NULL};

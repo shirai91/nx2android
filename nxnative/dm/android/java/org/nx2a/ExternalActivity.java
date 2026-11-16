@@ -188,8 +188,8 @@ public class ExternalActivity extends NativeActivity implements ExternalDisplay.
             if (data == null || data.length != 5 + names.length * 9) return;
             int layout = (int)data[0]; if (layout < 0 || layout >= themes.length) return;
             OverlayTheme theme = themes[layout]; Bitmap atlas = atlases[layout];
-            int menu = externalMenuState(); menuState = menu; boolean edit = menu >= 0 && (menu & 0x20000) != 0 && (menu & 0x10000) == 0;
-            if (menu >= 0 && !edit) { drawMenu(canvas, data); postInvalidateDelayed(33); return; }
+            int menu = externalMenuState(); menuState = menu; boolean edit = menu != -1 && (menu & 0x20000) != 0 && (menu & 0x10000) == 0;
+            if (menu != -1 && !edit) { drawMenu(canvas, data); postInvalidateDelayed(33); return; }
             for (int pass = 0; pass < 2; pass++) for (OverlayTheme.Sprite s : theme.sprites) {
                 int ctl = control(s.control); if (ctl < 0) continue;
                 int visible = edit ? 1 : (int)data[4 + names.length * 9];

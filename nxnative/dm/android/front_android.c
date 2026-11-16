@@ -337,7 +337,7 @@ JNIEXPORT jfloatArray JNICALL Java_org_nx2a_ExternalActivity_externalOverlay(JNI
     int layout = ov_layout_for_size(width, height);
     jfloat values[5 + OV_N * 9];
     int state = dm_menu_state();
-    values[0] = layout; values[1] = dm_overlay_scale(); values[2] = dm_overlay_opacity(); values[3] = state < 0 ? -1 : state & 0xffffff;
+    values[0] = layout; values[1] = dm_overlay_scale(); values[2] = dm_overlay_opacity(); values[3] = ov_menu_open(state) ? state & 0xffffff : -1;
     for (int i = 0; i < OV_N; i++) {
         const ov_ctl *c = &OV_LAYOUTS[layout][i]; float b[4], kx = 0, ky = 0;
         ov_box(c, (float)width, (float)height, b);

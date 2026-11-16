@@ -52,6 +52,8 @@ int dm_opmode(void) {return 1;}
 '''+function(front,'static void settings_load(')+'\n'+function(front,'static void settings_save(')+'''
 int main(int argc,char **argv) {
  assert(argc==2);snprintf(g_root,sizeof g_root,"%s",argv[1]);
+ assert(!ov_menu_open(-1) && ov_menu_open(-2));
+ for(int i=0;i<DM_FRAME_LIMIT_COUNT;i++) assert(ov_menu_open((int)((unsigned)i<<29)));
  char path[600],line[256];snprintf(path,sizeof path,"%s/settings.txt",g_root);
  for(int i=0;i<DM_FRAME_LIMIT_COUNT;i++) {
    int rate=DM_FRAME_LIMITS[i];remove(path);atomic_store(&g_set_limit,rate);settings_save();
@@ -60,7 +62,7 @@ int main(int argc,char **argv) {
  remove(path);atomic_store(&g_set_limit,0);settings_save();
  FILE *f=fopen(path,"r");assert(f);while(fgets(line,sizeof line,f))assert(!strstr(line,"fps_limit="));fclose(f);
  f=fopen(path,"w");assert(f);fprintf(f,"fps_limit=75\\n");fclose(f);settings_load();assert(atomic_load(&g_set_limit)==0);remove(path);
- win_t w={1};selected=0;assert(present_period(&w)==16666667);
+ win_t w={1};selected=0;assert(present_period(&w)==16666666);
  selected=120;assert(present_period(&w)==8333333);
  selected=60;assert(present_period(&w)==16666666);
  selected=120;assert(present_period(&w)==8333333);
@@ -79,7 +81,7 @@ int main(int argc,char **argv) {
  assert(dm_frame_limit_step(120,1,0)==120 && dm_frame_limit_step(0,-1,0)==0);
  selected=120;cap=30;w.interval=1;g_adapt=0;
  assert(present_period(&w)==33333333);assert(g_game_period==33333333);assert(nvn_game_fps()==30);
- cap=60;assert(present_period(&w)==16666667);assert(nvn_game_fps()==60);
+ cap=60;assert(present_period(&w)==16666666);assert(nvn_game_fps()==60);
  cap=0;selected=90;assert(present_period(&w)==11111111);assert(nvn_game_fps()==90);
  assert(dm_frame_limit_step(120,1,1)==0);
  assert(ov_menu_item(1,2)==OVM_LIMIT);assert(ov_menu_item(0,6)==-1);

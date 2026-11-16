@@ -174,8 +174,10 @@ static inline int ov_menu_item(int tab, int row) {
 // what the menu shows (-1 = closed): bit 0 the gamepad is on, bit 1 rumble is on, bit 2 docked, bit 3 the frame rate shown, bits 4..7 the highlighted row + 1
 // (0 = none), bit 8 the open tab, bits 9..15 the opacity in percent, bits 20..23 the last export's outcome (OVX_*), bits 24..27 a count of exports (its name
 // changes with each); bit 28: controller face-button labels; bits 29..31: FPS limit index (Default/30/40/50/60/90/120).
-// Bit 16: the text entry's panel instead (its edit count below); bit 17: the layout editor (OVE_ST_* below); bit 18: the save picker (OVS_ST)
+// Bit 16: the text entry's panel instead (its edit count below); bit 17: the layout editor (OVE_ST_* below); bit 18: the save picker (OVS_ST).
+// The FPS index can set bit 31, so a valid menu state may be negative as an int; -1 alone means closed.
 int dm_menu_state(void);
+static inline int ov_menu_open(int state) { return state != -1; }
 enum { OVX_IDLE, OVX_BUSY, OVX_DONE, OVX_NOSAVE, OVX_FAILED };   // Export save: the button; copying; the export's name; the game has not saved yet; failed
 int dm_save_note(char *out, int cap);   // front_android.c: the outcome (OVX_*) and the last export's name, or why it failed
 static inline float ov_menu_scale(void) { float s = dm_overlay_scale(), fit = 0.92f / (OVM_ROWS * OV_MENU_ROW + 2 * OV_MENU_PAD); return s < fit ? s : fit; }
