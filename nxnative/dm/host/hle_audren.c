@@ -369,7 +369,11 @@ HLE_FORCE("_ZN2nn5audio6server17AudioRenderSystem6UpdateEPvmS3_mPKvm", "renderer
     const char *tre = getenv("DM_AUDREN_TRACE"); int tr = tre != NULL;   // (live: a DM_CTL env line)
     uint64_t un = now_ns(), gap = un - atomic_exchange(&last_u_ns, un);
     uint64_t u = atomic_fetch_add(&g_updates, 1) + 1, r = atomic_load(&g_renders);
-    if (last_r != ~0ull && r == last_r) {
+    // DM_AUDREN_NOCATCHUP=1 (a profile's env row): no catch-up frames after the first 60 updates. The catch-ups exist for the start-up effect initialisation (above) and, for Square
+    // Enix's sound driver, for the pacing of its refill loop (below), so they stay on by default. Atelier Ryza: Ever Darkness & the Secret Hideout DX updates twice between two renders
+    // about every third frame; each such catch-up frame came out as a repeat of the audio 4 blocks earlier (45% of the 20 ms blocks of the audio dump), robotic sound, and 0% without them
+    static int nocu = -1; if (nocu < 0) { const char *e = getenv("DM_AUDREN_NOCATCHUP"); nocu = e && atoi(e) > 0; }
+    if (last_r != ~0ull && r == last_r && !(nocu && u > 60)) {
         uint64_t c = atomic_fetch_add(&g_catchups, 1) + 1;
         if (c <= 3) LOG("audren: no frame rendered before update %llu, rendering a catch-up frame first (%llu so far)", (unsigned long long)u, (unsigned long long)c);
         // DM_AUDREN_TRACE: the next 300 catch-ups with the calling thread, the time since the previous update and the frames queued ahead: a late sound thread that then updates

@@ -1,0 +1,35 @@
+# Game profile of Atelier Ryza: Ever Darkness & the Secret Hideout DX (Switch, base game v0). In bring-up: boots on an AYN Thor to the main menu (see android.tsv). Values guessed by profile_guess.py from the survey, not all checked by hand
+# SDK 18
+
+# ---- Identity ----
+title_id	0100199023B2E000
+program_id	0100199023B2E000
+
+# ---- App ----
+name	Atelier Ryza: Ever Darkness & the Secret Hideout DX
+ipa	AtelierRyzaEverDarknessTheSecretHideoutDx.ipa
+app_category	public.app-category.games
+
+# ---- Versions ----
+build	v0	1.0.0	main=a6be42f22d2788f89b2d68a2e3c53141	subsdk0=14765b1d77b12d8654ea87a61c65e2b1	sdk=f118ae1c2e7728471aaf1a0d58484968
+package	v0
+shader_versions	v0
+
+# ---- Files ----
+# every module main imports from
+modules	main subsdk0 sdk
+romfs_marker	Data/NX/Sound/pack01.ktsl2stbin
+zip_store	.gz:.ktsl2asbin:.ktsl2stbin:.mp4:.trmd:.metallib
+
+# ---- Memory ----
+# main sets a heap of at most the pool − 64 MB: a 3328 MB heap region
+mem_reserve	0x100000000
+mem_alias	0x10000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+# the NPDM declares 0 MB of system resource: IsVirtualAddressMemoryEnabled is false, as on Horizon (Big Brain Academy: Brain vs. Brain sets a heap only then)
+sys_resource	0x0
+
+# ---- Shader split ----
+shader_groups	/Data/=data /Event/=event /Saves/=saves /Script/=script /DLC/=dlc
+shader_note	Atelier Ryza: Ever Darkness & the Secret Hideout DX shaders (provisional profile)
