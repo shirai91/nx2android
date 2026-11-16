@@ -544,7 +544,13 @@ static int pool_zero_copy(vkpool_t *p, uint8_t *mem, uint64_t size) {
     VkMemoryRequirements mr; vkGetBufferMemoryRequirements(V.dev, p->buf, &mr);
     VkMemoryDedicatedAllocateInfo ded = {VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO, NULL, VK_NULL_HANDLE, p->buf};
     VkExportMemoryAllocateInfo ex = {VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO, &ded, VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
-    VkMemoryAllocateInfo ai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, &ex, mr.size, vk_mem_type(mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 0)};
+    // DM_VK_ZC_CACHED=1 prefers the cached+coherent type (Turnip type 1): the dma-buf mapping's cacheability is the BO's, and
+    // black/garbage with the uncached type points at CPU writes not reaching the GPU's reads; log the pick either way
+    static int zc_cached = -1; if (zc_cached < 0) { const char *e = getenv("DM_VK_ZC_CACHED"); zc_cached = e ? atoi(e) : 0; }
+    uint32_t zc_type = vk_mem_type(mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 0);
+    if (zc_cached) { uint32_t ct = vk_mem_type(mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT, 0); if (ct != UINT32_MAX) zc_type = ct; }
+    { static int zc_logged; if (!zc_logged++) VKLOG("[vk] zero-copy pool memory: bits %#x, type %u flags %#x (size %llu)", mr.memoryTypeBits, zc_type, zc_type != UINT32_MAX ? V.mem.memoryTypes[zc_type].propertyFlags : 0, (unsigned long long)size); }
+    VkMemoryAllocateInfo ai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, &ex, mr.size, zc_type};
     vr = vkAllocateMemory(V.dev, &ai, NULL, &p->mem);
     if (vr) { mem_diag_zc(9, "vkAllocateMemory", size, "VkResult", vr); vkDestroyBuffer(V.dev, p->buf, NULL); return -2; }
     vr = vkBindBufferMemory(V.dev, p->buf, p->mem, 0);
