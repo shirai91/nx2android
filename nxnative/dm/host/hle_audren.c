@@ -344,14 +344,19 @@ static Result render_once(uint8_t *sys, int16_t *dst, int *nout) {
     return RES_OK;
 }
 // The AudioRenderSystem inside AudioRendererImpl: at +0x60 in SDK 16, at +0x50 in SDK 3.5.0 (Xenoblade Chronicles 2: with +0x60 the mode and device read 0, every render
-// returned 0x40299, the renderer's event was never signaled, the game updated once and stayed silent). Read off the SDK's own function, whose first add is `add xN, x0, #off`
+// returned 0x40299, the renderer's event was never signaled, the game updated once and stayed silent). Read off the SDK's own function: its prologue adds the offset to `this` (`add xN, x0, #off`) before the first branch; anything else keeps +0x60
 static size_t impl_sys_off(void) {
-    static size_t off;
-    if (!off) {
-        const uint32_t *f = guest_sym("_ZN2nn5audio6server24AudioRendererManagerImpl17AudioRendererImpl29ExecuteAudioRendererRenderingEv"); off = 0x60;
-        for (int i = 0; f && i < 12; i++) if ((f[i] & 0xffc003e0u) == 0x91000000u) { off = (f[i] >> 10) & 0xfff; break; }   // add xd, x0, #imm12
-        LOG("audren: AudioRenderSystem at +%#zx inside AudioRendererImpl", off);
+    static _Atomic size_t found;   // the offset + 1 once looked up: an `add xd, x0, #0` gives +0
+    size_t k = atomic_load(&found);
+    if (k) return k - 1;
+    size_t off = 0x60;
+    const uint32_t *f = guest_sym("_ZN2nn5audio6server24AudioRendererManagerImpl17AudioRendererImpl29ExecuteAudioRendererRenderingEv");
+    for (int i = 0; f && i < 16; i++) {
+        uint32_t w = f[i];
+        if ((w & 0xffc003e0u) == 0x91000000u) { off = (w >> 10) & 0xfff; break; }   // add xd, x0, #imm12
+        if ((w & 0x7c000000u) == 0x14000000u) break;   // b / bl: no offset before the first branch (an add after a call is something else's address)
     }
+    if (!atomic_exchange(&found, off + 1)) LOG("audren: AudioRenderSystem at +%#zx inside AudioRendererImpl", off);
     return off;
 }
 HLE_FORCE("_ZN2nn5audio6server24AudioRendererManagerImpl17AudioRendererImpl29ExecuteAudioRendererRenderingEv", "render one frame manually: SDK generates commands + CPU processing, the host takes the DeviceSink output",
