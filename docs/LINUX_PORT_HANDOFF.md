@@ -1,0 +1,64 @@
+# Handoff: finish the Linux (aarch64) port of Burnout Paradise Remastered on the Retroid Pocket Nova
+
+You are taking over a port that already runs. Read this whole file, then `docs/LINUX_PORT_PLAN.md`, then start with task 1. Be skeptical of this file where it says "probably": it records what was observed and what was only guessed.
+
+## What exists
+
+nx2android (this repo, `~/Projects/Switch Ports`) turns a Switch game into an Android app: the game's own arm64 code runs in-process, the Switch's system services are a host (`nxnative/dm/host`), NVN graphics are replayed on Vulkan (`nxnative/dm/gfx`, `nxnative/dm/android/gfx_vk_*`). The Android port of Burnout Paradise Remastered (title ID `0100DBF01000A000`) already plays at 60 fps on the Nova under Android, so the game, its profile (`nxnative/dm/games/0100DBF01000A000/`) and its patched modules are good. This work moves the *host* to Linux.
+
+Branch `linux/burnout`, worktree `~/Projects/Switch Ports.worktrees/linux` (3 commits on top of `fix/criterion-front-face`; local only, never push). The worktree also carries the owner's uncommitted Vulkan edits (`gfx_vk_core.c`, `gfx_vk_exec.c`, ...): leave them uncommitted and unrevised. Everything below is under `nxnative/dm/` unless stated.
+
+- `linux/build.py`: build of `dmhost` with the system clang (derived from `android/build.py`). `--gfx null|vk`, `--vulkan-inc/--vulkan-lib/--sdl2-inc/--sdl2-lib`, `--rpath` (repeatable).
+- `linux/compat/`: glibc copy of the Darwin compat layer; `tls_slot.c` (the guest thread-slot anchor: the rewritten guest code reads `tpidr_el0[2]`, Bionic's `TLS_SLOT_APP`; on glibc that is the executable's first TLS word, a `.tdata` variable linked first; `host/loader.c` checks it at start); `audio_null.c` (AudioUnit on SDL2 audio, a thread pulls the host's render callback); `include/android/{hardware_buffer,native_window}.h` (stubs so the Android Vulkan code compiles).
+- `linux/front_linux.c`: SDL2 window + Vulkan surface, guest on its own thread, SDL game controller (by position: the east button is Switch A) and a bring-up keyboard (arrows; X/Z/S/A = A/B/X/Y; Return = Plus; Q/E = L/R), stubs for text input, perf hooks, overlay theme.
+- `linux/movie_avc.c`: **stub** H.264 decoder (`mavc_new` returns NULL). AudioConverter (AAC) is also a stub in `audio_null.c`.
+- Shared Android files edited under `#ifdef DM_LINUX`: `android/gfx_vk_present.c` (no JNI, SDL surface, no GL-frame import), `android/gfx_vk_core.c` (instance extensions from SDL, `pool_zero_copy` using dma-buf, remap/free paths), `android/gfx_vk.h` (`vkGetMemoryFdKHR`, `has_dmabuf`, `dmabuf_fd`), `host/crash.c`. The Android build was NOT rebuilt after these edits: do that (the NDK is in the main checkout's `tools/`) before calling anything done.
+- `devtools/linux_package.py` (a Haiku-written script, only dry-run on fake data) and `devtools/linux_deploy_nova.sh`.
+
+## Build and deploy (known good)
+
+This PC is aarch64 Linux (Asahi), so the build is native. Vulkan headers/loader and SDL2 come from nixpkgs; use the same nixpkgs as nova-nix (`flake.lock`), so the glibc matches the device.
+
+```bash
+cd "$HOME/Projects/Switch Ports.worktrees/linux/nxnative/dm"
+export NIX_CONFIG="experimental-features = nix-command flakes"
+read SL SD VH VL Z < <(echo $(nix build nixpkgs#SDL2 nixpkgs#SDL2.dev nixpkgs#vulkan-headers nixpkgs#vulkan-loader nixpkgs#zlib --no-link --print-out-paths))
+nix shell nixpkgs#clang nixpkgs#lld nixpkgs#shaderc nixpkgs#zlib -c python3 linux/build.py \
+  --game 0100DBF01000A000 --gfx vk --keep-going --jobs 8 \
+  --vulkan-inc $VH/include --vulkan-lib $VL/lib --sdl2-inc $SD/include --sdl2-lib $SL/lib \
+  --rpath $SL/lib --rpath $VL/lib --rpath $Z/lib
+../../../devtools/linux_deploy_nova.sh        # store path + nix copy + launcher update
+```
+`--gfx null` builds a windowless host; run it on this PC from `.gamedump/BurnoutLinux/` (`run.sh` there; needs `LD_LIBRARY_PATH` to nix zlib) to check the core without the device. It runs 600+ frames at 60 Hz.
+
+## The device
+
+`ssh heath@nova.lan` (find it with `getent ahostsv4 nova.lan`; the address changes; the USB gadget is not used). Read `~/Projects/nova-nix/AGENTS.md`: take `~/.config/agents/bin/devlock take "<why>"` (with `DEVLOCK_ID=<name>`) before touching it and release it after; **set `/sys/class/backlight/ae94000.dsi.0/brightness` to 0** as soon as you are on it and again after any `nova-session` restart or reboot (the owner's rule; screenshots still work); never stop the audio DSP, never write internal partitions, never load kernel modules, **do not reboot or power it off** unless the owner says so; never run a game in the foreground of your shell (use `nohup timeout N ./burnout > /dev/null 2>&1 &`). Screenshots: `ssh heath@nova.lan 'XDG_RUNTIME_DIR=/run/user/1000 WAYLAND_DISPLAY=wayland-1 grim -t png -' > shot.png`. The Nova is NixOS with Mesa Turnip (`/run/opengl-driver`); GPU "Turnip Adreno (TM) 740", Vulkan 1.4, 11 GB RAM; it has BC textures; extensions of interest: `VK_EXT_external_memory_dma_buf`, `VK_KHR_external_memory_fd`, `VK_EXT_map_memory_placed`, `VK_KHR_map_memory2`; it has NO `VK_EXT_external_memory_host` and no `VK_GOOGLE_display_timing`. Its pad is Nintendo-labelled (the Android profile sets `abxy=label`).
+
+On the device: `~/Games/burnout-linux/` holds the data pack (RomFS, `mods/`, `shaders.dmsv`, ...) and the launcher `burnout` (sets `DM_ROOT/DM_ROMFS/DM_SAVE/DM_TEMP/DM_VK_SHADERS/DM_LANG/DM_VK_FRONT=2`, writes `log.txt`; defaults to `DM_VK_NO_ZEROCOPY=1` unless `DM_VK_ZEROCOPY` is set). Scripted input: `DM_KEYS="62:Plus,66:Plus,95:A"` (seconds:key, see `host/hle_hid.c` line ~60; `DM_CTL` live commands are documented in `game files/burnout/STATUS.md`, "How to work on the device"). Frame shots from inside the host: `DM_VK_SHOT_DIR`/`DM_VK_SHOTS=1`; pass dumps `DM_VK_TRACE_PASS`, `DM_VK_PASSDUMP` (same file).
+
+## Where it stands (all observed on the device unless marked)
+
+1. Copy mode (default): the game boots, draws the "Paradise City / Loading" screen (screenshot), runs at **about 8 fps** (`frame time p50 ~122 ms`, `NVN submit+present` ~121 ms, GPU 3 ms). Cause (strong evidence): `[RED] memory pool ... could not be zero-copy: a GPU copy is refreshed before each submission (slow)` for ~1.2 GB of pools. After ~40 s the window is black. Guess, unverified: the boot movie, because `mavc_new` returns NULL. The title screen and menus have not been seen on Linux. A scripted skip needs `Plus` at about frame 3600-4200 (at 8 fps that is ~8 minutes; use a frame-based `DM_KEYS` step if the parser supports it).
+2. Zero-copy (`DM_VK_ZEROCOPY=1`): `pool_zero_copy` creates a buffer with `VkExternalMemoryBufferCreateInfo` (dma-buf), allocates exported dedicated memory (`VkExportMemoryAllocateInfo`, type HOST_VISIBLE|HOST_COHERENT), gets the fd with `vkGetMemoryFdKHR`, copies the pool into it through a temporary mmap and `mmap(MAP_SHARED|MAP_FIXED)`s it over the pool's pages; `vk_pool_remap_ro` remaps PROT_READ with the saved fd; free closes the fd. All pools report zero-copy (1.2 GB), then:
+   - default chunking (the 1 GB pool in 256 MB chunks): `CRASH sig=11` in `exec_ops` (`android/gfx_vk_exec.c:2419`, the `memcpy(&h, p, sizeof h)` of the op header), `p` ends in `...afff`, deterministic, within seconds. The op stream is not inside any pool (it is a host copy). `DM_VK_NO_REMAP_RO=1` (added for the experiment, Linux only) does not change it.
+   - `DM_VK_ZEROCOPY_MAX_MB=300` (pools over 300 MB copied, i.e. the 1 GB one; smaller ones zero-copy): no crash, `frame time p50 16.7 ms` (60 fps, 10,500+ frames) **but the window is black from the start**, including frames that copy mode draws.
+   - So zero-copy as written breaks something, and `ZC_CHUNK` (0x10000000) exists only because of an Android gralloc bug (comment above it in `gfx_vk_core.c`).
+3. Hypotheses to test, most likely first: (a) CPU/GPU coherence of the dma-buf mapping (Turnip BOs may be write-combined/uncached for the CPU, or the memory type chosen is not what the NVN layer's cached-pool assumptions expect); look at what `vk_mem_type` returned and at `VK_MEMORY_PROPERTY_*` of the chosen type, and try a HOST_CACHED type or `VK_EXT_map_memory_placed` (map the exported memory directly at the guest address instead of the fd dance). (b) The CPU-write detection (`nvn_ft_poll`, "pages written (poll)", `write-protection faults`) relies on mprotect/SIGSEGV on the pool pages; check it behaves on dma-buf `MAP_SHARED` pages and that the SIGSEGV handler is not consuming faults it should forward. (c) `vk_pool_of` ranges across chunk boundaries have no buffer: raise `ZC_CHUNK` for `DM_LINUX` (one chunk per pool; Turnip's max allocation is probably >= 1 GB, check `maxMemoryAllocationSize`) and see if the crash goes away. (d) The black output with small pools may be (a) or (b) on texture pools; texture uploads then read stale/uncoherent data. Use frame shots and a pass dump to see whether draws happen and what they sample. (e) The crash's op pointer is a host copy (`job_push(JOB_SUBMIT...)`, `g_flat_bytes`): a use-after-free or a copy of garbage when the source command memory (in a zero-copy pool) is read; verify with `DM_VK` validation (`DM_VK_VALIDATE=1` if the layer is installed) or an ASAN-less guard.
+4. Core on Linux: stable. 600+ frames headless, 10,500+ frames windowed with no crash in copy mode, `[RED] NVN unimplemented function` lines for `SetConservativeRasterDilate` / `SetSubpixelPrecisionBias` also appear on Android and are harmless.
+
+## Tasks, in order
+
+1. **Zero-copy correct on the Nova** (hypotheses above). Done when: all pools zero-copy (or a justified subset), no crash for 10 minutes, `frame time p50 <= 17 ms` AND the loading screen / menus / city draw correctly (compare with copy mode and with the Android screenshots in `game files/burnout/evidence/`). Keep copy mode as a fallback behind an env var.
+2. **See past the loading screen.** Provide a real H.264 decoder in `linux/movie_avc.c` (interface `host/hle_movie_avc.h`; libavcodec through nixpkgs `ffmpeg` is the quickest; the host wants NV12 or RGBA pictures) and AAC in the `AudioConverter*` stubs (same library). Until then skip the boot movie reliably (Plus). Then reach the title screen, the menu, the junkyard and driving as `STATUS.md` describes (START, A, A, A ...), and note anything that differs from Android (`DM_VK_FRONT=2` is already set).
+3. **Input, audio, saves, quit.** Verify the Nova's built-in pad drives the game (SDL needs a mapping for "RetroidPocket Gamepad"; check `SDL_GameControllerName` and the layout; face buttons by label as on Android), that sound is audible and in time (`dm/linux/compat/audio_null.c`; measure underruns), that saves persist in `DM_SAVE`, and that SIGTERM exits cleanly.
+4. **Make it a Nova game.** Package with `devtools/linux_package.py` (fix its known gaps: output must be on the same filesystem as the data for hard links; no `logo.png` in the pack; the launcher needs the rpath-ed host, no `LD_LIBRARY_PATH`), write `~/Games/<app>/game.json` (`{"command":[...],"environment":{},"icon":"logo.png","runtime":"native","title":"..."}`), and test launch from the menu, Home (pause), Resume, Home, Quit with the game's scope gone, as `~/Projects/nova-nix/AGENTS.md` requires for any game-flow change. Check how the host behaves under SIGSTOP/SIGCONT (audio thread, timers, the swapchain).
+5. **Generalise.** `porter` should emit a Linux output (host + data pack + launcher) next to the APK, so the other ports can follow (`README.md` lists 30+ games; start with ones marked `playable` at 60 fps on an Adreno 740 with Turnip: Super Mario 3D World, Pokémon Scarlet, Kirby). Keep game profiles free of platform branches (`docs/ARCHITECTURE.md`). Rebuild and spot-check the Android host so nothing there regressed.
+
+## Rules (from the owner and the repo; non-negotiable)
+
+- Nothing is pushed anywhere. The fork on GitHub is public; the owner said keep this local. No game files, keys (`prod.keys`, `title.keys`), dumps or firmware in git.
+- Read `CLAUDE.md` (repo root): game files only in `.gamedump/<App>/` as hard links (this PC's copy is `.gamedump/BurnoutLinux/`); say which big folders you leave; clean up worktrees you create; every `gh` command takes `--repo shirai91/nx2android`; do not touch `tools/`.
+- Backup of all refs and uncommitted work as of 2026-11-16: `~/Backups/switch-ports-20261116/` (git bundle, diffs, untracked files, checksums). Do not delete it.
+- A visual claim needs a screenshot from the device; a game-flow claim needs the launch/Home/Resume/Quit run; say what you verified and what you did not. "It builds" is not "it works".
+- Subagents: the owner allowed cheap (Haiku) helpers for self-contained pieces on this task; give them one file and a compile-only check, and do not let them run on the device or in the shared output directory at the same time as you.
