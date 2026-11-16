@@ -8,7 +8,8 @@
 # a fight and Argentum at 1280x720 and 60 fps (frames p95 16.9-17.6 ms, GPU about 10 ms with the two depth rows below).
 # DM_VK_FDZ=0, DM_VK_LRZ_TOUCH=0: the host's depth workarounds for Qualcomm's driver (gfx_vk_exec.c: the fragment-depth variants, the LRZ touch) cost GPU time here and
 # the picture is the same without them on Turnip (the title scene at 1280x720: the fragment-depth variants alone took the deferred lighting pass from 0.20 to 1.99 ms and
-# the frame from 10.0 to 12.0 ms of GPU). Checked on Turnip only: on Qualcomm's driver the game was run with both on (2026-11-14), not with these rows.
+# the frame from 10.0 to 12.0 ms of GPU). On Qualcomm's 512.800.72 one scene was compared with and without them (2026-11-16, a loaded save on the ancient ship at night): the same picture.
+# 2026-11-16, the head with these rows, a debug build: Turnip, a loaded save, a cutscene, 60 fps (frame work p50 11.5 / p95 12.0 ms), sound, no red lines.
 # Open: later areas, long sessions, the DLC; one crash on losing focus in Argentum, not reproduced.
 status	experimental
 tested	v983040 AYN Odin 3 (Snapdragon 8 Elite, Adreno 830, Android 15); Turnip (libvulkan_freedreno.so)
