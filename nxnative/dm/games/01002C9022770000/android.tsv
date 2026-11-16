@@ -1,0 +1,16 @@
+# Trails in the Sky 1st Chapter on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Falcom's engine on SDK 21, NVN, update 1.0.7 (v393216); 6,602 shaders, one of them patched (patches.py SPIRV: the instance culling compute shader).
+# Tested 2026-11-15 and 2026-11-16 on the AYN Odin 3 (Snapdragon 8 Elite, Adreno 830, Android 15) with Turnip (Mesa 26.99, Banners-Turnip v27.0.0-20261114-r4 A8xx), docked:
+# the title, a loaded save, towns, interiors and the roads, played for many hours by its owner. 60 fps on a road near the Guild at 1920x1080 (the Resolution row's High; GPU
+# 13.0-13.6 ms a frame) and at the game's own 1600x900 (12.0 ms).
+# The pause menu's rows: Resolution (patches.py: Low 1280x720, Auto the game's 1600x900, High 1920x1080; read when the game starts) and Detail distance (1x, 1.5x, 2x:
+# the culling shader's distances by the host's factor, at once).
+# Two compute shaders (a370ad7eceb0897a, f9def5d93748a39f) are in no game file: the host captures them on the first run and the next port translates them
+# (until then: two [RED] lines and one dispatch skipped). One shader does not translate (aecb69afbb394ff9); no draw asked for it.
+# 2026-11-16, this profile from the repository: the title, the save, Rolent's street at 1920x1080: frames p50 16.7 / p95 17.9 ms, GPU p50 13.2 ms, no red line.
+# Open: Qualcomm's own driver was not run. The culling shader's patch is tied to the translator's output for that shader (patches.py).
+status	experimental
+tested	v393216 AYN Odin 3 (Snapdragon 8 Elite, Adreno 830, Android 15); Turnip (libvulkan_freedreno.so)
+package	org.nx2a.t01002c9022770000
+orientation	landscape
+env	DM_DETAIL_DIST=1
