@@ -96,6 +96,31 @@ def _importable(m):
     except (ImportError, ValueError): return False
 
 
+def keys_check(path):
+    """A prod.keys file's own state: the file is there and it holds the keys a dump needs. Only the names are read, never
+    the values: a title.keys file renamed as prod.keys passes the file check and then fails every NCA header at the extract
+    (the header key is derived from master_key_00, so a keyset without it opens nothing).
+    → (ok, detail, fix)"""
+    if not path: return False, 'not set', 'dump prod.keys from your own Switch and set its path'
+    p = Path(path)
+    if not p.is_file(): return False, f'no such file: {path}', 'dump prod.keys from your own Switch and set its path'
+    names = set()
+    try:
+        with p.open('r', errors='replace') as f:
+            for ln in f:
+                if '=' in ln:
+                    k = ln.split('=', 1)[0].strip()
+                    if k: names.add(k)
+    except OSError as e:
+        return False, f'{path}: cannot be read ({e})', 'dump prod.keys from your own Switch and set its path'
+    masters = sorted(n for n in names if n.startswith('master_key_'))
+    if not masters:
+        return False, f'{path}: no master keys in it (a title.keys file?)', 'dump prod.keys from your own Switch (the title keys are not enough)'
+    if 'master_key_00' not in names and 'header_key' not in names:
+        return False, f'{path}: no master_key_00 in it ({len(masters)} master keys)', 'dump prod.keys from your own Switch'
+    return True, f'{path} ({len(names)} keys, {len(masters)} master keys)', ''
+
+
 def checks(cfg=None, keys=None):
     """Every requirement, as Check rows (the order the setup screen shows them)"""
     cfg = cfg if cfg is not None else config.load()
@@ -121,8 +146,8 @@ def checks(cfg=None, keys=None):
     out.append(Check('adb', bool(adb), str(adb) if adb else 'not found: the tool cannot install on a device (the APK and data pack are still made)', required=False, path=str(adb or ''),
                      fix='' if adb else 'Download missing tools, or install Android platform-tools'))
     k = keys or cfg.get('keys')
-    out.append(Check('prod.keys', bool(k) and Path(k).is_file(), k if k and Path(k).is_file() else (f'no such file: {k}' if k else 'not set'), path=k or '',
-                     fix='' if k and Path(k).is_file() else 'dump prod.keys from your own Switch and set its path'))
+    kok, kdetail, kfix = keys_check(k)
+    out.append(Check('prod.keys', kok, kdetail, path=k or '', fix=kfix))
     where = Path(cfg.get('out') or Path.home())   # the output folder's drive, or the home folder's (a port's build folder goes beside the game files: the port checks that drive itself)
     where = next((p for p in (where, *where.parents) if p.exists()), Path.home())
     free = shutil.disk_usage(where).free / 2**30
