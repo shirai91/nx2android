@@ -136,6 +136,7 @@ typedef struct {
 } cheat_t;
 
 static cheat_t g_cheat[CHEAT_MAX]; static int g_ncheat;
+static int g_states_loaded;     // states_load has run for the loaded file: a cheat killed later is saved off
 static char g_dir[1024];       // cheats folder (DM_CHEATS or <DM_ROOT>/cheats), "" when neither is set
 static char g_path[2048];      // the loaded file (logged; "Reload cheats" re-reads exactly this path)
 static char g_build[17];       // the loaded file's build ID: main's build ID cut to 16 hex digits, upper case as the
@@ -228,16 +229,20 @@ static void dry_line(const char *fmt, ...) {
 // A cheat turned itself off for good (until the file is reloaded): its program cannot run here (a runaway loop, an else
 // at depth 0, a write into the host's key page), and the menu shows it disabled with the reason. Never for a failed
 // memory access (cheat_fail). In a dry run the reason is only described: a preview must never change the cheat
+static void states_save(void);   // with the state files below: a killed cheat must not come back on at the next open
 static void cheat_kill(cheat_t *c, const char *fmt, ...) {
     va_list ap; va_start(ap, fmt);
     char msg[160]; vsnprintf(msg, sizeof msg, fmt, ap);
     va_end(ap);
     if (g_dry) { dry_line("stops: %s", msg); return; }
     if (c->dead) return;
+    int was_on = c->on;
     c->dead = 1;
     c->noted = 0;   // why now holds the kill reason, which note_settle must never erase as a stale failed-access note
+    if (!c->master) c->on = 0;   // a dead cheat is off for good; a master is always on
     snprintf(c->why, sizeof c->why, " (off: %s)", msg);
     LOG("[RED] cheat \"%s\": %s, turning it off", c->name, msg);
+    if (was_on && !c->master && g_states_loaded) states_save();   // the next open must not show it on and then refuse it again
 }
 
 // A memory access of a cheat failed (what: "read" / "write", at the guest address the VM computed; why: the page's state).
@@ -1168,7 +1173,7 @@ static void states_save(void) {
     text[0] = 0;
     for (int i = 0; i < g_ncheat; i++) {
         const cheat_t *c = &g_cheat[i];
-        if (!c->on || c->master || c->label || c->once || c->restore_once) continue;   // one-pass cheats are never saved as on
+        if (!c->on || c->master || c->label || c->once || c->restore_once || c->dead || c->broken) continue;   // a dead or broken cheat is off, whatever its old toggle said
         char k[NAME_MAX + 16]; cheat_key(c, k, sizeof k);
         o += (size_t)snprintf(text + o, cap - o, "%s\n", k);
     }
@@ -1272,7 +1277,8 @@ static void states_load(void) {
     }
     for (int k = 0; k < g_non; k++)
         for (int i = 0; i < g_ncheat; i++)
-            if (!g_cheat[i].master && !g_cheat[i].label && !strcasecmp(g_cheat[i].name, g_on[k])) g_cheat[i].on = 1;
+            if (!g_cheat[i].master && !g_cheat[i].label && !g_cheat[i].broken && !g_cheat[i].dead && !strcasecmp(g_cheat[i].name, g_on[k])) g_cheat[i].on = 1;
+    g_states_loaded = 1;
 }
 
 // ---------- typed values the panel may set ("ask") ----------
@@ -1791,7 +1797,7 @@ static void sources_scan(void) {
 // (Re)load: choose the file, note the other builds, parse, read the meta file and the values, link pairs, restore the
 // states, build the report. Called at init and from "Reload cheats" (safe mode and the master switch stay as they are)
 static void load_all(void) {
-    g_ncheat = 0; g_ncand = 0; g_nothers = 0; g_path[0] = 0; g_nskip = 0; g_have_meta = 0;
+    g_ncheat = 0; g_ncand = 0; g_nothers = 0; g_path[0] = 0; g_nskip = 0; g_have_meta = 0; g_states_loaded = 0;
     g_junk = g_junk_line = g_glued = 0; g_carried[0] = 0; g_version[0] = 0; g_meta_src[0] = 0;
     memset(g_static, 0, sizeof g_static);   // the reference clears its static registers when it loads cheats
     atomic_store(&g_active, 0);
