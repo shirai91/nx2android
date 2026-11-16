@@ -588,13 +588,19 @@ static _Atomic int g_ed_st;    // the layout editor's state for dm_menu_state (o
 static _Atomic int g_sp_on, g_sp_hi = -1, g_sp_ver;   // the save picker (below): open, its highlighted row, its edit count
 static _Atomic int g_ch_on, g_ch_hi = -1, g_ch_ver, g_ch_page;   // the cheats picker (below): open, its highlighted row, its edit count, its page
 static int g_ch_ptr = -1, g_ch_row = -2;              // the pointer pressing in the picker, and the row it went down on
+static float g_ch_x, g_ch_y;                          // where it went down: a sideways swipe pages
 static _Atomic int g_sv_st, g_sv_n;                   // Export save: its outcome (overlay_layout.h OVX_*), the exports made
 int dm_menu_state(void) {
     if (atomic_load(&g_tx_on)) return OVT_ST | (atomic_load(&g_tx_ver) & 0xffff);   // the text entry's panel (gfx_vk_present.c ov_text_panel)
     if (!atomic_load(&g_menu)) return -1;
     if (atomic_load(&g_edit)) return OVE_ST | atomic_load(&g_ed_st);
     if (atomic_load(&g_sp_on)) return OVS_ST | (atomic_load(&g_sp_hi) + 1) << 4 | (atomic_load(&g_sp_ver) & 255) << 20;
-    if (atomic_load(&g_ch_on)) return OVC_ST | (atomic_load(&g_ch_hi) + 1) << 4 | (atomic_load(&g_ch_ver) & 255) << 20;
+    if (atomic_load(&g_ch_on)) {   // the host kills a cheat (a code write, a bad opcode) between frames: its state must redraw the picker
+        int hv = 0;
+        for (int i = 0, n = dm_cheats_ncheats(); i < n; i++)
+            hv = hv * 31 + dm_cheat_on_at(i) * 2 + dm_cheat_kind_at(i) + (dm_cheat_why_at(i)[0] ? 4 : 0);
+        return OVC_ST | (atomic_load(&g_ch_hi) + 1) << 4 | ((atomic_load(&g_ch_ver) + hv) & 255) << 20;
+    }
     return atomic_load(&g_set_overlay) | atomic_load(&g_set_rumble) << 1 | (dm_opmode() != 0) << 2 | atomic_load(&g_set_fps) << 3 | (atomic_load(&g_menu_hi) + 1) << 4 |
            (atomic_load(&g_set_opacity) - OV_OPACITY_MIN) / 5 << 9 | atomic_load(&g_sv_st) << 20 | (atomic_load(&g_sv_n) & 15) << 24 | pad_labels() << 8 |
            atomic_load(&g_menu_tab) << 28;
@@ -884,17 +890,23 @@ static void ch_key(uint64_t bit) {
     else if (bit == DM_BTN_A) ch_do(hi);
     else if (bit == DM_BTN_B || bit == DM_BTN_PLUS) ch_back();
 }
-static void ch_touch(AInputEvent *e, float W, float H) {   // a row toggles when the finger that went down on it lifts there; outside the panel goes back
+static void ch_touch(AInputEvent *e, float W, float H) {   // a row toggles when the finger that went down on it lifts there; the title row's halves or a sideways swipe page; outside the panel goes back
     int act = AMotionEvent_getAction(e) & AMOTION_EVENT_ACTION_MASK, ai = AMotionEvent_getAction(e) >> AMOTION_EVENT_ACTION_POINTER_INDEX_SHIFT;
     int i = act == AMOTION_EVENT_ACTION_DOWN || act == AMOTION_EVENT_ACTION_UP ? 0 : ai, id = AMotionEvent_getPointerId(e, (size_t)i) & 31;
-    int row = ov_menu_row_at(AMotionEvent_getX(e, (size_t)i), AMotionEvent_getY(e, (size_t)i), W, H);
+    float x = AMotionEvent_getX(e, (size_t)i), y = AMotionEvent_getY(e, (size_t)i);
+    int row = ov_menu_row_at(x, y, W, H);
     if (act == AMOTION_EVENT_ACTION_DOWN || act == AMOTION_EVENT_ACTION_POINTER_DOWN) {
         if (g_ch_ptr >= 0) return;
-        g_ch_ptr = id; g_ch_row = row;
+        g_ch_ptr = id; g_ch_row = row; g_ch_x = x; g_ch_y = y;
         if (ch_selectable(row)) { atomic_store(&g_ch_hi, row); ch_changed(); }
     } else if ((act == AMOTION_EVENT_ACTION_UP || act == AMOTION_EVENT_ACTION_POINTER_UP) && id == g_ch_ptr) {
         int down = g_ch_row; g_ch_ptr = -1;
-        if (row == down && row == -2) ch_back(); else if (row == down) ch_do(row);
+        float dx = x - g_ch_x, dy = y - g_ch_y;
+        if (down == 0 && row == 0 && ch_pages() > 1) {   // the title row: its left half pages back, its right half forward
+            float p[4], r[4]; ov_menu_rect(W, H, p); ov_menu_rowrect(p, 0, r);
+            ch_page(x < r[0] + r[2] / 2 ? -1 : 1);
+        } else if (fabsf(dx) > W * 0.05f && fabsf(dx) > fabsf(dy) * 1.5f) ch_page(dx < 0 ? 1 : -1);   // a sideways swipe
+        else if (row == down && row == -2) ch_back(); else if (row == down) ch_do(row);
     } else if (act == AMOTION_EVENT_ACTION_CANCEL) g_ch_ptr = -1;
 }
 #define CH_ROW(i, st, ...) do { rows[i].style = st; snprintf(rows[i].left, sizeof rows[i].left, __VA_ARGS__); } while (0)
@@ -903,7 +915,7 @@ int dm_cheat_rows(ov_srow rows[OVM_ROWS]) {
     memset(rows, 0, sizeof(ov_srow) * OVM_ROWS);
     int n = ch_n(), pages = ch_pages(), page = atomic_load(&g_ch_page), per = ch_per();
     CH_ROW(0, OVS_TITLE, "Cheats");
-    if (pages > 1) snprintf(rows[0].right, sizeof rows[0].right, "page %d of %d", page + 1, pages);
+    if (pages > 1) snprintf(rows[0].right, sizeof rows[0].right, "< page %d of %d >", page + 1, pages);
     if (!n) {
         const char *build = dm_cheats_build();
         CH_ROW(1, OVS_NOTE, "No cheats for build %s", build[0] ? build : "?");
@@ -917,7 +929,13 @@ int dm_cheat_rows(ov_srow rows[OVM_ROWS]) {
             const char *nm = dm_cheat_name_at(i), *why = dm_cheat_why_at(i);
             ov_srow *q = &rows[1 + j];
             q->style = kind == 2 || kind == 3 ? OVS_NOTE : OVS_ITEM;
-            if (why && why[0]) snprintf(q->left, sizeof q->left, "%s%s", nm, why); else snprintf(q->left, sizeof q->left, "%s", nm);
+            char note[40] = "";   // the reason is long (code writes, failed accesses): a short form keeps the row's letters readable
+            if (why && why[0]) {
+                size_t wn = strlen(why);
+                if (wn >= sizeof note - 3) { memcpy(note, why, sizeof note - 4); memcpy(note + sizeof note - 4, "...", 4); }
+                else snprintf(note, sizeof note, "%s", why);
+            }
+            snprintf(q->left, sizeof q->left, "%s%s", nm, note);
             if (kind == 1) snprintf(q->right, sizeof q->right, "master");
             else if (kind == 2) snprintf(q->right, sizeof q->right, "off");
             else if (kind == 3) q->right[0] = 0;

@@ -477,7 +477,8 @@ static void ov_rows_panel(const ov_canvas *cv, int st, ov_srow rows[OVM_ROWS]) {
     float rh = r[3], rw = r[2], gap = rh * 0.35f, room = rw - rh * 0.3f; int sel = (st >> 4 & 15) - 1, is0 = (int)fmaxf(1, roundf(rh * 0.30f / PF_CAP)), size[OVS_BACK + 1];
     for (int k = 0; k <= OVS_BACK; k++) size[k] = k == OVS_NOTE ? (int)fmaxf(1, roundf(is0 * 0.8f)) : is0;
     for (int row = 0; row < OVM_ROWS; row++) { const ov_srow *q = &rows[row]; int *s = &size[q->style];
-        while (*s > 1 && cv_text_w(q->left, *s) + (q->right[0] ? gap + cv_text_w(q->right, *s) : 0) > room) --*s; }
+        int floor = q->style == OVS_NOTE ? (int)fmaxf(1, roundf(is0 * 0.55f)) : 1;   // a long reason keeps readable letters (front_android.c shortens it too)
+        while (*s > floor && cv_text_w(q->left, *s) + (q->right[0] ? gap + cv_text_w(q->right, *s) : 0) > room) --*s; }
     cv_rrect(cv, 0, 0, p[2], p[3], rh * 0.18f, C_BG);
     for (int row = 0; row < OVM_ROWS; row++) {
         const ov_srow *q = &rows[row]; ov_menu_rowrect(p, row, r); float cy = r[1] + rh / 2, x0 = r[0] + rh * 0.15f, x1 = r[0] + rw - rh * 0.15f;
