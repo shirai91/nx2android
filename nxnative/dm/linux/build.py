@@ -22,6 +22,8 @@ ap.add_argument('--release', action='store_true', help='a build to keep installe
 ap.add_argument('--adrenotools', action='store_true', help='also libadrenotools.so and its hooks (third_party/libadrenotools), which the APK carries with a custom Vulkan driver')
 ap.add_argument('--vulkan-inc', default=os.environ.get('DM_VULKAN_INC'), help='directory with vulkan/vulkan.h (nixpkgs#vulkan-headers: <out>/include)')
 ap.add_argument('--vulkan-lib', default=os.environ.get('DM_VULKAN_LIB'), help='directory with libvulkan.so (nixpkgs#vulkan-loader: <out>/lib)')
+ap.add_argument('--sdl2-inc', default=os.environ.get('DM_SDL2_INC'), help='directory with SDL2/SDL.h (nixpkgs#SDL2.dev: <out>/include)')
+ap.add_argument('--sdl2-lib', default=os.environ.get('DM_SDL2_LIB'), help='directory with libSDL2.so (nixpkgs#SDL2: <out>/lib)')
 a = ap.parse_args()
 a.exe = True; a.lib = False
 
@@ -58,7 +60,7 @@ ASM = srcs('host/entry.S', 'gfx/nvn/nvn_entry.S', 'gfx/nvn/nvn_thunks.S')
 VPX = srcs('third_party/libvpx/**/*.c')
 ZSTD = srcs('third_party/zstd/zstddeclib.c')   # zstd's decompressor: the shader bundle's SPIR-V (gfx_vk_shader.c bundle_spv)
 
-INC = (['-I' + a.vulkan_inc] if a.vulkan_inc else []) + ['-include', str(DM / 'linux/compat/include/darwin_compat.h'), f'-I{DM / "linux/compat/include"}', f'-I{DM / "host"}', f'-I{DM / "gfx/nvn"}', f'-I{DM / "gfx/tex"}', f'-I{DM / "gfx/nvn/include"}',
+INC = (['-I' + a.vulkan_inc] if a.vulkan_inc else []) + (['-I' + a.sdl2_inc, '-I' + a.sdl2_inc + '/SDL2'] if a.sdl2_inc else []) + ['-include', str(DM / 'linux/compat/include/darwin_compat.h'), f'-I{DM / "linux/compat/include"}', f'-I{DM / "host"}', f'-I{DM / "gfx/nvn"}', f'-I{DM / "gfx/tex"}', f'-I{DM / "gfx/nvn/include"}',
        f'-I{DM / "third_party/vulkan-headers/include"}', f'-I{gen / a.game}', f'-I{DM / "third_party/libvpx"}', f'-I{DM / "third_party/stb_vorbis"}', f'-I{DM / "third_party/zstd"}', f'-I{DM / "android"}']
 CFLAGS = [TARGET, f'-O{a.O}'] + DBG + ['-fPIC', '-fno-omit-frame-pointer', '-ffixed-x18', '-Wall', '-Wno-unused-function', '-Wno-unused-variable', '-Wno-unused-but-set-variable',
           '-Wno-format', '-Wno-deprecated-declarations', '-Wno-gnu-folding-constant', '-Werror=implicit-function-declaration', '-Werror=return-type',
@@ -111,7 +113,7 @@ print(f'compiled {len(all_files) + len(VPX) + len(ZSTD)} sources, {len(failed)} 
 if failed and not a.keep_going: sys.exit(1)
 if a.only_compile: sys.exit(1 if failed else 0)
 
-LIBS = ['-lz', '-lm', '-ldl', '-lpthread'] + ((['-L' + a.vulkan_lib] if a.vulkan_lib else []) + ['-lvulkan'] if a.gfx == 'vk' else [])
+LIBS = ['-lz', '-lm', '-ldl', '-lpthread'] + ((['-L' + a.sdl2_lib] if a.sdl2_lib else []) + ['-lSDL2'] if a.sdl2_inc else []) + ((['-L' + a.vulkan_lib] if a.vulkan_lib else []) + ['-lvulkan'] if a.gfx == 'vk' else [])
 LDFLAGS = ['-fuse-ld=lld', '-Wl,--error-limit=0', '-Wl,-z,max-page-size=16384', '-Wl,--build-id', '-Wl,-z,nostart-stop-gc', '-rdynamic']
 if a.exe:
     r = subprocess.run([CC] + LDFLAGS + ['-pie', '-o', str(out / 'dmhost')] + [str(o) for o in objs + vobjs] + LIBS, capture_output=True, text=True, errors='replace')
