@@ -283,11 +283,15 @@ LANG_NEAR = {'en-US': 'en-GB', 'en-GB': 'en-US', 'fr': 'fr-CA', 'fr-CA': 'fr', '
 
 
 def language_code(s):
-    """A game language as typed (a code such as ja / zh-Hans, any case, _ for -, or its name such as Japanese) → its language code (nacp.LANGUAGES); None when it is none of them"""
+    """A game language as typed (a code such as ja / zh-Hans, any case, _ for -, or its name such as Japanese) → its language code (nacp.LANGUAGES); None when it is none of them.
+    A phone's locale tag (ja-JP, zh-Hans-CN) is resolved by dropping what the game does not carry: the region first, then the rest"""
     k = s.strip().lower().replace('_', '-')
-    for c, n in nacp.LANGUAGES:
-        if k in (c.lower(), n.lower()): return c
-    return {'en': 'en-US', 'english': 'en-US', 'zh-cn': 'zh-Hans', 'zh-tw': 'zh-Hant'}.get(k)   # the settings' older codes for Chinese
+    for cand in (k, k.rsplit('-', 1)[0], k.split('-')[0]):
+        for c, n in nacp.LANGUAGES:
+            if cand in (c.lower(), n.lower()): return c
+        c = {'en': 'en-US', 'english': 'en-US', 'zh-cn': 'zh-Hans', 'zh-tw': 'zh-Hant'}.get(cand)   # the settings' older codes for Chinese
+        if c: return c
+    return None
 
 
 def game_language(want, asked, have):
