@@ -88,10 +88,16 @@ int main(void) {
     assert(ov_drag_pos(1100, 600, 1013, 50) == 506.5f);
     assert(ov_drag_pos(1100, 505, 1013, 50) == 508);
 
-    assert(ov_menu_item(0, OVM_ROWS - 2) == OVM_PAD && ov_menu_item(1, OVM_ROWS - 2) == -1);
-    assert(ov_menu_item(1, OVM_ROWS - 1) == OVM_RESUME);
+// Six rows a tab: the gamepad's settings, the Game tab the picture's and the save's, the Cheats tab its picker
+    assert(ov_menu_item(0, OVM_ROWS - 1) == OVM_RESUME);
+    assert(ov_menu_item(1, 1) == OVM_FPS && ov_menu_item(1, 2) == OVM_MODE && ov_menu_item(1, 3) == OVM_EXPORT && ov_menu_item(1, 4) == OVM_IMPORT && ov_menu_item(1, OVM_ROWS - 2) == -1);
+    assert(ov_menu_item(2, 1) == OVM_CHEATS && ov_menu_item(2, 2) == -1 && ov_menu_item(2, OVM_ROWS - 2) == -1 && ov_menu_item(2, OVM_ROWS - 1) == OVM_RESUME);
+    audio_available = 0;
+    assert(ov_menu_item(0, OVM_ROWS - 2) == -1);
     audio_available = 1;
-    assert(ov_menu_item(1, OVM_ROWS - 2) == OVM_AUDIO);
+    assert(ov_menu_item(0, OVM_ROWS - 2) == OVM_AUDIO && ov_menu_item(0, OVM_ROWS - 3) == OVM_PAD);
+    float tp[4], tr[4]; ov_menu_rect(2400, 1080, tp); ov_menu_rowrect(tp, 0, tr);
+    assert(ov_menu_tab_at(tr[0] + tr[2] * 0.10f, tp) == 0 && ov_menu_tab_at(tr[0] + tr[2] * 0.50f, tp) == 1 && ov_menu_tab_at(tr[0] + tr[2] * 0.90f, tp) == 2);
     const float screens[][2] = {{915, 412}, {1216, 760}, {2400, 1080}, {1080, 2400}};
     for (unsigned s = 0; s < sizeof screens / sizeof screens[0]; s++) {
         float W = screens[s][0], H = screens[s][1], step = H / OVE_GRID_ROWS, p[4];

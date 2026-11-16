@@ -47,6 +47,7 @@ kern_return_t mach_port_deallocate(task_t task, mach_port_t name);
 mach_port_t pthread_mach_thread_np(pthread_t t);
 
 kern_return_t vm_read_overwrite(task_t task, vm_address_t addr, vm_size_t size, vm_address_t data, vm_size_t *outsize);
+kern_return_t vm_write(task_t task, vm_address_t addr, vm_offset_t data, mach_msg_type_number_t size);
 kern_return_t vm_allocate(task_t task, vm_address_t *addr, vm_size_t size, int flags);
 kern_return_t vm_deallocate(task_t task, vm_address_t addr, vm_size_t size);
 // copy=TRUE: an eager copy at the target; copy=FALSE (sharing the source's pages) is impossible for private anonymous memory on Linux: KERN_NOT_SUPPORTED

@@ -1,10 +1,11 @@
-# The nx2android desktop app: four tabs over porter.
+# The nx2android desktop app: five tabs over porter.
 #   Port   pick the game folder (porter inspect), options, Port (porter port --progress json): the stage list, the current stage's bar, the log; then open or install the result
 #   Setup  the tools a port needs (porter doctor), downloading the missing ones (porter tools --download), and the saved settings (porter.config): prod.keys, the NDK,
 #          dotnet, adb, the output folder, the device
 #   Games  the game profiles (porter profiles --all)
 #   Saves  a ported game's save between the device and the PC (porter saves): the save folders on the device, a fresh export to a folder here, an import of a
 #          folder or .zip (a console's save, or an export)
+#   Cheats Atmosphère cheat files for a ported game (porter cheats): the files in the app's cheats folder and the install of one for the build it runs
 import html, os, subprocess, sys, time
 from pathlib import Path
 
@@ -537,13 +538,86 @@ class SavesTab(QWidget):
         call_json(self, ['saves', 'import', src, '--package', self.pkg(), '--json'], self.done('the import'))
 
 
+# ---------------- Cheats ----------------
+class CheatsTab(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.busy = None
+        v = QVBoxLayout(self)
+        lab = QLabel('Atmosphère cheat files for a ported game. The game reads <code>Android/data/&lt;package&gt;/files/cheats/&lt;build ID&gt;.txt</code> and lists its entries in '
+                     'the pause menu (<b>Game → Cheats</b>), where they are turned on and off. A file is installed for the build the app on the device runs; '
+                     'a game update changes the build, so a file for another build is refused. Android runs data cheats only: a cheat that writes the game\'s code '
+                     'shows as off. Cheat files are yours: this tab copies one over adb, it never downloads or ships one.')
+        lab.setWordWrap(True); lab.setTextFormat(Qt.RichText); v.addWidget(lab)
+        row = QHBoxLayout(); self.app = QComboBox(); self.app.currentIndexChanged.connect(self.refresh)
+        r = QPushButton('Refresh'); r.clicked.connect(self.load_apps)
+        row.addWidget(QLabel('Game on the device:')); row.addWidget(self.app, 1); row.addWidget(r); v.addLayout(row)
+        self.table = QTableWidget(0, 4); self.table.setHorizontalHeaderLabels(['Cheat file', 'Build', 'Size', 'On'])
+        self.table.verticalHeader().setVisible(False); self.table.setEditTriggers(QTableWidget.NoEditTriggers); self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.table.setSelectionMode(QTableWidget.SingleSelection); self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        v.addWidget(self.table, 1)
+        b = QHBoxLayout(); self.b_install = QPushButton('Install a cheat file…'); self.b_install.clicked.connect(self.install)
+        b.addWidget(self.b_install); v.addLayout(b)
+        self.status = QLabel(''); self.status.setWordWrap(True); v.addWidget(self.status)
+        self.load_apps()
+
+    def pkg(self): return self.app.currentData() or ''
+
+    def set_busy(self, msg, show=True):
+        if msg and show: self.status.setText(msg)
+        elif not msg and self.busy and self.status.text() == self.busy: self.status.setText('')
+        self.busy = msg
+        for w in (self.b_install, self.app): w.setEnabled(not msg and (w is self.app or bool(self.pkg())))
+
+    def load_apps(self):
+        def got(rows, code):
+            cur = self.pkg(); self.app.blockSignals(True); self.app.clear()
+            for pk in rows if isinstance(rows, list) else []: self.app.addItem(pk, pk)
+            if not self.app.count(): self.app.addItem('no ported game on the device', '')
+            i = self.app.findData(cur); self.app.setCurrentIndex(max(i, 0)); self.app.blockSignals(False)
+            self.set_busy(None); self.refresh()
+            if not isinstance(rows, list): self.status.setText(f'[RED] {(rows or {}).get("error", "porter cheats apps failed")}')
+        self.set_busy('looking for the device…'); call_json(self, ['cheats', 'apps', '--json'], got)
+
+    def refresh(self, show=True):
+        self.table.setRowCount(0)
+        if not self.pkg(): return
+        def got(res, code):
+            self.set_busy(None)
+            if not isinstance(res, dict) or res.get('error'): self.status.setText(f'[RED] {(res or {}).get("error", "porter cheats list failed")}'); return
+            rows = res.get('files') or []; self.table.setRowCount(len(rows))
+            for i, r in enumerate(rows):
+                cells = (r['name'], r['build'] + ('  (this build)' if r['current'] else ''), size(r['bytes']), f'{r["enabled"]} on')
+                for j, c in enumerate(cells):
+                    it = QTableWidgetItem(c); it.setData(Qt.UserRole, r['name']); self.table.setItem(i, j, it)
+            if not rows: self.status.setText(f'No cheat files in {res.get("folder", "the app's cheats folder")} yet: install one, or put a <build ID>.txt there over adb.')
+            else: self.status.setText(f'Build {res["build"]}, {res["folder"]}: open the pause menu\'s Cheats to turn them on. A game restart is not needed.')
+        self.set_busy('reading the cheat files…', show); call_json(self, ['cheats', 'list', '--package', self.pkg(), '--json'], got)
+
+    def done(self, what):
+        def got(res, code):
+            self.set_busy(None)
+            if code or not isinstance(res, dict) or res.get('error'): self.status.setText(f'[RED] {what} failed: {(res or {}).get("error", "see porter cheats for the reason")}')
+            else: self.status.setText(f'{res.get("file")} installed for build {res.get("build")}' + (f'; the old file is {res["backup"]}' if res.get('backup') else '') + '.')
+            if not code: self.refresh(show=False)
+        return got
+
+    def install(self):
+        src = QFileDialog.getOpenFileName(self, 'The cheat file (Atmosphère format)', '', 'Cheat files (*.txt)')[0]
+        if not src: return
+        if QMessageBox.question(self, 'Install the cheat file', f'{Path(src).name} is copied to {self.pkg()}\'s cheats folder on the device, named for the build it runs. '
+                                'An old file of that name is kept as .bak. The pause menu reads it when it opens. Go on?') != QMessageBox.Yes: return
+        self.set_busy(f'installing {Path(src).name}…')
+        call_json(self, ['cheats', 'install', src, '--package', self.pkg(), '--json'], self.done('the install'))
+
+
 class Window(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle('nx2android'); self.resize(997, 820)
         self.tabs = QTabWidget()
-        self.port = PortTab(self); self.setup = SetupTab(self); self.games = GamesTab(); self.saves = SavesTab()
-        self.tabs.addTab(self.port, 'Port'); self.tabs.addTab(self.setup, 'Setup'); self.tabs.addTab(self.games, 'Games'); self.tabs.addTab(self.saves, 'Saves')
+        self.port = PortTab(self); self.setup = SetupTab(self); self.games = GamesTab(); self.saves = SavesTab(); self.cheats = CheatsTab()
+        self.tabs.addTab(self.port, 'Port'); self.tabs.addTab(self.setup, 'Setup'); self.tabs.addTab(self.games, 'Games'); self.tabs.addTab(self.saves, 'Saves'); self.tabs.addTab(self.cheats, 'Cheats')
         self.setCentralWidget(self.tabs)
         self.first = True
 

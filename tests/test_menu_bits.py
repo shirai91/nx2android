@@ -11,7 +11,7 @@ class MenuBits(unittest.TestCase):
     def test_mode_bits_are_distinct_single_bits(self):
         h = (ANDROID / 'overlay_layout.h').read_text(encoding='utf-8')
         bits = {n: int(v, 0) for n, v in re.findall(r'^#define (OV[A-Z]_ST) (0x[0-9a-fA-F]+)', h, re.M)}
-        self.assertEqual(set(bits), {'OVT_ST', 'OVE_ST', 'OVS_ST'}, 'a new menu mode gets its own OV?_ST define here')
+        self.assertEqual(set(bits), {'OVT_ST', 'OVE_ST', 'OVS_ST', 'OVC_ST'}, 'a new menu mode gets its own OV?_ST define here')
         for n, v in bits.items():
             self.assertEqual(v & (v - 1), 0, f'{n} is one bit'); self.assertTrue(1 << 16 <= v < 1 << 20, f'{n} is in bits 16..19 (the others carry fields)')
         self.assertEqual(len(set(bits.values())), len(bits), f'two modes share a bit: {bits}')
