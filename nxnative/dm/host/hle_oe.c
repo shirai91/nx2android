@@ -1,6 +1,8 @@
 // nn::oe (application operating environment): on the real device the console state is queried through the am/oe services; the host gives fixed state directly.
 // oe::Initialize is in hle_sdkinit.c, not here.
-// Environment switches: DM_OPMODE=0 handheld / 1 console (default: the profile's op_mode, console unless set; console corresponds to the console-mode render profile); DM_LANG=language code (default en-US; the iOS app sets it from the IPA's DMLanguage, main.m).
+// Environment switches: DM_OPMODE=0 handheld / 1 console (default: the profile's op_mode, console unless set; console corresponds to the console-mode render profile); DM_LANG=language code (default en-US; the iOS app sets it from the IPA's DMLanguage, main.m);
+//   DM_OE_DEFRES=<w>x<h> overrides the default display resolution in both modes (NintendoSDK sizes its window by it: DEAD OR ALIVE Xtreme 3 Scarlet's env DM_OE_DEFRES=1280x960 fills
+//   the Retroid Pocket Nova's 4:3 panel edge to edge, where the Switch pair leaves 120 px bars; vi::ListDisplays reports the same, hle_vi.c). Read once like DM_OPMODE.
 #include "hle.h"
 
 // The operation mode is runtime state (the front end can change it: iOS overheat downgrade switches to handheld): the single source is here, taken once from DM_OPMODE at startup, the environment variable is not read again afterwards
@@ -10,6 +12,18 @@ int dm_opmode(void) {
     int m = g_opmode;
     if (m < 0) { const char *e = getenv("DM_OPMODE"); int v = e ? atoi(e) : DM_GAME_OPMODE; int exp = -1; atomic_compare_exchange_strong(&g_opmode, &exp, v); m = g_opmode; }
     return m;
+}
+// The default display resolution override (DM_OE_DEFRES, taken once at startup like DM_OPMODE): 0 when unset, and the Switch's own pair is answered instead
+static _Atomic int g_defres_done;
+static int g_defres[2];
+int dm_oe_defres(int *w, int *h) {
+    int done = 0; atomic_compare_exchange_strong(&g_defres_done, &done, 1);   // the first caller parses, the rest read
+    if (!done) { const char *e = getenv("DM_OE_DEFRES"); int pw = 0, ph = 0;
+        if (e && sscanf(e, "%dx%d", &pw, &ph) == 2 && pw > 0 && ph > 0 && pw <= 8192 && ph <= 8192) { g_defres[0] = pw; g_defres[1] = ph;
+            LOG("oe::GetDefaultDisplayResolution overridden to %dx%d (DM_OE_DEFRES)", pw, ph); } }
+    if (!g_defres[0]) return 0;
+    if (w) *w = g_defres[0]; if (h) *h = g_defres[1];
+    return 1;
 }
 // ---------- System notification queue (AppletMessage): front end state changes → fetched by the game every frame with TryPopNotificationMessage ----------
 // Message numbers the host sends: 15 focus change, 30 operation mode change, 31 performance mode change
@@ -129,7 +143,8 @@ HLE_FORCE("_ZN2nn2oe18GetPerformanceModeEv", "performance mode query; same as th
 static unsigned char g_cpu_oc;
 HLE_FORCE("_ZN2nn2oe21IsCpuOverclockEnabledEv", "CPU overclock state (through apm): what SetCpuOverclockEnabled set, off at start", unsigned, h_oe_CpuOc, void) { return g_cpu_oc; }
 HLE_FORCE("_ZN2nn2oe22SetCpuOverclockEnabledEb", "CPU overclock switch (through apm); the host does not scale clocks", void, h_oe_SetCpuOc, unsigned on) { g_cpu_oc = on & 0xff; }
-HLE_FORCE("_ZN2nn2oe27GetDefaultDisplayResolutionEPiS1_", "default display resolution: 1920x1080 docked, 1280x720 handheld", void, h_oe_DefRes, int *w, int *h) {
+HLE_FORCE("_ZN2nn2oe27GetDefaultDisplayResolutionEPiS1_", "default display resolution: 1920x1080 docked, 1280x720 handheld (DM_OE_DEFRES overrides both)", void, h_oe_DefRes, int *w, int *h) {
+    if (dm_oe_defres(w, h)) return;
     int con = opmode() == 1; if (w) *w = con ? 1920 : 1280; if (h) *h = con ? 1080 : 720;
 }
 HLE_FORCE("_ZN2nn2oe38GetDefaultDisplayResolutionChangeEventEPNS_2os11SystemEventE", "default display resolution change event: bound, never signaled (the operation mode notification carries the change)",

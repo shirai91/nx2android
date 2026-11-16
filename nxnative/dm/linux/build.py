@@ -100,7 +100,8 @@ def build(files):
             elif err.strip() and '--verbose' in sys.argv: print(err, file=sys.stderr)
     return objs, failed
 
-all_files = HOST + GFX + PORT + ASM
+PORT.sort(key=lambda p: p.name != 'tls_slot.c')   # first in the link: tpidr_el0[2] is its thread-local
+all_files = PORT[:1] + HOST + GFX + PORT[1:] + ASM
 objs, failed = build(all_files)
 vobjs, vfailed = build(VPX + ZSTD)
 failed += vfailed

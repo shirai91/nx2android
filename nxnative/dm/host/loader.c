@@ -65,6 +65,12 @@ void *dm_tsd_get(pthread_key_t k) { return (void *)(uintptr_t)tsd_block()[k]; }
 static void create_keys(void) {
     if (pthread_key_create(&g_tsd_free, tsd_block_free)) die("cannot create the slot block key");
     uint64_t **tp = tp_now();
+#ifdef DM_LINUX
+    {   // glibc: tpidr_el0[2] is the executable's first thread-local word (linux/compat/tls_slot.c)
+        extern __thread void *dm_tls_app;
+        if ((void *)&dm_tls_app != (void *)&tp[TLS_SLOT_APP]) die("glibc TLS layout: dm_tls_app is at %p, tpidr_el0[2] at %p (tls_slot.o must be linked first)", (void *)&dm_tls_app, (void *)&tp[TLS_SLOT_APP]);
+    }
+#endif
     if (tp[TLS_SLOT_APP]) die("bionic's TLS_SLOT_APP is already in use on this thread (%p): the guest thread slots cannot live there", (void *)tp[TLS_SLOT_APP]);
     g_key18 = 1; g_keytls = 2; g_keytlr = 3; g_keygate = 4;
     LOG("guest thread slots in TLS_SLOT_APP blocks: K18=%lu KTLS=%lu KTLR=%lu KGATE=%lu", (unsigned long)g_key18, (unsigned long)g_keytls, (unsigned long)g_keytlr, (unsigned long)g_keygate);
