@@ -24,6 +24,7 @@ ap.add_argument('--vulkan-inc', default=os.environ.get('DM_VULKAN_INC'), help='d
 ap.add_argument('--vulkan-lib', default=os.environ.get('DM_VULKAN_LIB'), help='directory with libvulkan.so (nixpkgs#vulkan-loader: <out>/lib)')
 ap.add_argument('--sdl2-inc', default=os.environ.get('DM_SDL2_INC'), help='directory with SDL2/SDL.h (nixpkgs#SDL2.dev: <out>/include)')
 ap.add_argument('--sdl2-lib', default=os.environ.get('DM_SDL2_LIB'), help='directory with libSDL2.so (nixpkgs#SDL2: <out>/lib)')
+ap.add_argument('--rpath', action='append', default=[], help='a library directory to record in the executable (repeatable)')
 a = ap.parse_args()
 a.exe = True; a.lib = False
 
@@ -114,7 +115,7 @@ if failed and not a.keep_going: sys.exit(1)
 if a.only_compile: sys.exit(1 if failed else 0)
 
 LIBS = ['-lz', '-lm', '-ldl', '-lpthread'] + ((['-L' + a.sdl2_lib] if a.sdl2_lib else []) + ['-lSDL2'] if a.sdl2_inc else []) + ((['-L' + a.vulkan_lib] if a.vulkan_lib else []) + ['-lvulkan'] if a.gfx == 'vk' else [])
-LDFLAGS = ['-fuse-ld=lld', '-Wl,--error-limit=0', '-Wl,-z,max-page-size=16384', '-Wl,--build-id', '-Wl,-z,nostart-stop-gc', '-rdynamic']
+LDFLAGS = ['-fuse-ld=lld'] + ['-Wl,-rpath,' + d for d in a.rpath] + [ '-Wl,--error-limit=0', '-Wl,-z,max-page-size=16384', '-Wl,--build-id', '-Wl,-z,nostart-stop-gc', '-rdynamic']
 if a.exe:
     r = subprocess.run([CC] + LDFLAGS + ['-pie', '-o', str(out / 'dmhost')] + [str(o) for o in objs + vobjs] + LIBS, capture_output=True, text=True, errors='replace')
     print(r.stderr.strip() if r.returncode else f'linked {out / "dmhost"}', file=sys.stderr if r.returncode else sys.stdout)

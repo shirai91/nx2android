@@ -202,7 +202,7 @@ void vk_init(void) {
     VkExtensionProperties *ex = calloc(ne, sizeof *ex); vkEnumerateDeviceExtensionProperties(V.pd, NULL, &ne, ex);
     const char *want[] = {"VK_KHR_swapchain", "VK_ANDROID_external_memory_android_hardware_buffer", "VK_EXT_queue_family_foreign", "VK_EXT_custom_border_color",
                           "VK_EXT_robustness2", "VK_EXT_depth_clip_control", "VK_EXT_provoking_vertex", "VK_EXT_index_type_uint8", "VK_EXT_transform_feedback",
-                          "VK_GOOGLE_display_timing"};
+                          "VK_GOOGLE_display_timing", "VK_KHR_external_memory", "VK_KHR_external_memory_fd", "VK_EXT_external_memory_dma_buf"};
     const char *on[64]; uint32_t non = 0;
     for (unsigned i = 0; i < sizeof want / sizeof *want; i++) if (has_ext(ex, ne, want[i])) on[non++] = want[i]; else VKLOG("device has no %s", want[i]);
     // A Vulkan 1.1 or 1.2 device (Legion Y700 2023, Adreno 730: its stock driver reports 1.1) has what the replay uses from 1.2 / 1.3 as extensions: they are enabled
@@ -253,6 +253,7 @@ void vk_init(void) {
     // dynamic rendering is 1.3 or its extension with the feature on; a loaded pointer does not tell, since the loader hands out a trampoline for core functions the driver lacks
     V.has_dynrender = v13 ? f13.dynamicRendering : featx(xf, nxf, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES)[0];
     // imageless framebuffers need render pass 2 (gfx_vk_exec.c rp_get): core in 1.2, else its extension
+    V.has_dmabuf = is_on(on, non, "VK_KHR_external_memory_fd") && is_on(on, non, "VK_EXT_external_memory_dma_buf");
     V.has_draw_count = v12 ? f12.drawIndirectCount : is_on(on, non, "VK_KHR_draw_indirect_count");
     V.has_imageless = v12 ? f12.imagelessFramebuffer : featx(xf, nxf, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGELESS_FRAMEBUFFER_FEATURES)[0] && is_on(on, non, "VK_KHR_create_renderpass2");
     if (!V.has_imageless && !V.has_dynrender) die("[vk] the device has neither dynamic rendering nor imageless framebuffers with render pass 2: passes cannot be begun");
@@ -531,6 +532,37 @@ static int slab_take(uint64_t size, slab_t **out, uint32_t *slot) {   // 1: a sl
 static void slab_give(slab_t *s, uint32_t i, uint64_t fence) {
     pthread_mutex_lock(&g_slab_mu); s->fence[i] = fence; s->bits[i >> 6] |= 1ull << (i & 63); s->nfree++; pthread_mutex_unlock(&g_slab_mu);
 }
+#ifdef DM_LINUX
+// Zero copy on Linux, as on Android with a dma-buf in place of the AHardwareBuffer: the pool's buffer is exported device memory (VK_EXT_external_memory_dma_buf), its
+// dma-buf mapped MAP_FIXED over the pool's pages after the contents are copied in, so the game's pointer is GPU memory. The fd is kept for remapping. 0 on success
+static int pool_zero_copy(vkpool_t *p, uint8_t *mem, uint64_t size) {
+    if (!V.has_dmabuf || !vkGetMemoryFdKHR) return -1;
+    VkExternalMemoryBufferCreateInfo eb = {VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO, NULL, VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
+    VkBufferCreateInfo bi = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, &eb, 0, size, POOL_USAGE, VK_SHARING_MODE_EXCLUSIVE};
+    VkResult vr = vkCreateBuffer(V.dev, &bi, NULL, &p->buf);
+    if (vr) { mem_diag_zc(8, "vkCreateBuffer", size, "VkResult", vr); return -2; }
+    VkMemoryRequirements mr; vkGetBufferMemoryRequirements(V.dev, p->buf, &mr);
+    VkMemoryDedicatedAllocateInfo ded = {VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO, NULL, VK_NULL_HANDLE, p->buf};
+    VkExportMemoryAllocateInfo ex = {VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO, &ded, VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
+    VkMemoryAllocateInfo ai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, &ex, mr.size, vk_mem_type(mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 0)};
+    vr = vkAllocateMemory(V.dev, &ai, NULL, &p->mem);
+    if (vr) { mem_diag_zc(9, "vkAllocateMemory", size, "VkResult", vr); vkDestroyBuffer(V.dev, p->buf, NULL); return -2; }
+    vr = vkBindBufferMemory(V.dev, p->buf, p->mem, 0);
+    int fd = -1;
+    VkMemoryGetFdInfoKHR gi = {VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR, NULL, p->mem, VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT};
+    if (!vr) { vr = vkGetMemoryFdKHR(V.dev, &gi, &fd); if (vr) mem_diag_zc(3, "vkGetMemoryFdKHR", size, "VkResult", vr); } else mem_diag_zc(10, "vkBindBufferMemory", size, "VkResult", vr);
+    int ok = !vr && fd >= 0;
+    if (ok) {   // the pool's current contents go into the buffer through a temporary mapping, then its pages replace the pool's at the same address
+        uint8_t *tmp = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        ok = tmp != MAP_FAILED;
+        if (ok) { memcpy(tmp, mem, size); munmap(tmp, size); ok = mmap(mem, size, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, 0) == mem; if (!ok) mem_diag_zc(6, "mmap-fixed", size, "errno", errno); }
+        else mem_diag_zc(5, "mmap-temporary", size, "errno", errno);
+    }
+    if (!ok) { if (fd >= 0) close(fd); vkDestroyBuffer(V.dev, p->buf, NULL); vkFreeMemory(V.dev, p->mem, NULL); p->buf = VK_NULL_HANDLE; p->mem = VK_NULL_HANDLE; return -2; }
+    p->ahb = NULL; p->dmabuf_fd = fd; p->zero_copy = 1;
+    return 0;
+}
+#else
 // Zero copy: the pages of [mem, mem+size) become an AHardwareBuffer's, imported as a VkBuffer (a slab's slot for a small pool, or a kept buffer of a freed pool of that size). 0 on success
 static int pool_zero_copy(vkpool_t *p, uint8_t *mem, uint64_t size) {
     slab_t *sl; uint32_t si;
@@ -585,12 +617,17 @@ static int pool_zero_copy(vkpool_t *p, uint8_t *mem, uint64_t size) {
     p->ahb = ahb; p->zero_copy = 1;
     return 0;
 }
+#endif
 // A zero-copy pool's dma-buf mapped again over [mem, mem+len) in one piece per chunk, read-only (nvn_dirty_defrag: the mappings its protection split never merge). 0 = done
 int vk_pool_remap_ro(void *mem, size_t len) {
+#ifdef DM_LINUX
+    if (getenv("DM_VK_NO_REMAP_RO")) return -1;   // experiment: leave the pool's mapping as it is
+#endif
     int rc = 0; uint64_t done = 0;
     pthread_rwlock_rdlock(&g_pool_mu);
     for (int i = 0; i < g_npool && !rc; i++) {
         vkpool_t *p = &g_pool[i]; if (p->base != (uint64_t)(uintptr_t)mem || p->end - p->base != len) continue;
+        if (p->dmabuf_fd > 0) { void *at = (void *)(uintptr_t)p->lo; rc = mmap(at, p->hi - p->lo, PROT_READ, MAP_SHARED | MAP_FIXED, p->dmabuf_fd, 0) == at ? 0 : -1; if (!rc) done += p->hi - p->lo; continue; }   // Linux: the pool's dma-buf
         if (!p->zero_copy) { if (!p->shadow) { rc = -1; break; } done += p->hi - p->lo; continue; }   // a copied pool: nothing to map again (its protection stays as it is), and done, so defrag stops taking its pages busy
         if (p->slab) { void *at = (void *)(uintptr_t)p->lo; rc = mmap(at, p->hi - p->lo, PROT_READ, MAP_SHARED | MAP_FIXED, ((slab_t *)p->slab)->fd, (off_t)p->boff) == at ? 0 : -1; if (!rc) done += p->hi - p->lo; continue; }   // a slab's slot
         int sv[2], fds[16], nfd = -1; if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sv)) { rc = -1; break; }
@@ -685,6 +722,7 @@ void mtl_pool_del(const void *mem) {
         pthread_rwlock_unlock(&g_pool_mu);
         uint64_t t0 = pool_ns();
         if (p.zero_copy) pool_copy_back(&p);
+        if (p.dmabuf_fd > 0) close(p.dmabuf_fd);
         free(p.baseline);
         { void vk_tbuf_drop_pool(uint64_t), vk_f1_drop_pool(uint64_t); vk_tbuf_drop_pool(p.serial); vk_f1_drop_pool(p.serial); }   // the texel buffer views and 2D-row fetch images over its buffer (gfx_vk_tex.c), before the buffer itself goes or is kept
         if (p.slab) slab_give(p.slab, p.slot, mtl_last_fence() + 1);   // the slot goes back to its slab (the GPU may still read it until that submission is done)
