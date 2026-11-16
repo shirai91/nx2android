@@ -82,15 +82,6 @@ static void mem_diag_baselines(const uint64_t count[4], const uint64_t bytes[4])
         names[i], (unsigned long long)count[i], bytes[i] / 1048576.0, (unsigned long long)total_count[i], total_bytes[i] / 1048576.0, (unsigned long long)calls);
 }
 
-// Whether the driver is Mesa's Turnip (VkPhysicalDeviceDriverProperties). The depth workarounds of gfx_vk_exec.c (lrz_touch, the fragment-depth variants) answer faults of
-// Qualcomm's driver and cost GPU time: on Turnip (Adreno 830, Mesa 26.99, Xenoblade Chronicles 2's title scene at 1280x720) the fragment-depth variants alone took the deferred
-// lighting pass from 0.20 to 1.99 ms and the frame from 10.0 to 12.0 ms of GPU, with the same picture. They default to off there (DM_VK_FDZ=1 / DM_VK_LRZ_TOUCH=1 turn them on)
-int vk_is_turnip(void) {
-    static int v = -1;
-    if (v < 0) { VkPhysicalDeviceDriverProperties dp = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES}; VkPhysicalDeviceProperties2 p2 = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &dp};
-        vkGetPhysicalDeviceProperties2(V.pd, &p2); v = dp.driverID == VK_DRIVER_ID_MESA_TURNIP; VKLOG("driver: %s %s%s", dp.driverName, dp.driverInfo, v ? " (Turnip: Qualcomm depth workarounds off by default)" : ""); }
-    return v;
-}
 uint32_t vk_mem_type(uint32_t bits, VkMemoryPropertyFlags want, VkMemoryPropertyFlags avoid) {
     for (uint32_t i = 0; i < V.mem.memoryTypeCount; i++)
         if ((bits >> i & 1) && (V.mem.memoryTypes[i].propertyFlags & want) == want && !(V.mem.memoryTypes[i].propertyFlags & avoid)) return i;

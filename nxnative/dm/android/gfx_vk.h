@@ -63,7 +63,6 @@ const void *vk_sg_pin(VkShaderStageFlagBits stage, const uint32_t *local);   // 
 // NULL when there is nothing the stage lacks (why empty) or it uses something not covered (why names it); the module then stays as it is
 uint32_t *spv_one_lane(const uint32_t *w, uint32_t nw, uint32_t ops, uint32_t *onw, char *why, size_t nwhy);
 uint32_t vk_mem_type(uint32_t bits, VkMemoryPropertyFlags want, VkMemoryPropertyFlags avoid);
-int vk_is_turnip(void);   // Mesa's Turnip is the driver (gfx_vk_core.c): the workarounds for Qualcomm's driver default to off
 void vk_init(void);   // once, from mtl_init or the first use
 
 // ---- memory pools (gfx_vk_core.c): the guest's pool memory is GPU memory (AHardwareBuffer mapped over it) ----
