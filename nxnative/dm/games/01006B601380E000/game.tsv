@@ -1,0 +1,38 @@
+# Game profile of Kirby’s Return to Dream Land Deluxe (Switch, base game 1.0.0 = v0). Plays on Android (android.tsv)
+# Format: see dm/games/README.md
+# HAL Laboratory's own engine on NintendoWare with nn::atk2 sound, SDK 13.3.5, NVN; subsdk0 is the SDK's movie library (WebM movies under mov/)
+# Checked on the device: the build IDs of the three modules, the NPDM's system resource (none) and the heap the game sets ("[mem] heap 3.14 GB (heap region 3.25 GB)")
+
+# ---- Identity ----
+title_id	01006B601380E000
+program_id	01006B601380E000
+
+# ---- App ----
+name	Kirby’s Return to Dream Land Deluxe
+ipa	KirbysReturnToDreamLandDeluxe.ipa
+app_category	public.app-category.games
+
+# ---- Versions ----
+build	v0	1.0.0	main=fa24ea3c3a512c072a2062556c9c9692	subsdk0=d0f13015e5badf2243d60a2bc9b978dd	sdk=3644a6760469451cabc99f00c540acc2
+package	v0
+shader_versions	v0
+
+# ---- Files ----
+# every module main imports from
+modules	main subsdk0 sdk
+romfs_marker	mov/EventMovie/Ending.webm
+zip_store	.bfsar:.bfstm:.cmp:.webm:.metallib
+
+# ---- Memory ----
+# The NPDM declares no system resource, so the game has no virtual address memory: it sets a heap of the pool less 64 MB, 3.14 GB, in the 3.25 GB heap region of
+# a 4 GB block (256 MB in front, a 256 MB alias region, a 256 MB stack region). The application pool is the Switch's 3285 MB
+mem_reserve	0x100000000
+mem_alias	0x10000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+sys_resource	0x0
+
+# ---- Shader split ----
+# 47,099 shaders: gfx/ (models, 36,950), ptcl/ (effects, 9,693, 62 of all shaders are compute), lyt/ (layouts, 323), the loose shader/ files (78), gfxshader/ (1) and main (54)
+shader_groups	/gfx/=gfx /ptcl/=ptcl /lyt/=lyt /shader/=shader /gfxshader/=gfxshader
+shader_note	Kirby’s Return to Dream Land Deluxe shaders

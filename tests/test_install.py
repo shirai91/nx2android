@@ -1,13 +1,14 @@
 # porter/install.py without a device: a RomFS read from a folder outside the app's files folder (--romfs-at). The device is made up: a dict of its files and the shell's
 # answers (python -m unittest discover tests).
-import hashlib, json, os, shlex, shutil, struct, subprocess, sys, tempfile, unittest, zipfile
+import hashlib, json, os, shlex, shutil, struct, subprocess, sys, tempfile, threading, unittest, zipfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 os.environ.setdefault('NX2A_HOME', tempfile.mkdtemp(prefix='nx2a_test_home_'))
 from porter import cli, datapack, install   # noqa: E402
-from porter.adb import Adb                  # noqa: E402
+from porter import adb as adb_mod          # noqa: E402
+from porter.adb import Adb, AdbError        # noqa: E402
 from porter.upstream import BuildError, PROG   # noqa: E402
 
 PKG = 'org.nx2a.test'
@@ -224,6 +225,39 @@ class RomfsAt(unittest.TestCase):
                                  'android.permission.ACCESS_WIFI_STATE': None, 'android.permission.CHANGE_WIFI_MULTICAST_STATE': None})
         app = next(a for tag, a in els if tag == 'application')
         self.assertIs(app['requestLegacyExternalStorage'], True); self.assertIs(app['debuggable'], False)
+
+
+class Hold(unittest.TestCase):
+    """Adb.hold, the lock that keeps two porter installs off one device: two Adb objects for one serial (two installs), a lock file in a temporary folder"""
+    def setUp(self):
+        self.dir = tempfile.TemporaryDirectory(prefix='nx2a_hold_'); self.addCleanup(self.dir.cleanup)
+        self.msgs = []
+        self.a, self.b = (Adb('adb', 'dev:5555', log=self.msgs.append) for _ in range(2))
+        lock = self.a.hold(self.dir.name)
+        if lock is None: self.skipTest('no flock or msvcrt.locking here')
+        lock.close()
+        self.poll, adb_mod.HOLD_POLL = adb_mod.HOLD_POLL, 0.02
+        self.addCleanup(setattr, adb_mod, 'HOLD_POLL', self.poll)
+
+    def test_second_refused_then_free(self):
+        first = self.a.hold(self.dir.name)
+        with self.assertRaises(AdbError): self.b.hold(self.dir.name, wait=False)
+        first.close()
+        second = self.b.hold(self.dir.name, wait=False); self.assertIsNotNone(second); second.close()
+        self.assertEqual([p.name for p in Path(self.dir.name).iterdir()], ['install-dev_5555.lock'])
+
+    def test_other_device_not_held(self):
+        first = self.a.hold(self.dir.name)
+        other = Adb('adb', 'other', log=self.msgs.append).hold(self.dir.name, wait=False)
+        other.close(); first.close()
+
+    def test_second_waits_for_first(self):
+        first = self.a.hold(self.dir.name); got = []
+        t = threading.Thread(target=lambda: got.append(self.b.hold(self.dir.name))); t.start()
+        t.join(0.3); self.assertTrue(t.is_alive()); self.assertEqual(got, [])   # waiting
+        self.assertEqual(self.msgs, ['another porter install is using dev:5555: waiting for it to end'])
+        first.close(); t.join(10); self.assertFalse(t.is_alive())
+        self.assertIsNotNone(got[0]); got[0].close()
 
 
 if __name__ == '__main__':

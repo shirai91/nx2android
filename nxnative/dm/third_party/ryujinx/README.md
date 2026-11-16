@@ -11,8 +11,24 @@ Three projects from Ryujinx 1.3.2: `Ryujinx.Graphics.Shader`, `Ryujinx.Common` a
 
 - `Ryujinx.Graphics.Shader/StructuredIr/AstOptimizer.cs`, `Optimize` / `UsedByCall`: a local that a call takes as an argument is not propagated. For SPIR-V, `StructuredProgram` copies every call argument into a local (SPIR-V passes them by pointer); propagating that local's expression into the call and removing the local left the call with a local no declaration made, and `CodeGen/Spirv` `GetLocalPointer` threw `KeyNotFoundException`: 1,894 of Viractal's 25,464 shaders, nearly all pixel shaders, did not translate (2026-10-25, the Android port). Marked `nxnative:` in the code. Not yet in `dm/gfx/tools/dmsh_xlate_bin`, which is rebuilt on a Mac with `dmsh_chain.py --update-lock`; the Android port builds the translator from this source.
 
+- `Ryujinx.Graphics.Shader/Translation/Optimizations/Optimizer.cs`,
+  `EliminateMultiplyByFragmentCoordW`: accept the reciprocal as either operand of
+  the outer FP32 multiply, retaining the existing input-load, FragCoord.w and
+  constant-one checks. An explicit Maxwell FMUL in Odyssey's alpha depth shader
+  used the opposite order to its material shader, so only the latter eliminated
+  the native-perspective compensation round trip. Alpha coverage disagreed at
+  individual pixels; retained HDR colour then multiplied to infinity and poisoned
+  bloom. A same-process original/direct-UV/original reversal and single-pixel
+  draw/depth histories isolated this (2026-11-12, Android). Marked `nxnative:`.
+  Not yet in `dm/gfx/tools/dmsh_xlate_bin`, which is rebuilt on a Mac with
+  `dmsh_chain.py --update-lock`; Android builds the translator from this source.
+
+The shader translation tool in `dm/gfx/tools/dmsh_xlate` references them to translate the original Switch shaders to SPIR-V.
+
+License: MIT, see `LICENSE.txt`. Upstream: <https://github.com/Ryubing>.
+
 - `Ryujinx.Graphics.Shader/Translation/Optimizations/ConstantBufferAddress.cs`,
-  called by `Optimizer` for vertex shaders: simplify constant-buffer integer
+  called by `Optimizer` for explicitly opted-in vertex shaders: simplify constant-buffer integer
   indices whose vec4 lane is provably constant. A bounded affine analysis retains
   32-bit wrapping and reduced-width masks; additions after truncation require a
   no-carry bound. Unknown operations remain opaque roots, signed shifts require
@@ -20,6 +36,12 @@ Three projects from Ryujinx 1.3.2: `Ryujinx.Graphics.Shader`, `Ryujinx.Common` a
   Equivalent addresses share temporaries within a block only. This removes
   dynamic component-selection ladders found in Turnip matrix loads without
   shader hashes or uniform specialization. Marked `nxnative:` in the code.
+  Android export first determines inputs using the original inference with this
+  pass off, then fixes those types for the optimized translation and checks the
+  full location/type signature before packing. It does not widen inference to
+  existing Function temporaries. The job's `constant_buffer_address` switch and
+  its reflection acknowledgement prevent a stale translator from silently
+  skipping the baseline or the optimization; absent switches leave the pass off.
   Not yet in `dm/gfx/tools/dmsh_xlate_bin`; Android builds from this source.
 
 The shader translation tool in `dm/gfx/tools/dmsh_xlate` references them to translate the original Switch shaders to SPIR-V.

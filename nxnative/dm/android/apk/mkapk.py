@@ -15,6 +15,7 @@ _p.add_argument('--asset', action='append', default=[], metavar='NAME=FILE', hel
 _p.add_argument('--dex', help='optional classes.dex for a custom NativeActivity')
 _p.add_argument('--activity', default='android.app.NativeActivity', help='NativeActivity class name')
 _p.add_argument('--release', action='store_true', help='not debuggable')
+_p.add_argument('--game-mode-performance', action='store_true', help='declare Performance Game Mode (requires the native NVN pacing policy)')
 _p.add_argument('--version-code', type=int, default=1, help='versionCode: a later port of the game must have a higher one to install over it')
 _p.add_argument('--version-name', default='1.0', help='versionName: the version the player sees (the game\'s display version)'); ARGS = _p.parse_args()
 PKG, LIB, LABEL = ARGS.package, ARGS.lib, ARGS.label
@@ -32,13 +33,16 @@ CONFIG_CHANGES = (0x0001 | 0x0002 | 0x0004 | 0x0008 | 0x0010 | 0x0020 | 0x0040 |
 # ---------------- binary XML ----------------
 ATTR_IDS = {  # android: attribute resource IDs (frameworks/base/core/res/res/values/public.xml)
     'label': 0x01010001, 'icon': 0x01010002, 'name': 0x01010003, 'hasCode': 0x0101000c, 'debuggable': 0x0101000f, 'exported': 0x01010010,
-    'configChanges': 0x0101001f, 'screenOrientation': 0x0101001e, 'value': 0x01010024, 'minSdkVersion': 0x0101020c, 'versionCode': 0x0101021b,
+    'configChanges': 0x0101001f, 'screenOrientation': 0x0101001e, 'value': 0x01010024, 'resource': 0x01010025, 'minSdkVersion': 0x0101020c, 'versionCode': 0x0101021b,
     'versionName': 0x0101021c, 'targetSdkVersion': 0x01010270, 'maxSdkVersion': 0x01010271, 'isGame': 0x010103f4, 'extractNativeLibs': 0x010104ea, 'appCategory': 0x01010545,
-    'requestLegacyExternalStorage': 0x01010603, 'enableOnBackInvokedCallback': 0x0101066c, 'drawable': 0x01010199}   # (maxSdkVersion and requestLegacyExternalStorage read from android-36's android.jar, R$attr)
+    'requestLegacyExternalStorage': 0x01010603, 'enableOnBackInvokedCallback': 0x0101066c, 'drawable': 0x01010199,
+    'supportsPerformanceGameMode': 0x01010657}   # framework public-final.xml; GameModeConfig since API33
 T_REF, T_STRING, T_INT_DEC, T_INT_HEX, T_BOOL = 0x01, 0x03, 0x10, 0x11, 0x12
 ICON_ID, ICON_FG_ID, ICON_BG_ID = 0x7f010000, 0x7f010001, 0x7f010002   # drawable/icon, icon_fg, icon_bg in resources.arsc (res_table)
 # A plain icon is drawn small on a white disc by Android 8+ launchers; an adaptive one fills the launcher's icon shape
 ADAPTIVE_ICON = ('adaptive-icon', [], [('background', [(True, 'drawable', ('ref', ICON_BG_ID))], []), ('foreground', [(True, 'drawable', ('ref', ICON_FG_ID))], [])])
+GAME_MODE_ID = 0x7f020000   # xml/game_mode_config; drawable IDs stay unchanged
+GAME_MODE_CONFIG = ('game-mode-config', [(True, 'supportsPerformanceGameMode', True)], [])
 
 # (tag, [(ns_android?, name, value)], children)
 MANIFEST = ('manifest', [(False, 'package', PKG), (True, 'versionCode', ARGS.version_code), (True, 'versionName', ARGS.version_name)], [
@@ -61,7 +65,11 @@ MANIFEST = ('manifest', [(False, 'package', PKG), (True, 'versionCode', ARGS.ver
         (True, 'appCategory', 0),   # a game (appCategory game = 0, and the older isGame): Android's game mode and game dashboard, and the device maker's game tools, apply to it
         # no predictive back: from target SDK 36 the system takes the back gesture itself and finishes the activity, which ends the game (front_android.c on_destroy), without
         # dispatching KEYCODE_BACK; opted out, the gesture comes as the Back key, which opens the front end's menu
-        (True, 'enableOnBackInvokedCallback', False)], [
+        (True, 'enableOnBackInvokedCallback', False)], ([
+        # #294: opt in only with the matching native performance policy; this mode replaces OEM interventions.
+        ('meta-data', [(True, 'name', 'android.game_mode_config'), (True, 'resource', ('ref', GAME_MODE_ID))], []),
+        ('meta-data', [(True, 'name', 'com.android.app.gamemode.performance.enabled'), (True, 'value', True)], []),   # Android 12, before XML config
+        ] if ARGS.game_mode_performance else []) + [
         ('activity', [(True, 'name', ARGS.activity), (True, 'exported', True), (True, 'configChanges', ('hex', CONFIG_CHANGES))] + ([(True, 'screenOrientation', 6)] if ARGS.landscape else []), [
             ('meta-data', [(True, 'name', 'android.app.lib_name'), (True, 'value', LIB)], []),
             ('intent-filter', [], [
@@ -117,22 +125,27 @@ def string_pool(strings):   # UTF-16 string pool chunk
     return rchunk(0x0001, 28, struct.pack('<IIIII', len(strings), 0, 0, 28 + 4 * len(strings), 0), b''.join(struct.pack('<I', o) for o in offs) + data)
 NODPI = struct.pack('<I', 64) + b'\0' * 10 + struct.pack('<H', 0xffff) + b'\0' * 48                                       # ResTable_config: density nodpi, the rest any
 ANYDPI_V26 = struct.pack('<I', 64) + b'\0' * 10 + struct.pack('<H', 0xfffe) + b'\0' * 8 + struct.pack('<HH', 26, 0) + b'\0' * 36   # density anydpi, sdkVersion 26
-def res_table(drawables):   # [(name, [(config, path)])]: drawable i is resource ICON_ID + i, a file per config
-    paths = [p for _, files in drawables for _, p in files]
-    types, keys = string_pool(['drawable']), string_pool([n for n, _ in drawables])
+def res_table(drawables, game_mode=False):   # drawable i is ICON_ID + i; the optional Game Mode XML is type 2, entry 0
+    default = struct.pack('<I', 64) + b'\0' * 60
+    groups = [drawables] + ([[('game_mode_config', [(default, 'res/xml/game_mode_config.xml')])]] if game_mode else [])
+    paths = [p for group in groups for _, files in group for _, p in files]
+    types, keys = string_pool(['drawable', 'xml'] if game_mode else ['drawable']), string_pool([n for group in groups for n, _ in group])
     # an entry with files for more than one config varies by density and SDK version (ResTable_config CONFIG_DENSITY | CONFIG_VERSION)
-    spec = rchunk(0x0202, 16, struct.pack('<BBHI', 1, 0, 0, len(drawables)), b''.join(struct.pack('<I', 0x0500 if len(f) > 1 else 0) for _, f in drawables))
-    typs = b''
-    for config in dict.fromkeys(c for _, files in drawables for c, _ in files):
-        offs, entries = [], b''
-        for i, (_, files) in enumerate(drawables):
-            path = dict(files).get(config)
-            if path is None: offs.append(0xffffffff); continue   # NO_ENTRY: no file for this config
-            offs.append(len(entries)); entries += struct.pack('<HHI', 8, 0, i) + struct.pack('<HBBI', 8, 0, T_STRING, paths.index(path))   # key i -> the file's path
-        typs += rchunk(0x0201, 20 + 64, struct.pack('<BBHII', 1, 0, 0, len(drawables), 20 + 64 + 4 * len(drawables)) + config,
-                       b''.join(struct.pack('<I', o) for o in offs) + entries)
+    typs, key_base = b'', 0
+    for type_id, group in enumerate(groups, 1):
+        if not group: continue
+        typs += rchunk(0x0202, 16, struct.pack('<BBHI', type_id, 0, 0, len(group)), b''.join(struct.pack('<I', 0x0500 if len(f) > 1 else 0) for _, f in group))
+        for config in dict.fromkeys(c for _, files in group for c, _ in files):
+            offs, entries = [], b''
+            for i, (_, files) in enumerate(group):
+                path = dict(files).get(config)
+                if path is None: offs.append(0xffffffff); continue   # NO_ENTRY: no file for this config
+                offs.append(len(entries)); entries += struct.pack('<HHI', 8, 0, key_base + i) + struct.pack('<HBBI', 8, 0, T_STRING, paths.index(path))
+            typs += rchunk(0x0201, 20 + 64, struct.pack('<BBHII', type_id, 0, 0, len(group), 20 + 64 + 4 * len(group)) + config,
+                           b''.join(struct.pack('<I', o) for o in offs) + entries)
+        key_base += len(group)
     name = PKG.encode('utf-16-le')[:254].ljust(256, b'\0')
-    pkg = rchunk(0x0200, 288, struct.pack('<I', 0x7f) + name + struct.pack('<IIIII', 288, 1, 288 + len(types), len(drawables), 0), types + keys + spec + typs)
+    pkg = rchunk(0x0200, 288, struct.pack('<I', 0x7f) + name + struct.pack('<IIIII', 288, len(groups), 288 + len(types), key_base, 0), types + keys + typs)
     return rchunk(0x0002, 12, struct.pack('<I', 1), string_pool(paths) + pkg)
 
 def walk_attrs(n):
@@ -153,12 +166,15 @@ def main():
     if ARGS.dex: entries.append(('classes.dex', open(ARGS.dex, 'rb').read(), 4))
     entries += [(f'lib/arm64-v8a/{os.path.basename(x)}', open(x, 'rb').read(), 16384) for x in ARGS.extra_so]
     entries += [(f'assets/{n}', open(f, 'rb').read(), 4) for n, _, f in (x.partition('=') for x in ARGS.asset)]   # stored, as every entry: AAsset reads them in place
+    drawables = []
     if ARGS.icon:
         icon = [(NODPI, 'res/drawable-nodpi-v4/icon.png')] + ([(ANYDPI_V26, 'res/drawable-anydpi-v26/icon.xml')] if ARGS.icon_fg else [])
         drawables = [('icon', icon)] + ([('icon_fg', [(NODPI, 'res/drawable-nodpi-v4/icon_fg.png')]), ('icon_bg', [(NODPI, 'res/drawable-nodpi-v4/icon_bg.png')])] if ARGS.icon_fg else [])
-        entries += [('resources.arsc', res_table(drawables), 4), ('res/drawable-nodpi-v4/icon.png', open(ARGS.icon, 'rb').read(), 4)]
+        entries += [('res/drawable-nodpi-v4/icon.png', open(ARGS.icon, 'rb').read(), 4)]
         if ARGS.icon_fg: entries += [('res/drawable-anydpi-v26/icon.xml', axml(ADAPTIVE_ICON), 4), ('res/drawable-nodpi-v4/icon_fg.png', open(ARGS.icon_fg, 'rb').read(), 4),
                                      ('res/drawable-nodpi-v4/icon_bg.png', open(ARGS.icon_bg, 'rb').read(), 4)]
+    if drawables or ARGS.game_mode_performance: entries.append(('resources.arsc', res_table(drawables, ARGS.game_mode_performance), 4))
+    if ARGS.game_mode_performance: entries.append(('res/xml/game_mode_config.xml', axml(GAME_MODE_CONFIG), 4))
     z, cd, eocd = build_zip(entries)
     apk = sign_v2(z, cd, eocd, k, crt)
     open(out, 'wb').write(apk)

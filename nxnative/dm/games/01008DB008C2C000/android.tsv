@@ -6,8 +6,9 @@
 # On the AYN Odin 2 (Snapdragon 8 Gen 2, Adreno 740, Android 13, Turnip, 2026-11-13), driven with DM_CTL: the first-launch screens, the opening broadcast with empty
 # pipeline caches, the house, the bag, a save and Continue from it (12 cold boots, 0 crashes), the door fade (frame shots: upright), Postwick. 30 fps as on the
 # Switch; 60 runs the game twice as fast, as in Sword. A 15-minute soak in Postwick kept one process at 33 ms a frame with no red line; the footprint settled at
-# about 1.09 GB and crept 2-3 MiB a minute. Battles, the Wild Area and local wireless are not checked yet.
+# about 1.09 GB and crept 2-3 MiB a minute. 2026-11-14, same device: wild battles played by hand, no freeze in the encounter-to-battle transition.
+# Local wireless is not checked yet. Sword draws blurred all over in handheld mode (DM_OPMODE=0; 0100ABF008968000/android.tsv), not checked here; docked is the default.
 status	playable
 tested	v458752 AYN Odin 2 (Snapdragon 8 Gen 2, Adreno 740, Android 13)
-package	org.nx2a.t01008db008c2c000
+package	org.nx2a.pokemonshield
 orientation	landscape

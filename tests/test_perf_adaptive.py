@@ -21,6 +21,7 @@ class AdaptiveFrameRate(unittest.TestCase):
         harness = r'''
 #include <assert.h>
 #include <stdint.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -36,6 +37,7 @@ int main(int argc, char **argv) {
     int median = argc > 1;
     unsetenv("DM_FPS_PIN"); unsetenv("DM_ADAPTIVE_FPS");
     if (median) setenv("DM_ADAPT_UP_PCT", "50", 1); else unsetenv("DM_ADAPT_UP_PCT");
+    game_mode_sync();   // presenting-frame policy initialization
     assert(dm_present_period_adapt(16666667) == 16666667);
     g_step = 1; g_last_change = 1000000000ll; g_up_hold = 20000000000ll;
     g_nwork = 64; g_nshown = 64;
