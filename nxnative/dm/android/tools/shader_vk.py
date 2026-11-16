@@ -348,45 +348,15 @@ def int_inputs(spv):
         if op == 65 and a[2] in inputs: chain[a[1]] = a[2]                     # OpAccessChain into an input
     for op, a in ins:
         if op == 61 and (a[2] in inputs or a[2] in chain): loads[a[1]] = a[2] if a[2] in inputs else chain[a[2]]   # OpLoad
-    # A shared address expression can keep the raw input in a Function temporary
-    # before several integer bitcasts. Follow identity copies through those cells;
-    # direct-use-only inference otherwise changes the input format after CSE.
-    origins = {v: {root} for v, root in loads.items()}
-    cells = {a[1]: set() for op, a in ins if op == OP_VARIABLE and a[2] == 7}
-    changed = True
-    while changed:
-        changed = False
-        for op, a in ins:
-            target, source = None, ()
-            if op == 62 and a[0] in cells: target, source = cells[a[0]], origins.get(a[1], ())  # OpStore
-            elif op == 61 and a[2] in cells: target, source = origins.setdefault(a[1], set()), cells[a[2]]
-            elif op == 83: target, source = origins.setdefault(a[1], set()), origins.get(a[2], ())  # OpCopyObject
-            elif op in (79, 80, 81, 82):  # shuffle, construct, extract and insert preserve component bits
-                operands = a[2:4] if op in (79, 82) else a[2:] if op == 80 else a[2:3]
-                target, source = origins.setdefault(a[1], set()), set().union(*(origins.get(x, ()) for x in operands))
-            if target is not None and not target.issuperset(source):
-                target.update(source); changed = True
-    in_function = False
     for op, a in ins:
-        if op == 54: in_function = True
-        if op == 56: in_function = False
-        if not in_function or op in (5, 6, 8, 59, 71, 72, 317): continue
-        # A cell whose pointer escapes the supported load/store path is unknown.
-        operands = a[:3] + a[4:] if op == 12 else a  # OpExtInst's instruction number is a literal, not an id.
-        for i, x in enumerate(operands):
-            if x in cells and not (op == 61 and i == 2 or op == 62 and i == 0): other.update(cells[x])
-        if op in (61, 65, 79, 80, 81, 82, 83): continue
-        if op == 62:
-            if a[0] not in cells: other.update(origins.get(a[1], ()))
-            continue
-        ops = a[2:] if op == 124 else a
+        if op in (5, 6, 61, 65, 71, 72): continue   # names, decorations, the loads and chains themselves
+        ops = a[2:] if op == 124 else a   # OpBitcast: result type, result, operand
         for x in ops:
-            roots = origins.get(x, ())
-            if op == 124 and a[0] in signed:
-                for root in roots:
-                    uses[root] += 1
-                    if signed[a[0]]: sint.add(root)
-            else: other.update(roots)
+            if x not in loads: continue
+            if op == 124:
+                uses[loads[x]] += 1
+                if signed.get(a[0]): sint.add(loads[x])   # cast to a signed type: declared int, so a SINT format's fetch matches the input's numeric type
+            else: other.add(loads[x])
     return {str(loc[v]): 'sint' if v in sint else 'uint' for v in uses if v not in other and v in loc}
 
 def main():
@@ -442,6 +412,11 @@ def main():
                 # A failed process may have written valid products before it stopped.
                 # Keep its diagnostic for keys with no output, and validate each product.
                 batch_errors.update(dict.fromkeys(ch, error))
+    # Establish the interface using exactly main's inference before address sharing.
+    # Inferring from optimized code can both lose old integer inputs and add new
+    # ones. Neither change belongs to an address-only optimization.
+    for k in keys:
+        if stages[k] == 'vs': jobs[k]['constant_buffer_address'] = False
     print(f'translating {len(keys)} shaders in {min(a.jobs, len(keys))} batches ...', flush=True)
     translate(keys)
     # second pass (as the Mac chain's dmsh_build.py finish): vertex shaders with inputs used only as integers, translated again with those inputs reported as uint (int_inputs)
@@ -451,6 +426,8 @@ def main():
         try:
             product = shader_products.output(w, k, STAGES[stages[k]])
             if product is None: continue
+            if product[1].get('constant_buffer_address') is not False:
+                raise ValueError('translator did not disable constant-buffer address optimization')
             extra = {l: t for l, t in int_inputs(product[0]).items() if l not in jobs[k]['attr']}
             if extra:
                 jobs[k]['attr'].update(extra)
@@ -461,6 +438,24 @@ def main():
     if again:
         print(f'translating {len(again)} vertex shaders again with their integer inputs ...', flush=True)
         translate(again)
+    original_inputs, optimized = {}, []
+    for k in keys:
+        if stages[k] != 'vs' or k in failures: continue
+        try:
+            product = shader_products.output(w, k, 0)
+            if product is None: continue
+            if product[1].get('constant_buffer_address') is not False:
+                raise ValueError('translator did not preserve the baseline vertex interface')
+            original_inputs[k] = shader_products.vertex_input_signature(product[0])
+            jobs[k]['constant_buffer_address'] = True
+            # Freeze attr: never re-infer from optimized SPIR-V. Remove baseline
+            # products so an unsuccessful optimized retry cannot silently reuse them.
+            for suffix in ('.spv', '.res.json'): os.unlink(os.path.join(w, k + suffix))
+            optimized.append(k)
+        except Exception as e: failures[k] = str(e)
+    if optimized:
+        print(f'optimizing {len(optimized)} vertex shaders with fixed baseline input types ...', flush=True)
+        translate(optimized)
     errs = collections.Counter()
     for r in rs:
         for ln in r.stderr.splitlines():
@@ -474,6 +469,11 @@ def main():
             product = shader_products.output(w, k, STAGES[stages[k]])
             if product is None: raise ValueError(batch_errors[k] or 'no output')
             spv, res = product
+            if stages[k] == 'vs':
+                if res.get('constant_buffer_address') is not True:
+                    raise ValueError('translator did not enable constant-buffer address optimization')
+                if shader_products.vertex_input_signature(spv) != original_inputs[k]:
+                    raise ValueError('address optimization changed the baseline vertex input interface')
             binds, local, io = spirv_bindings(spv)
             shader_products.validate_bindings(binds, res)
             if k in handle_remaps:

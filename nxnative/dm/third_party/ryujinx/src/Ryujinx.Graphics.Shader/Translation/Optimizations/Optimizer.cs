@@ -49,8 +49,7 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
                 }
             }
 
-            // Run optimizations one last time to remove any code that is now optimizable after above passes.
-            if (context.Stage == ShaderStage.Vertex)
+            if (context.Stage == ShaderStage.Vertex && context.Flags.HasFlag(TranslationFlags.OptimizeConstantBufferAddress))
             {
                 foreach (BasicBlock block in context.Blocks)
                 {
@@ -58,6 +57,7 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
                 }
             }
 
+            // Run optimizations one last time to remove any code that is now optimizable after above passes.
             RunOptimizationPasses(context.Blocks, context.ResourceManager);
         }
 

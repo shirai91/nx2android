@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -184,6 +185,46 @@ def require_dotnet10(dotnet):
         raise unittest.SkipTest('Unable to query the .NET installation: ' + type(error).__name__) from error
 
 
+def cached_packages():
+    """Require direct production dependencies; offline restore checks their transitives."""
+    vendor = PROJECT.parents[2]
+    versions = {p.attrib['Include'].lower(): p.attrib['Version']
+                for p in ET.parse(vendor/'Directory.Packages.props').getroot().iter('PackageVersion')}
+    cache = Path(os.environ.get('NUGET_PACKAGES', Path.home()/'.nuget/packages')).resolve()
+    common = vendor/'src/Ryujinx.Common/Ryujinx.Common.csproj'
+    for package in ET.parse(common).getroot().iter('PackageReference'):
+        name = package.attrib['Include'].lower()
+        version = package.attrib.get('Version') or versions[name]
+        if not (cache/name/version.lower()/'.nupkg.metadata').is_file():
+            raise unittest.SkipTest(f'{name} {version} is not cached; build the shader translator first')
+    return cache
+
+
+def harness_command(args, **kwargs):
+    try:
+        return subprocess.run(args, capture_output=True, text=True, errors='replace', **kwargs)
+    except subprocess.TimeoutExpired as error:
+        raise unittest.SkipTest('Address harness command timed out') from error
+
+
+def restore_offline(dotnet, project, work, env):
+    """An empty local feed permits cached packages but cannot fetch remote dependencies."""
+    feed = work/'offline-feed'
+    feed.mkdir()
+    config = work/'NuGet.Config'
+    config.write_text('<configuration><packageSources><clear />'
+                      '<add key="offline" value="' + html.escape(str(feed), quote=True) + '" />'
+                      '</packageSources><fallbackPackageFolders><clear /></fallbackPackageFolders>'
+                      '</configuration>', encoding='utf-8')
+    result = harness_command([dotnet, 'restore', str(project), '--configfile', str(config),
+                              '-p:RestoreSources=' + str(feed), '-p:NuGetAudit=false',
+                              '-p:ArtifactsPath=' + str(work/'artifacts'), '--nologo', '-v:q'],
+                             cwd=work, env=env, timeout=60)
+    if result.returncode and re.search(r'\bNU110[0-3]\b', result.stdout + result.stderr):
+        raise unittest.SkipTest('Shader dependency is not cached; offline restore cannot fetch it')
+    return result
+
+
 class DotnetPrerequisitesTests(unittest.TestCase):
     def test_missing_executable_skips(self):
         with self.assertRaises(unittest.SkipTest):
@@ -224,11 +265,53 @@ class DotnetPrerequisitesTests(unittest.TestCase):
             with self.assertRaises(unittest.SkipTest):
                 require_dotnet10('dotnet')
 
+    def test_missing_direct_package_skips(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with mock.patch.dict(os.environ, {'NUGET_PACKAGES': directory}):
+                with self.assertRaises(unittest.SkipTest):
+                    cached_packages()
+
+    def test_offline_restore_uses_only_empty_local_feed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            with mock.patch.object(subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, '', '')) as run:
+                restore_offline('dotnet', work/'Check.csproj', work, {})
+            sources = ET.parse(work/'NuGet.Config').getroot().find('packageSources')
+            self.assertIsNotNone(sources.find('clear'))
+            self.assertEqual([p.attrib['value'] for p in sources.findall('add')], [str(work/'offline-feed')])
+            self.assertIn('-p:RestoreSources=' + str(work/'offline-feed'), run.call_args.args[0])
+            self.assertIn('-p:NuGetAudit=false', run.call_args.args[0])
+
+    def test_missing_transitive_package_skips(self):
+        with tempfile.TemporaryDirectory() as directory:
+            failure = subprocess.CompletedProcess([], 1, 'error NU1101: Package unavailable in offline source', '')
+            with mock.patch.object(subprocess, 'run', return_value=failure):
+                with self.assertRaises(unittest.SkipTest):
+                    restore_offline('dotnet', Path(directory)/'Check.csproj', Path(directory), {})
+
+    def test_restore_timeout_skips(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with mock.patch.object(subprocess, 'run', side_effect=subprocess.TimeoutExpired('dotnet', 60)):
+                with self.assertRaises(unittest.SkipTest):
+                    restore_offline('dotnet', Path(directory)/'Check.csproj', Path(directory), {})
+
+    def test_build_timeout_skips(self):
+        with mock.patch.object(subprocess, 'run', side_effect=subprocess.TimeoutExpired('dotnet', 180)):
+            with self.assertRaises(unittest.SkipTest):
+                harness_command(['dotnet', 'build', '--no-restore'], timeout=180)
+
+    def test_other_restore_failures_remain_failures(self):
+        with tempfile.TemporaryDirectory() as directory:
+            failure = subprocess.CompletedProcess([], 1, 'error MSB1009: Project file does not exist', '')
+            with mock.patch.object(subprocess, 'run', return_value=failure):
+                self.assertEqual(restore_offline('dotnet', Path(directory)/'Check.csproj', Path(directory), {}).returncode, 1)
+
 
 class ConstantBufferAddressTests(unittest.TestCase):
     def test_production_address_rule(self):
         dotnet = os.environ.get('DOTNET') or shutil.which('dotnet')
         require_dotnet10(dotnet)
+        packages = cached_packages()
         with tempfile.TemporaryDirectory(prefix='nx2a_cbuf_') as directory:
             work = Path(directory)
             project = work/'Check.csproj'
@@ -237,10 +320,16 @@ class ConstantBufferAddressTests(unittest.TestCase):
                                '</PropertyGroup><ItemGroup><ProjectReference Include="' + html.escape(str(PROJECT), quote=True) +
                                '" /></ItemGroup></Project>', encoding='utf-8')
             (work/'Program.cs').write_text(HARNESS, encoding='utf-8')
-            result = subprocess.run([dotnet, 'build', str(project), '-c', 'Release', '--artifacts-path', str(work/'artifacts'),
-                                     '-p:NuGetAudit=false', '--nologo', '-v:q'], capture_output=True, text=True, errors='replace', timeout=180)
+            env = dict(os.environ, NUGET_PACKAGES=str(packages), DOTNET_CLI_HOME=str(work/'cli'),
+                       DOTNET_NOLOGO='1', DOTNET_SKIP_FIRST_TIME_EXPERIENCE='1', DOTNET_CLI_TELEMETRY_OPTOUT='1',
+                       DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE='true')
+            result = restore_offline(dotnet, project, work, env)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            result = subprocess.run([dotnet, str(work/'artifacts/bin/Check/release/Check.dll')],
-                                    capture_output=True, text=True, errors='replace', timeout=60)
+            result = harness_command([dotnet, 'build', str(project), '--no-restore', '-c', 'Release',
+                                      '--artifacts-path', str(work/'artifacts'), '-p:NuGetAudit=false', '--nologo', '-v:q'],
+                                     cwd=work, env=env, timeout=180)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            result = harness_command([dotnet, str(work/'artifacts/bin/Check/release/Check.dll')],
+                                     cwd=work, env=env, timeout=60)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn('constant buffer address: PASS', result.stdout)

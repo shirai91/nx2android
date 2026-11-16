@@ -121,18 +121,23 @@ axis preservation, not game recognition or device behavior.
 
 ## Tests
 
-`test_shader_constant_buffer_address` executes the production SSA rule through
-a .NET 10 reflection harness. It checks wrapping, truncation, carry bounds, signed
-shifts, near matches, block-local sharing and idempotence across generated graphs.
-SDK, reference-pack and runtime prerequisites are checked before building; missing
-prerequisites skip rather than fail release runners. `test_shader_integer_input_flow`
-checks integer-input inference through identity temporaries, vector operations,
-mixed consumers and pointer escapes without invoking an external compiler.
-
 
 ```
 python -m unittest discover tests
 ```
+
+`test_shader_constant_buffer_address` executes the production SSA rule through
+a .NET 10 reflection harness. It checks wrapping, truncation, carry bounds, signed
+shifts, near matches, block-local sharing and idempotence across generated graphs.
+SDK, reference-pack, runtime and cached-package prerequisites are checked before
+building. Restore uses an empty local feed with remote sources cleared and NuGet
+audit disabled; build uses `--no-restore`. Missing dependencies and command timeouts
+skip rather than fail release runners. `test_shader_integer_input_flow` keeps the
+original direct-use inference contract; Function temporaries and vector/copy
+graphs do not gain new inferred types. `test_shader_export_checks` verifies that
+baseline inference precedes address optimization, types remain fixed across
+retries, changed interfaces are rejected, and a failed optimized export cannot
+reuse an unoptimized product.
 
 `test_fragment_output_masks` compiles the production attachment-state loop and
 checks sparse output maps, absent fragment shaders, channel masks, integer

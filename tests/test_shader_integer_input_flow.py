@@ -1,4 +1,4 @@
-"""Integer-input inference follows identity temporaries without accepting FP uses."""
+"""Keep main's integer-input inference while the address pass fixes its inputs."""
 import ast
 import collections
 from pathlib import Path
@@ -28,55 +28,29 @@ def module(body, local_storage=7):
 
 
 class IntegerInputFlowTests(unittest.TestCase):
+    # Preserve the pre-address-pass inference contract. In particular, do not
+    # widen it to pre-existing Function temporaries or copied component graphs.
     def test_direct_signed_and_unsigned_cast(self):
         self.assertEqual(infer(module([(124, [2, 22, 21])])), {'11': 'sint'})
         self.assertEqual(infer(module([(124, [3, 22, 21])])), {'11': 'uint'})
 
-    def test_raw_function_temporary_and_copy(self):
-        body = [(62, [11, 21]), (61, [1, 22, 11]), (83, [1, 23, 22]), (124, [2, 24, 23])]
-        self.assertEqual(infer(module(body)), {'11': 'sint'})
-
-    def test_global_literal_is_not_a_pointer_use(self):
-        data = module([(62, [11, 21]), (61, [1, 22, 11]), (124, [2, 23, 22])])
-        # Capability11 is a literal that happens to equal the Function cell's id.
-        capability = struct.pack('<2I', 2 << 16 | 17, 11)
-        self.assertEqual(infer(data[:20] + capability + data[20:]), {'11': 'sint'})
-
-    def test_extinst_number_is_not_a_pointer_use(self):
-        body = [(62, [11, 21]), (61, [1, 22, 11]), (124, [2, 23, 22]), (12, [1, 24, 60, 11, 9])]
-        self.assertEqual(infer(module(body)), {'11': 'sint'})
-
-    def test_multiple_integer_reads(self):
-        body = [(62, [11, 21]), (61, [1, 22, 11]), (124, [3, 23, 22]),
-                (61, [1, 24, 11]), (124, [2, 25, 24])]
-        self.assertEqual(infer(module(body)), {'11': 'sint'})
-
-    def test_construct_and_extract_preserve_raw_bits(self):
-        body = [(80, [4, 22, 21, 9, 9, 9]), (81, [1, 23, 22, 0]), (124, [2, 24, 23])]
-        self.assertEqual(infer(module(body)), {'11': 'sint'})
-
-    def test_floating_use_of_constructed_vector_blocks_inference(self):
-        body = [(80, [4, 22, 21, 9, 9, 9]), (81, [1, 23, 22, 0]),
-                (124, [2, 24, 23]), (129, [1, 25, 23, 9])]
-        self.assertEqual(infer(module(body)), {})
-
-    def test_floating_use_after_identity_copy_blocks_inference(self):
-        body = [(62, [11, 21]), (61, [1, 22, 11]), (124, [2, 23, 22]),
-                (83, [1, 24, 22]), (129, [1, 25, 24, 9])]
-        self.assertEqual(infer(module(body)), {})
-
-    def test_function_pointer_escape_blocks_inference(self):
-        body = [(62, [11, 21]), (61, [1, 22, 11]), (124, [2, 23, 22]), (57, [1, 24, 60, 11])]
-        self.assertEqual(infer(module(body)), {})
-
-    def test_non_function_store_is_not_an_identity_cell(self):
+    def test_function_temporary_is_not_newly_inferred(self):
         body = [(62, [11, 21]), (61, [1, 22, 11]), (124, [2, 23, 22])]
-        self.assertEqual(infer(module(body, local_storage=12)), {})
+        self.assertEqual(infer(module(body)), {})
+
+    def test_identity_copy_is_not_newly_inferred(self):
+        self.assertEqual(infer(module([(83, [1, 22, 21]), (124, [2, 23, 22])])), {})
+
+    def test_vector_copy_is_not_newly_inferred(self):
+        body = [(80, [4, 22, 21, 9, 9, 9]), (81, [1, 23, 22, 0]), (124, [2, 24, 23])]
+        self.assertEqual(infer(module(body)), {})
+
+    def test_floating_consumer_blocks_direct_inference(self):
+        body = [(124, [2, 22, 21]), (129, [1, 23, 21, 9])]
+        self.assertEqual(infer(module(body)), {})
 
     def test_no_integer_consumer_is_not_inferred(self):
-        self.assertEqual(infer(module([(62, [11, 21]), (61, [1, 22, 11])])), {})
+        self.assertEqual(infer(module([])), {})
 
-    def test_mixed_stores_still_block_any_floating_consumer(self):
-        body = [(62, [11, 21]), (62, [11, 9]), (61, [1, 22, 11]),
-                (124, [2, 23, 22]), (129, [1, 24, 22, 9])]
-        self.assertEqual(infer(module(body)), {})
+
+if __name__ == '__main__': unittest.main()
