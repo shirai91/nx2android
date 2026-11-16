@@ -546,6 +546,11 @@ static VkShaderModule vk_shader_module_(vkshader_t *s, uint64_t um, uint64_t im,
     return m;
 }
 // Static support, zero and disabled-attribute buffers. Maxwell supplies (0,0,0,1) for disabled generic attributes; its register words are float bit patterns even when a shader reads them as integers.
+// The detail distance factor (front_android.c, the pause menu's row): its inverse, in the support buffer's last render scale entry (index 72: a shader's 72nd
+// texture, which no game has), where a game's patched culling shader reads it. 1 until the player chooses
+enum { DETAIL_SLOT = 192 + 16 * 72 };
+static float *g_detail_ptr; static uint32_t g_detail_bits = 0x3f800000;
+void dm_detail_dist_set(float inverse_factor) { uint32_t u; memcpy(&u, &inverse_factor, 4); __atomic_store_n(&g_detail_bits, u, __ATOMIC_RELEASE); float *p = __atomic_load_n(&g_detail_ptr, __ATOMIC_ACQUIRE); if (p) memcpy(p, &u, 4); }
 static VkBuffer static_buf(int which) {
     static VkBuffer b[3]; static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
     { VkBuffer r = __atomic_load_n(&b[which], __ATOMIC_ACQUIRE); if (r) return r; }   // made already: no lock (every draw binds them)
@@ -557,6 +562,7 @@ static VkBuffer static_buf(int which) {
         VkDeviceMemory m; VKCHK(vkAllocateMemory(V.dev, &ai, NULL, &m)); VKCHK(vkBindBufferMemory(V.dev, nb, m, 0));
         void *p; VKCHK(vkMapMemory(V.dev, m, 0, VK_WHOLE_SIZE, 0, &p)); memset(p, 0, 65536);
         if (which == 0) for (int i = 0; i < 73; i++) *(float *)((uint8_t *)p + 192 + 16 * i) = 1.0f;   // render_scale[i].x (SupportBuffer.cs layout)
+        if (which == 0) { uint32_t u = __atomic_load_n(&g_detail_bits, __ATOMIC_ACQUIRE); memcpy((uint8_t *)p + DETAIL_SLOT, &u, 4); __atomic_store_n(&g_detail_ptr, (float *)((uint8_t *)p + DETAIL_SLOT), __ATOMIC_RELEASE); }
         if (which == 2) ((float *)p)[3] = 1.0f;   // Odyssey's depth pre-pass reads an absent attribute's .w as its flower displacement weight; zero disagrees with the material pass and leaves stale colour.
         __atomic_store_n(&b[which], nb, __ATOMIC_RELEASE);   // published once filled
     }

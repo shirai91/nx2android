@@ -66,6 +66,15 @@ static int res_steps(void) {   // the profile's three scales, read once (env.txt
 }
 int dm_menu_res_available(void) { return res_steps() && dm_render_scale_has(); }
 static void res_apply(int step) { if (res_steps()) setenv("DM_RENDER_SCALE", g_res_scales[step < 0 ? 0 : step > 2 ? 2 : step], 1); }
+// The Detail distance row: for a game whose data pack sets DM_DETAIL_DIST=1 in env.txt, that is, whose culling compute shader multiplies its distances by the
+// factor the host keeps in the support buffer (gfx_vk_shader.c dm_detail_dist_set; Trails in the Sky 1st Chapter: its patches.py cull_detail_distance). 1x is the game's own
+// distances; 1.5x and 2x switch levels of detail and drop small objects that much farther away, for more GPU work
+static _Atomic int g_set_detail;   // the row's step: 0 1x, 1 1.5x, 2 2x (settings.txt detail=)
+static const float DETAIL_FACTORS[3] = {1.0f, 1.5f, 2.0f};
+__attribute__((weak)) void dm_detail_dist_set(float inverse_factor) { (void)inverse_factor; }
+static void detail_apply(int step) { dm_detail_dist_set(1.0f / DETAIL_FACTORS[step < 0 ? 0 : step > 2 ? 2 : step]); }
+int dm_menu_detail_available(void) { static int on = -1; if (on < 0) { const char *e = getenv("DM_DETAIL_DIST"); on = e && atoi(e); } return on; }
+int dm_menu_detail_step(void) { return atomic_load(&g_set_detail); }
 AAssetManager *dm_front_assets(void) { return g_act ? g_act->assetManager : NULL; }   // the APK's assets (overlay_theme.c: the gamepad's theme)
 static pthread_mutex_t g_win_mu = PTHREAD_MUTEX_INITIALIZER;
 static ANativeWindow *g_win, *g_external_win;
@@ -120,6 +129,7 @@ static void settings_load(void) {
         else if (sscanf(line, "docked=%d", &v) == 1) setenv("DM_OPMODE", v ? "1" : "0", 1);   // over env.txt's: the host reads it once, at its first query
         else if (sscanf(line, "opacity=%d", &v) == 1) atomic_store(&g_set_opacity, v < OV_OPACITY_MIN ? OV_OPACITY_MIN : v > OV_OPACITY_MAX ? OV_OPACITY_MAX : v);
         else if (sscanf(line, "grid=%d", &v) == 1) atomic_store(&g_set_grid, v != 0);
+        else if (sscanf(line, "detail=%d", &v) == 1 && v >= 0 && v <= 2) { atomic_store(&g_set_detail, v); detail_apply(v); }
         else if (sscanf(line, "res=%d", &v) == 1 && v >= 0 && v <= 2) { atomic_store(&g_set_res, v); res_apply(v); }   // over env.txt's: the loader reads it when the game starts
         else if (sscanf(line, "rate=%d", &v) == 1 && (v == 30 || v == 60)) { atomic_store(&g_set_rate, v); setenv("DM_FPS_TARGET", v == 60 ? "60" : "30", 1); }   // over env.txt's: the loader reads it when the game starts
         else if (sscanf(line, "labels=%d", &v) == 1) atomic_store(&g_set_labels, v != 0);
@@ -142,6 +152,7 @@ static void settings_save(void) {
     fprintf(f, "overlay=%d\nrumble=%d\ndocked=%d\nfps=%d\nopacity=%d\ngrid=%d\n", atomic_load(&g_set_overlay), atomic_load(&g_set_rumble), dm_opmode() != 0, atomic_load(&g_set_fps),
             atomic_load(&g_set_opacity), atomic_load(&g_set_grid));
     if (atomic_load(&g_set_rate) > 0) fprintf(f, "rate=%d\n", atomic_load(&g_set_rate));
+    if (atomic_load(&g_set_detail)) fprintf(f, "detail=%d\n", atomic_load(&g_set_detail));
     if (atomic_load(&g_set_res) >= 0) fprintf(f, "res=%d\n", atomic_load(&g_set_res));   // (only once the player chose: until then env.txt decides)
     if (atomic_load(&g_set_labels) >= 0) fprintf(f, "labels=%d\n", atomic_load(&g_set_labels));   // (only once the player chose: until then env.txt decides)
     for (int l = 0; l < 2; l++) for (int i = 0; i < OV_N; i++) {
@@ -573,6 +584,7 @@ static void menu_do(int item) {
     else if (item == OVM_FPS) { atomic_store(&g_set_fps, !atomic_load(&g_set_fps)); settings_save(); }
     else if (item == OVM_MODE) { dm_set_opmode(dm_opmode() ? 0 : 1); settings_save(); }   // the game takes it when it goes on
     else if (item == OVM_PAD) { atomic_store(&g_set_labels, !pad_labels()); settings_save(); }   // at once (pad_labels)
+    else if (item == OVM_DETAIL) { int s = (atomic_load(&g_set_detail) + 1) % 3; atomic_store(&g_set_detail, s); detail_apply(s); settings_save(); }   // at once: the shader reads it every dispatch
     else if (item == OVM_RES) { int s = (res_step() + 1) % 3; atomic_store(&g_set_res, s); res_apply(s); settings_save(); }   // each press the next step; the host takes it within 30 presents
     else if (item == OVM_RATE) { int t = dm_fps_target_get() >= 60 ? 30 : 60; dm_fps_target_set(t); atomic_store(&g_set_rate, t); settings_save(); }   // at once: the stubs and the present pacing read the state page every frame
     else if (item == OVM_TAB) { menu_tab(atomic_load(&g_menu_tab) + 1); return; }

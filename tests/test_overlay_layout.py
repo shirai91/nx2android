@@ -19,7 +19,8 @@ class OverlayLayout(unittest.TestCase):
         harness = r'''
 #include <assert.h>
 #include "overlay_layout.h"
-static int custom_faces, custom_a, custom_x, hidden_ctl = -1, audio_available, rate_available, res_available;
+static int custom_faces, custom_a, custom_x, hidden_ctl = -1, audio_available, rate_available, res_available, detail_available;
+int dm_menu_detail_available(void) { return detail_available; }
 int dm_menu_audio_available(void) { return audio_available; }
 int dm_menu_rate_available(void) { return rate_available; }
 int dm_menu_res_available(void) { return res_available; }
@@ -98,10 +99,14 @@ int main(void) {
     rate_available = 1;   // rows follow each other: the frame rate row takes its place, and the panel has a row more
     assert(OVM_ROWS == 8 && ov_menu_item(1, 2) == OVM_RATE && ov_menu_item(1, 3) == OVM_MODE && ov_menu_item(1, OVM_ROWS - 2) == OVM_AUDIO && ov_menu_item(0, 6) == -1);
     res_available = 1;
-    assert(OVM_ROWS == 9 && OVM_ROWS == OVM_ROWS_MAX && ov_menu_item(1, 2) == OVM_RATE && ov_menu_item(1, 3) == OVM_RES && ov_menu_item(1, 4) == OVM_MODE && ov_menu_item(1, OVM_ROWS - 2) == OVM_AUDIO);
+    assert(OVM_ROWS == 9 && ov_menu_item(1, 2) == OVM_RATE && ov_menu_item(1, 3) == OVM_RES && ov_menu_item(1, 4) == OVM_MODE && ov_menu_item(1, OVM_ROWS - 2) == OVM_AUDIO);
     assert(ov_menu_scale() <= fit && ov_menu_item(0, OVM_ROWS - 1) == OVM_RESUME);
     rate_available = 0;
     assert(OVM_ROWS == 8 && ov_menu_item(1, 2) == OVM_RES && ov_menu_item(1, 3) == OVM_MODE);
+    detail_available = 1;   // the detail distance row follows the resolution's
+    assert(OVM_ROWS == 9 && ov_menu_item(1, 2) == OVM_RES && ov_menu_item(1, 3) == OVM_DETAIL && ov_menu_item(1, 4) == OVM_MODE && ov_menu_item(1, OVM_ROWS - 2) == OVM_AUDIO);
+    rate_available = 1;
+    assert(OVM_ROWS == 10 && OVM_ROWS == OVM_ROWS_MAX && ov_menu_item(1, 2) == OVM_RATE && ov_menu_item(1, 4) == OVM_DETAIL && ov_menu_item(1, OVM_ROWS - 1) == OVM_RESUME);
     const float screens[][2] = {{915, 412}, {1216, 760}, {2400, 1080}, {1080, 2400}};
     for (unsigned s = 0; s < sizeof screens / sizeof screens[0]; s++) {
         float W = screens[s][0], H = screens[s][1], step = H / OVE_GRID_ROWS, p[4];
