@@ -478,10 +478,17 @@ static void md_pump(mdec_t *d) {
             int s = -1; for (int k = 0; k < d->nout; k++) if (!d->out[k].used) { s = k; break; }
             if (s < 0) { pthread_mutex_unlock(&d->mu); break; }
             d->out[s].used = 1; pthread_mutex_unlock(&d->mu);
-            d->jslot = s; d->jflush = 1; md_job(d, MDJ_TAKE); int got = d->jgot, left = d->avc ? mavc_queued(d->avc) : 0;
+            d->jslot = s; d->jflush = 1; int got = 0, left = 0; if (d->avc_drain != 2) { md_job(d, MDJ_TAKE); got = d->jgot; left = d->avc ? mavc_queued(d->avc) : 0; }
             pthread_mutex_lock(&d->mu);
-            d->out[s].pic = got; d->out[s].pts = got ? d->jpts_out : 0; d->out[s].flags = left ? 0 : 4; d->outq[d->noutq++] = s;
-            if (!left) d->avc_drain = 0;
+            // DM_MOVIE_EOS_SEPARATE=1: the last picture goes out alone and the end-of-stream flag follows on an output of its own (Another Eden's CRIWARE Mana player never fetches the
+            // picture of an output that carries the flag, so it waits for a picture that was lost and the movie never ends: a black screen after its intro)
+            static int sepeos = -1; if (sepeos < 0) { const char *e = getenv("DM_MOVIE_EOS_SEPARATE"); sepeos = e && atoi(e) > 0; }
+            int tail = d->avc_drain == 2;   // the empty end-of-stream output after a lone last picture
+            int sep = sepeos && !tail && got && !left;
+            if (tail) { got = 0; left = 0; }
+            if (md_trace_all()) LOG("[movie] drain: picture %d, %d left, tail %d, sep %d", got, left, tail, sep);
+            d->out[s].pic = got; d->out[s].pts = got ? d->jpts_out : 0; d->out[s].flags = left || sep ? 0 : 4; d->outq[d->noutq++] = s;
+            if (sep) d->avc_drain = 2; else if (!left) d->avc_drain = 0;
             pthread_mutex_unlock(&d->mu);
             md_event(d, 1);
             continue;

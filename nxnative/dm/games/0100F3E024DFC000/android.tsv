@@ -1,0 +1,11 @@
+# Another Eden Begins on Android: Unity (IL2CPP), SDK 20, NVN; the movies are CRIWARE Mana (H.264 through nn::movie), the audio CRI ADX and FMOD.
+# Tested 2026-11-16 on an AYN Thor (QCS8550, Adreno 740, Android 13), base game v0: the logos, the title, a new game's opening movie and its hand over to the game, at about
+# 30 fps in the frame loop (frame p50 33.3 ms, p95 about 39 ms, GPU 5 ms). Not yet: play past the first scene, a save and its load, 60 fps.
+# The game's main has 187 MB of text, beyond the +-128 MB a single branch reaches: it needs the rewriter's relay branches (dm/tools/patch_nso.py B()).
+status	boots
+tested	v0 AYN Thor (QCS8550, Adreno 740, Android 13)
+package	org.nx2a.anothereden
+orientation	landscape
+# CRIWARE Mana matches pictures to packets by count (every packet has time 0) and never fetches the picture of an output that carries the end-of-stream flag: the opening movie's last
+# picture went out on that output, the player waited for it for ever and the game stayed on a black screen. The last picture goes out alone, the flag on an output of its own.
+env	DM_MOVIE_EOS_SEPARATE=1

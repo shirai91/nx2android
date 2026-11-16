@@ -1,0 +1,35 @@
+# Game profile of Another Eden Begins (Switch, base game v0). In bring-up: boots on an AYN Thor through the opening movie (see android.tsv). Values guessed by profile_guess.py from the survey, not all checked by hand
+# Another Eden Begins, SDK 20, survey <NSP folder>/0100F3E024DFC000_survey/survey.md
+
+# ---- Identity ----
+title_id	0100F3E024DFC000
+program_id	0100F3E024DFC000
+
+# ---- App ----
+name	Another Eden Begins
+ipa	AnotherEdenBegins.ipa
+app_category	public.app-category.games
+
+# ---- Versions ----
+build	v0	1.0.0	main=8a18e27e81e8488cc6344b8f018aa128	subsdk0=99e21f98a397434b534c1459fc38a2b8	sdk=bc204aae7319bab274894f1cc3f5da92
+package	v0
+shader_versions	v0
+
+# ---- Files ----
+# every module main imports from
+modules	main subsdk0 sdk
+romfs_marker	Data/StreamingAssets/aa/Switch/91c9e37bd70357ee9550e45dd320d6a0
+zip_store	.assets:.bin:.bundle:.dat:.ress:.usm:.metallib
+
+# ---- Memory ----
+# the NPDM declares 16 MB of system resource (virtual address memory) and main never sets a heap: a 5 GB block with a 4.375 GB alias region, where the game maps its memory itself
+mem_reserve	0x140000000
+mem_alias	0x118000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+# the NPDM declares 16 MB of system resource
+sys_resource	0x1000000
+
+# ---- Shader split ----
+shader_groups	/Data/=data
+shader_note	Another Eden Begins shaders (provisional profile)
