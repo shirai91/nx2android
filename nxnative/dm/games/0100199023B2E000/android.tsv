@@ -1,0 +1,11 @@
+# Atelier Ryza: Ever Darkness & the Secret Hideout DX on Android: Gust's engine, SDK 18, NVN; 1,057 shaders (the Gust chunked-zlib shader reader of #352 reads them).
+# Tested 2026-11-15 on an AYN Thor (QCS8550, Adreno 740, Android 13), base game v0: the logos, the animated title screen with its movie, the main menu, with sound; about 30 fps
+# in the frame loop (frame p50 33.3 ms, p95 about 35 ms). Not yet: a new game or a load, play, a save, 60 fps.
+status	boots
+tested	v0 AYN Thor (QCS8550, Adreno 740, Android 13)
+package	org.nx2a.atelierryzadx
+orientation	landscape
+# The sound was robotic: 45% of the 20 ms blocks of the audio dump were repeats of the block 4 earlier, while the game's own PCM had none. The game updates the audio renderer twice
+# between two renders about every third frame, and each catch-up frame the host renders then came out as such a repeat. No catch-up frames after the first 60 updates: 0% repeats
+# over 14,000 blocks, and the sound is right. Why a catch-up snaps the voice back 960 samples is not known.
+env	DM_AUDREN_NOCATCHUP=1
