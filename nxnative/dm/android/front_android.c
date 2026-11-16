@@ -49,6 +49,23 @@ void front_screen_match(int fps) { (void)fps; }
 static ANativeActivity *g_act;
 static jmethodID g_audio_menu_method;
 int dm_menu_audio_available(void) { return g_audio_menu_method != NULL; }
+// The pause menu's Frame rate row: for a game whose rewriter stubs step by the host's target (the frame step state page, loader.c), 30 or 60 fps
+int dm_fps_target_get(void); void dm_fps_target_set(int t); int dm_fps_target_has(void);
+// Only for a profile that asks (android.tsv: env DM_MENU_RATE=1): a frame step page alone does not say that the game was tried at both rates
+int dm_menu_rate_available(void) { static int on = -1; if (on < 0) { const char *e = getenv("DM_MENU_RATE"); on = e && atoi(e) > 0; } return on && dm_fps_target_has(); }
+// The Resolution row: for a game with a render-scale stub (loader.c dm_render_scale_has) whose profile gives the row's three steps (android.tsv: env
+// DM_MENU_RES=<low>:<auto>:<high>, e.g. 0.5:1.0:0.9). The steps are render scales the host hands the stub (DM_RENDER_SCALE, read again every 30 presents: hle_nvn.c);
+// what a stub makes of a scale is its game's (a fraction of the size, a dynamic resolution's margin), so the host has no steps of its own
+int dm_render_scale_has(void);
+static char g_res_scales[3][16];
+static int res_steps(void) {   // the profile's three scales, read once (env.txt is loaded before the settings)
+    static int ok = -1;
+    if (ok < 0) { const char *e = getenv("DM_MENU_RES"); float f[3]; ok = e && sscanf(e, "%f:%f:%f", &f[0], &f[1], &f[2]) == 3 && f[0] > 0 && f[1] > 0 && f[2] > 0;
+        for (int i = 0; ok && i < 3; i++) snprintf(g_res_scales[i], sizeof g_res_scales[i], "%g", (double)f[i]); }
+    return ok;
+}
+int dm_menu_res_available(void) { return res_steps() && dm_render_scale_has(); }
+static void res_apply(int step) { if (res_steps()) setenv("DM_RENDER_SCALE", g_res_scales[step < 0 ? 0 : step > 2 ? 2 : step], 1); }
 AAssetManager *dm_front_assets(void) { return g_act ? g_act->assetManager : NULL; }   // the APK's assets (overlay_theme.c: the gamepad's theme)
 static pthread_mutex_t g_win_mu = PTHREAD_MUTEX_INITIALIZER;
 static ANativeWindow *g_win, *g_external_win;
@@ -77,6 +94,8 @@ static char g_root[512];
 static _Atomic int g_set_overlay = 1, g_set_rumble = 1, g_set_fps;   // the gamepad shown; rumble and tap vibration; the frame rate counter (top left)
 static _Atomic int g_set_opacity = 60;   // the gamepad's opacity, percent (OV_OPACITY_MIN..MAX: the menu's Opacity slider)
 static _Atomic int g_set_grid;   // the layout editor's Snap to grid
+static _Atomic int g_set_res = -1;      // the Resolution row's step the player chose: 0 low, 1 auto, 2 high (settings.txt res=); -1: env.txt's DM_RENDER_SCALE (res_step)
+static _Atomic int g_set_rate = -1;     // the frame step's target the player chose in the pause menu (30 or 60; settings.txt rate=); -1: the profile's or env.txt's
 static _Atomic int g_set_labels = -1;   // a controller's face buttons by their label (1) or their position (0); -1: as env.txt says (pad_labels)
 // the player's own layout (overlay_layout.h dm_overlay_custom): [0] the saved one (settings.txt ui= rows), [1] the layout editor's while it is open; per layout
 // and control: x + 1, y + 1 in 1/10000 of the window's width and height (0 = the layout's place), the size factor in 1/1000 (0 = 1), 1 when hidden
@@ -85,6 +104,14 @@ static _Atomic int g_cust[2][2][DM_AOV_N][CUST_K], g_cust_ver, g_edit;
 static const char *const LAYOUT_NAMES[2] = {"tablet", "phone"};
 static int ctl_named(const char *n) { for (int i = 0; i < OV_N; i++) if (!strcmp(OV_LAYOUTS[0][i].name, n)) return i; return -1; }
 int dm_opmode(void); void dm_set_opmode(int m);   // hle_oe.c: 0 handheld, 1 docked; a change reaches the game as the Switch's operation mode notification
+// The row's step: the player's, else the step nearest to env.txt's DM_RENDER_SCALE (auto when it is not set)
+static int res_step(void) {
+    int s = atomic_load(&g_set_res); const char *e = getenv("DM_RENDER_SCALE");
+    if (s >= 0 || !e || !res_steps()) return s >= 0 ? s : 1;
+    static const int order[3] = {1, 0, 2}; float v = strtof(e, NULL), best = 1e9f; s = 1;
+    for (int i = 0; i < 3; i++) { float d = fabsf(strtof(g_res_scales[order[i]], NULL) - v); if (d < best) { best = d; s = order[i]; } }
+    return s;
+}
 static void settings_load(void) {
     char p[600]; snprintf(p, sizeof p, "%s/settings.txt", g_root); FILE *f = fopen(p, "r"); char line[128];
     if (!f) return;
@@ -93,6 +120,8 @@ static void settings_load(void) {
         else if (sscanf(line, "docked=%d", &v) == 1) setenv("DM_OPMODE", v ? "1" : "0", 1);   // over env.txt's: the host reads it once, at its first query
         else if (sscanf(line, "opacity=%d", &v) == 1) atomic_store(&g_set_opacity, v < OV_OPACITY_MIN ? OV_OPACITY_MIN : v > OV_OPACITY_MAX ? OV_OPACITY_MAX : v);
         else if (sscanf(line, "grid=%d", &v) == 1) atomic_store(&g_set_grid, v != 0);
+        else if (sscanf(line, "res=%d", &v) == 1 && v >= 0 && v <= 2) { atomic_store(&g_set_res, v); res_apply(v); }   // over env.txt's: the loader reads it when the game starts
+        else if (sscanf(line, "rate=%d", &v) == 1 && (v == 30 || v == 60)) { atomic_store(&g_set_rate, v); setenv("DM_FPS_TARGET", v == 60 ? "60" : "30", 1); }   // over env.txt's: the loader reads it when the game starts
         else if (sscanf(line, "labels=%d", &v) == 1) atomic_store(&g_set_labels, v != 0);
         else if (!strncmp(line, "ui=", 3)) {   // ui=<layout>,<control>,<x>,<y>,<size>[,<hidden>]: x, y in 1/10000 of the window (-1 the layout's place), size in 1/1000
             char lay[16], name[32]; int x, y, z, hid = 0, l, i;
@@ -112,6 +141,8 @@ static void settings_save(void) {
     FILE *f = fopen(tmp, "w"); if (!f) { LOG("[RED] cannot write %s", tmp); return; }
     fprintf(f, "overlay=%d\nrumble=%d\ndocked=%d\nfps=%d\nopacity=%d\ngrid=%d\n", atomic_load(&g_set_overlay), atomic_load(&g_set_rumble), dm_opmode() != 0, atomic_load(&g_set_fps),
             atomic_load(&g_set_opacity), atomic_load(&g_set_grid));
+    if (atomic_load(&g_set_rate) > 0) fprintf(f, "rate=%d\n", atomic_load(&g_set_rate));
+    if (atomic_load(&g_set_res) >= 0) fprintf(f, "res=%d\n", atomic_load(&g_set_res));   // (only once the player chose: until then env.txt decides)
     if (atomic_load(&g_set_labels) >= 0) fprintf(f, "labels=%d\n", atomic_load(&g_set_labels));   // (only once the player chose: until then env.txt decides)
     for (int l = 0; l < 2; l++) for (int i = 0; i < OV_N; i++) {
         _Atomic int *c = g_cust[0][l][i]; int x = atomic_load(&c[0]), y = atomic_load(&c[1]), z = atomic_load(&c[2]), hid = atomic_load(&c[3]);
@@ -493,7 +524,7 @@ int dm_menu_state(void) {
     if (atomic_load(&g_edit)) return OVE_ST | atomic_load(&g_ed_st);
     if (atomic_load(&g_sp_on)) return OVS_ST | (atomic_load(&g_sp_hi) + 1) << 4 | (atomic_load(&g_sp_ver) & 255) << 20;
     return atomic_load(&g_set_overlay) | atomic_load(&g_set_rumble) << 1 | (dm_opmode() != 0) << 2 | atomic_load(&g_set_fps) << 3 | (atomic_load(&g_menu_hi) + 1) << 4 |
-           atomic_load(&g_menu_tab) << 8 | atomic_load(&g_set_opacity) << 9 | atomic_load(&g_sv_st) << 20 | (atomic_load(&g_sv_n) & 15) << 24 | pad_labels() << 28;
+           atomic_load(&g_menu_tab) << 8 | atomic_load(&g_set_opacity) << 9 | atomic_load(&g_sv_st) << 20 | (atomic_load(&g_sv_n) & 15) << 24 | pad_labels() << 28 | (dm_fps_target_get() >= 60) << 29 | (res_step() & 1) << 19 | (res_step() >> 1 & 1) << 30;
 }
 int dm_overlay_fps(void) { return atomic_load(&g_set_fps) && !atomic_load(&g_menu); }   // gfx_vk_present.c draws the counter (not while the menu holds the game)
 static void menu_open(int hi) {
@@ -542,6 +573,8 @@ static void menu_do(int item) {
     else if (item == OVM_FPS) { atomic_store(&g_set_fps, !atomic_load(&g_set_fps)); settings_save(); }
     else if (item == OVM_MODE) { dm_set_opmode(dm_opmode() ? 0 : 1); settings_save(); }   // the game takes it when it goes on
     else if (item == OVM_PAD) { atomic_store(&g_set_labels, !pad_labels()); settings_save(); }   // at once (pad_labels)
+    else if (item == OVM_RES) { int s = (res_step() + 1) % 3; atomic_store(&g_set_res, s); res_apply(s); settings_save(); }   // each press the next step; the host takes it within 30 presents
+    else if (item == OVM_RATE) { int t = dm_fps_target_get() >= 60 ? 30 : 60; dm_fps_target_set(t); atomic_store(&g_set_rate, t); settings_save(); }   // at once: the stubs and the present pacing read the state page every frame
     else if (item == OVM_TAB) { menu_tab(atomic_load(&g_menu_tab) + 1); return; }
     else if (item == OVM_EDIT) { dm_haptics_android_tap(); ed_open(); return; }
     else if (item == OVM_OPACITY) return;   // (the slider is dragged, or stepped with left and right)
@@ -689,9 +722,9 @@ static void sp_size(char *out, int cap, const dm_save_entry *s) {
     else snprintf(out, (size_t)cap, "%ld file%s, %lld KB", s->files, s->files == 1 ? "" : "s", (s->bytes + 1023) / 1024);
 }
 #define SP_ROW(i, st, ...) do { rows[i].style = st; snprintf(rows[i].left, sizeof rows[i].left, __VA_ARGS__); } while (0)
-int dm_save_rows(ov_srow rows[OVM_ROWS]) {   // (gfx_vk_present.c ov_save_panel)
+int dm_save_rows(ov_srow rows[OVM_ROWS_MAX]) {   // (gfx_vk_present.c ov_save_panel)
     if (!atomic_load(&g_sp_on)) return 0;
-    memset(rows, 0, sizeof(ov_srow) * OVM_ROWS);
+    memset(rows, 0, sizeof(ov_srow) * OVM_ROWS_MAX);
     pthread_mutex_lock(&g_sp_mu);
     if (g_sp.closing) {
         SP_ROW(0, OVS_TITLE, "Importing the save"); SP_ROW(1, OVS_ITEM, "%s", g_sp.pick.name); sp_size(rows[1].right, sizeof rows[1].right, &g_sp.pick);

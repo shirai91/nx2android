@@ -35,9 +35,12 @@ static struct {
     VkPipeline bound_pipe; int rp_pass;   // rp_pass: the open pass began with vkCmdBeginRenderPass
 } S;
 static p_tf_bind g_tf[4]; static uint64_t g_tf_off[4]; static int g_tf_on, g_tf_in_pass; static uint32_t g_tf_verts;   // transform feedback: buffers, bytes written into each, capture on, a capture in the open pass (xfb_begin), vertices captured since Begin
-static int g_depth_zero = 1, g_lower_left;
+static int g_depth_zero = 1, g_lower_left, g_queue_ll = 1;
 void mtl_set_depth_zero(int on) { g_depth_zero = on; }
 void mtl_set_origin_lower_left(int on) { g_lower_left = on; }
+// The submitting queue's raster origin (hle_nvn.c queue_t.origin_ll, set per submission under the submission lock): the winding follows it, the viewports and
+// scissors the device's current origin (g_lower_left). They differ when a game creates its queue before it changes the origin (Xenoblade Chronicles 2)
+void mtl_set_queue_origin_lower_left(int on) { g_queue_ll = on; }
 // NVN's upper-left mode has clip space y up (as Metal and D3D): it is drawn with a flipped viewport over the same top-left rectangle, lower-left mode without
 // one; the scissor is then never flipped and the winding follows nvn_mtl.m's. Drawn the other way, every blit flipped the picture (NEO docked: upside down)
 // and the winding had to be inverted. DM_VK_FLIPY=0 brings the old way back
@@ -2001,11 +2004,12 @@ static int prepare_draw(int prim, int indexed) {
     k.raster_discard = S.rast_discard; k.alt = (uint32_t)g_spv_alt; k.cull = g_no_cull ? 0 : S.poly.cull;
     // counter-clockwise front faces in Vulkan's framebuffer: Vulkan's clip space has y down, Metal's up (nvn_mtl.m: CCW when (front == CCW) != lower left), and the
     // lower-left origin mode flips the viewport again, so CCW when (front == CCW) == lower left. Taken as given, upper-left games (NEO) culled their ground and walls
-    k.front = g_front_ovr == 0 || g_front_ovr == 1 ? (uint32_t)g_front_ovr : (((S.poly.front == NVN_FRONT_FACE_CCW) == (g_lower_left != 0)) != (g_flipy != 0)) ^ (g_front_ovr == 2);
+    // the lower-left term is the queue's raster origin (g_queue_ll), as nvn_mtl.m's winding upstream: the same as the device's unless the queue was made before a change
+    k.front = g_front_ovr == 0 || g_front_ovr == 1 ? (uint32_t)g_front_ovr : (((S.poly.front == NVN_FRONT_FACE_CCW) == (g_queue_ll != 0)) != (g_flipy != 0)) ^ (g_front_ovr == 2);
     static int plog = -1; if (plog < 0) plog = getenv("DM_VK_PIPE_LOG") ? atoi(getenv("DM_VK_PIPE_LOG")) > 0 : 0;   // the polygon-state lines come with DM_VK_PIPE_LOG: unset costs one branch per draw
-    if (plog) { static int n; if (n < 16) { static int seen[16]; int b = (S.poly.cull & 3) << 2 | (S.poly.front & 1) << 1 | (g_lower_left != 0); if (!seen[b]) { seen[b] = 1; n++;
-        VKLOG("polygon state: cull %d, front %d, lower-left origin %d, flipy %d → Vulkan cull %u front %u (DM_VK_FRONT=%d, DM_VK_NOCULL=%d)",
-              (int)S.poly.cull, (int)S.poly.front, g_lower_left != 0, g_flipy != 0, k.cull, k.front, g_front_ovr, g_no_cull); } } }
+    if (plog) { static int n; if (n < 16) { static int seen[16]; int b = (S.poly.cull & 3) << 2 | (S.poly.front & 1) << 1 | (g_queue_ll != 0); if (!seen[b]) { seen[b] = 1; n++;
+        VKLOG("polygon state: cull %d, front %d, lower-left origin %d (queue %d), flipy %d → Vulkan cull %u front %u (DM_VK_FRONT=%d, DM_VK_NOCULL=%d)",
+              (int)S.poly.cull, (int)S.poly.front, g_lower_left != 0, g_queue_ll != 0, g_flipy != 0, k.cull, k.front, g_front_ovr, g_no_cull); } } }
     k.mode = S.poly.mode; k.depth_clamp = S.depth_clamp;
     k.bias_en = (S.poly.offset_en & (S.poly.mode == 0 ? 1 : S.poly.mode == 1 ? 2 : 4)) != 0;
     if (var == 2) k.bias_en = 0;
