@@ -94,7 +94,7 @@ uint64_t crash_code_addr(uint64_t a) {
 // A thread's name by its thread port (the tid on Android), for the crash and thread dumps: "vk prewarm", "vk async pipe" or the replay tells which compile crashed (issue #64)
 void crash_thread_name(unsigned t, char *b, size_t n) {
     b[0] = 0;
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || defined(DM_LINUX)
     char path[64]; snprintf(path, sizeof path, "/proc/self/task/%u/comm", (unsigned)t);
     int fd = open(path, O_RDONLY); if (fd < 0) return;
     ssize_t r = read(fd, b, n - 1); close(fd); if (r <= 0) { b[0] = 0; return; }

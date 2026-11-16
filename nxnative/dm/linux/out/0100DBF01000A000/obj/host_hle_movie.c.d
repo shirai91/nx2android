@@ -1,0 +1,21 @@
+/home/heath/Projects/Switch\ Ports.worktrees/linux/nxnative/dm/linux/out/0100DBF01000A000/obj/host_hle_movie.c.o: \
+  /home/heath/Projects/Switch\ Ports.worktrees/linux/nxnative/dm/host/hle_movie.c \
+  /home/heath/Projects/Switch\ Ports.worktrees/linux/nxnative/dm/linux/compat/include/darwin_compat.h \
+  /home/heath/Projects/Switch\ Ports.worktrees/linux/nxnative/dm/linux/compat/include/pthread/qos.h \
+  /home/heath/Projects/Switch\ Ports.worktrees/linux/nxnative/dm/host/hle.h \
+  /home/heath/Projects/Switch\ Ports.worktrees/linux/nxnative/dm/host/dm.h \
+  /home/heath/Projects/Switch\ Ports.worktrees/linux/nxnative/dm/linux/out/0100DBF01000A000/gen/0100DBF01000A000/game_profile.h \
+  /home/heath/Projects/Switch\ Ports.worktrees/linux/nxnative/dm/linux/compat/include/mach/mach.h \
+  /home/heath/Projects/Switch\ Ports.worktrees/linux/nxnative/dm/linux/compat/include/mach/mach_time.h \
+  /home/heath/Projects/Switch\ Ports.worktrees/linux/nxnative/dm/linux/compat/include/mach/thread_policy.h \
+  /home/heath/Projects/Switch\ Ports.worktrees/linux/nxnative/dm/third_party/libvpx/vpx/vpx_decoder.h \
+  /home/heath/Projects/Switch\ Ports.worktrees/linux/nxnative/dm/third_party/libvpx/vpx/./vpx_codec.h \
+  /home/heath/Projects/Switch\ Ports.worktrees/linux/nxnative/dm/third_party/libvpx/vpx/././vpx_image.h \
+  /home/heath/Projects/Switch\ Ports.worktrees/linux/nxnative/dm/third_party/libvpx/vpx/././vpx_integer.h \
+  /home/heath/Projects/Switch\ Ports.worktrees/linux/nxnative/dm/third_party/libvpx/vpx/./vpx_frame_buffer.h \
+  /home/heath/Projects/Switch\ Ports.worktrees/linux/nxnative/dm/third_party/libvpx/vpx/vp8dx.h \
+  /home/heath/Projects/Switch\ Ports.worktrees/linux/nxnative/dm/third_party/libvpx/vpx/./vp8.h \
+  /home/heath/Projects/Switch\ Ports.worktrees/linux/nxnative/dm/third_party/libvpx/vpx/././vpx_codec.h \
+  /home/heath/Projects/Switch\ Ports.worktrees/linux/nxnative/dm/host/hle_movie_avc.h \
+  /home/heath/Projects/Switch\ Ports.worktrees/linux/nxnative/dm/linux/compat/include/AudioToolbox/AudioToolbox.h \
+  /home/heath/Projects/Switch\ Ports.worktrees/linux/nxnative/dm/third_party/stb_vorbis/stb_vorbis.c

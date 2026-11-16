@@ -1,0 +1,12 @@
+/home/heath/Projects/Switch\ Ports.worktrees/linux/nxnative/dm/linux/out/0100DBF01000A000/obj/third_party_libvpx_vpx_dsp_arm_idct4x4_1_add_neon.c.o: \
+  /home/heath/Projects/Switch\ Ports.worktrees/linux/nxnative/dm/third_party/libvpx/vpx_dsp/arm/idct4x4_1_add_neon.c \
+  /home/heath/Projects/Switch\ Ports.worktrees/linux/nxnative/dm/third_party/libvpx/config/./vpx_dsp_rtcd.h \
+  /home/heath/Projects/Switch\ Ports.worktrees/linux/nxnative/dm/third_party/libvpx/vpx/vpx_integer.h \
+  /home/heath/Projects/Switch\ Ports.worktrees/linux/nxnative/dm/third_party/libvpx/vpx_dsp/vpx_dsp_common.h \
+  /home/heath/Projects/Switch\ Ports.worktrees/linux/nxnative/dm/third_party/libvpx/config/./vpx_config.h \
+  /home/heath/Projects/Switch\ Ports.worktrees/linux/nxnative/dm/third_party/libvpx/vpx_ports/mem.h \
+  /home/heath/Projects/Switch\ Ports.worktrees/linux/nxnative/dm/third_party/libvpx/config/vpx_config.h \
+  /home/heath/Projects/Switch\ Ports.worktrees/linux/nxnative/dm/third_party/libvpx/vpx_dsp/vpx_filter.h \
+  /home/heath/Projects/Switch\ Ports.worktrees/linux/nxnative/dm/third_party/libvpx/vpx_dsp/arm/mem_neon.h \
+  /home/heath/Projects/Switch\ Ports.worktrees/linux/nxnative/dm/third_party/libvpx/vpx_dsp/inv_txfm.h \
+  /home/heath/Projects/Switch\ Ports.worktrees/linux/nxnative/dm/third_party/libvpx/vpx_dsp/txfm_common.h
