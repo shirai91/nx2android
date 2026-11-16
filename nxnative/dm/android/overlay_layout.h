@@ -156,23 +156,31 @@ void dm_overlay_theme_done(const ov_theme *t);   // the pixels are on the GPU: t
 enum { OVM_OVERLAY, OVM_OPACITY, OVM_EDIT, OVM_RUMBLE, OVM_FPS, OVM_MODE, OVM_EXPORT, OVM_IMPORT, OVM_PAD, OVM_AUDIO, OVM_RATE, OVM_RES, OVM_DETAIL, OVM_RESUME, OVM_TAB, OVM_N };   // OVM_TAB: the tabs' row;
             // OVM_EDIT: the layout editor; OVM_MODE: handheld (performance) or docked (resolution); OVM_EXPORT, OVM_IMPORT: the save manager (saves_android.c);
             // OVM_PAD: a controller's face buttons by their position or by their label (front_android.c pad_labels); OVM_RATE: the frame step's target, 30 or 60 fps,
-            // for a game whose rewriter stubs step by the host's target (front_android.c dm_menu_rate_available); OVM_RES: the render scale of a game with a
-            // render-scale stub, in three steps (front_android.c dm_menu_res_available)
+            // for a game whose rewriter stubs step by the host's target; OVM_RES: the render scale of a game with a render-scale stub, in three steps. Both only
+            // for a profile that asks for them (front_android.c dm_menu_rate_available, dm_menu_res_available)
 #define OVM_TABS 2
-#define OVM_PER_TAB 7
-static const int OVM_TAB_ITEMS[OVM_TABS][OVM_PER_TAB] = {{OVM_OVERLAY, OVM_OPACITY, OVM_EDIT, OVM_RUMBLE, OVM_PAD, OVM_AUDIO, -1}, {OVM_FPS, OVM_RATE, OVM_RES, OVM_DETAIL, OVM_MODE, OVM_EXPORT, OVM_IMPORT}};
+#define OVM_PER_TAB 8
+static const int OVM_TAB_ITEMS[OVM_TABS][OVM_PER_TAB] = {{OVM_OVERLAY, OVM_OPACITY, OVM_EDIT, OVM_RUMBLE, OVM_PAD, -1, -1, -1}, {OVM_FPS, OVM_RATE, OVM_RES, OVM_DETAIL, OVM_MODE, OVM_EXPORT, OVM_IMPORT, OVM_AUDIO}};
 // OVM_DETAIL: the detail distance of a game whose culling shader takes the host's factor (front_android.c dm_menu_detail_available): 1x the game's own, 1.5x, 2x
 static const char *const OVM_TAB_NAMES[OVM_TABS] = {"Gamepad", "Game"};
-#define OVM_ROWS (OVM_PER_TAB + 2)   // the tabs, a tab's rows (as many for every tab: the panel keeps its size), Resume
 int dm_menu_audio_available(void); int dm_menu_rate_available(void); int dm_menu_res_available(void); int dm_menu_detail_available(void); int dm_menu_detail_step(void);
+static inline int ov_menu_shown(int it) { return it >= 0 && !(it == OVM_AUDIO && !dm_menu_audio_available()) && !(it == OVM_RATE && !dm_menu_rate_available()) && !(it == OVM_RES && !dm_menu_res_available()) && !(it == OVM_DETAIL && !dm_menu_detail_available()); }
+// The panel's rows: the tabs, a tab's rows (as many for every tab: the panel keeps its size from tab to tab), Resume. Five rows a tab, and more only when a tab shows
+// more (a game with the Frame rate, Resolution or Detail distance row): every other game's panel and rows keep their size
+#define OVM_ROWS_MAX (OVM_PER_TAB + 2)   // for arrays
+static inline int ov_menu_rows(void) {
+    int m = 5;
+    for (int t = 0; t < OVM_TABS; t++) { int n = 0; for (int k = 0; k < OVM_PER_TAB; k++) n += ov_menu_shown(OVM_TAB_ITEMS[t][k]); if (n > m) m = n; }
+    return m + 2;
+}
+#define OVM_ROWS ov_menu_rows()
 static inline int ov_menu_item(int tab, int row) {   // the rows a tab has follow each other: one the device or the game lacks (audio outputs, the frame rate) leaves no gap
     if (row == 0) return OVM_TAB;
     if (row == OVM_ROWS - 1) return OVM_RESUME;
     if (row < 0 || row >= OVM_ROWS) return -1;
     for (int k = 0, n = 0; k < OVM_PER_TAB; k++) {
         int it = OVM_TAB_ITEMS[tab & 1][k];
-        if (it < 0 || (it == OVM_AUDIO && !dm_menu_audio_available()) || (it == OVM_RATE && !dm_menu_rate_available()) || (it == OVM_RES && !dm_menu_res_available()) || (it == OVM_DETAIL && !dm_menu_detail_available())) continue;
-        if (++n == row) return it;
+        if (ov_menu_shown(it) && ++n == row) return it;
     }
     return -1;
 }
@@ -245,7 +253,7 @@ static inline int ov_ed_button_at(float x, float y, const float p[4], int first,
 #define OVS_ST 0x40000
 enum { OVS_EMPTY, OVS_TITLE, OVS_ITEM, OVS_NOTE, OVS_BUTTON, OVS_BACK };   // a row: nothing; the title (left) and the page (right); a save (its name, its size);
 typedef struct { int style; char left[80], right[40]; } ov_srow;            // a line of text; a button (the import); Back or Cancel, centred as Resume is
-int dm_save_rows(ov_srow rows[OVM_ROWS]);   // front_android.c: the picker's rows, 0 when it is not open
+int dm_save_rows(ov_srow rows[OVM_ROWS_MAX]);   // front_android.c: the picker's rows, 0 when it is not open
 
 // ---- the text entry's keyboard (front_android.c front_text_input, drawn by gfx_vk_present.c ov_text_panel), in the pause menu's panel rectangle ----
 // Four rows of ten character keys and a row of four wide ones; p is the panel's rectangle (x, y, width, height: the window's for touches, the raster's for drawing).

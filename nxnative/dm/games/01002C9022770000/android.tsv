@@ -8,9 +8,14 @@
 # Two compute shaders (a370ad7eceb0897a, f9def5d93748a39f) are in no game file: the host captures them on the first run and the next port translates them
 # (until then: two [RED] lines and one dispatch skipped). One shader does not translate (aecb69afbb394ff9); no draw asked for it.
 # 2026-11-16, this profile from the repository: the title, the save, Rolent's street at 1920x1080: frames p50 16.7 / p95 17.9 ms, GPU p50 13.2 ms, no red line.
-# Open: Qualcomm's own driver was not run. The culling shader's patch is tied to the translator's output for that shader (patches.py).
+# 2026-11-16, the same with the menu rows by the profile's keys (a debug build, a copy of the save): Rolent's street at the game's 1600x900, 60 fps (frame work p50 13.3 / p95
+# 14.4 ms), no red line. The Game tab shows Resolution and Detail distance, no Frame rate.
+# Qualcomm's own driver (512.800.72, the same build without DM_VK_DRIVER): the scene is almost black, the game's UI is right, no red line; DM_VK_FDZ=0 and
+# DM_VK_LRZ_TOUCH=0 change nothing. Not looked into: the game needs Turnip for now.
+# Open: the black scene on Qualcomm's own driver. The culling shader's patch is tied to the translator's output for that shader (patches.py).
 status	experimental
 tested	v393216 AYN Odin 3 (Snapdragon 8 Elite, Adreno 830, Android 15); Turnip (libvulkan_freedreno.so)
 package	org.nx2a.t01002c9022770000
 orientation	landscape
+env	DM_MENU_RES=0.5:1.0:0.9
 env	DM_DETAIL_DIST=1

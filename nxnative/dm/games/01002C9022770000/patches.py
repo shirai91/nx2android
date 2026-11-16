@@ -5,7 +5,7 @@ from nso_asm import ADRP, B
 # Render size. The game keeps its sizes in a structure at main+0x7261b0, filled once by main+0x8540: +0x1b4 the scene's reference size, 1600x900 in both modes, from
 # which it allocates its scene targets and by which it multiplies its dynamic resolution's factor (+0x210 / +0x200, 1.0 down to 0.5); +0x1cc the window, 1920x1080
 # docked. The stub replaces the reference size's store (main+0x8688, str x9,[x8]) by the state page's render scale (+0x10, the host's DM_RENDER_SCALE, which the
-# Android pause menu's Resolution row sets: Low 0.5, Auto 1.0, High 0.9): 1.0 or unset keeps 1600x900, a value from 0.75 up to 1.0 gives 1920x1080 (the docked
+# Android pause menu's Resolution row sets by android.tsv's DM_MENU_RES: Low 0.5, Auto 1.0, High 0.9): 1.0 or unset keeps 1600x900, a value from 0.75 up to 1.0 gives 1920x1080 (the docked
 # window's own size: no upscale), a smaller one 1280x720. Read once, when the game starts: a change in the menu takes effect at the next start.
 # Found on the AYN Odin 3 (2026-11-15) by writing the reference size in memory before the targets were made: 1920x1080 and 2560x1440 both drew a correct picture
 # (2560x1440: GPU 19 ms a frame there, 40 fps), and a size written after the targets were made drew the scene cropped.
@@ -28,7 +28,7 @@ def render_size(ctx):
               0xf9000109):  # store: str x9,[x8]         (original)
         emit(w)
     emit(B(here(), 0x868c))
-    ctx.put(0x8688, [B(0x8688, start)], 'scene reference size by the host render scale (1.0 = the game\'s 1600x900, High 1920x1080, Low 1280x720)'); ctx.render_scale = 1; ctx.frame_step = 0
+    ctx.put(0x8688, [B(0x8688, start)], 'scene reference size by the host render scale (1.0 = the game\'s 1600x900, High 1920x1080, Low 1280x720)'); ctx.render_scale = 1
 
 FRAME_STEP = {'8963a531fa7f27a52323081ace0f2f6e': render_size}
 

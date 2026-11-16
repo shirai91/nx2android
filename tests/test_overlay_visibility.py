@@ -48,6 +48,7 @@ static void dm_set_opmode(int mode) { (void)mode; }
 static int pad_labels(void) { return 0; }
 static void menu_tab(int tab) { (void)tab; }
 static void res_apply(int step) { (void)step; }
+static int res_step(void) { return 1; }
 static void detail_apply(int step) { (void)step; }
 static int dm_fps_target_get(void) { return 30; }
 static void dm_fps_target_set(int t) { (void)t; }
