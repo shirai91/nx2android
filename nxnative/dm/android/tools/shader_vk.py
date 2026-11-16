@@ -3,7 +3,7 @@
 # The same translator as the Apple chain (dm/gfx/tools/dmsh_xlate_bin, Ryujinx's translator with TargetApi.Vulkan) and the same jobs as dmsh_build.py
 # (control section / code area / c1 split, the VertexA + VertexB merge, the profile's answer table), but no MSL: Vulkan takes the SPIR-V as it is.
 # Geometry shaders are translated as Vulkan geometry shaders (the Apple chain emulates them in compute kernels).
-#   DM_GAME=<id> shader_vk.py <package dir> <out bundle> [--jobs N] [--keys k1,k2] [--xlate <dmsh_xlate.dll>] [--capture <dir>] [--zstd <level>]
+#   DM_GAME=<id> shader_vk.py <package dir> <out bundle> [--jobs N] [--keys k1,k2] [--xlate <dmsh_xlate.dll>] [--capture <dir>] [--zstd <level>] [--spirv-tools <dir>]
 # --capture: shaders whose code no game file holds, saved on the device by the Vulkan backend (gfx_vk_shader.c vk_shader_missing: <key>.bin = "DMSC", u32 control length, u32 code length,
 #   control section, code area), translated beside the package's; a file whose content does not hash to its name, or whose key the package has, is left out
 # Bundle (read by the Vulkan backend, dm/android/gfx_vk_shader.c): dmsv.py has the format and writes it. Each shader's SPIR-V and its binary reflection (refl_bin, below);
@@ -14,7 +14,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 TOOLS = HERE.parent.parent / 'gfx/tools'
 sys.path[:0] = [str(TOOLS), str(HERE)]
-import dmsh_facts, dmsh_chain, dmsv, shader_products   # noqa: E402  (DM_GAME picks the profile)
+import dmsh_facts, dmsh_chain, dmsv, shader_products, spv_post   # noqa: E402  (DM_GAME picks the profile)
 from shader_split import glslc_stage   # the package reader also recognizes headerless compute code
 
 ap = argparse.ArgumentParser()
@@ -25,6 +25,7 @@ ap.add_argument('--dotnet', default=os.environ.get('DOTNET', 'dotnet'))
 ap.add_argument('--report', help='write the expected and omitted shader inventory as JSON')
 ap.add_argument('--capture', help='a folder of shaders captured at run time on the device (<key>.bin)')
 ap.add_argument('--zstd', type=int, default=dmsv.LEVEL, help=f'zstd level of the SPIR-V in the bundle (default {dmsv.LEVEL}); 0: version 1, uncompressed')
+ap.add_argument('--spirv-tools', help="the folder of spirv-dis, spirv-as and spirv-val (the NDK's shader-tools/<host>), for the profile's SPIR-V patches")
 ap.add_argument('--xlate', help="the translator (dmsh_xlate.dll) to run (default: the iOS chain's dm/gfx/tools/dmsh_xlate_bin; the porter builds one from the in-repo source)")
 a = ap.parse_args()
 
@@ -45,6 +46,19 @@ SUBGROUP = int(GAME.get("android_subgroup_size", "128"))
 # Tears of the Kingdom on the Adreno 830 drew dark boxes of whole 16x16 tiles in its tiled lighting (607 shaders gather, 38 of them compute): in 2 of 12 camera
 # steps at the Great Sky Island pond and every frame at the Temple of Time's stone circle; with the bias, 0 in 24
 GATHER_BIAS = 8
+# game.tsv "android_discard demote": every pixel shader's discards become demotions to a helper invocation (spv_post.py demote_discards has the reason). Not the default:
+# only Trails in the Sky 1st Chapter was checked with it, and a device without the feature cannot load such a module
+DEMOTE = GAME.get('android_discard', 'kill') == 'demote'
+
+def spirv_patches():
+    """SPIRV of the profile's patches.py: {shader key: function(the lines of the shader's spirv-dis text) -> lines}, a fix of one translated shader that no general rule
+    covers yet. The function raises ValueError for a text that is not the one it was written for; the shader then stays as translated, with a [RED] line."""
+    p = GAME.table('patches.py')
+    if not p.exists(): return {}
+    import importlib.util
+    sys.path.append(str(HERE.parent.parent / 'tools'))   # nso_asm, which a patches.py imports for its code patches
+    spec = importlib.util.spec_from_file_location('profile_patches', p); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+    return {str(k).lower(): fn for k, fn in getattr(m, 'SPIRV', {}).items()}
 
 def records(d):
     r = [m.start() for m in re.finditer(b'BTCDBTCD', d)]
@@ -360,7 +374,7 @@ def int_inputs(spv):
     return {str(loc[v]): 'sint' if v in sint else 'uint' for v in uses if v not in other and v in loc}
 
 def main():
-    handle_remaps = {}
+    handle_remaps = {}; patches = spirv_patches(); demoted = [0, 0, 0]
     table = GAME.table('android_shader_handles.tsv')
     if table.exists():
         for line in table.read_text().splitlines():
@@ -444,6 +458,12 @@ def main():
             product = shader_products.output(w, k, STAGES[stages[k]])
             if product is None: raise ValueError(batch_errors[k] or 'no output')
             spv, res = product
+            if k in patches:
+                try: spv = spv_post.text_patch(spv, patches[k], a.spirv_tools, w, k); print(f'{k}: patched by the profile (patches.py SPIRV)', flush=True)
+                except ValueError as e: print(f'[RED] {k}: the profile\'s SPIR-V patch was not applied, the shader is as translated: {e}', flush=True)
+            if DEMOTE and stages[k] == 'ps':
+                d, n, left = spv_post.demote_discards(spv); demoted[1] += n; demoted[2] += left
+                if d: spv = d; demoted[0] += 1
             binds, local, io = spirv_bindings(spv)
             shader_products.validate_bindings(binds, res)
             if k in handle_remaps:
@@ -459,6 +479,7 @@ def main():
             failed.append([f'{gs_var[k] if k in gs_var else int(k, 16):016x}', reason])
             fails[reason] += 1
             print(f'[RED] {failed[-1][0]}: {reason}', flush=True)
+    if DEMOTE: print(f'discards as demotions: {demoted[1]} in {demoted[0]} pixel shaders, {demoted[2]} left as they were', flush=True)
     if a.zstd: print(f'compressing {len(entries)} shaders (zstd level {a.zstd}, {a.jobs} threads) ...', flush=True)
     ver, raw, stored = dmsv.write(a.out, entries, level=a.zstd, jobs=a.jobs)
     if a.report:
