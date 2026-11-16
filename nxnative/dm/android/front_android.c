@@ -938,7 +938,7 @@ int dm_cheat_rows(ov_srow rows[OVM_ROWS]) {
             }
             snprintf(q->left, sizeof q->left, "%s%s", nm, note);
             if (kind == 1) snprintf(q->right, sizeof q->right, "master");
-            else if (kind == 2) snprintf(q->right, sizeof q->right, "%s", why && strstr(why, "code writes") ? "code" : "off");
+            else if (kind == 2) snprintf(q->right, sizeof q->right, "%s", why && strstr(why, "code writes") ? "unsupported" : "off");
             else if (kind == 3) q->right[0] = 0;
             else if (fl & DM_CHEAT_ONCE) snprintf(q->right, sizeof q->right, "apply");
             else snprintf(q->right, sizeof q->right, "%s", dm_cheat_on_at(i) ? "ON" : "OFF");
