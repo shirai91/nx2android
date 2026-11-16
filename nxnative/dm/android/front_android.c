@@ -10,6 +10,7 @@
 #include "front.h"
 #include "dm_input.h"
 #include "overlay_layout.h"
+#include "stick_axis.h"
 #include "pixel_font.h"
 #include "saves_android.h"
 #include <math.h>
@@ -261,7 +262,7 @@ static uint64_t key_bit(int32_t k) {   // Nintendo layout by position: the botto
     default: return 0;
     }
 }
-static int32_t axis(float v) { if (v > -0.12f && v < 0.12f) return 0; return (int32_t)(v * DM_STICK_MAX); }
+static int32_t axis(float v) { return dm_stick_axis(v); }
 static uint64_t g_shake_btn;   // DM_BTN_SHAKE while the device is being shaken (below); input thread only
 static uint64_t pad_axis_buttons(const float axes[8]) {
     uint64_t b = 0;
@@ -275,7 +276,8 @@ static uint64_t pad_axis_buttons(const float axes[8]) {
 }
 static void pad_publish(void) {
     uint64_t b = g_btn | g_shake_btn | pad_axis_buttons(g_ax);
-    dm_pad_set(b, axis(g_ax[0]), -axis(g_ax[1]), axis(g_ax[2]), -axis(g_ax[3]));   // Android's y grows downward, the Switch's upward
+    int32_t lx, ly, rx, ry; dm_stick_xy(g_ax[0], g_ax[1], &lx, &ly); dm_stick_xy(g_ax[2], g_ax[3], &rx, &ry);
+    dm_pad_set(b, lx, -ly, rx, -ry);   // Android's y grows downward, the Switch's upward
 }
 // ---- the on-screen gamepad (overlay_layout.h): a pointer that goes down on a control keeps it until it lifts; every other pointer is the game's touch screen ----
 static _Atomic int g_overlay = 1;   // shown until a controller sends input, restored at the next touch if enabled
