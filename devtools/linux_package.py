@@ -77,6 +77,11 @@ def parse_args():
         type=Path,
         help="path to dmhost (default: nxnative/dm/linux/out/<TITLEID>/dmhost)",
     )
+    parser.add_argument(
+        "--logo",
+        type=Path,
+        help="logo.png source for the menu icon (default: <data>/logo.png if present)",
+    )
     return parser.parse_args()
 
 
@@ -153,6 +158,13 @@ def main():
     (out / "save").mkdir(exist_ok=True)
     (out / "temp").mkdir(exist_ok=True)
 
+    logo = args.logo.resolve() if args.logo else data / "logo.png"
+    has_logo = logo.is_file()
+    if args.logo and not has_logo:
+        fail(f"--logo not found: {logo}")
+    if has_logo and (out / "logo.png").resolve() != logo:
+        shutil.copy2(logo, out / "logo.png")
+
     launcher = out / args.app
     launcher.write_text(LAUNCHER_TEMPLATE.format(title=title.replace("\n", " ")))
     launcher.chmod(0o755)
@@ -160,10 +172,11 @@ def main():
     game_json = {
         "command": [str(launcher.resolve())],
         "environment": {},
-        "icon": "logo.png",
         "runtime": "native",
         "title": title,
     }
+    if has_logo:
+        game_json["icon"] = "logo.png"
     with open(out / "game.json", "w", encoding="utf-8") as fh:
         json.dump(game_json, fh, indent=2)
         fh.write("\n")
@@ -177,8 +190,8 @@ def main():
     print("  created: save/, temp/")
     print(f"  launcher: {launcher}")
     print(f"  menu entry: {out / 'game.json'}")
-    if not (data / "logo.png").exists() and not (out / "logo.png").exists():
-        print("  note: no logo.png in the data pack; game.json icon will not resolve")
+    if not has_logo:
+        print("  note: no logo.png (pass --logo with one); game.json has no icon")
 
 
 if __name__ == "__main__":
