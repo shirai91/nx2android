@@ -902,9 +902,9 @@ static void ch_touch(AInputEvent *e, float W, float H) {   // a row toggles when
     } else if ((act == AMOTION_EVENT_ACTION_UP || act == AMOTION_EVENT_ACTION_POINTER_UP) && id == g_ch_ptr) {
         int down = g_ch_row; g_ch_ptr = -1;
         float dx = x - g_ch_x, dy = y - g_ch_y;
-        if (down == 0 && row == 0 && ch_pages() > 1) {   // the title row: its left half pages back, its right half forward
+        if (down == 0 && row == 0 && ch_pages() > 1) {   // the page arrows sit in the title row's right part: left of three quarters pages back, the rest forward
             float p[4], r[4]; ov_menu_rect(W, H, p); ov_menu_rowrect(p, 0, r);
-            ch_page(x < r[0] + r[2] / 2 ? -1 : 1);
+            ch_page(x < r[0] + r[2] * 0.75f ? -1 : 1);
         } else if (fabsf(dx) > W * 0.05f && fabsf(dx) > fabsf(dy) * 1.5f) ch_page(dx < 0 ? 1 : -1);   // a sideways swipe
         else if (row == down && row == -2) ch_back(); else if (row == down) ch_do(row);
     } else if (act == AMOTION_EVENT_ACTION_CANCEL) g_ch_ptr = -1;
@@ -929,15 +929,16 @@ int dm_cheat_rows(ov_srow rows[OVM_ROWS]) {
             const char *nm = dm_cheat_name_at(i), *why = dm_cheat_why_at(i);
             ov_srow *q = &rows[1 + j];
             q->style = kind == 2 || kind == 3 ? OVS_NOTE : OVS_ITEM;
-            char note[40] = "";   // the reason is long (code writes, failed accesses): a short form keeps the row's letters readable
-            if (why && why[0]) {
+            int killed = kind == 2;   // dead or broken: the reason stays in the log, not on every row (a code write's refusal is not this entry's fault)
+            char note[40] = "";       // a failed-access note (the cheat still runs): short, so the row's letters stay readable
+            if (why && why[0] && !killed) {
                 size_t wn = strlen(why);
                 if (wn >= sizeof note - 3) { memcpy(note, why, sizeof note - 4); memcpy(note + sizeof note - 4, "...", 4); }
                 else snprintf(note, sizeof note, "%s", why);
             }
             snprintf(q->left, sizeof q->left, "%s%s", nm, note);
             if (kind == 1) snprintf(q->right, sizeof q->right, "master");
-            else if (kind == 2) snprintf(q->right, sizeof q->right, "off");
+            else if (kind == 2) snprintf(q->right, sizeof q->right, "%s", why && strstr(why, "code writes") ? "code" : "off");
             else if (kind == 3) q->right[0] = 0;
             else if (fl & DM_CHEAT_ONCE) snprintf(q->right, sizeof q->right, "apply");
             else snprintf(q->right, sizeof q->right, "%s", dm_cheat_on_at(i) ? "ON" : "OFF");

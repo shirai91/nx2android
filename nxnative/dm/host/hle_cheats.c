@@ -230,6 +230,9 @@ static void dry_line(const char *fmt, ...) {
 // at depth 0, a write into the host's key page), and the menu shows it disabled with the reason. Never for a failed
 // memory access (cheat_fail). In a dry run the reason is only described: a preview must never change the cheat
 static void states_save(void);   // with the state files below: a killed cheat must not come back on at the next open
+#if defined(__ANDROID__)
+void dm_overlay_redraw(void);    // the Android front end presents the held frame again (front_android.c/gfx_vk_present.c)
+#endif
 static void cheat_kill(cheat_t *c, const char *fmt, ...) {
     va_list ap; va_start(ap, fmt);
     char msg[160]; vsnprintf(msg, sizeof msg, fmt, ap);
@@ -243,6 +246,9 @@ static void cheat_kill(cheat_t *c, const char *fmt, ...) {
     snprintf(c->why, sizeof c->why, " (off: %s)", msg);
     LOG("[RED] cheat \"%s\": %s, turning it off", c->name, msg);
     if (was_on && !c->master && g_states_loaded) states_save();   // the next open must not show it on and then refuse it again
+#if defined(__ANDROID__)
+    dm_overlay_redraw();   // the picker's row turns off at once: the menu holds the game, so nothing else presents a frame
+#endif
 }
 
 // A memory access of a cheat failed (what: "read" / "write", at the guest address the VM computed; why: the page's state).

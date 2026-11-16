@@ -250,7 +250,7 @@ typedef struct { int style; char left[80], right[40]; } ov_srow;            // a
 int dm_save_rows(ov_srow rows[OVM_ROWS]);   // front_android.c: the picker's rows, 0 when it is not open
 
 // ---- the cheats picker (front_android.c, from the menu's Cheats tab): the same panel, one row per cheat of the running build's Atmosphère file (hle_cheats.c),
-// OVM_ROWS - 2 to a page (left and right, L and R, a tap on the title row's halves or a sideways swipe page), its name and on / off state, then Back. dm_menu_state:
+// OVM_ROWS - 2 to a page (left and right, L and R, a tap on the title row's page arrows or a sideways swipe page), its name and on / off state, then Back. dm_menu_state:
 // bit 19, bits 4..7 the highlighted row + 1, bits 20..27 the picker's edit count (a toggle, a page, the host's cheat states) ----
 #define OVC_ST 0x80000
 int dm_cheat_rows(ov_srow rows[OVM_ROWS]);   // front_android.c: the picker's rows, 0 when it is not open
