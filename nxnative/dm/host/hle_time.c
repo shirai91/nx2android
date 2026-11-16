@@ -48,6 +48,9 @@ HLE_FORCE("_ZN2nn4time25AdjustableUserSystemClock14GetCurrentTimeEPNS0_9PosixTim
 // IsAccuracySufficient (below) stays 0, no fresh sync. The host answered it with a failure before: Divinity: Original Sin 2 takes its wall clock from it once in nnMain
 // (main+0x7ce560, the result not checked) plus std::chrono::steady_clock, so its saves were dated 1970-01-01. The host's user clock, as on a console whose clocks agree
 HLE_FORCE("_ZN2nn4time26StandardNetworkSystemClock14GetCurrentTimeEPNS0_9PosixTimeE", "network clock → host time(), as the user clock (it runs on offline from its last sync)", Result, h_time_NetNow, int64_t *out) { return h_time_GetCurrentTime(out); }
+// Adjust writes the user clock's context into the SDK's MonotonicSystemClock, whose service object the host never creates (time::Initialize is a no-op here); the host clock needs no
+// anchor, so this one is taken over whole (Layton's Mystery Journey DX: a null read at sdk+0x211a7c without it)
+HLE_FORCE("_ZN2nn4time25AdjustableUserSystemClock6AdjustEv", "the host's clock needs no anchor", Result, h_time_AdjAdjust, void) { return RES_OK; }
 // The C library's real-time clock (SDK 17): clock_gettime(CLOCK_REALTIME) calls the source that nntimeStartup selects once time::Initialize succeeds (sdk+0x8e414: 1 = the standard user clock,
 // 2 = the adjustable one; 0, the system tick, before that), and std::chrono::system_clock::now() throws on its failure. The SDK's getters ask the time service: Ace Attorney Investigations
 // Collection called std::terminate at its first real-time read, right after the first-boot language dialog (main+0x3f3f68; found by armyja, GitHub issue #18). The host user clock, to the nanosecond
