@@ -2491,11 +2491,19 @@ static void copy_b2t(const p_copy_b2t *c, int to_texture) {
         unsigned level = c->has_view && c->view.set_levels ? c->view.base_level : 0;
         unsigned layer = c->has_view && c->view.set_layers ? c->view.min_layer : 0;
         if (c->r.width <= 0 || c->r.height < 0 || c->r.depth < 0 || c->r.xoffset < 0 || c->r.yoffset < 0 || c->r.zoffset < 0 ||
-            level >= im->levels || c->r.xoffset % 4 || c->r.yoffset % 4 ||
-            (uint64_t)c->r.xoffset + w > (im->w >> level ? im->w >> level : 1) ||
-            (uint64_t)c->r.yoffset + h > (im->h >> level ? im->h >> level : 1) ||
+            level >= im->levels || level >= 32 || c->r.xoffset % 4 || c->r.yoffset % 4)
+            { VKRED_ONCE(71, "invalid BC buffer upload region; copy skipped"); return; }
+        uint32_t mw = im->w >> level ? im->w >> level : 1, mh = im->h >> level ? im->h >> level : 1;
+        if ((uint32_t)c->r.xoffset >= mw || (uint32_t)c->r.yoffset >= mh ||
+            (uint64_t)c->r.xoffset + w > ((mw + 3ull) & ~3ull) ||
+            (uint64_t)c->r.yoffset + h > ((mh + 3ull) & ~3ull) ||
+            (w > mw - c->r.xoffset && w % 4) || (h > mh - c->r.yoffset && h % 4) ||
             (uint64_t)c->r.zoffset + d + (im->layers > 1 ? layer : 0) > (im->layers > 1 ? im->layers : (im->d >> level ? im->d >> level : 1)))
             { VKRED_ONCE(71, "invalid BC buffer upload region; copy skipped"); return; }
+        // Guest copies may round an edge mip to complete BC blocks. Decode only
+        // the image's remaining texels; the same compressed blocks/strides apply.
+        if (w > mw - c->r.xoffset) w = mw - c->r.xoffset;
+        if (h > mh - c->r.yoffset) h = mh - c->r.yoffset;
         size_t rows = ((size_t)h + 3) / 4, bytes = ((size_t)w + 3) / 4 * f->bpb;
         size_t row = S.row_stride > 0 ? (size_t)S.row_stride : bytes;
         if (row < bytes || row > SIZE_MAX / rows) { VKRED_ONCE(71, "invalid BC upload row stride; copy skipped"); return; }

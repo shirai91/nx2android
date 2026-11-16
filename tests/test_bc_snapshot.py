@@ -13,7 +13,7 @@ DM = ROOT / 'nxnative/dm'
 @unittest.skipUnless(host_cc.posix(), 'POSIX host C compiler required')
 class BCSnapshot(unittest.TestCase):
     def test_ordered_readback_reuses_command_buffers(self):
-        source = (DM / 'android/gfx_vk_core.c').read_text()
+        source = (DM / 'android/gfx_vk_core.c').read_text(encoding='utf-8')
         start = source.index('int vk_buffer_snapshot(')
         helper = source[start:source.index('\nint vk_cmd_parts_left', start)]
         code = r'''
@@ -83,7 +83,7 @@ int main(void) {
 }
 '''
         with tempfile.TemporaryDirectory() as folder:
-            src = Path(folder) / 'snapshot.c'; src.write_text(code)
+            src = Path(folder) / 'snapshot.c'; src.write_text(code, encoding='utf-8')
             exe = Path(folder) / 'snapshot'
             subprocess.run(['cc', '-std=c11', '-pthread', '-I', str(DM / 'third_party/vulkan-headers/include'),
                             str(src), '-o', str(exe)], check=True)
