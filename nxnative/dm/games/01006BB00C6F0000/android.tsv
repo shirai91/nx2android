@@ -1,0 +1,16 @@
+# The Legend of Zelda: Link's Awakening on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Base game 1.0.0 (v0), packed from a derived profile: the profile's tested build is 1.1.0 (v131072), so its one registered patch (the physics completion task release)
+# is not applied to this build. Not tried on 1.1.0. 9,698 shaders, all translated.
+# What it needed beyond the profile (each its own change): the vi layer crop for handheld mode (the game crops its layer through vi, not through its NVN window; merged as #293) and
+# readable slack behind each module (the game reads 4.2 MB past its own image at the first camera, which faulted in about half of the launches).
+# Its font engine dereferences null when no shared font holds U+25A1 (the white square a game falls back to), and the device's Roboto lacks it: the row below gives this game
+# Noto Serif, which has it, and leaves every other game on the default font. Where a device ships only a variable NotoSerif.ttf that path does not exist and the crash returns.
+# Tested 2026-11-12 on the AYN Thor (Adreno 740, Android 13, stock driver, handheld mode in the pause menu): the boot (12 of 12 cold launches reached the first frames),
+# the opening, Toronbo Shores, the inventory screen with the sword and shield, and about 5 minutes of play at a steady 60 fps with the frame rate pinned
+# (DM_FPS_PIN=60: GPU 8-12 ms a frame, no GPU boost). Docked mode ran the GPU at 15-18 ms a frame, so it fell to 30 fps there.
+# Not tested: saving and loading, the dungeons, later areas, the Switch's own 30 fps cases, audio over a long session. A few hitches of 100 ms or more in 5 minutes, none
+# from pipeline builds or texture uploads (the game thread was busy; cause not found).
+status	boots
+tested	v0 AYN Thor (QCS8550, Adreno 740, Android 13)
+orientation	landscape
+env	DM_SHARED_FONT=/system/fonts/NotoSerif-Regular.ttf
