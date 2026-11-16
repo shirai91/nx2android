@@ -125,6 +125,11 @@ axis preservation, not game recognition or device behavior.
 python -m unittest discover tests
 ```
 
+`test_vk_pixel_history` exercises production ROI/HDR helpers and mocked Vulkan
+capture/fence/resource behavior. Its harness also runs natively on Android.
+See [diagnostic switches](../.claude/skills/switch-android-port/references/switches.md)
+for pixel-history usage and limits.
+
 `test_fragment_output_masks` compiles the production attachment-state loop and
 checks sparse output maps, absent fragment shaders, channel masks, integer
 formats and the flat diagnostic shader's all-target output. The optional
