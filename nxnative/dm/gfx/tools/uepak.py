@@ -33,7 +33,7 @@
 #        uepak.py job <RomFS> <main NSO> <work dir> [<Mac host> <rewritten modules>]   the shader code archives of every pak, and an Oodle job of their Oodle-compressed shaders (LZ4 ones
 #                                                                       decoded at once); IoStore shader libraries (UE 5.6) decoded at once through the game's Oodle in the host (OodleHost)
 #        uepak.py finish <work dir> <out dir>                           after the host has run the job: the archives with every shader decoded
-import ctypes, json, os, struct, sys, zlib
+import ctypes, hashlib, json, os, re, struct, sys, zlib
 
 PAK_MAGIC, ARCHIVE_VERSION = 0x5A6F12E1, 2
 JOB_MAGIC, OUT_MAGIC = 0x4a4f4d44, 0x524f4d44   # "DMOJ", "DMOR" (hle_oodle.c)
@@ -379,6 +379,57 @@ def io_archive(toc, i, decode):
     out += struct.pack('<I', 0) + struct.pack(f'<I{len(idx)}I', len(idx), *idx)
     return bytes(out) + b''.join(code)
 
+IO_EXPORT_BUNDLE = 2   # EIoChunkType ExportBundleData in Unreal Engine 4.26 / 4.27's numbering (TOC version 3 and below; Unreal 5 numbers it 1)
+
+def lz4_inline(d):
+    """The shaders kept inline in cooked Unreal Engine 4.26 / 4.27 data (a material's export bundle, Engine/GlobalShaderCache-SF_GLSL_SWITCH.bin): [(frequency, LSLG record)], the project having
+    turned bShareMaterialShaderCode off. Each shader is an entry of FShaderMapResourceCode: i32 length, an LZ4 block of that length (the engine's shader compression since 4.26), i32 raw size,
+    u8 frequency. The block is found by the record's LSLG: its first literals, with the token byte before it (and one or two length bytes when the literal run is 15 or longer); it counts
+    only when the bytes before it are its length, it decodes to exactly the raw size after it, and the result is an LSLG record"""
+    import lz4.block
+    out, n = [], len(d)
+    for m in re.finditer(b'LSLG', d):
+        p = m.start()
+        for back in (1, 2, 3):
+            s = p - back
+            if s < 4: break
+            lit = d[s] >> 4
+            if back == 1 and lit >= 15 or back == 2 and lit != 15 or back == 3 and (lit != 15 or d[s + 1] != 255): continue
+            ln = int.from_bytes(d[s - 4:s], 'little')
+            if not 8 <= ln <= n - s - 5: continue
+            raw = int.from_bytes(d[s + ln:s + ln + 4], 'little')
+            if not 16 <= raw <= 1 << 24: continue
+            try: r = lz4.block.decompress(d[s:s + ln], uncompressed_size=raw)
+            except Exception: continue
+            if r[:4] == b'LSLG': out.append((d[s + ln + 4], r)); break
+    return out
+
+def export_bundle_tocs(folder):
+    """The IoStore containers in a pak's folder that hold export bundles (Unreal Engine 4.26 / 4.27, TOC version 3 and below) and no shader libraries: [(Toc, chunk indices)]"""
+    out = []
+    for f in sorted(os.listdir(folder)):
+        if not f.endswith('.utoc'): continue
+        try:
+            t = Toc(os.path.join(folder, f), b'\0' * 32)
+            if t.version < 4 and not t.encrypted:
+                idx = [i for i, c in enumerate(t.ids) if c[11] == IO_EXPORT_BUNDLE]
+                if idx: out.append((t, idx))
+        except (OSError, ValueError, struct.error): pass
+    return out
+
+def inline_archive(recs):
+    """[(frequency, LSLG record)] as a version 2 shader code archive with every shader decoded (the form the shader tools read; no shader maps: the records are unique by their bytes and
+    frequency, in the order they were found)"""
+    seen, keep = set(), []
+    for fr, r in recs:
+        k = (hashlib.sha1(r).digest(), fr)
+        if k not in seen: seen.add(k); keep.append((fr, r))
+    n = len(keep)
+    out = bytearray(struct.pack('<II', ARCHIVE_VERSION, 0) + struct.pack('<I', n) + b''.join(hashlib.sha1(r).digest() for _, r in keep) + struct.pack('<I', 0) + struct.pack('<I', n)); off = 0
+    for fr, r in keep: out += struct.pack('<QIIB', off, len(r), len(r), fr); off += len(r)
+    out += struct.pack('<I', 0) + struct.pack('<I', 0)
+    return bytes(out) + b''.join(r for _, r in keep)
+
 def io_shader_tocs(romfs):
     """The IoStore containers under the RomFS that hold Unreal Engine 5 shader libraries"""
     out = []
@@ -446,6 +497,16 @@ def job(romfs, main_nso, work, decode=None):
             key = find_key(img, lo, hi, pak)
             if key is None: raise ValueError(f'{pak}: the index is encrypted and no window of main decrypts it')
         p = Pak(pak, key)
+        if not any(x.endswith('.ushaderbytecode') for x in p.files):   # no archives: the shaders are inline (Tetris Effect: Connected, Unreal Engine 4.26)
+            cache = [x for x in p.files if os.path.basename(x).startswith('GlobalShaderCache') and x.endswith('.bin')]
+            tocs = export_bundle_tocs(os.path.dirname(pak))
+            if cache and tocs:   # with neither the containers' export bundles nor the pak's .uexp files, the global shaders alone are not read
+                inl = [r for x in cache for r in lz4_inline(p.read(x))]
+                for t, idx in tocs: inl += [r for i in idx for r in lz4_inline(t.read(i))]
+                name = f'ShaderArchive-Inline-{os.path.splitext(os.path.basename(pak))[0]}.ushaderbytecode'; b = inline_archive(inl)
+                open(os.path.join(work, 'archives', name), 'wb').write(b)
+                listing.append(dict(name=name, pak=os.path.relpath(pak, romfs), path='export bundles', shaders=len(archive(b)['shaders']), compressed=0, compression='inline, LZ4'))
+                continue
         for path in sorted(x for x in p.files if x.endswith('.ushaderbytecode')):
             b = p.read(path); a = archive(b); name = os.path.basename(path)
             comp = [i for i, (_, size, raw, _) in enumerate(a['shaders']) if size != raw]
