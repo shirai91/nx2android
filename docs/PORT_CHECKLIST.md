@@ -6,7 +6,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 
 "Profile here": `nxnative/dm/games/<title ID>/` has the game's profile from nxnative. "Upstream profile": only seedds/nxnative has one, to read as a reference or starter, not to pull. "60 fps with X" is upstream's note: they run that update at 60 fps (30 on the Switch).
 
-**77 / 124 ported**
+**78 / 125 ported**
 
 - [x] 13 Sentinels: Aegis Rim (Asia) · `01008D7016438000`
 - [x] 13 Sentinels: Aegis Rim · `01003FC01670C000`
@@ -29,6 +29,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [x] Captain Toad: Treasure Tracker · `01009BF0072D4000`
 - [x] Cardfight!! Vanguard Dear Days 2 · `0100B6F01DAF6000`
 - [x] Castlevania: Belmont's Curse · `0100BA4026E94000`
+- [x] Catherine: Full Body (Korean / Chinese release) · `0100BC4010896000`
 - [ ] Catherine: Full Body · `0100BF00112C0000` · profile here
 - [x] Celeste · `01002B30028F6000`
 - [ ] Cult of the Lamb · `01002E7016C46000` · upstream profile · iPhone only, through Apple Arcade
