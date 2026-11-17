@@ -28,8 +28,9 @@ class OverlayKeyRelease(unittest.TestCase):
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <pthread.h>
+#include "pad_assignment.h"
 enum { AINPUT_EVENT_TYPE_KEY = 1, AKEY_EVENT_ACTION_DOWN = 0,
-       AKEY_EVENT_ACTION_UP = 1, AINPUT_SOURCE_GAMEPAD = 2,
+       AKEY_EVENT_ACTION_UP = 1, AINPUT_SOURCE_GAMEPAD = 2, AINPUT_SOURCE_JOYSTICK = 4,
        AKEYCODE_BACK = 1, AKEYCODE_BUTTON_MODE, AKEYCODE_MENU, TEST_A };
 typedef struct { int source, type, key, action, device; } AInputEvent;
 #define AInputEvent_getSource(e) ((e)->source)
@@ -41,6 +42,14 @@ typedef struct { int source, type, key, action, device; } AInputEvent;
 #define LOG(...) ((void)0)
 static _Atomic int g_set_overlay = 1, g_overlay = 1, g_pad_in = -1, g_tx_on, g_menu;
 static int g_pad_used, vibration = -1, publications;
+static _Atomic int g_assign_active, g_assign_dialog;
+static pad_assignment_runtime g_assign;
+static uint64_t g_assign_keys[PA_SOURCES], g_assign_axis_buttons[PA_SOURCES];
+static int pad_dev_kind(int id) { (void)id; return 0; }
+static void pad_key_now(int id, char *key, size_t n) { (void)id; if (n) key[0] = 0; }
+static int assignment_attach(int id, const char *key) { (void)id; (void)key; return 0; }
+static void assignment_rumble_use(int s, int id) { (void)s; (void)id; }
+static void assignment_publish(void) {}
 static uint64_t g_btn[1];   // per player (PR #238); the device here is player 1's
 static pthread_mutex_t g_slot_mu = PTHREAD_MUTEX_INITIALIZER;
 static struct { int unused; } g_slots;
@@ -98,7 +107,7 @@ int main(int argc, char **argv) {
         source, cls.exe = tmp / 'keys.c', tmp / 'keys'
         source.write_text(harness, encoding='utf-8')
         result = subprocess.run([cc, '-std=c11', '-Wall', '-Wextra', '-Werror',
-                                 str(source), '-pthread', '-o', str(cls.exe)],
+                                 f'-I{ROOT / "nxnative/dm/android"}', str(source), '-pthread', '-o', str(cls.exe)],
                                 capture_output=True, text=True, timeout=60)
         if result.returncode:
             raise AssertionError(result.stdout + result.stderr)

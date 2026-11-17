@@ -21,6 +21,7 @@ uint64_t dm_input_samples(void);   // Cumulative number of times the game has sa
 void dm_pad_set(uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry);
 void dm_pad_set_player(int player, uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry);   // player 0..DM_PLAYERS-1 (player 1..8)
 void dm_pad_players(uint32_t mask);   // bit p: player p + 1 has a controller; player 1 always counts as connected (the keyboard, the touch gamepad, DM_KEYS)
+void dm_pad_players_exact(uint32_t mask);   // explicit assignment: every player, including player 1, is connected only when its bit is set
 uint32_t dm_player_npad(int player);  // the npad id the game reads player p + 1 on: Handheld (0x20) or No1 (0) for player 1, No n (id n - 1) for player n
 int dm_player_seen_as(int player);    // the player the game sees player p + 1's controller as: 0 (player 1, also every player of a one-player game), p, or -1 when it is not used
 // The device's motion as player 1's six-axis sensor (hle_hid.c), in the Switch controller's frame: x right, y away from the player (the screen's top edge), z out of the screen.
