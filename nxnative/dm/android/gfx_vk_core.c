@@ -1089,6 +1089,8 @@ struct vksub {
 };
 enum { GW_SUB = 64 };
 static vksub_t g_slot[NSLOT]; static int g_cur = -1; uint64_t g_cmd_gen;   // g_cmd_gen: main command buffers begun (gfx_vk_exec.c bind cache)
+static int g_paused = -1; int g_vk_hold_parts;   // a submission replayed ahead and paused (its slot), and its parts held until the commit (mtl_sub_pause)
+static int g_held = -1, g_hold_early, g_spoiled;   // its slot until its commit; 1 until the game's submit (mtl_sub_resume); a part of it went to the GPU before that
 static pthread_mutex_t g_df_mu = PTHREAD_MUTEX_INITIALIZER;   // the slots' deferred-free lists (df, ndf, capdf): df_add says why
 static uint64_t pool_merge_back(vkpool_t *p, uint64_t lo, uint64_t hi) {
     int diag = mem_diag_on(); uint64_t t = diag ? mem_diag_ns() : 0;
@@ -1220,7 +1222,10 @@ static void wait_fence(uint64_t f) {
 static int g_prereset = -1;
 static void slot_recycle(vksub_t *s) {   // the GPU has passed this slot's last submission: free what it held, rewind its allocators
     if (g_prereset < 0) { const char *e = getenv("DM_VK_X_NOPRERESET"); g_prereset = !(e && atoi(e)); }
-    if (g_prereset) mtl_wait(s->fence, ~0ull); else wait_fence(s->fence);
+    { int nvn_seq_active(void); void nvn_seq_note(const char *); int seq = nvn_seq_active(); struct timespec a, b; if (seq) clock_gettime(CLOCK_MONOTONIC, &a);
+      if (g_prereset) mtl_wait(s->fence, ~0ull); else wait_fence(s->fence);
+      if (seq) { clock_gettime(CLOCK_MONOTONIC, &b); double ms = (double)((b.tv_sec - a.tv_sec) * 1000000000ll + (b.tv_nsec - a.tv_nsec)) / 1e6;   // (DM_NVN_SEQ trace)
+                 if (ms > 0.05) { char t[96]; snprintf(t, sizeof t, "vk slot wait %.2f ms for fence %llu", ms, (unsigned long long)s->fence); nvn_seq_note(t); } } }
     pthread_mutex_lock(&g_df_mu); dfree_t *df = s->df; int ndf = s->ndf; s->df = NULL; s->ndf = s->capdf = 0; pthread_mutex_unlock(&g_df_mu);   // the list taken whole: a game thread may add to it meanwhile
     for (int i = 0; i < ndf; i++) {
         dfree_t *d = &df[i];
@@ -1252,7 +1257,7 @@ static void vk_cmd_split_(void) {
     if (vkEndCommandBuffer(s->main) < 0) { s->cb_err = 1; static int n; if (n++ < 3) VKLOG("[RED] a part of a long submission was refused at its end (part %d)", s->nmain_used); }
     // what is recorded so far goes to the GPU now, as a submission of its own (with its uploads first): Adreno refuses a single submission past about
     // 700 draws (NEO's handheld frames: VK_ERROR_OUT_OF_HOST_MEMORY at vkEndCommandBuffer whatever the draws were, and in one command buffer or several)
-    const char *se = getenv("DM_VK_SUBMIT_SPLIT"); int send = !(se && !atoi(se));   // on unless DM_VK_SUBMIT_SPLIT=0
+    const char *se = getenv("DM_VK_SUBMIT_SPLIT"); int send = !(se && !atoi(se)) && !g_vk_hold_parts;   // on unless DM_VK_SUBMIT_SPLIT=0, or held for a submission replayed ahead
     if (send && !s->cb_err) {
         VkCommandBuffer cbs[2]; uint32_t n = 0;
         if (s->up_used) { vk_img_barrier_all(s->up); if (vkEndCommandBuffer(s->up) < 0) s->cb_err = 1; cbs[n++] = s->up; }
@@ -1306,8 +1311,12 @@ void *vk_scratch(VkDeviceSize n, VkDeviceSize align, VkBuffer *buf, VkDeviceSize
 // Animal Crossing: New Horizons' release build (SIGSEGV in df_add: one thread had set capdf, the other wrote through the df still NULL). g_df_mu is above slot_recycle
 static void df_add(int kind, void *a, void *b) {
     pthread_mutex_lock(&g_df_mu);
-    if (g_cur >= 0) {
-        vksub_t *s = &g_slot[g_cur]; if (s->ndf == s->capdf) { s->capdf = s->capdf ? 2 * s->capdf : 64; s->df = realloc(s->df, s->capdf * sizeof *s->df); }
+    // a submission replayed ahead, until its commit, holds what goes (g_held): paused, it has no open slot, and its GPU work, still to be committed, may name
+    // what a game thread frees meanwhile (a pool finalized: mtl_pool_del, vk_tex_drop_pool); it is the next submission committed (begin_segment), so its fence
+    // covers everything before it too
+    int at = g_held >= 0 ? g_held : g_cur;
+    if (at >= 0) {
+        vksub_t *s = &g_slot[at]; if (s->ndf == s->capdf) { s->capdf = s->capdf ? 2 * s->capdf : 64; s->df = realloc(s->df, s->capdf * sizeof *s->df); }
         s->df[s->ndf++] = (dfree_t){kind, a, b};
         pthread_mutex_unlock(&g_df_mu); return;
     }
@@ -1409,12 +1418,15 @@ static void pools_readback_barrier(VkCommandBuffer cb) {
     VkMemoryBarrier b = {VK_STRUCTURE_TYPE_MEMORY_BARRIER, NULL, VK_ACCESS_MEMORY_WRITE_BIT, VK_ACCESS_HOST_READ_BIT};
     vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &b, 0, NULL, 0, NULL);
 }
+static void spoil_paused(void);
 static void begin_segment(int continuing) {
     vk_init();
     pthread_mutex_lock(&g_sub_lock);
+    if (g_paused >= 0) { spoil_paused(); pthread_mutex_lock(&g_sub_lock); }   // a submission begun while one replayed ahead is paused: that one is committed first
     // the next slot of the ring (g_cur is -1 between submissions, so it cannot say where the ring is: every submission took slot 0 and waited in slot_recycle
     // for the one before to finish on the GPU, which kept the replay of a frame from overlapping the GPU work of the last)
     static int next; g_cur = next; next = (next + 1) % NSLOT; vksub_t *s = &g_slot[g_cur];
+    if (g_vk_hold_parts) { pthread_mutex_lock(&g_df_mu); g_held = g_cur; pthread_mutex_unlock(&g_df_mu); }   // (a segment continued inside a held submission: vk_cpu_ready)
     slot_recycle(s);
     s->npost = 0; s->up_used = 0; s->ngw = 0;
     { const char *e = getenv("DM_VK_POOL_READBACK_RANGES"); s->readback_ranges = e && atoi(e); }
@@ -1438,6 +1450,133 @@ static void begin_segment(int continuing) {
 }
 void mtl_sub_begin(void) { begin_segment(0); }
 void vk_sub_resume(void) { begin_segment(1); }
+// Replay ahead (gfx/nvn/hle_nvn.c DM_NVN_AHEAD): a submission begun and partly replayed before the game submits, paused until it does, and held until its commit
+// (mtl_sub_hold_parts: g_held). Nothing of it reaches the GPU before the game's submit: its parts are kept (g_vk_hold_parts; parts sent early one by one would also go out
+// of order, vk_cmd_split sends only the part it ends), so the GPU reads the game's memory no earlier than on the console. And it is the next submission committed: a
+// submission begun while it is paused (a texel readback on a game thread, a frame shot) commits it first (spoil_paused), so the fence the replay gave what it recorded
+// (mtl_last_fence() + 1: in-flight uniform updates, GPU writes, images' last use, a slab slot or a kept buffer given back meanwhile) is its own, and frees go to its
+// slot (df_add). Such a readback sees that work done, the next frame's: the console's would not. Either way, a part sent before the game's submit spoils it, and the
+// game's submit replays the frame in full (the replay's checks, mtl_sub_ahead_check: hle_nvn.c ahead_resume)
+int mtl_sub_ahead_supported(void) { return 1; }
+static uint64_t g_hold_gen[3], g_hold_dirty;   // at the pause: texture IDs, sampler IDs and pools registered (generations); at the begin: watched guest pages written
+__attribute__((weak)) void nvn_dirty_stats(uint64_t *faults, uint64_t *preps) { *faults = *preps = 0; }   // (gfx/nvn/nvn_dirty.c; the graphics tests link without it)
+static uint64_t dirty_writes(void) { uint64_t f = 0, pr = 0; nvn_dirty_stats(&f, &pr); return f + pr; }
+static void hold_gens(uint64_t g[3]) { extern uint64_t g_tex_gen, g_samp_gen; g[0] = g_tex_gen; g[1] = __atomic_load_n(&g_samp_gen, __ATOMIC_ACQUIRE); g[2] = vk_pool_gen(); }
+static void reads_reset(void);
+void mtl_sub_hold_parts(int on) {
+    g_vk_hold_parts = on;
+    if (on) { pthread_mutex_lock(&g_df_mu); g_held = g_cur; pthread_mutex_unlock(&g_df_mu); g_hold_early = 1; g_spoiled = 0; g_hold_dirty = dirty_writes(); reads_reset(); }
+    else g_hold_early = 0;
+}
+int mtl_sub_pause(void) {
+    if (g_cur < 0) return 0;
+    void vk_end_pass_land(void); vk_end_pass_land();   // nothing stays open across the pause: the pass ends, the deferred uniform updates land
+    hold_gens(g_hold_gen);
+    g_paused = g_cur; g_cur = -1; pthread_mutex_unlock(&g_sub_lock); return 1;
+}
+// The paused submission committed before its time (begin_segment, under g_sub_lock: a submission begun while it is paused), its post ops dropped: they are the
+// predicted opening's counter reports, at an earlier frame's addresses, and what the game's full replay of the frame does again
+static void spoil_paused(void) {
+    g_cur = g_paused; g_paused = -1; g_hold_early = 0; g_spoiled = 1; g_slot[g_cur].npost = 0;   // (early cleared first: mtl_sub_commit's own spoil is a part sent early)
+    static int n; if (n++ < 8) VKLOG("replay ahead: a submission began while one replayed ahead was paused (a texel readback or a frame shot): that one is committed first, and the game's submit replays the frame in full");
+    mtl_sub_commit();   // (unlocks g_sub_lock)
+}
+// At the game's submit: 1 = open again; -1 = open again, but a part of it went to the GPU before the submit (vk_cpu_ready); 0 = it was committed meanwhile (spoil_paused)
+int mtl_sub_resume(void) {
+    pthread_mutex_lock(&g_sub_lock);
+    g_hold_early = 0;
+    if (g_paused < 0) { g_spoiled = 0; pthread_mutex_unlock(&g_sub_lock); return 0; }
+    g_cur = g_paused; g_paused = -1; int spoiled = g_spoiled; g_spoiled = 0; return spoiled ? -1 : 1;
+}
+void mtl_sub_drop_posts(void) { if (g_cur >= 0) g_slot[g_cur].npost = 0; }   // a miss: the open submission's post ops go (see spoil_paused)
+int mtl_sub_post_count(void) { return g_cur >= 0 ? g_slot[g_cur].npost : -1; }
+void mtl_sub_post_addr(int i, uint64_t addr) { vksub_t *s = cur(); if (i >= 0 && i < s->npost && s->post[i].kind == 2) s->post[i].addr = addr; }   // a counter report's address (the opening replayed ahead had the prediction's)
+int mtl_sub_ahead_ok(void) {   // replay ahead can start: no copied pool (its sync, at the begin, would wait for the GPU, and be early)
+    pthread_rwlock_rdlock(&g_pool_mu); int shadow = 0; for (int i = 0; i < g_npool; i++) shadow |= g_pool[i].shadow != NULL; pthread_rwlock_unlock(&g_pool_mu);
+    return !shadow;
+}
+// What the replay read of the game's memory on the CPU while held before the game's submit, for what the CPU decided by it: uniform words (vk_ubd_read: bindless
+// handles, indirect counts), quad indices, block-compressed texels decoded, each with a hash (its copies into scratch memory are refreshed instead: copies_refresh). A CPU write between the replay ahead and the submit is the game's, made before its submit, which the console's GPU would see:
+// mtl_sub_ahead_check finds it. The GPU's own reads of zero-copy pools come at execution, after the submit; packaged textures' pages are watched (nvn_dirty)
+enum { HR_MAX = 1 << 16 };
+typedef struct { uint64_t a, n, h; const void *who; } held_read;   // who: the reader (vk_ubd_read's caller, or 1 quad indices, 2 BC blocks)
+static held_read *g_hr; static size_t g_nhr, g_chr; static int g_hr_over;
+static uint64_t mem_hash(uint64_t a, uint64_t n) { const uint8_t *p = (const uint8_t *)(uintptr_t)a; uint64_t h = 0xcbf29ce484222325ull, w;
+    for (; n >= 8; n -= 8, p += 8) { memcpy(&w, p, 8); h = (h ^ w) * 0x100000001b3ull; } for (; n; n--, p++) h = (h ^ *p) * 0x100000001b3ull; return h; }
+// Copies of guest memory into scratch memory (uniform shadows, a constant buffer across a chunk's end, a vertex stream padded: vk_ubd_read_scratch) are not read on
+// the CPU but by the GPU, which runs nothing held before the commit: so a CPU write since is copied into them at the submit (copies_refresh) rather than missed.
+// Breath of the Wild writes a 64 KB constant block before each submit that ~280 shadows a frame are made of. Each range keeps its memory as at its first copy
+// (snap); at the submit the bytes that differ now go into each copy of it, but not those a deferred or in-flight update covered (their bytes are the command
+// stream's): what a replay at the submit would have copied, unless a byte changed during the replay and back by the submit
+enum { HC_RANGES = 64, HC_SNAP = 8 << 20, HC_COPIES = 1 << 15, HC_OV = 1 << 17 };
+typedef struct { uint64_t a, n; uint8_t *snap; } hc_range;
+typedef struct { uint8_t *dst; uint32_t r, ov0, nov; } hc_copy;
+static hc_range g_hcr[HC_RANGES]; static int g_nhcr; static uint64_t g_hc_snap;
+static hc_copy *g_hcc; static size_t g_nhcc, g_chcc; static uint32_t *g_hco; static size_t g_nhco, g_chco;   // g_hco: overlay intervals as offset pairs into their range
+static uint64_t g_hc_patched, g_hc_changed, g_hc_n;   // bytes written at submits, bytes found changed, submits that wrote any (the 600-submission line)
+static void reads_reset(void) {
+    g_nhr = 0; g_hr_over = 0;
+    for (int i = 0; i < g_nhcr; i++) free(g_hcr[i].snap);
+    g_nhcr = 0; g_hc_snap = 0; g_nhcc = 0; g_nhco = 0;
+}
+static int hc_push_ov(uint64_t lo, uint64_t hi) {
+    if (g_nhco + 2 > g_chco) { if (g_chco >= HC_OV) return 0; size_t k = g_chco ? 2 * g_chco : 4096; uint32_t *o = realloc(g_hco, k * sizeof *o); if (!o) return 0; g_hco = o; g_chco = k; }
+    g_hco[g_nhco++] = (uint32_t)lo; g_hco[g_nhco++] = (uint32_t)hi; return 1;
+}
+static void hc_write(const hc_copy *x, const uint8_t *mem, uint64_t lo, uint64_t hi) {   // [lo, hi) of the range into the copy, but for its overlays
+    while (lo < hi) {
+        uint64_t end = hi;
+        for (uint32_t j = 0; j < x->nov; j++) { uint64_t ol = g_hco[x->ov0 + 2 * j], oh = g_hco[x->ov0 + 2 * j + 1];
+            if (ol <= lo && oh > lo) { lo = oh; end = 0; break; } if (ol > lo && ol < end) end = ol; }
+        if (!end) continue;
+        memcpy(x->dst + lo, mem + lo, end - lo); g_hc_patched += end - lo; lo = end;
+    }
+}
+void mtl_sub_ahead_stats(uint64_t *patched, uint64_t *changed, uint64_t *subs) { *patched = g_hc_patched; *changed = g_hc_changed; *subs = g_hc_n; g_hc_patched = g_hc_changed = g_hc_n = 0; }
+static void copies_refresh(void) {
+    int any = 0;
+    for (int r = 0; r < g_nhcr; r++) {
+        const uint8_t *now = (const uint8_t *)(uintptr_t)g_hcr[r].a, *was = g_hcr[r].snap; uint64_t n = g_hcr[r].n;
+        for (uint64_t o = 0; o < n;) {
+            if (n - o >= 8 && !memcmp(now + o, was + o, 8)) { o += 8; continue; }
+            if (now[o] == was[o]) { o++; continue; }
+            uint64_t s = o; while (o < n && now[o] != was[o]) o++;   // a run of changed bytes
+            g_hc_changed += o - s; any = 1;
+            for (size_t i = 0; i < g_nhcc; i++) if (g_hcc[i].r == (uint32_t)r) hc_write(&g_hcc[i], now, s, o);
+        }
+    }
+    g_hc_n += any;
+}
+void vk_held_read(uint64_t a, uint64_t n, const void *who) {   // (the replay's thread: g_hold_early is set and cleared there, and by spoil_paused once it is paused)
+    if (!g_hold_early || !n) return;
+    if (g_nhr && g_hr[g_nhr - 1].a == a && g_hr[g_nhr - 1].n == n) return;   // (a shadow read again for the next draw)
+    if (g_nhr == g_chr) { if (g_chr >= HR_MAX) { g_hr_over = 1; return; } size_t c = g_chr ? 2 * g_chr : 1024; held_read *r = realloc(g_hr, c * sizeof *r); if (!r) { g_hr_over = 1; return; } g_hr = r; g_chr = c; }
+    g_hr[g_nhr++] = (held_read){a, n, mem_hash(a, n), who};
+}
+// At the game's submit, the open submission replayed ahead: 0 = what it read holds; else why not (1 its memory changed, 2 more reads than kept, 3 texture or sampler
+// IDs registered or pools made or dropped since the pause, 4 watched pages written since its begin (a packaged texture's), 5 a copied pool). On 0 its scratch copies
+// of guest memory are brought up to date (copies_refresh)
+int mtl_sub_ahead_check(void) {
+    int why = 0; uint64_t g[3]; hold_gens(g);
+    if (g_hr_over) why = 2;
+    else if (memcmp(g, g_hold_gen, sizeof g)) why = 3;
+    else if (dirty_writes() != g_hold_dirty) why = 4;
+    else if (!mtl_sub_ahead_ok()) why = 5;
+    else {   // (the first misses name the reads that changed: where, how many, by whom)
+        size_t nch = 0, first[4]; uint64_t bytes = 0, chb = 0;
+        for (size_t i = 0; i < g_nhr; i++) { bytes += g_hr[i].n; if (mem_hash(g_hr[i].a, g_hr[i].n) != g_hr[i].h) { if (nch < 4) first[nch] = i; nch++; chb += g_hr[i].n; } }
+        if (nch) { why = 1; static int nl; if (nl++ < 6) {
+            char t[600]; int k = 0;
+            for (size_t j = 0; j < nch && j < 4; j++) { const held_read *r = &g_hr[first[j]]; Dl_info di; const char *who = r->who == (const void *)1 ? "quad indices" : r->who == (const void *)2 ? "BC blocks" : NULL;
+                if (who) k += snprintf(t + k, sizeof t - (size_t)k, " [%zu] %#llx +%llu by %s;", first[j], (unsigned long long)r->a, (unsigned long long)r->n, who);
+                else if (dladdr(r->who, &di) && di.dli_fbase) k += snprintf(t + k, sizeof t - (size_t)k, " [%zu] %#llx +%llu by %s+%#llx;", first[j], (unsigned long long)r->a, (unsigned long long)r->n,
+                                                                            di.dli_fname && strrchr(di.dli_fname, '/') ? strrchr(di.dli_fname, '/') + 1 : "?", (unsigned long long)((uintptr_t)r->who - (uintptr_t)di.dli_fbase));
+                else k += snprintf(t + k, sizeof t - (size_t)k, " [%zu] %#llx +%llu by %p;", first[j], (unsigned long long)r->a, (unsigned long long)r->n, r->who); }
+            VKLOG("replay ahead: %zu of %zu reads (%llu of %llu bytes) changed between the replay ahead and the submit:%s", nch, g_nhr, (unsigned long long)chb, (unsigned long long)bytes, t); } }
+    }
+    if (!why) copies_refresh();
+    reads_reset(); return why;
+}
 void mtl_sub_event(volatile uint32_t *val, uint32_t mode, uint32_t v) { post((post_op){1, val, mode, v, 0, 0, -1}); }
 void mtl_sub_counter(uint64_t addr, uint32_t type) {
     vksub_t *s = cur(); int q = -1;
@@ -1480,6 +1619,10 @@ void mtl_sub_fill(uint64_t dst, uint64_t n, uint32_t value) {
 typedef struct { uint64_t lo, hi; VkBuffer sb; VkDeviceSize so; const uint8_t *p; uint8_t *own; } ubd_t;   // p: the bytes for CPU readers (own, or the scratch copy); own: their heap copy, freed with the entry
 enum { UBD_MAX = 512 };
 static ubd_t g_ubd[UBD_MAX]; static int g_nubd; extern int g_ubd_heap; uint64_t g_ubd_gen = 1, g_ubd_landed, g_ubd_shadows, g_ubd_bytes, g_ns_submit, g_ubd_superseded;
+uint64_t g_ns_submit_lock, g_ns_pq_submit, g_ns_pq_present;   // the replay's wait for the queue lock; the present thread's submit and vkQueuePresentKHR (gfx_vk_present.c)
+// DM_NVN_SEQ's trace (gfx/nvn/hle_nvn.c) for the completion and present threads; the graphics tests link without it
+__attribute__((weak)) int nvn_seq_active(void) { return 0; }
+__attribute__((weak)) void nvn_seq_note(const char *s) { (void)s; }
 void vk_end_pass_land(void);
 void vk_sub_update(uint64_t dst, const void *data, uint64_t n) {
     VkBuffer db, sb; VkDeviceSize dof, so;
@@ -1617,12 +1760,14 @@ void vk_cpu_ready(uint64_t a, uint64_t n) {
         }
         if (at == end) continue;   // deferred bytes cover prior and open producers alike
         if (w->fence <= g_fence) mtl_wait(w->fence, UINT64_MAX);
-        else { mtl_wait(mtl_sub_commit(), UINT64_MAX); vk_sub_resume(); }
+        else { mtl_wait(mtl_sub_commit(), UINT64_MAX); vk_sub_resume(); }   // (inside a submission replayed ahead, before the game's submit, that spoils it: mtl_sub_commit)
         return;
     }
 }
 // what a GPU read of [a, a + n) sees at this point of the command stream, into dst (memory, then the deferred updates in order)
+void vk_held_read(uint64_t a, uint64_t n, const void *who);
 void vk_ubd_read(uint64_t a, uint64_t n, uint8_t *dst) {
+    vk_held_read(a, n, __builtin_return_address(0));   // (replay ahead's check of what it read)
     if (vk_gpu_pending(a, n)) { static int k; g_ubd_racy++; if (k < 20) { k++; int cov = 0; for (int i = 0; i < g_nubd; i++) if (g_ubd[i].lo <= a && a + n <= g_ubd[i].hi) cov = 1;
         VKLOG("[RED] a CPU read of %#llx +%llu (%s) overlaps a GPU write not known to be complete", (unsigned long long)a, (unsigned long long)n, cov ? "covered by a deferred update" : "partly from memory"); } }
     memcpy(dst, (const void *)(uintptr_t)a, n);
@@ -1632,13 +1777,33 @@ void vk_ubd_read(uint64_t a, uint64_t n, uint8_t *dst) {
     for (int i = 0; i < g_nubd; i++) { uint64_t lo = g_ubd[i].lo > a ? g_ubd[i].lo : a, hi = g_ubd[i].hi < a + n ? g_ubd[i].hi : a + n;
         if (lo < hi) memcpy(dst + (lo - a), g_ubd[i].p + (lo - g_ubd[i].lo), hi - lo); }
 }
+// [a, a + n) of guest memory into d, a scratch copy the GPU reads (as vk_ubd_read: memory, then the in-flight and deferred updates). Held before the game's submit,
+// it is kept for copies_refresh
+void vk_ubd_read_scratch(uint64_t a, uint64_t n, uint8_t *d) {
+    if (!g_hold_early || !n || n > HC_SNAP) { vk_ubd_read(a, n, d); return; }
+    g_hold_early = 0; vk_ubd_read(a, n, d); g_hold_early = 1;   // (not a read the check hashes: refreshed instead)
+    if (g_hr_over) return;
+    int r = 0; while (r < g_nhcr && !(g_hcr[r].a == a && g_hcr[r].n == n)) r++;
+    if (r == g_nhcr) {
+        uint8_t *s = g_nhcr < HC_RANGES && g_hc_snap + n <= HC_SNAP ? malloc(n) : NULL; if (!s) { g_hr_over = 1; return; }
+        memcpy(s, (const void *)(uintptr_t)a, n); g_hcr[g_nhcr++] = (hc_range){a, n, s}; g_hc_snap += n;
+    }
+    if (g_nhcc == g_chcc) { if (g_chcc >= HC_COPIES) { g_hr_over = 1; return; } size_t k = g_chcc ? 2 * g_chcc : 512; hc_copy *x = realloc(g_hcc, k * sizeof *x); if (!x) { g_hr_over = 1; return; } g_hcc = x; g_chcc = k; }
+    hc_copy *x = &g_hcc[g_nhcc]; x->dst = d; x->r = (uint32_t)r; x->ov0 = (uint32_t)g_nhco; x->nov = 0;
+    uint64_t done = vk_fence_done();
+    for (int i = 0; i < g_ninfl; i++) { if (g_infl[i].fence <= done) continue; uint64_t lo = g_infl[i].lo > a ? g_infl[i].lo : a, hi = g_infl[i].hi < a + n ? g_infl[i].hi : a + n;
+        if (lo < hi) { if (!hc_push_ov(lo - a, hi - a)) { g_hr_over = 1; return; } x->nov++; } }
+    for (int i = 0; i < g_nubd; i++) { uint64_t lo = g_ubd[i].lo > a ? g_ubd[i].lo : a, hi = g_ubd[i].hi < a + n ? g_ubd[i].hi : a + n;
+        if (lo < hi) { if (!hc_push_ov(lo - a, hi - a)) { g_hr_over = 1; return; } x->nov++; } }
+    g_nhcc++;
+}
 // a uniform binding [a, a + n) that deferred updates overlap: its shadow (0 when none overlaps). Shadows are kept per (address, size) until the next update.
 int vk_ubd_shadow(uint64_t a, uint64_t n, VkBuffer *buf, VkDeviceSize *off) {
     if (!g_nubd || !vk_ubd_overlaps(a, n)) return 0;   // (a binding no deferred update touches reads memory on the GPU, after the in-flight copies: no shadow needed)
     enum { NC = 64 }; static struct { uint64_t a, n, gen; VkBuffer b; VkDeviceSize o; } c[NC];
     unsigned k = (unsigned)((a ^ n * 0x9E3779B97F4A7C15ull) >> 6) % NC;
     extern int g_x_noshc; if (c[k].a == a && c[k].n == n && c[k].gen == g_ubd_gen && !g_x_noshc) { *buf = c[k].b; *off = c[k].o; return 1; }
-    uint8_t *d = vk_scratch(n, V.props.limits.minUniformBufferOffsetAlignment, buf, off); vk_ubd_read(a, n, d); g_ubd_bytes += n;
+    void vk_ubd_read_scratch(uint64_t a, uint64_t n, uint8_t *d); uint8_t *d = vk_scratch(n, V.props.limits.minUniformBufferOffsetAlignment, buf, off); vk_ubd_read_scratch(a, n, d); g_ubd_bytes += n;
     c[k].a = a; c[k].n = n; c[k].gen = g_ubd_gen; c[k].b = *buf; c[k].o = *off; g_ubd_shadows++;
     return 1;
 }
@@ -1683,6 +1848,11 @@ static void *completion_main(void *a) {
         while (!g_ch) pthread_cond_wait(&g_ccv, &g_cmu);
         cpend *c = g_ch; pthread_mutex_unlock(&g_cmu);
         if (V.has_timeline) wait_fence(c->fence); else { VkResult r = vkWaitForFences(V.dev, 1, &g_fring[c->fence % NFRING], VK_TRUE, UINT64_MAX); if (r != VK_SUCCESS) die("[vk] GPU fence wait did not complete: %d", r); }
+        if (nvn_seq_active()) { char t[160]; uint64_t q[2] = {0, 0}, nw = gpu_ticks(); double tk = 625.0 / 12 / 1e6;   // ticks → ms (19.2 MHz, gpu_ticks' clock); began / ended: ms before now
+            if (g_tsq && c->slot >= 0) vkGetQueryPoolResults(V.dev, g_tsq, 2 * (uint32_t)c->slot, 2, sizeof q, q, 8, VK_QUERY_RESULT_64_BIT);
+            if (q[1] > q[0] && q[1] <= nw) snprintf(t, sizeof t, "vk GPU done fence %llu: its GPU work began %.2f ms and ended %.2f ms before this (span %.2f ms)", (unsigned long long)c->fence, (nw - q[0]) * tk, (nw - q[1]) * tk, (q[1] - q[0]) * tk);
+            else snprintf(t, sizeof t, "vk GPU done fence %llu (no timestamps)", (unsigned long long)c->fence);
+            nvn_seq_note(t); }
         if (g_shadow_pools && c->rslot >= 0) pools_copy_back(&g_slot[c->rslot]);
         if (g_tsq && c->slot >= 0) { uint64_t t[2]; if (vkGetQueryPoolResults(V.dev, g_tsq, 2 * (uint32_t)c->slot, 2, sizeof t, t, 8, VK_QUERY_RESULT_64_BIT) == VK_SUCCESS && t[1] > t[0])
             { uint64_t ns = (uint64_t)((double)(t[1] - t[0]) * V.props.limits.timestampPeriod); g_gpu_ns += ns; int k = (int)(c->frame % 64);
@@ -1763,6 +1933,9 @@ uint64_t mtl_sub_commit(void) {
     }
     else vk_bisect_result(1);
     { extern uint32_t g_sub_ops[64]; memset(g_sub_ops, 0, sizeof g_sub_ops); }
+    // A submission replayed ahead, committed (in part) before the game's submit: a descriptor that needed GPU-made data of its own (vk_cpu_ready cuts it there).
+    // Spoiled as spoil_paused says: its post ops go, and the game's submit replays the frame in full (mtl_sub_resume -1)
+    if (g_cur == g_held && g_hold_early) { g_spoiled = 1; s->npost = 0; static int k; if (k++ < 8) VKLOG("replay ahead: a part of the submission replayed ahead is committed before the game's submit (a descriptor needed GPU-made data of its own); the submit replays the frame in full"); }
     if (s->up_used) { vk_img_barrier_all(s->up); VKCHK(vkEndCommandBuffer(s->up)); }
     uint64_t f = ++g_fence;
     VkCommandBuffer cbs[1 + MAIN_CBS]; uint32_t ncb = 0; if (s->up_used) cbs[ncb++] = s->up; for (int i = s->nmain_sent; i < s->nmain_used; i++) cbs[ncb++] = s->mains[i];
@@ -1773,14 +1946,19 @@ uint64_t mtl_sub_commit(void) {
         if (f > NFRING) mtl_wait(f - NFRING, ~0ull);
         fe = g_fring[f % NFRING]; VKCHK(vkResetFences(V.dev, 1, &fe)); si.pNext = NULL; si.signalSemaphoreCount = 0;
     }
-    struct timespec t0, t1; clock_gettime(CLOCK_MONOTONIC, &t0); pthread_mutex_lock(&g_vk_queue_mu); VkResult r = vkQueueSubmit(V.q, 1, &si, fe); pthread_mutex_unlock(&g_vk_queue_mu); clock_gettime(CLOCK_MONOTONIC, &t1); g_ns_submit += (uint64_t)((t1.tv_sec - t0.tv_sec) * 1000000000ll + (t1.tv_nsec - t0.tv_nsec));
+    struct timespec t0, tl, t1; clock_gettime(CLOCK_MONOTONIC, &t0); pthread_mutex_lock(&g_vk_queue_mu); clock_gettime(CLOCK_MONOTONIC, &tl); VkResult r = vkQueueSubmit(V.q, 1, &si, fe); pthread_mutex_unlock(&g_vk_queue_mu); clock_gettime(CLOCK_MONOTONIC, &t1); g_ns_submit += (uint64_t)((t1.tv_sec - t0.tv_sec) * 1000000000ll + (t1.tv_nsec - t0.tv_nsec));
+    g_ns_submit_lock += (uint64_t)((tl.tv_sec - t0.tv_sec) * 1000000000ll + (tl.tv_nsec - t0.tv_nsec));   // of which waiting for the queue lock (the present thread holds it through vkQueuePresentKHR)
     if (r) { void vk_crumbs_report(void); vk_crumbs_report(); die("[vk] vkQueueSubmit: %d (device lost?)", r); }
     s->fence = f;
+    { int nvn_seq_active(void); void nvn_seq_note(const char *); if (nvn_seq_active()) { char t[96]; snprintf(t, sizeof t, "vk commit fence %llu (%d parts, %d sent early), vkQueueSubmit %.2f ms", (unsigned long long)f,
+          s->nmain_used, s->nmain_sent, (double)((t1.tv_sec - t0.tv_sec) * 1000000000ll + (t1.tv_nsec - t0.tv_nsec)) / 1e6); nvn_seq_note(t); } }
     cpend *c = calloc(1, sizeof *c); c->fence = f; c->frame = __atomic_load_n(&g_cur_frame, __ATOMIC_RELAXED); c->n = s->npost; c->rslot = g_cur; c->slot = s->no_ts ? -1 : g_cur; s->no_ts = 0;
     c->npass = g_npass[g_cur]; memcpy(c->pmeta, g_pmeta[g_cur], sizeof(pass_meta) * (size_t)c->npass);
     if (s->npost) { c->ops = malloc(s->npost * sizeof *c->ops); memcpy(c->ops, s->post, s->npost * sizeof *c->ops); }
     pthread_mutex_lock(&g_cmu); if (g_ct) g_ct->next = c; else g_ch = c; g_ct = c; pthread_cond_signal(&g_ccv); pthread_mutex_unlock(&g_cmu);
-    s->npost = 0; g_cur = -1;
+    s->npost = 0;
+    if (g_cur == g_held) { pthread_mutex_lock(&g_df_mu); g_held = -1; pthread_mutex_unlock(&g_df_mu); }
+    g_cur = -1;
     pthread_mutex_unlock(&g_sub_lock);
     return f;
 }

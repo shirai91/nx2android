@@ -53,6 +53,9 @@ def harness():
 #define NVN(name, ret, ...) ret h_##name(__VA_ARGS__)
 #define CB(c) ((cmd_t *)(c))
 #define LOG(...) ((void)0)
+#define SEQ(...) ((void)0)
+static int ahead_on(void) { return 0; }   /* replay ahead: not under test */
+static void ahead_note_end(uint64_t h) { (void)h; }
 #define OP_RESERVE 16
 #define HOSTSEG_SZ (256u << 10)
 #define HOSTSEG_MIN (4u << 10)
