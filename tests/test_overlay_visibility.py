@@ -31,7 +31,7 @@ class OverlayVisibility(unittest.TestCase):
 #include <string.h>
 #include "front.h"
 #include "overlay_layout.h"
-static _Atomic int g_set_overlay, g_overlay, g_pads, g_edit;
+static _Atomic int g_set_overlay, g_overlay, g_pads, g_edit, g_menu_btn = 1;
 static _Atomic int g_cust[2][2][OV_N][4];
 static _Atomic int g_set_rumble, g_set_fps, g_set_labels, g_menu_tab, g_sv_st;
 static int layout, saves;
@@ -243,8 +243,43 @@ static void hidden_controls(void) {
     atomic_store(&g_edit, 0); atomic_store(&g_cust[0][layout][button][3], 0);
     controls(1);
 }
+// DM_MENU_BUTTON=0 (issue #397): the menu button is hidden in play with the gamepad shown or not, a touch on its place goes to the game,
+// Back still opens and closes the menu, and the layout editor can still choose it (shown darkened there)
+static void no_menu_button(void) {
+    width = layout ? 2400 : 1920; height = 1080;
+    int menu = -1;
+    for (int i = 0; i < OV_N; i++) if (OV_CTLS[i].kind == OV_MENU) menu = i;
+    assert(menu >= 0);
+    atomic_store(&g_menu_btn, 0); atomic_store(&g_edit, 0); atomic_store(&g_menu, 0);
+    assert(dm_overlay_hidden(layout, menu) && dm_overlay_off(layout, menu));
+    float m[4]; ov_box(&OV_CTLS[menu], width, height, m);
+    for (int shown = 0; shown < 2; shown++) {
+        atomic_store(&g_set_overlay, shown); atomic_store(&g_overlay, 1); atomic_store(&g_pads, 0);
+        assert(dm_overlay_visible() == (shown ? 1 : 2));
+        assert(ctl_at(m[0], m[1], width, height) != menu);
+        if (!shown) assert(ctl_at(m[0], m[1], width, height) == -1);
+        int before = menu_opens;
+        AInputEvent tap = {.source = AINPUT_SOURCE_TOUCHSCREEN, .type = AINPUT_EVENT_TYPE_MOTION,
+                           .action = AMOTION_EVENT_ACTION_DOWN, .x = m[0], .y = m[1]};
+        assert(handle_event(&tap) == 1);
+        if (!shown) assert(touches == 1);   // the game's touch
+        tap.action = AMOTION_EVENT_ACTION_UP;
+        assert(handle_event(&tap) == 1 && menu_opens == before);
+        AInputEvent back = {.source = 0, .type = AINPUT_EVENT_TYPE_KEY, .key = AKEYCODE_BACK, .action = AKEY_EVENT_ACTION_DOWN};
+        assert(handle_event(&back) == 1 && menu_opens == before + 1);
+        back.action = AKEY_EVENT_ACTION_UP;
+        assert(handle_event(&back) == 1 && menu_opens == before + 1);
+    }
+    atomic_store(&g_edit, 1);
+    assert(dm_overlay_hidden(layout, menu) && !dm_overlay_off(layout, menu));
+    assert(ctl_at(m[0], m[1], width, height) == menu);
+    atomic_store(&g_edit, 0); atomic_store(&g_menu_btn, 1);
+    assert(!dm_overlay_hidden(layout, menu) && !dm_overlay_off(layout, menu));
+    atomic_store(&g_set_overlay, 0); controls(0);   // the default again: the menu button answers
+}
 int main(int argc, char **argv) {
     assert(argc == 2); int test = atoi(argv[1]);
+    if (test == 9) { for (layout = 0; layout < 2; layout++) no_menu_button(); return 0; }
     if (test == 8) { for (layout = 0; layout < 2; layout++) hidden_controls(); return 0; }
     if (test == 7) { for (layout = 0; layout < 2; layout++) motion_handoff(); return 0; }
     if (test >= 4) { for (layout = 0; layout < 2; layout++) input_handoff(test); return 0; }
@@ -292,6 +327,9 @@ int main(int argc, char **argv) {
 
     def test_hidden_controls_are_omitted_in_play_and_selectable_in_editor(self):
         self.run_case(8)
+
+    def test_no_menu_button_gives_its_place_to_the_game_and_back_opens_the_menu(self):
+        self.run_case(9)
 
     def test_visibility_follows_last_input_when_enabled(self):
         self.run_case(1)
