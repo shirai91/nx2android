@@ -20,7 +20,9 @@ def packed_romfs(data):   # whether the pack holds packed RomFS files (its env.t
     try: return 'DM_ROMFS_ZSTD=1' in (Path(data) / 'env.txt').read_text(encoding='utf-8').split()
     except OSError: return False
 APP = 'app'                                                  # --romfs-at app: the RomFS in the app's files folder (the default)
-ROMFS_MARK = '# porter install --romfs-at'                   # in the device's env.txt: the DM_ROMFS row under it is the installer's, carried over by later installs
+NO_SD = 'no-sd'                                              # --romfs-at no-sd: the RomFS back in the app's files folder when an earlier --romfs-at sd install put it on the SD card; otherwise as without --romfs-at
+SD = 'sd'                                                    # --romfs-at sd: the RomFS in <the SD card>/nx2android/<package>/romfs, pushed there (the APK stays in internal storage: Android 13 installs apps only to an adopted SD card)
+ROMFS_MARK ='# porter install --romfs-at'                   # in the device's env.txt: the DM_ROMFS row under it is the installer's, carried over by later installs
 ACCESS = 'android.permission.MANAGE_EXTERNAL_STORAGE'        # All files access, which the APK asks for (mkapk.py) and the installer grants
 ACCESS_HOW = 'Settings > Apps > {name} > All files access (Android 10: Permissions > Files and media)'
 SAMPLE_FILES, SAMPLE_MAX = 256, 4 << 20                      # the folder's content check: up to this many of its files, each of at most this many bytes (romfs_sample)
@@ -28,7 +30,7 @@ SAMPLE_FILES, SAMPLE_MAX = 256, 4 << 20                      # the folder's cont
 
 def romfs_target(arg, files=None):
     """--romfs-at's folder, checked before anything touches the device: None for the app's files folder (app, or that folder's own RomFS). files: the app's files folder"""
-    if arg is None or arg == APP: return None
+    if arg is None or arg in (APP, SD, NO_SD): return None
     if arg != arg.strip() or any(c in arg for c in '\r\n\0') or not arg.startswith('/'):
         raise BuildError(f'--romfs-at takes a folder on the device as an absolute path (/sdcard/…, /storage/…), or app: {arg!r}')
     d = posixpath.normpath(arg)
@@ -104,9 +106,10 @@ def install(apk, data, adb_exe, serial=None, replace_signer=False, romfs_at=None
     if not adb_exe: raise BuildError('adb not found: install Android platform-tools, or set its path with `porter config adb <path>`')
     files = datapack.files_folder(man['package'])
     target = romfs_target(romfs_at, files)
-    if romfs_push and not target: raise BuildError('--romfs-push needs --romfs-at <a folder on the device outside the app\'s files folder>')
+    sd = romfs_at == SD
+    if romfs_push and not target and not sd: raise BuildError('--romfs-push needs --romfs-at <a folder on the device outside the app\'s files folder>')
     packed = packed_romfs(data)
-    if packed and target: raise BuildError(PACKED_ELSEWHERE)
+    if packed and (target or sd): raise BuildError(PACKED_ELSEWHERE)
     adb = Adb(adb_exe, serial, log=say)
     PROG.stage('install', step='finding the device')
     pushing, lock = False, None
@@ -118,7 +121,15 @@ def install(apk, data, adb_exe, serial=None, replace_signer=False, romfs_at=None
             bc = adb.bc_textures()
             if bc is False: raise BuildError(f'{man["name"]} needs BC-compressed textures, which this device\'s GPU ({adb.gpu()}) cannot read')
             if bc is None: say(f'[RED] {man["name"]} needs BC-compressed textures; whether this GPU ({adb.gpu() or "unknown"}) reads them is not known')
+        if sd:
+            vol = adb.sd_volume()
+            if not vol: raise BuildError('--romfs-at sd: no SD card is mounted on the device')
+            romfs_at = f'{vol}/nx2android/{man["package"]}/{datapack.ROMFS}'; target = romfs_target(romfs_at, files); romfs_push = True
+            say(f'RomFS on the SD card: {target}')
         was = device_romfs(adb.read_text(f'{files}/env.txt'))   # an earlier --romfs-at install's folder
+        sd_dir = bool(was) and was.rstrip('/').startswith('/storage/') and was.rstrip('/').endswith(f'/nx2android/{man["package"]}/{datapack.ROMFS}')   # the folder an earlier --romfs-at sd made
+        if romfs_at == NO_SD:
+            romfs_at = APP if sd_dir else None
         if romfs_at is None and was:
             target = romfs_target(was, files)
             if packed and target: raise BuildError(f'the app reads its RomFS from {target} (an earlier install\'s --romfs-at). ' + PACKED_ELSEWHERE)
@@ -185,7 +196,9 @@ def install(apk, data, adb_exe, serial=None, replace_signer=False, romfs_at=None
             with tempfile.TemporaryDirectory(prefix='nx2a_env_') as t:
                 env = Path(t) / 'env.txt'; env.write_text(env_with_romfs((data / 'env.txt').read_text(encoding='utf-8'), target), encoding='utf-8', newline='\n')
                 adb.push_file(env, f'{files}/env.txt')
-        elif was and romfs_at == APP: say(f'the app reads its RomFS from its files folder again; {was} is left as it is')
+        elif was and romfs_at == APP:
+            if sd_dir: PROG.set(step='removing the RomFS from the SD card'); adb.shell(f'rm -rf {shlex.quote(was)}', timeout=1200); say(f'the app reads its RomFS from its files folder again; {was} (the earlier --romfs-at sd copy) is removed')
+            else: say(f'the app reads its RomFS from its files folder again; {was} is left as it is')
         stale = [rel for rel in have if rel.split('/', 1)[0] in datapack.OWNED and not (target and rel.startswith(datapack.ROMFS + '/')) and not (data / rel).is_file()]   # the push only adds the pack's own files, which are never stale
         if stale:   # an older version's files, which the game would still find
             PROG.set(step=f'removing {len(stale):,} stale files')

@@ -11,7 +11,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QTimer, QUrl
 from PySide6.QtGui import QColor, QDesktopServices, QFont, QIcon
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog, QFormLayout, QFrame, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
-                               QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QSpinBox, QSplitter, QStyle, QTableWidget, QTableWidgetItem,
+                               QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSpinBox, QSplitter, QStyle, QTableWidget, QTableWidgetItem,
                                QTabWidget, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from porter import config
@@ -78,6 +78,8 @@ class PortTab(QWidget):
                      'which the app then reads instead of a copy in its own files folder (7 to 18 GB less). The installer checks the folder and gives the app All files access.\n'
                      'Empty: as the device has it. "app": the RomFS back in the app\'s files folder. Install only: the port itself does not change.')
         self.romfs_push = QCheckBox('Push the game\'s RomFS into that folder (an empty folder, or one of this game: files are added, never deleted)')   # porter install --romfs-push
+        self.romfs_sd = QCheckBox('Game data on the SD card (the app itself stays in internal storage: Android installs apps only to an adopted SD card)')   # porter install --romfs-at sd
+        self.romfs_sd.toggled.connect(lambda on: (self.romfs_at.setEnabled(not on), self.romfs_push.setEnabled(not on)))
         romfs = with_info(self.romfs_at, romfs_tip); romfs.layout().setStretch(0, 1)
         self.package = QLineEdit(); self.package.setPlaceholderText('the profile\'s package')   # porter port --package: a test install beside the player's other build
         self.package.setToolTip('Install under another package than the profile\'s (org.nx2a.<game>.test), beside your other build of the game.\n'
@@ -107,12 +109,14 @@ class PortTab(QWidget):
                              'Raise it (16, 24 …) if the game still runs out. It uses no memory and does not change the speed.')
         f.addRow('App name', self.app_name); f.addRow('Game language', self.language)
         f.addRow('Output folder', path_row(self.out, self.pick_out)); f.addRow('Device', dev); f.addRow('', self.replace_signer)
-        f.addRow('RomFS on the device', romfs); f.addRow('', self.romfs_push)
+        f.addRow('RomFS on the device', romfs); f.addRow('', self.romfs_push); f.addRow('', self.romfs_sd)
         f.addRow('Package', self.package); f.addRow('versionCode offset', self.vercode); f.addRow('Extra address space', headroom)
         f.addRow('Vulkan driver', path_row(self.driver, self.pick_driver))
         f.addRow('System font', path_row(self.shared_font, self.pick_shared_font))
         f.addRow('', self.fps60); f.addRow('', self.touch); f.addRow('', self.no_menu_button); f.addRow('', self.mt_replay); f.addRow('', self.debug); f.addRow('', self.experimental)
-        v.addWidget(o)
+        scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setFrameShape(QFrame.NoFrame); scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setMinimumHeight(120); scroll.setWidget(o)   # the options scroll, so the tab fits a 1080p screen
+        v.addWidget(scroll, 3)
 
         bar = QHBoxLayout()
         self.port_btn = QPushButton('Port'); self.port_btn.setEnabled(False); self.port_btn.setMinimumHeight(36)
@@ -133,7 +137,7 @@ class PortTab(QWidget):
         hh = self.stages.header(); hh.setSectionResizeMode(0, QHeaderView.ResizeToContents); hh.setSectionResizeMode(1, QHeaderView.ResizeToContents); hh.setSectionResizeMode(2, QHeaderView.Stretch)
         self.log = QPlainTextEdit(); self.log.setReadOnly(True); self.log.setFont(QFont('Consolas' if os.name == 'nt' else 'Menlo', 9)); self.log.setMaximumBlockCount(20000)
         split.addWidget(self.stages); split.addWidget(self.log); split.setSizes([180, 220])
-        v.addWidget(split, 1)
+        v.addWidget(split, 2)
         self.tick = QTimer(self); self.tick.timeout.connect(self.on_tick); self.tick.start(1000)
         self.refresh_devices()
 
@@ -234,7 +238,9 @@ class PortTab(QWidget):
         self.run(args + self.romfs_args())
 
     def romfs_args(self):   # porter install --romfs-at / --romfs-push (porter/install.py)
-        return (['--romfs-at', self.romfs_at.text().strip()] if self.romfs_at.text().strip() else []) + (['--romfs-push'] if self.romfs_push.isChecked() else [])
+        if self.romfs_sd.isChecked(): return ['--romfs-at', 'sd']
+        if not self.romfs_at.text().strip(): return ['--romfs-at', 'no-sd'] + (['--romfs-push'] if self.romfs_push.isChecked() else [])   # no-sd: data an earlier SD install put on the card comes back into the app's files folder
+        return ['--romfs-at', self.romfs_at.text().strip()] + (['--romfs-push'] if self.romfs_push.isChecked() else [])
 
     def run(self, args):
         self.stages.clear(); self.items = {}; self.log.clear(); self.prog.setValue(0); self.step.setText('starting…')

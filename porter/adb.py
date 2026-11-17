@@ -110,6 +110,12 @@ class Adb:
         out = self.shell('for p in ' + ' '.join(shlex.quote(x) for x in (a, b)) + '; do while [ ! -e "$p" ]; do p=$(dirname "$p"); done; stat -L -c %d "$p"; done', check=False).split()
         return len(out) == 2 and out[0] == out[1]
 
+    def sd_volume(self):   # the removable SD card's mount folder (/storage/<its id>), None when none is mounted (sm lists a mounted public volume: "public:179,1 mounted 0AEF-0B2F")
+        for ln in self.shell('sm list-volumes', check=False).splitlines():
+            p = ln.split()
+            if len(p) >= 3 and p[0].startswith('public:') and p[1] == 'mounted' and re.fullmatch(r'[A-Za-z0-9-]+', p[2]) and p[2] != 'null': return f'/storage/{p[2]}'
+        return None
+
     def read_text(self, path):   # a small text file on the device, '' when it is not there
         return self.shell(f'cat {shlex.quote(path)} 2>/dev/null; true', check=False)
 

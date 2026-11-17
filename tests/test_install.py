@@ -26,6 +26,7 @@ class Device(Adb):
         self.fs, self.text, self.sdk_, self.access, self.grants, self.free, self.ops = dict(files), dict(text or {}), sdk, access, grants, free, []
         self.md5, self.installed_, self.requests = md5 if md5 is not None else {}, installed, requests
     def pick(self): return 'dev'
+    def sd_volume(self): return '/storage/ABCD-1234'
     def prop(self, name): return str(self.sdk_) if name == 'ro.build.version.sdk' else 'Test'
     def gpu(self): return 'Qualcomm, Adreno (TM) 830'
     def free_bytes(self, path='/sdcard'): return self.free
@@ -165,6 +166,15 @@ class RomfsAt(unittest.TestCase):
         dev = self.run_on(Device({f'{DUMP}/c.bin': 5}, text=env, access='allow'), romfs_at='app')
         self.assertEqual({k[len(FILES) + 7:] for k in dev.fs if k.startswith(f'{FILES}/RomFS/')}, set(ROM)); self.assertIsNone(install.device_romfs(dev.text[f'{FILES}/env.txt']))
         self.assertEqual(dev.step('push_file', 'env.txt'), -1); self.assertIn(f'{DUMP}/c.bin', dev.fs)   # the folder is left as it is
+
+    def test_sd(self):   # sd: the RomFS pushed into <the SD card>/nx2android/<package>/RomFS; no-sd later moves it back and removes it from the card, else changes nothing
+        sd = '/storage/ABCD-1234/nx2android/org.nx2a.test/RomFS'
+        dev = self.run_on(Device(access='allow'), romfs_at='sd')
+        self.assertEqual(dev.remote_sizes(sd), ROM); self.assertEqual(install.device_romfs(dev.text[f'{FILES}/env.txt']), sd)
+        back = self.run_on(Device(dict(dev.fs), text=dict(dev.text), access='allow'), romfs_at='no-sd')
+        self.assertEqual({k[len(FILES) + 7:] for k in back.fs if k.startswith(f'{FILES}/RomFS/')}, set(ROM)); self.assertFalse(back.remote_sizes(sd)); self.assertIsNone(install.device_romfs(back.text[f'{FILES}/env.txt']))
+        env = {f'{FILES}/env.txt': install.env_with_romfs('DM_LANG=en-US\n', DUMP)}
+        with self.assertRaisesRegex(BuildError, 'earlier install'): self.run_on(Device({f'{DUMP}/c.bin': 5}, text=env, access='allow'), romfs_at='no-sd')   # another folder: kept, checked as without --romfs-at
 
     def test_romfs_push(self):   # --romfs-push: the missing files and those of another size go into the folder, then it is checked again
         dev = self.run_on(Device({f'{DUMP}/c.bin': 4}), romfs_at=DUMP, romfs_push=True)
