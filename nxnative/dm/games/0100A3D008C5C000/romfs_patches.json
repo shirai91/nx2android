@@ -1,5 +1,6 @@
 {
   "v786432": [{
+    "type": "lua54_reorder",
     "reason": "Boxes -> party Pokemon summary -> Give held item can miss Pokemon context in some branches. Move the context setter before the mode branches; retain archived mode 12 and loose mode 11.",
     "path": "script/lua/bin/release/main/main.blua",
     "archive": "arc/data.trpfs",

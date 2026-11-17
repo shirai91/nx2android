@@ -10,6 +10,7 @@ def prepare(profile, version, romfs, work, decode):
     rules = json.loads(spec.read_text(encoding='utf-8')).get(version, [])
     out = {}
     for rule in rules:
+        if rule.get('type') != 'lua54_reorder': raise BuildError(f"RomFS patch: unsupported recipe type {rule.get('type')!r}")
         path = rule['path']; loose = romfs / path
         work.mkdir(parents=True, exist_ok=True)
         if loose.is_file():
