@@ -11,7 +11,7 @@
 #   settings.txt   the pause menu's first-launch defaults (the profile's setting rows, then the port's: --touch); the installer never replaces the player's own
 #   nx2a-data.json what the pack is: the game, the package, the version, the device features the profile requires (android.tsv requires), which the installer checks
 # Big trees are hard links into the extraction when the volume allows, so the pack takes no extra space; the pack is rebuilt whole when anything in it changes.
-import json, os, shutil, time
+import hashlib, json, os, shutil, tempfile, time
 from pathlib import Path
 
 MANIFEST = 'nx2a-data.json'
@@ -43,9 +43,10 @@ def romfs_sizes(d):   # {path in the RomFS: size} of the pack in d, '/'-separate
     return {p.relative_to(r).as_posix(): p.stat().st_size for p in r.rglob('*') if p.is_file()} if r.is_dir() else {}
 
 
-def build(dst, *, profile, version, display, patched, romfs, shaders, aoc=None, sysdata=None, language='en-US', package=None, env=(), settings=None, files=None, profile_h=None, progress=None):
+def build(dst, *, profile, version, display, patched, romfs, shaders, aoc=None, sysdata=None, language='en-US', package=None, env=(), settings=None, files=None, romfs_overrides=None, profile_h=None, progress=None):
     """Write the pack to dst (replacing it). profile: the AndroidProfile; package: the app's, when not the profile's; env: more env.txt rows, after the profile's; settings: settings.txt values over the profile's;
-    files: {name in the pack: source} (the 60 fps memory writes, fpslock.tsv; the button-icon font); profile_h: sha256 of the game_profile.h the host was built with (porter host). Returns the manifest"""
+    files: {name in the pack: source} (the 60 fps memory writes, fpslock.tsv; the button-icon font); romfs_overrides: {relative RomFS path: source}, recorded in the manifest
+    with the staged files' SHA-256 hashes; profile_h: sha256 of the game_profile.h the host was built with (porter host). Returns the manifest"""
     package = package or profile.package
     tmp = dst.with_name(dst.name + '.partial')
     if tmp.exists(): shutil.rmtree(tmp)
@@ -55,6 +56,16 @@ def build(dst, *, profile, version, display, patched, romfs, shaders, aoc=None, 
         if not src: continue
         if progress: progress(what)
         dn, db = link_tree(src, tmp / sub); n += dn; b += db
+    override_hashes = {}
+    for name, src in (romfs_overrides or {}).items():
+        dest = tmp / ROMFS / name
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if dest.exists(): b -= dest.stat().st_size
+        else: n += 1
+        with tempfile.NamedTemporaryFile(dir=dest.parent, delete=False) as f: staged = Path(f.name)
+        shutil.copyfile(src, staged); staged.replace(dest)
+        b += dest.stat().st_size
+        override_hashes[name] = hashlib.sha256(dest.read_bytes()).hexdigest()
     if shaders: link_or_copy(shaders, tmp / 'shaders.dmsv'); n += 1; b += shaders.stat().st_size   # none for an OpenGL ES game
     for name, src in (files or {}).items(): shutil.copyfile(src, tmp / name); n += 1; b += Path(src).stat().st_size
     rows = [f'# Written by nx2android\'s porter for {profile.name} ({profile.id}); KEY=VALUE per line, read by the app at launch',
@@ -68,6 +79,7 @@ def build(dst, *, profile, version, display, patched, romfs, shaders, aoc=None, 
                files=n, bytes=b, dlc=sorted(int(p.name) for p in aoc.iterdir() if p.is_dir() and p.name.isdigit()) if aoc else [],
                sysdata=sorted(p.name for p in sysdata.iterdir() if p.is_dir()) if sysdata else [], made=time.strftime('%Y-%m-%d %H:%M:%S'))
     if profile_h: man['profile_h'] = profile_h
+    if override_hashes: man['romfs_overrides'] = override_hashes
     (tmp / MANIFEST).write_text(json.dumps(man, indent=2), encoding='utf-8')
     if dst.exists(): shutil.rmtree(dst)
     for i in range(20):   # Windows: a folder just removed can stay delete-pending while another process (an indexer, a virus scan) holds it, and the rename is refused meanwhile

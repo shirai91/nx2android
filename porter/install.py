@@ -64,13 +64,13 @@ def romfs_sample(rom, n=SAMPLE_FILES, max_size=SAMPLE_MAX):
     return small if len(small) <= n else [small[i * len(small) // n] for i in range(n)]
 
 
-def romfs_changed(adb, data, target, rom, there):
+def romfs_changed(adb, data, target, rom, there, required=()):
     """The sample's files that target holds at the pack's size but with other bytes (MD5), sorted; None when the device gave no MD5 at all (nothing compared)"""
-    sample = [r for r in romfs_sample(rom) if there.get(r) == rom[r]]
+    sample = sorted(r for r in set(romfs_sample(rom)) | set(required) if there.get(r) == rom[r])
     if not sample: return []
     got = adb.remote_md5(target, sample)
-    if not got: return None
-    return sorted(r for r in sample if r in got and got[r] != hashlib.md5(Path(long_path(Path(data) / datapack.ROMFS / r)).read_bytes()).hexdigest())
+    if not got and not required: return None
+    return sorted(r for r in sample if (r in got and got[r] != hashlib.md5(Path(long_path(Path(data) / datapack.ROMFS / r)).read_bytes()).hexdigest()) or (r in required and r not in got))
 
 
 def romfs_mismatch(folder, want, have, n=5, changed=()):
@@ -82,7 +82,7 @@ def romfs_mismatch(folder, want, have, n=5, changed=()):
     sizes = lambda r: f'{r}: {have[r]:,} bytes, the pack has {want[r]:,}'
     parts = ([f'{len(missing):,} of the game\'s files are not there ({first(missing)})'] if missing else []) + \
             ([f'{len(other):,} have another size ({first(other, sizes)})'] if other else []) + \
-            ([f'{len(changed):,} have the right size but other content (MD5: {first(list(changed))})'] if changed else []) + \
+            ([f'{len(changed):,} have the right size but other content or an unavailable MD5 ({first(list(changed))})'] if changed else []) + \
             ([f'{len(extra):,} are not the game\'s ({first(extra)})'] if extra else [])
     return f'{folder} is not this pack\'s RomFS ({len(want):,} files): ' + '; '.join(parts) if parts else ''
 
@@ -100,6 +100,7 @@ def install(apk, data, adb_exe, serial=None, replace_signer=False, romfs_at=None
     apk, data = Path(apk), Path(data)
     man = datapack.read_manifest(data)
     if not man: raise BuildError(f'not a data pack (no {datapack.MANIFEST}): {data}')
+    overrides = man.get('romfs_overrides', {})
     if not apk.is_file(): raise BuildError(f'no APK: {apk}')
     if not adb_exe: raise BuildError('adb not found: install Android platform-tools, or set its path with `porter config adb <path>`')
     files = datapack.files_folder(man['package'])
@@ -133,7 +134,7 @@ def install(apk, data, adb_exe, serial=None, replace_signer=False, romfs_at=None
             missing, other, extra = romfs_diff(rom, there)
             if not extra and (romfs_push or not (missing or other)):   # a listing that can be used: a sample of the files compared by content too
                 PROG.set(step=f'comparing the content of {target} with the pack\'s RomFS')
-                changed = romfs_changed(adb, data, target, rom, there)
+                changed = romfs_changed(adb, data, target, rom, there, overrides)
                 if changed is None: say(f'[RED] the device gave no MD5 of the files in {target}: only their names and sizes were compared with the pack\'s RomFS'); changed = []
             if bad := romfs_mismatch(target, rom, there, changed=changed):
                 if extra or not romfs_push:
@@ -173,14 +174,14 @@ def install(apk, data, adb_exe, serial=None, replace_signer=False, romfs_at=None
         PROG.set(step='pushing the game data', done=0, total=man['bytes'] - sum(rom.values()), unit='B'); pushing = True
         have = adb.remote_sizes(files)   # again: an install with --replace-signer uninstalls first, and Android deletes the files folder with the app
         adb.push_tree(data, files, keep=datapack.KEEP_ON_DEVICE, skip=(datapack.MANIFEST,) + (('env.txt',) if target else ()), exclude=(datapack.ROMFS,) if target else (),
-                      verify=lambda rel: rel.split('/', 1)[0] not in ('RomFS', 'aoc'),   # the game's own files change only with their version
+                      verify=lambda rel: rel.split('/', 1)[0] not in ('RomFS', 'aoc') or rel.startswith(datapack.ROMFS + '/') and rel[len(datapack.ROMFS) + 1:] in overrides,   # the game's own files change only with their version; generated overrides can change at the same size
                       progress=lambda d, t, note: PROG.set(done=d, total=t, note=note), have=have)
         if target and (missing or other or changed):   # --romfs-push: the pack's RomFS into the folder (changed: pushed again when their MD5 differs), then the folder checked again
             PROG.set(step=f'pushing the RomFS into {target}', done=0, total=sum(rom[r] for r in missing + other + changed), unit='B')
             again = set(changed)
-            adb.push_tree(data / datapack.ROMFS, target, verify=lambda rel: rel in again, progress=lambda d, t, note: PROG.set(done=d, total=t, note=note), have=there)
+            adb.push_tree(data / datapack.ROMFS, target, verify=lambda rel: rel in again or rel in overrides, progress=lambda d, t, note: PROG.set(done=d, total=t, note=note), have=there)
             now = adb.remote_sizes(target)
-            if bad := romfs_mismatch(target, rom, now, changed=romfs_changed(adb, data, target, rom, now) or []): raise BuildError(f'after the push, {bad}')
+            if bad := romfs_mismatch(target, rom, now, changed=romfs_changed(adb, data, target, rom, now, overrides) or []): raise BuildError(f'after the push, {bad}')
         if target:   # the pack's env.txt with the installer's row
             with tempfile.TemporaryDirectory(prefix='nx2a_env_') as t:
                 env = Path(t) / 'env.txt'; env.write_text(env_with_romfs((data / 'env.txt').read_text(encoding='utf-8'), target), encoding='utf-8', newline='\n')

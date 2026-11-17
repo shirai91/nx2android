@@ -1,0 +1,13 @@
+{
+  "v786432": [{
+    "reason": "Boxes -> party Pokemon summary -> Give held item can miss Pokemon context in some branches. Move the context setter before the mode branches; retain archived mode 12 and loose mode 11.",
+    "path": "script/lua/bin/release/main/main.blua",
+    "archive": "arc/data.trpfs",
+    "file_hash": "be21e65463b9a98f",
+    "order": [[0, 40], [44, 52], [40, 44], [52, 80]],
+    "sources": [
+      {"sha256": "c63ecc1321bfc91fd9e625b912333e8fa1268ee6f40f5e07bf6743525a8e08fa", "offset": 11545754, "output": "5f1d0888f90debe846d7f4baa9572e3a92c354def602ee91637bd74ad7510c8b"},
+      {"sha256": "c1a4f4e2625912cf0b739a642a79ba3357df0557a544b92da22a6cb139de2815", "offset": 11515265, "output": "e7d379d43f2ee1293434ae84d1ef67ddeec1bec0d173ac837001c301f6afdce6"}
+    ]
+  }]
+}
