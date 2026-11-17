@@ -134,6 +134,8 @@ A profile is offered for Android when it has an `android.tsv`; the profiles with
 | `setting` | `<name>=<value>`: the pause menu's defaults on first launch (`overlay`, `rumble`, `docked`, `fps`: the frame rate counter in the top left corner, off by default; `opacity`: the gamepad's, 20 to 80 percent by 5, 60 by default), written to the data pack's `settings.txt`, where the app also keeps the player's own gamepad layout from the pause menu's layout editor (`ui=` rows) and its Snap to grid (`grid`, off by default) |
 | `romfs` | `raw` (default) or `zstd`: the data pack's RomFS files that compress are stored zstd-compressed and read back by the host ("Compressed RomFS" below) |
 | `env` | `<KEY>=<VALUE>`: a host switch the game needs on Android, written to the data pack's `env.txt` |
+
+The shared `game.tsv` key `online_sdk 1` packs the game's online SDK NRO (Epic Online Services) instead of refusing it, for a game that crashes without it (Tetris® Effect: Connected); the profile's `env` row `DM_ONLINE_SDK=1` then lets the host load it (`hle_ro.c`). Other games keep the refusal.
 | `overlay` | `<tablet\|phone> <control> <x> <y>`: moves one on-screen control of that layout (`dm/android/overlay_default.tsv`) to x, y as fractions of the window, compiled into `android_profile.h` |
 
 Per-build knowledge stays where upstream keeps it: the rewriter's cuts in `patches.py` / `dm/tools/sdk_patches.py`, keyed by build ID.

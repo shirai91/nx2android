@@ -1,0 +1,10 @@
+# TETRIS EFFECT: CONNECTED on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Enhance, Unreal Engine 4.26 on SDK 13, update 2.0.2.2 (v1310720); 11,923 shaders split, 12,063 translated.
+# Tested 2026-11-16 on the AYN Thor (Snapdragon 8 Gen 2, Adreno 740, Android 13), built from this profile: boots, the first levels play at 60 fps
+# (frame work p50 17 ms, no late frame, no red log line). Longer sessions, saves and the online menus are not checked.
+# DM_ONLINE_SDK=1 lets the host load the game's Epic Online Services NRO (hle_ro.c); the game crashes without it.
+status	wip
+tested	v1310720 AYN Thor (Snapdragon 8 Gen 2, Adreno 740, Android 13)
+package	org.nx2a.tetriseffectconnected
+orientation	landscape
+env	DM_ONLINE_SDK=1

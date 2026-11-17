@@ -101,6 +101,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [ ] Super Smash Bros. Ultimate · `01006A800016E000` · profile here · offline
 - [ ] Taiko Risshiden V DX · `0100346017304000` · profile here · Japanese · played by touch
 - [x] Tales of Eternia Remastered · `010006E0230AC000`
+- [x] Tetris® Effect: Connected · `0100DE501433A000` · AYN Thor; the first levels play at 60 fps; needs the game's Epic Online Services NRO loaded (`online_sdk`, `DM_ONLINE_SDK`); longer sessions and saves not checked
 - [ ] The Great Ace Attorney Chronicles · `010036E00FB20000` · profile here
 - [x] The Legend of Zelda: Breath of the Wild · `01007EF00011E000` · Galaxy S25 Ultra / Turnip; tested in the opening and on the Great Plateau
 - [x] The Legend of Zelda: Echoes of Wisdom · `01008CF01BAAC000` · Retroid Pocket 6 / PurpleVK; playable with minor transparency artifacts around rifts
