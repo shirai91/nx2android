@@ -254,6 +254,7 @@ static VkRenderingAttachmentInfo P_ca[8], P_da, P_sa; static VkRenderingInfo P_r
 // Keep writable aliases and route inactive duplicates to the first writer, or
 // the first slot when none writes. Distinct views/layers are never combined.
 static VkImageView P_alias_views[8]; static uint8_t P_alias[8];
+static uint32_t g_pruned_color;
 static void color_alias_map(uint32_t n, const VkImageView views[8], uint32_t mask, uint8_t map[8]) {
     for (uint32_t i=0;i<8;i++) map[i]=(uint8_t)i;
     for (uint32_t i=0;i<n && i<8;i++) if (views[i] && map[i]==i) {
@@ -263,6 +264,7 @@ static void color_alias_map(uint32_t n, const VkImageView views[8], uint32_t mas
     }
 }
 static void bind_chmask(uint32_t mask) {
+    if (g_pruned_color && mask) vk_end_pass();   // restore omitted targets before colour writes resume
     if (S.pass_open && mask!=S.chmask.mask) {
         uint8_t map[8];color_alias_map((uint32_t)S.ncol,P_alias_views,mask,map);
         if (memcmp(map,P_alias,sizeof map)) vk_end_pass();
@@ -352,6 +354,19 @@ static void lrz_touch(vkimg_t *im, int write) {
 // GPU +1 ms), as did writing back only the one a pass switches away from (0 genuine drops in about 140 frames, GPU +0.6-0.8 ms of 13-18)
 static vkimg_t *g_lrz_prev;
 void vk_lrz_forget(vkimg_t *im) { if (g_lrz_prev == im) g_lrz_prev = NULL; }   // an image dropped (gfx_vk_tex.c img_drop)
+// Odyssey's depth passes bind four colour targets with every channel disabled.
+// Omit LOAD-only targets before commit; their contents remain available to later passes.
+static void prune_masked_color(void) {
+    if (S.pass_open != 2 || S.chmask.mask || S.samples != 1 || S.ms.a2c ||
+        !(S.daspect & VK_IMAGE_ASPECT_DEPTH_BIT)) return;
+    for (int i = 0; i < S.ncol; i++) if (P_ca[i].imageView &&
+        (P_ca[i].loadOp != VK_ATTACHMENT_LOAD_OP_LOAD || P_ca[i].resolveImageView ||
+         !P_att[i].im || P_att[i].im->bc_of)) return;
+    for (int i = 0; i < S.ncol; i++) if (P_ca[i].imageView) {
+        g_pruned_color |= 1u << i;
+        P_ca[i].imageView = VK_NULL_HANDLE; S.cfmt[i] = VK_FORMAT_UNDEFINED; P_att[i].im = NULL;
+    }
+}
 // 0: no pass could be begun (no render pass or framebuffer, and no dynamic rendering to fall back on): the caller records nothing that needs one
 static int pass_commit(void) {
     if (S.pass_open != 2) return S.pass_open == 1;
@@ -666,7 +681,7 @@ void vk_end_pass(void) {
     if (S.pass_open == 1) { if (S.rp_pass) vkCmdEndRenderPass(vk_cmd()); else vkCmdEndRendering(vk_cmd()); bc_draw_back(); void vk_pass_ts(int end, uint32_t w, uint32_t h, uint32_t fmt, uint32_t draws); vk_pass_ts(1, S.pass_w, S.pass_h, (uint32_t)S.cfmt[0], (uint32_t)g_pass_draws | (g_pass_draws ? (uint32_t)((g_pass_bb[2] - g_pass_bb[0]) & 0xffff) << 16 : 0));  pass_dump(); if (g_x_tracepass >= 0 && g_sub_pass - 1 == g_x_tracepass) { setenv("DM_VK_TRACE_PASS", "-1", 1); g_x_tracepass = -1; } }
     if (S.pass_open == 1 && g_lin_back && g_pass_draws) lin_back();
     if (S.pass_open == 1) crumb_mark(0);
-    S.pass_open = 0; S.bound_pipe = VK_NULL_HANDLE; g_tf_in_pass = 0;
+    S.pass_open = 0; g_pruned_color = 0; S.bound_pipe = VK_NULL_HANDLE; g_tf_in_pass = 0;
 }
 // a pass end before something that reads or writes pool memory other than through a uniform binding (copies, fills, dispatches, buffer ↔ texture
 // copies, the submission's end): the deferred uniform updates land first (draws read them through their shadows, so ordinary pass ends keep them)
@@ -798,6 +813,7 @@ fail:
 }
 static int begin_pass(void) {
     if (S.pass_open) return 1;
+    g_pruned_color = 0;
     int psplit = g_psplit_now; g_psplit_now = 0;   // a pass split (prepare_draw): taken before any early return, so the flag never forces a later pass's cut
     VkCommandBuffer cb = vk_cmd();
     VkRenderingAttachmentInfo *ca = P_ca; memset(ca, 0, sizeof P_ca);
@@ -968,6 +984,7 @@ static int clear_masked(const p_clear_color *c, VkRect2D r) {   // 1 = done
     return 1;
 }
 static void clear_color(const p_clear_color *c) {
+    if (g_pruned_color) vk_end_pass();   // clears are independent of the draw channel mask
     if (!begin_pass()) return;
     if (c->index < 0 || c->index >= S.ncol) return;
     p_clear_color mapped=*c;mapped.index=P_alias[c->index];c=&mapped;
@@ -1985,7 +2002,11 @@ static int prepare_draw(int prim, int indexed) {
     else if (g_psplit > 0 && S.pass_open == 1 && g_pass_draws == (uint64_t)g_psplit && S.daspect && !g_psplit_depth) { static int n; if (n++ < 3) VKLOG("pass split: pass %d (%ux%u) has depth (format %d): not split", g_sub_pass - 1, S.pass_w, S.pass_h, S.dfmt); }
     { uint64_t fs = S.sh[1] ? S.sh[1]->key : 0; if (g_x_cutfs && S.pass_open == 1 && (fs == g_x_cutfs || g_prev_fs == g_x_cutfs)) vk_end_pass(); g_prev_fs = fs; }
     if (g_order_pending) { g_order_pending = 0; g_order_check = S.pass_open == 1; }   // an order-only barrier kept the pass open: decided below, once the draw's images are known
-    if (!begin_pass() || !pass_commit()) { g_vkst.skip_rt++; return 0; }
+    if (g_pruned_color && S.ms.a2c) vk_end_pass();
+    if (!begin_pass()) { g_vkst.skip_rt++; return 0; }
+    prune_masked_color();
+    if (!pass_commit()) { g_vkst.skip_rt++; return 0; }
+    uint32_t pruned_for_draw = g_pruned_color;
     if (g_x_tracepass >= 0 && g_sub_pass - 1 == g_x_tracepass) g_tracing = 1;
     uint64_t t0 = tick();
     VkCommandBuffer cb = vk_cmd();
@@ -2091,7 +2112,9 @@ static int prepare_draw(int prim, int indexed) {
         g_order_check = 0; vkshader_t *fs = k.raster_discard ? NULL : S.sh[1];
         if (g_pass_wmem || shader_wmem(S.sh[0]) || shader_wmem(fs) || shader_wmem(S.sh[2]) || order_feedback(3)) {
             g_order_ended++; vk_end_pass(); vk_img_barrier_all(vk_cmd());
-            if (!begin_pass() || !pass_commit()) { g_vkst.skip_rt++; return 0; }
+            if (!begin_pass()) { g_vkst.skip_rt++; return 0; }
+            if (pruned_for_draw) prune_masked_color();   // retain this draw's attachment compatibility
+            if (!pass_commit()) { g_vkst.skip_rt++; return 0; }
             cb = vk_cmd();
         } else g_order_kept++;
     }
