@@ -249,9 +249,9 @@ class HostTest(unittest.TestCase):   # porter host's update(): its refusals, the
             check(made, hashlib.sha256(crlf).hexdigest())                      # a port made on Windows before the fix
             check(made, hashlib.sha256(b'#define A 1\r\n').hexdigest())        # ... and before FPS_CEILING was added
             with self.assertRaises(BuildError): check(made, hashlib.sha256(b'#define A 2\n').hexdigest())
-        self.assertIn('Pokémon'.encode(), header)   # UTF-8 on every OS, not the locale's cp1252
-        legacy = 'Pokémon\r\n'.encode('cp1252') if os.name != 'nt' else 'Pokémon\r\n'.encode(__import__('locale').getpreferredencoding(False))
-        self.assertEqual(self.host.windows_text('Pokémon\n'.encode()), legacy)
+        self.assertIn('Pokémon'.encode('utf-8'), header)
+        legacy = 'Pokémon\r\n'.encode('utf-8')   # the Windows form of a header is CRLF and UTF-8 on every OS
+        self.assertEqual(self.host.windows_text('Pokémon\n'.encode('utf-8')), legacy)
         check(header, hashlib.sha256(self.host.windows_text(header)).hexdigest())   # Brilliant Diamond ported on Windows before the fix
 
     def test_update(self):
