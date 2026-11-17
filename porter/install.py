@@ -21,7 +21,7 @@ def packed_romfs(data):   # whether the pack holds packed RomFS files (its env.t
     except OSError: return False
 APP = 'app'                                                  # --romfs-at app: the RomFS in the app's files folder (the default)
 NO_SD = 'no-sd'                                              # --romfs-at no-sd: the RomFS back in the app's files folder when an earlier --romfs-at sd install put it on the SD card; otherwise as without --romfs-at
-SD = 'sd'                                                    # --romfs-at sd: the RomFS in <the SD card>/nx2android/<package>/romfs, pushed there (the APK stays in internal storage: Android 13 installs apps only to an adopted SD card)
+SD = 'sd'                                                    # --romfs-at sd: the RomFS in <the SD card>/Android/data/<package>/files/RomFS, pushed there: Android deletes that folder when the app is uninstalled (the APK stays in internal storage: Android 13 installs apps only to an adopted SD card)
 ROMFS_MARK ='# porter install --romfs-at'                   # in the device's env.txt: the DM_ROMFS row under it is the installer's, carried over by later installs
 ACCESS = 'android.permission.MANAGE_EXTERNAL_STORAGE'        # All files access, which the APK asks for (mkapk.py) and the installer grants
 ACCESS_HOW = 'Settings > Apps > {name} > All files access (Android 10: Permissions > Files and media)'
@@ -37,7 +37,8 @@ def romfs_target(arg, files=None):
     if files and d == f'{files}/{datapack.ROMFS}': return None
     if files and (d + '/').startswith(files + '/'): raise BuildError(f'--romfs-at {d}: the app\'s files folder is the installer\'s own; --romfs-at app keeps the RomFS there')
     if not d.startswith(('/sdcard/', '/storage/')): raise BuildError(f'--romfs-at {d}: the app can read only shared storage, /sdcard/… or /storage/… (an SD card: /storage/<its id>/…)')
-    if re.search(r'/Android/(data|obb)(/|$)', d, re.I):   # FUSE keeps every app out of the others' Android/data and Android/obb, All files access or not
+    own = files and re.fullmatch(r'/storage/[^/]+/Android/data/' + re.escape(files.split('/')[-2]) + '/files/' + datapack.ROMFS, d)   # the app's own folder on the SD card (--romfs-at sd): Android removes it with the app
+    if not own and re.search(r'/Android/(data|obb)(/|$)', d, re.I):   # FUSE keeps every app out of the others' Android/data and Android/obb, All files access or not
         raise BuildError(f'--romfs-at {d}: Android lets no app read a folder under another app\'s Android/data or Android/obb, even with All files access: '
                          'move the game\'s files elsewhere (/sdcard/Games/…), or keep them in this app\'s files folder with --romfs-at app')
     if len(d.encode()) > 512: raise BuildError(f'--romfs-at: a folder path of at most 512 bytes (the host\'s path buffers): {d}')
@@ -124,10 +125,10 @@ def install(apk, data, adb_exe, serial=None, replace_signer=False, romfs_at=None
         if sd:
             vol = adb.sd_volume()
             if not vol: raise BuildError('--romfs-at sd: no SD card is mounted on the device')
-            romfs_at = f'{vol}/nx2android/{man["package"]}/{datapack.ROMFS}'; target = romfs_target(romfs_at, files); romfs_push = True
+            romfs_at = f'{vol}/Android/data/{man["package"]}/files/{datapack.ROMFS}'; target = romfs_target(romfs_at, files); romfs_push = True
             say(f'RomFS on the SD card: {target}')
         was = device_romfs(adb.read_text(f'{files}/env.txt'))   # an earlier --romfs-at install's folder
-        sd_dir = bool(was) and was.rstrip('/').startswith('/storage/') and was.rstrip('/').endswith(f'/nx2android/{man["package"]}/{datapack.ROMFS}')   # the folder an earlier --romfs-at sd made
+        sd_dir = bool(was) and was.rstrip('/').startswith('/storage/') and was.rstrip('/').endswith((f'/Android/data/{man["package"]}/files/{datapack.ROMFS}', f'/nx2android/{man["package"]}/{datapack.ROMFS}'))   # the folder an earlier --romfs-at sd made (the second form: before the RomFS moved into the app's Android/data, where uninstalling removes it)
         if romfs_at == NO_SD:
             romfs_at = APP if sd_dir else None
         if romfs_at is None and was:

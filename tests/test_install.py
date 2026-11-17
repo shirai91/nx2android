@@ -167,10 +167,12 @@ class RomfsAt(unittest.TestCase):
         self.assertEqual({k[len(FILES) + 7:] for k in dev.fs if k.startswith(f'{FILES}/RomFS/')}, set(ROM)); self.assertIsNone(install.device_romfs(dev.text[f'{FILES}/env.txt']))
         self.assertEqual(dev.step('push_file', 'env.txt'), -1); self.assertIn(f'{DUMP}/c.bin', dev.fs)   # the folder is left as it is
 
-    def test_sd(self):   # sd: the RomFS pushed into <the SD card>/nx2android/<package>/RomFS; no-sd later moves it back and removes it from the card, else changes nothing
-        sd = '/storage/ABCD-1234/nx2android/org.nx2a.test/RomFS'
+    def test_sd(self):   # sd: the RomFS pushed into <the SD card>/Android/data/<package>/files/RomFS; no-sd later moves it back and removes it from the card, else changes nothing
+        sd = '/storage/ABCD-1234/Android/data/org.nx2a.test/files/RomFS'
         dev = self.run_on(Device(access='allow'), romfs_at='sd')
         self.assertEqual(dev.remote_sizes(sd), ROM); self.assertEqual(install.device_romfs(dev.text[f'{FILES}/env.txt']), sd)
+        again = self.run_on(Device(dict(dev.fs), text=dict(dev.text), access='allow'))   # a plain reinstall keeps the folder on the card
+        self.assertEqual(again.remote_sizes(sd), ROM); self.assertEqual(install.device_romfs(again.text[f'{FILES}/env.txt']), sd)
         back = self.run_on(Device(dict(dev.fs), text=dict(dev.text), access='allow'), romfs_at='no-sd')
         self.assertEqual({k[len(FILES) + 7:] for k in back.fs if k.startswith(f'{FILES}/RomFS/')}, set(ROM)); self.assertFalse(back.remote_sizes(sd)); self.assertIsNone(install.device_romfs(back.text[f'{FILES}/env.txt']))
         env = {f'{FILES}/env.txt': install.env_with_romfs('DM_LANG=en-US\n', DUMP)}
