@@ -448,12 +448,17 @@ static void *hle_lookup(const char *name) {   // the host's import table (hle.c 
     for (unsigned long i = 0; sec && i < sz / sizeof *sec; i++) if (!strcmp(sec[i].name, name)) return sec[i].fn;
     return NULL;
 }
+// GL entry points are "gl" followed by an upper-case letter (glCreateShader, glGenTextures). "gl" alone also matches glslcCompile and
+// other gl-prefixed names that are not GL entry points; those must keep their normal unimplemented stubs.
+static int is_gl_name(const char *name) {
+    return name && name[0] == 'g' && name[1] == 'l' && name[2] >= 'A' && name[2] <= 'Z';
+}
 EGLB(eglGetProcAddress, void *, const char *name) {
     static int asked, found; static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
     if (!name) return NULL;
     void *fn = NULL;
     if (!strncmp(name, "egl", 3)) fn = hle_lookup(name);
-    else if (!strncmp(name, "gl", 2)) {
+    else if (is_gl_name(name)) {
         for (const glw_ent *e = __start_swglw; e < __stop_swglw; e++) if (!strcmp(e->name, name)) { fn = e->fn; break; }
         if (!fn) { void *d = dev_sym(name); if (d) fn = tramp(d); }
     }
@@ -466,7 +471,7 @@ EGLB(eglGetProcAddress, void *, const char *name) {
 // the same pointer eglGetProcAddress would hand out. Layton's Mystery Journey DX imports 22 gl* entry points this way; bound to stubs, nothing was drawn (a black window) while its
 // audio and frames went on
 void *dm_gl_import(const char *name) {
-    if (!name || strncmp(name, "gl", 2)) return NULL;
+    if (!is_gl_name(name)) return NULL;
     for (const glw_ent *e = __start_swglw; e < __stop_swglw; e++) if (!strcmp(e->name, name)) return e->fn;
     void *d = dev_sym(name);
     return d ? tramp(d) : NULL;
