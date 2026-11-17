@@ -190,48 +190,86 @@ GLW(glTexStorage3D, void, GLenum t, GLsizei levels, GLenum f, GLsizei w, GLsizei
 typedef struct { uint64_t a[16]; } args_t;
 #define A(i, T) (T)x->a[i]
 // internalformat: the game asks with 0 (the Switch driver accepts it), which OpenGL ES rejects with GL_INVALID_VALUE and leaves a texture with no storage: a render target made this way
-// stays empty and every pass drawn into it is thrown away, which is a window that never shows anything. A sized format with the channel count of `format` instead
+// stays empty and every pass drawn into it is thrown away, which is a window that never shows anything. A sized format with the channel count of `format` instead.
+// The channel count of an unsized format (0: not one), and the sized format with that many channels
+static int fmt_channels(GLenum f) {
+    switch (f) {
+    case 0x1903: case 0x1906: case 0x1909: return 1;   // RED, ALPHA, LUMINANCE
+    case 0x8227: case 0x190A: return 2;                // RG, LUMINANCE_ALPHA
+    case 0x1907: return 3;                             // RGB
+    case 0x1908: return 4;                             // RGBA
+    default: return 0;
+    }
+}
+static GLint sized_for_channels(int ch) { return ch == 1 ? 0x8229 : ch == 2 ? 0x822B : ch == 3 ? 0x8051 : 0x8058; }   // R8, RG8, RGB8, RGBA8
 static GLint ifmt_ok(GLint ifmt, GLenum fmt, GLenum type) {
-    int ch = 4;    switch (fmt) { case 0x1903: case 0x1909: case 0x1906: case 0x8CDF: case 0x8226: ch = 1; break;   // RED, LUMINANCE, ALPHA, RGTC1, RG
-                   case 0x8227: case 0x190A: case 0x822F: ch = 2; break;                            // RG, LUMINANCE_ALPHA
-                   case 0x1907: case 0x8225: ch = 3; break;                                         // RGB
-                   default: ch = 4; break; }
-    switch (ifmt) {   // the sized formats are fine as they are
-    case 0x8051: case 0x8058: case 0x8229: case 0x822B: case 0x8814: case 0x881A: case 0x8C43: case 0x8F94: case 0x8F95: case 0x822A: case 0x822C: case 0x8D62: case 0x822D:
-    case 0x822F: case 0x881B: case 0x822E: case 0x8230: case 0x8815: case 0x8C41:
+    int fch = fmt_channels(fmt);
+    if (ifmt != 0) {
+        // A non-zero unsized internalformat: as the game asked, except for the 8-bit / float types, where the sized format that matches format's channels
+        // is the same storage. The packed types (GL_UNSIGNED_SHORT_4_4_4_4 / _5_5_5_1 / _5_6_5) keep the format the game asked for: a sized RGBA8/RGB8
+        // there would be GL_INVALID_OPERATION with no storage (FM24 Touch's case)
+        int ich = fmt_channels((GLenum)ifmt);
+        if (ich && (type == 0x1401 || type == 0x140B || type == 0x1406)) return sized_for_channels(fch ? fch : ich);
         return ifmt;
     }
-    int sized = 0;   // an unsized format: the same size its channels ask for
-    switch (ifmt) { case 0x1903: case 0x8227: case 0x1907: case 0x1908: case 0x1906: case 0x1909: case 0x190A: case 0: sized = 1; break; default: break; }
-    if (!sized) return ifmt;
+    int ch = fch ? fch : 4;
     GLenum ty16 = (type == 0x140B), ty32 = (type == 0x1406);
     if (ty16) return ch == 1 ? 0x822D : ch == 2 ? 0x822F : ch == 3 ? 0x881B : 0x881A;   // R16F, RG16F, RGB16F, RGBA16F
     if (ty32) return ch == 1 ? 0x822E : ch == 2 ? 0x8230 : ch == 3 ? 0x8815 : 0x8814;   // R32F, RG32F, RGB32F, RGBA32F
-    { static int said; if (!said++) GLOG("internal format %#x with format %#x: a sized format instead", ifmt, fmt); }
-    return ch == 1 ? 0x8229 : ch == 2 ? 0x822B : ch == 3 ? 0x8051 : 0x8058;   // R8, RG8, RGB8, RGBA8
+    { static int said; if (!said++) GLOG("internal format 0 with format %#x: a sized format instead", fmt); }
+    return sized_for_channels(ch);
 }
-// GL_ALPHA / GL_LUMINANCE / GL_LUMINANCE_ALPHA have no OpenGL ES form (ES 3 removed them). Passed through as R8 / RG8 the texture's alpha reads 1: a glyph atlas uploaded as
-// GL_ALPHA then draws every glyph as a filled box, and a movie's luminance planes read as black or green (Layton DX's 4096x1024 font page is GL_ALPHA, its AVC UV plane
-// GL_LUMINANCE_ALPHA). Converted to RGBA8 with the desktop sampling semantics (alpha → 0,0,0,a; luminance → v,v,v,255; luminance-alpha → v,v,v,a) instead
+// GL_ALPHA / GL_LUMINANCE / GL_LUMINANCE_ALPHA: ES 3 still takes them as unsized internalformats, but this device driver rejects the upload and the alpha channel
+// reads 1 when they are passed through as R8 / RG8: a glyph atlas uploaded as GL_ALPHA then draws every glyph as a filled box (Layton DX's 4096x1024 font page is
+// GL_ALPHA, texture 23), and a movie's luminance planes read as black or green. Converted to RGBA8 with the desktop sampling semantics (alpha → 0,0,0,a;
+// luminance → v,v,v,255; luminance-alpha → v,v,v,a) instead.
 #define GL_LEGACY_FMT(f) ((f) == 0x1906 || (f) == 0x1909 || (f) == 0x190A)
+// One legacy image converted to RGBA8. The source is read with the game's unpack state: a bound GL_PIXEL_UNPACK_BUFFER is mapped at the pointer's offset, and the rows
+// carry the GL_UNPACK_ALIGNMENT padding and the ROW_LENGTH / SKIP_ROWS / SKIP_PIXELS the game set. Returns a tightly packed buffer, or NULL (the call then goes through as asked)
 static unsigned char *legacy_rgba(GLenum f, GLsizei w, GLsizei h, const void *src) {
+    REAL(void, glGetIntegerv, GLenum, GLint *); REAL(void *, glMapBufferRange, GLenum, GLintptr, GLsizeiptr, GLbitfield); REAL(GLboolean, glUnmapBuffer, GLenum);
     if (!src || w <= 0 || h <= 0) return NULL;
-    size_t n = (size_t)w * (size_t)h; unsigned char *d = malloc(n * 4); if (!d) return NULL;
+    GLint pbo = 0, align = 4, row = 0, skr = 0, skp = 0;
+    r_glGetIntegerv(GL_PIXEL_UNPACK_BUFFER_BINDING, &pbo); r_glGetIntegerv(GL_UNPACK_ALIGNMENT, &align);
+    r_glGetIntegerv(GL_UNPACK_ROW_LENGTH, &row); r_glGetIntegerv(GL_UNPACK_SKIP_ROWS, &skr); r_glGetIntegerv(GL_UNPACK_SKIP_PIXELS, &skp);
+    int bpp = (f == 0x190A) ? 2 : 1, al = align > 0 ? align : 1;
+    size_t stride = (size_t)(row > 0 ? row : w) * bpp;
+    stride = (stride + (size_t)al - 1) / (size_t)al * (size_t)al;
+    size_t off = (size_t)skr * stride + (size_t)skp * bpp, need = off + (size_t)(h - 1) * stride + (size_t)w * bpp;
     const unsigned char *s = src;
-    if (f == 0x190A) for (size_t i = 0; i < n; i++) { unsigned char l = s[i * 2], a = s[i * 2 + 1]; d[i * 4] = l; d[i * 4 + 1] = l; d[i * 4 + 2] = l; d[i * 4 + 3] = a; }
-    else if (f == 0x1909) for (size_t i = 0; i < n; i++) { unsigned char l = s[i]; d[i * 4] = l; d[i * 4 + 1] = l; d[i * 4 + 2] = l; d[i * 4 + 3] = 255; }
-    else for (size_t i = 0; i < n; i++) { d[i * 4] = 0; d[i * 4 + 1] = 0; d[i * 4 + 2] = 0; d[i * 4 + 3] = s[i]; }
+    if (pbo) { s = r_glMapBufferRange(GL_PIXEL_UNPACK_BUFFER, (GLintptr)src, (GLsizeiptr)need, GL_MAP_READ_BIT); if (!s) return NULL; }
+    unsigned char *d = malloc((size_t)w * (size_t)h * 4);
+    if (d) {
+        const unsigned char *base = s + off;
+        for (GLsizei y = 0; y < h; y++) {
+            const unsigned char *r0 = base + (size_t)y * stride; unsigned char *o = d + (size_t)y * (size_t)w * 4;
+            if (f == 0x190A) for (GLsizei x = 0; x < w; x++) { unsigned char l = r0[x * 2], a = r0[x * 2 + 1]; o[x * 4] = l; o[x * 4 + 1] = l; o[x * 4 + 2] = l; o[x * 4 + 3] = a; }
+            else if (f == 0x1909) for (GLsizei x = 0; x < w; x++) { unsigned char l = r0[x]; o[x * 4] = l; o[x * 4 + 1] = l; o[x * 4 + 2] = l; o[x * 4 + 3] = 255; }
+            else for (GLsizei x = 0; x < w; x++) { o[x * 4] = 0; o[x * 4 + 1] = 0; o[x * 4 + 2] = 0; o[x * 4 + 3] = r0[x]; }
+        }
+    }
+    if (pbo) r_glUnmapBuffer(GL_PIXEL_UNPACK_BUFFER);
     return d;
 }
 static uint64_t p_glTexImage2D(void *v) { args_t *x = v; REAL(void, glTexImage2D, GLenum, GLint, GLint, GLsizei, GLsizei, GLint, GLenum, GLenum, const void *);
     GLenum t = A(0, GLenum); GLint level = A(1, GLint), ifmt = A(2, GLint); GLsizei w = A(3, GLsizei), h = A(4, GLsizei); GLenum f = A(6, GLenum), ty = A(7, GLenum);
-    GLint fixed = ifmt_ok(ifmt, f, ty); const void *px = A(8, const void *); unsigned char *conv = NULL;
-    if (ty == GL_UNSIGNED_BYTE && GL_LEGACY_FMT(f)) { if (level == 0 && px) { conv = legacy_rgba(f, w, h, px); if (conv) { fixed = GL_RGBA8; f = GL_RGBA; px = conv; } } else { fixed = GL_RGBA8; f = GL_RGBA; } }
-    r_glTexImage2D(t, level, fixed, w, h, A(5, GLint), f, ty, px); free(conv); return 0; }
+    GLint fixed = ifmt_ok(ifmt, f, ty); const void *px = A(8, const void *); unsigned char *conv = NULL; unpack_t u; int plain = 0;
+    // Every level that carries data is converted, not only level 0: the driver would read 4 bytes a texel past the game's 1- or 2-byte buffer. A level with no data
+    // still needs the RGBA8 storage that the lower levels were uploaded into
+    if (ty == GL_UNSIGNED_BYTE && GL_LEGACY_FMT(f)) {
+        if (px) { conv = legacy_rgba(f, w, h, px); if (conv) { fixed = GL_RGBA8; f = GL_RGBA; px = conv; unpack_plain(&u); plain = 1; } }
+        else { fixed = GL_RGBA8; f = GL_RGBA; }
+    }
+    r_glTexImage2D(t, level, fixed, w, h, A(5, GLint), f, ty, px);
+    if (plain) unpack_restore(&u);
+    free(conv); return 0; }
 static uint64_t p_glTexSubImage2D(void *v) { args_t *x = v; REAL(void, glTexSubImage2D, GLenum, GLint, GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, const void *);
-    GLenum t = A(0, GLenum), f = A(6, GLenum), ty = A(7, GLenum); GLsizei w = A(4, GLsizei), h = A(5, GLsizei); const void *px = A(8, const void *); unsigned char *conv = NULL;
-    if (A(1, GLint) == 0 && ty == GL_UNSIGNED_BYTE && GL_LEGACY_FMT(f)) { conv = legacy_rgba(f, w, h, px); if (conv) { f = GL_RGBA; px = conv; } }
-    r_glTexSubImage2D(t, A(1, GLint), A(2, GLint), A(3, GLint), w, h, f, ty, px); free(conv); return 0; }
+    GLenum t = A(0, GLenum), f = A(6, GLenum), ty = A(7, GLenum); GLsizei w = A(4, GLsizei), h = A(5, GLsizei); const void *px = A(8, const void *); unsigned char *conv = NULL; unpack_t u; int plain = 0;
+    // Every level, as in glTexImage2D: a mip level left as GL_ALPHA / GL_LUMINANCE into RGBA8 storage fails with GL_INVALID_OPERATION and stays empty
+    if (ty == GL_UNSIGNED_BYTE && GL_LEGACY_FMT(f)) { conv = legacy_rgba(f, w, h, px); if (conv) { f = GL_RGBA; px = conv; unpack_plain(&u); plain = 1; } }
+    r_glTexSubImage2D(t, A(1, GLint), A(2, GLint), A(3, GLint), w, h, f, ty, px);
+    if (plain) unpack_restore(&u);
+    free(conv); return 0; }
 static uint64_t p_glTexImage3D(void *v) { args_t *x = v; REAL(void, glTexImage3D, GLenum, GLint, GLint, GLsizei, GLsizei, GLsizei, GLint, GLenum, GLenum, const void *);
     r_glTexImage3D(A(0, GLenum), A(1, GLint), ifmt_ok(A(2, GLint), A(7, GLenum), A(8, GLenum)), A(3, GLsizei), A(4, GLsizei), A(5, GLsizei), A(6, GLint), A(7, GLenum), A(8, GLenum), A(9, const void *)); return 0; }
 static uint64_t p_glTexSubImage3D(void *v) { args_t *x = v; REAL(void, glTexSubImage3D, GLenum, GLint, GLint, GLint, GLint, GLsizei, GLsizei, GLsizei, GLenum, GLenum, const void *);
