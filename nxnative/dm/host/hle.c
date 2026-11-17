@@ -5,11 +5,17 @@
 #include <dlfcn.h>
 #include <time.h>
 
-// The Android GL layer (dm/android/gl_android.c) hands out the device driver's GL entry points; nothing defines it on the Apple platforms, where the GL layer serves GL names through
-// eglGetProcAddress only
-extern void *dm_gl_import(const char *) __attribute__((weak));
-
 typedef struct { const char *name; void *fn; } hle_ent;
+
+// The Android GL layer (dm/android/gl_android.c) defines this and hands out the device driver's GL entry points. The Apple hosts build hle.c too and have no
+// definition, so a weak default keeps the reference linkable there (front_android.c uses the same shape for its own weak hooks)
+__attribute__((weak)) void *dm_gl_import(const char *name) { (void)name; return NULL; }
+
+// GL entry points are "gl" followed by an upper-case letter (glCreateShader, glGenTextures). "gl" alone also matches glslcCompile and
+// other gl-prefixed names that are not GL entry points; those must keep their normal unimplemented stubs.
+static int is_gl_name(const char *name) {
+    return name && name[0] == 'g' && name[1] == 'l' && name[2] >= 'A' && name[2] <= 'Z';
+}
 
 // ---------- Unimplemented imports: named stubs (the statically assembled stub table in entry.S, the k-th = movz x9,#k; b unimpl_entry) ----------
 #define MAX_STUB 4096                 // Matches the .rept count in entry.S
@@ -42,7 +48,7 @@ uint64_t resolve_import(module_t *m, const char *name) {
 
     // A GL entry point the game imports by name rather than through eglGetProcAddress: the device driver's, behind the layer's big-stack stubs. Layton's Mystery Journey DX imports
     // 22 of them (glCreateShader, glGenTextures, glViewport, …); bound to unimplemented stubs, nothing was drawn (a black window) while its audio and frames went on
-    if (!strncmp(name, "gl", 2) && dm_gl_import) {
+    if (is_gl_name(name) && dm_gl_import) {
         void *f = dm_gl_import(name);
         if (f) { if (g_flag.imports) LOG("import %s -> GL driver", name); return (uint64_t)hlecount_wrap("HLE", name, f); }
     }
