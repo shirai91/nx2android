@@ -235,6 +235,7 @@ static void exec_begin(int continuing) {   // internal segments retain the curre
     static int inited; if (!inited) { inited = 1; state_reset(); crash_add_note_hook(build_dump); prewarm_start(); compute_warm_start(); }
     if (!continuing) { g_rc_npend = 0; g_rc_skip = 0; }
     { void vk_tex_release_drain(void); vk_tex_release_drain(); }   // Finalized textures' CPU-written marks that no queued job needs any more (gfx_vk_tex.c)
+    if (!continuing) vk_mem_tick();   // under memory pressure, idle uploaded images and a trim (gfx_vk_core.c), here where no image of this submission is held yet (not a segment continued)
     S.pass_open = 0; S.bound_pipe = VK_NULL_HANDLE; g_cb_draws = 0; g_ord_parts = 0; g_psplit_now = 0; g_set_epoch++; x_read();
     if (g_prof_on) { extern uint64_t g_pkg_ns, g_pkg_n; memset(g_prof_ns, 0, sizeof g_prof_ns); g_prof_t0 = tick(); g_prof_pkg0 = g_pkg_ns; g_prof_npkg0 = g_pkg_n; g_prof_pipes0 = g_vkst.pipes_built; }
     { extern volatile int g_vk_samp_log; if (g_vk_samp_log > 0) VKLOG("submission begins (present %llu, thread %d)", (unsigned long long)g_tex_frame, (int)gettid()); }
@@ -1097,8 +1098,18 @@ typedef struct {
 static nvn_hmap g_pipes = {.klen = sizeof(pkey)}; static pthread_mutex_t g_pipe_mu = PTHREAD_MUTEX_INITIALIZER;   // the replay thread and the prewarm threads
 static VkPipeline build_pipeline(const pkey *k, VkPipelineLayout layout, vkshader_t *const stg[3]);
 static void pipe_record(const pkey *k);
-// The last key and its pipeline (the replay thread's only; pipelines are never dropped): runs of draws with one pipeline skip the 992-byte hash and the lock
+// The last key and its pipeline (the replay thread's only; vk_pipes_drop_idle, on that thread too, clears it): runs of draws with one pipeline skip the 992-byte hash and the lock
 static pkey g_last_k; static VkPipeline g_last_p;
+// 1 + the present each graphics pipeline was last drawn with, by handle (the replay thread's only: vk_pipes_drop_idle), noted once a present on the fast path. Only under
+// memory pressure (gfx_vk_core.c g_mem_pressure), the only time pipelines go: g_seen_since is the present from which every pipeline drawn with is in it (~0: not under
+// pressure now), and one not in it since then counts as last drawn with then
+static nvn_hmap g_pipe_seen = {.klen = sizeof(VkPipeline)}; static uint64_t g_last_seen, g_seen_since = ~0ull;
+static void pipe_seen(VkPipeline p) {
+    extern uint64_t g_tex_frame; extern _Atomic int g_mem_pressure; uint64_t now = __atomic_load_n(&g_tex_frame, __ATOMIC_RELAXED); g_last_seen = now;
+    if (!atomic_load_explicit(&g_mem_pressure, memory_order_relaxed)) { g_seen_since = ~0ull; return; }
+    if (g_seen_since == ~0ull) g_seen_since = now;
+    if (p && p != (void *)1) nvn_hm_put(&g_pipe_seen, &p, (void *)(uintptr_t)(now + 1));
+}
 // Pipelines built in the background. A pipeline met for the first time costs the driver's compile on the replay thread, 20-35 ms each on Adreno 830 (no pipeline
 // libraries there): in Super Mario Odyssey the first cap throw at a breakable object, the first swim, made 2-7 new pipelines a frame (175 ms frames, seen as 40, 30
 // fps or lower for a moment), then never again in that run; the prewarm (below) covers what an earlier run met. A draw whose pipeline does not exist yet is queued for
@@ -1147,10 +1158,10 @@ static int async_pipe(const pkey *k) {   // 1: queued (the draw is left out); un
     return ok;
 }
 static VkPipeline graphics_pipeline(const pkey *k, VkPipelineLayout layout) {
-    if (g_last_p && !memcmp(k, &g_last_k, sizeof *k)) return g_last_p == (void *)1 ? VK_NULL_HANDLE : g_last_p;
+    if (g_last_p && !memcmp(k, &g_last_k, sizeof *k)) { extern uint64_t g_tex_frame; if (g_last_seen != __atomic_load_n(&g_tex_frame, __ATOMIC_RELAXED)) pipe_seen(g_last_p); return g_last_p == (void *)1 ? VK_NULL_HANDLE : g_last_p; }
     pthread_mutex_lock(&g_pipe_mu); VkPipeline p = nvn_hm_get(&g_pipes, k); pthread_mutex_unlock(&g_pipe_mu);
     if (p == PIPE_PENDING) return VK_NULL_HANDLE;
-    if (p) { g_last_k = *k; g_last_p = p; return p == (void *)1 ? VK_NULL_HANDLE : p; }
+    if (p) { g_last_k = *k; g_last_p = p; pipe_seen(p); return p == (void *)1 ? VK_NULL_HANDLE : p; }
     if (async_pipe(k)) return VK_NULL_HANDLE;
     vkshader_t *stg[3] = {S.sh[0], S.sh[1], S.sh[2]};
     uint64_t tb = g_prof_on ? tick() : 0; p = build_pipeline(k, layout, stg); if (g_prof_on) g_prof_ns[0] += tick() - tb; g_vkst.pipes_built++;
@@ -1159,8 +1170,30 @@ static VkPipeline graphics_pipeline(const pkey *k, VkPipelineLayout layout) {
     if (had) { if (p != (void *)1) vkDestroyPipeline(V.dev, p, NULL); p = had; }   // a prewarm thread made it meanwhile
     else { nvn_hm_put(&g_pipes, k, p); if (p != (void *)1) pipe_record(k); }
     pthread_mutex_unlock(&g_pipe_mu);
+    pipe_seen(p);
     return p == (void *)1 ? VK_NULL_HANDLE : p;
 }
+// Graphics pipelines not drawn with for idle presents under memory pressure go (the replay thread, at a submission's start: gfx_vk_core.c vk_mem_tick's trim), and one met again is built
+// again (in the background where async_pipe allows, its compile helped by the driver's pipeline cache). Each pipeline holds memory of the driver's own: Breath of the
+// Wild's 6,561 recorded pipelines, all prewarmed, made its process 470 MB larger at the title screen (PSS) on an AYN Thor (Adreno 740, 8 GB) with PurpleVK T30, and
+// 790 MB with Qualcomm's driver 512.676.53: about 70 and 120 KB a pipeline. Prewarmed pipelines never drawn with go first. Built ones stay in the table's place until they go: g_last_p, S.bound_pipe (reset at each submission) and the replay's draws hold
+// none past the submission
+uint64_t vk_pipes_drop_idle(uint64_t idle) {
+    extern uint64_t g_tex_frame; uint64_t now = __atomic_load_n(&g_tex_frame, __ATOMIC_RELAXED) + 1, n = 0; static pkey ks[64];   // (the replay thread only)
+    if (g_seen_since == ~0ull) return 0;   // (not noted yet: none has been idle under pressure)
+    pthread_mutex_lock(&g_pipe_mu);
+    for (int c = 64; c == 64;) { c = 0;
+        for (uint32_t i = 0; i < g_pipes.cap && c < 64; i++) { VkPipeline p = g_pipes.vals[i]; if (!p || p == PIPE_PENDING || p == (void *)1) continue;
+            uintptr_t seen = (uintptr_t)nvn_hm_get(&g_pipe_seen, &p); if (seen < g_seen_since + 1) seen = g_seen_since + 1; if (now - seen < idle) continue;
+            memcpy(&ks[c++], g_pipes.keys + (size_t)i * g_pipes.klen, sizeof(pkey)); }
+        for (int j = 0; j < c; j++) { VkPipeline p = nvn_hm_get(&g_pipes, &ks[j]); if (!p || p == PIPE_PENDING || p == (void *)1) continue;
+            nvn_hm_del(&g_pipes, &ks[j]); nvn_hm_del(&g_pipe_seen, &p); vk_defer_free_pipeline(p); n++; }
+    }
+    g_last_p = VK_NULL_HANDLE;
+    pthread_mutex_unlock(&g_pipe_mu);
+    return n;
+}
+uint64_t vk_pipes_live(void) { pthread_mutex_lock(&g_pipe_mu); uint64_t n = g_pipes.n; pthread_mutex_unlock(&g_pipe_mu); return n; }
 // ---- pipeline prewarm: every pipeline the game needed is recorded (DM_ROOT/vk_pipelines.bin) and made again at the next boot on background
 // threads, before the game reaches it, so a scene seen once never stalls a frame on a pipeline compile again (the driver's compile, not the
 // pipeline cache's lookup, is the cost: tens of milliseconds per pipeline on Adreno). DM_VK_NOPREWARM=1 turns it off.
@@ -1180,19 +1213,31 @@ static void *pipe_record_thread(void *arg) {
     }
     return NULL;
 }
+static nvn_hmap g_prec_have = {.klen = sizeof(pkey)};   // keys in the record (read at boot, or written since): a pipeline vk_pipes_drop_idle took, built again, is not written again
 static void pipe_record(const pkey *k) {   // (under g_pipe_mu: only queued here)
-    if (!g_prec || k->alt) return;   // DM_VK_SPV_ALT's pipelines are a debugging run's own
+    if (!g_prec || k->alt || nvn_hm_get(&g_prec_have, k)) return;   // DM_VK_SPV_ALT's pipelines are a debugging run's own
+    nvn_hm_put(&g_prec_have, k, (void *)1);
     pthread_mutex_lock(&g_precq_mu);
     if (!g_precw_on) { g_precw_on = 1; pthread_t t; pthread_attr_t a; pthread_attr_init(&a); pthread_attr_setdetachstate(&a, PTHREAD_CREATE_DETACHED); pthread_create(&t, &a, pipe_record_thread, NULL); pthread_attr_destroy(&a); }
     if (g_precq_n < PREC_Q) g_precq[g_precq_n++] = *k;   // (a full queue drops the record: that pipeline is only not prewarmed next time)
     pthread_cond_signal(&g_precq_cv); pthread_mutex_unlock(&g_precq_mu);
 }
 static pkey *g_pw; static size_t g_pw_n; static volatile size_t g_pw_next, g_pw_done;
+// The prewarm stops once the device's MemAvailable is under DM_MEM_FLOOR_MB (default 1536; 0: every recorded pipeline, as before; gfx_vk_core.c vk_mem_tick): each pipeline
+// holds memory of the driver's own (vk_pipes_drop_idle), and the record keeps every pipeline any earlier run met (6,579 for Breath of the Wild after a few sessions: 470 to
+// 790 MB on an AYN Thor, as above). It does not start again: the pipelines it would make are the ones vk_pipes_drop_idle takes first. A device with memory to spare still makes them all before the game meets them
+static int prewarm_room(void) {
+    long long floor_mb = vk_mem_floor_mb(); if (!floor_mb) return 1;
+    long long a = vk_mem_avail_mb(); if (a < 0 || a >= floor_mb) return 1;
+    static _Atomic int said; if (!atomic_exchange(&said, 1)) VKLOG("prewarm: stopped at %zu of %zu pipelines, MemAvailable %lld MB is under %lld MB (DM_MEM_FLOOR_MB)", g_pw_done, g_pw_n, a, floor_mb);
+    return 0;
+}
 static void *prewarm_thread(void *arg) {
     (void)arg; pthread_setname_np(pthread_self(), "vk prewarm");
     setpriority(PRIO_PROCESS, 0, 10);   // below the game's threads: prewarm uses idle cores
     for (;;) {
         size_t i = __atomic_fetch_add(&g_pw_next, 1, __ATOMIC_RELAXED); if (i >= g_pw_n) break;
+        if (!prewarm_room()) { __atomic_store_n(&g_pw_next, g_pw_n, __ATOMIC_RELAXED); break; }
         const pkey *k = &g_pw[i];
         pthread_mutex_lock(&g_pipe_mu); int have = nvn_hm_get(&g_pipes, k) != NULL; pthread_mutex_unlock(&g_pipe_mu);
         if (have) continue;
@@ -1222,6 +1267,7 @@ static void prewarm_start(void) {
     if (f) fclose(f);
     // rewrite the file with the records read (dropping a torn last record), then append to it
     g_prec = fopen(path, "wb"); if (g_prec) { fwrite(hdr, sizeof hdr, 1, g_prec); if (g_pw_n) fwrite(g_pw, sizeof(pkey), g_pw_n, g_prec); fflush(g_prec); }
+    pthread_mutex_lock(&g_pipe_mu); for (size_t i = 0; i < g_pw_n; i++) nvn_hm_put(&g_prec_have, &g_pw[i], (void *)1); pthread_mutex_unlock(&g_pipe_mu);
     if (!g_pw_n || getenv("DM_VK_NOPREWARM")) { VKLOG("prewarm: %zu pipelines recorded%s", g_pw_n, g_pw_n ? ", off (DM_VK_NOPREWARM)" : ""); return; }
     long nc = sysconf(_SC_NPROCESSORS_ONLN); int nt = nc >= 8 ? 3 : nc >= 4 ? 2 : 1;
     VKLOG("prewarm: %zu recorded pipelines on %d threads", g_pw_n, nt);
@@ -2503,6 +2549,7 @@ static void *compute_warm(void *arg) {
     for (int i = 0; i < n; i++) {
         uint64_t ck[3] = {keys[i], 0, 0};
         pthread_mutex_lock(&g_cpipe_mu); int have = nvn_hm_get(&g_cpipes, ck) != NULL; pthread_mutex_unlock(&g_cpipe_mu);
+        if (!have && !prewarm_room()) break;   // (the prewarm's floor: compute pipelines hold GPU memory of their own too)
         vkshader_t *cs = have ? NULL : vk_shader(keys[i], 5); if (!cs) continue;
         VkPipeline p = compute_build(cs, 0, 0); made++;
         pthread_mutex_lock(&g_cpipe_mu); if (!nvn_hm_get(&g_cpipes, ck)) nvn_hm_put(&g_cpipes, ck, p); else if (p != (void *)1) vkDestroyPipeline(V.dev, p, NULL); pthread_mutex_unlock(&g_cpipe_mu);
