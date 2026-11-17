@@ -124,15 +124,30 @@ public class ExternalActivity extends NativeActivity implements ExternalDisplay.
         if (assignmentDialog != null && assignmentDialog.isShowing()) return;
         assignmentStart();
         Dialog dialog = new Dialog(this, android.R.style.Theme_Material_NoActionBar_Fullscreen) {
+            private final android.util.SparseArray<java.util.HashSet<Integer>> held = new android.util.SparseArray<>();
+            private final android.util.SparseBooleanArray axisHeld = new android.util.SparseBooleanArray();
+            private void previewButtons(int id) {
+                java.util.HashSet<Integer> keys = held.get(id);
+                assignmentPreviewButton(id, (keys != null && !keys.isEmpty()) || axisHeld.get(id));
+            }
             @Override public boolean dispatchGenericMotionEvent(MotionEvent event) {
                 if ((event.getSource() & InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK) {
-                    assignmentPreview(event.getDeviceId(), event.getAxisValue(MotionEvent.AXIS_X), event.getAxisValue(MotionEvent.AXIS_Y)); return true;
+                    int id = event.getDeviceId();
+                    assignmentPreview(id, event.getAxisValue(MotionEvent.AXIS_X), event.getAxisValue(MotionEvent.AXIS_Y));
+                    axisHeld.put(id, Math.abs(event.getAxisValue(MotionEvent.AXIS_HAT_X)) > .5f || Math.abs(event.getAxisValue(MotionEvent.AXIS_HAT_Y)) > .5f ||
+                            event.getAxisValue(MotionEvent.AXIS_LTRIGGER) > .5f || event.getAxisValue(MotionEvent.AXIS_RTRIGGER) > .5f ||
+                            event.getAxisValue(MotionEvent.AXIS_BRAKE) > .5f || event.getAxisValue(MotionEvent.AXIS_GAS) > .5f);
+                    previewButtons(id); return true;
                 }
                 return super.dispatchGenericMotionEvent(event);
             }
             @Override public boolean dispatchKeyEvent(KeyEvent event) {
                 if ((event.getSource() & InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD || (event.getSource() & InputDevice.SOURCE_DPAD) == InputDevice.SOURCE_DPAD) {
-                    assignmentPreviewButton(event.getDeviceId(), event.getAction() == KeyEvent.ACTION_DOWN); return true;
+                    int id = event.getDeviceId(); java.util.HashSet<Integer> keys = held.get(id);
+                    if (keys == null) { keys = new java.util.HashSet<>(); held.put(id, keys); }
+                    if (event.getAction() == KeyEvent.ACTION_DOWN) keys.add(event.getKeyCode());
+                    else if (event.getAction() == KeyEvent.ACTION_UP) keys.remove(event.getKeyCode());
+                    previewButtons(id); return true;
                 }
                 return super.dispatchKeyEvent(event);
             }
