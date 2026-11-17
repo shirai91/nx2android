@@ -19,5 +19,15 @@ CUTS = {
     # for 33 ms. The 100 ms stalls while a new area is read are not this path.
     (0x10196d8, 'b29e0094', '1f2003d5', 'dynamic drop to 30 fps: bl main+0x10411a0 → nop (the stable-60fps patch; present interval stays 1)'),
     (0x10196f8, '0a020094', '1f2003d5', 'dynamic drop to 30 fps: bl main+0x1019f20 → nop (the stable-60fps patch; the call writes the pacing object +0x8128)'),
+    # The constructor at main+0x1bdb0 reads a uint16 table index from [x19, #0xa0] (copied from [x21, #0x38]) and indexes the 0x275-entry table at main+0x1bcc898
+    # (stride 0x58, reading byte +0x49 into [x19, #0xac]) without bounds-checking. When MainCamera_{0}P is created at main+0xbdaa0, that index is initialized to
+    # 0xffff (main+0xbdb68: mov w8, #0xffff; strh w8, [sp, #0x68]), so main+0x1c180 reads main+0x214c889 — ~4.2 MB past the end of main (0x1d1c000). On Switch or
+    # when ASLR happens to place a readable mapping (e.g. scudo:secondary) there, it reads garbage and survives; when that address is unmapped or PROT_NONE (most
+    # runs, and almost always in release builds due to different startup mmap layout), it SIGSEGVs at main+0x1c180. Compacting the 6-qword copy at main+0x1c13c
+    # with ldp/stp frees space in-place to zero [x19, #0xac] and bounds-check against 0x275 (matching main+0x238f8).
+    (0x01c13c,
+     'a9de40f968820991090500f9a9da40f9090100f9aaee40f9a9e640f90a1500f9aae240f9abea40f909ad01a90a0900f968424179090b80528add00904a6122910829099b0825413968ae00b9',
+     '68820991a92a5ba9092900a9a92a5ca9092901a9a92a5da9092902a97fae00b9684241791fd5097122010054090b80528add00904a6122910829099b0825413968ae00b91f2003d51f2003d5',
+     'constructor main+0x1bdb0: bounds-check table index [x19, #0xa0] against 0x275 (fixes 0xffff OOB read SIGSEGV at main+0x1c180)'),
   ],
 }

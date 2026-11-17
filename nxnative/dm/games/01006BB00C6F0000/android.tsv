@@ -1,12 +1,15 @@
 # The Legend of Zelda: Link's Awakening on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
 # Grezzo's engine on NintendoWare, SDK 8.2.0, update 1.1.0 (v131072). The iOS profile beside this file is unchanged.
 # Shared fonts come from the console's firmware: FontStandard, FontNintendoExtension, FontChineseSimplified,
-# FontChineseTraditional and FontKorean. --firmware extracts them. A System font (--shared-font) still replaces
-# every shared font but the button icons.
+# FontChineseTraditional and FontKorean. --firmware extracts them (without --firmware the game crashes at startup
+# because the fallback font lacks U+25A1; see https://github.com/shirai91/nx2android/pull/287). A System font
+# (--shared-font) still replaces every shared font but the button icons.
 # Played on a Lenovo TB323FU (Snapdragon 8 Elite Gen 5, Adreno 840, Android 16) on 2026-11-15, docked, language
 # zh-Hans, with those firmware fonts and no System font. A stretch of play stayed up, drew without a rendering
-# fault and did not crash. That build had Development build on (porter port --debug: debuggable, debug
-# information, DM_CTL). A build without it SIGSEGV at startup (main+0x1c180) and the process is gone at once.
+# fault and did not crash. Earlier runs saw main+0x1c180 SIGSEGV on startup (every release build and most debug
+# builds; debug builds occasionally survived when ASLR placed a readable mapping ~4.2 MB past main's end):
+# MainCamera_{0}P passes index 0xffff and main+0x1bdb0 indexed the 0x275-entry table at main+0x1bcc898 without
+# bounds checking. patches.py now bounds-checks that lookup in-place.
 # The present interval stayed 1 (the two NOPs in patches.py). Calm play held 60 fps
 # (frame work about 16.6 ms, late on screen 0 of 64). A save survived leaving the app: opening it again
 # continued that progress. Loading a new area can still stall for about 100 ms; that is not the interval path.
