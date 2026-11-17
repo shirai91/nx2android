@@ -1,0 +1,39 @@
+# Trails in the Sky 1st Chapter, update 1.0.7 (v393216), SDK 21, NVN; Falcom's engine. The memory keys are the survey's (dm/games/profile_guess.py), unchanged: the game runs with them.
+# See android.tsv for what was tested.
+
+# ---- Identity ----
+title_id	01002C9022770000
+program_id	01002C9022770000
+
+# ---- App ----
+name	Trails in the Sky 1st Chapter
+ipa	TrailsInTheSky1stChapter.ipa
+app_category	public.app-category.games
+
+# ---- Versions ----
+build	v1	1.0.7	main=8963a531fa7f27a52323081ace0f2f6e	subsdk0=fc537f0b21c880e89d6f247d22a150ca	sdk=148394139d9d26ca8afd5c9ba5d30601
+package	v1
+shader_versions	v1
+
+# ---- Files ----
+# every module main imports from
+modules	main subsdk0 sdk
+romfs_marker	movie_en/mp4/sora_1st_ed.mp4
+zip_store	.bmp:.mp4:.otf:.png:.metallib
+
+# ---- Memory ----
+# the NPDM declares 16 MB of system resource (virtual address memory) and main sets a heap: a 5 GB block with a large alias region; the heap check sizes the heap region from the heap the game asks for
+mem_reserve	0x4A8000000
+mem_alias	0x400000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+# the NPDM declares 16 MB of system resource
+sys_resource	0x1000000
+
+# ---- Shader split ----
+shader_groups	/asset/=asset /voice/=voice /voice_en/=voiceen /se/=se /vfx/=vfx /scene/=scene /script_de/=scriptde /script_en/=scripten /script_es/=scriptes /script_fr/=scriptfr /table_de/=tablede /table_en/=tableen /table_es/=tablees /table_fr/=tablefr /asset_fr/=assetfr /asset_de/=assetde /asset_es/=assetes /layout/=layout /asset_en/=asseten /bgm1/=bgm1 /bgm2/=bgm2 /bgm3/=bgm3 /system/=system /movie_en/=movieen
+shader_note	Trails in the Sky 1st Chapter shaders
+
+# ---- Android shaders ----
+# the materials discard for their dithered fades before they sample their textures: as demotions, or a tree's crown is gone during every level-of-detail cross-fade (dm/android/tools/spv_post.py)
+android_discard	demote

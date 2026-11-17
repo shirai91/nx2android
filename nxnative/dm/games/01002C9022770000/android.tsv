@@ -1,0 +1,25 @@
+# Trails in the Sky 1st Chapter on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Falcom's engine on SDK 21, NVN, update 1.0.7 (v393216); 6,602 shaders, one of them patched (patches.py SPIRV: the instance culling compute shader).
+# Tested 2026-11-15 and 2026-11-16 on the AYN Odin 3 (Snapdragon 8 Elite, Adreno 830, Android 15) with Turnip (Mesa 26.99, Banners-Turnip v27.0.0-20261114-r4 A8xx), docked:
+# the title, a loaded save, towns, interiors and the roads, played for many hours by its owner. 60 fps on a road near the Guild at 1920x1080 (the Resolution row's High; GPU
+# 13.0-13.6 ms a frame) and at the game's own 1600x900 (12.0 ms).
+# The pause menu's rows: Resolution (patches.py: Low 1280x720, Auto the game's 1600x900, High 1920x1080; read when the game starts) and Detail distance (1x, 1.5x, 2x:
+# the culling shader's distances by the host's factor, at once).
+# Two compute shaders (a370ad7eceb0897a, f9def5d93748a39f) are in no game file: the host captures them on the first run and the next port translates them
+# (until then: two [RED] lines and one dispatch skipped). One shader does not translate (aecb69afbb394ff9); no draw asked for it.
+# 2026-11-16, this profile from the repository: the title, the save, Rolent's street at 1920x1080: frames p50 16.7 / p95 17.9 ms, GPU p50 13.2 ms, no red line.
+# 2026-11-16, the same with the menu rows by the profile's keys (a debug build, a copy of the save): Rolent's street at the game's 1600x900, 60 fps (frame work p50 13.3 / p95
+# 14.4 ms), no red line. The Game tab shows Resolution and Detail distance, no Frame rate.
+# DM_VK_UBWC=7: the auto-exposure compute shader (cd75a1890f7bada0) keeps its exposure in a 1x1 RG32F texture, which it reads back as r32ui to blend with the new
+# value. With the default format list (the float format alone) the uint view falls back to the float one: Turnip still hands the shader the bits, Qualcomm's
+# driver (512.800.72) does not, the exposure stayed near 0.18 instead of 1.18 and the scene was almost black (the game's UI right, no red line). With the uint and
+# sint formats in the list (bit 4) the scene is right on both: Rolent's street, 60 fps, Qualcomm frame work p50 14.4 and 16.7 / p95 15.2 and 20.4 ms in two runs; Turnip GPU p50 13.3 ms
+# against 12.3 without it, p95 13.9 in both (one run each).
+# Open: on Qualcomm's own driver only that street was run.
+status	experimental
+tested	v393216 AYN Odin 3 (Snapdragon 8 Elite, Adreno 830, Android 15); Turnip (libvulkan_freedreno.so)
+package	org.nx2a.t01002c9022770000
+orientation	landscape
+env	DM_VK_UBWC=7
+env	DM_MENU_RES=0.5:1.0:0.9
+env	DM_DETAIL_DIST=1

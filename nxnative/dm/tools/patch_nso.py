@@ -66,6 +66,7 @@ else:
 #   OBS = {build ID: [(offset, number, original instruction word, reason)]}: observation gates. Numbers match OBS_* in the host's hle.h; the original instruction must be position
 #     independent (no PC-relative / branch / anything involving x18 or tpidr), asserted offline; when the host has no callback attached the gate block goes in and out once and returns
 #   FRAME_STEP = {build ID: function(ctx)}: the frame step stubs of a main ("Frame step in whole vsyncs" below)
+#   (SPIRV = {shader key: function} is not read here: the Android shader build applies it to one translated shader, dm/android/tools/shader_vk.py spirv_patches)
 #   DM_PATCHES_EXTRA (os.pathsep-separated files outside the repository): CUTS only, added after the registered ones of the same build (an Android port's 60 fps code bytes from a
 #     FPSLocker config, porter/fpslocker.py); an overlap with a registered cut fails that cut's original-bytes assert
 PATCH_FILES = [os.path.join(os.path.dirname(os.path.abspath(__file__)), 'sdk_patches.py')] + sorted(glob.glob(os.path.join(os.path.dirname(os.path.abspath(__file__)), '../games/*/patches.py')))
@@ -377,7 +378,9 @@ def site_window(seg):
         elif m == 'b':   # an unconditional branch inside a CAS window (e.g. ldaxrb; cbz <store>; clrex; b <after>; stlxrb; cbz)
             tgt = x.operands[-1].imm
             if lo <= tgt < hi: newt = copy0 + (tgt - lo)
-            elif tgt == hi: newt = exits
+            elif tgt == hi: newt = exits - 16   # the fall-through stub, which is the first one (exits is the first branch-out stub). It took exits: with ldaxrb; cbz <store>; clrex; b <after>;
+                                                # stlxrb; cbz <claimed>, a slot found in use left by the stub of <claimed> (Trails in the Sky 1st Chapter main+0x2cdeb4, its material table's
+                                                # slot search: two materials got one slot, and the one drawn with the other's entry took its glow, AYN Odin 3, 2026-11-17)
             else:
                 if tgt not in ex_targets: ex_targets.append(tgt)
                 newt = exits + 16 * ex_targets.index(tgt)

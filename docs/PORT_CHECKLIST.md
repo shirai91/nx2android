@@ -6,7 +6,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 
 "Profile here": `nxnative/dm/games/<title ID>/` has the game's profile from nxnative. "Upstream profile": only seedds/nxnative has one, to read as a reference or starter, not to pull. "60 fps with X" is upstream's note: they run that update at 60 fps (30 on the Switch).
 
-**57 / 110 ported**
+**59 / 111 ported**
 
 - [x] 13 Sentinels: Aegis Rim · `01003FC01670C000`
 - [ ] Ace Attorney Investigations Collection · `010005501E68C000` · profile here
@@ -108,13 +108,14 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [x] The Legend of Zelda: Tears of the Kingdom · `0100F2C0115B6000`
 - [x] The World Ends with You -Final Remix- · `0100C1500B82E000`
 - [x] Tomodachi Life: Living the Dream · `010051F0207B2000`
+- [x] Trails in the Sky 1st Chapter · `01002C9022770000` · experimental: 60 fps on the AYN Odin 3 with Turnip, played for many hours; Qualcomm's own driver not tested yet
 - [x] Ultra Kaiju Monster Rancher · `01008E0019388000` · AYN Odin 2 / Turnip; tested through the tutorials and battles
 - [x] UNDER NIGHT IN-BIRTH Exe:Late[cl-r] · `010038C00EC34000`
 - [x] UNDER NIGHT IN-BIRTH II Sys:Celes · `0100BD401D18A000`
 - [x] Unicorn Overlord · `010069401ADB8000` · boots; saving and a full battle not tested yet
 - [x] Untitled Goose Game · `010082400BCC6000`
 - [x] Viractal: Will You Trust Your Party? · `0100FD501F95A000`
-- [ ] Xenoblade Chronicles 2 · `0100E95004038000` · upstream profile
+- [x] Xenoblade Chronicles 2 · `0100E95004038000` · experimental: 60 fps on the AYN Odin 3 with Turnip, tested to the first steps in Argentum, later areas and the DLC not tested yet
 - [x] Xenoblade Chronicles 3 · `010074F013262000` · work in progress: some effects and models don't draw yet
 - [x] Xenoblade Chronicles: Definitive Edition · `0100FF500E34A000` · 30 fps; boots rarely crash (1 in ~35), tested to Colony 9 with the pause menu and saving, later maps not tested yet
 - [ ] Yoshi's Crafted World · `01006000040C2000` · upstream profile

@@ -79,8 +79,9 @@ class ExportChecks(unittest.TestCase):
         env = dict(collections=collections, cf=cf, os=os, json=json, struct=struct,
                    tempfile=tempfile, subprocess=subprocess, dmsv=dmsv, Path=Path, re=re,
                    shader_products=products, GAME=game, MAP=str(table), XLATE_DLL='translator.dll',
+                   spirv_patches=lambda: {}, DEMOTE=False, spv_post=None,   # no profile rule for the translated SPIR-V (tests/test_spv_post.py has those)
                    a=SimpleNamespace(pkg=str(self.root/'pkg'), out=str(self.out), capture=None, keys='',
-                                     jobs=self.jobs, dotnet='dotnet', zstd=0, report=str(self.report)),
+                                     jobs=self.jobs, dotnet='dotnet', zstd=0, report=str(self.report), spirv_tools=None),
                    STAGES={'vs': 0, 'cs': 5}, kinds_all=collections.Counter(),
                    captured=lambda _: {}, records=lambda _: [b'fixture'],
                    job_for=lambda key, stage, rec, w: ({'key': key, 'attr': {}}, b''),

@@ -1,0 +1,24 @@
+# Xenoblade Chronicles 2 on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Monolith Soft's engine on SDK 3.5.0, update 2.1.0 (v983040); 12,750 shaders in the bundle (base game, update and the New Quests Pack; the other DLC's shaders are not in it).
+# Tested 2026-11-14 on the AYN Odin 3 (Snapdragon 8 Elite, Adreno 830, Android 15), Turnip (Mesa 26.99, Banners-Turnip v27.0.0-20261114-r4 A8xx) and Qualcomm's 512.800.72:
+# boot, the title, a new game, the King Crustip tutorial fight and the first steps in Argentum. 60 fps through patches.py's frame step (30 in cutscenes), the pause menu's
+# Frame rate and Resolution rows (DM_MENU_RATE, DM_MENU_RES: Low 0.5 holds the scene at 896x504, Auto 1.0 is the game's own dynamic resolution, High 0.9 holds 1280x720;
+# patches.py's margin). In the fight at 896x504 (Resolution Low), frames p95 / GPU p50 / submit+present p50: Qualcomm 19.4 / 8.1 / 7.7 ms, Turnip 16.9 / 6.9 / 4.3 ms,
+# Turnip with the replay on its own thread (the env rows below) 16.8 / 6.9 / 2.3 ms. One run each, no red lines. At 60 fps and 1280x720 the SoC reached 101-104 C.
+# 2026-11-15, Turnip: sound (the SDK 3.5.0 renderer layout, hle_audren.c), the movies (the two-argument movie::Decoder, hle_movie.c), the game's own save made and loaded,
+# a fight and Argentum at 1280x720 and 60 fps (frames p95 16.9-17.6 ms, GPU about 10 ms with the two depth rows below).
+# DM_VK_FDZ=0, DM_VK_LRZ_TOUCH=0: the host's depth workarounds for Qualcomm's driver (gfx_vk_exec.c: the fragment-depth variants, the LRZ touch) cost GPU time here and
+# the picture is the same without them on Turnip (the title scene at 1280x720: the fragment-depth variants alone took the deferred lighting pass from 0.20 to 1.99 ms and
+# the frame from 10.0 to 12.0 ms of GPU). On Qualcomm's 512.800.72 one scene was compared with and without them (2026-11-16, a loaded save on the ancient ship at night): the same picture.
+# 2026-11-16, the head with these rows, a debug build: Turnip, a loaded save, a cutscene, 60 fps (frame work p50 11.5 / p95 12.0 ms), sound, no red lines.
+# Open: later areas, long sessions, the DLC; one crash on losing focus in Argentum, not reproduced.
+status	experimental
+tested	v983040 AYN Odin 3 (Snapdragon 8 Elite, Adreno 830, Android 15); Turnip (libvulkan_freedreno.so)
+package	org.nx2a.t0100e95004038000
+orientation	landscape
+env	DM_VK_FDZ=0
+env	DM_VK_LRZ_TOUCH=0
+env	DM_MENU_RATE=1
+env	DM_MENU_RES=0.5:1.0:0.9
+env	DM_NVN_ASYNC=1
+env	DM_PIN_REPLAY=prime

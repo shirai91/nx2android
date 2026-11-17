@@ -685,7 +685,7 @@ class Port:
         xlate, xkey = self.translator()
         PROG.set(step='checking the inputs')
         def input_key():
-            return nsp.fingerprint(nsp.package_key(pkg), ('files', [DM / 'android/tools' / name for name in ('shader_vk.py', 'dmsv.py', 'shader_products.py')] + nsp.tool_files(NXNATIVE)),
+            return nsp.fingerprint(nsp.package_key(pkg), ('files', [DM / 'android/tools' / name for name in ('shader_vk.py', 'dmsv.py', 'shader_products.py', 'spv_post.py')] + nsp.tool_files(NXNATIVE)),
                                    ('files', nsp.profile_files(self.g)), xkey, product_cache.inventory(Path(xlate).parent),
                                    ('files', sorted(cap.glob('*.bin'))))
         key = input_key()
@@ -697,7 +697,8 @@ class Port:
         def line(s):
             if m := re.match(r'(translating|compressing) (\d+) shaders', s): PROG.set(step=f'{m.group(1)} {int(m.group(2)):,} shaders')   # compressing: the bundle's SPIR-V (dmsv.py)
             elif s.startswith('[RED] '): say(s)
-        nsp.run([PY, DM / 'android/tools/shader_vk.py', pkg, tmp, '--jobs', str(self.o.jobs), '--dotnet', self.tools['dotnet'], '--xlate', xlate, '--capture', cap, '--report', report],
+        spvt = next((['--spirv-tools', p.parent] for p in sorted(Path(self.tools.get('ndk') or '.').glob('shader-tools/*/spirv-as*'))), [])   # for a profile's SPIR-V patches (its patches.py SPIRV)
+        nsp.run([PY, DM / 'android/tools/shader_vk.py', pkg, tmp, '--jobs', str(self.o.jobs), '--dotnet', self.tools['dotnet'], '--xlate', xlate, '--capture', cap, '--report', report] + spvt,
                 self.logs / 'android_shaders.log', env=self.env, on_line=line)
         import shader_products
         try:
