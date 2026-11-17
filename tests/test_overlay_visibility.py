@@ -371,9 +371,9 @@ static void no_menu_button(void) {
 }
 int main(int argc, char **argv) {
     assert(argc == 2); int test = atoi(argv[1]);
-    if (test == 11) { for (layout = 0; layout < 2; layout++) no_menu_button(); return 0; }
-    if (test == 10) { assigned_keyboard(); return 0; }
-    if (test == 9) { players(); return 0; }
+    if (test == 11) { assigned_keyboard(); return 0; }
+    if (test == 10) { players(); return 0; }
+    if (test == 9) { for (layout = 0; layout < 2; layout++) no_menu_button(); return 0; }
     if (test == 8) { for (layout = 0; layout < 2; layout++) hidden_controls(); return 0; }
     if (test == 7) { for (layout = 0; layout < 2; layout++) motion_handoff(); return 0; }
     if (test >= 4) { for (layout = 0; layout < 2; layout++) input_handoff(test); return 0; }
@@ -420,13 +420,13 @@ int main(int argc, char **argv) {
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_keyboard_preserves_assigned_players(self):
-        self.run_case(10)
+        self.run_case(11)
 
     def test_hidden_controls_are_omitted_in_play_and_selectable_in_editor(self):
         self.run_case(8)
 
     def test_no_menu_button_gives_its_place_to_the_game_and_back_opens_the_menu(self):
-        self.run_case(11)
+        self.run_case(9)
 
     def test_visibility_follows_last_input_when_enabled(self):
         self.run_case(1)
@@ -450,7 +450,7 @@ int main(int argc, char **argv) {
         self.run_case(7)
 
     def test_each_controller_is_a_player_of_its_own(self):
-        self.run_case(9)
+        self.run_case(10)
 
 
 if __name__ == '__main__':

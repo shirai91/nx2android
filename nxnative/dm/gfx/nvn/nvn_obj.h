@@ -49,7 +49,13 @@ _Static_assert(sizeof(view_t) <= 16, "view_t exceeds the newer SDKs' NVNtextureV
 // Sampler parameters (one copy shared by builder and object)
 typedef struct { uint8_t minf, magf, ws, wt, wr, cmp_mode, cmp_func, reduction; float lod_min, lod_max, lod_bias, aniso, border[4]; } samp_par;   // Enum values are all < 256; reduction takes the padding byte
 typedef struct { NVNdevice *dev; samp_par p; } samp_builder_t;                                FITS(samp_builder_t, NVNsamplerBuilder);
-typedef struct { uint32_t magic; samp_par p; } samp_t;                                        FITS(samp_t, NVNsampler);
+// Keep all sampler state after the opaque eight-byte header: engines hash the object after that header.
+// Odyssey 1.4.1 main b424be150a8e7d78701cbe7a439d9ebf: +0x980e40 hashes [sampler+8, sampler+0x60), length 0x58 (CRC16/A001).
+// Its cache allocates 0x68-byte entries (+0x980b34), copies 0x60 object bytes (+0x9810ac), then keeps refs/hash at +0x60/+0x62.
+// That observed 0x60-byte object storage contains our 0x30-byte samp_t; FITS also enforces the smaller public NVNsampler capacity.
+// Odyssey's sampler cache skipped min/mag/S/T at offsets 4..7; duplicates accumulated during extended play/scene loads, exhausted its pool and bound ID 0 (ground grids).
+typedef struct { uint64_t magic; samp_par p; } samp_t;                                        FITS(samp_t, NVNsampler);
+_Static_assert(offsetof(samp_t, p) == 8, "sampler state must participate in opaque-object hashes");
 
 // The per-stage shader keys are not kept in prog_t: the game's real NVNprogram may be smaller than the header's 0xC0 (growing prog_t corrupted the adjacent object in Mario); see prog_keys in hle_nvn.c
 typedef struct { uint32_t magic, nstage; NVNshaderData sd[6]; uint64_t serial; } prog_t;     FITS(prog_t, NVNprogram);   // serial: table key for the replay layer's resolved result
