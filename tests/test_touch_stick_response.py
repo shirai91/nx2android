@@ -8,7 +8,7 @@ from porter.upstream import android_profile
 
 
 class TouchStickResponse(unittest.TestCase):
-    def test_centre_deadzone_direction_and_screen_edges(self):
+    def test_centre_deadzone_direction_and_full_travel(self):
         cc = shutil.which('cc') or shutil.which('clang')
         if not cc:
             self.skipTest('a C compiler is needed for the stick response check')
@@ -24,14 +24,6 @@ int main(void) {
     ov_touch_stick(50, 0, 100, 1, &right, &y); assert(right > 0 && right < left && y == 0);
     ov_touch_stick(-300, 400, 100, 1, &x, &y); assert(fabsf(x + .6f) < .0001f && fabsf(y - .8f) < .0001f);
     ov_touch_stick(100, 0, 0, 1, &x, &y); assert(x == 0 && y == 0);
-    float r = ov_touch_range(30, 500, 0, 500, 100, 1920, 1080);
-    ov_touch_stick(-30, 0, r, 0, &x, &y); assert(fabsf(x + 1) < .0001f);
-    r = ov_touch_range(1890, 500, 1919, 500, 100, 1920, 1080);
-    ov_touch_stick(29, 0, r, 1, &x, &y); assert(fabsf(x - 1) < .0001f);
-    r = ov_touch_range(30, 500, 30, 500, 100, 1920, 1080);
-    ov_touch_stick(0, 0, r, 0, &x, &y); assert(x == 0 && y == 0);
-    r = ov_touch_range(30, 500, 130, 500, 100, 1920, 1080);
-    ov_touch_stick(100, 0, r, 0, &x, &y); assert(fabsf(x - 1) < .0001f);
 }'''
         with tempfile.TemporaryDirectory() as tmp:
             tmp = pathlib.Path(tmp)

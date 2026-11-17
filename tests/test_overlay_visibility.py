@@ -352,8 +352,13 @@ static void edge_stick(void) {
     AInputEvent touch = {.source = AINPUT_SOURCE_TOUCHSCREEN, .type = AINPUT_EVENT_TYPE_MOTION,
                          .action = AMOTION_EVENT_ACTION_DOWN, .x = b[0] - b[2] * .9f, .y = b[1]};
     assert(touch.x > 0 && ctl_at(touch.x, touch.y, width, height) == stick);
+    float travel = touch.x;
     assert(handle_event(&touch) == 1 && touch_sticks[0] == 0);
-    touch.action = 5; touch.x = 0; assert(handle_event(&touch) == 1 && touch_sticks[0] <= -DM_STICK_MAX + 1);
+    touch.action = 5; touch.x = 0; assert(handle_event(&touch) == 1 && touch_sticks[0] < 0 && touch_sticks[0] > -DM_STICK_MAX);
+    int32_t edge_output = touch_sticks[0];
+    touch.action = AMOTION_EVENT_ACTION_UP; assert(handle_event(&touch) == 1 && touch_sticks[0] == 0);
+    touch.action = AMOTION_EVENT_ACTION_DOWN; touch.x = b[0]; assert(handle_event(&touch) == 1 && touch_sticks[0] == 0);
+    touch.action = 5; touch.x = b[0] - travel; assert(handle_event(&touch) == 1 && abs(touch_sticks[0] - edge_output) <= 1);
     touch.action = AMOTION_EVENT_ACTION_UP; assert(handle_event(&touch) == 1 && touch_sticks[0] == 0);
 }
 int main(int argc, char **argv) {
@@ -406,7 +411,7 @@ int main(int argc, char **argv) {
         result = subprocess.run([str(self.exe), str(case)], capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
-    def test_stick_edge_touch_is_neutral_then_reaches_full_output(self):
+    def test_stick_edge_touch_is_neutral_and_keeps_fixed_sensitivity(self):
         self.run_case(10)
 
     def test_hidden_controls_are_omitted_in_play_and_selectable_in_editor(self):

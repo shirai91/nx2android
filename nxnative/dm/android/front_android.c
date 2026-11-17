@@ -1070,8 +1070,7 @@ static void touch_event(AInputEvent *e) {
                 btn |= dir[s]; }
         } else {
             float ox = g_ptr_origin[id][0], oy = g_ptr_origin[id][1];
-            float range = ov_touch_range(ox, oy, x, y, b[2], W, H);
-            ov_touch_stick(x - ox, y - oy, range, k->kind == OV_STICK_R, &dx, &dy);
+            ov_touch_stick(x - ox, y - oy, b[2], k->kind == OV_STICK_R, &dx, &dy);
             kn[k->kind == OV_STICK_R][0] = dx; kn[k->kind == OV_STICK_R][1] = dy; held[k->kind == OV_STICK_R] = 1;   // the knob shows the output
             int32_t sx = (int32_t)(dx * DM_STICK_MAX), sy = (int32_t)(-dy * DM_STICK_MAX);
             if (k->kind == OV_STICK_L) { lx = sx; ly = sy; } else { rx = sx; ry = sy; }
