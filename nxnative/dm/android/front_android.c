@@ -48,7 +48,11 @@ void front_screen_match(int fps) { (void)fps; }
 // ---------------- the app ----------------
 static ANativeActivity *g_act;
 static jmethodID g_audio_menu_method;
+static jmethodID g_mod_menu_method;
+static jmethodID g_mod_manage_method;
 int dm_menu_audio_available(void) { return g_audio_menu_method != NULL; }
+int dm_menu_mod_available(void) { return g_mod_menu_method != NULL; }
+int dm_menu_mod_manage_available(void) { return g_mod_manage_method != NULL; }
 AAssetManager *dm_front_assets(void) { return g_act ? g_act->assetManager : NULL; }   // the APK's assets (overlay_theme.c: the gamepad's theme)
 static pthread_mutex_t g_win_mu = PTHREAD_MUTEX_INITIALIZER;
 static ANativeWindow *g_win, *g_external_win;
@@ -543,6 +547,22 @@ static void menu_audio(void) {
     if ((*e)->ExceptionCheck(e)) { (*e)->ExceptionClear(e); LOG("[menu] audio selection is unavailable"); }
     if (attached) (*g_act->vm)->DetachCurrentThread(g_act->vm);
 }
+static void *menu_mod_worker(void *arg) {
+    pthread_mutex_lock(&g_win_mu);
+    ANativeActivity *act = g_act;
+    JavaVM *vm = act->vm;
+    JNIEnv *env = NULL;
+    if ((*vm)->AttachCurrentThread(vm, &env, NULL) != JNI_OK) { pthread_mutex_unlock(&g_win_mu); return NULL; }
+    jobject activity = (*env)->NewLocalRef(env, act->clazz);
+    pthread_mutex_unlock(&g_win_mu);
+    if (activity) {
+        (*env)->CallVoidMethod(env, activity, arg ? g_mod_manage_method : g_mod_menu_method);
+        if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+        (*env)->DeleteLocalRef(env, activity);
+    }
+    (*vm)->DetachCurrentThread(vm);
+    return NULL;
+}
 static void menu_do(int item) {
     if (item == OVM_OVERLAY) { atomic_store(&g_set_overlay, !atomic_load(&g_set_overlay)); atomic_store(&g_overlay, 1); settings_save(); }
     else if (item == OVM_RUMBLE) { int on = !atomic_load(&g_set_rumble); atomic_store(&g_set_rumble, on); dm_haptics_android_set(on); settings_save(); }
@@ -555,6 +575,8 @@ static void menu_do(int item) {
     else if (item == OVM_EXPORT) { if (atomic_load(&g_sv_st) == OVX_BUSY) return; save_export(); }
     else if (item == OVM_IMPORT) { dm_haptics_android_tap(); sp_open(); return; }
     else if (item == OVM_AUDIO) { menu_audio(); }
+    else if (item == OVM_MOD_IMPORT) { pthread_t t; if (!pthread_create(&t, NULL, menu_mod_worker, NULL)) pthread_detach(t); }
+    else if (item == OVM_MOD_MANAGE) { pthread_t t; if (!pthread_create(&t, NULL, menu_mod_worker, (void *)1)) pthread_detach(t); }
     if (item >= 0 && item < OVM_N) dm_haptics_android_tap();
     if (item == OVM_RESUME) menu_close(); else dm_overlay_redraw();
 }
@@ -1279,6 +1301,12 @@ __attribute__((visibility("default"))) void ANativeActivity_onCreate(ANativeActi
     jclass activity_class = (*env)->GetObjectClass(env, act->clazz);
     if (activity_class) g_audio_menu_method = (*env)->GetMethodID(env, activity_class, "openAudioMenu", "()V");
     if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+    if (activity_class) g_mod_menu_method = (*env)->GetMethodID(env, activity_class, "importModZip", "()V");
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+    if (activity_class) g_mod_manage_method = (*env)->GetMethodID(env, activity_class, "manageMods", "()V");
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+    jmethodID mod_start = activity_class ? (*env)->GetMethodID(env, activity_class, "startMods", "(Ljava/lang/String;Z)Ljava/lang/String;") : NULL;
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
     if (activity_class) (*env)->DeleteLocalRef(env, activity_class);
     snprintf(g_root, sizeof g_root, "%s", act->externalDataPath ? act->externalDataPath : act->internalDataPath);
     char p[700];
@@ -1292,6 +1320,17 @@ __attribute__((visibility("default"))) void ANativeActivity_onCreate(ANativeActi
     snprintf(p, sizeof p, "%s/shaders.dmsv", g_root); setenv("DM_VK_SHADERS", p, 0);
     snprintf(p, sizeof p, "%s/env.txt", g_root); env_file(p);
     { const char *e = getenv("DM_MENU_BUTTON"); if (e && *e && !atoi(e)) { atomic_store(&g_menu_btn, 0); LOG("[overlay] DM_MENU_BUTTON=0: no menu button (Back opens the menu)"); } }
+    if (mod_start) {
+        jstring title = (*env)->NewStringUTF(env, DM_ANDROID_TITLE_ID);
+        jstring path = (*env)->CallObjectMethod(env, act->clazz, mod_start, title, getenv("DM_ROMFS_OVERLAY") != NULL);
+        if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); LOG("[RED] [mod] selection unavailable; using original RomFS"); }
+        else if (path) {
+            const char *value = (*env)->GetStringUTFChars(env, path, NULL);
+            setenv("DM_ROMFS_OVERLAY", value, 1); LOG("[mod] experimental overlay %s", value);
+            (*env)->ReleaseStringUTFChars(env, path, value); (*env)->DeleteLocalRef(env, path);
+        }
+        (*env)->DeleteLocalRef(env, title);
+    }
 #ifdef DM_RELEASE
     unsetenv("DM_CTL");   // a release build takes no remote key presses (the control file is a development tool)
 #endif

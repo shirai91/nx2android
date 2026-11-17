@@ -1,10 +1,9 @@
 package org.nx2a;
 
-import android.app.NativeActivity;
 import java.nio.charset.StandardCharsets;
 
 /** Optional Java text entry; the ordinary NativeActivity APK remains code-less. */
-public class GameActivity extends NativeActivity {
+public class GameActivity extends ImportActivity {
     private final GameKeyboard keyboard = new GameKeyboard(this);
 
     private static String text(byte[] value) {
