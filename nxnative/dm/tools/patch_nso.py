@@ -788,7 +788,11 @@ if any(fb - fa > BIG_FN for fa, fb in funcs):
         split += [(p, q) for p, q in ps if bisect.bisect_left(sites18, p) < bisect.bisect_left(sites18, q)]   # the pieces that hold x18 sites
         print(f'function {fa:#x}..{fb:#x} ({(fb - fa) / 2**20:.2f} MB, no unwind entries) analysed in {len(ps)} pieces')
     funcs = split
-for fa, fb in funcs:
+# The long part: every piece is disassembled with its details, and a big function without unwind entries has hundreds of
+# them (OCTOPATH TRAVELER 0's main: 71 MB in 298 pieces). The progress is printed, so the wait is not a silence.
+pieces_total = sum(fb - fa for fa, fb in funcs); pieces_done = 0
+for pi, (fa, fb) in enumerate(funcs):
+    if pi % 4 == 0: print(f'progress: {pieces_done / 2**20:.1f} MB of {pieces_total / 2**20:.1f} MB ({pi + 1}/{len(funcs)} pieces)', flush=True)
     insl = disasm_fn(fa, fb)
     ws = find_windows(insl)
     for wseg in ws:
@@ -837,6 +841,7 @@ for fa, fb in funcs:
     for a_, tgt in tabjumps.items():
         if fa <= a_ < fb: assert not any(t in inwin and t not in heads for t in tgt), f'jump table target into window {a_:x}'
     rmid_all |= rmid
+    pieces_done += fb - fa
 if far_into:   # functions analysed in pieces (pieces above): their far b / bl, and every jump table's targets (a cut may follow a br x18), may not land inside a window or a retry block
     win_mid = {x.address for wseg in windows for x in wseg[1:]}
     for at, to in far_into: assert to not in win_mid and to not in rmid_all, f'far branch into a window or retry block {at:x}'

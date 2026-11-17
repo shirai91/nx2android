@@ -125,6 +125,11 @@ axis preservation, not game recognition or device behavior.
 python -m unittest discover tests
 ```
 
+`test_vk_pixel_history` exercises production ROI/HDR helpers and mocked Vulkan
+capture/fence/resource behavior. Its harness also runs natively on Android.
+See [diagnostic switches](../.claude/skills/switch-android-port/references/switches.md)
+for pixel-history usage and limits.
+
 `test_fragment_output_masks` compiles the production attachment-state loop and
 checks sparse output maps, absent fragment shaders, channel masks, integer
 formats and the flat diagnostic shader's all-target output. The optional
@@ -133,8 +138,30 @@ observations and pixel checks; its build script supports Windows, macOS and
 Linux NDK hosts and does not contact a device. Host checks do not qualify
 physical GPU rendering.
 
+`test_avc_frame_layout` and `test_avc_output_buffer` compile extracted production
+MediaCodec layout and drain code on the host. They cover bounded plane copies,
+metadata fallbacks, unknown-format NV12 compatibility, once-only drop logs and
+fatal picture-allocation failure. The layout harness selects C99 stdio on MinGW;
+`NX2A_TEST_SANITIZE=1` enables ASan/UBSan for the layout harness. The optional
+[AVC MediaCodec probe](../probes/avc_frame_layout.md) lives beside the AAC probes
+and builds with a macOS, Linux or Windows NDK. Host tests do not qualify a
+physical Android decoder or gameplay.
+
 The Vulkan-header harnesses need a discoverable NDK; set `ANDROID_NDK_HOME`
 when it is not found automatically. They skip if no NDK headers are found.
+`test_texture_format_aliases` compiles the production storage lookup, upload
+decisions, eviction, pool cleanup and NVN texture initializer under ASan/UBSan.
+It checks same-format plain/packaged peers in both orders, all orderings of two
+formats and their metadata peers, late CPU-write marks, and unique image retirement.
+A byte-store double at the GPU upload boundary checks visibility through those
+peers; it does not execute Vulkan uploads. The selected compiler is `CC`, then
+`cc`, then `clang`; a sanitizer link probe skips explicitly if unsupported.
+`test_texture_transfers` captures the actual Vulkan copy, resolve, blit and clear
+commands with NDK headers. It checks format, subresource and sRGB clear semantics,
+pooled/dedicated temporary retirement and injected allocation failures without
+running a GPU. The manual Android fixture builder supports macOS, Linux and
+Windows; see [texture-family validation](../tests/vk_texture_aliases.md).
+
 The protected-pool harness uses real page protection
 and a mutex/condition-variable rendezvous on macOS and Linux, handling each
 platform's protection-fault signal. The zero-copy diagnostics fixture forces

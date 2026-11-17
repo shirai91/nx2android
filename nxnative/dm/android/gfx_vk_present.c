@@ -666,7 +666,7 @@ static void ov_render(VkCommandBuffer cb, int mode, int menu, int fps) {
             }
         }
     }
-    for (int i = 0; i < OV_N; i++) if (OV_CTLS[i].kind == OV_MENU && mode) {   // the menu button, on top of the controls, where the player put it
+    for (int i = 0; i < OV_N; i++) if (OV_CTLS[i].kind == OV_MENU && mode && !ov_off(&OV_CTLS[i])) {   // the menu button, on top of the controls, where the player put it (not with DM_MENU_BUTTON=0)
         float ma = mode == 1 && (menu < 0 || edit) ? fmaxf(op, 0.5f) : OV_MENU_ALPHA;   // (findable at any opacity)
         if (th) { if (!tbound) { vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_ov.layout, 0, 1, &g_tt[g_ov.lay].set, 0, NULL); tbound = 1; }
                   ov_theme_menu(cb, th, i, ma); continue; }
@@ -1123,7 +1123,7 @@ int mtl_link_wait_tick(int vsyncs, uint64_t timeout_ns) { (void)vsyncs; (void)ti
 int mtl_has_window(void) { return dm_front_window() != NULL; }
 int mtl_display_hz(void) { return 60; }
 int mtl_fps_target(void) { return DM_GAME_FPS_TARGET > 0 ? DM_GAME_FPS_TARGET : 60; }
-// The adaptive frame rate's ceiling (perf_android.c fps_cap_step): the profile's fps_ceiling (30, or 0 for none; only Cardfight!! Vanguard Dear Days 2 sets it), which
+// The adaptive frame rate's ceiling (perf_android.c fps_cap_step): the profile's fps_ceiling (30, or 0 for none; Cardfight!! Vanguard Dear Days 2 and Pokémon Mystery Dungeon Rescue Team DX set it), which
 // DM_FPS_CEILING overrides (porter's --fps60 writes 0). A game whose host frame step is on (the rewriter's state page, loader.c dm_fps_state) gets none whatever the key says:
 // its holds are the frame step's (Breath of the Wild's VFR override fixes its step at one vsync, which a 30 fps ceiling would run at half speed)
 extern uint8_t *dm_fps_state;

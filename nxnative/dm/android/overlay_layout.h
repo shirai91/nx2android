@@ -4,7 +4,7 @@
 #pragma once
 #include <math.h>
 #include "dm_input.h"
-enum { OV_STICK_L, OV_STICK_R, OV_BUTTON, OV_DPAD, OV_MENU };   // OV_MENU: the menu button (always shown, 70%): pauses the game and opens the settings
+enum { OV_STICK_L, OV_STICK_R, OV_BUTTON, OV_DPAD, OV_MENU };   // OV_MENU: the menu button (shown with the gamepad on or off, 70%; env.txt DM_MENU_BUTTON=0 leaves it out): pauses the game and opens the settings
 typedef struct { int kind; float ax, x, y, w, h; uint64_t btn; const char *label, *name; } ov_ctl;   // ax: the anchor, as a fraction of the window's width; name: the table's
 // The layouts: dm/android/overlay_default.tsv with the game profile's moves (android.tsv overlay rows), compiled by build.py into android_profile.h. Both list the
 // same controls in the same order, so a control's index means the same in either (a press keeps it across a change of layout)
@@ -31,7 +31,7 @@ int64_t dm_overlay_pressed(int ctl, uint64_t bit);   // CLOCK_MONOTONIC ns of th
 int dm_overlay_custom(int layout, int ctl, float *x, float *y, float *s);
 int dm_overlay_custom_ver(void);   // counts the changes (the theme-less drawing is rasterized again)
 // a control the player hid in the layout editor (Hide): not drawn and not touchable in play. In the editor it is drawn and can be chosen, so it can be
-// shown again: dm_overlay_hidden says whether it is hidden, dm_overlay_off whether play leaves it out now (hidden and the editor closed). Never the menu button
+// shown again: dm_overlay_hidden says whether it is hidden, dm_overlay_off whether play leaves it out now (hidden and the editor closed). The player never hides the menu button; DM_MENU_BUTTON=0 does (front_android.c g_menu_btn)
 int dm_overlay_hidden(int layout, int ctl);
 int dm_overlay_off(int layout, int ctl);
 static inline int ov_off(const ov_ctl *c);   // (below: c in OV_LAYOUTS)

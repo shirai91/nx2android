@@ -288,6 +288,17 @@ class Misc(unittest.TestCase):
         self.assertTrue(cli._parser().parse_args(['port', 'x', '--mt-replay']).mt_replay); self.assertFalse(cli._parser().parse_args(['port', 'x']).mt_replay)
         self.assertFalse(pipeline.Options(Path(".")).mt_replay)
 
+    def test_no_menu_button_option(self):   # --no-menu-button (issue #397): off unless given; the port then writes DM_MENU_BUTTON=0 to env.txt (front_android.c g_menu_btn)
+        from porter import cli
+        self.assertTrue(cli._parser().parse_args(['port', 'x', '--no-menu-button']).no_menu_button)
+        self.assertFalse(cli._parser().parse_args(['port', 'x']).no_menu_button)
+        self.assertFalse(pipeline.Options(Path(".")).no_menu_button)
+        src = (Path(pipeline.__file__).read_text(encoding='utf-8'))
+        self.assertIn("(['DM_MENU_BUTTON=0'] if self.o.no_menu_button else [])", src)   # in the data pack's env rows, beside --mt-replay's
+        self.assertIn('no_menu_button=a.no_menu_button', Path(cli.__file__).read_text(encoding='utf-8'))
+        front = (Path(pipeline.__file__).parents[1] / 'nxnative/dm/android/front_android.c').read_text(encoding='utf-8')
+        self.assertIn('getenv("DM_MENU_BUTTON")', front)   # the name the device reads is the name porter writes
+
     def test_sysdata_no_firmware_text(self):   # the [RED] line without --firmware: MiiModel's wording as before; the shared fonts say what the host draws instead
         mii = pipeline.sysdata_no_firmware('Mario Kart 8 Deluxe', [0x0100000000000802])
         self.assertEqual(mii, 'Mario Kart 8 Deluxe reads system data from the console\'s firmware (0100000000000802); without --firmware <your firmware dump\'s system content folder> '

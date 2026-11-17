@@ -12,6 +12,13 @@ from porter import datapack, paths
 from porter.adb import Adb, AdbError, long_path
 from porter.upstream import BuildError, PROG, say
 
+# A pack of a profile with romfs zstd holds packed RomFS files (porter/romfs_pack.py), which only this app reads: pushed into a folder another app reads (--romfs-at, --romfs-push),
+# they would replace that app's own files of the same names and it would stop working. Such a pack goes only into the app's files folder
+PACKED_ELSEWHERE = ('a data pack with a compressed RomFS (android.tsv romfs zstd) goes only into the app\'s own files folder: its packed files would replace the files of a '
+                    'RomFS folder that another app reads. Install it with --romfs-at app')
+def packed_romfs(data):   # whether the pack holds packed RomFS files (its env.txt turns the host's reader on)
+    try: return 'DM_ROMFS_ZSTD=1' in (Path(data) / 'env.txt').read_text(encoding='utf-8').split()
+    except OSError: return False
 APP = 'app'                                                  # --romfs-at app: the RomFS in the app's files folder (the default)
 ROMFS_MARK = '# porter install --romfs-at'                   # in the device's env.txt: the DM_ROMFS row under it is the installer's, carried over by later installs
 ACCESS = 'android.permission.MANAGE_EXTERNAL_STORAGE'        # All files access, which the APK asks for (mkapk.py) and the installer grants
@@ -98,6 +105,8 @@ def install(apk, data, adb_exe, serial=None, replace_signer=False, romfs_at=None
     files = datapack.files_folder(man['package'])
     target = romfs_target(romfs_at, files)
     if romfs_push and not target: raise BuildError('--romfs-push needs --romfs-at <a folder on the device outside the app\'s files folder>')
+    packed = packed_romfs(data)
+    if packed and target: raise BuildError(PACKED_ELSEWHERE)
     adb = Adb(adb_exe, serial, log=say)
     PROG.stage('install', step='finding the device')
     pushing, lock = False, None
@@ -112,6 +121,7 @@ def install(apk, data, adb_exe, serial=None, replace_signer=False, romfs_at=None
         was = device_romfs(adb.read_text(f'{files}/env.txt'))   # an earlier --romfs-at install's folder
         if romfs_at is None and was:
             target = romfs_target(was, files)
+            if packed and target: raise BuildError(f'the app reads its RomFS from {target} (an earlier install\'s --romfs-at). ' + PACKED_ELSEWHERE)
             if target: say(f'the app reads its RomFS from {target} (an earlier install\'s --romfs-at; --romfs-at app moves it into its files folder)')
         rom = datapack.romfs_sizes(data) if target else {}
         missing = other = changed = []; there = {}
