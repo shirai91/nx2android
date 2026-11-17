@@ -756,8 +756,12 @@ NVN(nvnQueueBuilderGetQueueMemorySize, size_t, const NVNqueueBuilder *b) {
 }
 NVN(nvnQueueBuilderSetQueueMemory, void, NVNqueueBuilder *b, void *m, size_t n) { QB(b)->mem = m; QB(b)->mem_sz = n; }
 NVN(nvnQueueInitialize, NVNboolean, NVNqueue *q, const NVNqueueBuilder *b) {
-    *(queue_t *)q = (queue_t){MAGIC('Q', 'U', 'E', 'U'), ((const queue_builder_t *)b)->dev, 0};
-    OLOG("QueueInitialize %p", (void *)q); return 1;
+    NVNdevice *d = ((const queue_builder_t *)b)->dev;
+    // the raster origin is the device's now (queue_t.origin_ll): Xenoblade Chronicles 2 creates its queue before it switches the device to upper left, and its
+    // draws keep the lower-left winding (taken from the device's current origin, its indirect-lighting triangle was culled and the scene drawn almost black)
+    uint32_t ll = !d || ((const dev_t_ *)d)->origin == NVN_WINDOW_ORIGIN_MODE_LOWER_LEFT;
+    *(queue_t *)q = (queue_t){MAGIC('Q', 'U', 'E', 'U'), d, 0, ll};
+    OLOG("QueueInitialize %p (raster origin %s)", (void *)q, ll ? "lower left" : "upper left"); return 1;
 }
 NVN(nvnQueueFinalize, void, NVNqueue *q) { ((queue_t *)q)->magic = 0; }
 NVN(nvnQueueGetError, NVNqueueGetErrorResult, NVNqueue *q, NVNqueueErrorInfo *info) {
@@ -1389,6 +1393,7 @@ static void submit_now(NVNqueue *q, int n, const NVNcommandHandle *h) {
     pthread_mutex_lock(&g_sub_mu);
     uint64_t t0 = now_ns(), c0 = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID), i0, y0, s0 = thr_sys_ns(); thr_counts(&i0, &y0);
     if (!nvn_async()) ((queue_t *)q)->submits++;
+    mtl_set_queue_origin_lower_left(((queue_t *)q)->origin_ll);   // under the submission lock: this queue's raster origin for the winding of its draws
     mtl_sub_begin(); ft_del_drain();
     nvn_ft_poll();
     mtl_sub_index((const uint64_t *)h, n);

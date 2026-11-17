@@ -3311,6 +3311,7 @@ static int g_tpool_n; static uint64_t g_stat_tex_oob;
 // convention itself (text rendered into textures for the title and the menus came out upside down, and a MIRROR_Y copy of the frame)
 static _Atomic int g_origin_ll;
 void mtl_set_origin_lower_left(int on) { if (atomic_exchange(&g_origin_ll, on) != on) MLOG("window origin: %s", on ? "lower left (GL: viewport flipped, winding reversed, present flipped)" : "upper left"); }
+void mtl_set_queue_origin_lower_left(int on) { (void)on; }   // the Metal winding still follows the device origin here (the Android backend, gfx_vk_exec.c, takes the queue's)
 void mtl_set_tex_pool_n(int n) { g_tpool_n = n; }
 static id<MTLTexture> tex_by_id(int tid) {   // Caller holds g_rmu
     if (g_tpool_n && tid >= g_tpool_n) { if (!g_stat_tex_oob++) MLOG("texture ID %d outside the pool (capacity %d) treated as an empty slot: reads 0", tid, g_tpool_n); return nil; }

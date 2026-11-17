@@ -108,6 +108,7 @@ void mtl_xv_window_tex(uint64_t serial) { (void)serial; }
 void mtl_set_frame(uint64_t f) { (void)f; }
 void mtl_set_depth_zero(int on) { (void)on; }
 void mtl_set_origin_lower_left(int on) { (void)on; }
+void mtl_set_queue_origin_lower_left(int on) { (void)on; }
 
 // ---------------- resources ----------------
 void mtl_tex_init(const tex_t *t) { (void)t; }
