@@ -104,7 +104,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [ ] The Great Ace Attorney Chronicles · `010036E00FB20000` · profile here
 - [x] The Legend of Zelda: Breath of the Wild · `01007EF00011E000` · Galaxy S25 Ultra / Turnip; tested in the opening and on the Great Plateau
 - [x] The Legend of Zelda: Echoes of Wisdom · `01008CF01BAAC000` · Retroid Pocket 6 / PurpleVK; playable with minor transparency artifacts around rifts
-- [x] The Legend of Zelda: Link's Awakening · `01006BB00C6F0000` · Lenovo TB323FU; 60 fps; needs `--firmware` (without it, crashes at startup because the fallback font lacks `U+25A1`); startup `main+0x1c180` OOB read fixed in `patches.py`; area loads can hitch
+- [x] The Legend of Zelda: Link's Awakening · `01006BB00C6F0000` · Lenovo TB323FU; dynamic 30/60 fps by default (optional stable-60fps NOPs commented out in `patches.py` to avoid slow-motion/judder on weaker chips); needs `--firmware` (without it, crashes at startup because the fallback font lacks `U+25A1`); startup `main+0x1c180` OOB read fixed in `patches.py`; area loads can hitch
 - [x] The Legend of Zelda: Tears of the Kingdom · `0100F2C0115B6000`
 - [x] The World Ends with You -Final Remix- · `0100C1500B82E000`
 - [x] Tomodachi Life: Living the Dream · `010051F0207B2000`

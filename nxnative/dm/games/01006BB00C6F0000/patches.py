@@ -17,8 +17,12 @@ CUTS = {
     # 0x10196f8). Both are bl on this main: main+0x10196d8 calls main+0x10411a0, main+0x10196f8 calls main+0x1019f20 (that one stores an aligned word at the pacing object +0x8128, beside
     # the interval). NOP leaves the flag store at main+0x10196e0 and the call at main+0x10196ec in place. A frame that is still late then stays a little over 16.7 ms instead of being held
     # for 33 ms. The 100 ms stalls while a new area is read are not this path.
-    (0x10196d8, 'b29e0094', '1f2003d5', 'dynamic drop to 30 fps: bl main+0x10411a0 → nop (the stable-60fps patch; present interval stays 1)'),
-    (0x10196f8, '0a020094', '1f2003d5', 'dynamic drop to 30 fps: bl main+0x1019f20 → nop (the stable-60fps patch; the call writes the pacing object +0x8128)'),
+    # Left commented out by default so older/slower chips can still fall back cleanly to 30 fps (present interval 2):
+    # forcing interval 1 on devices that cannot hold 60 fps causes 16.7/33.3 ms frame-time judder and slow-motion
+    # gameplay (since the game keeps stepping at 1/60s per frame without the 2-vsync step). Uncomment both lines
+    # below and re-port if you want a steadier 60 fps on flagship chips.
+    # (0x10196d8, 'b29e0094', '1f2003d5', 'dynamic drop to 30 fps: bl main+0x10411a0 → nop (the stable-60fps patch; present interval stays 1)'),
+    # (0x10196f8, '0a020094', '1f2003d5', 'dynamic drop to 30 fps: bl main+0x1019f20 → nop (the stable-60fps patch; the call writes the pacing object +0x8128)'),
     # The constructor at main+0x1bdb0 reads a uint16 table index from [x19, #0xa0] (copied from [x21, #0x38]) and indexes the 0x275-entry table at main+0x1bcc898
     # (stride 0x58, reading byte +0x49 into [x19, #0xac]) without bounds-checking. When MainCamera_{0}P is created at main+0xbdaa0, that index is initialized to
     # 0xffff (main+0xbdb68: mov w8, #0xffff; strh w8, [sp, #0x68]), so main+0x1c180 reads main+0x214c889 — ~4.2 MB past the end of main (0x1d1c000). On Switch or
