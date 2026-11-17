@@ -13,7 +13,7 @@ from porter.adb import Adb, AdbError, long_path
 from porter.upstream import BuildError, PROG, say
 
 # A pack of a profile with romfs zstd holds packed RomFS files (porter/romfs_pack.py), which only this app reads: pushed into a folder another app reads (--romfs-at, --romfs-push),
-# they would replace that app's own files of the same names and it would stop working. Such a pack goes only into the app's files folder
+# they would replace that app's own files of the same names and it would stop working. Such a pack goes only into the app's files folder, or the app's own folder on the SD card (--romfs-at sd)
 PACKED_ELSEWHERE = ('a data pack with a compressed RomFS (android.tsv romfs zstd) goes only into the app\'s own files folder: its packed files would replace the files of a '
                     'RomFS folder that another app reads. Install it with --romfs-at app')
 def packed_romfs(data):   # whether the pack holds packed RomFS files (its env.txt turns the host's reader on)
@@ -110,7 +110,7 @@ def install(apk, data, adb_exe, serial=None, replace_signer=False, romfs_at=None
     sd = romfs_at == SD
     if romfs_push and not target and not sd: raise BuildError('--romfs-push needs --romfs-at <a folder on the device outside the app\'s files folder>')
     packed = packed_romfs(data)
-    if packed and (target or sd): raise BuildError(PACKED_ELSEWHERE)
+    if packed and target: raise BuildError(PACKED_ELSEWHERE)   # --romfs-at sd is the app's own folder on the card (no other app reads it): a packed pack goes there
     adb = Adb(adb_exe, serial, log=say)
     PROG.stage('install', step='finding the device')
     pushing, lock = False, None
@@ -127,13 +127,14 @@ def install(apk, data, adb_exe, serial=None, replace_signer=False, romfs_at=None
             if not vol: raise BuildError('--romfs-at sd: no SD card is mounted on the device')
             romfs_at = f'{vol}/Android/data/{man["package"]}/files/{datapack.ROMFS}'; target = romfs_target(romfs_at, files); romfs_push = True
             say(f'RomFS on the SD card: {target}')
-        was = device_romfs(adb.read_text(f'{files}/env.txt'))   # an earlier --romfs-at install's folder
+        dev_env = adb.read_text(f'{files}/env.txt') or ''
+        was = device_romfs(dev_env)   # an earlier --romfs-at install's folder
         sd_dir = bool(was) and was.rstrip('/').startswith('/storage/') and was.rstrip('/').endswith((f'/Android/data/{man["package"]}/files/{datapack.ROMFS}', f'/nx2android/{man["package"]}/{datapack.ROMFS}'))   # the folder an earlier --romfs-at sd made (the second form: before the RomFS moved into the app's Android/data, where uninstalling removes it)
         if romfs_at == NO_SD:
             romfs_at = APP if sd_dir else None
         if romfs_at is None and was:
             target = romfs_target(was, files)
-            if packed and target: raise BuildError(f'the app reads its RomFS from {target} (an earlier install\'s --romfs-at). ' + PACKED_ELSEWHERE)
+            if packed and target and not sd_dir: raise BuildError(f'the app reads its RomFS from {target} (an earlier install\'s --romfs-at). ' + PACKED_ELSEWHERE)
             if target: say(f'the app reads its RomFS from {target} (an earlier install\'s --romfs-at; --romfs-at app moves it into its files folder)')
         rom = datapack.romfs_sizes(data) if target else {}
         missing = other = changed = []; there = {}
@@ -157,6 +158,11 @@ def install(apk, data, adb_exe, serial=None, replace_signer=False, romfs_at=None
             else: say(f'{target} holds this pack\'s RomFS ({len(rom):,} files, {sum(rom.values()) / 2**30:.1f} GB): it is not pushed')
         free = adb.free_bytes()
         have = adb.remote_sizes(files)
+        was_packed = 'DM_ROMFS_ZSTD=1' in dev_env.split()
+        in_files = any(r.startswith(datapack.ROMFS + '/') for r in have)
+        if target and in_files and (missing or other or changed): say(f'the RomFS is copied again into {target}: the app\'s files folder holds a copy, and {"the SD card" if sd else "another folder"} needs its own')
+        elif target and there and (other or changed) and was_packed != packed: say(f'the RomFS in {target} is copied again: it was {"compressed" if was_packed else "not compressed"} and this pack\'s is {"compressed" if packed else "not compressed"}')
+        elif not target and was and romfs_at == APP and (sd_dir or in_files is False): say(f'the RomFS is copied again from {was} into the app\'s files folder' + (f' ({"compressed" if packed else "not compressed"} pack)' if packed != was_packed else ''))
         if target:   # the RomFS is not pushed into the files folder; a copy an earlier install left there goes only after env.txt points elsewhere, so it is not counted as freed
             need = man['bytes'] - sum(rom.values()) - sum(s for r, s in have.items() if not r.startswith(datapack.ROMFS + '/'))
             if push := sum(rom[r] for r in missing + other + changed):
