@@ -62,7 +62,7 @@ final class ModImport {
         new Thread(() -> {
             String message;
             boolean success = false;
-            try { message = "Imported to:\n" + extract(context, uri) + "\n\nImported files are not activated."; success = true; }
+            try { message = "Imported to:\n" + extract(context, uri) + "\n\nImported files are not activated. RomFS only; ExeFS/code patches are not applied."; success = true; }
             catch (Exception e) { message = "Import failed: " + e.getMessage(); }
             String outcome = message; boolean completed = success;
             MAIN.post(() -> { busy = false; imported = completed; show(outcome); });

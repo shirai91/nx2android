@@ -31,7 +31,9 @@ final class ModManager {
         for (File child : children) {
             if (!child.getCanonicalPath().equals(child.getAbsolutePath()) || child.getName().indexOf(':') >= 0) throw new IOException("Unsafe path in mod");
             if (!child.isDirectory()) continue;
-            if (child.getName().matches("(?i)[0-9a-f]{16}")) {
+            if (depth == 0 && child.getName().equals("romfs")) {
+                found.add(child);
+            } else if (child.getName().matches("(?i)[0-9a-f]{16}")) {
                 if (!child.getName().equalsIgnoreCase(title)) throw new IOException("Wrong or multiple title IDs");
                 File romfs = new File(child, "romfs");
                 if (!romfs.isDirectory()) throw new IOException("Missing romfs");
@@ -56,7 +58,7 @@ final class ModManager {
         if (!dir.isDirectory() || !dir.getCanonicalPath().equals(dir.getAbsolutePath())) throw new IOException("Missing or unsafe mod");
         ArrayList<File> found = new ArrayList<>();
         scan(dir, 0, found);
-        if (found.size() != 1) throw new IOException("Expected one matching title and romfs");
+        if (found.size() != 1) throw new IOException("Expected one romfs, optionally under a matching title");
         links(found.get(0));
         return found.get(0);
     }
