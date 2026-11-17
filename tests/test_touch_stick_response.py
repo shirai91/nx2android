@@ -1,16 +1,21 @@
 import pathlib
+import shutil
 import subprocess
 import tempfile
 import unittest
 
+from porter.upstream import android_profile
+
 
 class TouchStickResponse(unittest.TestCase):
-    def test_centre_deadzone_direction_and_full_travel(self):
-        source = (pathlib.Path(__file__).resolve().parents[1] / 'nxnative/dm/android/overlay_layout.h').read_text()
-        function = source[source.index('static inline void ov_touch_stick('):source.index('// the layout in use:')]
-        harness = '''#include <math.h>
-#include <assert.h>
-%s
+    def test_centre_deadzone_direction_and_screen_edges(self):
+        cc = shutil.which('cc') or shutil.which('clang')
+        if not cc:
+            self.skipTest('a C compiler is needed for the stick response check')
+        root = pathlib.Path(__file__).resolve().parents[1]
+        harness = r'''#include <assert.h>
+#include <math.h>
+#include "overlay_layout.h"
 int main(void) {
     float x, y, left, right;
     ov_touch_stick(0, 0, 100, 0, &x, &y); assert(x == 0 && y == 0);
@@ -19,12 +24,24 @@ int main(void) {
     ov_touch_stick(50, 0, 100, 1, &right, &y); assert(right > 0 && right < left && y == 0);
     ov_touch_stick(-300, 400, 100, 1, &x, &y); assert(fabsf(x + .6f) < .0001f && fabsf(y - .8f) < .0001f);
     ov_touch_stick(100, 0, 0, 1, &x, &y); assert(x == 0 && y == 0);
-}''' % function
+    float r = ov_touch_range(30, 500, 0, 500, 100, 1920, 1080);
+    ov_touch_stick(-30, 0, r, 0, &x, &y); assert(fabsf(x + 1) < .0001f);
+    r = ov_touch_range(1890, 500, 1919, 500, 100, 1920, 1080);
+    ov_touch_stick(29, 0, r, 1, &x, &y); assert(fabsf(x - 1) < .0001f);
+    r = ov_touch_range(30, 500, 30, 500, 100, 1920, 1080);
+    ov_touch_stick(0, 0, r, 0, &x, &y); assert(x == 0 && y == 0);
+    r = ov_touch_range(30, 500, 130, 500, 100, 1920, 1080);
+    ov_touch_stick(100, 0, r, 0, &x, &y); assert(fabsf(x - 1) < .0001f);
+}'''
         with tempfile.TemporaryDirectory() as tmp:
-            c = pathlib.Path(tmp) / 'check.c'
-            c.write_text(harness)
-            subprocess.run(['cc', '-std=c11', str(c), '-lm', '-o', str(c.with_suffix(''))], check=True)
-            subprocess.run([str(c.with_suffix(''))], check=True)
+            tmp = pathlib.Path(tmp)
+            (tmp / 'android_profile.h').write_text(android_profile.header(None), encoding='utf-8')
+            c = tmp / 'check.c'
+            c.write_text(harness, encoding='utf-8')
+            exe = c.with_suffix('')
+            subprocess.run([cc, '-std=c11', '-I', str(tmp), '-I', str(root / 'nxnative/dm/android'),
+                            '-I', str(root / 'nxnative/dm/host'), str(c), '-lm', '-o', str(exe)], check=True)
+            subprocess.run([str(exe)], check=True)
 
 
 if __name__ == '__main__':

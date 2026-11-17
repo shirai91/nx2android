@@ -83,7 +83,9 @@ static struct { int id; char key[64]; } g_dev_key[16];
 static int pad_dev_kind(int id) { return id == 7 || id == -1 ? 0 : id >= 0 && id < 256 && dev_gone[id] ? -1 : 1; }
 static void pad_key_now(int id, char *out, size_t n) { key_reads++; snprintf(out, n, "pad-%d", id == 45 ? 44 : id == 46 ? 42 : id); }
 static void log_line(const char *f, ...) { if (strstr(f, "are taken")) log_taken++; }
+static int32_t touch_sticks[4];
 static int g_ptr_ctl[32];
+static float g_ptr_origin[32][2];
 static struct { int id, moved; } g_drag = {-1, 0};
 static _Atomic int g_menu, g_sp_on, g_tx_on, g_pad_in, g_knob[2][2];
 static _Atomic int64_t g_menu_t, g_press_t[16], g_stick_t[2];
@@ -131,7 +133,7 @@ void dm_pad_set_player(int p, uint64_t b, int32_t lx, int32_t ly, int32_t rx, in
     pad_publications++;
 }
 void dm_input_set(uint64_t b, int32_t lx, int32_t ly, int32_t rx, int32_t ry) {
-    touch_buttons = b; (void)lx; (void)ly; (void)rx; (void)ry;
+    touch_buttons = b; touch_sticks[0] = lx; touch_sticks[1] = ly; touch_sticks[2] = rx; touch_sticks[3] = ry;
 }
 void dm_touch_set(const dm_touch *points, int n) { (void)points; touches = n; }
 static void (*dm_picture_rect)(float r[4]);
@@ -342,9 +344,22 @@ static void no_menu_button(void) {
     assert(!dm_overlay_hidden(layout, menu) && !dm_overlay_off(layout, menu));
     atomic_store(&g_set_overlay, 0); controls(0);   // the default again: the menu button answers
 }
+static void edge_stick(void) {
+    width = layout ? 2400 : 1920; height = 1080;
+    atomic_store(&g_set_overlay, 1); atomic_store(&g_overlay, 1); atomic_store(&g_pads, 0);
+    int stick = -1; for (int i = 0; i < OV_N; i++) if (OV_CTLS[i].kind == OV_STICK_L) stick = i;
+    assert(stick >= 0); float b[4]; ov_box(&OV_CTLS[stick], width, height, b);
+    AInputEvent touch = {.source = AINPUT_SOURCE_TOUCHSCREEN, .type = AINPUT_EVENT_TYPE_MOTION,
+                         .action = AMOTION_EVENT_ACTION_DOWN, .x = b[0] - b[2] * .9f, .y = b[1]};
+    assert(touch.x > 0 && ctl_at(touch.x, touch.y, width, height) == stick);
+    assert(handle_event(&touch) == 1 && touch_sticks[0] == 0);
+    touch.action = 5; touch.x = 0; assert(handle_event(&touch) == 1 && touch_sticks[0] <= -DM_STICK_MAX + 1);
+    touch.action = AMOTION_EVENT_ACTION_UP; assert(handle_event(&touch) == 1 && touch_sticks[0] == 0);
+}
 int main(int argc, char **argv) {
     assert(argc == 2); int test = atoi(argv[1]);
     if (test == 10) { players(); return 0; }
+    if (test == 11) { for (layout = 0; layout < 2; layout++) edge_stick(); return 0; }
     if (test == 9) { for (layout = 0; layout < 2; layout++) no_menu_button(); return 0; }
     if (test == 8) { for (layout = 0; layout < 2; layout++) hidden_controls(); return 0; }
     if (test == 7) { for (layout = 0; layout < 2; layout++) motion_handoff(); return 0; }
@@ -391,6 +406,9 @@ int main(int argc, char **argv) {
         result = subprocess.run([str(self.exe), str(case)], capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_stick_edge_touch_is_neutral_then_reaches_full_output(self):
+        self.run_case(10)
+
     def test_hidden_controls_are_omitted_in_play_and_selectable_in_editor(self):
         self.run_case(8)
 
@@ -419,7 +437,7 @@ int main(int argc, char **argv) {
         self.run_case(7)
 
     def test_each_controller_is_a_player_of_its_own(self):
-        self.run_case(10)
+        self.run_case(11)
 
 
 if __name__ == '__main__':
