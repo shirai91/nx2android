@@ -1,0 +1,38 @@
+# Experimental Android profile, generated from the survey and adjusted during device bring-up.
+# FIFA 21 Legacy Edition, SDK 9.6; build identifiers below were tested on Xiaomi 17 / Android 17.
+# The display version comes from control metadata; separate update merging was not verified.
+
+# ---- Identity ----
+title_id	01000A001171A000
+program_id	01000A001171A000
+
+# ---- App ----
+name	FIFA 21 Legacy Edition
+ipa	Fifa21LegacyEdition.ipa
+app_category	public.app-category.games
+
+# ---- Versions ----
+build	v0	1.0.7	main=480820c613eeea50b86aee580609bd89	sdk=cda31fe1e82ddeb67140a4486d882119
+package	v0
+shader_versions	v0
+
+# ---- Files ----
+# not loaded, main takes nothing from them the host does not supply: subsdk0 (GLSLC)
+modules	main sdk
+romfs_marker	data3.big
+zip_store	.big:.cbac:.vp6:.metallib
+
+# ---- Memory ----
+# the NPDM declares 8 MB of system resource (virtual address memory) and main sets a heap: a 5 GB block with a large alias region; the heap check sizes the heap region from the heap the game asks for
+mem_reserve	0x140000000
+# heap check: Xiaomi 17, 2026-11-17: SetHeapSize OOM req 0xba400000, cap 0x8000000.
+# profile_guess.heap_signals: keep the 5 GB reservation, give the heap a 3 GB region.
+mem_alias	0x60000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+# the NPDM declares 8 MB of system resource
+sys_resource	0x800000
+
+# ---- Shader split ----
+shader_groups	/data/=data
+shader_note	FIFA 21 Legacy Edition shaders (provisional profile)
