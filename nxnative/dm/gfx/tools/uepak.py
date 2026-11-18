@@ -181,15 +181,40 @@ def footer(f):
     methods = [ft[k + 44 + 32 * i:k + 76 + 32 * i].rstrip(b'\0').decode('latin1') for i in range(5)]
     return ft[k - 1], ioff, isz, methods, ver
 
+def code_keys(img, lo):
+    """32-byte keys that main's code stores from two 16-byte literals: stp qA, qB, [xN] after ldr qA / qB, each from an adrp page plus its offset, within 8 instructions before it.
+    UE_REGISTER_ENCRYPTION_KEY's callback copies a 32-byte array into its argument, and clang may split the array into two 16-byte constants that do not lie side by side
+    (Tetris Effect: Connected), so no window of main holds the key"""
+    w = struct.unpack_from(f'<{lo // 4}I', img)
+    out = []
+    for i, x in enumerate(w):
+        if x & 0xFFFF83E0 != 0xAD000000: continue   # stp qA, qB, [xN, #0] (signed offset)
+        page, half = {}, {}
+        for j in range(max(0, i - 8), i):
+            y = w[j]
+            if y & 0x9F000000 == 0x90000000:   # adrp: the page of pc + the 21-bit immediate pages
+                imm = (y >> 29 & 3) | (y >> 5 & 0x7FFFF) << 2
+                page[y & 31] = (j * 4 & ~0xFFF) + ((imm - (1 << 21) if imm & 1 << 20 else imm) << 12)
+            elif y & 0xFFC00000 == 0x3DC00000 and (y >> 5 & 31) in page:   # ldr qT, [xN, #imm12 * 16] on an adrp base
+                half[y & 31] = page[y >> 5 & 31] + (y >> 10 & 0xFFF) * 16
+            else: page.pop(y & 31, None); half.pop(y & 31, None)   # anything else that may write the register ends what it held
+        a, b = half.get(x & 31), half.get(x >> 10 & 31)
+        if a is not None and b is not None and a + 16 <= len(img) and b + 16 <= len(img): out.append(img[a:a + 16] + img[b:b + 16])
+    return out
+
 def find_key(img, lo, hi, pak):
-    """The AES key among main's 32-byte windows (read-only and data segments, 4-aligned, at least 20 distinct bytes): the one that decrypts the index start to a short mount point"""
+    """The AES key that decrypts the index start to a short mount point: one main's code stores from two 16-byte literals (code_keys), else one of main's 32-byte windows
+    (read-only and data segments, 4-aligned, at least 20 distinct bytes)"""
     with open(pak, 'rb') as f:
         _, ioff, _, _, _ = footer(f); f.seek(ioff); blk = f.read(16)
+    def opens(k):
+        d = aes_decrypt(k, blk)
+        return 0 < struct.unpack_from('<i', d)[0] < 512 and d[4:7] == b'../'
+    for k in code_keys(img, lo):
+        if opens(k): return k
     for a in range(lo, hi - 32, 4):
         w = img[a:a + 32]
-        if len(set(w)) < 20: continue
-        d = aes_decrypt(w, blk)
-        if 0 < struct.unpack_from('<i', d)[0] < 512 and d[4:7] == b'../': return w
+        if len(set(w)) >= 20 and opens(w): return w
     return None
 
 class Pak:
