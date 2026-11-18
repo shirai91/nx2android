@@ -78,7 +78,8 @@ static unsigned mode_value(const uint32_t *p, uint32_t n, unsigned mode) {
     return 0;
 }
 static void write_module(const char *prefix, int kind, int mode, const uint32_t *p, uint32_t n) {
-    if (!prefix) return; char path[1024]; snprintf(path, sizeof path, "%s-%d-%d.spv", prefix, kind, mode);
+    if (!prefix) return;
+    char path[1024]; snprintf(path, sizeof path, "%s-%d-%d.spv", prefix, kind, mode);
     FILE *f = fopen(path, "wb"); assert(f); assert(fwrite(p, 4, n, f) == n); fclose(f);
 }
 int main(int argc, char **argv) {

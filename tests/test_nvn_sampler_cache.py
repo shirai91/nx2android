@@ -111,7 +111,13 @@ class SamplerCacheTests(unittest.TestCase):
             source = Path(directory) / 'check.c'
             exe = Path(directory) / 'check.exe'
             source.write_text(harness(), encoding='utf-8')
-            subprocess.run([cc, '-std=c11', '-O2', '-I' + str(NVN), '-I' + str(NVN / 'include'),
-                            str(source), '-o', str(exe)], check=True, capture_output=True)
-            result = subprocess.run([str(exe)], check=True, capture_output=True, text=True)
+            # -fno-strict-aliasing as in the Android build (nxnative/dm/android/build.py): hle_nvn.c reads
+            # and writes the game's opaque NVN objects through its own structs, as make() does into its
+            # union. Without it, arm64 gcc 13 -O2 gave two equal samplers different bytes (memcmp assert).
+            build = subprocess.run([cc, '-std=c11', '-O2', '-fno-strict-aliasing',
+                                    '-I' + str(NVN), '-I' + str(NVN / 'include'),
+                                    str(source), '-o', str(exe)], capture_output=True, text=True)
+            self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
+            result = subprocess.run([str(exe)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn('PASS (10000 requests, 2 entries)', result.stdout)
