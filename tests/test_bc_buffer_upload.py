@@ -24,6 +24,7 @@ class BCBufferUpload(unittest.TestCase):
 #include <string.h>
 #include <assert.h>
 #include <setjmp.h>
+#include <stdarg.h>
 #include "nvn_bc.h"
 typedef struct {int format;} desc_t;
 typedef struct {desc_t d;} tex_t;
@@ -41,10 +42,18 @@ static uint8_t gpu[64],cpu[64],scratch[128];
 static vkpool_t pool;static unsigned wanted=50,fail_snapshot;
 static unsigned snapshots,uploads,ended,phase,expect_error,span_limit=48;
 static unsigned ew=5,eh=3,ed=2,span=48;
+static unsigned logs,log_readback,watches;
+static unsigned long long watch_address;static int watch_width,watch_height;
 static VkBufferImageCopy last;
 static jmp_buf failure;
 static void die(const char *s,...) {(void)s;assert(expect_error);longjmp(failure,1);}
 #define VKRED_ONCE(...) ((void)0)
+static void test_log(const char *fmt,...) {
+    char text[256];va_list a;va_start(a,fmt);vsnprintf(text,sizeof text,fmt,a);va_end(a);
+    assert(strstr(text,"BC CPU buffer upload: NVN format 0x49, 5x3x2, GPU readback "));
+    logs++;log_readback=strstr(text,"readback yes")!=NULL;
+}
+#define VKLOG(...) test_log(__VA_ARGS__)
 static void vk_end_pass_land(void) {ended++;phase=0;}
 static vkimg_t *vk_tex(const tex_t *t) {(void)t;return &image;}
 static const vkfmt_t *vk_fmt(int f) {assert(f==0x49);return &format;}
@@ -61,7 +70,12 @@ static void *vk_scratch(size_t n,size_t align,VkBuffer *b,VkDeviceSize *o) {
 static VkCommandBuffer vk_cmd(void) {assert(phase==1);return (VkCommandBuffer)2;}
 static void vk_tex_prepare(VkCommandBuffer cb,vkimg_t *im) {assert(cb==(VkCommandBuffer)2 && im==&image && phase==1);}
 static void vk_img_barrier_all(VkCommandBuffer cb) {assert(cb==(VkCommandBuffer)2);}
-static void vk_watch(vkimg_t *im,const char *s) {(void)im;(void)s;}
+static void vk_watch(vkimg_t *im,const char *s) {
+    unsigned long long address;int w,h;
+    assert(im==&image && sscanf(s,"buffer copy destination (buffer %llx, %dx%d)",&address,&w,&h)==3);
+    assert(address>=(uintptr_t)cpu && address<(uintptr_t)cpu+sizeof cpu && w>0 && h>0);
+    watches++;watch_address=address;watch_width=w;watch_height=h;
+}
 static vkpool_t *vk_pool_of(uint64_t a,uint64_t n) {return a>=(uintptr_t)cpu && a+n<=pool.end?&pool:NULL;}
 static void vk_readback_unknown(void) {abort();}
 void vk_gpu_wrote(uint64_t a,uint64_t n) {(void)a;(void)n;abort();}
@@ -83,7 +97,17 @@ int main(int argc,char **argv) {
     p_copy_b2t c={.tex=&t,.view={1,1,1,1},.has_view=1,.r={4,0,0,5,3,2},.src=(uintptr_t)cpu+4};
     for(unsigned z=0;z<2;z++)for(unsigned x=0;x<2;x++) {gpu[4+z*32+x*8]=20+z*30+x;cpu[4+z*32+x*8]=50+z*30+x;}
     if(enabled)setenv("DM_VK_X_BC_GPU_READBACK","1",1);else unsetenv("DM_VK_X_BC_GPU_READBACK");
-    wanted=enabled?20:50;copy_b2t(&c,1);
+    c.r.width=24;copy_b2t(&c,1);c.r.width=5;
+    assert(!uploads && !snapshots && !logs && !watches);
+    int fallback_first=argc>2;if(fallback_first)span_limit=47;
+    wanted=enabled&&!fallback_first?20:50;copy_b2t(&c,1);
+    assert(logs==1 && log_readback==(unsigned)(enabled&&!fallback_first) && !watches);
+    g_watch_off=0;
+    if(fallback_first) {
+        assert(!snapshots && uploads==1);copy_b2t(&c,1);
+        assert(!snapshots && uploads==2 && watches==1 && logs==1 && !log_readback);
+        return 0;
+    }
     if(!enabled) {
         assert(snapshots==0 && uploads==1);
         setenv("DM_VK_X_BC_GPU_READBACK","1",1);copy_b2t(&c,1);
@@ -143,6 +167,8 @@ small_mips:;
         if(v[6]-1>eh) {c.r.height=v[6]-1;copy_b2t(&c,1);c.r.height=v[6];}
         c.r.xoffset=(image.w>>v[2]?image.w>>v[2]:1);copy_b2t(&c,1);
         assert(uploads==before+1 && snapshots==reads+(enabled?1:0));
+        assert(logs==1 && watches==uploads-1);
+        assert(watch_address==(uintptr_t)cpu+4 && watch_width==(int)v[5] && watch_height==(int)v[6]);
     }
 }
 
@@ -155,6 +181,6 @@ small_mips:;
                             '-I', str(DM / 'third_party/vulkan-headers/include'),
                             '-I', str(DM / 'gfx/tex'), str(src), str(DM / 'gfx/tex/nvn_bc.c'),
                             '-o', str(exe)], check=True)
-            for mode in ([], ['gpu']):
+            for mode in ([], ['gpu'], ['gpu', 'fallback-first']):
                 result = subprocess.run([str(exe), *mode], capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stderr)

@@ -2538,13 +2538,18 @@ static void copy_b2t(const p_copy_b2t *c, int to_texture) {
         void *decoded = vk_scratch(decoded_size, 16, &dst, &dst_off);
         int result = nvn_bc_decode(c->tex->d.format, w, h, d, input, size, row, slice,
                                    decoded, decoded_size, pitch, pitch * h);
+        int used_readback = blocks != NULL;
         free(blocks); if (result) { VKRED_ONCE(71, "BC buffer upload decode failed; copy skipped"); return; }
         VkCommandBuffer cb = vk_cmd(); vk_tex_prepare(cb, im); vk_img_barrier_all(cb);
         VkBufferImageCopy r = {dst_off, 0, 0, sub_of(im, &c->view, c->has_view, c->r.zoffset),
                               {c->r.xoffset, c->r.yoffset, im->layers > 1 ? 0 : c->r.zoffset}, {w, h, im->layers > 1 ? 1 : d}};
         if (im->layers > 1) r.imageSubresource.layerCount = d;
+        if (g_watch_off >= 0) { char w[96]; snprintf(w, sizeof w, "buffer copy %s (buffer %#llx, %dx%d)", to_texture ? "destination" : "source", (unsigned long long)c->src, c->r.width, c->r.height); vk_watch(im, w); }
         vkCmdCopyBufferToImage(cb, dst, im->img, VK_IMAGE_LAYOUT_GENERAL, 1, &r);
-        im->gpu_w = 1; vk_img_barrier_all(cb); return;
+        im->gpu_w = 1; vk_img_barrier_all(cb);
+        { static int logged; if (!logged) { logged = 1; VKLOG("BC CPU buffer upload: NVN format %#x, %ux%ux%u, GPU readback %s",
+              c->tex->d.format, w, h, d, used_readback ? "yes" : "no"); } }
+        return;
     }
     VkBuffer b; VkDeviceSize o;
     if (!vk_buf_at(c->src, 1, &b, &o)) { VKRED_ONCE(70, "buffer of a buffer ↔ texture copy outside the memory pools"); return; }

@@ -324,7 +324,11 @@ Chunk-spanning or misaligned transfers use the prior CPU-address decode with a
 one-time diagnostic; that fallback preserves compatibility but may read stale
 GPU data. Invalid regions are skipped, and refused command buffers use the
 existing dropped-submission path. An executed snapshot logs
-`BC GPU snapshot: ordered readback completed` once.
+`BC GPU snapshot: ordered readback completed` once. The first successful CPU BC
+buffer upload also logs `BC CPU buffer upload: NVN format ..., WxHxD, GPU readback
+yes/no`, including with readback off. This records a decoded copy submitted to the
+command buffer, not GPU completion; `no` also covers a CPU fallback when readback
+is enabled but unavailable. `DM_VK_WATCH` continues reporting these buffer uploads.
 
 For device validation, compare switch-off and switch-on runs. A native-BC GPU
 also needs `DM_VK_X_BC_CPU=1` to exercise the CPU path; record the settings,
