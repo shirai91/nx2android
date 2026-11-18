@@ -18,7 +18,7 @@ import java.util.Arrays;
 import java.util.UUID;
 
 final class ModManager {
-    private static String title, applied = "";
+    private static String applied = "";
     private static boolean conflict;
 
     private static SharedPreferences state(Context c) { return c.getSharedPreferences("mod-selection", Context.MODE_PRIVATE); }
@@ -31,14 +31,8 @@ final class ModManager {
         for (File child : children) {
             if (!child.getCanonicalPath().equals(child.getAbsolutePath()) || child.getName().indexOf(':') >= 0) throw new IOException("Unsafe path in mod");
             if (!child.isDirectory()) continue;
-            if (depth == 0 && child.getName().equals("romfs")) {
-                found.add(child);
-            } else if (child.getName().matches("(?i)[0-9a-f]{16}")) {
-                if (!child.getName().equalsIgnoreCase(title)) throw new IOException("Wrong or multiple title IDs");
-                File romfs = new File(child, "romfs");
-                if (!romfs.isDirectory()) throw new IOException("Missing romfs");
-                found.add(romfs);
-            } else if (depth < 3) scan(child, depth + 1, found);
+            if (child.getName().equals("romfs")) found.add(child);
+            else if (depth < 3) scan(child, depth + 1, found);
         }
     }
     private static void links(File dir) throws IOException {
@@ -58,12 +52,12 @@ final class ModManager {
         if (!dir.isDirectory() || !dir.getCanonicalPath().equals(dir.getAbsolutePath())) throw new IOException("Missing or unsafe mod");
         ArrayList<File> found = new ArrayList<>();
         scan(dir, 0, found);
-        if (found.size() != 1) throw new IOException("Expected one romfs, optionally under a matching title");
+        if (found.size() != 1) throw new IOException("Expected exactly one romfs folder");
         links(found.get(0));
         return found.get(0);
     }
     static String start(Activity a, String game, boolean hasOverlay) {
-        title = game; conflict = hasOverlay; applied = "";
+        conflict = hasOverlay; applied = "";
         String selected = state(a).getString("selected", "");
         if (selected.isEmpty()) { Log.i("dmhost", "[mod] no mod selected; original RomFS"); return null; }
         if (conflict) { Log.e("dmhost", "[RED] [mod] existing DM_ROMFS_OVERLAY preserved; selected mod not applied"); return null; }
@@ -94,7 +88,7 @@ final class ModManager {
             }
         }
         String selected = state(a).getString("selected", "");
-        String message = "Experimental: engine and game version compatibility are not validated. ExeFS/code patches are not applied.\n\n"
+        String message = "Experimental: game/title ID, engine and version compatibility are not validated. ExeFS/code patches are not applied.\n\n"
             + "Applied this launch: " + (applied.isEmpty() ? "none" : label(a, applied))
             + "\nSelected for next launch: " + (selected.isEmpty() ? "none" : label(a, selected));
         if (!selected.equals(applied)) message += "\nRestart the game to apply the selection.";
