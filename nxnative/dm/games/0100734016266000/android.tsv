@@ -16,9 +16,11 @@
 # Played afterwards on the same Odin 2: Battle Network 4, 5 and 6, with saving, loading, battles and the gallery; no problem found.
 # DM_MOVIE_FAST=1 (2026-11-17), as in Vol. 1 (its android.tsv has the measurements): the same launcher converts and uploads a 1080p background video frame on the CPU every
 # frame, which at the Odin 2's Standard-mode clocks (mid cores at 1.65 GHz) held Vol. 1 at 30 fps; with the NEON conversion and the GOB-at-a-time copies it held 60.
+# romfs zstd (2026-11-18), as in Vol. 1: its RomFS is 4.71 GB extracted; packed, 1.97 GB on the device (608 of 10,168 files). Not run packed on a device yet; the reader is the one Vol. 1 ran.
 status	playable
 tested	v196608 (1.0.3) AYN Odin 2 (QCS8550, Adreno 740, Android 13, Turnip), 2026-11-13
 package	org.nx2a.mmbnlc2
 orientation	landscape
 env	DM_ADAPTIVE_FPS=0
 env	DM_MOVIE_FAST=1
+romfs	zstd

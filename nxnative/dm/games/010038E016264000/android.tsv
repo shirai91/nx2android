@@ -27,9 +27,12 @@
 # clock, with the decoder thread in the session or not), and there the launcher ran at 30 fps: frame work p50 27 ms, 145 of 300 frames dropped (the 60 fps above was measured
 # with the clocks up). With the NEON conversion (9.9 -> 3.3 ms, bit-exact) and the GOB-at-a-time copies (WriteTexels 5.0 -> 2.5 ms; upload 9.1 -> 6.4 ms): 60 fps in Standard
 # mode, frame work p50 16.5 ms, 0-3 of 300 frames dropped.
+# romfs zstd (2026-11-18): its RomFS is 2.81 GB extracted; packed, 0.99 GB on the device (457 of 5,186 files). Started on the Odin 2 with the packed RomFS on its
+# SD card, reading the packed files back (hle_fs.c, "fs: packed RomFS files read back"), without a fault.
 status	playable
 tested	v131072 (1.0.2) AYN Odin 2 (QCS8550, Adreno 740, Android 13, Turnip), 2026-11-14
 package	org.nx2a.mmbnlc1
 orientation	landscape
 env	DM_ADAPTIVE_FPS=0
 env	DM_MOVIE_FAST=1
+romfs	zstd
