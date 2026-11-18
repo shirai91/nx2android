@@ -327,6 +327,29 @@ def remap_handles(spv, source, target, expected):
         raise ValueError('expected one assignment per packed handle')
     return struct.pack(f'<{len(out)}I', *out)
 
+# The words of an instruction that int_inputs does not count as uses of a value: opcode → (first, count), indexes into the words after the opcode word, count None for every word
+# from first on. They are literals (OpConstant values, OpExtInst's instruction number, OpCompositeExtract indices, image operands and memory access masks, OpSwitch case values,
+# merge control masks ...) and, in whole-instruction rows, ids of what no load gives (types, constants, labels). A literal that equals a load's id is not a use: counted, it kept
+# the input float (13 Sentinels: 7 of 376 vertex shaders). An opcode not here keeps every word, the old answer: a literal there that equals a load's id keeps the input float.
+# Layouts as the SPIR-V specification, opcode numbers as Spv.Generator/spirv.cs (the translator's)
+SPIRV_LITERALS = {
+    **dict.fromkeys((2, 3, 4, 5, 6, 7, 8, 10, 11, 14, 15, 16, 17, 317, 330, 331), (0, None)),   # debug info, extensions, memory model, entry points, execution modes, capabilities
+    **dict.fromkeys(range(19, 40), (0, None)), **dict.fromkeys(range(41, 53), (0, None)),       # types, constants and spec constants
+    54: (0, None), 59: (0, None),                                     # OpFunction (control mask), OpVariable (storage class)
+    61: (0, None), 65: (0, None),                                     # OpLoad, OpAccessChain: the input loads themselves
+    **dict.fromkeys((71, 72, 73, 74, 75, 332, 5632, 5633), (0, None)),   # decorations
+    12: (3, 1),                                                       # OpExtInst: result type, result, set, instruction number, operands
+    62: (2, None), 63: (2, None), 64: (3, None),                      # OpStore, OpCopyMemory(Sized): memory access mask and its literal / scope operands
+    68: (3, None),                                                    # OpArrayLength: member index
+    79: (4, None), 81: (3, None), 82: (4, None),                      # OpVectorShuffle components, OpCompositeExtract / OpCompositeInsert indices
+    # image operands mask (the ids after it are operands): after the coordinate, or after the coordinate and the dref / gather component; OpImageWrite after the texel
+    **dict.fromkeys((87, 88, 91, 92, 95, 98, 305, 306, 309, 310, 313, 320), (4, 1)),
+    **dict.fromkeys((89, 90, 93, 94, 96, 97, 307, 308, 311, 312, 314, 315), (5, 1)), 99: (3, 1),
+    246: (0, None), 247: (0, None),                                   # OpLoopMerge, OpSelectionMerge: labels and control masks
+    250: (3, None), 251: (1, None),                                   # OpBranchConditional weights; OpSwitch default, case values and labels
+    **dict.fromkeys((*range(264, 272), 342, *range(349, 365)), (3, 1)),   # group operation of OpGroup* / OpGroupNonUniform* reductions
+}
+
 def int_inputs(spv):
     """A vertex shader's inputs that it uses only as integers → {location: 'sint' / 'uint'} (dmsh_build.py int_inputs, the Mac chain's, from SPIR-V instead of MSL): every load of the input
     (whole, or one component through an access chain) is used only by OpBitcast. Maxwell does no type conversion reading vertex attribute registers: an integer format's bit pattern
@@ -349,8 +372,10 @@ def int_inputs(spv):
     for op, a in ins:
         if op == 61 and (a[2] in inputs or a[2] in chain): loads[a[1]] = a[2] if a[2] in inputs else chain[a[2]]   # OpLoad
     for op, a in ins:
-        if op in (5, 6, 61, 65, 71, 72): continue   # names, decorations, the loads and chains themselves
-        ops = a[2:] if op == 124 else a   # OpBitcast: result type, result, operand
+        if op == 124: ops = a[2:]   # OpBitcast: result type, result, operand
+        else:   # the id operands: every word but the instruction's literals (SPIRV_LITERALS; an opcode not there keeps every word)
+            first, count = SPIRV_LITERALS.get(op, (len(a), 0))
+            ops = a[:first] + (() if count is None else a[first + count:])
         for x in ops:
             if x not in loads: continue
             if op == 124:
