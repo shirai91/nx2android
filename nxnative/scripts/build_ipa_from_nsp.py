@@ -850,7 +850,7 @@ def extract(nx, keys, ex, name, base, upd, cmp_dir, logs, g):   # the build IDs 
     last = extracted(log)   # the last extraction of this version (its log is about to be overwritten) has the exact size; without one, the NSPs' size is the estimate
     def poll():
         n, b = tree_size(tmp); return {'done': b, 'note': f'{n:,} files'}
-    PROG.stage(f'extract {name}', poll=poll, unit='B', total=last[1] if last else base.stat().st_size + (upd.stat().st_size if upd else 0), est=not last)
+    PROG.stage(f'extract {name}', poll=poll, unit='B', total=last[1] if last else base.stat().st_size + (upd.stat().st_size if upd and upd != base else 0), est=not last)   # a merged dump is the base and the update: count it once
     if upd == base:   # a merged dump: one file holds the base game and its update (scan_nsps filed both entries beside the base's). Its content metas (CNMT) pick the NCAs — an
                       # update's program and control NCAs carry the base game's title ID, so the ordinary pick could not tell them apart — and the version number selects the patch (0: none)
         run([nx, keys, '--merged', base, tmp, '--version', name[1:]] + ([cmp_dir] if cmp_dir else []) + (['--allow-damaged'] if ALLOW_DAMAGED else []), log)
