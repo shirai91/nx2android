@@ -305,6 +305,8 @@ class Misc(unittest.TestCase):
                               'the host\'s stand-in is used and those parts draw nothing (MiiModel: the Mii heads)')
         fonts = pipeline.sysdata_no_firmware('Kirby', [0x0100000000000811, 0x0100000000000810])
         self.assertIn('(0100000000000811, 0100000000000810)', fonts); self.assertIn('--shared-font <ttf>', fonts); self.assertIn('stand-ins', fonts)
+        regional = pipeline.sysdata_no_firmware('Link\'s Awakening', [0x0100000000000814, 0x0100000000000813, 0x0100000000000812])
+        self.assertIn('(0100000000000814, 0100000000000813, 0100000000000812)', regional); self.assertIn('button icons', regional)
         self.assertNotIn('MiiModel', fonts); self.assertNotIn('\n', fonts)
         both = pipeline.sysdata_no_firmware('X', [0x0100000000000802, 0x0100000000000810])
         self.assertIn('MiiModel: the Mii heads', both); self.assertIn('(0100000000000810)', both)
