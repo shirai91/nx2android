@@ -66,7 +66,7 @@ Installing, launching and the basic control-file lines are in `nx2android-dev/re
 
 Details and the cases behind them: `references/playbook.md`.
 1. Read the per-frame lines first (`replay per frame`, `timing up to frame`): replay ms (CPU), GPU busy ms, draws, passes, descriptor reuse; compare at the same frame rate.
-2. Check that CPU replay and GPU work overlap (`DM_NVN_SEQ=N` traces the render thread); submit in pieces (`DM_VK_CB_DRAWS`) or `DM_NVN_ASYNC=1`.
+2. Check that CPU replay and GPU work overlap (`DM_NVN_SEQ=N` traces the render thread); submit in pieces (`DM_VK_CB_DRAWS`) or `DM_NVN_ASYNC=1`; a game that waits for each frame's GPU work before the next submit: `DM_NVN_AHEAD=1`.
 3. Cut passes and reuse descriptor sets before anything else in the backend.
 4. Pacing problems: `adaptive frame rate` and `the game sets present interval` lines; pin a rate with `env DM_FPS_PIN=40` before blaming the governor.
 5. Hitches left: sample per-thread CPU from `/proc/<pid>/task/*/stat`.
@@ -78,6 +78,8 @@ Details and the cases behind them: `references/playbook.md`.
 - Dropped submissions leave stale GPU timestamps.
 - One thermal sysfs zone can be stale; read several.
 - The GPU clock isn't readable on retail devices; infer it from GPU busy at a fixed rate.
+- Check a driver's GPU times against the CPU: with PurpleVK T30 on the AYN Thor, GPU and `GPU busy` read about 0.63× the real span (details: `references/playbook.md`, performance step 1).
+- With parts sent early (`DM_VK_CB_DRAWS`), a submission's GPU span includes the GPU waiting for the replay's later parts.
 - `simpleperf` is refused on retail devices, and an in-process SIGPROF sampler crashed the game: use the replay's timers and per-thread `/proc` sampling.
 - Runs that reach different scenes aren't comparable.
 - A replay that is slow while no thread is near a full core (per-thread `/proc` sampling), with the profiler's samples on plain reads of op data (`DM_VK_PROF`: the first read of each op header in `exec_ops`), is reading slow memory. The `hardware buffers:` start-up line gives the CPU's read speed of a hardware buffer against malloc memory: a Retroid Pocket 5 reads every hardware buffer and every Vulkan memory type, HOST_CACHED included, write-combined, at 1.7-1.9 GB/s (`DM_VK_ZEROCOPY_LAZY`, references/switches.md).

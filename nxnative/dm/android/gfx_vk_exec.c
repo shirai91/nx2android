@@ -401,7 +401,7 @@ static int pass_commit(void) {
     if (g_x_tracepass >= 0 && g_sub_pass - 1 == g_x_tracepass) VKLOG("=== traced pass %d: %ux%u, colour formats %d %d, depth format %d", g_x_tracepass, S.pass_w, S.pass_h, S.cfmt[0], S.cfmt[1], S.dfmt); g_pass_draws = 0; g_list_vs = g_list_fs = 0; g_pass_bb[0] = g_pass_bb[1] = INT32_MAX; g_pass_bb[2] = g_pass_bb[3] = INT32_MIN;
     return 1;
 }
-void vk_ubd_land(VkCommandBuffer cb); int vk_ubd_shadow(uint64_t a, uint64_t n, VkBuffer *buf, VkDeviceSize *off); void vk_ubd_read(uint64_t a, uint64_t n, uint8_t *dst);
+void vk_ubd_land(VkCommandBuffer cb); int vk_ubd_shadow(uint64_t a, uint64_t n, VkBuffer *buf, VkDeviceSize *off); void vk_ubd_read(uint64_t a, uint64_t n, uint8_t *dst); void vk_held_read(uint64_t a, uint64_t n, const void *who); void vk_ubd_read_scratch(uint64_t a, uint64_t n, uint8_t *d);
 // DM_VK_PASSDUMP=1 (a DM_CTL "env" line; =N waits N - 1 presents first): the next submissions' passes each leave their first colour target in a buffer (up to 48 passes), written as
 // DM_ROOT/pass_NN.ppm when the GPU is done (RGBA8 as is, RGBA16F clamped to 0..1, with its NaN / infinite pixel count logged)
 // DM_VK_PASSDUMP_SKIP=n (read when a dump starts): leave out each submission's first n passes, to reach a frame's later passes (Xenoblade Chronicles 3's title frame has about 200);
@@ -1586,7 +1586,7 @@ static void cbuf_desc(int st, const vkshader_t *s, const dmsv_bind *b, VkDescrip
         if (p->hi < p->end && u->addr + n <= p->end) {   // into the pool's next chunk (vk_cross): the whole range from CPU memory, one copy per submission
             static struct { uint64_t a, n, ep, gen; VkBuffer b; VkDeviceSize o; } cc[16]; unsigned k = (unsigned)(u->addr >> 8) % 16;
             if (cc[k].a != u->addr || cc[k].n != n || cc[k].ep != g_set_epoch || cc[k].gen != g_ubd_gen) {
-                uint8_t *d = vk_scratch(n, V.props.limits.minUniformBufferOffsetAlignment, &buf, &off); vk_ubd_read(u->addr, n, d); vk_cross(0, u->addr, n, p);
+                uint8_t *d = vk_scratch(n, V.props.limits.minUniformBufferOffsetAlignment, &buf, &off); vk_ubd_read_scratch(u->addr, n, d); vk_cross(0, u->addr, n, p);
                 cc[k].a = u->addr; cc[k].n = n; cc[k].ep = g_set_epoch; cc[k].gen = g_ubd_gen; cc[k].b = buf; cc[k].o = off;
             } else { buf = cc[k].b; off = cc[k].o; }
             ubo_log(s, st, b->reg, u->addr, n); *bi = (VkDescriptorBufferInfo){buf, off, n}; return;
@@ -2349,7 +2349,7 @@ static void vbuf_bound(VkCommandBuffer cb, uint32_t first, uint32_t nvert, uint3
         uint64_t n = need[s], sz = S.vbuf[s].size; if (n <= sz || !sz) continue;
         if (n > (16u << 20)) { VKRED_ONCE(87, "vertex stream %u: a draw reads %llu bytes of a %llu-byte binding: not bounded", s, (unsigned long long)n, (unsigned long long)sz); continue; }
         VkBuffer b; VkDeviceSize o; uint8_t *p = vk_scratch(n, 16, &b, &o);
-        vk_ubd_read(S.vbuf[s].address, sz, p); memset(p + sz, 0, (size_t)(n - sz));
+        vk_ubd_read_scratch(S.vbuf[s].address, sz, p); memset(p + sz, 0, (size_t)(n - sz));
         vkCmdBindVertexBuffers(cb, s, 1, &b, &o); g_bc.vb[s] = b; g_bc.vo[s] = o;
         if (g_vbound_n++ < 8) VKLOG("vertex stream %u: draw of %u vertices from %u (shader %016llx) reads %llu bytes past its bound %llu: bound as a copy padded with zeros",
                                     s, nvert, first, (unsigned long long)vsh->key, (unsigned long long)(n - sz), (unsigned long long)sz);
@@ -2469,7 +2469,7 @@ static void draw_idx(const p_draw_idx *d) {
         VKLOG("unusual indexed draw: itype %d count %u instances %u indirect %#llx prim %d base vertex %d", d->itype, (unsigned)d->count, inst, (unsigned long long)d->ind, d->prim, d->base_vertex); } }
     if (d->ind) { VkBuffer b; VkDeviceSize o; bc_index(cb, ib, io, it); if (!vk_buf_at(d->ind, mcb ? (uint64_t)d->mdi_stride * (uint64_t)d->mdi_max : 20, &b, &o)) VKRED_ONCE(97, "indexed indirect draw arguments outside the memory pools");
         else if (!(dbg_draw() & 1) && g_ok) { if (mcb) vkCmdDrawIndexedIndirectCount(cb, b, o, mcb, mco, (uint32_t)d->mdi_max, (uint32_t)d->mdi_stride); else vkCmdDrawIndexedIndirect(cb, b, o, 1, 20); } return; }
-    if (prim == 7) { VkBuffer b; VkDeviceSize o; int n = quad_indices((uint32_t)d->count, (const uint8_t *)(uintptr_t)d->ibuf, d->itype, 0, &b, &o); if (!n) return;
+    if (prim == 7) { VkBuffer b; VkDeviceSize o; vk_held_read(d->ibuf, (uint64_t)d->count * isz, (const void *)1); int n = quad_indices((uint32_t)d->count, (const uint8_t *)(uintptr_t)d->ibuf, d->itype, 0, &b, &o); if (!n) return;
         bc_index(cb, b, o, VK_INDEX_TYPE_UINT32); if (!(dbg_draw() & 1) && g_ok) vkCmdDrawIndexed(cb, (uint32_t)n, inst, 0, d->base_vertex, (uint32_t)d->base_instance); return; }
     if (io % isz) { VKRED_ONCE(57, "index buffer offset not aligned to its index size"); return; }
     bc_index(cb, ib, io, it);
@@ -2606,6 +2606,7 @@ static void copy_b2t(const p_copy_b2t *c, int to_texture) {
         uint32_t w = (uint32_t)c->r.width, h = (uint32_t)(c->r.height ? c->r.height : 1), nz = (uint32_t)depth;
         size_t pitch = S.row_stride > 0 ? (size_t)S.row_stride : (size_t)((w + 3) / 4) * f->bpb, slice = S.image_stride > 0 ? (size_t)S.image_stride : pitch * ((h + 3) / 4), out = (size_t)w * h * f->dbpp;
         VkBuffer sb; VkDeviceSize so; uint8_t *p = vk_scratch(out * nz, 16, &sb, &so);
+        vk_held_read(c->src, (uint64_t)slice * (nz - 1) + (uint64_t)pitch * ((h + 3) / 4), (const void *)2);   // (replay ahead's check of what it read: gfx_vk_core.c)
         for (uint32_t z = 0; z < nz; z++) vk_bc_decode(f, (const uint8_t *)(uintptr_t)c->src + z * slice, pitch, w, h, 1, p + z * out);
         b = sb; r.bufferOffset = so; r.bufferRowLength = 0; r.bufferImageHeight = 0;
     }

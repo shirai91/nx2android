@@ -18,6 +18,7 @@ HARNESS = r'''
 #include <stdlib.h>
 #include <string.h>
 static void VKLOG(const char *f, ...) { (void)f; }
+static void vk_held_read(uint64_t a, uint64_t n, const void *who) { (void)a; (void)n; (void)who; }   /* replay ahead's read check: not under test */
 typedef struct { uint64_t lo, hi; const uint8_t *p; uint8_t *own; } ubd_t;
 static ubd_t g_ubd[64]; static int g_nubd;
 static uint64_t g_done, g_fence, g_ubd_racy; static int g_x_inflkeep;
