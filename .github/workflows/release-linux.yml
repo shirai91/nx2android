@@ -16,6 +16,7 @@ permissions:
 jobs:
   bundle:
     strategy:
+      fail-fast: false   # a failure on one cpu must not cancel the other job and hide its result; each job uploads only its own cpu's files
       matrix:
         include:
           - { runner: ubuntu-latest, cpu: x64 }
