@@ -565,6 +565,10 @@ def jump_offsets(insl, j, copy_first=False, far_base=False):
         p = ctx[i]
         m = re.fullmatch(r'(w\d+), (w\d+)', p.op_str) if p.mnemonic == 'mov' else None
         if m and m.group(1) in idx: idx.add(m.group(2)); continue
+        # A 32-bit zero-extension written into the index register is a copy of the index, not a mask of the checked value (Layton's Mystery Journey DX
+        # main+0x1eb2e0: cmp w10,#3; b.hi; and x18,x10,#0xffffffff; ldrsw x18,[x15,x18,lsl #2]; add x18,x18,x15; br x18)
+        m = re.fullmatch(r'([wx]\d+), ([wx]\d+), #0xffffffff', p.op_str) if p.mnemonic == 'and' else None
+        if m and wname(m.group(1)) in idx and m.group(1) != m.group(2): idx.add(wname(m.group(2))); continue
         m = re.fullmatch(r'([wx]\d+), ([wx]\d+), #(0x[0-9a-f]+|\d+)', p.op_str) if p.mnemonic == 'and' else None
         if m and wname(m.group(1)) in idx and masked is None: masked = (wname(m.group(2)), int(m.group(3), 0), i); continue
         # A 64-bit check of the index bounds it as well (OCTOPATH TRAVELER 1.0.5 main+0x1676f30: cmp x22,#0x10; ...; b.hi; adrp x18 + add x18; mov x0,x18; ldrsw x18,[x0,x22,lsl #2];
@@ -658,6 +662,8 @@ def jump_adr_offsets(insl, j):
         for p in reversed(ctx[:ctx.index(ld)]):   # walk back from the load to the bounds check
             m = re.fullmatch(r'(w\d+), (w\d+)', p.op_str) if p.mnemonic == 'mov' else None
             if m and m.group(1) in idx: idx.add(m.group(2)); continue
+            m = re.fullmatch(r'([wx]\d+), ([wx]\d+), #0xffffffff', p.op_str) if p.mnemonic == 'and' else None   # a 32-bit zero-extension into the index is a copy
+            if m and 'w' + m.group(1)[1:] in idx and m.group(1) != m.group(2): idx.add('w' + m.group(2)[1:]); continue
             m = re.fullmatch(r'(w\d+), #(0x[0-9a-f]+|\d+)', p.op_str) if p.mnemonic == 'cmp' else None
             if m and m.group(1) in idx: cmp = p; break
             if any('w' + p.reg_name(r)[1:] in idx for r in p.regs_access()[1]): return None   # the index changes after the check
