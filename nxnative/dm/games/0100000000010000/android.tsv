@@ -28,7 +28,14 @@
 # saved list prewarms them: 0 pipelines on the replay thread, no drop (user-checked), and the Resume load 4.9 s -> 0.2 s.
 # Draws left out while a pipeline builds must reach only targets drawn every frame: looser rules lost the fog for a whole run in 2 of 4 clean starts (the wave
 # solver's linear targets, an image kept from the title and drawn once at the load); with the final rule 4 of 4 clean starts matched a run without background builds.
+# Performance check 2026-11-10, TB321FU (Snapdragon 8 Gen 3, Adreno 750, Turnip 26.99.99), update 1.4.1, Metro Kingdom beside the Odyssey:
+# split the large depth passes every 256 draws so their replay overlaps GPU work. Same-process reversals: default frame p50 21.8-22.1 ms,
+# depth splitting 16.55-16.70 ms; 3 of 2,098 frames held late in the repeat, with the same ~2,900 draws. Fixed-view screenshots checked;
+# Subsequent moving-camera and multi-kingdom gameplay were checked by the player without a reported regression on this setup.
+# This is a device-tested Turnip configuration; the stock driver on the TB322FC was not rechecked here. DM_VK_PASS_SPLIT=0 restores the unsplit path.
 status	playable
 tested	v393216 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
 package	org.nx2a.supermarioodyssey
 orientation	landscape
+env	DM_VK_PASS_SPLIT=256
+env	DM_VK_PASS_SPLIT_DEPTH=1
