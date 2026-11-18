@@ -1,0 +1,41 @@
+# Mega Man Battle Network Legacy Collection Vol. 1: base v0 with update v131072 (display version 1.0.2); the DLC 010038E016265001 is a licence only, no content.
+# A GBA emulator collection with a NoesisGUI launcher, Nintendo SDK 13.3.5, NVN, Wwise; subsdk0 is GLSLC (the game never calls glslcCompile), subsdk1 NintendoSDK_movie (H.264 intro movies).
+# Started from the survey's provisional profile; identity, module build IDs and memory checked against the extraction and survey (main's 1,183 MB of bss: the 2 GB heap region
+# leaves the game a 1.95 GB heap, footprint 1.35 GB in BN1's opening). Android validation scope is recorded in android.tsv.
+
+# ---- Identity ----
+title_id	010038E016264000
+program_id	010038E016264000
+
+# ---- App ----
+name	MEGAMAN BATTLE NETWORK LEGACY COLLECTION Vol.1
+ipa	MegamanBattleNetworkLegacyCollectionVol1.ipa
+app_category	public.app-category.games
+
+# ---- Versions ----
+build	v131072	1.0.2	main=cc8d0cef5b9e88caaec56a6295f28544	subsdk0=c366dfa35272b8ac489629858902568b	subsdk1=d0f13015e5badf2243d60a2bc9b978dd	sdk=3644a6760469451cabc99f00c540acc2
+package	v131072
+shader_versions	v131072
+
+# ---- Files ----
+# every module main imports from
+modules	main subsdk0 subsdk1 sdk
+romfs_marker	launcher/Fonts/Ascender-Uni_210.ttf
+zip_store	.bnk:.fnt:.mp4:.mpak:.otf:.pak:.png:.srl:.tga:.ttf:.xtx:.metallib
+
+# ---- Memory ----
+# main sets a heap of at most the pool − 64 MB − 1183 MB of bss (counted as used memory): a 2048 MB heap region
+mem_reserve	0xb0000000
+mem_alias	0x10000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+# the NPDM declares 0 MB of system resource: IsVirtualAddressMemoryEnabled is false, as on Horizon (Big Brain Academy: Brain vs. Brain sets a heap only then)
+sys_resource	0x0
+
+# ---- Shader split ----
+shader_groups	/launcher/=launcher /audio/=audio /exe3/=exe3 /exe1/=exe1 /data/=data /exe2j/=exe2j /exe3b/=exe3b /bg/=bg
+shader_note	Mega Man Battle Network Legacy Collection Vol. 1 shaders: the 30 BNSH files in RomFS/data
+
+# ---- After the rewrite ----
+# the rewritten modules are larger than the default 64 MB of used memory (Age of Calamity: 66.6 MB → 72 MB)
+mem_used	0x6c28000

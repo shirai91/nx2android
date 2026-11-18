@@ -116,7 +116,7 @@ def job_for(key, stage, rec, w):   # dmsh_build.py job_for; transform feedback i
     elif code[:4] == bytes.fromhex('79563412'): code = code[0x100:]
     cp = os.path.join(w, key + '.bin'); open(cp, 'wb').write(code)
     xfb = xfb_layout(key, rec[ci:]) if stage in ('vs', 'gs') else None   # a geometry shader captures what it emits (Xenoblade Chronicles 3's particle update, 293ecebc0136519b)
-    j = {'key': key, 'stage': stage, 'code': cp, 'tex': {}, 'img': {}, 'attr': {}, 'fout': {}, 'c1': c1.hex(), 'debug': False, 'reduced': True, 'sb_align': SB_ALIGN, 'subgroup': SUBGROUP, 'gather_bias': GATHER_BIAS, 'gs_passthrough': False, 'draw_parameters': True, **({'xfb': xfb} if xfb else {})}
+    j = {'key': key, 'stage': stage, 'code': cp, 'tex': {}, 'img': {}, 'attr': {}, 'fout': {}, 'c1': c1.hex(), 'debug': False, 'reduced': True, 'sb_align': SB_ALIGN, 'subgroup': SUBGROUP, 'gather_bias': GATHER_BIAS, 'gs_passthrough': False, 'draw_parameters': True, 'viewport_mask': False, **({'xfb': xfb} if xfb else {})}
     if stage == 'cs':   # Runtime captures have no facts-table row; their control section still declares the workgroup.
         x, y, z, shared = struct.unpack_from('<4I', rec, ci + 0x748)
         j.update(local=[x, y, z], shared=(shared + 15) // 16 * 16)
@@ -193,12 +193,14 @@ def spirv_bindings(spv):
 
 # Handle decoding: as dmsh_build.py decode_tex / decode_ubo_tex / reflect (names: <stage>_t<type>_cb<slot>_<handle>, <stage>_c<n>, <stage>_s<n>, <stage>_i…)
 TEX_BASE, IMG_BASE, IMG_SLOTS, SEPTEX_BASE, SEPTEX_SLOT0, SAMP_BASE = 0x20, 0x120, 8, 0x168, 128, 0x568
-SSBO = {'vs': 0x110, 'cs': 0x310, 'ps': 0x510}
+# NVN geometry c0 uses 0x410 + 16 * slot. NieR's IndexBuildIndependent GS reads
+# slots 0 and 2 there to write the later colour draws' indirect indices/counts.
+SSBO = {'vs': 0x110, 'gs': 0x410, 'cs': 0x310, 'ps': 0x510}
 def classify(stage, b, res):
     nm = b['name']; e = dict(b)
     # Dynamic pool arrays use driver c2 slot indices (as the Metal backend).
-    if GAME.get('android_dynamic_slots', 'off') == 'on' and b['type'] in ('image', 'sampler') and b['count'] == 32 and re.fullmatch(r'[a-z]+_[ts]\w*_cb0_40000000', nm):
-        e.update(kind='texd' if b['type'] == 'image' else 'sampd'); return e
+    if GAME.get('android_dynamic_slots', 'off') == 'on' and b['type'] in ('image', 'sampler', 'tbuf') and b['count'] == 32 and re.fullmatch(r'[a-z]+_[ts]\w*_cb0_40000000', nm):
+        e.update(kind='texd' if b['type'] in ('image', 'tbuf') else 'sampd'); return e
     m = re.fullmatch(r'[a-z]+_c(\d+)', nm)
     if m:
         n = int(m.group(1))
@@ -327,6 +329,29 @@ def remap_handles(spv, source, target, expected):
         raise ValueError('expected one assignment per packed handle')
     return struct.pack(f'<{len(out)}I', *out)
 
+# The words of an instruction that int_inputs does not count as uses of a value: opcode → (first, count), indexes into the words after the opcode word, count None for every word
+# from first on. They are literals (OpConstant values, OpExtInst's instruction number, OpCompositeExtract indices, image operands and memory access masks, OpSwitch case values,
+# merge control masks ...) and, in whole-instruction rows, ids of what no load gives (types, constants, labels). A literal that equals a load's id is not a use: counted, it kept
+# the input float (13 Sentinels: 7 of 376 vertex shaders). An opcode not here keeps every word, the old answer: a literal there that equals a load's id keeps the input float.
+# Layouts as the SPIR-V specification, opcode numbers as Spv.Generator/spirv.cs (the translator's)
+SPIRV_LITERALS = {
+    **dict.fromkeys((2, 3, 4, 5, 6, 7, 8, 10, 11, 14, 15, 16, 17, 317, 330, 331), (0, None)),   # debug info, extensions, memory model, entry points, execution modes, capabilities
+    **dict.fromkeys(range(19, 40), (0, None)), **dict.fromkeys(range(41, 53), (0, None)),       # types, constants and spec constants
+    54: (0, None), 59: (0, None),                                     # OpFunction (control mask), OpVariable (storage class)
+    61: (0, None), 65: (0, None),                                     # OpLoad, OpAccessChain: the input loads themselves
+    **dict.fromkeys((71, 72, 73, 74, 75, 332, 5632, 5633), (0, None)),   # decorations
+    12: (3, 1),                                                       # OpExtInst: result type, result, set, instruction number, operands
+    62: (2, None), 63: (2, None), 64: (3, None),                      # OpStore, OpCopyMemory(Sized): memory access mask and its literal / scope operands
+    68: (3, None),                                                    # OpArrayLength: member index
+    79: (4, None), 81: (3, None), 82: (4, None),                      # OpVectorShuffle components, OpCompositeExtract / OpCompositeInsert indices
+    # image operands mask (the ids after it are operands): after the coordinate, or after the coordinate and the dref / gather component; OpImageWrite after the texel
+    **dict.fromkeys((87, 88, 91, 92, 95, 98, 305, 306, 309, 310, 313, 320), (4, 1)),
+    **dict.fromkeys((89, 90, 93, 94, 96, 97, 307, 308, 311, 312, 314, 315), (5, 1)), 99: (3, 1),
+    246: (0, None), 247: (0, None),                                   # OpLoopMerge, OpSelectionMerge: labels and control masks
+    250: (3, None), 251: (1, None),                                   # OpBranchConditional weights; OpSwitch default, case values and labels
+    **dict.fromkeys((*range(264, 272), 342, *range(349, 365)), (3, 1)),   # group operation of OpGroup* / OpGroupNonUniform* reductions
+}
+
 def int_inputs(spv):
     """A vertex shader's inputs that it uses only as integers → {location: 'sint' / 'uint'} (dmsh_build.py int_inputs, the Mac chain's, from SPIR-V instead of MSL): every load of the input
     (whole, or one component through an access chain) is used only by OpBitcast. Maxwell does no type conversion reading vertex attribute registers: an integer format's bit pattern
@@ -349,8 +374,10 @@ def int_inputs(spv):
     for op, a in ins:
         if op == 61 and (a[2] in inputs or a[2] in chain): loads[a[1]] = a[2] if a[2] in inputs else chain[a[2]]   # OpLoad
     for op, a in ins:
-        if op in (5, 6, 61, 65, 71, 72): continue   # names, decorations, the loads and chains themselves
-        ops = a[2:] if op == 124 else a   # OpBitcast: result type, result, operand
+        if op == 124: ops = a[2:]   # OpBitcast: result type, result, operand
+        else:   # the id operands: every word but the instruction's literals (SPIRV_LITERALS; an opcode not there keeps every word)
+            first, count = SPIRV_LITERALS.get(op, (len(a), 0))
+            ops = a[:first] + (() if count is None else a[first + count:])
         for x in ops:
             if x not in loads: continue
             if op == 124:
@@ -431,6 +458,24 @@ def main():
     if again:
         print(f'translating {len(again)} vertex shaders again with their integer inputs ...', flush=True)
         translate(again)
+    # Standalone software GS passthrough needs only locations consumed by the bundle's fragment
+    # shaders. Forwarding 16 vec4s plus built-ins exceeds a 64-component geometry input limit.
+    # Guest reads used for culling remain tracked independently. XFB keeps the conservative path.
+    fragment_inputs = 0
+    for k in keys:
+        if stages[k] != 'ps' or k in failures: continue
+        try:
+            product = shader_products.output(w, k, STAGES[stages[k]])
+            if product is not None: fragment_inputs |= spirv_bindings(product[0])[2][1][0]
+        except Exception as e: failures[k] = str(e)
+    geometry = [k for k in keys if stages[k] == 'gs' and not jobs[k].get('xfb') and k not in failures]
+    for k in geometry:
+        jobs[k]['gs_passthrough_mask'] = fragment_inputs & 0xffff
+        for suffix in ('.spv', '.res.json'):
+            if os.path.exists(os.path.join(w, k + suffix)): os.unlink(os.path.join(w, k + suffix))
+    if geometry:
+        print(f'translating {len(geometry)} geometry shaders with fragment input mask {fragment_inputs:#x} ...', flush=True)
+        translate(geometry)
     errs = collections.Counter()
     for r in rs:
         for ln in r.stderr.splitlines():

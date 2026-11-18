@@ -26,6 +26,15 @@ cd ~/Downloads/nx2android
 
 If the shell says *Permission denied* (some archive programs drop the executable mark when they extract), run `chmod +x nx2android` first. The app needs the system libraries of Ubuntu 24.04 or newer (glibc 2.39): it runs on recent Ubuntu and Mint, Debian 13 and later, Fedora, Arch and the like.
 
+Or take the AppImage, `nx2android-<version>-linux-x64.AppImage` (PC) or `nx2android-<version>-linux-arm64.AppImage`: one file, nothing to unzip. Make it executable (in the file manager: Properties → Permissions → *Allow executing file as program*, or in a terminal) and start it:
+
+```
+chmod +x ~/Downloads/nx2android-*-linux-x64.AppImage
+~/Downloads/nx2android-*-linux-x64.AppImage
+```
+
+It needs FUSE, which most desktop distributions have. If it says FUSE is missing, install `fuse3` (`sudo apt install fuse3` on Ubuntu and Debian), or start it with `--appimage-extract-and-run` as its first argument. The AppImage keeps a copy of the engine (about 15 MB) in `~/.config/nx2android/engine` and makes it again when you start a new AppImage. The command line is the same: `./nx2android-<version>-linux-x64.AppImage -m porter -h`.
+
 A few antivirus engines may flag `nx2android.exe` (on VirusTotal, 3 of 69 flagged v0.1.1, with generic labels such as "Trojan.Stealer" or "BehavesLike.Injector"; Microsoft Defender, Kaspersky, ESET, BitDefender and the other large engines did not). It is a false positive: the app is a Python program packed with PyInstaller, whose small launcher unpacks a compressed archive of the program and runs it, which heuristic scanners mistake for a packed trojan. The app is not code-signed yet, which adds to the score. Its source is on the project's GitHub page, and you can build the same bundle yourself with `python packaging/build_bundle.py`.
 
 ## 2. Setup tab (once)

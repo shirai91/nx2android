@@ -22,6 +22,9 @@ static vkpool_t g_pool[MAXPOOL]; static int g_npool, g_pool_ord[MAXPOOL]; static
 static pthread_rwlock_t g_pool_mu = PTHREAD_RWLOCK_INITIALIZER;
 static uint64_t g_set_epoch = 1, g_tex_gen, g_samp_gen, g_num_um, g_num_im, g_ubolog_key, g_tex_sseq;
 static int g_x_nosetmemo, g_tracing, g_var_now, g_x_nosetc, g_x_nodrvc, g_x_setverify, g_x_nodispbar;
+int g_x_inflkeep;   // gfx_vk_exec.c's (vk_ubd_land reads it)
+int g_ubd_heap = 1;   // gfx_vk_exec.c's (vk_sub_update reads it)
+int g_pool_slots = 1;   // gfx_vk_exec.c's (vk_pool_of reads it)
 static int g_x_tracepass = -1, g_sub_pass, g_prof_on, g_prereset = 1;
 static uint64_t g_prof_ns[8], g_fence;
 static long long g_td_off = -1;
@@ -43,6 +46,9 @@ void vk_gpu_wrote(uint64_t a, uint64_t n) {}
 static void sub_gpu_wrote(uint64_t a, uint64_t n) {}
 uint64_t vk_fence_done(void) { return 0; }
 static uint64_t mem_handle(uint64_t h) { abort(); }
+static void shader_cpu_ready(const vkshader_t *s,int stage) {
+    for(int i=0;i<s->nbind;i++) assert(s->b[i].kind!=RK_SBUF_UBO && s->b[i].kind!=RK_TEX_UBO && s->b[i].samp!=RS_UBO);
+}
 static uint32_t ubo_word(int a, int b, int c) { abort(); }
 static void cbuf_desc(int a, const vkshader_t *s, const dmsv_bind *b, VkDescriptorBufferInfo *d) { abort(); }
 void vk_shader_c1(vkshader_t *s, VkBuffer *b, VkDeviceSize *o, VkDeviceSize *n) { abort(); }
@@ -119,6 +125,10 @@ static void direct_dispatch(VkCommandBuffer cb, uint32_t x, uint32_t y, uint32_t
 static void indirect_dispatch(VkCommandBuffer cb, VkBuffer b, VkDeviceSize off) {
     assert(off % 4 == 0 && off + 12 <= buffer(b)->size && (buffer(b)->usage & VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT)); dispatch_event(b, off, 0, 0, 0);
 }
+// The pool lookup's lazy-pool path (gfx_vk_core.c pool_back): every pool here has its buffer, so it is never taken
+static uint64_t g_used_bytes;
+static uint64_t pool_ns(void) { return 0; }
+static int pool_back(vkpool_t *p, uint64_t serial) { (void)p; (void)serial; abort(); }
 /* CORE */
 /* REPLAY */
 /* LIFECYCLE */

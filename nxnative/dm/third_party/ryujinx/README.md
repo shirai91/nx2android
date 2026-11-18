@@ -1,6 +1,6 @@
 # Ryujinx shader translator (vendored subset)
 
-Three projects from Ryujinx 1.3.2: `Ryujinx.Graphics.Shader`, `Ryujinx.Common` and `Spv.Generator`, with these local changes:
+Three projects from Ryujinx 1.3.2: `Ryujinx.Graphics.Shader`, `Ryujinx.Common` and `Spv.Generator`, with these local changes. A bullet marked *from seedds/nxnative* carries that project's code (MIT; repository <https://github.com/seedds/nxnative>; author seedds; the licence text is `nxnative/LICENSE`, which the subtree import brought in); the others are changes made in nxnative itself.
 
 - `Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs`, `GenerateTextureSample`:
   - Texel offsets that are not constants (Maxwell AOFFI / TLD4.PTP offsets read from a register) are built with `OpCompositeConstruct` and passed as `Offset`. A four-offset gather becomes four one-offset gathers, each giving component w. Upstream wrote them as an `OpConstantComposite` with `ConstOffset(s)`, which is invalid SPIR-V; SPIRV-Cross threw `nullptr` and the shader never built (2026-10-18: 8 shaders in Wonder, Link's Awakening, Tears of the Kingdom and Age of Calamity). Marked `nxnative:` in the code.
@@ -11,5 +11,28 @@ Three projects from Ryujinx 1.3.2: `Ryujinx.Graphics.Shader`, `Ryujinx.Common` a
 
 - `Ryujinx.Graphics.Shader/StructuredIr/AstOptimizer.cs`, `Optimize` / `UsedByCall`: a local that a call takes as an argument is not propagated. For SPIR-V, `StructuredProgram` copies every call argument into a local (SPIR-V passes them by pointer); propagating that local's expression into the call and removing the local left the call with a local no declaration made, and `CodeGen/Spirv` `GetLocalPointer` threw `KeyNotFoundException`: 1,894 of Viractal's 25,464 shaders, nearly all pixel shaders, did not translate (2026-10-25, the Android port). Marked `nxnative:` in the code. Not yet in `dm/gfx/tools/dmsh_xlate_bin`, which is rebuilt on a Mac with `dmsh_chain.py --update-lock`; the Android port builds the translator from this source.
 
+- `Ryujinx.Graphics.Shader/Translation/Optimizations/Optimizer.cs`,
+  `EliminateMultiplyByFragmentCoordW`: accept the reciprocal as either operand of
+  the outer FP32 multiply, retaining the existing input-load, FragCoord.w and
+  constant-one checks. An explicit Maxwell FMUL in Odyssey's alpha depth shader
+  used the opposite order to its material shader, so only the latter eliminated
+  the native-perspective compensation round trip. Alpha coverage disagreed at
+  individual pixels; retained HDR colour then multiplied to infinity and poisoned
+  bloom. A same-process original/direct-UV/original reversal and single-pixel
+  draw/depth histories isolated this (2026-11-12, Android). Marked `nxnative:`.
+  Not yet in `dm/gfx/tools/dmsh_xlate_bin`, which is rebuilt on a Mac with
+  `dmsh_chain.py --update-lock`; Android builds the translator from this source.
+- *From seedds/nxnative* (commits `cf3ec563`, `99d0aae3` and `4a0551e4`, author seedds): `Translation/Optimizations/BindlessElimination.cs`, `Utils.cs` and the texture types of `Translation/ResourceManager.cs` (`GetTextureTypes`). NVN keeps each texture, image and sampler handle in a word of c[2]. A read whose handle reaches the instruction through phis that also carry what the same register held on a path the predicated read does not take (FINAL FANTASY RESONANCE's Niagara particle attributes are read that way) is resolved from those c[2] words: one read per candidate handle, a candidate whose type another instruction gives the same handle and cannot be read as this instruction's left out (one binding serves every use), the result of the read whose handle equals the phi's value at run time, and a second sweep (`deferSeveral`) for the handles that merge several c[2] words, once every other read has registered its texture. Without it the read was removed and its result 0: the game's fire and smoke meshes collapsed to a point (3,197 of its shaders, 58,122 reads). An array built from a handle table keeps 32 elements (`NvnSlotArrayLength`, the slots the host binds for it). Carried with the changes this port needs: the Metal image-atomic branch is left out, the comments are rewritten, `BindlessToArray.cs` keeps 32-element arrays and does not take seedds' `TryArrayBase` base rewrite, and `ResourceManager.cs` keeps the port's binding table sizes (18 constant buffers, 16 storage buffers) and no Metal HMMA scratch.
+
+- `Ryujinx.Graphics.Shader/Translation/Optimizations/Optimizer.cs`, `RemoveUnused`: follow a local's source only into a producer that is removed too, so the pass cannot drop the chain that feeds an instruction with side effects or with another destination still in use. Adapted from MacNativeGames' translator patch 0002 (MIT; <https://github.com/ly05010419/MacNativeGames>, licence text in `dm/third_party/macnativegames/LICENSE`, and `dm/third_party/README.md` lists it) after Ryujinx commit `01a1e37f`. 3 of FINAL FANTASY RESONANCE's 73,512 shaders translate differently without it.
+
+- Android bring-up (2026-11-08, Vulkan validation): `Declarations.cs` omits unused CullDistance and ClipDistance members from the SPIR-V per-vertex block. A never-written ninth distance exceeded the combined clip/cull limit of eight; software passthrough geometry also declared eight unused input and output clip planes. `StructuredProgramContext` retains implicit clipping IO for native geometry passthrough, while software passthrough records its real loads. Actual clip stores and transform feedback retain their member. Synthetic Maxwell translation tests cover both empty and clip-writing shaders.
+- `AttributeMap`, `EmitterContext` and the SPIR-V generator support software passthrough geometry on a single viewport when the host lacks `ShaderViewportMaskNV`. The guest mask remains private state, and bit zero gates emission of the whole primitive. Android jobs opt out of the NVIDIA capability; jobs with native support retain the previous path. This avoids a Turnip crash compiling a viewport-mask shader. Tests cover guest mask stores of zero/one and preservation of the native capability.
+
+These Android changes are built from source by the porter. They do not update the pinned Apple translator binary or its lock. The source-chain header is regenerated; rebuilding the Apple tools and shader libraries requires its documented Mac workflow.
+
+Android standalone geometry translation can now supply `gs_passthrough_mask`: the union of fragment input locations in the shader bundle. Software passthrough forwards these consumers' attributes, with the guest's own culling reads tracked independently. Jobs without the hint retain the original 16-location mask; transform-feedback jobs keep the conservative path. NieR's fragment shaders consume locations 1–11, so this removes the excess geometry inputs without arbitrarily truncating the interface. A synthetic translation checks the resulting locations.
+
 The shader translation tool in `dm/gfx/tools/dmsh_xlate` references them to translate the original Switch shaders to SPIR-V.
+
 License: MIT, see `LICENSE.txt`. Upstream: <https://github.com/Ryubing>.

@@ -5,7 +5,7 @@
 #   Games  the game profiles (porter profiles --all)
 #   Saves  a ported game's save between the device and the PC (porter saves): the save folders on the device, a fresh export to a folder here, an import of a
 #          folder or .zip (a console's save, or an export)
-import os, subprocess, sys, time
+import html, os, subprocess, sys, time
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, QUrl
@@ -84,6 +84,7 @@ class PortTab(QWidget):
                                 'An app of another package has its own saves.')
         self.fps60 = QCheckBox('60 fps (the profile\'s own frame-rate cap, else the community\'s FPSLocker-Warehouse config of the game\'s build, fetched from GitHub)')
         self.touch = QCheckBox('Touch game: start with the on-screen gamepad hidden, so every touch but the menu button\'s goes to the game (the pause menu shows it again)')   # porter port --touch
+        self.no_menu_button = QCheckBox('No menu button: hide the on-screen menu button; the Back gesture or key, or a controller\'s Home/Menu key, opens the menu (port again to show it)')   # porter port --no-menu-button
         self.driver = QLineEdit(); self.driver.setPlaceholderText('the device\'s own')   # porter port --vulkan-driver
         self.driver.setToolTip('A Vulkan driver library (.so) to pack in the APK and use instead of the device\'s own,\n'
                                'such as Mesa\'s Turnip for Adreno GPUs. Empty: the device\'s driver.\n'
@@ -110,7 +111,7 @@ class PortTab(QWidget):
         f.addRow('Package', self.package); f.addRow('versionCode offset', self.vercode); f.addRow('Extra address space', headroom)
         f.addRow('Vulkan driver', path_row(self.driver, self.pick_driver))
         f.addRow('System font', path_row(self.shared_font, self.pick_shared_font))
-        f.addRow('', self.fps60); f.addRow('', self.touch); f.addRow('', self.mt_replay); f.addRow('', self.debug); f.addRow('', self.experimental)
+        f.addRow('', self.fps60); f.addRow('', self.touch); f.addRow('', self.no_menu_button); f.addRow('', self.mt_replay); f.addRow('', self.debug); f.addRow('', self.experimental)
         v.addWidget(o)
 
         bar = QHBoxLayout()
@@ -159,12 +160,15 @@ class PortTab(QWidget):
         if not d: return
         if not Path(d).is_dir(): self.card.setText(f'<span style="color:#c62828">Not a folder: {d}</span>'); return
         self.card.setText('Reading the game folder…')
-        call_json(self, ['inspect', d, '--json'], self.on_inspect)
+        def failed(message, code): self.on_inspect({'error': 'Could not inspect the game folder:\n' + message}, code)
+        call_json(self, ['inspect', d, '--json'], self.on_inspect, failed=failed)
 
     def on_inspect(self, info, code):
         err = info
         self.info = info = None if info and info.get('error') else info
-        if not info: self.card.setText('<span style="color:#c62828">' + ((err or {}).get('error') or 'No game found in this folder (an NSP, XCI, NSZ or XCZ with a title ID).') + '</span>'); return
+        if not info:
+            message = (err or {}).get('error') or 'No game found in this folder (an NSP, XCI, NSZ or XCZ with a title ID).'
+            self.card.setText('<span style="color:#c62828">' + html.escape(message).replace('\n', '<br>') + '</span>'); return
         a = info.get('android') or {}
         st = a.get('status', 'ios only' if info.get('profile') else 'not supported')
         col = STATUS_COLOUR.get(st, '#c62828')
@@ -214,6 +218,7 @@ class PortTab(QWidget):
         if self.headroom.value() >= 0: args += ['--alias-headroom', str(self.headroom.value())]
         if self.fps60.isChecked(): args.append('--fps60')
         if self.touch.isChecked(): args.append('--touch')
+        if self.no_menu_button.isChecked(): args.append('--no-menu-button')
         if self.mt_replay.isChecked(): args.append('--mt-replay')
         if self.driver.text().strip(): args += ['--vulkan-driver', self.driver.text().strip()]
         if self.shared_font.text().strip(): args += ['--shared-font', self.shared_font.text().strip()]

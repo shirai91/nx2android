@@ -196,11 +196,23 @@ static uint32_t unsupported_players(void) {
 }
 static int one_player(void) { return !(atomic_load(&g_ids_supported) & ((1u << DM_PLAYERS) - 2)); }
 static uint32_t merged_players(void) { return one_player() ? unsupported_players() : 0; }
+// The player the game sees player p + 1's controller as, by the npads it supports: 0 for player 1 itself and for every player of a one-player game (merged_players), p when
+// the game supports No p, -1 when it does not use that player (a fifth controller in a four-player game) or for no player (p < 0). Not from dm_pad_players' mask, so a controller
+// taking its player with the input being asked about counts already (Android's pad_mark_used runs before the front end reports the new player)
+int dm_player_seen_as(int p) {
+    if (p < 0) return -1;
+    if (p == 0 || one_player()) return 0;
+    return atomic_load(&g_ids_supported) & id_bit((uint32_t)p) ? p : -1;
+}
 static int player_of(uint32_t id) {   // the reported player on npad id; -1 when none
     if (id == connected_id()) return 0;
     return id > 0 && id < DM_PLAYERS && reported((int)id) ? (int)id : -1;
 }
-static uint32_t style_of(uint32_t id) { return player_of(id) < 0 ? 0 : id == NPAD_HANDHELD ? STYLE_HANDHELD : STYLE_FULLKEY; }
+// The style and the player of one npad come from one player_of: a controller that leaves (dm_pad_players, from the front end's thread) or an operation mode change between two
+// lookups made the second -1, and fill and vib_targets shifted 1u by it (clang's static analyzer, seedds/nxnative issue #424). Each Android controller is a player of its own
+// (front_android.c), so players come and go while the game reads them
+static uint32_t style_for_player(uint32_t id, int p) { return p < 0 ? 0 : id == NPAD_HANDHELD ? STYLE_HANDHELD : STYLE_FULLKEY; }
+static uint32_t style_of(uint32_t id) { return style_for_player(id, player_of(id)); }
 static int32_t ax(uint64_t v, int i) { return (int16_t)(v >> (16 * i)); }
 static int32_t pick(int32_t a, int32_t b) { return (a < 0 ? -a : a) >= (b < 0 ? -b : b) ? a : b; }   // whichever of two sources is deflected more
 
@@ -235,9 +247,10 @@ void dm_pad_players(uint32_t mask) {
 static void fill(NpadState *s, uint32_t id, uint32_t style) {
     memset(s, 0, sizeof *s);
     s->sampling = atomic_fetch_add(&g_sampling, 1) + 1;
-    if (!(style_of(id) & style)) return;   // no controller of this id / style: attributes = 0
+    int pl = player_of(id);
+    if (!(style_for_player(id, pl) & style)) return;   // no controller of this id / style: attributes = 0
     // Player 1: the keyboard / touch path, its controller path and those of the players merged into it; another player: its own controller path
-    int pl = player_of(id); uint32_t src = pl ? 1u << pl : 1u | merged_players();
+    uint32_t src = pl ? 1u << pl : 1u | merged_players();
     uint64_t b = 0; int32_t a[4] = {0};
     if (!pl) { b = atomic_load(&g_btn) | atomic_exchange(&g_latch, 0); uint64_t k = atomic_load(&g_axes); for (int i = 0; i < 4; i++) a[i] = ax(k, i); }
     for (int p = 0; p < DM_PLAYERS; p++) if (src >> p & 1) {
@@ -406,16 +419,17 @@ HLE_FORCE("_ZN2nn3hid22GetSixAxisSensorStatesEPNS0_18SixAxisSensorStateEiRKNS0_1
 static uint32_t vib_targets(uint32_t h) {
     unsigned type = h & 0xff, id = h >> 8 & 0xff, motor = h >> 16 & 0xff;
     if (h >> 24 || motor > 1 || (type != 3 && type != 4)) return 0;
-    if (style_of(id) != (1u << (type - 3))) return 0;
     int p = player_of(id);
+    if (style_for_player(id, p) != (1u << (type - 3))) return 0;
     return dm_haptics_available() & (p == 0 ? 1u | merged_players() : 1u << p);
 }
 static void vib_send(const uint32_t *handles, const dm_vibration *values, int n) {
     if (!handles || !values || n <= 0) return;
     dm_vibration_update updates[DM_PLAYERS * 2];
-    uint32_t used = 0;
+    uint32_t used = 0; int unrouted = 0;
     for (int i = 0; i < n; i++) {
         uint32_t targets = vib_targets(handles[i]);
+        if (!targets) unrouted++;
         for (int p = 0; p < DM_PLAYERS; p++) if (targets >> p & 1) {
             int m = handles[i] >> 16 & 1, k = p * 2 + m;
             updates[k] = (dm_vibration_update){p, m, values[i]}; used |= 1u << k;
@@ -423,16 +437,33 @@ static void vib_send(const uint32_t *handles, const dm_vibration *values, int n)
     }
     int count = 0;
     for (int k = 0; k < DM_PLAYERS * 2; k++) if (used >> k & 1) updates[count++] = updates[k];
+    if (getenv("DM_RUMBLE_LOG")) {   // Count input values before deduplicating motors, including partially routed batches.
+        static pthread_mutex_t log_lock = PTHREAD_MUTEX_INITIALIZER;
+        static uint64_t sends, dropped, t0; static float peak; struct timespec ts;
+        pthread_mutex_lock(&log_lock);   // SDK sends can arrive from several game threads.
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        uint64_t now = ts.tv_sec; sends += n; dropped += unrouted;
+        for (int i = 0; i < n; i++) peak = fmaxf(peak, fmaxf(values[i].amplitude_low, values[i].amplitude_high));
+        if (now != t0) { LOG("rumble: %llu values sent, %llu with no output, peak amplitude %.2f, handle %#x", sends, dropped, peak, handles[0]); sends = dropped = 0; peak = 0; t0 = now; }
+        pthread_mutex_unlock(&log_lock);
+    }
     dm_haptics_send(updates, count);
 }
 HLE_FORCE("_ZN2nn3hid20IsVibrationPermittedEv", "vibration permission: enabled and an output available", unsigned, h_hid_VibPermit, void) { return dm_haptics_available() != 0; }
+// Games can cache handles once at startup, before the front end routes the pad's haptics (GameController on the Mac; seedds/nxnative PR #246: Unicorn Overlord kept an empty
+// answer and sent every value to handle 0). The Android front end routes only player 1's rumble (haptics_android.c), so players 2 and up (each controller a player of its own, front_android.c) never had handles there.
+// On Horizon handles are computed from npad id and style (libnx _hidGetVibrationDeviceHandles); vib_send checks for an output at each send. DM_RUMBLE_LOG=1 logs the handle
+// requests and, once a second, the values sent, those with no routed output and the peak amplitude.
 HLE_FORCE("_ZN2nn3hid25GetVibrationDeviceHandlesEPNS0_21VibrationDeviceHandleEiRKjNS_4util10BitFlagSetILi32ENS0_12NpadStyleTagEEE", "vibration devices of the connected controller",
           int, h_hid_VibHandles, uint32_t *h, int n, const uint32_t *id, uint32_t style) {
-    if (!h || !id || n <= 0 || !(style & style_of(*id))) return 0;
+    if (!h || !id || n <= 0 || !(style & style_of(*id)) || !dm_haptics_enabled()) {
+        if (getenv("DM_RUMBLE_LOG") && id) LOG("rumble: game asked for vibration handles of npad %u style %#x: none (connected style %#x, rumble %s)", *id, style, style_of(*id), dm_haptics_enabled() ? "on" : "off");
+        return 0;
+    }
     uint32_t base = (*id << 8) | (*id == NPAD_HANDHELD ? 4u : 3u);
-    if (!vib_targets(base)) return 0;
     int count = n < 2 ? n : 2;
     for (int i = 0; i < count; i++) h[i] = base | (uint32_t)i << 16;
+    if (getenv("DM_RUMBLE_LOG")) LOG("rumble: game asked for vibration handles of npad %u style %#x: %d, first %#x", *id, style, count, h[0]);
     return count;
 }
 HLE_FORCE("_ZN2nn3hid25InitializeVibrationDeviceERKNS0_21VibrationDeviceHandleE", "vibration: initialize one channel", void, h_hid_InitVib, const uint32_t *h) {
@@ -578,3 +609,40 @@ HLE_FORCE("_ZN2nn3hid23GetActualVibrationValueEPNS0_14VibrationValueERKNS0_21Vib
     uint32_t targets = h ? vib_targets(*h) : 0;
     *v = targets ? dm_haptics_actual(__builtin_ctz(targets), *h >> 16 & 1) : (dm_vibration){0, 160, 0, 320};
 }
+
+// Palma (the Poké Ball Plus): the SDK's Palma calls talk to the hid service themselves (nn::hid::detail::SetPalmaBoostMode connects through sm; Pokémon Sword 1.3.2 crashed at sdk+0x238eb0
+// after "[RED] sf: the game connects to service hid itself"). The host has no Poké Ball Plus: connection is allowed and boost mode accepted, no npad reports the Palma style, and every
+// call on a connection handle fails with hid's InvalidPalmaHandle (module 202, description 3302, as Ryujinx's hid ResultCode), the answer for a ball that is not there.
+// The operation-complete event is bound (a real, never signalled event) so a game that waits on it after a refused operation does not wait on an unbound one.
+#define PALMA_INVALID (202u | 3302u << 9)
+HLE_FORCE("_ZN2nn3hid17SetPalmaBoostModeEb", "Poké Ball Plus boost mode; accepted (no Poké Ball Plus on the host)", Result, h_hid_PalmaBoost, unsigned on) { (void)on; return RES_OK; }
+HLE_FORCE("_ZN2nn3hid24EnableAnyPalmaConnectionEv", "Poké Ball Plus pairing allowed; none comes", Result, h_hid_PalmaAnyOn, void) { return RES_OK; }
+HLE_FORCE("_ZN2nn3hid25DisableAnyPalmaConnectionEv", "Poké Ball Plus pairing refused", Result, h_hid_PalmaAnyOff, void) { return RES_OK; }
+HLE_FORCE("_ZN2nn3hid24GetPalmaConnectionHandleEPNS0_21PalmaConnectionHandleERKj", "Poké Ball Plus of a controller: none (InvalidPalmaHandle)", Result, h_hid_PalmaHandle, uint64_t *out, const uint32_t *id) {
+    (void)id; if (out) *out = 0; return PALMA_INVALID;
+}
+HLE_FORCE("_ZN2nn3hid31BindPalmaOperationCompleteEventERKNS0_21PalmaConnectionHandleEPNS_2os15SystemEventTypeENS4_14EventClearModeE", "Poké Ball Plus operation event: bound, never signalled",
+          Result, h_hid_PalmaBind, const uint64_t *h, void *ev, int clear) { (void)h; hle_bind_system_event(ev, clear); return RES_OK; }
+HLE_FORCE("_ZN2nn3hid21GetPalmaOperationInfoEPNS0_18PalmaOperationInfoERKNS0_21PalmaConnectionHandleE", "Poké Ball Plus operation result: none (InvalidPalmaHandle)", Result, h_hid_PalmaOpInfo,
+          void *info, const uint64_t *h) { (void)info; (void)h; return PALMA_INVALID; }
+// The rest take a connection handle the host never hands out
+#define PALMA_REFUSE(sym, what, fn) HLE_FORCE(sym, "Poké Ball Plus " what ": refused (InvalidPalmaHandle)", Result, fn, const uint64_t *h) { (void)h; return PALMA_INVALID; }
+PALMA_REFUSE("_ZN2nn3hid15InitializePalmaERKNS0_21PalmaConnectionHandleE", "initialization", h_hid_PalmaInit)
+PALMA_REFUSE("_ZN2nn3hid13ReadPalmaStepERKNS0_21PalmaConnectionHandleE", "step count read", h_hid_PalmaStepRd)
+PALMA_REFUSE("_ZN2nn3hid14ResetPalmaStepERKNS0_21PalmaConnectionHandleE", "step count reset", h_hid_PalmaStepReset)
+PALMA_REFUSE("_ZN2nn3hid15EnablePalmaStepERKNS0_21PalmaConnectionHandleEb", "step counting", h_hid_PalmaStepOn)
+PALMA_REFUSE("_ZN2nn3hid16ReadPalmaPlayLogERKNS0_21PalmaConnectionHandleERKt", "play log read", h_hid_PalmaLogRd)
+PALMA_REFUSE("_ZN2nn3hid17ResetPalmaPlayLogERKNS0_21PalmaConnectionHandleERKt", "play log reset", h_hid_PalmaLogReset)
+PALMA_REFUSE("_ZN2nn3hid17PlayPalmaActivityERKNS0_21PalmaConnectionHandleERKt", "activity", h_hid_PalmaPlay)
+PALMA_REFUSE("_ZN2nn3hid18SetPalmaFrModeTypeERKNS0_21PalmaConnectionHandleERKNS0_15PalmaFrModeTypeE", "FR mode", h_hid_PalmaFr)
+PALMA_REFUSE("_ZN2nn3hid19ReadPalmaUniqueCodeERKNS0_21PalmaConnectionHandleE", "unique code read", h_hid_PalmaCodeRd)
+PALMA_REFUSE("_ZN2nn3hid25SetPalmaUniqueCodeInvalidERKNS0_21PalmaConnectionHandleE", "unique code reset", h_hid_PalmaCodeInv)
+PALMA_REFUSE("_ZN2nn3hid19SuspendPalmaFeatureERKNS0_21PalmaConnectionHandleERKNS_4util10BitFlagSetILi32ENS0_12PalmaFeatureEEE", "feature suspension", h_hid_PalmaSuspend)
+PALMA_REFUSE("_ZN2nn3hid19WritePalmaWaveEntryERKNS0_21PalmaConnectionHandleERKNS0_12PalmaWaveSetERKtPKvmm", "sound write", h_hid_PalmaWave)
+PALMA_REFUSE("_ZN2nn3hid23WritePalmaActivityEntryERKNS0_21PalmaConnectionHandleERKtPKNS0_18PalmaActivityEntryE", "activity write", h_hid_PalmaActWr)
+PALMA_REFUSE("_ZN2nn3hid28WritePalmaRgbLedPatternEntryERKNS0_21PalmaConnectionHandleERKtPKvm", "LED pattern write", h_hid_PalmaLed)
+PALMA_REFUSE("_ZN2nn3hid27ReadPalmaApplicationSectionERKNS0_21PalmaConnectionHandleEim", "application section read", h_hid_PalmaAppRd)
+PALMA_REFUSE("_ZN2nn3hid28WritePalmaApplicationSectionERKNS0_21PalmaConnectionHandleEimRKNS0_35PalmaApplicationSectionAccessBufferE", "application section write", h_hid_PalmaAppWr)
+PALMA_REFUSE("_ZN2nn3hid37GetPalmaDataBaseIdentificationVersionERKNS0_21PalmaConnectionHandleE", "database version read", h_hid_PalmaDbRd)
+PALMA_REFUSE("_ZN2nn3hid37SetPalmaDataBaseIdentificationVersionERKNS0_21PalmaConnectionHandleEi", "database version write", h_hid_PalmaDbWr)
+PALMA_REFUSE("_ZN2nn3hid25CancelWritePalmaWaveEntryERKNS0_21PalmaConnectionHandleE", "sound write cancel", h_hid_PalmaWaveCancel)

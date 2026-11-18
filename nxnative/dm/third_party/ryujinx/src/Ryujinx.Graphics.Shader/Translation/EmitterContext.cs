@@ -399,6 +399,15 @@ namespace Ryujinx.Graphics.Shader.Translation
 
                 if (TranslatorContext.Definitions.GpPassthrough && !TranslatorContext.GpuAccessor.QueryHostSupportsGeometryShaderPassthrough())
                 {
+                    // A passthrough GS has one mask for its whole input primitive. On a single-viewport
+                    // host without NV viewport masks, emit that primitive only when viewport zero is enabled.
+                    Operand maskedEnd = null;
+                    if (!TranslatorContext.GpuAccessor.QueryHostSupportsViewportMask() && (Program.UsedFeatures & FeatureFlags.ViewportMask) != 0)
+                    {
+                        maskedEnd = Label();
+                        Operand mask = this.Load(StorageKind.Output, IoVariable.ViewportMask, null, Const(0));
+                        this.BranchIfTrue(maskedEnd, this.ICompareEqual(this.BitwiseAnd(mask, Const(1)), Const(0)));
+                    }
                     int inputStart, inputEnd, inputStep;
 
                     InputTopology topology = TranslatorContext.Definitions.InputTopology;
@@ -438,6 +447,7 @@ namespace Ryujinx.Graphics.Shader.Translation
                     }
 
                     this.EndPrimitive();
+                    if (maskedEnd != null) MarkLabel(maskedEnd);
                 }
             }
             else if (TranslatorContext.Definitions.Stage == ShaderStage.Fragment)

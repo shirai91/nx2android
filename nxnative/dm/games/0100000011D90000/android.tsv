@@ -1,0 +1,9 @@
+# Pokémon Brilliant Diamond on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Unity 2019.4.27f1 IL2CPP on SDK 11.4.3, update 1.3.0; VP8 movies decoded on the CPU and 60 fps (game.tsv fps_target, #133). The profile here as it was.
+# The package keeps the name the experimental port used, so a port made with this profile installs over it and keeps its saves.
+# Tested 2026-11-11 on the AYN Thor with Turnip 27.0.0-R2: walking, a wild battle and menus; 60 fps (the governor stepped to 40 a few times), 0 dropped frames,
+# footprint 1.4-1.7 GB, 0 audio underruns, no red log line.
+status	playable
+tested	v393216 AYN Thor (Snapdragon 8 Gen 2, Adreno 740, Android 13)
+package	org.nx2a.t0100000011d90000
+orientation	landscape

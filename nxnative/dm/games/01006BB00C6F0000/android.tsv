@@ -1,0 +1,23 @@
+# The Legend of Zelda: Link's Awakening on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Grezzo's engine on NintendoWare, SDK 8.2.0, update 1.1.0 (v131072). The iOS profile beside this file is unchanged.
+# Shared fonts come from the console's firmware: FontStandard, FontNintendoExtension, FontChineseSimplified,
+# FontChineseTraditional and FontKorean. --firmware extracts them (without --firmware the game crashes at startup
+# because Android's fallback Roboto font lacks U+25A1, #287; --shared-font with a TTF that has U+25A1 such as
+# NotoSerif-Regular.ttf also starts it, though it replaces every shared font except the button icons).
+# Played on a Lenovo TB323FU (Snapdragon 8 Elite Gen 5, Adreno 840, Android 16) on 2026-11-15, docked, language
+# zh-Hans, with those firmware fonts and no System font. A stretch of play stayed up, drew without a rendering
+# fault and did not crash. Earlier runs saw main+0x1c180 SIGSEGV on startup (every release build and most debug
+# builds; debug builds occasionally survived when ASLR placed a readable mapping ~4.2 MB past main's end):
+# MainCamera_{0}P passes index 0xffff and main+0x1bdb0 indexed the 0x275-entry table at main+0x1bcc898 without
+# bounds checking. patches.py now bounds-checks that lookup in-place.
+# By default the game keeps its dynamic 60/30 fps fallback so weaker SoCs stay at full speed. With the two NOPs
+# in patches.py uncommented, the present interval stayed 1 and calm play held 60 fps on the TB323FU (frame work
+# about 16.6 ms, late on screen 0 of 64); on older/slower devices unable to sustain 60 fps, enabling those NOPs
+# causes 16.7/33.3 ms judder and slow-motion gameplay. A save survived leaving the app: opening it again
+# continued that progress. Loading a new area can still stall for about 100 ms; that is not the interval path.
+# Not checked: a full playthrough, traditional Chinese and Korean text.
+status	playable
+tested	v131072 Lenovo TB323FU (Snapdragon 8 Elite Gen 5, Adreno 840, Android 16)
+package	org.nx2a.t01006bb00c6f0000
+orientation	landscape
+sysdata	0100000000000811 0100000000000810 0100000000000814 0100000000000813 0100000000000812

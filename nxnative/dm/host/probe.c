@@ -341,7 +341,14 @@ static void watch_install(void) {
                if (!g_poll || !g_plen || g_plen > 8) die("DM_PROBE_POLL format: <address>[+<length up to 8>] (hex)");
                pthread_t t; pthread_create(&t, NULL, poll_run, NULL); pthread_detach(t); } }
     const char *e = getenv("DM_PROBE_WATCH"); if (!e) return;
-    char *end; g_wat = strtoull(e, &end, 16); g_wlen = *end == '+' ? strtoull(end + 1, 0, 16) : 8;
+    char *end;
+    if (strchr(e, ':')) {   // module:offset[+length] (hex): the module's base moves from run to run on Android
+        char nm[64]; strlcpy(nm, e, sizeof nm); *strchr(nm, ':') = 0; module_t *m = NULL;
+        for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, nm)) m = &g_mod[i];
+        if (!m) die("DM_PROBE_WATCH: no such module %s", nm);
+        g_wat = (uint64_t)(uintptr_t)m->base + strtoull(strchr(e, ':') + 1, &end, 16);
+    } else g_wat = strtoull(e, &end, 16);
+    g_wlen = *end == '+' ? strtoull(end + 1, 0, 16) : 8;
     if (!g_wat || !g_wlen) die("DM_PROBE_WATCH format: <address>[+<length>] (hex)");
     g_wpsz = (uint64_t)getpagesize(); g_wpg = g_wat & ~(g_wpsz - 1);
     if (g_wat + g_wlen > g_wpg + g_wpsz) die("DM_PROBE_WATCH: the watched bytes must lie in one host page");

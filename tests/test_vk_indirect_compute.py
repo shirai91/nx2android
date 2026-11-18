@@ -39,12 +39,12 @@ def production():
     indirect = replay[replay.index('static void compute_warm_start(void) {'):replay.index('// ---------------- copies and clears')]
     indirect = indirect[indirect.index('\n}') + 2:]
     ubd = core[core.index('typedef struct { uint64_t lo, hi; VkBuffer sb;'):core.index('// the draw bisection')]
-    infl = core[core.index('typedef struct { uint64_t lo, hi, fence; const uint8_t *data; }'):core.index('int vk_ubd_overlaps')]
+    infl = core[core.index('typedef struct { uint64_t lo, hi, fence; const uint8_t *data; uint8_t *own; }'):core.index('int vk_ubd_overlaps')]
     functions = ''.join(function(core, sig) for sig in [
-        'vkpool_t *vk_pool_of(', 'uint32_t vk_pool_gen(', 'int vk_buf_at(',
+        'static vkpool_t *pool_find(', 'vkpool_t *vk_pool_of(', 'uint32_t vk_pool_gen(', 'int vk_buf_at(',
         'static vksub_t *cur(', 'void *vk_scratch(', 'void vk_img_barrier_all('])
     # Single-line production functions need their line, not the next function.
-    for sig in ['uint32_t vk_pool_gen(', 'static vksub_t *cur(']:
+    for sig in ['vkpool_t *vk_pool_of(', 'uint32_t vk_pool_gen(', 'static vksub_t *cur(']:
         functions = functions.replace(function(core, sig), next(x for x in core.splitlines() if x.startswith(sig)) + '\n')
     driver = function(replay, 'static uint64_t c2_handle(') + drvs + cache + memo + indirect
     lifecycle = function(core, 'static void slot_recycle(')
@@ -70,7 +70,8 @@ class IndirectCompute(unittest.TestCase):
             code = code.replace('/* ' + marker + ' */', value)
         (folder / 'check.c').write_text(code)
         cls.exe = folder / 'check'
-        subprocess.run(['cc', '-std=gnu11', '-pthread', '-Wall', '-Wextra', '-Werror',
+        # -fno-strict-aliasing as in the Android build (nxnative/dm/android/build.py): the harness reads driver-segment bytes stored as uint32_t as a uint64_t
+        subprocess.run(['cc', '-std=gnu11', '-fno-strict-aliasing', '-pthread', '-Wall', '-Wextra', '-Werror',
                         '-Wno-unused-parameter', '-Wno-unused-function',
                         '-Wno-unused-variable', '-Wno-missing-field-initializers', '-Wno-dangling-else',
                         '-I' + str(folder), '-I' + str(DM / 'third_party/vulkan-headers/include'),

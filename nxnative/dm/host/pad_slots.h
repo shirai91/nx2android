@@ -31,6 +31,11 @@ static int pad_slot_free(pad_slots *s, const void *owner) {
     int p = pad_slot_of(s, owner); if (p >= 0) s->owner[p] = NULL;
     return p;
 }
+// A held slot whose holder has this name, -1 if none: on Android a controller can come back under a new id before the old one is freed (front_android.c pad_player)
+static int pad_slot_named(const pad_slots *s, const char *name) {
+    for (int i = 0; name && *name && i < DM_PLAYERS; i++) if (s->owner[i] && !strcmp(s->last[i], name)) return i;
+    return -1;
+}
 static uint32_t pad_slot_mask(const pad_slots *s) {   // bit p: slot p is held
     uint32_t m = 0; for (int i = 0; i < DM_PLAYERS; i++) if (s->owner[i]) m |= 1u << i;
     return m;
