@@ -60,6 +60,11 @@ skip identical content by digest; incomplete snapshots and publication failures
 remain retryable. The legacy path cannot provide integrity guarantees absent from
 the old format.
 
+Before committing a single-sample depth pass with all colour channels disabled
+and alpha-to-coverage off, LOAD-only colour attachments without resolves or BC
+stand-ins are omitted. Colour
+writes, clears or alpha-to-coverage end that pass before restoring the targets.
+
 Vulkan colour attachments outside the fragment shader's reflected output map
 have writes and blending disabled, so undefined outputs cannot overwrite them.
 The replacement flat diagnostic fragment shader writes all eight outputs and
