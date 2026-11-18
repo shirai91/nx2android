@@ -60,11 +60,14 @@ static _Atomic int g_external_active;
 static _Atomic unsigned g_external_epoch;
 static _Atomic uint64_t g_ext_buttons, g_ext_presses;
 static _Atomic int g_ext_lx, g_ext_ly, g_ext_rx, g_ext_ry, g_ext_menu;
+static _Atomic int g_running, g_bg, g_menu;
+void dm_overlay_redraw(void);
 ANativeWindow *dm_front_window(void) { pthread_mutex_lock(&g_win_mu); ANativeWindow *w = g_external_win ? g_external_win : g_win; pthread_mutex_unlock(&g_win_mu); return w; }
 static ANativeWindow *phone_window(void) { pthread_mutex_lock(&g_win_mu); ANativeWindow *w = g_win; pthread_mutex_unlock(&g_win_mu); return w; }
 int dm_external_active(void) { return atomic_load(&g_external_active); }
 __attribute__((weak)) void vk_window_lost(void) {}   // the backend lets go of the window's swapchain before the window goes
-static void on_window_created(ANativeActivity *a, ANativeWindow *w) { (void)a; pthread_mutex_lock(&g_win_mu); g_win = w; pthread_mutex_unlock(&g_win_mu); }
+// A restored surface needs a redraw: the menu can keep the game paused with no new frames.
+static void on_window_created(ANativeActivity *a, ANativeWindow *w) { (void)a; pthread_mutex_lock(&g_win_mu); g_win = w; pthread_mutex_unlock(&g_win_mu); if (atomic_load(&g_running) && !atomic_load(&g_bg)) dm_overlay_redraw(); }
 static void on_window_destroyed(ANativeActivity *a, ANativeWindow *w) { (void)a; (void)w; pthread_mutex_lock(&g_win_mu); g_win = NULL; pthread_mutex_unlock(&g_win_mu); vk_window_lost(); }
 JNIEXPORT void JNICALL Java_org_nx2a_ExternalActivity_externalSurface(JNIEnv *env, jclass cls, jobject surface) {
     (void)cls;
@@ -133,7 +136,6 @@ void dm_haptics_suspend(unsigned reason, int suspended);
 __attribute__((weak)) void dm_overlay_redraw(void) {}   // the backend presents the last frame again (the pause menu changed while the game is held)
 
 // ---- holding the game: in the background and while the pause menu is open. Its clock reads wait (reason 1) and its audio goes to the silent sink ----
-static _Atomic int g_running, g_bg, g_menu;
 static pthread_mutex_t g_hold_mu = PTHREAD_MUTEX_INITIALIZER; static int g_held;
 static _Atomic int g_ime_on;
 static _Atomic int g_tx_on;   // text entry open (front_text_input): the game is held as by the menu
@@ -146,7 +148,7 @@ static void hold_sync(void) {
 static void shake_sensor(int on);   // the accelerometer, off in the background (input, below)
 static void go_background(void) { if (!atomic_load(&g_running) || atomic_exchange(&g_bg, 1)) return; dm_focus_set(2); dm_focus_set(3);   // through OutOfFocus, as a game sees HOME and then the suspension (front_mac.m does the same)
     hold_sync(); dm_gfx_suspend(1); shake_sensor(0); }
-static void go_foreground(void) { if (!atomic_load(&g_running) || !atomic_exchange(&g_bg, 0)) return; dm_gfx_suspend(0); hold_sync(); dm_focus_set(2); shake_sensor(1); }
+static void go_foreground(void) { if (!atomic_load(&g_running) || !atomic_exchange(&g_bg, 0)) return; dm_gfx_suspend(0); hold_sync(); dm_focus_set(2); shake_sensor(1); dm_overlay_redraw(); }
 void dm_perf_gpu_release(void);   // perf_android.c: the GPU's clock control back to its governor (DM_GPU_TURBO)
 // The clock control goes back after go_background: its dm_gfx_suspend waits for the presents in progress, and one of them could otherwise set the GPU's power control again
 static void on_pause(ANativeActivity *a) { (void)a; go_background(); dm_perf_gpu_release(); }

@@ -2,6 +2,7 @@
 // The code area (original text and patch area) is set to read-only+execute as soon as it is copied in, and from then on the loader only writes data: on iOS these two blocks must be embedded as is as signed code segments.
 #include "dm.h"
 #include <TargetConditionals.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -212,7 +213,7 @@ static void force_check(void) {
 static void read_layout(module_t *m, const char *dir) {
     char path[1024]; snprintf(path, sizeof path, "%s/%s.fixups.tsv", dir, m->name);
     FILE *f = fopen(path, "r");
-    if (!f) die("open %s", path);
+    if (!f) { int err = errno; die("open %s: errno=%d (%s)", path, err, strerror(err)); }
     static const char *kn[KEY_N] = {"K18", "KTLS", "KTLR", "KGATE"};
     char line[256], key[32], target[16] = "apple"; unsigned long v; unsigned seen = 0;   // an output without TARGET predates the Android port: Apple
     while (fgets(line, sizeof line, f)) {
