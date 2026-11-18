@@ -1,6 +1,7 @@
-# Builds the Linux bundles (packaging/build_bundle.py), x64 and arm64, and attaches them to each published release, beside the macOS
-# and Windows zips (release-windows.yml, release-macos.yml). x64 on ubuntu-latest; arm has no such alias, so it is pinned to an
-# Ubuntu 24.04 arm image (bump it when x64 latest moves). The bundle carries the system libraries of the runner that made it (glibc
+# Builds the Linux bundles (packaging/build_bundle.py), x64 and arm64, as zips and as AppImages (packaging/build_appimage.py, issue #440), and
+# attaches them to each published release, beside the macOS and Windows zips (release-windows.yml, release-macos.yml). x64 on ubuntu-latest; arm
+# has no such alias, so it is pinned to an Ubuntu 24.04 arm image (bump it when x64 latest moves). The bundle carries the system libraries of the
+# runner that made it (glibc
 # among them), so a 24.04 build runs on Ubuntu 24.04+, Debian 13+, Mint 22 and the rolling distributions.
 name: Linux release
 
@@ -30,12 +31,22 @@ jobs:
       - run: python -m pip install -r requirements.txt pyinstaller
       - run: python -m unittest discover tests
       - run: python packaging/build_bundle.py
+      - run: python packaging/build_appimage.py
+      - name: AppImage starts and runs the engine from its copy in the user folder
+        run: |
+          export XDG_CONFIG_HOME="$RUNNER_TEMP/config" APPIMAGE_EXTRACT_AND_RUN=1
+          ./dist/nx2android-*-linux-${{ matrix.cpu }}.AppImage -m porter profiles --json > "$RUNNER_TEMP/profiles.json"
+          python -c "import json, sys; n = len(json.load(open(sys.argv[1]))); assert n, 'no profiles'; print(n, 'profiles')" "$RUNNER_TEMP/profiles.json"
+          test -s "$XDG_CONFIG_HOME/nx2android/engine/KEY"
+          test -f "$XDG_CONFIG_HOME/nx2android/engine/nxnative/dm/android/build.py"
       - if: github.event_name == 'release'
-        run: gh release upload "${{ github.event.release.tag_name }}" dist/nx2android-*-linux-*.zip --clobber
+        run: gh release upload "${{ github.event.release.tag_name }}" dist/nx2android-*-linux-*.zip dist/nx2android-*-linux-*.AppImage --clobber
         env:
           GH_TOKEN: ${{ github.token }}
       - if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v7
         with:
           name: nx2android-linux-${{ matrix.cpu }}
-          path: dist/nx2android-*-linux-*.zip
+          path: |
+            dist/nx2android-*-linux-*.zip
+            dist/nx2android-*-linux-*.AppImage
