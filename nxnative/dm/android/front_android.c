@@ -1069,7 +1069,8 @@ static void touch_event(AInputEvent *e) {
                 static const uint64_t dir[8] = {DM_BTN_RIGHT, DM_BTN_RIGHT | DM_BTN_DOWN, DM_BTN_DOWN, DM_BTN_DOWN | DM_BTN_LEFT, DM_BTN_LEFT, DM_BTN_LEFT | DM_BTN_UP, DM_BTN_UP, DM_BTN_UP | DM_BTN_RIGHT};
                 btn |= dir[s]; }
         } else {
-            float ox = g_ptr_origin[id][0], oy = g_ptr_origin[id][1];
+            float ox = fminf(fmaxf(g_ptr_origin[id][0], b[2]), W - b[2]);
+            float oy = fminf(fmaxf(g_ptr_origin[id][1], b[2]), H - b[2]);
             ov_touch_stick(x - ox, y - oy, b[2], k->kind == OV_STICK_R, &dx, &dy);
             kn[k->kind == OV_STICK_R][0] = dx; kn[k->kind == OV_STICK_R][1] = dy; held[k->kind == OV_STICK_R] = 1;   // the knob shows the output
             int32_t sx = (int32_t)(dx * DM_STICK_MAX), sy = (int32_t)(-dy * DM_STICK_MAX);

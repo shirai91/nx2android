@@ -350,17 +350,30 @@ static void edge_stick(void) {
     int stick = -1; for (int i = 0; i < OV_N; i++) if (OV_CTLS[i].kind == OV_STICK_L) stick = i;
     assert(stick >= 0); float b[4]; ov_box(&OV_CTLS[stick], width, height, b);
     AInputEvent touch = {.source = AINPUT_SOURCE_TOUCHSCREEN, .type = AINPUT_EVENT_TYPE_MOTION,
-                         .action = AMOTION_EVENT_ACTION_DOWN, .x = b[0] - b[2] * .9f, .y = b[1]};
-    assert(touch.x > 0 && ctl_at(touch.x, touch.y, width, height) == stick);
-    float travel = touch.x;
+                         .action = AMOTION_EVENT_ACTION_DOWN, .x = b[2] * .9f, .y = b[1]};
+    assert(ctl_at(touch.x, touch.y, width, height) == stick);
+    assert(handle_event(&touch) == 1 && touch_sticks[0] < 0 && touch_sticks[0] > -DM_STICK_MAX / 4);
+    touch.action = 5; touch.x = 0; assert(handle_event(&touch) == 1 && touch_sticks[0] <= -DM_STICK_MAX + 1);
+    touch.action = AMOTION_EVENT_ACTION_UP; assert(handle_event(&touch) == 1 && touch_sticks[0] == 0);
+    touch.action = AMOTION_EVENT_ACTION_DOWN; touch.x = b[2]; assert(ctl_at(touch.x, touch.y, width, height) == stick);
     assert(handle_event(&touch) == 1 && touch_sticks[0] == 0);
-    touch.action = 5; touch.x = 0; assert(handle_event(&touch) == 1 && touch_sticks[0] < 0 && touch_sticks[0] > -DM_STICK_MAX);
-    int32_t edge_output = touch_sticks[0];
+    touch.action = 5; touch.x = b[2] * 1.5f; assert(handle_event(&touch) == 1); int32_t half = touch_sticks[0];
+    touch.action = AMOTION_EVENT_ACTION_UP; assert(handle_event(&touch) == 1);
+    touch.action = AMOTION_EVENT_ACTION_DOWN; touch.x = b[2] * 1.2f; assert(ctl_at(touch.x, touch.y, width, height) == stick);
+    assert(handle_event(&touch) == 1 && touch_sticks[0] == 0);
+    touch.action = 5; touch.x += b[2] * .5f; assert(handle_event(&touch) == 1 && abs(touch_sticks[0] - half) <= 1);
     touch.action = AMOTION_EVENT_ACTION_UP; assert(handle_event(&touch) == 1 && touch_sticks[0] == 0);
-    touch.action = AMOTION_EVENT_ACTION_DOWN; touch.x = b[0]; assert(handle_event(&touch) == 1 && touch_sticks[0] == 0);
-    touch.action = 5; touch.x = b[0] - travel; assert(handle_event(&touch) == 1 && abs(touch_sticks[0] - edge_output) <= 1);
-    touch.action = AMOTION_EVENT_ACTION_UP; assert(handle_event(&touch) == 1 && touch_sticks[0] == 0);
+    if (!layout) {   // the phone right stick reaches close to the bottom of the window
+        stick = -1; for (int i = 0; i < OV_N; i++) if (OV_CTLS[i].kind == OV_STICK_R) stick = i;
+        assert(stick >= 0); ov_box(&OV_CTLS[stick], width, height, b);
+        touch.action = AMOTION_EVENT_ACTION_DOWN; touch.x = b[0]; touch.y = height - b[2] * .9f;
+        assert(ctl_at(touch.x, touch.y, width, height) == stick);
+        assert(handle_event(&touch) == 1 && touch_sticks[3] < 0 && touch_sticks[3] > -DM_STICK_MAX / 4);
+        touch.action = 5; touch.y = height; assert(handle_event(&touch) == 1 && touch_sticks[3] <= -DM_STICK_MAX + 1);
+        touch.action = AMOTION_EVENT_ACTION_UP; assert(handle_event(&touch) == 1 && touch_sticks[3] == 0);
+    }
 }
+
 int main(int argc, char **argv) {
     assert(argc == 2); int test = atoi(argv[1]);
     if (test == 10) { players(); return 0; }
@@ -411,8 +424,8 @@ int main(int argc, char **argv) {
         result = subprocess.run([str(self.exe), str(case)], capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
-    def test_stick_edge_touch_is_neutral_and_keeps_fixed_sensitivity(self):
-        self.run_case(10)
+    def test_stick_edges_reach_full_output_with_fixed_sensitivity(self):
+        self.run_case(11)
 
     def test_hidden_controls_are_omitted_in_play_and_selectable_in_editor(self):
         self.run_case(8)
@@ -442,7 +455,7 @@ int main(int argc, char **argv) {
         self.run_case(7)
 
     def test_each_controller_is_a_player_of_its_own(self):
-        self.run_case(11)
+        self.run_case(10)
 
 
 if __name__ == '__main__':
