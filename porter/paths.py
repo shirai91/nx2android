@@ -28,7 +28,8 @@ def engine_copy(bundle, image):
         if key and (dst / 'KEY').read_text() == key: return dst / 'nxnative'
     except OSError: pass
     tmp = dst.with_name(f'engine.{os.getpid()}.partial'); shutil.rmtree(tmp, ignore_errors=True)
-    shutil.copytree(bundle / 'nxnative', tmp / 'nxnative')
+    # without the bundle's file times: a new copy is newer than the objects an older AppImage's port left, so the host build compiles them again
+    shutil.copytree(bundle / 'nxnative', tmp / 'nxnative', copy_function=shutil.copy)
     (tmp / 'KEY').write_text(key or '')
     shutil.rmtree(dst, ignore_errors=True)
     try: tmp.rename(dst)

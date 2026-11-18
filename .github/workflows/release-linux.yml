@@ -32,13 +32,19 @@ jobs:
       - run: python -m unittest discover tests
       - run: python packaging/build_bundle.py
       - run: python packaging/build_appimage.py
-      - name: AppImage starts and runs the engine from its copy in the user folder
+      - name: AppImage starts mounted (as a player starts it) and keeps its engine copy from one launch to the next
         run: |
-          export XDG_CONFIG_HOME="$RUNNER_TEMP/config" APPIMAGE_EXTRACT_AND_RUN=1
-          ./dist/nx2android-*-linux-${{ matrix.cpu }}.AppImage -m porter profiles --json > "$RUNNER_TEMP/profiles.json"
+          sudo apt-get update -qq && sudo apt-get install -y -qq fuse3
+          export XDG_CONFIG_HOME="$RUNNER_TEMP/config"
+          img=$(ls dist/nx2android-*-linux-${{ matrix.cpu }}.AppImage)
+          "./$img" -m porter profiles --json > "$RUNNER_TEMP/profiles.json"
           python -c "import json, sys; n = len(json.load(open(sys.argv[1]))); assert n, 'no profiles'; print(n, 'profiles')" "$RUNNER_TEMP/profiles.json"
           test -s "$XDG_CONFIG_HOME/nx2android/engine/KEY"
           test -f "$XDG_CONFIG_HOME/nx2android/engine/nxnative/dm/android/build.py"
+          touch "$XDG_CONFIG_HOME/nx2android/engine/nxnative/marker"
+          "./$img" -m porter profiles --json > /dev/null
+          test -f "$XDG_CONFIG_HOME/nx2android/engine/nxnative/marker"   # the second launch, at another mount path, used the same copy
+          APPIMAGE_EXTRACT_AND_RUN=1 "./$img" -m porter profiles --json > /dev/null   # the fallback INSTALL.md gives for a PC without FUSE
       - if: github.event_name == 'release'
         run: gh release upload "${{ github.event.release.tag_name }}" dist/nx2android-*-linux-*.zip dist/nx2android-*-linux-*.AppImage --clobber
         env:

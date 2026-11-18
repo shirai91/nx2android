@@ -30,6 +30,11 @@ class EngineCopy(unittest.TestCase):
         self.assertFalse((nx / 'dm/obj').exists())
         self.assertEqual([p.name for p in (self.t / 'home').iterdir()], ['engine'])   # no partial copy left
 
+    def test_copy_is_newer_than_old_objects(self):   # an AppImage built before the last port's objects: its copy still makes the host build compile again
+        tool = self.bundle / 'nxnative/dm/tool.py'; os.utime(tool, (1_000_000_000, 1_000_000_000))
+        nx = paths.engine_copy(self.bundle, self.image)
+        self.assertGreater((nx / 'dm/tool.py').stat().st_mtime, 1_000_000_000 + 86400)
+
 
 if __name__ == '__main__':
     unittest.main()
