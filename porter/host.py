@@ -4,7 +4,7 @@
 # The game's rewritten modules on the device (mods/) must still fit the host: mods/build_src.sha256 holds the hashes of the rewriter and the patch files that made them
 # (patch_nso.py), and any of them changed since (the rewriter, the SDK's patches, the game's own) needs a port again from the game's files. Other games' patch files do not matter,
 # being keyed by their own build IDs. The host is built from the repository's profile, so the port must have been made from it too: its version one the profile registers and the
-# hash of the game_profile.h it was built with (nx2a-data.json profile_h, which porter port writes) this checkout's, or this checkout's without defines added since (ADDED_DEFINES) that are at their off value. A derived profile (a version the profile does not register, with
+# hash of the game_profile.h it was built with (nx2a-data.json profile_h, which porter port writes) this checkout's, or this checkout's without defines added since (ADDED_DEFINES) that are at their off value. A port made on Windows before game.py wrote the header as bytes hashed the same header with CRLF newlines (still UTF-8), and that form is accepted too. A derived profile (a version the profile does not register, with
 # its automatic alias headroom) or --alias-headroom compiled another DM_GAME_MEM_ALIAS into libdmhost.so, and the repository's would give the game a smaller alias region. Nor does a change in sdk_patches.py for other SDK builds: the cuts and observation gates it and the game's patches.py give the build IDs of
 # the port's modules are checked against those mods/<module>.cuts.tsv and .obs.tsv list. A changed shader translator or data pack is not carried over either: a port again does that.
 import hashlib, json, os, re, shlex, subprocess, sys, tempfile
@@ -109,8 +109,15 @@ def older_hashes(header):
     return out
 
 
+def windows_text(header):
+    """header (UTF-8, LF) as game.py wrote it in text mode on Windows before it wrote bytes: CRLF, still UTF-8 (porter port runs game.py with PYTHONUTF8=1). None when it has no such form.
+    A port made on Windows then recorded that file's hash as profile_h."""
+    try: return header.decode('utf-8').replace('\n', '\r\n').encode('utf-8')
+    except UnicodeError: return None
+
+
 def check_profile(package, manifest, title_id):
-    """Refuses (BuildError) a port not made from this checkout's profile of title_id: its version unregistered, or its profile header's hash absent or another (a header that lacks only ADDED_DEFINES at their off value is accepted)"""
+    """Refuses (BuildError) a port not made from this checkout's profile of title_id: its version unregistered, or its profile header's hash absent or another (a header that lacks only ADDED_DEFINES at their off value is accepted). A port made on Windows before game.py wrote the header as bytes hashed the same header with CRLF newlines (still UTF-8), and that form is accepted too."""
     sys.path.insert(0, str(DM / 'games'))
     try: import game
     finally: sys.path.pop(0)
@@ -121,12 +128,14 @@ def check_profile(package, manifest, title_id):
                          f'with its own alias region; port the game again')
     if not manifest.get('profile_h'):
         raise BuildError(f'{package}: no profile_h in nx2a-data.json (a data pack made before nx2android recorded the profile the host was built from): port the game again')
-    header = profile_header(title_id)
-    if manifest['profile_h'] == hashlib.sha256(header).hexdigest(): return
-    for names, h in older_hashes(header):
-        if manifest['profile_h'] == h:
-            say(f'{package}: the host on the device was built before {", ".join(names)} existed in the profile header; they are off (default) in this checkout\'s profile of {title_id}, so the update goes on')
-            return
+    header = profile_header(title_id).replace(b'\r\n', b'\n')   # LF, as porter port's header is (game.py writes bytes)
+    for variant in (header, windows_text(header)):
+        if variant is None: continue
+        if manifest['profile_h'] == hashlib.sha256(variant).hexdigest(): return
+        for names, h in older_hashes(variant):
+            if manifest['profile_h'] == h:
+                say(f'{package}: the host on the device was built before {", ".join(names)} existed in the profile header; they are off (default) in this checkout\'s profile of {title_id}, so the update goes on')
+                return
     raise BuildError(f'{package}: the host on the device was built from another profile of {title_id} than this checkout\'s (another layout, --alias-headroom or a derived profile): '
                      f'port the game again')
 

@@ -70,7 +70,8 @@ class IndirectCompute(unittest.TestCase):
             code = code.replace('/* ' + marker + ' */', value)
         (folder / 'check.c').write_text(code)
         cls.exe = folder / 'check'
-        subprocess.run(['cc', '-std=gnu11', '-pthread', '-Wall', '-Wextra', '-Werror',
+        # -fno-strict-aliasing as in the Android build (nxnative/dm/android/build.py): the harness reads driver-segment bytes stored as uint32_t as a uint64_t
+        subprocess.run(['cc', '-std=gnu11', '-fno-strict-aliasing', '-pthread', '-Wall', '-Wextra', '-Werror',
                         '-Wno-unused-parameter', '-Wno-unused-function',
                         '-Wno-unused-variable', '-Wno-missing-field-initializers', '-Wno-dangling-else',
                         '-I' + str(folder), '-I' + str(DM / 'third_party/vulkan-headers/include'),

@@ -1,0 +1,12 @@
+# FINAL FANTASY RESONANCE, Asian release (0100B8A026F14000) on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# The Korean / Chinese release of FINAL FANTASY RESONANCE, the game the JP profile (dm/games/0100606026F12000) covers: Unreal Engine 5.6.1 on SDK 20.5.17, update 1.0.1,
+# the same engine build at the same offsets, and the same 73,496 shader stage/key entries (their package/index ordering differs, so this profile keeps its own tables).
+# Its shader libraries are in the IoStore container, Oodle-compressed shader groups that the port decodes with the game's own Oodle on the device (porter device_ue: one
+# round, 5,919 groups), so the port needs the device connected, as the JP release does.
+# Zero-copy direct GPU texel buffer views allow Niagara particle parameters (R32F, 36-44 elements) to render live battle flames and smoke/dust particles without CPU fallback.
+# The system driver crashes in its shader compiler on one of the game's compute shaders, so the port needs a Turnip driver: porter port --vulkan-driver <libvulkan.turnip.so>
+# (the GUI's "Vulkan driver" field). Tested with Turnip-26.2.3-EMULATOR (https://github.com/v3kt0r-87/Mesa-Turnip-Builder/releases).
+status	playable
+tested	v65536 Lenovo Legion Y700 TB321FU (Snapdragon 8 Gen 3, Adreno 750, Android 16)
+package	org.nx2a.finalfantasyresonanceasia
+orientation	landscape

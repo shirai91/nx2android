@@ -124,7 +124,7 @@ class BcDraw(unittest.TestCase):
 
     def test_the_level_and_layers_a_pass_draws_are_filled_and_copied_back_as_blocks(self):
         src = (ROOT / 'nxnative/dm/android/gfx_vk_exec.c').read_text(encoding='utf-8')
-        a = src.index('static struct { vkimg_t *im; VkImageView v; uint32_t fmt, layers, w, h, bc_lv, bc_ly, bc_nly; } P_att[9];')
+        a = src.index(next(line for line in src.splitlines() if line.startswith('static struct {') and '} P_att[9];' in line))
         f = src.index('static int bc_region('); g = src.index('\n}\n', src.index('static void bc_draw_back(void) {')) + 3
         r = build_and_run(self.fill(COPIES, **{'@PATT@': src[a:src.index('\n', a)], '@FN@': src[f:g]}), 'copies')
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
