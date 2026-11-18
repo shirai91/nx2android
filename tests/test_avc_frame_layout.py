@@ -148,7 +148,8 @@ int main(int argc,char **argv){assert(argc==2);int mode=atoi(argv[1]);
         cls.addClassCleanup(cls.temp.cleanup)
         c=Path(cls.temp.name)/'test.c';cls.binary=c.with_suffix('.exe' if os.name=='nt' else '');c.write_text(code,encoding='utf-8')
         flags=['-fsanitize=address,undefined','-fno-omit-frame-pointer'] if os.getenv('NX2A_TEST_SANITIZE') else []
-        subprocess.run(['cc','-std=c11','-O1','-Wall','-Werror','-Wno-unused-function',*flags,str(c),'-o',str(cls.binary)],check=True,capture_output=True,text=True)
+        # -fno-strict-aliasing as in the Android build (nxnative/dm/android/build.py): nv12_rgba stores uint32_t pixels into the uint8_t output
+        subprocess.run(['cc','-std=c11','-O1','-fno-strict-aliasing','-Wall','-Werror','-Wno-unused-function',*flags,str(c),'-o',str(cls.binary)],check=True,capture_output=True,text=True)
 
     def run_case(self,case):
         r=subprocess.run([str(self.binary),str(case)],capture_output=True,text=True)
