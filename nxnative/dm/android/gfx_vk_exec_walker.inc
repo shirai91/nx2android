@@ -87,14 +87,37 @@ static void prof_tick(void) {
         cnt[b] = 0; }
     VKLOG("%s", line);
 }
+// Every record is written by this same library, so a size that is not a whole number of 8-byte words means the stream went out of step (a copied command handle
+// that points into a rewritten buffer, or a payload read short). Print the records just before it and stop: going on jumps by a garbage size into unmapped
+// memory, which is what crashed inside an inlined texture copy (Pokémon Shining Pearl, 2026-11-15: "unknown record op 3194720768", SEGV in copy_t2t).
+// An op outside the enum with a sound size is skipped instead, logged: the size keeps the stream in step whatever the op means, while a size cannot be
+// guessed at all.
+typedef struct { uint32_t op, size; intptr_t off; } lastrec_t;
+static lastrec_t g_lastrec[16];
+static unsigned g_lastrec_n;
+static const uint8_t *g_rec_base;
+static void rec_stream_lost(const uint8_t *p, op_hdr h, const char *why) {
+    unsigned n = g_lastrec_n < 16 ? g_lastrec_n : 16;
+    VKLOG("[RED] [vk] record stream out of step at %+lld (%s): op %u size %u",
+          (long long)(p - g_rec_base), why, h.op, h.size);
+    for (unsigned i = 0; i < n; i++) {
+        unsigned k = (g_lastrec_n - n + i) & 15;
+        VKLOG("[RED] [vk]   %2u. op %u size %u at %+lld", i + 1, g_lastrec[k].op, g_lastrec[k].size,
+              (long long)g_lastrec[k].off);
+    }
+    abort();
+}
 void mtl_exec(const uint8_t *p) {   // timed at the top level only (OP_CALL nests)
-    static int depth; uint64_t t0 = depth ? 0 : tnow(); depth++; if (depth == 1) prof_tick();
+    static int depth; uint64_t t0 = depth ? 0 : tnow(); depth++; if (depth == 1) { prof_tick(); g_rec_base = p; g_lastrec_n = 0; }
     exec_ops(p);
     if (!--depth) g_vkst.ns_exec += tnow() - t0;
 }
 static void exec_ops(const uint8_t *p) {
     for (;;) {
         op_hdr h; memcpy(&h, p, sizeof h);
+        if (h.size < 8 || (h.size & 7)) rec_stream_lost(p, h, "bad size");
+        if (h.op >= OP_COUNT_) { static int nred; if (nred++ < 8) VKLOG("[RED] [vk] record op %u outside the enum (size %u) at %+lld: skipped", h.op, h.size, (long long)(p - g_rec_base)); p += h.size; continue; }
+        g_lastrec[g_lastrec_n++ & 15] = (lastrec_t){h.op, h.size, (intptr_t)(p - g_rec_base)};
         if (h.op < 64) g_sub_ops[h.op]++;
         static uint64_t skip = ~0ull; if (skip == ~0ull) { skip = 0; const char *e = getenv("DM_VK_SKIP_OPS"); for (const char *q = e; q && *q;) { char *n; long v = strtol(q, &n, 10); if (n == q) break; if (v > 0 && v < 64) skip |= 1ull << v; q = *n ? n + 1 : n; } }   // debugging: record ops not replayed
         if (h.op < 64 && h.op > 3 && (skip >> h.op & 1)) { p += h.size; continue; }
