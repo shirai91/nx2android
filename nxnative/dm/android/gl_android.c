@@ -202,36 +202,45 @@ static int fmt_channels(GLenum f) {
     }
 }
 static GLint sized_for_channels(int ch) { return ch == 1 ? 0x8229 : ch == 2 ? 0x822B : ch == 3 ? 0x8051 : 0x8058; }   // R8, RG8, RGB8, RGBA8
+static GLint sized_for_type(int ch, GLenum type) {   // the sized format with ch channels and the game's type
+    if (type == 0x140B) return ch == 1 ? 0x822D : ch == 2 ? 0x822F : ch == 3 ? 0x881B : 0x881A;   // R16F, RG16F, RGB16F, RGBA16F
+    if (type == 0x1406) return ch == 1 ? 0x822E : ch == 2 ? 0x8230 : ch == 3 ? 0x8815 : 0x8814;   // R32F, RG32F, RGB32F, RGBA32F
+    return sized_for_channels(ch);
+}
 static GLint ifmt_ok(GLint ifmt, GLenum fmt, GLenum type) {
     int fch = fmt_channels(fmt);
     if (ifmt != 0) {
         // A non-zero unsized internalformat: as the game asked, except for the 8-bit / float types, where the sized format that matches format's channels
-        // is the same storage. The packed types (GL_UNSIGNED_SHORT_4_4_4_4 / _5_5_5_1 / _5_6_5) keep the format the game asked for: a sized RGBA8/RGB8
-        // there would be GL_INVALID_OPERATION with no storage (FM24 Touch's case)
+        // and the game's type is the same storage. The packed types (GL_UNSIGNED_SHORT_4_4_4_4 / _5_5_5_1 / _5_6_5) keep the format the game asked for:
+        // a sized RGBA8/RGB8 there would be GL_INVALID_OPERATION with no storage (FM24 Touch's case)
         int ich = fmt_channels((GLenum)ifmt);
-        if (ich && (type == 0x1401 || type == 0x140B || type == 0x1406)) return sized_for_channels(fch ? fch : ich);
+        if (ich && (type == 0x1401 || type == 0x140B || type == 0x1406)) {
+            GLint sized = sized_for_type(fch ? fch : ich, type);
+            { static int said; if (!said++) GLOG("internal format %#x (format %#x, type %#x) -> %#x", ifmt, fmt, type, sized); }
+            return sized;
+        }
         return ifmt;
     }
     int ch = fch ? fch : 4;
-    GLenum ty16 = (type == 0x140B), ty32 = (type == 0x1406);
-    if (ty16) return ch == 1 ? 0x822D : ch == 2 ? 0x822F : ch == 3 ? 0x881B : 0x881A;   // R16F, RG16F, RGB16F, RGBA16F
-    if (ty32) return ch == 1 ? 0x822E : ch == 2 ? 0x8230 : ch == 3 ? 0x8815 : 0x8814;   // R32F, RG32F, RGB32F, RGBA32F
+    if (type == 0x140B || type == 0x1406) return sized_for_type(ch, type);
     { static int said; if (!said++) GLOG("internal format 0 with format %#x: a sized format instead", fmt); }
     return sized_for_channels(ch);
 }
-// GL_ALPHA / GL_LUMINANCE / GL_LUMINANCE_ALPHA: ES 3 still takes them as unsized internalformats, but this device driver rejects the upload and the alpha channel
-// reads 1 when they are passed through as R8 / RG8: a glyph atlas uploaded as GL_ALPHA then draws every glyph as a filled box (Layton DX's 4096x1024 font page is
-// GL_ALPHA, texture 23), and a movie's luminance planes read as black or green. Converted to RGBA8 with the desktop sampling semantics (alpha → 0,0,0,a;
-// luminance → v,v,v,255; luminance-alpha → v,v,v,a) instead.
+// GL_ALPHA / GL_LUMINANCE / GL_LUMINANCE_ALPHA uploads are converted to RGBA8 because glTexStorage2D needs a sized format and a texture stored as RGBA8 cannot
+// later be uploaded with GL_ALPHA / GL_LUMINANCE through glTexSubImage2D. Pass-through works on the Adreno 730 (DM_GL_LEGACY_PASS=1); the conversion is kept for
+// that storage / sub-upload contract, not because the driver rejects these formats. Converted with the desktop sampling semantics (alpha → 0,0,0,a;
+// luminance → v,v,v,255; luminance-alpha → v,v,v,a).
 #define GL_LEGACY_FMT(f) ((f) == 0x1906 || (f) == 0x1909 || (f) == 0x190A)
-// One legacy image converted to RGBA8. The source is read with the game's unpack state: a bound GL_PIXEL_UNPACK_BUFFER is mapped at the pointer's offset, and the rows
-// carry the GL_UNPACK_ALIGNMENT padding and the ROW_LENGTH / SKIP_ROWS / SKIP_PIXELS the game set. Returns a tightly packed buffer, or NULL (the call then goes through as asked)
+// One legacy image converted to RGBA8. The source is read with the game's unpack state: a bound GL_PIXEL_UNPACK_BUFFER is mapped at the pointer's offset (a NULL
+// pointer is offset 0, a valid source), and the rows carry the GL_UNPACK_ALIGNMENT padding and the ROW_LENGTH / SKIP_ROWS / SKIP_PIXELS the game set. Returns a
+// tightly packed buffer, or NULL when there is no data or the map/malloc failed (the caller then passes the game's own internalformat and pointer through)
 static unsigned char *legacy_rgba(GLenum f, GLsizei w, GLsizei h, const void *src) {
     REAL(void, glGetIntegerv, GLenum, GLint *); REAL(void *, glMapBufferRange, GLenum, GLintptr, GLsizeiptr, GLbitfield); REAL(GLboolean, glUnmapBuffer, GLenum);
-    if (!src || w <= 0 || h <= 0) return NULL;
+    if (w <= 0 || h <= 0) return NULL;
     GLint pbo = 0, align = 4, row = 0, skr = 0, skp = 0;
     r_glGetIntegerv(GL_PIXEL_UNPACK_BUFFER_BINDING, &pbo); r_glGetIntegerv(GL_UNPACK_ALIGNMENT, &align);
     r_glGetIntegerv(GL_UNPACK_ROW_LENGTH, &row); r_glGetIntegerv(GL_UNPACK_SKIP_ROWS, &skr); r_glGetIntegerv(GL_UNPACK_SKIP_PIXELS, &skp);
+    if (!pbo && !src) return NULL;
     int bpp = (f == 0x190A) ? 2 : 1, al = align > 0 ? align : 1;
     size_t stride = (size_t)(row > 0 ? row : w) * bpp;
     stride = (stride + (size_t)al - 1) / (size_t)al * (size_t)al;
@@ -240,6 +249,7 @@ static unsigned char *legacy_rgba(GLenum f, GLsizei w, GLsizei h, const void *sr
     if (pbo) { s = r_glMapBufferRange(GL_PIXEL_UNPACK_BUFFER, (GLintptr)src, (GLsizeiptr)need, GL_MAP_READ_BIT); if (!s) return NULL; }
     unsigned char *d = malloc((size_t)w * (size_t)h * 4);
     if (d) {
+        { static int said; if (!said++) GLOG("legacy format %#x %dx%d -> RGBA8", f, w, h); }
         const unsigned char *base = s + off;
         for (GLsizei y = 0; y < h; y++) {
             const unsigned char *r0 = base + (size_t)y * stride; unsigned char *o = d + (size_t)y * (size_t)w * 4;
@@ -251,14 +261,21 @@ static unsigned char *legacy_rgba(GLenum f, GLsizei w, GLsizei h, const void *sr
     if (pbo) r_glUnmapBuffer(GL_PIXEL_UNPACK_BUFFER);
     return d;
 }
+static int unpack_bound(void) {
+    REAL(void, glGetIntegerv, GLenum, GLint *); GLint pbo = 0;
+    r_glGetIntegerv(GL_PIXEL_UNPACK_BUFFER_BINDING, &pbo); return pbo != 0;
+}
 static uint64_t p_glTexImage2D(void *v) { args_t *x = v; REAL(void, glTexImage2D, GLenum, GLint, GLint, GLsizei, GLsizei, GLint, GLenum, GLenum, const void *);
     GLenum t = A(0, GLenum); GLint level = A(1, GLint), ifmt = A(2, GLint); GLsizei w = A(3, GLsizei), h = A(4, GLsizei); GLenum f = A(6, GLenum), ty = A(7, GLenum);
     GLint fixed = ifmt_ok(ifmt, f, ty); const void *px = A(8, const void *); unsigned char *conv = NULL; unpack_t u; int plain = 0;
     // Every level that carries data is converted, not only level 0: the driver would read 4 bytes a texel past the game's 1- or 2-byte buffer. A level with no data
-    // still needs the RGBA8 storage that the lower levels were uploaded into
+    // still needs the RGBA8 storage that the lower levels were uploaded into. A bound unpack buffer at offset 0 (px == NULL) is data too.
     if (ty == GL_UNSIGNED_BYTE && GL_LEGACY_FMT(f)) {
-        if (px) { conv = legacy_rgba(f, w, h, px); if (conv) { fixed = GL_RGBA8; f = GL_RGBA; px = conv; unpack_plain(&u); plain = 1; } }
-        else { fixed = GL_RGBA8; f = GL_RGBA; }
+        if (px || unpack_bound()) {
+            conv = legacy_rgba(f, w, h, px);
+            if (conv) { fixed = GL_RGBA8; f = GL_RGBA; px = conv; unpack_plain(&u); plain = 1; }
+            else fixed = ifmt;   // the map or malloc failed: the game's own internalformat, so its format and pointer still match
+        } else { fixed = GL_RGBA8; f = GL_RGBA; }
     }
     r_glTexImage2D(t, level, fixed, w, h, A(5, GLint), f, ty, px);
     if (plain) unpack_restore(&u);
