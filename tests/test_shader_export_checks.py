@@ -46,7 +46,7 @@ def vertex_module(numeric='float', width=32, channels=4, location=11, component=
     scalar = (22, [i(1), width]) if numeric == 'float' else (21, [i(1), width, numeric == 'sint'])
     array = [] if array_length is None else [(21, [i(9), 32, 0]), (43, [i(9), i(10), array_length]), (28, [i(11), i(2), i(10)])]
     instructions = [(17, [1]), (14, [0, 1]), (15, [0, i(7), 0x6e69616d, 0, i(4)]),
-                    (71, [i(4), 30, location]), (71, [i(4), 31, component]), scalar,
+                    *([] if location is None else [(71, [i(4), 30, location])]), (71, [i(4), 31, component]), scalar,
                     (23, [i(2), i(1), channels]), *array, (32, [i(3), 1, i(2) if array_length is None else i(11)]), (59, [i(3), i(4), 1]),
                     (19, [i(5)]), (33, [i(6), i(5)]), (54, [i(5), i(7), 0, i(6)]),
                     (248, [i(8)]), (253, []), (56, [])]
@@ -70,6 +70,10 @@ class ExportChecks(unittest.TestCase):
         self.job_history.extend(jobs)
         affected = self.bad_key is None or any(job['key'] == self.bad_key for job in jobs)
         if affected and self.behavior == 'launch-failed': raise OSError('translator unavailable')
+        if affected and any(job.get('constant_buffer_address') is True for job in jobs):
+            if self.behavior == 'optimized-launch-failed': raise OSError('optimizer unavailable')
+            if self.behavior == 'optimized-process-failed':
+                return subprocess.CompletedProcess(argv, 17, '', 'injected optimizer failure\nsecond error line')
         bad = 0
         for job in jobs:
             broken = self.bad_key is None or job['key'] == self.bad_key
@@ -79,12 +83,20 @@ class ExportChecks(unittest.TestCase):
             optimized = job.get('constant_buffer_address') is True
             if broken and self.behavior == 'optimized-missing' and optimized: bad += 1; continue
             key = job['key']
-            spv = module(self.stage)
+            spv = vertex_module(id_offset=20 if optimized else 0) if self.stage == 'vs' else module(self.stage)
             if self.behavior == 'input-type-change': spv = vertex_module('sint' if optimized else 'float')
+            if broken and (self.behavior == 'baseline-interface-unsupported' or
+                           self.behavior == 'optimized-interface-unsupported' and optimized): spv = vertex_module(location=None)
+            if broken and optimized and self.behavior == 'optimized-bad-module': spv = b'bad module'
             (dest / f'{key}.spv').write_bytes(b'bad module' if broken and self.behavior == 'bad-module' else spv)
             if broken and self.behavior == 'failed-after-spv': bad += 1; continue
+            if broken and optimized and self.behavior == 'optimized-missing-reflection': bad += 1; continue
             resource = reflection(key, self.stage)
             if self.behavior != 'old-translator': resource['constant_buffer_address'] = job.get('constant_buffer_address', True)
+            if broken and optimized and self.behavior == 'optimized-no-ack': resource.pop('constant_buffer_address')
+            if broken and optimized and self.behavior == 'optimized-bad-reflection': resource['key'] = 'wrong'
+            if self.behavior == 'optimized-binding-mismatch':
+                resource['sbufs'] = [dict(binding=4 if broken and optimized else 3, slot=0, cb_slot=0, cb_offset=132, flags=1)]
             if self.reflect or not broken: (dest / f'{key}.res.json').write_text(json.dumps(self.bad_resource if broken and self.bad_resource is not None else resource))
         summary = f'translated: {len(jobs)-bad} ok, {bad} failed\n'
         if affected and self.behavior in ('process-failed', 'crash-after-output'):
@@ -110,7 +122,7 @@ class ExportChecks(unittest.TestCase):
                    int_inputs=lambda _: self.inference,
                    spirv_bindings=lambda _: (self.bindings, [1, 1, 1], {1: [0, 0, 0], 3: [0, 0, 0]}),
                    refl_bin=lambda cl,c1,hdr: struct.pack('<5I', 0, 0, *hdr),
-                   classify=lambda *args: None)
+                   classify=lambda *args: dict(kind='ssbo'))
         source = TOOLS / 'shader_vk.py'; tree = ast.parse(source.read_text(encoding='utf-8'))
         nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'main']
         exec(compile(ast.Module(body=nodes, type_ignores=[]), str(source), 'exec'), env)
@@ -197,14 +209,55 @@ class ExportChecks(unittest.TestCase):
         self.assertEqual([j['constant_buffer_address'] for j in self.job_history], [False, True])
         self.assertTrue(all(j['attr'] == {} for j in self.job_history))
 
-    def test_failed_optimized_pass_cannot_reuse_baseline_product(self):
+    def assert_fallback(self, key, reason, emitted=(1,)):
+        self.assertEqual(json.loads(self.report.read_text())['failed'], [])
+        lines = [line for line in self.log.getvalue().splitlines() if 'using baseline vertex shader' in line]
+        self.assertEqual(len(lines), 1)
+        self.assertIn('[RED] ' + key, lines[0])
+        self.assertIn(reason, lines[0])
+        with dmsv.Bundle(str(self.out)) as bundle:
+            self.assertEqual([e[0] for e in bundle.entries], list(emitted))
+            entry = next(e for e in bundle.entries if e[0] == int(key, 16))
+            baseline = vertex_module(location=None) if self.behavior == 'baseline-interface-unsupported' else vertex_module()
+            self.assertEqual(bundle.spv(entry), baseline)
+        resource = next(self.root.glob('shvk_*/' + key + '.res.json'))
+        self.assertIs(json.loads(resource.read_text())['constant_buffer_address'], False)
+
+    def test_failed_optimized_pass_uses_baseline_product(self):
         self.stage = 'vs'; self.behavior = 'optimized-missing'
         self.second_shader = True; self.bad_key = '0000000000000002'
-        self.run_export(); self.assert_failed(self.bad_key, 'no output', [1])
+        self.run_export(); self.assert_fallback(self.bad_key, 'no output', [1, 2])
 
-    def test_changed_optimized_input_type_is_rejected(self):
+    def test_changed_optimized_input_type_uses_baseline(self):
         self.stage = 'vs'; self.behavior = 'input-type-change'
-        self.run_export(); self.assert_failed('0000000000000001', 'changed the baseline vertex input interface', [])
+        self.run_export(); self.assert_fallback('0000000000000001', 'changed the baseline vertex input interface')
+
+    def test_unreadable_baseline_interface_skips_only_optimization(self):
+        self.stage = 'vs'; self.behavior = 'baseline-interface-unsupported'
+        self.run_export(); self.assert_fallback('0000000000000001', 'without a supported location')
+        self.assertFalse(any(j['constant_buffer_address'] for j in self.job_history))
+
+    def test_invalid_optimized_products_use_baseline(self):
+        self.stage = 'vs'
+        cases = {'optimized-bad-module': 'SPIR-V', 'optimized-missing-reflection': 'omitted reflection',
+                 'optimized-bad-reflection': 'reflection identity', 'optimized-no-ack': 'did not enable',
+                 'optimized-interface-unsupported': 'without a supported location',
+                 'optimized-launch-failed': 'optimizer unavailable', 'optimized-process-failed': 'injected optimizer failure'}
+        for self.behavior, reason in cases.items():
+            with self.subTest(behavior=self.behavior):
+                self.log = io.StringIO(); self.job_history = []
+                self.run_export(); self.assert_fallback('0000000000000001', reason)
+
+    def test_optimized_binding_mismatch_restores_baseline_reflection_too(self):
+        self.stage = 'vs'; self.behavior = 'optimized-binding-mismatch'
+        self.bindings = [dict(name='vp_s0', binding=3, type='ssbo')]
+        self.run_export(); self.assert_fallback('0000000000000001', 'reflection does not match')
+
+    def test_valid_optimized_product_is_packed(self):
+        self.stage = 'vs'; self.run_export()
+        self.assertNotIn('using baseline vertex shader', self.log.getvalue())
+        with dmsv.Bundle(str(self.out)) as bundle:
+            self.assertEqual(bundle.spv(bundle.entries[0]), vertex_module(id_offset=20))
 
     def test_stale_translator_cannot_silently_skip_interface_baseline(self):
         self.stage = 'vs'; self.behavior = 'old-translator'

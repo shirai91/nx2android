@@ -121,7 +121,6 @@ axis preservation, not game recognition or device behavior.
 
 ## Tests
 
-
 ```
 python -m unittest discover tests
 ```
@@ -136,8 +135,21 @@ skip rather than fail release runners. `test_shader_integer_input_flow` keeps th
 original direct-use inference contract; Function temporaries and vector/copy
 graphs do not gain new inferred types. `test_shader_export_checks` verifies that
 baseline inference precedes address optimization, types remain fixed across
-retries, changed interfaces are rejected, and a failed optimized export cannot
-reuse an unoptimized product.
+retries, and failed or incompatible optimized products fall back to the exact
+baseline SPIR-V and reflection with one diagnostic. Unsupported baseline input
+signatures skip optimization without dropping the shader.
+
+`test_nvn_sampler_cache` exercises the production sampler initializer, finalizer,
+comparison and object layout. It checks that all four formerly skipped filter/wrap
+fields participate in an opaque-object CRC, preserves guard bytes beyond the
+smallest public object, and models hash lookup followed by semantic comparison:
+10,000 alternating requests must retain two entries. The cache model is separate
+from gameplay validation.
+
+`test_vk_pixel_history` exercises production ROI/HDR helpers and mocked Vulkan
+capture/fence/resource behavior. Its harness also runs natively on Android.
+See [diagnostic switches](../.claude/skills/switch-android-port/references/switches.md)
+for pixel-history usage and limits.
 
 `test_fragment_output_masks` compiles the production attachment-state loop and
 checks sparse output maps, absent fragment shaders, channel masks, integer

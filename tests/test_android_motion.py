@@ -77,7 +77,8 @@ static ssize_t ASensorEventQueue_getEvents(ASensorEventQueue *q, ASensorEvent *o
 static void rotation_start(void) {}
 static void rotation_poll(int64_t now) { (void)now; }
 static void shake_sensor(int on) { (void)on; }
-static void pad_publish(void) { atomic_store(&g_pad_btn[0], g_shake_btn); shake_note(); }
+static pthread_mutex_t g_slot_mu = PTHREAD_MUTEX_INITIALIZER;   // the per-player state's lock (each controller a player of its own)
+static void pad_publish(int p) { (void)p; atomic_store(&g_pad_btn[0], g_shake_btn); shake_note(); }
 ''' + sensor + r'''
 static void event(int type, uint64_t time, float x, float y, float z) {
     pending = (ASensorEvent){.type = type, .timestamp = time, .vector = {x, y, z}};
