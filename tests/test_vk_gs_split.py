@@ -15,11 +15,13 @@ class GeometrySplit(unittest.TestCase):
     def test_geometry_effects_are_once_only_and_rasterization_is_independent(self):
         with tempfile.TemporaryDirectory(prefix='nx2a_gs_split_') as tmp:
             exe = Path(tmp) / ('gs_split.exe' if os.name == 'nt' else 'gs_split')
-            subprocess.run([CC, '-std=c11', '-O2', '-Wall', '-Wextra', '-Werror',
-                            str(ROOT / 'tests/vk_gs_split_harness.c'),
-                            str(ROOT / 'nxnative/dm/android/gfx_vk_gs_split.c'), '-o', str(exe)],
-                           check=True, capture_output=True)
-            result = subprocess.run([str(exe)], check=True, capture_output=True, text=True)
+            build = subprocess.run([CC, '-std=c11', '-O2', '-Wall', '-Wextra', '-Werror',
+                                    str(ROOT / 'tests/vk_gs_split_harness.c'),
+                                    str(ROOT / 'nxnative/dm/android/gfx_vk_gs_split.c'), '-o', str(exe)],
+                                   capture_output=True, text=True)
+            self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
+            result = subprocess.run([str(exe)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn('43 cases passed', result.stdout)
 
 

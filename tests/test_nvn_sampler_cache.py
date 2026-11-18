@@ -111,7 +111,9 @@ class SamplerCacheTests(unittest.TestCase):
             source = Path(directory) / 'check.c'
             exe = Path(directory) / 'check.exe'
             source.write_text(harness(), encoding='utf-8')
-            subprocess.run([cc, '-std=c11', '-O2', '-I' + str(NVN), '-I' + str(NVN / 'include'),
-                            str(source), '-o', str(exe)], check=True, capture_output=True)
-            result = subprocess.run([str(exe)], check=True, capture_output=True, text=True)
+            build = subprocess.run([cc, '-std=c11', '-O2', '-I' + str(NVN), '-I' + str(NVN / 'include'),
+                                    str(source), '-o', str(exe)], capture_output=True, text=True)
+            self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
+            result = subprocess.run([str(exe)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn('PASS (10000 requests, 2 entries)', result.stdout)
