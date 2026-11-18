@@ -412,6 +412,11 @@ def main():
                 # A failed process may have written valid products before it stopped.
                 # Keep its diagnostic for keys with no output, and validate each product.
                 batch_errors.update(dict.fromkeys(ch, error))
+    # Establish the interface using exactly main's inference before address sharing.
+    # Inferring from optimized code can both lose old integer inputs and add new
+    # ones. Neither change belongs to an address-only optimization.
+    for k in keys:
+        if stages[k] == 'vs': jobs[k]['constant_buffer_address'] = False
     print(f'translating {len(keys)} shaders in {min(a.jobs, len(keys))} batches ...', flush=True)
     translate(keys)
     # second pass (as the Mac chain's dmsh_build.py finish): vertex shaders with inputs used only as integers, translated again with those inputs reported as uint (int_inputs)
@@ -421,6 +426,8 @@ def main():
         try:
             product = shader_products.output(w, k, STAGES[stages[k]])
             if product is None: continue
+            if product[1].get('constant_buffer_address') is not False:
+                raise ValueError('translator did not disable constant-buffer address optimization')
             extra = {l: t for l, t in int_inputs(product[0]).items() if l not in jobs[k]['attr']}
             if extra:
                 jobs[k]['attr'].update(extra)
@@ -431,6 +438,35 @@ def main():
     if again:
         print(f'translating {len(again)} vertex shaders again with their integer inputs ...', flush=True)
         translate(again)
+    original_inputs, optimized, baselines = {}, [], set()
+    def use_baseline(k, reason):
+        for suffix in ('.spv', '.res.json'):
+            os.replace(os.path.join(w, k + '.base' + suffix), os.path.join(w, k + suffix))
+        baselines.remove(k)
+        reason = ' '.join(reason.splitlines())
+        print(f'[RED] {k}: constant-buffer address optimization skipped ({reason}); using baseline vertex shader', flush=True)
+    for k in keys:
+        if stages[k] != 'vs' or k in failures: continue
+        try:
+            product = shader_products.output(w, k, 0)
+            if product is None: continue
+            if product[1].get('constant_buffer_address') is not False:
+                raise ValueError('translator did not preserve the baseline vertex interface')
+            # Keep both validated baseline files: an optional optimization must
+            # never remove a shader that the original export could ship.
+            for suffix in ('.spv', '.res.json'):
+                os.replace(os.path.join(w, k + suffix), os.path.join(w, k + '.base' + suffix))
+            baselines.add(k)
+            original_inputs[k] = shader_products.vertex_input_signature(product[0])
+            jobs[k]['constant_buffer_address'] = True
+            # Freeze attr: never re-infer from optimized SPIR-V.
+            optimized.append(k)
+        except Exception as e:
+            if k in baselines: use_baseline(k, str(e))
+            else: failures[k] = str(e)
+    if optimized:
+        print(f'optimizing {len(optimized)} vertex shaders with fixed baseline input types ...', flush=True)
+        translate(optimized)
     errs = collections.Counter()
     for r in rs:
         for ln in r.stderr.splitlines():
@@ -438,14 +474,26 @@ def main():
     entries, fails, failed = [], collections.Counter(), []
     expected = [[f'{gs_var[k] if k in gs_var else int(k, 16):016x}', STAGES[stages[k]]] for k in keys]
     if len({k for k, _ in expected}) != len(expected): raise ValueError('shader keys collide with geometry variants')
+    def read_product(k):
+        product = shader_products.output(w, k, STAGES[stages[k]])
+        if product is None: raise ValueError(batch_errors[k] or 'no output')
+        spv, res = product
+        if k in baselines:
+            if res.get('constant_buffer_address') is not True:
+                raise ValueError('translator did not enable constant-buffer address optimization')
+            if shader_products.vertex_input_signature(spv) != original_inputs[k]:
+                raise ValueError('address optimization changed the baseline vertex input interface')
+        binds, local, io = spirv_bindings(spv)
+        shader_products.validate_bindings(binds, res)
+        return spv, res, binds, local, io
     for k in keys:
         try:
             if k in failures: raise ValueError(failures[k])
-            product = shader_products.output(w, k, STAGES[stages[k]])
-            if product is None: raise ValueError(batch_errors[k] or 'no output')
-            spv, res = product
-            binds, local, io = spirv_bindings(spv)
-            shader_products.validate_bindings(binds, res)
+            try: spv, res, binds, local, io = read_product(k)
+            except Exception as e:
+                if k not in baselines: raise
+                use_baseline(k, str(e))
+                spv, res, binds, local, io = read_product(k)
             if k in handle_remaps:
                 spv = remap_handles(spv, *handle_remaps[k])
             st = stages[k]

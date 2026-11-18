@@ -121,16 +121,30 @@ axis preservation, not game recognition or device behavior.
 
 ## Tests
 
+```
+python -m unittest discover tests
+```
+
+`test_shader_constant_buffer_address` executes the production SSA rule through
+a .NET 10 reflection harness. It checks wrapping, truncation, carry bounds, signed
+shifts, near matches, block-local sharing and idempotence across generated graphs.
+SDK, reference-pack, runtime and cached-package prerequisites are checked before
+building. Restore uses an empty local feed with remote sources cleared and NuGet
+audit disabled; build uses `--no-restore`. Missing dependencies and command timeouts
+skip rather than fail release runners. `test_shader_integer_input_flow` keeps the
+original direct-use inference contract; Function temporaries and vector/copy
+graphs do not gain new inferred types. `test_shader_export_checks` verifies that
+baseline inference precedes address optimization, types remain fixed across
+retries, and failed or incompatible optimized products fall back to the exact
+baseline SPIR-V and reflection with one diagnostic. Unsupported baseline input
+signatures skip optimization without dropping the shader.
+
 `test_nvn_sampler_cache` exercises the production sampler initializer, finalizer,
 comparison and object layout. It checks that all four formerly skipped filter/wrap
 fields participate in an opaque-object CRC, preserves guard bytes beyond the
 smallest public object, and models hash lookup followed by semantic comparison:
 10,000 alternating requests must retain two entries. The cache model is separate
 from gameplay validation.
-
-```
-python -m unittest discover tests
-```
 
 `test_vk_pixel_history` exercises production ROI/HDR helpers and mocked Vulkan
 capture/fence/resource behavior. Its harness also runs natively on Android.

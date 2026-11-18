@@ -187,6 +187,10 @@ static class SwshXlate
                 var acc = new Accessor(code, job);
                 // Job debug = false: turn off DebugMode (DebugMode skips the AST optimizer and the output is full of temporaries; semantics unchanged)
                 var flags = (job["debug"] is JsonNode dbg && !(bool)dbg ? 0 : TranslationFlags.DebugMode) | ((string)job["stage"] == "cs" ? TranslationFlags.Compute : 0);
+                // Android first establishes the original input types, then shares addresses
+                // with those same types. This switch is a translation-time operation only.
+                bool addressPass = job["constant_buffer_address"] is JsonNode ca && (bool)ca;
+                if (addressPass) flags |= TranslationFlags.OptimizeConstantBufferAddress;
                 var ctx = Translator.CreateContext(0, acc, new TranslationOptions(TargetLanguage.Spirv, TargetApi.Vulkan, flags));
                 bool geometry = job["geometry_topology"] != null;
                 ShaderProgram p = ctx.Translate(geometry);
@@ -213,6 +217,7 @@ static class SwshXlate
                 var res = new JsonObject
                 {
                     ["key"] = key, ["stage"] = (string)job["stage"], ["notes"] = new JsonArray(acc.Notes.ConvertAll(n => (JsonNode)n).ToArray()),
+                    ["constant_buffer_address"] = addressPass,
                     ["cbufs"] = new JsonArray(), ["sbufs"] = new JsonArray(), ["textures"] = new JsonArray(), ["images"] = new JsonArray(),
                     ["geometry_stride"] = geometry ? ctx.GetResourceReservations().OutputSizePerInvocation : 0,
                     ["uses_frag_coord"] = p.Info.UsesFragCoord, ["frag_out_map"] = p.Info.FragmentOutputMap,

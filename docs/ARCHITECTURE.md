@@ -119,6 +119,21 @@ checks synthetic planes and padding; physical-device qualification is separate.
 
 The shader translator's existing native-perspective compensation rule accepts either outer operand order in `(input * FragCoord.w) * (1 / FragCoord.w)`. Both alpha depth and material variants must reach the same native interpolated input; leaving the multiply/divide round trip in only one variant can change alpha coverage and retain old HDR colour. The FP32, input-load, FragCoord.w and constant-one guards remain in place.
 
+The vertex shader translator simplifies constant-buffer address expressions only
+when exact integer analysis proves a constant vec4 lane. Its affine form retains
+modulo widths and carry bounds, and emitted expressions are shared only within
+one basic block. Floating-point and memory operations are not reassociated.
+Android export determines vertex inputs with the original integer-input inference
+before enabling address sharing. It then fixes those attributes while translating
+the optimized vertex shaders; inference is not repeated on optimized code.
+Every optimized vertex module is checked against the baseline's location,
+component, scalar type, signedness, width and vector/array shape before packing.
+A failed optimization, interface mismatch or unsupported interface keeps the
+validated unoptimized baseline and emits one diagnostic, preserving its original
+SPIR-V and reflection instead of dropping the shader. Other translator callers
+leave this optional pass disabled unless they explicitly request it. No game IDs
+or shader-key allowlists are used.
+
 Opaque NVN sampler objects keep all sampler parameters after an eight-byte header, within the smallest public object's storage. Engines may hash the bytes after that header before calling `SamplerCompare`. Putting filtering or wrap parameters in the skipped header makes different sampler states collide, defeats cache reuse and can exhaust the game's descriptor pool. In Odyssey, duplicate entries accumulated during extended play and repeated scene loads, exhausted the sampler pool and returned sampler ID 0, producing ground grid artifacts. The builder, initializer, comparison, getters and both graphics backends share the same parameter structure; this layout rule does not change filtering defaults.
 
 ## Game profiles on Android
