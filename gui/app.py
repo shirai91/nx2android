@@ -48,13 +48,12 @@ def with_info(field, tip):   # a field with the style's information icon after i
 
 
 # ---------------- Port ----------------
-def sd_warning():   # under the Port tab's "Game data on the SD card" box
-    w = QWidget(); h = QHBoxLayout(w); h.setContentsMargins(0, 0, 0, 0); h.setAlignment(Qt.AlignTop)
-    i = QLabel(); i.setPixmap(QApplication.style().standardIcon(QStyle.SP_MessageBoxWarning).pixmap(16, 16)); i.setAlignment(Qt.AlignTop)
-    t = QLabel('<b>Slow:</b> with the game data on the SD card, installing and uninstalling the game take far longer '
-               '(many GB written to the card, and deleted from it again on an uninstall). Internal storage is much faster.')
-    t.setWordWrap(True); t.setTextFormat(Qt.RichText); t.setAlignment(Qt.AlignLeft | Qt.AlignTop)
-    h.addWidget(i); h.addWidget(t, 1); w.setVisible(False)
+def sd_warning():   # right of the Port tab's "Game data on the SD card" box
+    w = QWidget(); h = QHBoxLayout(w); h.setContentsMargins(0, 0, 0, 0); h.setSpacing(4)
+    i = QLabel(); i.setPixmap(QApplication.style().standardIcon(QStyle.SP_MessageBoxWarning).pixmap(16, 16))
+    t = QLabel('<b>Slow</b> to install and uninstall'); t.setTextFormat(Qt.RichText)
+    w.setToolTip('Installing writes many GB to the SD card and uninstalling deletes them again; internal storage is much faster.')
+    h.addWidget(i); h.addWidget(t); w.setVisible(False)
     return w
 
 
@@ -120,7 +119,8 @@ class PortTab(QWidget):
                              'Raise it (16, 24 …) if the game still runs out. It uses no memory and does not change the speed.')
         f.addRow('App name', self.app_name); f.addRow('Game language', self.language)
         f.addRow('Output folder', path_row(self.out, self.pick_out)); f.addRow('Device', dev); f.addRow('', self.replace_signer)
-        f.addRow('RomFS on the device', romfs); f.addRow('', self.romfs_push); f.addRow('', self.romfs_sd); f.addRow('', self.romfs_sd_warn)
+        f.addRow('RomFS on the device', romfs); f.addRow('', self.romfs_push); sd_row = QWidget(); sr = QHBoxLayout(sd_row); sr.setContentsMargins(0, 0, 0, 0); sr.addWidget(self.romfs_sd); sr.addWidget(self.romfs_sd_warn); sr.addStretch(1)
+        f.addRow('', sd_row)
         f.addRow('Package', self.package); f.addRow('versionCode offset', self.vercode); f.addRow('Extra address space', headroom)
         f.addRow('Vulkan driver', path_row(self.driver, self.pick_driver))
         f.addRow('System font', path_row(self.shared_font, self.pick_shared_font))
