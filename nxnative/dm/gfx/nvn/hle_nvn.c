@@ -1027,7 +1027,34 @@ NVN(nvnCommandBufferClearColorui, void, NVNcommandBuffer *c, int index, const ui
 NVN(nvnCommandBufferClearDepthStencil, void, NVNcommandBuffer *c, float depth, uint32_t dmask, int stencil, int smask) {
     p_clear_ds *r = REC(c, OP_CLEAR_DS, p_clear_ds); *r = (p_clear_ds){depth, (int)B(dmask), stencil, smask};
 }
+// Debug: logs the game's own frame-pointer chain above a call whose width and height match the WxH in the
+// environment value `e` (from DM_NVN_TEXSIZE_CALLER or DM_NVN_VIEWPORT_CALLER). Render targets are usually sized,
+// and viewports set, through generic engine helpers, so the direct caller alone does not tell which pass it is.
+// Walks at most 4 frames and stops at a null, misaligned or non-increasing frame pointer; each chain is logged once.
+static void caller_chain_log(const char *e, const char *what, int w, int h, uint64_t lr, const uint64_t *fp) {
+    int ew, eh;
+    if (!e || sscanf(e, "%dx%d", &ew, &eh) != 2 || ew != w || eh != h) return;
+    uint64_t chain[5] = { lr }; int depth = 1;
+    for (; depth < 5 && fp && !((uintptr_t)fp & 15); depth++) {
+        const uint64_t *up = (const uint64_t *)fp[0];
+        chain[depth] = fp[1];
+        if (!up || up <= fp) { depth++; break; }
+        fp = up;
+    }
+    uint64_t key = (uint64_t)(uintptr_t)what; for (int i = 0; i < depth; i++) key = key * 1000003u ^ chain[i];
+    static uint64_t seen[128]; static int n;
+    for (int i = 0; i < n; i++) if (seen[i] == key) return;
+    if (n < 128) seen[n++] = key;
+    char line[512]; int o = 0;
+    for (int i = 0; i < depth && o < (int)sizeof line - 100; i++) { char at[96]; crash_addr_str(at, sizeof at, chain[i]); o += snprintf(line + o, sizeof line - o, i ? " < %s" : "%s", at); }
+    LOG("[nvn] %s %dx%d from %s", what, w, h, line);
+}
+#define CALLER_CHAIN_LOG(e, what, w, h) caller_chain_log(e, what, (int)(w), (int)(h), (uint64_t)__builtin_return_address(0), (const uint64_t *)*(const uint64_t *)__builtin_frame_address(0))
 NVN(nvnCommandBufferSetViewports, void, NVNcommandBuffer *c, int first, int n, const float *v) {
+    // SetViewports runs hundreds of times a frame: DM_NVN_VIEWPORT_CALLER (also settable live) is re-read every 4096 calls
+    static const char *vp_caller; static unsigned vp_tick;
+    if (!(vp_tick++ & 4095)) vp_caller = getenv("DM_NVN_VIEWPORT_CALLER");
+    if (vp_caller && n > 0) CALLER_CHAIN_LOG(vp_caller, "viewport", v[2], v[3]);
     if (n < 0 || first + n > 16) { LOG("[RED] SetViewports first=%d n=%d", first, n); return; }
     p_viewports *r = REC(c, OP_VIEWPORTS, p_viewports); r->first = first; r->n = n;
     for (int i = 0; i < n; i++) memcpy(r->v[i], v + 4 * i, 16);
@@ -1911,13 +1938,23 @@ static void fstep_tick(const win_t *o) {
 // frame time: over it the scale drops 0.05, under 70% of it the scale rises 0.05, between the lowest scale and 1.0; only while the frame step holds the cap (at a longer
 // hold the GPU clocks down: the pond's GPU p90 read 15-20 ms at 30 fps, and the scale fell to its floor while the CPU was what held the frames back). Tears of the Kingdom's own dynamic resolution
 // never lowered its size on the Adreno 830 (1280x720 handheld at 20 fps on the Great Sky Island); at its pond 1.0 held 30 fps (GPU p50 15.8 ms) and 0.7 held 60 (12.9 ms)
-static float g_dyn_min;   // the lowest scale while on (0 = off)
+// Named levels (a profile's "env DM_DYN_SCALE=<level>" row): low = lowest scale 0.85 against 90% of the frame time, medium = 0.70 against 85%, high = 0.50 against 80%.
+// A number keeps the 85% budget. A game without render-scale stubs gets engine_dyn_tick instead (the engine's own dynamic resolution, steered through the GPU clock it reads).
+static float g_dyn_min, g_dyn_budget = 0.85f;   // the lowest scale while on (0 = off); the share of the cap's frame time the GPU p90 may fill
 static int dyn_scale_on(void) { return g_dyn_min > 0; }
+static float dyn_scale_level(const char *e, float *budget) {
+    *budget = 0.85f;
+    if (!e) return 0;
+    if (!strcmp(e, "low")) { *budget = 0.90f; return 0.85f; }
+    if (!strcmp(e, "medium")) return 0.70f;
+    if (!strcmp(e, "high")) { *budget = 0.80f; return 0.50f; }
+    float m = strtof(e, NULL); return m >= 0.5f && m <= 0.95f ? m : 0;
+}
 static void dyn_scale_tick(uint64_t presents) {
     static float sc = 1.0f; static double win[30]; static int n;
     if (presents % 30 == 0) {
-        const char *e = getenv("DM_DYN_SCALE"); float m = e ? strtof(e, NULL) : 0; if (!(m >= 0.5f && m <= 0.95f)) m = 0;
-        if (m != g_dyn_min) { LOG("[nvn] host dynamic resolution %s (DM_DYN_SCALE=%s)", m > 0 ? "on" : "off", e ? e : ""); g_dyn_min = m; n = 0;
+        const char *e = getenv("DM_DYN_SCALE"); float bud, m = dyn_scale_level(e, &bud);
+        if (m != g_dyn_min || bud != g_dyn_budget) { LOG("[nvn] host dynamic resolution %s (DM_DYN_SCALE=%s: lowest scale %.2f, budget %.0f%% of the frame time)", m > 0 ? "on" : "off", e ? e : "", m, bud * 100); g_dyn_min = m; g_dyn_budget = bud; n = 0;
             if (!m) { sc = 1.0f; memcpy(dm_fps_state + 0x10, &sc, sizeof sc); } }
     }
     if (!g_dyn_min) return;
@@ -1926,18 +1963,64 @@ static void dyn_scale_tick(uint64_t presents) {
     win[n++] = g; if (n < 30) return; n = 0;
     double s[30]; memcpy(s, win, sizeof s);
     for (int i = 1; i < 30; i++) { double x = s[i]; int j = i; while (j && s[j - 1] > x) { s[j] = s[j - 1]; j--; } s[j] = x; }
-    double p90 = s[26], budget = 0.85 * 1000.0 / (fps_step_cap() ? fps_step_cap() : 60);
+    double p90 = s[26], budget = g_dyn_budget * 1000.0 / (fps_step_cap() ? fps_step_cap() : nvn_game_fps());   // no frame step: the rate the game presents at (its interval)
     float nsc = p90 > budget ? sc - 0.05f : p90 < 0.7 * budget ? sc + 0.05f : sc;
     if (nsc < g_dyn_min) nsc = g_dyn_min;
     if (nsc > 1.0f) nsc = 1.0f;
     if (nsc != sc) { static int nlog; if (nlog++ < 100) LOG("[nvn] host dynamic resolution: scale %.2f → %.2f at present %llu (GPU p90 %.1f ms, budget %.1f)", sc, nsc, (unsigned long long)presents, p90, budget);
         sc = nsc; memcpy(dm_fps_state + 0x10, &sc, sizeof sc); }
 }
+// Engine dynamic resolution steering: DM_DYN_SCALE in a game without render-scale stubs (no state page) whose engine runs its own dynamic resolution on the GPU time it
+// measures with NVN counter timestamps (nvnDeviceGetTimestampInNanoseconds). Pokémon Scarlet / Violet's Trinity engine does: it draws its 3D passes into a sub-rectangle of
+// full-size targets (the frame graph's viewport comes from the resource registry's current size, main+0xb53a00 in Violet 4.0.0) and at Violet's first town on the Adreno 740
+// it moved between 1920, 1536 and 1248 px wide on its own. Reporting the GPU clock k times as fast makes every duration the engine measures k times longer, so its
+// controller lowers the resolution as if the GPU were k times slower (Violet with k = 0.1: 1920 px, GPU 31.8 ms, frames 35-39 ms; k = 3: 1248 px, GPU 25.5 ms, 33.5 ms).
+// Every 30 presents the 90th percentile of the real GPU time is compared with the level's budget (dyn_scale_level): over it k grows 15%, under 70% of it k shrinks 15%,
+// between 1 and 1 / (lowest scale)² (the GPU cost follows the area: low 1.38, medium 2.04, high 4.0). k never goes under 1: a level only adds to the engine's own pressure,
+// it never holds a finer resolution than the engine would (at k = 0.1 Violet's frames ran 35-39 ms). Without DM_DYN_SCALE k stays 1 and the engine sees the real times.
+// The engine has a floor of its own (Violet stayed at or above 1248 px of 1920 at k = 4): high saved about 1 ms of GPU time over the engine alone at the first town and its
+// upscale shows stair-stepped edges on hats and hair, so the profile ships low, which only acts in scenes whose GPU p90 passes 90% of the frame time.
+// The reported clock stays continuous and monotonic: each change re-anchors it at the current time (reported = a + (t - b) × k). Two parameter slots, swapped atomically;
+// a change comes at most every 30 presents, long after any reader of the other slot is done.
+typedef struct { double k; uint64_t a, b; } gclk_t;
+static gclk_t g_gclk[2] = {{1, 0, 0}, {1, 0, 0}};
+static _Atomic int g_gclk_i;
+static uint64_t gclk_map(uint64_t t) {
+    const gclk_t *c = &g_gclk[atomic_load_explicit(&g_gclk_i, memory_order_acquire)];
+    if (c->k == 1 && c->a == c->b) return t;
+    double r = (double)c->a + ((double)t - (double)c->b) * c->k; return r > 0 ? (uint64_t)r : 0;
+}
+static void gclk_set(double k) {
+    int i = atomic_load_explicit(&g_gclk_i, memory_order_relaxed); uint64_t now = guest_ns();
+    gclk_t *n = &g_gclk[!i]; n->a = gclk_map(now); n->b = now; n->k = k;
+    atomic_store_explicit(&g_gclk_i, !i, memory_order_release);
+}
+static void engine_dyn_tick(uint64_t presents) {
+    static float lo, bud = 0.85f; static double k = 1, win[30]; static int n;
+    if (presents % 30 == 0) {
+        const char *e = getenv("DM_DYN_SCALE"); float b, m = dyn_scale_level(e, &b);
+        if (m != lo || b != bud) { LOG("[nvn] engine dynamic resolution steering %s (DM_DYN_SCALE=%s: GPU clock factor up to %.2f, budget %.0f%% of the frame time)", m > 0 ? "on" : "off", e ? e : "", m > 0 ? 1.0 / (m * m) : 1.0, b * 100);
+            lo = m; bud = b; n = 0; if (!m && k != 1) { k = 1; gclk_set(1); } }
+    }
+    if (!lo) return;
+    double g = -1; for (uint64_t f = g_frame; f-- > 0 && g_frame - f <= 8;) { g = mtl_gpu_ms(f); if (g >= 0) break; }
+    if (g < 0) return;
+    win[n++] = g; if (n < 30) return; n = 0;
+    double s[30]; memcpy(s, win, sizeof s);
+    for (int i = 1; i < 30; i++) { double x = s[i]; int j = i; while (j && s[j - 1] > x) { s[j] = s[j - 1]; j--; } s[j] = x; }
+    double p90 = s[26], budget = bud * 1000.0 / nvn_game_fps(), kmax = 1.0 / ((double)lo * lo);
+    double nk = p90 > budget ? k * 1.15 : p90 < 0.7 * budget ? k / 1.15 : k;
+    if (nk < 1) nk = 1;
+    if (nk > kmax) nk = kmax;
+    if (nk != k) { static int nlog; if (nlog++ < 100) LOG("[nvn] engine dynamic resolution: GPU clock factor %.2f → %.2f at present %llu (GPU p90 %.1f ms, budget %.1f)", k, nk, (unsigned long long)presents, p90, budget);
+        k = nk; gclk_set(k); }
+}
 NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
     (void)q; win_t *o = (win_t *)w; o->presents++; SEQ("present %d", idx);
     dm_fps_lock_tick();
     if (dm_fps_state) { static int was; int c = fps_step_cap(); if (c != was) { LOG("[nvn] frame step cap %d → %d fps at present %llu%s", was, c, (unsigned long long)o->presents, c == 30 && was == 60 ? " (prerendered movie)" : ""); was = c; } }
     if (dm_fps_state) dyn_scale_tick(o->presents);
+    else engine_dyn_tick(o->presents);
     if (dm_fps_state && o->presents % 30 == 0 && !dyn_scale_on()) {   // DM_RENDER_SCALE changed while the game runs (a DM_CTL "env" line): the render-scale stubs read the state page every frame
         static char last[16] = "-"; const char *rs = getenv("DM_RENDER_SCALE"); if (!rs) rs = "";
         if (last[0] == '-') snprintf(last, sizeof last, "%s", rs);   // the value loader.c applied at start
@@ -2290,7 +2373,8 @@ NVN(nvnSamplerCompare, NVNboolean, const NVNsampler *a, const NVNsampler *b) {
 }
 
 // Texture builder / texture / view
-NVN(nvnTextureBuilderSetSize2D, void, NVNtextureBuilder *b, int w, int h) { TB(b)->d.width = w; TB(b)->d.height = h; TB(b)->d.depth = 1; }
+// DM_NVN_TEXSIZE_CALLER=WxH (live; diagnostic, off when unset): log each distinct caller that sizes a texture at WxH, to find where a game picks its render size
+NVN(nvnTextureBuilderSetSize2D, void, NVNtextureBuilder *b, int w, int h) { CALLER_CHAIN_LOG(getenv("DM_NVN_TEXSIZE_CALLER"), "texture sized", w, h); TB(b)->d.width = w; TB(b)->d.height = h; TB(b)->d.depth = 1; }
 NVN(nvnTextureBuilderSetSize3D, void, NVNtextureBuilder *b, int w, int h, int d) { TB(b)->d.width = w; TB(b)->d.height = h; TB(b)->d.depth = d; }
 NVN(nvnTextureBuilderSetSwizzle, void, NVNtextureBuilder *b, NVNtextureSwizzle r, NVNtextureSwizzle g, NVNtextureSwizzle bl, NVNtextureSwizzle a) {
     tex_builder_t *o = (tex_builder_t *)b; o->set_swz = 1; o->swz = (uint16_t)((r & 7) | (g & 7) << 3 | (bl & 7) << 6 | (a & 7) << 9);
@@ -2430,9 +2514,12 @@ NVN(nvnDeviceGetTextureHandle, NVNtextureHandle, const NVNdevice *d, int tex, in
 // Handle for texel fetches only (Monster Hunter Rise): a fetch reads the texture descriptor and no sampler, so the handle is the texture ID with sampler ID 0
 NVN(nvnDeviceGetTexelFetchHandle, NVNtextureHandle, const NVNdevice *d, int tex) { (void)d; return (NVNtextureHandle)(uint64_t)(uint32_t)tex; }
 // Counter timestamps are 19.2 MHz GPU ticks (nvn_mtl.m gpu_ticks: ns × 12 / 625); convert back to ns. They used to be returned as is, about 52 times smaller than GetCurrentTimestampInNanoseconds, so subtracting one from the other gave garbage
-NVN(nvnDeviceGetTimestampInNanoseconds, uint64_t, const NVNdevice *d, const NVNcounterData *c) { (void)d; return c->timestamp * 625 / 12; }
+NVN(nvnDeviceGetTimestampInNanoseconds, uint64_t, const NVNdevice *d, const NVNcounterData *c) {
+    (void)d; CALLER_CHAIN_LOG(getenv("DM_NVN_TS_CALLER"), "GPU timestamp read", 0, 0);   // DM_NVN_TS_CALLER=0x0: who measures GPU time (a frame-rate or dynamic-resolution controller)
+    return gclk_map(c->timestamp * 625 / 12);
+}
 // Current GPU time (ns): the same clock as the counter timestamps -- the guest clock (guest_ns, nvn_mtl.m gpu_ticks)
-NVN(nvnDeviceGetCurrentTimestampInNanoseconds, uint64_t, const NVNdevice *d) { (void)d; return guest_ns(); }
+NVN(nvnDeviceGetCurrentTimestampInNanoseconds, uint64_t, const NVNdevice *d) { (void)d; return gclk_map(guest_ns()); }
 NVN(nvnDeviceRegisterFastClearColor, NVNboolean, NVNdevice *d, const float *c, NVNformat f) { (void)d; (void)c; (void)f; return 1; }
 // Same as the color one: a fast clear value is only a hint to the Tegra hardware (Tears of the Kingdom registers its depth clear at startup)
 NVN(nvnDeviceRegisterFastClearDepth, NVNboolean, NVNdevice *d, float v) { (void)d; (void)v; return 1; }
