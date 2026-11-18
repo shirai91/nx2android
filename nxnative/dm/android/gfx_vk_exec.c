@@ -2510,8 +2510,7 @@ static void copy_b2t(const p_copy_b2t *c, int to_texture) {
         size_t slice = S.image_stride > 0 ? (size_t)S.image_stride : row * rows;
         if (slice < row * rows || slice > SIZE_MAX / d) { VKRED_ONCE(71, "invalid BC upload slice stride; copy skipped"); return; }
         size_t size = slice * (d - 1) + row * (rows - 1) + bytes;
-        vkpool_t *pool = vk_pool_of(c->src, 1);
-        if (!pool || c->src > pool->end || size > pool->end - c->src) {
+        if (!vk_pool_contains(c->src, size)) {
             VKRED_ONCE(71, "BC upload source outside memory pools; copy skipped"); return;
         }
         size_t pixel = nvn_bc_pixel_size(c->tex->d.format), pitch = (size_t)w * pixel;

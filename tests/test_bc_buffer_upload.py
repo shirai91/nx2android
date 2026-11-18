@@ -39,7 +39,7 @@ static vkfmt_t format={.dec=5,.bw=4,.bh=4,.bpb=8,.dbpp=1};
 static struct {int64_t row_stride,image_stride;} S={24,32};
 static int64_t g_watch_off=-1;
 static uint8_t gpu[64],cpu[64],scratch[128];
-static vkpool_t pool;static unsigned wanted=50,fail_snapshot;
+static vkpool_t pool;static unsigned wanted=50,fail_snapshot,narrow_alias;
 static unsigned snapshots,uploads,ended,phase,expect_error,span_limit=48;
 static unsigned ew=5,eh=3,ed=2,span=48;
 static unsigned logs,log_readback,watches;
@@ -76,7 +76,12 @@ static void vk_watch(vkimg_t *im,const char *s) {
     assert(address>=(uintptr_t)cpu && address<(uintptr_t)cpu+sizeof cpu && w>0 && h>0);
     watches++;watch_address=address;watch_width=w;watch_height=h;
 }
-static vkpool_t *vk_pool_of(uint64_t a,uint64_t n) {return a>=(uintptr_t)cpu && a+n<=pool.end?&pool:NULL;}
+static vkpool_t *vk_pool_of(uint64_t a,uint64_t n) {
+    static vkpool_t alias;
+    if(narrow_alias) {alias=(vkpool_t){(uintptr_t)cpu+12,(uintptr_t)cpu+12};return &alias;}
+    return a>=(uintptr_t)cpu && a+n<=pool.end?&pool:NULL;
+}
+static int vk_pool_contains(uint64_t a,uint64_t n) {return a>=(uintptr_t)cpu && a<=pool.end && n<=pool.end-a;}
 static void vk_readback_unknown(void) {abort();}
 void vk_gpu_wrote(uint64_t a,uint64_t n) {(void)a;(void)n;abort();}
 void vkCmdCopyImageToBuffer(VkCommandBuffer c,VkImage i,VkImageLayout l,VkBuffer b,uint32_t n,const VkBufferImageCopy *r) {
@@ -100,7 +105,8 @@ int main(int argc,char **argv) {
     c.r.width=24;copy_b2t(&c,1);c.r.width=5;
     assert(!uploads && !snapshots && !logs && !watches);
     int fallback_first=argc>2;if(fallback_first)span_limit=47;
-    wanted=enabled&&!fallback_first?20:50;copy_b2t(&c,1);
+    // A smaller overlapping alias must not reject the larger valid CPU span.
+    narrow_alias=1;wanted=enabled&&!fallback_first?20:50;copy_b2t(&c,1);narrow_alias=0;
     assert(logs==1 && log_readback==(unsigned)(enabled&&!fallback_first) && !watches);
     g_watch_off=0;
     if(fallback_first) {
@@ -184,3 +190,47 @@ small_mips:;
             for mode in ([], ['gpu'], ['gpu', 'fallback-first']):
                 result = subprocess.run([str(exe), *mode], capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_source_span_with_overlapping_and_chunked_pools(self):
+        source = (DM / 'android/gfx_vk_core.c').read_text(encoding='utf-8')
+        start = source.index('int vk_pool_contains(')
+        helper = source[start:source.index('\nuint32_t vk_pool_gen(', start)]
+        code = r'''
+#include <stdint.h>
+#include <pthread.h>
+#include <assert.h>
+typedef struct {uint64_t lo,hi,end;} vkpool_t;
+static vkpool_t g_pool[3];static int g_npool;
+static pthread_rwlock_t g_pool_mu=PTHREAD_RWLOCK_INITIALIZER;
+''' + helper + r'''
+int main(void) {
+    // Short overlapping alias first; another original pool spans two chunks.
+    g_pool[0]=(vkpool_t){100,108,108};
+    g_pool[1]=(vkpool_t){100,132,164};
+    g_pool[2]=(vkpool_t){132,164,164};g_npool=3;
+    assert(vk_pool_contains(104,48));
+    assert(vk_pool_contains(128,36));
+    assert(vk_pool_contains(100,64));
+    assert(vk_pool_contains(163,1));
+    assert(!vk_pool_contains(99,1));
+    assert(!vk_pool_contains(164,1));
+    assert(!vk_pool_contains(128,37));
+    assert(!vk_pool_contains(100,0));
+    assert(!vk_pool_contains(UINT64_MAX-3,8));
+    assert(!vk_pool_contains(104,UINT64_MAX));
+    // Physical pools that happen to be adjacent do not grant a larger span.
+    g_pool[1].end=132;
+    assert(!vk_pool_contains(128,8));
+    assert(vk_pool_contains(132,32));
+    g_pool[0]=(vkpool_t){UINT64_MAX-8,UINT64_MAX,UINT64_MAX};g_npool=1;
+    assert(vk_pool_contains(UINT64_MAX-8,8));
+    assert(!vk_pool_contains(UINT64_MAX-8,9));
+}
+'''
+        with tempfile.TemporaryDirectory() as folder:
+            src, exe = Path(folder) / 'span.c', Path(folder) / 'span'
+            src.write_text(code, encoding='utf-8')
+            sanitize = ['-fsanitize=undefined', '-fno-sanitize-recover=all'] if host_cc.ubsan() else []
+            subprocess.run(['cc', '-D_GNU_SOURCE', '-std=c11', '-pthread',
+                            *sanitize, str(src), '-o', str(exe)], check=True)
+            subprocess.run([str(exe)], check=True)

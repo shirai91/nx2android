@@ -980,6 +980,20 @@ again:   // (pool_back found another pool in the entry: the one looked up was re
     return r;
 }
 vkpool_t *vk_pool_of(uint64_t addr, uint64_t len) { return pool_find(addr, len, 1); }
+int vk_pool_contains(uint64_t addr, uint64_t len) {
+    // A one-byte pool lookup can pick a shorter overlapping alias. Validate the
+    // whole guest span against every containing pool's original end, without
+    // requiring one GPU buffer across ZC_CHUNK boundaries or backing lazy pools.
+    if (!len) return 0;
+    int found = 0;
+    pthread_rwlock_rdlock(&g_pool_mu);
+    for (int i = 0; i < g_npool; i++) {
+        const vkpool_t *p = &g_pool[i];
+        if (addr >= p->lo && addr < p->hi && addr <= p->end && len <= p->end - addr) { found = 1; break; }
+    }
+    pthread_rwlock_unlock(&g_pool_mu);
+    return found;
+}
 uint32_t vk_pool_gen(void) { return __atomic_load_n(&g_pool_gen, __ATOMIC_ACQUIRE); }   // pools added or removed (gfx_vk_exec.c's descriptor set memo: vk_pool_of's results hold while it is unchanged)
 int vk_buf_at(uint64_t addr, uint64_t len, VkBuffer *buf, VkDeviceSize *off) {
     vkpool_t *p = vk_pool_of(addr, len ? len : 1);
