@@ -71,6 +71,7 @@ void vk_init(void);   // once, from mtl_init or the first use
 // ---- memory pools (gfx_vk_core.c): the guest's pool memory is GPU memory (AHardwareBuffer mapped over it) ----
 typedef struct { uint64_t lo, hi; VkBuffer buf; VkDeviceMemory mem; void *ahb; int zero_copy, noncoherent; uint8_t *shadow, *baseline; uint64_t serial, base, end; int flags, synced, baseline_complete; uint64_t stamp, stamp0; const void *span; uint64_t boff; void *slab; uint32_t slot; int used, lazy; uint32_t lazy_n; uint64_t lazy_at, left; } vkpool_t;   // used: vk_pool_of has found it (DM_VK_MEMLOG); lazy: 1, no buffer until the GPU first uses it (pool_back), 2, that failed for good; lazy_n, lazy_at: failed tries, no try before (pool_ns); left: a length from lo that covers the pages a failed try left on a buffer it dropped (copied back when the pool is removed, unless a later try covered them); boff: [lo, hi) is at this offset of buf (a slab slot; 0 otherwise); serial: unique per pool made (caches of views over a pool's buffer key on it); [base, end): the game's pool, of which [lo, hi) is one chunk (ZC_CHUNK); flags: the NVN pool's (vk_pool_set_flags); baseline: last synchronized GPU-copy contents; baseline_complete: refreshed by a full completion merge, consumed by the next sync; synced, stamp, stamp0, span: a copied pool's incremental sync
 vkpool_t *vk_pool_of(uint64_t addr, uint64_t len);   // the pool containing [addr, addr+len), NULL if none
+int vk_pool_contains(uint64_t addr, uint64_t len); // CPU source span within any guest pool, including chunk boundaries and overlapping pools
 int vk_buf_at(uint64_t addr, uint64_t len, VkBuffer *buf, VkDeviceSize *off);   // GPU buffer + offset of a pool address range
 // Pools that could not be made zero-copy keep a GPU copy refreshed before each submission (vk_pools_sync, called from mtl_sub_begin)
 void vk_pools_sync(VkCommandBuffer cb);
@@ -83,6 +84,7 @@ void vk_readback_unknown(void);   // force full cached-pool merge for this submi
 int vk_sub_open(void);                 // a submission is being recorded
 VkCommandBuffer vk_upload_cmd(void);   // the current submission's upload command buffer (runs before the main one)
 void *vk_scratch(VkDeviceSize n, VkDeviceSize align, VkBuffer *buf, VkDeviceSize *off);   // host-visible memory that lives until this submission completes
+int vk_buffer_snapshot(VkBuffer src, VkDeviceSize off, size_t len, void *dst); // ordered readback outside a pass; 0: submission refused, caller skips the copy
 void vk_defer_free_buffer(VkBuffer b, VkDeviceMemory m);   // destroyed once the GPU has passed the current submission
 void vk_defer_free_image(VkImage i, VkDeviceMemory m);
 VkDeviceMemory vk_image_memory(const VkMemoryRequirements *req, uint32_t type, VkDeviceSize *off, void **sub);   // NULL on failure; *sub: a slot of a shared block, or NULL (memory of its own)
