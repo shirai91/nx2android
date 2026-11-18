@@ -137,6 +137,7 @@ def update(adb, package, jobs=os.cpu_count() or 8):
     try: manifest = json.loads(adb.read_text(f'{files}/nx2a-data.json') or '{}')
     except ValueError: manifest = {}
     if not isinstance(manifest, dict): manifest = {}
+    if manifest.get('runtime_bundle'): raise BuildError(f'{package}: bundled runtime host updates are not supported; port the game again')
     title_id = manifest.get('title_id', '')
     if not title_id: raise BuildError(f'{package}: no title ID in {files}/nx2a-data.json (a data pack made before nx2android wrote one): port the game again')
     if not isinstance(title_id, str) or not TITLE_ID.fullmatch(title_id): raise BuildError(f'{package}: {title_id!r} in {files}/nx2a-data.json is not a title ID (16 hexadecimal digits)')

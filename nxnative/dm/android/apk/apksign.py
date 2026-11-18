@@ -1,6 +1,7 @@
 # apksign.py: the stored ZIP and the APK Signature Scheme v2 signer (RSA-2048, SHA-256, self-signed certificate) of mkapk.py, with the Python standard library only.
 # mkapk.py builds an APK with them; apkdriver.py rebuilds an installed one with another Vulkan driver library
-import hashlib, secrets, struct, zlib
+import hashlib, os, secrets, struct, tempfile, zlib
+from pathlib import Path
 
 # ---------------- RSA, DER, self-signed certificate ----------------
 def is_prime(n):
@@ -78,13 +79,65 @@ def chunked_sha256(sections):
             digests.append(hashlib.sha256(b'\xa5' + struct.pack('<I', len(c)) + c).digest())
     return hashlib.sha256(b'\x5a' + struct.pack('<I', len(digests)) + b''.join(digests)).digest()
 def sign_v2(zip_entries, cd, eocd, k, crt):
-    ALG = 0x0103   # RSASSA-PKCS1-v1_5 with SHA2-256
     digest = chunked_sha256([zip_entries, cd, eocd])   # EOCD's CD offset still points at the CD start = where the signing block will begin
+    block = signing_block(digest, k, crt)
+    new_eocd = eocd[:16] + struct.pack('<I', len(zip_entries) + len(block)) + eocd[20:]
+    return zip_entries + block + cd + new_eocd
+
+def signing_block(digest, k, crt):
+    ALG = 0x0103   # RSASSA-PKCS1-v1_5 with SHA2-256
     signed = lp(lp(struct.pack('<I', ALG) + lp(digest))) + lp(lp(crt)) + lp(b'')
     signer = lp(signed) + lp(lp(struct.pack('<I', ALG) + lp(rsa_sign(k, signed)))) + lp(spki(k))
     value = lp(lp(signer))
     pair = struct.pack('<QI', 4 + len(value), 0x7109871a) + value
     size = len(pair) + 8 + 16
-    block = struct.pack('<Q', size) + pair + struct.pack('<Q', size) + b'APK Sig Block 42'
-    new_eocd = eocd[:16] + struct.pack('<I', len(zip_entries) + len(block)) + eocd[20:]
-    return zip_entries + block + cd + new_eocd
+    return struct.pack('<Q', size) + pair + struct.pack('<Q', size) + b'APK Sig Block 42'
+
+def write_apk(entries, output: Path, k, crt):
+    output = Path(output)
+    with tempfile.TemporaryDirectory(dir=output.absolute().parent) as tmp:
+        unsigned = Path(tmp) / 'unsigned'
+        final = Path(tmp) / 'signed'
+        cd = bytearray()
+        dos_date = (2026 - 1980) << 9 | 1 << 5 | 1
+        with unsigned.open('wb') as out:
+            for name, data, align in entries:
+                nb = name.encode()
+                if isinstance(data, Path):
+                    crc, size = 0, 0
+                    with data.open('rb') as src:
+                        while chunk := src.read(1 << 20):
+                            crc = zlib.crc32(chunk, crc); size += len(chunk)
+                else:
+                    crc, size = zlib.crc32(data), len(data)
+                off = out.tell()
+                pad = -(off + 30 + len(nb)) % align
+                if 0 < pad < 4: pad += align
+                extra = struct.pack('<HH', 0xd935, pad - 4) + b'\0' * (pad - 4) if pad else b''
+                out.write(struct.pack('<IHHHHHIIIHH', 0x04034b50, 10, 0, 0, 0, dos_date, crc, size, size, len(nb), len(extra)) + nb + extra)
+                if isinstance(data, Path):
+                    written, actual_crc = 0, 0
+                    with data.open('rb') as src:
+                        while chunk := src.read(1 << 20):
+                            out.write(chunk); written += len(chunk); actual_crc = zlib.crc32(chunk, actual_crc)
+                    if written != size or actual_crc != crc: raise ValueError(f'file changed while packing: {data}')
+                else: out.write(data)
+                cd += struct.pack('<IHHHHHHIIIHHHHHII', 0x02014b50, 10, 10, 0, 0, 0, dos_date, crc, size, size, len(nb), 0, 0, 0, 0, 0, off) + nb
+            offset = out.tell()
+        eocd = struct.pack('<IHHHHIIH', 0x06054b50, 0, 0, len(entries), len(entries), len(cd), offset, 0)
+        digests = []
+        with unsigned.open('rb') as src:
+            while chunk := src.read(1 << 20):
+                digests.append(hashlib.sha256(b'\xa5' + struct.pack('<I', len(chunk)) + chunk).digest())
+        for section in (cd, eocd):
+            for i in range(0, len(section), 1 << 20):
+                chunk = section[i:i + (1 << 20)]
+                digests.append(hashlib.sha256(b'\xa5' + struct.pack('<I', len(chunk)) + chunk).digest())
+        digest = hashlib.sha256(b'\x5a' + struct.pack('<I', len(digests)) + b''.join(digests)).digest()
+        block = signing_block(digest, k, crt)
+        with final.open('wb') as out, unsigned.open('rb') as src:
+            while chunk := src.read(1 << 20): out.write(chunk)
+            out.write(block)
+            out.write(cd)
+            out.write(eocd[:16] + struct.pack('<I', offset + len(block)) + eocd[20:])
+        os.replace(final, output)

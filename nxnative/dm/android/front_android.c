@@ -81,6 +81,9 @@ JNIEXPORT void JNICALL Java_org_nx2a_ExternalActivity_externalSurface(JNIEnv *en
 void dm_focus_set(int st); void dm_audio_suspend(int on); void guest_clock_freeze_for(int reason, int on); void dm_gfx_suspend(int on);
 // ---- settings (the pause menu's), kept in the files folder as KEY=VALUE lines ----
 static char g_root[512];
+static char g_runtime[1024];
+static jclass g_runtime_class;
+static jmethodID g_runtime_prepare;
 static _Atomic int g_set_overlay = 1, g_set_rumble = 1, g_set_fps;   // the gamepad shown; rumble and tap vibration; the frame rate counter (top left)
 static _Atomic int g_set_opacity = 60;   // the gamepad's opacity, percent (OV_OPACITY_MIN..MAX: the menu's Opacity slider)
 static _Atomic int g_set_grid;   // the layout editor's Snap to grid
@@ -158,7 +161,7 @@ static void on_pause(ANativeActivity *a) { (void)a; go_background(); dm_perf_gpu
 static void on_window_focus(ANativeActivity *a, int focused) { (void)a; if (atomic_load(&g_running) && !atomic_load(&g_bg)) dm_focus_set(focused ? 1 : 2); }
 // A save manager's request, or a RomFS the app cannot read (romfs_readable), asked the app to end (ANativeActivity_onCreate): Activity.finish() when it is resumed, through JNI on the main thread.
 // ANativeActivity_finish, from onCreate or from here, left the activity on the screen (Y700, Android 16), and porter's am start -W waited out its timeout
-static int g_quit;
+static _Atomic int g_quit;
 static void act_finish(ANativeActivity *a) {
     JNIEnv *E = a->env; jclass c = (*E)->GetObjectClass(E, a->clazz); jmethodID m = c ? (*E)->GetMethodID(E, c, "finish", "()V") : NULL;
     if (m) (*E)->CallVoidMethod(E, a->clazz, m);
@@ -1224,9 +1227,79 @@ static void on_queue_destroyed(ANativeActivity *a, AInputQueue *q) { (void)a; AI
 
 // ---- the host ----
 int main(int argc, char **argv);   // dm/host/main.c
+JNIEXPORT void JNICALL Java_org_nx2a_RuntimeBundle_startupTrace(JNIEnv *env, jclass cls, jstring text) {
+    (void)cls;
+    const char *message = (*env)->GetStringUTFChars(env, text, NULL);
+    if (message) { LOG("%s", message); (*env)->ReleaseStringUTFChars(env, text, message); }
+}
+static void runtime_exception(JNIEnv *env, const char *where) {
+    jthrowable error = (*env)->ExceptionOccurred(env); (*env)->ExceptionClear(env);
+    jclass log_type = NULL, type = NULL; jstring text = NULL; const char *message = NULL;
+    log_type = (*env)->FindClass(env, "android/util/Log");
+    if (!log_type || (*env)->ExceptionCheck(env)) goto exception_fallback;
+    jmethodID stack = (*env)->GetStaticMethodID(env, log_type, "getStackTraceString", "(Ljava/lang/Throwable;)Ljava/lang/String;");
+    if (!stack || (*env)->ExceptionCheck(env)) goto exception_fallback;
+    text = (*env)->CallStaticObjectMethod(env, log_type, stack, error);
+    if (!text || (*env)->ExceptionCheck(env)) goto exception_fallback;
+    message = (*env)->GetStringUTFChars(env, text, NULL);
+    if (message && message[0]) goto exception_done;
+exception_fallback:
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+    if (message) { (*env)->ReleaseStringUTFChars(env, text, message); message = NULL; }
+    if (text) { (*env)->DeleteLocalRef(env, text); text = NULL; }
+    type = (*env)->GetObjectClass(env, error);
+    if (!type || (*env)->ExceptionCheck(env)) goto exception_done;
+    jmethodID to_string = (*env)->GetMethodID(env, type, "toString", "()Ljava/lang/String;");
+    if (!to_string || (*env)->ExceptionCheck(env)) goto exception_done;
+    text = (*env)->CallObjectMethod(env, error, to_string);
+    if (!text || (*env)->ExceptionCheck(env)) goto exception_done;
+    message = (*env)->GetStringUTFChars(env, text, NULL);
+exception_done:
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+    LOG("[RED] runtime %s failed:\n%s", where, message ? message : "cannot describe Java exception");
+    if (message) (*env)->ReleaseStringUTFChars(env, text, message);
+    if (text) (*env)->DeleteLocalRef(env, text);
+    if (type) (*env)->DeleteLocalRef(env, type);
+    if (log_type) (*env)->DeleteLocalRef(env, log_type);
+    (*env)->DeleteLocalRef(env, error);
+}
+static void runtime_default(const char *key, const char *name) {
+    char old[1100], legacy[1100], path[1200];
+    snprintf(old, sizeof old, "%s/%s", g_root, name);
+    const char *tail = strstr(g_root, "/Android/data/");
+    snprintf(legacy, sizeof legacy, "/sdcard%s/%s", tail ? tail : "", name);
+    snprintf(path, sizeof path, "%s/%s", g_runtime, name);
+    const char *value = getenv(key);
+    if (!access(path, R_OK) && (!value || !strcmp(value, old) || (tail && !strcmp(value, legacy)))) setenv(key, path, 1);
+}
 static void *host_thread(void *a) {
     (void)a;
-    char mods[600]; snprintf(mods, sizeof mods, "%s/mods", g_root);
+    if (g_runtime_class) {
+        JavaVM *vm = g_act->vm; JNIEnv *env;
+        LOG("[runtime] preparing bundled runtime");
+        if ((*vm)->AttachCurrentThread(vm, &env, NULL) != JNI_OK) {
+            LOG("[RED] runtime preparation failed: cannot attach to the Java VM"); g_quit = 1; return NULL;
+        }
+        jstring root = (*env)->CallStaticObjectMethod(env, g_runtime_class, g_runtime_prepare, g_act->clazz);
+        if ((*env)->ExceptionCheck(env)) {
+            runtime_exception(env, "preparation");
+        } else if (root) {
+            const char *value = (*env)->GetStringUTFChars(env, root, NULL);
+            snprintf(g_runtime, sizeof g_runtime, "%s", value);
+            (*env)->ReleaseStringUTFChars(env, root, value); (*env)->DeleteLocalRef(env, root);
+        } else LOG("[RED] runtime preparation failed: bundled manifest is unavailable");
+        (*env)->DeleteGlobalRef(env, g_runtime_class); g_runtime_class = NULL;
+        (*vm)->DetachCurrentThread(vm);
+        if (!g_runtime[0]) { g_quit = 1; return NULL; }
+        runtime_default("DM_VK_SHADERS", "shaders.dmsv");
+        runtime_default("DM_SHARED_FONT_EXT", "nintendo_ext.ttf");
+        runtime_default("DM_FPS_LOCKS", "fpslock.tsv");
+        LOG("[runtime] bundled runtime ready: %s", g_runtime);
+        LOG("[runtime] resolved shaders=%s font=%s fpslocks=%s", getenv("DM_VK_SHADERS") ? getenv("DM_VK_SHADERS") : "(unset)",
+            getenv("DM_SHARED_FONT_EXT") ? getenv("DM_SHARED_FONT_EXT") : "(unset)", getenv("DM_FPS_LOCKS") ? getenv("DM_FPS_LOCKS") : "(unset)");
+    }
+    char mods[1100]; snprintf(mods, sizeof mods, "%s/mods", g_runtime[0] ? g_runtime : g_root);
+    LOG("[runtime] resolved modules=%s", mods);
     char *argv[] = {"dmhost", mods, NULL};
     atomic_store(&g_running, 1);
     int rc = main(2, argv);
@@ -1315,12 +1388,53 @@ __attribute__((visibility("default"))) void ANativeActivity_onCreate(ANativeActi
     snprintf(p, sizeof p, "%s/log.txt", g_root); char prev[720]; snprintf(prev, sizeof prev, "%s/log.prev.txt", g_root); rename(p, prev);
     if (!freopen(p, "w", stderr)) __android_log_print(ANDROID_LOG_ERROR, "dmhost", "cannot write %s", p);
     setvbuf(stderr, NULL, _IOLBF, 0);
+    LOG("[runtime] startup title=%s host_compiled=%s %s", DM_ANDROID_TITLE_ID, __DATE__, __TIME__);
     setenv("DM_ROOT", g_root, 1);
     snprintf(p, sizeof p, "%s/RomFS", g_root); setenv("DM_ROMFS", p, 0);
     snprintf(p, sizeof p, "%s/save", act->internalDataPath); mkdir(p, 0700); setenv("DM_SAVE", p, 0);
     snprintf(p, sizeof p, "%s/temp", act->internalDataPath); mkdir(p, 0700); setenv("DM_TEMP", p, 0);
     snprintf(p, sizeof p, "%s/shaders.dmsv", g_root); setenv("DM_VK_SHADERS", p, 0);
     snprintf(p, sizeof p, "%s/env.txt", g_root); env_file(p);
+    AAsset *bundle = AAssetManager_open(act->assetManager, "runtime/manifest.json", AASSET_MODE_STREAMING);
+    if (bundle) {
+        AAsset_close(bundle);
+        LOG("[runtime] helper lookup BEGIN via activity class loader");
+        jclass activity_type = NULL, loader_type = NULL, cls = NULL;
+        jobject loader = NULL; jstring name = NULL;
+        activity_type = (*env)->GetObjectClass(env, act->clazz);
+        if (!activity_type || (*env)->ExceptionCheck(env)) goto runtime_lookup_done;
+        jmethodID get_loader = (*env)->GetMethodID(env, activity_type, "getClassLoader", "()Ljava/lang/ClassLoader;");
+        if (!get_loader || (*env)->ExceptionCheck(env)) goto runtime_lookup_done;
+        loader = (*env)->CallObjectMethod(env, act->clazz, get_loader);
+        if (!loader || (*env)->ExceptionCheck(env)) goto runtime_lookup_done;
+        LOG("[runtime] helper activity class loader obtained");
+        loader_type = (*env)->GetObjectClass(env, loader);
+        if (!loader_type || (*env)->ExceptionCheck(env)) goto runtime_lookup_done;
+        jmethodID load_class = (*env)->GetMethodID(env, loader_type, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;");
+        if (!load_class || (*env)->ExceptionCheck(env)) goto runtime_lookup_done;
+        name = (*env)->NewStringUTF(env, "org.nx2a.RuntimeBundle");
+        if (!name || (*env)->ExceptionCheck(env)) goto runtime_lookup_done;
+        cls = (*env)->CallObjectMethod(env, loader, load_class, name);
+        if (!cls || (*env)->ExceptionCheck(env)) goto runtime_lookup_done;
+        LOG("[runtime] helper class loaded; resolving prepare");
+        JNINativeMethod trace_method = {"startupTrace", "(Ljava/lang/String;)V", (void *)Java_org_nx2a_RuntimeBundle_startupTrace};
+        if ((*env)->RegisterNatives(env, cls, &trace_method, 1) != JNI_OK || (*env)->ExceptionCheck(env)) goto runtime_lookup_done;
+        g_runtime_prepare = (*env)->GetStaticMethodID(env, cls, "prepare", "(Landroid/content/Context;)Ljava/lang/String;");
+        if (!g_runtime_prepare || (*env)->ExceptionCheck(env)) goto runtime_lookup_done;
+        g_runtime_class = (*env)->NewGlobalRef(env, cls);
+runtime_lookup_done:
+        if ((*env)->ExceptionCheck(env)) {
+            runtime_exception(env, "helper lookup");
+            if (g_runtime_class) { (*env)->DeleteGlobalRef(env, g_runtime_class); g_runtime_class = NULL; }
+        }
+        if (name) (*env)->DeleteLocalRef(env, name);
+        if (cls) (*env)->DeleteLocalRef(env, cls);
+        if (loader_type) (*env)->DeleteLocalRef(env, loader_type);
+        if (loader) (*env)->DeleteLocalRef(env, loader);
+        if (activity_type) (*env)->DeleteLocalRef(env, activity_type);
+        if (!g_runtime_class || !g_runtime_prepare) { LOG("[RED] runtime preparation failed: APK runtime helper is unavailable"); g_quit = 1; return; }
+        LOG("[runtime] helper method cached");
+    }
     { const char *e = getenv("DM_MENU_BUTTON"); if (e && *e && !atoi(e)) { atomic_store(&g_menu_btn, 0); LOG("[overlay] DM_MENU_BUTTON=0: no menu button (Back opens the menu)"); } }
     if (mod_start) {
         jstring title = (*env)->NewStringUTF(env, DM_ANDROID_TITLE_ID);
