@@ -72,7 +72,7 @@ class PortTab(QWidget):
         gl.addWidget(self.card)
         v.addWidget(g)
 
-        o = QGroupBox('Options'); f = QFormLayout(o)
+        o = QGroupBox('Options'); inner = QWidget(); f = QFormLayout(inner)   # the title stays put; only the rows scroll
         self.app_name = QLineEdit(); self.app_name.setPlaceholderText('the game\'s name')
         self.language = QComboBox()
         for code, name in LANGUAGES: self.language.addItem(name, code)
@@ -126,8 +126,9 @@ class PortTab(QWidget):
         f.addRow('System font', path_row(self.shared_font, self.pick_shared_font))
         f.addRow('', self.fps60); f.addRow('', self.touch); f.addRow('', self.no_menu_button); f.addRow('', self.mt_replay); f.addRow('', self.debug); f.addRow('', self.experimental)
         scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setFrameShape(QFrame.NoFrame); scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        scroll.setMinimumHeight(120); scroll.setWidget(o)   # the options scroll, so the tab fits a 1080p screen
-        v.addWidget(scroll, 3)
+        scroll.setMinimumHeight(120); scroll.setWidget(inner)   # the options scroll, so the tab fits a 1080p screen
+        ol = QVBoxLayout(o); ol.setContentsMargins(4, 4, 4, 4); ol.addWidget(scroll)
+        v.addWidget(o, 3)
 
         bar = QHBoxLayout()
         self.port_btn = QPushButton('Port'); self.port_btn.setEnabled(False); self.port_btn.setMinimumHeight(36)
@@ -529,7 +530,7 @@ class SavesTab(QWidget):
 class Window(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle('nx2android'); self.resize(980, 820)
+        self.setWindowTitle('nx2android'); self.resize(997, 820)
         self.tabs = QTabWidget()
         self.port = PortTab(self); self.setup = SetupTab(self); self.games = GamesTab(); self.saves = SavesTab()
         self.tabs.addTab(self.port, 'Port'); self.tabs.addTab(self.setup, 'Setup'); self.tabs.addTab(self.games, 'Games'); self.tabs.addTab(self.saves, 'Saves')
