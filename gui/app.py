@@ -33,14 +33,14 @@ def size(b):
 
 
 def path_row(edit, pick):   # a line edit with a Browse button
-    w = QWidget(); h = QHBoxLayout(w); h.setContentsMargins(0, 0, 0, 0)
+    w = QWidget(); h = QHBoxLayout(w); h.setContentsMargins(0, 0, 0, 0); h.setAlignment(Qt.AlignTop)
     b = QPushButton('Browse…'); b.clicked.connect(pick)
     h.addWidget(edit, 1); h.addWidget(b)
     return w
 
 
 def with_info(field, tip):   # a field with the style's information icon after it, which shows tip on hover (the field shows it too)
-    w = QWidget(); h = QHBoxLayout(w); h.setContentsMargins(0, 0, 0, 0)
+    w = QWidget(); h = QHBoxLayout(w); h.setContentsMargins(0, 0, 0, 0); h.setAlignment(Qt.AlignTop)
     i = QLabel(); i.setPixmap(QApplication.style().standardIcon(QStyle.SP_MessageBoxInformation).pixmap(16, 16)); i.setCursor(Qt.WhatsThisCursor)
     i.setToolTip(tip); field.setToolTip(tip)
     h.addWidget(field); h.addWidget(i); h.addStretch(1)
@@ -48,6 +48,16 @@ def with_info(field, tip):   # a field with the style's information icon after i
 
 
 # ---------------- Port ----------------
+def sd_warning():   # under the Port tab's "Game data on the SD card" box
+    w = QWidget(); h = QHBoxLayout(w); h.setContentsMargins(0, 0, 0, 0); h.setAlignment(Qt.AlignTop)
+    i = QLabel(); i.setPixmap(QApplication.style().standardIcon(QStyle.SP_MessageBoxWarning).pixmap(16, 16)); i.setAlignment(Qt.AlignTop)
+    t = QLabel('<b>Slow:</b> with the game data on the SD card, installing and uninstalling the game take far longer '
+               '(many GB written to the card, and deleted from it again on an uninstall). Internal storage is much faster.')
+    t.setWordWrap(True); t.setTextFormat(Qt.RichText); t.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+    h.addWidget(i); h.addWidget(t, 1); w.setVisible(False)
+    return w
+
+
 class PortTab(QWidget):
     def __init__(self, win):
         super().__init__()
@@ -79,7 +89,8 @@ class PortTab(QWidget):
                      'Empty: as the device has it (an SD install\'s card folder too). "app": the RomFS back in the app\'s files folder (from the SD card too). Install only: the port itself does not change.')
         self.romfs_push = QCheckBox('Push the game\'s RomFS into that folder (an empty folder, or one of this game: files are added, never deleted)')   # porter install --romfs-push
         self.romfs_sd = QCheckBox('Game data on the SD card (the app itself stays in internal storage: Android installs apps only to an adopted SD card)')   # porter install --romfs-at sd
-        self.romfs_sd.toggled.connect(lambda on: (self.romfs_at.setEnabled(not on), self.romfs_push.setEnabled(not on)))
+        self.romfs_sd_warn = sd_warning()   # shown while the SD checkbox is on
+        self.romfs_sd.toggled.connect(lambda on: (self.romfs_at.setEnabled(not on), self.romfs_push.setEnabled(not on), self.romfs_sd_warn.setVisible(on)))
         romfs = with_info(self.romfs_at, romfs_tip); romfs.layout().setStretch(0, 1)
         self.package = QLineEdit(); self.package.setPlaceholderText('the profile\'s package')   # porter port --package: a test install beside the player's other build
         self.package.setToolTip('Install under another package than the profile\'s (org.nx2a.<game>.test), beside your other build of the game.\n'
@@ -109,7 +120,7 @@ class PortTab(QWidget):
                              'Raise it (16, 24 …) if the game still runs out. It uses no memory and does not change the speed.')
         f.addRow('App name', self.app_name); f.addRow('Game language', self.language)
         f.addRow('Output folder', path_row(self.out, self.pick_out)); f.addRow('Device', dev); f.addRow('', self.replace_signer)
-        f.addRow('RomFS on the device', romfs); f.addRow('', self.romfs_push); f.addRow('', self.romfs_sd)
+        f.addRow('RomFS on the device', romfs); f.addRow('', self.romfs_push); f.addRow('', self.romfs_sd); f.addRow('', self.romfs_sd_warn)
         f.addRow('Package', self.package); f.addRow('versionCode offset', self.vercode); f.addRow('Extra address space', headroom)
         f.addRow('Vulkan driver', path_row(self.driver, self.pick_driver))
         f.addRow('System font', path_row(self.shared_font, self.pick_shared_font))
