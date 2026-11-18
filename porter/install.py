@@ -14,18 +14,26 @@ from porter.upstream import BuildError, PROG, say
 
 # A pack of a profile with romfs zstd holds packed RomFS files (porter/romfs_pack.py), which only this app reads: pushed into a folder another app reads (--romfs-at, --romfs-push),
 # they would replace that app's own files of the same names and it would stop working. Such a pack goes only into the app's files folder, or the app's own folder on the SD card (--romfs-at sd)
-PACKED_ELSEWHERE = ('a data pack with a compressed RomFS (android.tsv romfs zstd) goes only into the app\'s own files folder: its packed files would replace the files of a '
-                    'RomFS folder that another app reads. Install it with --romfs-at app')
+PACKED_ELSEWHERE = ('a data pack with a compressed RomFS (android.tsv romfs zstd) goes only into the app\'s own folders: its packed files would replace the files of a '
+                    'RomFS folder that another app reads. Install it with --romfs-at app, or --romfs-at sd (the app\'s own folder on the SD card)')
 def packed_romfs(data):   # whether the pack holds packed RomFS files (its env.txt turns the host's reader on)
     try: return 'DM_ROMFS_ZSTD=1' in (Path(data) / 'env.txt').read_text(encoding='utf-8').split()
     except OSError: return False
 APP = 'app'                                                  # --romfs-at app: the RomFS in the app's files folder (the default)
 NO_SD = 'no-sd'                                              # --romfs-at no-sd: the RomFS back in the app's files folder when an earlier --romfs-at sd install put it on the SD card; otherwise as without --romfs-at
 SD = 'sd'                                                    # --romfs-at sd: the RomFS in <the SD card>/Android/data/<package>/files/RomFS, pushed there: Android deletes that folder when the app is uninstalled (the APK stays in internal storage: Android 13 installs apps only to an adopted SD card)
-ROMFS_MARK ='# porter install --romfs-at'                   # in the device's env.txt: the DM_ROMFS row under it is the installer's, carried over by later installs
+ROMFS_MARK = '# porter install --romfs-at'                  # in the device's env.txt: the DM_ROMFS row under it is the installer's, carried over by later installs
 ACCESS = 'android.permission.MANAGE_EXTERNAL_STORAGE'        # All files access, which the APK asks for (mkapk.py) and the installer grants
 ACCESS_HOW = 'Settings > Apps > {name} > All files access (Android 10: Permissions > Files and media)'
 SAMPLE_FILES, SAMPLE_MAX = 256, 4 << 20                      # the folder's content check: up to this many of its files, each of at most this many bytes (romfs_sample)
+
+
+def card_folder(d, package):
+    """Whether d is the app's own RomFS folder on a portable volume, the one --romfs-at sd makes: /storage/<volume id>/Android/data/<package>/files/RomFS. Android deletes it
+    with the app, and no other app reads it, so the installer handles it as its own (pushes what changed, removes what is not the pack's)"""
+    if not d: return False
+    m = re.fullmatch(r'/storage/([^/]+)/Android/data/' + re.escape(package) + '/files/' + re.escape(datapack.ROMFS), posixpath.normpath(d))
+    return bool(m) and m.group(1) not in ('emulated', 'self')   # those two are internal storage, where the files folder is
 
 
 def romfs_target(arg, files=None):
@@ -37,7 +45,7 @@ def romfs_target(arg, files=None):
     if files and d == f'{files}/{datapack.ROMFS}': return None
     if files and (d + '/').startswith(files + '/'): raise BuildError(f'--romfs-at {d}: the app\'s files folder is the installer\'s own; --romfs-at app keeps the RomFS there')
     if not d.startswith(('/sdcard/', '/storage/')): raise BuildError(f'--romfs-at {d}: the app can read only shared storage, /sdcard/… or /storage/… (an SD card: /storage/<its id>/…)')
-    own = files and re.fullmatch(r'/storage/[^/]+/Android/data/' + re.escape(files.split('/')[-2]) + '/files/' + datapack.ROMFS, d)   # the app's own folder on the SD card (--romfs-at sd): Android removes it with the app
+    own = files and card_folder(d, files.split('/')[-2])   # the app's own folder on the SD card (--romfs-at sd): Android removes it with the app
     if not own and re.search(r'/Android/(data|obb)(/|$)', d, re.I):   # FUSE keeps every app out of the others' Android/data and Android/obb, All files access or not
         raise BuildError(f'--romfs-at {d}: Android lets no app read a folder under another app\'s Android/data or Android/obb, even with All files access: '
                          'move the game\'s files elsewhere (/sdcard/Games/…), or keep them in this app\'s files folder with --romfs-at app')
@@ -124,37 +132,40 @@ def install(apk, data, adb_exe, serial=None, replace_signer=False, romfs_at=None
             if bc is None: say(f'[RED] {man["name"]} needs BC-compressed textures; whether this GPU ({adb.gpu() or "unknown"}) reads them is not known')
         if sd:
             vol = adb.sd_volume()
-            if not vol: raise BuildError('--romfs-at sd: no SD card is mounted on the device')
+            if not vol: raise BuildError('--romfs-at sd: no SD card (portable volume) is mounted on the device')
             romfs_at = f'{vol}/Android/data/{man["package"]}/files/{datapack.ROMFS}'; target = romfs_target(romfs_at, files); romfs_push = True
-            say(f'RomFS on the SD card: {target}')
+            say(f'RomFS on the SD card (the first mounted portable volume, an SD card before a USB drive): {target}')
         dev_env = adb.read_text(f'{files}/env.txt') or ''
         was = device_romfs(dev_env)   # an earlier --romfs-at install's folder
-        sd_dir = bool(was) and was.rstrip('/').startswith('/storage/') and was.rstrip('/').endswith((f'/Android/data/{man["package"]}/files/{datapack.ROMFS}', f'/nx2android/{man["package"]}/{datapack.ROMFS}'))   # the folder an earlier --romfs-at sd made (the second form: before the RomFS moved into the app's Android/data, where uninstalling removes it)
+        sd_dir = card_folder(was, man['package'])   # the folder an earlier --romfs-at sd made
+        if sd_dir: was = posixpath.normpath(was)
         if romfs_at == NO_SD:
             romfs_at = APP if sd_dir else None
         if romfs_at is None and was:
             target = romfs_target(was, files)
             if packed and target and not sd_dir: raise BuildError(f'the app reads its RomFS from {target} (an earlier install\'s --romfs-at). ' + PACKED_ELSEWHERE)
             if target: say(f'the app reads its RomFS from {target} (an earlier install\'s --romfs-at; --romfs-at app moves it into its files folder)')
+        own = card_folder(target, man['package'])   # the installer's own folder on the card: what changed is pushed and what is not the pack's removed, as in the files folder
+        if own: romfs_push = True
         rom = datapack.romfs_sizes(data) if target else {}
-        missing = other = changed = []; there = {}
+        missing = other = changed = extra = []; there = {}
         if target:   # what can refuse comes before the APK goes in, so a refused install changes nothing on the device (but a new app's grant: below)
             if not rom: raise BuildError(f'{data} has no RomFS to compare {target} with')
             if not apk_asks_access(apk): raise BuildError(f'{apk.name} does not ask for All files access, which reading {target} needs (a port made by an earlier nx2android): port the game again')
             PROG.set(step=f'comparing {target} with the pack\'s RomFS')
             there = adb.remote_sizes(target)
             missing, other, extra = romfs_diff(rom, there)
-            if not extra and (romfs_push or not (missing or other)):   # a listing that can be used: a sample of the files compared by content too
+            if (own or not extra) and (romfs_push or not (missing or other)):   # a listing that can be used: a sample of the files compared by content too
                 PROG.set(step=f'comparing the content of {target} with the pack\'s RomFS')
                 changed = romfs_changed(adb, data, target, rom, there)
                 if changed is None: say(f'[RED] the device gave no MD5 of the files in {target}: only their names and sizes were compared with the pack\'s RomFS'); changed = []
             if bad := romfs_mismatch(target, rom, there, changed=changed):
-                if extra or not romfs_push:
+                if (extra and not own) or not romfs_push:
                     whose = f'{man["name"]} {man.get("display") or man["version"]}'
                     raise BuildError(f'{bad}. ' + (f'It came from an earlier install\'s --romfs-at. ' if romfs_at is None else '') + f'Give --romfs-at the folder of {whose}\'s RomFS'
                                      + (' (--romfs-push adds files, it never deletes any: empty the folder, or choose another)' if extra else
                                         ', add --romfs-push to put the pack\'s RomFS into that folder') + ', or --romfs-at app to keep the RomFS in the app\'s files folder')
-                say(f'{target}: {len(missing) + len(other) + len(changed):,} of the RomFS\'s {len(rom):,} files to push (--romfs-push)')
+                say(f'{target}: {len(missing) + len(other) + len(changed):,} of the RomFS\'s {len(rom):,} files to push' + (f', {len(extra):,} files that are not the pack\'s to remove' if extra else '') + ('' if own else ' (--romfs-push)'))
             else: say(f'{target} holds this pack\'s RomFS ({len(rom):,} files, {sum(rom.values()) / 2**30:.1f} GB): it is not pushed')
         free = adb.free_bytes()
         have = adb.remote_sizes(files)
@@ -188,11 +199,17 @@ def install(apk, data, adb_exe, serial=None, replace_signer=False, romfs_at=None
             if not ok: raise BuildError(f'the app needs All files access to read {target}, and the device did not grant it over adb ({state}): allow it on the device '
                                         f'({ACCESS_HOW.format(name=man["name"])}), then install again')
             say(f'{state}: the app reads its RomFS from {target}')
+        if own and (now := adb.remote_sizes(target)) != there:   # again: an install with --replace-signer uninstalls first, and Android deletes the card folder with the app
+            say(f'{target} changed during the install (an uninstall deletes it with the app): {len(now):,} of its {len(there):,} files are left')
+            there = now; missing, other, extra = romfs_diff(rom, there); changed = [r for r in changed if there.get(r) == rom[r]]
         PROG.set(step='pushing the game data', done=0, total=man['bytes'] - sum(rom.values()), unit='B'); pushing = True
         have = adb.remote_sizes(files)   # again: an install with --replace-signer uninstalls first, and Android deletes the files folder with the app
         adb.push_tree(data, files, keep=datapack.KEEP_ON_DEVICE, skip=(datapack.MANIFEST,) + (('env.txt',) if target else ()), exclude=(datapack.ROMFS,) if target else (),
                       verify=lambda rel: rel.split('/', 1)[0] not in ('RomFS', 'aoc'),   # the game's own files change only with their version
                       progress=lambda d, t, note: PROG.set(done=d, total=t, note=note), have=have)
+        if own and extra:   # files of an older game version in the installer's own card folder, which the game would still find
+            PROG.set(step=f'removing {len(extra):,} files from {target} that are not the pack\'s')
+            for i in range(0, len(extra), 64): adb.shell(f'cd {shlex.quote(target)} && rm -f ' + ' '.join(shlex.quote(r) for r in extra[i:i + 64]))
         if target and (missing or other or changed):   # --romfs-push: the pack's RomFS into the folder (changed: pushed again when their MD5 differs), then the folder checked again
             PROG.set(step=f'pushing the RomFS into {target}', done=0, total=sum(rom[r] for r in missing + other + changed), unit='B')
             again = set(changed)

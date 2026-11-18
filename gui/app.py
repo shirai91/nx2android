@@ -76,7 +76,7 @@ class PortTab(QWidget):
         self.romfs_at = QLineEdit(); self.romfs_at.setPlaceholderText('as the device has it (an earlier install\'s folder, else the app\'s files folder)')   # porter install --romfs-at
         romfs_tip = ('A folder on the device that already holds this game version\'s RomFS (a dump an emulator reads, e.g. /sdcard/<dump>/romfs),\n'
                      'which the app then reads instead of a copy in its own files folder (7 to 18 GB less). The installer checks the folder and gives the app All files access.\n'
-                     'Empty: as the device has it. "app": the RomFS back in the app\'s files folder. Install only: the port itself does not change.')
+                     'Empty: as the device has it (an SD install\'s card folder too). "app": the RomFS back in the app\'s files folder (from the SD card too). Install only: the port itself does not change.')
         self.romfs_push = QCheckBox('Push the game\'s RomFS into that folder (an empty folder, or one of this game: files are added, never deleted)')   # porter install --romfs-push
         self.romfs_sd = QCheckBox('Game data on the SD card (the app itself stays in internal storage: Android installs apps only to an adopted SD card)')   # porter install --romfs-at sd
         self.romfs_sd.toggled.connect(lambda on: (self.romfs_at.setEnabled(not on), self.romfs_push.setEnabled(not on)))
@@ -239,8 +239,7 @@ class PortTab(QWidget):
 
     def romfs_args(self):   # porter install --romfs-at / --romfs-push (porter/install.py)
         if self.romfs_sd.isChecked(): return ['--romfs-at', 'sd']
-        if not self.romfs_at.text().strip(): return ['--romfs-at', 'no-sd'] + (['--romfs-push'] if self.romfs_push.isChecked() else [])   # no-sd: data an earlier SD install put on the card comes back into the app's files folder
-        return ['--romfs-at', self.romfs_at.text().strip()] + (['--romfs-push'] if self.romfs_push.isChecked() else [])
+        return (['--romfs-at', self.romfs_at.text().strip()] if self.romfs_at.text().strip() else []) + (['--romfs-push'] if self.romfs_push.isChecked() else [])   # empty: as the device has it (an SD install's card folder too); "app" brings the RomFS back from the card
 
     def run(self, args):
         self.stages.clear(); self.items = {}; self.log.clear(); self.prog.setValue(0); self.step.setText('starting…')
