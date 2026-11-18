@@ -135,6 +135,28 @@ static VkImage transfer_image(VkCommandBuffer cb, VkFormat fmt, uint32_t w, uint
     vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &b);
     return im;
 }
+// A texture copy into a LINEAR texture in CPU-visible memory: on the Switch the copy writes the texture's storage, which the CPU then reads. Here it writes the Vulkan
+// image only, so the copied region is also copied back to the storage at the texture's stride, marked as written by the GPU (the pools' copy-back carries it to the CPU).
+// Pokémon Violet captures its scene for the enrollment paper's portrait this way (1920x1080 RGBA8_SRGB into a 1920x1080 RGBA8 LINEAR texture in a CPU_UNCACHED pool,
+// stride 7680, a 1440x864 region) and encodes the picture to BC1 on the CPU from that storage; without the copy-back it read zeros and the portrait was black.
+// bpb is the image's own texel size only for an uncompressed format the device has (f->dec == 0: a CPU-decoded BC format's image texel is dbpp bytes).
+// DM_VK_LIN_COPY_BACK=1 (start-up, a profile env row): on. Off by default
+static void t2t_lin_back(VkCommandBuffer cb, vkimg_t *d, const tex_t *t, const vkfmt_t *f, const p_copy_t2t *c) {
+    static int on = -1; if (on < 0) { const char *e = getenv("DM_VK_LIN_COPY_BACK"); on = e && atoi(e) != 0; }
+    if (!on || !t->mem || !t->pool || !(t->d.flags & NVN_TEXTURE_FLAGS_LINEAR) || (t->pool->flags & NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS)) return;
+    if (f->dec || !f->bpb || f->bw > 1 || f->bh > 1 || d->levels != 1 || d->layers != 1 || d->d != 1 || d->aspect != VK_IMAGE_ASPECT_COLOR_BIT || d->samples > 1) return;
+    if (c->dr.xoffset < 0 || c->dr.yoffset < 0 || c->dr.width <= 0 || c->dr.height <= 0) return;
+    size_t stride = t->d.stride ? t->d.stride : (size_t)d->w * f->bpb;
+    if (stride % f->bpb || stride < (size_t)d->w * f->bpb) return;
+    uint64_t start = (uint64_t)(uintptr_t)t->mem + (uint64_t)c->dr.yoffset * stride + (uint64_t)c->dr.xoffset * f->bpb;
+    size_t len = stride * (size_t)(c->dr.height - 1) + (size_t)c->dr.width * f->bpb; VkBuffer b; VkDeviceSize o;
+    if (!vk_buf_at(start, len, &b, &o) || o % f->bpb) return;
+    vk_img_barrier_all(cb);
+    VkBufferImageCopy r = {o, (uint32_t)(stride / f->bpb), 0, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {c->dr.xoffset, c->dr.yoffset, 0}, {(uint32_t)c->dr.width, (uint32_t)c->dr.height, 1}};
+    vkCmdCopyImageToBuffer(cb, d->img, VK_IMAGE_LAYOUT_GENERAL, b, 1, &r);
+    void vk_gpu_wrote(uint64_t a, uint64_t n); vk_gpu_wrote(start, len); vk_readback_unknown();
+    static int n; if (n++ < 4) VKLOG("texture copy into a linear %ux%u texture (nvn format %#x, stride %zu): region %dx%d copied back to its storage %p (DM_VK_LIN_COPY_BACK)", d->w, d->h, t->d.format, stride, c->dr.width, c->dr.height, (void *)t->mem);
+}
 static void copy_t2t(const p_copy_t2t *c) {
     vk_end_pass();
     vkimg_t *s = vk_tex(c->src), *d = vk_tex(c->dst);
@@ -214,6 +236,7 @@ static void copy_t2t(const p_copy_t2t *c) {
         vkCmdBlitImage(cb, si, VK_IMAGE_LAYOUT_GENERAL, di, VK_IMAGE_LAYOUT_GENERAL, 1, &r, (c->flags & 1) ? VK_FILTER_LINEAR : VK_FILTER_NEAREST);
         if (di != d->img) { vk_img_barrier_all(cb); vkCmdCopyImage(cb, di, VK_IMAGE_LAYOUT_GENERAL, d->img, VK_IMAGE_LAYOUT_GENERAL, 1, &back); }
     }
+    t2t_lin_back(cb, d, k.dst, df, &k);
     vk_img_barrier_all(cb);
 }
 static void clear_tex(const p_clear_tex *c) {
