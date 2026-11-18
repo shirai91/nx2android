@@ -28,9 +28,9 @@ python -m gui
 
 Check the **Setup** tab, choose the game's folder (the base game NSP, XCI, NSZ or XCZ, its update and DLC) on the **Port** tab, and click **Port**.
 
-Keep the base game, update and DLC in separate files. When a dump's tickets or readable
-content-meta headers identify several titles in one file, porter warns which title it selects
-and which embedded titles it will not select as updates or DLC. It does not split merged dumps.
+The base game, its update and the DLC may be separate files, or one merged dump (a rebuilt card, "(1G+1U)"): porter reads every title a dump carries from its tickets and
+content-meta headers and takes the update and the DLC from the same file (nx_extract picks the NCAs from the dump's content metas). As with a separate update file, the update
+needs a [v<N>] tag in the file name; without one it is taken for the newest version the profile registers, and the extracted build IDs are checked as always.
 
 Or the command line:
 

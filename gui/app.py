@@ -32,10 +32,11 @@ def size(b):
     return f'{b} B'
 
 
-def path_row(edit, pick):   # a line edit with a Browse button
+def path_row(edit, pick, pick2=None, label2=None):   # a line edit with a Browse button (a second, pick2: the game folder takes a folder or one dump file)
     w = QWidget(); h = QHBoxLayout(w); h.setContentsMargins(0, 0, 0, 0); h.setAlignment(Qt.AlignTop)
     b = QPushButton('Browse…'); b.clicked.connect(pick)
     h.addWidget(edit, 1); h.addWidget(b)
+    if pick2: b2 = QPushButton(label2); b2.clicked.connect(pick2); h.addWidget(b2)
     return w
 
 
@@ -74,10 +75,10 @@ class PortTab(QWidget):
         self.porter = Porter(self); self.porter.event.connect(self.on_event); self.porter.finished.connect(self.on_finished)
         v = QVBoxLayout(self)
 
-        self.folder = QLineEdit(); self.folder.setPlaceholderText('the folder with the game\'s NSP / XCI / NSZ / XCZ files (base game, update, DLC)')
+        self.folder = QLineEdit(); self.folder.setPlaceholderText("the game's folder, or one dump file (a merged NSP / XCI carries the base game, update and DLC)")
         self.folder.editingFinished.connect(self.inspect)
         g = QGroupBox('Game'); gl = QVBoxLayout(g)
-        gl.addWidget(path_row(self.folder, self.pick_folder))
+        gl.addWidget(path_row(self.folder, self.pick_folder, self.pick_dump, 'File…'))
         self.card = QLabel('Choose a game folder.'); self.card.setWordWrap(True); self.card.setTextFormat(Qt.RichText); self.card.setMinimumHeight(60)
         gl.addWidget(self.card)
         v.addWidget(g)
@@ -168,6 +169,11 @@ class PortTab(QWidget):
         d = QFileDialog.getExistingDirectory(self, 'Game folder', self.folder.text() or str(Path.home()))
         if d: self.folder.setText(d); self.inspect()
 
+    def pick_dump(self):
+        p = QFileDialog.getOpenFileName(self, 'Game dump (a merged NSP / XCI carries the base game, update and DLC)', self.folder.text() or str(Path.home()),
+                                        'Game dumps (*.nsp *.xci *.nsz *.xcz)')[0]
+        if p: self.folder.setText(p); self.inspect()
+
     def pick_driver(self):
         p = QFileDialog.getOpenFileName(self, 'Vulkan driver', self.driver.text() or str(Path.home()), 'Vulkan driver (*.so)')[0]
         if p: self.driver.setText(p)
@@ -184,7 +190,7 @@ class PortTab(QWidget):
         d = self.folder.text().strip()
         self.info = None; self.port_btn.setEnabled(False)
         if not d: return
-        if not Path(d).is_dir(): self.card.setText(f'<span style="color:#c62828">Not a folder: {d}</span>'); return
+        if not Path(d).is_dir() and not Path(d).is_file(): self.card.setText(f'<span style="color:#c62828">Not a folder or dump file: {d}</span>'); return
         self.card.setText('Reading the game folder…')
         def failed(message, code): self.on_inspect({'error': 'Could not inspect the game folder:\n' + message}, code)
         call_json(self, ['inspect', d, '--json'], self.on_inspect, failed=failed)
