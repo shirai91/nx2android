@@ -129,8 +129,18 @@ struct vkimg {
     uint64_t pool; int64_t off, size; int flags;   // its storage (pool, offset, layout size) and NVN texture flags: images over the same memory find each other
     struct vkimg *ovl[8]; int novl;   // the other images over some of the same memory (a texture of another description over it: on the Switch it sees these texels)
     uint64_t wseq, rseen;             // when it was last rendered to (gfx_vk_tex.c g_wseq); the newest overlapping write already reported
+    uint64_t vk_bytes;                // its memory as the driver sized it (gfx_vk_tex.c vk_tex_mem: the [mem] line)
 };
 vkimg_t *vk_tex(const tex_t *t);                                 // the image of a texture object (created, uploaded or refreshed as needed)
+// Memory (gfx_vk_core.c, "memory: what the backend holds"): vk_mem_low asks the replay for a trim at its next submission (Android's onLowMemory, front_android.c);
+// vk_mem_tick runs there, and gives memory back only under memory pressure
+void vk_mem_low(void); void vk_mem_tick(void);
+long long vk_mem_avail_mb(void);                                 // MemAvailable in MB, -1 when unknown
+long long vk_mem_floor_mb(void);                                 // DM_MEM_FLOOR_MB: MemAvailable under it is memory pressure (0: never)
+void vk_defer_free_pipeline(VkPipeline p);                       // destroyed once the GPU has passed the open submission
+uint64_t vk_pipes_drop_idle(uint64_t idle); uint64_t vk_pipes_live(void);   // gfx_vk_exec.c: graphics pipelines not drawn with for idle presents under pressure go (how many); live ones
+uint64_t vk_tex_drop_idle(uint64_t idle, uint64_t *n);           // the replay thread: uploaded images not looked up for idle presents go (bytes freed; gfx_vk_tex.c)
+void vk_tex_mem(uint64_t idle, uint64_t *n, uint64_t *bytes, uint64_t *n_idle, uint64_t *idle_bytes);   // live images and their memory, and those vk_tex_drop_idle would take
 void vk_lrz_forget(vkimg_t *im);                                 // an image is being dropped: the pass code forgets it (gfx_vk_exec.c)
 int vk_window_bottom_up(void);                                   // the game draws in lower-left origin mode: its window image is stored bottom-up (gfx_vk_exec.c)
 VkImageView vk_tex_view(const tex_t *t, const view_t *v, int dim, int arrayed, int as_attachment, vkimg_t **img_out);   // a view for sampling / storage / rendering

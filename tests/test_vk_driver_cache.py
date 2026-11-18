@@ -42,6 +42,7 @@ enum { DRVC = 1024 };
 ''' + cache + '\n' + scratch_type + '\n' + scratch_size + r'''
 /* Only the slot fields vk_scratch uses; mapped bytes are owned by mocked Vulkan. */
 typedef struct { scratch_blk *blk; int nblk, capblk; } vksub_t;
+static uint64_t g_scratch_bytes;   /* vk_scratch counts the blocks it makes (the [mem] line) */
 static vksub_t slot;
 static vksub_t *cur(void) { return &slot; }
 static struct allocation { VkDeviceSize size; void *memory; } *buffers[64];
