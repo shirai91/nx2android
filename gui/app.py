@@ -87,7 +87,7 @@ class PortTab(QWidget):
                      'which the app then reads instead of a copy in its own files folder (7 to 18 GB less). The installer checks the folder and gives the app All files access.\n'
                      'Empty: as the device has it (an SD install\'s card folder too). "app": the RomFS back in the app\'s files folder (from the SD card too). Install only: the port itself does not change.')
         self.romfs_push = QCheckBox('Push the game\'s RomFS into that folder (an empty folder, or one of this game: files are added, never deleted)')   # porter install --romfs-push
-        self.romfs_sd = QCheckBox('Game data on the SD card (the app itself stays in internal storage: Android installs apps only to an adopted SD card)')   # porter install --romfs-at sd
+        self.romfs_sd = QCheckBox('Game data on the SD card (the app itself stays in internal storage; the bulky RomFS is stored on the SD card)')   # porter install --romfs-at sd
         self.romfs_sd_warn = sd_warning()   # shown while the SD checkbox is on
         self.romfs_sd.toggled.connect(lambda on: (self.romfs_at.setEnabled(not on), self.romfs_push.setEnabled(not on), self.romfs_sd_warn.setVisible(on)))
         romfs = with_info(self.romfs_at, romfs_tip); romfs.layout().setStretch(0, 1)
