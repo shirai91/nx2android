@@ -140,9 +140,11 @@ PPE3 invalidates older prewarm records. The effects shader writes PointSize, and
 discarded pipelines invalidate cached stencil state before the next raster draw.
 The split is off unless a profile sets `env DM_VK_GS_SPLIT=1` (NieR:Automata), and runs only on
 Adreno (vendor 0x5143, Qualcomm's driver or Turnip); `DM_VK_GS_SPLIT=0` restores the original path live
-for diagnosis. Likewise the first-use upload of CPU-filled uncompressed 2D textures (`gfx_vk_tex.c`
-`cpu_content_tex`, which also checks the pool for GPU-written aliases) needs `env DM_NVN_CPU_TEX2D_FIRST_USE=1`;
-without it only compressed and 3D textures are uploaded, as before.
+for diagnosis. The first-use upload of CPU-filled uncompressed 2D textures in CPU-accessible pools
+needs `env DM_NVN_CPU_TEX2D_FIRST_USE=1`. Sampled uncompressed 2D colour textures marked `IMAGE`
+over `CPU_NO_ACCESS` storage can seed the Vulkan image once from nonzero backing bytes.
+Both paths check for GPU-written aliases. Initial data from `CPU_NO_ACCESS` storage is uploaded
+without enrolling the texture in CPU write tracking.
 
 ## Game profiles on Android
 
