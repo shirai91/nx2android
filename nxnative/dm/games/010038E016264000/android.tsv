@@ -27,4 +27,4 @@ vulkan_driver	turnip
 tested	v131072 (1.0.2) AYN Odin 2 (QCS8550, Adreno 740, Android 13, Turnip), 2026-11-14
 package	org.nx2a.mmbnlc1
 orientation	landscape
-env	DM_ADAPTIVE_FPS=0
+pacing	steady

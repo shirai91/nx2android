@@ -3,6 +3,7 @@
 // (hle_nvn.c); the game sets the values after boot and may set them again, so each is written whenever it differs. Fixed addresses: each row runs only on the main build it was found in (AGENTS.md).
 // A port can also bring rows of its own from a FPSLocker config of its main build (DM_FPS_LOCKS, "Imported rows" below)
 #include "hle.h"
+#include "dm_pacing.h"   // the frame-pacing policy
 #include <mach/mach.h>
 #include <sys/mman.h>
 
@@ -180,8 +181,7 @@ void dm_fps_lock_tick(void) {
             else if (!nrow) { imp_load(g_mod[i].build_id); if (g_nimp) base = g_mod[i].base; }
         }
         if (!nrow && !g_nimp) return;
-        const char *e = getenv("DM_FPS_TARGET"); int t = e ? atoi(e) : DM_GAME_FPS_TARGET; src = e ? "DM_FPS_TARGET" : "game profile fps_target";
-        if (t != 0 && t != 30 && t != 60) { LOG("[RED] DM_FPS_TARGET=%s: must be 0, 30 or 60; leaving the game's frame limit", e); t = 0; }
+        int t = dm_pacing_target(&src);   // dm_pacing.c
         if (!t) { for (int r = 0; r < nrow; r++) LOG("main: %s left as the game sets it (%s)", k_locks[rows[r]].what, src);
                   if (g_nimp) LOG("main: %d FPSLocker write(s) left out (%s 0)", g_nimp, src); return; }
         target = t; state = 0;

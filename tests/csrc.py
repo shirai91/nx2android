@@ -41,3 +41,16 @@ def unit(path):
     p = Path(path)
     if not p.is_absolute(): p = REPO / p
     return re.sub(r'#include "(gfx_vk_exec_\w+\.inc)"[^\n]*\n', lambda m: (p.parent / m.group(1)).read_text(encoding='utf-8'), p.read_text(encoding='utf-8'))
+
+
+PACING_INCLUDE = '#include "dm_pacing.c"   /* the frame-pacing policy, compiled in the harness (csrc.pacing_files) */\n'
+
+
+def pacing_files(folder):
+    """Put the frame-pacing policy (nxnative/dm/host/dm_pacing.c, .h) and a stub game_profile.h in a harness's folder, for a harness that cuts
+    perf_android.c (which asks dm_pacing.c for the governor's switches). The harness includes it with PACING_INCLUDE and compiles with -I<folder>.
+    In the same translation unit, a harness's own getenv macro also counts the policy's reads"""
+    folder = Path(folder); host = REPO / 'nxnative/dm/host'
+    for n in ('dm_pacing.c', 'dm_pacing.h'): (folder / n).write_text((host / n).read_text(encoding='utf-8'), encoding='utf-8')
+    (folder / 'game_profile.h').write_text('#define DM_GAME_FPS_TARGET 0\n#define DM_GAME_FPS_CEILING 0\n#define DM_GAME_FPS_HOLD 1\n#define DM_GAME_PRESENT_DISPLAY 0\n', encoding='utf-8')
+    return folder

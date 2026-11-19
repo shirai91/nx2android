@@ -48,6 +48,13 @@ class AndroidProfiles(unittest.TestCase):
         for bad in ('DM_VK_CB_DRAWZ=32', 'DM_VK_X_NOBAR=1', 'DM_VK_FDZ=yes'):
             with self.assertRaises(android_profile.ProfileError): android_profile.load(profile_dir([('status', 'boots'), ('env', bad)]).name)
 
+    def test_pacing_preset(self):   # android.tsv pacing: env rows before the profile's own; a profile may not set one of them again
+        p = android_profile.load(profile_dir([('status', 'boots'), ('pacing', 'fixed30'), ('env', 'DM_VK_CB_DRAWS=32')]).name)
+        self.assertEqual(p.env, ['DM_FPS_TARGET=30', 'DM_ADAPTIVE_FPS=0', 'DM_VK_CB_DRAWS=32'])
+        self.assertEqual(android_profile.load(profile_dir([('status', 'boots')]).name).pacing, 'adaptive')
+        for rows in ([('pacing', 'fast')], [('pacing', 'steady'), ('env', 'DM_ADAPTIVE_FPS=1')]):
+            with self.assertRaises(android_profile.ProfileError): android_profile.load(profile_dir([('status', 'boots')] + rows).name)
+
     def test_find_turnip(self):
         from porter import toolchain
         with tempfile.TemporaryDirectory() as t:

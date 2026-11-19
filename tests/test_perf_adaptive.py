@@ -34,7 +34,7 @@ class AdaptiveFrameRate(unittest.TestCase):
 static int setenv(const char *k, const char *v, int o) { char s[256]; (void)o; snprintf(s, sizeof s, "%s=%s", k, v); return _putenv(s); }
 static int unsetenv(const char *k) { char s[256]; snprintf(s, sizeof s, "%s=", k); return _putenv(s); }
 #endif
-''' + controller + r'''
+''' + csrc.PACING_INCLUDE + controller + r'''
 static int64_t mixed_work(int i) { return i % 64 < 48 ? 15000000 : 27000000; }
 int main(int argc, char **argv) {
     (void)argv;
@@ -71,8 +71,8 @@ int main(int argc, char **argv) {
         with tempfile.TemporaryDirectory(prefix='nx2a_adaptive_') as tmp:
             c = Path(tmp) / 'check.c'
             exe = Path(tmp) / 'check'
-            c.write_text(harness, encoding='utf-8')
-            result = subprocess.run([cc, '-std=gnu11', '-Wall', '-Wextra', '-Werror', str(c), '-o', str(exe)], capture_output=True, text=True)
+            c.write_text(harness, encoding='utf-8'); csrc.pacing_files(tmp)   # perf_android.c asks dm_pacing.c
+            result = subprocess.run([cc, '-std=gnu11', '-Wall', '-Wextra', '-Werror', '-I' + tmp, str(c), '-o', str(exe)], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             for args in ([], ['median']):
                 with self.subTest(policy=args or 'default'):

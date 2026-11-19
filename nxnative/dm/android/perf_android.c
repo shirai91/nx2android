@@ -4,6 +4,7 @@
 // - ADPF (APerformanceHint, Android 13): the presenting thread reports how long each frame's work took against the frame period, so the
 //   CPU governor raises clocks before a frame runs late instead of after (the hint is ignored where the API is missing).
 #include <android/native_window.h>
+#include "dm_pacing.h"   // the frame-pacing policy
 #include <dlfcn.h>
 #include <pthread.h>
 #include <stdbool.h>
@@ -79,7 +80,7 @@ static int turbo_set(int want) {
 static void gpu_turbo(void) {
     pthread_mutex_lock(&g_turbo_mu);
     if (g_turbo_dead) { pthread_mutex_unlock(&g_turbo_mu); return; }
-    const char *e = getenv("DM_GPU_TURBO"); int want = e && !strcmp(e, "auto") ? turbo_auto(g_turbo_on) : e && atoi(e) > 0;
+    const char *e = getenv("DM_GPU_TURBO"); int tm = dm_pacing_turbo(), want = tm == 2 ? turbo_auto(g_turbo_on) : tm;   // dm_pacing.c; e names it in the log
     if (want != g_turbo_on) {
         if (turbo_set(want)) {
             g_turbo_dead = 1;
@@ -211,10 +212,8 @@ static int adaptive_enabled(void) {
 static void game_mode_sync(void) {   // presenting thread only: publish cached policy to guest acquire without environment reads there
     static unsigned frames; static int explicit_override;
     if (frames++ % 30 == 0) {
-        const char *e = getenv("DM_ADAPTIVE_FPS");
-        explicit_override = e && *e;
-        atomic_store(&g_adapt, !(e && !atoi(e)));
-        e = getenv("DM_FPS_PIN"); int v = e ? atoi(e) : 0;
+        atomic_store(&g_adapt, dm_pacing_adaptive(&explicit_override));   // dm_pacing.c
+        int v = dm_pacing_pin();
         int pin = v == 60 ? 0 : v == 40 ? 1 : v == 30 ? 2 : -1;
         if (pin != g_fps_pin) { g_fps_pin = pin; LOG("[perf] adaptive frame rate %s", pin < 0 ? "free again" : "pinned"); }
     }
@@ -332,7 +331,7 @@ static void adapt_frame(int64_t work, int64_t now) {
     // DM_ADAPT_UP_PCT (start-up, default 90): the percentile of frame work judged for a step up. At the longer period the clocks drop and the work grows:
     // Unicorn Overlord's opening held 60 fps with 1-2 of 64 frames late, but once a load stepped it down to 40 its p90 stayed at 21-25 ms and it never went back
     // up (p50 14-15 ms). With 50 it tries the shorter period again; a try that does not fit misses the display and steps back down, and the next waits twice as long
-    static int up_pct = -1; if (up_pct < 0) { const char *e = getenv("DM_ADAPT_UP_PCT"); up_pct = e && atoi(e) > 0 && atoi(e) < 100 ? atoi(e) : 90; }
+    static int up_pct = -1; if (up_pct < 0) { up_pct = dm_pacing_up_pct(); }   // dm_pacing.c
     if (g_step > fps_cap_step() && (up_pct == 90 ? p90 : work_pct(up_pct)) < STEPS[g_step - 1]) { if (++g_ok_frames > 120 && now - g_last_change >= g_up_hold) { g_step--; g_last_change = g_last_up = now; g_nwork = 0; g_nshown = 0; g_ok_frames = 0; LOG("[perf] adaptive frame rate: %.0f fps (frames p90 %.1f ms)", 1e9 / STEPS[g_step], p90 / 1e6); } }
     else g_ok_frames = 0;
 }

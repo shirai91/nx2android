@@ -18,4 +18,4 @@ status	playable
 tested	v196608 (1.0.3) AYN Odin 2 (QCS8550, Adreno 740, Android 13, Turnip), 2026-11-13
 package	org.nx2a.mmbnlc2
 orientation	landscape
-env	DM_ADAPTIVE_FPS=0
+pacing	steady

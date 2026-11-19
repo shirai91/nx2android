@@ -167,6 +167,10 @@ A profile that was tested with Mesa's Turnip says so with `vulkan_driver turnip`
 
 The command replay is one translation unit, `gfx_vk_exec.c`, kept in one file a section (`gfx_vk_exec_<section>.inc`: state, render_cond, passes, formats, pipelines, descriptors, draws, xfb, copies, walker) so that changes to different sections do not meet in one file. Test harnesses read it with `tests/csrc.py` `unit()`, which puts the sections back in place.
 
+## Frame pacing
+
+How a game's frames are paced is decided in one module, `nxnative/dm/host/dm_pacing.c`: the frame-rate target (`game.tsv` `fps_target`, `DM_FPS_TARGET`), the 30 fps ceiling (`fps_ceiling`, `DM_FPS_CEILING`), the frame step's hold (`fps_hold`, `DM_FPS_HOLD`), presents on the display's ticks (`present_interval`, `DM_PRESENT_INTERVAL`), the Android governor (`DM_ADAPTIVE_FPS`, `DM_FPS_PIN`, `DM_ADAPT_UP_PCT`), the window's rate vote (`DM_VK_WINDOW_GAME_RATE`) and GPU turbo (`DM_GPU_TURBO`). The mechanisms stay where they run (the frame step in `loader.c` and `nvn_fstep.h`, the 60 fps writes in `hle_fpslock.c`, the present interval in `hle_nvn.c`, presents and the rate vote in `gfx_vk_present.c`, the governor in `perf_android.c`) and ask it. At start-up the log has the whole policy in one line (`pacing: target 60 fps (game profile fps_target), ceiling 0, hold on ...`). A profile chooses its policy with one `android.tsv` row, `pacing <preset>` (below). Test harnesses that cut the governor out of `perf_android.c` compile the real `dm_pacing.c` with it (`tests/csrc.py` `pacing_files`).
+
 ## Game profiles on Android
 
 A profile is offered for Android when it has an `android.tsv`; the profiles without one (52 of the 54 today, upstream's iOS games) show as "ios only": an experimental port can still try them. `android.tsv` holds, one `key<TAB>value` row each:
@@ -182,6 +186,7 @@ A profile is offered for Android when it has an `android.tsv`; the profiles with
 | `setting` | `<name>=<value>`: the pause menu's defaults on first launch (`overlay`, `rumble`, `docked`, `fps`: the frame rate counter in the top left corner, off by default; `opacity`: the gamepad's, 20 to 80 percent by 5, 60 by default), written to the data pack's `settings.txt`, where the app also keeps the player's own gamepad layout from the pause menu's layout editor (`ui=` rows) and its Snap to grid (`grid`, off by default) |
 | `romfs` | `raw` (default) or `zstd`: the data pack's RomFS files that compress are stored zstd-compressed and read back by the host ("Compressed RomFS" below) |
 | `vulkan_driver` | `system` (default) or `turnip`: the Vulkan driver the profile was tested with. With `turnip` the port packs Mesa's Turnip (`porter config turnip <libvulkan_freedreno.so>`, else a build under `tools/turnip`) as `--vulkan-driver` would, and says so in red when it finds none; `--vulkan-driver system` keeps the device's driver |
+| `pacing` | the frame-pacing policy in one row: `adaptive` (default: the profile's `fps_target`, the governor steps between 60, 40 and 30), `steady` (no governor steps), `fixed60`, `fixed30`, `game` (the game's own limit, no governor). Each is `env` rows before the profile's own (`android_profile.py` `PACING`); a profile may not also set one of them (Frame pacing, above) |
 | `env` | `<KEY>=<VALUE>`: a host switch the game needs on Android, written to the data pack's `env.txt`; only switches of scope `profile` in the settings registry (Settings, above) |
 | `overlay` | `<tablet\|phone> <control> <x> <y>`: moves one on-screen control of that layout (`dm/android/overlay_default.tsv`) to x, y as fractions of the window, compiled into `android_profile.h` |
 
