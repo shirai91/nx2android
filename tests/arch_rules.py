@@ -24,6 +24,13 @@ for pid in profiles:
     if a.exists(): pkgs |= {l.split('\t')[1].strip() for l in a.read_text(encoding='utf-8').splitlines() if l.startswith('package\t')}
 GAME_RX = re.compile(r'0100[0-9A-Fa-f]{12}|\bNEO\b|Viractal|' + '|'.join(re.escape(k) + r'\b' for k in pkgs))   # profiles' own packages, not generic defaults
 
+# per-build rows live in the profiles (dm/games/game.py BUILD_TABLES, patches.py), not in the core: no main build ID in core code (comments may name one)
+hits = []
+for f in files:
+    if not re.match(r'nxnative/dm/(host|gfx|android)/', f) or '/tests/' in f or not f.endswith(('.c', '.h', '.inc', '.m')): continue
+    if re.search(r'"(?=[0-9a-f]*[a-f])[0-9a-f]{32}"', strip_c((R / f).read_text(encoding='utf-8', errors='replace'))): hits.append(f)
+check('per-build rows are profile data, not core code', not hits, ', '.join(hits))
+
 # 1. Core, Android runtime: no title IDs, game names or per-game branches in code
 hits = []
 for f in files:

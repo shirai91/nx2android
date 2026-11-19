@@ -1,0 +1,8 @@
+# Engine frame limits kept in game memory that the host raises to the frame-rate target (nxnative/dm/host/hle_fpslock.c; dm/games/game.py puts these rows in the
+# profile header as DM_GAME_FPS_LOCKS). Each row runs only on its main build. ptr_off: a pointer at main + ptr_off to the object holding the field (0: the field is at
+# main + field); kind: FPS_F32, VSYNCS_I32, MS_F32, SEC_F32, FPS_I32; copies: consecutive copies of the value; ptr2: a second pointer at that object + ptr2 (0 = none).
+#	build	what	ptr_off	field	kind	copies	ptr2
+# Octopath Traveler 0 1.0.5 (Chinese release): the same engine and the same console variables as the rows above, in its own main build (the engine's data 0x3000 bytes higher): t.MaxFPS
+# (main+0x7c768d0) and rhi.SyncInterval (main+0x7b35690). Found from the names' references (UTF-16) in the same static constructors (main+0x2ca6524, main+0x1026e54)
+e3e401c28d9fd3b1f9e033bb7bb31d42	Unreal t.MaxFPS	0x7c768e0	0x0	FPS_F32	2	0
+e3e401c28d9fd3b1f9e033bb7bb31d42	Unreal rhi.SyncInterval	0x7b356a0	0x0	VSYNCS_I32	2	0
