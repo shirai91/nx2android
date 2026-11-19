@@ -201,7 +201,12 @@ namespace Ryujinx.Graphics.Shader.Instructions
                 return;
             }
 
-            if (!IsSupportedByHost(context.TranslatorContext.GpuAccessor, context.TranslatorContext.Definitions.Stage, entry.IoVariable))
+            // Keep a passthrough primitive's mask as private state when native viewport masks are absent.
+            // PrepareForReturn tests bit zero before emitting the entire primitive (the Android renderer's one viewport).
+            bool emulateMask = entry.IoVariable == IoVariable.ViewportMask &&
+                context.TranslatorContext.Definitions.Stage == ShaderStage.Geometry && context.TranslatorContext.Definitions.GpPassthrough &&
+                !context.TranslatorContext.GpuAccessor.QueryHostSupportsGeometryShaderPassthrough();
+            if (!IsSupportedByHost(context.TranslatorContext.GpuAccessor, context.TranslatorContext.Definitions.Stage, entry.IoVariable) && !emulateMask)
             {
                 context.TranslatorContext.GpuAccessor.Log($"Attribute offset 0x{offset:X} ({entry.IoVariable}) is not supported by the host for stage {context.TranslatorContext.Definitions.Stage}.");
                 return;

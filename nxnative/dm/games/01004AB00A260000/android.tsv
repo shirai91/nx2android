@@ -11,3 +11,7 @@ status	playable
 tested	v196608 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
 package	org.nx2a.darksoulsremastered
 orientation	landscape
+readme_name	Dark Souls: Remastered
+readme_image	docs/images/dark-souls-remastered.jpg
+readme_tag	v0.4.0
+readme_note	update 1.0.3 · 30 fps

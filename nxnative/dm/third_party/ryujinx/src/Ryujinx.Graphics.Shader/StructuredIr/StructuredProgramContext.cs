@@ -36,6 +36,7 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
             AttributeUsage attributeUsage,
             ShaderDefinitions definitions,
             ResourceManager resourceManager,
+            bool nativeGeometryPassthrough,
             bool debugMode)
         {
             Info = new StructuredProgramInfo();
@@ -57,8 +58,13 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
                 }
 
                 Info.IoDefinitions.Add(new IoDefinition(StorageKind.Input, IoVariable.Position));
-                Info.IoDefinitions.Add(new IoDefinition(StorageKind.Input, IoVariable.PointSize));
-                Info.IoDefinitions.Add(new IoDefinition(StorageKind.Input, IoVariable.ClipDistance));
+                // Software passthrough records the inputs it actually loads. Implicit native
+                // passthrough also forwards these built-ins without explicit IR loads.
+                if (nativeGeometryPassthrough)
+                {
+                    Info.IoDefinitions.Add(new IoDefinition(StorageKind.Input, IoVariable.PointSize));
+                    Info.IoDefinitions.Add(new IoDefinition(StorageKind.Input, IoVariable.ClipDistance));
+                }
             }
         }
 

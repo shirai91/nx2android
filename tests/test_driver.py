@@ -228,6 +228,32 @@ class HostTest(unittest.TestCase):   # porter host's update(): its refusals, the
             self.assertIn('another profile', str(e.exception))
         with self.assertRaises(BuildError): check(cur, sha(old.replace(b'#define B 2\n', b'#define B 3\n')))   # another layout value
 
+    def test_profile_header_lf(self):   # game.py header writes LF bytes on every OS (Windows' text mode wrote CRLF, so porter host refused every port), and a CRLF-hashed port is still accepted
+        import hashlib
+        from unittest import mock
+        header = self.host.profile_header(self.BDSP)
+        self.assertNotIn(b'\r', header)
+        sys.path.insert(0, str(self.host.DM / 'games'))
+        try: import game
+        finally: sys.path.pop(0)
+        self.assertEqual(header, game.header(game.load(self.BDSP)).encode())   # the bytes porter port hashes are game.py's text as it is
+        old = self.t / 'gen' / 'game_profile.h'; old.parent.mkdir(); old.write_bytes(header.replace(b'\n', b'\r\n'))   # a CRLF header a build made before: written again as LF
+        subprocess.run([sys.executable, str(self.host.DM / 'games/game.py'), 'header', self.BDSP, str(old)], check=True)
+        self.assertEqual(old.read_bytes(), header)
+        def check(header, h):
+            with mock.patch.object(self.host, 'profile_header', return_value=header): self.host.check_profile(PKG, dict(version='v393216', profile_h=h), self.BDSP)
+        lf = b'#define A 1\n#define DM_GAME_FPS_CEILING 0\n'
+        crlf = lf.replace(b'\n', b'\r\n')
+        for made in (lf, crlf):   # the header made again here, either way
+            check(made, hashlib.sha256(lf).hexdigest())
+            check(made, hashlib.sha256(crlf).hexdigest())                      # a port made on Windows before the fix
+            check(made, hashlib.sha256(b'#define A 1\r\n').hexdigest())        # ... and before FPS_CEILING was added
+            with self.assertRaises(BuildError): check(made, hashlib.sha256(b'#define A 2\n').hexdigest())
+        self.assertIn('Pokémon'.encode('utf-8'), header)
+        legacy = 'Pokémon\r\n'.encode('utf-8')   # the Windows form of a header is CRLF and UTF-8 on every OS
+        self.assertEqual(self.host.windows_text('Pokémon\n'.encode('utf-8')), legacy)
+        check(header, hashlib.sha256(self.host.windows_text(header)).hexdigest())   # Brilliant Diamond ported on Windows before the fix
+
     def test_update(self):
         for debuggable in (False, True):
             self.builds.clear()

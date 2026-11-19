@@ -70,6 +70,7 @@ class VertexDefaultBuffers(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)
             (path/'check.c').write_text(harness_source(), encoding='utf-8')
-            subprocess.run(['cc', '-std=gnu11', '-O2', '-pthread', str(path/'check.c'), '-o', str(path/'check')], check=True, capture_output=True)
+            # -fno-strict-aliasing as in the Android build (nxnative/dm/android/build.py): static_buf stores floats that verify() reads as uint32_t
+            subprocess.run(['cc', '-std=gnu11', '-O2', '-fno-strict-aliasing', '-pthread', str(path/'check.c'), '-o', str(path/'check')], check=True, capture_output=True)
             result = subprocess.run([str(path/'check')], check=True, capture_output=True, text=True)
             self.assertIn('PASS', result.stdout)

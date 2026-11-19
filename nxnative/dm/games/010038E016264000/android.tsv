@@ -30,9 +30,14 @@
 # romfs zstd (2026-11-18): its RomFS is 2.81 GB extracted; packed, 0.99 GB on the device (457 of 5,186 files). Started on the Odin 2 with the packed RomFS on its
 # SD card, reading the packed files back (hle_fs.c, "fs: packed RomFS files read back"), without a fault.
 status	playable
+vulkan_driver	turnip
 tested	v131072 (1.0.2) AYN Odin 2 (QCS8550, Adreno 740, Android 13, Turnip), 2026-11-14
 package	org.nx2a.mmbnlc1
 orientation	landscape
-env	DM_ADAPTIVE_FPS=0
+pacing	steady
 env	DM_MOVIE_FAST=1
 romfs	zstd
+readme_name	Mega Man Battle Network Legacy Collection Vol. 1
+readme_image	docs/images/mega-man-battle-network-legacy-collection-vol-1.jpg
+readme_tag	v0.4.0
+readme_note	update 1.0.2 · 60 fps, held · tested on the AYN Odin 2 (Adreno 740) with a Turnip Vulkan driver (Qualcomm's driver crashes or runs at 30) · Battle Network 1, 2 and 3 played: saves, battles, maps, gallery · the launcher's menus draw fully from the second port with the device connected after a first run (it builds some shaders at run time)

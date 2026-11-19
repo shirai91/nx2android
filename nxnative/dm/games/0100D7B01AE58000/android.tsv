@@ -13,3 +13,7 @@ tested	v65536 Retroid Pocket 6 (Adreno 740, Android 13); PurpleVK-public git-62a
 package	org.nx2a.t0100d7b01ae58000
 orientation	landscape
 env	DM_VK_MT_REPLAY=1
+readme_name	Picross S+
+readme_image	docs/images/picross-s-plus.png
+readme_tag	v0.4.0
+readme_note	update 1.0.1 · Retroid Pocket 6 / PurpleVK · menu and puzzle verified; **Mali rendering issues**

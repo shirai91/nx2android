@@ -16,6 +16,8 @@ On arm64 Linux the NDK has x86_64 host tools only. `dm/android/build.py` uses `<
 - link `ld.lld` and the `llvm-*` tools to the same LLVM;
 - for the backend's own shaders, link `<NDK>/shader-tools/linux-aarch64/glslc` to a native `glslc` (Arch: `shaderc`, `/usr/bin/glslc`).
 
+On Windows, the Android host linker reads its object list from a UTF-8 response file (`dmhost.rsp` or `libdmhost.rsp` in the build output). This avoids `WinError 206` in long checkout paths. Clang is invoked with `--rsp-quoting=windows` so backslashes and spaces in those paths survive response-file parsing.
+
 ## Port a game
 
 The app:
@@ -84,7 +86,7 @@ It refuses when the game's code on the device was rewritten with other rewriter 
 
 ## Adding a game
 
-Each game is a profile in `nxnative/dm/games/<title ID>/` with an `android.tsv`: [ARCHITECTURE.md](ARCHITECTURE.md#adding-a-game). A finished port updates, in the profile's commit, the games table in the [README](../README.md#games) (its row, with a gameplay frame captured on the device in `docs/images/` and the tag of the nx2android version it was tested on) and [PORT_CHECKLIST.md](PORT_CHECKLIST.md).
+Each game is a profile in `nxnative/dm/games/<title ID>/` with an `android.tsv`: [ARCHITECTURE.md](ARCHITECTURE.md#adding-a-game). A finished port updates, in the profile's commit, the games table in the [README](../README.md#games) (the profile's `readme_image`, `readme_tag`, `readme_note` rows: a gameplay frame captured on the device in `docs/images/` and the tag of the nx2android version it was tested on) and [PORT_CHECKLIST.md](PORT_CHECKLIST.md); `python docs/gen_tables.py` writes the table, the checklist's ticks and its count from the profiles, so pull requests do not edit the same lines. The porter's options: a field of `porter/pipeline.py` `Options` and a `porter port` argument of the same name (`Options.from_args`).
 
 ## Releases and version numbers
 
@@ -100,7 +102,7 @@ python packaging/build_bundle.py
 
 On Windows, `build_bootloader.py` compiles PyInstaller's launcher on this PC (it needs the Microsoft C++ Build Tools), because a few antivirus engines flag the prebuilt one every PyInstaller app shares. Run it again after installing or upgrading PyInstaller.
 
-`dist/nx2android/` and `dist/nx2android-<version>-<os>-<cpu>.zip` (`windows-x64`, `macos-arm64`, `linux-x64`, `linux-arm64`): the app, the committed `nxnative/` and the install guide; no toolchains, keys or game files. Publishing a release builds the macOS, Windows and Linux zips on GitHub's runners and attaches them (`.github/workflows/release-macos.yml`, `release-windows.yml`, `release-linux.yml`, which builds both Linux cpus on Ubuntu 24.04 (`ubuntu-latest` for x64, so the system libraries the bundle carries are never older than glibc 2.39); `--clobber` replaces a zip of the same name, so do not upload them by hand). Run either workflow by hand (Actions → Run workflow) for a test build of a branch, kept as the run's artifact.
+`dist/nx2android/` and `dist/nx2android-<version>-<os>-<cpu>.zip` (`windows-x64`, `macos-arm64`, `linux-x64`, `linux-arm64`): the app, the committed `nxnative/` and the install guide; no toolchains, keys or game files. Publishing a release builds the macOS, Windows and Linux zips on GitHub's runners and attaches them (`.github/workflows/release-macos.yml`, `release-windows.yml`, `release-linux.yml`, which builds both Linux cpus on Ubuntu 24.04 (`ubuntu-latest` for x64, so the system libraries the bundle carries are never older than glibc 2.39); `--clobber` replaces a zip of the same name, so do not upload them by hand). The Linux workflow also packs each Linux bundle as `nx2android-<version>-linux-<cpu>.AppImage` (`packaging/build_appimage.py`, on Linux after `build_bundle.py`; it downloads appimagetool and the AppImage runtime at pinned versions) and starts it once as a check. An AppImage is a read-only mount at a new path each launch, so the app copies `nxnative/` to the user folder once for each AppImage and runs the engine from there (`porter/paths.py` `engine_copy`). Run either workflow by hand (Actions → Run workflow) for a test build of a branch, kept as the run's artifact.
 
 ## Android motion
 
@@ -121,16 +123,22 @@ axis preservation, not game recognition or device behavior.
 
 ## Tests
 
+```
+python -m unittest discover tests
+```
+
+**Every push and pull request** runs them on GitHub (`.github/workflows/tests.yml`): Linux with gcc and with clang, macOS, and Windows with MinGW gcc, plus an NDK compile of the Android host (debug and release). A Windows PC without a POSIX C compiler skips about 150 C harness tests, so a red Tests run is the first place such a break shows: wait for it before you merge into main. The release workflows run the tests again before they build the bundles.
+
+**Shader translator changes**: the CI runs the synthetic shader tests (`tests/test_spirv_per_vertex.py`); game shaders are game data and stay on your PC. `python devtools/shader_corpus.py record` (on main) and `check` (on the change) translate the split shaders of every port in `.gamedump` with the checkout's translator and list, game by game, the shaders whose SPIR-V the change touches (`--sample N` for a quick look: 300 shaders take seconds). The translator's key ignores comments and whitespace (`porter/codekey.py`), so a comment-only change keeps every game's shader bundle.
+
+**C harnesses** compile code cut out of core sources with their own stubs. Cut with `tests/csrc.py` (`csrc.function(src, 'static void f(')` takes a whole function; `csrc.between(src, begin, end)`), which names the source and the marker when the code moved. A cut function that calls a new symbol needs a stub in that harness: the Tests run on the pull request shows which.
+
 `test_nvn_sampler_cache` exercises the production sampler initializer, finalizer,
 comparison and object layout. It checks that all four formerly skipped filter/wrap
 fields participate in an opaque-object CRC, preserves guard bytes beyond the
 smallest public object, and models hash lookup followed by semantic comparison:
 10,000 alternating requests must retain two entries. The cache model is separate
 from gameplay validation.
-
-```
-python -m unittest discover tests
-```
 
 `test_vk_pixel_history` exercises production ROI/HDR helpers and mocked Vulkan
 capture/fence/resource behavior. Its harness also runs natively on Android.

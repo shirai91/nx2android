@@ -7,6 +7,10 @@ import unittest
 from unittest import mock
 import host_cc
 from porter import cli, pipeline
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import csrc  # noqa: E402
 
 
 class NativeKeyboard(unittest.TestCase):
@@ -43,8 +47,7 @@ class NativeKeyboardBridge(unittest.TestCase):
     def test_keyboard_jni_runs_off_guest_caller(self):
         root = Path(__file__).resolve().parents[1]
         front = (pipeline.DM / 'android/front_android.c').read_text(encoding='utf-8')
-        start = front.index('int front_text_input(')
-        dispatch = front[start:front.index('\n}\n', start) + 3]
+        dispatch = csrc.function(front, 'int front_text_input(')
         touch_state = next(line for line in front.splitlines() if ' g_touch_btn;' in line)
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)

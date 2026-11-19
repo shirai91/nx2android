@@ -159,7 +159,9 @@ class PerspectiveCancellationTests(unittest.TestCase):
         dotnet = os.environ.get('DOTNET') or shutil.which('dotnet')
         require_dotnet10(dotnet)
         with tempfile.TemporaryDirectory(prefix='nx2a_interp_') as directory:
-            work = Path(directory)
+            # resolve(): macOS's temp folder is under /var, a link to /private/var. MSBuild
+            # would make the Ryujinx project references relative to the link and miss them.
+            work = Path(directory).resolve()
             project = work/'Check.csproj'
             project.write_text('<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType>'
                                '<TargetFramework>net10.0</TargetFramework><Nullable>disable</Nullable>'
