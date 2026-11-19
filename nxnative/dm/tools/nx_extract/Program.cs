@@ -134,7 +134,9 @@ static class P {
         var pkg = OpenNsp(ks, nsp);
         Nca data;
         if (tidArg != null) {
-            ulong tid = Convert.ToUInt64(tidArg, 16);
+            ulong tid;
+            try { tid = Convert.ToUInt64(tidArg, 16); }
+            catch (Exception) { Console.Error.WriteLine($"[RED] the DLC's title ID must be a hex number: {tidArg}"); return 2; }
             data = pkg.Select(e => e.Nca).FirstOrDefault(n => n.Header.TitleId == tid && (n.Header.ContentType == NcaContentType.PublicData || n.Header.ContentType == NcaContentType.Data));
             if (data == null) { Console.Error.WriteLine($"[RED] no data NCA of {tid:x16} in {Path.GetFileName(nsp)}"); return 4; }
         } else data = Pick(pkg, NcaContentType.PublicData) ?? Pick(pkg, NcaContentType.Data) ?? throw new Exception("no data NCA in the DLC NSP");
