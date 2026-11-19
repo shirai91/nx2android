@@ -144,6 +144,21 @@ for diagnosis. Likewise the first-use upload of CPU-filled uncompressed 2D textu
 `cpu_content_tex`, which also checks the pool for GPU-written aliases) needs `env DM_NVN_CPU_TEX2D_FIRST_USE=1`;
 without it only compressed and 3D textures are uploaded, as before.
 
+## Settings
+
+Every `DM_*` switch the core reads has one row in `nxnative/dm/settings.tsv`, the settings registry: its type (`bool`, `int`, `float`, `hex`, `str`), its default, its scope, when it is read and what it does. Rows are kept in name order.
+
+| Scope | Who may set it |
+|---|---|
+| `profile` | a game profile's `android.tsv` `env` rows (and the porter) |
+| `porter` | the porter, in the data pack's `env.txt` (folders, fonts, `--fps60`, `--no-menu-button`, ...) |
+| `app` | the Android app itself (its folders, the player's pause-menu settings) |
+| `debug` | bring-up and diagnosis only: `env.txt` by hand or a `ctl.txt` `env` line. A profile that needs one gets the row's scope changed to `profile` first, as a decision in review |
+
+- **Checks.** `android_profile.py` refuses a profile `env` row whose switch has no row, has another scope or a value of the wrong type (`nxnative/dm/android/tools/settings_registry.py`); the data pack refuses such an `env.txt` row from the porter. `tests/test_settings.py` checks that every `"DM_..."` name in the core has a row, that every row is still read, and that the `,ios` mark (read only by the iOS host) is true.
+- **At run time** (Android build). `build.py` force-includes `dm/android/dm_settings.h` into every core source. The sources keep plain `getenv("DM_...")` and `setenv` calls; in this build a literal `getenv` reads a per-call-site cache that searches the environment again only after a `setenv` changed a value (`dm/android/dm_settings.c`), and `setenv` logs a `[RED]` line once for a `DM_` name with no row: a typo in `env.txt` or a `ctl.txt` line no longer does nothing silently. The replay thread reads about 50 switches at every submission; each read was a scan of the whole environment. Test harnesses that cut blocks out of core sources, and the iOS host, keep the plain libc calls with the same results.
+- **Adding a switch.** Add its row with the code that reads it. New behaviour starts off by default; a profile turns it on; it becomes the default only after the games it reaches were checked.
+
 ## Game profiles on Android
 
 A profile is offered for Android when it has an `android.tsv`; the profiles without one (52 of the 54 today, upstream's iOS games) show as "ios only": an experimental port can still try them. `android.tsv` holds, one `key<TAB>value` row each:
@@ -158,7 +173,7 @@ A profile is offered for Android when it has an `android.tsv`; the profiles with
 | `sysdata` | System data titles the game reads from the console's firmware, 16-digit hex title IDs (`0100000000000802`: MiiModel, the Mii heads Mario Kart 8 Deluxe builds): the port extracts each from the player's firmware dump (`--firmware`) into the data pack's `sysdata/<title ID>/`, and the host mounts it (`DM_SYSDATA`, `dm/host/hle_fs.c`) in place of its stand-in. Titles `0100000000000811` (FontStandard) and `0100000000000810` (FontNintendoExtension) make the host serve the console's own shared fonts (`nintendo_udsg-r_std_003.bfttf`, `nintendo_ext_003.bfttf`, decoded in `hle_sdk16.c`): the standard font after `DM_SHARED_FONT` and `$DM_FONT_DIR/standard.ttf`, the extension font before porter's generated stand-in. `0100000000000814` (FontChineseSimplified: `nintendo_udsg-r_org_zh-cn_003.bfttf` for type 1, `nintendo_udsg-r_ext_zh-cn_003.bfttf` for type 2), `0100000000000813` (FontChineseTraditional: `nintendo_udjxh-db_zh-tw_003.bfttf`) and `0100000000000812` (FontKorean: `nintendo_udsg-r_ko_003.bfttf`) are shared-font types 1–4 when `DM_SHARED_FONT` is unset; a file that is not in the pack leaves that type on the standard font. Never shipped with the tool |
 | `setting` | `<name>=<value>`: the pause menu's defaults on first launch (`overlay`, `rumble`, `docked`, `fps`: the frame rate counter in the top left corner, off by default; `opacity`: the gamepad's, 20 to 80 percent by 5, 60 by default), written to the data pack's `settings.txt`, where the app also keeps the player's own gamepad layout from the pause menu's layout editor (`ui=` rows) and its Snap to grid (`grid`, off by default) |
 | `romfs` | `raw` (default) or `zstd`: the data pack's RomFS files that compress are stored zstd-compressed and read back by the host ("Compressed RomFS" below) |
-| `env` | `<KEY>=<VALUE>`: a host switch the game needs on Android, written to the data pack's `env.txt` |
+| `env` | `<KEY>=<VALUE>`: a host switch the game needs on Android, written to the data pack's `env.txt`; only switches of scope `profile` in the settings registry (Settings, above) |
 | `overlay` | `<tablet\|phone> <control> <x> <y>`: moves one on-screen control of that layout (`dm/android/overlay_default.tsv`) to x, y as fractions of the window, compiled into `android_profile.h` |
 
 Per-build knowledge stays where upstream keeps it: the rewriter's cuts in `patches.py` / `dm/tools/sdk_patches.py`, keyed by build ID.

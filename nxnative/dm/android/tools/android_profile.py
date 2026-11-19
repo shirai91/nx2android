@@ -23,6 +23,8 @@ HERE = Path(__file__).resolve().parent
 ANDROID = HERE.parent
 sys.path.insert(0, str(ANDROID.parent / 'games'))
 import game   # noqa: E402  (the profile folders, DM_GAMES_DIR included)
+sys.path.insert(0, str(HERE))
+import settings_registry   # noqa: E402  (nxnative/dm/settings.tsv: which switches a profile may set)
 
 STATUS = ('playable', 'wip', 'boots', 'experimental')
 SETTINGS = {'overlay': ('0', '1'), 'rumble': ('0', '1'), 'docked': ('0', '1'), 'fps': ('0', '1'),   # the pause menu's settings (front_android.c settings_load)
@@ -126,6 +128,7 @@ class AndroidProfile:
             k, eq, val = v.partition('=')
             if not eq or k not in SETTINGS or val not in SETTINGS[k]: bad.append(f'setting {v!r}: ' + ', '.join(f'{n}={"|".join(vs)}' for n, vs in SETTINGS.items()))
         bad += [f'env {v!r}: KEY=VALUE' for v in self.values('env') if not re.fullmatch(r'[A-Z_][A-Z0-9_]*=.*', v)]
+        bad += settings_registry.check_env(self.values('env'), ('profile',), 'env ')   # a typo or a debug-only switch fails the port, not silently the game
         names = {r['name'] for r in default_layout()}
         for v in self.values('overlay'):
             c = v.split()
