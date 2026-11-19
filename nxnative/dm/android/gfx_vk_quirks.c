@@ -17,10 +17,12 @@ static int adreno(const vk_gpu *g) { return g->vendor == VENDOR_QUALCOMM; }   //
 static const struct {
     enum vk_quirk q; const char *name, *setting; int (*match)(const vk_gpu *); const char *why;
 } ROWS[] = {
+    // found with NEO's menu wipe and Xenoblade Chronicles 3's cloud dome
     {VQ_LRZ_TOUCH, "lrz_touch", "DM_VK_QUIRK_LRZ_TOUCH", adreno,
-     "Adreno's low-resolution Z keeps depth from before a command-buffer cut or a pass switch: draws behind objects vanish (NEO menu wipe, XC3 clouds)"},
+     "Adreno's low-resolution Z keeps depth from before a command-buffer cut or a pass switch: draws behind objects vanish"},
+    // written for NieR:Automata
     {VQ_GS_SPLIT, "gs_split", "DM_VK_QUIRK_GS_SPLIT", adreno,
-     "geometry-shader draws split into vertex and fragment passes: written and checked on Adreno only (NieR:Automata)"},
+     "geometry-shader draws split into vertex and fragment passes: written and checked on Adreno only"},
 };
 _Static_assert(sizeof ROWS / sizeof *ROWS == VQ_COUNT, "one row a quirk");
 
