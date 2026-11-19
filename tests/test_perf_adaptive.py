@@ -4,6 +4,10 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import csrc  # noqa: E402
 
 
 SOURCE = Path(__file__).resolve().parents[1] / 'nxnative/dm/android/perf_android.c'
@@ -15,7 +19,7 @@ class AdaptiveFrameRate(unittest.TestCase):
         if not cc:
             self.skipTest('a C compiler is required')
         src = SOURCE.read_text(encoding='utf-8')
-        controller = src[src.index('static const int64_t STEPS[]'):src.index('// hle_nvn.c, the first acquire')]
+        controller = csrc.between(src, 'static const int64_t STEPS[]', '// hle_nvn.c, the first acquire')
         hint, shown = controller.index('// The frame\'s work to the CPU hint'), controller.index('// The frames\' time on screen')
         controller = controller[:hint] + controller[shown:]   # without hint_report: the Android hint API (H, g_hint), called only from dm_perf_frame
         harness = r'''

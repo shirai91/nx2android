@@ -6,6 +6,10 @@ import tempfile
 import unittest
 
 from porter.upstream import android_profile
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import csrc  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -18,12 +22,12 @@ class OverlayVisibility(unittest.TestCase):
         if not cc:
             raise unittest.SkipTest('a C compiler is needed for the overlay check')
         front = (ROOT / 'nxnative/dm/android/front_android.c').read_text(encoding='utf-8')
-        pad = front[front.index('static int32_t axis('):front.index('// ---- the on-screen gamepad')]
-        visible = front[front.index('int dm_overlay_visible(void)'):front.index('int dm_overlay_layout(void)')]
-        hidden = front[front.index('int dm_overlay_hidden('):front.index('float dm_overlay_opacity(')]
-        hit = front[front.index('static int ctl_at('):front.index('// dragging the menu button:')]
-        menu = front[front.index('static void menu_do('):front.index('static void menu_touch(')]
-        events = front[front.index('static void touch_event(AInputEvent *e) {'):front.index('static int on_input(')]
+        pad = csrc.between(front, 'static int32_t axis(', '// ---- the on-screen gamepad')
+        visible = csrc.between(front, 'int dm_overlay_visible(void)', 'int dm_overlay_layout(void)')
+        hidden = csrc.between(front, 'int dm_overlay_hidden(', 'float dm_overlay_opacity(')
+        hit = csrc.between(front, 'static int ctl_at(', '// dragging the menu button:')
+        menu = csrc.between(front, 'static void menu_do(', 'static void menu_touch(')
+        events = csrc.between(front, 'static void touch_event(AInputEvent *e) {', 'static int on_input(')
         harness = r'''
 #include <assert.h>
 #include <stdatomic.h>

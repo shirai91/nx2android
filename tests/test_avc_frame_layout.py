@@ -5,6 +5,10 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import csrc  # noqa: E402
 
 ROOT=Path(__file__).resolve().parents[1]
 SOURCE=ROOT/'nxnative/dm/android/movie_avc.c'
@@ -19,7 +23,7 @@ class AVCFrameLayout(unittest.TestCase):
     def setUpClass(cls):
         source=SOURCE.read_text(encoding='utf-8')
         # Include production declarations and SPS helpers when color metadata lands.
-        state=source[source.index('#define QMAX'):source.index('mavc *mavc_new(')]
+        state=csrc.between(source, '#define QMAX', 'mavc *mavc_new(')
         code=r'''
 #define __USE_MINGW_ANSI_STDIO 1
 #include <assert.h>

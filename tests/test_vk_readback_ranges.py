@@ -4,6 +4,10 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import csrc  # noqa: E402
 
 
 class ReadbackRanges(unittest.TestCase):
@@ -16,7 +20,7 @@ class ReadbackRanges(unittest.TestCase):
         enums = '\n'.join(line for line in header.splitlines() if line.startswith(('enum { RK_SUPPORT', 'enum { RD_UBO')))
         controls = '\n'.join(line for line in core.splitlines() if line.startswith(('int vk_readback_ranges(', 'void vk_readback_unknown(')))
         start = core.index('static void sub_gpu_wrote(uint64_t a, uint64_t n) {')
-        ranges = core[start:core.index('\n}\n', start)+3]
+        ranges = csrc.function(core, 'static void sub_gpu_wrote(uint64_t a, uint64_t n) {')
         start = exec_src.index('static VkDescriptorSet stage_set(')
         gate = exec_src[exec_src.index('\n', start):exec_src.index('    int memo =', start)]
         # The gate must execute before descriptor memo/cache returns.

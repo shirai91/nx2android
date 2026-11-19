@@ -9,6 +9,7 @@ import unittest
 from porter.toolchain import find_ndk
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import host_cc   # noqa: E402
+import csrc  # noqa: E402
 
 TEX = Path(__file__).resolve().parents[1] / 'nxnative/dm/android/gfx_vk_tex.c'
 HARNESS = r'''
@@ -47,8 +48,7 @@ class DepthStencilReadback(unittest.TestCase):
         if not headers:
             self.skipTest('NDK Vulkan headers are required')
         src = TEX.read_text()
-        start = src.index('static void ds_texels(')
-        cut = src[start:src.index('\n}\n', start) + 3]
+        cut = csrc.function(src, 'static void ds_texels(')
         with tempfile.TemporaryDirectory(prefix='nx2a-ds-') as tmp:
             c, exe = Path(tmp) / 'check.c', Path(tmp) / 'check'
             c.write_text(HARNESS.replace('CUT', cut))

@@ -123,16 +123,20 @@ axis preservation, not game recognition or device behavior.
 
 ## Tests
 
+```
+python -m unittest discover tests
+```
+
+**Every push and pull request** runs them on GitHub (`.github/workflows/tests.yml`): Linux with gcc and with clang, macOS, and Windows with MinGW gcc, plus an NDK compile of the Android host (debug and release). A Windows PC without a POSIX C compiler skips about 150 C harness tests, so a red Tests run is the first place such a break shows: wait for it before you merge into main. The release workflows run the tests again before they build the bundles.
+
+**C harnesses** compile code cut out of core sources with their own stubs. Cut with `tests/csrc.py` (`csrc.function(src, 'static void f(')` takes a whole function; `csrc.between(src, begin, end)`), which names the source and the marker when the code moved. A cut function that calls a new symbol needs a stub in that harness: the Tests run on the pull request shows which.
+
 `test_nvn_sampler_cache` exercises the production sampler initializer, finalizer,
 comparison and object layout. It checks that all four formerly skipped filter/wrap
 fields participate in an opaque-object CRC, preserves guard bytes beyond the
 smallest public object, and models hash lookup followed by semantic comparison:
 10,000 alternating requests must retain two entries. The cache model is separate
 from gameplay validation.
-
-```
-python -m unittest discover tests
-```
 
 `test_vk_pixel_history` exercises production ROI/HDR helpers and mocked Vulkan
 capture/fence/resource behavior. Its harness also runs natively on Android.
