@@ -55,7 +55,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [x] Kirby and the Forgotten Land · `01004D300C5AE000`
 - [x] Kirby's Return to Dream Land Deluxe · `01006B601380E000` · needs the console's firmware for its fonts
 - [x] Lonely Mountains: Downhill · `0100A0C00E0DE000` · Retroid Pocket 6 / PurpleVK; brief visual glitches
-- [ ] Luigi's Mansion 3 · `0100DCA0064A6000` · profile here · 60 fps with 1.4.0
+- [ ] Luigi's Mansion 3 · `0100DCA0064A6000` · experimental Android profile for 1.4.0 · tested through early hotel gameplay on Xiaomi 17
 - [ ] Mario + Rabbids Kingdom Battle · `010067300059A000` · upstream profile
 - [ ] Mario + Rabbids Sparks of Hope · `0100317013770000` · upstream profile
 - [ ] Mario Kart 8 Deluxe · `0100152000022000` · profile here · no Mii heads
