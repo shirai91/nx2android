@@ -49,10 +49,17 @@ public class ExternalActivity extends NativeActivity implements ExternalDisplay.
     private static native float[] externalOverlay(int width, int height);
     private static native int externalMenuState();
     private static native int[] externalMenuPixels(int width, int height, int state);
+    private static native void assignmentStart();
+    private static native void assignmentClose();
+    private static native void assignmentMove(int source, int player, int cell);
+    private static native int[] assignmentSnapshot();
+    private static native void assignmentPreview(int id, float x, float y);
+    private static native void assignmentPreviewButton(int id, boolean down);
     private ExternalDisplay external;
     private View pad;
     private Dialog phonePad;
     private AlertDialog audioDialog;
+    private Dialog assignmentDialog;
     private final ExecutorService audioExecutor = Executors.newSingleThreadExecutor();
 
     @Override protected void onCreate(Bundle state) {
@@ -84,6 +91,7 @@ public class ExternalActivity extends NativeActivity implements ExternalDisplay.
         if (external != null) external.stop();
         if (phonePad != null) phonePad.dismiss();
         if (audioDialog != null) audioDialog.dismiss();
+        if (assignmentDialog != null) assignmentDialog.dismiss();
         audioExecutor.shutdown();
         super.onDestroy();
     }
@@ -111,6 +119,55 @@ public class ExternalActivity extends NativeActivity implements ExternalDisplay.
     }
 
     public void openAudioMenu() { runOnUiThread(this::showAudioMenu); }
+    public void openControllerAssignment() { runOnUiThread(this::showControllerAssignment); }
+    private void showControllerAssignment() {
+        if (assignmentDialog != null && assignmentDialog.isShowing()) return;
+        assignmentStart();
+        Dialog dialog = new Dialog(this, android.R.style.Theme_Material_NoActionBar_Fullscreen) {
+            private final android.util.SparseArray<java.util.HashSet<Integer>> held = new android.util.SparseArray<>();
+            private final android.util.SparseBooleanArray axisHeld = new android.util.SparseBooleanArray();
+            private void previewButtons(int id) {
+                java.util.HashSet<Integer> keys = held.get(id);
+                assignmentPreviewButton(id, (keys != null && !keys.isEmpty()) || axisHeld.get(id));
+            }
+            @Override public boolean dispatchGenericMotionEvent(MotionEvent event) {
+                if ((event.getSource() & InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK) {
+                    int id = event.getDeviceId();
+                    assignmentPreview(id, event.getAxisValue(MotionEvent.AXIS_X), event.getAxisValue(MotionEvent.AXIS_Y));
+                    axisHeld.put(id, Math.abs(event.getAxisValue(MotionEvent.AXIS_HAT_X)) > .5f || Math.abs(event.getAxisValue(MotionEvent.AXIS_HAT_Y)) > .5f ||
+                            event.getAxisValue(MotionEvent.AXIS_LTRIGGER) > .5f || event.getAxisValue(MotionEvent.AXIS_RTRIGGER) > .5f ||
+                            event.getAxisValue(MotionEvent.AXIS_BRAKE) > .5f || event.getAxisValue(MotionEvent.AXIS_GAS) > .5f);
+                    previewButtons(id); return true;
+                }
+                return super.dispatchGenericMotionEvent(event);
+            }
+            @Override public boolean dispatchKeyEvent(KeyEvent event) {
+                if ((event.getSource() & InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD || (event.getSource() & InputDevice.SOURCE_DPAD) == InputDevice.SOURCE_DPAD) {
+                    int id = event.getDeviceId(); java.util.HashSet<Integer> keys = held.get(id);
+                    if (keys == null) { keys = new java.util.HashSet<>(); held.put(id, keys); }
+                    if (event.getAction() == KeyEvent.ACTION_DOWN) keys.add(event.getKeyCode());
+                    else if (event.getAction() == KeyEvent.ACTION_UP) keys.remove(event.getKeyCode());
+                    previewButtons(id); return true;
+                }
+                return super.dispatchKeyEvent(event);
+            }
+        };
+        ControllerAssignmentView view = new ControllerAssignmentView(this, new ControllerAssignmentView.Host() {
+            public ControllerAssignmentView.Device[] devices() {
+                int[] data = assignmentSnapshot(); ArrayList<ControllerAssignmentView.Device> out = new ArrayList<>();
+                for (int i = 0; i + 6 < data.length; i += 7) {
+                    InputDevice d = data[i + 1] < 0 ? null : InputDevice.getDevice(data[i + 1]);
+                    String name = data[i] == 1 ? "Phone gamepad" : d != null ? d.getName() : "Controller";
+                    out.add(new ControllerAssignmentView.Device(data[i], name, data[i + 2], data[i + 3], data[i + 4] / 32767f, -data[i + 5] / 32767f, data[i + 6] != 0));
+                }
+                return out.toArray(new ControllerAssignmentView.Device[0]);
+            }
+            public void move(int source, int player, int cell) { assignmentMove(source, player, cell); }
+            public void close() { dialog.dismiss(); }
+        });
+        dialog.setContentView(view); dialog.setOnDismissListener(d -> { assignmentClose(); if (assignmentDialog == dialog) assignmentDialog = null; });
+        assignmentDialog = dialog; dialog.show();
+    }
     private void showAudioMenu() {
         AudioManager manager = (AudioManager)getSystemService(Context.AUDIO_SERVICE);
         if (manager == null) return;
@@ -222,13 +279,13 @@ public class ExternalActivity extends NativeActivity implements ExternalDisplay.
         }
         private void drawMenu(Canvas c, float[] data) {
             Bitmap bitmap = menuRaster(menuState); if (bitmap == null) return;
-            float W = getWidth(), H = getHeight(), scale = Math.min(data[1], .92f / (7 * .115f + 2 * .03f));
-            float w = Math.min(.95f * H * scale, W * .96f), h = (7 * .115f + 2 * .03f) * H * scale;
+            float W = getWidth(), H = getHeight(), scale = Math.min(data[1], .92f / (8 * .115f + 2 * .03f));
+            float w = Math.min(.95f * H * scale, W * .96f), h = (8 * .115f + 2 * .03f) * H * scale;
             paint.setAlpha(255); c.drawBitmap(bitmap, null, new RectF((W-w)/2, (H-h)/2, (W+w)/2, (H+h)/2), paint);
         }
         private void drawEditor(Canvas c, float[] data, int state) {
             Bitmap bitmap = menuRaster(state); if (bitmap == null) return;
-            float W = getWidth(), H = getHeight(), scale = Math.min(data[1], .92f / (7 * .115f + 2 * .03f));
+            float W = getWidth(), H = getHeight(), scale = Math.min(data[1], .92f / (8 * .115f + 2 * .03f));
             if ((state & 4) != 0) {
                 paint.setStyle(Paint.Style.STROKE); paint.setStrokeWidth(Math.max(1, H*.001f)); paint.setColor(Color.argb(51,255,255,255));
                 float step=H/20; for(float x=step;x<W;x+=step)c.drawLine(x,0,x,H,paint); for(float y=step;y<H;y+=step)c.drawLine(0,y,W,y,paint);
@@ -268,10 +325,13 @@ public class ExternalActivity extends NativeActivity implements ExternalDisplay.
         private final float[] xs = {.20f,.07f,.80f,.93f,.43f,.57f,.28f,.72f,.88f,.82f,.82f,.76f,.25f,.25f,.30f,.25f,.5f,.11f,.65f,.50f};
         private final float[] ys = {.19f,.19f,.19f,.19f,.10f,.10f,.45f,.45f,.62f,.76f,.48f,.62f,.76f,.65f,.76f,.87f,.10f,.57f,.78f,.27f};
         Pad() { super(ExternalActivity.this); setFocusable(true); setWillNotDraw(false); setLayerType(View.LAYER_TYPE_SOFTWARE, null); }
+        private boolean showControls() { float[] d = externalOverlay(getWidth(), getHeight()); return d != null && d.length > 0 && d[d.length - 1] == 1; }
         @Override protected void onDraw(Canvas c) {
             c.drawColor(Color.rgb(15,18,22)); float w=getWidth(), h=getHeight(), r=Math.min(w,h)*.064f;
+            boolean show = showControls();
             paint.setTextAlign(Paint.Align.CENTER); paint.setTextSize(r*.8f); paint.setStrokeWidth(Math.max(2,r*.06f));
             for(int i=0;i<labels.length;i++) {
+                if(!show && i != 16) continue;
                 if(i>=13 && i<=15) continue;
                 float x=xs[i]*w,y=ys[i]*h, rad=(i==12 || i==17 || i==18 ? r*1.65f:r);
                 paint.setStyle(Paint.Style.FILL); paint.setColor(Color.WHITE);
@@ -294,7 +354,9 @@ public class ExternalActivity extends NativeActivity implements ExternalDisplay.
         }
         private int hit(float x,float y) {
             float w=getWidth(),h=getHeight(),r=Math.min(w,h)*.064f, best=Float.MAX_VALUE; int which=-1;
+            boolean show = showControls();
             for(int i=0;i<labels.length;i++) { float dx=x-xs[i]*w,dy=y-ys[i]*h,lim=r*(i>=17?1.65f:1.15f),d=dx*dx+dy*dy;
+                if(!show && i != 16) continue;
                 if(i>=13 && i<=15) continue;
                 if(i==12) lim=r*1.65f;
                 if(i==19) lim=r*1.15f;

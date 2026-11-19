@@ -18,7 +18,9 @@ class OverlayVisibility(unittest.TestCase):
         if not cc:
             raise unittest.SkipTest('a C compiler is needed for the overlay check')
         front = (ROOT / 'nxnative/dm/android/front_android.c').read_text(encoding='utf-8')
-        pad = front[front.index('static int32_t axis('):front.index('// ---- the on-screen gamepad')]
+        pad_start = front.index('static int32_t axis(float v) {')
+        pad = front[pad_start:front.index('JNIEXPORT void JNICALL Java_org_nx2a_ExternalActivity_assignmentPreview', pad_start)] + front[front.index('static void pad_publish(', pad_start):front.index('// ---- the on-screen gamepad', pad_start)]
+        publish = front[front.index('static void assignment_publish(void) {'):front.index('static int assignment_device(')]
         visible = front[front.index('int dm_overlay_visible(void)'):front.index('int dm_overlay_layout(void)')]
         hidden = front[front.index('int dm_overlay_hidden('):front.index('float dm_overlay_opacity(')]
         hit = front[front.index('static int ctl_at('):front.index('// dragging the menu button:')]
@@ -32,6 +34,22 @@ class OverlayVisibility(unittest.TestCase):
 #include "front.h"
 #include "overlay_layout.h"
 #include "pad_slots.h"
+#include "pad_assignment.h"
+static _Atomic int g_assign_active, g_assign_dialog;
+static pad_assignment_runtime g_assign;
+static struct { int present; } g_assign_devices[PA_SOURCES];
+static uint64_t g_assign_keys[PA_SOURCES], g_assign_axis_buttons[PA_SOURCES], g_assign_clock, g_shake_btn;
+static int g_slot_mu;
+#define pthread_mutex_lock(m) ((void)(m))
+#define pthread_mutex_unlock(m) ((void)(m))
+static void assignment_publish(void);
+static void assignment_rumble_check(void) {}
+static void assignment_rumble_use(int s, int id) { (void)s; (void)id; }
+static void assignment_axes(int s, uint64_t b, const int32_t a[4]) { (void)s; (void)b; (void)a; }
+static int assignment_device(int id) { (void)id; return 0; }
+static int assignment_attach(int id, const char *key) { (void)id; (void)key; return 0; }
+static void menu_java(void *method) { (void)method; }
+static void *g_assignment_menu_method, *g_audio_menu_method;
 static _Atomic int g_set_overlay, g_overlay, g_pads, g_edit, g_menu_btn = 1;
 static _Atomic int g_cust[2][2][OV_N][4];
 static _Atomic int g_set_rumble, g_set_fps, g_set_labels, g_menu_tab, g_sv_st;
@@ -51,7 +69,6 @@ static void menu_tab(int tab) { (void)tab; }
 static void ed_open(void) {}
 static void sp_open(void) {}
 static void save_export(void) {}
-static void menu_audio(void) {}
 static void menu_close(void) {}
 static void dm_overlay_redraw(void) {}
 ''' + visible + hidden + hit + menu + r'''
@@ -78,7 +95,7 @@ static uint32_t players_mask;
 // The players (each controller its own): the slots, and the Java side stubbed. Devices 7 (a keyboard) and -1 (`adb shell input`'s virtual one) are not
 // controllers; every other id is one, until the test marks it gone. Device 45 is device 44 back under a new id, 46 another controller with 42's name
 static pad_slots g_slots;
-static int g_pad_merge = -1, g_slot_mu, g_ndev_key, key_reads, log_taken, dev_gone[256];
+static int g_pad_merge = -1, g_ndev_key, key_reads, log_taken, dev_gone[256];
 static struct { int id; char key[64]; } g_dev_key[16];
 static int pad_dev_kind(int id) { return id == 7 || id == -1 ? 0 : id >= 0 && id < 256 && dev_gone[id] ? -1 : 1; }
 static void pad_key_now(int id, char *out, size_t n) { key_reads++; snprintf(out, n, "pad-%d", id == 45 ? 44 : id == 46 ? 42 : id); }
@@ -89,8 +106,6 @@ static _Atomic int g_menu, g_sp_on, g_tx_on, g_pad_in, g_knob[2][2];
 static _Atomic int64_t g_menu_t, g_press_t[16], g_stick_t[2];
 static struct { int sel; } g_tx;
 static int g_tx_mu;
-#define pthread_mutex_lock(m) ((void)(m))
-#define pthread_mutex_unlock(m) ((void)(m))
 #define LOG(...) log_line(__VA_ARGS__)
 #define AInputEvent_getSource(e) ((e)->source)
 #define AInputEvent_getType(e) ((e)->type)
@@ -121,6 +136,7 @@ static uint64_t key_bit(int code) { return code == TEST_PAD_KEY ? DM_BTN_A : 0; 
 static int tx_key(AInputEvent *e) { (void)e; return 1; }
 static void tx_changed(void) {}
 void dm_pad_players(uint32_t n) { assert(n & 1); players_mask = n; }
+void dm_pad_players_exact(uint32_t n) { players_mask = n; }
 uint32_t dm_player_npad(int p) { return (uint32_t)p; }
 static int one_player_game;   // hle_hid.c: a one-player game merges every player into player 1
 int dm_player_seen_as(int p) { return p < 0 ? -1 : one_player_game ? 0 : p; }
@@ -135,7 +151,7 @@ void dm_input_set(uint64_t b, int32_t lx, int32_t ly, int32_t rx, int32_t ry) {
 }
 void dm_touch_set(const dm_touch *points, int n) { (void)points; touches = n; }
 static void (*dm_picture_rect)(float r[4]);
-''' + pad + events + r'''
+''' + pad + publish + events + r'''
 static void controls(int shown);
 static void input_handoff(int test) {
     width = layout ? 2400 : 1920; height = 1080;
@@ -308,6 +324,17 @@ static void hidden_controls(void) {
     atomic_store(&g_edit, 0); atomic_store(&g_cust[0][layout][button][3], 0);
     controls(1);
 }
+static void assigned_keyboard(void) {
+    width = 1920; height = 1080; atomic_store(&g_assign_active, 1);
+    pa_runtime_init(&g_assign); pa_runtime_attach(&g_assign, 2);
+    assert(pa_runtime_move(&g_assign, 1, 0, 0)); assert(pa_runtime_move(&g_assign, 2, 1, 0));
+    AInputEvent key = {.source = AINPUT_SOURCE_KEYBOARD, .type = AINPUT_EVENT_TYPE_KEY,
+                       .key = TEST_PAD_KEY, .action = AKEY_EVENT_ACTION_DOWN, .device = 7};
+    assert(handle_event(&key) == 1 && players_mask == 3 && (pad_buttons[0] & DM_BTN_A));
+    key.action = AKEY_EVENT_ACTION_UP;
+    assert(handle_event(&key) == 1 && players_mask == 3 && !(pad_buttons[0] & DM_BTN_A));
+    atomic_store(&g_assign_active, 0);
+}
 // DM_MENU_BUTTON=0 (issue #397): the menu button is hidden in play with the gamepad shown or not, a touch on its place goes to the game,
 // Back still opens and closes the menu, and the layout editor can still choose it (shown darkened there)
 static void no_menu_button(void) {
@@ -344,6 +371,7 @@ static void no_menu_button(void) {
 }
 int main(int argc, char **argv) {
     assert(argc == 2); int test = atoi(argv[1]);
+    if (test == 11) { assigned_keyboard(); return 0; }
     if (test == 10) { players(); return 0; }
     if (test == 9) { for (layout = 0; layout < 2; layout++) no_menu_button(); return 0; }
     if (test == 8) { for (layout = 0; layout < 2; layout++) hidden_controls(); return 0; }
@@ -390,6 +418,9 @@ int main(int argc, char **argv) {
     def run_case(self, case):
         result = subprocess.run([str(self.exe), str(case)], capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_keyboard_preserves_assigned_players(self):
+        self.run_case(11)
 
     def test_hidden_controls_are_omitted_in_play_and_selectable_in_editor(self):
         self.run_case(8)
