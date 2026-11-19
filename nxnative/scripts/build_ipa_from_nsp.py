@@ -882,7 +882,7 @@ def extract_aoc(nx, keys, repo, work, app, fam, logs):
         PROG.set(step='extracting', done=i, total=len(best), unit='DLC')
         say(f'DLC index {idx}: {p.name}' + (' (the merged dump holds it)' if p == fam['base'] else ''))
         # a merged dump holds several titles' NCAs: the DLC's title ID picks its data NCA by header (a DLC's NCAs carry their own title IDs); a DLC NSP holds one title, as before
-        run([nx, keys, '--aoc', p, tmp / str(idx)] + ([str(tid)] if p == fam['base'] else []), logs / f'aoc_{idx}.log')
+        run([nx, keys, '--aoc', p, tmp / str(idx)] + ([f'{tid:x}'] if p == fam['base'] else []), logs / f'aoc_{idx}.log')   # the DLC's title ID, hex: Aoc parses it with fromBase 16
     swap_in(tmp, dst)
     kf.write_text(f'{key}\n{len(best)} DLC\n')
     PROG.end(f'{len(best)} DLC')
