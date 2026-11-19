@@ -62,7 +62,7 @@ class NvnApiSemantics(unittest.TestCase):
     def test_typed_border_state_and_queue_accounting(self):
         with tempfile.TemporaryDirectory() as td:
             src=Path(td)/'api.c'; exe=Path(td)/'api'; src.write_text(production(),encoding='utf-8')
-            subprocess.run(['cc','-std=gnu11','-O2','-I'+str(NVN),'-I'+str(NVN/'include'),str(src),'-o',str(exe)],check=True,capture_output=True)
+            subprocess.run(['cc','-std=gnu11','-O2','-fno-strict-aliasing','-I'+str(NVN),'-I'+str(NVN/'include'),str(src),'-o',str(exe)],check=True,capture_output=True)
             self.assertIn('PASS',subprocess.check_output([str(exe)],text=True))
 
 if __name__=='__main__': unittest.main()

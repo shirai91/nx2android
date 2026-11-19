@@ -25,7 +25,7 @@ it, stadium geometry renders but players and the ball appear black.
 Use the existing capture workflow with a consistent test package:
 
 ```sh
-python -m porter port ".gamedump/FIFA21" --experimental --debug --package org.nx2a.fifa21.test --install --device <serial>
+python -m porter port ".gamedump/FIFA21" --debug --package org.nx2a.fifa21.test --install --device <serial>
 ```
 
 Launch the app and enter a match. The host saves a shader missing from the bundle

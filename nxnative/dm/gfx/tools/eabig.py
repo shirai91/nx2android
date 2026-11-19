@@ -87,9 +87,10 @@ def leaves(d, label, keys, depth=0):
     else: yield label, d
 
 def jobs(files, img):
-    """Select enveloped/archive/shader members by magic, avoiding whole multi-GB reads."""
+    """Select shader/archive members of .big files without reading unrelated RomFS files."""
     out, archives = [], set()
     for path, rel in files:
+        if not path.lower().endswith('.big'): continue
         with open(path, 'rb') as f:
             mm = members(f)
             if mm is None: continue
@@ -97,7 +98,7 @@ def jobs(files, img):
             for name, off, n in mm:
                 f.seek(off); h = f.read(min(n, 80))
                 if not h.startswith(MAGICS): continue
-                if h[:4] == b'EASF': keys[h[8:16]] = find_key(img, h)
+                if h[:4] == b'EASF' and h[8:16] not in keys: keys[h[8:16]] = find_key(img, h)
                 selected.append((name, off, n))
             if selected: out.append((path, rel, (JOB, selected, keys)))
     return out, archives

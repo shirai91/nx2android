@@ -103,4 +103,29 @@ class EaBig(unittest.TestCase):
             p = Path(td) / 'data.big'; p.write_bytes(big([('image.rx3', b'RX3' + bytes(20))]))
             self.assertEqual(eabig.jobs([(str(p), 'data.big')], b''), ([], {str(p)}))
 
+    def test_only_big_files_are_opened_including_mixed_case_extension(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            other = root / 'not-an-archive.bin'; other.write_bytes(b'BIG4broken')
+            archive = root / 'shaders.BiG'; archive.write_bytes(big([('shader.fxo', self.shader)]))
+            missing = root / 'not-present.pak'
+            jobs, archives = eabig.jobs([(str(p), p.name) for p in (missing, other, archive)], b'')
+            self.assertEqual(archives, {str(archive)})
+            self.assertEqual([job[:2] for job in jobs], [(str(archive), archive.name)])
+            _, found, _, _ = self.s.scan_file(jobs[0])
+            self.assertEqual(len(found), 1)
+
+    def test_shared_key_is_discovered_once_per_archive(self):
+        payloads = [('first', b'first payload' * 10), ('second', b'second payload' * 10)]
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / 'shared.big'
+            path.write_bytes(big([(name, self.envelope(data)) for name, data in payloads]))
+            with patch.object(eabig, 'find_key', wraps=eabig.find_key) as find:
+                jobs, _ = eabig.jobs([(str(path), path.name)], self.keyid + self.key)
+                self.assertEqual(find.call_count, 1)
+            _, selected, keys = jobs[0][2]
+            data = path.read_bytes()
+            decoded = [list(eabig.leaves(data[off:off + n], name, keys))[0] for name, off, n in selected]
+            self.assertEqual(decoded, payloads)
+
 if __name__ == '__main__': unittest.main()
