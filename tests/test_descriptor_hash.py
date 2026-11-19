@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class DescriptorHash(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        source = (ROOT / 'nxnative/dm/android/gfx_vk_exec.c').read_text()
+        source = csrc.unit((ROOT / 'nxnative/dm/android/gfx_vk_exec.c'))
         fnv = source[source.index('static inline uint64_t fnv('):
                      source.index('static void drv_shared(')]
         cache = csrc.between(source, 'enum { SETC =', 'static struct { uint64_t h, epoch; VkBuffer b;')

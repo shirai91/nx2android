@@ -211,6 +211,8 @@ class Port:
         o.folder = Path(o.folder).expanduser().resolve()
         if not o.folder.is_dir(): raise BuildError(f'not a folder: {o.folder}')
         version_code('v0', o.vercode_offset); alias_headroom_gb(o.alias_headroom)   # an offset or headroom out of range fails now, not after the shaders
+        self.driver_system = str(o.vulkan_driver) == 'system'   # --vulkan-driver system: the device's driver even when the profile asks for Turnip
+        if self.driver_system: o.vulkan_driver = None
         if o.vulkan_driver:
             o.vulkan_driver = Path(o.vulkan_driver).expanduser().resolve()
             if not o.vulkan_driver.is_file() or o.vulkan_driver.suffix != '.so': raise BuildError(f'--vulkan-driver: not a .so library: {o.vulkan_driver}')
@@ -272,6 +274,11 @@ class Port:
         self.package = o.package or ap.package
         if not re.fullmatch(r'[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+', self.package): raise BuildError(f'not a package name: {self.package}')
         say(f'game profile: {g.id} {g.get("name", "")} (Android: {ap.status}' + (f', tested on {ap.tested}' if ap.tested else '') + ')')
+        if ap.vulkan_driver == 'turnip' and not o.vulkan_driver and not self.driver_system:   # android.tsv vulkan_driver turnip: the driver the profile was tested with
+            lib = toolchain.find_turnip(self.cfg)
+            if lib: o.vulkan_driver = lib.resolve(); say(f"the profile asks for Mesa's Turnip driver (vulkan_driver turnip): {lib} is packed (--vulkan-driver system: the device's driver)")
+            else: say("[RED] the profile asks for Mesa's Turnip driver (vulkan_driver turnip), and none was found: the device's own driver is used. "
+                      "Give one with --vulkan-driver <libvulkan_freedreno.so>, or porter config turnip <path>")
         builds, need = g.builds(), g.words('shader_versions')
         have = nsp.nsp_versions(self.fam, builds)
         self.derived, self.derived_mem, self.lost = '', '', []

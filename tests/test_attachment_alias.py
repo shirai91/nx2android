@@ -4,6 +4,10 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import csrc  # noqa: E402
 
 ROOT=Path(__file__).resolve().parents[1]
 
@@ -11,7 +15,7 @@ ROOT=Path(__file__).resolve().parents[1]
 @unittest.skipUnless(shutil.which('cc'),'host C compiler required')
 class AttachmentAlias(unittest.TestCase):
     def test_inactive_aliases_mask_transitions_and_clears(self):
-        source=(ROOT/'nxnative/dm/android/gfx_vk_exec.c').read_text()
+        source=csrc.unit((ROOT/'nxnative/dm/android/gfx_vk_exec.c'))
         start=source.index('static void color_alias_map(')
         helpers=source[start:source.index('// Render passes.',start)]
         start=source.index('static void clear_color(const p_clear_color *c)')

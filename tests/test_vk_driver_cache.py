@@ -8,6 +8,10 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import csrc  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 DM = ROOT / 'nxnative/dm'
@@ -19,7 +23,7 @@ def function(source, signature):
 
 
 def harness():
-    source = (DM / 'android/gfx_vk_exec.c').read_text()
+    source = csrc.unit((DM / 'android/gfx_vk_exec.c'))
     core = (DM / 'android/gfx_vk_core.c').read_text()
     cache = next(line for line in source.splitlines() if 'g_drvc[DRVC];' in line)
     scratch_type = next(line for line in core.splitlines() if line.endswith('} scratch_blk;'))

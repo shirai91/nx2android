@@ -4,6 +4,10 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import csrc  # noqa: E402
 
 ROOT=Path(__file__).resolve().parents[1]
 
@@ -11,7 +15,7 @@ ROOT=Path(__file__).resolve().parents[1]
 class FragmentOutputMasks(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        source=(ROOT/'nxnative/dm/android/gfx_vk_exec.c').read_text(encoding='utf-8')
+        source=csrc.unit((ROOT/'nxnative/dm/android/gfx_vk_exec.c'))
         begin=source.index('    // attachments and blending\n')
         end=source.index('    // Dual-source blending:',begin)
         code=r'''

@@ -15,7 +15,7 @@ class ReadbackRanges(unittest.TestCase):
     def test_eligibility_and_range_capacity(self):
         dm = Path(__file__).resolve().parents[1] / 'nxnative/dm/android'
         core = (dm/'gfx_vk_core.c').read_text()
-        exec_src = (dm/'gfx_vk_exec.c').read_text()
+        exec_src = csrc.unit((dm/'gfx_vk_exec.c'))
         header = (dm/'gfx_vk.h').read_text()
         enums = '\n'.join(line for line in header.splitlines() if line.startswith(('enum { RK_SUPPORT', 'enum { RD_UBO')))
         controls = '\n'.join(line for line in core.splitlines() if line.startswith(('int vk_readback_ranges(', 'void vk_readback_unknown(')))

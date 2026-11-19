@@ -5,6 +5,10 @@ import subprocess
 import tempfile
 import unittest
 from host_cc import posix
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import csrc  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 HEADER = ROOT / 'nxnative/dm/android/gfx_vk_pixel_history.h'
@@ -48,7 +52,7 @@ int main(void) {
 
 
 def lifecycle_harness_source():
-    source = SOURCE.read_text(encoding='utf-8')
+    source = csrc.unit(SOURCE)
     block = source.split('#include "gfx_vk_pixel_history.h"', 1)[1].split('void vk_end_pass_land', 1)[0]
     prefix = r'''
 #define _GNU_SOURCE

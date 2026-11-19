@@ -32,3 +32,12 @@ def between(text, begin, end, what='', start=0):
     """From the first `begin` (at or after start) up to, not including, the next `end`"""
     s = _find(text, begin, start, what)
     return text[s:_find(text, end, s, what)]
+
+
+def unit(path):
+    """A core source with its section files put back: gfx_vk_exec.c includes gfx_vk_exec_<section>.inc files (one translation unit, one file a
+    section). A harness that cuts from it reads it through this, so a function keeps its place in the cut whichever section file holds it"""
+    import re
+    p = Path(path)
+    if not p.is_absolute(): p = REPO / p
+    return re.sub(r'#include "(gfx_vk_exec_\w+\.inc)"[^\n]*\n', lambda m: (p.parent / m.group(1)).read_text(encoding='utf-8'), p.read_text(encoding='utf-8'))

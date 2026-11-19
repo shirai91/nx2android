@@ -2,6 +2,10 @@
 from pathlib import Path
 import os, subprocess, tempfile, unittest
 import host_cc
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import csrc  # noqa: E402
 ROOT=Path(__file__).resolve().parents[1]
 A=ROOT/'nxnative/dm/android'
 def function(s, signature):
@@ -12,7 +16,7 @@ def function(s, signature):
 class Readiness(unittest.TestCase):
     @unittest.skipUnless(host_cc.ubsan(), 'host C compiler with UBSan required')
     def test_ordering_coverage_pressure_and_preflight(self):
-        core=(A/'gfx_vk_core.c').read_text(encoding='utf-8'); replay=(A/'gfx_vk_exec.c').read_text(encoding='utf-8'); header=(A/'gfx_vk.h').read_text(encoding='utf-8')
+        core=(A/'gfx_vk_core.c').read_text(encoding='utf-8'); replay=csrc.unit((A/'gfx_vk_exec.c')); header=(A/'gfx_vk.h').read_text(encoding='utf-8')
         i=core.index('typedef struct { uint64_t lo, hi, fence; } gpuw_t;')
         decl=core[i:core.index('static void sub_gpu_wrote',i)]
         ready=function(core,'void vk_cpu_ready(') if 'void vk_cpu_ready(' in core else 'void vk_cpu_ready(uint64_t a,uint64_t n) {}'

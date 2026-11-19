@@ -4,6 +4,10 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import csrc  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -16,7 +20,7 @@ def between(text, start, end):
 class CubeViews(unittest.TestCase):
     def test_production_views_and_descriptor_fallback(self):
         tex = (ROOT/'nxnative/dm/android/gfx_vk_tex.c').read_text()
-        exe = (ROOT/'nxnative/dm/android/gfx_vk_exec.c').read_text()
+        exe = csrc.unit((ROOT/'nxnative/dm/android/gfx_vk_exec.c'))
         header = (ROOT/'nxnative/dm/android/gfx_vk.h').read_text()
         code = r'''
 #define VK_NO_PROTOTYPES

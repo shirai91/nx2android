@@ -10,6 +10,10 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import csrc  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 DM = ROOT / 'nxnative/dm'
@@ -21,7 +25,7 @@ def function(source, signature):
 
 
 def production():
-    replay = (DM / 'android/gfx_vk_exec.c').read_text()
+    replay = csrc.unit((DM / 'android/gfx_vk_exec.c'))
     core = (DM / 'android/gfx_vk_core.c').read_text()
     header = (DM / 'android/gfx_vk.h').read_text()
     # Real runtime structs and Vulkan declarations, without Android OS headers.

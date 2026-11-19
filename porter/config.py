@@ -13,6 +13,7 @@ KEYS = {
     'out': 'folder for the APK and data pack (empty = the game folder)',
     'device': 'adb serial of the device to install on (empty = the only one connected)',
     'language': 'game language code (empty = English)',
+    'turnip': "Mesa's Turnip Vulkan driver (libvulkan_freedreno.so) for profiles with vulkan_driver turnip (empty = tools/turnip)",
 }
 
 

@@ -31,7 +31,7 @@ SETTINGS = {'overlay': ('0', '1'), 'rumble': ('0', '1'), 'docked': ('0', '1'), '
             'opacity': tuple(str(v) for v in range(20, 81, 5))}                                    # the gamepad's, percent (overlay_layout.h OV_OPACITY_MIN..MAX)
 REQUIRES = ('bcn',)
 KINDS = {'stick_l': 'OV_STICK_L', 'stick_r': 'OV_STICK_R', 'button': 'OV_BUTTON', 'dpad': 'OV_DPAD', 'menu': 'OV_MENU'}
-SINGLE = ('status', 'tested', 'package', 'orientation', 'requires', 'sysdata', 'romfs')
+SINGLE = ('status', 'tested', 'package', 'orientation', 'requires', 'sysdata', 'romfs', 'vulkan_driver')
 REPEAT = ('setting', 'env', 'overlay')
 
 
@@ -96,6 +96,8 @@ class AndroidProfile:
     @property
     def requires(self): return self.get('requires').split()
     @property
+    def vulkan_driver(self): return self.get('vulkan_driver', 'system')   # 'turnip': the port packs Mesa's Turnip when the porter finds it (porter.toolchain.find_turnip)
+    @property
     def sysdata(self): return [int(t, 16) for t in self.get('sysdata').split()]   # title IDs
     @property
     def romfs_zstd(self): return self.get('romfs', 'raw') == 'zstd'   # the data pack's RomFS compressed (porter/romfs_pack.py)
@@ -122,6 +124,7 @@ class AndroidProfile:
         if not re.fullmatch(r'[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+', self.package): bad.append(f'package {self.package!r} is not a package name')
         if self.get('orientation', 'landscape') not in ('landscape', 'any'): bad.append('orientation: landscape or any')
         if self.get('romfs', 'raw') not in ('raw', 'zstd'): bad.append('romfs: raw or zstd')
+        if self.vulkan_driver not in ('system', 'turnip'): bad.append('vulkan_driver: system or turnip')
         bad += [f'requires {r!r}: one of {", ".join(REQUIRES)}' for r in self.requires if r not in REQUIRES]
         bad += [f'sysdata {t!r}: a 16-digit hex title ID' for t in self.get('sysdata').split() if not re.fullmatch(r'[0-9A-Fa-f]{16}', t)]
         for v in self.values('setting'):
