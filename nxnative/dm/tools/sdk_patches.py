@@ -89,6 +89,14 @@ CUTS = {
     (0x145d0c, '08fca752', '087ca052', 'AddressRegionManager constructor: node area limit mov w8,#0x3fe00000 → mov w8,#0x3e00000'),
     (0x145d78, '09fca752', '097ca052', 'AddressRegionManager constructor: length of the node area registered as an occupied region mov w9,#0x3fe00000 → mov w9,#0x3e00000'),
   ],
+  # Digimon Story: Time Stranger 1.2.2 (v262144) sdk (SDK 20.5.21, Unreal Engine 4): the same node area cut. nninitStartup's StandardAllocator::Initialize(nullptr, 30 GB) is held to 4.06 GB, what the
+  # 4.38 GB alias region has room for, and its AllocateAddressRegion(0x104000000) returned 0x1803 (the game aborted in nninitStartup): the 1 GB node area at the start of the alias region left 3.38 GB.
+  # The constructor is at the same offsets as SDK 20.5.22's build above (limit = alias start + 0x3fe00000 at +0x28, the area registered as occupied at +0x145d78). No size alignment cut is needed:
+  # there is no mov #0x40000000 in sdk+0x145d80..0x146400 (checked by disassembly, the orr form of the constant included)
+  'c668ae02ea221e429677aa61d3dab7c6': [
+    (0x145d0c, '08fca752', '087ca052', 'AddressRegionManager constructor: node area limit mov w8,#0x3fe00000 → mov w8,#0x3e00000'),
+    (0x145d78, '09fca752', '097ca052', 'AddressRegionManager constructor: length of the node area registered as an occupied region mov w9,#0x3fe00000 → mov w9,#0x3e00000'),
+  ],
   # Super Mario Galaxy 1.3.1 / Super Mario Galaxy 2 1.4.0 sdk (SDK 18.3.5, the same build in both): the same node area cut. Galaxy 2's movie player initializes its StandardAllocator with
   # virtual address memory (main+0x62c280: Initialize(nullptr, 384 MB)), which aborted at its CentralHeap::Init: a 256 MB alias region holds no region after a 1 GB node area.
   # The constructor is at sdk+0x13be3c (limit = alias start + 0x3fe00000 at +0x28, a unit heap of 0x30-byte nodes, the area then registered as occupied at +0x13bee0)
