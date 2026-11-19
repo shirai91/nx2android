@@ -55,7 +55,8 @@ static void menu_tab(int tab) { (void)tab; }
 static void ed_open(void) {}
 static void sp_open(void) {}
 static void save_export(void) {}
-static void menu_audio(void) {}
+static void *g_audio_menu_method, *g_external_size_menu_method;
+static void menu_java(void *method) { (void)method; }
 static void menu_close(void) {}
 static void dm_overlay_redraw(void) {}
 ''' + visible + hidden + hit + menu + r'''

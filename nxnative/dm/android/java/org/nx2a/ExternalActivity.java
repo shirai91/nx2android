@@ -111,6 +111,23 @@ public class ExternalActivity extends NativeActivity implements ExternalDisplay.
     }
 
     public void openAudioMenu() { runOnUiThread(this::showAudioMenu); }
+    public void openExternalCanvasMenu() { runOnUiThread(this::showExternalCanvasMenu); }
+    private void showExternalCanvasMenu() {
+        String[] labels = {"Auto", "720p", "1080p", "1440p", "2160p"};
+        String[] values = {"auto", "1280x720", "1920x1080", "2560x1440", "3840x2160"};
+        String current = ExternalDisplay.readCanvas(this);
+        int selected = 0;
+        for (int i = 1; i < values.length; i++) if (values[i].equals(current)) selected = i;
+        new AlertDialog.Builder(this).setTitle("External resolution")
+            .setSingleChoiceItems(labels, selected, (dialog, which) -> {
+                if (!ExternalDisplay.writeCanvas(this, values[which])) {
+                    android.widget.Toast.makeText(this, "Could not save external canvas size", android.widget.Toast.LENGTH_LONG).show();
+                    return;
+                }
+                if (external != null) external.applyCanvas();
+                dialog.dismiss();
+            }).setNegativeButton("Cancel", null).show();
+    }
     private void showAudioMenu() {
         AudioManager manager = (AudioManager)getSystemService(Context.AUDIO_SERVICE);
         if (manager == null) return;
