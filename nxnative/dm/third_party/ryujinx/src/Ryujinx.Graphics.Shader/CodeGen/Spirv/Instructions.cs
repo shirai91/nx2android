@@ -1839,6 +1839,7 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
                     varType &= AggregateType.ElementTypeMask;
 
                     storageClass = isOutput ? StorageClass.Output : StorageClass.Input;
+                    if (isOutput && ioVariable == IoVariable.ViewportMask && context.EmulatesViewportMask) storageClass = StorageClass.Private;
 
                     IoDefinition ioDefinition = new(storageKind, ioVariable, location, component);
                     Dictionary<IoDefinition, SpvInstruction> dict = isPerPatch

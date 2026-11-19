@@ -377,7 +377,9 @@ def site_window(seg):
         elif m == 'b':   # an unconditional branch inside a CAS window (e.g. ldaxrb; cbz <store>; clrex; b <after>; stlxrb; cbz)
             tgt = x.operands[-1].imm
             if lo <= tgt < hi: newt = copy0 + (tgt - lo)
-            elif tgt == hi: newt = exits
+            elif tgt == hi: newt = exits - 16   # the fall-through stub, which is the first one (exits is the first branch-out stub). It took exits: with ldaxrb; cbz <store>; clrex; b <after>;
+                                                # stlxrb; cbz <claimed>, a slot found in use left by the stub of <claimed> (Trails in the Sky 1st Chapter main+0x2cdeb4, its material table's
+                                                # slot search: two materials got one slot, and the one drawn with the other's entry took its glow, AYN Odin 3, 2026-11-17)
             else:
                 if tgt not in ex_targets: ex_targets.append(tgt)
                 newt = exits + 16 * ex_targets.index(tgt)
