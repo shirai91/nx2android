@@ -583,16 +583,20 @@ static int cpu_content_tex(const tex_t *t, const vkfmt_t *f) {
     // (1024x1024, 4 to 18 layers) into CPU-uncached pools with no flush; left out, they were images of zeros and no text was drawn anywhere
     if (t->d.flags & ((DM_GAME_TEX_CPU_UNCACHED && f->compressed ? 0 : NVN_TEXTURE_FLAGS_COMPRESSIBLE) | NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET | NVN_TEXTURE_FLAGS_SPARSE)) return 0;
     int no_cpu = (t->pool->flags & NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS) != 0;
-    // IMAGE permits GPU writes. It does not erase data already in a CPU_NO_ACCESS pool.
-    // Luigi's Mansion 3 binds two 2048x2048 prefilled atlases (R8 and RGB9E5) this way.
-    // Seed the image once without tracking further CPU writes, as Metal's tex_init_fill does.
-    int initial_only = !f->compressed && t->d.target == NVN_TEXTURE_TARGET_2D && no_cpu &&
-                       (t->d.flags & NVN_TEXTURE_FLAGS_IMAGE);
-    if (!f->compressed && (t->d.flags & NVN_TEXTURE_FLAGS_IMAGE) && !initial_only) return 0;
+    int initial_only = 0;
+    if (!f->compressed && (t->d.flags & NVN_TEXTURE_FLAGS_IMAGE)) {
+        if (!no_cpu || t->d.target != NVN_TEXTURE_TARGET_2D) return 0;
+        // Luigi's Mansion 3 binds prefilled R8 and RGB9E5 atlases this way. Profiles
+        // can seed these images once, without treating their storage as CPU-writable.
+        static int enabled = -1;
+        if (enabled < 0) { const char *e = getenv("DM_NVN_CPU_NO_ACCESS_IMAGE_FIRST_USE"); enabled = e && atoi(e) != 0; }
+        if (!enabled) return 0;
+        initial_only = 1;
+    }
     // CPU-filled 2D tables need the same first upload as compressed/3D textures. NieR's
     // 256x16 RGBA8 LUT had 16,384 nonzero storage bytes but an all-black GPU image; its
     // final colour pass consequently erased an otherwise correct title image.
-    // Off unless the profile sets DM_NVN_CPU_TEX2D_FIRST_USE=1: the alias walk and a wrong upload over render-target content stay out of other games.
+    // CPU-accessible 2D storage has its own opt-in and uses the tracked upload path.
     static int tex2d = -1; if (tex2d < 0) { const char *e = getenv("DM_NVN_CPU_TEX2D_FIRST_USE"); tex2d = e && atoi(e) != 0; }
     if (!f->compressed && t->d.target != 2 &&
         ((!initial_only && (!tex2d || no_cpu)) || f->depth || f->stencil ||

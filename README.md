@@ -48,9 +48,7 @@ These games play on Android. Tested on a Lenovo Legion Y700 (Snapdragon 8 Elite,
 
 The tag (`v0.1.3`) is the latest nx2android version the game was tested on. Older games are not tested again for each release: if a later version breaks one, a patch release fixes it. A tag newer than the [latest release](https://github.com/shirai91/nx2android/releases/latest) is the next release, and the game needs the development checkout until it ships.
 
-An [experimental Android profile](nxnative/dm/games/0100DCA0064A6000/android.tsv) is available for Luigi's Mansion 3 (update 1.4.0). The title, menus, and early hotel gameplay were tested on Xiaomi 17.
-
-See the [port checklist](docs/PORT_CHECKLIST.md) for the status of other games.
+A game that is not in this table is not supported yet. The games we look at next, and the ones done: [docs/PORT_CHECKLIST.md](docs/PORT_CHECKLIST.md).
 
 ## For players: port a game without programming
 
