@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class DescriptorHash(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        source = (ROOT / 'nxnative/dm/android/gfx_vk_exec.c').read_text()
+        source = csrc.unit((ROOT / 'nxnative/dm/android/gfx_vk_exec.c'))
         fnv = source[source.index('static inline uint64_t fnv('):
                      source.index('static void drv_shared(')]
         cache = csrc.between(source, 'enum { SETC =', 'static struct { uint64_t h, epoch; VkBuffer b;')
@@ -266,7 +266,7 @@ int main(int argc, char **argv) {
         cls.addClassCleanup(cls.tmp.cleanup)
         src = Path(cls.tmp.name) / 'test.c'
         cls.exe = Path(cls.tmp.name) / 'test'
-        src.write_text(code)
+        src.write_text(code, encoding='utf-8')
         subprocess.run(['cc', '-std=c11', '-O2', '-Wall', '-Wextra', '-Werror',
                         *(['-fsanitize=address,undefined', '-g'] if os.environ.get('NX2A_TEST_SANITIZERS') else []), '-I',
                         str(ROOT / 'nxnative/dm/third_party/vulkan-headers/include'),

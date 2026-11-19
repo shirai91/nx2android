@@ -14,9 +14,9 @@ class ReadbackRanges(unittest.TestCase):
     @unittest.skipUnless(shutil.which('cc'), 'a host C compiler is required')
     def test_eligibility_and_range_capacity(self):
         dm = Path(__file__).resolve().parents[1] / 'nxnative/dm/android'
-        core = (dm/'gfx_vk_core.c').read_text()
-        exec_src = (dm/'gfx_vk_exec.c').read_text()
-        header = (dm/'gfx_vk.h').read_text()
+        core = (dm/'gfx_vk_core.c').read_text(encoding='utf-8')
+        exec_src = csrc.unit((dm/'gfx_vk_exec.c'))
+        header = (dm/'gfx_vk.h').read_text(encoding='utf-8')
         enums = '\n'.join(line for line in header.splitlines() if line.startswith(('enum { RK_SUPPORT', 'enum { RD_UBO')))
         controls = '\n'.join(line for line in core.splitlines() if line.startswith(('int vk_readback_ranges(', 'void vk_readback_unknown(')))
         start = core.index('static void sub_gpu_wrote(uint64_t a, uint64_t n) {')
@@ -75,6 +75,6 @@ int main(void) {
 '''.replace('ENUMS', enums).replace('CONTROLS', controls).replace('RANGES', ranges).replace('GATE', gate)
         with tempfile.TemporaryDirectory(prefix='nx2a-readback-ranges-') as tmp:
             c, exe = Path(tmp)/'check.c', Path(tmp)/'check'
-            c.write_text(harness)
+            c.write_text(harness, encoding='utf-8')
             subprocess.run(['cc', '-std=gnu11', '-Wall', '-Wextra', '-Werror', str(c), '-o', str(exe)], check=True)
             subprocess.run([str(exe)], check=True, timeout=15)

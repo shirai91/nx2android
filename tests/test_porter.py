@@ -38,6 +38,23 @@ class AndroidProfiles(unittest.TestCase):
         self.assertIn(NEO, [r.id for r in rows]); self.assertTrue(all(r.android for r in rows))
         self.assertGreater(len(profiles.all_entries(android_only=False)), len(rows))
 
+    def test_vulkan_driver_key(self):   # android.tsv vulkan_driver: the driver the profile was tested with (porter packs Turnip for 'turnip')
+        self.assertEqual(android_profile.load(profile_dir([('status', 'boots')]).name).vulkan_driver, 'system')
+        self.assertEqual(android_profile.load(profile_dir([('status', 'boots'), ('vulkan_driver', 'turnip')]).name).vulkan_driver, 'turnip')
+        with self.assertRaises(android_profile.ProfileError): android_profile.load(profile_dir([('status', 'boots'), ('vulkan_driver', 'mesa')]).name)
+
+    def test_env_rows_checked_against_the_settings_registry(self):   # nxnative/dm/settings.tsv: a typo or a debug switch fails the profile
+        self.assertEqual(android_profile.load(profile_dir([('status', 'boots'), ('env', 'DM_VK_CB_DRAWS=32')]).name).env, ['DM_VK_CB_DRAWS=32'])
+        for bad in ('DM_VK_CB_DRAWZ=32', 'DM_VK_X_NOBAR=1', 'DM_VK_FDZ=yes'):
+            with self.assertRaises(android_profile.ProfileError): android_profile.load(profile_dir([('status', 'boots'), ('env', bad)]).name)
+
+    def test_find_turnip(self):
+        from porter import toolchain
+        with tempfile.TemporaryDirectory() as t:
+            lib = Path(t) / 'libvulkan_freedreno.so'; lib.write_bytes(b'ELF')
+            self.assertEqual(toolchain.find_turnip({'turnip': str(lib)}), lib)
+            self.assertIsNone(toolchain.find_turnip({'turnip': str(Path(t) / 'missing.so')}))
+
     def test_fps_setting(self):   # the pause menu's Show FPS (front_android.c settings_load fps=)
         d = profile_dir([('status', 'boots'), ('setting', 'fps=1')])
         self.assertEqual(android_profile.load(d.name).settings, {'fps': '1'})

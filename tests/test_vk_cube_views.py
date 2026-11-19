@@ -4,6 +4,10 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import csrc  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -15,9 +19,9 @@ def between(text, start, end):
 @unittest.skipUnless(shutil.which('cc'), 'host C compiler required')
 class CubeViews(unittest.TestCase):
     def test_production_views_and_descriptor_fallback(self):
-        tex = (ROOT/'nxnative/dm/android/gfx_vk_tex.c').read_text()
-        exe = (ROOT/'nxnative/dm/android/gfx_vk_exec.c').read_text()
-        header = (ROOT/'nxnative/dm/android/gfx_vk.h').read_text()
+        tex = (ROOT/'nxnative/dm/android/gfx_vk_tex.c').read_text(encoding='utf-8')
+        exe = csrc.unit((ROOT/'nxnative/dm/android/gfx_vk_exec.c'))
+        header = (ROOT/'nxnative/dm/android/gfx_vk.h').read_text(encoding='utf-8')
         code = r'''
 #define VK_NO_PROTOTYPES
 #include <vulkan/vulkan_core.h>
@@ -171,7 +175,7 @@ int main(int argc, char **argv) {
 }
 '''
         with tempfile.TemporaryDirectory() as folder:
-            src=Path(folder)/'cube.c';src.write_text(code);binary=Path(folder)/'cube'
+            src=Path(folder)/'cube.c';src.write_text(code, encoding='utf-8');binary=Path(folder)/'cube'
             subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror','-Wno-misleading-indentation','-I',str(ROOT),'-I',str(ROOT/'nxnative/dm/gfx/nvn/include'),'-I',str(ROOT/'nxnative/dm/third_party/vulkan-headers/include'),str(src),'-o',str(binary),'-pthread'],check=True)
             for mode in ([], ['non-multiple-layers']):
                 with self.subTest(mode=mode):
