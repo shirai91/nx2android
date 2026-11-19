@@ -17,3 +17,6 @@ package	org.nx2a.xenobladechroniclesde
 orientation	landscape
 env	DM_NVN_ASYNC=1
 env	DM_PIN_REPLAY=prime
+readme_image	docs/images/xenoblade-chronicles-definitive-edition.jpg
+readme_tag	v0.4.0
+readme_note	update 2.0.0 · 30 fps · tested on the AYN Odin 2 with a Turnip driver · **tested to Colony 9**, the pause menu and saving: later maps not checked yet · the scene drops to 896x504 in heavy fights · rarely crashes at boot (restart)

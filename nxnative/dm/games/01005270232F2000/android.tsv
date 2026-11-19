@@ -9,3 +9,6 @@ tested	v327680 AYN Thor (Snapdragon 8 Gen 2, Adreno 740, Android 13)
 package	org.nx2a.octopathtraveler0
 orientation	landscape
 requires	bcn
+readme_image	docs/images/octopath-traveler-0.jpg
+readme_tag	v0.4.0
+readme_note	update 1.0.5 · 60 fps · tested on the AYN Thor (Adreno 740) with a Turnip Vulkan driver

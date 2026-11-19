@@ -55,6 +55,19 @@ class Options:
     romfs_push: bool = False           # with romfs_at: push the pack's RomFS into that folder first
     jobs: int = field(default_factory=lambda: os.cpu_count() or 8)
 
+    @classmethod
+    def from_args(cls, a, **over):
+        """Options from porter port's arguments (porter/cli.py): each field takes the argument of its name (a Path field as a Path), then over.
+        A new option is a field here and an argument of the same name there: no list of every option to edit"""
+        import dataclasses
+        kw = {}
+        for f in dataclasses.fields(cls):
+            if f.name in over or not hasattr(a, f.name): continue
+            v = getattr(a, f.name)
+            if f.name in ('folder', 'keys', 'out', 'firmware') and v is not None: v = Path(v)   # the others stay as given: --vulkan-driver also takes "system"
+            kw[f.name] = v
+        return cls(**{**kw, **over})
+
 
 # --vulkan-driver: libadrenotools and its hooks (dm/android/build.py --adrenotools, from dm/third_party/libadrenotools), which load the driver for the app
 # (gfx_vk_core.c vk_init); the APK carries them beside it

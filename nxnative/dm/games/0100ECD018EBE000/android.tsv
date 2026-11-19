@@ -11,3 +11,6 @@ status	wip
 tested	v65536 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
 package	org.nx2a.pmttyd
 orientation	landscape
+readme_image	docs/images/paper-mario-the-thousand-year-door.jpg
+readme_tag	v0.2.0
+readme_note	update 1.0.1 · 60 fps (30 on Switch) · **work in progress**: playable, but lighting flickers (walls go black for single frames after a fall)

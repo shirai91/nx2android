@@ -40,7 +40,7 @@ PACING = {
     'game': ['DM_FPS_TARGET=0', 'DM_ADAPTIVE_FPS=0'],       # the game's own frame limit, no governor
 }
 KINDS = {'stick_l': 'OV_STICK_L', 'stick_r': 'OV_STICK_R', 'button': 'OV_BUTTON', 'dpad': 'OV_DPAD', 'menu': 'OV_MENU'}
-SINGLE = ('status', 'tested', 'package', 'orientation', 'requires', 'sysdata', 'romfs', 'vulkan_driver', 'pacing')
+SINGLE = ('status', 'tested', 'package', 'orientation', 'requires', 'sysdata', 'romfs', 'vulkan_driver', 'pacing', 'readme_name', 'readme_image', 'readme_tag', 'readme_note')
 REPEAT = ('setting', 'env', 'overlay')
 
 
@@ -136,6 +136,10 @@ class AndroidProfile:
         if self.get('orientation', 'landscape') not in ('landscape', 'any'): bad.append('orientation: landscape or any')
         if self.get('romfs', 'raw') not in ('raw', 'zstd'): bad.append('romfs: raw or zstd')
         if self.vulkan_driver not in ('system', 'turnip'): bad.append('vulkan_driver: system or turnip')
+        readme = [k for k in ('readme_image', 'readme_tag', 'readme_note') if self.get(k)]
+        if (readme or self.get('readme_name')) and len(readme) != 3: bad.append('readme_image, readme_tag and readme_note go together (README.md games table, docs/gen_tables.py)')
+        if self.get('readme_tag') and not re.fullmatch(r'v\d+\.\d+\.\d+', self.get('readme_tag')): bad.append(f"readme_tag {self.get('readme_tag')!r}: the nx2android version tested, v<major>.<minor>.<patch>")
+        if self.get('readme_image') and not (ANDROID.parents[2] / self.get('readme_image')).is_file(): bad.append(f"readme_image {self.get('readme_image')!r}: no such file in the repository")
         if self.pacing not in PACING: bad.append(f'pacing {self.pacing!r}: one of {", ".join(PACING)}')
         else:
             preset = {r.split('=', 1)[0] for r in PACING[self.pacing]}

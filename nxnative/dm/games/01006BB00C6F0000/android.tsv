@@ -21,3 +21,6 @@ tested	v131072 Lenovo TB323FU (Snapdragon 8 Elite Gen 5, Adreno 840, Android 16)
 package	org.nx2a.t01006bb00c6f0000
 orientation	landscape
 sysdata	0100000000000811 0100000000000810 0100000000000814 0100000000000813 0100000000000812
+readme_image	docs/images/the-legend-of-zelda-links-awakening.jpg
+readme_tag	v0.4.0
+readme_note	update 1.1.0 · 60 fps (drops to 30 on slow frames by default; uncomment the two NOPs in `patches.py` to hold 60 on fast chips — may cause judder and slow-motion on older devices) · tested on the Lenovo TB323FU (Snapdragon 8 Elite Gen 5, Adreno 840) · needs your console's firmware for its fonts (`--firmware`): without them the game crashes at startup because the fallback font lacks `U+25A1` · a new area can hitch while it loads
