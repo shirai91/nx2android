@@ -1,11 +1,12 @@
 # Installing a port on a device over adb: the APK, then the data pack into the app's files folder (porter/adb.py pushes it in resumable pieces).
+# A new install whose RomFS / DLC another port of the same game version on the device already has copies them there (seed_from_sibling: the manifest's content keys).
 # The player's own files there are kept: the pause menu's settings.txt, the logs, the Vulkan pipeline caches; saves are in the app's internal storage, which an update keeps.
 # --romfs-at <folder>: the app reads the game's RomFS from a folder already on the device (a game dump an emulator also reads, a folder on the SD card) instead of a copy in
 # its files folder, which saves that copy's 7 to 18 GB. The folder must hold exactly the pack's RomFS, names and sizes and a sample's content (--romfs-push puts it there), the app gets All files
 # access over adb, and the installer writes DM_ROMFS=<folder> into the device's env.txt under ROMFS_MARK. The pack's env.txt is the same on every device, and the folder is
 # a fact of one device, so the row is the installer's, not the pack's: a later install without --romfs-at carries it over from the device's env.txt (and checks the folder
 # again), and --romfs-at app moves the RomFS back into the files folder. The DLC (aoc/) stays in the files folder: small for most games, and laid out by the port.
-import hashlib, posixpath, re, shlex, tempfile, zipfile
+import hashlib, json, posixpath, re, shlex, tempfile, zipfile
 from pathlib import Path
 
 from porter import datapack, paths
@@ -85,6 +86,49 @@ def romfs_mismatch(folder, want, have, n=5, changed=()):
             ([f'{len(changed):,} have the right size but other content (MD5: {first(list(changed))})'] if changed else []) + \
             ([f'{len(extra):,} are not the game\'s ({first(extra)})'] if extra else [])
     return f'{folder} is not this pack\'s RomFS ({len(want):,} files): ' + '; '.join(parts) if parts else ''
+
+
+def sibling_parts(adb, man, files):
+    """{part: files folder of another port on the device whose pack has the same content key for that part} (datapack.part_key), for the parts this pack has"""
+    want = man.get('parts') or {}
+    if not want: return {}
+    out = {}
+    lst = adb.shell('ls -d /sdcard/Android/data/*/files/nx2a-data.json 2>/dev/null; true', check=False)
+    for path in lst.split():
+        folder = path.rsplit('/', 1)[0]
+        if folder == files: continue
+        try: other = json.loads(adb.read_text(path) or 'null')
+        except ValueError: continue
+        if not isinstance(other, dict) or other.get('title_id') != man.get('title_id'): continue
+        for part, k in want.items():
+            if part not in out and (other.get('parts') or {}).get(part, {}).get('key') == k['key']: out[part] = folder
+    return out
+
+
+def seed_from_sibling(adb, man, files, have, data):
+    """The parts the files folder does not have yet (RomFS, aoc), copied on the device from another port of the same game version (sibling_parts), instead of pushed
+    over adb: a test build beside a release build of the game takes minutes, not the 7 to 18 GB push. Each copy is checked: its files and sizes, and the MD5 of a
+    sample against the pack; a copy that differs is deleted and the part is pushed as before. Returns the parts copied"""
+    copied = []
+    empty = [p for p in (man.get('parts') or {}) if not any(r.startswith(p + '/') for r in have)]
+    if not empty: return copied
+    for part, folder in sibling_parts(adb, man, files).items():
+        if part not in empty: continue
+        k = man['parts'][part]
+        there = adb.remote_sizes(f'{folder}/{part}')
+        if len(there) != k['files'] or sum(there.values()) != k['bytes']: say(f'{folder}/{part} is not the whole {part} its pack says (an earlier --romfs-at or a partial install): pushing it'); continue
+        PROG.set(step=f'copying the {part} on the device from {folder.split("/")[-2]} ({k["bytes"] / 2**30:.1f} GB)')
+        adb.shell(f'mkdir -p {shlex.quote(files)} && cp -r {shlex.quote(folder + "/" + part)} {shlex.quote(files + "/")}', timeout=3600)
+        now = adb.remote_sizes(f'{files}/{part}'); local = {p.relative_to(Path(data) / part).as_posix(): p.stat().st_size for p in (Path(data) / part).rglob('*') if p.is_file()}
+        bad = now != local
+        if not bad:
+            sample = romfs_sample(local)
+            got = adb.remote_md5(f'{files}/{part}', sample) if sample else {}
+            bad = any(got.get(r) != hashlib.md5((Path(data) / part / r).read_bytes()).hexdigest() for r in sample)
+        if bad:
+            adb.shell(f'rm -rf {shlex.quote(files + "/" + part)}', timeout=1200); say(f'[RED] the {part} copied from {folder} differs from the pack: deleted, pushed instead'); continue
+        say(f'copied the {part} from {folder} on the device ({k["files"]:,} files, {k["bytes"] / 2**30:.1f} GB): not pushed'); copied.append(part)
+    return copied
 
 
 def apk_asks_access(apk):   # whether the APK asks for All files access: one made before mkapk.py did cannot be given it (`appops set` takes, but FUSE checks the permission)
@@ -172,6 +216,8 @@ def install(apk, data, adb_exe, serial=None, replace_signer=False, romfs_at=None
             say(f'{state}: the app reads its RomFS from {target}')
         PROG.set(step='pushing the game data', done=0, total=man['bytes'] - sum(rom.values()), unit='B'); pushing = True
         have = adb.remote_sizes(files)   # again: an install with --replace-signer uninstalls first, and Android deletes the files folder with the app
+        if not target and seed_from_sibling(adb, man, files, have, data): have = adb.remote_sizes(files)   # another port of the game on the device gives its RomFS / DLC
+        PROG.set(step='pushing the game data')
         adb.push_tree(data, files, keep=datapack.KEEP_ON_DEVICE, skip=(datapack.MANIFEST,) + (('env.txt',) if target else ()), exclude=(datapack.ROMFS,) if target else (),
                       verify=lambda rel: rel.split('/', 1)[0] not in ('RomFS', 'aoc'),   # the game's own files change only with their version
                       progress=lambda d, t, note: PROG.set(done=d, total=t, note=note), have=have)
