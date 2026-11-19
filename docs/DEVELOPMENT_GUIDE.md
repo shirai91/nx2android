@@ -129,6 +129,8 @@ python -m unittest discover tests
 
 **Every push and pull request** runs them on GitHub (`.github/workflows/tests.yml`): Linux with gcc and with clang, macOS, and Windows with MinGW gcc, plus an NDK compile of the Android host (debug and release). A Windows PC without a POSIX C compiler skips about 150 C harness tests, so a red Tests run is the first place such a break shows: wait for it before you merge into main. The release workflows run the tests again before they build the bundles.
 
+**Shader translator changes**: the CI runs the synthetic shader tests (`tests/test_spirv_per_vertex.py`); game shaders are game data and stay on your PC. `python devtools/shader_corpus.py record` (on main) and `check` (on the change) translate the split shaders of every port in `.gamedump` with the checkout's translator and list, game by game, the shaders whose SPIR-V the change touches (`--sample N` for a quick look: 300 shaders take seconds). The translator's key ignores comments and whitespace (`porter/codekey.py`), so a comment-only change keeps every game's shader bundle.
+
 **C harnesses** compile code cut out of core sources with their own stubs. Cut with `tests/csrc.py` (`csrc.function(src, 'static void f(')` takes a whole function; `csrc.between(src, begin, end)`), which names the source and the marker when the code moved. A cut function that calls a new symbol needs a stub in that harness: the Tests run on the pull request shows which.
 
 `test_nvn_sampler_cache` exercises the production sampler initializer, finalizer,
