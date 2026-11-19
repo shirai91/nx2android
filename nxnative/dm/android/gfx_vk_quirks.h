@@ -2,7 +2,9 @@
 // A workaround that only one vendor's hardware or one driver needs is a row there, keyed by vendor, driver and version, instead of a check where it is used.
 // Each row has a settings registry switch (DM_VK_QUIRK_<NAME>=0/1, nxnative/dm/settings.tsv) that forces it, to test it on another GPU.
 #pragma once
-#include "gfx_vk.h"   // its Vulkan declarations (VK_NO_PROTOTYPES: the entry points are loaded); gfx_vk.h includes this header at its end
+// No includes: gfx_vk.h includes this header at its end, after the Vulkan declarations (VK_NO_PROTOTYPES: the entry points are loaded), and test harnesses
+// that copy gfx_vk.h bring their own. Include gfx_vk.h, not this header.
+#include <stdint.h>
 
 enum vk_quirk {
     VQ_LRZ_TOUCH,    // Adreno LRZ: one-texel depth reads around passes that load depth (gfx_vk_exec_passes.inc lrz_touch); default of DM_VK_LRZ_TOUCH

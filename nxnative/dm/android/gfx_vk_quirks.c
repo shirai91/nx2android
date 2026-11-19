@@ -1,11 +1,9 @@
 // GPU driver quirks (gfx_vk_quirks.h): which GPU and driver the device has, and the table of workarounds for it.
 // Add a row when a fix is needed by one vendor's hardware or one driver only; keep it off for the others until a device of theirs shows it is needed.
-#include "gfx_vk_quirks.h"
+#include "gfx_vk.h"   // the Vulkan declarations, then gfx_vk_quirks.h
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-#define VQLOG(...) do { fprintf(stderr, "[dm] [vk] " __VA_ARGS__); fputc('\n', stderr); } while (0)
 
 enum { VENDOR_QUALCOMM = 0x5143, VENDOR_ARM = 0x13B5, VENDOR_IMG = 0x1010, VENDOR_SAMSUNG = 0x144D };
 

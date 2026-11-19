@@ -266,7 +266,7 @@ int main(int argc, char **argv) {
         cls.addClassCleanup(cls.tmp.cleanup)
         src = Path(cls.tmp.name) / 'test.c'
         cls.exe = Path(cls.tmp.name) / 'test'
-        src.write_text(code)
+        src.write_text(code, encoding='utf-8')
         subprocess.run(['cc', '-std=c11', '-O2', '-Wall', '-Wextra', '-Werror',
                         *(['-fsanitize=address,undefined', '-g'] if os.environ.get('NX2A_TEST_SANITIZERS') else []), '-I',
                         str(ROOT / 'nxnative/dm/third_party/vulkan-headers/include'),

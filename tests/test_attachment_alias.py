@@ -79,7 +79,7 @@ int main(void) {
 }
 '''
         with tempfile.TemporaryDirectory() as folder:
-            src=Path(folder)/'test.c';src.write_text(code);exe=Path(folder)/'test'
+            src=Path(folder)/'test.c';src.write_text(code, encoding='utf-8');exe=Path(folder)/'test'
             result=subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror','-I',str(ROOT/'nxnative/dm/third_party/vulkan-headers/include'),str(src),'-o',str(exe)],capture_output=True,text=True)
             self.assertEqual(result.returncode,0,result.stderr)
             result=subprocess.run([str(exe)],capture_output=True,text=True)
