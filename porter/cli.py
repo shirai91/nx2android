@@ -15,7 +15,7 @@ def _parser():
     po.add_argument('-k', '--keys', help='prod.keys (default: the configured one)')
     po.add_argument('-o', '--out', help='folder for the APK and the data pack (default: the game folder)')
     po.add_argument('-p', '--version', default='', help='version to pack, v<N> (default: the newest in the folder)')
-    po.add_argument('-l', '--language', default='', help='game language, a code or a name (default: English)')
+    po.add_argument('-l', '--language', default='', help='game language, a code, a name or system (default: English)')
     po.add_argument('--app-name', default='', help='the app\'s name on the device (default: the game\'s name)')
     po.add_argument('--install', action='store_true', help='install on the connected device afterwards')
     po.add_argument('--device', default='', help='adb serial of the device to install on')
