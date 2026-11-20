@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DM = ROOT / 'nxnative/dm'
 sys.path.insert(0, str(ROOT))
 from porter.toolchain import find_ndk
+from csrc import unit
 
 
 def function(source, signature):
@@ -129,7 +130,7 @@ int main(int argc, char **argv) {
             runtime = runtime.replace('X(' + name + ')', '')
         helpers = ''.join(function(src, sig) for sig in ('static int spv_is_vec4(', 'static uint32_t *spv_vs_init(', 'static uint32_t *spv_add_outputs(', 'static uint32_t *spv_frag_depth(', 'static uint32_t *spv_dual('))
         integer = src[src.index('typedef struct { const uint32_t *w; uint32_t fn,'):src.index('// A variant of a fragment shader that writes gl_FragDepth')]
-        variant = function(src, 'static VkShaderModule vk_shader_module_(vkshader_t *s, uint64_t um, uint64_t im, uint32_t xo, int fd) {')
+        variant = function(src, 'static VkShaderModule vk_shader_module_(vkshader_t *s, uint64_t um, uint64_t im, uint32_t xo, int fd, uint32_t vi) {')
         spv = self.compile('''#version 450
 layout(set=1,binding=0) uniform sampler2D tex;
 layout(location=0) out vec4 color;
@@ -142,6 +143,7 @@ void main(){color=texture(tex,vec2(.5));secondary=vec4(.25);}
 #include <stdio.h>
 #include "runtime.h"
 #include "spv_alpha.h"
+#include "vk_spv_vertex.h"
 static pthread_mutex_t g_sh_mu=PTHREAD_MUTEX_INITIALIZER;
 vkdev_t V;
 static unsigned created, expected_kills=1;
@@ -163,34 +165,34 @@ int main(int argc,char **argv) {
     fseek(f,0,SEEK_END);long bytes=ftell(f);rewind(f);uint32_t *w=malloc((size_t)bytes);
     assert(fread(w,1,(size_t)bytes,f)==(size_t)bytes && !fclose(f));
     dmsv_bind binding={.binding=0};vkshader_t s={.stage=1,.mod=(VkShaderModule)(uintptr_t)1,.spv=w,.nspv=(uint32_t)bytes/4,.nbind=1,.b=&binding};
-    assert(vk_shader_module_(&s,0,0,0,0)==s.mod && created==0);
+    assert(vk_shader_module_(&s,0,0,0,0,0)==s.mod && created==0);
     VkShaderModule saved[8];unsigned n=0;
     for (unsigned um=0;um<2;um++) for (int flags=4;flags<8;flags++) {
-        VkShaderModule m=vk_shader_module_(&s,um,0,0,flags);
+        VkShaderModule m=vk_shader_module_(&s,um,0,0,flags,0);
         assert(m!=s.mod && created==n+1);saved[n++]=m;
     }
     n=0;
-    for (unsigned um=0;um<2;um++) for (int flags=4;flags<8;flags++) assert(vk_shader_module_(&s,um,0,0,flags)==saved[n++]);
-    assert(created==8 && vk_shader_module_(&s,0,0,0,0)==s.mod);
+    for (unsigned um=0;um<2;um++) for (int flags=4;flags<8;flags++) assert(vk_shader_module_(&s,um,0,0,flags,0)==saved[n++]);
+    assert(created==8 && vk_shader_module_(&s,0,0,0,0,0)==s.mod);
     vkshader_t alt=s;alt.key=99;alt.nvar=0;
     unsetenv("DM_VK_SPV_DIR");
-    VkShaderModule fallback=vk_shader_module_(&alt,0,0,1u<<31,4);
+    VkShaderModule fallback=vk_shader_module_(&alt,0,0,1u<<31,4,0);
     assert(fallback!=s.mod && created==9);
-    assert(vk_shader_module_(&alt,0,0,1u<<31,4)==fallback && created==9);
+    assert(vk_shader_module_(&alt,0,0,1u<<31,4,0)==fallback && created==9);
     setenv("DM_VK_SPV_DIR",folder,1);
-    assert(vk_shader_module_(&alt,0,0,1u<<31,4)==fallback); // missing optional file
+    assert(vk_shader_module_(&alt,0,0,1u<<31,4,0)==fallback); // missing optional file
     char path[2048];snprintf(path,sizeof path,"%s/%016llx.spv",folder,(unsigned long long)alt.key);
     f=fopen(path,"wb");assert(f && fwrite(w,1,(size_t)bytes,f)==(size_t)bytes && !fclose(f));
-    VkShaderModule replacement=vk_shader_module_(&alt,0,0,1u<<31,4);
+    VkShaderModule replacement=vk_shader_module_(&alt,0,0,1u<<31,4,0);
     assert(replacement!=fallback && replacement!=s.mod && created==10);
-    assert(vk_shader_module_(&alt,0,0,1u<<31,4)==replacement && created==10);
+    assert(vk_shader_module_(&alt,0,0,1u<<31,4,0)==replacement && created==10);
     expected_kills=0;
-    VkShaderModule untested=vk_shader_module_(&alt,0,0,1u<<31,0);
+    VkShaderModule untested=vk_shader_module_(&alt,0,0,1u<<31,0,0);
     assert(untested!=replacement && untested!=s.mod && created==11);
-    assert(vk_shader_module_(&alt,0,0,1u<<31,0)==untested && created==11);
+    assert(vk_shader_module_(&alt,0,0,1u<<31,0,0)==untested && created==11);
     // A short replacement also falls through to the ordinary alpha variant.
     f=fopen(path,"wb");assert(f && fputc(0,f)!=EOF && !fclose(f));alt.nvar=0;expected_kills=1;
-    assert(vk_shader_module_(&alt,0,0,1u<<31,4)!=s.mod && created==12);
+    assert(vk_shader_module_(&alt,0,0,1u<<31,4,0)!=s.mod && created==12);
     free(w);
 }
 ''')
@@ -274,7 +276,7 @@ int main(void) {
         ndk, _ = find_ndk()
         headers = next(ndk.glob('toolchains/llvm/prebuilt/*/sysroot/usr/include'), None) if ndk else None
         if not headers: self.skipTest('NDK Vulkan headers required')
-        src = (DM / 'android/gfx_vk_exec.c').read_text()
+        src = unit(DM / 'android/gfx_vk_exec.c')
         helpers = src[src.index('enum clear_type {'):src.index('static int prepare_draw(')]
         self.run_c(r'''
 #include <assert.h>
