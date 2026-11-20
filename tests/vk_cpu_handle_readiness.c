@@ -42,7 +42,7 @@ static void uniform_texture_array(void) {
     uint8_t expected[][4] = {{0,255,0,255}, {0,0,255,255}, {0,0,0,0},
                                    {255,255,255,255}, {0,0,0,0}, {0,0,0,0}, {0,0,255,255}, {255,255,255,255}};
 
-    for(int compute=0;compute<2;compute++) for (int gpu=0;gpu<(compute?7:4);gpu++) for (int pass = 0; pass < 8; ++pass) {
+    for(int compute=0;compute<2;compute++) for (int gpu=0;gpu<(compute?8:4);gpu++) for (int pass = 0; pass < 8; ++pass) {
         if(getenv("NX2A_HANDLE_CASE") && atoi(getenv("NX2A_HANDLE_CASE"))!=compute*10+gpu)continue;
         if(pass==4)continue; // Target incompatible 2D-to-3D views are a separate gap.
         printf("case compute%d gpu%d pass%d\n",compute,gpu,pass);fflush(stdout);
@@ -62,14 +62,15 @@ static void uniform_texture_array(void) {
         struct { uint64_t address, size, value; } update = {(uintptr_t)&handles[44 + index], 8, pass >= 6 ? 5u : pass >= 4 ? 7u : pass ? 6u : 5u};
 
 
-        if (!gpu || gpu==4) put(&list, OP_UPDATE_UB, &update, sizeof update);
+        if (!gpu || gpu==4 || gpu==7) put(&list, OP_UPDATE_UB, &update, sizeof update);
         samplers[16 + index] = (uint64_t)(pass == 3 ? 2 : 1) << 20;
-        if(gpu && gpu<4) {
+        if((gpu && gpu<4) || gpu==7) {
             uint32_t values[4]={(uint32_t)update.value,0,0,0};
             handles[44+index]=0;
             // Target adapter: the source push constants become a regular UBO;
             // SSBOs stay aligned to the target translator's 256-byte boundary.
             for(int sampler=0;sampler<2;sampler++) {
+                if(gpu==7 && !sampler)continue; // Isolate sampler-only readiness.
                 uint64_t *memory=sampler?samplers:handles;
                 unsigned element=(sampler?16:44)+index;
                 uint32_t value=sampler?(uint32_t)samplers[element]:(uint32_t)update.value;
@@ -85,11 +86,11 @@ static void uniform_texture_array(void) {
             if(gpu==2) { put(&list,OP_END,NULL,0);mtl_sub_begin();mtl_exec(list.bytes);mtl_sub_commit();list.used=0; }
             if(gpu==3) {
                 // Two later known ranges cover the earlier GPU-written handle;
-                // the sampler is a known fill. Neither needs a submission cut.
+                // the sampler is another known inline update. Neither needs a cut.
                 struct { uint64_t address,size;uint32_t value,pad; } part={update.address,4,(uint32_t)update.value,0};
                 put(&list,OP_UPDATE_UB,&part,sizeof part);
                 part.address+=4;part.value=0;put(&list,OP_UPDATE_UB,&part,sizeof part);
-                part.address=(uintptr_t)&samplers[16+index];part.size=4;part.value=values[0];put(&list,OP_UPDATE_UB,&part,sizeof part);
+                part.address=(uintptr_t)&samplers[16+index];part.size=8;part.value=values[0];put(&list,OP_UPDATE_UB,&part,sizeof part);
             }
         }
 
@@ -102,7 +103,7 @@ static void uniform_texture_array(void) {
             RECORD(OP_BIND_SSBO,p_bind_buf,.stage=5,.index=0,.addr=(uintptr_t)pointer,.size=8);
             RECORD(OP_DISPATCH,p_dispatch,.x=1,.y=1,.z=1);
         }
-        if(compute && gpu>=5) {
+        if(compute && (gpu==5 || gpu==6)) {
             handles[51]=0;producer[0]=0;producer[1]=(uint32_t)update.value;
             // The older inline bytes must land BEFORE the draw overwrites
             // them, and may not cover the newer GPU dependency afterward.
