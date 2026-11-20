@@ -484,6 +484,7 @@ static void ov_rows_panel(const ov_canvas *cv, int st, ov_srow rows[OVM_ROWS]) {
     if (st & OVC_ST) size[OVS_ITEM] = size[OVS_MASTER] = (int)fmaxf(1, roundf(is0 * 0.8f));   // the cheat picker: a cheat's name at the notes' size, the header above it
     for (int row = 0; row < OVM_ROWS; row++) { const ov_srow *q = &rows[row]; int *s = &size[q->style];
         int floor = q->style == OVS_NOTE ? (int)fmaxf(1, roundf(is0 * 0.55f)) : 1;   // a long reason keeps readable letters (front_android.c shortens it too)
+        if ((st & OVC_ST) && (q->style == OVS_ITEM || q->style == OVS_MASTER)) floor = *s;   // the cheat picker cuts a long name to its row instead (below): one credit line must not shrink every name on the page
         while (*s > floor && cv_text_w(q->left, *s) + (q->right[0] ? gap + cv_text_w(q->right, *s) : 0) > room) --*s; }
     cv_rrect(cv, 0, 0, p[2], p[3], rh * 0.18f, C_BG);
     for (int row = 0; row < OVM_ROWS; row++) {
@@ -493,7 +494,13 @@ static void ov_rows_panel(const ov_canvas *cv, int st, ov_srow rows[OVM_ROWS]) {
         if (row == sel) cv_rrect(cv, r[0], r[1] + rh * 0.08f, r[0] + rw, r[1] + rh * 0.92f, rh * 0.14f, C_HI);
         if (q->style == OVS_BACK) { cv_rrect(cv, r[0], r[1], r[0] + rw, r[1] + 1, 0.5f, C_LINE); cv_text(cv, r[0] + (rw - cv_text_w(q->left, is)) / 2, cy, q->left, is, C_ACCENT); continue; }
         if (q->style == OVS_BUTTON) { float bw = fminf(rw, cv_text_w(q->left, is) + 4 * gap), b[4] = {r[0] + (rw - bw) / 2, cy - rh * 0.34f, bw, rh * 0.68f}; cv_button(cv, b, q->left, 1, row == sel); continue; }
-        cv_text(cv, x0, cy, q->left, is, q->style == OVS_TITLE || row == sel ? C_WHITE : C_DIM);
+        char left[sizeof q->left]; snprintf(left, sizeof left, "%s", q->left);
+        float lroom = room - (q->right[0] ? gap + cv_text_w(q->right, is) : 0);
+        if ((st & OVC_ST) && (q->style == OVS_ITEM || q->style == OVS_MASTER) && cv_text_w(left, is) > lroom) {   // a name too long for its row is cut (dm_cheat_rows' buffer is finite too); the pack's own file has it whole
+            while (*left && cv_text_w(left, is) + cv_text_w("\xe2\x80\xa6", is) > lroom) pf_chop(left, strlen(left));
+            size_t n = strlen(left); if (n + 3 < sizeof left && cv_text_w("\xe2\x80\xa6", is) <= lroom) memcpy(left + n, "\xe2\x80\xa6", 4);
+        }
+        cv_text(cv, x0, cy, left, is, q->style == OVS_TITLE || row == sel ? C_WHITE : C_DIM);
         if (q->right[0]) cv_text(cv, x1 - cv_text_w(q->right, is), cy, q->right, is, C_DIM);
         if (q->style == OVS_TITLE) cv_rrect(cv, r[0], r[1] + rh - 1, r[0] + rw, r[1] + rh, 0.5f, C_LINE);
     }

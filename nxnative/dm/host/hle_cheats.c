@@ -30,9 +30,11 @@
 // the register as it was, a conditional compares against 0, a store writes nothing, and the cheat stays on and retries
 // next pass; the first failure of a cheat logs one [RED] line, the rest are counted into a note on its row.
 // Beyond the reference, all optional (a plain community file behaves as on a Switch):
-//   - an entry without code words is a label, never a cheat: a credits line, or EdiZon's [--SectionStart:Name--] /
-//     [--SectionEnd:Name--] markers, which give the entries between them a section; a header glued to the previous line's
-//     last code word ("00000008[Next]", a sloppy site file) still starts a new entry
+//   - an entry without code words is a label, never a cheat: a credits line, or EdiZon's [--SectionStart:Name--] marker,
+//     which gives the entries after it a section ([--SectionEnd:Name--] closes the section and takes no entry of its own);
+//     an entry of nothing but terminators is one too: EdiZon's 00000000 00000000 00000000 under a marker and its file's
+//     closing "[credit line] 20000000" are no-ops on a Switch, so they are headings rather than cheats that do nothing;
+//     a header glued to the previous line's last code word ("00000008[Next]", a sloppy site file) still starts a new entry
 //   - <build>.meta.tsv beside the file (scripts/cheat_anchor.py compiles one with it): per entry its section, note, type,
 //     on / off pair, a value the panel may set ("ask", kept in <build>.values), "set" cheats that run one pass and turn
 //     themselves off, and never-decrease, a host action on a typed address that keeps the highest value seen (Atmosphère's
@@ -122,7 +124,7 @@ typedef struct {
     uint8_t noted;             // why holds the failed-access note (cleared, with why, by the first pass without a failure)
     uint64_t note_ns;          // when the note was last rewritten (cheat_fail rewrites it sparingly: the panel reads why unlocked)
     uint8_t label;             // no code words (and no meta action): a credits line or a section marker, never a cheat
-    uint8_t sec_mark;          // 1 = [--SectionStart:…--], 2 = [--SectionEnd:…--]
+    uint8_t sec_mark;          // 1 = a section heading ([--SectionStart:…--]; an end marker takes no entry)
     uint8_t once;              // meta "set": runs one pass, then turns itself off
     uint8_t restore_once;      // the off half of a pair just switched off: runs one pass (the restore), then turns itself off
     uint8_t heap_wait;         // it waited for the game's heap once (logged once)
@@ -1563,10 +1565,13 @@ static void parse_file(const char *path) {
             cur->on = cur->master;
             char sec[NAME_MAX];
             int mark = section_marker(cur->name, sec, sizeof sec);
+            if (mark == 2) {   // an end marker only closes its section: it has nothing to show, so it takes no entry (the next heading says where it ends)
+                g_ncheat--; cur = NULL; section[0] = 0;
+                continue;
+            }
             if (mark == 1) snprintf(section, sizeof section, "%s", sec);
             if (mark) cur->sec_mark = (uint8_t)mark;
             snprintf(cur->section, NAME_MAX, "%s", mark == 1 ? sec : section);
-            if (mark == 2) section[0] = 0;
             for (int i = 0; i < g_ncheat - 1; i++) if (!strcmp(g_cheat[i].name, cur->name)) cur->dup++;
             p = q + 1;                 // dmnt reads on after the header: code words may follow on the same line
             while (*p == ' ' || *p == '\t' || *p == '\r') p++;
@@ -1628,6 +1633,13 @@ static void parse_file(const char *path) {
         if (c->broken) continue;   // already off with its own reason (a malformed line): the decode would overwrite why
         if (c->nins == 0 && c->junk_line) {   // its lines were all prose: a broken cheat (a typo), not a label
             c->broken = 1; snprintf(c->why, sizeof c->why, " (no code words: line %d is not code)", c->junk_line); continue;
+        }
+        {   // an entry of nothing but terminators has no effect to toggle and is a heading: EdiZon writes 00000000 00000000
+            // 00000000 under each section marker (zero-width stores, no-ops) and closes a file with [a credit line] 20000000
+            // (an end of a conditional block with no block open, a no-op)
+            int noop = c->nins > 0;
+            for (int k = 0; k < c->nins && noop; k++) noop = c->ins[k] == 0 || c->ins[k] == 0x20000000;
+            if (noop) c->nins = 0;
         }
         if (c->nins == 0) { c->label = 1; c->on = 0; continue; }
         for (int a = 0; a < c->nins;) {
@@ -2035,7 +2047,7 @@ int dm_cheat_kind_at(int i) {
 int dm_cheat_flags_at(int i) {
     if (i < 0 || i >= g_ncheat) return 0;
     const cheat_t *c = &g_cheat[i];
-    return (c->label ? DM_CHEAT_LABEL : 0) | (c->sec_mark == 1 ? DM_CHEAT_SECTION_START : 0) | (c->sec_mark == 2 ? DM_CHEAT_SECTION_END : 0)
+    return (c->label ? DM_CHEAT_LABEL : 0) | (c->sec_mark == 1 ? DM_CHEAT_SECTION_START : 0)
          | (c->pair >= 0 ? (c->pair_off ? DM_CHEAT_PAIR_OFF : DM_CHEAT_PAIR_ON) : 0) | (c->once ? DM_CHEAT_ONCE : 0)
          | (c->ask ? DM_CHEAT_ASK : 0) | (c->nd ? DM_CHEAT_HOST : 0) | (c->weak ? DM_CHEAT_WEAK : 0);
 }

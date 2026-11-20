@@ -195,11 +195,20 @@ int main(void) {
           "[far]\n040000FF FFFFFF00 00000001\n");
     load_all();
     int a = at("a", 0), b = at("b", 0), credits = at("www.example.com", 0);
-    CHECK(g_ncheat == 6 && b >= 0, "a header glued to the previous code line still starts an entry");
+    CHECK(g_ncheat == 5 && b >= 0, "a header glued to the previous code line still starts an entry");
     CHECK(dm_cheat_kind_at(credits) == 3 && dm_cheat_kind_at(at("--SectionStart:Stats--", 0)) == 3 && !g_cheat[credits].broken, "entries without code are labels, not broken cheats");
     CHECK(!strcmp(dm_cheat_section_at(a), "Stats") && !strcmp(dm_cheat_section_at(b), "Stats") && !dm_cheat_section_at(at("far", 0))[0], "entries between the markers carry the section");
-    CHECK((dm_cheat_flags_at(at("--SectionStart:Stats--", 0)) & DM_CHEAT_SECTION_START) && (dm_cheat_flags_at(at("--SectionEnd:Stats--", 0)) & DM_CHEAT_SECTION_END), "the markers are flagged");
+    CHECK((dm_cheat_flags_at(at("--SectionStart:Stats--", 0)) & DM_CHEAT_SECTION_START) && at("--SectionEnd:Stats--", 0) < 0, "the start marker is a heading; the end marker takes no entry");
     CHECK(strstr(dm_cheats_report(), "1 headers glued") != NULL, "the report counts the glued header");
+    fresh("edizon", "[--SectionStart:Items--]\n00000000 00000000 00000000\n"
+          "[a]\n04000000 00004070 00000001\n"
+          "[--SectionEnd:Items--]\n00000000 00000000 00000000\n"
+          "[update by someone]\n20000000\n");
+    load_all();
+    int es = at("--SectionStart:Items--", 0);
+    CHECK(es >= 0 && dm_cheat_kind_at(es) == 3 && entry("a")[0].section[0] && !strcmp(dm_cheat_section_at(es), "Items"), "EdiZon's terminator line under a section marker leaves a label, not a broken cheat");
+    CHECK(at("--SectionEnd:Items--", 0) < 0 && dm_cheat_kind_at(at("a", 0)) == 0 && !strcmp(dm_cheat_section_at(at("a", 0)), "Items"), "the end marker is dropped and the entries under the marker carry the section");
+    CHECK(dm_cheat_kind_at(at("update by someone", 0)) == 3 && !g_cheat[at("update by someone", 0)].broken && strstr(dm_cheats_report(), "0 broken") != NULL, "EdiZon's 20000000 footer is a label, not a cheat with a toggle");
     fresh("labels2", "[inline] 04000000 00004078 00000003\n[typo]\n0400000 0000407C 00000001\n[typo2]\nhello world\n[Max 999[A]]\n04000000 00004080 00000004\n");
     load_all();
     CHECK(entry("inline")[0].nins == 3 && dm_cheat_kind_at(at("inline", 0)) == 0, "code on the header's own line belongs to the entry (dmnt reads on after the header)");
@@ -697,8 +706,8 @@ int main(void) {
     CHECK(!dm_cheats_found(), "a reload that finds no file loads nothing: no cheat runs now");
 
     // ---- Atmosphère's limits in the report ----
-    size_t cap = 0x200 * 9 + 64; char *big = malloc(cap); size_t o = (size_t)snprintf(big, cap, "[Big]\n");
-    for (int k = 0; k < 0x200; k++) o += (size_t)snprintf(big + o, cap - o, "20000000\n");
+    size_t cap = 0x200 * 29 + 64; char *big = malloc(cap); size_t o = (size_t)snprintf(big, cap, "[Big]\n");
+    for (int k = 0; k < 0x200; k++) o += (size_t)snprintf(big + o, cap - o, "40000000 00000000 00000001\n");   // 0x200 stores, 3 words each
     fresh("limits", big); free(big);
     load_all();
     CHECK(strstr(dm_cheats_report(), "1 cheats over 0x100 words") != NULL, "the report names a cheat over Atmosphère's 0x100 words");

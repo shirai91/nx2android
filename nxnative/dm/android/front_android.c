@@ -930,17 +930,21 @@ int dm_cheat_rows(ov_srow rows[OVM_ROWS]) {
         int shown = ch_on_page();
         for (int j = 0; j < shown; j++) {
             int i = page * per + j, kind = dm_cheat_kind_at(i), fl = dm_cheat_flags_at(i);
-            const char *nm = dm_cheat_name_at(i), *why = dm_cheat_why_at(i);
+            const char *sec = dm_cheat_section_at(i), *why = dm_cheat_why_at(i);
+            const char *nm = (fl & DM_CHEAT_SECTION_START) && sec[0] ? sec : dm_cheat_name_at(i);   // a heading shows the section's name, not the marker's
             ov_srow *q = &rows[1 + j];
             q->style = kind == 2 || kind == 3 ? OVS_NOTE : kind == 1 ? OVS_MASTER : OVS_ITEM;   // a master's long title must not shrink the page's cheat rows (ov_rows_panel sizes it alone)
             int killed = kind == 2;   // dead or broken: the reason stays in the log, not on every row (a code write's refusal is not this entry's fault)
             char note[40] = "";       // a failed-access note (the cheat still runs): short, so the row's letters stay readable
             if (why && why[0] && !killed) {
-                size_t wn = strlen(why);
-                if (wn >= sizeof note - 3) { memcpy(note, why, sizeof note - 4); memcpy(note + sizeof note - 4, "...", 4); }
-                else snprintf(note, sizeof note, "%s", why);
+                if (!strncmp(why, " (no effect", 11)) snprintf(note, sizeof note, " (no effect)");   // the count would make one row wide enough to shrink every name on the page (it stays in the log)
+                else {
+                    size_t wn = strlen(why);
+                    if (wn >= sizeof note - 3) { memcpy(note, why, sizeof note - 4); memcpy(note + sizeof note - 4, "...", 4); }
+                    else snprintf(note, sizeof note, "%s", why);
+                }
             }
-            snprintf(q->left, sizeof q->left, "%s%s", nm, note);
+            snprintf(q->left, sizeof q->left, "%s%s", nm, note); pf_trim(q->left);
             if (kind == 1) snprintf(q->right, sizeof q->right, "master code");
             else if (kind == 2) snprintf(q->right, sizeof q->right, "%s", why && (strstr(why, "code write") || strstr(why, "rewriter changed")) ? "unsupported" : "off");
             else if (kind == 3) q->right[0] = 0;

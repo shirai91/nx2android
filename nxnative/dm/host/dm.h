@@ -165,8 +165,8 @@ int dm_cheat_on_at(int i);
 void dm_cheat_toggle(int i);          // The click on a plain row: flips the cheat (an on / off pair as one switch) and rewrites <build ID>.enabled
 void dm_cheats_reload(void);          // "Reload cheats": re-reads the file (the same path), so edits during play need no re-launch
 // What the panel shows beyond the menu (hle_cheats.c header: labels and sections, the meta file of scripts/cheat_anchor.py)
-enum { DM_CHEAT_LABEL = 1, DM_CHEAT_SECTION_START = 2, DM_CHEAT_SECTION_END = 4, DM_CHEAT_PAIR_ON = 8, DM_CHEAT_PAIR_OFF = 16,
-       DM_CHEAT_ONCE = 32, DM_CHEAT_ASK = 64, DM_CHEAT_HOST = 128, DM_CHEAT_WEAK = 256 };   // ONCE: a "set" cheat; HOST: a never-decrease run by this host only
+enum { DM_CHEAT_LABEL = 1, DM_CHEAT_SECTION_START = 2, DM_CHEAT_PAIR_ON = 4, DM_CHEAT_PAIR_OFF = 8,
+       DM_CHEAT_ONCE = 16, DM_CHEAT_ASK = 32, DM_CHEAT_HOST = 64, DM_CHEAT_WEAK = 128 };   // ONCE: a "set" cheat; HOST: a never-decrease run by this host only
 int dm_cheat_flags_at(int i);         // DM_CHEAT_* of entry i
 const char *dm_cheat_section_at(int i);   // the section entry i lies in ("" none)
 const char *dm_cheat_note_at(int i);  // the meta file's note: how the cheat was compiled, and its own note
