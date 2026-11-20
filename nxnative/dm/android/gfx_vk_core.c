@@ -739,6 +739,11 @@ static void pool_copy_back(vkpool_t *p) {
 // (vendor.qti.hardware.display.allocator-service, snapalloc) aborts on a BLOB of 812 MB ("ubsan: mul-overflow" in SnapConstraintManager::AlignmentToAlignedConstraints),
 // and the whole Android UI restarts with it; 400 MB ones work (13 Sentinels: Aegis Rim's 0x32c00000-byte pool). A range across two chunks has no buffer (vk_pool_of)
 #define ZC_CHUNK 0x10000000ull
+// DM_VK_ZEROCOPY_CHUNK_MB=<n> (start-up): chunks of at most n MB instead of ZC_CHUNK, for a game whose geometry is bound across a chunk's end. Pokémon Violet's 350 MB
+// pool held the Naranja Academy library's vertices at 0x6e8b2c1720 +0x22628e0, 28 MB of it past the first 256 MB chunk's end: the GPU read past that chunk's buffer
+// (vk_cross counted 32768 such vertex bindings), the shelves drew as dark gaps and the room behind the arch as a void. 512 keeps that pool in one AHardwareBuffer
+// (AYN Odin 2, Adreno 740, Android 13). Copying the pool whole instead (DM_VK_ZEROCOPY_MAX_MB=300) also fixed it, at 15 ms more per frame and 800 MB more memory
+static uint64_t zc_chunk(void) { static uint64_t c; if (!c) { const char *e = getenv("DM_VK_ZEROCOPY_CHUNK_MB"); c = e && atoi(e) > 0 ? (uint64_t)atoi(e) << 20 : ZC_CHUNK; } return c; }
 static void pool_add_one(const void *mem, uint64_t size, uint64_t base, uint64_t end, int lazy);
 static uint64_t g_zc_bytes, g_cp_bytes, g_lazy_total, g_lazy_bytes, g_used_bytes;   // made zero-copy, copied, made lazy, lazy ones given their buffer, found by vk_pool_of so far (DM_VK_MEMLOG; removed pools are not taken off)
 // Lazy pools: a pool's buffer is made only when the GPU first uses it (vk_pool_of, pool_back), through the slabs and kept buffers as at creation; until then its pages stay
@@ -795,7 +800,7 @@ void mtl_pool_add(const void *mem, uint64_t size) {
     vk_init();
     if (!size) return;
     uint64_t a = (uint64_t)(uintptr_t)mem; int whole = ((a | size) & 0xfff) || zc_over(size);   // copied in one piece
-    uint64_t c = whole ? size : ZC_CHUNK; int m = zc_lazy_mode();
+    uint64_t c = whole ? size : zc_chunk(); int m = zc_lazy_mode();
     static uint64_t pg; if (!pg) pg = (uint64_t)getpagesize();   // (a 16 KB-page kernel: a pool only 4 KB-aligned is not swapped in place, it is copied as before)
     // (zero copy off: no lazy pools, and no uncached-read check either)
     int lazy = !whole && !zc_off() && !((a | size) & (pg - 1)) && m && (m >= 2 || (size > c ? m == 1 : zc_uncached())) && nvn_dirty_tracked(mem, size);
