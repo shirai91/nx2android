@@ -94,7 +94,7 @@ def _romfs_at(p, when=''):   # install's --romfs-at / --romfs-push (porter/insta
     p.add_argument('--romfs-at', default=None, metavar='FOLDER',
                    help=when + 'read the game\'s RomFS from this folder on the device (e.g. /sdcard/Games/<game>/romfs, a dump another app also reads, or a folder on the SD card) '
                         'instead of a copy in the app\'s files folder: the folder must hold exactly the pack\'s RomFS (names and sizes, and the content of a sample), the app is given All files access, '
-                        'and a copy an earlier install left in the files folder is deleted. Later installs keep the folder; "app" moves the RomFS back into the files folder')
+                        'and a copy an earlier install left in the files folder is deleted. Later installs keep the folder; "app" moves the RomFS back into the files folder; "sd" pushes it into <the SD card>/Android/data/<package>/files/RomFS, the app\'s own folder there (Android removes it when the app is uninstalled; the APK stays in internal storage; later installs push what changed into it and remove files that are not the pack\'s; a USB drive only when no SD card is mounted); "no-sd" moves data an earlier "sd" install put on the card back into the app files folder, else changes nothing')
     p.add_argument('--romfs-push', action='store_true', help='with --romfs-at: push the pack\'s RomFS into that folder first (an empty folder, or one of this game; nothing there is deleted)')
 
 

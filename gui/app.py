@@ -8,10 +8,10 @@
 import html, os, subprocess, sys, time
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, QUrl
+from PySide6.QtCore import QSize, Qt, QTimer, QUrl
 from PySide6.QtGui import QColor, QDesktopServices, QFont, QIcon
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog, QFormLayout, QFrame, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
-                               QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QSpinBox, QSplitter, QStyle, QTableWidget, QTableWidgetItem,
+                               QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSpinBox, QSplitter, QStyle, QTableWidget, QTableWidgetItem,
                                QTabWidget, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from porter import config
@@ -33,14 +33,14 @@ def size(b):
 
 
 def path_row(edit, pick):   # a line edit with a Browse button
-    w = QWidget(); h = QHBoxLayout(w); h.setContentsMargins(0, 0, 0, 0)
+    w = QWidget(); h = QHBoxLayout(w); h.setContentsMargins(0, 0, 0, 0); h.setAlignment(Qt.AlignTop)
     b = QPushButton('Browse…'); b.clicked.connect(pick)
     h.addWidget(edit, 1); h.addWidget(b)
     return w
 
 
 def with_info(field, tip):   # a field with the style's information icon after it, which shows tip on hover (the field shows it too)
-    w = QWidget(); h = QHBoxLayout(w); h.setContentsMargins(0, 0, 0, 0)
+    w = QWidget(); h = QHBoxLayout(w); h.setContentsMargins(0, 0, 0, 0); h.setAlignment(Qt.AlignTop)
     i = QLabel(); i.setPixmap(QApplication.style().standardIcon(QStyle.SP_MessageBoxInformation).pixmap(16, 16)); i.setCursor(Qt.WhatsThisCursor)
     i.setToolTip(tip); field.setToolTip(tip)
     h.addWidget(field); h.addWidget(i); h.addStretch(1)
@@ -48,6 +48,25 @@ def with_info(field, tip):   # a field with the style's information icon after i
 
 
 # ---------------- Port ----------------
+class FitScroll(QScrollArea):
+    """A scroll area as tall as its rows: it never takes more height than they need (the log below gets the rest) and scrolls only when the window is too short for them"""
+    def fit(self):
+        if w := self.widget(): self.setMaximumHeight(w.sizeHint().height() + 2 * self.frameWidth()); self.updateGeometry()
+
+    def sizeHint(self):
+        s, w = super().sizeHint(), self.widget()
+        return QSize(s.width(), w.sizeHint().height() + 2 * self.frameWidth()) if w else s
+
+
+def sd_warning():   # right of the Port tab's "Game data on the SD card" box
+    w = QWidget(); h = QHBoxLayout(w); h.setContentsMargins(0, 0, 0, 0); h.setSpacing(4)
+    i = QLabel(); i.setPixmap(QApplication.style().standardIcon(QStyle.SP_MessageBoxWarning).pixmap(16, 16))
+    t = QLabel('<b>Slow</b> to install and uninstall'); t.setTextFormat(Qt.RichText)
+    w.setToolTip('Installing writes many GB to the SD card and uninstalling deletes them again; internal storage is much faster.')
+    h.addWidget(i); h.addWidget(t); w.setVisible(False)
+    return w
+
+
 class PortTab(QWidget):
     def __init__(self, win):
         super().__init__()
@@ -63,7 +82,7 @@ class PortTab(QWidget):
         gl.addWidget(self.card)
         v.addWidget(g)
 
-        o = QGroupBox('Options'); f = QFormLayout(o)
+        o = QGroupBox('Options'); inner = QWidget(); f = QFormLayout(inner)   # the title stays put; only the rows scroll
         self.app_name = QLineEdit(); self.app_name.setPlaceholderText('the game\'s name')
         self.language = QComboBox()
         for code, name in LANGUAGES: self.language.addItem(name, code)
@@ -76,8 +95,11 @@ class PortTab(QWidget):
         self.romfs_at = QLineEdit(); self.romfs_at.setPlaceholderText('as the device has it (an earlier install\'s folder, else the app\'s files folder)')   # porter install --romfs-at
         romfs_tip = ('A folder on the device that already holds this game version\'s RomFS (a dump an emulator reads, e.g. /sdcard/<dump>/romfs),\n'
                      'which the app then reads instead of a copy in its own files folder (7 to 18 GB less). The installer checks the folder and gives the app All files access.\n'
-                     'Empty: as the device has it. "app": the RomFS back in the app\'s files folder. Install only: the port itself does not change.')
+                     'Empty: as the device has it (an SD install\'s card folder too). "app": the RomFS back in the app\'s files folder (from the SD card too). Install only: the port itself does not change.')
         self.romfs_push = QCheckBox('Push the game\'s RomFS into that folder (an empty folder, or one of this game: files are added, never deleted)')   # porter install --romfs-push
+        self.romfs_sd = QCheckBox('Game data on the SD card (the app itself stays in internal storage; the bulky RomFS is stored on the SD card)')   # porter install --romfs-at sd
+        self.romfs_sd_warn = sd_warning()   # shown while the SD checkbox is on
+        self.romfs_sd.toggled.connect(lambda on: (self.romfs_at.setEnabled(not on), self.romfs_push.setEnabled(not on), self.romfs_sd_warn.setVisible(on)))
         romfs = with_info(self.romfs_at, romfs_tip); romfs.layout().setStretch(0, 1)
         self.package = QLineEdit(); self.package.setPlaceholderText('the profile\'s package')   # porter port --package: a test install beside the player's other build
         self.package.setToolTip('Install under another package than the profile\'s (org.nx2a.<game>.test), beside your other build of the game.\n'
@@ -107,11 +129,15 @@ class PortTab(QWidget):
                              'Raise it (16, 24 …) if the game still runs out. It uses no memory and does not change the speed.')
         f.addRow('App name', self.app_name); f.addRow('Game language', self.language)
         f.addRow('Output folder', path_row(self.out, self.pick_out)); f.addRow('Device', dev); f.addRow('', self.replace_signer)
-        f.addRow('RomFS on the device', romfs); f.addRow('', self.romfs_push)
+        f.addRow('RomFS on the device', romfs); f.addRow('', self.romfs_push); sd_row = QWidget(); sr = QHBoxLayout(sd_row); sr.setContentsMargins(0, 0, 0, 0); sr.addWidget(self.romfs_sd); sr.addWidget(self.romfs_sd_warn); sr.addStretch(1)
+        f.addRow('', sd_row)
         f.addRow('Package', self.package); f.addRow('versionCode offset', self.vercode); f.addRow('Extra address space', headroom)
         f.addRow('Vulkan driver', path_row(self.driver, self.pick_driver))
         f.addRow('System font', path_row(self.shared_font, self.pick_shared_font))
         f.addRow('', self.fps60); f.addRow('', self.touch); f.addRow('', self.no_menu_button); f.addRow('', self.mt_replay); f.addRow('', self.debug); f.addRow('', self.experimental)
+        scroll = FitScroll(); scroll.setWidgetResizable(True); scroll.setFrameShape(QFrame.NoFrame); scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setMinimumHeight(120); scroll.setWidget(inner); scroll.fit()   # the options scroll only when the window is too short for them, so the tab fits a 1080p screen
+        ol = QVBoxLayout(o); ol.setContentsMargins(0, 0, 0, 0); ol.addWidget(scroll)
         v.addWidget(o)
 
         bar = QHBoxLayout()
@@ -234,7 +260,8 @@ class PortTab(QWidget):
         self.run(args + self.romfs_args())
 
     def romfs_args(self):   # porter install --romfs-at / --romfs-push (porter/install.py)
-        return (['--romfs-at', self.romfs_at.text().strip()] if self.romfs_at.text().strip() else []) + (['--romfs-push'] if self.romfs_push.isChecked() else [])
+        if self.romfs_sd.isChecked(): return ['--romfs-at', 'sd']
+        return (['--romfs-at', self.romfs_at.text().strip()] if self.romfs_at.text().strip() else []) + (['--romfs-push'] if self.romfs_push.isChecked() else [])   # empty: as the device has it (an SD install's card folder too); "app" brings the RomFS back from the card
 
     def run(self, args):
         self.stages.clear(); self.items = {}; self.log.clear(); self.prog.setValue(0); self.step.setText('starting…')
@@ -513,7 +540,7 @@ class SavesTab(QWidget):
 class Window(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle('nx2android'); self.resize(980, 820)
+        self.setWindowTitle('nx2android'); self.resize(997, 820)
         self.tabs = QTabWidget()
         self.port = PortTab(self); self.setup = SetupTab(self); self.games = GamesTab(); self.saves = SavesTab()
         self.tabs.addTab(self.port, 'Port'); self.tabs.addTab(self.setup, 'Setup'); self.tabs.addTab(self.games, 'Games'); self.tabs.addTab(self.saves, 'Saves')
