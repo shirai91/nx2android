@@ -2,6 +2,7 @@
 import os,re,shutil,subprocess,tempfile,unittest
 from pathlib import Path
 from csrc import unit
+import host_cc
 W=Path(__file__).resolve().parents[1]
 class LogicOperations(unittest.TestCase):
  def test_donor_format_and_state_limits(self):
@@ -43,13 +44,14 @@ int main(void) {
  puts("33 native logic eligibility/state cases passed");
 }
 '''
-  cc=shutil.which('clang')
-  if not cc:self.skipTest('clang required')
+  cc=shutil.which('cc')
+  if not cc:self.skipTest('host C compiler required')
+  sanitizer=['-fsanitize=address,undefined'] if host_cc.asan_ubsan_runs(cc) else []
   with tempfile.TemporaryDirectory() as d:
-   p=Path(d);(p/'test.c').write_text(code)
-   result=subprocess.run([cc,'-std=c11','-O1','-fsanitize=address,undefined',str(p/'test.c'),'-o',str(p/'test')],capture_output=True,text=True)
+   p=Path(d);exe=p/('test.exe' if os.name=='nt' else 'test');(p/'test.c').write_text(code)
+   result=subprocess.run([cc,'-std=c11','-O1','-pthread',*sanitizer,str(p/'test.c'),'-o',str(exe)],capture_output=True,text=True)
    self.assertEqual(result.returncode,0,result.stdout+result.stderr)
-   result=subprocess.run([str(p/'test')],capture_output=True,text=True);self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+   result=subprocess.run([str(exe)],capture_output=True,text=True);self.assertEqual(result.returncode,0,result.stdout+result.stderr)
  def test_persisted_enabled_keys_respect_current_device(self):
   source=unit(W/'nxnative/dm/android/gfx_vk_exec.c')
   a=source.index('static void *prewarm_thread(');b=source.index('\n}',a)+2
@@ -82,11 +84,12 @@ int main(void){
  prewarm_thread(NULL);assert(built==2 && looked==2);
 }
 '''
-  cc=shutil.which('clang')
-  if not cc:self.skipTest('clang required')
+  cc=shutil.which('cc')
+  if not cc:self.skipTest('host C compiler required')
+  sanitizer=['-fsanitize=address,undefined'] if host_cc.asan_ubsan_runs(cc) else []
   with tempfile.TemporaryDirectory() as d:
-   p=Path(d);(p/'test.c').write_text(code)
-   result=subprocess.run([cc,'-std=c11','-O1','-fsanitize=address,undefined',str(p/'test.c'),'-o',str(p/'test')],capture_output=True,text=True)
+   p=Path(d);exe=p/('test.exe' if os.name=='nt' else 'test');(p/'test.c').write_text(code)
+   result=subprocess.run([cc,'-std=c11','-O1','-pthread',*sanitizer,str(p/'test.c'),'-o',str(exe)],capture_output=True,text=True)
    self.assertEqual(result.returncode,0,result.stdout+result.stderr)
-   result=subprocess.run([str(p/'test')],capture_output=True,text=True);self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+   result=subprocess.run([str(exe)],capture_output=True,text=True);self.assertEqual(result.returncode,0,result.stdout+result.stderr)
 if __name__=='__main__':unittest.main()
