@@ -80,6 +80,12 @@ static void vkCmdBlitImage(VkCommandBuffer cb,VkImage s,VkImageLayout sl,VkImage
 }
 static void vkCmdClearColorImage(VkCommandBuffer cb,VkImage im,VkImageLayout l,const VkClearColorValue *v,uint32_t n,const VkImageSubresourceRange *r) {(void)cb;(void)im;(void)l;(void)r;assert(n==1);last_clear=*v;}
 static void vkCmdClearDepthStencilImage(VkCommandBuffer cb,VkImage im,VkImageLayout l,const VkClearDepthStencilValue *v,uint32_t n,const VkImageSubresourceRange *r) {(void)cb;(void)im;(void)l;(void)v;(void)n;(void)r;abort();}
+// t2t_lin_back's copy-back is off by default (DM_VK_LIN_COPY_BACK unset), so these are never reached
+#define VKLOG(...) abort()
+static int vk_buf_at(uint64_t a,uint64_t n,VkBuffer *b,VkDeviceSize *o) {(void)a;(void)n;(void)b;(void)o;abort();}
+static void vk_readback_unknown(void) {abort();}
+void vk_gpu_wrote(uint64_t a,uint64_t n) {(void)a;(void)n;abort();}
+static void vkCmdCopyImageToBuffer(VkCommandBuffer cb,VkImage im,VkImageLayout l,VkBuffer b,uint32_t n,const VkBufferImageCopy *r) {(void)cb;(void)im;(void)l;(void)b;(void)n;(void)r;abort();}
 /* FUNCTIONS */
 static p_copy_t2t setup(int fmt,VkFormat sf,VkFormat df) {
     src=(tex_t){.d={.format=fmt}};dst=src;nimages=2;copies=blits=resolves=retired=barriers=same_image=red_calls=0;fail_alloc=dedicated=direct_allocs=pool_calls=pooled_retired=direct_retired=destroyed=0;bound_offset=0;create_calls=0;fail_n=1;
