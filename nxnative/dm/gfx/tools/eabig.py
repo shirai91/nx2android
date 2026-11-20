@@ -30,6 +30,7 @@ def members(f):
 def cbc(key, data):
     """AES-128 CBC over the shared platform AES implementation (no padding removal)."""
     if len(data) % 16: raise ValueError('unaligned EASF ciphertext')
+    data = bytes(data)   # CommonCrypto's ctypes binding needs bytes, including for slices of bytearrays
     raw = uepak.aes_decrypt(key, data); prev = key + data[:-16]
     return bytes(a ^ b for a, b in zip(raw, prev))
 
