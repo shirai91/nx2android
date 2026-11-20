@@ -323,5 +323,3 @@ static VkPipeline build_pipeline(const pkey *k, VkPipelineLayout layout, vkshade
     return p;   // (VkPipeline)1 = failed
 }
 
-
-/* NX2A_SECTION gfx_vk_exec_descriptors.inc */

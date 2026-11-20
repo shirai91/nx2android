@@ -185,5 +185,3 @@ static void x_read(void) { cpu_ready_config(); { const char *e = getenv("DM_VK_D
     g_x_nskipvs = 0; for (const char *q = getenv("DM_VK_X_SKIPVS"); q && *q && g_x_nskipvs < 8;) { char *n; uint64_t v = strtoull(q, &n, 16); if (n == q) break; if (v) g_x_skipvs[g_x_nskipvs++] = v; q = *n ? n + 1 : n;  }
     g_x_nskipfs = 0; for (const char *q = getenv("DM_VK_X_SKIPFS"); q && *q && g_x_nskipfs < 16;) { char *n; uint64_t v = strtoull(q, &n, 16); if (n == q) break; if (v) g_x_skipfs[g_x_nskipfs++] = v; q = *n ? n + 1 : n; }
     g_x_cutfs = (e = getenv("DM_VK_X_CUTFS")) ? strtoull(e, NULL, 16) : 0; }
-
-/* NX2A_SECTION gfx_vk_exec_render_cond.inc */

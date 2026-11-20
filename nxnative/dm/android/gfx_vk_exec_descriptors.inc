@@ -732,5 +732,3 @@ static VkDescriptorSet stage_set(int st, vkshader_t *s, uint32_t *dofs, VkDescri
     return set;
 }
 
-
-/* NX2A_SECTION gfx_vk_exec_draws.inc */
