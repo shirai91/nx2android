@@ -207,7 +207,10 @@ static GLint sized_for_type(int ch, GLenum type) {   // the sized format with ch
     if (type == 0x1406) return ch == 1 ? 0x822E : ch == 2 ? 0x8230 : ch == 3 ? 0x8815 : 0x8814;   // R32F, RG32F, RGB32F, RGBA32F
     return sized_for_channels(ch);
 }
+#define GL_LEGACY_FMT(f) ((f) == 0x1906 || (f) == 0x1909 || (f) == 0x190A)
 static GLint ifmt_ok(GLint ifmt, GLenum fmt, GLenum type) {
+    // A legacy unsized format with GL_UNSIGNED_BYTE is valid ES 3, and glTexImage3D has no conversion after this: pass the game's value through there
+    if (GL_LEGACY_FMT(fmt)) return ifmt ? ifmt : (GLint)fmt;
     int fch = fmt_channels(fmt);
     if (ifmt != 0) {
         // A non-zero unsized internalformat: as the game asked, except for the 8-bit / float types, where the sized format that matches format's channels
@@ -227,10 +230,9 @@ static GLint ifmt_ok(GLint ifmt, GLenum fmt, GLenum type) {
     return sized_for_channels(ch);
 }
 // GL_ALPHA / GL_LUMINANCE / GL_LUMINANCE_ALPHA uploads are converted to RGBA8 because glTexStorage2D needs a sized format and a texture stored as RGBA8 cannot
-// later be uploaded with GL_ALPHA / GL_LUMINANCE through glTexSubImage2D. Pass-through works on the Adreno 730 (DM_GL_LEGACY_PASS=1); the conversion is kept for
+// later be uploaded with GL_ALPHA / GL_LUMINANCE through glTexSubImage2D. Pass-through (internalformat = format) works on the Adreno 730; the conversion is kept for
 // that storage / sub-upload contract, not because the driver rejects these formats. Converted with the desktop sampling semantics (alpha → 0,0,0,a;
 // luminance → v,v,v,255; luminance-alpha → v,v,v,a).
-#define GL_LEGACY_FMT(f) ((f) == 0x1906 || (f) == 0x1909 || (f) == 0x190A)
 // One legacy image converted to RGBA8. The source is read with the game's unpack state: a bound GL_PIXEL_UNPACK_BUFFER is mapped at the pointer's offset (a NULL
 // pointer is offset 0, a valid source), and the rows carry the GL_UNPACK_ALIGNMENT padding and the ROW_LENGTH / SKIP_ROWS / SKIP_PIXELS the game set. Returns a
 // tightly packed buffer, or NULL when there is no data or the map/malloc failed (the caller then passes the game's own internalformat and pointer through)
