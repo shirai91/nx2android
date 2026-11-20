@@ -3,7 +3,22 @@
 // or the right edge: a thumb reaches as far from the edge on any width) and y of the window's height down; its size is in window heights (round controls stay round)
 #pragma once
 #include <math.h>
+#include <stdlib.h>
+#include <sys/system_properties.h>
 #include "dm_input.h"
+// The overlay's words follow the device's language (Chinese when the system locale says zh, English otherwise), and DM_UI_LANG=zh / en (an env.txt row) overrides
+// it — the pause menu, the layout editor and the save picker all read this one switch, and each of their strings sits beside its use as an English/Chinese table or
+// a TR() pair.
+static inline int dm_ui_zh(void) {
+    static int v = -1;
+    if (v < 0) {
+        const char *e = getenv("DM_UI_LANG");
+        if (e && *e) v = e[0] == 'z' || e[0] == 'Z' || e[0] == 'c' || e[0] == 'C' || e[0] == '1';
+        else { char loc[PROP_VALUE_MAX] = ""; if (!__system_property_get("persist.sys.locale", loc) || !loc[0]) __system_property_get("ro.product.locale", loc); v = loc[0] == 'z' && loc[1] == 'h'; }
+    }
+    return v;
+}
+#define TR(en, zh) (dm_ui_zh() ? (zh) : (en))
 enum { OV_STICK_L, OV_STICK_R, OV_BUTTON, OV_DPAD, OV_MENU };   // OV_MENU: the menu button (shown with the gamepad on or off, 70%; env.txt DM_MENU_BUTTON=0 leaves it out): pauses the game and opens the settings
 typedef struct { int kind; float ax, x, y, w, h; uint64_t btn; const char *label, *name; } ov_ctl;   // ax: the anchor, as a fraction of the window's width; name: the table's
 // The layouts: dm/android/overlay_default.tsv with the game profile's moves (android.tsv overlay rows), compiled by build.py into android_profile.h. Both list the
@@ -28,8 +43,8 @@ int dm_overlay_layout(void);   // front_android.c: 0 the tablet's, 1 the phone's
 #define OV_KNOB 0.42f        // a stick's knob radius, of the stick's (the theme-less drawing)
 #define OV_MENU_ALPHA 0.70f
 #define OV_FLASH_NS 180000000ll   // a pressed button's flash fades to its held glow in this time
-// front_android.c → gfx_vk_present.c: what to draw (0 nothing; 1 the gamepad; 2 only the menu button). Show gamepad decides between 1 and 2 even with a
-// controller attached. Where a stick's knob is (its offset from the stick's centre
+// front_android.c → gfx_vk_present.c: what to draw (0 nothing; 1 the gamepad; 2 only the menu button; 3 only the menu button, the rest of the screen the game's,
+// which is touch passthrough 触屏操作). Show gamepad decides between 1 and 2 even with a controller attached. Where a stick's knob is (its offset from the stick's centre
 // in stick radii, -1..1), and when each control was pressed (0 = not held; for the d-pad, its four directions by DM_BTN_* bit; a stick: while a finger holds it)
 int dm_overlay_visible(void);
 void dm_overlay_knob(int stick, float *dx, float *dy);
@@ -162,13 +177,16 @@ void dm_overlay_theme_done(const ov_theme *t);   // the pixels are on the GPU: t
 
 // ---- the pause menu: a panel in the middle of the window: a row of tabs, the open tab's rows, and Resume. Everything is placed in a panel rectangle p
 // (x, y, width, height: the window's for touches, the raster's for drawing), so the touches and the drawing agree ----
-enum { OVM_OVERLAY, OVM_OPACITY, OVM_EDIT, OVM_RUMBLE, OVM_FPS, OVM_MODE, OVM_EXPORT, OVM_IMPORT, OVM_PAD, OVM_AUDIO, OVM_RESUME, OVM_TAB, OVM_N };   // OVM_TAB: the tabs' row;
+enum { OVM_OVERLAY, OVM_OPACITY, OVM_EDIT, OVM_RUMBLE, OVM_FPS, OVM_MODE, OVM_EXPORT, OVM_IMPORT, OVM_PAD, OVM_AUDIO, OVM_TOUCH, OVM_RESUME, OVM_TAB, OVM_N };   // OVM_TAB: the tabs' row;
             // OVM_EDIT: the layout editor; OVM_MODE: handheld (performance) or docked (resolution); OVM_EXPORT, OVM_IMPORT: the save manager (saves_android.c);
-            // OVM_PAD: a controller's face buttons by their position or by their label (front_android.c pad_labels)
+            // OVM_PAD: a controller's face buttons by their position or by their label (front_android.c pad_labels); OVM_TOUCH: every touch is the game's own touch
+            // screen and the gamepad is not drawn (front_android.c g_set_touch, settings.txt touch=)
 #define OVM_TABS 2
-#define OVM_PER_TAB 5
-static const int OVM_TAB_ITEMS[OVM_TABS][OVM_PER_TAB] = {{OVM_OVERLAY, OVM_OPACITY, OVM_EDIT, OVM_RUMBLE, OVM_PAD}, {OVM_FPS, OVM_MODE, OVM_EXPORT, OVM_IMPORT, OVM_AUDIO}};
-static const char *const OVM_TAB_NAMES[OVM_TABS] = {"Gamepad", "Game"};
+#define OVM_PER_TAB 6
+static const int OVM_TAB_ITEMS[OVM_TABS][OVM_PER_TAB] = {{OVM_OVERLAY, OVM_OPACITY, OVM_EDIT, OVM_RUMBLE, OVM_TOUCH, OVM_PAD}, {OVM_FPS, OVM_MODE, OVM_EXPORT, OVM_IMPORT, OVM_AUDIO, -1}};   // -1: a tab with fewer rows leaves its row empty
+static const char *const OVM_TAB_NAMES_EN[OVM_TABS] = {"Pad", "Game"};
+static const char *const OVM_TAB_NAMES_ZH[OVM_TABS] = {"手柄", "游戏"};
+#define OVM_TAB_NAMES (dm_ui_zh() ? OVM_TAB_NAMES_ZH : OVM_TAB_NAMES_EN)
 #define OVM_ROWS (OVM_PER_TAB + 2)   // the tabs, a tab's rows (as many for every tab: the panel keeps its size), Resume
 int dm_menu_audio_available(void);
 static inline int ov_menu_item(int tab, int row) {

@@ -45,7 +45,10 @@ static int32_t clampi(float v, int hi) { int32_t r = (int32_t)(v * (float)(hi + 
 // the screen column and y the screen row less 360 (from -360 up: Unity converts the int signed). The Switch never shows this: its screen cannot be touched when docked.
 // DM_TOUCH_DOCKED=pixels: the screen pixel as it is, top-down (x column, y row of 1920x1080): Football Manager 26 Touch's Unity player maps the panel's values onto its 1920x1080
 // docked screen unscaled, so a tap at 31% across and 55% down pressed the tile at 20% / 36% (Start New Career for Manager Profiles)
-static int touch_docked_mode(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_TOUCH_DOCKED"); v = !e ? 0 : !strcmp(e, "screen") ? 1 : !strcmp(e, "pixels") ? 2 : 0; } return dm_opmode() == 1 ? v : 0; }
+// (no DM_TOUCH_DOCKED: the front end's touch passthrough asks for it — an Android screen can be touched while the game plays docked, and this game reads the touch as the
+// console screen's pixels; a port whose player wants the panel coordinates in console mode (Unity) sets DM_TOUCH_DOCKED=screen in its env)
+__attribute__((weak)) int dm_touch_passthrough(void) { return 0; }
+static int touch_docked_mode(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_TOUCH_DOCKED"); v = !e ? (dm_touch_passthrough() ? 2 : 0) : !strcmp(e, "screen") ? 1 : !strcmp(e, "pixels") ? 2 : 0; } return dm_opmode() == 1 ? v : 0; }
 static void touch_xy(float nx, float ny, int32_t *x, int32_t *y) {
     int m = touch_docked_mode();
     if (!m) { *x = clampi(nx, 1279); *y = clampi(ny, 719); return; }

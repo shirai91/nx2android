@@ -193,7 +193,8 @@ public class ExternalActivity extends NativeActivity implements ExternalDisplay.
             for (int pass = 0; pass < 2; pass++) for (OverlayTheme.Sprite s : theme.sprites) {
                 int ctl = control(s.control); if (ctl < 0) continue;
                 int visible = edit ? 1 : (int)data[4 + names.length * 9];
-                if (visible == 0 || (visible == 2 && ctl != names.length - 1)) continue;
+                // 0: nothing; 1: the gamepad; 2 (Show gamepad off) and 3 (touch passthrough): the menu button alone, the rest of the screen the game's
+                if (visible == 0 || (visible != 1 && ctl != names.length - 1)) continue;
                 boolean decor = s.state.equals("decor"); if (decor != (pass == 0)) continue;
                 int base = 4 + ctl * 9, kind = (int)data[base], held = (int)data[base + 5];
                 if (kind < 0) continue;   // hidden by the player in the layout editor

@@ -77,6 +77,7 @@ void dm_focus_set(int st); void dm_audio_suspend(int on); void guest_clock_freez
 // ---- settings (the pause menu's), kept in the files folder as KEY=VALUE lines ----
 static char g_root[512];
 static _Atomic int g_set_overlay = 1, g_set_rumble = 1, g_set_fps;   // the gamepad shown; rumble and tap vibration; the frame rate counter (top left)
+static _Atomic int g_set_touch;   // touch passthrough: every touch is the game's own touch screen and the gamepad is not drawn (the menu's Touch input row, settings.txt touch=)
 static _Atomic int g_set_opacity = 60;   // the gamepad's opacity, percent (OV_OPACITY_MIN..MAX: the menu's Opacity slider)
 static _Atomic int g_set_grid;   // the layout editor's Snap to grid
 // the menu button in play (issue #397): env.txt's DM_MENU_BUTTON=0 (porter port --no-menu-button) leaves it out, as a control the player hid (dm_overlay_hidden):
@@ -93,8 +94,10 @@ static int ctl_named(const char *n) { for (int i = 0; i < OV_N; i++) if (!strcmp
 int dm_opmode(void); void dm_set_opmode(int m);   // hle_oe.c: 0 handheld, 1 docked; a change reaches the game as the Switch's operation mode notification
 static void settings_load(void) {
     char p[600]; snprintf(p, sizeof p, "%s/settings.txt", g_root); FILE *f = fopen(p, "r"); char line[128];
+    { const char *e = getenv("DM_TOUCH"); atomic_store(&g_set_touch, e && *e && strcmp(e, "0")); }   // env.txt's until settings.txt says (a port without touch= keeps it)
     if (!f) return;
     while (fgets(line, sizeof line, f)) { int v; if (sscanf(line, "overlay=%d", &v) == 1) atomic_store(&g_set_overlay, v != 0); else if (sscanf(line, "rumble=%d", &v) == 1) atomic_store(&g_set_rumble, v != 0);
+        else if (sscanf(line, "touch=%d", &v) == 1) atomic_store(&g_set_touch, v != 0);
         else if (sscanf(line, "fps=%d", &v) == 1) atomic_store(&g_set_fps, v != 0);
         else if (sscanf(line, "docked=%d", &v) == 1) setenv("DM_OPMODE", v ? "1" : "0", 1);   // over env.txt's: the host reads it once, at its first query
         else if (sscanf(line, "opacity=%d", &v) == 1) atomic_store(&g_set_opacity, v < OV_OPACITY_MIN ? OV_OPACITY_MIN : v > OV_OPACITY_MAX ? OV_OPACITY_MAX : v);
@@ -119,6 +122,7 @@ static void settings_save(void) {
     fprintf(f, "overlay=%d\nrumble=%d\ndocked=%d\nfps=%d\nopacity=%d\ngrid=%d\n", atomic_load(&g_set_overlay), atomic_load(&g_set_rumble), dm_opmode() != 0, atomic_load(&g_set_fps),
             atomic_load(&g_set_opacity), atomic_load(&g_set_grid));
     if (atomic_load(&g_set_labels) >= 0) fprintf(f, "labels=%d\n", atomic_load(&g_set_labels));   // (only once the player chose: until then env.txt decides)
+    fprintf(f, "touch=%d\n", atomic_load(&g_set_touch));
     for (int l = 0; l < 2; l++) for (int i = 0; i < OV_N; i++) {
         _Atomic int *c = g_cust[0][l][i]; int x = atomic_load(&c[0]), y = atomic_load(&c[1]), z = atomic_load(&c[2]), hid = atomic_load(&c[3]);
         if ((x && y) || z || hid) fprintf(f, "ui=%s,%s,%d,%d,%d,%d\n", LAYOUT_NAMES[l], OV_LAYOUTS[0][i].name, x && y ? x - 1 : -1, x && y ? y - 1 : -1, z ? z : 1000, hid);
@@ -378,7 +382,10 @@ static _Atomic int64_t g_press_t[16], g_menu_t, g_stick_t[2];   // when each ove
 static _Atomic uint64_t g_touch_btn;   // the overlay buttons held, cleared by the menu or keyboard
 static int64_t mono_ns(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec; }
 // A system input device can report itself as an active controller (issues #22, #210). The saved choice must still work, and the menu must stay reachable.
-int dm_overlay_visible(void) { return atomic_load(&g_set_overlay) && atomic_load(&g_overlay) ? 1 : 2; }
+// Touch passthrough (g_set_touch): 3 draws the menu button alone, with no other control drawn or answering a touch, so every other finger is the game's touch
+// screen. The menu button stays: it is the way back to the pause menu, and to turning touch mode off again (Back and a controller's Menu key open the menu too,
+// handle_event). g_overlay stays as it was: turning it off shows the gamepad as it would have been
+int dm_overlay_visible(void) { return atomic_load(&g_set_touch) ? 3 : atomic_load(&g_set_overlay) && atomic_load(&g_overlay) ? 1 : 2; }
 int dm_overlay_layout(void) {   // the phone's layout in a window at least OV_PHONE_ASPECT wide for its height (overlay_layout.h)
     static int last_w = -1, last_h = -1, phone;
     ANativeWindow *w = phone_window(); int ww = w ? ANativeWindow_getWidth(w) : 0, wh = w ? ANativeWindow_getHeight(w) : 0;
@@ -447,9 +454,9 @@ static int g_ptr_ctl[32];   // pointer id → control index + 1 (0 = the touch s
 static float g_ptr_origin[32][2];
 static int ctl_at(float x, float y, float W, float H) {   // the control under (x, y) in pixels, -1 if none (in the layout editor: every control, shown or not)
     int best = -1, vis = atomic_load(&g_edit) ? 1 : dm_overlay_visible(), shown = vis == 1; float bd = 1e9f;
-    if (!vis) return -1;   // no overlay: every touch is the game's
+    if (!vis) return -1;   // no overlay at all (dm_overlay_visible's weak default without a front end): every touch is the game's
     for (int i = 0; i < OV_N; i++) {
-        const ov_ctl *c = &OV_CTLS[i]; if (!shown && c->kind != OV_MENU) continue;   // hidden: only the menu button answers
+        const ov_ctl *c = &OV_CTLS[i]; if (!shown && c->kind != OV_MENU) continue;   // 2 and touch passthrough (3): only the menu button answers, the rest is the game's
         if (ov_off(c)) continue;   // hidden by the player in the layout editor
         float b[4]; ov_box(c, W, H, b);
         float d = ov_sdf(c, b, x - b[0], y - b[1]), reach = ov_reach(c, b, H), m = fminf(b[2], b[3]);
@@ -593,8 +600,10 @@ int dm_menu_state(void) {
     if (atomic_load(&g_edit)) return OVE_ST | atomic_load(&g_ed_st);
     if (atomic_load(&g_sp_on)) return OVS_ST | (atomic_load(&g_sp_hi) + 1) << 4 | (atomic_load(&g_sp_ver) & 255) << 20;
     return atomic_load(&g_set_overlay) | atomic_load(&g_set_rumble) << 1 | (dm_opmode() != 0) << 2 | atomic_load(&g_set_fps) << 3 | (atomic_load(&g_menu_hi) + 1) << 4 |
-           atomic_load(&g_menu_tab) << 8 | atomic_load(&g_set_opacity) << 9 | atomic_load(&g_sv_st) << 20 | (atomic_load(&g_sv_n) & 15) << 24 | pad_labels() << 28;
+           atomic_load(&g_menu_tab) << 8 | atomic_load(&g_set_opacity) << 9 | atomic_load(&g_sv_st) << 20 | (atomic_load(&g_sv_n) & 15) << 24 | pad_labels() << 28 |
+           atomic_load(&g_set_touch) << 29;
 }
+int dm_touch_passthrough(void) { return atomic_load(&g_set_touch) != 0; }   // hle_touch.c: docked play gets the game's touch screen too (no DM_TOUCH_DOCKED needed)
 int dm_overlay_fps(void) { return atomic_load(&g_set_fps) && !atomic_load(&g_menu); }   // gfx_vk_present.c draws the counter (not while the menu holds the game)
 static void menu_open(int hi) {
     if (!atomic_load(&g_running) || atomic_exchange(&g_menu, 1)) return;
@@ -616,8 +625,9 @@ static void menu_close(void) {
     if (!atomic_exchange(&g_menu, 0)) return;
     g_menu_ptr = -1; atomic_store(&g_menu_t, 0);
     hold_sync(); dm_haptics_suspend(4, 0); dm_overlay_redraw();
-    LOG("[menu] closed: the game goes on (gamepad %s, opacity %d%%, rumble %s, face buttons by %s, frame rate %s, %s)", atomic_load(&g_set_overlay) ? "on" : "off", atomic_load(&g_set_opacity),
-        atomic_load(&g_set_rumble) ? "on" : "off", pad_labels() ? "label" : "position", atomic_load(&g_set_fps) ? "shown" : "hidden", dm_opmode() ? "docked" : "handheld");
+    LOG("[menu] closed: the game goes on (gamepad %s, opacity %d%%, rumble %s, face buttons by %s, frame rate %s, %s, %s)", atomic_load(&g_set_overlay) ? "on" : "off", atomic_load(&g_set_opacity),
+        atomic_load(&g_set_rumble) ? "on" : "off", pad_labels() ? "label" : "position", atomic_load(&g_set_fps) ? "shown" : "hidden", dm_opmode() ? "docked" : "handheld",
+        atomic_load(&g_set_touch) ? "touch passthrough: the game's touch screen" : "touch input: the gamepad");
 }
 static void menu_opacity(int v) {   // the slider: a new value is drawn at once and saved when the finger lifts (menu_touch) or with each controller step
     v = v < OV_OPACITY_MIN ? OV_OPACITY_MIN : v > OV_OPACITY_MAX ? OV_OPACITY_MAX : v;
@@ -637,11 +647,13 @@ static void menu_audio(void) {
     if (attached) (*g_act->vm)->DetachCurrentThread(g_act->vm);
 }
 static void menu_do(int item) {
-    if (item == OVM_OVERLAY) { atomic_store(&g_set_overlay, !atomic_load(&g_set_overlay)); atomic_store(&g_overlay, 1); settings_save(); }
+    if (item == OVM_OVERLAY) { int on = !atomic_load(&g_set_overlay); atomic_store(&g_set_overlay, on); if (on) atomic_store(&g_set_touch, 0); atomic_store(&g_overlay, 1); settings_save(); }   // 显示手柄 on leaves touch mode: the gamepad and 触屏操作 are exclusive
     else if (item == OVM_RUMBLE) { int on = !atomic_load(&g_set_rumble); atomic_store(&g_set_rumble, on); dm_haptics_android_set(on); settings_save(); }
     else if (item == OVM_FPS) { atomic_store(&g_set_fps, !atomic_load(&g_set_fps)); settings_save(); }
     else if (item == OVM_MODE) { dm_set_opmode(dm_opmode() ? 0 : 1); settings_save(); }   // the game takes it when it goes on
     else if (item == OVM_PAD) { atomic_store(&g_set_labels, !pad_labels()); settings_save(); }   // at once (pad_labels)
+    else if (item == OVM_TOUCH) { int on = !atomic_load(&g_set_touch);   // Touch input and Gamepad are the two input modes: one on turns the other off (dm_overlay_visible 3 hides the gamepad)
+        atomic_store(&g_set_touch, on); atomic_store(&g_set_overlay, !on); atomic_store(&g_overlay, 1); settings_save(); }
     else if (item == OVM_TAB) { menu_tab(atomic_load(&g_menu_tab) + 1); return; }
     else if (item == OVM_EDIT) { dm_haptics_android_tap(); ed_open(); return; }
     else if (item == OVM_OPACITY) return;   // (the slider is dragged, or stepped with left and right)
@@ -1029,6 +1041,16 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
 }
 
 __attribute__((weak)) void dm_picture_rect(float r[4]);   // gfx_vk_present.c
+static void touch_log(const dm_touch *t, int n) {   // DM_TOUCH_LOG=1: a line per touch set the game gets, at most about two a second (a finger drag does not flood log.txt)
+    static int on = -1, skipped; static int64_t last;
+    if (on < 0) { const char *e = getenv("DM_TOUCH_LOG"); on = e && strcmp(e, "1") == 0; }   // off unless DM_TOUCH_LOG=1
+    if (!on) return;
+    int64_t now = mono_ns();
+    if (now - last < 500000000ll) { skipped++; return; }   // (the sets in between are counted, not printed)
+    last = now;
+    if (skipped) { LOG("[touch] n=%d id=%u x=%.3f y=%.3f (+%d)", n, n ? t[0].id : 0u, n ? t[0].x : 0.0f, n ? t[0].y : 0.0f, skipped); skipped = 0; }
+    else LOG("[touch] n=%d id=%u x=%.3f y=%.3f", n, n ? t[0].id : 0u, n ? t[0].x : 0.0f, n ? t[0].y : 0.0f);
+}
 static void touch_event(AInputEvent *e) {
     ANativeWindow *w = phone_window(); float W = w ? (float)ANativeWindow_getWidth(w) : 1, H = w ? (float)ANativeWindow_getHeight(w) : 1;
     if (atomic_load(&g_tx_on)) { tx_touch(e, W, H); return; }   // the text entry's keys
@@ -1041,11 +1063,14 @@ static void touch_event(AInputEvent *e) {
         g_ptr_ctl[id] = c + 1;
         g_ptr_origin[id][0] = AMotionEvent_getX(e, (size_t)i); g_ptr_origin[id][1] = AMotionEvent_getY(e, (size_t)i);
         if (c >= 0 && OV_CTLS[c].kind == OV_MENU) { atomic_store(&g_menu_t, mono_ns()); dm_haptics_android_tap(); menu_grab(id, &OV_CTLS[c], AMotionEvent_getX(e, (size_t)i), AMotionEvent_getY(e, (size_t)i), W, H); }
-        if (!atomic_exchange(&g_overlay, 1) && !atomic_load(&g_pads)) dm_haptics_android_device(-1);   // keep vibration on a used controller that is still attached
+        // keep vibration on a used controller that is still attached (a touch does not bring the gamepad back in touch passthrough: nothing of it answers)
+        if (!atomic_load(&g_set_touch) && !atomic_exchange(&g_overlay, 1) && !atomic_load(&g_pads)) dm_haptics_android_device(-1);
     }
     uint64_t btn = 0; int32_t lx = 0, ly = 0, rx = 0, ry = 0; float kn[2][2] = {{0, 0}, {0, 0}}; int open = 0, held[2] = {0, 0};
     dm_touch t[16]; int n = 0;
-    float pic[4] = {0, 0, 1, 1}; if (dm_picture_rect) dm_picture_rect(pic); if (pic[2] <= 0 || pic[3] <= 0) pic[2] = pic[3] = 1;   // gfx_vk_present.c: the picture inside the window
+    float pic[4] = {0, 0, 1, 1}; if (dm_picture_rect) dm_picture_rect(pic);   // gfx_vk_present.c: the picture inside the window
+    // a stale or impossible rect (a mode switch mid-frame, a surface that had no size yet) turned every touch into a corner: the whole window is the picture then
+    if (pic[2] < 0.05f || pic[3] < 0.05f || pic[2] > 4 || pic[3] > 4 || pic[0] < -1 || pic[1] < -1) { pic[0] = pic[1] = 0; pic[2] = pic[3] = 1; }
     for (size_t i = 0; i < pc; i++) {
         int id = AMotionEvent_getPointerId(e, i) & 31;
         int lifted = act == AMOTION_EVENT_ACTION_UP || act == AMOTION_EVENT_ACTION_CANCEL || (act == AMOTION_EVENT_ACTION_POINTER_UP && (int)i == ai);
@@ -1060,7 +1085,9 @@ static void touch_event(AInputEvent *e) {
             }
             g_ptr_ctl[id] = 0; continue;
         }
-        if (c < 0) { if (n < 16) { t[n].id = (uint32_t)id & 15; t[n].x = (x / W - pic[0]) / pic[2]; t[n].y = (y / H - pic[1]) / pic[3]; n++; } continue; }   // relative to the game's picture
+        if (c < 0) { if (n < 16) { t[n].id = (uint32_t)id & 15; t[n].x = (x / W - pic[0]) / pic[2]; t[n].y = (y / H - pic[1]) / pic[3];
+                if (!(t[n].x >= 0)) t[n].x = 0; else if (t[n].x > 1) t[n].x = 1;   // a finger outside the picture stays at its edge (the panel is clamped anyway)
+                if (!(t[n].y >= 0)) t[n].y = 0; else if (t[n].y > 1) t[n].y = 1; n++; } continue; }   // relative to the game's picture
         const ov_ctl *k = &OV_CTLS[c];
         if (k->kind == OV_MENU) { if (id == g_drag.id) menu_drag(k, x, y, W, H); continue; }
         float b[4]; ov_box(k, W, H, b);
@@ -1087,6 +1114,7 @@ static void touch_event(AInputEvent *e) {
     for (int s = 0; s < 2; s++) if (!held[s]) atomic_store(&g_stick_t[s], 0); else if (!atomic_load(&g_stick_t[s])) atomic_store(&g_stick_t[s], now);
     dm_input_set(btn, lx, ly, rx, ry);
     dm_touch_set(t, n);
+    touch_log(t, n);
     if (open) menu_open(-1);
 }
 static void pad_mark_used(int32_t device, int p) {   // p: the player its input goes to (pad_player)
