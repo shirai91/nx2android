@@ -136,6 +136,16 @@ SPS VUI. Without a colour description with a specified matrix it uses BT.709 at 
 BT.601 below. Without a video signal type it uses limited range. Malformed or
 unsupported SPS data uses both defaults.
 
+Android shader export lowers supported fixed-size compute collectives to logical
+32-lane Maxwell warps using workgroup shared storage. The existing convergence,
+operand and shared-memory limits remain enforced; unsupported modules retain
+their native path. Conditional exchange lifting additionally needs the selected
+NDK optimizer and register-only movable operations. At the unchanged default
+translator subgroup size of 128, the known predicated fixtures with a lane-ID load
+inside the conditional arm remain unsupported. The exporter fingerprints the
+optimizer and all four warp helpers. Graphics-stage lowering and a general
+fallback for unsupported native subgroup operations are outside this path.
+
 Stopping a started guest AudioOut returns all pending buffers in queue order,
 including any partly played buffer, and wakes the guest's release event even if
 the pending queue is empty. Capacity covers all buffers accepted and yet to be
