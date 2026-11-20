@@ -310,6 +310,8 @@ static void clear_tex(const p_clear_tex *c) {
         clear_tex_compressed(im, storage, c, lv, (uint32_t)first, count, w, h);
         return;
     }
+    int srgb_backing = (f->vk == VK_FORMAT_R8G8B8A8_SRGB && im->fmt == VK_FORMAT_R8G8B8A8_UNORM) ||
+                       (f->vk == VK_FORMAT_B8G8R8A8_SRGB && im->fmt == VK_FORMAT_B8G8R8A8_UNORM);
     unsigned type = f->is_int ? (f->is_sint ? 2 : 1) : 0;
     VkClearColorValue value = clear_tex_value(c, type);
     VkCommandBuffer cb = vk_cmd(); vk_tex_prepare(cb, im); vk_img_barrier_all(cb);
@@ -317,7 +319,7 @@ static void clear_tex(const p_clear_tex *c) {
     int whole = rect.extent.width == w && rect.extent.height == h &&
         (mask == 15 || !(im->aspect & VK_IMAGE_ASPECT_COLOR_BIT)) && (!volume || count == layers);
     // Vulkan whole-image clears also support multisampled images.
-    if (whole && (f->vk == im->fmt || im->samples > 1)) goto whole_clear;
+    if (whole && (f->vk == im->fmt || srgb_backing || im->samples > 1)) goto whole_clear;
     // Keep the old whole-subresource result when the region path cannot run.
     if (im->target == NVN_TEXTURE_TARGET_1D || im->target == NVN_TEXTURE_TARGET_1D_ARRAY) {
         VKRED_ONCE(71, "texture region clear of a 1D image: clearing whole subresource"); goto whole_clear;
@@ -349,6 +351,11 @@ whole_clear:;
     if (im->aspect & VK_IMAGE_ASPECT_COLOR_BIT) {
         // A transfer uses the image's actual format, including after a rejected view.
         value = clear_tex_value(c, storage->is_int ? (storage->is_sint ? 2 : 1) : 0);
+        // ClearColorImage encodes only an sRGB image; family backing is UNORM.
+        if (srgb_backing) for (int i = 0; i < 3; i++) {
+            float x = fminf(fmaxf(value.float32[i], 0.0f), 1.0f);
+            value.float32[i] = x <= 0.0031308f ? 12.92f * x : 1.055f * powf(x, 1.0f / 2.4f) - 0.055f;
+        }
         vkCmdClearColorImage(cb, im->img, VK_IMAGE_LAYOUT_GENERAL, &value, 1, &range);
     } else { VkClearDepthStencilValue ds = {c->c.f[0],c->c.u[1]}; vkCmdClearDepthStencilImage(cb, im->img, VK_IMAGE_LAYOUT_GENERAL, &ds, 1, &range); }
     vk_img_barrier_all(cb);
