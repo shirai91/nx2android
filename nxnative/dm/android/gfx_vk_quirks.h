@@ -14,8 +14,9 @@ enum vk_quirk {
 
 typedef struct {
     uint32_t vendor, device, version, api;   // VkPhysicalDeviceProperties
-    int driver;                              // VkDriverId, 0 when the device does not say (Vulkan 1.1 without VK_KHR_driver_properties)
+    int driver;                              // VkDriverId, 0 when the device does not say (Vulkan 1.1 without VK_KHR_driver_properties); Turnip also by its name (below)
     char name[64];                           // the driver's own name ("Qualcomm Technologies Inc. Adreno Vulkan Driver", "turnip Mesa driver")
+    char info[64];                           // the driver's driverInfo ("Mesa 27.0.0-devel (git-2648b2059f)": Turnip's release), empty when it has none
 } vk_gpu;
 
 extern unsigned char g_vk_quirks[VQ_COUNT];
