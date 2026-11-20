@@ -1,5 +1,9 @@
 """Bounds checks for sparse Vulkan buffer bindings and image transfers."""
 from pathlib import Path
+
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import csrc  # noqa: E402
 import shutil
 import subprocess
 import tempfile
@@ -24,7 +28,7 @@ class SparseBufferRanges(unittest.TestCase):
     def test_callers_validate_the_extent_the_gpu_can_access(self):
         dm = Path(__file__).resolve().parents[1] / 'nxnative/dm/android'
         core = (dm / 'gfx_vk_core.c').read_text(encoding='utf-8')
-        exec_src = (dm / 'gfx_vk_exec.c').read_text(encoding='utf-8')
+        exec_src = csrc.unit(dm / 'gfx_vk_exec.c')
 
         self.assertIn('b < 16 && S.vbuf[b].size && nvn_sparse_address_pool(S.vbuf[b].address, 1) ? S.vbuf[b].size : 1', exec_src)
         self.assertIn('nvn_sparse_address_pool(d->ibuf, 1) ? index_bytes : 1', exec_src)
@@ -33,7 +37,10 @@ class SparseBufferRanges(unittest.TestCase):
         self.assertIn('copy_buffer_span(&r, f, depth, &span)', exec_src)
         self.assertIn('nvn_sparse_address_pool(c->src, 1) ? span : 1', exec_src)
         self.assertIn('vk_buf_at(c->src, lookup, &b, &o)', exec_src)
-        self.assertIn('else if (!vk_buf_at(c->src, span, &b, &o))', exec_src)
+        # main's bounds block logs a copy past the pool and still makes it: a regular pool keeps a 1-byte lookup, so only a sparse
+        # source (which must map contiguously) is looked up over its whole span
+        self.assertIn('uint64_t lookup = nvn_sparse_address_pool(c->src, 1) ? span : 1', exec_src)
+        self.assertIn('logged, still made', exec_src)
         self.assertIn('vk_ubd_read(d->ibuf, raw_n, raw)', exec_src)
         self.assertIn('uint8_t *raw = malloc((size_t)raw_n)', exec_src)
         self.assertIn('free(raw);', exec_src)
@@ -49,7 +56,7 @@ class SparseBufferRanges(unittest.TestCase):
         dm = Path(__file__).resolve().parents[1] / 'nxnative/dm'
         nvn = (dm / 'gfx/nvn/hle_nvn.c').read_text(encoding='utf-8')
         tex = (dm / 'android/gfx_vk_tex.c').read_text(encoding='utf-8')
-        exec_src = (dm / 'android/gfx_vk_exec.c').read_text(encoding='utf-8')
+        exec_src = csrc.unit(dm / 'android/gfx_vk_exec.c')
 
         self.assertIn('static _Atomic int g_vp_count', nvn)
         self.assertIn('atomic_fetch_add_explicit(&g_vp_count, 1', nvn)
@@ -62,7 +69,7 @@ class SparseBufferRanges(unittest.TestCase):
         tex_view = (dm / 'android/gfx_vk_tex.c').read_text(encoding='utf-8').split('VkBufferView vk_tbuf_view(', 1)[1].split('\n}\n', 1)[0]
         self.assertLess(tex_view.index('if (!pl) {'), tex_view.index('nvn_hm_get(&g_tbuf_cache, &k)'))
         unpooled = tex_view.split('if (!pl) {', 1)[1].split('\n    tbkey k', 1)[0]
-        self.assertIn('nvn_sparse_address_pool(addr, 1)', unpooled)
+        self.assertIn('nvn_sparse_address_pool(addr, n)', unpooled)   # the whole copy, not one byte (the extent can run past the virtual pool)
         self.assertIn('if (storage) return vk_dummy_tbuf(storage)', unpooled)
         self.assertIn('vk_ubd_read(addr, n, p)', unpooled)
         self.assertIn('return v;   // the per-bind copy is not cached', unpooled)
@@ -73,7 +80,7 @@ class SparseBufferRanges(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which('cc'), 'a host C compiler is required')
     def test_transfer_span_includes_row_and_image_strides(self):
-        source = (Path(__file__).resolve().parents[1] / 'nxnative/dm/android/gfx_vk_exec.c').read_text(encoding='utf-8')
+        source = csrc.unit(Path(__file__).resolve().parents[1] / 'nxnative/dm/android/gfx_vk_exec.c')
         helpers = '\n'.join(function_source(source, name) for name in ('copy_span_bytes', 'copy_buffer_span'))
         harness = r'''
 #include <assert.h>
