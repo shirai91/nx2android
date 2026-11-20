@@ -46,6 +46,9 @@ static void flags_init(void) {
 }
 
 // Zero point of the boot timeline = process creation time (p_starttime from sysctl KERN_PROC_PID, wall clock) converted to the now_ns monotonic time base; same definition on Mac / iOS
+// Seconds since process start for the log's timestamp: g_t0_ns is set once by host_preload below, so this is two memory reads,
+// where proc_start_mono_ns() walks /proc through the sysctl shim on Android for every line
+double dm_log_elapsed(void) { return (double)(now_ns() - g_t0_ns) / 1e9; }
 static uint64_t proc_start_mono_ns(void) {
     struct kinfo_proc kp; size_t n = sizeof kp; int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid()};
     uint64_t mono = now_ns(); struct timeval tv; gettimeofday(&tv, NULL);

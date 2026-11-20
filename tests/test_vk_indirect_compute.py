@@ -10,6 +10,10 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import csrc  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 DM = ROOT / 'nxnative/dm'
@@ -21,9 +25,9 @@ def function(source, signature):
 
 
 def production():
-    replay = (DM / 'android/gfx_vk_exec.c').read_text()
-    core = (DM / 'android/gfx_vk_core.c').read_text()
-    header = (DM / 'android/gfx_vk.h').read_text()
+    replay = csrc.unit((DM / 'android/gfx_vk_exec.c'))
+    core = (DM / 'android/gfx_vk_core.c').read_text(encoding='utf-8')
+    header = (DM / 'android/gfx_vk.h').read_text(encoding='utf-8')
     # Real runtime structs and Vulkan declarations, without Android OS headers.
     header = '\n'.join(line for line in header.splitlines()
                        if not any(x in line for x in ('VK_USE_PLATFORM_ANDROID_KHR',
@@ -63,12 +67,12 @@ class IndirectCompute(unittest.TestCase):
         cls.addClassCleanup(cls.tmp.cleanup)
         folder = Path(cls.tmp.name)
         header, state, slots, core, replay, lifecycle, wrapper, usage = production()
-        (folder / 'runtime.h').write_text(header)
-        code = (ROOT / 'tests/vk_indirect_compute_harness.c').read_text()
+        (folder / 'runtime.h').write_text(header, encoding='utf-8')
+        code = (ROOT / 'tests/vk_indirect_compute_harness.c').read_text(encoding='utf-8')
         for marker, value in [('STATE', state), ('SLOTS', slots), ('CORE', core),
                               ('REPLAY', replay), ('LIFECYCLE', lifecycle), ('STAGE_CALL', wrapper), ('USAGE', usage)]:
             code = code.replace('/* ' + marker + ' */', value)
-        (folder / 'check.c').write_text(code)
+        (folder / 'check.c').write_text(code, encoding='utf-8')
         cls.exe = folder / 'check'
         # -fno-strict-aliasing as in the Android build (nxnative/dm/android/build.py): the harness reads driver-segment bytes stored as uint32_t as a uint64_t
         subprocess.run(['cc', '-std=gnu11', '-fno-strict-aliasing', '-pthread', '-Wall', '-Wextra', '-Werror',

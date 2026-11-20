@@ -25,6 +25,7 @@
 # entering a shrine (Turnip); fights show single GPU frames of 25-180 ms (DM_VK_PASS_TIMES=1 + DM_VK_PASS_SPIKE=<ms> lists such a
 # frame's passes); a flickering light ray the user saw in a sky view on Qualcomm's driver.
 status	experimental
+vulkan_driver	turnip
 tested	v720896 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
 package	org.nx2a.zeldatearsofthekingdom
 orientation	landscape
@@ -32,3 +33,6 @@ setting	docked=0
 env	DM_VK_FDZ=0
 env	DM_NVN_ASYNC=1
 env	DM_PIN_REPLAY=prime
+readme_image	docs/images/the-legend-of-zelda-tears-of-the-kingdom.jpg
+readme_tag	v0.3.0
+readme_note	update 1.4.3 · 30 fps, 60 in caves and shrines · smoothest with a Turnip Vulkan driver · **work in progress**: 60 fps in the open world

@@ -26,6 +26,29 @@ LETTER_FONTS = [f'{os.environ.get("WINDIR", "C:/Windows")}/Fonts/{f}' for f in (
     '/usr/share/fonts/liberation/LiberationSans-Bold.ttf', '/usr/share/fonts/noto/NotoSans-Bold.ttf']   # after DejaVu: a machine that has both keeps the font (and its cache key) it had
 
 
+def build_translator(dotnet, env, logs):
+    """The shader translator (dm/gfx/tools/dmsh_xlate over dm/third_party/ryujinx) built from this checkout's source with dotnet, once for every game, in
+    <user dir>/tools/dmsh_xlate: (dmsh_xlate.dll, its key). Port.translator and devtools/shader_corpus.py use it"""
+    src = DM / 'gfx/tools/dmsh_xlate'; ryu = DM / 'third_party/ryujinx'
+    def source_key():
+        files = sorted([p for root in (src, ryu) for p in root.rglob('*') if p.is_file() and
+                        (p.suffix in ('.cs', '.csproj', '.props', '.targets') or p.name in ('global.json', 'NuGet.Config', 'nuget.config'))
+                        and not {'bin', 'obj'} & set(p.relative_to(root).parts)])
+        from porter import codekey   # C# without comments and whitespace: a comment-only change keeps the translator, and every game's shader bundle, as they are
+        return nsp.fingerprint([str(p.relative_to(DM)) for p in files], [codekey.file_key(p) for p in files],
+                               ('cmd', [str(dotnet), '--version']), env=env)
+    key = source_key()
+    out = paths.user_dir() / 'tools/dmsh_xlate'; kf = out.with_name('dmsh_xlate.key'); dll = out / 'dmsh_xlate.dll'
+    if dll.is_file() and product_cache.reused(kf, key, out) is not None:
+        return dll, nsp.fingerprint(key, product_cache.inventory(out))
+    tmp = out.with_name('dmsh_xlate.partial'); nsp.rmtree(tmp)
+    nsp.run([dotnet, 'build', src, '-c', 'Release', '-o', tmp, '-nologo', '-v', 'quiet'], logs / 'android_translator_build.log', env=env)
+    if not (tmp / 'dmsh_xlate.dll').is_file(): raise BuildError(f'the translator built without dmsh_xlate.dll (see {logs / "android_translator_build.log"})')
+    if source_key() != key: raise BuildError('translator inputs changed during build; port again')
+    nsp.swap_in(tmp, out); product_cache.stamp(kf, key, out)
+    return dll, nsp.fingerprint(key, product_cache.inventory(out))
+
+
 @dataclass
 class Options:
     folder: Path                       # the game's folder: the base game, its updates and DLC
@@ -54,6 +77,19 @@ class Options:
     romfs_at: str = None               # with install: the folder on the device the app reads the RomFS from (porter/install.py), 'app' for its files folder; None: as the device has it
     romfs_push: bool = False           # with romfs_at: push the pack's RomFS into that folder first
     jobs: int = field(default_factory=lambda: os.cpu_count() or 8)
+
+    @classmethod
+    def from_args(cls, a, **over):
+        """Options from porter port's arguments (porter/cli.py): each field takes the argument of its name (a Path field as a Path), then over.
+        A new option is a field here and an argument of the same name there: no list of every option to edit"""
+        import dataclasses
+        kw = {}
+        for f in dataclasses.fields(cls):
+            if f.name in over or not hasattr(a, f.name): continue
+            v = getattr(a, f.name)
+            if f.name in ('folder', 'keys', 'out', 'firmware') and v is not None: v = Path(v)   # the others stay as given: --vulkan-driver also takes "system"
+            kw[f.name] = v
+        return cls(**{**kw, **over})
 
 
 # --vulkan-driver: libadrenotools and its hooks (dm/android/build.py --adrenotools, from dm/third_party/libadrenotools), which load the driver for the app
@@ -211,6 +247,8 @@ class Port:
         o.folder = Path(o.folder).expanduser().resolve()
         if not o.folder.is_dir(): raise BuildError(f'not a folder: {o.folder}')
         version_code('v0', o.vercode_offset); alias_headroom_gb(o.alias_headroom)   # an offset or headroom out of range fails now, not after the shaders
+        self.driver_system = str(o.vulkan_driver) == 'system'   # --vulkan-driver system: the device's driver even when the profile asks for Turnip
+        if self.driver_system: o.vulkan_driver = None
         if o.vulkan_driver:
             o.vulkan_driver = Path(o.vulkan_driver).expanduser().resolve()
             if not o.vulkan_driver.is_file() or o.vulkan_driver.suffix != '.so': raise BuildError(f'--vulkan-driver: not a .so library: {o.vulkan_driver}')
@@ -272,6 +310,11 @@ class Port:
         self.package = o.package or ap.package
         if not re.fullmatch(r'[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+', self.package): raise BuildError(f'not a package name: {self.package}')
         say(f'game profile: {g.id} {g.get("name", "")} (Android: {ap.status}' + (f', tested on {ap.tested}' if ap.tested else '') + ')')
+        if ap.vulkan_driver == 'turnip' and not o.vulkan_driver and not self.driver_system:   # android.tsv vulkan_driver turnip: the driver the profile was tested with
+            lib = toolchain.find_turnip(self.cfg)
+            if lib: o.vulkan_driver = lib.resolve(); say(f"the profile asks for Mesa's Turnip driver (vulkan_driver turnip): {lib} is packed (--vulkan-driver system: the device's driver)")
+            else: say("[RED] the profile asks for Mesa's Turnip driver (vulkan_driver turnip), and none was found: the device's own driver is used. "
+                      "Give one with --vulkan-driver <libvulkan_freedreno.so>, or porter config turnip <path>")
         builds, need = g.builds(), g.words('shader_versions')
         have = nsp.nsp_versions(self.fam, builds)
         self.derived, self.derived_mem, self.lost = '', '', []
@@ -733,23 +776,7 @@ class Port:
         """The shader translator (dm/gfx/tools/dmsh_xlate over dm/third_party/ryujinx) built from the repository's source with the player's .NET SDK, once for every game,
         in <user dir>/tools/dmsh_xlate: (dmsh_xlate.dll, the source's key). Not the iOS chain's prebuilt dm/gfx/tools/dmsh_xlate_bin, which only a Mac can rebuild
         (its lock fingerprints Apple's Metal compiler): Android takes a translator fix as soon as it is in the source"""
-        src = DM / 'gfx/tools/dmsh_xlate'; ryu = DM / 'third_party/ryujinx'
-        def source_key():
-            files = sorted([p for root in (src, ryu) for p in root.rglob('*') if p.is_file() and
-                            (p.suffix in ('.cs', '.csproj', '.props', '.targets') or p.name in ('global.json', 'NuGet.Config', 'nuget.config'))
-                            and not {'bin', 'obj'} & set(p.relative_to(root).parts)])
-            return nsp.fingerprint([str(p.relative_to(DM)) for p in files], ('files', files),
-                                   ('cmd', [str(self.tools['dotnet']), '--version']), env=self.env)
-        key = source_key()
-        out = paths.user_dir() / 'tools/dmsh_xlate'; kf = out.with_name('dmsh_xlate.key'); dll = out / 'dmsh_xlate.dll'
-        if dll.is_file() and product_cache.reused(kf, key, out) is not None:
-            return dll, nsp.fingerprint(key, product_cache.inventory(out))
-        tmp = out.with_name('dmsh_xlate.partial'); nsp.rmtree(tmp)
-        nsp.run([self.tools['dotnet'], 'build', src, '-c', 'Release', '-o', tmp, '-nologo', '-v', 'quiet'], self.logs / 'android_translator_build.log', env=self.env)
-        if not (tmp / 'dmsh_xlate.dll').is_file(): raise BuildError(f'the translator built without dmsh_xlate.dll (see {self.logs / "android_translator_build.log"})')
-        if source_key() != key: raise BuildError('translator inputs changed during build; port again')
-        nsp.swap_in(tmp, out); product_cache.stamp(kf, key, out)
-        return dll, nsp.fingerprint(key, product_cache.inventory(out))
+        return build_translator(self.tools['dotnet'], self.env, self.logs)
 
     # ---- host: the Android host built for this profile with the player's NDK ----
     def host(self):

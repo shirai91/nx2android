@@ -18,3 +18,7 @@
 status	playable
 tested	v0 Xiaomi Pad 5 21051182G (Snapdragon 860, Adreno 640, Android 13)
 orientation	landscape
+readme_name	South Park: The Stick of Truth
+readme_image	docs/images/south-park-the-stick-of-truth.jpg
+readme_tag	v0.4.0
+readme_note	base game 1.0.0 · 30 fps · a Vulkan 1.3 driver is needed (Turnip packed on the Adreno 640)

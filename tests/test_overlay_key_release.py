@@ -4,6 +4,10 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import csrc  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -16,8 +20,8 @@ class OverlayKeyRelease(unittest.TestCase):
         if not cc:
             raise unittest.SkipTest('a C compiler is needed for the key-event check')
         front = (ROOT / 'nxnative/dm/android/front_android.c').read_text(encoding='utf-8')
-        visible = front[front.index('int dm_overlay_visible(void)'):front.index('int dm_overlay_layout(void)')]
-        mark = front[front.index('static void pad_mark_used('):front.index('static int handle_event(')]
+        visible = csrc.between(front, 'int dm_overlay_visible(void)', 'int dm_overlay_layout(void)')
+        mark = csrc.between(front, 'static void pad_mark_used(', 'static int handle_event(')
         # Compile the complete production key-event arm; the motion arm is outside
         # this test. Android accessors and unrelated menu/keyboard calls are stubs.
         keys = front[front.index('static int handle_event('):

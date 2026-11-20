@@ -11,3 +11,6 @@ tested	v65536 AYN Thor (Snapdragon 8 Gen 2, Adreno 740, Android 13)
 package	org.nx2a.kirbyandtheforgottenland
 orientation	landscape
 requires	bcn
+readme_image	docs/images/kirby-and-the-forgotten-land.jpg
+readme_tag	v0.4.0
+readme_note	update 1.1.0 · 30 fps (as on Switch) · tested on the AYN Thor (Adreno 740) with a Turnip Vulkan driver

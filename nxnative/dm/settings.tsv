@@ -1,0 +1,369 @@
+# The settings registry: every DM_* switch the core reads (docs/ARCHITECTURE.md, Settings). One row a switch, tab-separated:
+#   name   type (bool, int, float, hex, str)   default ("" = unset: the code decides; see its doc)   scope   when   read in   doc
+# scope: profile = a game profile may set it (android.tsv env rows); porter = the porter writes it to env.txt; app = the Android app sets it (its folders, the player's settings);
+#        debug = for bring-up and diagnosis only (a profile may not set it; promote it to profile first). ",ios" = read only by the iOS host.
+# when: start = read once at start-up; live = re-read while the game runs (a ctl.txt `env` line changes it); ? = not documented yet.
+# tests/test_settings.py checks that every getenv("DM_...") in the core has a row here and that profiles and porter set only rows they may.
+DM_ADAPTIVE_FPS	bool	1	profile	start	perf_android.c	the adaptive frame-rate governor (perf_android.c); 0 = off, the game runs at its own rate
+DM_ADAPT_UP_PCT	int	90	profile	?	perf_android.c	the governor steps up a rate when frames fit in this percent of the faster rate's budget (1..99)
+DM_ALIAS_WINDOWS	bool		debug	?	hle_svc.c	
+DM_AOC_DIR	str		porter	?	hle_fs.c hle_misc.c	the folder of the add-on content (DLC) the porter installed
+DM_AOC_OWNED	int		debug	?	hle_misc.c	
+DM_AUDIO	int		debug	start	hle_audio.c	silent sink (Android defaults to real output)
+DM_AUDIO_DUMP	str		debug	?	hle_audio.c	
+DM_AUDIO_MUTE	bool		debug	?	hle_audio.c	diagnostic: the whole real-output path (AudioUnit callback pacing, background take-over) but with the output silenced (lifecycle tests on the Mac without noise)
+DM_AUDREN_TRACE	str		debug	live	hle_audren.c	logs the first 200 renderer updates with the frames rendered since the previous one, and the next 300 catch-up frames (`audren: catch-up at update …`): the calling thread, the time since the previous update and the frames queued ahead. Animal Crossing: New Horizons: 14-25 catch-ups a second with or 
+DM_BOOTPROF	str		debug	?	nvn_mtl.m main.c	
+DM_CRASH_TOMBSTONE	str		debug	?	crash.c	
+DM_CTL	str		app	?	hle_hid.c	the control file of a development build (ctl.txt: key presses, env lines, shots); release builds ignore it
+DM_DBG	str		debug	?	main.c	
+DM_DBG_AU_FRAMES	int		debug	?	hle_audio.c	diagnostic: on the Mac, make the sound card callback ask N frames each time (1024 = the iOS default, reproduces the crackling)
+DM_DETCLOCK	str		debug	?	hle_nvn.c hle_os.c	
+DM_DETCLOCK_PACE	bool		debug	?	hle_nvn.c	
+DM_DYN_SCALE	float		debug	live	hle_nvn.c	the host's dynamic resolution through the render-scale stub: every 30 frames held at the cap, GPU p90 over 85% of the frame time lowers the scale 0.05, under 70% raises it; 0 = off (scale 1.0). Tears of the Kingdom's pond: 1.0 -> 0.6 saved only 2.6 ms of GPU p90
+DM_ENV_FILE_KEYS	str		app,ios	start	main.m	the iOS launcher: the keys an env file set (Launcher.swift keeps them)
+DM_FD_LOG	int		debug	?	hle_fdstat.c	
+DM_FIXED_TIME	str		debug	?	hle_time.c main.c	
+DM_FONT_DIR	str		debug	?	hle_sdk16.c	
+DM_FORCE_STRICT	str		debug	?	loader.c	
+DM_FPS	int		debug,ios	?	nvn_mtl.m	
+DM_FPS_CEILING	int		porter	?	gfx_vk_present.c	the 30 fps ceiling of the profile (fps_ceiling) when 30; 0 lifts it. Default: the profile
+DM_FPS_HOLD	str		profile	?	hle_nvn.c	"off" = no frame hold; any other value holds. Default: the profile (fps_hold)
+DM_FPS_LOCKS	str		porter	?	hle_fpslock.c	a fpslock.tsv the porter wrote (FPSLocker rows for this build) when the host has none
+DM_FPS_PIN	int	0	profile	live	perf_android.c	pin the governor at 60, 40 or 30 fps; 0 = no pin
+DM_FPS_TARGET	int		profile	?	hle_fpslock.c loader.c	the frame rate the game is held to; 0 = the game's own. Default: the profile (fps_target)
+DM_FS	str		debug	?	main.c	
+DM_FSLOG	str		debug	?	hle_fs.c	line-buffered: runs end at the time-limit alarm or a crash, which never flush stdio
+DM_FSLOG_HASH	str		debug	?	hle_fs.c	DM_FSLOG_HASH=1: append a column with the FNV-1a 64 of the content read (to compare whether the bytes read from two resource packs match)
+DM_FULLSCREEN	str		debug,ios	?	front_mac.m	start in fullscreen
+DM_GAME_ARGS_ADD	str		debug	start	main.c	more arguments after the profile's `game_args`, split at spaces: an engine's own options tried without a new port. A shipping Unreal build ignores `-dpcvars=` and `-ini:` (Final Fantasy Resonance: `r.ScreenPercentage=25` changed nothing)
+DM_GAME_ENV	str		debug	?	hle_os.c	
+DM_GLSLC_CAPTURE	str		debug	?	hle_glslc.c	
+DM_GL_ACTIVE	str		debug	?	gfx_vk_shader.c	
+DM_GL_CAPTURE	str		debug,ios	?	hle_gl.m	
+DM_GL_LOG	str		debug,ios	?	hle_gl.m	
+DM_GL_STUBS	str		debug,ios	?	hle_gl.m	
+DM_GPU_TURBO	str		profile	live	perf_android.c	"auto" or 1: ask the GPU for its high clocks while the game is GPU-bound; unset or 0 = no
+DM_GUEST_SPAWN_TEST	int		debug	?	hle_guestthread.c	
+DM_HLECOUNT	str		debug	start	hle_count.c	count every HLE call and write a TSV (category, name, count) at exit; the `ctl.txt` line `hlecount <file>` writes the counts so far, so two dumps around one action show the calls it made
+DM_IMPORTS	str		debug	?	main.c	
+DM_KBD	str		debug	?	hle_swkbd.c	
+DM_KBD_PLAYER	str		debug,ios	?	front_mac.m	
+DM_KEYS	str		debug	?	hle_hid.c	
+DM_LAN	bool	0	profile	start	lan_android.c hle_ldn.c	local wireless play over the LAN (ldn): 1 = on
+DM_LANG	str	en-US	porter	?	hle_oe.c main.m	the system language the game sees (en-US, ja, fr, ...)
+DM_LAN_TRACE	str		debug	start	hle_ldn.c hle_socket.c	with `DM_LAN=1`: every `nn::socket` call (addresses, flags, result, errno) and every `nn::ldn` / `nn::nifm` query with its result, as `[lan]` lines
+DM_LINK_VTICK	str		debug,ios	?	nvn_mtl.m	
+DM_LOADHASH	str		debug	?	loader.c	
+DM_LONGFRAME	str		debug	?	hle_nvn.c	
+DM_MEMSTAT	str		debug,ios	?	memstat.m	
+DM_MEMSTAT_DUMP	int		debug,ios	?	memstat.m	
+DM_MEM_CAP_GB	str		debug	?	hle_nvn.c	
+DM_MENU_BUTTON	bool	1	porter	start	front_android.c	0 = no menu button on the on-screen gamepad (porter --no-menu-button)
+DM_METAL_HUD	str		debug,ios	?	front_mac.m front_ios.m main.m	Apple's HUD over the game: frame rate, frame and GPU time, memory
+DM_MOTION	bool		debug	start	front_android.c	the device's gyroscope no longer moves player 1's six-axis sensor (`dm_motion_set`, `host/hle_hid.c`; aiming by motion, as Tears of the Kingdom's bow): accelerometer-only shaking still generates the fixed side-to-side motion. On by default when the device has a gyroscope; automatic shaking still ove
+DM_MOTION_LOG	bool		debug	start	front_android.c	logs the mapped motion once a second (`front end: motion (rotation …) acc … G, gyro … rev/s`): lying flat face up reads acc ≈ (0, 0, −1); lying flat, raising the top edge reads gyro x positive and turning left gyro z positive. Each change of the display's rotation logs `front end: display rotation …
+DM_MOTION_RAW	float		debug	start	front_android.c	opt in to preserving measured acceleration and angular velocity during strong phone flicks instead of the automatic `DM_BTN_SHAKE` waveform. Off by default; no profile enables it until Android hand/directional throws and aiming are qualified. Requires an active gyroscope; no gyro or `DM_MOTION=0` ke
+DM_MOVIE	str		debug	?	main.c	
+DM_MOVIE_AAC_MPEG_ORDER	str		debug	?	audioconverter_mediacodec.c	
+DM_MOVIE_AUDIO_SLOTS	int		profile	start	hle_movie.c	audio output buffers of a movie with sound (4 up to the decoder's maximum). Default: the maximum
+DM_MOVIE_TRACE	str		debug	?	hle_movie.c	
+DM_MSL_DIR	str		debug,ios	?	hle_gl.m nvn_mtl.m hle_vk.m	
+DM_NICK	str		debug	?	hle_account.c	
+DM_NO_ADPF	str		debug	start	perf_android.c	no Android performance hints
+DM_NRO	int		debug	?	loader.c	
+DM_NVN_ACQ_NOW	bool		debug	live	hle_nvn.c	the window acquire's sync fenced at all work so far (the old way) instead of at the texture's last present: Xenoblade Chronicles 3 then waits for its whole frame on the GPU before it submits the next
+DM_NVN_ACQ_REPLAYED	bool		debug	start	hle_nvn.c	with `DM_NVN_ASYNC=1`: the window acquire does not wait for the queued jobs' replay. XC3 then drew whole-screen garbage (solid colours, smears) while the camera turned in about half of the recordings; with the wait at the next submission instead, 2 of 6
+DM_NVN_ALLOCPROF	str		debug,ios	?	nvn_mtl.m	
+DM_NVN_ALPHA_RED	str		debug,ios	?	nvn_mtl.m	
+DM_NVN_API	str		debug	?	hle_nvn.c	
+DM_NVN_ASYNC	bool	0	profile	start	hle_nvn.c	asynchronous replay: submissions and presents run on a replay thread, syncs wait for the job's replay and then its GPU fence. Xenoblade Chronicles 3 has it in its profile (`env`): the replay (~26 ms a frame in Resolution-mode battles) overlaps the game's render thread; the window acquire then waits 
+DM_NVN_BARRIER	str		debug,ios	?	nvn_mtl.m	
+DM_NVN_BF_WANT	str		debug,ios	?	nvn_mtl.m	
+DM_NVN_BLIT_ORDER	str		debug,ios	?	nvn_mtl.m	
+DM_NVN_CBDUMP	str		debug,ios	?	nvn_mtl.m	the source bytes of a 3D upload, beside the uniform dumps (F<frame>_c3d_<serial>.bin)
+DM_NVN_CBDUMP_KEY	str		debug,ios	?	nvn_mtl.m	
+DM_NVN_CBLOG	str		debug	?	hle_nvn.c	
+DM_NVN_CLEARLOG	str		debug,ios	?	nvn_mtl.m	
+DM_NVN_CMDSTAT	str		debug	?	hle_nvn.c	
+DM_NVN_CPU_TEX2D_FIRST_USE	bool	0	profile	start	gfx_vk_tex.c	1 = 2D textures the CPU writes are uploaded at their first use, not at creation
+DM_NVN_CUT	int		debug,ios	?	nvn_mtl.m	
+DM_NVN_DEFER	str		debug,ios	?	nvn_mtl.m	
+DM_NVN_DEFER_AB	str		debug,ios	?	nvn_mtl.m	
+DM_NVN_DEPTHOVR	str		debug,ios	?	nvn_mtl.m	
+DM_NVN_DIRTYCHECK	str		debug,ios	?	nvn_mtl.m	
+DM_NVN_DISPATCH_OWN	str		debug,ios	?	nvn_mtl.m	
+DM_NVN_ENC_LABEL	bool		debug,ios	?	nvn_mtl.m	
+DM_NVN_ENC_THREAD	bool		debug	?	nvn_rec.h	
+DM_NVN_FB_SNAP	str		debug,ios	?	nvn_mtl.m	
+DM_NVN_FLUSH_FILL	int		debug,ios	?	nvn_mtl.m	
+DM_NVN_FRAMES	int		debug	?	hle_nvn.c	
+DM_NVN_FUSE_CHECK	str		debug,ios	?	nvn_mtl.m	
+DM_NVN_GPUPROF	str		debug,ios	?	nvn_mtl.m	
+DM_NVN_GPU_TS	str		debug,ios	?	nvn_mtl.m	
+DM_NVN_HILITE	str		debug,ios	?	nvn_mtl.m	
+DM_NVN_IXCLOG	int		debug,ios	?	nvn_mtl.m	
+DM_NVN_KEYDUMP	str		debug,ios	?	nvn_mtl.m	
+DM_NVN_LAZY_CLEAR	str		debug,ios	?	nvn_mtl.m	
+DM_NVN_LOADPROBE	str		debug,ios	?	nvn_mtl.m	
+DM_NVN_LOG	str		debug	?	hle_nvn.c	
+DM_NVN_MAGSCAN	str		debug,ios	?	nvn_mtl.m	
+DM_NVN_PASSDUMP	str		debug,ios	?	nvn_mtl.m	
+DM_NVN_PASSDUMP_ALL	str		debug,ios	?	nvn_mtl.m	Record on every new encode (otherwise only the first time per pass per stage)
+DM_NVN_PASSGPU	str		debug,ios	?	nvn_mtl.m	
+DM_NVN_PASSGPU_SERIAL	str		debug,ios	?	nvn_mtl.m	
+DM_NVN_PROF	str		debug	?	hle_nvn.c	
+DM_NVN_REGLUM	str		debug,ios	?	nvn_mtl.m	
+DM_NVN_RT_RANGE	str		debug,ios	?	nvn_mtl.m	Narrow candidate, off by default
+DM_NVN_RT_RANGE_CHECK	str		debug	?	rt_range_check.inc	
+DM_NVN_SAMP_SNAP	bool		debug	live	gfx_vk_exec.c	a bound sampler ID resolves to its newest registration, as before (default: to the registration it had when the game bound it; Super Mario Odyssey re-registers a bound ID before submitting, and its bloom read the wrong level: the moon glow flashed in 3-10 of 780 frames, 0 with the default)
+DM_NVN_SEQ	bool		debug	live	hle_nvn.c	the next N frames' submissions, fences, acquires, sync waits (with the time waited) and presents, in order, with thread and time: what the render thread waits for
+DM_NVN_SHDUMP	str		debug	?	gfx_vk_exec.c hle_nvn.c nvn_mtl.m	
+DM_NVN_SHMAP	str		debug,ios	?	nvn_mtl.m	
+DM_NVN_SHOT	str		debug,ios	?	nvn_mtl.m	
+DM_NVN_SHOT_OUT	str		debug,ios	?	nvn_mtl.m	
+DM_NVN_SKIP_FS	str		debug,ios	?	nvn_mtl.m	
+DM_NVN_SKIP_SMALL	int		debug,ios	?	nvn_mtl.m	
+DM_NVN_SNAPRAW	str		debug,ios	?	nvn_mtl.m	Also save the raw bytes (converting an HDR target to an 8-bit image truncates; first-line text header: width height format bytes-per-row)
+DM_NVN_STORAGE_FIRST_USE	int		debug	?	gfx_vk_tex.c	
+DM_NVN_T2T_FROM	str		debug,ios	?	nvn_mtl.m	
+DM_NVN_T2T_TRACE	str		debug,ios	?	nvn_mtl.m	
+DM_NVN_TBDR	str		debug,ios	?	nvn_mtl.m	
+DM_NVN_TEXCPU	str		debug,ios	?	nvn_mtl.m	
+DM_NVN_TEXDUMP	str		debug,ios	?	nvn_mtl.m	
+DM_NVN_TEXINFO	str		debug	?	hle_nvn.c nvn_mtl.m	
+DM_NVN_TEXRAW	str		debug,ios	?	nvn_mtl.m	
+DM_NVN_TEXSNAP	str		debug,ios	?	nvn_mtl.m	
+DM_NVN_TREG_ID	int		debug,ios	?	nvn_mtl.m	
+DM_NVN_TSV	str		debug	?	hle_nvn.c	
+DM_NVN_TSV_CALLS	int		debug	?	hle_nvn.c	0 = write only the @ timing rows (pulling files from a real device has a size limit, and the call-count rows take about 2/3)
+DM_NVN_UB	str		debug,ios	?	nvn_mtl.m	
+DM_NVN_UBP_CHECK	str		debug,ios	?	nvn_mtl.m	
+DM_NVN_UB_COPY_THREAD	str		debug	?	nvn_rec.h	
+DM_NVN_UB_DEFER	str		debug,ios	?	nvn_mtl.m	
+DM_NVN_UB_LAZY	int		debug,ios	?	nvn_mtl.m	the most updates kept across a pass end (0 = off)
+DM_NVN_UB_N	bool		debug,ios	?	nvn_mtl.m	
+DM_NVN_UB_PARTIAL	str		debug,ios	?	nvn_mtl.m	
+DM_NVN_UDC_AB	str		debug,ios	?	nvn_mtl.m	
+DM_NVN_UNWRITTEN_DC	str		debug,ios	?	nvn_mtl.m	
+DM_NVN_VBUF_CACHE	str		debug,ios	?	nvn_mtl.m	
+DM_NVN_VCONV_CHECK	bool		debug,ios	?	nvn_mtl.m	
+DM_NVN_VCONV_CPU	str		debug,ios	?	nvn_mtl.m	
+DM_NVN_VCONV_RANGE	bool		debug,ios	?	nvn_mtl.m	
+DM_NVN_VLOG	str		debug	?	hle_nvn.c	
+DM_NVN_XV	str		debug,ios	?	nvn_mtl.m	
+DM_NVN_ZBLOCK	str		debug,ios	?	nvn_mtl.m	DM_NVN_ZBLOCK=<folder>: also the raw storage of the first such texture of each format and size (up to 16), zb_<serial>.bin (unmapped pages as 0)
+DM_NVN_ZSKIP	str		debug,ios	?	nvn_mtl.m	
+DM_OE_SCRIPT	str		debug	?	hle_oe.c	
+DM_OODLE_JOB	str		debug	?	hle_oodle.c	
+DM_OODLE_JOB_BNSH	bool		debug	?	hle_oodle.c	
+DM_OODLE_SERVE	str		debug	?	hle_oodle.c	
+DM_OPMODE	int		app	start	hle_oe.c	the operation mode at launch: 0 handheld, 1 docked. Default: the profile (op_mode); the pause menu overrides it
+DM_PAD_LABEL	bool		debug	start	front_android.c	a physical controller's face buttons go to the game by their label (an Xbox controller's A is the game's A) instead of by their position (the Switch's: the bottom button is B, the right one A). The game's prompts name the button (A to confirm, B to go back), which an Xbox controller's labels match a
+DM_PAD_MERGE	bool		debug	?	front_android.c front_mac.m	
+DM_PAD_XBOX	bool		debug	start	front_android.c	a physical controller's face buttons go to the game by their label (an Xbox controller's A is the game's A) instead of by their position (the Switch's: the bottom button is B, the right one A). The game's prompts name the button (A to confirm, B to go back), which an Xbox controller's labels match a
+DM_PIN_REPLAY	str	0	profile	?	perf_android.c	pin the replay thread to fast cores: 0 = no, "prime" = the fastest core, other values = the big cores
+DM_PREEMPT	int		debug	?	hle_thread.c	
+DM_PRELOAD	str		debug	?	main.c	Exercise the early-start path on Mac (on iOS it is called from the App's main())
+DM_PRESENT_FIFO	str		debug,ios	?	nvn_mtl.m	
+DM_PRESENT_HZ	int		debug	?	hle_nvn.c	
+DM_PRESENT_INTERVAL	str		porter	?	hle_nvn.c	"display" = presents follow the display's rate; else the game's interval. Default: the profile (present_interval)
+DM_PRESENT_LATENCY	bool		debug,ios	?	nvn_mtl.m	
+DM_PRESENT_LINK	int		debug,ios	?	nvn_mtl.m	
+DM_PROBE	str		debug	?	probe.c	
+DM_PROBE_ALL	str		debug	?	probe.c	also print x9–x18
+DM_PROBE_DUMP	str		debug	?	probe.c	
+DM_PROBE_HEAP	int		debug	?	probe.c	
+DM_PROBE_HEAPFRAME	int		debug	?	probe.c	
+DM_PROBE_HEAPNAME	str		debug	?	probe.c	
+DM_PROBE_HEAPRAW	str		debug	?	probe.c	
+DM_PROBE_HEAPWORDS	str		debug	?	probe.c	
+DM_PROBE_POLL	hex		debug	?	probe.c	
+DM_PROBE_WATCH	str		debug	?	probe.c	
+DM_PROBE_X2	int		debug	?	probe.c	DM_PROBE_X2=bytes: also print the memory x2 points to (to read object fields)
+DM_PROGRAM_ID	hex		debug	?	hle_svc.c	default from the game profile's program_id; DM_PROGRAM_ID=hex overrides
+DM_PSO_MANIFEST	str		debug,ios	?	nvn_mtl.m	
+DM_PSO_RECORD	str		debug,ios	?	nvn_mtl.m	
+DM_PSO_USER	str		debug,ios	?	nvn_mtl.m	
+DM_QOS_EDGES	str		debug	?	hle_thread.c	
+DM_QOS_MAP	bool		debug	?	hle_thread.c	
+DM_RENDER_SCALE	float		debug	live	hle_nvn.c loader.c	games with a render-scale stub (Tears of the Kingdom, Breath of the Wild): the 3D views at that fraction of the game's size; 1.0 gives the game's own dynamic resolution back
+DM_RES_CHECK	str		debug,ios	?	nvn_mtl.m	
+DM_ROMFS	str		porter	?	front_android.c	a RomFS folder outside the app's files folder (porter install --romfs-at)
+DM_ROMFS_OVERLAY	str		debug	?	hle_fs.c	
+DM_ROMFS_ZSTD	bool	0	porter	?	hle_fs.c	1 = the RomFS holds zstd-packed files (porter writes it for a packed RomFS)
+DM_ROOT	str		app	?	gfx_vk_exec.c gfx_vk_pipeline_cache.inc gfx_vk_present.c …	the app's files folder (the Android front end sets it)
+DM_RT	str		debug	?	hle_nvn.c	
+DM_RT_COMP	int		debug	?	hle_nvn.c	−1 = auto
+DM_RUMBLE	int		debug,ios	?	haptics_apple.m	
+DM_RUMBLE_GAIN	float		debug,ios	?	haptics_apple.m	
+DM_RUMBLE_LOG	str		debug	?	hle_hid.c	Count input values before deduplicating motors, including partially routed batches.
+DM_SAVE	str		app	?	saves_android.c nvn_mtl.m hle_fs.c	the save folder (the Android front end sets it)
+DM_SCREEN_MATCH	str		debug,ios	?	front_mac.m	
+DM_SF_TRACE	str		debug	?	hle_sf.c	
+DM_SHAKE_G	float		debug	start	front_android.c DmGamepad.m	how hard (in G beyond gravity, 1.5 by default) the device must be shaken for the controller's six-axis sensor to be shaken (`DM_BTN_SHAKE`, `host/hle_hid.c`; Super Mario Odyssey's cap throw). Each detected shake logs `front end: device shaken (peak … G)`; `ctl.txt` `Shake~0.4` shakes it without the 
+DM_SHARED_FONT	str		porter	?	hle_sdk16.c	the standard shared font the player chose (porter --shared-font)
+DM_SHARED_FONT_EXT	str		porter	?		the Nintendo extension shared font the porter made (nintendo_ext.ttf)
+DM_SHOW_FPS	int		debug,ios	?	front_ios.m	
+DM_SLEEP_BT	float		debug	?	hle_thread.c	
+DM_SLOWFRAME	str		debug	start	hle_nvn.c	one `[slowframe]` line per dropped frame with a breakdown (frame, work, NVN, wait, thread and process CPU)
+DM_SPIN	bool		debug	?	hle_thread.c	
+DM_SPIN_POLL	str		debug	?	hle_thread.c	
+DM_STEADY_REALTIME	bool	0	profile	?	hle_time.c	1 = the steady clock follows real time also when the host fixes the time
+DM_SVC	str		debug	?	main.c	
+DM_SVC_SPIN	bool		debug	live	hle_thread.c	the SVC layer's lock G and guest waits sleep at once, as before (default: taking G spins a few microseconds before sleeping, and a guest thread that waits on a lock, condition variable, address or synchronization object spins on its wake flag first, `DM_SVC_SPIN_US`, before it parks; a thread whose 
+DM_SVC_SPIN_US	bool		debug	live	hle_thread.c	how long a guest wait spins before it parks (30)
+DM_SYMCHECK	str		debug	?	loader.c	
+DM_SYSDATA	str		porter	?	hle_fs.c hle_sdk16.c	the system data folder (firmware titles the porter extracted)
+DM_TEMP	str		app	start	hle_fs.c front_android.c main.m	the host's temp folder (the app's internal temp/); default $DM_ROOT/run/platform/temp
+DM_TEST_FS_FAIL	str		debug	?	hle_fs.c	
+DM_TEST_FS_FAILAT	str		debug	?	hle_fs.c	
+DM_TEST_KEYRACE	str		debug	?	main.c	
+DM_TEST_KILL_AT	str		debug	?	hle_fs.c	
+DM_TEST_LEAK_GPU	str		debug,ios	?	nvn_mtl.m	
+DM_TEST_LINK_STALL	str		debug,ios	?	nvn_mtl.m	
+DM_TEST_PRESENT_LAG	str		debug	?	hle_nvn.c	
+DM_TEST_SWKBD_HOLD_MS	int		debug	?	hle_swkbd.c	
+DM_TEST_SWKBD_LAG_MS	int		debug	?	hle_swkbd.c	test: slow down "keyboard handed back → the game's thread gets the result" to verify that auto-accept does not jump the gun // front end path cleanup (dm_cursor.c): auto-accept after the name is typed on the naming page
+DM_TEST_UP_LEAK	str		debug,ios	?	nvn_mtl.m	test switch DM_TEST_UP_LEAK=1: do not retire the old block, as before the fix (for comparison, to measure the leak)
+DM_TEST_UP_LOST	int		debug,ios	?	nvn_mtl.m	
+DM_THR	str		debug	?	main.c	
+DM_THRCPU	str		debug,ios	?	memstat.m	
+DM_TIME_OFFSET	str		debug	start	hle_time.c	the user clocks run that many seconds from the device's time (a test jumps to the next day or hour without changing the device's clock); the steady clock is unchanged
+DM_TOUCH_DOCKED	str		profile	start	hle_touch.c	touch in docked mode: "screen" = the screen's points, "pixels" = the game's pixels; unset = no touch when docked
+DM_TOUCH_HAPTICS	int		debug,ios	?	DmGamepad.m	
+DM_TOUCH_LOG	str		debug	?	hle_touch.c	DM_TOUCH_LOG=1 also logs each gesture entry (up to 500 lines)
+DM_UDC_SELFTEST	str		debug,ios	?	nvn_mtl.m	
+DM_VK_ASYNC_PIPE	bool	1	profile	live	gfx_vk_exec.c	0 = new pipelines are built on the replay thread, not in the background
+DM_VK_BC_DRAW	int	0	profile	start	gfx_vk_tex.c	BC texture stand-in mode for drivers without BC: 0 = off
+DM_VK_BIND_DUMP	str		debug	start	gfx_vk_exec.c	writes the storage of the texture that binding of that pixel shader really resolved to (at most 8 files) to `$DM_ROOT/bind_<fs>_b<binding>_<w>x<h>_f<format>_s<serial>.bin` (the current folder when `DM_ROOT` is unset); slots alone are polluted by stale entries of earlier draws
+DM_VK_CAPTURE	str		debug,ios	?	hle_vk.m	
+DM_VK_CB_DRAWS	int	128	profile	live	gfx_vk_exec.c	split the frame into command buffers every N draws (128), only before passes with a new depth image; `0` = never
+DM_VK_COMPUTE_WARM_MAX	int		debug	?	gfx_vk_exec.c	
+DM_VK_CPU_READY	bool		debug	?	gfx_vk_exec.c	
+DM_VK_CRUMBS	bool		debug	start	gfx_vk_exec.c	for a device lost (GPU hang): each pass end and dispatch writes its number into host-visible memory after a full barrier; when the device is lost the log names the last work the GPU finished and the passes after it, with their shaders. Slows the GPU
+DM_VK_DBG_DRAW	int		debug	start	gfx_vk_exec.c	bisection aids: skip command kinds; 1 no draw calls, 2 no vertex buffers, 4 no descriptor sets
+DM_VK_DRIVER	str		porter	start	gfx_vk_core.c	the Vulkan driver library in the APK (porter --vulkan-driver, e.g. Turnip)
+DM_VK_DYN_UBO	bool		debug	start	gfx_vk_shader.c	no dynamic uniform-buffer offsets (descriptor reuse drops)
+DM_VK_FDZ	bool	1	profile	live	gfx_vk_exec.c	no fragment-depth variants: draws that test a depth buffer a fragment shader wrote through `gl_FragDepth` (in the last two presents) normally get a variant of their fragment shader that writes `gl_FragDepth = gl_FragCoord.z`, the same depth tested after the shader, out of Adreno's early culling, whi
+DM_VK_FLIPY	bool		debug	live	gfx_vk_exec.c	the old clip-space y convention (pictures flip)
+DM_VK_FRONT	int		debug	start	gfx_vk_exec.c	2`
+DM_VK_GS_SPLIT	bool	0	profile	live	gfx_vk_exec.c	1 = split geometry-shader draws (gfx_vk_gs_split.c)
+DM_VK_LIN_BACK	bool		debug	live	gfx_vk_exec.c	what the GPU draws into a linear render target (NVN `LINEAR_RENDER_TARGET`) stays in the Vulkan image, as before (default: copied back to the texture's pool memory after the pass, so the CPU can read it; Super Mario Odyssey's ground fog reads its wave surface this way)
+DM_VK_LIST_AT	str		debug	?	gfx_vk_exec.c	DM_VK_LIST_AT=<present>: the pass list of every submission over two presents from there
+DM_VK_LOG	str		debug,ios	?	hle_vk.m	
+DM_VK_LOG_FS	hex		debug	live	gfx_vk_exec.c	one line per draw with that fragment shader (present, pass, depth state, viewport), and its samplers as the draw sees them (`DM_VK_SAMP_LOG` explains why one changed)
+DM_VK_LOG_SPARSE	bool		debug	?	gfx_vk_tex.c	which sparse textures are read, and how much of them was not mapped yet
+DM_VK_LOG_UPLOADS	bool		debug	start	gfx_vk_tex.c	which packaged textures are uploaded or re-uploaded
+DM_VK_LRZ_TOUCH	bool		debug	live	gfx_vk_exec.c	drop the LRZ touches: the one-texel depth read before passes that load a depth-stencil buffer (brings NEO's menu-wipe flicker back) the texel written back into the depth buffer a pass switches away from (brings XC3's cloud-layer drop-outs back), and the texel written back into a depth buffer a pass 
+DM_VK_MDI	int		debug	start	gfx_vk_exec.c	3`
+DM_VK_MDI_LOG	int		debug	start	gfx_vk_exec.c	two frames from that present: each multi-draw's count (GPU copy, CPU), its records below and past it, the dispatches, copies and clears
+DM_VK_MEMLOG	int		debug	start	gfx_vk_core.c	every s seconds a `[mem]` line: the process's memory (anonymous, file, shared, swapped), the system's (available, free, swap, pressure) and the pools (zero-copy, of it backed when first used, not used yet, copied, used). Sampling from outside stalls under memory pressure; this does not
+DM_VK_MEM_DIAG	bool		debug	start	gfx_vk_core.c	enabled storage-image features (extended formats, formatless reads/writes), each copied buffer's size, allowed memory-type mask, selected type/cache flags and compatible host-visible cached candidate (-1 if none; diagnostic only), and zero-copy failures once per stage, with the API return or errno; 
+DM_VK_MIP_MAX	int		debug	start	gfx_vk_tex.c	caps every sampler's `maxLod` at that level (0: always the base level; a sampler that already stops lower keeps its own, and `minLod` is lowered to it too): tells whether a flat material is the mip choice or the texture / UVs
+DM_VK_MT_REPLAY	bool	0	profile	start	gfx_vk_dq.c	two-stage replay: the vkCmd* calls (40 of them) are copied into a 32 MB ring and a "vk record" thread makes the real calls in order; the calls that end, submit or present a command buffer (and pool resets, waits) wait for the ring to empty first; a call with a pNext the copy does not know runs direc
+DM_VK_NAN_MINMAX	str		debug	?	gfx_vk_shader.c	
+DM_VK_NOCULL	str		debug	start	gfx_vk_exec.c	no face culling (test for winding bugs)
+DM_VK_NOPCACHE	str		debug	start	gfx_vk_pipeline_cache.inc	start with an empty Vulkan pipeline cache (the saved one is ignored; app-owned files cannot be deleted over adb)
+DM_VK_NOPREWARM	str		debug	start	gfx_vk_exec.c	no pipeline prewarm, and no compute pipelines made ahead at the first submission
+DM_VK_NO_ZEROCOPY	str		debug	?	gfx_vk_core.c	DM_VK_NO_ZEROCOPY (set at all): every pool copied
+DM_VK_ORDER_KEEP	int		debug	?	gfx_vk_exec.c	
+DM_VK_PACE	bool		debug	live	gfx_vk_present.c	present without desired times (`VK_GOOGLE_display_timing`): frames go out at the first vsync after they are latched, as before. On, each frame is timed at the last one's plus the game's period on the display's vsync grid; the log's `[perf] display timing` line counts resyncs (a longer frame where th
+DM_VK_PASSDUMP	bool		debug	live	gfx_vk_exec.c	dump each pass's first colour target and its depth (PPM, NaN counts, depth stretched) for one frame; `=N` waits N−1 presents first. **The dump adds barriers and depth reads, which can hide bugs**
+DM_VK_PASSDUMP_CROP	str		debug	live	gfx_vk_exec.c	Copy only this bounded rectangle of the selected colour image, reducing memory and disk use for temporal numeric probes. Origin is logged; an empty value restores full images.
+DM_VK_PASSDUMP_DEPTH	bool		debug	start	gfx_vk_exec.c	with `DM_VK_PASSDUMP_SIZE`, the size-filtered passes' depth too; every depth dump also writes its raw values as float32 (`<name>.f32` beside the PPM)
+DM_VK_PASSDUMP_FMT	str		debug	live	gfx_vk_exec.c	only these pass numbers of each submission / only passes whose first two colour formats are VkFormat a and b (pass numbers move from frame to frame; TTYD's first lit pass is `122/64`), to follow one pass over many frames
+DM_VK_PASSDUMP_FRAMES	bool		debug	start	gfx_vk_exec.c	keep dumping for N presents in a row (up to 96 dumps; the log names each dump's present): with `DM_VK_PASSDUMP_SIZE`, catches an effect that is wrong in single frames
+DM_VK_PASSDUMP_FS	str		debug	live	gfx_vk_exec.c	Only dump colour passes whose last draw has one of these fragment shader keys. With `DM_VK_X_CUTFS`, samples immediately before/after a draw across frames.
+DM_VK_PASSDUMP_PASS	str		debug	live	gfx_vk_exec.c	only these pass numbers of each submission / only passes whose first two colour formats are VkFormat a and b (pass numbers move from frame to frame; TTYD's first lit pass is `122/64`), to follow one pass over many frames
+DM_VK_PASSDUMP_RAW	bool		debug	start	gfx_vk_exec.c	Also write HDR colour dumps as interleaved float32 RGB in `<dump>.ppm.f32`, preserving NaNs and infinities for numeric comparisons.
+DM_VK_PASSDUMP_SIZE	str		debug	start	gfx_vk_exec.c	skip the first n passes, or start at the first pass of that size (depth included); only passes of those sizes (colour only)
+DM_VK_PASSDUMP_SKIP	int		debug	start	gfx_vk_exec.c	skip the first n passes, or start at the first pass of that size (depth included); only passes of those sizes (colour only)
+DM_VK_PASSDUMP_TARGET	bool		debug	?	gfx_vk_exec.c	=n: colour target n where the pass has one
+DM_VK_PASS_SPIKE	float		debug	start	gfx_vk_core.c	a frame whose timed passes and dispatches, or whose submissions, take longer logs `GPU spike:` with its six costliest items and the time outside them. The timestamps themselves add time: Tears of the Kingdom's 18 ms frames summed to 26 ms of passes, so set it well above the normal sum
+DM_VK_PASS_SPLIT	int	0	profile	?	gfx_vk_exec.c	split a pass into command buffers every N draws; 0 = never
+DM_VK_PASS_SPLIT_DEPTH	hex		debug	?	gfx_vk_exec.c	
+DM_VK_PASS_TIMES	bool		debug	start	gfx_vk_core.c	GPU timestamps around every pass; the per-frame line lists the costliest passes. Disturbs Adreno's binning: compare runs only
+DM_VK_PIPE_LOG	str		debug	start	gfx_vk_exec.c	one log line per pipeline built (first 600), and the polygon-state lines (cull, front face, origin, the Vulkan values; one per combination, at most 16): shaders, topology, cull/front, depth and stencil state, colour formats, blend, attribute and binding counts. Compare the lines of a wrong material 
+DM_VK_PIXEL_HISTORY	str		debug	live	gfx_vk_exec.c	Default off. For matching single-sample B10G11R11 target 0, record one pixel's colour/depth after each logical draw or clear in `pixel_history.tsv`, at most 4096 events. Includes shader keys, vertex/index buffers, vertex UBO addresses, depth/bias/scissor/viewport state and packed source words. A sin
+DM_VK_POOL_CACHED	bool		debug	start	gfx_vk_core.c	opt into host-visible cached memory for copied pools only; default off. Allocation/map/bind failure falls back to coherent memory, except device loss. Non-coherent pools flush initial uploads whole and incremental uploads over one atom-aligned interval spanning changed blocks; after GPU completion, 
+DM_VK_POOL_READBACK_RANGES	bool		debug	start	gfx_vk_core.c	default off; narrow cached-pool completion merges to tracked transfers only when the submission has no writable/unknown shader descriptors, transform feedback or texture-to-guest writes. Uncertain submissions retain full merging and whole-mapping invalidation. Eligible submissions invalidate one ato
+DM_VK_POOL_REUSE	bool		debug	start	gfx_vk_core.c	a finalized pool's hardware buffer is freed, as before (default: up to 128 of them, 384 MB, are kept, imported, for the next pool of the same size, once the GPU has passed them)
+DM_VK_POOL_SLABS	bool		debug	start	gfx_vk_core.c	every memory pool gets a hardware buffer of its own, as before (default: pools up to 256 KB take a slot of a slab, a hardware buffer of 2-8 MB allocated and imported once, mapped at the pool's address at the slot's offset; a 48 KB pool of its own cost ~170 µs to allocate and ~180 µs to import on an 
+DM_VK_POOL_SLOTS	hex		debug	live	gfx_vk_exec.c	`gfx_vk_core.c` `vk_pool_of` looks only in the last four pools the thread found, without its 512 slots by address page, as before them, for A/B runs against `replay per frame` (Breath of the Wild keeps over 4,096 pools live: the lookups were 13% of the replay thread with the last four alone, 4% with
+DM_VK_PRETRANSFORM	int		debug	?	gfx_vk_present.c	
+DM_VK_PROF	bool		debug	live	gfx_vk_exec.c	sampling profiler of the replay thread (1 ms of its CPU time): every 20 s the most frequent places, as offsets in `libdmhost.so` (`=1` charges libc and driver time to our first caller, shown `via:`; `=2` shows the place itself). Resolve with `llvm-symbolizer --obj=<build>/android/host-debug/libdmhos
+DM_VK_PROF_OUT	str		debug	start	gfx_vk_exec.c	sample that thread of the process instead of the replay thread, and append the raw samples (leaf pc, lr, six frame-chain returns) to the file. **Host threads only: sampling Xenoblade Chronicles 3's render thread crashed the game in its own code** (use `DM_NVN_ASYNC=1` to profile the replay on a host
+DM_VK_PROF_SLOW	bool		debug	live	gfx_vk_exec.c	a submission whose replay took over 40 ms logs `slow replay`: pipelines built on the replay thread, textures, pools sync, shader modules, binds, descriptor sets, cuts, compute pipelines; plus `pipeline built here: attachment …` for each pipeline a young target kept off the background threads (first 
+DM_VK_PROF_TID	bool		debug	start	gfx_vk_exec.c	sample that thread of the process instead of the replay thread, and append the raw samples (leaf pc, lr, six frame-chain returns) to the file. **Host threads only: sampling Xenoblade Chronicles 3's render thread crashed the game in its own code** (use `DM_NVN_ASYNC=1` to profile the replay on a host
+DM_VK_QUIRK_GS_SPLIT	bool		debug	start	gfx_vk_quirks.c	force the gs_split quirk row (gfx_vk_quirks.c): 1 lets profiles' geometry-shader splits run on a GPU other than Adreno, 0 stops them
+DM_VK_QUIRK_LRZ_TOUCH	bool		debug	start	gfx_vk_quirks.c	force the lrz_touch quirk row (gfx_vk_quirks.c): the default of DM_VK_LRZ_TOUCH (on for Adreno)
+DM_VK_RD_TOUCH	bool		debug	live	gfx_vk_exec.c	no transfer read of the memory a run of rasterizer-discard draws wrote, where the run ends: Xenoblade Chronicles 3's grass then flickers (whole blades black in some frames: the G-buffer's grass cards, depth EQUAL against the pre-pass, meet sway records not yet written)
+DM_VK_RP	bool		debug	start	gfx_vk_exec.c	dynamic rendering instead of cached `VkRenderPass` objects with imageless framebuffers (Adreno's `vkCmdBeginRendering` cost about 40 µs a pass)
+DM_VK_SAMP_LOG	bool		debug	live	gfx_vk_exec.c gfx_vk_tex.c	log the next n sampler registrations (ID, LOD range, wrap, aniso, compare, border, present, thread) and each submission's start, in time order with the replay's lines
+DM_VK_SCRATCH_MB	bool		debug	?	gfx_vk_core.c	
+DM_VK_SETSPLIT	bool	0	profile	?	gfx_vk_exec.c	1 = a descriptor set change may split the command buffer
+DM_VK_SHADERS	str		app	?	gfx_vk_shader.c	the shader bundle (shaders.dmsv); default: the files folder's
+DM_VK_SHOT	str		debug	start	gfx_vk_present.c	headless runs: save those presents (`DM_VK_SHOT_DIR`)
+DM_VK_SHOTS	bool		debug	live	gfx_vk_present.c	save each of the next N presented frames as `frame_<n>.ppm` in the files folder (logs "frame shots: presents a to b")
+DM_VK_SHOT_DIR	str		debug	?	gfx_vk_present.c	
+DM_VK_SKIP_OPS	str		debug	start	gfx_vk_exec.c	bisection aids: skip command kinds; 1 no draw calls, 2 no vertex buffers, 4 no descriptor sets
+DM_VK_SLOT0_FILL	bool		debug	?	gfx_vk_exec.c	
+DM_VK_SPV_ALT	bool		debug	?	gfx_vk_exec.c	pipelines made while `ALT` is on use `<dir>/<key>.spv` in place of the bundle's code where the file exists (same bindings), so two compilations of a shader compare in one run (e.g. the translator's GLSL through `glslc`, or a patched module)
+DM_VK_SPV_DIR	str		debug	?	gfx_vk_shader.c	pipelines made while `ALT` is on use `<dir>/<key>.spv` in place of the bundle's code where the file exists (same bindings), so two compilations of a shader compare in one run (e.g. the translator's GLSL through `glslc`, or a patched module)
+DM_VK_SUBGROUP_ONE_LANE	bool		debug	start	gfx_vk_shader.c	no shader module is rewritten as subgroups of one invocation (`gfx_vk_subgroup.c`): modules whose stage lacks subgroup operations keep them, as before the rewrite, which Vulkan leaves undefined (VUID-RuntimeSpirv-None-06343). For A/B tests on a driver where a rewritten shader draws wrong. Qualcomm's
+DM_VK_SUBGROUP_PIN	int		debug	start	gfx_vk_core.c	game pipelines' fragment and compute stages run at that subgroup size (`VkPipelineShaderStageRequiredSubgroupSizeCreateInfo`), where the device's `requiredSubgroupSizeStages` allows it; a compute workgroup larger than `maxComputeWorkgroupSubgroups` such subgroups keeps the driver's size. Off by defa
+DM_VK_SUBMIT_SPLIT	bool		debug	live	gfx_vk_core.c	don't submit the pieces early
+DM_VK_SYNC_PRESENT	str		debug	start	gfx_vk_present.c	present on the game thread instead of the present thread
+DM_VK_TEXBIND	str		debug	start	gfx_vk_exec.c	once per matching pipeline, a log line for every texture the draw has bound (stage, slot, ID, size, NVN format, levels, pool and offset). `all`: every draw that samples something, one group per pixel shader
+DM_VK_TEXBIND_DUMP	int		debug	start	gfx_vk_exec.c	writes the storage of that group's first mipmapped texture (`all`: the first 6 slots) as the GPU has it, block-linear, to `$DM_ROOT/texbind_<vs>_<fs>_s<slot>.bin`; the log line beside it has the dimensions and format to deswizzle it offline
+DM_VK_TEXDUMP	hex		debug	start	gfx_vk_exec.c	during the dump, the first sampled image at that pool offset (the trace prints both) is blitted to RGBA16F and dumped with the passes (level 0, up to 6 layers, pass number −100 − layer): a compressed texture such as a BC6H cube map, decoded by the GPU
+DM_VK_TEXDUMP_LEVEL	int		debug	?	gfx_vk_exec.c	=n: that mip level instead of level 0
+DM_VK_TRACE_FRAME	str		debug	live	gfx_vk_exec.c	trace every pass of the next submission whose targets match (a whole effect chain in one log); trace lines also describe each sampler (wrap, filters, LOD, border)
+DM_VK_TRACE_PASS	int		debug	live	gfx_vk_exec.c	`-2` lists one submission's passes; `n` logs every draw of pass n once (targets, depth target, textures, pipeline state); the `-2` list also shows each barrier's NVN bits and where each pass was ended from (an offset in `libdmhost.so`), each dispatch's storage buffers (`s<n> <address>+<size>`, for a
+DM_VK_TRACE_SIZE	str		debug	live	gfx_vk_exec.c	trace the (n+1)th pass whose first colour target has that size (and formats): pass numbers move by tens from frame to frame
+DM_VK_UBD_HEAP	hex		debug	live	gfx_vk_exec.c	a deferred uniform update keeps no copy in ordinary memory, and the shadows read its bytes back from the submission's scratch buffer, as before (`gfx_vk_core.c` `vk_sub_update`). Scratch is mapped GPU memory, not cached on Adreno: those reads were 17 to 33% of the replay thread on Breath of the Wild
+DM_VK_UBD_KEEP	hex		debug	live	gfx_vk_exec.c	every landed uniform update stays listed until its submission completes, as before (`gfx_vk_core.c` `vk_ubd_land`: one of the same range replaces the one in flight), for A/B runs against `replay per frame`
+DM_VK_UBO_LOG	hex		debug	live	gfx_vk_exec.c	log the next n uniform buffers that shader reads (every word up to 512 bytes, a hash; for register 0 of a vertex shader also its vertex stream 0; for an indexed draw, the index data's hash and range, every word of the first vertex the draw reads, and once per index data every index and vertex). Use 
+DM_VK_UBO_LOG_FROM	int		debug	live	gfx_vk_exec.c	with `DM_VK_UBO_LOG`: the 512 bytes logged start at that offset (a multiple of 16), for fields deeper in a buffer (Unreal's 4 KB view buffer). A memdump of a logged address comes too late: ring buffers are reused within the 2 s a ctl line takes
+DM_VK_UBWC	int	3	profile	start	gfx_vk_tex.c	framebuffer compression mode bits (Adreno UBWC)
+DM_VK_VALIDATE	str		debug	start	gfx_vk_core.c	Khronos validation layer; its messages go to the log. The APK must carry it (`mkapk.py --extra-so <libVkLayer_khronos_validation.so>`; built copy in `tools/vvl`)
+DM_VK_VATTR_LOG	hex		debug	start	gfx_vk_exec.c	once, the vertex inputs that shader's first draw really has: location, NVN format, stream, offset, stride, divisor, buffer address
+DM_VK_VBOUND	hex		debug	live	gfx_vk_exec.c	a direct draw whose last vertex reads past its vertex stream's bound size reads on into the pool, as before (default: the stream is bound as a copy padded with zeros, as Maxwell reads zeros there; Super Mario Odyssey's agl full-screen passes draw 9 vertices from a 36-byte stream)
+DM_VK_WATCH	str		debug	live	gfx_vk_exec.c	log the next n uses of images at that pool offset (attachment, sampled, copy) with present and pass numbers: who writes what a pass reads
+DM_VK_WINDOW_GAME_RATE	bool	0	profile	live	gfx_vk_present.c	1 = the display rate vote follows the game's rate
+DM_VK_XFB	bool		debug	?	gfx_vk_exec.c	
+DM_VK_X_BC_CPU	bool		debug	start	gfx_vk_core.c	BC textures decoded on the CPU into uncompressed images (`gfx_vk_tex.c` `bc_decode`), as on a driver without `textureCompressionBC`. With `DM_VK_X_FENCES=1` the Y700 stands in for those phones; Wonder's level 1: about 1 more dropped frame in 300, ~100 MiB more memory
+DM_VK_X_COLOR	bool		debug	?	gfx_vk_exec.c	
+DM_VK_X_CUTANY	bool	0	profile	live	gfx_vk_exec.c	1 = command buffers may be cut before any pass (not only passes with a new depth image)
+DM_VK_X_CUTFS	hex		debug	live	gfx_vk_exec.c	Diagnostic only: split before and after draws with this fragment shader, for before/after pass dumps. Off by default.
+DM_VK_X_DEPTH	bool		debug	?	gfx_vk_exec.c	
+DM_VK_X_DEPTH_CLEAR_COLOR	bool		debug	live	gfx_vk_exec.c	Diagnostic only: also clear colour target 0 to zero when a depth clear occurs on an R11G11B10 pass. Deliberately changes rendering to test dependence on retained colour; never a production correction.
+DM_VK_X_FENCES	bool		debug	start	gfx_vk_core.c	submissions signal a ring of fences instead of a timeline semaphore, as on a Vulkan 1.1 driver without timeline semaphores (the Adreno 618 / 619 of 2021, issue #15). On the Y700 it cost nothing measurable in Super Mario Bros. Wonder's level 1
+DM_VK_X_FLAT_VS	str		profile	?	gfx_vk_exec.c	vertex shaders (hex keys, key:n) whose outputs are made flat
+DM_VK_X_LANDCUT	bool		debug	?	gfx_vk_exec.c	
+DM_VK_X_NOBAR	bool		debug	live	gfx_vk_exec.c	cost measurements that **draw wrong**: no barrier before a pass; depth neither loaded nor stored; colour not loaded unless cleared
+DM_VK_X_NOBC	bool		debug	live	gfx_vk_exec.c	every draw sets all its dynamic state and binds again (no bind cache; the cache starts empty in each command buffer and each render pass)
+DM_VK_X_NODISPBAR	bool		debug	live	gfx_vk_exec.c	cost measurement that may draw wrong: no barrier after compute dispatches (Tears of the Kingdom: no GPU change at about 23 dispatches a frame)
+DM_VK_X_NODRVC	bool		debug	?	gfx_vk_exec.c	
+DM_VK_X_NOGS	bool		debug	live	gfx_vk_exec.c	leave out draws with a geometry shader (A/B their GPU cost: Xenoblade Chronicles 3's effects, 0.7 ms of 22 in a battle)
+DM_VK_X_NOKEEP	bool		debug	?	gfx_vk_exec.c	
+DM_VK_X_NOPRERESET	bool		debug	start	gfx_vk_core.c	a submission slot's command buffers are reset as they are begun again, on the replay thread, instead of on the completion thread when its submission is done
+DM_VK_X_NOSETC	bool		debug	live	gfx_vk_exec.c	flicker experiments: no descriptor-set reuse; no driver-segment reuse; deferred uniform updates land at each cut; no pass kept for repeated targets; no uniform-shadow reuse
+DM_VK_X_NOSETMEMO	bool		debug	?	gfx_vk_exec.c	
+DM_VK_X_NOSHC	bool		debug	?	gfx_vk_exec.c	
+DM_VK_X_NOTARGET	bool		debug	start	gfx_vk_exec.c	skip draws with no colour or depth target set, as before (A/B); default 1 runs them in an attachment-less pass the size of viewport 0
+DM_VK_X_RDKEEP	hex		debug	live	gfx_vk_exec.c	runs of rasterizer-discard draws (vertex shaders that write memory) stay in the pass of the draws around them instead of a pass of their own: Xenoblade Chronicles 3 then draws thin black slivers over cliffs and grass in a few percent of frames
+DM_VK_X_SETVERIFY	bool		debug	?	gfx_vk_exec.c	
+DM_VK_X_SKIPFS	hex		debug	live	gfx_vk_exec.c	Skip draws with one of up to 16 fragment shader keys for pass/shader bisection. Diagnostic only: this deliberately removes rendering. `=0` clears the list.
+DM_VK_X_SKIPVS	hex		debug	live	gfx_vk_exec.c	leave out the draws whose vertex shader key (hex, as the traces print it; up to 8) is listed: bisect which shaders an artifact needs, a group at a time (it found XC3's slivers from 40 candidates in 4 rounds)
+DM_VK_ZEROCOPY_LAZY	int		debug	start	gfx_vk_core.c	which zero-copy pools get their buffer only when the GPU first uses them (vk_pool_of, pool_back: a slab's slot or a kept buffer as at creation; until then the game's own cached, swappable pages): `0` none; `1` also the chunks of pools over 256 MB (`ZC_CHUNK`; Pokopia on the Thor, 4.96 GB of pools of
+DM_VK_ZEROCOPY_MAX_MB	int	0	profile	?	gfx_vk_core.c	pools above this many MB are not mapped zero-copy; 0 = no limit
+DM_VSYNC_HZ	float		debug	?	hle_sdk16.c	
+DM_WATCH	int		debug	?	crash.c	
+DM_WATCH_SAMPLE	str		debug	?	crash.c	Mac diagnostics: when stuck, sample itself for 1 second and write the thread stacks to this path
+DM_WATCH_STALL	bool		debug	?	crash.c	
+DM_WINDOW	str		debug,ios	?	front_mac.m	
+DM_XV_FILE	str		debug,ios	?	nvn_mtl.m	
+DM_YIELD_BACKOFF	str	250	profile	start	hle_thread.c	back off after this many ms of repeated yields (ms[:start ms]); 0 = plain spin
+DM_YIELD_WATCH	str		debug	start	hle_thread.c	yield watchdog, also in release builds: a guest thread that yields this many times a second or more (default 12000, above the busiest normal yielder seen) for 30 s logs a `[RED] yield watchdog` line with its backtrace and every guest thread's wait and backtrace (as the `threads` ctl line), again aft

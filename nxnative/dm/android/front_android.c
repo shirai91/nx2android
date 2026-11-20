@@ -11,6 +11,7 @@
 #include "dm_input.h"
 #include "pad_slots.h"
 #include "overlay_layout.h"
+#include "stick_axis.h"
 #include "pixel_font.h"
 #include "saves_android.h"
 #include <math.h>
@@ -299,7 +300,7 @@ static uint64_t key_bit(int32_t k) {   // Nintendo layout by position: the botto
     default: return 0;
     }
 }
-static int32_t axis(float v) { if (v > -0.12f && v < 0.12f) return 0; return (int32_t)(v * DM_STICK_MAX); }
+static int32_t axis(float v) { return dm_stick_axis(v); }
 static uint64_t g_shake_btn;   // DM_BTN_SHAKE while the device is being shaken (below); input thread only
 static uint64_t pad_axis_buttons(const float axes[8]) {
     uint64_t b = 0;
@@ -313,7 +314,8 @@ static uint64_t pad_axis_buttons(const float axes[8]) {
 }
 static void pad_publish(int p) {   // caller holds g_slot_mu
     uint64_t b = g_btn[p] | (p ? 0 : g_shake_btn) | pad_axis_buttons(g_ax[p]);
-    dm_pad_set_player(p, b, axis(g_ax[p][0]), -axis(g_ax[p][1]), axis(g_ax[p][2]), -axis(g_ax[p][3]));   // Android's y grows downward, the Switch's upward
+    int32_t lx, ly, rx, ry; dm_stick_xy(g_ax[p][0], g_ax[p][1], &lx, &ly); dm_stick_xy(g_ax[p][2], g_ax[p][3], &rx, &ry);
+    dm_pad_set_player(p, b, lx, -ly, rx, -ry);   // Android's y grows downward, the Switch's upward
 }
 static const void *pad_owner(int id) { return (const void *)((uintptr_t)(uint32_t)id + 1); }   // the slot table's key for a device id (never null)
 // Devices that sent input and hold no slot, so the input thread asks Java about each once: st 0, not a controller as pad_watch counts one (a keyboard's or a
@@ -442,6 +444,7 @@ JNIEXPORT jfloatArray JNICALL Java_org_nx2a_ExternalActivity_externalOverlay(JNI
     return out;
 }
 static int g_ptr_ctl[32];   // pointer id → control index + 1 (0 = the touch screen)
+static float g_ptr_origin[32][2];
 static int ctl_at(float x, float y, float W, float H) {   // the control under (x, y) in pixels, -1 if none (in the layout editor: every control, shown or not)
     int best = -1, vis = atomic_load(&g_edit) ? 1 : dm_overlay_visible(), shown = vis == 1; float bd = 1e9f;
     if (!vis) return -1;   // no overlay: every touch is the game's
@@ -585,7 +588,7 @@ static _Atomic int g_ed_st;    // the layout editor's state for dm_menu_state (o
 static _Atomic int g_sp_on, g_sp_hi = -1, g_sp_ver;   // the save picker (below): open, its highlighted row, its edit count
 static _Atomic int g_sv_st, g_sv_n;                   // Export save: its outcome (overlay_layout.h OVX_*), the exports made
 int dm_menu_state(void) {
-    if (atomic_load(&g_tx_on)) return 1 << 16 | (atomic_load(&g_tx_ver) & 0xffff);   // the text entry's panel (gfx_vk_present.c ov_text_panel)
+    if (atomic_load(&g_tx_on)) return OVT_ST | (atomic_load(&g_tx_ver) & 0xffff);   // the text entry's panel (gfx_vk_present.c ov_text_panel)
     if (!atomic_load(&g_menu)) return -1;
     if (atomic_load(&g_edit)) return OVE_ST | atomic_load(&g_ed_st);
     if (atomic_load(&g_sp_on)) return OVS_ST | (atomic_load(&g_sp_hi) + 1) << 4 | (atomic_load(&g_sp_ver) & 255) << 20;
@@ -1036,6 +1039,7 @@ static void touch_event(AInputEvent *e) {
         int i = act == AMOTION_EVENT_ACTION_DOWN ? 0 : ai, id = AMotionEvent_getPointerId(e, (size_t)i) & 31;
         int c = ctl_at(AMotionEvent_getX(e, (size_t)i), AMotionEvent_getY(e, (size_t)i), W, H);
         g_ptr_ctl[id] = c + 1;
+        g_ptr_origin[id][0] = AMotionEvent_getX(e, (size_t)i); g_ptr_origin[id][1] = AMotionEvent_getY(e, (size_t)i);
         if (c >= 0 && OV_CTLS[c].kind == OV_MENU) { atomic_store(&g_menu_t, mono_ns()); dm_haptics_android_tap(); menu_grab(id, &OV_CTLS[c], AMotionEvent_getX(e, (size_t)i), AMotionEvent_getY(e, (size_t)i), W, H); }
         if (!atomic_exchange(&g_overlay, 1) && !atomic_load(&g_pads)) dm_haptics_android_device(-1);   // keep vibration on a used controller that is still attached
     }
@@ -1067,8 +1071,10 @@ static void touch_event(AInputEvent *e) {
                 static const uint64_t dir[8] = {DM_BTN_RIGHT, DM_BTN_RIGHT | DM_BTN_DOWN, DM_BTN_DOWN, DM_BTN_DOWN | DM_BTN_LEFT, DM_BTN_LEFT, DM_BTN_LEFT | DM_BTN_UP, DM_BTN_UP, DM_BTN_UP | DM_BTN_RIGHT};
                 btn |= dir[s]; }
         } else {
-            if (m > 1) { dx /= m; dy /= m; }
-            kn[k->kind == OV_STICK_R][0] = dx; kn[k->kind == OV_STICK_R][1] = dy; held[k->kind == OV_STICK_R] = 1;   // the knob follows the finger (to the ring)
+            float ox = fminf(fmaxf(g_ptr_origin[id][0], b[2]), W - b[2]);
+            float oy = fminf(fmaxf(g_ptr_origin[id][1], b[2]), H - b[2]);
+            ov_touch_stick(x - ox, y - oy, b[2], k->kind == OV_STICK_R, &dx, &dy);
+            kn[k->kind == OV_STICK_R][0] = dx; kn[k->kind == OV_STICK_R][1] = dy; held[k->kind == OV_STICK_R] = 1;   // the knob shows the output
             int32_t sx = (int32_t)(dx * DM_STICK_MAX), sy = (int32_t)(-dy * DM_STICK_MAX);
             if (k->kind == OV_STICK_L) { lx = sx; ly = sy; } else { rx = sx; ry = sy; }
         }
@@ -1320,6 +1326,7 @@ static void *host_thread(void *a) {
     atomic_store(&g_running, 1);
     int rc = main(2, argv);
     LOG("host returned %d", rc);
+    { void hlecount_flush(void); hlecount_flush(); }   // DM_HLECOUNT: nnMain's normal return also leaves by _exit, which does not run atexit
     dm_perf_gpu_release();   // the game ended itself: the device-wide KGSL property outlives the process (perf_android.c)
     _exit(rc);
 }

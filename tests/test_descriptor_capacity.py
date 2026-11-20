@@ -6,6 +6,10 @@ import tempfile
 import unittest
 
 import host_cc
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import csrc  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -19,7 +23,7 @@ def between(text, start, end):
 class DescriptorCapacity(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        source = (ROOT / 'nxnative/dm/android/gfx_vk_exec.c').read_text(encoding='utf-8')
+        source = csrc.unit((ROOT / 'nxnative/dm/android/gfx_vk_exec.c'))
         header = (ROOT / 'nxnative/dm/android/gfx_vk.h').read_text(encoding='utf-8')
         stage = source[source.index('static VkDescriptorSet stage_set('):]
         declarations = next(line for line in stage.splitlines()

@@ -8,6 +8,7 @@ import unittest
 from porter.toolchain import find_ndk
 import sys; sys.path.insert(0, str(Path(__file__).resolve().parent))
 import host_cc   # noqa: E402
+import csrc  # noqa: E402
 
 
 class CopyBack(unittest.TestCase):
@@ -18,8 +19,7 @@ class CopyBack(unittest.TestCase):
         if not headers:
             self.skipTest('NDK Vulkan headers are required')
         core = (Path(__file__).resolve().parents[1] / 'nxnative/dm/android/gfx_vk_core.c').read_text()
-        start = core.index('static void pools_readback_barrier(VkCommandBuffer cb) {')
-        function = core[start:core.index('\n}\n', start)+3]
+        function = csrc.function(core, 'static void pools_readback_barrier(VkCommandBuffer cb) {')
         harness = r'''
 #define VK_NO_PROTOTYPES
 #include <vulkan/vulkan_core.h>
@@ -56,13 +56,12 @@ int main(void) {
         dirty = '\n'.join(s for s in dirty.splitlines() if not s.startswith('#include'))
         core = (dm / 'android/gfx_vk_core.c').read_text()
         start = core.index('static void pools_copy_back(const struct vksub *s) {')
-        copy_back = core[start:core.index('\n}\n', start) + 3]
+        copy_back = csrc.function(core, 'static void pools_copy_back(const struct vksub *s) {')
         if 'static uint64_t pool_merge_back(' in core:
             copy_back = core[core.index('static uint64_t pool_merge_back('):start] + copy_back
         start = core.index('static void vk_pools_sync_(VkCommandBuffer cb) {')
-        sync = core[start:core.index('\n}\n', start) + 3]
-        start = core.index('static void pool_cache_sync(')
-        cache_sync = core[start:core.index('\n}\n', start) + 3]
+        sync = csrc.function(core, 'static void vk_pools_sync_(VkCommandBuffer cb) {')
+        cache_sync = csrc.function(core, 'static void pool_cache_sync(')
         harness = r'''
 #define _GNU_SOURCE
 #include <assert.h>

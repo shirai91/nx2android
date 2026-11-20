@@ -1,0 +1,6 @@
+# Unreal Engine's allocator on a host malloc zone (nxnative/dm/host/hle_uemalloc.c; dm/games/game.py puts these rows in the profile header as DM_GAME_UE_MALLOC).
+# Each row runs only on its main build. layout: UE5, UE4_27, UE5_6 (the vtable slots, hle_uemalloc.c k_lay); obj: the FMallocBinned object (main + obj, 0 = made by
+# GCreateMalloc, given at the gate); vtable: main + vtable; cut: the cut constructor call (a nop after the rewrite, its patches.py).
+#	build	what	layout	obj	vtable	cut
+# DRAGON QUEST VII Reimagined 1.2.0: no fixed object (0: made by GCreateMalloc, given at the gate), its vtable (main+0x5e4c0e8, 21 slots), the cut constructor call (main+0x32758dc)
+f7ec03e4cb9de3bd8319d4e899d2e9cc	DRAGON QUEST VII Reimagined 1.2.0	UE4_27	0x0	0x5e4c0e8	0x32758dc

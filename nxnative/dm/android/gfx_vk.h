@@ -1,6 +1,7 @@
 // Android port: the Vulkan backend behind the replay interface of nvn_mtl.h (what nvn_mtl.m implements on Metal).
 // Files: gfx_vk_core.c (device, memory pools, submissions, completion), gfx_vk_tex.c (formats, textures, samplers, registration tables),
-// gfx_vk_shader.c (shader bundle, modules, layouts), gfx_vk_exec.c (command replay: passes, pipelines, descriptors, draws, copies), gfx_vk_present.c (window, swapchain).
+// gfx_vk_shader.c (shader bundle, modules, layouts), gfx_vk_exec.c (command replay: passes, pipelines, descriptors, draws, copies; one file a section, gfx_vk_exec_<section>.inc), gfx_vk_present.c (window, swapchain),
+// gfx_vk_quirks.c (the GPU driver and its quirk table).
 // Version 1 is correct-first: whole-pipeline barriers between passes, full pipelines with a small dynamic state set, descriptor sets per draw.
 #pragma once
 #define VK_NO_PROTOTYPES
@@ -200,3 +201,5 @@ enum { PT_DISPATCH = 0xd15 };   // vk_pass_ts: a dispatch timed as a pass (its f
 
 // Mark driver cache updates, including same-sized payload changes.
 void vk_pipeline_cache_changed(void);
+
+#include "gfx_vk_quirks.h"   // the GPU driver quirk table (vk_quirk)
