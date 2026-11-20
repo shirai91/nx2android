@@ -1,0 +1,8 @@
+# Divinity: Original Sin 2 - Definitive Edition on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Larian's Divinity Engine on SDK 9.3.0, update 1.0.12 (v786432); 12,329 shaders in the bundle (12,256 from the LSPK packages' .bshd members, 73 from main).
+# Tested 2026-11-20 on the Legion Y700 Gen 4 (Snapdragon 8 Elite, Adreno 830, the system Vulkan driver), driven with DM_CTL: boot, the title, the main menu, a new
+# game, character creation, the intro movie and the prison ship. 60 fps (game.tsv present_interval): GPU 8-9 ms a frame on the ship, frames on screen every 16.7 ms.
+status	boots
+tested	v786432 Legion Y700 Gen 4 (Snapdragon 8 Elite, Adreno 830, Android 16)
+package	org.nx2a.divinityoriginalsin2
+orientation	landscape
