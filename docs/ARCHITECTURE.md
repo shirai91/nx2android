@@ -233,6 +233,10 @@ reason, and stops with exit code 4. This diagnostic does not establish whether
 the input or the keys caused the rejection. `--allow-damaged` does not bypass
 header failures; filesystem integrity errors keep their existing handling.
 
+The shader split orders each RomFS and the DLC by their forward-slash source
+labels. When several files contain the same shader, Windows and POSIX now
+choose the same first source for the shader map (issue #461).
+
 RomFS in the data pack is hard-linked to the extraction when the volume allows it, so it takes no extra space.
 
 Generated NVN APKs declare Android Performance Game Mode through `android.game_mode_config`
