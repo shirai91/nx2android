@@ -20,4 +20,3 @@ orientation	landscape
 env	DM_NVN_ASYNC=1
 readme_image	docs/images/xenoblade-chronicles-3.jpg
 readme_tag	v0.1.0
-readme_note	update 2.2.0 · 30 fps · **work in progress**: some effects and models don't draw yet

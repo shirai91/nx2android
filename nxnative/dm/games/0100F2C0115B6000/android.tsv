@@ -35,4 +35,3 @@ env	DM_NVN_ASYNC=1
 env	DM_PIN_REPLAY=prime
 readme_image	docs/images/the-legend-of-zelda-tears-of-the-kingdom.jpg
 readme_tag	v0.3.0
-readme_note	update 1.4.3 · 30 fps, 60 in caves and shrines · smoothest with a Turnip Vulkan driver · **work in progress**: 60 fps in the open world

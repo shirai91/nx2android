@@ -12,4 +12,3 @@ package	org.nx2a.pokemonmysterydungeondx
 orientation	landscape
 readme_image	docs/images/pokemon-mystery-dungeon-rescue-team-dx.jpg
 readme_tag	v0.4.0
-readme_note	update 1.0.2 · 30 fps (as on Switch), 60 with the 60 fps option · tested on the AYN Odin 2 (Adreno 740) with a Turnip Vulkan driver

@@ -12,4 +12,3 @@ orientation	landscape
 requires	bcn
 readme_image	docs/images/rhythm-heaven-groove.jpg
 readme_tag	v0.4.0
-readme_note	base game 1.0.0 · 60 fps · tested on the Xiaomi 15 (Adreno 830)

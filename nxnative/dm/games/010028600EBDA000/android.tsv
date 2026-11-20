@@ -11,4 +11,3 @@ orientation	landscape
 requires	bcn
 readme_image	docs/images/super-mario-3d-world-bowsers-fury.jpg
 readme_tag	v0.4.0
-readme_note	update 1.2.2 · 60 fps · tested on the AYN Thor (Adreno 740) with a Turnip Vulkan driver

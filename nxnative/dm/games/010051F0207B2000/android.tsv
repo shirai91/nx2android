@@ -16,4 +16,3 @@ orientation	landscape
 env	DM_STEADY_REALTIME=1
 readme_image	docs/images/tomodachi-life-living-the-dream.jpg
 readme_tag	v0.4.0
-readme_note	update 1.0.4 · 60 fps

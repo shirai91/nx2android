@@ -12,4 +12,3 @@ requires	bcn
 readme_name	OCTOPATH TRAVELER 0 (Chinese release)
 readme_image	docs/images/octopath-traveler-0-chinese.jpg
 readme_tag	v0.4.0
-readme_note	update 1.0.5 · 60 fps · the Chinese and Korean release · tested on the Xiaomi 23117RK66C (Android 16) · port with Game language: Chinese (Simplified) (`--language zh-Hans`)

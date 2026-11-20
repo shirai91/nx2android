@@ -177,7 +177,7 @@ A profile is offered for Android when it has an `android.tsv`; the profiles with
 
 | Key | Meaning |
 |---|---|
-| `status` | `playable` (tested end to end on a device), `wip` (plays on a device, but parts are missing: README.md's Games table says which), `boots` (starts, not playable yet) or `experimental` |
+| `status` | `playable` (tested end to end on a device), `wip` (plays on a device, but parts are missing: the game's README.md says which), `boots` (starts, not playable yet) or `experimental` |
 | `tested` | `<version> <device>`: the version and device the status was checked on |
 | `package` | The app's package name (default `org.nx2a.t<title ID in lowercase>`) |
 | `orientation` | `landscape` (default) or `any` |
@@ -187,7 +187,7 @@ A profile is offered for Android when it has an `android.tsv`; the profiles with
 | `romfs` | `raw` (default) or `zstd`: the data pack's RomFS files that compress are stored zstd-compressed and read back by the host ("Compressed RomFS" below) |
 | `vulkan_driver` | `system` (default) or `turnip`: the Vulkan driver the profile was tested with. With `turnip` the port packs Mesa's Turnip (`porter config turnip <libvulkan_freedreno.so>`, else a build under `tools/turnip`) as `--vulkan-driver` would, and says so in red when it finds none; `--vulkan-driver system` keeps the device's driver |
 | `pacing` | the frame-pacing policy in one row: `adaptive` (default: the profile's `fps_target`, the governor steps between 60, 40 and 30), `steady` (no governor steps), `fixed60`, `fixed30`, `game` (the game's own limit, no governor). Each is `env` rows before the profile's own (`android_profile.py` `PACING`); a profile may not also set one of them (Frame pacing, above) |
-| `readme_image`, `readme_tag`, `readme_note` (`readme_name`) | the game's cell in README.md's Games table: its device frame shot (`docs/images/`), the nx2android version it was tested on (`v0.4.0`), the line under the name; `readme_name` when the table names the game otherwise than `game.tsv`. `python docs/gen_tables.py` makes the table (and the checklist's marks and count) from these rows; `tests/test_docs_tables.py` fails when the files differ |
+| `readme_image`, `readme_tag` (`readme_name`) | the game's place in README.md's Games list and the top of its own page, `README.md` in the profile folder: its device frame shot (`docs/images/`) and the nx2android version it was tested on (`v0.4.0`); `readme_name` when the list names the game otherwise than `game.tsv`. `python docs/gen_tables.py` makes the list, the page's facts block (status, tested version and device, what the profile sets) and the checklist's marks and count from the profiles; the page's other sections (Game version, Frame rate, Tested devices, Options, Quirks and known issues: `docs/GAME_README_TEMPLATE.md`) are written by hand. `tests/test_docs_tables.py` fails when a file differs, a section is missing or a link is broken |
 | `env` | `<KEY>=<VALUE>`: a host switch the game needs on Android, written to the data pack's `env.txt`; only switches of scope `profile` in the settings registry (Settings, above) |
 | `overlay` | `<tablet\|phone> <control> <x> <y>`: moves one on-screen control of that layout (`dm/android/overlay_default.tsv`) to x, y as fractions of the window, compiled into `android_profile.h` |
 
@@ -350,7 +350,7 @@ The player's settings, APK signing key and built translator live in their nx2and
 ```
 nx2android/
   docs/ARCHITECTURE.md   this file
-  docs/gen_tables.py     README.md's games table and docs/PORT_CHECKLIST.md's ticks, made from the profiles
+  docs/gen_tables.py     README.md's games list, each game page's facts block and docs/PORT_CHECKLIST.md's ticks, made from the profiles
   porter/                port pipeline (python -m porter)
   gui/                   desktop app (python -m gui)
   devtools/              device bring-up scripts

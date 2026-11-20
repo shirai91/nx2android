@@ -1,8 +1,49 @@
-# 三國志14 with 威力加強版 (`0100CD4012DCA000`)
+<!-- game facts: made by docs/gen_tables.py from android.tsv; edit android.tsv, not this block -->
+# ROMANCE OF THE THREE KINGDOMS XIV
+
+![ROMANCE OF THE THREE KINGDOMS XIV](../../../../docs/images/romance-of-the-three-kingdoms-xiv.jpg)
+
+| | |
+|---|---|
+| Status | **playable** |
+| Title ID | `0100CD4012DCA000` |
+| Tested with nx2android | `v0.4.0` |
+| Tested build and device | v786432 Xiaomi 2410DPN6CC haotian (Snapdragon 8 Elite, Adreno 830, Android 16) |
+| App package | `org.nx2a.t0100cd4012dca000` |
+
+Read the profile's porting log in the comment header of [`android.tsv`](android.tsv). Back to the [games list](../../../../README.md#games).
+<!-- end of the game facts -->
+
+## Game version
+
+- Update 1.1.1.
+- The profile was checked with `v786432` (the `tested` row of android.tsv).
+
+## Frame rate
+
+- 30 fps (as on Switch).
+
+## Tested devices
+
+| Device | GPU | Vulkan driver | Game version | nx2android | Result |
+|---|---|---|---|---|---|
+| Xiaomi 2410DPN6CC haotian (Snapdragon 8 Elite, Adreno 830, Android 16) | Adreno 830 | not recorded | 1.1.1 (v786432) | `v0.4.0` | playable |
+
+Tested on the Xiaomi 2410DPN6CC (Adreno 830).
+
+## Options
+
+- Not recorded.
+
+## Quirks and known issues
+
+- Not recorded.
+
+## Porting notes
 
 Update v786432 (1.1.1) over the base game, with add-on content 49 (the expansion pack itself). Koei Tecmo's KTGL on NVN, SDK 10.4.1. Modules `main`, `subsdk0` (NintendoSDK_movie: the MP4 opening and event movies) and `sdk`. Plays on Android at 30 fps, as on the Switch.
 
-## What it needs
+### What it needs
 
 | Setting | Where | Why |
 |---|---|---|
@@ -11,13 +52,13 @@ Update v786432 (1.1.1) over the base game, with add-on content 49 (the expansion
 
 No game-specific code cuts. The frame rate needs none: the game is 30 fps on the Switch too.
 
-## Audio
+### Audio
 
 `OpenAudioRenderer` is taken over (CPU rendering + manual execution, then the host's render thread), and the game sizes its own allocation by `GetAudioRendererWorkBufferSize`. Answering with the local SDK's CPU + manual size (0x60e000) rather than the DSP service's requirement (0x4c4000) made the game reserve 1.37 MB more than on hardware. Its internal pools are laid out to within a few hundred bytes, so a later allocation failed, the subsystem's process step returned -51, audio was torn down and the boot exited cleanly (`nnMain returned 0`) with no error line. The service's own formula now answers and the CPU representation is host storage taken at open and freed at close.
 
 The same game's Eden report ([Issue-Reports#387](https://github.com/eden-emulator/Issue-Reports/issues/387)) found the same failure on an emulator and fixed it by rebalancing the pools themselves — same 0x7248-byte request refused with 0x6CD0 left.
 
-## Memory
+### Memory
 
 The defaults hold. The game makes no `nn::os::AllocateAddressRegion` region in anything tested here: no `[mem] ... address regions live` line appears,
 and the campaign runs the same with `mem_alias` at 4.375 GB and at the profile's 256 MB. The SDK's node area is cut from 1 GB to 62 MB by
@@ -26,13 +67,13 @@ and the campaign runs the same with `mem_alias` at 4.375 GB and at the profile's
 The first turn of a campaign takes a while — a few seconds of the screen sitting still before the map comes up. It is the engine loading the scenario,
 not a freeze: the frame count keeps rising and the sound keeps playing, and the turn itself then runs at the same rate as the rest of the map.
 
-## Files and shaders
+### Files and shaders
 
 - RomFS: 12 GB, 1,019 files in the data pack. `0002/` holds the engine's `.rdb` archives and their `.bin` volumes, `0001_SC` / `0001_TC` the message data, `0004/` the maps; add-on content 49 is the expansion's own volume.
 - `shader_split.py` finds 55,383 shaders; the Vulkan bundle carries 55,391 (the split's supplemental vertex/pixel pairs included). All translate. GLSLC outputs in `main` and the G2S containers in `0002/` are the two sources, as in the other KTGL games.
 - The game reads its archives by offset, so the `.bin` extensions stay uncompressed (`zip_store`).
 
-## Frame rate
+### Frame rate (porting notes)
 
 30 fps, as on the Switch: frame time p50 33.3 ms, GPU 20.7 ms and replay 2.6 ms a frame on the campaign map, no frame dropped on screen.
 
@@ -47,7 +88,7 @@ not a freeze: the frame count keeps rising and the sound keeps playing, and the 
 
 FPSLocker's config for this build (`33E595CFF4FCB981.yaml`) moves the first three; the fourth is the host's `present_interval display`. With all four applied the lock is lifted (the game asks for 60 and the host presents one frame a tick) and the frame still takes 33.3 ms: the GPU needs 20.7 ms for the map against 7 ms on the Mac host for the same scene, so the ceiling on an Adreno 830 is about 48 fps. `DM_RENDER_SCALE=0.75` and handheld mode (`DM_OPMODE=0`) bring the GPU time to 4–14 ms but the frame stays at 33 ms, so the engine's own step — not the GPU — sets the pace once the lock moves; that is where a 60 fps attempt has to continue.
 
-## Testing
+### Testing
 
 Xiaomi 2410DPN6CC (haotian, Snapdragon 8 Elite, Adreno 830, Android 16), wireless adb, `porter port --experimental --touch`:
 
@@ -55,7 +96,7 @@ Xiaomi 2410DPN6CC (haotian, Snapdragon 8 Elite, Adreno 830, Android 16), wireles
 - 30 fps with frame time p50 33.3 ms, p95 35 ms, 0 frames dropped on screen; audio 0 underruns over 48,000 frames with 5 catch-up renders;
 - a re-run after a restart continues from the save.
 
-## Open
+### Open
 
 - **Touch on list screens.** Touch reaches the game correctly (Start/End balanced, coordinates across the 1280×720 panel, gestures recognized). The officer list still behaves as on hardware: a tap selects the officer and the game moves focus into the detail pane, and list paging is a right-stick operation. The Switch's own touch cannot do the scrollbar or some list operations either (KOEI's FAQ). A two-finger swipe as synthetic buttons, as NX2Apple's `DM_SWIPE_BTNS` does for the same game, is the planned fix; it is not implemented here.
 - **60 fps**: see above; the engine's step after the lock moves is the next thing to find.

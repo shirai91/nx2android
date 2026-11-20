@@ -15,4 +15,3 @@ setting	overlay=0
 setting	rumble=1
 readme_image	docs/images/fm24-touch.jpg
 readme_tag	v0.4.0
-readme_note	update 1.0.1 · 60 fps · OpenGL ES · touch or controller

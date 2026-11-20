@@ -1,10 +1,53 @@
-# 13 Sentinels: Aegis Rim (Asia) on Android
+<!-- game facts: made by docs/gen_tables.py from android.tsv; edit android.tsv, not this block -->
+# 13 Sentinels: Aegis Rim (Asia)
+
+![13 Sentinels: Aegis Rim (Asia)](../../../../docs/images/13-sentinels-asia.jpg)
+
+| | |
+|---|---|
+| Status | **playable** |
+| Title ID | `01008D7016438000` |
+| Tested with nx2android | `v0.4.0` |
+| Tested build and device | v0 Xiaomi 23117RK66C (Snapdragon 8 Gen 3, Adreno 750, Android 16) |
+| App package | `org.nx2a.thirteensentinelsasia` |
+| Needs | a GPU that reads BC-compressed textures (Adreno, Xclipse; not Mali or PowerVR) |
+
+Read the profile's porting log in the comment header of [`android.tsv`](android.tsv). Back to the [games list](../../../../README.md#games).
+<!-- end of the game facts -->
+
+## Game version
+
+- Base game 1.00.
+- The Asian release (Japanese, Korean, Chinese).
+- The profile was checked with `v0` (the `tested` row of android.tsv).
+
+## Frame rate
+
+- 60 fps.
+
+## Tested devices
+
+| Device | GPU | Vulkan driver | Game version | nx2android | Result |
+|---|---|---|---|---|---|
+| Xiaomi 23117RK66C (Snapdragon 8 Gen 3, Adreno 750, Android 16) | Adreno 750 | not recorded | 1.00 (v0) | `v0.4.0` | playable |
+
+Tested on the Xiaomi 23117RK66C (Android 16).
+
+## Options
+
+- Not recorded.
+
+## Quirks and known issues
+
+- Not recorded.
+
+## Porting notes
 
 Status: **playable** — ported and played on an Android device.
 
 The Asian release (Japanese, Korean, Chinese) of the game the western profile `01003FC01670C000` covers: its own title ID and its own `main` build, the same `subsdk0` / `sdk` builds and the same shader keys at other offsets in `main`. It covers **1.00 (`v0`)**, title ID `01008D7016438000`. Other game versions are outside this assessment.
 
-## Compatibility evidence
+### Compatibility evidence
 
 NVN GLSLC shaders are embedded in main; shaders/pairs match the supported western game (the offsets differ in `shader_map`). The existing `alloc_big_align`, movie path, pool chunking, BC textures and renderer support apply; no code is keyed to this Asian main.
 
@@ -14,7 +57,7 @@ Relevant existing paths:
 
 - `nxnative/dm/gfx/tools/shader_split.py`
 
-## Build and defaults
+### Build and defaults
 
 | Module | Build ID |
 |---|---|
@@ -24,7 +67,7 @@ Relevant existing paths:
 
 Android starts docked, with the gamepad visible. The gamepad's theme pack is the western release's (`13sentinels`), and the gamepad's layout, the pause menu's settings and the operation mode are the western profile's, so the two releases play the same way.
 
-## Device testing
+### Device testing
 
 Tested on the **Xiaomi 23117RK66C** (Snapdragon 8 Gen 3, Adreno 750, Android 16), the player's own dump and keys:
 

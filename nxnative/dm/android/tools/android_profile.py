@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # A game profile's Android keys: dm/games/<id>/android.tsv (key <TAB> value, # comments), beside the profile's game.tsv. A profile without one has not been ported to Android.
 # Keys (docs/ARCHITECTURE.md "Game profiles on Android"):
-#   status       playable | wip (plays, but parts are missing: docs/PORT_STATUS.md says which) | boots | experimental
+#   status       playable | wip (plays, but parts are missing: the game's README.md says which) | boots | experimental
 #   tested       <version> <device>: what the status was checked on
 #   package      the app's package name (default org.nx2a.t<title ID in lowercase>: a package name's parts start with a letter)
 #   orientation  landscape (default) | any
@@ -40,7 +40,7 @@ PACING = {
     'game': ['DM_FPS_TARGET=0', 'DM_ADAPTIVE_FPS=0'],       # the game's own frame limit, no governor
 }
 KINDS = {'stick_l': 'OV_STICK_L', 'stick_r': 'OV_STICK_R', 'button': 'OV_BUTTON', 'dpad': 'OV_DPAD', 'menu': 'OV_MENU'}
-SINGLE = ('status', 'tested', 'package', 'orientation', 'requires', 'sysdata', 'romfs', 'vulkan_driver', 'pacing', 'readme_name', 'readme_image', 'readme_tag', 'readme_note')
+SINGLE = ('status', 'tested', 'package', 'orientation', 'requires', 'sysdata', 'romfs', 'vulkan_driver', 'pacing', 'readme_name', 'readme_image', 'readme_tag')
 REPEAT = ('setting', 'env', 'overlay')
 
 
@@ -136,8 +136,8 @@ class AndroidProfile:
         if self.get('orientation', 'landscape') not in ('landscape', 'any'): bad.append('orientation: landscape or any')
         if self.get('romfs', 'raw') not in ('raw', 'zstd'): bad.append('romfs: raw or zstd')
         if self.vulkan_driver not in ('system', 'turnip'): bad.append('vulkan_driver: system or turnip')
-        readme = [k for k in ('readme_image', 'readme_tag', 'readme_note') if self.get(k)]
-        if (readme or self.get('readme_name')) and len(readme) != 3: bad.append('readme_image, readme_tag and readme_note go together (README.md games table, docs/gen_tables.py)')
+        readme = [k for k in ('readme_image', 'readme_tag') if self.get(k)]
+        if (readme or self.get('readme_name')) and len(readme) != 2: bad.append("readme_image and readme_tag go together (README.md's Games list and the game's own README.md, docs/gen_tables.py)")
         if self.get('readme_tag') and not re.fullmatch(r'v\d+\.\d+\.\d+', self.get('readme_tag')): bad.append(f"readme_tag {self.get('readme_tag')!r}: the nx2android version tested, v<major>.<minor>.<patch>")
         if self.get('readme_image') and not (ANDROID.parents[2] / self.get('readme_image')).is_file(): bad.append(f"readme_image {self.get('readme_image')!r}: no such file in the repository")
         if self.pacing not in PACING: bad.append(f'pacing {self.pacing!r}: one of {", ".join(PACING)}')

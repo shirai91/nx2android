@@ -16,4 +16,3 @@ sysdata	0100000000000811 0100000000000810
 readme_name	Kirby's Return to Dream Land Deluxe
 readme_image	docs/images/kirbys-return-to-dream-land-deluxe.jpg
 readme_tag	v0.4.0
-readme_note	60 fps · tested on the AYN Thor (Adreno 740) with a Turnip Vulkan driver · needs your console's firmware for its fonts (`--firmware`)
