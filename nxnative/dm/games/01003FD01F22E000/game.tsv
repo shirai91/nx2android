@@ -1,0 +1,37 @@
+# Tales of Berseria Remastered (Asia): update v262144, display version 1.0.5.
+# Unity 2022.3.62f1 / IL2CPP, Nintendo SDK 19.3.11, NVN, CRIWARE and FMOD; subsdk0 is NintendoSDK_movie.
+# Identity and module build IDs checked against the extraction and survey; Android validation is recorded in android.tsv.
+
+# ---- Identity ----
+title_id	01003FD01F22E000
+program_id	01003FD01F22E000
+
+# ---- App ----
+name	Tales of Berseria Remastered
+ipa	01003FD01F22E000.ipa
+app_category	public.app-category.games
+
+# ---- Versions ----
+build	v262144	1.0.5	main=7ce7738c90e3990895980f776bf31c66	subsdk0=bda3d43bac6b09f2d7ea324437c728a3	sdk=df7a3960c74c3a4803f826c587153252
+package	v262144
+shader_versions	v262144
+
+# ---- Files ----
+# Load main, the movie module, then sdk; the survey found no runtime NROs.
+modules	main subsdk0 sdk
+romfs_marker	Data/StreamingAssets/GAMEDATA/BASE/CHUNK0/GENERAL/COMMON/TLFILE.TLDAT
+zip_store	.acb:.assets:.awb:.dat:.png:.tldat:.usm:.metallib
+
+# ---- Memory ----
+# NPDM system resource: 16 MiB. The Xperia 1 V reached +4.26 GiB in the 4.375 GiB alias range during the opening without a refusal.
+# This is the layout used on the tested phones, not a physical RAM requirement or a Mac heap-check result.
+mem_reserve	0x140000000
+mem_alias	0x118000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+sys_resource	0x1000000
+
+# ---- Shader split ----
+# Source-only split: 11,527 shaders, 44 compute. See android.tsv for the Vulkan variant count.
+shader_groups	/Data/=data
+shader_note	Tales of Berseria Remastered shaders
