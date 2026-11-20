@@ -210,7 +210,7 @@ NVN(nvnMemoryPoolBuilderSetStorage, void, NVNmemoryPoolBuilder *b, void *m, size
 NVN(nvnMemoryPoolBuilderSetFlags, void, NVNmemoryPoolBuilder *b, int f) { ((pool_builder_t *)b)->flags = f; }
 static uint8_t *vpool_reserve(pool_t *o); static void vpool_release(pool_t *o);   // sparse virtual pools, see MapVirtual
 static void replay_lock(void); static void replay_unlock(void);   // the replay's state, from a game thread (see "Asynchronous replay")
-static void nvn_drain(void);
+static void nvn_drain(void); static int job_wait(uint64_t id, uint64_t timeout_ns); static int nvn_async(void); static int nvn_jobs_wait_queued(uint64_t timeout_ns);   // asynchronous replay (see below)
 __attribute__((weak)) void vk_pool_set_flags(const void *mem, int flags) { (void)mem; (void)flags; }
 __attribute__((weak)) void dm_perf_replay_thread(void) {}   // Android (perf_android.c): the replay thread's CPU placement   // Android's Vulkan host (gfx_vk_core.c): copied pools by their flags
 NVN(nvnMemoryPoolInitialize, NVNboolean, NVNmemoryPool *p, const NVNmemoryPoolBuilder *b) {
@@ -740,6 +740,9 @@ NVN(nvnCommandBufferRestoreZCullData, void, NVNcommandBuffer *c, NVNbufferAddres
 NVN(nvnCommandBufferSaveZCullData, void, NVNcommandBuffer *c, NVNbufferAddress a, size_t n) { (void)c; (void)a; (void)n; }
 NVN(nvnSyncWait, NVNsyncWaitResult, const NVNsync *s, uint64_t timeout) {
     const sync_t *o = (const sync_t *)s;
+    // Under asynchronous replay a sync is fenced while the replay thread records the command buffer the game just submitted, so an immediate
+    // TIMEOUT for the not-yet-fenced object made Final Fantasy Resonance abort through nn::diag at start-up: wait for the queued jobs first.
+    if (!o->fenced && nvn_async()) nvn_jobs_wait_queued(timeout);
     if (!o->fenced) { SEQ("syncwait %p unfenced", (void *)s); return NVN_SYNC_WAIT_RESULT_TIMEOUT_EXPIRED; }
     if (nvn_fence_wait(o->fence, 0)) { SEQ("syncwait %p kind %u already", (void *)s, o->fenced); return NVN_SYNC_WAIT_RESULT_ALREADY_SIGNALED; }
     uint64_t t0 = now_ns(); int r = nvn_fence_wait(o->fence, timeout);
@@ -1376,6 +1379,7 @@ static int nvn_fence_wait(uint64_t f, uint64_t timeout_ns) {
     return r;
 }
 static void nvn_drain(void) { if (nvn_async()) job_wait(g_job_enq, ~0ull); }   // every job queued so far replayed
+static int nvn_jobs_wait_queued(uint64_t timeout_ns) { return job_wait(g_job_enq, timeout_ns); }   // the same for a SyncWait: the fence of a command buffer waits only until the replay thread reaches it
 static void replay_lock(void) { if (nvn_async()) pthread_mutex_lock(&g_sub_mu); }
 static void replay_unlock(void) { if (nvn_async()) pthread_mutex_unlock(&g_sub_mu); }
 // Under asynchronous replay the game may record into its command memory again before the replay thread reaches what it submitted (Unicorn Overlord's skipped
