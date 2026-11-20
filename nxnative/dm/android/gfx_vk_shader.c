@@ -151,10 +151,12 @@ static VkDescriptorType desc_type(int d) {
 static int spv_is_vec4(const uint32_t *w, uint32_t fn, uint32_t t) {   // a vec4 of 32-bit floats, or an array of them (per-vertex inputs)
     for (int depth = 0; depth < 3; depth++) { uint32_t i = 5, found = 0;
         while (i < fn) { uint32_t n = w[i] >> 16; if (!n) return 0; if (w[i + 1] == t && ((w[i] & 0xffff) == 23 || (w[i] & 0xffff) == 28 || (w[i] & 0xffff) == 32)) { found = i; break; } i += n; }
-        if (!found) return 0; uint32_t op = w[found] & 0xffff;
+        if (!found) return 0;
+        uint32_t op = w[found] & 0xffff;
         if (op == 32) { t = w[found + 3]; continue; }   // OpTypePointer
         if (op == 28) { t = w[found + 2]; continue; }   // OpTypeArray
-        if (w[found + 3] != 4) return 0; for (i = 5; i < fn;) { if ((w[i] & 0xffff) == 22 && w[i + 1] == w[found + 2]) return w[i + 2] == 32; i += w[i] >> 16; } return 0; }
+        if (w[found + 3] != 4) return 0;
+        for (i = 5; i < fn;) { if ((w[i] & 0xffff) == 22 && w[i + 1] == w[found + 2]) return w[i + 2] == 32; i += w[i] >> 16; } return 0; }
     return 0;
 }
 static void spv_io_locs(const uint32_t *w, uint32_t nw, uint32_t *in, uint32_t *out) {
@@ -191,7 +193,8 @@ static uint32_t *spv_vs_init(const uint32_t *w, uint32_t nw, uint32_t *onw) {
     uint32_t at = 0;   // the entry point's first block, after its OpVariables
     for (uint32_t i = fn; i < nw;) { uint32_t n = w[i] >> 16, op = w[i] & 0xffff; if (!n) goto fail;
         if (op == 54 && w[i + 2] == ep) { uint32_t j = i + n; while (j < nw && (w[j] & 0xffff) != 248) j += w[j] >> 16; j += 2;
-            while (j < nw && ((w[j] & 0xffff) == 59 || (w[j] & 0xffff) == 8 || (w[j] & 0xffff) == 317)) j += w[j] >> 16; at = j; break; }
+            while (j < nw && ((w[j] & 0xffff) == 59 || (w[j] & 0xffff) == 8 || (w[j] & 0xffff) == 317)) j += w[j] >> 16;
+            at = j; break; }
         i += n; }
     if (!at || at >= nw) goto fail;
     uint32_t dec[16], nd = 0, id = bound;
@@ -211,7 +214,8 @@ fail:
 static uint32_t *spv_add_outputs(const uint32_t *w, uint32_t nw, uint32_t mask, uint32_t *onw) {
     uint32_t fn = nw, ep = 0, lastdec = 0, bound = w[3], f32 = 0, v4 = 0, pv4 = 0;
     for (uint32_t i = 5; i < nw;) { uint32_t n = w[i] >> 16, op = w[i] & 0xffff; if (!n) return NULL; if (op == 54) { fn = i; break; }
-        if (op == 15 && !ep) ep = i; if (op == 71 || op == 72) lastdec = i + n;
+        if (op == 15 && !ep) ep = i;
+        if (op == 71 || op == 72) lastdec = i + n;
         if (op == 22 && w[i + 2] == 32) f32 = w[i + 1];
         i += n; }
     if (!ep || !lastdec || !f32) return NULL;
