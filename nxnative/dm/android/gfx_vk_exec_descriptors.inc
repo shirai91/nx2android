@@ -260,13 +260,14 @@ static size_t set_key(uint64_t key[SET_KEY_WORDS], VkDescriptorSetLayout layout,
     }
     return n;
 }
+uint64_t g_c2_hit, g_c2_put, g_drv_content;   // driver segments found by the slots' hash, built for that path, and built for the content-hashed path (DM_LOG_FPS line)
 static void drv_shared(int st, int bank, VkBuffer *buf, VkDeviceSize *off, int dyn) {   // the driver segment: built, then one copy per distinct content in the submission
     static struct { uint64_t h, epoch; VkBuffer b; VkDeviceSize o; const uint8_t *p; } g_c2c[1024];   // (c2 by its slots: segments by g_c2h)
     if (bank && !dyn && g_c2fast && !g_x_nodrvc) {
-        // A hit trusts the 64-bit g_c2h: the slots are not compared. With DM_VK_X_SETVERIFY a verify collection (g_c2_check) builds the segment again and
+        // A hit trusts the 64-bit g_c2h: the slots are not compared. With DM_VK_X_SETVERIFY every hit (g_c2_check) builds the segment again and
         // compares its live bytes with the one found ([RED] on a difference, then the fresh one is used); DM_VK_C2_FAST=0 takes the content-hashed path below
         uint64_t h = g_c2h[st] ^ 0x632c632c632c632cull; unsigned k = (unsigned)(h % 1024);
-        if (g_c2c[k].epoch == g_set_epoch && g_c2c[k].h == h) {
+        if (g_c2c[k].epoch == g_set_epoch && g_c2c[k].h == h) { g_c2_hit++;
             if (!g_c2_check) { *buf = g_c2c[k].b; *off = g_c2c[k].o; return; }
             uint8_t d[0x1000], c[0x968]; drv_segment(st, bank, d, 0); g_c2_checked++;
             memcpy(c, g_c2c[k].p, sizeof c);   // (one read of the mapped copy, in the verify mode only; compares stay in ordinary memory)
@@ -275,9 +276,9 @@ static void drv_shared(int st, int bank, VkBuffer *buf, VkDeviceSize *off, int d
                                                             st, (unsigned long long)g_c2_bad, (unsigned long long)g_c2_checked);
         }
         uint8_t *p = vk_scratch(0x1000, V.props.limits.minUniformBufferOffsetAlignment, buf, off); drv_segment(st, bank, p, 0);
-        g_c2c[k].h = h; g_c2c[k].epoch = g_set_epoch; g_c2c[k].b = *buf; g_c2c[k].o = *off; g_c2c[k].p = p; return;
+        g_c2c[k].h = h; g_c2c[k].epoch = g_set_epoch; g_c2c[k].b = *buf; g_c2c[k].o = *off; g_c2c[k].p = p; g_c2_put++; return;
     }
-    uint8_t d[0x1000]; drv_segment(st, bank, d, dyn);
+    uint8_t d[0x1000]; drv_segment(st, bank, d, dyn); g_drv_content++;
     // only the bytes drv_segment can write are hashed (bank 0 ends at 0x648, the c2 table at 0x968; the rest is always zero): 4 KB was 512 hash steps a segment
     size_t n = bank ? 0x968 : 0x648;
     uint64_t h = fnv(0xcbf29ce484222325ull, d, n); unsigned k = (unsigned)(h % DRVC);
@@ -349,7 +350,7 @@ static void cbuf_desc(int st, const vkshader_t *s, const dmsv_bind *b, VkDescrip
 // buffers are marked written), nor for a shader that reads handles or addresses from uniform buffer memory (that memory changes under the same bindings).
 // DM_VK_X_NOSETMEMO=1 (live): always collected. DM_VK_X_SETVERIFY=1 (live): one hit in 64 is collected anyway and compared, [RED] on a difference
 enum { MEMO_CB = 16 };
-typedef struct { int nwh; uint32_t wbind[32], wtype[32]; uint64_t wh[32], wa[32]; vkshader_t *s; uint64_t epoch, bind, ubo, ubd, tex, samp, h, h2, um, im; uint32_t pool, binst, dofs[96]; int ncb; uint8_t ci[MEMO_CB], cpos[MEMO_CB]; VkDescriptorBufferInfo cd[MEMO_CB]; VkDescriptorSet set; } set_memo_t;
+typedef struct { vkshader_t *s; uint64_t epoch, bind, ubo, ubd, tex, samp, h, h2, um, im; uint32_t pool, binst, dofs[96]; int ncb; uint8_t ci[MEMO_CB], cpos[MEMO_CB]; VkDescriptorBufferInfo cd[MEMO_CB]; VkDescriptorSet set; } set_memo_t;
 static set_memo_t g_smemo_own[3], *g_smemo[3] = {&g_smemo_own[0], &g_smemo_own[1], &g_smemo_own[2]};   // each stage's last set: an entry of g_rmemo (rmemo_entry; its own without the table)
 static uint64_t g_bind_gen[6], g_ubo_gen[6];   // a stage's handles or storage buffers changed (bind_handles_rec, OP_BIND_SSBO), its uniform buffers (OP_BIND_UBO)
 uint64_t g_set_memo, g_set_memo_bad;   // memo hits, and differences the verify mode found
@@ -368,6 +369,7 @@ static int set_memo_ok(vkshader_t *s) {
     return s->setmemo == 1;
 }
 static uint64_t g_verify_n, g_verify_slot_bad, g_verify_bad;   // DM_VK_X_SETVERIFY checks: made, slot descriptors differing, anything differing
+static uint64_t g_verify_dofs[8];   // DM_VK_X_SETVERIFY: dynamic offsets that differ from the memo's, by binding kind (1 constant buffer, 3 driver segment)
 static int set_memo_get(int st, vkshader_t *s, uint32_t *dofs, const VkDescriptorBufferInfo *cbd) {   // cbd: the stage's constant buffer descriptors by binding (stage_set), or NULL
     set_memo_t *m = g_smemo[st];
     if (m->s != s) { g_memo_why[1]++; return 0; }
@@ -428,6 +430,17 @@ static set_memo_t *rmemo_entry(int st, const vkshader_t *s, uint64_t cbs) {
     uint64_t k = rmemo_key(st, s, cbs); rmemo_t *e = &g_rmemo[k % RMEMO]; e->key = k; e->st = st; g_rmemo_put++;
     return &e->m;
 }
+// A memo entry's slot descriptors one by one, for the verify mode's [RED] line naming the binding that differs: a side table made on the first verify
+// fill, one row per g_rmemo entry and per stage's own entry, so the entries themselves stay small (768 B of each ~1.7 KB, 1.5 MB of g_rmemo, when they were in it)
+typedef struct { int nwh; uint32_t wbind[32], wtype[32]; uint64_t wh[32], wa[32]; } memo_slots_t;
+static memo_slots_t *g_memo_slots;
+static memo_slots_t *memo_slots(const set_memo_t *m, int make) {
+    if (!g_memo_slots && (!make || !(g_memo_slots = calloc(RMEMO + 3, sizeof *g_memo_slots)))) return NULL;
+    for (int st = 0; st < 3; st++) if (m == &g_smemo_own[st]) return &g_memo_slots[RMEMO + st];
+    uintptr_t off = (uintptr_t)m - (uintptr_t)g_rmemo;   // (addresses as integers: m is an entry of g_rmemo or of g_smemo_own, two objects)
+    if (g_rmemo && off < sizeof *g_rmemo * RMEMO) return &g_memo_slots[off / sizeof *g_rmemo];
+    return NULL;
+}
 // The descriptors that come from the stage's slots (images, samplers, texel buffers, storage buffers), hashed apart from the uniform buffers: a memo hit must give these
 // exactly, while a uniform buffer or driver segment may be an equal copy in another buffer (the verify mode, DM_VK_X_SETVERIFY, tells the two apart)
 static uint64_t slot_desc_hash(const VkWriteDescriptorSet *w, uint32_t nw) {
@@ -475,7 +488,8 @@ static VkDescriptorSet stage_set(int st, vkshader_t *s, uint32_t *dofs, VkDescri
         verify = 1; memcpy(vd, dofs, sizeof *dofs * (size_t)s->ndyn); vum = g_num_um; vim = g_num_im; }
     uint64_t gtex = g_tex_gen, gsamp = __atomic_load_n(&g_samp_gen, __ATOMIC_ACQUIRE); uint32_t gpool = vk_pool_gen();   // before collecting: a change racing it (game thread) leaves the memo outdated
     extern unsigned g_tbuf_copies; unsigned tc0 = g_tbuf_copies;   // (gfx_vk_tex.c: a per-bind texel buffer copy made while collecting)
-    g_c2_check = verify;   // (DM_VK_X_SETVERIFY: the c2 segment built again and compared, drv_shared)
+    g_c2_check = g_x_setverify;   // (DM_VK_X_SETVERIFY: every c2 segment found by its slots' hash built again and compared, drv_shared; not only in the
+    // 1-in-64 memo checks, whose collections found none by hash in Super Mario Odyssey: 111,500 of them, 0 c2 checks)
     VkDescriptorSet set = VK_NULL_HANDLE; struct { uint32_t b, o; int i; } dp[96]; int nd = 0; uint64_t tb0 = tick();
     VkWriteDescriptorSet w[96]; VkDescriptorBufferInfo bi[96]; VkDescriptorImageInfo ii[96 * 4]; VkBufferView bv[128]; uint32_t nw = 0, nii = 0, nbv = 0;
     int ncb = 0; uint8_t mci[MEMO_CB]; VkDescriptorBufferInfo mcd[MEMO_CB];   // the constant buffers, for the memo
@@ -650,22 +664,31 @@ static VkDescriptorSet stage_set(int st, vkshader_t *s, uint32_t *dofs, VkDescri
     uint64_t h2 = g_x_setverify && (verify || memo) ? slot_desc_hash(w, nw) : 0;   // (only with DM_VK_X_SETVERIFY)
     // (DM_VK_X_SETVERIFY) a slot descriptor that differs is either a dependency the memo misses (named in the [RED] line below) or an equal copy made again,
     // such as a per-bind texel buffer copy (vk_tbuf_view's fallback), whose stage the memo keeps only for the next draw (rmemo takes none, see above)
+    int dofs_bad = 0, first_dof = -1;
     if (verify) { g_verify_n++; if (h2 != g_smemo[st]->h2) g_verify_slot_bad++;
-        if (h != g_smemo[st]->h || g_num_um != vum || g_num_im != vim || memcmp(vd, dofs, sizeof *dofs * (size_t)s->ndyn)) g_verify_bad++;
-        if (g_verify_n % 500 == 0) VKLOG("memo verify: %llu hits checked, slot descriptors differ %llu, anything %llu", (unsigned long long)g_verify_n, (unsigned long long)g_verify_slot_bad, (unsigned long long)g_verify_bad);
-        if (h2 != g_smemo[st]->h2) { static int nl; uint32_t fb[32], ft[32]; uint64_t fh[32], fa[32]; int fn = slot_desc_list(w, nw, fb, ft, fh, fa); const set_memo_t *mm = g_smemo[st];
+        dofs_bad = memcmp(vd, dofs, sizeof *dofs * (size_t)s->ndyn) != 0;
+        if (dofs_bad) for (int j = 0; j < nd && j < (int)s->ndyn; j++) if (vd[j] != dofs[j]) { int kind = s->b[dp[j].i].kind;
+            g_verify_dofs[kind < 0 ? 0 : kind > 7 ? 7 : kind]++; if (first_dof < 0) first_dof = j; }
+        if (h != g_smemo[st]->h || g_num_um != vum || g_num_im != vim || dofs_bad) g_verify_bad++;
+        if (g_verify_n % 500 == 0) { uint64_t other = g_verify_dofs[0] + g_verify_dofs[2] + g_verify_dofs[4] + g_verify_dofs[5] + g_verify_dofs[6] + g_verify_dofs[7];
+            VKLOG("memo verify: %llu hits checked, slot descriptors differ %llu, anything %llu; c2 segments found by hash checked %llu, differ %llu, dynamic offsets differ by kind: 1 %llu, 3 %llu, other %llu", (unsigned long long)g_verify_n, (unsigned long long)g_verify_slot_bad, (unsigned long long)g_verify_bad, (unsigned long long)g_c2_checked, (unsigned long long)g_c2_bad, (unsigned long long)g_verify_dofs[1], (unsigned long long)g_verify_dofs[3], (unsigned long long)other); }
+        const memo_slots_t *mm = h2 != g_smemo[st]->h2 ? memo_slots(g_smemo[st], 0) : NULL;
+        if (mm) { static int nl; uint32_t fb[32], ft[32]; uint64_t fh[32], fa[32]; int fn = slot_desc_list(w, nw, fb, ft, fh, fa);
             for (int q = 0; q < fn && q < mm->nwh && nl < 40; q++) if (fb[q] != mm->wbind[q] || fh[q] != mm->wh[q]) { int kind = -1, reg = -1;
                 for (int j = 0; j < s->nbind; j++) if (s->b[j].binding == fb[q]) { kind = s->b[j].kind; reg = s->b[j].reg; }
                 nl++; VKLOG("[RED] memo verify: stage %d shader %016llx binding %u (kind %d reg %d, Vulkan type %u) differs: memo %#llx, fresh %#llx", st, (unsigned long long)s->key, fb[q], kind, reg, ft[q], (unsigned long long)mm->wa[q], (unsigned long long)fa[q]); break; } } }
-    if (verify && (h != g_smemo[st]->h || g_num_um != vum || g_num_im != vim || memcmp(vd, dofs, sizeof *dofs * (size_t)s->ndyn))) { g_set_memo_bad++; static int n, n2;
+    if (verify && (h != g_smemo[st]->h || g_num_um != vum || g_num_im != vim || dofs_bad)) { g_set_memo_bad++; static int n, n2;
         if (h2 != g_smemo[st]->h2 && n2++ < 40) VKLOG("[RED] descriptor set memo: stage %d shader %016llx: slot descriptors differ from the memo's", st, (unsigned long long)s->key);
         if (n < 80) { char ks[256]; int ko = 0; for (int i = 0; i < s->nbind && ko < 240; i++) ko += snprintf(ks + ko, sizeof ks - (size_t)ko, " %d.%d.%d", s->b[i].kind, s->b[i].reg, s->b[i].samp); ks[ko] = 0;
             VKLOG("[RED] descriptor set memo: stage %d shader %016llx: bindings (kind.reg.samp):%s", st, (unsigned long long)s->key, ks); }
-        if (n++ < 80) VKLOG("[RED] descriptor set memo: stage %d shader %016llx: a fresh set differs from the memo's (hash %016llx / %016llx, um %#llx / %#llx, im %#llx / %#llx, dynamic offsets %s)", st, (unsigned long long)s->key,
-                            (unsigned long long)h, (unsigned long long)g_smemo[st]->h, (unsigned long long)g_num_um, (unsigned long long)vum, (unsigned long long)g_num_im, (unsigned long long)vim, memcmp(vd, dofs, sizeof *dofs * (size_t)s->ndyn) ? "differ" : "same"); }
+        if (n++ < 80) { char first[96] = "";
+            if (first_dof >= 0) { const dmsv_bind *b = &s->b[dp[first_dof].i];
+                snprintf(first, sizeof first, " first: binding %u kind %d reg %d, memo %#x fresh %#x", dp[first_dof].b, (int)b->kind, (int)b->reg, vd[first_dof], dofs[first_dof]); }
+            VKLOG("[RED] descriptor set memo: stage %d shader %016llx: a fresh set differs from the memo's (hash %016llx / %016llx, um %#llx / %#llx, im %#llx / %#llx, dynamic offsets %s)%s", st, (unsigned long long)s->key,
+                  (unsigned long long)h, (unsigned long long)g_smemo[st]->h, (unsigned long long)g_num_um, (unsigned long long)vum, (unsigned long long)g_num_im, (unsigned long long)vim, dofs_bad ? "differ" : "same", first); } }
     if (memo) { if (!have_cbs) { if (!have_cbd) { cbd_fill(st, s, cbd); have_cbd = 1; } cbs = cb_sig(s, cbd); } set_memo_t *m = g_smemo[st] = g_tbuf_copies != tc0 ? &g_smemo_own[st] : rmemo_entry(st, s, cbs);   // (set_memo_ok: at most MEMO_CB constant buffers)
         m->s = s; m->epoch = g_set_epoch; m->bind = g_bind_gen[st]; m->ubo = g_ubo_gen[st]; m->ubd = g_ubd_gen; m->tex = gtex; m->samp = gsamp; m->pool = gpool; m->binst = g_draw_binst;
-        m->nwh = g_x_setverify ? slot_desc_list(w, nw, m->wbind, m->wtype, m->wh, m->wa) : 0;
+        { memo_slots_t *ms = memo_slots(m, g_x_setverify); if (ms) ms->nwh = g_x_setverify ? slot_desc_list(w, nw, ms->wbind, ms->wtype, ms->wh, ms->wa) : 0; }   // (verify only)
         m->h = h; m->h2 = h2; m->um = g_num_um; m->im = g_num_im; m->set = set; memcpy(m->dofs, dofs, sizeof *dofs * (size_t)s->ndyn); m->ncb = ncb; memcpy(m->ci, mci, (size_t)ncb); memcpy(m->cd, mcd, sizeof *mcd * (size_t)ncb);
         for (int c = 0; c < ncb; c++) { m->cpos[c] = 0xff; for (int j = 0; j < nd; j++) if (dp[j].i == mci[c]) m->cpos[c] = (uint8_t)j; } }
     return set;

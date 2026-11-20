@@ -43,7 +43,7 @@ static uint32_t g_dispatch[3], g_draw_binst;
 static uint64_t g_set_epoch = 1;
 static int g_x_nodrvc;
 static uint64_t g_c2h[6]; static int g_c2fast;   /* c2 by its slots: off, the content-hashed path under test (on in c2_verify) */
-static int g_c2_check; static uint64_t g_c2_checked, g_c2_bad;
+static int g_c2_check; static uint64_t g_c2_checked, g_c2_bad, g_c2_hit, g_c2_put, g_drv_content;
 #define VKLOG(...) ((void)0)
 enum { DRVC = 1024 };
 ''' + cache + '\n' + scratch_type + '\n' + scratch_size + r'''

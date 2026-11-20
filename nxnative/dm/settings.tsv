@@ -57,6 +57,7 @@ DM_LANG	str	en-US	porter	?	hle_oe.c main.m	the system language the game sees (en
 DM_LAN_TRACE	str		debug	start	hle_ldn.c hle_socket.c	with `DM_LAN=1`: every `nn::socket` call (addresses, flags, result, errno) and every `nn::ldn` / `nn::nifm` query with its result, as `[lan]` lines
 DM_LINK_VTICK	str		debug,ios	?	nvn_mtl.m	
 DM_LOADHASH	str		debug	?	loader.c	
+DM_LOG_FPS	bool	0	debug	start	gfx_vk_present.c	1 = every 600 presents a line on the replay's descriptor caches: memo hits kept and missed by cause, stage sets found by their bindings (rmemo), constant buffer paths and misses, texture views
 DM_LONGFRAME	str		debug	?	hle_nvn.c	
 DM_MEMSTAT	str		debug,ios	?	memstat.m	
 DM_MEMSTAT_DUMP	int		debug,ios	?	memstat.m	
@@ -240,6 +241,7 @@ DM_UDC_SELFTEST	str		debug,ios	?	nvn_mtl.m
 DM_VK_ASYNC_PIPE	bool	1	profile	live	gfx_vk_exec.c	0 = new pipelines are built on the replay thread, not in the background
 DM_VK_BC_DRAW	int	0	profile	start	gfx_vk_tex.c	BC texture stand-in mode for drivers without BC: 0 = off
 DM_VK_BIND_DUMP	str		debug	start	gfx_vk_exec.c	writes the storage of the texture that binding of that pixel shader really resolved to (at most 8 files) to `$DM_ROOT/bind_<fs>_b<binding>_<w>x<h>_f<format>_s<serial>.bin` (the current folder when `DM_ROOT` is unset); slots alone are polluted by stale entries of earlier draws
+DM_VK_C2_FAST	bool	1	debug	live	gfx_vk_exec.c	c2 driver segments found by the hash of their slots instead of built and hashed for every draw whose bindings changed (drv_shared; docs/ARCHITECTURE.md, Descriptor cache hashing); 0 = built every time (A/B)
 DM_VK_CAPTURE	str		debug,ios	?	hle_vk.m	
 DM_VK_CB_DRAWS	int	128	profile	live	gfx_vk_exec.c	split the frame into command buffers every N draws (128), only before passes with a new depth image; `0` = never
 DM_VK_COMPUTE_WARM_MAX	int		debug	?	gfx_vk_exec.c	
@@ -358,11 +360,11 @@ DM_VK_X_NOGS	bool		debug	live	gfx_vk_exec.c	leave out draws with a geometry shad
 DM_VK_X_NOKEEP	bool		debug	?	gfx_vk_exec.c	
 DM_VK_X_NOPRERESET	bool		debug	start	gfx_vk_core.c	a submission slot's command buffers are reset as they are begun again, on the replay thread, instead of on the completion thread when its submission is done
 DM_VK_X_NOSETC	bool		debug	live	gfx_vk_exec.c	flicker experiments: no descriptor-set reuse; no driver-segment reuse; deferred uniform updates land at each cut; no pass kept for repeated targets; no uniform-shadow reuse
-DM_VK_X_NOSETMEMO	bool		debug	?	gfx_vk_exec.c	
+DM_VK_X_NOSETMEMO	bool		debug	live	gfx_vk_exec.c	1 = stage sets always collected: no memo of the last set, none found by their bindings (rmemo), for an A/B of those caches
 DM_VK_X_NOSHC	bool		debug	?	gfx_vk_exec.c	
 DM_VK_X_NOTARGET	bool		debug	start	gfx_vk_exec.c	skip draws with no colour or depth target set, as before (A/B); default 1 runs them in an attachment-less pass the size of viewport 0
 DM_VK_X_RDKEEP	hex		debug	live	gfx_vk_exec.c	runs of rasterizer-discard draws (vertex shaders that write memory) stay in the pass of the draws around them instead of a pass of their own: Xenoblade Chronicles 3 then draws thin black slivers over cliffs and grass in a few percent of frames
-DM_VK_X_SETVERIFY	bool		debug	?	gfx_vk_exec.c	
+DM_VK_X_SETVERIFY	bool		debug	live	gfx_vk_exec.c	1 = one memo hit in 64 is collected anyway and compared, and c2 segments found by hash are built again and compared: a [RED] line on any difference (docs/ARCHITECTURE.md, Descriptor cache hashing)
 DM_VK_X_SKIPFS	hex		debug	live	gfx_vk_exec.c	Skip draws with one of up to 16 fragment shader keys for pass/shader bisection. Diagnostic only: this deliberately removes rendering. `=0` clears the list.
 DM_VK_X_SKIPVS	hex		debug	live	gfx_vk_exec.c	leave out the draws whose vertex shader key (hex, as the traces print it; up to 8) is listed: bisect which shaders an artifact needs, a group at a time (it found XC3's slivers from 40 candidates in 4 rounds)
 DM_VK_ZEROCOPY_LAZY	int		debug	start	gfx_vk_core.c	which zero-copy pools get their buffer only when the GPU first uses them (vk_pool_of, pool_back: a slab's slot or a kept buffer as at creation; until then the game's own cached, swappable pages): `0` none; `1` also the chunks of pools over 256 MB (`ZC_CHUNK`; Pokopia on the Thor, 4.96 GB of pools of

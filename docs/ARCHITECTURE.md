@@ -180,7 +180,7 @@ The Android backend's descriptor caches (`gfx_vk_exec_descriptors.inc`) find can
   - a stage set found again by its bindings (`rmemo_take`, keyed by order-free hashes of the stage's slots, the shader and its constant buffers' buffers);
   - a c2 driver segment found by the hash of its slots (`drv_shared` with `DM_VK_C2_FAST`).
 
-  `DM_VK_X_SETVERIFY=1` collects one memo hit in 64 anyway, builds the c2 segment again instead of taking it by hash, and logs a `[RED]` line on any difference. `DM_VK_X_NOSETMEMO=1` and `DM_VK_C2_FAST=0` turn the two paths off for an A/B.
+  `DM_VK_X_SETVERIFY=1` collects one memo hit in 64 anyway and compares it, builds every c2 segment found by hash again and compares its bytes, and logs a `[RED]` line on any difference; its `memo verify` line counts both checks. `DM_VK_X_NOSETMEMO=1` and `DM_VK_C2_FAST=0` turn the two paths off for an A/B.
 
 These hashes stay in the process: they are not persisted and do not change the Vulkan pipeline-cache identity.
 
