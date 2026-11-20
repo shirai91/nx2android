@@ -723,7 +723,8 @@ class Port:
             if getattr(self, "ue_why", ""): self.device_ue()   # Unreal's shader code archives, decoded on the device into <version dir>/ue_shaders before the split reads them
             nsp.split_shaders(PY, NXNATIVE, [self.dirs[v] / 'RomFS' for v in sv], [self.dirs[v] / 'ExeFS/main' for v in sv], pkg, self.env, self.logs, self.g, bool(self.derived or self.provisional),
                                oodle=self.device_oodle if self.oodle_why else None,   # Oodle-compressed archives: the game's own decoder on the device
-                               aoc=self.aoc)   # DLC with shaders of its own (Xenoblade Chronicles 3's archives)
+                               aoc=self.aoc,   # DLC with shaders of its own (Xenoblade Chronicles 3's archives)
+                               captures=self.aw / 'captured_shaders')   # a runtime-compiled game (glslc) has no file shaders: the bundle comes from the device captures (Portal 2)
         finally: self.device_oodle_end()
         self.dmsv = self.aw / 'shaders.dmsv'; kf = self.aw / 'shaders.dmsv.key'; cap = self.aw / 'captured_shaders'
         PROG.stage('Vulkan shaders', step='building the translator')
