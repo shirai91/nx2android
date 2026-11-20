@@ -241,7 +241,9 @@ static int gs_split_inputs_safe(vkshader_t *gs, uint64_t ibuf, uint64_t in) {
 static int gs_split_draw(int prim, uint64_t indirect, uint64_t ibuf, uint64_t in) {
     if (!S.sh[2] || !g_gs_split || !vk_quirk(VQ_GS_SPLIT)) return 0;
     if (g_gs_split_mode || indirect || g_tf_on || g_bc_slot >= 0 || !S.sh[0] || S.sh[0]->xfb || shader_wmem(S.sh[0]) || g_spv_alt) return 0;
-    vkshader_t *gs = vk_shader_gs_topo(S.sh[2], topo(prim == 7 ? 4 : prim));
+    // Pool layout selection retains a topology variant in S.sh[2]. Deriving from it again can XOR a repeated point draw back to triangles.
+    vkshader_t *source = g_pool_gs_source ? g_pool_gs_source : S.sh[2];
+    vkshader_t *gs = vk_shader_gs_topo(source, topo(prim == 7 ? 4 : prim));
     if (!gs || (S.sh[1] && (S.sh[1]->in_locs & ~gs->out_locs))) return 0;
     return vk_shader_gs_split_ready(gs) && gs_split_inputs_safe(gs, ibuf, in);
 }
