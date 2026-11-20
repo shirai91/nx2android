@@ -55,7 +55,7 @@ class Options:
     keys: Path = None                  # prod.keys
     out: Path = None                   # where the APK and the data pack go (default: the game folder)
     version: str = ''                  # v<N> to pack (default: the newest in the folder)
-    language: str = ''                 # a code or a name (default: English)
+    language: str = ''                 # a code, a name or system (default: English)
     app_name: str = ''                 # the launcher label (default: the game's name in its control data)
     install: bool = False              # install on the device after packing
     device: str = ''                   # adb serial
@@ -434,10 +434,13 @@ class Port:
         self.app_name = o.app_name or nacp.name(self.base / 'control.nacp') or self.g.get('name', self.g.id)
         self.display = nacp.version(self.game / 'control.nacp') or nacp.version(self.base / 'control.nacp') or '1.0'
         lang_in = o.language or self.cfg.get('language')
-        want = nsp.language_code(lang_in) if lang_in else 'en-US'
-        if not want: raise BuildError(f'unknown game language {lang_in!r}')
-        have = nacp.languages(self.game / 'control.nacp') or nacp.languages(self.base / 'control.nacp')
-        self.lang = nsp.game_language(want, bool(lang_in), have)
+        self.languages = nacp.languages(self.game / 'control.nacp') or nacp.languages(self.base / 'control.nacp')
+        if lang_in and lang_in.strip().lower() == 'system':
+            self.lang = 'system'
+        else:
+            want = nsp.language_code(lang_in) if lang_in else 'en-US'
+            if not want: raise BuildError(f'unknown game language {lang_in!r}')
+            self.lang = nsp.game_language(want, bool(lang_in), self.languages)
         say(f'app: {self.app_name} {self.display} ({self.package}), game language {self.lang}')
 
     def mem_profile(self):
@@ -872,7 +875,7 @@ class Port:
             say(f'RomFS compressed: {npk:,} of {nf:,} files packed, {raw / 2**30:.1f} GB → {out / 2**30:.1f} GB on the device')
             romfs, zenv = self.aw / 'romfs_zstd' / self.pkg_ver, ['DM_ROMFS_ZSTD=1']
         man = datapack.build(dst, profile=self.ap, version=self.pkg_ver, display=self.display, patched=self.patched, romfs=romfs, shaders=self.dmsv,
-                             aoc=self.aoc, sysdata=self.sysdata, language=self.lang, package=self.package, env=self.fps_env + font_env + zenv + (['DM_VK_MT_REPLAY=1'] if self.o.mt_replay else [])
+                             aoc=self.aoc, sysdata=self.sysdata, language=self.lang, languages=self.languages, package=self.package, env=self.fps_env + font_env + zenv + (['DM_VK_MT_REPLAY=1'] if self.o.mt_replay else [])
                              + (['DM_MENU_BUTTON=0'] if self.o.no_menu_button else [])
                              + ([f'DM_VK_DRIVER={driver_lib_name(self.o.vulkan_driver)}'] if self.o.vulkan_driver else []), settings=TOUCH_SETTINGS if self.o.touch else None,
                              files={**self.fps_files, **font_files}, profile_h=getattr(self, 'profile_h', None),

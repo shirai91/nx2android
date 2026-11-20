@@ -51,7 +51,8 @@ DM_KBD	str		debug	?	hle_swkbd.c
 DM_KBD_PLAYER	str		debug,ios	?	front_mac.m	
 DM_KEYS	str		debug	?	hle_hid.c	
 DM_LAN	bool	0	profile	start	lan_android.c hle_ldn.c	local wireless play over the LAN (ldn): 1 = on
-DM_LANG	str	en-US	porter	?	hle_oe.c main.m	the system language the game sees (en-US, ja, fr, ...)
+DM_LANG	str	en-US	porter	?	hle_oe.c main.m front_android.c	the system language the game sees (en-US, ja, fr, ...); system follows the Android locale at app launch
+DM_LANG_SUPPORTED	str		porter	start	front_android.c	space-separated language codes from the title's control data for DM_LANG=system
 DM_LAN_TRACE	str		debug	start	hle_ldn.c hle_socket.c	with `DM_LAN=1`: every `nn::socket` call (addresses, flags, result, errno) and every `nn::ldn` / `nn::nifm` query with its result, as `[lan]` lines
 DM_LINK_VTICK	str		debug,ios	?	nvn_mtl.m	
 DM_LOADHASH	str		debug	?	loader.c	
@@ -86,6 +87,7 @@ DM_NVN_CBDUMP_KEY	str		debug,ios	?	nvn_mtl.m
 DM_NVN_CBLOG	str		debug	?	hle_nvn.c	
 DM_NVN_CLEARLOG	str		debug,ios	?	nvn_mtl.m	
 DM_NVN_CMDSTAT	str		debug	?	hle_nvn.c	
+DM_NVN_CPU_NO_ACCESS_IMAGE_FIRST_USE	bool	0	profile	start	gfx_vk_tex.c	1 = upload initial data for uncompressed 2D colour IMAGE textures in CPU_NO_ACCESS storage once, unless a GPU-written image overlaps them
 DM_NVN_CPU_TEX2D_FIRST_USE	bool	0	profile	start	gfx_vk_tex.c	1 = 2D textures the CPU writes are uploaded at their first use, not at creation
 DM_NVN_CUT	int		debug,ios	?	nvn_mtl.m	
 DM_NVN_DEFER	str		debug,ios	?	nvn_mtl.m	
