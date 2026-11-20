@@ -373,6 +373,17 @@ It builds through the production Java/dex packager, uses the real guest keyboard
 
 For live A/B testing, use a `DM_CTL` env update with `DM_VK_CPU_READY=0`, then restore `DM_VK_CPU_READY=1`. Values take effect at a submission boundary. Disabling allows unsynchronized CPU descriptor reads; the default remains enabled.
 
+### NVN DrawTexture
+
+`tests/test_vk_draw_texture.py` checks copied public command records, rebased
+handles and pixel-center clipping with synthetic inputs. The manual production
+replay in `tests/vk_draw_texture_replay.md` also covers sampler registration
+history, feedback mips and a subsequent ordinary draw. Its build runner does not
+contact a device. Donor provenance identifies Streets of Rage 4 movie-to-scene
+draws as a lead; no Android game version, screen, main frame shot or observed
+path execution has been established here. A named reproduction and physical
+Qualcomm/Turnip A/B remain required for gameplay qualification.
+
 ## Runtime GLSLC shader preparation
 
 Some NVN games compile shaders with their own GLSLC at startup (for example, Fire Emblem: Three Houses and Catherine: Full Body). The porter captures these outputs before the offline shader split. If the extraction already contains every complete `glslc_capture/*.glslc` output named by the profile, it reuses them without a device. Otherwise, connect an ARM64 Android device with USB debugging and configure `adb`, even when building without `--install`.
