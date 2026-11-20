@@ -167,9 +167,12 @@ def guess(F, hooks=None):
     # The engine region needs virtual address memory; without it (OCTOPATH TRAVELER 1.0.5, Unreal Engine 4 on SDK 3.5.1, no system resource) nninitStartup sets a heap of pool − used instead,
     # which the heap-region layout above holds
     if F.get('main_markers', set()) & {'Unreal', 'Unreal 4'} and R['exts'].get('.pak') and 'nvnBootstrapLoader' in imp and F['sysres']:
-        G['mem_reserve'] = ('0x1028000000', 'Unreal: nninitStartup reserves a 62 GB address region and its FMallocBinned3 takes 37 GB of it, so a 64 GB alias region for the bring-up on the Mac. '
-                            'An iPhone needs the allocator cut for the build and a capped region (game_args), as Octopath Traveler 0\'s profile (docs/agents/03)')
-        G['mem_alias'] = ('0x1008000000', '')
+        # Keep the provisional heap when growing the alias region. With no heap, the SDK's initial 6 MiB SetHeapSize failed (issue #425).
+        alias = 0x1008000000
+        reserve = mem[0] + (alias - mem[1])
+        G['mem_reserve'] = (f'{reserve:#x}', 'Unreal: nninitStartup reserves a 62 GB address region and its FMallocBinned3 takes 37 GB of it, so a 64 GB alias region for the bring-up on the Mac. '
+                            'The guest block keeps the provisional heap. An iPhone needs the allocator cut for the build and a capped region (game_args), as Octopath Traveler 0\'s profile (docs/agents/03)')
+        G['mem_alias'] = (f'{alias:#x}', '')
     G.update(preset)
     return G
 
