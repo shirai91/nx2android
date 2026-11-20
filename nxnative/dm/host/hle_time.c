@@ -44,6 +44,10 @@ HLE_FORCE("_ZN2nn4time23StandardUserSystemClock14GetCurrentTimeEPNS0_9PosixTimeE
 // GetCurrentTime reads the time service's shared memory, which the host never maps (an abort in MonotonicSystemClock::GetCurrentTime, sdk+0x4421cc on that build). On the host the user clock
 // is the host's own clock, so it is this one too; Adjust runs natively (it reads the user clock context, a host take-over) and only sets the SDK's copy
 HLE_FORCE("_ZN2nn4time25AdjustableUserSystemClock14GetCurrentTimeEPNS0_9PosixTimeE", "adjustable user clock → host time(), as the user clock", Result, h_time_AdjGetCurrentTime, int64_t *out) { return h_time_GetCurrentTime(out); }
+// The network clock: on a Switch it runs on from its last sync over the steady clock, so offline it still answers (it fails only on a console that never synced);
+// IsAccuracySufficient (below) stays 0, no fresh sync. The host answered it with a failure before: Divinity: Original Sin 2 takes its wall clock from it once in nnMain
+// (main+0x7ce560, the result not checked) plus std::chrono::steady_clock, so its saves were dated 1970-01-01. The host's user clock, as on a console whose clocks agree
+HLE_FORCE("_ZN2nn4time26StandardNetworkSystemClock14GetCurrentTimeEPNS0_9PosixTimeE", "network clock → host time(), as the user clock (it runs on offline from its last sync)", Result, h_time_NetNow, int64_t *out) { return h_time_GetCurrentTime(out); }
 // The C library's real-time clock (SDK 17): clock_gettime(CLOCK_REALTIME) calls the source that nntimeStartup selects once time::Initialize succeeds (sdk+0x8e414: 1 = the standard user clock,
 // 2 = the adjustable one; 0, the system tick, before that), and std::chrono::system_clock::now() throws on its failure. The SDK's getters ask the time service: Ace Attorney Investigations
 // Collection called std::terminate at its first real-time read, right after the first-boot language dialog (main+0x3f3f68; found by armyja, GitHub issue #18). The host user clock, to the nanosecond
