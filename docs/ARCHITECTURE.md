@@ -123,6 +123,15 @@ SPS VUI. Without a colour description with a specified matrix it uses BT.709 at 
 BT.601 below. Without a video signal type it uses limited range. Malformed or
 unsupported SPS data uses both defaults.
 
+Android shader-export jobs select the Vulkan host target. Texture-size queries
+supply defined values for absent axes instead of extracting components outside
+the returned vector. Dynamic integer-fetch offsets use the existing coordinate
+lowering; sample offsets retain the bounded constant-offset pass and its mip and
+derivative behavior. Export removes `ImageGatherExtended` only when no operation
+requires it: dynamic gather `Offset` and `ConstOffsets` operands retain the
+capability. These transformations precede reflection and their source enters the
+shader cache key, so an existing port must rebuild its shaders to take them.
+
 Stopping a started guest AudioOut returns all pending buffers in queue order,
 including any partly played buffer, and wakes the guest's release event even if
 the pending queue is empty. Capacity covers all buffers accepted and yet to be
