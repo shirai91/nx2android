@@ -301,6 +301,9 @@ whole mip volume. Plain single-layer 2D images ignore the region's layer
 coordinates and clear layer zero; array and 3D ranges still reject out-of-bounds
 layers or slices. Whole MSAA clears always use the transfer path, including
 alternate-format views, with values interpreted in the backing image's format.
+For sRGB views backed by a compatible UNORM image, whole transfers encode RGB
+explicitly and retain alpha, including compatibility fallbacks. Partial attachment
+draws and native sRGB-image transfers keep linear values for Vulkan to encode.
 Native BC1–BC7 and ASTC LDR images use constant-color encoded
 blocks and `vkCmdCopyBufferToImage`, since `vkCmdClearColorImage` forbids compressed
 formats (`VUID-vkCmdClearColorImage-image-00007`). Each compressed clear writes the

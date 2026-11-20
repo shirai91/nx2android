@@ -20,9 +20,12 @@ from pathlib import Path
 import platform
 import struct
 import subprocess
+import sys
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tests"))
+import csrc
 
 
 def main():
@@ -44,7 +47,7 @@ def main():
         'aarch64-linux-android30-clang' + ('.cmd' if suffix else ''))
     glslc = args.ndk / 'shader-tools' / tag / ('glslc' + suffix)
     android = ROOT / 'nxnative/dm/android'
-    source = (android / 'gfx_vk_exec.c').read_text()
+    source = csrc.unit(android / 'gfx_vk_exec.c')
     pipeline = source[source.index('typedef struct { uint32_t ncol, cfmt[8], dfmt, samples, mask, type; } mckey;'):
                       source.index('static VkPipeline mc_pipeline(uint32_t mask)')]
     clear = source[source.index('static int clear_tex_slice('):

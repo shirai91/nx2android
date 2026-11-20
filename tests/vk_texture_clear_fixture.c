@@ -28,8 +28,10 @@ static unsigned copies, scratch_calls;
 #define VKRED_ONCE(...) ((void)++diagnostics)
 static vkimg_t *vk_tex(const tex_t *t) { (void)t;return &image; }
 static const vkfmt_t *vk_fmt(int f) {
-    static const vkfmt_t formats[]={{VK_FORMAT_R32G32B32A32_SFLOAT,0,0,0,0},{VK_FORMAT_R32G32B32A32_UINT,1,0,0,0},{VK_FORMAT_R32G32B32A32_SINT,1,1,0,0},{VK_FORMAT_D32_SFLOAT_S8_UINT,0,0,0,0},{VK_FORMAT_R32G32B32A32_SFLOAT,0,0,1,1},{VK_FORMAT_BC1_RGBA_UNORM_BLOCK,0,0,1,0,4,4,8}};
-    return f>=0 && f<6 ? &formats[f] : NULL;
+    static const vkfmt_t formats[]={{VK_FORMAT_R32G32B32A32_SFLOAT,0,0,0,0},{VK_FORMAT_R32G32B32A32_UINT,1,0,0,0},{VK_FORMAT_R32G32B32A32_SINT,1,1,0,0},{VK_FORMAT_D32_SFLOAT_S8_UINT,0,0,0,0},{VK_FORMAT_R32G32B32A32_SFLOAT,0,0,1,1},{VK_FORMAT_BC1_RGBA_UNORM_BLOCK,0,0,1,0,4,4,8},
+        {VK_FORMAT_R8G8B8A8_UNORM,0,0,0,0},{VK_FORMAT_R8G8B8A8_SRGB,0,0,0,0},
+        {VK_FORMAT_B8G8R8A8_UNORM,0,0,0,0},{VK_FORMAT_B8G8R8A8_SRGB,0,0,0,0}};
+    return f>=0 && f<10 ? &formats[f] : NULL;
 }
 static void vk_end_pass(void) {}
 static VkCommandBuffer vk_cmd(void) {return VK_NULL_HANDLE;}
@@ -174,8 +176,34 @@ static int compressed_case(const char *name) {
         assert(covered[lv][ly][y]==(lv==level && ly>=first && ly<first+count && y<rows));
     return 0;
 }
+static int srgb_case(const char *name) {
+    for (int format=6;format<=8;format+=2) {
+        int draw=!strcmp(name,"srgb_draw"), fallback=!strcmp(name,"srgb_fallback");
+        int native=!strcmp(name,"srgb_native"), unorm=!strcmp(name,"srgb_unorm");
+        tex_t t={.d={.format=format}};
+        image=(vkimg_t){.w=8,.h=8,.d=1,.layers=1,.levels=1,.samples=1,.target=1,
+            .fmt=vk_fmt(format+native)->vk,.nvn_format=format+native,
+            .aspect=VK_IMAGE_ASPECT_COLOR_BIT,.usage=fallback ? 0 : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT};
+        p_clear_tex c={.tex=&t,.has_view=1,.view={.set_format=1,.format=format+!unorm},
+            .r={0,0,0,8,8,1},.mask=15,.c.f={0.25f,-1.0f,2.0f,0.4f}};
+        if(draw || fallback){c.r=(NVNcopyRegion){1,1,0,2,2,1};c.mask=7;}
+        transfers=draws=diagnostics=0;memset(pixels,0,sizeof pixels);clear_tex(&c);
+        assert(draw ? draws==1 && !transfers : transfers==1 && !draws);
+        assert(fallback ? diagnostics>0 : !diagnostics);
+        VkClearColorValue actual;memcpy(actual.uint32,pixels[0][0][draw ? 1 : 0][draw ? 1 : 0],16);
+        // A transfer to UNORM must encode sRGB explicitly. Native sRGB transfers
+        // and attachment draws receive linear values for Vulkan's conversion.
+        int encode=!draw && !native && !unorm;
+        assert(fabsf(actual.float32[0]-(encode ? 0.5370987f : 0.25f))<0.000001f);
+        assert(actual.float32[1]==(encode ? 0.0f : -1.0f));
+        assert(fabsf(actual.float32[2]-(encode ? 1.0f : 2.0f))<0.000001f);
+        assert(actual.float32[3]==(draw ? 0.0f : 0.4f));
+    }
+    return 0;
+}
 int main(int argc,char **argv) {
     if(argc>1){
+        if(strstr(argv[1],"srgb"))return srgb_case(argv[1]);
         if(strstr(argv[1],"compressed"))return compressed_case(argv[1]);
         if(strstr(argv[1],"single2d") || strstr(argv[1],"invalid_"))return layer_coordinates(argv[1]);
         return compatibility(argv[1]);

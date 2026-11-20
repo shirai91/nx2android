@@ -8,12 +8,13 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import csrc
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def clear_source():
-    source = (ROOT / 'nxnative/dm/android/gfx_vk_exec.c').read_text()
+    source = csrc.unit(ROOT / 'nxnative/dm/android/gfx_vk_exec.c')
     start = source.index('static VkClearColorValue clear_tex_value(')
     return source[start:source.index('// ---------------- the record walker', start)]
 
@@ -21,7 +22,7 @@ def clear_source():
 @unittest.skipUnless(shutil.which('cc'), 'host C compiler required')
 class TextureClear(unittest.TestCase):
     def test_failed_pipeline_is_cached(self):
-        source = (ROOT / 'nxnative/dm/android/gfx_vk_exec.c').read_text()
+        source = csrc.unit(ROOT / 'nxnative/dm/android/gfx_vk_exec.c')
         start = source.index('typedef struct { uint32_t ncol, cfmt[8], dfmt, samples, mask, type; } mckey;')
         pipeline = source[start:source.index('static VkPipeline mc_pipeline(uint32_t mask)', start)]
         fixture = (ROOT / 'tests/vk_clear_pipeline_fixture.c').read_text()
@@ -50,7 +51,7 @@ class TextureClear(unittest.TestCase):
                                     '-I', str(ROOT / 'nxnative/dm/android'),
                                     str(src), '-lm', '-o', str(exe)], capture_output=True, text=True)
             self.assertEqual(build.returncode, 0, build.stderr)
-            for case in ('', 'msaa_color', 'msaa_depth', 'msaa_view_format', 'partial_depth', 'decoded',
+            for case in ('srgb_whole', 'srgb_fallback', 'srgb_draw', 'srgb_native', 'srgb_unorm', '', 'msaa_color', 'msaa_depth', 'msaa_view_format', 'partial_depth', 'decoded',
                          'single2d_whole', 'single2d_partial', 'single2d_depth',
                          'invalid_array', 'invalid_volume', 'invalid_view',
                          'nonattachment', '1d', '1d_array', 'format', 'view', 'pipeline',
