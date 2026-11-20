@@ -11,6 +11,7 @@
 #include "dm_input.h"
 #include "pad_slots.h"
 #include "overlay_layout.h"
+#include "stick_axis.h"
 #include "pixel_font.h"
 #include "saves_android.h"
 #include <math.h>
@@ -299,7 +300,7 @@ static uint64_t key_bit(int32_t k) {   // Nintendo layout by position: the botto
     default: return 0;
     }
 }
-static int32_t axis(float v) { if (v > -0.12f && v < 0.12f) return 0; return (int32_t)(v * DM_STICK_MAX); }
+static int32_t axis(float v) { return dm_stick_axis(v); }
 static uint64_t g_shake_btn;   // DM_BTN_SHAKE while the device is being shaken (below); input thread only
 static uint64_t pad_axis_buttons(const float axes[8]) {
     uint64_t b = 0;
@@ -313,7 +314,8 @@ static uint64_t pad_axis_buttons(const float axes[8]) {
 }
 static void pad_publish(int p) {   // caller holds g_slot_mu
     uint64_t b = g_btn[p] | (p ? 0 : g_shake_btn) | pad_axis_buttons(g_ax[p]);
-    dm_pad_set_player(p, b, axis(g_ax[p][0]), -axis(g_ax[p][1]), axis(g_ax[p][2]), -axis(g_ax[p][3]));   // Android's y grows downward, the Switch's upward
+    int32_t lx, ly, rx, ry; dm_stick_xy(g_ax[p][0], g_ax[p][1], &lx, &ly); dm_stick_xy(g_ax[p][2], g_ax[p][3], &rx, &ry);
+    dm_pad_set_player(p, b, lx, -ly, rx, -ry);   // Android's y grows downward, the Switch's upward
 }
 static const void *pad_owner(int id) { return (const void *)((uintptr_t)(uint32_t)id + 1); }   // the slot table's key for a device id (never null)
 // Devices that sent input and hold no slot, so the input thread asks Java about each once: st 0, not a controller as pad_watch counts one (a keyboard's or a

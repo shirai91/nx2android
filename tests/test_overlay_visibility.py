@@ -36,6 +36,7 @@ class OverlayVisibility(unittest.TestCase):
 #include "front.h"
 #include "overlay_layout.h"
 #include "pad_slots.h"
+#include "stick_axis.h"
 static _Atomic int g_set_overlay, g_overlay, g_pads, g_edit, g_menu_btn = 1;
 static _Atomic int g_cust[2][2][OV_N][4];
 static _Atomic int g_set_rumble, g_set_fps, g_set_labels, g_menu_tab, g_sv_st;
