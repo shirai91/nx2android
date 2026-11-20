@@ -373,6 +373,12 @@ It builds through the production Java/dex packager, uses the real guest keyboard
 
 For live A/B testing, use a `DM_CTL` env update with `DM_VK_CPU_READY=0`, then restore `DM_VK_CPU_READY=1`. Values take effect at a submission boundary. Disabling allows unsynchronized CPU descriptor reads; the default remains enabled.
 
+## SDK memory patches across builds
+
+The rewriter retains every registered `sdk_patches.py` `CUTS` entry, including explicit empty entries. For an `sdk` build with no registered entry, it can apply the SDK-wide `MATCH_CUTS` rules for the address-region node area and placement alignment. These original-Switch rules match reviewed implementations using complete unwind-function fingerprints, direct-callee identity, constants, registers and exact original bytes. Missing or ambiguous matches keep the original instructions and explain the skip in `rewrite_sdk.log`. Applied cuts appear in `sdk.cuts.tsv` with `[function match]`.
+
+This fallback does not enable profile-level function patches. `DM_PATCHES_EXTRA` cuts still append and overlapping replacements fail their original-byte checks. Matcher and SDK-rule inputs participate in rewrite cache keys and source provenance, including for previously unregistered builds. The matcher tests use synthetic AArch64 code and unwind tables: `python -m unittest discover -s tests -p test_sdk_matching.py`; registry checks remain in `nxnative/dm/tools/tests/test_patches.py`.
+
 ## Runtime GLSLC shader preparation
 
 Some NVN games compile shaders with their own GLSLC at startup (for example, Fire Emblem: Three Houses and Catherine: Full Body). The porter captures these outputs before the offline shader split. If the extraction already contains every complete `glslc_capture/*.glslc` output named by the profile, it reuses them without a device. Otherwise, connect an ARM64 Android device with USB debugging and configure `adb`, even when building without `--install`.

@@ -205,3 +205,47 @@ CUTS = {
     (0x336bf0, 'e9230b32', '097ca052', 'AddressRegionManager constructor: length of the node area registered as an occupied region orr w9,wzr,#0x3fe00000 → mov w9,#0x3e00000'),
   ],
 }
+
+# SDK-wide fallback for builds without a registered CUTS row. Whole-function/callee fingerprints,
+# unique unwind boundaries and original bytes are checked by nso_match; explicit rows above always win.
+# Adapted from nxnative's preserved Android parity branch (1f01e28c), original-Switch implementations only.
+node_area, alignment = 'AddressRegionManager node area 1 GB → 62 MB', 'AllocateAddressRegion: regions of 4 MB and more aligned to 2 MB, as SDK 20'
+def mov(old, value):   # the original mov / orr of a constant, as the registered reasons name it (its destination register: the word's low 5 bits)
+    rd = int(old[:2], 16) & 31
+    return f'orr w{rd},wzr,#{value:#x}' if int(old[6:8], 16) == 0x32 else f'mov w{rd},#{value:#x}'
+def node(size, fingerprints, limit, limit_old, limit_new, occupied, occupied_old, occupied_new):
+    return {'name': node_area, 'size': size, 'fingerprints': fingerprints, 'cuts': [
+        (limit, limit_old, limit_new, f'AddressRegionManager constructor: node area limit {mov(limit_old, 0x3fe00000)} → {mov(limit_new, 0x3e00000)}'),
+        (occupied, occupied_old, occupied_new,
+         f'AddressRegionManager constructor: length of the node area registered as an occupied region {mov(occupied_old, 0x3fe00000)} → {mov(occupied_new, 0x3e00000)}')]}
+def align(size, fingerprints, old_32m, old_1g, old_4m):   # the three large classes' constants, at the same offsets in every implementation
+    return {'name': alignment, 'size': size, 'fingerprints': fingerprints, 'cuts': [
+        (0x64, old_32m, '0b04a052', f'AllocateAddressRegion: alignment of regions from 32 MB to 1 GB {mov(old_32m, 0x2000000)} → mov w11,#0x200000 (2 MB, as SDK 20)'),
+        (0x6c, old_1g, '0a04a052', f'AllocateAddressRegion: alignment of regions of 1 GB and more {mov(old_1g, 0x40000000)} → mov w10,#0x200000 (2 MB, as SDK 20)'),
+        (0x70, old_4m, '0804a052', f'AllocateAddressRegion: alignment of regions from 4 MB to 32 MB {mov(old_4m, 0x400000)} → mov w8,#0x200000 (2 MB, as SDK 20)')]}
+MATCH_CUTS = {'sdk': [
+    # SDK 7.3.2 (DRAGON QUEST XI S), 8.2.1 (Super Smash Bros. Ultimate), 8.3.1 (Paper Mario: The Origami King)
+    node(276, ['5c81bb821d119d00ffcda6c3a4f1b827fc08c084fa53995e3a6262b5bf37cded'], 0x10, 'e9230b32', '097ca052', 0xb0, 'e9230b32', '097ca052'),
+    # SDK 10.4.1 (Advance Wars 1+2), 10.4.8 (Pikmin 4)
+    node(272, ['6fe2b1b95eced45e081611b786a8ff80b656bdcad6bd58082ee3264f5163ec44'], 0x10, 'e8230b32', '087ca052', 0xac, 'e9230b32', '097ca052'),
+    # SDK 11.4.3 (Pokémon Brilliant Diamond), 12.3.2 (OCTOPATH TRAVELER II), 12.3.9 (Xenoblade Chronicles 3), 13.3.5 (Mario + Rabbids Sparks of Hope), 14.3.0 (Batman: Arkham Knight)
+    node(272, ['3ab9bc1471da6658c861c809d8aa43b3be34fd78a65f7136cb346e442a52968b', '14660c33f9b064a429405d34d1ab0d1b8fd3867d5b335e2831afb59c2a399746'],
+         0x10, '08fca752', '087ca052', 0xac, '09fca752', '097ca052'),
+    # SDK 15.3.2 (Paper Mario: The Thousand-Year Door), 16.2.0 (Sea of Stars), 16.2.4 (Brain Memory Training Academy), 17.5.3 (Ace Attorney Investigations Collection),
+    # 18.3.2 (Absolum), 18.3.5 (Super Mario Galaxy)
+    node(240, ['cd7fb0efd387e5676d349376acf368b706116e089c30485f2d33970d9fb23145', 'd16909674e7f982f2fe1c765f7cd366341c2aaa9eb56a28c52a48d3c1057a126',
+               '3549234b3e27a013791bbd834b5ff7dd501a5826c4216c80961bd996eef556ea'], 0x10, '08fca752', '087ca052', 0xa4, '09fca752', '097ca052'),
+    # SDK 19.3.11 (Pokémon Legends: Z-A), 19.3.13 (Octopath Traveler 0), 20.5.19 (BALL x PIT), 20.5.22 (Tears of the Kingdom)
+    node(244, ['b02f0514e2cc25a65261ec23cefa9a1fe7b244b3db741f183deb334935541eee'], 0x10, '08fca752', '087ca052', 0x7c, '09fca752', '097ca052'),
+    # SDK 22.2.0 (EA SPORTS FC 27, Well Dweller): the SDK 19 / 20 constructor, instruction for instruction up to its cold path, which gives each failing result its own abort (32 bytes more)
+    node(276, ['8960fe237061c387226a3775daf750a646dd0ee12eccf3d1340248683a6a7d78'], 0x10, '08fca752', '087ca052', 0x7c, '09fca752', '097ca052'),
+    # SDK 7.3.2 (DRAGON QUEST XI S), 8.2.1 (Super Smash Bros. Ultimate), 8.3.1 (Paper Mario: The Origami King), 10.4.1 (Advance Wars 1+2), 10.4.8 (Pikmin 4)
+    align(352, ['006abd214d94c93386735550cee4fe7708bc1f0d1812663123cfa3b9611f1533', '42167e4d3c710e11937e45a9e420fdd0ed9a410386c17da4d1d896b847d3b0d6'], 'eb030732', 'ea030232', 'e8030a32'),
+    # SDK 11.4.0 (Pokémon Legends: Arceus, Kirby and the Forgotten Land): the next rule's size classes with 8 more bytes of body; the 4 GB StandardAllocator region of Arceus's nninitStartup
+    # (the host's cap) fits after the 62 MB node area only with it
+    align(360, ['b8c0853dcad6b42ca2d504945c9944dd913a991297499e700a97a85bcf5a77c2'], '0b40a052', '0a00a852', '0808a052'),
+    # SDK 12.3.2 (OCTOPATH TRAVELER II), 12.3.9 (Xenoblade Chronicles 3), 13.3.5 (Mario + Rabbids Sparks of Hope), 14.3.0 (Batman: Arkham Knight), 15.3.2 (Paper Mario: The Thousand-Year Door)
+    align(352, ['4bec18d9a1f8c73408e95b54d971b2ae87ccb5451b185e3378c05801ad03fa39', '57ad718ebd4e8ebf49a3199c62e1ba2002867df5d124cfee6b4d30aeffee0b8d'], '0b40a052', '0a00a852', '0808a052'),
+    # SDK 16.2.0 (Sea of Stars), 18.3.2 (Absolum), 18.3.5 (Super Mario Galaxy)
+    align(388, ['bb9debe722dc0807c947365b7acfb1aa84f82af125e981f31b1d02b44d8032c8', '58845d068f4e828c39e03f66fbe03487387404183b0bcc14068eb45b571d2c02'], '0b40a052', '0a00a852', '0808a052'),
+]}
