@@ -133,6 +133,19 @@ class MergedDumps(unittest.TestCase):
             self.assertEqual(nsp.titles_of(path, bytes(32)), [self.BASE])
         say.assert_not_called()
 
+    def test_a_foreign_title_in_a_file_is_skipped_with_a_note(self):
+        # A stray ticket of another game (or a compilation card) beside a game's titles: main read only the file's first title and went on, so the scan must not stop with
+        # "more than one game" now that every title ID in a file is read (the review of #452).
+        other = 0x0100000000BBB000
+        path = self.dump('Card.nsp', [self.BASE, self.BASE + 0x800, other])
+        with patch.object(nsp, 'say') as say:
+            app, fam = nsp.scan_nsps(self.root)
+        self.assertEqual(app, self.BASE)
+        self.assertEqual(fam, {'base': path, 'updates': [(None, path)], 'dlc': []})
+        self.assertEqual(say.call_count, 1)
+        self.assertIn(f'{other:016X}', say.call_args.args[0])
+        self.assertIn(path.name, say.call_args.args[0])
+
     def test_extract_aoc_of_a_decompressed_merged_dump_still_tells_the_dumps_apart(self):
         # With NSZ / XCZ DLC, porter hands extract_aoc the decompressed DLC paths — but fam['base'] as scanned is still the compressed file: extract_aoc tells a merged dump from a
         # separate DLC NSP by comparing its paths against the base's, so the base must go through the decompression mapping too. Without it --aoc runs without the DLC's title ID
