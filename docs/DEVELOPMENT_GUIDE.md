@@ -360,3 +360,14 @@ It builds through the production Java/dex packager, uses the real guest keyboard
 `python -m unittest discover -s tests -p test_cpu_handle_readiness.py -v` executes the production tracking, deferred-coverage, live-switch and descriptor-preflight functions. It requires `host_cc.ubsan()` and defaults to UBSan; set `NX2A_TEST_SANITIZE=1` to also use ASan on a host with that runtime. A compiler without UBSan is reported as an explicit capability skip. The manual Android build runner and physical-device procedure are in `tests/vk_cpu_handle_readiness.md`. The runner only builds artifacts. Physical-driver behavior, real-game racy-read/cut/wait counts and timing remain separate validation.
 
 For live A/B testing, use a `DM_CTL` env update with `DM_VK_CPU_READY=0`, then restore `DM_VK_CPU_READY=1`. Values take effect at a submission boundary. Disabling allows unsynchronized CPU descriptor reads; the default remains enabled.
+
+### NVN DrawTexture
+
+`tests/test_vk_draw_texture.py` checks copied public command records, rebased
+handles and pixel-center clipping with synthetic inputs. The manual production
+replay in `tests/vk_draw_texture_replay.md` also covers sampler registration
+history, feedback mips and a subsequent ordinary draw. Its build runner does not
+contact a device. Donor provenance identifies Streets of Rage 4 movie-to-scene
+draws as a lead; no Android game version, screen, main frame shot or observed
+path execution has been established here. A named reproduction and physical
+Qualcomm/Turnip A/B remain required for gameplay qualification.

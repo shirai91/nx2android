@@ -66,6 +66,14 @@ The replacement flat diagnostic fragment shader writes all eight outputs and
 keeps those targets eligible; guest channel masks still apply. A draw without a
 fragment shader writes no colour.
 
+NVN `DrawTexture` records copied pixel/texel rectangles and rebased resource
+handles. Vulkan draws each writable color target with its channel mask, keeps
+clipped/flipped coordinates in the original mapping, and snapshots every visible
+source mip before feedback writes. The utility pipeline preserves guest draw
+state and registers its combined-sampler demand with the descriptor allocator.
+Sources are single-sample float/normalized 2D views; integer/depth sources and
+unsupported targets are diagnosed and skipped. Blending is diagnosed and omitted.
+
 Vulkan descriptor collection checks each image binding against its 384-entry
 scratch array before writing it. A binding that would exceed capacity stops the
 host with a diagnostic; valid arrays keep their full reflected counts, including

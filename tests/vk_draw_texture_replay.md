@@ -44,8 +44,11 @@ The runner links the remaining production host objects, including the public
 NVN lookup thunks and real Vulkan command replay. Its entry installs the normal
 host dirty-page fault handler.
 
-Validation: the donor oracle initially failed at target 0, pixel 2,1 (0 versus
+Historical validation reported with the original PR, before the current-main
+rebase: the donor oracle initially failed at target 0, pixel 2,1 (0 versus
 128); both render paths pass after the port. The sampler reuse case failed at
 118 versus 128 before connecting sampler history, then passed. All 192 native
 sources built, and both paths passed on an Android 15 ARM64 SwiftShader emulator.
-Physical GPU and commercial-game validation remain outstanding.
+Those runs do not qualify the current revision. Physical GPU and commercial-game
+validation remain outstanding; the donor game association is still an unverified
+Android scene lead.
