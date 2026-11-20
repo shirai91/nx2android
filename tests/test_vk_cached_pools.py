@@ -8,6 +8,7 @@ import unittest
 from porter.toolchain import find_ndk
 import sys; sys.path.insert(0, str(Path(__file__).resolve().parent))
 import host_cc   # noqa: E402
+import csrc  # noqa: E402
 
 
 class CachedPools(unittest.TestCase):
@@ -19,7 +20,7 @@ class CachedPools(unittest.TestCase):
             self.skipTest('NDK Vulkan headers are required')
         src = (Path(__file__).resolve().parents[1] / 'nxnative/dm/android/gfx_vk_core.c').read_text()
         start = src.index('static void pool_cache_sync(')
-        function = src[start:src.index('\n}\n', start)+3]
+        function = csrc.function(src, 'static void pool_cache_sync(')
         harness = r'''
 #define VK_NO_PROTOTYPES
 #include <vulkan/vulkan_core.h>
@@ -78,8 +79,7 @@ int main(void) {
         if not headers:
             self.skipTest('NDK Vulkan headers are required')
         src = (Path(__file__).resolve().parents[1] / 'nxnative/dm/android/gfx_vk_core.c').read_text()
-        start = src.index('static void wait_fence(uint64_t f) {')
-        wait = src[start:src.index('\n}\n', start)+3]
+        wait = csrc.function(src, 'static void wait_fence(uint64_t f) {')
         completion = next(line for line in src.splitlines() if 'g_fring[c->fence % NFRING]' in line)
         harness = r'''
 #define VK_NO_PROTOTYPES
@@ -126,7 +126,7 @@ COMPLETION
         def function(name):
             start = src.index(name)
             return src[start:src.index('\n}\n', start)+3]
-        usage = src[src.index('static const VkBufferUsageFlags POOL_USAGE0'):src.index('static VkResult pool_copied_alloc(')]
+        usage = csrc.between(src, 'static const VkBufferUsageFlags POOL_USAGE0', 'static VkResult pool_copied_alloc(')
         start = src.index('        const char *e = getenv("DM_VK_POOL_CACHED")')
         select = src[start:src.index('\n    }\n    pthread_rwlock_wrlock(&g_pool_mu);', start)]
         harness = r'''

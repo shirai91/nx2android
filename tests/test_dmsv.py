@@ -10,6 +10,7 @@ sys.path.insert(0, str(REPO / 'nxnative/dm/android/tools'))
 import dmsv   # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import host_cc   # noqa: E402
+import csrc  # noqa: E402
 
 ZSTD = dmsv.zstd_mod() is not None
 
@@ -185,7 +186,7 @@ class HostReader(unittest.TestCase):   # native bundle reader and vk_shader_q th
     @classmethod
     def setUpClass(cls):
         cls.d = Path(tempfile.mkdtemp(prefix='nx2a_test_dmsv_c_')); src = (REPO / 'nxnative/dm/android/gfx_vk_shader.c').read_text(encoding='utf-8')
-        body = src[src.index('// spv_size: 0 ='):src.index('// Run-time capture:')]
+        body = csrc.between(src, '// spv_size: 0 =', '// Run-time capture:')
         lookup_start = src.index('static vkshader_t *vk_shader_q(uint64_t key, int stage, int quiet) {')
         lookup = src[lookup_start:src.index("    // SPIR-V with the stage's set", lookup_start)]
         header = (REPO / 'nxnative/dm/android/gfx_vk.h').read_text(encoding='utf-8')

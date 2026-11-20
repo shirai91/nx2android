@@ -5,6 +5,10 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import csrc  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -13,8 +17,8 @@ ROOT = Path(__file__).resolve().parents[1]
 class GpuCodeVersion(unittest.TestCase):
     def test_precompiled_shader_range_and_runtime_compiler_floor(self):
         source = (ROOT / 'nxnative/dm/gfx/nvn/hle_nvn.c').read_text(encoding='utf-8')
-        table = source[source.index('static const int g_devinfo[]'):source.index('// The NVN API version')]
-        funcs = source[source.index('static void nvn_api('):source.index('NVN(nvnDeviceGetImageHandle,')]
+        table = csrc.between(source, 'static const int g_devinfo[]', '// The NVN API version')
+        funcs = csrc.between(source, 'static void nvn_api(', 'NVN(nvnDeviceGetImageHandle,')
         sdk_define = next(line for line in (ROOT / 'nxnative/dm/host/dm.h').read_text(encoding='utf-8').splitlines() if line.startswith('#define DM_SDK_OLD('))
         harness = r'''
 #include <assert.h>

@@ -16,3 +16,6 @@ status	playable
 tested	v327680 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
 package	org.nx2a.metroiddread
 orientation	landscape
+readme_image	docs/images/metroid-dread.jpg
+readme_tag	v0.3.0
+readme_note	update 2.1.0 · 60 fps

@@ -5,6 +5,10 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import csrc  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -22,7 +26,7 @@ def classifier():
 
 
 def driver_source():
-    text = (ROOT / 'nxnative/dm/android/gfx_vk_exec.c').read_text(encoding='utf-8')
+    text = csrc.unit((ROOT / 'nxnative/dm/android/gfx_vk_exec.c'))
     start = text.index('static void drv_segment(')
     function = text[start:text.index('\n}', start) + 2]
     return r'''

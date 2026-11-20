@@ -1,0 +1,8 @@
+# Engine frame limits kept in game memory that the host raises to the frame-rate target (nxnative/dm/host/hle_fpslock.c; dm/games/game.py puts these rows in the
+# profile header as DM_GAME_FPS_LOCKS). Each row runs only on its main build. ptr_off: a pointer at main + ptr_off to the object holding the field (0: the field is at
+# main + field); kind: FPS_F32, VSYNCS_I32, MS_F32, SEC_F32, FPS_I32; copies: consecutive copies of the value; ptr2: a second pointer at that object + ptr2 (0 = none).
+#	build	what	ptr_off	field	kind	copies	ptr2
+# FINAL FANTASY RESONANCE 1.0.1: Unreal Engine 5.6.1's t.MaxFPS and rhi.SyncInterval, the same layout (names in UTF-16). The engine's Switch device profile sets rhi.syncinterval=2
+# (BaseSwitchDeviceProfiles.ini). Registered at main+0x33a4dec (float, IConsoleManager slot 2; AsVariableFloat stored at +0x10) and main+0x149e0bc (int, slot 1; AsVariableInt at +0x10)
+84e182f72ee1da4f477804bd05b54c15	Unreal t.MaxFPS	0x8c29b00	0x0	FPS_F32	2	0
+84e182f72ee1da4f477804bd05b54c15	Unreal rhi.SyncInterval	0x8adca20	0x0	VSYNCS_I32	2	0

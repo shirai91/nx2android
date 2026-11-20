@@ -23,24 +23,24 @@
 
 // Slot layouts: which slots the host fills and which do nothing (up to 6; 0 ends the list); the others keep the guest's own functions
 enum { UE5, UE4_27, UE5_6 };
+// The builds and their offsets are the profile's ue_malloc.tsv (dm/games/game.py writes them into game_profile.h as DM_GAME_UE_MALLOC)
 static const struct { int nslot, malloc_, try_malloc, realloc_, try_realloc, free_, quantize, get_size, nothing[6]; } k_lay[] = {
     [UE5] = { 26, 6, 7, 8, 9, 10, 11, 12, { 13, 14, 15, 19 } },      // Trim, the TLS cache setup and teardown, DumpAllocatorStats
     [UE4_27] = { 21, 3, 4, 5, 6, 7, 8, 9, { 10, 11, 12, 16 } },
     [UE5_6] = { 32, 6, 7, 8, 9, 10, 13, 14, { 15, 16, 17, 18, 19, 23 } },   // Trim, the four TLS cache calls, DumpAllocatorStats
 };
 static const struct { const char *build, *what; int layout; uint64_t obj, vtable, cut; } k_ue[] = {
-    // Octopath Traveler 0 1.0.5: the FMallocBinned3 object (main+0x68022c8, bss), its vtable (main+0x5b06f38, 26 slots), the cut constructor call (main+0x12e40, a nop after the rewrite)
-    { "9fe60a212cff9b9a3656ab63d4f882e5", "Octopath Traveler 0 1.0.5", UE5, 0x68022c8, 0x5b06f38, 0x12e40 },
-    // Octopath Traveler 0 1.0.5 (Chinese release): the same game as the row above, its own main build with the engine's data 0x3000 bytes higher: the FMallocBinned3 object (main+0x68052c8, bss), its vtable (main+0x5b09f38, 26 slots), the cut constructor call (main+0x12e40, a nop after the rewrite)
-    { "e3e401c28d9fd3b1f9e033bb7bb31d42", "Octopath Traveler 0 1.0.5 (Chinese)", UE5, 0x68052c8, 0x5b09f38, 0x12e40 },
-    // DRAGON QUEST VII Reimagined 1.2.0: no fixed object (0: made by GCreateMalloc, given at the gate), its vtable (main+0x5e4c0e8, 21 slots), the cut constructor call (main+0x32758dc)
-    { "f7ec03e4cb9de3bd8319d4e899d2e9cc", "DRAGON QUEST VII Reimagined 1.2.0", UE4_27, 0, 0x5e4c0e8, 0x32758dc },
-    // FINAL FANTASY RESONANCE 1.0.1: the FMallocBinned3 object (main+0x77c6210, bss), its vtable (main+0x67df800, 32 slots), the cut constructor call (main+0x137f0)
-    { "84e182f72ee1da4f477804bd05b54c15", "FINAL FANTASY RESONANCE 1.0.1", UE5_6, 0x77c6210, 0x67df800, 0x137f0 },
-    // FINAL FANTASY RESONANCE 1.0.1, the Korean / Chinese release: the same Unreal Engine 5.6.1 build at the same offsets (its main+0x137e4 puts main+0x77c6210 in x0, the cut call there is the
-    // FMallocBinned3 constructor, and the 32-slot vtable at main+0x67df800 is the same)
-    { "b7f965b9d7227db8e29f04e84ea7331b", "FINAL FANTASY RESONANCE 1.0.1 (Asian release)", UE5_6, 0x77c6210, 0x67df800, 0x137f0 },
+#ifdef DM_GAME_UE_MALLOC
+    DM_GAME_UE_MALLOC   // the profile's ue_malloc.tsv (dm/games/game.py)
+#else
+    { NULL }
+#endif
 };
+#ifdef DM_GAME_UE_MALLOC
+#define NUE DM_GAME_UE_MALLOC_N
+#else
+#define NUE 0
+#endif
 enum { NSLOT = 32 };
 
 static malloc_zone_t *g_zone;
@@ -95,7 +95,7 @@ static void obj_made(const uint64_t *regs) {
 // Called once the modules are loaded and relocated, before any guest code runs
 void dm_ue_malloc_install(void) {
     for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "main"))
-        for (int k = 0; k < (int)(sizeof k_ue / sizeof k_ue[0]); k++) if (!strcmp(g_mod[i].build_id, k_ue[k].build)) {
+        for (int k = 0; k < NUE; k++) if (!strcmp(g_mod[i].build_id, k_ue[k].build)) {
             uint8_t *b = g_mod[i].base; int L = k_ue[k].layout;
             if (*(uint32_t *)(b + k_ue[k].cut) != 0xd503201f) { LOG("[RED] %s: main is rewritten without the allocator cut (its patches.py): Unreal's own FMallocBinned3 runs", k_ue[k].what); return; }
             if (!k_ue[k].obj && !gate_obs_present(OBS_UE_MALLOC)) { LOG("[RED] %s: main is rewritten without the allocator gate (OBS of its patches.py): the allocator would have no vtable", k_ue[k].what); return; }

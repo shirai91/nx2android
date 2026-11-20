@@ -25,3 +25,7 @@ status	playable
 tested	v65536 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
 package	org.nx2a.finalfantasyresonance
 orientation	landscape
+readme_name	Final Fantasy Resonance
+readme_image	docs/images/final-fantasy-resonance.jpg
+readme_tag	v0.4.0
+readme_note	update 1.0.1 · 60 fps · Asian release: tested on the Legion Y700 TB321FU (Adreno 750) with a Turnip Vulkan driver

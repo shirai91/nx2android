@@ -24,12 +24,19 @@ for pid in profiles:
     if a.exists(): pkgs |= {l.split('\t')[1].strip() for l in a.read_text(encoding='utf-8').splitlines() if l.startswith('package\t')}
 GAME_RX = re.compile(r'0100[0-9A-Fa-f]{12}|\bNEO\b|Viractal|' + '|'.join(re.escape(k) + r'\b' for k in pkgs))   # profiles' own packages, not generic defaults
 
+# per-build rows live in the profiles (dm/games/game.py BUILD_TABLES, patches.py), not in the core: no main build ID in core code (comments may name one)
+hits = []
+for f in files:
+    if not re.match(r'nxnative/dm/(host|gfx|android)/', f) or '/tests/' in f or not f.endswith(('.c', '.h', '.inc', '.m')): continue
+    if re.search(r'"(?=[0-9a-f]*[a-f])[0-9a-f]{32}"', strip_c((R / f).read_text(encoding='utf-8', errors='replace'))): hits.append(f)
+check('per-build rows are profile data, not core code', not hits, ', '.join(hits))
+
 # 1. Core, Android runtime: no title IDs, game names or per-game branches in code
 hits = []
 for f in files:
-    if not f.startswith('nxnative/dm/android/') or not f.endswith(('.c', '.h', '.py', '.m')): continue
+    if not f.startswith('nxnative/dm/android/') or not f.endswith(('.c', '.h', '.inc', '.py', '.m')): continue
     s = (R / f).read_text(encoding='utf-8', errors='replace')
-    code = strip_c(s) if f.endswith(('.c', '.h', '.m')) else strip_py(s)
+    code = strip_c(s) if f.endswith(('.c', '.h', '.inc', '.m')) else strip_py(s)
     code = re.sub(r'"[^"\n]*"', lambda m: m.group(0) if GAME_RX.search(m.group(0)) or any(n in m.group(0) for n in names) else '""', code)
     for m in GAME_RX.finditer(code): hits.append(f'{f}: {m.group(0)}')
     for n in names:
@@ -39,7 +46,7 @@ check('dm/android has no game-specific code', not hits, '; '.join(hits[:5]))
 # 2. Core, shared: no title IDs in code outside the profiles (upstream's own per-game rules live in patches.py / sdk_patches.py)
 hits = []
 for f in files:
-    if not re.match(r'nxnative/dm/(host|gfx|tools)/', f) or not f.endswith(('.c', '.h', '.m')): continue
+    if not re.match(r'nxnative/dm/(host|gfx|tools)/', f) or not f.endswith(('.c', '.h', '.inc', '.m')): continue
     code = strip_c((R / f).read_text(encoding='utf-8', errors='replace'))
     # system titles (0100000000000000..0100000000001fff: firmware programs, system data such as hle_fs.c's MiiModel 0100000000000802, applets) are not games
     if re.search(r'DM_ANDROID|__ANDROID__', code) and re.search(r'0100(?!00000000[01])[0-9A-Fa-f]{12}', code): hits.append(f)
@@ -48,7 +55,7 @@ diff = subprocess.run(['git', '-C', str(R), 'log', '--format=%h', '--', 'nxnativ
 notes.append(f'{len(diff)} commits touch the shared core since the subtree')
 
 # 3. Game profiles: data only, android.tsv keys from the documented set
-KEYS = {'status', 'tested', 'package', 'orientation', 'requires', 'sysdata', 'setting', 'env', 'overlay', 'romfs'}
+KEYS = {'status', 'tested', 'package', 'orientation', 'requires', 'sysdata', 'setting', 'env', 'overlay', 'romfs', 'vulkan_driver', 'pacing', 'readme_name', 'readme_image', 'readme_tag', 'readme_note'}
 STATUS = {'playable', 'wip', 'boots', 'experimental'}
 bad = []
 for f in files:

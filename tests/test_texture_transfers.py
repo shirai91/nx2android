@@ -7,6 +7,10 @@ import tempfile
 import unittest
 
 from porter.toolchain import find_ndk
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import csrc  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -25,7 +29,7 @@ class TextureTransfers(unittest.TestCase):
         headers = next(ndk.glob('toolchains/llvm/prebuilt/*/sysroot/usr/include'), None) if ndk else None
         if not headers:
             raise unittest.SkipTest('NDK Vulkan headers required')
-        exe = (ROOT / 'nxnative/dm/android/gfx_vk_exec.c').read_text(encoding='utf-8')
+        exe = csrc.unit((ROOT / 'nxnative/dm/android/gfx_vk_exec.c'))
         header = (ROOT / 'nxnative/dm/android/gfx_vk.h').read_text(encoding='utf-8')
         harness = (ROOT / 'tests/texture_transfers_harness.c').read_text(encoding='utf-8')
         types = between(header, 'typedef struct { VkFormat vk;', 'const vkfmt_t *vk_fmt')

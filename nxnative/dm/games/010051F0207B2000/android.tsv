@@ -14,3 +14,6 @@ orientation	landscape
 # CalculateSpanBetween returned Result 0 where the SDK returns a bool (fixed in the core, hle_time.c; checked 2026-11-06: two restarts after a save, no notice).
 # The steady clock follows the host's real time, as a Switch's runs on its battery-backed clock, so spans hold across device reboots
 env	DM_STEADY_REALTIME=1
+readme_image	docs/images/tomodachi-life-living-the-dream.jpg
+readme_tag	v0.4.0
+readme_note	update 1.0.4 · 60 fps

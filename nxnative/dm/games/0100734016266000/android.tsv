@@ -18,4 +18,8 @@ status	playable
 tested	v196608 (1.0.3) AYN Odin 2 (QCS8550, Adreno 740, Android 13, Turnip), 2026-11-13
 package	org.nx2a.mmbnlc2
 orientation	landscape
-env	DM_ADAPTIVE_FPS=0
+pacing	steady
+readme_name	Mega Man Battle Network Legacy Collection Vol. 2
+readme_image	docs/images/mega-man-battle-network-legacy-collection-vol-2.jpg
+readme_tag	v0.4.0
+readme_note	update 1.0.3 · 60 fps, held · tested on the AYN Odin 2 (Adreno 740) with a Turnip Vulkan driver · Battle Network 4, 5 and 6 played: saving, loading, battles, gallery · the launcher's menus draw fully from the second port with the device connected after a first run (it builds some shaders at run time)

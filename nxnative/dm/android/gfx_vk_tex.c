@@ -555,7 +555,8 @@ static int lin_copy(vkimg_t *im, const tex_t *t, const vkfmt_t *f) {   // 1 = th
 // data in its storage at first use is the CPU's), or an uncompressed 3D texture with none of the flags below (upstream 6a16b7d3, #1050: Xenoblade Chronicles 3's particle steering
 // fields, 10x10x10 RGBA8 and RGBA16F, flags 0; as GPU textures of zeros every send-off particle moved along (-1, -1, -1)). It is made CPU-written: uploaded now, again when its pages
 // change. The compressed case was missing here: Xenoblade Chronicles 3's particle sprites (the husks' 128x128 BC7 sRGB, flags 0) were images of zeros, so the particle
-// pixel shader read alpha 0 and discarded every pixel (no red husk particles, no send-off ones). DM_NVN_STORAGE_FIRST_USE=0 turns this off.
+// pixel shader read alpha 0 and discarded every pixel (no red husk particles, no send-off ones). A pool the CPU cannot access is filled from its storage once in the same way, as the
+// Mac's tex_init_fill does (the game cannot write it again). DM_NVN_STORAGE_FIRST_USE=0 turns this off.
 static int mem_any(const uint8_t *p, uint64_t n) {   // whether any byte is non-zero (stops at the first)
     uint64_t i = 0, v;
     for (; i + 8 <= n; i += 8) { memcpy(&v, p + i, 8); if (v) return 1; }

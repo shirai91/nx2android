@@ -9,6 +9,15 @@ static inline int android_language_list_has(const char *list, const char *code) 
     return 0;
 }
 
+static inline const char *android_locale_part(char **rest) {
+    char *part = *rest;
+    if (!part) return NULL;
+    char *dash = strchr(part, '-');
+    if (dash) *dash++ = '\0';
+    *rest = dash;
+    return part;
+}
+
 // Locale.toLanguageTag() returns canonical case, with a language, optional script and optional region.
 static inline const char *android_game_language(const char *tag, const char *supported) {
     static const char *const codes[] = {"en-US", "en-GB", "ja", "fr", "de", "es-419", "es", "it", "nl",
@@ -16,10 +25,10 @@ static inline const char *android_game_language(const char *tag, const char *sup
     char locale[64] = {0};
     strncpy(locale, tag, sizeof locale - 1);
     char *rest = locale;
-    const char *lang = strsep(&rest, "-");
-    const char *part = strsep(&rest, "-");
+    const char *lang = android_locale_part(&rest);
+    const char *part = android_locale_part(&rest);
     const char *script = part && strlen(part) == 4 ? part : "";
-    const char *region = *script ? strsep(&rest, "-") : part;
+    const char *region = *script ? android_locale_part(&rest) : part;
     if (!region) region = "";
 
     const char *want = "en-US", *near = NULL;

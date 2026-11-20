@@ -17,3 +17,6 @@ tested	v393216 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Andro
 package	org.nx2a.captaintoadtreasuretracker
 orientation	landscape
 setting	docked=0
+readme_image	docs/images/captain-toad-treasure-tracker.jpg
+readme_tag	v0.1.3
+readme_note	update 1.4.2 · 60 fps

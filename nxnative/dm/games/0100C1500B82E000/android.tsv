@@ -14,3 +14,6 @@ orientation	landscape
 setting	docked=0
 setting	overlay=0
 setting	rumble=1
+readme_image	docs/images/the-world-ends-with-you-final-remix.jpg
+readme_tag	v0.4.0
+readme_note	base game 1.0.0 · 60 fps · played by touch

@@ -1,0 +1,6 @@
+# Unreal Engine's allocator on a host malloc zone (nxnative/dm/host/hle_uemalloc.c; dm/games/game.py puts these rows in the profile header as DM_GAME_UE_MALLOC).
+# Each row runs only on its main build. layout: UE5, UE4_27, UE5_6 (the vtable slots, hle_uemalloc.c k_lay); obj: the FMallocBinned object (main + obj, 0 = made by
+# GCreateMalloc, given at the gate); vtable: main + vtable; cut: the cut constructor call (a nop after the rewrite, its patches.py).
+#	build	what	layout	obj	vtable	cut
+# Octopath Traveler 0 1.0.5: the FMallocBinned3 object (main+0x68022c8, bss), its vtable (main+0x5b06f38, 26 slots), the cut constructor call (main+0x12e40, a nop after the rewrite)
+9fe60a212cff9b9a3656ab63d4f882e5	Octopath Traveler 0 1.0.5	UE5	0x68022c8	0x5b06f38	0x12e40

@@ -4,7 +4,7 @@
 - **Start-up switches:** put them in the app's `env.txt` (`/sdcard/Android/data/<package>/files/env.txt`, one `KEY=VALUE` per line), then restart the app.
 - **Live switches:** append `env KEY=VALUE` to `ctl.txt` while the game runs. These are re-read at each submission or present. `ctl.txt` needs a development build with `DM_CTL=<files>/ctl.txt` in `env.txt`; release builds ignore it.
 
-The source of each switch is in `nxnative/dm/android/` unless noted. Check the code comment there before relying on a description below: switches are added and retired as bugs are found.
+Every switch has a row in `nxnative/dm/settings.tsv` (type, default, scope, doc; docs/ARCHITECTURE.md, Settings): a new switch needs a row there, and a name with no row is logged as `[RED] setting ... is not in nxnative/dm/settings.tsv`. The source of each switch is in `nxnative/dm/android/` unless noted. Check the code comment there before relying on a description below: switches are added and retired as bugs are found.
 
 ## Diagnostics
 

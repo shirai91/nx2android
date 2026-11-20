@@ -10,6 +10,10 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import csrc  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,9 +27,9 @@ class AndroidMotion(unittest.TestCase):
             raise unittest.SkipTest('a C compiler is required')
         front = (ROOT / 'nxnative/dm/android/front_android.c').read_text()
         hid = (ROOT / 'nxnative/dm/host/hle_hid.c').read_text()
-        shake = hid[hid.index('#define SHAKE_HZ'):hid.index('void dm_input_set(')]
-        motion = hid[hid.index('typedef struct { int64_t delta_ns'):hid.index('// SixAxisSensorHandle:')]
-        sensor = front[front.index('static void motion_feed('):front.index('static void *input_thread(')]
+        shake = csrc.between(hid, '#define SHAKE_HZ', 'void dm_input_set(')
+        motion = csrc.between(hid, 'typedef struct { int64_t delta_ns', '// SixAxisSensorHandle:')
+        sensor = csrc.between(front, 'static void motion_feed(', 'static void *input_thread(')
         harness = r'''
 #include <assert.h>
 #include <math.h>
