@@ -1054,7 +1054,7 @@ NVN(nvnCommandBufferClearDepthStencil, void, NVNcommandBuffer *c, float depth, u
     p_clear_ds *r = REC(c, OP_CLEAR_DS, p_clear_ds); *r = (p_clear_ds){depth, (int)B(dmask), stencil, smask};
 }
 // Debug: logs the game's own frame-pointer chain above a call whose width and height match the WxH in the
-// environment value `e` (from DM_NVN_TEXSIZE_CALLER or DM_NVN_VIEWPORT_CALLER). Render targets are usually sized,
+// environment value `e` (from DM_NVN_TEXSIZE_CALLER, DM_NVN_VIEWPORT_CALLER or DM_NVN_TS_CALLER). Render targets are usually sized,
 // and viewports set, through generic engine helpers, so the direct caller alone does not tell which pass it is.
 // Walks at most 4 frames and stops at a null, misaligned or non-increasing frame pointer; each chain is logged once.
 static void caller_chain_log(const char *e, const char *what, int w, int h, uint64_t lr, const uint64_t *fp) {
@@ -1075,12 +1075,11 @@ static void caller_chain_log(const char *e, const char *what, int w, int h, uint
     for (int i = 0; i < depth && o < (int)sizeof line - 100; i++) { char at[96]; crash_addr_str(at, sizeof at, chain[i]); o += snprintf(line + o, sizeof line - o, i ? " < %s" : "%s", at); }
     LOG("[nvn] %s %dx%d from %s", what, w, h, line);
 }
-#define CALLER_CHAIN_LOG(e, what, w, h) caller_chain_log(e, what, (int)(w), (int)(h), (uint64_t)__builtin_return_address(0), (const uint64_t *)*(const uint64_t *)__builtin_frame_address(0))
+// `name` is the switch: each call site re-reads it every 4096 calls (so it can be set live) and reads the frame pointer only while it is set, so the
+// hot paths it sits on (viewports hundreds of times a frame, GPU timestamps) cost a counter and a test for every game
+#define CALLER_CHAIN_LOG(name, what, w, h) do { static const char *e_; static unsigned t_; if (!(t_++ & 4095)) e_ = getenv(name); if (e_) caller_chain_log(e_, what, (int)(w), (int)(h), (uint64_t)__builtin_return_address(0), (const uint64_t *)*(const uint64_t *)__builtin_frame_address(0)); } while (0)
 NVN(nvnCommandBufferSetViewports, void, NVNcommandBuffer *c, int first, int n, const float *v) {
-    // SetViewports runs hundreds of times a frame: DM_NVN_VIEWPORT_CALLER (also settable live) is re-read every 4096 calls
-    static const char *vp_caller; static unsigned vp_tick;
-    if (!(vp_tick++ & 4095)) vp_caller = getenv("DM_NVN_VIEWPORT_CALLER");
-    if (vp_caller && n > 0) CALLER_CHAIN_LOG(vp_caller, "viewport", v[2], v[3]);
+    if (n > 0) CALLER_CHAIN_LOG("DM_NVN_VIEWPORT_CALLER", "viewport", v[2], v[3]);
     if (n < 0 || first + n > 16) { LOG("[RED] SetViewports first=%d n=%d", first, n); return; }
     p_viewports *r = REC(c, OP_VIEWPORTS, p_viewports); r->first = first; r->n = n;
     for (int i = 0; i < n; i++) memcpy(r->v[i], v + 4 * i, 16);
@@ -2034,7 +2033,10 @@ static void engine_dyn_tick(uint64_t presents) {
     win[n++] = g; if (n < 30) return; n = 0;
     double s[30]; memcpy(s, win, sizeof s);
     for (int i = 1; i < 30; i++) { double x = s[i]; int j = i; while (j && s[j - 1] > x) { s[j] = s[j - 1]; j--; } s[j] = x; }
-    double p90 = s[26], budget = bud * 1000.0 / nvn_game_fps(), kmax = 1.0 / ((double)lo * lo);
+    // The frame time is the rate frames are held at: a 30 fps ceiling (game.tsv fps_ceiling, dm_pacing.c) holds them at 33 ms although the game asks interval 1, where
+    // nvn_game_fps() says 60 (Violet with patches.py: a 15 ms budget held k at 1.38 in every scene whose GPU p90 passed 15 ms, the Odin 2's whole first town)
+    int fps = dm_pacing_ceiling() == 30 ? 30 : nvn_game_fps();
+    double p90 = s[26], budget = bud * 1000.0 / fps, kmax = 1.0 / ((double)lo * lo);
     double nk = p90 > budget ? k * 1.15 : p90 < 0.7 * budget ? k / 1.15 : k;
     if (nk < 1) nk = 1;
     if (nk > kmax) nk = kmax;
@@ -2399,8 +2401,8 @@ NVN(nvnSamplerCompare, NVNboolean, const NVNsampler *a, const NVNsampler *b) {
 }
 
 // Texture builder / texture / view
-// DM_NVN_TEXSIZE_CALLER=WxH (live; diagnostic, off when unset): log each distinct caller that sizes a texture at WxH, to find where a game picks its render size
-NVN(nvnTextureBuilderSetSize2D, void, NVNtextureBuilder *b, int w, int h) { CALLER_CHAIN_LOG(getenv("DM_NVN_TEXSIZE_CALLER"), "texture sized", w, h); TB(b)->d.width = w; TB(b)->d.height = h; TB(b)->d.depth = 1; }
+// DM_NVN_TEXSIZE_CALLER=WxH (live, read every 4096 calls; diagnostic, off when unset): log each distinct caller that sizes a texture at WxH, to find where a game picks its render size
+NVN(nvnTextureBuilderSetSize2D, void, NVNtextureBuilder *b, int w, int h) { CALLER_CHAIN_LOG("DM_NVN_TEXSIZE_CALLER", "texture sized", w, h); TB(b)->d.width = w; TB(b)->d.height = h; TB(b)->d.depth = 1; }
 NVN(nvnTextureBuilderSetSize3D, void, NVNtextureBuilder *b, int w, int h, int d) { TB(b)->d.width = w; TB(b)->d.height = h; TB(b)->d.depth = d; }
 NVN(nvnTextureBuilderSetSwizzle, void, NVNtextureBuilder *b, NVNtextureSwizzle r, NVNtextureSwizzle g, NVNtextureSwizzle bl, NVNtextureSwizzle a) {
     tex_builder_t *o = (tex_builder_t *)b; o->set_swz = 1; o->swz = (uint16_t)((r & 7) | (g & 7) << 3 | (bl & 7) << 6 | (a & 7) << 9);
@@ -2541,7 +2543,7 @@ NVN(nvnDeviceGetTextureHandle, NVNtextureHandle, const NVNdevice *d, int tex, in
 NVN(nvnDeviceGetTexelFetchHandle, NVNtextureHandle, const NVNdevice *d, int tex) { (void)d; return (NVNtextureHandle)(uint64_t)(uint32_t)tex; }
 // Counter timestamps are 19.2 MHz GPU ticks (nvn_mtl.m gpu_ticks: ns × 12 / 625); convert back to ns. They used to be returned as is, about 52 times smaller than GetCurrentTimestampInNanoseconds, so subtracting one from the other gave garbage
 NVN(nvnDeviceGetTimestampInNanoseconds, uint64_t, const NVNdevice *d, const NVNcounterData *c) {
-    (void)d; CALLER_CHAIN_LOG(getenv("DM_NVN_TS_CALLER"), "GPU timestamp read", 0, 0);   // DM_NVN_TS_CALLER=0x0: who measures GPU time (a frame-rate or dynamic-resolution controller)
+    (void)d; CALLER_CHAIN_LOG("DM_NVN_TS_CALLER", "GPU timestamp read", 0, 0);   // DM_NVN_TS_CALLER=0x0: who measures GPU time (a frame-rate or dynamic-resolution controller)
     return gclk_map(c->timestamp * 625 / 12);
 }
 // Current GPU time (ns): the same clock as the counter timestamps -- the guest clock (guest_ns, nvn_mtl.m gpu_ticks)
