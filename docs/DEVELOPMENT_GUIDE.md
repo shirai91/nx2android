@@ -389,6 +389,18 @@ foliage, Animal Crossing island maps and Astral Chain death effects are leads,
 not verified Android game/version/scene reproductions. Physical Qualcomm and
 Turnip gameplay qualification remains separate from host and synthetic checks.
 
+### Native color logic operations
+
+`test_logic_operations` compiles production format/state eligibility and the
+prewarm feature guard with ASan/UBSan. The manual renderer replay is in
+`tests/vk_logic_operations.md`; its build runner does not contact a device.
+`DM_VK_NO_LOGIC_OP` is a startup diagnostic: any set value, including `0`,
+disables the feature. Remove it for the device's advertised native behavior.
+The fallback diagnostic identifies a refused native path, not proof that an
+eligible native operation ran. No named Android game/version/scene is yet
+established for this feature; synthetic truth-table and build results do not
+satisfy the maintainer's requested Legion Y700 Qualcomm/Turnip gameplay A/B.
+
 ## Runtime GLSLC shader preparation
 
 Some NVN games compile shaders with their own GLSLC at startup (for example, Fire Emblem: Three Houses and Catherine: Full Body). The porter captures these outputs before the offline shader split. If the extraction already contains every complete `glslc_capture/*.glslc` output named by the profile, it reuses them without a device. Otherwise, connect an ARM64 Android device with USB debugging and configure `adb`, even when building without `--install`.

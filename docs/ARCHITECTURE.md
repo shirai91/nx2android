@@ -74,6 +74,14 @@ The transform accepts SPIR-V through 1.3 without existing push constants. A miss
 or unusable debug replacement keeps the ordinary alpha-tested variant. Pipeline
 prewarm records use PPE4 and the driver-cache envelope uses renderer ABI 2.
 
+Native Vulkan color logic operations use the device's `logicOp` feature for
+eligible unsigned-integer and normalized active attachments. Non-COPY operations
+disable blending; unwritten MRT holes do not affect eligibility. Mixed/unsupported
+formats or effective alpha testing keep COPY behavior, and a device without the
+feature also falls back to COPY. Persisted native-logic pipeline keys are skipped
+when the feature is unavailable. `DM_VK_NO_LOGIC_OP`, when set at startup, forces
+that feature-disabled path for diagnosis; it does not add software emulation.
+
 Vulkan descriptor collection checks each image binding against its 384-entry
 scratch array before writing it. A binding that would exceed capacity stops the
 host with a diagnostic; valid arrays keep their full reflected counts, including

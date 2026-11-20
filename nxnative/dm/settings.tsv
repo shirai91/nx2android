@@ -283,6 +283,7 @@ DM_VK_NAN_MINMAX	str		debug	?	gfx_vk_shader.c
 DM_VK_NOCULL	str		debug	start	gfx_vk_exec.c	no face culling (test for winding bugs)
 DM_VK_NOPCACHE	str		debug	start	gfx_vk_pipeline_cache.inc	start with an empty Vulkan pipeline cache (the saved one is ignored; app-owned files cannot be deleted over adb)
 DM_VK_NOPREWARM	str		debug	start	gfx_vk_exec.c	no pipeline prewarm, and no compute pipelines made ahead at the first submission
+DM_VK_NO_LOGIC_OP	str		debug	start	gfx_vk_core.c	diagnostic: when set (including 0), disable native logicOp and retain COPY fallback; unset to use the device feature
 DM_VK_NO_ZEROCOPY	str		debug	?	gfx_vk_core.c	DM_VK_NO_ZEROCOPY (set at all): every pool copied
 DM_VK_ORDER_KEEP	int		debug	?	gfx_vk_exec.c	
 DM_VK_PACE	bool		debug	live	gfx_vk_present.c	present without desired times (`VK_GOOGLE_display_timing`): frames go out at the first vsync after they are latched, as before. On, each frame is timed at the last one's plus the game's period on the display's vsync grid; the log's `[perf] display timing` line counts resyncs (a longer frame where th
