@@ -71,6 +71,18 @@ scratch array before writing it. A binding that would exceed capacity stops the
 host with a diagnostic; valid arrays keep their full reflected counts, including
 the existing 32-entry default for a zero count.
 
+Vulkan shaders that select packed texture and sampler handles at runtime can use
+compact descriptor pools spanning the guest's 20-bit texture and 12-bit sampler
+IDs. The exporter reflects pool bindings and the replay maps live registrations
+to typed descriptors, retaining registration history and typed dummy resources for
+unsupported views. Required indexing features and descriptor limits are checked
+before affected pipelines are created. Each draw resolves geometry topology from
+the bound original shader before selecting its resource layout. Pool layouts use
+synchronous compilation and are excluded from learned prewarm records; PPE4
+invalidates older records after their pipeline keys change. Profiles with
+`android_dynamic_slots on` retain the existing 32-slot export path. Full pools do
+not establish game compatibility or physical-driver qualification.
+
 The Vulkan descriptor-content cache (`g_setc`) reuses a set within one submission
 only when its hash and complete static key match. The key owns explicit layout,
 binding, array position, descriptor type/count and every buffer, image and texel-view field, without C
