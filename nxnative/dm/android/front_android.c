@@ -153,11 +153,18 @@ static void on_pause(ANativeActivity *a) { (void)a; go_background(); dm_perf_gpu
 static void on_window_focus(ANativeActivity *a, int focused) { (void)a; if (atomic_load(&g_running) && !atomic_load(&g_bg)) dm_focus_set(focused ? 1 : 2); }
 // A save manager's request, or a RomFS the app cannot read (romfs_readable), asked the app to end (ANativeActivity_onCreate): Activity.finish() when it is resumed, through JNI on the main thread.
 // ANativeActivity_finish, from onCreate or from here, left the activity on the screen (Y700, Android 16), and porter's am start -W waited out its timeout
-static int g_quit;
-static void act_finish(ANativeActivity *a) {
-    JNIEnv *E = a->env; jclass c = (*E)->GetObjectClass(E, a->clazz); jmethodID m = c ? (*E)->GetMethodID(E, c, "finish", "()V") : NULL;
-    if (m) (*E)->CallVoidMethod(E, a->clazz, m);
-    if (!m || (*E)->ExceptionCheck(E)) { (*E)->ExceptionClear(E); LOG("[RED] Activity.finish() failed: the app ends itself"); _exit(0); }
+static _Atomic int g_quit;
+static void act_finish(ANativeActivity *a) {   // Activity.finish(): the app ends the way Android ends it, so the host's pause and stop handlers run as always (no hard exit: the game may be mid-write, its saves commit atomically). a->env belongs to the main thread: a caller on another thread (the menu's Exit game) attaches its own, as menu_audio does
+    JNIEnv *E = NULL; int attached = 0, ok = 0;
+    if ((*a->vm)->GetEnv(a->vm, (void **)&E, JNI_VERSION_1_6) != JNI_OK && (*a->vm)->AttachCurrentThread(a->vm, &E, NULL) == JNI_OK) attached = 1;
+    if (E) {
+        jclass c = (*E)->GetObjectClass(E, a->clazz); jmethodID m = c ? (*E)->GetMethodID(E, c, "finish", "()V") : NULL;
+        if (m) (*E)->CallVoidMethod(E, a->clazz, m);
+        if (m && !(*E)->ExceptionCheck(E)) ok = 1;
+        else if ((*E)->ExceptionCheck(E)) (*E)->ExceptionClear(E);
+    }
+    if (attached) (*a->vm)->DetachCurrentThread(a->vm);
+    if (!ok) { LOG("[RED] Activity.finish() failed: the app ends itself"); _exit(0); }
 }
 // #294: Game Mode can change while the app is paused. Query on every resume, including NativeActivity without Java helpers.
 extern void dm_perf_game_mode(int mode);
@@ -182,7 +189,7 @@ static void activity_game_mode(ANativeActivity *a) {
     }
     dm_perf_game_mode(mode);   // absent service / older Android keeps the standard policy
 }
-static void on_resume(ANativeActivity *a) { if (g_quit) { act_finish(a); return; } activity_game_mode(a); go_foreground(); }
+static void on_resume(ANativeActivity *a) { if (atomic_load(&g_quit)) { act_finish(a); return; } activity_game_mode(a); go_foreground(); }
 static void on_destroy(ANativeActivity *a) { (void)a; dm_perf_gpu_release(); _exit(0); }   // one game per process
 
 // ---- input ----
@@ -645,6 +652,9 @@ static void menu_do(int item) {
     else if (item == OVM_EXPORT) { if (atomic_load(&g_sv_st) == OVX_BUSY) return; save_export(); }
     else if (item == OVM_IMPORT) { dm_haptics_android_tap(); sp_open(); return; }
     else if (item == OVM_AUDIO) { menu_audio(); }
+    else if (item == OVM_EXIT) {   // Exit game: the app ends itself the way Android does (Activity.finish(), g_quit keeps it finished if it is resumed once more); without an activity (the adb shell dmhost) the row does nothing
+        if (g_act) { dm_haptics_android_tap(); LOG("[menu] exit game: Activity.finish()"); atomic_store(&g_quit, 1); act_finish(g_act); return; }
+    }
     if (item >= 0 && item < OVM_N) dm_haptics_android_tap();
     if (item == OVM_RESUME) menu_close(); else dm_overlay_redraw();
 }
@@ -670,7 +680,7 @@ static void menu_touch(AInputEvent *e, float W, float H) {   // a press on a row
     } else if ((act == AMOTION_EVENT_ACTION_UP || act == AMOTION_EVENT_ACTION_POINTER_UP) && id == g_menu_ptr) {
         int down = g_menu_row; g_menu_ptr = -1; atomic_store(&g_menu_hi, -1);
         if (down >= 0 && ov_menu_item(tab, down) == OVM_OPACITY) { settings_save(); dm_overlay_redraw(); }
-        else if (row == down && item >= 0 && item != OVM_TAB) menu_do(item);
+        else if (row == down && item >= 0 && item != OVM_TAB) menu_do(item == OVM_RESUME && x * 2 < p[0] + p[2] ? OVM_EXIT : item);   // the button row: its left half is Exit game (gfx_vk_present.c draws the two at the same midline)
         else if (row == down && (row == -2 || row == -3)) { dm_haptics_android_tap(); menu_close(); }
         else dm_overlay_redraw();
     } else if (act == AMOTION_EVENT_ACTION_CANCEL) { g_menu_ptr = -1; atomic_store(&g_menu_hi, -1); dm_overlay_redraw(); }
@@ -1409,8 +1419,8 @@ __attribute__((visibility("default"))) void ANativeActivity_onCreate(ANativeActi
     unsetenv("DM_CTL");   // a release build takes no remote key presses (the control file is a development tool)
 #endif
     // the save manager's requests (saves_android.c), before the host mounts the save: an import chosen in the menu or pushed by porter, an export porter asks for
-    if (dm_saves_start(g_root)) { LOG("[saves] the request asked the app to end: the game is not started"); g_quit = 1; return; }
-    if (!romfs_readable(act, sdk)) { g_quit = 1; return; }   // after the save manager's requests, which need no RomFS
+    if (dm_saves_start(g_root)) { LOG("[saves] the request asked the app to end: the game is not started"); atomic_store(&g_quit, 1); return; }
+    if (!romfs_readable(act, sdk)) { atomic_store(&g_quit, 1); return; }   // after the save manager's requests, which need no RomFS
     settings_load(); dm_haptics_android_start(act, atomic_load(&g_set_rumble)); dm_lan_android_start(act);
     g_vm = act->vm;
     { pthread_t w; if (!pthread_create(&w, NULL, pad_watch, act->vm)) pthread_detach(w); }
