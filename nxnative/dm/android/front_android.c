@@ -407,6 +407,7 @@ int64_t dm_overlay_pressed(int ctl, uint64_t bit) {
     return bit && bit < 1u << 16 ? atomic_load(&g_press_t[__builtin_ctzll(bit)]) : 0;
 }
 static int g_dpi;   // the display's density (AConfiguration), 0 = unknown
+int dm_overlay_dpi(void) { return g_dpi; }
 float dm_overlay_scale(void) {
     static int last_w = -1, last_h = -1, last_x = -1; static float s = 1;
     ANativeWindow *w = phone_window(); int ww = w ? ANativeWindow_getWidth(w) : 0, h = w ? ANativeWindow_getHeight(w) : 0, ext = dm_external_active();

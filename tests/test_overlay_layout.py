@@ -24,6 +24,7 @@ static int custom_faces, custom_a, custom_x, hidden_ctl = -1, audio_available;
 int dm_menu_audio_available(void) { return audio_available; }
 float dm_overlay_scale(void) { return 1; }
 int dm_external_active(void) { return 0; }
+int dm_overlay_dpi(void) { return 0; }
 int dm_overlay_off(int l, int c) { return l == 1 && c == hidden_ctl; }
 int dm_overlay_custom(int layout, int ctl, float *x, float *y, float *s) {
     *s = 1;
@@ -148,6 +149,7 @@ int main(void) {
 static float g_s = 1; static int g_cust = -1; static float g_cx, g_cy;   /* g_cust: the control with a player's position (g_cx, g_cy) */
 float dm_overlay_scale(void) { return g_s; }
 int dm_external_active(void) { return 0; }
+int dm_overlay_dpi(void) { return 0; }
 int dm_overlay_custom(int layout, int ctl, float *x, float *y, float *s) { (void)layout; *s = 1; if (ctl != g_cust) return 0; *x = g_cx; *y = g_cy; return 1; }
 static float gap(const ov_ctl *a, const float p[4], const ov_ctl *b, const float q[4]) {   // < 0: they overlap (round ones as circles, the rest as boxes)
     float dx = fabsf(p[0] - q[0]), dy = fabsf(p[1] - q[1]);
@@ -203,9 +205,9 @@ int main(void) {
 
     def test_unfolded_window_puts_the_gamepad_under_the_picture(self):
         """A near-square window (an unfolded Galaxy Z Fold, 2184x1968 or 1968x2184) puts the picture across its top and lays the gamepad out in the band
-        under it with DM_OVERLAY_SPLIT=1 (overlay_layout.h ov_band): every control, grown as far as it fits there, stays inside the band and apart,
-        and a control dragged in the editor or the menu button lands under the finger (ov_drag_place). A phone's or a tablet's window keeps the
-        whole window, and without DM_OVERLAY_SPLIT=1 (the default) or with =0, or with the picture on an external display, there is no band"""
+        under it with DM_OVERLAY_SPLIT=1 when the density allows 8 mm face buttons or the window is taller than wide (overlay_layout.h ov_band): every control, grown as far as it fits there,
+        stays inside the band and apart, and a control dragged in the editor or the menu button lands under the finger (ov_drag_place). A phone's or a tablet's
+        window keeps the whole window, and without DM_OVERLAY_SPLIT=1 (the default) or with =0, or with the picture on an external display, there is no band"""
         cc = shutil.which('cc') or shutil.which('clang')
         if not cc:
             self.skipTest('a C compiler is needed for the layout geometry check')
@@ -218,6 +220,8 @@ static float g_s = 1; static int g_cust = -1; static float g_cx, g_cy;   /* g_cu
 float dm_overlay_scale(void) { return g_s; }
 static int g_ext;   /* the picture on an external display */
 int dm_external_active(void) { return g_ext; }
+static int g_dpi;
+int dm_overlay_dpi(void) { return g_dpi; }
 int dm_overlay_custom(int layout, int ctl, float *x, float *y, float *s) { (void)layout; *s = 1; if (ctl != g_cust) return 0; *x = g_cx; *y = g_cy; return 1; }
 static float gap(const ov_ctl *a, const float p[4], const ov_ctl *b, const float q[4]) {
     float dx = fabsf(p[0] - q[0]), dy = fabsf(p[1] - q[1]);
@@ -227,6 +231,12 @@ static float gap(const ov_ctl *a, const float p[4], const ov_ctl *b, const float
 int main(int argc, char **argv) {
     float y0, bh;
     if (argc > 1 && !strcmp(argv[1], "off")) { assert(!ov_band(2184, 1968, &y0, &bh)); return 0; }
+    g_dpi = 360; assert(ov_band(2184, 1968, &y0, &bh));
+    g_dpi = 373; assert(ov_band(2152, 2076, &y0, &bh));
+    g_dpi = 264; assert(!ov_band(2048, 1536, &y0, &bh));
+    g_dpi = 374; assert(!ov_band(2176, 1812, &y0, &bh));
+    g_dpi = 343; assert(ov_band(1270, 1600, &y0, &bh));   /* taller than wide: the band at 7 mm, since the gamepad over the picture would meet in the middle */
+    g_dpi = 0;
     assert(!ov_band(2400, 1080, &y0, &bh) && !ov_band(2560, 1600, &y0, &bh) && !ov_band(1920, 1080, &y0, &bh));   // phones and 16:10 tablets: as before
     const float screens[][3] = {{2184, 1968, 1}, {2184, 1968, 1.45f}, {1968, 2184, 1}, {1968, 2184, 1.45f}};
     for (unsigned k = 0; k < sizeof screens / sizeof screens[0]; k++) {

@@ -18,6 +18,7 @@
 
 __attribute__((weak)) ANativeWindow *dm_front_window(void) { return NULL; }
 __attribute__((weak)) int dm_external_active(void) { return 0; }
+__attribute__((weak)) int dm_overlay_dpi(void) { return 0; }
 static uint64_t g_presents;
 // Vulkan present IDs include overlay redraws; only the game's tickets have a time for the NVN frame statistics.
 enum { PRES_TIMES = 64 };

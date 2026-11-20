@@ -43,6 +43,7 @@ static int layout, saves;
 int dm_overlay_layout(void) { return layout; }
 float dm_overlay_scale(void) { return 1; }
 int dm_external_active(void) { return 0; }
+int dm_overlay_dpi(void) { return 0; }
 int dm_overlay_custom(int l, int c, float *x, float *y, float *s) {
     (void)l; (void)c; (void)x; (void)y; *s = 1; return 0;
 }

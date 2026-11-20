@@ -14,17 +14,24 @@ static const ov_ctl OV_LAYOUTS[2][DM_AOV_N] = {{DM_AOV_TABLET}, {DM_AOV_PHONE}};
 #define OV_N DM_AOV_N
 // the layout in use: the phone's when the window is at least OV_PHONE_ASPECT wide for its height (a 20:9 phone is 2.2, a 16:10 tablet 1.6), else the tablet's
 #define OV_PHONE_ASPECT 1.9f
-// DM_OVERLAY_SPLIT=1 (start-up, off by default): a window narrower than 3:2 (an unfolded Galaxy Z Fold: 2184 x 1968; a 4:3 tablet; a split-screen window) puts the
+// DM_OVERLAY_SPLIT=1 (start-up, off by default): a window narrower than 3:2 (an unfolded Galaxy Z Fold: 2184 x 1968; a 4:3 tablet; a split-screen window) can put the
 // picture across its top, as wide as the window, and the gamepad in the band left under it, instead of over a picture letterboxed in the middle: the band is
 // laid out as a window of its own (a 2184 x 740 band takes the phone's layout). gfx_vk_present.c places the picture to match while the gamepad shows, and the
 // player's own positions (the layout editor, the menu button's drag) are kept against the band (ov_drag_place). A band under a quarter of the height is not used
 #define OV_SPLIT_ASPECT 1.5f
+// the band is used only where its face buttons can be at least this wide. Players found the unfolded Galaxy Z Fold7's 8.7 mm comfortable. A 4:3 tablet's
+// 384-pixel band gives 6.2 mm and an older Z Fold 6.7 mm: those keep the gamepad over the picture. A window taller than wide takes the band whatever the size:
+// there the sides of the gamepad over the picture meet in the middle (half of a Legion Y700 in split screen: the right stick over the d-pad), and its band gives 7.0 mm
+#define OV_BAND_MIN_MM 8.0f
 static inline int ov_split_on(void) { static int on = -1; if (on < 0) { const char *e = getenv("DM_OVERLAY_SPLIT"); on = e && atoi(e) > 0; } return on; }
 int dm_external_active(void);   // (front_android.c) the picture is on an external display: the phone's window is all gamepad, with no picture to leave room for
+int dm_overlay_dpi(void);   // the display's density, 0 = unknown
+static inline float ov_band_face_mm(float W, float bandh, int dpi);
 static inline int ov_band(float W, float H, float *y0, float *bh) {   // the band's top and height, for a W x H window; 0: no band
     if (!ov_split_on() || dm_external_active() || W <= 0 || H <= 0 || W / H >= OV_SPLIT_ASPECT) return 0;
-    float ph = W * 9.0f / 16.0f; if (H - ph < 0.25f * H) return 0;   // (a 16:9 picture: every Switch game's)
-    *y0 = ph; *bh = H - ph; return 1;
+    float ph = W * 9.0f / 16.0f, bandh = H - ph; if (bandh < 0.25f * H) return 0;   // (a 16:9 picture: every Switch game's)
+    int dpi = dm_overlay_dpi(); if (W >= H && dpi > 0 && dpi < 0xfffe && ov_band_face_mm(W, bandh, dpi) < OV_BAND_MIN_MM) return 0;
+    *y0 = ph; *bh = bandh; return 1;
 }
 static inline int ov_layout_for_size(int width, int height) {
     float y0, bh, h = (float)height; if (ov_band((float)width, h, &y0, &bh)) h = bh;
@@ -106,6 +113,11 @@ static inline float ov_fit_scale(const ov_ctl *L, float W, float H, float s) {
         }
     }
     return fmaxf(s, 1);
+}
+static inline float ov_band_face_mm(float W, float bandh, int dpi) {
+    float face = 0.1f; const ov_ctl *L = OV_LAYOUTS[W / bandh >= OV_PHONE_ASPECT]; for (int i = 0; i < OV_N; i++) if (L[i].kind == OV_BUTTON && L[i].btn == DM_BTN_A) face = L[i].w;
+    float mm = face * bandh / (float)dpi * 25.4f, s = OV_MIN_MM / mm; if (s < 1) s = 1; if (s > 1.45f) s = 1.45f;
+    return mm * ov_fit_scale(L, W, bandh, s);
 }
 // a dragged control's centre on one axis (half: its half size, extent: the window's): kept on the screen, and with step > 0 on the nearest multiple
 // of step that keeps it there (none may fit an oversized control)
