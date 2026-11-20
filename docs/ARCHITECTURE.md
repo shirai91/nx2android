@@ -195,6 +195,13 @@ Per-build knowledge stays where upstream keeps it: the rewriter's cuts in `patch
 
 ## The port
 
+The Unreal shader-source check also inventories the IoStore containers recognized
+by `uepak.io_shader_tocs`. A supported shader library selects the existing Unreal
+decode stage even when the RomFS has no companion `.pak`. Non-shader containers,
+unrecognized TOCs and GL/Vulkan games do not select that stage through this rule.
+This changes detection only; the existing decoder's format and device requirements
+remain in force.
+
 `python -m porter port <game folder> -k <prod.keys>` (the GUI's **Port** button) runs these stages. The slow ones (extraction, rewrite, shader split, the translator build, the Vulkan shaders) keep their output with a key of their inputs and are skipped on the next run when the key is unchanged; the host build is incremental (`build.py`), and the APK and the data pack are made again each time (seconds).
 
 Shader reuse checks the generated bundle against its receipt. Windows uses size
