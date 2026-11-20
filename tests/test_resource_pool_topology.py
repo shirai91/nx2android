@@ -29,3 +29,20 @@ int main(void){S.sh[2]=&original;assert(pick(0));assert(S.sh[2]==&points);assert
 ''')
             subprocess.run(['cc','-std=c11',str(c),'-o',str(exe)],check=True)
             subprocess.run([str(exe)],check=True)
+
+    def test_geometry_split_uses_bound_source_on_repeated_draws(self):
+        source=csrc.unit(ROOT/'nxnative/dm/android/gfx_vk_exec.c')
+        shader=(ROOT/'nxnative/dm/android/gfx_vk_shader.c').read_text()
+        begin=source.index('    // layout and pipeline',source.index('static int prepare_draw('))
+        prepare=source[begin:source.index('    VkDescriptorSetLayout dsl[5]',begin)]
+        code=(ROOT/'tests/resource_pool_topology.c').read_text()
+        code=code.replace('/* TOPOLOGY */',csrc.function(shader,'vkshader_t *vk_shader_gs_topo('))
+        code=code.replace('/* SPLIT */',csrc.function(source,'static int gs_split_draw('))
+        code=code.replace('/* PREPARE */',prepare)
+        with tempfile.TemporaryDirectory(prefix='nx2a-pool-split-') as tmp:
+            c=Path(tmp)/'split.c';exe=Path(tmp)/'split';c.write_text(code)
+            subprocess.run(['cc','-std=c11','-Wall','-Wextra',str(c),'-o',str(exe)],check=True)
+            for base_pool,point_pool in ((0,1),(1,0),(0,0),(1,1)):
+                with self.subTest(base_pool=base_pool,point_pool=point_pool):
+                    result=subprocess.run([str(exe),str(base_pool),str(point_pool)],capture_output=True,text=True)
+                    self.assertEqual(result.returncode,0,result.stdout+result.stderr)
