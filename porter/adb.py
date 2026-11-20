@@ -120,6 +120,9 @@ class Adb:
                 vols.append((not p[0].startswith('public:179,'), f'/storage/{p[2]}'))
         return sorted(vols, key=lambda v: v[0])[0][1] if vols else None   # stable: the first listed of each kind
 
+    def is_dir(self, path):   # whether path is a folder on the device
+        return self.shell(f'[ -d {shlex.quote(path)} ] && echo yes; true', check=False).strip() == 'yes'
+
     def read_text(self, path):   # a small text file on the device, '' when it is not there
         return self.shell(f'cat {shlex.quote(path)} 2>/dev/null; true', check=False)
 

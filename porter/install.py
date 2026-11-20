@@ -146,7 +146,11 @@ def install(apk, data, adb_exe, serial=None, replace_signer=False, romfs_at=None
             if packed and target and not sd_dir: raise BuildError(f'the app reads its RomFS from {target} (an earlier install\'s --romfs-at). ' + PACKED_ELSEWHERE)
             if target: say(f'the app reads its RomFS from {target} (an earlier install\'s --romfs-at; --romfs-at app moves it into its files folder)')
         own = card_folder(target, man['package'])   # the installer's own folder on the card: what changed is pushed and what is not the pack's removed, as in the files folder
-        if own: romfs_push = True
+        if own:
+            card = '/'.join(posixpath.normpath(target).split('/')[:3])   # /storage/<volume id>: Android removes it while that card is not mounted
+            if not adb.is_dir(card):   # taken out, or another card: the listing would be empty and the push would go into /storage's tmpfs
+                raise BuildError(f'the SD card {card.rsplit("/", 1)[-1]} that holds the RomFS ({target}) is not in the device: insert it, or install with --romfs-at app')
+            romfs_push = True
         rom = datapack.romfs_sizes(data) if target else {}
         missing = other = changed = extra = []; there = {}
         if target:   # what can refuse comes before the APK goes in, so a refused install changes nothing on the device (but a new app's grant: below)

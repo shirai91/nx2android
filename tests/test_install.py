@@ -27,6 +27,8 @@ class Device(Adb):
         self.md5, self.installed_, self.requests = md5 if md5 is not None else {}, installed, requests
     def pick(self): return 'dev'
     def sd_volume(self): return '/storage/ABCD-1234'
+    gone = None   # a card taken out: its /storage/<id>, which Android removes while it is not mounted
+    def is_dir(self, path): return not (self.gone and (path + '/').startswith(self.gone + '/'))
     def prop(self, name): return str(self.sdk_) if name == 'ro.build.version.sdk' else 'Test'
     def gpu(self): return 'Qualcomm, Adreno (TM) 830'
     def free_bytes(self, path='/sdcard'): return self.free
@@ -213,6 +215,18 @@ class RomfsAt(unittest.TestCase):
             self.assertEqual(dev.remote_sizes(sd), ROM, kw); self.assertEqual(install.device_romfs(dev.text[f'{FILES}/env.txt']), sd)
         with self.assertRaisesRegex(BuildError, 'not the game'):   # a folder the user chose is still never emptied
             self.run_on(Device({**{f'{DUMP}/{r}': n for r, n in ROM.items()}, f'{DUMP}/old.bin': 3}, access='allow'), romfs_at=DUMP, romfs_push=True)
+
+    def test_sd_card_out(self):   # env.txt names the card folder, but that card is not in the device: refused before anything changes; --romfs-at app still moves the RomFS back
+        sd = '/storage/ABCD-1234/Android/data/org.nx2a.test/files/RomFS'
+        first = self.run_on(Device(access='allow'), romfs_at='sd')
+        out = {k: v for k, v in first.fs.items() if not k.startswith('/storage/ABCD-1234/')}
+        dev = Device(dict(out), text=dict(first.text), access='allow', installed=True); dev.gone = '/storage/ABCD-1234'
+        with self.assertRaisesRegex(BuildError, 'SD card ABCD-1234 that holds the RomFS .* is not in the device: insert it, or install with --romfs-at app'): self.run_on(dev)
+        self.assertEqual(dev.step('install'), -1); self.assertEqual(dev.step('push_tree'), -1); self.assertEqual(dev.step('push_file'), -1)
+        back = Device(dict(out), text=dict(first.text), access='allow', installed=True); back.gone = '/storage/ABCD-1234'
+        back = self.run_on(back, romfs_at='app')
+        self.assertEqual({k[len(FILES) + 7:] for k in back.fs if k.startswith(f'{FILES}/RomFS/')}, set(ROM)); self.assertIsNone(install.device_romfs(back.text[f'{FILES}/env.txt']))
+        self.assertFalse(back.remote_sizes(sd))
 
     def test_sd_volume(self):   # sm list-volumes: the SD card (block major 179) before a USB drive, whichever is listed first; None without a mounted portable volume
         class Sm(Adb):
