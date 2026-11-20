@@ -215,7 +215,7 @@ def inspect(folder, keys=None):
         info['reason'] = f'{g.get("name", g.id)} has a game profile (iOS) but is not ported to Android yet (an experimental port tries it with that profile)'
         return info
     info.update(android=profiles.entry(g, ap).as_dict(), supported=True)
-    if ap.status == 'wip': info['reason'] = f'{g.get("name", g.id)} is a work in progress: it plays, but parts of it are missing (the Games table in README.md says which)'
+    if ap.status == 'wip': info['reason'] = f'{g.get("name", g.id)} is a work in progress: it plays, but parts of it are missing (its page, nxnative/dm/games/{g.id}/README.md, says which)'
     if pack not in builds:
         info['reason'] = (info['reason'] + '; ' if info['reason'] else '') + f'{pack} is not a version the profile was brought up on ({", ".join(builds)}): it is packed from a derived profile, without that version\'s fixes'
     return info

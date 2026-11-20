@@ -19,4 +19,3 @@ orientation	landscape
 env	DM_VK_MT_REPLAY=1
 readme_image	docs/images/lonely-mountains-downhill.png
 readme_tag	v0.4.0
-readme_note	base game 1.0.5 · 60 fps on Retroid Pocket 6 with PurpleVK · **work in progress**: brief transition glitch and occasional black/white flashes

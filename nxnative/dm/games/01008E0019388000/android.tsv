@@ -9,4 +9,3 @@ package	org.nx2a.kaijumonsterrancher
 orientation	landscape
 readme_image	docs/images/ultra-kaiju-monster-rancher.jpg
 readme_tag	v0.4.0
-readme_note	update 1.0.1 · 30 fps (60 runs the game twice as fast) · tested on the AYN Odin 2 (Adreno 740) with a Turnip Vulkan driver · handheld 3D resolution by default, docked in the app menu · tested through the tutorials and battles

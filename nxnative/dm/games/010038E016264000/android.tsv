@@ -31,4 +31,3 @@ pacing	steady
 readme_name	Mega Man Battle Network Legacy Collection Vol. 1
 readme_image	docs/images/mega-man-battle-network-legacy-collection-vol-1.jpg
 readme_tag	v0.4.0
-readme_note	update 1.0.2 · 60 fps, held · tested on the AYN Odin 2 (Adreno 740) with a Turnip Vulkan driver (Qualcomm's driver crashes or runs at 30) · Battle Network 1, 2 and 3 played: saves, battles, maps, gallery · the launcher's menus draw fully from the second port with the device connected after a first run (it builds some shaders at run time)

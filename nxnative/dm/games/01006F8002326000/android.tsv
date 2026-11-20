@@ -27,4 +27,3 @@ env	DM_YIELD_BACKOFF=0
 env	DM_LAN=1
 readme_image	docs/images/animal-crossing-new-horizons.jpg
 readme_tag	v0.4.0
-readme_note	update 3.0.3 · 30 fps (as on Switch) · local play over Wi-Fi with Switches that run ldn_mitm (Atmosphère 1.11.2 needs ldn_mitm 1.21.2)

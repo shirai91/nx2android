@@ -10,4 +10,3 @@ package	org.nx2a.t0100a6301214e000
 orientation	landscape
 readme_image	docs/images/fire-emblem-engage.jpg
 readme_tag	v0.4.0
-readme_note	update 2.0.0 · 60 fps (30 on Switch) · tested on the AYN Thor (Adreno 740) with a Turnip Vulkan driver; Qualcomm's own driver mis-draws Engage Attacks (#122)

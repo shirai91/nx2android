@@ -68,4 +68,3 @@ env	DM_VK_BC_DRAW=1
 env	DM_GPU_TURBO=1
 readme_image	docs/images/the-legend-of-zelda-breath-of-the-wild.jpg
 readme_tag	v0.4.0
-readme_note	update 1.9.0 · 60 fps in the open world and shrines; about 30 in the busiest villages, which hold 60 while the phone is cool (30 on Switch) · the profile turns on `DM_GPU_TURBO=1` (the GPU at its highest clock: the phone runs hot, 67-76 °C; `DM_GPU_TURBO=0` in env.txt turns it off) · tested on the Galaxy S25 Ultra (Adreno 830) with Turnip (Stable Turnip v2, Mesa 26.2.3) · **work in progress**: tested on the Great Plateau, in shrines, villages and teleports

@@ -24,4 +24,3 @@ setting	rumble=1
 env	DM_TOUCH_DOCKED=pixels
 readme_image	docs/images/football-manager-26-touch.jpg
 readme_tag	v0.4.0
-readme_note	update 1.0.2 · 30 fps (as on Switch) · played by touch · port with a Turnip Vulkan driver (the crowd glitches on Qualcomm's driver)

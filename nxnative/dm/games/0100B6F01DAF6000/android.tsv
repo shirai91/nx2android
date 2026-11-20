@@ -22,4 +22,3 @@ orientation	landscape
 romfs	zstd
 readme_image	docs/images/cardfight-vanguard-dear-days-2.jpg
 readme_tag	v0.4.0
-readme_note	update 1.7.2 · 30 fps, 60 with the 60 fps box · tested on the AYN Odin 2 with a Turnip driver

@@ -14,7 +14,6 @@
 readme_name	ROMANCE OF THE THREE KINGDOMS XIV
 readme_image	docs/images/romance-of-the-three-kingdoms-xiv.jpg
 readme_tag	v0.4.0
-readme_note	update 1.1.1 · 30 fps (as on Switch) · tested on the Xiaomi 2410DPN6CC (Adreno 830)
 status	playable
 tested	v786432 Xiaomi 2410DPN6CC haotian (Snapdragon 8 Elite, Adreno 830, Android 16)
 package	org.nx2a.t0100cd4012dca000
