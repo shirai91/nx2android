@@ -162,12 +162,13 @@ void dm_overlay_theme_done(const ov_theme *t);   // the pixels are on the GPU: t
 
 // ---- the pause menu: a panel in the middle of the window: a row of tabs, the open tab's rows, and Resume. Everything is placed in a panel rectangle p
 // (x, y, width, height: the window's for touches, the raster's for drawing), so the touches and the drawing agree ----
-enum { OVM_OVERLAY, OVM_OPACITY, OVM_EDIT, OVM_RUMBLE, OVM_FPS, OVM_MODE, OVM_EXPORT, OVM_IMPORT, OVM_PAD, OVM_AUDIO, OVM_CHEATS, OVM_RESUME, OVM_TAB, OVM_N };   // OVM_TAB: the tabs' row;
+enum { OVM_OVERLAY, OVM_OPACITY, OVM_EDIT, OVM_RUMBLE, OVM_FPS, OVM_MODE, OVM_EXPORT, OVM_IMPORT, OVM_PAD, OVM_AUDIO, OVM_ENABLE_CHEATS, OVM_CHEATS, OVM_RESUME, OVM_TAB, OVM_N };   // OVM_TAB: the tabs' row;
             // OVM_EDIT: the layout editor; OVM_MODE: handheld (performance) or docked (resolution); OVM_EXPORT, OVM_IMPORT: the save manager (saves_android.c);
-            // OVM_PAD: a controller's face buttons by their position or by their label (front_android.c pad_labels); OVM_CHEATS: the Atmosphère cheat picker (hle_cheats.c)
+            // OVM_PAD: a controller's face buttons by their position or by their label (front_android.c pad_labels);
+            // OVM_ENABLE_CHEATS: the cheats master switch, OVM_CHEATS: the cheat list (both hle_cheats.c)
 #define OVM_TABS 3
 #define OVM_PER_TAB 6   // (a tab's rows: as many for every tab, the panel keeps its size; Audio output sits with the gamepad's settings)
-static const int OVM_TAB_ITEMS[OVM_TABS][OVM_PER_TAB] = {{OVM_OVERLAY, OVM_OPACITY, OVM_EDIT, OVM_RUMBLE, OVM_PAD, OVM_AUDIO}, {OVM_FPS, OVM_MODE, OVM_EXPORT, OVM_IMPORT, -1, -1}, {OVM_CHEATS, -1, -1, -1, -1, -1}};
+static const int OVM_TAB_ITEMS[OVM_TABS][OVM_PER_TAB] = {{OVM_OVERLAY, OVM_OPACITY, OVM_EDIT, OVM_RUMBLE, OVM_PAD, OVM_AUDIO}, {OVM_FPS, OVM_MODE, OVM_EXPORT, OVM_IMPORT, -1, -1}, {OVM_ENABLE_CHEATS, OVM_CHEATS, -1, -1, -1, -1}};
 static const char *const OVM_TAB_NAMES[OVM_TABS] = {"Gamepad", "Game", "Cheats"};
 #define OVM_ROWS (OVM_PER_TAB + 2)   // the tabs, a tab's rows (as many for every tab: the panel keeps its size), Resume
 int dm_menu_audio_available(void);
@@ -182,9 +183,9 @@ static inline int ov_menu_item(int tab, int row) {
 #define OV_OPACITY_MAX 80
 // what the menu shows (-1 = closed): bit 0 the gamepad is on, bit 1 rumble is on, bit 2 docked, bit 3 the frame rate shown, bits 4..7 the highlighted row + 1
 // (0 = none), bit 8 the face buttons by label, bits 9..12 the opacity as steps of 5 from OV_OPACITY_MIN, bits 28..29 the open tab, bits 20..23 the last
-// export's outcome (OVX_*), bits 24..27 a count of exports (its name changes with each). The mode bits, one each in 16..19 (tests/test_menu_bits.py):
-// OVT_ST the text entry (its edit count below), OVE_ST the layout editor (OVE_ST_* below), OVS_ST the save picker, OVC_ST the cheats picker; never bit 31
-// (a negative state reads as "no menu", which is how a closed one is named)
+// export's outcome (OVX_*), bits 24..27 a count of exports (its name changes with each). Bit 13: the cheats master switch is on. The mode bits, one each in
+// 16..19 (tests/test_menu_bits.py): OVT_ST the text entry (its edit count below), OVE_ST the layout editor (OVE_ST_* below), OVS_ST the save picker, OVC_ST
+// the cheats picker; never bit 31 (a negative state reads as "no menu", which is how a closed one is named)
 #define OVT_ST 0x10000   // the mode bits of dm_menu_state, one each: OVT_ST the text entry, OVE_ST the layout editor, OVS_ST the save picker, OVC_ST the cheats picker
 int dm_menu_state(void);
 enum { OVX_IDLE, OVX_BUSY, OVX_DONE, OVX_NOSAVE, OVX_FAILED };   // Export save: the button; copying; the export's name; the game has not saved yet; failed
@@ -245,13 +246,17 @@ static inline int ov_ed_button_at(float x, float y, const float p[4], int first,
 // saves/ newest first, OVM_ROWS - 2 to a page (left and right page), then the confirmation, then the note that the game closes. dm_menu_state: bit 18, bits 4..7
 // the highlighted row + 1, bits 20..27 the picker's edit count (a page, a confirmation) ----
 #define OVS_ST 0x40000
-enum { OVS_EMPTY, OVS_TITLE, OVS_ITEM, OVS_NOTE, OVS_BUTTON, OVS_BACK };   // a row: nothing; the title (left) and the page (right); a save (its name, its size);
-typedef struct { int style; char left[80], right[40]; } ov_srow;            // a line of text; a button (the import); Back or Cancel, centred as Resume is
+enum { OVS_EMPTY, OVS_TITLE, OVS_ITEM, OVS_MASTER, OVS_NOTE, OVS_BUTTON, OVS_BACK };   // a row: nothing; the title (left) and the page (right); a save (its name, its size);
+                                                                                         // a master cheat (its own size: its long title must not shrink the page's rows); a line of text;
+                                                                                         // a button (the import); Back or Cancel, centred as Resume is
+typedef struct { int style; char left[80], right[40]; } ov_srow;
 int dm_save_rows(ov_srow rows[OVM_ROWS]);   // front_android.c: the picker's rows, 0 when it is not open
 
 // ---- the cheats picker (front_android.c, from the menu's Cheats tab): the same panel, one row per cheat of the running build's Atmosphère file (hle_cheats.c),
-// OVM_ROWS - 2 to a page (left and right, L and R, a tap on the title row's page arrows or a sideways swipe page), its name and on / off state, then Back. dm_menu_state:
-// bit 19, bits 4..7 the highlighted row + 1, bits 20..27 the picker's edit count (a toggle, a page, the host's cheat states) ----
+// OVM_ROWS - 2 to a page (left and right, L and R, a tap on the title row's page arrows or a sideways swipe page), its name and on / off state, then Back.
+// The master switch is the menu's own Enable cheats row (OVM_ENABLE_CHEATS), above the list: every launch starts with it off, one tap runs the saved set,
+// turning it off puts back the code words the passes changed, and the title says "(off)" while it is. dm_menu_state: bit 19, bits 4..7 the highlighted row + 1,
+// bits 20..27 the picker's edit count (a toggle, a page, the host's cheat states) ----
 #define OVC_ST 0x80000
 int dm_cheat_rows(ov_srow rows[OVM_ROWS]);   // front_android.c: the picker's rows, 0 when it is not open
 

@@ -58,6 +58,9 @@ static void sp_open(void) {}
 static void save_export(void) {}
 static void menu_audio(void) {}
 static void menu_close(void) {}
+static int ch_master;
+static int dm_cheats_master(void) { return ch_master; }
+static void dm_cheats_master_set(int on) { ch_master = on; }
 #define ch_open() ((void)0)
 #define ch_touch(e, W, H) ((void)(e), (void)(W), (void)(H))
 static void dm_overlay_redraw(void) {}

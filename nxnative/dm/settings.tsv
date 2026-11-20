@@ -14,6 +14,10 @@ DM_AUDIO_DUMP	str		debug	?	hle_audio.c
 DM_AUDIO_MUTE	bool		debug	?	hle_audio.c	diagnostic: the whole real-output path (AudioUnit callback pacing, background take-over) but with the output silenced (lifecycle tests on the Mac without noise)
 DM_AUDREN_TRACE	str		debug	live	hle_audren.c	logs the first 200 renderer updates with the frames rendered since the previous one, and the next 300 catch-up frames (`audren: catch-up at update …`): the calling thread, the time since the previous update and the frames queued ahead. Animal Crossing: New Horizons: 14-25 catch-ups a second with or 
 DM_BOOTPROF	str		debug	?	nvn_mtl.m main.c	
+DM_CHEATS	str		app	start	hle_cheats.c	the cheats folder ("" = <files>/cheats, or <DM_ROOT>/cheats): Atmosphère files named <build ID>.txt
+DM_CHEATS_ANY_BUILD	bool	0	debug	start	hle_cheats.c	load the folder's only file whatever its build ID (checking a file whose addresses may not fit)
+DM_CHEATS_DEBUG	bool	0	debug	start	hle_cheats.c	log every cheat write
+DM_CHEATS_ON	str		debug	start	hle_cheats.c	names to turn on at launch (the Cheats tab's Enable cheats switch starts every launch off)
 DM_CRASH_TOMBSTONE	str		debug	?	crash.c	
 DM_CTL	str		app	?	hle_hid.c	the control file of a development build (ctl.txt: key presses, env lines, shots); release builds ignore it
 DM_DBG	str		debug	?	main.c	

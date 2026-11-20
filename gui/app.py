@@ -545,9 +545,10 @@ class CheatsTab(QWidget):
         self.busy = None
         v = QVBoxLayout(self)
         lab = QLabel('Atmosphère cheat files for a ported game. The game reads <code>Android/data/&lt;package&gt;/files/cheats/&lt;build ID&gt;.txt</code> and lists its entries in '
-                     'the pause menu (<b>Game → Cheats</b>), where they are turned on and off. A file is installed for the build the app on the device runs; '
-                     'a game update changes the build, so a file for another build is refused. Android runs data cheats only: a cheat that writes the game\'s code '
-                     'shows as off. Cheat files are yours: this tab copies one over adb, it never downloads or ships one.')
+                     'the pause menu (<b>Cheats → Cheat list</b>), where they are turned on and off; its <b>Enable cheats</b> switch starts off every launch and runs the saved set. '
+                     'A file is installed for the build the app on the device runs; '
+                     'a game update changes the build, so a file for another build is refused. Code cheats apply on Android too; a cheat that would overwrite an instruction '
+                     'the rewriter changed stays off and shows as unsupported. Cheat files are yours: this tab copies one over adb, it never downloads or ships one.')
         lab.setWordWrap(True); lab.setTextFormat(Qt.RichText); v.addWidget(lab)
         row = QHBoxLayout(); self.app = QComboBox(); self.app.currentIndexChanged.connect(self.refresh)
         r = QPushButton('Refresh'); r.clicked.connect(self.load_apps)

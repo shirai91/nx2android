@@ -603,7 +603,7 @@ int dm_menu_state(void) {
     }
     return atomic_load(&g_set_overlay) | atomic_load(&g_set_rumble) << 1 | (dm_opmode() != 0) << 2 | atomic_load(&g_set_fps) << 3 | (atomic_load(&g_menu_hi) + 1) << 4 |
            (atomic_load(&g_set_opacity) - OV_OPACITY_MIN) / 5 << 9 | atomic_load(&g_sv_st) << 20 | (atomic_load(&g_sv_n) & 15) << 24 | pad_labels() << 8 |
-           atomic_load(&g_menu_tab) << 28;
+           dm_cheats_master() << 13 | atomic_load(&g_menu_tab) << 28;
 }
 int dm_overlay_fps(void) { return atomic_load(&g_set_fps) && !atomic_load(&g_menu); }   // gfx_vk_present.c draws the counter (not while the menu holds the game)
 static void menu_open(int hi) {
@@ -660,6 +660,7 @@ static void menu_do(int item) {
     else if (item == OVM_EXPORT) { if (atomic_load(&g_sv_st) == OVX_BUSY) return; save_export(); }
     else if (item == OVM_IMPORT) { dm_haptics_android_tap(); sp_open(); return; }
     else if (item == OVM_AUDIO) { menu_audio(); }
+    else if (item == OVM_ENABLE_CHEATS) { dm_cheats_master_set(!dm_cheats_master()); }
     else if (item == OVM_CHEATS) { dm_haptics_android_tap(); ch_open(); return; }
     if (item >= 0 && item < OVM_N) dm_haptics_android_tap();
     if (item == OVM_RESUME) menu_close(); else dm_overlay_redraw();
@@ -830,11 +831,13 @@ int dm_save_rows(ov_srow rows[OVM_ROWS]) {   // (gfx_vk_present.c ov_save_panel)
     return 1;
 }
 
-// ---- the cheats picker (overlay_layout.h OVC_*; hle_cheats.c): the pause menu's panel, one row per cheat of the running build's Atmosphère file, its name
-// and on / off state, OVM_ROWS - 2 to a page (left and right, L and R page), Back. A row toggles when it lifts there; a controller: up and down choose,
-// A does, B goes back. Opening it reloads the file, so one pushed over adb while the game runs appears without a re-launch. Nothing is shown when the
-// build has no file: the rows say which file to put where, with the build ID the host read from main ----
-static int ch_per(void) { return OVM_ROWS - 2; }
+// ---- the cheats picker (overlay_layout.h OVC_*; hle_cheats.c): the pause menu's panel, one row per cheat of the running build's Atmosphère file, its name and
+// on / off state, OVM_ROWS - 2 to a page (left and right, L and R page), Back. The master switch is the Cheats tab's own Enable cheats row: every launch starts
+// with it off (nothing runs, the saved toggles still show), one tap runs the saved set, and turning it off puts back the code words the passes changed; the
+// title says "(off)" while it is. A row toggles when it lifts there; a controller: up and down choose, A does, B goes back. Opening it reloads the file, so one
+// pushed over adb while the game runs appears without a re-launch. Nothing is shown when the build has no file: the rows say which file to put where, with the
+// build ID the host read from main ----
+static int ch_per(void) { return OVM_ROWS - 2; }   // the title, the page's cheats, Back
 static int ch_n(void) { return dm_cheats_ncheats(); }
 static int ch_pages(void) { int n = ch_n(); return n > 0 ? (n + ch_per() - 1) / ch_per() : 1; }
 static int ch_on_page(void) {   // the cheats of the open page
@@ -851,7 +854,7 @@ static int ch_selectable(int row) {
 static void ch_changed(void) { atomic_fetch_add(&g_ch_ver, 1); dm_overlay_redraw(); }
 static void ch_first(int page) {   // the first selectable row of a page, else Back
     int hi = OVM_ROWS - 1;
-    for (int j = 1; j <= OVM_ROWS - 2; j++) {
+    for (int j = 1; j <= ch_per(); j++) {
         int i = page * ch_per() + j - 1;
         if (i < ch_n() && dm_cheat_kind_at(i) == 0) { hi = j; break; }
     }
@@ -861,7 +864,8 @@ static void ch_open(void) {
     dm_cheats_reload();   // a file pushed while the game runs, or its edits, are read now (hle_cheats.c load_all)
     atomic_store(&g_ch_page, 0); g_ch_ptr = -1; g_ch_row = -2; ch_first(0);
     atomic_store(&g_ch_on, 1); ch_changed();
-    LOG("[cheats] picker opened: %d cheat%s, build %s, folder %s", ch_n(), ch_n() == 1 ? "" : "s", dm_cheats_build(), dm_cheats_dir_path());
+    LOG("[cheats] picker opened: %d cheat%s, build %s, folder %s%s", ch_n(), ch_n() == 1 ? "" : "s", dm_cheats_build(), dm_cheats_dir_path(),
+        dm_cheats_master() ? "" : " (Enable cheats: off)");
 }
 static void ch_back(void) {
     if (!atomic_exchange(&g_ch_on, 0)) return;
@@ -914,7 +918,7 @@ int dm_cheat_rows(ov_srow rows[OVM_ROWS]) {
     if (!atomic_load(&g_ch_on)) return 0;
     memset(rows, 0, sizeof(ov_srow) * OVM_ROWS);
     int n = ch_n(), pages = ch_pages(), page = atomic_load(&g_ch_page), per = ch_per();
-    CH_ROW(0, OVS_TITLE, "Cheats");
+    CH_ROW(0, OVS_TITLE, "%s", dm_cheats_master() ? "Cheats" : "Cheats (off)");   // the master switch is the menu's Enable cheats row; the title carries its state
     if (pages > 1) snprintf(rows[0].right, sizeof rows[0].right, "< page %d of %d >", page + 1, pages);
     if (!n) {
         const char *build = dm_cheats_build();
@@ -928,7 +932,7 @@ int dm_cheat_rows(ov_srow rows[OVM_ROWS]) {
             int i = page * per + j, kind = dm_cheat_kind_at(i), fl = dm_cheat_flags_at(i);
             const char *nm = dm_cheat_name_at(i), *why = dm_cheat_why_at(i);
             ov_srow *q = &rows[1 + j];
-            q->style = kind == 2 || kind == 3 ? OVS_NOTE : OVS_ITEM;
+            q->style = kind == 2 || kind == 3 ? OVS_NOTE : kind == 1 ? OVS_MASTER : OVS_ITEM;   // a master's long title must not shrink the page's cheat rows (ov_rows_panel sizes it alone)
             int killed = kind == 2;   // dead or broken: the reason stays in the log, not on every row (a code write's refusal is not this entry's fault)
             char note[40] = "";       // a failed-access note (the cheat still runs): short, so the row's letters stay readable
             if (why && why[0] && !killed) {
@@ -937,8 +941,8 @@ int dm_cheat_rows(ov_srow rows[OVM_ROWS]) {
                 else snprintf(note, sizeof note, "%s", why);
             }
             snprintf(q->left, sizeof q->left, "%s%s", nm, note);
-            if (kind == 1) snprintf(q->right, sizeof q->right, "master");
-            else if (kind == 2) snprintf(q->right, sizeof q->right, "%s", why && strstr(why, "code writes") ? "unsupported" : "off");
+            if (kind == 1) snprintf(q->right, sizeof q->right, "master code");
+            else if (kind == 2) snprintf(q->right, sizeof q->right, "%s", why && (strstr(why, "code write") || strstr(why, "rewriter changed")) ? "unsupported" : "off");
             else if (kind == 3) q->right[0] = 0;
             else if (fl & DM_CHEAT_ONCE) snprintf(q->right, sizeof q->right, "apply");
             else snprintf(q->right, sizeof q->right, "%s", dm_cheat_on_at(i) ? "ON" : "OFF");
@@ -1459,7 +1463,7 @@ static void *host_thread(void *a) {
     atomic_store(&g_running, 1);
     int rc = main(2, argv);
     LOG("host returned %d", rc);
-{ void hlecount_flush(void); hlecount_flush(); }   // DM_HLECOUNT: nnMain's normal return also leaves by _exit, which does not run atexit
+    { void hlecount_flush(void); hlecount_flush(); }   // DM_HLECOUNT: nnMain's normal return also leaves by _exit, which does not run atexit
     dm_cheats_exit();        // a clean exit: the queued cheat state files land before the process ends
     dm_perf_gpu_release();   // the game ended itself: the device-wide KGSL property outlives the process (perf_android.c)
     _exit(rc);

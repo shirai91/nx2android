@@ -91,7 +91,7 @@ int main(void) {
 // Six rows a tab: the gamepad's settings, the Game tab the picture's and the save's, the Cheats tab its picker
     assert(ov_menu_item(0, OVM_ROWS - 1) == OVM_RESUME);
     assert(ov_menu_item(1, 1) == OVM_FPS && ov_menu_item(1, 2) == OVM_MODE && ov_menu_item(1, 3) == OVM_EXPORT && ov_menu_item(1, 4) == OVM_IMPORT && ov_menu_item(1, OVM_ROWS - 2) == -1);
-    assert(ov_menu_item(2, 1) == OVM_CHEATS && ov_menu_item(2, 2) == -1 && ov_menu_item(2, OVM_ROWS - 2) == -1 && ov_menu_item(2, OVM_ROWS - 1) == OVM_RESUME);
+    assert(ov_menu_item(2, 1) == OVM_ENABLE_CHEATS && ov_menu_item(2, 2) == OVM_CHEATS && ov_menu_item(2, 3) == -1 && ov_menu_item(2, OVM_ROWS - 2) == -1 && ov_menu_item(2, OVM_ROWS - 1) == OVM_RESUME);
     audio_available = 0;
     assert(ov_menu_item(0, OVM_ROWS - 2) == -1);
     audio_available = 1;

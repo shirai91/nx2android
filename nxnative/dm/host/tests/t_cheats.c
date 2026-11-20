@@ -9,7 +9,7 @@
 // ignored and counted, never turning the cheat off; and the host's own layer over the format: labels and EdiZon
 // sections, a header glued to a code line, duplicate names in <build>.enabled, on / off pairs as one switch, the meta
 // file of scripts/cheat_anchor.py (typed "ask" values kept in <build>.values, "set" cheats that run once, never-decrease,
-// the compiler's left-outs, the display version), the dry run, the master switch, safe mode after an unclean exit, toggles
+// the compiler's left-outs, the display version), the dry run, Enable cheats (every launch starts with it off), toggles
 // carried over to a new build, DM_CHEATS_ANY_BUILD's count of build-named files, and the load report. A synthetic main
 // image (text, data, key page), a second module, a heap and a guest block (one mapped page, one PROT_NONE page) live in
 // host memory; writes go through the engine's real paths (the writable alias of main, vm_write for a guest page).
@@ -23,6 +23,7 @@ module_t g_mod[MAX_MOD]; int g_nmod;
 // every pass is the test's own. On the real clock it ran passes of its own between the test's whenever a step took longer than 250 ms (a loaded machine), and the C4
 // auto-repeat counter rose once more while A was held ("C4: released: nothing fires" failed)
 uint64_t now_ns(void) { static _Atomic uint64_t t; return atomic_fetch_add(&t, 1000) + 1000; }
+double dm_log_elapsed(void) { return (double)now_ns() / 1e9; }   // dm.h's LOG prefixes every line with it (main.c links it in the host)
 void dm_guest_write_prepare(void *addr, size_t len) { (void)addr; (void)len; }   // no dirty-page tracking in the test
 static uint8_t *heap; static size_t heap_open;   // the guest heap (hle_svc.c): a plain buffer, opened in full
 void dm_guest_heap_range(uint64_t *base, size_t *open_len) { *base = (uint64_t)(uintptr_t)heap; *open_len = heap_open; }
@@ -89,7 +90,8 @@ static void fresh(const char *name, const char *txt) {
     snprintf(g_dir, sizeof g_dir, "%s/%s", root, name);
     mkdir(g_dir, 0755);
     memset(img + 0x4000, 0, 0x8000);
-    g_safe = 0; atomic_store(&g_master, 1); atomic_store(&g_exiting, 0); g_non = 0; held = 0;   // g_exiting: a case that exited cleanly must not mute the next one's flag writes
+    atomic_store(&g_master, 1); g_non = 0; held = 0;   // a case starts with Enable cheats on, as if the player had turned it on
+    g_nundo = 0; g_undoing = 0;                        // and with no text words of an earlier case to put back
     if (txt) put("1111111111111111.txt", txt);
 }
 
@@ -251,8 +253,35 @@ int main(void) {
     cheats_pass();
     CHECK(!dm_cheat_on_at(yoff) && rd32(0x100) == 0xD503201F && !strcmp(get("1111111111111111.enabled"), ""), "the restore runs one pass, then turns itself off");
     put("1111111111111111.enabled", "Y - off\n"); load_all();
-    CHECK(dm_cheat_on_at(yoff) && !dm_cheat_on_at(yon), "a saved state is kept as it is (a hand-made file's off entry the player left on)");
+    CHECK(!dm_cheat_on_at(yoff) && !dm_cheat_on_at(yon), "a saved restore half is ignored: it is an action, not a state");
     CHECK(g_tick_started && g_changed_state == 1 && g_nchanged == 2, "a loaded file starts the idle thread and reads the rewriter's list");
+
+    // ---- the Chinese packs' "X 开" / "X 关" pair is one switch too (the common packs ship a same-address restore as
+    //      "关": both halves on cancel each other, the later one winning), and a name that merely ends in 开 is no half ----
+    wr32(0x100, 0xD503201F);
+    fresh("pair-cn", "[精炼 S 开]\n04000000 00000100 52800020\n[精炼 S 关]\n04000000 00000100 D503201F\n"
+                     "[XY（开）]\n04000000 00000104 52800020\n[XY（关）]\n04000000 00000104 D503201F\n"
+                     "[情报公开]\n04000000 00000108 52800020\n");
+    load_all();
+    int cnon = at("精炼 S 开", 0), cnoff = at("精炼 S 关", 0), fwon = at("XY（开）", 0), fwoff = at("XY（关）", 0);
+    CHECK(dm_cheat_pair_at(cnon) == cnoff && (dm_cheat_flags_at(cnon) & DM_CHEAT_PAIR_ON) && (dm_cheat_flags_at(cnoff) & DM_CHEAT_PAIR_OFF), "\"X 开\" / \"X 关\" are paired");
+    CHECK(dm_cheat_pair_at(fwon) == fwoff && (dm_cheat_flags_at(fwon) & DM_CHEAT_PAIR_ON), "\"X（开）\" / \"X（关）\" are paired (the full-width brackets)");
+    CHECK(dm_cheat_pair_at(at("情报公开", 0)) < 0, "a name ending in 开 with no separator is not a half");
+    put("1111111111111111.enabled", "精炼 S 开\n精炼 S 关\n");   // a file from before the pairing (or a hand edit)
+    load_all(); cheats_pass();
+    CHECK(dm_cheat_on_at(cnon) && !dm_cheat_on_at(cnoff) && rd32(0x100) == 0x52800020, "both halves saved on: only the cheat's half loads, and it writes");
+    CHECK(!strcmp(get("1111111111111111.enabled"), "精炼 S 开\n精炼 S 关\n"), "the saved file is not rewritten by the load");
+    dm_cheat_toggle(cnon); dm_cheat_toggle(cnon);
+    CHECK(!strcmp(get("1111111111111111.enabled"), "精炼 S 开\n"), "a toggle saves the switch, never its restore half");
+    dm_cheat_toggle(cnoff); cheats_pass();
+    CHECK(!dm_cheat_on_at(cnon) && !dm_cheat_on_at(cnoff) && rd32(0x100) == 0xD503201F, "a tap on the restore half turns the switch off and puts the word back once");
+    CHECK(!strcmp(get("1111111111111111.enabled"), ""), "and saves nothing: the restore half is an action, not a state");
+    dm_cheat_toggle(cnoff); cheats_pass();
+    CHECK(!dm_cheat_on_at(cnon) && !dm_cheat_on_at(cnoff) && rd32(0x100) == 0xD503201F, "a second tap is the same action, not a toggle back on");
+    snprintf(g_on[0], NAME_MAX, "精炼 S 开"); snprintf(g_on[1], NAME_MAX, "精炼 S 关"); g_non = 2;
+    load_all(); cheats_pass();
+    CHECK(dm_cheat_on_at(cnon) && !dm_cheat_on_at(cnoff) && rd32(0x100) == 0x52800020, "DM_CHEATS_ON naming both halves turns the switch on, not both halves");
+    g_non = 0;
 
     // ---- code writes the rewriter's sites forbid, and the host's pages past the image ----
     wr32(0x304, 0x14000123);   // the rewriter's branch to its stub
@@ -277,6 +306,20 @@ int main(void) {
     load_all(); on_and_pass(at("Code", 0)); on_and_pass(at("Data", 0));
     CHECK(rd32(0x308) == 0 && strstr(dm_cheat_why_at(at("Code", 0)), "main.changed.tsv") && rd32(0x4300) == 5, "without the rewriter's list code writes are refused, data writes are not");
     g_changed_state = 1;
+
+    // ---- a write of the bytes already there is skipped (a static store runs on every presented frame), and the text's
+    //      last page is the loader's 16 KB one, whatever the host's page size ----
+    {
+        uint64_t end0 = g_mod[0].text_end;
+        g_mod[0].text_end = 0x4001;   // the loader sealed the whole next 16 KB page read + execute
+        CHECK(main_rx_end() == 0x8000, "the text ends on the loader's 16 KB page");
+        g_mod[0].text_end = end0;
+    }
+    { uint32_t same = rd32(0x200);
+      CHECK(main_write_pages((uint64_t)(uintptr_t)img + 0x200, 4, &same) == 1 && rd32(0x200) == same, "a write of the bytes already there is skipped"); }
+    { uint32_t code = 0xD503201F; wr32(0x200, 0);
+      CHECK(main_write_pages((uint64_t)(uintptr_t)img + 0x200, 4, &code) == 0 && rd32(0x200) == 0xD503201F, "a changed code word lands through the alias"); }
+    wr32(0x200, 0);
 
     // ---- the meta file: values, "set", never-decrease, left-outs, the version, the dry run ----
     fresh("meta", "[Gold]\n04000000 00004090 000001F4\n[HP keeps]\n[Patch]\n14050000 00000200 00000000\n04000000 00000200 52800040\n20000000\n");
@@ -321,30 +364,39 @@ int main(void) {
     nw = dm_cheat_preview(at("Patch", 0), pv, sizeof pv);
     CHECK(nw == 0 && strstr(pv, "writes nothing right now"), "the dry run of a guard that is not met says so");
 
-    // ---- the master switch ----
+    // ---- Enable cheats: off stops every cheat; every launch starts there ----
     fresh("master", "[M]\n04000000 000040B0 00000007\n");
     load_all(); dm_cheat_toggle(at("M", 0));
     dm_cheats_master_set(0); cheats_pass();
-    CHECK(rd32(0x40B0) == 0 && exists(".cheats-off-0100000000000000") && strstr(dm_cheats_report(), "master switch is off"), "master switch off: nothing runs, kept in .cheats-off");
+    CHECK(rd32(0x40B0) == 0 && strstr(dm_cheats_report(), "Cheats disabled"), "Enable cheats off: nothing runs (masters too)");
+    CHECK(!strcmp(get("1111111111111111.enabled"), "M\n"), "and the toggle is kept");
     dm_cheats_master_set(1); cheats_pass();
-    CHECK(rd32(0x40B0) == 7 && !exists(".cheats-off-0100000000000000"), "master switch on again");
+    CHECK(rd32(0x40B0) == 7 && !strstr(dm_cheats_report(), "Cheats disabled"), "Enable cheats on again");
 
-    // ---- safe mode after an unclean exit ----
-    fresh("safe", "{Master}\n04000000 000040C0 00000001\n[S]\n04000000 000040C4 00000002\n");
-    load_all(); dm_cheat_toggle(at("S", 0));
-    CHECK(exists(".cheats-running-0100000000000000"), "cheats on: the safe-mode flag exists");
-    folder_flags(); memset(img + 0x4000, 0, 0x100); load_all(); cheats_pass();   // the next launch, after a crash
-    CHECK(dm_cheats_safe() && !dm_cheat_on_at(at("S", 0)) && rd32(0x40C0) == 0 && rd32(0x40C4) == 0, "after a crash every cheat starts off, masters too");
-    CHECK(!strcmp(get("1111111111111111.enabled"), "S\n"), "and the saved toggles are kept");
+    // a code patch already written keeps running after its passes stop: Enable cheats off puts the game's own words back
+    wr32(0x200, 0x5400006A);
+    fresh("master-code", "[C]\n04000000 00000200 D503201F\n");
+    load_all(); dm_cheat_toggle(at("C", 0)); cheats_pass();
+    CHECK(rd32(0x200) == 0xD503201F, "a code cheat's instruction reaches the text");
+    dm_cheats_master_set(0);
+    CHECK(rd32(0x200) == 0x5400006A, "Enable cheats off writes the text words it changed back");
+    dm_cheats_master_set(1); cheats_pass();
+    CHECK(rd32(0x200) == 0xD503201F, "on again applies them again");
+    dm_cheats_master_set(0); wr32(0x200, 0);
+
+    // ---- a launch starts with Enable cheats off: the saved toggles show, one tap applies them ----
+    fresh("launch", "{Master}\n04000000 000040C0 00000001\n[S]\n04000000 000040C4 00000002\n");
+    load_all(); dm_cheat_toggle(at("S", 0));   // the player's set, saved
+    atomic_store(&g_master, 0);                 // the next launch
+    memset(img + 0x4000, 0, 0x100); load_all(); cheats_pass();
+    CHECK(!dm_cheats_master() && dm_cheat_on_at(at("S", 0)) && rd32(0x40C0) == 0 && rd32(0x40C4) == 0, "a launch runs nothing (masters too) while the panel shows the saved toggles");
     put("1111111111111111.txt", "{Master}\n04000000 000040C0 00000001\n[S]\n04000000 000040C4 00000002\n[T]\n04000000 000040C8 00000003\n");
-    put("1111111111111111.enabled", "S\n"); g_safe = 1; load_all();
-    dm_cheat_toggle(at("T", 0));
-    CHECK(!dm_cheats_safe() && dm_cheat_on_at(at("S", 0)) && dm_cheat_on_at(at("T", 0)) && !strcmp(get("1111111111111111.enabled"), "S\nT\n"), "turning a cheat on in safe mode brings the saved toggles back too");
-    put("1111111111111111.enabled", "S\n"); g_safe = 1; load_all();
-    dm_cheats_safe_restore(); cheats_pass();
-    CHECK(!dm_cheats_safe() && dm_cheat_on_at(at("S", 0)) && rd32(0x40C0) == 1 && rd32(0x40C4) == 2, "restoring brings them back");
-    dm_cheats_exit();
-    CHECK(!exists(".cheats-running-0100000000000000"), "a clean exit removes the flag");
+    put("1111111111111111.enabled", "S\n"); atomic_store(&g_master, 0); load_all();
+    dm_cheat_toggle(at("T", 0)); cheats_pass();
+    CHECK(dm_cheat_on_at(at("S", 0)) && dm_cheat_on_at(at("T", 0)) && rd32(0x40C4) == 0 && rd32(0x40C8) == 0 && !strcmp(get("1111111111111111.enabled"), "S\nT\n"),
+          "a toggle while Enable cheats is off edits the saved set; nothing runs");
+    dm_cheats_master_set(1); cheats_pass();
+    CHECK(rd32(0x40C4) == 2 && rd32(0x40C8) == 3, "turning Enable cheats on applies it");
 
     // ---- a compiled file of a new build takes the toggles of the previous build ----
     fresh("carry", "[Gold]\n04000000 000040D0 00000001\n[Silver]\n04000000 000040D4 00000001\n");
@@ -640,9 +692,9 @@ int main(void) {
     g_any = 0;
     fresh("nofile", "[R]\n04000000 000043F8 00000001\n");
     load_all(); dm_cheat_toggle(at("R", 0));
-    CHECK(exists(".cheats-running-0100000000000000"), "a cheat on: the safe-mode flag is there");
+    CHECK(!strcmp(get("1111111111111111.enabled"), "R\n"), "a cheat on: its toggle is saved");
     rm("1111111111111111.txt"); load_all();
-    CHECK(!dm_cheats_found() && !exists(".cheats-running-0100000000000000"), "a reload that finds no file removes the flag: nothing runs now");
+    CHECK(!dm_cheats_found(), "a reload that finds no file loads nothing: no cheat runs now");
 
     // ---- Atmosphère's limits in the report ----
     size_t cap = 0x200 * 9 + 64; char *big = malloc(cap); size_t o = (size_t)snprintf(big, cap, "[Big]\n");

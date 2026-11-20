@@ -37,12 +37,14 @@
 //     on / off pair, a value the panel may set ("ask", kept in <build>.values), "set" cheats that run one pass and turn
 //     themselves off, and never-decrease, a host action on a typed address that keeps the highest value seen (Atmosphère's
 //     VM keeps no state of a cheat between passes, so its .txt entry is empty and other engines show an inert label)
-//   - "X - on" / "X - off" entries (or a meta pair) form one switch: turning it off runs the off entry (the restore) for one
-//     pass; whatever <build>.enabled says is kept as it is
+//   - "X - on" / "X - off" entries (or a meta pair; the Chinese packs' "X 开" / "X 关" too) form one switch: turning it
+//     off runs the off entry (the restore) for one pass; the restore half is an action, never a saved state (states_save /
+//     states_read skip it), so both halves can never be on together
 //   - a dry run (dm_cheat_preview) describes what a cheat would write right now and writes nothing
-//   - a master switch (the folder's .cheats-off-<title> file) and a safe mode (not on iOS): a run that ended without a
-//     clean exit while cheats were on leaves the folder's .cheats-running-<title> file behind, and the next launch starts
-//     with every cheat off (masters too) until the player restores the saved toggles or turns a cheat on (which restores them)
+//   - Enable cheats (the Cheats tab's row above the cheat list, dm_cheats_master_set) is the master switch, and every launch starts with it
+//     off: nothing runs (the masters too) while the saved toggles load and show, so a set that breaks the game cannot lock
+//     the next launch out of its only way in; turning it on applies the set for that run, and turning it off puts back the
+//     main-text words the passes changed (a code patch left in place would keep running). DM_CHEATS_ON turns it on at launch
 //   - <build>.enabled names a duplicate name's later entries "Name #2", "Name #3", ...; a compiled file (one with a meta
 //     file) of a build without <build>.enabled takes its toggles from the newest other build's compiled from the same source
 //   - a load report (dm_cheats_report): counts, duplicate names, skipped lines, Atmosphère's size limits
@@ -67,7 +69,15 @@
 #endif
 #include <errno.h>
 #include <dirent.h>
+#include <fcntl.h>
 #include <unistd.h>
+#if defined(__ANDROID__)
+#include <sys/syscall.h>
+#include <linux/membarrier.h>   // MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED_SYNC_CORE and its sync command (icache_sync)
+#ifndef __NR_membarrier
+#define __NR_membarrier 283      // asm-generic (arm64)
+#endif
+#endif
 #include <strings.h>
 #include <stdarg.h>
 #include <stdatomic.h>
@@ -89,7 +99,7 @@
 #if TARGET_OS_IPHONE
 #define CHEAT_NO_CODE_WHY "code writes are not possible on the iPhone (the app's signed code pages)"
 #elif defined(__ANDROID__)
-#define CHEAT_NO_CODE_WHY "code writes are not possible on Android yet (no writable alias of main)"
+#define CHEAT_NO_CODE_WHY "code writes are not possible on Android (no write channel into main's text)"
 #else
 #define CHEAT_NO_CODE_WHY "code write without the writable alias of main"
 #endif
@@ -153,10 +163,8 @@ static int g_have_meta;        // the loaded file came with a meta file
 static int g_junk, g_junk_line, g_glued;   // prose lines ignored and the first one; headers split off a code line
 static char g_carried[64];     // the other build whose <build>.enabled gave the toggles ("" none)
 static char g_meta_src[256];   // the source the meta file names ("compiled from <source>"), "" without a meta file
-static _Atomic int g_exiting;  // dm_cheats_exit ran: no pass may write the safe-mode flag again
 static _Atomic int g_active;   // a file is loaded (the per-present hook exits before taking any lock)
-static _Atomic int g_master = 1;   // the master switch: 0 = no cheat runs (the folder's .cheats-off-<title> file)
-static int g_safe;             // safe mode: the last run ended without a clean exit while cheats were on
+static _Atomic int g_master;   // Enable cheats: 0 = no cheat runs (the masters too); every launch starts there, DM_CHEATS_ON turns it on
 static _Atomic uint64_t g_present_ns;   // the last present: the ~60 Hz thread stands down while it is recent
 static _Atomic int g_dbg;      // DM_CHEATS_DEBUG
 static int g_any;              // DM_CHEATS_ANY_BUILD
@@ -170,24 +178,35 @@ int dm_guest_as_contains(uintptr_t a);              // hle_svc.c: the address li
 void svc_guest_range(uint8_t **base, size_t *size); // hle_svc.c: that block (the aslr region of GetInfo), NULL before mem_init
 void svc_alias_range(uint8_t **base, size_t *size); // hle_svc.c: the alias region in it, NULL before mem_init
 
-// A second mapping of main's memory (same physical pages, mach_vm_remap with copy = false), protected read+write for the
-// whole process: a cheat's write to a code page goes through it while the game's own mapping stays executable. Toggling
-// the original page mprotect RW -> copy -> RX on every write races with the game's running cores: between the first
-// mprotect and the restore their fetches of any instruction on that page fault (a 16 KB macOS page holds ~4 KB of
-// instructions, found when main+0x305DD98 faulted while the poke page 0x305F3FC was toggled, run xa). With the alias the
-// protections never change, so only the honest mid-word race the reference on Switch itself has is left. NULL on the
-// iPhone and when the remap failed: then no cheat writes code (main_write_check)
+// The way a cheat writes main's code pages while the game runs them, per platform:
+//   - macOS: a second mapping of the same physical pages (mach_vm_remap with copy = false), protected read+write for the
+//     whole process: a write to a code page goes through it while the game's own mapping stays read+execute
+//   - Android: /proc/self/mem when the app may open it for writing (the kernel copies into the private anonymous page the
+//     game executes from, no protection changes), else a short read+write+execute window on the page around the copy
+//     (mprotect RWX, memcpy, back to RX): the page stays executable, so no core's fetch faults, and the app domain may add
+//     write to an executable anonymous mapping (SELinux execmem; measured 2026-11-20: opening /proc/self/mem is refused
+//     with EACCES on Android 16, its policy has no self:file write for apps)
+//   - iPhone / no channel: none, and no cheat writes code (main_write_check)
+// Toggling the original page to plain read+write (not RWX) is what none of these does: it races with the game's running
+// cores (between the first mprotect and the restore their fetches of any instruction on that page fault; a 16 KB macOS
+// page holds ~4 KB of instructions, found when main+0x305DD98 faulted while the poke page 0x305F3FC was toggled, run xa).
+// With a channel only the honest mid-word race the reference on Switch itself has is left. The mapping / the file stay for
+// the process's lifetime, opened once a cheat file is actually picked (at init that is before the guest starts, so nothing
+// protects or tracks these pages yet)
 static uint8_t *g_alias;       // the alias mapping of main's image (same layout, page rounded up); every offset a
                                // cheat reaches is bounds-checked against main's own span first, so the page-rounded
                                // size needs no variable of its own
+static int g_mem_fd = -1;      // Android's /proc/self/mem, open for writing; -1 elsewhere and when the open failed
+static int g_mem_errno;        // why the open failed (the load logs it with the window it falls back to)
+static int g_ch_setup;         // alias_setup ran (a channel exists or not; Android always has the window)
 
-// Map main's image a second time, writable. Called once a cheat file is actually picked (at init that is before the
-// guest starts, so nothing protects or tracks these pages yet); the mapping stays for the process's lifetime, the
-// loader's per-page protections never change after load. Not on the iPhone: its SDK has no mach_vm.h, and its code pages
-// are the app's signed pages, which no mapping can make writable; cheats write only data there. Android has no shared-page
-// remap either (the compat layer's mach_vm_remap copies), so code writes are refused there too until a separate path exists
-#if TARGET_OS_IPHONE || defined(__ANDROID__)
+#if TARGET_OS_IPHONE
 static void alias_setup(void) { g_alias = NULL; }
+#elif defined(__ANDROID__)
+static void alias_setup(void) {
+    g_mem_fd = open("/proc/self/mem", O_RDWR | O_CLOEXEC);
+    g_mem_errno = errno;
+}
 #else
 static void alias_setup(void) {
     module_t *m = g_main_mod;
@@ -206,6 +225,17 @@ static void alias_setup(void) {
     g_alias = (uint8_t *)(uintptr_t)dst;
 }
 #endif
+
+// Whether a code write has a channel at all (alias_setup found one); without it main_write_check refuses every write into
+// main's text, and the rewriter's list of changed words is not even read. Android always has one: /proc/self/mem or the
+// read+write+execute window, whichever the app domain allows
+static int code_path(void) {
+#if defined(__ANDROID__)
+    return 1;
+#else
+    return g_alias != NULL;
+#endif
+}
 
 // The cheats list, the toggles and one VM pass at a time
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -596,13 +626,13 @@ static int changed_hit(uint64_t off, uint64_t len) {
 //   - no word of it is one the rewriter changed or moved (changed_load): the cheat's instruction there would undo a site
 //     (an SVC, a TLS register read, a lock acquire made ldaxr), most often through an on / off pair's restore of the
 //     Switch's original word, or would never run (its copy in the patch area runs instead)
-//   - it goes through the writable alias of main (alias_setup), the same physical pages: the game's own mapping stays
-//     executable and untouched. Without the alias there is no text write: toggling the game's pages writable races
-//     with its running cores (their fetches fault while a page is RW), and on the iPhone the pages are the app's own
-//     signed code, which can never be made writable
+//   - it goes through the platform's write channel into main's code (alias_setup, code_path): the same physical pages,
+//     with the game's own mapping left read + execute. Without a channel there is no text write: toggling the game's
+//     pages writable races with its running cores (their fetches fault while a page is RW), and on the iPhone the pages
+//     are the app's own signed code, which can never be made writable
 // Data is written through the alias too when there is one, else directly (those pages are read + write). The checks
 // run in a dry run too (main_write_check, before the description), so the preview says the write would stop the cheat
-static uint64_t main_rx_end(void) { static long pg; if (!pg) pg = getpagesize(); return (g_main_mod->text_end + pg - 1) & ~(uint64_t)(pg - 1); }
+static uint64_t main_rx_end(void) { return (g_main_mod->text_end + 0x3FFF) & ~(uint64_t)0x3FFF; }   // the text as the loader sealed it, 16 KB pages whatever the host's (loader.c map_image)
 static int main_write_check(cheat_t *c, uint64_t addr, uint64_t len) {
     module_t *m = g_main_mod; uint64_t off = addr - (uint64_t)(uintptr_t)m->base;
     if (off + len > m->key_page_off) {
@@ -610,7 +640,7 @@ static int main_write_check(cheat_t *c, uint64_t addr, uint64_t len) {
         return -1;
     }
     if (off < main_rx_end()) {   // the text, to its last page as the loader sealed it
-        if (!g_alias) {
+        if (!code_path()) {
             cheat_kill(c, "%s", CHEAT_NO_CODE_WHY);
             return -1;
         }
@@ -624,11 +654,72 @@ static int main_write_check(cheat_t *c, uint64_t addr, uint64_t len) {
     }
     return 0;
 }
-static void main_write_pages(uint64_t addr, uint64_t len, const void *src) {
+// The game's own fetches must see the new instructions, on every core its threads run on. Darwin's sys_icache_invalidate
+// reaches all of this machine's processors. Android's EL0 may run ic ivau (by range) but not ic iallu / ic ialluis
+// (measured: SIGILL on a Snapdragon 8 Gen 3), so the range flush covers the writer's core and membarrier's
+// PRIVATE_EXPEDITED_SYNC_CORE, which has every thread of the process invalidate its own instruction pipeline (the
+// kernel's IPIs; ART's JIT registers for the same barrier in every app process), covers the rest
+static int g_mb;   // the membarrier registration: 0 untried, 1 registered, -1 the kernel refused (the range flush alone then)
+static void icache_sync(void *p, size_t n) {
+#if defined(__ANDROID__) && defined(__aarch64__)
+    __builtin___clear_cache((char *)p, (char *)p + n);
+    if (!g_mb) g_mb = syscall(__NR_membarrier, MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED_SYNC_CORE, 0, 0) == 0 ? 1 : -1;
+    if (g_mb == 1 && syscall(__NR_membarrier, MEMBARRIER_CMD_PRIVATE_EXPEDITED_SYNC_CORE, 0, 0)) g_mb = -1;
+#else
+    sys_icache_invalidate(p, n);
+#endif
+}
+// The text words a pass has changed and what the image had there: Enable cheats off writes them back, so the switch stops
+// the cheat instead of only stopping its passes (a code patch already written keeps running; a data write is the game's
+// own and is not undone). One entry per address and width, the first original kept: a later cheat over the same word
+// must not make the intermediate value the original. Under g_lock (a pass holds it, and so does the master switch)
+static struct { uint64_t off; uint8_t len; uint8_t orig[8]; } *g_undo;
+static int g_nundo, g_cundo, g_undoing;   // g_undoing: the restore's own writes are not recorded
+
+static void undo_note(uint64_t off, const void *was, unsigned len) {
+    if (g_undoing) return;
+    for (int i = 0; i < g_nundo; i++) if (g_undo[i].off == off && g_undo[i].len == len) return;
+    if (g_nundo == g_cundo) {
+        int cap = g_cundo ? g_cundo * 2 : 256;
+        void *grown = realloc(g_undo, (size_t)cap * sizeof *g_undo);
+        if (!grown) return;
+        g_undo = grown; g_cundo = cap;
+    }
+    g_undo[g_nundo].off = off; g_undo[g_nundo].len = (uint8_t)len;
+    memcpy(g_undo[g_nundo].orig, was, len);
+    g_nundo++;
+}
+// 0 written, 1 the bytes there are already the cheat's (a static store runs on every presented frame: the equal write and
+// its cache flush are skipped), -1 the platform refused the write. main's own mapping reads the same pages the write reaches
+static int main_write_pages(uint64_t addr, uint64_t len, const void *src) {
     uint64_t off = addr - (uint64_t)(uintptr_t)g_main_mod->base; int code = off < main_rx_end();
-    dm_guest_write_prepare((void *)(uintptr_t)addr, len);   // the write-protect dirty tracking must see this write coming
-    memcpy(g_alias ? g_alias + (size_t)off : (uint8_t *)(uintptr_t)addr, src, len);
-    if (code) sys_icache_invalidate((void *)(uintptr_t)addr, len);   // the game's own fetches must see the new instructions
+    if (!memcmp((const void *)(uintptr_t)addr, src, (size_t)len)) return 1;
+    if (code) undo_note(off, (const void *)(uintptr_t)addr, (unsigned)len);
+    dm_guest_write_prepare((void *)(uintptr_t)addr, (size_t)len);   // the write-protect dirty tracking must see this write coming
+    if (g_alias) memcpy(g_alias + (size_t)off, src, (size_t)len);
+    else if (!code) memcpy((uint8_t *)(uintptr_t)addr, src, (size_t)len);   // data pages are read + write
+    else if (g_mem_fd >= 0) { if (pwrite(g_mem_fd, src, (size_t)len, (off_t)addr) != (ssize_t)len) return -1; }
+    else {   // Android's window: the pages around the copy keep execute, so no core's fetch faults; the app domain may add write (execmem)
+        long pg = sysconf(_SC_PAGESIZE);
+        uintptr_t a = (uintptr_t)addr & ~(uintptr_t)(pg - 1), e = ((uintptr_t)addr + len + (uintptr_t)pg - 1) & ~(uintptr_t)(pg - 1);
+        if (mprotect((void *)a, (size_t)(e - a), PROT_READ | PROT_WRITE | PROT_EXEC)) return -1;
+        memcpy((void *)(uintptr_t)addr, src, (size_t)len);
+        if (mprotect((void *)a, (size_t)(e - a), PROT_READ | PROT_EXEC)) LOG("[RED] cheats: main+0x%llx: the text page stays writable (mprotect back failed: %s)", (unsigned long long)off, strerror(errno));
+    }
+    if (code) icache_sync((void *)(uintptr_t)addr, (size_t)len);   // the game's own fetches must see the new instructions
+    return 0;
+}
+
+// Put back every text word the passes changed, then forget them (Enable cheats off): the same channel and cache flush, so the
+// game's running cores see the original instructions again
+static void undo_apply(void) {
+    if (!g_main_mod) return;
+    g_undoing = 1;
+    for (int i = 0; i < g_nundo; i++)
+        main_write_pages((uint64_t)(uintptr_t)g_main_mod->base + g_undo[i].off, g_undo[i].len, g_undo[i].orig);
+    g_undoing = 0;
+    if (g_nundo) LOG("cheats: Enable cheats off: %d text word%s put back", g_nundo, g_nundo == 1 ? "" : "s");
+    g_nundo = 0;
 }
 
 // Read len bytes at a guest address without any consequence for a cheat: 0 and the value, or -1 when unmapped (the dry run
@@ -699,7 +790,10 @@ static void cheat_write(cheat_t *c, uint64_t addr, uint64_t len, uint64_t val) {
                                  w.kind == WH_MAIN ? "main NSO" : w.kind == WH_HEAP ? "heap" : w.kind == WH_MODULE ? w.mod->name : "guest page");
     int bad = 0;
     switch (w.kind) {
-        case WH_MAIN: main_write_pages(addr, len, &val); break;
+        case WH_MAIN:
+            if (main_write_pages(addr, len, &val) < 0)   // a refusal is this platform's, not the game's: the cheat goes off with the reason
+                cheat_kill(c, "code writes are refused at main+0x%llX (the kernel would not write the page)", (unsigned long long)(addr - (uint64_t)(uintptr_t)g_main_mod->base));
+            break;
         // The heap write happens under the memory lock (dm_guest_heap_write), so a concurrent SetHeapSize cannot shrink it
         // out from under the copy; it only refuses if the span shrank since the check a moment ago: a failed access as ever
         case WH_HEAP: bad = dm_guest_heap_write(addr, &val, len) != 0; break;
@@ -1020,12 +1114,11 @@ static void nd_step(cheat_t *c) {
 static void states_save(void);
 
 // Does cheat c take part in a pass's half (0 = the masters, 1 = the enabled plain cheats in file order)? Not a broken,
-// dead or label entry, not a master in safe mode (they wait for the player too), not a plain cheat that is off. One
-// place for the pass and for the dry run, which replays the same order
+// dead or label entry, not a plain cheat that is off. One place for the pass and for the dry run, which replays the same
+// order
 static int pass_runs(const cheat_t *c, int half) {
     if (c->broken || c->dead || c->label) return 0;
     if ((half == 0) != (c->master != 0)) return 0;
-    if (half == 0 && g_safe) return 0;
     if (half && !c->on) return 0;
     return 1;
 }
@@ -1045,8 +1138,8 @@ static void note_settle(cheat_t *c) {
 // and a stray loop end stays inside its own cheat. The static registers stay, and so does the previous-keys value of C4,
 // which the end of a pass that ran a VM cheat sets to this pass's keys (the reference's s_keyold, written at the end of
 // Execute, which only runs when the program has words). The lock is never waited for: a pass that arrives while a menu
-// operation or another pass runs is simply skipped (the next frame / tick applies again). The master switch stops
-// everything; safe mode holds the masters back too; a "set" cheat turns itself off after its pass
+// operation or another pass runs is simply skipped (the next frame / tick applies again). Enable cheats off stops
+// everything (masters too); a "set" cheat turns itself off after its pass
 static void cheats_pass(void) {
     if (!atomic_load(&g_active) || !atomic_load(&g_master)) return;
     if (pthread_mutex_trylock(&g_lock)) return;
@@ -1098,24 +1191,19 @@ static void tick_start(void) {
     pthread_attr_destroy(&a);
 }
 
-// ---------- the cheat states: <build>.enabled, DM_CHEATS_ON, the folder's flag files ----------
+// ---------- the cheat states: <build>.enabled, DM_CHEATS_ON ----------
 
 // The key of a cheat in <build>.enabled and <build>.values: its name, "Name #2" for the second entry of that name, …
 static void cheat_key(const cheat_t *c, char *out, size_t n) {
     if (c->dup) snprintf(out, n, "%s #%d", c->name, c->dup + 1); else snprintf(out, n, "%s", c->name);
 }
 
-
-// The folder's flag files carry this game's title ID: one cheats folder may serve several games (an SD card's tree)
-static void flag_file(char *out, size_t n, const char *what) { snprintf(out, n, "%s/.cheats-%s-%s", g_dir, what, g_tid); }
-
-// The state files (<build>.enabled, the safe-mode flag) are written from one serial dispatch queue, never on the thread
-// that asked: a "set" cheat fires inside a pass on the presenting thread (hle_nvn.c dump_frame), where an fopen on the
-// cheats folder (a slow or external volume) would hold the frame. What to write is captured under g_lock by the caller
-// and handed to the queue, which writes in the order it was asked, so the files end as a synchronous write would have
-// left them. files_drain waits for everything queued: before the engine reads <build>.enabled back (states_load) and at
-// a clean exit, so nothing is lost or read stale. The queue's blocks take no lock of this file: a drain under g_lock
-// cannot deadlock
+// The state files (<build>.enabled) are written from one serial dispatch queue, never on the thread that asked: a "set"
+// cheat fires inside a pass on the presenting thread (hle_nvn.c dump_frame), where an fopen on the cheats folder (a slow
+// or external volume) would hold the frame. What to write is captured under g_lock by the caller and handed to the queue,
+// which writes in the order it was asked, so the files end as a synchronous write would have left them. files_drain waits
+// for everything queued: before the engine reads <build>.enabled back (states_load) and at a clean exit, so nothing is
+// lost or read stale. The queue's blocks take no lock of this file: a drain under g_lock cannot deadlock
 #if defined(__ANDROID__)
 // Android has no libdispatch queue here: the state files are tiny and every toggle comes from the pause menu, which holds
 // the game, so they are written in place. A "set" cheat can fire on the presenting thread; that is one small file once.
@@ -1129,47 +1217,10 @@ static dispatch_queue_t files_queue(void) {
 static void files_drain(void) { dispatch_sync(files_queue(), ^{}); }
 #endif
 
-// The safe-mode flag: <dir>/.cheats-running-<title> exists while some cheat runs (a plain cheat on, or the masters while
-// not in safe mode, with the master switch on); a clean exit removes it (dm_cheats_exit), a crash leaves it for the next
-// launch. Not on iOS: an iOS app usually ends killed (swiped away, or while suspended), and the app has no cheats panel
-// to leave safe mode with. The verdict is taken here, under g_lock; the file itself is written by the files queue, where
-// it checks g_exiting again: a flag queued just before a clean exit must not come back after the exit removed it
-static void running_update(void) {
-#if TARGET_OS_IPHONE
-    return;
-#endif
-    if (!g_dir[0] || atomic_load(&g_exiting)) return;
-    int any = 0;
-    for (int i = 0; i < g_ncheat && !any; i++) {
-        const cheat_t *c = &g_cheat[i];
-        if (c->label || c->broken) continue;
-        any = c->master ? !g_safe : c->on;
-    }
-    char p[1100]; flag_file(p, sizeof p, "running");
-    int want = any && atomic_load(&g_master);
-    char *path = strdup(p), *build = strdup(g_build);
-    if (!path || !build) { free(path); free(build); return; }
-    #if defined(__ANDROID__)
-    if (!atomic_load(&g_exiting)) {
-        if (want) { FILE *f = fopen(path, "w"); if (f) { fprintf(f, "%s\n", build); fclose(f); } }
-        else unlink(path);
-    }
-    free(path); free(build);
-#else
-    dispatch_async(files_queue(), ^{
-        if (!atomic_load(&g_exiting)) {
-            if (want) { FILE *f = fopen(path, "w"); if (f) { fprintf(f, "%s\n", build); fclose(f); } }
-            else unlink(path);
-        }
-        free(path); free(build);
-    });
-#endif
-}
-
 // Save the enabled states: one key per line, <build>.enabled in the cheats folder (masters are always on, labels never
-// run, and a "set" cheat or a pending restore runs one pass only, so none of them is saved). Rewritten on every menu
-// toggle and when a one-pass cheat fired, read at each load; the safe-mode flag follows the states. The content is
-// built here under g_lock and written by the files queue
+// run, a pair's restore half is an action and not a state, and a "set" cheat or a pending restore runs one pass only, so
+// none of them is saved). Rewritten on every menu toggle and when a one-pass cheat fired, read at each load. The content
+// is built here under g_lock and written by the files queue
 static void states_save(void) {
     if (!g_dir[0] || !g_build[0]) return;
     char p[1400]; snprintf(p, sizeof p, "%s/%s.enabled", g_dir, g_build);
@@ -1179,7 +1230,7 @@ static void states_save(void) {
     text[0] = 0;
     for (int i = 0; i < g_ncheat; i++) {
         const cheat_t *c = &g_cheat[i];
-        if (!c->on || c->master || c->label || c->once || c->restore_once || c->dead || c->broken) continue;   // a dead or broken cheat is off, whatever its old toggle said
+        if (!c->on || c->master || c->label || c->pair_off || c->once || c->restore_once || c->dead || c->broken) continue;   // a dead or broken cheat is off, whatever its old toggle said
         char k[NAME_MAX + 16]; cheat_key(c, k, sizeof k);
         o += (size_t)snprintf(text + o, cap - o, "%s\n", k);
     }
@@ -1204,12 +1255,13 @@ static void states_save(void) {
         free(text); free(path);
     });
 #endif
-    running_update();
 }
 
 // Turn on the cheats a states file names, key for key; a line that is no key ("X" written by an older version for every
 // entry of that name) turns on the next entry of that name that is still off, so such a file keeps all its duplicates on.
-// Returns how many it turned on, -1 when the file cannot be read
+// A master, a label and a pair's restore half are not states and are ignored (an older file that named both halves of a
+// switch would otherwise run the restore straight over the cheat every pass). Returns how many it turned on, -1 when the
+// file cannot be read
 static int states_read(const char *path) {
     FILE *f = fopen(path, "r");
     if (!f) return -1;
@@ -1221,10 +1273,10 @@ static int states_read(const char *path) {
         for (int i = 0; i < g_ncheat && hit < 0; i++) {
             cheat_t *c = &g_cheat[i];
             char k[NAME_MAX + 16]; cheat_key(c, k, sizeof k);
-            if (!c->master && !c->label && !c->on && !strcmp(k, s)) hit = i;
+            if (!c->master && !c->label && !c->pair_off && !c->on && !strcmp(k, s)) hit = i;
         }
         for (int i = 0; i < g_ncheat && hit < 0; i++)
-            if (!g_cheat[i].master && !g_cheat[i].label && !g_cheat[i].on && !strcmp(g_cheat[i].name, s)) hit = i;
+            if (!g_cheat[i].master && !g_cheat[i].label && !g_cheat[i].pair_off && !g_cheat[i].on && !strcmp(g_cheat[i].name, s)) hit = i;
         if (hit >= 0) { if (!g_cheat[hit].on) n++; g_cheat[hit].on = 1; }
     }
     fclose(f);
@@ -1267,11 +1319,11 @@ static void newest_other_enabled(char *out, size_t n) {
 
 // Restore the states: the saved <build>.enabled (or, for a compiled file of a build without one, the newest other
 // build's), then DM_CHEATS_ON's names (name for name, case-insensitive, as the brief lets sites write the names); neither
-// writes a master or a label. In safe mode the saved states wait for dm_cheats_safe_restore
+// writes a master or a label
 static void states_load(void) {
     g_carried[0] = 0;
     files_drain();   // a save still on the files queue (a toggle, a "set" cheat that just fired) lands before it is read back
-    if (g_dir[0] && !g_safe) {
+    if (g_dir[0]) {
         char path[1400]; snprintf(path, sizeof path, "%s/%s.enabled", g_dir, g_build);
         if (states_read(path) < 0 && g_have_meta) {
             char other[64]; newest_other_enabled(other, sizeof other);
@@ -1283,7 +1335,7 @@ static void states_load(void) {
     }
     for (int k = 0; k < g_non; k++)
         for (int i = 0; i < g_ncheat; i++)
-            if (!g_cheat[i].master && !g_cheat[i].label && !g_cheat[i].broken && !g_cheat[i].dead && !strcasecmp(g_cheat[i].name, g_on[k])) g_cheat[i].on = 1;
+            if (!g_cheat[i].master && !g_cheat[i].label && !g_cheat[i].pair_off && !g_cheat[i].broken && !g_cheat[i].dead && !strcasecmp(g_cheat[i].name, g_on[k])) g_cheat[i].on = 1;
     g_states_loaded = 1;
 }
 
@@ -1705,16 +1757,25 @@ static void meta_load(const char *txt_path) {
     fclose(f);
 }
 
-// "X - on" / "X - off" (also "X on", "X: off", "X (off)", …): the base name and which half, 1 when the name has the form
+// "X - on" / "X - off" (also "X on", "X: off", "X (off)", and the Chinese packs' "X 开" / "X 关", "X（开）", …): the
+// base name and which half, 1 when the name has the form. A separator is required, so a plain name that happens to end
+// in 开 ("情报公开") is not a half
 static int onoff_split(const char *name, char *base, size_t n, int *is_off) {
     size_t e = strlen(name);
     while (e && isspace((unsigned char)name[e - 1])) e--;
     if (e && (name[e - 1] == ')' || name[e - 1] == ']')) e--;
+    else if (e >= 3 && !memcmp(name + e - 3, "\xEF\xBC\x89", 3)) e -= 3;   // a full-width "）"
     int off;
     if (e >= 3 && !strncasecmp(name + e - 3, "off", 3)) { off = 1; e -= 3; }
     else if (e >= 2 && !strncasecmp(name + e - 2, "on", 2)) { off = 0; e -= 2; }
+    else if (e >= 3 && !memcmp(name + e - 3, "\xE5\xBC\x80", 3)) { off = 0; e -= 3; }   // 开
+    else if (e >= 3 && !memcmp(name + e - 3, "\xE9\x96\x8B", 3)) { off = 0; e -= 3; }   // 開
+    else if (e >= 3 && !memcmp(name + e - 3, "\xE5\x85\xB3", 3)) { off = 1; e -= 3; }   // 关
+    else if (e >= 3 && !memcmp(name + e - 3, "\xE9\x97\x9C", 3)) { off = 1; e -= 3; }   // 關
     else return 0;
     size_t s = e; int sep = 0;
+    static const char *full[] = {"\xEF\xBC\x88", "\xEF\xBC\x9A", "\xE3\x80\x80"};   // "（", "：", an ideographic space
+    for (int k = 0; k < 3; k++) if (s >= 3 && !memcmp(name + s - 3, full[k], 3)) { s -= 3; sep = 1; break; }
     while (s && strchr(" -:_([", name[s - 1])) { s--; sep = 1; }
     if (!sep || !s) return 0;
     snprintf(base, n, "%.*s", (int)s, name);
@@ -1770,8 +1831,7 @@ static void report_build(void) {
     if (g_junk) ADD("%d lines that are not code words were ignored (the first: line %d)\n", g_junk, g_junk_line);
     if (g_glued) ADD("%d headers glued to a code line were split off\n", g_glued);
     if (g_carried[0]) ADD("Toggles carried over from %s (no %s.enabled yet)\n", g_carried, g_build);
-    if (g_safe) ADD("Safe mode: the last run ended without a clean exit while cheats were on; every cheat starts off\n");
-    if (!atomic_load(&g_master)) ADD("The master switch is off: no cheat runs\n");
+    if (!atomic_load(&g_master)) ADD("Cheats disabled: no cheat runs until Enable cheats in the Cheats tab is turned on\n");
     if (g_nskip) ADD("%d cheats were left out when this file was compiled\n", g_nskip);
     if (cheats > ATM_CHEATS || big || enabled_words > ATM_PROGRAM)
         ADD("Over Atmosphère's limits (a Switch refuses them): %d cheats (0x80), %d cheats over 0x100 words, %d words enabled (0x400)\n", cheats, big, enabled_words);
@@ -1801,7 +1861,7 @@ static void sources_scan(void) {
 }
 
 // (Re)load: choose the file, note the other builds, parse, read the meta file and the values, link pairs, restore the
-// states, build the report. Called at init and from "Reload cheats" (safe mode and the master switch stay as they are)
+// states, build the report. Called at init and from "Reload cheats" (Enable cheats stays as it is)
 static void load_all(void) {
     g_ncheat = 0; g_ncand = 0; g_nothers = 0; g_path[0] = 0; g_nskip = 0; g_have_meta = 0; g_states_loaded = 0;
     g_junk = g_junk_line = g_glued = 0; g_carried[0] = 0; g_version[0] = 0; g_meta_src[0] = 0;
@@ -1842,22 +1902,29 @@ static void load_all(void) {
             LOG("cheats: %s: %d .txt of other builds in the folder:%s", g_dir, g_nothers, list);
         }
         report_build();
-        running_update();   // no cheat runs now: a reload that lost its file must not leave the safe-mode flag behind
         return;
     }
     if (pick < 0) { pick = lone; other = 1; }   // DM_CHEATS_ANY_BUILD and a single file of another build: load it
     g_nothers = 0;   // a file is loaded (this build's own, or DM_CHEATS_ANY_BUILD's): no "another version" rows
     snprintf(g_path, sizeof g_path, "%s", g_cand[pick]);
-    // The writable alias of main is mapped once a cheat file is actually picked, not at init merely because DM_ROOT is
-    // set: a run without cheats would otherwise always map a second image of main and log a line for it. At init the
-    // pick happens before the guest starts; a later "Reload cheats" retries only when no alias mapped the first time
-    if (g_main_mod && !g_alias) {
+    // The write channel into main's code is opened once a cheat file is actually picked, not at init merely because
+    // DM_ROOT is set: a run without cheats would otherwise always map a second image of main (or open /proc/self/mem)
+    // and log a line for it. At init the pick happens before the guest starts; a later "Reload cheats" retries only when
+    // no channel was opened the first time
+    if (g_main_mod && !g_ch_setup) {
+        g_ch_setup = 1;
         alias_setup();
         if (g_alias) LOG("cheats: writable alias of main mapped");
-        else if (TARGET_OS_IPHONE) LOG("cheats: the iPhone's code pages are signed: cheats write data only");
+        else if (g_mem_fd >= 0) LOG("cheats: code writes go through /proc/self/mem");
+#if defined(__ANDROID__)
+        else LOG("cheats: code writes use a read+write+execute window on main's text pages (no /proc/self/mem: %s)", strerror(g_mem_errno));
+#elif TARGET_OS_IPHONE
+        else LOG("cheats: the iPhone's code pages are signed: cheats write data only");
+#else
         else LOG("[RED] cheats: no writable alias of main (mach_vm_remap failed): cheats write data only");
+#endif
     }
-    if (g_alias) changed_load();   // which text words a code write must leave alone (only where code can be written at all)
+    if (code_path()) changed_load();   // which text words a code write must leave alone (only where code can be written at all)
     parse_file(g_path);
     meta_load(g_path);
     pairs_link();
@@ -1877,21 +1944,6 @@ static void load_all(void) {
     report_build();
     atomic_store(&g_active, g_ncheat > labels);
     if (atomic_load(&g_active)) tick_start();
-    running_update();
-}
-
-// The folder's flag files of this game, read once at init: .cheats-off-<title> (the master switch) and
-// .cheats-running-<title> (left behind by a run that did not end cleanly while cheats were on: safe mode for this launch)
-static void folder_flags(void) {
-    if (!g_dir[0]) return;
-    char p[1100];
-    flag_file(p, sizeof p, "off");
-    atomic_store(&g_master, access(p, F_OK) != 0);
-#if !TARGET_OS_IPHONE   // iOS keeps no safe mode (running_update)
-    flag_file(p, sizeof p, "running");
-    g_safe = access(p, F_OK) == 0;
-#endif
-    if (g_safe) LOG("[RED] cheats: the last run ended without a clean exit while cheats were on: every cheat starts off (the Cheats panel restores them)");
 }
 
 // Read the switches, find the game's file and load it (load_all starts the idle apply thread when it has cheats). Called after load_modules
@@ -1912,6 +1964,7 @@ void dm_cheats_init(void) {
     }
     e = getenv("DM_CHEATS_ON");
     if (e && *e) {   // one-off names turned on at launch, split on ','; the saves' own <build>.enabled states stay too
+        atomic_store(&g_master, 1);   // the environment asking for cheats is the one launch that starts with Enable cheats on
         char *dup = strdup(e), *s = dup;
         while (s && g_non < 16) {
             char *t = strchr(s, ',');
@@ -1924,26 +1977,22 @@ void dm_cheats_init(void) {
     if (!g_dir[0]) { LOG("cheats: off (neither DM_CHEATS nor DM_ROOT is set)"); }
     else {   // for the main module the pass needs its base: the loader's g_mod tables them by name
         for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "main") && !g_mod[i].nro) { g_main_mod = &g_mod[i]; break; }
-        folder_flags();
         if (g_main_mod) { pthread_mutex_lock(&g_lock); load_all(); pthread_mutex_unlock(&g_lock); }   // load_all maps the writable alias once a file is picked
         atexit(dm_cheats_exit);   // exit() paths (⌘Q, closing the window); dm_host_exit's _exit calls it itself
     }
 }
 
-// A clean exit: no cheat runs any more, so the safe-mode flag goes (atexit, and dm_host_exit before its _exit)
+// A clean exit: a queued <build>.enabled lands before the process ends (atexit, and dm_host_exit before its _exit)
 void dm_cheats_exit(void) {
-    atomic_store(&g_exiting, 1);   // a pass still running on another thread must not write the flag back
     if (!g_dir[0]) return;
-    files_drain();                 // a queued <build>.enabled lands before the process ends; a queued flag sees g_exiting
-    char p[1100]; flag_file(p, sizeof p, "running");
-    unlink(p);
+    files_drain();
 }
 
 // ---------- the Mac cheats menu and panel (callers: front_mac.m; nothing else uses these) ----------
 // Cheap accessors read straight from the shared state: the list itself is rebuilt only from the main thread (this
 // menu's own actions, and init on the Mac's main thread), and a VM pass mutates only its own cheat's dead / why / fails /
 // noted fields, the on / restore_once flags of a one-pass cheat, the never-decrease state, and (through the files queue)
-// <build>.enabled and the safe-mode flag when a one-pass cheat fired; the worst-case tear shows as one stale row in a
+// <build>.enabled when a one-pass cheat fired; the worst-case tear shows as one stale row in a
 // row rebuilt in that instant. Each accessor's meaning is in dm.h
 
 int dm_cheats_found(void) { return atomic_load(&g_active) || g_ncheat > 0; }   // a file, of this build or another
@@ -1994,16 +2043,16 @@ int dm_cheat_flags_at(int i) {
 int dm_cheat_on_at(int i) { return i >= 0 && i < g_ncheat ? g_cheat[i].on != 0 : 0; }
 
 // The menu's toggle: flip the cheat, save the states. A pair is one switch: turning its on half off runs the off half (the
-// restore) for one pass, turning the on half on turns the off half off, and turning the off half on turns the on half off.
-// Turning a cheat on ends safe mode (the player chose: the saved toggles come back too) and starts a never-decrease from
-// the value there now
+// restore) for one pass, turning the on half on turns the off half off, and turning the off half on (always an action, never
+// a saved state) turns the on half off and runs the restore for one pass.
+// While Enable cheats is off a toggle only edits the saved set (the panel shows it): nothing runs until the player turns
+// Enable cheats on, and a turn-on starts a never-decrease from the value there now
 void dm_cheat_toggle(int i) {
     if (i < 0 || i >= g_ncheat) return;
     pthread_mutex_lock(&g_lock);
     cheat_t *c = &g_cheat[i];
     if (!c->master && !c->broken && !c->dead && !c->label) {
         int now = !c->on;
-        if (now && g_safe) { g_safe = 0; states_load(); }   // the player turns a cheat on in safe mode: the saved toggles come back first
         c->on = (uint8_t)now;
         c->restore_once = 0;   // the player's own choice: a pending one-pass restore no longer applies
         if (now) c->nd_have = 0;
@@ -2011,7 +2060,10 @@ void dm_cheat_toggle(int i) {
         if (c->pair >= 0) {
             cheat_t *p = &g_cheat[c->pair];
             if (!c->pair_off) { if (!p->broken && !p->dead) { p->on = (uint8_t)!now; p->restore_once = (uint8_t)!now; } }
-            else if (now) p->on = 0;
+            else {   // the restore half is an action, not a state: a tap always puts the words back once and turns the pair off
+                if (!p->broken && !p->dead) p->on = 0;
+                c->on = 1; c->restore_once = 1;
+            }
         }
         states_save();
     }
@@ -2108,34 +2160,14 @@ const char *dm_cheat_value_bounds(int i) {
     return b;
 }
 
-// The master switch: off stops every cheat (masters too) without touching the toggles; kept in the folder's .cheats-off-<title>
+// Enable cheats: off stops every cheat (masters too) without touching the toggles; a launch starts with it off
 int dm_cheats_master(void) { return atomic_load(&g_master); }
 
 void dm_cheats_master_set(int on) {
     pthread_mutex_lock(&g_lock);
     atomic_store(&g_master, !!on);
-    if (g_dir[0]) {
-        char p[1100]; flag_file(p, sizeof p, "off");
-        if (on) unlink(p);
-        else { FILE *f = fopen(p, "w"); if (f) fclose(f); }
-    }
+    if (!on) undo_apply();   // a code patch already written keeps running: the game's own words go back
     report_build();
-    running_update();
-    pthread_mutex_unlock(&g_lock);
-}
-
-// Safe mode (the last run ended without a clean exit while cheats were on): 1 while every cheat waits for the player
-int dm_cheats_safe(void) { return g_safe; }
-
-// Leave safe mode: the masters run again and the saved toggles come back
-void dm_cheats_safe_restore(void) {
-    pthread_mutex_lock(&g_lock);
-    if (g_safe) {
-        g_safe = 0;
-        states_load();
-        report_build();
-        running_update();
-    }
     pthread_mutex_unlock(&g_lock);
 }
 
