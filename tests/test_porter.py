@@ -343,6 +343,22 @@ class Misc(unittest.TestCase):
         both = pipeline.sysdata_no_firmware('X', [0x0100000000000802, 0x0100000000000810])
         self.assertIn('MiiModel: the Mii heads', both); self.assertIn('(0100000000000810)', both)
 
+    def test_echoes_of_wisdom_extracts_standard_and_extension_fonts(self):
+        profile = game.load('01008CF01BAAC000')
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            port = pipeline.Port(pipeline.Options(path, firmware=path / 'firmware', keys=path / 'placeholder'))
+            port.ap = android_profile.AndroidProfile(profile)
+            port.work, port.logs = path / 'work', path / 'logs'
+            port.env = {}
+            with mock.patch.object(pipeline.nsp, 'run') as run, mock.patch.object(pipeline, 'PROG'):
+                out = port.extract_sysdata(path / 'nx_extract')
+            self.assertEqual(out, port.work / 'sysdata')
+            self.assertEqual([call.args[0][4:] for call in run.call_args_list], [
+                ['0100000000000811', out / '0100000000000811'],
+                ['0100000000000810', out / '0100000000000810'],
+            ])
+
     def test_shared_font_option(self):   # --shared-font FILE: parsed, and a file that is not a .ttf fails before any stage
         from porter import cli
         self.assertEqual(cli._parser().parse_args(['port', 'x', '--shared-font', 'cjk.ttf']).shared_font, 'cjk.ttf')
