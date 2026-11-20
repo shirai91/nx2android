@@ -40,7 +40,8 @@ int main(int argc, char **argv) {
     FILE *f=fopen(argv[1],"rb"); if (!f) return 1;
     fseek(f,0,SEEK_END); long n=ftell(f); rewind(f);
     uint32_t *src=malloc((size_t)n); if (!src) return 1;
-    if (fread(src,1,(size_t)n,f)!=(size_t)n) return 1; fclose(f);
+    if (fread(src,1,(size_t)n,f)!=(size_t)n) return 1;
+    fclose(f);
     size_t words=0; const char *why=NULL;
     uint32_t *out=spv_alpha(src,(size_t)n/4,&words,&why); free(src);
     if (!out) { fprintf(stderr,"%s\n",why); return 2; }
