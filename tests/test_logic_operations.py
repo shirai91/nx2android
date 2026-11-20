@@ -1,6 +1,7 @@
 """Existing donor logic eligibility and blend precedence, using production C."""
 import os,re,shutil,subprocess,tempfile,unittest
 from pathlib import Path
+from csrc import unit
 W=Path(__file__).resolve().parents[1]
 class LogicOperations(unittest.TestCase):
  def test_donor_format_and_state_limits(self):
@@ -11,7 +12,7 @@ class LogicOperations(unittest.TestCase):
   headers=list(Path(ndk).glob('toolchains/llvm/prebuilt/*/sysroot/usr/include/vulkan/vulkan_core.h'))
   if not headers:self.skipTest('NDK Vulkan header unavailable')
   values=re.findall(r'(VK_FORMAT_\w+)\s*=\s*(\d+),',headers[0].read_text())
-  runtime=(W/'nxnative/dm/android/gfx_vk_exec.c').read_text()
+  runtime=unit(W/'nxnative/dm/android/gfx_vk_exec.c')
   classify=runtime[runtime.index('enum clear_type {'):runtime.index('static int alpha_enabled(')]
   enums='enum {'+','.join(name+'='+value for name,value in values)+'};'
   code=r'''#include <assert.h>
@@ -50,7 +51,7 @@ int main(void) {
    self.assertEqual(result.returncode,0,result.stdout+result.stderr)
    result=subprocess.run([str(p/'test')],capture_output=True,text=True);self.assertEqual(result.returncode,0,result.stdout+result.stderr)
  def test_persisted_enabled_keys_respect_current_device(self):
-  source=(W/'nxnative/dm/android/gfx_vk_exec.c').read_text()
+  source=unit(W/'nxnative/dm/android/gfx_vk_exec.c')
   a=source.index('static void *prewarm_thread(');b=source.index('\n}',a)+2
   code=r'''#include <assert.h>
 #include <stdint.h>
