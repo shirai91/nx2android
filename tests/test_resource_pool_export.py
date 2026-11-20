@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import host_cc
 
 ROOT=Path(__file__).resolve().parents[1];TOOLS=ROOT/'nxnative/dm/android/tools'
 sys.path.insert(0,str(TOOLS))
@@ -65,7 +66,10 @@ void main(){cp_s0.color=textureLod(sampler2D(cp_t2d_cb0_40000000[cp_c3.ids.x],cp
             subprocess.run(['spirv-val','--target-env','vulkan1.1',str(output)],check=True)
             # Validate the actual C runtime remap too, including donor rejection cases.
             executable=work/'descriptor-table'
-            subprocess.run([shutil.which('cc') or 'cc','-std=c11','-fsanitize=address,undefined','-I',str(TOOLS.parent),str(ROOT/'tests/spv_descriptor_table.c'),'-o',str(executable)],check=True)
+            cc=shutil.which('cc') or 'cc'
+            flags=['-fsanitize=address,undefined'] if host_cc.asan_ubsan_runs(cc) else []
+            if not flags: print('resource pool remap: ASan/UBSan unavailable; running all assertions without sanitizers')
+            subprocess.run([cc,'-std=c11',*flags,'-I',str(TOOLS.parent),str(ROOT/'tests/spv_descriptor_table.c'),'-o',str(executable)],check=True)
             remapped=work/'remapped.spv'
             subprocess.run([str(executable),str(output),str(remapped),'1','5','0','2','6','0'],check=True)
             subprocess.run(['spirv-val','--target-env','vulkan1.1',str(remapped)],check=True)
