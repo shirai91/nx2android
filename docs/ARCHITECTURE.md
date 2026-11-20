@@ -130,6 +130,16 @@ checked before pointer formation. These checks do not change the decoder choice
 or timestamp/queue policy. The manual [AVC probe](../probes/avc_frame_layout.md)
 checks synthetic planes and padding; physical-device qualification is separate.
 
+Android shader export lowers supported fixed-size compute collectives to logical
+32-lane Maxwell warps using workgroup shared storage. The existing convergence,
+operand and shared-memory limits remain enforced; unsupported modules retain
+their native path. Conditional exchange lifting additionally needs the selected
+NDK optimizer and register-only movable operations. At the unchanged default
+translator subgroup size of 128, the known predicated fixtures with a lane-ID load
+inside the conditional arm remain unsupported. The exporter fingerprints the
+optimizer and all four warp helpers. Graphics-stage lowering and a general
+fallback for unsupported native subgroup operations are outside this path.
+
 The shader translator's existing native-perspective compensation rule accepts either outer operand order in `(input * FragCoord.w) * (1 / FragCoord.w)`. Both alpha depth and material variants must reach the same native interpolated input; leaving the multiply/divide round trip in only one variant can change alpha coverage and retain old HDR colour. The FP32, input-load, FragCoord.w and constant-one guards remain in place.
 
 Opaque NVN sampler objects keep all sampler parameters after an eight-byte header, within the smallest public object's storage. Engines may hash the bytes after that header before calling `SamplerCompare`. Putting filtering or wrap parameters in the skipped header makes different sampler states collide, defeats cache reuse and can exhaust the game's descriptor pool. In Odyssey, duplicate entries accumulated during extended play and repeated scene loads, exhausted the sampler pool and returned sampler ID 0, producing ground grid artifacts. The builder, initializer, comparison, getters and both graphics backends share the same parameter structure; this layout rule does not change filtering defaults.
