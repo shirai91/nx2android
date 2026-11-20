@@ -179,7 +179,7 @@ GPU_DRIVERS = {'NintendoSDK_OpenGL', 'NintendoSDK_Vulkan'}
 
 
 # ---- Shader sources: decided from the game files at every build, not kept in the profile (scripts/build_ipa_from_nsp.py; shader_split.py reads what those steps write) ----
-def shader_sources(imports, glsl_src, glslc_mods, spirv, unreal_paks, trinity_packs=0, legacy_paks=0, gl_names=0, gl_src=0, gl_files=0, oodle_pkz=0, oodle_gfpak=0):
+def shader_sources(imports, glsl_src, glslc_mods, spirv, unreal_paks, trinity_packs=0, legacy_paks=0, gl_names=0, gl_src=0, gl_files=0, oodle_pkz=0, oodle_gfpak=0, glslc_mod=False):
     """{name: (value, reason)}: graphics (vulkan when main imports Vulkan functions and not nvnBootstrapLoader; gl when it imports eglCreateWindowSurface and names glShaderSource, so it compiles
     GLSL through OpenGL (gl_names: how often main has that name; Absolum imports the same EGL functions for SDL3 but renders with NVN and names no GL function); else nvn; vkGetInstanceProcAddr
     alone is SDL's Vulkan loader, which Balatro's LÖVE links and never uses), vk_capture (a Vulkan game without SPIR-V files generates its shaders at run time), gl_capture (an OpenGL game with no
@@ -191,9 +191,12 @@ def shader_sources(imports, glsl_src, glslc_mods, spirv, unreal_paks, trinity_pa
     alone with version 11 Unreal paks, DRAGON QUEST XI S alone with legacy ones, Pokémon Legends: Z-A alone with Trinity packs, Digimon Story Cyber Sleuth and Balatro alone with OpenGL (of the 23 games
     extracted; Hades and both Galaxies import 99 or 100 Vulkan functions, Balatro only vkGetInstanceProcAddr), Balatro alone composing its GLSL"""
     vk = sum(1 for s in imports if re.match(r'vk[A-Z]', s) and s != 'vkGetInstanceProcAddr'); vulkan = bool(vk) and 'nvnBootstrapLoader' not in imports
-    gl = not vulkan and 'eglCreateWindowSurface' in imports and bool(gl_names)
+    # A game that loads a module exporting glslc* compiles its GLSL through GLSLC into NVN shaders: it draws with NVN, not the host's GL layer, even when main also imports EGL and names
+    # glShaderSource (Portal 2's main keeps SDL's GL loader but its renderer is glslc → NVN)
+    gl = not vulkan and 'eglCreateWindowSurface' in imports and bool(gl_names) and not glslc_mod
     return {'graphics': ('vulkan', f'main imports {vk} Vulkan functions and not nvnBootstrapLoader: the host\'s Vulkan layer (dm/gfx/vk/hle_vk.m)') if vulkan else
-                        ('gl', 'main imports EGL and names glShaderSource: it renders with OpenGL and compiles GLSL, the host\'s GL layer (dm/gfx/gl/hle_gl.m)') if gl else ('nvn', 'main imports nvnBootstrapLoader'),
+                        ('gl', 'main imports EGL and names glShaderSource: it renders with OpenGL and compiles GLSL, the host\'s GL layer (dm/gfx/gl/hle_gl.m)') if gl else
+                        ('nvn', 'a module the game loads exports glslc: its GLSL is compiled at run time into NVN shaders, captured on the device (Portal 2)') if glslc_mod else ('nvn', 'main imports nvnBootstrapLoader'),
             'vk_capture': (vulkan and not spirv, 'no SPIR-V file in the RomFS: the game generates its shaders at run time (Super Mario Galaxy), captured by booting it on the Mac'),
             'gl_capture': (gl and not gl_src and not gl_files, 'no GLSL source in the RomFS or main: the game puts its shaders together at run time (LÖVE: Balatro), captured by booting it on the Mac'),
             'glslc_capture': (not vulkan and not gl and bool(glsl_src) and 'glslcCompile' in imports and bool(glslc_mods),
@@ -210,6 +213,8 @@ def build_sources(exefs, romfs, modules):
     imports = {s for s, defined, _ in nso_syms.dynsyms(main) if not defined}; glsl_src = main.count(b'#version '); gl_names = main.count(b'glShaderSource'); gl_src = len(re.findall(GL_SRC, main))
     glslc_mods = [m for m in modules if m != 'main' and glsl_src and 'glslcCompile' in imports and (exefs / m).exists()
                   and any(s == 'glslcCompile' and defined for s, defined, _ in nso_syms.dynsyms(nso(exefs / m)[0]))]
+    glslc_mod = [m for m in modules if m != 'main' and (exefs / m).exists()
+                 and any(s.startswith('glslc') and defined for s, defined, _ in nso_syms.dynsyms(nso(exefs / m)[0]))]
     spirv = 0
     if any(re.match(r'vk[A-Z]', s) for s in imports):   # only a Vulkan game's RomFS is read
         spirv = sum(1 for _, _, head in romfs_files(romfs) if head.startswith(bytes.fromhex('03022307')))
@@ -237,7 +242,7 @@ def build_sources(exefs, romfs, modules):
                     if h[:8] == b'GFLXPACK' and struct.unpack_from('<I', h, 0x10)[0]:
                         f.seek(struct.unpack_from('<Q', h, 0x18)[0]); e = f.read(4); oodle_gfpak += len(e) == 4 and struct.unpack_from('<H', e, 2)[0] == 3
     return shader_sources(imports, glsl_src, glslc_mods, spirv, len(uepak.unreal_paks(str(romfs), legacy=False)), trinity, len(uepak.legacy_decoder_paks(str(romfs))), gl_names, gl_src, gl_files, oodle_pkz,
-                          oodle_gfpak)
+                          oodle_gfpak, bool(glslc_mod))
 
 
 def va_heap(sysres, imports):   # virtual address memory (an NPDM system resource) and a heap: the alias / heap split is a starting point the heap check corrects (Wonder, Tears of the Kingdom; Engage's pool is its own measurement)

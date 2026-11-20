@@ -1283,7 +1283,7 @@ def data_rows(b):   # a table's data rows (without # comment lines: the header c
     return [l for l in b.splitlines() if not l.startswith(b'#')]
 
 
-def split_shaders(py, repo, roms, mains, pkg, env, logs, g, provisional=False, oodle=None, aoc=None):
+def split_shaders(py, repo, roms, mains, pkg, env, logs, g, provisional=False, oodle=None, aoc=None, captures=None):
     """The shader split into pkg, checked against the profile's tables. The package is reused when the tools, the profile and each version's main, RomFS (paths and sizes) and run-time capture
     are as at the last successful split. Returns the package's content key, the iOS shaders' input (None for a provisional profile or damaged files, which never reuse them): a split that runs
     again because a reader of another engine changed writes the same package, and the iOS shaders stay reused.
@@ -1305,7 +1305,9 @@ def split_shaders(py, repo, roms, mains, pkg, env, logs, g, provisional=False, o
     run([py, repo / 'dm/gfx/tools/shader_split.py', ','.join(map(str, roms)), ','.join(map(str, mains)), tmp / 'pkg'] + [tmp / 'tables' / n for n in names], logs / 'shader_split.log', env=env)
     m = re.search(r'shaders: (\d+) \(', (logs / 'shader_split.log').read_text(errors='replace'))
     if m and m.group(1) == '0':   # dmsh_build.py would make no library, and the iOS shader step stop with no word of why
-        raise BuildError('the shader split found no shaders in main or the RomFS: the game keeps them in a form shader_split.py does not read; locate them (docs/agents) and add a reader')
+        cap = sorted(captures.glob('*.bin')) if captures else []
+        if cap: say(f'no shaders in the game files: the bundle comes from the {len(cap)} shaders captured on the device')
+        else: raise BuildError('the shader split found no shaders in main or the RomFS: the game keeps them in a form shader_split.py does not read; locate them (docs/agents) and add a reader')
     if provisional:   # a provisional profile takes the tables as they come
         for n in names: shutil.copyfile(tmp / 'tables' / n, g.table(n))
     else:

@@ -512,7 +512,8 @@ class Port:
             try: Adb(self.tools['adb'], self.o.device or self.cfg.get('device'), log=say).pick()
             except (AdbError, KeyError) as e: raise BuildError(f"{self.app_name}'s shaders are in Oodle-compressed archives ({why}): the port decodes them with the game's own decoder on "
                                                                f'the Android device, so connect it (adb) and port again ({e})') from e
-        for k in ('glslc_capture', 'ue_legacy') + (() if self.ue_why else ('ue_decode',)) + (() if self.oodle_why else ('oodle_packs',)):
+        if src['glslc_capture'][0]: say(f"{self.app_name} compiles shaders at run time ({src['glslc_capture'][1]}): the device captures each one the bundle lacks and the next ports translate it")
+        for k in ('ue_legacy',) + (() if self.ue_why else ('ue_decode',)) + (() if self.oodle_why else ('oodle_packs',)):
             if src[k][0]: raise BuildError(f'{self.app_name} needs a step that boots the game in the Mac host ({src[k][1]}), which the Android port cannot run yet')
 
     # ---- the game's own Oodle decoder on the device, for the shader split (Pokémon Legends: Arceus's GFPAKs, Pokémon Legends: Z-A's Trinity packs) ----
@@ -722,7 +723,8 @@ class Port:
             if getattr(self, "ue_why", ""): self.device_ue()   # Unreal's shader code archives, decoded on the device into <version dir>/ue_shaders before the split reads them
             nsp.split_shaders(PY, NXNATIVE, [self.dirs[v] / 'RomFS' for v in sv], [self.dirs[v] / 'ExeFS/main' for v in sv], pkg, self.env, self.logs, self.g, bool(self.derived or self.provisional),
                                oodle=self.device_oodle if self.oodle_why else None,   # Oodle-compressed archives: the game's own decoder on the device
-                               aoc=self.aoc)   # DLC with shaders of its own (Xenoblade Chronicles 3's archives)
+                               aoc=self.aoc,   # DLC with shaders of its own (Xenoblade Chronicles 3's archives)
+                               captures=self.aw / 'captured_shaders')   # a runtime-compiled game (glslc) has no file shaders: the bundle comes from the device captures (Portal 2)
         finally: self.device_oodle_end()
         self.dmsv = self.aw / 'shaders.dmsv'; kf = self.aw / 'shaders.dmsv.key'; cap = self.aw / 'captured_shaders'
         PROG.stage('Vulkan shaders', step='building the translator')
