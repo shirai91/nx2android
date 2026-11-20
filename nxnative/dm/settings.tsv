@@ -22,7 +22,7 @@ DM_DBG	str		debug	?	main.c
 DM_DBG_AU_FRAMES	int		debug	?	hle_audio.c	diagnostic: on the Mac, make the sound card callback ask N frames each time (1024 = the iOS default, reproduces the crackling)
 DM_DETCLOCK	str		debug	?	hle_nvn.c hle_os.c	
 DM_DETCLOCK_PACE	bool		debug	?	hle_nvn.c	
-DM_DYN_SCALE	float		debug	live	hle_nvn.c	the host's dynamic resolution through the render-scale stub: every 30 frames held at the cap, GPU p90 over 85% of the frame time lowers the scale 0.05, under 70% raises it; 0 = off (scale 1.0). Tears of the Kingdom's pond: 1.0 -> 0.6 saved only 2.6 ms of GPU p90
+DM_DYN_SCALE	str		profile	live	hle_nvn.c	the host's dynamic resolution: a level for a profile's env row, `low` (lowest scale 0.85 against 90% of the frame time), `medium` (0.70, 85%) or `high` (0.50, 80%), or a number, the lowest scale (0.5 to 0.95, 85% budget); 0 or unset = off. In a game with a render-scale stub: every 30 frames held at the cap, GPU p90 over the budget lowers the scale 0.05, under 70% of it raises it (Tears of the Kingdom's pond: 1.0 -> 0.6 saved only 2.6 ms of GPU p90). In a game without one (no state page) it steers the engine's own dynamic resolution: the GPU clock the game reads (nvnDeviceGetTimestampInNanoseconds, GetCurrentTimestampInNanoseconds) runs k times as fast, k between 1 and 1 / (lowest scale)², raised 15% while GPU p90 is over the budget and lowered under 70% of it, the budget taken at 30 fps under a 30 fps ceiling (hle_nvn.c engine_dyn_tick). Only for engines whose resolution controller reads NVN counter timestamps (Pokémon Scarlet / Violet); a game that paces frames on them would be thrown off
 DM_ENV_FILE_KEYS	str		app,ios	start	main.m	the iOS launcher: the keys an env file set (Launcher.swift keeps them)
 DM_FD_LOG	int		debug	?	hle_fdstat.c	
 DM_FIXED_TIME	str		debug	?	hle_time.c main.c	
@@ -136,10 +136,12 @@ DM_NVN_TEXCPU	str		debug,ios	?	nvn_mtl.m
 DM_NVN_TEXDUMP	str		debug,ios	?	nvn_mtl.m	
 DM_NVN_TEXINFO	str		debug	?	hle_nvn.c nvn_mtl.m	
 DM_NVN_TEXRAW	str		debug,ios	?	nvn_mtl.m	
+DM_NVN_TEXSIZE_CALLER	str		debug	live	hle_nvn.c	WxH: log the game's call chain (direct caller and up to 4 frame-pointer frames above) of each distinct nvnTextureBuilderSetSize2D at that size, to find which engine system creates a render target; re-read every 4096 calls
 DM_NVN_TEXSNAP	str		debug,ios	?	nvn_mtl.m	
 DM_NVN_TREG_ID	int		debug,ios	?	nvn_mtl.m	
 DM_NVN_TSV	str		debug	?	hle_nvn.c	
 DM_NVN_TSV_CALLS	int		debug	?	hle_nvn.c	0 = write only the @ timing rows (pulling files from a real device has a size limit, and the call-count rows take about 2/3)
+DM_NVN_TS_CALLER	str		debug	live	hle_nvn.c	0x0: the same call chain for nvnDeviceGetTimestampInNanoseconds, to find which code measures GPU time (a frame-rate or dynamic-resolution controller); re-read every 4096 calls
 DM_NVN_UB	str		debug,ios	?	nvn_mtl.m	
 DM_NVN_UBP_CHECK	str		debug,ios	?	nvn_mtl.m	
 DM_NVN_UB_COPY_THREAD	str		debug	?	nvn_rec.h	
@@ -153,6 +155,7 @@ DM_NVN_VBUF_CACHE	str		debug,ios	?	nvn_mtl.m
 DM_NVN_VCONV_CHECK	bool		debug,ios	?	nvn_mtl.m	
 DM_NVN_VCONV_CPU	str		debug,ios	?	nvn_mtl.m	
 DM_NVN_VCONV_RANGE	bool		debug,ios	?	nvn_mtl.m	
+DM_NVN_VIEWPORT_CALLER	str		debug	live	hle_nvn.c	WxH: the same call chain for nvnCommandBufferSetViewports at that width and height, to find which pass draws at a (dynamically scaled) size; re-read every 4096 calls
 DM_NVN_VLOG	str		debug	?	hle_nvn.c	
 DM_NVN_XV	str		debug,ios	?	nvn_mtl.m	
 DM_NVN_ZBLOCK	str		debug,ios	?	nvn_mtl.m	DM_NVN_ZBLOCK=<folder>: also the raw storage of the first such texture of each format and size (up to 16), zb_<serial>.bin (unmapped pages as 0)
@@ -254,6 +257,7 @@ DM_VK_FRONT	int		debug	start	gfx_vk_exec.c	2`
 DM_VK_GS_SPLIT	bool	0	profile	live	gfx_vk_exec.c	1 = split geometry-shader draws (gfx_vk_gs_split.c)
 DM_VK_IMG_BLOCKS	bool		debug	start	gfx_vk_core.c	small images take a slot of a shared memory block (default); 0: every image gets memory of its own (A/B)
 DM_VK_LIN_BACK	bool		debug	live	gfx_vk_exec.c	what the GPU draws into a linear render target (NVN `LINEAR_RENDER_TARGET`) stays in the Vulkan image, as before (default: copied back to the texture's pool memory after the pass, so the CPU can read it; Super Mario Odyssey's ground fog reads its wave surface this way)
+DM_VK_LIN_COPY_BACK	bool	0	profile	start	gfx_vk_exec_copies.inc	1 = a texture copy into a LINEAR texture in CPU-visible memory also copies the region back to its storage, so the CPU reads what the GPU copied (gfx_vk_exec_copies.inc t2t_lin_back; Pokémon Violet encodes its enrollment portrait to BC1 on the CPU from such a capture)
 DM_VK_LIST_AT	str		debug	live	gfx_vk_exec.c	DM_VK_LIST_AT=<present>[#n]: the pass list of every submission over n (2) presents from there; now[#n] starts at the current present (once a run)
 DM_VK_LOG	str		debug,ios	?	hle_vk.m	
 DM_VK_LOG_FS	hex		debug	live	gfx_vk_exec.c	one line per draw with that fragment shader (present, pass, depth state, viewport), and its samplers as the draw sees them (`DM_VK_SAMP_LOG` explains why one changed)
@@ -331,6 +335,7 @@ DM_VK_TRACE_PASS	int		debug	live	gfx_vk_exec.c	`-2` lists one submission's passe
 DM_VK_TRACE_SIZE	str		debug	live	gfx_vk_exec.c	trace the (n+1)th pass whose first colour target has that size (and formats): pass numbers move by tens from frame to frame
 DM_VK_UBD_HEAP	hex		debug	live	gfx_vk_exec.c	a deferred uniform update keeps no copy in ordinary memory, and the shadows read its bytes back from the submission's scratch buffer, as before (`gfx_vk_core.c` `vk_sub_update`). Scratch is mapped GPU memory, not cached on Adreno: those reads were 17 to 33% of the replay thread on Breath of the Wild
 DM_VK_UBD_KEEP	hex		debug	live	gfx_vk_exec.c	every landed uniform update stays listed until its submission completes, as before (`gfx_vk_core.c` `vk_ubd_land`: one of the same range replaces the one in flight), for A/B runs against `replay per frame`
+DM_VK_UBO_COMPONENT	bool	0	profile	start	gfx_vk_shader.c	1 = fragment shaders' uniform buffer loads that pick a vector component at a non-constant index load the whole vector and take the component with OpVectorExtractDynamic (gfx_vk_ubo_comp.c). Qualcomm's vulkan.ad07xx.so on the Odin 2 (Adreno 740) did not give each invocation its own component: Pokémon Violet's lighting shader drew hair white in 8-row waves
 DM_VK_UBO_LOG	hex		debug	live	gfx_vk_exec.c	log the next n uniform buffers that shader reads (every word up to 512 bytes, a hash; for register 0 of a vertex shader also its vertex stream 0; for an indexed draw, the index data's hash and range, every word of the first vertex the draw reads, and once per index data every index and vertex). Use 
 DM_VK_UBO_LOG_FROM	int		debug	live	gfx_vk_exec.c	with `DM_VK_UBO_LOG`: the 512 bytes logged start at that offset (a multiple of 16), for fields deeper in a buffer (Unreal's 4 KB view buffer). A memdump of a logged address comes too late: ring buffers are reused within the 2 s a ctl line takes
 DM_VK_UBWC	int	3	profile	start	gfx_vk_tex.c	framebuffer compression mode bits (Adreno UBWC)
@@ -365,6 +370,7 @@ DM_VK_X_RDKEEP	hex		debug	live	gfx_vk_exec.c	runs of rasterizer-discard draws (v
 DM_VK_X_SETVERIFY	bool		debug	?	gfx_vk_exec.c	
 DM_VK_X_SKIPFS	hex		debug	live	gfx_vk_exec.c	Skip draws with one of up to 16 fragment shader keys for pass/shader bisection. Diagnostic only: this deliberately removes rendering. `=0` clears the list.
 DM_VK_X_SKIPVS	hex		debug	live	gfx_vk_exec.c	leave out the draws whose vertex shader key (hex, as the traces print it; up to 8) is listed: bisect which shaders an artifact needs, a group at a time (it found XC3's slivers from 40 candidates in 4 rounds)
+DM_VK_ZEROCOPY_CHUNK_MB	int	256	profile	start	gfx_vk_core.c	zero-copy pools over n MB come in chunks of at most n MB, each its own hardware buffer (ZC_CHUNK); a vertex range across a chunk's end reads past that chunk's buffer. Pokémon Violet: 512 (its 350 MB pool held the academy library's vertices past the 256 MB mark). Bigger chunks risk the gralloc abort ZC_CHUNK notes (Adreno 830 at 812 MB)
 DM_VK_ZEROCOPY_LAZY	int		debug	start	gfx_vk_core.c	which zero-copy pools get their buffer only when the GPU first uses them (vk_pool_of, pool_back: a slab's slot or a kept buffer as at creation; until then the game's own cached, swappable pages): `0` none; `1` also the chunks of pools over 256 MB (`ZC_CHUNK`; Pokopia on the Thor, 4.96 GB of pools of
 DM_VK_ZEROCOPY_MAX_MB	int	0	profile	?	gfx_vk_core.c	pools above this many MB are not mapped zero-copy; 0 = no limit
 DM_VSYNC_HZ	float		debug	?	hle_sdk16.c	
