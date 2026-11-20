@@ -1,0 +1,14 @@
+# Portal 2 on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Source engine (Switch: NVIDIA Lightspeed port), SDK 13, base game 1.0.3. The first SDK 13 OpenGL title met: subsdk0 is GLSLC,
+# the game's own runtime shader compiler, and the game files hold no shader files at all. Modules are main subsdk0 sdk
+# (subsdk1, NintendoSDK_OpenGL, stays out: the host's GL layer takes the game's GL calls).
+# Plays: the title, the menus, a new save and chapter 1 were played on Android; later chapters are untested and a newly
+# reached area can compile a shader variant the bundle lacks: it is captured on the device and must be translated back into the
+# bundle (README "Quirks").
+# A Switch save whose config.cfg holds mat_monitorgamma_nx_docked hangs the main menu on the LOADING screen; deleting that line
+# (and mat_monitorgamma_nx_handheld) lets it enter. The port's own new save may write nx_docked again.
+# Tested 2026-11-19 on the Y700: 60 fps, footprint about 520 MiB, zero skipped draws after the capture rounds (10 -> 64 -> 138).
+status	playable
+tested	1.0.3 Lenovo Legion Y700 TB323FU (Snapdragon 8 Elite Gen 5, Adreno 840, Android 16)
+package	org.nx2a.t0100abd01785c000
+orientation	landscape
