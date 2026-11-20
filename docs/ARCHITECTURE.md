@@ -197,6 +197,13 @@ Per-build knowledge stays where upstream keeps it: the rewriter's cuts in `patch
 
 `python -m porter port <game folder> -k <prod.keys>` (the GUI's **Port** button) runs these stages. The slow ones (extraction, rewrite, shader split, the translator build, the Vulkan shaders) keep their output with a key of their inputs and are skipped on the next run when the key is unchanged; the host build is incremental (`build.py`), and the APK and the data pack are made again each time (seconds).
 
+Module rewriting uses the porter's `--jobs` count, passed as `J` to the shared
+NSO/NRO rewrite scheduler. It must be a positive integer: `--jobs=1` runs one
+module at a time. Direct callers that omit `J` retain the CPU-based default
+(at least two workers, or four if the CPU count is unavailable). This limits
+concurrent processes, not the memory used by one module. Changing the count
+does not invalidate completed rewrite outputs.
+
 Shader reuse checks the generated bundle against its receipt. Windows uses size
 and modification time for the fast path. POSIX also checks change time and file
 identity. A metadata change triggers a digest check. On Windows, a same-size
