@@ -6,7 +6,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 
 "Profile here": `nxnative/dm/games/<title ID>/` has the game's profile from nxnative. "Upstream profile": only seedds/nxnative has one, to read as a reference or starter, not to pull. "60 fps with X" is upstream's note: they run that update at 60 fps (30 on the Switch).
 
-**66 / 114 ported**
+**67 / 115 ported**
 
 - [x] 13 Sentinels: Aegis Rim · `01003FC01670C000`
 - [x] 13 Sentinels: Aegis Rim (Asia) · `01008D7016438000`
@@ -16,6 +16,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [ ] AI: THE SOMNIUM FILES - nirvanA Initiative · `0100713016CCC000` · profile here
 - [x] Animal Crossing: New Horizons · `01006F8002326000`
 - [ ] ANIMAL WELL · `010020D01AD24000` · profile here
+- [x] Apollo Justice: Ace Attorney Trilogy · `010020D01B890000`
 - [ ] ASTRAL CHAIN · `01007300020FA000` · upstream profile · 60 fps target with 1.0.1
 - [ ] Bastion · `010038600B27E000` · upstream profile · iPhone only
 - [ ] Batman: Arkham Knight · `0100ACD0163D0000` · upstream profile
