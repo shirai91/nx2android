@@ -3,7 +3,7 @@
 // Plain C over the SPIR-V words, without Vulkan, so tests/test_vk_ubo_component.py builds and checks it on the PC.
 //
 // Maxwell reads a constant buffer at a register offset (LDC) per thread; the translator writes it as an access chain into the uniform block's vec4 array:
-// row offset >> 4, then component (offset >> 2) & 3, both computed in the shader. Vulkan allows both to differ between invocations. Qualcomm's Adreno 7xx driver
+// row offset >> 4, then component (offset >> 2) & 3, both computed in the shader. Vulkan allows both to differ between invocations. The Turnip (Mesa) driver
 // shipped as vulkan.ad07xx.so (AYN Odin 2, Adreno 740) does not give each invocation its own component when that index is not a constant: Pokémon Violet's
 // deferred lighting shader 8bc9341cecc2ce7d reads material parameters at (G-buffer material id & 7) * 16 + 496, and in a wave that holds both hair and skin
 // pixels the hair pixels came out white. Those waves are 8 pixel rows high, so every hair edge over skin or background was a staircase of white 8-row steps.

@@ -327,7 +327,7 @@ static vkshader_t *vk_shader_q(uint64_t key, int stage, int quiet) {
             if (drop) i += n; else for (uint32_t k = 0; k < n; k++) w[o++] = w[i++]; }
         nw = o; } }
     // DM_VK_UBO_COMPONENT=1 (start-up; a game profile's android.tsv env row): fragment shaders' uniform buffer loads that pick a vector component at a run-time
-    // index load the whole vector and take the component with OpVectorExtractDynamic (gfx_vk_ubo_comp.c). Qualcomm's vulkan.ad07xx.so did not give each
+    // index load the whole vector and take the component with OpVectorExtractDynamic (gfx_vk_ubo_comp.c). Turnip (Mesa, vulkan.ad07xx.so) did not give each
     // invocation its own component: Pokémon Violet's lighting drew hair white in waves that also held skin
     { static int on = -1; if (on < 0) { const char *e = getenv("DM_VK_UBO_COMPONENT"); on = e && atoi(e); if (on) VKLOG("shaders: uniform buffer components at run-time indices taken from the loaded vector in fragment shaders (DM_VK_UBO_COMPONENT)"); }
       uint32_t n2 = 0, sites = 0, *w2 = on && stage == 1 ? spv_ubo_component(w, nw, &n2, &sites) : NULL;
