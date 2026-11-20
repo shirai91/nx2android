@@ -492,6 +492,8 @@ def scan_nsps(nsp_dir, exts=('nsp', 'xci'), keys=None, only=None):
     keys: prod.keys, whose header_key reads the title IDs of a dump with neither a ticket nor a [title ID] tag from its NCA headers. One dump may hold several titles of the same game
     beside one another (a rebuilt card, "(1G+1U)"): every title ID it carries is classified by its low 12 bits, so the base game, its update and the DLC in one file are all found
     (nsp_versions and extract() send such a base through nx_extract --merged). A file's [v] tag names its update's version; a merged dump's DLC gets no version (the tag is the update's).
+    A file that carries another application's title as well (a stray ticket, a compilation card) skips it with a note: main went on with the file's first title, and one game per folder
+    keeps the scan from failing on it.
     only: one dump selected instead of a folder — only it is scanned (a merged dump carries everything; the other dumps in its folder are left out)"""
     fams, unknown = {}, []
     hk = header_key(keys) if keys else None
@@ -507,9 +509,13 @@ def scan_nsps(nsp_dir, exts=('nsp', 'xci'), keys=None, only=None):
         if not tids:   # no ticket and no readable meta: the [title ID] tag in the file name, if any
             if (tid := title_of(p, hk)) is None: unknown.append(p); continue
             tids = [tid]
+        fapp = None   # the file's first application: titles of another game beside it (a stray ticket, a compilation card) are skipped, as main went on with the first title
         for tid in tids:
             low = tid & 0xFFF   # base …000, update …800, DLC = base + 0x1000 + index
             app = tid if low == 0 else tid & ~0xFFF if low == 0x800 else (tid & ~0xFFF) - 0x1000
+            if fapp is None: fapp = app
+            elif app != fapp:
+                say(f'skipping {tid:016X} in {p.name}: not a title of {fapp:016X} (a file carries one game)'); continue
             f = fams.setdefault(app, {'base': None, 'updates': [], 'dlc': []})
             if low == 0: f['base'] = p
             elif low == 0x800: f['updates'].append((version_of(p), p))
