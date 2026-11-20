@@ -375,6 +375,15 @@ namespace Ryujinx.Graphics.Shader
         }
 
         /// <summary>
+        /// Queries whether the host may render at a scale other than 1 (nx2android: false skips the TexelFetchScale and TextureSizeUnscale helpers).
+        /// </summary>
+        /// <returns>True if the shader must apply the support buffer's render scales, false otherwise</returns>
+        bool QueryHostSupportsRenderScale()
+        {
+            return true;
+        }
+
+        /// <summary>
         /// Queries host GPU transform feedback support.
         /// </summary>
         /// <returns>True if the GPU and driver supports transform feedback, false otherwise</returns>
