@@ -6,3 +6,6 @@ tested	v327680 Xiaomi 17 (Adreno 840, Android 17)
 package	org.nx2a.luigis3
 orientation	landscape
 env	DM_NVN_CPU_NO_ACCESS_IMAGE_FIRST_USE=1
+readme_image	docs/images/luigis-mansion-3.jpg
+readme_tag	v0.5.0
+readme_note	update 1.4.0 · **experimental** · tested through the opening lobby on Xiaomi 17 (Adreno 840, Android 17) · about 30 fps in the lobby with default pacing
