@@ -1,0 +1,58 @@
+# Game profile of 三國志14 with 威力加強版 (ROMANCE OF THE THREE KINGDOMS XIV with the Diplomacy and Strategy
+# Expansion Pack; Switch, update v786432 = 1.1.1, Japanese / English / Simplified and Traditional Chinese).
+# Plays on a Xiaomi 2410DPN6CC (Android 16, Adreno 830): the logos, the title, the settings screen, a new game
+# (faction select, the opening narration, the campaign map), the officer list and the city panel, at 30 fps as on
+# the Switch, with sound and a working save.
+# Format: see dm/games/README.md
+# Koei Tecmo's KTGL on NVN, SDK 10.4.1. Modules main + subsdk0 (NintendoSDK_movie: the MP4 opening and event
+# movies) + sdk. The frame rate, the audio renderer and the region layout below are the three things this game
+# needed beyond the SDK's defaults; see the note.
+
+# ---- Identity ----
+title_id	0100CD4012DCA000
+program_id	0100CD4012DCA000
+
+# ---- App ----
+# Game name: only a label for profile listings and the Mac window title; the iOS app name is the game name in the
+# base NSP, and the bundle ID comes from the base game title ID (build_ipa.sh / NSP script)
+name	三國志14 with 威力加強版
+ipa	14With.ipa
+app_category	public.app-category.strategy-games
+
+# ---- Versions ----
+build	v786432	1.1.1	main=33e595cff4fcb98133aec71353632f03	subsdk0=84e50460493a12f26100e5150fbff271	sdk=d9add76fc264863d85fbbd1d70076c76
+package	v786432
+shader_versions	v786432
+
+# ---- Files ----
+# every module main imports from
+modules	main subsdk0 sdk
+# the RomFS directory no other title has: 12 GB of 0001_SC / 0001_TC (message data), 0002 (the engine's .rdb
+# archives) and 0004, plus the 49 add-on content volume under aoc/
+romfs_marker	0002/ScreenLayout.rdb.bin
+# these extensions are stored uncompressed by nx_extract: the engine's archives are read by offset
+zip_store	.bin:.bin1:.bin10:.bin11:.bin14:.bin14_0:.bin15:.bin16:.bin18:.bin2:.bin20:.bin21:.bin22:.bin22_0:.bin3:.bin4:.bin5:.bin6:.bin7:.bin8:.file:.mp4:.metallib
+
+# ---- Memory ----
+# main sets a heap of at most the pool − 64 MB: a 3328 MB heap region, and the defaults hold. The game makes no nn::os::AllocateAddressRegion
+# region in anything tested here: no "[mem] ... address regions live" line appears and the campaign runs the same at this 256 MB and at 4.375 GB.
+# The SDK's node area is cut from 1 GB to 62 MB by dm/tools/sdk_patches.py for this sdk build (d9add76fc264), which is where that belongs
+mem_reserve	0x100000000
+mem_alias	0x10000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+# the NPDM declares 0 MB of system resource: IsVirtualAddressMemoryEnabled is false, as on Horizon (Big Brain
+# Academy: Brain vs. Brain sets a heap only then)
+sys_resource	0x0
+
+# ---- Shader split ----
+shader_groups	/DLC_PATCH/=dlcpatch /0010_SC/=0010sc /0010_TC/=0010tc /0002/=0002 /0004/=0004 /0003/=0003 /0003_SC/=0003sc /0000/=0000 /0001_SC/=0001sc /0001_TC/=0001tc /0003_TC/=0003tc
+shader_note	三國志14 with 威力加強版 shaders
+
+# ---- After the rewrite ----
+# used memory for the current rewritten modules, at least the default 64 MB
+mem_used	0x5000000
+# 30 fps, as on the Switch. The frame-rate table at main+0x1e47120 and the lock at main+0x896c70 can be moved to 60 (FPSLocker's config for this
+# build does it in two data-and-code steps, and hle_fpslock.c's row types could carry the two host rows, though it has none for this game yet), but
+# the map renders in 20.7 ms of GPU time a frame on an Adreno 830 against the Mac's 7 ms, so 60 fps is out of reach on this GPU whatever the lock
+# says. Left at the game's own rate

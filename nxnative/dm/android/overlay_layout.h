@@ -11,6 +11,15 @@ typedef struct { int kind; float ax, x, y, w, h; uint64_t btn; const char *label
 #include "android_profile.h"
 static const ov_ctl OV_LAYOUTS[2][DM_AOV_N] = {{DM_AOV_TABLET}, {DM_AOV_PHONE}};
 #define OV_N DM_AOV_N
+// Touch sticks start at the finger's down point; the right stick has finer low-speed aiming.
+static inline void ov_touch_stick(float x, float y, float radius, int right, float *dx, float *dy) {
+    if (radius <= 0) { *dx = *dy = 0; return; }
+    float m = hypotf(x, y) / radius;
+    if (m <= 0.05f) { *dx = *dy = 0; return; }
+    float v = fminf((m - 0.05f) / 0.95f, 1.0f);
+    if (right) v *= 0.7f + 0.3f * v;
+    *dx = x / (m * radius) * v; *dy = y / (m * radius) * v;
+}
 // the layout in use: the phone's when the window is at least OV_PHONE_ASPECT wide for its height (a 20:9 phone is 2.2, a 16:10 tablet 1.6), else the tablet's
 #define OV_PHONE_ASPECT 1.9f
 static inline int ov_layout_for_size(int width, int height) { return height > 0 && (float)width / (float)height >= OV_PHONE_ASPECT; }

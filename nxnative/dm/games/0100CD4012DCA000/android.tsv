@@ -1,0 +1,21 @@
+# 三國志14 with 威力加強版 on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Koei Tecmo's KTGL on NVN, SDK 10.4.1, update 1.1.1; 55,391 shaders split into 55,383 and all translated.
+# Tested 2026-11-16/17 on a Xiaomi 2410DPN6CC (haotian, Snapdragon 8 Elite, Adreno 830, Android 16): the logos, the
+# title screen, the settings screen (every row drawn and switchable), a new game from the faction select through the
+# opening narration into the campaign map, a city panel opened by tapping its city, the officer list, and a save that
+# the game commits #7 without an error. 30 fps as on the Switch: frame time p50 33.3 ms, 0 frames dropped on screen,
+# GPU 20.7 ms and replay 2.6 ms a frame on the map; audio 0 underruns over 48,000 frames with 5 catch-up renders.
+# 60 fps was investigated and is GPU-bound on this device (see the note).
+#
+# Two things this game needed beyond the SDK's defaults, both described in this folder's README.md: the audio renderer's work buffer is sized by the
+# renderer service's budget rather than by the local SDK's CPU/manual size (KTGL's internal pools have only a few hundred bytes to spare, and the extra
+# 1.37 MB pushed one of them over — the subsystem's process step returned -51 and the game tore audio down and exited), and nn::fs's option-word
+# QueryMountRomCacheSize / MountRom overloads. No env switches and no code cuts.
+readme_name	ROMANCE OF THE THREE KINGDOMS XIV
+readme_image	docs/images/romance-of-the-three-kingdoms-xiv.jpg
+readme_tag	v0.4.0
+readme_note	update 1.1.1 · 30 fps (as on Switch) · tested on the Xiaomi 2410DPN6CC (Adreno 830)
+status	playable
+tested	v786432 Xiaomi 2410DPN6CC haotian (Snapdragon 8 Elite, Adreno 830, Android 16)
+package	org.nx2a.t0100cd4012dca000
+orientation	landscape
