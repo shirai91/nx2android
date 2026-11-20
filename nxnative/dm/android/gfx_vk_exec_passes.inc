@@ -764,5 +764,3 @@ static void clear_ds(const p_clear_ds *c) {
     if (r.rect.extent.width && r.rect.extent.height) vkCmdClearAttachments(vk_cmd(), 1, &a, 1, &r);
 }
 
-
-/* NX2A_SECTION gfx_vk_exec_formats.inc */

@@ -47,5 +47,3 @@ static VkPrimitiveTopology topo(int p) {
                  default: return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST; }
 }
 
-
-/* NX2A_SECTION gfx_vk_exec_pipelines.inc */

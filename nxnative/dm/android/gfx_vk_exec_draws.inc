@@ -392,5 +392,3 @@ static int quad_indices(uint32_t count, const uint8_t *src, int itype, int32_t f
     }
     return (int)(nq * 6);
 }
-
-/* NX2A_SECTION gfx_vk_exec_xfb.inc */
