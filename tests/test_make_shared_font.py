@@ -1,5 +1,7 @@
 """devtools/make_shared_font.py: one static TrueType font from several, the first font's glyphs first."""
+import contextlib
 import importlib.util
+import io
 import tempfile
 import unittest
 from pathlib import Path
@@ -72,6 +74,16 @@ class MakeSharedFont(unittest.TestCase):
         ttf(latin, 2048, 'A', 1100); otf(cff)
         with self.assertRaises(self.m.FontError): self.m.merge([str(latin), str(cff)], str(self.tmp / 'out.ttf'))
         with self.assertRaises(self.m.FontError): self.m.load(str(self.tmp / 'fonts.ttc'))
+
+    def test_adb_missing_or_unrunnable_is_a_message(self):
+        # --adb uses porter's adb (the Setup tab's download need not be on PATH); none, or one that cannot run, ends with a message, not a traceback
+        for found in (None, self.tmp / 'no-such-adb'):
+            self.m.find_adb = lambda found=found: found
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                self.assertEqual(self.m.main(['--adb', '-o', str(self.tmp / 'out.ttf')]), 1)
+            self.assertIn('make_shared_font: ', err.getvalue())
+            self.assertNotIn('Traceback', err.getvalue())
 
 
 if __name__ == '__main__':

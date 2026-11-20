@@ -7,13 +7,18 @@
 # Usage:
 #   make_shared_font.py -o korean.ttf LATIN.ttf HANGUL.ttf [MORE.ttf ...]
 #   make_shared_font.py -o korean.ttf --adb [SERIAL]   (the phone's Roboto, then the first of its /system/fonts TrueType fonts with Hangul)
+# Run it from a clone of this repository (Python 3.11+, requirements.txt): the player's zip has no devtools/.
 # Then: porter port <game> --shared-font korean.ttf. Fonts with CFF outlines (.otf, Noto Sans CJK) and collections (.ttc) are refused: the shared
 # font is one TrueType font. Needs fontTools (requirements.txt).
 import argparse, os, re, subprocess, sys, tempfile
+from pathlib import Path
 from fontTools.ttLib import TTFont
 from fontTools.ttLib.scaleUpem import scale_upem
 from fontTools.merge import Merger
 from fontTools.varLib import instancer
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from porter.toolchain import find_adb   # noqa: E402  (the adb from the Setup tab or porter config adb, which need not be on PATH)
 
 DROP = ('GSUB', 'GPOS', 'GDEF', 'BASE', 'JSTF', 'MATH', 'STAT', 'vhea', 'vmtx', 'VORG', 'kern', 'morx', 'DSIG', 'meta')   # layout and vertical tables: not merged, not needed
 LATIN_ON_DEVICE = ('RobotoStatic-Regular.ttf', 'Roboto-Regular.ttf')
@@ -52,7 +57,9 @@ def merge(paths, out, name='Shared Font (merged)'):
 
 
 def from_device(serial, tmp):
-    adb = ['adb'] + (['-s', serial] if serial else [])
+    exe = find_adb()
+    if not exe: raise FontError("no adb: get it with the Setup tab's Download missing tools, or give its path with porter config adb")
+    adb = [str(exe)] + (['-s', serial] if serial else [])
     names = subprocess.run(adb + ['shell', 'ls', '/system/fonts'], capture_output=True, text=True, check=True).stdout.split()
     latin = next((n for n in LATIN_ON_DEVICE if n in names), None)
     if not latin: raise FontError('the device has no Roboto in /system/fonts')
@@ -79,7 +86,7 @@ def main(argv=None):
             paths = from_device(a.adb, tmp) if a.adb is not None else a.fonts
             if len(paths) < 2: ap.error('give at least two fonts, or --adb')
             cover, n = merge(paths, a.out)
-    except (FontError, subprocess.CalledProcessError) as e:
+    except (FontError, subprocess.CalledProcessError, OSError) as e:
         print(f'make_shared_font: {e}', file=sys.stderr); return 1
     print(f'{a.out}: {n} characters; ' + ', '.join(f'{k} {"yes" if v else "no"}' for k, v in cover.items()))
     return 0
