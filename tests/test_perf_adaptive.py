@@ -65,6 +65,15 @@ int main(int argc, char **argv) {
     assert(g_step == 1 && g_last_change == 26000000000ll);
     assert(g_up_hold == 40000000000ll);  // a failed recovery doubles the hold
     assert(g_nwork == 0 && g_nshown == 0 && g_ok_frames == 0);
+    dm_perf_framegen_rate(60);
+    assert(dm_present_period_adapt(16666667) == 33333334 && g_game_period == 33333334);
+    assert(dm_present_period_adapt(50000000) == 50000000);
+    dm_perf_framegen_rate(48);
+    assert(dm_present_period_adapt(16666667) == 41666667 && g_game_period == 41666667);
+    adapt_frame(15000000, 30000000000ll);
+    assert(g_nwork == 0 && g_step == 1);
+    dm_perf_framegen_rate(0);
+    assert(dm_present_period_adapt(16666667) == 25000000 && g_game_period == 16666667);
     return 0;
 }
 '''

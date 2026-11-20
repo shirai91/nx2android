@@ -163,6 +163,10 @@ def main():
         json.dump({**{a: str(v) for a, v in k.items()}, 'cert': crt.hex()}, open(keyf, 'w'))
         print(f'new signing key {keyf} ({time.time() - t:.1f} s)')
     entries = [('AndroidManifest.xml', axml(MANIFEST), 4), (f'lib/arm64-v8a/lib{LIB}.so', open(so, 'rb').read(), 16384)]
+    if LIB == 'dmhost':
+        license_path = os.path.join(os.path.dirname(__file__), 'lsfg-vk-LICENSE.txt')
+        with open(license_path, 'rb') as f:
+            entries.append(('META-INF/lsfg-vk-LICENSE.txt', f.read(), 4))
     if ARGS.dex: entries.append(('classes.dex', open(ARGS.dex, 'rb').read(), 4))
     entries += [(f'lib/arm64-v8a/{os.path.basename(x)}', open(x, 'rb').read(), 16384) for x in ARGS.extra_so]
     entries += [(f'assets/{n}', open(f, 'rb').read(), 4) for n, _, f in (x.partition('=') for x in ARGS.asset)]   # stored, as every entry: AAsset reads them in place

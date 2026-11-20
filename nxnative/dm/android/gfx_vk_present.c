@@ -3,9 +3,11 @@
 // presented with FIFO (vsync) pacing. Headless (dmhost from adb shell): frames are counted, and DM_VK_SHOT=n1,n2,... writes those presented frames as PPM files to
 // DM_VK_SHOT_DIR (default DM_ROOT), which is how a run without a screen is checked.
 #include "gfx_vk.h"
+#include "gfx_vk_lsfg.h"
 #include "dm_pacing.h"   // the frame-pacing policy
 #include <android/native_window.h>
 #include <jni.h>
+#include <errno.h>
 #include <string.h>
 #include <math.h>
 #include <time.h>
@@ -15,30 +17,47 @@
 #include "overlay_frag.spv.h"
 #include "rot_vert.spv.h"
 #include "rot_frag.spv.h"
+static int framegen_display_clock(void);
 
 __attribute__((weak)) ANativeWindow *dm_front_window(void) { return NULL; }
 __attribute__((weak)) int dm_external_active(void) { return 0; }
 static uint64_t g_presents;
-// Vulkan present IDs include overlay redraws; only the game's tickets have a time for the NVN frame statistics.
+// Vulkan present IDs include generated frames and overlay redraws; only real frames have NVN tickets.
 enum { PRES_TIMES = 64 };
-static struct { uint64_t ticket, ns; } g_pres_t[PRES_TIMES];
-static struct { uint32_t id; uint64_t ticket; } g_pres_ids[PRES_TIMES];
+static struct { uint64_t ticket, ns, ready_ns; } g_pres_t[PRES_TIMES];
+static struct { uint32_t id; uint64_t ticket; int generated; } g_pres_ids[PRES_TIMES];
 static pthread_mutex_t g_pres_mu = PTHREAD_MUTEX_INITIALIZER;
 static uint64_t g_pres_recorded;   // display times recorded so far (present_time_record): none after 240 presents with display timing on, the hand-over time stands in
-static void present_time_begin(uint64_t ticket, uint64_t ns) {   // ns: the time to report now (no display times on this device), or 0 for the display's
+static uint64_t g_real_displayed, g_generated_displayed;   // excludes pause menu redraws
+static struct { uint64_t total_ns, max_ns; unsigned samples; } g_real_latency;   // driver feedback, under g_present_mu
+static void present_time_begin(uint64_t ticket, uint64_t ns, uint64_t ready_ns) {   // ns: the time to report now (no display times on this device), or 0 for the display's
     pthread_mutex_lock(&g_pres_mu);
-    g_pres_t[ticket % PRES_TIMES] = (typeof(g_pres_t[0])){ticket, ns};
+    g_pres_t[ticket % PRES_TIMES] = (typeof(g_pres_t[0])){ticket, ns, ready_ns};
     pthread_mutex_unlock(&g_pres_mu);
 }
-static void present_time_map(uint32_t id, uint64_t ticket) {   // the present thread, under g_present_mu
-    g_pres_ids[id % PRES_TIMES] = (typeof(g_pres_ids[0])){id, ticket};
+static void present_time_map(uint32_t id, uint64_t ticket, int generated) {   // under g_present_mu
+    g_pres_ids[id % PRES_TIMES] = (typeof(g_pres_ids[0])){id, ticket, generated};
 }
 static void present_time_record(uint32_t id, uint64_t ns) {   // the present thread, under g_present_mu
     typeof(g_pres_ids[0]) *m = &g_pres_ids[id % PRES_TIMES];
-    if (m->id != id || !m->ticket || !ns) return;
+    if (m->id != id || !ns) return;
+    uint64_t ticket = m->ticket;
+    if (m->generated) ++g_generated_displayed;
+    else if (ticket) ++g_real_displayed;
+    m->ticket = 0;
+    m->generated = 0;
+    if (!ticket) return;
     pthread_mutex_lock(&g_pres_mu);
-    typeof(g_pres_t[0]) *p = &g_pres_t[m->ticket % PRES_TIMES];
-    if (p->ticket == m->ticket) p->ns = ns;
+    typeof(g_pres_t[0]) *p = &g_pres_t[ticket % PRES_TIMES];
+    if (p->ticket == ticket) {
+        p->ns = ns;
+        if (p->ready_ns && ns >= p->ready_ns) {
+            uint64_t latency = ns - p->ready_ns;
+            g_real_latency.total_ns += latency;
+            if (latency > g_real_latency.max_ns) g_real_latency.max_ns = latency;
+            ++g_real_latency.samples;
+        }
+    }
     pthread_mutex_unlock(&g_pres_mu); g_pres_recorded++;
 }
 static void present_time_reset(void) {   // the old swapchain's pending results cannot describe the new one
@@ -53,6 +72,7 @@ static double present_time_get(uint64_t ticket) {
     return t;
 }
 static VkSurfaceKHR g_surf; static VkSwapchainKHR g_swap; static VkImage g_simg[8]; static uint32_t g_nsimg; static VkExtent2D g_sext; static VkFormat g_sfmt;
+static uint64_t g_real_presented, g_generated_presented;   // successful hand-overs, not measured display times
 // The swapchain's format follows the window texture's sRGB-ness: a blit from an sRGB image into a UNORM one decodes to linear and stores that unencoded, which darkened the whole
 // picture (Donkey Kong Country Returns HD presents RGBA8_SRGB, NVN format 0x38; issue #4). The Switch scans the window texture's bytes out as they are, and an SRGB -> SRGB blit
 // decodes and encodes them again. UNORM games keep the UNORM swapchain. The overlay drawn after the blit is encoded too in an sRGB swapchain, so it shows a little lighter there
@@ -70,8 +90,13 @@ __attribute__((weak)) float dm_overlay_scale(void) { return 1; }
 __attribute__((weak)) void dm_overlay_knob(int stick, float *dx, float *dy) { (void)stick; *dx = *dy = 0; }
 __attribute__((weak)) int64_t dm_overlay_pressed(int ctl, uint64_t bit) { (void)ctl; (void)bit; return 0; }
 __attribute__((weak)) int dm_menu_state(void) { return -1; }
+__attribute__((weak)) int dm_menu_scroll_position(void) { return 0; }
 __attribute__((weak)) int dm_menu_audio_available(void) { return 0; }
 __attribute__((weak)) int dm_overlay_fps(void) { return 0; }   // front_android.c: the pause menu's Show FPS
+__attribute__((weak)) int dm_framegen_enabled(void) { return 0; }
+__attribute__((weak)) int dm_framegen_target(void) { return 0; }
+void dm_perf_framegen_rate(int fps);
+__attribute__((weak)) int dm_game_held(void) { return 0; }
 __attribute__((weak)) int dm_save_note(char *out, int cap) { if (cap > 0) out[0] = 0; return OVX_IDLE; }   // front_android.c: the save manager's rows
 __attribute__((weak)) int dm_save_rows(ov_srow rows[OVM_ROWS]) { (void)rows; return 0; }
 __attribute__((weak)) int dm_overlay_custom(int layout, int ctl, float *x, float *y, float *s) { (void)layout; (void)ctl; (void)x; (void)y; *s = 1; return 0; }
@@ -82,6 +107,8 @@ __attribute__((weak)) float dm_overlay_opacity(void) { return 0.6f; }
 __attribute__((weak)) int dm_overlay_layout(void) { return 0; }
 __attribute__((weak)) int dm_text_entry(char *title, int tcap, char *text, int xcap, int *sel, int *shift) { (void)title; (void)tcap; (void)text; (void)xcap; (void)sel; (void)shift; return 0; }
 static void pace_reset(void); static void ov_fb_drop(void);
+extern pthread_mutex_t g_vk_queue_mu;
+void dm_perf_window(ANativeWindow *w, double fps);
 // Pre-rotation. A landscape window on a panel whose own orientation is portrait (the Retroid Pocket 5: 1080x1920, the window 1920x1080, currentTransform
 // ROTATE_90) left the turn to Android's compositor, and its display hardware does not rotate such a layer: SurfaceFlinger composited it on the GPU every
 // frame ("CLIENT", "ROT_90" in its layer table) and showed a new frame only every second vsync, 30 fps on screen whatever the game made. With the surface's
@@ -101,7 +128,9 @@ static void rot_drop_image(void) {
 static void swap_destroy(void) {
     pace_reset();
     present_time_reset();
-    if (g_swap) { vkDeviceWaitIdle(V.dev); ov_fb_drop(); for (uint32_t i = 0; i < g_nsimg; i++) if (g_sview[i]) { vkDestroyImageView(V.dev, g_sview[i], NULL); g_sview[i] = VK_NULL_HANDLE; }
+    if (g_swap) { pthread_mutex_lock(&g_vk_queue_mu); vkQueueWaitIdle(V.q); pthread_mutex_unlock(&g_vk_queue_mu);
+                  vk_lsfg_destroy(); ov_fb_drop(); for (uint32_t i = 0; i < g_nsimg; i++) if (g_sview[i]) { vkDestroyImageView(V.dev, g_sview[i], NULL); g_sview[i] = VK_NULL_HANDLE; }
+                  for (uint32_t i = 0; i < g_nsimg; i++) { vkDestroySemaphore(V.dev, g_done_sem[i], NULL); g_done_sem[i] = VK_NULL_HANDLE; }
                   vkDestroySwapchainKHR(V.dev, g_swap, NULL); g_swap = VK_NULL_HANDLE; rot_drop_image(); g_pre = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR; }
     if (g_surf) { vkDestroySurfaceKHR(V.inst, g_surf, NULL); g_surf = VK_NULL_HANDLE; }
 }
@@ -190,13 +219,16 @@ static int swap_make(void) {
     VkResult r = vkCreateSwapchainKHR(V.dev, &ci, NULL, &g_swap);
     if (r) { VKLOG("[RED] swapchain creation failed: %d", r); swap_destroy(); return 0; }
     g_nsimg = 8; vkGetSwapchainImagesKHR(V.dev, g_swap, &g_nsimg, g_simg);
+    VkSemaphoreCreateInfo sem = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+    // A present's wait may outlive the submit fence. Reacquiring the same image releases its semaphore.
     for (uint32_t i = 0; i < g_nsimg; i++) { VkImageViewCreateInfo vi = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, NULL, 0, g_simg[i], VK_IMAGE_VIEW_TYPE_2D, g_sfmt, {0}, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
-        VKCHK(vkCreateImageView(V.dev, &vi, NULL, &g_sview[i])); }
+        VKCHK(vkCreateImageView(V.dev, &vi, NULL, &g_sview[i]));
+        VKCHK(vkCreateSemaphore(V.dev, &sem, NULL, &g_done_sem[i])); }
     if (!g_ppool) {
         VkCommandPoolCreateInfo pci = {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, NULL, VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT, V.qf}; VKCHK(vkCreateCommandPool(V.dev, &pci, NULL, &g_ppool));
         VkCommandBufferAllocateInfo ai = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, NULL, g_ppool, VK_COMMAND_BUFFER_LEVEL_PRIMARY, 8}; VKCHK(vkAllocateCommandBuffers(V.dev, &ai, g_pcb));
         for (int i = 0; i < 8; i++) {
-            VkSemaphoreCreateInfo s = {VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO}; VKCHK(vkCreateSemaphore(V.dev, &s, NULL, &g_acq[i])); VKCHK(vkCreateSemaphore(V.dev, &s, NULL, &g_done_sem[i]));
+            VKCHK(vkCreateSemaphore(V.dev, &sem, NULL, &g_acq[i]));
             VkFenceCreateInfo f = {VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, NULL, VK_FENCE_CREATE_SIGNALED_BIT}; VKCHK(vkCreateFence(V.dev, &f, NULL, &g_pfence[i]));
         }
     }
@@ -218,9 +250,9 @@ static void barrier(VkCommandBuffer cb, VkImage img, VkImageLayout from, VkImage
 // With a theme in the APK (overlay_theme.c), the gamepad is its sprites instead: an atlas per layout in a texture of its own (g_tt), uploaded once, every
 // control drawn from it on each present; the procedural layer is then only the menu's panel, the dimming and the counter.
 enum { SP_DISC = OV_N, SP_BLACK, SP_WHITE, SP_ACCENT, SP_N };   // (black, white, accent: solid blocks, the dimming and the layout editor's frames)
-#define OV_FPS_CHARS "0123456789 FPS-CBATO"   // (the temperature rows: "SOC 52C", "BAT 38C")
+#define OV_FPS_CHARS "0123456789 -ABCDEFILNOPRSTY"   // FPS, RENDER, DISPLAY, PRESENT, SOC and BAT
 static struct { VkImage img; VkDeviceMemory mem; VkImageView view; VkSampler samp; VkDescriptorSetLayout dsl; VkPipelineLayout layout; VkDescriptorPool pool; VkDescriptorSet set;
-                VkPipeline pipe; VkFormat pfmt; uint32_t w, h, sh, pw, ph, gh, gs; VkBuffer up; VkDeviceMemory upm; uint8_t *px; int uploaded, panel, lay, cver; float sp[SP_N][4];
+                VkPipeline pipe; VkFormat pfmt; uint32_t w, h, sh, pw, ph, gh, gs; VkBuffer up; VkDeviceMemory upm; uint8_t *px; int uploaded, lay, cver; uint64_t panel; float sp[SP_N][4];
                 VkRenderPass rp; VkFramebuffer fb[8]; VkImageView fbview[8]; VkExtent2D fbext[8]; } g_ov;
 static struct { const ov_theme *t; VkImage img; VkDeviceMemory mem; VkImageView view; VkDescriptorSet set; VkBuffer up; VkDeviceMemory upm; uint32_t upk; int ready; } g_tt[2];   // per layout
 // Without dynamic rendering (a Vulkan 1.1 / 1.2 device, V.has_dynrender) the overlay draws in a render pass object over the swapchain image: one pass for the swapchain's
@@ -249,6 +281,8 @@ static VkFramebuffer ov_fb(uint32_t idx) {
     return g_ov.fb[idx];
 }
 static _Atomic uint64_t g_fps_frames;   // the game's frames shown (mtl_present), which the counter counts
+static uint64_t g_fg_sample_ns;
+static uint64_t g_fg_sample_real, g_fg_sample_generated;
 static int ov_round(const ov_ctl *c) { return c->w == c->h; }
 static uint32_t ov_layout_sprites(uint32_t w, uint32_t h) {   // places the sprites, returns the strip's height
     float x = 4, top = (float)h, mr = 0, disc = 0, b[4];
@@ -375,64 +409,111 @@ static void cv_button(const ov_canvas *cv, const float b[4], const char *l, int 
 }
 // The pause menu (overlay_layout.h: the rows, the tabs, the slider's track), in the raster's panel rectangle. Its letters are as large as a row allows (0.30 of
 // its height, about 2.7 mm on a 6.7" phone and 3.6 mm on the 8.8" tablet) and smaller only when the widest row would not fit beside its control
-static const char *const OVM_LABELS[OVM_N] = {"Show gamepad", "Opacity", "Edit layout", "Rumble", "Show FPS", "Mode", "Export save", "Import save", "Face buttons", "Audio output", "Resume", ""};
-static const char *const OVM_BUTTONS[OVM_N] = {[OVM_EDIT] = "Edit", [OVM_EXPORT] = "Export", [OVM_IMPORT] = "Import", [OVM_AUDIO] = "Select"};   // the rows that are a button: its word
+static const char *const OVM_LABELS[OVM_N] = {
+    "Show gamepad", "Opacity", "Edit layout", "Rumble", "Show FPS", "Mode",
+    "Export save", "Import save", "Face buttons", "Audio output", "Frame generation", "Target FPS", "Lossless.dll", "Resume", "",
+};
+static const char *const OVM_BUTTONS[OVM_N] = {[OVM_EDIT] = "Edit", [OVM_EXPORT] = "Export", [OVM_IMPORT] = "Import", [OVM_AUDIO] = "Select", [OVM_FG_IMPORT] = "Import"};   // the rows that are a button: its word
 static const char *const OVM_MODES[2] = {"Handheld", "Docked"};
 static const char *const OVM_PADS[2] = {"Position", "Label"};   // a controller's face buttons (front_android.c pad_labels)
-static void ov_menu_panel(const ov_canvas *cv, int st) {
-    float p[4] = {0, 0, (float)cv->w, (float)cv->h}, r[4]; ov_menu_rowrect(p, 0, r);
+static const char *const *menu_segments(int item) {
+    static const char *const targets[2] = {"60 FPS", "No limit"};
+    if (item == OVM_MODE) return OVM_MODES;
+    if (item == OVM_PAD) return OVM_PADS;
+    if (item == OVM_FG_TARGET) return targets;
+    return NULL;
+}
+
+static float menu_segment_width(const char *const *segments, int scale, float pad) {
+    return fmaxf(cv_text_w(segments[0], scale), cv_text_w(segments[1], scale)) + pad;
+}
+static void ov_menu_panel(const ov_canvas *cv, int st, int position) {
+    float p[4] = {0, 0, (float)cv->w, (float)cv->h}, r[4]; ov_menu_view_rowrect(p, 0, r);
     float rh = r[3], rw = r[2], gap = rh * 0.35f, sh = rh * 0.40f, sw = sh * 1.85f;
     int tab = st >> 8 & 1, sel = (st >> 4 & 15) - 1, op = st >> 9 & 127;
+    float offset = fmaxf(0, fminf(ov_menu_scroll_rows(position), ov_menu_scroll_limit(tab)));
     int is = (int)fmaxf(1, roundf(rh * 0.30f / PF_CAP));
     for (; is > 1; is--) {   // the widest row: its label, a gap and its control
         float need = 0;
         for (int i = 0; i < OVM_RESUME; i++) {
-            float lw = cv_text_w(OVM_LABELS[i], is), cw = i == OVM_MODE ? 2 * (cv_text_w(OVM_MODES[0], is) + sh) : i == OVM_PAD ? 2 * (cv_text_w(OVM_PADS[0], is) + sh) : OVM_BUTTONS[i] ? cv_text_w(OVM_BUTTONS[i], is) + 2 * sh : sw + gap + cv_text_w("OFF", is);
+            const char *const *seg = menu_segments(i);
+            float lw = cv_text_w(OVM_LABELS[i], is);
+            float cw = seg ? 2 * menu_segment_width(seg, is, sh) : OVM_BUTTONS[i] ? cv_text_w(OVM_BUTTONS[i], is) + 2 * sh : sw + gap + cv_text_w("OFF", is);
+            if (ov_menu_fg_choice(i)) {
+                if (menu_segment_width(seg, is, sh) > ov_menu_fg_choice_width(r)) { need = rw + 1; break; }
+                cw = 2 * ov_menu_fg_choice_width(r);
+            }
             need = fmaxf(need, i == OVM_OPACITY ? fmaxf(lw / 0.38f, cv_text_w("80%", is) / 0.14f) : lw + gap + cw + rh * 0.3f);
         }
         if (need <= rw && cv_text_w(OVM_TAB_NAMES[0], is) < rw / 2 - sh) break;
     }
     cv_rrect(cv, 0, 0, p[2], p[3], rh * 0.18f, C_BG);
+    float first[4], last[4]; ov_menu_view_rowrect(p, 1, first); ov_menu_view_rowrect(p, OVM_VIEW_ROWS - 1, last);
+    uint32_t top = (uint32_t)ceilf(first[1]), bottom = (uint32_t)floorf(last[1]);
+    ov_canvas body = *cv; body.y0 += top; body.h = bottom > top ? bottom - top : 0;
     for (int row = 0; row < OVM_ROWS; row++) {
-        int it = ov_menu_item(tab, row); ov_menu_rowrect(p, row, r); float cy = r[1] + rh / 2, x1 = r[0] + rw - rh * 0.15f;
+        if (!ov_menu_scroll_rowrect(p, tab, offset, row, r)) continue;
+        int it = ov_menu_item(tab, row), in_body = row > 0 && row < OVM_ROWS - 1;
+        const ov_canvas *target = in_body ? &body : cv;
+        float shift = in_body ? top : 0, slot = ov_menu_scroll_slot(tab, offset, row), paint_p[4] = {p[0], p[1] - shift, p[2], p[3]};
+        r[1] -= shift; float cy = r[1] + rh / 2, x1 = r[0] + rw - rh * 0.15f;
         if (it < 0) continue;
-        if (row == sel) cv_rrect(cv, r[0], r[1] + rh * 0.08f, r[0] + rw, r[1] + rh * 0.92f, rh * 0.14f, C_HI);
+        if (row == sel) cv_rrect(target, r[0], r[1] + rh * 0.08f, r[0] + rw, r[1] + rh * 0.92f, rh * 0.14f, C_HI);
         if (it == OVM_TAB) {   // the tabs: a segmented bar, the open one filled
             float th = rh * 0.62f, tw = rw / OVM_TABS;
-            cv_rrect(cv, r[0], cy - th / 2, r[0] + rw, cy + th / 2, th / 2, C_OFF);
-            cv_rrect(cv, r[0] + tab * tw, cy - th / 2, r[0] + (tab + 1) * tw, cy + th / 2, th / 2, C_ACCENT);
-            for (int k = 0; k < OVM_TABS; k++) cv_text(cv, r[0] + k * tw + (tw - cv_text_w(OVM_TAB_NAMES[k], is)) / 2, cy, OVM_TAB_NAMES[k], is, k == tab ? C_WHITE : C_DIM);
-            cv_rrect(cv, r[0], r[1] + rh - 1, r[0] + rw, r[1] + rh, 0.5f, C_LINE);
+            cv_rrect(target, r[0], cy - th / 2, r[0] + rw, cy + th / 2, th / 2, C_OFF);
+            cv_rrect(target, r[0] + tab * tw, cy - th / 2, r[0] + (tab + 1) * tw, cy + th / 2, th / 2, C_ACCENT);
+            for (int k = 0; k < OVM_TABS; k++) cv_text(target, r[0] + k * tw + (tw - cv_text_w(OVM_TAB_NAMES[k], is)) / 2, cy, OVM_TAB_NAMES[k], is, k == tab ? C_WHITE : C_DIM);
+            cv_rrect(target, r[0], r[1] + rh - 1, r[0] + rw, r[1] + rh, 0.5f, C_LINE);
             continue;
         }
-        if (it == OVM_RESUME) { cv_rrect(cv, r[0], r[1], r[0] + rw, r[1] + 1, 0.5f, C_LINE); cv_text(cv, r[0] + (rw - cv_text_w("Resume", is)) / 2, cy, "Resume", is, C_ACCENT); continue; }
-        cv_text(cv, r[0] + rh * 0.15f, cy, OVM_LABELS[it], is, row == sel ? C_WHITE : C_DIM);
+        if (it == OVM_RESUME) { cv_rrect(target, r[0], r[1], r[0] + rw, r[1] + 1, 0.5f, C_LINE); cv_text(target, r[0] + (rw - cv_text_w("Resume", is)) / 2, cy, "Resume", is, C_ACCENT); continue; }
+        cv_text(target, r[0] + rh * 0.15f, cy, OVM_LABELS[it], is, row == sel ? C_WHITE : C_DIM);
         if (it == OVM_OPACITY) {   // the slider: its track, filled to the value, the knob and the percent
-            float t[3]; ov_menu_track(p, row, t); float f = (float)(op - OV_OPACITY_MIN) / (OV_OPACITY_MAX - OV_OPACITY_MIN), th = fmaxf(2, rh * 0.08f), kr = rh * 0.20f;
+            float t[3]; ov_menu_track(paint_p, slot, t); float f = (float)(op - OV_OPACITY_MIN) / (OV_OPACITY_MAX - OV_OPACITY_MIN), th = fmaxf(2, rh * 0.08f), kr = rh * 0.20f;
             f = f < 0 ? 0 : f > 1 ? 1 : f;
-            cv_rrect(cv, t[0], t[1] - th / 2, t[0] + t[2], t[1] + th / 2, th / 2, C_OFF);
-            cv_rrect(cv, t[0], t[1] - th / 2, t[0] + f * t[2], t[1] + th / 2, th / 2, C_ACCENT);
-            cv_disc(cv, t[0] + f * t[2], t[1], kr, C_WHITE);
-            char v[8]; snprintf(v, sizeof v, "%d%%", op); cv_text(cv, x1 - cv_text_w(v, is), cy, v, is, C_WHITE);
-        } else if (it == OVM_EXPORT && (st >> 20 & 15) != OVX_IDLE) {   // the export's outcome in place of its button: its name, or why there is none
+            cv_rrect(target, t[0], t[1] - th / 2, t[0] + t[2], t[1] + th / 2, th / 2, C_OFF);
+            cv_rrect(target, t[0], t[1] - th / 2, t[0] + f * t[2], t[1] + th / 2, th / 2, C_ACCENT);
+            cv_disc(target, t[0] + f * t[2], t[1], kr, C_WHITE);
+            char v[8]; snprintf(v, sizeof v, "%d%%", op); cv_text(target, x1 - cv_text_w(v, is), cy, v, is, C_WHITE);
+        } else if (it == OVM_EXPORT && (st >> 20 & 7) != OVX_IDLE) {   // the export's outcome in place of its button: its name, or why there is none
             char nm[64], v[80]; int x = dm_save_note(nm, sizeof nm), vs = is;
             snprintf(v, sizeof v, "%s", x == OVX_BUSY ? "Exporting..." : x == OVX_DONE ? nm : x == OVX_NOSAVE ? "No save yet" : "Failed");
             while (vs > 1 && cv_text_w(v, vs) > rw - cv_text_w(OVM_LABELS[it], is) - gap - rh * 0.3f) vs--;
-            cv_text(cv, x1 - cv_text_w(v, vs), cy, v, vs, x == OVX_FAILED ? C_ACCENT : C_WHITE);
+            cv_text(target, x1 - cv_text_w(v, vs), cy, v, vs, x == OVX_FAILED ? C_ACCENT : C_WHITE);
         } else if (OVM_BUTTONS[it]) {   // a button
-            float bw = cv_text_w(OVM_BUTTONS[it], is) + 2 * sh, b[4] = {x1 - bw, cy - rh * 0.30f, bw, rh * 0.60f}; cv_button(cv, b, OVM_BUTTONS[it], 0, 0);
-        } else if (it == OVM_MODE || it == OVM_PAD) {   // two segments, the current one filled: handheld (performance) | docked (resolution); by position | by label
-            const char *const *seg = it == OVM_MODE ? OVM_MODES : OVM_PADS; int cur = it == OVM_MODE ? st >> 2 & 1 : st >> 28 & 1;
-            float hh = rh * 0.46f, segw = fmaxf(cv_text_w(seg[0], is), cv_text_w(seg[1], is)) + sh, x0 = x1 - 2 * segw;
-            cv_rrect(cv, x0, cy - hh / 2, x1, cy + hh / 2, hh / 2, C_OFF);
-            cv_rrect(cv, x0 + cur * segw, cy - hh / 2, x0 + (cur + 1) * segw, cy + hh / 2, hh / 2, C_ACCENT);
-            for (int k = 0; k < 2; k++) cv_text(cv, x0 + k * segw + (segw - cv_text_w(seg[k], is)) / 2, cy, seg[k], is, k == cur ? C_WHITE : C_DIM);
+            float bw = cv_text_w(OVM_BUTTONS[it], is) + 2 * sh, b[4] = {x1 - bw, cy - rh * 0.30f, bw, rh * 0.60f}; cv_button(target, b, OVM_BUTTONS[it], 0, 0);
+        } else if (menu_segments(it)) {
+            const char *const *seg = menu_segments(it);
+            int bit = it == OVM_MODE ? 2 : it == OVM_PAD ? 28 : OVM_FG_UNCAPPED_BIT;
+            int cur = st >> bit & 1;
+            float hh = rh * 0.46f;
+            float segw = ov_menu_fg_choice(it) ? ov_menu_fg_choice_width(r) : menu_segment_width(seg, is, sh);
+            float x0 = x1 - 2 * segw;
+            cv_rrect(target, x0, cy - hh / 2, x1, cy + hh / 2, hh / 2, C_OFF);
+            cv_rrect(target, x0 + cur * segw, cy - hh / 2, x0 + (cur + 1) * segw, cy + hh / 2, hh / 2, C_ACCENT);
+            for (int k = 0; k < 2; k++) cv_text(target, x0 + k * segw + (segw - cv_text_w(seg[k], is)) / 2, cy, seg[k], is,
+                                               k == cur ? C_WHITE : C_DIM);
         } else {   // a switch
-            int on = st >> (it == OVM_OVERLAY ? 0 : it == OVM_RUMBLE ? 1 : 3) & 1; float sx0 = x1 - sw;
-            cv_rrect(cv, sx0, cy - sh / 2, x1, cy + sh / 2, sh / 2, on ? C_ACCENT : C_OFF);
-            cv_disc(cv, on ? x1 - sh / 2 : sx0 + sh / 2, cy, sh / 2 - fmaxf(2, sh * 0.1f), on ? C_WHITE : C_KNOB_OFF);
-            const char *word = on ? "ON" : "OFF"; cv_text(cv, sx0 - gap - cv_text_w(word, is), cy, word, is, on ? C_WHITE : C_DIM);
+            int bit = it == OVM_OVERLAY ? 0 : it == OVM_RUMBLE ? 1 : it == OVM_FRAMEGEN ? OVM_FRAMEGEN_BIT : 3;
+            int disabled = it == OVM_FRAMEGEN && !(st >> OVM_FG_AVAILABLE_BIT & 1);
+            int on = !disabled && (st >> bit & 1);
+            float sx0 = x1 - sw;
+            cv_rrect(target, sx0, cy - sh / 2, x1, cy + sh / 2, sh / 2, on ? C_ACCENT : C_OFF);
+            cv_disc(target, on ? x1 - sh / 2 : sx0 + sh / 2, cy, sh / 2 - fmaxf(2, sh * 0.1f), on ? C_WHITE : disabled ? C_DIM : C_KNOB_OFF);
+            const char *word = disabled ? "Unavailable" : on ? "ON" : "OFF";
+            int ws = is;
+            while (ws > 1 && cv_text_w(word, ws) > sx0 - 2 * gap - r[0] - cv_text_w(OVM_LABELS[it], is)) ws--;
+            cv_text(target, sx0 - gap - cv_text_w(word, ws), cy, word, ws, on ? C_WHITE : C_DIM);
         }
+    }
+    int count = ov_menu_body_count(tab), limit = ov_menu_scroll_limit(tab);
+    if (limit) {
+        float a[4], b[4]; ov_menu_view_rowrect(p, 1, a); ov_menu_view_rowrect(p, OVM_VIEW_ROWS - 1, b);
+        float height = body.h, thumb = height * OVM_VISIBLE / count, x = p[2] - (p[2] - a[0] - a[2]) * 0.5f, width = fmaxf(2, rh * 0.035f);
+        float thumb_top = (height - thumb) * fminf(offset, limit) / limit;
+        cv_rrect(&body, x - width / 2, 0, x + width / 2, height, width / 2, C_OFF);
+        cv_rrect(&body, x - width / 2, thumb_top, x + width / 2, thumb_top + thumb, width / 2, C_DIM);
     }
 }
 // The layout editor's toolbar and prompt (overlay_layout.h ov_ed_*), at half the window's scale in the raster's panel rectangle: the toolbar at its top, the
@@ -490,17 +571,18 @@ static void ov_save_panel(const ov_canvas *cv, int st) {
         if (q->style == OVS_TITLE) cv_rrect(cv, r[0], r[1] + rh - 1, r[0] + rw, r[1] + rh, 0.5f, C_LINE);
     }
 }
-static void ov_panel(int st) {   // the pause menu, the text entry or the layout editor, for menu state st (dm_menu_state), into the panel's rows of the upload buffer
+static void ov_panel(int st, int position) {   // the pause menu, the text entry or the layout editor, for menu state st (dm_menu_state), into the panel's rows of the upload buffer
     ov_canvas cv = {g_ov.px, g_ov.w, 0, g_ov.h + g_ov.sh, g_ov.pw, g_ov.ph};
     for (uint32_t y = 0; y < g_ov.ph; y++) memset(g_ov.px + 4 * ((size_t)(cv.y0 + y) * g_ov.w), 0, (size_t)g_ov.pw * 4);
     if (st & OVT_ST) ov_text_panel(&cv);   // a text entry is open (dm_menu_state)
     else if (st & OVE_ST) ov_edit_panel(&cv, st, (float)g_sext.width, (float)g_sext.height);
     else if (st & OVS_ST) ov_save_panel(&cv, st);
-    else ov_menu_panel(&cv, st);
+    else ov_menu_panel(&cv, st, position);
 }
 // The phone window uses the same menu raster as Vulkan, independently of the external swapchain.
 JNIEXPORT jint JNICALL Java_org_nx2a_ExternalActivity_externalMenuState(JNIEnv *env, jclass cls) { (void)env; (void)cls; return dm_menu_state(); }
-JNIEXPORT jintArray JNICALL Java_org_nx2a_ExternalActivity_externalMenuPixels(JNIEnv *env, jclass cls, jint W, jint H, jint st) {
+JNIEXPORT jint JNICALL Java_org_nx2a_ExternalActivity_externalMenuScroll(JNIEnv *env, jclass cls) { (void)env; (void)cls; return dm_menu_scroll_position(); }
+JNIEXPORT jintArray JNICALL Java_org_nx2a_ExternalActivity_externalMenuPixels(JNIEnv *env, jclass cls, jint W, jint H, jint st, jint position) {
     (void)cls;
     if (W <= 0 || H <= 0 || W > 8192 || H > 8192 || st < 0) return NULL;
     float r[4]; ov_menu_rect((float)W, (float)H, r);
@@ -512,7 +594,7 @@ JNIEXPORT jintArray JNICALL Java_org_nx2a_ExternalActivity_externalMenuPixels(JN
     if (st & 0x10000) ov_text_panel(&cv);
     else if (st & OVE_ST) ov_edit_panel(&cv, st, (float)W, (float)H);
     else if (st & OVS_ST) ov_save_panel(&cv, st);
-    else ov_menu_panel(&cv, st);
+    else ov_menu_panel(&cv, st, position);
     size_t count = (size_t)w * h; jint *argb = malloc((count + 2) * sizeof *argb);
     if (!argb) { free(pixels); return NULL; }
     argb[0] = (jint)w; argb[1] = (jint)h;
@@ -568,37 +650,61 @@ static float ov_glow(int64_t t, int64_t now) {   // a held button's glow: bright
     float f = (float)(now - t) / OV_FLASH_NS; return f >= 1 ? 0.22f : 0.22f + 0.48f * (1 - f) * (1 - f);
 }
 // The frame rate counter: the game's frames shown per second, measured over half a second, in the window's top left corner on a dark block
-static float ov_fps_cell(void) {   // a character cell's width in texels: the widest advance of OV_FPS_CHARS (8 columns: A, O, T), a clear texel each side
+static float ov_fps_cell(void) {   // a character cell's width in texels: the widest advance of OV_FPS_CHARS, a clear texel each side
     static int adv;
     if (!adv) for (const char *c = OV_FPS_CHARS; *c; c++) { char one[2] = {*c, 0}; int a = pf_width(dm_overlay_font(), one); if (a > adv) adv = a; }
     return (float)adv * g_ov.gs + 2;
 }
-static void ov_fps_glyphs(void) {   // the characters into the rows under the panel
+static float ov_fps_glyph_row(void) { return g_ov.gh / 2.0f; }
+static void ov_fps_glyphs(void) {   // one row per color, so both fit on small windows
     ov_canvas cv = {g_ov.px, g_ov.w, 0, g_ov.h + g_ov.sh + g_ov.ph, g_ov.w, g_ov.gh};
-    int n = (int)strlen(OV_FPS_CHARS);   // white, then the same characters in red (a temperature too hot: ov_fps) after them
-    for (int i = 0; i < 2 * n; i++) { char one[2] = {OV_FPS_CHARS[i % n], 0}; cv_text(&cv, i * ov_fps_cell() + 1 + g_ov.gs * 0.5f, g_ov.gh / 2.0f, one, (int)g_ov.gs, i < n ? C_WHITE : C_HOT); }
+    for (int hot = 0; hot < 2; hot++) {
+        for (int i = 0; OV_FPS_CHARS[i]; i++) {
+            char one[2] = {OV_FPS_CHARS[i], 0};
+            cv_text(&cv, i * ov_fps_cell() + 1 + g_ov.gs * 0.5f, (hot + 0.5f) * ov_fps_glyph_row(),
+                    one, (int)g_ov.gs, hot ? C_HOT : C_WHITE);
+        }
+    }
 }
 __attribute__((weak)) void dm_android_temps(int *soc, int *bat) { (void)soc; (void)bat; }   // (front_android.c; absent in other builds)
-static void ov_fps(VkCommandBuffer cb, int64_t now) {   // one value a row: FPS, then the chip's and the battery's temperature where the device gives them
-    static uint64_t n0; static int64_t t0; static int fps = -1;
+static void ov_fps(VkCommandBuffer cb, int64_t now) {
+    static uint64_t n0, displayed0;
+    static int64_t t0;
+    static int fps = -1, display_fps = -1, was_measured = -1;
     uint64_t n = atomic_load(&g_fps_frames);
-    if (!t0 || now - t0 > 2000000000ll) { t0 = now; n0 = n; fps = -1; }   // the first frame, or after a pause in the presents (the menu, the background): measure anew
-    else if (now - t0 >= 500000000ll) { fps = (int)((double)(n - n0) * 1e9 / (double)(now - t0) + 0.5); t0 = now; n0 = n; }
-    char rows[3][16]; int nr = 0, hot[3] = {0};
-    if (fps < 0) snprintf(rows[nr++], 16, "FPS --"); else snprintf(rows[nr++], 16, "FPS %d", fps > 999 ? 999 : fps);
+    int measured = framegen_display_clock();
+    if (measured != was_measured) { t0 = 0; was_measured = measured; }
+    uint64_t displayed = measured ? g_real_displayed + g_generated_displayed : g_real_presented + g_generated_presented;
+    if (!t0 || now - t0 >= 500000000ll) {
+        double seconds = (now - t0) / 1e9;
+        if (!t0 || seconds > 2) fps = display_fps = -1;
+        else {
+            fps = (int)((n - n0) / seconds + 0.5);
+            display_fps = displayed > displayed0 ? (int)((displayed - displayed0) / seconds + 0.5) : -1;
+        }
+        t0 = now; n0 = n; displayed0 = displayed;
+    }
+    char rows[4][16]; int nr = 0, hot[4] = {0};
+    if (dm_framegen_enabled()) {
+        if (fps < 0) snprintf(rows[nr++], 16, "RENDER --"); else snprintf(rows[nr++], 16, "RENDER %d", fps);
+        if (display_fps < 0) snprintf(rows[nr++], 16, "%s --", measured ? "DISPLAY" : "PRESENT"); else snprintf(rows[nr++], 16, "%s %d", measured ? "DISPLAY" : "PRESENT", display_fps);
+    } else if (fps < 0) snprintf(rows[nr++], 16, "FPS --");
+    else snprintf(rows[nr++], 16, "FPS %d", fps > 999 ? 999 : fps);
     int soc = -1000, bat = -1000; dm_android_temps(&soc, &bat);   // front_android.c: the chip's hottest CPU / GPU zone and the battery, whole degrees C (-1000: not known)
     // red from where it is dangerously hot: the chip at 80 C (phones throttle hard in the high 80s), the battery at 45 C (Android's warnings and charging limits)
     if (soc > -100 && soc < 1000) { hot[nr] = soc >= 80; snprintf(rows[nr++], 16, "SOC %dC", soc); }
     if (bat > -100 && bat < 1000) { hot[nr] = bat >= 45; snprintf(rows[nr++], 16, "BAT %dC", bat); }
-    float k = (float)g_sext.width / g_ov.w, cw = ov_fps_cell() * k, ch = (float)g_ov.gh * k, m = (float)g_sext.height * 0.02f, pad = ch * 0.2f, lh = ch * 1.1f;
+    float k = (float)g_sext.width / g_ov.w, cw = ov_fps_cell() * k, ch = ov_fps_glyph_row() * k, m = (float)g_sext.height * 0.02f, pad = ch * 0.2f, lh = ch * 1.1f;
     float bx = g_ov.sp[SP_BLACK][0], by = g_ov.sp[SP_BLACK][1], gy = (float)(g_ov.h + g_ov.sh + g_ov.ph); size_t wmax = 0;
     for (int r = 0; r < nr; r++) if (strlen(rows[r]) > wmax) wmax = strlen(rows[r]);
     ov_rect(cb, m, m, m + ch * 0.5f + wmax * cw, m + 2 * pad + ch + (nr - 1) * lh, bx - 2, by - 2, bx + 2, by + 2, 0.45f);
     for (int r = 0; r < nr; r++) {
         float x = m + ch * 0.25f, y = m + pad + r * lh;
+        float glyph_y = gy + hot[r] * ov_fps_glyph_row();
         for (int i = 0; rows[r][i]; i++, x += cw) {
             const char *c = strchr(OV_FPS_CHARS, rows[r][i]); if (!c || rows[r][i] == ' ') continue;
-            float u = (float)(c - OV_FPS_CHARS + (hot[r] ? (int)strlen(OV_FPS_CHARS) : 0)) * ov_fps_cell(); ov_rect(cb, x, y, x + cw, y + ch, u, gy, u + ov_fps_cell(), gy + g_ov.gh, 1);
+            float u = (float)(c - OV_FPS_CHARS) * ov_fps_cell();
+            ov_rect(cb, x, y, x + cw, y + ch, u, glyph_y, u + ov_fps_cell(), glyph_y + ov_fps_glyph_row(), 1);
         }
     }
 }
@@ -772,7 +878,9 @@ static int overlay_ready(VkCommandBuffer cb, uint32_t k, int menu) {   // k: thi
         if (g_ov.view) { vkDestroyImageView(V.dev, g_ov.view, NULL); vkDestroyImage(V.dev, g_ov.img, NULL); vkFreeMemory(V.dev, g_ov.mem, NULL); vkDestroyBuffer(V.dev, g_ov.up, NULL); vkFreeMemory(V.dev, g_ov.upm, NULL); }
         g_ov.lay = lay; uint32_t sh = ov_layout_sprites(w, h); float mr[4]; ov_menu_rect((float)g_sext.width, (float)g_sext.height, mr);
         g_ov.pw = (uint32_t)(mr[2] / 2) + 1; g_ov.ph = (uint32_t)(mr[3] / 2) + 1; if (g_ov.pw > w) g_ov.pw = w;
-        g_ov.gs = (uint32_t)fmaxf(2, roundf(h * 0.022f / PF_CAP)); g_ov.gh = PF_CAP * g_ov.gs + 4;   // the counter's characters: 2.2% of the window's height
+        g_ov.gs = (uint32_t)fmaxf(1, roundf(h * 0.022f / PF_CAP));
+        while (g_ov.gs > 1 && ov_fps_cell() * strlen(OV_FPS_CHARS) > w) g_ov.gs--;
+        g_ov.gh = 2 * (PF_CAP * g_ov.gs + 4);
         uint32_t th = h + sh + g_ov.ph + g_ov.gh;
         VkImageCreateInfo ic = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, NULL, 0, VK_IMAGE_TYPE_2D, VK_FORMAT_R8G8B8A8_UNORM, {w, th, 1}, 1, 1, VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_TILING_OPTIMAL,
             VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, VK_SHARING_MODE_EXCLUSIVE, 0, NULL, VK_IMAGE_LAYOUT_UNDEFINED};
@@ -792,13 +900,14 @@ static int overlay_ready(VkCommandBuffer cb, uint32_t k, int menu) {   // k: thi
         vkUpdateDescriptorSets(V.dev, 1, &wr, 0, NULL);
         g_ov.uploaded = 0; g_ov.panel = -1;
     }
+    int position = dm_menu_scroll_position(); uint64_t panel_key = ov_menu_raster_key(menu, position);
     uint32_t y0 = 0, rows = g_ov.h + g_ov.sh + g_ov.ph + g_ov.gh;   // the rows to upload
-    if (g_ov.uploaded && menu >= 0 && menu != g_ov.panel) {   // only the panel, after the last copy out of the buffer has run
+    if (g_ov.uploaded && menu >= 0 && panel_key != g_ov.panel) {   // only the panel, after the last copy out of the buffer has run
         VkFence f[8]; uint32_t n = 0; for (uint32_t i = 0; i < 8; i++) if (i != k) f[n++] = g_pfence[i];
         vkWaitForFences(V.dev, n, f, 1, 1000000000ull);
         y0 = g_ov.h + g_ov.sh; rows = g_ov.ph; g_ov.uploaded = 0;
     }
-    if (menu >= 0 && menu != g_ov.panel) { ov_panel(menu); g_ov.panel = menu; }
+    if (menu >= 0 && panel_key != g_ov.panel) { ov_panel(menu, position); g_ov.panel = panel_key; }
     if (!g_ov.uploaded) {
         VkImageMemoryBarrier b = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL, VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, y0 ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED,
             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, g_ov.img, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
@@ -819,14 +928,113 @@ static int overlay_ready(VkCommandBuffer cb, uint32_t k, int menu) {   // k: thi
 // it cannot go out early. A frame that would not be ready in time moves the cadence to the first vsync it can make (a "resync": one longer frame, and from then on a vsync of
 // slack). The pause menu's redraws carry no time. DM_VK_PACE=0 (live) presents without times
 static uint64_t g_refresh_ns, g_pace_target, g_pace_ideal, g_pace_anchor, g_pace_n, g_pace_resync, g_pace_slip; static uint32_t g_pace_id; static int g_pace_on = 1;
+static uint64_t g_fg_cpu_present_ns;
+__attribute__((weak)) uint64_t dm_display_refresh_ns(void) { return 0; }
+enum framegen_outcome {
+    FG_PAIR, FG_NO_REFRESH, FG_PACE_OFF, FG_HELD, FG_MOVIE, FG_QUEUED, FG_MODE_CHANGE,
+    FG_WARMUP, FG_STALL, FG_BUNCHED, FG_REFRESH_LIMIT, FG_TARGET_LIMIT, FG_NO_HISTORY, FG_SETUP_FAILED, FG_PRESENT_FAILED, FG_OUTCOMES
+};
+typedef struct {
+    uint64_t last_ns;
+    double interval_ns;
+    double target_credit;
+    unsigned stable;
+    unsigned near_limit;
+    unsigned queued_frames;
+    enum framegen_outcome outcome;
+} framegen_cadence;
+
+// Base the midpoint on measured render intervals. A 50 ms input interval
+// can fit two presents on a 60 Hz display by alternating one and two refreshes.
+static double framegen_step(framegen_cadence *cadence, uint64_t ready_ns, uint64_t refresh_ns) {
+    uint64_t last = cadence->last_ns;
+    uint64_t elapsed = ready_ns > last ? ready_ns - last : 0;
+    if (!last || !elapsed || elapsed > 100000000 || elapsed < cadence->interval_ns * 0.5) {
+        enum framegen_outcome outcome = !last || !elapsed ? FG_WARMUP : elapsed > 100000000 ? FG_STALL : FG_BUNCHED;
+        *cadence = (framegen_cadence){.last_ns = ready_ns, .outcome = outcome};
+        return 0;
+    }
+
+    cadence->last_ns = ready_ns;
+    if (cadence->interval_ns) cadence->interval_ns += (elapsed - cadence->interval_ns) * 0.25;
+    else cadence->interval_ns = elapsed;
+
+    double half_ns = cadence->interval_ns * 0.5;
+    if (!refresh_ns || half_ns < refresh_ns * 0.96) {
+        // Keep a locked cadence through up to three slightly fast samples. The presents
+        // still occupy separate refresh slots, so sustained or larger overruns must unlock.
+        int brief = refresh_ns && cadence->stable == 4 && half_ns >= refresh_ns * 0.90 && ++cadence->near_limit <= 3;
+        if (!brief) {
+            cadence->stable = 0;
+            cadence->outcome = refresh_ns ? FG_REFRESH_LIMIT : FG_NO_REFRESH;
+            return 0;
+        }
+    } else cadence->near_limit = 0;
+    if (cadence->stable < 4) ++cadence->stable;
+    cadence->outcome = cadence->stable == 4 ? FG_PAIR : FG_WARMUP;
+    return cadence->stable == 4 ? fmax(half_ns, (double)refresh_ns) / 1e9 : 0;
+}
+
+static double framegen_frame_step(framegen_cadence *cadence, uint64_t ready_ns, uint64_t refresh_ns, int queued) {
+    unsigned queued_frames = ready_ns && queued ? cadence->queued_frames + 1 : 0;
+    // A short backlog still gives us consecutive producer timestamps. Keep the
+    // cadence but do no extra GPU work while draining. Reset on sustained backlog.
+    if (queued_frames >= 3) {
+        *cadence = (framegen_cadence){.queued_frames = 3, .outcome = FG_QUEUED};
+        return 0;
+    }
+    double step = framegen_step(cadence, ready_ns, refresh_ns);
+    cadence->queued_frames = queued_frames;
+    return queued ? 0 : step;
+}
+
+static int framegen_output_rate(int target, uint64_t refresh_ns) {
+    if (!target || !refresh_ns) return 0;
+    int refresh_fps = (int)((1000000000ull + refresh_ns / 2) / refresh_ns);
+    return refresh_fps < target ? refresh_fps : target;
+}
+
+// A pair uses one additional frame. When a game supplies more than half of
+// the desired display fps on its own, generate only the share still needed.
+static int framegen_pair_budget(framegen_cadence *cadence, int fps) {
+    if (!fps) return 1;
+    double extra = cadence->interval_ns * fps / 1e9 - 1;
+    if (extra <= 0.02) { cadence->target_credit = 0; return -1; }
+    if (extra >= 0.98) { cadence->target_credit = 0; return 1; }
+    cadence->target_credit += extra;
+    if (cadence->target_credit < 1.0) return 0;
+    cadence->target_credit -= 1.0;
+    return 1;
+}
+
+static uint64_t framegen_followup_deadline(uint64_t first_present_ns, double half_period) {
+    if (!first_present_ns || !(half_period > 0 && half_period <= 0.05)) return 0;
+    return first_present_ns + (uint64_t)(half_period * 1e9);
+}
+
+static framegen_cadence g_fg_cadence;
 static uint64_t mono_ns(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (uint64_t)t.tv_sec * 1000000000ull + (uint64_t)t.tv_nsec; }
-static void pace_reset(void) { g_pace_target = g_pace_ideal = g_pace_anchor = g_refresh_ns = 0; }
+static int framegen_display_clock(void) { return V.has_dtiming && g_pace_anchor && g_refresh_ns; }
+static void framegen_wait_followup(double half_period) {
+    uint64_t deadline = framegen_followup_deadline(g_fg_cpu_present_ns, half_period);
+    g_fg_cpu_present_ns = 0;
+    // Drivers without usable GOOGLE display times still get two paced FIFO presents. Never sleep with the Vulkan queue locked.
+    while (deadline > mono_ns() && dm_framegen_enabled() && !dm_game_held() && dm_menu_state() < 0) {
+        struct timespec t = {(time_t)(deadline / 1000000000ull), (long)(deadline % 1000000000ull)};
+        if (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &t, NULL) != EINTR) break;
+    }
+}
+static void pace_reset(void) {
+    g_pace_target = g_pace_ideal = g_pace_anchor = g_refresh_ns = 0;
+    g_fg_cadence = (framegen_cadence){0};
+    g_fg_cpu_present_ns = 0;
+}
 static uint64_t pace_snap(uint64_t t) {   // the first vsync at or after t on the grid through the anchor
     uint64_t r = g_refresh_ns, a = g_pace_anchor;
     if (t <= a) return a - (a - t) / r * r;
     return a + (t - a + r - 1) / r * r;
 }
-static uint64_t pace_desired(double period) {   // the frame's desired present time (0 = none)
+static uint64_t pace_desired(double period, int generated, int after_midpoint) {
     if (!V.has_dtiming || !g_swap) return 0;
     if (g_pace_n % 30 == 0) { const char *e = getenv("DM_VK_PACE"); g_pace_on = !(e && !atoi(e)); }
     if (!g_refresh_ns || g_pace_n % 120 == 0) {
@@ -853,34 +1061,66 @@ static uint64_t pace_desired(double period) {   // the frame's desired present t
     // so a period that is not a whole number of vsyncs always rounded up (40 fps on a 60 Hz panel: 25 ms came out as 2 vsyncs every frame, 30 fps, on a Retroid Pocket 5)
     uint64_t now = mono_ns(), t = 0;
     if (g_pace_target) { g_pace_ideal += (uint64_t)(period * 1e9); t = pace_snap(g_pace_ideal - g_refresh_ns / 2); }
-    if (t < now + gpu + g_refresh_ns) { if (g_pace_target) g_pace_resync++; t = pace_snap(now + gpu + g_refresh_ns * 3 / 2); g_pace_ideal = t; }
+    // A pair can occupy two FIFO slots. Schedule it with at most two refreshes
+    // of lead. The second frame follows the first without reserving GPU time again.
+    uint64_t lead = gpu + g_refresh_ns;
+    if (generated && lead > 2 * g_refresh_ns) lead = 2 * g_refresh_ns;
+    if (after_midpoint) lead = 0;
+    if (t < now + lead) {
+        if (g_pace_target) g_pace_resync++;
+        t = pace_snap(now + lead + g_refresh_ns / 2);
+        g_pace_ideal = t;
+    }
     g_pace_target = t;
     return t - g_refresh_ns / 2;
 }
-static void present_window(vkimg_t *im, const int crop[4], double period, uint64_t ticket) {   // period: the game's frame period (s); < 0 for a redraw (ticket 0)
+// The caller submits the real frame separately after a successful midpoint.
+// A redraw never feeds frame history.
+enum { PRESENT_REAL, PRESENT_CAPTURE, PRESENT_AFTER_MIDPOINT, PRESENT_HISTORY };
+enum present_result { PRESENT_FAILED, PRESENT_SUBMITTED, PRESENT_GENERATED, PRESENT_NO_HISTORY, PRESENT_SETUP_FAILED };
+static enum present_result present_window(vkimg_t *im, const int crop[4], double period, uint64_t ticket, int mode) {
+    if (mode == PRESENT_AFTER_MIDPOINT && !framegen_display_clock()) framegen_wait_followup(period);
     uint32_t k = g_pi++ % 8;
     vkWaitForFences(V.dev, 1, &g_pfence[k], 1, UINT64_MAX);
     VkFormat want = im->fmt == VK_FORMAT_R8G8B8A8_SRGB || im->fmt == VK_FORMAT_B8G8R8A8_SRGB || im->fmt == VK_FORMAT_A8B8G8R8_SRGB_PACK32 ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
-    if (want != g_want) { g_want = want; swap_destroy(); if (!swap_make()) return; }   // once, at the first present of the other kind
+    if (want != g_want) { g_want = want; swap_destroy(); if (!swap_make()) return 0; }
     uint32_t idx; VkResult r = vkAcquireNextImageKHR(V.dev, g_swap, UINT64_MAX, g_acq[k], VK_NULL_HANDLE, &idx);
-    if (r == VK_ERROR_OUT_OF_DATE_KHR) { swap_destroy(); if (!swap_make()) return; r = vkAcquireNextImageKHR(V.dev, g_swap, UINT64_MAX, g_acq[k], VK_NULL_HANDLE, &idx); }
-    if (r < 0) { VKRED_ONCE(90, "vkAcquireNextImageKHR: %d", r); return; }
+    if (r == VK_ERROR_OUT_OF_DATE_KHR) { swap_destroy(); if (!swap_make()) return 0; r = vkAcquireNextImageKHR(V.dev, g_swap, UINT64_MAX, g_acq[k], VK_NULL_HANDLE, &idx); }
+    if (r < 0) { vk_lsfg_forget(); VKRED_ONCE(90, "vkAcquireNextImageKHR: %d", r); return 0; }
+    int cx = crop ? crop[0] : 0, cy = crop ? crop[1] : 0, cw = crop && crop[2] ? crop[2] : (int)im->w, ch = crop && crop[3] ? crop[3] : (int)im->h;
+    VkOffset3D offsets[2] = {{cx, cy, 0}, {cx + cw, cy + ch, 1}};
+    if (vk_window_bottom_up()) { offsets[0].y = cy + ch; offsets[1].y = cy; }   // the window image is stored bottom-up (gfx_vk_exec.c)
+    int wants_history = mode == PRESENT_CAPTURE || mode == PRESENT_HISTORY;
+    int capture = wants_history && vk_lsfg_prepare((VkExtent2D){(uint32_t)cw, (uint32_t)ch}, offsets);
+    int generated = mode == PRESENT_CAPTURE && capture && vk_lsfg_has_history();
     vkResetFences(V.dev, 1, &g_pfence[k]);
     int turned = g_pre != VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;   // composed into g_rot.img, then copied turned into the swapchain image
     VkImage tgt = turned ? g_rot.img : g_simg[idx]; VkImageView tview = turned ? g_rot.view : g_sview[idx];
     VkCommandBuffer cb = g_pcb[k];
     VkCommandBufferBeginInfo bi = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, NULL, VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT}; vkBeginCommandBuffer(cb, &bi);
     vk_img_barrier_all(cb);   // after everything submitted before on this queue
-    barrier(cb, tgt, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-    VkClearColorValue black = {{0, 0, 0, 1}}; VkImageSubresourceRange rg = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    vkCmdClearColorImage(cb, tgt, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &rg);
-    int cx = crop ? crop[0] : 0, cy = crop ? crop[1] : 0, cw = crop && crop[2] ? crop[2] : (int)im->w, ch = crop && crop[3] ? crop[3] : (int)im->h;
+    if (im->layout == VK_IMAGE_LAYOUT_UNDEFINED) { barrier(cb, im->img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL); im->layout = VK_IMAGE_LAYOUT_GENERAL; }   // an imported frame buffer, first shown (gl_android.c)
+    VkImage source = im->img;
+    if (capture) {
+        VkImage midpoint = vk_lsfg_record(cb, source, generated);
+        if (generated) {
+            source = midpoint;
+            offsets[0] = (VkOffset3D){0, 0, 0};
+            offsets[1] = (VkOffset3D){cw, ch, 1};
+            period *= 0.5;
+            ticket = 0;   // only the original frame feeds the game's pacing statistics
+        }
+    }
     double s = fmin((double)g_sext.width / cw, (double)g_sext.height / ch); int dw = (int)(cw * s), dh = (int)(ch * s), dx = ((int)g_sext.width - dw) / 2, dy = ((int)g_sext.height - dh) / 2;
     vk_pic_set((float)dx / g_sext.width, (float)dy / g_sext.height, (float)dw / g_sext.width, (float)dh / g_sext.height);
-    VkImageBlit b = {{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {{cx, cy, 0}, {cx + cw, cy + ch, 1}}, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {{dx, dy, 0}, {dx + dw, dy + dh, 1}}};
-    if (vk_window_bottom_up()) { b.srcOffsets[0].y = cy + ch; b.srcOffsets[1].y = cy; }   // lower-left origin: the window image is stored bottom-up (gfx_vk_exec.c)
-    if (im->layout == VK_IMAGE_LAYOUT_UNDEFINED) { barrier(cb, im->img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL); im->layout = VK_IMAGE_LAYOUT_GENERAL; }   // an imported frame buffer, first shown (gl_android.c)
-    vkCmdBlitImage(cb, im->img, VK_IMAGE_LAYOUT_GENERAL, tgt, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &b, VK_FILTER_LINEAR);
+    barrier(cb, tgt, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    VkClearColorValue black = {{0, 0, 0, 1}};
+    VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    vkCmdClearColorImage(cb, tgt, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &range);
+    VkMemoryBarrier clear = {VK_STRUCTURE_TYPE_MEMORY_BARRIER, NULL, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_WRITE_BIT};
+    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &clear, 0, NULL, 0, NULL);
+    VkImageBlit b = {{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {offsets[0], offsets[1]}, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {{dx, dy, 0}, {dx + dw, dy + dh, 1}}};
+    vkCmdBlitImage(cb, source, VK_IMAGE_LAYOUT_GENERAL, tgt, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &b, VK_FILTER_LINEAR);
     VkImageLayout lay = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
     int external = dm_external_active();
     int ovm = external ? 0 : dm_overlay_visible(), menu = external ? -1 : dm_menu_state(), fps = dm_overlay_fps();
@@ -919,24 +1159,37 @@ static void present_window(vkimg_t *im, const int crop[4], double period, uint64
         barrier(cb, g_simg[idx], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
     } else barrier(cb, g_simg[idx], lay, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
     vkEndCommandBuffer(cb);
-    VkPipelineStageFlags ws = VK_PIPELINE_STAGE_TRANSFER_BIT;
-    VkSubmitInfo si = {VK_STRUCTURE_TYPE_SUBMIT_INFO, NULL, 1, &g_acq[k], &ws, 1, &cb, 1, &g_done_sem[k]};
-    extern pthread_mutex_t g_vk_queue_mu;
+    VkPipelineStageFlags ws = VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    VkSubmitInfo si = {VK_STRUCTURE_TYPE_SUBMIT_INFO, NULL, 1, &g_acq[k], &ws, 1, &cb, 1, &g_done_sem[idx]};
     pthread_mutex_lock(&g_vk_queue_mu);
     r = vkQueueSubmit(V.q, 1, &si, g_pfence[k]);
-    if (r) { pthread_mutex_unlock(&g_vk_queue_mu); VKRED_ONCE(91, "present submit failed (%d)", r); return; }
-    VkPresentInfoKHR pi = {VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, NULL, 1, &g_done_sem[k], 1, &g_swap, &idx, NULL};
-    VkPresentTimeGOOGLE ptm = {++g_pace_id, period >= 0 ? pace_desired(period) : 0};
+    if (r) { pthread_mutex_unlock(&g_vk_queue_mu); vk_lsfg_forget(); VKRED_ONCE(91, "present submit failed (%d)", r); return 0; }
+    if (capture) vk_lsfg_submitted();
+    VkPresentInfoKHR pi = {VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, NULL, 1, &g_done_sem[idx], 1, &g_swap, &idx, NULL};
+    VkPresentTimeGOOGLE ptm = {++g_pace_id, period >= 0 ? pace_desired(period, generated, mode == PRESENT_AFTER_MIDPOINT) : 0};
     VkPresentTimesInfoGOOGLE pti = {VK_STRUCTURE_TYPE_PRESENT_TIMES_INFO_GOOGLE, NULL, 1, &ptm};
     if (V.has_dtiming) pi.pNext = &pti;
     r = vkQueuePresentKHR(V.q, &pi);
-    if (V.has_dtiming && r >= 0) present_time_map(ptm.presentID, ticket);
+    if (V.has_dtiming && r >= 0) present_time_map(ptm.presentID, ticket, generated);
     pthread_mutex_unlock(&g_vk_queue_mu);
+    if (r >= 0) {
+        if (generated) ++g_generated_presented; else if (ticket) ++g_real_presented;
+        if (generated && !framegen_display_clock()) g_fg_cpu_present_ns = mono_ns();
+    }
+    if (r < 0) {
+        vk_lsfg_forget();
+        if (generated) { g_pace_target = 0; g_pace_ideal = 0; }
+    }
     if (r == VK_ERROR_OUT_OF_DATE_KHR) swap_destroy();
     else if (r == VK_SUBOPTIMAL_KHR && g_pre != VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR) {   // the device turned over (ROTATE_90 <-> ROTATE_270): a swapchain for the new turn
         VkSurfaceCapabilitiesKHR c; vkGetPhysicalDeviceSurfaceCapabilitiesKHR(V.pd, g_surf, &c);
         if ((c.currentTransform & (VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR | VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR)) != (VkSurfaceTransformFlagsKHR)g_pre) swap_destroy();
     }
+    if (r < 0) return PRESENT_FAILED;
+    if (generated) return PRESENT_GENERATED;
+    if (wants_history && !capture) return PRESENT_SETUP_FAILED;
+    if (mode == PRESENT_CAPTURE) return PRESENT_NO_HISTORY;
+    return PRESENT_SUBMITTED;
 }
 // headless frame shots
 static int shot_wanted(uint64_t n) {
@@ -969,12 +1222,155 @@ static void shot(vkimg_t *im, uint64_t n) {
     VKLOG("frame %llu written to %s (%ux%u)", (unsigned long long)n, path, w, h);
 }
 static pthread_mutex_t g_present_mu = PTHREAD_MUTEX_INITIALIZER;   // the swapchain against the window going away (vk_window_lost, on the main thread)
-void vk_window_lost(void) { pthread_mutex_lock(&g_present_mu); swap_destroy(); g_win = NULL; pthread_mutex_unlock(&g_present_mu); }
+void vk_window_lost(void) { pthread_mutex_lock(&g_present_mu); swap_destroy(); g_win = NULL; dm_perf_framegen_rate(0); pthread_mutex_unlock(&g_present_mu); }
+
+// Vote for a shorter display period immediately. Wait for a longer one to hold
+// for 60 frames to avoid switching the display mode on a transient slowdown.
+static void window_rate(double period, uint64_t ticket) {
+    static ANativeWindow *window;
+    static double rate, wanted;
+    static uint64_t since;
+    if (!g_win) return;
+    if (period != wanted) { wanted = period; since = ticket; }
+    if (g_win != window || (period != rate && (period < rate || ticket - since >= 60))) {
+        window = g_win;
+        rate = period;
+        dm_perf_window(window, 1.0 / period);
+    }
+}
+
+static void log_framegen_rate(uint64_t now, enum framegen_outcome outcome, uint64_t refresh_ns, uint64_t pair_ns) {
+    static int was_measured = -1;
+    static unsigned count[FG_OUTCOMES];
+    static uint64_t submitted0, late0, pair_total, pair_max;
+    int measured = framegen_display_clock();
+    if (measured != was_measured) { g_fg_sample_ns = 0; was_measured = measured; }
+    uint64_t real_now = measured ? g_real_displayed : g_real_presented;
+    uint64_t generated_now = measured ? g_generated_displayed : g_generated_presented;
+    if (g_fg_sample_ns) {
+        ++count[outcome];
+        if (outcome == FG_PAIR) {
+            pair_total += pair_ns;
+            if (pair_ns > pair_max) pair_max = pair_ns;
+        }
+        if (now - g_fg_sample_ns < 5000000000ull) return;
+        uint64_t real = real_now - g_fg_sample_real, generated = generated_now - g_fg_sample_generated;
+        double seconds = (now - g_fg_sample_ns) / 1e9;
+        VKLOG("frame generation: %.1f real and %.1f total fps %s (%llu generated in %.1fs, Lossless Scaling)",
+              real / seconds, (real + generated) / seconds, measured ? "on display" : "submitted (no display feedback)",
+              (unsigned long long)generated, seconds);
+        VKLOG("[fg] refresh %.2f Hz, input %.2f ms, pairs %u, generated submitted %llu, late presents %llu, pair wall avg/max %.2f/%.2f ms; "
+              "skipped refresh_limit=%u target_limit=%u queued=%u bunched=%u stall=%u warmup=%u history=%u no_refresh=%u mode_change=%u movie=%u held=%u pace_off=%u setup=%u present=%u",
+              refresh_ns ? 1e9 / refresh_ns : 0, g_fg_cadence.interval_ns / 1e6, count[FG_PAIR],
+              (unsigned long long)(g_generated_presented - submitted0), (unsigned long long)(g_pace_slip - late0),
+              count[FG_PAIR] ? pair_total / (1e6 * count[FG_PAIR]) : 0, pair_max / 1e6,
+              count[FG_REFRESH_LIMIT], count[FG_TARGET_LIMIT], count[FG_QUEUED], count[FG_BUNCHED], count[FG_STALL], count[FG_WARMUP], count[FG_NO_HISTORY],
+              count[FG_NO_REFRESH], count[FG_MODE_CHANGE], count[FG_MOVIE], count[FG_HELD], count[FG_PACE_OFF], count[FG_SETUP_FAILED], count[FG_PRESENT_FAILED]);
+        if (measured && g_real_latency.samples)
+            VKLOG("[fg] real display latency: ready-to-display avg/max %.2f/%.2f ms (%u samples)",
+                  g_real_latency.total_ns / (1e6 * g_real_latency.samples), g_real_latency.max_ns / 1e6, g_real_latency.samples);
+    }
+    g_fg_sample_ns = now;
+    g_fg_sample_real = real_now;
+    g_fg_sample_generated = generated_now;
+    submitted0 = g_generated_presented;
+    late0 = g_pace_slip;
+    pair_total = pair_max = 0;
+    memset(count, 0, sizeof count);
+    memset(&g_real_latency, 0, sizeof g_real_latency);
+}
+
+static void present_game_frame(vkimg_t *im, const int crop[4], double period, uint64_t ticket, uint64_t ready_ns, int queued) {
+    static int was_docked;
+    extern uint8_t *dm_fps_state;
+    int dm_opmode(void);
+    int docked = dm_opmode();
+    int movie = dm_fps_state && __atomic_load_n((uint32_t *)(dm_fps_state + 4), __ATOMIC_RELAXED);
+    if (vk_lsfg_poll(mono_ns())) g_fg_sample_ns = 0;
+    const char *pace = getenv("DM_VK_PACE"); g_pace_on = !(pace && !atoi(pace));
+    uint64_t refresh_ns = framegen_display_clock() ? g_refresh_ns : dm_external_active() ? 0 : dm_display_refresh_ns();
+    int enabled = dm_framegen_enabled(), goal = enabled ? dm_framegen_target() : 0;
+    int held = dm_game_held() || dm_menu_state() >= 0;
+    int wants_fg = ready_ns && g_pace_on && enabled && !movie && !held;
+    int output_fps = wants_fg ? framegen_output_rate(goal, refresh_ns) : 0;
+    static int last_goal, last_output, setup_errors;
+    static uint64_t retry_at;
+    if (goal != last_goal || output_fps != last_output) {
+        VKLOG("[fg] display target %d fps, usable %d fps", goal, output_fps);
+        g_fg_cadence = (framegen_cadence){0};
+        last_goal = goal;
+        last_output = output_fps;
+        retry_at = 0;
+        setup_errors = 0;
+    }
+    int eligible = wants_fg && refresh_ns && ticket >= retry_at;
+    // A title with a patched frame step manages its own game clock in whole
+    // guest vsyncs. Pace the display and interpolate its frames as they arrive.
+    dm_perf_framegen_rate(eligible && !dm_fps_state ? output_fps : 0);
+    if (ready_ns) {
+        double vote = period > 0 ? period : 1.0 / 60;
+        static int game_rate = -1; static uint64_t game_rate_at;
+        if (game_rate < 0 || ticket - game_rate_at >= 60) { game_rate = dm_pacing_window_game_rate(); game_rate_at = ticket; }
+        if (game_rate) { int nvn_game_fps(void); int gf = nvn_game_fps(); if (gf > 0 && 1.0 / gf < vote) vote = 1.0 / gf; }
+        // A 60 fps game needs a 120 Hz mode for midpoints; voting only 60 Hz left interpolation permanently ineligible.
+        window_rate(wants_fg && goal ? 1.0 / goal : eligible ? fmin(vote * 0.5, 1.0 / 60) : vote, ticket);
+    }
+    uint64_t sample = eligible && docked == was_docked ? ready_ns : 0;
+    double step = framegen_frame_step(&g_fg_cadence, sample, refresh_ns, queued);
+    enum framegen_outcome outcome = g_fg_cadence.outcome;
+    if (!refresh_ns) outcome = FG_NO_REFRESH;
+    else if (!g_pace_on) outcome = FG_PACE_OFF;
+    else if (movie) outcome = FG_MOVIE;
+    else if (held) outcome = FG_HELD;
+    else if (docked != was_docked) outcome = FG_MODE_CHANGE;
+    else if (queued) outcome = FG_QUEUED;
+    was_docked = docked;
+    int mode = step ? PRESENT_CAPTURE : PRESENT_REAL;
+    if (step) {
+        int budget = framegen_pair_budget(&g_fg_cadence, output_fps);
+        if (budget <= 0) {
+            mode = budget == 0 ? PRESENT_HISTORY : PRESENT_REAL;
+            outcome = FG_TARGET_LIMIT;
+            step = 0;
+        }
+    }
+    if (mode == PRESENT_REAL) { vk_lsfg_forget(); g_fg_cpu_present_ns = 0; }
+
+    uint64_t start = step ? mono_ns() : 0;
+    // When draining a frame-generation backlog, submit the real frame at the
+    // first available FIFO refresh instead of reserving a later display slot.
+    if (queued && sample) period = 0;
+    enum present_result result = present_window(im, crop, step ? step * 2 : period, ticket, mode);
+    if (result == PRESENT_GENERATED) {
+        setup_errors = 0;
+        if (!swap_make() || present_window(im, crop, step, ticket, PRESENT_AFTER_MIDPOINT) == PRESENT_FAILED)
+            outcome = FG_PRESENT_FAILED;
+    } else if (result == PRESENT_SETUP_FAILED) {
+        outcome = FG_SETUP_FAILED;
+        if (!dm_framegen_enabled()) dm_perf_framegen_rate(0);
+        if (++setup_errors >= 8 && output_fps) {
+            retry_at = ticket + 120;
+            setup_errors = 0;
+            dm_perf_framegen_rate(0);
+        }
+    } else if (step) {
+        setup_errors = 0;
+        outcome = result == PRESENT_NO_HISTORY ? FG_NO_HISTORY : FG_PRESENT_FAILED;
+    } else if (mode == PRESENT_HISTORY) {
+        setup_errors = 0;
+    }
+    if (enabled) {
+        uint64_t now = mono_ns();
+        log_framegen_rate(now, outcome, refresh_ns, start ? now - start : 0);
+    }
+    else g_fg_sample_ns = 0;
+}
+
 // The present thread: mtl_present only queues the frame and returns (as on Apple), so the game thread never waits in vkAcquireNextImageKHR or on the
 // swapchain's fences (a FIFO swapchain blocks there until a vsync); the window texture is not drawn again before its blit, because NVN's acquire waits for
 // its ticket (mtl_present_wait), and the blit's submission comes after the frame's own on the one queue. DM_VK_SYNC_PRESENT=1 presents on the game thread.
 #define PQ_N 4
-static struct { vkimg_t *im; int crop[4], has_crop; uint64_t n; double period; } g_pq[PQ_N];
+static struct { vkimg_t *im; int crop[4], has_crop; uint64_t n, ready_ns; double period; } g_pq[PQ_N];
 static uint64_t g_pq_head, g_pq_tail, g_pq_done;   // queued [tail, head), presents up to ticket g_pq_done are blitted
 static pthread_mutex_t g_pq_mu = PTHREAD_MUTEX_INITIALIZER; static pthread_cond_t g_pq_cv = PTHREAD_COND_INITIALIZER;
 // While the game is held (the pause menu) no frame comes: dm_overlay_redraw presents the last one again with what the overlay now shows.
@@ -985,61 +1381,79 @@ static void *present_thread(void *arg) {
     typeof(g_pq[0]) last = {0};
     for (;;) {
         pthread_mutex_lock(&g_pq_mu);
-        while (g_pq_tail == g_pq_head && !atomic_load(&g_redraw)) pthread_cond_wait(&g_pq_cv, &g_pq_mu);
-        atomic_store(&g_redraw, 0);
+        while (g_pq_tail == g_pq_head && !atomic_load(&g_redraw)) {
+            if (dm_menu_state() < 0) { pthread_cond_wait(&g_pq_cv, &g_pq_mu); continue; }
+            struct timespec deadline;
+            clock_gettime(CLOCK_REALTIME, &deadline);
+            ++deadline.tv_sec;
+            if (pthread_cond_timedwait(&g_pq_cv, &g_pq_mu, &deadline) == ETIMEDOUT) break;
+        }
+        int redraw = atomic_exchange(&g_redraw, 0);
         if (g_pq_tail == g_pq_head) {   // a redraw, no new frame
             pthread_mutex_unlock(&g_pq_mu);
-            if (last.im) { pthread_mutex_lock(&g_present_mu); if (swap_make()) present_window(last.im, last.has_crop ? last.crop : NULL, -1, 0); pthread_mutex_unlock(&g_present_mu); }
+            if (last.im) {
+                pthread_mutex_lock(&g_present_mu);
+                redraw |= vk_lsfg_poll(mono_ns());
+                if (dm_game_held() || !dm_framegen_enabled()) {
+                    g_fg_cadence = (framegen_cadence){0};
+                    g_fg_sample_ns = 0;
+                    vk_lsfg_forget();
+                    dm_perf_framegen_rate(0);
+                }
+                if (redraw && swap_make()) present_window(last.im, last.has_crop ? last.crop : NULL, -1, 0, PRESENT_REAL);
+                pthread_mutex_unlock(&g_present_mu);
+            }
             continue;
         }
         typeof(g_pq[0]) e = g_pq[g_pq_tail % PQ_N];
+        int queued = g_pq_head - g_pq_tail > 1;
         pthread_mutex_unlock(&g_pq_mu);
-        if (e.im) { last = e; pthread_mutex_lock(&g_present_mu); if (swap_make()) present_window(e.im, e.has_crop ? e.crop : NULL, e.period, e.n); pthread_mutex_unlock(&g_present_mu); }
+        pthread_mutex_lock(&g_present_mu);
+        if (e.im && swap_make()) {
+            last = e;
+            present_game_frame(e.im, e.has_crop ? e.crop : NULL, e.period, e.n, e.ready_ns, queued);
+        } else { vk_lsfg_forget(); dm_perf_framegen_rate(0); }
+        pthread_mutex_unlock(&g_present_mu);
         pthread_mutex_lock(&g_pq_mu); g_pq_tail++; g_pq_done = e.n; pthread_cond_broadcast(&g_pq_cv); pthread_mutex_unlock(&g_pq_mu);
     }
     return NULL;
 }
 static void present_thread_start(void) { pthread_t t; pthread_create(&t, NULL, present_thread, NULL); pthread_detach(t); }
-static uint64_t present_enqueue(vkimg_t *im, const int crop[4], uint64_t n, double period) {   // im NULL: nothing to show, the ticket still completes in order
+static uint64_t present_enqueue(vkimg_t *im, const int crop[4], uint64_t n, double period, uint64_t ready_ns) {   // im NULL: still complete its ticket in order
     static int sync = -1; static pthread_once_t once = PTHREAD_ONCE_INIT;
     if (sync < 0) sync = getenv("DM_VK_SYNC_PRESENT") != NULL;
     if (sync || !dm_front_window()) {   // headless: nothing to show; or presenting on this thread
-        if (sync && im) { pthread_mutex_lock(&g_present_mu); if (swap_make()) present_window(im, crop, period, n); pthread_mutex_unlock(&g_present_mu); }
+        if (sync && im) {
+            pthread_mutex_lock(&g_present_mu);
+            if (swap_make()) {
+                if (ready_ns) window_rate(period > 0 ? period : 1.0 / 60, n);
+                present_window(im, crop, period, n, PRESENT_REAL);
+            }
+            pthread_mutex_unlock(&g_present_mu);
+        }
         pthread_mutex_lock(&g_pq_mu); if (g_pq_tail == g_pq_head) g_pq_done = n; pthread_mutex_unlock(&g_pq_mu);   // done at once (after any queued ones)
         return n;
     }
     pthread_once(&once, present_thread_start);
     pthread_mutex_lock(&g_pq_mu);
     while (g_pq_head - g_pq_tail >= PQ_N) pthread_cond_wait(&g_pq_cv, &g_pq_mu);   // never more than PQ_N frames behind
-    typeof(g_pq[0]) *e = &g_pq[g_pq_head % PQ_N]; e->im = im; e->n = n; e->period = period; e->has_crop = crop != NULL; if (crop) memcpy(e->crop, crop, sizeof e->crop);
+    typeof(g_pq[0]) *e = &g_pq[g_pq_head % PQ_N]; e->im = im; e->n = n; e->period = period; e->ready_ns = ready_ns; e->has_crop = crop != NULL; if (crop) memcpy(e->crop, crop, sizeof e->crop);
     g_pq_head++; pthread_cond_broadcast(&g_pq_cv);
     pthread_mutex_unlock(&g_pq_mu);
     return n;
 }
-void dm_perf_frame(double period); void dm_perf_window(ANativeWindow *w, double fps); void dm_perf_frame_cost(int64_t replay_ns, int64_t gpu_ns);   // perf_android.c
+void dm_perf_frame(double period); void dm_perf_frame_cost(int64_t replay_ns, int64_t gpu_ns);   // perf_android.c
 uint64_t mtl_present(const tex_t *t, double period, const int crop[4]) {
     vk_init();
     { uint64_t vk_replay_ns(void); double vk_gpu_ms_recent(void);   // what else the frame costs: its replay and its GPU time
       static uint64_t last_exec; uint64_t ex = vk_replay_ns(), rp = ex - last_exec; last_exec = ex; double g = vk_gpu_ms_recent(); int64_t gn = g > 0 ? (int64_t)(g * 1e6) : 0;
       dm_perf_frame_cost((int64_t)rp, gn); }
     dm_perf_frame(period);   // paced to the game's frame period, and its work time reported to ADPF
-    // A longer period goes to the window only once it has held for 60 presents; a shorter one at once. Super Mario Bros. Wonder's own controller (main+0xcfd24) asks
-    // for interval 2 for a frame or a few and then 1 again: each ask was a vote (176 in 3 minutes of its first level on the Y700, 27-60 a run in issue #64's log of an
-    // Adreno 750 phone with a 60 Hz display), and where the display changes its mode for a vote, the switch itself lengthens the next frames (issue #45: 30-40 fps)
-    // DM_VK_WINDOW_GAME_RATE=1 (live, read every 60 presents): the window asks for the game's own rate (nvn_game_fps), not the period a frame-step hold or the adaptive
-    // rate lengthened. Held at 2 vsyncs for 60 presents, Breath of the Wild's window asked for 30 fps and a Galaxy S25 Ultra's display went to 30 Hz (refresh 33.3 ms);
-    // every trial back to 60 then ran its first frames on that 30 Hz display, showed them late and failed within 5 presents, at 1-2 ms of GPU work a frame on its
-    // title screen, and the game stayed at 30 fps for the run (the display at 30 Hz in each of four 30 fps runs, never in the runs that held 60)
-    static int game_rate = -1; static uint64_t game_rate_at; double wperiod = period;
-    if (game_rate < 0 || g_presents - game_rate_at >= 60) { game_rate = dm_pacing_window_game_rate(); game_rate_at = g_presents; }
-    if (game_rate) { int nvn_game_fps(void); int gf = nvn_game_fps(); if (gf > 0 && 1.0 / gf < wperiod) wperiod = 1.0 / gf; }
-    static ANativeWindow *rate_win; static double rate_period, want_period; static uint64_t want_since;
-    if (wperiod != want_period) { want_period = wperiod; want_since = g_presents; }
-    if (g_win && (g_win != rate_win || (wperiod != rate_period && (wperiod < rate_period || g_presents - want_since >= 60)))) { rate_win = g_win; rate_period = wperiod; dm_perf_window(g_win, wperiod > 0 ? 1.0 / wperiod : 60); }
     uint64_t n = ++g_presents;
+    uint64_t ready_ns = mono_ns();
     // without display times (no VK_GOOGLE_display_timing, no window, or none came back) the hand-over time stands in, as before: the governor's late check needs readings
-    { int disp = V.has_dtiming && dm_front_window() && (n <= 240 || g_pres_recorded); struct timespec ts; if (!disp) clock_gettime(CLOCK_MONOTONIC, &ts);
-      present_time_begin(n, disp ? 0 : (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec); }
+    { int disp = V.has_dtiming && dm_front_window() && (n <= 240 || g_pres_recorded);
+      present_time_begin(n, disp ? 0 : ready_ns, ready_ns); }
     vkimg_t *im = vk_tex(t);
     static uint64_t no_img, undrawn, shown;
     if (n == 600) { void crash_handlers_check(const char *when); crash_handlers_check("after 600 presents"); }
@@ -1060,8 +1474,8 @@ uint64_t mtl_present(const tex_t *t, double period, const int crop[4]) {
         void vk_pass_report(void); vk_pass_report();
         pe = g_vkst.ns_exec; pd = g_vkst.ns_desc; pp = g_vkst.ns_pipe; ps = g_ns_submit; pb = g_ubd_bytes; pdr = g_vkst.draws; pg = g_gpu_ns; pkn = g_pkg_n; pkb = g_pkg_bytes; pkt = g_pkg_ns; psb = g_ns_set_build; psh = g_ns_set_hash; psn = g_ns_set_new; psm = g_set_memo;
     }
-    if (!im) { no_img++; return present_enqueue(NULL, NULL, n, period); }
-    if (im->layout != VK_IMAGE_LAYOUT_GENERAL) { undrawn++; return present_enqueue(NULL, NULL, n, period); }   // never drawn into: nothing to show yet
+    if (!im) { no_img++; return present_enqueue(NULL, NULL, n, period, ready_ns); }
+    if (im->layout != VK_IMAGE_LAYOUT_GENERAL) { undrawn++; return present_enqueue(NULL, NULL, n, period, ready_ns); }   // never drawn into: nothing to show yet
     shown++; atomic_fetch_add(&g_fps_frames, 1);
     if (shot_wanted(n)) shot(im, n);
     { void vk_pass_dump_poll(uint64_t done); uint64_t vk_fence_done(void); vk_pass_dump_poll(vk_fence_done()); void vk_pass_frame(void); vk_pass_frame(); void vk_tex_sweep(void); vk_tex_sweep(); }
@@ -1077,7 +1491,7 @@ uint64_t mtl_present(const tex_t *t, double period, const int crop[4]) {
         void dm_vi_layer_crop(int c[4]); dm_vi_layer_crop(vcrop);
         if (vcrop[2] > 0 && vcrop[3] > 0 && vcrop[0] + vcrop[2] <= (int)im->w && vcrop[1] + vcrop[3] <= (int)im->h) crop = vcrop;
     }
-    return present_enqueue(im, crop, n, period);
+    return present_enqueue(im, crop, n, period, ready_ns);
 }
 // OpenGL ES games (gl_android.c): their frames are AHardwareBuffers the device's GL driver drew, imported as images and shown as an NVN window texture is
 vkimg_t *vk_image_from_ahb(AHardwareBuffer *ahb, uint32_t w, uint32_t h) {
@@ -1104,10 +1518,10 @@ uint64_t vk_present_vkimg(vkimg_t *im, double period) {
     dm_perf_frame(period);
     uint64_t n = ++g_presents;
     { int disp = V.has_dtiming && dm_front_window() && (n <= 240 || g_pres_recorded); struct timespec ts; if (!disp) clock_gettime(CLOCK_MONOTONIC, &ts);
-      present_time_begin(n, disp ? 0 : (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec); }
+      present_time_begin(n, disp ? 0 : (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec, 0); }
     atomic_fetch_add(&g_fps_frames, 1);
     if (shot_wanted(n) && im->layout == VK_IMAGE_LAYOUT_GENERAL) shot(im, n);
-    return present_enqueue(im, NULL, n, period);
+    return present_enqueue(im, NULL, n, period, 0);
 }
 void mtl_present_wait(uint64_t tk) {   // NVN acquire: the window texture's last present has been blitted (the game may draw into it again)
     if (!tk) return;
