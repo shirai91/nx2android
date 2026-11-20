@@ -504,7 +504,10 @@ class Port:
         self.oodle_why = src['oodle_packs'][1] if src['oodle_packs'][0] and ('GFPAK' in src['oodle_packs'][1] or 'Trinity' in src['oodle_packs'][1]) else ''
         # Unreal paks (version 11) and IoStore containers: their shader code archives are decoded with the game's own Oodle on the device too (device_ue)
         self.ue_why = src['ue_decode'][1] if src['ue_decode'][0] else ''
-        why = self.oodle_why or self.ue_why
+        # Already decoded UE archives need no device: rebuilding an APK's keyboard or host must also work after the player disconnects adb.
+        ue_cached = self.ue_why and all((self.dirs[v] / 'ue_shaders/stamp').is_file() and
+                                      (self.dirs[v] / 'ue_shaders/stamp').read_text() == nsp.ue_stamp(self.dirs[v]) for v in self.versions)
+        why = self.oodle_why or ('' if ue_cached else self.ue_why)
         if why:
             if not self.tools.get('adb'):   # adb is optional for a port that does not install (toolchain.require): this one needs it
                 raise BuildError(f"{self.app_name}'s shaders are in Oodle-compressed archives ({why}): the port decodes them with the game's own decoder on the Android "
