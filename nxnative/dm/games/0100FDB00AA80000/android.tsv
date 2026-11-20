@@ -4,6 +4,6 @@
 # Tested 2026-11-16 on the iQOO 9 (V2171A, Snapdragon 8 Gen 1, Adreno 730, Android 15), 2400x1080, OpenGL ES 3.2: the port completes, the title logo and the menus draw,
 # dialogue text renders (the GL_ALPHA glyph atlas is converted to RGBA8), the opening AVC movie plays with its colour, the 3D scenes and the daily-puzzle list were played.
 # 30 fps, the engine's own fixed step; 0 audio underruns in the 2,000 callbacks the log counts.
-status	playable
-tested	v65536 iQOO 9 V2171A (Snapdragon 8 Gen 1, Adreno 730, Android 15)
-package	org.nx2a.t0100fdb00aa80000
+readme_image	docs/images/layton-mystery-journey-dx.jpg
+readme_tag	v0.4.0
+readme_note	update 1.1.0 · 30 fps (as on Switch) · OpenGL ES · tested on the iQOO 9 (Adreno 730)
