@@ -1,0 +1,8 @@
+# Build-keyed console variables from seedds/nxnative
+# 16f4889192dd9bc6363a77b5d8b9654fe65441a2 dm/host/hle_fpslock.c.
+# TAutoConsoleVariable stores the value pointer at object+0x10, followed through
+# ptr_off below; two consecutive values serve the game and render threads.
+# The default target stays at 30; 60 is opt-in and unmeasured on Android.
+# build	what	ptr_off	field	kind	copies	ptr2
+0d9649011312f62e93f6a5673a09d7e9	Unreal t.MaxFPS	0x76fef68	0x0	FPS_F32	2	0
+0d9649011312f62e93f6a5673a09d7e9	Unreal rhi.SyncInterval	0x75ad0e0	0x0	VSYNCS_I32	2	0

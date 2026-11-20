@@ -72,7 +72,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [x] NOBUNAGA'S AMBITION: Shinsei · `01007AB012872000`
 - [x] Octopath Traveler 0 (Chinese release) · `01001300232F4000`
 - [x] Octopath Traveler 0 · `01005270232F2000`
-- [ ] Octopath Traveler II · `0100A3501946E000` · upstream profile · 60 fps with 1.1.1
+- [x] Octopath Traveler II · `0100A3501946E000` · experimental profile for update 1.1.1; Android untested; [bring-up notes](../nxnative/dm/games/0100A3501946E000/README.md)
 - [x] OCTOPATH TRAVELER · `010057D006492000` · profile here
 - [x] ŌKAMI HD · `0100276009872000`
 - [x] Paper Mario: The Origami King · `0100A3900C3E2000`

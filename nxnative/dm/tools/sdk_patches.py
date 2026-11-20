@@ -1,6 +1,14 @@
 # The rewriter's patches of Nintendo SDK module builds (sdk), which several games can ship: dm/tools/patch_nso.py applies those of a module's NSO build ID, whatever the game.
 # A patch of a game's own module (main) goes in its profile's patches.py (dm/games/<id>/patches.py). CUTS as described in patch_nso.py ("Registered patches")
 CUTS = {
+  # SDK 12.3.2 (OCTOPATH TRAVELER II 1.1.1): shrink the AddressRegionManager node area
+  # to 62 MB so the profile's capped 2 GB Unreal region fits in the alias region.
+  # Reference: seedds/nxnative 16f4889192dd9bc6363a77b5d8b9654fe65441a2,
+  # dm/tools/sdk_patches.py; constructor at sdk+0x346180. Not yet run on Android.
+  '5bcf525f24eb28658a8d67ac27800d9b': [
+    (0x346190, '08fca752', '087ca052', 'AddressRegionManager constructor: node area limit mov w8,#0x3fe00000 -> mov w8,#0x3e00000'),
+    (0x34622c, '09fca752', '097ca052', 'AddressRegionManager constructor: occupied node area mov w9,#0x3fe00000 -> mov w9,#0x3e00000'),
+  ],
   # Fire Emblem Engage 2.0.0 (v327680) sdk: AddressRegionManager node area 0x3fe00000 (about 1 GB) → 0x3e00000 (62 MB).
   # The constructor (sdk+0x346420) carves the node area out of the start of the alias region (a unit heap of 0x30-byte nodes, mapped only as used) before AllocateAddressRegion hands out regions.
   # The hardware alias region is 64 GB, so the 1 GB does not matter there; the host's alias region is only 5.375 GB (iOS caps a single reservation at 6 GB), and after StandardAllocator's 3.14 GB block (1 GB aligned)
