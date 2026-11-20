@@ -378,9 +378,9 @@ static int64_t mono_ns(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC
 // A system input device can report itself as an active controller (issues #22, #210). The saved choice must still work, and the menu must stay reachable.
 int dm_overlay_visible(void) { return atomic_load(&g_set_overlay) && atomic_load(&g_overlay) ? 1 : 2; }
 int dm_overlay_layout(void) {   // the phone's layout in a window at least OV_PHONE_ASPECT wide for its height (overlay_layout.h)
-    static int last_w = -1, last_h = -1, phone;
-    ANativeWindow *w = phone_window(); int ww = w ? ANativeWindow_getWidth(w) : 0, wh = w ? ANativeWindow_getHeight(w) : 0;
-    if (ww != last_w || wh != last_h) { last_w = ww; last_h = wh; phone = ov_layout_for_size(ww, wh);
+    static int last_w = -1, last_h = -1, last_x = -1, phone;
+    ANativeWindow *w = phone_window(); int ww = w ? ANativeWindow_getWidth(w) : 0, wh = w ? ANativeWindow_getHeight(w) : 0, ext = dm_external_active();
+    if (ww != last_w || wh != last_h || ext != last_x) { last_w = ww; last_h = wh; last_x = ext; phone = ov_layout_for_size(ww, wh);   // (an external display takes the band away: ov_band)
         if (wh > 0) LOG("[overlay] window %dx%d: the %s layout", ww, wh, phone ? "phone" : "tablet"); }
     return phone;
 }
@@ -408,9 +408,9 @@ int64_t dm_overlay_pressed(int ctl, uint64_t bit) {
 }
 static int g_dpi;   // the display's density (AConfiguration), 0 = unknown
 float dm_overlay_scale(void) {
-    static int last_w = -1, last_h = -1; static float s = 1;
-    ANativeWindow *w = phone_window(); int ww = w ? ANativeWindow_getWidth(w) : 0, h = w ? ANativeWindow_getHeight(w) : 0;
-    if (h != last_h || ww != last_w) { last_w = ww; last_h = h; s = 1;   // (the width picks the layout, whose buttons are sized for its form factor)
+    static int last_w = -1, last_h = -1, last_x = -1; static float s = 1;
+    ANativeWindow *w = phone_window(); int ww = w ? ANativeWindow_getWidth(w) : 0, h = w ? ANativeWindow_getHeight(w) : 0, ext = dm_external_active();
+    if (h != last_h || ww != last_w || ext != last_x) { last_w = ww; last_h = h; last_x = ext; s = 1;   // (the width picks the layout, whose buttons are sized for its form factor)
         { float y0, bh; if (ov_band((float)ww, (float)h, &y0, &bh)) h = (int)bh; }   // (the band under the picture is the gamepad's window: overlay_layout.h ov_band)
         float face = 0.1f; const ov_ctl *L = OV_CTLS; for (int i = 0; i < OV_N; i++) if (L[i].kind == OV_BUTTON && L[i].btn == DM_BTN_A) face = L[i].w;   // A's width, in window heights
         if (h > 0 && g_dpi > 0 && g_dpi < 0xfffe) { float mm = face * (float)h / (float)g_dpi * 25.4f; s = OV_MIN_MM / mm; if (s < 1) s = 1; if (s > 1.45f) s = 1.45f; s = ov_fit_scale(OV_CTLS, (float)ww, (float)h, s); }   // (no further than the controls fit the window)

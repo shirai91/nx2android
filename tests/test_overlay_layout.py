@@ -23,6 +23,7 @@ class OverlayLayout(unittest.TestCase):
 static int custom_faces, custom_a, custom_x, hidden_ctl = -1, audio_available;
 int dm_menu_audio_available(void) { return audio_available; }
 float dm_overlay_scale(void) { return 1; }
+int dm_external_active(void) { return 0; }
 int dm_overlay_off(int l, int c) { return l == 1 && c == hidden_ctl; }
 int dm_overlay_custom(int layout, int ctl, float *x, float *y, float *s) {
     *s = 1;
@@ -146,6 +147,7 @@ int main(void) {
 #include "overlay_layout.h"
 static float g_s = 1; static int g_cust = -1; static float g_cx, g_cy;   /* g_cust: the control with a player's position (g_cx, g_cy) */
 float dm_overlay_scale(void) { return g_s; }
+int dm_external_active(void) { return 0; }
 int dm_overlay_custom(int layout, int ctl, float *x, float *y, float *s) { (void)layout; *s = 1; if (ctl != g_cust) return 0; *x = g_cx; *y = g_cy; return 1; }
 static float gap(const ov_ctl *a, const float p[4], const ov_ctl *b, const float q[4]) {   // < 0: they overlap (round ones as circles, the rest as boxes)
     float dx = fabsf(p[0] - q[0]), dy = fabsf(p[1] - q[1]);
@@ -203,7 +205,7 @@ int main(void) {
         """A near-square window (an unfolded Galaxy Z Fold, 2184x1968 or 1968x2184) puts the picture across its top and lays the gamepad out in the band
         under it with DM_OVERLAY_SPLIT=1 (overlay_layout.h ov_band): every control, grown as far as it fits there, stays inside the band and apart,
         and a control dragged in the editor or the menu button lands under the finger (ov_drag_place). A phone's or a tablet's window keeps the
-        whole window, and without DM_OVERLAY_SPLIT=1 (the default) or with =0 there is no band"""
+        whole window, and without DM_OVERLAY_SPLIT=1 (the default) or with =0, or with the picture on an external display, there is no band"""
         cc = shutil.which('cc') or shutil.which('clang')
         if not cc:
             self.skipTest('a C compiler is needed for the layout geometry check')
@@ -214,6 +216,8 @@ int main(void) {
 #include "overlay_layout.h"
 static float g_s = 1; static int g_cust = -1; static float g_cx, g_cy;   /* g_cust: the control with a player's position (g_cx, g_cy) */
 float dm_overlay_scale(void) { return g_s; }
+static int g_ext;   /* the picture on an external display */
+int dm_external_active(void) { return g_ext; }
 int dm_overlay_custom(int layout, int ctl, float *x, float *y, float *s) { (void)layout; *s = 1; if (ctl != g_cust) return 0; *x = g_cx; *y = g_cy; return 1; }
 static float gap(const ov_ctl *a, const float p[4], const ov_ctl *b, const float q[4]) {
     float dx = fabsf(p[0] - q[0]), dy = fabsf(p[1] - q[1]);
@@ -250,6 +254,8 @@ int main(int argc, char **argv) {
             }
         }
     }
+    /* with the picture on an external display the phone's window is all gamepad (ExternalActivity draws it from the same layout): no band, as on main */
+    g_ext = 1; assert(!ov_band(2184, 1968, &y0, &bh) && ov_layout_for_size(2184, 1968) == 0);
     return 0;
 }
 """

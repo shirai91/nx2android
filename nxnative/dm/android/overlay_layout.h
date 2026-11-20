@@ -20,8 +20,9 @@ static const ov_ctl OV_LAYOUTS[2][DM_AOV_N] = {{DM_AOV_TABLET}, {DM_AOV_PHONE}};
 // player's own positions (the layout editor, the menu button's drag) are kept against the band (ov_drag_place). A band under a quarter of the height is not used
 #define OV_SPLIT_ASPECT 1.5f
 static inline int ov_split_on(void) { static int on = -1; if (on < 0) { const char *e = getenv("DM_OVERLAY_SPLIT"); on = e && atoi(e) > 0; } return on; }
+int dm_external_active(void);   // (front_android.c) the picture is on an external display: the phone's window is all gamepad, with no picture to leave room for
 static inline int ov_band(float W, float H, float *y0, float *bh) {   // the band's top and height, for a W x H window; 0: no band
-    if (!ov_split_on() || W <= 0 || H <= 0 || W / H >= OV_SPLIT_ASPECT) return 0;
+    if (!ov_split_on() || dm_external_active() || W <= 0 || H <= 0 || W / H >= OV_SPLIT_ASPECT) return 0;
     float ph = W * 9.0f / 16.0f; if (H - ph < 0.25f * H) return 0;   // (a 16:9 picture: every Switch game's)
     *y0 = ph; *bh = H - ph; return 1;
 }

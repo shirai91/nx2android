@@ -159,6 +159,7 @@ DM_OODLE_JOB	str		debug	?	hle_oodle.c
 DM_OODLE_JOB_BNSH	bool		debug	?	hle_oodle.c	
 DM_OODLE_SERVE	str		debug	?	hle_oodle.c	
 DM_OPMODE	int		app	start	hle_oe.c	the operation mode at launch: 0 handheld, 1 docked. Default: the profile (op_mode); the pause menu overrides it
+DM_OVERLAY_SPLIT	bool	0	debug	start	overlay_layout.h	1 = on a window narrower than 3:2 (an unfolded Galaxy Z Fold, a 4:3 tablet, a split-screen window) the picture across the top and the on-screen gamepad in the band under it; not while an external display shows the picture
 DM_PAD_LABEL	bool		debug	start	front_android.c	a physical controller's face buttons go to the game by their label (an Xbox controller's A is the game's A) instead of by their position (the Switch's: the bottom button is B, the right one A). The game's prompts name the button (A to confirm, B to go back), which an Xbox controller's labels match a
 DM_PAD_MERGE	bool		debug	?	front_android.c front_mac.m	
 DM_PAD_XBOX	bool		debug	start	front_android.c	a physical controller's face buttons go to the game by their label (an Xbox controller's A is the game's A) instead of by their position (the Switch's: the bottom button is B, the right one A). The game's prompts name the button (A to confirm, B to go back), which an Xbox controller's labels match a
