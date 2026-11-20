@@ -475,6 +475,18 @@ def version_of(path):
     return int(m.group(1)) if m else None
 
 
+def merged_version(base, name):
+    """The version number nx_extract --merged extracts from a merged dump: 0 for the base game alone, the file's [v] tag for a tagged one, and None for an untagged one — nsp_versions takes
+    an untagged merged dump for the newest update the profile registers on its name alone, so --merged runs without --version (it picks the newest patch the dump holds) and the build-ID
+    check decides whether the dump held that patch, as with a separate loose update (a retail card dump with an embedded patch may hold another one)"""
+    return 0 if name == 'v0' else version_of(base)
+
+
+def merged_args(nx, keys, base, out, ver):
+    """The arguments of an nx_extract --merged run: ver = the version number to extract (see merged_version); None means no --version, the newest patch in the dump"""
+    return [nx, keys, '--merged', base, out] + (['--version', str(ver)] if ver is not None else [])
+
+
 def scan_nsps(nsp_dir, exts=('nsp', 'xci'), keys=None, only=None):
     """Group by game: {application title ID: {'base': path, 'updates': [(version, path)], 'dlc': [(title ID, version, path)]}}. exts: the kinds of dump to take (the Android porter adds nsz, xcz);
     keys: prod.keys, whose header_key reads the title IDs of a dump with neither a ticket nor a [title ID] tag from its NCA headers. One dump may hold several titles of the same game
@@ -577,7 +589,7 @@ def survey(nsp_dir, app, fam, keys, repo, py, env):
     PROG.stage('survey: RomFS manifest', poll=listed)
     say(f'extracting the code modules and a RomFS manifest (no game files written) → {ex}')
     if upd == fam['base']:   # a merged dump: nx_extract --merged picks the base's and the update's NCAs from its content metas; with no [v] tag, the newest patch
-        args = [nx, keys, '--merged', fam['base'], tmp] + (['--version', str(ups[-1][0])] if ups[-1][0] is not None else [])
+        args = merged_args(nx, keys, fam['base'], tmp, ups[-1][0])
     else:
         args = [nx, keys, fam['base'], upd or '-', tmp]
     run(args + ['--manifest'] + (['--allow-damaged'] if ALLOW_DAMAGED else []), logs / 'extract.log')
@@ -852,8 +864,9 @@ def extract(nx, keys, ex, name, base, upd, cmp_dir, logs, g):   # the build IDs 
         n, b = tree_size(tmp); return {'done': b, 'note': f'{n:,} files'}
     PROG.stage(f'extract {name}', poll=poll, unit='B', total=last[1] if last else base.stat().st_size + (upd.stat().st_size if upd and upd != base else 0), est=not last)   # a merged dump is the base and the update: count it once
     if upd == base:   # a merged dump: one file holds the base game and its update (scan_nsps filed both entries beside the base's). Its content metas (CNMT) pick the NCAs — an
-                      # update's program and control NCAs carry the base game's title ID, so the ordinary pick could not tell them apart — and the version number selects the patch (0: none)
-        run([nx, keys, '--merged', base, tmp, '--version', name[1:]] + ([cmp_dir] if cmp_dir else []) + (['--allow-damaged'] if ALLOW_DAMAGED else []), log)
+                      # update's program and control NCAs carry the base game's title ID, so the ordinary pick could not tell them apart — and the version number selects the patch
+                      # (0: none; an untagged dump: none passed, the newest patch in the dump, the build-ID check decides — merged_version)
+        run(merged_args(nx, keys, base, tmp, merged_version(base, name)) + ([cmp_dir] if cmp_dir else []) + (['--allow-damaged'] if ALLOW_DAMAGED else []), log)
     else:
         run([nx, keys, base, upd or '-', tmp] + ([cmp_dir] if cmp_dir else []) + (['--allow-damaged'] if ALLOW_DAMAGED else []), log)
     swap_in(tmp, dst)
