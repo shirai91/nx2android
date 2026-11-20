@@ -48,7 +48,11 @@ class Registry(unittest.TestCase):
                     self.assertTrue(isinstance(off, int) and isinstance(oid, int) and HEX.match(word) and len(word) == 8 and why, f'{p} {bid} {off:#x}')
             for bid, fn in getattr(m, 'FRAME_STEP', {}).items():
                 self.assertTrue(callable(fn), f'{p} {bid}')
-            self.assertFalse({k for k in vars(m) if k.isupper() and k not in ('CUTS', 'OBS', 'FRAME_STEP')} - set(dir(__import__('nso_asm'))),
+            if p == REPO / 'dm/tools/sdk_patches.py':
+                from nso_match import validate
+                self.assertEqual(set(m.MATCH_CUTS), {'sdk'})
+                for rule in m.MATCH_CUTS['sdk']: validate(rule)
+            self.assertFalse({k for k in vars(m) if k.isupper() and k not in ('CUTS', 'OBS', 'FRAME_STEP') + (('MATCH_CUTS',) if p == REPO / 'dm/tools/sdk_patches.py' else ())} - set(dir(__import__('nso_asm'))),
                              f'{p}: a table patch_nso.py does not read')
 
     def test_game_files_name_their_own_builds(self):
@@ -78,7 +82,7 @@ class RewriteKey(unittest.TestCase):
         got = nsp.patch_files(REPO, tmp, ['main', 'sdk'])
         self.assertEqual(got, [REPO / 'dm/tools/sdk_patches.py', REPO / 'dm/games' / gid / 'patches.py'])
         (tmp / 'main').write_bytes(b'NSO0' + bytes(0x3c) + bytes(16)); (tmp / 'sdk').write_bytes(b'NSO0' + bytes(0x3c) + bytes(16))
-        self.assertEqual(nsp.patch_files(REPO, tmp, ['main', 'sdk']), [])   # an unregistered build: no patch file counts
+        self.assertEqual(nsp.patch_files(REPO, tmp, ['main', 'sdk']), [REPO / 'dm/tools/sdk_patches.py'])   # an unregistered sdk build still uses the SDK-wide rules
         g = game.load(gid)
         self.assertNotIn(REPO / 'dm/games' / gid / 'patches.py', nsp.profile_files(g))   # only the rewrite step reads it
 
