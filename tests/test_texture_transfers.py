@@ -35,7 +35,9 @@ class TextureTransfers(unittest.TestCase):
         types = between(header, 'typedef struct { VkFormat vk;', 'const vkfmt_t *vk_fmt')
         types += between(header, 'typedef struct vkimg vkimg_t;', 'vkimg_t *vk_tex(')
         functions = between(exe, 'static VkImageSubresourceLayers sub_of(', 'static void copy_b2t(')
-        functions += between(exe, 'enum { CF_MIRROR_X', '// ---------------- the record walker')
+        functions += between(exe, 'enum { CF_MIRROR_X', '// ClearTexture has its own coordinates')
+        functions += csrc.function(exe, 'static VkClearColorValue clear_tex_value(')
+        functions += csrc.function(exe, 'static void clear_tex(const p_clear_tex *c)')
         cls.tmp = tempfile.TemporaryDirectory(prefix='nx2a-transfers-')
         cls.addClassCleanup(cls.tmp.cleanup)
         c = Path(cls.tmp.name) / 'test.c'
