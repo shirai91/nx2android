@@ -397,7 +397,8 @@ class Port:
                                ('files', [NXNATIVE / 'dm/tools/nx_extract' / f for f in ('Program.cs', 'nx_extract.csproj')]))
         dkf = self.work / 'aoc.dumps.key'
         dlc_reused = bool(zdlc) and (self.work / 'aoc').is_dir() and nsp.reused(dkf, dkey) is not None
-        m = self.unpack([p for v in self.versions if not fresh(v) for p in picks[v] if p] + ([] if dlc_reused else zdlc))
+        m = self.unpack([p for v in self.versions if not fresh(v) for p in picks[v] if p] + ([] if dlc_reused else zdlc)
+                        + ([self.fam['base']] if not dlc_reused and self.fam['base'] in zdlc else []))   # the merged dump is its DLC's source: extract_aoc compares its paths against the base's, so the base is decompressed too — even when every version's extraction is reused
         picks = {v: tuple(m.get(p, p) if p else None for p in bu) for v, bu in picks.items()}
         PROG.stage('build nx_extract')
         nx = nsp.build_nx_extract(NXNATIVE, self.work, self.logs, self.env)
@@ -431,7 +432,9 @@ class Port:
         if dlc_reused:
             PROG.stage('extract DLC'); self.aoc = self.work / 'aoc'; PROG.end(f'{len(self.fam["dlc"])} DLC, reused (inputs unchanged)')
         else:
-            self.aoc = nsp.extract_aoc(nx, o.keys, NXNATIVE, self.work, self.app, dict(self.fam, dlc=[(t, v, m.get(p, p)) for t, v, p in self.fam['dlc']]), self.logs)
+            self.aoc = nsp.extract_aoc(nx, o.keys, NXNATIVE, self.work, self.app,
+                                       dict(self.fam, base=m.get(self.fam['base'], self.fam['base']),   # with compressed DLC, extract_aoc tells a merged dump from a DLC NSP by comparing its paths against the base's: hand it the decompressed ones
+                                           dlc=[(t, v, m.get(p, p)) for t, v, p in self.fam['dlc']]), self.logs)
             if zdlc: dkf.write_text(f'{dkey}\n')
             else: nsp.rmtree(dkf)
         self.sysdata = self.extract_sysdata(nx)

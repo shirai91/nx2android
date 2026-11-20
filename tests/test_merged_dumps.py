@@ -119,6 +119,31 @@ class MergedDumps(unittest.TestCase):
             self.assertEqual(nsp.titles_of(path, bytes(32)), [self.BASE])
         say.assert_not_called()
 
+    def test_extract_aoc_of_a_decompressed_merged_dump_still_tells_the_dumps_apart(self):
+        # With NSZ / XCZ DLC, porter hands extract_aoc the decompressed DLC paths — but fam['base'] as scanned is still the compressed file: extract_aoc tells a merged dump from a
+        # separate DLC NSP by comparing its paths against the base's, so the base must go through the decompression mapping too. Without it --aoc runs without the DLC's title ID
+        # and every DLC index gets the first DLC's RomFS (the review of #452).
+        dlc = self.BASE + 0x1001
+        compressed = self.dump('Merged [v262144].nsz', [self.BASE, self.BASE + 0x800, dlc])
+        unpacked = self.root / 'Merged [v262144].nsp'; unpacked.write_bytes(b'PFS0')   # what dumps.decompress leaves
+        from porter.paths import NXNATIVE
+        m = {compressed: unpacked}
+        fam = {'base': compressed, 'updates': [(262144, compressed)], 'dlc': [(dlc, None, compressed)]}
+        def run_stub(cmd, log, **_):
+            Path(cmd[4]).parent.mkdir(parents=True, exist_ok=True)   # what nx_extract would create, so swap_in can rename it
+        with patch.object(nsp, 'run', side_effect=run_stub) as run, patch.object(nsp, 'PROG'), patch.object(nsp, 'say') as say:
+            nsp.extract_aoc('nx', 'keys', NXNATIVE, self.root, self.BASE, dict(fam, base=m.get(fam['base'], fam['base']), dlc=[(t, v, m.get(p, p)) for t, v, p in fam['dlc']]), self.root / 'logs')
+            args = run.call_args.args[0]
+            self.assertEqual([str(a) for a in args[:4]], ['nx', 'keys', '--aoc', str(unpacked)])
+            self.assertEqual(args[4], self.root / 'aoc.partial' / '1')   # index = the DLC's title ID − the base's − 0x1000
+            self.assertEqual(args[5], f'{dlc:x}')   # the mapped base: the DLC's title ID, hex — Aoc parses it with fromBase 16
+            self.assertIn('the merged dump holds it', say.call_args.args[0])
+            nsp.rmtree(self.root / 'aoc'); nsp.rmtree(self.root / 'aoc.key')   # not the reuse cache: the same DLC fingerprints map through to the same decompressed file
+            nsp.extract_aoc('nx', 'keys', NXNATIVE, self.root, self.BASE, dict(fam, dlc=[(t, v, m.get(p, p)) for t, v, p in fam['dlc']]), self.root / 'logs')
+            args = run.call_args.args[0]
+            self.assertEqual(len(args), 5)   # the old bug: the base's path is still the .nsz, so --aoc runs without the DLC's title ID
+            self.assertNotIn('the merged dump holds it', say.call_args.args[0])
+
     def test_inspect_json_reports_the_merged_dump(self):
         from porter import cli, config
         base = 0x010043B013C5C000   # a supported profile, with no game data
