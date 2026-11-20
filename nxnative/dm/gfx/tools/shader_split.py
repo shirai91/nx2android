@@ -1669,6 +1669,66 @@ def bnd2_shaders(d, label):
         if b'\x91\x68\x86\x19' in r: found += glslc_shaders(r, f'{label}/{rid:016x}.{typ:x}.{k}', need=False)
     return found
 
+NX_SHADER_STAGES = {b'NXVS': 'vs', b'NXFS': 'ps', b'NXCS': 'cs'}
+
+
+def nx_shader_sections(data):
+    """Read the sections named in a Media.Vision shader record."""
+    magic, size, _, control_at, control_span, code_at, code_len = struct.unpack_from('<4s6I', data)
+    stage = NX_SHADER_STAGES.get(magic)
+    if not stage or size != len(data) or not 28 <= control_at <= control_at + control_span <= code_at <= code_at + code_len <= size:
+        raise ValueError('invalid shader header')
+    if control_span < 0x708:
+        raise ValueError('truncated NVN control section')
+    control_len = struct.unpack_from('<I', data, control_at + 0x20)[0]
+    if not 0x760 <= control_len <= control_span:
+        raise ValueError('invalid NVN control section length')
+    ctl = data[control_at:control_at + control_len]
+    code = data[code_at:code_at + code_len]
+    if glslc_stage(ctl, code) != stage or check('NX shader', stage, ctl, code):
+        raise ValueError('inconsistent NVN shader sections')
+    return stage, ctl, code
+
+
+def embedded_nx_shaders(image, label):
+    """Read the NXVS, NXFS and NXCS records embedded in Digimon Story Time Stranger's main."""
+    found = []
+    for match in re.finditer(rb'NX(?:VS|FS|CS)', image):
+        at = match.start()
+        if at & 3 or image[at + 0x40:at + 0x44] != CTL_MAGIC:
+            continue
+        size, control_at = struct.unpack_from('<I4xI', image, at + 4)
+        if control_at != 0x40 or not 0x40 <= size <= len(image) - at:
+            continue
+        try:
+            stage, ctl, code = nx_shader_sections(image[at:at + size])
+        except (ValueError, struct.error):
+            continue
+        found.append((f'{label}#NX@{at:#x}', stage, ctl, code))
+    return found
+
+
+def mvgl_nvn_shaders(path, label):
+    """Wide MVGL's NXVS and NXFS members reference NVN control and code sections directly."""
+    import mvgl
+    with open(path, 'rb') as file:
+        layout = mvgl.wide_layout(file)
+        if layout is None: return None
+        found = []
+        try:
+            for name, data in mvgl.wide_shaders(file, layout):
+                try:
+                    stage, ctl, code = nx_shader_sections(data)
+                except (ValueError, struct.error) as e:
+                    raise ValueError(f'{name}: {e}') from e
+                variation, suffix = name.rsplit('_', 1) if '_' in name else (name, '')
+                where = f'{label}/{variation}#var' if (stage, suffix) in (('vs', 'vp'), ('ps', 'fp')) else f'{label}/{name}'
+                found.append((where, stage, ctl, code))
+        except (ValueError, struct.error) as e:
+            red(f'{label}: {e}')
+        return found
+
+
 def scan_file(args):
     """→ (relative path, {key: …}, pairs, extra); extra = this file's Unity type trees, or 'defer' (no type tree, scanned again in the second pass)"""
     path, rel = args[:2]
@@ -1676,6 +1736,9 @@ def scan_file(args):
     if ext in ('.data', '.patch', '.debug', '.nxpc') and os.path.exists(stem + '.dict'): return rel, {}, set(), {}   # read through its Next Level Games index (nlg_shaders)
     with open(path, 'rb') as f: head = f.read(16)
     found = []; trees = {}
+    # The original narrow MDB1 archives (and archives for another console) keep their existing readers.
+    if head[:4] == b'MDB1' and path.endswith('.nx64.mvgl') and (members := mvgl_nvn_shaders(path, '/' + rel)) is not None:
+        return rel, uniq_keys(members), var_pairs(members), trees
     if LOOSE_MONO and ext in LOOSE_MONO and not (len(args) > 2):   # a loose Monolith file (.wishp, .wismt, .wismda …): HCPS archives in the file itself or in its xbc1 streams (mono_shaders)
         mono_shaders(open(path, 'rb').read(), '/' + rel, found)
         return rel, uniq_keys(found), var_pairs(found), trees
@@ -1791,9 +1854,11 @@ def main():
             import unityfs
             try: common = unityfs.common_strings(img)
             except ValueError: common = None   # not a Unity game
-        found = []; scan_blob(img, 'main' + ('@' + tag if tag else ''), found)
-        found += glslc_shaders(img, 'main' + ('@' + tag if tag else ''), need=False)
-        found += raw_shaders(img, 'main' + ('@' + tag if tag else ''), {c for _, _, c, _ in found})
+        main_label = 'main' + ('@' + tag if tag else '')
+        found = []; scan_blob(img, main_label, found)
+        found += glslc_shaders(img, main_label, need=False)
+        found += embedded_nx_shaders(img, main_label)
+        found += raw_shaders(img, main_label, {c for _, _, c, _ in found})
         # GLSLC outputs the game compiles at run time, captured on the Mac (hle_glslc.c): <version dir>/glslc_capture, or DM_GLSLC_CAPTURE. A game needs them when main holds GLSL sources and
         # calls glslcCompile in a module it loads (Fire Emblem: Three Houses; profile_guess.py shader_sources). Captain Toad: Treasure Tracker imports it with agl's GLSL sources, but no module defines it
         cap = os.environ.get('DM_GLSLC_CAPTURE') or os.path.join(os.path.dirname(os.path.abspath(romfs)), 'glslc_capture')

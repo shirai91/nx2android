@@ -9,7 +9,7 @@
 # bit 7 stored), the length and the stored length in that width, then the stream: a 32-bit control word per 32 items (bit 0 first, 0 = literal byte, 1 = match),
 # refilled when only its sentinel bit is left; a match is 1 to 4 bytes by its low 3 bits (offset and length - 3, see MATCH). The last 8 bytes are always literals.
 # Usage: mvgl.py list <archive> [ext]   |   mvgl.py get <archive> <name>.<ext> <out file>
-import struct, sys
+import os, struct, sys
 
 MATCH = [(0xff, 2, 0, 0, 1), (0xffff, 2, 0, 0, 2), (0xffff, 6, 15, 2, 2), (0xffffff, 8, 31, 3, 3),
          (0xff, 2, 0, 0, 1), (0xffff, 2, 0, 0, 2), (0xffff, 6, 15, 2, 2), (0xffffffff, 11, 255, 3, 4)]   # mask, offset shift, length mask, length shift, size
@@ -64,6 +64,44 @@ class Archive:
         off, n, cn = self.files[name]
         self.f.seek(off); b = self.f.read(cn)
         return doboz(b) if cn < n else b
+
+
+def wide_layout(file):
+    """MDB1 with 32-bit indices and 64-bit offsets, distinguished by its table geometry."""
+    header = file.read(32)
+    if len(header) != 32: return None
+    magic, tree, names, entries, start, size = struct.unpack('<4sIIIQQ', header)
+    if (magic != b'MDB1' or tree != names or not 0 < entries <= tree
+            or start != 32 + 16 * tree + 128 * names + 16 * entries
+            or not start <= size == os.fstat(file.fileno()).st_size):
+        return None
+    return tree, names, entries, start, size
+
+
+def wide_shaders(file, layout):
+    """Read only the shad members of the wide MVGL tables, using raw LZ4 for compressed entries."""
+    import lz4.block
+    tree, names, entries, start, size = layout
+    file.seek(32)
+    nodes, labels, records = file.read(16 * tree), file.read(128 * names), file.read(16 * entries)
+    for i in range(tree):
+        at = 128 * i
+        if labels[at:at + 4] != b'shad': continue
+        idx = struct.unpack_from('<I', nodes, 16 * i + 4)[0]
+        if idx == 0xffffffff: continue
+        if idx >= entries: raise ValueError('shader entry index out of range')
+        name = labels[at + 4:at + 128].split(b'\0', 1)[0].decode('latin1').replace('\\', '/')
+        offset, length, stored = struct.unpack_from('<QII', records, 16 * idx)
+        if not 0 < stored <= length <= 32 * 1024 * 1024 or offset + stored > size - start:
+            raise ValueError(f'{name}: invalid shader member range')
+        file.seek(start + offset)
+        blob = file.read(stored)
+        if len(blob) != stored: raise ValueError(f'{name}: truncated shader member')
+        if stored < length:
+            try: blob = lz4.block.decompress(blob, uncompressed_size=length)
+            except lz4.block.LZ4BlockError as e: raise ValueError(f'{name}: invalid LZ4 data') from e
+            if len(blob) != length: raise ValueError(f'{name}: wrong decoded length')
+        yield name, blob
 
 
 if __name__ == '__main__':
