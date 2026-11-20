@@ -1,10 +1,11 @@
 """Execute the production pool-layout selection before Vulkan pipeline creation."""
 from pathlib import Path
 import subprocess,tempfile,unittest
+import csrc
 ROOT=Path(__file__).resolve().parents[1]
 class PoolTopology(unittest.TestCase):
     def test_geometry_topology_changes_without_rebinding(self):
-        source=(ROOT/'nxnative/dm/android/gfx_vk_exec.c').read_text()
+        source=csrc.unit(ROOT/'nxnative/dm/android/gfx_vk_exec.c')
         begin=source.index('    // layout and pipeline',source.index('static int prepare_draw('))
         chunk=source[begin:source.index('    VkDescriptorSetLayout dsl[5]',begin)]
         with tempfile.TemporaryDirectory(prefix='nx2a-pool-topology-') as tmp:

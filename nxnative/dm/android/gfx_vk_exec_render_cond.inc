@@ -52,5 +52,3 @@ static void exec_begin(int continuing) {   // internal segments retain the curre
 void vk_exec_reset(void) { exec_begin(0); }
 void vk_exec_resume(void) { exec_begin(1); }
 
-
-/* NX2A_SECTION gfx_vk_exec_passes.inc */
