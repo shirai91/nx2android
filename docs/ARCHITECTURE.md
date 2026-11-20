@@ -77,7 +77,8 @@ IDs. The exporter reflects pool bindings and the replay maps live registrations
 to typed descriptors, retaining registration history and typed dummy resources for
 unsupported views. Required indexing features and descriptor limits are checked
 before affected pipelines are created. Each draw resolves geometry topology from
-the bound original shader before selecting its resource layout. Pool layouts use
+the bound original shader for both split eligibility and resource-layout selection,
+including repeated draws after a topology variant was retained in replay state. Pool layouts use
 synchronous compilation and are excluded from learned prewarm records; PPE4
 invalidates older records after their pipeline keys change. Profiles with
 `android_dynamic_slots on` retain the existing 32-slot export path. Full pools do
