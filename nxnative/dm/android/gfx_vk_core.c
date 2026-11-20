@@ -25,6 +25,7 @@
 VK_FNS(VK_DEF) VK_DEV_FNS(VK_DEF)
 static PFN_vkGetInstanceProcAddr p_vkGetInstanceProcAddr;
 vkdev_t V;
+char g_vk_driver[32] = "VULKAN";   // (gfx_vk.h)
 #include "gfx_vk_pipeline_cache.inc"
 pthread_mutex_t g_vk_queue_mu = PTHREAD_MUTEX_INITIALIZER;   // VkQueue access is externally synchronized: submissions and presents
 
@@ -131,6 +132,20 @@ static int drv_has_gpu(PFN_vkGetInstanceProcAddr g) {
     return ok;
 }
 
+// The frame rate counter's driver row (g_vk_driver), from the driver the quirk table named (g_vk_gpu, vk_driver_kind): "TURNIP 27.0.0", "QCOM 512.676.53",
+// a short vendor name or "ID <vendor id>" with the version decoded as the GPU log line does
+static void driver_row(void) {
+    const char *kind = vk_driver_kind(); uint32_t d = V.props.driverVersion, vid = V.props.vendorID; unsigned mj, mn, pt;
+    if (!strcmp(kind, "turnip")) {   // driverInfo ("Mesa 27.0.0-devel (git-2648b2059f)") has the release; the numeric version (26.99.99) is Mesa's encoding of a development build
+        for (const char *c = g_vk_gpu.info; *c; c++)
+            if (*c >= '0' && *c <= '9' && (c == g_vk_gpu.info || c[-1] < '0' || c[-1] > '9') && sscanf(c, "%u.%u.%u", &mj, &mn, &pt) == 3) {
+                snprintf(g_vk_driver, sizeof g_vk_driver, "TURNIP %u.%u.%u", mj, mn, pt); return; }
+    }
+    const char *nm = !strcmp(kind, "turnip") ? "TURNIP" : vid == 0x5143 ? "QCOM" : vid == 0x13B5 ? "ARM" : vid == 0x1010 ? "IMG" : vid == 0x10DE ? "NVIDIA" : vid == 0x1002 ? "AMD" : vid == 0x8086 ? "INTEL" : NULL;
+    if (nm) snprintf(g_vk_driver, sizeof g_vk_driver, "%s %u.%u.%u", nm, d >> 22, d >> 12 & 0x3ff, d & 0xfff);
+    else snprintf(g_vk_driver, sizeof g_vk_driver, "ID %04X %u.%u.%u", vid & 0xffff, d >> 22, d >> 12 & 0x3ff, d & 0xfff);
+}
+
 void vk_init(void) {
     static int done; if (done) return; done = 1;
     // DM_VK_DRIVER=<library>: a Vulkan driver the APK carries (Mesa's Turnip for Adreno; porter --vulkan-driver), loaded through libadrenotools (BSD-2-Clause), which the
@@ -184,6 +199,7 @@ void vk_init(void) {
       VKLOG("GPU %s (vendor %#x, device %#x), Vulkan %u.%u.%u, driver %u.%u.%u (%#x)", V.props.deviceName, V.props.vendorID, V.props.deviceID, VK_API_VERSION_MAJOR(V.props.apiVersion),
             VK_API_VERSION_MINOR(V.props.apiVersion), VK_API_VERSION_PATCH(V.props.apiVersion), d >> 22, d >> 12 & 0x3ff, d & 0xfff, d); }
     vk_quirks_init(V.pd, &V.props);   // the driver and its quirk table (gfx_vk_quirks.c), before anything that depends on them
+    driver_row();
     uint32_t qn = 0; vkGetPhysicalDeviceQueueFamilyProperties(V.pd, &qn, NULL);
     VkQueueFamilyProperties qp[16]; if (qn > 16) qn = 16; vkGetPhysicalDeviceQueueFamilyProperties(V.pd, &qn, qp);
     V.qf = 0; while (V.qf < qn && (qp[V.qf].queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) != (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) V.qf++;
