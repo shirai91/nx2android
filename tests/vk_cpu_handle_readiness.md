@@ -54,7 +54,7 @@ is excluded here. No new dimensional-view behavior is claimed. The later-known s
 overwrite covers all eight bytes, matching the donor known-fill case, using
 the target deferred inline-update path.
 
-Build the normal 192-source Android host, then the fixture (no device access
+Build the normal Android host, then the fixture (no device access
 is performed by this Python runner):
 
 ```sh

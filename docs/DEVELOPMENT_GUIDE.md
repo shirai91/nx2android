@@ -373,6 +373,8 @@ It builds through the production Java/dex packager, uses the real guest keyboard
 
 For live A/B testing, use a `DM_CTL` env update with `DM_VK_CPU_READY=0`, then restore `DM_VK_CPU_READY=1`. Values take effect at a submission boundary. Disabling allows unsynchronized CPU descriptor reads; the default remains enabled.
 
+`test_sampler_array_elements.py` checks independent sampler offsets, the packed binding ABI, fixed sources, overflow and full-array readiness with the same UBSan capability gate and optional ASan setting. The manual readiness fixture includes a sampler-only GPU producer at element 7; physical-device checks remain separate.
+
 ## Runtime GLSLC shader preparation
 
 Some NVN games compile shaders with their own GLSLC at startup (for example, Fire Emblem: Three Houses and Catherine: Full Body). The porter captures these outputs before the offline shader split. If the extraction already contains every complete `glslc_capture/*.glslc` output named by the profile, it reuses them without a device. Otherwise, connect an ARM64 Android device with USB debugging and configure `adb`, even when building without `--install`.
