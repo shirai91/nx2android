@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import host_cc
 
 ROOT=Path(__file__).resolve().parents[1]
 ANDROID=ROOT/'nxnative/dm/android'
@@ -59,7 +60,10 @@ int main(void){
  puts("sparse texture/sampler pools, dedup, bounds, rebasing and replay history PASS");return 0;
 }
 ''')
-            subprocess.run([shutil.which('clang') or 'cc','-std=c11','-fsanitize=address,undefined','-g','-I',str(ANDROID),str(c),'-o',str(exe)],check=True)
+            cc=shutil.which('cc') or 'cc'
+            flags=['-fsanitize=address,undefined'] if host_cc.asan_ubsan_runs(cc) else []
+            if not flags: print('resource pool runtime: ASan/UBSan unavailable; running all assertions without sanitizers')
+            subprocess.run([cc,'-std=c11','-pthread',*flags,'-g','-I',str(ANDROID),str(c),'-o',str(exe)],check=True)
             subprocess.run([str(exe)],check=True)
 
 if __name__=='__main__':unittest.main()

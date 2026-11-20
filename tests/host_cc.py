@@ -5,6 +5,7 @@ libubsan, so harnesses that mprotect pools or run under UBSan are skipped there;
 Linux run them.
 """
 import functools
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -25,14 +26,17 @@ int main(void) {
 '''
 
 
-def _builds(code, *flags, compiler='cc'):
+def _builds(code, *flags, compiler='cc', run=False):
     if not shutil.which(compiler):
         return False
     with tempfile.TemporaryDirectory() as d:
         c = Path(d) / 'probe.c'
         c.write_text(code, encoding='utf-8')
+        exe = Path(d) / ('probe.exe' if os.name == 'nt' else 'probe')
         try:
-            return subprocess.run([compiler, *flags, str(c), '-o', str(Path(d) / 'probe')], capture_output=True, timeout=60).returncode == 0
+            if subprocess.run([compiler, *flags, str(c), '-o', str(exe)], capture_output=True, timeout=60).returncode != 0:
+                return False
+            return not run or subprocess.run([str(exe)], capture_output=True, timeout=60).returncode == 0
         except (OSError, subprocess.SubprocessError):
             return False
 
@@ -54,3 +58,10 @@ def asan_ubsan(compiler):
     """The selected compiler links the texture-key harness's ASan/UBSan flags."""
     return _builds('int main(void) { return 0; }\n', '-std=c11',
                    '-fsanitize=address,undefined', compiler=compiler)
+
+
+@functools.lru_cache(maxsize=None)
+def asan_ubsan_runs(compiler):
+    """The selected compiler links ASan/UBSan and its runtime can load and run."""
+    return _builds('int main(void) { return 0; }\n', '-std=c11',
+                   '-fsanitize=address,undefined', compiler=compiler, run=True)
