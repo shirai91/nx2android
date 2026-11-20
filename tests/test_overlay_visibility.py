@@ -26,7 +26,8 @@ class OverlayVisibility(unittest.TestCase):
         visible = csrc.between(front, 'int dm_overlay_visible(void)', 'int dm_overlay_layout(void)')
         hidden = csrc.between(front, 'int dm_overlay_hidden(', 'float dm_overlay_opacity(')
         hit = csrc.between(front, 'static int ctl_at(', '// dragging the menu button:')
-        menu = csrc.between(front, 'static void menu_do(', 'static void menu_touch(')
+        menu = (csrc.function(front, 'int dm_framegen_enabled(void)') + csrc.function(front, 'static void menu_set_fg_choice(')
+                + csrc.function(front, 'static void menu_do('))
         events = csrc.between(front, 'static void touch_event(AInputEvent *e) {', 'static int on_input(')
         harness = r'''
 #include <assert.h>
@@ -39,8 +40,13 @@ class OverlayVisibility(unittest.TestCase):
 #include "stick_axis.h"
 static _Atomic int g_set_overlay, g_overlay, g_pads, g_edit, g_menu_btn = 1;
 static _Atomic int g_cust[2][2][OV_N][4];
-static _Atomic int g_set_rumble, g_set_fps, g_set_labels, g_menu_tab, g_sv_st;
-static int layout, saves;
+static _Atomic int g_set_rumble, g_set_fps, g_set_framegen, g_set_labels, g_menu_tab, g_sv_st;
+static _Atomic int g_set_fg_target = 60;
+static int dm_framegen_target(void) { return atomic_load(&g_set_fg_target); }
+static int layout, saves, lossless_available;
+static int vk_lsfg_available(void) { return lossless_available; }
+int dm_menu_audio_available(void) { return 0; }
+int dm_menu_lossless_import_available(void) { return 1; }
 int dm_overlay_layout(void) { return layout; }
 float dm_overlay_scale(void) { return 1; }
 int dm_overlay_custom(int l, int c, float *x, float *y, float *s) {
@@ -57,6 +63,8 @@ static void ed_open(void) {}
 static void sp_open(void) {}
 static void save_export(void) {}
 static void menu_audio(void) {}
+static int dll_imports;
+static void menu_lossless_import(void) { ++dll_imports; }
 static void menu_close(void) {}
 static void dm_overlay_redraw(void) {}
 ''' + visible + hidden + hit + menu + r'''
@@ -407,6 +415,24 @@ int main(int argc, char **argv) {
             assert(saves == 1 && dm_overlay_visible() == 1); controls(1);
             menu_do(OVM_OVERLAY);
             assert(saves == 2 && dm_overlay_visible() == 2); controls(0);
+            menu_do(OVM_FRAMEGEN);
+            assert(!dm_framegen_enabled() && saves == 2);
+            lossless_available = 1;
+            assert(!dm_framegen_enabled());  // Import does not turn on the switch.
+            menu_do(OVM_FRAMEGEN);
+            assert(dm_framegen_enabled() && saves == 3);
+            lossless_available = 0;
+            assert(!dm_framegen_enabled());
+            menu_do(OVM_FRAMEGEN);
+            assert(!dm_framegen_enabled() && saves == 3);
+            lossless_available = 1;
+            assert(dm_framegen_enabled());   // A replacement DLL restores the saved choice.
+            menu_do(OVM_FRAMEGEN);
+            assert(!dm_framegen_enabled() && saves == 4);
+            lossless_available = 0;
+            int before = dll_imports;
+            menu_do(OVM_FG_IMPORT);
+            assert(dll_imports == before + 1 && saves == 4);
         }
     }
     return 0;

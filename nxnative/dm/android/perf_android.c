@@ -205,6 +205,8 @@ static int64_t g_last_change, g_last_up, g_up_hold = 2000000000; static int g_ok
 static int g_nshown;
 static _Atomic int g_android_game_mode, g_game_mode_performance;
 static _Atomic int g_fps_pin = -1;
+static _Atomic int g_fg_display_fps;
+void dm_perf_framegen_rate(int fps) { atomic_store(&g_fg_display_fps, fps); }   // the Vulkan present thread publishes the usable display rate
 void dm_perf_game_mode(int mode) { atomic_store(&g_android_game_mode, mode); }   // main-thread onResume; policy changes stay on the presenting thread
 static int adaptive_enabled(void) {
     return atomic_load(&g_adapt) && !atomic_load(&g_game_mode_performance);
@@ -224,6 +226,12 @@ static void game_mode_sync(void) {   // presenting thread only: publish cached p
         atomic_store(&g_game_mode_performance, want);
         LOG("[perf] Android Game Mode: %s", want ? "performance (game's own period)" : "default pacing policy");
     }
+    static int last_fg_rate;
+    int fg_rate = atomic_load(&g_fg_display_fps);
+    if (fg_rate != last_fg_rate) {
+        last_fg_rate = fg_rate;
+        g_nwork = g_nshown = g_ok_frames = 0;
+    }
 }
 static int64_t work_pct(int q) {   // the q-th percentile of the last 64 frames' work
     int n = g_nwork < 64 ? g_nwork : 64; if (n < 16) return 0;
@@ -242,9 +250,21 @@ static int fps_cap_step(void) {
     if (s < 0) { s = dm_fps_ceiling() == 30 ? 2 : 0; if (s) LOG("[perf] frame rate capped at 30 fps (the profile's fps_ceiling; porter's --fps60 lifts it)"); }
     return s;
 }
+static uint64_t fg_render_period(void) {
+    int fps = atomic_load(&g_fg_display_fps);
+    return fps > 0 && fps_pin() < 0 ? (2000000000ull + fps - 1) / (uint64_t)fps : 0;
+}
 uint64_t dm_present_period_adapt(uint64_t period) {
     g_game_period = period;
     if (!period) return period;
+    uint64_t fg_period = fg_render_period();
+    if (fg_period) {
+        uint64_t ceiling = fps_cap_step() ? (uint64_t)STEPS[2] : 0;
+        if (fg_period < ceiling) fg_period = ceiling;
+        // ADPF uses the longer render budget too, so a capped game can run at lower clocks.
+        if (period < fg_period) g_game_period = period = fg_period;
+        return period;
+    }
     if (!adaptive_enabled()) {
         g_step = fps_cap_step();   // the ceiling's present-thread wait is pacing, not work for ADPF load hints
         return g_step && (uint64_t)STEPS[g_step] > period ? (uint64_t)STEPS[g_step] : period;
@@ -294,7 +314,8 @@ __attribute__((weak)) double vk_refresh_ms(void) { return 0; }
 __attribute__((weak)) double dm_nvn_present_hold_ms(void) { return 0; }
 void dm_perf_present(double iv_ms) {
     if (iv_ms == 0) return;
-    double r = vk_refresh_ms(), hold = dm_nvn_present_hold_ms(), per = STEPS[g_step] / 1e6, lim = (hold > per ? hold : per) * 1.5 + r / 4;
+    uint64_t fg_period = fg_render_period();
+    double r = vk_refresh_ms(), hold = dm_nvn_present_hold_ms(), per = (fg_period ? fg_period : (uint64_t)STEPS[g_step]) / 1e6, lim = (hold > per ? hold : per) * 1.5 + r / 4;
     g_late[g_nshown++ % 64] = iv_ms < 0 || iv_ms > lim;
 }
 static int shown_late(void) {   // of the last 64 frames on screen, how many missed the display; -1 without readings (a device that gives no present times)
@@ -303,7 +324,7 @@ static int shown_late(void) {   // of the last 64 frames on screen, how many mis
     return m * 64 / n;
 }
 static void adapt_frame(int64_t work, int64_t now) {
-    if (!adaptive_enabled()) return;
+    if (!adaptive_enabled() || fg_render_period()) return;
     // A long frame in which the replay and the GPU did next to nothing is a load (a loading screen, the game reading files on its main thread), not a frame the
     // rate could fit: it is not judged. Hades II's room changes gave ~10 frames of 28-680 ms with 0.3-0.4 ms of GPU work, the rate stepped down to 40 fps,
     // and each fight began at 40 until it climbed back 4 s later
@@ -355,7 +376,7 @@ void dm_perf_frame(double period) {
     { static unsigned n; if (++n % 60 == 0) gpu_turbo(); }
     if (g_work_start) {   // (a longer span: the game was held, by the pause menu or the background)
         int64_t w = g_prev_present ? t - g_prev_present - g_pace : t - g_work_start;
-        int64_t pq = g_prev_present ? g_pq : 0, pace = g_step > 0 ? pq : 0;   // (t - g_work_start starts after the wait already)
+        int64_t pq = g_prev_present ? g_pq : 0, pace = g_step > 0 || fg_render_period() ? pq : 0;   // (t - g_work_start starts after the wait already)
         if (w > 0 && w < 250000000) { adapt_frame(w - pace > 0 ? w - pace : 0, t); if (g_hint) hint_report(w, pq, pace, t, g_hint_target); }
         g_work_start = 0;
     }

@@ -62,6 +62,14 @@ A game whose profile lists the shared font titles (`0100000000000811` and `01000
 
 A game slowed by its draw calls in busy scenes: tick **Multithread replay** on the Port tab (`--mt-replay`). The game's Vulkan commands are then recorded on a thread of their own. It stays on until you port the game again without it.
 
+For experimental 2× Lossless frame generation, supply your own `Lossless.dll`. On ports built with `--native-keyboard` or `--external-display`, choose **Game → Lossless.dll → Import** in the pause menu. On any port you can copy the DLL next to `settings.txt` in the game's `Android/data/<package>/files/` folder. Use a DLL with the LSFG 3.1 Performance Vulkan shaders, such as Lossless Scaling 3.2.2. The APK carries the [lsfg-vk MIT license](nxnative/dm/android/apk/lsfg-vk-LICENSE.txt) for its integration code.
+
+Turn on **Frame generation** after importing a compatible DLL. The switch is off by default and unavailable when the renderer cannot use the DLL. If the file becomes unavailable during play, the game returns to ordinary presentation and retains your switch setting. Swipe the menu's list to reach more settings. The tabs and **Resume** stay visible, and controller navigation scrolls to the selected item.
+
+With **Frame generation** enabled, **Target FPS** defaults to **60 FPS**. The scheduler aims for 60 displayed frames per second, using a lower native render rate where the game's pacing supports it and adding up to one generated frame per rendered frame. **No limit** removes the frame generation target and uses the game's usual rendering cadence, with interpolation when the display and Vulkan driver can keep up.
+
+The timing follows the measured render cadence and skips long stalls or periods when the display cannot fit both frames. **Show FPS** reports the game's render rate and `DISPLAY` when the driver provides actual presentation times. When the driver exposes display timing but provides no usable timing feedback, single-screen ports can pace presents with Android's refresh rate and report `PRESENT` for submitted frames.
+
 When **Show gamepad** is enabled, using a controller hides the on-screen controls. Touch the screen to bring them back. The draggable menu button stays available even with **Show gamepad** off.
 
 To play without the on-screen menu button, tick **No menu button** on the Port tab (`--no-menu-button`). The button is then not drawn and its corner of the screen goes to the game. Open the pause menu with the Back gesture or key, or with a controller's Home or Menu key. The layout editor shows the button darkened, and a second screen's gamepad keeps it. It stays hidden until you port the game again without the option.
