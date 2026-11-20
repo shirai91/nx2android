@@ -80,10 +80,16 @@ static void vkCmdBlitImage(VkCommandBuffer cb,VkImage s,VkImageLayout sl,VkImage
 }
 static void vkCmdClearColorImage(VkCommandBuffer cb,VkImage im,VkImageLayout l,const VkClearColorValue *v,uint32_t n,const VkImageSubresourceRange *r) {(void)cb;(void)im;(void)l;(void)r;assert(n==1);last_clear=*v;}
 static void vkCmdClearDepthStencilImage(VkCommandBuffer cb,VkImage im,VkImageLayout l,const VkClearDepthStencilValue *v,uint32_t n,const VkImageSubresourceRange *r) {(void)cb;(void)im;(void)l;(void)v;(void)n;(void)r;abort();}
+// This fixture exercises transfer clears only. Region/compressed paths have
+// dedicated production-dispatcher fixtures and must not be reached here.
+static VkFormat vk_view_fmt;
+static VkImageView vk_tex_view(const tex_t *t,const view_t *v,int d,int a,int att,vkimg_t **out) { abort(); }
+static int clear_tex_slice(vkimg_t *im,VkImageView view,VkFormat format,VkExtent2D extent,VkRect2D rect,unsigned mask,unsigned type,const VkClearColorValue *v) { abort(); }
+static int clear_tex_compressed(vkimg_t *im,const vkfmt_t *f,const p_clear_tex *c,uint32_t lv,uint32_t first,uint32_t count,uint32_t w,uint32_t h) { abort(); }
 /* FUNCTIONS */
 static p_copy_t2t setup(int fmt,VkFormat sf,VkFormat df) {
     src=(tex_t){.d={.format=fmt}};dst=src;nimages=2;copies=blits=resolves=retired=barriers=same_image=red_calls=0;fail_alloc=dedicated=direct_allocs=pool_calls=pooled_retired=direct_retired=destroyed=0;bound_offset=0;create_calls=0;fail_n=1;
-    images[0]=(vkimg_t){.img=(VkImage)(uintptr_t)1,.fmt=sf,.w=32,.h=32,.d=1,.levels=2,.layers=4,.samples=1,.aspect=VK_IMAGE_ASPECT_COLOR_BIT};
+    images[0]=(vkimg_t){.img=(VkImage)(uintptr_t)1,.fmt=sf,.w=32,.h=32,.d=1,.levels=2,.layers=4,.samples=1,.aspect=VK_IMAGE_ASPECT_COLOR_BIT,.nvn_format=fmt};
     images[1]=images[0];images[1].img=(VkImage)(uintptr_t)2;images[1].fmt=df;
     return (p_copy_t2t){.src=&src,.dst=&dst,.sr={1,2,1,4,4,1},.dr={3,4,2,4,4,1},.has_sv=1,.has_dv=1,.sv={.set_levels=1,.base_level=1},.dv={.set_levels=1,.base_level=1}};
 }
@@ -137,7 +143,7 @@ int main(int argc,char **argv) {
             setup(fmt[f],srgb[f/2],unorm[f/2]);
             int linear=f<2?NVN_FORMAT_RGBA8:NVN_FORMAT_BGRA8;
             dst.d.format=srgb_view?linear:fmt[f];
-            p_clear_tex c={.tex=&dst,.r={0,0,0,32,32,1},.c.f={0.5f,0.25f,0.75f,0.25f},.has_view=1,.view={.set_format=1,.format=srgb_view?fmt[f]:linear}};
+            p_clear_tex c={.tex=&dst,.mask=15,.r={0,0,0,32,32,1},.c.f={0.5f,0.25f,0.75f,0.25f},.has_view=1,.view={.set_format=1,.format=srgb_view?fmt[f]:linear}};
             clear_tex(&c);assert(fabsf(last_clear.float32[0]-(srgb_view?0.73535698f:0.5f))<0.00001f && last_clear.float32[3]==0.25f);
             // A dormant view format must not override the texture's format.
             c.view.set_format=0;clear_tex(&c);assert(fabsf(last_clear.float32[0]-(srgb_view?0.5f:0.73535698f))<0.00001f);
@@ -145,7 +151,7 @@ int main(int argc,char **argv) {
         }
         if(!strcmp(argv[1],"clear")) for(int shared=0;shared<2;shared++) {
             setup(fmt[f],srgb[f/2],shared?unorm[f/2]:srgb[f/2]);
-            p_clear_tex c={.tex=&dst,.r={0,0,0,32,32,1},.c.f={0.5f,0.0031308f,1.0f,0.25f}};clear_tex(&c);
+            p_clear_tex c={.tex=&dst,.mask=15,.r={0,0,0,32,32,1},.c.f={0.5f,0.0031308f,1.0f,0.25f}};clear_tex(&c);
             assert(fabsf(last_clear.float32[0]-(shared?0.73535698f:0.5f))<0.00001f);
             assert(fabsf(last_clear.float32[1]-(shared?0.04044994f:0.0031308f))<0.00001f);
             assert(fabsf(last_clear.float32[2]-1.0f)<0.00001f && last_clear.float32[3]==0.25f);
