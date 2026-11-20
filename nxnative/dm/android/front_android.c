@@ -1324,6 +1324,7 @@ static void *host_thread(void *a) {
     atomic_store(&g_running, 1);
     int rc = main(2, argv);
     LOG("host returned %d", rc);
+    { void hlecount_flush(void); hlecount_flush(); }   // DM_HLECOUNT: nnMain's normal return also leaves by _exit, which does not run atexit
     dm_perf_gpu_release();   // the game ended itself: the device-wide KGSL property outlives the process (perf_android.c)
     _exit(rc);
 }

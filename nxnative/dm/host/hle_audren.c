@@ -27,16 +27,61 @@ void dm_pcmout_wait(void *k, int ms);
 
 // P_SIZE: bytes of the game's AudioRendererParameter copied before the two fields are changed. SDK 16's struct is 0x38 bytes; SDK 8's (Link's Awakening) has one more word,
 // its revision at +0x38: copying only 0x38 left the revision uninitialized and the SDK rejected it (CheckValidRevision, Result 0x499). The SDK reads only its own size of the copy
-enum { P_DEVICE = 0x2c, P_MODE = 0x30, P_SIZE = 0x40, FRAME_MAX = 1024, NBUF = 4 };
+enum { P_DEVICE = 0x2c, P_MODE = 0x30, P_SIZE = 0x40, WORK_PAGE = 0x1000, FRAME_MAX = 1024, NBUF = 4 };
 static void *gsym(const char *n) { void *p = guest_sym(n); if (!p) die("audren: missing SDK symbol %s", n); return p; }
 static void cpu_manual(uint8_t *dst, const uint8_t *src) { memcpy(dst, src, P_SIZE); *(int32_t *)(dst + P_DEVICE) = 1; *(int32_t *)(dst + P_MODE) = 1; }
 
-HLE_FORCE("_ZN2nn5audio30GetAudioRendererWorkBufferSizeERKNS0_22AudioRendererParameterE", "renderer work buffer size: computed for CPU rendering + manual execution",
+static size_t ar_align(size_t n, size_t a) { return (n + a - 1) & ~(a - 1); }
+// The renderer service's work-buffer requirement for a parameter, through renderer revision 15: the audren:u server's own formula, recovered from the service's
+// sizing code and its revision gates and checked by running that code in isolation (no firmware code runs here; an unknown revision falls back to the SDK's size).
+// It is not an emulator's copy: the service's command representation is independent of the client SDK's, and the SDK's local server instead sizes its own CPU
+// structures, which is what inflates the requirement when its answer is forwarded. The game sizes its allocation by this, so it has to be the service's number
+static size_t ar_service_work_size(const uint8_t *p) {
+    uint32_t revision = *(const uint32_t *)(p + 0x34);
+    if ((revision & 0xffffff) != 0x564552) revision = *(const uint32_t *)(p + 0x38);
+    if ((revision & 0xffffff) != 0x564552 || revision < 0x31564552 || revision > 0x3f564552) return 0;
+    unsigned r = (revision >> 24) - 0x30;
+    size_t n[11];
+    for (int i = 0; i < 11; i++) {
+        if (i == 8) { n[i] = p[0x20]; continue; }   // voice-drop is a byte; the following public-struct padding is not initialized
+        int32_t v = ((const int32_t *)p)[i];
+        if (v < 0 || v > 0x100000) return 0;   // bound arithmetic even if the caller supplied an invalid parameter
+        n[i] = (size_t)v;
+    }
+    size_t mix = n[2], sub = n[3], voices = n[4], sinks = n[5], effects = n[6], perf = n[7], splitters = n[9], dest = n[10], mixes = sub + 1;
+    size_t size = ar_align(((sinks + sub) * 0x3c0 + n[1] * 4) * (mix + 6), 64);
+    size += ar_align(mix * 4, 64) + sub * 0x400 + mixes * 0x940 + ar_align(mixes * 8, 16);
+    size += voices * 0x1d0 + ar_align(voices * (r >= 15 ? 0x238 : 0x220), 16) + ar_align(voices * 8, 16);
+    if (r >= 2) {
+        size_t graph = mixes * mixes * 4 + mixes * 12 + 2 * ar_align(mixes, 64) / 8 + ar_align(mixes * mixes, 64) / 8;
+        size += ar_align(graph, 16);
+        size += splitters * 0x20 + ar_align(dest * (r >= 12 ? (r >= 15 ? 0x130 : 8) : 0xe0), 16);
+        if (r < 5) size += ar_align(dest * 4, 16);
+    }
+    size += (effects + voices * 4) * 0x20 + 0x50;
+    if (r >= 12 && splitters && dest) size += ar_align(dest * (r >= 14 ? 0xe0 : 0x80), 64);
+    size = ar_align(size + (r >= 9 ? effects * 0x80 : 0), 64);
+    size += (sinks + sub) * 0x280 + effects * (r >= 9 ? 0x530 : 0x4b0) + sinks * 0x170 + voices * 0x100 + 0x40;
+    if (perf) {
+        size_t frame = (sub + voices + sinks + effects + 1) * (r >= 5 ? 0x18 : 0x10) + (r >= 5 ? 0x990 : 0x658);
+        size += ar_align(frame * (perf + 1), 64) + 0xc0;
+    }
+    size_t commands = 0x18000;
+    if (r >= 5) commands = effects * 0x540 + sub * 0x3f24 + sinks * 0x130 + dest * 0x360
+        + voices * (splitters * 0x50 + (r >= 8 ? 0x284 : 0x250)) + (voices + sub + effects + sinks + 0x65) * 0x28 + 0x2c4;
+    return ar_align(size + commands + 0x7e, WORK_PAGE);
+}
+// The game sizes its allocation by the DSP service's budget (Eden #387: RTK14's own pools were only a few hundred bytes from full, and the extra CPU-sized
+// allocation this port used to ask for pushed another one out — boot returned -51 and exited). The larger CPU representation the local SDK runs is
+// backend storage the host supplies at open (ar_open)
+HLE_FORCE("_ZN2nn5audio30GetAudioRendererWorkBufferSizeERKNS0_22AudioRendererParameterE", "renderer work buffer: DSP service budget, with extra local CPU backend storage supplied by the host",
           size_t, h_ar_WorkSize, const uint8_t *param) {
     static size_t (*orig)(const uint8_t *); if (!orig) orig = gsym("_ZN2nn5audio30GetAudioRendererWorkBufferSizeERKNS0_22AudioRendererParameterE");
     uint8_t p[P_SIZE]; cpu_manual(p, param); size_t n = orig(p);
-    { static int once; if (!once++) LOG("audren: work buffer %#zx", n); }
-    return n;
+    size_t service = *(int32_t *)(param + P_DEVICE) == 0 ? ar_service_work_size(p) : 0;
+    size_t guest_n = service ? service : n;
+    { static int once; if (!once++) LOG("audren: work buffer guest %#zx, local CPU/manual renderer %#zx", guest_n, n); }
+    return guest_n;
 }
 // ---------- rendering and output ----------
 static void *g_handle[2];                    // AudioRendererHandle (renderer object, client state)
@@ -120,8 +165,24 @@ static Result ar_open(void **handle, void *ev, const uint8_t *param, void *work,
     LOG("audren: OpenAudioRenderer%s rate %d samples per frame %d mix buffers %d submixes %d voices %d sinks %d effects %d splitters %d (original device %d mode %d → CPU / manual) work buffer %p+%#zx",
         ev ? "" : " (no event)", *(int32_t *)param, *(int32_t *)(param + 4), *(int32_t *)(param + 8), *(int32_t *)(param + 0xc), *(int32_t *)(param + 0x10), *(int32_t *)(param + 0x14),
         *(int32_t *)(param + 0x18), *(int32_t *)(param + 0x24), *(int32_t *)(param + P_DEVICE), *(int32_t *)(param + P_MODE), work, sz);
+    // The application's buffer follows the DSP service contract; the local server's larger CPU command representation is a backend cost. Keep a full-size caller buffer
+    // when it fits the backend, otherwise supply the backend storage here. The nested no-event open receives this same buffer and starts no second thread.
+    void *owned = NULL;
+    if (*(int32_t *)(param + P_DEVICE) == 0 && work && !((uintptr_t)work & (WORK_PAGE - 1)) && sz >= WORK_PAGE && !(sz & (WORK_PAGE - 1))) {
+        size_t (*size)(const uint8_t *) = gsym("_ZN2nn5audio30GetAudioRendererWorkBufferSizeERKNS0_22AudioRendererParameterE");
+        size_t need = size(p);
+        size_t service = ar_service_work_size(p), guest_need = service ? service : need;
+        // Smaller than what the service would ask: the host supplies the difference below, so the game's buffer is simply not used
+        if (sz < guest_need) LOG("[RED] audren: the game's work buffer %#zx is below the service requirement %#zx: the host backs the renderer itself", sz, guest_need);
+        if (need > sz) {
+            if (posix_memalign(&owned, WORK_PAGE, need)) { LOG("[RED] audren: cannot allocate local renderer work buffer %#zx", need); return RES_FAIL; }
+            memset(owned, 0, need); work = owned; sz = need;
+            LOG("audren: host backs local renderer work buffer %p+%#zx", work, sz);
+        }
+    }
     t_in_open = 1; Result r = ev ? orig_ev(handle, ev, p, work, sz) : orig(handle, p, work, sz); t_in_open = 0;
-    if (r) { LOG("[RED] audren: SDK OpenAudioRenderer failed %#x", r); return r; }
+    if (r) { free(owned); LOG("[RED] audren: SDK OpenAudioRenderer failed %#x", r); return r; }
+    if (owned) objmap_put(handle[0], owned);   // Close releases it only after the render thread and the SDK have finished with it
     if (atomic_load(&g_open)) { LOG("[RED] audren: a second renderer (the host drives only one)"); return r; }
     g_handle[0] = handle[0]; g_handle[1] = handle[1];
     { void **slot = (void **)handle[1]; uint8_t st = slot && *slot ? ((const uint8_t *)*slot)[0x28] : 0; g_ev_layout = (st == 1 || st == 2) && ev && *slot == ev && !DM_SDK_OLD(dm_sdk_major()); }
@@ -138,7 +199,9 @@ HLE_FORCE("_ZN2nn5audio18CloseAudioRendererENS0_19AudioRendererHandleE", "close 
     // Join the render thread first (it checks g_open every round and at most every 10 ms while waiting for the output): it may be inside exec(), which uses the renderer the SDK is about to free.
     // A fixed 20 ms sleep used to stand in for this, and a renderer reopened inside that window ran a second thread over the first one's static buffers
     if (obj == g_handle[0] && g_render_tt) { atomic_store(&g_open, 0); dm_guest_thread_join(g_render_tt); g_render_tt = NULL; }
+    void *owned = objmap_del(obj);
     orig(obj, state);
+    free(owned);   // the host-backed CPU work buffer (ar_open), after the render thread has joined and the SDK is done
 }
 
 // DeviceSink input mix buffers → int16 stereo. The command ID is 0x13 in SDK 16; SDK 20 inserted a command before it, making it 0x14 (written at sdk+0x233f44); SDK 8 (Link's Awakening)
