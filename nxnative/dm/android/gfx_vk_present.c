@@ -73,7 +73,7 @@ __attribute__((weak)) int dm_menu_state(void) { return -1; }
 __attribute__((weak)) int dm_menu_audio_available(void) { return 0; }
 __attribute__((weak)) int dm_overlay_fps(void) { return 0; }   // front_android.c: the pause menu's Show FPS
 __attribute__((weak)) int dm_save_note(char *out, int cap) { if (cap > 0) out[0] = 0; return OVX_IDLE; }   // front_android.c: the save manager's rows
-__attribute__((weak)) int dm_save_rows(ov_srow rows[OVM_ROWS]) { (void)rows; return 0; }
+__attribute__((weak)) int dm_save_rows(ov_srow rows[OVM_ROWS_MAX]) { (void)rows; return 0; }
 __attribute__((weak)) int dm_overlay_custom(int layout, int ctl, float *x, float *y, float *s) { (void)layout; (void)ctl; (void)x; (void)y; *s = 1; return 0; }
 __attribute__((weak)) int dm_overlay_custom_ver(void) { return 0; }
 __attribute__((weak)) int dm_overlay_hidden(int layout, int ctl) { (void)layout; (void)ctl; return 0; }
@@ -471,7 +471,7 @@ static void ov_edit_panel(const ov_canvas *cv, int st, float W, float H) {
 // The save picker (overlay_layout.h OVS_*): the menu panel's rows, as front_android.c fills them (dm_save_rows); letters as the menu's (notes a little smaller),
 // each kind of row at one size: the largest at which all its rows' two texts fit
 static void ov_save_panel(const ov_canvas *cv, int st) {
-    ov_srow rows[OVM_ROWS]; if (!dm_save_rows(rows)) return;
+    ov_srow rows[OVM_ROWS_MAX]; if (!dm_save_rows(rows)) return;
     float p[4] = {0, 0, (float)cv->w, (float)cv->h}, r[4]; ov_menu_rowrect(p, 0, r);
     float rh = r[3], rw = r[2], gap = rh * 0.35f, room = rw - rh * 0.3f; int sel = (st >> 4 & 15) - 1, is0 = (int)fmaxf(1, roundf(rh * 0.30f / PF_CAP)), size[OVS_BACK + 1];
     for (int k = 0; k <= OVS_BACK; k++) size[k] = k == OVS_NOTE ? (int)fmaxf(1, roundf(is0 * 0.8f)) : is0;

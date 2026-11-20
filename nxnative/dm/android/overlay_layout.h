@@ -160,9 +160,10 @@ enum { OVM_OVERLAY, OVM_OPACITY, OVM_EDIT, OVM_RUMBLE, OVM_FPS, OVM_MODE, OVM_EX
 #define OVM_PER_TAB 6
 static const int OVM_TAB_ITEMS[OVM_TABS][OVM_PER_TAB] = {{OVM_OVERLAY, OVM_OPACITY, OVM_EDIT, OVM_RUMBLE, OVM_PAD, -1}, {OVM_FPS, OVM_MODE, OVM_EXPORT, OVM_IMPORT, OVM_AUDIO, OVM_EXTERNAL_SIZE}};
 static const char *const OVM_TAB_NAMES[OVM_TABS] = {"Gamepad", "Game"};
-#define OVM_ROWS (OVM_PER_TAB + 2)   // the tabs, a tab's rows (as many for every tab: the panel keeps its size), Resume
 int dm_menu_audio_available(void);
 int dm_menu_external_size_available(void);
+#define OVM_ROWS_MAX (OVM_PER_TAB + 2)
+#define OVM_ROWS (dm_menu_external_size_available() ? OVM_ROWS_MAX : OVM_ROWS_MAX - 1)
 static inline int ov_menu_item(int tab, int row) {
     int item = row == 0 ? OVM_TAB : row == OVM_ROWS - 1 ? OVM_RESUME : row > 0 && row < OVM_ROWS - 1 ? OVM_TAB_ITEMS[tab & 1][row - 1] : -1;
     return (item == OVM_AUDIO && !dm_menu_audio_available()) || (item == OVM_EXTERNAL_SIZE && !dm_menu_external_size_available()) ? -1 : item;
@@ -237,7 +238,7 @@ static inline int ov_ed_button_at(float x, float y, const float p[4], int first,
 #define OVS_ST 0x40000
 enum { OVS_EMPTY, OVS_TITLE, OVS_ITEM, OVS_NOTE, OVS_BUTTON, OVS_BACK };   // a row: nothing; the title (left) and the page (right); a save (its name, its size);
 typedef struct { int style; char left[80], right[40]; } ov_srow;            // a line of text; a button (the import); Back or Cancel, centred as Resume is
-int dm_save_rows(ov_srow rows[OVM_ROWS]);   // front_android.c: the picker's rows, 0 when it is not open
+int dm_save_rows(ov_srow rows[OVM_ROWS_MAX]);   // front_android.c: the picker's rows, 0 when it is not open
 
 // ---- the text entry's keyboard (front_android.c front_text_input, drawn by gfx_vk_present.c ov_text_panel), in the pause menu's panel rectangle ----
 // Four rows of ten character keys and a row of four wide ones; p is the panel's rectangle (x, y, width, height: the window's for touches, the raster's for drawing).

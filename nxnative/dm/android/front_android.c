@@ -624,7 +624,7 @@ static void menu_opacity(int v) {   // the slider: a new value is drawn at once 
 }
 static void menu_tab(int t) { t = (t % OVM_TABS + OVM_TABS) % OVM_TABS; if (atomic_exchange(&g_menu_tab, t) != t) dm_haptics_android_tap(); dm_overlay_redraw(); }
 static void ed_open(void); static void sp_open(void); static void save_export(void);
-static void menu_java(jmethodID method) {
+static void menu_java(jmethodID method, const char *name) {
     if (!g_act || !g_act->vm || !g_act->clazz || !method) return;
     JNIEnv *e = NULL; int attached = 0;
     if ((*g_act->vm)->GetEnv(g_act->vm, (void **)&e, JNI_VERSION_1_6) != JNI_OK) {
@@ -632,7 +632,7 @@ static void menu_java(jmethodID method) {
         attached = 1;
     }
     (*e)->CallVoidMethod(e, g_act->clazz, method);
-    if ((*e)->ExceptionCheck(e)) { (*e)->ExceptionClear(e); LOG("[menu] selection is unavailable"); }
+    if ((*e)->ExceptionCheck(e)) { (*e)->ExceptionClear(e); LOG("[menu] %s is unavailable", name); }
     if (attached) (*g_act->vm)->DetachCurrentThread(g_act->vm);
 }
 static void menu_do(int item) {
@@ -646,8 +646,8 @@ static void menu_do(int item) {
     else if (item == OVM_OPACITY) return;   // (the slider is dragged, or stepped with left and right)
     else if (item == OVM_EXPORT) { if (atomic_load(&g_sv_st) == OVX_BUSY) return; save_export(); }
     else if (item == OVM_IMPORT) { dm_haptics_android_tap(); sp_open(); return; }
-    else if (item == OVM_AUDIO) { menu_java(g_audio_menu_method); }
-    else if (item == OVM_EXTERNAL_SIZE) { menu_java(g_external_size_menu_method); }
+    else if (item == OVM_AUDIO) { menu_java(g_audio_menu_method, "audio output"); }
+    else if (item == OVM_EXTERNAL_SIZE) { menu_java(g_external_size_menu_method, "external resolution"); }
     if (item >= 0 && item < OVM_N) dm_haptics_android_tap();
     if (item == OVM_RESUME) menu_close(); else dm_overlay_redraw();
 }
@@ -789,7 +789,7 @@ static void sp_size(char *out, int cap, const dm_save_entry *s) {
     else snprintf(out, (size_t)cap, "%ld file%s, %lld KB", s->files, s->files == 1 ? "" : "s", (s->bytes + 1023) / 1024);
 }
 #define SP_ROW(i, st, ...) do { rows[i].style = st; snprintf(rows[i].left, sizeof rows[i].left, __VA_ARGS__); } while (0)
-int dm_save_rows(ov_srow rows[OVM_ROWS]) {   // (gfx_vk_present.c ov_save_panel)
+int dm_save_rows(ov_srow rows[OVM_ROWS_MAX]) {   // (gfx_vk_present.c ov_save_panel)
     if (!atomic_load(&g_sp_on)) return 0;
     memset(rows, 0, sizeof(ov_srow) * OVM_ROWS);
     pthread_mutex_lock(&g_sp_mu);
