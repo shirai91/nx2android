@@ -8,7 +8,7 @@
 import html, os, subprocess, sys, time
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, QUrl
+from PySide6.QtCore import QSize, Qt, QTimer, QUrl
 from PySide6.QtGui import QColor, QDesktopServices, QFont, QIcon
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog, QFormLayout, QFrame, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
                                QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSpinBox, QSplitter, QStyle, QTableWidget, QTableWidgetItem,
@@ -48,6 +48,16 @@ def with_info(field, tip):   # a field with the style's information icon after i
 
 
 # ---------------- Port ----------------
+class FitScroll(QScrollArea):
+    """A scroll area as tall as its rows: it never takes more height than they need (the log below gets the rest) and scrolls only when the window is too short for them"""
+    def fit(self):
+        if w := self.widget(): self.setMaximumHeight(w.sizeHint().height() + 2 * self.frameWidth()); self.updateGeometry()
+
+    def sizeHint(self):
+        s, w = super().sizeHint(), self.widget()
+        return QSize(s.width(), w.sizeHint().height() + 2 * self.frameWidth()) if w else s
+
+
 def sd_warning():   # right of the Port tab's "Game data on the SD card" box
     w = QWidget(); h = QHBoxLayout(w); h.setContentsMargins(0, 0, 0, 0); h.setSpacing(4)
     i = QLabel(); i.setPixmap(QApplication.style().standardIcon(QStyle.SP_MessageBoxWarning).pixmap(16, 16))
@@ -125,10 +135,10 @@ class PortTab(QWidget):
         f.addRow('Vulkan driver', path_row(self.driver, self.pick_driver))
         f.addRow('System font', path_row(self.shared_font, self.pick_shared_font))
         f.addRow('', self.fps60); f.addRow('', self.touch); f.addRow('', self.no_menu_button); f.addRow('', self.mt_replay); f.addRow('', self.debug); f.addRow('', self.experimental)
-        scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setFrameShape(QFrame.NoFrame); scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        scroll.setMinimumHeight(120); scroll.setWidget(inner)   # the options scroll, so the tab fits a 1080p screen
-        ol = QVBoxLayout(o); ol.setContentsMargins(4, 4, 4, 4); ol.addWidget(scroll)
-        v.addWidget(o, 3)
+        scroll = FitScroll(); scroll.setWidgetResizable(True); scroll.setFrameShape(QFrame.NoFrame); scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setMinimumHeight(120); scroll.setWidget(inner); scroll.fit()   # the options scroll only when the window is too short for them, so the tab fits a 1080p screen
+        ol = QVBoxLayout(o); ol.setContentsMargins(0, 0, 0, 0); ol.addWidget(scroll)
+        v.addWidget(o)
 
         bar = QHBoxLayout()
         self.port_btn = QPushButton('Port'); self.port_btn.setEnabled(False); self.port_btn.setMinimumHeight(36)
@@ -149,7 +159,7 @@ class PortTab(QWidget):
         hh = self.stages.header(); hh.setSectionResizeMode(0, QHeaderView.ResizeToContents); hh.setSectionResizeMode(1, QHeaderView.ResizeToContents); hh.setSectionResizeMode(2, QHeaderView.Stretch)
         self.log = QPlainTextEdit(); self.log.setReadOnly(True); self.log.setFont(QFont('Consolas' if os.name == 'nt' else 'Menlo', 9)); self.log.setMaximumBlockCount(20000)
         split.addWidget(self.stages); split.addWidget(self.log); split.setSizes([180, 220])
-        v.addWidget(split, 2)
+        v.addWidget(split, 1)
         self.tick = QTimer(self); self.tick.timeout.connect(self.on_tick); self.tick.start(1000)
         self.refresh_devices()
 
