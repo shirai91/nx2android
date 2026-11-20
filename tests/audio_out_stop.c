@@ -20,6 +20,8 @@ module_t *module_of(const void *address) { (void)address; return NULL; }
 void dm_guest_write_prepare(void *address, size_t size) { (void)address; (void)size; }
 void dm_host_helper_qos(qos_class_t qos) { (void)qos; }
 uint64_t now_ns(void) { return clock_gettime_nsec_np(CLOCK_MONOTONIC); }
+// The isolated host has no main.c logging clock.
+double dm_log_elapsed(void) { return 0; }
 void hle_bind_system_event(void *event, int autoclear) { assert(event && autoclear); }
 void hle_signal_system_event(void *event) { dispatch_semaphore_signal(event); }
 
