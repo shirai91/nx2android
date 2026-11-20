@@ -15,15 +15,6 @@ ROOT = Path(__file__).resolve().parents[1]
 DM = ROOT / 'nxnative/dm'
 
 
-def overflow_fixture(tmp):
-    # Exercise a longer Game tab with existing actions, including the optional audio row.
-    header = (DM / 'android/overlay_layout.h').read_text(encoding='utf-8')
-    header = header.replace('#define OVM_PER_TAB 5', '#define OVM_PER_TAB 9')
-    header = header.replace('OVM_RUMBLE, OVM_PAD}', 'OVM_RUMBLE, OVM_PAD, -1, -1, -1, -1}')
-    header = header.replace('OVM_IMPORT, OVM_AUDIO}', 'OVM_IMPORT, OVM_AUDIO, OVM_POS, OVM_COLOUR, OVM_OUTLINE, OVM_SIZE}')
-    (tmp / 'overlay_layout.h').write_text(header, encoding='utf-8')
-
-
 class MenuScroll(unittest.TestCase):
     def test_production_raster_keeps_the_designed_label_size(self):
         cc = shutil.which('cc')
@@ -47,6 +38,7 @@ const uint8_t *dm_overlay_font(void) { return font; }
 float dm_overlay_scale(void) { return 1; }
 int dm_overlay_custom(int l,int c,float*x,float*y,float*s) {(void)l;(void)c;(void)x;(void)y;*s=1;return 0;}
 int dm_menu_audio_available(void) { return 0; }
+int dm_menu_lossless_import_available(void) { return 1; }
 int dm_save_note(char *s,int n) { if(n)s[0]=0;return OVX_IDLE; }
 ''' + draw + menu + r'''
 int main(int argc,char **argv) {
@@ -90,7 +82,6 @@ int main(int argc,char **argv) {
 '''
         with tempfile.TemporaryDirectory(prefix='nx2a_menu_font_') as tmp:
             tmp = Path(tmp)
-            overflow_fixture(tmp)
             (tmp/'android_profile.h').write_text(android_profile.header(None))
             src, exe = tmp/'raster.c', tmp/'raster'
             src.write_text(code, encoding='utf-8')
@@ -115,6 +106,7 @@ float dm_overlay_scale(void) { return 1; }
 int dm_overlay_layout(void) { return 0; }
 int dm_overlay_custom(int l, int c, float *x, float *y, float *s) { (void)l; (void)c; (void)x; (void)y; *s=1; return 0; }
 int dm_menu_audio_available(void) { return 0; }
+int dm_menu_lossless_import_available(void) { return 1; }
 enum { AMOTION_EVENT_ACTION_DOWN, AMOTION_EVENT_ACTION_UP, AMOTION_EVENT_ACTION_MOVE,
        AMOTION_EVENT_ACTION_CANCEL, AMOTION_EVENT_ACTION_POINTER_DOWN, AMOTION_EVENT_ACTION_POINTER_UP };
 #define AMOTION_EVENT_ACTION_MASK 255
@@ -125,7 +117,7 @@ typedef struct { int action; float x, y; } AInputEvent;
 #define AMotionEvent_getPointerCount(e) ((void)(e),1u)
 #define AMotionEvent_getX(e,i) ((void)(i),(e)->x)
 #define AMotionEvent_getY(e,i) ((void)(i),(e)->y)
-static _Atomic int g_edit, g_sp_on, g_set_opacity = 60;
+static _Atomic int g_edit, g_sp_on, g_set_opacity = 60, g_set_fg_target = 60;
 static int actions, last_action = -1;
 static void dm_overlay_redraw(void) {}
 static void dm_haptics_android_tap(void) {}
@@ -135,7 +127,7 @@ static void menu_do(int item) { actions++; last_action=item; }
 static void menu_close(void) {}
 static void ed_key(uint64_t bit) { (void)bit; }
 static void sp_key(uint64_t bit) { (void)bit; }
-''' + state + csrc.function(front, 'static void menu_opacity(') + next(line for line in front.splitlines(True) if line.startswith('static void menu_tab(int t)')) + csrc.function(front, 'static void menu_touch(') + csrc.function(front, 'static void menu_key(') + r'''
+''' + state + csrc.function(front, 'static void menu_opacity(') + next(line for line in front.splitlines(True) if line.startswith('static void menu_tab(int t)')) + csrc.function(front, 'static void menu_set_fg_choice(') + csrc.function(front, 'static void menu_touch(') + csrc.function(front, 'static void menu_key(') + r'''
 static void touch(int action, float x, float y, float W, float H) {
     AInputEvent e={action,x,y}; menu_touch(&e,W,H);
 }
@@ -145,9 +137,9 @@ int main(void) {
         float W=screens[n][0], H=screens[n][1], p[4], r[4]; ov_menu_rect(W,H,p);
         assert(p[0]>=0 && p[1]>=0 && p[2]<=W && p[3]<=H);
         atomic_store(&g_menu_tab,1); atomic_store(&g_menu_scroll,0); g_menu_ptr=-1; actions=0;
-        assert(ov_menu_body_count(1)==8 && ov_menu_scroll_limit(1)==3);
+        assert(ov_menu_body_count(1)==7 && ov_menu_scroll_limit(1)==2);
         assert(ov_menu_scroll_limit(0)==0);
-        for (int offset=0;offset<=3;offset++) for (int slot=0;slot<OVM_VIEW_ROWS;slot++) {
+        for (int offset=0;offset<=2;offset++) for (int slot=0;slot<OVM_VIEW_ROWS;slot++) {
             ov_menu_rowrect(p,slot,r);
             int row=slot==0?0:slot==OVM_VIEW_ROWS-1?OVM_ROWS-1:ov_menu_body_row(1,offset+slot-1);
             assert(ov_menu_scroll_row_at(r[0]+r[2]/2,r[1]+r[3]/2,W,H,1,offset)==row);
@@ -175,10 +167,17 @@ int main(void) {
         touch(AMOTION_EVENT_ACTION_DOWN,x,y,W,H);
         touch(AMOTION_EVENT_ACTION_MOVE,x,y-3.3f*rh,W,H);
         touch(AMOTION_EVENT_ACTION_UP,x,y-3.3f*rh,W,H);
-        assert(atomic_load(&g_menu_scroll)==3*OVM_SCROLL_UNITS && actions==0); // no accidental export on swipe
-        ov_menu_rowrect(p,5,r); x=r[0]+r[2]*.2f; y=r[1]+r[3]/2;
+        assert(atomic_load(&g_menu_scroll)==2*OVM_SCROLL_UNITS && actions==0); // no accidental export on swipe
+        int goal_row = ov_menu_body_row(1, 5);
+        assert(ov_menu_item(1,goal_row)==OVM_FG_TARGET && ov_menu_scroll_rowrect(p,1,2,goal_row,r));
+        x=r[0]+r[2]-r[3]*.15f-ov_menu_fg_choice_width(r)*.5f; y=r[1]+r[3]/2;
         touch(AMOTION_EVENT_ACTION_DOWN,x,y,W,H); touch(AMOTION_EVENT_ACTION_UP,x,y,W,H);
-        assert(last_action==OVM_SIZE && actions==1);
+        assert(atomic_load(&g_set_fg_target)==0 && actions==0);
+        atomic_store(&g_menu_hi,goal_row); menu_key(DM_BTN_LEFT);
+        assert(atomic_load(&g_set_fg_target)==60);
+        ov_menu_rowrect(p,5,r); x=r[0]+r[2]*.8f; y=r[1]+r[3]/2;
+        touch(AMOTION_EVENT_ACTION_DOWN,x,y,W,H); touch(AMOTION_EVENT_ACTION_UP,x,y,W,H);
+        assert(last_action==OVM_FG_IMPORT && actions==1);
         ov_menu_rowrect(p,4,r); x=r[0]+r[2]*.2f; y=r[1]+r[3]/2;
         touch(AMOTION_EVENT_ACTION_DOWN,x,y,W,H);
         touch(AMOTION_EVENT_ACTION_MOVE,x,y+20*rh,W,H);
@@ -191,8 +190,8 @@ int main(void) {
             assert(ov_menu_item(1,hi)>=0 && ov_menu_scroll_rowrect(p,1,offset,hi,r));
             if(hi>0 && hi<OVM_ROWS-1) {float slot=ov_menu_scroll_slot(1,offset,hi);assert(slot>=1 && slot+1<=OVM_VIEW_ROWS-1);}
         }
-        atomic_store(&g_menu_scroll,3*OVM_SCROLL_UNITS); atomic_store(&g_menu_hi,OVM_ROWS-2); menu_key(DM_BTN_A);
-        assert(last_action==OVM_SIZE);
+        atomic_store(&g_menu_scroll,2*OVM_SCROLL_UNITS); atomic_store(&g_menu_hi,OVM_ROWS-2); menu_key(DM_BTN_A);
+        assert(last_action==OVM_FG_IMPORT);
         menu_tab(0); assert(atomic_load(&g_menu_scroll)==0);
         ov_menu_rowrect(p,2,r); float track[3]; ov_menu_track(p,2,track);
         x=track[0]; y=track[1];
@@ -209,7 +208,6 @@ int main(void) {
 '''
         with tempfile.TemporaryDirectory(prefix='nx2a_menu_scroll_') as tmp:
             tmp = Path(tmp)
-            overflow_fixture(tmp)
             (tmp / 'android_profile.h').write_text(android_profile.header(None))
             src, exe = tmp / 'check.c', tmp / 'check'
             src.write_text(code, encoding='utf-8')

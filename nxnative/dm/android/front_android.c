@@ -8,6 +8,7 @@
 //   leaving and coming back pauses as on iOS.
 #include "dm.h"
 #include "front.h"
+#include "lossless_dll.h"
 #include "dm_input.h"
 #include "pad_slots.h"
 #include "overlay_layout.h"
@@ -51,7 +52,25 @@ void front_screen_match(int fps) { (void)fps; }
 // ---------------- the app ----------------
 static ANativeActivity *g_act;
 static jmethodID g_audio_menu_method;
+static jmethodID g_lossless_import_method;
+void dm_overlay_redraw(void);
+__attribute__((weak)) int vk_lsfg_validate_dll(const void *data, size_t size);
 int dm_menu_audio_available(void) { return g_audio_menu_method != NULL; }
+int dm_menu_lossless_import_available(void) { return g_lossless_import_method != NULL; }
+JNIEXPORT jboolean JNICALL Java_org_nx2a_GameFiles_validLossless(JNIEnv *e, jclass cls, jbyteArray bytes) {
+    (void)cls;
+    if (!bytes || !vk_lsfg_validate_dll) return JNI_FALSE;
+    jsize n = (*e)->GetArrayLength(e, bytes);
+    if (n <= 0 || (size_t)n > LSFG_DLL_MAX_SIZE) return JNI_FALSE;
+    jbyte *data = (*e)->GetByteArrayElements(e, bytes, NULL);
+    if (!data) return JNI_FALSE;
+    int ok = vk_lsfg_validate_dll(data, (size_t)n);
+    (*e)->ReleaseByteArrayElements(e, bytes, data, JNI_ABORT);
+    return ok ? JNI_TRUE : JNI_FALSE;
+}
+JNIEXPORT void JNICALL Java_org_nx2a_GameFiles_losslessImported(JNIEnv *e, jclass cls) {
+    (void)e; (void)cls; dm_overlay_redraw();
+}
 AAssetManager *dm_front_assets(void) { return g_act ? g_act->assetManager : NULL; }   // the APK's assets (overlay_theme.c: the gamepad's theme)
 static pthread_mutex_t g_win_mu = PTHREAD_MUTEX_INITIALIZER;
 static ANativeWindow *g_win, *g_external_win;
@@ -78,6 +97,7 @@ void dm_focus_set(int st); void dm_audio_suspend(int on); void guest_clock_freez
 // ---- settings (the pause menu's), kept in the files folder as KEY=VALUE lines ----
 static char g_root[512];
 static _Atomic int g_set_overlay = 1, g_set_rumble = 1, g_set_fps;   // the gamepad shown; rumble and tap vibration; the frame rate counter (top left)
+static _Atomic int g_set_framegen, g_set_fg_target = 60;
 static _Atomic int g_set_opacity = 60;   // the gamepad's opacity, percent (OV_OPACITY_MIN..MAX: the menu's Opacity slider)
 static _Atomic int g_set_grid;   // the layout editor's Snap to grid
 // the menu button in play (issue #397): env.txt's DM_MENU_BUTTON=0 (porter port --no-menu-button) leaves it out, as a control the player hid (dm_overlay_hidden):
@@ -124,6 +144,8 @@ static void settings_load(void) {
     while (fgets(line, sizeof line, f)) { int v; if (sscanf(line, "overlay=%d", &v) == 1) atomic_store(&g_set_overlay, v != 0); else if (sscanf(line, "rumble=%d", &v) == 1) atomic_store(&g_set_rumble, v != 0);
         else if (sscanf(line, "fps=%d", &v) == 1) atomic_store(&g_set_fps, v != 0);
         else if (fps_opt_parse(line)) {}
+        else if (sscanf(line, "framegen=%d", &v) == 1) atomic_store(&g_set_framegen, v != 0);
+        else if (sscanf(line, "framegen_target=%d", &v) == 1) atomic_store(&g_set_fg_target, v == 0 ? 0 : 60);
         else if (sscanf(line, "docked=%d", &v) == 1) setenv("DM_OPMODE", v ? "1" : "0", 1);   // over env.txt's: the host reads it once, at its first query
         else if (sscanf(line, "opacity=%d", &v) == 1) atomic_store(&g_set_opacity, v < OV_OPACITY_MIN ? OV_OPACITY_MIN : v > OV_OPACITY_MAX ? OV_OPACITY_MAX : v);
         else if (sscanf(line, "grid=%d", &v) == 1) atomic_store(&g_set_grid, v != 0);
@@ -148,6 +170,7 @@ static void settings_save(void) {
             atomic_load(&g_set_opacity), atomic_load(&g_set_grid));
     fps_opt_write(f);
     if (atomic_load(&g_set_labels) >= 0) fprintf(f, "labels=%d\n", atomic_load(&g_set_labels));   // (only once the player chose: until then env.txt decides)
+    fprintf(f, "framegen=%d\nframegen_target=%d\n", atomic_load(&g_set_framegen), atomic_load(&g_set_fg_target));
     for (int l = 0; l < 2; l++) for (int i = 0; i < OV_N; i++) {
         _Atomic int *c = g_cust[0][l][i]; int x = atomic_load(&c[0]), y = atomic_load(&c[1]), z = atomic_load(&c[2]), hid = atomic_load(&c[3]);
         if ((x && y) || z || hid) fprintf(f, "ui=%s,%s,%d,%d,%d,%d\n", LAYOUT_NAMES[l], OV_LAYOUTS[0][i].name, x && y ? x - 1 : -1, x && y ? y - 1 : -1, z ? z : 1000, hid);
@@ -161,6 +184,12 @@ __attribute__((weak)) void dm_overlay_redraw(void) {}   // the backend presents 
 
 // ---- holding the game: in the background and while the pause menu is open. Its clock reads wait (reason 1) and its audio goes to the silent sink ----
 static _Atomic int g_running, g_bg, g_menu;
+__attribute__((weak)) int vk_lsfg_available(void) { return 0; }   // the null renderer has no LSFG
+int dm_framegen_enabled(void) {
+    return atomic_load(&g_set_framegen) && vk_lsfg_available();
+}
+int dm_framegen_target(void) { return atomic_load(&g_set_fg_target); }
+int dm_game_held(void) { return atomic_load(&g_bg) || atomic_load(&g_menu); }
 static pthread_mutex_t g_hold_mu = PTHREAD_MUTEX_INITIALIZER; static int g_held;
 static _Atomic int g_ime_on;
 static _Atomic int g_tx_on;   // text entry open (front_text_input): the game is held as by the menu
@@ -615,7 +644,7 @@ static void *temp_watch(void *a) {
 static _Atomic int g_menu_hi = -1, g_menu_tab;   // the highlighted row (a controller's selection, or the row a finger is on), -1 none; the open tab
 static _Atomic int g_menu_scroll;
 int dm_menu_scroll_position(void) { return atomic_load(&g_menu_scroll); }
-static int g_menu_ptr = -1, g_menu_row = -2;
+static int g_menu_ptr = -1, g_menu_row = -2, g_menu_choice = -1;
 static float g_menu_down_y; static int g_menu_down_scroll, g_menu_scrolled, g_menu_can_scroll;
 static _Atomic int g_tx_ver;   // the text entry's edit count: the panel is drawn again when it changes
 static _Atomic int g_ed_st;    // the layout editor's state for dm_menu_state (overlay_layout.h OVE_ST)
@@ -626,8 +655,11 @@ int dm_menu_state(void) {
     if (!atomic_load(&g_menu)) return -1;
     if (atomic_load(&g_edit)) return OVE_ST | atomic_load(&g_ed_st);
     if (atomic_load(&g_sp_on)) return OVS_ST | (atomic_load(&g_sp_hi) + 1) << 4 | (atomic_load(&g_sp_ver) & 255) << 20;
+    int lossless = vk_lsfg_available();
     return atomic_load(&g_set_overlay) | atomic_load(&g_set_rumble) << 1 | (dm_opmode() != 0) << 2 | atomic_load(&g_set_fps) << 3 | (atomic_load(&g_menu_hi) + 1) << 4 |
-           (atomic_load(&g_menu_tab) & 1) << 8 | (atomic_load(&g_menu_tab) >> 1 & 1) << 19 | (atomic_load(&g_fps_ver) & 3) << 29 | atomic_load(&g_set_opacity) << 9 | atomic_load(&g_sv_st) << 20 | (atomic_load(&g_sv_n) & 15) << 24 | pad_labels() << 28;
+           (atomic_load(&g_menu_tab) & 1) << 8 | (atomic_load(&g_menu_tab) >> 1 & 1) << 19 | (atomic_load(&g_fps_ver) & 3) << 29 | atomic_load(&g_set_opacity) << 9 | atomic_load(&g_sv_st) << 20 | (atomic_load(&g_sv_n) & 3) << 24 | pad_labels() << 28 |
+           (lossless && atomic_load(&g_set_framegen)) << OVM_FRAMEGEN_BIT | lossless << OVM_FG_AVAILABLE_BIT |
+           (dm_framegen_target() == 0) << OVM_FG_UNCAPPED_BIT;
 }
 int dm_ui_zh(void) {
     const char *e = getenv("DM_UI_LANG");
@@ -673,6 +705,15 @@ static void menu_opacity(int v) {   // the slider: a new value is drawn at once 
     if (atomic_exchange(&g_set_opacity, v) != v) { dm_haptics_android_tap(); dm_overlay_redraw(); }
 }
 static void menu_tab(int t) { t = (t % OVM_TABS + OVM_TABS) % OVM_TABS; if (atomic_exchange(&g_menu_tab, t) != t) { atomic_store(&g_menu_scroll, 0); dm_haptics_android_tap(); } dm_overlay_redraw(); }
+static void menu_set_fg_choice(int choice) {
+    if (choice < 0) return;
+    int target = choice ? 0 : 60;
+    if (atomic_exchange(&g_set_fg_target, target) != target) {
+        settings_save();
+        dm_haptics_android_tap();
+    }
+    dm_overlay_redraw();
+}
 static void ed_open(void); static void sp_open(void); static void save_export(void);
 static void menu_audio(void) {
     if (!g_act || !g_act->vm || !g_act->clazz || !g_audio_menu_method) return;
@@ -685,11 +726,28 @@ static void menu_audio(void) {
     if ((*e)->ExceptionCheck(e)) { (*e)->ExceptionClear(e); LOG("[menu] audio selection is unavailable"); }
     if (attached) (*g_act->vm)->DetachCurrentThread(g_act->vm);
 }
+static void menu_lossless_import(void) {
+    if (!g_act || !g_lossless_import_method) return;
+    JNIEnv *e = NULL; int attached = 0;
+    if ((*g_act->vm)->GetEnv(g_act->vm, (void **)&e, JNI_VERSION_1_6) != JNI_OK) {
+        if ((*g_act->vm)->AttachCurrentThread(g_act->vm, &e, NULL) != JNI_OK) return;
+        attached = 1;
+    }
+    (*e)->CallVoidMethod(e, g_act->clazz, g_lossless_import_method);
+    if ((*e)->ExceptionCheck(e)) { (*e)->ExceptionClear(e); LOG("[menu] Lossless.dll import is unavailable"); }
+    if (attached) (*g_act->vm)->DetachCurrentThread(g_act->vm);
+}
 static void menu_do(int item) {
     if (item == OVM_OVERLAY) { atomic_store(&g_set_overlay, !atomic_load(&g_set_overlay)); atomic_store(&g_overlay, 1); settings_save(); }
     else if (item == OVM_RUMBLE) { int on = !atomic_load(&g_set_rumble); atomic_store(&g_set_rumble, on); dm_haptics_android_set(on); settings_save(); }
     else if (item == OVM_FPS) { atomic_store(&g_set_fps, !atomic_load(&g_set_fps)); settings_save(); }
     else if (fps_opt_press(item)) settings_save();   // the counter's rows, corner, colour, outline and size
+    else if (item == OVM_FRAMEGEN) {
+        if (!vk_lsfg_available()) { dm_overlay_redraw(); return; }
+        atomic_fetch_xor(&g_set_framegen, 1);
+        settings_save();
+    }
+    else if (item == OVM_FG_TARGET) { menu_set_fg_choice(dm_framegen_target() == 60); return; }
     else if (item == OVM_MODE) { dm_set_opmode(dm_opmode() ? 0 : 1); settings_save(); }   // the game takes it when it goes on
     else if (item == OVM_PAD) { atomic_store(&g_set_labels, !pad_labels()); settings_save(); }   // at once (pad_labels)
     else if (item == OVM_TAB) { menu_tab(atomic_load(&g_menu_tab) + 1); return; }
@@ -698,6 +756,7 @@ static void menu_do(int item) {
     else if (item == OVM_EXPORT) { if (atomic_load(&g_sv_st) == OVX_BUSY) return; save_export(); }
     else if (item == OVM_IMPORT) { dm_haptics_android_tap(); sp_open(); return; }
     else if (item == OVM_AUDIO) { menu_audio(); }
+    else if (item == OVM_FG_IMPORT) { menu_lossless_import(); }
     if (item >= 0 && item < OVM_N) dm_haptics_android_tap();
     if (item == OVM_RESUME) menu_close(); else dm_overlay_redraw();
 }
@@ -714,6 +773,7 @@ static void menu_touch(AInputEvent *e, float W, float H) {   // a press on a row
         g_menu_ptr = id; g_menu_row = row;
         g_menu_down_y = y; g_menu_down_scroll = atomic_load(&g_menu_scroll); g_menu_scrolled = 0;
         g_menu_can_scroll = row > 0 && row < OVM_ROWS - 1 && item != OVM_OPACITY && ov_menu_scroll_limit(tab) > 0;
+        g_menu_choice = ov_menu_fg_choice(item) ? ov_menu_fg_choice_at(x, p, slot) : -1;
         if (item == OVM_TAB) menu_tab(ov_menu_tab_at(x, p));   // a tab opens as the finger touches it
         else if (item == OVM_OPACITY) menu_opacity(ov_menu_track_value(x, p, slot));
         if (row >= 0) { atomic_store(&g_menu_hi, item >= 0 ? row : -1); dm_overlay_redraw(); }
@@ -735,6 +795,11 @@ static void menu_touch(AInputEvent *e, float W, float H) {   // a press on a row
         int down = g_menu_row; g_menu_ptr = -1; atomic_store(&g_menu_hi, -1);
         if (g_menu_scrolled) { atomic_store(&g_menu_scroll, ov_menu_scroll_drag(tab, g_menu_down_scroll, (g_menu_down_y - y) / vr[3])); dm_overlay_redraw(); return; }   // no snapping or activation on release
         if (down >= 0 && ov_menu_item(tab, down) == OVM_OPACITY) { settings_save(); dm_overlay_redraw(); }
+        else if (row == down && ov_menu_fg_choice(item)) {
+            int choice = ov_menu_fg_choice_at(x, p, slot);
+            if (choice >= 0 && choice == g_menu_choice) menu_set_fg_choice(choice);
+            else dm_overlay_redraw();
+        }
         else if (row == down && item >= 0 && item != OVM_TAB) menu_do(item);
         else if (row == down && (row == -2 || row == -3)) { dm_haptics_android_tap(); menu_close(); }
         else dm_overlay_redraw();
@@ -749,6 +814,7 @@ static void menu_key(uint64_t bit) {   // a controller key pressed while the men
         for (int k = 0; k < OVM_ROWS; k++) { hi = hi < 0 ? (bit == DM_BTN_UP ? OVM_ROWS - 1 : 1) : (hi + (bit == DM_BTN_UP ? OVM_ROWS - 1 : 1)) % OVM_ROWS; if (ov_menu_item(tab, hi) >= 0) break; }
         atomic_store(&g_menu_hi, hi); atomic_store(&g_menu_scroll, (int)lroundf(ov_menu_scroll_reveal(tab, ov_menu_scroll_rows(atomic_load(&g_menu_scroll)), hi) * OVM_SCROLL_UNITS)); dm_overlay_redraw();
     } else if ((bit == DM_BTN_LEFT || bit == DM_BTN_RIGHT) && item == OVM_OPACITY) { menu_opacity(atomic_load(&g_set_opacity) + (bit == DM_BTN_LEFT ? -5 : 5)); settings_save(); }
+    else if ((bit == DM_BTN_LEFT || bit == DM_BTN_RIGHT) && ov_menu_fg_choice(item)) menu_set_fg_choice(bit == DM_BTN_RIGHT);
     else if ((bit == DM_BTN_LEFT || bit == DM_BTN_RIGHT) && item == OVM_TAB) menu_tab(tab + (bit == DM_BTN_LEFT ? -1 : 1));
     else if (bit == DM_BTN_L || bit == DM_BTN_ZL || bit == DM_BTN_R || bit == DM_BTN_ZR) {
         menu_tab(tab + (bit == DM_BTN_L || bit == DM_BTN_ZL ? -1 : 1));
@@ -1266,7 +1332,9 @@ static void shake_sensor(int on) {
     if (on) ASensorEventQueue_registerSensor(g_sq, g_accel, g_gyro ? 5000 : 16667, 0); else ASensorEventQueue_disableSensor(g_sq, g_accel);
     if (g_gyro) { if (on) ASensorEventQueue_registerSensor(g_sq, g_gyro, 5000, 0); else ASensorEventQueue_disableSensor(g_sq, g_gyro); }
 }
-static JNIEnv *g_ienv; static jobject g_display; static jmethodID g_mRotation;   // the input thread's JNI: Display.getRotation
+static JNIEnv *g_ienv; static jobject g_display; static jmethodID g_mRotation, g_mRefreshRate;   // the input thread's JNI: Display rotation and refresh
+static _Atomic uint64_t g_display_refresh_ns;
+uint64_t dm_display_refresh_ns(void) { return atomic_load(&g_display_refresh_ns); }
 static int g_rot;   // the display's rotation, Surface.ROTATION_0..270 = 0..3
 static void rotation_start(void) {
     JavaVM *vm = g_act ? g_act->vm : NULL; JNIEnv *E;
@@ -1277,11 +1345,16 @@ static void rotation_start(void) {
     jmethodID mDisp = cWm ? (*E)->GetMethodID(E, cWm, "getDefaultDisplay", "()Landroid/view/Display;") : NULL; if (jx(E) || !mDisp || !cD) return;
     jobject d = (*E)->CallObjectMethod(E, wm, mDisp); g_mRotation = (*E)->GetMethodID(E, cD, "getRotation", "()I"); if (jx(E) || !d || !g_mRotation) return;
     g_display = (*E)->NewGlobalRef(E, d); g_ienv = E;
+    g_mRefreshRate = (*E)->GetMethodID(E, cD, "getRefreshRate", "()F"); jx(E);
 }
 static void rotation_poll(int64_t now) {
     static int64_t next; static int first = 1;
     if (!g_display || now < next) return;
     next = now + 250000000;
+    if (g_mRefreshRate) {
+        float hz = (*g_ienv)->CallFloatMethod(g_ienv, g_display, g_mRefreshRate);
+        if (!jx(g_ienv) && hz >= 20 && hz <= 1000) atomic_store(&g_display_refresh_ns, (uint64_t)(1e9 / hz));
+    }
     int r = (*g_ienv)->CallIntMethod(g_ienv, g_display, g_mRotation); if (jx(g_ienv)) return;
     if ((r & 3) != g_rot || first) LOG("front end: display rotation %d degrees: motion axes follow it", (r & 3) * 90);
     g_rot = r & 3; first = 0;
@@ -1341,7 +1414,7 @@ static void shake_start(void) {
     const char *e = getenv("DM_SHAKE_G"), *mo = getenv("DM_MOTION");
     if (!(mo && !atoi(mo))) {
         g_gyro = ASensorManager_getDefaultSensor(m, ASENSOR_TYPE_GYROSCOPE);
-        if (g_gyro) { rotation_start(); LOG("front end: the device's gyroscope (%s) moves the controller's six-axis sensor", ASensor_getName(g_gyro)); }
+        if (g_gyro) LOG("front end: the device's gyroscope (%s) moves the controller's six-axis sensor", ASensor_getName(g_gyro));
         else LOG("front end: no gyroscope: using accelerometer-only shake");
     } else LOG("front end: DM_MOTION=0: using accelerometer-only shake");
     if (g_gyro && motion_raw()) LOG("front end: DM_MOTION_RAW=1: raw device motion without automatic shake override");
@@ -1363,10 +1436,12 @@ static void *input_thread(void *a) {
         }
     }
     g_ilooper = ALooper_prepare(0);
+    rotation_start();   // frame generation also needs the display's refresh rate when motion sensors are disabled or absent
     shake_start();
     uint64_t prev = 0, latched = 0, sample = 0; int64_t since = 0;
     for (;;) {
-        ALooper_pollOnce(latched ? 10 : -1, NULL, NULL, NULL);
+        ALooper_pollOnce(latched ? 10 : 250, NULL, NULL, NULL);
+        rotation_poll(mono_ns());
         ext_touch_drain();
         if (!dm_external_active()) { prev = latched = 0; atomic_store(&g_ext_presses, 0); atomic_store(&g_ext_touch_enabled, 0); continue; }
         if (atomic_load(&g_ext_touch_enabled)) continue;
@@ -1468,6 +1543,8 @@ __attribute__((visibility("default"))) void ANativeActivity_onCreate(ANativeActi
     JNIEnv *env = act->env;
     jclass activity_class = (*env)->GetObjectClass(env, act->clazz);
     if (activity_class) g_audio_menu_method = (*env)->GetMethodID(env, activity_class, "openAudioMenu", "()V");
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+    if (activity_class) g_lossless_import_method = (*env)->GetMethodID(env, activity_class, "importLosslessDll", "()V");
     if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
     if (activity_class) (*env)->DeleteLocalRef(env, activity_class);
     snprintf(g_root, sizeof g_root, "%s", act->externalDataPath ? act->externalDataPath : act->internalDataPath);

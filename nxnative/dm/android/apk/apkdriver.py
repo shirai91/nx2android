@@ -42,6 +42,11 @@ def rebuild(src, driver=KEEP, host=None, assets=None):
         if i.filename.startswith('assets/') and i.filename[7:] in assets: data = open(assets[i.filename[7:]], 'rb').read()
         entries.append((i.filename, data, 16384 if i.filename.startswith(ABI) else 4))   # libraries page-aligned, as mkapk.py writes them (extracted, or mapped in place)
     have = {e for e, _, _ in entries}
+    license_entry = 'META-INF/lsfg-vk-LICENSE.txt'
+    if host and license_entry not in have:
+        license_path = os.path.join(os.path.dirname(__file__), 'lsfg-vk-LICENSE.txt')
+        with open(license_path, 'rb') as f:
+            entries.append((license_entry, f.read(), 4))
     entries += [(f'assets/{n}', open(f, 'rb').read(), 4) for n, f in assets.items() if f'assets/{n}' not in have]   # stored, as mkapk.py writes them: AAsset reads them in place
     if driver is KEEP: return entries, dropped, kept
     added = ''

@@ -78,7 +78,6 @@ static ssize_t ASensorEventQueue_getEvents(ASensorEventQueue *q, ASensorEvent *o
     if (!available) return 0;
     *out = pending; available = 0; clock_ns = pending.timestamp; return 1;
 }
-static void rotation_start(void) {}
 static void rotation_poll(int64_t now) { (void)now; }
 static void shake_sensor(int on) { (void)on; }
 static pthread_mutex_t g_slot_mu = PTHREAD_MUTEX_INITIALIZER;   // the per-player state's lock (each controller a player of its own)
