@@ -86,6 +86,20 @@ class MergedDumps(unittest.TestCase):
             self.assertEqual(nsp.nsp_versions(fam, {'v0': {}, 'v196608': {}}), {'v0': path, 'v196608': path})   # taken for the newest registered update, as an untagged update NSP is
             self.assertEqual(nsp.nsp_versions(fam, {'v0': {}}), {'v0': path})   # the profile registers no update: the loose one is left out
 
+    def test_an_untagged_merged_dump_extracts_the_newest_patch_it_holds(self):
+        # A retail card dump with an embedded patch carries no [v] tag: nsp_versions takes it for the newest update the profile registers on the name alone, and --merged --version N
+        # would stop the port when the card holds another patch. Instead the untagged one is extracted with no --version (nx_extract picks the newest patch in the dump) and the
+        # build-ID check decides, as with a separate loose update (the review of #452).
+        tagged = self.dump('Merged [v262144].nsp', [self.BASE, self.BASE + 0x800])
+        untagged = self.dump('Merged.nsp', [self.BASE, self.BASE + 0x800])
+        self.assertEqual(nsp.merged_version(tagged, 'v262144'), 262144)   # a [v] tag: --version selects the patch the tag names
+        self.assertEqual(nsp.merged_version(untagged, 'v0'), 0)   # the base game alone, tagged or not
+        self.assertIsNone(nsp.merged_version(untagged, 'v196608'))   # taken for the newest registered update on its name alone: no --version
+        self.assertEqual(nsp.merged_args('nx', 'keys', untagged, 'out', nsp.merged_version(untagged, 'v196608')),
+                         ['nx', 'keys', '--merged', untagged, 'out'])
+        self.assertEqual(nsp.merged_args('nx', 'keys', tagged, 'out', nsp.merged_version(tagged, 'v262144')),
+                         ['nx', 'keys', '--merged', tagged, 'out', '--version', '262144'])
+
     def test_an_untagged_merged_update_is_left_out_when_a_tagged_one_is_there(self):
         self.dump('Merged.nsp', [self.BASE, self.BASE + 0x800])
         self.dump('Update [v262144].nsp', [self.BASE + 0x800])
