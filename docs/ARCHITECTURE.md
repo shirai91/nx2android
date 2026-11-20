@@ -191,7 +191,7 @@ A profile is offered for Android when it has an `android.tsv`; the profiles with
 | `env` | `<KEY>=<VALUE>`: a host switch the game needs on Android, written to the data pack's `env.txt`; only switches of scope `profile` in the settings registry (Settings, above) |
 | `overlay` | `<tablet\|phone> <control> <x> <y>`: moves one on-screen control of that layout (`dm/android/overlay_default.tsv`) to x, y as fractions of the window, compiled into `android_profile.h` |
 
-Per-build knowledge stays where upstream keeps it: the rewriter's cuts in `patches.py` / `dm/tools/sdk_patches.py`, keyed by build ID.
+Per-build knowledge stays where upstream keeps it: the rewriter's cuts in `patches.py` / `dm/tools/sdk_patches.py`, keyed by build ID. For an unregistered `sdk` build, SDK-wide memory recipes may match a complete unwind function, its direct callees and original bytes. Exact entries, including explicit empty entries, take precedence. Missing, changed or ambiguous matches leave the original instructions in place; profile-level patches remain keyed by build ID. The matcher and SDK rules participate in rewrite cache keys and source provenance.
 
 ## The port
 
