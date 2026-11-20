@@ -275,11 +275,14 @@ static int pad_dev_kind(int id) {
     (*E)->DeleteLocalRef(E, d);
     return bad ? -2 : !virt && ((src & AINPUT_SOURCE_GAMEPAD) == AINPUT_SOURCE_GAMEPAD || (src & AINPUT_SOURCE_JOYSTICK) == AINPUT_SOURCE_JOYSTICK);
 }
-// A physical controller's face buttons by their label (an Xbox controller's A is the game's A) instead of by their position: the game's own prompts name the button
-// (A to confirm, B to go back), which an Xbox controller's labels match and its positions do not. Label or position is a property of the player's controller, not of
-// the game, so it is the pause menu's Face buttons row (settings.txt labels=, kept per device), or until the player chooses there DM_PAD_LABEL=1 in env.txt
-// (DM_PAD_XBOX=1, its first name, still counts). Only a controller is remapped: the on-screen gamepad sends the game's buttons as they are (the Switch layout,
-// with A, B, X and Y on the buttons, as the prompts name them). The row changes it at once: the menu's own A and B follow it
+// A physical controller's face buttons by their label (the button named A is the game's A) instead of by their position (the right-hand one is): the game's own
+// prompts name the button (A to confirm, B to go back), which a controller whose A sits at the bottom matches by label and one whose A is on the right by
+// position. Label or position is a property of the player's controller, not of the game: until the player chooses, DM_PAD_LABEL=1 in env.txt (DM_PAD_XBOX=1,
+// its first name, still counts) is the default, and the choice is kept per device as settings.txt labels=. The Gamepad tab's row opens the detector (pd_open):
+// the first face button a controller presses decides - A means by label, any other face button by position (a press arriving as X or Y on a rotated pad still
+// means positions: the four are one set, only A is special) - and Start or Select cancels (they are outside the measured set and map the same both ways).
+// Only a controller is remapped: the on-screen gamepad sends the game's buttons as they are (the Switch layout, with A, B, X and Y on the buttons, as the
+// prompts name them). The menu's own A and B follow pad_labels as soon as it is set
 static int pad_labels(void) {
     int s = atomic_load(&g_set_labels); if (s >= 0) return s;
     static int on = -1;
@@ -583,12 +586,14 @@ static int g_menu_ptr = -1, g_menu_row = -2;   // the pointer pressing in the me
 static _Atomic int g_tx_ver;   // the text entry's edit count: the panel is drawn again when it changes
 static _Atomic int g_ed_st;    // the layout editor's state for dm_menu_state (overlay_layout.h OVE_ST)
 static _Atomic int g_sp_on, g_sp_hi = -1, g_sp_ver;   // the save picker (below): open, its highlighted row, its edit count
+static _Atomic int g_pd_on, g_pd_ver;                 // the face-button detector (below): open, its edit count (the panel's raster re-rasterizes when it changes)
 static _Atomic int g_sv_st, g_sv_n;                   // Export save: its outcome (overlay_layout.h OVX_*), the exports made
 int dm_menu_state(void) {
     if (atomic_load(&g_tx_on)) return OVT_ST | (atomic_load(&g_tx_ver) & 0xffff);   // the text entry's panel (gfx_vk_present.c ov_text_panel)
     if (!atomic_load(&g_menu)) return -1;
     if (atomic_load(&g_edit)) return OVE_ST | atomic_load(&g_ed_st);
     if (atomic_load(&g_sp_on)) return OVS_ST | (atomic_load(&g_sp_hi) + 1) << 4 | (atomic_load(&g_sp_ver) & 255) << 20;
+    if (atomic_load(&g_pd_on)) return OVP_ST | (atomic_load(&g_pd_ver) & 255) << 20;   // the face-button detector's prompt (gfx_vk_present.c ov_pad_panel)
     return atomic_load(&g_set_overlay) | atomic_load(&g_set_rumble) << 1 | (dm_opmode() != 0) << 2 | atomic_load(&g_set_fps) << 3 | (atomic_load(&g_menu_hi) + 1) << 4 |
            atomic_load(&g_menu_tab) << 8 | atomic_load(&g_set_opacity) << 9 | atomic_load(&g_sv_st) << 20 | (atomic_load(&g_sv_n) & 15) << 24 | pad_labels() << 28;
 }
@@ -606,15 +611,16 @@ static void menu_open(int hi) {
     hold_sync(); dm_overlay_redraw();
     LOG("[menu] opened: the game is paused");
 }
-static void ed_cancel(void); static void sp_back(void);
+static void ed_cancel(void); static void sp_back(void); static void pd_open(void); static void pd_close(void);
 static void menu_close(void) {
+    if (atomic_load(&g_pd_on)) { pd_close(); return; }   // the face-button detector: a cancel, not the menu
     if (atomic_load(&g_edit)) { ed_cancel(); return; }   // the editor first: its changes are kept or thrown away before the game goes on
     if (atomic_load(&g_sp_on)) { sp_back(); return; }    // the save picker: back a step
     if (!atomic_exchange(&g_menu, 0)) return;
     g_menu_ptr = -1; atomic_store(&g_menu_t, 0);
     hold_sync(); dm_haptics_suspend(4, 0); dm_overlay_redraw();
-    LOG("[menu] closed: the game goes on (gamepad %s, opacity %d%%, rumble %s, face buttons by %s, frame rate %s, %s)", atomic_load(&g_set_overlay) ? "on" : "off", atomic_load(&g_set_opacity),
-        atomic_load(&g_set_rumble) ? "on" : "off", pad_labels() ? "label" : "position", atomic_load(&g_set_fps) ? "shown" : "hidden", dm_opmode() ? "docked" : "handheld");
+    LOG("[menu] closed: the game goes on (gamepad %s, opacity %d%%, rumble %s, face buttons: %s, frame rate %s, %s)", atomic_load(&g_set_overlay) ? "on" : "off", atomic_load(&g_set_opacity),
+        atomic_load(&g_set_rumble) ? "on" : "off", pad_labels() ? "A is at the bottom" : "A is on the right", atomic_load(&g_set_fps) ? "shown" : "hidden", dm_opmode() ? "docked" : "handheld");
 }
 static void menu_opacity(int v) {   // the slider: a new value is drawn at once and saved when the finger lifts (menu_touch) or with each controller step
     v = v < OV_OPACITY_MIN ? OV_OPACITY_MIN : v > OV_OPACITY_MAX ? OV_OPACITY_MAX : v;
@@ -638,7 +644,7 @@ static void menu_do(int item) {
     else if (item == OVM_RUMBLE) { int on = !atomic_load(&g_set_rumble); atomic_store(&g_set_rumble, on); dm_haptics_android_set(on); settings_save(); }
     else if (item == OVM_FPS) { atomic_store(&g_set_fps, !atomic_load(&g_set_fps)); settings_save(); }
     else if (item == OVM_MODE) { dm_set_opmode(dm_opmode() ? 0 : 1); settings_save(); }   // the game takes it when it goes on
-    else if (item == OVM_PAD) { atomic_store(&g_set_labels, !pad_labels()); settings_save(); }   // at once (pad_labels)
+    else if (item == OVM_PAD) { dm_haptics_android_tap(); pd_open(); return; }   // the detector decides (pd_capture): the row only opens it
     else if (item == OVM_TAB) { menu_tab(atomic_load(&g_menu_tab) + 1); return; }
     else if (item == OVM_EDIT) { dm_haptics_android_tap(); ed_open(); return; }
     else if (item == OVM_OPACITY) return;   // (the slider is dragged, or stepped with left and right)
@@ -679,6 +685,7 @@ static void ed_key(uint64_t bit); static void sp_key(uint64_t bit);
 static void menu_key(uint64_t bit) {   // a controller key pressed while the menu is open: up and down go through the rows, left and right change the tab or the
     if (atomic_load(&g_edit)) { ed_key(bit); return; }   // opacity on their rows, L and R change the tab anywhere, A does the row, B and + close
     if (atomic_load(&g_sp_on)) { sp_key(bit); return; }
+    if (atomic_load(&g_pd_on)) return;   // the face-button detector: navigation frozen (a face press never reaches here - handle_event captures it first, Start and Select too)
     int hi = atomic_load(&g_menu_hi), tab = atomic_load(&g_menu_tab), item = hi >= 0 ? ov_menu_item(tab, hi) : -1;
     if (bit == DM_BTN_UP || bit == DM_BTN_DOWN) {
         for (int k = 0; k < OVM_ROWS; k++) { hi = hi < 0 ? (bit == DM_BTN_UP ? OVM_ROWS - 1 : 1) : (hi + (bit == DM_BTN_UP ? OVM_ROWS - 1 : 1)) % OVM_ROWS; if (ov_menu_item(tab, hi) >= 0) break; }
@@ -786,6 +793,33 @@ static void sp_size(char *out, int cap, const dm_save_entry *s) {
     else snprintf(out, (size_t)cap, "%ld file%s, %lld KB", s->files, s->files == 1 ? "" : "s", (s->bytes + 1023) / 1024);
 }
 #define SP_ROW(i, st, ...) do { rows[i].style = st; snprintf(rows[i].left, sizeof rows[i].left, __VA_ARGS__); } while (0)
+
+// ---- the face-button detector (from the Gamepad tab's Configure row): the pause menu's panel with the prompt (gfx_vk_present.c ov_pad_panel). The first
+// face button a controller presses decides (handle_event calls pd_capture with the raw Android keycode - key_bit is not involved, the mapping is what is
+// being measured): A is by label, any other face button by position (a press arriving as X or Y on a rotated pad still means positions: the four are one
+// set, only A is special). Start or Select cancels (outside the measured set, they map the same both ways), the system's Back and the controller's menu
+// button route through menu_close, and a touch outside the panel cancels. While it is open the menu's own A and B navigation is frozen (menu_key) - the
+// menu cannot know which button is its "back", that is the thing being measured
+static void pd_open(void) {
+    atomic_store(&g_pd_on, 1); atomic_fetch_add(&g_pd_ver, 1); dm_overlay_redraw();
+    LOG("[menu] face-button detector open: press A (by label) or B, X, Y (by position); Start or a touch outside the panel cancels");
+}
+static void pd_close(void) {   // cancelled: the mapping is unchanged, nothing is saved
+    if (!atomic_exchange(&g_pd_on, 0)) return;
+    dm_haptics_android_tap(); atomic_store(&g_menu_hi, -1); dm_overlay_redraw();
+    LOG("[menu] face-button detector cancelled: the mapping is unchanged");
+}
+static void pd_capture(int32_t k, int device) {
+    atomic_store(&g_set_labels, k == AKEYCODE_BUTTON_A ? 1 : 0);
+    dm_haptics_android_tap(); atomic_store(&g_pd_on, 0); atomic_store(&g_menu_hi, -1); settings_save(); dm_overlay_redraw();
+    LOG("[menu] face-button detect: controller key %d (device %d) -> %s", k, device, k == AKEYCODE_BUTTON_A ? "A is at the bottom" : "A is on the right");
+}
+static void pd_touch(AInputEvent *e, float W, float H) {   // a touch outside the panel cancels; inside, the panel ignores it
+    int act = AMotionEvent_getAction(e) & AMOTION_EVENT_ACTION_MASK, ai = AMotionEvent_getAction(e) >> AMOTION_EVENT_ACTION_POINTER_INDEX_SHIFT;
+    int i = act == AMOTION_EVENT_ACTION_DOWN || act == AMOTION_EVENT_ACTION_UP ? 0 : ai;
+    if ((act == AMOTION_EVENT_ACTION_DOWN || act == AMOTION_EVENT_ACTION_POINTER_DOWN) && ov_menu_row_at(AMotionEvent_getX(e, (size_t)i), AMotionEvent_getY(e, (size_t)i), W, H) == -2) pd_close();
+}
+
 int dm_save_rows(ov_srow rows[OVM_ROWS]) {   // (gfx_vk_present.c ov_save_panel)
     if (!atomic_load(&g_sp_on)) return 0;
     memset(rows, 0, sizeof(ov_srow) * OVM_ROWS);
@@ -1029,7 +1063,7 @@ __attribute__((weak)) void dm_picture_rect(float r[4]);   // gfx_vk_present.c
 static void touch_event(AInputEvent *e) {
     ANativeWindow *w = phone_window(); float W = w ? (float)ANativeWindow_getWidth(w) : 1, H = w ? (float)ANativeWindow_getHeight(w) : 1;
     if (atomic_load(&g_tx_on)) { tx_touch(e, W, H); return; }   // the text entry's keys
-    if (atomic_load(&g_menu)) { if (atomic_load(&g_edit)) ed_touch(e, W, H); else if (atomic_load(&g_sp_on)) sp_touch(e, W, H); else menu_touch(e, W, H); return; }
+    if (atomic_load(&g_menu)) { if (atomic_load(&g_edit)) ed_touch(e, W, H); else if (atomic_load(&g_sp_on)) sp_touch(e, W, H); else if (atomic_load(&g_pd_on)) pd_touch(e, W, H); else menu_touch(e, W, H); return; }
     int act = AMotionEvent_getAction(e) & AMOTION_EVENT_ACTION_MASK, ai = AMotionEvent_getAction(e) >> AMOTION_EVENT_ACTION_POINTER_INDEX_SHIFT;
     size_t pc = AMotionEvent_getPointerCount(e);
     if (act == AMOTION_EVENT_ACTION_DOWN || act == AMOTION_EVENT_ACTION_POINTER_DOWN) {
@@ -1101,6 +1135,13 @@ static int handle_event(AInputEvent *e) {
         if (k == AKEYCODE_BACK || k == AKEYCODE_BUTTON_MODE || k == AKEYCODE_MENU) {   // the menu, both ways (Back would otherwise finish the activity, and the game with it)
             if (down && AKeyEvent_getRepeatCount(e) == 0) { if (atomic_load(&g_menu)) menu_close(); else menu_open(k == AKEYCODE_BACK ? -1 : 0); }
             return 1;
+        }
+        if (atomic_load(&g_pd_on)) {   // the face-button detector takes the keys the menu would act on (its own A and B are what is being measured)
+            if (down && AKeyEvent_getRepeatCount(e) == 0) {
+                if (k == AKEYCODE_BUTTON_A || k == AKEYCODE_BUTTON_B || k == AKEYCODE_BUTTON_X || k == AKEYCODE_BUTTON_Y) { pd_capture(k, AInputEvent_getDeviceId(e)); return 1; }
+                if (k == AKEYCODE_BUTTON_START || k == AKEYCODE_BUTTON_SELECT) { pd_close(); return 1; }   // outside the measured set: they map the same both ways
+            }
+            return 1;   // every other key, stick or d-pad step is ignored while detecting (the game is paused under the menu, so nothing is lost)
         }
         uint64_t bit = key_bit(k);
         if (!bit) {   // the rest: the system's. A controller's key nothing maps is logged once, so a new controller's menu key can be found
