@@ -377,6 +377,18 @@ It builds through the production Java/dex packager, uses the real guest keyboard
 
 For live A/B testing, use a `DM_CTL` env update with `DM_VK_CPU_READY=0`, then restore `DM_VK_CPU_READY=1`. Values take effect at a submission boundary. Disabling allows unsynchronized CPU descriptor reads; the default remains enabled.
 
+### NVN alpha testing
+
+`tests/test_vk_alpha.py` checks the recorded reference, dynamic comparison masks,
+integer-target bypass and SPIR-V variants with the NDK shader tools. Its replay
+source is read through `tests/csrc.py` `unit()` so the harness includes every
+replay section. `tests/vk_alpha_replay.md` describes the asset-free manual replay.
+The shader-variant log's `alpha test 1` reports variant creation; pair it with a
+scene-specific picture difference to establish game use. The donor's Dark Souls
+foliage, Animal Crossing island maps and Astral Chain death effects are leads,
+not verified Android game/version/scene reproductions. Physical Qualcomm and
+Turnip gameplay qualification remains separate from host and synthetic checks.
+
 ## Runtime GLSLC shader preparation
 
 Some NVN games compile shaders with their own GLSLC at startup (for example, Fire Emblem: Three Houses and Catherine: Full Body). The porter captures these outputs before the offline shader split. If the extraction already contains every complete `glslc_capture/*.glslc` output named by the profile, it reuses them without a device. Otherwise, connect an ARM64 Android device with USB debugging and configure `adb`, even when building without `--install`.
