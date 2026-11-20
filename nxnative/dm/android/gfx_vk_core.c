@@ -1747,12 +1747,25 @@ static void *completion_main(void *a) {
         }
         uint64_t now = gpu_ticks(), tend = 0;
         if (g_tsq && c->slot >= 0) { uint64_t t[2]; if (vkGetQueryPoolResults(V.dev, g_tsq, 2 * (uint32_t)c->slot, 2, sizeof t, t, 8, VK_QUERY_RESULT_64_BIT) == VK_SUCCESS) tend = t[1]; }
+        // Counter timestamps: one affine map of the GPU clock onto the guest's unit, anchored at the submission's end and at its completion.
+        // The guest clock freezes while the game is held (pause menu, background, the system keyboard: guest_clock_freeze_for) and the GPU
+        // counter keeps running, so the map is re-anchored when its end leads now. Now leading the map's end by 100 ms also catches a counter
+        // wrap (a driver with fewer valid timestamp bits) and slow drift; a report then never lands past the guest clock.
+        static uint64_t g_ts_o; static int g_ts_set; uint64_t ts_end = now;
+        if (tend) {
+            uint64_t qe = (uint64_t)((double)tend * V.props.limits.timestampPeriod * 12 / 625);   // GPU ticks → NVN ticks, the guest's 625/12 ns unit
+            if (!g_ts_set || g_ts_o + qe > now || now - (g_ts_o + qe) > 1920000ull) { g_ts_o = now - qe; g_ts_set = 1; }   // 100 ms in NVN ticks
+            ts_end = g_ts_o + qe;
+        }
         for (int i = 0; i < c->n; i++) {
             post_op *o = &c->ops[i];
             if (o->kind == 1) { if (o->mode == 1) *o->val += o->v; else *o->val = o->v; continue; }
-            uint64_t ts = now, tq;
-            if (o->q >= 0 && tend && vkGetQueryPoolResults(V.dev, g_cq, (uint32_t)o->q, 1, 8, &tq, 8, VK_QUERY_RESULT_64_BIT) == VK_SUCCESS && tq <= tend) {
-                uint64_t back = (uint64_t)((double)(tend - tq) * V.props.limits.timestampPeriod * 12 / 625); if (back < now) ts = now - back; }
+            // The guest measures frame time as the difference of two reports; back-dating each to its own submission's completion compressed
+            // that difference (the completion thread drains several submissions in one burst), so Unreal's automatic resolution read 17 ms of a
+            // frame that took 33 ms and raised the resolution. A report without a usable query takes the submission's end on the same map.
+            uint64_t ts = ts_end, tq = 0;
+            if (o->q >= 0 && tend && vkGetQueryPoolResults(V.dev, g_cq, (uint32_t)o->q, 1, 8, &tq, 8, VK_QUERY_RESULT_64_BIT) == VK_SUCCESS && tq && tq <= tend)
+                ts = g_ts_o + (uint64_t)((double)tq * V.props.limits.timestampPeriod * 12 / 625);
             // render_cond: a timestamp report's counter field is 0, as on the GPU (gfx_vk_exec.c render_cond evaluates conditions on it)
             uint64_t rec[2] = {o->type == 0 || o->type == 0x10 ? (DM_GAME_RENDER_COND ? 0 : ts) : o->type == NVN_COUNTER_TYPE_SAMPLES_PASSED ? (1u << 20) : 0, ts}; memcpy((void *)(uintptr_t)o->addr, rec, sizeof rec);
         }
