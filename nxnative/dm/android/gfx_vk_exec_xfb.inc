@@ -302,6 +302,7 @@ static void draw(const p_draw *d) {
 }
 static void draw_idx(const p_draw_idx *d) {
     graphics_updates_ready();
+    if (!quad_index_ready(d)) return;
     graphics_cpu_ready();
     uint64_t index_bytes = (uint64_t)(uint32_t)d->count * (d->itype == 0 ? 1u : d->itype == 1 ? 2u : 4u);
     if (gs_split_draw(d->prim, d->ind, d->ibuf, index_bytes)) {

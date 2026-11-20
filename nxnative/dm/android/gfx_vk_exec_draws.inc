@@ -368,12 +368,36 @@ static VkBuffer quad_index_buffer(uint32_t *nq) {
     return b;
 }
 // quads: a triangle list of indices made on the CPU (from the game's index buffer for indexed draws)
+// nxnative draw_direct readies indices before CPU primitive conversion
+// (1f01e28c, nvn_vk.c). Native GPU-index draws do not consume these bytes here.
+static int quad_index_ready(const p_draw_idx *d) {
+    if (d->prim != NVN_DRAW_PRIMITIVE_QUADS || d->ind) return 1;
+    if (d->count < 4 || (unsigned)d->itype > 2) return 0;
+    uint64_t n = (uint64_t)(uint32_t)d->count * (1u << d->itype);
+    if (d->ibuf > UINT64_MAX - n || !vk_pool_of(d->ibuf, n)) return 0;
+    cpu_ready(d->ibuf, n);
+    return 1;
+}
 static int quad_indices(uint32_t count, const uint8_t *src, int itype, int32_t first, VkBuffer *buf, VkDeviceSize *off) {
     uint32_t nq = count / 4; if (!nq) return 0;
+    unsigned bytes = itype == 0 ? 1 : itype == 1 ? 2 : 4;
+    if (src) {
+        // Donor cpu_access_ready materializes known bytes once. Reuse the
+        // target's uniform-shadow snapshot pattern, not a tracker scan per index.
+        VkBuffer snapshot_buffer; VkDeviceSize snapshot_offset, n = (VkDeviceSize)count * bytes;
+        uint8_t *snapshot = vk_scratch(n, 4, &snapshot_buffer, &snapshot_offset);
+        vk_ubd_read((uintptr_t)src, n, snapshot);
+        src = snapshot;
+    }
     uint32_t *d = vk_scratch((VkDeviceSize)nq * 6 * 4, 4, buf, off);
     for (uint32_t q = 0; q < nq; q++) for (int k = 0; k < 6; k++) {
         static const int pat[6] = {0, 1, 2, 0, 2, 3}; uint32_t i = q * 4 + (uint32_t)pat[k];
-        d[q * 6 + k] = !src ? (uint32_t)first + i : itype == 0 ? src[i] : itype == 1 ? ((const uint16_t *)src)[i] : ((const uint32_t *)src)[i];
+        uint32_t value = (uint32_t)first + i;
+        if (src) {
+            value = 0;
+            memcpy(&value, src + (size_t)i * bytes, bytes); // donor source_index, including unaligned input
+        }
+        d[q * 6 + k] = value;
     }
     return (int)(nq * 6);
 }
