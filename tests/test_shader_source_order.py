@@ -43,6 +43,11 @@ def compiler_output(unique_word):
 
 
 def open_fixture(path, *args, **kwargs):
+    # Port.run starts shader tools with PYTHONUTF8=1. This in-process path
+    # simulation must preserve that text encoding on a Windows ANSI locale.
+    mode = args[0] if args else kwargs.get('mode', 'r')
+    if 'b' not in mode:
+        kwargs.setdefault('encoding', 'utf-8')
     return builtins.open(os.fspath(path).replace('\\', '/'), *args, **kwargs)
 
 
