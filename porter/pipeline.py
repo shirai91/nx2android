@@ -299,9 +299,6 @@ class Port:
         o = self.o
         say(f'game folder: {o.folder}')
         self.app, self.fam = nsp.scan_nsps(o.folder, dumps.EXTS, o.keys)
-        if o.romfs_container and self.fam['base'].suffix.lower() in ('.xci', '.xcz'):
-            raise BuildError(f'--romfs-container reads the game out of its own NSPs, and the base game is {self.fam["base"].name}: the host reads NSP containers only so far. '
-                             f'Port without the option (the extracted RomFS), or give the folder the base game as an NSP')
         tid = f'{self.app:016X}'
         self.work = o.folder / f'{tid}_build'
         g, ap = profiles.by_title(self.app)
@@ -461,27 +458,28 @@ class Port:
 
     def containers(self):
         """--romfs-container: the player's own game files, listed in the data pack's manifest for the installer to push to the device as they are (files/container/
-        romfs.nsp, update.nsp, aoc/<index>.nsp, and prod.keys / title.keys in the files folder), which the host then reads the game's files out of at run time
-        (DM_ROMFS_CONTAINER, dm/host/dm_romfs.c). Nothing is copied into the pack: an NSP is listed where it is; an NSZ / XCZ is decompressed once into the build
-        folder, which the installer needs an NSP from (drop_unpacked comes after this)"""
+        romfs.nsp, or romfs.xci for a gamecard base; update.nsp; aoc/<index>.nsp; and prod.keys / title.keys in the files folder), which the host then reads the
+        game's files out of at run time (DM_ROMFS_CONTAINER, dm/host/dm_romfs.c). Nothing is copied into the pack: an NSP / XCI is listed where it is; an NSZ / XCZ is
+        decompressed once into the build folder, which the installer needs an NSP / XCI from (drop_unpacked comes after this)"""
         o = self.o
         base, upd = nsp.pick_nsps(self.fam, self.have, [self.pkg_ver])[self.pkg_ver]
         dlc = list(self.fam['dlc'])
         m = self.unpack([p for p in (base, upd, *(p for _, _, p in dlc)) if p])
         kept = self.work / 'containers'
 
-        def where(p):   # (the file to push, its bytes): the NSP as it is, or the NSP an NSZ / XCZ was decompressed to, kept in the build folder
+        def where(p):   # (the file to push, its bytes): the NSP / XCI as it is, or the one an NSZ / XCZ was decompressed to, kept in the build folder
             f = m.get(p, p)
             if f == p: return str(f), f.stat().st_size
             k = kept / f.name
             if not k.is_file() or k.stat().st_size != f.stat().st_size: datapack.link_or_copy(f, k)
             return str(k), k.stat().st_size
 
-        self.container_push = [(datapack.CONTAINER_BASE, *where(base))]
+        bsuf = Path(m.get(base, base)).suffix.lower()   # .nsp or .xci: the device file keeps the player's own format
+        self.container_push = [('romfs' + (bsuf if bsuf in ('.nsp', '.xci') else '.nsp'), *where(base))]
         if upd: self.container_push.append((datapack.CONTAINER_UPDATE, *where(upd)))
         for t, _, p in dlc: self.container_push.append((f'aoc/{t & 0xFFF}.nsp', *where(p)))
         self.container_keys = [(name, str(f), f.stat().st_size) for name, f in (('prod.keys', o.keys), ('title.keys', o.keys.with_name('title.keys'))) if f.is_file()]
-        say(f'the game as its own NSPs (--romfs-container): {Path(self.container_push[0][1]).name}' + (f', {m.get(upd, upd).name}' if upd else '')
+        say(f'the game as its own {"XCI" if bsuf == ".xci" else "NSPs"} (--romfs-container): {Path(self.container_push[0][1]).name}' + (f', {m.get(upd, upd).name}' if upd else '')
             + (f', {len(dlc)} DLC' if dlc else '') + ' — pushed to the device as they are, read in place (the pack holds no copy)')
 
     # ---- NSZ / XCZ: decompressed for the stages that read the game files (porter.dumps) into <build folder>/tmp/dumps/, deleted once extracted ----

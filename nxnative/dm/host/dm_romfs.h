@@ -1,7 +1,8 @@
-// RomFS inside the player's own official container (NSP PFS0 now, XCI later): mount the game's RomFS partition read-only without
-// unpacking it. The data pack then holds only the RomFS overlay and the saves; the game reads decrypted bytes straight out of the
-// .nsp on storage. Layout: PFS0 → NCA (XTS header, key area, AES-CTR section) → IVFC level 5 → RomFS metadata tables.
-// The tables are decrypted once at mount and kept resident (Engage's are ~10 MB); file reads decrypt only the blocks they cover.
+// RomFS inside the player's own official container (an NSP, PFS0, or a gamecard image, XCI): mount the game's RomFS partition
+// read-only without unpacking it. The data pack then holds no copy of the game; the game reads decrypted bytes straight out of the
+// .nsp / .xci on storage. Layout: PFS0, or XCI (root HFS0 → secure HFS0), → NCA (XTS header, key area, AES-CTR section) → IVFC
+// level 5 → RomFS metadata tables. The tables are decrypted once at mount and kept resident (Engage's are ~10 MB); file reads
+// decrypt only the blocks they cover.
 // A node is (offset in the metadata table) << 1 | (directory ? 1 : 0), unique within a container.
 #ifndef DM_ROMFS_H
 #define DM_ROMFS_H
@@ -11,7 +12,7 @@
 
 typedef struct romfs_cont romfs_cont;
 
-// path: .nsp (or a .xci later). keys: prod.keys text, or NULL for $DM_PROD_KEYS. Returns NULL with err set.
+// path: .nsp or .xci (an XCZ decompressed by the porter). keys: prod.keys text, or NULL for $DM_PROD_KEYS. Returns NULL with err set.
 romfs_cont *romfs_open_container(const char *path, const char *keys, char *err, size_t errn);
 // The base NSP plus the player's official update NSP: a BKTR update is mounted as a view over the base RomFS; an update
 // that carries a full RomFS section is used in its place. update may be NULL or empty (same as romfs_open_container).

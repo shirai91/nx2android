@@ -209,6 +209,11 @@ class DataPack(unittest.TestCase):
             self.assertEqual(man['push']['container'], [dict(dst=datapack.CONTAINER_BASE, src='game.nsp', bytes=100), dict(dst=datapack.CONTAINER_UPDATE, src='upd.nsp', bytes=50),
                                                         dict(dst='aoc/2.nsp', src='dlc.nsp', bytes=30)])   # beside the pack: named, not this PC's path
             self.assertEqual([e['dst'] for e in man['push']['keys']], ['prod.keys', 'title.keys'])
+            xci = t / 'game.xci'; xci.write_bytes(b'x' * 70)   # a gamecard base keeps its format on the device: romfs.xci, and the host reads XCIs too
+            man = datapack.build(t / 'xci-data', profile=p, version='v196608', display='1.03', patched=t / 'patched', romfs=None, shaders=None,
+                                 containers=[('romfs.xci', xci, 70), (datapack.CONTAINER_UPDATE, upd, 50)], keys=[('prod.keys', keys, keys.stat().st_size)])
+            self.assertIn(f'DM_ROMFS_CONTAINER={ff}/container/romfs.xci', (t / 'xci-data/env.txt').read_text())
+            self.assertEqual(man['push']['container'][0], dict(dst='romfs.xci', src='game.xci', bytes=70))
         finally:
             shutil.rmtree(t, ignore_errors=True)
 
