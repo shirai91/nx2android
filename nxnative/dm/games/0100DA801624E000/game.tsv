@@ -1,0 +1,23 @@
+# TUNIC: experimental Android candidate; requires device testing.
+# Build and shader metadata: seedds/nxnative 3084f7a205bcb3a9cb74cf26180dabcc01c7abca.
+# Memory enlarged through existing profile keys; see ANDROID.md for arithmetic.
+# Keep the game's native frame pacing; no Unity FPS override is requested.
+title_id	0100DA801624E000
+program_id	0100DA801624E000
+name	TUNIC
+ipa	Tunic.ipa
+app_category	public.app-category.games
+build	v196608	1.0.3	main=0909b4ac280d9d77ecd1fae840e4b295	subsdk0=c781dd63daf0ddcdb9975da50a198f93	sdk=2aef2cffb104ee7c9e212fd2f4c731e9
+package	v196608
+shader_versions	v196608
+modules	main subsdk0 sdk
+romfs_marker	Data/resources.assets.resS
+zip_store	.assets:.bank:.dat:.png:.resource:.ress:.metallib
+mem_reserve	0x340000000
+mem_alias	0x318000000
+mem_stack	0x10000000
+app_pool	0x40000000
+sys_resource	0x1000000
+shader_groups	/Data/=data
+shader_note	Tunic shaders
+depth_mode	zero
