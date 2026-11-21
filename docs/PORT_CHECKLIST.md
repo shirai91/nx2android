@@ -2,7 +2,7 @@
 
 Games with no official Android version, from the games nxnative tested on Mac or iPhone (2026-10-29) and our own ports. A checked game has an `android.tsv` here; which ones play and how well: the README's [Games](../README.md#games).
 
-Left out because they have an official Android release: Unpacking (ported here anyway), Balatro, Raging Loop, Baba Is You, BALL x PIT, Blasphemous, FINAL FANTASY CRYSTAL CHRONICLES Remastered Edition, Ghost Trick: Phantom Detective, Sea of Stars, Stardew Valley, and Absolum (Android on 2026-11-05)，Layton's Mystery Journey DX+.
+Left out because they have an official Android release: Unpacking (ported here anyway), Balatro, Raging Loop, Baba Is You, BALL x PIT, Blasphemous, FINAL FANTASY CRYSTAL CHRONICLES Remastered Edition, Ghost Trick: Phantom Detective, Sea of Stars, Stardew Valley, and Absolum (Android on 2026-11-05), and Layton's Mystery Journey DX+ (ported here anyway).
 
 "Profile here": `nxnative/dm/games/<title ID>/` has the game's profile from nxnative. "Upstream profile": only seedds/nxnative has one, to read as a reference or starter, not to pull. "60 fps with X" is upstream's note: they run that update at 60 fps (30 on the Switch).
 
