@@ -139,7 +139,10 @@ class AndroidProfile:
         readme = [k for k in ('readme_image', 'readme_tag') if self.get(k)]
         if (readme or self.get('readme_name')) and len(readme) != 2: bad.append("readme_image and readme_tag go together (README.md's Games list and the game's own README.md, docs/gen_tables.py)")
         if self.get('readme_tag') and not re.fullmatch(r'v\d+\.\d+\.\d+', self.get('readme_tag')): bad.append(f"readme_tag {self.get('readme_tag')!r}: the nx2android version tested, v<major>.<minor>.<patch>")
-        if self.get('readme_image') and not (ANDROID.parents[2] / self.get('readme_image')).is_file(): bad.append(f"readme_image {self.get('readme_image')!r}: no such file in the repository")
+        # only where the repository's docs are (a checkout, or a bundle, which carries docs/images): the AppImage's engine copy (porter/paths.py engine_copy) holds nxnative alone,
+        # and refused every profile with an image there, so the AppImage stopped at start-up
+        root = ANDROID.parents[2]
+        if self.get('readme_image') and (root / 'docs').is_dir() and not (root / self.get('readme_image')).is_file(): bad.append(f"readme_image {self.get('readme_image')!r}: no such file in the repository")
         if self.pacing not in PACING: bad.append(f'pacing {self.pacing!r}: one of {", ".join(PACING)}')
         else:
             preset = {r.split('=', 1)[0] for r in PACING[self.pacing]}
