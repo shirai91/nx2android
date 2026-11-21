@@ -378,6 +378,8 @@ static int quad_index_ready(const p_draw_idx *d) {
     if (d->ibuf > UINT64_MAX - n) return 0;
     if (!vk_pool_of(d->ibuf, 1)) return 1;   // draw_idx keeps its existing invalid-pool diagnostic
     cpu_ready(d->ibuf, n);
+    static int noted;
+    if (!noted) { noted = 1; VKLOG("direct indexed quads: itype %d count %d", d->itype, d->count); }
     return 1;
 }
 static int quad_indices(uint32_t count, const uint8_t *src, int itype, int32_t first, VkBuffer *buf, VkDeviceSize *off) {
