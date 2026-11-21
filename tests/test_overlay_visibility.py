@@ -38,7 +38,7 @@ class OverlayVisibility(unittest.TestCase):
 #include "pad_slots.h"
 static _Atomic int g_set_overlay, g_overlay, g_pads, g_edit, g_menu_btn = 1;
 static _Atomic int g_cust[2][2][OV_N][4];
-static _Atomic int g_set_rumble, g_set_fps, g_set_labels, g_menu_tab, g_sv_st;
+static _Atomic int g_set_rumble, g_set_fps, g_set_labels, g_menu_tab, g_sv_st, g_pd_on;
 static int layout, saves;
 int dm_overlay_layout(void) { return layout; }
 float dm_overlay_scale(void) { return 1; }
@@ -54,6 +54,9 @@ static int pad_labels(void) { return 0; }
 static void menu_tab(int tab) { (void)tab; }
 static void ed_open(void) {}
 static void sp_open(void) {}
+static void pd_open(void) {}
+static void pd_close(void) {}
+static void pd_capture(int32_t k, int device) { (void)k; (void)device; }   // front_android.c: the detector takes the face keys before the menu does
 static void save_export(void) {}
 static void menu_audio(void) {}
 static void menu_close(void) {}
@@ -114,6 +117,7 @@ static int g_tx_mu;
 #define menu_drag(ctl, x, y, W, H) ((void)(ctl), (void)(x), (void)(y), (void)(W), (void)(H))
 #define ed_touch(e, W, H) ((void)(e), (void)(W), (void)(H))
 #define sp_touch(e, W, H) ((void)(e), (void)(W), (void)(H))
+#define pd_touch(e, W, H) ((void)(e), (void)(W), (void)(H))
 #define menu_touch(e, W, H) ((void)(e), (void)(W), (void)(H))
 #define tx_touch(e, W, H) ((void)(e), (void)(W), (void)(H))
 static ANativeWindow *phone_window(void) { return &window; }

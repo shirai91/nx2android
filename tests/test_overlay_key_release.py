@@ -43,7 +43,7 @@ typedef struct { int source, type, key, action, device; } AInputEvent;
 #define AKeyEvent_getAction(e) ((e)->action)
 #define AKeyEvent_getRepeatCount(e) (0)
 #define LOG(...) ((void)0)
-static _Atomic int g_set_overlay = 1, g_overlay = 1, g_pad_in = -1, g_tx_on, g_menu;
+static _Atomic int g_set_overlay = 1, g_overlay = 1, g_pad_in = -1, g_tx_on, g_menu, g_pd_on;
 static int g_pad_used, vibration = -1, publications;
 static uint64_t g_btn[1];   // per player (PR #238); the device here is player 1's
 static pthread_mutex_t g_slot_mu = PTHREAD_MUTEX_INITIALIZER;
@@ -57,6 +57,8 @@ static int tx_key(AInputEvent *e) { (void)e; return 1; }
 static void menu_open(int tab) { (void)tab; }
 static void menu_close(void) {}
 static void menu_key(uint64_t bit) { (void)bit; }
+static void pd_close(void) {}
+static void pd_capture(int32_t k, int device) { (void)k; (void)device; }   // the detector swallows A and B while it is open; g_pd_on stays 0 in these tests
 static uint64_t key_bit(int k) { return k == TEST_A ? 1 : 0; }
 static void dm_pad_players(int n) { assert(n == 1); }
 static void pad_publish(int p) { assert(p == 0); publications++; }
