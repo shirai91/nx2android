@@ -51,7 +51,7 @@ int g_bis_on, g_bis_lo, g_bis_hi, g_bis_trace = -1, g_bis_var; static int g_draw
 static int draw_allowed(void) { int i = g_draw_i++; if (i == g_bis_trace) return g_bis_var == 7 ? 0 : 2;
     return !g_bis_on || i < (g_bis_lo + g_bis_hi) / 2; }
 void vk_bisect_reset_count(void) { g_draw_i = 0; }
-static int dbg_draw(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_VK_DBG_DRAW"); v = e ? atoi(e) : 0; } return v; }   // debugging: 1 no draw calls, 2 no vertex buffers, 4 no descriptor sets
+static int dbg_draw(void) { return g_dbg_draw_live; }   // debugging: 1 no draw calls, 2 no vertex buffers, 4 no descriptor sets
 // a transfer read of 4 bytes of each buffer the addresses are in (outside a render pass, between barriers): see prepare_draw's runs of rasterizer discard
 static void rd_read(const uint64_t *a, int n) {
     VkCommandBuffer cb = vk_cmd(); VkBuffer seen[16]; int ns = 0;

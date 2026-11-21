@@ -1,0 +1,24 @@
+# Fire Emblem: Three Houses on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Koei Tecmo's KTGL on NVN, SDK 6.5.0, update 1.2.0 (v327680); the profile's patches.py gives 60 fps on 1.2.0 main (the Switch shows 30).
+# KTGL compiles 9 built-in GLSL shaders at boot with the game's own GLSLC: the port boots the game once on the device to capture them (porter device_glslc),
+# so a port needs adb and the device even when it does not install.
+# Core fixes made for it (2026-11-21): no render-scale helpers in the Android shaders (five particle compute shaders made the Adreno 830 compiler fail after 25 s:
+# a freeze in the title's class demo, then a crash), indirect quad draws drawn as quads (the particles), and the pool lookup cache that bound a stale outer pool
+# for a dialogue sprite once the title's class demo had played (RBBM: GPC error, a device lost in the first dialogue after character creation).
+# Turnip compiles every shader too but takes three times the GPU time here: Qualcomm's driver is the one to use.
+# Tested 2026-11-21 on a Lenovo Legion Y700 (2025, TB322FC) with Qualcomm's driver: title, opening movie, class demo, new game, character creation with the
+# overlay keyboard, the prologue, the first battle won (combat scenes), the Chapter 1 story and the monastery hall, saving and loading; 60 fps (on screen: no
+# repeated frame in 20 minutes of battle docked and 10 handheld with the planned-end limiter; GPU 9 ms in battle handheld, 11-13 ms docked, 4-5 ms in the monastery hall), a 34-minute
+# soak on the fixed build (docked then handheld, same process); the sound checked with DM_AUDREN_DUMP and
+# devtools/pcm_glitches.py (54 minutes on the fixed build: no repeated blocks, gaps or frame-edge clicks; 10 clipped samples in loud combat;
+# 8.5 minutes of Chapter 1 free roam on the planned-end limiter build: none of these). The outdoor monastery is not measured (closed at the start of Chapter 1).
+# The DLC (Cindered Shadows and the others) were not ported or tested.
+status	playable
+tested	v327680 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
+package	org.nx2a.fireemblemthreehouses
+orientation	landscape
+readme_image	docs/images/fire-emblem-three-houses.jpg
+readme_tag	v0.5.0
+# Catch-up frames only in the renderer's first second: KTGL updates twice per renderer event, and a catch-up frame for every second update replayed 20 ms of its
+# looping stream buffers (music and voices buzzed: 45% of the output blocks were repeats). Effects are initialized at start-up, which the first second still covers
+env	DM_AUDREN_CATCHUP_FRAMES=200

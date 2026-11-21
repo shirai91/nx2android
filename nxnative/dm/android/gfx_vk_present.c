@@ -832,16 +832,34 @@ static uint64_t pace_desired(double period) {   // the frame's desired present t
     if (!g_refresh_ns || g_pace_n % 120 == 0) {
         VkRefreshCycleDurationGOOGLE rc; uint64_t was = g_refresh_ns;
         if (vkGetRefreshCycleDurationGOOGLE(V.dev, g_swap, &rc) == VK_SUCCESS && rc.refreshDuration > 1000000) g_refresh_ns = rc.refreshDuration;
-        if (g_refresh_ns && g_refresh_ns != was) { VKLOG("[perf] display timing: refresh %.3f ms", g_refresh_ns / 1e6); g_pace_target = 0; }
+        // A new period restarts the cadence (a resync: one frame a vsync late). The Legion Y700 (2025) reports its 120 Hz period a few ns differently at each read, so
+        // the cadence restarted every 120 presents: one frame shown for three vsyncs every 2 s in every game (Fire Emblem: Three Houses' idle title, 2.4 ms of GPU, dropped
+        // 2-4 frames of 300). Under 1% the period is taken without a restart; a real mode change (60 / 90 / 120 Hz) still restarts it
+        uint64_t dif = g_refresh_ns > was ? g_refresh_ns - was : was - g_refresh_ns;
+        if (g_refresh_ns && g_refresh_ns != was && (!was || dif * 100 >= was)) { VKLOG("[perf] display timing: refresh %.3f ms", g_refresh_ns / 1e6); g_pace_target = 0; }
     }
+    // DM_VK_PACE_LOG=1 (live): per 600 frames, the measured lead (each frame's earliest possible present time after its present call) and the driver's present margin,
+    // and each resync with the predicted shortfall
+    static uint64_t call_ns[64]; static uint32_t call_id[64]; static double lead_min = 1e9, lead_max, marg_min = 1e9, lead_sum; static int lead_n;
+    int plog = 0; { const char *e = getenv("DM_VK_PACE_LOG"); plog = e && atoi(e); }
     VkPastPresentationTimingGOOGLE pt[16]; uint32_t np = 16;
     if (vkGetPastPresentationTimingGOOGLE(V.dev, g_swap, &np, pt) >= 0)
         for (uint32_t i = 0; i < np; i++) {
+            if (plog && call_id[pt[i].presentID % 64] == pt[i].presentID && pt[i].earliestPresentTime) {
+                double l = ((double)pt[i].earliestPresentTime - (double)call_ns[pt[i].presentID % 64]) / 1e6, m = pt[i].presentMargin / 1e6;
+                if (l < lead_min) lead_min = l; if (l > lead_max) lead_max = l; if (m < marg_min) marg_min = m; lead_sum += l; lead_n++;
+            }
             present_time_record(pt[i].presentID, pt[i].actualPresentTime);
             if (pt[i].actualPresentTime > g_pace_anchor) g_pace_anchor = pt[i].actualPresentTime;
             if (pt[i].desiredPresentTime && pt[i].actualPresentTime > pt[i].desiredPresentTime + g_refresh_ns) g_pace_slip++;   // went out a vsync or more after its own
         }
     g_pace_n++;
+    if (plog && g_pace_n % 600 == 0 && lead_n) {
+        VKLOG("[perf] pace log: lead from the present call to the earliest present min %.2f / mean %.2f / max %.2f ms, present margin min %.2f ms (%d frames); refresh %.3f ms",
+              lead_min, lead_sum / lead_n, lead_max, marg_min, lead_n, g_refresh_ns / 1e6);
+        lead_min = marg_min = 1e9; lead_max = lead_sum = 0; lead_n = 0;
+    }
+    call_ns[g_pace_id % 64] = mono_ns(); call_id[g_pace_id % 64] = g_pace_id;   // this frame's present ID (the caller takes it first)
     if (g_pace_n % 600 == 0) VKLOG("[perf] display timing: %llu frames, %llu resyncs, %llu shown a vsync or more after their time (cumulative)%s",
                                    (unsigned long long)g_pace_n, (unsigned long long)g_pace_resync, (unsigned long long)g_pace_slip, g_pace_on ? "" : "; off (DM_VK_PACE=0)");
     if (!g_pace_on || !g_refresh_ns || !g_pace_anchor || period <= 0) { g_pace_target = 0; return 0; }
@@ -853,7 +871,7 @@ static uint64_t pace_desired(double period) {   // the frame's desired present t
     // so a period that is not a whole number of vsyncs always rounded up (40 fps on a 60 Hz panel: 25 ms came out as 2 vsyncs every frame, 30 fps, on a Retroid Pocket 5)
     uint64_t now = mono_ns(), t = 0;
     if (g_pace_target) { g_pace_ideal += (uint64_t)(period * 1e9); t = pace_snap(g_pace_ideal - g_refresh_ns / 2); }
-    if (t < now + gpu + g_refresh_ns) { if (g_pace_target) g_pace_resync++; t = pace_snap(now + gpu + g_refresh_ns * 3 / 2); g_pace_ideal = t; }
+    if (t < now + gpu + g_refresh_ns) { if (g_pace_target) { g_pace_resync++; if (plog) VKLOG("[perf] pace log: resync, predicted %.2f ms short (GPU estimate %.2f ms)", ((double)(now + gpu + g_refresh_ns) - (double)t) / 1e6, gpu / 1e6); } t = pace_snap(now + gpu + g_refresh_ns * 3 / 2); g_pace_ideal = t; }
     g_pace_target = t;
     return t - g_refresh_ns / 2;
 }
@@ -926,7 +944,8 @@ static void present_window(vkimg_t *im, const int crop[4], double period, uint64
     r = vkQueueSubmit(V.q, 1, &si, g_pfence[k]);
     if (r) { pthread_mutex_unlock(&g_vk_queue_mu); VKRED_ONCE(91, "present submit failed (%d)", r); return; }
     VkPresentInfoKHR pi = {VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, NULL, 1, &g_done_sem[k], 1, &g_swap, &idx, NULL};
-    VkPresentTimeGOOGLE ptm = {++g_pace_id, period >= 0 ? pace_desired(period) : 0};
+    uint32_t pid = ++g_pace_id;   // before pace_desired, which keys its call times by it (an initializer's order of evaluation is unspecified)
+    VkPresentTimeGOOGLE ptm = {pid, period >= 0 ? pace_desired(period) : 0};
     VkPresentTimesInfoGOOGLE pti = {VK_STRUCTURE_TYPE_PRESENT_TIMES_INFO_GOOGLE, NULL, 1, &ptm};
     if (V.has_dtiming) pi.pNext = &pti;
     r = vkQueuePresentKHR(V.q, &pi);

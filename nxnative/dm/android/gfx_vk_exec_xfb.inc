@@ -245,6 +245,60 @@ static int gs_split_draw(int prim, uint64_t indirect, uint64_t ibuf, uint64_t in
     if (!gs || (S.sh[1] && (S.sh[1]->in_locs & ~gs->out_locs))) return 0;
     return vk_shader_gs_split_ready(gs) && gs_split_inputs_safe(gs, ibuf, in);
 }
+// Indirect quad draws: Vulkan has no quads, and the vertex count of an indirect draw is in GPU memory, often written by the game's compute shaders in the same submission
+// (Fire Emblem: Three Houses' particles: its compute VM writes the records, and they were drawn as a triangle list of the quads' vertices, so every quad lost a triangle
+// and the rest crossed into the next quad). The records are copied into a buffer of our own, dm/android/shaders/quadind.comp rewrites them as indexed records over the
+// quad index buffer, and the draw becomes vkCmdDrawIndexedIndirect(Count). The pass is ended for the copy and the dispatch, as for the game's own dispatches
+#include "quadind_comp.spv.h"
+enum { QI_MAX = 4096, QI_SRC_STRIDE_MAX = 64, QI_DST = QI_MAX * QI_SRC_STRIDE_MAX };   // records (a draw's max), bytes: the records as copied, then the rewritten ones from QI_DST
+static struct { VkPipeline p; VkPipelineLayout pl; VkDescriptorSetLayout dl; VkDescriptorPool dp; VkDescriptorSet set; VkBuffer b; VkDeviceMemory m; int bad; } g_qi;
+static int qi_init(void) {
+    if (g_qi.p || g_qi.bad) return !g_qi.bad;
+    g_qi.bad = 1;
+    VkDeviceSize n = QI_DST + (VkDeviceSize)QI_MAX * 20;
+    VkBufferCreateInfo bi = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, NULL, 0, n, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_SHARING_MODE_EXCLUSIVE};
+    if (vkCreateBuffer(V.dev, &bi, NULL, &g_qi.b)) { VKLOG("[RED] indirect quad draws: no buffer for the rewritten records"); return 0; }
+    VkMemoryRequirements rq; vkGetBufferMemoryRequirements(V.dev, g_qi.b, &rq);
+    VkMemoryAllocateInfo ai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, rq.size, vk_mem_type(rq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0)};
+    if (vkAllocateMemory(V.dev, &ai, NULL, &g_qi.m) || vkBindBufferMemory(V.dev, g_qi.b, g_qi.m, 0)) { VKLOG("[RED] indirect quad draws: no memory for the rewritten records"); return 0; }
+    VkDescriptorSetLayoutBinding lb = {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL};
+    VkDescriptorSetLayoutCreateInfo li = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, NULL, 0, 1, &lb};
+    VkPushConstantRange pr = {VK_SHADER_STAGE_COMPUTE_BIT, 0, 16};
+    VkDescriptorPoolSize ps = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1};
+    VkDescriptorPoolCreateInfo pi = {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, NULL, 0, 1, 1, &ps};
+    VkShaderModuleCreateInfo mi = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, NULL, 0, sizeof quadind_comp_spv, quadind_comp_spv}; VkShaderModule sm = VK_NULL_HANDLE;
+    if (vkCreateDescriptorSetLayout(V.dev, &li, NULL, &g_qi.dl) || vkCreateDescriptorPool(V.dev, &pi, NULL, &g_qi.dp) || vkCreateShaderModule(V.dev, &mi, NULL, &sm)) { VKLOG("[RED] indirect quad draws: the rewrite shader could not be made"); return 0; }
+    VkPipelineLayoutCreateInfo pli = {VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, NULL, 0, 1, &g_qi.dl, 1, &pr};
+    VkComputePipelineCreateInfo ci = {VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, NULL, 0, {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, VK_SHADER_STAGE_COMPUTE_BIT, sm, "main", NULL}};
+    int bad = vkCreatePipelineLayout(V.dev, &pli, NULL, &g_qi.pl) || (ci.layout = g_qi.pl, vkCreateComputePipelines(V.dev, VK_NULL_HANDLE, 1, &ci, NULL, &g_qi.p));
+    vkDestroyShaderModule(V.dev, sm, NULL);
+    VkDescriptorSetAllocateInfo sa = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, NULL, g_qi.dp, 1, &g_qi.dl};
+    if (bad || vkAllocateDescriptorSets(V.dev, &sa, &g_qi.set)) { VKLOG("[RED] indirect quad draws: the rewrite pipeline could not be made"); return 0; }
+    VkDescriptorBufferInfo dbi = {g_qi.b, 0, VK_WHOLE_SIZE};
+    VkWriteDescriptorSet w = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, g_qi.set, 0, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, NULL, &dbi, NULL};
+    vkUpdateDescriptorSets(V.dev, 1, &w, 0, NULL);
+    g_qi.bad = 0; VKLOG("indirect quad draws: their records are rewritten on the GPU as indexed draws over the quad index buffer");
+    return 1;
+}
+static int quad_indirect(uint64_t ind, int n, int stride, VkBuffer *ob, VkDeviceSize *oo) {   // 1: *ob + *oo hold n indexed records (20 bytes apart)
+    if (n < 1 || n > QI_MAX || stride < 16 || stride > QI_SRC_STRIDE_MAX || stride & 3) { VKRED_ONCE(177, "indirect quad draw of %d records %d bytes apart: drawn as a triangle list", n, stride); return 0; }
+    if (!qi_init()) return 0;
+    VkDeviceSize len = (VkDeviceSize)stride * (VkDeviceSize)(n - 1) + 16; VkBuffer sb; VkDeviceSize so;
+    if (!vk_buf_at(ind, len, &sb, &so)) { VKRED_ONCE(53, "indirect draw arguments outside the memory pools"); return 0; }
+    vk_end_pass_land();
+    VkCommandBuffer cb = vk_cmd();
+    vk_img_barrier_all(cb);   // the records' writers before the copy; an earlier rewrite's draw before this one overwrites the buffer
+    VkBufferCopy c = {so, 0, len}; vkCmdCopyBuffer(cb, sb, g_qi.b, 1, &c);
+    vk_img_barrier_all(cb);
+    uint32_t pc[4] = {(uint32_t)n, (uint32_t)stride / 4, QUAD_MAX, QI_DST / 4};
+    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_qi.p);
+    vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, g_qi.pl, 0, 1, &g_qi.set, 0, NULL);
+    vkCmdPushConstants(cb, g_qi.pl, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof pc, pc);
+    vkCmdDispatch(cb, ((uint32_t)n + 63) / 64, 1, 1);
+    vk_img_barrier_all(cb);   // the rewritten records before the draw reads them as indirect arguments
+    S.bound_pipe = VK_NULL_HANDLE;   // the compute pipeline took the bind point the replay's dispatches use
+    *ob = g_qi.b; *oo = QI_DST; return 1;
+}
 static void draw(const p_draw *d) {
     graphics_updates_ready();
     graphics_cpu_ready();
@@ -258,6 +312,8 @@ static void draw(const p_draw *d) {
     }
     VkBuffer mcb = VK_NULL_HANDLE; VkDeviceSize mco = 0; if (mdi_group(d->mdi_cnt, d->ind, d->mdi_i, d->mdi_max, d->mdi_stride, 16, &mcb, &mco)) return;
     int prim = d->prim;
+    VkBuffer qib = VK_NULL_HANDLE; VkDeviceSize qio = 0;   // an indirect quad draw's records, rewritten as indexed ones (before prepare_draw: the rewrite ends the pass)
+    if (d->ind && prim == 7 && !g_tf_on) quad_indirect(d->ind, mcb ? d->mdi_max : 1, mcb ? d->mdi_stride : 16, &qib, &qio);
     // before prepare_draw, whose driver segment carries it (c0 + 0x644): set after it, each draw's segment had the draw before's. An indirect draw's is in GPU memory: 0
     g_draw_binst = d->ind ? 0 : (uint32_t)d->base_instance;
     if (!prepare_draw(prim == 7 ? 4 : prim, prim == 7)) return;
@@ -271,11 +327,16 @@ static void draw(const p_draw *d) {
     if (g_var_now == 10 && prim == 7) g_ok = 0; if (g_var_now == 11 && prim != 7) g_ok = 0;   // bisection: quads from the found draw on, or the rest
     { static int nq, nn; if (g_var_now) { if (prim == 7) nq++; else nn++; if ((nq + nn) % 50 == 1) VKLOG("draws from the found one on: %d quads, %d others", nq, nn); } }
     uint32_t inst = d->instances ? (uint32_t)d->instances : 1;
-    { static int n; if (n < 12 && (d->ind || (uint32_t)d->count > (1u << 20) || inst > (1u << 16))) { n++;
+    { static int n; if (n < 12 && ((d->ind && !qib) || (uint32_t)d->count > (1u << 20) || inst > (1u << 16))) { n++;
         VKLOG("unusual draw: count %u instances %u indirect %#llx prim %d first %d", (unsigned)d->count, inst, (unsigned long long)d->ind, d->prim, d->first); } }
     if (d->ind) {
         VkBuffer b; VkDeviceSize o;
         if (g_tf_on && S.sh[0] && S.sh[0]->xfb) VKRED_ONCE(84, "indirect draw under transform feedback: not captured");
+        if (qib) {   // quads: the rewritten records over the quad index buffer
+            uint32_t nq = QUAD_MAX; bc_index(cb, quad_index_buffer(&nq), 0, VK_INDEX_TYPE_UINT32);
+            if (!(dbg_draw() & 1) && g_ok) { if (mcb) vkCmdDrawIndexedIndirectCount(cb, qib, qio, mcb, mco, (uint32_t)d->mdi_max, 20); else vkCmdDrawIndexedIndirect(cb, qib, qio, 1, 20); }
+            return;
+        }
         if (!vk_buf_at(d->ind, mcb ? (uint64_t)d->mdi_stride * (uint64_t)d->mdi_max : 16, &b, &o)) VKRED_ONCE(53, "indirect draw arguments outside the memory pools");   // (an else after the nested if once went to the inner one)
         else if (!(dbg_draw() & 1) && g_ok) { if (mcb) vkCmdDrawIndirectCount(cb, b, o, mcb, mco, (uint32_t)d->mdi_max, (uint32_t)d->mdi_stride); else vkCmdDrawIndirect(cb, b, o, 1, 16); }
         return;
@@ -459,7 +520,7 @@ static void dispatch(const p_dispatch *d) {
     else vkCmdDispatch(cb, (uint32_t)d->x, (uint32_t)d->y, (uint32_t)d->z);
     vk_pass_ts(1, (uint32_t)d->x, (uint32_t)d->y, PT_DISPATCH, (uint32_t)d->z);
     if (!g_x_nodispbar) vk_img_barrier_all(cb);   // DM_VK_X_NODISPBAR=1 (live, a cost measurement that may draw wrong): no barrier after the dispatch
-    if (crumbs_on()) { crumb_t *c = crumb_cur(); if (c->n < 8) { c->k[c->n][0] = 0; c->k[c->n][1] = 0; c->k[c->n][2] = cs->key; c->n++; } crumb_mark(1); }
+    if (crumbs_on()) { crumb_t *c = crumb_cur(); if (c->n < 32) { c->k[c->n][0] = 0; c->k[c->n][1] = 0; c->k[c->n][2] = cs->key; c->n++; } crumb_mark(1); }
     if (g_x_tracepass == -2 || mdi_log_now()) {   // (DM_VK_TRACE_PASS=-2 lists the dispatches too, with their storage buffers: the addresses for a DM_CTL memdump)
         char sb[512]; int o = 0; for (int r = 0; r < 16 && o < (int)sizeof sb - 40; r++) if (S.ssbo[5][r].addr) o += snprintf(sb + o, sizeof sb - (size_t)o, " s%d %#llx+%#llx", r, (unsigned long long)S.ssbo[5][r].addr, (unsigned long long)S.ssbo[5][r].size);
         VKLOG("--- dispatch %016llx %dx%dx%d%s after pass %d;%s", (unsigned long long)cs->key, d->x, d->y, d->z, d->ind ? " (indirect)" : "", g_sub_pass - 1, o ? sb : " no storage buffers");

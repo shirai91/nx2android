@@ -256,7 +256,9 @@ static void cbuf_desc(int st, const vkshader_t *s, const dmsv_bind *b, VkDescrip
     const p_bind_buf *u = b->reg >= 0 && b->reg < 16 ? &S.ubo[st][b->reg] : NULL;
     uint64_t n = u && u->size ? (u->size > 65536 ? 65536 : u->size) : 65536; VkBuffer buf; VkDeviceSize off;
     vkpool_t *p = g_var_now != 9 && u && u->addr ? vk_pool_of(u->addr, 1) : NULL;
-    if (!p) { *bi = (VkDescriptorBufferInfo){vk_zero_buffer(), 0, 65536}; return; }
+    if (!p) {
+        if (g_ubolog_key && s->key == g_ubolog_key && g_ubolog_n > 0) { g_ubolog_n--; VKLOG("ubo: present %llu pass %d stage %d c%d %#llx +%llu: in no memory pool, zeros bound", (unsigned long long)g_tex_frame, g_sub_pass - 1, st, b->reg, (unsigned long long)(u ? u->addr : 0), (unsigned long long)(u ? u->size : 0)); }
+        *bi = (VkDescriptorBufferInfo){vk_zero_buffer(), 0, 65536}; return; }
     buf = p->buf; off = u->addr - p->lo;
     if (off + n > p->hi - p->lo) {
         if (p->hi < p->end && u->addr + n <= p->end) {   // into the pool's next chunk (vk_cross): the whole range from CPU memory, one copy per submission
