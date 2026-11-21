@@ -460,7 +460,8 @@ def title_of(path, hk=None):
             if len(tids) > 1:
                 say(f'[RED] {path.name}: multiple titles in one file; using {tids[0]:016X}. '
                     f'Other titles ({", ".join(f"{t:016X}" for t in tids[1:])}) are not selected as updates or DLC '
-                    'from this file. Supply the base game, update and DLC as separate files.')
+                    'from this file. Supply the base game, update and DLC as separate files (the Android container mode reads '
+                    'them from this image at run time instead).')
             return tids[0]   # the base game …000 before its update …800 and DLC
     m = re.search(r'\[([0-9A-Fa-f]{16})\]', path.name)
     return int(m.group(1), 16) if m else None
