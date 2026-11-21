@@ -193,6 +193,8 @@ class HostReader(unittest.TestCase):   # native bundle reader and vk_shader_q th
         types = header[header.index('typedef struct __attribute__((packed))'):header.index('} vkshader_t;') + len('} vkshader_t;')]
         set_start = src.index('static int set_of(')
         set_of = src[set_start:src.index('\n', set_start)]
+        rt_start = header.index('typedef struct { uint64_t key; uint32_t stage, nspv, nrefl;')
+        rt_ent = header[rt_start:header.index('\n', rt_start)]   # run-time translation is off here: nothing is ever translated
         harness = r'''
 #include <fcntl.h>
 #include <pthread.h>
@@ -219,12 +221,15 @@ static void *index_only_mmap(void *addr, size_t len, int prot, int flags, int fd
     return p;
 }
 #define mmap index_only_mmap
+''' + rt_ent + r'''
+static const vk_rt_ent *vk_rt_find(uint64_t key) { (void)key; return NULL; }
 ''' + body + r'''
 #undef mmap
 typedef void *VkShaderModule, *VkDescriptorSetLayout, *VkBuffer;
 typedef uint64_t VkDeviceSize;
 ''' + types + '\n' + set_of + r'''
 static nvn_hmap g_shaders = {.klen = 16};
+#define SH_FAILED ((void *)2)
 static pthread_mutex_t g_sh_mu = PTHREAD_MUTEX_INITIALIZER;
 ''' + lookup + r'''
     // The production path above validates and consumes reflection. Stop before
