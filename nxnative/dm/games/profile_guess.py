@@ -13,6 +13,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / 'tools')); import nso_syms   # dynamic symbols, the host's hooks
+from romfs import Path as RPath, os, open   # noqa: E402,F811  (a RomFS dir the build mounts reads the player's own container; other paths are untouched)
 
 MAGICS = [(b'UnityFS\0', 'UnityFS'), (b'UnityWeb', 'UnityWeb'), (b'UnityRaw', 'UnityRaw'), (b'BNSH', 'BNSH'), (b'BAHS', 'BAHS'), (b'SARC', 'SARC'), (b'Yaz0', 'Yaz0'),
           (bytes.fromhex('28b52ffd'), 'zstd'), (b'FRES', 'bfres'), (b'BNTX', 'BNTX'), (b'BWAV', 'BWAV'), (b'FSAR', 'BFSAR'), (b'CPK ', 'CRI CPK'), (b'CRID', 'CRI USM'),
@@ -49,8 +50,8 @@ def kind(m):   # a short name for what a module is: its NintendoSDK component, G
     return areas.most_common(1)[0][0] if areas else '?'
 
 
-def romfs_files(romfs):   # (path, size, first 32 bytes) of every RomFS file: from nx_extract's manifest, or read from a RomFS folder
-    romfs = Path(romfs)
+def romfs_files(romfs):   # (path, size, first 32 bytes) of every RomFS file: from nx_extract's manifest, or read from a RomFS folder (a mounted container included)
+    romfs = RPath(romfs)
     if romfs.is_file():
         for line in romfs.read_text(errors='replace').splitlines():
             if line.startswith('#'): continue
@@ -58,7 +59,7 @@ def romfs_files(romfs):   # (path, size, first 32 bytes) of every RomFS file: fr
         return
     for d, _, names in os.walk(romfs):
         for n in names:
-            p = Path(d) / n
+            p = RPath(d) / n
             with open(p, 'rb') as f: head = f.read(32)
             yield '/' + str(p.relative_to(romfs)), p.stat().st_size, head
 

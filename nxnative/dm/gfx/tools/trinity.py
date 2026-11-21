@@ -1,6 +1,8 @@
 # Game Freak's Trinity engine file system (Pokémon Legends: Z-A): arc/data.trpfs (packs of files) with arc/data.trpfd as its index, both FlatBuffers. Read by the shader split
 # (shader_split.py trpfs_jobs, trinity_shaders) and by the porter, which has the packs' Oodle files decoded by the game's own decoder on the Android device (porter/pipeline.py device_oodle)
-import mmap, os, struct
+import os, struct, sys
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../tools'))
+from romfs import os, open, mmap   # noqa: E402,F811  (a RomFS dir the build mounts reads the player's own container; other paths are untouched)
 
 ONEPACK = b'ONEPACK\0'
 
