@@ -70,6 +70,8 @@ __attribute__((weak)) float dm_overlay_scale(void) { return 1; }
 __attribute__((weak)) void dm_overlay_knob(int stick, float *dx, float *dy) { (void)stick; *dx = *dy = 0; }
 __attribute__((weak)) int64_t dm_overlay_pressed(int ctl, uint64_t bit) { (void)ctl; (void)bit; return 0; }
 __attribute__((weak)) int dm_menu_state(void) { return -1; }
+__attribute__((weak)) int dm_menu_panel_bits(void) { return 0; }   // front_android.c: Exit asked once (a second press ends the game)
+__attribute__((weak)) int64_t dm_menu_anim_ns(void) { return 0; }  // front_android.c: when the drawer began to slide in
 __attribute__((weak)) int dm_menu_audio_available(void) { return 0; }
 __attribute__((weak)) int dm_overlay_fps(void) { return 0; }   // front_android.c: the pause menu's Show FPS
 __attribute__((weak)) int dm_save_note(char *out, int cap) { if (cap > 0) out[0] = 0; return OVX_IDLE; }   // front_android.c: the save manager's rows
@@ -220,7 +222,7 @@ static void barrier(VkCommandBuffer cb, VkImage img, VkImageLayout from, VkImage
 enum { SP_DISC = OV_N, SP_BLACK, SP_WHITE, SP_ACCENT, SP_N };   // (black, white, accent: solid blocks, the dimming and the layout editor's frames)
 #define OV_FPS_CHARS "0123456789 FPS-CBATO"   // (the temperature rows: "SOC 52C", "BAT 38C")
 static struct { VkImage img; VkDeviceMemory mem; VkImageView view; VkSampler samp; VkDescriptorSetLayout dsl; VkPipelineLayout layout; VkDescriptorPool pool; VkDescriptorSet set;
-                VkPipeline pipe; VkFormat pfmt; uint32_t w, h, sh, pw, ph, gh, gs; VkBuffer up; VkDeviceMemory upm; uint8_t *px; int uploaded, panel, lay, cver; float sp[SP_N][4];
+                VkPipeline pipe; VkFormat pfmt; uint32_t w, h, sh, pw, ph, gh, gs; VkBuffer up; VkDeviceMemory upm; uint8_t *px; int uploaded, panel, pbits, lay, cver; float sp[SP_N][4];
                 VkRenderPass rp; VkFramebuffer fb[8]; VkImageView fbview[8]; VkExtent2D fbext[8]; } g_ov;
 static struct { const ov_theme *t; VkImage img; VkDeviceMemory mem; VkImageView view; VkDescriptorSet set; VkBuffer up; VkDeviceMemory upm; uint32_t upk; int ready; } g_tt[2];   // per layout
 // Without dynamic rendering (a Vulkan 1.1 / 1.2 device, V.has_dynrender) the overlay draws in a render pass object over the swapchain image: one pass for the swapchain's
@@ -325,6 +327,10 @@ static void cv_text_plot(void *u, int x, int y) { const cv_ink *k = u; cv_blend(
 static void cv_text(const ov_canvas *cv, float x, float cy, const char *s, int scale, const uint8_t c[4]) {   // x: the left edge
     cv_ink k = {cv, c}; pf_draw(dm_overlay_font(), s, (int)(x + 0.5f), (int)(cy + PF_CAP * scale / 2.0f + 0.5f), scale, cv_text_plot, &k);
 }
+static void cv_fit(char *out, size_t cap, const char *s, int scale, float maxw) {   // s into out, cut from the end until it fits: one letter size on every row
+    snprintf(out, cap, "%s", s);
+    while (out[0] && cv_text_w(out, scale) > maxw) pf_chop(out, strlen(out));
+}
 static const uint8_t C_WHITE[4] = {255, 255, 255, 255}, C_ACCENT[4] = {255, 60, 142, 255}, C_HOT[4] = {255, 64, 48, 255};
 static void ov_menu_icon(const ov_canvas *cv, const ov_ctl *c, const float b[4]) {   // the menu button: a dark pill with a ring and three bars
     static const uint8_t fill[4] = {20, 20, 26, 170}, ring[4] = {255, 255, 255, 210};
@@ -373,41 +379,54 @@ static void cv_button(const ov_canvas *cv, const float b[4], const char *l, int 
     int s = (int)fmaxf(1, roundf(b[3] * 0.40f / PF_CAP)); while (s > 1 && cv_text_w(l, s) > b[2] * 0.82f) s--;
     cv_text(cv, b[0] + (b[2] - cv_text_w(l, s)) / 2, b[1] + b[3] / 2, l, s, C_WHITE);
 }
-// The pause menu (overlay_layout.h: the rows, the tabs, the slider's track), in the raster's panel rectangle. Its letters are as large as a row allows (0.30 of
-// its height, about 2.7 mm on a 6.7" phone and 3.6 mm on the 8.8" tablet) and smaller only when the widest row would not fit beside its control
-static const char *const OVM_LABELS[OVM_N] = {"Show gamepad", "Opacity", "Edit layout", "Rumble", "Show FPS", "Mode", "Export save", "Import save", "Face buttons", "Audio output", "Resume", ""};
+// The pause menu (overlay_layout.h): a drawer at the window's right edge, p its rectangle in the raster: the tabs, the open tab's rows, Resume and
+// Exit. Its letters are one size, as large as a row allows; a row too long for the drawer is cut, never shrunk
+static const char *const OVM_LABELS[OVM_N] = {"Gamepad", "Opacity", "Edit layout", "Rumble", "FPS", "Mode", "Export save", "Import save",
+                                              "Face buttons", "Audio", "Resume", "Exit game", ""};
 static const char *const OVM_BUTTONS[OVM_N] = {[OVM_EDIT] = "Edit", [OVM_EXPORT] = "Export", [OVM_IMPORT] = "Import", [OVM_AUDIO] = "Select"};   // the rows that are a button: its word
 static const char *const OVM_MODES[2] = {"Handheld", "Docked"};
 static const char *const OVM_PADS[2] = {"Position", "Label"};   // a controller's face buttons (front_android.c pad_labels)
-static void ov_menu_panel(const ov_canvas *cv, int st) {
-    float p[4] = {0, 0, (float)cv->w, (float)cv->h}, r[4]; ov_menu_rowrect(p, 0, r);
-    float rh = r[3], rw = r[2], gap = rh * 0.35f, sh = rh * 0.40f, sw = sh * 1.85f;
-    int tab = st >> 8 & 1, sel = (st >> 4 & 15) - 1, op = st >> 9 & 127;
-    int is = (int)fmaxf(1, roundf(rh * 0.30f / PF_CAP));
-    for (; is > 1; is--) {   // the widest row: its label, a gap and its control
-        float need = 0;
-        for (int i = 0; i < OVM_RESUME; i++) {
-            float lw = cv_text_w(OVM_LABELS[i], is), cw = i == OVM_MODE ? 2 * (cv_text_w(OVM_MODES[0], is) + sh) : i == OVM_PAD ? 2 * (cv_text_w(OVM_PADS[0], is) + sh) : OVM_BUTTONS[i] ? cv_text_w(OVM_BUTTONS[i], is) + 2 * sh : sw + gap + cv_text_w("OFF", is);
-            need = fmaxf(need, i == OVM_OPACITY ? fmaxf(lw / 0.38f, cv_text_w("80%", is) / 0.14f) : lw + gap + cw + rh * 0.3f);
-        }
-        if (need <= rw && cv_text_w(OVM_TAB_NAMES[0], is) < rw / 2 - sh) break;
-    }
-    cv_rrect(cv, 0, 0, p[2], p[3], rh * 0.18f, C_BG);
+static void ov_menu_panel(const ov_canvas *cv, int st, const float p[4]) {
+    float r[4]; ov_menu_rowrect(p, 0, r);
+    float rh = r[3], rw = r[2], gap = rh * 0.30f, sh = rh * 0.34f, sw = sh * 1.85f;
+    int tab = st >> 8 & 1, sel = (st >> 4 & 15) - 1, op = st >> 9 & 127, armed = dm_menu_panel_bits() & 1, is = ov_menu_font(p);
+    cv_rrect(cv, p[0], p[1], p[0] + p[2], p[1] + p[3], 0, C_BG);
     for (int row = 0; row < OVM_ROWS; row++) {
-        int it = ov_menu_item(tab, row); ov_menu_rowrect(p, row, r); float cy = r[1] + rh / 2, x1 = r[0] + rw - rh * 0.15f;
+        int it = ov_menu_item(tab, row); ov_menu_rowrect(p, row, r); float cy = r[1] + rh / 2, x1 = r[0] + rw - rh * 0.10f;
         if (it < 0) continue;
         if (row == sel) cv_rrect(cv, r[0], r[1] + rh * 0.08f, r[0] + rw, r[1] + rh * 0.92f, rh * 0.14f, C_HI);
-        if (it == OVM_TAB) {   // the tabs: a segmented bar, the open one filled
+        if (it == OVM_TAB) {   // the tabs: a segmented bar, the open one filled; a name too long for its share is cut
             float th = rh * 0.62f, tw = rw / OVM_TABS;
             cv_rrect(cv, r[0], cy - th / 2, r[0] + rw, cy + th / 2, th / 2, C_OFF);
             cv_rrect(cv, r[0] + tab * tw, cy - th / 2, r[0] + (tab + 1) * tw, cy + th / 2, th / 2, C_ACCENT);
-            for (int k = 0; k < OVM_TABS; k++) cv_text(cv, r[0] + k * tw + (tw - cv_text_w(OVM_TAB_NAMES[k], is)) / 2, cy, OVM_TAB_NAMES[k], is, k == tab ? C_WHITE : C_DIM);
+            for (int k = 0; k < OVM_TABS; k++) { char b[16]; cv_fit(b, sizeof b, OVM_TAB_NAMES[k], is, tw * 0.90f);
+                cv_text(cv, r[0] + k * tw + (tw - cv_text_w(b, is)) / 2, cy, b, is, k == tab ? C_WHITE : C_DIM); }
             cv_rrect(cv, r[0], r[1] + rh - 1, r[0] + rw, r[1] + rh, 0.5f, C_LINE);
             continue;
         }
         if (it == OVM_RESUME) { cv_rrect(cv, r[0], r[1], r[0] + rw, r[1] + 1, 0.5f, C_LINE); cv_text(cv, r[0] + (rw - cv_text_w("Resume", is)) / 2, cy, "Resume", is, C_ACCENT); continue; }
-        cv_text(cv, r[0] + rh * 0.15f, cy, OVM_LABELS[it], is, row == sel ? C_WHITE : C_DIM);
-        if (it == OVM_OPACITY) {   // the slider: its track, filled to the value, the knob and the percent
+        if (it == OVM_EXIT) {   // the first press says what a second does
+            cv_rrect(cv, r[0], r[1], r[0] + rw, r[1] + 1, 0.5f, C_LINE);
+            const char *q = armed ? "Exit game?" : "Exit game";
+            if (armed) { float bw = cv_text_w(q, is) + 2.4f * sh, bh = rh * 0.60f; cv_rrect(cv, r[0] + (rw - bw) / 2, cy - bh / 2, r[0] + (rw + bw) / 2, cy + bh / 2, bh / 2, C_HOT); }
+            cv_text(cv, r[0] + (rw - cv_text_w(q, is)) / 2, cy, q, is, armed ? C_WHITE : C_HOT);
+            continue;
+        }
+        int slider = it == OVM_OPACITY, seg = it == OVM_MODE || it == OVM_PAD, button = OVM_BUTTONS[it] != NULL;
+        const char *const *segs = it == OVM_MODE ? OVM_MODES : OVM_PADS;
+        int cur = it == OVM_MODE ? st >> 2 & 1 : st >> 28 & 1;
+        float segw = seg ? fmaxf(cv_text_w(segs[0], is), cv_text_w(segs[1], is)) + sh : 0, segx = x1 - 2 * segw;
+        float bw = button ? cv_text_w(OVM_BUTTONS[it], is) + 2 * sh : 0, bx = x1 - bw;
+        char word[16] = ""; int on = 0;
+        if (!slider && !seg && !button) {   // a switch
+            on = st >> (it == OVM_OVERLAY ? 0 : it == OVM_RUMBLE ? 1 : 3) & 1;
+            snprintf(word, sizeof word, "%s", on ? "ON" : "OFF");
+        }
+        float cl = slider ? r[0] + rw * 0.40f : seg ? segx : button ? bx : x1 - sw - gap - cv_text_w(word, is);
+        float lmax = (it == OVM_EXPORT && (st >> 20 & 15) != OVX_IDLE) ? rw * 0.40f : cl - gap - r[0] - rh * 0.10f;
+        char lb[40]; cv_fit(lb, sizeof lb, OVM_LABELS[it], is, lmax > rw * 0.15f ? lmax : rw * 0.15f);
+        cv_text(cv, r[0] + rh * 0.10f, cy, lb, is, row == sel ? C_WHITE : C_DIM);
+        if (slider) {   // the opacity: its track, filled to the value, the knob and the percent
             float t[3]; ov_menu_track(p, row, t); float f = (float)(op - OV_OPACITY_MIN) / (OV_OPACITY_MAX - OV_OPACITY_MIN), th = fmaxf(2, rh * 0.08f), kr = rh * 0.20f;
             f = f < 0 ? 0 : f > 1 ? 1 : f;
             cv_rrect(cv, t[0], t[1] - th / 2, t[0] + t[2], t[1] + th / 2, th / 2, C_OFF);
@@ -415,23 +434,24 @@ static void ov_menu_panel(const ov_canvas *cv, int st) {
             cv_disc(cv, t[0] + f * t[2], t[1], kr, C_WHITE);
             char v[8]; snprintf(v, sizeof v, "%d%%", op); cv_text(cv, x1 - cv_text_w(v, is), cy, v, is, C_WHITE);
         } else if (it == OVM_EXPORT && (st >> 20 & 15) != OVX_IDLE) {   // the export's outcome in place of its button: its name, or why there is none
-            char nm[64], v[80]; int x = dm_save_note(nm, sizeof nm), vs = is;
+            char nm[64], v[96], shown[96]; int x = dm_save_note(nm, sizeof nm);
             snprintf(v, sizeof v, "%s", x == OVX_BUSY ? "Exporting..." : x == OVX_DONE ? nm : x == OVX_NOSAVE ? "No save yet" : "Failed");
-            while (vs > 1 && cv_text_w(v, vs) > rw - cv_text_w(OVM_LABELS[it], is) - gap - rh * 0.3f) vs--;
-            cv_text(cv, x1 - cv_text_w(v, vs), cy, v, vs, x == OVX_FAILED ? C_ACCENT : C_WHITE);
-        } else if (OVM_BUTTONS[it]) {   // a button
-            float bw = cv_text_w(OVM_BUTTONS[it], is) + 2 * sh, b[4] = {x1 - bw, cy - rh * 0.30f, bw, rh * 0.60f}; cv_button(cv, b, OVM_BUTTONS[it], 0, 0);
-        } else if (it == OVM_MODE || it == OVM_PAD) {   // two segments, the current one filled: handheld (performance) | docked (resolution); by position | by label
-            const char *const *seg = it == OVM_MODE ? OVM_MODES : OVM_PADS; int cur = it == OVM_MODE ? st >> 2 & 1 : st >> 28 & 1;
-            float hh = rh * 0.46f, segw = fmaxf(cv_text_w(seg[0], is), cv_text_w(seg[1], is)) + sh, x0 = x1 - 2 * segw;
-            cv_rrect(cv, x0, cy - hh / 2, x1, cy + hh / 2, hh / 2, C_OFF);
-            cv_rrect(cv, x0 + cur * segw, cy - hh / 2, x0 + (cur + 1) * segw, cy + hh / 2, hh / 2, C_ACCENT);
-            for (int k = 0; k < 2; k++) cv_text(cv, x0 + k * segw + (segw - cv_text_w(seg[k], is)) / 2, cy, seg[k], is, k == cur ? C_WHITE : C_DIM);
+            cv_fit(shown, sizeof shown, v, is, rw - (rh * 0.10f + cv_text_w(lb, is)) - gap - rh * 0.10f);
+            cv_text(cv, x1 - cv_text_w(shown, is), cy, shown, is, x == OVX_FAILED ? C_ACCENT : C_WHITE);
+        } else if (button) {   // a button
+            float hh = rh * 0.58f; cv_rrect(cv, bx, cy - hh / 2, x1, cy + hh / 2, hh / 2, C_OFF);
+            cv_text(cv, bx + (bw - cv_text_w(OVM_BUTTONS[it], is)) / 2, cy, OVM_BUTTONS[it], is, C_WHITE);
+        } else if (seg) {   // two segments, the current one filled
+            float hh = rh * 0.46f;
+            cv_rrect(cv, segx, cy - hh / 2, x1, cy + hh / 2, hh / 2, C_OFF);
+            cv_rrect(cv, segx + cur * segw, cy - hh / 2, segx + (cur + 1) * segw, cy + hh / 2, hh / 2, C_ACCENT);
+            for (int k = 0; k < 2; k++) { char sb[16]; cv_fit(sb, sizeof sb, segs[k], is, segw * 0.92f);
+                cv_text(cv, segx + k * segw + (segw - cv_text_w(sb, is)) / 2, cy, sb, is, k == cur ? C_WHITE : C_DIM); }
         } else {   // a switch
-            int on = st >> (it == OVM_OVERLAY ? 0 : it == OVM_RUMBLE ? 1 : 3) & 1; float sx0 = x1 - sw;
+            float sx0 = x1 - sw;
             cv_rrect(cv, sx0, cy - sh / 2, x1, cy + sh / 2, sh / 2, on ? C_ACCENT : C_OFF);
-            cv_disc(cv, on ? x1 - sh / 2 : sx0 + sh / 2, cy, sh / 2 - fmaxf(2, sh * 0.1f), on ? C_WHITE : C_KNOB_OFF);
-            const char *word = on ? "ON" : "OFF"; cv_text(cv, sx0 - gap - cv_text_w(word, is), cy, word, is, on ? C_WHITE : C_DIM);
+            cv_disc(cv, on ? x1 - sh / 2 : sx0 + sh / 2, cy, sh / 2 - fmaxf(2, sh * 0.10f), on ? C_WHITE : C_KNOB_OFF);
+            cv_text(cv, sx0 - gap - cv_text_w(word, is), cy, word, is, on ? C_WHITE : C_DIM);
         }
     }
 }
@@ -468,51 +488,53 @@ static void ov_edit_panel(const ov_canvas *cv, int st, float W, float H) {
     cv_text(cv, pr[0] + (pr[2] - cv_text_w(q, qs)) / 2, pr[1] + pr[3] * 0.27f, q, qs, C_WHITE);
     for (int i = OVE_DISCARD; i <= OVE_KEEP; i++) { float b[4]; ov_ed_button(i, pr, b); cv_button(cv, b, words[i], i == OVE_DISCARD, i == held); }
 }
-// The save picker (overlay_layout.h OVS_*): the menu panel's rows, as front_android.c fills them (dm_save_rows); letters as the menu's (notes a little smaller),
-// each kind of row at one size: the largest at which all its rows' two texts fit
-static void ov_save_panel(const ov_canvas *cv, int st) {
+// The save picker (overlay_layout.h OVS_*): the drawer's rows, as front_android.c fills them (dm_save_rows), at the menu's one letter size;
+// a name too long for its row is cut
+static void ov_save_panel(const ov_canvas *cv, int st, const float p[4]) {
     ov_srow rows[OVM_ROWS]; if (!dm_save_rows(rows)) return;
-    float p[4] = {0, 0, (float)cv->w, (float)cv->h}, r[4]; ov_menu_rowrect(p, 0, r);
-    float rh = r[3], rw = r[2], gap = rh * 0.35f, room = rw - rh * 0.3f; int sel = (st >> 4 & 15) - 1, is0 = (int)fmaxf(1, roundf(rh * 0.30f / PF_CAP)), size[OVS_BACK + 1];
-    for (int k = 0; k <= OVS_BACK; k++) size[k] = k == OVS_NOTE ? (int)fmaxf(1, roundf(is0 * 0.8f)) : is0;
-    for (int row = 0; row < OVM_ROWS; row++) { const ov_srow *q = &rows[row]; int *s = &size[q->style];
-        while (*s > 1 && cv_text_w(q->left, *s) + (q->right[0] ? gap + cv_text_w(q->right, *s) : 0) > room) --*s; }
-    cv_rrect(cv, 0, 0, p[2], p[3], rh * 0.18f, C_BG);
+    float r[4]; ov_menu_rowrect(p, 0, r);
+    float rh = r[3], rw = r[2], gap = rh * 0.35f; int sel = (st >> 4 & 15) - 1, is = ov_menu_font(p);
+    cv_rrect(cv, p[0], p[1], p[0] + p[2], p[1] + p[3], 0, C_BG);
     for (int row = 0; row < OVM_ROWS; row++) {
-        const ov_srow *q = &rows[row]; ov_menu_rowrect(p, row, r); float cy = r[1] + rh / 2, x0 = r[0] + rh * 0.15f, x1 = r[0] + rw - rh * 0.15f;
+        const ov_srow *q = &rows[row]; ov_menu_rowrect(p, row, r); float cy = r[1] + rh / 2, x0 = r[0] + rh * 0.10f, x1 = r[0] + rw - rh * 0.10f;
         if (q->style == OVS_EMPTY) continue;
-        int is = size[q->style];
         if (row == sel) cv_rrect(cv, r[0], r[1] + rh * 0.08f, r[0] + rw, r[1] + rh * 0.92f, rh * 0.14f, C_HI);
         if (q->style == OVS_BACK) { cv_rrect(cv, r[0], r[1], r[0] + rw, r[1] + 1, 0.5f, C_LINE); cv_text(cv, r[0] + (rw - cv_text_w(q->left, is)) / 2, cy, q->left, is, C_ACCENT); continue; }
-        if (q->style == OVS_BUTTON) { float bw = fminf(rw, cv_text_w(q->left, is) + 4 * gap), b[4] = {r[0] + (rw - bw) / 2, cy - rh * 0.34f, bw, rh * 0.68f}; cv_button(cv, b, q->left, 1, row == sel); continue; }
-        cv_text(cv, x0, cy, q->left, is, q->style == OVS_TITLE || row == sel ? C_WHITE : C_DIM);
-        if (q->right[0]) cv_text(cv, x1 - cv_text_w(q->right, is), cy, q->right, is, C_DIM);
+        if (q->style == OVS_BUTTON) { float bh = rh * 0.60f, bw = fminf(rw, cv_text_w(q->left, is) + 4 * gap), bx = r[0] + (rw - bw) / 2;
+            cv_rrect(cv, bx, cy - bh / 2, bx + bw, cy + bh / 2, bh / 2, row == sel ? C_ACCENT : C_OFF); cv_text(cv, bx + (bw - cv_text_w(q->left, is)) / 2, cy, q->left, is, C_WHITE); continue; }
+        char left[80], right[40];
+        cv_fit(left, sizeof left, q->left, is, (x1 - x0) * 0.64f);
+        cv_fit(right, sizeof right, q->right, is, (x1 - x0) * 0.32f);
+        cv_text(cv, x0, cy, left, is, q->style == OVS_TITLE || row == sel ? C_WHITE : C_DIM);
+        if (q->right[0]) cv_text(cv, x1 - cv_text_w(right, is), cy, right, is, C_DIM);
         if (q->style == OVS_TITLE) cv_rrect(cv, r[0], r[1] + rh - 1, r[0] + rw, r[1] + rh, 0.5f, C_LINE);
     }
 }
 static void ov_panel(int st) {   // the pause menu, the text entry or the layout editor, for menu state st (dm_menu_state), into the panel's rows of the upload buffer
     ov_canvas cv = {g_ov.px, g_ov.w, 0, g_ov.h + g_ov.sh, g_ov.pw, g_ov.ph};
     for (uint32_t y = 0; y < g_ov.ph; y++) memset(g_ov.px + 4 * ((size_t)(cv.y0 + y) * g_ov.w), 0, (size_t)g_ov.pw * 4);
-    if (st & OVT_ST) ov_text_panel(&cv);   // a text entry is open (dm_menu_state)
+    float d[4]; ov_menu_rect((float)g_sext.width, (float)g_sext.height, d);
+    float p[4] = {d[0] / 2, d[1] / 2, d[2] / 2, d[3] / 2};   // the drawer in the raster's pixels (half the window's)
+    if (st & OVT_ST) ov_text_panel(&cv);   // a text entry is open (dm_menu_state), over the whole window
     else if (st & OVE_ST) ov_edit_panel(&cv, st, (float)g_sext.width, (float)g_sext.height);
-    else if (st & OVS_ST) ov_save_panel(&cv, st);
-    else ov_menu_panel(&cv, st);
+    else if (st & OVS_ST) ov_save_panel(&cv, st, p);
+    else ov_menu_panel(&cv, st, p);
 }
 // The phone window uses the same menu raster as Vulkan, independently of the external swapchain.
 JNIEXPORT jint JNICALL Java_org_nx2a_ExternalActivity_externalMenuState(JNIEnv *env, jclass cls) { (void)env; (void)cls; return dm_menu_state(); }
 JNIEXPORT jintArray JNICALL Java_org_nx2a_ExternalActivity_externalMenuPixels(JNIEnv *env, jclass cls, jint W, jint H, jint st) {
     (void)cls;
     if (W <= 0 || H <= 0 || W > 8192 || H > 8192 || st < 0) return NULL;
-    float r[4]; ov_menu_rect((float)W, (float)H, r);
-    uint32_t w = (uint32_t)(r[2] / 2) + 1, h = (uint32_t)(r[3] / 2) + 1, maxw = (uint32_t)W / 2;
-    if (w > maxw) w = maxw;
+    uint32_t w, h, maxw = (uint32_t)W / 2;
+    if (st & 0x10000) { w = maxw; h = (uint32_t)H / 2 + 1; }   // the text entry's keyboard fills the mirror too (ExternalActivity.drawMenu)
+    else { float r[4]; ov_menu_rect((float)W, (float)H, r); w = (uint32_t)(r[2] / 2) + 1; h = (uint32_t)(r[3] / 2) + 1; if (w > maxw) w = maxw; }
     if (!w || !h || (size_t)w * h > 16 * 1024 * 1024) return NULL;
     uint8_t *pixels = calloc((size_t)w * h, 4); if (!pixels) return NULL;
-    ov_canvas cv = {pixels, w, 0, 0, w, h};
+    ov_canvas cv = {pixels, w, 0, 0, w, h}; float p[4] = {0, 0, (float)w, (float)h};   // the drawer fills this raster
     if (st & 0x10000) ov_text_panel(&cv);
     else if (st & OVE_ST) ov_edit_panel(&cv, st, (float)W, (float)H);
-    else if (st & OVS_ST) ov_save_panel(&cv, st);
-    else ov_menu_panel(&cv, st);
+    else if (st & OVS_ST) ov_save_panel(&cv, st, p);
+    else ov_menu_panel(&cv, st, p);
     size_t count = (size_t)w * h; jint *argb = malloc((count + 2) * sizeof *argb);
     if (!argb) { free(pixels); return NULL; }
     argb[0] = (jint)w; argb[1] = (jint)h;
@@ -635,10 +657,14 @@ static void ov_render(VkCommandBuffer cb, int mode, int menu, int fps) {
     int edit = menu >= 0 && !(menu & OVT_ST) && (menu & OVE_ST);   // the layout editor: the gamepad over the held frame, every control (shown or not)
     if (edit) mode = 1;
     float bx = g_ov.sp[SP_BLACK][0], by = g_ov.sp[SP_BLACK][1];
-    if (menu >= 0 && !edit) {   // paused: the frame dimmed, the panel, and the menu button (which closes it)
-        ov_rect(cb, 0, 0, W, H, bx - 2, by - 2, bx + 2, by + 2, 0.55f);
-        float r[4]; ov_menu_rect(W, H, r);
-        ov_rect(cb, r[0], r[1], r[0] + r[2], r[1] + r[3], 0, (float)(g_ov.h + g_ov.sh), (float)g_ov.pw, (float)(g_ov.h + g_ov.sh + g_ov.ph), 1);
+    if (menu >= 0 && !edit) {   // paused: the frame dimmed, the drawer sliding in from the right (or the text entry over the window)
+        float f = 1; int64_t anim = dm_menu_anim_ns();
+        if (anim) { float e = (float)(now - anim) / 180000000.0f; f = e <= 0 ? 0 : e >= 1 ? 1 : 1 - (1 - e) * (1 - e) * (1 - e); }
+        ov_rect(cb, 0, 0, W, H, bx - 2, by - 2, bx + 2, by + 2, 0.55f * f);
+        float r[4], v0 = (float)(g_ov.h + g_ov.sh); ov_menu_rect(W, H, r);
+        if (menu & OVT_ST) ov_rect(cb, 0, 0, W, H, 0, v0, (float)g_ov.pw, v0 + (float)g_ov.ph, 1);   // the text entry's keyboard fills the window
+        else { float dx = (1 - f) * r[2];   // the drawer's part of the raster, at the right edge, sliding in
+            ov_rect(cb, r[0] + dx, r[1], r[0] + dx + r[2], r[1] + r[3], r[0] / 2, v0 + r[1] / 2, (r[0] + r[2]) / 2, v0 + (r[1] + r[3]) / 2, 1); }
     } else if (edit) {
         ov_rect(cb, 0, 0, W, H, bx - 2, by - 2, bx + 2, by + 2, 0.30f);
         if (menu & OVE_GRID_ON) {
@@ -770,8 +796,8 @@ static int overlay_ready(VkCommandBuffer cb, uint32_t k, int menu) {   // k: thi
         g_ov.cver = dm_overlay_custom_ver();   // (and, without a theme, the player's own layout: the outlines are in the static layer)
         vkDeviceWaitIdle(V.dev);
         if (g_ov.view) { vkDestroyImageView(V.dev, g_ov.view, NULL); vkDestroyImage(V.dev, g_ov.img, NULL); vkFreeMemory(V.dev, g_ov.mem, NULL); vkDestroyBuffer(V.dev, g_ov.up, NULL); vkFreeMemory(V.dev, g_ov.upm, NULL); }
-        g_ov.lay = lay; uint32_t sh = ov_layout_sprites(w, h); float mr[4]; ov_menu_rect((float)g_sext.width, (float)g_sext.height, mr);
-        g_ov.pw = (uint32_t)(mr[2] / 2) + 1; g_ov.ph = (uint32_t)(mr[3] / 2) + 1; if (g_ov.pw > w) g_ov.pw = w;
+        g_ov.lay = lay; uint32_t sh = ov_layout_sprites(w, h);
+        g_ov.pw = w; g_ov.ph = h;   // the drawer sits inside; the text entry fills the window
         g_ov.gs = (uint32_t)fmaxf(2, roundf(h * 0.022f / PF_CAP)); g_ov.gh = PF_CAP * g_ov.gs + 4;   // the counter's characters: 2.2% of the window's height
         uint32_t th = h + sh + g_ov.ph + g_ov.gh;
         VkImageCreateInfo ic = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, NULL, 0, VK_IMAGE_TYPE_2D, VK_FORMAT_R8G8B8A8_UNORM, {w, th, 1}, 1, 1, VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_TILING_OPTIMAL,
@@ -792,13 +818,14 @@ static int overlay_ready(VkCommandBuffer cb, uint32_t k, int menu) {   // k: thi
         vkUpdateDescriptorSets(V.dev, 1, &wr, 0, NULL);
         g_ov.uploaded = 0; g_ov.panel = -1;
     }
+    int pb = dm_menu_panel_bits();   // Exit's first press, in the panel's key (dm_menu_state's fields are taken)
     uint32_t y0 = 0, rows = g_ov.h + g_ov.sh + g_ov.ph + g_ov.gh;   // the rows to upload
-    if (g_ov.uploaded && menu >= 0 && menu != g_ov.panel) {   // only the panel, after the last copy out of the buffer has run
+    if (g_ov.uploaded && menu >= 0 && (menu != g_ov.panel || pb != g_ov.pbits)) {   // only the panel, after the last copy out of the buffer has run
         VkFence f[8]; uint32_t n = 0; for (uint32_t i = 0; i < 8; i++) if (i != k) f[n++] = g_pfence[i];
         vkWaitForFences(V.dev, n, f, 1, 1000000000ull);
         y0 = g_ov.h + g_ov.sh; rows = g_ov.ph; g_ov.uploaded = 0;
     }
-    if (menu >= 0 && menu != g_ov.panel) { ov_panel(menu); g_ov.panel = menu; }
+    if (menu >= 0 && (menu != g_ov.panel || pb != g_ov.pbits)) { ov_panel(menu); g_ov.panel = menu; g_ov.pbits = pb; }
     if (!g_ov.uploaded) {
         VkImageMemoryBarrier b = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL, VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, y0 ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED,
             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, g_ov.img, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
@@ -990,6 +1017,7 @@ static void *present_thread(void *arg) {
         if (g_pq_tail == g_pq_head) {   // a redraw, no new frame
             pthread_mutex_unlock(&g_pq_mu);
             if (last.im) { pthread_mutex_lock(&g_present_mu); if (swap_make()) present_window(last.im, last.has_crop ? last.crop : NULL, -1, 0); pthread_mutex_unlock(&g_present_mu); }
+            if (dm_menu_state() >= 0 && dm_menu_anim_ns() && mono_ns() - dm_menu_anim_ns() < 240000000ll) dm_overlay_redraw();   // the drawer still sliding: present it again
             continue;
         }
         typeof(g_pq[0]) e = g_pq[g_pq_tail % PQ_N];
