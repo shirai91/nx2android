@@ -26,7 +26,7 @@ static void copy_b2t(const p_copy_b2t *c, int to_texture) {
         for (uint32_t z = 0; z < nz; z++) vk_bc_decode(f, (const uint8_t *)(uintptr_t)c->src + z * slice, pitch, w, h, 1, p + z * out);
         b = sb; r.bufferOffset = so; r.bufferRowLength = 0; r.bufferImageHeight = 0;
     }
-    {   // a transfer past the image's level or past the buffer is not covered by any robustness feature: Adreno loses the device (checked before the copy, the copy skipped)
+    {   // a transfer past the image's level or past the buffer is not covered by any robustness feature: Adreno loses the device (checked before the copy and logged; the copy is still made)
         uint32_t lv = r.imageSubresource.mipLevel, lw = im->w >> lv ? im->w >> lv : 1, lh = im->h >> lv ? im->h >> lv : 1, ld = im->d > 1 ? (im->d >> lv ? im->d >> lv : 1) : 1;
         lw = (lw + bw - 1) / bw * bw; lh = (lh + bh - 1) / bh * bh;
         int bad_img = lv >= im->levels || r.imageOffset.x < 0 || r.imageOffset.y < 0 || r.imageOffset.z < 0 || (uint32_t)r.imageOffset.x + r.imageExtent.width > lw ||
@@ -40,10 +40,9 @@ static void copy_b2t(const p_copy_b2t *c, int to_texture) {
             VkBuffer b2; VkDeviceSize o2; bad_buf = need && !vk_buf_at(c->src, need, &b2, &o2);
         }
         if (bad_img || bad_buf) {
-            static unsigned nbad; if (nbad++ < 16) VKLOG("[RED] buffer %s texture copy skipped: %s; region %d,%d,%d %ux%ux%u level %u layers %u+%u, image %ux%ux%u layers %u levels %u (nvn format %#x), buffer %#llx +%llu bytes",
+            static unsigned nbad; if (nbad++ < 16) VKLOG("[RED] buffer %s texture copy runs %s (logged, still made: no game seen doing it yet); region %d,%d,%d %ux%ux%u level %u layers %u+%u, image %ux%ux%u layers %u levels %u (nvn format %#x), buffer %#llx +%llu bytes",
                 to_texture ? "→" : "←", bad_img ? "past the image" : "past the memory pool", r.imageOffset.x, r.imageOffset.y, r.imageOffset.z, r.imageExtent.width, r.imageExtent.height, r.imageExtent.depth, lv,
                 r.imageSubresource.baseArrayLayer, r.imageSubresource.layerCount, im->w, im->h, im->d, im->layers, im->levels, (unsigned)c->tex->d.format, (unsigned long long)c->src, (unsigned long long)need);
-            return;
         }
     }
     if (g_watch_off >= 0) { char w[96]; snprintf(w, sizeof w, "buffer copy %s (buffer %#llx, %dx%d)", to_texture ? "destination" : "source", (unsigned long long)c->src, c->r.width, c->r.height); vk_watch(im, w); }

@@ -725,7 +725,8 @@ VkImageView vk_tex_view_as(const tex_t *t, const view_t *vw, int dim, int arraye
             // Returning a 2D view for a cube shader bypassed tex_desc_for's typed dummy. The saved creation flag also requires a square,
             // single-sample 2D image; having six layers alone is insufficient. Check the selected range before either view cache can keep a wrong type.
             if (!(im->cflags & VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT) || nly < 6 || (want == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY && nly % 6)) {
-                VKRED_ONCE(106, "cube view refused: image %ux%ux%u layers %u cflags %#x, levels %u+%u range %u+%u type %d", im->w, im->h, im->d, im->layers, im->cflags, lv0, nlv, ly0, nly, want);
+                VKRED_ONCE(106, "cube view refused: image %ux%ux%u layers %u cflags %#x, levels %u+%u range %u+%u type %d; texture nvn target %d format %#x %ux%ux%u", im->w, im->h, im->d, im->layers, im->cflags, lv0, nlv, ly0, nly, want,
+                           t->d.target, (unsigned)t->d.format, t->d.width, t->d.height, t->d.depth);
                 return VK_NULL_HANDLE;
             }
             if (want == VK_IMAGE_VIEW_TYPE_CUBE) nly = 6;
