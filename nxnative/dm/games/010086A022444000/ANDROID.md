@@ -1,8 +1,8 @@
 # BALL x PIT on Android
 
-Status: **experimental — requires testing**. No game was built, launched or played for this change.
+Status: **experimental — requires testing**. The registered 1.293 profile has not been qualified on Android. Community testing of the derived 1.301 profile reached gameplay but reported missing graphics and a crash when switching to handheld mode.
 
-This source audit covers **1.293 (`v393216`)**, Switch 1 title ID `010086A022444000`, against nx2android `00f41ec9c0f4`. It identifies existing tool and runtime paths for an experimental port; it does not establish Android playability. Other game versions are outside this assessment.
+This source audit covers **1.293 (`v393216`)**, Switch 1 title ID `010086A022444000`, against nx2android `00f41ec9c0f4`. It identifies existing tool and runtime paths for an experimental port; it does not establish Android playability. The later 1.301 report below does not qualify the registered version.
 
 ## Compatibility evidence
 
@@ -38,3 +38,17 @@ Android starts docked with the on-screen gamepad visible. Use an arm64 Android d
 2. Test the title, menus, movies, audio and gameplay with the intended controls; check for missing shaders or rendering errors.
 3. Save, quit, restart and load. Exercise later areas and monitor address-region failures, physical memory and pacing.
 4. Record the device, driver, version and tested route before raising the status.
+
+## Community bring-up and remaining issues
+
+The reported 1.301 (`v458752`) build uses `main=ab2259988e930c928a0d6fceef29d1d4` and the same movie-library and SDK builds listed above. With `--experimental` and local SDK node-area cuts, it reached gameplay on Samsung Xclipse 920, driver 2.0.0, but the player and scenery were not rendering correctly. This is not a tested/playable claim for either version.
+
+Its supplied shader-table diff contains real key changes: 68 vertex/pixel keys for `TimeSnareAOE` disappear and 64 for `TimeSnareFresnel` appear; the matching variation-pair changes are 34 removed and 32 added. Other differences include shifted table indices. The registered 1.293 tables remain the baseline; accepting locally generated 1.301 tables with `--experimental` does not validate their rendering. The supplied diff alone does not explain the missing player or scenery, and shader-translation diagnostics are still needed.
+
+The handheld switch delivered operation/performance notifications before an SDK null-session dereference while selecting a performance configuration. The host now intercepts the previously missing one-argument configuration setter as well as the existing two-argument form. This matches the SDK failure pattern, but resolving this device crash still needs a rebuild and retest. Keeping the game docked avoids the reported trigger while investigating; it does not fix the missing graphics.
+
+The contributor does not have the game files. Community testing of the mode switch, rendering, controls, audio, saves and later effects is still needed before changing the experimental status.
+
+## Found on this game
+
+- [Performance configuration calls](../../../../docs/ARCHITECTURE.md#performance-configuration-calls): the mode-switch crash exposed the same uninitialized-session pattern covered by upstream's missing-overload fix. Both overloads are now intercepted by name; device confirmation remains outstanding.
