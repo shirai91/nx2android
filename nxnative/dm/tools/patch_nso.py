@@ -718,13 +718,13 @@ def half_count(insl, ld, base):
     m = re.fullmatch(r'w\d+, \[(x\d+), [wx](\d+), (?:lsl|uxtw) #1\]', ld.op_str) if ld.mnemonic == 'ldrh' else None
     if not m: return None
     tb_reg, k = m.group(1), insl.index(ld)
-    idx, cmp = {'w' + m.group(2)}, None
+    idx, cmp = 'w' + m.group(2), None
     for p in reversed(insl[max(0, k - 32):k]):   # walk back from the load to the bounds check
         mm = re.fullmatch(r'(w\d+), (w\d+)', p.op_str) if p.mnemonic == 'mov' else None
-        if mm and mm.group(1) in idx: idx.add(mm.group(2)); continue
-        mm = re.fullmatch(r'(w\d+), #(0x[0-9a-f]+|\d+)', p.op_str) if p.mnemonic == 'cmp' else None
-        if mm and mm.group(1) in idx: cmp = p; break
-        if any('w' + p.reg_name(r)[1:] in idx for r in p.regs_access()[1]): return None   # the index changes after the check
+        if mm and mm.group(1) == idx: idx = mm.group(2); continue
+        mm = re.fullmatch(r'[wx](\d+), #(0x[0-9a-f]+|\d+)', p.op_str) if p.mnemonic == 'cmp' else None
+        if mm and 'w' + mm.group(1) == idx: cmp = p; break
+        if any('w' + p.reg_name(r)[1:] == idx for r in p.regs_access()[1]): return None   # the index changes after the check
     kc = insl.index(cmp) if cmp is not None else -1
     if kc < 0 or insl[kc + 1].mnemonic not in ('b.hi', 'b.hs', 'b.cs'): return None   # only a compare that guards the dispatch bounds the index (b.hs: one entry more than needed)
     n = int(cmp.op_str.split('#')[1], 0) + 1
