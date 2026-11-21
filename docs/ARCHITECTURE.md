@@ -193,6 +193,10 @@ A profile is offered for Android when it has an `android.tsv`; the profiles with
 
 Per-build knowledge stays where upstream keeps it: the rewriter's cuts in `patches.py` / `dm/tools/sdk_patches.py`, keyed by build ID.
 
+### Observation gates after removed calls
+
+Observation gates require a function entry, a preceding `BL` call boundary, or a proof that x9–x17 are unread before the next call. A build-keyed cut that replaces a checked original `BL` with a `NOP` retains the original call boundary; a different replacement does not. The rewriter records only the original boundary at registered observation sites before applying cuts, and still checks the cut bytes, observation instruction and rewrite-site conflicts. This lets an allocator observation replace a removed constructor call without treating arbitrary NOPs as safe gate sites.
+
 ## The port
 
 `python -m porter port <game folder> -k <prod.keys>` (the GUI's **Port** button) runs these stages. The slow ones (extraction, rewrite, shader split, the translator build, the Vulkan shaders) keep their output with a key of their inputs and are skipped on the next run when the key is unchanged; the host build is incremental (`build.py`), and the APK and the data pack are made again each time (seconds).

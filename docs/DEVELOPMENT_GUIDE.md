@@ -282,6 +282,11 @@ The `sync-scan`, `sync-protect`, `sync-upload` and `sync-baseline` phases report
 
 Eligible transfer-only completion also reuses NVN CPU_UNCACHED baselines. Native cases cover coherent and simulated non-coherent memory, empty/disjoint writes, independent CPU changes, incremental and clean snapshot volume, and fallback-to-eligible transitions. The old exclusion fails these tests. This does not change CPU_UNCACHED merge coverage for uncertain submissions; their baselines are reused too (no full snapshot of the pool at the next sync).
 
+`test_observation_cut_calls` exercises the production cut checks and observation-gate
+emission on synthetic instructions. It covers a removed call, original-byte mismatches,
+non-call NOPs, non-NOP replacements and overlapping rewrite sites. These checks do
+not require game files and do not establish real-game rewrite or Android compatibility.
+
 ## Commit messages
 
 [Conventional Commits 1.0.0](https://www.conventionalcommits.org/en/v1.0.0/), with commitlint's `config-conventional` types and limits:
