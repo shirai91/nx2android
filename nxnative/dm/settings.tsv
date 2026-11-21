@@ -272,6 +272,7 @@ DM_VK_NOPREWARM	str		debug	start	gfx_vk_exec.c	no pipeline prewarm, and no compu
 DM_VK_NO_ZEROCOPY	str		debug	?	gfx_vk_core.c	DM_VK_NO_ZEROCOPY (set at all): every pool copied
 DM_VK_ORDER_KEEP	int		debug	?	gfx_vk_exec.c	
 DM_VK_PACE	bool		debug	live	gfx_vk_present.c	present without desired times (`VK_GOOGLE_display_timing`): frames go out at the first vsync after they are latched, as before. On, each frame is timed at the last one's plus the game's period on the display's vsync grid; the log's `[perf] display timing` line counts resyncs (a longer frame where th
+DM_VK_PACE_LOG	bool		debug	live	gfx_vk_present.c	logs the display pacing every 600 frames (`pace log:` the measured lead from a present call to the frame's earliest possible present, the driver's present margin) and each resync with its predicted shortfall
 DM_VK_PASSDUMP	bool		debug	live	gfx_vk_exec.c	dump each pass's first colour target and its depth (PPM, NaN counts, depth stretched) for one frame; `=N` waits N−1 presents first. **The dump adds barriers and depth reads, which can hide bugs**
 DM_VK_PASSDUMP_CROP	str		debug	live	gfx_vk_exec.c	Copy only this bounded rectangle of the selected colour image, reducing memory and disk use for temporal numeric probes. Origin is logged; an empty value restores full images.
 DM_VK_PASSDUMP_DEPTH	bool		debug	start	gfx_vk_exec.c	with `DM_VK_PASSDUMP_SIZE`, the size-filtered passes' depth too; every depth dump also writes its raw values as float32 (`<name>.f32` beside the PPM)
