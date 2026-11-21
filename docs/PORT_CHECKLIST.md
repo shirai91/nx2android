@@ -2,13 +2,14 @@
 
 Games with no official Android version, from the games nxnative tested on Mac or iPhone (2026-10-29) and our own ports. A checked game has an `android.tsv` here; which ones play and how well: the README's [Games](../README.md#games).
 
-Left out because they have an official Android release: Unpacking (ported here anyway), Balatro, Raging Loop, Baba Is You, BALL x PIT, Blasphemous, FINAL FANTASY CRYSTAL CHRONICLES Remastered Edition, Ghost Trick: Phantom Detective, Sea of Stars, Stardew Valley, and Absolum (Android on 2026-11-05)，Layton's Mystery Journey DX+.
+Left out because they have an official Android release: Unpacking (ported here anyway), Balatro, Raging Loop, Baba Is You, BALL x PIT, Blasphemous, FINAL FANTASY CRYSTAL CHRONICLES Remastered Edition, Ghost Trick: Phantom Detective, Sea of Stars, Stardew Valley, and Absolum (Android on 2026-11-05), and Layton's Mystery Journey DX+ (ported here anyway).
 
 "Profile here": `nxnative/dm/games/<title ID>/` has the game's profile from nxnative. "Upstream profile": only seedds/nxnative has one, to read as a reference or starter, not to pull. "60 fps with X" is upstream's note: they run that update at 60 fps (30 on the Switch).
 
-**57 / 110 ported**
+**66 / 114 ported**
 
 - [x] 13 Sentinels: Aegis Rim · `01003FC01670C000`
+- [x] 13 Sentinels: Aegis Rim (Asia) · `01008D7016438000`
 - [ ] Ace Attorney Investigations Collection · `010005501E68C000` · profile here
 - [x] Advance Wars 1+2: Re-Boot Camp · `0100300012F2A000`
 - [ ] AI: THE SOMNIUM FILES · `010089B00D09C000` · profile here
@@ -34,15 +35,17 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [x] DARK SOULS: REMASTERED · `01004AB00A260000`
 - [ ] Digimon Story Cyber Sleuth: Complete Edition · `010014E00DB56000` · profile here
 - [x] Disco Elysium - The Final Cut · `01006C5015E84000`
+- [x] Divinity: Original Sin 2 - Definitive Edition · `010027400CDC6000`
 - [x] Donkey Kong Country Returns HD · `01009D901BC56000`
 - [ ] Donkey Kong Country: Tropical Freeze · `0100C1F0051B6000` · upstream profile
 - [ ] DRAGON QUEST VII Reimagined · `0100A9D01C446000` · profile here
 - [ ] DRAGON QUEST XI S: Echoes of an Elusive Age – Definitive Edition · `01006C300E9F0000` · profile here · 60 fps with 1.0.4
 - [x] FINAL FANTASY RESONANCE · `0100606026F12000`
-- [ ] FINAL FANTASY TACTICS - The Ivalice Chronicles · `010038B015560000` · profile here
+- [x] FINAL FANTASY RESONANCE (Asian release) · `0100B8A026F14000` · needs a Turnip driver
+- [x] FINAL FANTASY TACTICS - The Ivalice Chronicles · `010038B015560000` · profile here
 - [ ] FINAL FANTASY X/X-2 HD Remaster · `0100BC300CB48000` · upstream profile
 - [x] Fire Emblem Engage · `0100A6301214E000`
-- [ ] Fire Emblem: Three Houses · `010055D009F78000` · profile here · 60 fps with 1.2.0
+- [x] Fire Emblem: Three Houses · `010055D009F78000` · 60 fps with 1.2.0
 - [x] FM24 Touch · `01008B101B87A000`
 - [x] Football Manager 26 Touch · `0100D4A023450000`
 - [x] Graveyard Keeper 2 · `0100005027A18000`
@@ -64,8 +67,8 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [ ] Monster Hunter Rise · `0100B04011742000` · profile here · 60 fps with 16.0.2
 - [ ] Monster Train 2 · `010051701FB46000` · profile here · 60 fps with 1.1.1 · only the first Monster Train is on mobile
 - [x] NEO: The World Ends with You · `010043B013C5C000`
-- [ ] NieR:Automata The End of YoRHa Edition · `010056B015FE8000` · upstream profile · 60 fps with 1.0.3
-- [ ] OCTOPATH TRAVELER · `010057D006492000` · profile here
+- [x] NieR:Automata The End of YoRHa Edition · `010056B015FE8000` · profile here · boots with 1.0.3; save-loaded map and geometry corrected; broader gameplay checks pending; [test record](NIER_AUTOMATA_ANDROID_PORT.md)
+- [x] OCTOPATH TRAVELER · `010057D006492000` · profile here
 - [x] Octopath Traveler 0 · `01005270232F2000`
 - [x] Octopath Traveler 0 (Chinese release) · `01001300232F4000`
 - [ ] Octopath Traveler II · `0100A3501946E000` · upstream profile · 60 fps with 1.1.1
@@ -87,6 +90,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [ ] Return of the Obra Dinn · `010032E00E6E2000` · upstream profile
 - [x] Rhythm Heaven Groove · `0100D9F01D474000`
 - [ ] ROMANCE OF THE THREE KINGDOMS 8 REMAKE · `0100C2A01A730000` · profile here · controller only
+- [x] ROMANCE OF THE THREE KINGDOMS XIV with the Diplomacy and Strategy Expansion Pack (三國志14 with 威力加強版) · `0100CD4012DCA000` · 30 fps, as on the Switch
 - [ ] SHIN MEGAMI TENSEI V: Vengeance · `010069C01AB82000` · upstream profile · 60 fps with 1.0.3
 - [ ] Silver Pines · `0100D5B026844000` · upstream profile
 - [x] South Park™: The Stick Of Truth™ · `010043600B6A6000` · needs a Vulkan 1.3 driver or imageless framebuffers with render pass 2 (Turnip packed on the Adreno 640)
@@ -104,7 +108,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [ ] The Great Ace Attorney Chronicles · `010036E00FB20000` · profile here
 - [x] The Legend of Zelda: Breath of the Wild · `01007EF00011E000` · Galaxy S25 Ultra / Turnip; tested in the opening and on the Great Plateau
 - [x] The Legend of Zelda: Echoes of Wisdom · `01008CF01BAAC000` · Retroid Pocket 6 / PurpleVK; playable with minor transparency artifacts around rifts
-- [ ] The Legend of Zelda: Link's Awakening · `01006BB00C6F0000` · profile here
+- [x] The Legend of Zelda: Link's Awakening · `01006BB00C6F0000` · Lenovo TB323FU; dynamic 30/60 fps by default (optional stable-60fps NOPs commented out in `patches.py` to avoid slow-motion/judder on weaker chips); needs `--firmware` (without it, crashes at startup because the fallback font lacks `U+25A1`); startup `main+0x1c180` OOB read fixed in `patches.py`; area loads can hitch
 - [x] The Legend of Zelda: Tears of the Kingdom · `0100F2C0115B6000`
 - [x] The World Ends with You -Final Remix- · `0100C1500B82E000`
 - [x] Tomodachi Life: Living the Dream · `010051F0207B2000`
