@@ -1,0 +1,6 @@
+# Build-keyed allocator metadata for hle_uemalloc.c, from seedds/nxnative
+# 16f4889192dd9bc6363a77b5d8b9654fe65441a2 dm/host/hle_uemalloc.c.
+# The object is allocated dynamically (obj=0); OBS_UE_MALLOC receives it in x19.
+# Slots 0-19 match UE4_27; the copied 21st word is unused by this build.
+# build	what	layout	obj	vtable	cut
+0d9649011312f62e93f6a5673a09d7e9	OCTOPATH TRAVELER II 1.1.1	UE4_27	0x0	0x64710b0	0xbecc08

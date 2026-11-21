@@ -26,6 +26,7 @@
 #   The compression flags are no names: 1 zlib, 2 gzip, 4 custom; DRAGON QUEST XI S's engine uses 3, which is LZ5 2.0 (main exports LZ5_*; every block starts with its level, 0x2d = 45), and only the
 #   game's own decoder reads it (hle_oodle.c, through a decode function given to Pak.read). OCTOPATH TRAVELER (UE 4.18, Kingship-Switch.pak 1.9 GB / 103,018 files and Kingship-Switch_0_P.pak) uses 1:
 #   zlib, which Pak.read decodes itself, so its shaders need no game decoder (legacy_decoder_paks).
+# UE 4.27 projects can disable shared material shader code. Their paks hold the shaders in cooked packages and the global shader cache, read by shader_split.py.
 # Shader code archive (version 2): shader map hashes (20 bytes each), shader hashes (20 each), shader map entries {u32 first index, u32 shader count, u32 first preload, u32 preload count}, shader
 #   entries {u64 offset, u32 size, u32 raw size, u8 frequency} (17 bytes, packed), preload entries (16 each), shader indices (u32): each array is a u32 count and its elements; the code follows,
 #   offsets relative to its start. A shader whose size differs from its raw size is compressed.
@@ -219,9 +220,17 @@ def find_key(img, lo, hi, pak):
 
 class Pak:
     def __init__(self, path, key=None):
-        self.path, self.key = path, key; self.f = open(path, 'rb')
+        self.path, self.key = path, key
+        self.f = open(path, 'rb')
+        try:
+            self._read_index()
+        except BaseException:
+            self.f.close()
+            raise
+
+    def _read_index(self):
         enc, ioff, isz, self.methods, self.version = footer(self.f)
-        if enc and not key: raise ValueError(f'{path}: the index is encrypted and no key was given')
+        if enc and not self.key: raise ValueError(f'{self.path}: the index is encrypted and no key was given')
         r = R(self.read_at(ioff, isz, enc))
         self.mount = r.fstr(); self.count = r.take('<i')
         if self.version in LEGACY:   # one FPakEntry per file, kept as parsed
@@ -236,14 +245,26 @@ class Pak:
             return
         r.take('<Q')
         if r.take('<i'): r.take('<QQ'); r.raw(20)   # path hash index (not needed with the full directory index)
-        if not r.take('<i'): raise ValueError(f'{path}: no full directory index')
+        if not r.take('<i'): raise ValueError(f'{self.path}: no full directory index')
         doff, dsz = r.take('<QQ'); r.raw(20)
         self.enc = r.raw(r.take('<i'))
-        if r.take('<i'): raise ValueError(f'{path}: unencoded entries are not read')
+        if r.take('<i'): raise ValueError(f'{self.path}: unencoded entries are not read')
         d = R(self.read_at(doff, dsz, enc)); self.files = {}
         for _ in range(d.take('<i')):
             dn = d.fstr()
             for _ in range(d.take('<i')): fn = d.fstr(); self.files[(dn + fn).lstrip('/')] = d.take('<i')
+    def shader_layout(self):
+        if self.version in LEGACY:
+            return 'inline'
+        for name in self.files:
+            if name.endswith('.ushaderbytecode'):
+                return 'archive'
+        for name in self.files:
+            basename = name.rsplit('/', 1)[-1].lower()
+            if basename.endswith('.uexp') or (basename.startswith('globalshadercache-') and basename.endswith('.bin')):
+                return 'inline'
+        return None
+
     def read_at(self, off, n, enc):
         self.f.seek(off); b = self.f.read((n + 15) & ~15 if enc else n)
         return aes_decrypt(self.key, b)[:n] if enc else b
@@ -263,10 +284,19 @@ class Pak:
         return dict(off=off, raw=raw, size=size, method=self.methods[meth - 1] if meth else '', encrypted=enc, block_size=bsz, blocks=blocks)
     def read(self, path, decode=None):
         """A file's bytes. A compressed one needs decode(block bytes, raw length) → bytes, block by block (each block holds block_size raw bytes, the last one the rest):
-        the game's own decoder in the Mac host (shader_split.py oodle); Octopath Traveler 0's archives go through the Oodle job instead. Zlib and gzip blocks are decoded here (ZLIB)"""
+        the game's own decoder in the Mac host (shader_split.py oodle); Octopath Traveler 0's archives go through the Oodle job instead. Zlib, gzip and LZ4 are decoded here"""
         e = self.entry(path)
         if not e['method']: return self.read_at(e['off'] + 53, e['size'], e['encrypted'])
-        decode = ZLIB.get(e['method'], decode)
+        if e['method'] == 'LZ4':
+            from lz4.block import decompress
+
+            def decode(block, raw_size):
+                data = decompress(block, uncompressed_size=raw_size)
+                if len(data) != raw_size:
+                    raise ValueError(f'{path}: LZ4 block decoded to {len(data)} bytes, expected {raw_size}')
+                return data
+        else:
+            decode = ZLIB.get(e['method'], decode)
         if not decode: raise ValueError(f'{path} is {e["method"]}-compressed in the pak')
         out, left = [], e['raw']
         for s, n in e['blocks']:
@@ -320,7 +350,8 @@ class Toc:
     u64 partition size, u32 count of chunks without a perfect hash, then reserved words. After it: chunk IDs (12 bytes: u64 hash, u16 index, u8, u8 type), offsets and lengths
     (5 + 5 bytes, big-endian), the perfect hash seeds and overflow list (u32 each), the blocks (5-byte offset, 3-byte stored size, 3-byte raw size, u8 method; little-endian), the method names"""
     def __init__(self, path, key=None):
-        b = open(path, 'rb').read()
+        with open(path, 'rb') as f:
+            b = f.read()
         if b[:16] != TOC_MAGIC: raise ValueError(f'{path}: not an IoStore TOC')
         self.path, self.key, self.version = path, key, b[16]
         hsz, n, nblk, bsz, nmeth, mlen, self.block_size, _, nparts = struct.unpack_from('<9I', b, 20)
@@ -439,6 +470,20 @@ def unreal_paks(romfs, legacy=None):
         if legacy is None or (ver in LEGACY) == legacy: out.append(p)
     return out
 
+def shader_archive_sources(romfs):
+    """Paks with shader code archives or indexes that need opening in the extraction job, and IoStore TOCs with shader libraries."""
+    out = io_shader_tocs(romfs)
+    for path in unreal_paks(romfs, legacy=False):
+        try:
+            pak = Pak(path)
+        except (OSError, ValueError, struct.error):
+            out.append(path)   # encrypted and unreadable indexes are handled by the extraction job
+            continue
+        with pak.f:
+            if pak.shader_layout() == 'archive':
+                out.append(path)
+    return out
+
 def legacy_decoder_paks(romfs):
     """The legacy paks under the RomFS whose files need the game's own decoder: a compression method other than zlib or gzip (DRAGON QUEST XI S's LZ5), or an encrypted index, which
     is not read here. OCTOPATH TRAVELER's are all zlib: Pak.read decodes them and the shader split needs no game"""
@@ -511,9 +556,11 @@ def lslg(s):
     if s[:4] != b'LSLG': return None
     k = s.find(b'\x34\x12\x76\x98')
     if k < 8: return None
-    nctl, ncode = struct.unpack_from('<I', s, k - 4)[0], struct.unpack_from('<I', s, k + 0x704)[0]
+    nctl = struct.unpack_from('<I', s, k - 4)[0]
+    if nctl < 0x708 or k + nctl > len(s): return None
+    ncode = struct.unpack_from('<I', s, k + 0x704)[0]
     c = k - 4 - ncode
-    if c < 4 or struct.unpack_from('<I', s, c - 4)[0] != ncode or k + nctl > len(s): return None
+    if c < 4 or struct.unpack_from('<I', s, c - 4)[0] != ncode: return None
     return s[4:6].decode('latin1'), s[k:k + nctl], s[c:c + ncode]
 
 if __name__ == '__main__':

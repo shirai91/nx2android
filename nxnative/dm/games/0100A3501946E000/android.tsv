@@ -1,0 +1,9 @@
+# OCTOPATH TRAVELER II on Android (docs/ARCHITECTURE.md, Game profiles on Android).
+# Update 1.1.1, Unreal Engine 4.27, SDK 12.3.2. Prepared from upstream's public
+# profile metadata; no game files, APK build, Android device or driver were tested.
+# Keep experimental until shader-table parity, boot, rendering, audio, input and saves
+# have been checked on a device. No tested/readme_tag/readme_image claim is made.
+status	experimental
+package	org.nx2a.octopathtravelerii
+orientation	landscape
+pacing	game
