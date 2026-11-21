@@ -314,6 +314,12 @@ static int set_memo_get(int st, vkshader_t *s, uint32_t *dofs) {
 static dmsv_bind sampler_element(const dmsv_bind *b, uint32_t element) {
     dmsv_bind out = *b;
     if (b->samp == RS_UBO) {
+        static int noted;
+        if (!noted && b->count != 1) {
+            noted = 1;
+            VKLOG("independent UBO sampler array: %d elements, cbuf %d +%d",
+                  b->count ? b->count : 32, b->samp_arg & 0xff, b->samp_arg >> 8);
+        }
         int64_t packed = (int64_t)b->samp_arg + 8ll * element * 256;
         out.samp_arg = b->samp_arg < 0 || packed > INT32_MAX ? -1 : (int32_t)packed;
     }
