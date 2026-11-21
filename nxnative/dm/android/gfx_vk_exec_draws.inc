@@ -140,6 +140,31 @@ static void texbind(const pkey *k) {
         }
     }
 }
+enum clear_type { CLEAR_FLOAT, CLEAR_UINT, CLEAR_SINT };
+static enum clear_type clear_color_type(VkFormat format) {
+    switch (format) {
+        case VK_FORMAT_R8_UINT: case VK_FORMAT_R16_UINT: case VK_FORMAT_R32_UINT:
+        case VK_FORMAT_R8G8_UINT: case VK_FORMAT_R16G16_UINT: case VK_FORMAT_R32G32_UINT:
+        case VK_FORMAT_R8G8B8A8_UINT: case VK_FORMAT_R16G16B16A16_UINT: case VK_FORMAT_R32G32B32A32_UINT:
+        case VK_FORMAT_A2B10G10R10_UINT_PACK32: return CLEAR_UINT;
+        case VK_FORMAT_R8_SINT: case VK_FORMAT_R16_SINT: case VK_FORMAT_R32_SINT:
+        case VK_FORMAT_R8G8_SINT: case VK_FORMAT_R16G16_SINT: case VK_FORMAT_R32G32_SINT:
+        case VK_FORMAT_R8G8B8A8_SINT: case VK_FORMAT_R16G16B16A16_SINT: case VK_FORMAT_R32G32B32A32_SINT:
+        case VK_FORMAT_A2B10G10R10_SINT_PACK32: return CLEAR_SINT;
+        default: return CLEAR_FLOAT;
+    }
+}
+static int alpha_enabled(vkshader_t *fs, VkFormat format, int discard) {
+    return fs && !discard && fs->alpha_float && S.color.alpha_func &&
+        S.color.alpha_func != NVN_ALPHA_FUNC_ALWAYS && clear_color_type(format) == CLEAR_FLOAT;
+}
+static void alpha_push(VkCommandBuffer cb, VkPipelineLayout layout) {
+    static const uint32_t accept[]={15,0,1,2,3,4,13,6,15};
+    struct { uint32_t mask; float reference; } alpha={
+        S.color.alpha_func<sizeof accept/sizeof *accept ? accept[S.color.alpha_func] : 15,S.alpha_ref};
+    vkCmdPushConstants(cb,layout,VK_SHADER_STAGE_FRAGMENT_BIT,DM_VK_ALPHA_PUSH_OFFSET,sizeof alpha,&alpha);
+}
+
 static int prepare_draw(int prim, int indexed) {
     // DM_VK_CB_DRAWS (read every submission, default 128, 0 = never): the replay is cut every that many draws and what is recorded goes to the GPU at once
     // (vk_cmd_split), so the GPU works on the frame while the rest is replayed instead of after all of it: NEO's Scramble Crossing 36.7 → 15.7 ms a frame
@@ -271,6 +296,7 @@ static int prepare_draw(int prim, int indexed) {
     #define SRC1F(x) ((x) >= 0x10 && (x) <= 0x13)
     k.dual = (k.blend_en & 1) && S.sh[1] && !k.raster_discard && (SRC1F(k.bl[0].src) || SRC1F(k.bl[0].dst) || SRC1F(k.bl[0].srca) || SRC1F(k.bl[0].dsta));
     #undef SRC1F
+    k.alpha = alpha_enabled(S.sh[1], (VkFormat)S.cfmt[0], k.raster_discard);
     k.clip_neg1 = !g_depth_zero;
     // layout and pipeline
     VkDescriptorSetLayout dsl[5] = {0}; int nsets = 0;
@@ -319,6 +345,7 @@ static int prepare_draw(int prim, int indexed) {
               (unsigned long long)k.um[0], (unsigned long long)k.um[1], (unsigned long long)k.im[0], (unsigned long long)k.im[1]); }
     g_vkst.draws++; if (++g_pass_draws > g_vkst.max_pass_draws) g_vkst.max_pass_draws = g_pass_draws;
     if (p != S.bound_pipe) { uint64_t tb = g_prof_on ? tick() : 0; vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, p); S.bound_pipe = p; if (g_prof_on) g_prof_ns[4] += tick() - tb; }
+    if (k.alpha) alpha_push(cb, layout);
     set_dynamic(cb);
     if (var == 1) { vkCmdSetDepthBias(cb, 0, 0, 0); memset(&g_bc.po, 0xff, sizeof g_bc.po); }
     uint32_t at[6] = {0};   // where each set's dynamic offsets start in dall
