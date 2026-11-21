@@ -1253,7 +1253,8 @@ def ue_legacy_shaders(path, rel, names, out):
     pk = _PAKS.get(path) or _PAKS.setdefault(path, uepak.Pak(path))
     for name in names:
         d = pk.read(name, decode=oodle)
-        label = re.sub(r"^(\.\./)+", "", posixpath.normpath(pk.mount + name))
+        normpath = os.path.normpath if pk.version == 4 else posixpath.normpath
+        label = re.sub(r"^(\.\./)+", "", normpath(pk.mount + name))
         if pk.version == 8: out.extend(ue_shaders(d, f'/{rel}#{label}', version=1))
         else: ue_inline_shaders(d, f'/{rel}#{label}', out)
 

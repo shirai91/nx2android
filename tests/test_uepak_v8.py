@@ -1,12 +1,15 @@
 """Unreal Engine v8 pak and v1 shader archives through the production shader split."""
 import importlib.util
 import os
+import ntpath
+import posixpath
 from pathlib import Path
 import struct
 import subprocess
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 import zlib
 from unittest import mock
 
@@ -111,6 +114,31 @@ class UnrealV8(unittest.TestCase):
                 self.assertTrue(row.startswith('vs_game.bin\t0\tvertex\t'), row)
                 self.assertTrue(row.endswith(f'/Game-Switch.pak#{ARCHIVE}#UE0'), row)
                 self.assertTrue((root / 'pkg/vs_game.bin').read_bytes().startswith(b'BTCDBTCD'))
+
+    def test_legacy_labels_preserve_v4_windows_profile_paths(self):
+        spec = importlib.util.spec_from_file_location('shader_split_legacy_labels', SPLIT)
+        split = importlib.util.module_from_spec(spec)
+        with mock.patch.dict(os.environ, {'DM_GAME': '0100000000010000'}):
+            spec.loader.exec_module(split)
+        record = shader()
+        for version in (4, 8):
+            for paths in (ntpath, posixpath):
+                with self.subTest(version=version, paths=paths.__name__), tempfile.TemporaryDirectory() as tmp:
+                    pak = Path(tmp) / 'Game-Switch.pak'
+                    payload = struct.pack('<I', len(record)) + record if version == 4 else archive_v1(record)
+                    pak_fixture(pak, payload, 4, version=version)
+                    pack = uepak.Pak(pak)
+                    with pack.f, mock.patch.dict(split._PAKS, {str(pak): pack}), mock.patch.object(split, 'os', SimpleNamespace(path=paths)):
+                        output = []
+                        split.ue_legacy_shaders(str(pak), pak.name, [ARCHIVE], output)
+                    label, stage, control, code = output[0]
+                    expected = '../../../' + ARCHIVE if version == 4 and paths is ntpath else ARCHIVE
+                    if version == 4 and paths is ntpath:
+                        expected = expected.replace('/', '\\')
+                    self.assertEqual(label, f'/Game-Switch.pak#{expected}#UE{4 if version == 4 else 0}')
+                    self.assertEqual(stage, 'vs')
+                    self.assertEqual(len(control), 0x880)
+                    self.assertEqual(len(code), 0x70)
 
     def test_archive_v1_checks_version_ranges_and_zlib_size(self):
         record = shader()
