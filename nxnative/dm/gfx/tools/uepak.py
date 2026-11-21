@@ -412,7 +412,7 @@ def io_shader_tocs(romfs):
             if not f.endswith('.utoc'): continue
             try:
                 if Toc(os.path.join(dp, f), b'\0' * 32).of_type(IO_SHADER_LIBRARY): out.append(os.path.join(dp, f))
-            except (OSError, ValueError, struct.error): pass
+            except (OSError, ValueError, struct.error, IndexError): pass   # truncated headers or chunk/block records
     return sorted(out)
 
 def archive_names(romfs):
