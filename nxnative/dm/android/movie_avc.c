@@ -11,6 +11,9 @@
 #include <string.h>
 #include <media/NdkMediaCodec.h>
 #include <media/NdkMediaFormat.h>
+#ifdef __aarch64__
+#include <arm_neon.h>
+#endif
 
 #define QMAX 16
 #define COLOR_YUV420_PLANAR 19   // I420; all other formats retain the existing bounded NV12 fallback
@@ -28,7 +31,6 @@ struct mavc {
     // own output order stands (synth: the queue is not sorted)
     int64_t last_in; int synth; struct { int64_t c, g; } pmap[64]; int npmap;
 };
-
 mavc *mavc_new(void) { mavc *a = calloc(1, sizeof *a); if (!a) die("movie: AVC decoder allocation failed"); a->last_in = INT64_MIN; return a; }
 static void close_codec(mavc *a) { if (a->mc) { AMediaCodec_stop(a->mc); AMediaCodec_delete(a->mc); a->mc = NULL; } a->nin = a->nout = 0; a->eos_sent = 0; a->last_in = INT64_MIN; a->npmap = 0; }
 void mavc_drop(mavc *a) {
@@ -225,9 +227,38 @@ static void nv12_rgba(const uint8_t *y, const uint8_t *uv, int pw, int ph, uint8
     int hd = ph >= 720, cw = pw < w ? pw : w, chh = ph < h ? ph : h;
     int rv = hd ? 459 : 409, gu = hd ? 55 : 100, gv = hd ? 136 : 208, bu = hd ? 541 : 516;   // ×256, 8-bit video range (luma × 298)
     if (cw < w || chh < h) for (size_t i = 0; i < (size_t)w * h; i++) ((uint32_t *)dst)[i] = 0xff000000u;
+#ifdef __aarch64__
+    static int fast = -1; if (fast < 0) { const char *e = getenv("DM_MOVIE_FAST"); fast = e && !strcmp(e, "1"); }
+    const int16x8_t k16 = vdupq_n_s16(16), k128 = vdupq_n_s16(128); const int32x4_t rnd = vdupq_n_s32(128); const uint8x16_t a255 = vdupq_n_u8(255);
+    const int16x4_t c298 = vdup_n_s16(298), crv = vdup_n_s16((int16_t)rv), cgu = vdup_n_s16((int16_t)gu), cgv = vdup_n_s16((int16_t)gv), cbu = vdup_n_s16((int16_t)bu);
+#endif
     for (int r = 0; r < chh; r++) {
         const uint8_t *yr = y + (size_t)r * pw, *cr = uv + (size_t)(r / 2) * ((pw + 1) & ~1); uint8_t *o = dst + (size_t)r * w * 4;
-        for (int x = 0; x < cw; x++) {
+        int x = 0;
+#ifdef __aarch64__
+        // 16 pixels a step with the same integer arithmetic as the loop below (bit-exact): MMBN Legacy Collection Vol. 1's launcher converts a 1080p picture
+        // every frame, which the scalar loop took 9.9 ms for on an Odin 2's mid cores at their Standard-mode clock. Only under DM_MOVIE_FAST=1 (that game's profile)
+        if (fast) for (; x + 16 <= cw; x += 16) {
+            uint8x16_t yy = vld1q_u8(yr + x); uint8x8x2_t ch = vld2_u8(cr + x);   // 8 U and 8 V for 16 pixels
+            uint8x8x2_t uz = vzip_u8(ch.val[0], ch.val[0]), vz = vzip_u8(ch.val[1], ch.val[1]);   // each chroma sample for two pixels
+            int16x8_t Y[2] = { vsubq_s16(vreinterpretq_s16_u16(vmovl_u8(vget_low_u8(yy))), k16), vsubq_s16(vreinterpretq_s16_u16(vmovl_u8(vget_high_u8(yy))), k16) };
+            int16x8_t U[2] = { vsubq_s16(vreinterpretq_s16_u16(vmovl_u8(uz.val[0])), k128), vsubq_s16(vreinterpretq_s16_u16(vmovl_u8(uz.val[1])), k128) };
+            int16x8_t V[2] = { vsubq_s16(vreinterpretq_s16_u16(vmovl_u8(vz.val[0])), k128), vsubq_s16(vreinterpretq_s16_u16(vmovl_u8(vz.val[1])), k128) };
+            uint8x8_t R8[2], G8[2], B8[2];
+            for (int hp = 0; hp < 2; hp++) {
+                int32x4_t cl = vmlal_s16(rnd, vget_low_s16(Y[hp]), c298), chi = vmlal_s16(rnd, vget_high_s16(Y[hp]), c298);
+                int32x4_t rl = vmlal_s16(cl, vget_low_s16(V[hp]), crv), rh = vmlal_s16(chi, vget_high_s16(V[hp]), crv);
+                int32x4_t gl = vmlsl_s16(vmlsl_s16(cl, vget_low_s16(U[hp]), cgu), vget_low_s16(V[hp]), cgv), gh = vmlsl_s16(vmlsl_s16(chi, vget_high_s16(U[hp]), cgu), vget_high_s16(V[hp]), cgv);
+                int32x4_t bl = vmlal_s16(cl, vget_low_s16(U[hp]), cbu), bh = vmlal_s16(chi, vget_high_s16(U[hp]), cbu);
+                R8[hp] = vqmovun_s16(vcombine_s16(vqshrn_n_s32(rl, 8), vqshrn_n_s32(rh, 8)));
+                G8[hp] = vqmovun_s16(vcombine_s16(vqshrn_n_s32(gl, 8), vqshrn_n_s32(gh, 8)));
+                B8[hp] = vqmovun_s16(vcombine_s16(vqshrn_n_s32(bl, 8), vqshrn_n_s32(bh, 8)));
+            }
+            uint8x16x4_t px = { { vcombine_u8(R8[0], R8[1]), vcombine_u8(G8[0], G8[1]), vcombine_u8(B8[0], B8[1]), a255 } };
+            vst4q_u8(o + 4 * x, px);
+        }
+#endif
+        for (; x < cw; x++) {
             int c = 298 * (yr[x] - 16), u = cr[x & ~1] - 128, v = cr[(x & ~1) + 1] - 128;
             int R = (c + rv * v + 128) >> 8, G = (c - gu * u - gv * v + 128) >> 8, B = (c + bu * u + 128) >> 8;
             o[4 * x] = (uint8_t)(R < 0 ? 0 : R > 255 ? 255 : R); o[4 * x + 1] = (uint8_t)(G < 0 ? 0 : G > 255 ? 255 : G); o[4 * x + 2] = (uint8_t)(B < 0 ? 0 : B > 255 ? 255 : B); o[4 * x + 3] = 255;

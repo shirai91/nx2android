@@ -2657,6 +2657,17 @@ static int write_region_bl(const tex_t *t, unsigned level, unsigned layer, const
     size_t wb = (size_t)((r->width + bw - 1) / bw) * (size_t)bpb, hb = (size_t)((r->height + bh - 1) / bh);
     if (x0 + wb > row_bytes || y0 + hb > rows) return -1;
     uint32_t lb = nvn_tex_level_gobs(&t->d, level) * 64; if (lb < row_bytes) lb = row_bytes;   // the row as laid out (padded in a sparse texture's tiled levels)
+    static int fast = -1; if (fast < 0) { const char *e = getenv("DM_MOVIE_FAST"); fast = e && !strcmp(e, "1"); }
+    if (fast && x0 % 64 == 0 && wb % 64 == 0) {   // whole GOB columns (a movie's 1080p frame): one address per row, the next GOB column one block further on, and a GOB row's four
+        // 16-byte runs at 0, 32, 256 and 288 (gob_off, nvn_deswizzle.c). Address by address it took 5 ms per 1080p frame on an Odin 2's mid cores at their Standard-mode clock.
+        // Only under DM_MOVIE_FAST=1 (MMBN Legacy Collection Vol. 1's profile)
+        size_t blk = (size_t)512 << (th + td);
+        for (size_t y = 0; y < hb; y++) {
+            uint8_t *d = t->mem + base + nvn_bl_offset(x0, y0 + (uint32_t)y, 0, lb, rows, th, td); const uint8_t *s = src + y * row;
+            for (size_t x = 0; x < wb; x += 64, d += blk, s += 64) { memcpy(d, s, 16); memcpy(d + 32, s + 16, 16); memcpy(d + 256, s + 32, 16); memcpy(d + 288, s + 48, 16); }
+        }
+        return 0;
+    }
     for (size_t y = 0; y < hb; y++)
         for (size_t x = 0; x < wb;) {   // 16-byte runs are contiguous within a GOB
             uint32_t bx = x0 + (uint32_t)x; size_t n = 16 - bx % 16; if (n > wb - x) n = wb - x;

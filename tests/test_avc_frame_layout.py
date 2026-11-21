@@ -34,6 +34,9 @@ class AVCFrameLayout(unittest.TestCase):
 #include <stdio.h>
 #include <stdarg.h>
 #include <sys/types.h>
+#ifdef __aarch64__
+#include <arm_neon.h>   // nv12_rgba's DM_MOVIE_FAST path (movie_avc.c includes it above '#define QMAX')
+#endif
 #define LOG(...) (fprintf(stderr,__VA_ARGS__),fputc(10,stderr))
 typedef struct AMediaCodec AMediaCodec;
 typedef struct mavc mavc;
@@ -140,7 +143,30 @@ static void metadata_case(int mode) {
         free(a.q[0].nv12);
     }
 }
+// A picture wide enough for nv12_rgba's 16-pixel NEON steps plus a scalar tail, every byte value (clamping both ways), checked against the scalar formula
+static void wide(int pw,int ph) {
+    int cs=(pw+1)&~1;size_t ny=(size_t)pw*ph,nuv=(size_t)cs*((ph+1)/2);
+    uint8_t *y=malloc(ny),*uv=malloc(nuv),*out=malloc(ny*4);assert(y && uv && out);
+    uint32_t s=0x9e3779b9u^(uint32_t)(pw*7919+ph);
+    for(size_t i=0;i<ny;i++){s=s*1664525u+1013904223u;y[i]=(uint8_t)(s>>24);}
+    for(size_t i=0;i<nuv;i++){s=s*1664525u+1013904223u;uv[i]=(uint8_t)(s>>24);}
+    for(int i=0;i<256 && (size_t)i<ny;i++)y[i]=(uint8_t)i;
+    nv12_rgba(y,uv,pw,ph,out,pw,ph);
+    int hd=ph>=720,k[4]={hd?459:409,hd?55:100,hd?136:208,hd?541:516};
+    for(int r=0;r<ph;r++)for(int x=0;x<pw;x++){
+        const uint8_t *c=uv+(size_t)(r/2)*cs+(x&~1);
+        int l=298*(y[(size_t)r*pw+x]-16),u=c[0]-128,v=c[1]-128;
+        int expect[3]={l+k[0]*v,l-k[1]*u-k[2]*v,l+k[3]*u};
+        const uint8_t *o=out+4*((size_t)r*pw+x);
+        for(int ch=0;ch<3;ch++){int b=(expect[ch]+128)>>8;b=b<0?0:b>255?255:b;
+            if(o[ch]!=b){fprintf(stderr,"%dx%d pixel %d,%d channel %d: %d, expected %d",pw,ph,x,r,ch,o[ch],b);fputc(10,stderr);exit(1);}}
+        assert(o[3]==255);
+    }
+    free(y);free(uv);free(out);
+}
 int main(int argc,char **argv){assert(argc==2);int mode=atoi(argv[1]);
+    if(mode==60){wide(40,4);return 0;}
+    if(mode==61){wide(37,720);return 0;}
     if(mode==50){uint8_t bytes[96]={0};mavc a=format(19);fail_picture_allocation=1;keep_picture(&a,bytes,sizeof bytes,0);return 0;}
     if(mode>=40){cropped(mode==40?0x7f420888:mode==41?0x1234:0,0);return 0;}
     if(mode>=30){metadata_case(mode);return 0;}
@@ -182,6 +208,16 @@ int main(int argc,char **argv){assert(argc==2);int mode=atoi(argv[1]);
         self.assertIn('movie: AVC picture allocation failed',r.stderr)
 
     def test_odd_planar_stride_and_plane_height(self):self.run_case(6)
+
+    def test_wide_rgba_matches_formula_with_and_without_movie_fast(self):
+        # 40x4: two 16-pixel NEON steps and an 8-pixel tail (BT.601); 37x720: an odd width and BT.709. DM_MOVIE_FAST is read once per process
+        for fast in ('1',None):
+            env={k:v for k,v in os.environ.items() if k!='DM_MOVIE_FAST'}
+            if fast:env['DM_MOVIE_FAST']=fast
+            for mode in (60,61):
+                with self.subTest(fast=fast,mode=mode):
+                    r=subprocess.run([str(self.binary),str(mode)],capture_output=True,text=True,env=env)
+                    self.assertEqual(r.returncode,0,r.stderr)
 
     def test_format_defaults_and_crop_stride_slice_fallbacks(self):
         for mode in range(30,40):

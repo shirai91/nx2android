@@ -14,11 +14,18 @@
 # shows black menu backgrounds until a run and one more port with --install; neither the device nor Turnip is the cause. Qualcomm's own Odin 2 driver crashed Vol. 1 in
 # vkCmdBeginRenderPass and ran it at 30 fps with DM_VK_RP=0 (the game then runs at half speed): port with Turnip.
 # Played afterwards on the same Odin 2: Battle Network 4, 5 and 6, with saving, loading, battles and the gallery; no problem found.
+# DM_MOVIE_FAST=1 (2026-11-17), as in Vol. 1 (its android.tsv has the measurements): the same launcher converts and uploads a 1080p background video frame on the CPU every
+# frame, which at the Odin 2's Standard-mode clocks (mid cores at 1.65 GHz) held Vol. 1 at 30 fps; with the NEON conversion and the GOB-at-a-time copies it held 60.
+# romfs zstd (2026-11-18), as in Vol. 1: its RomFS is 4.71 GB extracted; packed, 1.97 GB on the device (608 of 10,168 files). Run packed on the Odin 2 (2026-11-20, PR head,
+# debug build, RomFS in internal storage): the launcher booted and Battle Network 4 started a new game, saved from the PET menu and continued from that save after a restart;
+# "fs: packed RomFS files read back" logged, no fault.
 status	playable
 tested	v196608 (1.0.3) AYN Odin 2 (QCS8550, Adreno 740, Android 13, Turnip), 2026-11-13
 package	org.nx2a.mmbnlc2
 orientation	landscape
 pacing	steady
+env	DM_MOVIE_FAST=1
+romfs	zstd
 readme_name	Mega Man Battle Network Legacy Collection Vol. 2
 readme_image	docs/images/mega-man-battle-network-legacy-collection-vol-2.jpg
 readme_tag	v0.4.0
