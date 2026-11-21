@@ -157,15 +157,17 @@ def game_files(man, files, data):
     romfs.nsp, update.nsp, aoc/<index>.nsp) and keys (files/prod.keys, title.keys), which the app reads the game's files out of. A source that is no longer where the
     port found it is looked for beside the pack (same name and size); without it the game's files cannot be pushed."""
     out = []
+    pack = Path(data).resolve()
+    where = [pack, pack.parent]   # the pack folder itself (a player drops the files into it) and the folder the port found them in
     for what in ('container', 'keys'):
         for e in (man.get('push') or {}).get(what) or []:
             src = Path(e['src'])
-            if not src.is_absolute(): src = Path(data) / src   # beside the pack, as the port wrote it there when the output folder holds the game's files
+            if not src.is_absolute(): src = pack.parent / src   # named, not given by this PC's path: the pack stays portable
             if not (src.is_file() and src.stat().st_size == e['bytes']):
-                alt = Path(data) / src.name
-                if not (alt.is_file() and alt.stat().st_size == e['bytes']):
+                alt = next((d / src.name for d in where if (d / src.name).is_file() and (d / src.name).stat().st_size == e['bytes']), None)
+                if alt is None:
                     raise BuildError(f'{src.name} ({e["bytes"] / 2**30:.2f} GB) is not where the port found it ({e["src"]}), nor beside the pack: the app reads the '
-                                     f'game out of it. Put it beside {Path(data).name}, or port again from the folder that has it')
+                                     f'game out of it. Put it beside {pack.name}, or port again from the folder that has it')
                 src = alt
             rel = f'{datapack.CONTAINER}/{e["dst"]}' if what == 'container' else e['dst']
             out.append((src, f'{files}/{rel}', rel, e['bytes']))
