@@ -16,6 +16,7 @@ The profile sets these for you (`android.tsv`); a player changes the pause menu 
 | Row | What it does |
 |---|---|
 | `pacing steady` | frame pacing preset: DM_ADAPTIVE_FPS=0 |
+| `DM_MOVIE_FAST=1` | the movie frame's NEON NV12 -> RGBA conversion (bit-exact) and block-linear copies a whole GOB at a time (the same addresses) |
 
 Read the profile's porting log in the comment header of [`android.tsv`](android.tsv). Back to the [games list](../../../../README.md#games).
 <!-- end of the game facts -->
