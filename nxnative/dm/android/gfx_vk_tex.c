@@ -1008,6 +1008,7 @@ void vk_tbuf_drop_pool(uint64_t serial) {
         for (int j = 0; j < nv; j++) vk_defer_free_bview(vs[j]);
     }
 }
+unsigned g_tbuf_copies;   // views over a per-bind copy in scratch memory (gfx_vk_exec.c stage_set: such a stage is not kept for later draws, rmemo)
 VkBufferView vk_tbuf_view(const tex_t *t, int storage) {
     // keyed by the pool too: a pool finalized and another made at the same address has a new VkBuffer, and the old one's memory is freed once the GPU is past it. Keyed by address
     // alone, the view over the old buffer was handed out again and shaders read and wrote freed memory, which the kernel gives to newer buffers (Xenoblade Chronicles 3: the
@@ -1049,7 +1050,7 @@ VkBufferView vk_tbuf_view(const tex_t *t, int storage) {
             VkDeviceSize n = (VkDeviceSize)t->d.width * f->bpb, so; VkBuffer sb; void vk_ubd_read(uint64_t a, uint64_t n, uint8_t *dst);
             uint8_t *p = vk_scratch(n, sa, &sb, &so); vk_ubd_read((uint64_t)(uintptr_t)t->mem, n, p);
             VkBufferViewCreateInfo ci = {VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO, NULL, 0, sb, f->vk, so, n};
-            if (vkCreateBufferView(V.dev, &ci, NULL, &v)) v = VK_NULL_HANDLE; else vk_defer_free_bview(v);
+            if (vkCreateBufferView(V.dev, &ci, NULL, &v)) v = VK_NULL_HANDLE; else { vk_defer_free_bview(v); g_tbuf_copies++; }
             static unsigned nc; if (nc++ < 4) VKLOG("buffer texture at a misaligned offset (%llu, not a multiple of %llu; format %#x, %u elements): read from a copy", (unsigned long long)off, (unsigned long long)sa, t->d.format, t->d.width);
             pthread_mutex_unlock(&g_tbuf_mu); return v;   // (not cached: a copy of this bind's bytes)
         } else if (!v && in) VKRED_ONCE(16, "storage buffer texture at a misaligned offset: %llu, not a multiple of %llu (format %#x, %u elements): zeros", (unsigned long long)off, (unsigned long long)sa, t->d.format, t->d.width);

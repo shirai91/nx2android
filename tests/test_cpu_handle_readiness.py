@@ -59,7 +59,7 @@ static struct {p_bind_buf ubo[6][16];int pass_open,ncol,rt_has_col[8];tex_t rt_c
 static int g_lin_back=1,g_pass_draws=1,P_cleared,ended;
 static void vk_end_pass(void){ended++;S.pass_open=0;}
 WRAPPER
-typedef struct {int nbind;const dmsv_bind *b;} vkshader_t;
+typedef struct {int nbind;const dmsv_bind *b;int cpuready;} vkshader_t;
 static uint64_t address,length;static int reads;
 static void cpu_ready(uint64_t a,uint64_t n){address=a;length=n;reads++;}
 STAGE

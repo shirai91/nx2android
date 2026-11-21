@@ -21,6 +21,8 @@ VK_FNS(DEFINE) VK_DEV_FNS(DEFINE)
 static vkpool_t g_pool[MAXPOOL]; static int g_npool, g_pool_ord[MAXPOOL]; static uint32_t g_pool_gen;
 static pthread_rwlock_t g_pool_mu = PTHREAD_RWLOCK_INITIALIZER;
 static uint64_t g_set_epoch = 1, g_tex_gen, g_samp_gen, g_num_um, g_num_im, g_ubolog_key, g_tex_sseq;
+static uint64_t g_c2h[6], g_sseqh[6], g_ssboh[6]; static int g_c2fast; static int g_c2_check; static uint64_t g_c2_checked, g_c2_bad;
+unsigned g_tbuf_copies;   /* (gfx_vk_tex.c: per-bind texel buffer copies) */
 static int g_x_nosetmemo, g_tracing, g_var_now, g_x_nosetc, g_x_nodrvc, g_x_setverify, g_x_nodispbar;
 int g_x_inflkeep;   // gfx_vk_exec.c's (vk_ubd_land reads it)
 int g_ubd_heap = 1;   // gfx_vk_exec.c's (vk_sub_update reads it)

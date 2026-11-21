@@ -1077,6 +1077,20 @@ uint64_t mtl_present(const tex_t *t, double period, const int crop[4]) {
           if (g_order_kept + g_order_ended > pk + pn) VKLOG("order-only barriers per frame (last 600): %.1f kept inside their pass, %.1f ended it", (g_order_kept - pk) / 600.0, (g_order_ended - pn) / 600.0);
           pk = g_order_kept; pn = g_order_ended; }
         void vk_pass_report(void); vk_pass_report();
+        { static int lf = -1; if (lf < 0) { const char *e = getenv("DM_LOG_FPS"); lf = e && atoi(e) > 0; }   // the descriptor caches (gfx_vk_exec.c), only with DM_LOG_FPS=1
+          if (lf) { extern uint64_t g_memo_why[6], g_cbpath[3], g_cbmiss[3], g_rmemo_hit, g_rmemo_put, g_tvc_hit, g_tvc_miss, g_tvc_cold, g_c2_hit, g_c2_put, g_drv_content;
+            static uint64_t pw[6], pc[3], pm[3], prh, prp, pth, ptm, ptc, p2h, p2p, pdc;
+            VKLOG("descriptor caches per frame (last 600): stage memo kept %.0f, missed for the shader %.0f, a binding %.0f, the tables %.0f, a constant buffer %.0f, "
+                  "other %.0f; stage sets found again by their bindings %.0f, stored %.0f; driver segments found by their slots %.0f, built for them %.0f, built by content %.0f; constant buffer descriptors from the pool %.0f, copied across chunks %.0f, "
+                  "from deferred updates %.0f; constant buffer misses: another buffer %.0f, another range %.0f, a static buffer's offset %.0f; texture views %.0f found, "
+                  "%.0f made (%.0f an earlier submission's)",
+                  (g_memo_why[0] - pw[0]) / 600.0, (g_memo_why[1] - pw[1]) / 600.0, (g_memo_why[2] - pw[2]) / 600.0, (g_memo_why[3] - pw[3]) / 600.0,
+                  (g_memo_why[4] - pw[4]) / 600.0, (g_memo_why[5] - pw[5]) / 600.0, (g_rmemo_hit - prh) / 600.0, (g_rmemo_put - prp) / 600.0,
+                  (g_c2_hit - p2h) / 600.0, (g_c2_put - p2p) / 600.0, (g_drv_content - pdc) / 600.0,
+                  (g_cbpath[0] - pc[0]) / 600.0, (g_cbpath[1] - pc[1]) / 600.0, (g_cbpath[2] - pc[2]) / 600.0, (g_cbmiss[0] - pm[0]) / 600.0,
+                  (g_cbmiss[1] - pm[1]) / 600.0, (g_cbmiss[2] - pm[2]) / 600.0, (g_tvc_hit - pth) / 600.0, (g_tvc_miss - ptm) / 600.0, (g_tvc_cold - ptc) / 600.0);
+            p2h = g_c2_hit; p2p = g_c2_put; pdc = g_drv_content; memcpy(pw, g_memo_why, sizeof pw); memcpy(pc, g_cbpath, sizeof pc); memcpy(pm, g_cbmiss, sizeof pm);
+            prh = g_rmemo_hit; prp = g_rmemo_put; pth = g_tvc_hit; ptm = g_tvc_miss; ptc = g_tvc_cold; } }
         pe = g_vkst.ns_exec; pd = g_vkst.ns_desc; pp = g_vkst.ns_pipe; ps = g_ns_submit; pb = g_ubd_bytes; pdr = g_vkst.draws; pg = g_gpu_ns; pkn = g_pkg_n; pkb = g_pkg_bytes; pkt = g_pkg_ns; psb = g_ns_set_build; psh = g_ns_set_hash; psn = g_ns_set_new; psm = g_set_memo;
     }
     if (!im) { no_img++; return present_enqueue(NULL, NULL, n, period); }
