@@ -11,7 +11,7 @@
 #   Registered observation gates (OBS of the patch files, restricted by build ID): one instruction at the entry is replaced with "enter the host observation callback → execute the original instruction → jump back", so diagnostics modify zero code at runtime; listed in <name>.obs.tsv
 # The key page only stores "actual key number × 8" at the end of the data segment, and patch code fetches thread slots indirectly through the key page: the loader may use any key number.
 # Output: <name>.patched.bin (key page and patch area appended after the image at PATCH_OFF; when that would start beyond 112 MB the patch area sits before the base, see FAR), <name>.fixups.tsv (layout and key page index header), <name>.gates.tsv, <name>.sites.tsv, <name>.cuts.tsv, <name>.obs.tsv
-import struct, re, sys, os, glob, types, importlib.util
+import struct, re, sys, os, glob, types, importlib.util, bisect
 from itertools import combinations
 import lz4.block
 from capstone import *
@@ -42,7 +42,7 @@ FAR, FRONT = NEAR_PATCH_OFF > 0x7000000, 0x2000000
 # order, so the last site's stub ends up about as far from it as the text is long. The first pass tries the gap that keeps every site in reach; when the patch area does not fit there
 # (Monster Hunter Rise: 3.6 MB), the rewriter runs again with exactly the size it needs (DM_PATCH_FRONT, set only by that rerun) and B() checks every branch
 BIG_TEXT = FAR and segs[0][2] + FRONT > 0x8000000 - 0x10000
-if BIG_TEXT: FRONT = int(os.environ.get('DM_PATCH_FRONT', '0'), 0) or (0x8000000 - 0x10000 - segs[0][2]) & ~0xFFFF
+if BIG_TEXT: FRONT = int(os.environ.get('DM_PATCH_FRONT', '0'), 0) or ((0x8000000 - 0x10000 - segs[0][2]) & ~0xFFFF if segs[0][2] < 0x8000000 - 0x10000 else 0x400000)   # text beyond B's reach: the sites past it use relays (B below)
 IMG = bytearray(segs[2][1] + segs[2][2] + (0 if FAR else bss))
 for i, (fo, mo, sz) in enumerate(segs):
     raw = d[fo:fo + csz[i]]
@@ -120,6 +120,42 @@ def emit_slot_addr(base, key_reg, kind):
     emit_key_addr(key_reg, kind); emit(ADDR(base, base, key_reg))
 
 # ---- Encoders: dm/tools/nso_asm.py (imported above) ----
+
+# ---- Branches beyond B's reach: a module whose text is longer than ~125 MB (Another Eden: 187 MB, IL2CPP) has sites whose stub, and stubs whose return point, are more than ±128 MB apart
+# (the patch area sits before the base). B(frm, to) below is the encoder's B when it reaches; otherwise it branches to a relay: one padding NOP of the text, overwritten at the end with
+# a B to the target, within reach of both ends. Only NOPs that pad qualify: after a ret / b / br, never the last NOP of a run (a function may begin with a NOP: IL2CPP's do), and none that
+# a direct branch, an adr or a pointer in the read-only or data segment names (a vtable or an init array entry may point at a function's first NOP) ---
+RELAY_REACH = 1 << 27   # B's reach: -R <= offset < R
+relay_slots, relay_writes, relay_cache = None, [], {}
+def find_relay_slots():
+    cand, cur, prev_term, mv = [], [], False, memoryview(IMG)[:TEXT_END].cast('I')
+    for i, x in enumerate(mv):
+        if x == 0xD503201F and (prev_term or cur): cur.append(4 * i); continue
+        if cur: cand.extend(cur[:-1]); cur = []
+        prev_term = x == 0xD65F03C0 or (x & 0xFC000000) == 0x14000000 or (x & 0xFFFFFC1F) == 0xD61F0000
+    cand = set(cand); named = set()
+    def sx(v, bits): return v - (1 << bits) if v >> (bits - 1) else v
+    for i, x in enumerate(mv):
+        if (x & 0x7C000000) == 0x14000000: t = 4 * i + 4 * sx(x & 0x3FFFFFF, 26)
+        elif (x & 0xFF000010) == 0x54000000 or (x & 0x7E000000) == 0x34000000: t = 4 * i + 4 * sx((x >> 5) & 0x7FFFF, 19)
+        elif (x & 0x7E000000) == 0x36000000: t = 4 * i + 4 * sx((x >> 5) & 0x3FFF, 14)
+        elif (x & 0x9F000000) == 0x10000000: t = 4 * i + sx(((x >> 5) & 0x7FFFF) << 2 | (x >> 29) & 3, 21)
+        else: continue
+        if t in cand: named.add(t)
+    for v in memoryview(IMG)[RO_OFF:RO_OFF + ((len(IMG) - RO_OFF) & ~7)].cast('Q'):   # RELR leaves a pointer's addend in place
+        if v < TEXT_END and v in cand: named.add(v)
+    return sorted(cand - named)
+def B(frm, to):
+    if -RELAY_REACH <= to - frm < RELAY_REACH: return nso_asm.B(frm, to)
+    global relay_slots
+    lo, hi = max(frm - RELAY_REACH, to - RELAY_REACH + 4), min(frm + RELAY_REACH - 4, to + RELAY_REACH)   # the slot is in reach of both ends
+    for v in relay_cache.get(to, ()):
+        if lo <= v <= hi: return nso_asm.B(frm, v)
+    if relay_slots is None: relay_slots = find_relay_slots(); print(f'{NAME}: {len(relay_slots)} padding slots for branches beyond B reach', flush=True)
+    k = bisect.bisect_left(relay_slots, max(lo, 0))
+    assert k < len(relay_slots) and relay_slots[k] <= hi, f'no padding slot to relay a branch {frm:#x} -> {to:#x}'
+    v = relay_slots.pop(k); relay_writes.append((v, to)); relay_cache.setdefault(to, []).append(v); stat('relay')
+    return nso_asm.B(frm, v)
 
 def dis(w, addr):
     l = list(md.disasm(struct.pack('<I', w), addr)); assert len(l) == 1, hex(w)
@@ -1141,6 +1177,7 @@ for g in spin_regions: spin_emit(g)
 if os.environ.get('DM_SPIN_LIST'):
     for T, bes, n in spin_sites: print(f'{NAME} spin wait {T:#x} ({n} instructions), back-edges ' + ' '.join(f'{b:#x}' for b in bes))
 
+for v, to in relay_writes: struct.pack_into('<I', IMG, v, nso_asm.B(v, to))
 os.makedirs(outdir, exist_ok=True)
 P = lambda ext: os.path.join(outdir, f'{NAME}.{ext}')
 if FAR:   # patch area before the base: file = text + ro + data (padded to 16K) + patch area
