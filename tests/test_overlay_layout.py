@@ -18,8 +18,10 @@ class OverlayLayout(unittest.TestCase):
             self.skipTest('a C compiler is needed for the layout geometry check')
         harness = r'''
 #include <assert.h>
+#include <string.h>
 #include "overlay_layout.h"
-static int custom_faces, custom_a, custom_x, hidden_ctl = -1, audio_available;
+static int custom_faces, custom_a, custom_x, hidden_ctl = -1, audio_available, ui_zh;
+int dm_ui_zh(void) { return ui_zh; }
 int dm_menu_audio_available(void) { return audio_available; }
 float dm_overlay_scale(void) { return 1; }
 int dm_overlay_off(int l, int c) { return l == 1 && c == hidden_ctl; }
@@ -92,6 +94,13 @@ int main(void) {
     assert(ov_menu_item(1, OVM_ROWS - 1) == OVM_RESUME);
     audio_available = 1;
     assert(ov_menu_item(1, OVM_ROWS - 2) == OVM_AUDIO);
+    ui_zh = 0;
+    assert(!strcmp(OVM_TAB_NAMES[0], "Gamepad") && !strcmp(OVM_TAB_NAMES[1], "Game"));
+    assert(!strcmp(TR("Resume", "继续游戏"), "Resume"));
+    ui_zh = 1;
+    assert(!strcmp(OVM_TAB_NAMES[0], "手柄") && !strcmp(OVM_TAB_NAMES[1], "游戏"));
+    assert(!strcmp(TR("Resume", "继续游戏"), "继续游戏"));
+    ui_zh = 0;
     const float screens[][2] = {{915, 412}, {1216, 760}, {2400, 1080}, {1080, 2400}};
     for (unsigned s = 0; s < sizeof screens / sizeof screens[0]; s++) {
         float W = screens[s][0], H = screens[s][1], step = H / OVE_GRID_ROWS, p[4];
