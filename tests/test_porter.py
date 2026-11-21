@@ -188,6 +188,30 @@ class DataPack(unittest.TestCase):
         finally:
             shutil.rmtree(t, ignore_errors=True)
 
+    def test_container(self):   # --romfs-container: the pack holds no copy of the game; the manifest lists the player's NSPs and keys for the installer to push, and env.txt points the host at them
+        t = Path(tempfile.mkdtemp(prefix='nx2a_test_pack_'))
+        try:
+            (t / 'patched').mkdir(); (t / 'patched/main.patched.bin').write_bytes(b'x' * 10)
+            base, upd, dlc, keys, tkeys = t / 'game.nsp', t / 'upd.nsp', t / 'dlc.nsp', t / 'prod.keys', t / 'title.keys'
+            for f, n in ((base, 100), (upd, 50), (dlc, 30)): f.write_bytes(b'n' * n)
+            keys.write_text('master_key_00 = 00\n'); tkeys.write_text('00ff = 11\n')
+            p = profiles.load(NEO)
+            man = datapack.build(t / 'out-data', profile=p, version='v196608', display='1.03', patched=t / 'patched', romfs=None, shaders=None,
+                                 containers=[(datapack.CONTAINER_BASE, base, 100), (datapack.CONTAINER_UPDATE, upd, 50), ('aoc/2.nsp', dlc, 30)],
+                                 keys=[('prod.keys', keys, keys.stat().st_size), ('title.keys', tkeys, tkeys.stat().st_size)])
+            o = t / 'out-data'; ff = '/sdcard/Android/data/org.nx2a.neo/files'
+            self.assertEqual(sorted(p.relative_to(o).as_posix() for p in o.rglob('*') if p.is_file()), ['env.txt', 'mods/main.patched.bin', 'nx2a-data.json', 'settings.txt'])   # no game data in the pack
+            env = (o / 'env.txt').read_text()
+            for row in (f'DM_PROD_KEYS={ff}/prod.keys', f'DM_ROMFS_CONTAINER={ff}/container/{datapack.CONTAINER_BASE}',
+                        f'DM_ROMFS_UPDATE={ff}/container/{datapack.CONTAINER_UPDATE}', f'DM_AOC_DIR={ff}/container/aoc'):
+                self.assertIn(row, env)
+            self.assertEqual((man['files'], man['dlc']), (1, [2])); self.assertFalse(man.get('parts')); self.assertTrue(man['container'])
+            self.assertEqual(man['push']['container'], [dict(dst=datapack.CONTAINER_BASE, src='game.nsp', bytes=100), dict(dst=datapack.CONTAINER_UPDATE, src='upd.nsp', bytes=50),
+                                                        dict(dst='aoc/2.nsp', src='dlc.nsp', bytes=30)])   # beside the pack: named, not this PC's path
+            self.assertEqual([e['dst'] for e in man['push']['keys']], ['prod.keys', 'title.keys'])
+        finally:
+            shutil.rmtree(t, ignore_errors=True)
+
     @unittest.skipUnless(any(Path(p).is_file() for p in pipeline.LETTER_FONTS), 'no letter font on this machine')
     def test_button_font(self):   # the Nintendo extension stand-in: made once, in the pack, named in env.txt (Super Mario Bros. Wonder's "Press L+R" drew '?' without it)
         try: from fontTools.ttLib import TTFont

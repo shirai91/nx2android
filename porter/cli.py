@@ -54,6 +54,11 @@ def _parser():
                          '"AllocateAddressRegion refused (0x1803)" before it crashes; it uses no memory (default: 8 for a game version the profile was not '
                          'brought up on, none for one it was)')
     _romfs_at(po, 'with --install: ')
+    po.add_argument('--romfs-container', action='store_true',
+                    help='have the app read the game\'s files straight out of your own NSPs instead of an extracted RomFS / DLC copy (DM_ROMFS_CONTAINER): the data pack '
+                         'keeps no copy, and porter install pushes your base game, its update and the DLC to the device as they are (from this folder, or from beside the '
+                         'pack) and the app reads them in place; prod.keys goes to the device the same way, never into the pack. The base game must be an NSP (the XCI '
+                         'reader is not written yet); --romfs-at does not apply')
     po.add_argument('--jobs', type=int, default=os.cpu_count() or 8)
     po.add_argument('--progress', default='auto', choices=('auto', 'bar', 'lines', 'json', 'off'), help='json: one JSON event per line, for the GUI')
     ins = sub.add_parser('install', help='install a port made earlier'); ins.add_argument('data', help='the data pack folder (<App>-data)'); ins.add_argument('--apk', help='the APK (default: <App>.apk beside the pack)')
@@ -168,6 +173,7 @@ def cmd_port(a):
         try: offset = int(env)
         except ValueError: print(f'NX2A_VERCODE_OFFSET is not a number: {env}', file=sys.stderr); return 2
     if (a.romfs_at is not None or a.romfs_push) and not a.install: print('--romfs-at and --romfs-push are install options: add --install, or run porter install after the port', file=sys.stderr); return 2
+    if a.romfs_container and (a.romfs_at is not None or a.romfs_push): print('--romfs-at and --romfs-push do not apply to --romfs-container: the app reads the game\'s files out of your own NSPs', file=sys.stderr); return 2
     from porter import install
     from porter.upstream import BuildError
     try: install.romfs_target(a.romfs_at)   # a folder the app cannot read fails now, not after the shaders

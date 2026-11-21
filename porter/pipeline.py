@@ -76,6 +76,7 @@ class Options:
     alias_headroom: int = None         # GB more alias region (alias_headroom); None: ALIAS_HEADROOM for a version the profile was not brought up on, none for one it was
     romfs_at: str = None               # with install: the folder on the device the app reads the RomFS from (porter/install.py), 'app' for its files folder; None: as the device has it
     romfs_push: bool = False           # with romfs_at: push the pack's RomFS into that folder first
+    romfs_container: bool = False      # the data pack carries the game's NSPs (base, update, DLC) instead of an extracted RomFS / DLC tree, and the host reads the files out of them at run time (DM_ROMFS_CONTAINER, dm/host/dm_romfs.c)
     jobs: int = field(default_factory=lambda: os.cpu_count() or 8)
 
     @classmethod
@@ -298,6 +299,9 @@ class Port:
         o = self.o
         say(f'game folder: {o.folder}')
         self.app, self.fam = nsp.scan_nsps(o.folder, dumps.EXTS, o.keys)
+        if o.romfs_container and self.fam['base'].suffix.lower() in ('.xci', '.xcz'):
+            raise BuildError(f'--romfs-container reads the game out of its own NSPs, and the base game is {self.fam["base"].name}: the host reads NSP containers only so far. '
+                             f'Port without the option (the extracted RomFS), or give the folder the base game as an NSP')
         tid = f'{self.app:016X}'
         self.work = o.folder / f'{tid}_build'
         g, ap = profiles.by_title(self.app)
@@ -429,6 +433,7 @@ class Port:
             if zdlc: dkf.write_text(f'{dkey}\n')
             else: nsp.rmtree(dkf)
         self.sysdata = self.extract_sysdata(nx)
+        if o.romfs_container: self.containers()   # before drop_unpacked: an NSZ / XCZ is linked as the NSP it was decompressed to
         self.drop_unpacked()   # everything that reads them has run, and the shader stages that follow need the room
         self.base = next((self.dirs[v] for v in self.versions if picks[v][1] is None), self.dirs[self.versions[0]])
         self.app_name = o.app_name or nacp.name(self.base / 'control.nacp') or self.g.get('name', self.g.id)
@@ -453,6 +458,31 @@ class Port:
         self.use_profile_dir(pdir, first=True)
         self.g = game.load(self.g.id); self.ap = android_profile.AndroidProfile(self.g)
         say(f'alias region: mem_alias {grown[0]:#x} → {grown[1]:#x} (+{self.o.alias_headroom} GB, --alias-headroom): {self.g.dir}')
+
+    def containers(self):
+        """--romfs-container: the player's own game files, listed in the data pack's manifest for the installer to push to the device as they are (files/container/
+        romfs.nsp, update.nsp, aoc/<index>.nsp, and prod.keys / title.keys in the files folder), which the host then reads the game's files out of at run time
+        (DM_ROMFS_CONTAINER, dm/host/dm_romfs.c). Nothing is copied into the pack: an NSP is listed where it is; an NSZ / XCZ is decompressed once into the build
+        folder, which the installer needs an NSP from (drop_unpacked comes after this)"""
+        o = self.o
+        base, upd = nsp.pick_nsps(self.fam, self.have, [self.pkg_ver])[self.pkg_ver]
+        dlc = list(self.fam['dlc'])
+        m = self.unpack([p for p in (base, upd, *(p for _, _, p in dlc)) if p])
+        kept = self.work / 'containers'
+
+        def where(p):   # (the file to push, its bytes): the NSP as it is, or the NSP an NSZ / XCZ was decompressed to, kept in the build folder
+            f = m.get(p, p)
+            if f == p: return str(f), f.stat().st_size
+            k = kept / f.name
+            if not k.is_file() or k.stat().st_size != f.stat().st_size: datapack.link_or_copy(f, k)
+            return str(k), k.stat().st_size
+
+        self.container_push = [(datapack.CONTAINER_BASE, *where(base))]
+        if upd: self.container_push.append((datapack.CONTAINER_UPDATE, *where(upd)))
+        for t, _, p in dlc: self.container_push.append((f'aoc/{t & 0xFFF}.nsp', *where(p)))
+        self.container_keys = [(name, str(f), f.stat().st_size) for name, f in (('prod.keys', o.keys), ('title.keys', o.keys.with_name('title.keys'))) if f.is_file()]
+        say(f'the game as its own NSPs (--romfs-container): {Path(self.container_push[0][1]).name}' + (f', {m.get(upd, upd).name}' if upd else '')
+            + (f', {len(dlc)} DLC' if dlc else '') + ' — pushed to the device as they are, read in place (the pack holds no copy)')
 
     # ---- NSZ / XCZ: decompressed for the stages that read the game files (porter.dumps) into <build folder>/tmp/dumps/, deleted once extracted ----
     def unpack(self, paths):
@@ -941,13 +971,17 @@ class Port:
             font_env, font_files = font_env + [f'DM_SHARED_FONT={datapack.files_folder(self.package)}/standard.ttf'], {**font_files, 'standard.ttf': self.o.shared_font}
         dst = self.o.out / f'{app_stem(self.g, self.app_name)}-data'
         romfs, zenv = self.game / 'RomFS', []
-        if self.ap.romfs_zstd and romfs.is_dir():   # android.tsv romfs zstd: packed copies of the files that compress, made once into the build folder; the rest stay links to the extraction
+        cont = self.o.romfs_container
+        if cont: romfs = None   # the pack lists the player's NSPs instead (containers), which the installer pushes and the host reads the files out of; the DLC tree stays out too
+        elif self.ap.romfs_zstd and romfs.is_dir():   # android.tsv romfs zstd: packed copies of the files that compress, made once into the build folder; the rest stay links to the extraction
             PROG.set(step='compressing the RomFS', done=0, total=1, unit='B')
             nf, npk, raw, out = romfs_pack.pack_tree(romfs, self.aw / 'romfs_zstd' / self.pkg_ver, self.o.jobs, progress=lambda d, t: PROG.set(step='compressing the RomFS', done=d, total=t, unit='B'))
             say(f'RomFS compressed: {npk:,} of {nf:,} files packed, {raw / 2**30:.1f} GB → {out / 2**30:.1f} GB on the device')
             romfs, zenv = self.aw / 'romfs_zstd' / self.pkg_ver, ['DM_ROMFS_ZSTD=1']
         man = datapack.build(dst, profile=self.ap, version=self.pkg_ver, display=self.display, patched=self.patched, romfs=romfs, shaders=self.dmsv,
-                             aoc=self.aoc, sysdata=self.sysdata, language=self.lang, package=self.package, env=self.fps_env + font_env + zenv + (['DM_VK_MT_REPLAY=1'] if self.o.mt_replay else [])
+                             aoc=None if cont else self.aoc, containers=getattr(self, 'container_push', None) if cont else None,
+                             keys=getattr(self, 'container_keys', None) if cont else None, sysdata=self.sysdata, language=self.lang, package=self.package,
+                             env=self.fps_env + font_env + zenv + (['DM_VK_MT_REPLAY=1'] if self.o.mt_replay else [])
                              + (['DM_MENU_BUTTON=0'] if self.o.no_menu_button else [])
                              + ([f'DM_VK_DRIVER={driver_lib_name(self.o.vulkan_driver)}'] if self.o.vulkan_driver else []), settings=TOUCH_SETTINGS if self.o.touch else None,
                              files={**self.fps_files, **font_files}, profile_h=getattr(self, 'profile_h', None),
