@@ -1,0 +1,24 @@
+# Super Robot Wars 30 on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Bandai Namco's engine on SDK 11.4.3 (NintendoSDK_NVN, NintendoSDK_movie, nnSdk), NVN + CRIWARE. The Korean SKU's single 14.24 GB XCI carries the base game,
+# its 1.2.3 update (v655360) and 15 DLC; RomFS 270 files 12,099.9 MB; 80 BNSH/BAHS shaders in the RomFS and main, 80 of 80 translated. The port runs the
+# update's Program NCA; the tested install used the base game and this update as separate NSPs (built with main's porter, v655361; boots to the title and the
+# load menu).
+# Black screen at the first attempt (2026-11-21): the XCI carries a Patch content meta (0100ecb0129be800 v655360) whose Program NCA is the code the console
+# runs; the porter extracted only the base game's, so it ran v1.0.0 code with v1.2.3 data, the async asset loader's submit returned negative and the main thread
+# parked for good (main+0x5fb8d4 -> 0x5faef0, the same dump on the Mac host and on Android). With the update Program it starts and plays.
+# Tested 2026-11-22 on the Lenovo Legion Y700 TB321FU (Snapdragon 8 Gen 3, Adreno 750, Android 16), handheld, with Mesa's Turnip (libvulkan_freedreno.so,
+# Mesa 26.3-devel, Vulkan 1.4.359; porter --vulkan-driver): the title and anniversary screen, the menus, a save loaded from the title, the battle map and battle
+# animations, saving; launched and played by hand. The map holds 60 fps (frame p50 16.5 ms, GPU 1 ms, 0 of 300 frames dropped). Entering a battle the game sets
+# present interval 2 (30 fps, as on the Switch); with Turnip the battle holds 29-30 fps (replay 0.3-4 ms at 650-1,351 draws, GPU 15-20 ms a frame, 0-23% of
+# frames late). In the heaviest animations the GPU took 32 ms a frame and the game fell to 16-21 fps. The device's own Qualcomm driver was much slower at the
+# replay: 40-55 ms a frame (6-15 fps), which Turnip cut by an order of magnitude.
+# Open: the heaviest battle animations still miss 30 fps; DM_GPU_TURBO=1 (the GPU's highest clock) is being tried for them; no 60 fps patch exists (the battle's
+# frame rate and clock would have to be raised together).
+status	playable
+tested	v655360 Lenovo Legion Y700 TB321FU (Snapdragon 8 Gen 3, Adreno 750, Android 16)
+package	org.nx2a.srw30
+orientation	landscape
+vulkan_driver	turnip
+readme_name	Super Robot Wars 30
+readme_image	docs/images/super-robot-wars-30.jpg
+readme_tag	v0.5.0
