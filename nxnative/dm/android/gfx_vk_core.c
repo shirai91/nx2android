@@ -1750,9 +1750,15 @@ static void *completion_main(void *a) {
         for (int i = 0; i < c->n; i++) {
             post_op *o = &c->ops[i];
             if (o->kind == 1) { if (o->mode == 1) *o->val += o->v; else *o->val = o->v; continue; }
-            uint64_t ts = now, tq;
-            if (o->q >= 0 && tend && vkGetQueryPoolResults(V.dev, g_cq, (uint32_t)o->q, 1, 8, &tq, 8, VK_QUERY_RESULT_64_BIT) == VK_SUCCESS && tq <= tend) {
-                uint64_t back = (uint64_t)((double)(tend - tq) * V.props.limits.timestampPeriod * 12 / 625); if (back < now) ts = now - back; }
+            uint64_t ts = now, tq = 0;
+            // The value is one affine map of the GPU clock, not the completion wall time. The guest measures frame time as the difference of
+            // two reports; back-dating each to its own submission's completion compressed that difference (the completion thread drains several
+            // submissions in one burst), so Unreal's automatic resolution read 17 ms of a frame that took 33 ms and raised the resolution.
+            static uint64_t g_ts_o; static int g_ts_set;
+            if (o->q >= 0 && tend && vkGetQueryPoolResults(V.dev, g_cq, (uint32_t)o->q, 1, 8, &tq, 8, VK_QUERY_RESULT_64_BIT) == VK_SUCCESS && tq && tq <= tend) {
+                uint64_t qn = (uint64_t)((double)tq * V.props.limits.timestampPeriod * 12 / 625);   // GPU ticks → NVN ticks, the guest's 12/625 ns unit
+                if (!g_ts_set) { g_ts_o = now - qn; g_ts_set = 1; }
+                ts = g_ts_o + qn; }
             // render_cond: a timestamp report's counter field is 0, as on the GPU (gfx_vk_exec.c render_cond evaluates conditions on it)
             uint64_t rec[2] = {o->type == 0 || o->type == 0x10 ? (DM_GAME_RENDER_COND ? 0 : ts) : o->type == NVN_COUNTER_TYPE_SAMPLES_PASSED ? (1u << 20) : 0, ts}; memcpy((void *)(uintptr_t)o->addr, rec, sizeof rec);
         }
