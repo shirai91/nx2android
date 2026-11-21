@@ -167,9 +167,26 @@ class MergedDumps(unittest.TestCase):
             self.assertIn('the merged dump holds it', say.call_args.args[0])
             nsp.rmtree(self.root / 'aoc'); nsp.rmtree(self.root / 'aoc.key')   # not the reuse cache: the same DLC fingerprints map through to the same decompressed file
             nsp.extract_aoc('nx', 'keys', NXNATIVE, self.root, self.BASE, dict(fam, dlc=[(t, v, m.get(p, p)) for t, v, p in fam['dlc']]), self.root / 'logs')
-            args = run.call_args.args[0]
-            self.assertEqual(len(args), 5)   # the old bug: the base's path is still the .nsz, so --aoc runs without the DLC's title ID
-            self.assertNotIn('the merged dump holds it', say.call_args.args[0])
+            self.assertEqual(run.call_args.args[0][5], f'{dlc:x}')   # the title ID is passed whatever the base's path maps to
+            self.assertNotIn('the merged dump holds it', say.call_args.args[0])   # the mapped base is what the note still names
+
+    def test_a_dlc_bundles_indices_get_their_own_romfs(self):
+        # A DLC-bundle NSP (several DLC titles in one file, no base game): the file is not the base's, so --aoc used to run without the title ID and Aoc fell back to Pick —
+        # every index got the same (lowest title ID's) RomFS. The title ID is passed always now; Aoc's pick works for a single-DLC NSP too (its data NCA carries its own ID).
+        d1, d2 = self.BASE + 0x1001, self.BASE + 0x1002
+        bundle = self.dump('DLC bundle.nsp', [d1, d2])
+        base = self.dump('Game.nsp', [self.BASE])
+        from porter.paths import NXNATIVE
+        def run_stub(cmd, log, **_):
+            Path(cmd[4]).parent.mkdir(parents=True, exist_ok=True)   # what nx_extract would create, so swap_in can rename it
+        with patch.object(nsp, 'say'), patch.object(nsp, 'PROG'), patch.object(nsp, 'run', side_effect=run_stub) as run:
+            app, fam = nsp.scan_nsps(self.root)
+            self.assertEqual(app, self.BASE)
+            self.assertEqual(fam, {'base': base, 'updates': [], 'dlc': [(d1, None, bundle), (d2, None, bundle)]})
+            nsp.extract_aoc('nx', 'keys', NXNATIVE, self.root, app, fam, self.root / 'logs')
+            self.assertEqual([c.args[0][3:] for c in run.call_args_list],
+                             [[bundle, self.root / 'aoc.partial' / '1', f'{d1:x}'],   # index = the DLC's title ID − the base's − 0x1000, its own title ID, hex
+                              [bundle, self.root / 'aoc.partial' / '2', f'{d2:x}']])
 
     def test_inspect_json_reports_the_merged_dump(self):
         from porter import cli, config
