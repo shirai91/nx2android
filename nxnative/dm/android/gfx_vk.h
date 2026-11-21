@@ -81,6 +81,10 @@ typedef struct vksub vksub_t;
 VkCommandBuffer vk_cmd(void);          // the current submission's main command buffer (recording)
 int vk_readback_ranges(void);
 void vk_readback_unknown(void);   // force full cached-pool merge for this submission
+const void *nvn_sparse_address_pool(uint64_t addr, uint64_t len);   // sparse virtual pool containing a guest address range, or NULL
+uint64_t nvn_sparse_gen(void);   // mapping generation shared by the sparse pools (a remap changes it)
+int nvn_sparse_address_translate(uint64_t addr, uint64_t len, uint64_t *physical);   // a contiguous mapped guest range → its physical pool address
+uint64_t nvn_sparse_address_copy(uint64_t addr, void *dst, uint64_t len);   // copy sparse guest bytes through the page table; unmapped pages read as zero
 int vk_sub_open(void);                 // a submission is being recorded
 VkCommandBuffer vk_upload_cmd(void);   // the current submission's upload command buffer (runs before the main one)
 void *vk_scratch(VkDeviceSize n, VkDeviceSize align, VkBuffer *buf, VkDeviceSize *off);   // host-visible memory that lives until this submission completes

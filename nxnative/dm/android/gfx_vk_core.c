@@ -1014,7 +1014,10 @@ again:   // (pool_back found another pool in the entry: the one looked up was re
 vkpool_t *vk_pool_of(uint64_t addr, uint64_t len) { return pool_find(addr, len, 1); }
 uint32_t vk_pool_gen(void) { return __atomic_load_n(&g_pool_gen, __ATOMIC_ACQUIRE); }   // pools added or removed (gfx_vk_exec.c's descriptor set memo: vk_pool_of's results hold while it is unchanged)
 int vk_buf_at(uint64_t addr, uint64_t len, VkBuffer *buf, VkDeviceSize *off) {
-    vkpool_t *p = vk_pool_of(addr, len ? len : 1);
+    if (!len) len = 1;
+    if (len > UINT64_MAX - addr) return 0;
+    vkpool_t *p = vk_pool_of(addr, len);
+    if (!p) { uint64_t physical; if (nvn_sparse_address_translate(addr, len, &physical)) { p = vk_pool_of(physical, len); if (p) addr = physical; } }
     if (!p) return 0;
     *buf = p->buf; *off = addr - p->lo + p->boff; return 1;
 }
@@ -1581,8 +1584,13 @@ void vk_ubd_land(VkCommandBuffer cb) {   // outside a render pass
         g_infl[g_ninfl++] = (ubd_infl_t){g_ubd[i].lo, g_ubd[i].hi, g_fence + 1, g_ubd[i].p, g_ubd[i].own};   // the fence of the submission being recorded; the heap copy goes with it
     }
     vk_img_barrier_all(cb);
-    for (int i = 0; i < g_nubd; i++) { VkBuffer db; VkDeviceSize dof; if (vk_buf_at(g_ubd[i].lo, g_ubd[i].hi - g_ubd[i].lo, &db, &dof)) {
-        VkBufferCopy r = {g_ubd[i].so, dof, g_ubd[i].hi - g_ubd[i].lo}; vkCmdCopyBuffer(cb, g_ubd[i].sb, db, 1, &r); sub_gpu_wrote(g_ubd[i].lo, g_ubd[i].hi - g_ubd[i].lo); } }
+    for (int i = 0; i < g_nubd; i++) {
+        uint64_t dst = g_ubd[i].lo, n = g_ubd[i].hi - dst; VkBuffer db; VkDeviceSize dof;
+        if (nvn_sparse_address_pool(dst, n) && !nvn_sparse_address_translate(dst, n, &dst)) { vk_readback_unknown(); continue; }
+        if (vk_buf_at(dst, n, &db, &dof)) {
+            VkBufferCopy r = {g_ubd[i].so, dof, n}; vkCmdCopyBuffer(cb, g_ubd[i].sb, db, 1, &r); sub_gpu_wrote(dst, n);
+        }
+    }
     vk_img_barrier_all(cb);
     g_ubd_landed += (uint64_t)g_nubd; g_nubd = 0; g_ubd_gen++;
 }
@@ -1599,8 +1607,15 @@ static void sub_gpu_wrote(uint64_t a, uint64_t n) {   // into the open submissio
     if (best >= 0 && (bd <= 65536 || s->ngw == GW_SUB)) { if (lo < s->gw[best].lo) s->gw[best].lo = lo; if (hi > s->gw[best].hi) s->gw[best].hi = hi; }
     else { s->gw[s->ngw].lo = lo; s->gw[s->ngw].hi = hi; s->ngw++; }
 }
+static int gpu_physical_range(uint64_t *a, uint64_t n) {
+    if (!nvn_sparse_address_pool(*a, n)) return 1;
+    uint64_t physical;
+    if (!nvn_sparse_address_translate(*a, n, &physical)) return 0;
+    *a = physical; return 1;
+}
 void vk_gpu_wrote(uint64_t a, uint64_t n) {
     if (!n || a > UINT64_MAX - n) return;
+    if (!gpu_physical_range(&a, n)) { vk_readback_unknown(); return; }   // a fragmented sparse write cannot be narrowed to one physical interval
     uint64_t f = g_fence + 1;
     for (size_t i = g_ngw; i-- > 0 && g_gw[i].fence == f;) if (g_gw[i].lo <= a && a + n <= g_gw[i].hi) return;
     if (g_ngw == g_cgw) {
@@ -1621,8 +1636,13 @@ void vk_gpu_wrote(uint64_t a, uint64_t n) {
     sub_gpu_wrote(a, n);
 }
 int vk_gpu_pending(uint64_t a, uint64_t n) {
-    if (!g_ngw) return 0;
+    if (!n || a > UINT64_MAX - n || !g_ngw) return 0;
+    int mapped = gpu_physical_range(&a, n);
     uint64_t done = vk_fence_done();
+    if (!mapped) {   // a fragmented sparse read can overlap any mapped physical run
+        for (size_t i = g_ngw; i-- > 0 && g_gw[i].fence > done;) return 1;
+        return 0;
+    }
     for (size_t i = g_ngw; i-- > 0 && g_gw[i].fence > done;) if (g_gw[i].lo < a + n && a < g_gw[i].hi) return 1;
     return 0;
 }
@@ -1634,7 +1654,18 @@ int vk_gpu_pending(uint64_t a, uint64_t n) {
 // already-landed updates conservatively retain the GPU wait on this backend.
 void vk_cpu_ready(uint64_t a, uint64_t n) {
     if (!g_vk_cpu_ready || !n || a > UINT64_MAX - n) return;
+    uint64_t guest_a = a;
+    int mapped = gpu_physical_range(&a, n);
     uint64_t done = vk_fence_done();
+    if (!mapped) {   // a fragmented sparse read cannot be narrowed to one physical interval; wait conservatively
+        for (size_t i = g_ngw; i-- > 0 && g_gw[i].fence > done;) {
+            const gpuw_t *w = &g_gw[i];
+            if (w->fence <= g_fence) mtl_wait(w->fence, UINT64_MAX);
+            else { mtl_wait(mtl_sub_commit(), UINT64_MAX); vk_sub_resume(); }
+            return;
+        }
+        return;
+    }
     // Appends and compaction preserve fence order. Only the live suffix matters;
     // waiting for its newest uncovered overlap also completes every older one.
     for (size_t i = g_ngw; i-- > 0 && g_gw[i].fence > done;) {
@@ -1642,16 +1673,17 @@ void vk_cpu_ready(uint64_t a, uint64_t n) {
         if (w->lo >= a + n || a >= w->hi) continue;
         uint64_t at = a > w->lo ? a : w->lo;
         uint64_t end = a + n < w->hi ? a + n : w->hi;
-        while (at < end) {
-            uint64_t covered = at;
+        uint64_t guest_at = guest_a + (at - a), guest_end = guest_at + (end - at);
+        while (guest_at < guest_end) {
+            uint64_t covered = guest_at;
             for (int j = 0; j < g_nubd; j++) {
                 const ubd_t *k = &g_ubd[j];
-                if (at >= k->lo && at < k->hi && k->hi > covered) covered = k->hi;
+                if (guest_at >= k->lo && guest_at < k->hi && k->hi > covered) covered = k->hi;
             }
-            if (covered == at) break;
-            at = covered < end ? covered : end;
+            if (covered == guest_at) break;
+            guest_at = covered < guest_end ? covered : guest_end;
         }
-        if (at == end) continue;   // deferred bytes cover prior and open producers alike
+        if (guest_at == guest_end) continue;   // deferred bytes cover prior and open producers alike
         if (w->fence <= g_fence) mtl_wait(w->fence, UINT64_MAX);
         else { mtl_wait(mtl_sub_commit(), UINT64_MAX); vk_sub_resume(); }
         return;
@@ -1661,7 +1693,8 @@ void vk_cpu_ready(uint64_t a, uint64_t n) {
 void vk_ubd_read(uint64_t a, uint64_t n, uint8_t *dst) {
     if (vk_gpu_pending(a, n)) { static int k; g_ubd_racy++; if (k < 20) { k++; int cov = 0; for (int i = 0; i < g_nubd; i++) if (g_ubd[i].lo <= a && a + n <= g_ubd[i].hi) cov = 1;
         VKLOG("[RED] a CPU read of %#llx +%llu (%s) overlaps a GPU write not known to be complete", (unsigned long long)a, (unsigned long long)n, cov ? "covered by a deferred update" : "partly from memory"); } }
-    memcpy(dst, (const void *)(uintptr_t)a, n);
+    if (nvn_sparse_address_pool(a, n)) nvn_sparse_address_copy(a, dst, n);
+    else memcpy(dst, (const void *)(uintptr_t)a, n);
     if (g_ninfl) { uint64_t done = vk_fence_done();
         for (int i = 0; i < g_ninfl; i++) { if (g_infl[i].fence <= done) continue; uint64_t lo = g_infl[i].lo > a ? g_infl[i].lo : a, hi = g_infl[i].hi < a + n ? g_infl[i].hi : a + n;
             if (lo < hi) memcpy(dst + (lo - a), g_infl[i].data + (lo - g_infl[i].lo), hi - lo); } }
