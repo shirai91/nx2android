@@ -3,6 +3,7 @@
 // or the right edge: a thumb reaches as far from the edge on any width) and y of the window's height down; its size is in window heights (round controls stay round)
 #pragma once
 #include <math.h>
+#include <stdlib.h>
 #include "dm_input.h"
 enum { OV_STICK_L, OV_STICK_R, OV_BUTTON, OV_DPAD, OV_MENU };   // OV_MENU: the menu button (shown with the gamepad on or off, 70%; env.txt DM_MENU_BUTTON=0 leaves it out): pauses the game and opens the settings
 typedef struct { int kind; float ax, x, y, w, h; uint64_t btn; const char *label, *name; } ov_ctl;   // ax: the anchor, as a fraction of the window's width; name: the table's
@@ -22,7 +23,28 @@ static inline void ov_touch_stick(float x, float y, float radius, int right, flo
 }
 // the layout in use: the phone's when the window is at least OV_PHONE_ASPECT wide for its height (a 20:9 phone is 2.2, a 16:10 tablet 1.6), else the tablet's
 #define OV_PHONE_ASPECT 1.9f
-static inline int ov_layout_for_size(int width, int height) { return height > 0 && (float)width / (float)height >= OV_PHONE_ASPECT; }
+// DM_OVERLAY_SPLIT=1 (start-up, off by default): a window narrower than 3:2 (an unfolded Galaxy Z Fold: 2184 x 1968; a 4:3 tablet; a split-screen window) can put the
+// picture across its top, as wide as the window, and the gamepad in the band left under it, instead of over a picture letterboxed in the middle: the band is
+// laid out as a window of its own (a 2184 x 740 band takes the phone's layout). gfx_vk_present.c places the picture to match while the gamepad shows, and the
+// player's own positions (the layout editor, the menu button's drag) are kept against the band (ov_drag_place). A band under a quarter of the height is not used
+#define OV_SPLIT_ASPECT 1.5f
+// the band is used only where its face buttons can be at least this wide. Players found the unfolded Galaxy Z Fold7's 8.7 mm comfortable. A 4:3 tablet's
+// 384-pixel band gives 6.2 mm and an older Z Fold 6.7 mm: those keep the gamepad over the picture. A window taller than wide takes the band whatever the size:
+// there the sides of the gamepad over the picture meet in the middle (half of a Legion Y700 in split screen: the right stick over the d-pad), and its band gives 7.0 mm
+#define OV_BAND_MIN_MM 8.0f
+static inline int ov_split_on(void) { static int on = -1; if (on < 0) { const char *e = getenv("DM_OVERLAY_SPLIT"); on = e && atoi(e) > 0; } return on; }
+int dm_external_active(void);   // (front_android.c) the picture is on an external display: the phone's window is all gamepad, with no picture to leave room for
+int dm_overlay_dpi(void);   // the display's density, 0 = unknown
+static inline float ov_band_face_mm(float W, float bandh, int dpi);
+static inline int ov_band(float W, float H, float *y0, float *bh) {   // the band's top and height, for a W x H window; 0: no band
+    if (!ov_split_on() || dm_external_active() || W <= 0 || H <= 0 || W / H >= OV_SPLIT_ASPECT) return 0;
+    float ph = W * 9.0f / 16.0f, bandh = H - ph; if (bandh < 0.25f * H) return 0;   // (a 16:9 picture: every Switch game's)
+    int dpi = dm_overlay_dpi(); if (W >= H && dpi > 0 && dpi < 0xfffe && ov_band_face_mm(W, bandh, dpi) < OV_BAND_MIN_MM) return 0;
+    *y0 = ph; *bh = bandh; return 1;
+}
+static inline int ov_layout_for_size(int width, int height) {
+    float y0, bh, h = (float)height; if (ov_band((float)width, h, &y0, &bh)) h = bh;
+    return h > 0 && (float)width / h >= OV_PHONE_ASPECT; }
 int dm_overlay_layout(void);   // front_android.c: 0 the tablet's, 1 the phone's
 #define OV_CTLS (OV_LAYOUTS[dm_overlay_layout()])
 #define OV_KNOB 0.42f        // a stick's knob radius, of the stick's (the theme-less drawing)
@@ -66,12 +88,13 @@ static inline int ov_beside(const ov_ctl *L, const ov_ctl *c) { return c->ax != 
 // its bottom corner. The menu button (anchored to the middle) stays at the top middle, growing down from the top edge, and so do the controls beside it
 // (ov_beside: they scale about their side's top corner, y down from the top edge)
 static inline void ov_box(const ov_ctl *c, float W, float H, float b[4]) {   // (c: in OV_LAYOUTS, whose index finds the player's own place and size)
+    float y0 = 0, bh; if (ov_band(W, H, &y0, &bh)) H = bh;   // (ov_band: the band under the picture is the gamepad's window)
     int l, i = ov_index(c, &l); float s = dm_overlay_scale(), mx, my, cs = 1;
     if (dm_overlay_custom(l, i, &mx, &my, &cs)) { b[0] = mx * W; b[1] = my * H; }
     else if (c->ax == 0.5f) { b[0] = c->ax * W + c->x * H; b[1] = c->y * H * s; }
     else if (ov_beside(OV_LAYOUTS[l], c)) { b[0] = c->ax * W + c->x * H * s; b[1] = c->y * H * s; }
     else { b[0] = c->ax * W + c->x * H * s; b[1] = H - (1 - c->y) * H * s; }
-    b[2] = c->w * H * s * cs / 2; b[3] = c->h * H * s * cs / 2;
+    b[2] = c->w * H * s * cs / 2; b[3] = c->h * H * s * cs / 2; b[1] += y0;
 }
 // the largest scale up to s (and at least 1) at which the side controls of layout L, grown as ov_box places them, stay on a W x H window and apart:
 // - a control below the top strip stays inside its half of the width (the two sides never meet) and below the strip, which reaches down to the menu
@@ -100,6 +123,11 @@ static inline float ov_fit_scale(const ov_ctl *L, float W, float H, float s) {
     }
     return fmaxf(s, 1);
 }
+static inline float ov_band_face_mm(float W, float bandh, int dpi) {
+    float face = 0.1f; const ov_ctl *L = OV_LAYOUTS[W / bandh >= OV_PHONE_ASPECT]; for (int i = 0; i < OV_N; i++) if (L[i].kind == OV_BUTTON && L[i].btn == DM_BTN_A) face = L[i].w;
+    float mm = face * bandh / (float)dpi * 25.4f, s = OV_MIN_MM / mm; if (s < 1) s = 1; if (s > 1.45f) s = 1.45f;
+    return mm * ov_fit_scale(L, W, bandh, s);
+}
 // a dragged control's centre on one axis (half: its half size, extent: the window's): kept on the screen, and with step > 0 on the nearest multiple
 // of step that keeps it there (none may fit an oversized control)
 static inline float ov_drag_pos(float p, float half, float extent, float step) {
@@ -109,6 +137,13 @@ static inline float ov_drag_pos(float p, float half, float extent, float step) {
         if (first <= last) return fminf(fmaxf(roundf(p / step), first), last) * step;
     }
     return fminf(fmaxf(p, lo), hi);
+}
+// where a control dragged to (x, y) on a W x H window is kept: its centre as fractions of the window's width and of the gamepad's height, as ov_box reads
+// them back (with a band under the picture, of the band and from its top, and kept inside it). steps: the grid rows over that height (0: none)
+static inline void ov_drag_place(float x, float y, float hw, float hh, float W, float H, int steps, float *fx, float *fy) {
+    float y0 = 0, bh = H; ov_band(W, H, &y0, &bh);
+    float step = steps > 0 ? bh / (float)steps : 0;
+    *fx = ov_drag_pos(x, hw, W, step) / W; *fy = ov_drag_pos(y - y0, hh, bh, step) / bh;
 }
 // its corners' radius: a round control (as wide as high), the menu button (a pill) and the d-pad (its diagonals) are round; the shoulder buttons are rounded boxes
 static inline float ov_corner(const ov_ctl *c, const float b[4]) { float m = fminf(b[2], b[3]); return c->w == c->h || c->kind == OV_MENU ? m : m * 0.35f; }
