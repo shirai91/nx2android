@@ -7,9 +7,6 @@ static VkFormat vertex_format(int f, int want_int, int want_sint) {
     if (f >= 0x19 && f <= 0x24) v = (VkFormat)rgb[f - 0x19];
     else if (f >= 0x5D && f <= 0x62) v = (VkFormat)rgb_scaled[f - 0x5D];
     else { const vkfmt_t *e = vk_fmt(f); v = e ? e->vk : VK_FORMAT_UNDEFINED; }
-    static uint8_t checked[0x100];   // a format the device cannot read as a vertex attribute gives undefined values: named once
-    if (v != VK_FORMAT_UNDEFINED && f > 0 && f < 0x100 && !checked[f]) { checked[f] = 1; VkFormatProperties fp; vkGetPhysicalDeviceFormatProperties(V.pd, v, &fp);
-        if (!(fp.bufferFeatures & VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT)) VKLOG("[RED] vertex attribute format %#x (vk %d): the device cannot read it as a vertex attribute", f, v); }
     if (want_int) {   // the shader declared an integer input: the attribute must be an integer format of the same layout
         switch (v) {
         case VK_FORMAT_R32_SFLOAT: return want_sint ? VK_FORMAT_R32_SINT : VK_FORMAT_R32_UINT;

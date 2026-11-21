@@ -192,6 +192,21 @@ static void build_dump(void) {   // (the crash handler: no locks, no allocation)
     if (!n) fprintf(stderr, "[dm] [vk] no pipeline was being built\n");
 }
 static VkPipeline build_pipeline(const pkey *k, VkPipelineLayout layout, vkshader_t *const stg_in[3]) {
+    // #404: the Samsung driver crashed compiling a pipeline after reporting no vertex-buffer support for RGB16F.
+    // Check the final formats here, after integer remapping and for keys restored by prewarm.
+    for (uint32_t i = 0; i < k->nattr; i++) {
+        VkFormat format = (VkFormat)k->attr[i].fmt;
+        VkFormatProperties properties;
+        vkGetPhysicalDeviceFormatProperties(V.pd, format, &properties);
+        if (!(properties.bufferFeatures & VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT)) {
+            // Core vertex formats fit here. Prewarm workers can reject the same format concurrently.
+            static atomic_uchar noted[256];
+            if ((unsigned)format >= sizeof noted / sizeof *noted || !atomic_exchange(&noted[format], 1))
+                VKLOG("[RED] graphics pipeline skipped: vertex attribute %u format %d lacks vertex-buffer support (vertex shader %016llx)",
+                      k->attr[i].loc, (int)format, (unsigned long long)k->key[0]);
+            return (VkPipeline)1;
+        }
+    }
     // DM_VK_PIPE_LOG: one line per pipeline built, with the state that decides how a material is drawn (shaders, cull/front, depth test/write/func,
     // colour formats, blend). For a game where some materials render wrong and others do not, the lines of the wrong material name the state to compare.
     { static int on = -1; if (on < 0) on = getenv("DM_VK_PIPE_LOG") ? atoi(getenv("DM_VK_PIPE_LOG")) : 0;
