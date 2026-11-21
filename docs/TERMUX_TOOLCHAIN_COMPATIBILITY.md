@@ -3,7 +3,7 @@
 **Assessment date:** 2026-11-18
 **Repository baseline:** nx2android 0.4.0
 **Target environment:** Android 17, API 37, AArch64 (`arm64-v8a`)
-**Status:** NDK ARM64 layout present; native compile/link validation pending.
+**Status:** native compile, link, install and run validated on 2026-11-21 (section 11).
 
 ## 1. Scope
 
@@ -183,13 +183,13 @@ success as proof of a completed native build.
 - [x] Confirm ARM64 clang, clang++, ld.lld, sysroot, and glslc paths.
 - [x] Confirm ARM64 LLVM utility binaries are present.
 - [x] Confirm the Android-targeted standalone Clang syntax check.
-- [ ] Inspect and validate the ARM64 clang/clang++ wrappers and resource
-      directory configuration.
-- [ ] Run a project native compile using the installed NDK.
-- [ ] Run a complete native link and verify the expected outputs.
-- [ ] Configure a valid user-owned `prod.keys` file.
+- [x] Inspect and validate the ARM64 clang/clang++ wrappers and resource
+      directory configuration (section 11).
+- [x] Run a project native compile using the installed NDK.
+- [x] Run a complete native link and verify the expected outputs.
+- [x] Configure a valid user-owned `prod.keys` file.
 - [ ] Install pycryptodome only if direct NSZ/XCZ input support is needed.
-- [ ] Validate a game-specific profile and complete the first Android port.
+- [x] Validate a game-specific profile and complete the first Android port.
 
 ## 9. Evidence and reproducibility
 
@@ -213,3 +213,58 @@ or repository revision.
   https://github.com/shirai91/nx2android/blob/main/docs/DEVELOPMENT_GUIDE.md
 - Porter tool detection:
   https://github.com/shirai91/nx2android/blob/main/porter/toolchain.py
+
+## 11. Validation result (2026-11-21)
+
+The open items of section 8 were completed on a Poco F5 (Adreno 725) with Termux's Python 3.14.10, Termux clang
+21.1.8 and NDK r27c, by porting Digimon Story: Time Stranger end to end with `python -m porter port ... --install`
+over wireless adb: the host library, the APK, the data pack and the install all build and run on the phone.
+
+### The ARM64 overlay
+
+The NDK ships host tools for x86_64 only; `toolchains/llvm/prebuilt/linux-aarch64` is an overlay over Termux's LLVM:
+
+- `sysroot` is a symlink to `../linux-x86_64/sysroot` (the target libraries are the same).
+- `bin/ld.lld` and the `llvm-*` tools link to Termux's binaries; `shader-tools/linux-aarch64/glslc` links to Termux's `glslc`.
+- `bin/clang` and `bin/clang++` are small shell wrappers (`$NDK` is the NDK folder, `$P` is `$NDK/toolchains/llvm/prebuilt`,
+  `$L` is `$P/linux-aarch64/sysroot/usr/lib/aarch64-linux-android`):
+
+```
+#!$PREFIX/bin/sh
+exec $PREFIX/bin/clang --sysroot=$P/linux-aarch64/sysroot -L$P/linux-x86_64/lib/clang/18/lib/linux/aarch64 -Qunused-arguments "$@"
+```
+
+```
+#!$PREFIX/bin/sh
+exec $PREFIX/bin/clang++ --sysroot=$P/linux-aarch64/sysroot -L$P/linux-x86_64/lib/clang/18/lib/linux/aarch64 -Qunused-arguments "$@" -nostdlib++ $L/libc++_static.a $L/libc++abi.a
+```
+
+Why each argument is there:
+
+- `--sysroot`: the NDK's API-versioned libc, libm, libdl and headers.
+- `-L.../clang/18/lib/linux/aarch64`: Termux's clang 21 resource directory has the compiler-rt builtins but no
+  aarch64-android `libunwind.a`; the NDK's has one, and its ABI is stable.
+- `clang++`: Termux's driver ignores `-static-libstdc++` and adds `-lc++_shared`, its own libc++ 21 runtime, which does not
+  match the NDK's libc++ 18 headers (`std::__ndk1`). The wrapper skips the driver's runtime and links the NDK's static archives
+  by full path, so `libadrenotools.so` (built with `--vulkan-driver`) needs no `libc++_shared.so` in the APK.
+- Do not add `sysroot/usr/lib/aarch64-linux-android` as a `-L` directory. It holds static `libc.a`, `libm.a` and `libdl.a`;
+  with it on the path `-lc` resolves to the static archive, bionic's allocator (with GWP-ASan) is linked into
+  `libdmhost.so`, and Android refuses the library: `dlopen failed: TLS symbol "_ZZN8gwp_asan15getThreadLocalsEvE6Locals" ...
+  using IE access model`. A healthy `libdmhost.so` lists `libc.so`, `libm.so` and `libdl.so` as NEEDED and has no `gwp_asan`
+  symbols (`llvm-readelf -d`, `llvm-nm -D`).
+
+### Changes the repository needed
+
+- `nxnative/dm/android/build.py`: Python 3.13+ on Android reports `sys.platform == 'android'`; only `darwin` selects the macOS
+  host folder.
+- `porter/datapack.py`, `porter/romfs_pack.py`: Python on Android has no `os.link`. With `NX2A_SU_LINK` set, a hard link is made
+  through `su` (the Termux app's SELinux domain denies `link()`, root's does not); otherwise the file is copied.
+- `porter/rootlink.py`: that fallback.
+
+### Checked
+
+- `porter doctor` passes with the NDK, .NET SDK, adb and a user-owned `prod.keys`.
+- The host compiles (193 sources, 0 failed) and links; the adrenotools libraries link with only `libandroid.so` and
+  `liblog.so` as needed libraries.
+- APK, 14.0 GB data pack and install over wireless adb complete; the game runs.
+
