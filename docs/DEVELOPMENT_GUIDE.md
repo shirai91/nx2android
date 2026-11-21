@@ -39,6 +39,12 @@ python -m porter doctor
 python -m porter port "D:\Games\NEO" -k "D:\keys\prod.keys" --install
 ```
 
+Add `--jobs=1` to rewrite the game's modules one at a time. A positive `--jobs N`
+also controls the parallel shader and host build work; the default is the CPU
+count (eight if unavailable). Serial rewriting reduces concurrent work but does
+not cap a single module's memory use. Changing `--jobs` preserves reusable
+rewrite outputs, so a completed rewrite need not run again for a different limit.
+
 The APK (`NeoTheWorldEndsWithYou.apk`) and the data pack (`NeoTheWorldEndsWithYou-data/`) appear in the game folder (`-o` picks another). `python -m porter install <App>-data` installs a port made earlier; with `--romfs-at <folder on the device>` the app reads the game's RomFS from a folder already there (an emulator's dump of the same version) instead of a copy in its files folder ([ARCHITECTURE.md](ARCHITECTURE.md#the-port), A RomFS already on the device). The first port takes a while (extraction, rewriting the game's code, translating its shaders); later ones reuse what has not changed. `python -m porter -h` lists the commands.
 
 ### Saves

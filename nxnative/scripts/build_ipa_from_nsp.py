@@ -890,10 +890,14 @@ def collect_nros(py, repo, romfs, dst, env, logs):
 
 
 def rewrite(py, repo, exe_dir, out, env, logs, g):
-    """patch_nso.py on every code module (each writes its own <module>.* files, all the same build_src.sha256 line), each with its log, as many at once as the Mac has cores.
+    """patch_nso.py on every code module (each writes its own <module>.* files, all the same build_src.sha256 line), each with its log, at most J at once (CPU count when unset).
     The modules are the profile's and the NROs the game registers (collect_nros; nro.tsv beside them lists those). Reused when the modules, patch_nso.py (with nso_code.py, nso_asm.py
     and the patch files of their builds), its switch and capstone are as at the last successful rewrite (Monster Hunter Rise's main alone takes 5.5 min)"""
     import capstone
+    # The Android porter passes --jobs as J, as the other shared tools expect.
+    try: jobs = int(env['J']) if 'J' in env else max(2, os.cpu_count() or 4)
+    except (TypeError, ValueError): raise BuildError('rewrite job count (J) must be a positive integer') from None
+    if jobs < 1: raise BuildError('rewrite job count (J) must be a positive integer')
     mods = g.words('modules')
     PROG.stage('rewrite', step='checking the inputs')
     nro_dir = out.with_name('nro_' + out.name.removeprefix('patched_'))
@@ -910,11 +914,11 @@ def rewrite(py, repo, exe_dir, out, env, logs, g):
     tmp = out.with_name(out.name + '.partial'); rmtree(tmp); tmp.mkdir(parents=True); logs.mkdir(parents=True, exist_ok=True)
     if manifest.is_file(): shutil.copyfile(manifest, tmp / 'nro.tsv')   # refused-only manifests preserve the game's offline registration path too
     PROG.set(step=', '.join(mods) + (f' and {len(nros)} NROs' if nros else ''), done=0, total=len(names), unit='modules')
-    procs, logf, todo, cores = {}, {}, list(names), max(2, os.cpu_count() or 4)
+    procs, logf, todo = {}, {}, list(names)
     notes = {}   # the last progress line of each module: the tools print them (patch_nso.py), and the stage's note follows them
     try:
         while todo or procs:
-            while todo and len(procs) < cores:
+            while todo and len(procs) < jobs:
                 m = todo.pop(0); logf[m] = open(logs / f'rewrite_{m}.log', 'w')
                 procs[m] = subprocess.Popen([str(py), str(repo / 'dm/tools/patch_nso.py'), str(src[m]), str(tmp), m], env=env, stdout=logf[m], stderr=subprocess.STDOUT)
             for m in [m for m in procs if procs[m].poll() is not None]:
@@ -922,7 +926,8 @@ def rewrite(py, repo, exe_dir, out, env, logs, g):
                 if p.returncode:
                     log = logs / f'rewrite_{m}.log'
                     PROG.end(ok=False)
-                    PROG.say(f'---- last lines of {log} ----\n' + ''.join(collections.deque(open(log, errors='replace'), maxlen=40)).rstrip('\n'))
+                    with open(log, errors='replace') as f:
+                        PROG.say(f'---- last lines of {log} ----\n' + ''.join(collections.deque(f, maxlen=40)).rstrip('\n'))
                     raise BuildError(f'patch_nso.py exit code {p.returncode} on {m} (full output: {log})')
             for m in procs:   # a rewrite of hours is not a silence: the tool's own progress lines are passed on
                 text = tail_line(logs / f'rewrite_{m}.log')
