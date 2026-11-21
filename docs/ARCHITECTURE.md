@@ -117,6 +117,14 @@ checked before pointer formation. These checks do not change the decoder choice
 or timestamp/queue policy. The manual [AVC probe](../probes/avc_frame_layout.md)
 checks synthetic planes and padding; physical-device qualification is separate.
 
+Stopping a started guest AudioOut returns all pending buffers in queue order,
+including any partly played buffer, and wakes the guest's release event even if
+the pending queue is empty. Capacity covers all buffers accepted and yet to be
+reclaimed. A stop on an already stopped output preserves buffers queued for its
+next start. The front end's suspend path still hands playback to the silent sink.
+Backend state is atomic because the device callback and silent sink read it
+without the lock that serializes lifecycle changes.
+
 The shader translator's existing native-perspective compensation rule accepts either outer operand order in `(input * FragCoord.w) * (1 / FragCoord.w)`. Both alpha depth and material variants must reach the same native interpolated input; leaving the multiply/divide round trip in only one variant can change alpha coverage and retain old HDR colour. The FP32, input-load, FragCoord.w and constant-one guards remain in place.
 
 Opaque NVN sampler objects keep all sampler parameters after an eight-byte header, within the smallest public object's storage. Engines may hash the bytes after that header before calling `SamplerCompare`. Putting filtering or wrap parameters in the skipped header makes different sampler states collide, defeats cache reuse and can exhaust the game's descriptor pool. In Odyssey, duplicate entries accumulated during extended play and repeated scene loads, exhausted the sampler pool and returned sampler ID 0, producing ground grid artifacts. The builder, initializer, comparison, getters and both graphics backends share the same parameter structure; this layout rule does not change filtering defaults.
