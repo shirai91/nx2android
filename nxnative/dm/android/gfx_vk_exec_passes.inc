@@ -671,23 +671,29 @@ static VkRect2D scissor_rect(void) {
 // target when Mario comes out of the water: cleared in full, the floor and water there went black for a frame. One pipeline per pass layout and mask, for attachment 0
 #include "maskclear_vert.spv.h"
 #include "maskclear_frag.spv.h"
+#include "maskclear_uint_frag.spv.h"
+#include "maskclear_sint_frag.spv.h"
 #include "flatdbg_frag.spv.h"
-typedef struct { uint32_t ncol, cfmt[8], dfmt, samples, mask; } mckey;
-static struct { VkPipelineLayout pl; VkShaderModule vs, fs; int bad; mckey k[32]; VkPipeline p[32]; int n; } g_mc;
-static VkPipeline mc_pipeline(uint32_t mask) {
-    mckey k; memset(&k, 0, sizeof k); k.ncol = (uint32_t)S.ncol; for (int i = 0; i < S.ncol && i < 8; i++) k.cfmt[i] = (uint32_t)S.cfmt[i];
-    k.dfmt = (uint32_t)S.dfmt; k.samples = S.samples ? S.samples : 1; k.mask = mask;
-    for (int i = 0; i < g_mc.n; i++) if (!memcmp(&g_mc.k[i], &k, sizeof k)) return g_mc.p[i];
-    if (g_mc.bad || g_mc.n == 32) return VK_NULL_HANDLE;
+typedef struct { uint32_t ncol, cfmt[8], dfmt, samples, mask, type; } mckey;   // type: float, uint, sint output
+static struct { VkPipelineLayout pl; VkShaderModule vs, fs[3]; int bad; } g_mc;
+static nvn_hmap g_mc_pipes = {.klen = sizeof(mckey)};
+static VkPipeline mc_pipeline_key(const mckey *key) {
+    mckey k = *key;
+    VkPipeline cached = nvn_hm_get(&g_mc_pipes, &k); if (cached) return cached == (VkPipeline)(uintptr_t)1 ? VK_NULL_HANDLE : cached;
+    if (g_mc.bad) return VK_NULL_HANDLE;
     if (!g_mc.pl) {
         VkPushConstantRange pr = {VK_SHADER_STAGE_FRAGMENT_BIT, 0, 16};
         VkPipelineLayoutCreateInfo li = {VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, NULL, 0, 0, NULL, 1, &pr};
         VkShaderModuleCreateInfo vi = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, NULL, 0, sizeof maskclear_vert_spv, maskclear_vert_spv}, fi = vi;
         fi.codeSize = sizeof maskclear_frag_spv; fi.pCode = maskclear_frag_spv;
-        if (vkCreatePipelineLayout(V.dev, &li, NULL, &g_mc.pl) || vkCreateShaderModule(V.dev, &vi, NULL, &g_mc.vs) || vkCreateShaderModule(V.dev, &fi, NULL, &g_mc.fs)) { g_mc.bad = 1; return VK_NULL_HANDLE; }
+        if (vkCreatePipelineLayout(V.dev, &li, NULL, &g_mc.pl) || vkCreateShaderModule(V.dev, &vi, NULL, &g_mc.vs) || vkCreateShaderModule(V.dev, &fi, NULL, &g_mc.fs[0])) { g_mc.bad = 1; return VK_NULL_HANDLE; }
+        fi.codeSize = sizeof maskclear_uint_frag_spv; fi.pCode = maskclear_uint_frag_spv;
+        if (vkCreateShaderModule(V.dev, &fi, NULL, &g_mc.fs[1])) { g_mc.bad = 1; return VK_NULL_HANDLE; }
+        fi.codeSize = sizeof maskclear_sint_frag_spv; fi.pCode = maskclear_sint_frag_spv;
+        if (vkCreateShaderModule(V.dev, &fi, NULL, &g_mc.fs[2])) { g_mc.bad = 1; return VK_NULL_HANDLE; }
     }
     VkPipelineShaderStageCreateInfo ss[2] = {{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, VK_SHADER_STAGE_VERTEX_BIT, g_mc.vs, "main", NULL},
-                                             {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, VK_SHADER_STAGE_FRAGMENT_BIT, g_mc.fs, "main", NULL}};
+                                             {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, VK_SHADER_STAGE_FRAGMENT_BIT, g_mc.fs[k.type], "main", NULL}};
     VkPipelineVertexInputStateCreateInfo vin = {VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
     VkPipelineInputAssemblyStateCreateInfo ia = {VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO, NULL, 0, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, 0};
     VkPipelineViewportStateCreateInfo vs = {VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, NULL, 0, 1, NULL, 1, NULL};
@@ -695,7 +701,7 @@ static VkPipeline mc_pipeline(uint32_t mask) {
     VkPipelineMultisampleStateCreateInfo ms = {VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO, NULL, 0, (VkSampleCountFlagBits)k.samples, 0, 0, NULL, 0, 0};
     VkPipelineDepthStencilStateCreateInfo ds = {VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
     VkPipelineColorBlendAttachmentState cba[8]; memset(cba, 0, sizeof cba);
-    cba[0].colorWriteMask = mask & 0xf;   // NVN's mask bits R G B A are Vulkan's
+    cba[0].colorWriteMask = k.mask & 0xf;   // NVN's mask bits R G B A are Vulkan's
     VkPipelineColorBlendStateCreateInfo cb = {VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO, NULL, 0, 0, 0, k.ncol, cba, {0, 0, 0, 0}};
     VkDynamicState dyn[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
     VkPipelineDynamicStateCreateInfo dy = {VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, NULL, 0, 2, dyn};
@@ -705,9 +711,14 @@ static VkPipeline mc_pipeline(uint32_t mask) {
     VkRenderPass prp = rp_on() ? rp_compat(k.ncol, k.cfmt, k.dfmt, k.samples) : VK_NULL_HANDLE;
     VkGraphicsPipelineCreateInfo ci = {VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, prp ? NULL : &rci, 0, 2, ss, &vin, &ia, NULL, &vs, &rs, &ms, &ds, &cb, &dy, g_mc.pl, prp, 0, VK_NULL_HANDLE, -1};
     VkPipeline p = VK_NULL_HANDLE;
-    if ((!prp && !V.has_dynrender) || vkCreateGraphicsPipelines(V.dev, V.pcache, 1, &ci, NULL, &p)) { VKRED_ONCE(32, "masked clear pipeline failed: cleared in full"); p = VK_NULL_HANDLE; }
+    if ((!prp && !V.has_dynrender) || vkCreateGraphicsPipelines(V.dev, V.pcache, 1, &ci, NULL, &p)) { VKRED_ONCE(32, "masked clear pipeline failed"); p = VK_NULL_HANDLE; }
     vk_pipeline_cache_changed();
-    g_mc.k[g_mc.n] = k; g_mc.p[g_mc.n++] = p; return p;
+    nvn_hm_put(&g_mc_pipes, &k, p ? p : (VkPipeline)(uintptr_t)1); return p;
+}
+static VkPipeline mc_pipeline(uint32_t mask) {
+    mckey k; memset(&k, 0, sizeof k); k.ncol = (uint32_t)S.ncol; for (int i = 0; i < S.ncol && i < 8; i++) k.cfmt[i] = (uint32_t)S.cfmt[i];
+    k.dfmt = (uint32_t)S.dfmt; k.samples = S.samples ? S.samples : 1; k.mask = mask;
+    return mc_pipeline_key(&k);
 }
 static int g_bc_stale;
 static int clear_masked(const p_clear_color *c, VkRect2D r) {   // 1 = done
