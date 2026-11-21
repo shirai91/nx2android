@@ -34,7 +34,8 @@ class OverlayKeyRelease(unittest.TestCase):
 #include <pthread.h>
 enum { AINPUT_EVENT_TYPE_KEY = 1, AKEY_EVENT_ACTION_DOWN = 0,
        AKEY_EVENT_ACTION_UP = 1, AINPUT_SOURCE_GAMEPAD = 2,
-       AKEYCODE_BACK = 1, AKEYCODE_BUTTON_MODE, AKEYCODE_MENU, TEST_A };
+       AKEYCODE_BACK = 1, AKEYCODE_BUTTON_MODE, AKEYCODE_MENU, TEST_A,
+       AKEYCODE_BUTTON_A, AKEYCODE_BUTTON_B, AKEYCODE_BUTTON_X, AKEYCODE_BUTTON_Y, AKEYCODE_BUTTON_START, AKEYCODE_BUTTON_SELECT };   // the detector's keys (pd_capture) come through the cut
 typedef struct { int source, type, key, action, device; } AInputEvent;
 #define AInputEvent_getSource(e) ((e)->source)
 #define AInputEvent_getType(e) ((e)->type)
