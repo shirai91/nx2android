@@ -254,40 +254,104 @@ static int sect_read(romfs_cont *c, const sect_t *s, uint64_t rel, void *buf, si
 
 // ---------- NCA discovery and section parsing ----------
 static int nca_header_ok(const uint8_t *hdr) { return !memcmp(hdr + 0x200, "NCA3", 4) || !memcmp(hdr + 0x200, "NCA2", 4); }
-// Picks the program NCA that carries a RomFS section and returns its file offset inside the container
-static int pfs0_find_nca(int fd, const uint8_t hkey[32], uint64_t *nca_base, char *name, size_t name_n, char *err, size_t errn) {
-    uint8_t h[0x10];
-    if (pread_all(fd, h, sizeof h, 0) || memcmp(h, "PFS0", 4)) { snprintf(err, errn, "not a PFS0 (NSP) container"); return -1; }
-    uint32_t cnt = rd32(h + 4), strsz = rd32(h + 8);
-    if (!cnt || cnt > 4096) { snprintf(err, errn, "PFS0 entry count %u", cnt); return -1; }
-    uint8_t *ents = malloc((size_t)cnt * 0x18); char *names = malloc((size_t)strsz + 1);
-    int rc = -1;
-    if (!ents || !names || pread_all(fd, ents, (size_t)cnt * 0x18, 0x10) || pread_all(fd, names, strsz, 0x10 + (uint64_t)cnt * 0x18)) { snprintf(err, errn, "NSP header unreadable"); goto out; }
-    names[strsz] = 0;
-    uint64_t data = 0x10 + (uint64_t)cnt * 0x18 + strsz, best = 0, best_sz = 0;
+typedef struct { uint64_t base, size; const char *name; } nca_ent;
+// Picks the program NCA that carries a RomFS section and returns its file offset inside the container: content type 0 (the program),
+// then the largest NCA (the one holding the RomFS data)
+static int pick_nca(int fd, const uint8_t hkey[32], const nca_ent *ents, uint32_t cnt, uint64_t *nca_base, char *name, size_t name_n, char *err, size_t errn) {
+    uint64_t best = 0, best_sz = 0;
     int found = 0, best_program = 0;
     for (uint32_t i = 0; i < cnt; i++) {
-        uint64_t off = rd64(ents + (size_t)i * 0x18), size = rd64(ents + (size_t)i * 0x18 + 8);
-        if (size < 0x1000) continue;
+        if (ents[i].size < 0x1000) continue;
         uint8_t hdr[0xc00];
-        if (pread_all(fd, hdr, sizeof hdr, data + off)) continue;
+        if (pread_all(fd, hdr, sizeof hdr, ents[i].base)) continue;
         for (int k = 0; k < 6; k++) xts_decrypt(hkey, (uint64_t)k, hdr + k * 0x200, 0x200);
         if (!nca_header_ok(hdr)) continue;
         int rom = -1;
         for (int k = 0; k < 4; k++) if (rd32(hdr + 0x240 + k * 0x10) && hdr[0x400 + k * 0x200 + 3] == 3) { rom = k; break; }
         if (rom < 0) continue;
         int program = hdr[0x205] == 0;
-        if (!found || (program && !best_program) || (program == best_program && size > best_sz)) {
-            best = off; best_sz = size; found = 1; best_program = program;
-            snprintf(name, name_n, "%s", names + rd32(ents + (size_t)i * 0x18 + 0x10));
+        if (!found || (program && !best_program) || (program == best_program && ents[i].size > best_sz)) {
+            best = ents[i].base; best_sz = ents[i].size; found = 1; best_program = program;
+            snprintf(name, name_n, "%s", ents[i].name);
         }
     }
-    if (!found) { snprintf(err, errn, "no NCA carries a RomFS section"); goto out; }
-    *nca_base = data + best;
-    rc = 0;
+    if (!found) { snprintf(err, errn, "no NCA carries a RomFS section"); return -1; }
+    *nca_base = best;
+    return 0;
+}
+// An NSP: PFS0 entries are the NCAs
+static int pfs0_find_nca(int fd, const uint8_t hkey[32], uint64_t *nca_base, char *name, size_t name_n, char *err, size_t errn) {
+    uint8_t h[0x10];
+    if (pread_all(fd, h, sizeof h, 0) || memcmp(h, "PFS0", 4)) { snprintf(err, errn, "not a PFS0 (NSP) container"); return -1; }
+    uint32_t cnt = rd32(h + 4), strsz = rd32(h + 8);
+    if (!cnt || cnt > 4096 || strsz > (4u << 20)) { snprintf(err, errn, "PFS0 header %u entries, %u name bytes", cnt, strsz); return -1; }
+    uint8_t *ents = malloc((size_t)cnt * 0x18); char *names = malloc((size_t)strsz + 1); nca_ent *list = malloc((size_t)cnt * sizeof *list);
+    int rc = -1;
+    if (!ents || !names || !list || pread_all(fd, ents, (size_t)cnt * 0x18, 0x10) || pread_all(fd, names, strsz, 0x10 + (uint64_t)cnt * 0x18)) { snprintf(err, errn, "NSP header unreadable"); goto out; }
+    names[strsz] = 0;
+    uint64_t data = 0x10 + (uint64_t)cnt * 0x18 + strsz;
+    for (uint32_t i = 0; i < cnt; i++) {
+        uint32_t no = rd32(ents + (size_t)i * 0x18 + 0x10);
+        list[i].base = data + rd64(ents + (size_t)i * 0x18); list[i].size = rd64(ents + (size_t)i * 0x18 + 8);
+        list[i].name = no < strsz ? names + no : "";
+    }
+    rc = pick_nca(fd, hkey, list, cnt, nca_base, name, name_n, err, errn);
 out:
-    free(ents); free(names);
+    free(ents); free(names); free(list);
     return rc;
+}
+// A gamecard image (XCI): the root HFS0 holds the secure partition (an HFS0 of NCAs); the header's plaintext part gives the root's offset.
+// Gamecard NCAs differ from an NSP's only in distribution type: the key area still decrypts with key_area_key_application.
+static int xci_find_nca(int fd, const uint8_t hkey[32], uint64_t *nca_base, char *name, size_t name_n, char *err, size_t errn) {
+    uint8_t h[0x200], t[0x10];
+    struct stat st;
+    if (pread_all(fd, h, sizeof h, 0) || memcmp(h + 0x100, "HEAD", 4)) { snprintf(err, errn, "not a gamecard (XCI) image"); return -1; }
+    if (fstat(fd, &st)) { snprintf(err, errn, "container size: %s", strerror(errno)); return -1; }
+    uint64_t fsz = (uint64_t)st.st_size, root = rd64(h + 0x130);
+    if (root > fsz || pread_all(fd, t, sizeof t, root) || memcmp(t, "HFS0", 4)) { snprintf(err, errn, "XCI root partition"); return -1; }
+    uint32_t rn = rd32(t + 4), rstr = rd32(t + 8);
+    if (!rn || rn > 4 || rstr > (1u << 20)) { snprintf(err, errn, "XCI root HFS0: %u entries", rn); return -1; }
+    uint64_t rsz = 0x10 + (uint64_t)rn * 0x40 + rstr, sec = 0, secsz = 0;
+    uint8_t *rb = malloc(rsz);
+    int rc = -1;
+    if (!rb || root + rsz > fsz || pread_all(fd, rb, rsz, root)) { snprintf(err, errn, "XCI root HFS0 unreadable"); goto out; }
+    for (uint32_t i = 0; i < rn; i++) {
+        const uint8_t *e = rb + 0x10 + (size_t)i * 0x40;
+        uint32_t no = rd32(e + 0x10);
+        if (no >= rstr || strcmp((const char *)rb + 0x10 + (size_t)rn * 0x40 + no, "secure")) continue;
+        uint64_t o = root + rsz + rd64(e), z = rd64(e + 8);
+        if (z < 0x1000 || o >= fsz || o + z > fsz) { snprintf(err, errn, "XCI secure partition bounds"); goto out; }
+        sec = o; secsz = z; break;
+    }
+    if (!sec) { snprintf(err, errn, "the XCI has no secure partition"); goto out; }
+    if (pread_all(fd, t, sizeof t, sec) || memcmp(t, "HFS0", 4)) { snprintf(err, errn, "XCI secure partition header"); goto out; }
+    uint32_t sn = rd32(t + 4), sstr = rd32(t + 8);
+    uint64_t shsz = 0x10 + (uint64_t)sn * 0x40 + sstr;
+    uint8_t *sb = NULL; nca_ent *list = NULL;
+    if (!sn || sn > 4096 || sstr > (1u << 20) || shsz > secsz) { snprintf(err, errn, "XCI secure HFS0: %u entries", sn); goto out; }
+    sb = malloc(shsz); list = malloc((size_t)sn * sizeof *list);
+    if (!sb || !list || pread_all(fd, sb, shsz, sec)) { snprintf(err, errn, "XCI secure HFS0 unreadable"); goto sec_out; }
+    for (uint32_t i = 0; i < sn; i++) {
+        const uint8_t *e = sb + 0x10 + (size_t)i * 0x40;
+        uint32_t no = rd32(e + 0x10);
+        list[i].base = sec + shsz + rd64(e); list[i].size = rd64(e + 8);
+        list[i].name = no < sstr ? (const char *)sb + 0x10 + (size_t)sn * 0x40 + no : "";
+    }
+    rc = pick_nca(fd, hkey, list, sn, nca_base, name, name_n, err, errn);
+sec_out:
+    free(sb); free(list);
+out:
+    free(rb);
+    return rc;
+}
+// The container's format: an NSP (PFS0) or a gamecard image (XCI, "HEAD" at 0x100)
+static int container_find_nca(int fd, const uint8_t hkey[32], uint64_t *nca_base, char *name, size_t name_n, char *err, size_t errn) {
+    uint8_t h[0x104];
+    if (pread_all(fd, h, sizeof h, 0)) { snprintf(err, errn, "container unreadable: %s", strerror(errno)); return -1; }
+    if (!memcmp(h, "PFS0", 4)) return pfs0_find_nca(fd, hkey, nca_base, name, name_n, err, errn);
+    if (!memcmp(h + 0x100, "HEAD", 4)) return xci_find_nca(fd, hkey, nca_base, name, name_n, err, errn);
+    snprintf(err, errn, "not an NSP or an XCI (no PFS0 / HEAD magic)");
+    return -1;
 }
 // title.keys sits beside prod.keys: "<rights id, 32 hex> = <title key, 32 hex>"
 static int title_key_find(const char *keys_path, const uint8_t rights[16], uint8_t out[16]) {
@@ -425,7 +489,7 @@ static int bktr_parse_tables(romfs_cont *c, const uint8_t *fs, char *err, size_t
         for (uint32_t i = 0; i < cnt; i++) {
             if (m == scap && !(sub = realloc(sub, (scap *= 2) * sizeof *sub))) break;
             sub[m].off = rd64(bk + 0x10 + (size_t)i * 0x10);
-            sub[m].ctr = rd32(bk + 0x10 + (size_t)i * 0x10 + 8);
+            sub[m].ctr = rd32(bk + 0x10 + (size_t)i * 0x10 + 0x0C);   // {u64 offset, u32 pad, u32 ctr}: the pad is not the counter (FFR's zeros hid a wrong read here)
             m++;
         }
     }
@@ -538,7 +602,7 @@ romfs_cont *romfs_open_view(const char *base_path, const char *update_path, cons
     if (c->base.fd < 0) { snprintf(err, errn, "open %s: %s", base_path, strerror(errno)); goto fail; }
     uint8_t hkey[32];
     if (key_find(kp, "header_key", hkey, sizeof hkey) < 32) { snprintf(err, errn, "header_key is missing from %s", kp); goto fail; }
-    if (pfs0_find_nca(c->base.fd, hkey, &nb, name, sizeof name, err, errn)) goto fail;
+    if (container_find_nca(c->base.fd, hkey, &nb, name, sizeof name, err, errn)) goto fail;
     c->base.nca_base = nb;
     if (parse_section(c, &c->base, kp, err, errn)) goto fail;
     if (c->base.crypt == 4) { snprintf(err, errn, "the base NCA is itself a BKTR update"); goto fail; }
@@ -546,7 +610,7 @@ romfs_cont *romfs_open_view(const char *base_path, const char *update_path, cons
         c->patch.fd = open(update_path, O_RDONLY);
         if (c->patch.fd < 0) { snprintf(err, errn, "open %s: %s", update_path, strerror(errno)); goto fail; }
         char uname[128] = "";
-        if (pfs0_find_nca(c->patch.fd, hkey, &nb, uname, sizeof uname, err, errn)) goto fail;
+        if (container_find_nca(c->patch.fd, hkey, &nb, uname, sizeof uname, err, errn)) goto fail;
         c->patch.nca_base = nb;
         if (parse_section(c, &c->patch, kp, err, errn)) goto fail;
         if (c->patch.crypt == 3) {   // a full replacement RomFS: it needs no base
