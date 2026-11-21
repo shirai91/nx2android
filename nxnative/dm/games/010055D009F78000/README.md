@@ -27,14 +27,16 @@ Read the profile's porting log in the comment header of [`android.tsv`](android.
 
 ## Frame rate
 
-- 60 fps (30 on Switch) on the title, in the dialogue and the menus, on the first battle map and in its 3D combat scenes, and in the monastery, docked and handheld. On a Legion Y700 (2025), handheld: the battle map and the combat scenes take about 7-9 ms of GPU time a frame, the monastery 4-5 ms, with no frames dropped on screen.
+- 60 fps (30 on Switch) on the title, in the dialogue and the menus, on the first battle map and in its 3D combat scenes, docked and handheld, and in the monastery's first hall (handheld; the outdoor areas are not measured yet).
+- On a Legion Y700 (2025): the battle map takes about 9 ms of GPU time a frame handheld and 11-13 ms docked (rising as the device warms), the combat scenes about 7 ms handheld, the monastery hall 4-5 ms.
+- About one frame a minute docked (19 in 20 minutes of battle) and one every 2-3 minutes handheld is shown twice: the display pacing starts its cadence again when a frame is late.
 - The anime movies play at their own 30 fps.
 
 ## Tested devices
 
 | Device | GPU | Vulkan driver | Game version | nx2android | Result |
 |---|---|---|---|---|---|
-| Lenovo Legion Y700 (2025, TB322FC) | Adreno 830 | system | 1.2.0 (v327680) | `v0.5.0` | playable: title, movies, class demo, new game, character creation, prologue, first battle won with its combat scenes, Chapter 1 story and monastery free roam, save and load, pause menu, 30-minute battle soak; sound checked with a recording of the output (no repeats, gaps or clipping in 20 minutes) |
+| Lenovo Legion Y700 (2025, TB322FC) | Adreno 830 | system | 1.2.0 (v327680) | `v0.5.0` | playable: title, movies, class demo, new game, character creation, prologue, first battle won with its combat scenes, Chapter 1 story and the monastery hall, save and load, pause menu, 30-minute battle soak; sound checked with a recording of the output (no repeats, gaps or frame-edge clicks in 54 minutes) |
 
 ## Options
 
@@ -43,5 +45,6 @@ Read the profile's porting log in the comment header of [`android.tsv`](android.
 
 ## Quirks and known issues
 
-- None known.
+- The log has a `yield watchdog` red line on long sessions: the frame limiter yields during the last 2 ms of each frame (on purpose, see `patches.py`).
+- The sound output clips for a few samples in the loudest combat moments (10 samples in 34 minutes).
 - Name entry opens the on-screen keyboard; press + (OK) to confirm the name, as the game's help line says.

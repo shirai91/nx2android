@@ -7,9 +7,10 @@
 # for a dialogue sprite once the title's class demo had played (RBBM: GPC error, a device lost in the first dialogue after character creation).
 # Turnip compiles every shader too but takes three times the GPU time here: Qualcomm's driver is the one to use.
 # Tested 2026-11-21 on a Lenovo Legion Y700 (2025, TB322FC) with Qualcomm's driver: title, opening movie, class demo, new game, character creation with the
-# overlay keyboard, the prologue, the first battle won (combat scenes), the Chapter 1 story and the monastery free roam, saving and loading; 60 fps with 0 frames
-# dropped on screen (GPU about 7-9 ms a frame in battle, 4-5 ms in the monastery, handheld), a 30-minute battle soak; the sound checked with DM_AUDREN_DUMP and
-# devtools/pcm_glitches.py (20 minutes: no repeated blocks, gaps or clipping after the catch-up fix below).
+# overlay keyboard, the prologue, the first battle won (combat scenes), the Chapter 1 story and the monastery hall, saving and loading; 60 fps (on screen: about one
+# frame a minute repeated docked, one in 2-3 minutes handheld; GPU 9 ms in battle handheld, 11-13 ms docked, 4-5 ms in the monastery hall), a 34-minute
+# soak on the fixed build (docked then handheld, same process); the sound checked with DM_AUDREN_DUMP and
+# devtools/pcm_glitches.py (54 minutes on the fixed build: no repeated blocks, gaps or frame-edge clicks; 10 clipped samples in loud combat).
 # The DLC (Cindered Shadows and the others) were not ported or tested.
 status	playable
 tested	v327680 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
