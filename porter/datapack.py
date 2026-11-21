@@ -23,7 +23,7 @@ KEEP_ON_DEVICE = ('settings.txt',)          # the player's choices win over the 
 OWNED = ('mods', 'RomFS', 'aoc', 'sysdata')            # folders the pack owns on the device: files there that the pack lacks are stale (an older version's) and removed
 ROMFS = 'RomFS'
 CONTAINER = 'container'           # with --romfs-container: where the installer puts the player's own NSPs in the files folder (files/container/...)
-CONTAINER_BASE = 'romfs.nsp'      # romfs_open_view (dm/host/hle_fs.c mount_rom_host): the base game's NSP, or its update's for a full update
+CONTAINER_BASE = 'romfs.nsp'      # romfs_open_view (dm/host/hle_fs.c mount_rom_host): the base game's NSP (romfs.xci for a gamecard base), or its update's for a full update
 CONTAINER_UPDATE = 'update.nsp'   # a BKTR update layered over the base RomFS, or a full one in its place
 
 
@@ -88,8 +88,8 @@ def build(dst, *, profile, version, display, patched, romfs, shaders, aoc=None, 
     if aoc: rows.append(f'DM_AOC_DIR={ff}/aoc')
     if containers:
         rows.append(f'DM_PROD_KEYS={ff}/prod.keys')
-        rows.append(f'DM_ROMFS_CONTAINER={ff}/{CONTAINER}/{CONTAINER_BASE}')
-        if any(dst_rel == CONTAINER_UPDATE for dst_rel, _, _ in containers): rows.append(f'DM_ROMFS_UPDATE={ff}/{CONTAINER}/{CONTAINER_UPDATE}')
+        rows.append(f'DM_ROMFS_CONTAINER={ff}/{CONTAINER}/{containers[0][0]}')   # romfs.nsp, or romfs.xci for a gamecard base
+        if upd := next((r for r, _, _ in containers if r.startswith('update.')), None): rows.append(f'DM_ROMFS_UPDATE={ff}/{CONTAINER}/{upd}')
         if any(dst_rel.startswith('aoc/') for dst_rel, _, _ in containers): rows.append(f'DM_AOC_DIR={ff}/{CONTAINER}/aoc')
     if sysdata: rows.append(f'DM_SYSDATA={ff}/sysdata')
     rows += profile.env + list(env)
