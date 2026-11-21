@@ -33,12 +33,20 @@ static struct {p_bind_buf ubo[6][16];} S;
 typedef struct {int nbind;const dmsv_bind *b;} vkshader_t;
 static uint64_t read_addr,read_size;
 static void cpu_ready(uint64_t a,uint64_t n){read_addr=a;read_size=n;}
+static unsigned log_count;
+static char log_line[256];
+#define VKLOG(...) do { log_count++; snprintf(log_line,sizeof log_line,__VA_ARGS__); } while(0)
 ADAPTER
 PREFLIGHT
 int main(void) {
  dmsv_bind b={.kind=RK_TEX_UBO,.reg=7,.count=32,.off=352,.samp=RS_UBO,.samp_arg=8|(128<<8)};
+ // Scalars and fixed sampler arrays must not consume the once-only marker.
+ b.count=1;sampler_element(&b,0);assert(log_count==0);
+ b.count=32;b.samp=RS_SLOT;sampler_element(&b,0);assert(log_count==0);b.samp=RS_UBO;
  for(unsigned k=0;k<32;k++) {dmsv_bind e=sampler_element(&b,k);assert((e.samp_arg&255)==8);assert((e.samp_arg>>8)==128+8*(int)k);assert(e.off==b.off&&e.reg==b.reg);}
  assert(b.samp_arg==(8|(128<<8)));
+ assert(log_count==1);assert(!strcmp(log_line,"independent UBO sampler array: 32 elements, cbuf 8 +128"));
+ b.count=0;sampler_element(&b,0);assert(log_count==1);b.count=32;
  for(int source=RS_NONE;source<RS_UBO;source++){b.samp=source;for(unsigned k=0;k<32;k++){dmsv_bind e=sampler_element(&b,k);assert(!memcmp(&e,&b,sizeof b));}}
  b.samp=RS_UBO;b.samp_arg=-1;assert(sampler_element(&b,7).samp_arg<0);
  b.samp_arg=INT32_MAX-7;assert(sampler_element(&b,0).samp_arg==b.samp_arg);assert(sampler_element(&b,1).samp_arg<0);
@@ -47,6 +55,7 @@ int main(void) {
  b.count=0;shader_cpu_ready(&s,1);assert(read_size==252);
  b.count=1;shader_cpu_ready(&s,1);assert(read_size==4);
  b.count=32;S.ubo[1][8].size=128+8*7+4;shader_cpu_ready(&s,1);assert(read_size==60);
+ assert(log_count==1);
  puts("32 matching sampler elements, fixed sources, packed overflow and full preflight PASS");
 }
 """.replace('DECL',decl).replace('ADAPTER',adapter).replace('PREFLIGHT',preflight)
