@@ -314,6 +314,7 @@ DM_VK_SHADERS	str		app	?	gfx_vk_shader.c	the shader bundle (shaders.dmsv); defau
 DM_VK_SHOT	str		debug	start	gfx_vk_present.c	headless runs: save those presents (`DM_VK_SHOT_DIR`)
 DM_VK_SHOTS	bool		debug	live	gfx_vk_present.c	save each of the next N presented frames as `frame_<n>.ppm` in the files folder (logs "frame shots: presents a to b")
 DM_VK_SHOT_DIR	str		debug	?	gfx_vk_present.c	
+DM_VK_SKIP_MISSING	bool	0	profile	live	gfx_vk_exec.c	1 = a draw whose program names a vertex or pixel shader not in the bundle is left out (by default a missing pixel shader leaves a depth-only draw)
 DM_VK_SKIP_OPS	str		debug	live	gfx_vk_exec.c	bisection aids: skip command kinds; 1 no draw calls, 2 no vertex buffers, 4 no descriptor sets
 DM_VK_SLOT0_FILL	bool		debug	?	gfx_vk_exec.c	
 DM_VK_SPV_ALT	bool		debug	?	gfx_vk_exec.c	pipelines made while `ALT` is on use `<dir>/<key>.spv` in place of the bundle's code where the file exists (same bindings), so two compilations of a shader compare in one run (e.g. the translator's GLSL through `glslc`, or a patched module)

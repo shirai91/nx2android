@@ -19,9 +19,14 @@ static void bind_program(const p_bind_program *bp) {
     uint32_t mask = bp->stages ? (uint32_t)bp->stages & 0x3f : 0x3f;
     for (int st = 0; st < 6; st++) if (mask >> st & 1) S.sh[st] = NULL;
     S.prog = bp->prog;
+    // A shader the bundle lacks has no stage known here, so it binds nothing: a program whose pixel shader is missing kept its vertex shader and drew depth
+    // only (prepare_draw). DM_VK_SKIP_MISSING=1 (profile, live) leaves those draws out like a missing vertex shader's: Pokémon Sword's opening (Vfx programs
+    // built at run time, not captured yet) froze the old shot under the new one's flares and text for seconds where such draws were drawn
+    if (mask & 3) S.prog_missing = 0;
     if (S.prog) for (unsigned i = 0; i < 6; i++) {
         uint8_t k[8]; if (!prog_key(S.prog, i, k)) break;
         uint64_t kk = key64(k); int st = kk ? vk_shader_stage(kk) : -1;
+        if (kk && st < 0 && (mask & 3)) S.prog_missing = 1;
         if (kk && st < 0) {   // the draw or dispatch is skipped. Logged once per shader (the first 16 binds were 4 shaders of Xenoblade Chronicles 3 over and over, which hid others)
             static uint64_t seen[256]; static int nseen; int known = 0; for (int j = 0; j < nseen; j++) if (seen[j] == kk) { known = 1; break; }
             if (!known && nseen < 256) { seen[nseen++] = kk; void vk_shader_missing(uint64_t key); vk_shader_missing(kk); shader_dump(S.prog, i, kk); } }

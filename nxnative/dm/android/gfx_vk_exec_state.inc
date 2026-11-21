@@ -1,6 +1,6 @@
 // ---------------- NVN state shadow ----------------
 static struct {
-    const prog_t *prog; vkshader_t *sh[6]; int prog_ok;
+    const prog_t *prog; vkshader_t *sh[6]; int prog_ok, prog_missing;
     p_bind_buf ubo[6][16], ssbo[6][16];
     uint64_t tex[6][256], samp[6][128], img[6][32], tex_sseq[6][256], samp_sseq[6][128];   // *_sseq: the sampler registrations made before the bind (gfx_vk_tex.c vk_samp_at)
     blend_st blend[8]; color_st color; chmask_st chmask; ms_st ms; poly_st poly; ds_st ds;
@@ -70,7 +70,7 @@ static int g_fdz = 1;  // DM_VK_FDZ (live): fragment-depth variants for draws on
 static int g_gs_split_mode; // 1: discarded, single-output memory pass; 2: pure rasterization
 static int g_gs_split;      // DM_VK_GS_SPLIT=1 (a profile env row; live, read in x_read): the split below on Adreno; off by default
 enum { LRZ_READ = 2, LRZ_SWITCH = 4, LRZ_CUT = 8, LRZ_ALL = 14, LRZ_CUT_RD = 16, LRZ_CORNER = 32 };   /* LRZ_CUT_RD: only read at a cut; LRZ_CORNER: the last texel, not the first (tests) */   // DM_VK_LRZ_TOUCH bits: the read before a load pass, the write-back on a depth switch, the write-back at a cut
-static int g_x_nosetc, g_x_nodrvc, g_x_landcut, g_x_nokeep, g_x_nobc, g_x_cutany, g_lrz_touch, g_xfb_on = 1, g_x_nogs, g_spv_alt, g_x_nodispbar; int g_x_noshc;   // g_xfb_on: DM_VK_XFB=0 captures no transform feedback (A/B)
+static int g_x_nosetc, g_x_nodrvc, g_x_landcut, g_x_nokeep, g_x_nobc, g_x_cutany, g_lrz_touch, g_xfb_on = 1, g_x_nogs, g_spv_alt, g_x_nodispbar, g_skip_missing; int g_x_noshc;   // g_xfb_on: DM_VK_XFB=0 captures no transform feedback (A/B)
 static int g_x_nosetmemo, g_x_setverify;   // DM_VK_X_NOSETMEMO=1 (live, A/B): no per-stage set memo; DM_VK_X_SETVERIFY=1 (live): one memo hit in 64 checked (see stage_set)
 static int g_vbound = 1;   // DM_VK_VBOUND (see vbuf_bound)
 // DM_VK_PROF_SLOW=1 (live): a submission whose replay took over 40 ms logs where it went: pipelines built on the replay thread, textures (vk_tex: images made and
@@ -162,7 +162,7 @@ static void x_read(void) { cpu_ready_config(); { const char *e = getenv("DM_VK_D
     { const char *tf = getenv("DM_VK_TRACE_FRAME"); snprintf(g_x_traceframe, sizeof g_x_traceframe, "%s", tf && strcmp(tf, "0") ? tf : ""); }
     { const char *tz = getenv("DM_VK_TRACE_SIZE"); snprintf(g_x_tracesize, sizeof g_x_tracesize, "%s", tz ? tz : ""); } const char *e; g_x_nobar = (e = getenv("DM_VK_X_NOBAR")) && atoi(e); g_x_depth = (e = getenv("DM_VK_X_DEPTH")) && atoi(e); g_x_color = (e = getenv("DM_VK_X_COLOR")) && atoi(e);
     g_x_nosetc = (e = getenv("DM_VK_X_NOSETC")) && atoi(e); g_x_nodrvc = (e = getenv("DM_VK_X_NODRVC")) && atoi(e); g_x_landcut = (e = getenv("DM_VK_X_LANDCUT")) && atoi(e);
-    g_x_nodispbar = (e = getenv("DM_VK_X_NODISPBAR")) && atoi(e);
+    g_x_nodispbar = (e = getenv("DM_VK_X_NODISPBAR")) && atoi(e); g_skip_missing = (e = getenv("DM_VK_SKIP_MISSING")) && atoi(e);
     g_x_depth_clear_color = (e = getenv("DM_VK_X_DEPTH_CLEAR_COLOR")) && atoi(e);
     g_x_nokeep = (e = getenv("DM_VK_X_NOKEEP")) && atoi(e); g_x_nobc = (e = getenv("DM_VK_X_NOBC")) && atoi(e); g_x_noshc = (e = getenv("DM_VK_X_NOSHC")) && atoi(e); g_x_cutany = (e = getenv("DM_VK_X_CUTANY")) && atoi(e); g_x_nogs = (e = getenv("DM_VK_X_NOGS")) && atoi(e); g_spv_alt = (e = getenv("DM_VK_SPV_ALT")) && atoi(e); g_rd_touch = !((e = getenv("DM_VK_RD_TOUCH")) && !atoi(e));
     g_lrz_touch = (e = getenv("DM_VK_LRZ_TOUCH")) ? atoi(e) : vk_quirk(VQ_LRZ_TOUCH); if (g_lrz_touch == 1) g_lrz_touch = LRZ_ALL;   /* 0 none, 1 all, else LRZ_* bits */ g_fdz = !((e = getenv("DM_VK_FDZ")) && !atoi(e)); g_xfb_on = !((e = getenv("DM_VK_XFB")) && !atoi(e));
