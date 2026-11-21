@@ -528,7 +528,8 @@ static size_t romfs_work_size(const char *dir) {
     return 4 * romfs_buckets(ndir) + dbytes + 4 * romfs_buckets(nfile) + fbytes;
 }
 // Add-on content lives either as an extracted folder (DM_AOC_DIR/<index>/) or, with the container reader, as the player's own
-// DLC NSP (DM_AOC_DIR/<index>.nsp): both mount read-only. *container tells which, so the cache answer stays the directory's
+// DLC NSP (DM_AOC_DIR/<index>.nsp) or inside the base container itself (an integrated XCI, see romfs_open_dlc): all mount
+// read-only. *container tells which, so the cache answer stays the directory's
 static int aoc_dir(char *dir, size_t n, int index, int *container) {
     const char *base = getenv("DM_AOC_DIR"); struct stat st;
     if (container) *container = 0;
@@ -537,14 +538,41 @@ static int aoc_dir(char *dir, size_t n, int index, int *container) {
     if (snprintf(dir, n, "%s/%d.nsp", base, index) < (int)n && !stat(dir, &st) && S_ISREG(st.st_mode)) { if (container) *container = 1; return 1; }
     return 0;
 }
+static size_t cont_work_size(romfs_cont *c) {   // the same answer as romfs_work_size, from the container's own tables
+    size_t db, nd, fb, nf;
+    romfs_table_usage(c, &db, &nd, &fb, &nf);
+    romfs_close_container(c);
+    return 4 * romfs_buckets(nd) + db + 4 * romfs_buckets(nf) + fb;
+}
+static size_t aoc_work_size(int index) {   // an extracted folder, the player's DLC NSP, or the DLC NCAs of an integrated container
+    char dir[1024], err[256]; int cont = 0;
+    if (aoc_dir(dir, sizeof dir, index, &cont)) {
+        if (!cont) return romfs_work_size(dir);
+        romfs_cont *c = romfs_open_view(dir, NULL, getenv("DM_PROD_KEYS"), err, sizeof err);
+        return c ? cont_work_size(c) : 0x1000;
+    }
+    const char *base = getenv("DM_ROMFS_CONTAINER");
+    if (base && *base) {
+        romfs_cont *c = romfs_open_dlc(base, getenv("DM_PROD_KEYS"), index, err, sizeof err);
+        if (c) return cont_work_size(c);
+    }
+    return 0x1000;   // an index the host does not have: the earlier minimum; the mount then fails
+}
 HLE_FORCE("_ZN2nn2fs31QueryMountAddOnContentCacheSizeEPmi", "fsp-srv; add-on content reads the host directory directly, the cache is the size of its RomFS file table", Result, h_fs_QueryAocCache, size_t *out, int index) {
-    char dir[1024]; int cont = 0;
-    *out = aoc_dir(dir, sizeof dir, index, &cont) && !cont ? romfs_work_size(dir) : 0x1000;   // an index the host does not have: the earlier minimum; the mount then fails
+    *out = aoc_work_size(index);
     return RES_OK;
 }
 HLE_FORCE("_ZN2nn2fs17MountAddOnContentEPKciPvm", "fsp-srv; add-on content → DM_AOC_DIR/<index> or <index>.nsp (read-only)", Result, h_fs_MountAoc, const char *name, int index, void *cache, size_t sz) {
     (void)cache; (void)sz; char dir[1024]; int cont = 0;
     if (!aoc_dir(dir, sizeof dir, index, &cont)) {
+        const char *base = getenv("DM_ROMFS_CONTAINER");
+        if (base && *base) {   // the base container may carry the add-on content itself (an integrated XCI): its own RomFS, read-only
+            char err[256];
+            romfs_cont *c = romfs_open_dlc(base, getenv("DM_PROD_KEYS"), index, err, sizeof err);
+            if (c) return mount_container(name, c);
+            LOG("fs mount add-on content %s: index %d is not in DM_AOC_DIR nor bundled in %s: %s", name, index, base, err);
+            return RES_TARGET_NOT_FOUND;
+        }
         LOG("fs mount add-on content %s: index %d does not exist (DM_AOC_DIR=%s)", name, index, getenv("DM_AOC_DIR") ? getenv("DM_AOC_DIR") : "unset");
         return RES_TARGET_NOT_FOUND;
     }

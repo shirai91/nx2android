@@ -255,103 +255,140 @@ static int sect_read(romfs_cont *c, const sect_t *s, uint64_t rel, void *buf, si
 // ---------- NCA discovery and section parsing ----------
 static int nca_header_ok(const uint8_t *hdr) { return !memcmp(hdr + 0x200, "NCA3", 4) || !memcmp(hdr + 0x200, "NCA2", 4); }
 typedef struct { uint64_t base, size; const char *name; } nca_ent;
-// Picks the program NCA that carries a RomFS section and returns its file offset inside the container: content type 0 (the program),
-// then the largest NCA (the one holding the RomFS data)
-static int pick_nca(int fd, const uint8_t hkey[32], const nca_ent *ents, uint32_t cnt, uint64_t *nca_base, char *name, size_t name_n, char *err, size_t errn) {
-    uint64_t best = 0, best_sz = 0;
-    int found = 0, best_program = 0;
+typedef void (*nca_visit_fn)(void *ctx, const uint8_t *hdr, uint64_t base, uint64_t size, const char *name);
+static void visit_list(int fd, const uint8_t hkey[32], const nca_ent *list, uint32_t cnt, nca_visit_fn visit, void *ctx) {
     for (uint32_t i = 0; i < cnt; i++) {
-        if (ents[i].size < 0x1000) continue;
+        if (list[i].size < 0x1000) continue;
         uint8_t hdr[0xc00];
-        if (pread_all(fd, hdr, sizeof hdr, ents[i].base)) continue;
+        if (pread_all(fd, hdr, sizeof hdr, list[i].base)) continue;
         for (int k = 0; k < 6; k++) xts_decrypt(hkey, (uint64_t)k, hdr + k * 0x200, 0x200);
         if (!nca_header_ok(hdr)) continue;
-        int rom = -1;
-        for (int k = 0; k < 4; k++) if (rd32(hdr + 0x240 + k * 0x10) && hdr[0x400 + k * 0x200 + 3] == 3) { rom = k; break; }
-        if (rom < 0) continue;
-        int program = hdr[0x205] == 0;
-        if (!found || (program && !best_program) || (program == best_program && ents[i].size > best_sz)) {
-            best = ents[i].base; best_sz = ents[i].size; found = 1; best_program = program;
-            snprintf(name, name_n, "%s", ents[i].name);
+        visit(ctx, hdr, list[i].base, list[i].size, list[i].name);
+    }
+}
+// Calls visit for every NCA of the container with its decrypted header: an NSP's PFS0 entries, or the secure HFS0 of a gamecard
+// image (XCI, magic "HEAD" at 0x100; the header's plaintext part gives the root HFS0's offset)
+static int container_walk(int fd, const uint8_t hkey[32], nca_visit_fn visit, void *ctx, char *err, size_t errn) {
+    uint8_t h[0x200];
+    if (pread_all(fd, h, sizeof h, 0)) { snprintf(err, errn, "container unreadable: %s", strerror(errno)); return -1; }
+    if (!memcmp(h, "PFS0", 4)) {
+        uint32_t cnt = rd32(h + 4), strsz = rd32(h + 8);
+        if (!cnt || cnt > 4096 || strsz > (4u << 20)) { snprintf(err, errn, "PFS0 header %u entries, %u name bytes", cnt, strsz); return -1; }
+        uint8_t *ents = malloc((size_t)cnt * 0x18); char *names = malloc((size_t)strsz + 1); nca_ent *list = malloc((size_t)cnt * sizeof *list);
+        int rc = -1;
+        if (!ents || !names || !list || pread_all(fd, ents, (size_t)cnt * 0x18, 0x10) || pread_all(fd, names, strsz, 0x10 + (uint64_t)cnt * 0x18)) { snprintf(err, errn, "NSP header unreadable"); goto pfs_out; }
+        names[strsz] = 0;
+        uint64_t data = 0x10 + (uint64_t)cnt * 0x18 + strsz;
+        for (uint32_t i = 0; i < cnt; i++) {
+            uint32_t no = rd32(ents + (size_t)i * 0x18 + 0x10);
+            list[i].base = data + rd64(ents + (size_t)i * 0x18); list[i].size = rd64(ents + (size_t)i * 0x18 + 8);
+            list[i].name = no < strsz ? names + no : "";
         }
+        visit_list(fd, hkey, list, cnt, visit, ctx);
+        rc = 0;
+pfs_out:
+        free(ents); free(names); free(list);
+        return rc;
     }
-    if (!found) { snprintf(err, errn, "no NCA carries a RomFS section"); return -1; }
-    *nca_base = best;
-    return 0;
-}
-// An NSP: PFS0 entries are the NCAs
-static int pfs0_find_nca(int fd, const uint8_t hkey[32], uint64_t *nca_base, char *name, size_t name_n, char *err, size_t errn) {
-    uint8_t h[0x10];
-    if (pread_all(fd, h, sizeof h, 0) || memcmp(h, "PFS0", 4)) { snprintf(err, errn, "not a PFS0 (NSP) container"); return -1; }
-    uint32_t cnt = rd32(h + 4), strsz = rd32(h + 8);
-    if (!cnt || cnt > 4096 || strsz > (4u << 20)) { snprintf(err, errn, "PFS0 header %u entries, %u name bytes", cnt, strsz); return -1; }
-    uint8_t *ents = malloc((size_t)cnt * 0x18); char *names = malloc((size_t)strsz + 1); nca_ent *list = malloc((size_t)cnt * sizeof *list);
-    int rc = -1;
-    if (!ents || !names || !list || pread_all(fd, ents, (size_t)cnt * 0x18, 0x10) || pread_all(fd, names, strsz, 0x10 + (uint64_t)cnt * 0x18)) { snprintf(err, errn, "NSP header unreadable"); goto out; }
-    names[strsz] = 0;
-    uint64_t data = 0x10 + (uint64_t)cnt * 0x18 + strsz;
-    for (uint32_t i = 0; i < cnt; i++) {
-        uint32_t no = rd32(ents + (size_t)i * 0x18 + 0x10);
-        list[i].base = data + rd64(ents + (size_t)i * 0x18); list[i].size = rd64(ents + (size_t)i * 0x18 + 8);
-        list[i].name = no < strsz ? names + no : "";
-    }
-    rc = pick_nca(fd, hkey, list, cnt, nca_base, name, name_n, err, errn);
-out:
-    free(ents); free(names); free(list);
-    return rc;
-}
-// A gamecard image (XCI): the root HFS0 holds the secure partition (an HFS0 of NCAs); the header's plaintext part gives the root's offset.
-// Gamecard NCAs differ from an NSP's only in distribution type: the key area still decrypts with key_area_key_application.
-static int xci_find_nca(int fd, const uint8_t hkey[32], uint64_t *nca_base, char *name, size_t name_n, char *err, size_t errn) {
-    uint8_t h[0x200], t[0x10];
+    if (memcmp(h + 0x100, "HEAD", 4)) { snprintf(err, errn, "not an NSP or an XCI (no PFS0 / HEAD magic)"); return -1; }
     struct stat st;
-    if (pread_all(fd, h, sizeof h, 0) || memcmp(h + 0x100, "HEAD", 4)) { snprintf(err, errn, "not a gamecard (XCI) image"); return -1; }
     if (fstat(fd, &st)) { snprintf(err, errn, "container size: %s", strerror(errno)); return -1; }
     uint64_t fsz = (uint64_t)st.st_size, root = rd64(h + 0x130);
+    uint8_t t[0x10];
     if (root > fsz || pread_all(fd, t, sizeof t, root) || memcmp(t, "HFS0", 4)) { snprintf(err, errn, "XCI root partition"); return -1; }
     uint32_t rn = rd32(t + 4), rstr = rd32(t + 8);
     if (!rn || rn > 4 || rstr > (1u << 20)) { snprintf(err, errn, "XCI root HFS0: %u entries", rn); return -1; }
     uint64_t rsz = 0x10 + (uint64_t)rn * 0x40 + rstr, sec = 0, secsz = 0;
     uint8_t *rb = malloc(rsz);
     int rc = -1;
-    if (!rb || root + rsz > fsz || pread_all(fd, rb, rsz, root)) { snprintf(err, errn, "XCI root HFS0 unreadable"); goto out; }
+    if (!rb || root + rsz > fsz || pread_all(fd, rb, rsz, root)) { snprintf(err, errn, "XCI root HFS0 unreadable"); goto xci_out; }
     for (uint32_t i = 0; i < rn; i++) {
         const uint8_t *e = rb + 0x10 + (size_t)i * 0x40;
         uint32_t no = rd32(e + 0x10);
         if (no >= rstr || strcmp((const char *)rb + 0x10 + (size_t)rn * 0x40 + no, "secure")) continue;
         uint64_t o = root + rsz + rd64(e), z = rd64(e + 8);
-        if (z < 0x1000 || o >= fsz || o + z > fsz) { snprintf(err, errn, "XCI secure partition bounds"); goto out; }
+        if (z < 0x1000 || o >= fsz || o + z > fsz) { snprintf(err, errn, "XCI secure partition bounds"); goto xci_out; }
         sec = o; secsz = z; break;
     }
-    if (!sec) { snprintf(err, errn, "the XCI has no secure partition"); goto out; }
-    if (pread_all(fd, t, sizeof t, sec) || memcmp(t, "HFS0", 4)) { snprintf(err, errn, "XCI secure partition header"); goto out; }
+    if (!sec) { snprintf(err, errn, "the XCI has no secure partition"); goto xci_out; }
+    if (pread_all(fd, t, sizeof t, sec) || memcmp(t, "HFS0", 4)) { snprintf(err, errn, "XCI secure partition header"); goto xci_out; }
     uint32_t sn = rd32(t + 4), sstr = rd32(t + 8);
     uint64_t shsz = 0x10 + (uint64_t)sn * 0x40 + sstr;
     uint8_t *sb = NULL; nca_ent *list = NULL;
-    if (!sn || sn > 4096 || sstr > (1u << 20) || shsz > secsz) { snprintf(err, errn, "XCI secure HFS0: %u entries", sn); goto out; }
+    if (!sn || sn > 4096 || sstr > (1u << 20) || shsz > secsz) { snprintf(err, errn, "XCI secure HFS0: %u entries", sn); goto xci_out; }
     sb = malloc(shsz); list = malloc((size_t)sn * sizeof *list);
-    if (!sb || !list || pread_all(fd, sb, shsz, sec)) { snprintf(err, errn, "XCI secure HFS0 unreadable"); goto sec_out; }
+    if (!sb || !list || pread_all(fd, sb, shsz, sec)) { snprintf(err, errn, "XCI secure HFS0 unreadable"); goto xci_sec; }
     for (uint32_t i = 0; i < sn; i++) {
         const uint8_t *e = sb + 0x10 + (size_t)i * 0x40;
         uint32_t no = rd32(e + 0x10);
         list[i].base = sec + shsz + rd64(e); list[i].size = rd64(e + 8);
         list[i].name = no < sstr ? (const char *)sb + 0x10 + (size_t)sn * 0x40 + no : "";
     }
-    rc = pick_nca(fd, hkey, list, sn, nca_base, name, name_n, err, errn);
-sec_out:
+    visit_list(fd, hkey, list, sn, visit, ctx);
+    rc = 0;
+xci_sec:
     free(sb); free(list);
-out:
+xci_out:
     free(rb);
     return rc;
 }
-// The container's format: an NSP (PFS0) or a gamecard image (XCI, "HEAD" at 0x100)
-static int container_find_nca(int fd, const uint8_t hkey[32], uint64_t *nca_base, char *name, size_t name_n, char *err, size_t errn) {
-    uint8_t h[0x104];
-    if (pread_all(fd, h, sizeof h, 0)) { snprintf(err, errn, "container unreadable: %s", strerror(errno)); return -1; }
-    if (!memcmp(h, "PFS0", 4)) return pfs0_find_nca(fd, hkey, nca_base, name, name_n, err, errn);
-    if (!memcmp(h + 0x100, "HEAD", 4)) return xci_find_nca(fd, hkey, nca_base, name, name_n, err, errn);
-    snprintf(err, errn, "not an NSP or an XCI (no PFS0 / HEAD magic)");
+// The RomFS section inside an NCA header, or -1
+static int hdr_rom_section(const uint8_t *hdr) {
+    for (int k = 0; k < 4; k++) if (rd32(hdr + 0x240 + k * 0x10) && hdr[0x400 + k * 0x200 + 3] == 3) return k;
     return -1;
+}
+typedef struct { uint64_t base, size, tid; char name[128]; int found, cls; } pick_t;
+static void pick_visit(void *ctx, const uint8_t *hdr, uint64_t base, uint64_t size, const char *name) {
+    pick_t *p = ctx;
+    int rom = hdr_rom_section(hdr);
+    if (rom < 0) return;
+    // an ordinary program NCA first, then a BKTR one (an update, which needs the one before it), then any other content
+    int cls = hdr[0x205] == 0 ? (hdr[0x400 + rom * 0x200 + 4] == 4 ? 1 : 0) : 2;
+    if (!p->found || cls < p->cls || (cls == p->cls && size > p->size)) {
+        p->base = base; p->size = size; p->cls = cls; p->found = 1; p->tid = rd64(hdr + 0x210);
+        snprintf(p->name, sizeof p->name, "%s", name);
+    }
+}
+// Picks the NCA that carries the game's RomFS and returns its file offset inside the container
+static int pick_nca(int fd, const uint8_t hkey[32], uint64_t *nca_base, uint64_t *tid, char *name, size_t name_n, char *err, size_t errn) {
+    pick_t p = {0};
+    if (container_walk(fd, hkey, pick_visit, &p, err, errn)) return -1;
+    if (!p.found) { snprintf(err, errn, "no NCA carries a RomFS section"); return -1; }
+    *nca_base = p.base; if (tid) *tid = p.tid;
+    snprintf(name, name_n, "%s", p.name);
+    return 0;
+}
+typedef struct { uint64_t tid, base, size; char name[128]; int found; } upd_t;
+static void upd_visit(void *ctx, const uint8_t *hdr, uint64_t base, uint64_t size, const char *name) {
+    upd_t *u = ctx;
+    if (hdr[0x205] != 0 || rd64(hdr + 0x210) != u->tid) return;   // a program NCA of the base title
+    int rom = hdr_rom_section(hdr);
+    if (rom < 0 || hdr[0x400 + rom * 0x200 + 4] != 4) return;     // BKTR: an update layered over the base
+    if (!u->found || size > u->size) { u->base = base; u->size = size; u->found = 1; snprintf(u->name, sizeof u->name, "%s", name); }
+}
+// An update bundled in the base container (an integrated XCI): the base title's BKTR program NCA. 0 and found=0 when there is none
+static int bundled_update(int fd, const uint8_t hkey[32], uint64_t tid, upd_t *u, char *err, size_t errn) {
+    memset(u, 0, sizeof *u); u->tid = tid;
+    return container_walk(fd, hkey, upd_visit, u, err, errn);
+}
+// The add-on content bundled in a container: its Data / PublicData NCAs, by the index in the title ID's low 12 bits
+static int dlc_index(const uint8_t *hdr) {
+    if (hdr[0x205] != 4 && hdr[0x205] != 5) return -1;
+    if (hdr_rom_section(hdr) < 0) return -1;
+    unsigned lo = (unsigned)(rd64(hdr + 0x210) & 0xFFF);
+    return lo >= 1 && lo < 0x800 ? (int)lo : -1;
+}
+typedef struct { int *out, n, max; } dlc_list_t;
+static void dlc_list_visit(void *ctx, const uint8_t *hdr, uint64_t base, uint64_t size, const char *name) {
+    dlc_list_t *l = ctx; (void)base; (void)size; (void)name;
+    int i = dlc_index(hdr);
+    if (i >= 0 && l->n < l->max) l->out[l->n++] = i;
+}
+typedef struct { int want, found; uint64_t base; char name[128]; } dlc_pick_t;
+static void dlc_pick_visit(void *ctx, const uint8_t *hdr, uint64_t base, uint64_t size, const char *name) {
+    dlc_pick_t *d = ctx; (void)size;
+    if (d->found || dlc_index(hdr) != d->want) return;
+    d->base = base; d->found = 1; snprintf(d->name, sizeof d->name, "%s", name);
 }
 // title.keys sits beside prod.keys: "<rights id, 32 hex> = <title key, 32 hex>"
 static int title_key_find(const char *keys_path, const uint8_t rights[16], uint8_t out[16]) {
@@ -507,6 +544,18 @@ static int bktr_parse_tables(romfs_cont *c, const uint8_t *fs, char *err, size_t
     c->rel = rel; c->nrel = n; c->sub = sub; c->nsub = m;
     return 0;
 }
+// A parsed BKTR patch section (c->patch) over the base: its relocation and subsection tables, then merged reads
+static int bktr_attach(romfs_cont *c, const uint8_t hkey[32], char *err, size_t errn) {
+    uint8_t hdr[0xc00];
+    if (pread_all(c->patch.fd, hdr, sizeof hdr, c->patch.nca_base)) { snprintf(err, errn, "update NCA header unreadable"); return -1; }
+    for (int k = 0; k < 6; k++) xts_decrypt(hkey, (uint64_t)k, hdr + k * 0x200, 0x200);
+    if (!nca_header_ok(hdr)) { snprintf(err, errn, "update NCA header magic"); return -1; }
+    int rom = hdr_rom_section(hdr);
+    if (rom < 0 || c->patch.romfs_off != rd64(hdr + 0x400 + rom * 0x200 + 0x08 + 0x10 + 5 * 0x18)) { snprintf(err, errn, "update RomFS section"); return -1; }
+    if (bktr_parse_tables(c, hdr + 0x400 + rom * 0x200, err, errn)) return -1;
+    c->bktr = 1;
+    return 0;
+}
 static const reloc_t *reloc_at(const romfs_cont *c, uint64_t v) {
     size_t lo = 0, hi = c->nrel - 1;   // sentinel is last
     while (lo + 1 < hi) { size_t mid = (lo + hi) / 2; if (c->rel[mid].virt <= v) lo = mid; else hi = mid; }
@@ -597,41 +646,42 @@ romfs_cont *romfs_open_view(const char *base_path, const char *update_path, cons
     pthread_mutex_init(&c->lock, NULL);
     c->base.fd = c->patch.fd = -1;
     char name[128] = "";
-    uint64_t nb;
+    uint64_t nb, tid = 0;
     c->base.fd = open(base_path, O_RDONLY);
     if (c->base.fd < 0) { snprintf(err, errn, "open %s: %s", base_path, strerror(errno)); goto fail; }
     uint8_t hkey[32];
     if (key_find(kp, "header_key", hkey, sizeof hkey) < 32) { snprintf(err, errn, "header_key is missing from %s", kp); goto fail; }
-    if (container_find_nca(c->base.fd, hkey, &nb, name, sizeof name, err, errn)) goto fail;
+    if (pick_nca(c->base.fd, hkey, &nb, &tid, name, sizeof name, err, errn)) goto fail;
     c->base.nca_base = nb;
     if (parse_section(c, &c->base, kp, err, errn)) goto fail;
     if (c->base.crypt == 4) { snprintf(err, errn, "the base NCA is itself a BKTR update"); goto fail; }
-    if (update_path && *update_path) {
+    if (update_path && *update_path) {   // the player's update NSP beside the base
         c->patch.fd = open(update_path, O_RDONLY);
         if (c->patch.fd < 0) { snprintf(err, errn, "open %s: %s", update_path, strerror(errno)); goto fail; }
         char uname[128] = "";
-        if (container_find_nca(c->patch.fd, hkey, &nb, uname, sizeof uname, err, errn)) goto fail;
+        if (pick_nca(c->patch.fd, hkey, &nb, NULL, uname, sizeof uname, err, errn)) goto fail;
         c->patch.nca_base = nb;
         if (parse_section(c, &c->patch, kp, err, errn)) goto fail;
         if (c->patch.crypt == 3) {   // a full replacement RomFS: it needs no base
             close(c->base.fd); c->base = c->patch; c->patch.fd = -1; c->patch.valid = 0;
             snprintf(name, sizeof name, "%s", uname);
         } else if (c->patch.crypt == 4) {   // a BKTR update: merged view over the base NCA
-            uint8_t hdr[0xc00];
-            if (pread_all(c->patch.fd, hdr, sizeof hdr, c->patch.nca_base)) { snprintf(err, errn, "update NCA header unreadable"); goto fail; }
-            for (int k = 0; k < 6; k++) xts_decrypt(hkey, (uint64_t)k, hdr + k * 0x200, 0x200);
-            if (!nca_header_ok(hdr)) { snprintf(err, errn, "update NCA header magic"); goto fail; }
-            int rom = -1;
-            for (int k = 0; k < 4; k++) if (rd32(hdr + 0x240 + k * 0x10) && hdr[0x400 + k * 0x200 + 3] == 3) { rom = k; break; }
-            if (rom < 0 || c->patch.romfs_off != rd64(hdr + 0x400 + rom * 0x200 + 0x08 + 0x10 + 5 * 0x18)) { snprintf(err, errn, "update RomFS section"); goto fail; }
-            if (bktr_parse_tables(c, hdr + 0x400 + rom * 0x200, err, errn)) goto fail;
-            c->bktr = 1;
+            if (bktr_attach(c, hkey, err, errn)) goto fail;
             snprintf(name, sizeof name, "%s + update", name);
         } else { snprintf(err, errn, "unsupported update section crypto %d", c->patch.crypt); goto fail; }
+    } else {   // an integrated container (1G+1U+…): the update rides in the same file as a BKTR program NCA of the base title
+        upd_t u;
+        if (!bundled_update(c->base.fd, hkey, tid, &u, err, errn) && u.found) {
+            c->patch.fd = c->base.fd; c->patch.nca_base = u.base;
+            if (parse_section(c, &c->patch, kp, err, errn)) goto fail;
+            if (c->patch.crypt != 4) { snprintf(err, errn, "the bundled update NCA has section crypto %d, not BKTR", c->patch.crypt); goto fail; }
+            if (bktr_attach(c, hkey, err, errn)) goto fail;
+            snprintf(name, sizeof name, "%s + update", name);
+        }
     }
     c->romfs_off = c->bktr ? c->patch.romfs_off : c->base.romfs_off;
     if (read_tables(c, err, errn) || build_index(c, err, errn)) goto fail;
-    snprintf(c->err, sizeof c->err, "%s%s", name, c->bktr ? "" : "");
+    snprintf(c->err, sizeof c->err, "%s", name);
     return c;
 fail:
     cont_free(c);
@@ -640,8 +690,52 @@ fail:
 romfs_cont *romfs_open_container(const char *path, const char *keys, char *err, size_t errn) { return romfs_open_view(path, NULL, keys, err, errn); }
 void romfs_close_container(romfs_cont *c) { if (c) cont_free(c); }
 
+// The add-on content bundled in a container (an integrated XCI): its indices, ascending, or -1 with err set. Reads NCA headers only
+int romfs_bundled_dlc(const char *path, const char *keys, int *out, int max, char *err, size_t errn) {
+    const char *kp = keys && *keys ? keys : getenv("DM_PROD_KEYS");
+    if (!kp || !*kp) { snprintf(err, errn, "no prod.keys (pass a path or set DM_PROD_KEYS)"); return -1; }
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) { snprintf(err, errn, "open %s: %s", path, strerror(errno)); return -1; }
+    uint8_t hkey[32];
+    if (key_find(kp, "header_key", hkey, sizeof hkey) < 32) { close(fd); snprintf(err, errn, "header_key is missing from %s", kp); return -1; }
+    dlc_list_t l = {out, 0, max};
+    int rc = container_walk(fd, hkey, dlc_list_visit, &l, err, errn);
+    close(fd);
+    if (rc) return -1;
+    for (int i = 1; i < l.n; i++) {   // ascending, one entry per index (a DLC may hold more than one NCA)
+        int v = out[i], j = i - 1;
+        while (j >= 0 && out[j] > v) { out[j + 1] = out[j]; j--; }
+        out[j + 1] = v;
+    }
+    int n = 0;
+    for (int i = 0; i < l.n; i++) if (!n || out[n - 1] != out[i]) out[n++] = out[i];
+    return n;
+}
+// The add-on content with that index in the container, as its own RomFS (each DLC NCA holds one); NULL with err set when it has none
+romfs_cont *romfs_open_dlc(const char *path, const char *keys, int index, char *err, size_t errn) {
+    const char *kp = keys && *keys ? keys : getenv("DM_PROD_KEYS");
+    if (!kp || !*kp) { snprintf(err, errn, "no prod.keys (pass a path or set DM_PROD_KEYS)"); return NULL; }
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) { snprintf(err, errn, "open %s: %s", path, strerror(errno)); return NULL; }
+    uint8_t hkey[32];
+    if (key_find(kp, "header_key", hkey, sizeof hkey) < 32) { close(fd); snprintf(err, errn, "header_key is missing from %s", kp); return NULL; }
+    dlc_pick_t d = {.want = index};
+    if (container_walk(fd, hkey, dlc_pick_visit, &d, err, errn)) { close(fd); return NULL; }
+    if (!d.found) { close(fd); snprintf(err, errn, "no add-on content %d is bundled in it", index); return NULL; }
+    romfs_cont *c = calloc(1, sizeof *c);
+    if (!c) { close(fd); snprintf(err, errn, "out of memory"); return NULL; }
+    pthread_mutex_init(&c->lock, NULL);
+    c->patch.fd = -1; c->base.fd = fd; c->base.nca_base = d.base;
+    if (parse_section(c, &c->base, kp, err, errn)) { cont_free(c); return NULL; }
+    c->romfs_off = c->base.romfs_off;
+    if (read_tables(c, err, errn) || build_index(c, err, errn)) { cont_free(c); return NULL; }
+    snprintf(c->err, sizeof c->err, "%s", d.name);
+    return c;
+}
+
 // ---------- lookup / stat / read / list ----------
 #define NODE_DIR 1ull
+#define NODE_FILE 2ull   // a file may sit at metadata offset 0: its node must still be non-zero
 static int ent_is_dot(const char *s, uint32_t n) { return (n == 1 && s[0] == '.') || (n == 2 && s[0] == '.' && s[1] == '.'); }
 static void parent_range(const idx_ent *ix, size_t n, uint32_t parent, size_t *lo, size_t *hi) {
     size_t a = 0, b = n;
@@ -655,12 +749,12 @@ static uint64_t lookup_child(romfs_cont *c, uint32_t dir, const char *name, size
     parent_range(c->dix, c->ndix, dir, &lo, &hi);
     for (size_t i = lo; i < hi; i++) {
         uint32_t o = c->dix[i].off, nl = rd32(c->dirs + o + 0x14);
-        if (nl == len && !memcmp(c->dirs + o + 0x18, name, len)) return (uint64_t)o << 1 | NODE_DIR;
+        if (nl == len && !memcmp(c->dirs + o + 0x18, name, len)) return (uint64_t)o << 2 | NODE_DIR;
     }
     parent_range(c->fix, c->nfix, dir, &lo, &hi);
     for (size_t i = lo; i < hi; i++) {
         uint32_t o = c->fix[i].off, nl = rd32(c->files + o + 0x1C);
-        if (nl == len && !memcmp(c->files + o + 0x20, name, len)) return (uint64_t)o << 1;
+        if (nl == len && !memcmp(c->files + o + 0x20, name, len)) return (uint64_t)o << 2 | NODE_FILE;
     }
     return 0;
 }
@@ -673,8 +767,8 @@ uint64_t romfs_path_lookup(romfs_cont *c, const char *path) {
         const char *e = strchr(p, '/');
         size_t len = e ? (size_t)(e - p) : strlen(p);
         if (len > 0x300) { seterr(c, "%s: name too long", path); return 0; }
-        if (!(node & NODE_DIR) || !dir_ok(c, (uint32_t)(node >> 1))) { seterr(c, "%.*s: not a directory in %s", (int)len, p, path); return 0; }
-        node = lookup_child(c, (uint32_t)(node >> 1), p, len);
+        if (!(node & NODE_DIR) || !dir_ok(c, (uint32_t)(node >> 2))) { seterr(c, "%.*s: not a directory in %s", (int)len, p, path); return 0; }
+        node = lookup_child(c, (uint32_t)(node >> 2), p, len);
         if (!node) { seterr(c, "%s: not found", path); return 0; }
         p = e ? e + 1 : p + len;
     }
@@ -682,26 +776,30 @@ uint64_t romfs_path_lookup(romfs_cont *c, const char *path) {
 }
 int romfs_node_stat(romfs_cont *c, uint64_t node, int *isdir, uint64_t *size) {
     if (node & NODE_DIR) {
-        if (!dir_ok(c, (uint32_t)(node >> 1))) { seterr(c, "bad directory node %#llx", (unsigned long long)node); return -1; }
+        if (!dir_ok(c, (uint32_t)(node >> 2))) { seterr(c, "bad directory node %#llx", (unsigned long long)node); return -1; }
         *isdir = 1; *size = 0; return 0;
     }
-    uint32_t o = (uint32_t)(node >> 1);
+    uint32_t o = (uint32_t)(node >> 2);
     if (!file_ok(c, o)) { seterr(c, "bad file node %#llx", (unsigned long long)node); return -1; }
     *isdir = 0; *size = rd64(c->files + o + 0x10); return 0;
 }
 int romfs_node_read(romfs_cont *c, uint64_t node, uint64_t off, void *buf, size_t n, size_t *got) {
     *got = 0;
     if (node & NODE_DIR) { seterr(c, "read of a directory"); return -1; }
-    uint32_t o = (uint32_t)(node >> 1);
+    uint32_t o = (uint32_t)(node >> 2);
     if (!file_ok(c, o)) { seterr(c, "bad file node %#llx", (unsigned long long)node); return -1; }
     uint64_t foff = rd64(c->files + o + 8), fsz = rd64(c->files + o + 0x10);
     if (off >= fsz) return 0;
     if (n > fsz - off) n = (size_t)(fsz - off);
     return view_read(c, c->romfs_off + c->data_off + foff + off, buf, n, got);
 }
+void romfs_table_usage(const romfs_cont *c, size_t *dirs_bytes, size_t *ndirs, size_t *files_bytes, size_t *nfiles) {
+    *dirs_bytes = (size_t)c->dirs_n; *ndirs = c->ndix;
+    *files_bytes = (size_t)c->files_n; *nfiles = c->nfix;
+}
 int romfs_dir_entry(romfs_cont *c, uint64_t dir, size_t index, char *name, size_t name_n, int *isdir, uint64_t *size) {
-    if (!(dir & NODE_DIR) || !dir_ok(c, (uint32_t)(dir >> 1))) { seterr(c, "not a directory node"); return -1; }
-    uint32_t o = (uint32_t)(dir >> 1);
+    if (!(dir & NODE_DIR) || !dir_ok(c, (uint32_t)(dir >> 2))) { seterr(c, "not a directory node"); return -1; }
+    uint32_t o = (uint32_t)(dir >> 2);
     size_t lo, hi;
     parent_range(c->dix, c->ndix, o, &lo, &hi);
     for (size_t i = lo; i < hi; i++) {
