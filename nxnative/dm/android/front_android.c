@@ -39,6 +39,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/system_properties.h>
 #include <unistd.h>
 
 void front_run(void (*guest)(void)) { guest(); }
@@ -595,6 +596,20 @@ int dm_menu_state(void) {
     return atomic_load(&g_set_overlay) | atomic_load(&g_set_rumble) << 1 | (dm_opmode() != 0) << 2 | atomic_load(&g_set_fps) << 3 | (atomic_load(&g_menu_hi) + 1) << 4 |
            atomic_load(&g_menu_tab) << 8 | atomic_load(&g_set_opacity) << 9 | atomic_load(&g_sv_st) << 20 | (atomic_load(&g_sv_n) & 15) << 24 | pad_labels() << 28;
 }
+int dm_ui_zh(void) {
+    const char *e = getenv("DM_UI_LANG");
+    if (e && *e) return e[0] == 'z' || e[0] == 'Z' || e[0] == 'c' || e[0] == 'C' || e[0] == '1';
+    static _Atomic int sys = -1;
+    int cur = atomic_load(&sys);
+    if (cur >= 0) return cur;
+    char loc[PROP_VALUE_MAX] = "";
+    if (!__system_property_get("persist.sys.locale", loc) || !loc[0])
+        if (!__system_property_get("ro.product.locale", loc) || !loc[0])
+            __system_property_get("persist.sys.language", loc);
+    cur = (loc[0] == 'z' || loc[0] == 'Z') && (loc[1] == 'h' || loc[1] == 'H');
+    atomic_store(&sys, cur);
+    return cur;
+}
 int dm_overlay_fps(void) { return atomic_load(&g_set_fps) && !atomic_load(&g_menu); }   // gfx_vk_present.c draws the counter (not while the menu holds the game)
 static void menu_open(int hi) {
     if (!atomic_load(&g_running) || atomic_exchange(&g_menu, 1)) return;
@@ -785,8 +800,13 @@ static void sp_touch(AInputEvent *e, float W, float H) {   // a row is done when
     } else if (act == AMOTION_EVENT_ACTION_CANCEL) g_sp.ptr = -1;
 }
 static void sp_size(char *out, int cap, const dm_save_entry *s) {
-    if (s->bytes >= 1 << 20) snprintf(out, (size_t)cap, "%ld file%s, %.1f MB", s->files, s->files == 1 ? "" : "s", s->bytes / 1048576.0);
-    else snprintf(out, (size_t)cap, "%ld file%s, %lld KB", s->files, s->files == 1 ? "" : "s", (s->bytes + 1023) / 1024);
+    if (dm_ui_zh()) {
+        if (s->bytes >= 1 << 20) snprintf(out, (size_t)cap, "%ld 个文件，%.1f MB", s->files, s->bytes / 1048576.0);
+        else snprintf(out, (size_t)cap, "%ld 个文件，%lld KB", s->files, (s->bytes + 1023) / 1024);
+    } else {
+        if (s->bytes >= 1 << 20) snprintf(out, (size_t)cap, "%ld file%s, %.1f MB", s->files, s->files == 1 ? "" : "s", s->bytes / 1048576.0);
+        else snprintf(out, (size_t)cap, "%ld file%s, %lld KB", s->files, s->files == 1 ? "" : "s", (s->bytes + 1023) / 1024);
+    }
 }
 #define SP_ROW(i, st, ...) do { rows[i].style = st; snprintf(rows[i].left, sizeof rows[i].left, __VA_ARGS__); } while (0)
 int dm_save_rows(ov_srow rows[OVM_ROWS]) {   // (gfx_vk_present.c ov_save_panel)
@@ -794,22 +814,26 @@ int dm_save_rows(ov_srow rows[OVM_ROWS]) {   // (gfx_vk_present.c ov_save_panel)
     memset(rows, 0, sizeof(ov_srow) * OVM_ROWS);
     pthread_mutex_lock(&g_sp_mu);
     if (g_sp.closing) {
-        SP_ROW(0, OVS_TITLE, "Importing the save"); SP_ROW(1, OVS_ITEM, "%s", g_sp.pick.name); sp_size(rows[1].right, sizeof rows[1].right, &g_sp.pick);
-        SP_ROW(2, OVS_NOTE, "The game closes now. Open it again:"); SP_ROW(3, OVS_NOTE, "the save is imported as it starts.");
+        SP_ROW(0, OVS_TITLE, "%s", TR("Importing the save", "正在导入存档")); SP_ROW(1, OVS_ITEM, "%s", g_sp.pick.name); sp_size(rows[1].right, sizeof rows[1].right, &g_sp.pick);
+        SP_ROW(2, OVS_NOTE, "%s", TR("The game closes now. Open it again:", "游戏即将关闭，请重新打开："));
+        SP_ROW(3, OVS_NOTE, "%s", TR("the save is imported as it starts.", "启动时将自动导入该存档。"));
     } else if (g_sp.confirm) {
-        SP_ROW(0, OVS_TITLE, "Import this save?"); SP_ROW(1, OVS_ITEM, "%s", g_sp.pick.name); sp_size(rows[1].right, sizeof rows[1].right, &g_sp.pick);
-        SP_ROW(2, OVS_NOTE, "Your current save is exported first,"); SP_ROW(3, OVS_NOTE, "then the game closes: open it again.");
-        SP_ROW(OVM_ROWS - 2, OVS_BUTTON, "Import and close"); SP_ROW(OVM_ROWS - 1, OVS_BACK, "Cancel");
+        SP_ROW(0, OVS_TITLE, "%s", TR("Import this save?", "确定导入此存档？")); SP_ROW(1, OVS_ITEM, "%s", g_sp.pick.name); sp_size(rows[1].right, sizeof rows[1].right, &g_sp.pick);
+        SP_ROW(2, OVS_NOTE, "%s", TR("Your current save is exported first,", "会先导出当前存档，"));
+        SP_ROW(3, OVS_NOTE, "%s", TR("then the game closes: open it again.", "随后关闭游戏，请重新打开。"));
+        SP_ROW(OVM_ROWS - 2, OVS_BUTTON, "%s", TR("Import and close", "导入并关闭")); SP_ROW(OVM_ROWS - 1, OVS_BACK, "%s", TR("Cancel", "取消"));
     } else {
         int pages = (g_sp.n + SP_PER - 1) / SP_PER, k = sp_on_page();
-        SP_ROW(0, OVS_TITLE, "Import a save"); if (pages > 1) snprintf(rows[0].right, sizeof rows[0].right, "page %d of %d", g_sp.page + 1, pages);
+        SP_ROW(0, OVS_TITLE, "%s", TR("Import a save", "导入存档"));
+        if (pages > 1) { if (dm_ui_zh()) snprintf(rows[0].right, sizeof rows[0].right, "第 %d / %d 页", g_sp.page + 1, pages); else snprintf(rows[0].right, sizeof rows[0].right, "page %d of %d", g_sp.page + 1, pages); }
         for (int j = 0; j < k; j++) { const dm_save_entry *s = &g_sp.e[g_sp.page * SP_PER + j]; SP_ROW(1 + j, OVS_ITEM, "%s", s->name); sp_size(rows[1 + j].right, sizeof rows[1 + j].right, s); }
         if (!g_sp.n) {
             const char *d = strstr(dm_saves_dir(), "Android/data/");
-            SP_ROW(1, OVS_NOTE, "No saves yet. Export one, or put a save folder"); SP_ROW(2, OVS_NOTE, "(a console's, as its save tools copy it) in");
+            SP_ROW(1, OVS_NOTE, "%s", TR("No saves yet. Export one, or put a save folder", "暂无存档。请先导出，或将存档文件夹"));
+            SP_ROW(2, OVS_NOTE, "%s", TR("(a console's, as its save tools copy it) in", "放入以下目录："));
             SP_ROW(3, OVS_NOTE, "%s", d ? d : dm_saves_dir());
         }
-        SP_ROW(OVM_ROWS - 1, OVS_BACK, "Back");
+        SP_ROW(OVM_ROWS - 1, OVS_BACK, "%s", TR("Back", "返回"));
     }
     pthread_mutex_unlock(&g_sp_mu);
     return 1;
@@ -994,7 +1018,7 @@ static int overlay_text_input(const char *title, const char *sub, const char *gu
     if (!out || out_cap <= 0) return -1;
     if (!g_act || !dm_front_window()) return -1;   // the adb shell executable, or no window yet: nothing is shown
     pthread_mutex_lock(&g_tx_mu);
-    const char *t = title && *title ? title : guide && *guide ? guide : sub && *sub ? sub : "Enter text";
+    const char *t = title && *title ? title : guide && *guide ? guide : sub && *sub ? sub : TR("Enter text", "输入文本");
     snprintf(g_tx.title, sizeof g_tx.title, "%s", t); pf_trim(g_tx.title);
     g_tx.cap = out_cap - 1 < (int)sizeof g_tx.text - 1 ? out_cap - 1 : (int)sizeof g_tx.text - 1;
     g_tx.n = 0; g_tx.text[0] = 0;

@@ -4,6 +4,9 @@
 #pragma once
 #include <math.h>
 #include "dm_input.h"
+// The overlay's UI language (implemented in front_android.c: DM_UI_LANG=zh|en, else device locale).
+int dm_ui_zh(void);
+#define TR(en, zh) (dm_ui_zh() ? (zh) : (en))
 enum { OV_STICK_L, OV_STICK_R, OV_BUTTON, OV_DPAD, OV_MENU };   // OV_MENU: the menu button (shown with the gamepad on or off, 70%; env.txt DM_MENU_BUTTON=0 leaves it out): pauses the game and opens the settings
 typedef struct { int kind; float ax, x, y, w, h; uint64_t btn; const char *label, *name; } ov_ctl;   // ax: the anchor, as a fraction of the window's width; name: the table's
 // The layouts: dm/android/overlay_default.tsv with the game profile's moves (android.tsv overlay rows), compiled by build.py into android_profile.h. Both list the
@@ -168,7 +171,9 @@ enum { OVM_OVERLAY, OVM_OPACITY, OVM_EDIT, OVM_RUMBLE, OVM_FPS, OVM_MODE, OVM_EX
 #define OVM_TABS 2
 #define OVM_PER_TAB 5
 static const int OVM_TAB_ITEMS[OVM_TABS][OVM_PER_TAB] = {{OVM_OVERLAY, OVM_OPACITY, OVM_EDIT, OVM_RUMBLE, OVM_PAD}, {OVM_FPS, OVM_MODE, OVM_EXPORT, OVM_IMPORT, OVM_AUDIO}};
-static const char *const OVM_TAB_NAMES[OVM_TABS] = {"Gamepad", "Game"};
+static const char *const OVM_TAB_NAMES_EN[OVM_TABS] = {"Gamepad", "Game"};
+static const char *const OVM_TAB_NAMES_ZH[OVM_TABS] = {"手柄", "游戏"};
+#define OVM_TAB_NAMES (dm_ui_zh() ? OVM_TAB_NAMES_ZH : OVM_TAB_NAMES_EN)
 #define OVM_ROWS (OVM_PER_TAB + 2)   // the tabs, a tab's rows (as many for every tab: the panel keeps its size), Resume
 int dm_menu_audio_available(void);
 static inline int ov_menu_item(int tab, int row) {
