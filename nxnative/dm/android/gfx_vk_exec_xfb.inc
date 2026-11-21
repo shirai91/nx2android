@@ -283,7 +283,6 @@ static int qi_init(void) {
 static int quad_indirect(uint64_t ind, int n, int stride, VkBuffer *ob, VkDeviceSize *oo) {   // 1: *ob + *oo hold n indexed records (20 bytes apart)
     if (n < 1 || n > QI_MAX || stride < 16 || stride > QI_SRC_STRIDE_MAX || stride & 3) { VKRED_ONCE(177, "indirect quad draw of %d records %d bytes apart: drawn as a triangle list", n, stride); return 0; }
     if (!qi_init()) return 0;
-    { static uint64_t calls, logged; calls++; if (g_tex_frame - logged >= 300 || !logged) { logged = g_tex_frame ? g_tex_frame : 1; VKLOG("indirect quad draws: %llu so far (present %llu, %d records %d bytes apart, args %#llx)", (unsigned long long)calls, (unsigned long long)g_tex_frame, n, stride, (unsigned long long)ind); } }
     VkDeviceSize len = (VkDeviceSize)stride * (VkDeviceSize)(n - 1) + 16; VkBuffer sb; VkDeviceSize so;
     if (!vk_buf_at(ind, len, &sb, &so)) { VKRED_ONCE(53, "indirect draw arguments outside the memory pools"); return 0; }
     vk_end_pass_land();
