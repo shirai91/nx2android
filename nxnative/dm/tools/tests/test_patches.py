@@ -77,7 +77,12 @@ class RewriteKey(unittest.TestCase):
             if m in ('main', 'sdk'): (tmp / m).write_bytes(b'NSO0' + bytes(0x3c) + bytes.fromhex(bid))
         got = nsp.patch_files(REPO, tmp, ['main', 'sdk'])
         self.assertEqual(got, [REPO / 'dm/tools/sdk_patches.py', REPO / 'dm/games' / gid / 'patches.py'])
-        (tmp / 'main').write_bytes(b'NSO0' + bytes(0x3c) + bytes(16)); (tmp / 'sdk').write_bytes(b'NSO0' + bytes(0x3c) + bytes(16))
+        # Zero-filled instruction padding can match patch_files' conservative text
+        # search. Use a deterministic synthetic ID absent from every patch file.
+        unknown = '1234567890abcdef1234567890abcdef'
+        self.assertTrue(all(unknown not in p.read_text(encoding='utf-8') for p in FILES))
+        for name in ('main', 'sdk'):
+            (tmp / name).write_bytes(b'NSO0' + bytes(0x3c) + bytes.fromhex(unknown))
         self.assertEqual(nsp.patch_files(REPO, tmp, ['main', 'sdk']), [])   # an unregistered build: no patch file counts
         g = game.load(gid)
         self.assertNotIn(REPO / 'dm/games' / gid / 'patches.py', nsp.profile_files(g))   # only the rewrite step reads it
