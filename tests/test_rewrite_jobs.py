@@ -2,12 +2,11 @@
 from pathlib import Path
 import sys
 import tempfile
-import types
 import unittest
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from porter.upstream import nsp
+from porter.upstream import game, nsp
 
 
 class RewriteJobs(unittest.TestCase):
@@ -20,7 +19,9 @@ class RewriteJobs(unittest.TestCase):
         for name in ('patch_nso.py', 'nso_code.py', 'nso_asm.py', 'sdk_patches.py'):
             path = self.repo / 'dm/tools' / name; path.parent.mkdir(parents=True, exist_ok=True); path.write_text('# fixture\n')
         self.out = self.root / 'patched_test'; self.logs = self.root / 'logs'
-        self.profile = types.SimpleNamespace(words=lambda key: self.modules)
+        profile = self.root / 'profile'; profile.mkdir()
+        (profile / 'game.tsv').write_text('modules\t' + ' '.join(self.modules) + '\n', encoding='utf-8')
+        self.profile = game.Game(profile)
         self.children = []; self.active = set(); self.peak = 0; self.failing_module = None
         for patch in (mock.patch.object(nsp, 'PROG'), mock.patch.object(nsp.os, 'cpu_count', return_value=8),
                       mock.patch.object(nsp.subprocess, 'Popen', side_effect=self.launch), mock.patch.object(nsp.time, 'sleep')):
