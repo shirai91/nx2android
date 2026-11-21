@@ -522,6 +522,7 @@ class Port:
 
     # ---- shaders compiled by the game's GLSLC at boot, captured on the Android device ----
     GLSLC_SECS = 60
+    GLSLC_SMALL = 16 << 20   # Preserve main's small-file startup RomFS staging.
 
     def glslc_todo(self):
         want = nsp.glslc_wanted(self.g)
@@ -563,16 +564,40 @@ class Port:
             PROG.set(step='copying the game for its compiler')
             adb.push_file(host / 'dmhost', f'{dev}/dmhost')
             adb.push_tree(self.patched, f'{dev}/mods')
-            adb.push_tree(d / 'RomFS', f'{dev}/RomFS')
+            rom, small = d / 'RomFS', staging / 'romfs'
+            small.mkdir()
+            big = []
+            for src in sorted(rom.rglob('*')):
+                if not src.is_file(): continue
+                rel = src.relative_to(rom)
+                size = src.stat().st_size
+                if size > self.GLSLC_SMALL:
+                    big.append((rel.as_posix(), size)); continue
+                dest = small / rel; dest.parent.mkdir(parents=True, exist_ok=True)
+                try: os.link(src, dest)
+                except OSError: shutil.copyfile(src, dest)
+            adb.push_tree(small, f'{dev}/RomFS')
+            adb.push_file(self.g.table('shader_map.tsv'), f'{dev}/shader_map.tsv')
+            for start in range(0, len(big), 50):
+                adb.shell('; '.join(f'mkdir -p {shlex.quote(os.path.dirname(f"{dev}/RomFS/{rel}"))}; '
+                                    f'truncate -s {size} {shlex.quote(f"{dev}/RomFS/{rel}")}'
+                                    for rel, size in big[start:start + 50]), retries=1)
             # No live save data, shader bundle or installed application environment enters this boot.
             env = {f'DM_{key}': f'{dev}/{value}' for key, value in
                    (('ROOT', '.'), ('ROMFS', 'RomFS'), ('SAVE', 'save'), ('TEMP', 'temp'), ('GLSLC_CAPTURE', 'capture'), ('NVN_SHMAP', 'shader_map.tsv'))}
             command = ' '.join(f'{k}={shlex.quote(v)}' for k, v in env.items())
             PROG.set(step='capturing run-time shaders')
             say(f'booting {self.app_name} on the Android device to capture its run-time shaders (up to {self.GLSLC_SECS} seconds)')
-            # The device's deadline also applies if adb disconnects. Never retry a guest execution after a transport error.
+            # Main stops early once the profile's outputs exist. Keep that behavior inside
+            # the device-side timeout, which also bounds an adb disconnect or a stuck host.
+            complete = ' && '.join(f'[ -s {shlex.quote("capture/" + name)} ]' for name in sorted(want or ())) or 'false'
+            wait_script = ("trap 'exit 124' HUP INT TERM; "
+                           './dmhost mods > run.log 2>&1 & p=$!; '
+                           'trap \'kill "$p" 2>/dev/null; sleep 1; kill -9 "$p" 2>/dev/null; wait "$p" 2>/dev/null\' EXIT; '
+                           f'while kill -0 "$p" 2>/dev/null; do if {complete}; then sleep 1; exit 0; fi; sleep 0.25; done; wait "$p"')
+            # Never retry a guest execution after a transport error.
             try:
-                result = adb.shell(f'cd {dev} && chmod 755 dmhost && {command} timeout -k 5 {self.GLSLC_SECS} ./dmhost mods > run.log 2>&1; '
+                result = adb.shell(f'cd {dev} && chmod 755 dmhost && {command} timeout -k 5 {self.GLSLC_SECS} sh -c {shlex.quote(wait_script)}; '
                                    'echo "NX2A_GLSLC_EXIT=$?"', timeout=self.GLSLC_SECS + 30, retries=1)
             except BaseException:
                 # A transient transport failure can recover before cleanup; save its diagnostic log without retrying the guest or replacing the original error.

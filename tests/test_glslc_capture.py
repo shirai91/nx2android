@@ -1,6 +1,11 @@
 """Runtime-shader preparation with real capture files and transport replaced at the adb boundary."""
 from pathlib import Path
 import shutil
+import os
+import shlex
+import subprocess
+import signal
+import time
 import struct
 import tempfile
 from types import SimpleNamespace
@@ -87,6 +92,65 @@ class GlslcCapture(unittest.TestCase):
         dest = self.port.game / 'glslc_capture'; dest.mkdir(exist_ok=True)
         (dest / NAME).write_bytes(output() if data is None else data)
         return dest
+
+
+    def test_large_romfs_files_use_sparse_standins_and_profile_map_is_copied(self):
+        self.port.GLSLC_SMALL = 8
+        large = self.port.game / 'RomFS/large file.bin'
+        large.write_bytes(b'x' * 9)
+        staged = {}
+        push = self.adb.push_tree
+        def inspect(src, dst, **kw):
+            if dst.endswith('/RomFS'):
+                staged.update({p.relative_to(src).as_posix(): p.read_bytes() for p in Path(src).rglob('*') if p.is_file()})
+            push(src, dst, **kw)
+        with patch.object(self.adb, 'push_tree', side_effect=inspect):
+            self.port.device_glslc()
+        self.assertEqual(staged, {'file': b'data'})
+        self.assertEqual(large.read_bytes(), b'x' * 9)
+        self.assertTrue(any(c[0] == 'shell' and 'truncate -s 9' in c[1] and 'large file.bin' in c[1] for c in self.adb.calls))
+        self.assertTrue(any(c[0] == 'push_file' and c[1] == self.map and c[2].endswith('/shader_map.tsv') for c in self.adb.calls))
+
+    @unittest.skipUnless(os.name == 'posix', 'POSIX shell required')
+    def test_capture_wait_stops_and_reaps_host_when_expected_files_arrive(self):
+        self.port.device_glslc()
+        run = next(c[1] for c in self.adb.calls if c[0] == 'shell' and 'timeout ' in c[1])
+        args = shlex.split(run)
+        script = args[args.index('-c') + 1].removesuffix(';')
+        work = self.root / 'shell'; (work / 'capture').mkdir(parents=True)
+        host = work / 'dmhost'
+        host.write_text('#!/bin/sh\necho x > capture/' + NAME + '\nexec sleep 60\n', encoding='utf-8')
+        host.chmod(0o755)
+        result = subprocess.run(['sh', '-c', script], cwd=work, capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((work / 'capture' / NAME).is_file())
+
+
+    @unittest.skipUnless(os.name == 'posix', 'POSIX shell required')
+    def test_capture_wait_signal_stops_and_reaps_host_without_outputs(self):
+        self.port.device_glslc()
+        run = next(c[1] for c in self.adb.calls if c[0] == 'shell' and 'timeout ' in c[1])
+        args = shlex.split(run); script = args[args.index('-c') + 1].removesuffix(';')
+        work = self.root / 'signal'; (work / 'capture').mkdir(parents=True)
+        host = work / 'dmhost'
+        host.write_text('#!/bin/sh\necho $$ > host.pid\nexec sleep 60\n', encoding='utf-8')
+        host.chmod(0o755)
+        process = subprocess.Popen(['sh', '-c', script], cwd=work, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        child = None
+        try:
+            deadline = time.monotonic() + 5
+            while not (work / 'host.pid').exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            child = int((work / 'host.pid').read_text(encoding='utf-8'))
+            process.terminate()
+            self.assertEqual(process.wait(timeout=5), 124)
+            with self.assertRaises(ProcessLookupError): os.kill(child, 0)
+        finally:
+            if child:
+                try: os.kill(child, signal.SIGKILL)
+                except ProcessLookupError: pass
+            if process.poll() is None: process.kill()
+            process.wait(timeout=5)
 
     def test_complete_capture_reuses_without_adb_or_build(self):
         self.capture(); self.port.tools.pop('adb')
