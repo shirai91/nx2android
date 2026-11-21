@@ -21,7 +21,7 @@ Read the profile's porting log in the comment header of [`android.tsv`](android.
 
 ## Frame rate
 
-- 60 fps (30 on Switch), in the monastery scenes, the dialogue, the menus and on the battle map. The battle map takes about 10-12 ms of GPU time a frame on a Legion Y700 (2025).
+- 60 fps (30 on Switch) on the title, in the dialogue, the menus and on the first battle map, docked and handheld. The battle map takes about 9-11 ms of GPU time a frame on a Legion Y700 (2025). The monastery (Chapter 1 and later) is not tested yet.
 - The anime movies play at their own 30 fps.
 
 ## Tested devices
