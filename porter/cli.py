@@ -56,8 +56,9 @@ def _parser():
     _romfs_at(po, 'with --install: ')
     po.add_argument('--romfs-container', action='store_true',
                     help='have the app read the game\'s files straight out of your own NSP or XCI instead of an extracted RomFS / DLC copy (DM_ROMFS_CONTAINER): the data pack '
-                         'keeps no copy, and porter install pushes your base game (NSP or XCI), its update and the DLC to the device as they are (from this folder, or from '
-                         'beside the pack) and the app reads them in place; prod.keys goes to the device the same way, never into the pack. --romfs-at does not apply')
+                         'keeps no copy, and the build reads the game\'s files out of it as well (nothing is extracted, so the build folder needs no room for the RomFS); porter install '
+                         'pushes your base game (NSP or XCI), its update and the DLC to the device as they are (from this folder, or from beside the pack) and the app reads them in '
+                         'place; prod.keys goes to the device the same way, never into the pack. --romfs-at does not apply')
     po.add_argument('--jobs', type=int, default=os.cpu_count() or 8)
     po.add_argument('--progress', default='auto', choices=('auto', 'bar', 'lines', 'json', 'off'), help='json: one JSON event per line, for the GUI')
     ins = sub.add_parser('install', help='install a port made earlier'); ins.add_argument('data', help='the data pack folder (<App>-data)'); ins.add_argument('--apk', help='the APK (default: <App>.apk beside the pack)')
