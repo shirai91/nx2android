@@ -568,6 +568,9 @@ def jump_offsets(insl, j, copy_first=False, far_base=False):
         m = re.fullmatch(r'(w\d+), (w\d+)', p.op_str) if p.mnemonic == 'mov' else None
         if m and m.group(1) in idx: idx.add(m.group(2)); continue
         m = re.fullmatch(r'([wx]\d+), ([wx]\d+), #(0x[0-9a-f]+|\d+)', p.op_str) if p.mnemonic == 'and' else None
+        # A mask of 0xffffffff only zero-extends: a copy of the 32-bit index (Crash Team Racing Nitro-Fueled main+0x5ae918: cmp w8,#3; b.hi; and x18,x8,#0xffffffff;
+        # ldrsw x18,[x17,x18,lsl #2]; add x18,x18,x17; br x18). Taken only in the last attempt (copy_first), so sites that rewrote before come out the same
+        if copy_first and m and wname(m.group(1)) in idx and int(m.group(3), 0) == 0xffffffff: idx.add(wname(m.group(2))); continue
         if m and wname(m.group(1)) in idx and masked is None: masked = (wname(m.group(2)), int(m.group(3), 0), i); continue
         # A 64-bit check of the index bounds it as well (OCTOPATH TRAVELER 1.0.5 main+0x1676f30: cmp x22,#0x10; ...; b.hi; adrp x18 + add x18; mov x0,x18; ldrsw x18,[x0,x22,lsl #2];
         # add x18,x18,x0, the base copied, so only far_base reads it); taken only in the last attempt, so sites that rewrote before come out the same

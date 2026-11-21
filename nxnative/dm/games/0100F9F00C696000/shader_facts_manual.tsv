@@ -1,0 +1,5 @@
+# Hand-written translation facts, merged over the generated rows of shader_facts.tsv by dm/gfx/tools/shader_split.py: key <TAB> facts JSON (same format)
+# Crash Team Racing Nitro-Fueled (Alchemy's 2D UI, shaders captured on the device): input 1 is the vertex colour in RGBA8 UNORM; the integer-input guess declared it integer, the host bound
+# the attribute as R8G8B8A8_SINT and every UI draw (the title's "press A" prompt, dialogs) came out invisible. Declared float.
+4965aa6de476ebdb	{"attr":{"1":"float"}}
+e4b0362b3b74c306	{"attr":{"1":"float"}}

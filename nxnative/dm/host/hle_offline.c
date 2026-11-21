@@ -2,6 +2,18 @@
 // Only entry points that go to a service are hooked; library functions that only read and write the game's own buffers (prepo Add / Array / Struct, err ErrorResultVariant, friends getters, socket byte-order conversion) keep running in the SDK.
 // Return convention as in hle_friends.c: Result returns RES_FAIL ("saved / submitted" kinds return RES_OK so the game does not retry); bool returns false; events get a bound SystemEvent that never fires.
 #include "hle.h"
+#include <stdarg.h>
+
+// ---------- diag: the game's own log (nn::diag::detail::LogImpl, behind NN_LOG and engine report printers such as Alchemy's igReportPrint, Crash Team Racing Nitro-Fueled
+// main+0x17fc6dc). A release SDK prints nothing; DM_GUESTLOG=1 copies each line into the host's log, prefixed [guest]. Called on the guest's stack: a small per-thread buffer ----------
+HLE_FORCE("_ZN2nn4diag6detail7LogImplERKNS0_11LogMetaDataEPKcz", "the game's debug log: copied to the host log with DM_GUESTLOG=1, otherwise dropped as in a release SDK",
+          void, h_diag_Log, const void *meta, const char *fmt, ...) {
+    (void)meta; static int on = -1; if (on < 0) { const char *e = getenv("DM_GUESTLOG"); on = e && *e == '1'; }
+    if (!on || !fmt) return;
+    static __thread char buf[512]; va_list ap; va_start(ap, fmt); vsnprintf(buf, sizeof buf, fmt, ap); va_end(ap);
+    size_t n = strlen(buf); while (n && (buf[n - 1] == '\n' || buf[n - 1] == '\r')) buf[--n] = 0;
+    if (n) LOG("[guest] %s", buf);
+}
 
 
 // ---------- prepo: telemetry reports. Saving / submitting all report success; nothing is sent ----------

@@ -1,0 +1,14 @@
+# Crash™ Team Racing Nitro-Fueled on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Beenox's Alchemy engine (not Unreal), SDK 8.2.0, update v983040 (1.0.15); FMOD sound, Bink movies, Havok. What it needed:
+# - Shaders it compiles at run time with its own GLSLC (GLSL sources in main, glslcCompile in subsdk0: Alchemy's 2D UI): captured on the device, no Mac step (pipeline.py
+#   check_graphics). The first run draws no menus or text; they appear after the next port with --install. The game files hold 12 shaders, the rest are captured the same way.
+# - A jump table indexed through "and x18, x8, #0xffffffff" (patch_nso.py jump_offsets, main+0x5ae918).
+# - Two audio renderers open at once, FMOD's (32 kHz) and Bink's (48 kHz, movies): the second one runs on a host thread with an output of its own (hle_audren.c). Undriven, closing
+#   the intro movie waited for its event for good on the autosave notice.
+# - The UI shaders' vertex colour (RGBA8 UNORM) declared float in shader_facts_manual.tsv: guessed integer, every menu and text came out invisible.
+# Tested 2026-11-20 on a Galaxy S23+ (SM-S916B, Snapdragon 8 Gen 2, Adreno 740, Android 16) with Mesa Turnip (PurpleVK): the boot, the autosave notice and intro
+# movie with its sound, the title, the Activision EULA, menus and the character select, about 15 minutes of play at 30 fps with no crash. Rare small tile rendering glitches, hard to
+# reproduce. Not yet checked by the porter: a full race, saving and loading progress, adventure mode, online (cut, as for every port).
+status	boots
+tested	v983040 Samsung Galaxy S23+ SM-S916B (Snapdragon 8 Gen 2, Adreno 740, Android 16)
+orientation	landscape

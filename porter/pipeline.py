@@ -512,7 +512,13 @@ class Port:
             try: Adb(self.tools['adb'], self.o.device or self.cfg.get('device'), log=say).pick()
             except (AdbError, KeyError) as e: raise BuildError(f"{self.app_name}'s shaders are in Oodle-compressed archives ({why}): the port decodes them with the game's own decoder on "
                                                                f'the Android device, so connect it (adb) and port again ({e})') from e
-        for k in ('glslc_capture', 'ue_legacy') + (() if self.ue_why else ('ue_decode',)) + (() if self.oodle_why else ('oodle_packs',)):
+        # Shaders the game compiles at run time with its own GLSLC (main holds GLSL sources and a module it loads defines glslcCompile): the Mac captures them by booting the game,
+        # which the Android port cannot do, but no file needs them here. A draw that needs one is skipped once and the program saved to captured_shaders/ (gfx_vk_shader.c
+        # vk_shader_missing), which the next port --install pulls and translates, as for Xenoblade Chronicles 3's effects. Crash Team Racing Nitro-Fueled (Alchemy's 2D UI) runs this way
+        if src['glslc_capture'][0]:
+            say(f"[RED] {self.app_name} compiles some shaders at run time ({src['glslc_capture'][1]}): on Android they are captured on the device at the first run, "
+                'so what they draw (Crash Team Racing Nitro-Fueled: its menus and text) appears after the next port with --install')
+        for k in ('ue_legacy',) + (() if self.ue_why else ('ue_decode',)) + (() if self.oodle_why else ('oodle_packs',)):
             if src[k][0]: raise BuildError(f'{self.app_name} needs a step that boots the game in the Mac host ({src[k][1]}), which the Android port cannot run yet')
 
     # ---- the game's own Oodle decoder on the device, for the shader split (Pokémon Legends: Arceus's GFPAKs, Pokémon Legends: Z-A's Trinity packs) ----

@@ -6,7 +6,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 
 "Profile here": `nxnative/dm/games/<title ID>/` has the game's profile from nxnative. "Upstream profile": only seedds/nxnative has one, to read as a reference or starter, not to pull. "60 fps with X" is upstream's note: they run that update at 60 fps (30 on the Switch).
 
-**65 / 114 ported**
+**66 / 115 ported**
 
 - [x] 13 Sentinels: Aegis Rim · `01003FC01670C000`
 - [x] 13 Sentinels: Aegis Rim (Asia) · `01008D7016438000`
@@ -30,6 +30,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [x] Castlevania: Belmont's Curse · `0100BA4026E94000`
 - [ ] Catherine: Full Body · `0100BF00112C0000` · profile here
 - [x] Celeste · `01002B30028F6000`
+- [x] Crash™ Team Racing Nitro-Fueled · `0100F9F00C696000`
 - [ ] Cult of the Lamb · `01002E7016C46000` · upstream profile · iPhone only, through Apple Arcade
 - [ ] Cuphead · `0100A5C00D162000` · profile here
 - [x] DARK SOULS: REMASTERED · `01004AB00A260000`
