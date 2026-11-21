@@ -167,7 +167,8 @@ def guess(F, hooks=None):
     # The engine region needs virtual address memory; without it (OCTOPATH TRAVELER 1.0.5, Unreal Engine 4 on SDK 3.5.1, no system resource) nninitStartup sets a heap of pool − used instead,
     # which the heap-region layout above holds
     if F.get('main_markers', set()) & {'Unreal', 'Unreal 4'} and R['exts'].get('.pak') and 'nvnBootstrapLoader' in imp and F['sysres']:
-        G['mem_reserve'] = ('0x1028000000', 'Unreal: nninitStartup reserves a 62 GB address region and its FMallocBinned3 takes 37 GB of it, so a 64 GB alias region for the bring-up on the Mac. '
+        # Keep a 256 MB heap after the 256 MB front, alias and 256 MB stacks: DRAGON QUEST I & II 1.0.2 aborted on its 6 MB SetHeapSize when the old total left zero heap bytes.
+        G['mem_reserve'] = ('0x1038000000', 'Unreal: nninitStartup reserves a 62 GB address region and its FMallocBinned3 takes 37 GB of it, so a 64 GB alias region and a separate 256 MB heap for bring-up. '
                             'An iPhone needs the allocator cut for the build and a capped region (game_args), as Octopath Traveler 0\'s profile (docs/agents/03)')
         G['mem_alias'] = ('0x1008000000', '')
     G.update(preset)
