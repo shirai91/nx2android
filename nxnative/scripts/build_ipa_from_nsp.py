@@ -900,8 +900,8 @@ def extract_aoc(nx, keys, repo, work, app, fam, logs):
         idx = tid - app - 0x1000
         PROG.set(step='extracting', done=i, total=len(best), unit='DLC')
         say(f'DLC index {idx}: {p.name}' + (' (the merged dump holds it)' if p == fam['base'] else ''))
-        # a merged dump holds several titles' NCAs: the DLC's title ID picks its data NCA by header (a DLC's NCAs carry their own title IDs); a DLC NSP holds one title, as before
-        run([nx, keys, '--aoc', p, tmp / str(idx)] + ([f'{tid:x}'] if p == fam['base'] else []), logs / f'aoc_{idx}.log')   # the DLC's title ID, hex: Aoc parses it with fromBase 16
+        # the DLC's title ID picks its data NCA by header (a DLC's NCAs carry their own title IDs): always passed, a file may hold several titles — a merged dump, or a DLC bundle (several DLC titles in one file, no base game), where Pick would take the lowest title ID's data NCA for every index. A single-DLC NSP's data NCA carries its own title ID, so the pick works there too
+        run([nx, keys, '--aoc', p, tmp / str(idx), f'{tid:x}'], logs / f'aoc_{idx}.log')   # the title ID, hex: Aoc parses it with fromBase 16
     swap_in(tmp, dst)
     kf.write_text(f'{key}\n{len(best)} DLC\n')
     PROG.end(f'{len(best)} DLC')
