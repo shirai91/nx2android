@@ -89,9 +89,10 @@ int main(void) {
     assert(ov_drag_pos(1100, 505, 1013, 50) == 508);
 
     assert(ov_menu_item(0, OVM_ROWS - 2) == OVM_PAD && ov_menu_item(1, OVM_ROWS - 2) == -1);
+    assert(ov_menu_item(0, OVM_ROWS - 3) == OVM_TOUCH);
     assert(ov_menu_item(1, OVM_ROWS - 1) == OVM_RESUME);
     audio_available = 1;
-    assert(ov_menu_item(1, OVM_ROWS - 2) == OVM_AUDIO);
+    assert(ov_menu_item(1, OVM_ROWS - 3) == OVM_AUDIO);
     const float screens[][2] = {{915, 412}, {1216, 760}, {2400, 1080}, {1080, 2400}};
     for (unsigned s = 0; s < sizeof screens / sizeof screens[0]; s++) {
         float W = screens[s][0], H = screens[s][1], step = H / OVE_GRID_ROWS, p[4];

@@ -233,6 +233,7 @@ DM_TEST_UP_LOST	int		debug,ios	?	nvn_mtl.m
 DM_THR	str		debug	?	main.c	
 DM_THRCPU	str		debug,ios	?	memstat.m	
 DM_TIME_OFFSET	str		debug	start	hle_time.c	the user clocks run that many seconds from the device's time (a test jumps to the next day or hour without changing the device's clock); the steady clock is unchanged
+DM_TOUCH	bool	0	profile	start	front_android.c	1 = touch passthrough mode on by default (every touch goes to the game's touch screen; the pause menu's Touch input switch overrides)
 DM_TOUCH_DOCKED	str		profile	start	hle_touch.c	touch in docked mode: "screen" = the screen's points, "pixels" = the game's pixels; unset = no touch when docked
 DM_TOUCH_HAPTICS	int		debug,ios	?	DmGamepad.m	
 DM_TOUCH_LOG	str		debug	?	hle_touch.c	DM_TOUCH_LOG=1 also logs each gesture entry (up to 500 lines)

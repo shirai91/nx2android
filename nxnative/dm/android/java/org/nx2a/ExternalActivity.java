@@ -222,13 +222,13 @@ public class ExternalActivity extends NativeActivity implements ExternalDisplay.
         }
         private void drawMenu(Canvas c, float[] data) {
             Bitmap bitmap = menuRaster(menuState); if (bitmap == null) return;
-            float W = getWidth(), H = getHeight(), scale = Math.min(data[1], .92f / (7 * .115f + 2 * .03f));
-            float w = Math.min(.95f * H * scale, W * .96f), h = (7 * .115f + 2 * .03f) * H * scale;
+            float W = getWidth(), H = getHeight(), scale = Math.min(data[1], .92f / (8 * .115f + 2 * .03f));
+            float w = Math.min(.95f * H * scale, W * .96f), h = (8 * .115f + 2 * .03f) * H * scale;
             paint.setAlpha(255); c.drawBitmap(bitmap, null, new RectF((W-w)/2, (H-h)/2, (W+w)/2, (H+h)/2), paint);
         }
         private void drawEditor(Canvas c, float[] data, int state) {
             Bitmap bitmap = menuRaster(state); if (bitmap == null) return;
-            float W = getWidth(), H = getHeight(), scale = Math.min(data[1], .92f / (7 * .115f + 2 * .03f));
+            float W = getWidth(), H = getHeight(), scale = Math.min(data[1], .92f / (8 * .115f + 2 * .03f));
             if ((state & 4) != 0) {
                 paint.setStyle(Paint.Style.STROKE); paint.setStrokeWidth(Math.max(1, H*.001f)); paint.setColor(Color.argb(51,255,255,255));
                 float step=H/20; for(float x=step;x<W;x+=step)c.drawLine(x,0,x,H,paint); for(float y=step;y<H;y+=step)c.drawLine(0,y,W,y,paint);
