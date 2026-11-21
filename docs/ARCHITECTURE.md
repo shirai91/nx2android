@@ -193,6 +193,14 @@ A profile is offered for Android when it has an `android.tsv`; the profiles with
 
 Per-build knowledge stays where upstream keeps it: the rewriter's cuts in `patches.py` / `dm/tools/sdk_patches.py`, keyed by build ID.
 
+The rewrite warns when an external (including provisional) profile contains a
+`patches.py` that the rewriter will not load. The warning also appears on cache
+reuse. Registered `dm/games/*/patches.py` files and explicitly supplied
+`DM_PATCHES_EXTRA` files retain their existing behavior; external files are not
+executed automatically. The standalone rewriter's `DM_PATCHES_EXTRA` accepts
+`CUTS` only; the Android porter replaces it with its generated FPSLocker cuts.
+The warning directs porter users to register their build-specific patches.
+
 ## The port
 
 `python -m porter port <game folder> -k <prod.keys>` (the GUI's **Port** button) runs these stages. The slow ones (extraction, rewrite, shader split, the translator build, the Vulkan shaders) keep their output with a key of their inputs and are skipped on the next run when the key is unchanged; the host build is incremental (`build.py`), and the APK and the data pack are made again each time (seconds).
