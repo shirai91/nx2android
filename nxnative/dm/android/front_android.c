@@ -79,10 +79,10 @@ static char g_root[512];
 static _Atomic int g_set_overlay = 1, g_set_rumble = 1, g_set_fps;   // the gamepad shown; rumble and tap vibration; the frame rate counter (top left)
 static _Atomic int g_set_opacity = 60;   // the gamepad's opacity, percent (OV_OPACITY_MIN..MAX: the menu's Opacity slider)
 static _Atomic int g_set_grid;   // the layout editor's Snap to grid
-// the menu button in play (issue #397): env.txt's DM_MENU_BUTTON=0 (porter port --no-menu-button) leaves it out, as a control the player hid (dm_overlay_hidden):
-// not drawn and not touchable, on the gamepad and over the pause menu, so its corner of the screen is the game's. Back (the system's back gesture or key) and a
-// controller's Home/Menu key open the menu (handle_event); the layout editor shows it darkened. The external screen's gamepad keeps it (externalOverlay)
-static _Atomic int g_menu_btn = 1;
+// the menu button in play (issue #397): left out by default, as a control the player hid (dm_overlay_hidden): not drawn and not touchable, on the gamepad and over
+// the pause menu, so its corner of the screen is the game's. Back (the system's back gesture or key) and a controller's Home/Menu key open the menu (handle_event).
+// env.txt's DM_MENU_BUTTON=1 (porter port --menu-button) draws it; the layout editor shows it darkened. The external screen's gamepad keeps it (externalOverlay)
+static _Atomic int g_menu_btn;
 static _Atomic int g_set_labels = -1;   // a controller's face buttons by their label (1) or their position (0); -1: as env.txt says (pad_labels)
 // the player's own layout (overlay_layout.h dm_overlay_custom): [0] the saved one (settings.txt ui= rows), [1] the layout editor's while it is open; per layout
 // and control: x + 1, y + 1 in 1/10000 of the window's width and height (0 = the layout's place), the size factor in 1/1000 (0 = 1), 1 when hidden
@@ -1440,7 +1440,7 @@ __attribute__((visibility("default"))) void ANativeActivity_onCreate(ANativeActi
     snprintf(p, sizeof p, "%s/temp", act->internalDataPath); mkdir(p, 0700); setenv("DM_TEMP", p, 0);
     snprintf(p, sizeof p, "%s/shaders.dmsv", g_root); setenv("DM_VK_SHADERS", p, 0);
     snprintf(p, sizeof p, "%s/env.txt", g_root); env_file(p);
-    { const char *e = getenv("DM_MENU_BUTTON"); if (e && *e && !atoi(e)) { atomic_store(&g_menu_btn, 0); LOG("[overlay] DM_MENU_BUTTON=0: no menu button (Back opens the menu)"); } }
+    { const char *e = getenv("DM_MENU_BUTTON"); if (e && *e && atoi(e)) { atomic_store(&g_menu_btn, 1); LOG("[overlay] DM_MENU_BUTTON=1: the on-screen menu button (Back also opens the menu)"); } }
 #ifdef DM_RELEASE
     unsetenv("DM_CTL");   // a release build takes no remote key presses (the control file is a development tool)
 #endif

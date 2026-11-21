@@ -27,11 +27,11 @@ def _parser():
     po.add_argument('--external-display', action='store_true', help='build the external-screen gamepad activity (requires Android SDK platform and build-tools)')
     po.add_argument('--fps60', action='store_true', help='60 fps: the profile\'s own frame-rate cap, else the community\'s FPSLocker-Warehouse config of the game\'s build, fetched from GitHub')
     po.add_argument('--touch', action='store_true',
-                    help='a game played by touch: the on-screen gamepad starts hidden, so every touch but the menu button\'s goes to the game (the pause menu shows it again; '
+                    help='a game played by touch: the on-screen gamepad starts hidden, so every touch goes to the game (the pause menu shows it again; '
                          'the first launch\'s default: the app keeps the player\'s own settings)')
-    po.add_argument('--no-menu-button', action='store_true',
-                    help='no on-screen menu button (DM_MENU_BUTTON=0 in env.txt): the Back gesture or key, or a controller\'s Home/Menu key, opens the pause menu; '
-                         'it needs a port again (or env.txt edited) to show the button again')
+    po.add_argument('--menu-button', action='store_true',
+                    help='the on-screen menu button (DM_MENU_BUTTON=1 in env.txt): without it the Back gesture or key, or a controller\'s Home/Menu key, opens the pause menu; '
+                         'it needs a port again (or env.txt edited) to hide the button again')
     po.add_argument('--mt-replay', action='store_true',
                     help='multithread replay: the game\'s Vulkan commands are recorded on a thread of their own (DM_VK_MT_REPLAY=1 in env.txt), for a game whose replay '
                          'thread holds its frame rate back; it needs a port again (or env.txt edited) to turn off')

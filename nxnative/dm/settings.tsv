@@ -59,7 +59,7 @@ DM_LONGFRAME	str		debug	?	hle_nvn.c
 DM_MEMSTAT	str		debug,ios	?	memstat.m	
 DM_MEMSTAT_DUMP	int		debug,ios	?	memstat.m	
 DM_MEM_CAP_GB	str		debug	?	hle_nvn.c	
-DM_MENU_BUTTON	bool	1	porter	start	front_android.c	0 = no menu button on the on-screen gamepad (porter --no-menu-button)
+DM_MENU_BUTTON	bool	0	porter	start	front_android.c	1 = the menu button on the on-screen gamepad (porter --menu-button); without it the Back gesture or key opens the pause menu
 DM_METAL_HUD	str		debug,ios	?	front_mac.m front_ios.m main.m	Apple's HUD over the game: frame rate, frame and GPU time, memory
 DM_MOTION	bool		debug	start	front_android.c	the device's gyroscope no longer moves player 1's six-axis sensor (`dm_motion_set`, `host/hle_hid.c`; aiming by motion, as Tears of the Kingdom's bow): accelerometer-only shaking still generates the fixed side-to-side motion. On by default when the device has a gyroscope; automatic shaking still ove
 DM_MOTION_LOG	bool		debug	start	front_android.c	logs the mapped motion once a second (`front end: motion (rotation …) acc … G, gyro … rev/s`): lying flat face up reads acc ≈ (0, 0, −1); lying flat, raising the top edge reads gyro x positive and turning left gyro z positive. Each change of the display's rotation logs `front end: display rotation …
