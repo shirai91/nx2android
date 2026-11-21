@@ -176,6 +176,13 @@ typedef struct {
     int gs_split; VkShaderModule gs_mod[2]; // 1: effects/raster modules ready, 2: cannot safely separate, 0: not checked
 } vkshader_t;
 vkshader_t *vk_shader(uint64_t key, int stage);   // NULL when the bundle has no such shader
+// Run-time translation (gfx_vk_shader_rt.c, DM_VK_RUNTIME_SHADERS): shaders the bundle lacks, translated on worker threads by libdmsh_xlate_rt.so, each entry as the
+// bundle's (SPIR-V, dmsv_refl). vk_rt_find: NULL until the shader is translated (or when run-time translation is off); entries are never freed
+typedef struct { uint64_t key; uint32_t stage, nspv, nrefl; const uint8_t *spv, *refl; } vk_rt_ent;
+int vk_rt_on(void);
+int vk_rt_first(uint64_t key);   // 1 the first time a key is asked about (gfx_vk_exec.c bind_program, past its 256 logged misses), then 0
+const vk_rt_ent *vk_rt_find(uint64_t key);
+void vk_rt_request(uint64_t key, const uint8_t *ctl, uint32_t nctl, const uint8_t *code, uint32_t ncode);
 vkshader_t *vk_shader_gs_topo(vkshader_t *gs, VkPrimitiveTopology topo);   // the geometry shader translated for the draw's input primitive (shader_vk.py gs_variant_key); gs when there is none
 VkShaderModule vk_shader_module(vkshader_t *s, uint64_t um, uint64_t im, uint32_t xo, int fd, uint32_t vi);   // the module, or its variant (integer views; extra outputs; fragment depth written)
 int vk_shader_gs_split_ready(vkshader_t *s); // both modules exist before either pass may be recorded

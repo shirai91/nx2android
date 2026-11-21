@@ -307,6 +307,7 @@ DM_VK_QUIRK_LRZ_TOUCH	bool		debug	start	gfx_vk_quirks.c	force the lrz_touch quir
 DM_VK_RD_TOUCH	bool		debug	live	gfx_vk_exec.c	no transfer read of the memory a run of rasterizer-discard draws wrote, where the run ends: Xenoblade Chronicles 3's grass then flickers (whole blades black in some frames: the G-buffer's grass cards, depth EQUAL against the pre-pass, meet sway records not yet written)
 DM_VK_ROBUST	bool		debug	start	gfx_vk_core.c	robust buffer access on (A/B for a device lost): a buffer, texel buffer or vertex read past its range reads 0 and a write past it is dropped, instead of faulting the GPU
 DM_VK_RP	bool		debug	start	gfx_vk_exec.c	dynamic rendering instead of cached `VkRenderPass` objects with imageless framebuffers (Adreno's `vkCmdBeginRendering` cost about 40 µs a pass)
+DM_VK_RUNTIME_SHADERS	bool	0	profile	start	gfx_vk_shader_rt.c	1 = a shader the bundle lacks is translated while the game runs, on worker threads, by libdmsh_xlate_rt.so (android.tsv runtime_shaders on packs it); its draws are left out until it is ready, and translations are kept for the next start
 DM_VK_SAMP_LOG	bool		debug	live	gfx_vk_exec.c gfx_vk_tex.c	log the next n sampler registrations (ID, LOD range, wrap, aniso, compare, border, present, thread) and each submission's start, in time order with the replay's lines
 DM_VK_SCRATCH_MB	bool		debug	?	gfx_vk_core.c	
 DM_VK_SETSPLIT	bool	0	profile	?	gfx_vk_exec.c	1 = a descriptor set change may split the command buffer

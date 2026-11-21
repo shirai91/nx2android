@@ -40,7 +40,7 @@ PACING = {
     'game': ['DM_FPS_TARGET=0', 'DM_ADAPTIVE_FPS=0'],       # the game's own frame limit, no governor
 }
 KINDS = {'stick_l': 'OV_STICK_L', 'stick_r': 'OV_STICK_R', 'button': 'OV_BUTTON', 'dpad': 'OV_DPAD', 'menu': 'OV_MENU'}
-SINGLE = ('status', 'tested', 'package', 'orientation', 'requires', 'sysdata', 'romfs', 'vulkan_driver', 'pacing', 'readme_name', 'readme_image', 'readme_tag')
+SINGLE = ('status', 'tested', 'package', 'orientation', 'requires', 'sysdata', 'romfs', 'vulkan_driver', 'pacing', 'readme_name', 'readme_image', 'readme_tag', 'runtime_shaders')
 REPEAT = ('setting', 'env', 'overlay')
 
 
@@ -117,9 +117,14 @@ class AndroidProfile:
 
     @property
     def pacing(self): return self.get('pacing', 'adaptive')
+    # runtime_shaders on: the port packs the shader translator as an Android library (dm/android/xlate_rt, porter/pipeline.py build_runtime_translator) and the app
+    # translates a shader the bundle lacks while the game runs (DM_VK_RUNTIME_SHADERS, dm/android/gfx_vk_shader_rt.c): for programs a game builds at run time, which
+    # no game file holds (Pokémon Sword's NintendoWare Vfx effects). Off by default: every other game's shaders are all in its files
     @property
-    def env(self):   # ['KEY=VALUE', ...]: the pacing preset's rows, then the profile's env rows
-        return PACING.get(self.pacing, []) + self.values('env')
+    def runtime_shaders(self): return self.get('runtime_shaders', 'off') == 'on'
+    @property
+    def env(self):   # ['KEY=VALUE', ...]: the pacing preset's rows, runtime_shaders' row, then the profile's env rows
+        return PACING.get(self.pacing, []) + (['DM_VK_RUNTIME_SHADERS=1'] if self.runtime_shaders else []) + self.values('env')
 
     def overlay_table(self):
         """The gamepad layouts: the default ones with this profile's moves (a moved control's x is a fraction of the window's width: its anchor, no offset)"""
@@ -136,6 +141,11 @@ class AndroidProfile:
         if self.get('orientation', 'landscape') not in ('landscape', 'any'): bad.append('orientation: landscape or any')
         if self.get('romfs', 'raw') not in ('raw', 'zstd'): bad.append('romfs: raw or zstd')
         if self.vulkan_driver not in ('system', 'turnip'): bad.append('vulkan_driver: system or turnip')
+        if self.get('runtime_shaders', 'off') not in ('off', 'on'): bad.append('runtime_shaders: off or on')
+        if self.runtime_shaders:   # the library translates as shader_vk.py does with its defaults (dm/android/xlate_rt/Runtime.cs): a profile that changes them is not covered
+            if any(v.split('=', 1)[0] == 'DM_VK_RUNTIME_SHADERS' for v in self.values('env')): bad.append('env DM_VK_RUNTIME_SHADERS: runtime_shaders sets it')
+            if self.game.get('android_subgroup_size', '128') != '128' or self.game.get('android_dynamic_slots', 'off') != 'off' or (self.game.dir / 'android_shader_handles.tsv').exists():
+                bad.append("runtime_shaders on: the run-time translator has shader_vk.py's defaults only (android_subgroup_size 128, android_dynamic_slots off, no android_shader_handles.tsv)")
         readme = [k for k in ('readme_image', 'readme_tag') if self.get(k)]
         if (readme or self.get('readme_name')) and len(readme) != 2: bad.append("readme_image and readme_tag go together (README.md's Games list and the game's own README.md, docs/gen_tables.py)")
         if self.get('readme_tag') and not re.fullmatch(r'v\d+\.\d+\.\d+', self.get('readme_tag')): bad.append(f"readme_tag {self.get('readme_tag')!r}: the nx2android version tested, v<major>.<minor>.<patch>")

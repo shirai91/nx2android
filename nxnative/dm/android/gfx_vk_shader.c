@@ -57,7 +57,11 @@ static const bent *find(uint64_t key) {
     if (lo < g_nent) { uint64_t k; memcpy(&k, &g_ent[lo].key, 8); if (k == key) return &g_ent[lo]; }
     return NULL;
 }
-int vk_shader_stage(uint64_t key) { bundle_auto(); const bent *e = g_bundle ? find(key) : NULL; return e ? (int)e->stage : -1; }   // the NVN stage the bundle has this shader as
+int vk_shader_stage(uint64_t key) {   // the NVN stage the bundle has this shader as (or the run-time translator gave it, gfx_vk_shader_rt.c)
+    bundle_auto(); const bent *e = g_bundle ? find(key) : NULL; if (e) return (int)e->stage;
+    const vk_rt_ent *r = vk_rt_find(key); return r ? (int)r->stage : -1;
+}
+static uint32_t *spv_valid(uint32_t *w, uint32_t n, uint64_t key, char why[96], uint32_t *nw);
 // A shader's SPIR-V as the host's own copy (patched at module creation, then kept for the variants: vkshader_t spv), copied out of the mapping or decompressed from its zstd
 // frame. Called outside g_sh_mu: the replay thread looks its shaders up under that lock while the prewarm threads make theirs. Decompression contexts (94 KB each) are kept
 // for the next shader, one per thread decompressing at once. NULL, logged, when the module is not SPIR-V of its entry's length
@@ -80,17 +84,28 @@ static uint32_t *bundle_spv(const bent *e, uint32_t *nw) {
     if (!w) snprintf(why, sizeof why, "%u bytes of SPIR-V in its entry, not a module", n);
     else if (ZSTD_isError(r)) snprintf(why, sizeof why, "its SPIR-V does not decompress (zstd error %d, zstd_errors.h)", (int)ZSTD_getErrorCode(r));
     else if (r != n) snprintf(why, sizeof why, "its SPIR-V decompresses to %zu bytes, its entry says %u", r, n);
-    else if (w[0] != 0x07230203) snprintf(why, sizeof why, "not SPIR-V (first word %#x)", w[0]);
-    else if (w[4]) snprintf(why, sizeof why, "invalid SPIR-V schema %u", w[4]);
-    else if (w[1] < 0x10000 || w[1] > 0x10300 || (w[1] & 0xff)) snprintf(why, sizeof why, "unsupported SPIR-V version %#x", w[1]);
+    return spv_valid(w, n, e->key, why, nw);
+}
+// A shader translated at run time (gfx_vk_shader_rt.c): its SPIR-V as the host's own copy, checked as a bundle shader's
+static uint32_t *rt_spv(const vk_rt_ent *e, uint32_t *nw) {
+    uint32_t n = e->nspv, *w = n >= 20 && !(n & 3) ? malloc(n) : NULL; char why[96] = "";
+    if (w) memcpy(w, e->spv, n); else snprintf(why, sizeof why, "%u bytes of SPIR-V from the run-time translator, not a module", n);
+    return spv_valid(w, n, e->key, why, nw);
+}
+// w (n bytes) when it is SPIR-V as the runtime patchers expect it; else freed and NULL, logged (why: the reason found already, or "")
+static uint32_t *spv_valid(uint32_t *w, uint32_t n, uint64_t key, char why[96], uint32_t *nw) {
+    if (*why) ;
+    else if (w[0] != 0x07230203) snprintf(why, 96, "not SPIR-V (first word %#x)", w[0]);
+    else if (w[4]) snprintf(why, 96, "invalid SPIR-V schema %u", w[4]);
+    else if (w[1] < 0x10000 || w[1] > 0x10300 || (w[1] & 0xff)) snprintf(why, 96, "unsupported SPIR-V version %#x", w[1]);
     // Our translator emits SPIR-V 1.3 for Vulkan 1.1; check framing before any
     // runtime patcher walks instructions. This is not semantic spirv-val.
     if (!*why) for (uint32_t at = 5; at < n / 4;) {
         uint32_t count = w[at] >> 16;
-        if (!count || count > n / 4 - at) { snprintf(why, sizeof why, "invalid SPIR-V instruction at word %u", at); break; }
+        if (!count || count > n / 4 - at) { snprintf(why, 96, "invalid SPIR-V instruction at word %u", at); break; }
         at += count;
     }
-    if (*why) { VKLOG("[RED] shader %016llx: %s: left out as if missing", (unsigned long long)e->key, why); free(w); return NULL; }
+    if (*why) { VKLOG("[RED] shader %016llx: %s: left out as if missing", (unsigned long long)key, why); free(w); return NULL; }
     *nw = n / 4; return w;
 }
 
@@ -122,6 +137,7 @@ void vk_shader_missing(uint64_t key) {
     uint8_t md[CC_SHA256_DIGEST_LENGTH]; CC_SHA256_CTX hc; CC_SHA256_Init(&hc); CC_SHA256_Update(&hc, p.ctl, p.nctl); CC_SHA256_Update(&hc, (const void *)(uintptr_t)p.data, p.ncode); CC_SHA256_Final(md, &hc);
     uint64_t now = 0; for (int i = 0; i < 8; i++) now = now << 8 | md[i];
     if (now != key) { VKLOG("[RED] shader %016llx is not in the bundle; its code area changed since SetShaders, not saved", (unsigned long long)key); free(p.ctl); return; }
+    vk_rt_request(key, p.ctl, p.nctl, (const uint8_t *)(uintptr_t)p.data, p.ncode);   // DM_VK_RUNTIME_SHADERS: translated now as well (gfx_vk_shader_rt.c)
     const char *r = getenv("DM_ROOT"); char dir[1024], path[1100], tmp[1110]; snprintf(dir, sizeof dir, "%s/captured_shaders", r ? r : "."); mkdir(dir, 0755);
     snprintf(path, sizeof path, "%s/%016llx.bin", dir, (unsigned long long)key); snprintf(tmp, sizeof tmp, "%s.part", path);
     struct stat st; if (!stat(path, &st)) { VKLOG("[RED] shader %016llx is not in the bundle: captured in %s by an earlier run, the next port translates it", (unsigned long long)key, path); free(p.ctl); return; }
@@ -232,7 +248,8 @@ static uint32_t *spv_add_outputs(const uint32_t *w, uint32_t nw, uint32_t mask, 
     memcpy(&o[no], &w[fn], (nw - fn) * 4); no += nw - fn;
     o[3] = bound; *onw = no; return o;
 }
-static nvn_hmap g_shaders = {.klen = 16};   // {key, stage} → vkshader_t*
+static nvn_hmap g_shaders = {.klen = 16};   // {key, stage} → vkshader_t*; (void *)1 not in the bundle (nor translated at run time yet), SH_FAILED unusable for good
+#define SH_FAILED ((void *)2)
 static pthread_mutex_t g_sh_mu = PTHREAD_MUTEX_INITIALIZER;
 // Shared layouts keep pipeline layouts and descriptor bindings reusable across shaders; g_sh_mu protects this cache too.
 static VkDescriptorSetLayout shader_layout(const VkDescriptorSetLayoutBinding *b, uint32_t n) {
@@ -278,21 +295,22 @@ static vkshader_t *vk_shader_q(uint64_t key, int stage, int quiet) {
     struct { uint64_t key; uint64_t stage; } hk = {key, (uint64_t)stage};
     pthread_mutex_lock(&g_sh_mu);
     vkshader_t *s = nvn_hm_get(&g_shaders, &hk);
-    if (s) { pthread_mutex_unlock(&g_sh_mu); return s == (void *)1 ? NULL : s; }
-    const bent *e = g_bundle ? find(key) : NULL;
-    if (!e) { nvn_hm_put(&g_shaders, &hk, (void *)1); pthread_mutex_unlock(&g_sh_mu);
+    // a shader missed before may have been translated at run time since (gfx_vk_shader_rt.c): the miss is not kept then
+    if (s && !(s == (void *)1 && vk_rt_find(key))) { pthread_mutex_unlock(&g_sh_mu); return s == (void *)1 || s == SH_FAILED ? NULL : s; }
+    const bent *e = g_bundle ? find(key) : NULL; const vk_rt_ent *rt = e ? NULL : vk_rt_find(key);
+    if (!e && !rt) { nvn_hm_put(&g_shaders, &hk, (void *)1); pthread_mutex_unlock(&g_sh_mu);
               static int n; if (!quiet && n++ < 16) VKLOG("[RED] shader %016llx (stage %d) is not in the bundle", (unsigned long long)key, stage); return NULL; }
     pthread_mutex_unlock(&g_sh_mu);
-    uint32_t nw = 0, *w = bundle_spv(e, &nw);   // copied or decompressed outside the lock
+    uint32_t nw = 0, *w = e ? bundle_spv(e, &nw) : rt_spv(rt, &nw);   // copied or decompressed outside the lock
     pthread_mutex_lock(&g_sh_mu);
-    if ((s = nvn_hm_get(&g_shaders, &hk))) { pthread_mutex_unlock(&g_sh_mu); free(w); return s == (void *)1 ? NULL : s; }   // another thread made it meanwhile
-    if (!w) { nvn_hm_put(&g_shaders, &hk, (void *)1); pthread_mutex_unlock(&g_sh_mu); return NULL; }
+    if ((s = nvn_hm_get(&g_shaders, &hk)) && !(s == (void *)1 && rt)) { pthread_mutex_unlock(&g_sh_mu); free(w); return s == (void *)1 || s == SH_FAILED ? NULL : s; }   // another thread made it meanwhile
+    if (!w) { nvn_hm_put(&g_shaders, &hk, SH_FAILED); pthread_mutex_unlock(&g_sh_mu); return NULL; }
     // reflection
-    const uint8_t *r = g_bundle + e->refl_off; uint32_t hdr[5]; memcpy(hdr, r, 20);
+    const uint8_t *r = e ? g_bundle + e->refl_off : rt->refl; uint32_t refl_len = e ? e->refl_len : rt->nrefl, hdr[5]; memcpy(hdr, r, 20);
     // Counts must fit this record, not merely the mapped file; widen before multiplying.
-    if (20 + 20ull * hdr[0] + hdr[1] > e->refl_len) {
+    if (20 + 20ull * hdr[0] + hdr[1] > refl_len) {
         VKLOG("[RED] shader %016llx: reflection exceeds its record: left out as if missing", (unsigned long long)key);
-        free(w); nvn_hm_put(&g_shaders, &hk, (void *)1); pthread_mutex_unlock(&g_sh_mu); return NULL;
+        free(w); nvn_hm_put(&g_shaders, &hk, SH_FAILED); pthread_mutex_unlock(&g_sh_mu); return NULL;
     }
     s = calloc(1, sizeof *s); s->key = key; s->stage = stage; s->set = set_of(stage);
     s->nbind = (int)hdr[0]; s->c1_len = hdr[1]; memcpy(s->local, hdr + 2, 12);
@@ -352,7 +370,7 @@ static vkshader_t *vk_shader_q(uint64_t key, int stage, int quiet) {
     spv_io_locs(w, nw, &s->in_locs, &s->out_locs);
     VkShaderModuleCreateInfo ci = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, NULL, 0, (size_t)nw * 4, w};
     VkResult vr = vkCreateShaderModule(V.dev, &ci, NULL, &s->mod); s->spv = w; s->nspv = nw;
-    if (vr) { VKLOG("[RED] shader %016llx: vkCreateShaderModule %d", (unsigned long long)key, vr); free(w); free(s); nvn_hm_put(&g_shaders, &hk, (void *)1); pthread_mutex_unlock(&g_sh_mu); return NULL; }
+    if (vr) { VKLOG("[RED] shader %016llx: vkCreateShaderModule %d", (unsigned long long)key, vr); free(w); free(s); nvn_hm_put(&g_shaders, &hk, SH_FAILED); pthread_mutex_unlock(&g_sh_mu); return NULL; }
     // descriptor set layout: one entry per binding
     // The game's constant buffers and the driver segment are dynamic uniform buffers: their offset is given when the set is bound, so a set matches any draw's
     // with the same buffers (Unity updates a constant buffer before nearly every draw, and each update is a shadow at a new offset: NEO made a new set for

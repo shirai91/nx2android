@@ -7,6 +7,8 @@ __pycache__/
 # Intermediate build outputs of the shader translation tool (dotnet writes them next to the sources)
 gfx/tools/dmsh_xlate/obj/
 gfx/tools/dmsh_xlate/bin/
+android/xlate_rt/obj/
+android/xlate_rt/bin/
 tools/nx_extract/obj/
 tools/nx_extract/bin/
 third_party/ryujinx/**/obj/
