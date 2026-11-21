@@ -169,8 +169,10 @@ The command replay is one translation unit, `gfx_vk_exec.c`, kept in one file a 
 
 Graphics pipeline creation checks vertex-buffer support for each final Vulkan
 attribute format, including integer remaps and formats from prewarm records.
-Unsupported formats are reported and the pipeline is cached as failed, so draws
-that need it are skipped before Vulkan can receive an invalid pipeline.
+Unsupported core formats are reported once per format across replay and prewarm
+workers; out-of-range formats are still reported without indexing the diagnostic
+array. Every unsupported pipeline is cached as failed, so draws that need it are
+skipped before Vulkan can receive an invalid pipeline.
 
 ## Frame pacing
 

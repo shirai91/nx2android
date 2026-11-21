@@ -199,8 +199,11 @@ static VkPipeline build_pipeline(const pkey *k, VkPipelineLayout layout, vkshade
         VkFormatProperties properties;
         vkGetPhysicalDeviceFormatProperties(V.pd, format, &properties);
         if (!(properties.bufferFeatures & VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT)) {
-            VKLOG("[RED] graphics pipeline skipped: vertex attribute %u format %d lacks vertex-buffer support (vertex shader %016llx)",
-                  k->attr[i].loc, (int)format, (unsigned long long)k->key[0]);
+            // Core vertex formats fit here. Prewarm workers can reject the same format concurrently.
+            static atomic_uchar noted[256];
+            if ((unsigned)format >= sizeof noted / sizeof *noted || !atomic_exchange(&noted[format], 1))
+                VKLOG("[RED] graphics pipeline skipped: vertex attribute %u format %d lacks vertex-buffer support (vertex shader %016llx)",
+                      k->attr[i].loc, (int)format, (unsigned long long)k->key[0]);
             return (VkPipeline)1;
         }
     }

@@ -13,6 +13,7 @@ STUBS = r"""
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdatomic.h>
 
 static struct {
     VkPhysicalDevice pd;
@@ -104,6 +105,17 @@ int main(int argc, char **argv) {
     }
     vkshader_t v = {0}, *stages[3] = {&v};
     VkPipeline result = build_pipeline(&k, VK_NULL_HANDLE, stages);
+    if (test == 0) {
+        // Different failed keys sharing a format stay rejected without repeating its warning.
+        for (unsigned i = 0; i < 300; i++) {
+            k.key[0]++;
+            assert(build_pipeline(&k, VK_NULL_HANDLE, stages) == (VkPipeline)(uintptr_t)1);
+        }
+        unsupported = VK_FORMAT_R32_UINT;
+        k.attr[1].fmt = unsupported;
+        assert(build_pipeline(&k, VK_NULL_HANDLE, stages) == (VkPipeline)(uintptr_t)1);
+        assert(build_pipeline(&k, VK_NULL_HANDLE, stages) == (VkPipeline)(uintptr_t)1);
+    }
     printf("%d %d %d\n", driver_calls, (int)forwarded, result == (VkPipeline)(uintptr_t)1);
     return 0;
 }
@@ -139,3 +151,4 @@ class VertexFormatSupport(unittest.TestCase):
                     self.assertEqual(result.stdout.strip(), expected, result.stderr)
                     if expected.startswith("0"):
                         self.assertIn("[RED]", result.stderr)
+                        self.assertEqual(result.stderr.count("graphics pipeline skipped:"), 2 if scenario == 0 else 1)
