@@ -368,12 +368,51 @@ static VkBuffer quad_index_buffer(uint32_t *nq) {
     return b;
 }
 // quads: a triangle list of indices made on the CPU (from the game's index buffer for indexed draws)
+// nxnative draw_direct readies indices before CPU primitive conversion
+// (1f01e28c, nvn_vk.c). Native GPU-index draws do not consume these bytes here.
+static int quad_index_ready(const p_draw_idx *d) {
+    if (d->prim != NVN_DRAW_PRIMITIVE_QUADS || d->ind) return 1;
+    if (d->count < 4 || (unsigned)d->itype > 2) return 0;
+    uint64_t n = (uint64_t)(uint32_t)d->count * (1u << d->itype);
+    // Match draw eligibility: the CPU index span may cross registered pool chunks.
+    if (d->ibuf > UINT64_MAX - n) return 0;
+    if (!vk_pool_of(d->ibuf, 1)) return 1;   // draw_idx keeps its existing invalid-pool diagnostic
+    cpu_ready(d->ibuf, n);
+    static int noted;
+    if (!noted) { noted = 1; VKLOG("direct indexed quads: itype %d count %d", d->itype, d->count); }
+    return 1;
+}
 static int quad_indices(uint32_t count, const uint8_t *src, int itype, int32_t first, VkBuffer *buf, VkDeviceSize *off) {
     uint32_t nq = count / 4; if (!nq) return 0;
+    unsigned bytes = itype == 0 ? 1 : itype == 1 ? 2 : 4;
+    if (src) {
+        // Replay-thread-owned CPU storage: repeated reads must not hit possibly
+        // uncached Vulkan scratch. Retain the largest input until process exit.
+        static uint8_t *snapshot; static size_t capacity;
+        uint64_t n = (uint64_t)count * bytes;
+        if (n > SIZE_MAX) die("[vk] quad index snapshot size overflow");
+        if (n > capacity) {
+            uint8_t *next = realloc(snapshot, (size_t)n);
+            if (!next) die("[vk] cannot allocate quad index snapshot");
+            snapshot = next; capacity = (size_t)n;
+        }
+        vk_ubd_read((uintptr_t)src, n, snapshot);
+        src = snapshot;
+    }
     uint32_t *d = vk_scratch((VkDeviceSize)nq * 6 * 4, 4, buf, off);
-    for (uint32_t q = 0; q < nq; q++) for (int k = 0; k < 6; k++) {
-        static const int pat[6] = {0, 1, 2, 0, 2, 3}; uint32_t i = q * 4 + (uint32_t)pat[k];
-        d[q * 6 + k] = !src ? (uint32_t)first + i : itype == 0 ? src[i] : itype == 1 ? ((const uint16_t *)src)[i] : ((const uint32_t *)src)[i];
+    static const uint32_t pat[6] = {0, 1, 2, 0, 2, 3};
+    // Guest input may be unaligned; the heap snapshot is aligned for every width.
+    // Choose the width once, avoiding a runtime-sized memcpy per expanded index.
+    if (!src) {
+        for (uint32_t q = 0; q < nq; q++) for (int k = 0; k < 6; k++) d[q * 6 + k] = (uint32_t)first + q * 4 + pat[k];
+    } else if (bytes == 1) {
+        for (uint32_t q = 0; q < nq; q++) for (int k = 0; k < 6; k++) d[q * 6 + k] = src[q * 4 + pat[k]];
+    } else if (bytes == 2) {
+        const uint16_t *s = (const uint16_t *)src;
+        for (uint32_t q = 0; q < nq; q++) for (int k = 0; k < 6; k++) d[q * 6 + k] = s[q * 4 + pat[k]];
+    } else {
+        const uint32_t *s = (const uint32_t *)src;
+        for (uint32_t q = 0; q < nq; q++) for (int k = 0; k < 6; k++) d[q * 6 + k] = s[q * 4 + pat[k]];
     }
     return (int)(nq * 6);
 }

@@ -42,7 +42,7 @@ static void uniform_texture_array(void) {
     uint8_t expected[][4] = {{0,255,0,255}, {0,0,255,255}, {0,0,0,0},
                                    {255,255,255,255}, {0,0,0,0}, {0,0,0,0}, {0,0,255,255}, {255,255,255,255}};
 
-    for(int compute=0;compute<2;compute++) for (int gpu=0;gpu<(compute?7:4);gpu++) for (int pass = 0; pass < 8; ++pass) {
+    for(int compute=0;compute<2;compute++) for (int gpu=0;gpu<(compute?8:4);gpu++) for (int pass = 0; pass < 8; ++pass) {
         if(getenv("NX2A_HANDLE_CASE") && atoi(getenv("NX2A_HANDLE_CASE"))!=compute*10+gpu)continue;
         if(pass==4)continue; // Target incompatible 2D-to-3D views are a separate gap.
         printf("case compute%d gpu%d pass%d\n",compute,gpu,pass);fflush(stdout);
@@ -62,14 +62,15 @@ static void uniform_texture_array(void) {
         struct { uint64_t address, size, value; } update = {(uintptr_t)&handles[44 + index], 8, pass >= 6 ? 5u : pass >= 4 ? 7u : pass ? 6u : 5u};
 
 
-        if (!gpu || gpu==4) put(&list, OP_UPDATE_UB, &update, sizeof update);
+        if (!gpu || gpu==4 || gpu==7) put(&list, OP_UPDATE_UB, &update, sizeof update);
         samplers[16 + index] = (uint64_t)(pass == 3 ? 2 : 1) << 20;
-        if(gpu && gpu<4) {
+        if((gpu && gpu<4) || gpu==7) {
             uint32_t values[4]={(uint32_t)update.value,0,0,0};
             handles[44+index]=0;
             // Target adapter: the source push constants become a regular UBO;
             // SSBOs stay aligned to the target translator's 256-byte boundary.
             for(int sampler=0;sampler<2;sampler++) {
+                if(gpu==7 && !sampler)continue; // Isolate sampler-only readiness.
                 uint64_t *memory=sampler?samplers:handles;
                 unsigned element=(sampler?16:44)+index;
                 uint32_t value=sampler?(uint32_t)samplers[element]:(uint32_t)update.value;
@@ -85,11 +86,11 @@ static void uniform_texture_array(void) {
             if(gpu==2) { put(&list,OP_END,NULL,0);mtl_sub_begin();mtl_exec(list.bytes);mtl_sub_commit();list.used=0; }
             if(gpu==3) {
                 // Two later known ranges cover the earlier GPU-written handle;
-                // the sampler is a known fill. Neither needs a submission cut.
+                // the sampler is another known inline update. Neither needs a cut.
                 struct { uint64_t address,size;uint32_t value,pad; } part={update.address,4,(uint32_t)update.value,0};
                 put(&list,OP_UPDATE_UB,&part,sizeof part);
                 part.address+=4;part.value=0;put(&list,OP_UPDATE_UB,&part,sizeof part);
-                part.address=(uintptr_t)&samplers[16+index];part.size=4;part.value=values[0];put(&list,OP_UPDATE_UB,&part,sizeof part);
+                part.address=(uintptr_t)&samplers[16+index];part.size=8;part.value=values[0];put(&list,OP_UPDATE_UB,&part,sizeof part);
             }
         }
 
@@ -102,7 +103,7 @@ static void uniform_texture_array(void) {
             RECORD(OP_BIND_SSBO,p_bind_buf,.stage=5,.index=0,.addr=(uintptr_t)pointer,.size=8);
             RECORD(OP_DISPATCH,p_dispatch,.x=1,.y=1,.z=1);
         }
-        if(compute && gpu>=5) {
+        if(compute && (gpu==5 || gpu==6)) {
             handles[51]=0;producer[0]=0;producer[1]=(uint32_t)update.value;
             // The older inline bytes must land BEFORE the draw overwrites
             // them, and may not cover the newer GPU dependency afterward.
@@ -170,4 +171,79 @@ static void uniform_texture_array(void) {
 }
 
 
-int __wrap_main(void){setenv("DM_VK_NOPREWARM","1",1);mtl_init();uniform_texture_array();return 0;}
+
+// The donor read_draw/direct-draw preflight also covers CPU index conversion.
+// Reuse the existing producer and texture oracle; only the consumed data changes.
+static void indexed_quad_readiness(void) {
+    tex_t input={.magic=MAGIC('T','E','X',0),.serial=0x5300,
+        .d={.width=1,.height=1,.depth=1,.levels=1,.target=NVN_TEXTURE_TARGET_3D,.format=NVN_FORMAT_RGBA8}};
+    tex_t output={.magic=MAGIC('T','E','X',0),.serial=0x5301,
+        .d={.width=4,.height=4,.depth=1,.levels=1,.target=NVN_TEXTURE_TARGET_2D,.format=NVN_FORMAT_RGBA8}};
+    nvn_tex_layout(&input.d,&input.L);nvn_tex_layout(&output.d,&output.L);
+    mtl_reg_tex(2053,&input,NULL);samp_par edge={0};mtl_reg_samp(257,&edge);
+    _Alignas(4096) uint64_t handles[128]={0},samplers[128]={0};
+    _Alignas(4096) uint32_t indices[1024]={0},producer[1024]={0},params[1024]={0},readback[1024];
+    mtl_pool_add(handles,sizeof handles);mtl_pool_add(samplers,sizeof samplers);
+    mtl_pool_add(indices,sizeof indices);mtl_pool_add(producer,sizeof producer);
+    mtl_pool_add(params,sizeof params);mtl_pool_add(readback,sizeof readback);
+    handles[44]=5;samplers[16]=1u<<20;float coordinate=.5f;memcpy(params+1,&coordinate,4);
+    unsigned cases=0;
+    for(int type=0;type<3;type++)for(int mode=0;mode<6;mode++)for(int shifted=0;shifted<2;shifted++)for(int disabled=0;disabled<2;disabled++) {
+        if(getenv("NX2A_INDEX_CASE") && atoi(getenv("NX2A_INDEX_CASE"))!=mode)continue;
+        unsigned bytes=1u<<type,n=bytes*4;
+        uint32_t expected[4]={0},gpu_data[4]={0};
+        for(unsigned i=0;i<4;i++){uint32_t v=i+(unsigned)shifted;memcpy((uint8_t*)expected+i*bytes,&v,bytes);}
+        memcpy(gpu_data,expected,n);
+        if(mode==4)memset(gpu_data,0,sizeof gpu_data);
+        if(mode==5){uint32_t bad=9;memcpy(gpu_data,&bad,bytes);}
+        memset(indices,0,sizeof indices);memset(readback,0xcc,sizeof readback);
+        if(!mode)memcpy(indices+64,expected,n);
+        list_t list={0};uint8_t *pixels=(uint8_t*)(readback+64);
+        RECORD(OP_RENDER_COND,p_render_cond,.mode=2);
+        RECORD(OP_CLEAR_TEX,p_clear_tex,.tex=&input,.r={.width=1,.height=1,.depth=1},.mask=15,.c.f={0,1,0,1});
+        RECORD(OP_CLEAR_TEX,p_clear_tex,.tex=&output,.r={.width=4,.height=4,.depth=1},.mask=15,.c.f={1,0,0,1});
+        RECORD(OP_SET_TEX_POOL,p_set_pool,.pool=&texture_pool);
+        RECORD(OP_SET_SAMP_POOL,p_set_pool,.pool=&sampler_pool);
+        if(mode>=2) {
+            for(unsigned word=0;word<(n+7)/8*2;word+=2) {
+                struct{uint64_t address,size;uint32_t data[4];}u={(uintptr_t)producer,16,{word,gpu_data[word],gpu_data[word+1],0}};
+                put(&list,OP_UPDATE_UB,&u,sizeof u);
+                RECORD(OP_BIND_PROGRAM,p_bind_program,.prog=&groups,.stages=0x20);
+                RECORD(OP_BIND_UBO,p_bind_buf,.stage=5,.index=0,.addr=(uintptr_t)producer,.size=16);
+                RECORD(OP_BIND_SSBO,p_bind_buf,.stage=5,.index=0,.addr=(uintptr_t)(indices+64),.size=16);
+                RECORD(OP_DISPATCH,p_dispatch,.x=1,.y=1,.z=1);
+            }
+            if(mode==3){put(&list,OP_END,NULL,0);mtl_sub_begin();mtl_exec(list.bytes);mtl_sub_commit();list.used=0;}
+        }
+        if(mode==1 || mode>=4) {
+            struct{uint64_t address,size;uint32_t data[4];}u={(uintptr_t)(indices+64),mode==5?bytes:n,{0}};
+            memcpy(u.data,expected,(size_t)u.size);put(&list,OP_UPDATE_UB,&u,sizeof u);
+        }
+        RECORD(OP_BIND_PROGRAM,p_bind_program,.prog=&bindless_program,.stages=3);
+        RECORD(OP_VIEWPORTS,p_viewports,.n=1,.v={{0,0,4,4}});
+        RECORD(OP_SCISSOR,p_scissor,.w=4,.h=4);
+        RECORD(OP_BIND_UBO,p_bind_buf,.stage=1,.index=7,.addr=(uintptr_t)handles,.size=sizeof handles);
+        RECORD(OP_BIND_UBO,p_bind_buf,.stage=1,.index=8,.addr=(uintptr_t)samplers,.size=sizeof samplers);
+        RECORD(OP_BIND_UBO,p_bind_buf,.stage=1,.index=9,.addr=(uintptr_t)params,.size=16);
+        RECORD(OP_SET_RT,p_set_rt,.n=1,.color={&output});
+        RECORD(OP_RENDER_COND,p_render_cond,.mode=disabled?3:2);
+        RECORD(OP_DRAW_IDX,p_draw_idx,.prim=NVN_DRAW_PRIMITIVE_QUADS,.itype=type,.count=4,
+            .ibuf=(uintptr_t)(indices+64),.base_vertex=-shifted,.instances=2,.base_instance=3);
+        RECORD(OP_COPY_T2B,p_copy_b2t,.tex=&output,.src=(uintptr_t)pixels,.r={.width=4,.height=4,.depth=1});
+        put(&list,OP_END,NULL,0);
+        mtl_sub_begin();mtl_exec(list.bytes);assert(mtl_wait(mtl_sub_commit(),UINT64_MAX));
+        uint8_t want[4]={disabled?255:0,disabled?0:255,0,255};
+        for(unsigned i=0;i<64;i++)if(pixels[i]!=want[i%4]){
+            fprintf(stderr,"indexed quad type%d mode%d base%d disabled%d byte%u: %u expected%u\n",
+                type,mode,-shifted,disabled,i,pixels[i],want[i%4]);abort();
+        }
+        for(unsigned i=0;i<1024;i++)if(i<64 || i>=80)assert(readback[i]==0xccccccccu);
+        cases++;
+    }
+    mtl_pool_del(handles);mtl_pool_del(samplers);mtl_pool_del(indices);
+    mtl_pool_del(producer);mtl_pool_del(params);mtl_pool_del(readback);
+    mtl_reg_tex(2053,NULL,NULL);mtl_tex_release(&input);mtl_tex_release(&output);
+    printf("%u indexed quad readiness cases passed\n",cases);
+}
+
+int __wrap_main(void){setenv("DM_VK_NOPREWARM","1",1);mtl_init();if(!getenv("NX2A_INDEX_ONLY"))uniform_texture_array();indexed_quad_readiness();return 0;}
