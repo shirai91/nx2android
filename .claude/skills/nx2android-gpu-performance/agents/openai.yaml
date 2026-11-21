@@ -1,0 +1,4 @@
+interface:
+  display_name: "nx2android GPU Performance"
+  short_description: "Profile complete Vulkan frames and verify same-scene optimization gains."
+  default_prompt: "Use $nx2android-gpu-performance to verify the current app identity, account for complete GPU work, localize measured hotspots and test one reversible candidate while preserving quality and saves."
