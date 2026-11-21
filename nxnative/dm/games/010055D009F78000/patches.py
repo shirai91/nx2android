@@ -19,11 +19,21 @@ CUTS = {
     # is a busy loop on the host: the yield back-off spins its first 2 ms on a performance core and then oversleeps by up to 250 µs, so frames took 16.8 ms (59.5 fps, a repeated
     # display frame every 2 s) and CPU energy went from 0.16 W at 30 fps to 1.5 W on the Mac. The yield becomes nn::os::SleepThread of 96% of the time left, and the loop goes back to
     # the limiter's own tick read and comparison at main+0x5be44c (the instructions after the b are no longer reached); the host's sleep never oversleeps, so the frames take 16.68 ms
+    # The limiter's tick is 1/59.94 s (the double at main+0xcb91a8, read only at main+0x5be4a8), the Switch's output rate: on a 60.00 Hz cadence (Android's display pacing) each frame
+    # came 16 us late, and about every 100 frames one missed its vsync and stayed on screen for three (a resync: 2-3 dropped frames in 300, even on the idle title). 60.0 Hz
+    (0xcb91a8, 'b81e85eb51f84d40', '0000000000004e40', 'frame limiter tick: 59.94 Hz → 60.0 Hz (the display cadence; the game logic steps by 1/fps per update either way)'),
     (0x5be4c0, '20fa1494', 'e00208cb', 'frame limiter wait: bl YieldThread → sub x0,x23,x8 (time left, 100 ns units)'),
-    (0x5be4c4, 'bbf71494', '01e87bd3', 'frame limiter wait: bl GetSystemTick → lsl x1,x0,#5'),
-    (0x5be4c8, '680240f9', '2018008b', 'frame limiter wait: ldr x8,[x19] → add x0,x1,x0,lsl #6 (96 ns per 100 ns left)'),
-    (0x5be4cc, '080008cb', '8df71494', 'frame limiter wait: sub x8,x0,x8 → bl nn::os::SleepThread (PLT main+0xafc300)'),
-    (0x5be4d0, '087d149b', 'dfffff17', 'frame limiter wait: mul x8,x8,x20 → b main+0x5be44c (read the tick and compare again)'),
+    # On Android a sleep sometimes wakes 1-2 ms late (a core in deep idle), and the limiter counts from the frame's real end, so each late wake-up delayed every frame after it:
+    # frames of 17-19 ms every ~100 frames, each a resync of the display pacing (a frame shown for three vsyncs). The wait now sleeps only while more than 2 ms are left
+    # and yields for the rest (the original yield loop, at most 2 ms a frame), in the instructions after the old b, which are no longer reached
+    (0x5be4c4, 'bbf71494', '1f1440f1', 'frame limiter wait: bl GetSystemTick → cmp x0,#0x5000 (2 ms left?)'),
+    (0x5be4c8, '680240f9', 'a3000054', 'frame limiter wait: ldr x8,[x19] → b.lo main+0x5be4dc (yield for the last 2 ms)'),
+    (0x5be4cc, '080008cb', '01e87bd3', 'frame limiter wait: sub x8,x0,x8 → lsl x1,x0,#5'),
+    (0x5be4d0, '087d149b', '2018008b', 'frame limiter wait: mul x8,x8,x20 → add x0,x1,x0,lsl #6 (96 ns per 100 ns left)'),
+    (0x5be4d4, 'c90240f9', '8bf71494', 'frame limiter wait: ldr x9,[x22] → bl nn::os::SleepThread (PLT main+0xafc300)'),
+    (0x5be4d8, '3f0108eb', 'ddffff17', 'frame limiter wait: cmp x9,x8 → b main+0x5be44c (read the tick and compare again)'),
+    (0x5be4dc, 'a00200f9', '19fa1494', 'frame limiter wait: str x0,[x21] → bl YieldThread (the last 2 ms)'),
+    (0x5be4e0, 'a9feff54', 'dbffff17', 'frame limiter wait: b.ls main+0x5be4b4 → b main+0x5be44c'),
     # The render thread waits for the next update with KTGL's event wait (main+0xaa90e0, timeout in µs: × 1000 → nn::os::TimedWaitEvent) and passes 1/fps × 1000 = 16, one frame in ms,
     # so it polls every 16 µs: at 60 fps it draws in about 3 ms and then polled for the rest of the frame (42,000–53,000 wakeups a second on the Mac, against 1,200 at 30 fps, where
     # it waited in the present instead). The other four callers wait without a timeout. The timeout becomes 1000/fps × 1000 = 16,666 µs (s8 = 1000.0, loaded first)
