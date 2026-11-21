@@ -331,5 +331,80 @@ class Hold(unittest.TestCase):
         self.assertIsNotNone(got[0]); got[0].close()
 
 
+class ContainerPack(unittest.TestCase):
+    """A pack with the game's own NSPs (--romfs-container, the manifest's container flag and push list): no game data in the pack; the installer pushes the player's
+    files as they are, compares no RomFS folder, and removes an earlier extracted port's RomFS / aoc trees in one go"""
+    SIZES = {datapack.CONTAINER_BASE: 500, datapack.CONTAINER_UPDATE: 200, 'aoc/2.nsp': 100}
+
+    def setUp(self):
+        self.t = Path(tempfile.mkdtemp(prefix='nx2a_test_install_')); self.real, PROG.mode = install.Adb, 'off'
+        d = self.data = self.t / 'Test-data'
+        (d / 'mods').mkdir(parents=True); (d / 'mods/main').write_bytes(b'x' * 10)
+        (d / 'env.txt').write_text(f'# porter\nDM_LANG=en-US\nDM_PROD_KEYS={FILES}/prod.keys\nDM_ROMFS_CONTAINER={FILES}/{datapack.CONTAINER}/{datapack.CONTAINER_BASE}\n', encoding='utf-8')
+        game = self.game = self.t / 'game'   # the player's own files, where the port found them (outside the pack)
+        game.mkdir()
+        push = {'container': [], 'keys': []}
+        for dst, n in self.SIZES.items():
+            (game / Path(dst).name).write_bytes(b'n' * n); push['container'].append(dict(dst=dst, src=str(game / Path(dst).name), bytes=n))
+        (game / 'prod.keys').write_bytes(b'master_key_00 = 00\n'); push['keys'].append(dict(dst='prod.keys', src=str(game / 'prod.keys'), bytes=19))
+        (d / datapack.MANIFEST).write_text(json.dumps(dict(title_id='0100000000AAA000', name='Test Game', package=PKG, version='v65536', display='1.1.0', requires=[],
+                                                           bytes=(d / 'mods/main').stat().st_size, container=True, push=push)))
+        self.apk = apk_file(self.t / 'Test.apk')
+
+    def tearDown(self): install.Adb = self.real; shutil.rmtree(self.t, ignore_errors=True)
+
+    def run_on(self, dev, **kw):
+        install.Adb = lambda exe, serial=None, log=print: dev
+        install.install(self.apk, self.data, 'adb', **kw)
+        return dev
+
+    def test_push(self):   # the game's own files go into the files folder from where they are; no RomFS compared, no All files access asked for
+        dev = self.run_on(Device())
+        self.assertEqual(dev.fs[f'{FILES}/{datapack.CONTAINER}/{datapack.CONTAINER_BASE}'], 500); self.assertEqual(dev.fs[f'{FILES}/{datapack.CONTAINER}/aoc/2.nsp'], 100)
+        self.assertEqual(dev.fs[f'{FILES}/prod.keys'], 19)
+        self.assertIn(f'DM_ROMFS_CONTAINER={FILES}/{datapack.CONTAINER}/{datapack.CONTAINER_BASE}', dev.text[f'{FILES}/env.txt'])
+        self.assertEqual(dev.step('shell', 'appops'), -1); self.assertEqual(dev.step('md5'), -1)
+        self.assertEqual(dev.ops[dev.step('push_tree', FILES)][2], 2)   # mods/main and env.txt: the pack holds no game data
+
+    def test_resume_and_old_dlc(self):   # files the device has at the same size are not pushed again; a DLC this pack does not list is removed
+        dev = Device({f'{FILES}/{datapack.CONTAINER}/{datapack.CONTAINER_BASE}': 500, f'{FILES}/{datapack.CONTAINER}/aoc/3.nsp': 70})
+        self.run_on(dev)
+        self.assertNotIn(f'{FILES}/{datapack.CONTAINER}/aoc/3.nsp', dev.fs); self.assertEqual(dev.fs[f'{FILES}/{datapack.CONTAINER}/aoc/2.nsp'], 100)
+        self.assertEqual(dev.fs[f'{FILES}/{datapack.CONTAINER}/{datapack.CONTAINER_BASE}'], 500)
+        pushed = [o[1] for o in dev.ops if o[0] == 'push_file']
+        self.assertNotIn(f'{FILES}/{datapack.CONTAINER}/{datapack.CONTAINER_BASE}', pushed)   # it is on the device already
+        for rel in (f'{FILES}/{datapack.CONTAINER}/{datapack.CONTAINER_UPDATE}', f'{FILES}/{datapack.CONTAINER}/aoc/2.nsp', f'{FILES}/prod.keys'): self.assertIn(rel, pushed)
+
+    def test_source_beside_the_pack_or_gone(self):   # a pack moved to another PC: the files are taken from beside it by name; without them, a clear error
+        moved = self.t / 'elsewhere'; moved.mkdir(); pack = moved / self.data.name
+        shutil.copytree(self.data, pack)
+        for e in json.loads((pack / datapack.MANIFEST).read_text())['push']['container']: (pack / Path(e['src']).name).write_bytes(b'n' * e['bytes'])
+        (pack / 'prod.keys').write_bytes(b'master_key_00 = 00\n')
+        shutil.rmtree(self.game)   # the PC the pack was carried to does not have the port's folder
+        self.data = pack
+        dev = self.run_on(Device())
+        self.assertEqual(dev.fs[f'{FILES}/{datapack.CONTAINER}/{datapack.CONTAINER_BASE}'], 500)
+        for e in json.loads((pack / datapack.MANIFEST).read_text())['push']['container']: (pack / Path(e['src']).name).unlink()
+        (pack / 'prod.keys').unlink()
+        with self.assertRaisesRegex(BuildError, 'is not where the port found it'): self.run_on(Device())
+
+    def test_replaces_extracted_port(self):   # an earlier extracted port's trees and installer row: replaced by the player's files, the trees removed in one go (not file by file)
+        env = {f'{FILES}/env.txt': install.env_with_romfs('DM_LANG=en-US\n', DUMP)}
+        old = {f'{FILES}/RomFS/{r}': n for r, n in ROM.items()} | {f'{FILES}/aoc/2/romfs.bin': 40} | {f'{FILES}/log.txt': 9}
+        dev = self.run_on(Device(old, text=env, access='allow'))
+        self.assertFalse([k for k in dev.fs if k.startswith((f'{FILES}/RomFS/', f'{FILES}/aoc/'))])
+        self.assertTrue(dev.fs[f'{FILES}/log.txt']); self.assertTrue(dev.fs[f'{FILES}/{datapack.CONTAINER}/{datapack.CONTAINER_BASE}'])
+        self.assertIsNone(install.device_romfs(dev.text[f'{FILES}/env.txt']))
+        self.assertIn(f'DM_ROMFS_CONTAINER={FILES}/{datapack.CONTAINER}/{datapack.CONTAINER_BASE}', dev.text[f'{FILES}/env.txt'])
+        self.assertEqual(dev.step('shell', f'rm -rf {FILES}/RomFS'), dev.step('shell', f'rm -rf {FILES}/aoc') - 1)   # one rm -rf each
+        self.assertEqual([o for o in dev.ops if o[0] == 'shell' and ' && rm -f ' in o[1]], [])
+
+    def test_options(self):   # --romfs-at does not apply to a pack that reads the game out of its NSPs
+        with self.assertRaisesRegex(BuildError, 'do not apply'): self.run_on(Device(), romfs_at='app')
+        with self.assertRaisesRegex(BuildError, 'do not apply'): self.run_on(Device(), romfs_push=True)
+        self.assertTrue(cli._parser().parse_args(['port', 'x', '--romfs-container']).romfs_container)
+        self.assertEqual(cli.main(['port', str(self.t), '--romfs-container', '--romfs-at', 'app']), 2)
+
+
 if __name__ == '__main__':
     unittest.main()

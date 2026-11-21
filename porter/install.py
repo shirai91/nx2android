@@ -1,6 +1,9 @@
 # Installing a port on a device over adb: the APK, then the data pack into the app's files folder (porter/adb.py pushes it in resumable pieces).
 # A new install whose RomFS / DLC another port of the same game version on the device already has copies them there (seed_from_sibling: the manifest's content keys).
 # The player's own files there are kept: the pause menu's settings.txt, the logs, the Vulkan pipeline caches; saves are in the app's internal storage, which an update keeps.
+# A pack with the game's own NSPs (manifest container, --romfs-container) carries no RomFS / DLC tree: its push list names the player's files (from the folder they
+# were ported from, or beside the pack) and the installer sends them to the device as they are, into files/container/, and an earlier extracted port's RomFS / aoc
+# folders in the app's files folder are removed in one go (--romfs-at does not apply: the host reads the game's files out of the NSPs).
 # --romfs-at <folder>: the app reads the game's RomFS from a folder already on the device (a game dump an emulator also reads, a folder on the SD card) instead of a copy in
 # its files folder, which saves that copy's 7 to 18 GB. The folder must hold exactly the pack's RomFS, names and sizes and a sample's content (--romfs-push puts it there), the app gets All files
 # access over adb, and the installer writes DM_ROMFS=<folder> into the device's env.txt under ROMFS_MARK. The pack's env.txt is the same on every device, and the folder is
@@ -149,6 +152,28 @@ def apk_asks_access(apk):   # whether the APK asks for All files access: one mad
     return ACCESS.encode('utf-16-le') in m or ACCESS.encode() in m
 
 
+def game_files(man, files, data):
+    """The pack's push list (--romfs-container): [(source on this PC, path in the files folder, relative path, bytes)] for the player's own NSPs (files/container/
+    romfs.nsp, update.nsp, aoc/<index>.nsp) and keys (files/prod.keys, title.keys), which the app reads the game's files out of. A source that is no longer where the
+    port found it is looked for beside the pack (same name and size); without it the game's files cannot be pushed."""
+    out = []
+    pack = Path(data).resolve()
+    where = [pack, pack.parent]   # the pack folder itself (a player drops the files into it) and the folder the port found them in
+    for what in ('container', 'keys'):
+        for e in (man.get('push') or {}).get(what) or []:
+            src = Path(e['src'])
+            if not src.is_absolute(): src = pack.parent / src   # named, not given by this PC's path: the pack stays portable
+            if not (src.is_file() and src.stat().st_size == e['bytes']):
+                alt = next((d / src.name for d in where if (d / src.name).is_file() and (d / src.name).stat().st_size == e['bytes']), None)
+                if alt is None:
+                    raise BuildError(f'{src.name} ({e["bytes"] / 2**30:.2f} GB) is not where the port found it ({e["src"]}), nor beside the pack: the app reads the '
+                                     f'game out of it. Put it beside {pack.name}, or port again from the folder that has it')
+                src = alt
+            rel = f'{datapack.CONTAINER}/{e["dst"]}' if what == 'container' else e['dst']
+            out.append((src, f'{files}/{rel}', rel, e['bytes']))
+    return out
+
+
 def install(apk, data, adb_exe, serial=None, replace_signer=False, romfs_at=None, romfs_push=False):
     """romfs_at: a folder on the device that holds the game's RomFS (romfs_push: push the pack's RomFS into it first), 'app' for the app's files folder, None: as the
     device has it (an earlier --romfs-at install's folder, else the files folder)"""
@@ -160,6 +185,9 @@ def install(apk, data, adb_exe, serial=None, replace_signer=False, romfs_at=None
     files = datapack.files_folder(man['package'])
     target = romfs_target(romfs_at, files)
     sd = romfs_at == SD
+    cont = bool(man.get('container'))   # a pack of the game's own NSPs (--romfs-container): no RomFS / aoc tree, which the host reads out of the containers
+    if cont and (romfs_at is not None or romfs_push):
+        raise BuildError('this pack reads the game out of your own NSPs (its push list), so --romfs-at and --romfs-push do not apply')
     if romfs_push and not target and not sd: raise BuildError('--romfs-push needs --romfs-at <a folder on the device outside the app\'s files folder>')
     packed = packed_romfs(data)
     if packed and target: raise BuildError(PACKED_ELSEWHERE)   # --romfs-at sd is the app's own folder on the card (no other app reads it): a packed pack goes there
@@ -185,7 +213,7 @@ def install(apk, data, adb_exe, serial=None, replace_signer=False, romfs_at=None
         if sd_dir: was = posixpath.normpath(was)
         if romfs_at == NO_SD:
             romfs_at = APP if sd_dir else None
-        if romfs_at is None and was:
+        if romfs_at is None and was and not cont:
             target = romfs_target(was, files)
             if packed and target and not sd_dir: raise BuildError(f'the app reads its RomFS from {target} (an earlier install\'s --romfs-at). ' + PACKED_ELSEWHERE)
             if target: say(f'the app reads its RomFS from {target} (an earlier install\'s --romfs-at; --romfs-at app moves it into its files folder)')
@@ -217,6 +245,7 @@ def install(apk, data, adb_exe, serial=None, replace_signer=False, romfs_at=None
             else: say(f'{target} holds this pack\'s RomFS ({len(rom):,} files, {sum(rom.values()) / 2**30:.1f} GB): it is not pushed')
         free = adb.free_bytes()
         have = adb.remote_sizes(files)
+        game_files_push = game_files(man, files, data) if cont else []   # --romfs-container: the player's own NSPs and keys, pushed as they are
         was_packed = 'DM_ROMFS_ZSTD=1' in dev_env.split()
         in_files = any(r.startswith(datapack.ROMFS + '/') for r in have)
         if target and in_files and (missing or other or changed): say(f'the RomFS is copied again into {target}: the app\'s files folder holds a copy, and {"the SD card" if sd else "another folder"} needs its own')
@@ -227,7 +256,7 @@ def install(apk, data, adb_exe, serial=None, replace_signer=False, romfs_at=None
             if push := sum(rom[r] for r in missing + other + changed):
                 if adb.same_volume('/sdcard', target): need += push
                 elif (tfree := adb.free_bytes(target)) is not None and push > tfree: raise BuildError(f'{target}\'s volume has {tfree / 2**30:.1f} GB free; the RomFS needs {push / 2**30:.1f} GB more')
-        else: need = man['bytes'] - sum(have.values())
+        else: need = man['bytes'] - sum(have.values()) + sum(b for _, _, rel, b in game_files_push if have.get(rel) != b)
         if free is not None and need > free: raise BuildError(f'the device has {free / 2**30:.1f} GB free; the game needs {need / 2**30:.1f} GB more')
         if target and not replace_signer and adb.installed(man['package']):   # an update: the grant (the app's uid's, which the update keeps) before the APK goes in
             PROG.set(step='granting the app All files access')
@@ -255,8 +284,26 @@ def install(apk, data, adb_exe, serial=None, replace_signer=False, romfs_at=None
         if not target and seed_from_sibling(adb, man, files, have, data): have = adb.remote_sizes(files)   # another port of the game on the device gives its RomFS / DLC
         PROG.set(step='pushing the game data')
         adb.push_tree(data, files, keep=datapack.KEEP_ON_DEVICE, skip=(datapack.MANIFEST,) + (('env.txt',) if target else ()), exclude=(datapack.ROMFS,) if target else (),
-                      verify=lambda rel: rel.split('/', 1)[0] not in ('RomFS', 'aoc'),   # the game's own files change only with their version
+                      verify=lambda rel: rel.split('/', 1)[0] not in ('RomFS', 'aoc', datapack.CONTAINER),   # the game's own files change only with their version
                       progress=lambda d, t, note: PROG.set(done=d, total=t, note=note), have=have)
+        if cont and (old := [r for r in have if r.split('/', 1)[0] in (datapack.ROMFS, 'aoc')]):   # an earlier extracted port's trees: the containers hold the same files
+            PROG.set(step=f'removing the extracted RomFS / DLC ({len(old):,} files)')
+            for sub in (datapack.ROMFS, 'aoc'): adb.shell(f'rm -rf {shlex.quote(files + "/" + sub)}', timeout=1200)
+            say(f'removed the extracted RomFS / DLC from the app\'s files folder ({len(old):,} files, {sum(have[r] for r in old) / 2**30:.1f} GB): this pack reads them out of its NSPs')
+        if game_files_push:   # --romfs-container: the game's own NSPs and keys, from the folder they came from, as they are (a picture of the files already there is skipped)
+            push_now = [(s, r, rel, b) for s, r, rel, b in game_files_push if have.get(rel) != b]
+            total = sum(b for _, _, _, b in push_now); PROG.set(step=f'pushing the game\'s own files ({len(push_now):,})', done=0, total=total, unit='B')
+            done = 0
+            for src, remote, rel, size in push_now:
+                base = done
+                adb.push_file(src, remote, progress=lambda d, t, note: PROG.set(done=base + d, total=total, note=note))
+                done += size
+            if total: say(f'pushed the game\'s own files: {len(push_now)} file{"s" if len(push_now) > 1 else ""}, {total / 2**30:.1f} GB')
+            else: say('the game\'s own files are on the device already (same names and sizes): not pushed')
+            keep = {rel for _, _, rel, _ in game_files_push}
+            if extra := [r for r in have if r.startswith(datapack.CONTAINER + '/') and r not in keep]:   # an earlier pack's DLC that this one does not push
+                PROG.set(step=f'removing {len(extra):,} files from {files}/{datapack.CONTAINER} that the pack no longer pushes')
+                for i in range(0, len(extra), 64): adb.shell(f'cd {shlex.quote(files)} && rm -f ' + ' '.join(shlex.quote(r) for r in extra[i:i + 64]))
         if own and extra:   # files of an older game version in the installer's own card folder, which the game would still find
             PROG.set(step=f'removing {len(extra):,} files from {target} that are not the pack\'s')
             for i in range(0, len(extra), 64): adb.shell(f'cd {shlex.quote(target)} && rm -f ' + ' '.join(shlex.quote(r) for r in extra[i:i + 64]))
@@ -273,7 +320,8 @@ def install(apk, data, adb_exe, serial=None, replace_signer=False, romfs_at=None
         elif was and romfs_at == APP:
             if sd_dir: PROG.set(step='removing the RomFS from the SD card'); adb.shell(f'rm -rf {shlex.quote(was)}', timeout=1200); say(f'the app reads its RomFS from its files folder again; {was} (the earlier --romfs-at sd copy) is removed')
             else: say(f'the app reads its RomFS from its files folder again; {was} is left as it is')
-        stale = [rel for rel in have if rel.split('/', 1)[0] in datapack.OWNED and not (target and rel.startswith(datapack.ROMFS + '/')) and not (data / rel).is_file()]   # the push only adds the pack's own files, which are never stale
+        stale = [rel for rel in have if rel.split('/', 1)[0] in datapack.OWNED and not (target and rel.startswith(datapack.ROMFS + '/'))
+                 and not (cont and rel.split('/', 1)[0] in (datapack.ROMFS, 'aoc')) and not (data / rel).is_file()]   # the push only adds the pack's own files, which are never stale (a container pack removed its trees above, in one go)
         if stale:   # an older version's files, which the game would still find
             PROG.set(step=f'removing {len(stale):,} stale files')
             for i in range(0, len(stale), 64): adb.shell(f'cd {shlex.quote(files)} && rm -f ' + ' '.join(shlex.quote(r) for r in stale[i:i + 64]))

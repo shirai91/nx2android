@@ -1,29 +1,46 @@
 // Miscellaneous service layer: add-on content / shop / error applet / profanity filter / server name resolution / parental controls / software keyboard.
 // On the real device each goes through IPC or a system applet; the host gives results as single-player offline. Pure-computation SDK parts (hash, util, software Opus) are not taken over, the original implementation is used directly.
 #include "hle.h"
+#include "dm_romfs.h"
 #include <dirent.h>
 
 // ---------- aoc add-on content (the DLC NSPs in the player's folder) / ec shop (excluded) ----------
 // Owned add-on content indices (ascending), fixed at the first query:
-//   numeric subdirectories of DM_AOC_DIR: each is one DLC's RomFS, which the packing script extracts only from DLC NSPs really in the player's folder (title ID = base + 0x1000 + index).
+//   numeric entries of DM_AOC_DIR: a directory holds an extracted DLC RomFS, a file <index>.nsp is the player's own DLC NSP
+//   (the packing script extracts folders only from DLC NSPs really in the player's folder; title ID = base + 0x1000 + index).
 //     Engage: F001 → 1 (E0), F002 → 2 (H0); the content itself is in the 2.0.0 update's RomFS and each DLC package holds one empty marker file; the game calls MountAddOnContent for each index ListAddOnContent returns (hle_fs.c).
-//   No DM_AOC_DIR: none (on a Switch 2 Mario 1.2.1 uses it to tell whether the upgrade pack is owned, and the user has no Mario add-on content files).
+//   The base container's own add-on content (an integrated XCI holds its DLC NCAs beside the base's) is added to that list.
+//   No DM_AOC_DIR and no such container: none (on a Switch 2 Mario 1.2.1 uses it to tell whether the upgrade pack is owned, and the user has no Mario add-on content files).
 //   DM_AOC_OWNED=0: always none (test switch, for runs without the DLC).
 static int g_aoc[64], g_naoc = -1;
 static int aoc_int_cmp(const void *a, const void *b) { return *(const int *)a - *(const int *)b; }
 static void aoc_load(void) {
     if (g_naoc >= 0) return;
     g_naoc = 0;
-    const char *e = getenv("DM_AOC_OWNED"), *dir = getenv("DM_AOC_DIR"); const char *why = "no DM_AOC_DIR";
+    const char *e = getenv("DM_AOC_OWNED"), *dir = getenv("DM_AOC_DIR"), *cont = getenv("DM_ROMFS_CONTAINER");
+    const char *why = "no DM_AOC_DIR";
     if (e && !strcmp(e, "0")) why = "DM_AOC_OWNED=0";
-    else if (dir && *dir) {
-        why = dir; DIR *d = opendir(dir); struct dirent *ent;
-        while (d && (ent = readdir(d)) && g_naoc < (int)(sizeof g_aoc / sizeof *g_aoc)) {
-            char *end; long i = strtol(ent->d_name, &end, 10);
-            if (ent->d_name[0] >= '1' && ent->d_name[0] <= '9' && !*end && i <= 2000) g_aoc[g_naoc++] = (int)i;
+    else {
+        int max = (int)(sizeof g_aoc / sizeof *g_aoc);
+        if (dir && *dir) {
+            why = dir; DIR *d = opendir(dir); struct dirent *ent;
+            while (d && (ent = readdir(d)) && g_naoc < max) {
+                char *end; long i = strtol(ent->d_name, &end, 10);
+                if (ent->d_name[0] >= '1' && ent->d_name[0] <= '9' && (!*end || !strcmp(end, ".nsp")) && i <= 2000) g_aoc[g_naoc++] = (int)i;
+            }
+            if (d) closedir(d);
         }
-        if (d) closedir(d);
+        if (cont && *cont) {   // an integrated container carries its add-on content: NCA headers only, so cheap
+            char err[256]; int idx[64];
+            int n = romfs_bundled_dlc(cont, getenv("DM_PROD_KEYS"), idx, 64, err, sizeof err);
+            if (n < 0) LOG("aoc: cannot list the add-on content bundled in %s: %s", cont, err);
+            else for (int i = 0; i < n && g_naoc < max; i++) g_aoc[g_naoc++] = idx[i];
+            why = dir && *dir ? "DM_AOC_DIR + the container's own" : "the container's own";
+        }
         qsort(g_aoc, g_naoc, sizeof *g_aoc, aoc_int_cmp);
+        int n = 0;   // a DLC in both places is owned once
+        for (int i = 0; i < g_naoc; i++) if (!n || g_aoc[n - 1] != g_aoc[i]) g_aoc[n++] = g_aoc[i];
+        g_naoc = n;
     }
     char list[256] = ""; for (int i = 0; i < g_naoc; i++) snprintf(list + strlen(list), sizeof list - strlen(list), "%s%d", i ? "," : "", g_aoc[i]);
     LOG("aoc: reporting %d add-on contents {%s} (%s)", g_naoc, list, why);
