@@ -38,3 +38,7 @@ The memory layout deliberately uses the original explicit 2 GB Unreal region arg
 The game uses Unreal Engine 4.27 with LZ4 shader records inside cooked packages in a version-11 pak, rather than a separate shader-code archive. Generic reader support accompanies this profile. It still needs a full split against the real update, shader translation, an APK build and a device run through traveler selection, an opening battle, a save/reload and a sustained play session.
 
 Keep `status experimental` until those checks are recorded in [`android.tsv`](android.tsv). Add a device-captured gameplay image and the tested-version tag only after an actual device run.
+
+## Found on this game
+
+- [Observation gates after removed calls](../../../../docs/ARCHITECTURE.md#observation-gates-after-removed-calls): the 1.1.1 allocator cut replaces its constructor call with a NOP before the following observation gate is checked. The rewriter retains the checked original call boundary for that NOP. The reported step-3 failure exposed this ordering issue; a complete real-game rewrite and Android bring-up remain unverified.
