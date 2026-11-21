@@ -66,6 +66,8 @@ When **Show gamepad** is enabled, using a controller hides the on-screen control
 
 To play without the on-screen menu button, tick **No menu button** on the Port tab (`--no-menu-button`). The button is then not drawn and its corner of the screen goes to the game. Open the pause menu with the Back gesture or key, or with a controller's Home or Menu key. The layout editor shows the button darkened, and a second screen's gamepad keeps it. It stays hidden until you port the game again without the option.
 
+The frame rate counter (**Game → Show FPS**) has two more tabs in the pause menu. **Counter** chooses its rows (FPS, SOC and BAT temperatures, the Vulkan driver in use, and a frame-time graph: one bar per presented frame, green on time, amber a little late, red a dropped frame, a grey line at the target; FPS, SOC and BAT are on by default, as before, and the driver row and the graph are opt-ins); **Style** chooses its corner, text colour, outline or background box, and size. Both show the counter while they are open.
+
 To arrange the on-screen controls, open the pause menu's **Gamepad** tab and choose **Edit layout**: drag a control to move it, pinch or use **− / +** to resize it. **Save** keeps the layout for the next launch and **Cancel** discards your edits. **Snap to grid** (off at first, and remembered) shows a square grid and snaps each control's center to it as you drag.
 
 A controller whose A is the bottom button (Xbox labels, most Android devices' built-in controls) can have its face buttons follow their labels: the **Gamepad** tab's **Face buttons** row switches between **Position** (the Switch's layout, the default) and **Label**. It applies at once, also to the pause menu's own A and B, and each device keeps its own choice.
