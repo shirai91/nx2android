@@ -360,3 +360,27 @@ It builds through the production Java/dex packager, uses the real guest keyboard
 `python -m unittest discover -s tests -p test_cpu_handle_readiness.py -v` executes the production tracking, deferred-coverage, live-switch and descriptor-preflight functions. It requires `host_cc.ubsan()` and defaults to UBSan; set `NX2A_TEST_SANITIZE=1` to also use ASan on a host with that runtime. A compiler without UBSan is reported as an explicit capability skip. The manual Android build runner and physical-device procedure are in `tests/vk_cpu_handle_readiness.md`. The runner only builds artifacts. Physical-driver behavior, real-game racy-read/cut/wait counts and timing remain separate validation.
 
 For live A/B testing, use a `DM_CTL` env update with `DM_VK_CPU_READY=0`, then restore `DM_VK_CPU_READY=1`. Values take effect at a submission boundary. Disabling allows unsynchronized CPU descriptor reads; the default remains enabled.
+
+### NVN alpha testing
+
+`tests/test_vk_alpha.py` checks the recorded reference, dynamic comparison masks,
+integer-target bypass and SPIR-V variants with the NDK shader tools. Its replay
+source is read through `tests/csrc.py` `unit()` so the harness includes every
+replay section. `tests/vk_alpha_replay.md` describes the asset-free manual replay.
+The shader-variant log's `alpha test 1` reports variant creation; pair it with a
+scene-specific picture difference to establish game use. The donor's Dark Souls
+foliage, Animal Crossing island maps and Astral Chain death effects are leads,
+not verified Android game/version/scene reproductions. Physical Qualcomm and
+Turnip gameplay qualification remains separate from host and synthetic checks.
+
+### Native color logic operations
+
+`test_logic_operations` compiles production format/state eligibility and the
+prewarm feature guard with ASan/UBSan. The manual renderer replay is in
+`tests/vk_logic_operations.md`; its build runner does not contact a device.
+`DM_VK_NO_LOGIC_OP` is a startup diagnostic: any set value, including `0`,
+disables the feature. Remove it for the device's advertised native behavior.
+The fallback diagnostic identifies a refused native path, not proof that an
+eligible native operation ran. No named Android game/version/scene is yet
+established for this feature; synthetic truth-table and build results do not
+satisfy the maintainer's requested Legion Y700 Qualcomm/Turnip gameplay A/B.

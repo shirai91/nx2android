@@ -66,6 +66,22 @@ The replacement flat diagnostic fragment shader writes all eight outputs and
 keeps those targets eligible; guest channel masks still apply. A draw without a
 fragment shader writes no colour.
 
+NVN alpha-reference commands are recorded and replayed as dynamic fragment push
+constants. Eligible float4 location-zero fragment outputs use an alpha-test
+SPIR-V variant; integer attachments and discarded draws bypass it. Comparisons
+retain unordered NaN behavior and compose with depth and dual-source variants.
+The transform accepts SPIR-V through 1.3 without existing push constants. A missing
+or unusable debug replacement keeps the ordinary alpha-tested variant. Pipeline
+prewarm records use PPE4 and the driver-cache envelope uses renderer ABI 2.
+
+Native Vulkan color logic operations use the device's `logicOp` feature for
+eligible unsigned-integer and normalized active attachments. Non-COPY operations
+disable blending; unwritten MRT holes do not affect eligibility. Mixed/unsupported
+formats or effective alpha testing keep COPY behavior, and a device without the
+feature also falls back to COPY. Persisted native-logic pipeline keys are skipped
+when the feature is unavailable. `DM_VK_NO_LOGIC_OP`, when set at startup, forces
+that feature-disabled path for diagnosis; it does not add software emulation.
+
 Vulkan descriptor collection checks each image binding against its 384-entry
 scratch array before writing it. A binding that would exceed capacity stops the
 host with a diagnostic; valid arrays keep their full reflected counts, including
