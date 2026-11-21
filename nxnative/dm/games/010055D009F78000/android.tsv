@@ -7,7 +7,9 @@
 # for a dialogue sprite once the title's class demo had played (RBBM: GPC error, a device lost in the first dialogue after character creation).
 # Turnip compiles every shader too but takes three times the GPU time here: Qualcomm's driver is the one to use.
 # Tested 2026-11-21 on a Lenovo Legion Y700 (2025, TB322FC) with Qualcomm's driver: title, opening movie, class demo, new game, character creation with the
-# overlay keyboard, the prologue, the first battle, saving and loading; 60 fps (GPU about 12 ms a frame in battle), 0 audio underruns, a 30-minute battle soak.
+# overlay keyboard, the prologue, the first battle won (combat scenes), the Chapter 1 story and the monastery free roam, saving and loading; 60 fps with 0 frames
+# dropped on screen (GPU about 7-9 ms a frame in battle, 4-5 ms in the monastery, handheld), a 30-minute battle soak; the sound checked with DM_AUDREN_DUMP and
+# devtools/pcm_glitches.py (20 minutes: no repeated blocks, gaps or clipping after the catch-up fix below).
 # The DLC (Cindered Shadows and the others) were not ported or tested.
 status	playable
 tested	v327680 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
@@ -15,3 +17,6 @@ package	org.nx2a.fireemblemthreehouses
 orientation	landscape
 readme_image	docs/images/fire-emblem-three-houses.jpg
 readme_tag	v0.5.0
+# Catch-up frames only in the renderer's first second: KTGL updates twice per renderer event, and a catch-up frame for every second update replayed 20 ms of its
+# looping stream buffers (music and voices buzzed: 45% of the output blocks were repeats). Effects are initialized at start-up, which the first second still covers
+env	DM_AUDREN_CATCHUP_FRAMES=200
