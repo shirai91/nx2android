@@ -1,0 +1,8 @@
+# FIFA 21 Legacy Edition, SDK 9.6, Xiaomi 17 / Android 17, 2026-11-17.
+# Menu and a match reached; one asset-GC crash remains under investigation.
+# Player/ball rendering needs one runtime shader capture followed by a rebuild with --install.
+# See README.md in this profile for the capture workflow and validation limits.
+status	experimental
+tested	v0 Xiaomi 17 (Adreno 840, Android 17)
+package	org.nx2a.fifa21
+orientation	landscape
