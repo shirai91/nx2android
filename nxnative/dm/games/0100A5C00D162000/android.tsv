@@ -1,0 +1,9 @@
+# Cuphead on Android: source-audited candidate, not device tested.
+# Audited build: 1.3.7 (v655360); compatibility evidence and test plan: ANDROID.md.
+status	experimental
+package	org.nx2a.t0100a5c00d162000
+orientation	landscape
+requires	bcn
+setting	docked=1
+setting	overlay=1
+setting	rumble=1
