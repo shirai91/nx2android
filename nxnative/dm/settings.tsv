@@ -12,6 +12,8 @@ DM_AOC_OWNED	int		debug	?	hle_misc.c
 DM_AUDIO	int		debug	start	hle_audio.c	silent sink (Android defaults to real output)
 DM_AUDIO_DUMP	str		debug	?	hle_audio.c	
 DM_AUDIO_MUTE	bool		debug	?	hle_audio.c	diagnostic: the whole real-output path (AudioUnit callback pacing, background take-over) but with the output silenced (lifecycle tests on the Mac without noise)
+DM_AUDREN_CATCHUP_FRAMES	int		profile	start	hle_audren.c	catch-up frames (a frame rendered on the updating thread when nothing was rendered since the last update) only while fewer than this many frames have been rendered; unset: always. For games that update several times per renderer event and stream from looping voice buffers (Fire Emblem: Three Houses: 200)
+DM_AUDREN_DUMP	str		debug	start	hle_audren.c	writes every block the renderer hands to the output, in play order (stereo int16, 48 kHz), to this file; logs the blocks that rendered nothing and those from the catch-up queue (`audren dump:`); devtools/pcm_glitches.py finds clicks, gaps and clipping in it
 DM_AUDREN_TRACE	str		debug	live	hle_audren.c	logs the first 200 renderer updates with the frames rendered since the previous one, and the next 300 catch-up frames (`audren: catch-up at update …`): the calling thread, the time since the previous update and the frames queued ahead. Animal Crossing: New Horizons: 14-25 catch-ups a second with or 
 DM_BOOTPROF	str		debug	?	nvn_mtl.m main.c	
 DM_CRASH_TOMBSTONE	str		debug	?	crash.c	

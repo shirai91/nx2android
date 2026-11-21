@@ -24,6 +24,7 @@ Moved out of SKILL.md (unchanged) so it is read only when a symptom or a speed p
 | A model drawn as a flat black silhouette; `shader … is not in the bundle` lines | pass dumps: depth there, G-buffer albedo black = its G-buffer draw was skipped | shaders whose code is in no game file (Xenoblade Chronicles 3: effects and model materials). The app captures them (`captured_shaders/`); port again with `--install` to translate them in |
 | No sound | "silent sink" in the log | real output defaulted on for iOS only |
 | Crash in the audio device callback, or "more than 8 AudioOuts open", after the pause menu's mode switch | count `OpenAudioOut` against `Close` lines | the game closes an output only when its `AudioOut` struct is marked open (first word non-zero, as the SDK leaves it): unmarked, every mode change opened another one beside the old |
+| Buzz, stutter or clicks in music and voices with 0 underruns in the log | record the output (`env.txt` `DM_AUDREN_DUMP=<files>/aud.pcm`), pull it and run `devtools/pcm_glitches.py`: repeats (blocks equal to one a few frames earlier), clicks on 240-sample frame edges, gaps, clipping; `catch-up renders so far` growing tens a second, and `DM_AUDREN_TRACE` showing pairs of updates under 1 ms apart | Fire Emblem: Three Houses updates twice per renderer event: the catch-up frame for every second update ran its looping stream buffers past the refill (46% of blocks were repeats). The profile sets `DM_AUDREN_CATCHUP_FRAMES=200` |
 
 ## Performance playbook
 
