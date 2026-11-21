@@ -119,6 +119,9 @@ class AvcColor(unittest.TestCase):
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#ifdef __aarch64__
+#include <arm_neon.h>
+#endif
 typedef struct { int h, standard, range, layout; } AMediaFormat;
 typedef void AMediaCodec;
 typedef struct mavc mavc;
