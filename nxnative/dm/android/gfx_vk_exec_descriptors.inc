@@ -180,6 +180,16 @@ static int tex_desc_for(int st, const dmsv_bind *b, uint64_t h, VkDescriptorImag
     if (num && !storage) ii->sampler = samp_for(st, b, h, 1);
     if (!ii->imageView) {
         if (g_tracing) VKLOG("  texture binding %d handle %#llx id %d: no texture (%s) → a dummy view", b->binding, (unsigned long long)h, tid, !tid ? "ID 0" : g_var_now == 3 ? "variant 3" : !t ? "the ID is not registered" : "no view");
+        // A texture buffer in a slot the translator read as 2D rows of 16384 texels (a 1D integer fetch with no type answer, Program.cs RecordTexelFetch1D; flag 8,
+        // shader_vk.py): the Apple host binds the buffer as such rows (nvn_mtl.m tbuf_as_2d), this backend has no image over a buffer, so the shader reads the dummy.
+        // Fire Emblem: Three Houses' eye layer read its lighting tables (slots 18-20) so: white, noisy eyes. The profile's answer table fixes it (the slot becomes a texel buffer)
+        if (t && t->d.target == NVN_TEXTURE_TARGET_BUFFER && (b->flags & 8)) {
+            static uint64_t seen[64]; static int ns; uint64_t key = S.sh[st] ? S.sh[st]->key : 0, id = key ^ (uint64_t)(uint16_t)b->reg << 48; int dup = 0;
+            for (int i = 0; i < ns; i++) dup |= seen[i] == id;
+            if (!dup && ns < 64) { seen[ns++] = id;
+                LOG("[RED] [vk] shader %016llx reads texture slot %d as 2D rows (a 1D fetch with no type answer) but a texture buffer is bound there: it reads a dummy. "
+                    "Answer it in the profile's shader_facts_manual.tsv: %016llx {\"tex\":{\"%d\":\"buffer\"}}", (unsigned long long)key, (int)b->reg, (unsigned long long)key, (int)b->reg); }
+        }
         const vkfmt_t *f = t ? vk_fmt(t->d.format) : NULL;
         ii->imageView = vk_dummy_view(b->dim == 0xff ? 1 : b->dim, b->flags & 1, (b->flags & 2) != 0, storage, f && f->is_int); num = f && f->is_int ? (f->is_sint ? 2 : 1) : 0;
     }
@@ -429,6 +439,13 @@ static VkDescriptorSet stage_set(int st, vkshader_t *s, uint32_t *dofs, VkDescri
             bv[nbv] = tid && vk_tex_by_id(tid, &v, &t) && t && t->d.target == NVN_TEXTURE_TARGET_BUFFER ? vk_tbuf_view(t, b->kind == RK_IMG_TBUF) : VK_NULL_HANDLE;
             if ((g_tracing && g_x_tracepass >= 0) || (st == 5 && g_x_tracepass == -2)) VKLOG("  texel buffer binding %d (kind %d, cbuf %d +%d): handle %#llx → %s format %#x, %u elements at %#llx%s", b->binding, b->kind, b->reg, b->off,
                 (unsigned long long)h, t ? "texture" : "no texture", t ? t->d.format : 0, t ? t->d.width : 0, t ? (unsigned long long)(uintptr_t)t->mem : 0ull, bv[nbv] ? "" : " (the dummy: zeros)");
+            if (!bv[nbv] && t && t->d.target != NVN_TEXTURE_TARGET_BUFFER && b->kind == RK_TBUF) {   // a profile's "buffer" answer (shader_facts_manual.tsv) that met an image: the answer is wrong
+                static uint64_t seen[64]; static int ns; uint64_t key = S.sh[st] ? S.sh[st]->key : 0, id = key ^ (uint64_t)(uint16_t)b->reg << 48; int dup = 0;
+                for (int j = 0; j < ns; j++) dup |= seen[j] == id;
+                if (!dup && ns < 64) { seen[ns++] = id;
+                    LOG("[RED] [vk] shader %016llx reads texture slot %d as a texel buffer (the answer table says buffer) but a texture of target %d is bound there: it reads zeros",
+                        (unsigned long long)key, (int)b->reg, (int)t->d.target); }
+            }
             if (!bv[nbv]) bv[nbv] = vk_dummy_tbuf(b->kind == RK_IMG_TBUF);
             else if (i < 64) { int num = view_num(t, NULL); if (num == 1) g_num_um |= 1ull << i; else if (num == 2) g_num_im |= 1ull << i; }   // texel buffers read and write their words alike (storage ones too: gfx_vk_shader.c spv_int_images)
             wr->pTexelBufferView = &bv[nbv++]; wr->descriptorType = b->kind == RK_IMG_TBUF ? VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER : VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER; nw++;
