@@ -36,6 +36,9 @@ static void cpu_ready(uint64_t a,uint64_t n){assert(mapped(a,n));waits++;waited_
 static void vk_ubd_read(uint64_t a,uint64_t n,uint8_t *out){assert(mapped(a,n));memcpy(out,snapshot+(a-(uintptr_t)memory),n);reads++;}
 static void *vk_scratch(uint64_t n,unsigned align,VkBuffer *b,VkDeviceSize *o){scratch_calls++;allocated=(allocated+3)&~3u;assert(n<=sizeof scratch-allocated);output=(uint32_t*)(scratch+allocated);allocated+=(unsigned)n;*b=1;*o=0;return output;}
 static void *snapshot_realloc(void *p,size_t n){heap_grows++;heap_size=n;return realloc(p,n);}
+static unsigned log_count;
+static char log_line[256];
+#define VKLOG(...) do { log_count++; snprintf(log_line,sizeof log_line,__VA_ARGS__); } while(0)
 READY
 static int diagnostics,accepted;
 static int vk_buf_at(uint64_t a,uint64_t n,VkBuffer *b,VkDeviceSize *o){return vk_pool_of(a,n)!=NULL;}
@@ -51,9 +54,15 @@ REJECT
 CONVERT
 #undef realloc
 int main(void){
+ // Invalid, indirect and native paths must not consume the once-only marker.
+ p_draw_idx unused={.prim=4,.itype=2,.count=4,.ibuf=(uintptr_t)memory};
+ assert(quad_index_ready(&unused));unused.prim=7;unused.ind=1;assert(quad_index_ready(&unused));
+ unused.ind=0;unused.count=3;assert(!quad_index_ready(&unused));
+ unused.count=4;unused.ibuf=(uintptr_t)(memory+64);assert(quad_index_ready(&unused));assert(!log_count&&!waits);
  // Match the existing draw path: a registered first byte, with indices crossing its chunk.
  p_draw_idx crossing={.prim=7,.itype=2,.count=4,.ibuf=(uintptr_t)(memory+60)};
  assert(quad_index_ready(&crossing));assert(waits==1&&waited_size==16);
+ assert(log_count==1);assert(!strcmp(log_line,"direct indexed quads: itype 2 count 4"));
  for(unsigned i=0;i<4;i++){uint32_t value=21+i;memcpy(snapshot+60+i*4,&value,4);}
  VkBuffer cross_buf;VkDeviceSize cross_off;
  assert(quad_indices(4,memory+60,2,0,&cross_buf,&cross_off)==6);
@@ -91,6 +100,7 @@ int main(void){
  VkBuffer b;VkDeviceSize o;unsigned before=reads;assert(quad_indices(4,NULL,0,5,&b,&o)==6);
  const uint32_t generated[]={5,6,7,5,7,8};assert(!memcmp(output,generated,sizeof generated)&&reads==before);
  assert(quad_indices(3,NULL,0,5,&b,&o)==0);
+ assert(log_count==1);
  puts("CPU quad index widths, deferred bytes, consumed bounds and native paths PASS");
 }
 """.replace('READY',ready).replace('CONVERT',convert).replace('PREFLIGHT',preflight).replace('REJECT',reject)
