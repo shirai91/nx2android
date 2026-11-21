@@ -1,0 +1,40 @@
+# Game profile made from the survey (scripts/build_ipa_from_nsp.py with dm/games/profile_guess.py), its values brought up on Android unchanged: the boot, the title, menus and the
+# character select ran with them (android.tsv). Not brought up on the Mac host or iOS.
+# Crash™ Team Racing Nitro-Fueled, Beenox / Alchemy engine (not Unreal), SDK 8.2.0, update v983040 (1.0.15)
+
+# ---- Identity ----
+title_id	0100F9F00C696000
+program_id	0100F9F00C696000
+
+# ---- App ----
+name	Crash™ Team Racing Nitro-Fueled
+ipa	CrashTeamRacingNitroFueled.ipa
+app_category	public.app-category.games
+
+# ---- Versions ----
+build	v983040	1.0.15	main=1c689518406930512c13ddf4217e7676	subsdk0=c8a3cc0b1d1858330a881c0c2fc87940	sdk=3ae34e689d7a35f13cbf42bfd672af8b
+package	v983040
+shader_versions	v983040
+
+# ---- Files ----
+# every module main imports from
+modules	main subsdk0 sdk
+romfs_marker	archives/update.pak
+zip_store	.bk2:.pak:.metallib
+
+# ---- Memory ----
+# main sets a heap of at most the pool − 64 MB: a 3328 MB heap region
+mem_reserve	0x100000000
+mem_alias	0x10000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+# the NPDM declares 0 MB of system resource: IsVirtualAddressMemoryEnabled is false, as on Horizon (Big Brain Academy: Brain vs. Brain sets a heap only then)
+sys_resource	0x0
+
+# ---- Shader split ----
+shader_groups	/archives/=archives /ghosts/=ghosts /dlog/=dlog
+shader_note	Crash™ Team Racing Nitro-Fueled shaders (provisional profile)
+
+# ---- After the rewrite ----
+# the rewritten modules are larger than the default 64 MB of used memory (Age of Calamity: 66.6 MB → 72 MB)
+mem_used	0x7000000

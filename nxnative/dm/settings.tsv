@@ -44,6 +44,7 @@ DM_GL_CAPTURE	str		debug,ios	?	hle_gl.m
 DM_GL_LOG	str		debug,ios	?	hle_gl.m	
 DM_GL_STUBS	str		debug,ios	?	hle_gl.m	
 DM_GPU_TURBO	str		profile	live	perf_android.c	"auto" or 1: ask the GPU for its high clocks while the game is GPU-bound; unset or 0 = no
+DM_GUESTLOG	bool		debug	start	hle_offline.c	1 = copy the game's own log (nn::diag LogImpl: NN_LOG and engine report printers) into the host log, each line prefixed [guest]; a release SDK prints nothing
 DM_GUEST_SPAWN_TEST	int		debug	?	hle_guestthread.c	
 DM_HLECOUNT	str		debug	start	hle_count.c	count every HLE call and write a TSV (category, name, count) at exit; the `ctl.txt` line `hlecount <file>` writes the counts so far, so two dumps around one action show the calls it made
 DM_IMPORTS	str		debug	?	main.c	

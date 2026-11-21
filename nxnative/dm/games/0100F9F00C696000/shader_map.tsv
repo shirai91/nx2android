@@ -1,0 +1,15 @@
+# kind: evidence  Crash™ Team Racing Nitro-Fueled shaders (provisional profile) (GLSLC in RomFS + main) → control section + code area keys (dm/gfx/tools/shader_split.py)
+# column 5 records where each key first appears; this game has no PC version to pair with
+package	index	stage	dm_ctl_sha16	source
+vs_main.bin	0	vertex	664f9d5cd8fddc85	main#GLSLC@0x40cd370
+vs_main.bin	1	vertex	32e960b985a3ac61	main#GLSLC@0x40d0034
+vs_main.bin	2	vertex	5cfbaba0893310fb	main#GLSLC@0x40d1f08
+vs_main.bin	3	vertex	76ea7b0b619a5299	main#GLSLC@0x40d3df4
+vs_main.bin	4	vertex	675800c88f1ca0e0	main#GLSLC@0x40d5cc8
+ps_main.bin	0	pixel	b39a359e6269c7a4	main#GLSLC@0x40d7f2c
+ps_main.bin	1	pixel	720e6c5da80f82de	main#GLSLC@0x40da728
+ps_main.bin	2	pixel	707bde8df112a1ee	main#GLSLC@0x40dc66c
+ps_main.bin	3	pixel	efaa4bc0fbd3a9d1	main#GLSLC@0x40ddc48
+ps_main.bin	4	pixel	cf444a1dcc8410a0	main#GLSLC@0x40df4c4
+vs_main.bin	5	vertex	b5e6c55a98bd0927	main#GLSLC@0x40e59a4
+ps_main.bin	5	pixel	76c71ac0f2448246	main#GLSLC@0x40e7a50
