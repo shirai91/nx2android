@@ -10,7 +10,8 @@
 # overlay keyboard, the prologue, the first battle won (combat scenes), the Chapter 1 story and the monastery hall, saving and loading; 60 fps (on screen: no
 # repeated frame in 20 minutes of battle docked and 10 handheld with the planned-end limiter; GPU 9 ms in battle handheld, 11-13 ms docked, 4-5 ms in the monastery hall), a 34-minute
 # soak on the fixed build (docked then handheld, same process); the sound checked with DM_AUDREN_DUMP and
-# devtools/pcm_glitches.py (54 minutes on the fixed build: no repeated blocks, gaps or frame-edge clicks; 10 clipped samples in loud combat).
+# devtools/pcm_glitches.py (54 minutes on the fixed build: no repeated blocks, gaps or frame-edge clicks; 10 clipped samples in loud combat;
+# 8.5 minutes of Chapter 1 free roam on the planned-end limiter build: none of these). The outdoor monastery is not measured (closed at the start of Chapter 1).
 # The DLC (Cindered Shadows and the others) were not ported or tested.
 status	playable
 tested	v327680 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)

@@ -27,7 +27,7 @@ Read the profile's porting log in the comment header of [`android.tsv`](android.
 
 ## Frame rate
 
-- 60 fps (30 on Switch) on the title, in the dialogue and the menus, on the first battle map and in its 3D combat scenes, docked and handheld, and in the monastery's first hall (handheld; the outdoor areas are not measured yet).
+- 60 fps (30 on Switch) on the title, in the dialogue and the menus, on the first battle map and in its 3D combat scenes, docked and handheld, and in the monastery's halls and corridors (handheld, 5 minutes of walking in the Chapter 1 free roam: GPU 5 ms, no frame shown twice). The outdoor areas are not measured: at the start of Chapter 1 the guards close them.
 - On a Legion Y700 (2025): the battle map takes about 9 ms of GPU time a frame handheld and 11-13 ms docked (rising as the device warms), the combat scenes about 7 ms handheld, the monastery hall 4-5 ms.
 - No frame shown twice in 20 minutes of battle docked and 10 minutes handheld (before the frame limiter fix: 19 in 20 minutes docked). The game's 60.0 Hz clock and the panel's vsync differ slightly, so about every 11 minutes one frame stays on screen for one vsync instead of two.
 - The anime movies play at their own 30 fps.
