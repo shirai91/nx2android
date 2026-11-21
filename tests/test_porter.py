@@ -207,6 +207,26 @@ class DataPack(unittest.TestCase):
 
 
 class Experimental(unittest.TestCase):
+    def test_unreal_provisional_alias_region_leaves_a_heap(self):
+        from porter.upstream import profile_guess
+
+        imports = {'nvnBootstrapLoader', profile_guess.HEAP_API}
+        facts = {
+            'mods': {'main': {'imports': imports, 'far': False, 'bss': 0}},
+            'romfs': {'root': set(), 'exts': {'.pak': 1}},
+        }
+        for markers, resource, alias, heap in (
+            ({'Unreal 4'}, 0x1000000, 0x1008000000, 0x08000000),
+            (set(), 0x1000000, 0x118000000, 0x08000000),
+            ({'Unreal 4'}, 0, 0x10000000, 0xD0000000),
+        ):
+            with self.subTest(markers=markers, resource=resource):
+                rows = profile_guess.guess(dict(facts, main_markers=markers, sysres=resource), hooks=set())
+                reserve, alias_region, stack = (int(rows[key][0], 0) for key in ('mem_reserve', 'mem_alias', 'mem_stack'))
+                self.assertEqual(alias_region, alias)
+                # hle_svc.c places the guest heap after a 256 MiB prefix, the alias region and the stack.
+                self.assertEqual(reserve - 0x10000000 - alias_region - stack, heap)
+
     def test_ios_profile_copied_with_experimental_android_tsv(self):   # an iOS-only profile is copied out of the repository, never edited in place
         ios_only = '010099C022B96000'   # Super Mario Galaxy: an iOS profile without android.tsv or patches.py (it renders with Vulkan itself, which the Android host does not take)
         t = Path(tempfile.mkdtemp(prefix='nx2a_test_exp_')); environ = dict(os.environ)
