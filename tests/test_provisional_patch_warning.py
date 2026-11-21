@@ -35,9 +35,9 @@ class ProvisionalPatchWarning(unittest.TestCase):
         self.root = Path(temp.name); self.exe = self.root / 'ExeFS'; self.exe.mkdir()
         (self.root / 'RomFS').mkdir(); fixture_nso(self.exe / 'main')
         profile = self.root / 'profile/0100000000AAA000'; profile.mkdir(parents=True)
-        (profile / 'game.tsv').write_text('title_id\t0100000000AAA000\nmodules\tmain\n')
+        (profile / 'game.tsv').write_text('title_id\t0100000000AAA000\nmodules\tmain\n', encoding='utf-8')
         self.g = game.Game(profile); self.local = self.g.table('patches.py')
-        self.local.write_text("CUTS = {'000102030405060708090a0b0c0d0e0f': [(0x10, '1f2003d5', 'c0035fd6', 'synthetic cut')]}\n")
+        self.local.write_text("CUTS = {'000102030405060708090a0b0c0d0e0f': [(0x10, '1f2003d5', 'c0035fd6', 'synthetic cut')]}\n", encoding='utf-8')
         self.env = dict(os.environ, DM_TARGET='android'); self.env.pop('DM_PATCHES_EXTRA', None)
 
     def rewrite(self, repo=REPO):
@@ -51,7 +51,7 @@ class ProvisionalPatchWarning(unittest.TestCase):
             self.assertTrue(any('[RED]' in s and str(self.local) in s and 'dm/games' in s for s in messages), messages)
             self.assertFalse(any('DM_PATCHES_EXTRA' in s for s in messages), messages)
             self.assertEqual((self.root / 'patched/main.patched.bin').read_bytes()[0x10:0x14], bytes.fromhex('1f2003d5'))
-            cuts = (self.root / 'patched/main.cuts.tsv').read_text().splitlines()
+            cuts = (self.root / 'patched/main.cuts.tsv').read_text(encoding='utf-8').splitlines()
             self.assertFalse([s for s in cuts if s.strip() and not s.startswith('#')])
             self.assertEqual('reused' in str(end.call_args), reused)
 
