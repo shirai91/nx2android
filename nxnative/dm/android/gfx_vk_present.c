@@ -793,12 +793,15 @@ static int overlay_ready(VkCommandBuffer cb, uint32_t k, int menu) {   // k: thi
         g_ov.uploaded = 0; g_ov.panel = -1;
     }
     uint32_t y0 = 0, rows = g_ov.h + g_ov.sh + g_ov.ph + g_ov.gh;   // the rows to upload
+    // A fence this device's kgsl holds for half a second would freeze the whole menu: wait one frame's worth, and when the copy out of the buffer has not run yet keep
+    // the panel as it was this frame: the next redraw, one vsync on, tries again and the change lands then
+    int panel_ok = 1;
     if (g_ov.uploaded && menu >= 0 && menu != g_ov.panel) {   // only the panel, after the last copy out of the buffer has run
         VkFence f[8]; uint32_t n = 0; for (uint32_t i = 0; i < 8; i++) if (i != k) f[n++] = g_pfence[i];
-        vkWaitForFences(V.dev, n, f, 1, 1000000000ull);
-        y0 = g_ov.h + g_ov.sh; rows = g_ov.ph; g_ov.uploaded = 0;
+        if (vkWaitForFences(V.dev, n, f, 1, 20000000ull) == VK_TIMEOUT) panel_ok = 0;
+        else { y0 = g_ov.h + g_ov.sh; rows = g_ov.ph; g_ov.uploaded = 0; }
     }
-    if (menu >= 0 && menu != g_ov.panel) { ov_panel(menu); g_ov.panel = menu; }
+    if (panel_ok && menu >= 0 && menu != g_ov.panel) { ov_panel(menu); g_ov.panel = menu; }
     if (!g_ov.uploaded) {
         VkImageMemoryBarrier b = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL, VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, y0 ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED,
             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, g_ov.img, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
@@ -877,10 +880,14 @@ static uint64_t pace_desired(double period) {   // the frame's desired present t
 }
 static void present_window(vkimg_t *im, const int crop[4], double period, uint64_t ticket) {   // period: the game's frame period (s); < 0 for a redraw (ticket 0)
     uint32_t k = g_pi++ % 8;
-    vkWaitForFences(V.dev, 1, &g_pfence[k], 1, UINT64_MAX);
+    // A redraw is not worth a freeze: this device's kgsl or compositor can hold a fence or a buffer for half a second, and waiting it out stalls the whole menu. Wait
+    // 30 ms at most and give the frame up; the next redraw, one vsync on, tries again with the newest state. Game frames still wait without a bound
+    uint64_t wt = period < 0 ? 30000000ull : UINT64_MAX;
+    if (vkWaitForFences(V.dev, 1, &g_pfence[k], 1, wt) == VK_TIMEOUT) return;
     VkFormat want = im->fmt == VK_FORMAT_R8G8B8A8_SRGB || im->fmt == VK_FORMAT_B8G8R8A8_SRGB || im->fmt == VK_FORMAT_A8B8G8R8_SRGB_PACK32 ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
     if (want != g_want) { g_want = want; swap_destroy(); if (!swap_make()) return; }   // once, at the first present of the other kind
-    uint32_t idx; VkResult r = vkAcquireNextImageKHR(V.dev, g_swap, UINT64_MAX, g_acq[k], VK_NULL_HANDLE, &idx);
+    uint32_t idx; VkResult r = vkAcquireNextImageKHR(V.dev, g_swap, wt, g_acq[k], VK_NULL_HANDLE, &idx);
+    if (r == VK_TIMEOUT) return;   // (a redraw that could not get an image in time: the next one presents this state)
     if (r == VK_ERROR_OUT_OF_DATE_KHR) { swap_destroy(); if (!swap_make()) return; r = vkAcquireNextImageKHR(V.dev, g_swap, UINT64_MAX, g_acq[k], VK_NULL_HANDLE, &idx); }
     if (r < 0) { VKRED_ONCE(90, "vkAcquireNextImageKHR: %d", r); return; }
     vkResetFences(V.dev, 1, &g_pfence[k]);
@@ -1004,7 +1011,15 @@ static void *present_thread(void *arg) {
     typeof(g_pq[0]) last = {0};
     for (;;) {
         pthread_mutex_lock(&g_pq_mu);
-        while (g_pq_tail == g_pq_head && !atomic_load(&g_redraw)) pthread_cond_wait(&g_pq_cv, &g_pq_mu);
+        while (g_pq_tail == g_pq_head && !atomic_load(&g_redraw)) {
+            // With the pause menu open the game sends no frame, so nothing would be presented between two touches and a dragged slider would only move on the next
+            // touch event. Present the last frame again every vsync instead, which is what makes the menu follow the finger
+            if (dm_menu_state() >= 0) {
+                struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts);   // (the condvar's clock: pthread_cond_timedwait takes an absolute time on it)
+                ts.tv_nsec += 33333333; if (ts.tv_nsec >= 1000000000) { ts.tv_sec++; ts.tv_nsec -= 1000000000; }
+                if (pthread_cond_timedwait(&g_pq_cv, &g_pq_mu, &ts)) break;   // (timed out: a redraw; a state change that came in lands here too)
+            } else pthread_cond_wait(&g_pq_cv, &g_pq_mu);
+        }
         atomic_store(&g_redraw, 0);
         if (g_pq_tail == g_pq_head) {   // a redraw, no new frame
             pthread_mutex_unlock(&g_pq_mu);
