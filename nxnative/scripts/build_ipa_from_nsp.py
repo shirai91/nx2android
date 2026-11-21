@@ -771,7 +771,15 @@ def derive_profile(g, pdir, ver, d, mods):
 
 
 # ---- Stage reuse: a stage whose inputs are all as at its last successful run keeps its output ----
+romfs = None   # dm/tools/romfs.py, set by a caller that mounts a container over an extraction folder (porter/pipeline.py): a mounted RomFS dir is then scanned as if it were extracted
+
 def files_under(d):   # (relative path, stat) of every file under d, sorted; [] when it does not exist
+    if romfs is not None and romfs.mounted(d):
+        out = []
+        for dp, _, names in romfs.walk(d):
+            for n in names:
+                p = os.path.join(dp, n); out.append((os.path.relpath(p, str(d)), romfs.stat(p)))
+        return sorted(out, key=lambda x: x[0])
     out, todo = [], [str(d)]
     while todo:
         try: it = os.scandir(todo.pop())
@@ -861,9 +869,9 @@ def extracted(log):   # (files, bytes) from the summary lines nx_extract wrote t
     return (sum(int(n) for n, _ in rows), int(sum(float(mb) for _, mb in rows) * 2**20)) if rows else None
 
 
-def extract(nx, keys, ex, name, base, upd, cmp_dir, logs, g):   # the build IDs are checked by the caller (build_mismatch)
+def extract(nx, keys, ex, name, base, upd, cmp_dir, logs, g, exefs_only=False):   # the build IDs are checked by the caller (build_mismatch)
     dst, marker, log = ex / name, g.get('romfs_marker'), logs / f'extract_{name}.log'
-    if (dst / 'ExeFS' / 'main').exists() and (dst / 'RomFS' / marker).exists():
+    if (dst / 'ExeFS' / 'main').exists() and (exefs_only or (dst / 'RomFS' / marker).exists()):
         PROG.stage(f'extract {name}')
         say(f'reusing the extracted {name}: {dst}')
         PROG.end('reused')
@@ -876,9 +884,10 @@ def extract(nx, keys, ex, name, base, upd, cmp_dir, logs, g):   # the build IDs 
     if upd == base:   # a merged dump: one file holds the base game and its update (scan_nsps filed both entries beside the base's). Its content metas (CNMT) pick the NCAs — an
                       # update's program and control NCAs carry the base game's title ID, so the ordinary pick could not tell them apart — and the version number selects the patch
                       # (0: none; an untagged dump: none passed, the newest patch in the dump, the build-ID check decides — merged_version)
-        run(merged_args(nx, keys, base, tmp, merged_version(base, name)) + ([cmp_dir] if cmp_dir else []) + (['--allow-damaged'] if ALLOW_DAMAGED else []), log)
+        args = merged_args(nx, keys, base, tmp, merged_version(base, name))
     else:
-        run([nx, keys, base, upd or '-', tmp] + ([cmp_dir] if cmp_dir else []) + (['--allow-damaged'] if ALLOW_DAMAGED else []), log)
+        args = [nx, keys, base, upd or '-', tmp]
+    run(args + ([cmp_dir] if cmp_dir else []) + (['--allow-damaged'] if ALLOW_DAMAGED else []) + (['--exefs'] if exefs_only else []), log)
     swap_in(tmp, dst)
     n, b = extracted(log) or (0, 0)
     PROG.end(f'{n:,} files, {amount(b, "B")}')
@@ -1114,7 +1123,8 @@ UE_DECODE_SECS = 300   # the longest Oodle decode run: Octopath Traveler 0's 10,
 
 
 def ue_stamp(d):   # what an extraction's decoded shader archives were made from: its paks and IoStore TOCs (paths and sizes)
-    return ''.join(f'{p.relative_to(d / "RomFS")}\t{p.stat().st_size}\n' for p in sorted([*(d / 'RomFS').rglob('*.pak'), *(d / 'RomFS').rglob('*.utoc')]))
+    root = romfs.Path(d / 'RomFS') if romfs is not None and romfs.mounted(d / 'RomFS') else d / 'RomFS'   # a mounted container reads as a folder
+    return ''.join(f'{p.relative_to(root)}\t{p.stat().st_size}\n' for p in sorted([*root.rglob('*.pak'), *root.rglob('*.utoc')]))
 
 
 def decode_ue_shaders(repo, dirs, pkg_ver, patched, work, env, logs, g):

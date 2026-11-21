@@ -1,6 +1,7 @@
 // NSP extraction: nx_extract <prod.keys> <base NSP> <update NSP or -> <output dir> [base RomFS dir to compare against] [--manifest]
 // Writes <output dir>/ExeFS and <output dir>/RomFS (the merged RomFS when there is an update); with a base RomFS dir, files whose content matches it become APFS clones (no new space).
 // --manifest: the RomFS is not written, only a list <output dir>/romfs_manifest.tsv (path, size, first 32 bytes), for surveying a new game (a large game's RomFS is well over 10 GB).
+// --exefs: only ExeFS (and the control data) is written; the RomFS is left unread. A container port reads the player's own file through dm_romfs instead (dm/tools/romfs.py mounts it).
 // A damaged NSP (a file whose data fails the NCA's hash check, e.g. a copy cut short or a broken download) stops the extraction with exit code 3 after listing every damaged file;
 //   --allow-damaged writes those files as read instead and only lists them (Super Mario Galaxy's base NSP with 147 MB zeroed: its two prologue WebM movies).
 // Integrity failures outside the individual-file handlers (e.g. RomFS metadata) stop immediately with exit code 3 and the LibHac reason, even with --allow-damaged.
@@ -19,6 +20,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Text;
 using LibHac.Common;
 using LibHac.Common.Keys;
 using LibHac.Fs;
@@ -59,6 +61,7 @@ static class P {
 
     static int Extract(string[] a) {
         bool manifest = Array.IndexOf(a, "--manifest") >= 0; a = Array.FindAll(a, s => s != "--manifest");
+        bool exefsOnly = Array.IndexOf(a, "--exefs") >= 0; a = Array.FindAll(a, s => s != "--exefs");
         g_allow = Array.IndexOf(a, "--allow-damaged") >= 0; a = Array.FindAll(a, s => s != "--allow-damaged");
         string verArg = null;   // --version N (--merged): extract exactly the update whose content meta says version N; 0 = the base game alone. Without it, the newest patch
         var kept = new List<string>(a.Length);
@@ -67,20 +70,21 @@ static class P {
             kept.Add(a[i]);
         }
         a = kept.ToArray();
-        if (a.Length < 4) { Console.Error.WriteLine("usage: nx_extract <prod.keys> <base.nsp> <update.nsp|-> <out dir> [base RomFS dir] [--manifest] [--allow-damaged]\n       nx_extract <prod.keys> --merged <dump> <out dir> [--version N] [base RomFS dir] [--manifest] [--allow-damaged]\n       nx_extract <prod.keys> --aoc <dlc.nsp> <out dir>\n       nx_extract <prod.keys> --aoc <dump> <out dir> <DLC title id hex>\n       nx_extract <prod.keys> --sysdata <firmware dir> <title id> <out dir>"); return 2; }
+        if (a.Length < 4) { Console.Error.WriteLine("usage: nx_extract <prod.keys> <base.nsp> <update.nsp|-> <out dir> [base RomFS dir] [--manifest|--exefs] [--allow-damaged]\n       nx_extract <prod.keys> --merged <dump> <out dir> [--version N] [base RomFS dir] [--manifest|--exefs] [--allow-damaged]\n       nx_extract <prod.keys> --aoc <dlc.nsp> <out dir>\n       nx_extract <prod.keys> --aoc <dump> <out dir> <DLC title id hex>\n       nx_extract <prod.keys> --sysdata <firmware dir> <title id> <out dir>\n       nx_extract <prod.keys> --serve <base.nsp|base.xci> <update.nsp|->"); return 2; }
         KeySet ks = ExternalKeyReader.ReadKeyFile(a[0]);
         if (a[1] == "--aoc") return Aoc(ks, a[2], a[3], a.Length > 4 ? a[4] : null);
+        if (a[1] == "--serve") { if (a.Length < 4) { Console.Error.WriteLine("usage: nx_extract <prod.keys> --serve <base.nsp|base.xci> <update.nsp|->"); return 2; } return Serve(ks, a[2], a[3] == "-" ? null : a[3]); }
         if (a[1] == "--sysdata") { if (a.Length < 5) { Console.Error.WriteLine("usage: nx_extract <prod.keys> --sysdata <firmware dir> <title id> <out dir>"); return 2; } return SysData(ks, a[2], Convert.ToUInt64(a[3], 16), a[4]); }
-        if (a[1] == "--merged") return Merged(ks, a[2], a[3], a.Length > 4 ? a[4] : null, manifest, verArg);
+        if (a[1] == "--merged") return Merged(ks, a[2], a[3], a.Length > 4 ? a[4] : null, manifest, verArg, exefsOnly);
         var basePkg = OpenNsp(ks, a[1]); var updPkg = a[2] == "-" ? null : OpenNsp(ks, a[2]);
         Nca baseProg = Pick(basePkg, NcaContentType.Program) ?? throw new Exception("no Program NCA in the base NSP");
         Nca updProg = updPkg == null ? null : Pick(updPkg, NcaContentType.Program, baseProg.Header.TitleId) ?? throw new Exception("no Program NCA of the base game's program in the update NSP");
         Nca ctrl = Pick(updPkg ?? basePkg, NcaContentType.Control, baseProg.Header.TitleId);
-        return ExtractTitles(baseProg, updProg, ctrl, a[3], a.Length > 4 ? a[4] : null, manifest);
+        return ExtractTitles(baseProg, updProg, ctrl, a[3], a.Length > 4 ? a[4] : null, manifest, exefsOnly);
     }
 
     // The control data, the ExeFS and the RomFS of one base program NCA layered with an update's: what the ordinary (base NSP + update NSP) and the merged paths share
-    static int ExtractTitles(Nca baseProg, Nca updProg, Nca ctrl, string outDir, string cmpDir, bool manifest) {
+    static int ExtractTitles(Nca baseProg, Nca updProg, Nca ctrl, string outDir, string cmpDir, bool manifest, bool exefsOnly = false) {
         Console.WriteLine($"title {baseProg.Header.TitleId:x16}" + (updProg != null ? $", update {updProg.Header.TitleId:x16}" : ""));
         if (ctrl != null) {   // control data (NACP): display version and game name; a raw copy goes to <output dir>/control.nacp for naming the app
             byte[] nacp = Nacp(ctrl);
@@ -100,6 +104,7 @@ static class P {
             byte[] h = new byte[0x50]; using (var f = File.OpenRead(p)) f.ReadExactly(h);
             if (h[0] == 'N' && h[1] == 'S' && h[2] == 'O' && h[3] == '0') Console.WriteLine($"{Path.GetFileName(p)} build id {Convert.ToHexString(h, 0x40, 16).ToLowerInvariant()}");
         }
+        if (exefsOnly) return Damaged();   // a container port: the RomFS is read from the player's own file, never written
         // A program can embed all assets in its code modules (ANIMAL WELL 1.0.10).
         // Preserve the extraction layout without asking LibHac to open an absent section.
         if (!baseProg.SectionExists(1) && (updProg == null || !updProg.SectionExists(1))) {
@@ -261,7 +266,7 @@ static class P {
     // A merged dump ("(1G+1U)"): base game, update and DLC NCAs beside one another in one container. NCA headers cannot pick them: an update's program and control NCAs carry the
     // base game's title ID, so base and update both read …000. The content metas decide: the application CNMT's entries are the base's NCAs, the newest patch CNMT's the update's
     // (when a card holds several updates, the older ones' NCAs stay unused). The DLC is extracted with --aoc and its title ID. Everything after the picking is ExtractTitles, as always
-    static int Merged(KeySet ks, string path, string outDir, string cmpDir, bool manifest, string verArg) {
+    static int Merged(KeySet ks, string path, string outDir, string cmpDir, bool manifest, string verArg, bool exefsOnly = false) {
         var entries = OpenNsp(ks, path);
         var metas = Cnmts(entries);
         foreach (var m in metas) Console.WriteLine($"content meta {m.TitleId:x16} type {m.Type} version {m.TitleVersion.Version}");
@@ -283,7 +288,7 @@ static class P {
         NcaEntry updProg = patch == null ? null : of(EntryOf(patch, LibHac.Ncm.ContentType.Program, entries)?.NcaId);
         if (patch != null && updProg == null) throw new Exception($"the update's content meta ({patch.TitleId:x16} v{patch.TitleVersion.Version}) lists a program NCA that is not in {Path.GetFileName(path)}");
         NcaEntry ctrl = of(EntryOf(patch ?? app, LibHac.Ncm.ContentType.Control, entries)?.NcaId);
-        return ExtractTitles(baseProg.Nca, updProg?.Nca, ctrl?.Nca, outDir, cmpDir, manifest);
+        return ExtractTitles(baseProg.Nca, updProg?.Nca, ctrl?.Nca, outDir, cmpDir, manifest, exefsOnly);
     }
 
     // Icon: the control data holds one 256x256 JPEG per language (/icon_<language>.dat). Use the English one (American, then British); if neither exists, take the first in NACP language order
@@ -378,15 +383,113 @@ static class P {
         }
         Console.WriteLine($"{path}: RomFS {n} files {bytes / 1048576.0:F1} MB (manifest only)");
     }
-    static bool Same(IFile f, string path, long size, byte[] buf, byte[] cb) {
-        using var c = File.OpenRead(path);
-        for (long off = 0; off < size;) {
-            int want = (int)Math.Min(buf.Length, size - off);
-            f.Read(out long got, off, buf.AsSpan(0, want), ReadOption.None).ThrowIfFailure();
-            c.ReadExactly(cb, 0, (int)got);
-            if (!buf.AsSpan(0, (int)got).SequenceEqual(cb.AsSpan(0, (int)got))) return false;
-            off += got;
+    // --serve: the merged RomFS of a container as a read-only file system the build tools read through (dm/tools/romfs.py): requests on stdin, answers on stdout,
+//   STAT / LIST / OPEN / READ / CLOSE. LibHac layers the update's BKTR over the base exactly as the extraction does, so a container build reads the player's own
+    //   file without extracting it, and no C compiler is needed on the machine that ports (dotnet is part of the toolchain already).
+    //   nx_extract <prod.keys> --serve <base.nsp|base.xci> <update.nsp|-> (the base alone for a container without an update; the base again for an integrated one)
+    static int Serve(KeySet ks, string basePath, string updPath) {
+        var basePkg = OpenNsp(ks, basePath);
+        var updPkg = updPath == null ? null : (updPath == basePath ? basePkg : OpenNsp(ks, updPath));
+        Nca baseProg = Pick(basePkg, NcaContentType.Program) ?? throw new Exception("no Program NCA in the base NSP");
+        Nca updProg;
+        if (updPkg == null) updProg = null;
+        else if (updPkg != basePkg) updProg = Pick(updPkg, NcaContentType.Program, baseProg.Header.TitleId);   // the update NSP's Program NCA, whatever program index it is
+        else {   // an integrated image: its newest Patch content meta names the Program NCA the console runs; the base game's and the update's share a title ID, so Pick would take either
+            Cnmt patch = Cnmts(basePkg).Where(m => m.Type == ContentMetaType.Patch).OrderByDescending(m => m.TitleVersion.Version).FirstOrDefault();
+            NcaEntry e = patch == null ? null : basePkg.FirstOrDefault(x => Path.GetFileNameWithoutExtension(x.Name).Equals(Convert.ToHexString(EntryOf(patch, LibHac.Ncm.ContentType.Program, basePkg)?.NcaId ?? Array.Empty<byte>()), StringComparison.OrdinalIgnoreCase));
+            if (patch != null && e == null) throw new Exception($"the update's content meta ({patch.TitleId:x16} v{patch.TitleVersion.Version}) lists a program NCA that is not in {Path.GetFileName(basePath)}");
+            updProg = e?.Nca;
         }
-        return true;
+        if (updProg == baseProg) updProg = null;
+        IStorage storage = updProg != null ? baseProg.OpenStorageWithPatch(updProg, NcaSectionType.Data, IntegrityCheckLevel.ErrorOnInvalid)
+                                           : baseProg.OpenStorage(NcaSectionType.Data, IntegrityCheckLevel.ErrorOnInvalid);
+        IFileSystem fs = new RomFsFileSystem(storage);
+        // The whole tree once: EnumerateEntries' pattern matching answers only the root reliably, and the tools list, stat and read every entry anyway
+        var files = new Dictionary<string, long>(StringComparer.Ordinal);
+        var dirs = new Dictionary<string, List<(string name, bool isdir, long size)>>(StringComparer.Ordinal) { [""] = new List<(string, bool, long)>() };
+        foreach (DirectoryEntryEx e in fs.EnumerateEntries("*", SearchOptions.RecurseSubdirectories)) {
+            string rel = e.FullPath.TrimStart('/');
+            int slash = rel.LastIndexOf('/');
+            string parent = slash < 0 ? "" : rel.Substring(0, slash), name = slash < 0 ? rel : rel.Substring(slash + 1);
+            bool isdir = e.Type == DirectoryEntryType.Directory;
+            if (!dirs.TryGetValue(parent, out var l)) dirs[parent] = l = new List<(string, bool, long)>();
+            l.Add((name, isdir, e.Size));
+            if (!isdir) files[rel] = e.Size;
+        }
+        StreamIn input = new StreamIn(Console.OpenStandardInput()); Stream stdout = Console.OpenStandardOutput();
+        var handles = new Dictionary<int, UniqueRef<IFile>>(); int next = 0;
+        stdout.WriteByte(0); stdout.Flush();   // ready
+        byte[] head = new byte[5];
+        while (input.Exactly(head, 5)) {
+            int op = head[0], len = BitConverter.ToInt32(head, 1);
+            byte[] payload = new byte[len];
+            if (!input.Exactly(payload, len)) return 0;
+            var ms = new MemoryStream(); var w = new BinaryWriter(ms, Encoding.UTF8, true);
+            try {
+                using (var r = new BinaryReader(new MemoryStream(payload), Encoding.UTF8)) {
+                    switch (op) {
+                    case 1: {   // STAT <path>
+                        string p = ReadU16String(r); p = p.Trim('/');
+                        if (files.TryGetValue(p, out long size)) { w.Write(false); w.Write(size); }
+                        else if (dirs.ContainsKey(p)) { w.Write(true); w.Write(0L); }
+                        else throw new FileNotFoundException(p == "" ? "/" : p);
+                        break;
+                    }
+                    case 2: {   // LIST <dir>
+                        string p = ReadU16String(r).Trim('/');
+                        if (!dirs.TryGetValue(p, out var names)) throw new IOException($"not a directory: {p}");
+                        w.Write(names.Count);
+                        foreach (var (n, d, s) in names) { byte[] b = Encoding.UTF8.GetBytes(n); w.Write((ushort)b.Length); w.Write(b); w.Write(d); w.Write(s); }
+                        break;
+                    }
+                    case 3: {   // OPEN <path> → handle
+                        string p = ReadU16String(r); var f = new UniqueRef<IFile>();
+                        fs.OpenFile(ref f.Ref, ("/" + p).ToU8Span(), OpenMode.Read).ThrowIfFailure();
+                        int id = ++next; handles[id] = f; w.Write(id); break;
+                    }
+                    case 4: {   // READ <handle> <offset> <length>
+                        int id = r.ReadInt32(); long off = r.ReadInt64(); int n = r.ReadInt32();
+                        if (!handles.TryGetValue(id, out var f)) throw new IOException($"no open file {id}");
+                        byte[] buf = new byte[n]; long got = 0;
+                        f.Get.Read(out got, off, buf, ReadOption.None).ThrowIfFailure();
+                        w.Write((int)got); w.Write(buf, 0, (int)got); break;
+                    }
+                    case 5: {   // CLOSE <handle>
+                        int id = r.ReadInt32(); if (handles.Remove(id, out var f)) f.Destroy(); break;
+                    }
+                    case 6: foreach (var f in handles.Values) f.Destroy(); WriteFrame(stdout, 0, Array.Empty<byte>()); return 0;
+                    default: throw new IOException($"unknown request {op}");
+                    }
+                }
+                WriteFrame(stdout, 0, ms.ToArray());
+            } catch (Exception e) { WriteFrame(stdout, 1, Encoding.UTF8.GetBytes(e.Message)); }
+        }
+        return 0;
     }
+    static string ReadU16String(BinaryReader r) { int n = r.ReadUInt16(); var b = r.ReadBytes(n); if (b.Length != n) throw new EndOfStreamException(); return Encoding.UTF8.GetString(b); }
+    static void WriteFrame(Stream s, byte status, byte[] payload) {
+        byte[] head = new byte[5]; head[0] = status; BitConverter.TryWriteBytes(new Span<byte>(head, 1, 4), payload.Length);
+        s.Write(head, 0, 5); s.Write(payload, 0, payload.Length); s.Flush();
+    }
+    sealed class StreamIn {
+        private readonly Stream s;
+        public StreamIn(Stream stream) { s = stream; }
+        public bool Exactly(byte[] buf, int n) {
+            int off = 0;
+            while (off < n) { int got = s.Read(buf, off, n - off); if (got <= 0) return false; off += got; }
+            return true;
+        }
+    }
+
+    static bool Same(IFile f, string path, long size, byte[] buf, byte[] cb) {
+            using var c = File.OpenRead(path);
+            for (long off = 0; off < size;) {
+                int want = (int)Math.Min(buf.Length, size - off);
+                f.Read(out long got, off, buf.AsSpan(0, want), ReadOption.None).ThrowIfFailure();
+                c.ReadExactly(cb, 0, (int)got);
+                if (!buf.AsSpan(0, (int)got).SequenceEqual(cb.AsSpan(0, (int)got))) return false;
+                off += got;
+            }
+            return true;
+        }
 }
