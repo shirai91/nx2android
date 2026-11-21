@@ -10,7 +10,7 @@
 #   Registered cuts (CUTS of the patch files, restricted by NSO build ID, see "Registered patches"): before rewriting, the original bytes are asserted one by one and any mismatch aborts; results are listed in <name>.cuts.tsv
 #   Registered observation gates (OBS of the patch files, restricted by build ID): one instruction at the entry is replaced with "enter the host observation callback → execute the original instruction → jump back", so diagnostics modify zero code at runtime; listed in <name>.obs.tsv
 # The key page only stores "actual key number × 8" at the end of the data segment, and patch code fetches thread slots indirectly through the key page: the loader may use any key number.
-# Output: <name>.patched.bin (key page and patch area appended after the image at PATCH_OFF; when that would start beyond 112 MB the patch area sits before the base, see FAR), <name>.fixups.tsv (layout and key page index header), <name>.gates.tsv, <name>.sites.tsv, <name>.cuts.tsv, <name>.obs.tsv
+# Output: <name>.patched.bin (key page and patch area appended after the image at PATCH_OFF; when that would start beyond 112 MB the patch area sits before the base, see FAR), <name>.fixups.tsv (layout and key page index header), <name>.gates.tsv, <name>.sites.tsv, <name>.cuts.tsv, <name>.obs.tsv, <name>.changed.tsv (the text words the rewrite changed or moved: the cheat engine refuses a code write into one)
 import struct, re, sys, os, glob, types, importlib.util
 from itertools import combinations
 import lz4.block
@@ -50,6 +50,11 @@ for i, (fo, mo, sz) in enumerate(segs):
     IMG[mo:mo + sz] = raw
 TEXT_END = segs[0][2]
 RO_OFF, DATA_OFF = segs[1][1], segs[2][1]
+# The text as the loader seals it read + execute: whole 16 KB pages whatever the host's page size (loader.c map_image,
+# hle_cheats.c main_rx_end). IMG0 is the Switch's own text before the rewrite: <name>.changed.tsv holds the words that
+# differ, which a cheat's code write must leave alone (a cheat restoring one would undo a rewriter site)
+CHANGED_RX = (TEXT_END + 0x3FFF) & ~0x3FFF
+IMG0 = bytes(IMG[:CHANGED_RX]).ljust(CHANGED_RX, b'\0')
 if FAR:
     FILE_IMAGE_LEN = (len(IMG) + 0x3FFF) & ~0x3FFF
     KEY_PAGE_OFF = (len(IMG) + bss + 0x3FFF) & ~0x3FFF
@@ -1175,6 +1180,15 @@ with open(P('sites.tsv'), 'w') as f:
 with open(P('cuts.tsv'), 'w') as f:
     f.write(f'# BUILD_ID\t{BUILD_ID}\n')
     for off, ob, nb, why in cuts: f.write(f'{off:#x}\t{ob}\t{nb}\t{why}\n')   # Columns: offset, original bytes, new bytes, reason
+with open(P('changed.tsv'), 'w') as f:   # dm/host/hle_cheats.c changed_load: sorted, non-overlapping runs of text words the rewriter changed or moved (a cheat's code write into one is refused)
+    f.write(f'# BUILD_ID\t{BUILD_ID}\n')
+    now, was = memoryview(bytes(IMG[:CHANGED_RX]).ljust(CHANGED_RX, b'\0')).cast('I'), memoryview(IMG0).cast('I')
+    runs = []
+    for i, (a, b) in enumerate(zip(now, was)):
+        if a == b: continue
+        if runs and runs[-1][0] + runs[-1][1] == 4 * i: runs[-1][1] += 4
+        else: runs.append([4 * i, 4])
+    for off, ln in runs: f.write(f'{off:#x}\t{ln:#x}\n')
 with open(P('obs.tsv'), 'w') as f:
     f.write(f'# BUILD_ID\t{BUILD_ID}\n')
     for off, oid, ow, why in obs: f.write(f'{off:#x}\t{oid}\t{ow}\t{why}\n')

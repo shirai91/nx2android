@@ -215,6 +215,31 @@ static uint32_t style_for_player(uint32_t id, int p) { return p < 0 ? 0 : id == 
 static uint32_t style_of(uint32_t id) { return style_for_player(id, player_of(id)); }
 static int32_t ax(uint64_t v, int i) { return (int16_t)(v >> (16 * i)); }
 static int32_t pick(int32_t a, int32_t b) { return (a < 0 ? -a : a) >= (b < 0 ? -b : b) ? a : b; }   // whichever of two sources is deflected more
+// The cheat VM's key mask (hle_cheats.c "all keys of the mask held"): the OR of every player's controller buttons
+// (the keyboard / touch source's bits included) plus the eight stick-direction pseudo buttons of the merged axes —
+// one flat bitset, not exactly any one npad read (fill() publishes per-npad states with attributes, merges and
+// latches), and nothing here consumes a latch or bumps the sampling: the game's own reads keep them both. Mask bits:
+// the buttons 0..15 in NpadButton order and the sticks' directions 16..23; SL / SR (bits 24 / 25) can never fire, no
+// input source of this host reports them
+uint64_t dm_cheats_keys(void) {
+    uint64_t b = 0; int32_t a[4] = {0};
+    b |= atomic_load(&g_btn);
+    for (int p = 0; p < DM_PLAYERS; p++) {
+        b |= atomic_load(&g_pad_btn[p]);
+        uint64_t v = atomic_load(&g_pad_axes[p]); for (int i = 0; i < 4; i++) a[i] = pick(a[i], ax(v, i));
+    }
+    uint64_t k = atomic_load(&g_axes); for (int i = 0; i < 4; i++) a[i] = pick(a[i], ax(k, i));
+    b &= 0xffffull;
+    if (a[0] < -STICK_THRESH) b |= 1u << 16;
+    if (a[1] > STICK_THRESH) b |= 1u << 17;
+    if (a[0] > STICK_THRESH) b |= 1u << 18;
+    if (a[1] < -STICK_THRESH) b |= 1u << 19;
+    if (a[2] < -STICK_THRESH) b |= 1u << 20;
+    if (a[3] > STICK_THRESH) b |= 1u << 21;
+    if (a[2] > STICK_THRESH) b |= 1u << 22;
+    if (a[3] < -STICK_THRESH) b |= 1u << 23;
+    return b;
+}
 
 // Style update events bound per npad (BindNpadStyleSetUpdateEvent, No1..No8 by id): signalled when a player's controller comes or goes, as the hid
 // service does. The front end reports from its own thread, where an event cannot be bound, so only a bound one is signalled (one the game destroyed is not bound any more)

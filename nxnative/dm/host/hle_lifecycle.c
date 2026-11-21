@@ -27,6 +27,7 @@ void dm_host_shutdown(const char *why) {
     pthread_t th; if (!pthread_create(&th, NULL, exit_fallback, NULL)) pthread_detach(th);
 #endif
     hlecount_flush();                               // DM_HLECOUNT: _exit does not run atexit, write a copy here
+    dm_cheats_exit();                               // a clean exit: the queued cheat state files land before the process ends
     dm_audio_suspend(1);
     dm_gfx_suspend(1);
     LOG("graceful exit done (%.3f s)", (now_ns() - t0) / 1e9);

@@ -99,6 +99,29 @@ static void map_add(uint64_t b, uint64_t n, uint64_t src, uint32_t st) {   // ca
 }
 static void map_del(int i) { g_map[i] = g_map[--g_nmap]; }   // caller holds g_map_lock
 
+// The guest heap for the cheat VM (hle_cheats.c): its base and the length the game has opened with SetHeapSize right now,
+// and hole-free reads / writes under g_map_lock, so a concurrent SetHeapSize cannot shrink the span away between the
+// bounds check and the copy. Both return 0 when every byte was inside the opened span, 1 otherwise. The address is the
+// guest heap address the cheat VM computed (heap base + offset + offset register)
+void dm_guest_heap_range(uint64_t *base, size_t *open_len) {
+    if (base) *base = (uint64_t)(uintptr_t)g_heap;
+    if (open_len) *open_len = g_heap ? g_heap_cur : 0;
+}
+int dm_guest_heap_write(uint64_t addr, const void *src, size_t len) {
+    pthread_mutex_lock(&g_map_lock);
+    int out = !dm_guest_heap_readable(addr, len);
+    if (!out) { dm_guest_write_prepare((void *)(uintptr_t)addr, len); memcpy((void *)(uintptr_t)addr, src, len); }
+    pthread_mutex_unlock(&g_map_lock);
+    return out;
+}
+int dm_guest_heap_read(uint64_t addr, void *out, size_t len) {
+    pthread_mutex_lock(&g_map_lock);
+    int bad = !dm_guest_heap_readable(addr, len);
+    if (!bad) memcpy(out, (void *)(uintptr_t)addr, len);
+    pthread_mutex_unlock(&g_map_lock);
+    return bad;
+}
+
 // One bit per 4 KB page of the alias region (mapped = 1): Map sets bits, Unmap clears them; returns the number of pages whose state really changed (signed: positive for Map, negative for Unmap)
 static int64_t alias_pages(uint64_t off, uint64_t n, int map) {
     int64_t ch = 0;
@@ -153,12 +176,13 @@ uint64_t svc_dispatch(int num, uint64_t *regs, uint64_t orig_addr) {
     case 0x01: {  // SetHeapSize(out_addr*, size)  → x1 = heap base
         size_t size = regs[1];
         if (size > g_heap_cap) { LOG("SetHeapSize OOM: req %#zx > cap %#zx", size, g_heap_cap); regs[0] = 0xD401; return 0; }
+        pthread_mutex_lock(&g_map_lock);   // the heap's opened span, under the same lock as the cheat VM's heap reads and writes (hle_cheats.c)
         if (size + image_bytes() > APP_POOL) {   // exceeds the application memory pool: ResultLimitReached. At startup the game retries in 2 MB decrements until it fits (main+0x1b66184)
             // Logged once (Mario's retries would repeat it): a game that sizes its heap as pool − used memory and does not retry stops here when its modules are larger than the used memory reported
             // (profile mem_used; the NSP script's probe boot reads this line, and sets mem_used when no SetHeapSize succeeds afterwards)
             static int once; if (!once++) LOG("[mem] SetHeapSize %#zx + modules %#zx > app pool %#llx (used memory reported %#llx + bss %#zx)", size, image_bytes() - big_bss_bytes(),
                                               (unsigned long long)APP_POOL, (unsigned long long)DM_GAME_MEM_USED, big_bss_bytes());
-            regs[0] = 0x10801; return 0;
+            regs[0] = 0x10801; pthread_mutex_unlock(&g_map_lock); return 0;
         }
         int rc = 0;
         if (size > g_heap_cur) rc = mprotect(g_heap + g_heap_cur, size - g_heap_cur, PROT_READ | PROT_WRITE);
@@ -166,6 +190,7 @@ uint64_t svc_dispatch(int num, uint64_t *regs, uint64_t orig_addr) {
         if (g_flag.svc) LOG("SetHeapSize %#zx -> base %p mprotect=%d errno=%d", size, g_heap, rc, errno);
         else if (size > g_heap_cur) LOG("[mem] heap %.2f GB (heap region %.2f GB)", size / 1073741824.0, g_heap_cap / 1073741824.0);
         g_heap_cur = size;
+        pthread_mutex_unlock(&g_map_lock);
         regs[0] = 0; regs[1] = (uint64_t)g_heap; return 0;
     }
     case 0x02: regs[0] = 0; return 0;   // SetMemoryPermission

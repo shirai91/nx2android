@@ -47,6 +47,14 @@ kern_return_t vm_read_overwrite(task_t task, vm_address_t addr, vm_size_t size, 
     if (outsize) *outsize = (vm_size_t)n;
     return (vm_size_t)n == size ? KERN_SUCCESS : KERN_INVALID_ADDRESS;
 }
+// The write counterpart: the kernel copies through the page tables and refuses an unmapped or read-only address with
+// EFAULT instead of faulting in the caller (the cheat VM's guest-page writes, hle_cheats.c)
+kern_return_t vm_write(task_t task, vm_address_t addr, vm_offset_t data, mach_msg_type_number_t size) {
+    (void)task;
+    struct iovec l = {(void *)(uintptr_t)data, size}, r = {(void *)addr, size};
+    ssize_t n = process_vm_writev(getpid(), &l, 1, &r, 1, 0);
+    return n == (ssize_t)size ? KERN_SUCCESS : KERN_INVALID_ADDRESS;
+}
 kern_return_t vm_allocate(task_t task, vm_address_t *addr, vm_size_t size, int flags) {
     (void)task;
     void *hint = (flags & VM_FLAGS_ANYWHERE) ? NULL : (void *)*addr;

@@ -6,7 +6,7 @@ GINC = $(if $(strip $(GAME)),-I../gen/$(GAME) -I../../games/$(GAME),$(error GAME
 GAME_H = ../gen/$(GAME)/game_profile.h
 # macOS's <ucontext.h> needs _XOPEN_SOURCE (and _DARWIN_C_SOURCE to keep the rest of the SDK's declarations): crash.c and hle_thread.c use the ucontext routines
 UCTX = $(if $(filter Darwin,$(shell uname -s)),-D_XOPEN_SOURCE=600 -D_DARWIN_C_SOURCE)
-run: $(B)/t_touch $(B)/t_gesture $(B)/t_oe $(B)/t_fs $(B)/t_fs_commit_list $(B)/t_thread_leak $(B)/t_fs_case $(B)/t_audio $(B)/t_audio_spsc $(B)/t_swkbd $(B)/t_altstack $(B)/t_condvar $(B)/t_condvar_old $(B)/t_pctl $(B)/t_time $(B)/t_shared_font $(B)/t_vorbis $(B)/t_vorbis_divides $(B)/t_hid $(B)/t_haptics $(B)/t_haptics_apple
+run: $(B)/t_touch $(B)/t_gesture $(B)/t_oe $(B)/t_fs $(B)/t_fs_commit_list $(B)/t_thread_leak $(B)/t_fs_case $(B)/t_audio $(B)/t_audio_spsc $(B)/t_swkbd $(B)/t_altstack $(B)/t_condvar $(B)/t_condvar_old $(B)/t_pctl $(B)/t_time $(B)/t_shared_font $(B)/t_vorbis $(B)/t_vorbis_divides $(B)/t_hid $(B)/t_haptics $(B)/t_haptics_apple $(B)/t_cheats
 	$(B)/t_touch
 	$(B)/t_gesture
 	$(B)/t_oe 2>/dev/null
@@ -28,6 +28,7 @@ run: $(B)/t_touch $(B)/t_gesture $(B)/t_oe $(B)/t_fs $(B)/t_fs_commit_list $(B)/
 	$(B)/t_hid
 	$(B)/t_haptics
 	$(B)/t_haptics_apple
+	TMPDIR="$(abspath $(B))" $(B)/t_cheats
 	$(B)/t_nro
 run: $(B)/t_nro
 $(B)/t_nro: t_nro.c ../loader.c ../hle_ro.c ../hle.h ../dm.h $(GAME_H) | $(B)
@@ -35,6 +36,12 @@ $(B)/t_nro: t_nro.c ../loader.c ../hle_ro.c ../hle.h ../dm.h $(GAME_H) | $(B)
 .PHONY: nro
 nro: $(B)/t_nro
 	$(B)/t_nro
+# the cheat engine (hle_cheats.c, compiled into the test with stubs for the loader, the heap and the keys)
+$(B)/t_cheats: t_cheats.c ../hle_cheats.c ../dm.h ../dm_input.h $(GAME_H) | $(B)
+	clang -O1 -g -Wall -Werror -Wno-unused-function -I.. $(GINC) -o $@ t_cheats.c
+.PHONY: cheats
+cheats: $(B)/t_cheats
+	TMPDIR="$(abspath $(B))" $(B)/t_cheats
 $(GAME_H):
 	$(MAKE) -C .. game_profile GAME=$(GAME)
 $(B)/t_touch: t_touch.c ../hle_touch.c ../front.h ../dm.h $(GAME_H) | $(B)

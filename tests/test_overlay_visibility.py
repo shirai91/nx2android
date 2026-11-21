@@ -39,7 +39,7 @@ class OverlayVisibility(unittest.TestCase):
 #include "stick_axis.h"
 static _Atomic int g_set_overlay, g_overlay, g_pads, g_edit, g_menu_btn = 1;
 static _Atomic int g_cust[2][2][OV_N][4];
-static _Atomic int g_set_rumble, g_set_fps, g_set_labels, g_menu_tab, g_sv_st;
+static _Atomic int g_set_rumble, g_set_fps, g_set_labels, g_menu_tab, g_sv_st, g_ch_on;
 static int layout, saves;
 int dm_overlay_layout(void) { return layout; }
 float dm_overlay_scale(void) { return 1; }
@@ -58,6 +58,11 @@ static void sp_open(void) {}
 static void save_export(void) {}
 static void menu_audio(void) {}
 static void menu_close(void) {}
+static int ch_master;
+static int dm_cheats_master(void) { return ch_master; }
+static void dm_cheats_master_set(int on) { ch_master = on; }
+#define ch_open() ((void)0)
+#define ch_touch(e, W, H) ((void)(e), (void)(W), (void)(H))
 static void dm_overlay_redraw(void) {}
 ''' + visible + hidden + hit + menu + r'''
 // Synthetic Android events. The production dispatch and touch handlers below consume them.

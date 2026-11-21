@@ -77,6 +77,17 @@ def _parser():
     for x in (sa, sl, se, si):
         x.add_argument('--device', default='', help='adb serial (default: the configured device, else the only one)'); x.add_argument('--json', action='store_true')
         if x is not sa: x.add_argument('--package', default='', help='the app (default: the only ported game installed)')
+    ch = sub.add_parser('cheats', help="Atmosphère cheat files on the device: list them, install one for the app's build (the pause menu's Cheats picker reads it)")
+    chs = ch.add_subparsers(dest='cheats_cmd', required=True)
+    ca = chs.add_parser('apps', help='the ported games installed on the device')
+    cl = chs.add_parser('list', help="the cheat files in the app's cheats folder")
+    ci = chs.add_parser('install', help="push a cheat .txt as cheats/<build ID>.txt for the app's build; an old file is kept as .bak")
+    ci.add_argument('file', help='the cheat file (.txt, Atmosphère format)')
+    ci.add_argument('--build', default='', help='the build ID to name it for (default: the file\'s own 16-hex name, else the installed port\'s build)')
+    ci.add_argument('--any-build', action='store_true', help='install a file of another build anyway (the host refuses it unless DM_CHEATS_ANY_BUILD=1)')
+    for x in (ca, cl, ci):
+        x.add_argument('--device', default='', help='adb serial (default: the configured device, else the only one)'); x.add_argument('--json', action='store_true')
+        if x is not ca: x.add_argument('--package', default='', help='the app (default: the only ported game installed)')
     dr = sub.add_parser('driver', help='another Vulkan driver for a port on the device, without the game files: its APK is rebuilt with the library and signed again (the saves stay)')
     drg = dr.add_mutually_exclusive_group(required=True)
     drg.add_argument('library', nargs='?', help='the driver library (.so, such as Mesa\'s Turnip); the app must have been ported with --vulkan-driver once')
@@ -257,6 +268,32 @@ def cmd_saves(a):
     return 0
 
 
+def cmd_cheats(a):
+    import contextlib
+    from porter import cheats, config, saves, toolchain
+    from porter.upstream import BuildError
+    try:
+        with contextlib.redirect_stdout(sys.stderr if a.json else sys.stdout):   # with --json, stdout is the one JSON document (the GUI parses it whole)
+            cfg = config.load(); adb = saves.connect(toolchain.find_adb(cfg), a.device or cfg.get('device'))
+            if a.cheats_cmd == 'apps': out = saves.apps(adb)
+            else:
+                pkg = saves.pick_app(adb, a.package)
+                out = cheats.listing(adb, pkg) if a.cheats_cmd == 'list' else cheats.install(adb, pkg, Path(a.file), a.build, a.any_build)
+    except BuildError as e:
+        if a.json: _print_json({'error': str(e)})
+        else: print(e, file=sys.stderr)
+        return 1
+    if a.json: _print_json(out)
+    elif a.cheats_cmd == 'apps': print('\n'.join(out) or 'no ported game is installed')
+    elif a.cheats_cmd == 'list':
+        if not out['files']: print(f'no cheat files on the device ({out["folder"]})')
+        for r in out['files']:
+            print(f'{r["name"]:28} {r["bytes"]:8} bytes  ' + ('this build' if r['current'] else 'build ' + r['build']) + f'  {r["enabled"]} on')
+        if out['files']: print(f'build {out["build"]}, {out["folder"]}')
+    else: print(f'{out["file"]} installed for build {out["build"]} ({out["bytes"]} bytes)' + (f'; the old one is {out["backup"]}' if out['backup'] else ''))
+    return 0
+
+
 def cmd_driver(a):   # porter driver and porter host: the installed APK rebuilt without the game files
     import contextlib
     from porter import config, driver, host, paths, saves, toolchain
@@ -281,4 +318,5 @@ def cmd_driver(a):   # porter driver and porter host: the installed APK rebuilt 
 def main(argv):
     if hasattr(sys.stdout, 'reconfigure'): sys.stdout.reconfigure(encoding='utf-8', errors='replace')   # game names and progress bars on a Windows console
     a = _parser().parse_args(argv)
-    return {'doctor': cmd_doctor, 'profiles': cmd_profiles, 'inspect': cmd_inspect, 'port': cmd_port, 'install': cmd_install, 'devices': cmd_devices, 'tools': cmd_tools, 'config': cmd_config, 'saves': cmd_saves, 'driver': cmd_driver, 'host': cmd_driver}[a.cmd](a)
+    return {'doctor': cmd_doctor, 'profiles': cmd_profiles, 'inspect': cmd_inspect, 'port': cmd_port, 'install': cmd_install, 'devices': cmd_devices, 'tools': cmd_tools,
+            'config': cmd_config, 'saves': cmd_saves, 'cheats': cmd_cheats, 'driver': cmd_driver, 'host': cmd_driver}[a.cmd](a)

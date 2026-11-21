@@ -13,6 +13,8 @@
 
 module_t g_mod[MAX_MOD];
 int g_nmod;
+static char g_module_dir[1024];   // the folder load_modules read the modules from (dm_module_dir)
+const char *dm_module_dir(void) { return g_module_dir; }
 // Stable module addresses live in g_mod; lookup order follows activation, including unload/reload.
 static module_t *g_loaded[MAX_MOD]; static int g_nloaded;
 static pthread_rwlock_t g_modules_mu = PTHREAD_RWLOCK_INITIALIZER;
@@ -612,6 +614,7 @@ static void map_image(module_t *m, const char *dir) {
 #endif
 
 void load_modules(const char *dir, const char **names, int n) {
+    strlcpy(g_module_dir, dir ? dir : "", sizeof g_module_dir);
     // Map everything and parse the symbol tables first, then relocate all at once (cross-module symbols must all be in place first)
     // DM_BOOTPROF: breakdown of ① host loading (milliseconds), to set the upper bound for ③ pre-relocation / mmap
     uint64_t t0 = now_ns(), tm = 0, tp = 0, tg = 0, tr = 0, t;
