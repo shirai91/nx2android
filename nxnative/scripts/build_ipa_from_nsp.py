@@ -519,15 +519,32 @@ def nsp_versions(fam, builds):
     return out
 
 
-def pick_nsps(fam, have, versions):
-    """For each version to extract, (base game, update or None): v0 = the base game alone, v<N> = the base game + the update with version number N"""
+def pick_nsps(fam, have, versions, bundled=None):
+    """For each version to extract, (base game, update or None): v0 = the base game alone, v<N> = the base game + the update with version number N.
+    bundled: the base file carries an update of its own (an integrated cartridge image); a version the folder holds no separate update for is read from it, its
+    Program NCA laid over the base game (extract asks it for the file as both sides)"""
     say(f'base: {fam["base"].name}')
     out = {}
     for ver in versions:
-        if ver not in have: raise BuildError(f'no NSP for update {ver} (the game profile needs these versions: {", ".join(versions)})')
+        if ver not in have:
+            if not bundled: raise BuildError(f'no NSP for update {ver} (the game profile needs these versions: {", ".join(versions)})')
+            say(f'update {ver}: {bundled.name}, the update this container carries')
+            out[ver] = (fam['base'], None)
+            continue
         if have[ver]: say(f'update {ver}: {have[ver].name}')
         out[ver] = (fam['base'], have[ver])
     return out
+
+
+def bundled_update(nx, keys, p):
+    """Whether the container carries an update of its own (an integrated cartridge image, "1G+1U": nx_extract reads the base game and the Patch content meta
+    out of the one file). Asked with the file as both sides, which reads headers only. The Patch's Program NCA is the code the console runs — not the base NCA's
+    (Super Robot Wars 30: v1.0.0 base code with v1.2.3 data boots to a black screen in the game's own async asset loader)"""
+    if p.suffix.lower() not in ('.xci', '.nsp'): return False
+    with tempfile.TemporaryDirectory(prefix='bundle_') as t:
+        r = subprocess.run([str(nx), str(keys), str(p), str(p), t, '--list'], capture_output=True, text=True, errors='replace')
+    # "title <id>, update <id>" when the file also holds a Patch content meta; the newer nx_extract lists "update Program <id>"
+    return r.returncode == 0 and (re.search(r', update [0-9a-f]{16}', r.stdout) is not None or 'update Program' in r.stdout)
 
 
 def can_clone(d):   # whether this volume supports APFS clones (nx_extract uses them to save space; without them it writes full copies)
@@ -548,6 +565,9 @@ def survey(nsp_dir, app, fam, keys, repo, py, env):
     nx = build_nx_extract(repo, work, logs, env)
     ups = sorted(fam['updates'], key=lambda u: u[0] or 0)
     upd = ups[-1][1] if ups else None
+    if upd is None and bundled_update(nx, keys, fam['base']):
+        upd = fam['base']   # an integrated container: survey the code the console runs (the update's Program NCA), not the base's
+        say(f'{fam["base"].name} carries its own update: its Program NCA is surveyed over the base game')
     tmp = work / 'extract.partial'; rmtree(tmp)
     def listed():   # files in the manifest so far
         try: return {'done': (tmp / 'romfs_manifest.tsv').read_bytes().count(b'\n'), 'unit': 'files'}
@@ -815,18 +835,23 @@ def extracted(log):   # (files, bytes) from the summary lines nx_extract wrote t
 
 def extract(nx, keys, ex, name, base, upd, cmp_dir, logs, g):   # the build IDs are checked by the caller (build_mismatch)
     dst, marker, log = ex / name, g.get('romfs_marker'), logs / f'extract_{name}.log'
-    if (dst / 'ExeFS' / 'main').exists() and (dst / 'RomFS' / marker).exists():
+    bundled = (upd is None or upd == base) and bundled_update(nx, keys, base)
+    if bundled: say(f'{base.name} carries its own update: its Program NCA is extracted over the base game (the console runs it)')
+    if (dst / 'ExeFS' / 'main').exists() and (dst / 'RomFS' / marker).exists() and (not bundled or (dst / '.bundled_update').is_file()):
         PROG.stage(f'extract {name}')
         say(f'reusing the extracted {name}: {dst}')
         PROG.end('reused')
         return dst
     tmp = ex / (name + '.partial'); rmtree(tmp)
+    # an integrated container carries its update in the one file: nx_extract reads the Patch content meta from it when the file is both sides
+    src = None if bundled else upd
     last = extracted(log)   # the last extraction of this version (its log is about to be overwritten) has the exact size; without one, the NSPs' size is the estimate
     def poll():
         n, b = tree_size(tmp); return {'done': b, 'note': f'{n:,} files'}
-    PROG.stage(f'extract {name}', poll=poll, unit='B', total=last[1] if last else base.stat().st_size + (upd.stat().st_size if upd else 0), est=not last)
-    run([nx, keys, base, upd or '-', tmp] + ([cmp_dir] if cmp_dir else []) + (['--allow-damaged'] if ALLOW_DAMAGED else []), log)
+    PROG.stage(f'extract {name}', poll=poll, unit='B', total=last[1] if last else base.stat().st_size + (src.stat().st_size if src and src != base else 0), est=not last)
+    run([nx, keys, base, base if bundled else (src or '-'), tmp] + ([cmp_dir] if cmp_dir else []) + (['--allow-damaged'] if ALLOW_DAMAGED else []), log)
     swap_in(tmp, dst)
+    if bundled: (dst / '.bundled_update').write_text('the Program NCA of the update this container carries\n')
     n, b = extracted(log) or (0, 0)
     PROG.end(f'{n:,} files, {amount(b, "B")}')
     return dst
