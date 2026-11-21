@@ -119,7 +119,7 @@ static void exec_ops(const uint8_t *p) {
         if (h.op >= OP_COUNT_) { static int nred; if (nred++ < 8) VKLOG("[RED] [vk] record op %u outside the enum (size %u) at %+lld: skipped", h.op, h.size, (long long)(p - g_rec_base)); p += h.size; continue; }
         g_lastrec[g_lastrec_n++ & 15] = (lastrec_t){h.op, h.size, (intptr_t)(p - g_rec_base)};
         if (h.op < 64) g_sub_ops[h.op]++;
-        static uint64_t skip = ~0ull; if (skip == ~0ull) { skip = 0; const char *e = getenv("DM_VK_SKIP_OPS"); for (const char *q = e; q && *q;) { char *n; long v = strtol(q, &n, 10); if (n == q) break; if (v > 0 && v < 64) skip |= 1ull << v; q = *n ? n + 1 : n; } }   // debugging: record ops not replayed
+        uint64_t skip = g_skip_ops_live;   // DM_VK_SKIP_OPS (debugging, live): record ops not replayed
         if (h.op < 64 && h.op > 3 && (skip >> h.op & 1)) { p += h.size; continue; }
         const uint8_t *a = p + 8;
         switch (h.op) {

@@ -283,6 +283,7 @@ static int qi_init(void) {
 static int quad_indirect(uint64_t ind, int n, int stride, VkBuffer *ob, VkDeviceSize *oo) {   // 1: *ob + *oo hold n indexed records (20 bytes apart)
     if (n < 1 || n > QI_MAX || stride < 16 || stride > QI_SRC_STRIDE_MAX || stride & 3) { VKRED_ONCE(177, "indirect quad draw of %d records %d bytes apart: drawn as a triangle list", n, stride); return 0; }
     if (!qi_init()) return 0;
+    { static uint64_t calls, logged; calls++; if (g_tex_frame - logged >= 300 || !logged) { logged = g_tex_frame ? g_tex_frame : 1; VKLOG("indirect quad draws: %llu so far (present %llu, %d records %d bytes apart, args %#llx)", (unsigned long long)calls, (unsigned long long)g_tex_frame, n, stride, (unsigned long long)ind); } }
     VkDeviceSize len = (VkDeviceSize)stride * (VkDeviceSize)(n - 1) + 16; VkBuffer sb; VkDeviceSize so;
     if (!vk_buf_at(ind, len, &sb, &so)) { VKRED_ONCE(53, "indirect draw arguments outside the memory pools"); return 0; }
     vk_end_pass_land();
@@ -327,7 +328,7 @@ static void draw(const p_draw *d) {
     if (g_var_now == 10 && prim == 7) g_ok = 0; if (g_var_now == 11 && prim != 7) g_ok = 0;   // bisection: quads from the found draw on, or the rest
     { static int nq, nn; if (g_var_now) { if (prim == 7) nq++; else nn++; if ((nq + nn) % 50 == 1) VKLOG("draws from the found one on: %d quads, %d others", nq, nn); } }
     uint32_t inst = d->instances ? (uint32_t)d->instances : 1;
-    { static int n; if (n < 12 && (d->ind || (uint32_t)d->count > (1u << 20) || inst > (1u << 16))) { n++;
+    { static int n; if (n < 12 && ((d->ind && !qib) || (uint32_t)d->count > (1u << 20) || inst > (1u << 16))) { n++;
         VKLOG("unusual draw: count %u instances %u indirect %#llx prim %d first %d", (unsigned)d->count, inst, (unsigned long long)d->ind, d->prim, d->first); } }
     if (d->ind) {
         VkBuffer b; VkDeviceSize o;
@@ -520,7 +521,7 @@ static void dispatch(const p_dispatch *d) {
     else vkCmdDispatch(cb, (uint32_t)d->x, (uint32_t)d->y, (uint32_t)d->z);
     vk_pass_ts(1, (uint32_t)d->x, (uint32_t)d->y, PT_DISPATCH, (uint32_t)d->z);
     if (!g_x_nodispbar) vk_img_barrier_all(cb);   // DM_VK_X_NODISPBAR=1 (live, a cost measurement that may draw wrong): no barrier after the dispatch
-    if (crumbs_on()) { crumb_t *c = crumb_cur(); if (c->n < 8) { c->k[c->n][0] = 0; c->k[c->n][1] = 0; c->k[c->n][2] = cs->key; c->n++; } crumb_mark(1); }
+    if (crumbs_on()) { crumb_t *c = crumb_cur(); if (c->n < 32) { c->k[c->n][0] = 0; c->k[c->n][1] = 0; c->k[c->n][2] = cs->key; c->n++; } crumb_mark(1); }
     if (g_x_tracepass == -2 || mdi_log_now()) {   // (DM_VK_TRACE_PASS=-2 lists the dispatches too, with their storage buffers: the addresses for a DM_CTL memdump)
         char sb[512]; int o = 0; for (int r = 0; r < 16 && o < (int)sizeof sb - 40; r++) if (S.ssbo[5][r].addr) o += snprintf(sb + o, sizeof sb - (size_t)o, " s%d %#llx+%#llx", r, (unsigned long long)S.ssbo[5][r].addr, (unsigned long long)S.ssbo[5][r].size);
         VKLOG("--- dispatch %016llx %dx%dx%d%s after pass %d;%s", (unsigned long long)cs->key, d->x, d->y, d->z, d->ind ? " (indirect)" : "", g_sub_pass - 1, o ? sb : " no storage buffers");

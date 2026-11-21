@@ -242,15 +242,16 @@ DM_VK_CB_DRAWS	int	128	profile	live	gfx_vk_exec.c	split the frame into command b
 DM_VK_COMPUTE_WARM_MAX	int		debug	?	gfx_vk_exec.c	
 DM_VK_CPU_READY	bool		debug	?	gfx_vk_exec.c	
 DM_VK_CRUMBS	bool		debug	start	gfx_vk_exec.c	for a device lost (GPU hang): each pass end and dispatch writes its number into host-visible memory after a full barrier; when the device is lost the log names the last work the GPU finished and the passes after it, with their shaders. Slows the GPU
-DM_VK_DBG_DRAW	int		debug	start	gfx_vk_exec.c	bisection aids: skip command kinds; 1 no draw calls, 2 no vertex buffers, 4 no descriptor sets
+DM_VK_DBG_DRAW	int		debug	live	gfx_vk_exec.c	bisection aids: skip command kinds; 1 no draw calls, 2 no vertex buffers, 4 no descriptor sets
 DM_VK_DRIVER	str		porter	start	gfx_vk_core.c	the Vulkan driver library in the APK (porter --vulkan-driver, e.g. Turnip)
 DM_VK_DYN_UBO	bool		debug	start	gfx_vk_shader.c	no dynamic uniform-buffer offsets (descriptor reuse drops)
 DM_VK_FDZ	bool	1	profile	live	gfx_vk_exec.c	no fragment-depth variants: draws that test a depth buffer a fragment shader wrote through `gl_FragDepth` (in the last two presents) normally get a variant of their fragment shader that writes `gl_FragDepth = gl_FragCoord.z`, the same depth tested after the shader, out of Adreno's early culling, whi
 DM_VK_FLIPY	bool		debug	live	gfx_vk_exec.c	the old clip-space y convention (pictures flip)
 DM_VK_FRONT	int		debug	start	gfx_vk_exec.c	2`
 DM_VK_GS_SPLIT	bool	0	profile	live	gfx_vk_exec.c	1 = split geometry-shader draws (gfx_vk_gs_split.c)
+DM_VK_IMG_BLOCKS	bool		debug	start	gfx_vk_core.c	small images take a slot of a shared memory block (default); 0: every image gets memory of its own (A/B)
 DM_VK_LIN_BACK	bool		debug	live	gfx_vk_exec.c	what the GPU draws into a linear render target (NVN `LINEAR_RENDER_TARGET`) stays in the Vulkan image, as before (default: copied back to the texture's pool memory after the pass, so the CPU can read it; Super Mario Odyssey's ground fog reads its wave surface this way)
-DM_VK_LIST_AT	str		debug	?	gfx_vk_exec.c	DM_VK_LIST_AT=<present>: the pass list of every submission over two presents from there
+DM_VK_LIST_AT	str		debug	live	gfx_vk_exec.c	DM_VK_LIST_AT=<present>[#n]: the pass list of every submission over n (2) presents from there; now[#n] starts at the current present (once a run)
 DM_VK_LOG	str		debug,ios	?	hle_vk.m	
 DM_VK_LOG_FS	hex		debug	live	gfx_vk_exec.c	one line per draw with that fragment shader (present, pass, depth state, viewport), and its samplers as the draw sees them (`DM_VK_SAMP_LOG` explains why one changed)
 DM_VK_LOG_SPARSE	bool		debug	?	gfx_vk_tex.c	which sparse textures are read, and how much of them was not mapped yet
@@ -287,6 +288,7 @@ DM_VK_PASS_TIMES	bool		debug	start	gfx_vk_core.c	GPU timestamps around every pas
 DM_VK_PIPE_LOG	str		debug	start	gfx_vk_exec.c	one log line per pipeline built (first 600), and the polygon-state lines (cull, front face, origin, the Vulkan values; one per combination, at most 16): shaders, topology, cull/front, depth and stencil state, colour formats, blend, attribute and binding counts. Compare the lines of a wrong material 
 DM_VK_PIXEL_HISTORY	str		debug	live	gfx_vk_exec.c	Default off. For matching single-sample B10G11R11 target 0, record one pixel's colour/depth after each logical draw or clear in `pixel_history.tsv`, at most 4096 events. Includes shader keys, vertex/index buffers, vertex UBO addresses, depth/bias/scissor/viewport state and packed source words. A sin
 DM_VK_POOL_CACHED	bool		debug	start	gfx_vk_core.c	opt into host-visible cached memory for copied pools only; default off. Allocation/map/bind failure falls back to coherent memory, except device loss. Non-coherent pools flush initial uploads whole and incremental uploads over one atom-aligned interval spanning changed blocks; after GPU completion, 
+DM_VK_POOL_LOG	bool		debug	live	gfx_vk_core.c	every memory pool made (address, size, zero-copy or copied, slab slot) and finalized, logged
 DM_VK_POOL_READBACK_RANGES	bool		debug	start	gfx_vk_core.c	default off; narrow cached-pool completion merges to tracked transfers only when the submission has no writable/unknown shader descriptors, transform feedback or texture-to-guest writes. Uncertain submissions retain full merging and whole-mapping invalidation. Eligible submissions invalidate one ato
 DM_VK_POOL_REUSE	bool		debug	start	gfx_vk_core.c	a finalized pool's hardware buffer is freed, as before (default: up to 128 of them, 384 MB, are kept, imported, for the next pool of the same size, once the GPU has passed them)
 DM_VK_POOL_SLABS	bool		debug	start	gfx_vk_core.c	every memory pool gets a hardware buffer of its own, as before (default: pools up to 256 KB take a slot of a slab, a hardware buffer of 2-8 MB allocated and imported once, mapped at the pool's address at the slot's offset; a 48 KB pool of its own cost ~170 µs to allocate and ~180 µs to import on an 
@@ -299,6 +301,7 @@ DM_VK_PROF_TID	bool		debug	start	gfx_vk_exec.c	sample that thread of the process
 DM_VK_QUIRK_GS_SPLIT	bool		debug	start	gfx_vk_quirks.c	force the gs_split quirk row (gfx_vk_quirks.c): 1 lets profiles' geometry-shader splits run on a GPU other than Adreno, 0 stops them
 DM_VK_QUIRK_LRZ_TOUCH	bool		debug	start	gfx_vk_quirks.c	force the lrz_touch quirk row (gfx_vk_quirks.c): the default of DM_VK_LRZ_TOUCH (on for Adreno)
 DM_VK_RD_TOUCH	bool		debug	live	gfx_vk_exec.c	no transfer read of the memory a run of rasterizer-discard draws wrote, where the run ends: Xenoblade Chronicles 3's grass then flickers (whole blades black in some frames: the G-buffer's grass cards, depth EQUAL against the pre-pass, meet sway records not yet written)
+DM_VK_ROBUST	bool		debug	start	gfx_vk_core.c	robust buffer access on (A/B for a device lost): a buffer, texel buffer or vertex read past its range reads 0 and a write past it is dropped, instead of faulting the GPU
 DM_VK_RP	bool		debug	start	gfx_vk_exec.c	dynamic rendering instead of cached `VkRenderPass` objects with imageless framebuffers (Adreno's `vkCmdBeginRendering` cost about 40 µs a pass)
 DM_VK_SAMP_LOG	bool		debug	live	gfx_vk_exec.c gfx_vk_tex.c	log the next n sampler registrations (ID, LOD range, wrap, aniso, compare, border, present, thread) and each submission's start, in time order with the replay's lines
 DM_VK_SCRATCH_MB	bool		debug	?	gfx_vk_core.c	
@@ -307,7 +310,7 @@ DM_VK_SHADERS	str		app	?	gfx_vk_shader.c	the shader bundle (shaders.dmsv); defau
 DM_VK_SHOT	str		debug	start	gfx_vk_present.c	headless runs: save those presents (`DM_VK_SHOT_DIR`)
 DM_VK_SHOTS	bool		debug	live	gfx_vk_present.c	save each of the next N presented frames as `frame_<n>.ppm` in the files folder (logs "frame shots: presents a to b")
 DM_VK_SHOT_DIR	str		debug	?	gfx_vk_present.c	
-DM_VK_SKIP_OPS	str		debug	start	gfx_vk_exec.c	bisection aids: skip command kinds; 1 no draw calls, 2 no vertex buffers, 4 no descriptor sets
+DM_VK_SKIP_OPS	str		debug	live	gfx_vk_exec.c	bisection aids: skip command kinds; 1 no draw calls, 2 no vertex buffers, 4 no descriptor sets
 DM_VK_SLOT0_FILL	bool		debug	?	gfx_vk_exec.c	
 DM_VK_SPV_ALT	bool		debug	?	gfx_vk_exec.c	pipelines made while `ALT` is on use `<dir>/<key>.spv` in place of the bundle's code where the file exists (same bindings), so two compilations of a shader compare in one run (e.g. the translator's GLSL through `glslc`, or a patched module)
 DM_VK_SPV_DIR	str		debug	?	gfx_vk_shader.c	pipelines made while `ALT` is on use `<dir>/<key>.spv` in place of the bundle's code where the file exists (same bindings), so two compilations of a shader compare in one run (e.g. the translator's GLSL through `glslc`, or a patched module)
@@ -342,6 +345,7 @@ DM_VK_X_DEPTH_CLEAR_COLOR	bool		debug	live	gfx_vk_exec.c	Diagnostic only: also c
 DM_VK_X_FENCES	bool		debug	start	gfx_vk_core.c	submissions signal a ring of fences instead of a timeline semaphore, as on a Vulkan 1.1 driver without timeline semaphores (the Adreno 618 / 619 of 2021, issue #15). On the Y700 it cost nothing measurable in Super Mario Bros. Wonder's level 1
 DM_VK_X_FLAT_VS	str		profile	?	gfx_vk_exec.c	vertex shaders (hex keys, key:n) whose outputs are made flat
 DM_VK_X_LANDCUT	bool		debug	?	gfx_vk_exec.c	
+DM_VK_X_LEAK	int		debug	live	gfx_vk_core.c	freed Vulkan objects of the kinds in the mask are never destroyed (1 buffers, 2 images, 4 image views, 8 buffer views, 16 images in a block slot): no handle value is used twice. A/B only, memory grows
 DM_VK_X_NOBAR	bool		debug	live	gfx_vk_exec.c	cost measurements that **draw wrong**: no barrier before a pass; depth neither loaded nor stored; colour not loaded unless cleared
 DM_VK_X_NOBC	bool		debug	live	gfx_vk_exec.c	every draw sets all its dynamic state and binds again (no bind cache; the cache starts empty in each command buffer and each render pass)
 DM_VK_X_NODISPBAR	bool		debug	live	gfx_vk_exec.c	cost measurement that may draw wrong: no barrier after compute dispatches (Tears of the Kingdom: no GPU change at about 23 dispatches a frame)

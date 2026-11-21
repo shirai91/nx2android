@@ -271,7 +271,8 @@ void vk_init(void) {
     }
     // transform feedback (NVN BeginTransformFeedback; gfx_vk_exec.c xfb_*): Xenoblade Chronicles 3 captures particle state with it
     V.has_xfb = fxf.transformFeedback && has_ext(ex, ne, "VK_EXT_transform_feedback"); fxf.geometryStreams = 0;
-    fr2.robustBufferAccess2 = 0; fr2.robustImageAccess2 = 0;   // nullDescriptor only: unbound slots read 0 without a dummy
+    int robust = 0; { const char *e = getenv("DM_VK_ROBUST"); robust = e ? atoi(e) : 0; }   // DM_VK_ROBUST (start-up, A/B): 1 robust buffer access, 2 also robust image access and robustness2's
+    if (robust < 2) { fr2.robustBufferAccess2 = 0; fr2.robustImageAccess2 = 0; }   // nullDescriptor only: unbound slots read 0 without a dummy
     V.has_custom_border = fcb.customBorderColors && has_ext(ex, ne, "VK_EXT_custom_border_color");
     V.has_robust2 = fr2.nullDescriptor && has_ext(ex, ne, "VK_EXT_robustness2");
     V.has_depth_clip_ctl = fdc.depthClipControl && has_ext(ex, ne, "VK_EXT_depth_clip_control");
@@ -314,9 +315,12 @@ void vk_init(void) {
                       VKLOG("subgroups: stages %#x pinned to %u lanes (DM_VK_SUBGROUP_PIN)", st, pin); } }
     // enable: everything the shaders may use that the device has
     VkPhysicalDeviceFeatures en = ff.features; en.robustBufferAccess = 0; en.shaderFloat64 = 0;
+    // DM_VK_ROBUST=1 (start-up, A/B): robust buffer access, so a buffer, texel buffer or vertex read past its range reads 0 instead of faulting the GPU (a device lost)
+    if (robust && ff.features.robustBufferAccess) { en.robustBufferAccess = 1; VKLOG("robust buffer access on (DM_VK_ROBUST)%s", robust >= 2 ? ", with robust image access and robustness2 where the device has them" : ""); }
+    else fr2.robustBufferAccess2 = 0;   // (robustBufferAccess2 needs robustBufferAccess)
     f12.bufferDeviceAddressCaptureReplay = 0; f12.bufferDeviceAddressMultiDevice = 0;
     featx(xf, nxf, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES)[1] = featx(xf, nxf, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES)[2] = 0;   // (its extension's: the same two)
-    f13.robustImageAccess = 0;
+    if (robust < 2) f13.robustImageAccess = 0;
     fcb.pNext = NULL; fr2.pNext = V.has_custom_border ? (void *)&fcb : NULL; fdc.pNext = V.has_robust2 ? (void *)&fr2 : (V.has_custom_border ? (void *)&fcb : NULL);
     fu8.pNext = V.has_depth_clip_ctl ? (void *)&fdc : fdc.pNext;
     fxf.pNext = &fu8;
@@ -437,6 +441,7 @@ enum { ZCF_N = 128 };
 static zcfree_t g_zcf[ZCF_N]; static int g_nzcf; static uint64_t g_zcf_bytes; static pthread_mutex_t g_zcf_mu = PTHREAD_MUTEX_INITIALIZER;
 static uint64_t g_zcf_hit, g_zcf_miss, g_zcf_kept;   // under g_zcf_mu (the pool line)
 uint64_t mtl_last_fence(void);
+static int pool_log_on(void) { const char *e = getenv("DM_VK_POOL_LOG"); return e && atoi(e); }   // DM_VK_POOL_LOG=1 (live, debugging): every pool made and finalized, logged
 static int zcf_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_VK_POOL_REUSE"); v = !(e && !atoi(e)); } return v; }
 static void zcf_free_now(const zcfree_t *e) { vkDestroyBuffer(V.dev, e->buf, NULL); vkFreeMemory(V.dev, e->mem, NULL); AHardwareBuffer_release(e->ahb); }
 static int zcf_take(uint64_t size, zcfree_t *out) {
@@ -873,7 +878,7 @@ static void pool_add_one(const void *mem, uint64_t size, uint64_t base, uint64_t
     if (near & 2) pthread_mutex_unlock(&g_lazy_mu);
     if (np >= 1024 && !(np & (np - 1))) VKLOG("%d memory pools live", np);
     __atomic_fetch_add(zc ? &g_cp_bytes : lazy ? &g_lazy_total : &g_zc_bytes, size, __ATOMIC_RELAXED);
-    static int nlog; if (nlog++ < 24) VKLOG("memory pool %p +%#llx: %s (zero-copy %.1f MB, lazy %.1f MB, copied %.1f MB)", mem, (unsigned long long)size, zc ? "copied" : lazy ? "zero-copy when the GPU first uses it" : "zero-copy",
+    static int nlog; if (nlog++ < 24 || pool_log_on()) VKLOG("memory pool %p +%#llx: %s%s (zero-copy %.1f MB, lazy %.1f MB, copied %.1f MB)", mem, (unsigned long long)size, zc ? "copied" : lazy ? "zero-copy when the GPU first uses it" : "zero-copy", q.slab ? " (a slab slot)" : "",
                                         g_zc_bytes / 1048576.0, g_lazy_total / 1048576.0, g_cp_bytes / 1048576.0);
     pool_note(0, size, pool_ns() - t0);
 }
@@ -937,6 +942,7 @@ static int pool_back(vkpool_t *p, uint64_t serial) {
     return rc;
 }
 void mtl_pool_del(const void *mem) {
+    if (pool_log_on()) VKLOG("memory pool %p finalized (present %llu)", mem, (unsigned long long)mtl_last_fence());
     for (;;) {   // every chunk of the pool
         pthread_mutex_lock(&g_lazy_mu); pthread_mutex_lock(&g_nest_mu); pthread_rwlock_wrlock(&g_pool_mu);   // (lock order: g_lazy_mu, g_nest_mu, g_pool_mu)
         int i = 0; while (i < g_npool && g_pool[i].base != (uint64_t)(uintptr_t)mem) i++;
@@ -1324,6 +1330,9 @@ void *vk_scratch(VkDeviceSize n, VkDeviceSize align, VkBuffer *buf, VkDeviceSize
 // thread that finalizes a pool (nvnMemoryPoolFinalize → mtl_pool_del) adds to the same list without g_sub_lock. Unlocked, two first adds to a recycled slot crashed
 // Animal Crossing: New Horizons' release build (SIGSEGV in df_add: one thread had set capdf, the other wrote through the df still NULL). g_df_mu is above slot_recycle
 static void df_add(int kind, void *a, void *b) {
+    // DM_VK_X_LEAK=<mask> (live, debugging): the kinds whose bit is set (1 buffers, 2 images, 4 image views, 8 buffer views, 16 images in a block's slot) are never destroyed,
+    // so no handle value is used twice (a cache keyed by a handle cannot meet a new object at an old address). Memory grows: for A/B runs only
+    { const char *e = getenv("DM_VK_X_LEAK"); if (e && (atoi(e) >> kind & 1)) { static int n; if (!n++) VKLOG("[RED] DM_VK_X_LEAK=%s: freed Vulkan objects of those kinds are leaked", e); return; } }
     pthread_mutex_lock(&g_df_mu);
     if (g_cur >= 0) {
         vksub_t *s = &g_slot[g_cur]; if (s->ndf == s->capdf) { s->capdf = s->capdf ? 2 * s->capdf : 64; s->df = realloc(s->df, s->capdf * sizeof *s->df); }
@@ -1353,7 +1362,8 @@ static VkDeviceSize img_class_size(int c) { return (c & 1 ? 6144ull : 4096ull) <
 VkDeviceMemory vk_image_memory(const VkMemoryRequirements *req, uint32_t type, VkDeviceSize *off, void **sub) {
     *off = 0; *sub = NULL;
     int c = 0; while (c < IMG_CLASSES && img_class_size(c) < req->size) c++;
-    if (c == IMG_CLASSES || req->size > IMG_SLOT_MAX || req->alignment > 4096) {   // memory of its own
+    static int blocks = -1; if (blocks < 0) { const char *e = getenv("DM_VK_IMG_BLOCKS"); blocks = !(e && !atoi(e)); }   // DM_VK_IMG_BLOCKS=0 (start-up, A/B): every image gets memory of its own
+    if (!blocks || c == IMG_CLASSES || req->size > IMG_SLOT_MAX || req->alignment > 4096) {   // memory of its own
         VkMemoryAllocateInfo ai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, req->size, type}; VkDeviceMemory m;
         return vkAllocateMemory(V.dev, &ai, NULL, &m) ? VK_NULL_HANDLE : m;
     }
