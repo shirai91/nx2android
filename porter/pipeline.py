@@ -689,7 +689,10 @@ class Port:
             say(f'reusing the captured run-time shaders: {cap}'); return
         PROG.add(1); PROG.stage('GLSLC capture', step='building the host as a tool', done=0, total=len(want) if want else None, unit='shaders')
         t0 = time.time()
-        adb = Adb(self.tools['adb'], self.o.device or self.cfg.get('device'), log=say); adb.pick()
+        adb = Adb(self.tools['adb'], self.o.device or self.cfg.get('device'), log=say)
+        try: adb.pick()
+        except (AdbError, KeyError) as e: raise BuildError(f'{self.app_name} compiles some shaders at run time ({self.glslc_why}): the port boots the game on the Android device '
+                                                           f'to capture them, so connect it (adb, USB debugging on) and port again ({e})') from e
         host = self.aw / ('host-debug' if self.o.debug else 'host')   # the host stage's own folder: its objects serve both
         nsp.run([PY, DM / 'android/build.py', '--game', self.g.id, '--ndk', self.tools['ndk'], '--out', host, '--exe', '--jobs', str(self.o.jobs)] + ([] if self.o.debug else ['--release']),
                 self.logs / 'android_glslc_host.log', env=self.env)
