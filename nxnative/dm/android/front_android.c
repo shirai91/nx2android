@@ -279,8 +279,8 @@ static int pad_dev_kind(int id) {
 // prompts name the button (A to confirm, B to go back), which a controller whose A sits at the bottom matches by label and one whose A is on the right by
 // position. Label or position is a property of the player's controller, not of the game: until the player chooses, DM_PAD_LABEL=1 in env.txt (DM_PAD_XBOX=1,
 // its first name, still counts) is the default, and the choice is kept per device as settings.txt labels=. The Gamepad tab's row opens the detector (pd_open):
-// the first face button a controller presses decides - A means by label, any other face button by position (a press arriving as X or Y on a rotated pad still
-// means positions: the four are one set, only A is special) - and Start or Select cancels (they are outside the measured set and map the same both ways).
+// A chooses by label, B by position, X and Y are ignored (a press arriving as X or Y cannot tell which mapping the controller uses, so the panel says they
+// are ignored) - and Start or Select cancels.
 // Only a controller is remapped: the on-screen gamepad sends the game's buttons as they are (the Switch layout, with A, B, X and Y on the buttons, as the
 // prompts name them). The menu's own A and B follow pad_labels as soon as it is set
 static int pad_labels(void) {
@@ -794,22 +794,24 @@ static void sp_size(char *out, int cap, const dm_save_entry *s) {
 }
 #define SP_ROW(i, st, ...) do { rows[i].style = st; snprintf(rows[i].left, sizeof rows[i].left, __VA_ARGS__); } while (0)
 
-// ---- the face-button detector (from the Gamepad tab's Configure row): the pause menu's panel with the prompt (gfx_vk_present.c ov_pad_panel). The first
-// face button a controller presses decides (handle_event calls pd_capture with the raw Android keycode - key_bit is not involved, the mapping is what is
-// being measured): A is by label, any other face button by position (a press arriving as X or Y on a rotated pad still means positions: the four are one
-// set, only A is special). Start or Select cancels (outside the measured set, they map the same both ways), the system's Back and the controller's menu
-// button route through menu_close, and a touch outside the panel cancels. While it is open the menu's own A and B navigation is frozen (menu_key) - the
+// ---- the face-button detector (from the Gamepad tab's Configure row): the pause menu's panel with the prompt (gfx_vk_present.c ov_pad_panel). A press of
+// the controller's A chooses by label, B by position (handle_event calls pd_capture with the raw Android keycode - key_bit is not involved, the mapping is what
+// is being measured): the two settings are a choice, and the panel says so. X and Y are ignored, and the panel says
+// that too: a press arriving as X or Y does not say which mapping the controller uses - by position maps the pressed X to the game's Y and the pressed Y to the
+// game's X on a controller whose labels follow the Switch's placement, and on another placement the same press means something else again, so either answer
+// could be wrong with no way to tell. Start or Select cancels (outside the measured set, they map the same both ways), the system's Back and the controller's
+// menu button route through menu_close, and a touch outside the panel cancels. While it is open the menu's own A and B navigation is frozen (menu_key) - the
 // menu cannot know which button is its "back", that is the thing being measured
 static void pd_open(void) {
     atomic_store(&g_pd_on, 1); atomic_fetch_add(&g_pd_ver, 1); dm_overlay_redraw();
-    LOG("[menu] face-button detector open: press A (by label) or B, X, Y (by position); Start or a touch outside the panel cancels");
+    LOG("[menu] face-button detector open: A chooses by label, B by position, X and Y are ignored; Start or a touch outside the panel cancels");
 }
 static void pd_close(void) {   // cancelled: the mapping is unchanged, nothing is saved
     if (!atomic_exchange(&g_pd_on, 0)) return;
     dm_haptics_android_tap(); atomic_store(&g_menu_hi, -1); dm_overlay_redraw();
     LOG("[menu] face-button detector cancelled: the mapping is unchanged");
 }
-static void pd_capture(int32_t k, int device) {
+static void pd_capture(int32_t k, int device) {   // only A and B reach here (handle_event): A chooses by label, B by position; X and Y are consumed above and never arrive
     atomic_store(&g_set_labels, k == AKEYCODE_BUTTON_A ? 1 : 0);
     dm_haptics_android_tap(); atomic_store(&g_pd_on, 0); atomic_store(&g_menu_hi, -1); settings_save(); dm_overlay_redraw();
     LOG("[menu] face-button detect: controller key %d (device %d) -> %s", k, device, k == AKEYCODE_BUTTON_A ? "A is at the bottom" : "A is on the right");
@@ -1138,7 +1140,8 @@ static int handle_event(AInputEvent *e) {
         }
         if (atomic_load(&g_pd_on)) {   // the face-button detector takes the keys the menu would act on (its own A and B are what is being measured)
             if (down && AKeyEvent_getRepeatCount(e) == 0) {
-                if (k == AKEYCODE_BUTTON_A || k == AKEYCODE_BUTTON_B || k == AKEYCODE_BUTTON_X || k == AKEYCODE_BUTTON_Y) { pd_capture(k, AInputEvent_getDeviceId(e)); return 1; }
+                if (k == AKEYCODE_BUTTON_A || k == AKEYCODE_BUTTON_B) { pd_capture(k, AInputEvent_getDeviceId(e)); return 1; }   // A chooses by label, B by position
+                if (k == AKEYCODE_BUTTON_X || k == AKEYCODE_BUTTON_Y) return 1;   // ignored, and the panel says so: an X or Y press cannot tell which mapping the controller uses
                 if (k == AKEYCODE_BUTTON_START || k == AKEYCODE_BUTTON_SELECT) { pd_close(); return 1; }   // outside the measured set: they map the same both ways
             }
             return 1;   // every other key, stick or d-pad step is ignored while detecting (the game is paused under the menu, so nothing is lost)

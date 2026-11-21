@@ -375,7 +375,7 @@ static void cv_button(const ov_canvas *cv, const float b[4], const char *l, int 
 }
 // The pause menu (overlay_layout.h: the rows, the tabs, the slider's track), in the raster's panel rectangle. Its letters are as large as a row allows (0.30 of
 // its height, about 2.7 mm on a 6.7" phone and 3.6 mm on the 8.8" tablet) and smaller only when the widest row would not fit beside its control
-static const char *const OVM_LABELS[OVM_N] = {"Show gamepad", "Opacity", "Edit layout", "Rumble", "Show FPS", "Mode", "Export save", "Import save", "Gamepad", "Audio output", "Resume", ""};
+static const char *const OVM_LABELS[OVM_N] = {"Show gamepad", "Opacity", "Edit layout", "Rumble", "Show FPS", "Mode", "Export save", "Import save", "Controller buttons", "Audio output", "Resume", ""};
 static const char *const OVM_BUTTONS[OVM_N] = {[OVM_EDIT] = "Edit", [OVM_EXPORT] = "Export", [OVM_IMPORT] = "Import", [OVM_AUDIO] = "Select", [OVM_PAD] = "Configure"};   // the rows that are a button: its word (OVM_PAD opens the face-button detector, front_android.c pd_open)
 static const char *const OVM_MODES[2] = {"Handheld", "Docked"};
 static void ov_menu_panel(const ov_canvas *cv, int st) {
@@ -489,9 +489,11 @@ static void ov_save_panel(const ov_canvas *cv, int st) {
         if (q->style == OVS_TITLE) cv_rrect(cv, r[0], r[1] + rh - 1, r[0] + rw, r[1] + rh, 0.5f, C_LINE);
     }
 }
-// The face-button detector (front_android.c, from the Gamepad tab's Configure): the menu's panel with the prompt, centred. A face press decides
-// (front_android.c pd_capture); Start or Select cancels, a touch outside the panel cancels
-static void ov_pad_panel(const ov_canvas *cv) {
+// The face-button detector (front_android.c, from the Gamepad tab's Controller buttons row): the menu's panel with the prompt, centred. A press of the
+// controller's A chooses by label, B by position (front_android.c pd_capture); X and Y are ignored and the panel says so, Start or Select cancels, a touch
+// outside the panel cancels. The choice in effect (dm_menu_state's bit 28, front_android.c pad_labels) shows under the prompt, so the player sees what
+// they are changing
+static void ov_pad_panel(const ov_canvas *cv, int st) {
     float p[4] = {0, 0, (float)cv->w, (float)cv->h}, r[4]; ov_menu_rowrect(p, 0, r);
     float rh = r[3], rw = r[2];
     cv_rrect(cv, 0, 0, p[2], p[3], rh * 0.18f, C_BG);
@@ -501,9 +503,14 @@ static void ov_pad_panel(const ov_canvas *cv) {
     const char *msg = "Press the A button on your controller.";
     int s = is; while (s > 1 && cv_text_w(msg, s) > rw * 0.92f) s--;
     cv_text(cv, r[0] + (rw - cv_text_w(msg, s)) / 2, cy, msg, s, C_WHITE);
-    ov_menu_rowrect(p, 4, r); cy = r[1] + rh / 2;
-    s = is; while (s > 1 && cv_text_w("Start to cancel", s) > rw * 0.92f) s--;
-    cv_text(cv, r[0] + (rw - cv_text_w("Start to cancel", s)) / 2, cy, "Start to cancel", s, C_DIM);
+    const char *lines[3] = {st >> 28 & 1 ? "Face buttons: by label" : "Face buttons: by position",   // the choice in effect (dm_menu_state bit 28, front_android.c pad_labels)
+                            "B chooses by position; X and Y are ignored.", "Start or tap outside to cancel"};
+    for (int row = 3; row <= 5; row++) {
+        ov_menu_rowrect(p, row, r); cy = r[1] + rh / 2;
+        const char *line = lines[row - 3];
+        s = is; while (s > 1 && cv_text_w(line, s) > rw * 0.92f) s--;
+        cv_text(cv, r[0] + (rw - cv_text_w(line, s)) / 2, cy, line, s, C_DIM);
+    }
 }
 static void ov_panel(int st) {   // the pause menu, the text entry or the layout editor, for menu state st (dm_menu_state), into the panel's rows of the upload buffer
     ov_canvas cv = {g_ov.px, g_ov.w, 0, g_ov.h + g_ov.sh, g_ov.pw, g_ov.ph};
@@ -511,7 +518,7 @@ static void ov_panel(int st) {   // the pause menu, the text entry or the layout
     if (st & OVT_ST) ov_text_panel(&cv);   // a text entry is open (dm_menu_state)
     else if (st & OVE_ST) ov_edit_panel(&cv, st, (float)g_sext.width, (float)g_sext.height);
     else if (st & OVS_ST) ov_save_panel(&cv, st);
-    else if (st & OVP_ST) ov_pad_panel(&cv);
+    else if (st & OVP_ST) ov_pad_panel(&cv, st);
     else ov_menu_panel(&cv, st);
 }
 // The phone window uses the same menu raster as Vulkan, independently of the external swapchain.
@@ -528,7 +535,7 @@ JNIEXPORT jintArray JNICALL Java_org_nx2a_ExternalActivity_externalMenuPixels(JN
     if (st & 0x10000) ov_text_panel(&cv);
     else if (st & OVE_ST) ov_edit_panel(&cv, st, (float)W, (float)H);
     else if (st & OVS_ST) ov_save_panel(&cv, st);
-    else if (st & OVP_ST) ov_pad_panel(&cv);
+    else if (st & OVP_ST) ov_pad_panel(&cv, st);
     else ov_menu_panel(&cv, st);
     size_t count = (size_t)w * h; jint *argb = malloc((count + 2) * sizeof *argb);
     if (!argb) { free(pixels); return NULL; }
