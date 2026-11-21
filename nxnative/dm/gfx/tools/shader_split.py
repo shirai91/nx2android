@@ -45,6 +45,8 @@
 #   Unity type trees need Unity's common string table, which is taken from the first main
 # Pair table: (vertex key, pixel key) of every BNSH variation (every Unity program); dmsh_build uses it to give vertex shaders the outputs their pixel shaders read but they do not write (see dmsh_build.py vs_pad)
 import base64, collections, concurrent.futures as cf, hashlib, json, os, re, struct, subprocess, sys, zlib
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../tools'))
+from romfs import os, open, mmap   # noqa: E402,F811  (a RomFS dir the build mounts reads the player's own container; other paths are untouched)
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../games')); import game as _game
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); import uepak, eabig
 GAME = _game.load()   # the current game profile (DM_GAME, required): source group rules and the table header note
@@ -258,7 +260,6 @@ def idrk_shaders(path, label, out):
     as GLSLC compiler outputs (glslc_shaders). One '_DOK0000' container (type KTID 0x20a6a0bb, the engine's system resources; once in system.rdb.bin and once in the update's .bin1) holds 151 bare
     GLSLC outputs without a G2S wrapper, among them 21 shaders the first battle draws. No other entry type holds any. The RDB files are up to 3.8 GB, so they are mapped rather than read,
     and only entries whose data starts with one of those two magics are inflated"""
-    import mmap
     with open(path, 'rb') as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as d:
         for a, b, flags in idrk_entries(d):
             if idrk_data(d, a, b, flags, 4) in (b'_S2G', b'_DOK'): out.extend(glslc_shaders(idrk_data(d, a, b, flags), f'{label}#IDRK@{a:#x}', need=False))
@@ -322,7 +323,6 @@ def linkdata_jobs(path, rel, parts=64):
     return jobs
 
 def linkdata_shaders(path, rel, rng, out):
-    import mmap
     with open(os.path.join(os.path.dirname(path), 'DATA0.bin'), 'rb') as f: idx = f.read()
     with open(path, 'rb') as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as d:
         for i in range(*rng):
@@ -389,7 +389,6 @@ def sdf_shaders(d, label):
     return out
 
 def kpka_shaders(path, rel, ents, out):
-    import mmap
     with open(path, 'rb') as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as d:
         for e in ents:
             if e[3] >= 0x10 and kpka_data(d, e, 4) == b'SDF\0': out.extend(sdf_shaders(kpka_data(d, e), f'/{rel}#{e[0]:016x}'))
@@ -820,7 +819,6 @@ def bnd3_members(d, label):
 def bdt_shaders(path, rel, ents, out):
     """Dark Souls Remastered's shaders: GLSLC outputs, one per BND3 entry ('.vpo' vertex, '.fpo' pixel; 3,225 in six DCX-compressed BND3 archives in dvdbnd0.bdt, 3,088 of them the
     FLVER material shaders). The engine combines vertex and pixel shaders per draw, so they are paired as single-stage programs (separable_pairs)"""
-    import mmap
     with open(path, 'rb') as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as m:
         for h, off, n in ents:
             label = f'/{rel}#{h:08x}'; d = m[off:off + n]
@@ -1008,7 +1006,7 @@ def smash_arc_jobs(files, parts=128):
 def smash_arc_shaders(path, rel, ents, out):
     """Each file of a range scanned as a file of its own: GLSLC outputs in the SSBH shader databases ('HBSS' … 'RDHS', the .nushdb files: 41 in 13.0.5), BNSH in the effects ('EFFN') and the UI
     layout archives (SARC). Labels name the file by its format (an SSBH resource by its type, 'SHDR') and its path's hash40: /data.arc/SHDR#<hash40>"""
-    import mmap, smash_arc
+    import smash_arc
     with open(path, 'rb') as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as d:
         for e in ents:
             if not e[3]: continue
@@ -1042,7 +1040,6 @@ def oodle(comp, n):
 def trinity_shaders(path, rel, packs, out):
     """A range of Trinity packs (trpfs_jobs); each file is scanned like a loose one. Oodle files are decoded by the game's own decoder: DM_GFPAK_DECODED = a folder of those already decoded
     (the porter decodes them on the Android device, trpfs_decoded), else through the Mac host (oodle, DM_OODLE_HOST)"""
-    import mmap
     dec = trpfs_decoded('/' + rel, os.path.getsize(path))
     with open(path, 'rb') as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as d:
         for off, name in packs:
@@ -1059,7 +1056,6 @@ def trpfs_decoded(label, size):
     """The Oodle files of a Trinity file system that hold a BNSH file, decoded already: DM_GFPAK_DECODED/<label with / as __>.dec = 'DTPD', u64 the .trpfs's size, u32 count, then per file
     u64 pack offset, u32 index in the pack, u32 length and the bytes (porter/pipeline.py device_oodle). One file holds the whole file system's shaders, so each worker maps it once and
     indexes it (the split runs one job per range of packs). → {(pack offset, index): memoryview}, or None without a folder or without a file of this size"""
-    import mmap
     root = os.environ.get('DM_GFPAK_DECODED')
     if not root: return None
     p = os.path.join(root, label.lstrip('/').replace('/', '__') + '.dec')

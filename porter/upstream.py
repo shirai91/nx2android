@@ -14,6 +14,7 @@ import android_profile   # noqa: E402
 import game              # noqa: E402
 import nacp              # noqa: E402
 import profile_guess     # noqa: E402
+import romfs             # noqa: E402  (the read-only views of the player's container / RomFS image the build tools read through)
 import settings_registry # noqa: E402
 import trinity           # noqa: E402
 import uepak             # noqa: E402
