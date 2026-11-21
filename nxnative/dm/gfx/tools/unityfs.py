@@ -112,7 +112,7 @@ class NoTree(ValueError):
 # Type trees written out for players whose serialized files carry none and that ship no bundle to borrow one from (Brain Memory Training Academy, Unity 2022.3.5f1: only Data/*.assets;
 # Patrick's Parabox, Unity 2020.3.30f1: only the built-in shaders in Data/Resources).
 # {(class ID, type hash): (root type, layout)}. The layout is one struct per line, "Name: type field; type field; …", in serialization order. A type is a primitive, a struct of the layout,
-# string, vector<element name:type>, map<data:pair(key type,value type)>; a trailing ~ = the container's Array is not aligned after it, ! = the field itself is aligned after it (the 0x4000 flags).
+# string, vector<element name:type> (staticvector<…> alike), map<data:pair(key type,value type)>; a trailing ~ = the container's Array is not aligned after it, ! = the field itself is aligned after it (the 0x4000 flags).
 # The structs up to SerializedProgramParameters are the same in both layouts below
 _SHADER_COMMON = '''
 SerializedTextureProperty: string m_DefaultName; int m_TexDim
@@ -207,6 +207,12 @@ SHADER_2019_4 = (SHADER_2018_3.replace('vector<data:UInt16> m_KeywordIndices;', 
                  .replace('vector<data:unsigned int> offsets; vector<data:unsigned int> compressedLengths; vector<data:unsigned int> decompressedLengths;',
                           'vector<data:vector<data:unsigned int>> offsets; vector<data:vector<data:unsigned int>> compressedLengths; vector<data:vector<data:unsigned int>> decompressedLengths;'))
 assert SHADER_2019_4.count('m_LocalKeywordIndices') == SHADER_2019_4.count('progRayTracing') == 1 and SHADER_2019_4.count('vector<data:vector<data:unsigned int>>') == 3
+# The Unity 2017.4 Shader (Hollow Knight, Unity 2017.4.10f1: no bundles, its 158 shaders in Data/*.assets, Data/level* and Data/Resources), from 2017.4.10f1's type tree as AssetRipper's
+# TypeTreeDumps records it (2017.4.9f1's is the same), checked node for node with the flags: 2018.3's without the pass's procedural instancing flag (the instancing flag is aligned
+# after it instead) and without the non-modifiable textures
+SHADER_2017_4 = (SHADER_2018_3.replace('bool m_HasInstancingVariant; bool! m_HasProceduralInstancingVariant;', 'bool! m_HasInstancingVariant;')
+                 .replace(' map<data:pair(string,PPtr<Texture>)>~ m_NonModifiableTextures;', '').replace('\nPPtr<Texture>: int m_FileID; SInt64 m_PathID', ''))
+assert 'Procedural' not in SHADER_2017_4 and 'NonModifiable' not in SHADER_2017_4 and 'PPtr<Texture>' not in SHADER_2017_4
 # The Unity 2022.3 ComputeShader (Monster Train 2, Unity 2022.3.54f1: 12 in Data/sharedassets2.assets, which carries no type trees, and no bundle has one), from Unity 2022.3.54f1's type tree
 # as AssetRipper's TypeTreeDumps records it (StructsDump/release/2022.3.54f1.dump). Each kernel variant's code is a program code of one stage, compute (the layout of a Shader's subprogram code)
 COMPUTE_2022_3 = '''ComputeShaderResource: string name; string generatedName; int bindPoint; int samplerBindPoint; int texDimension
@@ -233,6 +239,12 @@ ComputeShaderCB: string name; int byteSize; vector<data:ComputeShaderParam> para
 ComputeShaderVariant: int targetRenderer; int targetLevel; vector<data:ComputeShaderKernel> kernels; vector<data:ComputeShaderCB> constantBuffers; bool! resourcesResolved
 ComputeShader: string m_Name; vector<data:ComputeShaderVariant> variants
 '''
+# The Unity 2017.4 ComputeShader (Hollow Knight, Unity 2017.4.10f1: one in Data/Resources/unity default resources), from 2017.4.10f1's type tree as AssetRipper's TypeTreeDumps records it:
+# 2019.4's, but a resource has a buffer counter in place of the sampler bind point and texture dimension, and the thread group size is a staticvector
+COMPUTE_2017_4 = (COMPUTE_2019_4.replace('ComputeShaderResource: string name; string generatedName; int bindPoint; int samplerBindPoint; int texDimension\n',
+                                         'ComputeBufferCounter: int bindpoint; int offset\nComputeShaderResource: string name; string generatedName; int bindPoint; ComputeBufferCounter counter\n')
+                  .replace('vector<data:unsigned int>~ threadGroupSize', 'staticvector<data:unsigned int>~ threadGroupSize'))
+assert 'ComputeBufferCounter counter' in COMPUTE_2017_4 and 'staticvector' in COMPUTE_2017_4
 COMPUTE_2020_3 = (COMPUTE_2022_3.replace('; SInt64 requirements', '')
                   .replace('vector<data:ComputeShaderKernel> uniqueVariants; vector<data:pair(string,unsigned int)> variantIndices', 'map<data:pair(string,ComputeShaderKernel)>~ variantMap')
                   .replace('; vector<data:string> dynamicKeywords', ''))
@@ -242,6 +254,8 @@ KNOWN_TREES = {(CLASS_SHADER, bytes.fromhex('ea424a5fc1e48db62144df956f9e1005'))
                (CLASS_SHADER, bytes.fromhex('a30e3dcf6c6d25153d6f64e5e41caf4e')): ('Shader', SHADER_2020_3),
                (CLASS_SHADER, bytes.fromhex('8db760073e1392061e4a36995f0735af')): ('Shader', SHADER_2018_3),
                (CLASS_SHADER, bytes.fromhex('ed2a06ce7fb8203f6efb5ab5e0ce20d5')): ('Shader', SHADER_2019_4),
+               (CLASS_SHADER, bytes.fromhex('266d53113fa30d2b858f2768f92eaa14')): ('Shader', SHADER_2017_4),
+               (CLASS_COMPUTE_SHADER, bytes.fromhex('20291e020d10074c35d8286f5191593f')): ('ComputeShader', COMPUTE_2017_4),
                (CLASS_COMPUTE_SHADER, bytes.fromhex('1a95529ac2eb1a97cd9d2a4356bd722f')): ('ComputeShader', COMPUTE_2019_4),
                (CLASS_COMPUTE_SHADER, bytes.fromhex('d0171b849bb064b2424893e7d4809be5')): ('ComputeShader', COMPUTE_2020_3),
                (CLASS_COMPUTE_SHADER, bytes.fromhex('bfdf63ab0ce84d5a2c765ee560d90fe7')): ('ComputeShader', COMPUTE_2022_3),
@@ -271,7 +285,7 @@ def tree_from_layout(root, layout):
             a = Node('Array', 'Array', -1, arr_align); a.kids = [Node('int', 'size', 4, 0), el]; return a
         if t == 'string':
             n = Node('string', name, -1, flags); n.kids = [array(Node('char', 'data', 1, 0))]
-        elif t.startswith(('vector<', 'map<')):
+        elif t.startswith(('vector<', 'staticvector<', 'map<')):
             kind, inner = t[:-1].split('<', 1); el_name, el_type = inner.split(':', 1)
             n = Node(kind, name, -1, flags); n.kids = [array(node(el_type, el_name))]
         elif t.startswith('pair('):
