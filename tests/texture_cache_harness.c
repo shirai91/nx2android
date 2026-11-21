@@ -16,7 +16,7 @@ typedef struct vkimg {
     uint64_t pool,used,pkg_used,pkg_vgen,pkg_stamp,pkg_seen,pkg_hash;
     int64_t off,size; int flags,looked,packaged,pkg_sparse,pkg_released,gpu_w;
     const void *pkg_span,*pkg_mem,*lin_mem;size_t pkg_len,lin_len;
-    void *img,*mem,*sub;
+    void *img,*mem,*sub,*full;
     struct vkimg *bc_draw; // No compressed-format stand-in in this family fixture.
     unsigned family_formats,family_closed;
     int format,content;
@@ -33,6 +33,7 @@ static void vk_tex_view_drop_all(vkimg_t *im) {(void)im;}
 static void nvn_dirty_release(const void *mem,size_t len) {(void)mem;(void)len;}
 static void vk_defer_free_image(void *img,void *mem) {(void)mem;unsigned n=(unsigned)(uintptr_t)img;assert(n && n<=created && !retired[n]);retired[n]=1;dropped++;}
 static void vk_defer_free_image_sub(void *img,void *sub) {(void)sub;vk_defer_free_image(img,NULL);}
+static void vk_defer_free_view(void *view) {(void)view;}
 static int vk_sub_open(void) {return 1;}
 static int vk_upload_cmd(void) {return 1;}
 static void vk_tex_prepare(int cb,vkimg_t *im) {(void)cb;im->content=0;}
