@@ -380,7 +380,12 @@ class Port:
     # ---- extract: nx_extract, each version the shaders come from, the DLC ----
     def extract(self):
         o, g = self.o, self.g
-        picks = nsp.pick_nsps(self.fam, self.have, self.versions)
+        PROG.stage('build nx_extract')
+        nx = nsp.build_nx_extract(NXNATIVE, self.work, self.logs, self.env)
+        PROG.end()
+        # an integrated cartridge image carries its update inside the one file: a version the folder has no separate update for is read from it
+        bundled = self.bundled_update_src = self.fam['base'] if nsp.bundled_update(nx, o.keys, self.fam['base']) else None
+        picks = nsp.pick_nsps(self.fam, self.have, self.versions, bundled)
         ex = self.work / 'extract'; ex.mkdir(parents=True, exist_ok=True)
         need = sum(dumps.size(p) * (2 if dumps.compressed(p) else 1) for p in {p for b, u in picks.values() for p in (b, u) if p}) / 2**30 + 6
         if nsp.free_gb(self.work) < need and not all((ex / v).exists() for v in self.versions): raise BuildError(f'less than {need:.0f} GB free on the volume of {self.work}')
@@ -394,9 +399,6 @@ class Port:
         dlc_reused = bool(zdlc) and (self.work / 'aoc').is_dir() and nsp.reused(dkf, dkey) is not None
         m = self.unpack([p for v in self.versions if not fresh(v) for p in picks[v] if p] + ([] if dlc_reused else zdlc))
         picks = {v: tuple(m.get(p, p) if p else None for p in bu) for v, bu in picks.items()}
-        PROG.stage('build nx_extract')
-        nx = nsp.build_nx_extract(NXNATIVE, self.work, self.logs, self.env)
-        PROG.end()
         self.dirs = {ver: nsp.extract(nx, o.keys, ex, ver, *picks[ver], None, self.logs, g) for ver in self.versions}
         for d in self.dirs.values(): nsp.require_64bit(d / 'ExeFS', f'{g.get("name", g.id)} ({g.id})')
         bad = [] if self.derived else [f'{v}: {x}' for v in self.versions for x in nsp.build_mismatch(self.dirs[v], v, g)]
@@ -462,7 +464,7 @@ class Port:
         game's files out of at run time (DM_ROMFS_CONTAINER, dm/host/dm_romfs.c). Nothing is copied into the pack: an NSP / XCI is listed where it is; an NSZ / XCZ is
         decompressed once into the build folder, which the installer needs an NSP / XCI from (drop_unpacked comes after this)"""
         o = self.o
-        base, upd = nsp.pick_nsps(self.fam, self.have, [self.pkg_ver])[self.pkg_ver]
+        base, upd = nsp.pick_nsps(self.fam, self.have, [self.pkg_ver], getattr(self, 'bundled_update_src', None))[self.pkg_ver]
         dlc = list(self.fam['dlc'])
         m = self.unpack([p for p in (base, upd, *(p for _, _, p in dlc)) if p])
         kept = self.work / 'containers'
