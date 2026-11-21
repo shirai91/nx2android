@@ -273,6 +273,20 @@ static int prepare_draw(int prim, int indexed) {
     #undef SRC1F
     k.clip_neg1 = !g_depth_zero;
     // layout and pipeline
+    if(g_pool_gs_source) {
+        vkshader_t *gs=vk_shader_gs_topo(g_pool_gs_source,(VkPrimitiveTopology)k.topo);
+        // Topology variants can have different optimized resource interfaces.
+        // Resolve from the bound original on every draw, including no-pool variants.
+        if(gs->has_pools || g_pool_gs_source->has_pools) {S.sh[2]=gs;k.pool_gs=k.has_pools=1;}
+        else S.sh[2]=g_pool_gs_source;
+    }
+    for(int st=0;st<3;st++)if(S.sh[st] && !(st==1 && k.raster_discard)) {
+        if(!prepare_resource_pools(st,&S.sh[st]))return 0;
+        k.key[st]=S.sh[st]->key;k.pool_variant[st]=S.sh[st]->pool_variant;k.has_pools|=S.sh[st]->has_pools;
+    }
+    vkshader_t *pool_stages[3]={S.sh[0],k.raster_discard?NULL:S.sh[1],S.sh[2]};
+    if(k.has_pools && !vk_shader_pool_limits(pool_stages,3)){VKRED_ONCE(99,"combined resource pool layouts exceed device limits");return 0;}
+
     VkDescriptorSetLayout dsl[5] = {0}; int nsets = 0;
     for (int st = 0; st < 3; st++) if (S.sh[st] && !(st == 1 && k.raster_discard)) { dsl[S.sh[st]->set] = S.sh[st]->dsl; if (S.sh[st]->set + 1 > nsets) nsets = S.sh[st]->set + 1; }
     // the last draw's set layouts and what vk_pipeline_layout made of them (it fills absent stages with the empty layout): its lock and hash took ~10% of the

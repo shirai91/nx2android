@@ -241,7 +241,9 @@ static int gs_split_inputs_safe(vkshader_t *gs, uint64_t ibuf, uint64_t in) {
 static int gs_split_draw(int prim, uint64_t indirect, uint64_t ibuf, uint64_t in) {
     if (!S.sh[2] || !g_gs_split || !vk_quirk(VQ_GS_SPLIT)) return 0;
     if (g_gs_split_mode || indirect || g_tf_on || g_bc_slot >= 0 || !S.sh[0] || S.sh[0]->xfb || shader_wmem(S.sh[0]) || g_spv_alt) return 0;
-    vkshader_t *gs = vk_shader_gs_topo(S.sh[2], topo(prim == 7 ? 4 : prim));
+    // Pool layout selection retains a topology variant in S.sh[2]. Deriving from it again can XOR a repeated point draw back to triangles.
+    vkshader_t *source = g_pool_gs_source ? g_pool_gs_source : S.sh[2];
+    vkshader_t *gs = vk_shader_gs_topo(source, topo(prim == 7 ? 4 : prim));
     if (!gs || (S.sh[1] && (S.sh[1]->in_locs & ~gs->out_locs))) return 0;
     return vk_shader_gs_split_ready(gs) && gs_split_inputs_safe(gs, ibuf, in);
 }
@@ -421,7 +423,7 @@ static void draw_idx(const p_draw_idx *d) {
     bc_index(cb, ib, io, it);
     if (!(dbg_draw() & 1) && g_ok) { int xf = xfb_begin(cb); vkCmdDrawIndexed(cb, (uint32_t)d->count, inst, 0, d->base_vertex, (uint32_t)d->base_instance); if (xf) xfb_end(cb, prim, (uint32_t)d->count, inst, xf); }
 }
-static nvn_hmap g_cpipes = {.klen = 24};   // {shader, its integer-texel bindings}
+static nvn_hmap g_cpipes = {.klen = 32};   // {shader, its integer-texel bindings}
 static pthread_mutex_t g_cpipe_mu = PTHREAD_MUTEX_INITIALIZER;   // the replay thread and compute_warm
 static VkPipeline compute_build(vkshader_t *cs, uint64_t um, uint64_t im) {   // (VkPipeline)1 when it fails
     VkDescriptorSetLayout dsl[5] = {cs->dsl}; VkPipeline p;
@@ -447,9 +449,9 @@ static void *compute_warm(void *arg) {
     { const char *e = getenv("DM_VK_COMPUTE_WARM_MAX"); int cap = e ? atoi(e) : 256;
       if (n > cap) { VKLOG("compute pipelines made ahead: none, the bundle has %d%s compute shaders (more than %d, DM_VK_COMPUTE_WARM_MAX)", n, n == 4096 ? " or more" : "", cap); return NULL; } }
     for (int i = 0; i < n; i++) {
-        uint64_t ck[3] = {keys[i], 0, 0};
+        uint64_t ck[4] = {keys[i], 0, 0, 0};
         pthread_mutex_lock(&g_cpipe_mu); int have = nvn_hm_get(&g_cpipes, ck) != NULL; pthread_mutex_unlock(&g_cpipe_mu);
-        vkshader_t *cs = have ? NULL : vk_shader(keys[i], 5); if (!cs) continue;
+        vkshader_t *cs = have ? NULL : vk_shader(keys[i], 5); if (!cs || cs->has_pools) continue;
         VkPipeline p = compute_build(cs, 0, 0); made++;
         pthread_mutex_lock(&g_cpipe_mu); if (!nvn_hm_get(&g_cpipes, ck)) nvn_hm_put(&g_cpipes, ck, p); else if (p != (void *)1) vkDestroyPipeline(V.dev, p, NULL); pthread_mutex_unlock(&g_cpipe_mu);
     }
@@ -483,6 +485,8 @@ static void dispatch(const p_dispatch *d) {
     vkshader_t *cs = S.sh[5];
     if (!cs) { VKRED_ONCE(60, "dispatch with no compute shader in the bundle: skipped"); return; }
     shader_cpu_ready(cs, 5);
+    if(!prepare_resource_pools(5,&cs))return;
+    S.sh[5]=cs;
     VkBuffer src[3]; VkBufferCopy spans[3]; int nspans = 0;
     if (d->ind && !(nspans = dispatch_indirect_spans(d->ind, src, spans))) { VKRED_ONCE(61, "indirect dispatch arguments are not a valid aligned memory pool range: %#llx", (unsigned long long)d->ind); return; }
     g_vkst.dispatches++;
@@ -495,7 +499,7 @@ static void dispatch(const p_dispatch *d) {
     g_dispatch[0] = (uint32_t)d->x; g_dispatch[1] = (uint32_t)d->y; g_dispatch[2] = (uint32_t)d->z;
     VkDescriptorBufferInfo indirect_c0 = {0};
     uint32_t dofs[96]; VkDescriptorSet set = stage_set(5, cs, dofs, d->ind ? &indirect_c0 : NULL);
-    uint64_t ck[3] = {cs->key, g_num_um, g_num_im};
+    uint64_t ck[4] = {cs->key, g_num_um, g_num_im,cs->pool_variant};
     pthread_mutex_lock(&g_cpipe_mu); VkPipeline p = nvn_hm_get(&g_cpipes, ck); pthread_mutex_unlock(&g_cpipe_mu);
     if (!p) {
         uint64_t tb = g_prof_on ? tick() : 0; p = compute_build(cs, ck[1], ck[2]); if (g_prof_on) g_prof_ns[7] += tick() - tb;

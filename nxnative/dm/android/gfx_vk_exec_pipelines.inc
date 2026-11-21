@@ -11,6 +11,7 @@ static void shader_dump(const prog_t *p, unsigned i, uint64_t kk) {
     fwrite(p->sd[i].control, 1, 0x880, f); if (ncode < (1u << 24)) fwrite((const void *)(uintptr_t)p->sd[i].data, 1, ncode, f); fclose(f);
     VKLOG("shader %016llx written to %s", (unsigned long long)kk, path);
 }
+static vkshader_t *g_pool_gs_source;
 static void bind_program(const p_bind_program *bp) {
     // NVN binds by stage mask (vertex 1, fragment 2, geometry 4, tessellation 8 / 0x10, compute 0x20): only the masked stages change, so a game that keeps
     // its vertex and fragment shaders in programs of their own (NEO, AI: THE SOMNIUM FILES) binds them one after the other and draws with both.
@@ -28,10 +29,11 @@ static void bind_program(const p_bind_program *bp) {
         if (st < 0 || st > 5 || !(mask >> st & 1)) continue;
         S.sh[st] = vk_shader(kk, st);
     }
+    if(mask&4)g_pool_gs_source=S.sh[2];
     S.prog_ok = S.sh[0] || S.sh[5];   // a vertex-only program draws depth only (prepare_draw)
 }
 typedef struct {
-    uint64_t key[3]; uint32_t topo, restart, raster_discard, cull, front, mode, depth_clamp, bias_en, debug_mode;
+    uint64_t key[3]; uint32_t pool_variant[3], has_pools, pool_gs; uint32_t topo, restart, raster_discard, cull, front, mode, depth_clamp, bias_en, debug_mode;
     uint32_t dt, dw, df, st, sf[2], sfail[2], szfail[2], szpass[2];
     uint32_t nattr; struct { uint32_t loc, binding, fmt, off; } attr[16];
     uint32_t nbind; struct { uint32_t binding, stride, rate, divisor; } bind[17];
@@ -79,7 +81,7 @@ static void *async_pipe_thread(void *arg) {
     return NULL;
 }
 static int async_pipe(const pkey *k) {   // 1: queued (the draw is left out); under nothing (takes g_pipe_mu)
-    if (!g_async_pipe || k->raster_discard || (S.sh[0] && S.sh[0]->xfb) || (S.sh[2] && S.sh[2]->xfb)) return 0;
+    if (k->has_pools || !g_async_pipe || k->raster_discard || (S.sh[0] && S.sh[0]->xfb) || (S.sh[2] && S.sh[2]->xfb)) return 0;
     for (int i = 0; i < S.ncol && i < 8; i++) if (S.rt_has_col[i] && (S.rt_col[i].d.flags & NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET)) return 0;   // (the CPU reads it: lin_back)
     int natt = 0; for (int i = 0; i < 9; i++) { const vkimg_t *a = P_att[i].im; if (!a) continue; natt++; if (a->rt_frames < 3) {
             if (g_prof_on) { static int n; if (n++ < 300) VKLOG("pipeline built here: attachment %d %ux%u nvn format %#x drawn in %llu presents in a row (shaders %016llx %016llx)", i, a->w, a->h, a->nvn_format, (unsigned long long)a->rt_frames, (unsigned long long)k->key[0], (unsigned long long)k->key[1]); }
@@ -110,7 +112,7 @@ static VkPipeline graphics_pipeline(const pkey *k, VkPipelineLayout layout) {
 // ---- pipeline prewarm: every pipeline the game needed is recorded (DM_ROOT/vk_pipelines.bin) and made again at the next boot on background
 // threads, before the game reaches it, so a scene seen once never stalls a frame on a pipeline compile again (the driver's compile, not the
 // pipeline cache's lookup, is the cost: tens of milliseconds per pipeline on Adreno). DM_VK_NOPREWARM=1 turns it off.
-#define PIPE_MAGIC 0x33455050u   // "PPE3"; geometry effects/rasterization now have separate pipeline keys
+#define PIPE_MAGIC 0x34455050u   // "PPE4"; resource-pool variants extend the geometry-split pipeline keys
 // debug_mode shifted the key's fields without changing its padded size; PPE1 prewarm records otherwise decoded as 76 colour targets and crashed Adreno at startup.
 static FILE *g_prec;
 // The records are written by a thread of their own: a flush to the app's files folder (FUSE) took tens of milliseconds, and made under g_pipe_mu it held up the replay's
@@ -127,7 +129,7 @@ static void *pipe_record_thread(void *arg) {
     return NULL;
 }
 static void pipe_record(const pkey *k) {   // (under g_pipe_mu: only queued here)
-    if (!g_prec || k->alt) return;   // DM_VK_SPV_ALT's pipelines are a debugging run's own
+    if (!g_prec || k->alt || k->has_pools) return;   // DM_VK_SPV_ALT's pipelines are a debugging run's own
     pthread_mutex_lock(&g_precq_mu);
     if (!g_precw_on) { g_precw_on = 1; pthread_t t; pthread_attr_t a; pthread_attr_init(&a); pthread_attr_setdetachstate(&a, PTHREAD_CREATE_DETACHED); pthread_create(&t, &a, pipe_record_thread, NULL); pthread_attr_destroy(&a); }
     if (g_precq_n < PREC_Q) g_precq[g_precq_n++] = *k;   // (a full queue drops the record: that pipeline is only not prewarmed next time)
@@ -199,7 +201,7 @@ static VkPipeline build_pipeline(const pkey *k, VkPipelineLayout layout, vkshade
         VKLOG("pipeline %d: shaders %016llx %016llx %016llx topo %u cull %u front %u mode %u depth test %u write %u func %u stencil %u | colour targets %u (formats %u %u %u %u) depth format %u | samples %u a2c %u blend %u logic %u/%u | attrs %u binds %u",
               n, (unsigned long long)k->key[0], (unsigned long long)k->key[1], (unsigned long long)k->key[2], k->topo, k->cull, k->front, k->mode,
               k->dt, k->dw, k->df, k->st, k->ncol, k->cfmt[0], k->cfmt[1], k->cfmt[2], k->cfmt[3], k->dfmt, k->samples, k->a2c, k->blend_en, k->logic_en, k->logic_op, k->nattr, k->nbind); } }
-    VkPipeline p; vkshader_t *stg[3] = {stg_in[0], stg_in[1], stg_in[2] ? vk_shader_gs_topo(stg_in[2], (VkPrimitiveTopology)k->topo) : NULL};
+    VkPipeline p; vkshader_t *stg[3] = {stg_in[0], stg_in[1], stg_in[2] ? (k->pool_gs ? stg_in[2] : vk_shader_gs_topo(stg_in[2], (VkPrimitiveTopology)k->topo)) : NULL};
     if (k->gs_split && (k->gs_split > 2 || !stg[2] || !vk_shader_gs_split_ready(stg[2]))) return (VkPipeline)1;
     int bs = build_begin();
     if (bs >= 0) { snprintf(g_build[bs].what, sizeof g_build[bs].what, "graphics pipeline, shaders %016llx %016llx %016llx; topology %u, polygon mode %u, samples %u, "

@@ -9,6 +9,7 @@ import io
 import json
 import os
 import re
+import shutil
 from pathlib import Path
 import struct
 import subprocess
@@ -76,11 +77,15 @@ class ExportChecks(unittest.TestCase):
         game = SimpleNamespace(table=lambda name: self.root / name)
         try: products = importlib.import_module('shader_products')
         except ModuleNotFoundError: products = None
-        env = dict(collections=collections, cf=cf, os=os, json=json, struct=struct,
+        numeric = {}
+        for name in ('spv_half', 'spv_precise', 'spv_texture_offsets', 'spv_pool', 'spv_warp'):
+            try: numeric[name] = importlib.import_module(name)
+            except ModuleNotFoundError: numeric[name] = None
+        env = dict(**numeric, collections=collections, cf=cf, os=os, json=json, struct=struct,
                    tempfile=tempfile, subprocess=subprocess, dmsv=dmsv, Path=Path, re=re,
                    shader_products=products, GAME=game, MAP=str(table), XLATE_DLL='translator.dll',
                    a=SimpleNamespace(pkg=str(self.root/'pkg'), out=str(self.out), capture=None, keys='',
-                                     jobs=self.jobs, dotnet='dotnet', zstd=0, report=str(self.report)),
+                                     jobs=self.jobs, dotnet='dotnet', zstd=0, report=str(self.report), spirv_opt=None),
                    STAGES={'vs': 0, 'cs': 5}, kinds_all=collections.Counter(),
                    captured=lambda _: {}, records=lambda _: [b'fixture'],
                    job_for=lambda key, stage, rec, w: ({'key': key, 'attr': {}}, b''),
@@ -89,10 +94,80 @@ class ExportChecks(unittest.TestCase):
                    refl_bin=lambda cl,c1,hdr: struct.pack('<5I', 0, 0, *hdr),
                    classify=lambda *args: None)
         source = TOOLS / 'shader_vk.py'; tree = ast.parse(source.read_text())
-        nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'main']
+        nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in ('main', 'lower_resource_pools')]
         exec(compile(ast.Module(body=nodes, type_ignores=[]), str(source), 'exec'), env)
         with mock.patch.dict(os.environ, {'WORK': str(self.root)}), mock.patch.object(subprocess, 'run', side_effect=self.translate), contextlib.redirect_stdout(self.log):
             env['main']()
+
+    @unittest.skipUnless(shutil.which('spirv-as') and shutil.which('spirv-val'), 'requires NDK SPIR-V tools on PATH')
+    def test_exact_offsets_reach_published_bundle(self):
+        from test_shader_exact_offsets import ASSEMBLY
+        raw=subprocess.check_output(['spirv-as','--target-env','spv1.3','-o','-','-'],input=ASSEMBLY.encode())
+        with mock.patch(__name__ + '.module', return_value=raw): self.run_export()
+        with dmsv.Bundle(self.out) as bundle: exported=bytes(bundle.spv(bundle.entries[0]))
+        result=subprocess.run(['spirv-val','--target-env','vulkan1.1','-'],input=exported,capture_output=True)
+        self.assertEqual(result.returncode,0,result.stderr.decode())
+
+    @unittest.skipUnless(shutil.which('spirv-as') and shutil.which('spirv-val'), 'requires SPIR-V tools')
+    def test_compute_warp_reaches_published_bundle(self):
+        # Independent assembly: a shuffle from lane31 must become a logical32 exchange.
+        source = """OpCapability Shader
+OpCapability GroupNonUniformShuffle
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %main "main" %lane
+OpExecutionMode %main LocalSize 64 1 1
+OpDecorate %lane BuiltIn SubgroupLocalInvocationId
+%void = OpTypeVoid
+%uint = OpTypeInt 32 0
+%fn = OpTypeFunction %void
+%input = OpTypePointer Input %uint
+%lane = OpVariable %input Input
+%scope = OpConstant %uint 3
+%last = OpConstant %uint 31
+%main = OpFunction %void None %fn
+%entry = OpLabel
+%id = OpLoad %uint %lane
+%value = OpGroupNonUniformShuffle %uint %scope %id %last
+OpReturn
+OpFunctionEnd
+"""
+        raw = subprocess.check_output(['spirv-as', '--target-env', 'vulkan1.1', '-', '-o', '-'], input=source.encode())
+        with mock.patch(__name__ + '.module', return_value=raw): self.run_export()
+        with dmsv.Bundle(self.out) as bundle: exported = bytes(bundle.spv(bundle.entries[0]))
+        from spv_module import decode, opcode
+        ops = list(map(opcode, decode(exported)[1]))
+        self.assertNotIn(345, ops)
+        self.assertEqual(ops.count(224), 2)
+        subprocess.run(['spirv-val', '--target-env', 'vulkan1.1', '-'], input=exported, check=True)
+
+    def test_numeric_failure_omits_only_affected_shader(self):
+        self.second_shader = True
+        with mock.patch.object(importlib.import_module('spv_half'), 'lower', side_effect=[ValueError('unsupported half-pack signature'), module('cs')]):
+            self.run_export()
+        with dmsv.Bundle(self.out) as bundle:
+            self.assertEqual([e[0] for e in bundle.entries], [2])
+        report = json.loads(self.report.read_text())
+        self.assertEqual(report['failed'], [['0000000000000001', 'unsupported half-pack signature']])
+
+    @unittest.skipUnless(shutil.which('glslc'), 'requires NDK glslc on PATH')
+    def test_numeric_passes_reach_published_bundle(self):
+        source = b"""#version 450
+layout(local_size_x=1) in;
+layout(set=0,binding=0,std430) buffer Data {vec2 a; float smallest; uint packed;} d;
+void main(){d.smallest=min(d.a.x,d.a.y);d.packed=packHalf2x16(d.a);}
+"""
+        raw = subprocess.check_output(['glslc', '-fshader-stage=compute', '--target-env=vulkan1.1', '-', '-o', '-'], input=source)
+        with mock.patch(__name__ + '.module', return_value=raw): self.run_export()
+        with dmsv.Bundle(self.out) as bundle: exported = bytes(bundle.spv(bundle.entries[0]))
+        def operations(data):
+            w=struct.unpack('<'+'I'*(len(data)//4),data); at=5; ops=[]
+            while at<len(w):
+                if w[at]&0xffff==12: ops.append(w[at+4])
+                at+=w[at]>>16
+            return ops
+        self.assertIn(37,operations(raw)); self.assertIn(58,operations(raw))
+        self.assertNotIn(37,operations(exported)); self.assertNotIn(58,operations(exported))
+        self.assertIn(79,operations(exported))
 
     def test_normal_per_shader_failure_keeps_best_effort_export(self):
         self.behavior = 'partial'; self.second_shader = True

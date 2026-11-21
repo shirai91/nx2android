@@ -300,7 +300,7 @@ static set_memo_t g_smemo[3]; static uint64_t g_bind_gen[6], g_ubo_gen[6];   // 
 uint64_t g_set_memo, g_set_memo_bad;   // memo hits, and differences the verify mode found
 extern uint64_t g_ubd_gen; uint32_t vk_pool_gen(void);
 static int set_memo_ok(vkshader_t *s) {
-    if (!s->setmemo) { int ok = 1, ncb = 0;
+    if (!s->setmemo) { int ok = !s->has_pools, ncb = 0;
         for (int i = 0; i < s->nbind; i++) { const dmsv_bind *b = &s->b[i]; ncb += b->kind == RK_CBUF;
             ok &= b->kind != RK_TEXD && b->kind != RK_SAMPD && b->kind != RK_SBUF_UBO && b->kind != RK_UBO_PTR && b->kind != RK_TEX_UBO && b->kind != RK_IMG_UBO && b->kind != RK_TBUF_UBO && b->samp != RS_UBO && i < 256; }
         s->setmemo = ok && ncb <= MEMO_CB ? 1 : 2; }
@@ -319,6 +319,7 @@ static int set_memo_get(int st, vkshader_t *s, uint32_t *dofs) {
 }
 // dofs (at least s->ndyn entries): the dynamic offsets of the set's dynamic uniform buffers, in binding order as vkCmdBindDescriptorSets takes them
 // indirect_c0 (compute only): a fresh segment for this dispatch's GPU-written counts; never put mutable bytes in drv_shared's content cache.
+#include "gfx_vk_resource_exec.inc"
 static VkDescriptorSet stage_set(int st, vkshader_t *s, uint32_t *dofs, VkDescriptorBufferInfo *indirect_c0) {
     // Check before descriptor memo hits: storage/unknown descriptors can write beyond tracked transfer ranges.
     if (vk_readback_ranges()) for (int i = 0; i < s->nbind; i++) {
@@ -332,7 +333,7 @@ static VkDescriptorSet stage_set(int st, vkshader_t *s, uint32_t *dofs, VkDescri
     if (memo && set_memo_get(st, s, dofs)) { static unsigned nv; if (!g_x_setverify || ++nv % 64) { g_set_memo++; return g_smemo[st].set; }
         verify = 1; memcpy(vd, dofs, sizeof *dofs * (size_t)s->ndyn); vum = g_num_um; vim = g_num_im; }
     uint64_t gtex = g_tex_gen, gsamp = __atomic_load_n(&g_samp_gen, __ATOMIC_ACQUIRE); uint32_t gpool = vk_pool_gen();   // before collecting: a change racing it (game thread) leaves the memo outdated
-    VkDescriptorSet set = VK_NULL_HANDLE; struct { uint32_t b, o; int i; } dp[96]; int nd = 0; uint64_t tb0 = tick();
+    VkDescriptorSet set = s->has_pools ? vk_alloc_set(s->dsl) : VK_NULL_HANDLE; struct { uint32_t b, o; int i; } dp[96]; int nd = 0; uint64_t tb0 = tick();
     VkWriteDescriptorSet w[96]; VkDescriptorBufferInfo bi[96]; VkDescriptorImageInfo ii[96 * 4]; VkBufferView bv[128]; uint32_t nw = 0, nii = 0, nbv = 0;
     int ncb = 0; uint8_t mci[MEMO_CB]; VkDescriptorBufferInfo mcd[MEMO_CB];   // the constant buffers, for the memo
     g_num_um = g_num_im = 0;
@@ -345,6 +346,16 @@ static VkDescriptorSet stage_set(int st, vkshader_t *s, uint32_t *dofs, VkDescri
         wr->sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; wr->dstSet = set; wr->dstBinding = b->binding; wr->descriptorCount = 1;
         VkBuffer buf; VkDeviceSize off, len;
         switch (b->kind) {
+        case RK_TEX_POOL: case RK_SAMP_POOL: write_resource_pool(set,st,b);continue;
+        case RK_POOL_MAP: {
+            const vk_resource_table *table=resource_tables[st][b->reg];len=(table->map[0]+2ull)*4;
+            void *dst=vk_scratch(len,V.props.limits.minStorageBufferOffsetAlignment,&buf,&off);memcpy(dst,table->map,(size_t)len);
+            bi[nw]=(VkDescriptorBufferInfo){buf,off,len};break; }
+        case RK_POOL_BOUNDS: {
+            uint32_t bounds[96][4]={{0}};
+            for(int j=0;j<s->nbind;j++)if(s->b[j].kind==RK_TEX_POOL || s->b[j].kind==RK_SAMP_POOL)bounds[s->b[j].reg][0]=resource_tables[st][s->b[j].reg]->map[0];
+            len=(unsigned)b->reg*sizeof bounds[0];void *dst=vk_scratch(len,V.props.limits.minUniformBufferOffsetAlignment,&buf,&off);memcpy(dst,bounds,(size_t)len);
+            bi[nw]=(VkDescriptorBufferInfo){buf,off,len};break; }
         case RK_SUPPORT: bi[nw] = (VkDescriptorBufferInfo){vk_support_buffer(), 0, 65536}; break;
         case RK_C1: vk_shader_c1(s, &buf, &off, &len); bi[nw] = (VkDescriptorBufferInfo){buf, off, len}; break;
         case RK_CBUF: cbuf_desc(st, s, b, &bi[nw]); if (ncb < MEMO_CB) { mci[ncb] = (uint8_t)i; mcd[ncb++] = bi[nw]; } break;
@@ -482,6 +493,7 @@ static VkDescriptorSet stage_set(int st, vkshader_t *s, uint32_t *dofs, VkDescri
         else if (x->pImageInfo) for (uint32_t k = 0; k < x->descriptorCount && k < 4; k++) VKLOG("  stage %d binding %u[%u] type %d: view %p sampler %p", st, x->dstBinding, k, x->descriptorType, (void *)x->pImageInfo[k].imageView, (void *)x->pImageInfo[k].sampler);
         else if (x->pTexelBufferView) VKLOG("  stage %d binding %u type %d: texel buffer view %p", st, x->dstBinding, x->descriptorType, (void *)x->pTexelBufferView[0]);
     }
+    if(s->has_pools){for(uint32_t i=0;i<nw;i++)w[i].dstSet=set;vkUpdateDescriptorSets(V.dev,nw,w,0,NULL);return set;}
     // the set's content, then an earlier identical set of this submission or a new one
     uint64_t tb1 = tick(); g_ns_set_build += tb1 - tb0;
     uint64_t key[SET_KEY_WORDS]; size_t nk = set_key(key, s->dsl, w, nw);

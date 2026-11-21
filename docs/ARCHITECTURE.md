@@ -71,6 +71,19 @@ scratch array before writing it. A binding that would exceed capacity stops the
 host with a diagnostic; valid arrays keep their full reflected counts, including
 the existing 32-entry default for a zero count.
 
+Vulkan shaders that select packed texture and sampler handles at runtime can use
+compact descriptor pools spanning the guest's 20-bit texture and 12-bit sampler
+IDs. The exporter reflects pool bindings and the replay maps live registrations
+to typed descriptors, retaining registration history and typed dummy resources for
+unsupported views. Required indexing features and descriptor limits are checked
+before affected pipelines are created. Each draw resolves geometry topology from
+the bound original shader for both split eligibility and resource-layout selection,
+including repeated draws after a topology variant was retained in replay state. Pool layouts use
+synchronous compilation and are excluded from learned prewarm records; PPE4
+invalidates older records after their pipeline keys change. Profiles with
+`android_dynamic_slots on` retain the existing 32-slot export path. Full pools do
+not establish game compatibility or physical-driver qualification.
+
 The Vulkan descriptor-content cache (`g_setc`) reuses a set within one submission
 only when its hash and complete static key match. The key owns explicit layout,
 binding, array position, descriptor type/count and every buffer, image and texel-view field, without C
@@ -116,6 +129,16 @@ Codec-config buffers are excluded and buffer offsets/lengths are
 checked before pointer formation. These checks do not change the decoder choice
 or timestamp/queue policy. The manual [AVC probe](../probes/avc_frame_layout.md)
 checks synthetic planes and padding; physical-device qualification is separate.
+
+Android shader export lowers supported fixed-size compute collectives to logical
+32-lane Maxwell warps using workgroup shared storage. The existing convergence,
+operand and shared-memory limits remain enforced; unsupported modules retain
+their native path. Conditional exchange lifting additionally needs the selected
+NDK optimizer and register-only movable operations. At the unchanged default
+translator subgroup size of 128, the known predicated fixtures with a lane-ID load
+inside the conditional arm remain unsupported. The exporter fingerprints the
+optimizer and all four warp helpers. Graphics-stage lowering and a general
+fallback for unsupported native subgroup operations are outside this path.
 
 The shader translator's existing native-perspective compensation rule accepts either outer operand order in `(input * FragCoord.w) * (1 / FragCoord.w)`. Both alpha depth and material variants must reach the same native interpolated input; leaving the multiply/divide round trip in only one variant can change alpha coverage and retain old HDR colour. The FP32, input-load, FragCoord.w and constant-one guards remain in place.
 
