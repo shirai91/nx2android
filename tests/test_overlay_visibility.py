@@ -37,7 +37,7 @@ class OverlayVisibility(unittest.TestCase):
 #include "overlay_layout.h"
 #include "pad_slots.h"
 #include "stick_axis.h"
-static _Atomic int g_set_overlay, g_overlay, g_pads, g_edit, g_menu_btn = 1;
+static _Atomic int g_set_overlay, g_overlay, g_pads, g_edit, g_menu_btn = 1, g_set_touch;
 static _Atomic int g_cust[2][2][OV_N][4];
 static _Atomic int g_set_rumble, g_set_fps, g_set_labels, g_menu_tab, g_sv_st;
 static int layout, saves;
@@ -379,8 +379,38 @@ static void edge_stick(void) {
     }
 }
 
+static void touch_passthrough(void) {
+    width = layout ? 2400 : 1920; height = 1080;
+    atomic_store(&g_set_overlay, 1); atomic_store(&g_overlay, 1); atomic_store(&g_set_touch, 0); saves = 0;
+    menu_do(OVM_TOUCH);
+    assert(saves == 1 && atomic_load(&g_set_touch) == 1 && atomic_load(&g_set_overlay) == 0);
+    assert(dm_overlay_visible() == 2); controls(0);
+    int button = -1, menu = -1;
+    for (int i = 0; i < OV_N; i++) { if (OV_CTLS[i].btn == DM_BTN_A) button = i; if (OV_CTLS[i].kind == OV_MENU) menu = i; }
+    assert(button >= 0 && menu >= 0);
+    float b[4], m[4]; ov_box(&OV_CTLS[button], width, height, b); ov_box(&OV_CTLS[menu], width, height, m);
+    AInputEvent tap = {.source = AINPUT_SOURCE_TOUCHSCREEN, .type = AINPUT_EVENT_TYPE_MOTION,
+                       .action = AMOTION_EVENT_ACTION_DOWN, .x = b[0], .y = b[1]};
+    assert(handle_event(&tap) == 1 && touches == 1 && touch_buttons == 0);
+    tap.action = AMOTION_EVENT_ACTION_UP;
+    assert(handle_event(&tap) == 1 && touches == 0);
+    int before = menu_opens;
+    tap.action = AMOTION_EVENT_ACTION_DOWN; tap.x = m[0]; tap.y = m[1];
+    assert(handle_event(&tap) == 1 && touches == 0);
+    tap.action = AMOTION_EVENT_ACTION_UP;
+    assert(handle_event(&tap) == 1 && menu_opens == before + 1);
+    menu_do(OVM_TOUCH);
+    assert(saves == 2 && atomic_load(&g_set_touch) == 0 && atomic_load(&g_set_overlay) == 1);
+    assert(dm_overlay_visible() == 1); controls(1);
+    menu_do(OVM_TOUCH);
+    assert(atomic_load(&g_set_touch) == 1 && dm_overlay_visible() == 2);
+    menu_do(OVM_OVERLAY);
+    assert(atomic_load(&g_set_touch) == 0 && atomic_load(&g_set_overlay) == 1 && dm_overlay_visible() == 1);
+}
+
 int main(int argc, char **argv) {
     assert(argc == 2); int test = atoi(argv[1]);
+    if (test == 12) { for (layout = 0; layout < 2; layout++) touch_passthrough(); return 0; }
     if (test == 10) { players(); return 0; }
     if (test == 11) { for (layout = 0; layout < 2; layout++) edge_stick(); return 0; }
     if (test == 9) { for (layout = 0; layout < 2; layout++) no_menu_button(); return 0; }
@@ -461,6 +491,9 @@ int main(int argc, char **argv) {
 
     def test_each_controller_is_a_player_of_its_own(self):
         self.run_case(10)
+
+    def test_touch_passthrough_sends_touches_to_game_and_keeps_menu(self):
+        self.run_case(12)
 
 
 if __name__ == '__main__':
