@@ -67,7 +67,7 @@ class IoStoreDetection(unittest.TestCase):
         output = (work / 'archives' / listing[0]['name']).read_bytes()
         parsed = uepak.archive(output)
         self.assertEqual(output[parsed['code']:], shader)
-        self.assertEqual(json.loads((work / 'job.json').read_text())['records'], [])
+        self.assertEqual(json.loads((work / 'job.json').read_text(encoding='utf-8'))['records'], [])
 
     def test_nonshader_and_unsupported_containers_do_not_request_decode(self):
         container(self.romfs / 'NoLibrary', library=False)
@@ -78,7 +78,7 @@ class IoStoreDetection(unittest.TestCase):
     def test_port_selects_existing_device_decode_and_checks_device_requirement(self):
         container(self.romfs / 'Synthetic')
         port = SimpleNamespace(game=self.root, g=SimpleNamespace(words=lambda _: ['main']), app_name='Synthetic',
-                               tools={}, o=SimpleNamespace(device=None), cfg={})
+                               tools={}, o=SimpleNamespace(device=None), cfg={}, dirs={'v': self.root}, versions=['v'])
         with self.assertRaisesRegex(BuildError, 'needs adb'):
             Port.check_graphics(port)
         port.tools['adb'] = 'synthetic-adb'
