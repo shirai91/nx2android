@@ -744,6 +744,28 @@ static void pool_copy_back(vkpool_t *p) {
 // (vendor.qti.hardware.display.allocator-service, snapalloc) aborts on a BLOB of 812 MB ("ubsan: mul-overflow" in SnapConstraintManager::AlignmentToAlignedConstraints),
 // and the whole Android UI restarts with it; 400 MB ones work (13 Sentinels: Aegis Rim's 0x32c00000-byte pool). A range across two chunks has no buffer (vk_pool_of)
 #define ZC_CHUNK 0x10000000ull
+// A gralloc may refuse a BLOB of exactly ZC_CHUNK bytes: an OPPO Pad on Android 15 answers AHardwareBuffer_allocate with 3 (bad value) for 256 MB, so every 256 MB pool
+// fell back to the copied path (768 MB of GPU copies before each submission, 2 fps). The chunk is therefore probed once, before the first pool: ZC_CHUNK if this gralloc
+// takes it, else half of it, and so on down to 32 MB. A device that takes ZC_CHUNK is unchanged; one that refuses it gets its pools cut evenly instead of copied.
+// DM_VK_ZC_CHUNK_MB=<n> sets the chunk in MB and skips the probe
+static uint64_t zc_probe(uint64_t size) {   // asks the gralloc for a BLOB of that size, and gives it back
+    AHardwareBuffer_Desc d = {(uint32_t)size, 1, 1, AHARDWAREBUFFER_FORMAT_BLOB,
+        AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN | AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN | AHARDWAREBUFFER_USAGE_GPU_DATA_BUFFER, 0, 0, 0};
+    AHardwareBuffer *b = NULL;
+    if (size > 0xffffffffull || AHardwareBuffer_allocate(&d, &b)) return 0;
+    AHardwareBuffer_release(b);
+    return size;
+}
+static uint64_t zc_chunk(void) {
+    static uint64_t v = 1;   // (1: not worked out yet)
+    if (v == 1) {
+        const char *e = getenv("DM_VK_ZC_CHUNK_MB"); long mb = e ? atol(e) : 0;
+        if (mb > 0) { v = (uint64_t)mb << 20; return v; }   // (asked for by hand: no probe, no line)
+        for (v = ZC_CHUNK; v > (1ull << 25) && !zc_probe(v); v /= 2) { }
+        if (v != ZC_CHUNK) LOG("[vk] this gralloc refuses %#llx MB: memory pools are cut into %#llx MB chunks", (unsigned long long)(ZC_CHUNK >> 20), (unsigned long long)(v >> 20));
+    }
+    return v;
+}
 static void pool_add_one(const void *mem, uint64_t size, uint64_t base, uint64_t end, int lazy);
 static uint64_t g_zc_bytes, g_cp_bytes, g_lazy_total, g_lazy_bytes, g_used_bytes;   // made zero-copy, copied, made lazy, lazy ones given their buffer, found by vk_pool_of so far (DM_VK_MEMLOG; removed pools are not taken off)
 // Lazy pools: a pool's buffer is made only when the GPU first uses it (vk_pool_of, pool_back), through the slabs and kept buffers as at creation; until then its pages stay
@@ -800,7 +822,7 @@ void mtl_pool_add(const void *mem, uint64_t size) {
     vk_init();
     if (!size) return;
     uint64_t a = (uint64_t)(uintptr_t)mem; int whole = ((a | size) & 0xfff) || zc_over(size);   // copied in one piece
-    uint64_t c = whole ? size : ZC_CHUNK; int m = zc_lazy_mode();
+    uint64_t c = whole ? size : zc_chunk(); int m = zc_lazy_mode();
     static uint64_t pg; if (!pg) pg = (uint64_t)getpagesize();   // (a 16 KB-page kernel: a pool only 4 KB-aligned is not swapped in place, it is copied as before)
     // (zero copy off: no lazy pools, and no uncached-read check either)
     int lazy = !whole && !zc_off() && !((a | size) & (pg - 1)) && m && (m >= 2 || (size > c ? m == 1 : zc_uncached())) && nvn_dirty_tracked(mem, size);
@@ -1008,7 +1030,7 @@ again:   // (pool_back found another pool in the entry: the one looked up was re
     else if (lazy) { int b = pool_back(r, serial); if (b > 0) goto again; if (b) r = NULL; }
     if (r && back && !__atomic_load_n(&r->used, __ATOMIC_RELAXED) && !__atomic_exchange_n(&r->used, 1, __ATOMIC_RELAXED)) __atomic_fetch_add(&g_used_bytes, r->hi - r->lo, __ATOMIC_RELAXED);
     if (r) { if (c.gen != g) { memset(&c, 0, sizeof c); c.gen = g; } c.p[ck] = r; memmove(&c.last[1], &c.last[0], 3 * sizeof *c.last); c.last[0] = r; }
-    if (!r && across) { static uint64_t n; uint64_t k = ++n; if (!(k & (k - 1))) LOG("[RED] [vk] %llu ranges across two chunks of a memory pool (ZC_CHUNK; this one %#llx +%#llx): no buffer for them", (unsigned long long)k, (unsigned long long)addr, (unsigned long long)len); }
+    if (!r && across) { static uint64_t n; uint64_t k = ++n; if (!(k & (k - 1))) LOG("[RED] [vk] %llu ranges across two chunks of a memory pool (DM_VK_ZC_CHUNK_MB; this one %#llx +%#llx): no buffer for them", (unsigned long long)k, (unsigned long long)addr, (unsigned long long)len); }
     return r;
 }
 vkpool_t *vk_pool_of(uint64_t addr, uint64_t len) { return pool_find(addr, len, 1); }
