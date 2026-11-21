@@ -79,10 +79,10 @@ static char g_root[512];
 static _Atomic int g_set_overlay = 1, g_set_rumble = 1, g_set_fps;   // the gamepad shown; rumble and tap vibration; the frame rate counter (top left)
 static _Atomic int g_set_opacity = 60;   // the gamepad's opacity, percent (OV_OPACITY_MIN..MAX: the menu's Opacity slider)
 static _Atomic int g_set_grid;   // the layout editor's Snap to grid
-// the menu button in play (issue #397): env.txt's DM_MENU_BUTTON=0 (porter port --no-menu-button) leaves it out, as a control the player hid (dm_overlay_hidden):
-// not drawn and not touchable, on the gamepad and over the pause menu, so its corner of the screen is the game's. Back (the system's back gesture or key) and a
-// controller's Home/Menu key open the menu (handle_event); the layout editor shows it darkened. The external screen's gamepad keeps it (externalOverlay)
-static _Atomic int g_menu_btn = 1;
+// the menu button in play (issue #397): left out by default, as a control the player hid (dm_overlay_hidden): not drawn and not touchable, on the gamepad and over
+// the pause menu, so its corner of the screen is the game's. Back (the system's back gesture or key) and a controller's Home/Menu key open the menu (handle_event).
+// env.txt's DM_MENU_BUTTON=1 (porter port --menu-button) draws it; the layout editor shows it darkened. The external screen's gamepad keeps it (externalOverlay)
+static _Atomic int g_menu_btn;
 static _Atomic int g_set_labels = -1;   // a controller's face buttons by their label (1) or their position (0); -1: as env.txt says (pad_labels)
 // the player's own layout (overlay_layout.h dm_overlay_custom): [0] the saved one (settings.txt ui= rows), [1] the layout editor's while it is open; per layout
 // and control: x + 1, y + 1 in 1/10000 of the window's width and height (0 = the layout's place), the size factor in 1/1000 (0 = 1), 1 when hidden
@@ -583,6 +583,10 @@ static void *temp_watch(void *a) {
 // Resume under them ----
 static _Atomic int g_menu_hi = -1, g_menu_tab;   // the highlighted row (a controller's selection, or the row a finger is on), -1 none; the open tab
 static int g_menu_ptr = -1, g_menu_row = -2;   // the pointer pressing in the menu, and the row it went down on (-3 the menu button)
+static _Atomic int g_menu_exit_armed;   // Exit asked once (a second press ends the game); the panel is drawn again when it changes
+static _Atomic int64_t g_menu_anim;     // when the drawer started to slide in (gfx_vk_present.c ov_render)
+int dm_menu_panel_bits(void) { return atomic_load(&g_menu_exit_armed); }
+int64_t dm_menu_anim_ns(void) { return atomic_load(&g_menu_anim); }
 static _Atomic int g_tx_ver;   // the text entry's edit count: the panel is drawn again when it changes
 static _Atomic int g_ed_st;    // the layout editor's state for dm_menu_state (overlay_layout.h OVE_ST)
 static _Atomic int g_sp_on, g_sp_hi = -1, g_sp_ver;   // the save picker (below): open, its highlighted row, its edit count
@@ -599,6 +603,7 @@ int dm_overlay_fps(void) { return atomic_load(&g_set_fps) && !atomic_load(&g_men
 static void menu_open(int hi) {
     if (!atomic_load(&g_running) || atomic_exchange(&g_menu, 1)) return;
     atomic_store(&g_menu_hi, hi); g_menu_ptr = -1;
+    atomic_store(&g_menu_exit_armed, 0); atomic_store(&g_menu_anim, mono_ns());
     if (atomic_load(&g_sv_st) != OVX_BUSY) atomic_store(&g_sv_st, OVX_IDLE);   // the last export's note goes (one still copying stays)
     dm_input_set(0, 0, 0, 0, 0); dm_touch_set(NULL, 0); atomic_store(&g_touch_btn, 0);   // nothing stays pressed in the game
     for (int i = 0; i < 16; i++) atomic_store(&g_press_t[i], 0);
@@ -614,7 +619,7 @@ static void menu_close(void) {
     if (atomic_load(&g_edit)) { ed_cancel(); return; }   // the editor first: its changes are kept or thrown away before the game goes on
     if (atomic_load(&g_sp_on)) { sp_back(); return; }    // the save picker: back a step
     if (!atomic_exchange(&g_menu, 0)) return;
-    g_menu_ptr = -1; atomic_store(&g_menu_t, 0);
+    g_menu_ptr = -1; atomic_store(&g_menu_t, 0); atomic_store(&g_menu_exit_armed, 0);
     hold_sync(); dm_haptics_suspend(4, 0); dm_overlay_redraw();
     LOG("[menu] closed: the game goes on (gamepad %s, opacity %d%%, rumble %s, face buttons by %s, frame rate %s, %s)", atomic_load(&g_set_overlay) ? "on" : "off", atomic_load(&g_set_opacity),
         atomic_load(&g_set_rumble) ? "on" : "off", pad_labels() ? "label" : "position", atomic_load(&g_set_fps) ? "shown" : "hidden", dm_opmode() ? "docked" : "handheld");
@@ -636,6 +641,25 @@ static void menu_audio(void) {
     if ((*e)->ExceptionCheck(e)) { (*e)->ExceptionClear(e); LOG("[menu] audio selection is unavailable"); }
     if (attached) (*g_act->vm)->DetachCurrentThread(g_act->vm);
 }
+static void *exit_watch(void *a) { (void)a; sleep(1); _exit(0); }   // (the system may keep a finished activity's process)
+static void menu_exit(void) {   // Exit game: finish the activity, as the save manager's quit does; the process ends in onDestroy
+    LOG("[menu] exit: the game ends");
+    settings_save();
+    pthread_t t; if (!pthread_create(&t, NULL, exit_watch, NULL)) pthread_detach(t);
+    JavaVM *vm = g_act ? g_act->vm : NULL; JNIEnv *E = NULL;
+    if (!vm) _exit(0);
+    int attached = 0;
+    if ((*vm)->GetEnv(vm, (void **)&E, JNI_VERSION_1_6) != JNI_OK) {
+        if ((*vm)->AttachCurrentThread(vm, &E, NULL) != JNI_OK) _exit(0);
+        attached = 1;
+    }
+    jclass c = (*E)->GetObjectClass(E, g_act->clazz); jmethodID m = c ? (*E)->GetMethodID(E, c, "finish", "()V") : NULL;
+    if (m) (*E)->CallVoidMethod(E, g_act->clazz, m);
+    int failed = !m || (*E)->ExceptionCheck(E);
+    if (failed) (*E)->ExceptionClear(E);
+    if (attached) (*vm)->DetachCurrentThread(vm);
+    if (failed) _exit(0);
+}
 static void menu_do(int item) {
     if (item == OVM_OVERLAY) { atomic_store(&g_set_overlay, !atomic_load(&g_set_overlay)); atomic_store(&g_overlay, 1); settings_save(); }
     else if (item == OVM_RUMBLE) { int on = !atomic_load(&g_set_rumble); atomic_store(&g_set_rumble, on); dm_haptics_android_set(on); settings_save(); }
@@ -648,6 +672,11 @@ static void menu_do(int item) {
     else if (item == OVM_EXPORT) { if (atomic_load(&g_sv_st) == OVX_BUSY) return; save_export(); }
     else if (item == OVM_IMPORT) { dm_haptics_android_tap(); sp_open(); return; }
     else if (item == OVM_AUDIO) { menu_audio(); }
+    else if (item == OVM_EXIT) {   // a second press ends the game
+        if (atomic_load(&g_menu_exit_armed)) { menu_exit(); return; }
+        atomic_store(&g_menu_exit_armed, 1); dm_haptics_android_tap(); dm_overlay_redraw(); return;
+    }
+    if (item != OVM_EXIT) atomic_store(&g_menu_exit_armed, 0);
     if (item >= 0 && item < OVM_N) dm_haptics_android_tap();
     if (item == OVM_RESUME) menu_close(); else dm_overlay_redraw();
 }
@@ -690,7 +719,7 @@ static void menu_key(uint64_t bit) {   // a controller key pressed while the men
     else if ((bit == DM_BTN_LEFT || bit == DM_BTN_RIGHT) && item == OVM_TAB) menu_tab(tab + (bit == DM_BTN_LEFT ? -1 : 1));
     else if (bit == DM_BTN_L || bit == DM_BTN_ZL || bit == DM_BTN_R || bit == DM_BTN_ZR) {
         menu_tab(tab + (bit == DM_BTN_L || bit == DM_BTN_ZL ? -1 : 1));
-        if (hi > 0 && ov_menu_item(atomic_load(&g_menu_tab), hi) < 0) atomic_store(&g_menu_hi, OVM_ROWS - 1);   // (the other tab has fewer rows)
+        if (hi > 0 && ov_menu_item(atomic_load(&g_menu_tab), hi) < 0) atomic_store(&g_menu_hi, OVM_ROWS - 2);   // (the other tab has fewer rows: Resume)
     }
     else if (bit == DM_BTN_A) menu_do(hi < 0 ? OVM_RESUME : item);
     else if (bit == DM_BTN_B || bit == DM_BTN_PLUS) menu_close();
@@ -978,7 +1007,7 @@ static int tx_key(AInputEvent *e) {   // every key goes to the entry while it is
 static void tx_touch(AInputEvent *e, float W, float H) {   // a key is pressed when the finger that went down on it lifts there
     int act = AMotionEvent_getAction(e) & AMOTION_EVENT_ACTION_MASK, ai = AMotionEvent_getAction(e) >> AMOTION_EVENT_ACTION_POINTER_INDEX_SHIFT;
     int i = act == AMOTION_EVENT_ACTION_DOWN || act == AMOTION_EVENT_ACTION_UP ? 0 : ai;
-    float p[4]; ov_menu_rect(W, H, p);
+    float p[4] = {0, 0, W, H};   // the keyboard fills the window (gfx_vk_present.c ov_text_panel), not the drawer's rectangle
     int key = ov_kb_at(AMotionEvent_getX(e, (size_t)i), AMotionEvent_getY(e, (size_t)i), p);
     if (act == AMOTION_EVENT_ACTION_DOWN || act == AMOTION_EVENT_ACTION_POINTER_DOWN) {
         pthread_mutex_lock(&g_tx_mu); g_tx.ptr = key; if (key >= 0) g_tx.sel = key; pthread_mutex_unlock(&g_tx_mu);
@@ -1411,7 +1440,7 @@ __attribute__((visibility("default"))) void ANativeActivity_onCreate(ANativeActi
     snprintf(p, sizeof p, "%s/temp", act->internalDataPath); mkdir(p, 0700); setenv("DM_TEMP", p, 0);
     snprintf(p, sizeof p, "%s/shaders.dmsv", g_root); setenv("DM_VK_SHADERS", p, 0);
     snprintf(p, sizeof p, "%s/env.txt", g_root); env_file(p);
-    { const char *e = getenv("DM_MENU_BUTTON"); if (e && *e && !atoi(e)) { atomic_store(&g_menu_btn, 0); LOG("[overlay] DM_MENU_BUTTON=0: no menu button (Back opens the menu)"); } }
+    { const char *e = getenv("DM_MENU_BUTTON"); if (e && *e && atoi(e)) { atomic_store(&g_menu_btn, 1); LOG("[overlay] DM_MENU_BUTTON=1: the on-screen menu button (Back also opens the menu)"); } }
 #ifdef DM_RELEASE
     unsetenv("DM_CTL");   // a release build takes no remote key presses (the control file is a development tool)
 #endif

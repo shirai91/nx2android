@@ -52,7 +52,7 @@ A game that is not in this list is not supported yet. The games we look at next,
 
 Pokémon Legends: Arceus and Pokémon Legends: Z-A need the device during the port, even without **Install on the device when done**: their shaders are in Oodle-compressed archives, which the port decodes with the game's own decoder on the device. Have platform-tools (adb) from step 2, and plug in the device with USB debugging on before you click **Port**.
 
-A game played by touch: tick **Touch game** on the Port tab (`--touch`). The on-screen gamepad then starts hidden and every touch but one on the menu button goes to the game; the pause menu shows the gamepad again.
+A game played by touch: tick **Touch game** on the Port tab (`--touch`). The on-screen gamepad then starts hidden and every touch goes to the game; the pause menu shows the gamepad again.
 
 Chinese or Korean text drawn as `???`: choose a TrueType font with those characters as **System font** on the Port tab (`--shared-font`, a single `.ttf`, not a `.ttc`). It goes in the data pack; the tool ships none. The tool's own text entry panel shows those characters in its title and the game's initial text, but its keyboard types only ASCII.
 
@@ -62,9 +62,9 @@ A game whose profile lists the shared font titles (`0100000000000811` and `01000
 
 A game slowed by its draw calls in busy scenes: tick **Multithread replay** on the Port tab (`--mt-replay`). The game's Vulkan commands are then recorded on a thread of their own. It stays on until you port the game again without it.
 
-When **Show gamepad** is enabled, using a controller hides the on-screen controls. Touch the screen to bring them back. The draggable menu button stays available even with **Show gamepad** off.
+When **Show gamepad** is enabled, using a controller hides the on-screen controls. Touch the screen to bring them back.
 
-To play without the on-screen menu button, tick **No menu button** on the Port tab (`--no-menu-button`). The button is then not drawn and its corner of the screen goes to the game. Open the pause menu with the Back gesture or key, or with a controller's Home or Menu key. The layout editor shows the button darkened, and a second screen's gamepad keeps it. It stays hidden until you port the game again without the option.
+The on-screen menu button is off; open the pause menu with the Back gesture or key, or with a controller's Home or Menu key. Its corner of the screen is then the game's. To keep the button, tick **Menu button** on the Port tab (`--menu-button`): it stays available even with **Show gamepad** off. Without it the layout editor shows the button darkened, and a second screen's gamepad keeps it. The choice needs a port again to change.
 
 To arrange the on-screen controls, open the pause menu's **Gamepad** tab and choose **Edit layout**: drag a control to move it, pinch or use **− / +** to resize it. **Save** keeps the layout for the next launch and **Cancel** discards your edits. **Snap to grid** (off at first, and remembered) shows a square grid and snaps each control's center to it as you drag.
 

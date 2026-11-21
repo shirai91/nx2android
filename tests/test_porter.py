@@ -320,14 +320,14 @@ class Misc(unittest.TestCase):
         self.assertEqual((o.folder, o.keys, o.firmware, o.vulkan_driver, o.jobs, o.alias_headroom, o.vercode_offset), (Path('game'), Path('k.keys'), Path('fw'), 'system', 3, 4, 7))
         self.assertEqual({f.name for f in dataclasses.fields(pipeline.Options)} - set(vars(a)), set(), 'an Options field with no porter port argument of its name')
 
-    def test_no_menu_button_option(self):   # --no-menu-button (issue #397): off unless given; the port then writes DM_MENU_BUTTON=0 to env.txt (front_android.c g_menu_btn)
+    def test_menu_button_option(self):   # --menu-button (issue #397): off unless given; the port then writes DM_MENU_BUTTON=1 to env.txt (front_android.c g_menu_btn)
         from porter import cli
-        self.assertTrue(cli._parser().parse_args(['port', 'x', '--no-menu-button']).no_menu_button)
-        self.assertFalse(cli._parser().parse_args(['port', 'x']).no_menu_button)
-        self.assertFalse(pipeline.Options(Path(".")).no_menu_button)
+        self.assertTrue(cli._parser().parse_args(['port', 'x', '--menu-button']).menu_button)
+        self.assertFalse(cli._parser().parse_args(['port', 'x']).menu_button)
+        self.assertFalse(pipeline.Options(Path(".")).menu_button)
         src = (Path(pipeline.__file__).read_text(encoding='utf-8'))
-        self.assertIn("(['DM_MENU_BUTTON=0'] if self.o.no_menu_button else [])", src)   # in the data pack's env rows, beside --mt-replay's
-        self.assertTrue(pipeline.Options.from_args(cli._parser().parse_args(['port', 'x', '--no-menu-button'])).no_menu_button)   # the CLI passes it on
+        self.assertIn("(['DM_MENU_BUTTON=1'] if self.o.menu_button else [])", src)   # in the data pack's env rows, beside --mt-replay's
+        self.assertTrue(pipeline.Options.from_args(cli._parser().parse_args(['port', 'x', '--menu-button'])).menu_button)   # the CLI passes it on
         front = (Path(pipeline.__file__).parents[1] / 'nxnative/dm/android/front_android.c').read_text(encoding='utf-8')
         self.assertIn('getenv("DM_MENU_BUTTON")', front)   # the name the device reads is the name porter writes
 
