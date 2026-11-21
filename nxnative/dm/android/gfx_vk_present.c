@@ -375,7 +375,7 @@ static void cv_button(const ov_canvas *cv, const float b[4], const char *l, int 
 }
 // The pause menu (overlay_layout.h: the rows, the tabs, the slider's track), in the raster's panel rectangle. Its letters are as large as a row allows (0.30 of
 // its height, about 2.7 mm on a 6.7" phone and 3.6 mm on the 8.8" tablet) and smaller only when the widest row would not fit beside its control
-static const char *const OVM_LABELS[OVM_N] = {"Show gamepad", "Opacity", "Edit layout", "Rumble", "Show FPS", "Mode", "Export save", "Import save", "Face buttons", "Audio output", "Resume", ""};
+static const char *const OVM_LABELS[OVM_N] = {"Show gamepad", "Opacity", "Edit layout", "Rumble", "Show FPS", "Mode", "Export save", "Import save", "Face buttons", "Audio output", "Resume", "Exit game", ""};
 static const char *const OVM_BUTTONS[OVM_N] = {[OVM_EDIT] = "Edit", [OVM_EXPORT] = "Export", [OVM_IMPORT] = "Import", [OVM_AUDIO] = "Select"};   // the rows that are a button: its word
 static const char *const OVM_MODES[2] = {"Handheld", "Docked"};
 static const char *const OVM_PADS[2] = {"Position", "Label"};   // a controller's face buttons (front_android.c pad_labels)
@@ -405,7 +405,13 @@ static void ov_menu_panel(const ov_canvas *cv, int st) {
             cv_rrect(cv, r[0], r[1] + rh - 1, r[0] + rw, r[1] + rh, 0.5f, C_LINE);
             continue;
         }
-        if (it == OVM_RESUME) { cv_rrect(cv, r[0], r[1], r[0] + rw, r[1] + 1, 0.5f, C_LINE); cv_text(cv, r[0] + (rw - cv_text_w("Resume", is)) / 2, cy, "Resume", is, C_ACCENT); continue; }
+        if (it == OVM_RESUME) {   // the button row: Exit game (left) beside Resume (right), each centred in its half (menu_touch splits the row at the same midline); the row's line stays
+            cv_rrect(cv, r[0], r[1], r[0] + rw, r[1] + 1, 0.5f, C_LINE);
+            const char *const w[2] = {OVM_LABELS[OVM_EXIT], OVM_LABELS[OVM_RESUME]};   // "Exit game", "Resume": OVM_LABELS is indexed by the item id, so the words come from the ids, not from a pointer past OVM_EXIT (the next slot is OVM_TAB's empty label)
+            for (int k = 0; k < 2; k++) { int s = is; while (s > 1 && cv_text_w(w[k], s) > rw / 2 - rh * 0.3f) s--;   // the letters shrink only if the half would not hold them (the Thor's narrow overlay)
+                cv_text(cv, r[0] + k * (rw / 2) + (rw / 2 - cv_text_w(w[k], s)) / 2, cy, w[k], s, k ? C_ACCENT : C_WHITE); }
+            continue;
+        }
         cv_text(cv, r[0] + rh * 0.15f, cy, OVM_LABELS[it], is, row == sel ? C_WHITE : C_DIM);
         if (it == OVM_OPACITY) {   // the slider: its track, filled to the value, the knob and the percent
             float t[3]; ov_menu_track(p, row, t); float f = (float)(op - OV_OPACITY_MIN) / (OV_OPACITY_MAX - OV_OPACITY_MIN), th = fmaxf(2, rh * 0.08f), kr = rh * 0.20f;
