@@ -52,7 +52,9 @@ static void used(int64_t d) {
 }
 static size_t align_of(uint32_t a) { return a > 16 ? a : 16; }   // 0 = DEFAULT_ALIGNMENT, 16 bytes as Binned3 gives
 static void *alloc(size_t n, uint32_t a) {
-    void *p = align_of(a) == 16 ? malloc_zone_malloc(g_zone, n ? n : 1) : malloc_zone_memalign(g_zone, align_of(a), n ? n : 1);
+    // Android jemalloc's tiny bin is only eight-byte aligned; Unreal requires at least 16 even for smaller requests.
+    if (n < 16) n = 16;
+    void *p = align_of(a) == 16 ? malloc_zone_malloc(g_zone, n) : malloc_zone_memalign(g_zone, align_of(a), n);
     if (p) used((int64_t)malloc_size(p));
     return p;
 }
@@ -60,6 +62,7 @@ static void release(void *p) { if (p) { used(-(int64_t)malloc_size(p)); malloc_z
 static void *realloc_aligned(void *p, size_t n, uint32_t a) {
     if (!p) return alloc(n, a);
     if (!n) { release(p); return NULL; }
+    if (n < 16) n = 16;   // a shrink must not move the allocation into the eight-byte tiny bin either
     size_t old = malloc_size(p);
     if (align_of(a) == 16) { void *q = malloc_zone_realloc(g_zone, p, n); if (q) used((int64_t)malloc_size(q) - (int64_t)old); return q; }
     if (!((uintptr_t)p & (align_of(a) - 1)) && old >= n) return p;

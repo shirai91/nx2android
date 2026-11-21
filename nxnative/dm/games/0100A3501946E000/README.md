@@ -1,7 +1,7 @@
 # OCTOPATH TRAVELER II
 
 **Experimental profile; Android support is not validated.** Title ID `0100A3501946E000`, package `org.nx2a.octopathtravelerii`.
-The version and shader metadata come from the existing nxnative profile. No APK has been built and no Android device has been tested for this addition.
+The version and shader metadata come from the existing nxnative profile. Community testing has completed the rewrite, built and installed an APK, and reached `nnMain`; startup then crashed in PhysX. Successful gameplay remains unverified.
 
 ## Game version
 
@@ -15,7 +15,7 @@ The Android profile uses `pacing game`, preserving the game's own 30 fps limit a
 
 ## Tested devices
 
-None. Boot, movies, audio, rendering, controls, frame pacing and saves still need Android validation.
+No device is qualified. Community startup testing exposed the allocator issue below; a retest with the alignment correction is still needed. Boot, movies, audio, rendering, controls, frame pacing and saves still need Android validation.
 
 ## Options
 
@@ -28,6 +28,7 @@ No Vulkan driver or device-specific option has been qualified. The profile has n
 - Upstream's Metal backend needed a larger reflection table for the traveler-selection map's 66 shader bindings. Android uses its own descriptor path (up to 96 layout bindings), so the Metal limit is not an established Android blocker; the map still needs visual validation on a device.
 - Upstream also records geometry-path fixes and a rare title-screen crash. Their Android relevance is untested; see the [upstream game notes](https://github.com/seedds/nxnative/blob/d2fd78b402f92d5a83b78987e49aba22e8626719/dm/games/0100A3501946E000/README.md).
 - There is no measured Android pipeline prewarm list. The shader tables are reference metadata and contain no shader binaries or game assets.
+- The reported startup crash follows a PhysX allocator wrapper rejecting a pointer that is not 16-byte aligned. The host now keeps small allocations and shrinking reallocations out of Android's eight-byte tiny bin. Whether this resolves the device crash is awaiting a community retest.
 
 ## Profile provenance and bring-up
 
@@ -41,4 +42,5 @@ Keep `status experimental` until those checks are recorded in [`android.tsv`](an
 
 ## Found on this game
 
-- [Observation gates after removed calls](../../../../docs/ARCHITECTURE.md#observation-gates-after-removed-calls): the 1.1.1 allocator cut replaces its constructor call with a NOP before the following observation gate is checked. The rewriter retains the checked original call boundary for that NOP. The reported step-3 failure exposed this ordering issue; a complete real-game rewrite and Android bring-up remain unverified.
+- [Observation gates after removed calls](../../../../docs/ARCHITECTURE.md#observation-gates-after-removed-calls): the 1.1.1 allocator cut replaces its constructor call with a NOP before the following observation gate is checked. The rewriter retains the checked original call boundary for that NOP. Community testing subsequently completed the rewrite and reached `nnMain`; Android gameplay remains unverified.
+- [Unreal heap alignment](../../../../docs/ARCHITECTURE.md#unreal-heap-alignment): the PhysX startup trace exposed rejection of an eight-byte allocation when the host did not preserve Unreal's 16-byte minimum. The correction also covers shrinking reallocations; device confirmation remains outstanding.

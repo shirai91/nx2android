@@ -249,6 +249,10 @@ The warning directs porter users to register their build-specific patches.
 
 Observation gates require a function entry, a preceding `BL` call boundary, or a proof that x9–x17 are unread before the next call. A build-keyed cut that replaces a checked original `BL` with a `NOP` retains the original call boundary; a different replacement does not. The rewriter records only the original boundary at registered observation sites before applying cuts, and still checks the cut bytes, observation instruction and rewrite-site conflicts. This lets an allocator observation replace a removed constructor call without treating arbitrary NOPs as safe gate sites.
 
+### Unreal heap alignment
+
+The host Unreal allocator (`dm/host/hle_uemalloc.c`) provides at least 16-byte alignment, including requests smaller than 16 bytes. Android jemalloc has an eight-byte tiny size class, so both allocation and nonzero reallocation requests are raised to at least 16 bytes before calling the native allocator. Shrinking a block must preserve that minimum too. Larger explicit alignments use the aligned allocation path; reallocating an existing block to zero still frees it. This matters for PhysX, whose allocator wrapper can report a misaligned non-null result and return null to a caller that expects allocation to succeed.
+
 ## The port
 
 `python -m porter port <game folder> -k <prod.keys>` (the GUI's **Port** button) runs these stages. The slow ones (extraction, rewrite, shader split, the translator build, the Vulkan shaders) keep their output with a key of their inputs and are skipped on the next run when the key is unchanged; the host build is incremental (`build.py`), and the APK and the data pack are made again each time (seconds).
