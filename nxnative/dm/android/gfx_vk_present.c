@@ -832,7 +832,11 @@ static uint64_t pace_desired(double period) {   // the frame's desired present t
     if (!g_refresh_ns || g_pace_n % 120 == 0) {
         VkRefreshCycleDurationGOOGLE rc; uint64_t was = g_refresh_ns;
         if (vkGetRefreshCycleDurationGOOGLE(V.dev, g_swap, &rc) == VK_SUCCESS && rc.refreshDuration > 1000000) g_refresh_ns = rc.refreshDuration;
-        if (g_refresh_ns && g_refresh_ns != was) { VKLOG("[perf] display timing: refresh %.3f ms", g_refresh_ns / 1e6); g_pace_target = 0; }
+        // A new period restarts the cadence (a resync: one frame a vsync late). The Legion Y700 (2025) reports its 120 Hz period a few ns differently at each read, so
+        // the cadence restarted every 120 presents: one frame shown for three vsyncs every 2 s in every game (Fire Emblem: Three Houses' idle title, 2.4 ms of GPU, dropped
+        // 2-4 frames of 300). Under 1% the period is taken without a restart; a real mode change (60 / 90 / 120 Hz) still restarts it
+        uint64_t dif = g_refresh_ns > was ? g_refresh_ns - was : was - g_refresh_ns;
+        if (g_refresh_ns && g_refresh_ns != was && (!was || dif * 100 >= was)) { VKLOG("[perf] display timing: refresh %.3f ms", g_refresh_ns / 1e6); g_pace_target = 0; }
     }
     VkPastPresentationTimingGOOGLE pt[16]; uint32_t np = 16;
     if (vkGetPastPresentationTimingGOOGLE(V.dev, g_swap, &np, pt) >= 0)
