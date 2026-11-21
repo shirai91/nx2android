@@ -151,7 +151,7 @@ static int prepare_draw(int prim, int indexed) {
     if (var == 6) vk_end_pass();   // a new pass for this draw
     // A program may have no fragment stage (a depth-only draw: NVN binds by stage mask, and Metroid Dread draws about nine a frame so in its intro; nvn_mtl.m makes them vertex-only pipelines):
     // drawn with no fragment shader and no colour written (Vulkan leaves colour outputs undefined without one), as before only rasterizer-discard draws were
-    if (!S.sh[0]) { g_vkst.skip_prog++; VKRED_ONCE(50, "draw with a program whose shaders are not in the bundle: skipped"); return 0; }
+    if (!S.sh[0] || (g_skip_missing && S.prog_missing)) { g_vkst.skip_prog++; VKRED_ONCE(50, "draw with a program whose shaders are not in the bundle: skipped"); return 0; }
     if (g_x_nogs && S.sh[2]) return 0;   // DM_VK_X_NOGS=1 (live, A/B): draws with a geometry shader are left out
     for (int i = 0; i < g_x_nskipvs; i++) if (S.sh[0]->key == g_x_skipvs[i]) return 0;   // DM_VK_X_SKIPVS=<key>[,<key>...] (live, up to 8): draws with these vertex shaders are left out
     for (int i = 0; i < g_x_nskipfs; i++) if (S.sh[1] && S.sh[1]->key == g_x_skipfs[i]) return 0;

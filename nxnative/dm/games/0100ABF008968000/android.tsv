@@ -16,6 +16,9 @@
 # 0 or 512 1 ms more GPU. Depth not loaded or stored (DM_VK_X_DEPTH, draws wrong) saved 3.1 ms: six of the passes only clear a 1080p depth buffer (0.22 ms each).
 # Handheld (DM_OPMODE=0) is not fixed: the 3D draws at 1280x720 but the title and the fields come out blurred all over (a depth-of-field-like blur, its chain mixes
 # 720p and 1080p buffer sizes); docked is the default and correct. Local wireless is not checked yet.
+# 2026-11-22, same device, mrpurple and kimchi Turnip: before a port has the Vfx programs, a draw whose pixel shader is missing still wrote depth, so the opening
+# froze on the old shot (8-12 s spans in the stadium and after the logo). DM_VK_SKIP_MISSING=1 leaves those draws out entirely; the opening then plays through.
+env	DM_VK_SKIP_MISSING=1
 status	playable
 tested	v458752 AYN Odin 2 (Snapdragon 8 Gen 2, Adreno 740, Android 13)
 package	org.nx2a.pokemonsword
