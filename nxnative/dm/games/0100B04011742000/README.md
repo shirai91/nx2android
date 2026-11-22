@@ -2,9 +2,39 @@
 
 Status: **experimental — requires testing on an Android device**. No game was built, launched or played for this change.
 
+## Game version
+
 The source audit covers **16.0.2 (`v2228224`)**, title ID `0100B04011742000`, on nx2android `00f41ec9c0f4`. It found an existing runtime/tool path for this build; it does not establish that the game boots, renders correctly or completes. Use an arm64 Android device with BC texture support and the Vulkan features needed by its shaders. Other game versions are outside this assessment.
 
-## Compatibility evidence
+No game version is verified on Android.
+
+| Module | Build ID |
+|---|---|
+| `main` | `c9a3dd7702075ecd90101f4555389582` |
+| `subsdk0` | `507f19d1240d09d00992248e8a0fd77e` |
+| `sdk` | `2d369d9999e3e10e665106f840ffff9b` |
+
+## Frame rate
+
+Not measured on Android. No frame-rate or pacing claim is available without a device run.
+
+## Tested devices
+
+None. No APK build, Android launch, gameplay session or device screenshot is available for this profile.
+
+## Options
+
+Android starts docked, with the gamepad visible. The package name includes the title ID so regional versions install separately. No `tested` value or Android frame-rate claim is supplied.
+
+Use the exact version above and the player's own dump and keys. An arm64 Android device with BC texture support and the Vulkan features required by the shaders is needed. No driver or settings combination has been validated on Android; these are initial profile defaults.
+
+## Quirks and known issues
+
+The local add-on ownership table holds at most 64 entries, while the upstream notes describe 252 licenses. This candidate covers the base game with the registered update; complete Sunbreak/cosmetic DLC availability is not claimed. Preserve the existing order_keep setting.
+
+Booting, rendering, audio, movies, controls, save/reload, frame pacing and long-session stability are unverified. Source compatibility is not a device result.
+
+## Source compatibility evidence
 
 Existing registered 16.0.2 local profile plus Android sparse-pool upload/page table, dirty textures, RE frame cap, big-module rewriting, and separate texture/sampler paths exist.
 
@@ -21,21 +51,10 @@ Relevant existing paths:
 - `porter/pipeline.py:441`
 - `nxnative/dm/android/tools/shader_vk.py:109`
 
-## Build and defaults
-
-| Module | Build ID |
-|---|---|
-| `main` | `c9a3dd7702075ecd90101f4555389582` |
-| `subsdk0` | `507f19d1240d09d00992248e8a0fd77e` |
-| `sdk` | `2d369d9999e3e10e665106f840ffff9b` |
-
-Android starts docked, with the gamepad visible. The package name includes the title ID so regional versions install separately. No `tested` value or Android frame-rate claim is supplied.
-
-The local add-on ownership table holds at most 64 entries, while the upstream notes describe 252 licenses. This candidate covers the base game with the registered update; complete Sunbreak/cosmetic DLC availability is not claimed. Preserve the existing order_keep setting.
-
 ## Required device testing
 
 1. Port the exact version above using the player's own dump and keys; confirm extraction, rewriting and shader translation finish without missing inputs.
 2. Test a fresh save through the menus and into gameplay, including rendering, audio, movies and the intended controls.
 3. Save, quit, restart and load; exercise later scenes and check for crashes, missing shaders, incorrect graphics and pacing problems.
 4. Record the device, driver, game version and tested route before raising the status or adding a `tested` row.
+5. Capture a 1280x720 gameplay frame on the device without an overlay, and record the nx2android revision or release used. Only after a real run should the tested-device details, `tested`, `readme_image` and `readme_tag` be added and the generated game lists updated.

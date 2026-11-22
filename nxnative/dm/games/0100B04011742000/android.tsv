@@ -1,5 +1,5 @@
 # Monster Hunter Rise on Android: source-audited candidate, not device tested.
-# Audited build: 16.0.2 (v2228224); compatibility evidence and test plan: ANDROID.md.
+# Audited build: 16.0.2 (v2228224); compatibility evidence and test plan: README.md.
 status	experimental
 package	org.nx2a.t0100b04011742000
 orientation	landscape
