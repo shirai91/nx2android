@@ -2,9 +2,37 @@
 
 Status: **experimental — requires testing**. No game was built, launched or played for this change.
 
+## Game version
+
 This source audit covers **1.0.3 (`v196608`)**, Switch 1 title ID `0100DA801624E000`, against nx2android `00f41ec9c0f4`. It identifies existing tool and runtime paths for an experimental port; it does not establish Android playability. Other game versions are outside this assessment.
 
-## Compatibility evidence
+No game version is verified on Android.
+
+| Module | Build ID |
+|---|---|
+| `main` | `0909b4ac280d9d77ecd1fae840e4b295` |
+| `subsdk0` | `c781dd63daf0ddcdb9975da50a198f93` |
+| `sdk` | `2aef2cffb104ee7c9e212fd2f4c731e9` |
+
+## Frame rate
+
+Not measured on Android. No frame-rate or pacing claim is available without a device run.
+
+## Tested devices
+
+None. No APK build, Android launch, gameplay session or device screenshot is available for this profile.
+
+## Options
+
+Android starts docked with the on-screen gamepad visible. Use an arm64 Android device with BC texture support and the Vulkan features needed by the shaders. The profile requests no frame-rate override and supplies no `tested` row.
+
+Use the exact version above and the player's own dump and keys. An arm64 Android device with BC texture support and the Vulkan features required by the shaders is needed. No driver or settings combination has been validated on Android; these are initial profile defaults.
+
+## Quirks and known issues
+
+Booting, rendering, audio, movies, controls, save/reload, frame pacing and long-session stability are unverified. Source compatibility is not a device result. The source-derived memory layout below also needs validation on the device.
+
+## Source compatibility evidence
 
 The [upstream game notes](https://github.com/seedds/nxnative/blob/3084f7a205bcb3a9cb74cf26180dabcc01c7abca/dm/games/0100DA801624E000/README.md) describe Unity 2020.3 IL2CPP, SDK 14.3.0, NVN rendering and FMOD audio, with no game-specific binary patch. The profile records the exact `main`, movie-library `subsdk0` and `sdk` builds. The local Unity asset readers and static GLSLC-output splitter handle these containers; the 11 player shaders embedded in `main` are static inputs, not runtime shader capture.
 
@@ -18,19 +46,10 @@ SDK 14 also retains larger allocation-alignment classes. The upstream 1 GiB appl
 
 The [upstream memory reference](https://github.com/seedds/nxnative/blob/3084f7a205bcb3a9cb74cf26180dabcc01c7abca/docs/reference/memory.md#the-sdks-address-region-node-area) explains the node reservation and alignment classes. Locally, `porter/pipeline.py::alias_headroom` already supports this sizing transformation, `game.py::header` emits it, and `hle_svc.c::mem_init` uses it with `MAP_NORESERVE`. Stack capacity stays 256 MiB and heap capacity 128 MiB. Reserved address space is not committed physical RAM; actual memory use and later allocation patterns still need testing.
 
-## Build and defaults
-
-| Module | Build ID |
-|---|---|
-| `main` | `0909b4ac280d9d77ecd1fae840e4b295` |
-| `subsdk0` | `c781dd63daf0ddcdb9975da50a198f93` |
-| `sdk` | `2aef2cffb104ee7c9e212fd2f4c731e9` |
-
-Android starts docked with the on-screen gamepad visible. Use an arm64 Android device with BC texture support and the Vulkan features needed by the shaders. The profile requests no frame-rate override and supplies no `tested` row.
-
-## Required testing
+## Required device testing
 
 1. Port the exact version from the player's own dump and keys; verify extraction, rewriting and shader translation complete.
 2. Test the title, menus, movies, audio and gameplay with the intended controls; check for missing shaders or rendering errors.
 3. Save, quit, restart and load. Exercise later areas and monitor address-region failures, physical memory and pacing.
 4. Record the device, driver, version and tested route before raising the status.
+5. Capture a 1280x720 gameplay frame on the device without an overlay, and record the nx2android revision or release used. Only after a real run should the tested-device details, `tested`, `readme_image` and `readme_tag` be added and the generated game lists updated.

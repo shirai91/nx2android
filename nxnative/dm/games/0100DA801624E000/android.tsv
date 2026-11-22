@@ -1,5 +1,5 @@
 # TUNIC: 1.0.3 (v196608), SDK 14.3.0, NVN.
-# Source-audited only. No game build or device test; see ANDROID.md.
+# Source-audited only. No game build or device test; see README.md.
 status	experimental
 package	org.nx2a.t0100da801624e000
 orientation	landscape
