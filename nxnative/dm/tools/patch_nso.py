@@ -66,16 +66,18 @@ else:
 #   OBS = {build ID: [(offset, number, original instruction word, reason)]}: observation gates. Numbers match OBS_* in the host's hle.h; the original instruction must be position
 #     independent (no PC-relative / branch / anything involving x18 or tpidr), asserted offline; when the host has no callback attached the gate block goes in and out once and returns
 #   FRAME_STEP = {build ID: function(ctx)}: the frame step stubs of a main ("Frame step in whole vsyncs" below)
+#   CUTS_FPS60 = {build ID: [same rows as CUTS]}: the cuts that raise the game's own frame rate to 60, kept apart from the CUTS every build gets; applied unless DM_FPS60=0
+#     (the Android porter sets DM_FPS60 from --fps60, so its default is the game's own 30; the NSP script never sets it, so an iOS build keeps 60 as before; Fire Emblem: Three Houses)
 #   DM_PATCHES_EXTRA (os.pathsep-separated files outside the repository): CUTS only, added after the registered ones of the same build (an Android port's 60 fps code bytes from a
 #     FPSLocker config, porter/fpslocker.py); an overlap with a registered cut fails that cut's original-bytes assert
 PATCH_FILES = [os.path.join(os.path.dirname(os.path.abspath(__file__)), 'sdk_patches.py')] + sorted(glob.glob(os.path.join(os.path.dirname(os.path.abspath(__file__)), '../games/*/patches.py')))
 EXTRA_PATCH_FILES = [p for p in os.environ.get('DM_PATCHES_EXTRA', '').split(os.pathsep) if p]
 def load_patches():
-    tables, where = {'CUTS': {}, 'OBS': {}, 'FRAME_STEP': {}}, {}
+    tables, where = {'CUTS': {}, 'CUTS_FPS60': {}, 'OBS': {}, 'FRAME_STEP': {}}, {}
     for n, path in enumerate(PATCH_FILES + EXTRA_PATCH_FILES):
         spec = importlib.util.spec_from_file_location(f'patches_{n}', path); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
         extra = path in EXTRA_PATCH_FILES
-        assert not extra or not getattr(m, 'OBS', None) and not getattr(m, 'FRAME_STEP', None), f'{path}: DM_PATCHES_EXTRA files hold CUTS only'
+        assert not extra or not getattr(m, 'OBS', None) and not getattr(m, 'FRAME_STEP', None) and not getattr(m, 'CUTS_FPS60', None), f'{path}: DM_PATCHES_EXTRA files hold CUTS only'
         for kind, table in tables.items():
             for bid, v in getattr(m, kind, {}).items():
                 if extra: table[bid] = list(table.get(bid, [])) + list(v); continue
@@ -88,7 +90,7 @@ FS_STATE_OFF = 0
 if BUILD_ID in PATCHES['FRAME_STEP'] and NAME == 'main':
     FS_STATE_OFF = KEY_PAGE_OFF + 0x4000
     PATCH_OFF = max(PATCH_OFF, (FS_STATE_OFF + 0x4000 + 0xFFFF) & ~0xFFFF)
-cuts = list(PATCHES['CUTS'].get(BUILD_ID, []))
+cuts = list(PATCHES['CUTS'].get(BUILD_ID, [])) + (list(PATCHES['CUTS_FPS60'].get(BUILD_ID, [])) if os.environ.get('DM_FPS60', '1') != '0' else [])
 for off, ob, nb, why in cuts:
     ob, nb = bytes.fromhex(ob), bytes.fromhex(nb)
     assert len(ob) == len(nb) and IMG[off:off + len(ob)] == ob, f'cut original bytes mismatch {off:#x}: {bytes(IMG[off:off + len(ob)]).hex()}'

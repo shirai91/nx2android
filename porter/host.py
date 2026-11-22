@@ -28,10 +28,10 @@ def module_tables(cuts_tsv, obs_tsv):
     return {'build_id': bid, **rows}
 
 
-def _tables(path):   # CUTS, OBS and FRAME_STEP of a patch file, as patch_nso.py load_patches reads them
+def _tables(path):   # CUTS, CUTS_FPS60, OBS and FRAME_STEP of a patch file, as patch_nso.py load_patches reads them
     import importlib.util
     spec = importlib.util.spec_from_file_location(f'nx2a_host_{abs(hash(str(path)))}', path); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
-    return {k: getattr(m, k, {}) for k in ('CUTS', 'OBS', 'FRAME_STEP')}
+    return {k: getattr(m, k, {}) for k in ('CUTS', 'CUTS_FPS60', 'OBS', 'FRAME_STEP')}
 
 
 def sdk_patches_fit(modules, title_id, extra, tools=DM / 'tools'):
@@ -47,7 +47,8 @@ def sdk_patches_fit(modules, title_id, extra, tools=DM / 'tools'):
         cuts = [(o, ob.lower(), nb.lower()) for t in tables for o, ob, nb, _ in t['CUTS'].get(bid, [])]
         obs = [(o, str(n).lower(), str(w).lower()) for t in tables for o, n, w, _ in t['OBS'].get(bid, [])]
         if m['obs'] != obs: return False
-        if m['cuts'] != cuts and not (extra and m['cuts'][:len(cuts)] == cuts): return False
+        fps60 = cuts + [(o, ob.lower(), nb.lower()) for t in tables for o, ob, nb, _ in t['CUTS_FPS60'].get(bid, [])]   # a --fps60 port has the profile's 60 fps cuts after them
+        if m['cuts'] not in (cuts, fps60) and not (extra and m['cuts'][:len(cuts)] == cuts): return False
     return True
 
 

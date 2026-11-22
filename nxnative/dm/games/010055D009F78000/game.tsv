@@ -20,9 +20,6 @@ pad_layout	full
 # Rewriter cuts on 1.2.0 main (patches.py) set every mode's interval to 1, as in the engine's own 60 fps modes, so game mode gives 60 fps at the same game speed;
 # one more drops the render thread's forced 30 fps in the opening movie and scenes such as character creation; two more make the frame limiter sleep instead of yield
 # and the render thread wait a frame instead of 16 µs
-# 30 fps by default, 60 with porter's --fps60: fps_ceiling 30 holds presentation at 30 (perf_android.c fps_cap_step) and --fps60 lifts it (DM_FPS_CEILING=0).
-# The game still updates 60 times a second on the main thread whatever is shown, so the cap does not change the game speed; the render thread waits in the present
-fps_ceiling	30
 
 # ---- Versions ----
 build	v327680	1.2.0	main=89048449ba238c8cf565518b83bf02d3	subsdk0=8d073b25b9abda677e6967cef9ef6070	subsdk1=b9c00c0216af9b5b7f958ddbd25271c8	sdk=b2872a7bcc589969fb7afb8e372414e4

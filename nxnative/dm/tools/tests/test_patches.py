@@ -31,7 +31,7 @@ def builds_of(g):   # {build ID: module name} of a profile's build rows (a profi
 
 class Registry(unittest.TestCase):
     def test_no_build_claimed_twice(self):
-        for kind in ('CUTS', 'OBS', 'FRAME_STEP'):
+        for kind in ('CUTS', 'CUTS_FPS60', 'OBS', 'FRAME_STEP'):
             seen = {}
             for p, m in MODS.items():
                 for bid in getattr(m, kind, {}):
@@ -39,7 +39,7 @@ class Registry(unittest.TestCase):
 
     def test_entry_forms(self):
         for p, m in MODS.items():
-            for bid, cuts in getattr(m, 'CUTS', {}).items():
+            for bid, cuts in [*getattr(m, 'CUTS', {}).items(), *getattr(m, 'CUTS_FPS60', {}).items()]:
                 self.assertRegex(bid, r'^[0-9a-f]{32}$')
                 for off, ob, nb, why in cuts:
                     self.assertTrue(isinstance(off, int) and HEX.match(ob) and HEX.match(nb) and len(ob) == len(nb) and len(ob) % 8 == 0 and why, f'{p} {bid} {off:#x}')
@@ -48,14 +48,14 @@ class Registry(unittest.TestCase):
                     self.assertTrue(isinstance(off, int) and isinstance(oid, int) and HEX.match(word) and len(word) == 8 and why, f'{p} {bid} {off:#x}')
             for bid, fn in getattr(m, 'FRAME_STEP', {}).items():
                 self.assertTrue(callable(fn), f'{p} {bid}')
-            self.assertFalse({k for k in vars(m) if k.isupper() and k not in ('CUTS', 'OBS', 'FRAME_STEP')} - set(dir(__import__('nso_asm'))),
+            self.assertFalse({k for k in vars(m) if k.isupper() and k not in ('CUTS', 'CUTS_FPS60', 'OBS', 'FRAME_STEP')} - set(dir(__import__('nso_asm'))),
                              f'{p}: a table patch_nso.py does not read')
 
     def test_game_files_name_their_own_builds(self):
         for p, m in MODS.items():
             if p.name != 'patches.py': continue
             own = builds_of(p.parent.name)
-            for kind in ('CUTS', 'OBS', 'FRAME_STEP'):
+            for kind in ('CUTS', 'CUTS_FPS60', 'OBS', 'FRAME_STEP'):
                 for bid in getattr(m, kind, {}):
                     self.assertIn(bid, own, f'{p}: {kind} of {bid}, which is no build of profile {p.parent.name}')
                     self.assertNotEqual(own[bid], 'sdk', f'{p}: {bid} is an sdk build; its patches go in dm/tools/sdk_patches.py')

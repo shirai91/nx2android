@@ -165,14 +165,14 @@ def alias_headroom(tsv, gb=None):
     return alias, alias + add
 
 
-def registered_patches():
+def registered_patches(kinds=('CUTS', 'CUTS_FPS60', 'OBS', 'FRAME_STEP')):
     """{build ID: (the file, [the reason of each patch])} of the files the rewriter loads (patch_nso.py "Registered patches": dm/tools/sdk_patches.py and the profiles' patches.py;
-    CUTS and OBS by their reasons, FRAME_STEP as its stubs)"""
+    CUTS, CUTS_FPS60 and OBS by their reasons, FRAME_STEP as its stubs)"""
     out = {}
     for n, p in enumerate([DM / 'tools/sdk_patches.py'] + sorted((DM / 'games').glob('*/patches.py'))):
         spec = importlib.util.spec_from_file_location(f'porter_patches_{n}', p); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
         rel = p.relative_to(DM.parent).as_posix()
-        for kind in ('CUTS', 'OBS', 'FRAME_STEP'):
+        for kind in kinds:
             for bid, v in getattr(m, kind, {}).items(): out.setdefault(bid, (rel, []))[1].extend(['frame step stubs'] if kind == 'FRAME_STEP' else [x[3] for x in v])
     return out
 
@@ -746,13 +746,20 @@ class Port:
     def fps_unlock(self):
         self.fps_env, self.fps_files = [], {}
         self.env.pop('DM_PATCHES_EXTRA', None)
+        # A profile with 60 fps cuts of its own (patches.py CUTS_FPS60: Fire Emblem: Three Houses) gets them only with --fps60: patch_nso.py applies them unless DM_FPS60=0 (the iOS build
+        # sets nothing and keeps them). DM_FPS60 is set only for such a profile, so every other game's rewrite and its reuse key stay as they were
+        self.env.pop('DM_FPS60', None)
+        img, bid = fpslocker.nso_image(self.game / 'ExeFS/main')
+        n60 = len(registered_patches(kinds=('CUTS_FPS60',)).get(bid, ('', []))[1])
+        if n60: self.env['DM_FPS60'] = '1' if self.o.fps60 else '0'
         if not self.o.fps60: return
         PROG.stage('60 fps', step='the game profile')
+        if n60:   # the game itself presents every update with them: no FPSLocker config, no present pacing of the host's
+            PROG.end(f"the game profile's own 60 fps cuts (patches.py CUTS_FPS60): {n60} for main build {bid[:16].upper()}"); return
         if self.g.get('fps_ceiling', '0') != '0':   # a game that runs at 60 on the Switch, held at 30 by default: the ceiling lifted (android/gfx_vk_present.c dm_fps_ceiling)
             self.fps_env = ['DM_FPS_CEILING=0']; PROG.end('the game profile\'s 30 fps ceiling lifted (fps_ceiling)'); return
         if self.g.get('fps_target', '0') != '0':
             self.fps_env = ['DM_FPS_TARGET=60']; PROG.end('the game profile\'s own frame-rate cap (fps_target), at 60'); return
-        img, bid = fpslocker.nso_image(self.game / 'ExeFS/main')
         src = fpslocker.url(self.g.id, bid); d = self.aw / 'fpslock'; d.mkdir(exist_ok=True); cache = d / f'{bid[:16].upper()}.yaml'
         PROG.set(step='fetching the FPSLocker-Warehouse config')
         try: text = fpslocker.fetch(self.g.id, bid)
