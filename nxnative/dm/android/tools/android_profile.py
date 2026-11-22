@@ -28,7 +28,9 @@ import settings_registry   # noqa: E402  (nxnative/dm/settings.tsv: which switch
 
 STATUS = ('playable', 'wip', 'boots', 'experimental')
 SETTINGS = {'overlay': ('0', '1'), 'rumble': ('0', '1'), 'docked': ('0', '1'), 'fps': ('0', '1'),   # the pause menu's settings (front_android.c settings_load)
-            'opacity': tuple(str(v) for v in range(20, 81, 5))}                                    # the gamepad's, percent (overlay_layout.h OV_OPACITY_MIN..MAX)
+            'opacity': tuple(str(v) for v in range(20, 81, 5)),                                    # the gamepad's, percent (overlay_layout.h OV_OPACITY_MIN..MAX)
+            'fps_rows': tuple(str(v) for v in range(32)), 'fps_pos': tuple('0123'), 'fps_colour': tuple('01234'),   # the frame rate counter's rows (a bit each: 1 FPS, 2 SOC, 4 BAT,
+            'fps_outline': tuple('01234'), 'fps_size': tuple('0123')}                                               # 8 driver, 16 graph), corner, colour, outline and size (overlay_layout.h fpso_*)
 REQUIRES = ('bcn',)
 # pacing <preset>: the profile's frame-pacing policy in one row (docs/ARCHITECTURE.md, Frame pacing; nxnative/dm/host/dm_pacing.c reads the switches).
 # Each preset is env rows the data pack's env.txt gets before the profile's own env rows; a profile may not also set one of them.
