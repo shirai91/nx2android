@@ -396,12 +396,14 @@ static int recv_fds(int sock, int *fds, int max) {
     return n;
 }
 // Extract the mappable dma-buf fd from an AHardwareBuffer's native handle. Adreno sends 1 fd; MediaTek gralloc_extra sends 3 (metadata at 0, dma-buf at 1).
-static int ahb_fd(AHardwareBuffer *ahb) {
+static int ahb_fd(AHardwareBuffer *ahb, int *why) {
     int sv[2], fds[16], nfd = -1;
-    if (!ahb || socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sv)) return -1;
+    if (why) *why = 4;   // the caller's diagnostic stage: 2 socketpair, 3 the handle never arrived, 4 no usable fd among them
+    if (!ahb || socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sv)) { if (why) *why = 2; return -1; }
     if (!AHardwareBuffer_sendHandleToUnixSocket(ahb, sv[0])) nfd = recv_fds(sv[1], fds, 16);
+    else if (why) *why = 3;
     close(sv[0]); close(sv[1]);
-    if (nfd < 1) return -1;
+    if (nfd < 1) { if (why) *why = 3; return -1; }
     int pick = -1;
     if (nfd == 1) {
         pick = 0;
@@ -421,7 +423,8 @@ static int ahb_fd(AHardwareBuffer *ahb) {
     }
     if (pick >= 0) {
         static int said;
-        if (!said++) {
+        if (!said) {
+            said = 1;
             char link[64], target[128] = "?";
             snprintf(link, sizeof link, "/proc/self/fd/%d", fds[pick]);
             ssize_t r = readlink(link, target, sizeof target - 1);
@@ -530,7 +533,7 @@ static slab_t *slab_new(int c) {   // a slab of class c, allocated and imported 
     s->slot_bytes = sb; s->nslot = s->nfree = n; s->fd = -1;
     AHardwareBuffer_Desc d = {(uint32_t)size, 1, 1, AHARDWAREBUFFER_FORMAT_BLOB, AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN | AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN | AHARDWAREBUFFER_USAGE_GPU_DATA_BUFFER, 0, 0, 0};
     if (AHardwareBuffer_allocate(&d, &s->ahb)) { free(s); return NULL; }
-    s->fd = ahb_fd(s->ahb);
+    s->fd = ahb_fd(s->ahb, NULL);
     s->map = s->fd >= 0 ? mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, s->fd, 0) : MAP_FAILED;
     VkAndroidHardwareBufferPropertiesANDROID ap = {VK_STRUCTURE_TYPE_ANDROID_HARDWARE_BUFFER_PROPERTIES_ANDROID};
     VkExternalMemoryBufferCreateInfo eb = {VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO, NULL, VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID};
@@ -660,8 +663,8 @@ static int pool_zero_copy(vkpool_t *p, uint8_t *mem, uint64_t size, int lazy, co
     AHardwareBuffer *ahb = reuse ? re.ahb : NULL; int ar = reuse ? 0 : AHardwareBuffer_allocate(&d, &ahb);
     if (ar) { mem_diag_zc(1, "AHardwareBuffer_allocate", size, "return", ar); return -1; }
 #define ZC_DROP() do { if (reuse) zcf_free_now(&re); else AHardwareBuffer_release(ahb); } while (0)
-    int fd = ahb_fd(ahb);
-    if (fd < 0) { mem_diag_zc(4, "ahb_fd", size, "return", fd); ZC_DROP(); return -1; }
+    int why = 4; int fd = ahb_fd(ahb, &why);
+    if (fd < 0) { mem_diag_zc(why, "ahb_fd", size, "return", fd); ZC_DROP(); return -1; }
     // copy the pool's current contents into the buffer through a temporary mapping, then put the buffer's pages at the pool's address
     zcfill_t f = {fd, 0, NULL, 0, in}; int rc = zc_place(mem, size, &f, lazy, &done);
     if (rc == -5) mem_diag_zc(5, "mmap-temporary", size, "errno", errno);
@@ -706,7 +709,7 @@ static int pool_fd(const vkpool_t *p, int *own) {
     *own = 0;
     if (!p->zero_copy) return -1;
     if (p->slab) return ((slab_t *)p->slab)->fd;
-    int fd = ahb_fd(p->ahb);
+    int fd = ahb_fd(p->ahb, NULL);
     if (fd < 0) return -1;
     *own = 1; return fd;
 }
@@ -802,7 +805,7 @@ static int zc_uncached(void) {
     enum { N = 1 << 20 }; v = 0;
     AHardwareBuffer_Desc d = {N, 1, 1, AHARDWAREBUFFER_FORMAT_BLOB, AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN | AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN | AHARDWAREBUFFER_USAGE_GPU_DATA_BUFFER, 0, 0, 0};
     AHardwareBuffer *ahb = NULL; if (AHardwareBuffer_allocate(&d, &ahb)) return v;
-    int fd = ahb_fd(ahb);
+    int fd = ahb_fd(ahb, NULL);
     uint8_t *a = fd >= 0 ? mmap(NULL, N, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0) : MAP_FAILED, *m = malloc(N);
     if (fd >= 0) close(fd);
     if (a != MAP_FAILED && m) {
