@@ -1,8 +1,12 @@
 # OCTOPATH TRAVELER II on Android (docs/ARCHITECTURE.md, Game profiles on Android).
 # Update 1.1.1, Unreal Engine 4.27, SDK 12.3.2. Prepared from upstream's public
-# profile metadata; no game files, APK build, Android device or driver were tested.
-# Keep experimental until shader-table parity, boot, rendering, audio, input and saves
-# have been checked on a device. No tested/readme_tag/readme_image claim is made.
+# profile metadata. Community retest: @dusk-beep, commit 914c432, update 1.1.1,
+# Adreno 640 phone (model not stated in this report), Turnip 26.99.99 / Vulkan 1.3.367:
+# boot and about 30 minutes of gameplay after the allocator alignment fix.
+# https://github.com/shirai91/nx2android/pull/484#issuecomment-7072943355
+# Movies, audio, save/reload, battles and traveler selection not individually confirmed.
+# Keep experimental; maintainer smoke tests and gameplay frame pending.
+# No tested/readme_tag/readme_image claim is made.
 status	experimental
 package	org.nx2a.octopathtravelerii
 orientation	landscape
