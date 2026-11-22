@@ -6,6 +6,8 @@ status	experimental
 package	org.nx2a.runefactory3special
 orientation	landscape
 setting	overlay=0
+# Game speed is the same at 30 and 60 fps (checked by hand), so the frame rate is held at 60 and the governor does not step down.
+pacing	fixed60
 # Name entry rejected every name while nn::ngc GetContentVersion read 0 (the host has no word list); it now reads 1.
 env	DM_NGC_CONTENT_VERSION=1
 readme_image	docs/images/rune-factory-3-special.jpg

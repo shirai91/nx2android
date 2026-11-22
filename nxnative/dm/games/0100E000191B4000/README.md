@@ -16,6 +16,7 @@ The profile sets these for you (`android.tsv`); a player changes the pause menu 
 | Row | What it does |
 |---|---|
 | `overlay=0` | pause menu default on first launch: on-screen gamepad shown (1) or hidden (0) |
+| `pacing fixed60` | frame pacing preset: DM_FPS_TARGET=60, DM_ADAPTIVE_FPS=0 |
 | `DM_NGC_CONTENT_VERSION=1` | nn::ngc::ProfanityFilter::GetContentVersion result; unset: 0 |
 
 Read the profile's porting log in the comment header of [`android.tsv`](android.tsv). Back to the [games list](../../../../README.md#games).
@@ -27,7 +28,7 @@ Read the profile's porting log in the comment header of [`android.tsv`](android.
 
 ## Frame rate
 
-- 60 fps on the tested device. Measured in the town of Sharance: about 51% GPU busy, about 113% CPU and about 1000 mA. A 30 fps lock was measured at about 25% GPU, 71% CPU and 756 mA, with no late frames. The profile does not lock the rate. Whether game speed follows the frame rate is not yet checked.
+- Held at 60 fps (`pacing fixed60`): the adaptive governor does not step down. Game speed is the same at 30 and 60 fps (checked by hand), so the lock changes smoothness only. Measured in the town of Sharance: about 51% GPU busy, about 113% CPU and about 1000 mA at 60 fps; a 30 fps lock gave about 25% GPU, 71% CPU and 756 mA, with no late frames. No fidelity-neutral saving was found, so 60 fps stays as is.
 
 ## Tested devices
 
