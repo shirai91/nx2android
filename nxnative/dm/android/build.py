@@ -29,7 +29,7 @@ def host_dir(base, tool):
     """The NDK's host folder for a tool under base. On arm64 Linux the NDK ships x86_64 host tools only, so a folder named linux-aarch64 with an arm64 build of the tool beside the NDK's sysroot
     (see docs/DEVELOPMENT_GUIDE.md) is used when it holds the tool; otherwise linux-x86_64, as before (an x86_64 machine, or arm64 with qemu-user / box64), so a missing folder fails as it did"""
     if os.name == 'nt': return 'windows-x86_64'
-    if not sys.platform.startswith('linux'): return 'darwin-x86_64'
+    if sys.platform == 'darwin': return 'darwin-x86_64'   # Python 3.13+ on Android (Termux) reports 'android', which is Linux for the NDK's host folders
     if platform.machine() in ('aarch64', 'arm64') and (Path(a.ndk) / base / 'linux-aarch64' / tool).exists(): return 'linux-aarch64'
     return 'linux-x86_64'
 host = host_dir('toolchains/llvm/prebuilt', 'bin/clang')
