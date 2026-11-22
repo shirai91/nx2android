@@ -308,6 +308,7 @@ DM_VK_RD_TOUCH	bool		debug	live	gfx_vk_exec.c	no transfer read of the memory a r
 DM_VK_ROBUST	bool		debug	start	gfx_vk_core.c	robust buffer access on (A/B for a device lost): a buffer, texel buffer or vertex read past its range reads 0 and a write past it is dropped, instead of faulting the GPU
 DM_VK_RP	bool		debug	start	gfx_vk_exec.c	dynamic rendering instead of cached `VkRenderPass` objects with imageless framebuffers (Adreno's `vkCmdBeginRendering` cost about 40 µs a pass)
 DM_VK_SAMP_LOG	bool		debug	live	gfx_vk_exec.c gfx_vk_tex.c	log the next n sampler registrations (ID, LOD range, wrap, aniso, compare, border, present, thread) and each submission's start, in time order with the replay's lines
+DM_VK_SCALED_FETCH	bool	0	profile	start	gfx_vk_exec.c	a USCALED / SSCALED vertex format the device cannot fetch, read by a float input, is fetched as the UINT / SINT format of its layout and converted to float in the vertex shader (vk_spv_vertex.h) instead of the pipeline being skipped. Toy Story 3 Complete Edition's profile sets it: the Adreno 740 has no R8G8B8A8_USCALED, its skinned characters' bone indices
 DM_VK_SCRATCH_MB	bool		debug	?	gfx_vk_core.c	
 DM_VK_SETSPLIT	bool	0	profile	?	gfx_vk_exec.c	1 = a descriptor set change may split the command buffer
 DM_VK_SHADERS	str		app	?	gfx_vk_shader.c	the shader bundle (shaders.dmsv); default: the files folder's

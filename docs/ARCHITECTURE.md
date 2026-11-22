@@ -180,7 +180,14 @@ attribute format, including integer remaps and formats from prewarm records.
 Unsupported core formats are reported once per format across replay and prewarm
 workers; out-of-range formats are still reported without indexing the diagnostic
 array. Every unsupported pipeline is cached as failed, so draws that need it are
-skipped before Vulkan can receive an invalid pipeline.
+skipped before Vulkan can receive an invalid pipeline. A profile that sets
+`DM_VK_SCALED_FETCH=1` (off by default) has one exception: a USCALED / SSCALED
+format read by a float input is fetched as the UINT / SINT format of the same
+layout and the vertex shader converts each load to float (`vk_spv_vertex.h`,
+OpConvertUToF / OpConvertSToF), which gives the same values. Toy Story 3 Complete
+Edition sets it: the Adreno 740 has no R8G8B8A8_USCALED, the bone indices of its
+skinned characters, which were all skipped. Without the switch, and for formats
+the device fetches, pipelines are built exactly as before.
 
 ## Frame pacing
 
