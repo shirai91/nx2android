@@ -1113,23 +1113,41 @@ void vk_pools_sync(VkCommandBuffer cb) { extern int g_prof_on; extern uint64_t g
     int diag = mem_diag_on(); uint64_t t = diag ? mem_diag_ns() : 0, bytes = diag ? g_sync_bytes : 0;
     vk_pools_sync_(cb); if (diag) mem_diag_note(1, t, g_sync_bytes - bytes);
     if (g_prof_on) { clock_gettime(CLOCK_MONOTONIC, &b); g_prof_ns[2] += (uint64_t)((b.tv_sec - a.tv_sec) * 1000000000ll + (b.tv_nsec - a.tv_nsec)); } }
+static void dc_civac_range(const void *addr, size_t len) {
+#if defined(__aarch64__)
+    uintptr_t a = (uintptr_t)addr & ~(uintptr_t)63, e = ((uintptr_t)addr + len + 63) & ~(uintptr_t)63;
+    for (; a < e; a += 64) __asm__ volatile("dc civac, %0" :: "r"(a) : "memory");
+    __asm__ volatile("dsb ish" ::: "memory");
+#else
+    (void)addr; (void)len;
+#endif
+}
 static void vk_pools_sync_(VkCommandBuffer cb) {
     (void)cb;
     int diag = mem_diag_on(); uint64_t ns[4] = {0}, amount[4] = {0};
     uint64_t reason_count[4] = {0}, reason_bytes[4] = {0};
+    int zc_flush = (V.props.vendorID == 0x13b5);   // Mali: CPU-cached AHB is not IO-coherent with the GPU
 #define SYNC_MEASURE(k, n, op) do { if (diag) { uint64_t t_ = mem_diag_ns(); op; ns[k] += mem_diag_ns() - t_; amount[k] += (n); } else { op; } } while (0)
     enum { BLK = 64 << 10 };
     pthread_rwlock_rdlock(&g_pool_mu);
     for (int i = 0; i < g_npool; i++) {
-        vkpool_t *p = &g_pool[i]; if (!p->shadow) continue;
+        vkpool_t *p = &g_pool[i];
+        int zc = !p->shadow && zc_flush && p->zero_copy;
+        if (!p->shadow && !zc) continue;
         uint8_t *lo = (uint8_t *)(uintptr_t)p->lo; uint64_t size = p->hi - p->lo, st = nvn_dirty_now();
-        if (!p->baseline) { p->baseline = malloc(size); if (!p->baseline) die("[RED] [vk] copied-pool baseline allocation failed (%llu bytes)", (unsigned long long)size);
+        if (!zc && !p->baseline) { p->baseline = malloc(size); if (!p->baseline) die("[RED] [vk] copied-pool baseline allocation failed (%llu bytes)", (unsigned long long)size);
             p->synced = 0; if (mem_diag_on()) VKLOG("[memdiag] copy-back baseline allocated: %.2f MiB", size / 1048576.0); }
-        if (!p->span && (p->span = nvn_dirty_span(lo, size))) p->synced = 0;   // tracked only now: copied whole once more, protected
-        if (!p->synced || !p->span) {   // untracked: every sync copies all of it, as before
+        if (!p->span && (p->span = nvn_dirty_span(lo, size))) p->synced = 0;   // tracked only now: copied/flushed whole once more, protected
+        if (!p->synced || !p->span) {   // untracked: every sync copies/flushes all of it
             if (diag) { int reason = !p->synced ? 0 : 1; reason_count[reason]++; reason_bytes[reason] += size; }
             if (p->span) SYNC_MEASURE(1, size, nvn_dirty_protect(lo, size));
-            SYNC_MEASURE(2, size, memcpy(p->shadow, lo, size)); SYNC_MEASURE(3, size, memcpy(p->baseline, p->shadow, size)); pool_cache_sync(p, 0, 0, size); g_sync_bytes += size; g_sync_full++; p->synced = 1; p->baseline_complete = 0; p->stamp0 = p->stamp = st; continue; }
+            if (zc) {
+                SYNC_MEASURE(2, size, dc_civac_range(lo, size));
+            } else {
+                SYNC_MEASURE(2, size, memcpy(p->shadow, lo, size)); SYNC_MEASURE(3, size, memcpy(p->baseline, p->shadow, size)); pool_cache_sync(p, 0, 0, size);
+            }
+            g_sync_bytes += size; g_sync_full++; p->synced = 1; p->baseline_complete = 0; p->stamp0 = p->stamp = st; continue;
+        }
         // judged against the sync before the last: a write whose fault took its generation before the last sync's stamp but stored it after that sync looked
         // at its block would otherwise never count (its page is writable from then on, and clean by every later stamp). A dirty block is copied twice
         uint64_t first = size, last = 0;
@@ -1138,17 +1156,22 @@ static void vk_pools_sync_(VkCommandBuffer cb) {
             uint64_t n = size - off < BLK ? size - off : BLK;
             if (!nvn_dirty_since_span(p->span, lo + off, n, p->stamp0)) continue;
             SYNC_MEASURE(1, n, nvn_dirty_protect(lo + off, n));
-            SYNC_MEASURE(2, n, memcpy(p->shadow + off, lo + off, n)); g_sync_bytes += n;
+            if (zc) {
+                SYNC_MEASURE(2, n, dc_civac_range(lo + off, n));
+            } else {
+                SYNC_MEASURE(2, n, memcpy(p->shadow + off, lo + off, n));
+                if (p->baseline_complete) SYNC_MEASURE(3, n, memcpy(p->baseline + off, p->shadow + off, n));
+            }
+            g_sync_bytes += n;
             if (off < first) first = off; last = off + n;
-            if (p->baseline_complete) SYNC_MEASURE(3, n, memcpy(p->baseline + off, p->shadow + off, n));
         }
         // A full merge already refreshed the baseline; only uploaded blocks changed. A pool synced again with no merge since (no completion) takes a full snapshot.
         if (diag) { ns[0] += mem_diag_ns() - scan_start - (ns[1] + ns[2] + ns[3] - work_start); amount[0] += size; }
-        if (!p->baseline_complete) {
+        if (!zc && !p->baseline_complete) {
             if (diag) { int reason = p->flags & 0x2 ? 2 : 3; reason_count[reason]++; reason_bytes[reason] += size; }
             SYNC_MEASURE(3, size, memcpy(p->baseline, p->shadow, size));
         }
-        if (last) pool_cache_sync(p, 0, first, last);
+        if (!zc && last) pool_cache_sync(p, 0, first, last);
         p->baseline_complete = 0;
         p->stamp0 = p->stamp; p->stamp = st;
     }
