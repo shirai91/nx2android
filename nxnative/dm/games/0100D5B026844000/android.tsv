@@ -1,0 +1,12 @@
+# Silver Pines, 1.0.0 (v0), SDK 21.4.7, NVN.
+# Source inspection only: no game build, Android launch or device testing.
+# Integer fragment-output declarations are missing for URP rendering-layer masks.
+# See README.md for blockers and the required testing route.
+status	experimental
+package	org.nx2a.t0100d5b026844000
+orientation	landscape
+requires	bcn
+pacing	game
+setting	docked=1
+setting	overlay=1
+setting	rumble=1
