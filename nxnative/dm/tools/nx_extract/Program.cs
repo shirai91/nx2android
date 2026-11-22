@@ -6,6 +6,7 @@
 //   --allow-damaged writes those files as read instead and only lists them (Super Mario Galaxy's base NSP with 147 MB zeroed: its two prologue WebM movies).
 // Integrity failures outside the individual-file handlers (e.g. RomFS metadata) stop immediately with exit code 3 and the LibHac reason, even with --allow-damaged.
 // An unreadable NCA header stops with exit code 4, naming the input container and its NCA entry; --allow-damaged does not bypass it.
+// A prod.keys that lacks an NCA's key stops with exit code 5, naming the key (never its value).
 // Add-on content: nx_extract <prod.keys> --aoc <DLC NSP> <output dir> writes the RomFS of the DLC's data NCA to <output dir> (the packing script puts it at aoc/<index>/, the host mounts it through DM_AOC_DIR).
 // A merged dump (a rebuilt card holding the base game, its update and DLC beside one another, "(1G+1U)"): --merged selects the base's and the update's NCAs from their content metas
 // (CNMT, inside the meta NCAs): an update's program and control NCAs carry the base game's title ID, so NCA headers cannot tell them apart. --aoc takes the DLC's title ID when the
@@ -52,6 +53,10 @@ static class P {
         catch (NcaOpenException e) {
             Console.Error.WriteLine($"[RED] {e.Message}");
             return 4;
+        }
+        catch (MissingKeyException e) {
+            Console.Error.WriteLine($"[RED] this prod.keys does not hold the key this game's NCA needs: {e.Message.Replace('\n', ' ')} (use a prod.keys from the firmware the game was built for)");
+            return 5;
         }
         catch (HorizonResultException e) when (HashError(e)) {
             Console.Error.WriteLine($"[RED] extraction stopped by a filesystem integrity check: {e.Message}");
