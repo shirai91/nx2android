@@ -20,7 +20,7 @@ The profile sets these for you (`android.tsv`); a player changes the pause menu 
 | `DM_NVN_ASYNC=1` | asynchronous replay: submissions and presents run on a replay thread, syncs wait for the job's replay and then its GPU fence |
 | `DM_PIN_REPLAY=prime` | pin the replay thread to fast cores: 0 = no, "prime" = the fastest core, other values = the big cores |
 | `DM_VK_X_CUTANY=1` | 1 = command buffers may be cut before any pass (not only passes with a new depth image) |
-| `DM_VK_CB_DRAWS=32` | split the frame into command buffers every N draws (128), only before passes with a new depth image; `0` = never |
+| `DM_VK_CB_DRAWS=128` | split the frame into command buffers every N draws (128), only before passes with a new depth image; `0` = never |
 | `DM_VK_WINDOW_GAME_RATE=1` | 1 = the display rate vote follows the game's rate |
 | `DM_VK_BC_DRAW=1` | BC texture stand-in mode for drivers without BC: 0 = off |
 | `DM_GPU_TURBO=1` | "auto" or 1: ask the GPU for its high clocks while the game is GPU-bound; unset or 0 = no |

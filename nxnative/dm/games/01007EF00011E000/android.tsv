@@ -53,6 +53,11 @@
 # ms a frame at 3,300 draws) with the prime cores refused for its whole length (DM_PIN_REPLAY refused about 14 times): the phone limited, not the turbo's absence alone.
 # The turbo turns off while the app is paused or ends; after a crash the property stays set until the app runs and closes again or the device restarts (it outlives the
 # process). The cost is the heat noted above; a player who prefers a cooler device sets DM_GPU_TURBO=0
+# DM_VK_CB_DRAWS=128 (a cut every 128 draws instead of 32), from back-to-back runs on the S25 Ultra in a busy village with Turnip 26.2.3 and the turbo, one switch
+# a run: at 32 the GPU took 12.6-15.1 ms a frame for 4,100-5,150 draws and the game held 30 for most of the run; at 128 it took 10.9-12.6 ms for 4,350-5,550 draws
+# and held 60 throughout (1,699 of 1,800 frames at one vsync, 0-4 of 300 dropped), the replay unchanged (about 10-11 ms) and no picture fault seen. Each cut ends a
+# command buffer and its passes' state, and a busy frame of 4,000-5,000 draws made about 130 of them. The 128 run came fourth of five, so the phone was warmer
+# than in the run at 32. DM_VK_LRZ_TOUCH=0 in the same session gave no GPU time back (13.1-15.5 ms at 4,300-5,300 draws)
 status	experimental
 tested	v1114112 Samsung Galaxy S25 Ultra (Snapdragon 8 Elite for Galaxy, Adreno 830); Turnip 26.2.3
 package	org.nx2a.zeldabreathofthewild
@@ -62,7 +67,7 @@ env	DM_VK_FDZ=0
 env	DM_NVN_ASYNC=1
 env	DM_PIN_REPLAY=prime
 env	DM_VK_X_CUTANY=1
-env	DM_VK_CB_DRAWS=32
+env	DM_VK_CB_DRAWS=128
 env	DM_VK_WINDOW_GAME_RATE=1
 env	DM_VK_BC_DRAW=1
 env	DM_GPU_TURBO=1
