@@ -3,6 +3,10 @@
 # ("[RED] [mem] AllocateAddressRegion ... refused (0x1803)", then a null dereference). The profile now has an 8 GB alias region and a 2 GB pool.
 # Touch game: the on-screen gamepad starts hidden (overlay=0); the pause menu brings it back.
 status	experimental
-package	org.nx2a.runefactory3s
+package	org.nx2a.runefactory3special
 orientation	landscape
 setting	overlay=0
+# Name entry rejected every name while nn::ngc GetContentVersion read 0 (the host has no word list); it now reads 1.
+env	DM_NGC_CONTENT_VERSION=1
+readme_image	docs/images/rune-factory-3-special.jpg
+readme_tag	v0.5.0
