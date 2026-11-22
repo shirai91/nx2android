@@ -2,9 +2,36 @@
 
 Status: **experimental — requires testing on an Android device**. No game was built, launched or played for this change.
 
+## Game version
+
 The source audit covers **1.0.10 (`v655360`)**, title ID `010020D01AD24000`, on nx2android `00f41ec9c0f4`. It found an existing runtime/tool path for this build; it does not establish that the game boots, renders correctly or completes. Use an arm64 Android device with BC texture support and the Vulkan features needed by its shaders. Other game versions are outside this assessment.
 
-## Compatibility evidence
+No game version is verified on Android.
+
+| Module | Build ID |
+|---|---|
+| `main` | `6a6ec42ffb98642a11f17a0d5e23c702` |
+| `sdk` | `112ea664a8df622911758ef8abc94802` |
+
+## Frame rate
+
+Not measured on Android. No frame-rate or pacing claim is available without a device run.
+
+## Tested devices
+
+None. No APK build, Android launch, gameplay session or device screenshot is available for this profile.
+
+## Options
+
+Android starts docked, with the gamepad visible. The package name includes the title ID so regional versions install separately. No `tested` value or Android frame-rate claim is supplied.
+
+Use the exact version above and the player's own dump and keys. An arm64 Android device with BC texture support and the Vulkan features required by the shaders is needed. No driver or settings combination has been validated on Android; these are initial profile defaults.
+
+## Quirks and known issues
+
+Booting, rendering, audio, movies, controls, save/reload, frame pacing and long-session stability are unverified. Source compatibility is not a device result.
+
+## Source compatibility evidence
 
 Existing identical local profile; embedded BNSH shaders, empty RomFS, no game-specific host/rewriter fixes.
 
@@ -18,18 +45,10 @@ Relevant existing paths:
 - `porter/pipeline.py:441`
 - `nxnative/dm/android/tools/shader_vk.py:109`
 
-## Build and defaults
-
-| Module | Build ID |
-|---|---|
-| `main` | `6a6ec42ffb98642a11f17a0d5e23c702` |
-| `sdk` | `112ea664a8df622911758ef8abc94802` |
-
-Android starts docked, with the gamepad visible. The package name includes the title ID so regional versions install separately. No `tested` value or Android frame-rate claim is supplied.
-
 ## Required device testing
 
 1. Port the exact version above using the player's own dump and keys; confirm extraction, rewriting and shader translation finish without missing inputs.
 2. Test a fresh save through the menus and into gameplay, including rendering, audio, movies and the intended controls.
 3. Save, quit, restart and load; exercise later scenes and check for crashes, missing shaders, incorrect graphics and pacing problems.
 4. Record the device, driver, game version and tested route before raising the status or adding a `tested` row.
+5. Capture a 1280x720 gameplay frame on the device without an overlay, and record the nx2android revision or release used. Only after a real run should the tested-device details, `tested`, `readme_image` and `readme_tag` be added and the generated game lists updated.
