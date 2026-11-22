@@ -63,6 +63,17 @@ for f in files:
     if not m: continue
     if f.endswith(('.c', '.h', '.m', '.cs', '.sh')) or (f.endswith('.py') and m.group(2) != 'patches.py'): bad.append(f)
 check('profiles hold data only (code only as patches.py)', not bad, ', '.join(bad))
+# a game folder holds only the files the tools read: the page is README.md (ANDROID.md is its old name, d12d4d49); no test output (smoke.tsv), notes or subfolders
+GAME_FILES = {'README.md', 'android.tsv', 'game.tsv', 'patches.py', 'fps_locks.tsv', 'ue_malloc.tsv',
+              'bf_want.tsv', 'pso_manifest.tsv', 'pso_pairs.tsv', 'shader_facts.tsv', 'shader_facts_manual.tsv', 'shader_map.tsv',
+              'shader_map.tsv.conflicts.tsv', 'shader_pairs.tsv', 'android_shader_handles.tsv', 'vk_capture.tsv', 'gl_capture.tsv'}
+bad = []
+for f in files:
+    m = re.match(r'nxnative/dm/games/([^/]+)/(.+)', f)
+    if not m: continue
+    if not re.fullmatch(r'0100[0-9A-F]{12}', m.group(1)): bad.append(f'{f} (folder is not a title ID)')
+    elif m.group(2) not in GAME_FILES: bad.append(f + (' (rename to README.md)' if m.group(2) == 'ANDROID.md' else ''))
+check('game folders hold only known profile files', not bad, ', '.join(bad))
 atsv = [f for f in files if f.endswith('/android.tsv') and f.startswith('nxnative/dm/games/')]
 bad = []
 for f in atsv:
