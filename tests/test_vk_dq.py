@@ -1,7 +1,7 @@
 """The two-stage replay's queue (nxnative/dm/android/gfx_vk_dq.c, DM_VK_MT_REPLAY): the real source compiled on the host with stand-in Vulkan entry points
 and driven by two producer threads (as the replay thread and the present thread), against a recorder made slow at times. Every queued call must be made once,
 in each producer's order, and every call that needs a drain (vkEndCommandBuffer, vkQueuePresentKHR) must find all the calls queued before it made. Long
-phases with the recorder held fill the 32 MB ring, so the wrap and the full-ring wait run too."""
+phases with the recorder held fill the 32 MB ring, so the wrap and the full-ring wait run too. Each waiting mode of the queue runs once."""
 from pathlib import Path
 import os
 import re
@@ -98,6 +98,7 @@ int main(int argc, char **argv) {
     setenv("DM_VK_MT_REPLAY", "1", 1);
     vkCmdDraw = s_draw; vkCmdBindVertexBuffers = s_vb; vkEndCommandBuffer = s_end; vkQueuePresentKHR = s_present;
     vk_dq_init();
+    vk_dq_report();   /* the first call only notes the time */
     assert(vkCmdDraw != s_draw && vkEndCommandBuffer != s_end);   /* the wrappers are in */
     pthread_t pt; pthread_create(&pt, NULL, present_main, NULL);
     struct timespec t0, t1; clock_gettime(CLOCK_MONOTONIC, &t0);
@@ -113,6 +114,7 @@ int main(int argc, char **argv) {
     }
     vkEndCommandBuffer((VkCommandBuffer)(uintptr_t)0);
     pthread_join(pt, NULL);
+    vk_dq_report();
     clock_gettime(CLOCK_MONOTONIC, &t1);
     printf("made %llu + %llu (%llu vertex binds), %llu drains, %.2f s\n", (unsigned long long)made[0], (unsigned long long)made[1], (unsigned long long)vbmade,
            (unsigned long long)g_dq_drains, (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9);
@@ -131,10 +133,14 @@ int main(int argc, char **argv) {
         r = subprocess.run([str(self.exe), '3000000'], capture_output=True, text=True, timeout=120, env=e)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr[-4000:])
         self.assertIn('made ', r.stdout)
+        self.assertIn('replay queue per frame', r.stderr)
         return r.stdout
 
     def test_every_call_made_in_order_sleeping(self):
         self.run_mode({})
+
+    def test_every_call_made_in_order_spinning(self):
+        self.run_mode({'DM_VK_DQ_SPIN': '1'})
 
 
 if __name__ == '__main__':

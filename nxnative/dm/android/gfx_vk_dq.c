@@ -47,20 +47,53 @@ static int g_on;
 uint64_t g_dq_recs, g_dq_drains, g_dq_direct;   // records queued, drains, calls made directly (unknown arguments)
 
 static void wake(void) { if (atomic_load(&g_sleeping)) { pthread_mutex_lock(&g_mu); pthread_cond_signal(&g_cv); pthread_mutex_unlock(&g_mu); } }
+// Waiting for the other side. The two sides used to wait in sched_yield loops: the replay thread at a drain for up to 2,000 calls, the recorder for up to 200
+// before it slept; with nothing else to run each call returns at once, so a wait on a fast device kept a core busy in and out of the kernel. On an AYN Odin 3
+// (Breath of the Wild at 60 fps, replay 4-6 ms a frame) "nvn replay" and "vk record" used 42-54% of a core each, with 35-65% of the app's CPU time in the
+// kernel. Now each side spins on the position itself for up to SPIN_NS without leaving user space, and then sleeps. DM_VK_DQ_SPIN=1 (start-up): the old loops
+#define SPIN_NS 50000ull
+static int g_spin;
+static _Atomic uint64_t g_ns_drain, g_drain_sleeps, g_ns_rec_spin, g_rec_sleeps, g_ns_rec_sleep;   // vk_dq_report
+static inline void dq_relax(void) {
+#if defined(__aarch64__)
+    __asm__ __volatile__("yield");
+#elif defined(__x86_64__) || defined(__i386__)
+    __builtin_ia32_pause();
+#endif
+}
+static uint64_t dq_ns(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (uint64_t)t.tv_sec * 1000000000ull + (uint64_t)t.tv_nsec; }
+static int spin_rd(uint64_t w) {   // until the recorder has read up to w (1), or SPIN_NS passed (0)
+    for (uint64_t t0 = 0;;) {
+        for (int i = 0; i < 64; i++) { if (atomic_load_explicit(&g_rd, memory_order_acquire) >= w) return 1; dq_relax(); }
+        uint64_t t = dq_ns(); if (!t0) t0 = t; else if (t - t0 > SPIN_NS) return 0;
+    }
+}
+static uint64_t spin_pub(uint64_t r) {   // until the published end moves past r (its new value), or SPIN_NS passed (r)
+    for (uint64_t t0 = 0;;) {
+        for (int i = 0; i < 64; i++) { uint64_t pub = atomic_load(&g_pub); if (pub != r) return pub; dq_relax(); }
+        uint64_t t = dq_ns(); if (!t0) t0 = t; else if (t - t0 > SPIN_NS) return r;
+    }
+}
 void vk_dq_drain(void) {
     if (!g_on) return;
     pthread_spin_lock(&g_pl); uint64_t w = g_w; pthread_spin_unlock(&g_pl);   // the records queued so far (another producer may add more meanwhile)
     if (atomic_load_explicit(&g_rd, memory_order_acquire) >= w) return;
     g_dq_drains++; wake();
-    for (int i = 0; i < 2000 && atomic_load_explicit(&g_rd, memory_order_acquire) < w; i++) sched_yield();   // the recorder is usually a few calls behind
-    if (atomic_load_explicit(&g_rd, memory_order_acquire) >= w) return;
-    pthread_mutex_lock(&g_mu); atomic_store(&g_draining, 1);
-    while (atomic_load_explicit(&g_rd, memory_order_acquire) < w) { pthread_cond_signal(&g_cv);
-        struct timespec dl; clock_gettime(CLOCK_REALTIME, &dl); dl.tv_sec += 1;
-        if (pthread_cond_timedwait(&g_dcv, &g_mu, &dl)) { uint64_t rd = atomic_load(&g_rd); const rec_hdr *h = (const rec_hdr *)(g_ring + rd % RING); static int n;
-            if (n++ < 20) VKLOG("[RED] two-stage replay: a drain waits over 1 s: written %llu, published %llu, read %llu; the record there: op %u size %u",
-                (unsigned long long)w, (unsigned long long)atomic_load(&g_pub), (unsigned long long)rd, h->op, h->size); } }
-    atomic_store(&g_draining, 0); pthread_mutex_unlock(&g_mu);
+    uint64_t t0 = dq_ns(); int done;
+    if (g_spin) { for (int i = 0; i < 2000 && atomic_load_explicit(&g_rd, memory_order_acquire) < w; i++) sched_yield(); done = atomic_load_explicit(&g_rd, memory_order_acquire) >= w; }   // the recorder is usually a few calls behind
+    else done = spin_rd(w);
+    if (!done) {
+        atomic_fetch_add_explicit(&g_drain_sleeps, 1, memory_order_relaxed);
+        pthread_mutex_lock(&g_mu); atomic_fetch_add(&g_draining, 1);   // (a count: the replay and the present thread may both wait)
+        int said = 0;
+        while (atomic_load_explicit(&g_rd, memory_order_acquire) < w) { pthread_cond_signal(&g_cv);
+            struct timespec dl; clock_gettime(CLOCK_REALTIME, &dl); dl.tv_nsec += 2000000; if (dl.tv_nsec >= 1000000000) { dl.tv_sec++; dl.tv_nsec -= 1000000000; }   // (2 ms: a missed broadcast costs no more)
+            if (pthread_cond_timedwait(&g_dcv, &g_mu, &dl) && !said && dq_ns() - t0 > 1000000000ull) { said = 1; uint64_t rd = atomic_load(&g_rd); const rec_hdr *h = (const rec_hdr *)(g_ring + rd % RING); static int n;
+                if (n++ < 20) VKLOG("[RED] two-stage replay: a drain waits over 1 s: written %llu, published %llu, read %llu; the record there: op %u size %u",
+                    (unsigned long long)w, (unsigned long long)atomic_load(&g_pub), (unsigned long long)rd, h->op, h->size); } }
+        atomic_fetch_sub(&g_draining, 1); pthread_mutex_unlock(&g_mu);
+    }
+    atomic_fetch_add_explicit(&g_ns_drain, dq_ns() - t0, memory_order_relaxed);
 }
 static void ring_room(uint64_t n) {   // under g_pl: until n more bytes fit; the recorder's read position is read only when the copy says they do not (it only grows)
     while (g_w + n - g_p.rd_seen > RING) {
@@ -186,13 +219,18 @@ static void *recorder_main(void *arg) {
     for (;;) {
         uint64_t pub = atomic_load(&g_pub);
         if (r == pub) {
-            for (int i = 0; i < 200 && (pub = atomic_load(&g_pub)) == r; i++) sched_yield();   // the producer usually queues the next call within microseconds
+            uint64_t t0 = dq_ns();
+            if (g_spin) for (int i = 0; i < 200 && (pub = atomic_load(&g_pub)) == r; i++) sched_yield();   // the producer usually queues the next call within microseconds
+            else pub = spin_pub(r);
+            uint64_t t1 = dq_ns(); atomic_fetch_add_explicit(&g_ns_rec_spin, t1 - t0, memory_order_relaxed);
             if (pub == r) {
+                atomic_fetch_add_explicit(&g_rec_sleeps, 1, memory_order_relaxed);
                 pthread_mutex_lock(&g_mu);
                 if (atomic_load(&g_draining)) pthread_cond_broadcast(&g_dcv);
                 atomic_store(&g_sleeping, 1);
                 while ((pub = atomic_load(&g_pub)) == r) pthread_cond_wait(&g_cv, &g_mu);
                 atomic_store(&g_sleeping, 0); pthread_mutex_unlock(&g_mu);
+                atomic_fetch_add_explicit(&g_ns_rec_sleep, dq_ns() - t1, memory_order_relaxed);
             }
         }
         while (r != pub) { const rec_hdr *h = (const rec_hdr *)(g_ring + r % RING); run(h); r += h->size; atomic_store_explicit(&g_rd, r, memory_order_release); }
@@ -333,9 +371,24 @@ void vk_dq_init(void) {   // vk_init, after the device's entry points are loaded
     if (!(g_ring = malloc(RING))) { VKLOG("[RED] DM_VK_MT_REPLAY: no memory for the queue; recording on the replay thread"); return; }
 #define DQ_SWAP(f) r_##f = f; if (r_##f) f = w_##f;
     DQ_CMDS(DQ_SWAP) DQ_SYNC(DQ_SWAP)
+    { const char *sp = getenv("DM_VK_DQ_SPIN"); g_spin = sp && atoi(sp) > 0; if (g_spin) VKLOG("DM_VK_DQ_SPIN=1: the replay queue waits in sched_yield loops (as before)"); }
     g_on = 1;
     pthread_t t; pthread_attr_t at; pthread_attr_init(&at); pthread_attr_setdetachstate(&at, PTHREAD_CREATE_DETACHED);
     if (pthread_create(&t, &at, recorder_main, NULL)) die("[vk] recorder thread");
     pthread_attr_destroy(&at);
     VKLOG("two-stage replay: vkCmd* calls queued for the recorder thread (DM_VK_MT_REPLAY)");
+}
+
+// Every 600 presents (gfx_vk_present.c, beside "replay per frame"): the queue's records and drains, the producers' time waiting at drains, and the recorder's time
+// spinning idle and asleep (the rest of the period it was making calls)
+void vk_dq_report(void) {
+    if (!g_on) return;
+    static uint64_t pr, pd, pns, pds, psp, psl, pnsl, pt;
+    uint64_t now = dq_ns(), recs = g_dq_recs, drains = g_dq_drains, ns = atomic_load(&g_ns_drain), ds = atomic_load(&g_drain_sleeps), sp = atomic_load(&g_ns_rec_spin),
+             sl = atomic_load(&g_rec_sleeps), nsl = atomic_load(&g_ns_rec_sleep);
+    if (pt) { double wall = (double)(now - pt), busy = wall - (double)(sp - psp) - (double)(nsl - pnsl);
+        VKLOG("replay queue per frame (last 600): %.0f records, %.1f drains (%.1f slept), waiting at drains %.2f ms; recorder making calls %.2f ms, spinning %.2f ms, asleep %.2f ms (%.1f times)%s",
+              (recs - pr) / 600.0, (drains - pd) / 600.0, (ds - pds) / 600.0, (ns - pns) / 6e8, (busy > 0 ? busy : 0) / 6e8, (sp - psp) / 6e8, (nsl - pnsl) / 6e8, (sl - psl) / 600.0,
+              g_spin ? " (DM_VK_DQ_SPIN)" : ""); }
+    pr = recs; pd = drains; pns = ns; pds = ds; psp = sp; psl = sl; pnsl = nsl; pt = now;
 }

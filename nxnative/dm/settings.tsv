@@ -254,6 +254,7 @@ DM_VK_COMPUTE_WARM_MAX	int		debug	?	gfx_vk_exec.c
 DM_VK_CPU_READY	bool		debug	?	gfx_vk_exec.c	
 DM_VK_CRUMBS	bool		debug	start	gfx_vk_exec.c	for a device lost (GPU hang): each pass end and dispatch writes its number into host-visible memory after a full barrier; when the device is lost the log names the last work the GPU finished and the passes after it, with their shaders. Slows the GPU
 DM_VK_DBG_DRAW	int		debug	live	gfx_vk_exec.c	bisection aids: skip command kinds; 1 no draw calls, 2 no vertex buffers, 4 no descriptor sets
+DM_VK_DQ_SPIN	bool		debug	start	gfx_vk_dq.c	the two-stage replay's threads wait for each other in sched_yield loops, as before they spun briefly and then slept (A/B)
 DM_VK_DRIVER	str		porter	start	gfx_vk_core.c	the Vulkan driver library in the APK (porter --vulkan-driver, e.g. Turnip)
 DM_VK_DYN_UBO	bool		debug	start	gfx_vk_shader.c	no dynamic uniform-buffer offsets (descriptor reuse drops)
 DM_VK_FDZ	bool	1	profile	live	gfx_vk_exec.c	no fragment-depth variants: draws that test a depth buffer a fragment shader wrote through `gl_FragDepth` (in the last two presents) normally get a variant of their fragment shader that writes `gl_FragDepth = gl_FragCoord.z`, the same depth tested after the shader, out of Adreno's early culling, whi
