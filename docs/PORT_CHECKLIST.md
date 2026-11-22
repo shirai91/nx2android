@@ -6,7 +6,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 
 "Profile here": `nxnative/dm/games/<title ID>/` has the game's profile from nxnative. "Upstream profile": only seedds/nxnative has one, to read as a reference or starter, not to pull. "60 fps with X" is upstream's note: they run that update at 60 fps (30 on the Switch).
 
-**77 / 124 ported**
+**78 / 124 ported**
 
 - [x] 13 Sentinels: Aegis Rim (Asia) · `01008D7016438000`
 - [x] 13 Sentinels: Aegis Rim · `01003FC01670C000`
@@ -76,7 +76,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [x] OCTOPATH TRAVELER · `010057D006492000` · profile here
 - [x] Paper Mario: The Origami King · `0100A3900C3E2000`
 - [x] Paper Mario: The Thousand-Year Door · `0100ECD018EBE000`
-- [ ] Patrick's Parabox · `0100E44016C22000` · profile here
+- [x] Patrick's Parabox · `0100E44016C22000` · profile here
 - [ ] Persona 4 Golden · `010062B01525C000` · upstream profile
 - [ ] Persona 5 Royal · `01005CA01580E000` · upstream profile
 - [x] Picross S+ · `0100D7B01AE58000` · update 1.0.1; RP6 / PurpleVK only; Pixel rendering issues
