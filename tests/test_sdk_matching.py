@@ -322,7 +322,7 @@ class Registry(unittest.TestCase):
             exefs = root / 'extract/ExeFS'; exefs.mkdir(parents=True)
             (exefs / 'sdk').write_bytes(b'NSO0' + bytes(0x4c))
             out = root / 'patched'; out.mkdir(); (out / 'sdk.patched.bin').write_bytes(b'output')
-            g = SimpleNamespace(words=lambda _: ['sdk']); keys = []
+            g = SimpleNamespace(words=lambda _: ['sdk'], table=lambda name: root / 'profile' / name); keys = []
             def reused(path, key): keys.append(key); return 'fixture'
             with patch.object(nsp, 'collect_nros', return_value={}), patch.object(nsp, 'PROG'), patch.object(nsp, 'reused', side_effect=reused):
                 nsp.rewrite(sys.executable, repo, exefs, out, {}, root / 'logs', g)
