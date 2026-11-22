@@ -1,0 +1,12 @@
+# Ori and the Will of the Wisps, 1.2.1 (v196608), SDK 9.4.0, NVN.
+# Source inspection only: no game build, Android launch or device testing.
+# Startup race: upstream registry_lock STUBS are unsupported and omitted.
+# See README.md for blockers and the required testing route.
+status	experimental
+package	org.nx2a.t01008dd013200000
+orientation	landscape
+requires	bcn
+pacing	game
+setting	docked=1
+setting	overlay=1
+setting	rumble=1
