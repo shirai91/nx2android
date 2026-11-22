@@ -1,5 +1,6 @@
 """Cube requests reject incompatible backing images before the descriptor fallback."""
 from pathlib import Path
+import os
 import shutil
 import subprocess
 import tempfile
@@ -131,7 +132,8 @@ int main(int argc, char **argv) {
     if (argc>1 && !strcmp(argv[1],"widen")) {
         // DM_VK_CUBE_WIDEN (game profile switch): a cube read through fewer than six faces of a
         // cube-compatible image takes the whole cube holding its first face (Pokemon Sword/Shield's probe).
-        setenv("DM_VK_CUBE_WIDEN","1",1);
+        // The harness runs this mode with DM_VK_CUBE_WIDEN=1 in the environment (setenv is not ISO C).
+        assert(getenv("DM_VK_CUBE_WIDEN") && !strcmp(getenv("DM_VK_CUBE_WIDEN"),"1"));
         reset(4,16,16,6,1); has_subview=1; subview=(view_t){.set_layers=1,.min_layer=0,.nlayers=1}; accepted(0,0,6);
         reset(4,16,16,12,1); has_subview=1; subview=(view_t){.set_layers=1,.min_layer=7,.nlayers=1}; accepted(0,6,6);
         reset(4,16,16,12,1); has_subview=1; subview=(view_t){.set_layers=1,.min_layer=6,.nlayers=5}; accepted(1,6,6);
@@ -191,7 +193,8 @@ int main(int argc, char **argv) {
             subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror','-Wno-misleading-indentation','-I',str(ROOT),'-I',str(ROOT/'nxnative/dm/gfx/nvn/include'),'-I',str(ROOT/'nxnative/dm/third_party/vulkan-headers/include'),str(src),'-o',str(binary),'-pthread'],check=True)
             for mode in ([], ['non-multiple-layers'], ['widen']):
                 with self.subTest(mode=mode):
-                    result=subprocess.run([str(binary), *mode],capture_output=True,text=True)
+                    env=dict(os.environ, DM_VK_CUBE_WIDEN='1') if mode==['widen'] else {k:v for k,v in os.environ.items() if k!='DM_VK_CUBE_WIDEN'}
+                    result=subprocess.run([str(binary), *mode],capture_output=True,text=True,env=env)
                     self.assertEqual(result.returncode,0,result.stderr)
 
 
