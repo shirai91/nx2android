@@ -6,7 +6,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 
 "Profile here": `nxnative/dm/games/<title ID>/` has the game's profile from nxnative. "Upstream profile": only seedds/nxnative has one, to read as a reference or starter, not to pull. "60 fps with X" is upstream's note: they run that update at 60 fps (30 on the Switch).
 
-**77 / 124 ported**
+**78 / 124 ported**
 
 - [x] 13 Sentinels: Aegis Rim (Asia) · `01008D7016438000`
 - [x] 13 Sentinels: Aegis Rim · `01003FC01670C000`
@@ -109,7 +109,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [ ] Super Mario Party Jamboree · `0100965017338000` · upstream profile
 - [x] Super Robot Wars 30 · `0100ECB0129BE000`
 - [ ] Super Smash Bros. Ultimate · `01006A800016E000` · profile here · offline
-- [ ] Taiko Risshiden V DX · `0100346017304000` · profile here · Japanese · played by touch
+- [x] Taiko Risshiden V DX · `0100346017304000` · profile here · Japanese · played by touch
 - [x] Tales of Berseria Remastered · `01003FD01F22E000`
 - [x] Tales of Eternia Remastered · `010006E0230AC000`
 - [x] The Binding of Isaac: Afterbirth+ · `010021C000B6A000`
