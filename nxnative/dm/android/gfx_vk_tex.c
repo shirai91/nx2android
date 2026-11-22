@@ -724,6 +724,15 @@ VkImageView vk_tex_view_as(const tex_t *t, const view_t *vw, int dim, int arraye
         if (want == VK_IMAGE_VIEW_TYPE_CUBE || want == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY) {
             // Returning a 2D view for a cube shader bypassed tex_desc_for's typed dummy. The saved creation flag also requires a square,
             // single-sample 2D image; having six layers alone is insufficient. Check the selected range before either view cache can keep a wrong type.
+            // A cube read through a view narrowed to fewer than six faces of a cube-compatible image (Pokemon Sword/Shield's 16x16 reflection probe: layers 6,
+            // range 0+1) was refused here, the sampler read the dummy's zero and every lake and river rendered black (issue #511). DM_VK_CUBE_WIDEN (start-up,
+            // default 0, set by the game profiles where it was seen) widens such a range to the whole cube that holds its first face, or to whole cubes for an array.
+            { static int widen = -1; if (widen < 0) { const char *e = getenv("DM_VK_CUBE_WIDEN"); widen = e && atoi(e) != 0; }
+              if (widen && (im->cflags & VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT) && im->layers >= 6 && nly < 6) {
+                  uint32_t first = ly0 / 6 * 6; if (first + 6 > im->layers) first = im->layers / 6 * 6 - 6;
+                  uint32_t wide = want == VK_IMAGE_VIEW_TYPE_CUBE ? 6 : (im->layers - first) / 6 * 6;
+                  static int n; if (n++ < 8) VKLOG("cube view widened to whole faces: image %ux%ux%u layers %u, range %u+%u -> %u+%u type %d (DM_VK_CUBE_WIDEN)", im->w, im->h, im->d, im->layers, ly0, nly, first, wide, want);
+                  ly0 = first; nly = wide; } }
             if (!(im->cflags & VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT) || nly < 6 || (want == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY && nly % 6)) {
                 VKRED_ONCE(106, "cube view refused: image %ux%ux%u layers %u cflags %#x, levels %u+%u range %u+%u type %d; texture nvn target %d format %#x %ux%ux%u", im->w, im->h, im->d, im->layers, im->cflags, lv0, nlv, ly0, nly, want,
                            t->d.target, (unsigned)t->d.format, t->d.width, t->d.height, t->d.depth);

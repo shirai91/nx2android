@@ -128,7 +128,19 @@ static void accepted(int arr, unsigned base, unsigned count) {
     assert(vk_tex_view(&texture,has_subview?&subview:NULL,3,arr,0,NULL)==saved && view_calls==calls);
 }
 int main(int argc, char **argv) {
-    (void)argv;
+    if (argc>1 && !strcmp(argv[1],"widen")) {
+        // DM_VK_CUBE_WIDEN (game profile switch): a cube read through fewer than six faces of a
+        // cube-compatible image takes the whole cube holding its first face (Pokemon Sword/Shield's probe).
+        setenv("DM_VK_CUBE_WIDEN","1",1);
+        reset(4,16,16,6,1); has_subview=1; subview=(view_t){.set_layers=1,.min_layer=0,.nlayers=1}; accepted(0,0,6);
+        reset(4,16,16,12,1); has_subview=1; subview=(view_t){.set_layers=1,.min_layer=7,.nlayers=1}; accepted(0,6,6);
+        reset(4,16,16,12,1); has_subview=1; subview=(view_t){.set_layers=1,.min_layer=6,.nlayers=5}; accepted(1,6,6);
+        reset(4,16,16,12,1); has_subview=1; subview=(view_t){.set_layers=1,.min_layer=2,.nlayers=1}; accepted(1,0,12);
+        // still refused without the creation flag or six layers
+        reset(4,16,16,12,1); image.cflags&=~VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT; has_subview=1; subview=(view_t){.set_layers=1,.min_layer=0,.nlayers=1}; rejected(0);
+        reset(4,16,16,5,1); has_subview=1; subview=(view_t){.set_layers=1,.min_layer=0,.nlayers=1}; rejected(0);
+        vk_tex_view_drop_all(&image); free(g_views.keys); free(g_views.vals); return 0;
+    }
     if (argc>1) {
         reset(4,16,16,7,1); accepted(0,0,6);
         reset(4,16,16,8,1); has_subview=1; subview=(view_t){.set_layers=1,.min_layer=2,.nlayers=6}; accepted(0,2,6);
@@ -177,7 +189,7 @@ int main(int argc, char **argv) {
         with tempfile.TemporaryDirectory() as folder:
             src=Path(folder)/'cube.c';src.write_text(code, encoding='utf-8');binary=Path(folder)/'cube'
             subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror','-Wno-misleading-indentation','-I',str(ROOT),'-I',str(ROOT/'nxnative/dm/gfx/nvn/include'),'-I',str(ROOT/'nxnative/dm/third_party/vulkan-headers/include'),str(src),'-o',str(binary),'-pthread'],check=True)
-            for mode in ([], ['non-multiple-layers']):
+            for mode in ([], ['non-multiple-layers'], ['widen']):
                 with self.subTest(mode=mode):
                     result=subprocess.run([str(binary), *mode],capture_output=True,text=True)
                     self.assertEqual(result.returncode,0,result.stderr)
