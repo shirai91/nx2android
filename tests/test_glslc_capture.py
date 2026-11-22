@@ -54,7 +54,7 @@ class Device:
         assert command == 'pull'
         dest = Path(local)
         if remote.endswith('/run.log'):
-            dest.write_text('fixture guest compiled shaders\n')
+            dest.write_text('fixture guest compiled shaders\n', encoding='utf-8')
         else:
             dest.mkdir(parents=True)
             for name, data in self.files.items(): (dest / name).write_bytes(data)
@@ -76,7 +76,7 @@ class GlslcCapture(unittest.TestCase):
         p.o = pipeline.Options(folder=self.root); p.cfg = {}; p.env = {}; p.app_name = 'Fixture'
         p.tools = {'adb': 'fixture-adb', 'ndk': 'fixture-ndk'}; p.glslc_why = 'runtime GLSLC outputs'
         self.map = self.root / 'shader_map.tsv'
-        self.map.write_text(f'x\t0\tvertex\tkey\t/glslc_capture/{NAME}#GLSLC@0\n')
+        self.map.write_text(f'x\t0\tvertex\tkey\t/glslc_capture/{NAME}#GLSLC@0\n', encoding='utf-8')
         p.g = SimpleNamespace(id='0100000000010000', table=lambda _: self.map, words=lambda _: ['main', 'subsdk0', 'sdk'])
         self.src = {k: (False, '') for k in ('glslc_capture', 'oodle_packs', 'ue_decode', 'ue_legacy')}
         self.src.update(graphics=('nvn', 'NVN'), glslc_capture=(True, p.glslc_why))
@@ -159,7 +159,7 @@ class GlslcCapture(unittest.TestCase):
 
     def test_reused_capture_filters_truncated_extra_without_device(self):
         cap = self.capture(); (cap / 'broken.glslc').write_bytes(b'truncated')
-        (cap / 'notes.txt').write_text('keep non-shader notes')
+        (cap / 'notes.txt').write_text('keep non-shader notes', encoding='utf-8')
         self.port.tools.pop('adb')
         self.port.check_graphics(); self.port.device_glslc()
         self.assertFalse((cap / 'broken.glslc').exists())
@@ -190,7 +190,7 @@ class GlslcCapture(unittest.TestCase):
         self.assertEqual(list(old.iterdir()), [old / NAME])
         self.assertEqual((old / NAME).read_bytes(), output())
         self.assertEqual((saved / 'keep').read_bytes(), b'user save')
-        self.assertIn('fixture guest', (self.port.logs / 'android_glslc.log').read_text())
+        self.assertIn('fixture guest', (self.port.logs / 'android_glslc.log').read_text(encoding='utf-8'))
         args = self.build.call_args.args[0]
         self.assertIn('--exe', args); self.assertEqual(args[args.index('--gfx') + 1], 'null')
         run = next(c for c in self.adb.calls if c[0] == 'shell' and 'timeout ' in c[1])
@@ -217,22 +217,22 @@ class GlslcCapture(unittest.TestCase):
         self.assertTrue(self.adb.calls[-1][1].startswith('rm -rf /data/local/tmp/nx2a-glslc-'))
 
     def test_transport_failure_recovers_log_before_cleanup(self):
-        log = self.port.logs / 'android_glslc.log'; log.write_text('previous attempt')
+        log = self.port.logs / 'android_glslc.log'; log.write_text('previous attempt', encoding='utf-8')
         self.adb.fail = True
         with self.assertRaisesRegex(pipeline.AdbError, 'device disconnected'): self.port.device_glslc()
-        self.assertEqual(log.read_text(), 'fixture guest compiled shaders\n')
+        self.assertEqual(log.read_text(encoding='utf-8'), 'fixture guest compiled shaders\n')
         pull_index = next(i for i, c in enumerate(self.adb.calls) if c[0] == 'pull' and c[1].endswith('/run.log'))
         cleanup_index = next(i for i, c in enumerate(self.adb.calls) if c[0] == 'shell' and c[1].startswith('rm -rf '))
         self.assertLess(pull_index, cleanup_index)
         self.assertEqual(self.adb.calls[pull_index][3]['retries'], 1)
 
     def test_failed_log_recovery_preserves_error_and_marks_old_log_stale(self):
-        log = self.port.logs / 'android_glslc.log'; log.write_text('previous attempt')
+        log = self.port.logs / 'android_glslc.log'; log.write_text('previous attempt', encoding='utf-8')
         self.adb.fail = True
         with patch.object(self.adb, 'run', side_effect=pipeline.AdbError('log unavailable')):
             with self.assertRaisesRegex(pipeline.AdbError, 'device disconnected'): self.port.device_glslc()
-        self.assertNotIn('previous attempt', log.read_text())
-        self.assertIn('not retrieved', log.read_text())
+        self.assertNotIn('previous attempt', log.read_text(encoding='utf-8'))
+        self.assertIn('not retrieved', log.read_text(encoding='utf-8'))
 
     def test_concurrent_runs_get_distinct_remote_directories(self):
         self.port.device_glslc()
@@ -268,7 +268,7 @@ class GlslcCapture(unittest.TestCase):
             with self.assertRaises(SplitReached): self.port.shaders()
 
     def test_provisional_profile_requires_at_least_one_complete_output(self):
-        self.map.write_text('')
+        self.map.write_text('', encoding='utf-8')
         self.adb.files = {}
         with self.assertRaisesRegex(pipeline.BuildError, 'captured.*run-time shaders'): self.port.device_glslc()
         self.adb.files = {NAME: output()}; self.port.device_glslc()
