@@ -27,10 +27,21 @@ enum { OP_WRAP, DQ_CMDS(DQ_OP) OP_N };
 // ---- the queue: one producer, one consumer; positions count bytes since the start (the ring index is position % RING), records 16-byte aligned ----
 enum { RING = 32 << 20 };
 typedef struct { uint32_t op, size; VkCommandBuffer cb; } rec_hdr;   // size: the whole record, header included
-static uint8_t *g_ring; static uint64_t g_w;   // the producer's write position
-static _Atomic uint64_t g_pub, g_rd;           // published end, the recorder's read position
-static _Atomic int g_sleeping, g_draining;
-static pthread_spinlock_t g_pl;   // the producers' lock, from rec_begin to rec_end
+// Each side's state on cache lines of its own. Side by side, the recorder's store of its read position after every record took the line that also held the
+// producers' write position away from the replay thread's core, and the replay thread paid that miss on every vkCmd* it queued: a Galaxy S25 Ultra's replay thread
+// spent 9% of its samples in rec_begin (Breath of the Wild in a village, DM_VK_PROF=1), most of them on the load of the write position right after taking the
+// lock. The producers also keep their own copy of the read position (rd_seen) and read the recorder's only when the ring looks full
+#define DQ_LINE 128   // (64-byte lines on most Arm cores; 128 also keeps the line next to it apart, which some cores fetch in pairs)
+static uint8_t *g_ring;
+static struct { _Alignas(DQ_LINE) pthread_spinlock_t lock; uint64_t w, rd_seen; } g_p;   // the producers: lock from rec_begin to rec_end; their write position; the read position last seen
+static struct { _Alignas(DQ_LINE) _Atomic uint64_t v; } g_pub_line, g_rd_line;   // published end (the producers write it), the recorder's read position (only it writes it)
+static struct { _Alignas(DQ_LINE) _Atomic int sleeping, draining; } g_flags;
+#define g_pub g_pub_line.v
+#define g_rd g_rd_line.v
+#define g_sleeping g_flags.sleeping
+#define g_draining g_flags.draining
+#define g_pl g_p.lock
+#define g_w g_p.w
 static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER; static pthread_cond_t g_cv = PTHREAD_COND_INITIALIZER, g_dcv = PTHREAD_COND_INITIALIZER;
 static int g_on;
 uint64_t g_dq_recs, g_dq_drains, g_dq_direct;   // records queued, drains, calls made directly (unknown arguments)
@@ -51,16 +62,23 @@ void vk_dq_drain(void) {
                 (unsigned long long)w, (unsigned long long)atomic_load(&g_pub), (unsigned long long)rd, h->op, h->size); } }
     atomic_store(&g_draining, 0); pthread_mutex_unlock(&g_mu);
 }
+static void ring_room(uint64_t n) {   // under g_pl: until n more bytes fit; the recorder's read position is read only when the copy says they do not (it only grows)
+    while (g_w + n - g_p.rd_seen > RING) {
+        g_p.rd_seen = atomic_load_explicit(&g_rd, memory_order_acquire);
+        if (g_w + n - g_p.rd_seen <= RING) break;
+        wake(); sched_yield();
+    }
+}
 static void *rec_begin(uint32_t op, VkCommandBuffer cb, size_t n) {   // room for a record with n bytes after its header
     size_t need = (sizeof(rec_hdr) + n + 15) & ~(size_t)15;   // 16-byte records: the ring's end always has room for a whole header
     if (need > RING / 4) return NULL;   // (no call copies that much: such a call is made directly)
     pthread_spin_lock(&g_pl);   // released by rec_end
     size_t off = (size_t)(g_w % RING);
     if (off + need > RING) {   // the rest of the ring is skipped
-        while (g_w + (RING - off) - atomic_load_explicit(&g_rd, memory_order_acquire) > RING) { wake(); sched_yield(); }
+        ring_room(RING - off);
         rec_hdr *h = (rec_hdr *)(g_ring + off); h->op = OP_WRAP; h->size = (uint32_t)(RING - off); g_w += RING - off; atomic_store_explicit(&g_pub, g_w, memory_order_release); off = 0;
     }
-    while (g_w + need - atomic_load_explicit(&g_rd, memory_order_acquire) > RING) { wake(); sched_yield(); }
+    ring_room(need);
     rec_hdr *h = (rec_hdr *)(g_ring + off); h->op = op; h->size = (uint32_t)need; h->cb = cb;
     return h + 1;
 }
