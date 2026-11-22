@@ -1,5 +1,5 @@
 # Hollow Knight: 1.5.12620 (v589824), SDK 20.5.21, NVN.
-# Source-audited only. No game build or device test; see ANDROID.md.
+# Source-audited only. No game build or device test; see README.md.
 status	experimental
 package	org.nx2a.t0100633007d48000
 orientation	landscape
