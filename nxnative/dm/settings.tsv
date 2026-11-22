@@ -365,7 +365,7 @@ DM_VK_X_RDKEEP	hex		debug	live	gfx_vk_exec.c	runs of rasterizer-discard draws (v
 DM_VK_X_SETVERIFY	bool		debug	?	gfx_vk_exec.c	
 DM_VK_X_SKIPFS	hex		debug	live	gfx_vk_exec.c	Skip draws with one of up to 16 fragment shader keys for pass/shader bisection. Diagnostic only: this deliberately removes rendering. `=0` clears the list.
 DM_VK_X_SKIPVS	hex		debug	live	gfx_vk_exec.c	leave out the draws whose vertex shader key (hex, as the traces print it; up to 8) is listed: bisect which shaders an artifact needs, a group at a time (it found XC3's slivers from 40 candidates in 4 rounds)
-DM_VK_ZC_CHUNK_MB	int		profile	start	gfx_vk_core.c	the chunk size in MB that a memory pool over it is cut into (unset: 256 MB, halved once if a gralloc refuses that size, as an OPPO Pad's does for exactly 256)
+DM_VK_ZC_CHUNK_MB	int		profile	start	gfx_vk_core.c	the chunk size in MB that a memory pool over it is cut into (unset: 256 MB, or the largest of 128 / 64 / 32 MB that this gralloc takes when it refuses 256 MB, as an OPPO Pad's does for exactly 256)
 DM_VK_ZEROCOPY_LAZY	int		debug	start	gfx_vk_core.c	which zero-copy pools get their buffer only when the GPU first uses them (vk_pool_of, pool_back: a slab's slot or a kept buffer as at creation; until then the game's own cached, swappable pages): `0` none; `1` also the chunks of pools over 256 MB (`ZC_CHUNK`; Pokopia on the Thor, 4.96 GB of pools of
 DM_VK_ZEROCOPY_MAX_MB	int	0	profile	?	gfx_vk_core.c	pools above this many MB are not mapped zero-copy; 0 = no limit
 DM_VSYNC_HZ	float		debug	?	hle_sdk16.c	

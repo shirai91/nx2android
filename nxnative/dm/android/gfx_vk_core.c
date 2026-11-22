@@ -756,15 +756,19 @@ static uint64_t zc_probe(uint64_t size) {   // asks the gralloc for a BLOB of th
     AHardwareBuffer_release(b);
     return size;
 }
-static uint64_t zc_chunk(void) {
-    static uint64_t v = 1;   // (1: not worked out yet)
-    if (v == 1) {
-        const char *e = getenv("DM_VK_ZC_CHUNK_MB"); long mb = e ? atol(e) : 0;
-        if (mb > 0) { v = (uint64_t)mb << 20; return v; }   // (asked for by hand: no probe, no line)
-        for (v = ZC_CHUNK; v > (1ull << 25) && !zc_probe(v); v /= 2) { }
-        if (v != ZC_CHUNK) LOG("[vk] this gralloc refuses %#llx MB: memory pools are cut into %#llx MB chunks", (unsigned long long)(ZC_CHUNK >> 20), (unsigned long long)(v >> 20));
-    }
+static uint64_t zc_chunk_work_out(void) {   // the probe itself: a hardware buffer per size tried, on the thread that first needs it
+    const char *e = getenv("DM_VK_ZC_CHUNK_MB"); long mb = e ? atol(e) : 0;
+    if (mb > 0) return (uint64_t)mb << 20;   // (asked for by hand: no probe, no line)
+    uint64_t v = ZC_CHUNK;
+    for (; v > (1ull << 25) && !zc_probe(v); v /= 2) { }
+    if (v != ZC_CHUNK) LOG("[vk] this gralloc refuses %llu MB: memory pools are cut into %llu MB chunks", (unsigned long long)(ZC_CHUNK >> 20), (unsigned long long)(v >> 20));
     return v;
+}
+static uint64_t zc_chunk(void) {
+    static uint64_t v;   // (0: not worked out yet; stored once it is, so another thread adding a pool sees ZC_CHUNK or the answer, never a half-way value)
+    uint64_t got = __atomic_load_n(&v, __ATOMIC_ACQUIRE);
+    if (!got) __atomic_store_n(&v, got = zc_chunk_work_out(), __ATOMIC_RELEASE);
+    return got;
 }
 static void pool_add_one(const void *mem, uint64_t size, uint64_t base, uint64_t end, int lazy);
 static uint64_t g_zc_bytes, g_cp_bytes, g_lazy_total, g_lazy_bytes, g_used_bytes;   // made zero-copy, copied, made lazy, lazy ones given their buffer, found by vk_pool_of so far (DM_VK_MEMLOG; removed pools are not taken off)
@@ -822,7 +826,7 @@ void mtl_pool_add(const void *mem, uint64_t size) {
     vk_init();
     if (!size) return;
     uint64_t a = (uint64_t)(uintptr_t)mem; int whole = ((a | size) & 0xfff) || zc_over(size);   // copied in one piece
-    uint64_t c = whole ? size : zc_chunk(); int m = zc_lazy_mode();
+    uint64_t c = whole ? size : !zc_off() && size >= ZC_CHUNK ? zc_chunk() : ZC_CHUNK; int m = zc_lazy_mode();   // (the probe only where a pool is actually cut: not with zero copy off, nor for pools that never reach ZC_CHUNK)
     static uint64_t pg; if (!pg) pg = (uint64_t)getpagesize();   // (a 16 KB-page kernel: a pool only 4 KB-aligned is not swapped in place, it is copied as before)
     // (zero copy off: no lazy pools, and no uncached-read check either)
     int lazy = !whole && !zc_off() && !((a | size) & (pg - 1)) && m && (m >= 2 || (size > c ? m == 1 : zc_uncached())) && nvn_dirty_tracked(mem, size);
