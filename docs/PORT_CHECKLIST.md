@@ -6,7 +6,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 
 "Profile here": `nxnative/dm/games/<title ID>/` has the game's profile from nxnative. "Upstream profile": only seedds/nxnative has one, to read as a reference or starter, not to pull. "60 fps with X" is upstream's note: they run that update at 60 fps (30 on the Switch).
 
-**77 / 124 ported**
+**78 / 124 ported**
 
 - [x] 13 Sentinels: Aegis Rim (Asia) · `01008D7016438000`
 - [x] 13 Sentinels: Aegis Rim · `01003FC01670C000`
@@ -92,7 +92,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [ ] Portal · `01007BB017812000` · upstream profile · Android only on NVIDIA Shield TV
 - [ ] Return of the Obra Dinn · `010032E00E6E2000` · upstream profile
 - [x] Rhythm Heaven Groove · `0100D9F01D474000`
-- [ ] ROMANCE OF THE THREE KINGDOMS 8 REMAKE · `0100C2A01A730000` · profile here · controller only
+- [x] ROMANCE OF THE THREE KINGDOMS 8 REMAKE · `0100C2A01A730000` · profile here · controller only
 - [x] ROMANCE OF THE THREE KINGDOMS XIV with the Diplomacy and Strategy Expansion Pack (三國志14 with 威力加強版) · `0100CD4012DCA000` · 30 fps, as on the Switch
 - [x] Rune Factory 3 Special · `0100E000191B4000` · experimental · 60 fps, about 51% GPU on the Adreno 740
 - [x] Rune Factory 5 · `01002F7013224000` · experimental · 30 fps, as on the Switch
