@@ -133,6 +133,14 @@ without the lock that serializes lifecycle changes.
 
 The shader translator's existing native-perspective compensation rule accepts either outer operand order in `(input * FragCoord.w) * (1 / FragCoord.w)`. Both alpha depth and material variants must reach the same native interpolated input; leaving the multiply/divide round trip in only one variant can change alpha coverage and retain old HDR colour. The FP32, input-load, FragCoord.w and constant-one guards remain in place.
 
+When a shader stage lacks required subgroup operations, `gfx_vk_subgroup.c`
+rewrites supported operations and built-ins to single-invocation behavior. Its
+successful rewrite report counts subgroup instructions and BuiltIn decorations
+in the original module; `gfx_vk_shader.c` logs it with the shader key, stage and
+available operation mask. This diagnostic does not change the rewritten shader
+or its cache identity, and cannot establish that scalarization preserves a
+particular game's multi-lane algorithm.
+
 Opaque NVN sampler objects keep all sampler parameters after an eight-byte header, within the smallest public object's storage. Engines may hash the bytes after that header before calling `SamplerCompare`. Putting filtering or wrap parameters in the skipped header makes different sampler states collide, defeats cache reuse and can exhaust the game's descriptor pool. In Odyssey, duplicate entries accumulated during extended play and repeated scene loads, exhausted the sampler pool and returned sampler ID 0, producing ground grid artifacts. The builder, initializer, comparison, getters and both graphics backends share the same parameter structure; this layout rule does not change filtering defaults.
 
 On Adreno, eligible direct geometry draws separate buffer effects from rasterization

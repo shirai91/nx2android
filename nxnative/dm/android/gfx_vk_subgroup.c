@@ -49,6 +49,30 @@ static uint32_t sg_op(uint32_t op, char *to, uint32_t *arg) {
 static int sg_builtin(uint32_t b) {
     switch (b) { case 36: return 1; case 4416: case 4417: case 4419: return 2; case 41: case 4418: case 4420: return 3; case 37: case 38: case 40: return -1; default: return 0; }
 }
+// Static instruction/declaration counts from the original, already checked module, not execution counts. Keep opcode numbers so the report distinguishes
+// votes and ballots from relative shuffles or quads without sharing the game's shader. Never log operands or binary shader data.
+static void sg_report(const uint32_t *w, uint32_t nw, char *out, size_t cap) {
+    struct { uint32_t key, count; } items[64] = {{0}};   // fewer than 64 opcodes + built-ins recognized by sg_op / sg_builtin
+    uint32_t used = 0;
+    if (!cap) return;
+    out[0] = 0;
+    for (uint32_t i = 5; i < nw; i += w[i] >> 16) {
+        uint32_t n = w[i] >> 16, op = w[i] & 0xffff, arg, key = 0; char to;
+        if (sg_op(op, &to, &arg)) key = op;
+        else if (op == 71 && n >= 4 && w[i + 2] == 11 && sg_builtin(w[i + 3])) key = 0x10000 | w[i + 3];
+        if (!key) continue;
+        uint32_t k = 0; while (k < used && items[k].key != key) k++;
+        if (k == used) { if (used == 64) break; items[used++].key = key; }
+        items[k].count++;
+    }
+    size_t at = 0;
+    for (uint32_t k = 0; k < used; k++) {
+        char token[48]; int n = snprintf(token, sizeof token, "%s%s%u=%u", k ? " " : "", items[k].key & 0x10000 ? "bi" : "op", items[k].key & 0xffff, items[k].count);
+        // Reserve space for an explicit truncation marker unless this is the last entry.
+        if ((size_t)n + (k + 1 < used ? 3 : 0) >= cap - at) { if (cap - at >= 4) memcpy(out + at, "...", 4); break; }
+        memcpy(out + at, token, (size_t)n + 1); at += (size_t)n;
+    }
+}
 // per id: a pointer type's storage class and pointee, a vector type's component type and width, a 32-bit integer type; the built-in a variable is, mark 1 for
 // its variable and 2 for a pointer into it; and per type the declarations made for it: a Private pointer to it, constants 0, 1, null, true and bit 0
 typedef struct { uint32_t to, comp, priv, k0, k1, kn, kt, kb; uint16_t sc, bi; uint8_t ncomp, isint, mark; } sgid;
@@ -74,7 +98,8 @@ static uint32_t p_priv(sgx *c, uint32_t ty) { if (!c->t[ty].priv) { c->t[ty].pri
 static int str_end(uint32_t x) { return !(x & 0xff) || !(x & 0xff00) || !(x & 0xff0000) || !(x & 0xff000000); }   // the word holding a literal string's nul
 
 // The module w (nw words) as subgroups of one invocation, when it uses a subgroup class not in ops (the stage's: 0 when the device has none in it); malloc'd, *onw
-// words. NULL when it uses none the stage lacks (why empty), or something not covered (why names it): either way the module stays as it is
+// words, with original subgroup opcode / built-in counts in why (possibly truncated, ending in ...). NULL when it uses none the stage lacks (why empty),
+// or something not covered (why names it): either way the module stays as it is
 uint32_t *spv_one_lane(const uint32_t *w, uint32_t nw, uint32_t ops, uint32_t *onw, char *why, size_t nwhy) {
     if (nwhy) why[0] = 0;
     *onw = 0;
@@ -135,7 +160,7 @@ uint32_t *spv_one_lane(const uint32_t *w, uint32_t nw, uint32_t ops, uint32_t *o
             else { uint32_t y[4] = {4u << 16 | 83, x[1], x[2], to == 't' ? t[x[1]].kt : x[a]}; memcpy(o + no, y, 16); no += 4; }   // OpCopyObject of the value, or true
             continue; }
         memcpy(o + no, x, (size_t)n * 4); no += n; }
-    o[3] = c.nb; *onw = no;
+    o[3] = c.nb; *onw = no; sg_report(w, nw, why, nwhy);
 #undef ID
 out:
     free(t); free(c.d);
