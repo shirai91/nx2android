@@ -1,5 +1,7 @@
 # Silver Pines, 1.0.0 (v0), SDK 21.4.7, NVN.
 # Source inspection only: no game build, Android launch or device testing.
+# Community 1.0.2/v131072 derived-profile attempt: OS OOM at shader compression;
+# no completed APK or device run. Bounded export fix awaits that game's retest.
 # Integer fragment-output declarations are missing for URP rendering-layer masks.
 # See README.md for blockers and the required testing route.
 status	experimental
