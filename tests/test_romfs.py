@@ -1,6 +1,6 @@
 # nxnative/dm/tools/romfs.py: the read-only views of a player's container (a mount over dm_romfs) and of a RomFS image (DMROMFS1),
 # seen by the readers that opt into its os / open / mmap (python -m unittest discover tests).
-import errno, os, shutil, struct, sys, tempfile, unittest
+import errno, os, select, shutil, signal, stat, struct, sys, tempfile, unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -84,6 +84,24 @@ class Mount(unittest.TestCase):
                 self.assertEqual(d.find(b'BTCD'), 0)
                 d.seek(4); self.assertEqual(d.read(2), b'\0\0')
         self.assertEqual(romfs._fd_ranges, {})
+    def test_fstat_of_a_container_entry(self):
+        """getsize() on an open container file stat's its virtual fd: the entry's length, not an OS file's"""
+        with romfs.open(self.tree + '/data/a.bin', 'rb') as f:
+            entry = romfs.os.fstat(f.fileno())
+            self.assertEqual(entry.st_size, 768)
+            self.assertTrue(stat.S_ISREG(entry.st_mode))
+        self.assertEqual(romfs._fd_ranges, {})
+    def test_fstat_of_an_image_entry(self):
+        """an image entry's real fd is the whole image's: stat through the facade gives the entry's length"""
+        data = b'hello'
+        name = b'a.bin'
+        index = romfs.ENT.pack(1, 1, 0, 0, 0, 0) + romfs.ENT.pack(romfs.HEAD.size, len(data), 0, len(name), 1, 0) + name
+        image = Path(self.root) / 'game.img'
+        image.write_bytes(romfs.HEAD.pack(romfs.MAGIC, romfs.HEAD.size + len(data), len(index), 2) + data + index)
+        with romfs.open(str(image) + '/' + name.decode(), 'rb') as f:
+            self.assertEqual(os.fstat(f.fileno()).st_size, image.stat().st_size)   # the OS sees the image
+            self.assertEqual(romfs.os.fstat(f.fileno()).st_size, len(data))        # the facade sees the entry
+        self.assertEqual(romfs._fd_ranges, {})
     def test_unmount_restores_the_real_filesystem(self):
         romfs.unmount(self.tree)
         self.assertFalse(os.path.exists(self.tree))
@@ -130,6 +148,37 @@ class Daemon(unittest.TestCase):
                 self.assertEqual(struct.unpack_from('<4s', d, 0)[0], b'BTCD')
                 self.assertEqual(d.find(b'BTCD'), 0)
         self.assertEqual(romfs._fd_ranges, {})
+    @unittest.skipUnless(hasattr(os, 'fork'), 'the build forks its shader workers on POSIX')
+    def test_a_forked_worker_uses_its_own_reader(self):
+        """A worker forked after the mount shares the pipe, not only the reader: it must start one of its own"""
+        parent_reader = self.back.proc.pid
+        r, w = os.pipe()
+        pid = os.fork()
+        if pid == 0:
+            try:
+                os.close(r)
+                with romfs.open(self.tree + '/data/Pack/b.arc', 'rb') as f: data = f.read(4)
+                reader = self.back.proc
+                os.write(w, f'{romfs.os.path.getsize(self.tree + "/data/Pack/b.arc")} {data.hex()} {reader.pid}'.encode())
+                self.back.shutdown()
+                try: reader.wait(timeout=5)
+                except Exception: pass
+            except BaseException as error:
+                try: os.write(w, f'error {error!r}'.encode())
+                except OSError: pass
+            finally:
+                os._exit(0)
+        os.close(w)
+        ready, _, _ = select.select([r], [], [], 10)
+        if not ready: os.kill(pid, signal.SIGKILL)
+        out = os.read(r, 4096) if ready else b''
+        os.close(r)
+        _, status = os.waitpid(pid, 0)
+        self.assertTrue(ready, f'the forked worker did not answer: {out!r}')
+        self.assertEqual(os.waitstatus_to_exitcode(status), 0)
+        self.assertTrue(out.startswith(b'4096 42544344 '), out)
+        self.assertNotEqual(int(out.rsplit(b' ', 1)[1]), parent_reader)
+        self.assertEqual(romfs.os.path.getsize(self.tree + '/data/a.bin'), 768)   # and the parent's reader still works
 
 
 if __name__ == '__main__':

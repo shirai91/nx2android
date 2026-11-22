@@ -103,20 +103,33 @@ class Container:
     the console runs) is what gets read. Requests: STAT / LIST / OPEN / READ / CLOSE, framed on stdin/stdout. The whole tree is indexed by the helper once at start, so
     listing and stat'ing are cheap; the bytes are decrypted only as they are read."""
     def __init__(self, base, update=None, keys=None, exe=None):
-        import subprocess
         self.base = _os.path.abspath(_os.fsdecode(base))
         self.update = _os.path.abspath(_os.fsdecode(update)) if update else None
         self.keys = _os.fsdecode(keys) if keys else _os.environ.get('DM_PROD_KEYS')
         exe = exe or _os.environ.get('DM_ROMFS_EXE')
         if not self.keys: raise OSError(f'{self.base}: no prod.keys (pass keys or set DM_PROD_KEYS)')
         if not exe: raise OSError('no nx_extract to read a container with (pass exe or set DM_ROMFS_EXE)')
+        self.exe = exe
+        self.files, self.dirs = {}, {}
+        self._start_reader()
+        self.stat_base = _os.stat(self.base)
+
+    def _start_reader(self):
+        import subprocess
         self.err = tempfile.TemporaryFile()
-        self.proc = subprocess.Popen([exe, self.keys, '--serve', self.base, self.update or '-'],
+        self.proc = subprocess.Popen([self.exe, self.keys, '--serve', self.base, self.update or '-'],
                                      stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.err, bufsize=0)
         self.lock = threading.Lock()
-        self.files, self.dirs = {}, {}
+        self.pid = _os.getpid()
         if self.proc.stdout.read(1) != b'\0': raise OSError(f'{self.base}: the container reader did not start: {self.message()}')
-        self.stat_base = _os.stat(self.base)
+
+    def _forked(self):
+        """A forked child shares the parent's pipe descriptors, not only its reader: two processes' frames would
+        interleave. The child closes its copies (the parent's reader keeps running) and starts its own."""
+        for f in (self.proc.stdin, self.proc.stdout, self.err):
+            try: f.close()
+            except (OSError, ValueError): pass
+        self._start_reader()
 
     def message(self):
         try:
@@ -125,6 +138,7 @@ class Container:
         return text or 'no message'
 
     def request(self, op, payload=b''):
+        if self.pid != _os.getpid(): self._forked()
         with self.lock:
             try:
                 self.proc.stdin.write(bytes([op]) + struct.pack('<I', len(payload)) + payload); self.proc.stdin.flush()
@@ -399,6 +413,21 @@ def _entry_stat(backend, k):
                            st_ctime=s.st_ctime, st_ctime_ns=s.st_ctime_ns, st_atime=s.st_atime, st_atime_ns=s.st_atime_ns)
 
 
+def fstat(fd):
+    """A container entry's file descriptor is a virtual one: its stat comes from the entry, not from the OS.
+    An image entry's fd is the image's: its size is the entry's length, not the whole image's."""
+    range_ = _fd_ranges.get(fd)
+    if range_ is None: return _os.fstat(fd)
+    if range_[0] == 'node':
+        backend, k = range_[1], range_[2]
+        return _entry_stat(backend, k)
+    st = _os.fstat(fd)
+    return SimpleNamespace(st_mode=st.st_mode, st_size=range_[2], st_ino=st.st_ino, st_dev=st.st_dev,
+                           st_nlink=st.st_nlink, st_uid=st.st_uid, st_gid=st.st_gid, st_atime=st.st_atime,
+                           st_mtime=st.st_mtime, st_ctime=st.st_ctime, st_atime_ns=st.st_atime_ns,
+                           st_mtime_ns=st.st_mtime_ns, st_ctime_ns=st.st_ctime_ns)
+
+
 def exists(path):
     try: stat(path); return True
     except OSError: return False
@@ -486,7 +515,7 @@ class _PathOps:
     def __getattr__(self, name): return getattr(_os.path, name)
 class _OS:
     path = _PathOps()
-    stat = staticmethod(stat); scandir = staticmethod(scandir); walk = staticmethod(walk)
+    stat = staticmethod(stat); fstat = staticmethod(fstat); scandir = staticmethod(scandir); walk = staticmethod(walk)
     @staticmethod
     def listdir(path):
         with scandir(path) as entries: return [e.name for e in entries]
