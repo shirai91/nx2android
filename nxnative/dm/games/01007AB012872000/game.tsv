@@ -1,0 +1,45 @@
+# Game profile of 信長の野望·新生 (NOBUNAGA'S AMBITION: Shinsei; Switch, update v65536 = 1.0.1, Japanese, Simplified and Traditional
+# Chinese, no English). Plays on a Lenovo Legion Y700 (Android 16, Adreno 750) with Mesa's Turnip: the opening movies, the tutorial's
+# new game, the faction select, the campaign map, a retainer's advice, an in-game save and the pause menu, at 30 fps as on the Switch.
+# Format: see dm/games/README.md
+# Koei Tecmo's KTGL on NVN, SDK 13.3.2. Modules main + subsdk1 (NintendoSDK_movie: the .n16 opening and event movies) + sdk; subsdk0
+# is GLSLC, which main never loads (it imports no nn::ro::LoadModule and no glslcCompile): every shader is precompiled, 69 GLSLC outputs
+# in main and 880 in RES/res_shader.bin. The profile asks for Turnip (android.tsv vulkan_driver turnip): the Adreno 750's own driver
+# (512.762.40) crashes in its LLVM compiler on the game's compute shaders, which use subgroup ballot; Turnip builds all 70.
+
+# ---- Identity ----
+title_id	01007AB012872000
+program_id	01007AB012872000
+
+# ---- App ----
+# Game name: only a label for profile listings and the Mac window title; the Android app's name is this one unless --app-name is given
+name	信長の野望·新生
+ipa	NobunagasAmbitionShinsei.ipa
+app_category	public.app-category.strategy-games
+
+# ---- Versions ----
+build	v65536	1.0.1	main=a419edfc5026f5ded9ef4c9b93fe6693	subsdk1=a8cb97803f7f442a3b6cce1c7cd4ee4a	sdk=357efc198e728cb5d55265aff304f03c
+package	v65536
+shader_versions	v65536
+
+# ---- Files ----
+# load order as on Horizon: main, subsdk*, sdk (subsdk1 = NintendoSDK_movie)
+modules	main subsdk1 sdk
+# RES holds the engine's res_*.bin archives (res_shader.bin among them) and the STAGE / MOVIE (.n16) / SNDRES data; MSG/{JP,SC,TC}
+# and RES_{JP,SC,TC} are the three languages, chosen by the language the app packs
+romfs_marker	RES/res_face.bin
+# the archives are read by offset, so .bin stays uncompressed (RES is 2.7 GB)
+zip_store	.aszbin:.bin:.bmp:.n16:.stbin:.metallib
+
+# ---- Memory ----
+# main sets a heap of at most the pool − 64 MB: a 3328 MB heap region (the log's "heap 3.14 GB (heap region 3.25 GB)"). The NPDM
+# declares no system resource (0 MB), so IsVirtualAddressMemoryEnabled is false, as on Horizon.
+mem_reserve	0x100000000
+mem_alias	0x10000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+sys_resource	0x0
+
+# ---- Shader split ----
+shader_groups	/PARAM/=param /SNDRES/=sndres /SUBMIT/=submit /MOVIE/=movie /RES/=res /MSG/=msg /SCENARIO/=scenario /DLC_PATCH/=dlcpatch /FLOW/=flow /CONTENTS/=contents /AI/=ai /RES_JP/=resjp /RES_SC/=ressc /RES_TC/=restc /STAGE/=stage
+shader_note	NOBUNAGA'S AMBITION: Shinsei shaders

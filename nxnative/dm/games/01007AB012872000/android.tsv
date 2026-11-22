@@ -1,0 +1,22 @@
+# NOBUNAGA'S AMBITION: Shinsei (信長の野望·新生) on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Koei Tecmo's KTGL on NVN, SDK 13.3.2, update v65536 (1.0.1); Japanese, Traditional and Simplified Chinese (no English).
+# 949 shaders (880 in RES/res_shader.bin, 69 GLSLC outputs in main) all translate; 70 of them are compute shaders that use subgroup
+# ballot, and the device's own Adreno driver crashes in its shader compiler on them (037ce7a95ed81563 in the boot's compute prewarm,
+# f4ba29462f05dd06 at the first one the game builds), so the port packs Mesa's Turnip (vulkan_driver turnip): tested with
+# Turnip-26.2.3-EMULATOR and with GameSir's rutabaga 26.3.0-devel. With Turnip the 70 compute pipelines build in the background at boot
+# (about 26-28 s) and nothing crashes.
+# Tested 2026-11-22 on a Lenovo Legion Y700 TB321FU (Snapdragon 8 Gen 3, Adreno 750, Android 16) with zh-Hans: the opening movies, the
+# tutorial's new game, the faction select, the campaign map, a retainer's advice, an in-game save the game commits (svdSC01.n16) and the
+# pause menu. 30 fps as on the Switch in the campaign (frame time p50 33.0 ms, GPU 18-19 ms), 60 in the movies; no [RED] lines.
+# Not yet tested: a battle, and the software keyboard (naming a custom officer).
+readme_name	NOBUNAGA'S AMBITION: Shinsei
+readme_image	docs/images/nobunagas-ambition-shinsei.jpg
+readme_tag	v0.5.0
+status	playable
+tested	v65536 Lenovo Legion Y700 TB321FU (Snapdragon 8 Gen 3, Adreno 750, Android 16)
+package	org.nx2a.t01007ab012872000
+orientation	landscape
+vulkan_driver	turnip
+# the game paces itself at 30 fps but presents with interval 1: the host holds each frame 2 vsyncs (the Switch's 30 fps presentation),
+# and the governor does not step the window rate up to 40/60 while the game stays at 30
+pacing	fixed30
