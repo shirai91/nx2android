@@ -6,7 +6,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 
 "Profile here": `nxnative/dm/games/<title ID>/` has the game's profile from nxnative. "Upstream profile": only seedds/nxnative has one, to read as a reference or starter, not to pull. "60 fps with X" is upstream's note: they run that update at 60 fps (30 on the Switch).
 
-**77 / 124 ported**
+**78 / 124 ported**
 
 - [x] 13 Sentinels: Aegis Rim (Asia) · `01008D7016438000`
 - [x] 13 Sentinels: Aegis Rim · `01003FC01670C000`
@@ -66,7 +66,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [x] Mega Man Battle Network Legacy Collection Vol. 2 · `0100734016266000`
 - [x] Metroid Dread · `010093801237C000`
 - [ ] Monster Hunter Rise · `0100B04011742000` · profile here · 60 fps with 16.0.2
-- [ ] Monster Train 2 · `010051701FB46000` · profile here · 60 fps with 1.1.1 · only the first Monster Train is on mobile
+- [x] Monster Train 2 · `010051701FB46000` · profile here · 60 fps with 1.1.1 · only the first Monster Train is on mobile
 - [x] NEO: The World Ends with You · `010043B013C5C000`
 - [x] NieR:Automata The End of YoRHa Edition · `010056B015FE8000` · profile here · boots with 1.0.3; save-loaded map and geometry corrected; broader gameplay checks pending; [test record](NIER_AUTOMATA_ANDROID_PORT.md)
 - [x] NOBUNAGA'S AMBITION: Shinsei · `01007AB012872000`
