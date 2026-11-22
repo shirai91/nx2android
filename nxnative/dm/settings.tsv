@@ -45,7 +45,7 @@ DM_GL_ACTIVE	str		debug	?	gfx_vk_shader.c
 DM_GL_CAPTURE	str		debug,ios	?	hle_gl.m	
 DM_GL_LOG	str		debug,ios	?	hle_gl.m	
 DM_GL_STUBS	str		debug,ios	?	hle_gl.m	
-DM_GPU_TURBO	str		profile	live	perf_android.c	"auto" or 1: ask the GPU for its high clocks while the game is GPU-bound; unset or 0 = no
+DM_GPU_TURBO	str		profile	live	perf_android.c	"auto" or 1: ask the GPU for its high clocks while the game is GPU-bound; "need": only while the game is held below its target; unset or 0 = no
 DM_GUEST_SPAWN_TEST	int		debug	?	hle_guestthread.c	
 DM_HLECOUNT	str		debug	start	hle_count.c	count every HLE call and write a TSV (category, name, count) at exit; the `ctl.txt` line `hlecount <file>` writes the counts so far, so two dumps around one action show the calls it made
 DM_IMPORTS	str		debug	?	main.c	
@@ -165,7 +165,7 @@ DM_OPMODE	int		app	start	hle_oe.c	the operation mode at launch: 0 handheld, 1 do
 DM_PAD_LABEL	bool		debug	start	front_android.c	a physical controller's face buttons go to the game by their label (an Xbox controller's A is the game's A) instead of by their position (the Switch's: the bottom button is B, the right one A). The game's prompts name the button (A to confirm, B to go back), which an Xbox controller's labels match a
 DM_PAD_MERGE	bool		debug	?	front_android.c front_mac.m	
 DM_PAD_XBOX	bool		debug	start	front_android.c	a physical controller's face buttons go to the game by their label (an Xbox controller's A is the game's A) instead of by their position (the Switch's: the bottom button is B, the right one A). The game's prompts name the button (A to confirm, B to go back), which an Xbox controller's labels match a
-DM_PIN_REPLAY	str	0	profile	?	perf_android.c	pin the replay thread to fast cores: 0 = no, "prime" = the fastest core, other values = the big cores
+DM_PIN_REPLAY	str	0	profile	?	perf_android.c	pin the replay thread to fast cores: 0 = no, "prime" = the fastest core, "need" = the fastest core only while the replay is slow, other values = the big cores
 DM_PREEMPT	int		debug	?	hle_thread.c	
 DM_PRELOAD	str		debug	?	main.c	Exercise the early-start path on Mac (on iOS it is called from the App's main())
 DM_PRESENT_FIFO	str		debug,ios	?	nvn_mtl.m	

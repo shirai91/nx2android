@@ -41,7 +41,7 @@ int main(void) {
     setenv("DM_ADAPT_UP_PCT", "100", 1); assert(dm_pacing_up_pct() == 90); unsetenv("DM_ADAPT_UP_PCT");
     assert(!dm_pacing_window_game_rate()); setenv("DM_VK_WINDOW_GAME_RATE", "1", 1); assert(dm_pacing_window_game_rate()); unsetenv("DM_VK_WINDOW_GAME_RATE");
     assert(dm_pacing_turbo() == 0); setenv("DM_GPU_TURBO", "auto", 1); assert(dm_pacing_turbo() == 2);
-    setenv("DM_GPU_TURBO", "1", 1); assert(dm_pacing_turbo() == 1); unsetenv("DM_GPU_TURBO");
+    setenv("DM_GPU_TURBO", "1", 1); assert(dm_pacing_turbo() == 1); setenv("DM_GPU_TURBO", "need", 1); assert(dm_pacing_turbo() == 3); unsetenv("DM_GPU_TURBO");
     dm_pacing_log();
     puts("pacing ok"); return 0;
 }
