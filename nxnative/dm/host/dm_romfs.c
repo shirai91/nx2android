@@ -19,10 +19,14 @@ typedef struct {
     uint64_t romfs_off;       // RomFS image inside the section (IVFC level 5)
     uint8_t ctr[8], key[16];
     int crypt;                // 1 none, 3 CTR, 4 BKTR (patch section; its tables still read as plain CTR)
+    int comp;                 // a compressed section: the RomFS image is behind a compression bucket tree
+    uint64_t comp_table;      // compression table, relative to the IVFC level-5 data
+    uint64_t comp_table_size, ivfc_size;
 } sect_t;
 typedef struct { uint64_t virt, phys; int patch; } reloc_t;
 typedef struct { uint64_t off; uint32_t ctr; } sub_t;
 typedef struct { uint32_t off, parent; } idx_ent;
+typedef struct { uint64_t vstart, pstart; uint32_t vlen, psize; uint8_t type; } comp_ent_t;   // one bucket-tree entry: 0 stored, 1 zeroed, 3 LZ4
 
 struct romfs_cont {
     sect_t base;              // the single section, or the base NCA's section in a BKTR view
@@ -32,6 +36,10 @@ struct romfs_cont {
     sub_t *sub; size_t nsub;     // sorted by physical offset, sentinels last
     uint64_t romfs_off;       // view-level RomFS image offset
     uint64_t data_off;        // file data inside the RomFS image
+    int comp;                 // the RomFS is a compressed NCA section: img_read decompresses through cent
+    uint64_t comp_l6;         // the IVFC level-5 data start in the view's section space
+    uint64_t comp_size;       // decompressed image size
+    comp_ent_t *cent; size_t ncent;   // sorted by vstart; a read lands in one entry
     uint8_t *dirs, *files;    // RomFS metadata tables (decrypted, resident)
     uint64_t dirs_n, files_n;
     idx_ent *dix, *fix;       // entries sorted by (parent, offset)
@@ -452,6 +460,11 @@ static int parse_section(romfs_cont *c, sect_t *s, const char *keys, char *err, 
     s->section_off = (uint64_t)rd32(hdr + 0x240 + rom * 0x10) * 0x200;
     s->section_size = (uint64_t)rd32(hdr + 0x240 + rom * 0x10 + 4) * 0x200 - s->section_off;
     s->romfs_off = rd64(fs + 0x08 + 0x10 + 5 * 0x18);   // IVFC level 5 logical offset
+    s->ivfc_size = rd64(fs + 0x08 + 0x10 + 5 * 0x18 + 8);
+    const uint8_t *ci = fs + 0x178;   // CompressionInfo: table offset/size and the bucket-tree header
+    s->comp = !memcmp(ci + 0x10, "BKTR", 4) && rd64(ci + 8) && rd64(ci + 8) <= (64u << 20) &&
+              rd32(ci + 0x18) && rd32(ci + 0x18) <= (1u << 20) && rd64(ci) + rd64(ci + 8) <= s->ivfc_size;
+    if (s->comp) { s->comp_table = rd64(ci); s->comp_table_size = rd64(ci + 8); }
     memcpy(s->ctr, fs + 0x140, 8);
     s->valid = 1;
     if (s->crypt != 1 && s->crypt != 3 && s->crypt != 4) { snprintf(err, errn, "unsupported NCA section crypto %d", s->crypt); return -1; }
@@ -591,10 +604,116 @@ static int view_read(romfs_cont *c, uint64_t v, void *buf, size_t n, size_t *got
                 g += sg;
             }
         }
-        if (rc || g != chunk) { if (!rc) seterr(c, "short read in the container view at %#llx", (unsigned long long)at); return -1; }
+        if (rc || g != chunk) { if (!rc) seterr(c, "short read in the container view at %#llx", (unsigned long long)at);
+                                else seterr(c, "container read failed at %#llx+%#zx (patch %d): %s", (unsigned long long)at, (size_t)chunk, r->patch, strerror(errno)); return -1; }
         *got += g;
     }
     return 0;
+}
+// ---------- compressed sections: a bucket tree of {virtual, physical, type, physical size} entries over the section's data ----------
+// Nintendo's compression table maps the decompressed image to the stored section: type 0 is stored, 1 zeroed, 3 an LZ4 block
+// (raw LZ4, decompressed to the entry's virtual span). The tree is the compression table itself, not compressed.
+static sect_t *romfs_sect(romfs_cont *c) { return c->bktr ? &c->patch : &c->base; }
+static int lz4_block(const uint8_t *src, size_t n, uint8_t *dst, size_t cap, size_t *out) {
+    size_t s = 0, d = 0;
+    while (s < n) {
+        unsigned token = src[s++];
+        size_t lit = token >> 4;
+        if (lit == 15) for (;;) { if (s >= n) return -1; unsigned b = src[s++]; lit += b; if (b != 255) break; }
+        if (lit > n - s || lit > cap - d) return -1;
+        memcpy(dst + d, src + s, lit); s += lit; d += lit;
+        if (s == n) break;   // the last sequence is literals only
+        if (n - s < 2) return -1;
+        size_t back = (size_t)src[s] | (size_t)src[s + 1] << 8; s += 2;
+        if (!back || back > d) return -1;
+        size_t mlen = token & 15;
+        if (mlen == 15) for (;;) { if (s >= n) return -1; unsigned b = src[s++]; mlen += b; if (b != 255) break; }
+        mlen += 4;
+        if (mlen > cap - d) return -1;
+        for (size_t i = 0; i < mlen; i++) dst[d + i] = dst[d + i - back];
+        d += mlen;
+    }
+    *out = d;
+    return d == cap ? 0 : -1;
+}
+static int comp_init(romfs_cont *c, char *err, size_t errn) {
+    sect_t *s = romfs_sect(c);
+    if (!s->comp) return 0;
+    uint64_t tab = c->romfs_off + s->comp_table;   // the tree sits at the end of the section's IVFC data
+    uint8_t *node = malloc(0x4000);
+    size_t got;
+    if (!node) { snprintf(err, errn, "out of memory for the compression table"); return -1; }
+    if (view_read(c, tab, node, 0x4000, &got)) { snprintf(err, errn, "compression tree: %s", c->err); free(node); return -1; }
+    uint32_t sets = rd32(node + 4);
+    uint64_t total = rd64(node + 8);
+    if (!sets || sets > 0x800 || !total || total > (8ull << 30)) { snprintf(err, errn, "compression tree header (%u sets, %#llx bytes)", sets, (unsigned long long)total); free(node); return -1; }
+    uint64_t eoff = tab + 0x4000ull * ((sets + 2045) / 2046);   // one L1 node holds up to 2046 entry-set offsets
+    size_t cap = 0, n = 0; comp_ent_t *ents = NULL;
+    for (uint32_t j = 0; j < sets; j++) {
+        if (view_read(c, eoff + (uint64_t)j * 0x4000, node, 0x4000, &got)) { snprintf(err, errn, "entry set %u: %s", j, c->err); goto bad; }
+        uint32_t cnt = rd32(node + 4);
+        uint64_t end = rd64(node + 8);
+        if (cnt > 0x2aa) { snprintf(err, errn, "entry set %u has %u entries", j, cnt); goto bad; }
+        for (uint32_t i = 0; i < cnt; i++) {
+            const uint8_t *e = node + 0x10 + (size_t)i * 24;
+            uint64_t v = rd64(e), p = rd64(e + 8), vend = i + 1 < cnt ? rd64(e + 24) : end;
+            uint8_t type = e[0x10];
+            uint32_t psize = rd32(e + 0x14);
+            uint64_t plen = type == 0 ? vend - v : psize;
+            if (vend <= v || vend - v > 0xFFFFFFFF || type > 3 || plen > (64u << 20) || p + plen > s->comp_table) {
+                snprintf(err, errn, "entry set %u entry %u (virt %#llx, type %u, %#x bytes)", j, i, (unsigned long long)v, type, psize); goto bad;
+            }
+            if (n == cap) {
+                size_t nc = cap ? cap * 2 : 4096;
+                comp_ent_t *ne = realloc(ents, nc * sizeof *ne);
+                if (!ne) { snprintf(err, errn, "out of memory for %zu compression entries", n + 1); goto bad; }
+                ents = ne; cap = nc;
+            }
+            ents[n].vstart = v; ents[n].vlen = (uint32_t)(vend - v); ents[n].pstart = p; ents[n].psize = psize; ents[n].type = type; n++;
+        }
+    }
+    if (!n || ents[n - 1].vstart + ents[n - 1].vlen != total || ents[0].vstart != 0) { snprintf(err, errn, "compression entries do not cover %#llx bytes", (unsigned long long)total); goto bad; }
+    for (size_t i = 1; i < n; i++) if (ents[i].vstart != ents[i - 1].vstart + ents[i - 1].vlen) { snprintf(err, errn, "compression entry %zu leaves a gap at %#llx", i, (unsigned long long)ents[i].vstart); goto bad; }
+    free(node);
+    c->comp = 1; c->comp_l6 = c->romfs_off; c->comp_size = total; c->cent = ents; c->ncent = n;
+    return 0;
+bad:
+    free(ents); free(node); return -1;
+}
+static int decomp_read(romfs_cont *c, uint64_t off, void *buf, size_t n, size_t *got) {
+    *got = 0;
+    if (off >= c->comp_size) return 0;
+    if (n > c->comp_size - off) n = (size_t)(c->comp_size - off);
+    while (*got < n) {
+        uint64_t at = off + *got;
+        size_t lo = 0, hi = c->ncent;   // hi exclusive: the last entry's vstart can be the answer
+        while (lo < hi) { size_t m = (lo + hi) / 2; if (c->cent[m].vstart <= at) lo = m + 1; else hi = m; }
+        if (!lo) { seterr(c, "compressed view: no entry at %#llx", (unsigned long long)at); return -1; }
+        const comp_ent_t *e = c->cent + (lo - 1);
+        size_t rel = (size_t)(at - e->vstart);
+        if (rel >= e->vlen) { seterr(c, "compressed view: no entry at %#llx", (unsigned long long)at); return -1; }
+        size_t chunk = e->vlen - rel < n - *got ? e->vlen - rel : n - *got;
+        uint8_t *dst = (uint8_t *)buf + *got;
+        if (e->type == 0) {
+            size_t g = 0;
+            if (view_read(c, c->comp_l6 + e->pstart + rel, dst, chunk, &g) || g != chunk) { if (!g) seterr(c, "stored block at %#llx unreadable", (unsigned long long)at); return -1; }
+        } else if (e->type == 1) {
+            memset(dst, 0, chunk);
+        } else if (e->type == 3) {
+            uint8_t *raw = malloc(e->psize), *img = malloc(e->vlen);
+            size_t g = 0, out = 0;
+            int ok = raw && img && !view_read(c, c->comp_l6 + e->pstart, raw, e->psize, &g) && g == e->psize && !lz4_block(raw, e->psize, img, e->vlen, &out) && out == e->vlen;
+            if (!ok) { free(raw); free(img); seterr(c, "LZ4 block at %#llx (virtual %#llx) is damaged", (unsigned long long)e->pstart, (unsigned long long)e->vstart); return -1; }
+            memcpy(dst, img + rel, chunk);
+            free(raw); free(img);
+        } else { seterr(c, "compression type %u at %#llx", e->type, (unsigned long long)at); return -1; }
+        *got += chunk;
+    }
+    return 0;
+}
+// Reads the RomFS image (or a compressed section) by an offset inside the image: a plain view, or the decompressed view
+static int img_read(romfs_cont *c, uint64_t off, void *buf, size_t n, size_t *got) {
+    return c->comp ? decomp_read(c, off, buf, n, got) : view_read(c, c->romfs_off + off, buf, n, got);
 }
 
 // ---------- mount ----------
@@ -623,18 +742,22 @@ static int build_index(romfs_cont *c, char *err, size_t errn) {
 static int read_tables(romfs_cont *c, char *err, size_t errn) {
     uint8_t rh[0x50];
     size_t got;
-    if (view_read(c, c->romfs_off, rh, sizeof rh, &got) || rd64(rh) != 0x50) { snprintf(err, errn, "RomFS header"); return -1; }
+    if (comp_init(c, err, errn)) return -1;
+    if (img_read(c, 0, rh, sizeof rh, &got) || rd64(rh) != 0x50) { snprintf(err, errn, "RomFS header"); return -1; }
     uint64_t dm = rd64(rh + 0x18), fm = rd64(rh + 0x38);
     c->dirs_n = rd64(rh + 0x20); c->files_n = rd64(rh + 0x40); c->data_off = rd64(rh + 0x48);
     if (!c->dirs_n || !c->files_n || c->dirs_n > (512u << 20) || c->files_n > (512u << 20)) { snprintf(err, errn, "RomFS table sizes %#llx/%#llx", (unsigned long long)c->dirs_n, (unsigned long long)c->files_n); return -1; }
     c->dirs = malloc(c->dirs_n); c->files = malloc(c->files_n);
-    if (!c->dirs || !c->files || view_read(c, c->romfs_off + dm, c->dirs, c->dirs_n, &got) || view_read(c, c->romfs_off + fm, c->files, c->files_n, &got)) { snprintf(err, errn, "RomFS metadata tables"); return -1; }
+    if (!c->dirs || !c->files || img_read(c, dm, c->dirs, c->dirs_n, &got) || img_read(c, fm, c->files, c->files_n, &got)) {
+        snprintf(err, errn, "RomFS metadata tables%s: dirs %#llx at %#llx, files %#llx at %#llx, romfs %#llx; %s", c->comp ? " (compressed section)" : "",
+                 (unsigned long long)c->dirs_n, (unsigned long long)dm, (unsigned long long)c->files_n, (unsigned long long)fm, (unsigned long long)c->romfs_off, c->err[0] ? c->err : "read failed");
+        return -1; }
     return 0;
 }
 static void cont_free(romfs_cont *c) {
     if (c->base.fd >= 0 && c->base.fd != c->patch.fd) close(c->base.fd);
     if (c->patch.fd >= 0) close(c->patch.fd);
-    free(c->rel); free(c->sub);
+    free(c->rel); free(c->sub); free(c->cent);
     free(c->dirs); free(c->files); free(c->dix); free(c->fix);
     pthread_mutex_destroy(&c->lock); free(c);
 }
@@ -791,7 +914,7 @@ int romfs_node_read(romfs_cont *c, uint64_t node, uint64_t off, void *buf, size_
     uint64_t foff = rd64(c->files + o + 8), fsz = rd64(c->files + o + 0x10);
     if (off >= fsz) return 0;
     if (n > fsz - off) n = (size_t)(fsz - off);
-    return view_read(c, c->romfs_off + c->data_off + foff + off, buf, n, got);
+    return img_read(c, c->data_off + foff + off, buf, n, got);
 }
 void romfs_table_usage(const romfs_cont *c, size_t *dirs_bytes, size_t *ndirs, size_t *files_bytes, size_t *nfiles) {
     *dirs_bytes = (size_t)c->dirs_n; *ndirs = c->ndix;
