@@ -1113,10 +1113,10 @@ void vk_pools_sync(VkCommandBuffer cb) { extern int g_prof_on; extern uint64_t g
     int diag = mem_diag_on(); uint64_t t = diag ? mem_diag_ns() : 0, bytes = diag ? g_sync_bytes : 0;
     vk_pools_sync_(cb); if (diag) mem_diag_note(1, t, g_sync_bytes - bytes);
     if (g_prof_on) { clock_gettime(CLOCK_MONOTONIC, &b); g_prof_ns[2] += (uint64_t)((b.tv_sec - a.tv_sec) * 1000000000ll + (b.tv_nsec - a.tv_nsec)); } }
-static void dc_civac_range(const void *addr, size_t len) {
+static void dc_cvac_range(const void *addr, size_t len) {
 #if defined(__aarch64__)
     uintptr_t a = (uintptr_t)addr & ~(uintptr_t)63, e = ((uintptr_t)addr + len + 63) & ~(uintptr_t)63;
-    for (; a < e; a += 64) __asm__ volatile("dc civac, %0" :: "r"(a) : "memory");
+    for (; a < e; a += 64) __asm__ volatile("dc cvac, %0" :: "r"(a) : "memory");
     __asm__ volatile("dsb ish" ::: "memory");
 #else
     (void)addr; (void)len;
@@ -1134,15 +1134,17 @@ static void vk_pools_sync_(VkCommandBuffer cb) {
         vkpool_t *p = &g_pool[i];
         int zc = !p->shadow && zc_flush && p->zero_copy;
         if (!p->shadow && !zc) continue;
+        if (zc) { static int said; if (!said++) VKLOG("Mali zero-copy CPU cache sync active (vendor %#x)", V.props.vendorID); }
         uint8_t *lo = (uint8_t *)(uintptr_t)p->lo; uint64_t size = p->hi - p->lo, st = nvn_dirty_now();
         if (!zc && !p->baseline) { p->baseline = malloc(size); if (!p->baseline) die("[RED] [vk] copied-pool baseline allocation failed (%llu bytes)", (unsigned long long)size);
             p->synced = 0; if (mem_diag_on()) VKLOG("[memdiag] copy-back baseline allocated: %.2f MiB", size / 1048576.0); }
         if (!p->span && (p->span = nvn_dirty_span(lo, size))) p->synced = 0;   // tracked only now: copied/flushed whole once more, protected
+        if (zc && !p->span) { static int said_untracked; if (!said_untracked++) VKLOG("Mali zero-copy pool has no dirty span: all %llu bytes are cleaned on every submission", (unsigned long long)size); }
         if (!p->synced || !p->span) {   // untracked: every sync copies/flushes all of it
             if (diag) { int reason = !p->synced ? 0 : 1; reason_count[reason]++; reason_bytes[reason] += size; }
             if (p->span) SYNC_MEASURE(1, size, nvn_dirty_protect(lo, size));
             if (zc) {
-                SYNC_MEASURE(2, size, dc_civac_range(lo, size));
+                SYNC_MEASURE(2, size, dc_cvac_range(lo, size));
             } else {
                 SYNC_MEASURE(2, size, memcpy(p->shadow, lo, size)); SYNC_MEASURE(3, size, memcpy(p->baseline, p->shadow, size)); pool_cache_sync(p, 0, 0, size);
             }
@@ -1157,7 +1159,7 @@ static void vk_pools_sync_(VkCommandBuffer cb) {
             if (!nvn_dirty_since_span(p->span, lo + off, n, p->stamp0)) continue;
             SYNC_MEASURE(1, n, nvn_dirty_protect(lo + off, n));
             if (zc) {
-                SYNC_MEASURE(2, n, dc_civac_range(lo + off, n));
+                SYNC_MEASURE(2, n, dc_cvac_range(lo + off, n));
             } else {
                 SYNC_MEASURE(2, n, memcpy(p->shadow + off, lo + off, n));
                 if (p->baseline_complete) SYNC_MEASURE(3, n, memcpy(p->baseline + off, p->shadow + off, n));
@@ -1560,6 +1562,8 @@ static void begin_segment(int continuing) {
     if (shadow) {
         int diag = mem_diag_on(); uint64_t t = diag ? mem_diag_ns() : 0;
         mtl_wait(g_fence, ~0ull); if (diag) mem_diag_note(0, t, 0);
+        vk_pools_sync(NULL);
+    } else if (V.props.vendorID == 0x13b5) {
         vk_pools_sync(NULL);
     }   // (after the completion thread's copy-back of the last submission, not only its GPU work)
     if (g_tsq) { vkCmdResetQueryPool(s->main, g_tsq, 2 * (uint32_t)g_cur, 2); vkCmdWriteTimestamp(s->main, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, g_tsq, 2 * (uint32_t)g_cur); }
