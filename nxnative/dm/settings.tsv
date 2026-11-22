@@ -346,7 +346,7 @@ DM_VK_X_CUTANY	bool	0	profile	live	gfx_vk_exec.c	1 = command buffers may be cut 
 DM_VK_X_CUTFS	hex		debug	live	gfx_vk_exec.c	Diagnostic only: split before and after draws with this fragment shader, for before/after pass dumps. Off by default.
 DM_VK_X_DEPTH	bool		debug	?	gfx_vk_exec.c	
 DM_VK_X_DEPTH_CLEAR_COLOR	bool		debug	live	gfx_vk_exec.c	Diagnostic only: also clear colour target 0 to zero when a depth clear occurs on an R11G11B10 pass. Deliberately changes rendering to test dependence on retained colour; never a production correction.
-DM_VK_X_FENCES	bool		debug	start	gfx_vk_core.c	submissions signal a ring of fences instead of a timeline semaphore, as on a Vulkan 1.1 driver without timeline semaphores (the Adreno 618 / 619 of 2021, issue #15). On the Y700 it cost nothing measurable in Super Mario Bros. Wonder's level 1
+DM_VK_X_FENCES	bool		profile	start	gfx_vk_core.c	submissions signal a ring of fences instead of a timeline semaphore, as on a Vulkan 1.1 driver without timeline semaphores (the Adreno 618 / 619 of 2021, issue #15). On the Y700 it cost nothing measurable in Super Mario Bros. Wonder's level 1; Fire Emblem: Three Houses sets it: on Turnip a submission that signals a timeline semaphore blocked in vkQueueSubmit for about a frame
 DM_VK_X_FLAT_VS	str		profile	?	gfx_vk_exec.c	vertex shaders (hex keys, key:n) whose outputs are made flat
 DM_VK_X_LANDCUT	bool		debug	?	gfx_vk_exec.c	
 DM_VK_X_LEAK	int		debug	live	gfx_vk_core.c	freed Vulkan objects of the kinds in the mask are never destroyed (1 buffers, 2 images, 4 image views, 8 buffer views, 16 images in a block slot): no handle value is used twice. A/B only, memory grows
