@@ -1,7 +1,7 @@
 <!-- game facts: made by docs/gen_tables.py from android.tsv; edit android.tsv, not this block -->
 # The Great Ace Attorney Chronicles
 
-![The Great Ace Attorney Chronicles](../../../../docs/images/the-great-ace-attorney-chronicles.jpg)
+![The Great Ace Attorney Chronicles](../../../../docs/images/the-great-ace-attorney-chronicles-chinese.jpg)
 
 | | |
 |---|---|
