@@ -216,10 +216,6 @@ executed automatically. The standalone rewriter's `DM_PATCHES_EXTRA` accepts
 `CUTS` only; the Android porter replaces it with its generated FPSLocker cuts.
 The warning directs porter users to register their build-specific patches.
 
-## Performance configuration calls
-
-The host intercepts both `nn::oe::SetPerformanceConfiguration(PerformanceMode, int)` and `nn::oe::SetPerformanceConfiguration(int)` by symbol name. The first selects a clock configuration for one mode; the second configures both modes. Both are logged and ignored because the host does not apply Switch CPU/GPU clock settings. Leaving either overload in the SDK can reach an uninitialized apm session, including after an operation-mode change. Operation/performance queries and notifications retain their existing behavior.
-
 ## The port
 
 `python -m porter port <game folder> -k <prod.keys>` (the GUI's **Port** button) runs these stages. The slow ones (extraction, rewrite, shader split, the translator build, the Vulkan shaders) keep their output with a key of their inputs and are skipped on the next run when the key is unchanged; the host build is incremental (`build.py`), and the APK and the data pack are made again each time (seconds).

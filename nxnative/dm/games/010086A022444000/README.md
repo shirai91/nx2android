@@ -1,8 +1,35 @@
 # BALL x PIT on Android
 
-Status: **experimental — requires testing**. The registered 1.293 profile has not been qualified on Android. Community testing of the derived 1.301 profile reached gameplay but reported missing graphics and a crash when switching to handheld mode.
+Status: **experimental — requires testing**. The registered 1.293 profile has not been qualified on Android. Community testing of derived 1.301 reaches gameplay with missing graphics. A retest of the separate performance-configuration change reported that switching to handheld no longer crashes; the registered build remains untested.
 
 This source audit covers **1.293 (`v393216`)**, Switch 1 title ID `010086A022444000`, against nx2android `00f41ec9c0f4`. It identifies existing tool and runtime paths for an experimental port; it does not establish Android playability. The later 1.301 report below does not qualify the registered version.
+
+## Game version
+
+Registered: **1.293 (`v393216`)**. The community's **1.301 (`v458752`)** report uses a derived profile with local SDK node-area cuts and does not qualify this registered build.
+
+## Frame rate
+
+No measured frame-rate claim for the registered version. Missing player and scenery rendering in the community run prevents treating that run as normal gameplay performance.
+
+## Tested devices
+
+| Device | GPU | Vulkan driver | Game version | nx2android | Result |
+|---|---|---|---|---|---|
+| Community device; model not specified | Samsung Xclipse 920 | 2.0.0, Vulkan 1.3.231 | Derived 1.301 | `42a80e6` retest | @YGOmod reports handheld switching no longer crashes; player and much of the scenery remain missing |
+
+The registered 1.293 build has no device qualification. Audio, saves/reload, controls, later snow/ice/floor effects and a 1280×720 gameplay frame still need explicit coverage. I do not have the game files; community testing with your own copy is needed.
+
+## Options
+
+Start with docked mode and the full gamepad layout. `--experimental` permits a derived profile but does not establish compatibility. Keep any local SDK edits and the exact source revision documented when comparing builds.
+
+## Quirks and known issues
+
+- Player and scenery rendering remain incomplete in the reported 1.301 run despite all 38,099 translated shaders completing with `failed: {}`.
+- The handheld retest is positive, but its quoted log is the existing two-argument configuration hook. It does not show that the added one-argument hook executed or establish which SDK function caused the earlier crash.
+- The shared one-argument hook has been separated from this profile at the maintainer's request; it is not included in this branch. Its isolated fix still needs the requested mode-switch log identifying that overload.
+- Hull/domain use and later effects remain unverified; see the inventory below.
 
 ## Compatibility evidence
 
@@ -43,12 +70,8 @@ Android starts docked with the on-screen gamepad visible. Use an arm64 Android d
 
 The reported 1.301 (`v458752`) build uses `main=ab2259988e930c928a0d6fceef29d1d4` and the same movie-library and SDK builds listed above. With `--experimental` and local SDK node-area cuts, it reached gameplay on Samsung Xclipse 920, driver 2.0.0, but the player and scenery were not rendering correctly. This is not a tested/playable claim for either version.
 
-Its supplied shader-table diff contains real key changes: 68 vertex/pixel keys for `TimeSnareAOE` disappear and 64 for `TimeSnareFresnel` appear; the matching variation-pair changes are 34 removed and 32 added. Other differences include shifted table indices. The registered 1.293 tables remain the baseline; accepting locally generated 1.301 tables with `--experimental` does not validate their rendering. The supplied diff alone does not explain the missing player or scenery, and shader-translation diagnostics are still needed.
+Its supplied shader-table diff contains real key changes: 68 vertex/pixel keys for `TimeSnareAOE` disappear and 64 for `TimeSnareFresnel` appear; the matching variation-pair changes are 34 removed and 32 added. Other differences include shifted table indices. The registered 1.293 tables remain the baseline; accepting locally generated 1.301 tables with `--experimental` does not validate their rendering. The supplied diff alone does not explain the missing player or scenery, The later translation log reports 38,099 of 38,099 shaders, including five geometry variants, with no translation failures; this does not prove correct shader semantics or explain the rendering failure.
 
-The handheld switch delivered operation/performance notifications before an SDK null-session dereference while selecting a performance configuration. The host now intercepts the previously missing one-argument configuration setter as well as the existing two-argument form. This matches the SDK failure pattern, but resolving this device crash still needs a rebuild and retest. Keeping the game docked avoids the reported trigger while investigating; it does not fix the missing graphics.
+The original handheld switch delivered operation/performance notifications before an SDK null-session dereference. [The retest](https://github.com/shirai91/nx2android/pull/346#issuecomment-7080822396) reports no crash after applying `42a80e6`, but quotes only `SetPerformanceConfiguration mode=1 cfg=0x10001`, the pre-existing two-argument hook. The maintainer requested separating the one-argument hook and an exact log from the mode change before accepting it as the cause-specific fix.
 
 The contributor does not have the game files. Community testing of the mode switch, rendering, controls, audio, saves and later effects is still needed before changing the experimental status.
-
-## Found on this game
-
-- [Performance configuration calls](../../../../docs/ARCHITECTURE.md#performance-configuration-calls): the mode-switch crash exposed the same uninitialized-session pattern covered by upstream's missing-overload fix. Both overloads are now intercepted by name; device confirmation remains outstanding.
