@@ -22,3 +22,6 @@ readme_tag	v0.5.0
 # Catch-up frames only in the renderer's first second: KTGL updates twice per renderer event, and a catch-up frame for every second update replayed 20 ms of its
 # looping stream buffers (music and voices buzzed: 45% of the output blocks were repeats). Effects are initialized at start-up, which the first second still covers
 env	DM_AUDREN_CATCHUP_FRAMES=200
+# With Turnip a submission that signals a timeline semaphore blocked in vkQueueSubmit for about a frame (13.9-17.5 ms) and 60 fps fell to 40-45 (PR #365, AYN Odin 2,
+# Adreno 740); with the fence ring the submit takes 0.05 ms. On Qualcomm's driver the ring cost nothing measurable (settings.tsv DM_VK_X_FENCES)
+env	DM_VK_X_FENCES=1
