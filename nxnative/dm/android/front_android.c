@@ -670,7 +670,7 @@ static void menu_opacity(int v) {   // the slider: a new value is drawn at once 
     if (atomic_exchange(&g_set_opacity, v) != v) { dm_haptics_android_tap(); dm_overlay_redraw(); }
 }
 static void menu_tab(int t) { t = (t % OVM_TABS + OVM_TABS) % OVM_TABS; if (atomic_exchange(&g_menu_tab, t) != t) dm_haptics_android_tap(); dm_overlay_redraw(); }
-static void ed_open(void); static void sp_open(void); static void save_export(void);
+static void ed_open(void); static void sp_open(void); static void sp_open_clear(void); static void save_export(void);
 static void menu_audio(void) {
     if (!g_act || !g_act->vm || !g_act->clazz || !g_audio_menu_method) return;
     JNIEnv *e = NULL; int attached = 0;
@@ -698,6 +698,7 @@ static void menu_do(int item) {
         if (!dm_saves_java()) sp_open(); else if (dm_saves_import_zip()) LOG("[saves] the zip picker is busy (another picker is open)");
         return;
     }
+    else if (item == OVM_CLEAR) { dm_haptics_android_tap(); sp_open_clear(); return; }   // asks first, in the save panel
     else if (item == OVM_AUDIO) { menu_audio(); }
     else if (item == OVM_FOLDER) { dm_haptics_android_tap(); if (dm_saves_folder_pick()) LOG("[saves] the folder picker is busy (another picker is open)"); return; }
     else if (item == OVM_FOLDER_LABEL) return;   // (a title)
@@ -776,7 +777,7 @@ static void menu_key(uint64_t bit) {   // a controller key pressed while the men
 #define SP_MAX 64
 #define SP_PER (OVM_ROWS - 2)
 static pthread_mutex_t g_sp_mu = PTHREAD_MUTEX_INITIALIZER;   // the picker's list and the export's note
-static struct { int n, page, confirm, closing, ptr, row; dm_save_entry e[SP_MAX], pick; } g_sp = {.ptr = -1};
+static struct { int n, page, confirm, closing, clear, ptr, row; dm_save_entry e[SP_MAX], pick; } g_sp = {.ptr = -1};   // clear: the panel is the Clear data one (its confirmation, then the note), not the import's
 static char g_sv_note[160], g_sp_folder[512];   // (and the save folder whose save the next start loads: sp_closing)
 int dm_save_note(char *out, int cap) { pthread_mutex_lock(&g_sp_mu); snprintf(out, (size_t)cap, "%s", g_sv_note); pthread_mutex_unlock(&g_sp_mu); return atomic_load(&g_sv_st); }
 static void *export_run(void *a) {
@@ -795,25 +796,34 @@ static void sp_changed(void) { atomic_fetch_add(&g_sp_ver, 1); dm_overlay_redraw
 static int sp_on_page(void) { int k = g_sp.n - g_sp.page * SP_PER; return k < 0 ? 0 : k > SP_PER ? SP_PER : k; }   // the caller holds g_sp_mu
 static int sp_selectable(int row) {   // the rows a controller and a finger can choose
     pthread_mutex_lock(&g_sp_mu);
-    int ok = g_sp.closing ? 0 : g_sp.confirm ? row == OVM_ROWS - 2 || row == OVM_ROWS - 1 : (row >= 1 && row <= sp_on_page()) || row == OVM_ROWS - 1;
+    int ok = g_sp.closing ? 0 : g_sp.confirm ? (row == OVM_ROWS - 2 && (!g_sp.clear || g_sp.pick.files)) || row == OVM_ROWS - 1   // (no save: nothing to clear, only Back)
+                                          : (row >= 1 && row <= sp_on_page()) || row == OVM_ROWS - 1;
     pthread_mutex_unlock(&g_sp_mu); return ok;
 }
 static void sp_open(void) {
     pthread_mutex_lock(&g_sp_mu);
-    int n = g_sp.n = dm_saves_list(g_sp.e, SP_MAX); g_sp.page = g_sp.confirm = g_sp.closing = 0; g_sp.ptr = -1;
+    int n = g_sp.n = dm_saves_list(g_sp.e, SP_MAX); g_sp.page = g_sp.confirm = g_sp.closing = g_sp.clear = 0; g_sp.ptr = -1;
     pthread_mutex_unlock(&g_sp_mu);
     atomic_store(&g_sp_hi, n ? 1 : OVM_ROWS - 1); atomic_store(&g_sp_on, 1); sp_changed();
     LOG("[saves] picker opened: %d saves in %s", n, dm_saves_dir());
 }
+static void sp_open_clear(void) {   // Clear data: the panel asks first (what would go), then the game closes and the next start clears it (saves_android.c clear_apply)
+    dm_save_entry cur; dm_saves_current(&cur);
+    pthread_mutex_lock(&g_sp_mu);
+    g_sp.n = g_sp.page = g_sp.closing = 0; g_sp.confirm = g_sp.clear = 1; g_sp.ptr = -1; g_sp.pick = cur;
+    pthread_mutex_unlock(&g_sp_mu);
+    atomic_store(&g_sp_hi, OVM_ROWS - 1); atomic_store(&g_sp_on, 1); sp_changed();   // (Cancel is chosen first: a stray A must not erase)
+    LOG("[saves] clear data: asking (%ld files, %lld bytes)", cur.files, cur.bytes);
+}
 static void sp_back(void) {   // the confirmation → the list → the menu (nothing once the import is under way)
-    pthread_mutex_lock(&g_sp_mu); int closing = g_sp.closing, confirm = g_sp.confirm; if (!closing) g_sp.confirm = 0; g_sp.ptr = -1; pthread_mutex_unlock(&g_sp_mu);
+    pthread_mutex_lock(&g_sp_mu); int closing = g_sp.closing, confirm = g_sp.confirm, clear = g_sp.clear; if (!closing) g_sp.confirm = 0; g_sp.ptr = -1; pthread_mutex_unlock(&g_sp_mu);
     if (closing) return;
     dm_haptics_android_tap();
-    if (confirm) { atomic_store(&g_sp_hi, 1); sp_changed(); return; }
+    if (confirm && !clear) { atomic_store(&g_sp_hi, 1); sp_changed(); return; }   // (Clear's confirmation goes straight back to the menu)
     atomic_store(&g_sp_on, 0); atomic_store(&g_menu_hi, -1); dm_overlay_redraw();
 }
 static void *sp_end(void *a) {   // the panel's note shows for a moment, then the app ends; the next start imports the save (saves_android.c dm_saves_start)
-    (void)a; sleep(3); LOG("[saves] the app ends: the next start %s", g_sp.closing == 2 ? "loads the save folder's save" : "imports the save"); _exit(0);
+    (void)a; sleep(3); LOG("[saves] the app ends: the next start %s", g_sp.clear ? "clears the game's data" : g_sp.closing == 2 ? "loads the save folder's save" : "imports the save"); _exit(0);
 }
 // The panel's note that the game closes, then the app ends: an import (a zip unpacked into saves/ as name), or the save folder name chosen whose save the next
 // start loads (folder 1)
@@ -822,7 +832,7 @@ static void sp_closing(const char *name, int folder) {
     pthread_mutex_lock(&g_sp_mu);
     memset(&g_sp.pick, 0, sizeof g_sp.pick); snprintf(g_sp.pick.name, sizeof g_sp.pick.name, "%s", name); snprintf(g_sp_folder, sizeof g_sp_folder, "%s", folder ? name : "");
     if (!folder) { g_sp.n = dm_saves_list(g_sp.e, SP_MAX); for (int k = 0; k < g_sp.n; k++) if (!strcmp(g_sp.e[k].name, name)) g_sp.pick = g_sp.e[k]; }
-    g_sp.closing = 1 + folder; g_sp.confirm = 0; g_sp.ptr = -1;
+    g_sp.closing = 1 + folder; g_sp.confirm = g_sp.clear = 0; g_sp.ptr = -1;
     pthread_mutex_unlock(&g_sp_mu);
     atomic_store(&g_sp_hi, -1); atomic_store(&g_sp_on, 1); sp_changed();
     pthread_t t; if (pthread_create(&t, NULL, sp_end, NULL)) sp_end(NULL); else pthread_detach(t);
@@ -842,9 +852,9 @@ static void sp_do(int row) {
     if (row == OVM_ROWS - 1) { sp_back(); return; }
     pthread_mutex_lock(&g_sp_mu);
     if (!g_sp.confirm) { g_sp.pick = g_sp.e[g_sp.page * SP_PER + row - 1]; g_sp.confirm = 1; pthread_mutex_unlock(&g_sp_mu); atomic_store(&g_sp_hi, OVM_ROWS - 2); sp_changed(); return; }
-    char name[64]; snprintf(name, sizeof name, "%s", g_sp.pick.name);
+    char name[64]; snprintf(name, sizeof name, "%s", g_sp.pick.name); int clear = g_sp.clear;
     pthread_mutex_unlock(&g_sp_mu);
-    if (dm_saves_request_import(name)) return;
+    if (clear ? dm_saves_request_clear() : dm_saves_request_import(name)) return;
     pthread_mutex_lock(&g_sp_mu); g_sp.closing = 1; pthread_mutex_unlock(&g_sp_mu);
     atomic_store(&g_sp_hi, -1); sp_changed();
     pthread_t t; if (pthread_create(&t, NULL, sp_end, NULL)) sp_end(NULL); else pthread_detach(t);
@@ -889,7 +899,19 @@ int dm_save_rows(ov_srow rows[OVM_ROWS]) {   // (gfx_vk_present.c ov_save_panel)
     if (!atomic_load(&g_sp_on)) return 0;
     memset(rows, 0, sizeof(ov_srow) * OVM_ROWS);
     pthread_mutex_lock(&g_sp_mu);
-    if (g_sp.closing == 2) {   // the save folder's save (sp_closing): its path's end when it is long
+    if (g_sp.clear && g_sp.closing) {
+        SP_ROW(0, OVS_TITLE, "Clearing the game's data");
+        SP_ROW(2, OVS_NOTE, "The game closes now. Open it again:"); SP_ROW(3, OVS_NOTE, "it starts as on its first run.");
+    } else if (g_sp.clear) {
+        SP_ROW(0, OVS_TITLE, "Clear the game's data?");
+        if (g_sp.pick.files) {
+            SP_ROW(1, OVS_ITEM, "Current save"); sp_size(rows[1].right, sizeof rows[1].right, &g_sp.pick);
+            SP_ROW(2, OVS_NOTE, "The save is exported first (Import save"); SP_ROW(3, OVS_NOTE, "brings it back), then the game closes.");
+            SP_ROW(OVM_ROWS - 2, OVS_BUTTON, "Clear and close"); SP_ROW(OVM_ROWS - 1, OVS_BACK, "Cancel");
+        } else {
+            SP_ROW(1, OVS_NOTE, "This game has no save yet: nothing to clear."); SP_ROW(OVM_ROWS - 1, OVS_BACK, "Back");
+        }
+    } else if (g_sp.closing == 2) {   // the save folder's save (sp_closing): its path's end when it is long
         size_t L = strlen(g_sp_folder);
         SP_ROW(0, OVS_TITLE, "Loading the folder's save"); SP_ROW(1, OVS_ITEM, "%s%s", L > 56 ? "..." : "", g_sp_folder + (L > 56 ? L - 53 : 0));
         SP_ROW(2, OVS_NOTE, "The game closes now. Open it again:"); SP_ROW(3, OVS_NOTE, "the folder's save is loaded as it starts.");

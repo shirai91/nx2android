@@ -14,6 +14,8 @@ int dm_saves_start(const char *files_root);
 int dm_saves_export(const char *suffix, char *name, int cap, char *err, int ecap);
 int dm_saves_list(dm_save_entry *out, int max);   // the save folders in saves/, newest first
 int dm_saves_request_import(const char *name);    // name is imported at the next start: 0, or -1 when the request cannot be written
+int dm_saves_request_clear(void);                  // the game's data is cleared at the next start (its save is exported first as <stamp>-before-clear): 0, or -1 when the request cannot be written
+int dm_saves_current(dm_save_entry *out);          // the save the game has now (files, bytes, device); 0 when it has none
 
 // ---- through the app's Java (SaveBridge.java; none of this in a code-less app). Its pickers answer later, on a thread of Java's, in dm_saves_event ----
 enum { DM_SAVES_EXPORT = 1, DM_SAVES_IMPORT, DM_SAVES_FOLDER };                                         // what answers (SaveBridge's kinds)

@@ -181,19 +181,19 @@ static inline int fpso_pack(int rows, int pos, int colour, int outline, int size
 static inline int fpso_scale(int base, int size) { return size == FPSO_SMALL ? (base > 1 ? base - 1 : 1) : size == FPSO_LARGE ? base + 1 : size == FPSO_XL ? 2 * base : base; }
 // ---- the pause menu: a panel in the middle of the window: a row of tabs, the open tab's rows, and Resume. Everything is placed in a panel rectangle p
 // (x, y, width, height: the window's for touches, the raster's for drawing), so the touches and the drawing agree ----
-enum { OVM_OVERLAY, OVM_OPACITY, OVM_EDIT, OVM_RUMBLE, OVM_FPS, OVM_MODE, OVM_EXPORT, OVM_IMPORT, OVM_PAD, OVM_AUDIO, OVM_FOLDER_LABEL, OVM_FOLDER,
+enum { OVM_OVERLAY, OVM_OPACITY, OVM_EDIT, OVM_RUMBLE, OVM_FPS, OVM_MODE, OVM_EXPORT, OVM_IMPORT, OVM_CLEAR, OVM_PAD, OVM_AUDIO, OVM_FOLDER_LABEL, OVM_FOLDER,
        OVM_ROW_FPS, OVM_ROW_SOC, OVM_ROW_BAT, OVM_ROW_DRV, OVM_ROW_GRAPH, OVM_POS, OVM_COLOUR, OVM_OUTLINE, OVM_SIZE, OVM_RESUME, OVM_TAB, OVM_N };   // OVM_TAB: the tabs' row;
             // OVM_ROW_*: the counter's rows on or off; OVM_POS .. OVM_SIZE: its corner, colour, outline and size, one value on with each press (fpso_step below);
-            // OVM_EDIT: the layout editor; OVM_MODE: handheld (performance) or docked (resolution); OVM_EXPORT, OVM_IMPORT: the save manager (saves_android.c);
+            // OVM_EDIT: the layout editor; OVM_MODE: handheld (performance) or docked (resolution); OVM_EXPORT, OVM_IMPORT: the save manager (saves_android.c); OVM_CLEAR: clearing the game's data, asked in the save panel first (front_android.c);
             // OVM_PAD: a controller's face buttons by their position or by their label (front_android.c pad_labels); OVM_AUDIO: the audio output's chooser (only when the
             // activity has it: dm_menu_audio_available); OVM_FOLDER_LABEL, OVM_FOLDER: the save file directory's title, then its Browse button and its path (only in an app
             // with the Java save bridge: SaveBridge.java)
 #define OVM_TABS 4   // (a power of two: ov_menu_item masks the tab)
 #define OVM_PER_TAB 5    // the rows a tab shows at once (the panel keeps its size); a tab with more scrolls (OVM_SCROLL_STEPS): the Game tab
-#define OVM_TAB_MAX 7    // the most rows a tab has
-static const int OVM_TAB_ITEMS[OVM_TABS][OVM_TAB_MAX] = {{OVM_OVERLAY, OVM_OPACITY, OVM_EDIT, OVM_RUMBLE, OVM_PAD, -1, -1},
-                                                         {OVM_FPS, OVM_MODE, OVM_EXPORT, OVM_IMPORT, OVM_AUDIO, OVM_FOLDER_LABEL, OVM_FOLDER},
-                                                         {OVM_ROW_FPS, OVM_ROW_SOC, OVM_ROW_BAT, OVM_ROW_DRV, OVM_ROW_GRAPH, -1, -1}, {OVM_POS, OVM_COLOUR, OVM_OUTLINE, OVM_SIZE, -1, -1, -1}};   // -1: no row
+#define OVM_TAB_MAX 8    // the most rows a tab has
+static const int OVM_TAB_ITEMS[OVM_TABS][OVM_TAB_MAX] = {{OVM_OVERLAY, OVM_OPACITY, OVM_EDIT, OVM_RUMBLE, OVM_PAD, -1, -1, -1},
+                                                         {OVM_FPS, OVM_MODE, OVM_EXPORT, OVM_IMPORT, OVM_CLEAR, OVM_AUDIO, OVM_FOLDER_LABEL, OVM_FOLDER},
+                                                         {OVM_ROW_FPS, OVM_ROW_SOC, OVM_ROW_BAT, OVM_ROW_DRV, OVM_ROW_GRAPH, -1, -1, -1}, {OVM_POS, OVM_COLOUR, OVM_OUTLINE, OVM_SIZE, -1, -1, -1, -1}};   // -1: no row
 static const char *const OVM_TAB_NAMES[OVM_TABS] = {"Gamepad", "Game", "Counter", "Style"};
 #define OVM_ROWS (OVM_PER_TAB + 2)   // the tabs, the shown part of a tab's rows, Resume
 static inline int fpso_step(int o, int item) {   // the options after a press on a menu item: a row's bit flips, the others go to their next value (and round)
@@ -213,11 +213,11 @@ static inline int fpso_step(int o, int item) {   // the options after a press on
     return fpso_pack(r, p, c, l, z);
 }
 int dm_menu_audio_available(void);
-// A tab's rows: the Gamepad and Counter tabs have five, Style four; the Game tab has four, one more with the audio output's chooser, two more with the save folder's
+// A tab's rows: the Gamepad and Counter tabs have five, Style four; the Game tab has five, one more with the audio output's chooser, two more with the save folder's
 // (folder: the app can choose a save folder)
 static inline int ov_menu_count(int tab, int folder) {
     switch (tab & (OVM_TABS - 1)) {
-    case 1: return 4 + (dm_menu_audio_available() ? 1 : 0) + (folder ? 2 : 0);
+    case 1: return 5 + (dm_menu_audio_available() ? 1 : 0) + (folder ? 2 : 0);
     case 3: return 4;
     default: return 5;
     }

@@ -18,7 +18,8 @@
 // the player leaves or closes the game (dm_saves_folder_sync), and read back at the start (folder_start, before the host mounts the save), so the folder can
 // be shared with a PC or a cloud sync app. saves/folder-sync.txt keeps the save's fingerprint at the last sync, which tells a folder another device changed
 // (it wins: the app's save is exported to saves/<stamp>-before-folder first) from a session that ended before its sync (the app's save goes to the folder).
-// The folder is also updated shortly after each in-game save (watch_run)
+// The folder is also updated shortly after each in-game save (watch_run). Clear data (saves/clear.txt) is applied at the start too: the save is exported as
+// saves/<stamp>-before-clear first, then erased, and a save folder's save is not loaded back over the fresh start (folder_start)
 #include "dm.h"
 #include "saves_android.h"
 #include <dirent.h>
@@ -198,6 +199,34 @@ static int import_apply(const char *name, const char *req) {   // 1: imported
     return 1;
 }
 
+// Clear data (the pause menu's Clear row), applied at the next start for the same reason an import is: the save is not touched while the game runs. The menu writes
+// saves/clear.txt and the app ends; at the start the save (and the device save) is exported first as saves/<stamp>-before-clear, so it can be taken back with Import
+// save, and then erased. When the export fails nothing is erased. The game then starts as on its first run
+int dm_saves_request_clear(void) {
+    char p[640], tmp[650]; snprintf(p, sizeof p, "%s/clear.txt", g_dir); snprintf(tmp, sizeof tmp, "%s.new", p);
+    FILE *f = fopen(tmp, "w"); if (!f) { LOG("[RED] [saves] cannot write %s (errno %d)", tmp, errno); return -1; }
+    fprintf(f, "clear\nrequest=menu\n"); fclose(f);
+    if (rename(tmp, p)) { LOG("[RED] [saves] cannot write %s (errno %d)", p, errno); return -1; }
+    LOG("[saves] the game's data will be cleared at the next start"); return 0;
+}
+int dm_saves_current(dm_save_entry *out) {   // the save the game has now: its files and bytes (the device save's too); 0 when it has none
+    memset(out, 0, sizeof *out); tree_size(g_save, &out->files, &out->bytes);
+    if ((out->device = is_dir(g_dev) && has_entries(g_dev))) tree_size(g_dev, &out->files, &out->bytes);
+    return out->files > 0;
+}
+static int clear_apply(const char *req) {   // 1: the save was erased (or there was none to erase)
+    char bk[96] = "", e2[600] = ""; dm_save_entry cur; int had = dm_saves_current(&cur);
+    if (!g_save[0]) { result(req, "result=error\nerror=DM_SAVE is not set"); return 0; }
+    if (had) {
+        int r = dm_saves_export("-before-clear", bk, sizeof bk, e2, sizeof e2);
+        if (r) { result(req, "result=error\nerror=the current save could not be backed up first (%s): nothing was cleared", e2); return 0; }
+    }
+    rm_tree(g_save); rm_tree(g_dev);
+    if (has_entries(g_save) || is_dir(g_dev)) { result(req, "result=error\nerror=the save could not be erased (%s)%s", g_save, bk[0] ? "; it was backed up first" : ""); return 0; }
+    result(req, "result=ok\nbackup=%s\nfiles=%ld\nbytes=%lld", bk, cur.files, cur.bytes);
+    return 1;
+}
+
 // ---- a save's fingerprint: FNV-1a over its tree's names, kinds and bytes in name order (not its times: a copy has the same) ----
 static uint64_t fnv(uint64_t h, const void *p, size_t n) { const uint8_t *b = p; while (n--) { h ^= *b++; h *= 0x100000001b3ull; } return h; }
 static int by_name(const void *a, const void *b) { return strcmp(*(char *const *)a, *(char *const *)b); }
@@ -351,7 +380,7 @@ static void watch_start(void) {
     if (!g_bridge) return;   // (no folder yet is fine: sync_run does nothing until the player picks one)
     pthread_t t; if (pthread_create(&t, NULL, watch_run, NULL)) LOG("[RED] [saves] save folder: cannot start the watch of the game's saves"); else pthread_detach(t);
 }
-static void folder_start(int imported) {   // at the start, before the host mounts the save
+static void folder_start(int imported, int cleared) {   // at the start, before the host mounts the save
     char label[512]; if (!g_bridge || !dm_saves_folder_label(label, sizeof label)) return;
     pthread_mutex_lock(&g_sync_mu);
     char stage[640], staged[660]; snprintf(stage, sizeof stage, "%s/.folder-in", g_dir); snprintf(staged, sizeof staged, "%s.device", stage);
@@ -366,7 +395,10 @@ static void folder_start(int imported) {   // at the start, before the host moun
     else {
         uint64_t hd = save_hash(g_save, g_dev), hf = r ? save_hash(stage, staged) : 0, last = 0; int have = last_read(&last);
         int d = dm_folder_decide(r == 1, hf, hd, have, last);
-        if (d == DM_FOLDER_KEEP) { last_write(hd); g_sync_dirty = 0; g_sync_hold = 0; LOG("[saves] save folder %s: the same save as the app's", label); }
+        if (cleared && r == 1) {   // the player cleared the game's data: the folder's save is not loaded back over the fresh start, and it stays there (the only other copy, and a
+            last_write(hf); g_sync_dirty = 0; g_sync_hold = 0;   // sync app may have sent it elsewhere) until the game saves again: that save replaces it, as any save does
+            LOG("[saves] save folder %s: the game's data was cleared: the folder's save is kept, and not loaded; the game's next save replaces it", label);
+        } else if (d == DM_FOLDER_KEEP) { last_write(hd); g_sync_dirty = 0; g_sync_hold = 0; LOG("[saves] save folder %s: the same save as the app's", label); }
         else if (d == DM_FOLDER_PUSH) {
             LOG("[saves] save folder %s: %s", label, r ? "the save in the app is newer (its last session ended before it was copied): it goes to the folder" : "no save of this game there yet: the app's goes there");
             if (!folder_push("the start")) g_sync_dirty = 0;
@@ -413,6 +445,8 @@ int dm_saves_start(const char *files_root) {
         quit |= q; char out[96], err[600]; int r = dm_saves_export("", out, sizeof out, err, sizeof err);
         if (r) result(req, "result=error\nerror=%s", err); else result(req, "result=ok\nname=%s", out);
     }
-    if (!quit) { folder_start(imported); watch_start(); }   // (a request that ends the app leaves the folder alone: the game does not run)
+    int cleared = 0;
+    if (read_request("clear.txt", name, sizeof name, req, sizeof req, &q)) { quit |= q; cleared = clear_apply(req); }
+    if (!quit) { folder_start(imported, cleared); watch_start(); }   // (a request that ends the app leaves the folder alone: the game does not run)
     return quit;
 }
