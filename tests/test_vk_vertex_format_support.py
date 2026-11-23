@@ -14,6 +14,9 @@ STUBS = r"""
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdatomic.h>
+#ifdef _WIN32
+#define setenv(n, v, o) _putenv_s(n, v)   /* MinGW has no setenv */
+#endif
 
 static struct {
     VkPhysicalDevice pd;
