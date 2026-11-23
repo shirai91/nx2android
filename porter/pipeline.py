@@ -282,7 +282,7 @@ class Port:
         self.check_graphics()
         self.fps_unlock()
         self.rewrite()
-        if o.install: self.pull_captures()
+        self.pull_captures()
         self.shaders()
         self.host()
         self.apk()
@@ -888,12 +888,16 @@ class Port:
     def pull_captures(self):
         """Shaders whose code no game file holds: the app saves each one the bundle lacks on the device (gfx_vk_shader.c vk_shader_missing), and they are
         pulled here into <build folder>/android/captured_shaders, kept from port to port, for shader_vk.py to translate into the bundle (Xenoblade Chronicles 3: effect and model shaders).
-        Only for an install, which has the device; a device that cannot be reached leaves the captures already pulled"""
+        Whenever adb can reach the device, also for a port that does not install (the GUI ports first and installs with its own button, issue #512). A device that cannot be
+        reached leaves the captures already pulled, and a port without --install needs no device, so it does not mention one that is not connected"""
+        if not self.tools.get('adb'): return   # optional for a port that does not install (toolchain.require)
         adb = Adb(self.tools['adb'], self.o.device or self.cfg.get('device'), log=say)
         try:
             adb.pick()
             got = adb.pull_new(f'{datapack.files_folder(self.package)}/captured_shaders', self.aw / 'captured_shaders', pattern=lambda n: re.fullmatch(r'[0-9a-f]{16}\.bin', n))
-        except AdbError as e: say(f'shaders captured on the device not pulled ({e})'); return
+        except AdbError as e:
+            if self.o.install or 'no device connected' not in str(e): say(f'shaders captured on the device not pulled ({e})')
+            return
         if got: say(f'{len(got)} shader(s) missing from the bundle, captured on the device: {" ".join(n[:16] for n in got)}')
 
     def translator(self):
