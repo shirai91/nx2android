@@ -40,11 +40,12 @@ Read the profile's porting log in the comment header of [`android.tsv`](android.
 
 | Device | GPU | Vulkan driver | Game version | nx2android | Result |
 |---|---|---|---|---|---|
-| AYN Odin 2 | Adreno 740 | Turnip (`--vulkan-driver`) | 1.1.4 | `v0.5.0` | plays: the title, character creation, a new save, Spring Village, combat; 21-25 fps |
+| AYN Odin 2 | Adreno 740 | Turnip v26.0.0_R8 by K11MCH1 (`--vulkan-driver`) | 1.1.4 | `v0.5.0` | plays: the title, character creation, a new save, Spring Village, combat; 21-25 fps |
 
 ## Options
 
-- `--vulkan-driver` with a Turnip build: the profile's `TU_DEBUG=sysmem` speed-up only works on Turnip.
+- `--vulkan-driver` with a Turnip build: the profile's `TU_DEBUG=sysmem` speed-up only works on Turnip. All testing used
+  the K11MCH1 Turnip build v26.0.0_R8.
 - Pause menu, Game tab: Handheld gives a few more frames a second at a lower resolution. Docked is the default and looks sharper.
 - Battery: about 4.9 W while playing in Docked mode, about 5 hours on the Odin 2.
 
