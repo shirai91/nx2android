@@ -70,7 +70,7 @@ class BridgeContract(unittest.TestCase):
         c, java = (ANDROID / 'saves_android.c').read_text(encoding='utf-8'), (JAVA / 'SaveBridge.java').read_text(encoding='utf-8')
         types = {'String': 'Ljava/lang/String;', 'int': 'I', 'boolean': 'Z', 'void': 'V', 'byte[]': '[B'}
         found = re.findall(r'GetMethodID\(E, bc, "(\w+)", "([^"]+)"\)', c)
-        self.assertEqual(len(found), 6)
+        self.assertEqual(len(found), 7)
         for name, desc in found:
             m = re.search(r'public (?:synchronized )?(\S+) ' + name + r'\(([^)]*)\)', java)
             self.assertTrue(m, f'SaveBridge.{name} is not public')
