@@ -21,9 +21,10 @@ class OverlayLayout(unittest.TestCase):
 #include <assert.h>
 #include <string.h>
 #include "overlay_layout.h"
-static int custom_faces, custom_a, custom_x, hidden_ctl = -1, audio_available, ui_zh;
+static int custom_faces, custom_a, custom_x, hidden_ctl = -1, audio_available, menu_btn_available = 1, ui_zh;
 int dm_ui_zh(void) { return ui_zh; }
 int dm_menu_audio_available(void) { return audio_available; }
+int dm_menu_btn_available(void) { return menu_btn_available; }
 float dm_overlay_scale(void) { return 1; }
 int dm_external_active(void) { return 0; }
 int dm_overlay_dpi(void) { return 0; }
@@ -93,10 +94,13 @@ int main(void) {
     assert(ov_drag_pos(1100, 600, 1013, 50) == 506.5f);
     assert(ov_drag_pos(1100, 505, 1013, 50) == 508);
 
-    assert(ov_menu_item(0, OVM_ROWS - 2) == OVM_PAD && ov_menu_item(1, OVM_ROWS - 2) == -1);
+    assert(ov_menu_item(0, OVM_ROWS - 3) == OVM_PAD && ov_menu_item(0, OVM_ROWS - 2) == OVM_MENU_BTN && ov_menu_item(1, OVM_ROWS - 3) == -1);
+    menu_btn_available = 0;
+    assert(ov_menu_item(0, OVM_ROWS - 2) == -1);
+    menu_btn_available = 1;
     assert(ov_menu_item(1, OVM_ROWS - 1) == OVM_RESUME);
     audio_available = 1;
-    assert(ov_menu_item(1, OVM_ROWS - 2) == OVM_AUDIO);
+    assert(ov_menu_item(1, OVM_ROWS - 3) == OVM_AUDIO);
     ui_zh = 0;
     assert(!strcmp(OVM_TAB_NAMES[0], "Gamepad") && !strcmp(OVM_TAB_NAMES[1], "Game") && !strcmp(OVM_TAB_NAMES[2], "Counter") && !strcmp(OVM_TAB_NAMES[3], "Style"));
     assert(!strcmp(FPSO_POS_NAMES[0], "Top left") && !strcmp(FPSO_SIZE_NAMES[3], "Extra large"));

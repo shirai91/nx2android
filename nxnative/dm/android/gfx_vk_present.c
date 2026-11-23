@@ -72,6 +72,9 @@ __attribute__((weak)) void dm_overlay_knob(int stick, float *dx, float *dy) { (v
 __attribute__((weak)) int64_t dm_overlay_pressed(int ctl, uint64_t bit) { (void)ctl; (void)bit; return 0; }
 __attribute__((weak)) int dm_menu_state(void) { return -1; }
 __attribute__((weak)) int dm_menu_audio_available(void) { return 0; }
+__attribute__((weak)) int dm_menu_btn_available(void) { return 1; }
+__attribute__((weak)) int dm_menu_btn_autohide(void) { return 0; }
+__attribute__((weak)) float dm_menu_btn_fade(int64_t now) { (void)now; return 1.0f; }
 __attribute__((weak)) int dm_fps_opts(void) { return FPSO_DEFAULT; }   // front_android.c: the counter's options, packed (overlay_layout.h fpso_*)
 __attribute__((weak)) int dm_overlay_fps(void) { return 0; }   // front_android.c: the pause menu's Show FPS
 __attribute__((weak)) int dm_save_note(char *out, int cap) { if (cap > 0) out[0] = 0; return OVX_IDLE; }   // front_android.c: the save manager's rows
@@ -406,6 +409,7 @@ static const char *ovm_label(int it) {
     case OVM_EXPORT: return TR("Export save", "导出存档");
     case OVM_IMPORT: return TR("Import save", "导入存档");
     case OVM_PAD: return TR("Face buttons", "按键布局");
+    case OVM_MENU_BTN: return TR("Menu button", "菜单键");
     case OVM_AUDIO: return TR("Audio output", "音频输出");
     case OVM_ROW_FPS: return TR("FPS row", "帧率行");
     case OVM_ROW_SOC: return TR("SOC row", "SoC 行");
@@ -431,6 +435,7 @@ static const char *ovm_button(int it) {
 }
 static const char *ovm_mode(int i) { return i ? TR("Docked", "底座") : TR("Handheld", "掌机"); }
 static const char *ovm_pad(int i) { return i ? TR("Label", "标签") : TR("Position", "位置"); }   // a controller's face buttons (front_android.c pad_labels)
+static const char *ovm_menu_btn(int i) { return i ? TR("Auto-hide", "自动隐藏") : TR("Shown", "显示"); }   // the on-screen menu button in play (front_android.c dm_menu_btn_autohide)
 static int ov_val_n(int it) { return it == OVM_POS ? FPSO_POS_N : it == OVM_COLOUR ? FPSO_COLOUR_N : it == OVM_OUTLINE ? FPSO_OUTLINE_N : it == OVM_SIZE ? FPSO_SIZE_N : 0; }   // the choice rows' values
 static const char *ov_val_name(int it, int v) {
     return it == OVM_POS ? FPSO_POS_NAMES[v] : it == OVM_COLOUR ? FPSO_COLOUR_NAMES[v] : it == OVM_OUTLINE ? FPSO_OUTLINE_NAMES[v] : FPSO_SIZE_NAMES[v];
@@ -451,6 +456,7 @@ static void ov_menu_panel(const ov_canvas *cv, int st) {
             float cw = ov_val_n(i) ? ov_val_w(i, is) + 2 * sh
                      : i == OVM_MODE ? 2 * (fmaxf(cv_text_w(ovm_mode(0), is), cv_text_w(ovm_mode(1), is)) + sh)
                      : i == OVM_PAD  ? 2 * (fmaxf(cv_text_w(ovm_pad(0), is),  cv_text_w(ovm_pad(1), is))  + sh)
+                     : i == OVM_MENU_BTN ? 2 * (fmaxf(cv_text_w(ovm_menu_btn(0), is), cv_text_w(ovm_menu_btn(1), is)) + sh)
                      : btn ? cv_text_w(btn, is) + 2 * sh
                      : sw + gap + fmaxf(cv_text_w(TR("ON", "开"), is), cv_text_w(TR("OFF", "关"), is));
             need = fmaxf(need, i == OVM_OPACITY ? fmaxf(lw / 0.38f, cv_text_w("80%", is) / 0.14f) : lw + gap + cw + rh * 0.3f);
@@ -493,9 +499,10 @@ static void ov_menu_panel(const ov_canvas *cv, int st) {
             cv_text(cv, x1 - pw + (pw - cv_text_w(nm, is)) / 2, cy, nm, is, it == OVM_COLOUR ? rgb : tc);
         } else if (btn) {   // a button
             float bw = cv_text_w(btn, is) + 2 * sh, b[4] = {x1 - bw, cy - rh * 0.30f, bw, rh * 0.60f}; cv_button(cv, b, btn, 0, 0);
-        } else if (it == OVM_MODE || it == OVM_PAD) {   // two segments, the current one filled: handheld (performance) | docked (resolution); by position | by label
-            const char *seg[2] = {it == OVM_MODE ? ovm_mode(0) : ovm_pad(0), it == OVM_MODE ? ovm_mode(1) : ovm_pad(1)};
-            int cur = it == OVM_MODE ? st >> 2 & 1 : st >> 28 & 1;
+        } else if (it == OVM_MODE || it == OVM_PAD || it == OVM_MENU_BTN) {   // two segments, the current one filled
+            const char *seg[2] = {it == OVM_MODE ? ovm_mode(0) : it == OVM_PAD ? ovm_pad(0) : ovm_menu_btn(0),
+                                  it == OVM_MODE ? ovm_mode(1) : it == OVM_PAD ? ovm_pad(1) : ovm_menu_btn(1)};
+            int cur = it == OVM_MODE ? st >> 2 & 1 : it == OVM_PAD ? st >> 28 & 1 : dm_menu_btn_autohide() != 0;
             float hh = rh * 0.46f, segw = fmaxf(cv_text_w(seg[0], is), cv_text_w(seg[1], is)) + sh, x0 = x1 - 2 * segw;
             cv_rrect(cv, x0, cy - hh / 2, x1, cy + hh / 2, hh / 2, C_OFF);
             cv_rrect(cv, x0 + cur * segw, cy - hh / 2, x0 + (cur + 1) * segw, cy + hh / 2, hh / 2, C_ACCENT);
@@ -831,8 +838,9 @@ static void ov_render(VkCommandBuffer cb, int mode, int menu, int fps) {
             }
         }
     }
-    for (int i = 0; i < OV_N; i++) if (OV_CTLS[i].kind == OV_MENU && mode && !ov_off(&OV_CTLS[i])) {   // the menu button, on top of the controls, where the player put it (not with DM_MENU_BUTTON=0)
-        float ma = mode == 1 && (menu < 0 || edit) ? fmaxf(op, 0.5f) : OV_MENU_ALPHA;   // (findable at any opacity)
+    for (int i = 0; i < OV_N; i++) if (OV_CTLS[i].kind == OV_MENU && mode && !ov_off(&OV_CTLS[i])) {   // the menu button, on top of the controls, where the player put it (not with DM_MENU_BUTTON=0; fades out in Auto-hide mode)
+        float ma = (mode == 1 && (menu < 0 || edit) ? fmaxf(op, 0.5f) : OV_MENU_ALPHA) * dm_menu_btn_fade(now);
+        if (ma <= 0.001f) continue;
         if (th) { if (!tbound) { vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_ov.layout, 0, 1, &g_tt[g_ov.lay].set, 0, NULL); tbound = 1; }
                   ov_theme_menu(cb, th, i, ma); continue; }
         const ov_ctl *c = &OV_CTLS[i]; float b[4], g = ov_glow(dm_overlay_pressed(i, 0), now); ov_box(c, W, H, b);

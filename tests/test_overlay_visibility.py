@@ -25,6 +25,8 @@ class OverlayVisibility(unittest.TestCase):
         pad = csrc.between(front, 'static int32_t axis(', '// ---- the on-screen gamepad')
         visible = csrc.between(front, 'int dm_overlay_visible(void)', 'int dm_overlay_layout(void)')
         hidden = csrc.between(front, 'int dm_overlay_hidden(', 'float dm_overlay_opacity(')
+        menu_btn = csrc.between(front, 'int dm_menu_btn_available(void)', 'static _Atomic int g_set_labels')
+        fade = csrc.function(front, 'float dm_menu_btn_fade(')
         hit = csrc.between(front, 'static int ctl_at(', '// dragging the menu button:')
         menu = csrc.between(front, 'static void menu_do(', 'static void menu_touch(')
         events = csrc.between(front, 'static void touch_event(AInputEvent *e) {', 'static int on_input(')
@@ -37,10 +39,15 @@ class OverlayVisibility(unittest.TestCase):
 #include "overlay_layout.h"
 #include "pad_slots.h"
 #include "stick_axis.h"
-static _Atomic int g_set_overlay, g_overlay, g_pads, g_edit, g_menu_btn = 1;
+static _Atomic int g_set_overlay, g_overlay, g_pads, g_edit, g_menu_btn = 1, g_set_menu_autohide, g_fps_ver;
+static _Atomic int64_t g_menu_reveal_until;
+static int g_menu_reveal_ptr = -1;
+#define MENU_REVEAL_NS 4000000000ll
+#define MENU_FADE_NS    500000000ll
 static _Atomic int g_cust[2][2][OV_N][4];
-static _Atomic int g_set_rumble, g_set_fps, g_set_labels, g_menu_tab, g_sv_st;
+static _Atomic int g_set_rumble, g_set_fps, g_set_labels, g_menu_tab, g_sv_st, g_menu;
 static int layout, saves;
+int dm_menu_audio_available(void) { return 0; }
 int dm_overlay_layout(void) { return layout; }
 float dm_overlay_scale(void) { return 1; }
 int dm_external_active(void) { return 0; }
@@ -62,7 +69,7 @@ static void save_export(void) {}
 static void menu_audio(void) {}
 static void menu_close(void) {}
 static void dm_overlay_redraw(void) {}
-''' + visible + hidden + hit + menu + r'''
+''' + menu_btn + visible + hidden + fade + hit + menu + r'''
 // Synthetic Android events. The production dispatch and touch handlers below consume them.
 enum { AINPUT_SOURCE_TOUCHSCREEN = 1, AINPUT_SOURCE_GAMEPAD = 2, AINPUT_SOURCE_JOYSTICK = 4, AINPUT_SOURCE_KEYBOARD = 8 };
 enum { AINPUT_EVENT_TYPE_KEY = 1, AINPUT_EVENT_TYPE_MOTION };
@@ -95,7 +102,7 @@ static int32_t touch_sticks[4];
 static int g_ptr_ctl[32];
 static float g_ptr_origin[32][2];
 static struct { int id, moved; } g_drag = {-1, 0};
-static _Atomic int g_menu, g_sp_on, g_tx_on, g_pad_in, g_knob[2][2];
+static _Atomic int g_sp_on, g_tx_on, g_pad_in, g_knob[2][2];
 static _Atomic int64_t g_menu_t, g_press_t[16], g_stick_t[2];
 static struct { int sel; } g_tx;
 static int g_tx_mu;
@@ -123,7 +130,8 @@ static int g_tx_mu;
 #define menu_touch(e, W, H) ((void)(e), (void)(W), (void)(H))
 #define tx_touch(e, W, H) ((void)(e), (void)(W), (void)(H))
 static ANativeWindow *phone_window(void) { return &window; }
-static int64_t mono_ns(void) { return 1; }
+static int64_t fake_ns = 1000000000ll;
+static int64_t mono_ns(void) { return fake_ns; }
 static void dm_haptics_android_device(int id) { vibration = id; }
 static void menu_open(int tab) { (void)tab; menu_opens++; }
 static void menu_key(uint64_t bit) { (void)bit; }
@@ -382,8 +390,87 @@ static void edge_stick(void) {
     }
 }
 
+static void menu_autohide(void) {
+    width = layout ? 2400 : 1920; height = 1080;
+    int menu = -1, minus = -1;
+    for (int i = 0; i < OV_N; i++) {
+        if (OV_CTLS[i].kind == OV_MENU) menu = i;
+        if (OV_CTLS[i].btn == DM_BTN_MINUS) minus = i;
+    }
+    assert(menu >= 0 && minus >= 0);
+    float m[4], mn[4]; ov_box(&OV_CTLS[menu], width, height, m); ov_box(&OV_CTLS[minus], width, height, mn);
+    fake_ns = 10000000000ll;
+    atomic_store(&g_menu_btn, 1); atomic_store(&g_set_menu_autohide, 0);
+    atomic_store(&g_menu_reveal_until, 0); atomic_store(&g_edit, 0); atomic_store(&g_menu, 0);
+    atomic_store(&g_set_overlay, 0); atomic_store(&g_overlay, 1); atomic_store(&g_pads, 0);
+    g_menu_reveal_ptr = -1; saves = 0;
+
+    // Default (Shown): always full alpha, available in menu, single tap opens menu.
+    assert(dm_menu_btn_available() == 1 && dm_menu_btn_autohide() == 0);
+    assert(ov_menu_item(0, OVM_ROWS - 2) == OVM_MENU_BTN);
+    assert(dm_menu_btn_fade(fake_ns) == 1.0f);
+
+    // Toggling OVM_MENU_BTN enables Auto-hide and persists.
+    menu_do(OVM_MENU_BTN);
+    assert(saves == 1 && dm_menu_btn_autohide() == 1);
+    assert(dm_menu_btn_fade(fake_ns) == 0.0f);
+
+    // Pause menu and layout editor always show the menu button at full alpha.
+    atomic_store(&g_menu, 1); assert(dm_menu_btn_fade(fake_ns) == 1.0f); atomic_store(&g_menu, 0);
+    atomic_store(&g_edit, 1); assert(dm_menu_btn_fade(fake_ns) == 1.0f); atomic_store(&g_edit, 0);
+
+    // Tap near the hidden menu button reveals it for 4 s without opening the menu or passing touch to the game.
+    int before = menu_opens;
+    AInputEvent tap = {.source = AINPUT_SOURCE_TOUCHSCREEN, .type = AINPUT_EVENT_TYPE_MOTION,
+                       .action = AMOTION_EVENT_ACTION_DOWN, .x = m[0] + m[2] * 1.5f, .y = m[1]};
+    assert(handle_event(&tap) == 1 && touches == 0 && menu_opens == before);
+    assert(dm_menu_btn_fade(fake_ns) == 1.0f);
+    tap.action = AMOTION_EVENT_ACTION_UP;
+    assert(handle_event(&tap) == 1 && menu_opens == before);
+
+    // Mid-window still fully visible; tapping the revealed menu button opens the pause menu.
+    fake_ns += 2000000000ll;
+    assert(dm_menu_btn_fade(fake_ns) == 1.0f);
+    tap.action = AMOTION_EVENT_ACTION_DOWN; tap.x = m[0]; tap.y = m[1];
+    assert(handle_event(&tap) == 1 && touches == 0);
+    tap.action = AMOTION_EVENT_ACTION_UP;
+    assert(handle_event(&tap) == 1 && menu_opens == before + 1);
+
+    // After the reveal window fades linearly over the last 0.5 s and hides again.
+    fake_ns += MENU_REVEAL_NS - MENU_FADE_NS / 2;
+    assert(fabsf(dm_menu_btn_fade(fake_ns) - 0.5f) < 0.01f);
+    fake_ns += MENU_FADE_NS;
+    assert(dm_menu_btn_fade(fake_ns) == 0.0f);
+
+    // When the touch gamepad is shown, tapping an adjacent button (-) is not absorbed by the reveal halo.
+    atomic_store(&g_set_overlay, 1); atomic_store(&g_overlay, 1);
+    tap.action = AMOTION_EVENT_ACTION_DOWN; tap.x = mn[0]; tap.y = mn[1];
+    assert(handle_event(&tap) == 1 && (touch_buttons & DM_BTN_MINUS) && dm_menu_btn_fade(fake_ns) == 0.0f);
+    tap.action = AMOTION_EVENT_ACTION_UP;
+    assert(handle_event(&tap) == 1 && !touch_buttons);
+
+    // Tapping the middle of the screen still passes through to the game without revealing the menu button.
+    atomic_store(&g_set_overlay, 0);
+    tap.action = AMOTION_EVENT_ACTION_DOWN; tap.x = width * 0.5f; tap.y = height * 0.5f;
+    assert(handle_event(&tap) == 1 && touches == 1 && dm_menu_btn_fade(fake_ns) == 0.0f);
+    tap.action = AMOTION_EVENT_ACTION_UP;
+    assert(handle_event(&tap) == 1);
+
+    // With DM_MENU_BUTTON=0, the setting row is hidden and the top zone passes through to the game.
+    atomic_store(&g_menu_btn, 0);
+    assert(dm_menu_btn_available() == 0 && ov_menu_item(0, OVM_ROWS - 2) == -1);
+    tap.action = AMOTION_EVENT_ACTION_DOWN; tap.x = m[0]; tap.y = m[1];
+    assert(handle_event(&tap) == 1 && touches == 1);
+    tap.action = AMOTION_EVENT_ACTION_UP;
+    assert(handle_event(&tap) == 1);
+
+    // Reset back to defaults.
+    atomic_store(&g_menu_btn, 1); atomic_store(&g_set_menu_autohide, 0); atomic_store(&g_menu_reveal_until, 0);
+}
+
 int main(int argc, char **argv) {
     assert(argc == 2); int test = atoi(argv[1]);
+    if (test == 12) { for (layout = 0; layout < 2; layout++) menu_autohide(); return 0; }
     if (test == 10) { players(); return 0; }
     if (test == 11) { for (layout = 0; layout < 2; layout++) edge_stick(); return 0; }
     if (test == 9) { for (layout = 0; layout < 2; layout++) no_menu_button(); return 0; }
@@ -464,6 +551,9 @@ int main(int argc, char **argv) {
 
     def test_each_controller_is_a_player_of_its_own(self):
         self.run_case(10)
+
+    def test_menu_button_autohide_reveals_fades_and_opens(self):
+        self.run_case(12)
 
 
 if __name__ == '__main__':
