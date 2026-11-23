@@ -41,6 +41,7 @@ static int clear_masked(const p_clear_color *c,VkRect2D r) {(void)c;(void)r;retu
 static VkRect2D scissor_rect(void) {return (VkRect2D){{0,0},{100,100}};}
 static int pass_whole(VkRect2D r) {return r.extent.width==100;}
 static const vkfmt_t *vk_fmt(int format) {(void)format;return NULL;}
+static const vkfmt_t *rt_view_fmt(int i) {(void)i;return vk_fmt(0);}
 static VkCommandBuffer vk_cmd(void) {return VK_NULL_HANDLE;}
 static void fake_clear(VkCommandBuffer cb,uint32_t na,const VkClearAttachment *a,uint32_t nr,const VkClearRect *r) {
  (void)cb;(void)nr;(void)r;assert(na==1);clears++;cleared_slot=a->colorAttachment;

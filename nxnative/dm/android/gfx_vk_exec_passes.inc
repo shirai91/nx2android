@@ -711,7 +711,7 @@ static VkPipeline mc_pipeline(uint32_t mask) {
 }
 static int g_bc_stale;
 static int clear_masked(const p_clear_color *c, VkRect2D r) {   // 1 = done
-    const vkfmt_t *f = vk_fmt(S.rt_col[c->index].d.format);
+    const vkfmt_t *f = rt_view_fmt(c->index);
     if (c->index != 0 || (f && f->is_int)) return 0;
     VkPipeline p = mc_pipeline(c->mask); if (!p) return 0;
     if (!pass_commit()) return 1;
@@ -732,7 +732,7 @@ static void clear_color(const p_clear_color *c) {
         if (clear_masked(c, r)) return;
         VKRED_ONCE(31, "partial channel clear mask %#x cleared in full", c->mask); }
     VkClearAttachment a = {VK_IMAGE_ASPECT_COLOR_BIT, (uint32_t)c->index, {{{c->rgba[0], c->rgba[1], c->rgba[2], c->rgba[3]}}}};
-    const vkfmt_t *f = vk_fmt(S.rt_col[c->index].d.format);
+    const vkfmt_t *f = rt_view_fmt(c->index);
     if (f && f->is_int) for (int i = 0; i < 4; i++) { if (f->is_sint) a.clearValue.color.int32[i] = (int32_t)c->rgba[i]; else a.clearValue.color.uint32[i] = c->rgba[i] > 0 ? (uint32_t)c->rgba[i] : 0; }
     // every layer of the pass: NVN clears the whole bound target, and a layered pass (a 3D texture drawn slice by slice, the layer from a geometry shader) cleared
     // only its layer 0 here. FINAL FANTASY RESONANCE adds its lights into 32x32x32 volumes (vertex shader f701ff79cec258e6, 32 instances, additive blend): slices 1-31

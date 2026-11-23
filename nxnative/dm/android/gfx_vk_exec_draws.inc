@@ -258,7 +258,7 @@ static int prepare_draw(int prim, int indexed) {
         // Upstream seedds/nxnative 742318ae color_operations: Maxwell leaves
         // absent outputs untouched, as nvn_mtl.m does for Metal colour attachments.
         if (!(outputs & (1u << i))) { k.wmask[i] = 0; continue; }
-        const vkfmt_t *f = S.rt_has_col[i] ? vk_fmt(S.rt_col[i].d.format) : NULL;
+        const vkfmt_t *f = S.rt_has_col[i] ? rt_view_fmt(i) : NULL;
         if (((S.color.blend_en >> i) & 1) && f && !f->is_int) {
             k.blend_en |= 1u << i;
             k.bl[i].src = S.blend[i].src_rgb; k.bl[i].dst = S.blend[i].dst_rgb; k.bl[i].srca = S.blend[i].src_a; k.bl[i].dsta = S.blend[i].dst_a; k.bl[i].eq = S.blend[i].eq_rgb; k.bl[i].eqa = S.blend[i].eq_a;

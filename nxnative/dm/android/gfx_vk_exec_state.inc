@@ -14,6 +14,11 @@ static struct {
     int pass_open; uint32_t pass_w, pass_h; VkFormat cfmt[8], dfmt; VkImageAspectFlags daspect; uint32_t samples; int ncol;
     VkPipeline bound_pipe; int rp_pass;   // rp_pass: the open pass began with vkCmdBeginRenderPass
 } S;
+// the format a colour target is drawn in: its view's when the view sets one, as vk_tex_view makes the attachment (an RGBA16UI view of a BC4 texture is an integer target)
+static const vkfmt_t *rt_view_fmt(int i) {
+    const vkfmt_t *f = S.rt_has_cview[i] && S.rt_cview[i].set_format ? vk_fmt(S.rt_cview[i].format) : NULL;
+    return f ? f : vk_fmt(S.rt_col[i].d.format);
+}
 static p_tf_bind g_tf[4]; static uint64_t g_tf_off[4]; static int g_tf_on, g_tf_in_pass; static uint32_t g_tf_verts;   // transform feedback: buffers, bytes written into each, capture on, a capture in the open pass (xfb_begin), vertices captured since Begin
 static int g_depth_zero = 1, g_lower_left;
 void mtl_set_depth_zero(int on) { g_depth_zero = on; }
