@@ -31,6 +31,7 @@ Read the profile's porting log in the comment header of [`android.tsv`](android.
 
 - About 21-25 fps on the Odin 2 against the game's 30 fps target. The game is GPU-bound: about 33 ms of GPU work a frame in
   Docked mode, and the CPU waits for the GPU several times a frame.
+- For smoother play, a Snapdragon 8 Gen 3 or newer is recommended. The Odin 2 (Snapdragon 8 Gen 2) stays below 30 fps.
 - Game speed follows real time, not the frame rate, so the game does not slow down when the frame rate drops.
 - Handheld mode is faster (about 25 fps outdoors against about 21.5 fps Docked) at a lower render resolution.
 - The game's 60 fps mode is not useful: it does not hold 30 fps.
