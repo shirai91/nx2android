@@ -1,4 +1,4 @@
-# Per-build rows as profile data (dm/games/game.py BUILD_TABLES: fps_locks.tsv, ue_malloc.tsv): the header carries them only for a profile that has the file, and
+# Per-build rows as profile data (dm/games/game.py BUILD_TABLES: fps_locks.tsv, ue_malloc.tsv, ue_cvars.tsv): the header carries them only for a profile that has the file, and
 # porter host accepts a port whose host was built when the rows were still in the core (porter/host.py MOVED_PREFIXES).
 import hashlib, os, sys, tempfile, unittest
 from pathlib import Path
@@ -37,6 +37,23 @@ class BuildTables(unittest.TestCase):
             for bad in ('x' * 32 + '\tw\t0\t0\tFPS_F32\t1\t0', 'a' * 32 + '\tw\t0\t0\tFPS_F64\t1\t0', 'a' * 32 + '\tw\tzero\t0\tFPS_F32\t1\t0', 'a' * 32 + '\tw\t0\t0\tFPS_F32\t1'):
                 (Path(t) / 'fps_locks.tsv').write_text(bad + '\n', encoding='utf-8')
                 with self.assertRaises(SystemExit, msg=bad): game.build_table(g, 'fps_locks.tsv')
+
+    def test_ue_cvars_rows_are_read_and_checked(self):
+        with tempfile.TemporaryDirectory() as t:
+            g = mock.Mock(); g.dir = Path(t)
+            row = 'a' * 32 + '\tr.Streaming.PoolSize\t0x10\t0\tINT32\t2\t1000'
+            (Path(t) / 'ue_cvars.tsv').write_text('# a comment\n' + row + '\n', encoding='utf-8')
+            self.assertEqual(game.build_table(g, 'ue_cvars.tsv'), [row.split('\t')])
+            defines = game.build_table_defines(g, lambda s: '"' + s + '"')
+            self.assertIn('#define DM_GAME_UE_CVARS_N 1', defines)
+            self.assertIn('"r.Streaming.PoolSize", 0x10, 0x0, INT32, 0x2, 0x3e8', ', '.join(defines))
+            (Path(t) / 'ue_cvars.tsv').unlink()
+            self.assertNotIn('DM_GAME_UE_CVARS', ', '.join(game.build_table_defines(g, lambda s: s)))   # no file, no define: the mechanism is inert
+            for bad in ('a' * 32 + '\tw\t0x10\t0\tINT64\t2\t1000', 'a' * 32 + '\tw\t0x10\t0\tINT32\t2',
+                        'x' * 32 + '\tw\t0x10\t0\tINT32\t2\t1000', 'a' * 32 + '\tw\tzero\t0\tINT32\t2\t1000',
+                        'a' * 32 + '\tw\t0x10\t0\tINT32\t2\tbig'):
+                (Path(t) / 'ue_cvars.tsv').write_text(bad + '\n', encoding='utf-8')
+                with self.assertRaises(SystemExit, msg=bad): game.build_table(g, 'ue_cvars.tsv')
 
     def test_porter_host_accepts_a_host_built_before_the_move(self):
         header = host.profile_header(FFR).replace(b'\r\n', b'\n')

@@ -88,21 +88,23 @@ def by_title(tid):
 # Per-build rows a profile carries for the host (written into its header only when the file exists, so other profiles' headers do not change):
 #   fps_locks.tsv  engine frame limits in game memory (hle_fpslock.c): build, what, ptr_off, field, kind, copies, ptr2
 #   ue_malloc.tsv  Unreal Engine's allocator on a host zone (hle_uemalloc.c): build, what, layout, obj, vtable, cut
-BUILD_TABLES = {'fps_locks.tsv': ('DM_GAME_FPS_LOCKS', ('build', 'what', 'ptr_off', 'field', 'kind', 'copies', 'ptr2'), ('FPS_F32', 'VSYNCS_I32', 'MS_F32', 'SEC_F32', 'FPS_I32')),
-                'ue_malloc.tsv': ('DM_GAME_UE_MALLOC', ('build', 'what', 'layout', 'obj', 'vtable', 'cut'), ('UE5', 'UE4_27', 'UE5_6'))}
+#   ue_cvars.tsv   Unreal console variables the host raises in game memory (hle_uecvar.c): build, what, obj_off, field, kind, copies, value
+BUILD_TABLES = {'fps_locks.tsv': ('DM_GAME_FPS_LOCKS', ('build', 'what', 'ptr_off', 'field', 'kind', 'copies', 'ptr2'), ('FPS_F32', 'VSYNCS_I32', 'MS_F32', 'SEC_F32', 'FPS_I32'), 4),
+                'ue_malloc.tsv': ('DM_GAME_UE_MALLOC', ('build', 'what', 'layout', 'obj', 'vtable', 'cut'), ('UE5', 'UE4_27', 'UE5_6'), 2),
+                'ue_cvars.tsv': ('DM_GAME_UE_CVARS', ('build', 'what', 'obj_off', 'field', 'kind', 'copies', 'value'), ('INT32',), 4)}
 
 
 def build_table(g, fname):
     """[(row fields)] of a profile's per-build table (BUILD_TABLES), checked; [] without the file"""
     path = g.dir / fname
     if not path.is_file(): return []
-    macro, cols, kinds = BUILD_TABLES[fname]; rows = []
+    macro, cols, kinds, ki = BUILD_TABLES[fname]; rows = []
     for n, line in enumerate(path.read_text(encoding='utf-8').splitlines(), 1):
         if not line.strip() or line.startswith('#'): continue
         c = line.split('\t')
         if len(c) != len(cols): raise SystemExit(f'{path}:{n}: {len(c)} columns, want {len(cols)} ({", ".join(cols)})')
         if not re.fullmatch(r'[0-9a-f]{32}', c[0]): raise SystemExit(f'{path}:{n}: build {c[0]!r} is not a 32-digit main build ID')
-        kind = c[4] if fname == 'fps_locks.tsv' else c[2]
+        kind = c[ki]
         if kind not in kinds: raise SystemExit(f'{path}:{n}: {kind!r} is not one of {", ".join(kinds)}')
         for i, v in enumerate(c):
             if i in (0, 1) or v == kind: continue
@@ -114,7 +116,7 @@ def build_table(g, fname):
 
 def build_table_defines(g, q):
     out = []
-    for fname, (macro, cols, kinds) in BUILD_TABLES.items():
+    for fname, (macro, cols, kinds, ki) in BUILD_TABLES.items():
         rows = build_table(g, fname)
         if not rows: continue
         items = []
