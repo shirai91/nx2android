@@ -32,34 +32,40 @@ class OverlayKeyRelease(unittest.TestCase):
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <pthread.h>
+#include "pad_remap.h"
 enum { AINPUT_EVENT_TYPE_KEY = 1, AKEY_EVENT_ACTION_DOWN = 0,
        AKEY_EVENT_ACTION_UP = 1, AINPUT_SOURCE_GAMEPAD = 2,
-       AKEYCODE_BACK = 1, AKEYCODE_BUTTON_MODE, AKEYCODE_MENU, TEST_A };
+       AKEYCODE_BACK = PAD_KC_BACK, AKEYCODE_BUTTON_MODE = PAD_KC_BTN_MODE, AKEYCODE_MENU = PAD_KC_MENU, TEST_A = PAD_KC_BTN_B };
 typedef struct { int source, type, key, action, device; } AInputEvent;
 #define AInputEvent_getSource(e) ((e)->source)
 #define AInputEvent_getType(e) ((e)->type)
 #define AInputEvent_getDeviceId(e) ((e)->device)
 #define AKeyEvent_getKeyCode(e) ((e)->key)
+#define AKeyEvent_getScanCode(e) (0)
 #define AKeyEvent_getAction(e) ((e)->action)
 #define AKeyEvent_getRepeatCount(e) (0)
 #define LOG(...) ((void)0)
-static _Atomic int g_set_overlay = 1, g_overlay = 1, g_pad_in = -1, g_tx_on, g_menu;
+static _Atomic int g_set_overlay = 1, g_overlay = 1, g_pad_in = -1, g_tx_on, g_menu, g_rm_listen;
 static int g_pad_used, vibration = -1, publications;
+static pad_remap_table g_remap;
+static pad_held_keys g_held_keys[1];
 static uint64_t g_btn[1];   // per player (PR #238); the device here is player 1's
 static pthread_mutex_t g_slot_mu = PTHREAD_MUTEX_INITIALIZER;
 static struct { int unused; } g_slots;
 static uint32_t pad_slot_mask(const void *s) { (void)s; return 0; }
 static int takes = -1;   // what the last pad_player call asked: 1 take a player, 0 not
 static int pad_player(int id, int src, int take) { (void)id; (void)src; takes = take; return 0; }
-static int dm_player_seen_as(int p) { return p; }   // hle_hid.c: the player the game sees (one player here)
+static int pad_labels(void) { return 0; }
+int dm_player_seen_as(int p) { return p; }   // hle_hid.c: the player the game sees (one player here)
 static void dm_haptics_android_device(int d) { vibration = d; }
 static int tx_key(AInputEvent *e) { (void)e; return 1; }
 static void menu_open(int tab) { (void)tab; }
 static void menu_close(void) {}
 static void menu_key(uint64_t bit) { (void)bit; }
+static int rm_capture(uint32_t phys, int32_t kc, int32_t sc, int32_t src, int id) { (void)phys; (void)kc; (void)sc; (void)src; (void)id; return 1; }
 static uint64_t key_bit(int k) { return k == TEST_A ? 1 : 0; }
-static void dm_pad_players(int n) { assert(n == 1); }
-static void pad_publish(int p) { assert(p == 0); publications++; }
+void dm_pad_players(uint32_t n) { assert(n == 1); }
+static void pad_publish(int p) { assert(p == 0); g_btn[p] = pad_held_eval(&g_held_keys[p], &g_remap, 0); publications++; }
 ''' + visible + mark + keys + r'''
     return 0;
 }
@@ -102,6 +108,7 @@ int main(int argc, char **argv) {
         source, cls.exe = tmp / 'keys.c', tmp / 'keys'
         source.write_text(harness, encoding='utf-8')
         result = subprocess.run([cc, '-std=c11', '-Wall', '-Wextra', '-Werror',
+                                 f'-I{ROOT / "nxnative/dm/android"}', f'-I{ROOT / "nxnative/dm/host"}',
                                  str(source), '-pthread', '-o', str(cls.exe)],
                                 capture_output=True, text=True, timeout=60)
         if result.returncode:

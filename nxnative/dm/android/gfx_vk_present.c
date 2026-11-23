@@ -406,6 +406,7 @@ static const char *ovm_label(int it) {
     case OVM_EXPORT: return TR("Export save", "导出存档");
     case OVM_IMPORT: return TR("Import save", "导入存档");
     case OVM_PAD: return TR("Face buttons", "按键布局");
+    case OVM_REMAP: return TR("Remap buttons", "自定义按键");
     case OVM_AUDIO: return TR("Audio output", "音频输出");
     case OVM_ROW_FPS: return TR("FPS row", "帧率行");
     case OVM_ROW_SOC: return TR("SOC row", "SoC 行");
@@ -425,6 +426,7 @@ static const char *ovm_button(int it) {
     case OVM_EDIT: return TR("Edit", "编辑");
     case OVM_EXPORT: return TR("Export", "导出");
     case OVM_IMPORT: return TR("Import", "导入");
+    case OVM_REMAP: return TR("Remap", "设置");
     case OVM_AUDIO: return TR("Select", "选择");
     default: return NULL;
     }
@@ -563,17 +565,23 @@ static void ov_save_panel(const ov_canvas *cv, int st) {
     float rh = r[3], rw = r[2], gap = rh * 0.35f, room = rw - rh * 0.3f; int sel = (st >> 4 & 15) - 1, is0 = (int)fmaxf(1, roundf(rh * 0.30f / PF_CAP)), size[OVS_BACK + 1];
     for (int k = 0; k <= OVS_BACK; k++) size[k] = k == OVS_NOTE ? (int)fmaxf(1, roundf(is0 * 0.8f)) : is0;
     for (int row = 0; row < OVM_ROWS; row++) { const ov_srow *q = &rows[row]; int *s = &size[q->style];
-        while (*s > 1 && cv_text_w(q->left, *s) + (q->right[0] ? gap + cv_text_w(q->right, *s) : 0) > room) --*s; }
+        const char *rt = q->style == OVS_TITLE && q->right[0] == '*' ? q->right + 1 : q->right;
+        while (*s > 1 && cv_text_w(q->left, *s) + (rt[0] ? gap + cv_text_w(rt, *s) : 0) > room) --*s; }
     cv_rrect(cv, 0, 0, p[2], p[3], rh * 0.18f, C_BG);
     for (int row = 0; row < OVM_ROWS; row++) {
         const ov_srow *q = &rows[row]; ov_menu_rowrect(p, row, r); float cy = r[1] + rh / 2, x0 = r[0] + rh * 0.15f, x1 = r[0] + rw - rh * 0.15f;
         if (q->style == OVS_EMPTY) continue;
         int is = size[q->style];
-        if (row == sel) cv_rrect(cv, r[0], r[1] + rh * 0.08f, r[0] + rw, r[1] + rh * 0.92f, rh * 0.14f, C_HI);
+        if (row == sel && q->style != OVS_DISABLED) cv_rrect(cv, r[0], r[1] + rh * 0.08f, r[0] + rw, r[1] + rh * 0.92f, rh * 0.14f, C_HI);
         if (q->style == OVS_BACK) { cv_rrect(cv, r[0], r[1], r[0] + rw, r[1] + 1, 0.5f, C_LINE); cv_text(cv, r[0] + (rw - cv_text_w(q->left, is)) / 2, cy, q->left, is, C_ACCENT); continue; }
         if (q->style == OVS_BUTTON) { float bw = fminf(rw, cv_text_w(q->left, is) + 4 * gap), b[4] = {r[0] + (rw - bw) / 2, cy - rh * 0.34f, bw, rh * 0.68f}; cv_button(cv, b, q->left, 1, row == sel); continue; }
-        cv_text(cv, x0, cy, q->left, is, q->style == OVS_TITLE || row == sel ? C_WHITE : C_DIM);
-        if (q->right[0]) cv_text(cv, x1 - cv_text_w(q->right, is), cy, q->right, is, C_DIM);
+        const uint8_t *lc = q->style == OVS_DISABLED ? C_OFF : q->style == OVS_TITLE || row == sel ? C_WHITE : C_DIM;
+        cv_text(cv, x0, cy, q->left, is, lc);
+        if (q->right[0]) {
+            int badge = q->style == OVS_TITLE && q->right[0] == '*';
+            const char *rt = badge ? q->right + 1 : q->right;
+            cv_text(cv, x1 - cv_text_w(rt, is), cy, rt, is, badge ? C_ACCENT : q->style == OVS_DISABLED ? C_OFF : C_DIM);
+        }
         if (q->style == OVS_TITLE) cv_rrect(cv, r[0], r[1] + rh - 1, r[0] + rw, r[1] + rh, 0.5f, C_LINE);
     }
 }
