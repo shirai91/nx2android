@@ -78,7 +78,7 @@ DM_NICK	str		debug	?	hle_account.c
 DM_NO_ADPF	str		debug	start	perf_android.c	no Android performance hints
 DM_NRO	int		debug	?	loader.c	
 DM_NVN_ACQ_NOW	bool		debug	live	hle_nvn.c	the window acquire's sync fenced at all work so far (the old way) instead of at the texture's last present: Xenoblade Chronicles 3 then waits for its whole frame on the GPU before it submits the next
-DM_NVN_ACQ_REPLAYED	bool		debug	start	hle_nvn.c	with `DM_NVN_ASYNC=1`: the window acquire does not wait for the queued jobs' replay. XC3 then drew whole-screen garbage (solid colours, smears) while the camera turned in about half of the recordings; with the wait at the next submission instead, 2 of 6
+DM_NVN_ACQ_REPLAYED	bool		profile	start	hle_nvn.c	with `DM_NVN_ASYNC=1`: the window acquire does not wait for the queued jobs' replay. XC3 then drew whole-screen garbage (solid colours, smears) while the camera turned in about half of the recordings; with the wait at the next submission instead, 2 of 6 A profile may set it (Digimon Story Time Stranger: 0 with DM_PIN_REPLAY=prime, about 20 -> 30 fps in a crowded area on a Poco F5).
 DM_NVN_ALLOCPROF	str		debug,ios	?	nvn_mtl.m	
 DM_NVN_ALPHA_RED	str		debug,ios	?	nvn_mtl.m	
 DM_NVN_API	str		debug	?	hle_nvn.c	
