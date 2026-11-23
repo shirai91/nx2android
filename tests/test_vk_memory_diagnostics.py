@@ -9,6 +9,7 @@ import unittest
 from porter.toolchain import find_ndk
 import sys; sys.path.insert(0, str(Path(__file__).resolve().parent))
 import host_cc   # noqa: E402
+import csrc  # noqa: E402
 
 
 class MemoryDiagnostics(unittest.TestCase):
@@ -67,7 +68,7 @@ int main(void) {
         if not headers:
             self.skipTest('NDK Vulkan headers are required')
         src = (Path(__file__).resolve().parents[1] / 'nxnative/dm/android/gfx_vk_core.c').read_text(encoding='utf-8')
-        helpers = src[src.index('// DM_VK_MEM_DIAG'):src.index('\nuint32_t vk_mem_type')]
+        helpers = csrc.between(src, '// DM_VK_MEM_DIAG', '\nuint32_t vk_mem_type')
         start = src.index('typedef struct { const uint64_t *r; int n; } zcin_t;')   # zc_next_in, zc_fill, zc_place, zc_anon_fill, zc_unplace, pool_zero_copy
         function = src[start:src.index('\n}\n', src.index('static int pool_zero_copy(')) + 3]
         harness = r'''

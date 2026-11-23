@@ -1,6 +1,7 @@
-# Builds the Linux bundles (packaging/build_bundle.py), x64 and arm64, and attaches them to each published release, beside the macOS
-# and Windows zips (release-windows.yml, release-macos.yml). x64 on ubuntu-latest; arm has no such alias, so it is pinned to an
-# Ubuntu 24.04 arm image (bump it when x64 latest moves). The bundle carries the system libraries of the runner that made it (glibc
+# Builds the Linux bundles (packaging/build_bundle.py), x64 and arm64, as zips and as AppImages (packaging/build_appimage.py, issue #440), and
+# attaches them to each published release, beside the macOS and Windows zips (release-windows.yml, release-macos.yml). x64 on ubuntu-latest; arm
+# has no such alias, so it is pinned to an Ubuntu 24.04 arm image (bump it when x64 latest moves). The bundle carries the system libraries of the
+# runner that made it (glibc
 # among them), so a 24.04 build runs on Ubuntu 24.04+, Debian 13+, Mint 22 and the rolling distributions.
 name: Linux release
 
@@ -15,6 +16,7 @@ permissions:
 jobs:
   bundle:
     strategy:
+      fail-fast: false   # a failure on one cpu must not cancel the other job and hide its result; each job uploads only its own cpu's files
       matrix:
         include:
           - { runner: ubuntu-latest, cpu: x64 }
@@ -30,12 +32,28 @@ jobs:
       - run: python -m pip install -r requirements.txt pyinstaller
       - run: python -m unittest discover tests
       - run: python packaging/build_bundle.py
+      - run: python packaging/build_appimage.py
+      - name: AppImage starts mounted (as a player starts it) and keeps its engine copy from one launch to the next
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq fuse3
+          export XDG_CONFIG_HOME="$RUNNER_TEMP/config"
+          img=$(ls dist/nx2android-*-linux-${{ matrix.cpu }}.AppImage)
+          "./$img" -m porter profiles --json > "$RUNNER_TEMP/profiles.json"
+          python -c "import json, sys; n = len(json.load(open(sys.argv[1]))); assert n, 'no profiles'; print(n, 'profiles')" "$RUNNER_TEMP/profiles.json"
+          test -s "$XDG_CONFIG_HOME/nx2android/engine/KEY"
+          test -f "$XDG_CONFIG_HOME/nx2android/engine/nxnative/dm/android/build.py"
+          touch "$XDG_CONFIG_HOME/nx2android/engine/nxnative/marker"
+          "./$img" -m porter profiles --json > /dev/null
+          test -f "$XDG_CONFIG_HOME/nx2android/engine/nxnative/marker"   # the second launch, at another mount path, used the same copy
+          APPIMAGE_EXTRACT_AND_RUN=1 "./$img" -m porter profiles --json > /dev/null   # the fallback INSTALL.md gives for a PC without FUSE
       - if: github.event_name == 'release'
-        run: gh release upload "${{ github.event.release.tag_name }}" dist/nx2android-*-linux-*.zip --clobber
+        run: gh release upload "${{ github.event.release.tag_name }}" dist/nx2android-*-linux-*.zip dist/nx2android-*-linux-*.AppImage --clobber
         env:
           GH_TOKEN: ${{ github.token }}
       - if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v7
         with:
           name: nx2android-linux-${{ matrix.cpu }}
-          path: dist/nx2android-*-linux-*.zip
+          path: |
+            dist/nx2android-*-linux-*.zip
+            dist/nx2android-*-linux-*.AppImage

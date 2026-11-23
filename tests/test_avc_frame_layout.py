@@ -5,6 +5,10 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import csrc  # noqa: E402
 
 ROOT=Path(__file__).resolve().parents[1]
 SOURCE=ROOT/'nxnative/dm/android/movie_avc.c'
@@ -19,7 +23,7 @@ class AVCFrameLayout(unittest.TestCase):
     def setUpClass(cls):
         source=SOURCE.read_text(encoding='utf-8')
         # Include production declarations and SPS helpers when color metadata lands.
-        state=source[source.index('#define QMAX'):source.index('mavc *mavc_new(')]
+        state=csrc.between(source, '#define QMAX', 'mavc *mavc_new(')
         code=r'''
 #define __USE_MINGW_ANSI_STDIO 1
 #include <assert.h>
@@ -30,6 +34,9 @@ class AVCFrameLayout(unittest.TestCase):
 #include <stdio.h>
 #include <stdarg.h>
 #include <sys/types.h>
+#ifdef __aarch64__
+#include <arm_neon.h>   // nv12_rgba's DM_MOVIE_FAST path (movie_avc.c includes it above '#define QMAX')
+#endif
 #define LOG(...) (fprintf(stderr,__VA_ARGS__),fputc(10,stderr))
 typedef struct AMediaCodec AMediaCodec;
 typedef struct mavc mavc;
@@ -136,7 +143,36 @@ static void metadata_case(int mode) {
         free(a.q[0].nv12);
     }
 }
+// A picture wide enough for nv12_rgba's 16-pixel NEON steps plus a scalar tail, every byte value (clamping both ways), checked against the scalar formula
+static void wide(int pw,int ph,int standard,int full) {
+    int cs=(pw+1)&~1;size_t ny=(size_t)pw*ph,nuv=(size_t)cs*((ph+1)/2);
+    uint8_t *y=malloc(ny),*uv=malloc(nuv),*out=malloc(ny*4);assert(y && uv && out);
+    uint32_t s=0x9e3779b9u^(uint32_t)(pw*7919+ph);
+    for(size_t i=0;i<ny;i++){s=s*1664525u+1013904223u;y[i]=(uint8_t)(s>>24);}
+    for(size_t i=0;i<nuv;i++){s=s*1664525u+1013904223u;uv[i]=(uint8_t)(s>>24);}
+    for(int i=0;i<256 && (size_t)i<ny;i++)y[i]=(uint8_t)i;
+    nv12_rgba(y,uv,pw,ph,out,pw,ph,standard,full);
+    int k[4]={409,100,208,516};
+    if(standard==1){k[0]=459;k[1]=55;k[2]=136;k[3]=541;}
+    if(standard==6){k[0]=430;k[1]=48;k[2]=167;k[3]=548;}
+    if(full)for(int i=0;i<4;i++)k[i]=k[i]*224/255;
+    for(int r=0;r<ph;r++)for(int x=0;x<pw;x++){
+        const uint8_t *c=uv+(size_t)(r/2)*cs+(x&~1);
+        int yy=y[(size_t)r*pw+x],l=full?256*yy:298*(yy-16),u=c[0]-128,v=c[1]-128;
+        int expect[3]={l+k[0]*v,l-k[1]*u-k[2]*v,l+k[3]*u};
+        const uint8_t *o=out+4*((size_t)r*pw+x);
+        for(int ch=0;ch<3;ch++){int b=(expect[ch]+128)>>8;b=b<0?0:b>255?255:b;
+            if(o[ch]!=b){fprintf(stderr,"%dx%d pixel %d,%d channel %d: %d, expected %d",pw,ph,x,r,ch,o[ch],b);fputc(10,stderr);exit(1);}}
+        assert(o[3]==255);
+    }
+    free(y);free(uv);free(out);
+}
 int main(int argc,char **argv){assert(argc==2);int mode=atoi(argv[1]);
+    if(mode==60 || mode==61){
+        for(int standard=1;standard<=6;standard++)if(standard==1 || standard==2 || standard==4 || standard==6)
+            for(int full=0;full<=1;full++)wide(mode==60?40:37,mode==60?4:720,standard,full);
+        return 0;
+    }
     if(mode==50){uint8_t bytes[96]={0};mavc a=format(19);fail_picture_allocation=1;keep_picture(&a,bytes,sizeof bytes,0);return 0;}
     if(mode>=40){cropped(mode==40?0x7f420888:mode==41?0x1234:0,0);return 0;}
     if(mode>=30){metadata_case(mode);return 0;}
@@ -148,7 +184,8 @@ int main(int argc,char **argv){assert(argc==2);int mode=atoi(argv[1]);
         cls.addClassCleanup(cls.temp.cleanup)
         c=Path(cls.temp.name)/'test.c';cls.binary=c.with_suffix('.exe' if os.name=='nt' else '');c.write_text(code,encoding='utf-8')
         flags=['-fsanitize=address,undefined','-fno-omit-frame-pointer'] if os.getenv('NX2A_TEST_SANITIZE') else []
-        subprocess.run(['cc','-std=c11','-O1','-Wall','-Werror','-Wno-unused-function',*flags,str(c),'-o',str(cls.binary)],check=True,capture_output=True,text=True)
+        # -fno-strict-aliasing as in the Android build (nxnative/dm/android/build.py): nv12_rgba stores uint32_t pixels into the uint8_t output
+        subprocess.run(['cc','-std=c11','-O1','-fno-strict-aliasing','-Wall','-Werror','-Wno-unused-function',*flags,str(c),'-o',str(cls.binary)],check=True,capture_output=True,text=True)
 
     def run_case(self,case):
         r=subprocess.run([str(self.binary),str(case)],capture_output=True,text=True)
@@ -177,6 +214,17 @@ int main(int argc,char **argv){assert(argc==2);int mode=atoi(argv[1]);
         self.assertIn('movie: AVC picture allocation failed',r.stderr)
 
     def test_odd_planar_stride_and_plane_height(self):self.run_case(6)
+
+    def test_wide_rgba_matches_formula_with_and_without_movie_fast(self):
+        # Exercise NEON blocks and scalar tails for every supported matrix and range.
+        # DM_MOVIE_FAST is read once per process; ARM64 hosts execute the vector path.
+        for fast in ('1',None):
+            env={k:v for k,v in os.environ.items() if k!='DM_MOVIE_FAST'}
+            if fast:env['DM_MOVIE_FAST']=fast
+            for mode in (60,61):
+                with self.subTest(fast=fast,mode=mode):
+                    r=subprocess.run([str(self.binary),str(mode)],capture_output=True,text=True,env=env)
+                    self.assertEqual(r.returncode,0,r.stderr)
 
     def test_format_defaults_and_crop_stride_slice_fallbacks(self):
         for mode in range(30,40):

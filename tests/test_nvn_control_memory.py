@@ -152,7 +152,8 @@ class ControlMemory(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='nx2a-control-memory-') as tmp:
             c, exe = Path(tmp)/'check.c', Path(tmp)/'check'
             c.write_text(harness(), encoding='utf-8')
-            subprocess.run(['cc','-std=gnu11','-O2','-Wall','-Wextra','-Wno-unused-variable',
+            # -fno-strict-aliasing as in the Android build (nxnative/dm/android/build.py): hle_nvn.c writes its cmd_t over the opaque NVNcommandBuffer
+            subprocess.run(['cc','-std=gnu11','-O2','-fno-strict-aliasing','-Wall','-Wextra','-Wno-unused-variable',
                             '-Wno-unused-function','-I',str(NVN),'-I',str(NVN/'include'),str(c),'-pthread','-o',str(exe)],check=True)
             subprocess.run([str(exe)],check=True)
 
@@ -297,7 +298,8 @@ class ControlMemoryCapacity(unittest.TestCase):
         source, binary = cls.root/(name+'.c'), cls.root/name
         source.write_text(code, encoding='utf-8')
         flags = ['-fsanitize=address,undefined','-fno-sanitize-recover=all','-fno-omit-frame-pointer'] if cls.sanitize else []
-        subprocess.run(['cc','-std=gnu11','-O1','-g','-pthread',*flags,'-I'+str(NVN),
+        # -fno-strict-aliasing as in the Android build: hle_nvn.c writes its cmd_t over the opaque NVNcommandBuffer
+        subprocess.run(['cc','-std=gnu11','-O1','-fno-strict-aliasing','-g','-pthread',*flags,'-I'+str(NVN),
                         '-I'+str(NVN/'include'),str(source),'-o',str(binary)],check=True,capture_output=True)
         return binary
 

@@ -16,8 +16,12 @@ namespace Ryujinx.Graphics.Shader.Translation.Transforms
         {
             if (node.Value is TextureOperation texOp)
             {
-                node = InsertTexelFetchScale(context.Hfm, node, context.ResourceManager, context.Stage);
-                node = InsertTextureSizeUnscale(context.Hfm, node, context.ResourceManager, context.Stage);
+                // nx2android: a host that never scales the render (QueryHostSupportsRenderScale false: the Android chain, whose support buffer holds 1.0 in every
+                // render scale) gets no scale helpers. Each texel fetch called TexelFetchScale, whose branch and early return were inlined at every call: Fire Emblem:
+                // Three Houses' particle compute shaders (1,607 fetches in one loop) made the Adreno 830 compiler fail after 25 s (VK_ERROR_UNKNOWN or std::bad_alloc)
+                bool renderScale = context.GpuAccessor.QueryHostSupportsRenderScale();
+                node = InsertTexelFetchScale(context.Hfm, node, context.ResourceManager, context.Stage, renderScale);
+                node = InsertTextureSizeUnscale(context.Hfm, node, context.ResourceManager, context.Stage, renderScale);
 
                 if (texOp.Inst == Instruction.TextureSample)
                 {
@@ -39,7 +43,8 @@ namespace Ryujinx.Graphics.Shader.Translation.Transforms
             HelperFunctionManager hfm,
             LinkedListNode<INode> node,
             ResourceManager resourceManager,
-            ShaderStage stage)
+            ShaderStage stage,
+            bool renderScale)
         {
             TextureOperation texOp = (TextureOperation)node.Value;
 
@@ -54,6 +59,7 @@ namespace Ryujinx.Graphics.Shader.Translation.Transforms
                 !isBindless &&
                 !isIndexed &&
                 stage.SupportsRenderScale &&
+                renderScale &&
                 TypeSupportsScale(texOp.Type))
             {
                 int functionId = hfm.GetOrCreateFunctionId(HelperFunctionName.TexelFetchScale);
@@ -92,7 +98,8 @@ namespace Ryujinx.Graphics.Shader.Translation.Transforms
             HelperFunctionManager hfm,
             LinkedListNode<INode> node,
             ResourceManager resourceManager,
-            ShaderStage stage)
+            ShaderStage stage,
+            bool renderScale)
         {
             TextureOperation texOp = (TextureOperation)node.Value;
 
@@ -104,6 +111,7 @@ namespace Ryujinx.Graphics.Shader.Translation.Transforms
                 !isBindless &&
                 !isIndexed &&
                 stage.SupportsRenderScale &&
+                renderScale &&
                 TypeSupportsScale(texOp.Type))
             {
                 int functionId = hfm.GetOrCreateFunctionId(HelperFunctionName.TextureSizeUnscale);
@@ -199,7 +207,7 @@ namespace Ryujinx.Graphics.Shader.Translation.Transforms
 
                 texOp.SetSource(index, coordNormalized);
 
-                InsertTextureSizeUnscale(hfm, textureSizeNode, resourceManager, stage);
+                InsertTextureSizeUnscale(hfm, textureSizeNode, resourceManager, stage, gpuAccessor.QueryHostSupportsRenderScale());
             }
 
             return node;

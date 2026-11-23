@@ -1,0 +1,51 @@
+# Pokémon Violet 4.0.0 (v786432), Game Freak Trinity, SDK 13.3.13, NVN.
+# Experimental Android bring-up on AYN Odin 2 / Adreno 740 (2026-11-18).
+# Shader tables come from this build's own main and Trinity packs; they differ from Scarlet's in a few keys.
+
+# ---- Identity ----
+title_id	01008F6008C5E000
+program_id	01008F6008C5E000
+
+# ---- App ----
+name	Pokémon Violet
+ipa	PokMonViolet.ipa
+app_category	public.app-category.games
+pad_layout	full
+
+# ---- Versions ----
+build	v786432	4.0.0	main=709bfd66115298640155fcc4979dba15	sdk=bb560bdfa85b4a97786ae2c3b7995df6
+package	v786432
+shader_versions	v786432
+
+# ---- Files ----
+# The host supplies the movie API; main takes nothing else from subsdk0.
+modules	main sdk
+romfs_marker	arc/data.trpfs
+zip_store	.bk2:.bnk:.pck:.trpfd:.trpfs:.metallib
+
+# ---- Memory ----
+# The NPDM declares 16 MB of system resource. nninitStartup reserves a 12 GB
+# StandardAllocator region; the survey's 4.375 GB alias region refused it and
+# boot aborted in the Oodle decoder. A 14.375 GB alias region in a 15 GB block boots.
+mem_reserve	0x3c0000000
+mem_alias	0x398000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+sys_resource	0x1000000
+# Same engine as Scarlet (0100A3D008C5C000): without the pool enforced the allocators count the 12 GB setup pages twice,
+# the periodic free-memory sample wraps to 0, and the wild Pokémon spawner despawns every wild Pokémon.
+mem_map_limit	on
+
+# ---- Frame rate ----
+# Without patches.py the game asks for present interval 2 and runs at 30 (as on the Switch), whatever DM_FPS_PIN holds.
+# patches.py (the community dynamic-FPS cut, as Scarlet's) makes it ask for interval 1 and step by the time that really passed;
+# fps_ceiling 30 holds it at 30 by default and porter's --fps60 lifts the ceiling (DM_FPS_CEILING=0).
+# Measured on the Odin 2 in Poco Path (one run): turning the camera for 2 s at 33 fps (DM_FPS_PIN=40) and back for 2 s pinned at 30 returned to the same view
+# within about 1 degree, either order; frame counting would have missed by about 18. Below 30 fps (CPU load, about 15 fps) a turn came up short, so the
+# game slows down there rather than skipping ahead, as on the Switch. The overworld's frame work is 25 to 32 ms here, so --fps60 gives about 33 fps, not 60
+fps_ceiling	30
+
+# ---- Shader split ----
+# 35,937 shaders, including BNSH inside Oodle-compressed arc/data.trpfs entries.
+shader_groups	/audio/=audio /arc/=arc /demo/=demo /system/=system /event/=event
+shader_note	Pokémon Violet shaders

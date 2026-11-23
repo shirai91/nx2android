@@ -11,6 +11,9 @@ from porter.toolchain import find_ndk
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import host_cc   # noqa: E402
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import csrc  # noqa: E402
+
 EXEC = Path(__file__).resolve().parents[1] / 'nxnative/dm/android/gfx_vk_exec.c'
 HARNESS = r'''
 #define VK_NO_PROTOTYPES
@@ -66,7 +69,7 @@ class Slot0Fill(unittest.TestCase):
         headers = next(ndk.glob('toolchains/llvm/prebuilt/*/sysroot/usr/include'), None) if ndk else None
         if not headers:
             self.skipTest('NDK Vulkan headers are required')
-        src = EXEC.read_text(encoding='utf-8')
+        src = csrc.unit(EXEC)
         rpkey = next(line for line in src.splitlines() if '} rpkey;' in line)
         def cut(start, end_marker):
             a = src.index(start); return src[a:src.index(end_marker, a)]
@@ -87,7 +90,7 @@ class Slot0Fill(unittest.TestCase):
     def test_scratch_is_not_read_as_the_games_target(self):
         # Where slot 0 holds the scratch, S.rt_col[0] is still the target the game bound there earlier (or an alias's): the sample-count check,
         # the linear target copy-back and the colour clear must each leave that slot out
-        src = EXEC.read_text(encoding='utf-8')
+        src = csrc.unit(EXEC)
         self.assertLess(src.index('static vkimg_t g_s0_image;'), src.index('static void lin_back(void)'))
         def body(start, end_marker):
             a = src.index(start); return src[a:src.index(end_marker, a)]

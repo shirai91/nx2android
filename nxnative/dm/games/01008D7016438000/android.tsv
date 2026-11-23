@@ -1,0 +1,14 @@
+# 13 Sentinels: Aegis Rim (Asia) on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# The Asian release (Japanese / Korean / Chinese) of the game the western profile 01003FC01670C000 covers: its own title ID and its own main build (31194702…), the same
+# subsdk0 / sdk builds and the same shader keys (all 751 rows), at other offsets in main. The profile is upstream's (seedds/nxnative dm/games/01008D7016438000, played on the Mac:
+# 60 fps with sound, saving and loading; no host change was needed); the Android bring-up is ours: the game's own files (the profile's romfs marker is the Chinese data archive
+# ROBO_CN.CPK), the gamepad's theme pack is the western release's (the gamepad's layout, the pause menu's settings and the operation mode are the western profile's, so the two
+# releases play the same way). On the Xiaomi 23117RK66C (Snapdragon 8 Gen 3, Adreno 750, Android 16): the port runs, the game starts, the Chinese text and the cutscenes play, the
+# save menu works, 58-59 fps at 1440p with 1.4 GB resident.
+status	playable
+tested	v0 Xiaomi 23117RK66C (Snapdragon 8 Gen 3, Adreno 750, Android 16)
+package	org.nx2a.thirteensentinelsasia
+orientation	landscape
+requires	bcn
+readme_image	docs/images/13-sentinels-asia.jpg
+readme_tag	v0.4.0

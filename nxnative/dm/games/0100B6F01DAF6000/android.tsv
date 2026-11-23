@@ -8,6 +8,9 @@
 # Text and the card data screen's ability labels need game.tsv's tex_cpu_uncached (the game fills its textures in CPU-uncached pools, with COMPRESSIBLE on all of them).
 # The game's frame limiter busy-waited on yields (one big core at 100%, the fan at full speed): patches.py turns its yield into a 0.52 ms sleep. The whole game at 60 fps on
 # the title screen: 1.27 of a core before, 0.27 after; the boot screens keep their 3.0 s, so the game's speed is the same.
+# Since 2026-11-19 the limiter sleeps until the next frame is due, and the resource loader polls its empty queue every 4 ms instead of 1 ms (patches.py). Tutorial fight on
+# the Odin 2, 120 s per run: at 60 fps 0.82 to 0.84 of a core before, 0.77 to 0.78 after, GPU 61% either way, battery power 4.28 to 4.32 W before, 4.22 to 4.27 W after
+# (within run-to-run noise), frame time p95 17.5 to 18.1 ms, 0 or 1 late frame of 64; at 30 fps 0.55 of a core and about 3.0 W both before and after.
 # 30 fps by default (game.tsv fps_ceiling), 60 with porter's --fps60: the whole game took 0.14 of a core at 30 fps on the title screen.
 # romfs zstd: its RomFS is 30.6 GB extracted against 21 GB of XCI and update; packed, 19.7 GB on the device (7,456 of 40,848 files), boot, saves and fights read from it.
 # Known gaps: shaders the game patches or builds at run time (14 in the tutorial fight: its card and board shaders) are captured on the device and need a port again
@@ -17,3 +20,5 @@ tested	v1441792 AYN Odin 2 (Snapdragon 8 Gen 2, Adreno 740, Android 13)
 package	org.nx2a.vanguarddeardays2
 orientation	landscape
 romfs	zstd
+readme_image	docs/images/cardfight-vanguard-dear-days-2.jpg
+readme_tag	v0.4.0

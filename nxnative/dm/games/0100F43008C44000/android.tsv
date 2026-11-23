@@ -25,3 +25,5 @@ package	org.nx2a.plza
 orientation	landscape
 env	DM_FPS_HOLD=off
 env	DM_VK_CB_DRAWS=32
+readme_image	docs/images/pokemon-legends-z-a.jpg
+readme_tag	v0.3.0

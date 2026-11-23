@@ -12,6 +12,7 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
 
         // 1 and 0 elements are not considered arrays anymore.
         public const int MinimumArrayLength = 2;
+        private const int NvnSlotArrayLength = 32;      // nxnative: as BindlessElimination's
 
         public static void RunPassOgl(BasicBlock block, ResourceManager resourceManager)
         {
@@ -204,6 +205,12 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
                 }
 
                 int length = Math.Max(MinimumArrayLength, gpuAccessor.QueryTextureArrayLengthFromBuffer(src0CbufSlot));
+
+                // nxnative: images and buffer textures keep 32 elements at most (the host binds those slots one by one); c[2]'s texture table keeps the length the query answers (32 in dmsh_xlate)
+                if (src0CbufSlot != NvnTextureBufferIndex && (texOp.Inst.IsImage() || (texOp.Type & SamplerType.Mask) == SamplerType.TextureBuffer))
+                {
+                    length = Math.Min(length, NvnSlotArrayLength);
+                }
 
                 TurnIntoArray(resourceManager, texOp, cbufSlot, handleIndex, length);
 

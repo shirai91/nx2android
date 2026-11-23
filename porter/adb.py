@@ -110,6 +110,19 @@ class Adb:
         out = self.shell('for p in ' + ' '.join(shlex.quote(x) for x in (a, b)) + '; do while [ ! -e "$p" ]; do p=$(dirname "$p"); done; stat -L -c %d "$p"; done', check=False).split()
         return len(out) == 2 and out[0] == out[1]
 
+    def sd_volume(self):
+        """The SD card's mount folder (/storage/<its id>), None when no portable volume is mounted. sm lists a mounted public volume as "public:179,1 mounted 0AEF-0B2F":
+        179 is the MMC block major (an SD card), so such a volume comes first; a USB drive on OTG (major 8) only when no SD card is mounted"""
+        vols = []
+        for ln in self.shell('sm list-volumes', check=False).splitlines():
+            p = ln.split()
+            if len(p) >= 3 and p[0].startswith('public:') and p[1] == 'mounted' and re.fullmatch(r'[A-Za-z0-9-]+', p[2]) and p[2] != 'null':
+                vols.append((not p[0].startswith('public:179,'), f'/storage/{p[2]}'))
+        return sorted(vols, key=lambda v: v[0])[0][1] if vols else None   # stable: the first listed of each kind
+
+    def is_dir(self, path):   # whether path is a folder on the device
+        return self.shell(f'[ -d {shlex.quote(path)} ] && echo yes; true', check=False).strip() == 'yes'
+
     def read_text(self, path):   # a small text file on the device, '' when it is not there
         return self.shell(f'cat {shlex.quote(path)} 2>/dev/null; true', check=False)
 

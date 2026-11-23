@@ -144,4 +144,22 @@ class InspectionProcesses(unittest.TestCase):
         self.assertTrue(cleaned)
 
 
+@unittest.skipIf(QApplication is None, 'PySide6 is needed for the GUI tests')
+class SdCardWarning(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication([])
+
+    def test_shown_only_while_the_sd_box_is_on(self):
+        with patch.object(PortTab, 'refresh_devices'):
+            tab = PortTab(None)
+        self.addCleanup(tab.deleteLater)
+        self.assertTrue(tab.romfs_sd_warn.isHidden())
+        tab.romfs_sd.setChecked(True)
+        self.assertFalse(tab.romfs_sd_warn.isHidden())
+        self.assertEqual(tab.romfs_args(), ['--romfs-at', 'sd'])
+        tab.romfs_sd.setChecked(False)
+        self.assertTrue(tab.romfs_sd_warn.isHidden())
+
+
 if __name__ == '__main__': unittest.main()

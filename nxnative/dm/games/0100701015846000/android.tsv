@@ -15,3 +15,5 @@ package	org.nx2a.unpacking
 orientation	landscape
 setting	overlay=0
 env	DM_TOUCH_DOCKED=screen
+readme_image	docs/images/unpacking.jpg
+readme_tag	v0.1.2

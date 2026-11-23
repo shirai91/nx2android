@@ -8,8 +8,19 @@
 
 typedef struct { uint8_t *keys; void **vals; uint32_t klen, cap, n; } nvn_hmap;   // vals[i] == NULL means an empty slot
 
+// Keys of 32 bytes or more go through four independent lanes, 32 bytes a step: one multiply chain made a long key wait on each multiply in turn, and the
+// Android Vulkan backend's pipeline key (~1 KB, looked up for most draws) took ~5% of Sifu's replay thread on a Galaxy Z Fold7 in this function
 static inline uint64_t nvn_hm_hash(const void *k, uint32_t len) {
     const uint8_t *p = k; uint64_t h = 0x9e3779b97f4a7c15ull ^ len;
+    if (len >= 32) {
+        uint64_t a = h, b = h ^ 0xc2b2ae3d27d4eb4full, c = h ^ 0x165667b19e3779f9ull, d = h ^ 0x85ebca77c2b2ae63ull;
+        for (; len >= 32; p += 32, len -= 32) {
+            uint64_t w[4]; memcpy(w, p, sizeof w);
+            a = (a ^ w[0]) * 0xff51afd7ed558ccdull; a ^= a >> 32; b = (b ^ w[1]) * 0xff51afd7ed558ccdull; b ^= b >> 32;
+            c = (c ^ w[2]) * 0xff51afd7ed558ccdull; c ^= c >> 32; d = (d ^ w[3]) * 0xff51afd7ed558ccdull; d ^= d >> 32;
+        }
+        h = a ^ ((b << 13) | (b >> 51)) ^ ((c << 29) | (c >> 35)) ^ ((d << 47) | (d >> 17));
+    }
     for (; len >= 8; p += 8, len -= 8) { uint64_t w; memcpy(&w, p, 8); h = (h ^ w) * 0xff51afd7ed558ccdull; h ^= h >> 32; }
     if (len) { uint64_t w = 0; memcpy(&w, p, len); h = (h ^ w) * 0xff51afd7ed558ccdull; }
     h ^= h >> 33; h *= 0xc4ceb9fe1a85ec53ull; h ^= h >> 33;

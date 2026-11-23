@@ -1,16 +1,10 @@
 """Keep main's integer-input inference while the address pass fixes its inputs."""
-import ast
-import collections
-from pathlib import Path
 import struct
 import unittest
 
-SOURCE = Path(__file__).resolve().parents[1]/'nxnative/dm/android/tools/shader_vk.py'
-tree = ast.parse(SOURCE.read_text(encoding='utf-8'))
-function = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'int_inputs')
-namespace = dict(struct=struct, collections=collections, OP_DECORATE=71, OP_VARIABLE=59)
-exec(compile(ast.Module(body=[function], type_ignores=[]), str(SOURCE), 'exec'), namespace)
-infer = namespace['int_inputs']
+from test_shader_int_inputs import load
+
+infer = load()
 
 
 def module(body, local_storage=7):

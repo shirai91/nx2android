@@ -12,3 +12,5 @@ tested	v0 (1.0.7) Sony XQ-DQ72 (Adreno 740) and OnePlus 15 (Snapdragon 8 Elite G
 package	org.nx2a.t01006c5015e84000
 orientation	landscape
 setting	docked=0
+readme_image	docs/images/disco-elysium-the-final-cut.jpg
+readme_tag	v0.4.0

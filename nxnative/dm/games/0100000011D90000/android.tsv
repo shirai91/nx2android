@@ -7,3 +7,5 @@ status	playable
 tested	v393216 AYN Thor (Snapdragon 8 Gen 2, Adreno 740, Android 13)
 package	org.nx2a.t0100000011d90000
 orientation	landscape
+readme_image	docs/images/pokemon-brilliant-diamond.jpg
+readme_tag	v0.4.0

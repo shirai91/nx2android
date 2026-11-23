@@ -268,6 +268,9 @@ namespace Ryujinx.Graphics.Shader
             return true;
         }
 
+        // Locations required by downstream consumers when translating software passthrough alone.
+        int QueryGeometryPassthroughAttributeMask() => 0xffff;
+
         /// <summary>
         /// Queries host support for readable images without a explicit format declaration on the shader.
         /// </summary>
@@ -367,6 +370,15 @@ namespace Ryujinx.Graphics.Shader
         /// </summary>
         /// <returns>True if the GPU and driver supports texture shadow LOD, false otherwise</returns>
         bool QueryHostSupportsTextureShadowLod()
+        {
+            return true;
+        }
+
+        /// <summary>
+        /// Queries whether the host may render at a scale other than 1 (nx2android: false skips the TexelFetchScale and TextureSizeUnscale helpers).
+        /// </summary>
+        /// <returns>True if the shader must apply the support buffer's render scales, false otherwise</returns>
+        bool QueryHostSupportsRenderScale()
         {
             return true;
         }

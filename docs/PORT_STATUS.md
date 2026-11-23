@@ -1,3 +1,3 @@
 # Games
 
-The games table moved to the README: [Games](../README.md#games).
+The games list is in the README: [Games](../README.md#games). Each game has its own page, `nxnative/dm/games/<title ID>/README.md`.

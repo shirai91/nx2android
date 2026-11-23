@@ -408,8 +408,9 @@ static Result err_res(const char *op, const char *path) {
 
 // ---------- Mount ----------
 HLE_FORCE("_ZN2nn2fs22QueryMountRomCacheSizeEPm", "fsp-srv; rom reads the host directory directly, the cache gets only the minimum size", Result, h_fs_QueryRomCache, size_t *out) { *out = 0x1000; return RES_OK; }
-HLE_FORCE("_ZN2nn2fs8MountRomEPKcPvm", "fsp-srv; rom → host RomFS directory", Result, h_fs_MountRom, const char *name, void *cache, size_t sz) {
-    (void)cache; (void)sz; char b[1024];
+HLE_FORCE("_ZN2nn2fs22QueryMountRomCacheSizeEPmi", "fsp-srv; the (size_t*, int) overload (RTK14: main+0x5a20 calls it with the option word 0), same minimum cache size as the size_t* one", Result, h_fs_QueryRomCache2, size_t *out, int opt) { (void)opt; *out = 0x1000; return RES_OK; }
+static Result mount_rom_host(const char *name) {
+    char b[1024];
     Result r = mount(name, envdir("DM_ROMFS", "romfs", b, sizeof b), 1);
     if (r == RES_OK && getenv("DM_ROMFS_OVERLAY")) {
         PATH_LOCK();
@@ -418,6 +419,12 @@ HLE_FORCE("_ZN2nn2fs8MountRomEPKcPvm", "fsp-srv; rom → host RomFS directory", 
         }
     }
     return r;
+}
+HLE_FORCE("_ZN2nn2fs8MountRomEPKcPvm", "fsp-srv; rom → host RomFS directory", Result, h_fs_MountRom, const char *name, void *cache, size_t sz) {
+    (void)cache; (void)sz; return mount_rom_host(name);
+}
+HLE_FORCE("_ZN2nn2fs8MountRomEPKciPvm", "fsp-srv; the (const char*, int, void*, size_t) MountRom overload (RTK14: main+0x5a80 passes option word 0), same host RomFS mount", Result, h_fs_MountRom2, const char *name, int opt, void *cache, size_t sz) {
+    (void)opt; (void)cache; (void)sz; return mount_rom_host(name);
 }
 // Add-on content (DLC) RomFS: DM_AOC_DIR/<index>/, extracted from the player's DLC NSPs by the packing script; mounted read-only, using the directory index like rom.
 // The owned index list is reported by the aoc calls in hle_misc.c from the same directory; the game only mounts indices it was given, and a missing directory answers "target not found" (fs 2-1002, as on hardware without that DLC)

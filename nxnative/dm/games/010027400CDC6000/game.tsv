@@ -1,0 +1,48 @@
+# Divinity: Original Sin 2 - Definitive Edition (Larian Studios' Divinity Engine 3.6, NVN, Wwise), SDK 9.3.0, update 1.0.12 (v786432). No iOS profile upstream: made from the
+# survey (dm/games/profile_guess.py), then checked on Android (android.tsv). The game data is 47 Larian packages (LSPK version 13, Data/*.pak); its 12,256 shaders are GLSLC
+# outputs in the packages' .bshd members (shader_split.py lspk_shaders), 73 more are in main.
+
+# ---- Identity ----
+title_id	010027400CDC6000
+program_id	010027400CDC6000
+
+# ---- App ----
+name	Divinity Original Sin 2
+ipa	DivinityOriginalSin2.ipa
+app_category	public.app-category.games
+
+# ---- Versions ----
+# The ExeFS holds the SDK twice: subsdk0 and sdk are the same file (the same build ID and bytes), loaded twice as on hardware
+build	v786432	1.0.12	main=4979b200d53bb282e0d11871613286da	subsdk0=230994acc1eb0f13878dd155361beff3	sdk=230994acc1eb0f13878dd155361beff3
+package	v786432
+shader_versions	v786432
+
+# ---- Files ----
+modules	main subsdk0 sdk
+romfs_marker	Data/SharedSounds.pak
+zip_store	.pak:.metallib
+
+# ---- Memory ----
+# The NPDM declares 2 MB of system resource, and nninitStartup asks SetHeapSize(0xbd400000), 3.03 GB (the guessed 4.375 GB alias region left a 128 MB heap region,
+# and the game stopped there with a Break). 5 GB block - 256 MB code - 1.5 GB alias - 256 MB stacks = a 3 GB heap region; the alias region holds the SDK's 1 GB node area
+# and the game's few address regions (+1.25 GB at boot).
+mem_reserve	0x140000000
+mem_alias	0x60000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+sys_resource	0x200000
+
+# ---- Shader split ----
+shader_groups	/Data/=data
+shader_note	Divinity Original Sin 2 shaders
+
+# ---- Network ----
+# Before every load the game checks its socket layer: a UDP socket bound to port 0 sends 4 bytes to itself on 127.0.0.1 and reads them back. With Socket failing
+# (the offline answer) it waited on its loading screen for ever; sockets on the loopback interface only, as Horizon's bsd service with no network (hle_socket.c)
+sock_loopback	on
+
+# ---- Frame rate ----
+# The game asks for present interval 2 (30 fps on the Switch). Its logic steps by the time that passed: on the prison ship the character walked the same distance in
+# 1.5 s at 60 fps and pinned at 30 (about 5.5 map units both ways), so presents follow the display and the game runs at 60 fps. Its dynamic resolution reads the
+# GPU time between two timestamps of one submission, 0 with gpu_timestamps submission, so it keeps the full resolution (GPU 8-9 ms a frame on the Y700)
+present_interval	display
