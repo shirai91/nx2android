@@ -398,12 +398,12 @@ static int recv_fds(int sock, int *fds, int max) {
 // Extract the mappable dma-buf fd from an AHardwareBuffer's native handle. Adreno sends 1 fd; MediaTek gralloc_extra sends 3 (metadata at 0, dma-buf at 1).
 static int ahb_fd(AHardwareBuffer *ahb, int *why) {
     int sv[2], fds[16], nfd = -1;
-    if (why) *why = 4;   // the caller's diagnostic stage: 2 socketpair, 3 the handle never arrived, 4 no usable fd among them
+    if (why) *why = 4;   // the caller's diagnostic stage: 2 socketpair, 3 the handle never arrived, 4 nothing usable came back
     if (!ahb || socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sv)) { if (why) *why = 2; return -1; }
     if (!AHardwareBuffer_sendHandleToUnixSocket(ahb, sv[0])) nfd = recv_fds(sv[1], fds, 16);
     else if (why) *why = 3;
     close(sv[0]); close(sv[1]);
-    if (nfd < 1) { if (why) *why = 3; return -1; }
+    if (nfd < 1) return -1;   // (still 4: the receive brought nothing back)
     int pick = -1;
     if (nfd == 1) {
         pick = 0;
@@ -664,7 +664,9 @@ static int pool_zero_copy(vkpool_t *p, uint8_t *mem, uint64_t size, int lazy, co
     if (ar) { mem_diag_zc(1, "AHardwareBuffer_allocate", size, "return", ar); return -1; }
 #define ZC_DROP() do { if (reuse) zcf_free_now(&re); else AHardwareBuffer_release(ahb); } while (0)
     int why = 4; int fd = ahb_fd(ahb, &why);
-    if (fd < 0) { mem_diag_zc(why, "ahb_fd", size, "return", fd); ZC_DROP(); return -1; }
+    if (fd < 0) {   // the stage says which step of ahb_fd it was, and the name says the same: 2 socketpair, 3 the handle never arrived, 4 nothing usable came back
+        static const char *const stage_name[] = {"ahb_fd", "ahb_fd", "socketpair", "AHardwareBuffer_sendHandleToUnixSocket", "recv_fds"};
+        mem_diag_zc(why, why >= 0 && why < 5 ? stage_name[why] : "ahb_fd", size, "return", fd); ZC_DROP(); return -1; }
     // copy the pool's current contents into the buffer through a temporary mapping, then put the buffer's pages at the pool's address
     zcfill_t f = {fd, 0, NULL, 0, in}; int rc = zc_place(mem, size, &f, lazy, &done);
     if (rc == -5) mem_diag_zc(5, "mmap-temporary", size, "errno", errno);
