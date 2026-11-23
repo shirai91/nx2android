@@ -243,7 +243,7 @@ DM_TOUCH_DOCKED	str		profile	start	hle_touch.c	touch in docked mode: "screen" = 
 DM_TOUCH_HAPTICS	int		debug,ios	?	DmGamepad.m	
 DM_TOUCH_LOG	str		debug	?	hle_touch.c	DM_TOUCH_LOG=1 also logs each gesture entry (up to 500 lines)
 DM_UDC_SELFTEST	str		debug,ios	?	nvn_mtl.m	
-DM_UI_LANG	str		app	start	front_android.c	overlay UI language ("zh" or "en"); unset follows the device locale (persist.sys.locale / ro.product.locale)
+DM_UI_LANG	str		app	start	front_android.c	overlay UI language: unset follows the device locale (persist.sys.locale / ro.product.locale); any value starting with "z" ("zh", "zh-CN", "zh-TW") gives Chinese, anything else English. The Chinese strings are Simplified, so every zh* locale gets Simplified Chinese
 DM_VK_ASYNC_PIPE	bool	1	profile	live	gfx_vk_exec.c	0 = new pipelines are built on the replay thread, not in the background
 DM_VK_BC_DRAW	int	0	profile	start	gfx_vk_tex.c	BC texture stand-in mode for drivers without BC: 0 = off
 DM_VK_BIND_DUMP	str		debug	start	gfx_vk_exec.c	writes the storage of the texture that binding of that pixel shader really resolved to (at most 8 files) to `$DM_ROOT/bind_<fs>_b<binding>_<w>x<h>_f<format>_s<serial>.bin` (the current folder when `DM_ROOT` is unset); slots alone are polluted by stale entries of earlier draws
