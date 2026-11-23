@@ -36,10 +36,15 @@ class OverlayVisibility(unittest.TestCase):
 #include "front.h"
 #include "overlay_layout.h"
 #include "pad_slots.h"
+#include "pad_remap.h"
 #include "stick_axis.h"
 static _Atomic int g_set_overlay, g_overlay, g_pads, g_edit, g_menu_btn = 1;
 static _Atomic int g_cust[2][2][OV_N][4];
 static _Atomic int g_set_rumble, g_set_fps, g_set_labels, g_menu_tab, g_sv_st;
+static int g_slot_mu;
+static pad_remap_table g_remap;
+#define pthread_mutex_lock(m) ((void)(m))
+#define pthread_mutex_unlock(m) ((void)(m))
 static int layout, saves;
 int dm_overlay_layout(void) { return layout; }
 float dm_overlay_scale(void) { return 1; }
@@ -58,6 +63,7 @@ static void menu_tab(int tab) { (void)tab; }
 static int fps_opt_press(int item) { (void)item; return 0; }
 static void ed_open(void) {}
 static void sp_open(void) {}
+static void rm_open(void) {}
 static void save_export(void) {}
 static void menu_audio(void) {}
 static void menu_close(void) {}
@@ -66,7 +72,7 @@ static void dm_overlay_redraw(void) {}
 // Synthetic Android events. The production dispatch and touch handlers below consume them.
 enum { AINPUT_SOURCE_TOUCHSCREEN = 1, AINPUT_SOURCE_GAMEPAD = 2, AINPUT_SOURCE_JOYSTICK = 4, AINPUT_SOURCE_KEYBOARD = 8 };
 enum { AINPUT_EVENT_TYPE_KEY = 1, AINPUT_EVENT_TYPE_MOTION };
-enum { AKEYCODE_BACK = 1, AKEYCODE_BUTTON_MODE, AKEYCODE_MENU, TEST_PAD_KEY };
+enum { AKEYCODE_BACK = PAD_KC_BACK, AKEYCODE_BUTTON_MODE = PAD_KC_BTN_MODE, AKEYCODE_MENU = PAD_KC_MENU, TEST_PAD_KEY = PAD_KC_BTN_B };
 enum { AKEY_EVENT_ACTION_DOWN, AKEY_EVENT_ACTION_UP };
 enum { AMOTION_EVENT_ACTION_DOWN, AMOTION_EVENT_ACTION_UP, AMOTION_EVENT_ACTION_CANCEL,
        AMOTION_EVENT_ACTION_POINTER_DOWN, AMOTION_EVENT_ACTION_POINTER_UP };
@@ -77,6 +83,7 @@ enum { AMOTION_EVENT_AXIS_X, AMOTION_EVENT_AXIS_Y, AMOTION_EVENT_AXIS_Z, AMOTION
 typedef struct { int source, type, action, key, device; float x, y, axis[10]; } AInputEvent;
 typedef int ANativeWindow;
 static int width, height, window, vibration = -1, touches, menu_opens, pad_publications, g_pad_used;
+static pad_held_keys g_held_keys[DM_PLAYERS];
 static uint64_t g_btn[DM_PLAYERS], touch_buttons;
 static _Atomic uint64_t g_touch_btn;   // as in front_android.c: the touch handler swaps it with atomic_exchange
 static float g_ax[DM_PLAYERS][8];
@@ -86,7 +93,7 @@ static uint32_t players_mask;
 // The players (each controller its own): the slots, and the Java side stubbed. Devices 7 (a keyboard) and -1 (`adb shell input`'s virtual one) are not
 // controllers; every other id is one, until the test marks it gone. Device 45 is device 44 back under a new id, 46 another controller with 42's name
 static pad_slots g_slots;
-static int g_pad_merge = -1, g_slot_mu, g_ndev_key, key_reads, log_taken, dev_gone[256];
+static int g_pad_merge = -1, g_ndev_key, key_reads, log_taken, dev_gone[256];
 static struct { int id; char key[64]; } g_dev_key[16];
 static int pad_dev_kind(int id) { return id == 7 || id == -1 ? 0 : id >= 0 && id < 256 && dev_gone[id] ? -1 : 1; }
 static void pad_key_now(int id, char *out, size_t n) { key_reads++; snprintf(out, n, "pad-%d", id == 45 ? 44 : id == 46 ? 42 : id); }
@@ -95,17 +102,16 @@ static int32_t touch_sticks[4];
 static int g_ptr_ctl[32];
 static float g_ptr_origin[32][2];
 static struct { int id, moved; } g_drag = {-1, 0};
-static _Atomic int g_menu, g_sp_on, g_tx_on, g_pad_in, g_knob[2][2];
-static _Atomic int64_t g_menu_t, g_press_t[16], g_stick_t[2];
+static _Atomic int g_menu, g_sp_on, g_rm_on, g_rm_listen, g_tx_on, g_pad_in, g_knob[2][2];
+static _Atomic int64_t g_menu_t, g_press_t[16], g_stick_t[2], g_rm_bind_ns;
 static struct { int sel; } g_tx;
 static int g_tx_mu;
-#define pthread_mutex_lock(m) ((void)(m))
-#define pthread_mutex_unlock(m) ((void)(m))
 #define LOG(...) log_line(__VA_ARGS__)
 #define AInputEvent_getSource(e) ((e)->source)
 #define AInputEvent_getType(e) ((e)->type)
 #define AInputEvent_getDeviceId(e) ((e)->device)
 #define AKeyEvent_getKeyCode(e) ((e)->key)
+#define AKeyEvent_getScanCode(e) (0)
 #define AKeyEvent_getAction(e) ((e)->action)
 #define AKeyEvent_getRepeatCount(e) (0)
 #define AMotionEvent_getAction(e) ((e)->action)
@@ -120,8 +126,10 @@ static int g_tx_mu;
 #define menu_drag(ctl, x, y, W, H) ((void)(ctl), (void)(x), (void)(y), (void)(W), (void)(H))
 #define ed_touch(e, W, H) ((void)(e), (void)(W), (void)(H))
 #define sp_touch(e, W, H) ((void)(e), (void)(W), (void)(H))
+#define rm_touch(e, W, H) ((void)(e), (void)(W), (void)(H))
 #define menu_touch(e, W, H) ((void)(e), (void)(W), (void)(H))
 #define tx_touch(e, W, H) ((void)(e), (void)(W), (void)(H))
+static int rm_capture(uint32_t phys, int32_t kc, int32_t sc, int32_t src, int id) { (void)phys; (void)kc; (void)sc; (void)src; (void)id; return 1; }
 static ANativeWindow *phone_window(void) { return &window; }
 static int64_t mono_ns(void) { return 1; }
 static void dm_haptics_android_device(int id) { vibration = id; }
@@ -136,6 +144,7 @@ static int one_player_game;   // hle_hid.c: a one-player game merges every playe
 int dm_player_seen_as(int p) { return p < 0 ? -1 : one_player_game ? 0 : p; }
 void dm_pad_set_player(int p, uint64_t b, int32_t lx, int32_t ly, int32_t rx, int32_t ry) {
     assert(p >= 0 && p < DM_PLAYERS);
+    g_btn[p] = b;
     pad_buttons[p] = b;
     pad_sticks[p][0] = lx; pad_sticks[p][1] = ly; pad_sticks[p][2] = rx; pad_sticks[p][3] = ry;
     pad_publications++;
@@ -186,7 +195,7 @@ static void motion_handoff(void) {
     atomic_store(&g_overlay, 1);
     atomic_store(&g_pads, 0);
     atomic_store(&g_pad_in, -1);
-    g_pad_used = 0; memset(g_btn, 0, sizeof g_btn); vibration = -1;
+    g_pad_used = 0; memset(g_btn, 0, sizeof g_btn); memset(g_held_keys, 0, sizeof g_held_keys); vibration = -1;
     AInputEvent idle = {.source = AINPUT_SOURCE_JOYSTICK, .type = AINPUT_EVENT_TYPE_MOTION, .device = 43};
     assert(handle_event(&idle) == 1);
     assert(dm_overlay_visible() == 1 && !g_pad_used && atomic_load(&g_pad_in) == -1 && vibration == -1);
