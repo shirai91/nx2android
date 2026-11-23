@@ -4,6 +4,10 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import csrc  # noqa: E402
 
 ROOT=Path(__file__).resolve().parents[1]
 
@@ -11,7 +15,7 @@ ROOT=Path(__file__).resolve().parents[1]
 @unittest.skipUnless(shutil.which('cc'),'host C compiler required')
 class AttachmentAlias(unittest.TestCase):
     def test_inactive_aliases_mask_transitions_and_clears(self):
-        source=(ROOT/'nxnative/dm/android/gfx_vk_exec.c').read_text()
+        source=csrc.unit((ROOT/'nxnative/dm/android/gfx_vk_exec.c'))
         start=source.index('static void color_alias_map(')
         helpers=source[start:source.index('// Render passes.',start)]
         start=source.index('static void clear_color(const p_clear_color *c)')
@@ -30,7 +34,7 @@ static VkImageView P_alias_views[8];static uint8_t P_alias[8];
 static VkRenderingAttachmentInfo P_ca[8];static VkRenderingInfo P_ri;static int P_cleared,ended,clears;static uint32_t cleared_slot;
 static struct {unsigned folded;} g_vkst;
 typedef struct {int w;} vkimg_t;static vkimg_t g_s0_image;static struct {vkimg_t *im;} P_att[8];
-static void vk_end_pass(void) {ended++;S.pass_open=0;}
+static void vk_end_pass(void);
 static int begin_pass(void) {return 1;}
 static int pass_commit(void) {return 1;}
 static int clear_masked(const p_clear_color *c,VkRect2D r) {(void)c;(void)r;return 0;}
@@ -43,7 +47,9 @@ static void fake_clear(VkCommandBuffer cb,uint32_t na,const VkClearAttachment *a
 }
 #define vkCmdClearAttachments fake_clear
 #define VKRED_ONCE(...) ((void)0)
-''' + helpers + clear + r'''
+''' + helpers + r'''
+static void vk_end_pass(void) {ended++;S.pass_open=0;g_pruned_color=0;}
+''' + clear + r'''
 int main(void) {
  VkImageView views[8]={0};uint8_t map[8];views[0]=(VkImageView)(uintptr_t)1;
  views[3]=views[4]=(VkImageView)(uintptr_t)2;views[7]=(VkImageView)(uintptr_t)3;
@@ -71,11 +77,22 @@ int main(void) {
  S.pass_open=1;clear_color(&c);assert(clears==1 && cleared_slot==3);
  c.index=-1;clear_color(&c);c.index=8;clear_color(&c);assert(clears==1);
  P_att[3].im=&g_s0_image;c.index=4;clear_color(&c);assert(clears==1);P_att[3].im=NULL;clear_color(&c);assert(clears==2);
+ // Same alias map, but a pruned pass must restore its targets before a writer.
+ S.pass_open=1;S.chmask.mask=0;g_pruned_color=1u<<3;
+ color_alias_map(5,views,0,P_alias);
+ int before=ended;bind_chmask(0);assert(ended==before && g_pruned_color);
+ bind_chmask(0x0000f000u);assert(ended==before+1 && !g_pruned_color && S.pass_open==0);
+ assert(g_prune_split_color==1 && g_prune_split_clear==0);
+ // A clear writes independently of the draw mask, and must also restore targets.
+ S.pass_open=1;g_pruned_color=1u<<3;S.chmask.mask=0;c.index=4;
+ clear_color(&c);assert(ended==before+2 && !g_pruned_color && clears==3 && cleared_slot==3);
+ assert(g_prune_split_clear==1 && g_prune_split_color==1);
+ clear_color(&c);assert(ended==before+2 && g_prune_split_clear==1);
  return 0;
 }
 '''
         with tempfile.TemporaryDirectory() as folder:
-            src=Path(folder)/'test.c';src.write_text(code);exe=Path(folder)/'test'
+            src=Path(folder)/'test.c';src.write_text(code, encoding='utf-8');exe=Path(folder)/'test'
             result=subprocess.run(['cc','-std=c11','-Wall','-Wextra','-Werror','-I',str(ROOT/'nxnative/dm/third_party/vulkan-headers/include'),str(src),'-o',str(exe)],capture_output=True,text=True)
             self.assertEqual(result.returncode,0,result.stderr)
             result=subprocess.run([str(exe)],capture_output=True,text=True)

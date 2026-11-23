@@ -9,3 +9,5 @@ status	playable
 tested	v65536 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
 package	org.nx2a.talesofeternia
 orientation	landscape
+readme_image	docs/images/tales-of-eternia-remastered.jpg
+readme_tag	v0.1.2

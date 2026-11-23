@@ -23,6 +23,8 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
         public ShaderDefinitions Definitions { get; }
         public ShaderProperties Properties { get; }
         public HostCapabilities HostCapabilities { get; }
+        public bool EmulatesViewportMask => Definitions.Stage == ShaderStage.Geometry && Definitions.GpPassthrough &&
+            !HostCapabilities.SupportsGeometryShaderPassthrough && !HostCapabilities.SupportsViewportMask;
         public ILogger Logger { get; }
         public TargetApi TargetApi { get; }
 
@@ -152,7 +154,10 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
             List<Instruction> mainInterface = [];
 
             mainInterface.AddRange(Inputs.Values);
-            mainInterface.AddRange(Outputs.Values);
+            foreach (var output in Outputs)
+            {
+                if (output.Key.IoVariable != IoVariable.ViewportMask || !EmulatesViewportMask) mainInterface.Add(output.Value);
+            }
             mainInterface.AddRange(InputsPerPatch.Values);
             mainInterface.AddRange(OutputsPerPatch.Values);
 

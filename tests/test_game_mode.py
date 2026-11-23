@@ -11,6 +11,9 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import csrc  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[1]
 APK = ROOT / 'nxnative/dm/android/apk'
 ANDROID = ROOT / 'nxnative/dm/android'
@@ -85,8 +88,8 @@ class GameMode(unittest.TestCase):
         cc = shutil.which('cc') or shutil.which('clang')
         if not cc: self.skipTest('C compiler required')
         with tempfile.TemporaryDirectory(prefix='nx2a_game_mode_') as temp:
-            c = Path(temp) / 'test.c'; exe = Path(temp) / 'test'; c.write_text(source, encoding='utf-8')
-            result = subprocess.run([cc, '-std=c11', '-D_POSIX_C_SOURCE=200809L', *['-I' + str(x) for x in includes], str(c), '-o', str(exe)], capture_output=True, text=True)
+            c = Path(temp) / 'test.c'; exe = Path(temp) / 'test'; c.write_text(source, encoding='utf-8'); csrc.pacing_files(temp)   # perf_android.c asks dm_pacing.c
+            result = subprocess.run([cc, '-std=c11', '-D_POSIX_C_SOURCE=200809L', '-I' + temp, *['-I' + str(x) for x in includes], str(c), '-o', str(exe)], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             result = subprocess.run([str(exe)], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
@@ -158,6 +161,7 @@ class GameMode(unittest.TestCase):
         code = source[start:end]
         code += '\nstatic int64_t g_frame_cost; static unsigned g_held_back;\nstatic int shown_late(void) { return -1; }\n'
         code += function(source, 'adapt_frame')
+        code = csrc.PACING_INCLUDE + code
         self.compile_run('''#include <assert.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -236,6 +240,7 @@ int main(void) {
                             'int dm_fps_ceiling(void) { return PROFILE_CEILING; }')
         code += '\nstatic int64_t g_frame_cost; static unsigned g_held_back;\nstatic int shown_late(void) { return -1; }\n'
         code += function(source, 'adapt_frame')
+        code = csrc.PACING_INCLUDE + code
         for ceiling in (0, 30):
             with self.subTest(ceiling=ceiling):
                 self.compile_run(f'#define PROFILE_CEILING {ceiling}\n' + r'''#include <assert.h>
@@ -281,6 +286,7 @@ int main(void) {
                                 'int dm_fps_ceiling(void) { return PROFILE_CEILING; }')
         fixture = (ROOT/'tests/game_mode_hint_fixture.c').read_text(encoding='utf-8')
         code = policy + '\n' + function(source, 'hint_report') + '\n' + function(source, 'dm_perf_frame')
+        code = csrc.PACING_INCLUDE + code
         for ceiling in (0, 30):
             with self.subTest(ceiling=ceiling):
                 self.compile_run(f'#define PROFILE_CEILING {ceiling}\n' + fixture.replace('/* PRODUCTION */', code))

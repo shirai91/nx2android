@@ -1,5 +1,6 @@
 """Check the Android layout editor's geometry without a device."""
 from pathlib import Path
+import os
 import shutil
 import subprocess
 import tempfile
@@ -18,10 +19,14 @@ class OverlayLayout(unittest.TestCase):
             self.skipTest('a C compiler is needed for the layout geometry check')
         harness = r'''
 #include <assert.h>
+#include <string.h>
 #include "overlay_layout.h"
-static int custom_faces, custom_a, custom_x, hidden_ctl = -1, audio_available;
+static int custom_faces, custom_a, custom_x, hidden_ctl = -1, audio_available, ui_zh;
+int dm_ui_zh(void) { return ui_zh; }
 int dm_menu_audio_available(void) { return audio_available; }
 float dm_overlay_scale(void) { return 1; }
+int dm_external_active(void) { return 0; }
+int dm_overlay_dpi(void) { return 0; }
 int dm_overlay_off(int l, int c) { return l == 1 && c == hidden_ctl; }
 int dm_overlay_custom(int layout, int ctl, float *x, float *y, float *s) {
     *s = 1;
@@ -92,6 +97,15 @@ int main(void) {
     assert(ov_menu_item(1, OVM_ROWS - 1) == OVM_RESUME);
     audio_available = 1;
     assert(ov_menu_item(1, OVM_ROWS - 2) == OVM_AUDIO);
+    ui_zh = 0;
+    assert(!strcmp(OVM_TAB_NAMES[0], "Gamepad") && !strcmp(OVM_TAB_NAMES[1], "Game") && !strcmp(OVM_TAB_NAMES[2], "Counter") && !strcmp(OVM_TAB_NAMES[3], "Style"));
+    assert(!strcmp(FPSO_POS_NAMES[0], "Top left") && !strcmp(FPSO_SIZE_NAMES[3], "Extra large"));
+    assert(!strcmp(TR("Resume", "继续游戏"), "Resume"));
+    ui_zh = 1;
+    assert(!strcmp(OVM_TAB_NAMES[0], "手柄") && !strcmp(OVM_TAB_NAMES[1], "游戏") && !strcmp(OVM_TAB_NAMES[2], "计数") && !strcmp(OVM_TAB_NAMES[3], "样式"));
+    assert(!strcmp(FPSO_POS_NAMES[0], "左上") && !strcmp(FPSO_SIZE_NAMES[3], "特大"));
+    assert(!strcmp(TR("Resume", "继续游戏"), "继续游戏"));
+    ui_zh = 0;
     const float screens[][2] = {{915, 412}, {1216, 760}, {2400, 1080}, {1080, 2400}};
     for (unsigned s = 0; s < sizeof screens / sizeof screens[0]; s++) {
         float W = screens[s][0], H = screens[s][1], step = H / OVE_GRID_ROWS, p[4];
@@ -143,9 +157,11 @@ int main(void) {
 #include <assert.h>
 #include <stdio.h>
 #include "overlay_layout.h"
-static float g_s = 1;
+static float g_s = 1; static int g_cust = -1; static float g_cx, g_cy;   /* g_cust: the control with a player's position (g_cx, g_cy) */
 float dm_overlay_scale(void) { return g_s; }
-int dm_overlay_custom(int layout, int ctl, float *x, float *y, float *s) { (void)layout; (void)ctl; (void)x; (void)y; *s = 1; return 0; }
+int dm_external_active(void) { return 0; }
+int dm_overlay_dpi(void) { return 0; }
+int dm_overlay_custom(int layout, int ctl, float *x, float *y, float *s) { (void)layout; *s = 1; if (ctl != g_cust) return 0; *x = g_cx; *y = g_cy; return 1; }
 static float gap(const ov_ctl *a, const float p[4], const ov_ctl *b, const float q[4]) {   // < 0: they overlap (round ones as circles, the rest as boxes)
     float dx = fabsf(p[0] - q[0]), dy = fabsf(p[1] - q[1]);
     if (a->w == a->h && b->w == b->h) return hypotf(dx, dy) - p[2] - q[2];
@@ -197,6 +213,87 @@ int main(void) {
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             result = subprocess.run([str(exe)], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_unfolded_window_puts_the_gamepad_under_the_picture(self):
+        """A near-square window (an unfolded Galaxy Z Fold, 2184x1968 or 1968x2184) puts the picture across its top and lays the gamepad out in the band
+        under it with DM_OVERLAY_SPLIT=1 when the density allows 8 mm face buttons or the window is taller than wide (overlay_layout.h ov_band): every control, grown as far as it fits there,
+        stays inside the band and apart, and a control dragged in the editor or the menu button lands under the finger (ov_drag_place). A phone's or a tablet's
+        window keeps the whole window, and without DM_OVERLAY_SPLIT=1 (the default) or with =0, or with the picture on an external display, there is no band"""
+        cc = shutil.which('cc') or shutil.which('clang')
+        if not cc:
+            self.skipTest('a C compiler is needed for the layout geometry check')
+        harness = r"""
+#include <assert.h>
+#include <stdio.h>
+#include <string.h>
+#include "overlay_layout.h"
+static float g_s = 1; static int g_cust = -1; static float g_cx, g_cy;   /* g_cust: the control with a player's position (g_cx, g_cy) */
+float dm_overlay_scale(void) { return g_s; }
+static int g_ext;   /* the picture on an external display */
+int dm_external_active(void) { return g_ext; }
+static int g_dpi;
+int dm_overlay_dpi(void) { return g_dpi; }
+int dm_overlay_custom(int layout, int ctl, float *x, float *y, float *s) { (void)layout; *s = 1; if (ctl != g_cust) return 0; *x = g_cx; *y = g_cy; return 1; }
+static float gap(const ov_ctl *a, const float p[4], const ov_ctl *b, const float q[4]) {
+    float dx = fabsf(p[0] - q[0]), dy = fabsf(p[1] - q[1]);
+    if (a->w == a->h && b->w == b->h) return hypotf(dx, dy) - p[2] - q[2];
+    return fmaxf(dx - p[2] - q[2], dy - p[3] - q[3]);
+}
+int main(int argc, char **argv) {
+    float y0, bh;
+    if (argc > 1 && !strcmp(argv[1], "off")) { assert(!ov_band(2184, 1968, &y0, &bh)); return 0; }
+    g_dpi = 360; assert(ov_band(2184, 1968, &y0, &bh));
+    g_dpi = 373; assert(ov_band(2152, 2076, &y0, &bh));
+    g_dpi = 264; assert(!ov_band(2048, 1536, &y0, &bh));
+    g_dpi = 374; assert(!ov_band(2176, 1812, &y0, &bh));
+    g_dpi = 343; assert(ov_band(1270, 1600, &y0, &bh));   /* taller than wide: the band at 7 mm, since the gamepad over the picture would meet in the middle */
+    g_dpi = 0;
+    assert(!ov_band(2400, 1080, &y0, &bh) && !ov_band(2560, 1600, &y0, &bh) && !ov_band(1920, 1080, &y0, &bh));   // phones and 16:10 tablets: as before
+    const float screens[][3] = {{2184, 1968, 1}, {2184, 1968, 1.45f}, {1968, 2184, 1}, {1968, 2184, 1.45f}};
+    for (unsigned k = 0; k < sizeof screens / sizeof screens[0]; k++) {
+        float W = screens[k][0], H = screens[k][1];
+        assert(ov_band(W, H, &y0, &bh) && fabsf(y0 - W * 9 / 16) < 0.5f && fabsf(y0 + bh - H) < 0.5f);
+        int l = ov_layout_for_size((int)W, (int)H); const ov_ctl *L = OV_LAYOUTS[l];
+        if (W > H) assert(l == 1);   // a 2184x740 band is as wide as a phone
+        g_s = ov_fit_scale(L, W, bh, screens[k][2]);
+        float b[OV_N][4];
+        for (int i = 0; i < OV_N; i++) {
+            ov_box(&L[i], W, H, b[i]);
+            if (!(b[i][0] - b[i][2] >= -0.5f && b[i][0] + b[i][2] <= W + 0.5f && b[i][1] - b[i][3] >= y0 - 0.5f && b[i][1] + b[i][3] <= H + 0.5f)) {
+                fprintf(stderr, "%gx%g x%.2f: %s leaves the band under the picture (%.0f-%.0f)\n", W, H, g_s, L[i].name, y0, H); return 1; }
+        }
+        for (int i = 0; i < OV_N; i++) for (int j = i + 1; j < OV_N; j++) if (gap(&L[i], b[i], &L[j], b[j]) < 0) {
+            fprintf(stderr, "%gx%g x%.2f: %s and %s overlap\n", W, H, g_s, L[i].name, L[j].name); return 1; }
+        /* a control dragged to a point in the band is drawn centred there (ov_drag_place keeps it against the band, as ov_box reads it) */
+        for (int i = 0; i < OV_N; i++) {
+            const float fingers[][2] = {{W * 0.3f, y0 + bh * 0.5f}, {W * 0.7f, y0 + bh * 0.4f}};
+            for (unsigned f = 0; f < 2; f++) {
+                ov_drag_place(fingers[f][0], fingers[f][1], b[i][2], b[i][3], W, H, 0, &g_cx, &g_cy); g_cust = i;
+                float d[4]; ov_box(&L[i], W, H, d); g_cust = -1;
+                if (fabsf(d[0] - fingers[f][0]) > 0.5f || fabsf(d[1] - fingers[f][1]) > 0.5f) {
+                    fprintf(stderr, "%gx%g: %s dragged to %.0f,%.0f is drawn at %.0f,%.0f\n", W, H, L[i].name, fingers[f][0], fingers[f][1], d[0], d[1]); return 1; }
+            }
+        }
+    }
+    /* with the picture on an external display the phone's window is all gamepad (ExternalActivity draws it from the same layout): no band, as on main */
+    g_ext = 1; assert(!ov_band(2184, 1968, &y0, &bh) && ov_layout_for_size(2184, 1968) == 0);
+    return 0;
+}
+"""
+        with tempfile.TemporaryDirectory(prefix='nx2a_overlay_') as tmp:
+            tmp = Path(tmp)
+            (tmp / 'android_profile.h').write_text(android_profile.header(None), encoding='utf-8')
+            c, exe = tmp / 'check.c', tmp / 'check'
+            c.write_text(harness, encoding='utf-8')
+            result = subprocess.run([cc, '-std=gnu11', '-Wall', '-Wextra', '-Werror', '-Wno-missing-field-initializers', f'-I{tmp}',
+                                     f'-I{DM / "android"}', f'-I{DM / "host"}', str(c), '-lm', '-o', str(exe)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            env = {k: v for k, v in os.environ.items() if k != 'DM_OVERLAY_SPLIT'}
+            result = subprocess.run([str(exe)], capture_output=True, text=True, env={**env, 'DM_OVERLAY_SPLIT': '1'})
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            for off in ({}, {'DM_OVERLAY_SPLIT': '0'}):   # off by default, and off with =0
+                result = subprocess.run([str(exe), 'off'], capture_output=True, text=True, env={**env, **off})
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 if __name__ == '__main__':
     unittest.main()

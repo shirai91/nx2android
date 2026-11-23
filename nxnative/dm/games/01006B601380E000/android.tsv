@@ -13,3 +13,6 @@ tested	v0 AYN Thor (Snapdragon 8 Gen 2, Adreno 740, Android 13)
 package	org.nx2a.t01006b601380e000
 orientation	landscape
 sysdata	0100000000000811 0100000000000810
+readme_name	Kirby's Return to Dream Land Deluxe
+readme_image	docs/images/kirbys-return-to-dream-land-deluxe.jpg
+readme_tag	v0.4.0

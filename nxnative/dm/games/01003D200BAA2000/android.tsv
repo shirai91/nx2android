@@ -10,3 +10,5 @@ status	playable
 tested	1.0.2 AYN Odin 2 (Adreno 740, Turnip)
 package	org.nx2a.pokemonmysterydungeondx
 orientation	landscape
+readme_image	docs/images/pokemon-mystery-dungeon-rescue-team-dx.jpg
+readme_tag	v0.4.0

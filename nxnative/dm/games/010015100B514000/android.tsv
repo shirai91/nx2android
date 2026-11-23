@@ -24,3 +24,5 @@ orientation	landscape
 #   DM_NO_ADPF=1
 #   DM_ADAPTIVE_FPS=0
 #   DM_GPU_TURBO=auto
+readme_image	docs/images/super-mario-bros-wonder.jpg
+readme_tag	v0.1.3

@@ -138,6 +138,12 @@ static class SwshXlate
         // Job "gs_passthrough" = false (the Android chain): passthrough geometry shaders (Maxwell's fast GS) are written out as ordinary ones. VK_NV_geometry_shader_passthrough is NVIDIA's
         // alone; with its capability declared, Adreno refused every pipeline of Xenoblade Chronicles 3's effect geometry shaders (VK_ERROR_UNKNOWN)
         public bool QueryHostSupportsGeometryShaderPassthrough() => !(_job["gs_passthrough"] is JsonNode n && !(bool)n);
+        public int QueryGeometryPassthroughAttributeMask() => _job["gs_passthrough_mask"] is JsonNode n ? (int)n : 0xffff;
+        // Android renders viewport zero without VK_NV_viewport_array2; Apple jobs retain native mask metadata.
+        public bool QueryHostSupportsViewportMask() => !(_job["viewport_mask"] is JsonNode n && !(bool)n);
+        // Job "render_scale" = false (the Android chain, whose support buffer holds 1.0 in every render scale: gfx_vk_shader.c): no TexelFetchScale / TextureSizeUnscale helpers.
+        // Their branch at each texel fetch made the Adreno 830 compiler fail on Fire Emblem: Three Houses' particle compute shaders (TexturePass.cs)
+        public bool QueryHostSupportsRenderScale() => !(_job["render_scale"] is JsonNode n && !(bool)n);
         JsonObject Xfb(int b) => _job["xfb"] is JsonArray a && b < a.Count ? a[b] as JsonObject : null;
         public bool QueryTransformFeedbackEnabled() => _job["xfb"] != null;
         public ReadOnlySpan<byte> QueryTransformFeedbackVaryingLocations(int bufferIndex)

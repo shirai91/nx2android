@@ -65,6 +65,8 @@ $(B)/t_shared_font: t_shared_font.c ../hle_sdk16.c ../hle.h ../dm.h $(GAME_H) | 
 	clang -O1 -Wall -Werror -Wno-unused-function -Wno-frame-address -I.. $(GINC) -o $@ t_shared_font.c
 $(B)/t_hid: t_hid.c ../hle_hid.c ../hle_haptics.c ../hle_haptics.h ../pad_slots.h ../dm_input.h ../hle.h ../dm.h $(GAME_H) | $(B)
 	clang -O1 -Wall -Werror -Wno-unused-function -I.. $(GINC) -o $@ t_hid.c ../hle_haptics.c
+$(B)/t_hid_tsan: t_hid.c ../hle_hid.c ../hle_haptics.c ../hle_haptics.h ../pad_slots.h ../dm_input.h ../hle.h ../dm.h $(GAME_H) | $(B)
+	clang -O1 -g -fsanitize=thread -Wall -Werror -Wno-unused-function -I.. $(GINC) -o $@ t_hid.c ../hle_haptics.c
 $(B)/t_haptics: t_haptics.c ../hle_haptics.c ../hle_haptics.h ../dm_input.h | $(B)
 	clang -O1 -g -Wall -Werror -I.. -o $@ t_haptics.c ../hle_haptics.c
 $(B)/t_haptics_apple: t_haptics_apple.m ../haptics_apple.m ../haptics_apple.h ../hle_haptics.c ../hle_haptics.h | $(B)
@@ -85,5 +87,6 @@ $(B)/t_vorbis_divides: t_vorbis.c ../../third_party/stb_vorbis/stb_vorbis.c | $(
 $(B):
 	mkdir -p $@
 .PHONY: run tsan
-tsan: $(B)/t_audio_spsc_tsan
+tsan: $(B)/t_audio_spsc_tsan $(B)/t_hid_tsan
 	$(B)/t_audio_spsc_tsan
+	$(B)/t_hid_tsan

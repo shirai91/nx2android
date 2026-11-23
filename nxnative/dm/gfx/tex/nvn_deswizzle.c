@@ -5,6 +5,7 @@
 //   block = 1 GOB wide × 2^tileH GOBs high × 2^tileD GOBs deep, ordered y first then z within a block; blocks fill the level in x → y → z row-major order.
 // Level / layer start offsets and the actual block height and block depth of this level come from nvn_tex.c; here we only do intra-level addressing and copying.
 #include "nvn_deswizzle.h"
+#include <stdlib.h>
 #include <string.h>
 
 static uint32_t gob_off(uint32_t x, uint32_t y) {
@@ -47,10 +48,22 @@ static int move(const nvn_texdesc *d, unsigned level, unsigned layer, uint8_t *b
     if (pitch < row_bytes) return -1;
     bl += base; uint32_t lb = nvn_tex_level_gobs(d, level) * 64;   // the row as laid out (padded in a sparse texture's tiled levels)
     if (lb < row_bytes) lb = row_bytes;
+    static int fast = -1; if (fast < 0) { const char *e = getenv("DM_MOVIE_FAST"); fast = e && !strcmp(e, "1"); }
     for (uint32_t z = 0; z < slices; z++)
         for (uint32_t y = 0; y < rows; y++) {
             uint8_t *row = lin + ((size_t)z * rows + y) * pitch;
-            for (uint32_t x = 0; x < row_bytes; x += 16) {             // 16-byte segments: 16 bytes are contiguous within a GOB, and 16 divides all block widths
+            // whole GOBs first: one address per row, the next GOB one block further on, a GOB row's four 16-byte runs at 0, 32, 256 and 288 (gob_off). Address by
+            // address, a 1080p RGBA movie frame took several ms per upload on an Odin 2's mid cores at their Standard-mode clock (MMBN Legacy Collection Vol. 1's launcher).
+            // Only under DM_MOVIE_FAST=1 (that game's profile)
+            uint32_t x = 0, whole = fast ? row_bytes & ~63u : 0;
+            if (whole) {
+                size_t blk = (size_t)512 << (th + td); uint8_t *p = bl + nvn_bl_offset(0, y, z, lb, rows, th, td), *l = row;
+                for (; x < whole; x += 64, p += blk, l += 64) {
+                    if (to_linear) { memcpy(l, p, 16); memcpy(l + 16, p + 32, 16); memcpy(l + 32, p + 256, 16); memcpy(l + 48, p + 288, 16); }
+                    else { memcpy(p, l, 16); memcpy(p + 32, l + 16, 16); memcpy(p + 256, l + 32, 16); memcpy(p + 288, l + 48, 16); }
+                }
+            }
+            for (; x < row_bytes; x += 16) {             // 16-byte segments: 16 bytes are contiguous within a GOB, and 16 divides all block widths
                 uint32_t n = row_bytes - x < 16 ? row_bytes - x : 16;
                 uint8_t *p = bl + nvn_bl_offset(x, y, z, lb, rows, th, td);
                 if (to_linear) memcpy(row + x, p, n); else memcpy(p, row + x, n);

@@ -1,0 +1,17 @@
+#version 450
+// Indirect quad draws (gfx_vk_exec_xfb.inc quad_indirect): Vulkan has no quads, and an indirect draw's vertex count is in GPU memory, so its records are rewritten on the GPU
+// as indexed records over the quad index buffer (0 1 2 0 2 3, 4 5 6 4 6 7, ...): {vertexCount, instanceCount, firstVertex, firstInstance} at the record stride (words) from word 0
+// → {indexCount = vertexCount / 4 x 6, instanceCount, firstIndex 0, vertexOffset = firstVertex, firstInstance} at 5 words a record from word dst
+layout(local_size_x = 64) in;
+layout(set = 0, binding = 0) buffer B { uint w[]; };
+layout(push_constant) uniform P { uint n, stride, qmax, dst; } p;
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= p.n) return;
+    uint s = i * p.stride, o = p.dst + i * 5u;
+    w[o] = min(w[s] / 4u, p.qmax) * 6u;
+    w[o + 1u] = w[s + 1u];
+    w[o + 2u] = 0u;
+    w[o + 3u] = w[s + 2u];
+    w[o + 4u] = w[s + 3u];
+}

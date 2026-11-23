@@ -4,25 +4,29 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import csrc  # noqa: E402
 
 
 class ReadbackRanges(unittest.TestCase):
     @unittest.skipUnless(shutil.which('cc'), 'a host C compiler is required')
     def test_eligibility_and_range_capacity(self):
         dm = Path(__file__).resolve().parents[1] / 'nxnative/dm/android'
-        core = (dm/'gfx_vk_core.c').read_text()
-        exec_src = (dm/'gfx_vk_exec.c').read_text()
-        header = (dm/'gfx_vk.h').read_text()
+        core = (dm/'gfx_vk_core.c').read_text(encoding='utf-8')
+        exec_src = csrc.unit((dm/'gfx_vk_exec.c'))
+        header = (dm/'gfx_vk.h').read_text(encoding='utf-8')
         enums = '\n'.join(line for line in header.splitlines() if line.startswith(('enum { RK_SUPPORT', 'enum { RD_UBO')))
         controls = '\n'.join(line for line in core.splitlines() if line.startswith(('int vk_readback_ranges(', 'void vk_readback_unknown(')))
         start = core.index('static void sub_gpu_wrote(uint64_t a, uint64_t n) {')
-        ranges = core[start:core.index('\n}\n', start)+3]
+        ranges = csrc.function(core, 'static void sub_gpu_wrote(uint64_t a, uint64_t n) {')
         start = exec_src.index('static VkDescriptorSet stage_set(')
         gate = exec_src[exec_src.index('\n', start):exec_src.index('    int memo =', start)]
         # The gate must execute before descriptor memo/cache returns.
         self.assertIn('vk_readback_ranges()', gate)
         for marker in ['vk_gpu_wrote((uint64_t)(uintptr_t)t->mem, len); vk_readback_unknown();',
-                       'vk_gpu_wrote(c->src, p ? p->hi - c->src : 1); vk_readback_unknown();',
+                       'vk_gpu_wrote(c->src, span); vk_readback_unknown();',
                        'vk_readback_unknown();   // capture extents']:
             self.assertIn(marker, exec_src)
         harness = r'''
@@ -71,6 +75,6 @@ int main(void) {
 '''.replace('ENUMS', enums).replace('CONTROLS', controls).replace('RANGES', ranges).replace('GATE', gate)
         with tempfile.TemporaryDirectory(prefix='nx2a-readback-ranges-') as tmp:
             c, exe = Path(tmp)/'check.c', Path(tmp)/'check'
-            c.write_text(harness)
+            c.write_text(harness, encoding='utf-8')
             subprocess.run(['cc', '-std=gnu11', '-Wall', '-Wextra', '-Werror', str(c), '-o', str(exe)], check=True)
             subprocess.run([str(exe)], check=True, timeout=15)

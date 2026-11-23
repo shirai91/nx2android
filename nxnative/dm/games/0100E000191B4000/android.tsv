@@ -1,0 +1,14 @@
+# Rune Factory 3 Special on Android (Unity 2020.3 IL2CPP, NVN, SDK 14.3; update v131072 = 1.0.4).
+# First experimental build crashed at boot: game.tsv's default 4.38 GB alias region and 3.2 GB pool left Unity's own address regions no room
+# ("[RED] [mem] AllocateAddressRegion ... refused (0x1803)", then a null dereference). The profile now has an 8 GB alias region and a 2 GB pool.
+# Touch game: the on-screen gamepad starts hidden (overlay=0); the pause menu brings it back.
+status	experimental
+package	org.nx2a.runefactory3special
+orientation	landscape
+setting	overlay=0
+# Game speed is the same at 30 and 60 fps (checked by hand), so the frame rate is held at 60 and the governor does not step down.
+pacing	fixed60
+# Name entry rejected every name while nn::ngc GetContentVersion read 0 (the host has no word list); it now reads 1.
+env	DM_NGC_CONTENT_VERSION=1
+readme_image	docs/images/rune-factory-3-special.jpg
+readme_tag	v0.5.0

@@ -5,6 +5,10 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import csrc  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -13,10 +17,10 @@ ROOT = Path(__file__).resolve().parents[1]
 class DescriptorHash(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        source = (ROOT / 'nxnative/dm/android/gfx_vk_exec.c').read_text()
+        source = csrc.unit((ROOT / 'nxnative/dm/android/gfx_vk_exec.c'))
         fnv = source[source.index('static inline uint64_t fnv('):
                      source.index('static void drv_shared(')]
-        cache = source[source.index('enum { SETC ='):source.index('static struct { uint64_t h, epoch; VkBuffer b;')]
+        cache = csrc.between(source, 'enum { SETC =', 'static struct { uint64_t h, epoch; VkBuffer b;')
         start = source.index('    uint64_t tb1 = tick(); g_ns_set_build += tb1 - tb0;')
         start = source.index('\n', start) + 1
         block = source[start:source.index('    // verify: the same content', start)]
@@ -218,6 +222,28 @@ static void oversized_key(void) {
     w.descriptorCount = 32; a = cached(VK_NULL_HANDLE, &w, 1);
     assert(cached(VK_NULL_HANDLE, &w, 1) == a);
 }
+static void texel_array_views(void) {
+    // Every view of a texel buffer array is part of the key: two arrays differing only past slot 0 must not share a set.
+    for (unsigned pos = 0; pos < 32; pos++) {
+        reset(); VkBufferView views[32];
+        for (unsigned i = 0; i < 32; i++) views[i] = (VkBufferView)(uintptr_t)(100 + i);
+        VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+            .dstBinding = 5, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER,
+            .descriptorCount = 32, .pTexelBufferView = views};
+        VkDescriptorSet first = cached(VK_NULL_HANDLE, &w, 1);
+        views[pos] = (VkBufferView)(uintptr_t)999;
+        VkDescriptorSet second = cached(VK_NULL_HANDLE, &w, 1);
+        assert(second != first && updates == 2);
+        assert(cached(VK_NULL_HANDLE, &w, 1) == second && g_set_hits == 1);
+    }
+    reset(); VkBufferView views[32];
+    for (unsigned i = 0; i < 32; i++) views[i] = (VkBufferView)(uintptr_t)(100 + i);
+    VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        .dstBinding = 5, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER,
+        .descriptorCount = 32, .pTexelBufferView = views};
+    VkDescriptorSet first = cached(VK_NULL_HANDLE, &w, 1);
+    assert(cached(VK_NULL_HANDLE, &w, 1) == first && g_set_hits == 1 && updates == 1);
+}
 int main(int argc, char **argv) {
     assert(argc == 2);
     switch (atoi(argv[1])) {
@@ -231,6 +257,7 @@ int main(int argc, char **argv) {
     case 7: oversized_key(); break;
     case 8: dynamic_offsets(); break;
     case 9: large_mixed_key(); break;
+    case 10: texel_array_views(); break;
     default: abort();
     }
 }
@@ -239,7 +266,7 @@ int main(int argc, char **argv) {
         cls.addClassCleanup(cls.tmp.cleanup)
         src = Path(cls.tmp.name) / 'test.c'
         cls.exe = Path(cls.tmp.name) / 'test'
-        src.write_text(code)
+        src.write_text(code, encoding='utf-8')
         subprocess.run(['cc', '-std=c11', '-O2', '-Wall', '-Wextra', '-Werror',
                         *(['-fsanitize=address,undefined', '-g'] if os.environ.get('NX2A_TEST_SANITIZERS') else []), '-I',
                         str(ROOT / 'nxnative/dm/third_party/vulkan-headers/include'),
@@ -278,6 +305,10 @@ int main(int argc, char **argv) {
 
     def test_maximum_mixed_descriptor_content_is_cacheable_and_exact(self):
         self.run_case(9)
+
+    def test_texel_buffer_array_hashes_every_view(self):
+        self.run_case(10)
+
 
 
 if __name__ == '__main__':

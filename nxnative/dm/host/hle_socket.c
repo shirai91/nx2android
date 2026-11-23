@@ -4,6 +4,11 @@
 // Horizon's socket ABI mixes the two families: FreeBSD's sockaddr with a length byte, SOL_SOCKET 0xffff and its option numbers, MSG_DONTWAIT 0x80, but Linux's error numbers
 // (EAGAIN 11, as Ryujinx's bsd service answers; Animal Crossing: New Horizons' Pia aborted on a non-blocking RecvFrom's EAGAIN given as FreeBSD's 35) and O_NONBLOCK 0x800. Darwin shares the options;
 // Linux (Android) does not, so the values are translated under __linux__. Descriptors are the guest's own small numbers (a table of host descriptors), so fd_set bit maps stay in range.
+// Profile key sock_loopback (off by default): offline, the sockets are the host's too, but only on the loopback interface, as Horizon's bsd service with no network (a Switch in
+// flight mode still talks to 127.0.0.1). Divinity: Original Sin 2 - Definitive Edition checks its socket layer before every load with a UDP socket that talks to itself
+// (Socket(2, 2, 0); Bind(0.0.0.0:0); GetSockName; SendTo(4 bytes, 127.0.0.1:<its port>); RecvFrom → 4) and, with Socket failing, waits on its loading screen for ever. A bind to any
+// address binds 127.0.0.1, so nothing from the network reaches the socket; Connect / SendTo outside 127.0.0.0/8 fail with ENETDOWN as before, and the ldn / nifm side stays offline.
+// Off by default: every other game takes its offline branch from Socket failing, and none was tested with sockets that work
 // Not cut, in both modes: Inet* / nnsocketInet* byte order and address text conversion (pure computation, they keep running in the SDK). Name resolution stays cut (no internet play).
 #include "hle.h"
 #include <arpa/inet.h>
@@ -17,7 +22,9 @@
 #include <unistd.h>
 
 int dm_lan_on(void);   // hle_ldn.c: local play over the LAN is on (DM_LAN=1)
-enum { SK_ENETDOWN = 100, SK_EAI_FAIL = 4, SK_EBADF = 9, SK_EINVAL = 22, SK_EMFILE = 24, SK_EAFNOSUPPORT = 97 };   // Linux numbering (above)
+static int sk_lo(void) { return DM_GAME_SOCK_LOOPBACK && !dm_lan_on(); }   // offline sockets on the loopback interface only (profile sock_loopback, above)
+static int sa_loop(const struct sockaddr_in *a) { return (ntohl(a->sin_addr.s_addr) >> 24) == 127; }
+enum { SK_ENETDOWN = 100, SK_EAI_FAIL = 4, SK_EBADF = 9, SK_EINVAL = 22, SK_EMFILE = 24, SK_EAFNOSUPPORT = 97, SK_EADDRNOTAVAIL = 99 };   // Linux numbering (above)
 static __thread int t_skerr = SK_ENETDOWN;
 static int sk_fail(void) { t_skerr = SK_ENETDOWN; return -1; }
 static int sk_seterr(int e) { t_skerr = e; return -1; }
@@ -144,7 +151,7 @@ static int lan_socket_(int fam, int type, int proto) {
 #ifdef __APPLE__
     int one = 1; setsockopt(h, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
 #endif
-    int s = fd_new(h); if (s >= 0) LOG("[lan] socket %d: type %d protocol %d", s, type & 0xffff, proto);
+    int s = fd_new(h); if (s >= 0) LOG("[lan] socket %d: type %d protocol %d%s", s, type & 0xffff, proto, sk_lo() ? " (offline: loopback only, game profile sock_loopback)" : "");
     return s;
 }
 static int lan_close_(int s) {
@@ -154,10 +161,13 @@ static int lan_close_(int s) {
 }
 static int lan_bind_(int s, const void *a, unsigned n) {
     HFD(s); struct sockaddr_in sa; if (sa_in(a, n, &sa)) return -1;
+    if (sk_lo() && !sa.sin_addr.s_addr) sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);   // any address: the loopback interface only
+    if (sk_lo() && !sa_loop(&sa)) return sk_seterr(SK_EADDRNOTAVAIL);   // no other interface offline
     SKR(bind(h, (void *)&sa, sizeof sa));
 }
 static int lan_connect_(int s, const void *a, unsigned n) {
     HFD(s); struct sockaddr_in sa; if (sa_in(a, n, &sa)) return -1;
+    if (sk_lo() && !sa_loop(&sa)) return sk_fail();   // offline: only 127.0.0.0/8 is reachable
     SKR(connect(h, (void *)&sa, sizeof sa));
 }
 static int lan_listen_(int s, int n) { HFD(s); SKR(listen(h, n)); }
@@ -202,6 +212,7 @@ static long lan_sendto_(int s, const void *b, unsigned long n, int f, const void
     HFD(s);
     if (!a) SKR(send(h, b, n, msg_flags(f) | NOSIG));
     struct sockaddr_in sa; if (sa_in(a, an, &sa)) return -1;
+    if (sk_lo() && !sa_loop(&sa)) return sk_fail();   // offline: only 127.0.0.0/8 is reachable
     SKR(sendto(h, b, n, msg_flags(f) | NOSIG, (void *)&sa, sizeof sa));
 }
 // Poll: pollfd is {i32 fd, i16 events, i16 revents} on both sides. POLLIN 1, POLLPRI 2, POLLOUT 4, POLLERR 8, POLLHUP 0x10, POLLNVAL 0x20 and POLLRDNORM 0x40 agree; FreeBSD's
@@ -267,8 +278,8 @@ static long lan_sendto(int s, const void *b, unsigned long n, int f, const void 
 static int lan_poll(void *fds, uint64_t n, int ms) { int r = lan_poll_(fds, n, ms); TR(r, "Poll(%llu fds, %d ms)", (unsigned long long)n, ms); return r; }
 static int lan_select(int nfds, uint64_t *rs, uint64_t *ws, uint64_t *es, const int64_t *tv) { int r = lan_select_(nfds, rs, ws, es, tv); TR(r, "Select(%d)", nfds); return r; }
 
-// ---------- the entry points: offline unless the LAN is on ----------
-#define LAN dm_lan_on()
+// ---------- the entry points: offline unless the LAN is on (or the profile's sock_loopback: the host's sockets on the loopback interface) ----------
+#define LAN (dm_lan_on() || DM_GAME_SOCK_LOOPBACK)
 #define WHY "bsd socket service: offline (-1, ENETDOWN) or the host's sockets with local play over the LAN (DM_LAN)"
 HLE_FORCE("_ZN2nn6socket10InitializeERKNS0_6ConfigE", "connects to the bsd socket service; creates no session", Result, h_sk_Initialize, const void *cfg) { (void)cfg; return RES_OK; }
 HLE_FORCE("_ZN2nn6socket10InitializeEPvmmi", "connects to the bsd socket service; creates no session", Result, h_sk_Init4, void *mem, uint64_t sz, uint64_t alloc, int conc) {

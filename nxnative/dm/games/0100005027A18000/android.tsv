@@ -13,3 +13,5 @@ status	playable
 tested	v262144 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
 package	org.nx2a.graveyardkeeper2
 orientation	landscape
+readme_image	docs/images/graveyard-keeper-2.jpg
+readme_tag	v0.1.2

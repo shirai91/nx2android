@@ -12,3 +12,5 @@ status	playable
 tested	v458752 AYN Odin 2 (Snapdragon 8 Gen 2, Adreno 740, Android 13)
 package	org.nx2a.pokemonshield
 orientation	landscape
+readme_image	docs/images/pokemon-shield.jpg
+readme_tag	v0.4.0

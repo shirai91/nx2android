@@ -15,6 +15,7 @@ void dm_haptics_route(int player, int available);   // clears old state even whe
 void dm_haptics_clear(int player);                 // engine reset: needs a fresh game signal
 uint64_t dm_haptics_epoch(int player);
 uint32_t dm_haptics_available(void);
+int dm_haptics_enabled(void);   // an output sink is installed and rumble is on (whether or not a controller has connected yet)
 void dm_haptics_suspend(unsigned reason, int suspended);
 void dm_haptics_send(const dm_vibration_update *updates, int count);   // one atomic batch
 dm_vibration dm_haptics_actual(int player, int motor);
