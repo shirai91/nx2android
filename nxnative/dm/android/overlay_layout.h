@@ -242,7 +242,13 @@ static const int OVM_TAB_ITEMS[OVM_TABS][OVM_PER_TAB] = {{OVM_OVERLAY, OVM_OPACI
 static const char *const OVM_TAB_NAMES_EN[OVM_TABS] = {"Gamepad", "Game", "Counter", "Style"};
 static const char *const OVM_TAB_NAMES_ZH[OVM_TABS] = {"手柄", "游戏", "计数", "样式"};
 #define OVM_TAB_NAMES (dm_ui_zh() ? OVM_TAB_NAMES_ZH : OVM_TAB_NAMES_EN)
-#define OVM_ROWS (OVM_PER_TAB + 2)   // the tabs, a tab's rows (as many for every tab: the panel keeps its size), Resume
+#define OVM_ROWS (OVM_PER_TAB + 2)   // logical row capacity: tabs, body actions, Resume
+#define OVM_VISIBLE 5              // fixed-size body viewport; extra items scroll instead of shrinking all text
+#define OVM_VIEW_ROWS (OVM_VISIBLE + 2)
+#define OVM_SCROLL_UNITS 1024      // fixed-point rows for continuous dragging, with no row snapping
+int dm_menu_scroll_position(void);
+static inline float ov_menu_scroll_rows(int position) { return (float)position / OVM_SCROLL_UNITS; }
+static inline uint64_t ov_menu_raster_key(int state, int position) { return state < 0 ? UINT64_MAX : (uint64_t)(uint32_t)state << 32 | (uint32_t)position; }
 static inline int fpso_step(int o, int item) {   // the options after a press on a menu item: a row's bit flips, the others go to their next value (and round)
     int r = fpso_rows(o), p = fpso_pos(o), c = fpso_colour(o), l = fpso_outline(o), z = fpso_size(o);
     switch (item) {
@@ -279,30 +285,69 @@ static inline int ov_menu_item(int tab, int row) {
 int dm_menu_state(void);
 enum { OVX_IDLE, OVX_BUSY, OVX_DONE, OVX_NOSAVE, OVX_FAILED };   // Export save: the button; copying; the export's name; the game has not saved yet; failed
 int dm_save_note(char *out, int cap);   // front_android.c: the outcome (OVX_*) and the last export's name, or why it failed
-static inline float ov_menu_scale(void) { float s = dm_overlay_scale(), fit = 0.92f / (OVM_ROWS * OV_MENU_ROW + 2 * OV_MENU_PAD); return s < fit ? s : fit; }
+static inline float ov_menu_scale(void) { float s = dm_overlay_scale(), fit = 0.92f / (OVM_VIEW_ROWS * OV_MENU_ROW + 2 * OV_MENU_PAD); return s < fit ? s : fit; }
 static inline void ov_menu_rect(float W, float H, float r[4]) {   // x, y, width, height in window pixels
-    float s = ov_menu_scale(), pw = OV_MENU_W * H * s, ph = (OVM_ROWS * OV_MENU_ROW + 2 * OV_MENU_PAD) * H * s;
+    float s = ov_menu_scale(), pw = OV_MENU_W * H * s, ph = (OVM_VIEW_ROWS * OV_MENU_ROW + 2 * OV_MENU_PAD) * H * s;
     if (pw > W * 0.96f) pw = W * 0.96f;
     r[0] = (W - pw) / 2; r[1] = (H - ph) / 2; r[2] = pw; r[3] = ph;
 }
-static inline void ov_menu_rowrect(const float p[4], int row, float r[4]) {   // row's rectangle in the panel p
-    float u = p[3] / (OVM_ROWS * OV_MENU_ROW + 2 * OV_MENU_PAD);
-    r[0] = p[0] + OV_MENU_PAD * u; r[1] = p[1] + (OV_MENU_PAD + row * OV_MENU_ROW) * u; r[2] = p[2] - 2 * OV_MENU_PAD * u; r[3] = OV_MENU_ROW * u;
+static inline void ov_menu_rowrect(const float p[4], float slot, float r[4]) {
+    float u = p[3] / (OVM_VIEW_ROWS * OV_MENU_ROW + 2 * OV_MENU_PAD);
+    r[0] = p[0] + OV_MENU_PAD * u; r[1] = p[1] + (OV_MENU_PAD + slot * OV_MENU_ROW) * u; r[2] = p[2] - 2 * OV_MENU_PAD * u; r[3] = OV_MENU_ROW * u;
 }
-static inline int ov_menu_row_at(float x, float y, float W, float H) {   // the row under (x, y): 0..OVM_ROWS-1, -1 the panel elsewhere, -2 outside it
+static inline int ov_menu_row_at(float x, float y, float W, float H) {   // the row under (x, y): 0..OVM_VIEW_ROWS-1, -1 the panel elsewhere, -2 outside it
     float r[4]; ov_menu_rect(W, H, r);
     if (x < r[0] || x >= r[0] + r[2] || y < r[1] || y >= r[1] + r[3]) return -2;
     float q[4]; ov_menu_rowrect(r, 0, q); int i = (int)floorf((y - q[1]) / q[3]);
-    return i >= 0 && i < OVM_ROWS ? i : -1;
+    return i >= 0 && i < OVM_VIEW_ROWS ? i : -1;
+}
+static inline int ov_menu_body_count(int tab) {
+    int n = 0; for (int row = 1; row < OVM_ROWS - 1; row++) n += ov_menu_item(tab, row) >= 0; return n;
+}
+static inline int ov_menu_scroll_limit(int tab) { int n = ov_menu_body_count(tab) - OVM_VISIBLE; return n > 0 ? n : 0; }
+static inline int ov_menu_body_row(int tab, int index) {
+    int n = 0; for (int row = 1; row < OVM_ROWS - 1; row++) if (ov_menu_item(tab, row) >= 0 && n++ == index) return row;
+    return -1;
+}
+static inline int ov_menu_body_index(int tab, int row) {
+    int n = 0; for (int r = 1; r < OVM_ROWS - 1; r++) if (ov_menu_item(tab, r) >= 0) { if (r == row) return n; n++; }
+    return -1;
+}
+static inline float ov_menu_scroll_slot(int tab, float offset, int row) {
+    return row == 0 ? 0 : row == OVM_ROWS - 1 ? OVM_VIEW_ROWS - 1 : 1 + ov_menu_body_index(tab, row) - offset;
+}
+static inline int ov_menu_scroll_rowrect(const float p[4], int tab, float offset, int row, float r[4]) {
+    if (ov_menu_item(tab, row) < 0) return 0;
+    float slot = ov_menu_scroll_slot(tab, offset, row); ov_menu_rowrect(p, slot, r);
+    return row == 0 || row == OVM_ROWS - 1 || (slot + 1 > 1 && slot < OVM_VIEW_ROWS - 1);
+}
+static inline int ov_menu_scroll_row_at(float x, float y, float W, float H, int tab, float offset) {
+    float p[4], r[4]; ov_menu_rect(W, H, p);
+    if (x < p[0] || x >= p[0] + p[2] || y < p[1] || y >= p[1] + p[3]) return -2;
+    ov_menu_rowrect(p, 0, r); float slot = (y - r[1]) / r[3];
+    if (slot < 0 || slot >= OVM_VIEW_ROWS) return -1;
+    if (slot < 1) return 0;
+    if (slot >= OVM_VIEW_ROWS - 1) return OVM_ROWS - 1;
+    return ov_menu_body_row(tab, (int)floorf(slot - 1 + offset));
+}
+static inline float ov_menu_scroll_reveal(int tab, float offset, int row) {
+    int n = 0; for (int r = 1; r < OVM_ROWS - 1; r++) if (ov_menu_item(tab, r) >= 0) {
+        if (r == row) { if (n < offset) offset = n; else if (n + 1 > offset + OVM_VISIBLE) offset = n - OVM_VISIBLE + 1; break; } n++;
+    }
+    int limit = ov_menu_scroll_limit(tab); return offset < 0 ? 0 : offset > limit ? limit : offset;
+}
+static inline int ov_menu_scroll_drag(int tab, int start, float delta_rows) {
+    int value = start + (int)lroundf(delta_rows * OVM_SCROLL_UNITS), limit = ov_menu_scroll_limit(tab) * OVM_SCROLL_UNITS;
+    return value < 0 ? 0 : value > limit ? limit : value;
 }
 static inline int ov_menu_tab_at(float x, const float p[4]) { float r[4]; ov_menu_rowrect(p, 0, r); int t = (int)((x - r[0]) / (r[2] / OVM_TABS)); return t < 0 ? 0 : t >= OVM_TABS ? OVM_TABS - 1 : t; }
 // the Opacity slider's track in its row (x, y of its left end's centre line, width): the right part of the row, room for the value after it
-static inline void ov_menu_track(const float p[4], int row, float t[3]) { float r[4]; ov_menu_rowrect(p, row, r); t[0] = r[0] + r[2] * 0.40f; t[1] = r[1] + r[3] / 2; t[2] = r[2] * 0.44f; }
-static inline int ov_menu_track_value(float x, const float p[4], int row) {   // the opacity a finger at x sets, whole 5 percents
+static inline void ov_menu_track(const float p[4], float row, float t[3]) { float r[4]; ov_menu_rowrect(p, row, r); t[0] = r[0] + r[2] * 0.40f; t[1] = r[1] + r[3] / 2; t[2] = r[2] * 0.44f; }
+static inline int ov_menu_track_value(float x, const float p[4], float row) {   // the opacity a finger at x sets, whole 5 percents
     float t[3]; ov_menu_track(p, row, t); float f = (x - t[0]) / t[2]; f = f < 0 ? 0 : f > 1 ? 1 : f;
     return OV_OPACITY_MIN + 5 * (int)lroundf(f * (OV_OPACITY_MAX - OV_OPACITY_MIN) / 5);
 }
-static inline int ov_menu_track_pct(float x, const float p[4], int row) {   // the same track as a percent of its width 0..100 (the Sharpness slider)
+static inline int ov_menu_track_pct(float x, const float p[4], float row) {   // the same track as a percent of its width 0..100 (the Sharpness slider)
     float t[3]; ov_menu_track(p, row, t); float f = (x - t[0]) / t[2]; f = f < 0 ? 0 : f > 1 ? 1 : f;
     return (int)lroundf(f * 100.0f);
 }
@@ -336,12 +381,12 @@ static inline int ov_ed_button_at(float x, float y, const float p[4], int first,
 }
 
 // ---- the save picker (front_android.c, from the menu's Import save): the pause menu's panel and rows, with what front_android.c puts in each row: the saves in
-// saves/ newest first, OVM_ROWS - 2 to a page (left and right page), then the confirmation, then the note that the game closes. dm_menu_state: bit 18, bits 4..7
+// saves/ newest first, OVM_VIEW_ROWS - 2 to a page (left and right page), then the confirmation, then the note that the game closes. dm_menu_state: bit 18, bits 4..7
 // the highlighted row + 1, bits 20..27 the picker's edit count (a page, a confirmation) ----
 #define OVS_ST 0x40000
 enum { OVS_EMPTY, OVS_TITLE, OVS_ITEM, OVS_NOTE, OVS_BUTTON, OVS_BACK };   // a row: nothing; the title (left) and the page (right); a save (its name, its size);
 typedef struct { int style; char left[80], right[40]; } ov_srow;            // a line of text; a button (the import); Back or Cancel, centred as Resume is
-int dm_save_rows(ov_srow rows[OVM_ROWS]);   // front_android.c: the picker's rows, 0 when it is not open
+int dm_save_rows(ov_srow rows[OVM_VIEW_ROWS]);   // front_android.c: the picker's rows, 0 when it is not open
 
 // ---- the text entry's keyboard (front_android.c front_text_input, drawn by gfx_vk_present.c ov_text_panel), in the pause menu's panel rectangle ----
 // Four rows of ten character keys and a row of four wide ones; p is the panel's rectangle (x, y, width, height: the window's for touches, the raster's for drawing).
