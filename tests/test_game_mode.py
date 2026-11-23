@@ -108,8 +108,8 @@ class GameMode(unittest.TestCase):
                 with patch.object(sys, 'argv', args), patch.object(sys, 'path', [str(APK), *sys.path]): spec.loader.exec_module(module)
                 captured = {}
                 class Captured(Exception): pass
-                def capture(entries): captured.update({name: data for name, data, _ in entries}); raise Captured
-                with patch.object(module, 'gen_key', return_value={}), patch.object(module, 'cert', return_value=b''), patch.object(module, 'build_zip', side_effect=capture):
+                def capture(entries, output, k, crt): captured.update({name: data.read_bytes() if isinstance(data, Path) else data for name, data, _ in entries}); raise Captured
+                with patch.object(module, 'gen_key', return_value={}), patch.object(module, 'cert', return_value=b''), patch.object(module, 'write_apk', side_effect=capture):
                     with self.assertRaises(Captured): module.main()
                 nodes = elements(captured['AndroidManifest.xml'])
                 app = next(attrs for tag, attrs in nodes if tag == 'application')
@@ -143,12 +143,15 @@ class GameMode(unittest.TestCase):
                 t = Path(temp); p = object.__new__(pipeline.Port)
                 p.g = SimpleNamespace(); p.app_name = 'Synthetic'; p.pkg_ver = 'v0'; p.package = 'org.nx2a.probe'; p.display = '1.0'
                 p.o = SimpleNamespace(out=t, vercode_offset=0, external_display=False, native_keyboard=False, vulkan_driver=None, debug=True)
-                p.ap = SimpleNamespace(landscape=False); p.so = t/'host.so'; p.logs = t; p.env = {}; p.result = {}
+                p.ap = SimpleNamespace(landscape=False, id='010015100B514000'); p.so = t/'host.so'; p.logs = t; p.env = {}; p.result = {}
+                p.aw = t; p.patched = t/'patched'; p.dmsv = t/'shaders.dmsv'; p.fps_files = {}; p.profile_h = '0' * 64
                 p.icon = p.theme = p.ui_font = lambda: []
+                p.external_activity = lambda: ['--dex', t/'classes.dex']
+                p.button_font = lambda: ([], {})
                 if gl is not None: p.gl = gl
                 calls = []
                 def run(args, *a, **kw): calls.append(args); p.apk_path.write_bytes(b'unsigned placeholder')
-                with patch.object(pipeline, 'app_stem', return_value='Synthetic'), patch.object(pipeline.nsp, 'run', side_effect=run), patch.object(pipeline.paths, 'signing_key', return_value=t/'unused-key'), patch.object(pipeline, 'PROG'):
+                with patch.object(pipeline, 'app_stem', return_value='Synthetic'), patch.object(pipeline.nsp, 'run', side_effect=run), patch.object(pipeline.paths, 'signing_key', return_value=t/'unused-key'), patch.object(pipeline, 'PROG'), patch.object(pipeline.runtimebundle, 'build', return_value=({}, '0' * 64, ['--asset', f'runtime/manifest.json={t}/manifest.json'])):
                     p.apk()
                 self.assertEqual(len(calls), 1)
                 self.assertEqual('--game-mode-performance' in calls[0], gl is False)
