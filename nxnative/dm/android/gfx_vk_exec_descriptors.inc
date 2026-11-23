@@ -29,6 +29,11 @@ static void uniform_ready(int stage, int reg, int64_t off, uint32_t count) {
 }
 static void shader_cpu_ready(const vkshader_t *s, int stage) {
     if (!s) return;
+    // most shaders read no handle or address from uniform buffer memory: found once a shader, not by walking its bindings for every draw (~2% of Sifu's replay)
+    if (!s->cpuready) { int any = 0; for (int i = 0; i < s->nbind; i++) { const dmsv_bind *b = &s->b[i];
+            any |= b->kind == RK_TEX_UBO || b->kind == RK_TBUF_UBO || b->kind == RK_IMG_UBO || b->kind == RK_SBUF_UBO || b->samp == RS_UBO; }
+        ((vkshader_t *)s)->cpuready = any ? 2 : 1; }
+    if (s->cpuready == 1) return;
     for (int i = 0; i < s->nbind; i++) {
         const dmsv_bind *b = &s->b[i];
         if (b->kind == RK_TEX_UBO || b->kind == RK_TBUF_UBO || b->kind == RK_IMG_UBO)
@@ -73,7 +78,9 @@ static void drv_segment(int st, int bank, uint8_t *d, int dyn) {
         if (st != 5) { const float mp = 2047.0f; memcpy(d + 0x610, &mp, 4); memcpy(d + 0x644, &g_draw_binst, 4); }
         else { memcpy(d + 0x200, g_dispatch, 12); for (int r = 0; r < 16; r++) { uint64_t a = S.ubo[5][r].addr; uint32_t n = (uint32_t)S.ubo[5][r].size; memcpy(d + 0x210 + 16 * r, &a, 8); memcpy(d + 0x210 + 16 * r + 8, &n, 4); } }
     } else if (!dyn) {
-        for (int off = 0x20; off < 0x968; off += 8) { uint64_t h = c2_handle(st, off); memcpy(d + off, &h, 8); }
+        // c2_handle's layout, a run at a time (d is zeroed above, so 0x160-0x168 stays 0): one call per 8 bytes, 297 a segment, was ~4 % of the replay's samples
+        // in Sifu's 15k-draw frames (Fold7)
+        memcpy(d + 0x20, S.tex[st], 32 * 8); memcpy(d + 0x120, S.img[st], 8 * 8); memcpy(d + 0x168, S.tex[st] + 128, 128 * 8); memcpy(d + 0x568, S.samp[st], 128 * 8);
     } else {
         // Slot-index handles only for profiles declaring tex_dyn_slots.
         for (int r = 0; r < 8; r++) { uint32_t h = (uint32_t)S.img[st][r]; memcpy(d + 0x120 + 8*r, &h, 4); }
@@ -113,6 +120,7 @@ static VkSampler samp_for(int st, const dmsv_bind *b, uint64_t texh, int nearest
 // locks (NEO: about 2 ms a frame). An entry holds while no texture ID is registered again and no view is dropped (g_tex_gen)
 enum { TVC = 4096 };
 static struct { uint64_t epoch, gen; int tid, dim, arr, num, sc; VkImageView v; vkimg_t *im; } g_tvc[TVC];
+uint64_t g_tvc_hit, g_tvc_miss, g_tvc_cold;   // lookups the cache answered, ones it did not, and of those the ones only an older submission's entry would have answered
 // what a view's texels are, as gfx_vk_shader.c's integer-texel variants need it: 0 float, 1 uint (unsigned integer formats, a stencil), 2 int
 static int view_num(const tex_t *t, const view_t *v) {
     const vkfmt_t *f = vk_fmt(v && v->set_format ? v->format : t->d.format); if (!f) return 0;
@@ -137,11 +145,14 @@ static int tex_desc_for(int st, const dmsv_bind *b, uint64_t h, VkDescriptorImag
     unsigned ck = ((unsigned)tid * 2654435761u ^ (unsigned)b->dim * 97u ^ (unsigned)(b->flags & 1) ^ (unsigned)sc * 0x9E37u) % TVC;
     int logfs = g_x_logfs && S.sh[1] && S.sh[1]->key == g_x_logfs && st == 1; static int nlogfs; if (logfs && nlogfs >= 60) logfs = 0;
     if (tid && g_var_now != 3 && !g_tracing && !logfs && g_tvc[ck].epoch == g_set_epoch && g_tvc[ck].gen == g_tex_gen && g_tvc[ck].tid == tid && g_tvc[ck].dim == b->dim && g_tvc[ck].arr == (b->flags & 1) && g_tvc[ck].sc == sc) {
-        ii->imageView = g_tvc[ck].v; if (g_tvc[ck].im) g_tvc[ck].im->last_use = mtl_last_fence() + 1; vk_texdump_note(g_tvc[ck].im);
+        // (no last_use here: the entry was made in this submission, whose fence the miss below already gave the image; the fence changes only at the commit.
+        // Writing it again touched a scattered image record per binding, ~77,000 a frame in Sifu)
+        ii->imageView = g_tvc[ck].v; vk_texdump_note(g_tvc[ck].im); g_tvc_hit++;
         if (g_tvc[ck].num && !storage) ii->sampler = samp_for(st, b, h, 1);
         return g_tvc[ck].num;
     }
-    int num = 0;
+    int num = 0; g_tvc_miss++;
+    if (tid && g_tvc[ck].epoch != g_set_epoch && g_tvc[ck].gen == g_tex_gen && g_tvc[ck].tid == tid && g_tvc[ck].dim == b->dim && g_tvc[ck].arr == (b->flags & 1) && g_tvc[ck].sc == sc) g_tvc_cold++;
     if (tid && g_var_now != 3 && vk_tex_by_id(tid, &v, &t) && t) {
         // a storage image the shader declares as integers over a float or unorm texture of the same texel size: a view of the same image in that class, so the shader
         // reads the texels' bits (FINAL FANTASY TACTICS' UI composite loads its RGBA8 window as r32ui; through a float view its blend came out yellow and white). Integer
@@ -211,9 +222,23 @@ static size_t g_set_key_used;
 static struct { uint64_t h, epoch; VkBuffer b; VkDeviceSize o; size_t n; uint8_t data[0x968]; } g_drvc[DRVC];
 uint64_t g_set_key_bypass;   // cacheable misses left uncached because the per-submission key arena is full
 uint64_t g_set_hits, g_set_new, g_ns_set_build, g_ns_set_hash, g_ns_set_new;   // descriptor sets: reused, new; time collecting their descriptors, hashing them, allocating and writing new ones
-// content hash of descriptor sets and driver segments: 8 bytes a step (a set with 32-slot texture arrays is several KB, which byte-wise FNV took milliseconds a frame over)
+// Content hash only indexes a cache: set_key/drv_shared still compare every byte before reuse.
+// Sifu on Fold7: ~20% of replay CPU samples were in the serial multiply/xor chain.
+// Four independent lanes let the CPU overlap long descriptor/driver-segment hashes.
 static inline uint64_t fnv(uint64_t h, const void *p, size_t n) {
     const uint8_t *b = p; size_t i = 0;
+    if (n >= 32) {
+        uint64_t a = h, c = h ^ 0xC2B2AE3D27D4EB4Full, d = h ^ 0x165667B19E3779F9ull, e = h ^ 0x85EBCA77C2B2AE63ull;
+        for (; i + 32 <= n; i += 32) {
+            uint64_t w[4]; memcpy(w, b + i, sizeof w);
+            a = (a ^ w[0]) * 0x9E3779B97F4A7C15ull; a ^= a >> 29;
+            c = (c ^ w[1]) * 0x9E3779B97F4A7C15ull; c ^= c >> 29;
+            d = (d ^ w[2]) * 0x9E3779B97F4A7C15ull; d ^= d >> 29;
+            e = (e ^ w[3]) * 0x9E3779B97F4A7C15ull; e ^= e >> 29;
+        }
+        h = a ^ ((c << 13) | (c >> 51)) ^ ((d << 29) | (d >> 35)) ^ ((e << 47) | (e >> 17));
+        h = (h ^ n) * 0x9E3779B97F4A7C15ull; h ^= h >> 29;
+    }
     for (; i + 8 <= n; i += 8) { uint64_t w; memcpy(&w, b + i, 8); h = (h ^ w) * 0x9E3779B97F4A7C15ull; h ^= h >> 29; }
     for (; i < n; i++) { h ^= b[i]; h *= 0x100000001b3ull; }
     return h;
@@ -235,8 +260,25 @@ static size_t set_key(uint64_t key[SET_KEY_WORDS], VkDescriptorSetLayout layout,
     }
     return n;
 }
+uint64_t g_c2_hit, g_c2_put, g_drv_content;   // driver segments found by the slots' hash, built for that path, and built for the content-hashed path (DM_LOG_FPS line)
 static void drv_shared(int st, int bank, VkBuffer *buf, VkDeviceSize *off, int dyn) {   // the driver segment: built, then one copy per distinct content in the submission
-    uint8_t d[0x1000]; drv_segment(st, bank, d, dyn);
+    static struct { uint64_t h, epoch; VkBuffer b; VkDeviceSize o; const uint8_t *p; } g_c2c[1024];   // (c2 by its slots: segments by g_c2h)
+    if (bank && !dyn && g_c2fast && !g_x_nodrvc) {
+        // A hit trusts the 64-bit g_c2h: the slots are not compared. With DM_VK_X_SETVERIFY every hit (g_c2_check) builds the segment again and
+        // compares its live bytes with the one found ([RED] on a difference, then the fresh one is used); DM_VK_C2_FAST=0 takes the content-hashed path below
+        uint64_t h = g_c2h[st] ^ 0x632c632c632c632cull; unsigned k = (unsigned)(h % 1024);
+        if (g_c2c[k].epoch == g_set_epoch && g_c2c[k].h == h) { g_c2_hit++;
+            if (!g_c2_check) { *buf = g_c2c[k].b; *off = g_c2c[k].o; return; }
+            uint8_t d[0x1000], c[0x968]; drv_segment(st, bank, d, 0); g_c2_checked++;
+            memcpy(c, g_c2c[k].p, sizeof c);   // (one read of the mapped copy, in the verify mode only; compares stay in ordinary memory)
+            if (!memcmp(d, c, sizeof c)) { *buf = g_c2c[k].b; *off = g_c2c[k].o; return; }
+            g_c2_bad++; static int n; if (n++ < 20) VKLOG("[RED] c2 segment verify: stage %d: the segment found by the slots' hash differs from a fresh one (%llu of %llu checks)",
+                                                            st, (unsigned long long)g_c2_bad, (unsigned long long)g_c2_checked);
+        }
+        uint8_t *p = vk_scratch(0x1000, V.props.limits.minUniformBufferOffsetAlignment, buf, off); drv_segment(st, bank, p, 0);
+        g_c2c[k].h = h; g_c2c[k].epoch = g_set_epoch; g_c2c[k].b = *buf; g_c2c[k].o = *off; g_c2c[k].p = p; g_c2_put++; return;
+    }
+    uint8_t d[0x1000]; drv_segment(st, bank, d, dyn); g_drv_content++;
     // only the bytes drv_segment can write are hashed (bank 0 ends at 0x648, the c2 table at 0x968; the rest is always zero): 4 KB was 512 hash steps a segment
     size_t n = bank ? 0x968 : 0x648;
     uint64_t h = fnv(0xcbf29ce484222325ull, d, n); unsigned k = (unsigned)(h % DRVC);
@@ -262,10 +304,21 @@ static void vk_cross(int k, uint64_t a, uint64_t n, const vkpool_t *p) {
                                                            (unsigned long long)a, (unsigned long long)n, (unsigned long long)p->hi);
 }
 // a constant buffer binding's descriptor (stage_set, set_memo_get): its pool's buffer from the alignment boundary below it, or the shadow of the deferred updates over it
+extern uint64_t g_cbpath[3];
 static void cbuf_desc(int st, const vkshader_t *s, const dmsv_bind *b, VkDescriptorBufferInfo *bi) {
     const p_bind_buf *u = b->reg >= 0 && b->reg < 16 ? &S.ubo[st][b->reg] : NULL;
     uint64_t n = u && u->size ? (u->size > 65536 ? 65536 : u->size) : 65536; VkBuffer buf; VkDeviceSize off;
-    vkpool_t *p = g_var_now != 9 && u && u->addr ? vk_pool_of(u->addr, 1) : NULL;
+    // the pool this slot's buffer was last found in, while no pool came or went (vk_pool_gen; a lazy pool given its buffer counts): the memo's check of the
+    // constant buffers (set_memo_get) looks each one up again for most draws, and pool_find's own cache (thread-local, by page) took ~8% of Sifu's replay thread
+    // (the last four, most recent first: Sifu's game scene binds a slot's constant buffers from several pools in turn). As pool_find's own caches, a pool with pools inside
+    // it (has_inner) is never answered from here: its range holds the inner pool's addresses, whose pages its buffer no longer has (Fire Emblem: Three Houses' device lost, 7a6eba18)
+    static struct { uint32_t gen; vkpool_t *p[4]; } pc[6][16];
+    vkpool_t *p = NULL;
+    if (g_var_now != 9 && u && u->addr) {
+        uint32_t vk_pool_gen(void); uint32_t g = vk_pool_gen() + 1; typeof(pc[0][0]) *e = &pc[st][b->reg];
+        if (e->gen == g) for (int k = 0; k < 4; k++) { vkpool_t *c = e->p[k]; if (c && u->addr >= c->lo && u->addr < c->hi && !__atomic_load_n(&c->has_inner, __ATOMIC_ACQUIRE)) { p = c; for (; k > 0; k--) e->p[k] = e->p[k - 1]; e->p[0] = c; break; } }
+        if (!p) { p = vk_pool_of(u->addr, 1); if (e->gen != g) { memset(e->p, 0, sizeof e->p); e->gen = g; } if (p) { memmove(&e->p[1], &e->p[0], 3 * sizeof *e->p); e->p[0] = p; } }
+    }
     if (!p) {
         if (g_ubolog_key && s->key == g_ubolog_key && g_ubolog_n > 0) { g_ubolog_n--; VKLOG("ubo: present %llu pass %d stage %d c%d %#llx +%llu: in no memory pool, zeros bound", (unsigned long long)g_tex_frame, g_sub_pass - 1, st, b->reg, (unsigned long long)(u ? u->addr : 0), (unsigned long long)(u ? u->size : 0)); }
         *bi = (VkDescriptorBufferInfo){vk_zero_buffer(), 0, 65536}; return; }
@@ -277,14 +330,16 @@ static void cbuf_desc(int st, const vkshader_t *s, const dmsv_bind *b, VkDescrip
                 uint8_t *d = vk_scratch(n, V.props.limits.minUniformBufferOffsetAlignment, &buf, &off); vk_ubd_read(u->addr, n, d); vk_cross(0, u->addr, n, p);
                 cc[k].a = u->addr; cc[k].n = n; cc[k].ep = g_set_epoch; cc[k].gen = g_ubd_gen; cc[k].b = buf; cc[k].o = off;
             } else { buf = cc[k].b; off = cc[k].o; }
-            ubo_log(s, st, b->reg, u->addr, n); *bi = (VkDescriptorBufferInfo){buf, off, n}; return;
+            ubo_log(s, st, b->reg, u->addr, n); *bi = (VkDescriptorBufferInfo){buf, off, n}; g_cbpath[1]++; return;
         }
         n = p->hi - p->lo - off;
     }
     ubo_log(s, st, b->reg, u->addr, n);
-    if (vk_ubd_shadow(u->addr, n, &buf, &off)) { *bi = (VkDescriptorBufferInfo){buf, off, n}; return; }   // deferred updates in it: their shadow
-    VkDeviceSize al = V.props.limits.minUniformBufferOffsetAlignment; if (off % al) VKRED_ONCE(40, "uniform buffer at an offset not aligned to %llu", (unsigned long long)al);
-    *bi = (VkDescriptorBufferInfo){buf, p->boff + off - off % al, n + off % al};   // (off is from the pool's start, its buffer starts boff before it)
+    if (vk_ubd_shadow(u->addr, n, &buf, &off)) { *bi = (VkDescriptorBufferInfo){buf, off, n}; g_cbpath[2]++; return; }   // deferred updates in it: their shadow
+    g_cbpath[0]++;
+    VkDeviceSize am = V.props.limits.minUniformBufferOffsetAlignment - 1, mis = off & am;   // (a power of two: a mask, not a division)
+    if (mis) VKRED_ONCE(40, "uniform buffer at an offset not aligned to %llu", (unsigned long long)am + 1);
+    *bi = (VkDescriptorBufferInfo){buf, p->boff + off - mis, n + mis};   // (off is from the pool's start, its buffer starts boff before it)
 }
 // The set a stage's last draw got, and what it was built from. Between two draws most stages change no texture, sampler, image or storage buffer, only
 // the offsets of their constant buffers, which go to the bind (dynamic uniform buffers). Then nothing is collected or hashed: the constant buffers alone are
@@ -295,10 +350,17 @@ static void cbuf_desc(int st, const vkshader_t *s, const dmsv_bind *b, VkDescrip
 // buffers are marked written), nor for a shader that reads handles or addresses from uniform buffer memory (that memory changes under the same bindings).
 // DM_VK_X_NOSETMEMO=1 (live): always collected. DM_VK_X_SETVERIFY=1 (live): one hit in 64 is collected anyway and compared, [RED] on a difference
 enum { MEMO_CB = 16 };
-typedef struct { vkshader_t *s; uint64_t epoch, bind, ubo, ubd, tex, samp, h, um, im; uint32_t pool, binst, dofs[96]; int ncb; uint8_t ci[MEMO_CB], cpos[MEMO_CB]; VkDescriptorBufferInfo cd[MEMO_CB]; VkDescriptorSet set; } set_memo_t;
-static set_memo_t g_smemo[3]; static uint64_t g_bind_gen[6], g_ubo_gen[6];   // a stage's handles or storage buffers changed (bind_handles_rec, OP_BIND_SSBO), its uniform buffers (OP_BIND_UBO)
+typedef struct { vkshader_t *s; uint64_t epoch, bind, ubo, ubd, tex, samp, h, h2, um, im; uint32_t pool, binst, dofs[96]; int ncb; uint8_t ci[MEMO_CB], cpos[MEMO_CB]; VkDescriptorBufferInfo cd[MEMO_CB]; VkDescriptorSet set; } set_memo_t;
+static set_memo_t g_smemo_own[3], *g_smemo[3] = {&g_smemo_own[0], &g_smemo_own[1], &g_smemo_own[2]};   // each stage's last set: an entry of g_rmemo (rmemo_entry; its own without the table)
+static uint64_t g_bind_gen[6], g_ubo_gen[6];   // a stage's handles or storage buffers changed (bind_handles_rec, OP_BIND_SSBO), its uniform buffers (OP_BIND_UBO)
 uint64_t g_set_memo, g_set_memo_bad;   // memo hits, and differences the verify mode found
 extern uint64_t g_ubd_gen; uint32_t vk_pool_gen(void);
+// Where stage_set's time goes and why its memo misses (the Android overlay's descriptor rows, gfx_vk_present.c): collecting by binding kind (0 textures,
+// images, samplers and texel buffers; 1 uniform and storage buffers; 2 the driver segments, c1 and the support buffer), and per call 0 kept by the memo,
+// 1 another shader on the stage, 2 a binding of the stage changed, 3 the texture, sampler or pool tables changed, 4 its constant buffers moved, 5 other
+// (another submission, base instance, a stage or shader the memo does not take)
+uint64_t g_memo_why[6], g_cbmiss[3], g_cbpath[3];   // g_cbpath: cbuf_desc's answers from the pool's buffer, a copy across chunks, a deferred update's shadow   // g_cbmiss: constant buffer misses by cause (another buffer, another range, a static one's offset)
+static inline int ss_kind(int k) { return k == RK_CBUF || k == RK_SBUF || k == RK_UBO_PTR || k == RK_SBUF_UBO ? 1 : k == RK_SUPPORT || k == RK_C1 || k == RK_DRV ? 2 : 0; }
 static int set_memo_ok(vkshader_t *s) {
     if (!s->setmemo) { int ok = 1, ncb = 0;
         for (int i = 0; i < s->nbind; i++) { const dmsv_bind *b = &s->b[i]; ncb += b->kind == RK_CBUF;
@@ -306,16 +368,102 @@ static int set_memo_ok(vkshader_t *s) {
         s->setmemo = ok && ncb <= MEMO_CB ? 1 : 2; }
     return s->setmemo == 1;
 }
-static int set_memo_get(int st, vkshader_t *s, uint32_t *dofs) {
-    set_memo_t *m = &g_smemo[st];
-    if (m->s != s || m->epoch != g_set_epoch || m->bind != g_bind_gen[st] || m->tex != g_tex_gen || m->samp != __atomic_load_n(&g_samp_gen, __ATOMIC_ACQUIRE) || m->pool != vk_pool_gen() || m->binst != g_draw_binst) return 0;
+static uint64_t g_verify_n, g_verify_slot_bad, g_verify_bad;   // DM_VK_X_SETVERIFY checks: made, slot descriptors differing, anything differing
+static uint64_t g_verify_dofs[8];   // DM_VK_X_SETVERIFY: dynamic offsets that differ from the memo's, by binding kind (1 constant buffer, 3 driver segment)
+static int set_memo_get(int st, vkshader_t *s, uint32_t *dofs, const VkDescriptorBufferInfo *cbd) {   // cbd: the stage's constant buffer descriptors by binding (stage_set), or NULL
+    set_memo_t *m = g_smemo[st];
+    if (m->s != s) { g_memo_why[1]++; return 0; }
+    if (m->epoch != g_set_epoch || m->binst != g_draw_binst) { g_memo_why[5]++; return 0; }
+    if (m->bind != g_bind_gen[st]) { g_memo_why[2]++; return 0; }
+    if (m->tex != g_tex_gen || m->samp != __atomic_load_n(&g_samp_gen, __ATOMIC_ACQUIRE) || m->pool != vk_pool_gen()) { g_memo_why[3]++; return 0; }
     if (m->ubo != g_ubo_gen[st] || m->ubd != g_ubd_gen) {   // the constant buffers again: most draws move only their offsets
-        for (int c = 0; c < m->ncb; c++) { VkDescriptorBufferInfo d; cbuf_desc(st, s, &s->b[m->ci[c]], &d);
-            if (d.buffer != m->cd[c].buffer || d.range != m->cd[c].range || (m->cpos[c] == 0xff && d.offset != m->cd[c].offset)) return 0;
+        for (int c = 0; c < m->ncb; c++) { VkDescriptorBufferInfo d; if (cbd) d = cbd[m->ci[c]]; else cbuf_desc(st, s, &s->b[m->ci[c]], &d);
+            if (d.buffer != m->cd[c].buffer || d.range != m->cd[c].range || (m->cpos[c] == 0xff && d.offset != m->cd[c].offset)) { g_memo_why[4]++;
+                g_cbmiss[d.buffer != m->cd[c].buffer ? 0 : d.range != m->cd[c].range ? 1 : 2]++; return 0; }
             if (m->cpos[c] != 0xff) m->dofs[m->cpos[c]] = (uint32_t)d.offset; }
         m->ubo = g_ubo_gen[st]; m->ubd = g_ubd_gen; }
     memcpy(dofs, m->dofs, sizeof *dofs * (size_t)s->ndyn); g_num_um = m->um; g_num_im = m->im;
-    return 1;
+    g_memo_why[0]++; return 1;
+}
+// Several sets a stage had in this submission, by its bindings' content (g_c2h, g_sseqh, g_ssboh: order-free hashes of every slot of the stage, kept by the
+// binds in O(1)): a stage whose bindings come back to an earlier draw's gets that draw's set without collecting or hashing anything, set_memo_get checking
+// the rest as for the last set (shader, submission, base instance, tables, constant buffers). The last-set memo alone missed 9,500 stage sets a frame in
+// Sifu's title scene (a binding changed), and 6,200 of the sets they collected were found again in the submission. A hit trusts the 64-bit rmemo_key for the
+// slots: nothing compares them (the entry keeps no copy of them; set_memo_get still compares the constant buffers). DM_VK_X_SETVERIFY collects one hit in 64
+// anyway, with the c2 segment built again rather than found by its hash (drv_shared), and logs [RED] on a difference. A stage that made a per-bind texel
+// buffer copy while it was collected (vk_tbuf_view's fallback) is not kept here: its set holds that bind's bytes (stage_set)
+enum { RMEMO = 2048 };
+typedef struct { uint64_t key; int st; set_memo_t m; } rmemo_t;
+static rmemo_t *g_rmemo; uint64_t g_rmemo_hit, g_rmemo_put;
+// The buffers of the stage's constant buffers go into the key too: Sifu's game scene keeps them in many pools (a VkBuffer each), and one entry per bindings
+// was overwritten each time a draw's constant buffers sat in other pools (7,700 of its stage sets a frame missed for another buffer)
+static void cbuf_desc(int st, const vkshader_t *s, const dmsv_bind *b, VkDescriptorBufferInfo *bi);
+// The stage's constant buffer descriptors, once a stage_set (the memo's check, its key and the collection all take them)
+enum { CBD_MAX = 256 };
+static void cbd_fill(int st, const vkshader_t *s, VkDescriptorBufferInfo cbd[CBD_MAX]) {
+    for (int i = 0; i < s->nbind && i < CBD_MAX; i++) if (s->b[i].kind == RK_CBUF) cbuf_desc(st, s, &s->b[i], &cbd[i]);
+}
+static uint64_t cb_sig(const vkshader_t *s, const VkDescriptorBufferInfo *cbd) {
+    uint64_t h = 0;
+    for (int i = 0; i < s->nbind && i < CBD_MAX; i++) if (s->b[i].kind == RK_CBUF) { const VkDescriptorBufferInfo *d = &cbd[i];
+        h = (h ^ (uint64_t)(uintptr_t)d->buffer ^ (d->range << 40)) * 0x9E3779B97F4A7C15ull; h ^= h >> 31; }
+    return h;
+}
+static uint64_t rmemo_key(int st, const vkshader_t *s, uint64_t cbs) {
+    uint64_t k = ((uint64_t)(uintptr_t)s + (uint64_t)st) * 0x9E3779B97F4A7C15ull ^ cbs; k ^= k >> 29;
+    k ^= g_c2h[st] * 0xC2B2AE3D27D4EB4Full; k ^= k >> 31; k ^= g_sseqh[st] * 0x165667B19E3779F9ull; k ^= k >> 29; k ^= g_ssboh[st] * 0x85EBCA77C2B2AE63ull;
+    return k ^ (k >> 32);
+}
+static int rmemo_take(int st, vkshader_t *s, uint32_t *dofs, uint64_t cbs, const VkDescriptorBufferInfo *cbd) {
+    if (!g_rmemo) return 0;
+    uint64_t k = rmemo_key(st, s, cbs); rmemo_t *e = &g_rmemo[k % RMEMO];
+    if (e->key != k || e->st != st || e->m.s != s || e->m.epoch != g_set_epoch) return 0;
+    // the stage's last set from now. Its bindings are taken to be those it was made with (an equal rmemo_key), so the generation is today's: set_memo_get's
+    // binding check then holds by construction, and the hit rests on the key (see above)
+    g_smemo[st] = &e->m; e->m.bind = g_bind_gen[st];
+    return set_memo_get(st, s, dofs, cbd);
+}
+// The entry a stage's new set is written into, in place (a ~1.7 KB copy each way took 7% of Sifu's replay thread): another stage's memo left pointing at
+// it only misses, as the entry then names another shader
+static set_memo_t *rmemo_entry(int st, const vkshader_t *s, uint64_t cbs) {
+    if (!g_rmemo && !(g_rmemo = calloc(RMEMO, sizeof *g_rmemo))) return &g_smemo_own[st];
+    uint64_t k = rmemo_key(st, s, cbs); rmemo_t *e = &g_rmemo[k % RMEMO]; e->key = k; e->st = st; g_rmemo_put++;
+    return &e->m;
+}
+// A memo entry's slot descriptors one by one, for the verify mode's [RED] line naming the binding that differs: a side table made on the first verify
+// fill, one row per g_rmemo entry and per stage's own entry, so the entries themselves stay small (768 B of each ~1.7 KB, 1.5 MB of g_rmemo, when they were in it)
+typedef struct { int nwh; uint32_t wbind[32], wtype[32]; uint64_t wh[32], wa[32]; } memo_slots_t;
+static memo_slots_t *g_memo_slots;
+static memo_slots_t *memo_slots(const set_memo_t *m, int make) {
+    if (!g_memo_slots && (!make || !(g_memo_slots = calloc(RMEMO + 3, sizeof *g_memo_slots)))) return NULL;
+    for (int st = 0; st < 3; st++) if (m == &g_smemo_own[st]) return &g_memo_slots[RMEMO + st];
+    uintptr_t off = (uintptr_t)m - (uintptr_t)g_rmemo;   // (addresses as integers: m is an entry of g_rmemo or of g_smemo_own, two objects)
+    if (g_rmemo && off < sizeof *g_rmemo * RMEMO) return &g_memo_slots[off / sizeof *g_rmemo];
+    return NULL;
+}
+// The descriptors that come from the stage's slots (images, samplers, texel buffers, storage buffers), hashed apart from the uniform buffers: a memo hit must give these
+// exactly, while a uniform buffer or driver segment may be an equal copy in another buffer (the verify mode, DM_VK_X_SETVERIFY, tells the two apart)
+static uint64_t slot_desc_hash(const VkWriteDescriptorSet *w, uint32_t nw) {
+    uint64_t h = 0x84222325cbf29ce4ull;
+    for (uint32_t i = 0; i < nw; i++) { const VkWriteDescriptorSet *x = &w[i];
+        if (x->descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER || x->descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC) continue;
+        h = (h ^ x->dstBinding) * 0x100000001b3ull;
+        for (uint32_t k = 0; k < x->descriptorCount; k++) {
+            if (x->pImageInfo) { h = (h ^ (uint64_t)(uintptr_t)x->pImageInfo[k].imageView) * 0x9E3779B97F4A7C15ull; h = (h ^ (uint64_t)(uintptr_t)x->pImageInfo[k].sampler) * 0x9E3779B97F4A7C15ull; }
+            else if (x->pTexelBufferView) h = (h ^ (uint64_t)(uintptr_t)x->pTexelBufferView[k]) * 0x9E3779B97F4A7C15ull;
+            else if (x->pBufferInfo) { h = (h ^ (uint64_t)(uintptr_t)x->pBufferInfo[k].buffer) * 0x9E3779B97F4A7C15ull; h = (h ^ x->pBufferInfo[k].offset ^ (x->pBufferInfo[k].range << 32)) * 0x9E3779B97F4A7C15ull; } } }
+    return h;
+}
+// The same descriptors one write at a time (the verify mode names the first that differs): binding, type, a hash and the first element's handle
+static int slot_desc_list(const VkWriteDescriptorSet *w, uint32_t nw, uint32_t bind[32], uint32_t type[32], uint64_t hv[32], uint64_t first[32]) {
+    int n = 0;
+    for (uint32_t i = 0; i < nw && n < 32; i++) { const VkWriteDescriptorSet *x = &w[i];
+        if (x->descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER || x->descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC) continue;
+        bind[n] = x->dstBinding; type[n] = x->descriptorType; hv[n] = slot_desc_hash(x, 1);
+        first[n] = x->pImageInfo ? (uint64_t)(uintptr_t)x->pImageInfo[0].imageView ^ ((uint64_t)(uintptr_t)x->pImageInfo[0].sampler << 1) :
+                   x->pTexelBufferView ? (uint64_t)(uintptr_t)x->pTexelBufferView[0] : x->pBufferInfo ? (uint64_t)(uintptr_t)x->pBufferInfo[0].buffer + x->pBufferInfo[0].offset : 0;
+        n++; }
+    return n;
 }
 // dofs (at least s->ndyn entries): the dynamic offsets of the set's dynamic uniform buffers, in binding order as vkCmdBindDescriptorSets takes them
 // indirect_c0 (compute only): a fresh segment for this dispatch's GPU-written counts; never put mutable bytes in drv_shared's content cache.
@@ -329,9 +477,19 @@ static VkDescriptorSet stage_set(int st, vkshader_t *s, uint32_t *dofs, VkDescri
     }
     int memo = st < 3 && !g_x_nosetmemo && !g_tracing && !g_var_now && !g_x_nosetc && !g_x_nodrvc && !g_ubolog_key && g_td_off < 0 && set_memo_ok(s), verify = 0;
     uint32_t vd[96]; uint64_t vum = 0, vim = 0;   // verify: what the memo gave
-    if (memo && set_memo_get(st, s, dofs)) { static unsigned nv; if (!g_x_setverify || ++nv % 64) { g_set_memo++; return g_smemo[st].set; }
+    if (!memo) g_memo_why[5]++;
+    // the constant buffer descriptors now, unless the last set holds without looking at them (nothing moved since)
+    VkDescriptorBufferInfo cbd[CBD_MAX]; int have_cbd = 0;
+    if (memo) { const set_memo_t *m0 = g_smemo[st]; if (!(m0->s == s && m0->ubo == g_ubo_gen[st] && m0->ubd == g_ubd_gen)) { cbd_fill(st, s, cbd); have_cbd = 1; } }
+    int got = memo && set_memo_get(st, s, dofs, have_cbd ? cbd : NULL); uint64_t cbs = 0; int have_cbs = 0;
+    if (!got && memo) { if (!have_cbd) { cbd_fill(st, s, cbd); have_cbd = 1; }
+        cbs = cb_sig(s, cbd); have_cbs = 1; if (rmemo_take(st, s, dofs, cbs, cbd)) { got = 1; g_rmemo_hit++; } }
+    if (got) { static unsigned nv; if (!g_x_setverify || ++nv % 64) { g_set_memo++; return g_smemo[st]->set; }
         verify = 1; memcpy(vd, dofs, sizeof *dofs * (size_t)s->ndyn); vum = g_num_um; vim = g_num_im; }
     uint64_t gtex = g_tex_gen, gsamp = __atomic_load_n(&g_samp_gen, __ATOMIC_ACQUIRE); uint32_t gpool = vk_pool_gen();   // before collecting: a change racing it (game thread) leaves the memo outdated
+    extern unsigned g_tbuf_copies; unsigned tc0 = g_tbuf_copies;   // (gfx_vk_tex.c: a per-bind texel buffer copy made while collecting)
+    g_c2_check = g_x_setverify;   // (DM_VK_X_SETVERIFY: every c2 segment found by its slots' hash built again and compared, drv_shared; not only in the
+    // 1-in-64 memo checks, whose collections found none by hash in Super Mario Odyssey: 111,500 of them, 0 c2 checks)
     VkDescriptorSet set = VK_NULL_HANDLE; struct { uint32_t b, o; int i; } dp[96]; int nd = 0; uint64_t tb0 = tick();
     VkWriteDescriptorSet w[96]; VkDescriptorBufferInfo bi[96]; VkDescriptorImageInfo ii[96 * 4]; VkBufferView bv[128]; uint32_t nw = 0, nii = 0, nbv = 0;
     int ncb = 0; uint8_t mci[MEMO_CB]; VkDescriptorBufferInfo mcd[MEMO_CB];   // the constant buffers, for the memo
@@ -347,7 +505,7 @@ static VkDescriptorSet stage_set(int st, vkshader_t *s, uint32_t *dofs, VkDescri
         switch (b->kind) {
         case RK_SUPPORT: bi[nw] = (VkDescriptorBufferInfo){vk_support_buffer(), 0, 65536}; break;
         case RK_C1: vk_shader_c1(s, &buf, &off, &len); bi[nw] = (VkDescriptorBufferInfo){buf, off, len}; break;
-        case RK_CBUF: cbuf_desc(st, s, b, &bi[nw]); if (ncb < MEMO_CB) { mci[ncb] = (uint8_t)i; mcd[ncb++] = bi[nw]; } break;
+        case RK_CBUF: if (have_cbd && i < CBD_MAX) bi[nw] = cbd[i]; else cbuf_desc(st, s, b, &bi[nw]); if (ncb < MEMO_CB) { mci[ncb] = (uint8_t)i; mcd[ncb++] = bi[nw]; } break;
         case RK_DRV: {
             if (indirect_c0 && st == 5 && b->reg == 0) {
                 if (!indirect_c0->buffer) {   // several bindings of c0 in one shader share this dispatch's segment
@@ -482,6 +640,7 @@ static VkDescriptorSet stage_set(int st, vkshader_t *s, uint32_t *dofs, VkDescri
         else if (x->pImageInfo) for (uint32_t k = 0; k < x->descriptorCount && k < 4; k++) VKLOG("  stage %d binding %u[%u] type %d: view %p sampler %p", st, x->dstBinding, k, x->descriptorType, (void *)x->pImageInfo[k].imageView, (void *)x->pImageInfo[k].sampler);
         else if (x->pTexelBufferView) VKLOG("  stage %d binding %u type %d: texel buffer view %p", st, x->dstBinding, x->descriptorType, (void *)x->pTexelBufferView[0]);
     }
+    g_c2_check = 0;
     // the set's content, then an earlier identical set of this submission or a new one
     uint64_t tb1 = tick(); g_ns_set_build += tb1 - tb0;
     uint64_t key[SET_KEY_WORDS]; size_t nk = set_key(key, s->dsl, w, nw);
@@ -502,12 +661,35 @@ static VkDescriptorSet stage_set(int st, vkshader_t *s, uint32_t *dofs, VkDescri
         g_ns_set_new += tick() - tb2; }
     // verify: the same content (hash), integer-texel bindings and dynamic offsets as the memo gave. A lone difference in dofs alone can be a driver segment
     // copied again after its g_drvc entry was taken by another (the memo's copy is as good); anything repeated is a dependency the memo misses
-    if (verify && (h != g_smemo[st].h || g_num_um != vum || g_num_im != vim || memcmp(vd, dofs, sizeof *dofs * (size_t)s->ndyn))) { g_set_memo_bad++; static int n;
-        if (n++ < 20) VKLOG("[RED] descriptor set memo: stage %d shader %016llx: a fresh set differs from the memo's (hash %016llx / %016llx, um %#llx / %#llx, im %#llx / %#llx, dynamic offsets %s)", st, (unsigned long long)s->key,
-                            (unsigned long long)h, (unsigned long long)g_smemo[st].h, (unsigned long long)g_num_um, (unsigned long long)vum, (unsigned long long)g_num_im, (unsigned long long)vim, memcmp(vd, dofs, sizeof *dofs * (size_t)s->ndyn) ? "differ" : "same"); }
-    if (memo) { set_memo_t *m = &g_smemo[st];   // (set_memo_ok: at most MEMO_CB constant buffers)
+    uint64_t h2 = g_x_setverify && (verify || memo) ? slot_desc_hash(w, nw) : 0;   // (only with DM_VK_X_SETVERIFY)
+    // (DM_VK_X_SETVERIFY) a slot descriptor that differs is either a dependency the memo misses (named in the [RED] line below) or an equal copy made again,
+    // such as a per-bind texel buffer copy (vk_tbuf_view's fallback), whose stage the memo keeps only for the next draw (rmemo takes none, see above)
+    int dofs_bad = 0, first_dof = -1;
+    if (verify) { g_verify_n++; if (h2 != g_smemo[st]->h2) g_verify_slot_bad++;
+        dofs_bad = memcmp(vd, dofs, sizeof *dofs * (size_t)s->ndyn) != 0;
+        if (dofs_bad) for (int j = 0; j < nd && j < (int)s->ndyn; j++) if (vd[j] != dofs[j]) { int kind = s->b[dp[j].i].kind;
+            g_verify_dofs[kind < 0 ? 0 : kind > 7 ? 7 : kind]++; if (first_dof < 0) first_dof = j; }
+        if (h != g_smemo[st]->h || g_num_um != vum || g_num_im != vim || dofs_bad) g_verify_bad++;
+        if (g_verify_n % 500 == 0) { uint64_t other = g_verify_dofs[0] + g_verify_dofs[2] + g_verify_dofs[4] + g_verify_dofs[5] + g_verify_dofs[6] + g_verify_dofs[7];
+            VKLOG("memo verify: %llu hits checked, slot descriptors differ %llu, anything %llu; c2 segments found by hash checked %llu, differ %llu, dynamic offsets differ by kind: 1 %llu, 3 %llu, other %llu", (unsigned long long)g_verify_n, (unsigned long long)g_verify_slot_bad, (unsigned long long)g_verify_bad, (unsigned long long)g_c2_checked, (unsigned long long)g_c2_bad, (unsigned long long)g_verify_dofs[1], (unsigned long long)g_verify_dofs[3], (unsigned long long)other); }
+        const memo_slots_t *mm = h2 != g_smemo[st]->h2 ? memo_slots(g_smemo[st], 0) : NULL;
+        if (mm) { static int nl; uint32_t fb[32], ft[32]; uint64_t fh[32], fa[32]; int fn = slot_desc_list(w, nw, fb, ft, fh, fa);
+            for (int q = 0; q < fn && q < mm->nwh && nl < 40; q++) if (fb[q] != mm->wbind[q] || fh[q] != mm->wh[q]) { int kind = -1, reg = -1;
+                for (int j = 0; j < s->nbind; j++) if (s->b[j].binding == fb[q]) { kind = s->b[j].kind; reg = s->b[j].reg; }
+                nl++; VKLOG("[RED] memo verify: stage %d shader %016llx binding %u (kind %d reg %d, Vulkan type %u) differs: memo %#llx, fresh %#llx", st, (unsigned long long)s->key, fb[q], kind, reg, ft[q], (unsigned long long)mm->wa[q], (unsigned long long)fa[q]); break; } } }
+    if (verify && (h != g_smemo[st]->h || g_num_um != vum || g_num_im != vim || dofs_bad)) { g_set_memo_bad++; static int n, n2;
+        if (h2 != g_smemo[st]->h2 && n2++ < 40) VKLOG("[RED] descriptor set memo: stage %d shader %016llx: slot descriptors differ from the memo's", st, (unsigned long long)s->key);
+        if (n < 80) { char ks[256]; int ko = 0; for (int i = 0; i < s->nbind && ko < 240; i++) ko += snprintf(ks + ko, sizeof ks - (size_t)ko, " %d.%d.%d", s->b[i].kind, s->b[i].reg, s->b[i].samp); ks[ko] = 0;
+            VKLOG("[RED] descriptor set memo: stage %d shader %016llx: bindings (kind.reg.samp):%s", st, (unsigned long long)s->key, ks); }
+        if (n++ < 80) { char first[96] = "";
+            if (first_dof >= 0) { const dmsv_bind *b = &s->b[dp[first_dof].i];
+                snprintf(first, sizeof first, " first: binding %u kind %d reg %d, memo %#x fresh %#x", dp[first_dof].b, (int)b->kind, (int)b->reg, vd[first_dof], dofs[first_dof]); }
+            VKLOG("[RED] descriptor set memo: stage %d shader %016llx: a fresh set differs from the memo's (hash %016llx / %016llx, um %#llx / %#llx, im %#llx / %#llx, dynamic offsets %s)%s", st, (unsigned long long)s->key,
+                  (unsigned long long)h, (unsigned long long)g_smemo[st]->h, (unsigned long long)g_num_um, (unsigned long long)vum, (unsigned long long)g_num_im, (unsigned long long)vim, dofs_bad ? "differ" : "same", first); } }
+    if (memo) { if (!have_cbs) { if (!have_cbd) { cbd_fill(st, s, cbd); have_cbd = 1; } cbs = cb_sig(s, cbd); } set_memo_t *m = g_smemo[st] = g_tbuf_copies != tc0 ? &g_smemo_own[st] : rmemo_entry(st, s, cbs);   // (set_memo_ok: at most MEMO_CB constant buffers)
         m->s = s; m->epoch = g_set_epoch; m->bind = g_bind_gen[st]; m->ubo = g_ubo_gen[st]; m->ubd = g_ubd_gen; m->tex = gtex; m->samp = gsamp; m->pool = gpool; m->binst = g_draw_binst;
-        m->h = h; m->um = g_num_um; m->im = g_num_im; m->set = set; memcpy(m->dofs, dofs, sizeof *dofs * (size_t)s->ndyn); m->ncb = ncb; memcpy(m->ci, mci, (size_t)ncb); memcpy(m->cd, mcd, sizeof *mcd * (size_t)ncb);
+        { memo_slots_t *ms = memo_slots(m, g_x_setverify); if (ms) ms->nwh = g_x_setverify ? slot_desc_list(w, nw, ms->wbind, ms->wtype, ms->wh, ms->wa) : 0; }   // (verify only)
+        m->h = h; m->h2 = h2; m->um = g_num_um; m->im = g_num_im; m->set = set; memcpy(m->dofs, dofs, sizeof *dofs * (size_t)s->ndyn); m->ncb = ncb; memcpy(m->ci, mci, (size_t)ncb); memcpy(m->cd, mcd, sizeof *mcd * (size_t)ncb);
         for (int c = 0; c < ncb; c++) { m->cpos[c] = 0xff; for (int j = 0; j < nd; j++) if (dp[j].i == mci[c]) m->cpos[c] = (uint8_t)j; } }
     return set;
 }
