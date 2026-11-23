@@ -409,9 +409,9 @@ static int64_t mono_ns(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC
 // A system input device can report itself as an active controller (issues #22, #210). The saved choice must still work, and the menu must stay reachable.
 int dm_overlay_visible(void) { return atomic_load(&g_set_overlay) && atomic_load(&g_overlay) ? 1 : 2; }
 int dm_overlay_layout(void) {   // the phone's layout in a window at least OV_PHONE_ASPECT wide for its height (overlay_layout.h)
-    static int last_w = -1, last_h = -1, phone;
-    ANativeWindow *w = phone_window(); int ww = w ? ANativeWindow_getWidth(w) : 0, wh = w ? ANativeWindow_getHeight(w) : 0;
-    if (ww != last_w || wh != last_h) { last_w = ww; last_h = wh; phone = ov_layout_for_size(ww, wh);
+    static int last_w = -1, last_h = -1, last_x = -1, phone;
+    ANativeWindow *w = phone_window(); int ww = w ? ANativeWindow_getWidth(w) : 0, wh = w ? ANativeWindow_getHeight(w) : 0, ext = dm_external_active();
+    if (ww != last_w || wh != last_h || ext != last_x) { last_w = ww; last_h = wh; last_x = ext; phone = ov_layout_for_size(ww, wh);   // (an external display takes the band away: ov_band)
         if (wh > 0) LOG("[overlay] window %dx%d: the %s layout", ww, wh, phone ? "phone" : "tablet"); }
     return phone;
 }
@@ -438,10 +438,12 @@ int64_t dm_overlay_pressed(int ctl, uint64_t bit) {
     return bit && bit < 1u << 16 ? atomic_load(&g_press_t[__builtin_ctzll(bit)]) : 0;
 }
 static int g_dpi;   // the display's density (AConfiguration), 0 = unknown
+int dm_overlay_dpi(void) { return g_dpi; }
 float dm_overlay_scale(void) {
-    static int last_w = -1, last_h = -1; static float s = 1;
-    ANativeWindow *w = phone_window(); int ww = w ? ANativeWindow_getWidth(w) : 0, h = w ? ANativeWindow_getHeight(w) : 0;
-    if (h != last_h || ww != last_w) { last_w = ww; last_h = h; s = 1;   // (the width picks the layout, whose buttons are sized for its form factor)
+    static int last_w = -1, last_h = -1, last_x = -1; static float s = 1;
+    ANativeWindow *w = phone_window(); int ww = w ? ANativeWindow_getWidth(w) : 0, h = w ? ANativeWindow_getHeight(w) : 0, ext = dm_external_active();
+    if (h != last_h || ww != last_w || ext != last_x) { last_w = ww; last_h = h; last_x = ext; s = 1;   // (the width picks the layout, whose buttons are sized for its form factor)
+        { float y0, bh; if (ov_band((float)ww, (float)h, &y0, &bh)) h = (int)bh; }   // (the band under the picture is the gamepad's window: overlay_layout.h ov_band)
         float face = 0.1f; const ov_ctl *L = OV_CTLS; for (int i = 0; i < OV_N; i++) if (L[i].kind == OV_BUTTON && L[i].btn == DM_BTN_A) face = L[i].w;   // A's width, in window heights
         if (h > 0 && g_dpi > 0 && g_dpi < 0xfffe) { float mm = face * (float)h / (float)g_dpi * 25.4f; s = OV_MIN_MM / mm; if (s < 1) s = 1; if (s > 1.45f) s = 1.45f; s = ov_fit_scale(OV_CTLS, (float)ww, (float)h, s); }   // (no further than the controls fit the window)
         LOG("[overlay] window %dx%d, density %d dpi: face buttons %.1f mm, controls x%.2f", ww, h, g_dpi, h > 0 && g_dpi > 0 && g_dpi < 0xfffe ? face * h / g_dpi * 25.4f : 0, s); }
@@ -500,8 +502,8 @@ static void menu_drag(const ov_ctl *m, float x, float y, float W, float H) {   /
     if (!g_drag.moved && hypotf(x - g_drag.x0, y - g_drag.y0) < OV_DRAG_SLOP * H) return;
     g_drag.moved = 1;
     float b[4]; ov_box(m, W, H, b);
-    float px = ov_drag_pos(x + g_drag.gx, b[2], W, 0), py = ov_drag_pos(y + g_drag.gy, b[3], H, 0); int l, i = ov_index(m, &l);
-    cust_place(0, l, i, px / W, py / H); atomic_fetch_add(&g_cust_ver, 1);
+    float fx, fy; ov_drag_place(x + g_drag.gx, y + g_drag.gy, b[2], b[3], W, H, 0, &fx, &fy); int l, i = ov_index(m, &l);   // (against the band under the picture, if any)
+    cust_place(0, l, i, fx, fy); atomic_fetch_add(&g_cust_ver, 1);
 }
 
 // ---- controllers attached: InputDevice's list, read once a second through JNI (a code-less NativeActivity has no InputManager listener). A device counts
@@ -915,9 +917,8 @@ static void ed_key(uint64_t bit) {
 }
 static void ed_drag(float x, float y, float W, float H) {   // the chosen control's centre follows the finger, kept on the screen
     int l = dm_overlay_layout(); float b[4]; ov_box(&OV_LAYOUTS[l][g_ed.sel], W, H, b);
-    float step = atomic_load(&g_set_grid) ? H / OVE_GRID_ROWS : 0;
-    float px = ov_drag_pos(x + g_ed.gx, b[2], W, step), py = ov_drag_pos(y + g_ed.gy, b[3], H, step);
-    cust_place(1, l, g_ed.sel, px / W, py / H); g_ed.dirty = 1;
+    float fx, fy; ov_drag_place(x + g_ed.gx, y + g_ed.gy, b[2], b[3], W, H, atomic_load(&g_set_grid) ? OVE_GRID_ROWS : 0, &fx, &fy);   // (against the band, if any)
+    cust_place(1, l, g_ed.sel, fx, fy); g_ed.dirty = 1;
 }
 static void ed_touch(AInputEvent *e, float W, float H) {   // the prompt's buttons, else the toolbar's, else the controls
     int act = AMotionEvent_getAction(e) & AMOTION_EVENT_ACTION_MASK, ai = AMotionEvent_getAction(e) >> AMOTION_EVENT_ACTION_POINTER_INDEX_SHIFT;

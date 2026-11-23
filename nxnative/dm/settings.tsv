@@ -164,6 +164,7 @@ DM_OODLE_JOB	str		debug	?	hle_oodle.c
 DM_OODLE_JOB_BNSH	bool		debug	?	hle_oodle.c	
 DM_OODLE_SERVE	str		debug	?	hle_oodle.c	
 DM_OPMODE	int		app	start	hle_oe.c	the operation mode at launch: 0 handheld, 1 docked. Default: the profile (op_mode); the pause menu overrides it
+DM_OVERLAY_SPLIT	bool	0	debug	start	overlay_layout.h	1 = on a window narrower than 3:2 the picture across the top and the on-screen gamepad in the band under it. When the display's density is known, a window wider than tall uses the band only where its face buttons stay at least 8 mm wide at that density (a window taller than wide takes it anyway: the gamepad over the picture would meet in the middle). An external display showing the picture disables the band.
 DM_PAD_LABEL	bool		debug	start	front_android.c	a physical controller's face buttons go to the game by their label (an Xbox controller's A is the game's A) instead of by their position (the Switch's: the bottom button is B, the right one A). The game's prompts name the button (A to confirm, B to go back), which an Xbox controller's labels match a
 DM_PAD_MERGE	bool		debug	?	front_android.c front_mac.m	
 DM_PAD_XBOX	bool		debug	start	front_android.c	a physical controller's face buttons go to the game by their label (an Xbox controller's A is the game's A) instead of by their position (the Switch's: the bottom button is B, the right one A). The game's prompts name the button (A to confirm, B to go back), which an Xbox controller's labels match a
