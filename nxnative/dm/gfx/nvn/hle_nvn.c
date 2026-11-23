@@ -1855,9 +1855,11 @@ static int fstep_on(void) { return fps_step_cap() != 0; }   // the host decides 
 static nvn_fstep g_fs;   // present thread only
 static nvn_fgpu g_fg;   // the GPU time at kmin and at the current hold (nvn_fstep_gpu_slowed)
 static _Atomic int g_fs_k;   // the hold presentation follows (0 = not decided yet)
+static _Atomic int g_fs_owns;   // the frame step decides how long frames stay on screen: its hold is on, or the game fixed its step (fstep_tick)
 // The display link runs at 30 Hz at a 30 cap, except while the game fixes its own step at 1 (BotW's VFR override)
 int nvn_game_fps(void) { int c = fps_step_cap(); if (c) return c == 30 && atomic_load(&g_fs_k) == 1 && fstep_on() ? 60 : c; uint64_t s = atomic_load(&g_itv2_since); return g_hz > 0 && !g_display_mode && s && now_ns() - s >= 1000000000ull ? 30 : 60; }
 int dm_nvn_frame_held(void) { int c = fps_step_cap(); return fstep_on() && atomic_load(&g_fs_k) > 60 / (c ? c : 60); }   // frames held longer than the cap's vsyncs (perf_android.c, DM_GPU_TURBO=need)
+int dm_nvn_frame_step_owns(void) { return fstep_on() && atomic_load(&g_fs_owns); }   // perf_android.c: the adaptive governor then leaves the period to the frame step
 static void present_cfg(const win_t *o) {
     if (g_hz >= 0) return;
     // The interval mode comes from the game profile (present_interval, default game): whether frames follow the present interval the game sets depends on whether the game's logic counts frames, which differs per game. Environment variables override it, and can override the fixed 60 Hz.
@@ -1937,6 +1939,7 @@ static void fstep_tick(const win_t *o) {
     double cpu_raw = shown - pw / v, cpu_nopq = shown - (pw + pq) / v, cpu = link ? cpu_raw : (cpu_nopq > rpl ? cpu_nopq : rpl), cost = cpu > gpu ? cpu : gpu;
     int c = fps_step_cap(), kmin = 60 / c, kmax = !fstep_hold() ? kmin : kmin >= 2 ? 2 : FSTEP_MAX, k0 = g_fs.k, kmin0 = g_fs.kmin, probe0 = g_fs.probe, pphase = nvn_fstep_probe_phase(&g_fs);
     int fixed = (int)__atomic_load_n((uint32_t *)(dm_fps_state + 0x24), __ATOMIC_RELAXED);
+    atomic_store(&g_fs_owns, fstep_hold() || fixed > 0);
     uint64_t probes0 = g_fs.probes, failed0 = g_fs.failed;
     // A screen whose rate is not a multiple of 60 (144, 165 Hz) shows the link's 1/60 s ticks on their nearest refreshes (nvn_mtl.m link_range), so a frame on time can show for one
     // refresh more than its hold: a cheap 50 ms frame shows 54.5 ms at 165 Hz, which counted as late kept the hold at 20 fps for good

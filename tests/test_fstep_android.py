@@ -26,6 +26,7 @@ static uint64_t g_frame;
 static uint64_t g_fs_start, g_fs_wait, g_fs_pq;
 static _Atomic uint64_t g_fs_replay_ns;
 static _Atomic int g_fs_k;
+static _Atomic int g_fs_owns;
 static nvn_fstep g_fs;
 static nvn_fgpu g_fg;
 static int g_fs_pshare = 100;
@@ -144,6 +145,16 @@ int main(int argc, char **argv) {
         assert(g_fs.k == 2);
         for (int i = 0; i < 300 && g_fs.k > 1; i++) step_frame(&w, 2.05, 0.0, 1.35, 0.25, 6.0);
         assert(g_fs.k == 1);
+    } else if (strcmp(mode, "owns_the_period") == 0) {   // issue #377: the hold on, or a step the game fixed; not a profile with the hold off
+        init_state(0, 120);
+        step_frame(&w, 1.0, 0.0, 0.25, 0.30, 8.0);
+        assert(atomic_load(&g_fs_owns) == 1);
+        g_hold = 0;
+        step_frame(&w, 1.0, 0.0, 0.25, 0.30, 8.0);
+        assert(atomic_load(&g_fs_owns) == 0);
+        uint32_t one = 1; memcpy(dm_fps_state + 0x24, &one, sizeof one);
+        step_frame(&w, 1.0, 0.0, 0.25, 0.30, 8.0);
+        assert(atomic_load(&g_fs_owns) == 1);
     } else if (strcmp(mode, "display_link_unchanged") == 0) {
         init_state(1, 165);
         for (int i = 0; i < 20; i++) step_frame(&w, 1.0, 0.1, 0.0, 0.30, 10.0);
@@ -192,6 +203,7 @@ class FstepAndroidTests(unittest.TestCase):
             'android_replay_bound_holds_30',
             'android_no_gpu_ts_steps_up_at_kmin',
             'android_real_overrun_at_30_steps_to_20_then_recovers',
+            'owns_the_period',
             'display_link_unchanged',
         )
         for case in cases:

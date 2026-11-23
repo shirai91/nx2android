@@ -259,10 +259,15 @@ static int g_step = 0; static _Atomic int g_adapt = 1; static int64_t g_work_his
 static int64_t g_last_change, g_last_up, g_up_hold = 2000000000; static int g_ok_frames; static uint64_t g_game_period;   // the period the game asks for, before the adaptive step
 static int g_nshown;
 static _Atomic int g_android_game_mode, g_game_mode_performance;
+// A game whose frame step holds its frames itself (hle_nvn.c: the hold is on, or the game fixed its step) has one controller of the period, not two: a longer period from the
+// governor runs a game-fixed step slow (Breath of the Wild's VFR override, step 1: half speed at 30 fps, with no debt to pay it back) and fails each of the frame step's trials
+// back to a shorter hold. A profile with the hold off (fps_hold) keeps the governor, the only thing that slows its frames. DM_FPS_PIN or an explicit DM_ADAPTIVE_FPS still wins
+__attribute__((weak)) int dm_nvn_frame_step_owns(void) { return 0; }
+static _Atomic int g_fstep_yield;
 static _Atomic int g_fps_pin = -1;
 void dm_perf_game_mode(int mode) { atomic_store(&g_android_game_mode, mode); }   // main-thread onResume; policy changes stay on the presenting thread
 static int adaptive_enabled(void) {
-    return atomic_load(&g_adapt) && !atomic_load(&g_game_mode_performance);
+    return atomic_load(&g_adapt) && !atomic_load(&g_game_mode_performance) && !atomic_load(&g_fstep_yield);
 }
 static void game_mode_sync(void) {   // presenting thread only: publish cached policy to guest acquire without environment reads there
     static unsigned frames; static int explicit_override;
@@ -278,6 +283,13 @@ static void game_mode_sync(void) {   // presenting thread only: publish cached p
         g_last_change = g_last_up = 0; g_up_hold = 2000000000;
         atomic_store(&g_game_mode_performance, want);
         LOG("[perf] Android Game Mode: %s", want ? "performance (game's own period)" : "default pacing policy");
+    }
+    int fs_owns = dm_nvn_frame_step_owns() && !explicit_override && g_fps_pin < 0;
+    if (fs_owns != atomic_load(&g_fstep_yield)) {
+        g_step = 0; g_nwork = g_nshown = g_ok_frames = 0;
+        g_last_change = g_last_up = 0; g_up_hold = 2000000000;
+        atomic_store(&g_fstep_yield, fs_owns);
+        LOG("[perf] adaptive frame rate: %s", fs_owns ? "off while the frame step holds the frames" : "on again");
     }
 }
 static int64_t work_pct(int q) {   // the q-th percentile of the last 64 frames' work
