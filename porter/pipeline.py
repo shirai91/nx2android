@@ -7,7 +7,7 @@ import hashlib, importlib.util, json, os, re, shlex, shutil, sys, time, tracebac
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from porter import config, datapack, dumps, fpslocker, install, paths, profiles, product_cache, romfs_pack, toolchain
+from porter import config, datapack, dumps, fpslocker, install, paths, profiles, product_cache, romfs_pack, runtimebundle, toolchain
 from porter.adb import NO_ADB, Adb, AdbError
 from porter.paths import DM, NXNATIVE
 from porter.upstream import BuildError, PROG, android_profile, game, nacp, nsp, profile_guess, say, trinity, uepak
@@ -72,6 +72,7 @@ class Options:
     no_menu_button: bool = False       # no on-screen menu button: DM_MENU_BUTTON=0 in env.txt (dm/android/front_android.c g_menu_btn); Back opens the menu (issue #397)
     native_keyboard: bool = False      # optional Unicode Android IME (requires SDK/JDK)
     external_display: bool = False     # compile the optional external-screen activity with the Android SDK
+    external_runtime: bool = False     # rewritten modules and shaders stay in the data pack; the APK carries no runtime bundle (porter install, not in-app import)
     vercode_offset: int = 0            # added to the APK's versionCode: a rebuild of the same game version installs over a build with a higher one (version_code)
     alias_headroom: int = None         # GB more alias region (alias_headroom); None: ALIAS_HEADROOM for a version the profile was not brought up on, none for one it was
     romfs_at: str = None               # with install: the folder on the device the app reads the RomFS from (porter/install.py), 'app' for its files folder; None: as the device has it
@@ -922,7 +923,13 @@ class Port:
         icon = self.icon()
         code = version_code(self.pkg_ver, self.o.vercode_offset)
         if self.o.vercode_offset: say(f'versionCode {code} ({self.pkg_ver} + 1 + offset {self.o.vercode_offset})')
-        external = self.external_activity() if self.o.external_display or self.o.native_keyboard else []
+        external = self.external_activity()
+        self.runtime_bundle, runtime_assets = None, []
+        if not self.o.external_runtime:   # bundled: modules, shaders, button font and fpslock ride in the APK; --external-runtime leaves them in the data pack
+            _, font_files = self.button_font()
+            _, self.runtime_bundle, runtime_assets = runtimebundle.build(
+                self.aw / 'runtime-bundle', self.patched, self.dmsv, font_files, self.fps_files,
+                self.package, self.ap.id, self.pkg_ver, self.profile_h)
         driver = self.o.vulkan_driver
         if driver and driver.name != driver_lib_name(driver):   # packed under a lib*.so name (driver_lib_name), copied beside the host library
             driver = self.so.parent / driver_lib_name(driver); shutil.copyfile(self.o.vulkan_driver, driver)
@@ -930,20 +937,21 @@ class Port:
         nsp.run([PY, DM / 'android/apk/mkapk.py', self.so, self.apk_path, paths.signing_key(), '--package', self.package, '--label', self.app_name, '--lib', 'dmhost',
                  '--version-code', str(code), '--version-name', self.display]
                 + (['--landscape'] if self.ap.landscape else []) + icon + self.theme() + self.ui_font() + external + ([] if self.o.debug else ['--release'])
-                + (['--game-mode-performance'] if getattr(self, 'gl', None) is False else [])   # only NVN implements the mode's pacing policy; GL keeps OEM interventions
+                + runtime_assets + (['--game-mode-performance'] if getattr(self, 'gl', None) is False else [])   # only NVN implements the mode's pacing policy; GL keeps OEM interventions
                 + [a for f in ([driver] + [self.so.parent / n for n in ADRENOTOOLS_LIBS] if driver else []) for a in ('--extra-so', str(f))],
                 self.logs / 'android_apk.log', env=self.env)
         self.result['apk'] = str(self.apk_path)
         PROG.end(f'{self.apk_path.name}, {self.apk_path.stat().st_size / 2**20:.1f} MB')
 
     def external_activity(self):
+        if self.o.external_runtime and not self.o.external_display and not self.o.native_keyboard: return []   # no runtime helper and no optional activity: the APK stays code-less
         javac = shutil.which('javac')
         roots = toolchain._sdk_roots()
         platforms = [p for root in roots for p in (root / 'platforms').glob('android-*/android.jar')]
         d8s = [p for root in roots for p in (root / 'build-tools').glob('*/d8' + ('.bat' if os.name == 'nt' else ''))]
         def version(p): return tuple(int(x) for x in re.findall(r'\d+', p.parent.name))
         if not javac or not platforms or not d8s:
-            raise BuildError('--external-display / --native-keyboard needs javac and an Android SDK with a platform and build-tools (set ANDROID_HOME)')
+            raise BuildError('APK building (bundled runtime, --external-display / --native-keyboard) requires javac and an Android SDK with a platform and build-tools (set ANDROID_HOME)')
         platform, d8 = max(platforms, key=version), max(d8s, key=version)
         out = self.aw / 'external-activity'; classes, dex = out / 'classes', out / 'dex'
         shutil.rmtree(out, ignore_errors=True); classes.mkdir(parents=True); dex.mkdir()
@@ -951,7 +959,7 @@ class Port:
         nsp.run([javac, '-source', '8', '-target', '8', '-classpath', platform, '-d', classes, *sources], self.logs / 'android_external_java.log', env=self.env)
         nsp.run([d8, '--min-api', '29', '--lib', platform, '--output', dex, *sorted(classes.rglob('*.class'))], self.logs / 'android_external_dex.log', env=self.env)
         activity = 'KeyboardExternalActivity' if self.o.native_keyboard else 'ExternalActivity'
-        return ['--dex', dex / 'classes.dex', '--activity', 'org.nx2a.' + activity if self.o.external_display else 'org.nx2a.GameActivity']
+        return ['--dex', dex / 'classes.dex'] + (['--activity', 'org.nx2a.' + activity] if self.o.external_display else ['--activity', 'org.nx2a.GameActivity'] if self.o.native_keyboard else [])
 
     def theme(self):
         """The on-screen gamepad's theme: only the game's own pack goes in the APK (dm/android/themes/themes.tsv maps title IDs to packs; a game with no row
@@ -985,9 +993,11 @@ class Port:
     # ---- data: the files the app reads from its files folder ----
     def data(self):
         PROG.stage('data pack', step='button-icon font')
-        font_env, font_files = self.button_font()
+        external = self.o.external_runtime
+        font_env, font_files = self.button_font() if external else ([], {})
         if self.o.shared_font:   # the host serves it for every shared-font type but the button icons (hle_sdk16.c font_get)
             font_env, font_files = font_env + [f'DM_SHARED_FONT={datapack.files_folder(self.package)}/standard.ttf'], {**font_files, 'standard.ttf': self.o.shared_font}
+        if external: font_files = {**font_files, **self.fps_files}   # fpslock.tsv beside the button font; bundled mode keeps both in the APK
         dst = self.o.out / f'{app_stem(self.g, self.app_name)}-data'
         romfs, zenv = self.game / 'RomFS', []
         if self.ap.romfs_zstd and romfs.is_dir():   # android.tsv romfs zstd: packed copies of the files that compress, made once into the build folder; the rest stay links to the extraction
@@ -995,11 +1005,12 @@ class Port:
             nf, npk, raw, out = romfs_pack.pack_tree(romfs, self.aw / 'romfs_zstd' / self.pkg_ver, self.o.jobs, progress=lambda d, t: PROG.set(step='compressing the RomFS', done=d, total=t, unit='B'))
             say(f'RomFS compressed: {npk:,} of {nf:,} files packed, {raw / 2**30:.1f} GB → {out / 2**30:.1f} GB on the device')
             romfs, zenv = self.aw / 'romfs_zstd' / self.pkg_ver, ['DM_ROMFS_ZSTD=1']
-        man = datapack.build(dst, profile=self.ap, version=self.pkg_ver, display=self.display, patched=self.patched, romfs=romfs, shaders=self.dmsv,
-                             aoc=self.aoc, sysdata=self.sysdata, language=self.lang, package=self.package, env=self.fps_env + font_env + zenv + (['DM_VK_MT_REPLAY=1'] if self.o.mt_replay else [])
+        fps_env = self.fps_env if external else [row for row in self.fps_env if not row.startswith('DM_FPS_LOCKS=')]
+        man = datapack.build(dst, profile=self.ap, version=self.pkg_ver, display=self.display, patched=self.patched if external else None, romfs=romfs, shaders=self.dmsv if external else None,
+                             aoc=self.aoc, sysdata=self.sysdata, language=self.lang, package=self.package, env=fps_env + font_env + zenv + (['DM_VK_MT_REPLAY=1'] if self.o.mt_replay else [])
                              + (['DM_MENU_BUTTON=0'] if self.o.no_menu_button else [])
                              + ([f'DM_VK_DRIVER={driver_lib_name(self.o.vulkan_driver)}'] if self.o.vulkan_driver else []), settings=TOUCH_SETTINGS if self.o.touch else None,
-                             files={**self.fps_files, **font_files}, profile_h=getattr(self, 'profile_h', None),
+                             files=font_files, profile_h=getattr(self, 'profile_h', None), runtime_bundle=None if external else self.runtime_bundle,
                              progress=lambda what: PROG.set(step=f'linking {what}'))
         self.data_path = dst; self.result['data'] = str(dst)
         PROG.end(f'{man["files"]:,} files, {man["bytes"] / 2**30:.1f} GB')

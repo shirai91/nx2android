@@ -74,7 +74,9 @@ MANIFEST = ('manifest', [(False, 'package', PKG), (True, 'versionCode', ARGS.ver
             ('meta-data', [(True, 'name', 'android.app.lib_name'), (True, 'value', LIB)], []),
             ('intent-filter', [], [
                 ('action', [(True, 'name', 'android.intent.action.MAIN')], []),
-                ('category', [(True, 'name', 'android.intent.category.LAUNCHER')], [])])])])])
+                ('category', [(True, 'name', 'android.intent.category.LAUNCHER')], [])])])] +
+        ([('activity', [(True, 'name', 'org.nx2a.DataImportActivity'), (True, 'exported', False), (True, 'configChanges', ('hex', CONFIG_CHANGES))], [])]
+         if any(a.partition('=')[0] == 'runtime/manifest.json' for a in ARGS.asset) else []))])
 
 def axml(root):
     # string pool: attribute names that carry resource IDs come first, in resource-map order

@@ -59,11 +59,15 @@ static _Atomic int g_external_active;
 static _Atomic unsigned g_external_epoch;
 static _Atomic uint64_t g_ext_buttons, g_ext_presses;
 static _Atomic int g_ext_lx, g_ext_ly, g_ext_rx, g_ext_ry, g_ext_menu;
+static _Atomic int g_running, g_bg, g_menu;
+void dm_overlay_redraw(void);
 ANativeWindow *dm_front_window(void) { pthread_mutex_lock(&g_win_mu); ANativeWindow *w = g_external_win ? g_external_win : g_win; pthread_mutex_unlock(&g_win_mu); return w; }
 static ANativeWindow *phone_window(void) { pthread_mutex_lock(&g_win_mu); ANativeWindow *w = g_win; pthread_mutex_unlock(&g_win_mu); return w; }
 int dm_external_active(void) { return atomic_load(&g_external_active); }
 __attribute__((weak)) void vk_window_lost(void) {}   // the backend lets go of the window's swapchain before the window goes
-static void on_window_created(ANativeActivity *a, ANativeWindow *w) { (void)a; pthread_mutex_lock(&g_win_mu); g_win = w; pthread_mutex_unlock(&g_win_mu); }
+// Pokemon Legends: Z-A: open the pause menu, switch apps, then return; redraw stops
+// because the paused game produces no new frames. Redraw the last frame/menu when its surface returns.
+static void on_window_created(ANativeActivity *a, ANativeWindow *w) { (void)a; pthread_mutex_lock(&g_win_mu); g_win = w; pthread_mutex_unlock(&g_win_mu); if (atomic_load(&g_running) && !atomic_load(&g_bg)) dm_overlay_redraw(); }
 static void on_window_destroyed(ANativeActivity *a, ANativeWindow *w) { (void)a; (void)w; pthread_mutex_lock(&g_win_mu); g_win = NULL; pthread_mutex_unlock(&g_win_mu); vk_window_lost(); }
 JNIEXPORT void JNICALL Java_org_nx2a_ExternalActivity_externalSurface(JNIEnv *env, jclass cls, jobject surface) {
     (void)cls;
@@ -77,6 +81,9 @@ JNIEXPORT void JNICALL Java_org_nx2a_ExternalActivity_externalSurface(JNIEnv *en
 void dm_focus_set(int st); void dm_audio_suspend(int on); void guest_clock_freeze_for(int reason, int on); void dm_gfx_suspend(int on);
 // ---- settings (the pause menu's), kept in the files folder as KEY=VALUE lines ----
 static char g_root[512];
+static char g_runtime[1024];
+static jclass g_runtime_class;
+static jmethodID g_runtime_prepare, g_runtime_check_data;
 static _Atomic int g_set_overlay = 1, g_set_rumble = 1, g_set_fps;   // the gamepad shown; rumble and tap vibration; the frame rate counter (top left)
 static _Atomic int g_set_opacity = 60;   // the gamepad's opacity, percent (OV_OPACITY_MIN..MAX: the menu's Opacity slider)
 static _Atomic int g_set_grid;   // the layout editor's Snap to grid
@@ -160,7 +167,6 @@ void dm_haptics_suspend(unsigned reason, int suspended);
 __attribute__((weak)) void dm_overlay_redraw(void) {}   // the backend presents the last frame again (the pause menu changed while the game is held)
 
 // ---- holding the game: in the background and while the pause menu is open. Its clock reads wait (reason 1) and its audio goes to the silent sink ----
-static _Atomic int g_running, g_bg, g_menu;
 static pthread_mutex_t g_hold_mu = PTHREAD_MUTEX_INITIALIZER; static int g_held;
 static _Atomic int g_ime_on;
 static _Atomic int g_tx_on;   // text entry open (front_text_input): the game is held as by the menu
@@ -173,7 +179,7 @@ static void hold_sync(void) {
 static void shake_sensor(int on);   // the accelerometer, off in the background (input, below)
 static void go_background(void) { if (!atomic_load(&g_running) || atomic_exchange(&g_bg, 1)) return; dm_focus_set(2); dm_focus_set(3);   // through OutOfFocus, as a game sees HOME and then the suspension (front_mac.m does the same)
     hold_sync(); dm_gfx_suspend(1); shake_sensor(0); }
-static void go_foreground(void) { if (!atomic_load(&g_running) || !atomic_exchange(&g_bg, 0)) return; dm_gfx_suspend(0); hold_sync(); dm_focus_set(2); shake_sensor(1); }
+static void go_foreground(void) { if (!atomic_load(&g_running) || !atomic_exchange(&g_bg, 0)) return; dm_gfx_suspend(0); hold_sync(); dm_focus_set(2); shake_sensor(1); dm_overlay_redraw(); }
 void dm_perf_gpu_release(void);   // perf_android.c: the GPU's clock control back to its governor (DM_GPU_TURBO)
 // The clock control goes back after go_background: its dm_gfx_suspend waits for the presents in progress, and one of them could otherwise set the GPU's power control again
 static void on_pause(ANativeActivity *a) { (void)a; go_background(); dm_perf_gpu_release(); }
@@ -183,7 +189,7 @@ static void on_pause(ANativeActivity *a) { (void)a; go_background(); dm_perf_gpu
 static void on_window_focus(ANativeActivity *a, int focused) { (void)a; if (atomic_load(&g_running) && !atomic_load(&g_bg)) dm_focus_set(focused ? 1 : 2); }
 // A save manager's request, or a RomFS the app cannot read (romfs_readable), asked the app to end (ANativeActivity_onCreate): Activity.finish() when it is resumed, through JNI on the main thread.
 // ANativeActivity_finish, from onCreate or from here, left the activity on the screen (Y700, Android 16), and porter's am start -W waited out its timeout
-static int g_quit;
+static _Atomic int g_quit;
 static void act_finish(ANativeActivity *a) {
     JNIEnv *E = a->env; jclass c = (*E)->GetObjectClass(E, a->clazz); jmethodID m = c ? (*E)->GetMethodID(E, c, "finish", "()V") : NULL;
     if (m) (*E)->CallVoidMethod(E, a->clazz, m);
@@ -1374,9 +1380,71 @@ static void on_queue_destroyed(ANativeActivity *a, AInputQueue *q) { (void)a; AI
 
 // ---- the host ----
 int main(int argc, char **argv);   // dm/host/main.c
+static void runtime_exception(JNIEnv *env, const char *where) {
+    jthrowable error = (*env)->ExceptionOccurred(env); (*env)->ExceptionClear(env);
+    jclass log_type = NULL, type = NULL; jstring text = NULL; const char *message = NULL;
+    log_type = (*env)->FindClass(env, "android/util/Log");
+    if (!log_type || (*env)->ExceptionCheck(env)) goto exception_fallback;
+    jmethodID stack = (*env)->GetStaticMethodID(env, log_type, "getStackTraceString", "(Ljava/lang/Throwable;)Ljava/lang/String;");
+    if (!stack || (*env)->ExceptionCheck(env)) goto exception_fallback;
+    text = (*env)->CallStaticObjectMethod(env, log_type, stack, error);
+    if (!text || (*env)->ExceptionCheck(env)) goto exception_fallback;
+    message = (*env)->GetStringUTFChars(env, text, NULL);
+    if (message && message[0]) goto exception_done;
+exception_fallback:
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+    if (message) { (*env)->ReleaseStringUTFChars(env, text, message); message = NULL; }
+    if (text) { (*env)->DeleteLocalRef(env, text); text = NULL; }
+    type = (*env)->GetObjectClass(env, error);
+    if (!type || (*env)->ExceptionCheck(env)) goto exception_done;
+    jmethodID to_string = (*env)->GetMethodID(env, type, "toString", "()Ljava/lang/String;");
+    if (!to_string || (*env)->ExceptionCheck(env)) goto exception_done;
+    text = (*env)->CallObjectMethod(env, error, to_string);
+    if (!text || (*env)->ExceptionCheck(env)) goto exception_done;
+    message = (*env)->GetStringUTFChars(env, text, NULL);
+exception_done:
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+    LOG("[RED] runtime %s failed:\n%s", where, message ? message : "cannot describe Java exception");
+    if (message) (*env)->ReleaseStringUTFChars(env, text, message);
+    if (text) (*env)->DeleteLocalRef(env, text);
+    if (type) (*env)->DeleteLocalRef(env, type);
+    if (log_type) (*env)->DeleteLocalRef(env, log_type);
+    (*env)->DeleteLocalRef(env, error);
+}
+static void runtime_default(const char *key, const char *name) {
+    char old[1100], legacy[1100], path[1200];
+    snprintf(old, sizeof old, "%s/%s", g_root, name);
+    const char *tail = strstr(g_root, "/Android/data/");
+    snprintf(legacy, sizeof legacy, "/sdcard%s/%s", tail ? tail : "", name);
+    snprintf(path, sizeof path, "%s/%s", g_runtime, name);
+    const char *value = getenv(key);
+    if (!access(path, R_OK) && (!value || !strcmp(value, old) || (tail && !strcmp(value, legacy)))) setenv(key, path, 1);
+}
 static void *host_thread(void *a) {
     (void)a;
-    char mods[600]; snprintf(mods, sizeof mods, "%s/mods", g_root);
+    if (g_runtime_class) {
+        JavaVM *vm = g_act->vm; JNIEnv *env;
+        LOG("[runtime] preparing bundled runtime");
+        if ((*vm)->AttachCurrentThread(vm, &env, NULL) != JNI_OK) {
+            LOG("[RED] runtime preparation failed: cannot attach to the Java VM"); g_quit = 1; return NULL;
+        }
+        jstring root = (*env)->CallStaticObjectMethod(env, g_runtime_class, g_runtime_prepare, g_act->clazz);
+        if ((*env)->ExceptionCheck(env)) {
+            runtime_exception(env, "preparation");
+        } else if (root) {
+            const char *value = (*env)->GetStringUTFChars(env, root, NULL);
+            snprintf(g_runtime, sizeof g_runtime, "%s", value);
+            (*env)->ReleaseStringUTFChars(env, root, value); (*env)->DeleteLocalRef(env, root);
+        } else LOG("[RED] runtime preparation failed: bundled manifest is unavailable");
+        (*env)->DeleteGlobalRef(env, g_runtime_class); g_runtime_class = NULL;
+        (*vm)->DetachCurrentThread(vm);
+        if (!g_runtime[0]) { g_quit = 1; return NULL; }
+        runtime_default("DM_VK_SHADERS", "shaders.dmsv");
+        runtime_default("DM_SHARED_FONT_EXT", "nintendo_ext.ttf");
+        runtime_default("DM_FPS_LOCKS", "fpslock.tsv");
+        LOG("[runtime] bundled runtime ready: %s", g_runtime);
+    }
+    char mods[1100]; snprintf(mods, sizeof mods, "%s/mods", g_runtime[0] ? g_runtime : g_root);
     char *argv[] = {"dmhost", mods, NULL};
     atomic_store(&g_running, 1);
     int rc = main(2, argv);
@@ -1446,7 +1514,6 @@ __attribute__((visibility("default"))) void ANativeActivity_onCreate(ANativeActi
     g_act = act;
     int sdk; { AConfiguration *cfg = AConfiguration_new(); AConfiguration_fromAssetManager(cfg, act->assetManager); g_dpi = AConfiguration_getDensity(cfg); sdk = AConfiguration_getSdkVersion(cfg); AConfiguration_delete(cfg); }
     act->callbacks->onNativeWindowCreated = on_window_created; act->callbacks->onNativeWindowDestroyed = on_window_destroyed;
-    act->callbacks->onInputQueueCreated = on_queue_created; act->callbacks->onInputQueueDestroyed = on_queue_destroyed;
     act->callbacks->onPause = on_pause; act->callbacks->onResume = on_resume; act->callbacks->onWindowFocusChanged = on_window_focus; act->callbacks->onDestroy = on_destroy;
     ANativeActivity_setWindowFlags(act, AWINDOW_FLAG_KEEP_SCREEN_ON | AWINDOW_FLAG_FULLSCREEN, 0);
     static int started; if (started++) return;   // a second onCreate (configuration change) keeps the running game
@@ -1460,19 +1527,79 @@ __attribute__((visibility("default"))) void ANativeActivity_onCreate(ANativeActi
     snprintf(p, sizeof p, "%s/log.txt", g_root); char prev[720]; snprintf(prev, sizeof prev, "%s/log.prev.txt", g_root); rename(p, prev);
     if (!freopen(p, "w", stderr)) __android_log_print(ANDROID_LOG_ERROR, "dmhost", "cannot write %s", p);
     setvbuf(stderr, NULL, _IOLBF, 0);
+    LOG("[runtime] startup title=%s host_compiled=%s %s", DM_GAME_ID, __DATE__, __TIME__);
+    LOG("[runtime] environment BEGIN");
     setenv("DM_ROOT", g_root, 1);
     snprintf(p, sizeof p, "%s/RomFS", g_root); setenv("DM_ROMFS", p, 0);
     snprintf(p, sizeof p, "%s/save", act->internalDataPath); mkdir(p, 0700); setenv("DM_SAVE", p, 0);
     snprintf(p, sizeof p, "%s/temp", act->internalDataPath); mkdir(p, 0700); setenv("DM_TEMP", p, 0);
     snprintf(p, sizeof p, "%s/shaders.dmsv", g_root); setenv("DM_VK_SHADERS", p, 0);
+    LOG("[runtime] environment DONE");
+    LOG("[runtime] env file BEGIN");
     snprintf(p, sizeof p, "%s/env.txt", g_root); env_file(p);
+    LOG("[runtime] env file DONE");
+    LOG("[runtime] manifest detection BEGIN");
+    AAsset *bundle = AAssetManager_open(act->assetManager, "runtime/manifest.json", AASSET_MODE_STREAMING);
+    LOG("[runtime] manifest detection DONE present=%d", bundle != NULL);
+    if (bundle) {
+        AAsset_close(bundle);
+        LOG("[runtime] helper lookup BEGIN");
+        jclass activity_type = NULL, loader_type = NULL, cls = NULL;
+        jobject loader = NULL; jstring name = NULL;
+        activity_type = (*env)->GetObjectClass(env, act->clazz);
+        if (!activity_type || (*env)->ExceptionCheck(env)) goto runtime_lookup_done;
+        jmethodID get_loader = (*env)->GetMethodID(env, activity_type, "getClassLoader", "()Ljava/lang/ClassLoader;");
+        if (!get_loader || (*env)->ExceptionCheck(env)) goto runtime_lookup_done;
+        loader = (*env)->CallObjectMethod(env, act->clazz, get_loader);
+        if (!loader || (*env)->ExceptionCheck(env)) goto runtime_lookup_done;
+        LOG("[runtime] helper loader acquired");
+        loader_type = (*env)->GetObjectClass(env, loader);
+        if (!loader_type || (*env)->ExceptionCheck(env)) goto runtime_lookup_done;
+        jmethodID load_class = (*env)->GetMethodID(env, loader_type, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;");
+        if (!load_class || (*env)->ExceptionCheck(env)) goto runtime_lookup_done;
+        name = (*env)->NewStringUTF(env, "org.nx2a.RuntimeBundle");
+        if (!name || (*env)->ExceptionCheck(env)) goto runtime_lookup_done;
+        cls = (*env)->CallObjectMethod(env, loader, load_class, name);
+        if (!cls || (*env)->ExceptionCheck(env)) goto runtime_lookup_done;
+        LOG("[runtime] helper class loaded");
+        g_runtime_prepare = (*env)->GetStaticMethodID(env, cls, "prepare", "(Landroid/content/Context;)Ljava/lang/String;");
+        if (!g_runtime_prepare || (*env)->ExceptionCheck(env)) goto runtime_lookup_done;
+        g_runtime_check_data = (*env)->GetStaticMethodID(env, cls, "checkData", "(Landroid/app/Activity;Ljava/lang/String;)Z");
+        if (!g_runtime_check_data || (*env)->ExceptionCheck(env)) goto runtime_lookup_done;
+        g_runtime_class = (*env)->NewGlobalRef(env, cls);
+runtime_lookup_done:
+        if ((*env)->ExceptionCheck(env)) {
+            runtime_exception(env, "helper lookup");
+            if (g_runtime_class) { (*env)->DeleteGlobalRef(env, g_runtime_class); g_runtime_class = NULL; }
+        }
+        if (name) (*env)->DeleteLocalRef(env, name);
+        if (cls) (*env)->DeleteLocalRef(env, cls);
+        if (loader_type) (*env)->DeleteLocalRef(env, loader_type);
+        if (loader) (*env)->DeleteLocalRef(env, loader);
+        if (activity_type) (*env)->DeleteLocalRef(env, activity_type);
+        if (!g_runtime_class || !g_runtime_prepare || !g_runtime_check_data) { LOG("[RED] runtime preparation failed: APK runtime helper is unavailable"); g_quit = 1; return; }
+        LOG("[runtime] helper lookup DONE");
+    }
     { const char *e = getenv("DM_MENU_BUTTON"); if (e && *e && !atoi(e)) { atomic_store(&g_menu_btn, 0); LOG("[overlay] DM_MENU_BUTTON=0: no menu button (Back opens the menu)"); } }
 #ifdef DM_RELEASE
     unsetenv("DM_CTL");   // a release build takes no remote key presses (the control file is a development tool)
 #endif
     // the save manager's requests (saves_android.c), before the host mounts the save: an import chosen in the menu or pushed by porter, an export porter asks for
-    if (dm_saves_start(g_root)) { LOG("[saves] the request asked the app to end: the game is not started"); g_quit = 1; return; }
+    LOG("[runtime] saves start BEGIN");
+    int saves_end = dm_saves_start(g_root);
+    LOG("[runtime] saves start DONE end=%d", saves_end);
+    if (saves_end) { LOG("[saves] the request asked the app to end: the game is not started"); g_quit = 1; return; }
+    if (g_runtime_class) {
+        jstring romfs = (*env)->NewStringUTF(env, getenv("DM_ROMFS"));
+        LOG("[runtime] data check BEGIN");
+        jboolean ready = (*env)->CallStaticBooleanMethod(env, g_runtime_class, g_runtime_check_data, act->clazz, romfs);
+        LOG("[runtime] data check DONE ready=%d", ready);
+        (*env)->DeleteLocalRef(env, romfs);
+        if ((*env)->ExceptionCheck(env)) { runtime_exception(env, "data check"); g_quit = 1; return; }
+        if (!ready) return;
+    }
     if (!romfs_readable(act, sdk)) { g_quit = 1; return; }   // after the save manager's requests, which need no RomFS
+    act->callbacks->onInputQueueCreated = on_queue_created; act->callbacks->onInputQueueDestroyed = on_queue_destroyed;
     settings_load(); dm_haptics_android_start(act, atomic_load(&g_set_rumble)); dm_lan_android_start(act);
     g_vm = act->vm;
     { pthread_t w; if (!pthread_create(&w, NULL, pad_watch, act->vm)) pthread_detach(w); }
