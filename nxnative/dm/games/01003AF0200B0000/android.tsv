@@ -1,0 +1,5 @@
+# Rune Factory: Guardians of Azuma on Android (Unreal Engine 4, NVN; update v589824 = 1.1.4).
+# First experimental build: boots to the autosave notice and renders the farm on the Odin 2 with the stock profile.
+status	experimental
+package	org.nx2a.runefactorygoa
+orientation	landscape
