@@ -1,0 +1,35 @@
+# Rune Factory 3 Special (Unity 2020.3 IL2CPP, NVN, SDK 14.3), update v131072 (1.0.4). Started from the generated provisional profile; memory checked on the Odin 2.
+# Memory: Unity maps 3+ GB of address regions beside StandardAllocator's; the default 4.38 GB alias region ran out (0x1803) and the host crashed, so the alias region is 8 GB (reserve = alias + 0x28000000) and the pool 2 GB.
+
+# ---- Identity ----
+title_id	0100E000191B4000
+program_id	0100E000191B4000
+
+# ---- App ----
+name	Rune Factory 3 Special
+ipa	RuneFactory3Special.ipa
+app_category	public.app-category.games
+
+# ---- Versions ----
+build	v131072	1.0.4	main=d76aa4fa0ff920daf0fbf42df2f69e24	subsdk0=c781dd63daf0ddcdb9975da50a198f93	sdk=2aef2cffb104ee7c9e212fd2f4c731e9
+package	v131072
+shader_versions	v131072
+
+# ---- Files ----
+# every module main imports from
+modules	main subsdk0 sdk
+romfs_marker	Data/StreamingAssets/aa/Switch/CriStreamingData/MOV_RUNE3_01.usmdf0404dae3cb9213b0e682320bcb6f2c
+zip_store	.acb6baa662e1bffb0821e319ed6ce39b036:.awb0268000d2d47d443e50814f44140abcb:.awb07bffc37c879a1eea15643c9c2367b2b:.awb093ccfd13fe20e395ac1209ad9b6c119:.awb0c104efb656f2219d1aed6d805d91f03:.awb0c1173fbd9287347cf20145861b298c8:.awb0ef954244d522894ebf1c17ade4ccb16:.awb12cac1f13382401b57e0d869eab7f25a:.awb13d900da1ae6a07f594af5ac02b278cc:.awb158936b4d696bedfb1255a407304b63e:.awb1877e26943bd33c4f7df54b8e7ad65ce:.awb1e698e57a94a0279812799fd97ca07ba:.awb2fffec3fe7ffbef79e41dca6db1633c5:.awb302ed9a7ebdf4e5faf4b39fbe50a9cac:.awb393a6b9d48a0c783f4dc2267a956d63b:.awb3b8b0b6eed9247398ecc4e1135330a8f:.awb3e3f0dece28d597d7e4abee1438f1d73:.awb3fd6deec7cdc7f28ebb4e47d7cbe3e62:.awb42046d271ebdd938708a2aec76b5d2dc:.awb4278028996bd324a7354dddb20688440:.awb43f5583fb46876f7e26ffd759532702c:.awb45cf2d35b24ce068148ed73d58a92079:.awb4857522c2293c3b17b37ddfbb9d9f2b1:.awb4b5a88d4bf02c5b44f394e5c4cb1b8c1:.awb4ba879a8f902d00885fa89ba5cb09da1:.awb4c2bebd804b693c688c8a38b3f57078d:.awb555d440ba629d3cb758848cd23fb6613:.awb59d7daf728c23de42714a9a4b71cb586:.awb67628361eaeeca9aed705a81bca49c5b:.awb691832b480b5de5e61a4dcf91f9daabb:.awb6cc71fae114c1af5c9b9a442d45e117a:.awb75745ecdbf1c86e276851f7161f4f1e6:.awb7ac39709b3598c2a0fdaceeb8d0399af:.awb7cfde14e3d179cc5c3a80a76c00f12ca:.awb814cff62f33cf362a531a39773db8acd:.awb833760f463bc83e5b73f1dae5c25eb14:.awb8457f3cc045ea8afa89b05fa5e8b668f:.awb852b166bbcecd9e8f3225dfe139234fd:.awb8c303273383de095467b7978b21c9554:.awb94210ea38e4d58e43c69cd825ec88e7e:.awb968d7fe8641cf28f0697671f04da0da1:.awba1de7872182d50610cc7f3473a0439e2:.awba26e339241f5b06e79705b93d6d09a50:.awba33b46497acc2ad8f5633b380ecface4:.awbab0ed81d49ac62b999472539193ea81e:.awbad5811d56610946d2cd9dec57c78d79f:.awbb257ad84de1b41e0ae6f4a0df7560ba7:.awbb54c312fcd8550ba74367fa162bd5242:.awbb5b0133efb58288bf5550f79ac604c96:.awbb8da20474f46fd442b92110555869243:.awbbbd8664961eab9abefd1e8e063d41c65:.awbbcb5d3e9777bccd6cf3b8823490d3f7d:.awbbf91ece9cff12c1ff9f5402491b9b3fa:.awbc160c7bcbf65850c6681ea3b1472cb6f:.awbc779a3d6bc3c18444561d39ba4b5cddd:.awbc84a0618923a432510b3e83bd1998578:.awbca3529e986ecf97522b02796d03d5ea6:.awbcab26a74eb342614186623ed0f4af3d4:.awbcafa848075ba637b0525cc4a8005e0bc:.awbcb97baca1e42ba2760f05b8eff101d8a:.awbcc8eb88259079ee6f877e8cf815dab47:.awbcd276cdccda049b94749192c0eeb0aeb:.awbd8686ad8441ddae529ca2cd0e05a1f22:.awbd8cd101cf714ffef86786bddf81c8db9:.awbdad1c4bfa304ff8edf0f329c8fbb0b97:.awbdb0076c12019e2257a1c2702bd8400af:.awbdb546b6b06c9b35a5ddc80e64a02abdb:.awbdee9b94aa7e8fce98e253c3094bd2a98:.awbe7d65adb11d2e42e1d87679033582885:.awbe99e6001d9d37ca6a8b88f309a423d76:.awbed380a32848d35e234651d782a98806e:.awbef964970cf492624e5e54575b7670fb8:.awbf4426166f37731b38119a9a2c0e0390e:.awbf5960bbddc7d64b6f72606e379775a8c:.awbf72d1ff397d1222868e119886e9a58a8:.awbfa4ea83cda2232157025139162a0defd:.awbfec5c0b7ef9707233ad2ac50e780fc1e:.bundle:.dat:.json:.nro:.ress:.usm22a6e06b506c7c2672b2ec2981c53a9b:.usm28e0a47494cda3f54e6a2b17335c979c:.usm4147ca96622ccf4a2392c11f8d276074:.usm69373249a3d94f577e6b15070c46523e:.usm962fcd3cb09118dcdb36b683d0121338:.usm9c931da2bf0e655f79623a97a4a0f41d:.usmae8af50ae58cab10dfe5ad8a81022b78:.usmc745dfcf29ddd26aa7df80c2d6472530:.usmdf0404dae3cb9213b0e682320bcb6f2c:.usmdfa57f475403887fdecbe7f2ddf7194c:.usme3f4aad373bfaa7392ac72d67765b64e:.usmee85349a0f386a0d7ff56d00b9327df5:.usmf62b5efe942deac164e9e1c1c39f54d4:.metallib
+
+# ---- Memory ----
+# the NPDM declares 16 MB of system resource (virtual address memory) and main sets a heap: a 5 GB block with a large alias region; the heap check sizes the heap region from the heap the game asks for
+mem_reserve	0x228000000
+mem_alias	0x200000000
+mem_stack	0x10000000
+app_pool	0x80000000
+# the NPDM declares 16 MB of system resource
+sys_resource	0x1000000
+
+# ---- Shader split ----
+shader_groups	/Data/=data /.nrr/=nrr /Plugins/=plugins
+shader_note	Rune Factory 3 Special shaders (provisional profile)
