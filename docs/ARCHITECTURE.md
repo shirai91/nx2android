@@ -117,6 +117,12 @@ checked before pointer formation. These checks do not change the decoder choice
 or timestamp/queue policy. The manual [AVC probe](../probes/avc_frame_layout.md)
 checks synthetic planes and padding; physical-device qualification is separate.
 
+The Android AVC adapter snapshots matrix and range with each queued picture.
+MediaCodec color metadata is accepted only for fields declared in the stream's
+SPS VUI. Without a colour description with a specified matrix it uses BT.709 at 720 lines and above,
+BT.601 below. Without a video signal type it uses limited range. Malformed or
+unsupported SPS data uses both defaults.
+
 Stopping a started guest AudioOut returns all pending buffers in queue order,
 including any partly played buffer, and wakes the guest's release event even if
 the pending queue is empty. Capacity covers all buffers accepted and yet to be
