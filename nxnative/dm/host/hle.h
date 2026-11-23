@@ -34,7 +34,7 @@ void guest_clock_read_wait(void);     // A guest read of the system counter: wai
 typedef struct { const char *name; void *fn; const char *why; const char *gate; } hle_force_ent;   // gate: NULL = always; else an env switch that must be set and nonzero, or the module's own definition stays
 #define HLE_FORCE(mangled, why, ret, cname, ...)                                                   \
     static ret cname(__VA_ARGS__);                                                                \
-    __attribute__((used, DM_SECTION("swforce"))) static const hle_force_ent hle_force_##cname = {mangled, (void *)cname, why}; \
+    __attribute__((used, DM_SECTION("swforce"))) static const hle_force_ent hle_force_##cname = {mangled, (void *)cname, why, NULL}; \
     static ret cname(__VA_ARGS__)
 // Same as HLE_FORCE, but taken over only when the env switch `gate` is set and nonzero (a per-profile fix that must not change other games)
 #define HLE_FORCE_IF(gate, mangled, why, ret, cname, ...)                                              static ret cname(__VA_ARGS__);                                                                    __attribute__((used, DM_SECTION("swforce"))) static const hle_force_ent hle_force_##cname = {mangled, (void *)cname, why, gate};     static ret cname(__VA_ARGS__)
