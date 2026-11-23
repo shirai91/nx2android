@@ -78,7 +78,7 @@ DM_NICK	str		debug	?	hle_account.c
 DM_NO_ADPF	str		debug	start	perf_android.c	no Android performance hints
 DM_NRO	int		debug	?	loader.c	
 DM_NVN_ACQ_NOW	bool		debug	live	hle_nvn.c	the window acquire's sync fenced at all work so far (the old way) instead of at the texture's last present: Xenoblade Chronicles 3 then waits for its whole frame on the GPU before it submits the next
-DM_NVN_ACQ_REPLAYED	bool		profile	start	hle_nvn.c	with `DM_NVN_ASYNC=1`: the window acquire does not wait for the queued jobs' replay. XC3 then drew whole-screen garbage (solid colours, smears) while the camera turned in about half of the recordings; with the wait at the next submission instead, 2 of 6 A profile may set it (Digimon Story Time Stranger: 0 with DM_PIN_REPLAY=prime, about 20 -> 30 fps in a crowded area on a Poco F5).
+DM_NVN_ACQ_REPLAYED	bool		profile	start	hle_nvn.c	with `DM_NVN_ASYNC=1`: the window acquire does not wait for the queued jobs' replay. XC3 then drew whole-screen garbage (solid colours, smears) while the camera turned in about half of the recordings; with the wait at the next submission instead, 2 of 6. A profile may set it (Digimon Story Time Stranger: 0 with DM_PIN_REPLAY=prime, about 20 -> 30 fps in a crowded area on a Poco F5).
 DM_NVN_ALLOCPROF	str		debug,ios	?	nvn_mtl.m	
 DM_NVN_ALPHA_RED	str		debug,ios	?	nvn_mtl.m	
 DM_NVN_API	str		debug	?	hle_nvn.c	
@@ -295,8 +295,8 @@ DM_VK_PASSDUMP_SIZE	str		debug	start	gfx_vk_exec.c	skip the first n passes, or s
 DM_VK_PASSDUMP_SKIP	int		debug	start	gfx_vk_exec.c	skip the first n passes, or start at the first pass of that size (depth included); only passes of those sizes (colour only)
 DM_VK_PASSDUMP_TARGET	bool		debug	?	gfx_vk_exec.c	=n: colour target n where the pass has one
 DM_VK_PASS_SPIKE	float		debug	start	gfx_vk_core.c	a frame whose timed passes and dispatches, or whose submissions, take longer logs `GPU spike:` with its six costliest items and the time outside them. The timestamps themselves add time: Tears of the Kingdom's 18 ms frames summed to 26 ms of passes, so set it well above the normal sum
-DM_VK_PASS_SPLIT	int	0	profile	?	gfx_vk_exec.c	split a pass into command buffers every N draws; 0 = never
-DM_VK_PASS_SPLIT_DEPTH	hex		debug	?	gfx_vk_exec.c	
+DM_VK_PASS_SPLIT	int	0	profile	?	gfx_vk_exec.c	split a pass into command buffers every N draws; 0 = never. Digimon Story: Time Stranger sets 128 (with DM_VK_PASS_SPLIT_DEPTH=1)
+DM_VK_PASS_SPLIT_DEPTH	hex		profile	?	gfx_vk_exec.c	with DM_VK_PASS_SPLIT: also split a pass that has a depth attachment (it writes back a depth texel before the second part, for Adreno's LRZ); 0 or unset = such passes are not split. Digimon Story: Time Stranger sets 1: its main 3D pass has depth
 DM_VK_PASS_TIMES	bool		debug	start	gfx_vk_core.c	GPU timestamps around every pass; the per-frame line lists the costliest passes. Disturbs Adreno's binning: compare runs only
 DM_VK_PIPE_LOG	str		debug	start	gfx_vk_exec.c	one log line per pipeline built (first 600), and the polygon-state lines (cull, front face, origin, the Vulkan values; one per combination, at most 16): shaders, topology, cull/front, depth and stencil state, colour formats, blend, attribute and binding counts. Compare the lines of a wrong material 
 DM_VK_PIXEL_HISTORY	str		debug	live	gfx_vk_exec.c	Default off. For matching single-sample B10G11R11 target 0, record one pixel's colour/depth after each logical draw or clear in `pixel_history.tsv`, at most 4096 events. Includes shader keys, vertex/index buffers, vertex UBO addresses, depth/bias/scissor/viewport state and packed source words. A sin

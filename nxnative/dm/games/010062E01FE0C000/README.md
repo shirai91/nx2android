@@ -20,6 +20,8 @@ The profile sets these for you (`android.tsv`); a player changes the pause menu 
 | `DM_VK_MT_REPLAY=1` | two-stage replay: the vkCmd* calls (40 of them) are copied into a 32 MB ring and a "vk record" thread makes the real calls in order; the calls that end, submit … |
 | `DM_NVN_ACQ_REPLAYED=0` | with `DM_NVN_ASYNC=1`: the window acquire does not wait for the queued jobs' replay |
 | `DM_PIN_REPLAY=prime` | pin the replay thread to fast cores: 0 = no, "prime" = the fastest core, "need" = the fastest core only while the replay is slow, other values = the big cores |
+| `DM_VK_PASS_SPLIT=128` | split a pass into command buffers every N draws; 0 = never |
+| `DM_VK_PASS_SPLIT_DEPTH=1` | with DM_VK_PASS_SPLIT: also split a pass that has a depth attachment (it writes back a depth texel before the second part, for Adreno's LRZ); 0 or unset = such … |
 | `DM_FPS_PIN=30` | pin the governor at 60, 40 or 30 fps; 0 = no pin |
 
 Read the profile's porting log in the comment header of [`android.tsv`](android.tsv). Back to the [games list](../../../../README.md#games).
@@ -46,6 +48,7 @@ Read the profile's porting log in the comment header of [`android.tsv`](android.
 
 - The profile asks for Mesa's Turnip (`vulkan_driver turnip`). Point the port at a Turnip build for your GPU once with `python -m porter config turnip <libvulkan_freedreno.so>`; without one the port says so in red and uses the phone's driver, which is far slower (see Frame rate).
 - GPU turbo is not needed.
+- The profile splits the long 1920x1080 render pass (`DM_VK_PASS_SPLIT=128` with `DM_VK_PASS_SPLIT_DEPTH=1`): in the same area the slowest frames got shorter (95th percentile frame time about 56 ms without it, 38 ms with it, in short runs). A split of 512 helped much less; 256 and smaller values were not tried.
 
 ## Quirks and known issues
 
