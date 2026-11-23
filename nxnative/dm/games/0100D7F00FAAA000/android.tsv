@@ -1,0 +1,12 @@
+# The Great Ace Attorney Chronicles — Chinese release (0100D7F00FAAA000, base game v0 = 1.0.0 CN1.3), on Android. Capcom's MT Framework, SDK 10, 460 shaders, 30 fps.
+# The global release's profile (010036E00FB20000) covers the engine; this one differs in its title ID, its build row and main's hash only, and its shader tables are the same.
+# Checked 2026-11-20 on an OPPO Pad (OPD2101, Snapdragon 870, Adreno 650, Android 15) with the bundled Turnip 25.99.99: the title screen, the first episode's office,
+# both pause-menu tabs, opacity, the layout editor, the handheld/docked switch, touch passthrough in both modes, save export and import, and a data pack imported from a
+# ZIP inside the app. 30 fps steady (frame time p50 33.3 ms, the GPU 10-14 ms of it), no [RED] lines. Not played end to end.
+status	wip
+tested	v0 OPPO Pad OPD2101 (Snapdragon 870, Adreno 650, Android 15)
+package	org.nx2a.t0100d7f00faaa000
+orientation	landscape
+vulkan_driver	turnip
+readme_image	docs/images/the-great-ace-attorney-chronicles-chinese.jpg
+readme_tag	v0.4.0

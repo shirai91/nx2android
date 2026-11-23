@@ -6,7 +6,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 
 "Profile here": `nxnative/dm/games/<title ID>/` has the game's profile from nxnative. "Upstream profile": only seedds/nxnative has one, to read as a reference or starter, not to pull. "60 fps with X" is upstream's note: they run that update at 60 fps (30 on the Switch).
 
-**70 / 118 ported**
+**71 / 119 ported**
 
 - [x] 13 Sentinels: Aegis Rim · `01003FC01670C000`
 - [x] 13 Sentinels: Aegis Rim (Asia) · `01008D7016438000`
@@ -110,6 +110,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [x] Tales of Berseria Remastered · `01003FD01F22E000`
 - [x] Tales of Eternia Remastered · `010006E0230AC000`
 - [ ] The Great Ace Attorney Chronicles · `010036E00FB20000` · profile here
+- [x] The Great Ace Attorney Chronicles (Chinese release) · `0100D7F00FAAA000` · profile here
 - [x] The Legend of Zelda: Breath of the Wild · `01007EF00011E000` · Galaxy S25 Ultra / Turnip; tested in the opening and on the Great Plateau
 - [x] The Legend of Zelda: Echoes of Wisdom · `01008CF01BAAC000` · Retroid Pocket 6 / PurpleVK; playable with minor transparency artifacts around rifts
 - [x] The Legend of Zelda: Link's Awakening · `01006BB00C6F0000` · Lenovo TB323FU; dynamic 30/60 fps by default (optional stable-60fps NOPs commented out in `patches.py` to avoid slow-motion/judder on weaker chips); needs `--firmware` (without it, crashes at startup because the fallback font lacks `U+25A1`); startup `main+0x1c180` OOB read fixed in `patches.py`; area loads can hitch
