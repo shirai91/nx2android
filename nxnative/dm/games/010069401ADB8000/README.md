@@ -21,7 +21,7 @@ The profile sets these for you (`android.tsv`); a player changes the pause menu 
 | `DM_VK_UBWC=1` | framebuffer compression mode bits (Adreno UBWC) |
 | `DM_ADAPT_UP_PCT=50` | the governor steps up a rate when frames fit in this percent of the faster rate's budget (1..99) |
 | `DM_VK_PASS_SPLIT=512` | split a pass into command buffers every N draws; 0 = never |
-| `DM_PIN_REPLAY=prime` | pin the replay thread to fast cores: 0 = no, "prime" = the fastest core, other values = the big cores |
+| `DM_PIN_REPLAY=prime` | pin the replay thread to fast cores: 0 = no, "prime" = the fastest core, "need" = the fastest core only while the replay is slow, other values = the big cores |
 | `DM_VK_SETSPLIT=1` | 1 = a descriptor set change may split the command buffer |
 
 Read the profile's porting log in the comment header of [`android.tsv`](android.tsv). Back to the [games list](../../../../README.md#games).
