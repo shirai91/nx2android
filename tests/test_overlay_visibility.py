@@ -104,6 +104,7 @@ static struct { int sel; } g_tx;
 static int g_tx_mu;
 #define pthread_mutex_lock(m) ((void)(m))
 #define pthread_mutex_unlock(m) ((void)(m))
+#undef LOG
 #define LOG(...) log_line(__VA_ARGS__)
 #define AInputEvent_getSource(e) ((e)->source)
 #define AInputEvent_getType(e) ((e)->type)

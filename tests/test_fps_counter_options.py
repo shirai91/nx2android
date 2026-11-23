@@ -38,9 +38,9 @@ int main(int argc, char **argv) {
     // four tabs showing five rows each (the Game tab scrolls when it has more); the Counter tab: the five rows (FPS, SOC, BAT, driver, graph); the Style tab: the four choices
     // (ov_menu_item takes the tab, the row's number and the tab's row count: ov_menu_count)
     assert(OVM_TABS == 4 && OVM_PER_TAB == 5 && OVM_ROWS == 7);
-    assert(ov_menu_count(2, 0) == 5 && ov_menu_count(3, 0) == 4 && ov_menu_count(1, 0) == 5);   // (the Game tab: its four rows and the audio output's chooser, which this build has)
+    assert(ov_menu_count(2, 0) == 5 && ov_menu_count(3, 0) == 4 && ov_menu_count(1, 0) == 6);   // (the Game tab: its five rows and the audio output's chooser, which this build has)
     assert(ov_menu_item(0, 0, 5) == OVM_TAB && ov_menu_item(3, OVM_HI_RESUME, 4) == OVM_RESUME);
-    assert(ov_menu_item(1, 1, 5) == OVM_FPS && ov_menu_item(1, 5, 5) == OVM_AUDIO);
+    assert(ov_menu_item(1, 1, 6) == OVM_FPS && ov_menu_item(1, 5, 6) == OVM_CLEAR && ov_menu_item(1, 6, 6) == OVM_AUDIO);
     const int counter[5] = {OVM_ROW_FPS, OVM_ROW_SOC, OVM_ROW_BAT, OVM_ROW_DRV, OVM_ROW_GRAPH}, style[5] = {OVM_POS, OVM_COLOUR, OVM_OUTLINE, OVM_SIZE, -1};
     for (int r = 0; r < 5; r++) { assert(ov_menu_item(2, r + 1, 5) == counter[r]); assert(ov_menu_item(3, r + 1, 4) == style[r]); }
     assert(!strcmp(OVM_TAB_NAMES[2], "Counter") && !strcmp(OVM_TAB_NAMES[3], "Style"));

@@ -90,17 +90,17 @@ int main(void) {
 
     // the Gamepad tab's last row is the face buttons' (front_android.c pad_labels); the Game tab has five rows in a code-less app, seven with the save folder's
     // (its title, which a controller skips, then Browse); the highlight's numbers: 0 the tabs, k + 1 a row, OVM_HI_RESUME Resume
-    assert(ov_menu_count(0, 0) == 5 && ov_menu_count(0, 1) == 5 && ov_menu_count(1, 0) == 4 && ov_menu_count(1, 1) == 6 && ov_menu_count(2, 0) == 5 && ov_menu_count(3, 0) == 4);
-    assert(ov_menu_item(0, 5, 5) == OVM_PAD && ov_menu_item(1, 5, 4) < 0 && ov_menu_item(1, OVM_HI_RESUME, 4) == OVM_RESUME && ov_menu_item(1, 0, 6) == OVM_TAB);
-    assert(ov_menu_item(1, 5, 6) == OVM_FOLDER_LABEL && !ov_menu_selectable(OVM_FOLDER_LABEL) && ov_menu_item(1, 6, 6) == OVM_FOLDER && ov_menu_selectable(OVM_FOLDER));
+    assert(ov_menu_count(0, 0) == 5 && ov_menu_count(0, 1) == 5 && ov_menu_count(1, 0) == 5 && ov_menu_count(1, 1) == 7 && ov_menu_count(2, 0) == 5 && ov_menu_count(3, 0) == 4);
+    assert(ov_menu_item(0, 5, 5) == OVM_PAD && ov_menu_item(1, 6, 5) < 0 && ov_menu_item(1, OVM_HI_RESUME, 5) == OVM_RESUME && ov_menu_item(1, 0, 7) == OVM_TAB);
+    assert(ov_menu_item(1, 6, 7) == OVM_FOLDER_LABEL && !ov_menu_selectable(OVM_FOLDER_LABEL) && ov_menu_item(1, 7, 7) == OVM_FOLDER && ov_menu_selectable(OVM_FOLDER));
     assert(OVM_HI_RESUME + 1 <= 15);   // (bits 4..7 of dm_menu_state)
     // the scroll: none for five rows; a sixth scrolls by a row, and the controller's choice is brought into view
     assert(ov_menu_scroll_max(5) == 0 && ov_menu_scroll_max(6) == OVM_SCROLL_STEPS && ov_menu_scroll_max(6) <= 127);   // (bits 9..15)
     assert(ov_menu_scroll_to(5, 0, 6) == OVM_SCROLL_STEPS && ov_menu_scroll_to(0, OVM_SCROLL_STEPS, 6) == 0 && ov_menu_scroll_to(2, 7, 6) == 7);
     assert(ov_menu_scroll_clamp(-3, 6) == 0 && ov_menu_scroll_clamp(99, 6) == OVM_SCROLL_STEPS && ov_menu_scroll_clamp(5, 4) == 0);
-    // the audio output's chooser (the Game tab's fifth row when the activity has it), and the Counter and Style tabs
+    // the audio output's chooser (the Game tab's sixth row, after Clear data, when the activity has it), and the Counter and Style tabs
     audio_available = 1;
-    assert(ov_menu_count(1, 0) == 5 && ov_menu_count(1, 1) == 7 && ov_menu_item(1, 5, 5) == OVM_AUDIO && ov_menu_item(1, 5, 7) == OVM_AUDIO && ov_menu_item(1, 6, 7) == OVM_FOLDER_LABEL && ov_menu_item(1, 7, 7) == OVM_FOLDER);
+    assert(ov_menu_count(1, 0) == 6 && ov_menu_count(1, 1) == 8 && ov_menu_item(1, 6, 6) == OVM_AUDIO && ov_menu_item(1, 6, 8) == OVM_AUDIO && ov_menu_item(1, 7, 8) == OVM_FOLDER_LABEL && ov_menu_item(1, 8, 8) == OVM_FOLDER);
     audio_available = 0;
     assert(ov_menu_item(2, 1, 5) == OVM_ROW_FPS && ov_menu_item(2, 5, 5) == OVM_ROW_GRAPH && ov_menu_item(3, 1, 4) == OVM_POS && ov_menu_item(3, 4, 4) == OVM_SIZE && ov_menu_item(3, 5, 4) == -1);
     const float screens[][2] = {{915, 412}, {1216, 760}, {2400, 1080}, {1080, 2400}};
