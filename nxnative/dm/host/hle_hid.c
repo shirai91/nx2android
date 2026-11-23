@@ -331,7 +331,8 @@ enum { SIX_PERIOD_NS = 5000000 };
 #define SHAKE_G 3.0
 #define SHAKE_REV 1.5
 static int shaking(uint64_t t) { return t >= atomic_load(&g_shake_t0) && t < atomic_load(&g_shake_end); }
-// The device's own motion (dm_motion_set, dm_input.h: the Android front end's gyroscope and accelerometer): player 1's controller moves as the device does, as the Switch's
+// The player's motion (dm_motion_set and dm_motion_pad_set, dm_input.h: the Android front end's device sensors and a controller's own): player 1's controller moves as
+// the device or the pad does, as the Switch's
 // Joy-Cons move with the console in handheld mode (The Legend of Zelda: Tears of the Kingdom aims the bow by them: its main reads only GetSixAxisSensorHandles / Start /
 // GetSixAxisSensorStates). Each sample goes in a ring under the guest sampling number it arrived at, so a history read returns the newest sample at or before each entry's
 // time; the angle is the angular velocity integrated (revolutions, not wrapped) and the direction the gyroscope's rotation from the identity at the first sample (no
@@ -343,8 +344,33 @@ static motion_sample g_mo[MO_RING]; static int g_mo_n, g_mo_fuse; static int64_t
 static _Atomic int g_mo_on; static _Atomic uint64_t g_mo_moved;   // fed at least once; the guest time the device last turned faster than MO_REST_REV
 #define MO_REST_REV 0.01   // revolutions / s (3.6 degrees / s): slower is at rest (IsSixAxisSensorAtRest)
 static _Atomic int g_mo_inject;   // DM_CTL "motion" lines feed made-up motion: the front end's samples are left out until "motion release"
+// Two sources feed that one sensor: the device's own sensors (dm_motion_set, Android's gyroscope and accelerometer) and a controller's (dm_motion_pad_set, its
+// InputDevice's sensors). One of them owns it at a time, or two writers would integrate into one direction: a pad sample holds the device's out for
+// MO_PAD_HOLD_NS, long enough to cover a dropped sample and short enough that a pad put down, unpaired or switched off hands the sensor back. DM_MOTION_SRC chooses
+// instead of that: pad (the device's motion is never fed), phone (the pad's never is); unset and auto take whichever feeds
+static _Atomic uint64_t g_mo_pad_t;   // the guest time of the newest pad sample; 0: none yet
+#define MO_PAD_HOLD_NS 1000000000
+static int mo_src(void) {   // 0 auto, 1 pad only, 2 phone only
+    static _Atomic int src = -1;
+    int s = atomic_load(&src);
+    if (s >= 0) return s;
+    const char *e = getenv("DM_MOTION_SRC");
+    s = e && !strcmp(e, "pad") ? 1 : e && !strcmp(e, "phone") ? 2 : 0;
+    atomic_store(&src, s);
+    return s;
+}
 static void mo_set(const float acc[3], const float gyro[3], int64_t t_ns);
-void dm_motion_set(const float acc[3], const float gyro[3], int64_t t_ns) { if (!atomic_load(&g_mo_inject)) mo_set(acc, gyro, t_ns); }
+void dm_motion_set(const float acc[3], const float gyro[3], int64_t t_ns) {
+    if (atomic_load(&g_mo_inject) || mo_src() == 1) return;   // made-up motion, or the controller's only
+    uint64_t pad = atomic_load(&g_mo_pad_t);
+    if (mo_src() == 0 && pad && guest_ns() - pad < MO_PAD_HOLD_NS) return;   // the controller is the one in the player's hands
+    mo_set(acc, gyro, t_ns);
+}
+void dm_motion_pad_set(const float acc[3], const float gyro[3], int64_t t_ns) {
+    if (atomic_load(&g_mo_inject) || mo_src() == 2) return;
+    if (!atomic_exchange(&g_mo_pad_t, guest_ns())) LOG("hid: the controller's own motion moves player 1's six-axis sensor (gyroscope + accelerometer)");
+    mo_set(acc, gyro, t_ns);
+}
 static void mo_set(const float acc[3], const float gyro[3], int64_t t_ns) {
     pthread_mutex_lock(&g_mo_mu);
     double dt = g_mo_n && t_ns > g_mo_t ? (double)(t_ns - g_mo_t) / 1e9 : 0; if (dt > 0.05) dt = 0.05;   // a gap (the app in the background) is not one long turn

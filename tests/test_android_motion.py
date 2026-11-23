@@ -84,6 +84,42 @@ static void shake_sensor(int on) { (void)on; }
 static pthread_mutex_t g_slot_mu = PTHREAD_MUTEX_INITIALIZER;   // the per-player state's lock (each controller a player of its own)
 static void pad_publish(int p) { (void)p; atomic_store(&g_pad_btn[0], g_shake_btn); shake_note(); }
 ''' + sensor + r'''
+// Two sources feed one sensor (hle_hid.c): the device's own and a controller's. The newest owns it, and DM_MOTION_SRC
+// picks instead. Each case starts from an empty ring and a 1 s guest clock, as the test harness begins.
+static void near(float got, float want);
+static void pad_case(const char *mode) {
+    const float pg[3] = {0, 0, 0.5f}, pa[3] = {0, 0, -1};   // the device turning 0.5 rev/s about z
+    const float qg[3] = {-1, 0, 0}, qa[3] = {0, 0, -1};     // the pad turning 1 rev/s the other way about x
+    SixAxisState s;
+    if (!strcmp(mode, "padonly")) {   // DM_MOTION_SRC=pad: the device's motion is left out
+        dm_motion_set(pa, pg, clock_ns);
+        six_sample(&s, clock_ns / SIX_PERIOD_NS, 1);
+        near(s.gyro[2], 0); near(s.acc[2], -1);
+        clock_ns += 10000000; dm_motion_pad_set(qa, qg, clock_ns);
+        clock_ns += 10000000; six_sample(&s, clock_ns / SIX_PERIOD_NS, 1);
+        near(s.gyro[0], -1); near(s.gyro[2], 0);
+        return;
+    }
+    if (!strcmp(mode, "phoneonly")) {   // DM_MOTION_SRC=phone: the pad's motion is left out
+        clock_ns += 10000000; dm_motion_pad_set(qa, qg, clock_ns);
+        clock_ns += 10000000; six_sample(&s, clock_ns / SIX_PERIOD_NS, 1);
+        near(s.gyro[0], 0);
+        clock_ns += 10000000; dm_motion_set(pa, pg, clock_ns);
+        clock_ns += 10000000; six_sample(&s, clock_ns / SIX_PERIOD_NS, 1);
+        near(s.gyro[2], 0.5f);
+        return;
+    }
+    dm_motion_set(pa, pg, clock_ns);   // auto, nothing else feeding: the device's
+    six_sample(&s, clock_ns / SIX_PERIOD_NS, 1);
+    near(s.gyro[2], 0.5f); near(s.gyro[0], 0);
+    clock_ns += 10000000; dm_motion_pad_set(qa, qg, clock_ns);   // the pad feeds: it owns the sensor at once
+    clock_ns += 10000000; dm_motion_set(pa, pg, clock_ns);       // the device's next sample is left out
+    six_sample(&s, clock_ns / SIX_PERIOD_NS, 1);
+    near(s.gyro[0], -1); near(s.gyro[2], 0);
+    clock_ns += 2 * 1000000000ULL; dm_motion_set(pa, pg, clock_ns);   // the pad quiet for over a second: the device's again
+    six_sample(&s, clock_ns / SIX_PERIOD_NS, 1);
+    near(s.gyro[2], 0.5f); near(s.gyro[0], 0);
+}
 static void event(int type, uint64_t time, float x, float y, float z) {
     pending = (ASensorEvent){.type = type, .timestamp = time, .vector = {x, y, z}};
     available = 1; assert(on_sensor(0, 0, NULL) == 1 && !available);
@@ -92,8 +128,9 @@ static void near(float got, float want) {
     if (fabsf(got - want) > 0.00001f) { fprintf(stderr, "got %g, expected %g\n", got, want); exit(1); }
 }
 int main(int argc, char **argv) {
-    assert(argc == 5);
+    assert(argc == 5 || argc == 6);
     has_gyro = atoi(argv[1]); g_rot = atoi(argv[2]);
+    if (argc == 6) { pad_case(argv[5]); return 0; }
     float flick = (float)atof(argv[3]); int manual = atoi(argv[4]);
     shake_start();
     const char *motion_env = getenv("DM_MOTION");
@@ -152,6 +189,25 @@ int main(int argc, char **argv) {
                                 env=env,
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def run_pad(self, mode, src=None):
+        env = dict(os.environ, DM_MOTION='1', DM_SHAKE_G='1.5', DM_MOTION_LOG='0')
+        env.pop('DM_MOTION_RAW', None); env.pop('DM_MOTION_SRC', None)
+        if src is not None:
+            env['DM_MOTION_SRC'] = src
+        result = subprocess.run([str(self.exe), '1', '0', '0.5', '0', mode], env=env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_controller_motion_owns_the_sensor_while_it_feeds(self):
+        for src in (None, 'auto'):
+            with self.subTest(src=src):
+                self.run_pad('pad', src)
+
+    def test_controller_only_source(self):
+        self.run_pad('padonly', 'pad')
+
+    def test_phone_only_source(self):
+        self.run_pad('phoneonly', 'phone')
 
     def test_directional_flicks_with_real_motion(self):
         for rotation in range(4):

@@ -23,10 +23,13 @@ void dm_pad_set_player(int player, uint64_t buttons, int32_t lx, int32_t ly, int
 void dm_pad_players(uint32_t mask);   // bit p: player p + 1 has a controller; player 1 always counts as connected (the keyboard, the touch gamepad, DM_KEYS)
 uint32_t dm_player_npad(int player);  // the npad id the game reads player p + 1 on: Handheld (0x20) or No1 (0) for player 1, No n (id n - 1) for player n
 int dm_player_seen_as(int player);    // the player the game sees player p + 1's controller as: 0 (player 1, also every player of a one-player game), p, or -1 when it is not used
-// The device's motion as player 1's six-axis sensor (hle_hid.c), in the Switch controller's frame: x right, y away from the player (the screen's top edge), z out of the screen.
-// acc: gravity's direction in G (lying flat face up: 0, 0, -1, the opposite sign of Android's accelerometer); gyro: angular velocity in revolutions / s, counter-clockwise
-// positive (right-hand rule, as Android's gyroscope); t_ns: the sample's time (any monotonic clock, for the integration). A front end that never calls it keeps the sensor at rest
+// The player's motion as player 1's six-axis sensor (hle_hid.c), in the Switch controller's frame: x right, y away from the player (the screen's top edge), z out of the
+// screen. acc: gravity's direction in G (lying flat face up: 0, 0, -1, the opposite sign of Android's accelerometer); gyro: angular velocity in revolutions / s,
+// counter-clockwise positive (right-hand rule, as Android's gyroscope); t_ns: the sample's time (any monotonic clock, for the integration). A front end that never calls
+// it keeps the sensor at rest. Two sources feed it and one owns it at a time: dm_motion_set is the device's own sensors (a phone's gyroscope), dm_motion_pad_set a
+// controller's (Android 12+'s InputDevice sensors), which holds the device's out for a second after its last sample unless DM_MOTION_SRC picks a source
 void dm_motion_set(const float acc[3], const float gyro[3], int64_t t_ns);
+void dm_motion_pad_set(const float acc[3], const float gyro[3], int64_t t_ns);   // a controller's own sensors, same frame and units; DM_MOTION_SRC=phone leaves it out
 
 // Optional diagnostic DM_HID_RECEIPT_LOG=<writable JSONL path>: received samples of real GetNpadState returns.
 // Fields read_start_ns/time_ns use the same host now_ns(); the front-end publish window must use the same helper, and a read interval that spans a publish must not be force-matched.

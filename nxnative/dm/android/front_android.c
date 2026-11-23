@@ -4,7 +4,8 @@
 //   (/sdcard/Android/data/<package>/files: mods/ = the rewritten modules, RomFS/ (or env.txt's DM_ROMFS: romfs_readable), shaders.dmsv; env.txt = KEY=VALUE switches; log.txt = the log), keeps saves in
 //   internal storage, and starts the host on a thread of its own. The window goes to the Vulkan backend's swapchain (dm_front_window); game controllers
 //   (KEYCODE_BUTTON_*, sticks, triggers, hat) are each a player of their own, the first one used player 1 (pad_slots.h); touches go to the game's touch screen and
-//   the touch gamepad is player 1's; shaking the device shakes player 1's controller and turning it turns the controller's six-axis sensor (the gyroscope);
+//   the touch gamepad is player 1's; shaking the device shakes player 1's controller and turning it turns the controller's six-axis sensor (the gyroscope), and so
+//   do a controller's own gyroscope and accelerometer (org.nx2a.PadMotion, Android 12+);
 //   leaving and coming back pauses as on iOS.
 #include "dm.h"
 #include "front.h"
@@ -1271,6 +1272,59 @@ static void rotation_poll(int64_t now) {
     if ((r & 3) != g_rot || first) LOG("front end: display rotation %d degrees: motion axes follow it", (r & 3) * 90);
     g_rot = r & 3; first = 0;
 }
+// ---- a controller's own motion: a pad that has a gyroscope (InputDevice.getSensorManager, Android 12+) moves player 1's six-axis sensor, so motion aiming follows the pad
+// in the player's hands rather than a phone propped up or clipped to it (the case this exists for: a stand or a clip and a pad). Java does the reading (org.nx2a.PadMotion
+// in the APK's classes.dex: a NativeActivity has no Java of its own, and the NDK reaches only the device's own sensors) at 200 Hz without batching, and calls
+// Java_org_nx2a_PadMotion_nativeSample per sample. The pad's axes are the controller's (x to its right, y up, z out of its face), so unlike the device's they do not turn
+// with the display's rotation. Angular velocity: revolutions / s; acceleration: gravity's direction in G (the opposite sign of Android's). Which source owns the sensor is
+// the host's (dm_motion_pad_set); DM_MOTION_SRC=phone does not read the pad at all, and DM_MOTION_SRC=pad leaves the device's motion out
+static void pad_motion_feed(int id, float gx, float gy, float gz, float ax, float ay, float az, int64_t t_ns) {
+    float g[3] = {(float)(gx / (2 * M_PI)), (float)(gy / (2 * M_PI)), (float)(gz / (2 * M_PI))};
+    float a[3] = {(float)(-ax / ASENSOR_STANDARD_GRAVITY), (float)(-ay / ASENSOR_STANDARD_GRAVITY), (float)(-az / ASENSOR_STANDARD_GRAVITY)};
+    static int first = 1, log = -1; static int64_t logged;
+    if (log < 0) { const char *v = getenv("DM_MOTION_LOG"); log = v && atoi(v) > 0; }
+    // The frame (the pad's own, as Android documents a controller's sensors) is not measured on this path: one line is what a player checks it with — pad flat and still
+    // must read acc ≈ (0, 0, -1) G, turning it left gyro z positive, raising its top edge gyro x positive. A pad whose axes come through permuted or negated (a HID driver
+    // and the input stack's sensor mapper sit in between) needs the mapping here, with its own expectations in tests/test_android_motion.py
+    if (first) { first = 0; LOG("front end: controller %d motion (first sample) acc %+.2f %+.2f %+.2f G, gyro %+.3f %+.3f %+.3f rev/s", id, a[0], a[1], a[2], g[0], g[1], g[2]); }
+    dm_motion_pad_set(a, g, t_ns);
+    if (log && t_ns - logged >= 1000000000) { logged = t_ns;
+        LOG("front end: controller %d motion acc %+.2f %+.2f %+.2f G, gyro %+.3f %+.3f %+.3f rev/s", id, a[0], a[1], a[2], g[0], g[1], g[2]); }
+}
+JNIEXPORT void JNICALL Java_org_nx2a_PadMotion_nativeSample(JNIEnv *E, jclass c, jint id, jfloat gx, jfloat gy, jfloat gz,
+                                                                                                  jfloat ax, jfloat ay, jfloat az, jlong t_ns) {
+    (void)E; (void)c; pad_motion_feed(id, gx, gy, gz, ax, ay, az, t_ns);
+}
+static jclass app_class(JNIEnv *E, const char *name) {   // a class from the APK's dex: FindClass on a native thread searches the boot class path alone
+    jclass cA = (*E)->GetObjectClass(E, g_act->clazz), cL = NULL;
+    jmethodID mLoader = cA ? (*E)->GetMethodID(E, cA, "getClassLoader", "()Ljava/lang/ClassLoader;") : NULL;
+    jobject loader = !jx(E) && mLoader ? (*E)->CallObjectMethod(E, g_act->clazz, mLoader) : NULL, c = NULL;
+    if (!jx(E) && loader) {
+        cL = (*E)->FindClass(E, "java/lang/ClassLoader");
+        jmethodID mLoad = cL ? (*E)->GetMethodID(E, cL, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;") : NULL;
+        jstring s = mLoad ? (*E)->NewStringUTF(E, name) : NULL;
+        if (!jx(E) && s) c = (*E)->CallObjectMethod(E, loader, mLoad, s);
+        if (jx(E)) c = NULL;   // ClassNotFoundException: the APK has no PadMotion
+        if (s) (*E)->DeleteLocalRef(E, s);
+    }
+    if (cA) (*E)->DeleteLocalRef(E, cA);
+    if (cL) (*E)->DeleteLocalRef(E, cL);
+    if (loader) (*E)->DeleteLocalRef(E, loader);
+    return (jclass)c;
+}
+// The input thread's JNI: hand the activity to org.nx2a.PadMotion, which registers a listener for every controller that has a gyroscope and follows the unplugs
+// (InputManager's device callbacks). A port built without Android's SDK has no classes.dex and so no PadMotion: it logs that and keeps the device's motion
+static void pad_motion_start(void) {
+    const char *s = getenv("DM_MOTION_SRC");
+    if (s && !strcmp(s, "phone")) { LOG("front end: DM_MOTION_SRC=phone: a controller's own gyroscope is not read"); return; }
+    JNIEnv *E = NULL;
+    if (!g_vm || (*g_vm)->GetEnv(g_vm, (void **)&E, JNI_VERSION_1_6) != JNI_OK) { LOG("[RED] front end: no JNIEnv: a controller's own gyroscope is not read"); return; }
+    jclass c = app_class(E, "org.nx2a.PadMotion");
+    jmethodID m = c ? (*E)->GetStaticMethodID(E, c, "start", "(Landroid/app/Activity;)V") : NULL;
+    if (jx(E) || !c || !m) { if (c) (*E)->DeleteLocalRef(E, c); LOG("front end: this port has no org.nx2a.PadMotion (an APK without classes.dex): a controller's own gyroscope is not read"); return; }
+    (*E)->CallStaticVoidMethod(E, c, m, g_act->clazz); jx(E);
+    (*E)->DeleteLocalRef(E, c);
+}
 static void motion_feed(const ASensorEvent *e, const double acc[3]) {   // a gyroscope sample with the latest acceleration (device frame, m/s^2) → the host
     static int log = -1; static int64_t logged;
     if (log < 0) { const char *v = getenv("DM_MOTION_LOG"); log = v && atoi(v) > 0; }
@@ -1347,6 +1401,7 @@ static void *input_thread(void *a) {
             (*E)->DeleteLocalRef(E, c);
         }
     }
+    pad_motion_start();
     g_ilooper = ALooper_prepare(0);
     shake_start();
     uint64_t prev = 0, latched = 0, sample = 0; int64_t since = 0;
