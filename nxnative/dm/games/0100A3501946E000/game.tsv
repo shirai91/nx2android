@@ -1,5 +1,5 @@
 # OCTOPATH TRAVELER II: Square Enix / Acquire, Unreal Engine 4.27, SDK 12.3.2, NVN.
-# Experimental Android profile for update 1.1.1 (v131072); no Android build or device run yet.
+# Experimental Android profile for update 1.1.1 (v131072); community run on Adreno 640 at 914c432, maintainer run pending.
 # Version, memory and shader metadata reference: seedds/nxnative commit
 # 16f4889192dd9bc6363a77b5d8b9654fe65441a2. See README.md for provenance and validation gaps.
 # Format: ../README.md; Android settings: android.tsv.

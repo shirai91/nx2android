@@ -4,7 +4,7 @@ CUTS = {
   # SDK 12.3.2 (OCTOPATH TRAVELER II 1.1.1): shrink the AddressRegionManager node area
   # to 62 MB so the profile's capped 2 GB Unreal region fits in the alias region.
   # Reference: seedds/nxnative 16f4889192dd9bc6363a77b5d8b9654fe65441a2,
-  # dm/tools/sdk_patches.py; constructor at sdk+0x346180. Not yet run on Android.
+  # dm/tools/sdk_patches.py; constructor at sdk+0x346180. Run in the community test at 914c432 (Adreno 640).
   '5bcf525f24eb28658a8d67ac27800d9b': [
     (0x346190, '08fca752', '087ca052', 'AddressRegionManager constructor: node area limit mov w8,#0x3fe00000 -> mov w8,#0x3e00000'),
     (0x34622c, '09fca752', '097ca052', 'AddressRegionManager constructor: occupied node area mov w9,#0x3fe00000 -> mov w9,#0x3e00000'),
