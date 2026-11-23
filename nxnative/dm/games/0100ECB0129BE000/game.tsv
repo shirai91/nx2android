@@ -1,0 +1,39 @@
+# Super Robot Wars 30 (Bandai Namco), Korean SKU, SDK 11.4.3 (NintendoSDK_NVN, NintendoSDK_movie, nnSdk), NVN + CRIWARE. No iOS profile upstream: made from the
+# survey (dm/games/profile_guess.py), then checked on Android (android.tsv). The integrated XCI carries the base game, its 1.2.3 update and 15 DLC; the update's
+# Program NCA is the code the console runs, and the port runs it too.
+
+# ---- Identity ----
+title_id	0100ECB0129BE000
+program_id	0100ECB0129BE000
+
+# ---- App ----
+name	슈퍼로봇대전 30
+ipa	SuperRobotWars30.ipa
+app_category	public.app-category.games
+
+# ---- Versions ----
+build	v655360	1.2.3	main=2277b2804ed2c1c6b93768fc2aa19e85	subsdk0=507f19d1240d09d00992248e8a0fd77e	sdk=2d369d9999e3e10e665106f840ffff9b
+package	v655360
+shader_versions	v655360
+
+# ---- Files ----
+modules	main subsdk0 sdk
+romfs_marker	data/btlc/wp00.cpk
+zip_store	.awb:.cpk:.sso:.usm:.metallib
+
+# ---- Memory ----
+# main sets a heap of at most the pool − 64 MB − 288 MB of bss (counted as used memory): a 3072 MB heap region
+mem_reserve	0xf0000000
+mem_alias	0x10000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+# the NPDM declares 0 MB of system resource: IsVirtualAddressMemoryEnabled is false, as on Horizon (Big Brain Academy: Brain vs. Brain sets a heap only then)
+sys_resource	0x0
+
+# ---- Shader split ----
+shader_groups	/data/=data /commondata/=commondata /shaders/=shaders
+shader_note	Super Robot Wars 30 shaders
+
+# ---- Frame rate ----
+# The map runs at 60 fps. Entering a battle the game sets present interval 2 (30 fps, as on the Switch) and sets 1 again when it ends. No 60 fps patch is
+# attempted: the battle's frame rate and its clock would have to be raised together, and they are not found yet
