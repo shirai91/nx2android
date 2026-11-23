@@ -3,6 +3,7 @@ on the host with stubs for what it takes from the rest of the app, so it needs a
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -90,7 +91,7 @@ def jni_dirs():
 
 
 class EraseSave(unittest.TestCase):
-    @unittest.skipIf(os.name == 'nt', 'POSIX paths and permissions are needed')
+    @unittest.skipUnless(sys.platform.startswith('linux'), 'saves_android.c swaps the save with renameat2, which only Linux (and Android) has')
     def test_erase_exports_first_then_erases(self):
         cc = shutil.which('cc') or shutil.which('clang') or shutil.which('gcc')
         if not cc: self.skipTest('a C compiler is needed')
