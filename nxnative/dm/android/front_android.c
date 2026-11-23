@@ -9,6 +9,7 @@
 #include "dm.h"
 #include "front.h"
 #include "dm_input.h"
+#include "locale_android.h"
 #include "pad_slots.h"
 #include "overlay_layout.h"
 #include "stick_axis.h"
@@ -1395,6 +1396,35 @@ static void env_file(const char *path) {   // KEY=VALUE per line (# comments): s
     }
     fclose(f);
 }
+
+static void select_game_language(JNIEnv *env) {
+    const char *setting = getenv("DM_LANG");
+    if (!setting || strcmp(setting, "system")) return;
+    const char *supported = getenv("DM_LANG_SUPPORTED");
+    const char *code = android_game_language("", supported);
+    if ((*env)->PushLocalFrame(env, 4) == JNI_OK) {
+        do {
+            jclass locale = (*env)->FindClass(env, "java/util/Locale");
+            if (jx(env) || !locale) break;
+            jmethodID get = (*env)->GetStaticMethodID(env, locale, "getDefault", "()Ljava/util/Locale;");
+            if (jx(env) || !get) break;
+            jmethodID tag = (*env)->GetMethodID(env, locale, "toLanguageTag", "()Ljava/lang/String;");
+            if (jx(env) || !tag) break;
+            jobject current = (*env)->CallStaticObjectMethod(env, locale, get);
+            if (jx(env) || !current) break;
+            jstring value = (*env)->CallObjectMethod(env, current, tag);
+            if (jx(env) || !value) break;
+            const char *locale_tag = (*env)->GetStringUTFChars(env, value, NULL);
+            if (jx(env) || !locale_tag) break;
+            code = android_game_language(locale_tag, supported);
+            LOG("[locale] Android %s -> game %s", locale_tag, code);
+            (*env)->ReleaseStringUTFChars(env, value, locale_tag);
+        } while (0);
+        (*env)->PopLocalFrame(env, NULL);
+    } else jx(env);
+    setenv("DM_LANG", code, 1);
+}
+
 // ---- a RomFS outside the app's files folder (env.txt's DM_ROMFS, written by porter install --romfs-at: a game dump another app also reads, a folder on the SD card). The app
 // reads it only with All files access (the appop MANAGE_EXTERNAL_STORAGE, Android 11 on) or, on Android 10, READ_EXTERNAL_STORAGE in the legacy storage view: mkapk.py asks
 // for both and porter grants them over adb. Without it scoped storage gives the app none of the files another app made there, and the game would fail somewhere in its
@@ -1466,6 +1496,7 @@ __attribute__((visibility("default"))) void ANativeActivity_onCreate(ANativeActi
     snprintf(p, sizeof p, "%s/temp", act->internalDataPath); mkdir(p, 0700); setenv("DM_TEMP", p, 0);
     snprintf(p, sizeof p, "%s/shaders.dmsv", g_root); setenv("DM_VK_SHADERS", p, 0);
     snprintf(p, sizeof p, "%s/env.txt", g_root); env_file(p);
+    select_game_language(env);
     { const char *e = getenv("DM_MENU_BUTTON"); if (e && *e && !atoi(e)) { atomic_store(&g_menu_btn, 0); LOG("[overlay] DM_MENU_BUTTON=0: no menu button (Back opens the menu)"); } }
 #ifdef DM_RELEASE
     unsetenv("DM_CTL");   // a release build takes no remote key presses (the control file is a development tool)
