@@ -1510,7 +1510,7 @@ __attribute__((visibility("default"))) void ANativeActivity_onCreate(ANativeActi
     snprintf(p, sizeof p, "%s/log.txt", g_root); char prev[720]; snprintf(prev, sizeof prev, "%s/log.prev.txt", g_root); rename(p, prev);
     if (!freopen(p, "w", stderr)) __android_log_print(ANDROID_LOG_ERROR, "dmhost", "cannot write %s", p);
     setvbuf(stderr, NULL, _IOLBF, 0);
-    LOG("[runtime] startup title=%s host_compiled=%s %s", DM_ANDROID_TITLE_ID, __DATE__, __TIME__);
+    LOG("[runtime] startup title=%s host_compiled=%s %s", DM_GAME_ID, __DATE__, __TIME__);
     setenv("DM_ROOT", g_root, 1);
     snprintf(p, sizeof p, "%s/RomFS", g_root); setenv("DM_ROMFS", p, 0);
     snprintf(p, sizeof p, "%s/save", act->internalDataPath); mkdir(p, 0700); setenv("DM_SAVE", p, 0);

@@ -898,7 +898,7 @@ class Port:
         d8s = [p for root in roots for p in (root / 'build-tools').glob('*/d8' + ('.bat' if os.name == 'nt' else ''))]
         def version(p): return tuple(int(x) for x in re.findall(r'\d+', p.parent.name))
         if not javac or not platforms or not d8s:
-            raise BuildError('APK building requires javac and an Android SDK with a platform and build-tools (set ANDROID_HOME)')
+            raise BuildError('APK building (bundled runtime, --external-display / --native-keyboard) requires javac and an Android SDK with a platform and build-tools (set ANDROID_HOME)')
         platform, d8 = max(platforms, key=version), max(d8s, key=version)
         out = self.aw / 'external-activity'; classes, dex = out / 'classes', out / 'dex'
         shutil.rmtree(out, ignore_errors=True); classes.mkdir(parents=True); dex.mkdir()
