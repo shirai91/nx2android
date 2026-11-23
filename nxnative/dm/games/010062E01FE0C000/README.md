@@ -54,4 +54,4 @@ Read the profile's porting log in the comment header of [`android.tsv`](android.
 
 - **work in progress**: it plays, but only a short session, including one crowded area, has been tested, in both modes; more of the game needs testing.
 - A brief stutter shows the first time an area is entered; after that the area runs smoothly.
-- A blue line artifact showed in earlier builds; it has not been rechecked on this one.
+- A blue line artifact showed in earlier builds; it was not reproduced on a recheck.
