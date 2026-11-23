@@ -1,4 +1,4 @@
-"""Clear data (saves_android.c): the save is exported first, then erased at the next start, and nothing is erased when the export fails. The unit itself is built
+"""Erase (saves_android.c): the save is exported first, then erased at the next start, and nothing is erased when the export fails. The unit itself is built
 on the host with stubs for what it takes from the rest of the app, so it needs a POSIX C compiler and a JDK's jni.h (as the other Android tests do)."""
 import os
 import shutil
@@ -27,17 +27,17 @@ static void fresh_save(void) {   // a save with a file, a folder and a device sa
     rm_tree(save); rm_tree(dev);
     put(save, "main.dat", "progress"); char sub[460]; snprintf(sub, sizeof sub, "%s/profile", save); put(sub, "slot0.dat", "slot zero"); put(dev, "device.dat", "device");
 }
-static int backups(char *first) {   // saves/<stamp>-before-clear folders (not their .device ones): how many, and the first's name
+static int backups(char *first) {   // saves/<stamp>-before-erase folders (not their .device ones): how many, and the first's name
     DIR *d = opendir(g_dir); struct dirent *e; int n = 0; if (first) first[0] = 0;
     while (d && (e = readdir(d))) { size_t L = strlen(e->d_name);
-        if (L > 13 && !strncmp(e->d_name + L - 13, "-before-clear", 13)) { if (first && !n) snprintf(first, 100, "%s", e->d_name); n++; } }
+        if (L > 13 && !strncmp(e->d_name + L - 13, "-before-erase", 13)) { if (first && !n) snprintf(first, 100, "%s", e->d_name); n++; } }
     if (d) closedir(d); return n;
 }
 static int result_has(const char *needle) {
     char p[700], buf[2000] = ""; snprintf(p, sizeof p, "%s/result.txt", g_dir);
     FILE *f = fopen(p, "r"); if (!f) return 0; size_t n = fread(buf, 1, sizeof buf - 1, f); buf[n] = 0; fclose(f); return strstr(buf, needle) != NULL;
 }
-static void run_clear(void) { assert(dm_saves_request_clear() == 0); assert(dm_saves_start(files) == 0); }   // (0: the app does not end)
+static void run_erase(void) { assert(dm_saves_request_erase() == 0); assert(dm_saves_start(files) == 0); }   // (0: the app does not end)
 
 int main(int argc, char **argv) {
     assert(argc == 2);
@@ -49,13 +49,13 @@ int main(int argc, char **argv) {
     // 1. a save and a device save: exported first, then erased; the export holds every file; the result says so
     fresh_save();
     dm_save_entry cur; assert(dm_saves_current(&cur) == 1 && cur.files == 3 && cur.device == 1);
-    run_clear();
+    run_erase();
     assert(!is_dir(save) && !is_dir(dev));
     assert(backups(bk) == 1);
     char p[900], q[900]; snprintf(p, sizeof p, "%s/%s/main.dat", g_dir, bk); assert(!access(p, R_OK));
     snprintf(p, sizeof p, "%s/%s/profile/slot0.dat", g_dir, bk); assert(!access(p, R_OK));
     snprintf(p, sizeof p, "%s/%s.device/device.dat", g_dir, bk); assert(!access(p, R_OK));
-    assert(result_has("result=ok") && result_has("-before-clear") && result_has("files=3"));
+    assert(result_has("result=ok") && result_has("-before-erase") && result_has("files=3"));
     assert(dm_saves_current(&cur) == 0);   // nothing now
 
     // 2. the backup is a save Import save can take back: it is listed, with its device save
@@ -64,19 +64,19 @@ int main(int argc, char **argv) {
     assert(found);
 
     // 3. nothing saved yet: nothing to export, nothing to erase, and no new backup; still ok
-    run_clear();
+    run_erase();
     assert(backups(NULL) == 1 && result_has("result=ok") && result_has("files=0"));
 
     // 4. a save that cannot be exported (a file nobody can read): refused, and the save is still there
     fresh_save(); snprintf(p, sizeof p, "%s/main.dat", save); assert(!chmod(p, 0));
-    run_clear();
+    run_erase();
     assert(is_dir(save) && is_dir(dev));
     assert(backups(NULL) == 1);   // (still only the first one: the failed export left no folder)
-    assert(result_has("result=error") && result_has("nothing was cleared"));
+    assert(result_has("result=error") && result_has("nothing was erased"));
     assert(chmod(p, 0600) == 0); snprintf(q, sizeof q, "%s/profile/slot0.dat", save); assert(!access(q, R_OK) && !access(dev, R_OK));
 
-    // 5. a request that ends the app leaves a save folder alone and clears nothing more: a second clear.txt without a save is still ok
-    rm_tree(save); rm_tree(dev); run_clear(); assert(backups(NULL) == 1 && result_has("result=ok"));
+    // 5. a request that ends the app leaves a save folder alone and erases nothing more: a second erase.txt without a save is still ok
+    rm_tree(save); rm_tree(dev); run_erase(); assert(backups(NULL) == 1 && result_has("result=ok"));
     puts("ok"); return 0;
 }
 '''
@@ -89,9 +89,9 @@ def jni_dirs():
     return [inc] + sorted(p for p in inc.glob('*') if p.is_dir()) if (inc / 'jni.h').exists() else []
 
 
-class ClearData(unittest.TestCase):
+class EraseSave(unittest.TestCase):
     @unittest.skipIf(os.name == 'nt', 'POSIX paths and permissions are needed')
-    def test_clear_exports_first_then_erases(self):
+    def test_erase_exports_first_then_erases(self):
         cc = shutil.which('cc') or shutil.which('clang') or shutil.which('gcc')
         if not cc: self.skipTest('a C compiler is needed')
         jni = jni_dirs()

@@ -14,7 +14,7 @@ int dm_saves_start(const char *files_root);
 int dm_saves_export(const char *suffix, char *name, int cap, char *err, int ecap);
 int dm_saves_list(dm_save_entry *out, int max);   // the save folders in saves/, newest first
 int dm_saves_request_import(const char *name);    // name is imported at the next start: 0, or -1 when the request cannot be written
-int dm_saves_request_clear(void);                  // the game's data is cleared at the next start (its save is exported first as <stamp>-before-clear): 0, or -1 when the request cannot be written
+int dm_saves_request_erase(void);                  // the save is erased at the next start (it is exported first as <stamp>-before-erase): 0, or -1 when the request cannot be written
 int dm_saves_current(dm_save_entry *out);          // the save the game has now (files, bytes, device); 0 when it has none
 
 // ---- through the app's Java (SaveBridge.java; none of this in a code-less app). Its pickers answer later, on a thread of Java's, in dm_saves_event ----
@@ -23,7 +23,8 @@ enum { DM_SAVES_OK, DM_SAVES_CANCELLED, DM_SAVES_LOAD, DM_SAVES_DEFAULT, DM_SAVE
 void dm_saves_bridge(void *vm, void *activity);   // the JavaVM and the activity (ANativeActivity's), on the main thread before dm_saves_start
 int dm_saves_java(void);                           // 1: the app has the bridge (the menu's save folder rows, and exports and imports as .zip files)
 int dm_saves_folder_label(char *out, int cap);     // the save folder's path into out, "" when there is none (the default: the save stays in the app)
-int dm_saves_folder_pick(void);                    // the folder picker (or, with a folder, the choice to change it or go back to the default): 0, -1 busy
+int dm_saves_folder_pick(void);                    // the folder picker (to choose the sync folder, or another one): 0, -1 busy
+int dm_saves_folder_default(void);                 // back to no sync folder: the save stays in the app (the answer is DM_SAVES_DEFAULT): 0, -1 busy
 int dm_saves_export_zip(char *err, int ecap);      // the save exported to saves/ (dm_saves_export), then the picker for the .zip: 0, or -errno and why
 int dm_saves_import_zip(void);                     // the picker for a .zip; an accepted one is unpacked into saves/ and named in DM_SAVES_IMPORT's answer: 0, -1 busy
 // The save folder updated from the committed save, when it changed since the last time (the player leaving or closing the game). wait 0: on a thread of its own

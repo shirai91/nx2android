@@ -56,11 +56,12 @@ static void menu_tab(int tab) { (void)tab; }
 static int fps_opt_press(int item) { (void)item; return 0; }
 static void ed_open(void) {}
 static void sp_open(void) {}
-static void sp_open_clear(void) {}
+static void sp_open_erase(void) {}
 static void save_export(void) {}
 static int dm_saves_java(void) { return 0; }
 static int dm_saves_import_zip(void) { return 0; }
 static int dm_saves_folder_pick(void) { return 0; }
+static int dm_saves_folder_default(void) { return 0; }
 #define LOG(...) ((void)0)
 static void menu_audio(void) {}
 static void menu_close(void) {}

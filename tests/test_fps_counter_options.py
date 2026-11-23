@@ -35,17 +35,17 @@ int dm_overlay_custom(int l, int c, float *x, float *y, float *s) { (void)l; (vo
 static int parse(const char *line) { return fps_opt_parse(line); }
 int main(int argc, char **argv) {
     assert(argc == 2);   // a scratch file in the test's own folder (tmpfile() on MinGW with msvcrt makes it in the drive's root)
-    // four tabs showing five rows each (the Game tab scrolls when it has more); the Counter tab: the five rows (FPS, SOC, BAT, driver, graph); the Style tab: the four choices
+    // five tabs showing five rows each (the Save tab scrolls when it has more); the Counter tab: the five rows (FPS, SOC, BAT, driver, graph); the Style tab: the four choices
     // (ov_menu_item takes the tab, the row's number and the tab's row count: ov_menu_count)
-    assert(OVM_TABS == 4 && OVM_PER_TAB == 5 && OVM_ROWS == 7);
-    assert(ov_menu_count(2, 0) == 5 && ov_menu_count(3, 0) == 4 && ov_menu_count(1, 0) == 6);   // (the Game tab: its five rows and the audio output's chooser, which this build has)
-    assert(ov_menu_item(0, 0, 5) == OVM_TAB && ov_menu_item(3, OVM_HI_RESUME, 4) == OVM_RESUME);
-    assert(ov_menu_item(1, 1, 6) == OVM_FPS && ov_menu_item(1, 5, 6) == OVM_CLEAR && ov_menu_item(1, 6, 6) == OVM_AUDIO);
+    assert(OVM_TAB_N == 5 && OVM_TABS == 8 && OVM_PER_TAB == 5 && OVM_ROWS == 7);
+    assert(ov_menu_count(3, 0) == 5 && ov_menu_count(4, 0) == 4 && ov_menu_count(1, 0) == 3);   // (the Game tab: Show FPS, Mode and the audio output's chooser, which this build has)
+    assert(ov_menu_item(0, 0, 5) == OVM_TAB && ov_menu_item(4, OVM_HI_RESUME, 4) == OVM_RESUME);
+    assert(ov_menu_item(1, 1, 3) == OVM_FPS && ov_menu_item(1, 2, 3) == OVM_MODE && ov_menu_item(1, 3, 3) == OVM_AUDIO);
     const int counter[5] = {OVM_ROW_FPS, OVM_ROW_SOC, OVM_ROW_BAT, OVM_ROW_DRV, OVM_ROW_GRAPH}, style[5] = {OVM_POS, OVM_COLOUR, OVM_OUTLINE, OVM_SIZE, -1};
-    for (int r = 0; r < 5; r++) { assert(ov_menu_item(2, r + 1, 5) == counter[r]); assert(ov_menu_item(3, r + 1, 4) == style[r]); }
-    assert(!strcmp(OVM_TAB_NAMES[2], "Counter") && !strcmp(OVM_TAB_NAMES[3], "Style"));
+    for (int r = 0; r < 5; r++) { assert(ov_menu_item(3, r + 1, 5) == counter[r]); assert(ov_menu_item(4, r + 1, 4) == style[r]); }
+    assert(!strcmp(OVM_TAB_NAMES[2], "Save") && !strcmp(OVM_TAB_NAMES[3], "Counter") && !strcmp(OVM_TAB_NAMES[4], "Style"));
     float p[4] = {0, 0, 1000, 700};
-    for (int t = 0; t < OVM_TABS; t++) { float r[4]; ov_menu_rowrect(p, 0, r); assert(ov_menu_tab_at(r[0] + (t + 0.5f) * r[2] / OVM_TABS, p) == t); }
+    for (int t = 0; t < OVM_TAB_N; t++) { float r[4]; ov_menu_rowrect(p, 0, r); assert(ov_menu_tab_at(r[0] + (t + 0.5f) * r[2] / OVM_TAB_N, p) == t); }
     // the defaults: today's look (FPS, SOC and BAT; the driver row and the graph are opt-ins)
     int o = atomic_load(&g_fps_opts);
     assert(fpso_rows(o) == 7 && FPSO_ROWS_DEFAULT == 7 && FPSO_GRAPH == 16 && fpso_pos(o) == FPSO_TL && fpso_colour(o) == FPSO_WHITE && fpso_outline(o) == FPSO_BOX && fpso_size(o) == FPSO_NORMAL);

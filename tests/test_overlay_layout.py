@@ -88,21 +88,23 @@ int main(void) {
     assert(ov_drag_pos(1100, 600, 1013, 50) == 506.5f);
     assert(ov_drag_pos(1100, 505, 1013, 50) == 508);
 
-    // the Gamepad tab's last row is the face buttons' (front_android.c pad_labels); the Game tab has five rows in a code-less app, seven with the save folder's
-    // (its title, which a controller skips, then Browse); the highlight's numbers: 0 the tabs, k + 1 a row, OVM_HI_RESUME Resume
-    assert(ov_menu_count(0, 0) == 5 && ov_menu_count(0, 1) == 5 && ov_menu_count(1, 0) == 5 && ov_menu_count(1, 1) == 7 && ov_menu_count(2, 0) == 5 && ov_menu_count(3, 0) == 4);
-    assert(ov_menu_item(0, 5, 5) == OVM_PAD && ov_menu_item(1, 6, 5) < 0 && ov_menu_item(1, OVM_HI_RESUME, 5) == OVM_RESUME && ov_menu_item(1, 0, 7) == OVM_TAB);
-    assert(ov_menu_item(1, 6, 7) == OVM_FOLDER_LABEL && !ov_menu_selectable(OVM_FOLDER_LABEL) && ov_menu_item(1, 7, 7) == OVM_FOLDER && ov_menu_selectable(OVM_FOLDER));
+    // the Gamepad tab's last row is the face buttons' (front_android.c pad_labels); the Save tab has three rows in a code-less app, five with the sync folder's
+    // explanation and seven with a folder (the lines of text, which a controller skips); the highlight's numbers: 0 the tabs, k + 1 a row, OVM_HI_RESUME Resume
+    assert(ov_menu_count(0, 0) == 5 && ov_menu_count(0, 1) == 5 && ov_menu_count(2, 0) == 3 && ov_menu_count(2, 1) == 5 && ov_menu_count(2, 2) == 7 && ov_menu_count(3, 0) == 5 && ov_menu_count(4, 0) == 4);
+    assert(ov_menu_item(0, 5, 5) == OVM_PAD && ov_menu_item(2, 4, 3) < 0 && ov_menu_item(2, OVM_HI_RESUME, 5) == OVM_RESUME && ov_menu_item(2, 0, 7) == OVM_TAB);
+    assert(ov_menu_item(2, 4, 5) == OVM_SYNC && ov_menu_item(2, 5, 5) == OVM_SYNC_OFF && !ov_menu_selectable(OVM_SYNC_OFF) && ov_menu_selectable(OVM_SYNC));
+    assert(ov_menu_item(2, 5, 7) == OVM_SYNC_WITH && ov_menu_item(2, 6, 7) == OVM_SYNC_PATH && ov_menu_item(2, 7, 7) == OVM_SYNC_STOP && !ov_menu_selectable(OVM_SYNC_PATH) && ov_menu_selectable(OVM_SYNC_STOP));
     assert(OVM_HI_RESUME + 1 <= 15);   // (bits 4..7 of dm_menu_state)
     // the scroll: none for five rows; a sixth scrolls by a row, and the controller's choice is brought into view
     assert(ov_menu_scroll_max(5) == 0 && ov_menu_scroll_max(6) == OVM_SCROLL_STEPS && ov_menu_scroll_max(6) <= 127);   // (bits 9..15)
     assert(ov_menu_scroll_to(5, 0, 6) == OVM_SCROLL_STEPS && ov_menu_scroll_to(0, OVM_SCROLL_STEPS, 6) == 0 && ov_menu_scroll_to(2, 7, 6) == 7);
     assert(ov_menu_scroll_clamp(-3, 6) == 0 && ov_menu_scroll_clamp(99, 6) == OVM_SCROLL_STEPS && ov_menu_scroll_clamp(5, 4) == 0);
-    // the audio output's chooser (the Game tab's sixth row, after Clear data, when the activity has it), and the Counter and Style tabs
+    // the audio output's chooser (the Game tab's third row, when the activity has it), and the Counter and Style tabs
     audio_available = 1;
-    assert(ov_menu_count(1, 0) == 6 && ov_menu_count(1, 1) == 8 && ov_menu_item(1, 6, 6) == OVM_AUDIO && ov_menu_item(1, 6, 8) == OVM_AUDIO && ov_menu_item(1, 7, 8) == OVM_FOLDER_LABEL && ov_menu_item(1, 8, 8) == OVM_FOLDER);
+    assert(ov_menu_count(1, 0) == 3 && ov_menu_count(1, 2) == 3 && ov_menu_item(1, 3, 3) == OVM_AUDIO);
     audio_available = 0;
-    assert(ov_menu_item(2, 1, 5) == OVM_ROW_FPS && ov_menu_item(2, 5, 5) == OVM_ROW_GRAPH && ov_menu_item(3, 1, 4) == OVM_POS && ov_menu_item(3, 4, 4) == OVM_SIZE && ov_menu_item(3, 5, 4) == -1);
+    assert(ov_menu_count(1, 0) == 2 && ov_menu_item(1, 2, 2) == OVM_MODE && ov_menu_item(1, 3, 2) < 0);
+    assert(ov_menu_item(3, 1, 5) == OVM_ROW_FPS && ov_menu_item(3, 5, 5) == OVM_ROW_GRAPH && ov_menu_item(4, 1, 4) == OVM_POS && ov_menu_item(4, 4, 4) == OVM_SIZE && ov_menu_item(4, 5, 4) == -1);
     const float screens[][2] = {{915, 412}, {1216, 760}, {2400, 1080}, {1080, 2400}};
     for (unsigned s = 0; s < sizeof screens / sizeof screens[0]; s++) {
         float W = screens[s][0], H = screens[s][1], step = H / OVE_GRID_ROWS, p[4];
@@ -135,19 +137,15 @@ int main(void) {
             assert(ov_ed_button_at(b[0] + b[2] / 2, b[1] + b[3] / 2, p, first, n) == i);
         }
     }
-    // the Game tab's rows (OVM_TAB_ITEMS): Clear data sits after Import save, and ov_menu_item numbers the rows as ov_menu_count counts them, with and without the
-    // audio output's chooser and the save folder's two rows; the Gamepad tab is as it was; Resume's highlight (+ 1) fits the state word's four bits
-    for (int audio = 0; audio < 2; audio++) for (int folder = 0; folder < 2; folder++) {
-        audio_available = audio;
-        int n = ov_menu_count(1, folder), want[OVM_TAB_MAX] = {OVM_FPS, OVM_MODE, OVM_EXPORT, OVM_IMPORT, OVM_CLEAR}, k = 5;
-        if (audio) want[k++] = OVM_AUDIO;
-        if (folder) { want[k++] = OVM_FOLDER_LABEL; want[k++] = OVM_FOLDER; }
-        assert(n == k && n <= OVM_TAB_MAX);
-        for (int hi = 1; hi <= n; hi++) assert(ov_menu_item(1, hi, n) == want[hi - 1]);
-        assert(ov_menu_item(1, 0, n) == OVM_TAB && ov_menu_item(1, OVM_HI_RESUME, n) == OVM_RESUME && (n + 1 == OVM_HI_RESUME || ov_menu_item(1, n + 1, n) == -1));   // (a full tab's n + 1 is Resume's own number)
+    // the Save tab's rows (OVM_TAB_ITEMS): export, import, erase, then the sync folder's (the button and its lines of text, and Stop with a folder); ov_menu_item numbers the
+    // rows as ov_menu_count counts them; the Gamepad tab is as it was; Resume's highlight (+ 1) fits the state word's four bits
+    for (int folder = 0; folder < 3; folder++) {
+        int n = ov_menu_count(2, folder), want[OVM_TAB_MAX] = {OVM_EXPORT, OVM_IMPORT, OVM_ERASE, OVM_SYNC, folder == 2 ? OVM_SYNC_WITH : OVM_SYNC_OFF, OVM_SYNC_PATH, OVM_SYNC_STOP};
+        assert(n == (folder == 2 ? 7 : folder == 1 ? 5 : 3) && n <= OVM_TAB_MAX);
+        for (int hi = 1; hi <= n; hi++) assert(ov_menu_item(2, hi, n) == want[hi - 1]);
+        assert(ov_menu_item(2, 0, n) == OVM_TAB && ov_menu_item(2, OVM_HI_RESUME, n) == OVM_RESUME && (n + 1 == OVM_HI_RESUME || ov_menu_item(2, n + 1, n) == -1));
     }
-    audio_available = 0;
-    assert(ov_menu_selectable(OVM_CLEAR) && ov_menu_selectable(OVM_EXPORT) && !ov_menu_selectable(OVM_FOLDER_LABEL));
+    assert(ov_menu_selectable(OVM_ERASE) && ov_menu_selectable(OVM_EXPORT) && !ov_menu_selectable(OVM_SYNC_OFF));
     { int n = ov_menu_count(0, 0); const int want[5] = {OVM_OVERLAY, OVM_OPACITY, OVM_EDIT, OVM_RUMBLE, OVM_PAD}; assert(n == 5); for (int hi = 1; hi <= n; hi++) assert(ov_menu_item(0, hi, n) == want[hi - 1]); }
     assert(OVM_HI_RESUME + 1 <= 15);
     return 0;

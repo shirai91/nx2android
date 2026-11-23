@@ -18,8 +18,8 @@
 // the player leaves or closes the game (dm_saves_folder_sync), and read back at the start (folder_start, before the host mounts the save), so the folder can
 // be shared with a PC or a cloud sync app. saves/folder-sync.txt keeps the save's fingerprint at the last sync, which tells a folder another device changed
 // (it wins: the app's save is exported to saves/<stamp>-before-folder first) from a session that ended before its sync (the app's save goes to the folder).
-// The folder is also updated shortly after each in-game save (watch_run). Clear data (saves/clear.txt) is applied at the start too: the save is exported as
-// saves/<stamp>-before-clear first, then erased, and a save folder's save is not loaded back over the fresh start (folder_start)
+// The folder is also updated shortly after each in-game save (watch_run). Erase (saves/erase.txt) is applied at the start too: the save is exported as
+// saves/<stamp>-before-erase first, then erased, and a save folder's save is not loaded back over the fresh start (folder_start)
 #include "dm.h"
 #include "saves_android.h"
 #include <dirent.h>
@@ -199,27 +199,27 @@ static int import_apply(const char *name, const char *req) {   // 1: imported
     return 1;
 }
 
-// Clear data (the pause menu's Clear row), applied at the next start for the same reason an import is: the save is not touched while the game runs. The menu writes
-// saves/clear.txt and the app ends; at the start the save (and the device save) is exported first as saves/<stamp>-before-clear, so it can be taken back with Import
-// save, and then erased. When the export fails nothing is erased. The game then starts as on its first run
-int dm_saves_request_clear(void) {
-    char p[640], tmp[650]; snprintf(p, sizeof p, "%s/clear.txt", g_dir); snprintf(tmp, sizeof tmp, "%s.new", p);
+// Erase (the pause menu's Save tab), applied at the next start for the same reason an import is: the save is not touched while the game runs. The menu writes
+// saves/erase.txt and the app ends; at the start the save (and the device save) is exported first as saves/<stamp>-before-erase, so it can be taken back with Import,
+// and then erased. When the export fails nothing is erased. The game then starts as on its first run
+int dm_saves_request_erase(void) {
+    char p[640], tmp[650]; snprintf(p, sizeof p, "%s/erase.txt", g_dir); snprintf(tmp, sizeof tmp, "%s.new", p);
     FILE *f = fopen(tmp, "w"); if (!f) { LOG("[RED] [saves] cannot write %s (errno %d)", tmp, errno); return -1; }
-    fprintf(f, "clear\nrequest=menu\n"); fclose(f);
+    fprintf(f, "erase\nrequest=menu\n"); fclose(f);
     if (rename(tmp, p)) { LOG("[RED] [saves] cannot write %s (errno %d)", p, errno); return -1; }
-    LOG("[saves] the game's data will be cleared at the next start"); return 0;
+    LOG("[saves] the save will be erased at the next start"); return 0;
 }
 int dm_saves_current(dm_save_entry *out) {   // the save the game has now: its files and bytes (the device save's too); 0 when it has none
     memset(out, 0, sizeof *out); tree_size(g_save, &out->files, &out->bytes);
     if ((out->device = is_dir(g_dev) && has_entries(g_dev))) tree_size(g_dev, &out->files, &out->bytes);
     return out->files > 0;
 }
-static int clear_apply(const char *req) {   // 1: the save was erased (or there was none to erase)
+static int erase_apply(const char *req) {   // 1: the save was erased (or there was none to erase)
     char bk[96] = "", e2[600] = ""; dm_save_entry cur; int had = dm_saves_current(&cur);
     if (!g_save[0]) { result(req, "result=error\nerror=DM_SAVE is not set"); return 0; }
     if (had) {
-        int r = dm_saves_export("-before-clear", bk, sizeof bk, e2, sizeof e2);
-        if (r) { result(req, "result=error\nerror=the current save could not be backed up first (%s): nothing was cleared", e2); return 0; }
+        int r = dm_saves_export("-before-erase", bk, sizeof bk, e2, sizeof e2);
+        if (r) { result(req, "result=error\nerror=the current save could not be backed up first (%s): nothing was erased", e2); return 0; }
     }
     rm_tree(g_save); rm_tree(g_dev);
     if (has_entries(g_save) || is_dir(g_dev)) { result(req, "result=error\nerror=the save could not be erased (%s)%s", g_save, bk[0] ? "; it was backed up first" : ""); return 0; }
@@ -272,7 +272,7 @@ static void last_forget(void) { char p[640]; snprintf(p, sizeof p, "%s/folder-sy
 
 // ---- the app's Java (SaveBridge.java), when it has it: GameActivity.saveBridge() ----
 static JavaVM *g_vm; static jobject g_bridge;   // NULL: a code-less app
-static jmethodID g_m_label, g_m_pick, g_m_export, g_m_import, g_m_restore, g_m_mirror;
+static jmethodID g_m_label, g_m_pick, g_m_default, g_m_export, g_m_import, g_m_restore, g_m_mirror;
 static pthread_mutex_t g_label_mu = PTHREAD_MUTEX_INITIALIZER; static char g_label[512];   // the save folder's path, "" none
 static JNIEnv *jattach(int *detach) {
     JNIEnv *E = NULL; *detach = 0; if (!g_vm) return NULL;
@@ -294,11 +294,11 @@ void dm_saves_bridge(void *vm, void *activity) {
     if (jfail(E) || !m) { LOG("[saves] a code-less app: the menu's own save manager (saves/ in the files folder), no save folder"); if (c) (*E)->DeleteLocalRef(E, c); jdetach(dt); return; }
     jobject b = (*E)->CallObjectMethod(E, (jobject)activity, m); jclass bc = b && !jfail(E) ? (*E)->GetObjectClass(E, b) : NULL;
     if (bc) {
-        g_m_label = (*E)->GetMethodID(E, bc, "folderLabel", "()Ljava/lang/String;"); g_m_pick = (*E)->GetMethodID(E, bc, "pickFolder", "(Ljava/lang/String;)Z");
+        g_m_label = (*E)->GetMethodID(E, bc, "folderLabel", "()Ljava/lang/String;"); g_m_pick = (*E)->GetMethodID(E, bc, "pickFolder", "(Ljava/lang/String;)Z"); g_m_default = (*E)->GetMethodID(E, bc, "useDefault", "(Ljava/lang/String;)Z");
         g_m_export = (*E)->GetMethodID(E, bc, "exportZip", "(Ljava/lang/String;Ljava/lang/String;)Z"); g_m_import = (*E)->GetMethodID(E, bc, "importZip", "(Ljava/lang/String;Ljava/lang/String;)Z");
         g_m_restore = (*E)->GetMethodID(E, bc, "restore", "(Ljava/lang/String;Ljava/lang/String;)I"); g_m_mirror = (*E)->GetMethodID(E, bc, "mirror", "(Ljava/lang/String;Ljava/lang/String;)I");
     }
-    if (jfail(E) || !bc || !g_m_label || !g_m_pick || !g_m_export || !g_m_import || !g_m_restore || !g_m_mirror)
+    if (jfail(E) || !bc || !g_m_label || !g_m_pick || !g_m_default || !g_m_export || !g_m_import || !g_m_restore || !g_m_mirror)
         LOG("[RED] [saves] the app's SaveBridge does not answer as this host expects (an APK built from another checkout?): no save folder, the menu's own save manager");
     else { g_bridge = (*E)->NewGlobalRef(E, b); label_refresh(E); LOG("[saves] the Java save bridge is there: save folder %s", g_label[0] ? g_label : "none (the default: the save stays in the app)"); }
     if (bc) (*E)->DeleteLocalRef(E, bc); if (b) (*E)->DeleteLocalRef(E, b); (*E)->DeleteLocalRef(E, c);
@@ -317,6 +317,7 @@ static int jcall(jmethodID m, int boolean, const char *a, const char *b, int dfl
     jdetach(dt); return r;
 }
 int dm_saves_folder_pick(void) { return jcall(g_m_pick, 1, DM_GAME_ID, NULL, 0) == 1 ? 0 : -1; }
+int dm_saves_folder_default(void) { return jcall(g_m_default, 1, DM_GAME_ID, NULL, 0) == 1 ? 0 : -1; }
 int dm_saves_import_zip(void) { return jcall(g_m_import, 1, g_dir, DM_GAME_ID, 0) == 1 ? 0 : -1; }
 int dm_saves_export_zip(char *err, int ecap) {   // the export in saves/ stays there, as the menu's own export's does
     char name[96], p[700]; int r = dm_saves_export("", name, sizeof name, err, ecap); if (r) return r;
@@ -380,7 +381,7 @@ static void watch_start(void) {
     if (!g_bridge) return;   // (no folder yet is fine: sync_run does nothing until the player picks one)
     pthread_t t; if (pthread_create(&t, NULL, watch_run, NULL)) LOG("[RED] [saves] save folder: cannot start the watch of the game's saves"); else pthread_detach(t);
 }
-static void folder_start(int imported, int cleared) {   // at the start, before the host mounts the save
+static void folder_start(int imported, int erased) {   // at the start, before the host mounts the save
     char label[512]; if (!g_bridge || !dm_saves_folder_label(label, sizeof label)) return;
     pthread_mutex_lock(&g_sync_mu);
     char stage[640], staged[660]; snprintf(stage, sizeof stage, "%s/.folder-in", g_dir); snprintf(staged, sizeof staged, "%s.device", stage);
@@ -395,9 +396,9 @@ static void folder_start(int imported, int cleared) {   // at the start, before 
     else {
         uint64_t hd = save_hash(g_save, g_dev), hf = r ? save_hash(stage, staged) : 0, last = 0; int have = last_read(&last);
         int d = dm_folder_decide(r == 1, hf, hd, have, last);
-        if (cleared && r == 1) {   // the player cleared the game's data: the folder's save is not loaded back over the fresh start, and it stays there (the only other copy, and a
+        if (erased && r == 1) {   // the player erased the save: the folder's save is not loaded back over the fresh start, and it stays there (the only other copy, and a
             last_write(hf); g_sync_dirty = 0; g_sync_hold = 0;   // sync app may have sent it elsewhere) until the game saves again: that save replaces it, as any save does
-            LOG("[saves] save folder %s: the game's data was cleared: the folder's save is kept, and not loaded; the game's next save replaces it", label);
+            LOG("[saves] save folder %s: the save was erased: the folder's save is kept, and not loaded; the game's next save replaces it", label);
         } else if (d == DM_FOLDER_KEEP) { last_write(hd); g_sync_dirty = 0; g_sync_hold = 0; LOG("[saves] save folder %s: the same save as the app's", label); }
         else if (d == DM_FOLDER_PUSH) {
             LOG("[saves] save folder %s: %s", label, r ? "the save in the app is newer (its last session ended before it was copied): it goes to the folder" : "no save of this game there yet: the app's goes there");
@@ -445,8 +446,8 @@ int dm_saves_start(const char *files_root) {
         quit |= q; char out[96], err[600]; int r = dm_saves_export("", out, sizeof out, err, sizeof err);
         if (r) result(req, "result=error\nerror=%s", err); else result(req, "result=ok\nname=%s", out);
     }
-    int cleared = 0;
-    if (read_request("clear.txt", name, sizeof name, req, sizeof req, &q)) { quit |= q; cleared = clear_apply(req); }
-    if (!quit) { folder_start(imported, cleared); watch_start(); }   // (a request that ends the app leaves the folder alone: the game does not run)
+    int erased = 0;
+    if (read_request("erase.txt", name, sizeof name, req, sizeof req, &q)) { quit |= q; erased = erase_apply(req); }
+    if (!quit) { folder_start(imported, erased); watch_start(); }   // (a request that ends the app leaves the folder alone: the game does not run)
     return quit;
 }

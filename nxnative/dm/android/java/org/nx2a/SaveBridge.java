@@ -33,7 +33,7 @@ import java.util.zip.ZipOutputStream;
 /**
  * The save manager's Android side (saves_android.c calls it through JNI): the system's own pickers (the Storage Access Framework), so the app asks for no
  * storage permission: picking a folder grants that folder alone, and the grant is kept (takePersistableUriPermission) across starts.
- *   Save file directory: a folder the player picks; the game's save is mirrored into <folder>/<title ID>/ (and <title ID>.device/) when the player leaves or
+ *   Sync folder: a folder the player picks; the game's save is mirrored into <folder>/<title ID>/ (and <title ID>.device/) when the player leaves or
  *   closes the game, and read back from there at the next start (restore, mirror). The files are written in place, as ordinary files on the device's storage,
  *   so a sync app watching the folder (FolderSync's instant sync) sees each changed file, and an unchanged file is not written again.
  *   Export save: a .zip the player names and places, holding <title ID>/<the save's files>. Import save: such a .zip, refused when it holds no folder named
@@ -60,18 +60,16 @@ public final class SaveBridge {
         Uri tree = saved(); if (tree == null) return "";
         return (granted(tree) ? "" : "No access: ") + label(tree);
     }
+    /** The folder picker, opened where the current sync folder is (the Save tab's Choose and Change). Another folder replaces it once the player has answered what to do with its save. */
     public synchronized boolean pickFolder(String titleId) {
         if (!start(FOLDER, titleId, "")) return false;
-        activity.runOnUiThread(() -> {
-            Uri cur = saved();
-            if (cur == null) { openTree(null); return; }
-            new AlertDialog.Builder(activity).setTitle("Save file directory").setMessage(label(cur) + "\n\nThe game's save is copied here when you leave or close the game, and "
-                    + "loaded from here when it starts.")
-                .setPositiveButton("Choose another folder", (d, b) -> openTree(cur))
-                .setNeutralButton("Use default", (d, b) -> { forget(); finish(FOLDER, DEFAULT, ""); })
-                .setNegativeButton("Cancel", (d, b) -> finish(FOLDER, CANCELLED, ""))
-                .setOnCancelListener(d -> finish(FOLDER, CANCELLED, "")).show();
-        });
+        activity.runOnUiThread(() -> openTree(saved()));
+        return true;
+    }
+    /** Back to no sync folder: the save stays in the app (the Save tab's Stop syncing). The answer is DEFAULT. */
+    public synchronized boolean useDefault(String titleId) {
+        if (!start(FOLDER, titleId, "")) return false;
+        activity.runOnUiThread(() -> { forget(); finish(FOLDER, DEFAULT, ""); });
         return true;
     }
     /** folder: the save as exported to saves/ (saves_android.c dm_saves_export), zipped where the player says */
@@ -152,11 +150,11 @@ public final class SaveBridge {
             catch (IOException | RuntimeException e) { release(tree); fail(FOLDER, "The folder could not be read: " + e.getMessage(), e); return; }
             String where = label(tree);
             if (have == null) { activity.runOnUiThread(() -> { keep(tree); finish(FOLDER, OK, where); }); return; }
-            activity.runOnUiThread(() -> new AlertDialog.Builder(activity).setTitle("This folder has a save for this game")
-                .setMessage(where + "/" + title + "\n\nLoad it: the game closes, and the folder's save replaces the save on this device when you open the game again "
-                    + "(the save on this device is backed up first, in the app's saves folder).\n\nReplace it: the save on this device is copied over the folder's.")
-                .setPositiveButton("Load it", (d, b) -> { keep(tree); finish(FOLDER, LOAD, where); })
-                .setNeutralButton("Replace it", (d, b) -> { keep(tree); finish(FOLDER, OK, where); })
+            activity.runOnUiThread(() -> new AlertDialog.Builder(activity).setTitle("This folder already has a save of this game")
+                .setMessage(where + "/" + title + "\n\nUse its save: the game closes, and when you open it again it starts from the folder's save "
+                    + "(yours is kept as a backup first).\n\nKeep mine: your save is copied over the folder's.")
+                .setPositiveButton("Use its save", (d, b) -> { keep(tree); finish(FOLDER, LOAD, where); })
+                .setNeutralButton("Keep mine", (d, b) -> { keep(tree); finish(FOLDER, OK, where); })
                 .setNegativeButton("Cancel", (d, b) -> { release(tree); finish(FOLDER, CANCELLED, ""); })
                 .setOnCancelListener(d -> { release(tree); finish(FOLDER, CANCELLED, ""); }).show());
         });
@@ -368,7 +366,7 @@ public final class SaveBridge {
         android.util.Log.e("dmhost", "[saves] " + message.replace('\n', ' '), why);
         activity.runOnUiThread(() -> {
             try {
-                new AlertDialog.Builder(activity).setTitle(kind == IMPORT ? "Import save" : kind == EXPORT ? "Export save" : "Save file directory").setMessage(message)
+                new AlertDialog.Builder(activity).setTitle(kind == IMPORT ? "Import save" : kind == EXPORT ? "Export save" : "Sync folder").setMessage(message)
                     .setPositiveButton(android.R.string.ok, null).setOnDismissListener(d -> finish(kind, FAILED, message)).show();
             } catch (RuntimeException e) { finish(kind, FAILED, message); }
         });
