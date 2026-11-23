@@ -11,22 +11,143 @@
 #include <string.h>
 #include <media/NdkMediaCodec.h>
 #include <media/NdkMediaFormat.h>
+#ifdef __aarch64__
+#include <arm_neon.h>
+#endif
 
 #define QMAX 16
-#define COLOR_YUV420_PLANAR 19   // MediaCodecInfo.CodecCapabilities: I420 (the software decoder's); every other format is read as semi-planar (21, Qualcomm's 0x7fa30c04 venus NV12)
+#define COLOR_YUV420_PLANAR 19   // I420; all other formats retain the existing bounded NV12 fallback
 struct mavc {
     uint8_t sps[512], pps[512]; int nsps, npps, dirty;
     AMediaCodec *mc; int eos_sent;
     int fw, fh, fstride, fslice, fcolor, cl, ct, cr, cb;   // output format: size, stride, slice height, colour format, crop rectangle (inclusive)
+    int fstandard, ffull;                                  // Android color-standard and full-range flag for the current output format
     long nin, nout;                                        // inputs queued and pictures out since the codec started (or was flushed)
-    struct { uint8_t *nv12; int w, h; int64_t pts; } q[QMAX]; int nq;
+    struct { uint8_t *nv12; int w, h, standard, full; int64_t pts; } q[QMAX]; int nq;
     uint8_t *au; size_t aucap;   // Annex B copy of the access unit being decoded
+    int unknown_format_logged, dropped_picture_logged; // once per decoder, independently of other errors
     int red, rgba;               // rgba: pictures as 4-byte RGBA (native texture mode) instead of NV12
     // The codec's timestamps: the game's while they increase, else the last one + 1 µs, each mapped back to the game's on output (pmap). 13 Sentinels: Aegis Rim sends every
     // packet of its 1024x576 movies with time 0, and c2.qti.avc.decoder gave no picture for 81 packets and then took no more input. With made-up timestamps the codec's
     // own output order stands (synth: the queue is not sorted)
     int64_t last_in; int synth; struct { int64_t c, g; } pmap[64]; int npmap;
 };
+
+typedef struct { uint8_t data[512]; size_t end, bit; int bad; } sps_bits;
+static unsigned sps_u(sps_bits *b, unsigned count) {
+    if (count > 32 || count > b->end - b->bit) { b->bad = 1; return 0; }
+    unsigned value = 0;
+    while (count--) {
+        value = (value << 1) | ((b->data[b->bit / 8] >> (7 - b->bit % 8)) & 1);
+        b->bit++;
+    }
+    return value;
+}
+static unsigned sps_ue(sps_bits *b) {
+    unsigned zeros = 0;
+    while (!b->bad && !sps_u(b, 1)) {
+        if (++zeros > 30) { b->bad = 1; return 0; }
+    }
+    return b->bad ? 0 : ((1u << zeros) - 1) + sps_u(b, zeros);
+}
+static void sps_scaling_list(sps_bits *b, unsigned count) {
+    int last = 8, next = 8;
+    for (unsigned i = 0; i < count && !b->bad; i++) {
+        if (next) {
+            unsigned code = sps_ue(b);
+            int delta = code & 1 ? (int)((code + 1) / 2) : -(int)(code / 2);
+            next = (last + delta) & 255;
+        }
+        if (next) last = next;
+    }
+}
+static void sps_hrd(sps_bits *b) {
+    unsigned cpb = sps_ue(b);
+    if (cpb > 31) { b->bad = 1; return; }
+    sps_u(b, 4); sps_u(b, 4);
+    for (unsigned i = 0; i <= cpb && !b->bad; i++) {
+        sps_ue(b); sps_ue(b); sps_u(b, 1);
+    }
+    for (unsigned i = 0; i < 4; i++) sps_u(b, 5);
+}
+enum { SPS_RANGE_DECLARED = 1, SPS_COLOR_DECLARED = 2 };
+// H.264 7.3.2.1.1 and E.1.1: validate the base SPS and locate its VUI colour fields.
+// A decoder's size-based defaults are not stream declarations. Malformed SPS enables neither field.
+static unsigned sps_color_flags(const uint8_t *nal, size_t n) {
+    if (n < 4 || n > 512 || (nal[0] & 0x9f) != 7) return 0;
+    sps_bits b = {0}; size_t bytes = 0; unsigned zeros = 0;
+    for (size_t i = 1; i < n; i++) {
+        if (zeros == 2 && nal[i] == 3) {
+            if (i + 1 == n || nal[i + 1] > 3) return 0;
+            zeros = 0;
+            continue;
+        }
+        b.data[bytes++] = nal[i];
+        zeros = nal[i] == 0 ? zeros + 1 : 0;
+    }
+    b.end = bytes * 8;
+    // Exclude rbsp_stop_one_bit and alignment so truncation cannot turn the stop bit into a flag.
+    while (b.end && !(b.data[(b.end - 1) / 8] & (1u << (7 - (b.end - 1) % 8)))) b.end--;
+    if (!b.end) return 0;
+    b.end--;
+    unsigned profile = sps_u(&b, 8);
+    if (sps_u(&b, 8) & 3) return 0; // reserved_zero_2bits
+    sps_u(&b, 8); // level_idc
+    if (sps_ue(&b) > 31) return 0;
+    switch (profile) {
+    case 44: case 83: case 86: case 100: case 110: case 118: case 122:
+    case 128: case 134: case 135: case 138: case 139: case 244: {
+        unsigned chroma = sps_ue(&b);
+        if (chroma > 3) return 0;
+        if (chroma == 3) sps_u(&b, 1);
+        if (sps_ue(&b) > 6 || sps_ue(&b) > 6) return 0; // bit depths minus eight
+        sps_u(&b, 1); // qpprime_y_zero_transform_bypass_flag
+        if (sps_u(&b, 1)) for (unsigned i = 0; i < (chroma == 3 ? 12u : 8u) && !b.bad; i++) {
+            if (sps_u(&b, 1)) sps_scaling_list(&b, i < 6 ? 16 : 64);
+        }
+        break;
+    }
+    case 66: case 77: case 88: break;
+    default: return 0;
+    }
+    if (sps_ue(&b) > 12) return 0; // log2_max_frame_num_minus4
+    unsigned poc = sps_ue(&b);
+    if (poc == 0) { if (sps_ue(&b) > 12) return 0; }
+    else if (poc == 1) {
+        sps_u(&b, 1); sps_ue(&b); sps_ue(&b);
+        unsigned cycle = sps_ue(&b);
+        if (cycle > 255) return 0;
+        for (unsigned i = 0; i < cycle && !b.bad; i++) sps_ue(&b);
+    } else if (poc != 2) return 0;
+    sps_ue(&b); sps_u(&b, 1); sps_ue(&b); sps_ue(&b); // reference frames, gaps, picture dimensions
+    if (!sps_u(&b, 1)) sps_u(&b, 1); // field coding
+    sps_u(&b, 1); // direct_8x8_inference_flag
+    if (sps_u(&b, 1)) for (unsigned i = 0; i < 4; i++) sps_ue(&b); // crop offsets
+    if (!sps_u(&b, 1)) return 0; // vui_parameters_present_flag
+    if (sps_u(&b, 1) && sps_u(&b, 8) == 255) { sps_u(&b, 16); sps_u(&b, 16); }
+    if (sps_u(&b, 1)) sps_u(&b, 1); // overscan
+    if (!sps_u(&b, 1)) return 0; // video_signal_type_present_flag
+    sps_u(&b, 3); sps_u(&b, 1); // video_format, video_full_range_flag
+    unsigned flags = SPS_RANGE_DECLARED;
+    if (sps_u(&b, 1)) {
+        sps_u(&b, 8); sps_u(&b, 8); // colour_primaries, transfer_characteristics
+        if (sps_u(&b, 8) != 2) flags |= SPS_COLOR_DECLARED; // matrix_coefficients=2 is unspecified
+    }
+    // Check the remaining VUI too, so a later truncation cannot retain declarations.
+    if (sps_u(&b, 1)) { sps_ue(&b); sps_ue(&b); } // chroma location
+    if (sps_u(&b, 1)) { sps_u(&b, 32); sps_u(&b, 32); sps_u(&b, 1); } // timing
+    unsigned nal_hrd = sps_u(&b, 1);
+    if (nal_hrd) sps_hrd(&b);
+    unsigned vcl_hrd = sps_u(&b, 1);
+    if (vcl_hrd) sps_hrd(&b);
+    if (nal_hrd || vcl_hrd) sps_u(&b, 1);
+    sps_u(&b, 1); // pic_struct_present_flag
+    if (sps_u(&b, 1)) {
+        sps_u(&b, 1);
+        for (unsigned i = 0; i < 6; i++) sps_ue(&b);
+    }
+    return b.bad || b.bit != b.end ? 0 : flags;
+}
 
 mavc *mavc_new(void) { mavc *a = calloc(1, sizeof *a); if (!a) die("movie: AVC decoder allocation failed"); a->last_in = INT64_MIN; return a; }
 static void close_codec(mavc *a) { if (a->mc) { AMediaCodec_stop(a->mc); AMediaCodec_delete(a->mc); a->mc = NULL; } a->nin = a->nout = 0; a->eos_sent = 0; a->last_in = INT64_MIN; a->npmap = 0; }
@@ -102,33 +223,66 @@ static void read_format(mavc *a) {
     a->fstride = AMediaFormat_getInt32(f, AMEDIAFORMAT_KEY_STRIDE, &v) && v >= a->fw ? v : a->fw;
     a->fslice = AMediaFormat_getInt32(f, AMEDIAFORMAT_KEY_SLICE_HEIGHT, &v) && v >= a->fh ? v : a->fh;
     a->fcolor = AMediaFormat_getInt32(f, AMEDIAFORMAT_KEY_COLOR_FORMAT, &v) ? v : 0;
+    unsigned declared = sps_color_flags(a->sps, (size_t)a->nsps);
+    int reported_standard = AMediaFormat_getInt32(f, "color-standard", &v) ? v : 0;
+    a->fstandard = declared & SPS_COLOR_DECLARED ? reported_standard : 0;
+    a->ffull = AMediaFormat_getInt32(f, "color-range", &v) && v == 1 && (declared & SPS_RANGE_DECLARED);
     int32_t l, t, r, b;
-    if (AMediaFormat_getRect(f, AMEDIAFORMAT_KEY_DISPLAY_CROP, &l, &t, &r, &b) && r >= l && b >= t && r < a->fw && b < a->fh) { a->cl = l; a->ct = t; a->cr = r; a->cb = b; }
-    else { a->cl = a->ct = 0; a->cr = a->fw - 1; a->cb = a->fh - 1; }
-    LOG("[movie] AVC: output %dx%d stride %d slice height %d colour format %#x crop %d,%d-%d,%d", a->fw, a->fh, a->fstride, a->fslice, a->fcolor, a->cl, a->ct, a->cr, a->cb);
+    if (AMediaFormat_getRect(f, AMEDIAFORMAT_KEY_DISPLAY_CROP, &l, &t, &r, &b) && l >= 0 && t >= 0 && r >= l && b >= t && r < a->fw && b < a->fh) { a->cl = l; a->ct = t; a->cr = r; a->cb = b; }
+    else { a->cl = a->ct = 0; a->cr = a->fw > 0 ? a->fw - 1 : -1; a->cb = a->fh > 0 ? a->fh - 1 : -1; }
+    LOG("[movie] AVC: output %dx%d stride %d slice height %d colour format %#x crop %d,%d-%d,%d color-standard %d full-range %d declared %u", a->fw, a->fh, a->fstride, a->fslice, a->fcolor, a->cl, a->ct, a->cr, a->cb, reported_standard, a->ffull, declared);
     AMediaFormat_delete(f);
 }
 // one output buffer → a compact NV12 picture of the crop rectangle, queued in presentation order
 static void keep_picture(mavc *a, const uint8_t *src, size_t n, int64_t pts) {
-    int w = (a->cr - a->cl + 1) & ~1, h = (a->cb - a->ct + 1) & ~1, s = a->fstride;
-    size_t uvoff = (size_t)s * a->fslice;
-    int planar = a->fcolor == COLOR_YUV420_PLANAR;
-    size_t need = planar ? uvoff + uvoff / 2 : uvoff + (size_t)s * (a->fslice / 2);
-    if (w <= 0 || h <= 0 || n < need - (size_t)(s - a->fw)) { if (!a->red++) LOG("[RED] movie: AVC output buffer of %zu bytes is smaller than its %dx%d picture (stride %d, slice height %d)", n, a->fw, a->fh, s, a->fslice); return; }
-    uint8_t *o = malloc((size_t)w * h * 3 / 2); if (!o) die("movie: AVC picture allocation failed");
-    for (int r = 0; r < h; r++) memcpy(o + (size_t)r * w, src + (size_t)(a->ct + r) * s + a->cl, (size_t)w);
-    uint8_t *ouv = o + (size_t)w * h;
-    if (planar) {   // I420: U plane then V plane, half stride
-        const uint8_t *u = src + uvoff, *v = u + (size_t)(s / 2) * (a->fslice / 2);
-        for (int r = 0; r < h / 2; r++) {
-            const uint8_t *ur = u + (size_t)(a->ct / 2 + r) * (s / 2) + a->cl / 2, *vr = v + (size_t)(a->ct / 2 + r) * (s / 2) + a->cl / 2; uint8_t *d = ouv + (size_t)r * w;
-            for (int x = 0; x < w / 2; x++) { d[2 * x] = ur[x]; d[2 * x + 1] = vr[x]; }
+    // Existing Android-parity copy_picture (nxnative 1f01e28c): validate
+    // the layout and last byte actually read before copying any planes.
+    int cw=a->fw, ch=a->fh, stride=a->fstride, slice=a->fslice;
+    int cf=a->fcolor;
+    if (cf != COLOR_YUV420_PLANAR) {
+        if (cf != 21 && cf != 0x7fa30c04 && !a->unknown_format_logged) {
+            a->unknown_format_logged = 1;
+            LOG("[RED] movie: MediaCodec AVC output colour format %#x, using NV12 fallback", cf);
         }
-    } else for (int r = 0; r < h / 2; r++) memcpy(ouv + (size_t)r * w, src + uvoff + (size_t)(a->ct / 2 + r) * s + (a->cl & ~1), (size_t)w);
+        cf = 21; // keep the existing NV12 interpretation, including Qualcomm Venus
+    }
+    int l=a->cl, t=a->ct, r=a->cr, b=a->cb;
+    if (cw <= 0 || ch <= 0 || stride < cw || slice < ch || stride > 32768 || slice > 32768 ||
+        l < 0 || t < 0 || r < l || b < t || r >= cw || b >= ch || ((l | t) & 1)) {
+        if (!a->dropped_picture_logged) {
+            a->dropped_picture_logged = 1;
+            LOG("[RED] movie: AVC picture dropped: invalid layout, %zu bytes, %dx%d, stride %d, slice height %d, crop %d,%d-%d,%d", n, cw, ch, stride, slice, l, t, r, b);
+        }
+        return;
+    }
+    int w = r-l+1, h = b-t+1, uvw = (w+1)/2, uvh = (h+1)/2;
+    size_t ysize = (size_t)stride*slice, cs = cf == 19 ? (stride+1)/2 : stride;
+    size_t cbase = ysize + (size_t)(t/2)*cs + (cf == 19 ? l/2 : l);
+    size_t vbase = cf == 19 ? cbase + cs*((slice+1)/2) : cbase+1;
+    size_t step = cf == 19 ? 1 : 2;
+    if ((size_t)b * stride + r >= n || vbase + (uvh-1)*cs + (uvw-1)*step >= n) {
+        if (!a->dropped_picture_logged) {
+            a->dropped_picture_logged = 1;
+            LOG("[RED] movie: AVC picture dropped: short buffer, %zu bytes, %dx%d, stride %d, slice height %d, crop %d,%d-%d,%d", n, cw, ch, stride, slice, l, t, r, b);
+        }
+        return;
+    }
+    uint8_t *o = malloc((size_t)w*h + (size_t)uvw*2*uvh);
+    if (!o) die("movie: AVC picture allocation failed");
+    for (int y = 0; y < h; y++) memcpy(o + (size_t)y*w, src + (size_t)(t+y)*stride + l, w);
+    uint8_t *uv = o + (size_t)w*h;
+    for (int y = 0; y < uvh; y++) for (int x = 0; x < uvw; x++) {
+        size_t at = (size_t)y*cs + x*step;
+        *uv++ = src[cbase+at]; *uv++ = src[vbase+at];
+    }
     if (a->nq == QMAX) { if (!a->red++) LOG("[RED] movie: AVC picture queue full, dropping the oldest picture"); free(a->q[0].nv12); memmove(a->q, a->q + 1, --a->nq * sizeof a->q[0]); }
     for (int m = 0; m < a->npmap; m++) if (a->pmap[m].c == pts) { pts = a->pmap[m].g; a->pmap[m] = a->pmap[--a->npmap]; break; }   // the game's own timestamp
     int k = a->nq; while (!a->synth && k > 0 && a->q[k - 1].pts > pts) { a->q[k] = a->q[k - 1]; k--; }
-    a->q[k].nv12 = o; a->q[k].w = w; a->q[k].h = h; a->q[k].pts = pts; a->nq++;
+    a->q[k].nv12 = o; a->q[k].w = w; a->q[k].h = h; a->q[k].pts = pts;
+    // Metadata travels with the picture through sorting and later format changes.
+    int standard = a->fstandard;
+    a->q[k].standard = standard == 1 || standard == 2 || standard == 4 || standard == 6 ? standard : (h >= 720 ? 1 : 4);
+    a->q[k].full = a->ffull; a->nq++;
 }
 // collect the pictures the codec has ready, waiting up to wait_us for the first; 1 = the end-of-stream output came
 static int drain(mavc *a, int64_t wait_us) {
@@ -139,7 +293,14 @@ static int drain(mavc *a, int64_t wait_us) {
         if (i < 0) return 0;   // AMEDIACODEC_INFO_TRY_AGAIN_LATER
         if (!a->fw) read_format(a);
         size_t n = 0; uint8_t *b = AMediaCodec_getOutputBuffer(a->mc, (size_t)i, &n);
-        if (b && bi.size > 0) { keep_picture(a, b + bi.offset, (size_t)bi.size, bi.presentationTimeUs); a->nout++; }
+        if (b && bi.size > 0 && !(bi.flags & AMEDIACODEC_BUFFER_FLAG_CODEC_CONFIG)) {
+            // Existing movie_mediacodec.h bounds: form the source pointer only
+            // after MediaCodec's offset and length fit its actual output buffer.
+            if (bi.offset >= 0 && (size_t)bi.offset <= n && (size_t)bi.size <= n - bi.offset)
+                keep_picture(a, b + bi.offset, (size_t)bi.size, bi.presentationTimeUs);
+            else if (!a->red++) LOG("[RED] movie: AVC output offset/size exceeds its codec buffer");
+            a->nout++;
+        }
         AMediaCodec_releaseOutputBuffer(a->mc, (size_t)i, false);
         if (bi.flags & AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM) return 1;
         wait_us = 0;
@@ -187,15 +348,49 @@ static void finish(mavc *a) {
     for (int k = 0; i >= 0 && k < 100 && !drain(a, 10000); k++) {}
     close_codec(a); a->eos_sent = 1;
 }
-// NV12 (video range) → RGBA rows of w pixels; BT.709 from 720 lines up, else BT.601 (VideoToolbox converts with the stream's colour matrix)
-static void nv12_rgba(const uint8_t *y, const uint8_t *uv, int pw, int ph, uint8_t *dst, int w, int h) {
-    int hd = ph >= 720, cw = pw < w ? pw : w, chh = ph < h ? ph : h;
-    int rv = hd ? 459 : 409, gu = hd ? 55 : 100, gv = hd ? 136 : 208, bu = hd ? 541 : 516;   // ×256, 8-bit video range (luma × 298)
+// NV12 → RGBA using the picture's matrix/range. Android standards: 1=709, 2/4=601, 6=2020.
+// Matrix/range conversion adapted from dm/host/movie_avc_android.inc in
+// thehobbit85/nxnative at 1f01e28c87da (MIT, see nxnative/LICENSE).
+static void nv12_rgba(const uint8_t *y, const uint8_t *uv, int pw, int ph, uint8_t *dst, int w, int h, int standard, int full) {
+    int cw = pw < w ? pw : w, chh = ph < h ? ph : h;
+    int rv = 409, gu = 100, gv = 208, bu = 516;   // ×256, 8-bit video range (luma × 298)
+    if (standard == 1) { rv = 459; gu = 55; gv = 136; bu = 541; }
+    if (standard == 6) { rv = 430; gu = 48; gv = 167; bu = 548; }
+    if (full) { rv = rv * 224 / 255; gu = gu * 224 / 255; gv = gv * 224 / 255; bu = bu * 224 / 255; }
     if (cw < w || chh < h) for (size_t i = 0; i < (size_t)w * h; i++) ((uint32_t *)dst)[i] = 0xff000000u;
+#ifdef __aarch64__
+    static int fast = -1; if (fast < 0) { const char *e = getenv("DM_MOVIE_FAST"); fast = e && !strcmp(e, "1"); }
+    const int16x8_t k16 = vdupq_n_s16(full ? 0 : 16), k128 = vdupq_n_s16(128); const int32x4_t rnd = vdupq_n_s32(128); const uint8x16_t a255 = vdupq_n_u8(255);
+    const int16x4_t c298 = vdup_n_s16(full ? 256 : 298), crv = vdup_n_s16((int16_t)rv), cgu = vdup_n_s16((int16_t)gu), cgv = vdup_n_s16((int16_t)gv), cbu = vdup_n_s16((int16_t)bu);
+#endif
     for (int r = 0; r < chh; r++) {
-        const uint8_t *yr = y + (size_t)r * pw, *cr = uv + (size_t)(r / 2) * pw; uint8_t *o = dst + (size_t)r * w * 4;
-        for (int x = 0; x < cw; x++) {
-            int c = 298 * (yr[x] - 16), u = cr[x & ~1] - 128, v = cr[(x & ~1) + 1] - 128;
+        const uint8_t *yr = y + (size_t)r * pw, *cr = uv + (size_t)(r / 2) * ((pw + 1) & ~1); uint8_t *o = dst + (size_t)r * w * 4;
+        int x = 0;
+#ifdef __aarch64__
+        // 16 pixels a step with the same integer arithmetic as the loop below (bit-exact): MMBN Legacy Collection Vol. 1's launcher converts a 1080p picture
+        // every frame, which the scalar loop took 9.9 ms for on an Odin 2's mid cores at their Standard-mode clock. Only under DM_MOVIE_FAST=1 (that game's profile)
+        if (fast) for (; x + 16 <= cw; x += 16) {
+            uint8x16_t yy = vld1q_u8(yr + x); uint8x8x2_t ch = vld2_u8(cr + x);   // 8 U and 8 V for 16 pixels
+            uint8x8x2_t uz = vzip_u8(ch.val[0], ch.val[0]), vz = vzip_u8(ch.val[1], ch.val[1]);   // each chroma sample for two pixels
+            int16x8_t Y[2] = { vsubq_s16(vreinterpretq_s16_u16(vmovl_u8(vget_low_u8(yy))), k16), vsubq_s16(vreinterpretq_s16_u16(vmovl_u8(vget_high_u8(yy))), k16) };
+            int16x8_t U[2] = { vsubq_s16(vreinterpretq_s16_u16(vmovl_u8(uz.val[0])), k128), vsubq_s16(vreinterpretq_s16_u16(vmovl_u8(uz.val[1])), k128) };
+            int16x8_t V[2] = { vsubq_s16(vreinterpretq_s16_u16(vmovl_u8(vz.val[0])), k128), vsubq_s16(vreinterpretq_s16_u16(vmovl_u8(vz.val[1])), k128) };
+            uint8x8_t R8[2], G8[2], B8[2];
+            for (int hp = 0; hp < 2; hp++) {
+                int32x4_t cl = vmlal_s16(rnd, vget_low_s16(Y[hp]), c298), chi = vmlal_s16(rnd, vget_high_s16(Y[hp]), c298);
+                int32x4_t rl = vmlal_s16(cl, vget_low_s16(V[hp]), crv), rh = vmlal_s16(chi, vget_high_s16(V[hp]), crv);
+                int32x4_t gl = vmlsl_s16(vmlsl_s16(cl, vget_low_s16(U[hp]), cgu), vget_low_s16(V[hp]), cgv), gh = vmlsl_s16(vmlsl_s16(chi, vget_high_s16(U[hp]), cgu), vget_high_s16(V[hp]), cgv);
+                int32x4_t bl = vmlal_s16(cl, vget_low_s16(U[hp]), cbu), bh = vmlal_s16(chi, vget_high_s16(U[hp]), cbu);
+                R8[hp] = vqmovun_s16(vcombine_s16(vqshrn_n_s32(rl, 8), vqshrn_n_s32(rh, 8)));
+                G8[hp] = vqmovun_s16(vcombine_s16(vqshrn_n_s32(gl, 8), vqshrn_n_s32(gh, 8)));
+                B8[hp] = vqmovun_s16(vcombine_s16(vqshrn_n_s32(bl, 8), vqshrn_n_s32(bh, 8)));
+            }
+            uint8x16x4_t px = { { vcombine_u8(R8[0], R8[1]), vcombine_u8(G8[0], G8[1]), vcombine_u8(B8[0], B8[1]), a255 } };
+            vst4q_u8(o + 4 * x, px);
+        }
+#endif
+        for (; x < cw; x++) {
+            int c = full ? 256 * yr[x] : 298 * (yr[x] - 16), u = cr[x & ~1] - 128, v = cr[(x & ~1) + 1] - 128;
             int R = (c + rv * v + 128) >> 8, G = (c - gu * u - gv * v + 128) >> 8, B = (c + bu * u + 128) >> 8;
             o[4 * x] = (uint8_t)(R < 0 ? 0 : R > 255 ? 255 : R); o[4 * x + 1] = (uint8_t)(G < 0 ? 0 : G > 255 ? 255 : G); o[4 * x + 2] = (uint8_t)(B < 0 ? 0 : B > 255 ? 255 : B); o[4 * x + 3] = 255;
         }
@@ -206,14 +401,17 @@ int mavc_take(mavc *a, int flush, uint8_t *dst, int w, int h, int64_t *pts_us) {
     else if (!a->nq && a->mc && a->nin > a->nout) drain(a, 4000);   // a picture is in the codec's pipeline: give it a few milliseconds
     if (!a->nq) return 0;
     uint8_t *pic = a->q[0].nv12; int pw = a->q[0].w, ph = a->q[0].h; if (pts_us) *pts_us = a->q[0].pts;
+    int standard = a->q[0].standard, full = a->q[0].full;
     memmove(a->q, a->q + 1, --a->nq * sizeof a->q[0]);
     const uint8_t *uv = pic + (size_t)pw * ph;
-    if (a->rgba) nv12_rgba(pic, uv, pw, ph, dst, w, h);
+    if (a->rgba) nv12_rgba(pic, uv, pw, ph, dst, w, h, standard, full);
     else {
         int cw = pw < w ? pw : w, chh = ph < h ? ph : h;
-        if (cw < w || chh < h) { memset(dst, 16, (size_t)w * h); memset(dst + (size_t)w * h, 128, (size_t)w * h / 2); }
+        if (cw < w || chh < h) { memset(dst, full ? 0 : 16, (size_t)w * h); memset(dst + (size_t)w * h, 128, (size_t)w * h / 2); }
         for (int r = 0; r < chh; r++) memcpy(dst + (size_t)r * w, pic + (size_t)r * pw, (size_t)cw);
-        for (int r = 0; r < chh / 2 && r < h / 2; r++) memcpy(dst + (size_t)w * h + (size_t)r * w, uv + (size_t)r * pw, (size_t)cw);
+        int cs = (pw + 1) & ~1, copied = (cw + 1) & ~1;
+        if (copied > w) copied = w;
+        for (int r = 0; r < (chh + 1) / 2 && r < h / 2; r++) memcpy(dst + (size_t)w * h + (size_t)r * w, uv + (size_t)r * cs, (size_t)copied);
     }
     free(pic);
     return 1;

@@ -1,0 +1,25 @@
+# Pokémon Violet 4.0.0, SDK 13.3.13, Trinity / NVN.
+# 2026-11-18: AYN Odin 2, Adreno 740, Android 13, Turnip (Mesa 25.99.99, a build named vulkan.ad07xx.so, packed with --vulkan-driver).
+status	playable
+tested	4.0.0 AYN Odin 2 (Adreno 740, Android 13, Turnip)
+package	org.nx2a.pokemonviolet
+orientation	landscape
+requires	bcn
+setting	docked=0
+# The engine runs its own dynamic resolution on the GPU time it measures. DM_DYN_SCALE=low|medium|high steers it harder in heavy scenes (hle_nvn.c engine_dyn_tick);
+# unset leaves the engine alone. high saves about 1 ms of GPU time and shows stair-stepped edges, so low is the default.
+env	DM_DYN_SCALE=low
+# The enrollment paper's portrait: the game copies its scene into a LINEAR RGBA8 texture in CPU-visible memory and encodes the picture to BC1 on the CPU from that storage.
+# Without the copy-back (gfx_vk_exec_copies.inc t2t_lin_back) the CPU read zeros and the portrait was black.
+env	DM_VK_LIN_COPY_BACK=1
+# Jagged white steps on hair edges (Director Clavell in the intro): the deferred lighting shader 8bc9341cecc2ce7d reads its material row from a uniform buffer at
+# (G-buffer material id & 7) * 16 + 496, component (offset >> 2) & 3; Turnip (Mesa 25.99.99) did not give each pixel its own component, so hair pixels in 8-row waves
+# that also held skin came out white. DM_VK_UBO_COMPONENT (gfx_vk_ubo_comp.c) loads the vector and takes the component; no GPU cost measured.
+env	DM_VK_UBO_COMPONENT=1
+# The Naranja Academy library (intro montage) drew its shelves as dark gaps and the room behind the arch as a void: its vertices sit in a 350 MB memory pool, 28 MB of
+# them past the end of the first 256 MB chunk (gfx_vk_core.c ZC_CHUNK), where the GPU read past that chunk's buffer. 512 MB chunks keep the pool in one buffer.
+env	DM_VK_ZC_CHUNK_MB=512
+# Scarlet's DM_VK_X_FLAT_VS=45cd97ab0aae9cdc:8 (alpha coverage off on the paving-stone vertex shader, env_titanmaterialstandard.bnsh here) is not carried over:
+# on the Odin 2 the Cabo Poco paving-stone path, shown magenta with :1 to confirm the shader, drew no black seams without the row, from two camera angles.
+readme_image	docs/images/pokemon-violet.jpg
+readme_tag	v0.4.0

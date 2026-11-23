@@ -34,8 +34,8 @@ typedef struct {
 // Field order packed to 0x80: newer SDKs (SMBW, NVN 55) allocate NVNtexture as 0x80 bytes (allocated from main 0x978c3c, initialized at 0x978cd4);
 // the former 0x88 wrote past the object's end and corrupted the adjacent heap block's free list. has_layout sits in the alignment gap after d, layout and serial fill up to 0x80.
 typedef struct {
-    // set_swz / stencil / swz (as in tex_builder_t) take the alignment gap after d; the size is still 0x80
-    uint32_t magic; nvn_texdesc d; uint8_t has_layout, set_swz : 1, stencil : 1; uint16_t swz; nvn_texlayout L; uint8_t *mem; pool_t *pool; int64_t off; uint8_t layout[8];
+    // set_swz / stencil / swz and immutable has_pkg_data take the alignment gap after d; the size is still 0x80
+    uint32_t magic; nvn_texdesc d; uint8_t has_layout, set_swz : 1, stencil : 1, has_pkg_data : 1; uint16_t swz; nvn_texlayout L; uint8_t *mem; pool_t *pool; int64_t off; uint8_t layout[8];
     uint64_t serial;                     // Initialization serial: the replay layer uses it to find the MTLTexture in the host table (the game may copy the object by value, so object pointers cannot be stored)
 } tex_t;                                                                                     FITS(tex_t, NVNtexture);
 _Static_assert(sizeof(tex_t) <= 0x80, "tex_t exceeds the newer SDKs' NVNtexture (0x80)");
@@ -49,7 +49,13 @@ _Static_assert(sizeof(view_t) <= 16, "view_t exceeds the newer SDKs' NVNtextureV
 // Sampler parameters (one copy shared by builder and object)
 typedef struct { uint8_t minf, magf, ws, wt, wr, cmp_mode, cmp_func, reduction; float lod_min, lod_max, lod_bias, aniso, border[4]; } samp_par;   // Enum values are all < 256; reduction takes the padding byte
 typedef struct { NVNdevice *dev; samp_par p; } samp_builder_t;                                FITS(samp_builder_t, NVNsamplerBuilder);
-typedef struct { uint32_t magic; samp_par p; } samp_t;                                        FITS(samp_t, NVNsampler);
+// Keep all sampler state after the opaque eight-byte header: engines hash the object after that header.
+// Odyssey 1.4.1 main b424be150a8e7d78701cbe7a439d9ebf: +0x980e40 hashes [sampler+8, sampler+0x60), length 0x58 (CRC16/A001).
+// Its cache allocates 0x68-byte entries (+0x980b34), copies 0x60 object bytes (+0x9810ac), then keeps refs/hash at +0x60/+0x62.
+// That observed 0x60-byte object storage contains our 0x30-byte samp_t; FITS also enforces the smaller public NVNsampler capacity.
+// Odyssey's sampler cache skipped min/mag/S/T at offsets 4..7; duplicates accumulated during extended play/scene loads, exhausted its pool and bound ID 0 (ground grids).
+typedef struct { uint64_t magic; samp_par p; } samp_t;                                        FITS(samp_t, NVNsampler);
+_Static_assert(offsetof(samp_t, p) == 8, "sampler state must participate in opaque-object hashes");
 
 // The per-stage shader keys are not kept in prog_t: the game's real NVNprogram may be smaller than the header's 0xC0 (growing prog_t corrupted the adjacent object in Mario); see prog_keys in hle_nvn.c
 typedef struct { uint32_t magic, nstage; NVNshaderData sd[6]; uint64_t serial; } prog_t;     FITS(prog_t, NVNprogram);   // serial: table key for the replay layer's resolved result
@@ -86,6 +92,10 @@ typedef struct {
     uint64_t used;                       // Bytes written since the game last added command memory, across recordings and host segments, including segment-switch JUMPs (returned by GetCommandMemoryUsed)
     int32_t tex_base, samp_base;         // Host-table bases of the texture / sampler pool this command buffer last bound (hle_nvn.c dpool_add; 0 = the first pool of its kind)
     size_t cmd_size;                     // GetCommandMemorySize: the byte count the game last passed to AddCommandMemory with a pool (records and host-lent segments leave it)
+    uint8_t *ctl_mem, *ctl_end;           // Guest control storage owns handles even when there is no GPU command pool
+    uint64_t ctl_used;                   // Bytes reserved for lifetime anchors in the last control grant
+    uintptr_t ctl_anchor;                // This recording's reserved control bytes; CPU replay records stay in host storage
+    uint32_t host_control, host_sz;       // Empty GPU command pool with control-owned host storage; initial segment size
 } cmd_t;                                                                                   FITS(cmd_t, NVNcommandBuffer);
 
 // ---------- State objects (defaults follow the NVN / GL defaults) ----------

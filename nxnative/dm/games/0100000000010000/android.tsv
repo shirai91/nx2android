@@ -28,14 +28,28 @@
 # saved list prewarms them: 0 pipelines on the replay thread, no drop (user-checked), and the Resume load 4.9 s -> 0.2 s.
 # Draws left out while a pipeline builds must reach only targets drawn every frame: looser rules lost the fog for a whole run in 2 of 4 clean starts (the wave
 # solver's linear targets, an image kept from the title and drawn once at the load); with the final rule 4 of 4 clean starts matched a run without background builds.
-# Performance check 2026-11-10, TB321FU (Snapdragon 8 Gen 3, Adreno 750, Turnip 26.99.99), update 1.4.1, Metro Kingdom beside the Odyssey:
-# split the large depth passes every 256 draws so their replay overlaps GPU work. Same-process reversals: default frame p50 21.8-22.1 ms,
-# depth splitting 16.55-16.70 ms; 3 of 2,098 frames held late in the repeat, with the same ~2,900 draws. Fixed-view screenshots checked;
-# Subsequent moving-camera and multi-kingdom gameplay were checked by the player without a reported regression on this setup.
-# This is a device-tested Turnip configuration; the stock driver on the TB322FC was not rechecked here. DM_VK_PASS_SPLIT=0 restores the unsplit path.
+# Isolated #317 rerun: base 00f41ec9 + these rows only (a9b017b tree), fresh host/modules/shaders, update 1.4.1, fixed 1600x900 in both modes.
+# TB321FU (Snapdragon 8 Gen 3, Adreno 750, Android 16), stock 512.762.40 and Turnip 26.99.99; the earlier mixed-build figures are discarded.
+# Same-process ON/OFF/ON: median of complete 300-frame-window p50s, milliseconds; F = frame, G = GPU submission timestamps (including feed gaps).
+# Each ON range spans the two ON trials. Normal governor changes are included; these are not equal-clock GPU-work measurements.
+# Scene / power / driver: F OFF -> ON; G OFF -> ON:
+# Metro / performance / Turnip: F 16.59 -> 16.60-16.64; G 14.53 -> 13.22-13.27.
+# Metro / performance / stock:  F 20.05 -> 18.24-18.97; G 17.42 -> 15.39-16.10.
+# Metro / power-saving / Turnip: F 48.69 -> 33.44-33.78; G 44.47 -> 29.79-30.13.
+# Metro / power-saving / stock:  F 61.88 -> 40.68-41.45; G 53.10 -> 33.29-33.89.
+# Cap / performance / Turnip: F 16.61 -> 16.60-16.62; G 10.09 -> 9.64-9.66.
+# Cap / performance / stock:  F 16.65 -> 16.67-16.68; G 13.18 -> 10.76-10.77.
+# Cap / power-saving / Turnip: F 35.48 -> 23.62-23.66; G 30.91 -> 20.22-20.28.
+# Cap / power-saving / stock:  F 48.13 -> 33.37-33.53; G 38.38 -> 25.04-25.05.
+# Reviewer TB322FC (Adreno 830), stock 512.800.72, Cap: 60 fps either way, GPU p50 7.8 -> 9.0 ms; gains are device/scene dependent.
+# The isolated rerun checked still views; its Metro stock-driver moving-camera LRZ recording remains pending. These are historical results, not a retest of this main merge.
+# DM_VK_PASS_SPLIT=256 splits passes without depth after 256 draws; DM_VK_PASS_SPLIT_DEPTH=1 includes depth passes.
+# DM_VK_PASS_SPLIT_DEPTH=0 keeps depth passes whole (Adreno LRZ A/B); DM_VK_PASS_SPLIT=0 disables both kinds of split.
 status	playable
 tested	v393216 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
 package	org.nx2a.supermarioodyssey
 orientation	landscape
+readme_image	docs/images/super-mario-odyssey.jpg
+readme_tag	v0.2.0
 env	DM_VK_PASS_SPLIT=256
 env	DM_VK_PASS_SPLIT_DEPTH=1

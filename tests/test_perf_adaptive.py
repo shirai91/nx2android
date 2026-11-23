@@ -4,6 +4,10 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import csrc  # noqa: E402
 
 
 SOURCE = Path(__file__).resolve().parents[1] / 'nxnative/dm/android/perf_android.c'
@@ -15,12 +19,13 @@ class AdaptiveFrameRate(unittest.TestCase):
         if not cc:
             self.skipTest('a C compiler is required')
         src = SOURCE.read_text(encoding='utf-8')
-        controller = src[src.index('static const int64_t STEPS[]'):src.index('// hle_nvn.c, the first acquire')]
+        controller = csrc.between(src, 'static const int64_t STEPS[]', '// hle_nvn.c, the first acquire')
         hint, shown = controller.index('// The frame\'s work to the CPU hint'), controller.index('// The frames\' time on screen')
         controller = controller[:hint] + controller[shown:]   # without hint_report: the Android hint API (H, g_hint), called only from dm_perf_frame
         harness = r'''
 #include <assert.h>
 #include <stdint.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -29,13 +34,14 @@ class AdaptiveFrameRate(unittest.TestCase):
 static int setenv(const char *k, const char *v, int o) { char s[256]; (void)o; snprintf(s, sizeof s, "%s=%s", k, v); return _putenv(s); }
 static int unsetenv(const char *k) { char s[256]; snprintf(s, sizeof s, "%s=", k); return _putenv(s); }
 #endif
-''' + controller + r'''
+''' + csrc.PACING_INCLUDE + controller + r'''
 static int64_t mixed_work(int i) { return i % 64 < 48 ? 15000000 : 27000000; }
 int main(int argc, char **argv) {
     (void)argv;
     int median = argc > 1;
     unsetenv("DM_FPS_PIN"); unsetenv("DM_ADAPTIVE_FPS");
     if (median) setenv("DM_ADAPT_UP_PCT", "50", 1); else unsetenv("DM_ADAPT_UP_PCT");
+    game_mode_sync();   // presenting-frame policy initialization
     assert(dm_present_period_adapt(16666667) == 16666667);
     g_step = 1; g_last_change = 1000000000ll; g_up_hold = 20000000000ll;
     g_nwork = 64; g_nshown = 64;
@@ -65,8 +71,8 @@ int main(int argc, char **argv) {
         with tempfile.TemporaryDirectory(prefix='nx2a_adaptive_') as tmp:
             c = Path(tmp) / 'check.c'
             exe = Path(tmp) / 'check'
-            c.write_text(harness, encoding='utf-8')
-            result = subprocess.run([cc, '-std=gnu11', '-Wall', '-Wextra', '-Werror', str(c), '-o', str(exe)], capture_output=True, text=True)
+            c.write_text(harness, encoding='utf-8'); csrc.pacing_files(tmp)   # perf_android.c asks dm_pacing.c
+            result = subprocess.run([cc, '-std=gnu11', '-Wall', '-Wextra', '-Werror', '-I' + tmp, str(c), '-o', str(exe)], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             for args in ([], ['median']):
                 with self.subTest(policy=args or 'default'):

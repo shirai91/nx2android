@@ -1,0 +1,7 @@
+# Unreal Engine's allocator on a host malloc zone (nxnative/dm/host/hle_uemalloc.c; dm/games/game.py puts these rows in the profile header as DM_GAME_UE_MALLOC).
+# Each row runs only on its main build. layout: UE5, UE4_27, UE5_6 (the vtable slots, hle_uemalloc.c k_lay); obj: the FMallocBinned object (main + obj, 0 = made by
+# GCreateMalloc, given at the gate); vtable: main + vtable; cut: the cut constructor call (a nop after the rewrite, its patches.py).
+#	build	what	layout	obj	vtable	cut
+# FINAL FANTASY RESONANCE 1.0.1, the Korean / Chinese release: the same Unreal Engine 5.6.1 build at the same offsets (its main+0x137e4 puts main+0x77c6210 in x0, the cut call there is the
+# FMallocBinned3 constructor, and the 32-slot vtable at main+0x67df800 is the same)
+b7f965b9d7227db8e29f04e84ea7331b	FINAL FANTASY RESONANCE 1.0.1 (Asian release)	UE5_6	0x77c6210	0x67df800	0x137f0

@@ -106,6 +106,25 @@ int main(int argc,char **argv) {
         assert(access(stale,F_OK)==-1); pcache_load(); assert(loaded==sizeof payload);
         return 0;
     }
+    if (mode==5) {
+        // a burst: 64 new pipelines start a save on a thread of its own; within the gap, 64 more do not; past it, they do
+        g_pcache_gap_ns=0; payload[63]=44; int prior=renames;   // (the save above was just now)
+        for (int i=0;i<PCACHE_BURST-1;i++) vk_pipeline_cache_changed();
+        usleep(100000); assert(renames==prior);
+        vk_pipeline_cache_changed();
+        for (int i=0;i<200 && renames==prior;i++) usleep(10000);
+        assert(renames==prior+1);
+        g_pcache_gap_ns=15000000000ll; payload[63]=45; for (int i=0;i<PCACHE_BURST;i++) vk_pipeline_cache_changed();
+        usleep(100000); assert(renames==prior+1);
+        g_pcache_gap_ns=0; payload[63]=46; vk_pipeline_cache_changed();   // (the 64 are there already: one more past the gap)
+        for (int i=0;i<200 && renames==prior+1;i++) usleep(10000);
+        assert(renames==prior+2);
+        pthread_mutex_lock(&g_pcache_io); pthread_mutex_unlock(&g_pcache_io);   // (the save thread done)
+        // the gap grows with the cache: one step up to 32 MB, one per 16 MB above, at most 8 steps
+        g_pcache_gap_ns=15000000000ll; size_t sizes[]={0,1u<<20,(32u<<20)-1,32u<<20,54u<<20,138u<<20,256u<<20}; int64_t steps[]={1,1,1,2,3,8,8};
+        for (int i=0;i<7;i++) { atomic_store(&g_pcache_size,sizes[i]); assert(pcache_gap()==steps[i]*15000000000ll); }
+        return 0;
+    }
     if (mode==4) {
         reject_empty=1; setenv("DM_VK_NOPCACHE","1",1); reds=0;
         pcache_load(); assert(!V.pcache && reds==1); unsetenv("DM_VK_NOPCACHE");
@@ -153,6 +172,7 @@ int main(int argc,char **argv) {
     def test_identical_loaded_and_saved_content_skips_writes(self): self.check_case(2)
     def test_next_save_reuses_interrupted_temporary_file(self): self.check_case(3)
     def test_empty_cache_creation_failure_is_logged(self): self.check_case(4)
+    def test_burst_of_new_pipelines_saves(self): self.check_case(5)
 
 
 if __name__ == '__main__': unittest.main()

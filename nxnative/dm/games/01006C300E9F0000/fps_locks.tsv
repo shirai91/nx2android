@@ -1,0 +1,9 @@
+# Engine frame limits kept in game memory that the host raises to the frame-rate target (nxnative/dm/host/hle_fpslock.c; dm/games/game.py puts these rows in the
+# profile header as DM_GAME_FPS_LOCKS). Each row runs only on its main build. ptr_off: a pointer at main + ptr_off to the object holding the field (0: the field is at
+# main + field); kind: FPS_F32, VSYNCS_I32, MS_F32, SEC_F32, FPS_I32; copies: consecutive copies of the value; ptr2: a second pointer at that object + ptr2 (0 = none).
+#	build	what	ptr_off	field	kind	copies	ptr2
+# DRAGON QUEST XI S 1.0.4: Unreal Engine 4.18's t.MaxFPS and nvn.SyncInterval (the Switch RHI's present interval), the same TAutoConsoleVariable layout. The game's config sets
+# FrameRateLimit=30 (DefaultGameUserSettings.ini) and nvn.SyncInterval=2 (JackGame/Config/Switch/SwitchEngine.ini). Found from the names' references (UTF-32, as the engine's TCHAR on
+# the Switch) in the static constructors: main+0x1e7f98 (TAutoConsoleVariable<float> constructor main+0x6ee0e0, AsVariableFloat stored at +0x10) and main+0x21c00c
+1719aabfa5eae42b132b65770b871288	Unreal t.MaxFPS	0x8501c48	0x0	FPS_F32	2	0
+1719aabfa5eae42b132b65770b871288	Unreal nvn.SyncInterval	0x85270c8	0x0	VSYNCS_I32	2	0

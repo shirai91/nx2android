@@ -143,6 +143,7 @@ static void *ctl_main(void *arg) {
                 if (!strcmp(line, "yields")) { void dm_yield_top(char *out, size_t n); char yt[256]; dm_yield_top(yt, sizeof yt); LOG("DM_CTL: top yielders since the last call: %s", yt); continue; }
                 if (!strncmp(line, "hlecount ", 9)) { void hlecount_dump(const char *path); hlecount_dump(line + 9); continue; }   // HLE call counts so far (DM_HLECOUNT)
                 if (!strcmp(line, "threads")) { void svc_thread_dump(void); LOG("DM_CTL: guest threads"); svc_thread_dump(); continue; }   // every guest thread: its wait and backtrace
+                if (!strncmp(line, "motion ", 7)) { void dm_ctl_motion(const char *args); dm_ctl_motion(line + 7); continue; }   // made-up device motion (the six-axis section below)
                 if (!strncmp(line, "texlist ", 8)) { void dm_gfx_texlist(int target); dm_gfx_texlist(atoi(line + 8)); continue; }
                 if (!strncmp(line, "texraw ", 7)) { void dm_gfx_texraw(uint64_t serial, const char *path); char *e2; uint64_t s = strtoull(line + 7, &e2, 10); while (*e2 == ' ') e2++; dm_gfx_texraw(s, e2); continue; }
                 if (!strncmp(line, "pokei ", 6)) { void dm_ctl_poke_i32(uint64_t a, int32_t v); char *e2; uint64_t a = strtoull(line + 6, &e2, 16); dm_ctl_poke_i32(a, (int32_t)strtol(e2, NULL, 0)); continue; }
@@ -196,11 +197,23 @@ static uint32_t unsupported_players(void) {
 }
 static int one_player(void) { return !(atomic_load(&g_ids_supported) & ((1u << DM_PLAYERS) - 2)); }
 static uint32_t merged_players(void) { return one_player() ? unsupported_players() : 0; }
+// The player the game sees player p + 1's controller as, by the npads it supports: 0 for player 1 itself and for every player of a one-player game (merged_players), p when
+// the game supports No p, -1 when it does not use that player (a fifth controller in a four-player game) or for no player (p < 0). Not from dm_pad_players' mask, so a controller
+// taking its player with the input being asked about counts already (Android's pad_mark_used runs before the front end reports the new player)
+int dm_player_seen_as(int p) {
+    if (p < 0) return -1;
+    if (p == 0 || one_player()) return 0;
+    return atomic_load(&g_ids_supported) & id_bit((uint32_t)p) ? p : -1;
+}
 static int player_of(uint32_t id) {   // the reported player on npad id; -1 when none
     if (id == connected_id()) return 0;
     return id > 0 && id < DM_PLAYERS && reported((int)id) ? (int)id : -1;
 }
-static uint32_t style_of(uint32_t id) { return player_of(id) < 0 ? 0 : id == NPAD_HANDHELD ? STYLE_HANDHELD : STYLE_FULLKEY; }
+// The style and the player of one npad come from one player_of: a controller that leaves (dm_pad_players, from the front end's thread) or an operation mode change between two
+// lookups made the second -1, and fill and vib_targets shifted 1u by it (clang's static analyzer, seedds/nxnative issue #424). Each Android controller is a player of its own
+// (front_android.c), so players come and go while the game reads them
+static uint32_t style_for_player(uint32_t id, int p) { return p < 0 ? 0 : id == NPAD_HANDHELD ? STYLE_HANDHELD : STYLE_FULLKEY; }
+static uint32_t style_of(uint32_t id) { return style_for_player(id, player_of(id)); }
 static int32_t ax(uint64_t v, int i) { return (int16_t)(v >> (16 * i)); }
 static int32_t pick(int32_t a, int32_t b) { return (a < 0 ? -a : a) >= (b < 0 ? -b : b) ? a : b; }   // whichever of two sources is deflected more
 
@@ -235,9 +248,10 @@ void dm_pad_players(uint32_t mask) {
 static void fill(NpadState *s, uint32_t id, uint32_t style) {
     memset(s, 0, sizeof *s);
     s->sampling = atomic_fetch_add(&g_sampling, 1) + 1;
-    if (!(style_of(id) & style)) return;   // no controller of this id / style: attributes = 0
+    int pl = player_of(id);
+    if (!(style_for_player(id, pl) & style)) return;   // no controller of this id / style: attributes = 0
     // Player 1: the keyboard / touch path, its controller path and those of the players merged into it; another player: its own controller path
-    int pl = player_of(id); uint32_t src = pl ? 1u << pl : 1u | merged_players();
+    uint32_t src = pl ? 1u << pl : 1u | merged_players();
     uint64_t b = 0; int32_t a[4] = {0};
     if (!pl) { b = atomic_load(&g_btn) | atomic_exchange(&g_latch, 0); uint64_t k = atomic_load(&g_axes); for (int i = 0; i < 4; i++) a[i] = ax(k, i); }
     for (int p = 0; p < DM_PLAYERS; p++) if (src >> p & 1) {
@@ -325,16 +339,32 @@ static int shaking(uint64_t t) { return t >= atomic_load(&g_shake_t0) && t < ato
 enum { MO_RING = 16 };
 typedef struct { int64_t samp; float acc[3], gyro[3], angle[3], dir[9]; } motion_sample;
 static pthread_mutex_t g_mo_mu = PTHREAD_MUTEX_INITIALIZER;
-static motion_sample g_mo[MO_RING]; static int g_mo_n; static int64_t g_mo_t; static double g_mo_q[4] = {1, 0, 0, 0}, g_mo_ang[3];   // under g_mo_mu
+static motion_sample g_mo[MO_RING]; static int g_mo_n, g_mo_fuse; static int64_t g_mo_t; static float g_mo_last_acc[3]; static double g_mo_q[4] = {1, 0, 0, 0}, g_mo_ang[3];   // under g_mo_mu (g_mo_fuse: samples fused)
 static _Atomic int g_mo_on; static _Atomic uint64_t g_mo_moved;   // fed at least once; the guest time the device last turned faster than MO_REST_REV
 #define MO_REST_REV 0.01   // revolutions / s (3.6 degrees / s): slower is at rest (IsSixAxisSensorAtRest)
-void dm_motion_set(const float acc[3], const float gyro[3], int64_t t_ns) {
+static _Atomic int g_mo_inject;   // DM_CTL "motion" lines feed made-up motion: the front end's samples are left out until "motion release"
+static void mo_set(const float acc[3], const float gyro[3], int64_t t_ns);
+void dm_motion_set(const float acc[3], const float gyro[3], int64_t t_ns) { if (!atomic_load(&g_mo_inject)) mo_set(acc, gyro, t_ns); }
+static void mo_set(const float acc[3], const float gyro[3], int64_t t_ns) {
     pthread_mutex_lock(&g_mo_mu);
     double dt = g_mo_n && t_ns > g_mo_t ? (double)(t_ns - g_mo_t) / 1e9 : 0; if (dt > 0.05) dt = 0.05;   // a gap (the app in the background) is not one long turn
-    g_mo_t = t_ns;
+    g_mo_t = t_ns; memcpy(g_mo_last_acc, acc, sizeof g_mo_last_acc);
     for (int i = 0; i < 3; i++) g_mo_ang[i] += gyro[i] * dt;
     // q (controller to world) turns by the body-frame angular velocity w (radians): q' = q (x) (0, w) / 2, then normalized
     double w[3] = {2 * M_PI * gyro[0], 2 * M_PI * gyro[1], 2 * M_PI * gyro[2]}, *q = g_mo_q, h = dt / 2;
+    // Sensor fusion, as the Switch's own: the gyroscope alone drifted, and Breath of the Wild aims its Sheikah Slate viewfinder by the direction, so a tilt up
+    // moved the view diagonally and a turn barely moved it once the direction had wandered from the device's real attitude (on an AYN Thor, after a while
+    // of play; a made-up 90-degree roll with gravity unchanged did the same). Gravity pulls it back (Mahony's complementary filter): the measured down (the
+    // acceleration, in G, gravity's direction in the controller's frame) against q's down (R^T (0, 0, -1)), their cross product added to w as a rate. Only
+    // when the acceleration is near 1 G (a hand's jerk is not gravity); the first 0.5 s at a high gain, so the direction starts at the device's tilt rather
+    // than lying flat. The yaw has no reference, as on the console. A sample whose time did not advance (dt 0, the first one too) turns nothing
+    double am = sqrt((double)acc[0] * acc[0] + (double)acc[1] * acc[1] + (double)acc[2] * acc[2]);
+    if (am > 0.75 && am < 1.25) {
+        double d[3] = {acc[0] / am, acc[1] / am, acc[2] / am}, a = q[0], b = q[1], c = q[2], e = q[3];
+        double p[3] = {-2 * (b * e - a * c), -2 * (c * e + a * b), -(1 - 2 * (b * b + c * c))};   // q's down in the controller's frame
+        double k = g_mo_fuse < 100 ? 10.0 : 1.0; g_mo_fuse++;   // per second
+        w[0] += k * (d[1] * p[2] - d[2] * p[1]); w[1] += k * (d[2] * p[0] - d[0] * p[2]); w[2] += k * (d[0] * p[1] - d[1] * p[0]);
+    }
     double n0 = q[0] - h * (q[1] * w[0] + q[2] * w[1] + q[3] * w[2]), n1 = q[1] + h * (q[0] * w[0] + q[2] * w[2] - q[3] * w[1]),
            n2 = q[2] + h * (q[0] * w[1] + q[3] * w[0] - q[1] * w[2]), n3 = q[3] + h * (q[0] * w[2] + q[1] * w[1] - q[2] * w[0]), m = sqrt(n0 * n0 + n1 * n1 + n2 * n2 + n3 * n3);
     q[0] = n0 / m; q[1] = n1 / m; q[2] = n2 / m; q[3] = n3 / m;
@@ -401,21 +431,47 @@ HLE_FORCE("_ZN2nn3hid23GetSixAxisSensorHandlesEPNS0_19SixAxisSensorHandleEiRKjNS
 HLE_FORCE("_ZN2nn3hid18StartSixAxisSensorERKNS0_19SixAxisSensorHandleE", "six-axis sensor; always sampling on the host", void, h_hid_SixStart, const uint32_t *h) { (void)h; }
 HLE_FORCE("_ZN2nn3hid22GetSixAxisSensorStatesEPNS0_18SixAxisSensorStateEiRKNS0_19SixAxisSensorHandleE", "six-axis sensor states: every requested entry, newest first",
           int, h_hid_SixStates, SixAxisState *out, int n, const uint32_t *h) { return six_states(out, n, *h); }
+// DM_CTL "motion <gx> <gy> <gz> [<ax> <ay> <az> [<seconds>]]": that angular velocity (revolutions / s, the controller's frame) from that acceleration (G; default the last one
+// fed, else 0 0 -1, lying flat) at 200 Hz for the time (default 1 s), as if the device moved so, then held in that pose: the device's own motion stays out until
+// "motion release" (a series of turns goes on from where the last left it). "motion reset" puts the integrated orientation back at rest. For finding which axes a game turns its
+// camera by (Breath of the Wild's Sheikah Slate viewfinder) without moving the device
+static void mo_ctl(const char *args) {
+    if (!strncmp(args, "release", 7)) { atomic_store(&g_mo_inject, 0); LOG("DM_CTL: motion released: the device's own motion again"); return; }
+    if (!strncmp(args, "reset", 5)) { pthread_mutex_lock(&g_mo_mu); g_mo_q[0] = 1; g_mo_q[1] = g_mo_q[2] = g_mo_q[3] = 0; g_mo_ang[0] = g_mo_ang[1] = g_mo_ang[2] = 0; g_mo_fuse = 0; pthread_mutex_unlock(&g_mo_mu); LOG("DM_CTL: motion reset"); return; }
+    float g[3] = {0}, a[3] = {0, 0, -1}, s = 1;
+    int k = sscanf(args, "%f %f %f %f %f %f %f", &g[0], &g[1], &g[2], &a[0], &a[1], &a[2], &s);
+    if (k < 3) { LOG("[RED] DM_CTL motion wants gx gy gz [ax ay az [seconds]] or reset"); return; }
+    if (k < 6) { pthread_mutex_lock(&g_mo_mu); if (g_mo_n) memcpy(a, g_mo_last_acc, sizeof a); else { a[0] = 0; a[1] = 0; a[2] = -1; } pthread_mutex_unlock(&g_mo_mu); }
+    if (!(a[0] * a[0] + a[1] * a[1] + a[2] * a[2] > 0.01f)) { a[0] = 0; a[1] = 0; a[2] = -1; }   // no gravity (or not a number): lying flat (a turn of a zero vector made NaNs)
+    LOG("DM_CTL: motion gyro %+.3f %+.3f %+.3f rev/s, acceleration %+.2f %+.2f %+.2f G, %.2f s", g[0], g[1], g[2], a[0], a[1], a[2], s);
+    atomic_store(&g_mo_inject, 1);
+    // gravity turns with the controller, as in a real turn (a fixed world vector seen from the turning frame: dv/dt = v x w); held fixed, the fusion rightly pulled
+    // against every tilt and a pitch up and back did not come back
+    struct timespec t; for (int i = 0, n = (int)(s * 200); i < n; i++) { clock_gettime(CLOCK_MONOTONIC, &t); mo_set(a, g, (int64_t)t.tv_sec * 1000000000ll + t.tv_nsec);
+        double w0 = 2 * M_PI * g[0] * 0.005, w1 = 2 * M_PI * g[1] * 0.005, w2 = 2 * M_PI * g[2] * 0.005, m0 = sqrt((double)a[0] * a[0] + (double)a[1] * a[1] + (double)a[2] * a[2]);
+        float n0 = (float)(a[0] + (a[1] * w2 - a[2] * w1)), n1 = (float)(a[1] + (a[2] * w0 - a[0] * w2)), n2 = (float)(a[2] + (a[0] * w1 - a[1] * w0));
+        double m1 = sqrt((double)n0 * n0 + (double)n1 * n1 + (double)n2 * n2); a[0] = (float)(n0 * m0 / m1); a[1] = (float)(n1 * m0 / m1); a[2] = (float)(n2 * m0 / m1);
+        usleep(5000); }
+    float z[3] = {0}; clock_gettime(CLOCK_MONOTONIC, &t); mo_set(a, z, (int64_t)t.tv_sec * 1000000000ll + t.tv_nsec);   // at rest at the end, in the same pose
+    LOG("DM_CTL: motion done, acceleration now %+.2f %+.2f %+.2f G (held until \"motion release\")", a[0], a[1], a[2]);
+}
+void dm_ctl_motion(const char *args) { mo_ctl(args); }   // (the DM_CTL reader, above)
 // Vibration handles: byte 0 = SDK style index (FullKey 3, Handheld 4), byte 1 = npad id, byte 2 = motor.
 // See libnx hid.c _hidGetVibrationDeviceHandles. Only the styles this host connects are exposed.
 static uint32_t vib_targets(uint32_t h) {
     unsigned type = h & 0xff, id = h >> 8 & 0xff, motor = h >> 16 & 0xff;
     if (h >> 24 || motor > 1 || (type != 3 && type != 4)) return 0;
-    if (style_of(id) != (1u << (type - 3))) return 0;
     int p = player_of(id);
+    if (style_for_player(id, p) != (1u << (type - 3))) return 0;
     return dm_haptics_available() & (p == 0 ? 1u | merged_players() : 1u << p);
 }
 static void vib_send(const uint32_t *handles, const dm_vibration *values, int n) {
     if (!handles || !values || n <= 0) return;
     dm_vibration_update updates[DM_PLAYERS * 2];
-    uint32_t used = 0;
+    uint32_t used = 0; int unrouted = 0;
     for (int i = 0; i < n; i++) {
         uint32_t targets = vib_targets(handles[i]);
+        if (!targets) unrouted++;
         for (int p = 0; p < DM_PLAYERS; p++) if (targets >> p & 1) {
             int m = handles[i] >> 16 & 1, k = p * 2 + m;
             updates[k] = (dm_vibration_update){p, m, values[i]}; used |= 1u << k;
@@ -423,16 +479,33 @@ static void vib_send(const uint32_t *handles, const dm_vibration *values, int n)
     }
     int count = 0;
     for (int k = 0; k < DM_PLAYERS * 2; k++) if (used >> k & 1) updates[count++] = updates[k];
+    if (getenv("DM_RUMBLE_LOG")) {   // Count input values before deduplicating motors, including partially routed batches.
+        static pthread_mutex_t log_lock = PTHREAD_MUTEX_INITIALIZER;
+        static uint64_t sends, dropped, t0; static float peak; struct timespec ts;
+        pthread_mutex_lock(&log_lock);   // SDK sends can arrive from several game threads.
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        uint64_t now = ts.tv_sec; sends += n; dropped += unrouted;
+        for (int i = 0; i < n; i++) peak = fmaxf(peak, fmaxf(values[i].amplitude_low, values[i].amplitude_high));
+        if (now != t0) { LOG("rumble: %llu values sent, %llu with no output, peak amplitude %.2f, handle %#x", sends, dropped, peak, handles[0]); sends = dropped = 0; peak = 0; t0 = now; }
+        pthread_mutex_unlock(&log_lock);
+    }
     dm_haptics_send(updates, count);
 }
 HLE_FORCE("_ZN2nn3hid20IsVibrationPermittedEv", "vibration permission: enabled and an output available", unsigned, h_hid_VibPermit, void) { return dm_haptics_available() != 0; }
+// Games can cache handles once at startup, before the front end routes the pad's haptics (GameController on the Mac; seedds/nxnative PR #246: Unicorn Overlord kept an empty
+// answer and sent every value to handle 0). The Android front end routes only player 1's rumble (haptics_android.c), so players 2 and up (each controller a player of its own, front_android.c) never had handles there.
+// On Horizon handles are computed from npad id and style (libnx _hidGetVibrationDeviceHandles); vib_send checks for an output at each send. DM_RUMBLE_LOG=1 logs the handle
+// requests and, once a second, the values sent, those with no routed output and the peak amplitude.
 HLE_FORCE("_ZN2nn3hid25GetVibrationDeviceHandlesEPNS0_21VibrationDeviceHandleEiRKjNS_4util10BitFlagSetILi32ENS0_12NpadStyleTagEEE", "vibration devices of the connected controller",
           int, h_hid_VibHandles, uint32_t *h, int n, const uint32_t *id, uint32_t style) {
-    if (!h || !id || n <= 0 || !(style & style_of(*id))) return 0;
+    if (!h || !id || n <= 0 || !(style & style_of(*id)) || !dm_haptics_enabled()) {
+        if (getenv("DM_RUMBLE_LOG") && id) LOG("rumble: game asked for vibration handles of npad %u style %#x: none (connected style %#x, rumble %s)", *id, style, style_of(*id), dm_haptics_enabled() ? "on" : "off");
+        return 0;
+    }
     uint32_t base = (*id << 8) | (*id == NPAD_HANDHELD ? 4u : 3u);
-    if (!vib_targets(base)) return 0;
     int count = n < 2 ? n : 2;
     for (int i = 0; i < count; i++) h[i] = base | (uint32_t)i << 16;
+    if (getenv("DM_RUMBLE_LOG")) LOG("rumble: game asked for vibration handles of npad %u style %#x: %d, first %#x", *id, style, count, h[0]);
     return count;
 }
 HLE_FORCE("_ZN2nn3hid25InitializeVibrationDeviceERKNS0_21VibrationDeviceHandleE", "vibration: initialize one channel", void, h_hid_InitVib, const uint32_t *h) {

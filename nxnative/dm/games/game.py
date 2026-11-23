@@ -84,6 +84,46 @@ def by_title(tid):
     return next((g for g in all_games() if g.title_id == tid), None)
 
 
+
+# Per-build rows a profile carries for the host (written into its header only when the file exists, so other profiles' headers do not change):
+#   fps_locks.tsv  engine frame limits in game memory (hle_fpslock.c): build, what, ptr_off, field, kind, copies, ptr2
+#   ue_malloc.tsv  Unreal Engine's allocator on a host zone (hle_uemalloc.c): build, what, layout, obj, vtable, cut
+BUILD_TABLES = {'fps_locks.tsv': ('DM_GAME_FPS_LOCKS', ('build', 'what', 'ptr_off', 'field', 'kind', 'copies', 'ptr2'), ('FPS_F32', 'VSYNCS_I32', 'MS_F32', 'SEC_F32', 'FPS_I32')),
+                'ue_malloc.tsv': ('DM_GAME_UE_MALLOC', ('build', 'what', 'layout', 'obj', 'vtable', 'cut'), ('UE5', 'UE4_27', 'UE5_6'))}
+
+
+def build_table(g, fname):
+    """[(row fields)] of a profile's per-build table (BUILD_TABLES), checked; [] without the file"""
+    path = g.dir / fname
+    if not path.is_file(): return []
+    macro, cols, kinds = BUILD_TABLES[fname]; rows = []
+    for n, line in enumerate(path.read_text(encoding='utf-8').splitlines(), 1):
+        if not line.strip() or line.startswith('#'): continue
+        c = line.split('\t')
+        if len(c) != len(cols): raise SystemExit(f'{path}:{n}: {len(c)} columns, want {len(cols)} ({", ".join(cols)})')
+        if not re.fullmatch(r'[0-9a-f]{32}', c[0]): raise SystemExit(f'{path}:{n}: build {c[0]!r} is not a 32-digit main build ID')
+        kind = c[4] if fname == 'fps_locks.tsv' else c[2]
+        if kind not in kinds: raise SystemExit(f'{path}:{n}: {kind!r} is not one of {", ".join(kinds)}')
+        for i, v in enumerate(c):
+            if i in (0, 1) or v == kind: continue
+            try: int(v, 0)
+            except ValueError: raise SystemExit(f'{path}:{n}: {cols[i]} {v!r} is not a number') from None
+        rows.append(c)
+    return rows
+
+
+def build_table_defines(g, q):
+    out = []
+    for fname, (macro, cols, kinds) in BUILD_TABLES.items():
+        rows = build_table(g, fname)
+        if not rows: continue
+        items = []
+        for c in rows:
+            vals = [q(c[0]), q(c[1])] + [v if v in kinds else f'{int(v, 0):#x}' for v in c[2:]]
+            items.append('{ ' + ', '.join(vals) + ' }')
+        out += [f'#define {macro} ' + ', '.join(items), f'#define {macro}_N {len(rows)}']
+    return out
+
 def header(g):
     """the host's game_profile.h: the profile constants the host uses, as macros"""
     q = lambda s: '"' + s.replace('\\', '\\\\').replace('"', '\\"') + '"'
@@ -91,6 +131,9 @@ def header(g):
     vers = ', '.join('{' + q(b['main']) + ', ' + q(b['display']) + '}' for b in g.builds().values() if 'main' in b)
     pi = g.get('present_interval', 'game')   # present interval: game = as the game sets it (as on the Switch), display = one frame per display tick
     if pi not in ('game', 'display'): sys.exit(f'{g.id}: present_interval must be game or display: {pi}')
+    # a new define that is off by default must be appended to ADDED_DEFINES in porter/host.py, or `porter host` refuses every port made before it
+    fc = g.get('fps_ceiling', '0')   # Android: the adaptive frame rate never above 30 fps, for a game that presents at 60 and steps by the time that passed (android/gfx_vk_present.c dm_fps_ceiling): 0 / 30
+    if fc not in ('0', '30'): sys.exit(f'{g.id}: fps_ceiling must be 0 or 30: {fc}')
     ft = g.get('fps_target', '0')   # frame rate cap of the rewriter's frame step (FRAME_STEP in the profile's patches.py: Tears of the Kingdom 1.4.3, Breath of the Wild 1.9.0) or of the engine's own frame limit (hle_fpslock.c): 0 = the game's own step, 30 / 60
     if ft not in ('0', '30', '60'): sys.exit(f'{g.id}: fps_target must be 0, 30 or 60: {ft}')
     fh = g.get('fps_hold', 'on')   # whether the frame step may hold a frame longer than the cap's vsyncs when frames come late (hle_nvn.c fstep_tick): on / off
@@ -113,6 +156,8 @@ def header(g):
     if tfu not in ('on', 'off'): sys.exit(f'{g.id}: tex_flush_upload must be on or off: {tfu}')
     tdu = g.get('tex_dirty_upload', 'off')   # with tex_flush_upload: a registered texture the CPU writes after init without any flush is uploaded too (dirty pages, hle_nvn.c nvn_ft_written): on / off
     if tdu not in ('on', 'off') or (tdu == 'on' and tfu != 'on'): sys.exit(f'{g.id}: tex_dirty_upload must be on or off, and needs tex_flush_upload on: {tdu}')
+    tcu = g.get('tex_cpu_uncached', 'off')   # the CPU's data in CPU-uncached pools: block-compressed textures with the COMPRESSIBLE flag at first use, data at creation (gfx_vk_tex.c, hle_nvn.c): on / off
+    if tcu not in ('on', 'off'): sys.exit(f'{g.id}: tex_cpu_uncached must be on or off: {tcu}')
     tds = g.get('tex_dyn_slots', 'off')   # shaders whose texture handle the translator could not trace to one slot: slot indices in c2, the bound slots in the fallback arrays (nvn_mtl.m): on / off
     if tds not in ('on', 'off'): sys.exit(f'{g.id}: tex_dyn_slots must be on or off: {tds}')
     ok = g.get('order_keep', 'off')   # Android: NVN barriers of only ORDER_PRIMITIVES / ORDER_FRAGMENTS(_TILED) keep the pass open unless the next draw needs them (android/gfx_vk_exec.c g_order_keep): on / off
@@ -121,6 +166,8 @@ def header(g):
     if vcr not in ('on', 'off'): sys.exit(f'{g.id}: vconv_range must be on or off: {vcr}')
     svs = g.get('small_vpool_sparse', 'off')   # virtual pools no larger than the application pool get their own range and may become sparse at the first mapping (hle_nvn.c vpool_reserve): on / off
     if svs not in ('on', 'off'): sys.exit(f'{g.id}: small_vpool_sparse must be on or off: {svs}')
+    slb = g.get('sock_loopback', 'off')   # offline sockets on the loopback interface, as Horizon's bsd service with no network (hle_socket.c): on / off
+    if slb not in ('on', 'off'): sys.exit(f'{g.id}: sock_loopback must be on or off: {slb}')
     mml = g.get('mem_map_limit', 'off')   # MapPhysicalMemory refused beyond the application pool, as on Horizon (hle_svc.c): on / off
     if mml not in ('on', 'off'): sys.exit(f'{g.id}: mem_map_limit must be on or off: {mml}')
     gts = g.get('gpu_timestamps', 'submission')   # counter timestamps (nvn_mtl.m rep_ticks): submission = one time per submission, segment = the GPU start / end of the segment holding the report
@@ -150,12 +197,14 @@ def header(g):
          f'#define DM_GAME_ARGS {q(g.get("game_args", ""))}',   # game arguments when the command line gives none (main.c; Octopath Traveler 0: Unreal's -SwitchVirtualAddressSpaceSize=)
          f'#define DM_GAME_ENV {q(g.get("game_env", ""))}',   # KEY=VALUE pairs getenv answers (hle_os.c; Absolum: .NET's DOTNET_GCRegionRange)
          f'#define DM_GAME_MEM_MAP_LIMIT {int(mml == "on")}',
+         f'#define DM_GAME_SOCK_LOOPBACK {int(slb == "on")}',
          f'#define DM_GAME_SMALL_VPOOL_SPARSE {int(svs == "on")}',
          f'#define DM_GAME_DISPLAY_VERSIONS {vers}',
          f'#define DM_GAME_PRESENT_DISPLAY {int(pi == "display")}',
          f'#define DM_GAME_CORE_PREEMPT {int(cp == "on")}',
          f'#define DM_GAME_ALLOC_BIG_ALIGN {int(aba == "on")}',
          f'#define DM_GAME_FPS_TARGET {int(ft)}',
+         f'#define DM_GAME_FPS_CEILING {int(fc)}',
          f'#define DM_GAME_FPS_HOLD {int(fh == "on")}',
          *([f'#define DM_GAME_SHARED_FONT_TTF {int(sf == "ttf")}'] if g.get('shared_font', '') else []),   # without the key the host decides by the SDK version (hle_sdk16.c)
          f'#define DM_GAME_PAD_LAYOUT {("simple", "full", "touch").index(pl)}',
@@ -167,9 +216,11 @@ def header(g):
          f'#define DM_GAME_RENDER_COND {int(rcd == "on")}',
          f'#define DM_GAME_TEX_DIRTY_UPLOAD {int(tdu == "on")}',
          f'#define DM_GAME_TEX_DYN_SLOTS {int(tds == "on")}',
+         f'#define DM_GAME_TEX_CPU_UNCACHED {int(tcu == "on")}',
          f'#define DM_GAME_GPU_TS_SEGMENT {int(gts == "segment")}',
          f'#define DM_GAME_VCONV_RANGE {int(vcr == "on")}',
          f'#define DM_GAME_ORDER_KEEP {int(ok == "on")}',
+         *build_table_defines(g, q),   # fps_locks.tsv, ue_malloc.tsv: only when the profile has one
          *([f'#define DM_GAME_NVN_API_MAJOR {api.split(".")[0]}', f'#define DM_GAME_NVN_API_MINOR {api.split(".")[1]}'] if g.get('device_api', '') else []),   # without the key: by the SDK version (hle_nvn.c nvn_api)
          '']
     return '\n'.join(L)
@@ -181,8 +232,9 @@ if __name__ == '__main__':
         for g in all_games(): print(f'{g.id}\t{g.title_id:016X}\t{g.get("name", "")}')
     elif len(a) == 3 and a[0] == 'header':
         out, text = Path(a[2]), header(load(a[1])); out.parent.mkdir(parents=True, exist_ok=True)
-        if not (out.exists() and out.read_text() == text):   # written only when it changes: make runs this every time (the profile folder can change under the same GAME), and an unchanged header must not rebuild the host
-            tmp = out.with_name(out.name + '.tmp'); tmp.write_text(text); tmp.replace(out)
+        data = text.encode()   # LF bytes on every OS: porter port records the sha256 of this file (nx2a-data.json profile_h) and porter host compares it with a header made again, so text mode's CRLF on Windows must not get in
+        if not (out.exists() and out.read_bytes() == data):   # written only when it changes: make runs this every time (the profile folder can change under the same GAME), and an unchanged header must not rebuild the host
+            tmp = out.with_name(out.name + '.tmp'); tmp.write_bytes(data); tmp.replace(out)
     elif len(a) == 2 and a[0] == 'dir':
         print(load(a[1]).dir)
     elif len(a) == 3 and a[0] == 'link':   # link → the profile folder (replaced when it points elsewhere)

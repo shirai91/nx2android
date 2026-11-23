@@ -16,6 +16,8 @@ On arm64 Linux the NDK has x86_64 host tools only. `dm/android/build.py` uses `<
 - link `ld.lld` and the `llvm-*` tools to the same LLVM;
 - for the backend's own shaders, link `<NDK>/shader-tools/linux-aarch64/glslc` to a native `glslc` (Arch: `shaderc`, `/usr/bin/glslc`).
 
+On Windows, the Android host linker reads its object list from a UTF-8 response file (`dmhost.rsp` or `libdmhost.rsp` in the build output). This avoids `WinError 206` in long checkout paths. Clang is invoked with `--rsp-quoting=windows` so backslashes and spaces in those paths survive response-file parsing.
+
 ## Port a game
 
 The app:
@@ -26,9 +28,9 @@ python -m gui
 
 Check the **Setup** tab, choose the game's folder (the base game NSP, XCI, NSZ or XCZ, its update and DLC) on the **Port** tab, and click **Port**.
 
-Keep the base game, update and DLC in separate files. When a dump's tickets or readable
-content-meta headers identify several titles in one file, porter warns which title it selects
-and which embedded titles it will not select as updates or DLC. It does not split merged dumps.
+The base game, its update and the DLC may be separate files, or one merged dump (a rebuilt card, "(1G+1U)"): porter reads every title a dump carries from its tickets and
+content-meta headers and takes the update and the DLC from the same file (nx_extract picks the NCAs from the dump's content metas). As with a separate update file, the update
+needs a [v<N>] tag in the file name; without one it is taken for the newest version the profile registers, and the extracted build IDs are checked as always.
 
 Or the command line:
 
@@ -36,6 +38,12 @@ Or the command line:
 python -m porter doctor
 python -m porter port "D:\Games\NEO" -k "D:\keys\prod.keys" --install
 ```
+
+Add `--jobs=1` to rewrite the game's modules one at a time. A positive `--jobs N`
+also controls the parallel shader and host build work; the default is the CPU
+count (eight if unavailable). Serial rewriting reduces concurrent work but does
+not cap a single module's memory use. Changing `--jobs` preserves reusable
+rewrite outputs, so a completed rewrite need not run again for a different limit.
 
 The APK (`NeoTheWorldEndsWithYou.apk`) and the data pack (`NeoTheWorldEndsWithYou-data/`) appear in the game folder (`-o` picks another). `python -m porter install <App>-data` installs a port made earlier; with `--romfs-at <folder on the device>` the app reads the game's RomFS from a folder already there (an emulator's dump of the same version) instead of a copy in its files folder ([ARCHITECTURE.md](ARCHITECTURE.md#the-port), A RomFS already on the device). The first port takes a while (extraction, rewriting the game's code, translating its shaders); later ones reuse what has not changed. `python -m porter -h` lists the commands.
 
@@ -70,7 +78,7 @@ python -m porter driver --system --package org.nx2a.supermario3dworld
 python -m porter host --package org.nx2a.supermario3dworld
 ```
 
-It refuses when the game's code on the device was rewritten with other rewriter sources than this checkout's; then port the game again from its files. The data pack is not changed. How it works: [ARCHITECTURE.md](ARCHITECTURE.md#the-port).
+It refuses when the game's code on the device was rewritten with other rewriter sources than this checkout's; then port the game again from its files. It also refuses a host built from another profile header than this checkout's (another layout, `--alias-headroom` or a derived profile); a header that differs only by defines added later that are off (`ADDED_DEFINES` in `porter/host.py`) is accepted. The data pack is not changed. How it works: [ARCHITECTURE.md](ARCHITECTURE.md#the-port).
 
 ## Layout
 
@@ -84,7 +92,7 @@ It refuses when the game's code on the device was rewritten with other rewriter 
 
 ## Adding a game
 
-Each game is a profile in `nxnative/dm/games/<title ID>/` with an `android.tsv`: [ARCHITECTURE.md](ARCHITECTURE.md#adding-a-game). A finished port updates, in the profile's commit, the games table in the [README](../README.md#games) (its row, with a gameplay frame captured on the device in `docs/images/` and the tag of the nx2android version it was tested on) and [PORT_CHECKLIST.md](PORT_CHECKLIST.md).
+Each game is a profile in `nxnative/dm/games/<title ID>/` with an `android.tsv`: [ARCHITECTURE.md](ARCHITECTURE.md#adding-a-game). A finished port adds, in the profile's commit, the game's own page `nxnative/dm/games/<title ID>/README.md` ([GAME_README_TEMPLATE.md](GAME_README_TEMPLATE.md): game version, frame rate, tested devices, options, quirks), its place in the [README](../README.md#games)'s games list (the profile's `readme_image` and `readme_tag` rows: a gameplay frame captured on the device in `docs/images/` and the tag of the nx2android version it was tested on) and [PORT_CHECKLIST.md](PORT_CHECKLIST.md); `python docs/gen_tables.py` writes the list, the page's facts block, the checklist's ticks and its count from the profiles (and starts the page from the template), so pull requests do not edit the same lines. The porter's options: a field of `porter/pipeline.py` `Options` and a `porter port` argument of the same name (`Options.from_args`).
 
 ## Releases and version numbers
 
@@ -100,7 +108,7 @@ python packaging/build_bundle.py
 
 On Windows, `build_bootloader.py` compiles PyInstaller's launcher on this PC (it needs the Microsoft C++ Build Tools), because a few antivirus engines flag the prebuilt one every PyInstaller app shares. Run it again after installing or upgrading PyInstaller.
 
-`dist/nx2android/` and `dist/nx2android-<version>-<os>-<cpu>.zip` (`windows-x64`, `macos-arm64`, `linux-x64`, `linux-arm64`): the app, the committed `nxnative/` and the install guide; no toolchains, keys or game files. Publishing a release builds the macOS, Windows and Linux zips on GitHub's runners and attaches them (`.github/workflows/release-macos.yml`, `release-windows.yml`, `release-linux.yml`, which builds both Linux cpus on Ubuntu 24.04 (`ubuntu-latest` for x64, so the system libraries the bundle carries are never older than glibc 2.39); `--clobber` replaces a zip of the same name, so do not upload them by hand). Run either workflow by hand (Actions → Run workflow) for a test build of a branch, kept as the run's artifact.
+`dist/nx2android/` and `dist/nx2android-<version>-<os>-<cpu>.zip` (`windows-x64`, `macos-arm64`, `linux-x64`, `linux-arm64`): the app, the committed `nxnative/` and the install guide; no toolchains, keys or game files. Publishing a release builds the macOS, Windows and Linux zips on GitHub's runners and attaches them (`.github/workflows/release-macos.yml`, `release-windows.yml`, `release-linux.yml`, which builds both Linux cpus on Ubuntu 24.04 (`ubuntu-latest` for x64, so the system libraries the bundle carries are never older than glibc 2.39); `--clobber` replaces a zip of the same name, so do not upload them by hand). The Linux workflow also packs each Linux bundle as `nx2android-<version>-linux-<cpu>.AppImage` (`packaging/build_appimage.py`, on Linux after `build_bundle.py`; it downloads appimagetool and the AppImage runtime at pinned versions) and starts it once as a check. An AppImage is a read-only mount at a new path each launch, so the app copies `nxnative/` to the user folder once for each AppImage and runs the engine from there (`porter/paths.py` `engine_copy`). Run either workflow by hand (Actions → Run workflow) for a test build of a branch, kept as the run's artifact.
 
 ## Android motion
 
@@ -121,12 +129,66 @@ axis preservation, not game recognition or device behavior.
 
 ## Tests
 
+`test_avc_color` exercises the Android AVC format reader, SPS declarations,
+picture queue and output conversion on the host. Synthetic SPS cases cover
+untagged decoder defaults, independently declared range, parameter changes,
+byte-prefix truncation, emulation prevention and optional SPS/VUI syntax.
+`probes/avc_color.md` describes the decoder probes and remaining RGBA device check.
+
 ```
 python -m unittest discover tests
 ```
 
+**Every push and pull request** runs them on GitHub (`.github/workflows/tests.yml`): Linux with gcc and with clang, macOS, and Windows with MinGW gcc, plus an NDK compile of the Android host (debug and release). A Windows PC without a POSIX C compiler skips about 150 C harness tests, so a red Tests run is the first place such a break shows: wait for it before you merge into main. The release workflows run the tests again before they build the bundles.
+
+**Shader translator changes**: the CI runs the synthetic shader tests (`tests/test_spirv_per_vertex.py`); game shaders are game data and stay on your PC. `python devtools/shader_corpus.py record` (on main) and `check` (on the change) translate the split shaders of every port in `.gamedump` with the checkout's translator and list, game by game, the shaders whose SPIR-V the change touches (`--sample N` for a quick look: 300 shaders take seconds). The translator's key ignores comments and whitespace (`porter/codekey.py`), so a comment-only change keeps every game's shader bundle.
+
+**C harnesses** compile code cut out of core sources with their own stubs. Cut with `tests/csrc.py` (`csrc.function(src, 'static void f(')` takes a whole function; `csrc.between(src, begin, end)`), which names the source and the marker when the code moved. A cut function that calls a new symbol needs a stub in that harness: the Tests run on the pull request shows which.
+
+`test_nvn_sampler_cache` exercises the production sampler initializer, finalizer,
+comparison and object layout. It checks that all four formerly skipped filter/wrap
+fields participate in an opaque-object CRC, preserves guard bytes beyond the
+smallest public object, and models hash lookup followed by semantic comparison:
+10,000 alternating requests must retain two entries. The cache model is separate
+from gameplay validation.
+
+`test_vk_pixel_history` exercises production ROI/HDR helpers and mocked Vulkan
+capture/fence/resource behavior. Its harness also runs natively on Android.
+See [diagnostic switches](../.claude/skills/switch-android-port/references/switches.md)
+for pixel-history usage and limits.
+
+`test_fragment_output_masks` compiles the production attachment-state loop and
+checks sparse output maps, absent fragment shaders, channel masks, integer
+formats and the flat diagnostic shader's all-target output. The optional
+[fragment-output replay](../tests/vk_fragment_output_masks.md) adds pipeline
+observations and pixel checks; its build script supports Windows, macOS and
+Linux NDK hosts and does not contact a device. Host checks do not qualify
+physical GPU rendering.
+
+`test_avc_frame_layout` and `test_avc_output_buffer` compile extracted production
+MediaCodec layout and drain code on the host. They cover bounded plane copies,
+metadata fallbacks, unknown-format NV12 compatibility, once-only drop logs and
+fatal picture-allocation failure. The layout harness selects C99 stdio on MinGW;
+`NX2A_TEST_SANITIZE=1` enables ASan/UBSan for the layout harness. The optional
+[AVC MediaCodec probe](../probes/avc_frame_layout.md) lives beside the AAC probes
+and builds with a macOS, Linux or Windows NDK. Host tests do not qualify a
+physical Android decoder or gameplay.
+
 The Vulkan-header harnesses need a discoverable NDK; set `ANDROID_NDK_HOME`
 when it is not found automatically. They skip if no NDK headers are found.
+`test_texture_format_aliases` compiles the production storage lookup, upload
+decisions, eviction, pool cleanup and NVN texture initializer under ASan/UBSan.
+It checks same-format plain/packaged peers in both orders, all orderings of two
+formats and their metadata peers, late CPU-write marks, and unique image retirement.
+A byte-store double at the GPU upload boundary checks visibility through those
+peers; it does not execute Vulkan uploads. The selected compiler is `CC`, then
+`cc`, then `clang`; a sanitizer link probe skips explicitly if unsupported.
+`test_texture_transfers` captures the actual Vulkan copy, resolve, blit and clear
+commands with NDK headers. It checks format, subresource and sRGB clear semantics,
+pooled/dedicated temporary retirement and injected allocation failures without
+running a GPU. The manual Android fixture builder supports macOS, Linux and
+Windows; see [texture-family validation](../tests/vk_texture_aliases.md).
+
 The protected-pool harness uses real page protection
 and a mutex/condition-variable rendezvous on macOS and Linux, handling each
 platform's protection-fault signal. The zero-copy diagnostics fixture forces
@@ -141,11 +203,15 @@ results and list callers. Process callbacks run once and release the process.
 These tests need no game files, keys, devices or browser, and do not identify the
 cause of a particular player's inspection failure.
 
-`test_descriptor_hash` exercises the Vulkan descriptor hash and reuse path with
-different C padding bytes but identical image fields. Image keys include each
-array element's sampler, view and layout as explicit words; padding cannot force
-another descriptor allocation. Reuse still compares the hash, layout and
-submission epoch, without a full-content collision check.
+`test_descriptor_hash` exercises the Vulkan descriptor-content cache (`g_setc`)
+with owned static keys, including every buffer, image and texel-view field.
+Different C padding bytes do not prevent reuse; dynamic offsets stay outside the
+static key. Constant-hash cases verify exact equality under forced collisions,
+source mutation, replacement and submission epochs. Bounded-arena exhaustion
+bypasses new cache entries while retaining existing hits and counting capacity
+bypasses; oversized keys and explicitly disabled caching remain uncached. The
+separate per-stage memo uses generation counters. These host checks do not
+establish a natural collision, game symptom or device performance result.
 
 `test_dmsv` checks both shader-bundle versions and the native reader. Publication
 uses a unique staging directory beside the destination, flushes the file, verifies
@@ -268,12 +334,22 @@ compatibility checks until migration. Mismatched or corrupt envelopes start empt
 a driver rejection retries empty, and failure to create that cache is logged.
 Pipeline creation marks the cache dirty even when its size stays unchanged. A
 complete snapshot with the same size and SHA-256 as the last accepted load or
-successful save skips publication. Other saves use one fixed `.tmp` file under the
+successful save skips publication. Besides the present timer, a save also starts on
+a thread of its own after 64 new pipelines, at most once per gap: 15 s for every
+whole 16 MB of cache (at least 15 s, at most 120 s), as each save rewrites the whole file.
+Other saves use one fixed `.tmp` file under the
 I/O lock, so the next write reuses an interrupted save's staging file. Publication
 requires successful writes and synchronization; failed or incomplete snapshots and
 pending legacy migrations remain eligible for retry. `DM_VK_NOPCACHE` still means
 start empty, while allowing newly built pipelines to be saved. Bump `PCACHE_ABI`
 when changing the renderer's persistent cache contract.
+
+The replay statistics printed every 600 presents include cumulative descriptor
+sets reused, new sets and `key arena bypasses`. A bypass counts each otherwise
+cacheable miss whose owned key does not fit in the current submission's bounded
+arena. Existing entries can still hit after exhaustion. Tracing, explicitly
+disabled caching and oversized keys do not increment this counter. The arena
+resets each submission; the counter remains cumulative for the host process.
 
 ## Optional native keyboard
 
@@ -290,3 +366,19 @@ python tests/android/keyboard_smoke.py --sdk "$ANDROID_HOME" --ndk "$ANDROID_NDK
 ```
 
 It builds through the production Java/dex packager, uses the real guest keyboard conversion and JNI bridge, and checks Unicode/UTF-16 output, minimum length, cancel, background/resume, repeated requests and bounded UTF-8 output. Add `--without-java` to verify the default APK's fallback. The probe installs only `org.nx2a.keyboardtest` and uninstalls it afterward; run it on a dedicated emulator. No game dump is needed. This probe does not qualify the combined external-display keyboard or physical-device gameplay.
+
+### CPU descriptor readiness
+
+`python -m unittest discover -s tests -p test_cpu_handle_readiness.py -v` executes the production tracking, deferred-coverage, live-switch and descriptor-preflight functions. It requires `host_cc.ubsan()` and defaults to UBSan; set `NX2A_TEST_SANITIZE=1` to also use ASan on a host with that runtime. A compiler without UBSan is reported as an explicit capability skip. The manual Android build runner and physical-device procedure are in `tests/vk_cpu_handle_readiness.md`. The runner only builds artifacts. Physical-driver behavior, real-game racy-read/cut/wait counts and timing remain separate validation.
+
+For live A/B testing, use a `DM_CTL` env update with `DM_VK_CPU_READY=0`, then restore `DM_VK_CPU_READY=1`. Values take effect at a submission boundary. Disabling allows unsynchronized CPU descriptor reads; the default remains enabled.
+
+## Runtime GLSLC shader preparation
+
+Some NVN games compile shaders with their own GLSLC at startup (for example, Fire Emblem: Three Houses and Catherine: Full Body). The porter captures these outputs before the offline shader split. If the extraction already contains every complete `glslc_capture/*.glslc` output named by the profile, it reuses them without a device. Otherwise, connect an ARM64 Android device with USB debugging and configure `adb`, even when building without `--install`.
+
+The capture builds a headless NVN host with null graphics, copies the rewritten modules and RomFS to a unique `/data/local/tmp/nx2a-glslc-*` directory, and runs the game's own compiler for up to 60 seconds. It uses fresh temporary saves, leaves installed apps alone, and removes its device directory afterward. Allow enough device space for an additional copy of the RomFS. Logs are in `<title ID>_build/logs/android_glslc.log` and `android_glslc_host.log`.
+
+Incomplete captures leave previous outputs intact. Only the packed version can be captured with its rewritten modules; if another shader-source version needs a capture, port that version separately first. A provisional profile has no expected-output list, so any complete output permits a best-effort split; this does not prove complete shader coverage or game playability. Runtime compilers inside NRO modules are not detected by this preparation stage yet.
+
+Regression tests: `python -m unittest discover -s tests -p test_glslc_capture.py`. For transport integration on a dedicated ARM64 emulator, run `python tests/android/glslc_smoke.py --ndk <NDK> --adb <adb> --serial emulator-<port> --out <scratch>`. This runs the production capture writer with synthetic compiler output through the real device deadline, transfer and publication path. It does not execute a commercial game's compiler or qualify gameplay.

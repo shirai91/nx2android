@@ -34,10 +34,12 @@ app_pool	0xCD500000
 sys_resource	0x1000000
 
 # ---- Frame rate ----
-# 60 fps (30 on the Switch): the game asks for present interval 2 (Unity's vSyncCount), which display mode ignores, and nothing else holds it at 30 (frame work about 3 ms on an
-# Adreno 740). The dungeon steps by the time that really passed: on the Odin 2, holding up for 1 s at 60 fps and then down for 1 s pinned at 30 (DM_FPS_PIN, one run) walked back
-# to the same tile, one belly point a step both ways; frame counting would have walked twice as far up. DM_PRESENT_INTERVAL=game in env.txt keeps 30 and saves power
+# 30 fps by default (as on the Switch), 60 with porter's --fps60. The game asks for present interval 2 (Unity's vSyncCount), which display mode ignores, so presents follow
+# the display (60) and fps_ceiling 30 holds the adaptive frame rate at 30; --fps60 lifts the ceiling (DM_FPS_CEILING=0). The dungeon steps by the time that really passed: on the
+# Odin 2, holding up for 1 s at 60 fps and then down for 1 s pinned at 30 (DM_FPS_PIN, one run) walked back to the same tile, one belly point a step both ways; frame counting
+# would have walked twice as far up. So the 30 cap runs at the Switch's speed and halves the work
 present_interval	display
+fps_ceiling	30
 
 # ---- Shader split ----
 shader_groups	/Data/=data

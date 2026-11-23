@@ -1,0 +1,9 @@
+# Engine frame limits kept in game memory that the host raises to the frame-rate target (nxnative/dm/host/hle_fpslock.c; dm/games/game.py puts these rows in the
+# profile header as DM_GAME_FPS_LOCKS). Each row runs only on its main build. ptr_off: a pointer at main + ptr_off to the object holding the field (0: the field is at
+# main + field); kind: FPS_F32, VSYNCS_I32, MS_F32, SEC_F32, FPS_I32; copies: consecutive copies of the value; ptr2: a second pointer at that object + ptr2 (0 = none).
+#	build	what	ptr_off	field	kind	copies	ptr2
+# Advance Wars 1+2: Re-Boot Camp 1.0.0: Unity 2020.2's OnDemandRendering.renderFrameInterval, an IL2CPP static int: main+0x481b2f8 holds the class (Il2CppClass), whose +0xb8 points to its
+# static fields, the interval first. The game sets 1 in the menus and 2 in battle (Unity then renders every second frame: 30 fps, the frame's work 33 ms with the CPU and GPU idle).
+# From masagrator's FPSLocker config for this build (FPSLocker-Warehouse, patches/0100300012F2A000/320A17744AEFD67F.yaml, which writes -1); 1 renders every frame as well.
+# The host's log of that config on the Y700 read 1 at the title and 2 in the first training battle
+320a17744aefd67fec5738ca0c629795	Unity render frame interval	0x481b2f8	0x0	VSYNCS_I32	1	0xb8

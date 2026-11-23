@@ -26,6 +26,9 @@
 #   The compression flags are no names: 1 zlib, 2 gzip, 4 custom; DRAGON QUEST XI S's engine uses 3, which is LZ5 2.0 (main exports LZ5_*; every block starts with its level, 0x2d = 45), and only the
 #   game's own decoder reads it (hle_oodle.c, through a decode function given to Pak.read). OCTOPATH TRAVELER (UE 4.18, Kingship-Switch.pak 1.9 GB / 103,018 files and Kingship-Switch_0_P.pak) uses 1:
 #   zlib, which Pak.read decodes itself, so its shaders need no game decoder (legacy_decoder_paks).
+# Version 8 paks (UE 4.22 and 4.23) also have the per-file index and relative block offsets, but name their compression methods in the footer. The four-name footer uses a one-byte
+# method index and the five-name footer a four-byte index. UE 4.22's version 1 shader library (issue #425) is a map from SHA-1 to offset, size, raw size and frequency, then the code;
+# each compressed shader is its own zlib stream.
 # Shader code archive (version 2): shader map hashes (20 bytes each), shader hashes (20 each), shader map entries {u32 first index, u32 shader count, u32 first preload, u32 preload count}, shader
 #   entries {u64 offset, u32 size, u32 raw size, u8 frequency} (17 bytes, packed), preload entries (16 each), shader indices (u32): each array is a u32 count and its elements; the code follows,
 #   offsets relative to its start. A shader whose size differs from its raw size is compressed.
@@ -39,14 +42,22 @@ PAK_MAGIC, ARCHIVE_VERSION = 0x5A6F12E1, 2
 JOB_MAGIC, OUT_MAGIC = 0x4a4f4d44, 0x524f4d44   # "DMOJ", "DMOR" (hle_oodle.c)
 FREQ = {0: 'vs', 1: 'hs', 2: 'ds', 3: 'ps', 4: 'gs', 5: 'cs'}   # EShaderFrequency (the archive's frequency census: 0 vertex, 3 pixel, 5 compute)
 
-_cc = None
+_cc, _aes = None, None
 def aes_decrypt(key, data):
-    """AES-256 ECB decryption through CommonCrypto (every Mac has it; no Python package needed)"""
-    global _cc
-    if _cc is None:
-        _cc = ctypes.CDLL('/usr/lib/libSystem.B.dylib').CCCrypt
-        _cc.restype = ctypes.c_int32
-        _cc.argtypes = [ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_char_p, ctypes.c_size_t, ctypes.c_void_p, ctypes.c_char_p, ctypes.c_size_t, ctypes.c_void_p, ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t)]
+    """AES-256 ECB decryption: CommonCrypto on the Mac (every Mac has it; no Python package needed), pycryptodome elsewhere (requirements.txt; the Windows and Linux
+    bundles ship it). The porter runs where the game is, so the pak's encrypted index is read on a machine that has no CommonCrypto"""
+    global _cc, _aes
+    if _cc is None and _aes is None:
+        try:
+            _cc = ctypes.CDLL('/usr/lib/libSystem.B.dylib').CCCrypt
+            _cc.restype = ctypes.c_int32
+            _cc.argtypes = [ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_char_p, ctypes.c_size_t, ctypes.c_void_p, ctypes.c_char_p, ctypes.c_size_t, ctypes.c_void_p, ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t)]
+        except OSError:   # not a Mac: pycryptodome does the same work (pip install pycryptodome)
+            try: from Crypto.Cipher import AES as _aes
+            except ImportError:
+                try: from Cryptodome.Cipher import AES as _aes   # what some system package managers call pycryptodome
+                except ImportError: raise ValueError('AES-256 ECB decryption needs CommonCrypto (a Mac) or pycryptodome (pip install pycryptodome)') from None
+    if _aes is not None: return _aes.new(key, _aes.MODE_ECB).decrypt(data)
     out = ctypes.create_string_buffer(len(data)); moved = ctypes.c_size_t()
     if _cc(1, 0, 2, key, len(key), None, data, len(data), out, len(data), ctypes.byref(moved)): raise ValueError('CCCrypt failed')   # decrypt, AES, ECB
     return out.raw[:moved.value]
@@ -146,16 +157,22 @@ class R:
         if n < 0: return self.raw(-2 * n).decode('utf-16-le')[:-1]
         return self.raw(n)[:-1].decode('utf-8', 'replace') if n else ''
 
-LEGACY = (4,)   # legacy pak versions read (the per-file index); 11 has the encoded one
+LEGACY = (4, 8)   # legacy pak versions read (the per-file index); 11 has the encoded one
+V8_METHOD_COUNTS = {0xac: 4, 0xcc: 5}   # footer magic offset from the end distinguishes UE4.22's v8A from v8B
 LEGACY_METHODS = {1: 'Zlib', 2: 'Gzip', 3: 'LZ5', 4: 'Custom'}   # compression flags of a legacy pak (3: DRAGON QUEST XI S's engine, see the header)
 ZLIB = {'Zlib': lambda b, n: zlib.decompress(b), 'Gzip': lambda b, n: zlib.decompress(b, 31)}   # the methods Pak.read decodes without the game
 
 def magic_back(f):
     """(how far from the end the footer's magic is, the pak version): a legacy footer is the last 0x2d bytes (magic 0x2c from the end); version 11's magic is 0xc8 from the end in
     Octopath Traveler 0 (UE5) and 0xcc in Unreal Engine 4.27 (DRAGON QUEST VII Reimagined: five whole 32-byte compression method names after the SHA-1)"""
-    for back in (0x2c, 0xc8, 0xcc):
+    f.seek(0, os.SEEK_END)
+    size = f.tell()
+    for back in (0x2c, 0xc8, 0xcc, 0xac):
+        if size < back: continue
         f.seek(-back, 2); m, ver = struct.unpack('<II', f.read(8))
-        if m == PAK_MAGIC: return back, ver
+        if m != PAK_MAGIC: continue
+        if ver == 8 and back not in V8_METHOD_COUNTS or back == 0xac and ver != 8: continue
+        return back, ver
     raise ValueError('no pak footer')
 
 def pak_version(f):
@@ -164,42 +181,73 @@ def pak_version(f):
 def footer(f):
     """(encrypted index, index offset, index size, compression method names by number from 1, version)"""
     back, ver = magic_back(f)
-    if ver in LEGACY:
+    if ver == 4:
         f.seek(-0x2d, 2); ft = f.read(0x2d); ioff, isz = struct.unpack_from('<QQ', ft, 9)
         return ft[0], ioff, isz, [LEGACY_METHODS.get(i, f'flags {i}') for i in range(1, 8)], ver
-    if ver != 11: raise ValueError(f'pak version {ver}, only {", ".join(map(str, LEGACY))} and 11 are read')
-    f.seek(-(back + 21), 2); ft = f.read(back + 21); k = 21
+    if ver not in (8, 11): raise ValueError(f'pak version {ver}, only {", ".join(map(str, LEGACY))} and 11 are read')
+    f.seek(-(back + 17), 2); ft = f.read(back + 17); k = 17
     ioff, isz = struct.unpack_from('<QQ', ft, k + 8)
-    methods = [ft[k + 44 + 32 * i:k + 76 + 32 * i].rstrip(b'\0').decode('latin1') for i in range(5)]
+    methods = [ft[k + 44 + 32 * i:k + 76 + 32 * i].rstrip(b'\0').decode('latin1')
+               for i in range(V8_METHOD_COUNTS[back] if ver == 8 else 5)]
     return ft[k - 1], ioff, isz, methods, ver
 
+def code_keys(img, lo):
+    """32-byte keys that main's code stores from two 16-byte literals: stp qA, qB, [xN] after ldr qA / qB, each from an adrp page plus its offset, within 8 instructions before it.
+    UE_REGISTER_ENCRYPTION_KEY's callback copies a 32-byte array into its argument, and clang may split the array into two 16-byte constants that do not lie side by side
+    (Tetris Effect: Connected), so no window of main holds the key"""
+    w = struct.unpack_from(f'<{lo // 4}I', img)
+    out = []
+    for i, x in enumerate(w):
+        if x & 0xFFFF83E0 != 0xAD000000: continue   # stp qA, qB, [xN, #0] (signed offset)
+        page, half = {}, {}
+        for j in range(max(0, i - 8), i):
+            y = w[j]
+            if y & 0x9F000000 == 0x90000000:   # adrp: the page of pc + the 21-bit immediate pages
+                imm = (y >> 29 & 3) | (y >> 5 & 0x7FFFF) << 2
+                page[y & 31] = (j * 4 & ~0xFFF) + ((imm - (1 << 21) if imm & 1 << 20 else imm) << 12)
+            elif y & 0xFFC00000 == 0x3DC00000 and (y >> 5 & 31) in page:   # ldr qT, [xN, #imm12 * 16] on an adrp base
+                half[y & 31] = page[y >> 5 & 31] + (y >> 10 & 0xFFF) * 16
+            else: page.pop(y & 31, None); half.pop(y & 31, None)   # anything else that may write the register ends what it held
+        a, b = half.get(x & 31), half.get(x >> 10 & 31)
+        if a is not None and b is not None and a + 16 <= len(img) and b + 16 <= len(img): out.append(img[a:a + 16] + img[b:b + 16])
+    return out
+
 def find_key(img, lo, hi, pak):
-    """The AES key among main's 32-byte windows (read-only and data segments, 4-aligned, at least 20 distinct bytes): the one that decrypts the index start to a short mount point"""
+    """The AES key that decrypts the index start to a short mount point: one main's code stores from two 16-byte literals (code_keys), else one of main's 32-byte windows
+    (read-only and data segments, 4-aligned, at least 20 distinct bytes)"""
     with open(pak, 'rb') as f:
         _, ioff, _, _, _ = footer(f); f.seek(ioff); blk = f.read(16)
+    def opens(k):
+        d = aes_decrypt(k, blk)
+        return 0 < struct.unpack_from('<i', d)[0] < 512 and d[4:7] == b'../'
+    for k in code_keys(img, lo):
+        if opens(k): return k
     for a in range(lo, hi - 32, 4):
         w = img[a:a + 32]
-        if len(set(w)) < 20: continue
-        d = aes_decrypt(w, blk)
-        if 0 < struct.unpack_from('<i', d)[0] < 512 and d[4:7] == b'../': return w
+        if len(set(w)) >= 20 and opens(w): return w
     return None
 
 class Pak:
     def __init__(self, path, key=None):
         self.path, self.key = path, key; self.f = open(path, 'rb')
         enc, ioff, isz, self.methods, self.version = footer(self.f)
+        narrow_method = self.version == 8 and len(self.methods) == 4
+        self.entry_header = 50 if narrow_method else 53
+        self.deleted = set()
         if enc and not key: raise ValueError(f'{path}: the index is encrypted and no key was given')
         r = R(self.read_at(ioff, isz, enc))
         self.mount = r.fstr(); self.count = r.take('<i')
         if self.version in LEGACY:   # one FPakEntry per file, kept as parsed
             self.files = {}
             for _ in range(self.count):
-                name = r.fstr(); off, size, raw, meth = r.take('<qqqi'); r.raw(20)
+                name = r.fstr(); off, size, raw, meth = r.take('<qqqB' if narrow_method else '<qqqi'); r.raw(20)
                 blocks = [r.take('<qq') for _ in range(r.take('<i'))] if meth else []
-                e, bsz = r.take('<BI'); head = 53 + (4 + 16 * len(blocks) if meth else 0)
+                flags, bsz = r.take('<BI'); head = self.entry_header + (4 + 16 * len(blocks) if meth else 0)
+                if self.version == 8 and flags & 2: self.deleted.add(name); continue
+                if meth and not (0 < meth <= len(self.methods) and self.methods[meth - 1]): raise ValueError(f'{path}: invalid compression method {meth} on {name}')
                 if self.version < 5: blocks = [(s - off, t - s) for s, t in blocks]
                 else: blocks = [(s, t - s) for s, t in blocks]
-                self.files[name] = dict(off=off, raw=raw, size=size, method=self.methods[meth - 1] if meth else '', encrypted=e, block_size=bsz, blocks=blocks or [(head, size)])
+                self.files[name] = dict(off=off, raw=raw, size=size, method=self.methods[meth - 1] if meth else '', encrypted=flags & 1, block_size=bsz, blocks=blocks or [(head, size)])
             return
         r.take('<Q')
         if r.take('<i'): r.take('<QQ'); r.raw(20)   # path hash index (not needed with the full directory index)
@@ -232,13 +280,34 @@ class Pak:
         """A file's bytes. A compressed one needs decode(block bytes, raw length) → bytes, block by block (each block holds block_size raw bytes, the last one the rest):
         the game's own decoder in the Mac host (shader_split.py oodle); Octopath Traveler 0's archives go through the Oodle job instead. Zlib and gzip blocks are decoded here (ZLIB)"""
         e = self.entry(path)
-        if not e['method']: return self.read_at(e['off'] + 53, e['size'], e['encrypted'])
+        if not e['method']: return self.read_at(e['off'] + self.entry_header, e['size'], e['encrypted'])
         decode = ZLIB.get(e['method'], decode)
         if not decode: raise ValueError(f'{path} is {e["method"]}-compressed in the pak')
         out, left = [], e['raw']
         for s, n in e['blocks']:
             k = min(left, e['block_size']); out.append(decode(self.read_at(e['off'] + s, n, e['encrypted']), k)); left -= k
         return b''.join(out)
+
+    def legacy_shader_entries(self):
+        """The files the split needs: version 4 keeps shaders inline, version 8 in shader code libraries"""
+        return ((name, entry) for name, entry in self.files.items() if self.version == 4 or name.endswith('.ushaderbytecode'))
+
+def archive_v1_shaders(b):
+    """An Unreal 4.22 version 1 shader library: yield (decoded record, frequency) in table order"""
+    r = R(b)
+    if len(b) < 8 or r.take('<I') != 1: raise ValueError('not a version 1 shader code archive')
+    count = r.take('<i'); code = 8 + count * 37  # SHA-1 hash and a 17-byte entry for each shader
+    if count < 0 or code > len(b): raise ValueError('invalid version 1 shader table size')
+    for i in range(count):
+        r.raw(20); off, size, raw, freq = r.take('<QIIB')
+        if not size or not raw or off + size > len(b) - code: raise ValueError(f'shader {i} has an invalid data range')
+        data = b[code + off:code + off + size]
+        if size != raw:
+            decoder = zlib.decompressobj()
+            try: data = decoder.decompress(data, raw + 1)
+            except zlib.error as e: raise ValueError(f'shader {i} has invalid zlib data') from e
+            if len(data) != raw or not decoder.eof or decoder.unused_data: raise ValueError(f'shader {i} does not match its declared raw size')
+        yield data, freq
 
 def archive(b):
     """A shader code archive's tables: {'maps': [(first index, count)], 'shaders': [(offset, size, raw size, frequency)], 'indices': [...], 'code': start of the code}"""
@@ -379,7 +448,7 @@ def io_shader_tocs(romfs):
             if not f.endswith('.utoc'): continue
             try:
                 if Toc(os.path.join(dp, f), b'\0' * 32).of_type(IO_SHADER_LIBRARY): out.append(os.path.join(dp, f))
-            except (OSError, ValueError, struct.error): pass
+            except (OSError, ValueError, struct.error, IndexError): pass   # truncated headers or chunk/block records
     return sorted(out)
 
 def archive_names(romfs):
@@ -413,8 +482,8 @@ def legacy_decoder_paks(romfs):
     for p in unreal_paks(romfs, legacy=True):
         try: pk = Pak(p)
         except ValueError: out.append(p); continue
-        if any(e['method'] and e['method'] not in ZLIB for e in pk.files.values()): out.append(p)
-        pk.f.close()
+        with pk.f:
+            if any(e['method'] and e['method'] not in ZLIB for _, e in pk.legacy_shader_entries()): out.append(p)
     return out
 
 def job(romfs, main_nso, work, decode=None):

@@ -1,6 +1,7 @@
 # Unit tests of the port pipeline's own parts (python -m unittest discover tests). They need no game files, toolchains or device.
 import hashlib, importlib.util, json, os, random, re, shutil, struct, sys, tempfile, unittest
 from pathlib import Path
+from unittest import mock
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
@@ -36,6 +37,30 @@ class AndroidProfiles(unittest.TestCase):
         rows = profiles.all_entries()
         self.assertIn(NEO, [r.id for r in rows]); self.assertTrue(all(r.android for r in rows))
         self.assertGreater(len(profiles.all_entries(android_only=False)), len(rows))
+
+    def test_vulkan_driver_key(self):   # android.tsv vulkan_driver: the driver the profile was tested with (porter packs Turnip for 'turnip')
+        self.assertEqual(android_profile.load(profile_dir([('status', 'boots')]).name).vulkan_driver, 'system')
+        self.assertEqual(android_profile.load(profile_dir([('status', 'boots'), ('vulkan_driver', 'turnip')]).name).vulkan_driver, 'turnip')
+        with self.assertRaises(android_profile.ProfileError): android_profile.load(profile_dir([('status', 'boots'), ('vulkan_driver', 'mesa')]).name)
+
+    def test_env_rows_checked_against_the_settings_registry(self):   # nxnative/dm/settings.tsv: a typo or a debug switch fails the profile
+        self.assertEqual(android_profile.load(profile_dir([('status', 'boots'), ('env', 'DM_VK_CB_DRAWS=32')]).name).env, ['DM_VK_CB_DRAWS=32'])
+        for bad in ('DM_VK_CB_DRAWZ=32', 'DM_VK_X_NOBAR=1', 'DM_VK_FDZ=yes'):
+            with self.assertRaises(android_profile.ProfileError): android_profile.load(profile_dir([('status', 'boots'), ('env', bad)]).name)
+
+    def test_pacing_preset(self):   # android.tsv pacing: env rows before the profile's own; a profile may not set one of them again
+        p = android_profile.load(profile_dir([('status', 'boots'), ('pacing', 'fixed30'), ('env', 'DM_VK_CB_DRAWS=32')]).name)
+        self.assertEqual(p.env, ['DM_FPS_TARGET=30', 'DM_ADAPTIVE_FPS=0', 'DM_VK_CB_DRAWS=32'])
+        self.assertEqual(android_profile.load(profile_dir([('status', 'boots')]).name).pacing, 'adaptive')
+        for rows in ([('pacing', 'fast')], [('pacing', 'steady'), ('env', 'DM_ADAPTIVE_FPS=1')]):
+            with self.assertRaises(android_profile.ProfileError): android_profile.load(profile_dir([('status', 'boots')] + rows).name)
+
+    def test_find_turnip(self):
+        from porter import toolchain
+        with tempfile.TemporaryDirectory() as t:
+            lib = Path(t) / 'libvulkan_freedreno.so'; lib.write_bytes(b'ELF')
+            self.assertEqual(toolchain.find_turnip({'turnip': str(lib)}), lib)
+            self.assertIsNone(toolchain.find_turnip({'turnip': str(Path(t) / 'missing.so')}))
 
     def test_fps_setting(self):   # the pause menu's Show FPS (front_android.c settings_load fps=)
         d = profile_dir([('status', 'boots'), ('setting', 'fps=1')])
@@ -182,6 +207,26 @@ class DataPack(unittest.TestCase):
 
 
 class Experimental(unittest.TestCase):
+    def test_unreal_provisional_alias_region_leaves_a_heap(self):
+        from porter.upstream import profile_guess
+
+        imports = {'nvnBootstrapLoader', profile_guess.HEAP_API}
+        facts = {
+            'mods': {'main': {'imports': imports, 'far': False, 'bss': 0}},
+            'romfs': {'root': set(), 'exts': {'.pak': 1}},
+        }
+        for markers, resource, alias, heap in (
+            ({'Unreal 4'}, 0x1000000, 0x1008000000, 0x08000000),
+            (set(), 0x1000000, 0x118000000, 0x08000000),
+            ({'Unreal 4'}, 0, 0x10000000, 0xD0000000),
+        ):
+            with self.subTest(markers=markers, resource=resource):
+                rows = profile_guess.guess(dict(facts, main_markers=markers, sysres=resource), hooks=set())
+                reserve, alias_region, stack = (int(rows[key][0], 0) for key in ('mem_reserve', 'mem_alias', 'mem_stack'))
+                self.assertEqual(alias_region, alias)
+                # hle_svc.c places the guest heap after a 256 MiB prefix, the alias region and the stack.
+                self.assertEqual(reserve - 0x10000000 - alias_region - stack, heap)
+
     def test_ios_profile_copied_with_experimental_android_tsv(self):   # an iOS-only profile is copied out of the repository, never edited in place
         ios_only = '010099C022B96000'   # Super Mario Galaxy: an iOS profile without android.tsv or patches.py (it renders with Vulkan itself, which the Android host does not take)
         t = Path(tempfile.mkdtemp(prefix='nx2a_test_exp_')); environ = dict(os.environ)
@@ -287,6 +332,37 @@ class Misc(unittest.TestCase):
         self.assertTrue(cli._parser().parse_args(['port', 'x', '--mt-replay']).mt_replay); self.assertFalse(cli._parser().parse_args(['port', 'x']).mt_replay)
         self.assertFalse(pipeline.Options(Path(".")).mt_replay)
 
+    def test_options_from_args_covers_every_field(self):   # porter port: each Options field comes from the argument of its name (Options.from_args), no hand list
+        import dataclasses
+        from porter import cli
+        a = cli._parser().parse_args(['port', 'game', '-k', 'k.keys', '--firmware', 'fw', '--vulkan-driver', 'system', '--jobs', '3', '--alias-headroom', '4'])
+        o = pipeline.Options.from_args(a, vercode_offset=7)
+        self.assertEqual((o.folder, o.keys, o.firmware, o.vulkan_driver, o.jobs, o.alias_headroom, o.vercode_offset), (Path('game'), Path('k.keys'), Path('fw'), 'system', 3, 4, 7))
+        self.assertEqual({f.name for f in dataclasses.fields(pipeline.Options)} - set(vars(a)), set(), 'an Options field with no porter port argument of its name')
+
+    def test_no_menu_button_option(self):   # --no-menu-button (issue #397): off unless given; the port then writes DM_MENU_BUTTON=0 to env.txt (front_android.c g_menu_btn)
+        from porter import cli
+        self.assertTrue(cli._parser().parse_args(['port', 'x', '--no-menu-button']).no_menu_button)
+        self.assertFalse(cli._parser().parse_args(['port', 'x']).no_menu_button)
+        self.assertFalse(pipeline.Options(Path(".")).no_menu_button)
+        src = (Path(pipeline.__file__).read_text(encoding='utf-8'))
+        self.assertIn("(['DM_MENU_BUTTON=0'] if self.o.no_menu_button else [])", src)   # in the data pack's env rows, beside --mt-replay's
+        self.assertTrue(pipeline.Options.from_args(cli._parser().parse_args(['port', 'x', '--no-menu-button'])).no_menu_button)   # the CLI passes it on
+        front = (Path(pipeline.__file__).parents[1] / 'nxnative/dm/android/front_android.c').read_text(encoding='utf-8')
+        self.assertIn('getenv("DM_MENU_BUTTON")', front)   # the name the device reads is the name porter writes
+
+    def test_sysdata_no_firmware_text(self):   # the [RED] line without --firmware: MiiModel's wording as before; the shared fonts say what the host draws instead
+        mii = pipeline.sysdata_no_firmware('Mario Kart 8 Deluxe', [0x0100000000000802])
+        self.assertEqual(mii, 'Mario Kart 8 Deluxe reads system data from the console\'s firmware (0100000000000802); without --firmware <your firmware dump\'s system content folder> '
+                              'the host\'s stand-in is used and those parts draw nothing (MiiModel: the Mii heads)')
+        fonts = pipeline.sysdata_no_firmware('Kirby', [0x0100000000000811, 0x0100000000000810])
+        self.assertIn('(0100000000000811, 0100000000000810)', fonts); self.assertIn('--shared-font <ttf>', fonts); self.assertIn('stand-ins', fonts)
+        regional = pipeline.sysdata_no_firmware('Link\'s Awakening', [0x0100000000000814, 0x0100000000000813, 0x0100000000000812])
+        self.assertIn('(0100000000000814, 0100000000000813, 0100000000000812)', regional); self.assertIn('button icons', regional)
+        self.assertNotIn('MiiModel', fonts); self.assertNotIn('\n', fonts)
+        both = pipeline.sysdata_no_firmware('X', [0x0100000000000802, 0x0100000000000810])
+        self.assertIn('MiiModel: the Mii heads', both); self.assertIn('(0100000000000810)', both)
+
     def test_shared_font_option(self):   # --shared-font FILE: parsed, and a file that is not a .ttf fails before any stage
         from porter import cli
         self.assertEqual(cli._parser().parse_args(['port', 'x', '--shared-font', 'cjk.ttf']).shared_font, 'cjk.ttf')
@@ -366,6 +442,20 @@ class Misc(unittest.TestCase):
             with self.assertRaises(pipeline.BuildError): pipeline.Port.check_space(p)
             work.mkdir(); (work / 'x').write_bytes(b'\0' * 2**20); pipeline.Port.check_space(p)   # a build folder already there counts
         finally: shutil.disk_usage = real
+
+    def test_disk_space_counts_only_the_selected_dump(self):   # one dump picked out of a folder of games: the others are not being ported (SMBW asked for 4,000 GB)
+        from types import SimpleNamespace as NS
+        d = Path(tempfile.mkdtemp(prefix='nx2a_test_game_')); g = d / 'g.nsp'; g.write_bytes(b'\0' * 2**20)
+        other = d / 'other.nsp'
+        with open(other, 'wb') as f: f.truncate(4 * 2**30)   # a sparse 4 GB: big for the estimator, nothing on the disk
+        p = NS(o=NS(folder=d, dump=g), work=d / 'build'); real = shutil.disk_usage
+        try:
+            shutil.disk_usage = lambda _: NS(free=2**30 + 2**22)   # enough for the selected dump alone (about 1 GB + 2 MB), not for the folder (about 9 GB)
+            pipeline.Port.check_space(p)
+            p.o = NS(folder=d, dump=None)
+            with self.assertRaises(pipeline.BuildError): pipeline.Port.check_space(p)
+        finally:
+            shutil.disk_usage = real; other.unlink()
 
 
 def _hfs0(files):   # an HFS0 of (name, data): the XCI's partitions (hash fields left zero: nothing here reads them)
@@ -573,6 +663,109 @@ class Saves(unittest.TestCase):   # porter/saves.py: the save folders on the dev
         u = Path(tempfile.mkdtemp(dir=t)); self.assertEqual(sorted(p.name for p in saves._unpacked(t / 'loose.zip', u).iterdir()), ['main.dat', 'other.dat'])
         with self.assertRaises(BuildError): saves._unpacked(t / 'bad.zip', Path(tempfile.mkdtemp(dir=t)))
         self.assertEqual(saves._unpacked(t, None), t)   # a folder: as it is
+
+
+class UnrealShaders(unittest.TestCase):
+    """porter/pipeline.py device_ue: the Unreal shader code archives decoded with the game's own Oodle decoder, in rounds"""
+
+    def test_cached_shader_archives_do_not_require_adb(self):
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp); (d / 'RomFS').mkdir(); (d / 'ue_shaders').mkdir()
+            (d / 'RomFS/game.pak').write_bytes(b'pak')
+            (d / 'ue_shaders/stamp').write_text(pipeline.nsp.ue_stamp(d))
+            p = SimpleNamespace(game=d, g=mock.Mock(), dirs={'v1': d}, versions=['v1'], tools={}, app_name='test')
+            kinds = {k: (False, '') for k in ('oodle_packs', 'glslc_capture', 'ue_legacy')}
+            kinds.update(graphics=('nvn', ''), ue_decode=(True, 'Unreal shader archive'))
+            with mock.patch.object(pipeline.profile_guess, 'build_sources', return_value=kinds), mock.patch.object(pipeline, 'Adb') as adb:
+                pipeline.Port.check_graphics(p)
+                adb.assert_not_called()
+                (d / 'RomFS/game.pak').write_bytes(b'changed archive')
+                with self.assertRaises(pipeline.BuildError): pipeline.Port.check_graphics(p)
+
+    class FakePort:
+        """the parts of Port.device_ue it uses"""
+        UE_ROUNDS = 4
+        def __init__(self, root, answers):
+            self.versions, self.dirs = ['v1'], {'v1': root / 'extract' / 'v1'}
+            self.work, self.logs = root / 'work', root / 'logs'
+            self.answers, self.asked = answers, []   # answers: the raw bytes each stream decodes to (missing: the decoder fails)
+            for d in (self.dirs['v1'] / 'RomFS', self.dirs['v1'] / 'ExeFS', self.logs): d.mkdir(parents=True, exist_ok=True)
+        def device_oodle_job(self, job, out, bnsh=False):
+            """the game's own Oodle decoder: the job's streams, decoded (a stream it fails on comes back with no bytes)"""
+            b = job.read_bytes(); n = struct.unpack_from('<I', b, 4)[0]; o = 8; recs = []
+            for _ in range(n):
+                ln, raw = struct.unpack_from('<II', b, o); o += 8
+                recs.append((b[o:o + ln], raw)); o += ln
+            self.asked.append([c for c, _ in recs])
+            ans = b'DMOR' + struct.pack('<I', n)
+            for comp, raw in recs:
+                got = self.answers.get(comp, b'')
+                ans += struct.pack('<I', len(got)) + got
+            out.write_bytes(ans)
+
+    def uepak_job(self, rounds):
+        """what uepak.job does: it asks its decoder for the streams of this round (rounds: a list of stream lists, one per round) and it lists the archives"""
+        state = {'n': 0}
+        def job(romfs, main, jd, decode=None):
+            (Path(jd) / 'archives').mkdir(parents=True, exist_ok=True)   # the real job writes the archives here
+            i = state['n']; state['n'] += 1
+            for comp, raw in rounds[min(i, len(rounds) - 1)]: decode(comp, raw)
+            return [{'name': 'ShaderArchive-Global', 'shaders': 2, 'compressed': 1, 'compression': 'Oodle'}], 0
+        return job
+
+    def uepak_finish(self, jd, out):
+        """what uepak.finish does: the decoded archives land in out"""
+        Path(out).mkdir(parents=True, exist_ok=True)
+        (Path(out) / 'ShaderArchive-Global.ushaderbytecode').write_bytes(b'shaders')
+
+    def port(self, rounds, answers, stamp_size=None):
+        """a port with the fake decoder and the fake archives"""
+        root = Path(tempfile.mkdtemp(prefix='nx2a_test_ue_'))
+        self.addCleanup(shutil.rmtree, root, True)
+        p = self.FakePort(root, answers)
+        (p.dirs['v1'] / 'RomFS' / 'Content').mkdir(parents=True, exist_ok=True)
+        (p.dirs['v1'] / 'RomFS' / 'Content' / 'pakchunk0-Switch.pak').write_bytes(b'pak')
+        p.stamp = pipeline.nsp.ue_stamp(p.dirs['v1'])   # what the version's archives were made from: its paks (the path is the platform's own)
+        if stamp_size is not None:
+            (p.dirs['v1'] / 'ue_shaders').mkdir(parents=True, exist_ok=True)
+            (p.dirs['v1'] / 'ue_shaders' / 'stamp').write_text(p.stamp.rsplit('\t', 1)[0] + f'\t{stamp_size}\n', encoding='utf-8')
+        patches = [mock.patch.object(pipeline.uepak, 'job', self.uepak_job(rounds)),
+                   mock.patch.object(pipeline.uepak, 'finish', self.uepak_finish)]
+        for q in patches: q.start()
+        self.addCleanup(lambda: [q.stop() for q in patches])
+        return p
+
+    def test_the_rounds_advance_until_nothing_is_left(self):   # the same stream again is a cache hit: the round asks for nothing and the decode is done
+        p = self.port([[(b'one', 6)]], {b'one': b'123456'})
+        pipeline.Port.device_ue(p)
+        self.assertEqual(p.asked, [[b'one']])   # the decoder was asked once: the second round wanted nothing
+        self.assertEqual((p.dirs['v1'] / 'ue_shaders' / 'ShaderArchive-Global.ushaderbytecode').read_bytes(), b'shaders')
+        self.assertEqual((p.dirs['v1'] / 'ue_shaders' / 'stamp').read_text(), p.stamp)
+
+    def test_a_stream_the_decoder_fails_on_is_asked_again(self):   # the round that decodes none of them says so
+        from porter.upstream import BuildError
+        p = self.port([[(b'one', 6), (b'two', 4)]], {b'one': b'123456'})
+        with self.assertRaises(BuildError) as e: pipeline.Port.device_ue(p)
+        self.assertIn('decoded none of 1 streams', str(e.exception))
+        self.assertEqual(p.asked, [[b'one', b'two'], [b'two']])   # the stream that failed is asked for again, the decoded one is not
+
+    def test_the_rounds_end_with_an_error(self):   # a new stream every round: the rounds run out
+        from porter.upstream import BuildError
+        rounds = [[(f'stream {i}'.encode(), 4)] for i in range(8)]
+        p = self.port(rounds, {f'stream {i}'.encode(): b'1234' for i in range(8)})
+        with self.assertRaises(BuildError) as e: pipeline.Port.device_ue(p)
+        self.assertIn('still need Oodle streams after 4 rounds', str(e.exception))
+        self.assertEqual(len(p.asked), 4)
+
+    def test_a_stamped_decode_is_not_done_again(self):   # the stamp of a version whose archives are decoded: it is left alone
+        p = self.port([[(b'one', 6)]], {b'one': b'123456'}, stamp_size=3)   # the stamp of this version's paks
+        pipeline.Port.device_ue(p)
+        self.assertEqual(p.asked, [])
+        self.assertFalse((p.dirs['v1'] / 'ue_shaders' / 'ShaderArchive-Global.ushaderbytecode').exists())
+        p = self.port([[(b'one', 6)]], {b'one': b'123456'}, stamp_size=9)   # another pak: the stamp is not the one
+        pipeline.Port.device_ue(p)
+        self.assertEqual(p.asked, [[b'one']])
 
 
 if __name__ == '__main__':

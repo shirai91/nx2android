@@ -8,7 +8,13 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
 {
     class BindlessElimination
     {
-        public static void RunPass(BasicBlock block, ResourceManager resourceManager, IGpuAccessor gpuAccessor)
+        private const int NvnTextureBufferIndex = 2;   // nxnative: as BindlessToArray, see TryTableHandle
+        private const int NvnSlotArrayLength = 32;      // nxnative: the length of every array GenerateBindlessAccess makes (the host binds those arrays slot by slot)
+        private const int NvnSeparateSamplerBase = 0x568;   // nxnative: c[2]'s separate sampler table (dmsh_abi.h DMSH_C2_SAMP), 128 slots of 8 bytes; a word there is a sampler handle, never a texture's
+        private const int NvnSeparateSamplerEnd = NvnSeparateSamplerBase + 8 * 128;
+
+        // nxnative: deferSeveral leaves the reads whose handle merges several constant buffer handles to a second sweep (see TryTableHandle)
+        public static void RunPass(BasicBlock block, ResourceManager resourceManager, IGpuAccessor gpuAccessor, bool deferSeveral = false)
         {
             // We can turn a bindless into regular access by recognizing the pattern
             // produced by the compiler for separate texture and sampler.
@@ -32,7 +38,20 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
                     continue;
                 }
 
-                if (!TryConvertBindless(block, resourceManager, gpuAccessor, texOp) &&
+                if (TryConvertBindless(block, resourceManager, gpuAccessor, texOp))
+                {
+                    continue;
+                }
+
+                TableHandle table = TryTableHandle(block, resourceManager, gpuAccessor, texOp, node, deferSeveral);
+
+                if (table == TableHandle.Deferred)
+                {
+                    continue;
+                }
+
+                bool converted = table == TableHandle.Set && TryConvertBindless(block, resourceManager, gpuAccessor, texOp);
+                if (!converted &&
                     !GenerateBindlessAccess(block, resourceManager, gpuAccessor, texOp, node))
                 {
                     // If we can't do bindless elimination, remove the texture operation.
@@ -44,6 +63,11 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
 
                     gpuAccessor.Log($"Failed to find handle source for bindless access of type \"{typeName}\".");
 
+                    if (Environment.GetEnvironmentVariable("DMSH_BINDLESS_TRACE") != null)   // nxnative: what the handle is made of, for a diagnosis (dmsh_xlate on one job)
+                    {
+                        Console.Error.WriteLine($"bindless {typeName} handle: {Describe(texOp.GetSource(0), 0)}");
+                    }
+
                     for (int destIndex = 0; destIndex < texOp.DestsCount; destIndex++)
                     {
                         block.Operations.AddBefore(node, new Operation(Instruction.Copy, texOp.GetDest(destIndex), OperandHelper.Const(0)));
@@ -52,6 +76,264 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
                     Utils.DeleteNode(node, texOp);
                 }
             }
+        }
+
+        // nxnative: NVN keeps every texture and image handle in c[2]. When a handle reaches the instruction through phis whose other inputs are not made of c[2]
+        // words (undefined, or another value the compiler kept in the same register on a path where the predicated read does not run: float arithmetic, texture
+        // results, uniform words), the read can only name a texture those c[2] words give. Unreal's Niagara vertex factories read particle attributes this way, under a
+        // predicate (float or half data): GenerateBindlessAccess refuses such a phi, so the read was removed and its result 0 (58,122 reads, 3,197 of FINAL
+        // FANTASY RESONANCE's shaders), and its fire and smoke meshes collapsed to a point. Only those phis come here: one GenerateBindlessAccess takes keeps its
+        // path. One such handle takes the phi's place. Several (the float and the half buffer reaching one read) give one read each, before this one, and the result is the
+        // read whose handle equals the phi's value at run time (the host fills c[2] with the bound handles, or with distinct slot indices for dynamic handle arrays);
+        // when none does, the path that got there does not use the result, and the last one is taken. The caller converts this operation as usual.
+        // Every use of a handle shares one binding, typed by the instructions that read it, so a candidate that other reads use as a texture of another shape (a 2D array
+        // where this read is 2D: two of Unreal's global pixel shaders in FINAL FANTASY RESONANCE) would make the read invalid and is left out. Those reads are converted in a
+        // second sweep (deferSeveral), once every other read has registered its texture.
+        // A word of the game's own uniform buffer is no handle alone, but a texture word ORed with a sampler word of the same bank, or with a constant sampler, is one, including when the
+        // compiler builds it under a guard in a register whose earlier value reaches a phi of the handle: Utils.FindLastOperation cannot tie such a read to the OR (a vote, and a branch over it),
+        // so the phi also carries the handle's first word and what the register held before. Comparing the phi's value with each candidate at run time picks the handle of the path that built it.
+        // With the OR unguarded the phi lies on its source, not on the handle
+        private enum TableHandle { None, Set, Deferred }
+
+        private static TableHandle TryTableHandle(BasicBlock block, ResourceManager resourceManager, IGpuAccessor gpuAccessor, TextureOperation texOp, LinkedListNode<INode> node, bool deferSeveral)
+        {
+            Operand handle = texOp.GetSource(0);
+
+            if (handle.AsgOp is not PhiNode and not Operation { Inst: Instruction.BitwiseOr } || IsBindlessHandleAllowed(handle))
+            {
+                return TableHandle.None;   // GenerateBindlessAccess takes it, as before (a choice among c[2] words: the dynamic handle arrays, which the host binds slot by slot)
+            }
+
+            List<(Operand Texture, Operand Sampler)> found = new();
+
+            foreach (Operand leaf in PhiLeaves(handle))
+            {
+                if (IsTableWord(leaf))
+                {
+                    AddCandidate(found, leaf, null);
+                }
+                else if (!texOp.Inst.IsImage() && leaf.AsgOp is Operation orOp && orOp.Inst == Instruction.BitwiseOr)
+                {
+                    foreach (Operand texture in PhiLeaves(orOp.GetSource(0)))
+                    {
+                        foreach (Operand sampler in PhiLeaves(orOp.GetSource(1)))
+                        {
+                            (Operand t, Operand sm) = IsSamplerWord(texture) && !IsSamplerWord(sampler) ? (sampler, texture) : (texture, sampler);   // either order, as TryConvertBindless
+
+                            if (t.Type == OperandType.ConstantBuffer && !IsSamplerWord(t) && (IsSameBankWord(sm, t) || (sm.Type == OperandType.Constant && (sm.Value & 0xfffff) == 0)))
+                            {
+                                AddCandidate(found, t, sm);
+                            }
+                        }
+                    }
+                }
+                else if (leaf.AsgOp is Operation load && load.Inst == Instruction.Load)
+                {
+                    return TableHandle.None;   // a handle loaded from memory or an input is a real bindless access (GenerateBindlessAccess)
+                }
+            }
+
+            // A word alone that an ORed candidate also takes is that handle on its way (R = word; R |= other word), not a handle of its own
+            found = found.FindAll(candidate => candidate.Sampler != null || !found.Exists(other => other.Sampler != null && (other.Texture.Value == candidate.Texture.Value || other.Sampler.Value == candidate.Texture.Value && other.Sampler.Type == OperandType.ConstantBuffer)));
+
+            if (found.Count > 1)
+            {
+                if (texOp.Inst.IsImageStore())
+                {
+                    return TableHandle.None;   // one operation per candidate would store into every candidate
+                }
+
+                if (deferSeveral)
+                {
+                    return TableHandle.Deferred;
+                }
+
+                found = found.FindAll(candidate => resourceManager.GetTextureTypes(candidate.Texture.GetCbufSlot(), candidate.Texture.GetCbufOffset(), texOp.Inst.IsImage())
+                    .TrueForAll(type => SameShape(type, texOp.Type)));
+            }
+
+            if (found.Count == 0)
+            {
+                return TableHandle.None;
+            }
+
+            int last = found.Count - 1;
+            Operand[] matches = new Operand[last];
+            Operand[][] results = new Operand[last][];
+
+            for (int index = 0; index < last; index++)
+            {
+                Operand candidate = CandidateHandle(block, node, found[index]);
+                Operand[] sources = new Operand[texOp.SourcesCount];
+                results[index] = new Operand[texOp.DestsCount];
+
+                for (int srcIndex = 0; srcIndex < sources.Length; srcIndex++)
+                {
+                    sources[srcIndex] = srcIndex == 0 ? candidate : texOp.GetSource(srcIndex);
+                }
+
+                for (int destIndex = 0; destIndex < results[index].Length; destIndex++)
+                {
+                    results[index][destIndex] = OperandHelper.Local();
+                }
+
+                TextureOperation read = new(texOp.Inst, texOp.Type, texOp.Format, texOp.Flags, texOp.Set, texOp.Binding, texOp.Index, results[index], sources);
+                LinkedListNode<INode> readNode = block.Operations.AddBefore(node, read);
+
+                if (!TryConvertBindless(block, resourceManager, gpuAccessor, read))
+                {
+                    for (int destIndex = 0; destIndex < results[index].Length; destIndex++)
+                    {
+                        block.Operations.AddBefore(readNode, new Operation(Instruction.Copy, results[index][destIndex], OperandHelper.Const(0)));
+                    }
+
+                    Utils.DeleteNode(readNode, read);
+                }
+
+                matches[index] = OperandHelper.Local();
+                block.Operations.AddBefore(node, new Operation(Instruction.CompareEqual, matches[index], handle, candidate));
+            }
+
+            texOp.SetSource(0, CandidateHandle(block, node, found[last]));
+
+            LinkedListNode<INode> after = node;
+
+            for (int destIndex = 0; destIndex < texOp.DestsCount && last > 0; destIndex++)
+            {
+                Operand dest = texOp.GetDest(destIndex);
+                Operand value = OperandHelper.Local();
+                texOp.SetDest(destIndex, value);
+
+                for (int index = last - 1; index >= 0; index--)
+                {
+                    Operand selected = index == 0 ? dest : OperandHelper.Local();
+                    after = block.Operations.AddAfter(after, new Operation(Instruction.ConditionalSelect, selected, matches[index], results[index][destIndex], value));
+                    value = selected;
+                }
+            }
+
+            gpuAccessor.Log(found.Count == 1
+                ? "Bindless handle taken from the one constant buffer handle among its phi inputs."
+                : $"Bindless handle chosen at run time among {found.Count} constant buffer handles of its phi inputs.");
+
+            return TableHandle.Set;
+        }
+
+        // Whether a texture of the given type can be read as this instruction's (a 1D texture and a texture buffer are told apart only by the descriptor)
+        private static bool SameShape(SamplerType type, SamplerType opType)
+        {
+            const SamplerType Shape = SamplerType.Mask | SamplerType.Array | SamplerType.Multisample;
+
+            static SamplerType Of(SamplerType t)
+            {
+                t &= Shape;
+
+                return t == SamplerType.TextureBuffer ? SamplerType.Texture1D : t;
+            }
+
+            return Of(type) == Of(opType);
+        }
+
+        private static Operand CandidateHandle(BasicBlock block, LinkedListNode<INode> node, (Operand Texture, Operand Sampler) candidate)
+        {
+            if (candidate.Sampler == null)
+            {
+                return candidate.Texture;
+            }
+
+            Operand combined = OperandHelper.Local();
+            block.Operations.AddBefore(node, new Operation(Instruction.BitwiseOr, combined, candidate.Texture, candidate.Sampler));
+
+            return combined;
+        }
+
+        private static bool IsTableWord(Operand operand)   // a c[2] word that can name a texture (not one of the separate sampler table: a sampler word alone, on a path the read does not take, is no candidate)
+        {
+            return operand.Type == OperandType.ConstantBuffer && operand.GetCbufSlot() == NvnTextureBufferIndex && !IsSamplerWord(operand);
+        }
+
+        private static bool IsSamplerWord(Operand operand)
+        {
+            if (operand.Type != OperandType.ConstantBuffer || operand.GetCbufSlot() != NvnTextureBufferIndex) return false;
+            int offset = operand.GetCbufOffset() * 4;
+            return offset >= NvnSeparateSamplerBase && offset < NvnSeparateSamplerEnd;
+        }
+
+        private static bool IsSameBankWord(Operand operand, Operand word)
+        {
+            return operand.Type == OperandType.ConstantBuffer && operand.GetCbufSlot() == word.GetCbufSlot();
+        }
+
+        private static void AddCandidate(List<(Operand Texture, Operand Sampler)> found, Operand texture, Operand sampler)
+        {
+            foreach ((Operand t, Operand s) in found)
+            {
+                if (t.Value == texture.Value && (s == null ? sampler == null : sampler != null && s.Type == sampler.Type && s.Value == sampler.Value))
+                {
+                    return;
+                }
+            }
+
+            found.Add((texture, sampler));
+        }
+
+        // nxnative: an operand as text for DMSH_BINDLESS_TRACE: constant buffer words, constants, and operations with their sources, four levels deep
+        private static string Describe(Operand o, int depth)
+        {
+            if (o == null) return "null";
+            switch (o.Type)
+            {
+                case OperandType.ConstantBuffer: return $"c[{o.GetCbufSlot()}][0x{o.GetCbufOffset() * 4:x}]";
+                case OperandType.Constant: return $"0x{o.Value:x}";
+                case OperandType.Undefined: return "undefined";
+                case OperandType.Register: return $"r{o.Value}";
+            }
+            if (depth > 4) return "...";
+            if (o.AsgOp is PhiNode phi)
+            {
+                List<string> parts = new();
+                for (int i = 0; i < phi.SourcesCount; i++) parts.Add(Describe(phi.GetSource(i), depth + 1));
+                return "phi(" + string.Join(", ", parts) + ")";
+            }
+            if (o.AsgOp is Operation op)
+            {
+                List<string> parts = new();
+                for (int i = 0; i < op.SourcesCount; i++) parts.Add(Describe(op.GetSource(i), depth + 1));
+                string kind = op.StorageKind != StorageKind.None ? "." + op.StorageKind : "";
+                return $"{op.Inst}{kind}(" + string.Join(", ", parts) + ")";
+            }
+            return o.Type.ToString();
+        }
+
+        // The values a phi can take, through the phis it merges (each visited once).
+        private static List<Operand> PhiLeaves(Operand operand)
+        {
+            List<Operand> leaves = new();
+            HashSet<PhiNode> visited = new();
+            Stack<Operand> pending = new();
+            pending.Push(operand);
+
+            while (pending.Count > 0)
+            {
+                Operand current = pending.Pop();
+
+                if (current.AsgOp is PhiNode phi)
+                {
+                    if (visited.Add(phi))
+                    {
+                        for (int index = 0; index < phi.SourcesCount; index++)
+                        {
+                            pending.Push(phi.GetSource(index));
+                        }
+                    }
+                }
+                else
+                {
+                    leaves.Add(current);
+                }
+            }
+
+            return leaves;
         }
 
         private static bool GenerateBindlessAccess(
@@ -70,19 +352,7 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
 
             Operand bindlessHandle = texOp.GetSource(0);
 
-            if (bindlessHandle.AsgOp is PhiNode phi)
-            {
-                for (int srcIndex = 0; srcIndex < phi.SourcesCount; srcIndex++)
-                {
-                    Operand phiSource = phi.GetSource(srcIndex);
-
-                    if (phiSource.AsgOp is not PhiNode && !IsBindlessAccessAllowed(phiSource))
-                    {
-                        return false;
-                    }
-                }
-            }
-            else if (!IsBindlessAccessAllowed(bindlessHandle))
+            if (!IsBindlessHandleAllowed(bindlessHandle))
             {
                 return false;
             }
@@ -94,7 +364,9 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
             block.Operations.AddBefore(node, new Operation(Instruction.BitwiseAnd, textureHandle, bindlessHandle, OperandHelper.Const(0xfffff)));
             block.Operations.AddBefore(node, new Operation(Instruction.ShiftRightU32, samplerHandle, bindlessHandle, OperandHelper.Const(20)));
 
-            int texturePoolLength = Math.Max(BindlessToArray.MinimumArrayLength, gpuAccessor.QueryTextureArrayLengthFromPool());
+            // nxnative: every array this pass makes holds NvnSlotArrayLength elements, the number of descriptor slots the Android replay binds for it (android_dynamic_slots
+            // arrays are bound slot by slot); dmsh_xlate answers the texture and sampler pool queries with the same 32, so both lengths are one
+            int texturePoolLength = NvnSlotArrayLength;
 
             block.Operations.AddBefore(node, new Operation(Instruction.MinimumU32, textureIndex, textureHandle, OperandHelper.Const(texturePoolLength - 1)));
 
@@ -116,7 +388,7 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
             {
                 Operand samplerIndex = OperandHelper.Local();
 
-                int samplerPoolLength = Math.Max(BindlessToArray.MinimumArrayLength, gpuAccessor.QuerySamplerArrayLengthFromPool());
+                int samplerPoolLength = NvnSlotArrayLength;
 
                 block.Operations.AddBefore(node, new Operation(Instruction.MinimumU32, samplerIndex, samplerHandle, OperandHelper.Const(samplerPoolLength - 1)));
 
@@ -139,6 +411,26 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
             }
 
             return true;
+        }
+
+        private static bool IsBindlessHandleAllowed(Operand bindlessHandle)
+        {
+            if (bindlessHandle.AsgOp is PhiNode phi)
+            {
+                for (int srcIndex = 0; srcIndex < phi.SourcesCount; srcIndex++)
+                {
+                    Operand phiSource = phi.GetSource(srcIndex);
+
+                    if (phiSource.AsgOp is not PhiNode && !IsBindlessAccessAllowed(phiSource))
+                    {
+                        return false;
+                    }
+                }
+
+                return true;
+            }
+
+            return IsBindlessAccessAllowed(bindlessHandle);
         }
 
         private static bool IsBindlessAccessAllowed(Operand bindlessHandle)
@@ -222,6 +514,13 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
                 // Since this is a commutative operation, both are fine,
                 // and having a "canonical" representation simplifies some checks below.
                 if (src0.Type == OperandType.Constant && src1.Type != OperandType.Constant)
+                {
+                    (src0, src1) = (src1, src0);
+                }
+
+                // nxnative: the compiler ORs the two words in either order (a sampler word first named the sampler's word as the texture, a binding with no slot). A word in c[2]'s separate
+                // sampler table is the sampler, the other the texture
+                if (IsSamplerWord(src0) && !IsSamplerWord(src1))
                 {
                     (src0, src1) = (src1, src0);
                 }

@@ -17,3 +17,5 @@ tested	v0 Retroid Pocket 6 (QCS8550, Adreno 740, Android 13); PurpleVK-public gi
 package	org.nx2a.t0100a0c00e0de000
 orientation	landscape
 env	DM_VK_MT_REPLAY=1
+readme_image	docs/images/lonely-mountains-downhill.png
+readme_tag	v0.4.0

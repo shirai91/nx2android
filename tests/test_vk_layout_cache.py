@@ -11,6 +11,9 @@ DM = ROOT / 'nxnative/dm'
 sys.path.insert(0, str(ROOT))
 from porter.toolchain import find_ndk
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import csrc  # noqa: E402
+
 
 class LayoutCache(unittest.TestCase):
     @unittest.skipUnless(shutil.which('cc'), 'a host C compiler is required')
@@ -20,8 +23,7 @@ class LayoutCache(unittest.TestCase):
         if not headers:
             self.skipTest('NDK Vulkan headers are required')
         src = (DM / 'android/gfx_vk_shader.c').read_text()
-        start = src.index('static VkDescriptorSetLayout shader_layout(')
-        helper = src[start:src.index('\n}\n', start) + 3]
+        helper = csrc.function(src, 'static VkDescriptorSetLayout shader_layout(')
         code = r'''
 #include <assert.h>
 #include <vulkan/vulkan.h>

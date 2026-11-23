@@ -3,6 +3,9 @@
 #include "../hle_time.c"
 #include <mach-o/getsect.h>
 
+void *guest_sym(const char *name) { (void)name; return NULL; }
+int dm_sdk_major(void) { return 20; }
+
 uint64_t guest_ns(void) { return clock_gettime_nsec_np(CLOCK_MONOTONIC); }
 static int checks, fails;
 extern const struct mach_header_64 _mh_execute_header;

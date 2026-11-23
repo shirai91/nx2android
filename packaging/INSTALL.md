@@ -26,6 +26,15 @@ cd ~/Downloads/nx2android
 
 If the shell says *Permission denied* (some archive programs drop the executable mark when they extract), run `chmod +x nx2android` first. The app needs the system libraries of Ubuntu 24.04 or newer (glibc 2.39): it runs on recent Ubuntu and Mint, Debian 13 and later, Fedora, Arch and the like.
 
+Or take the AppImage, `nx2android-<version>-linux-x64.AppImage` (PC) or `nx2android-<version>-linux-arm64.AppImage`: one file, nothing to unzip. Make it executable (in the file manager: Properties → Permissions → *Allow executing file as program*, or in a terminal) and start it:
+
+```
+chmod +x ~/Downloads/nx2android-*-linux-x64.AppImage
+~/Downloads/nx2android-*-linux-x64.AppImage
+```
+
+It needs FUSE, which most desktop distributions have. If it says FUSE is missing, install `fuse3` (`sudo apt install fuse3` on Ubuntu and Debian), or start it with `--appimage-extract-and-run` as its first argument. The AppImage keeps a copy of the engine (about 15 MB) in `~/.config/nx2android/engine` and makes it again when you start a new AppImage. The command line is the same: `./nx2android-<version>-linux-x64.AppImage -m porter -h`.
+
 A few antivirus engines may flag `nx2android.exe` (on VirusTotal, 3 of 69 flagged v0.1.1, with generic labels such as "Trojan.Stealer" or "BehavesLike.Injector"; Microsoft Defender, Kaspersky, ESET, BitDefender and the other large engines did not). It is a false positive: the app is a Python program packed with PyInstaller, whose small launcher unpacks a compressed archive of the program and runs it, which heuristic scanners mistake for a packed trojan. The app is not code-signed yet, which adds to the score. Its source is on the project's GitHub page, and you can build the same bundle yourself with `python packaging/build_bundle.py`.
 
 ## 2. Setup tab (once)
@@ -52,7 +61,17 @@ The data folder carries the game's own files, its RomFS (most of the game: often
 nx2android.exe -m porter install "<Game>-data" --romfs-at /sdcard/<path to the dump>/romfs
 ```
 
-(`./nx2android -m porter …` on a Mac.) The installer checks that the folder holds exactly the game's files, gives the app **All files access** (the device does not ask you), does not copy the game's files, and deletes the copy an earlier install left in the app's folder. It compares the names and sizes of all the files, and the content of a sample of them, so a dump of another game version is refused. Later installs, from the app's **Install on device** button too, keep reading that folder; a port of a newer game version needs that version's folder (`--romfs-at` again, or the field). `--romfs-at app` (or `app` in the field) puts the files back in the app's own folder. A folder inside another app's `Android/data` cannot be used: Android lets no app read it. To put the game's files on the SD card instead, add `--romfs-push` (the **Push the game's RomFS into that folder** box) with an empty folder there.
+(`./nx2android -m porter …` on a Mac.) The installer checks that the folder holds exactly the game's files, gives the app **All files access** (the device does not ask you), does not copy the game's files, and deletes the copy an earlier install left in the app's folder. It compares the names and sizes of all the files, and the content of a sample of them, so a dump of another game version is refused. Later installs, from the app's **Install on device** button too, keep reading that folder; a port of a newer game version needs that version's folder (`--romfs-at` again, or the field). `--romfs-at app` (or `app` in the field) puts the files back in the app's own folder; a folder you chose is left as it is. A folder inside another app's `Android/data` cannot be used: Android lets no app read it. To put the game's files in a folder of your own on the SD card instead, add `--romfs-push` (the **Push the game's RomFS into that folder** box) with an empty folder there.
+
+### The game's files on the SD card
+
+Android installs apps only to an SD card formatted as internal storage. On a device whose SD card is portable storage, the app stays in internal storage, but its game files (the RomFS, most of the game) can go on the card: tick **Game data on the SD card**, or install with:
+
+```
+nx2android.exe -m porter install "<Game>-data" --romfs-at sd
+```
+
+The installer copies the game's files into the app's own folder on the card, `Android/data/<package>/files/RomFS`, and gives the app **All files access**. Android deletes that folder when you uninstall the game. A later install, with the box ticked or not, keeps the files on the card and copies only what a new game version changed (files that are not the new version's are deleted). `--romfs-at app` (or `app` in the field) moves the files back into internal storage and deletes them from the card. With no SD card in the device, the install stops before it changes anything. If a USB drive is plugged in too, the SD card is used; with only a USB drive, the files go on it, and the game does not start without it.
 
 If the app closes at once and its `log.txt` says it lacks All files access, turn it on in Settings → Apps → the game → All files access (the app opens that page itself), or install again.
 

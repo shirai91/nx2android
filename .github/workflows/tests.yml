@@ -1,0 +1,57 @@
+# The tests on every push and pull request, before a merge (docs/DEVELOPMENT_GUIDE.md, Tests). The release workflows (release-*.yml) run them again
+# before they build the bundles. The C harnesses need a POSIX compiler, which a Windows PC without one skips: here Linux runs them with gcc and with
+# clang (each finds other errors), macOS with Apple clang, Windows with MinGW gcc. The Android host is compiled with the NDK as a port compiles it.
+name: Tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true   # a newer push to the same branch replaces the run
+
+jobs:
+  unit:
+    strategy:
+      fail-fast: false   # each job's failures stay visible
+      matrix:
+        include:
+          - { name: linux-gcc, runner: ubuntu-latest, cc: gcc }
+          - { name: linux-clang, runner: ubuntu-latest, cc: clang }
+          - { name: macos, runner: macos-latest, cc: '' }
+          - { name: windows, runner: windows-latest, cc: '' }
+    name: unit (${{ matrix.name }})
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.14'
+      - run: python -m pip install -r requirements.txt
+      - name: cc is ${{ matrix.cc }}   # the harnesses call cc
+        if: matrix.cc != ''
+        run: |
+          mkdir -p "$RUNNER_TEMP/cc" && ln -sf "$(command -v ${{ matrix.cc }})" "$RUNNER_TEMP/cc/cc" && echo "$RUNNER_TEMP/cc" >> "$GITHUB_PATH"
+      - run: cc --version || true
+      - run: python -m unittest discover tests
+
+  android-host:
+    name: android host (NDK, debug and release)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.14'
+      - run: python -m pip install -r requirements.txt
+      # one profile is enough: the core is the same for every game, the profile adds only its generated headers
+      - run: python nxnative/dm/android/build.py --game 0100F43008C44000 --ndk "$ANDROID_NDK_LATEST_HOME" --out "$RUNNER_TEMP/host-debug" --lib --jobs 4
+      - run: python nxnative/dm/android/build.py --game 0100F43008C44000 --ndk "$ANDROID_NDK_LATEST_HOME" --out "$RUNNER_TEMP/host-release" --lib --release --jobs 4

@@ -34,10 +34,14 @@ zip_store	.bundle:.wem:.unity3d:.metallib
 # one address region in the alias region (1 GB aligned). Unity's low-level virtual allocator also calls AllocateAddressRegion itself (each block aligned by size: 2.25 MB takes 4 MB, 16.25 MB takes 20 MB),
 # about 1.05 GB in the prologue battle. Newer SDKs' AddressRegionManager first takes about 1 GB at the start of the alias region as its node area; dm/tools/sdk_patches.py registers a cut for this game's sdk build that shrinks it to 62 MB (the hardware's alias region is 64 GB and does not care).
 # Measured (prologue to the battle, 12 minutes): StandardAllocator commits only 0.58 GB and Unity's own regions 0.97 GB, 1.55 GB in all. So the pool is reported as 2.5 GB (StandardAllocator about 2.44 GB, four times its use),
-# and the block fits in 5 GB = 256 MB in front + 4.375 GB alias region + 256 MB stack region + 128 MB heap region (Engage never calls SetHeapSize; thread stacks are placed at random in the stack region). 5 GB is the total proven on a phone (D2R);
-# without the "extended virtual addressing" entitlement iOS allows one reservation of at most 6 GB, but Metal and the rest need address space too (Engage allocates about 1 GB of GPU memory on the Mac), so the former 6 GB block left no margin on a phone.
-mem_reserve	0x140000000
-mem_alias	0x118000000
+# and the block keeps 256 MB in front + 20.375 GB alias region + 256 MB stack region + 128 MB heap region (Engage never calls SetHeapSize; thread stacks are placed at random in the stack region).
+# The prologue stays under 4.375 GB of alias region, but the Somniel and later scenes reserve more and were refused (AllocateAddressRegion 0x1803, 275 regions, 3.96 GB reserved) before a SIGSEGV;
+# 16 GB more ran the Somniel with 0 refusals at 60 fps on the Legion Y700 (2026-11-16). The Android host reserves the block with MAP_NORESERVE, so the address space costs no memory
+# (without the "extended virtual addressing" entitlement iOS allows one reservation of at most 6 GB, so an iOS build of this layout needs it).
+# The NPDM's 16 MB of system resource: the game's virtual address memory (nninitStartup above), which --alias-headroom extends for a port that needs more
+sys_resource	0x1000000
+mem_reserve	0x540000000
+mem_alias	0x518000000
 mem_stack	0x10000000
 app_pool	0xA0000000
 

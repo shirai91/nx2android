@@ -14,6 +14,7 @@ NO_ADB = 'adb not found: install Android platform-tools (Download missing tools)
 
 
 LONG_PATH = 240   # adb.exe is not long-path aware: it cannot open a file whose full path passes Windows' 260 characters (Viractal's Unity bundles in a deep game folder)
+HOLD_POLL = 1.0   # s between tries while another install holds the device (Adb.hold)
 TAR_MIN, TAR_FILES, TAR_BYTES = 256, 8192, 64 << 20   # push_tree: from this many small files on, tar archives of at most this many files / bytes
 
 
@@ -109,6 +110,19 @@ class Adb:
         out = self.shell('for p in ' + ' '.join(shlex.quote(x) for x in (a, b)) + '; do while [ ! -e "$p" ]; do p=$(dirname "$p"); done; stat -L -c %d "$p"; done', check=False).split()
         return len(out) == 2 and out[0] == out[1]
 
+    def sd_volume(self):
+        """The SD card's mount folder (/storage/<its id>), None when no portable volume is mounted. sm lists a mounted public volume as "public:179,1 mounted 0AEF-0B2F":
+        179 is the MMC block major (an SD card), so such a volume comes first; a USB drive on OTG (major 8) only when no SD card is mounted"""
+        vols = []
+        for ln in self.shell('sm list-volumes', check=False).splitlines():
+            p = ln.split()
+            if len(p) >= 3 and p[0].startswith('public:') and p[1] == 'mounted' and re.fullmatch(r'[A-Za-z0-9-]+', p[2]) and p[2] != 'null':
+                vols.append((not p[0].startswith('public:179,'), f'/storage/{p[2]}'))
+        return sorted(vols, key=lambda v: v[0])[0][1] if vols else None   # stable: the first listed of each kind
+
+    def is_dir(self, path):   # whether path is a folder on the device
+        return self.shell(f'[ -d {shlex.quote(path)} ] && echo yes; true', check=False).strip() == 'yes'
+
     def read_text(self, path):   # a small text file on the device, '' when it is not there
         return self.shell(f'cat {shlex.quote(path)} 2>/dev/null; true', check=False)
 
@@ -173,6 +187,31 @@ class Adb:
         out = self.shell(f'am start -W -n {shlex.quote(components[0])} 2>&1', timeout=60)
         if re.search(r'(?im)^(?:Error|Exception)', out):
             raise AdbError(f'{package}: could not start its launcher activity: {out.strip()}')
+
+    def hold(self, folder, wait=True):
+        """One porter install per device at a time (two at once on one device uninstalled each other's app, and Android deleted the data and the saves with it): a lock
+        file per serial in folder, held until the returned file is closed (the system also drops it when a crashed or killed install exits). While another install
+        holds it: a message, then wait for it (wait=False: AdbError). None (no lock) on a system with neither flock nor msvcrt.locking"""
+        try: import fcntl
+        except ImportError: fcntl = None
+        try: import msvcrt
+        except ImportError: msvcrt = None
+        if not fcntl and not msvcrt: return None
+        f = open(Path(folder) / ('install-' + re.sub(r'[^A-Za-z0-9._-]', '_', self.serial or 'device') + '.lock'), 'w')
+        def take():   # True when f now holds the lock
+            try:
+                if fcntl: fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                else: f.seek(0); msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)   # byte 0; Windows drops it when the handle closes or the process exits
+                return True
+            except OSError: return False
+        try:
+            if not take():
+                name = self.serial or 'the device'
+                if not wait: raise AdbError(f'another porter install is using {name}: wait for it to end')
+                self.log(f'another porter install is using {name}: waiting for it to end')
+                while not take(): time.sleep(HOLD_POLL)
+        except BaseException: f.close(); raise
+        return f
 
     def prepare_app_files(self, package, timeout=30):
         """Have Android create the app's files folder (/sdcard/Android/data/<package>/files) before anything is pushed into it: the system makes it, owned by the app with
