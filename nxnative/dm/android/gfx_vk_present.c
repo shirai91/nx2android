@@ -76,6 +76,7 @@ __attribute__((weak)) int dm_fps_opts(void) { return FPSO_DEFAULT; }   // front_
 __attribute__((weak)) int dm_overlay_fps(void) { return 0; }   // front_android.c: the pause menu's Show FPS
 __attribute__((weak)) int dm_save_note(char *out, int cap) { if (cap > 0) out[0] = 0; return OVX_IDLE; }   // front_android.c: the save manager's rows
 __attribute__((weak)) int dm_save_rows(ov_srow rows[OVM_ROWS]) { (void)rows; return 0; }
+__attribute__((weak)) int dm_menu_folder(char *out, int cap) { if (cap > 0) out[0] = 0; return 0; }   // front_android.c: the save folder's rows
 __attribute__((weak)) int dm_overlay_custom(int layout, int ctl, float *x, float *y, float *s) { (void)layout; (void)ctl; (void)x; (void)y; *s = 1; return 0; }
 __attribute__((weak)) int dm_overlay_custom_ver(void) { return 0; }
 __attribute__((weak)) int dm_overlay_hidden(int layout, int ctl) { (void)layout; (void)ctl; return 0; }
@@ -394,7 +395,8 @@ static void cv_button(const ov_canvas *cv, const float b[4], const char *l, int 
     cv_text(cv, b[0] + (b[2] - cv_text_w(l, s)) / 2, b[1] + b[3] / 2, l, s, C_WHITE);
 }
 // The pause menu (overlay_layout.h: the rows, the tabs, the slider's track), in the raster's panel rectangle. Its letters are as large as a row allows (0.30 of
-// its height, about 2.7 mm on a 6.7" phone and 3.6 mm on the 8.8" tablet) and smaller only when the widest row would not fit beside its control
+// its height, about 2.7 mm on a 6.7" phone and 3.6 mm on the 8.8" tablet) and smaller only when the widest row would not fit beside its control. A tab with
+// more rows than the panel shows draws them scrolled (overlay_layout.h ov_menu_item_y), cut at the tabs' row and at Resume, with a scrollbar on the right
 static const char *ovm_label(int it) {
     switch (it) {
     case OVM_OVERLAY: return TR("Show gamepad", "显示手柄");
@@ -403,8 +405,13 @@ static const char *ovm_label(int it) {
     case OVM_RUMBLE: return TR("Rumble", "震动");
     case OVM_FPS: return TR("Show FPS", "显示帧率");
     case OVM_MODE: return TR("Mode", "模式");
-    case OVM_EXPORT: return TR("Export save", "导出存档");
-    case OVM_IMPORT: return TR("Import save", "导入存档");
+    case OVM_EXPORT: return TR("Export to a file", "导出存档到文件");
+    case OVM_IMPORT: return TR("Import from a file", "从文件导入存档");
+    case OVM_ERASE: return TR("Erase and start over", "清除存档并重新开始");
+    case OVM_SYNC: return TR("Sync folder", "同步文件夹");
+    case OVM_SYNC_OFF: return TR("Off: the save stays only in the app.", "已关闭：存档仅保存在应用内。");
+    case OVM_SYNC_WITH: return TR("Syncing with:", "正在同步到：");
+    case OVM_SYNC_STOP: return TR("Stop syncing", "停止同步");
     case OVM_PAD: return TR("Face buttons", "按键布局");
     case OVM_AUDIO: return TR("Audio output", "音频输出");
     case OVM_ROW_FPS: return TR("FPS row", "帧率行");
@@ -425,6 +432,9 @@ static const char *ovm_button(int it) {
     case OVM_EDIT: return TR("Edit", "编辑");
     case OVM_EXPORT: return TR("Export", "导出");
     case OVM_IMPORT: return TR("Import", "导入");
+    case OVM_ERASE: return TR("Erase", "清除");
+    case OVM_SYNC: { char q[8]; return dm_menu_folder(q, sizeof q) == 2 ? TR("Change", "更改") : TR("Choose", "选择"); }
+    case OVM_SYNC_STOP: return TR("Stop", "停止");
     case OVM_AUDIO: return TR("Select", "选择");
     default: return NULL;
     }
@@ -439,14 +449,62 @@ static int ov_val_cur(int it, int o) { return it == OVM_POS ? fpso_pos(o) : it =
 static float ov_val_w(int it, int is) {   // the widest value's width
     float w = 0; for (int v = 0; v < ov_val_n(it); v++) w = fmaxf(w, cv_text_w(ov_val_name(it, v), is)); return w;
 }
+typedef struct { float rh, rw, gap, sh, sw; int is, st, op, fo; } ov_mm;   // the menu's measures: row height and width, gaps, the switch's size, the letters, the state
+static void ov_menu_row(const ov_canvas *cv, const ov_mm *m, int it, const float r[4], int selected) {   // a tab's row it in its rectangle r (cv: cut to the rows)
+    float rh = m->rh, rw = m->rw, gap = m->gap, sh = m->sh, sw = m->sw, cy = r[1] + rh / 2, x1 = r[0] + rw - rh * 0.15f; int is = m->is, st = m->st;
+    if (selected) cv_rrect(cv, r[0], r[1] + rh * 0.08f, r[0] + rw, r[1] + rh * 0.92f, rh * 0.14f, C_HI);
+    if (ov_menu_note(it)) {   // a line of text, no control: what the sync folder is now. The folder's path in white, smaller when it is long, and its end when it is longer still
+        char path[512]; dm_menu_folder(path, sizeof path);
+        const char *txt = it == OVM_SYNC_PATH ? path : ovm_label(it); float room = rw - rh * 0.3f;
+        int fs = is, lo = (int)fmaxf(1, floorf(is * 0.55f)); while (fs > lo && cv_text_w(txt, fs) > room) fs--;
+        char cut[520]; snprintf(cut, sizeof cut, "%s", txt); const char *tail = txt;
+        while (*tail && cv_text_w(cut, fs) > room) { pf_next(&tail); snprintf(cut, sizeof cut, "...%s", tail); }
+        cv_text(cv, r[0] + rh * 0.15f, cy, cut, fs, it != OVM_SYNC_PATH ? C_DIM : !strncmp(path, "No access", 9) ? C_ACCENT : C_WHITE);
+        return;
+    }
+    const char *lbl = ovm_label(it), *btn = ovm_button(it);
+    cv_text(cv, r[0] + rh * 0.15f, cy, lbl, is, selected ? C_WHITE : C_DIM);
+    if (it == OVM_OPACITY) {   // the slider: its track (overlay_layout.h ov_menu_track's), filled to the value, the knob and the percent
+        float t[3] = {r[0] + r[2] * 0.40f, cy, r[2] * 0.44f}, f = (float)(m->op - OV_OPACITY_MIN) / (OV_OPACITY_MAX - OV_OPACITY_MIN), th = fmaxf(2, rh * 0.08f), kr = rh * 0.20f;
+        f = f < 0 ? 0 : f > 1 ? 1 : f;
+        cv_rrect(cv, t[0], t[1] - th / 2, t[0] + t[2], t[1] + th / 2, th / 2, C_OFF);
+        cv_rrect(cv, t[0], t[1] - th / 2, t[0] + f * t[2], t[1] + th / 2, th / 2, C_ACCENT);
+        cv_disc(cv, t[0] + f * t[2], t[1], kr, C_WHITE);
+        char v[8]; snprintf(v, sizeof v, "%d%%", m->op); cv_text(cv, x1 - cv_text_w(v, is), cy, v, is, C_WHITE);
+    } else if (it == OVM_EXPORT && (st >> 20 & 15) != OVX_IDLE) {   // the export's outcome in place of its button: its name, or why there is none
+        char nm[160], v[170]; int x = dm_save_note(nm, sizeof nm), vs = is;
+        snprintf(v, sizeof v, "%s", x == OVX_BUSY ? TR("Exporting...", "导出中...") : x == OVX_DONE ? nm : x == OVX_NOSAVE ? TR("No save yet", "还没有存档") : TR("Failed", "失败"));
+        while (vs > 1 && cv_text_w(v, vs) > rw - cv_text_w(lbl, is) - gap - rh * 0.3f) vs--;
+        cv_text(cv, x1 - cv_text_w(v, vs), cy, v, vs, x == OVX_FAILED ? C_ACCENT : C_WHITE);
+    } else if (ov_val_n(it)) {   // the counter's corner, colour, outline and size: the value in a pill
+        int cur = ov_val_cur(it, m->fo); const char *nm = ov_val_name(it, cur); float pw = ov_val_w(it, is) + 2 * sh, hh = rh * 0.46f;
+        cv_rrect(cv, x1 - pw, cy - hh / 2, x1, cy + hh / 2, hh / 2, C_OFF);
+        const uint8_t *tc = C_WHITE, rgb[4] = {FPSO_RGB[fpso_colour(m->fo)][0], FPSO_RGB[fpso_colour(m->fo)][1], FPSO_RGB[fpso_colour(m->fo)][2], 255};
+        cv_text(cv, x1 - pw + (pw - cv_text_w(nm, is)) / 2, cy, nm, is, it == OVM_COLOUR ? rgb : tc);
+    } else if (btn) {   // a button
+        float bw = cv_text_w(btn, is) + 2 * sh, b[4] = {x1 - bw, cy - rh * 0.30f, bw, rh * 0.60f}; cv_button(cv, b, btn, 0, 0);
+    } else if (it == OVM_MODE || it == OVM_PAD) {   // two segments, the current one filled: handheld (performance) | docked (resolution); by position | by label
+        const char *seg[2] = {it == OVM_MODE ? ovm_mode(0) : ovm_pad(0), it == OVM_MODE ? ovm_mode(1) : ovm_pad(1)}; int cur = it == OVM_MODE ? st >> 2 & 1 : st >> 28 & 1;
+        float hh = rh * 0.46f, segw = fmaxf(cv_text_w(seg[0], is), cv_text_w(seg[1], is)) + sh, x0 = x1 - 2 * segw;
+        cv_rrect(cv, x0, cy - hh / 2, x1, cy + hh / 2, hh / 2, C_OFF);
+        cv_rrect(cv, x0 + cur * segw, cy - hh / 2, x0 + (cur + 1) * segw, cy + hh / 2, hh / 2, C_ACCENT);
+        for (int k = 0; k < 2; k++) cv_text(cv, x0 + k * segw + (segw - cv_text_w(seg[k], is)) / 2, cy, seg[k], is, k == cur ? C_WHITE : C_DIM);
+    } else {   // a switch
+        int on = it >= OVM_ROW_FPS && it <= OVM_ROW_GRAPH ? fpso_rows(m->fo) >> (it - OVM_ROW_FPS) & 1 : st >> (it == OVM_OVERLAY ? 0 : it == OVM_RUMBLE ? 1 : 3) & 1; float sx0 = x1 - sw;
+        cv_rrect(cv, sx0, cy - sh / 2, x1, cy + sh / 2, sh / 2, on ? C_ACCENT : C_OFF);
+        cv_disc(cv, on ? x1 - sh / 2 : sx0 + sh / 2, cy, sh / 2 - fmaxf(2, sh * 0.1f), on ? C_WHITE : C_KNOB_OFF);
+        const char *word = on ? TR("ON", "开") : TR("OFF", "关"); cv_text(cv, sx0 - gap - cv_text_w(word, is), cy, word, is, on ? C_WHITE : C_DIM);
+    }
+}
 static void ov_menu_panel(const ov_canvas *cv, int st) {
     float p[4] = {0, 0, (float)cv->w, (float)cv->h}, r[4]; ov_menu_rowrect(p, 0, r);
-    float rh = r[3], rw = r[2], gap = rh * 0.35f, sh = rh * 0.40f, sw = sh * 1.85f;
-    int tab = (st >> 8 & 1) | (st >> 19 & 1) << 1, sel = (st >> 4 & 15) - 1, op = st >> 9 & 127, fo = dm_fps_opts();
-    int is = (int)fmaxf(1, roundf(rh * 0.30f / PF_CAP));
-    for (; is > 1; is--) {   // the widest row: its label, a gap and its control
-        float need = 0;
+    char path[8]; int tab = (st >> 8 & 1) | (st >> 19 & 1) << 1 | (st >> 27 & 1) << 2, sel = (st >> 4 & 15) - 1, n = ov_menu_count(tab, dm_menu_folder(path, sizeof path)), s = tab == OVM_TAB_SAVE ? ov_menu_scroll_clamp(st >> 9 & 127, n) : 0;
+    ov_mm m = {r[3], r[2], r[3] * 0.35f, r[3] * 0.40f, r[3] * 0.40f * 1.85f, (int)fmaxf(1, roundf(r[3] * 0.30f / PF_CAP)), st, tab == 0 ? st >> 9 & 127 : 0, dm_fps_opts()};
+    float rh = m.rh, rw = m.rw, gap = m.gap, sh = m.sh, sw = m.sw;
+    for (; m.is > 1; m.is--) {   // the widest row: its label, a gap and its control
+        int is = m.is; float need = 0;
         for (int i = 0; i < OVM_RESUME; i++) {
+            if (ov_menu_note(i)) continue;   // (a line of text shrinks on its own row)
             float lw = cv_text_w(ovm_label(i), is); const char *btn = ovm_button(i);
             float cw = ov_val_n(i) ? ov_val_w(i, is) + 2 * sh
                      : i == OVM_MODE ? 2 * (fmaxf(cv_text_w(ovm_mode(0), is), cv_text_w(ovm_mode(1), is)) + sh)
@@ -455,58 +513,35 @@ static void ov_menu_panel(const ov_canvas *cv, int st) {
                      : sw + gap + fmaxf(cv_text_w(TR("ON", "开"), is), cv_text_w(TR("OFF", "关"), is));
             need = fmaxf(need, i == OVM_OPACITY ? fmaxf(lw / 0.38f, cv_text_w("80%", is) / 0.14f) : lw + gap + cw + rh * 0.3f);
         }
-        float tabw = 0; for (int k = 0; k < OVM_TABS; k++) tabw = fmaxf(tabw, cv_text_w(OVM_TAB_NAMES[k], is));
-        if (need <= rw && tabw < rw / OVM_TABS - sh) break;
+        float tabw = 0; for (int k = 0; k < OVM_TAB_N; k++) tabw = fmaxf(tabw, cv_text_w(OVM_TAB_NAMES[k], is));
+        if (need <= rw && tabw < rw / OVM_TAB_N - sh) break;
     }
+    int is = m.is;
     cv_rrect(cv, 0, 0, p[2], p[3], rh * 0.18f, C_BG);
-    for (int row = 0; row < OVM_ROWS; row++) {
-        int it = ov_menu_item(tab, row); ov_menu_rowrect(p, row, r); float cy = r[1] + rh / 2, x1 = r[0] + rw - rh * 0.15f;
-        if (it < 0) continue;
-        if (row == sel) cv_rrect(cv, r[0], r[1] + rh * 0.08f, r[0] + rw, r[1] + rh * 0.92f, rh * 0.14f, C_HI);
-        if (it == OVM_TAB) {   // the tabs: a segmented bar, the open one filled
-            float th = rh * 0.62f, tw = rw / OVM_TABS;
-            cv_rrect(cv, r[0], cy - th / 2, r[0] + rw, cy + th / 2, th / 2, C_OFF);
-            cv_rrect(cv, r[0] + tab * tw, cy - th / 2, r[0] + (tab + 1) * tw, cy + th / 2, th / 2, C_ACCENT);
-            for (int k = 0; k < OVM_TABS; k++) cv_text(cv, r[0] + k * tw + (tw - cv_text_w(OVM_TAB_NAMES[k], is)) / 2, cy, OVM_TAB_NAMES[k], is, k == tab ? C_WHITE : C_DIM);
-            cv_rrect(cv, r[0], r[1] + rh - 1, r[0] + rw, r[1] + rh, 0.5f, C_LINE);
-            continue;
-        }
-        if (it == OVM_RESUME) { const char *w = ovm_label(OVM_RESUME); cv_rrect(cv, r[0], r[1], r[0] + rw, r[1] + 1, 0.5f, C_LINE); cv_text(cv, r[0] + (rw - cv_text_w(w, is)) / 2, cy, w, is, C_ACCENT); continue; }
-        const char *lbl = ovm_label(it), *btn = ovm_button(it);
-        cv_text(cv, r[0] + rh * 0.15f, cy, lbl, is, row == sel ? C_WHITE : C_DIM);
-        if (it == OVM_OPACITY) {   // the slider: its track, filled to the value, the knob and the percent
-            float t[3]; ov_menu_track(p, row, t); float f = (float)(op - OV_OPACITY_MIN) / (OV_OPACITY_MAX - OV_OPACITY_MIN), th = fmaxf(2, rh * 0.08f), kr = rh * 0.20f;
-            f = f < 0 ? 0 : f > 1 ? 1 : f;
-            cv_rrect(cv, t[0], t[1] - th / 2, t[0] + t[2], t[1] + th / 2, th / 2, C_OFF);
-            cv_rrect(cv, t[0], t[1] - th / 2, t[0] + f * t[2], t[1] + th / 2, th / 2, C_ACCENT);
-            cv_disc(cv, t[0] + f * t[2], t[1], kr, C_WHITE);
-            char v[8]; snprintf(v, sizeof v, "%d%%", op); cv_text(cv, x1 - cv_text_w(v, is), cy, v, is, C_WHITE);
-        } else if (it == OVM_EXPORT && (st >> 20 & 15) != OVX_IDLE) {   // the export's outcome in place of its button: its name, or why there is none
-            char nm[64], v[80]; int x = dm_save_note(nm, sizeof nm), vs = is;
-            snprintf(v, sizeof v, "%s", x == OVX_BUSY ? TR("Exporting...", "导出中...") : x == OVX_DONE ? nm : x == OVX_NOSAVE ? TR("No save yet", "还没有存档") : TR("Failed", "失败"));
-            while (vs > 1 && cv_text_w(v, vs) > rw - cv_text_w(lbl, is) - gap - rh * 0.3f) vs--;
-            cv_text(cv, x1 - cv_text_w(v, vs), cy, v, vs, x == OVX_FAILED ? C_ACCENT : C_WHITE);
-        } else if (ov_val_n(it)) {   // the counter's corner, colour, outline and size: the value in a pill
-            int cur = ov_val_cur(it, fo); const char *nm = ov_val_name(it, cur); float pw = ov_val_w(it, is) + 2 * sh, hh = rh * 0.46f;
-            cv_rrect(cv, x1 - pw, cy - hh / 2, x1, cy + hh / 2, hh / 2, C_OFF);
-            const uint8_t *tc = C_WHITE, rgb[4] = {FPSO_RGB[fpso_colour(fo)][0], FPSO_RGB[fpso_colour(fo)][1], FPSO_RGB[fpso_colour(fo)][2], 255};
-            cv_text(cv, x1 - pw + (pw - cv_text_w(nm, is)) / 2, cy, nm, is, it == OVM_COLOUR ? rgb : tc);
-        } else if (btn) {   // a button
-            float bw = cv_text_w(btn, is) + 2 * sh, b[4] = {x1 - bw, cy - rh * 0.30f, bw, rh * 0.60f}; cv_button(cv, b, btn, 0, 0);
-        } else if (it == OVM_MODE || it == OVM_PAD) {   // two segments, the current one filled: handheld (performance) | docked (resolution); by position | by label
-            const char *seg[2] = {it == OVM_MODE ? ovm_mode(0) : ovm_pad(0), it == OVM_MODE ? ovm_mode(1) : ovm_pad(1)};
-            int cur = it == OVM_MODE ? st >> 2 & 1 : st >> 28 & 1;
-            float hh = rh * 0.46f, segw = fmaxf(cv_text_w(seg[0], is), cv_text_w(seg[1], is)) + sh, x0 = x1 - 2 * segw;
-            cv_rrect(cv, x0, cy - hh / 2, x1, cy + hh / 2, hh / 2, C_OFF);
-            cv_rrect(cv, x0 + cur * segw, cy - hh / 2, x0 + (cur + 1) * segw, cy + hh / 2, hh / 2, C_ACCENT);
-            for (int k = 0; k < 2; k++) cv_text(cv, x0 + k * segw + (segw - cv_text_w(seg[k], is)) / 2, cy, seg[k], is, k == cur ? C_WHITE : C_DIM);
-        } else {   // a switch
-            int on = it >= OVM_ROW_FPS && it <= OVM_ROW_GRAPH ? fpso_rows(fo) >> (it - OVM_ROW_FPS) & 1 : st >> (it == OVM_OVERLAY ? 0 : it == OVM_RUMBLE ? 1 : 3) & 1; float sx0 = x1 - sw;
-            cv_rrect(cv, sx0, cy - sh / 2, x1, cy + sh / 2, sh / 2, on ? C_ACCENT : C_OFF);
-            cv_disc(cv, on ? x1 - sh / 2 : sx0 + sh / 2, cy, sh / 2 - fmaxf(2, sh * 0.1f), on ? C_WHITE : C_KNOB_OFF);
-            const char *word = on ? TR("ON", "开") : TR("OFF", "关"); cv_text(cv, sx0 - gap - cv_text_w(word, is), cy, word, is, on ? C_WHITE : C_DIM);
-        }
+    // the tabs: a segmented bar, the open one filled
+    if (sel == 0) cv_rrect(cv, r[0], r[1] + rh * 0.08f, r[0] + rw, r[1] + rh * 0.92f, rh * 0.14f, C_HI);
+    float cy = r[1] + rh / 2, th = rh * 0.62f, tw = rw / OVM_TAB_N;
+    cv_rrect(cv, r[0], cy - th / 2, r[0] + rw, cy + th / 2, th / 2, C_OFF);
+    cv_rrect(cv, r[0] + tab * tw, cy - th / 2, r[0] + (tab + 1) * tw, cy + th / 2, th / 2, C_ACCENT);
+    for (int k = 0; k < OVM_TAB_N; k++) cv_text(cv, r[0] + k * tw + (tw - cv_text_w(OVM_TAB_NAMES[k], is)) / 2, cy, OVM_TAB_NAMES[k], is, k == tab ? C_WHITE : C_DIM);
+    cv_rrect(cv, r[0], r[1] + rh - 1, r[0] + rw, r[1] + rh, 0.5f, C_LINE);
+    // the tab's rows, scrolled by s, into the panel cut to the rows between the tabs and Resume
+    float l[4]; ov_menu_listrect(p, l); uint32_t ly = (uint32_t)fmaxf(0, ceilf(l[1])), lb = (uint32_t)fminf((float)cv->h, floorf(l[1] + l[3]));
+    ov_canvas list = {cv->px, cv->stride, cv->x0, cv->y0 + ly, cv->w, lb > ly ? lb - ly : 0};
+    for (int k = 0; k < n; k++) {
+        float q[4] = {r[0], ov_menu_item_y(p, k, s) - (float)ly, rw, rh};
+        if (q[1] + rh < 0 || q[1] > (float)list.h) continue;
+        ov_menu_row(&list, &m, ov_menu_item(tab, k + 1, n), q, sel == k + 1);
     }
+    if (ov_menu_scroll_max(n)) {   // the scrollbar: its track, and the thumb where the shown rows are
+        float tr[4], tb[4]; ov_menu_scrollbar(p, s, n, tr, tb);
+        cv_rrect(cv, tr[0], tr[1], tr[0] + tr[2], tr[1] + tr[3], tr[2] / 2, C_LINE);
+        cv_rrect(cv, tb[0], tb[1], tb[0] + tb[2], tb[1] + tb[3], tb[2] / 2, C_DIM);
+    }
+    // Resume
+    ov_menu_rowrect(p, OVM_ROWS - 1, r); cy = r[1] + rh / 2;
+    if (sel == OVM_HI_RESUME) cv_rrect(cv, r[0], r[1] + rh * 0.08f, r[0] + rw, r[1] + rh * 0.92f, rh * 0.14f, C_HI);
+    cv_rrect(cv, r[0], r[1], r[0] + rw, r[1] + 1, 0.5f, C_LINE); cv_text(cv, r[0] + (rw - cv_text_w("Resume", is)) / 2, cy, "Resume", is, C_ACCENT);
 }
 // The layout editor's toolbar and prompt (overlay_layout.h ov_ed_*), at half the window's scale in the raster's panel rectangle: the toolbar at its top, the
 // prompt under it (gfx_vk_present.c ov_render draws each where overlay_layout.h puts it)

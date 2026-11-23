@@ -93,16 +93,29 @@ int main(void) {
     assert(ov_drag_pos(1100, 600, 1013, 50) == 506.5f);
     assert(ov_drag_pos(1100, 505, 1013, 50) == 508);
 
-    assert(ov_menu_item(0, OVM_ROWS - 2) == OVM_PAD && ov_menu_item(1, OVM_ROWS - 2) == -1);
-    assert(ov_menu_item(1, OVM_ROWS - 1) == OVM_RESUME);
+    // the Gamepad tab's last row is the face buttons' (front_android.c pad_labels); the Save tab has three rows in a code-less app, five with the sync folder's
+    // explanation and seven with a folder (the lines of text, which a controller skips); the highlight's numbers: 0 the tabs, k + 1 a row, OVM_HI_RESUME Resume
+    assert(ov_menu_count(0, 0) == 5 && ov_menu_count(0, 1) == 5 && ov_menu_count(2, 0) == 3 && ov_menu_count(2, 1) == 5 && ov_menu_count(2, 2) == 7 && ov_menu_count(3, 0) == 5 && ov_menu_count(4, 0) == 4);
+    assert(ov_menu_item(0, 5, 5) == OVM_PAD && ov_menu_item(2, 4, 3) < 0 && ov_menu_item(2, OVM_HI_RESUME, 5) == OVM_RESUME && ov_menu_item(2, 0, 7) == OVM_TAB);
+    assert(ov_menu_item(2, 4, 5) == OVM_SYNC && ov_menu_item(2, 5, 5) == OVM_SYNC_OFF && !ov_menu_selectable(OVM_SYNC_OFF) && ov_menu_selectable(OVM_SYNC));
+    assert(ov_menu_item(2, 5, 7) == OVM_SYNC_WITH && ov_menu_item(2, 6, 7) == OVM_SYNC_PATH && ov_menu_item(2, 7, 7) == OVM_SYNC_STOP && !ov_menu_selectable(OVM_SYNC_PATH) && ov_menu_selectable(OVM_SYNC_STOP));
+    assert(OVM_HI_RESUME + 1 <= 15);   // (bits 4..7 of dm_menu_state)
+    // the scroll: none for five rows; a sixth scrolls by a row, and the controller's choice is brought into view
+    assert(ov_menu_scroll_max(5) == 0 && ov_menu_scroll_max(6) == OVM_SCROLL_STEPS && ov_menu_scroll_max(6) <= 127);   // (bits 9..15)
+    assert(ov_menu_scroll_to(5, 0, 6) == OVM_SCROLL_STEPS && ov_menu_scroll_to(0, OVM_SCROLL_STEPS, 6) == 0 && ov_menu_scroll_to(2, 7, 6) == 7);
+    assert(ov_menu_scroll_clamp(-3, 6) == 0 && ov_menu_scroll_clamp(99, 6) == OVM_SCROLL_STEPS && ov_menu_scroll_clamp(5, 4) == 0);
+    // the audio output's chooser (the Game tab's third row, when the activity has it), and the Counter and Style tabs
     audio_available = 1;
-    assert(ov_menu_item(1, OVM_ROWS - 2) == OVM_AUDIO);
+    assert(ov_menu_count(1, 0) == 3 && ov_menu_count(1, 2) == 3 && ov_menu_item(1, 3, 3) == OVM_AUDIO);
+    audio_available = 0;
+    assert(ov_menu_count(1, 0) == 2 && ov_menu_item(1, 2, 2) == OVM_MODE && ov_menu_item(1, 3, 2) < 0);
+    assert(ov_menu_item(3, 1, 5) == OVM_ROW_FPS && ov_menu_item(3, 5, 5) == OVM_ROW_GRAPH && ov_menu_item(4, 1, 4) == OVM_POS && ov_menu_item(4, 4, 4) == OVM_SIZE && ov_menu_item(4, 5, 4) == -1);
     ui_zh = 0;
-    assert(!strcmp(OVM_TAB_NAMES[0], "Gamepad") && !strcmp(OVM_TAB_NAMES[1], "Game") && !strcmp(OVM_TAB_NAMES[2], "Counter") && !strcmp(OVM_TAB_NAMES[3], "Style"));
+    assert(!strcmp(OVM_TAB_NAMES[0], "Gamepad") && !strcmp(OVM_TAB_NAMES[1], "Game") && !strcmp(OVM_TAB_NAMES[2], "Save") && !strcmp(OVM_TAB_NAMES[3], "Counter") && !strcmp(OVM_TAB_NAMES[4], "Style"));
     assert(!strcmp(FPSO_POS_NAMES[0], "Top left") && !strcmp(FPSO_SIZE_NAMES[3], "Extra large"));
     assert(!strcmp(TR("Resume", "继续游戏"), "Resume"));
     ui_zh = 1;
-    assert(!strcmp(OVM_TAB_NAMES[0], "手柄") && !strcmp(OVM_TAB_NAMES[1], "游戏") && !strcmp(OVM_TAB_NAMES[2], "计数") && !strcmp(OVM_TAB_NAMES[3], "样式"));
+    assert(!strcmp(OVM_TAB_NAMES[0], "手柄") && !strcmp(OVM_TAB_NAMES[1], "游戏") && !strcmp(OVM_TAB_NAMES[2], "存档") && !strcmp(OVM_TAB_NAMES[3], "计数") && !strcmp(OVM_TAB_NAMES[4], "样式"));
     assert(!strcmp(FPSO_POS_NAMES[0], "左上") && !strcmp(FPSO_SIZE_NAMES[3], "特大"));
     assert(!strcmp(TR("Resume", "继续游戏"), "继续游戏"));
     ui_zh = 0;
@@ -114,6 +127,14 @@ int main(void) {
             float r[4]; ov_menu_rowrect(p, row, r);
             assert(ov_menu_row_at(r[0] + r[2] / 2, r[1] + r[3] / 2, W, H) == row);
         }
+        // a scrolled row is hit where it is drawn (ov_menu_item_y), and only inside the shown rows; the scrollbar's thumb stays in its track, in the margin
+        for (int s = 0; s <= ov_menu_scroll_max(6); s += 4) for (int k = 0; k < 6; k++) {
+            float r1[4], l[4]; ov_menu_rowrect(p, 1, r1); ov_menu_listrect(p, l); float y = ov_menu_item_y(p, k, s) + r1[3] / 2;
+            assert(ov_menu_index_at(y, p, s, 6) == (y >= l[1] && y < l[1] + l[3] ? k : -1));
+            float tr[4], tb[4]; ov_menu_scrollbar(p, s, 6, tr, tb);
+            assert(tb[1] >= tr[1] - 0.01f && tb[1] + tb[3] <= tr[1] + tr[3] + 0.01f && tr[0] >= l[0] + l[2] && tr[0] + tr[2] <= p[0] + p[2]);
+        }
+        { float l[4]; ov_menu_listrect(p, l); assert(ov_menu_index_at(l[1] + l[3] - 1, p, 0, 4) == -1 && ov_menu_index_at(l[1] + l[3] - 1, p, 0, 5) == 4); }
         for (int axis = 0; axis < 2; axis++) for (int i = -10; i <= 110; i++) {
             float extent = screens[s][axis], half = H * 0.12f;
             float pos = ov_drag_pos(extent * i / 100, half, extent, step);
@@ -130,6 +151,17 @@ int main(void) {
             assert(ov_ed_button_at(b[0] + b[2] / 2, b[1] + b[3] / 2, p, first, n) == i);
         }
     }
+    // the Save tab's rows (OVM_TAB_ITEMS): export, import, erase, then the sync folder's (the button and its lines of text, and Stop with a folder); ov_menu_item numbers the
+    // rows as ov_menu_count counts them; the Gamepad tab is as it was; Resume's highlight (+ 1) fits the state word's four bits
+    for (int folder = 0; folder < 3; folder++) {
+        int n = ov_menu_count(2, folder), want[OVM_TAB_MAX] = {OVM_EXPORT, OVM_IMPORT, OVM_ERASE, OVM_SYNC, folder == 2 ? OVM_SYNC_WITH : OVM_SYNC_OFF, OVM_SYNC_PATH, OVM_SYNC_STOP};
+        assert(n == (folder == 2 ? 7 : folder == 1 ? 5 : 3) && n <= OVM_TAB_MAX);
+        for (int hi = 1; hi <= n; hi++) assert(ov_menu_item(2, hi, n) == want[hi - 1]);
+        assert(ov_menu_item(2, 0, n) == OVM_TAB && ov_menu_item(2, OVM_HI_RESUME, n) == OVM_RESUME && (n + 1 == OVM_HI_RESUME || ov_menu_item(2, n + 1, n) == -1));
+    }
+    assert(ov_menu_selectable(OVM_ERASE) && ov_menu_selectable(OVM_EXPORT) && !ov_menu_selectable(OVM_SYNC_OFF));
+    { int n = ov_menu_count(0, 0); const int want[5] = {OVM_OVERLAY, OVM_OPACITY, OVM_EDIT, OVM_RUMBLE, OVM_PAD}; assert(n == 5); for (int hi = 1; hi <= n; hi++) assert(ov_menu_item(0, hi, n) == want[hi - 1]); }
+    assert(OVM_HI_RESUME + 1 <= 15);
     return 0;
 }
 '''

@@ -58,7 +58,13 @@ static void menu_tab(int tab) { (void)tab; }
 static int fps_opt_press(int item) { (void)item; return 0; }
 static void ed_open(void) {}
 static void sp_open(void) {}
+static void sp_open_erase(void) {}
 static void save_export(void) {}
+static int dm_saves_java(void) { return 0; }
+static int dm_saves_import_zip(void) { return 0; }
+static int dm_saves_folder_pick(void) { return 0; }
+static int dm_saves_folder_default(void) { return 0; }
+#define LOG(...) ((void)0)
 static void menu_audio(void) {}
 static void menu_close(void) {}
 static void dm_overlay_redraw(void) {}
@@ -101,6 +107,7 @@ static struct { int sel; } g_tx;
 static int g_tx_mu;
 #define pthread_mutex_lock(m) ((void)(m))
 #define pthread_mutex_unlock(m) ((void)(m))
+#undef LOG
 #define LOG(...) log_line(__VA_ARGS__)
 #define AInputEvent_getSource(e) ((e)->source)
 #define AInputEvent_getType(e) ((e)->type)

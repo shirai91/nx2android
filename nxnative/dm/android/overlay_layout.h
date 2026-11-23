@@ -227,19 +227,29 @@ static inline int fpso_pack(int rows, int pos, int colour, int outline, int size
 static inline int fpso_scale(int base, int size) { return size == FPSO_SMALL ? (base > 1 ? base - 1 : 1) : size == FPSO_LARGE ? base + 1 : size == FPSO_XL ? 2 * base : base; }
 // ---- the pause menu: a panel in the middle of the window: a row of tabs, the open tab's rows, and Resume. Everything is placed in a panel rectangle p
 // (x, y, width, height: the window's for touches, the raster's for drawing), so the touches and the drawing agree ----
-enum { OVM_OVERLAY, OVM_OPACITY, OVM_EDIT, OVM_RUMBLE, OVM_FPS, OVM_MODE, OVM_EXPORT, OVM_IMPORT, OVM_PAD, OVM_AUDIO,
-       OVM_ROW_FPS, OVM_ROW_SOC, OVM_ROW_BAT, OVM_ROW_DRV, OVM_ROW_GRAPH, OVM_POS, OVM_COLOUR, OVM_OUTLINE, OVM_SIZE, OVM_RESUME, OVM_TAB, OVM_N };   // OVM_TAB: the tabs' row;
+enum { OVM_OVERLAY, OVM_OPACITY, OVM_EDIT, OVM_RUMBLE, OVM_FPS, OVM_MODE, OVM_EXPORT, OVM_IMPORT, OVM_ERASE, OVM_SYNC, OVM_SYNC_OFF, OVM_SYNC_WITH, OVM_SYNC_PATH, OVM_SYNC_STOP,
+       OVM_PAD, OVM_AUDIO, OVM_ROW_FPS, OVM_ROW_SOC, OVM_ROW_BAT, OVM_ROW_DRV, OVM_ROW_GRAPH, OVM_POS, OVM_COLOUR, OVM_OUTLINE, OVM_SIZE, OVM_RESUME, OVM_TAB, OVM_N };   // OVM_TAB: the tabs' row;
             // OVM_ROW_*: the counter's rows on or off; OVM_POS .. OVM_SIZE: its corner, colour, outline and size, one value on with each press (fpso_step below);
-            // OVM_EDIT: the layout editor; OVM_MODE: handheld (performance) or docked (resolution); OVM_EXPORT, OVM_IMPORT: the save manager (saves_android.c);
-            // OVM_PAD: a controller's face buttons by their position or by their label (front_android.c pad_labels)
-#define OVM_TABS 4   // (a power of two: ov_menu_item masks the tab)
-#define OVM_PER_TAB 5
-static const int OVM_TAB_ITEMS[OVM_TABS][OVM_PER_TAB] = {{OVM_OVERLAY, OVM_OPACITY, OVM_EDIT, OVM_RUMBLE, OVM_PAD}, {OVM_FPS, OVM_MODE, OVM_EXPORT, OVM_IMPORT, OVM_AUDIO},
-                                                         {OVM_ROW_FPS, OVM_ROW_SOC, OVM_ROW_BAT, OVM_ROW_DRV, OVM_ROW_GRAPH}, {OVM_POS, OVM_COLOUR, OVM_OUTLINE, OVM_SIZE, -1}};
-static const char *const OVM_TAB_NAMES_EN[OVM_TABS] = {"Gamepad", "Game", "Counter", "Style"};
-static const char *const OVM_TAB_NAMES_ZH[OVM_TABS] = {"手柄", "游戏", "计数", "样式"};
+            // OVM_EDIT: the layout editor; OVM_MODE: handheld (performance) or docked (resolution); OVM_PAD: a controller's face buttons by their position or by their label
+            // (front_android.c pad_labels); OVM_AUDIO: the audio output's chooser (only when the activity has it: dm_menu_audio_available).
+            // The Save tab (saves_android.c): OVM_EXPORT, OVM_IMPORT: a save to a file and back; OVM_ERASE: starting the game over, asked in the save panel first (front_android.c);
+            // then, in an app with the Java save bridge (SaveBridge.java), the sync folder: OVM_SYNC its button (Choose, or Change once there is a folder), and under it either
+            // OVM_SYNC_OFF (a line of text: no folder) or OVM_SYNC_WITH and OVM_SYNC_PATH (two lines of text: the folder) and OVM_SYNC_STOP (back to no folder)
+#define OVM_TAB_N 5      // the tabs that exist: Gamepad, Game, Save, Counter, Style
+#define OVM_TABS 8       // the tables' size: the open tab is three bits of dm_menu_state, and ov_menu_item masks it with this (a power of two)
+#define OVM_TAB_GAME 1
+#define OVM_TAB_SAVE 2
+#define OVM_PER_TAB 5    // the rows a tab shows at once (the panel keeps its size); a tab with more scrolls (OVM_SCROLL_STEPS): the Save tab with a sync folder
+#define OVM_TAB_MAX 7    // the most rows a tab has
+static const int OVM_TAB_ITEMS[OVM_TABS][OVM_TAB_MAX] = {
+    {OVM_OVERLAY, OVM_OPACITY, OVM_EDIT, OVM_RUMBLE, OVM_PAD, -1, -1},
+    {OVM_FPS, OVM_MODE, OVM_AUDIO, -1, -1, -1, -1},
+    {OVM_EXPORT, OVM_IMPORT, OVM_ERASE, OVM_SYNC, OVM_SYNC_WITH, OVM_SYNC_PATH, OVM_SYNC_STOP},   // (with no folder the fifth row is OVM_SYNC_OFF, ov_menu_item)
+    {OVM_ROW_FPS, OVM_ROW_SOC, OVM_ROW_BAT, OVM_ROW_DRV, OVM_ROW_GRAPH, -1, -1}, {OVM_POS, OVM_COLOUR, OVM_OUTLINE, OVM_SIZE, -1, -1, -1}};   // -1: no row (the tabs after the last: none)
+static const char *const OVM_TAB_NAMES_EN[OVM_TAB_N] = {"Gamepad", "Game", "Save", "Counter", "Style"};
+static const char *const OVM_TAB_NAMES_ZH[OVM_TAB_N] = {"手柄", "游戏", "存档", "计数", "样式"};
 #define OVM_TAB_NAMES (dm_ui_zh() ? OVM_TAB_NAMES_ZH : OVM_TAB_NAMES_EN)
-#define OVM_ROWS (OVM_PER_TAB + 2)   // the tabs, a tab's rows (as many for every tab: the panel keeps its size), Resume
+#define OVM_ROWS (OVM_PER_TAB + 2)   // the tabs, the shown part of a tab's rows, Resume
 static inline int fpso_step(int o, int item) {   // the options after a press on a menu item: a row's bit flips, the others go to their next value (and round)
     int r = fpso_rows(o), p = fpso_pos(o), c = fpso_colour(o), l = fpso_outline(o), z = fpso_size(o);
     switch (item) {
@@ -257,23 +267,44 @@ static inline int fpso_step(int o, int item) {   // the options after a press on
     return fpso_pack(r, p, c, l, z);
 }
 int dm_menu_audio_available(void);
-static inline int ov_menu_item(int tab, int row) {
-    int item = row == 0 ? OVM_TAB : row == OVM_ROWS - 1 ? OVM_RESUME : row > 0 && row < OVM_ROWS - 1 ? OVM_TAB_ITEMS[tab & (OVM_TABS - 1)][row - 1] : -1;
-    return item == OVM_AUDIO && !dm_menu_audio_available() ? -1 : item;
+// A tab's rows: the Gamepad and Counter tabs have five, Style four, Game two (Show FPS, Mode) and one more with the audio output's chooser. The Save tab has three (export,
+// import, erase) and, in an app that can sync a folder (folder: 1 no folder yet, 2 a folder; 0 the app cannot), two more with the explanation of no folder (the sync row and its
+// line), four more with a folder (the sync row, the two lines of text, stop)
+static inline int ov_menu_count(int tab, int folder) {
+    switch (tab & (OVM_TABS - 1)) {
+    case OVM_TAB_GAME: return 2 + (dm_menu_audio_available() ? 1 : 0);
+    case OVM_TAB_SAVE: return folder == 2 ? 7 : folder == 1 ? 5 : 3;
+    case 4: return 4;
+    default: return 5;
+    }
 }
+// The highlighted row (front_android.c g_menu_hi, and bits 4..7 of dm_menu_state less one): 0 the tabs, 1..n the open tab's row k + 1 (shown or scrolled
+// out of the panel), OVM_HI_RESUME Resume, -1 none
+#define OVM_HI_RESUME (OVM_TAB_MAX + 1)
+static inline int ov_menu_item(int tab, int hi, int n) {   // the row hi stands for, in a tab of n rows (ov_menu_count tells which rows the tab has)
+    if (hi == 0) return OVM_TAB;
+    if (hi == OVM_HI_RESUME) return OVM_RESUME;
+    if (hi < 1 || hi > n) return -1;
+    if ((tab & (OVM_TABS - 1)) == OVM_TAB_SAVE && n == 5 && hi == 5) return OVM_SYNC_OFF;   // (no folder: the line that says so, not the folder's)
+    return OVM_TAB_ITEMS[tab & (OVM_TABS - 1)][hi - 1];
+}
+static inline int ov_menu_note(int item) { return item == OVM_SYNC_OFF || item == OVM_SYNC_WITH || item == OVM_SYNC_PATH; }   // the lines of text: no control
+static inline int ov_menu_selectable(int item) { return item >= 0 && !ov_menu_note(item); }   // (a line of text only: a controller's up and down skip it)
 #define OV_MENU_ROW 0.115f   // row height, of the window's height
 #define OV_MENU_W 0.95f      // panel width, of the window's height
 #define OV_MENU_PAD 0.03f
 #define OV_OPACITY_MIN 20    // the gamepad's opacity, percent (the Opacity slider, settings.txt opacity=)
 #define OV_OPACITY_MAX 80
 // what the menu shows (-1 = closed): bit 0 the gamepad is on, bit 1 rumble is on, bit 2 docked, bit 3 the frame rate shown, bits 4..7 the highlighted row + 1
-// (0 = none), bit 8 the open tab, bits 9..15 the opacity in percent, bit 19 the open tab's second bit (the Counter and Style tabs), bits 29..30 a count of the counter options' changes (dm_fps_opts: the panel
-// shows them), bits 20..23 the last export's outcome (OVX_*), bits 24..27 a count of exports (its name
-// changes with each). Bit 16: the text entry's panel instead (its edit count below); bit 17: the layout editor (OVE_ST_* below); bit 18: the save picker (OVS_ST)
+// (OVM_HI_RESUME; 0 = none), bit 8 the open tab's first bit, bits 9..15 the open tab's own: the opacity in percent on the Gamepad tab, the scroll on the Save tab, bit 19 the open
+// tab's second bit and bit 27 its third (OVM_TABS: the tabs are numbered in three bits), bits 29..30 a count of the counter options' changes (dm_fps_opts: the panel shows them),
+// bits 20..23 the last export's outcome (OVX_*), bits 24..26 a count of the save rows' changes (an export's name, the sync folder's path). Bit 16: the text entry's panel instead
+// (its edit count below); bit 17: the layout editor (OVE_ST_* below); bit 18: the save picker (OVS_ST)
 #define OVT_ST 0x10000   // the mode bits of dm_menu_state, one each: OVT_ST the text entry, OVE_ST the layout editor, OVS_ST the save picker (tests/test_menu_bits.py)
 int dm_menu_state(void);
 enum { OVX_IDLE, OVX_BUSY, OVX_DONE, OVX_NOSAVE, OVX_FAILED };   // Export save: the button; copying; the export's name; the game has not saved yet; failed
 int dm_save_note(char *out, int cap);   // front_android.c: the outcome (OVX_*) and the last export's name, or why it failed
+int dm_menu_folder(char *out, int cap);   // front_android.c: the sync folder's state, 0 the app cannot choose one, 1 it can and none is chosen, 2 one is (out: its path)
 static inline float ov_menu_scale(void) { float s = dm_overlay_scale(), fit = 0.92f / (OVM_ROWS * OV_MENU_ROW + 2 * OV_MENU_PAD); return s < fit ? s : fit; }
 static inline void ov_menu_rect(float W, float H, float r[4]) {   // x, y, width, height in window pixels
     float s = ov_menu_scale(), pw = OV_MENU_W * H * s, ph = (OVM_ROWS * OV_MENU_ROW + 2 * OV_MENU_PAD) * H * s;
@@ -290,7 +321,29 @@ static inline int ov_menu_row_at(float x, float y, float W, float H) {   // the 
     float q[4]; ov_menu_rowrect(r, 0, q); int i = (int)floorf((y - q[1]) / q[3]);
     return i >= 0 && i < OVM_ROWS ? i : -1;
 }
-static inline int ov_menu_tab_at(float x, const float p[4]) { float r[4]; ov_menu_rowrect(p, 0, r); int t = (int)((x - r[0]) / (r[2] / OVM_TABS)); return t < 0 ? 0 : t >= OVM_TABS ? OVM_TABS - 1 : t; }
+// The tab's rows scroll under the tabs' row, between it and Resume: s, the scroll, in OVM_SCROLL_STEPS of a row (0 = the first row at the top). A finger drags
+// them (front_android.c menu_touch), a controller's up and down bring the highlighted row into view; a scrollbar in the panel's right margin shows where
+#define OVM_SCROLL_STEPS 16
+static inline int ov_menu_scroll_max(int n) { return n > OVM_PER_TAB ? (n - OVM_PER_TAB) * OVM_SCROLL_STEPS : 0; }
+static inline void ov_menu_listrect(const float p[4], float r[4]) { ov_menu_rowrect(p, 1, r); r[3] *= OVM_PER_TAB; }   // the shown rows' rectangle
+static inline float ov_menu_item_y(const float p[4], int k, int s) { float r[4]; ov_menu_rowrect(p, 1, r); return r[1] + (k - (float)s / OVM_SCROLL_STEPS) * r[3]; }   // row k's top
+static inline int ov_menu_index_at(float y, const float p[4], int s, int n) {   // the row (0..n-1) under y, -1 none (outside the shown rows, or under the last)
+    float r[4]; ov_menu_listrect(p, r); if (y < r[1] || y >= r[1] + r[3]) return -1;
+    int k = (int)floorf((y - r[1]) / (r[3] / OVM_PER_TAB) + (float)s / OVM_SCROLL_STEPS);
+    return k >= 0 && k < n ? k : -1;
+}
+static inline int ov_menu_scroll_clamp(int s, int n) { int m = ov_menu_scroll_max(n); return s < 0 ? 0 : s > m ? m : s; }
+static inline int ov_menu_scroll_to(int k, int s, int n) {   // the scroll nearest s that shows row k whole
+    int top = k * OVM_SCROLL_STEPS, bottom = (k + 1 - OVM_PER_TAB) * OVM_SCROLL_STEPS;
+    return ov_menu_scroll_clamp(s > top ? top : s < bottom ? bottom : s, n);
+}
+static inline void ov_menu_scrollbar(const float p[4], int s, int n, float track[4], float thumb[4]) {   // x, y, width, height: in the margin right of the rows
+    float l[4]; ov_menu_listrect(p, l); float w = fmaxf(2, (p[0] + p[2] - (l[0] + l[2])) * 0.40f), m = (float)ov_menu_scroll_max(n);
+    track[0] = l[0] + l[2] + (p[0] + p[2] - (l[0] + l[2]) - w) / 2; track[1] = l[1] + l[3] * 0.02f; track[2] = w; track[3] = l[3] * 0.96f;
+    float h = track[3] * OVM_PER_TAB / (n > OVM_PER_TAB ? n : OVM_PER_TAB);
+    thumb[0] = track[0]; thumb[2] = w; thumb[3] = h; thumb[1] = track[1] + (m > 0 ? (track[3] - h) * s / m : 0);
+}
+static inline int ov_menu_tab_at(float x, const float p[4]) { float r[4]; ov_menu_rowrect(p, 0, r); int t = (int)((x - r[0]) / (r[2] / OVM_TAB_N)); return t < 0 ? 0 : t >= OVM_TAB_N ? OVM_TAB_N - 1 : t; }
 // the Opacity slider's track in its row (x, y of its left end's centre line, width): the right part of the row, room for the value after it
 static inline void ov_menu_track(const float p[4], int row, float t[3]) { float r[4]; ov_menu_rowrect(p, row, r); t[0] = r[0] + r[2] * 0.40f; t[1] = r[1] + r[3] / 2; t[2] = r[2] * 0.44f; }
 static inline int ov_menu_track_value(float x, const float p[4], int row) {   // the opacity a finger at x sets, whole 5 percents

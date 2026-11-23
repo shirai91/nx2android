@@ -54,6 +54,12 @@ public class ExternalActivity extends NativeActivity implements ExternalDisplay.
     private Dialog phonePad;
     private AlertDialog audioDialog;
     private final ExecutorService audioExecutor = Executors.newSingleThreadExecutor();
+    private final SaveBridge saves = new SaveBridge(this);
+
+    public SaveBridge saveBridge() { return saves; }   // the save manager's pickers, as GameActivity's
+    @Override protected void onActivityResult(int request, int result, android.content.Intent data) {
+        if (!saves.onActivityResult(request, result, data)) super.onActivityResult(request, result, data);
+    }
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);

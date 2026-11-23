@@ -75,7 +75,7 @@ To arrange the on-screen controls, open the pause menu's **Gamepad** tab and cho
 
 A controller whose A is the bottom button (Xbox labels, most Android devices' built-in controls) can have its face buttons follow their labels: the **Gamepad** tab's **Face buttons** row switches between **Position** (the Switch's layout, the default) and **Label**. It applies at once, also to the pause menu's own A and B, and each device keeps its own choice.
 
-For Android's Unicode keyboard, port with `--native-keyboard`. It supports composed text, non-Latin scripts and emoji through the system IME, preserves initial text, and applies the guest's UTF-16 length limits. This option requires `javac` and an Android SDK with platform and build-tools (`ANDROID_HOME`). The default APK keeps the existing controller keyboard and does not require Java build tools. Combine `--external-display --native-keyboard` to opt into the native keyboard on an external-screen port; external display alone keeps the controller keyboard. The combined mode still needs runtime qualification over the full-screen phone gamepad.
+For Android's Unicode keyboard, port with `--native-keyboard`. It supports composed text, non-Latin scripts and emoji through the system IME, preserves initial text, and applies the guest's UTF-16 length limits. This option requires `javac` and an Android SDK with platform and build-tools (`ANDROID_HOME`). Without the option the APK keeps the existing controller keyboard, and the option is the only one that fails without Java build tools. Combine `--external-display --native-keyboard` to opt into the native keyboard on an external-screen port; external display alone keeps the controller keyboard. The combined mode still needs runtime qualification over the full-screen phone gamepad.
 
 For the experimental external-screen controller, port from the command line with `--external-display`. The game moves to a connected display and the phone shows the gamepad. In the pause menu's **Game → Audio output**, choose the phone, a connected output, or the system default; the list updates as devices connect or disconnect. Bluetooth call-only routes are omitted; the system may not honor the requested device. This option requires `javac` and an Android SDK with a platform and build-tools (`ANDROID_HOME`). Android 12 or newer uses the saved native layout; Android 10–11 use the fallback controller. Support varies by device and game.
 
@@ -87,9 +87,24 @@ The step-by-step guide is [packaging/INSTALL.md](packaging/INSTALL.md). You need
 
 ## Saves
 
-The game's pause menu (Game tab) has **Export save** and **Import save**: an export is a folder in `Android/data/<package>/files/saves/` on the device, the save's files as a console's save tools copy them, so a save from a console imports the same way. The app's **Saves** tab moves them between the device and the PC.
+The game's pause menu has a **Game** tab with the save options (scroll down for all of them):
 
-An import replaces the save the game has; the app exports that one first on the device (a folder ending `-before-import`). Uninstalling the app deletes its saves and its exports: copy them to the PC first.
+- **Export to a file** opens Android's save dialog, so you choose the folder and can rename the file. The default name is `<game> save data - YYYY-MM-DD HH_MM.zip`. The zip holds one folder named after the game's Switch title ID, with the save's files in it:
+  ```
+  Unicorn Overlord save data - 2026-11-11 21_52.zip
+  └── 010069401ADB8000/
+      ├── UCGLOBALDATA.DAT
+      ├── UCSAVEFILE00_AUTOSAVE.DAT
+      └── UCSAVEFILE01.DAT
+  ```
+  A message then confirms the folder the save went to, and **Export** is ready for another export. These are the files as a console's save tools copy them, so a save from a console, a PC or a Steam Deck can be packed the same way.
+- **Import from a file** opens Android's file picker. Choose a zip with that layout. A zip without a folder named after this game's title ID is refused with an error, so another game's save can't be imported by mistake. The game then closes; open it again to play the imported save.
+- **Erase and start over** (*Erase*, Save tab) starts the game over: it asks first (*Erase and close* / *Cancel*, and *Cancel* is the one chosen when it opens), then the game closes. When you open it again, the save is exported as a folder ending `-before-erase` (so **Import from a file** can bring it back) and then erased, and the game starts as on its first run. If that export fails, nothing is erased. With a sync folder, its copy of the save is kept and not loaded back; the game's next save replaces it.
+- **Sync folder**: **Choose** lets you pick any folder on the device with Android's folder picker; under it, the row says *Off: the save stays only in the app* or *Syncing with:* and the folder. This is the only time the app asks for access, and only to that folder. When you leave or close the game, its latest save is copied to `<folder>/<title ID>/`. When the game starts, the save in that folder is loaded. Only changed files are rewritten, so a sync app watching the folder (for example FolderSync's instant sync) uploads the new save right after you stop playing, and you can share one folder with a PC or Steam Deck. To stop, press **Stop** (*Stop syncing*); **Change** picks another folder.
+
+The app keeps a copy of every export, and of the save it had before each import or folder load (folders ending `-before-import`, `-before-folder` and `-before-erase`), in `Android/data/<package>/files/saves/`. Older exports there are kept too. The app's **Saves** tab moves them between the device and the PC. Uninstalling the app deletes its saves and these copies, but not a save file directory you picked.
+
+These options need the app's Java part, which porter builds when your PC has `javac` and the Android SDK (or takes from the release bundle, which includes it). Without it, the menu works as before: **Export save** makes a folder in `Android/data/<package>/files/saves/`, and **Import save** chooses one from there.
 
 ## For developers
 
