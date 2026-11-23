@@ -84,11 +84,12 @@ static class IntegrityFixture {
             BitConverter.GetBytes(0x200L).CopyTo(container, card + 0x130); root.CopyTo(container, card + 0x200);
         }
         File.WriteAllBytes(input, container);
-        var ncas = (System.Collections.Generic.List<Nca>)Call("OpenNsp", new KeySet(), input);
+        var ncas = (System.Collections.IList)Call("OpenNsp", new KeySet(), input);
         if (mode == "card-small-nsp") return ncas.Count == 0 ? 0 : 92;
         if (ncas.Count != 1) return 92;
         GC.Collect(); GC.WaitForPendingFinalizers(); // the returned NCA must keep its borrowed card storage view alive
-        byte[] got = new byte[payload.Length]; ncas[0].BaseStorage.Read(0xc00, got).ThrowIfFailure();
+        Nca entry = (Nca)ncas[0].GetType().GetField("Nca").GetValue(ncas[0]);   // OpenNsp returns P.NcaEntry (the entry's name beside the NCA), not the NCA itself
+        byte[] got = new byte[payload.Length]; entry.BaseStorage.Read(0xc00, got).ThrowIfFailure();
         return got.AsSpan().SequenceEqual(payload) ? 0 : 93;
     }
     static int Main(string[] args) {

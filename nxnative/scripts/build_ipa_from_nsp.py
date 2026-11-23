@@ -446,22 +446,26 @@ def meta_title(f, at, hk):
     return struct.unpack_from('<Q', p, 0x10)[0] if p[:4] in (b'NCA3', b'NCA2') and p[5] == 1 else None
 
 
-def title_of(path, hk=None):
-    """The ticket name (the first 16 digits of the rights ID = title ID), else the content meta NCA's header (hk: prod.keys' header_key; an untagged cartridge dump has no ticket:
-    "hr-bdlwa.xci", issue #28), else [title ID] in the file name. A file name's tag can be wrong (FFT's base NSP is tagged …0001, its ticket is …0000)"""
+def titles_of(path, hk=None):
+    """Every title whose content the dump carries, sorted: the base game …000 before its update …800 and its DLC. Evidence: for an NSP / NSZ, its tickets (a title's NSP holds its
+    ticket beside its NCAs); a cartridge dump has no tickets, so its meta NCAs' headers (hk: prod.keys' header_key, issue #28) say what it holds — a cart may carry its update's ticket
+    only (Crayon Shin-chan: …800.tik beside the base game's ticketless NCAs) without holding the update, so its tickets alone would lie; a converted (ticketless) NSP counts its meta
+    NCAs too. A file name's tag is the last resort for a file with no readable title at all; a tag can be wrong (FFT's base NSP is tagged …0001, its ticket is …0000)"""
     with open(path, 'rb') as f:
         files = dump_files(f)
-        tids = [int(n[:16], 16) for n, _ in files if re.match(r'[0-9A-Fa-f]{32}\.tik$', n)]
-        # a cartridge may carry its update's ticket only (Crayon Shin-chan: …800.tik beside the base game's ticketless NCAs): its meta NCAs count too
-        if hk and aes_ecb(hk[:16]) and (not tids or Path(path).suffix.lower() in ('.xci', '.xcz')):
-            tids += [t for n, o in files if n.endswith(('.nca', '.ncz')) and (t := meta_title(f, o, hk)) is not None]
-        if tids:
-            tids = sorted(set(tids))   # several rights IDs can name the same title
-            if len(tids) > 1:
-                say(f'[RED] {path.name}: multiple titles in one file; using {tids[0]:016X}. '
-                    f'Other titles ({", ".join(f"{t:016X}" for t in tids[1:])}) are not selected as updates or DLC '
-                    'from this file. Supply the base game, update and DLC as separate files.')
-            return tids[0]   # the base game …000 before its update …800 and DLC
+        tickets = [int(n[:16], 16) for n, _ in files if re.match(r'[0-9A-Fa-f]{32}\.tik$', n)]
+        if hk and aes_ecb(hk[:16]) and (not tickets or Path(path).suffix.lower() in ('.xci', '.xcz')):
+            metas = [t for n, o in files if n.endswith(('.nca', '.ncz')) and (t := meta_title(f, o, hk)) is not None]
+            if Path(path).suffix.lower() in ('.xci', '.xcz'):   # a cartridge: what its meta NCAs name is what it holds; its tickets (when a packer put some in) only when no meta is readable
+                return sorted(set(metas)) if metas else sorted(set(tickets))
+            if tickets: return sorted(set(tickets))   # several rights IDs can name the same title
+            return sorted(set(metas))
+        return sorted(set(tickets))
+
+
+def title_of(path, hk=None):   # the base game's title ID of a dump: the first of titles_of (…000 before …800 and the DLC), which is what a single-title dump holds
+    tids = titles_of(path, hk)
+    if tids: return tids[0]
     m = re.search(r'\[([0-9A-Fa-f]{16})\]', path.name)
     return int(m.group(1), 16) if m else None
 
@@ -471,22 +475,51 @@ def version_of(path):
     return int(m.group(1)) if m else None
 
 
-def scan_nsps(nsp_dir, exts=('nsp', 'xci'), keys=None):
+def merged_version(base, name):
+    """The version number nx_extract --merged extracts from a merged dump: 0 for the base game alone, the file's [v] tag for a tagged one, and None for an untagged one — nsp_versions takes
+    an untagged merged dump for the newest update the profile registers on its name alone, so --merged runs without --version (it picks the newest patch the dump holds) and the build-ID
+    check decides whether the dump held that patch, as with a separate loose update (a retail card dump with an embedded patch may hold another one)"""
+    return 0 if name == 'v0' else version_of(base)
+
+
+def merged_args(nx, keys, base, out, ver):
+    """The arguments of an nx_extract --merged run: ver = the version number to extract (see merged_version); None means no --version, the newest patch in the dump"""
+    return [nx, keys, '--merged', base, out] + (['--version', str(ver)] if ver is not None else [])
+
+
+def scan_nsps(nsp_dir, exts=('nsp', 'xci'), keys=None, only=None):
     """Group by game: {application title ID: {'base': path, 'updates': [(version, path)], 'dlc': [(title ID, version, path)]}}. exts: the kinds of dump to take (the Android porter adds nsz, xcz);
-    keys: prod.keys, whose header_key reads the title ID of a dump with neither a ticket nor a [title ID] tag from its NCA headers"""
+    keys: prod.keys, whose header_key reads the title IDs of a dump with neither a ticket nor a [title ID] tag from its NCA headers. One dump may hold several titles of the same game
+    beside one another (a rebuilt card, "(1G+1U)"): every title ID it carries is classified by its low 12 bits, so the base game, its update and the DLC in one file are all found
+    (nsp_versions and extract() send such a base through nx_extract --merged). A file's [v] tag names its update's version; a merged dump's DLC gets no version (the tag is the update's).
+    A file that carries another application's title as well (a stray ticket, a compilation card) skips it with a note: main went on with the file's first title, and one game per folder
+    keeps the scan from failing on it.
+    only: one dump selected instead of a folder — only it is scanned (a merged dump carries everything; the other dumps in its folder are left out)"""
     fams, unknown = {}, []
     hk = header_key(keys) if keys else None
-    for p in sorted(p for p in nsp_dir.glob('*') if p.is_file() and p.suffix.lower()[1:] in exts):   # suffix case is accepted on every host; directories named *.nsp are not dumps
+    if only is not None:
+        if only.suffix.lower()[1:] not in exts: raise BuildError(f'not a dump porter reads ({" / ".join(exts)}): {only.name}')
+        files = [only]
+    else:
+        files = sorted(p for p in nsp_dir.glob('*') if p.is_file() and p.suffix.lower()[1:] in exts)   # suffix case is accepted on every host; directories named *.nsp are not dumps
+    for p in files:
         if p.stat().st_size == 0:   # an empty file left by an incomplete download (the Zelda BotW folder holds a 0-byte DLC NSP next to the complete (1).nsp)
             say(f'skipping an empty file: {p.name}'); continue
-        tid = title_of(p, hk)
-        if tid is None: unknown.append(p); continue
-        low = tid & 0xFFF   # base …000, update …800, DLC = base + 0x1000 + index
-        app = tid if low == 0 else tid & ~0xFFF if low == 0x800 else (tid & ~0xFFF) - 0x1000
-        f = fams.setdefault(app, {'base': None, 'updates': [], 'dlc': []})
-        if low == 0: f['base'] = p
-        elif low == 0x800: f['updates'].append((version_of(p), p))
-        else: f['dlc'].append((tid, version_of(p), p))
+        tids = titles_of(p, hk)
+        if not tids:   # no ticket and no readable meta: the [title ID] tag in the file name, if any
+            if (tid := title_of(p, hk)) is None: unknown.append(p); continue
+            tids = [tid]
+        fapp = None   # the file's first application: titles of another game beside it (a stray ticket, a compilation card) are skipped, as main went on with the first title
+        for tid in tids:
+            low = tid & 0xFFF   # base …000, update …800, DLC = base + 0x1000 + index
+            app = tid if low == 0 else tid & ~0xFFF if low == 0x800 else (tid & ~0xFFF) - 0x1000
+            if fapp is None: fapp = app
+            elif app != fapp:
+                say(f'skipping {tid:016X} in {p.name}: not a title of {fapp:016X} (a file carries one game)'); continue
+            f = fams.setdefault(app, {'base': None, 'updates': [], 'dlc': []})
+            if low == 0: f['base'] = p
+            elif low == 0x800: f['updates'].append((version_of(p), p))
+            else: f['dlc'].append((tid, version_of(p) if len(tids) == 1 else None, p))
     if len(fams) == 1 and len(unknown) == 1 and next(iter(fams.values()))['base'] is None:   # a base game converted from a cartridge may have neither tags nor a ticket; build IDs are checked afterwards
         next(iter(fams.values()))['base'] = unknown[0]
     if not fams:
@@ -505,12 +538,19 @@ def vnum(ver):   # 'v655360' → 655360
     return int(ver[1:])
 
 
+def merged_dump(fam):   # whether the base game's file is a merged container: scan_nsps filed the update's and the DLC's titles from the same file beside the base's
+    return fam['base'] is not None and (any(p == fam['base'] for _, p in fam['updates']) or any(p == fam['base'] for _, _, p in fam['dlc']))
+
+
 def nsp_versions(fam, builds):
-    """The versions the folder holds: {version: its update NSP, or None for v0 (the base game alone)}. An update is known by the [v<N>] tag in its file name; a single update without one
-    is taken for the newest update the profile registers (its build IDs are checked once extracted), and is left out when the profile registers none or other updates are there"""
+    """The versions the folder holds: {version: its update NSP, or None for v0 (the base game alone), or the base game's own file when the base game is a merged dump that holds the update
+    (nx_extract --merged extracts from it; its base and update program NCAs both carry the base game's title ID, so the ordinary pick could not tell them apart)}. An update is known by the
+    [v<N>] tag in its file name; a single update without one is taken for the newest update the profile registers (its build IDs are checked once extracted), and is left out when the
+    profile registers none or other updates are there"""
     out = {'v0': None}
     for v, p in fam['updates']:
         if v is not None: out[f'v{v}'] = p
+    if merged_dump(fam): out['v0'] = fam['base']
     loose = [p for v, p in fam['updates'] if v is None]
     reg = sorted((b for b in builds if b != 'v0'), key=vnum)
     if loose and len(fam['updates']) == 1 and reg: out[reg[-1]] = loose[0]
@@ -519,12 +559,13 @@ def nsp_versions(fam, builds):
 
 
 def pick_nsps(fam, have, versions):
-    """For each version to extract, (base game, update or None): v0 = the base game alone, v<N> = the base game + the update with version number N"""
+    """For each version to extract, (base game, update or None): v0 = the base game alone, v<N> = the base game + the update with version number N. When the base game is a merged dump,
+    every version extracts from the base game's own file (the update's NCAs are in it): extract() runs that through nx_extract --merged"""
     say(f'base: {fam["base"].name}')
     out = {}
     for ver in versions:
         if ver not in have: raise BuildError(f'no NSP for update {ver} (the game profile needs these versions: {", ".join(versions)})')
-        if have[ver]: say(f'update {ver}: {have[ver].name}')
+        if have[ver]: say(f'update {ver}: {have[ver].name}' + (' (the merged dump holds it)' if have[ver] == fam['base'] else ''))
         out[ver] = (fam['base'], have[ver])
     return out
 
@@ -553,7 +594,11 @@ def survey(nsp_dir, app, fam, keys, repo, py, env):
         except OSError: return None
     PROG.stage('survey: RomFS manifest', poll=listed)
     say(f'extracting the code modules and a RomFS manifest (no game files written) → {ex}')
-    run([nx, keys, fam['base'], upd or '-', tmp, '--manifest'] + (['--allow-damaged'] if ALLOW_DAMAGED else []), logs / 'extract.log')
+    if upd == fam['base']:   # a merged dump: nx_extract --merged picks the base's and the update's NCAs from its content metas; with no [v] tag, the newest patch
+        args = merged_args(nx, keys, fam['base'], tmp, ups[-1][0])
+    else:
+        args = [nx, keys, fam['base'], upd or '-', tmp]
+    run(args + ['--manifest'] + (['--allow-damaged'] if ALLOW_DAMAGED else []), logs / 'extract.log')
     swap_in(tmp, ex)
     require_64bit(ex / 'ExeFS', f'{nacp.name(ex / "control.nacp") or "the game"} ({app:016X})')
     PROG.stage('survey: code modules', step='reading')
@@ -561,7 +606,7 @@ def survey(nsp_dir, app, fam, keys, repo, py, env):
     dv = re.search(r'display version (\S+)', xlog)
     F = pg.facts_of(ex / 'ExeFS', ex / 'romfs_manifest.tsv'); mods, rom = F['mods'], F['romfs']   # dm/games/profile_guess.py: what the code modules and the RomFS show
     R = [f'# Survey: {nacp.name(ex / "control.nacp") or "?"} ({app:016X})', '', f'- display version: {dv.group(1) if dv else "?"}', f'- base: `{fam["base"].name}` ({fam["base"].stat().st_size / 2**30:.2f} GB)']
-    R += [f'- update: `{p.name}` (v{v}, {p.stat().st_size / 2**30:.2f} GB){" (used for this survey)" if p == upd else ""}' for v, p in ups]
+    R += [f'- update: `{p.name}` (v{v}, {p.stat().st_size / 2**30:.2f} GB){" (used for this survey)" if p == upd else ""}{" (the merged dump holds it)" if p == fam["base"] else ""}' for v, p in ups]
     R += [f'- DLC: `{p.name}` ({p.stat().st_size / 1024:.0f} KB{", licence only, no content" if p.stat().st_size < 1 << 20 else ""})' for _, _, p in fam['dlc']]
 
     # Code modules
@@ -823,8 +868,13 @@ def extract(nx, keys, ex, name, base, upd, cmp_dir, logs, g):   # the build IDs 
     last = extracted(log)   # the last extraction of this version (its log is about to be overwritten) has the exact size; without one, the NSPs' size is the estimate
     def poll():
         n, b = tree_size(tmp); return {'done': b, 'note': f'{n:,} files'}
-    PROG.stage(f'extract {name}', poll=poll, unit='B', total=last[1] if last else base.stat().st_size + (upd.stat().st_size if upd else 0), est=not last)
-    run([nx, keys, base, upd or '-', tmp] + ([cmp_dir] if cmp_dir else []) + (['--allow-damaged'] if ALLOW_DAMAGED else []), log)
+    PROG.stage(f'extract {name}', poll=poll, unit='B', total=last[1] if last else base.stat().st_size + (upd.stat().st_size if upd and upd != base else 0), est=not last)   # a merged dump is the base and the update: count it once
+    if upd == base:   # a merged dump: one file holds the base game and its update (scan_nsps filed both entries beside the base's). Its content metas (CNMT) pick the NCAs — an
+                      # update's program and control NCAs carry the base game's title ID, so the ordinary pick could not tell them apart — and the version number selects the patch
+                      # (0: none; an untagged dump: none passed, the newest patch in the dump, the build-ID check decides — merged_version)
+        run(merged_args(nx, keys, base, tmp, merged_version(base, name)) + ([cmp_dir] if cmp_dir else []) + (['--allow-damaged'] if ALLOW_DAMAGED else []), log)
+    else:
+        run([nx, keys, base, upd or '-', tmp] + ([cmp_dir] if cmp_dir else []) + (['--allow-damaged'] if ALLOW_DAMAGED else []), log)
     swap_in(tmp, dst)
     n, b = extracted(log) or (0, 0)
     PROG.end(f'{n:,} files, {amount(b, "B")}')
@@ -849,8 +899,9 @@ def extract_aoc(nx, keys, repo, work, app, fam, logs):
     for i, (tid, (_, p)) in enumerate(sorted(best.items())):
         idx = tid - app - 0x1000
         PROG.set(step='extracting', done=i, total=len(best), unit='DLC')
-        say(f'DLC index {idx}: {p.name}')
-        run([nx, keys, '--aoc', p, tmp / str(idx)], logs / f'aoc_{idx}.log')
+        say(f'DLC index {idx}: {p.name}' + (' (the merged dump holds it)' if p == fam['base'] else ''))
+        # the DLC's title ID picks its data NCA by header (a DLC's NCAs carry their own title IDs): always passed, a file may hold several titles — a merged dump, or a DLC bundle (several DLC titles in one file, no base game), where Pick would take the lowest title ID's data NCA for every index. A single-DLC NSP's data NCA carries its own title ID, so the pick works there too
+        run([nx, keys, '--aoc', p, tmp / str(idx), f'{tid:x}'], logs / f'aoc_{idx}.log')   # the title ID, hex: Aoc parses it with fromBase 16
     swap_in(tmp, dst)
     kf.write_text(f'{key}\n{len(best)} DLC\n')
     PROG.end(f'{len(best)} DLC')

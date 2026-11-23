@@ -45,6 +45,20 @@ class DumpDiscovery(unittest.TestCase):
                     self.assertEqual(app, self.BASE)
                     self.assertEqual(fam, {'base': base, 'updates': [(131072, new), (65536, old)], 'dlc': [(self.BASE + 0x1001, 0, dlc)]})
 
+    def test_selecting_one_dump_scans_only_it(self):
+        base = self.dump(self.root, 'base.nsp', self.BASE)
+        self.dump(self.root, 'update [v65536].nsp', self.BASE + 0x800)   # in the folder, but not selected
+        app, fam = nsp.scan_nsps(self.root, dumps.EXTS, only=base)
+        self.assertEqual(app, self.BASE)
+        self.assertEqual(fam, {'base': base, 'updates': [], 'dlc': []})   # a merged dump carries everything; the other dumps are left out
+
+    def test_selecting_a_non_dump_is_refused(self):
+        self.dump(self.root, 'base.nsp', self.BASE)
+        notes = self.root / 'notes.txt'; notes.write_text('x')
+        with self.assertRaises(nsp.BuildError) as e:
+            nsp.scan_nsps(self.root, dumps.EXTS, only=notes)
+        self.assertIn('notes.txt', str(e.exception))
+
     def test_directories_and_unrequested_extensions_are_ignored(self):
         base = self.dump(self.root, 'base.nsp', self.BASE)
         for name in ('folder.nsp', 'folder.XCI', 'folder.NsZ', 'folder.xcz'):

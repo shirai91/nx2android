@@ -4,28 +4,58 @@ static VkImageSubresourceLayers sub_of(vkimg_t *im, const view_t *v, int has_v, 
     int layered = im->layers > 1;
     return (VkImageSubresourceLayers){im->aspect & VK_IMAGE_ASPECT_COLOR_BIT ? VK_IMAGE_ASPECT_COLOR_BIT : (im->aspect & VK_IMAGE_ASPECT_DEPTH_BIT ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_STENCIL_BIT), lv, ly + (layered ? (uint32_t)z : 0), 1};
 }
+static int copy_span_bytes(uint64_t row_bytes, uint64_t pitch, uint64_t slice, uint64_t rows, uint64_t slices, uint64_t *span) {
+    if (!row_bytes || !pitch || !rows || !slices || pitch < row_bytes || rows - 1 > (UINT64_MAX - row_bytes) / pitch) return 0;
+    uint64_t image = (rows - 1) * pitch + row_bytes, prior = slices - 1;
+    if (prior && (!slice || slice < image || prior > (UINT64_MAX - image) / slice)) return 0;
+    *span = prior * slice + image; return 1;
+}
+static int copy_buffer_span(const VkBufferImageCopy *r, const vkfmt_t *f, uint32_t slices, uint64_t *span) {
+    uint64_t bw = f->bw ? f->bw : 1, bh = f->bh ? f->bh : 1, bpb = f->bpb;
+    uint64_t w = r->imageExtent.width, h = r->imageExtent.height;
+    uint64_t cols = (w + bw - 1) / bw, rows = (h + bh - 1) / bh;
+    uint64_t row_blocks = (r->bufferRowLength ? r->bufferRowLength : w) + bw - 1;
+    uint64_t image_rows = (r->bufferImageHeight ? r->bufferImageHeight : h) + bh - 1;
+    row_blocks /= bw; image_rows /= bh;
+    if (!bpb || !cols || !rows || row_blocks < cols || image_rows < rows || cols > UINT64_MAX / bpb || row_blocks > UINT64_MAX / bpb) return 0;
+    uint64_t tight = cols * bpb, pitch = row_blocks * bpb;
+    if (image_rows > UINT64_MAX / pitch) return 0;
+    return copy_span_bytes(tight, pitch, pitch * image_rows, rows, slices, span);
+}
 static void copy_b2t(const p_copy_b2t *c, int to_texture) {
     vk_end_pass_land();
     vkimg_t *im = vk_tex(c->tex); const vkfmt_t *f = vk_fmt(c->tex->d.format);
     if (!im || !f) return;
-    VkBuffer b; VkDeviceSize o;
-    if (!vk_buf_at(c->src, 1, &b, &o)) { VKRED_ONCE(70, "buffer of a buffer ↔ texture copy outside the memory pools"); return; }
-    VkCommandBuffer cb = vk_cmd(); vk_tex_prepare(cb, im); vk_img_barrier_all(cb);
+    if (c->r.width <= 0 || c->r.height < 0 || c->r.depth < 0) { VKRED_ONCE(72, "buffer ↔ texture copy with an invalid extent: skipped"); return; }
     unsigned bw = f->bw ? f->bw : 1, bh = f->bh ? f->bh : 1;
-    uint32_t rowlen = S.row_stride > 0 && f->bpb ? (uint32_t)(S.row_stride / f->bpb) * bw : 0;
-    uint32_t imgh = S.image_stride > 0 && S.row_stride > 0 ? (uint32_t)(S.image_stride / S.row_stride) * bh : 0;
-    int layered = im->layers > 1, depth = c->r.depth ? c->r.depth : 1;
-    VkBufferImageCopy r = {o, rowlen, imgh, sub_of(im, &c->view, c->has_view, c->r.zoffset), {c->r.xoffset, c->r.yoffset, layered ? 0 : c->r.zoffset},
-                           {(uint32_t)c->r.width, (uint32_t)(c->r.height ? c->r.height : 1), layered ? 1 : (uint32_t)depth}};
-    if (layered) r.imageSubresource.layerCount = (uint32_t)depth;
-    if (f->dec) {   // a BC format the device lacks (gfx_vk_tex.c bc_decode): the blocks decoded on the CPU from the buffer's memory as the replay reaches the copy
-        if (!to_texture) { VKRED_ONCE(71, "copy of a BC texture decoded on the CPU into a buffer: skipped"); return; }
-        uint32_t w = (uint32_t)c->r.width, h = (uint32_t)(c->r.height ? c->r.height : 1), nz = (uint32_t)depth;
-        size_t pitch = S.row_stride > 0 ? (size_t)S.row_stride : (size_t)((w + 3) / 4) * f->bpb, slice = S.image_stride > 0 ? (size_t)S.image_stride : pitch * ((h + 3) / 4), out = (size_t)w * h * f->dbpp;
-        VkBuffer sb; VkDeviceSize so; uint8_t *p = vk_scratch(out * nz, 16, &sb, &so);
-        for (uint32_t z = 0; z < nz; z++) vk_bc_decode(f, (const uint8_t *)(uintptr_t)c->src + z * slice, pitch, w, h, 1, p + z * out);
-        b = sb; r.bufferOffset = so; r.bufferRowLength = 0; r.bufferImageHeight = 0;
+    uint32_t w = (uint32_t)c->r.width, h = (uint32_t)(c->r.height ? c->r.height : 1), depth = (uint32_t)(c->r.depth ? c->r.depth : 1);
+    uint64_t rowlen64 = 0, imgh64 = 0;
+    if (S.row_stride > 0 && f->bpb) { uint64_t blocks = (uint64_t)S.row_stride / f->bpb; if (blocks > UINT64_MAX / bw) { VKRED_ONCE(73, "buffer ↔ texture copy stride exceeds Vulkan's range: skipped"); return; } rowlen64 = blocks * bw; }
+    if (S.image_stride > 0 && S.row_stride > 0) { uint64_t images = (uint64_t)S.image_stride / (uint64_t)S.row_stride; if (images > UINT64_MAX / bh) { VKRED_ONCE(73, "buffer ↔ texture copy stride exceeds Vulkan's range: skipped"); return; } imgh64 = images * bh; }
+    if (rowlen64 > UINT32_MAX || imgh64 > UINT32_MAX) { VKRED_ONCE(73, "buffer ↔ texture copy stride exceeds Vulkan's range: skipped"); return; }
+    uint32_t rowlen = (uint32_t)rowlen64, imgh = (uint32_t)imgh64;
+    int layered = im->layers > 1;
+    VkBufferImageCopy r = {0, rowlen, imgh, sub_of(im, &c->view, c->has_view, c->r.zoffset), {c->r.xoffset, c->r.yoffset, layered ? 0 : c->r.zoffset},
+                           {w, h, layered ? 1 : depth}};
+    if (layered) r.imageSubresource.layerCount = depth;
+    VkCommandBuffer cb = vk_cmd(); vk_tex_prepare(cb, im); vk_img_barrier_all(cb);
+    uint64_t span;
+    if (!copy_buffer_span(&r, f, depth, &span) || span > UINT64_MAX - c->src) { VKRED_ONCE(74, "buffer ↔ texture copy extent overflows: skipped"); return; }
+    int decode = f->dec && to_texture;
+    if (f->dec && !to_texture) { VKRED_ONCE(71, "copy of a BC texture decoded on the CPU into a buffer: skipped"); return; }
+    VkBuffer b = VK_NULL_HANDLE; VkDeviceSize o = 0;
+    if (decode) {   // BC formats the device lacks: stage through sparse-aware CPU reads before decoding
+        uint64_t cols = ((uint64_t)w + bw - 1) / bw, rows = ((uint64_t)h + bh - 1) / bh;
+        if (!f->bpb || cols > UINT64_MAX / f->bpb) { VKRED_ONCE(74, "BC buffer ↔ texture copy extent overflows: skipped"); return; }
+        uint64_t tight = cols * f->bpb, pitch = S.row_stride > 0 ? (uint64_t)S.row_stride : tight, slice;
+        if (S.image_stride > 0) slice = (uint64_t)S.image_stride;
+        else { if (rows > UINT64_MAX / pitch) { VKRED_ONCE(74, "BC buffer ↔ texture copy extent overflows: skipped"); return; } slice = pitch * rows; }
+        if (!copy_span_bytes(tight, pitch, slice, rows, depth, &span) || span > UINT64_MAX - c->src) { VKRED_ONCE(74, "BC buffer ↔ texture copy extent overflows: skipped"); return; }
     }
+    // The lookup extent: a sparse source must map contiguously, so it is checked (and translated) over its whole span; a regular pool keeps main's
+    // 1-byte lookup, so a copy whose span runs past the pool is logged by the block below and still made, as main decides
+    uint64_t lookup = nvn_sparse_address_pool(c->src, 1) ? span : 1;
+    if (!vk_buf_at(c->src, lookup, &b, &o)) { VKRED_ONCE(70, "buffer of a buffer ↔ texture copy outside the memory pools"); return; }
     {   // a transfer past the image's level or past the buffer is not covered by any robustness feature: Adreno loses the device (checked before the copy and logged; the copy is still made)
         uint32_t lv = r.imageSubresource.mipLevel, lw = im->w >> lv ? im->w >> lv : 1, lh = im->h >> lv ? im->h >> lv : 1, ld = im->d > 1 ? (im->d >> lv ? im->d >> lv : 1) : 1;
         lw = (lw + bw - 1) / bw * bw; lh = (lh + bh - 1) / bh * bh;
@@ -45,10 +75,22 @@ static void copy_b2t(const p_copy_b2t *c, int to_texture) {
                 r.imageSubresource.baseArrayLayer, r.imageSubresource.layerCount, im->w, im->h, im->d, im->layers, im->levels, (unsigned)c->tex->d.format, (unsigned long long)c->src, (unsigned long long)need);
         }
     }
+    if (decode) {
+        uint64_t pixels = (uint64_t)w * h;
+        uint64_t out64 = pixels * f->dbpp;
+        if (!f->dbpp || out64 > SIZE_MAX || depth > SIZE_MAX / out64 || span > SIZE_MAX) { VKRED_ONCE(74, "BC buffer ↔ texture copy is too large to decode: skipped"); return; }
+        size_t out = (size_t)out64, pitch = S.row_stride > 0 ? (size_t)S.row_stride : (size_t)(((uint64_t)w + bw - 1) / bw) * f->bpb;
+        size_t slice = S.image_stride > 0 ? (size_t)S.image_stride : pitch * (((size_t)h + bh - 1) / bh);
+        uint8_t *raw = malloc((size_t)span); if (!raw) { VKRED_ONCE(75, "BC buffer ↔ texture copy could not allocate a CPU snapshot: skipped"); return; }
+        vk_ubd_read(c->src, span, raw);
+        VkBuffer sb; VkDeviceSize so; uint8_t *p = vk_scratch(out * depth, 16, &sb, &so);
+        for (uint32_t z = 0; z < depth; z++) vk_bc_decode(f, raw + (size_t)z * slice, pitch, w, h, 1, p + (size_t)z * out);
+        free(raw); b = sb; r.bufferOffset = so; r.bufferRowLength = 0; r.bufferImageHeight = 0;
+    } else r.bufferOffset = o;
     if (g_watch_off >= 0) { char w[96]; snprintf(w, sizeof w, "buffer copy %s (buffer %#llx, %dx%d)", to_texture ? "destination" : "source", (unsigned long long)c->src, c->r.width, c->r.height); vk_watch(im, w); }
     if (to_texture) { vkCmdCopyBufferToImage(cb, b, im->img, VK_IMAGE_LAYOUT_GENERAL, 1, &r); im->gpu_w = 1; }
     else { vkCmdCopyImageToBuffer(cb, im->img, VK_IMAGE_LAYOUT_GENERAL, b, 1, &r);
-        void vk_gpu_wrote(uint64_t a, uint64_t n); vkpool_t *p = vk_pool_of(c->src, 1); vk_gpu_wrote(c->src, p ? p->hi - c->src : 1); vk_readback_unknown(); }   // (to the pool's end: the copy's extent in memory is not worked out here)
+        void vk_gpu_wrote(uint64_t a, uint64_t n); vk_gpu_wrote(c->src, span); vk_readback_unknown(); }
     vk_img_barrier_all(cb);
 }
 // Scaled copies of depth and stencil: Adreno blits no depth-stencil format (Pokémon Legends: Arceus copies its 1920x1080 D24S8 depth to a 480x270 one, which stayed unwritten), so each
@@ -135,6 +177,28 @@ static VkImage transfer_image(VkCommandBuffer cb, VkFormat fmt, uint32_t w, uint
     vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &b);
     return im;
 }
+// A texture copy into a LINEAR texture in CPU-visible memory: on the Switch the copy writes the texture's storage, which the CPU then reads. Here it writes the Vulkan
+// image only, so the copied region is also copied back to the storage at the texture's stride, marked as written by the GPU (the pools' copy-back carries it to the CPU).
+// Pokémon Violet captures its scene for the enrollment paper's portrait this way (1920x1080 RGBA8_SRGB into a 1920x1080 RGBA8 LINEAR texture in a CPU_UNCACHED pool,
+// stride 7680, a 1440x864 region) and encodes the picture to BC1 on the CPU from that storage; without the copy-back it read zeros and the portrait was black.
+// bpb is the image's own texel size only for an uncompressed format the device has (f->dec == 0: a CPU-decoded BC format's image texel is dbpp bytes).
+// DM_VK_LIN_COPY_BACK=1 (start-up, a profile env row): on. Off by default
+static void t2t_lin_back(VkCommandBuffer cb, vkimg_t *d, const tex_t *t, const vkfmt_t *f, const p_copy_t2t *c) {
+    static int on = -1; if (on < 0) { const char *e = getenv("DM_VK_LIN_COPY_BACK"); on = e && atoi(e) != 0; }
+    if (!on || !t->mem || !t->pool || !(t->d.flags & NVN_TEXTURE_FLAGS_LINEAR) || (t->pool->flags & NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS)) return;
+    if (f->dec || !f->bpb || f->bw > 1 || f->bh > 1 || d->levels != 1 || d->layers != 1 || d->d != 1 || d->aspect != VK_IMAGE_ASPECT_COLOR_BIT || d->samples > 1) return;
+    if (c->dr.xoffset < 0 || c->dr.yoffset < 0 || c->dr.width <= 0 || c->dr.height <= 0) return;
+    size_t stride = t->d.stride ? t->d.stride : (size_t)d->w * f->bpb;
+    if (stride % f->bpb || stride < (size_t)d->w * f->bpb) return;
+    uint64_t start = (uint64_t)(uintptr_t)t->mem + (uint64_t)c->dr.yoffset * stride + (uint64_t)c->dr.xoffset * f->bpb;
+    size_t len = stride * (size_t)(c->dr.height - 1) + (size_t)c->dr.width * f->bpb; VkBuffer b; VkDeviceSize o;
+    if (!vk_buf_at(start, len, &b, &o) || o % f->bpb) return;
+    vk_img_barrier_all(cb);
+    VkBufferImageCopy r = {o, (uint32_t)(stride / f->bpb), 0, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {c->dr.xoffset, c->dr.yoffset, 0}, {(uint32_t)c->dr.width, (uint32_t)c->dr.height, 1}};
+    vkCmdCopyImageToBuffer(cb, d->img, VK_IMAGE_LAYOUT_GENERAL, b, 1, &r);
+    void vk_gpu_wrote(uint64_t a, uint64_t n); vk_gpu_wrote(start, len); vk_readback_unknown();
+    static int n; if (n++ < 4) VKLOG("texture copy into a linear %ux%u texture (nvn format %#x, stride %zu): region %dx%d copied back to its storage %p (DM_VK_LIN_COPY_BACK)", d->w, d->h, t->d.format, stride, c->dr.width, c->dr.height, (void *)t->mem);
+}
 static void copy_t2t(const p_copy_t2t *c) {
     vk_end_pass();
     vkimg_t *s = vk_tex(c->src), *d = vk_tex(c->dst);
@@ -214,6 +278,7 @@ static void copy_t2t(const p_copy_t2t *c) {
         vkCmdBlitImage(cb, si, VK_IMAGE_LAYOUT_GENERAL, di, VK_IMAGE_LAYOUT_GENERAL, 1, &r, (c->flags & 1) ? VK_FILTER_LINEAR : VK_FILTER_NEAREST);
         if (di != d->img) { vk_img_barrier_all(cb); vkCmdCopyImage(cb, di, VK_IMAGE_LAYOUT_GENERAL, d->img, VK_IMAGE_LAYOUT_GENERAL, 1, &back); }
     }
+    t2t_lin_back(cb, d, k.dst, df, &k);
     vk_img_barrier_all(cb);
 }
 static void clear_tex(const p_clear_tex *c) {

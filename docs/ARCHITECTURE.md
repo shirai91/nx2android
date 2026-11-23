@@ -117,6 +117,12 @@ checked before pointer formation. These checks do not change the decoder choice
 or timestamp/queue policy. The manual [AVC probe](../probes/avc_frame_layout.md)
 checks synthetic planes and padding; physical-device qualification is separate.
 
+The Android AVC adapter snapshots matrix and range with each queued picture.
+MediaCodec color metadata is accepted only for fields declared in the stream's
+SPS VUI. Without a colour description with a specified matrix it uses BT.709 at 720 lines and above,
+BT.601 below. Without a video signal type it uses limited range. Malformed or
+unsupported SPS data uses both defaults.
+
 Stopping a started guest AudioOut returns all pending buffers in queue order,
 including any partly played buffer, and wakes the guest's release event even if
 the pending queue is empty. Capacity covers all buffers accepted and yet to be
@@ -193,6 +199,19 @@ the device fetches, pipelines are built exactly as before.
 
 How a game's frames are paced is decided in one module, `nxnative/dm/host/dm_pacing.c`: the frame-rate target (`game.tsv` `fps_target`, `DM_FPS_TARGET`), the 30 fps ceiling (`fps_ceiling`, `DM_FPS_CEILING`), the frame step's hold (`fps_hold`, `DM_FPS_HOLD`), presents on the display's ticks (`present_interval`, `DM_PRESENT_INTERVAL`), the Android governor (`DM_ADAPTIVE_FPS`, `DM_FPS_PIN`, `DM_ADAPT_UP_PCT`), the window's rate vote (`DM_VK_WINDOW_GAME_RATE`) and GPU turbo (`DM_GPU_TURBO`). The mechanisms stay where they run (the frame step in `loader.c` and `nvn_fstep.h`, the 60 fps writes in `hle_fpslock.c`, the present interval in `hle_nvn.c`, presents and the rate vote in `gfx_vk_present.c`, the governor in `perf_android.c`) and ask it. At start-up the log has the whole policy in one line (`pacing: target 60 fps (game profile fps_target), ceiling 0, hold on ...`). A profile chooses its policy with one `android.tsv` row, `pacing <preset>` (below). Test harnesses that cut the governor out of `perf_android.c` compile the real `dm_pacing.c` with it (`tests/csrc.py` `pacing_files`).
 
+## Descriptor cache hashing
+
+The Android backend's descriptor caches (`gfx_vk_exec_descriptors.inc`) find candidates by hash. Two kinds of path decide reuse differently:
+
+- **Exact.** The content-keyed set cache (`set_key`) and driver segments built and hashed (`drv_shared`'s content path) compare every byte of a candidate before reusing it, so a collision only costs a miss. Long inputs use a four-lane hash so the replay thread does not wait on one dependent multiply chain.
+- **Hash only.** Two paths reuse on a 64-bit hash alone, to avoid collecting or building anything:
+  - a stage set found again by its bindings (`rmemo_take`, keyed by order-free hashes of the stage's slots, the shader and its constant buffers' buffers);
+  - a c2 driver segment found by the hash of its slots (`drv_shared` with `DM_VK_C2_FAST`).
+
+  `DM_VK_X_SETVERIFY=1` collects one memo hit in 64 anyway and compares it, builds every c2 segment found by hash again and compares its bytes, and logs a `[RED]` line on any difference; its `memo verify` line counts both checks. `DM_VK_X_NOSETMEMO=1` and `DM_VK_C2_FAST=0` turn the two paths off for an A/B.
+
+These hashes stay in the process: they are not persisted and do not change the Vulkan pipeline-cache identity.
+
 ## Game profiles on Android
 
 A profile is offered for Android when it has an `android.tsv`; the profiles without one (52 of the 54 today, upstream's iOS games) show as "ios only": an experimental port can still try them. `android.tsv` holds, one `key<TAB>value` row each:
@@ -258,6 +277,7 @@ captures and translator. The new receipt format rebuilds existing ports once.
 | system data | Only for a profile with `sysdata` and a `--firmware` folder (the player's own system content files, `.nca`): `nx_extract --sysdata` writes each title's RomFS; without the folder the port says so in red and the host's stand-in is used (for the font titles, the host's own stand-in fonts) | `sysdata/<title ID>/` |
 | 60 fps | Only with `--fps60` (below): the profile's own cap, or the build's FPSLocker-Warehouse config converted for the host | `android/fpslock/{fpslock.tsv,patches.py,<build ID>.yaml}` |
 | rewrite | `patch_nso.py` with `DM_TARGET=android` | `android/patched_<version>/` |
+| runtime GLSLC | When expected startup compiler outputs are missing, run the packed version's rewritten modules in a headless Android host before splitting; complete captures are reused without a device | `extract/<version>/glslc_capture/` |
 | shaders | `shader_split.py` (the DLC's own shaders too, `aoc/` given as `DM_SPLIT_AOC`), then `shader_vk.py` (SPIR-V, each module zstd-compressed in the bundle: 3.5x smaller, about 2 s more for the largest bundle; uncompressed in a Python without zstd) with the translator built from the repository's source (`dm/gfx/tools/dmsh_xlate` over `dm/third_party/ryujinx`, once per player in their nx2android folder), plus the shaders captured on the device (below) | `shader/pkg`, `android/shaders.dmsv`, `android/captured_shaders/` |
 | host | `dm/android/build.py --release` with the player's NDK (`--debug`: a development build, debug information and `DM_CTL`) | `android/host/libdmhost.so` (`android/host-debug/`) |
 | apk | `dm/android/apk/mkapk.py`, signed with the player's own key, with the game's gamepad theme only (`dm/android/themes/themes.tsv`: its pack, else the ergo pack) as `assets/overlay/`, and the overlay's font with its licenses (`dm/third_party/fusion-pixel-font`) as `assets/font/` | `<out>/<App>.apk` |
@@ -341,7 +361,7 @@ OpenGL ES games (FM24 Touch: NVIDIA's OpenGL driver in subsdk0, GLSL ES shaders 
 
 What the port refuses: a game whose `main` renders with Vulkan (the Android host replays NVN and runs OpenGL ES so far), and one whose shaders need a step upstream runs by booting the game in the Mac host (legacy Unreal paks, PlatinumGames' PKZ archives).
 
-**GLSLC capture on the device.** A game that compiles some shaders at run time with its own GLSLC (Fire Emblem: Three Houses: 9 built-in GLSL shaders at boot) has no file that holds their outputs. The port boots the game headless on the Android device before the split (`pipeline.device_glslc`): the host built as an executable, the rewritten modules and the RomFS go to `/data/local/tmp/nx2a-glslc`, the RomFS as its files up to 16 MB with empty files of the same size for the bigger ones (Three Houses compiles before it reads its archives: 0.7 of 11.5 GB), and the host runs with `DM_GLSLC_CAPTURE` (`dm/host/hle_glslc.c`) until every capture the profile's shader map names is there or 60 s pass. The captures are pulled into `<version dir>/glslc_capture`, where the split reads them, as the Mac's `capture_glslc` leaves them; their names are hashes of the outputs, so they match the profile's tables. So the port needs adb and the device even when it does not install.
+**Runtime GLSLC capture.** Games whose own compiler produces shaders at startup can capture them on Android before the offline split (`pipeline.device_glslc`). Missing outputs require adb and an ARM64 device even without `--install`. The RomFS staging retains small files and sparse stand-ins above 16 MiB, so startup compilation does not copy multi-gigabyte archives. A null-graphics host runs the packed version's code with fresh temporary saves and a device-side deadline; validated outputs replace the capture directory with rollback on publication failure. Complete profile-listed captures are reused without a device. Each missing shader-source version needs its own code, provisional profiles remain best effort, and compilers hosted in NROs are outside this preparation stage. This path does not establish that a game reaches its compiler or runs correctly on Android.
 
 **Oodle on the device.** Shaders that only the game's own Oodle decodes are decoded with that code on the Android device: the host built as an executable (`build.py --exe`) and the rewritten modules go to `/data/local/tmp/nx2a-oodle` once a port, each job file is decoded there (`dm/host/hle_oodle.c` `DM_OODLE_JOB`), and the folder is removed afterwards (`pipeline.device_oodle_job`). So the port needs adb and the device even when it does not install. Game Freak's GFPAKs and Trinity packs go as one job before the split (`device_oodle`). The returned result is indexed by file offset and length, then copied into the split's decoded archives in chunks of at most 1 MiB, without retaining whole payloads or concatenated archives in Python memory. Short headers, record lengths and payloads fail the stage before decoded archives are written. The temporary result is removed after copying and closing it. An IoStore shader library selects the Unreal decode stage even without a version 11 pak. Unreal Engine's shader code archives (version 11 paks, Unreal Engine 5's IoStore shader libraries) go in rounds (`device_ue`): `uepak.job` runs with a decoder that answers from what is decoded so far and notes the rest, the noted streams go to the device as one job, and the next round runs, until a round notes nothing (FINAL FANTASY RESONANCE: one round of 5,919 shader groups, 74,244 shaders in under a minute); the archives land in `<version dir>/ue_shaders` with the NSP script's stamp, where the split reads them, as the Mac's `decode_ue_shaders` leaves them.
 

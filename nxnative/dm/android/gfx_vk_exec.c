@@ -8,6 +8,7 @@
 #include "nvn_hmap.h"
 #include "game_profile.h"
 #include <math.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/resource.h>
 #include <unistd.h>

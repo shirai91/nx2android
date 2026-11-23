@@ -28,9 +28,9 @@ python -m gui
 
 Check the **Setup** tab, choose the game's folder (the base game NSP, XCI, NSZ or XCZ, its update and DLC) on the **Port** tab, and click **Port**.
 
-Keep the base game, update and DLC in separate files. When a dump's tickets or readable
-content-meta headers identify several titles in one file, porter warns which title it selects
-and which embedded titles it will not select as updates or DLC. It does not split merged dumps.
+The base game, its update and the DLC may be separate files, or one merged dump (a rebuilt card, "(1G+1U)"): porter reads every title a dump carries from its tickets and
+content-meta headers and takes the update and the DLC from the same file (nx_extract picks the NCAs from the dump's content metas). As with a separate update file, the update
+needs a [v<N>] tag in the file name; without one it is taken for the newest version the profile registers, and the extracted build IDs are checked as always.
 
 Or the command line:
 
@@ -128,6 +128,12 @@ before enabling the opt-in in a profile. Host sensor tests verify routing and
 axis preservation, not game recognition or device behavior.
 
 ## Tests
+
+`test_avc_color` exercises the Android AVC format reader, SPS declarations,
+picture queue and output conversion on the host. Synthetic SPS cases cover
+untagged decoder defaults, independently declared range, parameter changes,
+byte-prefix truncation, emulation prevention and optional SPS/VUI syntax.
+`probes/avc_color.md` describes the decoder probes and remaining RGBA device check.
 
 ```
 python -m unittest discover tests
@@ -366,3 +372,13 @@ It builds through the production Java/dex packager, uses the real guest keyboard
 `python -m unittest discover -s tests -p test_cpu_handle_readiness.py -v` executes the production tracking, deferred-coverage, live-switch and descriptor-preflight functions. It requires `host_cc.ubsan()` and defaults to UBSan; set `NX2A_TEST_SANITIZE=1` to also use ASan on a host with that runtime. A compiler without UBSan is reported as an explicit capability skip. The manual Android build runner and physical-device procedure are in `tests/vk_cpu_handle_readiness.md`. The runner only builds artifacts. Physical-driver behavior, real-game racy-read/cut/wait counts and timing remain separate validation.
 
 For live A/B testing, use a `DM_CTL` env update with `DM_VK_CPU_READY=0`, then restore `DM_VK_CPU_READY=1`. Values take effect at a submission boundary. Disabling allows unsynchronized CPU descriptor reads; the default remains enabled.
+
+## Runtime GLSLC shader preparation
+
+Some NVN games compile shaders with their own GLSLC at startup (for example, Fire Emblem: Three Houses and Catherine: Full Body). The porter captures these outputs before the offline shader split. If the extraction already contains every complete `glslc_capture/*.glslc` output named by the profile, it reuses them without a device. Otherwise, connect an ARM64 Android device with USB debugging and configure `adb`, even when building without `--install`.
+
+The capture builds a headless NVN host with null graphics, copies the rewritten modules and RomFS to a unique `/data/local/tmp/nx2a-glslc-*` directory, and runs the game's own compiler for up to 60 seconds. It uses fresh temporary saves, leaves installed apps alone, and removes its device directory afterward. Allow enough device space for an additional copy of the RomFS. Logs are in `<title ID>_build/logs/android_glslc.log` and `android_glslc_host.log`.
+
+Incomplete captures leave previous outputs intact. Only the packed version can be captured with its rewritten modules; if another shader-source version needs a capture, port that version separately first. A provisional profile has no expected-output list, so any complete output permits a best-effort split; this does not prove complete shader coverage or game playability. Runtime compilers inside NRO modules are not detected by this preparation stage yet.
+
+Regression tests: `python -m unittest discover -s tests -p test_glslc_capture.py`. For transport integration on a dedicated ARM64 emulator, run `python tests/android/glslc_smoke.py --ndk <NDK> --adb <adb> --serial emulator-<port> --out <scratch>`. This runs the production capture writer with synthetic compiler output through the real device deadline, transfer and publication path. It does not execute a commercial game's compiler or qualify gameplay.

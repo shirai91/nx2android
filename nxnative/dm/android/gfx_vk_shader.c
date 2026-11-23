@@ -326,6 +326,12 @@ static vkshader_t *vk_shader_q(uint64_t key, int stage, int quiet) {
                        (op == 10 && !memcmp(&w[i + 1], "SPV_EXT_fragment_shader_interlock", 33));
             if (drop) i += n; else for (uint32_t k = 0; k < n; k++) w[o++] = w[i++]; }
         nw = o; } }
+    // DM_VK_UBO_COMPONENT=1 (start-up; a game profile's android.tsv env row): fragment shaders' uniform buffer loads that pick a vector component at a run-time
+    // index load the whole vector and take the component with OpVectorExtractDynamic (gfx_vk_ubo_comp.c). Turnip (Mesa, vulkan.ad07xx.so) did not give each
+    // invocation its own component: Pokémon Violet's lighting drew hair white in waves that also held skin
+    { static int on = -1; if (on < 0) { const char *e = getenv("DM_VK_UBO_COMPONENT"); on = e && atoi(e); if (on) VKLOG("shaders: uniform buffer components at run-time indices taken from the loaded vector in fragment shaders (DM_VK_UBO_COMPONENT)"); }
+      uint32_t n2 = 0, sites = 0, *w2 = on && stage == 1 ? spv_ubo_component(w, nw, &n2, &sites) : NULL;
+      if (w2) { free(w); w = w2; nw = n2; VKLOG("shader %016llx: %u uniform buffer components at run-time indices taken from the loaded vector (DM_VK_UBO_COMPONENT)", (unsigned long long)key, sites); } }
     // subgroup operations of a class the stage lacks (not in supportedStages, VUID-RuntimeSpirv-None-06343; a class not in supportedOperations; quad operations outside
     // fragment and compute without quadOperationsInAllStages, -06342): the module runs as subgroups of one invocation (gfx_vk_subgroup.c). On a Retroid Pocket 5
     // (Adreno 650, Turnip: compute alone) Pokemon Pokopia's fragment shader 541aa7b27f1fae4d, the translator's SHFL helper, lost the device at the title screen.

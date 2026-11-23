@@ -21,7 +21,7 @@ int dm_pacing_pin(void);
 int dm_pacing_up_pct(void);
 // Whether the window asks the display for the game's own rate (DM_VK_WINDOW_GAME_RATE=1)
 int dm_pacing_window_game_rate(void);
-// GPU turbo: 0 off, 1 on, 2 auto (DM_GPU_TURBO=1 / auto)
+// GPU turbo: 0 off, 1 on, 2 auto, 3 when needed (DM_GPU_TURBO=1 / auto / need)
 int dm_pacing_turbo(void);
 // One log line with the whole policy (at start-up, after the game profile is known)
 void dm_pacing_log(void);

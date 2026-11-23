@@ -42,6 +42,9 @@ static struct { p_bind_buf ssbo[6][16], ubo[6][16]; uint64_t tex[6][256], img[6]
 static uint32_t g_dispatch[3], g_draw_binst;
 static uint64_t g_set_epoch = 1;
 static int g_x_nodrvc;
+static uint64_t g_c2h[6]; static int g_c2fast;   /* c2 by its slots: off, the content-hashed path under test (on in c2_verify) */
+static int g_c2_check; static uint64_t g_c2_checked, g_c2_bad, g_c2_hit, g_c2_put, g_drv_content;
+#define VKLOG(...) ((void)0)
 enum { DRVC = 1024 };
 ''' + cache + '\n' + scratch_type + '\n' + scratch_size + r'''
 /* Only the slot fields vk_scratch uses; mapped bytes are owned by mocked Vulkan. */
@@ -240,6 +243,35 @@ static void ordinary(void) {
     uint32_t value; memcpy(&value, bytes(next) + 0x644, sizeof value);
     assert(!same(first, next) && value == 78 && used() == n + 0x1000);
 }
+/* drv_segment builds c2 a run at a time: every 8 bytes as c2_handle lays them out, zeros elsewhere, for every stage */
+static void c2_layout(void) {
+    for (int st = 0; st < 6; st++) {
+        clean();
+        for (int i = 0; i < 256; i++) S.tex[st][i] = 0x1000000000ull * (st + 1) + 0x100 + i;
+        for (int i = 0; i < 32; i++) S.img[st][i] = 0x1000000000ull * (st + 1) + 0x400 + i;
+        for (int i = 0; i < 128; i++) S.samp[st][i] = 0x1000000000ull * (st + 1) + 0x800 + i;
+        uint8_t d[0x1000]; memset(d, 0xa5, sizeof d); drv_segment(st, 2, d, 0);
+        for (int off = 0; off < 0x1000; off += 8) {
+            uint64_t want = off >= 0x20 && off < 0x968 ? c2_handle(st, off) : 0, got; memcpy(&got, d + off, 8);
+            assert(got == want);
+        }
+    }
+}
+/* DM_VK_X_SETVERIFY: a c2 segment found by its slots' hash is built again and compared; one the hash wrongly matched is replaced by a fresh one */
+static void c2_verify(void) {
+    clean(); force_hash = 0; g_c2fast = 1;
+    S.tex[1][3] = 0x33; g_c2h[1] = 0x1234;
+    ref a = get(1, 2, 0); assert(same(a, get(1, 2, 0)));   /* found again by g_c2h */
+    S.tex[1][3] = 0x44;                                     /* a slot changed and the hash did not: a collision */
+    assert(same(a, get(1, 2, 0)));                          /* without the check the hash is trusted */
+    g_c2_check = 1; ref b = get(1, 2, 0); g_c2_check = 0;
+    assert(!same(a, b) && g_c2_bad == 1 && g_c2_checked == 1);
+    uint8_t want[0x1000]; memset(want, 0, sizeof want); drv_segment(1, 2, want, 0);
+    assert(!memcmp(bytes(b), want, 0x968));
+    g_c2_check = 1; ref c = get(1, 2, 0); g_c2_check = 0;   /* the fresh segment is the cached one now: it checks out */
+    assert(same(b, c) && g_c2_bad == 1 && g_c2_checked == 2);
+    g_c2fast = 0;
+}
 int main(int argc, char **argv) {
     (void)compare_bytes; assert(argc == 2); V.props.limits.minUniformBufferOffsetAlignment = 256;
     switch (atoi(argv[1])) {
@@ -253,6 +285,8 @@ int main(int argc, char **argv) {
     case 7: growth(); break;
     case 8: ordinary(); break;
     case 9: live_range(); break;
+    case 10: c2_layout(); break;
+    case 11: c2_verify(); break;
     default: abort();
     }
     clean(); return 0;
@@ -306,6 +340,12 @@ class DriverCache(unittest.TestCase):
 
     def test_normal_hash_reuse(self):
         self.check_case(8)
+
+    def test_handle_table_matches_c2_handle_layout(self):
+        self.check_case(10)
+
+    def test_c2_verify_replaces_a_wrong_hash_hit(self):
+        self.check_case(11)
 
 
 if __name__ == '__main__':

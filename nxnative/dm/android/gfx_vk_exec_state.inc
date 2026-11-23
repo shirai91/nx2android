@@ -60,6 +60,18 @@ static inline uint64_t tick(void) {
 // DM_VK_X_NOBAR=1 no barrier before a pass, DM_VK_X_DEPTH=1 depth neither loaded nor stored, DM_VK_X_COLOR=1 colour not loaded unless cleared
 static int g_x_nobar, g_x_depth, g_x_color, g_x_cbdraws, g_x_tracepass = -1, g_sub_pass;   // DM_VK_TRACE_PASS=n: log every draw of the submission's pass n (once)
 static int g_x_listpasses;
+static int g_c2fast = 1;   // DM_VK_C2_FAST (x_read; drv_shared)
+// c2 by its slots (DM_VK_C2_FAST, live, default on): a c2 segment (bank != 0, not the slot-index form) is S.tex / S.img / S.samp of its stage and nothing else,
+// and only bind_handles_rec changes those, so it keeps g_c2h[st], an order-free hash of every non-zero slot (O(1) a bind). drv_shared then finds an equal
+// segment by that hash instead of building 4 KB and hashing 2.4 KB of it for every draw whose bindings changed (Sifu's bindless pool shaders all read c2:
+// the driver segments went from 4 to 12 ms a frame), and builds a new one straight into the scratch memory
+static uint64_t g_c2h[6];
+static int g_c2_check; static uint64_t g_c2_checked, g_c2_bad;   // DM_VK_X_SETVERIFY: c2 segments found by g_c2h built again and compared (drv_shared)
+static uint64_t g_sseqh[6], g_ssboh[6];   // the same for the slots' sampler registration counts (S.tex_sseq, S.samp_sseq) and the storage buffers (S.ssbo): with g_c2h, a stage's bindings (rmemo_key)
+static inline uint64_t c2mix(uint64_t k, uint64_t v) {
+    if (!v) return 0;
+    uint64_t x = (k + 1) * 0x9E3779B97F4A7C15ull ^ v; x ^= x >> 31; x *= 0xBF58476D1CE4E5B9ull; x ^= x >> 29; x *= 0x94D049BB133111EBull; return x ^ (x >> 32);
+}
 uint64_t vk_replay_ns(void) { return g_vkst.ns_exec; }   // the replay time so far (gfx_vk_present.c: a frame's cost for the adaptive rate)
 // flicker experiments (DM_CTL env lines, read every submission): DM_VK_X_NOSETC no descriptor set reuse, DM_VK_X_NODRVC no driver segment reuse, DM_VK_X_LANDCUT deferred
 // uniform updates land at each cut, DM_VK_X_NOKEEP no pass kept for the same targets, DM_VK_X_NOSHC no shadow reuse
@@ -146,6 +158,7 @@ static void cpu_ready_config(void) {
 static int g_dbg_draw_live; static uint64_t g_skip_ops_live;   // DM_VK_DBG_DRAW, DM_VK_SKIP_OPS: read with the other live switches, once a submission (bisection at a chosen moment)
 static void x_read(void) { cpu_ready_config(); { const char *e = getenv("DM_VK_DBG_DRAW"); g_dbg_draw_live = e ? atoi(e) : 0; } { uint64_t s = 0; const char *e = getenv("DM_VK_SKIP_OPS"); for (const char *q = e; q && *q;) { char *n; long v = strtol(q, &n, 10); if (n == q) break; if (v > 0 && v < 64) s |= 1ull << v; q = *n ? n + 1 : n; } g_skip_ops_live = s; } const char *c = getenv("DM_VK_CB_DRAWS"); g_x_cbdraws = c ? atoi(c) : 128; g_sub_pass = 0;
     const char *fy = getenv("DM_VK_FLIPY"); g_flipy = !(fy && !atoi(fy));   // on unless DM_VK_FLIPY=0
+    { const char *e = getenv("DM_VK_C2_FAST"); g_c2fast = !(e && !atoi(e)); }   // c2 segments found by their slots' hash (drv_shared); on unless DM_VK_C2_FAST=0
     if (g_x_listpasses) { g_x_listpasses = 0; setenv("DM_VK_TRACE_PASS", "-1", 1); }
     const char *tp = getenv("DM_VK_TRACE_PASS"); g_x_tracepass = tp ? atoi(tp) : -1;
     { const char *e = getenv("DM_VK_ORDER_KEEP"); g_order_keep = e ? atoi(e) != 0 : DM_GAME_ORDER_KEEP; g_order_pending = g_order_check = 0; }
