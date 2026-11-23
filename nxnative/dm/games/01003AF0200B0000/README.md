@@ -1,0 +1,55 @@
+<!-- game facts: made by docs/gen_tables.py from android.tsv; edit android.tsv, not this block -->
+# Rune Factory: Guardians of Azuma
+
+![Rune Factory: Guardians of Azuma](../../../../docs/images/rune-factory-guardians-of-azuma.jpg)
+
+| | |
+|---|---|
+| Status | **experimental** |
+| Title ID | `01003AF0200B0000` |
+| Tested with nx2android | `v0.5.0` |
+| Tested build and device | v589824 AYN Odin 2 (Snapdragon 8 Gen 2, Adreno 740, Android 13, Turnip) |
+| App package | `org.nx2a.runefactorygoa` |
+
+The profile sets these for you (`android.tsv`); a player changes the pause menu ones in the game, and the env rows in the data pack's `env.txt`:
+
+| Row | What it does |
+|---|---|
+| `DM_VK_FDZ=0` | no fragment-depth variants: draws that test a depth buffer a fragment shader wrote through `gl_FragDepth` (in the last two presents) normally get a variant of … |
+| `DM_NGC_CONTENT_VERSION=1` | nn::ngc::ProfanityFilter::GetContentVersion result; unset: 0 |
+| `DM_NGC_CHINA_PASSTHROUGH=1` | nn::ngc::MaskProfanityWordsInTextForPlatformRegionChina leaves the text as it is instead of filtering through ngct:u, which the host does not serve (abort … |
+| `TU_DEBUG=sysmem` | - |
+
+Read the profile's porting log in the comment header of [`android.tsv`](android.tsv). Back to the [games list](../../../../README.md#games).
+<!-- end of the game facts -->
+
+## Game version
+
+- Update 1.1.4 (v589824), with the downloadable content installed. Other versions are untested.
+
+## Frame rate
+
+- About 21-25 fps on the Odin 2 against the game's 30 fps target. The game is GPU-bound: about 33 ms of GPU work a frame in
+  Docked mode, and the CPU waits for the GPU several times a frame.
+- Game speed follows real time, not the frame rate, so the game does not slow down when the frame rate drops.
+- Handheld mode is faster (about 25 fps outdoors against about 21.5 fps Docked) at a lower render resolution.
+- The game's 60 fps mode is not useful: it does not hold 30 fps.
+
+## Tested devices
+
+| Device | GPU | Vulkan driver | Game version | nx2android | Result |
+|---|---|---|---|---|---|
+| AYN Odin 2 | Adreno 740 | Turnip (`--vulkan-driver`) | 1.1.4 | `v0.5.0` | plays: the title, character creation, a new save, Spring Village, combat; 21-25 fps |
+
+## Options
+
+- `--vulkan-driver` with a Turnip build: the profile's `TU_DEBUG=sysmem` speed-up only works on Turnip.
+- Pause menu, Game tab: Handheld gives a few more frames a second at a lower resolution. Docked is the default and looks sharper.
+- Battery: about 4.9 W while playing in Docked mode, about 5 hours on the Odin 2.
+
+## Quirks and known issues
+
+- Below the game's 30 fps target in most scenes (see Frame rate).
+- A fresh install with no saved shaders rendered the title, character creation, the opening and the first house without
+  glitches.
+- The game's opening movie (`Mov001_F.bk2`) was not seen in testing.
