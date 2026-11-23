@@ -82,7 +82,7 @@ void dm_focus_set(int st); void dm_audio_suspend(int on); void guest_clock_freez
 static char g_root[512];
 static char g_runtime[1024];
 static jclass g_runtime_class;
-static jmethodID g_runtime_prepare;
+static jmethodID g_runtime_prepare, g_runtime_check_data;
 static _Atomic int g_set_overlay = 1, g_set_rumble = 1, g_set_fps;   // the gamepad shown; rumble and tap vibration; the frame rate counter (top left)
 static _Atomic int g_set_opacity = 60;   // the gamepad's opacity, percent (OV_OPACITY_MIN..MAX: the menu's Opacity slider)
 static _Atomic int g_set_grid;   // the layout editor's Snap to grid
@@ -1489,7 +1489,6 @@ __attribute__((visibility("default"))) void ANativeActivity_onCreate(ANativeActi
     g_act = act;
     int sdk; { AConfiguration *cfg = AConfiguration_new(); AConfiguration_fromAssetManager(cfg, act->assetManager); g_dpi = AConfiguration_getDensity(cfg); sdk = AConfiguration_getSdkVersion(cfg); AConfiguration_delete(cfg); }
     act->callbacks->onNativeWindowCreated = on_window_created; act->callbacks->onNativeWindowDestroyed = on_window_destroyed;
-    act->callbacks->onInputQueueCreated = on_queue_created; act->callbacks->onInputQueueDestroyed = on_queue_destroyed;
     act->callbacks->onPause = on_pause; act->callbacks->onResume = on_resume; act->callbacks->onWindowFocusChanged = on_window_focus; act->callbacks->onDestroy = on_destroy;
     ANativeActivity_setWindowFlags(act, AWINDOW_FLAG_KEEP_SCREEN_ON | AWINDOW_FLAG_FULLSCREEN, 0);
     static int started; if (started++) return;   // a second onCreate (configuration change) keeps the running game
@@ -1504,15 +1503,22 @@ __attribute__((visibility("default"))) void ANativeActivity_onCreate(ANativeActi
     if (!freopen(p, "w", stderr)) __android_log_print(ANDROID_LOG_ERROR, "dmhost", "cannot write %s", p);
     setvbuf(stderr, NULL, _IOLBF, 0);
     LOG("[runtime] startup title=%s host_compiled=%s %s", DM_GAME_ID, __DATE__, __TIME__);
+    LOG("[runtime] environment BEGIN");
     setenv("DM_ROOT", g_root, 1);
     snprintf(p, sizeof p, "%s/RomFS", g_root); setenv("DM_ROMFS", p, 0);
     snprintf(p, sizeof p, "%s/save", act->internalDataPath); mkdir(p, 0700); setenv("DM_SAVE", p, 0);
     snprintf(p, sizeof p, "%s/temp", act->internalDataPath); mkdir(p, 0700); setenv("DM_TEMP", p, 0);
     snprintf(p, sizeof p, "%s/shaders.dmsv", g_root); setenv("DM_VK_SHADERS", p, 0);
+    LOG("[runtime] environment DONE");
+    LOG("[runtime] env file BEGIN");
     snprintf(p, sizeof p, "%s/env.txt", g_root); env_file(p);
+    LOG("[runtime] env file DONE");
+    LOG("[runtime] manifest detection BEGIN");
     AAsset *bundle = AAssetManager_open(act->assetManager, "runtime/manifest.json", AASSET_MODE_STREAMING);
+    LOG("[runtime] manifest detection DONE present=%d", bundle != NULL);
     if (bundle) {
         AAsset_close(bundle);
+        LOG("[runtime] helper lookup BEGIN");
         jclass activity_type = NULL, loader_type = NULL, cls = NULL;
         jobject loader = NULL; jstring name = NULL;
         activity_type = (*env)->GetObjectClass(env, act->clazz);
@@ -1521,6 +1527,7 @@ __attribute__((visibility("default"))) void ANativeActivity_onCreate(ANativeActi
         if (!get_loader || (*env)->ExceptionCheck(env)) goto runtime_lookup_done;
         loader = (*env)->CallObjectMethod(env, act->clazz, get_loader);
         if (!loader || (*env)->ExceptionCheck(env)) goto runtime_lookup_done;
+        LOG("[runtime] helper loader acquired");
         loader_type = (*env)->GetObjectClass(env, loader);
         if (!loader_type || (*env)->ExceptionCheck(env)) goto runtime_lookup_done;
         jmethodID load_class = (*env)->GetMethodID(env, loader_type, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;");
@@ -1529,8 +1536,11 @@ __attribute__((visibility("default"))) void ANativeActivity_onCreate(ANativeActi
         if (!name || (*env)->ExceptionCheck(env)) goto runtime_lookup_done;
         cls = (*env)->CallObjectMethod(env, loader, load_class, name);
         if (!cls || (*env)->ExceptionCheck(env)) goto runtime_lookup_done;
+        LOG("[runtime] helper class loaded");
         g_runtime_prepare = (*env)->GetStaticMethodID(env, cls, "prepare", "(Landroid/content/Context;)Ljava/lang/String;");
         if (!g_runtime_prepare || (*env)->ExceptionCheck(env)) goto runtime_lookup_done;
+        g_runtime_check_data = (*env)->GetStaticMethodID(env, cls, "checkData", "(Landroid/app/Activity;Ljava/lang/String;)Z");
+        if (!g_runtime_check_data || (*env)->ExceptionCheck(env)) goto runtime_lookup_done;
         g_runtime_class = (*env)->NewGlobalRef(env, cls);
 runtime_lookup_done:
         if ((*env)->ExceptionCheck(env)) {
@@ -1542,15 +1552,29 @@ runtime_lookup_done:
         if (loader_type) (*env)->DeleteLocalRef(env, loader_type);
         if (loader) (*env)->DeleteLocalRef(env, loader);
         if (activity_type) (*env)->DeleteLocalRef(env, activity_type);
-        if (!g_runtime_class || !g_runtime_prepare) { LOG("[RED] runtime preparation failed: APK runtime helper is unavailable"); g_quit = 1; return; }
+        if (!g_runtime_class || !g_runtime_prepare || !g_runtime_check_data) { LOG("[RED] runtime preparation failed: APK runtime helper is unavailable"); g_quit = 1; return; }
+        LOG("[runtime] helper lookup DONE");
     }
     { const char *e = getenv("DM_MENU_BUTTON"); if (e && *e && !atoi(e)) { atomic_store(&g_menu_btn, 0); LOG("[overlay] DM_MENU_BUTTON=0: no menu button (Back opens the menu)"); } }
 #ifdef DM_RELEASE
     unsetenv("DM_CTL");   // a release build takes no remote key presses (the control file is a development tool)
 #endif
     // the save manager's requests (saves_android.c), before the host mounts the save: an import chosen in the menu or pushed by porter, an export porter asks for
-    if (dm_saves_start(g_root)) { LOG("[saves] the request asked the app to end: the game is not started"); g_quit = 1; return; }
+    LOG("[runtime] saves start BEGIN");
+    int saves_end = dm_saves_start(g_root);
+    LOG("[runtime] saves start DONE end=%d", saves_end);
+    if (saves_end) { LOG("[saves] the request asked the app to end: the game is not started"); g_quit = 1; return; }
+    if (g_runtime_class) {
+        jstring romfs = (*env)->NewStringUTF(env, getenv("DM_ROMFS"));
+        LOG("[runtime] data check BEGIN");
+        jboolean ready = (*env)->CallStaticBooleanMethod(env, g_runtime_class, g_runtime_check_data, act->clazz, romfs);
+        LOG("[runtime] data check DONE ready=%d", ready);
+        (*env)->DeleteLocalRef(env, romfs);
+        if ((*env)->ExceptionCheck(env)) { runtime_exception(env, "data check"); g_quit = 1; return; }
+        if (!ready) return;
+    }
     if (!romfs_readable(act, sdk)) { g_quit = 1; return; }   // after the save manager's requests, which need no RomFS
+    act->callbacks->onInputQueueCreated = on_queue_created; act->callbacks->onInputQueueDestroyed = on_queue_destroyed;
     settings_load(); dm_haptics_android_start(act, atomic_load(&g_set_rumble)); dm_lan_android_start(act);
     g_vm = act->vm;
     { pthread_t w; if (!pthread_create(&w, NULL, pad_watch, act->vm)) pthread_detach(w); }

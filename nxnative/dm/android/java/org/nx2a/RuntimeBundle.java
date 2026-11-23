@@ -47,7 +47,7 @@ public final class RuntimeBundle {
         }
     }
 
-    private static byte[] readSmall(InputStream in) throws IOException {
+    static byte[] readSmall(InputStream in) throws IOException {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         byte[] buffer = new byte[8192];
         int n;
@@ -64,6 +64,59 @@ public final class RuntimeBundle {
         return out.toString();
     }
 
+    static void validateData(Context context, byte[] raw, byte[] source) throws Exception {
+        JSONObject manifest = new JSONObject(new String(raw, java.nio.charset.StandardCharsets.UTF_8));
+        JSONObject data = new JSONObject(new String(source, java.nio.charset.StandardCharsets.UTF_8));
+        if (manifest.getInt("format") != 1 || !manifest.getString("package").equals(context.getPackageName()))
+            throw new IOException("Runtime manifest format or package mismatch");
+        String profile = manifest.getString("profile_h");
+        if (!manifest.getString("title_id").equals(data.optString("title_id"))
+                || !manifest.getString("version").equals(data.optString("version"))
+                || ((data.has("runtime_bundle") || !profile.isEmpty()) && !profile.equals(data.optString("profile_h")))
+                || (data.has("package") && !context.getPackageName().equals(data.optString("package"))))
+            throw new IOException("External game data identity does not match the bundled runtime");
+        if (data.has("runtime_bundle") && !hex(MessageDigest.getInstance("SHA-256").digest(raw)).equals(data.optString("runtime_bundle")))
+            throw new IOException("External game data runtime bundle does not match this APK");
+    }
+
+    static void validateData(Context context, byte[] source) throws Exception {
+        try (InputStream in = context.getAssets().open("runtime/manifest.json")) {
+            validateData(context, readSmall(in), source);
+        }
+    }
+
+    public static boolean checkData(android.app.Activity activity, String romfs) {
+        File external = activity.getExternalFilesDir(null);
+        String path = external == null ? "external files directory" : external.getAbsolutePath();
+        try {
+            if (external == null) throw new IOException("External game data is unavailable");
+            byte[] raw;
+            try (InputStream in = Files.newInputStream(external.toPath().resolve("nx2a-data.json"), LinkOption.NOFOLLOW_LINKS)) {
+                raw = readSmall(in);
+            }
+            validateData(activity, raw);
+            JSONObject data = new JSONObject(new String(raw, java.nio.charset.StandardCharsets.UTF_8));
+            Path own = external.toPath().resolve("RomFS");
+            if (new File(romfs).getCanonicalFile().equals(own.toFile().getCanonicalFile())) {
+                try {
+                    Files.readAttributes(own, BasicFileAttributes.class);
+                    try (java.nio.file.DirectoryStream<Path> ignored = Files.newDirectoryStream(own)) {}
+                } catch (java.nio.file.NoSuchFileException e) {
+                    if (data.has("parts") && data.getJSONObject("parts").has("RomFS")) throw e;
+                }
+            }
+            return true;
+        } catch (Exception e) {
+            String reason = e instanceof java.nio.file.NoSuchFileException ? "Game data is missing"
+                    : e instanceof java.nio.file.AccessDeniedException || e instanceof SecurityException ? "Game data is not accessible"
+                    : "Game data is invalid or unreadable";
+            android.util.Log.e("nx2a", "[RED] " + reason + ": " + path, e);
+            activity.startActivity(new android.content.Intent(activity, DataImportActivity.class)
+                    .putExtra("error", reason + ": " + e.getMessage() + "\nExpected location: " + path));
+            return false;
+        }
+    }
+
     private static boolean matches(InputStream in, Entry entry, FileOutputStream out) throws Exception {
         MessageDigest digest = MessageDigest.getInstance("SHA-256");
         byte[] buffer = new byte[1024 * 1024];
@@ -78,7 +131,7 @@ public final class RuntimeBundle {
         return size == entry.size && hex(digest.digest()).equals(entry.hash);
     }
 
-    private static void removeStage(Path path) throws IOException {
+    static void removeStage(Path path) throws IOException {
         if (Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)) {
             try (java.nio.file.DirectoryStream<Path> children = Files.newDirectoryStream(path)) {
                 for (Path child : children) removeStage(child);
@@ -150,8 +203,6 @@ public final class RuntimeBundle {
         JSONObject manifest = new JSONObject(new String(raw, java.nio.charset.StandardCharsets.UTF_8));
         if (manifest.getInt("format") != 1 || !manifest.getString("package").equals(context.getPackageName()))
             throw new IOException("Runtime manifest format or package mismatch");
-        String title = manifest.getString("title_id"), version = manifest.getString("version");
-        String profile = manifest.getString("profile_h");
         String id = hex(MessageDigest.getInstance("SHA-256").digest(raw));
         List<Entry> files = new ArrayList<>(), cleanup = new ArrayList<>();
         Set<String> paths = new HashSet<>();
@@ -171,17 +222,8 @@ public final class RuntimeBundle {
 
         File external = context.getExternalFilesDir(null);
         if (external == null) throw new IOException("External game data is unavailable");
-        JSONObject data;
         try (InputStream in = Files.newInputStream(external.toPath().resolve("nx2a-data.json"), LinkOption.NOFOLLOW_LINKS)) {
-            data = new JSONObject(new String(readSmall(in), java.nio.charset.StandardCharsets.UTF_8));
-        }
-        if (!title.equals(data.optString("title_id")) || !version.equals(data.optString("version"))
-                || ((data.has("runtime_bundle") || !profile.isEmpty()) && !profile.equals(data.optString("profile_h")))
-                || (data.has("package") && !context.getPackageName().equals(data.optString("package"))))
-            throw new IOException("External game data identity does not match the bundled runtime");
-        if (data.has("runtime_bundle")) {
-            if (!id.equals(data.optString("runtime_bundle")))
-                throw new IOException("External game data runtime bundle does not match this APK");
+            validateData(context, raw, readSmall(in));
         }
 
         Path parent = context.getFilesDir().toPath().resolve("runtime");
