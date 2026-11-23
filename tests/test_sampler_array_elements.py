@@ -30,7 +30,7 @@ class SamplerArray(unittest.TestCase):
 DECL
 typedef struct {uint64_t addr,size;} p_bind_buf;
 static struct {p_bind_buf ubo[6][16];} S;
-typedef struct {int nbind;const dmsv_bind *b;} vkshader_t;
+typedef struct {int nbind;const dmsv_bind *b;int cpuready;} vkshader_t;
 static uint64_t read_addr,read_size;
 static void cpu_ready(uint64_t a,uint64_t n){read_addr=a;read_size=n;}
 static unsigned log_count;

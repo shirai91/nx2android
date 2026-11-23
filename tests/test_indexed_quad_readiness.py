@@ -15,7 +15,7 @@ class IndexedQuadReadiness(unittest.TestCase):
         convert=function(src,'static int quad_indices(')
         draw=function(src, 'static void draw_idx(')
         preflight=next(line for line in draw.splitlines() if 'if (!quad_index_ready(d)) return;' in line)
-        reject=next(line for line in draw.splitlines() if 'if (!vk_buf_at(d->ibuf, 1,' in line)
+        reject=next(line for line in draw.splitlines() if 'if (!vk_buf_at(d->ibuf, index_lookup,' in line)
         code=r"""
 #include <stdint.h>
 #include <stddef.h>
@@ -46,7 +46,7 @@ static void diagnostic(int code,const char *message){assert(code==56);assert(!st
 #define VKRED_ONCE(code,message) diagnostic(code,message)
 static void draw_rejection(const p_draw_idx *d){
 PREFLIGHT
- VkBuffer ib;VkDeviceSize io;
+ VkBuffer ib;VkDeviceSize io;uint64_t index_lookup=1;
 REJECT
  accepted++;
 }
