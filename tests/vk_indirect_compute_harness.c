@@ -131,8 +131,14 @@ static void indirect_dispatch(VkCommandBuffer cb, VkBuffer b, VkDeviceSize off) 
 static uint64_t g_used_bytes;
 static uint64_t pool_ns(void) { return 0; }
 static int pool_back(vkpool_t *p, uint64_t serial) { (void)p; (void)serial; abort(); }
+// This fixture exercises ordinary pools; sparse pools are covered by the host.
+const void *nvn_sparse_address_pool(uint64_t a, uint64_t n) { return NULL; }
+uint64_t nvn_sparse_gen(void) { return 0; }
+int nvn_sparse_address_translate(uint64_t a, uint64_t n, uint64_t *physical) { return 0; }
+uint64_t nvn_sparse_address_copy(uint64_t a, void *dst, uint64_t n) { return n; }
 /* CORE */
 /* REPLAY */
+static int shader_wmem(vkshader_t *s) { return 0; }
 /* LIFECYCLE */
 static VkDescriptorSet cached_stage(int st, vkshader_t *s, uint32_t *offsets) { return /* STAGE_CALL */; }
 

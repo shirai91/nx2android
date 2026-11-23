@@ -19,7 +19,9 @@ class Readiness(unittest.TestCase):
         core=(A/'gfx_vk_core.c').read_text(encoding='utf-8'); replay=csrc.unit((A/'gfx_vk_exec.c')); header=(A/'gfx_vk.h').read_text(encoding='utf-8')
         i=core.index('typedef struct { uint64_t lo, hi, fence; } gpuw_t;')
         decl=core[i:core.index('static void sub_gpu_wrote',i)]
+        sparse_range=function(core,'static int gpu_physical_range(')
         ready=function(core,'void vk_cpu_ready(') if 'void vk_cpu_ready(' in core else 'void vk_cpu_ready(uint64_t a,uint64_t n) {}'
+        pending=function(core,'int vk_gpu_pending(')
         if 'g_vk_cpu_ready' not in decl: decl+='int g_vk_cpu_ready=1;\n'
         config=function(replay, 'static void cpu_ready_config(') if 'static void cpu_ready_config(' in replay else 'static void cpu_ready_config(void){}'
         wrapper=function(replay, 'static void cpu_ready(').replace('static void cpu_ready(', 'static void replay_ready(')
@@ -39,12 +41,18 @@ static uint64_t g_fence,done;static int waits,cuts,resumes;
 typedef struct {uint64_t lo,hi;} ubd_t;
 static ubd_t g_ubd[512];static int g_nubd;
 static void sub_gpu_wrote(uint64_t a,uint64_t n){}
+static int sparse_mode,sparse_fragmented;
+const void *nvn_sparse_address_pool(uint64_t a,uint64_t n){return sparse_mode&&a>=0x1000&&a<0x20000&&n<=0x20000-a?(const void *)(uintptr_t)1:NULL;}
+int nvn_sparse_address_translate(uint64_t a,uint64_t n,uint64_t *p){if(sparse_fragmented||!nvn_sparse_address_pool(a,n))return 0;*p=0x800000+(a-0x1000);return 1;}
+void vk_readback_unknown(void){}
 uint64_t vk_fence_done(void){return done;}
 int mtl_wait(uint64_t f,uint64_t timeout){assert(f<=g_fence);done=f;waits++;return 1;}
 uint64_t mtl_sub_commit(void){cuts++;return ++g_fence;}
 void vk_sub_resume(void){resumes++;}
 DECL
+SPARSE_RANGE
 WRITE
+PENDING
 READY
 static const char *ready_env;
 static char *test_getenv(const char *name){assert(!strcmp(name,"DM_VK_CPU_READY"));return (char *)ready_env;}
@@ -63,7 +71,7 @@ typedef struct {int nbind;const dmsv_bind *b;int cpuready;} vkshader_t;
 static uint64_t address,length;static int reads;
 static void cpu_ready(uint64_t a,uint64_t n){address=a;length=n;reads++;}
 STAGE
-static void reset(void){g_ngw=g_nubd=g_fence=done=waits=cuts=resumes=ended=0;g_vk_cpu_ready=1;}
+static void reset(void){g_ngw=g_nubd=g_fence=done=waits=cuts=resumes=ended=0;g_vk_cpu_ready=1;sparse_mode=sparse_fragmented=0;}
 int main(void){
  reset();vk_gpu_wrote(100,8);vk_cpu_ready(104,4);assert(cuts==1&&resumes==1&&waits==1);
  reset();vk_gpu_wrote(100,8);vk_cpu_ready(108,4);assert(!cuts&&!waits);
@@ -95,10 +103,13 @@ int main(void){
  b=(dmsv_bind){.kind=RK_SBUF_UBO,.reg=2,.off=16};S.ubo[5][2]=(p_bind_buf){0x20000,32};shader_cpu_ready(&s,5);assert(address==0x20010&&length==8);
  b=(dmsv_bind){.kind=RK_TEX_UBO,.reg=-1,.samp=RS_UBO,.samp_arg=3|(64<<8)};S.ubo[0][3]=(p_bind_buf){0x30000,80};shader_cpu_ready(&s,0);assert(address==0x30040&&length==4);
  before=reads;shader_cpu_ready(&s,-1);shader_cpu_ready(&s,6);S.ubo[0][3].addr=UINT64_MAX-8;shader_cpu_ready(&s,0);assert(reads==before);
+ reset();sparse_mode=1;vk_gpu_wrote(0x1010,8);assert(g_ngw==1&&g_gw[0].lo==0x800010&&g_gw[0].hi==0x800018);assert(vk_gpu_pending(0x1010,8));vk_cpu_ready(0x1010,8);assert(waits==1&&cuts==1&&resumes==1);
+ reset();sparse_mode=1;vk_gpu_wrote(0x1010,8);g_ubd[g_nubd++]=(ubd_t){0x1010,0x1018};vk_cpu_ready(0x1010,8);assert(!waits&&!cuts);
+ reset();sparse_mode=1;sparse_fragmented=1;vk_gpu_wrote(0x800010,8);assert(vk_gpu_pending(0x1010,8));vk_cpu_ready(0x1010,8);assert(waits==1&&cuts==1&&resumes==1);
  puts("GPU readiness current/prior/coverage/pressure and descriptor bounds PASS");
 }
 """
-        code=code.replace('DECL',decl).replace('WRITE',function(core,'void vk_gpu_wrote(uint64_t a, uint64_t n) {')).replace('\nREADY\n', '\n'+ready+'\n').replace('ENUMS',enums).replace('STAGE',stage).replace('CONFIG',config).replace('WRAPPER',wrapper)
+        code=code.replace('DECL',decl).replace('SPARSE_RANGE',sparse_range).replace('WRITE',function(core,'void vk_gpu_wrote(uint64_t a, uint64_t n) {')).replace('PENDING',pending).replace('\nREADY\n', '\n'+ready+'\n').replace('ENUMS',enums).replace('STAGE',stage).replace('CONFIG',config).replace('WRAPPER',wrapper)
         with tempfile.TemporaryDirectory(prefix='nx2a-ready-') as tmp:
             c=Path(tmp)/'check.c';exe=Path(tmp)/'check';c.write_text(code, encoding='utf-8')
             subprocess.run(['cc','-std=gnu11','-Wall','-Wextra','-Wno-unused-parameter','-fsanitize=undefined','-fno-sanitize-recover=all',*(['-fsanitize=address'] if os.environ.get('NX2A_TEST_SANITIZE') else []),str(c),'-o',str(exe)],check=True)

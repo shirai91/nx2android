@@ -377,12 +377,16 @@ static void draw_idx(const p_draw_idx *d) {
     int prim = d->prim;
     g_draw_binst = d->ind ? 0 : (uint32_t)d->base_instance;   // before prepare_draw (see draw)
     if (!prepare_draw(prim == 7 ? 4 : prim, 1)) return;
+    if (!d->ind && d->count < 0) { VKRED_ONCE(99, "indexed draw with a negative index count: skipped"); return; }
+    uint32_t isz = d->itype == 0 ? 1 : d->itype == 1 ? 2 : 4;
+    uint32_t index_count = d->count > 0 ? (uint32_t)d->count : 0;
+    uint64_t index_lookup = !d->ind && nvn_sparse_address_pool(d->ibuf, 1) ? index_bytes : 1;
     VkCommandBuffer cb = vk_cmd();
     int g_ok = draw_allowed(); if (g_ok == 2 || (g_tracing && g_x_tracepass >= 0)) trace_draw("indexed draw", d->prim, (uint32_t)d->count, (uint32_t)d->instances, d->itype);
     if (d->ind && g_tracing && g_x_tracepass >= 0) { uint32_t w[5]; vk_ubd_read(d->ind, 20, (uint8_t *)w);   // the arguments as the CPU sees them now (a GPU writer's last merged copy)
         VKLOG("  indirect arguments at %#llx: count %u instances %u first index %u base vertex %d base instance %u", (unsigned long long)d->ind, w[0], w[1], w[2], (int)w[3], w[4]); }
     if (g_tracing && g_x_tracepass >= 0 && !d->ind && S.vbuf[0].address && d->ibuf) {   // the vertices of the first indices, stream 0, every word as a float (as draw does)
-        uint32_t st = S.vstream[0].stride ? S.vstream[0].stride : 16, nw = st / 4 < 16 ? st / 4 : 16, isz = d->itype == 0 ? 1 : d->itype == 1 ? 2 : 4;
+        uint32_t st = S.vstream[0].stride ? S.vstream[0].stride : 16, nw = st / 4 < 16 ? st / 4 : 16;
         for (uint32_t i = 0; i < (uint32_t)d->count && i < 6; i++) { uint8_t ix[4] = {0}; vk_ubd_read(d->ibuf + (uint64_t)i * isz, isz, ix);
             uint32_t v = isz == 1 ? ix[0] : isz == 2 ? (uint32_t)(ix[0] | ix[1] << 8) : (uint32_t)(ix[0] | ix[1] << 8 | ix[2] << 16 | (uint32_t)ix[3] << 24);
             uint64_t o = (uint64_t)((int64_t)v + d->base_vertex) * st; if (o + nw * 4 > S.vbuf[0].size) break;
@@ -390,32 +394,39 @@ static void draw_idx(const p_draw_idx *d) {
             VKLOG("  index %u → vertex %u of stream 0 (+%llu):%s", i, v, (unsigned long long)o, t); } }
     if (g_var_now == 11) g_ok = 0;
     VkIndexType it = d->itype == 0 ? VK_INDEX_TYPE_UINT8_EXT : d->itype == 1 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32;
-    uint32_t isz = d->itype == 0 ? 1 : d->itype == 1 ? 2 : 4;
     VkBuffer ib; VkDeviceSize io;
-    if (!vk_buf_at(d->ibuf, 1, &ib, &io)) { VKRED_ONCE(56, "index buffer outside the memory pools"); return; }
-    if (!d->ind) { vkpool_t *ip = vk_pool_of(d->ibuf, 1); uint64_t in = (uint64_t)d->count * isz; if (ip && d->ibuf + in > ip->hi && ip->hi < ip->end) vk_cross(3, d->ibuf, in, ip); }
+    if (d->ind && nvn_sparse_address_pool(d->ibuf, 1)) { VKRED_ONCE(98, "indexed indirect draw with a sparse index buffer has no bounded index extent: skipped"); return; }
+    if (!vk_buf_at(d->ibuf, index_lookup, &ib, &io)) { VKRED_ONCE(56, "index buffer outside the memory pools"); return; }
+    if (!d->ind) { vkpool_t *ip = vk_pool_of(d->ibuf, 1); if (ip && d->ibuf + index_bytes > ip->hi && ip->hi < ip->end) vk_cross(3, d->ibuf, index_bytes, ip); }
     if (g_ubolog_key && S.sh[0] && S.sh[0]->key == g_ubolog_key && g_ubolog_n > 0) {   // DM_VK_UBO_LOG: the index data the draw reads (CPU view at replay)
-        const uint8_t *ix = (const uint8_t *)(uintptr_t)d->ibuf; uint64_t h = 1469598103934665603ull; uint32_t mn = ~0u, mx = 0;
-        for (uint32_t i = 0; i < (uint32_t)d->count; i++) { uint32_t v = isz == 1 ? ix[i] : isz == 2 ? ((const uint16_t *)ix)[i] : ((const uint32_t *)ix)[i]; h = (h ^ v) * 1099511628211ull; if (v < mn) mn = v; if (v > mx) mx = v; }
+        uint64_t h = 1469598103934665603ull; uint32_t mn = ~0u, mx = 0;
+        for (uint32_t i = 0; i < index_count; i++) { uint8_t ix[4] = {0}; vk_ubd_read(d->ibuf + (uint64_t)i * isz, isz, ix);
+            uint32_t v = isz == 1 ? ix[0] : isz == 2 ? (uint32_t)(ix[0] | (uint32_t)ix[1] << 8) : (uint32_t)(ix[0] | (uint32_t)ix[1] << 8 | (uint32_t)ix[2] << 16 | (uint32_t)ix[3] << 24);
+            h = (h ^ v) * 1099511628211ull; if (v < mn) mn = v; if (v > mx) mx = v; }
         VKLOG("ubo: present %llu index buffer %#llx count %d base vertex %d indirect %#llx hash %016llx range %u..%u", (unsigned long long)g_tex_frame, (unsigned long long)d->ibuf, d->count, d->base_vertex,
               (unsigned long long)d->ind, (unsigned long long)h, mn, mx);
         if (S.vbuf[0].address && mn != ~0u) { uint32_t st = S.vstream[0].stride ? S.vstream[0].stride : 12; uint64_t v0 = (uint64_t)(int64_t)d->base_vertex + mn;   // the first vertex this draw reads, every word
-            if ((v0 + 1) * st <= S.vbuf[0].size) { const float *vf = (const float *)(uintptr_t)(S.vbuf[0].address + v0 * st); char t[512]; int k = 0;
-                for (uint32_t i = 0; i < st / 4 && i < 24; i++) k += snprintf(t + k, sizeof t - k, " %g", vf[i]);
+            if ((v0 + 1) * st <= S.vbuf[0].size) { float vf[24]; uint32_t nw = st / 4 < 24 ? st / 4 : 24; vk_ubd_read(S.vbuf[0].address + v0 * st, nw * 4, (uint8_t *)vf); char t[512]; int k = 0;
+                for (uint32_t i = 0; i < nw; i++) k += snprintf(t + k, sizeof t - k, " %g", vf[i]);
                 VKLOG("ubo: present %llu first vertex read (%llu):%s", (unsigned long long)g_tex_frame, (unsigned long long)v0, t); } }
-        static uint64_t dumped; if (dumped != h && S.vbuf[0].address && d->count <= 4096) { dumped = h; char t[1024]; int k = 0; uint32_t i0 = 0;   // once per index data: every index,
-            for (uint32_t i = 0; i < (uint32_t)d->count; i++) { uint32_t v = isz == 1 ? ix[i] : isz == 2 ? ((const uint16_t *)ix)[i] : ((const uint32_t *)ix)[i];   // then every word of stream 0's vertices
+        static uint64_t dumped; if (dumped != h && S.vbuf[0].address && index_count <= 4096) { dumped = h; char t[1024]; int k = 0; uint32_t i0 = 0;   // once per index data: every index,
+            for (uint32_t i = 0; i < index_count; i++) { uint8_t ix[4] = {0}; vk_ubd_read(d->ibuf + (uint64_t)i * isz, isz, ix);
+                uint32_t v = isz == 1 ? ix[0] : isz == 2 ? (uint32_t)(ix[0] | (uint32_t)ix[1] << 8) : (uint32_t)(ix[0] | (uint32_t)ix[1] << 8 | (uint32_t)ix[2] << 16 | (uint32_t)ix[3] << 24);   // then every word of stream 0's vertices
                 k += snprintf(t + k, sizeof t - k, " %u", v); if (k > 900 || i + 1 == (uint32_t)d->count) { VKLOG("ubo: indices from %u:%s", i0, t); k = 0; i0 = i + 1; } }
             uint32_t st = S.vstream[0].stride ? S.vstream[0].stride : 12, nv = (uint32_t)(S.vbuf[0].size / st);
-            for (uint32_t i = 0; i < nv && i <= mx; i++) { const float *vf = (const float *)(uintptr_t)(S.vbuf[0].address + (uint64_t)i * st);   // every word of stream 0's vertex (up to 8)
-                for (uint32_t w = 0; w < st / 4 && w < 8; w++) k += snprintf(t + k, sizeof t - k, "%s%g", w ? "," : " ", vf[w]);
+            for (uint32_t i = 0; i < nv && i <= mx; i++) { float vf[8]; uint32_t nw = st / 4 < 8 ? st / 4 : 8; vk_ubd_read(S.vbuf[0].address + (uint64_t)i * st, nw * 4, (uint8_t *)vf);   // every word of stream 0's vertex (up to 8)
+                for (uint32_t w = 0; w < nw; w++) k += snprintf(t + k, sizeof t - k, "%s%g", w ? "," : " ", vf[w]);
                 if (k > 800 || i + 1 == nv || i == mx) { VKLOG("ubo: vertices to %u:%s", i, t); k = 0; } } } }
     uint32_t inst = d->instances ? (uint32_t)d->instances : 1;
     { static int n; if (n < 12 && (d->itype == 0 || d->ind || (uint32_t)d->count > (1u << 20) || inst > (1u << 16))) { n++;
         VKLOG("unusual indexed draw: itype %d count %u instances %u indirect %#llx prim %d base vertex %d", d->itype, (unsigned)d->count, inst, (unsigned long long)d->ind, d->prim, d->base_vertex); } }
     if (d->ind) { VkBuffer b; VkDeviceSize o; bc_index(cb, ib, io, it); if (!vk_buf_at(d->ind, mcb ? (uint64_t)d->mdi_stride * (uint64_t)d->mdi_max : 20, &b, &o)) VKRED_ONCE(97, "indexed indirect draw arguments outside the memory pools");
         else if (!(dbg_draw() & 1) && g_ok) { if (mcb) vkCmdDrawIndexedIndirectCount(cb, b, o, mcb, mco, (uint32_t)d->mdi_max, (uint32_t)d->mdi_stride); else vkCmdDrawIndexedIndirect(cb, b, o, 1, 20); } return; }
-    if (prim == 7) { VkBuffer b; VkDeviceSize o; int n = quad_indices((uint32_t)d->count, (const uint8_t *)(uintptr_t)d->ibuf, d->itype, 0, &b, &o); if (!n) return;
+    if (prim == 7) { uint32_t nq = index_count / 4; if (!nq) return;
+        uint64_t raw_n = (uint64_t)nq * 4 * isz; if (raw_n > SIZE_MAX) { VKRED_ONCE(100, "indexed quad draw of %u quads exceeds the host address range: skipped", nq); return; }
+        uint8_t *raw = malloc((size_t)raw_n); if (!raw) { VKRED_ONCE(101, "indexed quad draw of %u quads could not allocate its CPU index snapshot: skipped", nq); return; }
+        vk_ubd_read(d->ibuf, raw_n, raw);
+        VkBuffer b; VkDeviceSize o; int n = quad_indices(nq * 4, raw, d->itype, 0, &b, &o); free(raw); if (!n) return;
         bc_index(cb, b, o, VK_INDEX_TYPE_UINT32); if (!(dbg_draw() & 1) && g_ok) vkCmdDrawIndexed(cb, (uint32_t)n, inst, 0, d->base_vertex, (uint32_t)d->base_instance); return; }
     if (io % isz) { VKRED_ONCE(57, "index buffer offset not aligned to its index size"); return; }
     bc_index(cb, ib, io, it);
