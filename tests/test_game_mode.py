@@ -108,8 +108,8 @@ class GameMode(unittest.TestCase):
                 with patch.object(sys, 'argv', args), patch.object(sys, 'path', [str(APK), *sys.path]): spec.loader.exec_module(module)
                 captured = {}
                 class Captured(Exception): pass
-                def capture(entries, output, k, crt): captured.update({name: data.read_bytes() if isinstance(data, Path) else data for name, data, _ in entries}); raise Captured
-                with patch.object(module, 'gen_key', return_value={}), patch.object(module, 'cert', return_value=b''), patch.object(module, 'write_apk', side_effect=capture):
+                def capture(entries): captured.update({name: data for name, data, _ in entries}); raise Captured
+                with patch.object(module, 'gen_key', return_value={}), patch.object(module, 'cert', return_value=b''), patch.object(module, 'build_zip', side_effect=capture):
                     with self.assertRaises(Captured): module.main()
                 nodes = elements(captured['AndroidManifest.xml'])
                 app = next(attrs for tag, attrs in nodes if tag == 'application')

@@ -27,7 +27,7 @@ def rebuild(src, driver=KEEP, host=None, assets=None):
     assets ({name: path}) put in as assets/<name>, an entry of that name replaced, the others added after the APK's own:
     ([(name, data, align)], dropped names, the driver library's name)"""
     z = zipfile.ZipFile(src)
-    if 'assets/runtime/manifest.json' in z.namelist():
+    if 'assets/runtime/manifest.json' in z.namelist() and (host or any(n.startswith('runtime/') for n in (assets or {}))):
         raise SystemExit(f'{src}: bundled runtime APK updates are not supported; port the game again')
     if any(i.compress_type != zipfile.ZIP_STORED for i in z.infolist()): raise SystemExit(f'{src}: not an APK made by mkapk.py (a compressed entry)')
     libs = {os.path.basename(i.filename) for i in z.infolist() if i.filename.startswith(ABI)}

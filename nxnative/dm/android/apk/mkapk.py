@@ -3,7 +3,6 @@
 #   binary AndroidManifest.xml (AXML) -> stored ZIP with the .so page-aligned -> APK Signature Scheme v2 (RSA-2048, SHA-256) with a self-signed cert.
 # Usage: mkapk.py <lib.so> <out.apk> [key.json] [--package P] [--label L] [--lib NAME] [--landscape] [--icon icon.png [--icon-fg fg.png --icon-bg bg.png]] [--release] [--version-code N] [--version-name V]   (the key is created on first use and reused, so reinstalls keep the same signer)
 import hashlib, json, os, struct, sys, time
-from pathlib import Path
 
 import argparse as _ap
 _p = _ap.ArgumentParser(); _p.add_argument('so'); _p.add_argument('out'); _p.add_argument('key', nargs='?'); _p.add_argument('--package', default='org.nx2a.probe')
@@ -153,7 +152,7 @@ def walk_attrs(n):
     for a in n[1]: yield a
     for k in n[2]: yield from walk_attrs(k)
 
-from apksign import cert, gen_key, write_apk   # the stored ZIP and the v2 signer (apksign.py)
+from apksign import build_zip, cert, gen_key, sign_v2   # the stored ZIP and the v2 signer (apksign.py)
 
 def main():
     so, out = ARGS.so, ARGS.out
@@ -163,10 +162,10 @@ def main():
         t = time.time(); k = gen_key(); crt = cert(k)
         json.dump({**{a: str(v) for a, v in k.items()}, 'cert': crt.hex()}, open(keyf, 'w'))
         print(f'new signing key {keyf} ({time.time() - t:.1f} s)')
-    entries = [('AndroidManifest.xml', axml(MANIFEST), 4), (f'lib/arm64-v8a/lib{LIB}.so', Path(so), 16384)]
-    if ARGS.dex: entries.append(('classes.dex', Path(ARGS.dex), 4))
-    entries += [(f'lib/arm64-v8a/{os.path.basename(x)}', Path(x), 16384) for x in ARGS.extra_so]
-    entries += [(f'assets/{n}', Path(f), 4) for n, _, f in (x.partition('=') for x in ARGS.asset)]   # stored, as every entry: AAsset reads them in place
+    entries = [('AndroidManifest.xml', axml(MANIFEST), 4), (f'lib/arm64-v8a/lib{LIB}.so', open(so, 'rb').read(), 16384)]
+    if ARGS.dex: entries.append(('classes.dex', open(ARGS.dex, 'rb').read(), 4))
+    entries += [(f'lib/arm64-v8a/{os.path.basename(x)}', open(x, 'rb').read(), 16384) for x in ARGS.extra_so]
+    entries += [(f'assets/{n}', open(f, 'rb').read(), 4) for n, _, f in (x.partition('=') for x in ARGS.asset)]   # stored, as every entry: AAsset reads them in place
     drawables = []
     if ARGS.icon:
         icon = [(NODPI, 'res/drawable-nodpi-v4/icon.png')] + ([(ANYDPI_V26, 'res/drawable-anydpi-v26/icon.xml')] if ARGS.icon_fg else [])
@@ -176,7 +175,9 @@ def main():
                                      ('res/drawable-nodpi-v4/icon_bg.png', open(ARGS.icon_bg, 'rb').read(), 4)]
     if drawables or ARGS.game_mode_performance: entries.append(('resources.arsc', res_table(drawables, ARGS.game_mode_performance), 4))
     if ARGS.game_mode_performance: entries.append(('res/xml/game_mode_config.xml', axml(GAME_MODE_CONFIG), 4))
-    write_apk(entries, Path(out), k, crt)
-    print(f'{out}: {os.path.getsize(out)} bytes, signer SHA-256 {hashlib.sha256(crt).hexdigest()[:16]}...')
+    z, cd, eocd = build_zip(entries)
+    apk = sign_v2(z, cd, eocd, k, crt)
+    open(out, 'wb').write(apk)
+    print(f'{out}: {len(apk)} bytes, signer SHA-256 {hashlib.sha256(crt).hexdigest()[:16]}...')
 
 if __name__ == '__main__': main()

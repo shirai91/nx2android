@@ -64,7 +64,8 @@ ANativeWindow *dm_front_window(void) { pthread_mutex_lock(&g_win_mu); ANativeWin
 static ANativeWindow *phone_window(void) { pthread_mutex_lock(&g_win_mu); ANativeWindow *w = g_win; pthread_mutex_unlock(&g_win_mu); return w; }
 int dm_external_active(void) { return atomic_load(&g_external_active); }
 __attribute__((weak)) void vk_window_lost(void) {}   // the backend lets go of the window's swapchain before the window goes
-// A restored surface needs a redraw: the menu can keep the game paused with no new frames.
+// Pokemon Legends: Z-A: open the pause menu, switch apps, then return; redraw stops
+// because the paused game produces no new frames. Redraw the last frame/menu when its surface returns.
 static void on_window_created(ANativeActivity *a, ANativeWindow *w) { (void)a; pthread_mutex_lock(&g_win_mu); g_win = w; pthread_mutex_unlock(&g_win_mu); if (atomic_load(&g_running) && !atomic_load(&g_bg)) dm_overlay_redraw(); }
 static void on_window_destroyed(ANativeActivity *a, ANativeWindow *w) { (void)a; (void)w; pthread_mutex_lock(&g_win_mu); g_win = NULL; pthread_mutex_unlock(&g_win_mu); vk_window_lost(); }
 JNIEXPORT void JNICALL Java_org_nx2a_ExternalActivity_externalSurface(JNIEnv *env, jclass cls, jobject surface) {
@@ -1354,11 +1355,6 @@ static void on_queue_destroyed(ANativeActivity *a, AInputQueue *q) { (void)a; AI
 
 // ---- the host ----
 int main(int argc, char **argv);   // dm/host/main.c
-JNIEXPORT void JNICALL Java_org_nx2a_RuntimeBundle_startupTrace(JNIEnv *env, jclass cls, jstring text) {
-    (void)cls;
-    const char *message = (*env)->GetStringUTFChars(env, text, NULL);
-    if (message) { LOG("%s", message); (*env)->ReleaseStringUTFChars(env, text, message); }
-}
 static void runtime_exception(JNIEnv *env, const char *where) {
     jthrowable error = (*env)->ExceptionOccurred(env); (*env)->ExceptionClear(env);
     jclass log_type = NULL, type = NULL; jstring text = NULL; const char *message = NULL;
@@ -1422,11 +1418,8 @@ static void *host_thread(void *a) {
         runtime_default("DM_SHARED_FONT_EXT", "nintendo_ext.ttf");
         runtime_default("DM_FPS_LOCKS", "fpslock.tsv");
         LOG("[runtime] bundled runtime ready: %s", g_runtime);
-        LOG("[runtime] resolved shaders=%s font=%s fpslocks=%s", getenv("DM_VK_SHADERS") ? getenv("DM_VK_SHADERS") : "(unset)",
-            getenv("DM_SHARED_FONT_EXT") ? getenv("DM_SHARED_FONT_EXT") : "(unset)", getenv("DM_FPS_LOCKS") ? getenv("DM_FPS_LOCKS") : "(unset)");
     }
     char mods[1100]; snprintf(mods, sizeof mods, "%s/mods", g_runtime[0] ? g_runtime : g_root);
-    LOG("[runtime] resolved modules=%s", mods);
     char *argv[] = {"dmhost", mods, NULL};
     atomic_store(&g_running, 1);
     int rc = main(2, argv);
@@ -1520,7 +1513,6 @@ __attribute__((visibility("default"))) void ANativeActivity_onCreate(ANativeActi
     AAsset *bundle = AAssetManager_open(act->assetManager, "runtime/manifest.json", AASSET_MODE_STREAMING);
     if (bundle) {
         AAsset_close(bundle);
-        LOG("[runtime] helper lookup BEGIN via activity class loader");
         jclass activity_type = NULL, loader_type = NULL, cls = NULL;
         jobject loader = NULL; jstring name = NULL;
         activity_type = (*env)->GetObjectClass(env, act->clazz);
@@ -1529,7 +1521,6 @@ __attribute__((visibility("default"))) void ANativeActivity_onCreate(ANativeActi
         if (!get_loader || (*env)->ExceptionCheck(env)) goto runtime_lookup_done;
         loader = (*env)->CallObjectMethod(env, act->clazz, get_loader);
         if (!loader || (*env)->ExceptionCheck(env)) goto runtime_lookup_done;
-        LOG("[runtime] helper activity class loader obtained");
         loader_type = (*env)->GetObjectClass(env, loader);
         if (!loader_type || (*env)->ExceptionCheck(env)) goto runtime_lookup_done;
         jmethodID load_class = (*env)->GetMethodID(env, loader_type, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;");
@@ -1538,9 +1529,6 @@ __attribute__((visibility("default"))) void ANativeActivity_onCreate(ANativeActi
         if (!name || (*env)->ExceptionCheck(env)) goto runtime_lookup_done;
         cls = (*env)->CallObjectMethod(env, loader, load_class, name);
         if (!cls || (*env)->ExceptionCheck(env)) goto runtime_lookup_done;
-        LOG("[runtime] helper class loaded; resolving prepare");
-        JNINativeMethod trace_method = {"startupTrace", "(Ljava/lang/String;)V", (void *)Java_org_nx2a_RuntimeBundle_startupTrace};
-        if ((*env)->RegisterNatives(env, cls, &trace_method, 1) != JNI_OK || (*env)->ExceptionCheck(env)) goto runtime_lookup_done;
         g_runtime_prepare = (*env)->GetStaticMethodID(env, cls, "prepare", "(Landroid/content/Context;)Ljava/lang/String;");
         if (!g_runtime_prepare || (*env)->ExceptionCheck(env)) goto runtime_lookup_done;
         g_runtime_class = (*env)->NewGlobalRef(env, cls);
@@ -1555,7 +1543,6 @@ runtime_lookup_done:
         if (loader) (*env)->DeleteLocalRef(env, loader);
         if (activity_type) (*env)->DeleteLocalRef(env, activity_type);
         if (!g_runtime_class || !g_runtime_prepare) { LOG("[RED] runtime preparation failed: APK runtime helper is unavailable"); g_quit = 1; return; }
-        LOG("[runtime] helper method cached");
     }
     { const char *e = getenv("DM_MENU_BUTTON"); if (e && *e && !atoi(e)) { atomic_store(&g_menu_btn, 0); LOG("[overlay] DM_MENU_BUTTON=0: no menu button (Back opens the menu)"); } }
 #ifdef DM_RELEASE
