@@ -66,6 +66,9 @@ const void *vk_sg_pin(VkShaderStageFlagBits stage, const uint32_t *local);   // 
 // gfx_vk_subgroup.c (no Vulkan): the module as subgroups of one invocation when it uses a subgroup class not in ops (its stage's; 0 when the device has none there).
 // NULL when there is nothing the stage lacks (why empty) or it uses something not covered (why names it); the module then stays as it is
 uint32_t *spv_one_lane(const uint32_t *w, uint32_t nw, uint32_t ops, uint32_t *onw, char *why, size_t nwhy);
+// gfx_vk_ubo_comp.c (no Vulkan): uniform buffer loads of a vector component at a run-time index as a load of the vector and OpVectorExtractDynamic
+// (DM_VK_UBO_COMPONENT); NULL when there is none
+uint32_t *spv_ubo_component(const uint32_t *w, uint32_t nw, uint32_t *onw, uint32_t *nsites);
 uint32_t *spv_gs_split(const uint32_t *w, uint32_t nw, int mode, uint32_t *onw, char *why, size_t nwhy);
 uint32_t vk_mem_type(uint32_t bits, VkMemoryPropertyFlags want, VkMemoryPropertyFlags avoid);
 void vk_init(void);   // once, from mtl_init or the first use
