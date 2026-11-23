@@ -79,6 +79,8 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
             Add(Instruction.ConvertU32ToFP64,         GenerateConvertU32ToFP64);
             Add(Instruction.Cosine,                   GenerateCosine);
             Add(Instruction.Ddx,                      GenerateDdx);
+            Add(Instruction.DdxCoarse,                GenerateDdxCoarse);
+            Add(Instruction.DdyCoarse,                GenerateDdyCoarse);
             Add(Instruction.Ddy,                      GenerateDdy);
             Add(Instruction.Discard,                  GenerateDiscard);
             Add(Instruction.Divide,                   GenerateDivide);
@@ -491,6 +493,18 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
         private static OperationResult GenerateCosine(CodeGenContext context, AstOperation operation)
         {
             return GenerateUnary(context, operation, context.Delegates.GlslCos, null);
+        }
+
+        private static OperationResult GenerateDdxCoarse(CodeGenContext context, AstOperation operation)
+        {
+            context.AddCapability(Capability.DerivativeControl);
+            return GenerateUnaryFP32(context, operation, context.Delegates.DPdxCoarse);
+        }
+
+        private static OperationResult GenerateDdyCoarse(CodeGenContext context, AstOperation operation)
+        {
+            context.AddCapability(Capability.DerivativeControl);
+            return GenerateUnaryFP32(context, operation, context.Delegates.DPdyCoarse);
         }
 
         private static OperationResult GenerateDdx(CodeGenContext context, AstOperation operation)

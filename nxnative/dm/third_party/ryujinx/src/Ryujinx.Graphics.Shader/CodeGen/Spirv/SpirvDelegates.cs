@@ -32,6 +32,8 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
         // UnaryFP32
         public readonly FuncUnaryInstruction DPdx;
         public readonly FuncUnaryInstruction DPdy;
+        public readonly FuncUnaryInstruction DPdxCoarse;
+        public readonly FuncUnaryInstruction DPdyCoarse;
 
         // UnaryS32
         public readonly FuncUnaryInstruction BitCount;
@@ -139,6 +141,8 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
 
             // UnaryFP32
             DPdx = context.DPdx;
+            DPdxCoarse = context.DPdxCoarse;
+            DPdyCoarse = context.DPdyCoarse;
             DPdy = context.DPdy;
 
             // UnaryS32

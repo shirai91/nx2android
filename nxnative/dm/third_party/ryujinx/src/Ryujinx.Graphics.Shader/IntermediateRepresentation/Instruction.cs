@@ -61,6 +61,8 @@ namespace Ryujinx.Graphics.Shader.IntermediateRepresentation
         Cosine,
         Ddx,
         Ddy,
+        DdxCoarse,
+        DdyCoarse,
         Discard,
         Divide,
         EmitVertex,
