@@ -257,6 +257,12 @@ static VkPipeline build_pipeline(const pkey *k, VkPipelineLayout layout, vkshade
     for (int i = 0; i < 3; i++) if (stg[i] && !(i == 1 && k->raster_discard)) {
         VkShaderModule mod = i == 2 && k->gs_split ? stg[i]->gs_mod[k->gs_split - 1] :
             vk_shader_module(stg[i], k->um[i], k->im[i], k->alt && !k->um[i] && !k->im[i] && !xo[i] ? 1u << 31 : xo[i], i == 1 ? (k->fdz ? 1 : 0) | (k->dual ? 2 : 0) : 0, i == 0 ? vi_flip : 0);
+        if (i == 0 && vi_scaled && mod == stg[0]->mod) {   // no vertex variant could be made (vk_shader_module fell back to the original): the integer fetch chosen above
+            // would feed a float input, which Vulkan leaves undefined. Skip the pipeline, as for a format with no fallback
+            static atomic_uchar noted_var; if (!atomic_exchange(&noted_var, 1))
+                VKLOG("[RED] graphics pipeline skipped: no vertex shader variant for the scaled attributes %#llx (vertex shader %016llx)", (unsigned long long)vi_scaled, (unsigned long long)k->key[0]);
+            return (VkPipeline)1;
+        }
         ss[ns++] = (VkPipelineShaderStageCreateInfo){VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, vk_sg_pin(fl[i], NULL), 0, fl[i], mod, "main", NULL};   // (pNext: DM_VK_SUBGROUP_PIN)
     }
     int flat = (int)k->debug_mode;
