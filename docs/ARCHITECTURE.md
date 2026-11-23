@@ -262,6 +262,15 @@ triggers translation. The shader key covers the three Android export helpers
 (`shader_vk.py`, `dmsv.py`, `shader_products.py`), the shared shader tools, profile,
 captures and translator. The new receipt format rebuilds existing ports once.
 
+Shader bundle export keeps validated SPIR-V modules in their translation files
+and loads at most one compression batch of `jobs` modules at a time. Each batch
+is written before the next is loaded; uncompressed export reads one module at
+a time. The sorted entry table and reflection remain in memory; payload memory
+depends on individual module sizes and the job count, rather than the aggregate
+SPIR-V. The private staged bundle is read back one module at a time before atomic
+publication. Version 1/2 layout, compression settings and byte comparison are
+unchanged.
+
 | Stage | What | Output (in `<game folder>/<title ID>_build/`) |
 |---|---|---|
 | inputs | Find the base game, updates and DLC (NSP / XCI / NSZ / XCZ files, regardless of extension case), match the profile, pick the version; check the game folder's drive has room (about twice the game files, NSZ / XCZ counted decompressed and once more for their NSP, less an earlier port's build folder) | |
