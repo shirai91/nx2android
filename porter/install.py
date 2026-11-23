@@ -273,7 +273,7 @@ def install(apk, data, adb_exe, serial=None, replace_signer=False, romfs_at=None
         elif was and romfs_at == APP:
             if sd_dir: PROG.set(step='removing the RomFS from the SD card'); adb.shell(f'rm -rf {shlex.quote(was)}', timeout=1200); say(f'the app reads its RomFS from its files folder again; {was} (the earlier --romfs-at sd copy) is removed')
             else: say(f'the app reads its RomFS from its files folder again; {was} is left as it is')
-        stale = [rel for rel in have if rel.split('/', 1)[0] in datapack.OWNED and not (target and rel.startswith(datapack.ROMFS + '/')) and not (data / rel).is_file()]   # the push only adds the pack's own files, which are never stale
+        stale = [rel for rel in have if rel.split('/', 1)[0] in datapack.OWNED and not (man.get('runtime_bundle') and rel.startswith('mods/')) and not (target and rel.startswith(datapack.ROMFS + '/')) and not (data / rel).is_file()]   # the push only adds the pack's own files, which are never stale
         if stale:   # an older version's files, which the game would still find
             PROG.set(step=f'removing {len(stale):,} stale files')
             for i in range(0, len(stale), 64): adb.shell(f'cd {shlex.quote(files)} && rm -f ' + ' '.join(shlex.quote(r) for r in stale[i:i + 64]))
