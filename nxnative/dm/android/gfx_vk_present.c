@@ -82,6 +82,7 @@ __attribute__((weak)) int dm_overlay_off(int layout, int ctl) { (void)layout; (v
 __attribute__((weak)) float dm_overlay_opacity(void) { return 0.6f; }
 __attribute__((weak)) int dm_overlay_layout(void) { return 0; }
 __attribute__((weak)) int dm_text_entry(char *title, int tcap, char *text, int xcap, int *sel, int *shift) { (void)title; (void)tcap; (void)text; (void)xcap; (void)sel; (void)shift; return 0; }
+__attribute__((weak)) int dm_ui_zh(void) { return 0; }
 static void pace_reset(void); static void ov_fb_drop(void);
 // Pre-rotation. A landscape window on a panel whose own orientation is portrait (the Retroid Pocket 5: 1080x1920, the window 1920x1080, currentTransform
 // ROTATE_90) left the turn to Android's compositor, and its display hardware does not rotate such a layer: SurfaceFlinger composited it on the GPU every
@@ -369,7 +370,7 @@ static void ov_text_panel(const ov_canvas *cv) {
     char shown[260]; snprintf(shown, sizeof shown, "%s_", text);   // the caret
     const char *s = shown; while (*s && cv_text_w(s, xs) > room) pf_next(&s);   // the end of a long text
     cv_text(cv, 2 * pad, H * 0.205f, s, xs, C_WHITE);
-    static const char *wide[4] = {"Shift", "Space", "Del", "OK"};
+    const char *wide[4] = {TR("Shift", "大小写"), TR("Space", "空格"), TR("Del", "退格"), TR("OK", "确定")};
     for (int i = 0; i < OVK_N; i++) {
         float r[4]; ov_kb_key(i, p, r);
         int on = i == sel || (i == OVK_SHIFT && shift);
@@ -378,7 +379,7 @@ static void ov_text_panel(const ov_canvas *cv) {
         int ls = ks; while (ls > 1 && cv_text_w(l, ls) > r[2] * 0.85f) ls--;   // a wide key's word fits inside it
         cv_text(cv, r[0] + (r[2] - cv_text_w(l, ls)) / 2, r[1] + r[3] / 2, l, ls, i == OVK_OK && i != sel ? C_ACCENT : C_WHITE);
     }
-    const char *k = "A key  B delete  Y shift  + OK  - cancel";   // one line, centred, smaller until it fits
+    const char *k = TR("A key  B delete  Y shift  + OK  - cancel", "A 输入  B 删除  Y 大小写  + 确定  - 取消");   // one line, centred, smaller until it fits
     while (hs > 1 && cv_text_w(k, hs) > W - 2 * pad) hs--;
     cv_text(cv, (W - cv_text_w(k, hs)) / 2, H * 0.95f, k, hs, dim);
 }
@@ -393,11 +394,42 @@ static void cv_button(const ov_canvas *cv, const float b[4], const char *l, int 
 }
 // The pause menu (overlay_layout.h: the rows, the tabs, the slider's track), in the raster's panel rectangle. Its letters are as large as a row allows (0.30 of
 // its height, about 2.7 mm on a 6.7" phone and 3.6 mm on the 8.8" tablet) and smaller only when the widest row would not fit beside its control
-static const char *const OVM_LABELS[OVM_N] = {"Show gamepad", "Opacity", "Edit layout", "Rumble", "Show FPS", "Mode", "Export save", "Import save", "Face buttons", "Audio output",
-                                        "FPS row", "SOC row", "BAT row", "Driver row", "Graph row", "Position", "Colour", "Outline", "Size", "Resume", ""};
-static const char *const OVM_BUTTONS[OVM_N] = {[OVM_EDIT] = "Edit", [OVM_EXPORT] = "Export", [OVM_IMPORT] = "Import", [OVM_AUDIO] = "Select"};   // the rows that are a button: its word
-static const char *const OVM_MODES[2] = {"Handheld", "Docked"};
-static const char *const OVM_PADS[2] = {"Position", "Label"};   // a controller's face buttons (front_android.c pad_labels)
+static const char *ovm_label(int it) {
+    switch (it) {
+    case OVM_OVERLAY: return TR("Show gamepad", "显示手柄");
+    case OVM_OPACITY: return TR("Opacity", "透明度");
+    case OVM_EDIT: return TR("Edit layout", "编辑布局");
+    case OVM_RUMBLE: return TR("Rumble", "震动");
+    case OVM_FPS: return TR("Show FPS", "显示帧率");
+    case OVM_MODE: return TR("Mode", "模式");
+    case OVM_EXPORT: return TR("Export save", "导出存档");
+    case OVM_IMPORT: return TR("Import save", "导入存档");
+    case OVM_PAD: return TR("Face buttons", "按键布局");
+    case OVM_AUDIO: return TR("Audio output", "音频输出");
+    case OVM_ROW_FPS: return TR("FPS row", "帧率行");
+    case OVM_ROW_SOC: return TR("SOC row", "SoC 行");
+    case OVM_ROW_BAT: return TR("BAT row", "电量行");
+    case OVM_ROW_DRV: return TR("Driver row", "驱动行");
+    case OVM_ROW_GRAPH: return TR("Graph row", "帧时图");
+    case OVM_POS: return TR("Position", "位置");
+    case OVM_COLOUR: return TR("Colour", "颜色");
+    case OVM_OUTLINE: return TR("Outline", "描边");
+    case OVM_SIZE: return TR("Size", "大小");
+    case OVM_RESUME: return TR("Resume", "继续游戏");
+    default: return "";
+    }
+}
+static const char *ovm_button(int it) {
+    switch (it) {
+    case OVM_EDIT: return TR("Edit", "编辑");
+    case OVM_EXPORT: return TR("Export", "导出");
+    case OVM_IMPORT: return TR("Import", "导入");
+    case OVM_AUDIO: return TR("Select", "选择");
+    default: return NULL;
+    }
+}
+static const char *ovm_mode(int i) { return i ? TR("Docked", "底座") : TR("Handheld", "掌机"); }
+static const char *ovm_pad(int i) { return i ? TR("Label", "标签") : TR("Position", "位置"); }   // a controller's face buttons (front_android.c pad_labels)
 static int ov_val_n(int it) { return it == OVM_POS ? FPSO_POS_N : it == OVM_COLOUR ? FPSO_COLOUR_N : it == OVM_OUTLINE ? FPSO_OUTLINE_N : it == OVM_SIZE ? FPSO_SIZE_N : 0; }   // the choice rows' values
 static const char *ov_val_name(int it, int v) {
     return it == OVM_POS ? FPSO_POS_NAMES[v] : it == OVM_COLOUR ? FPSO_COLOUR_NAMES[v] : it == OVM_OUTLINE ? FPSO_OUTLINE_NAMES[v] : FPSO_SIZE_NAMES[v];
@@ -414,7 +446,12 @@ static void ov_menu_panel(const ov_canvas *cv, int st) {
     for (; is > 1; is--) {   // the widest row: its label, a gap and its control
         float need = 0;
         for (int i = 0; i < OVM_RESUME; i++) {
-            float lw = cv_text_w(OVM_LABELS[i], is), cw = ov_val_n(i) ? ov_val_w(i, is) + 2 * sh : i == OVM_MODE ? 2 * (cv_text_w(OVM_MODES[0], is) + sh) : i == OVM_PAD ? 2 * (cv_text_w(OVM_PADS[0], is) + sh) : OVM_BUTTONS[i] ? cv_text_w(OVM_BUTTONS[i], is) + 2 * sh : sw + gap + cv_text_w("OFF", is);
+            float lw = cv_text_w(ovm_label(i), is); const char *btn = ovm_button(i);
+            float cw = ov_val_n(i) ? ov_val_w(i, is) + 2 * sh
+                     : i == OVM_MODE ? 2 * (fmaxf(cv_text_w(ovm_mode(0), is), cv_text_w(ovm_mode(1), is)) + sh)
+                     : i == OVM_PAD  ? 2 * (fmaxf(cv_text_w(ovm_pad(0), is),  cv_text_w(ovm_pad(1), is))  + sh)
+                     : btn ? cv_text_w(btn, is) + 2 * sh
+                     : sw + gap + fmaxf(cv_text_w(TR("ON", "开"), is), cv_text_w(TR("OFF", "关"), is));
             need = fmaxf(need, i == OVM_OPACITY ? fmaxf(lw / 0.38f, cv_text_w("80%", is) / 0.14f) : lw + gap + cw + rh * 0.3f);
         }
         float tabw = 0; for (int k = 0; k < OVM_TABS; k++) tabw = fmaxf(tabw, cv_text_w(OVM_TAB_NAMES[k], is));
@@ -433,8 +470,9 @@ static void ov_menu_panel(const ov_canvas *cv, int st) {
             cv_rrect(cv, r[0], r[1] + rh - 1, r[0] + rw, r[1] + rh, 0.5f, C_LINE);
             continue;
         }
-        if (it == OVM_RESUME) { cv_rrect(cv, r[0], r[1], r[0] + rw, r[1] + 1, 0.5f, C_LINE); cv_text(cv, r[0] + (rw - cv_text_w("Resume", is)) / 2, cy, "Resume", is, C_ACCENT); continue; }
-        cv_text(cv, r[0] + rh * 0.15f, cy, OVM_LABELS[it], is, row == sel ? C_WHITE : C_DIM);
+        if (it == OVM_RESUME) { const char *w = ovm_label(OVM_RESUME); cv_rrect(cv, r[0], r[1], r[0] + rw, r[1] + 1, 0.5f, C_LINE); cv_text(cv, r[0] + (rw - cv_text_w(w, is)) / 2, cy, w, is, C_ACCENT); continue; }
+        const char *lbl = ovm_label(it), *btn = ovm_button(it);
+        cv_text(cv, r[0] + rh * 0.15f, cy, lbl, is, row == sel ? C_WHITE : C_DIM);
         if (it == OVM_OPACITY) {   // the slider: its track, filled to the value, the knob and the percent
             float t[3]; ov_menu_track(p, row, t); float f = (float)(op - OV_OPACITY_MIN) / (OV_OPACITY_MAX - OV_OPACITY_MIN), th = fmaxf(2, rh * 0.08f), kr = rh * 0.20f;
             f = f < 0 ? 0 : f > 1 ? 1 : f;
@@ -444,18 +482,19 @@ static void ov_menu_panel(const ov_canvas *cv, int st) {
             char v[8]; snprintf(v, sizeof v, "%d%%", op); cv_text(cv, x1 - cv_text_w(v, is), cy, v, is, C_WHITE);
         } else if (it == OVM_EXPORT && (st >> 20 & 15) != OVX_IDLE) {   // the export's outcome in place of its button: its name, or why there is none
             char nm[64], v[80]; int x = dm_save_note(nm, sizeof nm), vs = is;
-            snprintf(v, sizeof v, "%s", x == OVX_BUSY ? "Exporting..." : x == OVX_DONE ? nm : x == OVX_NOSAVE ? "No save yet" : "Failed");
-            while (vs > 1 && cv_text_w(v, vs) > rw - cv_text_w(OVM_LABELS[it], is) - gap - rh * 0.3f) vs--;
+            snprintf(v, sizeof v, "%s", x == OVX_BUSY ? TR("Exporting...", "导出中...") : x == OVX_DONE ? nm : x == OVX_NOSAVE ? TR("No save yet", "还没有存档") : TR("Failed", "失败"));
+            while (vs > 1 && cv_text_w(v, vs) > rw - cv_text_w(lbl, is) - gap - rh * 0.3f) vs--;
             cv_text(cv, x1 - cv_text_w(v, vs), cy, v, vs, x == OVX_FAILED ? C_ACCENT : C_WHITE);
         } else if (ov_val_n(it)) {   // the counter's corner, colour, outline and size: the value in a pill
             int cur = ov_val_cur(it, fo); const char *nm = ov_val_name(it, cur); float pw = ov_val_w(it, is) + 2 * sh, hh = rh * 0.46f;
             cv_rrect(cv, x1 - pw, cy - hh / 2, x1, cy + hh / 2, hh / 2, C_OFF);
             const uint8_t *tc = C_WHITE, rgb[4] = {FPSO_RGB[fpso_colour(fo)][0], FPSO_RGB[fpso_colour(fo)][1], FPSO_RGB[fpso_colour(fo)][2], 255};
             cv_text(cv, x1 - pw + (pw - cv_text_w(nm, is)) / 2, cy, nm, is, it == OVM_COLOUR ? rgb : tc);
-        } else if (OVM_BUTTONS[it]) {   // a button
-            float bw = cv_text_w(OVM_BUTTONS[it], is) + 2 * sh, b[4] = {x1 - bw, cy - rh * 0.30f, bw, rh * 0.60f}; cv_button(cv, b, OVM_BUTTONS[it], 0, 0);
+        } else if (btn) {   // a button
+            float bw = cv_text_w(btn, is) + 2 * sh, b[4] = {x1 - bw, cy - rh * 0.30f, bw, rh * 0.60f}; cv_button(cv, b, btn, 0, 0);
         } else if (it == OVM_MODE || it == OVM_PAD) {   // two segments, the current one filled: handheld (performance) | docked (resolution); by position | by label
-            const char *const *seg = it == OVM_MODE ? OVM_MODES : OVM_PADS; int cur = it == OVM_MODE ? st >> 2 & 1 : st >> 28 & 1;
+            const char *seg[2] = {it == OVM_MODE ? ovm_mode(0) : ovm_pad(0), it == OVM_MODE ? ovm_mode(1) : ovm_pad(1)};
+            int cur = it == OVM_MODE ? st >> 2 & 1 : st >> 28 & 1;
             float hh = rh * 0.46f, segw = fmaxf(cv_text_w(seg[0], is), cv_text_w(seg[1], is)) + sh, x0 = x1 - 2 * segw;
             cv_rrect(cv, x0, cy - hh / 2, x1, cy + hh / 2, hh / 2, C_OFF);
             cv_rrect(cv, x0 + cur * segw, cy - hh / 2, x0 + (cur + 1) * segw, cy + hh / 2, hh / 2, C_ACCENT);
@@ -464,7 +503,7 @@ static void ov_menu_panel(const ov_canvas *cv, int st) {
             int on = it >= OVM_ROW_FPS && it <= OVM_ROW_GRAPH ? fpso_rows(fo) >> (it - OVM_ROW_FPS) & 1 : st >> (it == OVM_OVERLAY ? 0 : it == OVM_RUMBLE ? 1 : 3) & 1; float sx0 = x1 - sw;
             cv_rrect(cv, sx0, cy - sh / 2, x1, cy + sh / 2, sh / 2, on ? C_ACCENT : C_OFF);
             cv_disc(cv, on ? x1 - sh / 2 : sx0 + sh / 2, cy, sh / 2 - fmaxf(2, sh * 0.1f), on ? C_WHITE : C_KNOB_OFF);
-            const char *word = on ? "ON" : "OFF"; cv_text(cv, sx0 - gap - cv_text_w(word, is), cy, word, is, on ? C_WHITE : C_DIM);
+            const char *word = on ? TR("ON", "开") : TR("OFF", "关"); cv_text(cv, sx0 - gap - cv_text_w(word, is), cy, word, is, on ? C_WHITE : C_DIM);
         }
     }
 }
@@ -477,29 +516,43 @@ static void ov_ed_rects_for(float W, float H, float pw, float ph, float tb[4], f
 }
 static void ov_ed_rects(float tb[4], float pr[4]) { ov_ed_rects_for((float)g_sext.width, (float)g_sext.height, (float)g_ov.pw, (float)g_ov.ph, tb, pr); }
 static const char *ov_ctl_name(const ov_ctl *c) {
-    return c->kind == OV_STICK_L ? "Left stick" : c->kind == OV_STICK_R ? "Right stick" : c->kind == OV_DPAD ? "D-pad" : c->kind == OV_MENU ? "Menu button"
-         : !strcmp(c->label, "-") ? "Minus" : !strcmp(c->label, "+") ? "Plus" : c->label;
+    return c->kind == OV_STICK_L ? TR("Left stick", "左摇杆") : c->kind == OV_STICK_R ? TR("Right stick", "右摇杆")
+         : c->kind == OV_DPAD ? TR("D-pad", "十字键") : c->kind == OV_MENU ? TR("Menu button", "菜单键")
+         : !strcmp(c->label, "-") ? TR("Minus", "减号键") : !strcmp(c->label, "+") ? TR("Plus", "加号键") : c->label;
+}
+static const char *ov_ed_word(int i) {
+    switch (i) {
+    case OVE_SMALLER: return "-";
+    case OVE_BIGGER: return "+";
+    case OVE_RESET: return TR("Reset", "重置");
+    case OVE_CANCEL: return TR("Cancel", "取消");
+    case OVE_SAVE: return TR("Save", "保存");
+    case OVE_GRID: return TR("Snap to grid: Off", "吸附网格：关");
+    case OVE_HIDE: return TR("Hide", "隐藏");
+    case OVE_DISCARD: return TR("Discard", "放弃");
+    case OVE_KEEP: return TR("Keep editing", "继续编辑");
+    default: return "";
+    }
 }
 static void ov_edit_panel(const ov_canvas *cv, int st, float W, float H) {
     float tb[4], pr[4]; ov_ed_rects_for(W, H, (float)cv->w, (float)cv->h, tb, pr);
     int held = (st >> 4 & 15) - 1, sel = (st >> 8 & 255) - 1;
-    static const char *const words[OVE_ALL] = {"-", "+", "Reset", "Cancel", "Save", "Snap to grid: Off", "Hide", "Discard", "Keep editing"};
     cv_rrect(cv, tb[0], tb[1], tb[0] + tb[2], tb[1] + tb[3], tb[3] * 0.14f, C_BG);
     char hint[96]; int hid = (st & OVE_SEL_HIDDEN) != 0, can_hide = sel >= 0 && sel < OV_N && OV_CTLS[sel].kind != OV_MENU;
-    if (sel >= 0 && sel < OV_N && hid) snprintf(hint, sizeof hint, "%s: hidden, Show", ov_ctl_name(&OV_CTLS[sel]));
-    else if (sel >= 0 && sel < OV_N) snprintf(hint, sizeof hint, "%s: drag, pinch, - +", ov_ctl_name(&OV_CTLS[sel]));   // (short: 2x-scale letters on a phone)
-    else snprintf(hint, sizeof hint, "Drag to move, pinch to resize");
+    if (sel >= 0 && sel < OV_N && hid) snprintf(hint, sizeof hint, "%s%s", ov_ctl_name(&OV_CTLS[sel]), TR(": hidden, Show", "：已隐藏，点击显示"));
+    else if (sel >= 0 && sel < OV_N) snprintf(hint, sizeof hint, "%s%s", ov_ctl_name(&OV_CTLS[sel]), TR(": drag, pinch, - +", "：拖动、双指缩放、- +"));   // (short: 2x-scale letters on a phone)
+    else snprintf(hint, sizeof hint, "%s", TR("Drag to move, pinch to resize", "拖动移动，双指缩放"));
     int hs = (int)fmaxf(1, roundf(tb[3] * 0.11f / PF_CAP)); while (hs > 1 && cv_text_w(hint, hs) > tb[2] * 0.94f) hs--;
     cv_text(cv, tb[0] + (tb[2] - cv_text_w(hint, hs)) / 2, tb[1] + tb[3] * 0.14f, hint, hs, sel >= 0 ? C_WHITE : C_DIM);
     for (int i = 0; i < OVE_N; i++) { float b[4]; ov_ed_button(i, tb, b); int grid = i == OVE_GRID && (st & OVE_GRID_ON);
-        if (i == OVE_HIDE && !can_hide) { cv_rrect(cv, b[0], b[1], b[0] + b[2], b[1] + b[3], b[3] * 0.3f, C_OFF); int ws = (int)fmaxf(1, roundf(b[3] * 0.45f / 7));
-            while (ws > 1 && cv_text_w(words[i], ws) > b[2] * 0.9f) ws--; cv_text(cv, b[0] + (b[2] - cv_text_w(words[i], ws)) / 2, b[1] + b[3] / 2, words[i], ws, C_DIM); continue; }   // nothing to hide
-        cv_button(cv, b, i == OVE_HIDE && hid ? "Show" : grid ? "Snap to grid: On" : words[i], i == OVE_SAVE || grid || (i == OVE_HIDE && hid), i == held); }
+        if (i == OVE_HIDE && !can_hide) { const char *hw = ov_ed_word(i); cv_rrect(cv, b[0], b[1], b[0] + b[2], b[1] + b[3], b[3] * 0.3f, C_OFF); int ws = (int)fmaxf(1, roundf(b[3] * 0.45f / 7));
+            while (ws > 1 && cv_text_w(hw, ws) > b[2] * 0.9f) ws--; cv_text(cv, b[0] + (b[2] - cv_text_w(hw, ws)) / 2, b[1] + b[3] / 2, hw, ws, C_DIM); continue; }   // nothing to hide
+        cv_button(cv, b, i == OVE_HIDE && hid ? TR("Show", "显示") : grid ? TR("Snap to grid: On", "吸附网格：开") : ov_ed_word(i), i == OVE_SAVE || grid || (i == OVE_HIDE && hid), i == held); }
     if (!(st & 1)) return;
     cv_rrect(cv, pr[0], pr[1], pr[0] + pr[2], pr[1] + pr[3], pr[3] * 0.10f, C_BG);
-    const char *q = "Discard your changes?"; int qs = (int)fmaxf(1, roundf(pr[3] * 0.13f / PF_CAP)); while (qs > 1 && cv_text_w(q, qs) > pr[2] * 0.9f) qs--;
+    const char *q = TR("Discard your changes?", "放弃更改？"); int qs = (int)fmaxf(1, roundf(pr[3] * 0.13f / PF_CAP)); while (qs > 1 && cv_text_w(q, qs) > pr[2] * 0.9f) qs--;
     cv_text(cv, pr[0] + (pr[2] - cv_text_w(q, qs)) / 2, pr[1] + pr[3] * 0.27f, q, qs, C_WHITE);
-    for (int i = OVE_DISCARD; i <= OVE_KEEP; i++) { float b[4]; ov_ed_button(i, pr, b); cv_button(cv, b, words[i], i == OVE_DISCARD, i == held); }
+    for (int i = OVE_DISCARD; i <= OVE_KEEP; i++) { float b[4]; ov_ed_button(i, pr, b); cv_button(cv, b, ov_ed_word(i), i == OVE_DISCARD, i == held); }
 }
 // The save picker (overlay_layout.h OVS_*): the menu panel's rows, as front_android.c fills them (dm_save_rows); letters as the menu's (notes a little smaller),
 // each kind of row at one size: the largest at which all its rows' two texts fit

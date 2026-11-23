@@ -4,6 +4,9 @@
 #pragma once
 #include <math.h>
 #include "dm_input.h"
+// The overlay's UI language (implemented in front_android.c: DM_UI_LANG=zh|en, else device locale).
+int dm_ui_zh(void);
+#define TR(en, zh) (dm_ui_zh() ? (zh) : (en))
 enum { OV_STICK_L, OV_STICK_R, OV_BUTTON, OV_DPAD, OV_MENU };   // OV_MENU: the menu button (shown with the gamepad on or off, 70%; env.txt DM_MENU_BUTTON=0 leaves it out): pauses the game and opens the settings
 typedef struct { int kind; float ax, x, y, w, h; uint64_t btn; const char *label, *name; } ov_ctl;   // ax: the anchor, as a fraction of the window's width; name: the table's
 // The layouts: dm/android/overlay_default.tsv with the game profile's moves (android.tsv overlay rows), compiled by build.py into android_profile.h. Both list the
@@ -166,10 +169,18 @@ enum { FPSO_TL, FPSO_TR, FPSO_BL, FPSO_BR, FPSO_POS_N };   // fps_pos: the corne
 enum { FPSO_WHITE, FPSO_YELLOW, FPSO_GREEN, FPSO_CYAN, FPSO_MAGENTA, FPSO_COLOUR_N };   // fps_colour: the text (a temperature too hot stays red)
 enum { FPSO_BOX, FPSO_NONE, FPSO_THIN, FPSO_MEDIUM, FPSO_THICK, FPSO_OUTLINE_N };   // fps_outline: the dark block behind the rows; nothing; a black outline round each letter, 1, 2 or 3 font texels
 enum { FPSO_SMALL, FPSO_NORMAL, FPSO_LARGE, FPSO_XL, FPSO_SIZE_N };   // fps_size: the letters' scale = base - 1, base, base + 1, 2 * base (base: 2.2% of the window's height / PF_CAP, at least 2)
-static const char *const FPSO_POS_NAMES[FPSO_POS_N] = {"Top left", "Top right", "Bottom left", "Bottom right"};
-static const char *const FPSO_COLOUR_NAMES[FPSO_COLOUR_N] = {"White", "Yellow", "Green", "Cyan", "Magenta"};
-static const char *const FPSO_OUTLINE_NAMES[FPSO_OUTLINE_N] = {"Box", "None", "Thin", "Medium", "Thick"};
-static const char *const FPSO_SIZE_NAMES[FPSO_SIZE_N] = {"Small", "Normal", "Large", "Extra large"};
+static const char *const FPSO_POS_NAMES_EN[FPSO_POS_N] = {"Top left", "Top right", "Bottom left", "Bottom right"};
+static const char *const FPSO_POS_NAMES_ZH[FPSO_POS_N] = {"左上", "右上", "左下", "右下"};
+#define FPSO_POS_NAMES (dm_ui_zh() ? FPSO_POS_NAMES_ZH : FPSO_POS_NAMES_EN)
+static const char *const FPSO_COLOUR_NAMES_EN[FPSO_COLOUR_N] = {"White", "Yellow", "Green", "Cyan", "Magenta"};
+static const char *const FPSO_COLOUR_NAMES_ZH[FPSO_COLOUR_N] = {"白色", "黄色", "绿色", "青色", "洋红"};
+#define FPSO_COLOUR_NAMES (dm_ui_zh() ? FPSO_COLOUR_NAMES_ZH : FPSO_COLOUR_NAMES_EN)
+static const char *const FPSO_OUTLINE_NAMES_EN[FPSO_OUTLINE_N] = {"Box", "None", "Thin", "Medium", "Thick"};
+static const char *const FPSO_OUTLINE_NAMES_ZH[FPSO_OUTLINE_N] = {"黑底", "无", "细边", "中边", "粗边"};
+#define FPSO_OUTLINE_NAMES (dm_ui_zh() ? FPSO_OUTLINE_NAMES_ZH : FPSO_OUTLINE_NAMES_EN)
+static const char *const FPSO_SIZE_NAMES_EN[FPSO_SIZE_N] = {"Small", "Normal", "Large", "Extra large"};
+static const char *const FPSO_SIZE_NAMES_ZH[FPSO_SIZE_N] = {"小", "标准", "大", "特大"};
+#define FPSO_SIZE_NAMES (dm_ui_zh() ? FPSO_SIZE_NAMES_ZH : FPSO_SIZE_NAMES_EN)
 static const uint8_t FPSO_RGB[FPSO_COLOUR_N][3] = {{255, 255, 255}, {255, 220, 0}, {64, 255, 96}, {0, 230, 255}, {255, 64, 255}};
 #define FPSO_DEFAULT (FPSO_ROWS_DEFAULT | FPSO_TL << 5 | FPSO_WHITE << 7 | FPSO_BOX << 10 | FPSO_NORMAL << 13)
 static inline int fpso_rows(int o) { return o & 31; }
@@ -190,7 +201,9 @@ enum { OVM_OVERLAY, OVM_OPACITY, OVM_EDIT, OVM_RUMBLE, OVM_FPS, OVM_MODE, OVM_EX
 #define OVM_PER_TAB 5
 static const int OVM_TAB_ITEMS[OVM_TABS][OVM_PER_TAB] = {{OVM_OVERLAY, OVM_OPACITY, OVM_EDIT, OVM_RUMBLE, OVM_PAD}, {OVM_FPS, OVM_MODE, OVM_EXPORT, OVM_IMPORT, OVM_AUDIO},
                                                          {OVM_ROW_FPS, OVM_ROW_SOC, OVM_ROW_BAT, OVM_ROW_DRV, OVM_ROW_GRAPH}, {OVM_POS, OVM_COLOUR, OVM_OUTLINE, OVM_SIZE, -1}};
-static const char *const OVM_TAB_NAMES[OVM_TABS] = {"Gamepad", "Game", "Counter", "Style"};
+static const char *const OVM_TAB_NAMES_EN[OVM_TABS] = {"Gamepad", "Game", "Counter", "Style"};
+static const char *const OVM_TAB_NAMES_ZH[OVM_TABS] = {"手柄", "游戏", "计数", "样式"};
+#define OVM_TAB_NAMES (dm_ui_zh() ? OVM_TAB_NAMES_ZH : OVM_TAB_NAMES_EN)
 #define OVM_ROWS (OVM_PER_TAB + 2)   // the tabs, a tab's rows (as many for every tab: the panel keeps its size), Resume
 static inline int fpso_step(int o, int item) {   // the options after a press on a menu item: a row's bit flips, the others go to their next value (and round)
     int r = fpso_rows(o), p = fpso_pos(o), c = fpso_colour(o), l = fpso_outline(o), z = fpso_size(o);
