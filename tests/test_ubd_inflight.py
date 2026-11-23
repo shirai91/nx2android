@@ -23,6 +23,8 @@ static ubd_t g_ubd[64]; static int g_nubd;
 static uint64_t g_done, g_fence, g_ubd_racy; static int g_x_inflkeep;
 static uint64_t vk_fence_done(void) { return g_done; }
 static int vk_gpu_pending(uint64_t a, uint64_t n) { (void)a; (void)n; return 0; }
+static const void *nvn_sparse_address_pool(uint64_t a, uint64_t n) { (void)a; (void)n; return NULL; }
+static uint64_t nvn_sparse_address_copy(uint64_t a, void *dst, uint64_t n) { (void)a; (void)dst; (void)n; return 0; }
 @INFL@
 static ubd_infl_t *g_infl; static int g_ninfl, g_capinfl;
 @READ@

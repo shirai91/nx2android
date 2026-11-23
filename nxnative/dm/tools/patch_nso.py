@@ -567,6 +567,10 @@ def jump_offsets(insl, j, copy_first=False, far_base=False):
         p = ctx[i]
         m = re.fullmatch(r'(w\d+), (w\d+)', p.op_str) if p.mnemonic == 'mov' else None
         if m and m.group(1) in idx: idx.add(m.group(2)); continue
+        # A 32-bit zero-extension written into the index register is a copy of the index, not a mask of the checked value (Layton's Mystery Journey DX
+        # main+0x1eb2e0: cmp w10,#3; b.hi; and x18,x10,#0xffffffff; ldrsw x18,[x15,x18,lsl #2]; add x18,x18,x15; br x18)
+        m = re.fullmatch(r'([wx]\d+), ([wx]\d+), #0xffffffff', p.op_str) if p.mnemonic == 'and' else None
+        if m and wname(m.group(1)) in idx and m.group(1) != m.group(2): idx.add(wname(m.group(2))); continue
         m = re.fullmatch(r'([wx]\d+), ([wx]\d+), #(0x[0-9a-f]+|\d+)', p.op_str) if p.mnemonic == 'and' else None
         if m and wname(m.group(1)) in idx and masked is None: masked = (wname(m.group(2)), int(m.group(3), 0), i); continue
         # A 64-bit check of the index bounds it as well (OCTOPATH TRAVELER 1.0.5 main+0x1676f30: cmp x22,#0x10; ...; b.hi; adrp x18 + add x18; mov x0,x18; ldrsw x18,[x0,x22,lsl #2];
@@ -646,7 +650,8 @@ def copied_base(insl, k, rb):
     return None
 def jump_adr_offsets(insl, j):
     """Entries relative to an adr rather than to the table (Tears of the Kingdom main+0x393bb0): cmp w0,#5; b.hi; ...; adr x18,#L; ldrsw x1,[x17,x0,lsl #2];
-    add x18,x18,x1; br x18 → target = L + entry, with the table base x17 from adrp + add. Tried only where jump_offsets finds nothing. Returns all targets, or None if not recognized"""
+    add x18,x18,x1; br x18 → target = L + entry, with the table base x17 from adrp + add. A 64-bit compare bounds the index too (DRAGON QUEST I & II HD-2D Remake 1.0.2,
+    main+0x30ee50c: cmp x9,#4; b.hi; adr x18; ldrsw x0,[x15,x9,lsl #2]; add x18,x18,x0). Tried only where jump_offsets finds nothing. Returns all targets, or None if not recognized"""
     ctx = insl[max(0, j - 16):j]
     add = next((p for p in reversed(ctx) if p.mnemonic == 'add' and re.fullmatch(r'x18, x\d+, x\d+', p.op_str)), None)
     if not add: return None
@@ -656,13 +661,15 @@ def jump_adr_offsets(insl, j):
         wa = next((p for p in reversed(ctx[:ka]) if any(p.reg_name(r) == a for r in p.regs_access()[1])), None)   # the nearest writer of a
         if not ld or not wa or wa.mnemonic != 'adr': continue
         tb_reg, ix = re.fullmatch(rf'{e}, \[(x\d+), x(\d+), lsl #2\]', ld.op_str).groups()
-        idx, cmp = {'w' + ix}, None   # the index and the registers copied into it (main+0x596d30: cmp w15,#8; b.hi; mov w16,w15; ...; ldrsw x0,[x17,x16,lsl #2])
+        idx, cmp = 'w' + ix, None   # follow the value used at the load back through copies (main+0x596d30: cmp w15,#8; b.hi; mov w16,w15; ...; ldrsw x0,[x17,x16,lsl #2])
         for p in reversed(ctx[:ctx.index(ld)]):   # walk back from the load to the bounds check
             m = re.fullmatch(r'(w\d+), (w\d+)', p.op_str) if p.mnemonic == 'mov' else None
-            if m and m.group(1) in idx: idx.add(m.group(2)); continue
-            m = re.fullmatch(r'(w\d+), #(0x[0-9a-f]+|\d+)', p.op_str) if p.mnemonic == 'cmp' else None
-            if m and m.group(1) in idx: cmp = p; break
-            if any('w' + p.reg_name(r)[1:] in idx for r in p.regs_access()[1]): return None   # the index changes after the check
+            if m and m.group(1) == idx: idx = m.group(2); continue
+            m = re.fullmatch(r'([wx]\d+), ([wx]\d+), #0xffffffff', p.op_str) if p.mnemonic == 'and' else None   # a 32-bit zero-extension into the index is a copy
+            if m and 'w' + m.group(1)[1:] == idx and m.group(1) != m.group(2): idx = 'w' + m.group(2)[1:]; continue
+            m = re.fullmatch(r'[wx](\d+), #(0x[0-9a-f]+|\d+)', p.op_str) if p.mnemonic == 'cmp' else None
+            if m and 'w' + m.group(1) == idx: cmp = p; break
+            if any('w' + p.reg_name(r)[1:] == idx for r in p.regs_access()[1]): return None   # the index changes after the check
         if cmp is None: return None
         n, at = int(cmp.op_str.split('#')[1], 0) + 1, wa.operands[1].imm
         def targets(tb): return [at + struct.unpack_from('<i', IMG, tb + 4 * i)[0] for i in range(n)] if 0 <= tb and tb + 4 * n <= len(IMG) else None
@@ -717,13 +724,13 @@ def half_count(insl, ld, base):
     m = re.fullmatch(r'w\d+, \[(x\d+), [wx](\d+), (?:lsl|uxtw) #1\]', ld.op_str) if ld.mnemonic == 'ldrh' else None
     if not m: return None
     tb_reg, k = m.group(1), insl.index(ld)
-    idx, cmp = {'w' + m.group(2)}, None
+    idx, cmp = 'w' + m.group(2), None
     for p in reversed(insl[max(0, k - 32):k]):   # walk back from the load to the bounds check
         mm = re.fullmatch(r'(w\d+), (w\d+)', p.op_str) if p.mnemonic == 'mov' else None
-        if mm and mm.group(1) in idx: idx.add(mm.group(2)); continue
-        mm = re.fullmatch(r'(w\d+), #(0x[0-9a-f]+|\d+)', p.op_str) if p.mnemonic == 'cmp' else None
-        if mm and mm.group(1) in idx: cmp = p; break
-        if any('w' + p.reg_name(r)[1:] in idx for r in p.regs_access()[1]): return None   # the index changes after the check
+        if mm and mm.group(1) == idx: idx = mm.group(2); continue
+        mm = re.fullmatch(r'[wx](\d+), #(0x[0-9a-f]+|\d+)', p.op_str) if p.mnemonic == 'cmp' else None
+        if mm and 'w' + mm.group(1) == idx: cmp = p; break
+        if any('w' + p.reg_name(r)[1:] == idx for r in p.regs_access()[1]): return None   # the index changes after the check
     kc = insl.index(cmp) if cmp is not None else -1
     if kc < 0 or insl[kc + 1].mnemonic not in ('b.hi', 'b.hs', 'b.cs'): return None   # only a compare that guards the dispatch bounds the index (b.hs: one entry more than needed)
     n = int(cmp.op_str.split('#')[1], 0) + 1

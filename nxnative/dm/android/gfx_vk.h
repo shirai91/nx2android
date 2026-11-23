@@ -66,6 +66,9 @@ const void *vk_sg_pin(VkShaderStageFlagBits stage, const uint32_t *local);   // 
 // gfx_vk_subgroup.c (no Vulkan): the module as subgroups of one invocation when it uses a subgroup class not in ops (its stage's; 0 when the device has none there).
 // NULL when there is nothing the stage lacks (why empty) or it uses something not covered (why names it); the module then stays as it is
 uint32_t *spv_one_lane(const uint32_t *w, uint32_t nw, uint32_t ops, uint32_t *onw, char *why, size_t nwhy);
+// gfx_vk_ubo_comp.c (no Vulkan): uniform buffer loads of a vector component at a run-time index as a load of the vector and OpVectorExtractDynamic
+// (DM_VK_UBO_COMPONENT); NULL when there is none
+uint32_t *spv_ubo_component(const uint32_t *w, uint32_t nw, uint32_t *onw, uint32_t *nsites);
 uint32_t *spv_gs_split(const uint32_t *w, uint32_t nw, int mode, uint32_t *onw, char *why, size_t nwhy);
 uint32_t vk_mem_type(uint32_t bits, VkMemoryPropertyFlags want, VkMemoryPropertyFlags avoid);
 void vk_init(void);   // once, from mtl_init or the first use
@@ -82,6 +85,10 @@ typedef struct vksub vksub_t;
 VkCommandBuffer vk_cmd(void);          // the current submission's main command buffer (recording)
 int vk_readback_ranges(void);
 void vk_readback_unknown(void);   // force full cached-pool merge for this submission
+const void *nvn_sparse_address_pool(uint64_t addr, uint64_t len);   // sparse virtual pool containing a guest address range, or NULL
+uint64_t nvn_sparse_gen(void);   // mapping generation shared by the sparse pools (a remap changes it)
+int nvn_sparse_address_translate(uint64_t addr, uint64_t len, uint64_t *physical);   // a contiguous mapped guest range → its physical pool address
+uint64_t nvn_sparse_address_copy(uint64_t addr, void *dst, uint64_t len);   // copy sparse guest bytes through the page table; unmapped pages read as zero
 int vk_sub_open(void);                 // a submission is being recorded
 VkCommandBuffer vk_upload_cmd(void);   // the current submission's upload command buffer (runs before the main one)
 void *vk_scratch(VkDeviceSize n, VkDeviceSize align, VkBuffer *buf, VkDeviceSize *off);   // host-visible memory that lives until this submission completes
@@ -173,6 +180,7 @@ typedef struct {
     int depth_repl;                     // a fragment shader that writes gl_FragDepth (DepthReplacing / DepthGreater / DepthLess)
     uint32_t in_locs, out_locs;         // the vec4 (or per-vertex vec4) inputs and outputs it declares, by location
     int setmemo;                        // gfx_vk_exec.c stage_set: 1 its set may be memoized per stage, 2 not (it reads handles or addresses from uniform buffer memory), 0 not known yet
+    int cpuready;                       // gfx_vk_exec.c shader_cpu_ready: 1 it reads nothing from uniform buffer memory on the CPU, 2 it does, 0 not known yet
     int wmem;                           // gfx_vk_exec.c shader_wmem: 1 it writes memory (stores to storage buffers or images, atomics), 2 not, 0 not known yet
     int gs_split; VkShaderModule gs_mod[2]; // 1: effects/raster modules ready, 2: cannot safely separate, 0: not checked
 } vkshader_t;

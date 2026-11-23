@@ -1,0 +1,31 @@
+# Game profile of Layton's Mystery Journey: Katrielle and the Millionaires' Conspiracy DX+ (Switch, update 1.1.0 = v65536, DLC 0100FDB00AA8100A)
+# Format: see dm/games/README.md
+# LEVEL-5's engine on SDK 5.4.0, OpenGL through EGL: main imports the GL entry points and subsdk0 is NintendoSDK_OpenGL, never loaded, the Android GL layer answers its EGL imports.
+# subsdk1 is NintendoSDK_movie, loaded for the AVC movies. Started from the experimental port's survey (dm/games/profile_guess.py); the build IDs, modules and RomFS marker are checked against survey.md.
+# ---- Identity ----
+title_id	0100FDB00AA80000
+program_id	0100FDB00AA80000
+# ---- App ----
+# Game name: only a label for profile listings and error messages; the iOS app's name comes from the base NSP's control data
+name	Layton's Mystery Journey: Katrielle and the Millionaires' Conspiracy DX+
+ipa	LaytonMysteryJourneyDX.ipa
+app_category	public.app-category.adventure-games
+# ---- Versions ----
+build	v65536	1.1.0	main=517fb1e9589bb7999baa8bc673c008f9	subsdk1=2e8d3a967b3539eb77f50d1647380378	sdk=f7c7b7a90ecdc2d41c97508cc7236b8a
+package	v65536
+shader_versions	v65536
+# ---- Files ----
+# load order as on Horizon: main, subsdk1, sdk. subsdk0 (NintendoSDK_OpenGL) is never loaded: the GL layer answers main's EGL imports.
+modules	main subsdk1 sdk
+romfs_marker	snd/bgm.awb
+zip_store	.awb:.mp4:.xc:.xf:.metallib
+# ---- Memory ----
+# the NPDM declares no system resource: the 4 GB layout, its heap region the pool − 64 MB
+mem_reserve	0x100000000
+mem_alias	0x10000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+sys_resource	0x0
+# ---- Shader split ----
+# no NVN shaders: the NVN tables stay empty (the GLSL shaders the game compiles go through the GL layer)
+shader_note	Layton's Mystery Journey DX+ has no NVN shaders (its GLSL shaders go through the GL layer)

@@ -65,6 +65,28 @@ static int turbo_auto(int on) {
     if (now - since < hold || late > 0 || g_gpu_mean <= 0 || g_gpu_mean >= AUTO_OFF_NS) return 1;
     off_at = now; LOG("[perf] DM_GPU_TURBO=auto: off (GPU %.1f ms at the highest clock)", g_gpu_mean / 1e6); return 0;
 }
+// DM_GPU_TURBO=need: on while the game is held below its target (the frame step holds frames longer than its cap, or the adaptive rate stepped down) or
+// frames miss the display; off again at the target once the GPU's mean frame time at the highest clock is under NEED_OFF_NS (70% of a 60 fps frame: room for
+// the governor's own clocks), after the same hold as auto. auto waits for late frames, and a game the frame step holds at 30 shows almost none: Breath of
+// the Wild on a Galaxy S25 Ultra sat at 30 for a whole run with the GPU at about 21 ms a frame for 3,300 draws (12-13 ms with the turbo), the governor
+// lowering the clock until the work filled the longer frame. The turbo held all the time (DM_GPU_TURBO=1) costs heat where it is not needed: on an AYN
+// Odin 3 (Adreno 830, fan) the same game took 7-11 ms of GPU a frame at 1080p with it, and the GPU's package ran hot beside the CPU.
+// A turbo that must come back within 30 s of going off also lowers the limit by a fifth (down to NEED_OFF_MIN_NS), besides doubling the hold: the governor
+// of the same S25 Ultra dropped the clock as soon as it was let go at 11.3 and 9.6 ms, and the frames went back to 30 within 1.3 s both times
+#define NEED_OFF_NS 11700000ll
+#define NEED_OFF_MIN_NS 6000000ll
+static int frame_held(void);   // (below dm_perf_frame: the adaptive rate's state)
+static int turbo_need(int on) {
+    static int64_t since, off_at, hold = 10000000000ll, lim = NEED_OFF_NS; int64_t now = perf_now(); int late = shown_late(), held = frame_held();
+    if (!on) {
+        if (!held && late < 4) return 0;
+        if (off_at && now - off_at < 30000000000ll) { hold = hold * 2 > 300000000000ll ? 300000000000ll : hold * 2; lim = lim * 4 / 5 < NEED_OFF_MIN_NS ? NEED_OFF_MIN_NS : lim * 4 / 5; }
+        since = now; LOG("[perf] DM_GPU_TURBO=need: on (%s, GPU %.1f ms; held at least %.0f s, off under %.1f ms)", held ? "frames held below the target" : "frames late on screen", g_gpu_mean / 1e6, hold / 1e9, lim / 1e6);
+        return 1;
+    }
+    if (now - since < hold || held || late > 0 || g_gpu_mean <= 0 || g_gpu_mean >= lim) return 1;
+    off_at = now; LOG("[perf] DM_GPU_TURBO=need: off (at the target, GPU %.1f ms at the highest clock)", g_gpu_mean / 1e6); return 0;
+}
 // The KGSL property is device-wide and outlives the app, so the power control goes back to the governor when the app pauses or ends (front_android.c
 // on_pause, on_destroy, host_thread when the game ends itself); the next presents set it again. A device without KGSL (Mali, Xclipse) or one that refuses the ioctl is tried once and then left alone.
 static pthread_mutex_t g_turbo_mu = PTHREAD_MUTEX_INITIALIZER;
@@ -80,7 +102,7 @@ static int turbo_set(int want) {
 static void gpu_turbo(void) {
     pthread_mutex_lock(&g_turbo_mu);
     if (g_turbo_dead) { pthread_mutex_unlock(&g_turbo_mu); return; }
-    const char *e = getenv("DM_GPU_TURBO"); int tm = dm_pacing_turbo(), want = tm == 2 ? turbo_auto(g_turbo_on) : tm;   // dm_pacing.c; e names it in the log
+    const char *e = getenv("DM_GPU_TURBO"); int tm = dm_pacing_turbo(), want = tm == 2 ? turbo_auto(g_turbo_on) : tm == 3 ? turbo_need(g_turbo_on) : tm;   // dm_pacing.c; e names it in the log
     if (want != g_turbo_on) {
         if (turbo_set(want)) {
             g_turbo_dead = 1;
@@ -171,18 +193,51 @@ static void hint_threads_scan(int32_t self) {
 // start of 3 of about 30 runs of Breath of the Wild, and those runs stayed slower; all eight cores were online and allowed to the app when read during a run,
 // so the refusal seems to come while the app is still being moved into its foreground core group (a guess, not seen directly). So a refusal is tried again,
 // every 120 presents for up to 60 tries, and the log says which try held
+// The cores of the highest maximum clock (which 1), every core above the lowest maximum clock (2), or every core (0) for the calling thread: 0, or -1 with
+// errno from sched_setaffinity, or -2 when the cores' clocks are unknown or all alike. l: the cores, for logs; *hi: the highest maximum clock in MHz
+static int pin_set(int which, char *l, size_t ln, long *hi) {
+    long n = sysconf(_SC_NPROCESSORS_CONF); if (n > 32) n = 32;
+    long mhz[32] = {0}, top = 0, lo = 0;
+    for (long c = 0; c < n; c++) { char p[96]; snprintf(p, sizeof p, "/sys/devices/system/cpu/cpu%ld/cpufreq/cpuinfo_max_freq", c); FILE *f = fopen(p, "r");
+        if (f) { if (fscanf(f, "%ld", &mhz[c]) != 1) mhz[c] = 0; fclose(f); } mhz[c] /= 1000; if (mhz[c] > top) top = mhz[c]; if (mhz[c] && (!lo || mhz[c] < lo)) lo = mhz[c]; }
+    *hi = top; l[0] = 0;
+    if (which && (!top || top == lo)) return -2;
+    cpu_set_t set; CPU_ZERO(&set); size_t o = 0;
+    for (long c = 0; c < n; c++) if (!which || (which == 1 ? mhz[c] == top : mhz[c] > lo)) { CPU_SET(c, &set); if (o < ln) o += (size_t)snprintf(l + o, ln - o, " %ld", c); }
+    return sched_setaffinity(0, sizeof set, &set) ? -1 : 0;
+}
+// DM_PIN_REPLAY=need: the replay thread starts on every core and goes to the prime cores only while its mean time a frame (dm_perf_frame_cost) is over
+// PIN_ON_NS, and back to every core once it has stayed under PIN_OFF_NS for 20 s. Pinned for good (prime), a fast device pays for cores it does not need: an
+// AYN Odin 3 (Snapdragon 8 Elite) replayed Breath of the Wild's 4,000-5,000 draws in 4-6 ms a frame on them, and its two prime cores ran at 90 C with the
+// fan at 70% while the GPU idled. A Galaxy S25 Ultra took 9-12 ms for the same draws and needs them. Looked at every 60 presents (the replay thread)
+#define PIN_ON_NS 9000000ll
+#define PIN_OFF_NS 6000000ll
+static int64_t g_replay_mean;   // the replay's time a frame, a running mean over ~16 frames (dm_perf_frame_cost; read here on the replay thread)
+static void replay_need(void) {
+    static unsigned calls; static int pinned, dead; static int64_t changed;
+    if (dead || ++calls % 60) return;
+    int64_t r = __atomic_load_n(&g_replay_mean, __ATOMIC_RELAXED), now = perf_now(); char l[160]; long hi;
+    if (r <= 0) return;
+    if (!pinned && r > PIN_ON_NS) {
+        int e = pin_set(1, l, sizeof l, &hi);
+        if (e == -2) { dead = 1; LOG("[perf] DM_PIN_REPLAY=need: the cores' clocks are unknown or all alike, not pinned"); return; }
+        if (e) { static int said; if (!said++) LOG("[perf] DM_PIN_REPLAY=need: sched_setaffinity refused CPUs%s (%s): tried again every 60 presents", l, strerror(errno)); return; }
+        pinned = 1; changed = now; LOG("[perf] DM_PIN_REPLAY=need: replay %.1f ms a frame, the replay thread on CPUs%s (prime, up to %ld MHz)", r / 1e6, l, hi);
+    } else if (pinned && r < PIN_OFF_NS && now - changed > 20000000000ll) {
+        if (pin_set(0, l, sizeof l, &hi)) return;
+        pinned = 0; changed = now; LOG("[perf] DM_PIN_REPLAY=need: replay %.1f ms a frame, the replay thread on every core again", r / 1e6);
+    }
+}
 void dm_perf_replay_thread(void) {
-    static int state, tries, calls;   // state: 0 not asked yet, 1 settled (pinned, not wanted or given up), 2 refused so far
+    static int state, tries, calls, need = -1;   // state: 0 not asked yet, 1 settled (pinned, not wanted or given up), 2 refused so far
+    if (need < 0) { const char *e = getenv("DM_PIN_REPLAY"); need = e && !strcmp(e, "need"); }
+    if (need) { replay_need(); return; }
     if (state == 1 || (state == 2 && ++calls % 120)) return;
     const char *e = getenv("DM_PIN_REPLAY"); if (!e || !*e || !strcmp(e, "0")) { state = 1; return; }
-    int prime = !strcmp(e, "prime"); long n = sysconf(_SC_NPROCESSORS_CONF); if (n > 32) n = 32;
-    long mhz[32] = {0}, hi = 0, lo = 0;
-    for (long c = 0; c < n; c++) { char p[96]; snprintf(p, sizeof p, "/sys/devices/system/cpu/cpu%ld/cpufreq/cpuinfo_max_freq", c); FILE *f = fopen(p, "r");
-        if (f) { if (fscanf(f, "%ld", &mhz[c]) != 1) mhz[c] = 0; fclose(f); } mhz[c] /= 1000; if (mhz[c] > hi) hi = mhz[c]; if (mhz[c] && (!lo || mhz[c] < lo)) lo = mhz[c]; }
-    if (!hi || hi == lo) { LOG("[perf] DM_PIN_REPLAY: the cores' clocks are unknown or all alike, not pinned"); state = 1; return; }
-    cpu_set_t set; CPU_ZERO(&set); char l[96]; size_t o = 0;
-    for (long c = 0; c < n; c++) if (prime ? mhz[c] == hi : mhz[c] > lo) { CPU_SET(c, &set); o += snprintf(l + o, sizeof l - o, " %ld", c); }
-    if (sched_setaffinity(0, sizeof set, &set)) {
+    int prime = !strcmp(e, "prime"); char l[160]; long hi;
+    int r = pin_set(prime ? 1 : 2, l, sizeof l, &hi);
+    if (r == -2) { LOG("[perf] DM_PIN_REPLAY: the cores' clocks are unknown or all alike, not pinned"); state = 1; return; }
+    if (r) {
         int err = errno; tries++;
         if (state == 0) { char on[64] = "?"; FILE *f = fopen("/sys/devices/system/cpu/online", "r"); if (f) { if (fgets(on, sizeof on, f)) on[strcspn(on, "\n")] = 0; fclose(f); }
             LOG("[perf] DM_PIN_REPLAY: sched_setaffinity refused CPUs%s (%s; cores online %s): tried again every 120 presents", l, strerror(err), on); }
@@ -263,8 +318,10 @@ static int fps_pin(void) { return g_fps_pin; }   // the presenting thread refres
 // of ~24 ms GPU time, and the display's switch to 120 Hz and the missed frames made 80-550 ms frames
 static int64_t g_frame_cost, g_frame_gpu;
 static int64_t g_gpu_mean;   // (also above, for turbo_auto; tests/test_perf_adaptive.py compiles only this part)
+static int64_t g_replay_mean;   // (also above, for DM_PIN_REPLAY=need)
 void dm_perf_frame_cost(int64_t replay_ns, int64_t gpu_ns) { g_frame_cost = replay_ns > gpu_ns ? replay_ns : gpu_ns; g_frame_gpu = gpu_ns;
-    if (gpu_ns > 0) g_gpu_mean = g_gpu_mean ? g_gpu_mean + (gpu_ns - g_gpu_mean) / 16 : gpu_ns; }
+    if (gpu_ns > 0) g_gpu_mean = g_gpu_mean ? g_gpu_mean + (gpu_ns - g_gpu_mean) / 16 : gpu_ns;
+    if (replay_ns > 0 && replay_ns < 1000000000ll) { int64_t m = __atomic_load_n(&g_replay_mean, __ATOMIC_RELAXED); __atomic_store_n(&g_replay_mean, m ? m + (replay_ns - m) / 16 : replay_ns, __ATOMIC_RELAXED); } }
 // The frame's work to the CPU hint: with the GPU's time where Android 15 takes it, and a load increase signalled (Android 16) when 3 frames in a row run over
 // the period, at most every 0.5 s: the clocks then follow the whole frame and not only its CPU half. (Super Mario Odyssey on the Red Magic Astra fell from 60
 // to 30-45 fps with the GPU at 222-443 MHz in the same scene; that device's GPU clock moved only with its FULL performance mode or its game menu, hints or not)
@@ -368,6 +425,10 @@ void dm_perf_frame(double period) {
     if (!g_hint) return;
     if (p != g_hint_target && H.update) { H.update(g_hint, p); g_hint_target = p; }
 }
+
+// Whether the game is held below its target: the frame step holds frames longer than its cap (hle_nvn.c), or the adaptive rate stepped down (DM_GPU_TURBO=need)
+__attribute__((weak)) int dm_nvn_frame_held(void) { return 0; }
+static int frame_held(void) { return dm_nvn_frame_held() || (adaptive_enabled() && g_step > fps_cap_step()); }
 
 // The window's frame rate: the game's rate, so the display can pick a mode it divides (60 / 120 Hz rather than 144 Hz for a 60 fps game).
 void dm_perf_window(ANativeWindow *w, double fps) {

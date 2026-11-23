@@ -435,7 +435,8 @@ static vkimg_t *vk_tex_(const tex_t *t) {
     // otherwise only a later nvn_ft_poll pass finds it, and its first draws read zeros
     int nvn_ft_written(const tex_t *);
     if (t->mem && lin_copy(im, t, f)) {}
-    else if (t->mem && (packaged_tex(t) || (first && (nvn_ft_written(t) || cpu_content_tex(t, f))))) {
+    // A key hit can reuse a packaged image for another texture over the same storage. Refresh it only before GPU writes have made the image authoritative.
+    else if (t->mem && (packaged_tex(t) || (im->packaged && !im->gpu_w) || (first && (nvn_ft_written(t) || cpu_content_tex(t, f))))) {
         im->pkg_used = g_tex_frame;
         if (!im->packaged) { im->packaged = 1; pkg_upload(im, t, f); }
         else {
@@ -1008,12 +1009,33 @@ void vk_tbuf_drop_pool(uint64_t serial) {
         for (int j = 0; j < nv; j++) vk_defer_free_bview(vs[j]);
     }
 }
+unsigned g_tbuf_copies;   // views over a per-bind copy in scratch memory (gfx_vk_exec.c stage_set: such a stage is not kept for later draws, rmemo)
 VkBufferView vk_tbuf_view(const tex_t *t, int storage) {
     // keyed by the pool too: a pool finalized and another made at the same address has a new VkBuffer, and the old one's memory is freed once the GPU is past it. Keyed by address
     // alone, the view over the old buffer was handed out again and shaders read and wrote freed memory, which the kernel gives to newer buffers (Xenoblade Chronicles 3: the
     // allocator kept inside one of its memory pools had its tree bins overwritten during the opening movie, and malloc crashed at the next scene)
-    vkpool_t *pl = t->mem ? vk_pool_of((uint64_t)(uintptr_t)t->mem, 1) : NULL;
-    tbkey k = {(uint64_t)(uintptr_t)t->mem, pl ? pl->serial : 0, (uint32_t)t->d.format, t->d.width};
+    uint64_t addr = (uint64_t)(uintptr_t)t->mem;
+    vkpool_t *pl = t->mem ? vk_pool_of(addr, 1) : NULL;
+    if (!pl) {
+        const vkfmt_t *f = vk_fmt(t->d.format);
+        VkDeviceSize n = f && f->bpb ? (VkDeviceSize)t->d.width * f->bpb : 0;
+        // the whole copy, not one byte: past the virtual pool vk_ubd_read would fall back to a plain memcpy of the reserved (no-access) range
+        if (t->mem && n && nvn_sparse_address_pool(addr, n)) {
+            if (storage) return vk_dummy_tbuf(storage);   // a sparse pool's physical buffer can go away; never cache a view over it
+            VkDeviceSize so; VkBuffer b;
+            VkDeviceSize al = V.props.limits.minTexelBufferOffsetAlignment;
+            VkDeviceSize eu = V.tbuf_align_uniform ? V.tbuf_align_uniform : al;
+            VkDeviceSize es = V.tbuf_align_storage ? V.tbuf_align_storage : al;
+            VkDeviceSize sa = al; if (eu > sa) sa = eu; if (es > sa) sa = es;
+            uint8_t *p = vk_scratch(n, sa, &b, &so); void vk_ubd_read(uint64_t a, uint64_t n, uint8_t *dst); vk_ubd_read(addr, n, p);
+            VkBufferViewCreateInfo ci = {VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO, NULL, 0, b, f->vk, so, n}; VkBufferView v = VK_NULL_HANDLE;
+            if (!vkCreateBufferView(V.dev, &ci, NULL, &v)) vk_defer_free_bview(v);
+            return v;   // the per-bind copy is not cached: no live guest pool owns this view
+        }
+        if (t->mem) VKRED_ONCE(16, "buffer texture not in a pool (format %#x, %u elements)", t->d.format, t->d.width);
+        return vk_dummy_tbuf(storage);
+    }
+    tbkey k = {addr, pl->serial, (uint32_t)t->d.format, t->d.width};
     pthread_mutex_lock(&g_tbuf_mu);
     VkBufferView v = nvn_hm_get(&g_tbuf_cache, &k);
     if (!v) {
@@ -1049,7 +1071,7 @@ VkBufferView vk_tbuf_view(const tex_t *t, int storage) {
             VkDeviceSize n = (VkDeviceSize)t->d.width * f->bpb, so; VkBuffer sb; void vk_ubd_read(uint64_t a, uint64_t n, uint8_t *dst);
             uint8_t *p = vk_scratch(n, sa, &sb, &so); vk_ubd_read((uint64_t)(uintptr_t)t->mem, n, p);
             VkBufferViewCreateInfo ci = {VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO, NULL, 0, sb, f->vk, so, n};
-            if (vkCreateBufferView(V.dev, &ci, NULL, &v)) v = VK_NULL_HANDLE; else vk_defer_free_bview(v);
+            if (vkCreateBufferView(V.dev, &ci, NULL, &v)) v = VK_NULL_HANDLE; else { vk_defer_free_bview(v); g_tbuf_copies++; }
             static unsigned nc; if (nc++ < 4) VKLOG("buffer texture at a misaligned offset (%llu, not a multiple of %llu; format %#x, %u elements): read from a copy", (unsigned long long)off, (unsigned long long)sa, t->d.format, t->d.width);
             pthread_mutex_unlock(&g_tbuf_mu); return v;   // (not cached: a copy of this bind's bytes)
         } else if (!v && in) VKRED_ONCE(16, "storage buffer texture at a misaligned offset: %llu, not a multiple of %llu (format %#x, %u elements): zeros", (unsigned long long)off, (unsigned long long)sa, t->d.format, t->d.width);

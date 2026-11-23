@@ -45,11 +45,11 @@ int dm_pacing_up_pct(void) { const char *e = getenv("DM_ADAPT_UP_PCT"); return e
 
 int dm_pacing_window_game_rate(void) { const char *e = getenv("DM_VK_WINDOW_GAME_RATE"); return e && atoi(e) != 0; }
 
-int dm_pacing_turbo(void) { const char *e = getenv("DM_GPU_TURBO"); return e && !strcmp(e, "auto") ? 2 : e && atoi(e) > 0; }
+int dm_pacing_turbo(void) { const char *e = getenv("DM_GPU_TURBO"); return e && !strcmp(e, "auto") ? 2 : e && !strcmp(e, "need") ? 3 : e && atoi(e) > 0; }
 
 void dm_pacing_log(void) {
     const char *ts, *hs, *ds; int t = dm_pacing_target(&ts), h = dm_pacing_hold(&hs), d = dm_pacing_display(&ds), ex, a = dm_pacing_adaptive(&ex), pin = dm_pacing_pin();
-    static const char *turbo[] = {"off", "on", "auto"};
+    static const char *turbo[] = {"off", "on", "auto", "when needed"};
     PLOG("pacing: target %s (%s), ceiling %d, hold %s (%s), presents %s (%s), governor %s%s, pin %d, step-up p%d, window game rate %s, GPU turbo %s",
          t ? (t == 30 ? "30 fps" : "60 fps") : "the game's own", ts, dm_pacing_ceiling(), h ? "on" : "off", hs, d ? "on the display's ticks" : "at the game's interval", ds,
          a ? "on" : "off", ex ? " (set)" : "", pin, dm_pacing_up_pct(), dm_pacing_window_game_rate() ? "on" : "off", turbo[dm_pacing_turbo()]);

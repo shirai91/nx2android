@@ -6,6 +6,9 @@
 // Integrity failures outside the individual-file handlers (e.g. RomFS metadata) stop immediately with exit code 3 and the LibHac reason, even with --allow-damaged.
 // An unreadable NCA header stops with exit code 4, naming the input container and its NCA entry; --allow-damaged does not bypass it.
 // Add-on content: nx_extract <prod.keys> --aoc <DLC NSP> <output dir> writes the RomFS of the DLC's data NCA to <output dir> (the packing script puts it at aoc/<index>/, the host mounts it through DM_AOC_DIR).
+// A merged dump (a rebuilt card holding the base game, its update and DLC beside one another, "(1G+1U)"): --merged selects the base's and the update's NCAs from their content metas
+// (CNMT, inside the meta NCAs): an update's program and control NCAs carry the base game's title ID, so NCA headers cannot tell them apart. --aoc takes the DLC's title ID when the
+// container holds several titles (a DLC's NCAs carry their own title IDs, so the pick is by header, no content meta needed).
 // System data: nx_extract <prod.keys> --sysdata <firmware dir> <title ID hex> <output dir> writes the RomFS of that title's data NCA, found among the .nca files of a firmware dump
 // (a console's NAND SYSTEM Contents/registered, as DBI's MTP mode shows it): Mario Kart 8 Deluxe builds its Mii heads from MiiModel, 0100000000000802.
 // System NCAs carry their keys in the key area (no ticket).
@@ -14,17 +17,20 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
 using LibHac.Common;
 using LibHac.Common.Keys;
 using LibHac.Fs;
 using LibHac.Fs.Fsa;
 using LibHac.FsSystem;
+using LibHac.Ncm;
 using LibHac.Spl;
 using LibHac.Tools.Fs;
 using LibHac.Tools.FsSystem;
 using LibHac.Tools.FsSystem.NcaUtils;
 using LibHac.Tools.FsSystem.RomFs;
+using LibHac.Tools.Ncm;
 using Path = System.IO.Path;
 
 static class P {
@@ -54,16 +60,28 @@ static class P {
     static int Extract(string[] a) {
         bool manifest = Array.IndexOf(a, "--manifest") >= 0; a = Array.FindAll(a, s => s != "--manifest");
         g_allow = Array.IndexOf(a, "--allow-damaged") >= 0; a = Array.FindAll(a, s => s != "--allow-damaged");
-        if (a.Length < 4) { Console.Error.WriteLine("usage: nx_extract <prod.keys> <base.nsp> <update.nsp|-> <out dir> [base RomFS dir] [--manifest] [--allow-damaged]\n       nx_extract <prod.keys> --aoc <dlc.nsp> <out dir>\n       nx_extract <prod.keys> --sysdata <firmware dir> <title id> <out dir>"); return 2; }
+        string verArg = null;   // --version N (--merged): extract exactly the update whose content meta says version N; 0 = the base game alone. Without it, the newest patch
+        var kept = new List<string>(a.Length);
+        for (int i = 0; i < a.Length; i++) {
+            if (a[i] == "--version") { if (i + 1 >= a.Length) { Console.Error.WriteLine("[RED] --version needs a number"); return 2; } verArg = a[i + 1]; i++; continue; }
+            kept.Add(a[i]);
+        }
+        a = kept.ToArray();
+        if (a.Length < 4) { Console.Error.WriteLine("usage: nx_extract <prod.keys> <base.nsp> <update.nsp|-> <out dir> [base RomFS dir] [--manifest] [--allow-damaged]\n       nx_extract <prod.keys> --merged <dump> <out dir> [--version N] [base RomFS dir] [--manifest] [--allow-damaged]\n       nx_extract <prod.keys> --aoc <dlc.nsp> <out dir>\n       nx_extract <prod.keys> --aoc <dump> <out dir> <DLC title id hex>\n       nx_extract <prod.keys> --sysdata <firmware dir> <title id> <out dir>"); return 2; }
         KeySet ks = ExternalKeyReader.ReadKeyFile(a[0]);
-        if (a[1] == "--aoc") return Aoc(ks, a[2], a[3]);
+        if (a[1] == "--aoc") return Aoc(ks, a[2], a[3], a.Length > 4 ? a[4] : null);
         if (a[1] == "--sysdata") { if (a.Length < 5) { Console.Error.WriteLine("usage: nx_extract <prod.keys> --sysdata <firmware dir> <title id> <out dir>"); return 2; } return SysData(ks, a[2], Convert.ToUInt64(a[3], 16), a[4]); }
+        if (a[1] == "--merged") return Merged(ks, a[2], a[3], a.Length > 4 ? a[4] : null, manifest, verArg);
         var basePkg = OpenNsp(ks, a[1]); var updPkg = a[2] == "-" ? null : OpenNsp(ks, a[2]);
         Nca baseProg = Pick(basePkg, NcaContentType.Program) ?? throw new Exception("no Program NCA in the base NSP");
         Nca updProg = updPkg == null ? null : Pick(updPkg, NcaContentType.Program, baseProg.Header.TitleId) ?? throw new Exception("no Program NCA of the base game's program in the update NSP");
         Nca ctrl = Pick(updPkg ?? basePkg, NcaContentType.Control, baseProg.Header.TitleId);
+        return ExtractTitles(baseProg, updProg, ctrl, a[3], a.Length > 4 ? a[4] : null, manifest);
+    }
+
+    // The control data, the ExeFS and the RomFS of one base program NCA layered with an update's: what the ordinary (base NSP + update NSP) and the merged paths share
+    static int ExtractTitles(Nca baseProg, Nca updProg, Nca ctrl, string outDir, string cmpDir, bool manifest) {
         Console.WriteLine($"title {baseProg.Header.TitleId:x16}" + (updProg != null ? $", update {updProg.Header.TitleId:x16}" : ""));
-        string outDir = a[3], cmpDir = a.Length > 4 ? a[4] : null;
         if (ctrl != null) {   // control data (NACP): display version and game name; a raw copy goes to <output dir>/control.nacp for naming the app
             byte[] nacp = Nacp(ctrl);
             Console.WriteLine($"display version {System.Text.Encoding.ASCII.GetString(nacp, 0x3060, 0x10).TrimEnd('\0')}");
@@ -110,10 +128,18 @@ static class P {
         return 3;
     }
 
-    // DLC NSP: one data NCA (content type PublicData / Data) + a meta NCA + the ticket; only the data NCA's RomFS is written
-    static int Aoc(KeySet ks, string nsp, string outDir) {
+    // DLC NSP: one data NCA (content type PublicData / Data) + a meta NCA + the ticket; only the data NCA's RomFS is written. In a merged container the DLC's title ID (hex) picks its
+    // data NCA: a DLC's NCAs carry their own title IDs, so the pick is by header, without a content meta
+    static int Aoc(KeySet ks, string nsp, string outDir, string tidArg = null) {
         var pkg = OpenNsp(ks, nsp);
-        Nca data = Pick(pkg, NcaContentType.PublicData) ?? Pick(pkg, NcaContentType.Data) ?? throw new Exception("no data NCA in the DLC NSP");
+        Nca data;
+        if (tidArg != null) {
+            ulong tid;
+            try { tid = Convert.ToUInt64(tidArg, 16); }
+            catch (Exception) { Console.Error.WriteLine($"[RED] the DLC's title ID must be a hex number: {tidArg}"); return 2; }
+            data = pkg.Select(e => e.Nca).FirstOrDefault(n => n.Header.TitleId == tid && (n.Header.ContentType == NcaContentType.PublicData || n.Header.ContentType == NcaContentType.Data));
+            if (data == null) { Console.Error.WriteLine($"[RED] no data NCA of {tid:x16} in {Path.GetFileName(nsp)}"); return 4; }
+        } else data = Pick(pkg, NcaContentType.PublicData) ?? Pick(pkg, NcaContentType.Data) ?? throw new Exception("no data NCA in the DLC NSP");
         Console.WriteLine($"add-on content {data.Header.TitleId:x16}");
         Directory.CreateDirectory(outDir);
         Copy(new RomFsFileSystem(data.OpenStorage(NcaSectionType.Data, IntegrityCheckLevel.ErrorOnInvalid)), outDir, null);
@@ -138,8 +164,8 @@ static class P {
         return 0;
     }
 
-    // Open an NSP (PFS0) or the secure partition of an XCI, import the common tickets, list all NCAs
-    static List<Nca> OpenNsp(KeySet ks, string path) {
+    // Open an NSP (PFS0) or the secure partition of an XCI, import the common tickets, list all NCAs with their entry names
+    static List<NcaEntry> OpenNsp(KeySet ks, string path) {
         IFileSystem pfs; var st0 = new LocalStorage(path, FileAccess.Read);
         byte[] magic = new byte[4]; st0.Read(0, magic).ThrowIfFailure();
         st0.GetSize(out long size).ThrowIfFailure(); long card = -1;
@@ -158,7 +184,7 @@ static class P {
         } else {
             var p = new PartitionFileSystem(); p.Initialize(st0).ThrowIfFailure(); pfs = p;
         }
-        var ncas = new List<Nca>();
+        var ncas = new List<NcaEntry>();
         foreach (DirectoryEntryEx e in pfs.EnumerateEntries("*", SearchOptions.Default)) {
             using var f = new UniqueRef<IFile>();
             pfs.OpenFile(ref f.Ref, e.FullPath.ToU8Span(), OpenMode.Read).ThrowIfFailure();
@@ -171,16 +197,22 @@ static class P {
                 Nca nca;
                 try { nca = new Nca(ks, st); }
                 catch (InvalidDataException x) { throw new NcaOpenException(path, e.Name, x); }
-                ncas.Add(nca);
+                ncas.Add(new NcaEntry(e.Name, nca));
             }
         }
         return ncas;
     }
+    // An NCA of a container, kept with its entry name: the content metas name NCAs by content ID, which is the entry's file name
+    sealed class NcaEntry {
+        public string Name; public Nca Nca;
+        public NcaEntry(string name, Nca nca) { Name = name; Nca = nca; }
+    }
     // A multi-program application has a Program and a Control NCA per program index (ROMANCE OF THE THREE KINGDOMS 8 REMAKE: its update 1.1.3 adds a whole second program,
     // title ID …0001, beside the game's patch, …0000): with no title ID the lowest one (program index 0, the game), else the NCA of that title ID
-    static Nca Pick(List<Nca> l, NcaContentType t, ulong? id = null) {
+    static Nca Pick(List<NcaEntry> l, NcaContentType t, ulong? id = null) {
         Nca r = null;
-        foreach (Nca n in l) {
+        foreach (var e in l) {
+            Nca n = e.Nca;
             if (n.Header.ContentType != t || (id != null && n.Header.TitleId != id)) continue;
             if (id != null) { r = n; continue; }   // a title ID names one NCA per content type: the last one wins, as before
             if (r == null) { r = n; continue; }
@@ -194,6 +226,55 @@ static class P {
     static bool IsPatch(Nca n) {
         for (int i = 0; i < 4; i++) if (n.Header.IsSectionEnabled(i) && n.Header.GetFsHeader(i).IsPatchSection()) return true;
         return false;
+    }
+
+    // Every meta NCA's data section holds its title's content meta (a CNMT, named *.cnmt), which lists that title's NCAs by content ID: the NCA entry's file name. The merged
+    // container's titles and versions come from these (LibHac's Cnmt parses a CNMT); the ordinary path never reads them
+    static List<Cnmt> Cnmts(List<NcaEntry> ncas) {
+        var metas = new List<Cnmt>();
+        foreach (var e in ncas) {
+            if (e.Nca.Header.ContentType != NcaContentType.Meta) continue;
+            IFileSystem fs = e.Nca.OpenFileSystem(NcaSectionType.Data, IntegrityCheckLevel.ErrorOnInvalid);
+            foreach (DirectoryEntryEx de in fs.EnumerateEntries("*", SearchOptions.RecurseSubdirectories)) {
+                if (!de.FullPath.EndsWith(".cnmt", StringComparison.OrdinalIgnoreCase)) continue;
+                using var f = new UniqueRef<IFile>();
+                fs.OpenFile(ref f.Ref, de.FullPath.ToU8Span(), OpenMode.Read).ThrowIfFailure();
+                f.Get.GetSize(out long n).ThrowIfFailure();
+                byte[] v = new byte[n]; f.Get.Read(out _, 0, v, ReadOption.None).ThrowIfFailure();
+                metas.Add(new Cnmt(new MemoryStream(v)));
+            }
+        }
+        return metas;
+    }
+    // A multi-program title (an update may add a whole second program, e.g. ROMANCE OF THE THREE KINGDOMS 8 REMAKE's 1.1.3, title ID …0001) lists a Program (and Control) entry per index: take the lowest IdOffset (program 0, the game), as Pick takes the lowest title ID on the ordinary path — the list's order need not start at 0
+    static CnmtContentEntry EntryOf(Cnmt m, LibHac.Ncm.ContentType t) => m?.ContentEntries.Where(c => c.Type == t).OrderBy(c => c.IdOffset).FirstOrDefault();
+
+    // A merged dump ("(1G+1U)"): base game, update and DLC NCAs beside one another in one container. NCA headers cannot pick them: an update's program and control NCAs carry the
+    // base game's title ID, so base and update both read …000. The content metas decide: the application CNMT's entries are the base's NCAs, the newest patch CNMT's the update's
+    // (when a card holds several updates, the older ones' NCAs stay unused). The DLC is extracted with --aoc and its title ID. Everything after the picking is ExtractTitles, as always
+    static int Merged(KeySet ks, string path, string outDir, string cmpDir, bool manifest, string verArg) {
+        var entries = OpenNsp(ks, path);
+        var metas = Cnmts(entries);
+        foreach (var m in metas) Console.WriteLine($"content meta {m.TitleId:x16} type {m.Type} version {m.TitleVersion.Version}");
+        Cnmt app = metas.Where(m => m.Type == ContentMetaType.Application).OrderBy(m => m.TitleId).FirstOrDefault() ?? throw new Exception($"no application content meta in {Path.GetFileName(path)}");
+        Cnmt patch = metas.Where(m => m.Type == ContentMetaType.Patch && m.TitleId == (app.TitleId | 0x800)).OrderByDescending(m => m.TitleVersion.Version).FirstOrDefault();
+        if (verArg != null) {   // the caller names the version (the dump's [v] tag): 0 extracts the base game alone, N the patch whose content meta says N
+            ulong want = Convert.ToUInt64(verArg);
+            patch = want == 0 ? null : metas.FirstOrDefault(m => m.Type == ContentMetaType.Patch && m.TitleId == (app.TitleId | 0x800) && m.TitleVersion.Version == want);
+            if (want != 0 && patch == null) {
+                var held = string.Join(", ", metas.Where(m => m.Type == ContentMetaType.Patch).Select(m => $"v{m.TitleVersion.Version}"));
+                throw new Exception($"{Path.GetFileName(path)} does not hold update v{want} (its patch content metas: {(held.Length > 0 ? held : "none")})");
+            }
+        }
+        NcaEntry of(byte[] id) => id == null ? null : entries.FirstOrDefault(e => Path.GetFileNameWithoutExtension(e.Name).Equals(Convert.ToHexString(id), StringComparison.OrdinalIgnoreCase));
+        NcaEntry baseProg = of(EntryOf(app, LibHac.Ncm.ContentType.Program)?.NcaId);
+        if (baseProg == null)   // the application's content meta has no program entry (not seen): the lowest title ID's program NCA, as Pick picks
+            foreach (var e in entries) if (e.Nca.Header.ContentType == NcaContentType.Program && (baseProg == null || e.Nca.Header.TitleId < baseProg.Nca.Header.TitleId)) baseProg = e;
+        if (baseProg == null) throw new Exception("no Program NCA in the merged dump");
+        NcaEntry updProg = patch == null ? null : of(EntryOf(patch, LibHac.Ncm.ContentType.Program)?.NcaId);
+        if (patch != null && updProg == null) throw new Exception($"the update's content meta ({patch.TitleId:x16} v{patch.TitleVersion.Version}) lists a program NCA that is not in {Path.GetFileName(path)}");
+        NcaEntry ctrl = of(EntryOf(patch ?? app, LibHac.Ncm.ContentType.Control)?.NcaId);
+        return ExtractTitles(baseProg.Nca, updProg?.Nca, ctrl?.Nca, outDir, cmpDir, manifest);
     }
 
     // Icon: the control data holds one 256x256 JPEG per language (/icon_<language>.dat). Use the English one (American, then British); if neither exists, take the first in NACP language order
