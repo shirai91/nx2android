@@ -1,6 +1,6 @@
 # Ori and the Will of the Wisps on Android
 
-**Experimental setup profile — known blockers remain; requires testing.** No game build or Android device test was performed. This profile makes the exact build's metadata available to the porter; it does not establish that the game boots or plays.
+**Experimental setup profile — known blockers remain; requires testing.** A community port attempt reached a rewriter failure; no successful game build or Android device test is established. This profile makes the exact build's metadata available to the porter; it does not establish that the game boots or plays.
 
 **Startup crash risk:** nxnative needs a lock around Unity's shared constant-buffer table. This fork cannot apply that upstream patch, and this profile does not include it.
 
@@ -33,6 +33,7 @@ None. No APK, full shader translation, game launch, screenshots or gameplay vali
 
 ## Quirks and known issues
 
+- A community port of the registered `main` build stopped at `jump table 1b56540`. The shared rewriter now recognizes the reported fixed-frame tail-call form (`ldp x18, x10, [x10]`, frame/link-register restore, `add sp, sp, #0x90`, `br x18`) when its frame and control flow can be proven safe. Synthetic regressions cover this form and unsafe variants. The supplied disassembly is incomplete, so a fresh full port must confirm that the complete game function passes; later rewrite failures are also untested.
 - **Unity startup race remains unfixed.** [Upstream's analysis](https://github.com/seedds/nxnative/blob/6e12b9f8471c0ea80628ef33f7ffcfe2380cada5/dm/games/01008DD013200000/README.md#startup) records concurrent main/render-thread access to a constant-buffer table and 3 crashes in 7 Mac boots without the lock. This is upstream evidence, not an Android measurement. Disabling Unity graphics jobs did not remove the race upstream.
 - The upstream `registry_lock` patch for `main` build `11c33c7c2dbd3c5491841f67495c7ee8` uses `STUBS`. nx2android's `patch_nso.py::load_patches` reads only `CUTS`, `OBS` and `FRAME_STEP`. Its patch registry test also rejects unrecognized tables. The unsupported `patches.py` is deliberately omitted; a successful port command would not mean the lock was applied.
 - The shader inventory includes six hull and six domain shaders. The Android graphics pipeline currently assembles vertex, fragment and geometry stages only. Whether these tessellation shaders are invoked, and the impact if they are, remain untested.
@@ -43,7 +44,7 @@ None. No APK, full shader translation, game launch, screenshots or gameplay vali
 
 Audited against nx2android [`581ca540f7b2`](https://github.com/shirai91/nx2android/tree/581ca540f7b2214d47aee1e9be6156fc36809426). Build identity and ordinary shader tables are taken from the pinned [nxnative profile](https://github.com/seedds/nxnative/tree/6e12b9f8471c0ea80628ef33f7ffcfe2380cada5/dm/games/01008DD013200000) at `6e12b9f8471c`. The local Unity asset reader, static GLSLC-output splitter and NVN-to-Vulkan path already exist. Table reproduction from a real dump and complete shader translation have not been checked.
 
-Only the ordinary shader map, conflict table, shader facts, shader pairs and `bf_want` inputs are included. Apple pipeline archives, supplemental `pso_pairs.tsv` and unsupported patches are not copied. No shared runtime, rewriter or shader-translator change is part of this profile. No `tested`, screenshot or tested-release metadata is supplied.
+Only the ordinary shader map, conflict table, shader facts, shader pairs and `bf_want` inputs are included. Apple pipeline archives, supplemental `pso_pairs.tsv` and unsupported patches are not copied. The shared rewriter has a general fixed-frame tail-call recognition rule prompted by the community port failure; no runtime or shader-translator change is included. No `tested`, screenshot or tested-release metadata is supplied.
 
 ## Required testing
 

@@ -690,11 +690,73 @@ def table_cands(insl, rb):
         m = re.fullmatch(rf'{rb}, {rb}, #(0x[0-9a-f]+|\d+)', q.op_str) if q is not None and q.mnemonic == 'add' else None
         if m: cands.add(p.operands[1].imm + int(m.group(1), 0))
     return sorted(cands)
+def tail_call_frame(insl, j):
+    """A fixed frame can end in a tail call before the function's error blocks. Ori and the Will of the Wisps' reported main+0x1b56540 loads the pointer with ldp x18,x10,[x10],
+    restores x29/x30 from [sp,#0x80], then adds back its 0x90-byte frame. Prove that frame is gone before using the call stub, which borrows x16/x17 without saving them.
+    This deliberately rejects unproven control flow, frame aliases and stores: a false accept silently corrupts an intra-function jump; a rejection retains the jump-table assertion."""
+    if j < 5 or any(b.address != a.address + 4 for a, b in zip(insl, insl[1:])): return False
+    sub, add = (re.fullmatch(r'sp, sp, #(0x[0-9a-f]+|\d+)', p.op_str) if p.mnemonic == m else None for p, m in ((insl[0], 'sub'), (insl[j - 1], 'add')))
+    if not sub or not add or int(sub[1], 0) != int(add[1], 0): return False
+    size = int(sub[1], 0)
+    if not size or size % 16: return False
+    writes = lambda p: {p.reg_name(r) for r in p.regs_access()[1]}
+    load = next((k for k in range(j - 1, 0, -1) if writes(insl[k]) & {'x18', 'w18'}), None)
+    if load is None or insl[load].mnemonic not in ('ldr', 'ldp') or not re.fullmatch(r'x18, (x\d+, )?\[(x\d+|sp)(, #(0x[0-9a-f]+|\d+))?\]', insl[load].op_str): return False
+    restore = next((k for k in range(j - 2, load, -1) if insl[k].mnemonic == 'ldp' and re.fullmatch(r'x29, x30, \[sp(, #(0x[0-9a-f]+|\d+))?\]', insl[k].op_str)), None)
+    if restore is None: return False
+    disp = insl[restore].operands[-1].mem.disp
+    if disp < 0 or disp + 16 > size: return False
+    saved = fp_set = False
+    targets = []; setup_end = insl[1].address
+    cond = lambda p: p.mnemonic in ('cbz', 'cbnz', 'tbz', 'tbnz') or p.mnemonic.startswith('b.')
+    for k in range(1, j - 1):
+        p = insl[k]
+        if k == restore: continue
+        if cond(p) or p.mnemonic == 'b':
+            if not saved or not fp_set or k >= load: return False
+            targets.append(p.operands[-1].imm)
+            continue
+        if p.mnemonic in ('bl', 'blr'):
+            if not saved or not fp_set or k >= load: return False
+            if p.mnemonic == 'bl' and insl[0].address <= p.operands[-1].imm <= insl[-1].address: return False
+            continue   # x30 is saved, and the target pointer is loaded after the call
+        if any(p.group_name(g) in ('jump', 'call', 'ret', 'int', 'iret', 'privilege') for g in p.groups) or p.mnemonic in ('udf', 'msr', 'sys', 'dc', 'ic'): return False
+        w = writes(p)
+        if w & {'sp', 'wsp', 'lr', 'x30', 'w30'}: return False
+        if w & {'fp', 'x29', 'w29'}:
+            sets_fp = p.mnemonic == 'mov' and p.op_str == 'x29, sp' and not disp or p.mnemonic == 'add' and p.op_str.startswith('x29, sp, #') and p.operands[2].imm == disp and not p.operands[2].shift.value
+            if not saved or fp_set or k >= load or not sets_fp: return False
+            fp_set = True; setup_end = insl[k + 1].address
+            continue
+        if not saved and p.mnemonic == 'stp' and p.op_str == insl[restore].op_str:
+            saved = True; setup_end = insl[k + 1].address
+            continue
+        # Do not let an alias to the frame escape through a register or store. Stack memory operands themselves are allowed.
+        if re.search(r'\b(sp|wsp|fp|x29|w29)\b', p.op_str.split('[')[0]): return False
+        if '[' not in p.op_str: continue
+        mem = p.operands[-1].mem; base = p.reg_name(mem.base)
+        if base in ('fp', 'x29') and (not fp_set or k > restore): return False
+        if p.mnemonic.startswith(('ldr', 'ldur', 'ldp', 'ldar', 'prfm')): continue
+        if k > restore or p.mnemonic not in ('str', 'strb', 'strh', 'stur', 'sturb', 'sturh', 'stp') or p.writeback: return False
+        if base not in ('sp', 'fp', 'x29') or mem.index: return False
+        at = mem.disp + (disp if base != 'sp' else 0)
+        width = {'b': 1, 'h': 2}.get(p.mnemonic[-1]) or {'x': 8, 'w': 4, 'q': 16, 'd': 8, 's': 4, 'h': 2, 'b': 1}.get(p.reg_name(p.operands[0].reg)[0], 8)
+        if p.mnemonic == 'stp': width *= 2
+        if at < 0 or at < disp + 16 and at + width > disp: return False
+    if not saved or not fp_set: return False
+    # Every entry to the tail executes both its pointer load and frame restore. No path re-enters the prologue.
+    if any(t < setup_end or insl[load].address < t <= insl[j].address for t in targets): return False
+    for p in insl[j + 1:]:
+        if (cond(p) or p.mnemonic in ('b', 'bl')) and p.operands[-1].imm <= insl[j].address and p.operands[-1].imm >= insl[0].address: return False
+        if any(p.group_name(g) in ('jump', 'call', 'ret') for g in p.groups) and not (cond(p) or p.mnemonic in ('b', 'bl')): return False
+    return True
+
 def tail_call(insl, j):
     """The br x18 is an indirect tail call, not a jump table: the last write of x18 before it is a plain pointer load and the br ends the function. Ace Attorney Investigations Collection
     (Unity 2022.3 IL2CPP) main+0x1d271bc: ldr x18,[x0,#0x18]; ...; ldr x16,[sp]; ...; br x18, a thunk that moves stack arguments and jumps to the method pointer at +0x18.
     The br need not end the function when the frame is popped between the load and the br: Blasphemous 2 (Unity 2021.3 IL2CPP) main+0x1e86fc, ldr x18,[x0,#0x10]; ...;
     ldp x29,x30,[sp],#0x10; br x18, with the null check's throw (bl; udf) after it"""
+    if tail_call_frame(insl, j): return True
     popped = j + 1 == len(insl)
     for p in reversed(insl[:j]):
         if p.mnemonic == 'ldp' and re.fullmatch(r'x29, x30, \[sp\], #(0x[0-9a-f]+|\d+)', p.op_str): popped = True

@@ -1,5 +1,6 @@
 # Ori and the Will of the Wisps, 1.2.1 (v196608), SDK 9.4.0, NVN.
-# Source inspection only: no game build, Android launch or device testing.
+# Community rewrite failure: fixed-frame tail-call form covered synthetically; full port retest pending.
+# No successful game build, Android launch or device testing is established.
 # Startup race: upstream registry_lock STUBS are unsupported and omitted.
 # See README.md for blockers and the required testing route.
 status	experimental
