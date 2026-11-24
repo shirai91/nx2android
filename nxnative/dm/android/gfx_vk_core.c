@@ -371,6 +371,7 @@ void vk_init(void) {
     completion_start();
     memlog_start();
     { void crash_handlers_check(const char *when); crash_handlers_check("after the Vulkan device was made"); }   // (again at present 600, gfx_vk_present.c: the shader compiler loads with the first pipelines)
+    { void crash_install(void); crash_install(); crash_handlers_check("after the crash handlers were put back"); }   // the Vulkan driver resets the app's signal handlers to the default action right after the device is made (crash_handlers_check above): put ours back, so a fault in the host is reported instead of killing the process silently
 }
 const void *vk_sg_pin(VkShaderStageFlagBits stage, const uint32_t *local) {
     if (!(V.sg_pin_stages & stage)) return NULL;
