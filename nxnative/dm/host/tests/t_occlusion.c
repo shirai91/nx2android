@@ -78,15 +78,6 @@ int main(void) {
     CHECK(g_seq == RING + 2, "given-back slots are taken again");
     CHECK(report(2, &c) == RING * 10 + 15 + 50, "the recycled queries count their own samples");
 
-    // R7: a segment no report reads is not counted at all
-    fresh(1);
-    reset(); vk_oq_need(0); pass(100, 400);
-    CHECK(g_seq == 0, "a segment no report reads begins no query");
-    // a report arriving on a segment marked unread writes the constant, never a count we did not measure (the look-ahead is linear and misses a called sublist)
-    CHECK(report(0, &c) == 1 && !c, "a report on an uncounted segment writes the constant");
-    vk_oq_need(1); reset(); pass(50, 10);
-    CHECK(report(1, &c) == 50, "counting resumes at the next reset");
-
     // the reset's zero rides the next report, so a reset with no queries of its own needs no post op
     fresh(1);
     reset(); pass(100, 10); report(1, &c);

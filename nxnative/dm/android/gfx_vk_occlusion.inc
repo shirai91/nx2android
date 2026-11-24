@@ -25,7 +25,7 @@
 typedef struct { uint64_t q0; uint32_t nq, lost, fresh; } oq_seg;   // a report's queries by sequence number, the draws of it that count one sample without a query, and a reset since the last report
 
 static struct {
-    int on, counting, need, open;
+    int on, counting, open;
     uint32_t ring;
     uint64_t head, seg0;          // the next query's sequence number; the segment's first
     uint32_t lost, fresh;         // draws of this segment counted one sample each (no query, or skipped by the replay); a reset since the last report
@@ -36,19 +36,15 @@ static struct {
 
 static void vk_oq_init(int on, uint32_t ring) {
     memset(&g_oq, 0, sizeof g_oq);
-    g_oq.on = on; g_oq.ring = ring ? ring : 1; g_oq.need = 1;
+    g_oq.on = on; g_oq.ring = ring ? ring : 1;
     atomic_store(&g_oq.ready, g_oq.ring);
 }
 static int vk_oq_on(void) { return g_oq.on; }
-// Whether the draws now encoded will be read by a report. The walker scans ahead at a reset and at a report: 0 only when it positively finds another
-// samples-passed reset with no report between, in the same submission; no next op found means 1, and a report arriving on a segment marked 0 writes the
-// constant, so a segment is never culled on a count we did not measure. A game that never reports samples-passed never starts counting at all, and costs nothing
-static void vk_oq_need(int need) { g_oq.need = need; }
 
 // A counted draw: the query index to begin, or -1 when none is needed (one already open in this pass, not counting, or the ring is full and the draw counts 1).
 // The open test comes first: it is the common case of every draw but a pass's first
 static int vk_oq_draw(void) {
-    if (g_oq.open || !g_oq.on || !g_oq.counting || !g_oq.need) return -1;
+    if (g_oq.open || !g_oq.on || !g_oq.counting) return -1;
     if (g_oq.head >= atomic_load_explicit(&g_oq.ready, memory_order_acquire)) { g_oq.lost++; g_oq.s_lost++; return -1; }
     uint64_t fly = g_oq.head + 1 - (atomic_load_explicit(&g_oq.ready, memory_order_relaxed) - g_oq.ring);
     if (fly > g_oq.s_fly) g_oq.s_fly = fly;
@@ -62,13 +58,16 @@ static int vk_oq_close(void) {
     return (int)((g_oq.head - 1) % g_oq.ring);
 }
 // A draw the replay did not record while counting (the walker compares the draw count across the whole draw op): what is not known reads as visible
-static void vk_oq_lost(void) { if (g_oq.on && g_oq.counting && g_oq.need) { g_oq.lost++; g_oq.s_lost++; } }
+static void vk_oq_lost(void) { if (g_oq.on && g_oq.counting) { g_oq.lost++; g_oq.s_lost++; } }
 
+// Every reset counts. There is no look-ahead over the record stream to skip a segment no report would read: the walker's execution order follows OP_JUMP and
+// OP_CALL, so the linear bytes after an op are not necessarily records, and scanning them without the buffer's end walked into unmapped memory and crashed
+// DRAGON QUEST VII Reimagined (SIGSEGV in the scan, twice). The games measured pair every reset with a report, so nothing is counted that no report reads.
 // OP_RESET_COUNTER(SAMPLES_PASSED): the queries since the last report go back unread. The count starts from zero at the next report (fresh), not here: nothing
 // between a reset and that report reads the count, so one post op serves both and a reset with no queries needs none at all
 static void vk_oq_reset(oq_seg *s) {
     s->q0 = g_oq.seg0; s->nq = (uint32_t)(g_oq.head - g_oq.seg0); s->lost = 0; s->fresh = 0;
-    g_oq.seg0 = g_oq.head; g_oq.lost = 0; g_oq.fresh = 1; g_oq.counting = 1; g_oq.need = 1; g_oq.s_reset++;
+    g_oq.seg0 = g_oq.head; g_oq.lost = 0; g_oq.fresh = 1; g_oq.counting = 1; g_oq.s_reset++;
 }
 // OP_REPORT_COUNTER(SAMPLES_PASSED): 1 = the segment is counted (post it with the submission's fence), 0 = write the constant
 static int vk_oq_report(oq_seg *s) {
@@ -77,9 +76,6 @@ static int vk_oq_report(oq_seg *s) {
     if (!g_oq.counting) { g_oq.counting = 1; g_oq.seg0 = g_oq.head; g_oq.lost = 0; g_oq.fresh = 0; g_oq.s_const++; return 0; }
     s->q0 = g_oq.seg0; s->nq = (uint32_t)(g_oq.head - g_oq.seg0); s->lost = g_oq.lost; s->fresh = g_oq.fresh;
     g_oq.seg0 = g_oq.head; g_oq.lost = 0; g_oq.fresh = 0;
-    // The segment was not counted (the look-ahead found no report reading it). A report that arrives anyway -- the scan is linear and does not follow a
-    // called sublist -- reads the constant, never a count we did not measure
-    if (!g_oq.need) { g_oq.s_const++; return 0; }
     return 1;
 }
 

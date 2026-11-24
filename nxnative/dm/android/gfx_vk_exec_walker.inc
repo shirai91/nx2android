@@ -114,19 +114,6 @@ void mtl_exec(const uint8_t *p) {   // timed at the top level only (OP_CALL nest
     exec_ops(p);
     if (!--depth) g_vkst.ns_exec += tnow() - t0;
 }
-// Whether a report will read the draws encoded after this reset or report: the next samples-passed op in the stream, scanned linearly (a called sublist is
-// not followed, so the answer stays 1 = count). 0 only when that op is positively another reset, which reads nothing; a report that arrives on a segment
-// marked 0 writes the constant (vk_oq_report), so a wrong scan can never cull on a count we did not measure. The bound is short: a reset with no report of its
-// own is adjacent to the next reset, and a scan that runs out answers 1, so the cost is a few dozen record headers per counter op, not a walk of the pass's draws
-static int oq_ahead(const uint8_t *p) {
-    for (int i = 0; i < 64; i++) {
-        op_hdr h; memcpy(&h, p, sizeof h);
-        if (h.size < 8 || (h.size & 7) || h.op >= OP_COUNT_ || h.op == OP_END) return 1;
-        if (h.op == OP_RESET_COUNTER || h.op == OP_REPORT_COUNTER) { uint64_t t; memcpy(&t, p + 8, 8); if (t == NVN_COUNTER_TYPE_SAMPLES_PASSED) return h.op == OP_REPORT_COUNTER; }
-        p += h.size;
-    }
-    return 1;
-}
 static void exec_ops(const uint8_t *p) {
     for (;;) {
         op_hdr h; memcpy(&h, p, sizeof h);
@@ -145,11 +132,11 @@ static void exec_ops(const uint8_t *p) {
         case OP_SIGNAL_EVENT: { volatile uint32_t *val; uint32_t m, v; memcpy(&val, a, 8); memcpy(&m, a + 8, 4); memcpy(&v, a + 12, 4); mtl_sub_event(val, m, v); break; }
         case OP_REPORT_COUNTER: { uint64_t t, ad; memcpy(&t, a, 8); memcpy(&ad, a + 8, 8);
             int kind = t == 0 || t == 0x10 ? 1 : 3;   // the render condition's: 1 timestamp, 2 a counted samples-passed report, 3 a value that measured nothing
-            if (t == NVN_COUNTER_TYPE_SAMPLES_PASSED && vk_oq_enabled()) { if (vk_sub_samples_passed(ad)) kind = 2; vk_oq_count_need(oq_ahead(p + h.size)); }
+            if (t == NVN_COUNTER_TYPE_SAMPLES_PASSED && vk_oq_enabled()) { if (vk_sub_samples_passed(ad)) kind = 2; }
             else mtl_sub_counter(ad, (uint32_t)t);
             if (DM_GAME_RENDER_COND) rc_note(ad, kind);
             if (g_x_tracepass == -2) VKLOG("--- report counter type %#llx to %#llx", (unsigned long long)t, (unsigned long long)ad); break; }
-        case OP_RESET_COUNTER: { uint64_t t; memcpy(&t, a, 8); if (t == NVN_COUNTER_TYPE_SAMPLES_PASSED && vk_oq_enabled()) { vk_sub_samples_reset(); vk_oq_count_need(oq_ahead(p + h.size)); } break; }
+        case OP_RESET_COUNTER: { uint64_t t; memcpy(&t, a, 8); if (t == NVN_COUNTER_TYPE_SAMPLES_PASSED && vk_oq_enabled()) vk_sub_samples_reset(); break; }
         case OP_FENCE_SYNC: { sync_t *s; memcpy(&s, a, 8);
             if (!sync_replay_fence(s, mtl_last_fence() + 1)) { static int n; if (n++ < 4) VKLOG("fence on sync %p skipped: the game has finalized or freed it (nvn_obj.h sync_replay_fence)", (void *)s); }
             break; }

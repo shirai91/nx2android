@@ -1577,7 +1577,6 @@ void vk_oq_begin_draw(void) { int q = vk_oq_draw(); if (q >= 0) vkCmdBeginQuery(
 // A query lives inside one render pass instance: it ends at the pass end, and at a report or reset that falls inside the pass
 void vk_oq_end_pass(void) { int q = vk_oq_close(); if (q >= 0) vkCmdEndQuery(vk_cmd(), g_oqpool, (uint32_t)q); }
 void vk_oq_draw_skipped(void) { vk_oq_lost(); }   // a draw the replay left out while counting: what is not known reads as visible
-void vk_oq_count_need(int need) { vk_oq_need(need); }
 int vk_oq_enabled(void) { return vk_oq_on(); }   // the walker's gate: off, a samples-passed reset stays the no-op it was and no extra post op is made
 int vk_oq_stats_line(char *b, size_t n, double frames) { int r = vk_oq_stats(b, n, frames); vk_oq_stats_clear(); return r; }   // the replay statistics' occlusion line, per window (gfx_vk_present.c)
 void vk_sub_samples_reset(void) {   // OP_RESET_COUNTER(SAMPLES_PASSED): only its unread queries need an op; the zero rides the next report
