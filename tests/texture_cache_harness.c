@@ -51,7 +51,6 @@ static int nvn_dirty_since_span(const void *span,const void *mem,size_t size,uin
 static void nvn_dirty_protect(const void *mem,size_t size) {(void)mem;(void)size;}
 static void wb_drop_img(const vkimg_t *im) {(void)im;}
 static void wb_drop_pool(const void *pool) {(void)pool;}
-static void wb_maybe_record(void) {}
 /* CACHE KEYS */
 /* CACHE LIFETIME */
 /* LOOKUP */

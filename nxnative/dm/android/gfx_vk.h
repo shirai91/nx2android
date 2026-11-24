@@ -158,6 +158,9 @@ VkBufferView vk_dummy_tbuf(int storage);
 void vk_end_pass_land(void);   // vk_end_pass, then the deferred uniform updates land (before copies, dispatches, the submission's end)
 void vk_img_barrier_all(VkCommandBuffer cb);   // version 1: one global memory barrier (all images stay in GENERAL)
 void vk_tex_prepare(VkCommandBuffer cb, vkimg_t *im);   // first use: transition from UNDEFINED to GENERAL (and upload a packaged texture)
+void vk_wb_commit(VkCommandBuffer cb, uint64_t fence);   // DM_VK_MINIMAL_BACK: record batched write-back copies at submission end (gfx_vk_tex.c)
+void vk_wb_abort(uint64_t fence);                        // DM_VK_MINIMAL_BACK: drop write-back batch if command buffer failed
+void vk_wb_complete(uint64_t fence);                     // DM_VK_MINIMAL_BACK: swizzle completed copies into guest RAM before signaling fence
 
 // ---- shaders (gfx_vk_shader.c) ----
 enum { RK_SUPPORT, RK_CBUF, RK_C1, RK_DRV, RK_SBUF, RK_UBO_PTR, RK_SBUF_UBO, RK_TEX, RK_TBUF, RK_IMG, RK_IMG_TBUF, RK_TEX_C2A, RK_TEX_UBO, RK_TBUF_UBO, RK_IMG_UBO, RK_TEXD, RK_SAMPD, RK_UNKNOWN = 255 };

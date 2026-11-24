@@ -51,18 +51,22 @@ typedef struct vkimg {{
 }} vkimg_t;
 
 static struct {{ VkDevice dev; }} V = {{ .dev = (VkDevice)(uintptr_t)1 }};
-static uint64_t g_last_fence, g_done_fence;
-static int g_sub_open = 1;
+static uint64_t g_last_fence;
 static int g_buf_allocs, g_buf_frees, g_mem_allocs, g_mem_frees;
-static int g_copies, g_barriers, g_write_preps, g_last_mem_flags;
+static int g_copies, g_barriers, g_host_barriers, g_write_preps, g_last_mem_flags;
 static uint8_t *g_last_stage;
 static VkDeviceSize g_last_stage_size;
 
 uint64_t mtl_last_fence(void) {{ return g_last_fence; }}
-static uint64_t vk_fence_done(void) {{ return g_done_fence; }}
-static int vk_sub_open(void) {{ return g_sub_open; }}
-static VkCommandBuffer vk_upload_cmd(void) {{ return (VkCommandBuffer)(uintptr_t)0x10; }}
 static void vk_img_barrier_all(VkCommandBuffer cb) {{ (void)cb; g_barriers++; }}
+static void vkCmdPipelineBarrier(VkCommandBuffer cb, VkPipelineStageFlags src, VkPipelineStageFlags dst, VkDependencyFlags dep,
+                                 uint32_t nm, const VkMemoryBarrier *mb, uint32_t nb, const VkBufferMemoryBarrier *bb,
+                                 uint32_t ni, const VkImageMemoryBarrier *ib) {{
+    (void)cb; (void)dep; (void)nb; (void)bb; (void)ni; (void)ib;
+    if ((src & VK_PIPELINE_STAGE_TRANSFER_BIT) && (dst & VK_PIPELINE_STAGE_HOST_BIT) &&
+        nm == 1 && (mb[0].srcAccessMask & VK_ACCESS_TRANSFER_WRITE_BIT) && (mb[0].dstAccessMask & VK_ACCESS_HOST_READ_BIT))
+        g_host_barriers++;
+}}
 static void dm_guest_write_prepare(void *addr, size_t len) {{ (void)addr; (void)len; g_write_preps++; }}
 
 static const vkfmt_t *vk_fmt(int f) {{
@@ -182,33 +186,31 @@ int main(int argc, char **argv) {{
     bad = t; bad.d.target = NVN_TEXTURE_TARGET_2D_ARRAY; assert(!wb_want(&im, &bad));
     pool_t no_cpu = {{ .flags = NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS }};
     bad = t; bad.pool = &no_cpu; assert(!wb_want(&im, &bad));
+    pool_t virt = {{ .flags = NVN_MEMORY_POOL_FLAGS_VIRTUAL }};
+    bad = t; bad.pool = &virt; assert(!wb_want(&im, &bad));
     vkimg_t im_bad = im; im_bad.layers = 2; assert(!wb_want(&im_bad, &t));
     im_bad = im; im_bad.samples = 4; assert(!wb_want(&im_bad, &t));
     im_bad = im; im_bad.levels = 17; assert(!wb_want(&im_bad, &t));
 
-    // 2. Deduplication within a submission + full swizzle round-trip across all 9 mip levels
-    g_last_fence = 10; g_done_fence = 10;
+    // 2. Deduplication within a submission + same-submission commit & completion before fence signals
+    VkCommandBuffer cb = (VkCommandBuffer)(uintptr_t)0x10;
+    g_last_fence = 10;
     wb_note_attachment(&im, &t);
     wb_note_attachment(&im, &t);
     assert(g_nwb == 1);
-    wb_maybe_record();   // same submission (now == 11 == sub): must wait for a later submission
-    assert(g_copies == 0);
-
-    g_last_fence = 11;   // next submission (now == 12 > sub == 11)
-    wb_maybe_record();
+    vk_wb_commit(cb, 11);   // committed into submission 11 itself (no cross-submission lag)
     assert(g_copies == 9);
+    assert(g_host_barriers == 1);
     assert((g_last_mem_flags & (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)) ==
            (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT));
     assert(g_buf_allocs == 1 && g_buf_frees == 0);
 
-    // Fence not yet complete: nothing written or freed
-    g_done_fence = 11;
-    wb_maybe_poll();
+    // Earlier fence completion does not touch submission 11
+    vk_wb_complete(10);
     assert(g_write_preps == 0 && g_buf_frees == 0 && g_nwb == 1);
 
-    // Fence complete: swizzled into guest RAM, buffer freed, deswizzle matches every mip byte-for-byte
-    g_done_fence = 12;
-    wb_maybe_poll();
+    // Submission 11 completes: swizzled into guest RAM before fence wakes game, staging buffer freed
+    vk_wb_complete(11);
     assert(g_write_preps == 1 && g_wb_done == 1 && g_buf_frees == 1 && g_mem_frees == 1 && g_nwb == 0);
     for (uint32_t lv = 0; lv < 9; lv++) {{
         uint32_t lw = 260u >> lv ? 260u >> lv : 1, lh = 260u >> lv ? 260u >> lv : 1;
@@ -224,41 +226,35 @@ int main(int argc, char **argv) {{
     }}
 
     // 3. Eviction while queued (state 0): cancelled cleanly without recording
-    g_copies = 0; g_last_fence = 20; g_done_fence = 20;
+    g_copies = 0; g_last_fence = 20;
     wb_note_attachment(&im, &t);
     assert(g_nwb == 1);
     wb_drop_img(&im);
-    g_last_fence = 21;
-    wb_maybe_record();
-    assert(g_copies == 0);
-    wb_maybe_poll();
-    assert(g_nwb == 0);
+    vk_wb_commit(cb, 21);
+    assert(g_copies == 0 && g_nwb == 0);
 
-    // 4. Eviction while copy is in flight (state 1): freeing im must not UAF in wb_maybe_poll
+    // 4. Eviction while copy is in flight (state 1): cancels write-back, frees staging buffer, no UAF or stale guest overwrite
     vkimg_t *dyn_im = calloc(1, sizeof *dyn_im); assert(dyn_im); *dyn_im = im;
     memset(guest, 0, (size_t)t.L.size);
-    g_last_fence = 30; g_done_fence = 30;
+    g_last_fence = 30;
     wb_note_attachment(dyn_im, &t);
-    g_last_fence = 31;
-    wb_maybe_record();
+    vk_wb_commit(cb, 31);
     assert(g_copies == 9);
     wb_drop_img(dyn_im);
-    memset(dyn_im, 0xdd, sizeof *dyn_im); free(dyn_im);   // poison & free before poll
-    g_done_fence = 32;
-    wb_maybe_poll();
-    assert(g_wb_done == 2 && g_nwb == 0 && g_buf_allocs == g_buf_frees && g_mem_allocs == g_mem_frees);
+    memset(dyn_im, 0xdd, sizeof *dyn_im); free(dyn_im);   // poison & free before completion
+    vk_wb_complete(31);
+    assert(g_wb_done == 1 && g_nwb == 0 && g_buf_allocs == g_buf_frees && g_mem_allocs == g_mem_frees);
+    for (size_t i = 0; i < t.L.size; i++) assert(guest[i] == 0);
 
-    // 5. Pool teardown while copy is in flight (state 1): waits for fence, frees VkBuffer, skips guest memcpy
+    // 5. Pool teardown while copy is in flight (state 1): waits for completion, frees VkBuffer, skips guest memcpy
     uint8_t *pool_mem = calloc(1, (size_t)t.L.size); assert(pool_mem);
     tex_t t2 = make_tile(&pool, pool_mem);
     int preps_before = g_write_preps;
-    g_last_fence = 40; g_done_fence = 40;
+    g_last_fence = 40;
     wb_note_attachment(&im, &t2);
-    g_last_fence = 41;
-    wb_maybe_record();
+    vk_wb_commit(cb, 41);
     wb_drop_pool(&pool);
-    g_done_fence = 42;
-    wb_maybe_poll();
+    vk_wb_complete(41);
     assert(g_write_preps == preps_before);
     for (size_t i = 0; i < t2.L.size; i++) assert(pool_mem[i] == 0);
     assert(g_nwb == 0 && g_buf_allocs == g_buf_frees && g_mem_allocs == g_mem_frees);
@@ -271,16 +267,14 @@ int main(int argc, char **argv) {{
     vkimg_t bi[3] = {{ im, im, im }};
     bi[0].img = (VkImage)(uintptr_t)201; bi[1].img = (VkImage)(uintptr_t)202; bi[2].img = (VkImage)(uintptr_t)203;
     int ba0 = g_buf_allocs, ma0 = g_mem_allocs, cp0 = g_copies;
-    g_last_fence = 50; g_done_fence = 50;
+    g_last_fence = 50;
     for (int k = 0; k < 3; k++) wb_note_attachment(&bi[k], &bt[k]);
     assert(g_nwb == 3);
-    g_last_fence = 51;
-    wb_maybe_record();
+    vk_wb_commit(cb, 51);
     assert(g_buf_allocs == ba0 + 1 && g_mem_allocs == ma0 + 1);   // exactly 1 shared staging allocation for all 3 tiles
     assert(g_copies == cp0 + 27);
     wb_drop_pool(&p_drop);
-    g_done_fence = 52;
-    wb_maybe_poll();
+    vk_wb_complete(51);
     assert(g_nwb == 0 && g_buf_allocs == g_buf_frees && g_mem_allocs == g_mem_frees);
     for (size_t i = 0; i < t.L.size; i++) assert(m1[i] == 0);
     for (int k = 0; k < 3; k++) {{
@@ -292,6 +286,17 @@ int main(int argc, char **argv) {{
         free(got);
     }}
     free(m0); free(m1); free(m2);
+
+    // 7. Command-buffer failure abort: vk_wb_abort releases staging buffer immediately without writing guest memory
+    memset(guest, 0, (size_t)t.L.size);
+    preps_before = g_write_preps;
+    g_last_fence = 60;
+    wb_note_attachment(&im, &t);
+    vk_wb_commit(cb, 61);
+    assert(g_nwb == 1 && g_buf_allocs == g_buf_frees + 1);
+    vk_wb_abort(61);
+    assert(g_nwb == 0 && g_buf_allocs == g_buf_frees && g_mem_allocs == g_mem_frees && g_write_preps == preps_before);
+    for (size_t i = 0; i < t.L.size; i++) assert(guest[i] == 0);
 
     free(pool_mem);
     free(guest);
