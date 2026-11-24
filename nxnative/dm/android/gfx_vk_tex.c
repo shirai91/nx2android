@@ -638,12 +638,14 @@ int mtl_tex_gpu_owned(uint64_t serial) { (void)serial; return 0; }
 // On the Switch a render target is its pool memory: Tears of the Kingdom draws its 260x260 RG8 MINIMAL_LAYOUT terrain/grass maps on the GPU at load and compacts
 // its terrain pool ~30-40 s later with a plain CPU memcpy (even while standing still). Linear render targets survive because lin_back writes them back to guest RAM;
 // block-linear MINIMAL_LAYOUT render targets lived only in their Vulkan image, so the CPU copy carried zeros and grass blades flattened across Hyrule Field.
-// DM_VK_MINIMAL_BACK=1 (start-up, profile opt-in): asynchronously copies rendered MINIMAL_LAYOUT uncompressed 2D color targets in CPU-accessible pools into a
-// HOST_VISIBLE|HOST_COHERENT staging buffer on a later submission's upload buffer, then swizzles their mip levels back into guest memory once that fence completes.
+// DM_VK_MINIMAL_BACK=1 (start-up, profile opt-in): asynchronously copies rendered MINIMAL_LAYOUT uncompressed 2D color targets in CPU-accessible pools into one
+// shared HOST_VISIBLE|HOST_COHERENT staging buffer per submission on a later submission's upload buffer, then swizzles their mip levels back into guest memory once
+// that fence completes.
 // Lock order: g_img_mu before g_wb_mu (wb_drop_img / wb_drop_pool are called with g_img_mu held; wb_* never takes g_img_mu).
+typedef struct { VkBuffer b; VkDeviceMemory m; void *p; int refs; } wb_stage_t;
 typedef struct {
     vkimg_t *im; tex_t t; uint32_t w, h, levels; uint64_t sub, fence;
-    VkBuffer b; VkDeviceMemory m; void *p; VkDeviceSize lvoff[16];
+    wb_stage_t *st; VkDeviceSize lvoff[16];
     uint8_t state, cancelled;   // state: 0 queued after draw, 1 copy recorded, 2 done, 3 cancel/error
 } wb_t;
 enum { WB_MAX = 2048 };
@@ -689,19 +691,38 @@ static void wb_maybe_record(void) {
     static uint64_t seen; if (now == seen) return; seen = now;
     VkCommandBuffer cb = VK_NULL_HANDLE;
     pthread_mutex_lock(&g_wb_mu);
+    VkDeviceSize total = 0; int nready = 0, first = -1;
     for (int i = 0; i < g_nwb; i++) {
         wb_t *w = &g_wb[i]; if (w->state != 0 || w->sub >= now || !w->im) continue;
-        vkimg_t *im = w->im; const vkfmt_t *f = vk_fmt(w->t.d.format); VkDeviceSize n = 0;
-        for (uint32_t lv = 0; lv < w->levels; lv++) { uint32_t lw = w->w >> lv ? w->w >> lv : 1, lh = w->h >> lv ? w->h >> lv : 1; w->lvoff[lv] = n; n += ((VkDeviceSize)lw * lh * f->bpb + 15) & ~15ull; }
-        VkBufferCreateInfo bi = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, NULL, 0, n, VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_SHARING_MODE_EXCLUSIVE, 0, NULL};
-        if (vkCreateBuffer(V.dev, &bi, NULL, &w->b)) { w->state = 3; continue; }
-        VkMemoryRequirements rq; vkGetBufferMemoryRequirements(V.dev, w->b, &rq);
-        VkMemoryAllocateInfo ai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, rq.size, vk_mem_type(rq.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 0)};
-        if (vkAllocateMemory(V.dev, &ai, NULL, &w->m) || vkBindBufferMemory(V.dev, w->b, w->m, 0) || vkMapMemory(V.dev, w->m, 0, VK_WHOLE_SIZE, 0, &w->p)) { w->state = 3; continue; }
-        if (!cb) { cb = vk_upload_cmd(); vk_img_barrier_all(cb); }
-        for (uint32_t lv = 0; lv < w->levels; lv++) { uint32_t lw = w->w >> lv ? w->w >> lv : 1, lh = w->h >> lv ? w->h >> lv : 1;
-            VkBufferImageCopy r = {w->lvoff[lv], 0, 0, {VK_IMAGE_ASPECT_COLOR_BIT, lv, 0, 1}, {0, 0, 0}, {lw, lh, 1}}; vkCmdCopyImageToBuffer(cb, im->img, VK_IMAGE_LAYOUT_GENERAL, w->b, 1, &r); }
-        w->fence = now; w->state = 1;
+        const vkfmt_t *f = vk_fmt(w->t.d.format); if (!f || !f->bpb) { w->state = 3; continue; }
+        for (uint32_t lv = 0; lv < w->levels; lv++) { uint32_t lw = w->w >> lv ? w->w >> lv : 1, lh = w->h >> lv ? w->h >> lv : 1; w->lvoff[lv] = total; total += ((VkDeviceSize)lw * lh * f->bpb + 15) & ~15ull; }
+        if (first < 0) first = i;
+        nready++;
+    }
+    if (nready && total) {
+        wb_stage_t *st = calloc(1, sizeof *st);
+        VkBufferCreateInfo bi = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, NULL, 0, total, VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_SHARING_MODE_EXCLUSIVE, 0, NULL};
+        int ok = st && !vkCreateBuffer(V.dev, &bi, NULL, &st->b);
+        if (ok) {
+            VkMemoryRequirements rq; vkGetBufferMemoryRequirements(V.dev, st->b, &rq);
+            VkMemoryAllocateInfo ai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, rq.size, vk_mem_type(rq.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 0)};
+            ok = !vkAllocateMemory(V.dev, &ai, NULL, &st->m) && !vkBindBufferMemory(V.dev, st->b, st->m, 0) && !vkMapMemory(V.dev, st->m, 0, VK_WHOLE_SIZE, 0, &st->p);
+        }
+        if (!ok) {
+            if (st) { if (st->b) vkDestroyBuffer(V.dev, st->b, NULL); if (st->m) vkFreeMemory(V.dev, st->m, NULL); free(st); }
+            for (int i = 0; i < g_nwb; i++) if (g_wb[i].state == 0 && g_wb[i].sub < now && g_wb[i].im) g_wb[i].state = 3;
+        } else {
+            st->refs = nready;
+            cb = vk_upload_cmd(); vk_img_barrier_all(cb);
+            for (int i = 0; i < g_nwb; i++) {
+                wb_t *w = &g_wb[i]; if (w->state != 0 || w->sub >= now || !w->im) continue;
+                for (uint32_t lv = 0; lv < w->levels; lv++) { uint32_t lw = w->w >> lv ? w->w >> lv : 1, lh = w->h >> lv ? w->h >> lv : 1;
+                    VkBufferImageCopy r = {w->lvoff[lv], 0, 0, {VK_IMAGE_ASPECT_COLOR_BIT, lv, 0, 1}, {0, 0, 0}, {lw, lh, 1}};
+                    vkCmdCopyImageToBuffer(cb, w->im->img, VK_IMAGE_LAYOUT_GENERAL, st->b, 1, &r); }
+                w->st = st; w->fence = now; w->state = 1;
+            }
+            static int nlog; if (nlog++ < 8) VKLOG("minimal-layout write-back: queued %d target(s) in one %llu KB staging buffer (first %ux%u nvn fmt %#x levels %u)", nready, (unsigned long long)(total >> 10), g_wb[first].w, g_wb[first].h, g_wb[first].t.d.format, g_wb[first].levels);
+        }
     }
     pthread_mutex_unlock(&g_wb_mu);
     if (cb) vk_img_barrier_all(cb);
@@ -714,21 +735,21 @@ static void wb_maybe_poll(void) {
     for (int i = 0; i < g_nwb; i++) {
         wb_t *w = &g_wb[i];
         if (w->state == 1 && done >= w->fence) {
-            if (!w->cancelled && w->t.mem && w->t.L.size) {
+            if (!w->cancelled && w->t.mem && w->t.L.size && w->st) {
                 uint8_t *st = malloc(w->t.L.size);
                 if (st) {
                     memcpy(st, w->t.mem, w->t.L.size); const vkfmt_t *f = vk_fmt(w->t.d.format); int bad = 0;
                     uint32_t nl = w->t.d.levels ? w->t.d.levels : 1;
                     for (uint32_t lv = 0; lv < w->levels && lv < nl; lv++) { uint32_t lw = w->w >> lv ? w->w >> lv : 1;
-                        if (nvn_swizzle(&w->t.d, lv, 0, (const uint8_t *)w->p + w->lvoff[lv], (size_t)lw * f->bpb, st)) bad = 1; }
+                        if (nvn_swizzle(&w->t.d, lv, 0, (const uint8_t *)w->st->p + w->lvoff[lv], (size_t)lw * f->bpb, st)) bad = 1; }
                     if (!bad) { dm_guest_write_prepare((void *)w->t.mem, w->t.L.size); memcpy((void *)w->t.mem, st, w->t.L.size); g_wb_done++; }
                     else VKRED_ONCE(202, "minimal-layout write-back: swizzle refused %ux%u fmt %#x", w->w, w->h, w->t.d.format);
                     free(st);
                 }
             }
-            vkDestroyBuffer(V.dev, w->b, NULL); vkFreeMemory(V.dev, w->m, NULL); w->state = 2;
+            if (w->st && --w->st->refs == 0) { vkDestroyBuffer(V.dev, w->st->b, NULL); vkFreeMemory(V.dev, w->st->m, NULL); free(w->st); }
+            w->st = NULL; w->state = 2;
         }
-        if (w->state == 3) { if (w->b) vkDestroyBuffer(V.dev, w->b, NULL); if (w->m) vkFreeMemory(V.dev, w->m, NULL); }
         if (w->state < 2) g_wb[o++] = *w;
     }
     __atomic_store_n(&g_nwb, o, __ATOMIC_RELEASE);

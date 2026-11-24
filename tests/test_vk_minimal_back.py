@@ -42,6 +42,7 @@ typedef int pthread_mutex_t;
 #define pthread_mutex_lock(p) ((void)(p))
 #define pthread_mutex_unlock(p) ((void)(p))
 #define LOG(...) ((void)0)
+#define VKLOG(...) ((void)0)
 {red_macro}
 {vkfmt_decl}
 typedef struct vkimg {{
@@ -111,16 +112,17 @@ static VkResult vkMapMemory(VkDevice d, VkDeviceMemory m, VkDeviceSize o, VkDevi
     return VK_SUCCESS;
 }}
 static void vkCmdCopyImageToBuffer(VkCommandBuffer cb, VkImage img, VkImageLayout lay, VkBuffer dst, uint32_t n, const VkBufferImageCopy *r) {{
-    (void)cb; (void)img; (void)lay; assert(n == 1);
+    (void)cb; (void)lay; assert(n == 1);
     mock_buf *mb = (mock_buf *)(uintptr_t)dst;
+    uint32_t tag = (uint32_t)(uintptr_t)img;
     uint32_t lv = r->imageSubresource.mipLevel;
     uint32_t lw = r->imageExtent.width, lh = r->imageExtent.height;
     uint8_t *p = mb->data + r->bufferOffset;
     for (uint32_t y = 0; y < lh; y++)
         for (uint32_t x = 0; x < lw; x++) {{
             size_t off = ((size_t)y * lw + x) * 2;
-            p[off + 0] = (uint8_t)((x * 3 + y * 5 + lv * 17 + 1) & 0xff);
-            p[off + 1] = (uint8_t)((x * 7 + y * 11 + lv * 29 + 3) & 0xff);
+            p[off + 0] = (uint8_t)((x * 3 + y * 5 + lv * 17 + tag) & 0xff);
+            p[off + 1] = (uint8_t)((x * 7 + y * 11 + lv * 29 + tag * 3) & 0xff);
         }}
     g_copies++;
 }}
@@ -215,8 +217,8 @@ int main(int argc, char **argv) {{
         for (uint32_t y = 0; y < lh; y++)
             for (uint32_t x = 0; x < lw; x++) {{
                 size_t off = ((size_t)y * lw + x) * 2;
-                assert(got[off + 0] == (uint8_t)((x * 3 + y * 5 + lv * 17 + 1) & 0xff));
-                assert(got[off + 1] == (uint8_t)((x * 7 + y * 11 + lv * 29 + 3) & 0xff));
+                assert(got[off + 0] == (uint8_t)((x * 3 + y * 5 + lv * 17 + 100u) & 0xff));
+                assert(got[off + 1] == (uint8_t)((x * 7 + y * 11 + lv * 29 + 300u) & 0xff));
             }}
         free(got);
     }}
@@ -260,6 +262,36 @@ int main(int argc, char **argv) {{
     assert(g_write_preps == preps_before);
     for (size_t i = 0; i < t2.L.size; i++) assert(pool_mem[i] == 0);
     assert(g_nwb == 0 && g_buf_allocs == g_buf_frees && g_mem_allocs == g_mem_frees);
+
+    // 6. Multi-tile batching: 3 tiles in one submission share 1 staging buffer; dropping 1 pool mid-flight preserves the other 2
+    pool_t p_keep = {{ .flags = 0x24 }}, p_drop = {{ .flags = 0x24 }};
+    uint8_t *m0 = calloc(1, (size_t)t.L.size), *m1 = calloc(1, (size_t)t.L.size), *m2 = calloc(1, (size_t)t.L.size);
+    assert(m0 && m1 && m2);
+    tex_t bt[3] = {{ make_tile(&p_keep, m0), make_tile(&p_drop, m1), make_tile(&p_keep, m2) }};
+    vkimg_t bi[3] = {{ im, im, im }};
+    bi[0].img = (VkImage)(uintptr_t)201; bi[1].img = (VkImage)(uintptr_t)202; bi[2].img = (VkImage)(uintptr_t)203;
+    int ba0 = g_buf_allocs, ma0 = g_mem_allocs, cp0 = g_copies;
+    g_last_fence = 50; g_done_fence = 50;
+    for (int k = 0; k < 3; k++) wb_note_attachment(&bi[k], &bt[k]);
+    assert(g_nwb == 3);
+    g_last_fence = 51;
+    wb_maybe_record();
+    assert(g_buf_allocs == ba0 + 1 && g_mem_allocs == ma0 + 1);   // exactly 1 shared staging allocation for all 3 tiles
+    assert(g_copies == cp0 + 27);
+    wb_drop_pool(&p_drop);
+    g_done_fence = 52;
+    wb_maybe_poll();
+    assert(g_nwb == 0 && g_buf_allocs == g_buf_frees && g_mem_allocs == g_mem_frees);
+    for (size_t i = 0; i < t.L.size; i++) assert(m1[i] == 0);
+    for (int k = 0; k < 3; k++) {{
+        if (k == 1) continue;
+        uint8_t *got = calloc(1, 260 * 260 * 2); assert(got);
+        assert(nvn_deswizzle(&bt[k].d, 0, 0, k == 0 ? m0 : m2, got, 260 * 2) == 0);
+        uint32_t tag = (uint32_t)(201 + k);
+        assert(got[0] == (uint8_t)(tag & 0xff) && got[1] == (uint8_t)((tag * 3) & 0xff));
+        free(got);
+    }}
+    free(m0); free(m1); free(m2);
 
     free(pool_mem);
     free(guest);
