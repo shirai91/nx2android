@@ -46,7 +46,8 @@ def production():
     infl = core[core.index('typedef struct { uint64_t lo, hi, fence; const uint8_t *data; uint8_t *own; }'):core.index('int vk_ubd_overlaps')]
     functions = ''.join(function(core, sig) for sig in [
         'static vkpool_t *pool_find(', 'vkpool_t *vk_pool_of(', 'uint32_t vk_pool_gen(', 'int vk_buf_at(',
-        'static vksub_t *cur(', 'void *vk_scratch(', 'void vk_img_barrier_all('])
+        'static vksub_t *cur(', 'void *vk_scratch(', 'void vk_img_barrier_all(',
+        'static uint64_t chunk_span('])   # the chunk a range lives in: the copies below call it
     # Single-line production functions need their line, not the next function.
     for sig in ['vkpool_t *vk_pool_of(', 'uint32_t vk_pool_gen(', 'static vksub_t *cur(']:
         functions = functions.replace(function(core, sig), next(x for x in core.splitlines() if x.startswith(sig)) + '\n')
