@@ -54,6 +54,7 @@ public class ExternalActivity extends NativeActivity implements ExternalDisplay.
     private View pad;
     private Dialog phonePad;
     private AlertDialog audioDialog;
+    private AlertDialog canvasDialog;
     private final ExecutorService audioExecutor = Executors.newSingleThreadExecutor();
 
     @Override protected void onCreate(Bundle state) {
@@ -85,6 +86,7 @@ public class ExternalActivity extends NativeActivity implements ExternalDisplay.
         if (external != null) external.stop();
         if (phonePad != null) phonePad.dismiss();
         if (audioDialog != null) audioDialog.dismiss();
+        if (canvasDialog != null) canvasDialog.dismiss();
         audioExecutor.shutdown();
         super.onDestroy();
     }
@@ -112,6 +114,27 @@ public class ExternalActivity extends NativeActivity implements ExternalDisplay.
     }
 
     public void openAudioMenu() { runOnUiThread(this::showAudioMenu); }
+    public void openExternalCanvasMenu() { runOnUiThread(this::showExternalCanvasMenu); }
+    private void showExternalCanvasMenu() {
+        if (canvasDialog != null && canvasDialog.isShowing()) return;
+        String[] labels = {"Auto", "720p", "1080p", "1440p", "2160p"};
+        String[] values = {"auto", "1280x720", "1920x1080", "2560x1440", "3840x2160"};
+        String current = ExternalDisplay.readCanvas(this);
+        int selected = 0;
+        for (int i = 1; i < values.length; i++) if (values[i].equals(current)) selected = i;
+        AlertDialog dialog = new AlertDialog.Builder(this).setTitle("External resolution")
+            .setSingleChoiceItems(labels, selected, (d, which) -> {
+                if (!ExternalDisplay.writeCanvas(this, values[which])) {
+                    android.widget.Toast.makeText(this, "Could not save external canvas size", android.widget.Toast.LENGTH_LONG).show();
+                    return;
+                }
+                if (external != null) external.applyCanvas();
+                d.dismiss();
+            }).setNegativeButton("Cancel", null).create();
+        dialog.setOnDismissListener(d -> { if (canvasDialog == dialog) canvasDialog = null; });
+        canvasDialog = dialog;
+        dialog.show();
+    }
     private void showAudioMenu() {
         AudioManager manager = (AudioManager)getSystemService(Context.AUDIO_SERVICE);
         if (manager == null) return;
