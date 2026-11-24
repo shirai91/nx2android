@@ -1,7 +1,7 @@
 # Rune Factory: Guardians of Azuma on Android (Unreal Engine 5, NVN; update v589824 = 1.1.4).
-# Experimental: plays from a new game through the village and combat, but runs at about 21-25 fps against the game's 30 fps
-# target (GPU-bound, ~33-35 ms GPU a frame Docked; DM_VK_X_FENCES removed the CPU wait on each submission). Game speed is time-based, so the low frame rate does not slow the game.
-# Tip: Handheld mode in the pause menu (Game tab) drops the render resolution and gains about 3 fps.
+# Experimental: plays from a new game through the village and combat. Docked it runs at about 21-25 fps against the game's 30 fps
+# target (GPU-bound, ~33-35 ms GPU a frame; DM_VK_X_FENCES removed the CPU wait on each submission). Game speed is time-based, so the low frame rate does not slow the game.
+# Handheld (pause menu, Game tab) at the game's 30 fps setting, with DM_GPU_TURBO: holds 30 fps in Spring Village (GPU ~29 ms a frame). Recommended on mid-range devices.
 status	experimental
 package	org.nx2a.runefactorygoa
 orientation	landscape
@@ -23,3 +23,7 @@ env	TU_DEBUG=sysmem
 # on the GPU (no CPU/GPU overlap). Title scene, Docked, A/B on one boot path: queue submit 18.3 -> 0.2 ms a frame, frame work p50 25.9 -> 19.7 ms
 # (GPU busy unchanged, ~20 ms). Same fix as 010055D009F78000 (settings.tsv DM_VK_X_FENCES)
 env	DM_VK_X_FENCES=1
+# DM_GPU_TURBO=1: holds the GPU at its highest clock (KGSL power control off; DM_GPU_TURBO=0 in env.txt turns it off). Spring Village, Handheld,
+# the game's 30 fps setting, Odin 2: GPU busy ~29 ms a frame (against ~35 ms Docked without it), frame work p50 28.9 / p95 29.3 ms over 4 windows
+# of 600 frames, no long frames. Power draw with it is unmeasured (higher than the ~4.9 W Docked figure).
+env	DM_GPU_TURBO=1
