@@ -6,7 +6,7 @@ GINC = $(if $(strip $(GAME)),-I../gen/$(GAME) -I../../games/$(GAME),$(error GAME
 GAME_H = ../gen/$(GAME)/game_profile.h
 # macOS's <ucontext.h> needs _XOPEN_SOURCE (and _DARWIN_C_SOURCE to keep the rest of the SDK's declarations): crash.c and hle_thread.c use the ucontext routines
 UCTX = $(if $(filter Darwin,$(shell uname -s)),-D_XOPEN_SOURCE=600 -D_DARWIN_C_SOURCE)
-run: $(B)/t_touch $(B)/t_gesture $(B)/t_oe $(B)/t_fs $(B)/t_fs_commit_list $(B)/t_thread_leak $(B)/t_fs_case $(B)/t_audio $(B)/t_audio_spsc $(B)/t_swkbd $(B)/t_altstack $(B)/t_condvar $(B)/t_condvar_old $(B)/t_pctl $(B)/t_time $(B)/t_shared_font $(B)/t_vorbis $(B)/t_vorbis_divides $(B)/t_hid $(B)/t_haptics $(B)/t_haptics_apple
+run: $(B)/t_touch $(B)/t_gesture $(B)/t_oe $(B)/t_fs $(B)/t_fs_commit_list $(B)/t_thread_leak $(B)/t_fs_case $(B)/t_audio $(B)/t_audio_spsc $(B)/t_swkbd $(B)/t_altstack $(B)/t_condvar $(B)/t_condvar_old $(B)/t_pctl $(B)/t_time $(B)/t_occlusion $(B)/t_shared_font $(B)/t_vorbis $(B)/t_vorbis_divides $(B)/t_hid $(B)/t_haptics $(B)/t_haptics_apple
 	$(B)/t_touch
 	$(B)/t_gesture
 	$(B)/t_oe 2>/dev/null
@@ -22,6 +22,7 @@ run: $(B)/t_touch $(B)/t_gesture $(B)/t_oe $(B)/t_fs $(B)/t_fs_commit_list $(B)/
 	$(B)/t_condvar_old
 	$(B)/t_pctl
 	$(B)/t_time
+	$(B)/t_occlusion
 	$(B)/t_shared_font
 	$(B)/t_vorbis
 	$(B)/t_vorbis_divides
@@ -79,6 +80,9 @@ $(B)/t_condvar: t_condvar.c t_condvar_stub.c ../hle_thread.c ../dm.h $(GAME_H) |
 	clang -O1 -Wno-unused-function -DDM_TEST_HOOKS $(UCTX) -I.. $(GINC) -o $@ t_condvar.c t_condvar_stub.c ../hle_thread.c
 $(B)/t_condvar_old: t_condvar.c t_condvar_stub.c ../hle_thread.c ../dm.h $(GAME_H) | $(B)
 	clang -O1 -Wno-unused-function -DDM_TEST_HOOKS -DDM_TEST_CV_OLD_ORDER $(UCTX) -I.. $(GINC) -o $@ t_condvar.c t_condvar_stub.c ../hle_thread.c
+# the occlusion counting test drives the Android replay's counter state machine, which needs no Vulkan and no game profile
+$(B)/t_occlusion: t_occlusion.c ../../android/gfx_vk_occlusion.inc | $(B)
+	clang -O1 -g -Wall -Werror -Wno-unused-function -o $@ t_occlusion.c
 # the Vorbis tests build their own packets and need no game profile (they build without GAME)
 $(B)/t_vorbis: t_vorbis.c ../../third_party/stb_vorbis/stb_vorbis.c | $(B)
 	clang -O1 -g -Wno-unused-function -Wno-tautological-compare -o $@ t_vorbis.c

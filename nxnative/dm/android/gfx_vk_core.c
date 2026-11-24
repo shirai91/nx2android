@@ -27,6 +27,7 @@ static PFN_vkGetInstanceProcAddr p_vkGetInstanceProcAddr;
 vkdev_t V;
 char g_vk_driver[32] = "VULKAN";   // (gfx_vk.h)
 #include "gfx_vk_pipeline_cache.inc"
+#include "gfx_vk_occlusion.inc"   // NVN samples-passed counting: the counter's semantics and the query ring's accounting, no Vulkan (dm/host/tests/t_occlusion.c)
 pthread_mutex_t g_vk_queue_mu = PTHREAD_MUTEX_INITIALIZER;   // VkQueue access is externally synchronized: submissions and presents
 
 // DM_VK_MEM_DIAG=1 at startup: observe copied-pool costs without changing memory protection or rendering.
@@ -294,6 +295,8 @@ void vk_init(void) {
     V.has_depth_clip_ctl = fdc.depthClipControl && has_ext(ex, ne, "VK_EXT_depth_clip_control");
     V.has_dtiming = has_ext(ex, ne, "VK_GOOGLE_display_timing");   // frame pacing on the display (gfx_vk_present.c pace_*)
     V.has_bc = ff.features.textureCompressionBC; V.has_astc = ff.features.textureCompressionASTC_LDR; V.has_gs = ff.features.geometryShader;
+    V.has_hqreset = v12 ? f12.hostQueryReset : featx(xf, nxf, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_HOST_QUERY_RESET_FEATURES)[0];
+    V.oq_precise = ff.features.occlusionQueryPrecise;
     V.has_gs_pointsize = ff.features.shaderTessellationAndGeometryPointSize;
     { const char *e = getenv("DM_VK_X_BC_CPU"); if (e && atoi(e)) V.has_bc = 0; }   // (start-up) BC textures decoded on the CPU as on a device without them (gfx_vk_tex.c bc_decode)
     V.max_aniso = ff.features.samplerAnisotropy ? fminf(16, V.props.limits.maxSamplerAnisotropy) : 1;
@@ -1175,10 +1178,17 @@ static VkQueryPool g_tsq; uint64_t g_gpu_ns;
 // the size holds steady
 enum { CQ = 64 };
 static VkQueryPool g_cq;
+// Occlusion queries: one pool shared by every submission, its slots recycled by the completion thread with hostQueryReset (a device without it cannot give a
+// query back while later submissions use the pool, so it keeps the constant). One query per run of draws between two counter ops inside a pass, so the cost
+// follows the game's counter ops rather than its draws (FFR's hall: 506 reports and 563 queries a frame for 1425 draws)
+enum { OQ_N = 8192, OQ_DEFAULT = 1 };   // DM_VK_OCCLUSION=0 restores the constant every samples-passed report used to write
+static VkQueryPool g_oqpool;
 #define SCRATCH_BLOCK (8u << 20)
 typedef struct { VkBuffer b; VkDeviceMemory m; uint8_t *p; VkDeviceSize size, used; } scratch_blk;
 typedef struct { int kind; void *a; void *b; } dfree_t;   // 0 buffer+memory, 1 image+memory, 2 view
-typedef struct { int kind; volatile uint32_t *val; uint32_t mode, v; uint64_t addr; uint32_t type; int q; } post_op;   // q: a timestamp counter's query in g_cq, or -1
+typedef struct { int kind; volatile uint32_t *val; uint32_t mode, v; uint64_t addr; uint32_t type; int q; uint64_t oq0; uint32_t oqn, oql; } post_op;   // q: a timestamp counter's query in g_cq, or -1
+// kind 3: a samples-passed report's segment (oq0/oqn its queries by sequence number, oql the draws of it that count one sample without a query, mode a reset
+// since the last report), added to the running count and written at its submission's completion; kind 4: a samples-passed reset's queries, given back unread
 struct vksub {
     VkCommandPool pool; VkCommandBuffer up, main; int up_used;
     VkCommandBuffer mains[MAIN_CBS]; int nmain_alloc, nmain_used, cb_err;
@@ -1300,6 +1310,13 @@ static void slots_init(void) {
     VkQueryPoolCreateInfo cqi = {VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, NULL, 0, VK_QUERY_TYPE_TIMESTAMP, NSLOT * CQ};
     if (!g_tsq || vkCreateQueryPool(V.dev, &cqi, NULL, &g_cq)) g_cq = VK_NULL_HANDLE;
     { const char *e = getenv("DM_VK_PASS_TIMES"); if (e && atoi(e)) { VkQueryPoolCreateInfo pq = {VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, NULL, 0, VK_QUERY_TYPE_TIMESTAMP, NSLOT * PASSQ * 2}; if (vkCreateQueryPool(V.dev, &pq, NULL, &g_pq)) g_pq = VK_NULL_HANDLE; } }
+    { const char *e = getenv("DM_VK_OCCLUSION"); int want = e ? atoi(e) : OQ_DEFAULT;
+      if (want && V.has_hqreset && vkCmdBeginQuery && vkCmdEndQuery && vkResetQueryPool) {
+          VkQueryPoolCreateInfo oi = {VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, NULL, 0, VK_QUERY_TYPE_OCCLUSION, OQ_N};
+          if (!vkCreateQueryPool(V.dev, &oi, NULL, &g_oqpool)) { vkResetQueryPool(V.dev, g_oqpool, 0, OQ_N); vk_oq_init(1, OQ_N);
+              VKLOG("occlusion queries: counted on the GPU (%s; a ring of %d; DM_VK_OCCLUSION=0: the constant)", V.oq_precise ? "precise counts" : "not precise: a nonzero count for any sample", OQ_N); } }
+      if (!g_oqpool) { vk_oq_init(0, OQ_N);
+          if (want) VKLOG("occlusion queries: %s: every samples-passed report writes the constant", V.has_hqreset ? "no occlusion query pool" : "no hostQueryReset"); } }
     for (int i = 0; i < NSLOT; i++) {
         // not TRANSIENT, and reset by command buffer (see slot_recycle)
         VkCommandPoolCreateInfo ci = {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, NULL, VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT, V.qf};
@@ -1552,6 +1569,27 @@ void mtl_sub_counter(uint64_t addr, uint32_t type) {
     vksub_t *s = cur(); int q = -1;
     if (g_cq && (type == 0 || type == 0x10) && s->ncq < CQ) { q = g_cur * CQ + s->ncq++; vkCmdWriteTimestamp(vk_cmd(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, g_cq, (uint32_t)q); }
     post((post_op){2, NULL, 0, 0, addr, type, q});
+}
+// ---- samples-passed (occlusion) counting: the replay records the queries here, the completion thread adds them up (gfx_vk_occlusion.inc) ----
+// A committed draw: begins the query its run of draws counts into, if none is open in this pass. Off, or a segment no report reads, this does nothing
+void vk_oq_begin_draw(void) { int q = vk_oq_draw(); if (q >= 0) vkCmdBeginQuery(vk_cmd(), g_oqpool, (uint32_t)q, V.oq_precise ? VK_QUERY_CONTROL_PRECISE_BIT : 0); }
+// A query lives inside one render pass instance: it ends at the pass end, and at a report or reset that falls inside the pass
+void vk_oq_end_pass(void) { int q = vk_oq_close(); if (q >= 0) vkCmdEndQuery(vk_cmd(), g_oqpool, (uint32_t)q); }
+void vk_oq_draw_skipped(void) { vk_oq_lost(); }   // a draw the replay left out while counting: what is not known reads as visible
+void vk_oq_count_need(int need) { vk_oq_need(need); }
+int vk_oq_enabled(void) { return vk_oq_on(); }   // the walker's gate: off, a samples-passed reset stays the no-op it was and no extra post op is made
+int vk_oq_stats_line(char *b, size_t n, double frames) { int r = vk_oq_stats(b, n, frames); vk_oq_stats_clear(); return r; }   // the replay statistics' occlusion line, per window (gfx_vk_present.c)
+void vk_sub_samples_reset(void) {   // OP_RESET_COUNTER(SAMPLES_PASSED): only its unread queries need an op; the zero rides the next report
+    vk_oq_end_pass();
+    oq_seg s; vk_oq_reset(&s);
+    if (s.nq) post((post_op){4, NULL, 0, 0, 0, NVN_COUNTER_TYPE_SAMPLES_PASSED, -1, s.q0, s.nq, 0});
+}
+int vk_sub_samples_passed(uint64_t addr) {   // OP_REPORT_COUNTER(SAMPLES_PASSED): 1 counted, 0 the constant (the render condition's kind depends on it)
+    vk_oq_end_pass();
+    oq_seg s;
+    if (vk_oq_report(&s)) { post((post_op){3, NULL, s.fresh, 0, addr, NVN_COUNTER_TYPE_SAMPLES_PASSED, -1, s.q0, s.nq, s.lost}); return 1; }
+    post((post_op){2, NULL, 0, 0, addr, NVN_COUNTER_TYPE_SAMPLES_PASSED, -1, 0, 0, 0});   // the constant, as before (off, or no reset before it)
+    return 0;
 }
 static VkMemoryBarrier2 full_barrier(void) {
     return (VkMemoryBarrier2){VK_STRUCTURE_TYPE_MEMORY_BARRIER_2, NULL, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
@@ -1815,6 +1853,27 @@ static void pass_spike_flush(void) {
     }
     g_nsf = 0; g_sf_tot = 0;
 }
+// ---- occlusion queries at completion: read a segment's results (no wait) and give its slots back to the ring ----
+enum { OQ_RB = 64 };   // queries read and reset per call: the ring wraps, so a segment is taken in contiguous runs of its slots
+static void oq_slots_back(uint64_t q0, uint32_t nq) {
+    for (uint64_t q = q0; q < q0 + nq;) {
+        uint32_t s = (uint32_t)(q % OQ_N), k = (uint32_t)(q0 + nq - q < OQ_N - s ? q0 + nq - q : OQ_N - s); if (k > OQ_RB) k = OQ_RB;
+        vkResetQueryPool(V.dev, g_oqpool, s, k); q += k;
+    }
+    vk_oq_give(q0, nq);
+}
+static uint64_t oq_take(uint64_t q0, uint32_t nq, uint32_t *unav) {
+    uint64_t sum = 0; *unav = 0;
+    for (uint64_t q = q0; q < q0 + nq;) {
+        uint32_t s = (uint32_t)(q % OQ_N), k = (uint32_t)(q0 + nq - q < OQ_N - s ? q0 + nq - q : OQ_N - s); if (k > OQ_RB) k = OQ_RB;
+        uint64_t r[2 * OQ_RB];
+        VkResult e = vkGetQueryPoolResults(V.dev, g_oqpool, s, k, 16 * (size_t)k, r, 16, VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
+        for (uint32_t i = 0; i < k; i++) { if (e != VK_SUCCESS || !r[2 * i + 1]) { sum++; (*unav)++; } else sum += r[2 * i]; }   // unavailable after its fence: one sample, visible
+        q += k;
+    }
+    oq_slots_back(q0, nq);
+    return sum;
+}
 static void *completion_main(void *a) {
     (void)a; pthread_setname_np(pthread_self(), "dm-vk-complete");
     for (;;) {
@@ -1847,6 +1906,12 @@ static void *completion_main(void *a) {
         for (int i = 0; i < c->n; i++) {
             post_op *o = &c->ops[i];
             if (o->kind == 1) { if (o->mode == 1) *o->val += o->v; else *o->val = o->v; continue; }
+            if (o->kind == 4) { oq_slots_back(o->oq0, o->oqn); continue; }   // a samples-passed reset: its queries go back unread (the zero rides the next report)
+            if (o->kind == 3) {   // a samples-passed report: its segment added to the running count, in submission order
+                uint32_t unav; uint64_t sum = oq_take(o->oq0, o->oqn, &unav);
+                oq_seg s = {o->oq0, o->oqn, o->oql, o->mode}; uint64_t rec[2] = {vk_oq_add(&s, sum, unav), ts_end};
+                memcpy((void *)(uintptr_t)o->addr, rec, sizeof rec); continue;
+            }
             // The guest measures frame time as the difference of two reports; back-dating each to its own submission's completion compressed
             // that difference (the completion thread drains several submissions in one burst), so Unreal's automatic resolution read 17 ms of a
             // frame that took 33 ms and raised the resolution. A report without a usable query takes the submission's end on the same map.

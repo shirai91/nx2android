@@ -114,6 +114,19 @@ void mtl_exec(const uint8_t *p) {   // timed at the top level only (OP_CALL nest
     exec_ops(p);
     if (!--depth) g_vkst.ns_exec += tnow() - t0;
 }
+// Whether a report will read the draws encoded after this reset or report: the next samples-passed op in the stream, scanned linearly (a called sublist is
+// not followed, so the answer stays 1 = count). 0 only when that op is positively another reset, which reads nothing; a report that arrives on a segment
+// marked 0 writes the constant (vk_oq_report), so a wrong scan can never cull on a count we did not measure. The bound is short: a reset with no report of its
+// own is adjacent to the next reset, and a scan that runs out answers 1, so the cost is a few dozen record headers per counter op, not a walk of the pass's draws
+static int oq_ahead(const uint8_t *p) {
+    for (int i = 0; i < 64; i++) {
+        op_hdr h; memcpy(&h, p, sizeof h);
+        if (h.size < 8 || (h.size & 7) || h.op >= OP_COUNT_ || h.op == OP_END) return 1;
+        if (h.op == OP_RESET_COUNTER || h.op == OP_REPORT_COUNTER) { uint64_t t; memcpy(&t, p + 8, 8); if (t == NVN_COUNTER_TYPE_SAMPLES_PASSED) return h.op == OP_REPORT_COUNTER; }
+        p += h.size;
+    }
+    return 1;
+}
 static void exec_ops(const uint8_t *p) {
     for (;;) {
         op_hdr h; memcpy(&h, p, sizeof h);
@@ -130,8 +143,13 @@ static void exec_ops(const uint8_t *p) {
         case OP_JUMP: { const uint8_t *t; memcpy(&t, a, 8); p = t; continue; }
         case OP_CALL: { uint64_t t; memcpy(&t, a, 8); exec_ops((const uint8_t *)(uintptr_t)t); break; }
         case OP_SIGNAL_EVENT: { volatile uint32_t *val; uint32_t m, v; memcpy(&val, a, 8); memcpy(&m, a + 8, 4); memcpy(&v, a + 12, 4); mtl_sub_event(val, m, v); break; }
-        case OP_REPORT_COUNTER: { uint64_t t, ad; memcpy(&t, a, 8); memcpy(&ad, a + 8, 8); if (DM_GAME_RENDER_COND) rc_note(ad, t == 0 || t == 0x10 ? 1 : 2); if (g_x_tracepass == -2) VKLOG("--- report counter type %#llx to %#llx", (unsigned long long)t, (unsigned long long)ad); mtl_sub_counter(ad, (uint32_t)t); break; }
-        case OP_RESET_COUNTER: break;
+        case OP_REPORT_COUNTER: { uint64_t t, ad; memcpy(&t, a, 8); memcpy(&ad, a + 8, 8);
+            int kind = t == 0 || t == 0x10 ? 1 : 3;   // the render condition's: 1 timestamp, 2 a counted samples-passed report, 3 a value that measured nothing
+            if (t == NVN_COUNTER_TYPE_SAMPLES_PASSED && vk_oq_enabled()) { if (vk_sub_samples_passed(ad)) kind = 2; vk_oq_count_need(oq_ahead(p + h.size)); }
+            else mtl_sub_counter(ad, (uint32_t)t);
+            if (DM_GAME_RENDER_COND) rc_note(ad, kind);
+            if (g_x_tracepass == -2) VKLOG("--- report counter type %#llx to %#llx", (unsigned long long)t, (unsigned long long)ad); break; }
+        case OP_RESET_COUNTER: { uint64_t t; memcpy(&t, a, 8); if (t == NVN_COUNTER_TYPE_SAMPLES_PASSED && vk_oq_enabled()) { vk_sub_samples_reset(); vk_oq_count_need(oq_ahead(p + h.size)); } break; }
         case OP_FENCE_SYNC: { sync_t *s; memcpy(&s, a, 8);
             if (!sync_replay_fence(s, mtl_last_fence() + 1)) { static int n; if (n++ < 4) VKLOG("fence on sync %p skipped: the game has finalized or freed it (nvn_obj.h sync_replay_fence)", (void *)s); }
             break; }
@@ -177,9 +195,11 @@ static void exec_ops(const uint8_t *p) {
         case OP_RAST_DISCARD: S.rast_discard = ((const p_rast_discard *)a)->on; break;
         case OP_PRIM_RESTART: S.prim_restart = ((const p_prim_restart *)a)->on; break;
         case OP_DRAW: { if (g_rc_skip) break; p_draw t; const p_draw *d = draw_rec(a, h.size, &t); uint64_t before = g_vkst.draws; draw(d);
-            pixel_history_record(3, g_draw_i - 1, g_vkst.draws != before, d->count, d->instances, 0, d->first); break; }
+            int drawn = g_vkst.draws != before; if (!drawn) vk_oq_draw_skipped();   // whichever path left the draw out: what is not measured reads as visible
+            pixel_history_record(3, g_draw_i - 1, drawn, d->count, d->instances, 0, d->first); break; }
         case OP_DRAW_IDX: { if (g_rc_skip) break; p_draw_idx t; const p_draw_idx *d = draw_idx_rec(a, h.size, &t); uint64_t before = g_vkst.draws; draw_idx(d);
-            pixel_history_record(4, g_draw_i - 1, g_vkst.draws != before, d->count, d->instances, d->ibuf, d->base_vertex); break; }
+            int drawn = g_vkst.draws != before; if (!drawn) vk_oq_draw_skipped();
+            pixel_history_record(4, g_draw_i - 1, drawn, d->count, d->instances, d->ibuf, d->base_vertex); break; }
         case OP_DISPATCH: dispatch((const p_dispatch *)a); break;
         case OP_BARRIER: {   // the pass ends at every barrier: kept across XC3's fragment- and primitive-order barriers (0x1 0x2 0x4) its characters drew torn in some frames
             int32_t bits = *(const int32_t *)a;
@@ -196,7 +216,7 @@ static void exec_ops(const uint8_t *p) {
         case OP_COPY_T2T: copy_t2t((const p_copy_t2t *)a); break;
         case OP_CLEAR_TEX: clear_tex((const p_clear_tex *)a); break;
         case OP_RENDER_COND: render_cond((const p_render_cond *)a); break;   // recorded only with the profile key render_cond (hle_nvn.c)
-        case OP_DRAW_TF: if (!g_rc_skip) draw_tf((const p_draw_tf *)a); break;
+        case OP_DRAW_TF: { if (g_rc_skip) break; uint64_t before = g_vkst.draws; draw_tf((const p_draw_tf *)a); if (g_vkst.draws == before) vk_oq_draw_skipped(); break; }
         case OP_TF_BIND: { const p_tf_bind *b = (const p_tf_bind *)a; if (b->index >= 0 && b->index < 4) g_tf[b->index] = *b; break; }
         case OP_TF_STATE: if (!V.has_xfb) VKRED_ONCE(80, "transform feedback: the device has none, its draws write nothing"); tf_state((const p_tf_state *)a); break;
         case OP_VP_SWIZZLE: { const p_vp_swizzle *b = (const p_vp_swizzle *)a; memcpy(S.vp_sw[b->first], b->sw, 4 * (size_t)b->n); break; }
