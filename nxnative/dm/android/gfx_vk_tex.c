@@ -5,6 +5,7 @@
 //   dirty-page tracker saw a write to its pages; any other texture is the GPU's (render targets, images), filled only by GPU work.
 //   Version 1 keeps every image in VK_IMAGE_LAYOUT_GENERAL after its first use, ordered by whole-pipeline barriers.
 #include "gfx_vk.h"
+#include "../host/dm.h"
 #include "nvn_tex.h"
 #include "../gfx/tex/nvn_deswizzle.h"
 #include "nvn_hmap.h"
@@ -389,9 +390,14 @@ extern uint64_t g_tex_frame;   // presents so far, for the packaged textures' la
 // stayed: Xenoblade Chronicles 3 streams its field textures through pools that live for good, the device's GPU memory grew by about 470 MB a minute while walking (6.3 GB
 // after 20 minutes) and Android's low-memory killer ended the game. A new image takes over: the images of the same pool over its memory that were not looked up in the
 // last EVICT_KEEP presents go (their memory now holds another texture; one drawn again is made and filled again). Called with g_img_mu held
+static void wb_drop_img(const vkimg_t *im);
+static void wb_drop_pool(const void *pool);
+static void wb_maybe_record(void);
+static void wb_maybe_poll(void);
+static void wb_note_attachment(vkimg_t *im, const tex_t *t);
 enum { EVICT_KEEP = 60 };
 static uint64_t g_img_n, g_img_bytes, g_img_evicted;   // live images and their bytes, images evicted so far (vk_tex_sweep's line)
-static void img_drop(vkimg_t *im) { if (im->bc_draw) { vkimg_t *d = im->bc_draw; vk_lrz_forget(d); vk_tex_view_drop_all(d); if (d->sub) vk_defer_free_image_sub(d->img, d->sub); else vk_defer_free_image(d->img, d->mem); free(d); }
+static void img_drop(vkimg_t *im) { wb_drop_img(im); if (im->bc_draw) { vkimg_t *d = im->bc_draw; vk_lrz_forget(d); vk_tex_view_drop_all(d); if (d->sub) vk_defer_free_image_sub(d->img, d->sub); else vk_defer_free_image(d->img, d->mem); free(d); }
     vk_lrz_forget(im); if (im->lin_mem) nvn_dirty_release(im->lin_mem, im->lin_len); if (im->packaged && !im->pkg_released && im->pkg_mem) nvn_dirty_release(im->pkg_mem, im->pkg_len); g_img_n--; g_img_bytes -= im->size > 0 ? (uint64_t)im->size : 0; alias_unlink(im); vk_tex_view_drop_all(im); if (im->sub) vk_defer_free_image_sub(im->img, im->sub); else vk_defer_free_image(im->img, im->mem); free(im); }
 static void evict_overlaps(uint64_t pool, int64_t off, int64_t size) {
     akey ks[64]; int n = 0;
@@ -406,6 +412,7 @@ vkimg_t *vk_tex(const tex_t *t) { extern int g_prof_on; extern uint64_t g_prof_n
     vkimg_t *im = vk_tex_(t); if (g_prof_on) { clock_gettime(CLOCK_MONOTONIC, &b); g_prof_ns[1] += (uint64_t)((b.tv_sec - a.tv_sec) * 1000000000ll + (b.tv_nsec - a.tv_nsec)); } return im; }
 static vkimg_t *vk_tex_(const tex_t *t) {
     if (!t || !t->serial || t->magic != MAGIC('T', 'E', 'X', 0)) return NULL;
+    wb_maybe_record();
     const vkfmt_t *f = vk_fmt(t->d.format);
     if (!f) { VKRED_ONCE(14, "texture format %#x has no Vulkan counterpart here (first case %ux%u target %d)", t->d.format, t->d.width, t->d.height, t->d.target); return NULL; }
     if (t->d.target == NVN_TEXTURE_TARGET_BUFFER) return NULL;   // buffer textures: texel buffer views of the pool (vk_tex_view)
@@ -466,6 +473,7 @@ uint64_t g_tex_frame;
 typedef struct { uint64_t used; vkimg_t *im; } pkg_age;
 static int pkg_age_cmp(const void *a, const void *b) { uint64_t x = ((const pkg_age *)a)->used, y = ((const pkg_age *)b)->used; return x < y ? -1 : x > y; }
 void vk_tex_sweep(void) {
+    wb_maybe_poll();
     if (++g_tex_frame % 300) return;
     uint64_t idle = 0, lru = 0, before = nvn_dirty_released();
     pthread_mutex_lock(&g_img_mu);
@@ -502,6 +510,7 @@ void vk_tex_sweep(void) {
 // under the lock the replay's texture lookups take, for each of the pools Pokémon Scarlet drops while a capture loads
 void vk_tex_drop_pool(const void *pool) {   // the pool is finalized: its textures' images go once the GPU is done with them
     pthread_mutex_lock(&g_img_mu);
+    wb_drop_pool(pool);
     for (int n = 64; n == 64;) {
         akey ks[64]; n = 0;
         for (uint32_t i = 0; i < g_by_key.cap && n < 64; i++) {
@@ -625,6 +634,107 @@ void vk_tex_release_drain(void) {   // the replay thread, at each submission (vk
 }
 int mtl_tex_gpu_owned(uint64_t serial) { (void)serial; return 0; }
 
+// ---------------- block-linear render-target write-back (DM_VK_MINIMAL_BACK) ----------------
+// On the Switch a render target is its pool memory: Tears of the Kingdom draws its 260x260 RG8 MINIMAL_LAYOUT terrain/grass maps on the GPU at load and compacts
+// its terrain pool ~30-40 s later with a plain CPU memcpy (even while standing still). Linear render targets survive because lin_back writes them back to guest RAM;
+// block-linear MINIMAL_LAYOUT render targets lived only in their Vulkan image, so the CPU copy carried zeros and grass blades flattened across Hyrule Field.
+// DM_VK_MINIMAL_BACK=1 (start-up, profile opt-in): asynchronously copies rendered MINIMAL_LAYOUT uncompressed 2D color targets in CPU-accessible pools into a
+// HOST_VISIBLE|HOST_COHERENT staging buffer on a later submission's upload buffer, then swizzles their mip levels back into guest memory once that fence completes.
+// Lock order: g_img_mu before g_wb_mu (wb_drop_img / wb_drop_pool are called with g_img_mu held; wb_* never takes g_img_mu).
+typedef struct {
+    vkimg_t *im; tex_t t; uint32_t w, h, levels; uint64_t sub, fence;
+    VkBuffer b; VkDeviceMemory m; void *p; VkDeviceSize lvoff[16];
+    uint8_t state, cancelled;   // state: 0 queued after draw, 1 copy recorded, 2 done, 3 cancel/error
+} wb_t;
+enum { WB_MAX = 2048 };
+static wb_t g_wb[WB_MAX]; static int g_nwb; static uint64_t g_wb_done;
+static pthread_mutex_t g_wb_mu = PTHREAD_MUTEX_INITIALIZER;
+uint64_t mtl_last_fence(void);
+static int wb_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_VK_MINIMAL_BACK"); v = e && atoi(e); } return v; }
+static int wb_want(const vkimg_t *im, const tex_t *t) {
+    if (!wb_on() || !t->mem || !t->pool || !t->L.size || (t->pool->flags & NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS)) return 0;
+    if (!(t->d.flags & NVN_TEXTURE_FLAGS_MINIMAL_LAYOUT) || (t->d.flags & (NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET | NVN_TEXTURE_FLAGS_SPARSE))) return 0;
+    if (t->d.target != NVN_TEXTURE_TARGET_2D || im->layers != 1 || im->samples > 1 || im->levels > 16) return 0;
+    const vkfmt_t *f = vk_fmt(t->d.format); return f && !f->compressed && !f->depth && !f->stencil && !f->dec && f->bpb;
+}
+static void wb_drop_img(const vkimg_t *im) {
+    if (!__atomic_load_n(&g_nwb, __ATOMIC_ACQUIRE)) return;
+    pthread_mutex_lock(&g_wb_mu);
+    for (int i = 0; i < g_nwb; i++) if (g_wb[i].im == im) { if (g_wb[i].state == 0) g_wb[i].state = 3; g_wb[i].im = NULL; }
+    pthread_mutex_unlock(&g_wb_mu);
+}
+static void wb_drop_pool(const void *pool) {
+    if (!__atomic_load_n(&g_nwb, __ATOMIC_ACQUIRE)) return;
+    pthread_mutex_lock(&g_wb_mu);
+    for (int i = 0; i < g_nwb; i++) if (g_wb[i].t.pool == pool) {
+        if (g_wb[i].state == 0) g_wb[i].state = 3;
+        else if (g_wb[i].state == 1) g_wb[i].cancelled = 1;
+        g_wb[i].im = NULL;
+    }
+    pthread_mutex_unlock(&g_wb_mu);
+}
+static void wb_note_attachment(vkimg_t *im, const tex_t *t) {
+    if (!wb_want(im, t)) return;
+    uint64_t sub = mtl_last_fence() + 1;
+    pthread_mutex_lock(&g_wb_mu);
+    for (int i = 0; i < g_nwb; i++) if (g_wb[i].im == im && g_wb[i].state == 0) { g_wb[i].sub = sub; g_wb[i].t = *t; pthread_mutex_unlock(&g_wb_mu); return; }
+    if (g_nwb == WB_MAX) { pthread_mutex_unlock(&g_wb_mu); VKRED_ONCE(201, "minimal-layout write-back: more than %d waiting", WB_MAX); return; }
+    wb_t *w = &g_wb[g_nwb]; memset(w, 0, sizeof *w); w->im = im; w->t = *t; w->w = im->w; w->h = im->h; w->levels = im->levels; w->sub = sub; w->state = 0;
+    __atomic_store_n(&g_nwb, g_nwb + 1, __ATOMIC_RELEASE);
+    pthread_mutex_unlock(&g_wb_mu);
+}
+static void wb_maybe_record(void) {
+    if (!__atomic_load_n(&g_nwb, __ATOMIC_ACQUIRE) || !vk_sub_open()) return;
+    uint64_t now = mtl_last_fence() + 1;
+    static uint64_t seen; if (now == seen) return; seen = now;
+    VkCommandBuffer cb = VK_NULL_HANDLE;
+    pthread_mutex_lock(&g_wb_mu);
+    for (int i = 0; i < g_nwb; i++) {
+        wb_t *w = &g_wb[i]; if (w->state != 0 || w->sub >= now || !w->im) continue;
+        vkimg_t *im = w->im; const vkfmt_t *f = vk_fmt(w->t.d.format); VkDeviceSize n = 0;
+        for (uint32_t lv = 0; lv < w->levels; lv++) { uint32_t lw = w->w >> lv ? w->w >> lv : 1, lh = w->h >> lv ? w->h >> lv : 1; w->lvoff[lv] = n; n += ((VkDeviceSize)lw * lh * f->bpb + 15) & ~15ull; }
+        VkBufferCreateInfo bi = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, NULL, 0, n, VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_SHARING_MODE_EXCLUSIVE, 0, NULL};
+        if (vkCreateBuffer(V.dev, &bi, NULL, &w->b)) { w->state = 3; continue; }
+        VkMemoryRequirements rq; vkGetBufferMemoryRequirements(V.dev, w->b, &rq);
+        VkMemoryAllocateInfo ai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, rq.size, vk_mem_type(rq.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, 0)};
+        if (vkAllocateMemory(V.dev, &ai, NULL, &w->m) || vkBindBufferMemory(V.dev, w->b, w->m, 0) || vkMapMemory(V.dev, w->m, 0, VK_WHOLE_SIZE, 0, &w->p)) { w->state = 3; continue; }
+        if (!cb) { cb = vk_upload_cmd(); vk_img_barrier_all(cb); }
+        for (uint32_t lv = 0; lv < w->levels; lv++) { uint32_t lw = w->w >> lv ? w->w >> lv : 1, lh = w->h >> lv ? w->h >> lv : 1;
+            VkBufferImageCopy r = {w->lvoff[lv], 0, 0, {VK_IMAGE_ASPECT_COLOR_BIT, lv, 0, 1}, {0, 0, 0}, {lw, lh, 1}}; vkCmdCopyImageToBuffer(cb, im->img, VK_IMAGE_LAYOUT_GENERAL, w->b, 1, &r); }
+        w->fence = now; w->state = 1;
+    }
+    pthread_mutex_unlock(&g_wb_mu);
+    if (cb) vk_img_barrier_all(cb);
+}
+static void wb_maybe_poll(void) {
+    if (!__atomic_load_n(&g_nwb, __ATOMIC_ACQUIRE)) return;
+    uint64_t done = vk_fence_done();
+    pthread_mutex_lock(&g_wb_mu);
+    int o = 0;
+    for (int i = 0; i < g_nwb; i++) {
+        wb_t *w = &g_wb[i];
+        if (w->state == 1 && done >= w->fence) {
+            if (!w->cancelled && w->t.mem && w->t.L.size) {
+                uint8_t *st = malloc(w->t.L.size);
+                if (st) {
+                    memcpy(st, w->t.mem, w->t.L.size); const vkfmt_t *f = vk_fmt(w->t.d.format); int bad = 0;
+                    uint32_t nl = w->t.d.levels ? w->t.d.levels : 1;
+                    for (uint32_t lv = 0; lv < w->levels && lv < nl; lv++) { uint32_t lw = w->w >> lv ? w->w >> lv : 1;
+                        if (nvn_swizzle(&w->t.d, lv, 0, (const uint8_t *)w->p + w->lvoff[lv], (size_t)lw * f->bpb, st)) bad = 1; }
+                    if (!bad) { dm_guest_write_prepare((void *)w->t.mem, w->t.L.size); memcpy((void *)w->t.mem, st, w->t.L.size); g_wb_done++; }
+                    else VKRED_ONCE(202, "minimal-layout write-back: swizzle refused %ux%u fmt %#x", w->w, w->h, w->t.d.format);
+                    free(st);
+                }
+            }
+            vkDestroyBuffer(V.dev, w->b, NULL); vkFreeMemory(V.dev, w->m, NULL); w->state = 2;
+        }
+        if (w->state == 3) { if (w->b) vkDestroyBuffer(V.dev, w->b, NULL); if (w->m) vkFreeMemory(V.dev, w->m, NULL); }
+        if (w->state < 2) g_wb[o++] = *w;
+    }
+    __atomic_store_n(&g_nwb, o, __ATOMIC_RELEASE);
+    pthread_mutex_unlock(&g_wb_mu);
+}
+
 // ---------------- views ----------------
 typedef struct vview { VkImageView v; VkImageViewType type; VkFormat fmt; uint32_t lv0, nlv, ly0, nly; VkComponentMapping swz; VkImageAspectFlags aspect; int attach; VkImageUsageFlags usage; struct vview *next; } vview;   // attach: an attachment view (its usage differs from a sampling view's)
 static nvn_hmap g_views = {.klen = sizeof(vkimg_t *)};   // vkimg_t* → vview list
@@ -685,6 +795,7 @@ static int bc_standin_ok(const vkimg_t *im, const vkfmt_t *cf, const vkfmt_t *vf
 VkImageView vk_tex_view_as(const tex_t *t, const view_t *vw, int dim, int arrayed, int as_attachment, vkimg_t **img_out, VkFormat vfmt) {
     vkimg_t *im = vk_tex(t); if (img_out) *img_out = im;
     if (!im) return VK_NULL_HANDLE;
+    if (as_attachment) wb_note_attachment(im, t);
     if (as_attachment) { im->wseq = ++g_wseq; im->gpu_w = 1; } else if (im->novl) alias_check(im);
     vk_watch(im, as_attachment ? "attachment" : "sampled or image");
     if (!as_attachment) { void vk_texdump_note(vkimg_t *im); vk_texdump_note(im); }
