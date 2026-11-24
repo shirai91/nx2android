@@ -41,7 +41,7 @@ app_pool	0xCD500000
 sys_resource	0x5000000
 
 # ---- Input ----
-# A 3D game with a free camera on the right stick: the 3D pad layout. It reads the controller only, so it stays docked (1920x1080)
+# A 3D game with a free camera on the right stick: the 3D pad layout. It reads the controller only, so either operation mode works; the player's docked setting decides 1920x1080 or 1280x720
 pad_layout	full
 
 # ---- Shader split ----

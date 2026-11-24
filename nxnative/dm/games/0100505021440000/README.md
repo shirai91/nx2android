@@ -16,7 +16,7 @@ The profile sets these for you (`android.tsv`); a player changes the pause menu 
 
 | Row | What it does |
 |---|---|
-| `pacing fixed30` | frame pacing preset: DM_FPS_TARGET=30, DM_ADAPTIVE_FPS=0 |
+| `DM_GPU_TURBO=auto` | "auto" or 1: ask the GPU for its high clocks while the game is GPU-bound; "need": only while the game is held below its target; unset or 0 = no |
 
 Read the profile's porting log in the comment header of [`android.tsv`](android.tsv). Back to the [games list](../../../../README.md#games).
 <!-- end of the game facts -->
@@ -28,7 +28,8 @@ Read the profile's porting log in the comment header of [`android.tsv`](android.
 
 ## Frame rate
 
-- 30 fps, held (`pacing fixed30`), as on the Switch. The game itself caps Unreal at 30 and asks for present interval 2; the profile lifts both (`fps_locks.tsv`) and the host holds 30. Docked at 1920x1080 it is GPU-bound (GPU p50 20-28 ms against the 33 ms of 30 fps); held there the GPU stayed at 46-66 °C on the tested device. With the frame-rate governor on it stepped between 40 and 30.
+- Up to 60 fps, with the frame-rate governor stepping between 60, 40 and 30. On the tested device handheld (1280x720) reaches 60 fps on the overworld and 40 in the village; docked (1920x1080) holds 30, at a higher SoC temperature. The game itself caps Unreal at 30 and asks for present interval 2; the profile lifts both (`fps_locks.tsv`). The operation mode is the pause menu's own setting, and it decides the render resolution.
+- The GPU is asked for its high clocks while it is the limit (`DM_GPU_TURBO=auto`). Without that, a held frame rate lets the GPU governor lower the clock until the work fills the longer frame: measured at ~22 fps with a cool SoC, against 30 fps held once the clocks were asked for. A low temperature alongside a low frame rate is that downclocking, not headroom.
 
 ## Tested devices
 
