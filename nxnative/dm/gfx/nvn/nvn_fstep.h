@@ -26,6 +26,7 @@
 #define FSTEP_HOLD_MAX 480.0
 #define FSTEP_GRACE 30        // a probe's first frames, whose lateness neither fails it nor counts toward a step up (the controller lowered the clock within 10 frames of a step to 30)
 #define FSTEP_SAME 1.1        // the cost at the longer hold against the cost that held kmin: at most this much is the same scene (BotW at hold 2: 1.0–1.07 times its hold-1 GPU time)
+#define FSTEP_GAME_WAIT 10    // a trial's frames, at most, that wait for the game's own interval to follow the shorter hold (game_k)
 
 typedef struct {
     int k, step;              // vsyncs each frame stays on screen; the step handed to the game for the next frame (k, or k + 1 while paying back)
@@ -39,6 +40,7 @@ typedef struct {
                               // crun when the last run of FSTEP_HOLD_MAX or more ended in a step up (0 = none yet)
     double ccur; int ck, cn;  // the cost of the frames on time at the longer hold ck (running mean) and their count
     int ckmin;                // the kmin run, crun and cref belong to
+    int game_k, gwait;        // the game's own present interval (set by the caller before each call; 0 = unknown); a trial's frames so far that waited for it
     uint64_t late, paid, ups, downs, failed, probes; double dropped;   // statistics for the log
 } nvn_fstep;
 
@@ -69,8 +71,14 @@ static inline int nvn_fstep_next(nvn_fstep *s, double shown, double cost, int km
     if (kmin < s->kmin || s->k < kmin) s->k = kmin;   // the cap rose (a movie or the game's own step ended) or fell
     if (s->k > kmax) s->k = kmax;
     s->kmin = kmin;
-    int late = shown > held + FSTEP_LATE + s->shown_slack || cost > held + FSTEP_LATE, grace = s->grace > 0;
-    if (grace) s->grace--;
+    // The game's own interval logic (Breath of the Wild, Tears of the Kingdom: present intervals 1-3) waits its interval out itself, so the first frames of a trial below the
+    // game's interval cost the game's interval: they are late until the game follows the shorter hold. On an AYN Odin 3, BotW set interval 3 after a hitch while loading a
+    // save; every trial at hold 2 then saw 3 frames at a cost of 3.0 vsyncs (the scene's own cost was 0.3-0.6) and failed, the game went back to 3 within 100 ms, and it ran
+    // at 20 fps for a minute until the pause menu broke the loop. Up to FSTEP_GAME_WAIT frames of a trial, while the game's interval is above the hold, count as its grace
+    int gwait = s->trial && s->game_k > s->k && s->gwait < FSTEP_GAME_WAIT;
+    if (gwait) s->gwait++;
+    int late = shown > held + FSTEP_LATE + s->shown_slack || cost > held + FSTEP_LATE, grace = s->grace > 0 || gwait;
+    if (s->grace > 0) s->grace--;
     if (late) { s->late++; s->late_run = grace ? 0 : s->late_run + 1; s->fit_run = 0; } else s->late_run = 0;
     // The cost of the frames on time (a hitch is not what the scene costs): at kmin, and at the longer hold
     if (kmin != s->ckmin) { s->ckmin = kmin; s->run = s->crun = s->cref = 0; }
@@ -90,9 +98,9 @@ static inline int nvn_fstep_next(nvn_fstep *s, double shown, double cost, int km
         s->k = want; s->ups++; s->late_run = s->fit_run = 0; s->since = 0; s->probe = 0;
     } else if (s->trial && !grace && !--s->trial) { if (s->probe) { s->probe = 2; s->since = 0; } else s->hold = FSTEP_HOLD0; }   // the trial held (a probe's run at kmin is judged at the next step up)
     if (!late) s->fit_run = s->k > kmin && cost <= FSTEP_FIT * (s->k - 1) ? s->fit_run + 1 : 0;
-    if (s->fit_run >= FSTEP_RUN && s->since >= s->hold && !s->trial) { s->k--; s->downs++; s->trial = FSTEP_RUN; s->fit_run = 0; }
+    if (s->fit_run >= FSTEP_RUN && s->since >= s->hold && !s->trial) { s->k--; s->downs++; s->trial = FSTEP_RUN; s->fit_run = 0; s->gwait = 0; }
     else if ((slow || nvn_fstep_same(s)) && s->k > kmin && s->since >= s->hold && !s->trial) {   // probe: straight to kmin, so the controller sees the whole deadline
-        s->k = kmin; s->downs++; s->probes++; s->trial = FSTEP_RUN; s->probe = 1; s->grace = FSTEP_GRACE; s->fit_run = s->late_run = 0;
+        s->k = kmin; s->downs++; s->probes++; s->trial = FSTEP_RUN; s->probe = 1; s->grace = FSTEP_GRACE; s->fit_run = s->late_run = 0; s->gwait = 0;
     }
     s->step = s->k + (s->debt >= 1 && s->k < FSTEP_MAX);
     s->paid += s->step > s->k;

@@ -19,7 +19,7 @@ HARNESS_HEAD = r'''
 #include <string.h>
 #include "nvn_fstep.h"
 
-typedef struct { uint64_t presents; } win_t;
+typedef struct { uint64_t presents; int interval; } win_t;   // interval: the game's own present interval (nvnWindowSetPresentInterval)
 
 static uint64_t g_fake_now_ns = 10000000000ULL;
 static uint64_t g_frame;
@@ -144,6 +144,28 @@ int main(int argc, char **argv) {
         assert(g_fs.k == 2);
         for (int i = 0; i < 300 && g_fs.k > 1; i++) step_frame(&w, 2.05, 0.0, 1.35, 0.25, 6.0);
         assert(g_fs.k == 1);
+    } else if (strcmp(mode, "android_trial_waits_for_the_games_interval") == 0 || strcmp(mode, "android_trial_fails_when_the_game_never_follows") == 0) {
+        // Breath of the Wild on an AYN Odin 3: a hitch while loading a save stepped the hold to 3 and the game set its own present interval to 3. The scene is cheap
+        // (0.3-0.6 vsyncs), but at a trial at hold 2 the game still waits out its interval for its first frames (cost 3.0): those must not fail the trial
+        int follows = strcmp(mode, "android_trial_waits_for_the_games_interval") == 0;
+        init_state(0, 120);
+        w.interval = 1;
+        for (int i = 0; i < 30; i++) step_frame(&w, 1.0, 0.0, 0.25, 0.30, 6.0);
+        for (int i = 0; i < 4; i++) step_frame(&w, 3.25, 0.0, 0.0, 3.20, 6.0);   // the hitch
+        assert(g_fs.k == 3);
+        w.interval = 3;   // the game's own logic follows to 20 fps
+        int i = 0;
+        for (; i < 900 && g_fs.k == 3; i++) step_frame(&w, 3.02, 0.0, 2.60, 0.30, 6.0);
+        assert(g_fs.k == 2 && g_fs.trial);   // a trial at 30 fps
+        for (int j = 0; j < 3; j++) step_frame(&w, 3.00, 0.0, 0.0, 0.30, 6.0);   // the game still waits out its interval 3
+        if (follows) {
+            w.interval = 2;   // and then follows the shorter hold
+            for (int j = 0; j < 120; j++) { step_frame(&w, g_fs.k == 1 ? 1.0 : 2.02, 0.0, g_fs.k == 1 ? 0.6 : 1.60, 0.30, 6.0); assert(g_fs.k <= 2); }   // never back to 20 fps (and on to 60 once 30 holds)
+            assert(g_fs.k == 1);
+        } else {
+            for (int j = 0; j < 40 && g_fs.k == 2; j++) step_frame(&w, 3.00, 0.0, 0.0, 0.30, 6.0);
+            assert(g_fs.k == 3);   // the grace is bounded: a game that stays at 20 fps fails the trial
+        }
     } else if (strcmp(mode, "display_link_unchanged") == 0) {
         init_state(1, 165);
         for (int i = 0; i < 20; i++) step_frame(&w, 1.0, 0.1, 0.0, 0.30, 10.0);
@@ -193,6 +215,8 @@ class FstepAndroidTests(unittest.TestCase):
             'android_no_gpu_ts_steps_up_at_kmin',
             'android_real_overrun_at_30_steps_to_20_then_recovers',
             'display_link_unchanged',
+            'android_trial_waits_for_the_games_interval',
+            'android_trial_fails_when_the_game_never_follows',
         )
         for case in cases:
             with self.subTest(case=case):
