@@ -1182,7 +1182,7 @@ static VkQueryPool g_cq;
 // query back while later submissions use the pool, so it keeps the constant). One query per run of draws between two counter ops inside a pass, so the cost
 // follows the game's counter ops rather than its draws (FFR's hall: 506 reports and 563 queries a frame for 1425 draws)
 enum { OQ_N = 8192, OQ_DEFAULT = 1 };   // DM_VK_OCCLUSION=0 restores the constant every samples-passed report used to write
-static VkQueryPool g_oqpool;
+static VkQueryPool g_oqpool; static int g_oq_precise;   // precise: exact sample counts, else a query answers only zero / nonzero (what a visibility test reads)
 #define SCRATCH_BLOCK (8u << 20)
 typedef struct { VkBuffer b; VkDeviceMemory m; uint8_t *p; VkDeviceSize size, used; } scratch_blk;
 typedef struct { int kind; void *a; void *b; } dfree_t;   // 0 buffer+memory, 1 image+memory, 2 view
@@ -1311,10 +1311,11 @@ static void slots_init(void) {
     if (!g_tsq || vkCreateQueryPool(V.dev, &cqi, NULL, &g_cq)) g_cq = VK_NULL_HANDLE;
     { const char *e = getenv("DM_VK_PASS_TIMES"); if (e && atoi(e)) { VkQueryPoolCreateInfo pq = {VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, NULL, 0, VK_QUERY_TYPE_TIMESTAMP, NSLOT * PASSQ * 2}; if (vkCreateQueryPool(V.dev, &pq, NULL, &g_pq)) g_pq = VK_NULL_HANDLE; } }
     { const char *e = getenv("DM_VK_OCCLUSION"); int want = e ? atoi(e) : OQ_DEFAULT;
+      const char *pe = getenv("DM_VK_OCCLUSION_PRECISE"); g_oq_precise = V.oq_precise && (!pe || atoi(pe));
       if (want && V.has_hqreset && vkCmdBeginQuery && vkCmdEndQuery && vkResetQueryPool) {
           VkQueryPoolCreateInfo oi = {VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, NULL, 0, VK_QUERY_TYPE_OCCLUSION, OQ_N};
           if (!vkCreateQueryPool(V.dev, &oi, NULL, &g_oqpool)) { vkResetQueryPool(V.dev, g_oqpool, 0, OQ_N); vk_oq_init(1, OQ_N);
-              VKLOG("occlusion queries: counted on the GPU (%s; a ring of %d; DM_VK_OCCLUSION=0: the constant)", V.oq_precise ? "precise counts" : "not precise: a nonzero count for any sample", OQ_N); } }
+              VKLOG("occlusion queries: counted on the GPU (%s; a ring of %d; DM_VK_OCCLUSION=0: the constant)", g_oq_precise ? "precise counts" : "not precise: a nonzero count for any sample", OQ_N); } }
       if (!g_oqpool) { vk_oq_init(0, OQ_N);
           if (want) VKLOG("occlusion queries: %s: every samples-passed report writes the constant", V.has_hqreset ? "no occlusion query pool" : "no hostQueryReset"); } }
     for (int i = 0; i < NSLOT; i++) {
@@ -1572,7 +1573,7 @@ void mtl_sub_counter(uint64_t addr, uint32_t type) {
 }
 // ---- samples-passed (occlusion) counting: the replay records the queries here, the completion thread adds them up (gfx_vk_occlusion.inc) ----
 // A committed draw: begins the query its run of draws counts into, if none is open in this pass. Off, or a segment no report reads, this does nothing
-void vk_oq_begin_draw(void) { int q = vk_oq_draw(); if (q >= 0) vkCmdBeginQuery(vk_cmd(), g_oqpool, (uint32_t)q, V.oq_precise ? VK_QUERY_CONTROL_PRECISE_BIT : 0); }
+void vk_oq_begin_draw(void) { int q = vk_oq_draw(); if (q >= 0) vkCmdBeginQuery(vk_cmd(), g_oqpool, (uint32_t)q, g_oq_precise ? VK_QUERY_CONTROL_PRECISE_BIT : 0); }
 // A query lives inside one render pass instance: it ends at the pass end, and at a report or reset that falls inside the pass
 void vk_oq_end_pass(void) { int q = vk_oq_close(); if (q >= 0) vkCmdEndQuery(vk_cmd(), g_oqpool, (uint32_t)q); }
 void vk_oq_draw_skipped(void) { vk_oq_lost(); }   // a draw the replay left out while counting: what is not known reads as visible
