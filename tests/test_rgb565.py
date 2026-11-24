@@ -4,6 +4,10 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import csrc  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -12,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class Packed565(unittest.TestCase):
     def test_rgb_and_bgr_channel_order(self):
         source = (ROOT / 'nxnative/dm/android/gfx_vk_tex.c').read_text()
-        table = source[source.index('enum { K_NONE'):source.index('static vkfmt_t g_fmt')]
+        table = csrc.between(source, 'enum { K_NONE', 'static vkfmt_t g_fmt')
         code = r'''
 #include <assert.h>
 #include <stdint.h>

@@ -26,7 +26,7 @@ typedef struct {
     gbuf *rel[RELMAX]; _Atomic uint32_t rel_head, rel_tail; // Released: written by the output side, read by the game side
     uint64_t pos;                      // Bytes already played of the current block
     AudioUnit au;
-    int backend;                       // BK_*: the running consumer. Start, Stop and the background suspend change it only under g_aos_lock and act on it rather than re-deriving it from state and g_suspended
+    _Atomic int backend;               // BK_*: lifecycle writes hold g_aos_lock; device callbacks and the silent sink read it without that lock
     pthread_t null_th; _Atomic int null_run;
     _Atomic int pulling;               // a consumer is in pull() (exclusive_pull)
     dispatch_semaphore_t notify_sem;
@@ -311,7 +311,7 @@ static Result au_open_at(void *g, void *ev, const char *name, const uint8_t *par
     if (rate && rate != RATE) die("AudioOut sample rate %d not supported (48 kHz only)", rate);
     aout *a = calloc(1, sizeof *a);
     pthread_mutex_init(&a->m, NULL); a->event = ev; a->ch = ch;
-    atomic_init(&a->state, STATE_STOPPED); atomic_init(&a->vol, 0x3f800000u);
+    atomic_init(&a->state, STATE_STOPPED); atomic_init(&a->vol, 0x3f800000u); atomic_init(&a->backend, BK_NONE);
     atomic_init(&a->q_head, 0); atomic_init(&a->q_tail, 0);
     atomic_init(&a->rel_head, 0); atomic_init(&a->rel_tail, 0);
     atomic_init(&a->null_run, 0); atomic_init(&a->notify_run, 1);
@@ -360,6 +360,24 @@ static void au_stop_at(void *g, void *lr) {   // lr NULL: the stop inside Close,
     int was = atomic_exchange_explicit(&a->state, STATE_STOPPED, memory_order_acq_rel);
     if (lr) au_note(a, was == STATE_STARTED ? "Stop" : "Stop (already stopped)", lr);
     backend_stop(a);   // the AudioUnit, or the silent sink (including one that took over during suspension)
+    if (was == STATE_STARTED) {
+        // FMOD joins its output thread after Stop; that thread can be waiting on the release event (#458).
+        // Take over the consumer slot while returning its partial buffer and every pending buffer.
+        while (!pull_begin(a)) sched_yield();
+        pthread_mutex_lock(&a->m);
+        uint32_t head = atomic_load_explicit(&a->q_head, memory_order_relaxed);
+        uint32_t tail = atomic_load_explicit(&a->q_tail, memory_order_relaxed);
+        uint32_t released = atomic_load_explicit(&a->rel_tail, memory_order_relaxed);
+        for (uint32_t i = head; i != tail; i++)
+            a->rel[released++ & (RELMAX - 1)] = a->q[i & (QMAX - 1)].b;
+        a->pos = 0;
+        atomic_store_explicit(&a->q_head, tail, memory_order_release);
+        atomic_store_explicit(&a->rel_tail, released, memory_order_release);
+        pthread_mutex_unlock(&a->m);
+        pull_end(a);
+        if (a->event) notify_release(a);   // Also wake a waiter on an empty started output.
+        if (head != tail && a->rel_sem) dispatch_semaphore_signal(a->rel_sem);
+    }
     pthread_mutex_unlock(&g_aos_lock);
 }
 HLE_FORCE("_ZN2nn5audio12StopAudioOutEPNS0_8AudioOutE", "stop playback", void, h_au_Stop, void *g) { au_stop_at(g, __builtin_return_address(0)); }
@@ -411,8 +429,10 @@ HLE_FORCE("_ZN2nn5audio20AppendAudioOutBufferEPNS0_8AudioOutEPNS0_14AudioOutBuff
       if (df && b && b->ptr && b->size) fwrite(b->ptr, 1, (size_t)b->size, df); }
     pthread_mutex_lock(&a->m);
     uint32_t qt = atomic_load_explicit(&a->q_tail, memory_order_relaxed);
-    uint32_t qh = atomic_load_explicit(&a->q_head, memory_order_acquire);
-    int ok = qt - qh < QMAX;
+    // Each accepted buffer occupies a slot until the game takes it back.
+    // This leaves room in the released queue for every pending buffer on Stop.
+    uint32_t taken = atomic_load_explicit(&a->rel_head, memory_order_relaxed);
+    int ok = qt - taken < QMAX;
     // the buffer's data pointer and size are taken now, as the audout service does: the game's AudioOutBuffer is its own to change once appended (Xenoblade
     // Chronicles 3 set its buffers up again for the output it opened after an operation mode change while they were queued, and the device callback copied from a
     // null pointer); the struct's address stays the buffer's identity for GetReleasedAudioOutBuffer

@@ -10,6 +10,10 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import csrc  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,11 +25,11 @@ class AndroidMotion(unittest.TestCase):
         cc = shutil.which('cc') or shutil.which('clang')
         if not cc:
             raise unittest.SkipTest('a C compiler is required')
-        front = (ROOT / 'nxnative/dm/android/front_android.c').read_text()
-        hid = (ROOT / 'nxnative/dm/host/hle_hid.c').read_text()
-        shake = hid[hid.index('#define SHAKE_HZ'):hid.index('void dm_input_set(')]
-        motion = hid[hid.index('typedef struct { int64_t delta_ns'):hid.index('// SixAxisSensorHandle:')]
-        sensor = front[front.index('static void motion_feed('):front.index('static void *input_thread(')]
+        front = (ROOT / 'nxnative/dm/android/front_android.c').read_text(encoding='utf-8')
+        hid = (ROOT / 'nxnative/dm/host/hle_hid.c').read_text(encoding='utf-8')
+        shake = csrc.between(hid, '#define SHAKE_HZ', 'void dm_input_set(')
+        motion = csrc.between(hid, 'typedef struct { int64_t delta_ns', '// SixAxisSensorHandle:')
+        sensor = csrc.between(front, 'static void motion_feed(', 'static void *input_thread(')
         harness = r'''
 #include <assert.h>
 #include <math.h>
@@ -132,7 +136,7 @@ int main(int argc, char **argv) {
         cls.addClassCleanup(cls.tmp.cleanup)
         c = Path(cls.tmp.name) / 'motion.c'
         cls.exe = Path(cls.tmp.name) / 'motion'
-        c.write_text(harness)
+        c.write_text(harness, encoding='utf-8')
         result = subprocess.run([cc, '-std=gnu11', '-Wall', '-Wextra', '-Werror',
                                  '-I' + str(ROOT / 'nxnative/dm/host'), str(c),
                                  '-lm', '-pthread', '-o', str(cls.exe)], capture_output=True, text=True)

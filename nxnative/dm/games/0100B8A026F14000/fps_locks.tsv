@@ -1,0 +1,7 @@
+# Engine frame limits kept in game memory that the host raises to the frame-rate target (nxnative/dm/host/hle_fpslock.c; dm/games/game.py puts these rows in the
+# profile header as DM_GAME_FPS_LOCKS). Each row runs only on its main build. ptr_off: a pointer at main + ptr_off to the object holding the field (0: the field is at
+# main + field); kind: FPS_F32, VSYNCS_I32, MS_F32, SEC_F32, FPS_I32; copies: consecutive copies of the value; ptr2: a second pointer at that object + ptr2 (0 = none).
+#	build	what	ptr_off	field	kind	copies	ptr2
+# FINAL FANTASY RESONANCE 1.0.1, the Korean / Chinese release: the same engine build at the same offsets (its game.tsv also has fps_target 60 on the Android host)
+b7f965b9d7227db8e29f04e84ea7331b	Unreal t.MaxFPS	0x8c29b00	0x0	FPS_F32	2	0
+b7f965b9d7227db8e29f04e84ea7331b	Unreal rhi.SyncInterval	0x8adca20	0x0	VSYNCS_I32	2	0

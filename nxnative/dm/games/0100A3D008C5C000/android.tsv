@@ -22,3 +22,5 @@ env	DM_FPS_TARGET=0
 env	DM_FPS_PIN=60
 env	DM_FPS_HOLD=off
 env	DM_VK_X_FLAT_VS=45cd97ab0aae9cdc:8
+readme_image	docs/images/pokemon-scarlet.jpg
+readme_tag	v0.4.0

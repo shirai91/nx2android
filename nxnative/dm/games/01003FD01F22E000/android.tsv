@@ -1,0 +1,14 @@
+# Tales of Berseria Remastered on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Unity 2022.3.62f1 IL2CPP with CRIWARE and FMOD, SDK 19.3.11, NVN; subsdk0 is NintendoSDK_movie. Update v262144, display 1.0.5 (Asia).
+# 11,527 source shaders, including 44 compute; all 11,531 Vulkan variants translated without runtime captures.
+# The 1.0.5 main patch fixes a missed wake in Unity's render queue; no shared runtime change is needed.
+# Sony XQ-DQ72 (Xperia 1 V, Adreno 740, Android 13): passed the former white-screen transition; movement, camera and pause menu worked,
+# about 30 fps at 1920x1080 in the opening area. The player also reported about an hour on Xperia 1 V and three hours on OnePlus 15
+# (Snapdragon 8 Elite Gen 5) without issues. Full completion and other GPU families are unverified.
+# System Vulkan driver and default frame pacing; no forced 60 fps or diagnostic overrides.
+status	playable
+tested	v262144 (1.0.5) Sony XQ-DQ72 (Adreno 740) and OnePlus 15 (Snapdragon 8 Elite Gen 5)
+package	org.nx2a.t01003fd01f22e000
+orientation	landscape
+readme_image	docs/images/tales-of-berseria.jpg
+readme_tag	v0.5.0

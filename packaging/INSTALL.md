@@ -61,7 +61,17 @@ The data folder carries the game's own files, its RomFS (most of the game: often
 nx2android.exe -m porter install "<Game>-data" --romfs-at /sdcard/<path to the dump>/romfs
 ```
 
-(`./nx2android -m porter …` on a Mac.) The installer checks that the folder holds exactly the game's files, gives the app **All files access** (the device does not ask you), does not copy the game's files, and deletes the copy an earlier install left in the app's folder. It compares the names and sizes of all the files, and the content of a sample of them, so a dump of another game version is refused. Later installs, from the app's **Install on device** button too, keep reading that folder; a port of a newer game version needs that version's folder (`--romfs-at` again, or the field). `--romfs-at app` (or `app` in the field) puts the files back in the app's own folder. A folder inside another app's `Android/data` cannot be used: Android lets no app read it. To put the game's files on the SD card instead, add `--romfs-push` (the **Push the game's RomFS into that folder** box) with an empty folder there.
+(`./nx2android -m porter …` on a Mac.) The installer checks that the folder holds exactly the game's files, gives the app **All files access** (the device does not ask you), does not copy the game's files, and deletes the copy an earlier install left in the app's folder. It compares the names and sizes of all the files, and the content of a sample of them, so a dump of another game version is refused. Later installs, from the app's **Install on device** button too, keep reading that folder; a port of a newer game version needs that version's folder (`--romfs-at` again, or the field). `--romfs-at app` (or `app` in the field) puts the files back in the app's own folder; a folder you chose is left as it is. A folder inside another app's `Android/data` cannot be used: Android lets no app read it. To put the game's files in a folder of your own on the SD card instead, add `--romfs-push` (the **Push the game's RomFS into that folder** box) with an empty folder there.
+
+### The game's files on the SD card
+
+Android installs apps only to an SD card formatted as internal storage. On a device whose SD card is portable storage, the app stays in internal storage, but its game files (the RomFS, most of the game) can go on the card: tick **Game data on the SD card**, or install with:
+
+```
+nx2android.exe -m porter install "<Game>-data" --romfs-at sd
+```
+
+The installer copies the game's files into the app's own folder on the card, `Android/data/<package>/files/RomFS`, and gives the app **All files access**. Android deletes that folder when you uninstall the game. A later install, with the box ticked or not, keeps the files on the card and copies only what a new game version changed (files that are not the new version's are deleted). `--romfs-at app` (or `app` in the field) moves the files back into internal storage and deletes them from the card. With no SD card in the device, the install stops before it changes anything. If a USB drive is plugged in too, the SD card is used; with only a USB drive, the files go on it, and the game does not start without it.
 
 If the app closes at once and its `log.txt` says it lacks All files access, turn it on in Settings → Apps → the game → All files access (the app opens that page itself), or install again.
 

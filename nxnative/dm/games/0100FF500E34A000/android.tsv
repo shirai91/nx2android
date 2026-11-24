@@ -11,9 +11,16 @@
 # GPU at 475-615 MHz, 71-80% busy, 30 fps held; the title stays 1280x720. The dithered dark streaks near the camera in fights look the same with and without
 # DM_NVN_ASYNC. 30 minutes in the battle area (walking, the camera, fights): one process, frame p95 33.5-34.1 ms, memory flat at 1.2 GB, no audio underruns.
 # Open: one crash in about 35 boots, at frame 2 (nn::os::FlushDataCache from main+0x619e78 with a size of 0x7d7c7d7e, while resource_creater started); 0 in a 10-boot loop
+# Black road on the way to Colony 9 (2026-11-19): the road-blend decal (fragment shader 5119ea2c4c0a2211) reads the RGB10A2 normal G-buffer it draws into as r32ui
+# and unpacks the bits itself. Without an integer view in the image's format list the view fell back to RGB10A2 UNORM, the shader got garbage, and the road's
+# normals came out as per-pixel noise, lit black. DM_VK_UBWC bit 4 (gfx_vk_tex.c) lists the uint and sint formats on images flagged as images.
+# The road and all of Colony 9 up to the Military District now draw correctly; GPU busy 20.6-22.9 ms a frame against 22.6 ms before, so the added formats cost nothing.
 status	playable
 tested	v262144 AYN Odin 2 (Snapdragon 8 Gen 2, Adreno 740, Android 13); Turnip (vulkan.ad07xx.so)
 package	org.nx2a.xenobladechroniclesde
 orientation	landscape
 env	DM_NVN_ASYNC=1
 env	DM_PIN_REPLAY=prime
+env	DM_VK_UBWC=7
+readme_image	docs/images/xenoblade-chronicles-definitive-edition.jpg
+readme_tag	v0.4.0

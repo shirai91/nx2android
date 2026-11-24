@@ -14,6 +14,7 @@ import android_profile   # noqa: E402
 import game              # noqa: E402
 import nacp              # noqa: E402
 import profile_guess     # noqa: E402
+import settings_registry # noqa: E402
 import trinity           # noqa: E402
 import uepak             # noqa: E402
 

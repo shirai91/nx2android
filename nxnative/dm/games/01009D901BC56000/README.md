@@ -1,36 +1,77 @@
-# Donkey Kong Country Returns HD (`01009D901BC56000`)
+<!-- game facts: made by docs/gen_tables.py from android.tsv; edit android.tsv, not this block -->
+# Donkey Kong Country Returns HD
 
-Update 1.1.0 (v65536) over the base game, SDK 18.3.5. Unity 6000.0.28f1 IL2CPP with FMOD on NVN. Modules `main`, `subsdk0` (NintendoSDK_movie) and `sdk`; the SDK and movie module are the builds used by [Monster Train 2](../010051701FB46000/README.md) and [Super Mario Galaxy](../010099C022B96000/README.md). The base game is not registered or tested.
+![Donkey Kong Country Returns HD](../../../../docs/images/donkey-kong-country-returns-hd.jpg)
+
+| | |
+|---|---|
+| Status | **playable** |
+| Title ID | `01009D901BC56000` |
+| Tested with nx2android | `v0.1.3` |
+| Tested build and device | v65536 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16) |
+| App package | `org.nx2a.donkeykongcountryreturnshd` |
+
+Read the profile's porting log in the comment header of [`android.tsv`](android.tsv). Back to the [games list](../../../../README.md#games).
+<!-- end of the game facts -->
+
+## Game version
+
+- Update 1.1.0.
+- The profile was checked with `v65536` (the `tested` row of android.tsv).
+
+## Frame rate
+
+- 60 fps.
+
+## Tested devices
+
+| Device | GPU | Vulkan driver | Game version | nx2android | Result |
+|---|---|---|---|---|---|
+| Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16) | Adreno 830 | not recorded | 1.1.0 (v65536) | `v0.1.3` | playable |
+
+## Options
+
+- Not recorded.
+
+## Quirks and known issues
+
+- Not recorded.
+
+## Porting notes
+
+These notes come from the profile's earlier page (nxnative). Parts of them cover the Mac and iOS hosts, not Android.
+
+Update 1.1.0 (v65536) over the base game, SDK 18.3.5. Unity 6000.0.28f1 IL2CPP with FMOD on NVN. Modules `main`, `subsdk0` (NintendoSDK_movie) and `sdk`; the SDK and movie module are the builds used by [Monster Train 2](https://github.com/seedds/nxnative/blob/3084f7a205bcb3a9cb74cf26180dabcc01c7abca/dm/games/010051701FB46000/README.md) and [Super Mario Galaxy](https://github.com/seedds/nxnative/blob/3084f7a205bcb3a9cb74cf26180dabcc01c7abca/dm/games/010099C022B96000/README.md). The base game is not registered or tested.
 
 Plays on the Mac at 60 fps: the title, a new save, the opening movie, the island and Jungle maps, and the opening of 1-1 Jungle Hijinxs (running, jumping, damage, losing a life and restarting). An unsigned IPA is built; iOS is untested.
 
-## What it needs
+### What it needs
 
 | Setting | Where | Why |
 |---|---|---|
 | `sys_resource 0x1000000` | [`game.tsv`](game.tsv) | the NPDM declares 16 MB of system resource: virtual address memory |
-| 5 GB guest block: `mem_reserve 0x140000000`, `mem_alias 0x118000000`, `mem_stack 0x10000000`, `app_pool 0xCD500000` | `game.tsv` | Unity 6 reserves and commits its regions itself, without setting a heap, as [BALL x PIT](../010086A022444000/README.md) |
+| 5 GB guest block: `mem_reserve 0x140000000`, `mem_alias 0x118000000`, `mem_stack 0x10000000`, `app_pool 0xCD500000` | `game.tsv` | Unity 6 reserves and commits its regions itself, without setting a heap, as [BALL x PIT](https://github.com/seedds/nxnative/blob/3084f7a205bcb3a9cb74cf26180dabcc01c7abca/dm/games/010086A022444000/README.md) |
 | `depth_mode zero` | `game.tsv` | the offline pipeline prebuild uses the near=0 convention the game sets at boot |
 | SDK node area 1 GB → 62 MB | `dm/tools/sdk_patches.py`, SDK build `60751516…` | the existing shared SDK patch leaves room for the game's address regions |
 | Unity 6 Shader layout | `dm/gfx/tools/unityfs.py` | no bundle supplies the stripped files' type tree; see [Shaders](#shaders) |
 
 No game-code patch.
 
-## Shaders
+### Shaders
 
-- **Resolved:** the split stopped with `no bundle has a Shader type tree of the same hash to borrow`. The 214 Shader objects have hash `2ec7223dce3af4232b14ae1441bd7999`, the same as BALL x PIT's bundles. The shared reader now supplies that layout: [Unity Shader layouts written out for players without bundles](../../../docs/reference/shaders.md#unity-shader-layouts-written-out-for-players-without-bundles).
+- **Resolved:** the split stopped with `no bundle has a Shader type tree of the same hash to borrow`. The 214 Shader objects have hash `2ec7223dce3af4232b14ae1441bd7999`, the same as BALL x PIT's bundles. The shared reader now supplies that layout: [Unity Shader layouts written out for players without bundles](https://github.com/seedds/nxnative/blob/3084f7a205bcb3a9cb74cf26180dabcc01c7abca/docs/reference/shaders.md#unity-shader-layouts-written-out-for-players-without-bundles).
 - The layout matches the bundle tree in types, field order and alignment flags. Every Shader object and all 16 ComputeShader objects read to their exact ends; compute uses the existing 2022.3 layout (`bfdf63ab…`).
 - All 19,314 shaders build for Mac and iOS, with no unresolved binding or driver-bank read the host cannot fill. The prewarm seed has 280 entries (160 shaders, 110 render pipelines, 10 compute pipelines), covering the tested opening route. A clean Mac startup prepared every entry in 0.04 seconds with no missing key or red line.
 - 19,314 stage shaders: 9,596 vertex, 9,600 pixel, 117 compute and one geometry; 9,602 vertex/pixel pairs. Of these, 19,303 come from the loose serialized files under `Data/`, and 11 are the player's GLSLC outputs in `main`. RomFS has 362 files (12.50 GB), including 14 MP4 movies and 74 FMOD resource files.
 
-## Mac routes
+### Mac routes
 
 The work folder is `<NSP folder>/01009D901BC56000-work`. `run/boot.py <log name> <seconds> KEY=VALUE…` uses the rewritten v65536 modules and `build/returnshost`, with save and temporary storage in `run/`. `run/ctl.py --shot <name> <buttons…>` drives `DM_CTL` and takes a screenshot.
 
 - Fresh save: L+R at the title, A at the update notice, A for slot 1, A for Modern Mode, then A for one player. Give each menu transition about two seconds. The opening movie is `GI.mp4`, 119 seconds of 1920×1080 H.264 with stereo 48 kHz AAC.
 - Existing slot: L+R, A, then A for one player; the new-game mode choice is skipped. The save made after the intro starts at the island map. A enters Jungle; A selects 1-1 Jungle Hijinxs, and A starts the level. At the treehouse, press X rapidly (30 presses about 0.23 seconds apart) to finish the opening prompt; widely spaced presses do not finish it. The left stick moves, B jumps and X/Y pounds or rolls.
 
-## Testing
+### Testing
 
 - 2026-10-26, Mac: initialization, title, new-game menus, the opening MP4, save creation and reloading, island and Jungle maps, and the opening of 1-1 Jungle Hijinxs. Running, jumping over the first block, enemy damage, losing a life (four balloons to three), restarting and the pause menu work. No red line in the complete-library run, about ten minutes including the maps and first-level testing. No game-code cut or rendering switch is needed.
 - Frame time p50 about 16.67 ms (60 fps); median p95 over the last twenty 300-frame windows 19.53 ms while the IPA build ran on the same Mac.
@@ -38,19 +79,19 @@ The work folder is `<NSP folder>/01009D901BC56000-work`. `run/boot.py <log name>
 - FMOD opens one stereo 48 kHz AudioOut. The first ten seconds of PCM contain 592,464 nonzero samples of 960,000, peak 12,940 and RMS 1,239; real Core Audio output opens without an underrun or watchdog warning. Sound was not assessed by listening.
 - The unsigned IPA is about 11.6 GB (12,486,937,808 bytes), with 19,314 iOS libraries, the prewarm list and the fps counter. Archive inspection confirmed version 1.1.0, the correct bundle ID, an unsigned arm64 executable and no diagnostic environment file.
 
-## Open
+### Open
 
 - iOS has not been tested on a device.
 - Only the opening portion of the first level was played; finishing it, later levels, bosses and multiplayer remain untested.
 - The other thirteen MP4 movies and non-English languages are untested.
 
-## Base game v0
+### Base game v0
 
 - Not registered (`main` `8ac516e8…`, `subsdk0` `ca1378cd…`, `sdk` `f118ae1c…`, the Absolum build with the node-area and alignment cuts). GitHub issue #26 (an Honor MagicPad 3 Pro); measured on the Y700 on 2026-10-31.
 - Its `nninitStartup` hands pool − used to a StandardAllocator as one 3.14 GB address region before Unity reserves its own regions above it. Update 1.1.0 makes no such region: on the Y700 it reserves about 1.8 GB, up to +2.75 GB of the alias region.
 - With this profile's layout (4.375 GB alias region) v0 was refused (`0x1803`) a few seconds in and crashed at `main+0x829630`. With 1 GB more (the issue's `mem_alias 0x158000000`) it crashed in the opening movie at +5.37 GB, after 32 refusals.
 - Unity frees regions and makes new ones higher up, so the highest address rises above the 4.8 GB reserved: +6.26 GB after the movie, +7.01 GB in 1-1, and below +7.25 GB to the end of 22 minutes (the movie, the treehouse, 1-1 and the world map) with 8 GB more, at 60 fps with no red line. Porter gives every derived profile of a game with virtual address memory these 8 GB (`porter/pipeline.py` `alias_headroom`).
 
-## Found on this game
+### Found on this game
 
-- The stripped Unity 6 Shader layout, hash `2ec7223d…`: [shaders.md](../../../docs/reference/shaders.md#unity-shader-layouts-written-out-for-players-without-bundles).
+- The stripped Unity 6 Shader layout, hash `2ec7223d…`: [shaders.md](https://github.com/seedds/nxnative/blob/3084f7a205bcb3a9cb74cf26180dabcc01c7abca/docs/reference/shaders.md#unity-shader-layouts-written-out-for-players-without-bundles).

@@ -20,6 +20,7 @@
 #       ROMANCE OF THE THREE KINGDOMS 8 REMAKE's newer RDB keeps them in .fdata files (a PDRK header, then IDRK entries of zlib or LZ4 chunks)
 #   · SPKG (the older KTGL of Fire Emblem: Three Houses): shader packages of G2S containers, loose and inside the LINKDATA archive DATA0.bin / DATA1.bin, see kt_shaders and linkdata_jobs
 #   · SDF (Capcom's RE Engine, Monster Hunter Rise): shader definitions inside the PAK archives (KPKA, entries zstd / deflate compressed), only the newest copy of each path, see kpka_jobs and sdf_shaders
+#   · LSPK (Larian's packages, Divinity: Original Sin 2 - Definitive Edition): GLSLC outputs in the zlib stream of each .bshd member (stored or LZ4 in the package), see lspk_entries and lspk_shaders
 #   · Trinity packs (Game Freak, Pokémon Legends: Z-A): BNSH inside the files of arc/data.trpfs (Oodle Mermaid, decoded by the game's own decoder in the Mac host), see trpfs_jobs and trinity_shaders
 #   · SPK (Capcom's MT Framework, The Great Ace Attorney Chronicles): the shader package inside an ARC archive (zlib entries), code area + control section per shader, see mtarc_members and mtspk_shaders
 #   · BEA (NintendoWare Bezel Engine archives, Big Brain Academy: Brain vs. Brain): BNSH in the .bfsha entries of the archives (zstd entries), see bea_members
@@ -43,9 +44,9 @@
 #   With an update: give RomFS and main as comma-separated lists (base game first, e.g. data/v0/RomFS,data/v327680/RomFS); the output is the union of both versions (see main())
 #   Unity type trees need Unity's common string table, which is taken from the first main
 # Pair table: (vertex key, pixel key) of every BNSH variation (every Unity program); dmsh_build uses it to give vertex shaders the outputs their pixel shaders read but they do not write (see dmsh_build.py vs_pad)
-import base64, collections, concurrent.futures as cf, hashlib, json, os, re, struct, subprocess, sys
+import base64, collections, concurrent.futures as cf, hashlib, json, os, posixpath, re, struct, subprocess, sys, zlib
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../games')); import game as _game
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); import uepak
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); import uepak, eabig
 GAME = _game.load()   # the current game profile (DM_GAME, required): source group rules and the table header note
 GROUPS, NOTE = GAME.pairs('shader_groups'), GAME.get('shader_note')
 LOOSE_MONO = tuple(GAME.words('shader_loose_monolith', ''))   # extensions of loose Monolith files that carry HCPS shader archives (Xenoblade Chronicles: Definitive Edition: .wishp .wismt .wismda .wiefb .wimdo); empty: none are scanned
@@ -392,6 +393,63 @@ def kpka_shaders(path, rel, ents, out):
     with open(path, 'rb') as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as d:
         for e in ents:
             if e[3] >= 0x10 and kpka_data(d, e, 4) == b'SDF\0': out.extend(sdf_shaders(kpka_data(d, e), f'/{rel}#{e[0]:016x}'))
+
+LSPK = 'Larian LSPK'
+def lspk_entries(path):
+    """Larian's package (Divinity: Original Sin 2 - Definitive Edition: 47 .pak files, 10.6 GB), version 13: the header is at the end, 'LSPK' in the last 4 bytes and the header's length in the 4
+    before (0x28): u32 version, u32 file list offset, u32 file list length, u16 part count, u8 flags, u8 priority, 16-byte MD5. The file list is u32 count, then an LZ4 block of count 280-byte entries
+    {256-byte path, u32 offset, u32 stored length, u32 length (0: stored), u32 part, u32 flags, u32 CRC}; flags bits 0-3: 0 stored, 1 zlib, 2 LZ4 block. A part above 0 lives in <name>_<part>.pak,
+    which has no header of its own (Voice_1.pak … Voice_3.pak). → [(path, offset, stored length, length, part, flags)], or None for a file with no LSPK footer"""
+    import lz4.block
+    with open(path, 'rb') as f:
+        f.seek(0, 2); n = f.tell()
+        if n < 0x30: return None
+        f.seek(n - 8); hsz, magic = struct.unpack('<I4s', f.read(8))
+        if magic != b'LSPK' or not 0x28 <= hsz <= n: return None
+        f.seek(n - hsz); ver, flo, fls = struct.unpack('<III', f.read(12))
+        if ver != 13: red(f'{path}: LSPK version {ver}: only version 13 is known')
+        f.seek(flo); cnt, = struct.unpack('<I', f.read(4)); raw = lz4.block.decompress(f.read(fls - 4), uncompressed_size=cnt * 280)
+    return [(nm.split(b'\0', 1)[0].decode('utf-8', 'replace'), off, csz, usz, part, fl) for nm, off, csz, usz, part, fl, _ in struct.iter_unpack('<256sIIIIII', raw)]
+
+def lspk_jobs(files, parts=64):
+    """Every member of every LSPK package (the header decides, not the name), in ranges of about equal stored length. → ([(pak path, rel, (LSPK, entries)), …], the package paths and their parts)"""
+    paks = [(p, r, es) for p, r in files if p.endswith('.pak') and (es := lspk_entries(p)) is not None]
+    jobs, step = [], sum(e[2] for _, _, es in paks for e in es) / parts or 1
+    taken = set()
+    for p, r, es in paks:
+        taken.add(p); taken |= {f'{p[:-4]}_{e[4]}.pak' for e in es if e[4]}
+        cur, size = [], 0
+        for e in sorted(es, key=lambda e: (e[4], e[1])):
+            cur.append(e); size += e[2]
+            if size >= step: jobs.append((p, r, (LSPK, tuple(cur)))); cur, size = [], 0
+        if cur: jobs.append((p, r, (LSPK, tuple(cur))))
+    return jobs, taken
+
+def lspk_shaders(path, rel, ents, out):
+    """GLSLC outputs in a range of LSPK members (lspk_jobs). The shaders are the .bshd members (EngineShaders.pak and Materials.pak stored, Engine.pak and CommunityMods.pak LZ4): a u32, then a zlib
+    stream of the engine's shader file, which holds whole GLSLC outputs (vertex and pixel, one stage each). A stored member is tested by its first 8 bytes before it is read whole, so the 6 GB of
+    stored Wwise voices and Bink movies are not read"""
+    import lz4.block, zlib
+    files = {}
+    try:
+        for nm, off, csz, usz, part, fl in ents:
+            if not csz: continue
+            fp = path if not part else f'{path[:-4]}_{part}.pak'
+            f = files.get(fp) or files.setdefault(fp, open(fp, 'rb'))
+            f.seek(off)
+            if fl & 0xf == 0:
+                head = f.read(8)
+                if head[4:5] != b'\x78' and b'\x91\x68\x86\x19' not in head: continue
+                d = head + f.read(csz - 8)
+            elif fl & 0xf == 1: d = zlib.decompress(f.read(csz))
+            elif fl & 0xf == 2: d = lz4.block.decompress(f.read(csz), uncompressed_size=usz)
+            else: red(f'/{rel}/{nm}: LSPK compression {fl & 0xf} is not known')
+            if d[4:5] == b'\x78':
+                try: d = zlib.decompress(d[4:])
+                except zlib.error: pass
+            if b'\x91\x68\x86\x19' in d: out.extend(glslc_shaders(d, f'/{rel}/{nm}', need=False))
+    finally:
+        for f in files.values(): f.close()
 
 PKZL, PGDAT = b'pkzl', b'DAT\0'
 PG_STAGES = {b'VSO\0': 'vs', b'HSO\0': 'hs', b'DSO\0': 'ds', b'GSO\0': 'gs', b'PSO\0': 'ps', b'CSO\0': 'cs'}
@@ -1160,23 +1218,34 @@ def ard_shaders(path, rel, ents, out):
 UE_LEGACY = 'UE legacy pak'
 def ue_legacy_jobs(files, parts=64):
     """Legacy Unreal paks (version 4, DRAGON QUEST XI S: pakchunk0-Switch.pak and pakchunk1-Switch.pak, 13.8 GB, and the update's *_0_P.pak): the engine mounts them all as one view, and a patch pak
-    (name ending in _P.pak) wins over the others for the same path. Only the newest copy of each path is scanned. → ([(pak path, rel, (UE_LEGACY, names)), …] in about equal raw sizes, the pak paths taken)"""
-    def legacy(p):
+    (name ending in _P.pak) wins over the others for the same path. Version 8 reads only shader archives (Unreal 4.22, Minecraft Dungeons) and orders patches by the numeric suffix before _P.
+    → ([(pak path, rel, (UE_LEGACY, names)), …] in about equal raw sizes, the pak paths taken)"""
+    def pak_priority(p, rel):
         try:
-            with open(p, 'rb') as f: return uepak.pak_version(f) in uepak.LEGACY
-        except (OSError, ValueError, struct.error): return False
-    paks = [(p, r) for p, r in files if p.endswith('.pak') and legacy(p)]
+            with open(p, 'rb') as f: version = uepak.pak_version(f)
+        except (OSError, ValueError, struct.error): return None
+        if version not in uepak.LEGACY: return None
+        if not rel.endswith('_P.pak'): return 0
+        patch = re.search(r'_([0-9]+)_P\.pak$', posixpath.basename(rel)) if version == 8 else None
+        return int(patch[1]) + 1 if patch else 1
+    paks = [(priority, r, p) for p, r in files if p.endswith('.pak') and (priority := pak_priority(p, r)) is not None]
     if not paks: return [], set()
     view = {}
-    for p, r in sorted(paks, key=lambda x: (x[1].endswith('_P.pak'), x[1])):   # patch paks last, so they replace; one view per pak folder (one per version given)
+    for priority, r, p in sorted(paks):   # higher-priority patches replace earlier entries within each pak folder
         pk = uepak.Pak(p)
-        for name, e in pk.files.items(): view[(os.path.dirname(p), os.path.normpath(pk.mount + name))] = (p, r, name, e['raw'])
-    jobs, cur, size, step = [], collections.defaultdict(list), 0, sum(v[3] for v in view.values()) / parts
-    for p, r, name, raw in sorted(view.values(), key=lambda x: (x[1], x[2])):
+        folder = os.path.dirname(p)
+        with pk.f:
+            # Unreal searches all paks at a delete record's priority for a live copy. A patch can move an asset between chunks at the same priority.
+            for name in pk.deleted:
+                key = folder, posixpath.normpath(pk.mount + name)
+                if (current := view.get(key)) and current[0] < priority: del view[key]
+            for name, e in pk.legacy_shader_entries(): view[(folder, posixpath.normpath(pk.mount + name))] = (priority, p, r, name, e['raw'])
+    jobs, cur, size, step = [], collections.defaultdict(list), 0, sum(v[4] for v in view.values()) / parts
+    for _, p, r, name, raw in sorted(view.values(), key=lambda x: (x[2], x[3])):
         cur[(p, r)].append(name); size += raw
         if size >= step: jobs += [(p_, r_, (UE_LEGACY, tuple(ns))) for (p_, r_), ns in cur.items()]; cur, size = collections.defaultdict(list), 0
     jobs += [(p_, r_, (UE_LEGACY, tuple(ns))) for (p_, r_), ns in cur.items()]
-    return jobs, {p for p, _ in paks}
+    return jobs, {p for _, _, p in paks}
 
 _PAKS = {}
 def ue_legacy_shaders(path, rel, names, out):
@@ -1184,8 +1253,10 @@ def ue_legacy_shaders(path, rel, names, out):
     pk = _PAKS.get(path) or _PAKS.setdefault(path, uepak.Pak(path))
     for name in names:
         d = pk.read(name, decode=oodle)
-        label = re.sub(r"^(\.\./)+", "", os.path.normpath(pk.mount + name))
-        ue_inline_shaders(d, f'/{rel}#{label}', out)
+        normpath = os.path.normpath if pk.version == 4 else posixpath.normpath
+        label = re.sub(r"^(\.\./)+", "", normpath(pk.mount + name))
+        if pk.version == 8: out.extend(ue_shaders(d, f'/{rel}#{label}', version=1))
+        else: ue_inline_shaders(d, f'/{rel}#{label}', out)
 
 ZLIB_HEAD = re.compile(b'\x78[\x01\x5e\x9c\xda]')
 def ue_inline_shaders(d, label, out):
@@ -1488,14 +1559,19 @@ def glslc_module(exefs):   # a module of the profile's that defines glslcCompile
         if m != 'main' and os.path.exists(p) and any(s == 'glslcCompile' and defined for s, defined, _ in nso_syms.dynsyms(nso_image(p))): return m
     return None
 
-def ue_shaders(d, label):
+def ue_shaders(d, label, version=2):
     """An Unreal Engine shader code archive with every shader decoded (Octopath Traveler 0: the two .ushaderbytecode files of its pak, whose shaders are Oodle-compressed; the NSP script decodes them
     on the Mac with the game's own Oodle, uepak.py): each shader is an LSLG record holding one stage's code area and control section (uepak.lslg); the stage is the record's tag (SV vertex,
     SP pixel, SC compute), checked against the archive entry's frequency. The engine combines vertex and pixel shaders per draw, so they are paired as single-stage programs (separable_pairs)"""
-    a, out = uepak.archive(d), []
-    for i, (off, size, raw, fr) in enumerate(a['shaders']):
-        if size != raw: red(f'{label}: shader {i} is still compressed (an archive the NSP script has not decoded)')
-        rec = uepak.lslg(d[a['code'] + off:a['code'] + off + size])
+    def decoded_v2():
+        a = uepak.archive(d)
+        for i, (off, size, raw, fr) in enumerate(a['shaders']):
+            if size != raw: red(f'{label}: shader {i} is still compressed (an archive the NSP script has not decoded)')
+            yield d[a['code'] + off:a['code'] + off + size], fr
+    out = []
+    records = uepak.archive_v1_shaders(d) if version == 1 else decoded_v2()
+    for i, (record, fr) in enumerate(records):
+        rec = uepak.lslg(record)
         if not rec: red(f'{label}: shader {i} is not an LSLG record')
         tag, ctl, code = rec; st = UE_TAG.get(tag)
         if not st or uepak.FREQ.get(fr) != st: red(f'{label}: shader {i} has tag {tag} but frequency {fr}')
@@ -1611,6 +1687,66 @@ def bnd2_shaders(d, label):
         if b'\x91\x68\x86\x19' in r: found += glslc_shaders(r, f'{label}/{rid:016x}.{typ:x}.{k}', need=False)
     return found
 
+NX_SHADER_STAGES = {b'NXVS': 'vs', b'NXFS': 'ps', b'NXCS': 'cs'}
+
+
+def nx_shader_sections(data):
+    """Read the sections named in a Media.Vision shader record."""
+    magic, size, _, control_at, control_span, code_at, code_len = struct.unpack_from('<4s6I', data)
+    stage = NX_SHADER_STAGES.get(magic)
+    if not stage or size != len(data) or not 28 <= control_at <= control_at + control_span <= code_at <= code_at + code_len <= size:
+        raise ValueError('invalid shader header')
+    if control_span < 0x708:
+        raise ValueError('truncated NVN control section')
+    control_len = struct.unpack_from('<I', data, control_at + 0x20)[0]
+    if not 0x760 <= control_len <= control_span:
+        raise ValueError('invalid NVN control section length')
+    ctl = data[control_at:control_at + control_len]
+    code = data[code_at:code_at + code_len]
+    if glslc_stage(ctl, code) != stage or check('NX shader', stage, ctl, code):
+        raise ValueError('inconsistent NVN shader sections')
+    return stage, ctl, code
+
+
+def embedded_nx_shaders(image, label):
+    """Read the NXVS, NXFS and NXCS records embedded in Digimon Story Time Stranger's main."""
+    found = []
+    for match in re.finditer(rb'NX(?:VS|FS|CS)', image):
+        at = match.start()
+        if at & 3 or image[at + 0x40:at + 0x44] != CTL_MAGIC:
+            continue
+        size, control_at = struct.unpack_from('<I4xI', image, at + 4)
+        if control_at != 0x40 or not 0x40 <= size <= len(image) - at:
+            continue
+        try:
+            stage, ctl, code = nx_shader_sections(image[at:at + size])
+        except (ValueError, struct.error):
+            continue
+        found.append((f'{label}#NX@{at:#x}', stage, ctl, code))
+    return found
+
+
+def mvgl_nvn_shaders(path, label):
+    """Wide MVGL's NXVS and NXFS members reference NVN control and code sections directly."""
+    import mvgl
+    with open(path, 'rb') as file:
+        layout = mvgl.wide_layout(file)
+        if layout is None: return None
+        found = []
+        try:
+            for name, data in mvgl.wide_shaders(file, layout):
+                try:
+                    stage, ctl, code = nx_shader_sections(data)
+                except (ValueError, struct.error) as e:
+                    raise ValueError(f'{name}: {e}') from e
+                variation, suffix = name.rsplit('_', 1) if '_' in name else (name, '')
+                where = f'{label}/{variation}#var' if (stage, suffix) in (('vs', 'vp'), ('ps', 'fp')) else f'{label}/{name}'
+                found.append((where, stage, ctl, code))
+        except (ValueError, struct.error) as e:
+            red(f'{label}: {e}')
+        return found
+
+
 def scan_file(args):
     """→ (relative path, {key: …}, pairs, extra); extra = this file's Unity type trees, or 'defer' (no type tree, scanned again in the second pass)"""
     path, rel = args[:2]
@@ -1618,6 +1754,19 @@ def scan_file(args):
     if ext in ('.data', '.patch', '.debug', '.nxpc') and os.path.exists(stem + '.dict'): return rel, {}, set(), {}   # read through its Next Level Games index (nlg_shaders)
     with open(path, 'rb') as f: head = f.read(16)
     found = []; trees = {}
+    # The original narrow MDB1 archives (and archives for another console) keep their existing readers.
+    if head[:4] == b'MDB1' and path.endswith('.nx64.mvgl') and (members := mvgl_nvn_shaders(path, '/' + rel)) is not None:
+        return rel, uniq_keys(members), var_pairs(members), trees
+    if len(args) > 2 and args[2][0] == eabig.JOB:   # EA BIG: EASF/chunkzip-wrapped shader archives (eabig.py), selected by their magic without reading the other assets
+        try:
+            with open(path, 'rb') as f:
+                for name, off, n in args[2][1]:
+                    f.seek(off)
+                    for label, data in eabig.leaves(f.read(n), f'/{rel}/{name}', args[2][2]):
+                        scan_blob(data, label, found)
+                        found += glslc_shaders(data, label, need=False)
+        except (ValueError, zlib.error) as e: red(f'{rel}: EA archive: {e}')
+        return rel, uniq_keys(found), var_pairs(found), trees
     if LOOSE_MONO and ext in LOOSE_MONO and not (len(args) > 2):   # a loose Monolith file (.wishp, .wismt, .wismda …): HCPS archives in the file itself or in its xbc1 streams (mono_shaders)
         mono_shaders(open(path, 'rb').read(), '/' + rel, found)
         return rel, uniq_keys(found), var_pairs(found), trees
@@ -1629,6 +1778,9 @@ def scan_file(args):
         return rel, uniq_keys(found), var_pairs(found), trees
     if len(args) > 2 and head[:8] == ONEPACK:   # a range of Trinity packs (trpfs_jobs)
         trinity_shaders(path, rel, args[2], found)
+        return rel, uniq_keys(found), var_pairs(found), trees
+    if len(args) > 2 and args[2][0] == LSPK:   # members of a Larian package (lspk_jobs)
+        lspk_shaders(path, rel, args[2][1], found)
         return rel, uniq_keys(found), var_pairs(found), trees
     if len(args) > 2 and args[2][0] == MONO_ARD:   # files of a Monolith archive (ard_jobs)
         ard_shaders(path, rel, args[2][1], found)
@@ -1714,6 +1866,13 @@ def nso_image(path):
         img[mo:mo + sz] = lz4.block.decompress(raw, uncompressed_size=sz) if flags >> i & 1 else raw
     return bytes(img)
 
+def romfs_sources(root, prefix=''):
+    """Paths to scan, ordered by the same forward-slash labels written to the shader table."""
+    paths = (os.path.join(dp, name) for dp, _, files in os.walk(root) for name in files)
+    sources = ((path, prefix + os.path.relpath(path, root).replace(os.sep, '/')) for path in paths)
+    # Deduplication keeps the first occurrence. Windows' native separator sorts after digits and uppercase letters, while '/' sorts before them (issue #461).
+    return sorted(sources, key=lambda source: source[1])
+
 def main():
     romfs_l, main_l, pkg, mapout, factsout = sys.argv[1:6]
     pairsout = sys.argv[6] if len(sys.argv) > 6 else None
@@ -1722,17 +1881,24 @@ def main():
     romfs_v, main_v = romfs_l.split(','), main_l.split(',')
     if len(romfs_v) != len(main_v): red(f'{len(romfs_v)} RomFS and {len(main_v)} main: they must pair one to one')
     files, results, common = [], [], None
+    ea_jobs, ea_archives = [], set()
     for i, (romfs, mainnso) in enumerate(zip(romfs_v, main_v)):
         tag = os.path.basename(os.path.dirname(os.path.abspath(romfs))) if i else ''
-        files += sorted((os.path.join(dp, f), (tag + '/' if tag else '') + os.path.relpath(os.path.join(dp, f), romfs).replace(os.sep, '/')) for dp, _, fs in os.walk(romfs) for f in fs)
+        version_files = romfs_sources(romfs, tag + '/' if tag else '')
+        files += version_files
         img = nso_image(mainnso)
+        try: ej, ep = eabig.jobs(version_files, img)
+        except ValueError as e: red(f'EA archive: {e}')
+        ea_jobs += ej; ea_archives.update(ep)
         if not i:
             import unityfs
             try: common = unityfs.common_strings(img)
             except ValueError: common = None   # not a Unity game
-        found = []; scan_blob(img, 'main' + ('@' + tag if tag else ''), found)
-        found += glslc_shaders(img, 'main' + ('@' + tag if tag else ''), need=False)
-        found += raw_shaders(img, 'main' + ('@' + tag if tag else ''), {c for _, _, c, _ in found})
+        main_label = 'main' + ('@' + tag if tag else '')
+        found = []; scan_blob(img, main_label, found)
+        found += glslc_shaders(img, main_label, need=False)
+        found += embedded_nx_shaders(img, main_label)
+        found += raw_shaders(img, main_label, {c for _, _, c, _ in found})
         # GLSLC outputs the game compiles at run time, captured on the Mac (hle_glslc.c): <version dir>/glslc_capture, or DM_GLSLC_CAPTURE. A game needs them when main holds GLSL sources and
         # calls glslcCompile in a module it loads (Fire Emblem: Three Houses; profile_guess.py shader_sources). Captain Toad: Treasure Tracker imports it with agl's GLSL sources, but no module defines it
         cap = os.environ.get('DM_GLSLC_CAPTURE') or os.path.join(os.path.dirname(os.path.abspath(romfs)), 'glslc_capture')
@@ -1750,7 +1916,7 @@ def main():
     # maps and effects in an archive of its own (aoc/4/bf3_dlc04.ard). Scanned like a version's RomFS, under aoc/<index>/
     aoc = os.environ.get('DM_SPLIT_AOC')
     if aoc and os.path.isdir(aoc):
-        files += sorted((os.path.join(dp, f), 'aoc/' + os.path.relpath(os.path.join(dp, f), aoc).replace(os.sep, '/')) for dp, _, fs in os.walk(aoc) for f in fs)
+        files += romfs_sources(aoc, 'aoc/')
     zdicts = {k: v for r in romfs_v for k, v in zs_dicts(r).items()}   # Tears of the Kingdom's zstd dictionaries (zs_dicts)
     keys = {}
     # First pass: every file; Unity bundles carry type trees, and the Shader trees are collected on the way. Second pass: Unity serialized files without type trees are scanned again with the borrowed trees
@@ -1764,8 +1930,9 @@ def main():
     pz_jobs, pkzs = pkz_jobs(files)   # Bayonetta 3's PKZ archives, Oodle Kraken decoded by the game's own decoder in the Mac host
     ar_jobs, ards = ard_jobs(files)   # Xenoblade Chronicles 3's archive (bf3.arh / bf3.ard)
     cp_jobs, cpks = cpk_jobs(files)   # CRI CPK entries, decoded and scanned recursively (PlatinumGames DATs)
-    big += cp_jobs + pak_jobs + tr_jobs + ue_jobs + bd_jobs + arc_jobs + pz_jobs + ar_jobs
-    files = [(p, r) for p, r in files if not linkdata_jobs(p, r) and p not in paks and p not in trp and p not in uep and p not in bdts and p not in arcs and p not in pkzs and p not in ards and p not in cpks]
+    ls_jobs, lspks = lspk_jobs([(p, r) for p, r in files if p not in paks])   # Divinity: Original Sin 2's Larian packages (and their footerless _N parts)
+    big += cp_jobs + pak_jobs + tr_jobs + ue_jobs + bd_jobs + arc_jobs + pz_jobs + ar_jobs + ls_jobs + ea_jobs
+    files = [(p, r) for p, r in files if not linkdata_jobs(p, r) and p not in paks and p not in trp and p not in uep and p not in bdts and p not in arcs and p not in pkzs and p not in ards and p not in cpks and p not in lspks and p not in ea_archives]
     with cf.ProcessPoolExecutor(J, initializer=_pool_init, initargs=(common, {}, zdicts)) as ex:
         results += list(ex.map(scan_file, big)) + list(ex.map(scan_file, files, chunksize=16))
     trees, defer = {}, []

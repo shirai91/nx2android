@@ -4,6 +4,10 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import csrc  # noqa: E402
 
 ROOT=Path(__file__).resolve().parents[1]
 
@@ -12,7 +16,7 @@ ROOT=Path(__file__).resolve().parents[1]
 class TextureSwizzle(unittest.TestCase):
     def test_view_override_format_mapping_and_attachment_identity(self):
         source=(ROOT/'nxnative/dm/android/gfx_vk_tex.c').read_text()
-        helper=source[source.index('static VkComponentSwizzle swz_comp'):source.index('__thread VkFormat vk_view_fmt')]
+        helper=csrc.between(source, 'static VkComponentSwizzle swz_comp', '__thread VkFormat vk_view_fmt')
         code=r'''
 #include <vulkan/vulkan_core.h>
 #include <stdint.h>

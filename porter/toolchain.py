@@ -84,6 +84,18 @@ def dotnet_root(dotnet):
     return Path(next(iter(sdks.values()))).parent if sdks else Path(dotnet).resolve().parent
 
 
+def find_turnip(cfg=None):
+    """Mesa's Turnip Vulkan driver for a profile with `vulkan_driver turnip`: the `turnip` setting (porter config turnip <libvulkan_freedreno.so>), else a build
+    under tools/turnip (the developer's) or the player's tools folder. None when there is none"""
+    if cfg and cfg.get('turnip'):
+        p = Path(cfg['turnip']).expanduser()
+        return p if p.is_file() else None
+    for t in (LOCAL_TOOLS, player_tools()):
+        hits = sorted(glob.glob(str(t / 'turnip' / '**' / 'libvulkan_freedreno.so'), recursive=True))
+        if hits: return Path(hits[0])
+    return None
+
+
 def find_adb(cfg=None):
     cfg = cfg if cfg is not None else config.load()
     for c in [cfg.get('adb'), shutil.which('adb'), *[str(r / 'platform-tools' / f'adb{EXE}') for r in _sdk_roots()], str(LOCAL_TOOLS / 'platform-tools' / f'adb{EXE}'), str(player_tools() / 'platform-tools' / f'adb{EXE}')]:

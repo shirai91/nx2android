@@ -10,22 +10,23 @@ ROOT = Path(__file__).resolve().parents[1]
 NVN = ROOT / 'nxnative/dm/gfx/nvn'
 
 
+def function(source, marker):
+    start = source.find(marker)
+    if start < 0:
+        return ''
+    body = source.index('{', start)
+    depth = 0
+    for token in re.finditer(r'//[^\n]*|/\*[\s\S]*?\*/|"(?:\\.|[^"\\])*"|[{}]', source[body:]):
+        if token[0] == '{':
+            depth += 1
+        elif token[0] == '}':
+            depth -= 1
+            if not depth:
+                return source[start:body + token.end()]
+    raise AssertionError(marker)
+
 def harness():
     source = (NVN / 'hle_nvn.c').read_text(encoding='utf-8')
-
-    def function(marker):
-        start = source.index(marker)
-        body = source.index('{', start)
-        depth = 0
-        for token in re.finditer(r'//[^\n]*|/\*[\s\S]*?\*/|"(?:\\.|[^"\\])*"|[{}]', source[body:]):
-            if token[0] == '{':
-                depth += 1
-            elif token[0] == '}':
-                depth -= 1
-                if not depth:
-                    return source[start:body + token.end()]
-        raise AssertionError(marker)
-
     pre = r'''
 #include <assert.h>
 #include <stddef.h>
@@ -35,7 +36,7 @@ def harness():
 #define NVN(name, ret, ...) ret h_##name(__VA_ARGS__)
 #define SP(s) (&((const samp_t *)(s))->p)
 '''
-    functions = [function('NVN(' + name + ',') for name in
+    functions = [function(source, 'NVN(' + name + ',') for name in
                  ['nvnSamplerInitialize', 'nvnSamplerFinalize', 'nvnSamplerCompare']]
     post = r'''
 // The engine's CRC16 skips the first eight opaque bytes. Its larger backing
@@ -102,15 +103,63 @@ int main(void) {
     return pre + '\n'.join(functions) + post
 
 
+def builder_getters_harness():
+    source = (NVN / 'hle_nvn.c').read_text(encoding='utf-8')
+    pre = r'''
+#include <assert.h>
+#include <stdio.h>
+#include "nvn_obj.h"
+#include "nvn_protos.h"
+#define NVN(name, ret, ...) ret h_##name(__VA_ARGS__)
+'''
+    # The implementation's builder storage macro, followed by the real hooks.
+    setter_macro = next(line for line in source.splitlines() if line.startswith('#define SB(b) '))
+    functions = [
+        function(source, 'NVN(nvnSamplerBuilder' + name + ',')
+        for name in ('SetDefaults', 'SetLodBias', 'SetCompare', 'SetBorderColor',
+                     'GetLodBias', 'GetCompare', 'GetBorderColor')
+    ]
+    post = r'''
+static NVNT_nvnSamplerBuilderGetLodBias bias = h_nvnSamplerBuilderGetLodBias;
+static NVNT_nvnSamplerBuilderGetCompare compare = h_nvnSamplerBuilderGetCompare;
+static NVNT_nvnSamplerBuilderGetBorderColor border = h_nvnSamplerBuilderGetBorderColor;
+
+int main(void) {
+    NVNsamplerBuilder builder = {0};
+    h_nvnSamplerBuilderSetDefaults(&builder);
+    NVNcompareMode mode;
+    NVNcompareFunc func;
+    float color[4];
+    const float zeros[] = {0, 0, 0, 0}, configured[] = {0.0f, 0.25f, 0.5f, 1.0f};
+    assert(bias(&builder) == 0.0f);
+    compare(&builder, &mode, &func);
+    assert(mode == NVN_COMPARE_MODE_NONE && func == NVN_COMPARE_FUNC_LESS);
+    border(&builder, color);
+    assert(!memcmp(color, zeros, sizeof color));
+
+    h_nvnSamplerBuilderSetLodBias(&builder, -1.25f);
+    h_nvnSamplerBuilderSetCompare(&builder, NVN_COMPARE_MODE_COMPARE_R_TO_TEXTURE, NVN_COMPARE_FUNC_GEQUAL);
+    h_nvnSamplerBuilderSetBorderColor(&builder, configured);
+    assert(bias(&builder) == -1.25f);
+    compare(&builder, &mode, &func);
+    assert(mode == NVN_COMPARE_MODE_COMPARE_R_TO_TEXTURE && func == NVN_COMPARE_FUNC_GEQUAL);
+    border(&builder, color);
+    assert(!memcmp(color, configured, sizeof color));
+    puts("sampler builder getters: PASS");
+}
+'''
+    return '\n'.join([pre, setter_macro, *functions, post])
+
+
 class SamplerCacheTests(unittest.TestCase):
-    def test_opaque_hash_and_cache_reuse(self):
+    def run_harness(self, program, expected):
         cc = shutil.which('cc') or shutil.which('clang') or shutil.which('gcc')
         if not cc:
             self.skipTest('Native C compiler unavailable')
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / 'check.c'
             exe = Path(directory) / 'check.exe'
-            source.write_text(harness(), encoding='utf-8')
+            source.write_text(program, encoding='utf-8')
             # -fno-strict-aliasing as in the Android build (nxnative/dm/android/build.py): hle_nvn.c reads
             # and writes the game's opaque NVN objects through its own structs, as make() does into its
             # union. Without it, arm64 gcc 13 -O2 gave two equal samplers different bytes (memcmp assert).
@@ -120,4 +169,10 @@ class SamplerCacheTests(unittest.TestCase):
             self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
             result = subprocess.run([str(exe)], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertIn('PASS (10000 requests, 2 entries)', result.stdout)
+            self.assertIn(expected, result.stdout)
+
+    def test_opaque_hash_and_cache_reuse(self):
+        self.run_harness(harness(), 'PASS (10000 requests, 2 entries)')
+
+    def test_builder_getters_read_default_and_configured_values(self):
+        self.run_harness(builder_getters_harness(), 'sampler builder getters: PASS')

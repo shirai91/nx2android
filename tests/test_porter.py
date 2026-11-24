@@ -38,6 +38,30 @@ class AndroidProfiles(unittest.TestCase):
         self.assertIn(NEO, [r.id for r in rows]); self.assertTrue(all(r.android for r in rows))
         self.assertGreater(len(profiles.all_entries(android_only=False)), len(rows))
 
+    def test_vulkan_driver_key(self):   # android.tsv vulkan_driver: the driver the profile was tested with (porter packs Turnip for 'turnip')
+        self.assertEqual(android_profile.load(profile_dir([('status', 'boots')]).name).vulkan_driver, 'system')
+        self.assertEqual(android_profile.load(profile_dir([('status', 'boots'), ('vulkan_driver', 'turnip')]).name).vulkan_driver, 'turnip')
+        with self.assertRaises(android_profile.ProfileError): android_profile.load(profile_dir([('status', 'boots'), ('vulkan_driver', 'mesa')]).name)
+
+    def test_env_rows_checked_against_the_settings_registry(self):   # nxnative/dm/settings.tsv: a typo or a debug switch fails the profile
+        self.assertEqual(android_profile.load(profile_dir([('status', 'boots'), ('env', 'DM_VK_CB_DRAWS=32')]).name).env, ['DM_VK_CB_DRAWS=32'])
+        for bad in ('DM_VK_CB_DRAWZ=32', 'DM_VK_X_NOBAR=1', 'DM_VK_FDZ=yes'):
+            with self.assertRaises(android_profile.ProfileError): android_profile.load(profile_dir([('status', 'boots'), ('env', bad)]).name)
+
+    def test_pacing_preset(self):   # android.tsv pacing: env rows before the profile's own; a profile may not set one of them again
+        p = android_profile.load(profile_dir([('status', 'boots'), ('pacing', 'fixed30'), ('env', 'DM_VK_CB_DRAWS=32')]).name)
+        self.assertEqual(p.env, ['DM_FPS_TARGET=30', 'DM_ADAPTIVE_FPS=0', 'DM_VK_CB_DRAWS=32'])
+        self.assertEqual(android_profile.load(profile_dir([('status', 'boots')]).name).pacing, 'adaptive')
+        for rows in ([('pacing', 'fast')], [('pacing', 'steady'), ('env', 'DM_ADAPTIVE_FPS=1')]):
+            with self.assertRaises(android_profile.ProfileError): android_profile.load(profile_dir([('status', 'boots')] + rows).name)
+
+    def test_find_turnip(self):
+        from porter import toolchain
+        with tempfile.TemporaryDirectory() as t:
+            lib = Path(t) / 'libvulkan_freedreno.so'; lib.write_bytes(b'ELF')
+            self.assertEqual(toolchain.find_turnip({'turnip': str(lib)}), lib)
+            self.assertIsNone(toolchain.find_turnip({'turnip': str(Path(t) / 'missing.so')}))
+
     def test_fps_setting(self):   # the pause menu's Show FPS (front_android.c settings_load fps=)
         d = profile_dir([('status', 'boots'), ('setting', 'fps=1')])
         self.assertEqual(android_profile.load(d.name).settings, {'fps': '1'})
@@ -183,6 +207,26 @@ class DataPack(unittest.TestCase):
 
 
 class Experimental(unittest.TestCase):
+    def test_unreal_provisional_alias_region_leaves_a_heap(self):
+        from porter.upstream import profile_guess
+
+        imports = {'nvnBootstrapLoader', profile_guess.HEAP_API}
+        facts = {
+            'mods': {'main': {'imports': imports, 'far': False, 'bss': 0}},
+            'romfs': {'root': set(), 'exts': {'.pak': 1}},
+        }
+        for markers, resource, alias, heap in (
+            ({'Unreal 4'}, 0x1000000, 0x1008000000, 0x08000000),
+            (set(), 0x1000000, 0x118000000, 0x08000000),
+            ({'Unreal 4'}, 0, 0x10000000, 0xD0000000),
+        ):
+            with self.subTest(markers=markers, resource=resource):
+                rows = profile_guess.guess(dict(facts, main_markers=markers, sysres=resource), hooks=set())
+                reserve, alias_region, stack = (int(rows[key][0], 0) for key in ('mem_reserve', 'mem_alias', 'mem_stack'))
+                self.assertEqual(alias_region, alias)
+                # hle_svc.c places the guest heap after a 256 MiB prefix, the alias region and the stack.
+                self.assertEqual(reserve - 0x10000000 - alias_region - stack, heap)
+
     def test_ios_profile_copied_with_experimental_android_tsv(self):   # an iOS-only profile is copied out of the repository, never edited in place
         ios_only = '010099C022B96000'   # Super Mario Galaxy: an iOS profile without android.tsv or patches.py (it renders with Vulkan itself, which the Android host does not take)
         t = Path(tempfile.mkdtemp(prefix='nx2a_test_exp_')); environ = dict(os.environ)
@@ -288,6 +332,14 @@ class Misc(unittest.TestCase):
         self.assertTrue(cli._parser().parse_args(['port', 'x', '--mt-replay']).mt_replay); self.assertFalse(cli._parser().parse_args(['port', 'x']).mt_replay)
         self.assertFalse(pipeline.Options(Path(".")).mt_replay)
 
+    def test_options_from_args_covers_every_field(self):   # porter port: each Options field comes from the argument of its name (Options.from_args), no hand list
+        import dataclasses
+        from porter import cli
+        a = cli._parser().parse_args(['port', 'game', '-k', 'k.keys', '--firmware', 'fw', '--vulkan-driver', 'system', '--jobs', '3', '--alias-headroom', '4'])
+        o = pipeline.Options.from_args(a, vercode_offset=7)
+        self.assertEqual((o.folder, o.keys, o.firmware, o.vulkan_driver, o.jobs, o.alias_headroom, o.vercode_offset), (Path('game'), Path('k.keys'), Path('fw'), 'system', 3, 4, 7))
+        self.assertEqual({f.name for f in dataclasses.fields(pipeline.Options)} - set(vars(a)), set(), 'an Options field with no porter port argument of its name')
+
     def test_no_menu_button_option(self):   # --no-menu-button (issue #397): off unless given; the port then writes DM_MENU_BUTTON=0 to env.txt (front_android.c g_menu_btn)
         from porter import cli
         self.assertTrue(cli._parser().parse_args(['port', 'x', '--no-menu-button']).no_menu_button)
@@ -295,7 +347,7 @@ class Misc(unittest.TestCase):
         self.assertFalse(pipeline.Options(Path(".")).no_menu_button)
         src = (Path(pipeline.__file__).read_text(encoding='utf-8'))
         self.assertIn("(['DM_MENU_BUTTON=0'] if self.o.no_menu_button else [])", src)   # in the data pack's env rows, beside --mt-replay's
-        self.assertIn('no_menu_button=a.no_menu_button', Path(cli.__file__).read_text(encoding='utf-8'))
+        self.assertTrue(pipeline.Options.from_args(cli._parser().parse_args(['port', 'x', '--no-menu-button'])).no_menu_button)   # the CLI passes it on
         front = (Path(pipeline.__file__).parents[1] / 'nxnative/dm/android/front_android.c').read_text(encoding='utf-8')
         self.assertIn('getenv("DM_MENU_BUTTON")', front)   # the name the device reads is the name porter writes
 
@@ -390,6 +442,20 @@ class Misc(unittest.TestCase):
             with self.assertRaises(pipeline.BuildError): pipeline.Port.check_space(p)
             work.mkdir(); (work / 'x').write_bytes(b'\0' * 2**20); pipeline.Port.check_space(p)   # a build folder already there counts
         finally: shutil.disk_usage = real
+
+    def test_disk_space_counts_only_the_selected_dump(self):   # one dump picked out of a folder of games: the others are not being ported (SMBW asked for 4,000 GB)
+        from types import SimpleNamespace as NS
+        d = Path(tempfile.mkdtemp(prefix='nx2a_test_game_')); g = d / 'g.nsp'; g.write_bytes(b'\0' * 2**20)
+        other = d / 'other.nsp'
+        with open(other, 'wb') as f: f.truncate(4 * 2**30)   # a sparse 4 GB: big for the estimator, nothing on the disk
+        p = NS(o=NS(folder=d, dump=g), work=d / 'build'); real = shutil.disk_usage
+        try:
+            shutil.disk_usage = lambda _: NS(free=2**30 + 2**22)   # enough for the selected dump alone (about 1 GB + 2 MB), not for the folder (about 9 GB)
+            pipeline.Port.check_space(p)
+            p.o = NS(folder=d, dump=None)
+            with self.assertRaises(pipeline.BuildError): pipeline.Port.check_space(p)
+        finally:
+            shutil.disk_usage = real; other.unlink()
 
 
 def _hfs0(files):   # an HFS0 of (name, data): the XCI's partitions (hash fields left zero: nothing here reads them)
@@ -601,6 +667,21 @@ class Saves(unittest.TestCase):   # porter/saves.py: the save folders on the dev
 
 class UnrealShaders(unittest.TestCase):
     """porter/pipeline.py device_ue: the Unreal shader code archives decoded with the game's own Oodle decoder, in rounds"""
+
+    def test_cached_shader_archives_do_not_require_adb(self):
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp); (d / 'RomFS').mkdir(); (d / 'ue_shaders').mkdir()
+            (d / 'RomFS/game.pak').write_bytes(b'pak')
+            (d / 'ue_shaders/stamp').write_text(pipeline.nsp.ue_stamp(d))
+            p = SimpleNamespace(game=d, g=mock.Mock(), dirs={'v1': d}, versions=['v1'], tools={}, app_name='test')
+            kinds = {k: (False, '') for k in ('oodle_packs', 'glslc_capture', 'ue_legacy')}
+            kinds.update(graphics=('nvn', ''), ue_decode=(True, 'Unreal shader archive'))
+            with mock.patch.object(pipeline.profile_guess, 'build_sources', return_value=kinds), mock.patch.object(pipeline, 'Adb') as adb:
+                pipeline.Port.check_graphics(p)
+                adb.assert_not_called()
+                (d / 'RomFS/game.pak').write_bytes(b'changed archive')
+                with self.assertRaises(pipeline.BuildError): pipeline.Port.check_graphics(p)
 
     class FakePort:
         """the parts of Port.device_ue it uses"""

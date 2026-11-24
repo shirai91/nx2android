@@ -1,0 +1,9 @@
+# Engine frame limits kept in game memory that the host raises to the frame-rate target (nxnative/dm/host/hle_fpslock.c; dm/games/game.py puts these rows in the
+# profile header as DM_GAME_FPS_LOCKS). Each row runs only on its main build. ptr_off: a pointer at main + ptr_off to the object holding the field (0: the field is at
+# main + field); kind: FPS_F32, VSYNCS_I32, MS_F32, SEC_F32, FPS_I32; copies: consecutive copies of the value; ptr2: a second pointer at that object + ptr2 (0 = none).
+#	build	what	ptr_off	field	kind	copies	ptr2
+# Graveyard Keeper 2 1.0.4: Unity 6's vsync count and frame time, globals in main's data. Its vsync-count setter (main+0xd47310) stores the count (at least 1) at main+0x7d869d8 and
+# count / 60 seconds at main+0x7d869e4, which the frame pacing (main+0xd587f4) waits for 0.9 of after the last vsync; the game sets 2. Found from masagrator's FPSLocker config for
+# 1.0.2 (FPSLocker-Warehouse, patches/0100005027A18000/D8AEEEB4E7F1AB63.yaml: the same two fields, 1 / 62 s at 60), whose reference bytes occur once in this build's data
+1d69f09fc684a7d1cbd778b90a5df1e5	Unity vsync count	0x0	0x7d869d8	VSYNCS_I32	1	0
+1d69f09fc684a7d1cbd778b90a5df1e5	Unity frame time	0x0	0x7d869e4	SEC_F32	1	0

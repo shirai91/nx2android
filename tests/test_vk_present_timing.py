@@ -4,6 +4,10 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import csrc  # noqa: E402
 
 
 SOURCE = Path(__file__).resolve().parents[1] / 'nxnative/dm/android/gfx_vk_present.c'
@@ -58,7 +62,7 @@ int main(void) {
         if not cc:
             self.skipTest('a C compiler is needed for the presentation history check')
         src = SOURCE.read_text(encoding='utf-8')
-        history = src[src.index('enum { PRES_TIMES'):src.index('static VkSurfaceKHR g_surf')]
+        history = csrc.between(src, 'enum { PRES_TIMES', 'static VkSurfaceKHR g_surf')
         harness = r'''
 #include <assert.h>
 #include <pthread.h>

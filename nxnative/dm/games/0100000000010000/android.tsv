@@ -32,3 +32,5 @@ status	playable
 tested	v393216 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
 package	org.nx2a.supermarioodyssey
 orientation	landscape
+readme_image	docs/images/super-mario-odyssey.jpg
+readme_tag	v0.2.0

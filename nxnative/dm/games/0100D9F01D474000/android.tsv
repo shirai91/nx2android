@@ -10,3 +10,5 @@ tested	v0 Xiaomi 15 (Snapdragon 8 Elite, Adreno 830, Android 16)
 package	org.nx2a.t0100d9f01d474000
 orientation	landscape
 requires	bcn
+readme_image	docs/images/rhythm-heaven-groove.jpg
+readme_tag	v0.4.0

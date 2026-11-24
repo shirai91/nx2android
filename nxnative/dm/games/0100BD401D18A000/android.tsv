@@ -10,3 +10,5 @@ status	playable
 tested	v1179648 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
 package	org.nx2a.undernightinbirth2
 orientation	landscape
+readme_image	docs/images/under-night-in-birth-ii-sys-celes.jpg
+readme_tag	v0.2.0

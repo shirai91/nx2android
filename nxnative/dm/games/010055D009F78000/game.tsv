@@ -41,5 +41,6 @@ app_pool	0xCD500000
 # ---- Shader split (shader_split.py) ----
 shader_groups	/DATA1.bin=data /patch4/=patch4 /patch3/=patch3 /patch2/=patch2 /patch1/=patch1 /nx/=nx /glslc_capture/=runtime
 shader_note	Fire Emblem: Three Houses shaders
-# KTGL compiles 9 built-in GLSL shaders at boot with the game's own GLSLC (subsdk0; sources in main): the NSP script captures them once on the Mac with DM_GLSLC_CAPTURE=<version dir>/glslc_capture
+# KTGL compiles 9 built-in GLSL shaders at boot with the game's own GLSLC (subsdk0; sources in main): the NSP script captures them once on the Mac with DM_GLSLC_CAPTURE=<version dir>/glslc_capture,
+# the Android porter on the device (pipeline.device_glslc)
 # (hle_glslc.c), as for any game whose main holds GLSL sources and imports glslcCompile

@@ -10,3 +10,5 @@ status	playable
 tested	v0 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16)
 package	org.nx2a.advancewars
 orientation	landscape
+readme_image	docs/images/advance-wars-1-2-re-boot-camp.jpg
+readme_tag	v0.1.3

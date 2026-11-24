@@ -1,0 +1,11 @@
+# Layton's Mystery Journey: Katrielle and the Millionaires' Conspiracy DX+ on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# LEVEL-5's engine on SDK 5.4.0, OpenGL through EGL: main imports the GL entry points and subsdk0 (NintendoSDK_OpenGL) is not loaded (the Android GL layer answers its EGL imports),
+# subsdk1 (NintendoSDK_movie) plays the AVC movies. Update 1.1.0 (v65536) + DLC 0100FDB00AA8100A.
+# Retested 2026-11-21 on the iQOO 9 (Snapdragon 8 Gen 1, Adreno 730, Android 15), 2400x1080, OpenGL ES 3.2: the port completes, the title logo and the menus draw,
+# the name entry and voice selection work, and the opening AVC movie plays with its colour.
+# Dialogue text (the GL_ALPHA glyph atlas is converted to RGBA8), the 3D scenes and the daily-puzzle list were checked in the 2026-11-16 run.
+# 30 fps, the engine's own fixed step; 8400 display frames with 25 late presents and 30000 audio callbacks with 0 underruns.
+status	playable
+tested	v65536 iQOO 9 V2171A (Snapdragon 8 Gen 1, Adreno 730, Android 15)
+readme_image	docs/images/layton-mystery-journey-dx.jpg
+readme_tag	v0.4.0

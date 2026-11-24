@@ -3,3 +3,5 @@ status	playable
 package	org.nx2a.t01008cf01baac000
 orientation	landscape
 tested	v196608 Retroid Pocket 6 (Adreno 740, PurpleVK)
+readme_image	docs/images/zelda-echoes-of-wisdom-rp6.png
+readme_tag	v0.4.0

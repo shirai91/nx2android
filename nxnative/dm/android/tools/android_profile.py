@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # A game profile's Android keys: dm/games/<id>/android.tsv (key <TAB> value, # comments), beside the profile's game.tsv. A profile without one has not been ported to Android.
 # Keys (docs/ARCHITECTURE.md "Game profiles on Android"):
-#   status       playable | wip (plays, but parts are missing: docs/PORT_STATUS.md says which) | boots | experimental
+#   status       playable | wip (plays, but parts are missing: the game's README.md says which) | boots | experimental
 #   tested       <version> <device>: what the status was checked on
 #   package      the app's package name (default org.nx2a.t<title ID in lowercase>: a package name's parts start with a letter)
 #   orientation  landscape (default) | any
@@ -23,13 +23,26 @@ HERE = Path(__file__).resolve().parent
 ANDROID = HERE.parent
 sys.path.insert(0, str(ANDROID.parent / 'games'))
 import game   # noqa: E402  (the profile folders, DM_GAMES_DIR included)
+sys.path.insert(0, str(HERE))
+import settings_registry   # noqa: E402  (nxnative/dm/settings.tsv: which switches a profile may set)
 
 STATUS = ('playable', 'wip', 'boots', 'experimental')
 SETTINGS = {'overlay': ('0', '1'), 'rumble': ('0', '1'), 'docked': ('0', '1'), 'fps': ('0', '1'),   # the pause menu's settings (front_android.c settings_load)
-            'opacity': tuple(str(v) for v in range(20, 81, 5))}                                    # the gamepad's, percent (overlay_layout.h OV_OPACITY_MIN..MAX)
+            'opacity': tuple(str(v) for v in range(20, 81, 5)),                                    # the gamepad's, percent (overlay_layout.h OV_OPACITY_MIN..MAX)
+            'fps_rows': tuple(str(v) for v in range(32)), 'fps_pos': tuple('0123'), 'fps_colour': tuple('01234'),   # the frame rate counter's rows (a bit each: 1 FPS, 2 SOC, 4 BAT,
+            'fps_outline': tuple('01234'), 'fps_size': tuple('0123')}                                               # 8 driver, 16 graph), corner, colour, outline and size (overlay_layout.h fpso_*)
 REQUIRES = ('bcn',)
+# pacing <preset>: the profile's frame-pacing policy in one row (docs/ARCHITECTURE.md, Frame pacing; nxnative/dm/host/dm_pacing.c reads the switches).
+# Each preset is env rows the data pack's env.txt gets before the profile's own env rows; a profile may not also set one of them.
+PACING = {
+    'adaptive': [],                                         # the default: the profile's fps_target, the governor steps between 60, 40 and 30
+    'steady': ['DM_ADAPTIVE_FPS=0'],                        # the profile's fps_target, no governor steps
+    'fixed60': ['DM_FPS_TARGET=60', 'DM_ADAPTIVE_FPS=0'],   # held at 60 fps
+    'fixed30': ['DM_FPS_TARGET=30', 'DM_ADAPTIVE_FPS=0'],   # held at 30 fps
+    'game': ['DM_FPS_TARGET=0', 'DM_ADAPTIVE_FPS=0'],       # the game's own frame limit, no governor
+}
 KINDS = {'stick_l': 'OV_STICK_L', 'stick_r': 'OV_STICK_R', 'button': 'OV_BUTTON', 'dpad': 'OV_DPAD', 'menu': 'OV_MENU'}
-SINGLE = ('status', 'tested', 'package', 'orientation', 'requires', 'sysdata', 'romfs')
+SINGLE = ('status', 'tested', 'package', 'orientation', 'requires', 'sysdata', 'romfs', 'vulkan_driver', 'pacing', 'readme_name', 'readme_image', 'readme_tag')
 REPEAT = ('setting', 'env', 'overlay')
 
 
@@ -94,6 +107,8 @@ class AndroidProfile:
     @property
     def requires(self): return self.get('requires').split()
     @property
+    def vulkan_driver(self): return self.get('vulkan_driver', 'system')   # 'turnip': the port packs Mesa's Turnip when the porter finds it (porter.toolchain.find_turnip)
+    @property
     def sysdata(self): return [int(t, 16) for t in self.get('sysdata').split()]   # title IDs
     @property
     def romfs_zstd(self): return self.get('romfs', 'raw') == 'zstd'   # the data pack's RomFS compressed (porter/romfs_pack.py)
@@ -103,8 +118,10 @@ class AndroidProfile:
         return dict(v.split('=', 1) for v in self.values('setting'))
 
     @property
-    def env(self):   # ['KEY=VALUE', ...]
-        return self.values('env')
+    def pacing(self): return self.get('pacing', 'adaptive')
+    @property
+    def env(self):   # ['KEY=VALUE', ...]: the pacing preset's rows, then the profile's env rows
+        return PACING.get(self.pacing, []) + self.values('env')
 
     def overlay_table(self):
         """The gamepad layouts: the default ones with this profile's moves (a moved control's x is a fraction of the window's width: its anchor, no offset)"""
@@ -120,12 +137,25 @@ class AndroidProfile:
         if not re.fullmatch(r'[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+', self.package): bad.append(f'package {self.package!r} is not a package name')
         if self.get('orientation', 'landscape') not in ('landscape', 'any'): bad.append('orientation: landscape or any')
         if self.get('romfs', 'raw') not in ('raw', 'zstd'): bad.append('romfs: raw or zstd')
+        if self.vulkan_driver not in ('system', 'turnip'): bad.append('vulkan_driver: system or turnip')
+        readme = [k for k in ('readme_image', 'readme_tag') if self.get(k)]
+        if (readme or self.get('readme_name')) and len(readme) != 2: bad.append("readme_image and readme_tag go together (README.md's Games list and the game's own README.md, docs/gen_tables.py)")
+        if self.get('readme_tag') and not re.fullmatch(r'v\d+\.\d+\.\d+', self.get('readme_tag')): bad.append(f"readme_tag {self.get('readme_tag')!r}: the nx2android version tested, v<major>.<minor>.<patch>")
+        # only where the repository's docs are (a checkout, or a bundle, which carries docs/images): the AppImage's engine copy (porter/paths.py engine_copy) holds nxnative alone,
+        # and refused every profile with an image there, so the AppImage stopped at start-up
+        root = ANDROID.parents[2]
+        if self.get('readme_image') and (root / 'docs').is_dir() and not (root / self.get('readme_image')).is_file(): bad.append(f"readme_image {self.get('readme_image')!r}: no such file in the repository")
+        if self.pacing not in PACING: bad.append(f'pacing {self.pacing!r}: one of {", ".join(PACING)}')
+        else:
+            preset = {r.split('=', 1)[0] for r in PACING[self.pacing]}
+            bad += [f'env {v!r}: pacing {self.pacing} sets {v.split("=", 1)[0]} already' for v in self.values('env') if v.split('=', 1)[0] in preset]
         bad += [f'requires {r!r}: one of {", ".join(REQUIRES)}' for r in self.requires if r not in REQUIRES]
         bad += [f'sysdata {t!r}: a 16-digit hex title ID' for t in self.get('sysdata').split() if not re.fullmatch(r'[0-9A-Fa-f]{16}', t)]
         for v in self.values('setting'):
             k, eq, val = v.partition('=')
             if not eq or k not in SETTINGS or val not in SETTINGS[k]: bad.append(f'setting {v!r}: ' + ', '.join(f'{n}={"|".join(vs)}' for n, vs in SETTINGS.items()))
         bad += [f'env {v!r}: KEY=VALUE' for v in self.values('env') if not re.fullmatch(r'[A-Z_][A-Z0-9_]*=.*', v)]
+        bad += settings_registry.check_env(self.env, ('profile',), 'env ')   # a typo or a debug-only switch fails the port, not silently the game
         names = {r['name'] for r in default_layout()}
         for v in self.values('overlay'):
             c = v.split()

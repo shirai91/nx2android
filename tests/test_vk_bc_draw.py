@@ -7,6 +7,10 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import csrc  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -123,7 +127,7 @@ class BcDraw(unittest.TestCase):
         return code
 
     def test_the_level_and_layers_a_pass_draws_are_filled_and_copied_back_as_blocks(self):
-        src = (ROOT / 'nxnative/dm/android/gfx_vk_exec.c').read_text(encoding='utf-8')
+        src = csrc.unit((ROOT / 'nxnative/dm/android/gfx_vk_exec.c'))
         a = src.index(next(line for line in src.splitlines() if line.startswith('static struct {') and '} P_att[9];' in line))
         f = src.index('static int bc_region('); g = src.index('\n}\n', src.index('static void bc_draw_back(void) {')) + 3
         r = build_and_run(self.fill(COPIES, **{'@PATT@': src[a:src.index('\n', a)], '@FN@': src[f:g]}), 'copies')
