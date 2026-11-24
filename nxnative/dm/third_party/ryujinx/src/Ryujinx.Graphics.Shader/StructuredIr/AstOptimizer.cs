@@ -23,7 +23,11 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
                 {
                     if (node is AstAssignment assignment && assignment.Destination is AstOperand propVar)
                     {
-                        bool isWorthPropagating = propVar.Uses.Count == 1 || IsWorthPropagating(assignment.Source);
+                        // nxnative: "used once" counts the operands that read the variable, not the nodes (Uses is a set of parents): x * x has one parent and two
+                        // reads. Propagated, both operands took the same expression tree, and the SPIR-V generator, which emits a node at every visit, doubled the
+                        // code at each step of a chain such as x2 = x1 * x1; x3 = x2 * x2. Ori and the Will of the Wisps has 12 such pixel shaders (05d3d48b13d299be,
+                        // 8e17133f0af74193, …): one translation took 13 GB in 30 s and never ended, and the port was killed on a 6 GB phone even with --jobs 1
+                        bool isWorthPropagating = Reads(propVar) == 1 || IsWorthPropagating(assignment.Source);
 
                         // nxnative: a call's arguments stay the locals StructuredProgram copied them to (SPIR-V passes them by pointer). Propagated, the call
                         // kept a local whose declaration was removed (KeyNotFoundException in CodeGen/Spirv GetLocalPointer: 1,894 shaders of Viractal)
@@ -84,6 +88,31 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
             return inst == Instruction.Load && operation.StorageKind is StorageKind.LocalMemory or StorageKind.SharedMemory or StorageKind.SharedMemory8 or
                 StorageKind.SharedMemory16 or StorageKind.StorageBuffer or StorageKind.GlobalMemory or StorageKind.GlobalMemoryS8 or StorageKind.GlobalMemoryS16 or
                 StorageKind.GlobalMemoryU8 or StorageKind.GlobalMemoryU16;
+        }
+
+        private static int Reads(AstOperand propVar)
+        {
+            int count = 0;
+
+            foreach (IAstNode use in propVar.Uses)
+            {
+                if (use is AstOperation operation)
+                {
+                    for (int srcIndex = 0; srcIndex < operation.SourcesCount; srcIndex++)
+                    {
+                        if (operation.GetSource(srcIndex) == propVar)
+                        {
+                            count++;
+                        }
+                    }
+                }
+                else
+                {
+                    count++;   // a block's condition or an assignment's source: one read
+                }
+            }
+
+            return count;
         }
 
         private static bool UsedByCall(AstOperand propVar)
