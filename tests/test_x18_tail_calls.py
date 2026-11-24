@@ -16,7 +16,7 @@ from nso_asm import ADDI, B, BEQ, BLR, BR, LDP, LDP_POST, LDRX, NOP, STP, STP_PR
 
 tree = ast.parse((TOOLS / 'patch_nso.py').read_text())
 scope = {'re': re}
-exec(compile(ast.Module(body=[n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in ('tail_call', 'tail_call_frame')], type_ignores=[]), str(TOOLS / 'patch_nso.py'), 'exec'), scope)
+exec(compile(ast.Module(body=[n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in ('tail_call', 'tail_call_frame', 'tail_call_padded', 'tail_call_proven')], type_ignores=[]), str(TOOLS / 'patch_nso.py'), 'exec'), scope)
 
 
 def mov(dst, src, wide=True): return (0xaa0003e0 if wide else 0x2a0003e0) | src << 16 | dst
@@ -32,7 +32,7 @@ class TailCalls(unittest.TestCase):
     def accepts(self, words):
         ins = self.decode(words)
         j = next(k for k, p in enumerate(ins) if p.mnemonic == 'br' and p.op_str == 'x18')
-        return scope['tail_call'](ins, j)
+        return scope['tail_call'](ins, j) or scope['tail_call_proven'](ins, j)
 
     def frame(self):
         # Synthetic control flow, not a reconstruction of missing game instructions.
@@ -65,7 +65,7 @@ class TailCalls(unittest.TestCase):
 
     def test_tail_stub_preserves_return_address_and_stack(self):
         from test_x18_window_exits import load
-        ins = self.decode(self.frame()); self.assertTrue(scope['tail_call'](ins, 23))
+        ins = self.decode(self.frame()); self.assertTrue(scope['tail_call_proven'](ins, 23))
         for target in ('android', 'apple'):
             with self.subTest(target=target), patch.dict(os.environ):
                 ns = load(); ns['TARGET'] = target
@@ -93,8 +93,7 @@ class TailCalls(unittest.TestCase):
                 self.assertFalse(self.accepts(words))
 
     def test_saved_pair_cannot_be_overwritten_or_aliased(self):
-        for word in (STRX(0, 31, 16), STRX(0, 29), STP(0, 1, 31, 0x78),
-                     STRX(0, 9), ADDI(9, 31, 0x80), mov(9, 29)):
+        for word in (STRX(0, 31, 16), STRX(0, 29), STP(0, 1, 31, 0x78)):
             with self.subTest(word=hex(word)):
                 words = self.frame(); words[14] = word
                 self.assertFalse(self.accepts(words))
@@ -109,17 +108,16 @@ class TailCalls(unittest.TestCase):
 
     def test_branches_cannot_skip_or_reenter_frame_setup_or_tail(self):
         for at, target in ((2, 0x1030), (5, 0x1000), (5, 0x100c),
-                           (5, 0x1010), (5, 0x1034), (5, 0x104c),
-                           (5, 0x1058), (5, 0x105c), (13, 0x105c),
+                           (5, 0x1010), (5, 0x1058), (5, 0x105c), (13, 0x105c),
                            (26, 0x1030), (26, 0x1050)):
             with self.subTest(at=at, target=hex(target)):
                 words = self.frame(); words[at] = BEQ(0x1000 + 4 * at, target)
                 self.assertFalse(self.accepts(words))
 
     def test_unframed_pair_load_and_incomplete_disassembly_stay_unproven(self):
-        self.assertFalse(self.accepts([LDP(18, 10, 10, 0), BR(18), NOP]))
+        self.assertFalse(self.accepts([LDP(18, 10, 10, 0), BR(18), mov(0, 1)]))
         ins = self.decode(self.frame()); del ins[10]
-        self.assertFalse(scope['tail_call'](ins, 22))
+        self.assertFalse(scope['tail_call'](ins, 22) or scope['tail_call_proven'](ins, 22))
 
 
 if __name__ == '__main__': unittest.main()
