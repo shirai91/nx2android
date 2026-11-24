@@ -211,6 +211,12 @@ def build_sources(exefs, romfs, modules):
     """shader_sources from an extraction (its ExeFS and RomFS folders) and the modules the profile loads"""
     exefs = Path(exefs); main = nso(exefs / 'main')[0]
     imports = {s for s, defined, _ in nso_syms.dynsyms(main) if not defined}; glsl_src = main.count(b'#version '); gl_names = main.count(b'glShaderSource'); gl_src = len(re.findall(GL_SRC, main))
+    if not glsl_src and 'glslcCompile' in imports and Path(romfs).is_dir():
+        # A thin launcher main can import glslcCompile while the GLSL sources live inside its runtime-loaded NRO modules (The Binding of Isaac: Afterbirth+ 1.7.9b)
+        for d, _, names in os.walk(romfs):
+            for n in names:
+                if n.lower().endswith('.nro'):
+                    glsl_src += Path(d, n).read_bytes().count(b'#version ')
     glslc_mods = [m for m in modules if m != 'main' and glsl_src and 'glslcCompile' in imports and (exefs / m).exists()
                   and any(s == 'glslcCompile' and defined for s, defined, _ in nso_syms.dynsyms(nso(exefs / m)[0]))]
     spirv = 0
