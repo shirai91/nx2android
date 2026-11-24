@@ -141,6 +141,15 @@ available operation mask. This diagnostic does not change the rewritten shader
 or its cache identity, and cannot establish that scalarization preserves a
 particular game's multi-lane algorithm.
 
+Maxwell fragment shaders can also form coarse derivatives with indexed quad
+shuffles. A single-invocation fallback cannot read the neighboring pixel, so the
+shader translator recognizes that exact sequence and emits `OpDPdxCoarse` or
+`OpDPdyCoarse`, which need no subgroup operations. Near matches and other stages
+keep their shuffle. The translator sources that implement this are inputs of the
+shader chain version, so existing shader libraries are rebuilt. On Adreno 640
+with Turnip, where subgroups are compute-only, this removed Disco Elysium's
+block and triangle artifacts and its 219 fallback shaders.
+
 Opaque NVN sampler objects keep all sampler parameters after an eight-byte header, within the smallest public object's storage. Engines may hash the bytes after that header before calling `SamplerCompare`. Putting filtering or wrap parameters in the skipped header makes different sampler states collide, defeats cache reuse and can exhaust the game's descriptor pool. In Odyssey, duplicate entries accumulated during extended play and repeated scene loads, exhausted the sampler pool and returned sampler ID 0, producing ground grid artifacts. The builder, initializer, comparison, getters and both graphics backends share the same parameter structure; this layout rule does not change filtering defaults.
 
 On Adreno, eligible direct geometry draws separate buffer effects from rasterization

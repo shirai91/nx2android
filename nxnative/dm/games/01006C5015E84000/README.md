@@ -34,8 +34,9 @@ Read the profile's porting log in the comment header of [`android.tsv`](android.
 | Device | GPU | Vulkan driver | Game version | nx2android | Result |
 |---|---|---|---|---|---|
 | (1.0.7) Sony XQ-DQ72 (Adreno 740) and OnePlus 15 (Snapdragon 8 Elite Gen 5), 2026-11-10 | Adreno 740 | not recorded | 1.0.7 (v0) | `v0.4.0` | playable |
+| POCO X3 Pro (Snapdragon 860), community test, 2026-11-24 | Adreno 640 | Turnip, Mesa 27.0.0-devel (git-c5ef4bdfab) | 1.0.13 (as reported) | [#520](https://github.com/shirai91/nx2android/pull/520) | renders correctly; one 37-minute session |
 
-Tested on the Sony XQ-DQ72 and the OnePlus 15.
+Tested on the Sony XQ-DQ72 and the OnePlus 15. A community tester confirmed the Adreno 640 rendering fix on the POCO X3 Pro.
 
 ## Options
 
@@ -43,12 +44,10 @@ Tested on the Sony XQ-DQ72 and the OnePlus 15.
 
 ## Quirks and known issues
 
-- Severe block and triangle artifacts are reported on POCO X3 Pro
-  (Snapdragon 860 / Adreno 640) with Turnip reporting 26.99.99, in game versions
-  1.0.7 and 1.0.12 ([issue #283](https://github.com/shirai91/nx2android/issues/283),
-  [follow-up log](https://github.com/shirai91/nx2android/pull/484#issuecomment-7074295461)).
-  The supplied logs advertise subgroup support only in compute (`stages 0x20`)
-  and show the existing one-invocation fallback on 219 fragment shaders. This
-  does not establish the cause of the corruption. Investigation and verification
-  on the affected device remain pending; the playable results above apply to
-  the listed tested devices.
+- Block and triangle artifacts on Adreno 640 with Turnip
+  ([issue #283](https://github.com/shirai91/nx2android/issues/283)) came from 219
+  fragment shaders that form coarse derivatives with indexed quad shuffles. That
+  driver offers subgroup operations only in compute (`stages 0x20`), so these
+  shaders ran on the one-invocation fallback. The translator now emits native
+  coarse derivatives for this form. The POCO X3 Pro run above logs no fallback
+  shaders and renders the game correctly.
