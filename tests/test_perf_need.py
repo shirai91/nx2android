@@ -36,7 +36,7 @@ static int late_n, held_n; static int shown_late(void) { return late_n; } static
 static int64_t g_gpu_mean;
 ''' + need_off + '\n' + turbo + r'''
 static int64_t g_replay_mean;
-static int pins[8], npins, pin_result; static long pin_hi = 4320;
+static int pins[64], npins, pin_result; static long pin_hi = 4320;
 static int pin_set(int which, char *l, size_t ln, long *hi) { pins[npins++] = which; snprintf(l, ln, which ? " 6 7" : " 0 1 2 3 4 5 6 7"); *hi = pin_hi; if (pin_result == -1) errno = EINVAL; return pin_result; }
 ''' + pin_defs + replay + r'''
 static void calls(int n) { for (int i = 0; i < n; i++) replay_need(); }
@@ -83,9 +83,19 @@ int main(void) {
     g_replay_mean = 6100000; t_now = 330 * S; calls(600); assert(npins == 1);
     /* under 6 ms after the 20 s: every core again */
     g_replay_mean = 5000000; t_now = 340 * S; calls(60); assert(npins == 2 && pins[1] == 0);
+    /* back over 9 ms within 60 s of going off: pinned again, now kept 40 s and only back under 4.8 ms (the prime cores alone brought it under 6) */
+    g_replay_mean = 9500000; t_now = 360 * S; calls(60); assert(npins == 3 && pins[2] == 1);
+    g_replay_mean = 5500000; t_now = 380 * S; calls(60); assert(npins == 3);   /* 5.5 ms: under the old 6, not under 4.8 */
+    g_replay_mean = 4500000; t_now = 395 * S; calls(60); assert(npins == 3);   /* under 4.8, but within the 40 s */
+    t_now = 401 * S; calls(60); assert(npins == 4 && pins[3] == 0);
+    /* back again within 60 s, many times: the limit never goes under 3 ms, the time kept never over 5 min */
+    for (int k = 0; k < 8; k++) { g_replay_mean = 9500000; t_now += 1 * S; calls(60); g_replay_mean = 2900000; t_now += 301 * S; calls(60); }
+    int np = npins; g_replay_mean = 9500000; t_now += 1 * S; calls(60); assert(npins == np + 1);
+    g_replay_mean = 3100000; t_now += 400 * S; calls(60); assert(npins == np + 1);   /* 3.1 ms: not under the 3 ms floor */
+    g_replay_mean = 2900000; calls(60); assert(npins == np + 2);
     /* refused: logged once, tried again at the next look */
-    pin_result = -1; g_replay_mean = 12000000; int l0 = nlog; calls(120); assert(npins == 4 && nlog == l0 + 1);
-    pin_result = 0; calls(60); assert(npins == 5 && pins[4] == 1);
+    np = npins; pin_result = -1; g_replay_mean = 12000000; int l0 = nlog; calls(120); assert(npins == np + 2 && nlog == l0 + 1);
+    pin_result = 0; calls(60); assert(npins == np + 3 && pins[np + 2] == 1);
     puts("ok"); return 0;
 }
 '''
