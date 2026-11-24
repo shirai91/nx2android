@@ -78,6 +78,7 @@ __attribute__((weak)) int dm_menu_state(void) { return -1; }
 __attribute__((weak)) int dm_menu_scroll_position(void) { return 0; }
 __attribute__((weak)) int dm_menu_audio_available(void) { return 0; }
 __attribute__((weak)) int dm_fps_opts(void) { return FPSO_DEFAULT; }   // front_android.c: the counter's options, packed (overlay_layout.h fpso_*)
+__attribute__((weak)) int dm_menu_assignment_available(void) { return 0; }
 __attribute__((weak)) int dm_overlay_fps(void) { return 0; }   // front_android.c: the pause menu's Show FPS
 __attribute__((weak)) int dm_overlay_sr(void) { return 0; }   // front_android.c: the pause menu's Super resolution (settings.txt sr=)
 __attribute__((weak)) int dm_overlay_sharp(void) { return 0; }   // front_android.c: and its Sharpness (settings.txt sharpness=, percent)
@@ -415,6 +416,7 @@ static const char *ovm_label(int it) {
     case OVM_EXPORT: return TR("Export save", "导出存档");
     case OVM_IMPORT: return TR("Import save", "导入存档");
     case OVM_PAD: return TR("Face buttons", "按键布局");
+    case OVM_ASSIGN: return TR("Controllers", "手柄");
     case OVM_AUDIO: return TR("Audio output", "音频输出");
     case OVM_ZONE: return TR("Stick area", "摇杆区域");
     case OVM_ROW_FPS: return TR("FPS row", "帧率行");
@@ -435,6 +437,7 @@ static const char *ovm_button(int it) {
     case OVM_EDIT: return TR("Edit", "编辑");
     case OVM_EXPORT: return TR("Export", "导出");
     case OVM_IMPORT: return TR("Import", "导入");
+    case OVM_ASSIGN: return TR("Assign", "分配");
     case OVM_AUDIO: return TR("Select", "选择");
     default: return NULL;
     }

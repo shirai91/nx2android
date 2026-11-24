@@ -11,6 +11,7 @@
 #include "dm_input.h"
 #include "locale_android.h"
 #include "pad_slots.h"
+#include "pad_assignment.h"
 #include "overlay_layout.h"
 #include "stick_axis.h"
 #include "pixel_font.h"
@@ -52,7 +53,9 @@ void front_screen_match(int fps) { (void)fps; }
 // ---------------- the app ----------------
 static ANativeActivity *g_act;
 static jmethodID g_audio_menu_method;
+static jmethodID g_assignment_menu_method;
 int dm_menu_audio_available(void) { return g_audio_menu_method != NULL; }
+int dm_menu_assignment_available(void) { return g_assignment_menu_method != NULL; }
 AAssetManager *dm_front_assets(void) { return g_act ? g_act->assetManager : NULL; }   // the APK's assets (overlay_theme.c: the gamepad's theme)
 static pthread_mutex_t g_win_mu = PTHREAD_MUTEX_INITIALIZER;
 static ANativeWindow *g_win, *g_external_win;
@@ -63,6 +66,7 @@ static _Atomic int g_ext_lx, g_ext_ly, g_ext_rx, g_ext_ry, g_ext_menu;
 ANativeWindow *dm_front_window(void) { pthread_mutex_lock(&g_win_mu); ANativeWindow *w = g_external_win ? g_external_win : g_win; pthread_mutex_unlock(&g_win_mu); return w; }
 static ANativeWindow *phone_window(void) { pthread_mutex_lock(&g_win_mu); ANativeWindow *w = g_win; pthread_mutex_unlock(&g_win_mu); return w; }
 int dm_external_active(void) { return atomic_load(&g_external_active); }
+static void assignment_clear_phone(void);
 __attribute__((weak)) void vk_window_lost(void) {}   // the backend lets go of the window's swapchain before the window goes
 static void on_window_created(ANativeActivity *a, ANativeWindow *w) { (void)a; pthread_mutex_lock(&g_win_mu); g_win = w; pthread_mutex_unlock(&g_win_mu); }
 static void on_window_destroyed(ANativeActivity *a, ANativeWindow *w) { (void)a; (void)w; pthread_mutex_lock(&g_win_mu); g_win = NULL; pthread_mutex_unlock(&g_win_mu); vk_window_lost(); }
@@ -72,7 +76,7 @@ JNIEXPORT void JNICALL Java_org_nx2a_ExternalActivity_externalSurface(JNIEnv *en
     pthread_mutex_lock(&g_win_mu); ANativeWindow *old = g_external_win; g_external_win = next; atomic_fetch_add(&g_external_epoch, 1); atomic_store(&g_external_active, next != NULL); pthread_mutex_unlock(&g_win_mu);
     vk_window_lost();
     if (old) ANativeWindow_release(old);
-    if (!next) { atomic_store(&g_ext_buttons, 0); atomic_store(&g_ext_presses, 0); atomic_store(&g_ext_menu, 0); dm_input_set(0, 0, 0, 0, 0); }
+    if (!next) { atomic_store(&g_ext_buttons, 0); atomic_store(&g_ext_presses, 0); atomic_store(&g_ext_menu, 0); dm_input_set(0, 0, 0, 0, 0); assignment_clear_phone(); }
 }
 
 void dm_focus_set(int st); void dm_audio_suspend(int on); void guest_clock_freeze_for(int reason, int on); void dm_gfx_suspend(int on);
@@ -304,10 +308,178 @@ JNIEXPORT void JNICALL Java_org_nx2a_ExternalActivity_externalInput(JNIEnv *env,
 // `adb shell input`) is player 1's, as before. A controller that comes back gets its player back by its InputDevice descriptor (read at its first input, pad_key_now,
 // as a DualSense sends input before pad_watch sees it), also when it comes back under a new id before pad_watch's next poll freed the old one, and pad_watch frees
 // the slot when the device goes. The touch gamepad, shaking and the game's rumble stay player 1's. DM_PAD_MERGE=1: every controller is player 1, as before
-static uint64_t g_btn[DM_PLAYERS]; static float g_ax[DM_PLAYERS][8]; static int g_pad_used;   // per player: lx ly rx ry lt rt hatx haty
+static uint64_t g_btn[DM_PLAYERS], g_shake_btn; static float g_ax[DM_PLAYERS][8]; static int g_pad_used;   // per player: lx ly rx ry lt rt hatx haty
+static int32_t axis(float v);
+static uint64_t pad_axis_buttons(const float axes[8]);
 static pad_slots g_slots; static int g_pad_merge = -1;
 static struct { int id; char key[64]; } g_dev_key[16]; static int g_ndev_key;   // each controller's descriptor (its name when it has none), from pad_watch
 static pthread_mutex_t g_slot_mu = PTHREAD_MUTEX_INITIALIZER;   // the slots, the keys and the per-player state: the input thread and pad_watch
+static pad_assignment_runtime g_assign;
+static struct { int id, present; char key[64]; } g_assign_devices[PA_SOURCES];
+static uint64_t g_assign_keys[PA_SOURCES], g_assign_axis_buttons[PA_SOURCES];
+static _Atomic int g_assign_active;
+static _Atomic int g_assign_dialog;
+static uint64_t g_assign_clock;
+static int g_assign_rumble = -1;
+
+// Caller holds g_slot_mu. A pad only takes player 1's rumble while it still feeds that player.
+static void assignment_rumble_check(void) {
+    if (g_assign_rumble < 0) return;
+    for (int i = 1; i < PA_SOURCES; i++) if (g_assign_devices[i].present && g_assign_devices[i].id == g_assign_rumble) {
+        int p, c; if (pa_find(&g_assign.slots, i + 1, &p, &c) && dm_player_seen_as(p) == 0) return;
+    }
+    g_assign_rumble = -1; dm_haptics_android_device(-1);
+}
+static void assignment_rumble_use(int source, int id) {
+    int p, c;
+    if (source > 1 && pa_find(&g_assign.slots, source, &p, &c) && dm_player_seen_as(p) == 0) {
+        g_assign_rumble = id; dm_haptics_android_device(id);
+    }
+}
+
+// Call with g_slot_mu held; the legacy touch path is cleared before assigning each player.
+static void assignment_publish(void) {
+    uint32_t mask = 0;
+    for (int p = 0; p < PA_PLAYERS; p++) {
+        pad_assignment_input empty = {0};
+        int a = g_assign.slots.source[p][0], b = g_assign.slots.source[p][1];
+        const pad_assignment_input *aa = a > 0 && a <= PA_SOURCES && g_assign.connected[a - 1] ? &g_assign.input[a - 1] : &empty;
+        const pad_assignment_input *bb = b > 0 && b <= PA_SOURCES && g_assign.connected[b - 1] ? &g_assign.input[b - 1] : &empty;
+        if (aa != &empty || bb != &empty) mask |= 1u << p;
+    }
+    dm_pad_players_exact(mask);
+    assignment_rumble_check();
+    dm_input_set(0, 0, 0, 0, 0);
+    int player1 = (mask & 1) != 0;
+    for (int p = 1; p < PA_PLAYERS; p++) if ((mask & (1u << p)) && dm_player_seen_as(p) == 0) player1 = 1;
+    for (int p = 0; p < PA_PLAYERS; p++) {
+        pad_assignment_input empty = {0}; int a = g_assign.slots.source[p][0], b = g_assign.slots.source[p][1];
+        const pad_assignment_input *aa = a > 0 && a <= PA_SOURCES && g_assign.connected[a - 1] ? &g_assign.input[a - 1] : &empty;
+        const pad_assignment_input *bb = b > 0 && b <= PA_SOURCES && g_assign.connected[b - 1] ? &g_assign.input[b - 1] : &empty;
+        pad_assignment_input v = atomic_load(&g_menu) ? empty : pa_combine(aa, bb);
+        if (p == 0 && player1 && !atomic_load(&g_menu)) {
+            pad_assignment_input other = {.buttons = g_btn[0] | g_shake_btn | pad_axis_buttons(g_ax[0]),
+                .axis = {axis(g_ax[0][0]), -axis(g_ax[0][1]), axis(g_ax[0][2]), -axis(g_ax[0][3])}};
+            v = pa_combine(&v, &other);
+        }
+        dm_pad_set_player(p, v.buttons, v.axis[0], v.axis[1], v.axis[2], v.axis[3]);
+    }
+}
+static int assignment_device(int id) {
+    for (int i = 1; i < PA_SOURCES; i++) if (g_assign_devices[i].present && g_assign_devices[i].id == id) return i + 1;
+    return 0;
+}
+static int pad_dev_kind(int id);
+static void assignment_save(void);
+static int assignment_attach(int id, const char *key) {
+    int source = assignment_device(id); if (source) return source;
+    int found = -1;
+    // A reconnect may send input before the watcher has removed its old Android id.
+    for (int i = 1; i < PA_SOURCES; i++) if (g_assign_devices[i].present && *key && !strcmp(g_assign_devices[i].key, key) && pad_dev_kind(g_assign_devices[i].id) == -1) {
+        g_assign_devices[i].id = id;
+        g_assign.input[i] = (pad_assignment_input){0}; g_assign_keys[i] = g_assign_axis_buttons[i] = 0;
+        return i + 1;
+    }
+    for (int i = 1; i < PA_SOURCES; i++) if (!g_assign_devices[i].present && *key && !strcmp(g_assign_devices[i].key, key)) { found = i; break; }
+    int known = found >= 0;
+    if (found < 0) for (int i = 1; i < PA_SOURCES; i++) if (!g_assign_devices[i].present && !g_assign_devices[i].key[0]) { found = i; break; }
+    if (found < 0) for (int i = 1; i < PA_SOURCES; i++) if (!g_assign_devices[i].present) { found = i; g_assign.last_player[i] = g_assign.last_cell[i] = -1; break; }
+    if (found < 0) return 0;
+    g_assign_devices[found].id = id; g_assign_devices[found].present = 1;
+    snprintf(g_assign_devices[found].key, sizeof g_assign_devices[found].key, "%s", key);
+    if (atomic_load(&g_assign_active)) { pa_runtime_attach_new(&g_assign, found + 1, known); assignment_save(); }
+    else pa_runtime_attach(&g_assign, found + 1);
+    return found + 1;
+}
+static void assignment_axes(int source, uint64_t buttons, const int32_t axis[4]) {
+    if (source < 1 || source > PA_SOURCES) return;
+    pad_assignment_input *v = &g_assign.input[source - 1]; v->buttons = buttons;
+    pa_axes(v, axis, &g_assign_clock); assignment_publish();
+}
+static void assignment_clear_phone(void) {
+    if (!atomic_load(&g_assign_active)) return;
+    pthread_mutex_lock(&g_slot_mu); g_assign.input[0] = (pad_assignment_input){0}; assignment_publish(); pthread_mutex_unlock(&g_slot_mu);
+}
+static void assignment_clear_all(void) {
+    if (!atomic_load(&g_assign_active)) return;
+    pthread_mutex_lock(&g_slot_mu);
+    for (int i = 0; i < PA_SOURCES; i++) g_assign.input[i] = (pad_assignment_input){0};
+    memset(g_assign_keys, 0, sizeof g_assign_keys); memset(g_assign_axis_buttons, 0, sizeof g_assign_axis_buttons);
+    memset(g_btn, 0, sizeof g_btn); memset(g_ax, 0, sizeof g_ax);
+    assignment_publish(); pthread_mutex_unlock(&g_slot_mu);
+}
+// Caller holds g_slot_mu, or is starting up before the input threads exist.
+static void assignment_save(void) {
+    char path[700], tmp[720]; snprintf(path, sizeof path, "%s/controller-assignment.txt", g_root); snprintf(tmp, sizeof tmp, "%s.tmp", path);
+    FILE *f = fopen(tmp, "w"); if (!f) { LOG("[RED] controller assignment could not be saved"); return; }
+    int ok = fprintf(f, "v1\n") >= 0;
+    for (int i = 0; i < PA_SOURCES; i++) {
+        int p = g_assign.last_player[i], c = g_assign.last_cell[i];
+        if (!i && (p < 0 || c < 0)) continue;
+        if (!i) ok &= fprintf(f, "%d %d phone\n", p, c) >= 0;
+        else if (g_assign_devices[i].key[0]) {
+            ok &= fprintf(f, "%d %d ", p, c) >= 0;
+            for (const unsigned char *s = (const unsigned char *)g_assign_devices[i].key; *s; s++) ok &= fprintf(f, "%02x", *s) >= 0;
+            ok &= fputc('\n', f) != EOF;
+        }
+    }
+    if (fclose(f)) ok = 0;
+    if (!ok || rename(tmp, path)) { unlink(tmp); LOG("[RED] controller assignment could not be saved"); }
+}
+static int assignment_load(void) {
+    char path[700], line[256]; snprintf(path, sizeof path, "%s/controller-assignment.txt", g_root);
+    FILE *f = fopen(path, "r"); if (!f) return 0;
+    if (!fgets(line, sizeof line, f) || strcmp(line, "v1\n")) { fclose(f); return 0; }
+    pa_runtime_init(&g_assign); memset(g_assign_devices, 0, sizeof g_assign_devices); int next = 1;
+    while (fgets(line, sizeof line, f)) {
+        int p, c; char key[128];
+        if (sscanf(line, "%d %d %127s", &p, &c, key) != 3 || !((p == -1 && c == -1) || (p >= 0 && p < PA_PLAYERS && c >= 0 && c < PA_CELLS))) continue;
+        if (!strcmp(key, "phone")) { if (p >= 0) pa_runtime_move(&g_assign, 1, p, c); continue; }
+        size_t n = strlen(key); if (!n || (n & 1) || n / 2 >= sizeof g_assign_devices[0].key || next >= PA_SOURCES) continue;
+        char decoded[64]; int valid = 1;
+        for (size_t i = 0; i < n / 2; i++) { unsigned v; if (sscanf(key + i * 2, "%2x", &v) != 1 || !v) { valid = 0; break; } decoded[i] = (char)v; }
+        if (!valid) continue; decoded[n / 2] = 0;
+        snprintf(g_assign_devices[next].key, sizeof g_assign_devices[next].key, "%s", decoded);
+        g_assign.last_player[next] = p; g_assign.last_cell[next] = c; next++;
+    }
+    fclose(f); atomic_store(&g_assign_active, 1); assignment_publish(); return 1;
+}
+JNIEXPORT void JNICALL Java_org_nx2a_ExternalActivity_assignmentStart(JNIEnv *env, jclass cls) {
+    (void)env; (void)cls; pthread_mutex_lock(&g_slot_mu);
+    if (!atomic_load(&g_assign_active)) {
+        pa_runtime_init(&g_assign); pa_runtime_move(&g_assign, 1, 0, -1);
+        for (int i = 0; i < g_ndev_key; i++) {
+            int id = g_dev_key[i].id, source = assignment_attach(id, g_dev_key[i].key);
+            int p = pad_slot_of(&g_slots, (const void *)((uintptr_t)(uint32_t)id + 1));
+            if (source && p >= 0 && p < PA_PLAYERS) pa_runtime_move(&g_assign, source, p, -1);
+        }
+        memset(g_btn, 0, sizeof g_btn); memset(g_ax, 0, sizeof g_ax);
+        atomic_store(&g_assign_active, 1); assignment_publish(); assignment_save();
+    }
+    atomic_store(&g_assign_dialog, 1); pthread_mutex_unlock(&g_slot_mu);
+}
+JNIEXPORT void JNICALL Java_org_nx2a_ExternalActivity_assignmentClose(JNIEnv *env, jclass cls) {
+    (void)env; (void)cls; pthread_mutex_lock(&g_slot_mu);
+    atomic_store(&g_assign_dialog, 0);
+    for (int i = 0; i < PA_SOURCES; i++) g_assign.input[i] = (pad_assignment_input){0};
+    memset(g_assign_keys, 0, sizeof g_assign_keys); memset(g_assign_axis_buttons, 0, sizeof g_assign_axis_buttons);
+    assignment_publish(); pthread_mutex_unlock(&g_slot_mu);
+}
+JNIEXPORT void JNICALL Java_org_nx2a_ExternalActivity_assignmentMove(JNIEnv *env, jclass cls, jint source, jint player, jint cell) {
+    (void)env; (void)cls; pthread_mutex_lock(&g_slot_mu);
+    if (atomic_load(&g_assign_active) && pa_runtime_move(&g_assign, source, player, cell)) { assignment_publish(); assignment_save(); }
+    pthread_mutex_unlock(&g_slot_mu);
+}
+JNIEXPORT jintArray JNICALL Java_org_nx2a_ExternalActivity_assignmentSnapshot(JNIEnv *env, jclass cls) {
+    (void)cls; jint data[PA_SOURCES * 7]; int n = 0; pthread_mutex_lock(&g_slot_mu);
+    for (int i = 0; i < PA_SOURCES; i++) if (g_assign.connected[i]) {
+        int p = -1, c = -1; pa_find(&g_assign.slots, i + 1, &p, &c);
+        data[n++] = i + 1; data[n++] = i ? g_assign_devices[i].id : -1; data[n++] = p; data[n++] = c;
+        data[n++] = g_assign.input[i].axis[0]; data[n++] = g_assign.input[i].axis[1]; data[n++] = g_assign.input[i].buttons != 0;
+    }
+    pthread_mutex_unlock(&g_slot_mu);
+    jintArray out = (*env)->NewIntArray(env, n); if (out) (*env)->SetIntArrayRegion(env, out, 0, n, data); return out;
+}
 static int jx(JNIEnv *E) { if (!(*E)->ExceptionCheck(E)) return 0; (*E)->ExceptionClear(E); return 1; }
 static JavaVM *g_vm; static jclass g_in_cls; static jmethodID g_in_get, g_in_desc, g_in_name, g_in_src, g_in_virt;   // InputDevice for the input thread (input_thread attaches it)
 static void pad_key_now(int id, char *out, size_t n) {   // input thread: a controller's descriptor (its name when it has none) before pad_watch learns it; "" when unknown
@@ -329,8 +501,12 @@ static int pad_dev_kind(int id) {
     if (!g_vm || !g_in_cls || !g_in_src || !g_in_virt || (*g_vm)->GetEnv(g_vm, (void **)&E, JNI_VERSION_1_6) != JNI_OK) return -2;
     jobject d = (*E)->CallStaticObjectMethod(E, g_in_cls, g_in_get, id); if (jx(E)) return -2; if (!d) return -1;
     jint src = (*E)->CallIntMethod(E, d, g_in_src); jboolean virt = (*E)->CallBooleanMethod(E, d, g_in_virt); int bad = jx(E);
+    jstring name = g_in_name ? (*E)->CallObjectMethod(E, d, g_in_name) : NULL;
+    const char *nm = !jx(E) && name ? (*E)->GetStringUTFChars(E, name, NULL) : NULL;
+    int system_pad = nm && !strcmp(nm, "uinput-xiaomi");
+    if (nm) (*E)->ReleaseStringUTFChars(E, name, nm); if (name) (*E)->DeleteLocalRef(E, name);
     (*E)->DeleteLocalRef(E, d);
-    return bad ? -2 : !virt && ((src & AINPUT_SOURCE_GAMEPAD) == AINPUT_SOURCE_GAMEPAD || (src & AINPUT_SOURCE_JOYSTICK) == AINPUT_SOURCE_JOYSTICK);
+    return bad ? -2 : !virt && !system_pad && ((src & AINPUT_SOURCE_GAMEPAD) == AINPUT_SOURCE_GAMEPAD || (src & AINPUT_SOURCE_JOYSTICK) == AINPUT_SOURCE_JOYSTICK);
 }
 // A physical controller's face buttons by their label (an Xbox controller's A is the game's A) instead of by their position: the game's own prompts name the button
 // (A to confirm, B to go back), which an Xbox controller's labels match and its positions do not. Label or position is a property of the player's controller, not of
@@ -357,7 +533,6 @@ static uint64_t key_bit(int32_t k) {   // Nintendo layout by position: the botto
     }
 }
 static int32_t axis(float v) { return dm_stick_axis(v); }
-static uint64_t g_shake_btn;   // DM_BTN_SHAKE while the device is being shaken (below); input thread only
 static uint64_t pad_axis_buttons(const float axes[8]) {
     uint64_t b = 0;
     if (axes[4] > 0.5f) b |= DM_BTN_ZL;
@@ -367,6 +542,17 @@ static uint64_t pad_axis_buttons(const float axes[8]) {
     if (axes[7] < -0.5f) b |= DM_BTN_UP;
     if (axes[7] > 0.5f) b |= DM_BTN_DOWN;
     return b;
+}
+JNIEXPORT void JNICALL Java_org_nx2a_ExternalActivity_assignmentPreview(JNIEnv *env, jclass cls, jint id, jfloat x, jfloat y) {
+    (void)env; (void)cls; pthread_mutex_lock(&g_slot_mu);
+    int32_t a[4] = {0}; dm_stick_xy(x, -y, &a[0], &a[1]); int source = assignment_device(id);
+    if (source) pa_axes(&g_assign.input[source - 1], a, &g_assign_clock);
+    pthread_mutex_unlock(&g_slot_mu);
+}
+JNIEXPORT void JNICALL Java_org_nx2a_ExternalActivity_assignmentPreviewButton(JNIEnv *env, jclass cls, jint id, jboolean down) {
+    (void)env; (void)cls; pthread_mutex_lock(&g_slot_mu); int source = assignment_device(id);
+    if (source) g_assign.input[source - 1].buttons = down ? 1 : 0;
+    pthread_mutex_unlock(&g_slot_mu);
 }
 static void pad_publish(int p) {   // caller holds g_slot_mu
     uint64_t b = g_btn[p] | (p ? 0 : g_shake_btn) | pad_axis_buttons(g_ax[p]);
@@ -412,17 +598,20 @@ static void pad_learn(int id, const char *key) {   // pad_watch: a controller's 
     int i = 0; while (i < g_ndev_key && g_dev_key[i].id != id) i++;
     if (i == 16) { memmove(g_dev_key, g_dev_key + 1, 15 * sizeof *g_dev_key); i = 15; } else if (i == g_ndev_key) g_ndev_key++;
     g_dev_key[i].id = id; snprintf(g_dev_key[i].key, sizeof g_dev_key[i].key, "%s", key);
+    if (atomic_load(&g_assign_active)) { assignment_attach(id, key); assignment_publish(); }
     int p = pad_slot_of(&g_slots, pad_owner(id)); if (p >= 0) snprintf(g_slots.last[p], sizeof g_slots.last[p], "%s", key);
     pthread_mutex_unlock(&g_slot_mu);
 }
 static void pad_gone(int id) {   // pad_watch: the device went; its player is free, with nothing left pressed, and a controller refused for want of a player may take it
     pthread_mutex_lock(&g_slot_mu);
+    if (atomic_load(&g_assign_active)) { int source = assignment_device(id); if (source) { pa_runtime_detach(&g_assign, source); g_assign_devices[source - 1].present = 0; g_assign_keys[source - 1] = g_assign_axis_buttons[source - 1] = 0; assignment_publish(); } }
+    for (int i = 0; i < g_ndev_key; i++) if (g_dev_key[i].id == id) { g_dev_key[i] = g_dev_key[--g_ndev_key]; break; }
     int p = pad_slot_free(&g_slots, pad_owner(id));
     for (int i = 0; i < g_nnoslot; ) if (g_noslot[i].id == id) g_noslot[i] = g_noslot[--g_nnoslot]; else { if (p >= 0 && g_noslot[i].st == 2) g_noslot[i].st = 1; i++; }
-    if (p >= 0) { g_btn[p] = 0; memset(g_ax[p], 0, sizeof g_ax[p]); pad_publish(p); dm_pad_players(pad_slot_mask(&g_slots) | 1); LOG("[input] player %d is free", p + 1); }
+    if (p >= 0) { g_btn[p] = 0; memset(g_ax[p], 0, sizeof g_ax[p]); if (!atomic_load(&g_assign_active)) { pad_publish(p); dm_pad_players(pad_slot_mask(&g_slots) | 1); } LOG("[input] player %d is free", p + 1); }
     // player 1's controller went: its rumble back to the phone until the next player 1 sends input (pad_mark_used); pad_watch hands it back only when no controller is
     // in use, so with player 2's still in use the game's rumble went to a device that was gone. (Under the lock: a controller taking player 1 next routes it after this)
-    if (p == 0) dm_haptics_android_device(-1);
+    if (p == 0 && !atomic_load(&g_assign_active)) dm_haptics_android_device(-1);
     pthread_mutex_unlock(&g_slot_mu);
 }
 // ---- the on-screen gamepad (overlay_layout.h): a pointer that goes down on a control keeps it until it lifts; every other pointer is the game's touch screen ----
@@ -434,7 +623,10 @@ static _Atomic int64_t g_press_t[16], g_menu_t, g_stick_t[2];   // when each ove
 static _Atomic uint64_t g_touch_btn;   // the overlay buttons held, cleared by the menu or keyboard
 static int64_t mono_ns(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec; }
 // A system input device can report itself as an active controller (issues #22, #210). The saved choice must still work, and the menu must stay reachable.
-int dm_overlay_visible(void) { return atomic_load(&g_set_overlay) && atomic_load(&g_overlay) ? 1 : 2; }
+int dm_overlay_visible(void) {
+    if (atomic_load(&g_assign_active)) { int p, c; pthread_mutex_lock(&g_slot_mu); int assigned = pa_find(&g_assign.slots, 1, &p, &c); pthread_mutex_unlock(&g_slot_mu); return atomic_load(&g_set_overlay) && assigned ? 1 : 2; }
+    return atomic_load(&g_set_overlay) && atomic_load(&g_overlay) ? 1 : 2;
+}
 int dm_overlay_layout(void) {   // the phone's layout in a window at least OV_PHONE_ASPECT wide for its height (overlay_layout.h)
     static int last_w = -1, last_h = -1, last_x = -1, phone;
     ANativeWindow *w = phone_window(); int ww = w ? ANativeWindow_getWidth(w) : 0, wh = w ? ANativeWindow_getHeight(w) : 0, ext = dm_external_active();
@@ -573,7 +765,7 @@ static void *pad_watch(void *a) {
                         jint ven = (*E)->CallIntMethod(E, d, mVen), prod = (*E)->CallIntMethod(E, d, mProd); jx(E);
                         LOG("[input] controller attached: %s (device %d, sources 0x%x, %04x:%04x)", nm ? nm : "?", v[i], src, ven, prod);
                         jstring ds = mDesc ? (*E)->CallObjectMethod(E, d, mDesc) : NULL; const char *dk = !jx(E) && ds ? (*E)->GetStringUTFChars(E, ds, NULL) : NULL;
-                        pad_learn(v[i], dk && *dk ? dk : nm ? nm : "");
+                        if (!nm || strcmp(nm, "uinput-xiaomi")) pad_learn(v[i], dk && *dk ? dk : nm ? nm : "");
                         if (dk) (*E)->ReleaseStringUTFChars(E, ds, dk);
                         if (ds) (*E)->DeleteLocalRef(E, ds);
                         if (nm) (*E)->ReleaseStringUTFChars(E, s, nm);
@@ -589,7 +781,7 @@ static void *pad_watch(void *a) {
         }
         for (int k = 0; k < np; k++) { int still = 0; for (int i = 0; i < n; i++) still |= ids[i] == prev[k]; if (!still) { LOG("[input] controller detached (device %d)", prev[k]); pad_gone(prev[k]); } }
         if (atomic_exchange(&g_pads, nu) && !nu) {   // the last one went: the device's motor for rumble
-            atomic_store(&g_overlay, 1); dm_haptics_android_device(-1);
+            atomic_store(&g_overlay, 1); if (!atomic_load(&g_assign_active)) dm_haptics_android_device(-1);
             LOG("[input] no controller in use: vibration returns to the phone");
         }
         memcpy(prev, ids, sizeof ids); memcpy(used, on, sizeof on); np = n;
@@ -693,7 +885,8 @@ static void menu_open(int hi) {
     for (int i = 0; i < 16; i++) atomic_store(&g_press_t[i], 0);
     for (int s = 0; s < 2; s++) { atomic_store(&g_stick_t[s], 0); for (int a = 0; a < 2; a++) atomic_store(&g_knob[s][a], 0); }
     stick_at_clear();
-    if (g_pad_used) { pthread_mutex_lock(&g_slot_mu); for (int p = 0; p < DM_PLAYERS; p++) { g_btn[p] = 0; memset(g_ax[p], 0, sizeof g_ax[p]); pad_publish(p); } pthread_mutex_unlock(&g_slot_mu); }
+    if (atomic_load(&g_assign_active)) assignment_clear_all();
+    else if (g_pad_used) { pthread_mutex_lock(&g_slot_mu); for (int p = 0; p < DM_PLAYERS; p++) { g_btn[p] = 0; memset(g_ax[p], 0, sizeof g_ax[p]); pad_publish(p); } pthread_mutex_unlock(&g_slot_mu); }
     for (int i = 0; i < 32; i++) g_ptr_ctl[i] = 0;
     dm_haptics_suspend(4, 1);   // (bits 1 and 2 are the iOS front end's reasons)
     hold_sync(); dm_overlay_redraw();
@@ -704,6 +897,7 @@ static void menu_close(void) {
     if (atomic_load(&g_edit)) { ed_cancel(); return; }   // the editor first: its changes are kept or thrown away before the game goes on
     if (atomic_load(&g_sp_on)) { sp_back(); return; }    // the save picker: back a step
     if (!atomic_exchange(&g_menu, 0)) return;
+    assignment_clear_all();
     g_menu_ptr = -1; atomic_store(&g_menu_t, 0);
     hold_sync(); dm_haptics_suspend(4, 0); dm_overlay_redraw();
     LOG("[menu] closed: the game goes on (gamepad %s, opacity %d%%, sticks %s, rumble %s, face buttons by %s, frame rate %s %#x, super resolution %s (%d%% sharp), %s)", atomic_load(&g_set_overlay) ? "on" : "off", atomic_load(&g_set_opacity),
@@ -721,15 +915,15 @@ static void menu_opacity(int v) {   // the slider: a new value is drawn at once 
 }
 static void menu_tab(int t) { t = (t % OVM_TABS + OVM_TABS) % OVM_TABS; if (atomic_exchange(&g_menu_tab, t) != t) { atomic_store(&g_menu_scroll, 0); dm_haptics_android_tap(); } dm_overlay_redraw(); }
 static void ed_open(void); static void sp_open(void); static void save_export(void);
-static void menu_audio(void) {
-    if (!g_act || !g_act->vm || !g_act->clazz || !g_audio_menu_method) return;
+static void menu_java(jmethodID method) {
+    if (!g_act || !g_act->vm || !g_act->clazz || !method) return;
     JNIEnv *e = NULL; int attached = 0;
     if ((*g_act->vm)->GetEnv(g_act->vm, (void **)&e, JNI_VERSION_1_6) != JNI_OK) {
         if ((*g_act->vm)->AttachCurrentThread(g_act->vm, &e, NULL) != JNI_OK) return;
         attached = 1;
     }
-    (*e)->CallVoidMethod(e, g_act->clazz, g_audio_menu_method);
-    if ((*e)->ExceptionCheck(e)) { (*e)->ExceptionClear(e); LOG("[menu] audio selection is unavailable"); }
+    (*e)->CallVoidMethod(e, g_act->clazz, method);
+    if ((*e)->ExceptionCheck(e)) { (*e)->ExceptionClear(e); LOG("[menu] selection is unavailable"); }
     if (attached) (*g_act->vm)->DetachCurrentThread(g_act->vm);
 }
 static void menu_do(int item) {
@@ -747,7 +941,8 @@ static void menu_do(int item) {
     else if (item == OVM_OPACITY) return;   // (the slider is dragged, or stepped with left and right)
     else if (item == OVM_EXPORT) { if (atomic_load(&g_sv_st) == OVX_BUSY) return; save_export(); }
     else if (item == OVM_IMPORT) { dm_haptics_android_tap(); sp_open(); return; }
-    else if (item == OVM_AUDIO) { menu_audio(); }
+    else if (item == OVM_AUDIO) { menu_java(g_audio_menu_method); }
+    else if (item == OVM_ASSIGN) { menu_java(g_assignment_menu_method); }
     if (item >= 0 && item < OVM_N) dm_haptics_android_tap();
     if (item == OVM_RESUME) menu_close(); else dm_overlay_redraw();
 }
@@ -1231,7 +1426,8 @@ static void touch_event(AInputEvent *e) {
     for (int s = 0; s < 2; s++) for (int a = 0; a < 2; a++) atomic_store(&g_knob[s][a], (int)(kn[s][a] * 10000));
     for (int s = 0; s < 2; s++) for (int a = 0; a < 2; a++) atomic_store(&g_stick_at[s][a], at[s][0] < 0 ? 0 : 1 + (int)lroundf(at[s][a] * 10000));
     for (int s = 0; s < 2; s++) if (!held[s]) atomic_store(&g_stick_t[s], 0); else if (!atomic_load(&g_stick_t[s])) atomic_store(&g_stick_t[s], now);
-    dm_input_set(btn, lx, ly, rx, ry);
+    if (atomic_load(&g_assign_active)) { int32_t a[4] = {lx, ly, rx, ry}; pthread_mutex_lock(&g_slot_mu); assignment_axes(1, btn, a); pthread_mutex_unlock(&g_slot_mu); }
+    else dm_input_set(btn, lx, ly, rx, ry);
     dm_touch_set(t, n);
     if (open) menu_open(-1);
 }
@@ -1262,13 +1458,27 @@ static int handle_event(AInputEvent *e) {
             return 0;
         }
         int id = AInputEvent_getDeviceId(e);
+        if (atomic_load(&g_assign_active) && pad_dev_kind(id) == 1) {
+            char key[64]; pad_key_now(id, key, sizeof key);
+            pthread_mutex_lock(&g_slot_mu); int source = assignment_attach(id, key);
+            if (source) { int i = source - 1; pad_assignment_input *s = &g_assign.input[i];
+                if (down) g_assign_keys[i] |= bit; else if (AKeyEvent_getAction(e) == AKEY_EVENT_ACTION_UP) g_assign_keys[i] &= ~bit;
+                s->buttons = g_assign_keys[i] | g_assign_axis_buttons[i];
+                if (!atomic_load(&g_menu)) { if (down) assignment_rumble_use(source, id); assignment_publish(); } }
+            pthread_mutex_unlock(&g_slot_mu);
+            if (atomic_load(&g_menu) && !atomic_load(&g_assign_dialog) && down && AKeyEvent_getRepeatCount(e) == 0) menu_key(bit);
+            return 1;
+        }
+        if (atomic_load(&g_assign_active) && ((src & AINPUT_SOURCE_GAMEPAD) == AINPUT_SOURCE_GAMEPAD || (src & AINPUT_SOURCE_JOYSTICK) == AINPUT_SOURCE_JOYSTICK)) return 1;
         pthread_mutex_lock(&g_slot_mu); int p = pad_player(id, src, down); pthread_mutex_unlock(&g_slot_mu);   // (a release takes no player either)
         if (down) pad_mark_used(id, p);   // a release after a touch must not hide the controls again
         if (atomic_load(&g_menu)) { if (down && AKeyEvent_getRepeatCount(e) == 0) menu_key(bit); return 1; }
         if (p < 0) return 1;
         pthread_mutex_lock(&g_slot_mu);
         if (down) g_btn[p] |= bit; else if (AKeyEvent_getAction(e) == AKEY_EVENT_ACTION_UP) g_btn[p] &= ~bit;
-        dm_pad_players(pad_slot_mask(&g_slots) | 1); pad_publish(p); pthread_mutex_unlock(&g_slot_mu); return 1;
+        if (atomic_load(&g_assign_active)) assignment_publish();
+        else { dm_pad_players(pad_slot_mask(&g_slots) | 1); pad_publish(p); }
+        pthread_mutex_unlock(&g_slot_mu); return 1;
     }
     if (atomic_load(&g_tx_on) && ((src & AINPUT_SOURCE_JOYSTICK) == AINPUT_SOURCE_JOYSTICK || (src & AINPUT_SOURCE_GAMEPAD) == AINPUT_SOURCE_GAMEPAD)) {
         // the d-pad (reported as a hat on Retroid and many Android handhelds) or the left stick moves the text-entry highlight on edge transitions, as the pause menu uses the hat; touch taps the keys (tx_touch)
@@ -1294,6 +1504,19 @@ static int handle_event(AInputEvent *e) {
         if (axes[5] == 0) axes[5] = AMotionEvent_getAxisValue(e, AMOTION_EVENT_AXIS_GAS, 0);
         // Idle reports still release game inputs, but only a mapped axis outside its dead zone takes over from touch, or takes a player.
         int id = AInputEvent_getDeviceId(e), live = axis(axes[0]) || axis(axes[1]) || axis(axes[2]) || axis(axes[3]) || pad_axis_buttons(axes);
+        if (atomic_load(&g_assign_active) && pad_dev_kind(id) == 1) {
+            char key[64]; pad_key_now(id, key, sizeof key); int32_t a[4];
+            dm_stick_xy(axes[0], -axes[1], &a[0], &a[1]);
+            dm_stick_xy(axes[2], -axes[3], &a[2], &a[3]);
+            pthread_mutex_lock(&g_slot_mu); int source = assignment_attach(id, key);
+            if (source) { int i = source - 1; pad_assignment_input *s = &g_assign.input[i]; g_assign_axis_buttons[i] = pad_axis_buttons(axes); s->buttons = g_assign_keys[i] | g_assign_axis_buttons[i]; pa_axes(s, a, &g_assign_clock); if (!atomic_load(&g_menu)) { if (live) assignment_rumble_use(source, id); assignment_publish(); } }
+            pthread_mutex_unlock(&g_slot_mu);
+            if (atomic_load(&g_menu) && !atomic_load(&g_assign_dialog)) { static float hx, hy; float x = axes[6], y = axes[7];
+                if (y < -.5f && hy >= -.5f) menu_key(DM_BTN_UP); else if (y > .5f && hy <= .5f) menu_key(DM_BTN_DOWN);
+                if (x < -.5f && hx >= -.5f) menu_key(DM_BTN_LEFT); else if (x > .5f && hx <= .5f) menu_key(DM_BTN_RIGHT); hx = x; hy = y; }
+            return 1;
+        }
+        if (atomic_load(&g_assign_active)) return 1;   // stale or unrecognized controller reports must not restore legacy player assignments
         pthread_mutex_lock(&g_slot_mu); int p = pad_player(id, src, live); pthread_mutex_unlock(&g_slot_mu);
         if (live) pad_mark_used(id, p);
         if (atomic_load(&g_menu)) {   // the hat moves the selection
@@ -1304,7 +1527,9 @@ static int handle_event(AInputEvent *e) {
         }
         if (p < 0) return 1;   // a controller with no player: its idle reports have nothing to release (given to player 1, they let go of player 1's stick)
         pthread_mutex_lock(&g_slot_mu); memcpy(g_ax[p], axes, sizeof g_ax[p]);
-        dm_pad_players(pad_slot_mask(&g_slots) | 1); pad_publish(p); pthread_mutex_unlock(&g_slot_mu); return 1;
+        if (atomic_load(&g_assign_active)) assignment_publish();
+        else { dm_pad_players(pad_slot_mask(&g_slots) | 1); pad_publish(p); }
+        pthread_mutex_unlock(&g_slot_mu); return 1;
     }
     if ((src & AINPUT_SOURCE_TOUCHSCREEN) == AINPUT_SOURCE_TOUCHSCREEN) { touch_event(e); return 1; }
     return 0;
@@ -1405,7 +1630,7 @@ static int on_sensor(int fd, int events, void *data) {
         int on = last >= 0 && ev[i].timestamp - last < 120000000;
         if (!on && last >= 0) { LOG("front end: device shaken (peak %.1f G)", peak); last = -1; }
         uint64_t want = on ? DM_BTN_SHAKE : 0;
-        if (want != g_shake_btn) { g_shake_btn = want; pthread_mutex_lock(&g_slot_mu); pad_publish(0); pthread_mutex_unlock(&g_slot_mu); }
+        if (want != g_shake_btn) { pthread_mutex_lock(&g_slot_mu); g_shake_btn = want; if (atomic_load(&g_assign_active)) assignment_publish(); else pad_publish(0); pthread_mutex_unlock(&g_slot_mu); }
     }
     return 1;
 }
@@ -1454,7 +1679,9 @@ static void *input_thread(void *a) {
             int64_t elapsed = mono_ns() - since;
             if (latched && ((elapsed >= 20000000 && dm_input_samples() != sample) || elapsed >= 100000000)) latched = 0;
             if (presses) { latched |= presses; sample = dm_input_samples(); since = mono_ns(); }
-            dm_input_set(b | latched, atomic_load(&g_ext_lx), atomic_load(&g_ext_ly), atomic_load(&g_ext_rx), atomic_load(&g_ext_ry));
+            int32_t a[4] = {atomic_load(&g_ext_lx), atomic_load(&g_ext_ly), atomic_load(&g_ext_rx), atomic_load(&g_ext_ry)};
+            if (atomic_load(&g_assign_active)) { pthread_mutex_lock(&g_slot_mu); assignment_axes(1, b | latched, a); pthread_mutex_unlock(&g_slot_mu); }
+            else dm_input_set(b | latched, a[0], a[1], a[2], a[3]);
         }
         prev = b;
     }
@@ -1574,8 +1801,11 @@ __attribute__((visibility("default"))) void ANativeActivity_onCreate(ANativeActi
     jclass activity_class = (*env)->GetObjectClass(env, act->clazz);
     if (activity_class) g_audio_menu_method = (*env)->GetMethodID(env, activity_class, "openAudioMenu", "()V");
     if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+    if (activity_class) g_assignment_menu_method = (*env)->GetMethodID(env, activity_class, "openControllerAssignment", "()V");
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
     if (activity_class) (*env)->DeleteLocalRef(env, activity_class);
     snprintf(g_root, sizeof g_root, "%s", act->externalDataPath ? act->externalDataPath : act->internalDataPath);
+    assignment_load();
     char p[700];
     snprintf(p, sizeof p, "%s/log.txt", g_root); char prev[720]; snprintf(prev, sizeof prev, "%s/log.prev.txt", g_root); rename(p, prev);
     if (!freopen(p, "w", stderr)) __android_log_print(ANDROID_LOG_ERROR, "dmhost", "cannot write %s", p);

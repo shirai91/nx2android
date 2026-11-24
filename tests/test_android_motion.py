@@ -62,6 +62,8 @@ static int has_gyro, g_rot;
 static void *g_ilooper;
 static _Atomic int g_bg;
 static uint64_t g_shake_btn;
+static _Atomic int g_assign_active;
+static void assignment_publish(void) { atomic_store(&g_pad_btn[0], g_shake_btn); shake_note(); }
 static ASensorEvent pending;
 static int available;
 static ASensorManager *ASensorManager_getInstanceForPackage(const char *p) { (void)p; return &queue; }
