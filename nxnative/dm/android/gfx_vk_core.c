@@ -1181,7 +1181,7 @@ static VkQueryPool g_cq;
 // Occlusion queries: one pool shared by every submission, its slots recycled by the completion thread with hostQueryReset (a device without it cannot give a
 // query back while later submissions use the pool, so it keeps the constant). One query per run of draws between two counter ops inside a pass, so the cost
 // follows the game's counter ops rather than its draws (FFR's hall: 506 reports and 563 queries a frame for 1425 draws)
-enum { OQ_N = 8192, OQ_DEFAULT = 1 };   // DM_VK_OCCLUSION=0 restores the constant every samples-passed report used to write
+enum { OQ_N = 8192, OQ_DEFAULT = 1 };   // on by default: the counter exists for the game's own culling, so a profile opts out only when measured to lose
 static VkQueryPool g_oqpool; static int g_oq_precise;   // precise: exact sample counts, else a query answers only zero / nonzero (what a visibility test reads)
 #define SCRATCH_BLOCK (8u << 20)
 typedef struct { VkBuffer b; VkDeviceMemory m; uint8_t *p; VkDeviceSize size, used; } scratch_blk;
