@@ -1,6 +1,6 @@
 # Ori and the Will of the Wisps on Android
 
-**Experimental setup profile — known blockers remain; requires testing.** A community port attempt reached a rewriter failure; no successful game build or Android device test is established. This profile makes the exact build's metadata available to the porter; it does not establish that the game boots or plays.
+**Experimental setup profile — known blockers remain; requires testing.** A full port of 1.2.1 builds the APK and data pack with #581, #585 and #562 merged (see Quirks); no Android launch or device test is established. This profile makes the exact build's metadata available to the porter; it does not establish that the game boots or plays.
 
 **Startup crash risk:** nxnative needs a lock around Unity's shared constant-buffer table. This fork cannot apply that upstream patch, and this profile does not include it.
 
@@ -33,7 +33,12 @@ None. No APK, full shader translation, game launch, screenshots or gameplay vali
 
 ## Quirks and known issues
 
-- A community port of the registered `main` build stopped at `jump table 1b56540`, then at `jump table 1b574e0`. The shared rewriter now tries nxnative's tail-call proofs, the ones nxnative uses on this build, at any `br x18` it could not otherwise classify. Synthetic regressions cover these forms and unsafe variants. The instructions at `1b574e0` are not available, so a fresh full port must confirm the rewrite; later rewrite failures are also untested.
+- A community port of the registered `main` build stopped at `jump table 1b56540`, then at `jump table 1b574e0`. The shared rewriter now tries nxnative's tail-call proofs, the ones nxnative uses on this build, at any `br x18` it could not otherwise classify. Synthetic regressions cover these forms and unsafe variants. The rewrite of `main`, `subsdk0` and `sdk` now finishes on a real 1.2.1 dump, on a Mac and in Termux on a phone.
+- Until they are merged, a port of this game needs three core fixes, each found with it:
+  - #581: the shader split unpacks Unity bundles one node at a time. Unpacking the 822 MB `data_1.unity3d` whole ran a 6 GB phone out of memory, even with `--jobs 1`.
+  - #585: the shader translator's optimizer no longer copies one expression into both operands of `x * x`. 12 pixel shaders made the translator grow without end, about 13 GB in 30 s for one of them.
+  - #562: the shader export writes the bundle in batches. Without it, the export held all 1.25 GB of SPIR-V and peaked at about 2 GB.
+  On a Mac with all three, the port's largest processes peaked at 843 MB (the shader export), 798 MB (porter) and 133 MB (each translator).
 - **Unity startup race remains unfixed.** [Upstream's analysis](https://github.com/seedds/nxnative/blob/6e12b9f8471c0ea80628ef33f7ffcfe2380cada5/dm/games/01008DD013200000/README.md#startup) records concurrent main/render-thread access to a constant-buffer table and 3 crashes in 7 Mac boots without the lock. This is upstream evidence, not an Android measurement. Disabling Unity graphics jobs did not remove the race upstream.
 - The upstream `registry_lock` patch for `main` build `11c33c7c2dbd3c5491841f67495c7ee8` uses `STUBS`. nx2android's `patch_nso.py::load_patches` reads only `CUTS`, `OBS` and `FRAME_STEP`. Its patch registry test also rejects unrecognized tables. The unsupported `patches.py` is deliberately omitted; a successful port command would not mean the lock was applied.
 - The shader inventory includes six hull and six domain shaders. The Android graphics pipeline currently assembles vertex, fragment and geometry stages only. Whether these tessellation shaders are invoked, and the impact if they are, remain untested.
@@ -42,7 +47,7 @@ None. No APK, full shader translation, game launch, screenshots or gameplay vali
 
 ## Source and profile scope
 
-Audited against nx2android [`581ca540f7b2`](https://github.com/shirai91/nx2android/tree/581ca540f7b2214d47aee1e9be6156fc36809426). Build identity and ordinary shader tables are taken from the pinned [nxnative profile](https://github.com/seedds/nxnative/tree/6e12b9f8471c0ea80628ef33f7ffcfe2380cada5/dm/games/01008DD013200000) at `6e12b9f8471c`. The local Unity asset reader, static GLSLC-output splitter and NVN-to-Vulkan path already exist. Table reproduction from a real dump and complete shader translation have not been checked.
+Audited against nx2android [`581ca540f7b2`](https://github.com/shirai91/nx2android/tree/581ca540f7b2214d47aee1e9be6156fc36809426). Build identity and ordinary shader tables are taken from the pinned [nxnative profile](https://github.com/seedds/nxnative/tree/6e12b9f8471c0ea80628ef33f7ffcfe2380cada5/dm/games/01008DD013200000) at `6e12b9f8471c`. The local Unity asset reader, static GLSLC-output splitter and NVN-to-Vulkan path already exist. A port of a real 1.2.1 dump reproduces the shader tables (the split stops when they differ) and translates all 52,682 shaders, with none failed, with #585 merged.
 
 Only the ordinary shader map, conflict table, shader facts, shader pairs and `bf_want` inputs are included. Apple pipeline archives, supplemental `pso_pairs.tsv` and unsupported patches are not copied. The shared rewriter has a general fixed-frame tail-call recognition rule prompted by the community port failure; no runtime or shader-translator change is included. No `tested`, screenshot or tested-release metadata is supplied.
 
