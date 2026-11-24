@@ -200,7 +200,10 @@ static void on_crash(int sig, siginfo_t *si, void *uc_) {
         _exit(128 + sig);
     }
     funlockfile(stderr);
+    // The first line goes out at once: the app's stderr is line-buffered and this line has no newline of its own, so a crash that kills the process before the
+    // newline (the Android host: the driver's compiler faults inside the crash handler) left the log without any trace of it (Fire Emblem: Three Houses, 2026-11-23)
     fprintf(stderr, "[dm] CRASH sig=%d", sig);
+    fflush(stderr);
     off("addr", (uint64_t)si->si_addr); off("pc", DM_UC_SS(uc)->__pc); off("lr", crash_code_addr(DM_UC_SS(uc)->__lr));
     { mach_port_t me = mach_thread_self(); char nm[64]; crash_thread_name(me, nm, sizeof nm);
       fprintf(stderr, " sp=%#llx thread %#x '%s'\n", DM_UC_SS(uc)->__sp, (unsigned)me, nm); }

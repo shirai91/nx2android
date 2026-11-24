@@ -447,29 +447,78 @@ static VkPipeline compute_build(vkshader_t *cs, uint64_t um, uint64_t im) {   //
     if (r) { LOG("[RED] [vk] compute pipeline failed: %016llx", (unsigned long long)cs->key); p = (VkPipeline)1; }
     return p;
 }
+// The compute shaders the game dispatched: their keys, in the pack's own file (DM_ROOT/vk_compute_pipes.bin, a list of u64). The replay thread appends a key
+// when it builds a pipeline for it (dispatch below).
+static void compute_record(uint64_t key) {
+    const char *root = getenv("DM_ROOT"); if (!root) return;
+    char path[1024]; snprintf(path, sizeof path, "%s/vk_compute_pipes.bin", root);
+    static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
+    pthread_mutex_lock(&mu);
+    FILE *f = fopen(path, "ab"); if (f) { fwrite(&key, sizeof key, 1, f); fflush(f); fclose(f); }
+    pthread_mutex_unlock(&mu);
+}
+static int compute_used(uint64_t *out, int max) {   // the keys the game dispatched, without duplicates
+    const char *root = getenv("DM_ROOT"); if (!root) return 0;
+    char path[1024]; snprintf(path, sizeof path, "%s/vk_compute_pipes.bin", root);
+    FILE *f = fopen(path, "rb"); if (!f) return 0;
+    int n = 0; uint64_t k;
+    while (n < max && fread(&k, sizeof k, 1, f) == 1) {
+        int dup = 0; for (int i = 0; i < n; i++) if (out[i] == k) { dup = 1; break; }
+        if (!dup) out[n++] = k;
+    }
+    fclose(f);
+    return n;
+}
+// The shader whose build crashed the driver's compiler last time: the warm-up writes the key before every build (DM_ROOT/vk_compute_skip.txt), so a crash leaves the
+// culprit behind and the next run skips it instead of dying the same way
+static uint64_t compute_skip(void) {
+    const char *root = getenv("DM_ROOT"); if (!root) return 0;
+    char path[1024]; snprintf(path, sizeof path, "%s/vk_compute_skip.txt", root);
+    FILE *f = fopen(path, "rb"); if (!f) return 0;
+    unsigned long long k = 0; if (fscanf(f, "%llx", &k) != 1) k = 0; fclose(f);
+    return (uint64_t)k;
+}
+static void compute_skip_set(uint64_t key) {
+    const char *root = getenv("DM_ROOT"); if (!root) return;
+    char path[1024]; snprintf(path, sizeof path, "%s/vk_compute_skip.txt", root);
+    FILE *f = fopen(path, "w"); if (f) { fprintf(f, "%016llx\n", (unsigned long long)key); fflush(f); fclose(f); }
+}
 // Compute pipelines made ahead. One depends only on its shader (and integer-texel variants, rare), and building one costs Adreno 45-105 ms: Super Mario Odyssey's
 // particle emitters run on compute shaders (EffectPtcl), and the first cap throw at a breakable object built one on the replay thread (a 65 ms frame), the first scenes
-// several. A game has few (Odyssey 41), so at the first submission a background thread builds every compute shader in the bundle with no integer-texel variant (up to a cap, below)
+// several. A game has few (Odyssey 41), so at the first submission a background thread builds the compute shaders the game dispatched with no integer-texel variant (up to a cap, below)
+// Only the shaders the game has dispatched are built: a bundle holds many more (Fire Emblem: Three Houses: 147), and the driver's shader compiler can die on one of them
+// (the Adreno 750's, libllvm-qgl.so: SIGSEGV, NULL+0x48, on the game's compute shader 00d5d19d07c37895 - the whole process dies a second and a half after the launch,
+// before the title screen, and the app's log has no crash report of it)
 static void *compute_warm(void *arg) {
     (void)arg; pthread_setname_np(pthread_self(), "vk compute warm"); setpriority(PRIO_PROCESS, 0, 10);
+    { void crash_thread_init(void); crash_thread_init(); }   // the alternate signal stack: the driver's compiler faults (SIGSEGV in libllvm-qgl.so) and the report needs a stack of its own
     int vk_shader_keys(uint32_t stage, uint64_t *out, int max); static uint64_t keys[4096]; int n = vk_shader_keys(5, keys, 4096), made = 0; uint64_t t0 = tick();
+    static uint64_t used[4096]; int nu = compute_used(used, 4096);
+    if (!nu) { VKLOG("compute pipelines made ahead: none, the game has not dispatched a compute shader yet (%d in the bundle)", n); return NULL; }
     // A bundle with many compute shaders is left to the replay: Monster Hunter Rise's (4096 or more) held ~550 MB more from the title on, and a Retroid Pocket 5
     // (Adreno 650, 8 GB) ran out of GPU memory loading the first area (vkAllocateMemory -2 at a 4 MB pool). DM_VK_COMPUTE_WARM_MAX (start-up, default 256): the most made ahead
     { const char *e = getenv("DM_VK_COMPUTE_WARM_MAX"); int cap = e ? atoi(e) : 256;
-      if (n > cap) { VKLOG("compute pipelines made ahead: none, the bundle has %d%s compute shaders (more than %d, DM_VK_COMPUTE_WARM_MAX)", n, n == 4096 ? " or more" : "", cap); return NULL; } }
-    for (int i = 0; i < n; i++) {
-        uint64_t ck[3] = {keys[i], 0, 0};
+      if (nu > cap) { VKLOG("compute pipelines made ahead: none, the game dispatched %d compute shaders (more than %d, DM_VK_COMPUTE_WARM_MAX)", nu, cap); return NULL; } }
+    uint64_t skip = compute_skip();
+    if (skip) VKLOG("compute pipelines made ahead: the shader %016llx is skipped (its build crashed the driver's compiler last time)", (unsigned long long)skip);
+    for (int i = 0; i < nu; i++) {
+        uint64_t key = used[i];
+        if (key == skip) continue;
+        uint64_t ck[3] = {key, 0, 0};
         pthread_mutex_lock(&g_cpipe_mu); int have = nvn_hm_get(&g_cpipes, ck) != NULL; pthread_mutex_unlock(&g_cpipe_mu);
-        vkshader_t *cs = have ? NULL : vk_shader(keys[i], 5); if (!cs) continue;
+        vkshader_t *cs = have ? NULL : vk_shader(key, 5); if (!cs) continue;
+        compute_skip_set(key);   // if the driver crashes in this build, the next run knows which shader it was
         VkPipeline p = compute_build(cs, 0, 0); made++;
         pthread_mutex_lock(&g_cpipe_mu); if (!nvn_hm_get(&g_cpipes, ck)) nvn_hm_put(&g_cpipes, ck, p); else if (p != (void *)1) vkDestroyPipeline(V.dev, p, NULL); pthread_mutex_unlock(&g_cpipe_mu);
     }
-    VKLOG("compute pipelines made ahead: %d of %d compute shaders in %.0f ms", made, n, (tick() - t0) / 1e6);
+    VKLOG("compute pipelines made ahead: %d of the %d compute shaders the game dispatched in %.0f ms", made, nu, (tick() - t0) / 1e6);
     return NULL;
 }
 static void compute_warm_start(void) {
     if (getenv("DM_VK_NOPREWARM")) return;
-    pthread_t t; pthread_attr_t a; pthread_attr_init(&a); pthread_attr_setdetachstate(&a, PTHREAD_CREATE_DETACHED); pthread_create(&t, &a, compute_warm, NULL); pthread_attr_destroy(&a);
+    pthread_t t; pthread_attr_t a; pthread_attr_init(&a);
+    pthread_attr_setstacksize(&a, 16 << 20);   // the driver's shader compiler wants a lot of stack (it faults on a thread that has little)
+    pthread_attr_setdetachstate(&a, PTHREAD_CREATE_DETACHED); pthread_create(&t, &a, compute_warm, NULL); pthread_attr_destroy(&a);
 }
 // Validate all three indirect argument words before recording any copy. A pool can have several VkBuffers (chunks), and a slab's
 // buffer begins at boff. CPU memory is not a source: a preceding GPU command may generate these counts during this submission.
@@ -513,6 +562,7 @@ static void dispatch(const p_dispatch *d) {
         pthread_mutex_lock(&g_cpipe_mu); VkPipeline had = nvn_hm_get(&g_cpipes, ck);
         if (had) { if (p != (void *)1) vkDestroyPipeline(V.dev, p, NULL); p = had; } else nvn_hm_put(&g_cpipes, ck, p);   // (compute_warm made it meanwhile)
         pthread_mutex_unlock(&g_cpipe_mu);
+        if (p != (void *)1) compute_record(cs->key);   // the game used this compute shader: the warm-up may build it ahead next time
     }
     if (p == (void *)1) return;
     vk_img_barrier_all(cb);
