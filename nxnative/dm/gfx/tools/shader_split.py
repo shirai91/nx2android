@@ -1258,12 +1258,36 @@ _PAKS = {}
 def ue_legacy_shaders(path, rel, names, out):
     """Files of a legacy Unreal pak (ue_legacy_jobs), each decoded block by block with the game's own decoder (DRAGON QUEST XI S: LZ5; zlib blocks, OCTOPATH TRAVELER's, by uepak itself) and scanned for the shader records the engine keeps inline"""
     pk = _PAKS.get(path) or _PAKS.setdefault(path, uepak.Pak(path))
+    dec = ue_legacy_decoded(path, rel)
     for name in names:
-        d = pk.read(name, decode=oodle)
-        normpath = os.path.normpath if pk.version == 4 else posixpath.normpath
+        if dec is not None and pk.files[name]['method'] == 'LZ5':
+            if name not in dec[1]: continue   # decoded on the device and holds no shader record (hle_oodle.c ue_has_shader)
+            o, n = dec[1][name]; dec[0].seek(o); d = dec[0].read(n)
+            if len(d) != n or n != pk.files[name]['raw']: red(f'/{rel}#{name}: the file decoded on the device is cut short ({len(d)} of {pk.files[name]["raw"]} bytes)')
+        else: d = pk.read(name, decode=oodle)
+        # Version 4 labels follow the platform's separators (OCTOPATH TRAVELER's tables were written on Windows); DRAGON QUEST XI S's were written on the Mac, so its paks decoded on the
+        # Android device (dec) keep forward slashes when the porter runs on Windows
+        normpath = os.path.normpath if pk.version == 4 and dec is None else posixpath.normpath
         label = re.sub(r"^(\.\./)+", "", normpath(pk.mount + name))
         if pk.version == 8: out.extend(ue_shaders(d, f'/{rel}#{label}', version=1))
         else: ue_inline_shaders(d, f'/{rel}#{label}', out)
+
+_UEL_DEC = {}
+def ue_legacy_decoded(path, rel):
+    """A legacy Unreal pak's LZ5 files decoded already, on the Android device (the porter's device_ue_legacy; DRAGON QUEST XI S, profile key ue_legacy_decode device): the files that can hold a
+    shader record, in <version dir>/ue_legacy/<rel with / as __>.dec = 'DULD', u64 the pak's size, u32 count, then per file u16 name length, the name (UTF-8), u32 length and the bytes.
+    An LZ5 file not in it holds no shader record. None: no such file (the Mac decodes through the host, oodle). → (open file, {name: (offset, length)})"""
+    if path in _UEL_DEC: return _UEL_DEC[path]
+    ap = os.path.abspath(path); romfs = ap[:len(ap) - len(rel)].rstrip('\/')
+    p = os.path.join(os.path.dirname(romfs), 'ue_legacy', rel.replace('/', '__') + '.dec')
+    if not os.path.isfile(p): _UEL_DEC[path] = None; return None
+    f = open(p, 'rb'); head = f.read(16)
+    if len(head) != 16 or head[:4] != b'DULD' or struct.unpack_from('<Q', head, 4)[0] != os.path.getsize(path): red(f'{p}: not the decoded files of /{rel} (stale: port again)')
+    ent = {}
+    for _ in range(struct.unpack_from('<I', head, 12)[0]):
+        name = f.read(struct.unpack('<H', f.read(2))[0]).decode('utf-8'); n = struct.unpack('<I', f.read(4))[0]
+        ent[name] = (f.tell(), n); f.seek(n, os.SEEK_CUR)
+    _UEL_DEC[path] = (f, ent); return _UEL_DEC[path]
 
 ZLIB_HEAD = re.compile(b'\x78[\x01\x5e\x9c\xda]')
 def ue_inline_shaders(d, label, out):
