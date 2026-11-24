@@ -19,6 +19,7 @@ The profile sets these for you (`android.tsv`); a player changes the pause menu 
 | `DM_NGC_CONTENT_VERSION=1` | nn::ngc::ProfanityFilter::GetContentVersion result; unset: 0 |
 | `DM_NGC_CHINA_PASSTHROUGH=1` | nn::ngc::MaskProfanityWordsInTextForPlatformRegionChina leaves the text as it is instead of filtering through ngct:u, which the host does not serve (abort … |
 | `TU_DEBUG=sysmem` | - |
+| `DM_VK_X_FENCES=1` | submissions signal a ring of fences instead of a timeline semaphore, as on a Vulkan 1.1 driver without timeline semaphores (the Adreno 618 / 619 of 2021, issue … |
 
 Read the profile's porting log in the comment header of [`android.tsv`](android.tsv). Back to the [games list](../../../../README.md#games).
 <!-- end of the game facts -->
@@ -29,8 +30,12 @@ Read the profile's porting log in the comment header of [`android.tsv`](android.
 
 ## Frame rate
 
-- About 21-25 fps on the Odin 2 against the game's 30 fps target. The game is GPU-bound: about 33 ms of GPU work a frame in
-  Docked mode, and the CPU waits for the GPU several times a frame.
+- About 21-25 fps on the Odin 2 against the game's 30 fps target. The game is GPU-bound: about 33-35 ms of GPU work a frame
+  in Docked mode.
+- `DM_VK_X_FENCES=1` stops the CPU from waiting for the GPU on every submission (on Turnip, a submission that signals the
+  timeline semaphore blocks until the previous one finishes). Title scene, Docked: 18.3 ms to 0.2 ms of submit time and
+  25.9 ms to 19.7 ms of frame work a frame. In Spring Village the frame time now follows the GPU time (about 39 ms against
+  about 35 ms), so the play still feels slow there.
 - For smoother play, a Snapdragon 8 Gen 3 or newer is recommended. The Odin 2 (Snapdragon 8 Gen 2) stays below 30 fps.
 - Game speed follows real time, not the frame rate, so the game does not slow down when the frame rate drops.
 - Handheld mode is faster (about 25 fps outdoors against about 21.5 fps Docked) at a lower render resolution.

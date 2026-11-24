@@ -1,6 +1,6 @@
 # Rune Factory: Guardians of Azuma on Android (Unreal Engine 5, NVN; update v589824 = 1.1.4).
 # Experimental: plays from a new game through the village and combat, but runs at about 21-25 fps against the game's 30 fps
-# target (GPU-bound, ~33 ms GPU a frame Docked). Game speed is time-based, so the low frame rate does not slow the game.
+# target (GPU-bound, ~33-35 ms GPU a frame Docked; DM_VK_X_FENCES removed the CPU wait on each submission). Game speed is time-based, so the low frame rate does not slow the game.
 # Tip: Handheld mode in the pause menu (Game tab) drops the render resolution and gains about 3 fps.
 status	experimental
 package	org.nx2a.runefactorygoa
@@ -19,3 +19,7 @@ env	DM_NGC_CHINA_PASSTHROUGH=1
 # GPU p50 38.4 -> 34.5 ms, frame p50 43.6 -> 39.5 ms; the two screenshots match. Still under 30 fps there: the depth prepass (~16 ms,
 # ~450 draws) and the base pass (~15.5 ms, ~340 draws) take most of the frame.
 env	TU_DEBUG=sysmem
+# DM_VK_X_FENCES=1: with Turnip every submission that signals the timeline semaphore blocked in vkQueueSubmit until the previous one finished
+# on the GPU (no CPU/GPU overlap). Title scene, Docked, A/B on one boot path: queue submit 18.3 -> 0.2 ms a frame, frame work p50 25.9 -> 19.7 ms
+# (GPU busy unchanged, ~20 ms). Same fix as 010055D009F78000 (settings.tsv DM_VK_X_FENCES)
+env	DM_VK_X_FENCES=1
