@@ -21,6 +21,10 @@
 # 2,000 draws) went from 30 to 60 fps with 4 of 11 ten-second windows dropping frames, but the GPU went from 53 to 75 °C in 60 s, so it is not in the profile.
 # Motion aiming (2026-11-05, Turnip, docked setting): the game reads only the npad six-axis sensor (GetSixAxisSensorHandles / Start / States); with the device's
 # gyroscope feeding it (front_android.c → dm_motion_set) the user's aim followed the tablet's turns in the right directions.
+# DM_VK_MINIMAL_BACK=1 (2026-11-24, Retroid Pocket 6, Snapdragon 8 Gen 2 / Adreno 740, Turnip v27.0.0-R2): Hyrule Field grass vanished ~30-40 s after load even
+# while standing still. grass.Product samples 260x260 RG8 9-level MINIMAL_LAYOUT terrain maps (binding 4) that the GPU renders at load (178 tiles) and the CPU
+# later relocates to new pool offsets via memcpy; because block-linear render targets stayed only in VkImages, the CPU copy carried zeros and flattened grass.
+# Async write-back + nvn_swizzle preserves the relocated tiles and keeps grass intact across normal play.
 # Open: 60 fps in the open world without turbo (GPU about 19 ms on Turnip); the frame step tries 60 only under 0.85 of a frame; GPU frames of 0.8-1.9 s on
 # entering a shrine (Turnip); fights show single GPU frames of 25-180 ms (DM_VK_PASS_TIMES=1 + DM_VK_PASS_SPIKE=<ms> lists such a
 # frame's passes); a flickering light ray the user saw in a sky view on Qualcomm's driver.
@@ -33,5 +37,6 @@ setting	docked=0
 env	DM_VK_FDZ=0
 env	DM_NVN_ASYNC=1
 env	DM_PIN_REPLAY=prime
+env	DM_VK_MINIMAL_BACK=1
 readme_image	docs/images/the-legend-of-zelda-tears-of-the-kingdom.jpg
 readme_tag	v0.3.0

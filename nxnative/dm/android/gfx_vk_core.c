@@ -1795,6 +1795,7 @@ static void *completion_main(void *a) {
         cpend *c = g_ch; pthread_mutex_unlock(&g_cmu);
         if (V.has_timeline) wait_fence(c->fence); else { VkResult r = vkWaitForFences(V.dev, 1, &g_fring[c->fence % NFRING], VK_TRUE, UINT64_MAX); if (r != VK_SUCCESS) die("[vk] GPU fence wait did not complete: %d", r); }
         if (g_shadow_pools && c->rslot >= 0) pools_copy_back(&g_slot[c->rslot]);
+        vk_wb_complete(c->fence);
         if (g_tsq && c->slot >= 0) { uint64_t t[2]; if (vkGetQueryPoolResults(V.dev, g_tsq, 2 * (uint32_t)c->slot, 2, sizeof t, t, 8, VK_QUERY_RESULT_64_BIT) == VK_SUCCESS && t[1] > t[0])
             { uint64_t ns = (uint64_t)((double)(t[1] - t[0]) * V.props.limits.timestampPeriod); g_gpu_ns += ns; int k = (int)(c->frame % 64);
               if (g_frame_gpu_of[k] != c->frame + 1) { g_frame_gpu[k] = 0; g_frame_gpu_of[k] = c->frame + 1; } g_frame_gpu[k] += ns; } }
@@ -1866,10 +1867,13 @@ uint64_t mtl_sub_commit(void) {
     { void vk_prof_end(void); vk_prof_end(); }
     vksub_t *s = cur();
     vk_end_pass_land();
+    uint64_t next_f = g_fence + 1;
+    vk_wb_commit(s->main, next_f);
     pools_readback_barrier(s->main);
     if (g_tsq) vkCmdWriteTimestamp(s->main, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, g_tsq, 2 * (uint32_t)g_cur + 1);
     VkResult er = vkEndCommandBuffer(s->main); if (s->cb_err && er >= 0) er = VK_ERROR_OUT_OF_HOST_MEMORY;
     if (er < 0) {   // the driver refused something recorded in it: logged with what the submission held, then it is dropped and the game goes on
+        vk_wb_abort(next_f);
         extern uint32_t g_sub_ops[64]; char ops[600]; int o = 0;
         for (int i = 0; i < 64 && o < (int)sizeof ops - 16; i++) if (g_sub_ops[i]) o += snprintf(ops + o, sizeof ops - (size_t)o, " %d:%u", i, g_sub_ops[i]);
         static int n; if (n++ < 3) VKLOG("[RED] vkEndCommandBuffer failed (%d): submission dropped; record ops (op:count)%s", er, ops);
