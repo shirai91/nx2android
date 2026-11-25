@@ -871,6 +871,9 @@ static void cmd_new_segment(cmd_t *o, uint8_t *mem, size_t n) {
 // - The pool goes: a list recorded in a pool's memory dies with it, so nvnMemoryPoolFinalize frees the segments that hang off the pool's memory (after its drain: no queued
 //   submission still reads them). Memory the game never records in again (its command memory moved to another pool) would otherwise keep its segments up to HOSTSEG_CAP. A
 //   virtual pool's memory can be a physical pool's (MapVirtual), so only a physical pool going frees them.
+// - A bound: memory the game grants again but never records in again, or leaves without finalizing its pool, still keeps its segments. Once the segments held by a guest range
+//   reach HOSTSEG_GRANT_FREES, a quarter of HOSTSEG_CAP, a [RED] line says so and, for the rest of the run, a command memory grant frees the segments it covers again, the rule
+//   before 0d1037875. That takes back the risk above, a list's tail lent to the next overflow, in place of the abort at HOSTSEG_CAP.
 // Control-owned segments (below) hang off their 16-byte control anchor instead, and a control grant over the anchor frees them (AddControlMemory).
 // The segment pool grows on demand (SMBW opening course: many small command buffers each overflow once per frame, and the old fixed 64 segments × 1 MB ran out within 8 frames); abort only beyond HOSTSEG_CAP in total.
 // An empty command pool can still have guest control memory: reserve a distinct lifetime anchor per recording below, so any overflow has a real guest lifetime. Super Mario Odyssey's Wooded Kingdom
@@ -883,6 +886,9 @@ uint64_t dm_nvn_frame_count(void);
 typedef struct { uint8_t *mem; uint64_t frame; int busy; uintptr_t org_lo, org_hi; uint32_t sz, rec_id; } hostseg_t;   // org: the guest range of the recording it hangs off (0 = unknown, never reclaimed); rec_id: the recording that took it
 static hostseg_t *g_hostseg; static int g_nhostseg, g_caphostseg; static uint64_t g_hostseg_bytes;
 static _Atomic int g_hostseg_held;   // busy segments with a guest range: 0 lets hostseg_written return without the lock
+static uint64_t g_hostseg_held_bytes;   // their bytes
+#define HOSTSEG_GRANT_FREES (HOSTSEG_CAP / 4)
+static _Atomic int g_hostseg_grant_frees;   // the held bytes reached HOSTSEG_GRANT_FREES: command memory grants free the segments they cover (see above)
 static _Atomic uint32_t g_rec_serial;   // BeginRecording's serials (cmd_t rec_id; one that wraps around to a recording whose segment is still lent only keeps that segment lent)
 static pthread_mutex_t g_hostseg_mu = PTHREAD_MUTEX_INITIALIZER;
 // Take a segment of sz bytes: origin = the current recording's guest bytes in the segment it ran short in, [own, end of the JUMP at the write position), or the byte at own when it has no
@@ -909,16 +915,19 @@ static uint8_t *hostseg_take(cmd_t *o, uint32_t sz) {
         m = malloc(sz); g_hostseg_bytes += sz;
         g_hostseg[g_nhostseg++] = (hostseg_t){ m, f, 1, lo, hi, sz, rid };
     }
-    if (m && hi > lo) atomic_fetch_add_explicit(&g_hostseg_held, 1, memory_order_relaxed);
-    unsigned t = ++total; int n = g_nhostseg; unsigned mb = (unsigned)(g_hostseg_bytes >> 20);
+    if (m && hi > lo) { atomic_fetch_add_explicit(&g_hostseg_held, 1, memory_order_relaxed); g_hostseg_held_bytes += sz; }
+    int bound = g_hostseg_held_bytes >= HOSTSEG_GRANT_FREES && !atomic_exchange_explicit(&g_hostseg_grant_frees, 1, memory_order_relaxed);
+    unsigned t = ++total; int n = g_nhostseg; unsigned mb = (unsigned)(g_hostseg_bytes >> 20), held_mb = (unsigned)(g_hostseg_held_bytes >> 20);
     pthread_mutex_unlock(&g_hostseg_mu);
+    if (bound) LOG("[RED] NVN command memory: %u MB of host-lent segments are held by lists the game has not recorded over (segment pool %d segments, %u MB); from now on a command memory grant frees the segments it covers, and a list whose tail such a grant covers can be recorded over", held_mb, n, mb);
     if (!m) die("NVN command memory: the game's pool is empty and host-lent segments reached %u MB without being reclaimed by the game's blocks", HOSTSEG_CAP >> 20);
     if (t == 1 || t % 1024 == 0) LOG("[nvn] the game's command memory ran short, the host lends a segment (%u times so far, frame %llu, segment pool %d segments, %u MB)", t, (unsigned long long)f, n, mb);
     return m;
 }
-static void hostseg_free(hostseg_t *s) { s->busy = 0; if (s->org_hi > s->org_lo) atomic_fetch_sub_explicit(&g_hostseg_held, 1, memory_order_relaxed); }
+static void hostseg_free(hostseg_t *s) { s->busy = 0; if (s->org_hi > s->org_lo) { atomic_fetch_sub_explicit(&g_hostseg_held, 1, memory_order_relaxed); g_hostseg_held_bytes -= s->sz; } }   // under g_hostseg_mu
 // The game gives out control memory [lo, hi) (AddControlMemory: control-owned segments whose anchor overlaps it are dead), or a pool over [lo, hi) goes (nvnMemoryPoolFinalize: the
-// lists recorded there are dead): reclaim the segments that hang off it (command memory grants free nothing: see above)
+// lists recorded there are dead), or, past HOSTSEG_GRANT_FREES, command memory [lo, hi) (AddCommandMemory): reclaim the segments that hang off it (command memory grants below the
+// bound free nothing: see above)
 static void hostseg_release(uintptr_t lo, uintptr_t hi) {
     pthread_mutex_lock(&g_hostseg_mu);
     for (int i = 0; i < g_nhostseg; i++) if (g_hostseg[i].busy && g_hostseg[i].org_hi > lo && g_hostseg[i].org_lo < hi) hostseg_free(&g_hostseg[i]);
@@ -952,6 +961,7 @@ NVN(nvnCommandBufferAddCommandMemory, void, NVNcommandBuffer *c, const NVNmemory
     if (!pl || room < 16) { if (cs_on()) { pthread_mutex_lock(&g_cs_mu); g_cs.hostseg++; pthread_mutex_unlock(&g_cs_mu); } uint32_t sz = HOSTSEG_SZ; if (!pl && n >= 64) { sz = HOSTSEG_MIN; while (sz < n && sz < HOSTSEG_SZ) sz <<= 1; }
         cmd_new_segment(CB(c), hostseg_take(CB(c), sz), sz); return; }
     if (!pl->mem) { LOG("[RED] AddCommandMemory: pool has no CPU storage"); return; }
+    if (atomic_load_explicit(&g_hostseg_grant_frees, memory_order_relaxed)) hostseg_release((uintptr_t)(pl->mem + off), (uintptr_t)(pl->mem + off + n));   // past the bound (see hostseg_take)
     if (cs_on()) { pthread_mutex_lock(&g_cs_mu); g_cs.grants++; g_cs.grant_bytes += n; if (!g_cs.grant_min || n < g_cs.grant_min) g_cs.grant_min = n; if (n > g_cs.grant_max) g_cs.grant_max = n; pthread_mutex_unlock(&g_cs_mu); }
     { static int cblog = -1; if (cblog < 0) cblog = getenv("DM_NVN_CBLOG") != NULL; static uint64_t ng; if (cblog && (++ng <= 60 || ng % 500 == 0)) LOG("[nvn] AddCommandMemory #%llu cmd=%p pool %p +%#lx length %#zx (recording %d)", (unsigned long long)ng, (void *)c, (const void *)pl, (long)off, n, CB(c)->recording); }
     cmd_new_segment(CB(c), pl->mem + off, n);

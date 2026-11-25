@@ -4,8 +4,8 @@
 The harness compiles the real recording code from hle_nvn.c (cut out as in test_nvn_control_memory).
 A segment is freed when another recording writes over its list's guest bytes, or tries to write a
 record there that does not fit, or when the pool its list was recorded in is finalized, never when
-command memory over it is only granted; and grants of 16 bytes or more (Borderlands 3 grants 40 and
-56) are recorded into the game's memory.
+command memory over it is only granted, until the held segments reach HOSTSEG_GRANT_FREES; and
+grants of 16 bytes or more (Borderlands 3 grants 40 and 56) are recorded into the game's memory.
 """
 from pathlib import Path
 import subprocess
@@ -200,11 +200,45 @@ static void pool_goes(void) {
     h_nvnCommandBufferAddCommandMemory(&cx, (NVNmemoryPool *)&live, 2048, 64); h_nvnCommandBufferBeginRecording(&cx); h_nvnCommandBufferEndRecording(&cx);
 }
 
+static void grant_frees_past_the_bound(void) {   // runs last: the bound holds for the rest of the run
+    // A game that grants its lists' memory again but never records in it again: each list keeps its segment. Below HOSTSEG_GRANT_FREES of them a grant frees nothing; at it,
+    // grants free the segments they cover again (the rule before 0d1037875)
+    enum { STRIDE = 128, LISTS = HOSTSEG_GRANT_FREES / HOSTSEG_SZ + 8 };
+    static _Alignas(4096) uint8_t far_mem[LISTS * STRIDE];
+    pool_t far = { .mem = far_mem, .size = sizeof far_mem };
+    NVNcommandBuffer cf = {0}, cg = {0};
+    h_nvnCommandBufferInitialize(&cf, NULL); h_nvnCommandBufferInitialize(&cg, NULL);
+    int lists = 0, kept = 1;
+    while (!atomic_load(&g_hostseg_grant_frees) && lists < LISTS) {
+        h_nvnCommandBufferAddCommandMemory(&cf, (NVNmemoryPool *)&far, (ptrdiff_t)lists * STRIDE, 64); rec_list(&cf, 0, 0, 0xf);
+        if (!atomic_load(&g_hostseg_grant_frees)) {   // below the bound, the next list's grant reaching over this one (max(S, 512)) keeps its segment
+            h_nvnCommandBufferAddCommandMemory(&cg, (NVNmemoryPool *)&far, (ptrdiff_t)lists * STRIDE, 512);
+            int k = seg_of((uintptr_t)(far_mem + lists * STRIDE)); kept &= k >= 0 && g_hostseg[k].busy;
+        }
+        lists++;
+    }
+    EXPECT("below the bound, a grant frees nothing", 1, kept);
+    EXPECT("held segments reach the bound", 1, atomic_load(&g_hostseg_grant_frees));
+    EXPECT("at a quarter of the cap", 1, g_hostseg_held_bytes >= HOSTSEG_GRANT_FREES && g_hostseg_held_bytes < HOSTSEG_GRANT_FREES + HOSTSEG_SZ);
+    EXPECT("with the lists' own segments", 1, lists > LISTS - 16);
+    int first = seg_of((uintptr_t)far_mem), last = seg_of((uintptr_t)(far_mem + (lists - 1) * STRIDE));
+    h_nvnCommandBufferAddCommandMemory(&cg, (NVNmemoryPool *)&far, 0, 4 * STRIDE);
+    EXPECT("past the bound, a grant frees the segments it covers", 0, first >= 0 ? g_hostseg[first].busy : -1);
+    int held = 0; for (int i = 0; i < 8; i++) held += seg_of((uintptr_t)(far_mem + i * STRIDE)) >= 0;
+    EXPECT("all of them, and only them", 4, held);
+    EXPECT("a list it does not cover keeps its segment", 1, last >= 0 && g_hostseg[last].busy);
+    uint64_t pool = g_hostseg_bytes;
+    h_nvnCommandBufferAddCommandMemory(&cf, (NVNmemoryPool *)&far, 0, 64); NVNcommandHandle h = rec_list(&cf, 0, 0, 0x10);
+    EXPECT("the next overflow takes a freed segment", pool, g_hostseg_bytes);
+    EXPECT("and replays whole", NB, list_ok(h, 0x10));
+}
+
 int main(void) {
     grant_is_no_write(); printf("grant is no write: %d busy of %d\n", busy_n(), g_nhostseg);
     record_that_does_not_fit(); printf("record that does not fit: %d busy of %d\n", busy_n(), g_nhostseg);
     small_grants(); printf("small grants: %d busy of %d\n", busy_n(), g_nhostseg);
     pool_goes(); printf("pool goes: %d busy of %d\n", busy_n(), g_nhostseg);
+    grant_frees_past_the_bound(); printf("grant frees past the bound: %d busy of %d, %llu MB\n", busy_n(), g_nhostseg, (unsigned long long)(g_hostseg_bytes >> 20));
     if (failed) { printf("%d checks failed\n", failed); return 1; }
     puts("host-lent segment lifetime: PASS"); return 0;
 }
