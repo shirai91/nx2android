@@ -115,10 +115,11 @@ _TABLE = {}
 
 
 def base(name):
-    """the fixed bits of an instruction, from the decoder's InstTable.cs"""
+    """the fixed bits of an emitter's form (FaddR) or an instruction's first form (Ldg), from the decoder's InstTable.cs"""
     import re
     if not _TABLE: _TABLE['src'] = (ROOT / 'nxnative/dm/third_party/ryujinx/src/Ryujinx.Graphics.Shader/Decoders/InstTable.cs').read_text()
-    found = re.search(r'Add\("([01x]{64})", InstName\.' + name + r'\s*,', _TABLE['src'])
+    found = (re.search(r'Add\("([01x]{64})", InstName\.\w+\s*,\s*InstEmit\.' + name + r'\s*,', _TABLE['src'])   # an emitter, e.g. FaddR
+             or re.search(r'Add\("([01x]{64})", InstName\.' + name + r'\s*,', _TABLE['src']))                  # or an instruction's first form
     if not found: raise AssertionError(f'{name} is not in InstTable.cs')
     return int(found[1].replace('x', '0'), 2)
 
@@ -132,3 +133,119 @@ def uniform_reads(data):
         if o == 5: names[a[0]] = struct.pack(f'<{len(a) - 1}I', *a[1:]).split(b'\0', 1)[0].decode()
     uniform = {a[1] for o, a in ins if o == 59 and a[2] == 2}
     return [(names.get(a[2], str(a[2])), [consts.get(i) for i in a[3:]]) for o, a in ins if o == 65 and a[2] in uniform]
+
+
+def f32_round(x, mode='rn'):
+    """the binary32 bits of the exact rational x (a Fraction) rounded by mode: 'rn' (to nearest even), 'rm', 'rp', 'rz'"""
+    from fractions import Fraction
+    import math
+    if x == 0: return 0
+    sign = 0x80000000 if x < 0 else 0
+    a = abs(Fraction(x))
+    e = max(a.numerator.bit_length() - a.denominator.bit_length() - 1, -126)
+    while Fraction(2) ** (e + 1) <= a: e += 1
+    while e > -126 and Fraction(2) ** e > a: e -= 1
+    m = a / Fraction(2) ** (e - 23)                     # the significand in ulps, [2^23, 2^24) for a normal
+    low = math.floor(m)
+    up = {'rn': m - low > Fraction(1, 2) or (m - low == Fraction(1, 2) and low & 1), 'rz': False,
+          'rm': bool(sign) and m != low, 'rp': not sign and m != low}[mode]
+    n = low + int(up)
+    if n >= 1 << 24: n >>= 1; e += 1
+    if e > 127:   # overflow: infinity, or the largest finite value where the mode rounds toward zero
+        return sign | (0x7f800000 if mode == 'rn' or (mode == 'rm' and sign) or (mode == 'rp' and not sign) else 0x7f7fffff)
+    if n < 1 << 23: return sign | n                     # subnormal
+    return sign | (e + 127) << 23 | (n - (1 << 23))
+
+
+def f32_value(bits):
+    """the exact value of finite binary32 bits, as a Fraction"""
+    from fractions import Fraction
+    e, m = bits >> 23 & 0xff, bits & 0x7fffff
+    v = Fraction(m, 1 << 149) if e == 0 else Fraction((1 << 23) | m) * Fraction(2) ** (e - 150)
+    return -v if bits >> 31 else v
+
+
+_INT_OPS = {128: lambda p, q: p + q, 130: lambda p, q: p - q, 132: lambda p, q: p * q, 199: lambda p, q: p & q, 197: lambda p, q: p | q,
+            198: lambda p, q: p ^ q, 196: lambda p, q: p << (q & 31), 194: lambda p, q: p >> (q & 31), 195: lambda p, q: _s32(p) >> (q & 31)}
+_INT_COMPARES = {170: lambda p, q: p == q, 171: lambda p, q: p != q, 172: lambda p, q: p > q, 173: lambda p, q: _s32(p) > _s32(q),
+                 174: lambda p, q: p >= q, 175: lambda p, q: _s32(p) >= _s32(q), 176: lambda p, q: p < q, 177: lambda p, q: _s32(p) < _s32(q),
+                 178: lambda p, q: p <= q, 179: lambda p, q: _s32(p) <= _s32(q)}
+_FLOAT_COMPARES = {180: '==', 181: '!=', 182: '<', 183: '>', 184: '<=', 185: '>='}   # ordered; 186..191 the same, unordered
+
+
+def _s32(x): return x - (1 << 32) if x & 0x80000000 else x
+def _nan(x): return (x & 0x7fffffff) > 0x7f800000
+def _finite(x): return (x & 0x7f800000) != 0x7f800000
+def _float(x): return struct.unpack('<f', struct.pack('<I', x))[0]
+def _bits(v): return 0x7fc00000 if v != v else struct.unpack('<I', struct.pack('<f', v))[0]   # an infinity or NaN: exact in a double
+
+
+def run(data):
+    """runs a translated compute shader of one basic block (what a program of literals folds to) on the CPU, with exact IEEE binary32
+    arithmetic (round to nearest even, denormals kept); returns the words it stores into Workgroup memory, in program order. Raises on an
+    instruction it does not model. An infinity or NaN operand gives an infinity or the NaN 0x7fc00000."""
+    import operator
+    ins = instructions(data)
+    values, glsl = {}, set()
+    for o, a in ins:
+        if o == 43 and len(a) == 3: values[a[1]] = a[2]          # OpConstant
+        elif o in (41, 42): values[a[1]] = int(o == 41)           # OpConstantTrue / False
+        elif o == 11: glsl.add(a[0])                              # OpExtInstImport
+    start = next(i for i, (o, _) in enumerate(ins) if o == 54)   # the first OpFunction: the entry point, the only one in such a module
+    local, chains, out = {}, set(), []
+    for o, a in ins[start + 1:]:
+        if o in (248, 253, 56): continue                          # OpLabel, OpReturn, OpFunctionEnd
+        if o == 54: break
+        if o == 59: local[a[1]] = None; continue                   # OpVariable (Function)
+        if o == 65: chains.add(a[1]); continue                     # OpAccessChain: into shared memory, the only kind stored to here
+        if o == 62:                                                # OpStore
+            if a[0] in local: local[a[0]] = values[a[1]]
+            elif a[0] in chains: out.append(values[a[1]] & 0xffffffff)
+            else: raise AssertionError(f'OpStore to %{a[0]}')
+            continue
+        r, x = a[1], [values.get(i) for i in a[2:]]
+        if o == 61: values[r] = local[a[2]]                                                   # OpLoad
+        elif o == 124: values[r] = x[0]                                                       # OpBitcast
+        elif o == 169: values[r] = x[1] if x[0] else x[2]                                     # OpSelect
+        elif o in _INT_OPS: values[r] = _INT_OPS[o](x[0], x[1]) & 0xffffffff
+        elif o in _INT_COMPARES: values[r] = int(_INT_COMPARES[o](x[0], x[1]))
+        elif o == 200: values[r] = ~x[0] & 0xffffffff                                         # OpNot
+        elif o == 126: values[r] = -x[0] & 0xffffffff                                         # OpSNegate
+        elif o == 166: values[r] = x[0] | x[1]                                                # OpLogicalOr
+        elif o == 167: values[r] = x[0] & x[1]                                                # OpLogicalAnd
+        elif o == 168: values[r] = 1 - x[0]                                                   # OpLogicalNot
+        elif o == 164: values[r] = int(x[0] == x[1])                                          # OpLogicalEqual
+        elif o == 165: values[r] = int(x[0] != x[1])                                          # OpLogicalNotEqual
+        elif o == 127: values[r] = x[0] ^ 0x80000000                                          # OpFNegate
+        elif o in (129, 131, 133):                                                            # OpFAdd, OpFSub, OpFMul
+            p, q = x
+            fn = {129: operator.add, 131: operator.sub, 133: operator.mul}[o]
+            if not (_finite(p) and _finite(q)): values[r] = _bits(fn(_float(p), _float(q))); continue
+            exact = fn(f32_value(p), f32_value(q))
+            zero = {129: p & q, 131: p & ~q, 133: p ^ q}[o] & 0x80000000
+            values[r] = f32_round(exact) if exact else zero
+        elif o in _FLOAT_COMPARES or 186 <= o <= 191:
+            p, q = x
+            if _nan(p) or _nan(q): values[r] = int(o == 181 or o >= 186)
+            else:
+                cmp = {'==': operator.eq, '!=': operator.ne, '<': operator.lt, '>': operator.gt, '<=': operator.le, '>=': operator.ge}
+                values[r] = int(cmp[_FLOAT_COMPARES[o if o < 186 else o - 6]](f32_value(p) if _finite(p) else (1 - 2 * (p >> 31)) * 2 ** 200,
+                                                                              f32_value(q) if _finite(q) else (1 - 2 * (q >> 31)) * 2 ** 200))
+        elif o == 12 and a[2] in glsl:                                                         # OpExtInst GLSL.std.450
+            n, arg = a[3], [values[i] for i in a[4:]]
+            if n == 50:                                                                        # Fma
+                p, q, s = arg
+                if not all(map(_finite, arg)): values[r] = _bits(_float(p) * _float(q) + _float(s)); continue
+                exact = f32_value(p) * f32_value(q) + f32_value(s)
+                values[r] = f32_round(exact) if exact else ((p ^ q) & s & 0x80000000)
+            elif n == 4: values[r] = arg[0] & 0x7fffffff                                      # FAbs
+            elif n in (37, 40, 79, 80):                                                       # FMin, FMax, NMin, NMax: either zero may come back
+                p, q = arg
+                if _nan(p) or _nan(q): values[r] = q if _nan(p) else p
+                elif f32_value(p) == f32_value(q): values[r] = q                               # a model of a device that returns the second
+                else: values[r] = p if (f32_value(p) < f32_value(q)) == (n in (37, 79)) else q
+            elif n in (38, 39, 41, 42):                                                       # UMin, SMin, UMax, SMax
+                values[r] = (min if n in (38, 39) else max)(arg, key=(lambda t: t) if n in (38, 41) else _s32)
+            else: raise AssertionError(f'GLSL.std.450 instruction {n} is not modelled')
+        else: raise AssertionError(f'SPIR-V opcode {o} is not modelled')
+    return out
