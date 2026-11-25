@@ -11,22 +11,39 @@ static void shader_dump(const prog_t *p, unsigned i, uint64_t kk) {
     fwrite(p->sd[i].control, 1, 0x880, f); if (ncode < (1u << 24)) fwrite((const void *)(uintptr_t)p->sd[i].data, 1, ncode, f); fclose(f);
     VKLOG("shader %016llx written to %s", (unsigned long long)kk, path);
 }
+// The stages a program has, as bits of NVN's stage mask (vertex 1 ... compute 0x20), from the bundle; *unknown is set when a stage's shader is not in it (or has no key)
+static uint32_t prog_stage_bits(const prog_t *p, uint64_t kk[6], int st[6], int *unknown) {
+    int vk_shader_stage(uint64_t key);
+    uint32_t m = 0; *unknown = 0;
+    for (unsigned i = 0; i < 6; i++) {
+        uint8_t k[8]; kk[i] = 0; st[i] = -1;
+        if (!p || !prog_key(p, i, k)) continue;
+        kk[i] = key64(k); st[i] = kk[i] ? vk_shader_stage(kk[i]) : -1;
+        if (st[i] >= 0 && st[i] <= 5) m |= 1u << st[i]; else *unknown = 1;
+    }
+    return m;
+}
 static void bind_program(const p_bind_program *bp) {
     // NVN binds by stage mask (vertex 1, fragment 2, geometry 4, tessellation 8 / 0x10, compute 0x20): only the masked stages change, so a game that keeps
     // its vertex and fragment shaders in programs of their own (NEO, AI: THE SOMNIUM FILES) binds them one after the other and draws with both.
     // prog_key's index is the position in the program's shader array (as the game passed them to SetShaders), not the stage: the stage is the bundle's.
-    int vk_shader_stage(uint64_t key);
     uint32_t mask = bp->stages ? (uint32_t)bp->stages & 0x3f : 0x3f;
+    uint64_t kk[6]; int sst[6], unknown;
+    uint32_t has = prog_stage_bits(bp->prog, kk, sst, &unknown);
+    // A program with a fragment, geometry or tessellation shader but no vertex shader, bound with the vertex bit, leaves the vertex stage as it was: Little Busters!
+    // Converted Edition makes one program per shader and binds each with all graphics bits (BindProgram(vs, 0x1f), then BindProgram(ps, 0x1f)); the pixel bind
+    // dropped the vertex shader and every draw was skipped (black screen). Other absent stages still unbind (Xenoblade Chronicles 2 binds vertex-only programs
+    // with 0x1f after vertex and fragment), and NULL, compute-only and partly unknown programs change every stage they name (seedds/nxnative e59c910ad).
+    if (bp->prog && (mask & 1) && (has & 0x1e) && !(has & 1) && !unknown) mask &= ~1u;
     for (int st = 0; st < 6; st++) if (mask >> st & 1) S.sh[st] = NULL;
     S.prog = bp->prog;
-    if (S.prog) for (unsigned i = 0; i < 6; i++) {
-        uint8_t k[8]; if (!prog_key(S.prog, i, k)) break;
-        uint64_t kk = key64(k); int st = kk ? vk_shader_stage(kk) : -1;
-        if (kk && st < 0) {   // the draw or dispatch is skipped. Logged once per shader (the first 16 binds were 4 shaders of Xenoblade Chronicles 3 over and over, which hid others)
-            static uint64_t seen[256]; static int nseen; int known = 0; for (int j = 0; j < nseen; j++) if (seen[j] == kk) { known = 1; break; }
-            if (!known && nseen < 256) { seen[nseen++] = kk; void vk_shader_missing(uint64_t key); vk_shader_missing(kk); shader_dump(S.prog, i, kk); } }
+    for (unsigned i = 0; i < 6; i++) {
+        if (kk[i] && sst[i] < 0) {   // the draw or dispatch is skipped. Logged once per shader (the first 16 binds were 4 shaders of Xenoblade Chronicles 3 over and over, which hid others)
+            static uint64_t seen[256]; static int nseen; int known = 0; for (int j = 0; j < nseen; j++) if (seen[j] == kk[i]) { known = 1; break; }
+            if (!known && nseen < 256) { seen[nseen++] = kk[i]; void vk_shader_missing(uint64_t key); vk_shader_missing(kk[i]); shader_dump(S.prog, i, kk[i]); } }
+        int st = sst[i];
         if (st < 0 || st > 5 || !(mask >> st & 1)) continue;
-        S.sh[st] = vk_shader(kk, st);
+        S.sh[st] = vk_shader(kk[i], st);
     }
     S.prog_ok = S.sh[0] || S.sh[5];   // a vertex-only program draws depth only (prepare_draw)
 }
