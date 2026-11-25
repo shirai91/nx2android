@@ -72,7 +72,7 @@ def translate(insts, test=None, refused=False, stage='cs', **job):
             return out
         if not (work / 'k.spv').exists(): raise AssertionError('not translated\n' + out)
         data = (work / 'k.spv').read_bytes()
-        res = json.loads((work / 'k.res.json').read_text())
+        res = json.loads((work / 'k.res.json').read_text(encoding='utf-8'))
         if shutil.which('spirv-val'):
             v = subprocess.run(['spirv-val', '--target-env', 'vulkan1.1', str(work / 'k.spv')], capture_output=True, text=True)
             if v.returncode: raise AssertionError('spirv-val: ' + v.stdout + v.stderr)
@@ -117,7 +117,7 @@ _TABLE = {}
 def base(name):
     """the fixed bits of an emitter's form (FaddR) or an instruction's first form (Ldg), from the decoder's InstTable.cs"""
     import re
-    if not _TABLE: _TABLE['src'] = (ROOT / 'nxnative/dm/third_party/ryujinx/src/Ryujinx.Graphics.Shader/Decoders/InstTable.cs').read_text()
+    if not _TABLE: _TABLE['src'] = (ROOT / 'nxnative/dm/third_party/ryujinx/src/Ryujinx.Graphics.Shader/Decoders/InstTable.cs').read_text(encoding='utf-8')
     found = (re.search(r'Add\("([01x]{64})", InstName\.\w+\s*,\s*InstEmit\.' + name + r'\s*,', _TABLE['src'])   # an emitter, e.g. FaddR
              or re.search(r'Add\("([01x]{64})", InstName\.' + name + r'\s*,', _TABLE['src']))                  # or an instruction's first form
     if not found: raise AssertionError(f'{name} is not in InstTable.cs')
