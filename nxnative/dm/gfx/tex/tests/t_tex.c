@@ -133,6 +133,34 @@ int main(void) {
         printf("  E 32³ RGBA16F (the shape of a 32³ color lookup table) block height/depth %u/%u, storage %llu (expected 0/4, 262144)\n", L.tileH, L.tileD, (unsigned long long)L.size);
     }
 
+    // Packaged 32³ RGBA8: markers computed independently with block height/depth 0/0 or 2/1.
+    // For byte 0x12, (20,11,3) is at depth block 8192 + column 4096 + GOB 2560 + intra-GOB 112 = 14960.
+    // For byte 0x00, the same voxel is at slice 12288 + row 1024 + column 512 + intra-GOB 112 = 13936.
+    printf("E packaged 3D block dimensions and mip reductions\n");
+    for (unsigned c = 0; c < 2; c++) {
+        nvn_texdesc d = {2, 0x25, 0, 0, 32, 32, 32, 3, 0, c ? 0x13 : 1};
+        nvn_texlayout L; nvn_tex_layout(&d, &L);
+        CHECK(L.size == 151552, "E packaged storage %llu expected 151552", (unsigned long long)L.size);
+        for (unsigned l = 0; l < 3; l++) {
+            unsigned th, td; nvn_tex_level_tiles(&d, l, &th, &td);
+            CHECK(th == (c ? 2 - l : 0) && td == (c ? 1 : 0),
+                  "E packaged byte %#x mip %u block %u/%u", d.pkg_block_h - 1, l, th, td);
+        }
+        CHECK(nvn_tex_level_offset(&d, 1) == 131072 && nvn_tex_level_offset(&d, 2) == 147456,
+              "E packaged mip offsets must be 131072 / 147456");
+        static const uint32_t xyz[3][3] = {{20,11,3}, {5,2,1}, {31,31,31}};
+        static const uint64_t addr[2][3] = {{13936,4196,131068}, {14960,2148,131068}};
+        uint8_t *st = calloc(L.size, 1), *lin = calloc(131072, 1);
+        for (unsigned i = 0; i < 3; i++) for (unsigned k = 0; k < 4; k++) st[addr[c][i] + k] = (uint8_t)(i * 16 + k + 1);
+        CHECK(!nvn_deswizzle(&d, 0, 0, st, lin, 128), "E packaged deswizzle failed");
+        for (unsigned i = 0; i < 3; i++) {
+            const uint8_t *p = lin + ((size_t)xyz[i][2] * 32 + xyz[i][1]) * 128 + xyz[i][0] * 4;
+            int ok = 1; for (unsigned k = 0; k < 4; k++) ok &= p[k] == (uint8_t)(i * 16 + k + 1);
+            CHECK(ok, "E packaged byte %#x marker %u at %llu decoded at the wrong voxel", d.pkg_block_h - 1, i, (unsigned long long)addr[c][i]);
+        }
+        free(st); free(lin);
+    }
+
     // ---------- S sparse layout: Monster Hunter Rise's streamed 1024×1024 ASTC 6×6 sRGB textures (flag SPARSE, packaged block height 8 GOBs), level 0 checked against the game's data ----------
     // A 64 KB tile is 16 GOBs × 8 GOBs here. Level 0 (171 block columns = 43 GOBs) is padded to 48 GOBs × 3 block rows = 9 tiles: its dumped data decodes with no all-zero block that way
     // (2,183 unpadded). Level 1 (86 = 22 GOBs → 32, 2 block rows) is 4 tiles; level 2 (43 block columns, less than a tile's 64) starts the mip tail, packed as before; storage in whole tiles

@@ -1,8 +1,10 @@
 // Storage size / alignment / per-level offsets of NVN textures (Tegra X1 block-linear layout).
 // The algorithm is ported from deko3d source/dk_image.cpp (zlib license, Copyright (C) 2018-2020 fincs):
 //   one GOB = 64 bytes × 8 rows = 512 bytes; the block height (tileH, in GOBs) is picked by 'height×1.5'; levels are accumulated with block alignment.
-// The game's packaged textures (SetPackagedTextureLayout) carry 8 bytes of layout parameters: byte 0 = log2 of the block height (derived by comparing 16 cases from the real game,
-// 4 of which differ from the automatic algorithm); when present it takes precedence.
+// The game's packaged textures (SetPackagedTextureLayout) carry 8 bytes of layout parameters: byte 0's low nibble = log2 of the block height (derived by comparing 16 cases
+// from the real game, 4 of which differ from the automatic algorithm), its high nibble = log2 of the block depth (3D); when present they take precedence.
+// Linear storage counts pixel rows, also for block-compressed formats. The block depth nibble and the pixel rows were found by digitalhivehub against the original
+// NVN driver (nxnative PR #11) and taken from MacNativeGames 3c482a7, with the shapes of t_tex_layout.
 #include "nvn_tex.h"
 
 typedef struct { uint8_t bpb, bw, bh; } fmt_t;   // Bytes per block, block width, block height (for uncompressed formats block width and height = 1)
@@ -116,7 +118,7 @@ void nvn_tex_layout(const nvn_texdesc *d, nvn_texlayout *o) {
     if (d->flags & 0x50) {                                            // LINEAR or LINEAR_RENDER_TARGET: row pitch = stride or aligned to 32 (128)
         o->align = (d->flags & 0x40) ? 128 : 32;
         uint32_t stride = d->stride ? d->stride : (t.bpb * blk(w, t.bw) + o->align - 1) & ~(o->align - 1);
-        o->layer_size = o->size = (uint64_t)stride * blk(h, t.bh);
+        o->layer_size = o->size = (uint64_t)stride * h;               // the driver counts pixel rows, also for block-compressed formats
         return;
     }
     unsigned tileH = 0, tileD = 0;
@@ -125,8 +127,12 @@ void nvn_tex_layout(const nvn_texdesc *d, nvn_texlayout *o) {
     // with 2; the 512×512 DXT5 logo with the tile's 8)
     int sth = dpl == 2 && !d->pkg_block_h && sparse_of(d) ? sparse_tile_h(t.bpb) : -1;
     if (sth >= 0 && (blk(w * sx, t.bw) * t.bpb < (128u >> sth) * 64 || blk(h * sy, t.bh) < 8u << sth)) sth = -1;
-    if (sth >= 0) tileH = (unsigned)sth;
-    else if (dpl == 2) { uint32_t ah = blk(h * sy, t.bh); tileH = d->pkg_block_h ? (unsigned)d->pkg_block_h - 1 : pick_tile(ah * 3 / 16); }
+    if (d->pkg_block_h) {                                             // packaged byte 0: low nibble block height, high nibble block depth
+        unsigned pl = (unsigned)(d->pkg_block_h - 1) & 0xff;
+        if (dpl >= 2) tileH = pl & 0xf;
+        if (dpl == 3) tileD = pl >> 4;
+    } else if (sth >= 0) tileH = (unsigned)sth;
+    else if (dpl == 2) { uint32_t ah = blk(h * sy, t.bh); tileH = pick_tile(ah * 3 / 16); }
     else if (dpl == 3) tileD = pick_tile(z + z / 2);
     o->tileH = tileH; o->tileD = tileD;
     unsigned levels = d->levels ? d->levels : 1;

@@ -1,6 +1,7 @@
 """NVN texture layout (nvn_tex.c) and the CPU block-linear copies (nvn_deswizzle.c) through nxnative's own C tests.
 
-t_tex checks the layout's sizes and the deswizzle (round trips, hand-computed addresses). Plain C.
+t_tex_layout checks storage sizes, level offsets and block heights against shapes the original NVN driver gives; t_tex the layout's
+sizes and the deswizzle (round trips, hand-computed addresses). Plain C.
 """
 from pathlib import Path
 import os
@@ -31,6 +32,10 @@ class NvnTexLayout(unittest.TestCase):
         r = subprocess.run([str(exe)], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=600)
         self.assertEqual(r.returncode, 0, r.stdout[-4000:] + r.stderr[-2000:])
         return r.stdout
+
+    def test_driver_shapes(self):
+        out = self.run_c('t_tex_layout', GFX / 'tests/t_tex_layout.c')
+        self.assertNotIn('FAIL', out)
 
     def test_deswizzle(self):
         out = self.run_c('t_tex', GFX / 'tex/tests/t_tex.c')
