@@ -228,16 +228,17 @@ static inline int fpso_scale(int base, int size) { return size == FPSO_SMALL ? (
 // ---- the pause menu: a panel in the middle of the window: a row of tabs, the open tab's rows, and Resume. Everything is placed in a panel rectangle p
 // (x, y, width, height: the window's for touches, the raster's for drawing), so the touches and the drawing agree ----
 enum { OVM_OVERLAY, OVM_OPACITY, OVM_EDIT, OVM_RUMBLE, OVM_FPS, OVM_MODE, OVM_EXPORT, OVM_IMPORT, OVM_PAD, OVM_AUDIO,
-       OVM_ROW_FPS, OVM_ROW_SOC, OVM_ROW_BAT, OVM_ROW_DRV, OVM_ROW_GRAPH, OVM_POS, OVM_COLOUR, OVM_OUTLINE, OVM_SIZE, OVM_RESUME, OVM_TAB, OVM_N };   // OVM_TAB: the tabs' row;
+       OVM_ROW_FPS, OVM_ROW_SOC, OVM_ROW_BAT, OVM_ROW_DRV, OVM_ROW_GRAPH, OVM_POS, OVM_COLOUR, OVM_OUTLINE, OVM_SIZE, OVM_MOD_IMPORT, OVM_MOD_MANAGE, OVM_RESUME, OVM_TAB, OVM_N };   // OVM_TAB: the tabs' row;
             // OVM_ROW_*: the counter's rows on or off; OVM_POS .. OVM_SIZE: its corner, colour, outline and size, one value on with each press (fpso_step below);
             // OVM_EDIT: the layout editor; OVM_MODE: handheld (performance) or docked (resolution); OVM_EXPORT, OVM_IMPORT: the save manager (saves_android.c);
             // OVM_PAD: a controller's face buttons by their position or by their label (front_android.c pad_labels)
-#define OVM_TABS 4   // (a power of two: ov_menu_item masks the tab)
+#define OVM_TABS 5
 #define OVM_PER_TAB 5
 static const int OVM_TAB_ITEMS[OVM_TABS][OVM_PER_TAB] = {{OVM_OVERLAY, OVM_OPACITY, OVM_EDIT, OVM_RUMBLE, OVM_PAD}, {OVM_FPS, OVM_MODE, OVM_EXPORT, OVM_IMPORT, OVM_AUDIO},
-                                                         {OVM_ROW_FPS, OVM_ROW_SOC, OVM_ROW_BAT, OVM_ROW_DRV, OVM_ROW_GRAPH}, {OVM_POS, OVM_COLOUR, OVM_OUTLINE, OVM_SIZE, -1}};
-static const char *const OVM_TAB_NAMES_EN[OVM_TABS] = {"Gamepad", "Game", "Counter", "Style"};
-static const char *const OVM_TAB_NAMES_ZH[OVM_TABS] = {"手柄", "游戏", "计数", "样式"};
+                                                         {OVM_ROW_FPS, OVM_ROW_SOC, OVM_ROW_BAT, OVM_ROW_DRV, OVM_ROW_GRAPH}, {OVM_POS, OVM_COLOUR, OVM_OUTLINE, OVM_SIZE, -1},
+                                                         {OVM_MOD_IMPORT, OVM_MOD_MANAGE, -1, -1, -1}};
+static const char *const OVM_TAB_NAMES_EN[OVM_TABS] = {"Gamepad", "Game", "Counter", "Style", "Mods"};
+static const char *const OVM_TAB_NAMES_ZH[OVM_TABS] = {"手柄", "游戏", "计数", "样式", "模组"};
 #define OVM_TAB_NAMES (dm_ui_zh() ? OVM_TAB_NAMES_ZH : OVM_TAB_NAMES_EN)
 #define OVM_ROWS (OVM_PER_TAB + 2)   // the tabs, a tab's rows (as many for every tab: the panel keeps its size), Resume
 static inline int fpso_step(int o, int item) {   // the options after a press on a menu item: a row's bit flips, the others go to their next value (and round)
@@ -257,9 +258,12 @@ static inline int fpso_step(int o, int item) {   // the options after a press on
     return fpso_pack(r, p, c, l, z);
 }
 int dm_menu_audio_available(void);
+int dm_menu_mod_available(void);
+int dm_menu_mod_manage_available(void);
+static inline int ov_menu_tabs(void) { return dm_menu_mod_available() || dm_menu_mod_manage_available() ? OVM_TABS : OVM_TABS - 1; }
 static inline int ov_menu_item(int tab, int row) {
-    int item = row == 0 ? OVM_TAB : row == OVM_ROWS - 1 ? OVM_RESUME : row > 0 && row < OVM_ROWS - 1 ? OVM_TAB_ITEMS[tab & (OVM_TABS - 1)][row - 1] : -1;
-    return item == OVM_AUDIO && !dm_menu_audio_available() ? -1 : item;
+    int item = row == 0 ? OVM_TAB : row == OVM_ROWS - 1 ? OVM_RESUME : row > 0 && row < OVM_ROWS - 1 ? OVM_TAB_ITEMS[(tab % OVM_TABS + OVM_TABS) % OVM_TABS][row - 1] : -1;
+    return (item == OVM_AUDIO && !dm_menu_audio_available()) || (item == OVM_MOD_IMPORT && !dm_menu_mod_available()) || (item == OVM_MOD_MANAGE && !dm_menu_mod_manage_available()) ? -1 : item;
 }
 #define OV_MENU_ROW 0.115f   // row height, of the window's height
 #define OV_MENU_W 0.95f      // panel width, of the window's height
@@ -268,7 +272,7 @@ static inline int ov_menu_item(int tab, int row) {
 #define OV_OPACITY_MAX 80
 // what the menu shows (-1 = closed): bit 0 the gamepad is on, bit 1 rumble is on, bit 2 docked, bit 3 the frame rate shown, bits 4..7 the highlighted row + 1
 // (0 = none), bit 8 the open tab, bits 9..15 the opacity in percent, bit 19 the open tab's second bit (the Counter and Style tabs), bits 29..30 a count of the counter options' changes (dm_fps_opts: the panel
-// shows them), bits 20..23 the last export's outcome (OVX_*), bits 24..27 a count of exports (its name
+// shows them), bits 20..22 the last export's outcome (OVX_*), bit 23 the open tab's third bit, bits 24..27 a count of exports (its name
 // changes with each). Bit 16: the text entry's panel instead (its edit count below); bit 17: the layout editor (OVE_ST_* below); bit 18: the save picker (OVS_ST)
 #define OVT_ST 0x10000   // the mode bits of dm_menu_state, one each: OVT_ST the text entry, OVE_ST the layout editor, OVS_ST the save picker (tests/test_menu_bits.py)
 int dm_menu_state(void);
@@ -290,7 +294,7 @@ static inline int ov_menu_row_at(float x, float y, float W, float H) {   // the 
     float q[4]; ov_menu_rowrect(r, 0, q); int i = (int)floorf((y - q[1]) / q[3]);
     return i >= 0 && i < OVM_ROWS ? i : -1;
 }
-static inline int ov_menu_tab_at(float x, const float p[4]) { float r[4]; ov_menu_rowrect(p, 0, r); int t = (int)((x - r[0]) / (r[2] / OVM_TABS)); return t < 0 ? 0 : t >= OVM_TABS ? OVM_TABS - 1 : t; }
+static inline int ov_menu_tab_at(float x, const float p[4]) { float r[4]; int n = ov_menu_tabs(); ov_menu_rowrect(p, 0, r); int t = (int)((x - r[0]) / (r[2] / n)); return t < 0 ? 0 : t >= n ? n - 1 : t; }
 // the Opacity slider's track in its row (x, y of its left end's centre line, width): the right part of the row, room for the value after it
 static inline void ov_menu_track(const float p[4], int row, float t[3]) { float r[4]; ov_menu_rowrect(p, row, r); t[0] = r[0] + r[2] * 0.40f; t[1] = r[1] + r[3] / 2; t[2] = r[2] * 0.44f; }
 static inline int ov_menu_track_value(float x, const float p[4], int row) {   // the opacity a finger at x sets, whole 5 percents

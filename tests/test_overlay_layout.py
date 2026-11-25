@@ -24,6 +24,8 @@ class OverlayLayout(unittest.TestCase):
 static int custom_faces, custom_a, custom_x, hidden_ctl = -1, audio_available, ui_zh;
 int dm_ui_zh(void) { return ui_zh; }
 int dm_menu_audio_available(void) { return audio_available; }
+int dm_menu_mod_available(void) { return 0; }
+int dm_menu_mod_manage_available(void) { return 0; }
 float dm_overlay_scale(void) { return 1; }
 int dm_external_active(void) { return 0; }
 int dm_overlay_dpi(void) { return 0; }

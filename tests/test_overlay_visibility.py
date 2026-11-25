@@ -59,7 +59,8 @@ static int fps_opt_press(int item) { (void)item; return 0; }
 static void ed_open(void) {}
 static void sp_open(void) {}
 static void save_export(void) {}
-static void menu_audio(void) {}
+static int g_audio_menu_method = 1, g_mod_menu_method = 2, g_mod_manage_method = 3, java_action;
+static void menu_java(int method, const char *action) { (void)action; java_action = method; }
 static void menu_close(void) {}
 static void dm_overlay_redraw(void) {}
 ''' + visible + hidden + hit + menu + r'''
@@ -410,6 +411,9 @@ int main(int argc, char **argv) {
             assert(saves == 1 && dm_overlay_visible() == 1); controls(1);
             menu_do(OVM_OVERLAY);
             assert(saves == 2 && dm_overlay_visible() == 2); controls(0);
+            menu_do(OVM_AUDIO); assert(java_action == 1);
+            menu_do(OVM_MOD_IMPORT); assert(java_action == 2);
+            menu_do(OVM_MOD_MANAGE); assert(java_action == 3);
         }
     }
     return 0;

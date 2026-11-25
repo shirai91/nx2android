@@ -51,7 +51,10 @@ void front_screen_match(int fps) { (void)fps; }
 // ---------------- the app ----------------
 static ANativeActivity *g_act;
 static jmethodID g_audio_menu_method;
+static jmethodID g_mod_menu_method, g_mod_manage_method;
 int dm_menu_audio_available(void) { return g_audio_menu_method != NULL; }
+int dm_menu_mod_available(void) { return g_mod_menu_method != NULL; }
+int dm_menu_mod_manage_available(void) { return g_mod_manage_method != NULL; }
 AAssetManager *dm_front_assets(void) { return g_act ? g_act->assetManager : NULL; }   // the APK's assets (overlay_theme.c: the gamepad's theme)
 static pthread_mutex_t g_win_mu = PTHREAD_MUTEX_INITIALIZER;
 static ANativeWindow *g_win, *g_external_win;
@@ -623,8 +626,9 @@ int dm_menu_state(void) {
     if (!atomic_load(&g_menu)) return -1;
     if (atomic_load(&g_edit)) return OVE_ST | atomic_load(&g_ed_st);
     if (atomic_load(&g_sp_on)) return OVS_ST | (atomic_load(&g_sp_hi) + 1) << 4 | (atomic_load(&g_sp_ver) & 255) << 20;
+    int tab = atomic_load(&g_menu_tab);
     return atomic_load(&g_set_overlay) | atomic_load(&g_set_rumble) << 1 | (dm_opmode() != 0) << 2 | atomic_load(&g_set_fps) << 3 | (atomic_load(&g_menu_hi) + 1) << 4 |
-           (atomic_load(&g_menu_tab) & 1) << 8 | (atomic_load(&g_menu_tab) >> 1 & 1) << 19 | (atomic_load(&g_fps_ver) & 3) << 29 | atomic_load(&g_set_opacity) << 9 | atomic_load(&g_sv_st) << 20 | (atomic_load(&g_sv_n) & 15) << 24 | pad_labels() << 28;
+           (tab & 1) << 8 | (tab >> 1 & 1) << 19 | (tab >> 2 & 1) << 23 | (atomic_load(&g_fps_ver) & 3) << 29 | atomic_load(&g_set_opacity) << 9 | atomic_load(&g_sv_st) << 20 | (atomic_load(&g_sv_n) & 15) << 24 | pad_labels() << 28;
 }
 int dm_ui_zh(void) {
     const char *e = getenv("DM_UI_LANG");
@@ -641,7 +645,7 @@ int dm_ui_zh(void) {
     return cur;
 }
 // gfx_vk_present.c draws the counter: not while the menu holds the game, except under the pause menu's Counter and Style tabs, where it shows what they change
-int dm_overlay_fps(void) { return atomic_load(&g_menu) ? atomic_load(&g_menu_tab) >= 2 && !atomic_load(&g_edit) && !atomic_load(&g_sp_on) && !atomic_load(&g_tx_on) : atomic_load(&g_set_fps); }
+int dm_overlay_fps(void) { return atomic_load(&g_menu) ? (atomic_load(&g_menu_tab) == 2 || atomic_load(&g_menu_tab) == 3) && !atomic_load(&g_edit) && !atomic_load(&g_sp_on) && !atomic_load(&g_tx_on) : atomic_load(&g_set_fps); }
 static void menu_open(int hi) {
     if (!atomic_load(&g_running) || atomic_exchange(&g_menu, 1)) return;
     atomic_store(&g_menu_hi, hi); g_menu_ptr = -1;
@@ -669,17 +673,17 @@ static void menu_opacity(int v) {   // the slider: a new value is drawn at once 
     v = v < OV_OPACITY_MIN ? OV_OPACITY_MIN : v > OV_OPACITY_MAX ? OV_OPACITY_MAX : v;
     if (atomic_exchange(&g_set_opacity, v) != v) { dm_haptics_android_tap(); dm_overlay_redraw(); }
 }
-static void menu_tab(int t) { t = (t % OVM_TABS + OVM_TABS) % OVM_TABS; if (atomic_exchange(&g_menu_tab, t) != t) dm_haptics_android_tap(); dm_overlay_redraw(); }
+static void menu_tab(int t) { int n = ov_menu_tabs(); t = (t % n + n) % n; if (atomic_exchange(&g_menu_tab, t) != t) dm_haptics_android_tap(); dm_overlay_redraw(); }
 static void ed_open(void); static void sp_open(void); static void save_export(void);
-static void menu_audio(void) {
-    if (!g_act || !g_act->vm || !g_act->clazz || !g_audio_menu_method) return;
+static void menu_java(jmethodID method, const char *action) {
+    if (!g_act || !g_act->vm || !g_act->clazz || !method) return;
     JNIEnv *e = NULL; int attached = 0;
     if ((*g_act->vm)->GetEnv(g_act->vm, (void **)&e, JNI_VERSION_1_6) != JNI_OK) {
         if ((*g_act->vm)->AttachCurrentThread(g_act->vm, &e, NULL) != JNI_OK) return;
         attached = 1;
     }
-    (*e)->CallVoidMethod(e, g_act->clazz, g_audio_menu_method);
-    if ((*e)->ExceptionCheck(e)) { (*e)->ExceptionClear(e); LOG("[menu] audio selection is unavailable"); }
+    (*e)->CallVoidMethod(e, g_act->clazz, method);
+    if ((*e)->ExceptionCheck(e)) { (*e)->ExceptionClear(e); LOG("[RED] [menu] %s is unavailable", action); }
     if (attached) (*g_act->vm)->DetachCurrentThread(g_act->vm);
 }
 static void menu_do(int item) {
@@ -694,7 +698,9 @@ static void menu_do(int item) {
     else if (item == OVM_OPACITY) return;   // (the slider is dragged, or stepped with left and right)
     else if (item == OVM_EXPORT) { if (atomic_load(&g_sv_st) == OVX_BUSY) return; save_export(); }
     else if (item == OVM_IMPORT) { dm_haptics_android_tap(); sp_open(); return; }
-    else if (item == OVM_AUDIO) { menu_audio(); }
+    else if (item == OVM_AUDIO) { menu_java(g_audio_menu_method, "audio selection"); }
+    else if (item == OVM_MOD_IMPORT) { menu_java(g_mod_menu_method, "mod import"); }
+    else if (item == OVM_MOD_MANAGE) { menu_java(g_mod_manage_method, "mod manager"); }
     if (item >= 0 && item < OVM_N) dm_haptics_android_tap();
     if (item == OVM_RESUME) menu_close(); else dm_overlay_redraw();
 }
@@ -1454,6 +1460,12 @@ __attribute__((visibility("default"))) void ANativeActivity_onCreate(ANativeActi
     jclass activity_class = (*env)->GetObjectClass(env, act->clazz);
     if (activity_class) g_audio_menu_method = (*env)->GetMethodID(env, activity_class, "openAudioMenu", "()V");
     if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+    if (activity_class) g_mod_menu_method = (*env)->GetMethodID(env, activity_class, "importModZip", "()V");
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+    if (activity_class) g_mod_manage_method = (*env)->GetMethodID(env, activity_class, "manageMods", "()V");
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+    jmethodID mod_start = activity_class ? (*env)->GetMethodID(env, activity_class, "startMods", "(Z)Ljava/lang/String;") : NULL;
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
     if (activity_class) (*env)->DeleteLocalRef(env, activity_class);
     snprintf(g_root, sizeof g_root, "%s", act->externalDataPath ? act->externalDataPath : act->internalDataPath);
     char p[700];
@@ -1473,6 +1485,17 @@ __attribute__((visibility("default"))) void ANativeActivity_onCreate(ANativeActi
     // the save manager's requests (saves_android.c), before the host mounts the save: an import chosen in the menu or pushed by porter, an export porter asks for
     if (dm_saves_start(g_root)) { LOG("[saves] the request asked the app to end: the game is not started"); g_quit = 1; return; }
     if (!romfs_readable(act, sdk)) { g_quit = 1; return; }   // after the save manager's requests, which need no RomFS
+    if (mod_start) {
+        jstring path = (*env)->CallObjectMethod(env, act->clazz, mod_start, getenv("DM_ROMFS_OVERLAY") != NULL);
+        if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); LOG("[RED] [mod] selection unavailable; using original RomFS"); g_mod_menu_method = g_mod_manage_method = NULL; }
+        else if (path) {
+            const char *value = (*env)->GetStringUTFChars(env, path, NULL);
+            setenv("DM_ROMFS_OVERLAY", value, 1); LOG("[mod] experimental overlay %s", value);
+            (*env)->ReleaseStringUTFChars(env, path, value); (*env)->DeleteLocalRef(env, path);
+        }
+    } else {
+        g_mod_menu_method = g_mod_manage_method = NULL;
+    }
     settings_load(); dm_haptics_android_start(act, atomic_load(&g_set_rumble)); dm_lan_android_start(act);
     g_vm = act->vm;
     { pthread_t w; if (!pthread_create(&w, NULL, pad_watch, act->vm)) pthread_detach(w); }

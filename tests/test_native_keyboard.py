@@ -38,7 +38,8 @@ class NativeKeyboard(unittest.TestCase):
 
     def test_external_display_without_keyboard_keeps_native_activity(self):
         source = pipeline.DM / 'android/java/org/nx2a/ExternalActivity.java'
-        self.assertIn('extends NativeActivity', source.read_text(encoding='utf-8'))
+        self.assertIn('extends ImportActivity', source.read_text(encoding='utf-8'))
+        self.assertIn('extends NativeActivity', (source.parent / 'ImportActivity.java').read_text(encoding='utf-8'))
         self.assertNotIn('readKeyboard(', source.read_text(encoding='utf-8'))
 
 

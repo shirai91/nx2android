@@ -1,4 +1,4 @@
-"""The Android frame rate counter's options: the menu table (4 tabs), the settings.txt keys and the packed state."""
+"""The Android frame rate counter's options: the menu table, the settings.txt keys and the packed state."""
 from pathlib import Path
 import shutil
 import subprocess
@@ -29,6 +29,9 @@ class FpsCounterOptions(unittest.TestCase):
 static _Atomic int g_fps_opts = FPSO_DEFAULT, g_fps_ver;
 int dm_ui_zh(void) { return 0; }
 int dm_menu_audio_available(void) { return 1; }
+static int mod_import, mod_manage;
+int dm_menu_mod_available(void) { return mod_import; }
+int dm_menu_mod_manage_available(void) { return mod_manage; }
 float dm_overlay_scale(void) { return 1; }
 int dm_overlay_off(int l, int c) { (void)l; (void)c; return 0; }
 int dm_overlay_custom(int l, int c, float *x, float *y, float *s) { (void)l; (void)c; (void)x; (void)y; *s = 1; return 0; }
@@ -36,15 +39,25 @@ int dm_overlay_custom(int l, int c, float *x, float *y, float *s) { (void)l; (vo
 static int parse(const char *line) { return fps_opt_parse(line); }
 int main(int argc, char **argv) {
     assert(argc == 2);   // a scratch file in the test's own folder (tmpfile() on MinGW with msvcrt makes it in the drive's root)
-    // four tabs, five rows each; the Counter tab: the five rows (FPS, SOC, BAT, driver, graph); the Style tab: the four choices then a blank
-    assert(OVM_TABS == 4 && OVM_PER_TAB == 5 && OVM_ROWS == 7);
+    // five tab slots, five rows each; four tabs without mod support
+    assert(OVM_TABS == 5 && OVM_PER_TAB == 5 && OVM_ROWS == 7 && ov_menu_tabs() == 4);
     assert(ov_menu_item(0, 0) == OVM_TAB && ov_menu_item(3, 6) == OVM_RESUME);
     assert(ov_menu_item(1, 1) == OVM_FPS && ov_menu_item(1, 5) == OVM_AUDIO);
     const int counter[5] = {OVM_ROW_FPS, OVM_ROW_SOC, OVM_ROW_BAT, OVM_ROW_DRV, OVM_ROW_GRAPH}, style[5] = {OVM_POS, OVM_COLOUR, OVM_OUTLINE, OVM_SIZE, -1};
     for (int r = 0; r < 5; r++) { assert(ov_menu_item(2, r + 1) == counter[r]); assert(ov_menu_item(3, r + 1) == style[r]); }
     assert(!strcmp(OVM_TAB_NAMES[2], "Counter") && !strcmp(OVM_TAB_NAMES[3], "Style"));
     float p[4] = {0, 0, 1000, 700};
-    for (int t = 0; t < OVM_TABS; t++) { float r[4]; ov_menu_rowrect(p, 0, r); assert(ov_menu_tab_at(r[0] + (t + 0.5f) * r[2] / OVM_TABS, p) == t); }
+    for (int n = 4; n <= 5; n++) {
+        mod_import = mod_manage = n == 5;
+        assert(ov_menu_tabs() == n);
+        for (int t = 0; t < n; t++) { float r[4]; ov_menu_rowrect(p, 0, r); assert(ov_menu_tab_at(r[0] + (t + 0.5f) * r[2] / n, p) == t); }
+    }
+    assert(!strcmp(OVM_TAB_NAMES[4], "Mods"));
+    assert(ov_menu_item(4, 1) == OVM_MOD_IMPORT && ov_menu_item(4, 2) == OVM_MOD_MANAGE && ov_menu_item(4, 3) == -1);
+    mod_import = 0;
+    assert(ov_menu_tabs() == 5 && ov_menu_item(4, 1) == -1 && ov_menu_item(4, 2) == OVM_MOD_MANAGE);
+    mod_manage = 0;
+    assert(ov_menu_tabs() == 4 && ov_menu_item(4, 2) == -1);
     // the defaults: today's look (FPS, SOC and BAT; the driver row and the graph are opt-ins)
     int o = atomic_load(&g_fps_opts);
     assert(fpso_rows(o) == 7 && FPSO_ROWS_DEFAULT == 7 && FPSO_GRAPH == 16 && fpso_pos(o) == FPSO_TL && fpso_colour(o) == FPSO_WHITE && fpso_outline(o) == FPSO_BOX && fpso_size(o) == FPSO_NORMAL);
