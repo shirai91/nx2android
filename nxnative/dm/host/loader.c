@@ -248,6 +248,10 @@ static void read_layout(module_t *m, const char *dir) {
         die("%s: the output comes from an old rewriter; rewrite the modules again with dm/tools/patch_nso.py", path);
     if (m->patch_off < 0 && (!m->image_size || !m->file_image_len || m->file_image_len % 0x4000 || m->patch_off % 0x4000 || m->key_page_off + m->key_page_size > m->image_size))
         die("%s: patch area before the base, but IMAGE_SIZE / FILE_IMAGE_LEN missing or wrong", path);
+    // map_image seals [0, text_end rounded up to 16 KB) read + execute on every host (16 KB is whole pages on Android's 4 KB and 16 KB page kernels alike): data below that would be
+    // read-only and fault in relocate() (FINAL FANTASY VIII Remastered's Math.nro and Platform.nro). patch_nso.py moves data up (mod_layout.py); stop here on a copy rewritten before that
+    if (m->data_off < ((m->text_end + 0x3FFF) & ~0x3FFFull))
+        die("%s: data at %#llx shares a 16 KB page with code (text ends at %#llx): rewrite the module again with dm/tools/patch_nso.py", m->name, (unsigned long long)m->data_off, (unsigned long long)m->text_end);
 }
 
 // Frame step state (the page after the key page, read-write; layout in patch_nso.py FRAME_STEP): the rewriter's stubs step the game by the host's whole vsyncs capped at this
