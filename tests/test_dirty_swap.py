@@ -33,6 +33,9 @@ class DirtySwap(unittest.TestCase):
 #include <sys/mman.h>
 #include <time.h>
 #include <unistd.h>
+#ifdef __APPLE__
+#include <mach/mach.h>   // nvn_dirty.c's page_writable (vm_region_64) on the Mac
+#endif
 typedef struct { uint32_t numer, denom; } mach_timebase_info_data_t;
 static void mach_timebase_info(mach_timebase_info_data_t *t) { t->numer = t->denom = 1; }
 static uint64_t mach_absolute_time(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (uint64_t)t.tv_sec * 1000000000ull + t.tv_nsec; }
