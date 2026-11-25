@@ -46,6 +46,28 @@ static void roundtrip(const char *tag, int target, int fmt, uint32_t w, uint32_t
 }
 
 int main(void) {
+    printf("L linear render targets without the separate LINEAR flag\n");
+    {
+        // Persona 5 Royal asks for 16x16 RGBA8, flags 0x44, stride 128: 2 KB,
+        // including row padding. Treating it as block-linear returned only 1 KB.
+        nvn_texdesc d = {1, 0x25, 0x44, 0, 16, 16, 1, 1, 128, 0};
+        nvn_texlayout L; nvn_tex_layout(&d, &L);
+        CHECK(L.size == 2048 && L.layer_size == 2048 && L.align == 128,
+              "L render target storage %llu alignment %u, expected 2048 / 128", (unsigned long long)L.size, L.align);
+        CHECK(nvn_tex_level_gobs(&d, 0) == 0 && nvn_tex_level_offset(&d, 0) == 0,
+              "L linear render target must not have block-linear GOB columns");
+        uint8_t storage[2048] = {0}, pixels[1024] = {0};
+        CHECK(nvn_deswizzle(&d, 0, 0, storage, pixels, 64) == -1,
+              "L linear render target must not be deswizzled");
+        d.stride = 0; nvn_tex_layout(&d, &L);
+        CHECK(L.size == 2048 && L.align == 128, "L implicit render target stride must align to 128");
+        d.flags |= 0x10; nvn_tex_layout(&d, &L);
+        CHECK(L.size == 2048 && L.align == 128, "L both linear flags must keep render target alignment");
+        d.flags = 0x10; nvn_tex_layout(&d, &L);
+        CHECK(L.size == 1024 && L.align == 32, "L ordinary linear texture keeps 32-byte alignment");
+        d.flags = 0x44; d.stride = 256; nvn_tex_layout(&d, &L);
+        CHECK(L.size == 4096, "L explicit padded stride must be preserved");
+    }
     printf("A round trip (random data, non-power-of-2 sizes)\n");
     roundtrip("2D 100×37 R8 4 levels", 1, 0x01, 100, 37, 1, 4);
     roundtrip("2D 100×37 RG8 4 levels", 1, 0x0D, 100, 37, 1, 4);
