@@ -32,6 +32,7 @@ typedef unsigned NVNdeviceInfo;
 #define OLOG(...) ((void)0)
 static int sdk, compiler_major, compiler_minor;
 static int dm_sdk_major(void) { return sdk; }
+static int dm_sdk_nvn1_minor(void) { return -1; }   /* no sdk switch read: 53.313 for SDK 10 and older */
 static int dm_glslc_gpu_code(int *major, int *minor) {
     *major = compiler_major; *minor = compiler_minor;
     return compiler_major > 0;
