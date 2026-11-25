@@ -373,6 +373,12 @@ void vk_init(void) {
     { void crash_handlers_check(const char *when); crash_handlers_check("after the Vulkan device was made"); }   // (again at present 600, gfx_vk_present.c: the shader compiler loads with the first pipelines)
     { void crash_install(void); crash_install(); crash_handlers_check("after the crash handlers were put back"); }   // the Vulkan driver resets the app's signal handlers to the default action right after the device is made (crash_handlers_check above): put ours back, so a fault in the host is reported instead of killing the process silently
 }
+// The driver loads its shader compiler with the first pipeline build, and it resets the app's signal handlers when it does (the Adreno 750's: the class of issue #64, the Fire Emblem: Three Houses case): the host's
+// handlers are put back after the device is made (above), and again after the first pipeline build, so a fault in the driver's compiler is reported instead of killing the process silently
+void vk_crash_handlers_after_build(void) {
+    static int done; if (done) return; done = 1;
+    { void crash_install(void); void crash_handlers_check(const char *when); crash_install(); crash_handlers_check("after the first pipeline build"); }
+}
 const void *vk_sg_pin(VkShaderStageFlagBits stage, const uint32_t *local) {
     if (!(V.sg_pin_stages & stage)) return NULL;
     // a compute workgroup must fit in maxComputeWorkgroupSubgroups subgroups of the pinned size (VUID-VkPipelineShaderStageCreateInfo-pNext-02756): a larger one keeps the driver's size

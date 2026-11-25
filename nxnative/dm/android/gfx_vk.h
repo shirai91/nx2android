@@ -78,6 +78,7 @@ typedef struct { uint64_t lo, hi; VkBuffer buf; VkDeviceMemory mem; void *ahb; i
 vkpool_t *vk_pool_of(uint64_t addr, uint64_t len);   // the pool containing [addr, addr+len), NULL if none
 int vk_buf_at(uint64_t addr, uint64_t len, VkBuffer *buf, VkDeviceSize *off);   // GPU buffer + offset of a pool address range
 uint64_t vk_chunk_span(uint64_t addr, uint64_t len, VkBuffer *buf, VkDeviceSize *off);   // the piece of [addr, addr+len) the chunk holding addr covers (0: none): a range over a chunk's end has no single buffer for it
+void vk_crash_handlers_after_build(void);   // after the first pipeline build: the driver has loaded its shader compiler (and may have reset the app's signal handlers): put the host's back
 // Pools that could not be made zero-copy keep a GPU copy refreshed before each submission (vk_pools_sync, called from mtl_sub_begin)
 void vk_pools_sync(VkCommandBuffer cb);
 
