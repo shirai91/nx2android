@@ -5,25 +5,38 @@ from xml.sax.saxutils import escape
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
-from porter.toolchain import dotnet_sdks
+from porter.toolchain import dotnet_sdks, find_dotnet
 
 PROJECT = REPO / 'nxnative/dm/tools/nx_extract/nx_extract.csproj'
+
+
+def sdk_candidates():
+    """Every place a dotnet may be. find_dotnet is the product's own lookup and comes first, but the suite sets NX2A_HOME, so user_dir() — and the toolchain the
+    app installs under it, the one a player builds with — points at a temporary folder with no SDK. The real app-data folder is therefore named as well, or the
+    gate below skips on exactly the machines that compile nx_extract by hand and would catch a source error (a PATH-only runtime, as Windows installs for apps)"""
+    exe = 'dotnet.exe' if os.name == 'nt' else 'dotnet'
+    appdata = Path(os.environ.get('APPDATA') or Path.home() / 'AppData/Roaming')
+    found = [find_dotnet(), shutil.which('dotnet'), os.environ.get('DOTNET_ROOT') and Path(os.environ['DOTNET_ROOT']) / exe,
+             appdata / 'nx2android' / 'toolchains' / 'dotnet' / exe, REPO / 'tools' / 'dotnet' / exe, Path.home() / '.dotnet' / exe]
+    return [Path(f) for f in dict.fromkeys(str(f) for f in found if f)]
+
+
+def sdk_dotnet(major):
+    """The first dotnet that carries SDK `major`, which is what builds nx_extract; a runtime-only dotnet cannot"""
+    return next((str(f) for f in sdk_candidates() if f.is_file() and any(int(v.split('.')[0]) == major for v in dotnet_sdks(f))), None)
 
 
 class ExtractIntegrity(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.dotnet = shutil.which('dotnet')
-        if not cls.dotnet and os.environ.get('DOTNET_ROOT'):
-            candidate = Path(os.environ['DOTNET_ROOT']) / ('dotnet.exe' if os.name == 'nt' else 'dotnet')
-            if candidate.is_file(): cls.dotnet = str(candidate)
         project = ET.parse(PROJECT).getroot()
         target = project.findtext('./PropertyGroup/TargetFramework')
         major = int(target.removeprefix('net').split('.')[0])
+        cls.dotnet = sdk_dotnet(major)
         sdks = dotnet_sdks(cls.dotnet) if cls.dotnet else {}
         matching = [Path(root).parent for version, root in sdks.items() if int(version.split('.')[0]) == major]
         if not matching:
-            raise unittest.SkipTest(f'.NET SDK {major} is required')
+            raise unittest.SkipTest(f'.NET SDK {major} is required (no dotnet with that SDK in {sdk_candidates()})')
         if not any(list((root / 'packs/Microsoft.NETCore.App.Ref').glob(f'{major}.*/*/{target}/System.Runtime.dll')) for root in matching):
             raise unittest.SkipTest(f'.NET {major} reference assemblies are required')
         runtimes = subprocess.run([str(cls.dotnet), '--list-runtimes'], capture_output=True, text=True, timeout=30)
