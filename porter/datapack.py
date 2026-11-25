@@ -60,9 +60,10 @@ def romfs_sizes(d):   # {path in the RomFS: size} of the pack in d, '/'-separate
     return {p.relative_to(r).as_posix(): p.stat().st_size for p in r.rglob('*') if p.is_file()} if r.is_dir() else {}
 
 
-def build(dst, *, profile, version, display, patched, romfs, shaders, aoc=None, sysdata=None, language='en-US', package=None, env=(), settings=None, files=None, profile_h=None, progress=None):
+def build(dst, *, profile, version, display, patched, romfs, shaders, aoc=None, sysdata=None, language='en-US', languages=(), package=None, env=(), settings=None, files=None, profile_h=None, progress=None):
     """Write the pack to dst (replacing it). profile: the AndroidProfile; package: the app's, when not the profile's; env: more env.txt rows, after the profile's; settings: settings.txt values over the profile's;
-    files: {name in the pack: source} (the 60 fps memory writes, fpslock.tsv; the button-icon font); profile_h: sha256 of the game_profile.h the host was built with (porter host). Returns the manifest"""
+    languages: supported Switch language codes from the NACP when language is 'system'; files: {name in the pack: source} (fpslock.tsv, the button-icon font);
+    profile_h: sha256 of the game_profile.h the host was built with (porter host). Returns the manifest"""
     package = package or profile.package
     tmp = dst.with_name(dst.name + '.partial')
     if tmp.exists(): shutil.rmtree(tmp)
@@ -76,6 +77,8 @@ def build(dst, *, profile, version, display, patched, romfs, shaders, aoc=None, 
     for name, src in (files or {}).items(): shutil.copyfile(src, tmp / name); n += 1; b += Path(src).stat().st_size
     rows = [f'# Written by nx2android\'s porter for {profile.name} ({profile.id}); KEY=VALUE per line, read by the app at launch',
             f'DM_LANG={language}']
+    if language == 'system' and languages:
+        rows.append('DM_LANG_SUPPORTED=' + ' '.join(languages))
     if aoc: rows.append(f'DM_AOC_DIR={files_folder(package)}/aoc')
     if sysdata: rows.append(f'DM_SYSDATA={files_folder(package)}/sysdata')
     rows += profile.env + list(env)

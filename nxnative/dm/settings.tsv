@@ -53,7 +53,8 @@ DM_KBD	str		debug	?	hle_swkbd.c
 DM_KBD_PLAYER	str		debug,ios	?	front_mac.m	
 DM_KEYS	str		debug	?	hle_hid.c	
 DM_LAN	bool	0	profile	start	lan_android.c hle_ldn.c	local wireless play over the LAN (ldn): 1 = on
-DM_LANG	str	en-US	porter	?	hle_oe.c main.m	the system language the game sees (en-US, ja, fr, ...)
+DM_LANG	str	en-US	porter	?	hle_oe.c main.m front_android.c	the system language the game sees (en-US, ja, fr, ...); system follows the Android locale at app launch
+DM_LANG_SUPPORTED	str		porter	start	front_android.c	space-separated language codes from the title's control data for DM_LANG=system
 DM_LAN_TRACE	str		debug	start	hle_ldn.c hle_socket.c	with `DM_LAN=1`: every `nn::socket` call (addresses, flags, result, errno) and every `nn::ldn` / `nn::nifm` query with its result, as `[lan]` lines
 DM_LINK_VTICK	str		debug,ios	?	nvn_mtl.m	
 DM_LOADHASH	str		debug	?	loader.c	
@@ -73,6 +74,7 @@ DM_MOVIE_AUDIO_SLOTS	int		profile	start	hle_movie.c	audio output buffers of a mo
 DM_MOVIE_FAST	bool		profile	start	movie_avc.c hle_nvn.c nvn_deswizzle.c	the movie frame's NEON NV12 -> RGBA conversion (bit-exact) and block-linear copies a whole GOB at a time (the same addresses). MMBN Legacy Collection Vol. 1 and 2: 30 -> 60 fps on an Odin 2 in Standard mode
 DM_MOVIE_TRACE	str		debug	?	hle_movie.c	
 DM_MSL_DIR	str		debug,ios	?	hle_gl.m nvn_mtl.m hle_vk.m	
+DM_NGC_CHINA_PASSTHROUGH	bool	0	profile	start	hle_misc.c	nn::ngc::MaskProfanityWordsInTextForPlatformRegionChina leaves the text as it is instead of filtering through ngct:u, which the host does not serve (abort 0xe15). Rune Factory: Guardians of Azuma calls it on the name entry once DM_NGC_CONTENT_VERSION is 1 (1)
 DM_NGC_CONTENT_VERSION	int		profile	start	hle_misc.c	nn::ngc::ProfanityFilter::GetContentVersion result; unset: 0. Rune Factory 3 Special rejects every name in the name entry while it reads 0 (1)
 DM_NICK	str		debug	?	hle_account.c	
 DM_NO_ADPF	str		debug	start	perf_android.c	no Android performance hints
@@ -91,6 +93,7 @@ DM_NVN_CBDUMP_KEY	str		debug,ios	?	nvn_mtl.m
 DM_NVN_CBLOG	str		debug	?	hle_nvn.c	
 DM_NVN_CLEARLOG	str		debug,ios	?	nvn_mtl.m	
 DM_NVN_CMDSTAT	str		debug	?	hle_nvn.c	
+DM_NVN_CPU_NO_ACCESS_IMAGE_FIRST_USE	bool	0	profile	start	gfx_vk_tex.c	1 = upload initial data for uncompressed 2D colour IMAGE textures in CPU_NO_ACCESS storage once, unless a GPU-written image overlaps them
 DM_NVN_CPU_TEX2D_FIRST_USE	bool	0	profile	start	gfx_vk_tex.c	1 = 2D textures the CPU writes are uploaded at their first use, not at creation
 DM_NVN_CUT	int		debug,ios	?	nvn_mtl.m	
 DM_NVN_DEFER	str		debug,ios	?	nvn_mtl.m	
@@ -239,6 +242,7 @@ DM_TEST_UP_LOST	int		debug,ios	?	nvn_mtl.m
 DM_THR	str		debug	?	main.c	
 DM_THRCPU	str		debug,ios	?	memstat.m	
 DM_TIME_OFFSET	str		debug	start	hle_time.c	the user clocks run that many seconds from the device's time (a test jumps to the next day or hour without changing the device's clock); the steady clock is unchanged
+DM_TOUCH	int		profile	start	front_android.c	1 = this game is touch-only: it starts with the gamepad hidden (Show gamepad off), so every touch goes to the game's touch screen and only the menu button answers; the player's own Show gamepad switch is saved and wins from then on
 DM_TOUCH_DOCKED	str		profile	start	hle_touch.c	touch in docked mode: "screen" = the screen's points, "pixels" = the game's pixels; unset = no touch when docked
 DM_TOUCH_HAPTICS	int		debug,ios	?	DmGamepad.m	
 DM_TOUCH_LOG	str		debug	?	hle_touch.c	DM_TOUCH_LOG=1 also logs each gesture entry (up to 500 lines)
@@ -317,6 +321,7 @@ DM_VK_RD_TOUCH	bool		debug	live	gfx_vk_exec.c	no transfer read of the memory a r
 DM_VK_ROBUST	bool		debug	start	gfx_vk_core.c	robust buffer access on (A/B for a device lost): a buffer, texel buffer or vertex read past its range reads 0 and a write past it is dropped, instead of faulting the GPU
 DM_VK_RP	bool		debug	start	gfx_vk_exec.c	dynamic rendering instead of cached `VkRenderPass` objects with imageless framebuffers (Adreno's `vkCmdBeginRendering` cost about 40 µs a pass)
 DM_VK_SAMP_LOG	bool		debug	live	gfx_vk_exec.c gfx_vk_tex.c	log the next n sampler registrations (ID, LOD range, wrap, aniso, compare, border, present, thread) and each submission's start, in time order with the replay's lines
+DM_VK_SCALED_FETCH	bool	0	profile	start	gfx_vk_exec.c	a USCALED / SSCALED vertex format the device cannot fetch, read by a float input, is fetched as the UINT / SINT format of its layout and converted to float in the vertex shader (vk_spv_vertex.h) instead of the pipeline being skipped. Toy Story 3 Complete Edition's profile sets it: the Adreno 740 has no R8G8B8A8_USCALED, its skinned characters' bone indices
 DM_VK_SCRATCH_MB	bool		debug	?	gfx_vk_core.c	
 DM_VK_SETSPLIT	bool	0	profile	?	gfx_vk_exec.c	1 = a descriptor set change may split the command buffer
 DM_VK_SHADERS	str		app	?	gfx_vk_shader.c	the shader bundle (shaders.dmsv); default: the files folder's
@@ -327,6 +332,8 @@ DM_VK_SKIP_OPS	str		debug	live	gfx_vk_exec.c	bisection aids: skip command kinds;
 DM_VK_SLOT0_FILL	bool		debug	?	gfx_vk_exec.c	
 DM_VK_SPV_ALT	bool		debug	?	gfx_vk_exec.c	pipelines made while `ALT` is on use `<dir>/<key>.spv` in place of the bundle's code where the file exists (same bindings), so two compilations of a shader compare in one run (e.g. the translator's GLSL through `glslc`, or a patched module)
 DM_VK_SPV_DIR	str		debug	?	gfx_vk_shader.c	pipelines made while `ALT` is on use `<dir>/<key>.spv` in place of the bundle's code where the file exists (same bindings), so two compilations of a shader compare in one run (e.g. the translator's GLSL through `glslc`, or a patched module)
+DM_VK_SR	bool		debug	start	gfx_vk_present.c	the present pass's super resolution (settings.txt `sr=`, the pause menu's Game tab); 0/1 overrides it for a device run
+DM_VK_SR_SHARP	int		debug	live	gfx_vk_present.c	the Sharpness slider for a run: percent, 0 to 100 (settings.txt `sharpness=`)
 DM_VK_SUBGROUP_ONE_LANE	bool		debug	start	gfx_vk_shader.c	no shader module is rewritten as subgroups of one invocation (`gfx_vk_subgroup.c`): modules whose stage lacks subgroup operations keep them, as before the rewrite, which Vulkan leaves undefined (VUID-RuntimeSpirv-None-06343). For A/B tests on a driver where a rewritten shader draws wrong. Qualcomm's
 DM_VK_SUBGROUP_PIN	int		debug	start	gfx_vk_core.c	game pipelines' fragment and compute stages run at that subgroup size (`VkPipelineShaderStageRequiredSubgroupSizeCreateInfo`), where the device's `requiredSubgroupSizeStages` allows it; a compute workgroup larger than `maxComputeWorkgroupSubgroups` such subgroups keeps the driver's size. Off by defa
 DM_VK_SUBMIT_SPLIT	bool		debug	live	gfx_vk_core.c	don't submit the pieces early

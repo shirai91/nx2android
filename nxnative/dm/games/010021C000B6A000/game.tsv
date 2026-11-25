@@ -1,0 +1,37 @@
+# Game profile of The Binding of Isaac: Afterbirth+ (Switch, update 1.7.9b = v524288 + Repentance DLC 010021C000B6B001).
+# Custom NVN engine on SDK 13.3.5; modules main + subsdk0 (GLSLC) + subsdk1 (NintendoSDK_movie) + sdk.
+# main is a launcher that loads Repentance.nro (or AfterbirthPlus.nro) via nn::ro and compiles its 43 GLSL shaders at boot with subsdk0 (captured via porter device_glslc).
+
+# ---- Identity ----
+title_id	010021C000B6A000
+program_id	010021C000B6A000
+
+# ---- App ----
+name	The Binding of Isaac: Afterbirth+
+ipa	TheBindingOfIsaacAfterbirth.ipa
+app_category	public.app-category.games
+pad_layout	full
+
+# ---- Versions ----
+build	v524288	1.7.9b	main=b6e5bdb9dc12e1d1a25cbfda17f4be24	subsdk0=c366dfa35272b8ac489629858902568b	subsdk1=d0f13015e5badf2243d60a2bc9b978dd	sdk=3644a6760469451cabc99f00c540acc2
+package	v524288
+shader_versions	v524288
+
+# ---- Files ----
+# subsdk0 (GLSLC) + subsdk1 (NintendoSDK_movie, imported by AfterbirthPlus.nro and Repentance.nro)
+modules	main subsdk0 subsdk1 sdk
+romfs_marker	rp_patch/resources.zh/font/teammeatfontextended12_0.pcx
+zip_store	.b:.mp4:.nro:.ogg:.metallib
+
+# ---- Memory ----
+# main sets a heap of at most the pool − 64 MB: a 3328 MB heap region
+mem_reserve	0x100000000
+mem_alias	0x10000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+# The NPDM declares 0 MB of system resource: IsVirtualAddressMemoryEnabled is false, as on Horizon.
+sys_resource	0x0
+
+# ---- Shader split ----
+shader_groups	/rp_patch/=rppatch /resources/=resources /resources.kr/=resourceskr /resources.jp/=resourcesjp /.nro/=nro /.nrr/=nrr /glslc_capture/=runtime
+shader_note	The Binding of Isaac: Afterbirth+ shaders

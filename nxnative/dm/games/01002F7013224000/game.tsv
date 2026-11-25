@@ -1,0 +1,38 @@
+# Rune Factory 5 1.0.2 (update v131072): Unity 2019.4.17f1 IL2CPP with FMOD on SDK 10.4.1, NVN; subsdk0 is NintendoSDK_movie. Started from porter's
+# provisional profile (dm/games/profile_guess.py) and checked by hand against the survey; Android testing is in android.tsv.
+
+# ---- Identity ----
+title_id	01002F7013224000
+program_id	01002F7013224000
+
+# ---- App ----
+name	Rune Factory 5
+ipa	RuneFactory5.ipa
+app_category	public.app-category.games
+
+# ---- Versions ----
+build	v131072	1.0.2	main=54de72afb1afcc43a0f47e831bbfbf1f	subsdk0=84e50460493a12f26100e5150fbff271	sdk=d9add76fc264863d85fbbd1d70076c76
+package	v131072
+shader_versions	v131072
+
+# ---- Files ----
+# every module main imports from
+modules	main subsdk0 sdk
+romfs_marker	Data/StreamingAssets/Movies/RF5_n_OP1_master_non_sound.mp4
+zip_store	.bundle:.dat:.json:.mp4:.ress:.metallib
+
+# ---- Memory ----
+# the NPDM declares 16 MB of system resource (virtual address memory) and Unity takes its memory from the alias region (no SetHeapSize call seen at boot), so the heap region keeps only the 128 MB left over
+mem_reserve	0x1B0000000
+mem_alias	0x118000000
+# a 2 GB stack region, as Horizon gives a 39-bit process: starting a new game creates a burst of threads with 8 MB stacks (17 live at once, ~160 MB with the others),
+# and nn::os::CreateThread places each alias stack at a random address in the region (AddressSpaceAllocator::AllocateSpace, 512 tries); with the 256 MB default the
+# 18th found no gap and aborted (CreateAliasStackUnsafe, sdk+0x33e4c4, called from Unity's thread start at main+0x31940). The reserve grows by the same 1.75 GB
+mem_stack	0x80000000
+app_pool	0xCD500000
+# the NPDM declares 16 MB of system resource
+sys_resource	0x1000000
+
+# ---- Shader split ----
+shader_groups	/Data/=data
+shader_note	Rune Factory 5 shaders (provisional profile)

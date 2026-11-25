@@ -36,12 +36,14 @@ int dm_overlay_custom(int l, int c, float *x, float *y, float *s) { (void)l; (vo
 static int parse(const char *line) { return fps_opt_parse(line); }
 int main(int argc, char **argv) {
     assert(argc == 2);   // a scratch file in the test's own folder (tmpfile() on MinGW with msvcrt makes it in the drive's root)
-    // four tabs, five rows each; the Counter tab: the five rows (FPS, SOC, BAT, driver, graph); the Style tab: the four choices then a blank
-    assert(OVM_TABS == 4 && OVM_PER_TAB == 5 && OVM_ROWS == 7);
-    assert(ov_menu_item(0, 0) == OVM_TAB && ov_menu_item(3, 6) == OVM_RESUME);
-    assert(ov_menu_item(1, 1) == OVM_FPS && ov_menu_item(1, 5) == OVM_AUDIO);
+    // four tabs, six rows each (as many for every tab: the panel keeps its size); the Counter tab: the five rows (FPS, SOC, BAT, driver, graph)
+    // then a blank; the Style tab: the four choices then two blanks
+    assert(OVM_TABS == 4 && OVM_PER_TAB == 6 && OVM_ROWS == 8);
+    assert(ov_menu_item(0, 0) == OVM_TAB && ov_menu_item(3, 7) == OVM_RESUME);
+    assert(ov_menu_item(1, 1) == OVM_FPS && ov_menu_item(0, 6) == OVM_AUDIO && ov_menu_item(1, 5) == OVM_EXPORT);
     const int counter[5] = {OVM_ROW_FPS, OVM_ROW_SOC, OVM_ROW_BAT, OVM_ROW_DRV, OVM_ROW_GRAPH}, style[5] = {OVM_POS, OVM_COLOUR, OVM_OUTLINE, OVM_SIZE, -1};
     for (int r = 0; r < 5; r++) { assert(ov_menu_item(2, r + 1) == counter[r]); assert(ov_menu_item(3, r + 1) == style[r]); }
+    assert(ov_menu_item(2, 6) == -1 && ov_menu_item(3, 5) == -1 && ov_menu_item(3, 6) == -1);
     assert(!strcmp(OVM_TAB_NAMES[2], "Counter") && !strcmp(OVM_TAB_NAMES[3], "Style"));
     float p[4] = {0, 0, 1000, 700};
     for (int t = 0; t < OVM_TABS; t++) { float r[4]; ov_menu_rowrect(p, 0, r); assert(ov_menu_tab_at(r[0] + (t + 0.5f) * r[2] / OVM_TABS, p) == t); }
