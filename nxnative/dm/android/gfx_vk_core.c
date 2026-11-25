@@ -1562,23 +1562,64 @@ void vk_img_barrier_all(VkCommandBuffer cb) {
     vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &b, 0, NULL, 0, NULL);
 }
 void vk_gpu_wrote(uint64_t a, uint64_t n);
+// How much of [addr, addr+len) the chunk holding addr covers (0 when there is none): a pool over ZC_CHUNK is made of chunks, each with a buffer of its own, so a range that runs
+// over a chunk's end has no single buffer for it (vk_buf_at fails on it). The copy paths below do such a range in pieces, one per chunk.
+static uint64_t chunk_span(uint64_t addr, uint64_t len, VkBuffer *buf, VkDeviceSize *off) {
+    vkpool_t *p = vk_pool_of(addr, 1);   // the chunk the address is in (pool_find: the last pool by lo that starts at or below it)
+    if (!p || !p->buf) return 0;
+    uint64_t n = p->hi - addr;
+    if (n > len) n = len;
+    *buf = p->buf; *off = addr - p->lo + p->boff;
+    return n;
+}
+// The same, for the callers outside this file: how much of [addr, addr+len) the chunk holding addr covers (0 when there is none). A range that runs over a chunk's end
+// has no single buffer for it (the paths that need one check the length against it and report the range as dropped)
+uint64_t vk_chunk_span(uint64_t addr, uint64_t len, VkBuffer *buf, VkDeviceSize *off) { return chunk_span(addr, len, buf, off); }
 void mtl_sub_copy(uint64_t src, uint64_t dst, uint64_t n) {
     VkBuffer sb, db; VkDeviceSize so, dof;
     if (!n) return;
-    if (!vk_buf_at(src, n, &sb, &so) || !vk_buf_at(dst, n, &db, &dof)) { VKRED_ONCE(1, "buffer copy outside the memory pools (%#llx → %#llx, %llu bytes)", (unsigned long long)src, (unsigned long long)dst, (unsigned long long)n); return; }
-    vk_end_pass_land();
-    VkCommandBuffer cb = vk_cmd(); vk_img_barrier_all(cb);
-    VkBufferCopy r = {so, dof, n}; vkCmdCopyBuffer(cb, sb, db, 1, &r);
-    vk_img_barrier_all(cb); vk_gpu_wrote(dst, n);
+    if (vk_buf_at(src, n, &sb, &so) && vk_buf_at(dst, n, &db, &dof)) {   // the whole range fits in one buffer on each side: one copy
+        vk_end_pass_land();
+        VkCommandBuffer cb = vk_cmd(); vk_img_barrier_all(cb);
+        VkBufferCopy r = {so, dof, n}; vkCmdCopyBuffer(cb, sb, db, 1, &r);
+        vk_img_barrier_all(cb); vk_gpu_wrote(dst, n);
+        return;
+    }
+    // a range that runs over a chunk's end: one copy per chunk, as far as both sides' chunks cover
+    for (uint64_t done = 0; done < n; ) {
+        VkBuffer cs, cd; VkDeviceSize co, cod;
+        uint64_t ns = chunk_span(src + done, n - done, &cs, &co), nd = chunk_span(dst + done, n - done, &cd, &cod);
+        if (!ns || !nd) { VKRED_ONCE(1, "buffer copy outside the memory pools (%#llx → %#llx, %llu bytes)", (unsigned long long)src, (unsigned long long)dst, (unsigned long long)n); return; }
+        uint64_t m = ns < nd ? ns : nd;   // the piece both sides' chunks cover
+        vk_end_pass_land();
+        VkCommandBuffer cb = vk_cmd(); vk_img_barrier_all(cb);
+        VkBufferCopy r = {co, cod, m}; vkCmdCopyBuffer(cb, cs, cd, 1, &r);
+        vk_img_barrier_all(cb); vk_gpu_wrote(dst + done, m);
+        done += m;
+    }
 }
 void mtl_sub_fill(uint64_t dst, uint64_t n, uint32_t value) {
     VkBuffer db; VkDeviceSize dof;
     if (!n) return;
-    if (!vk_buf_at(dst, n, &db, &dof)) { VKRED_ONCE(2, "buffer fill outside the memory pools"); return; }
-    vk_end_pass_land();
-    VkCommandBuffer cb = vk_cmd(); vk_img_barrier_all(cb);
-    vkCmdFillBuffer(cb, db, dof, n & ~3ull, value);
-    vk_img_barrier_all(cb); vk_gpu_wrote(dst, n);
+    if (vk_buf_at(dst, n, &db, &dof)) {   // the whole range fits in one buffer: one fill
+        vk_end_pass_land();
+        VkCommandBuffer cb = vk_cmd(); vk_img_barrier_all(cb);
+        vkCmdFillBuffer(cb, db, dof, n & ~3ull, value);
+        vk_img_barrier_all(cb); vk_gpu_wrote(dst, n);
+        return;
+    }
+    for (uint64_t done = 0; done < n; ) {   // a range that runs over a chunk's end: one fill per chunk
+        VkBuffer fb; VkDeviceSize fo;
+        uint64_t m = chunk_span(dst + done, n - done, &fb, &fo);
+        if (!m) { VKRED_ONCE(2, "buffer fill outside the memory pools"); return; }
+        uint64_t f = m & ~3ull;   // a fill's size is a multiple of 4 (the last piece of a range that is not: the rest is left alone, as before)
+        if (!f) break;
+        vk_end_pass_land();
+        VkCommandBuffer cb = vk_cmd(); vk_img_barrier_all(cb);
+        vkCmdFillBuffer(cb, fb, fo, f, value);
+        vk_img_barrier_all(cb); vk_gpu_wrote(dst + done, f);
+        done += f;
+    }
 }
 // an inline uniform update (UpdateUniformBuffer): the bytes are taken at record time, copied in GPU order from scratch memory
 // Inline uniform updates (UpdateUniformBuffer) are deferred instead of ending the render pass (as nvn_mtl.m's ubd_*): a copy cannot run inside a pass, and
@@ -1593,7 +1634,8 @@ void vk_end_pass_land(void);
 void vk_sub_update(uint64_t dst, const void *data, uint64_t n) {
     VkBuffer db, sb; VkDeviceSize dof, so;
     if (!n) return;
-    if (!vk_buf_at(dst, n, &db, &dof)) { VKRED_ONCE(3, "uniform update outside the memory pools"); return; }
+    // only the first piece is looked up here: the update's range may run over a chunk's end, and the pieces are copied when the update lands (vk_ubd_land)
+    if (!vk_buf_at(dst, n, &db, &dof) && !chunk_span(dst, n, &db, &dof)) { VKRED_ONCE(3, "uniform update outside the memory pools"); return; }
     // an update of exactly the range of a deferred one supersedes it: the older one goes (Unity rewrites the same few constant buffers before every draw,
     // so the list keeps about one entry per buffer region, which keeps the landing to a few copies and the shadows cheap to build)
     for (int i = g_nubd - 1; i >= 0; i--) if (g_ubd[i].lo == dst && g_ubd[i].hi == dst + n) { free(g_ubd[i].own); memmove(&g_ubd[i], &g_ubd[i + 1], sizeof *g_ubd * (size_t)(g_nubd - i - 1)); g_nubd--; g_ubd_superseded++; break; }
@@ -1659,7 +1701,12 @@ void vk_ubd_land(VkCommandBuffer cb) {   // outside a render pass
         if (nvn_sparse_address_pool(dst, n) && !nvn_sparse_address_translate(dst, n, &dst)) { vk_readback_unknown(); continue; }
         if (vk_buf_at(dst, n, &db, &dof)) {
             VkBufferCopy r = {g_ubd[i].so, dof, n}; vkCmdCopyBuffer(cb, g_ubd[i].sb, db, 1, &r); sub_gpu_wrote(dst, n);
+            continue;
         }
+        for (uint64_t done = 0; done < n; ) {   // the update's range runs over a chunk's end: one copy per chunk
+            uint64_t m = chunk_span(dst + done, n - done, &db, &dof);
+            if (!m) { VKRED_ONCE(183, "a uniform update's range runs into a part that is in no memory pool: the rest of it is not copied"); break; }
+            VkBufferCopy r = {g_ubd[i].so + done, dof, m}; vkCmdCopyBuffer(cb, g_ubd[i].sb, db, 1, &r); sub_gpu_wrote(dst + done, m); done += m; }
     }
     vk_img_barrier_all(cb);
     g_ubd_landed += (uint64_t)g_nubd; g_nubd = 0; g_ubd_gen++;

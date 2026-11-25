@@ -376,7 +376,15 @@ static void lin_back(void) {
         vkimg_t *im = P_att[i].im; const tex_t *t = S.rt_has_col[i] ? &S.rt_col[i] : NULL; const vkfmt_t *f = t ? vk_fmt(t->d.format) : NULL;
         if (!im || im == &g_s0_image || !t || !t->mem || !(t->d.flags & NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET) || !f || !f->bpb || f->bw > 1 || im->levels != 1 || im->layers != 1 || im->d != 1) continue;
         size_t stride = t->d.stride ? t->d.stride : (size_t)im->w * f->bpb, len = stride * (im->h - 1) + (size_t)im->w * f->bpb; VkBuffer b; VkDeviceSize o;
-        if (stride % f->bpb || stride < (size_t)im->w * f->bpb || !vk_buf_at((uint64_t)(uintptr_t)t->mem, len, &b, &o) || o % f->bpb) continue;
+        // one buffer's worth: a pool over ZC_CHUNK is made of chunks, each with a buffer of its own, so a target that runs over a chunk's end has none. The whole range
+        // is looked up first (vk_buf_at): it finds the pool whose buffer holds it, and it translates a sparse address (the chunk lookup comes out short with a pool
+        // inside a pool).
+        if (!vk_buf_at((uint64_t)(uintptr_t)t->mem, len, &b, &o)) {
+            uint64_t span = vk_chunk_span((uint64_t)(uintptr_t)t->mem, (uint64_t)len, &b, &o);
+            if (span) VKRED_ONCE(181, "a linear render target crosses a chunk boundary (ZC_CHUNK): not copied back");
+            continue;
+        }
+        if (stride % f->bpb || stride < (size_t)im->w * f->bpb || o % f->bpb) continue;
         VkCommandBuffer cb = vk_cmd(); vk_img_barrier_all(cb);
         VkBufferImageCopy r = {o, (uint32_t)(stride / f->bpb), 0, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {0, 0, 0}, {im->w, im->h, 1}};
         vkCmdCopyImageToBuffer(cb, im->img, VK_IMAGE_LAYOUT_GENERAL, b, 1, &r); vk_img_barrier_all(cb);
