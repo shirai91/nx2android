@@ -363,7 +363,8 @@ int mavc_decode(mavc *a, const uint8_t *p, int n, int64_t pts_us) {
     if (!b || cap < c.len) { if (!a->red++) LOG("[RED] movie: AVC access unit of %zu bytes does not fit MediaCodec's %zu-byte input buffer", c.len, cap); AMediaCodec_queueInputBuffer(a->mc, (size_t)i, 0, 0, (uint64_t)pts_us, 0); return -1; }
     memcpy(b, a->au, c.len);
     int64_t cpts = mavc_map_time(a, pts_us);
-    if (AMediaCodec_queueInputBuffer(a->mc, (size_t)i, 0, c.len, (uint64_t)cpts, 0) != AMEDIA_OK) { if (!a->red++) LOG("[RED] movie: MediaCodec refused an AVC access unit (first case)"); return -1; }    a->nin++;
+    if (AMediaCodec_queueInputBuffer(a->mc, (size_t)i, 0, c.len, (uint64_t)cpts, 0) != AMEDIA_OK) { if (!a->red++) LOG("[RED] movie: MediaCodec refused an AVC access unit (first case)"); return -1; }
+    a->nin++;
     drain(a, 0);
     return 0;
 }
