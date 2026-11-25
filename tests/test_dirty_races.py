@@ -27,9 +27,6 @@ HARNESS = r'''
 #include <sys/mman.h>
 #include <time.h>
 #include <unistd.h>
-#ifdef __APPLE__
-#include <mach/mach.h>   // nvn_dirty.c's page_writable (vm_region_64) on the Mac
-#endif
 typedef struct { uint32_t numer, denom; } mach_timebase_info_data_t;
 static void mach_timebase_info(mach_timebase_info_data_t *t) { t->numer = t->denom = 1; }
 static uint64_t mach_absolute_time(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (uint64_t)t.tv_sec * 1000000000ull + t.tv_nsec; }
@@ -104,17 +101,18 @@ static void case_born(void) {
 }
 
 // a3d58526: a page the tracker unprotected (NONE, a generation) that another subsystem made read-only. A store there must be handed on (not re-executed forever): here
-// within two faults (none_writable re-executes a NONE page once before it asks the kernel). Once writable again it is the tracker's to re-execute
+// after REEXEC_MAX re-executions, and at once from then on. Once the tracker has made the page writable for a write again (a stamp), a fault that raced it is re-executed
 static void case_foreign_ro(void) {
     uint8_t *m = page_map(pg);
     nvn_dirty_add_range(m, pg); nvn_dirty_protect(m, pg);
     m[0] = 1;   // faults and leaves the page NONE with a generation
     mprotect(m, pg, PROT_READ);
-    int first = on_fault(m, 1, NULL), second = first ? on_fault(m, 1, NULL) : 0;
-    EXPECT("write fault on a NONE page the kernel has read-only: declined by the second fault", 0, second);
+    int n = 0; while (n <= REEXEC_MAX && on_fault(m, 1, NULL)) n++;
+    EXPECT("write fault on a NONE page another subsystem made read-only: re-executed REEXEC_MAX times, then handed on", REEXEC_MAX, n);
+    EXPECT("... and handed on at once from then on", 0, on_fault(m, 1, NULL));
     mprotect(m, pg, PROT_READ | PROT_WRITE);
-    EXPECT("write fault on a NONE page the kernel has writable: claimed", 1, on_fault(m, 1, NULL));
-    EXPECT("... and again", 1, on_fault(m, 1, NULL));
+    nvn_dirty_protect(m, pg); dm_guest_write_prepare(m, 1);   // protected again, then a host write lets it through: NONE, stamped
+    EXPECT("a write fault that raced the tracker's release: re-executed", 1, on_fault(m, 1, NULL));
     nvn_dirty_remove_range(m); munmap(m, pg);
 }
 

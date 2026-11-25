@@ -10,10 +10,6 @@
 #include <unistd.h>
 #include <mach/mach_time.h>
 #include <sched.h>
-#include <fcntl.h>
-#ifdef __APPLE__
-#include <mach/mach.h>
-#endif
 
 // Order of page state and mprotect: the side changing protection first sets the state to BUSY and sets the final state only after mprotect has landed; other threads wait when they see BUSY.
 //   set read-only: NONE -> BUSY -> mprotect(read-only) -> PROT; unprotect: PROT -> BUSY -> mprotect(writable) -> NONE.
@@ -50,10 +46,27 @@ static inline range_t *rg(int i) { return &atomic_load_explicit(&g_blk[i >> BLK_
 static _Atomic int g_nr;
 static uintptr_t g_pg, g_shift;
 static _Atomic uint64_t g_now = 1;
-// A page written (made writable for a write): its new generation, then the range's highest (a compare-and-swap maximum: signal-safe, and a slower thread never lowers it)
+// Re-executions of write faults no range claimed as protected (on_fault), per host page in a table hashed by page: (page << 8) | how many since this module last made the
+// page writable for a write (stamp_page sets it back to 0). A write this module let through faults at most once more for each thread that raced it, so a page past
+// REEXEC_MAX in a row is not this module's: a store into a mapped file past its end (SIGBUS), an MTE tag fault on Android, a read-only protection another subsystem put on
+// it. Its fault then goes on to the next hook or the crash handler instead of being re-executed forever. Pages sharing a slot take it from each other (the count starts
+// again), which only gives a foreign fault more tries, never a write of this module fewer. Signal-safe: atomics only
+enum { REEXEC_SLOTS = 256, REEXEC_MAX = 128 };
+static _Atomic uint64_t g_reexec[REEXEC_SLOTS];
+static inline uint64_t page_no(uintptr_t a) { return (a & 0x00ffffffffffffffull) >> g_shift; }   // (without the top byte: Android's tagged pointers)
+static int reexec_take(uintptr_t a) {   // 1 = one more re-execution of the page at a granted
+    uint64_t pg = page_no(a), o = atomic_load(&g_reexec[pg % REEXEC_SLOTS]), n;
+    do { if (o >> 8 != pg) n = pg << 8 | 1; else if ((o & 0xff) < REEXEC_MAX) n = o + 1; else return 0; }
+    while (!atomic_compare_exchange_weak(&g_reexec[pg % REEXEC_SLOTS], &o, n));
+    return 1;
+}
+// A page written (made writable for a write): its new generation, then the range's highest (a compare-and-swap maximum: signal-safe, and a slower thread never lowers it);
+// its re-executions start again (reexec_take)
 static inline void stamp_page(range_t *r, uintptr_t p) {
     uint64_t g = atomic_fetch_add(&g_now, 1) + 1; atomic_store(&r->gen[p], g);
     uint64_t o = atomic_load(&r->last); while (o < g && !atomic_compare_exchange_weak(&r->last, &o, g)) {}
+    uint64_t pg = page_no(rb(r)) + p; _Atomic uint64_t *s = &g_reexec[pg % REEXEC_SLOTS];
+    for (o = atomic_load(s); o >> 8 == pg && (o & 0xff) && !atomic_compare_exchange_weak(s, &o, pg << 8); ) {}
 }
 static _Atomic uint64_t g_faults, g_preps, g_released;
 static _Atomic uint64_t g_adds_total;
@@ -133,48 +146,35 @@ static int release_page(range_t *r, uintptr_t p, _Atomic uint64_t *count) {
         if (atomic_compare_exchange_strong(&r->state[p], &st, PG_BUSY)) { if (unprotect_page(r, p)) return 0;   // a write let through is the only way on: not ours, the crash handler reports it
             if (count) atomic_fetch_add(count, 1); return 1; }
         // already NONE: most often another thread just unprotected it (the fault happened before the unprotect), but a read-only protection another subsystem put on a page
-        // this module made writable is not ours either, and claiming it re-executed the store forever (seedds/nxnative a3d58526): on_fault decides (none_writable)
+        // this module made writable is not ours either, and claiming it re-executed the store forever (seedds/nxnative a3d58526): on_fault decides (reexec_take)
         if (st != PG_BUSY) return atomic_load(&r->gen[p]) != 0 ? 2 : 0;
         if (!busy_wait(r, p)) return 0;
     }
 }
-// The kernel's protection of the host page at a now: writable (and not executable). Made only for a fault no range claimed as protected.
-// On Android (and Linux) from /proc/self/maps, read with open/read alone and parsed in place (no stdio, no allocation: this runs in the signal handler). The address is
-// compared without its top byte (Android's tagged pointers; the maps list untagged addresses)
-static int page_writable(uintptr_t a) {
-#ifdef __APPLE__
-    vm_address_t pg = a & ~(g_pg - 1), va = pg; vm_size_t vs = 0; vm_region_basic_info_data_64_t bi; mach_msg_type_number_t cnt = VM_REGION_BASIC_INFO_COUNT_64; mach_port_t obj = MACH_PORT_NULL;
-    if (vm_region_64(mach_task_self(), &va, &vs, VM_REGION_BASIC_INFO_64, (vm_region_info_t)&bi, &cnt, &obj) != KERN_SUCCESS || va > pg) return 0;
-    return (bi.protection & (VM_PROT_WRITE | VM_PROT_EXECUTE)) == VM_PROT_WRITE;
-#else
-    a &= 0x00ffffffffffffffull;
-    int fd = open("/proc/self/maps", O_RDONLY | O_CLOEXEC); if (fd < 0) return 0;
-    char buf[512], perm[3] = {0}; uintptr_t lo = 0, hi = 0; int field = 0, np = 0, found = -1;   // field: 0 start, 1 end, 2 permissions, 3 the rest of the line
-    for (ssize_t n; found < 0 && (n = read(fd, buf, sizeof buf)) > 0; )
-        for (ssize_t i = 0; i < n && found < 0; i++) {
-            char c = buf[i]; int d = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : -1;
-            if (c == '\n') { field = 0; lo = hi = 0; np = 0; continue; }
-            if (field == 0) { if (d >= 0) lo = lo << 4 | (uintptr_t)d; else if (c == '-') field = 1; }
-            else if (field == 1) { if (d >= 0) hi = hi << 4 | (uintptr_t)d; else if (c == ' ') field = 2; }
-            else if (field == 2) {
-                perm[np++] = c; if (np < 3) continue;
-                field = 3;
-                if (a < lo) found = 0;   // the lines are in address order: past it, unmapped
-                else if (a < hi) found = perm[1] == 'w' && perm[2] != 'x';
-            }
-        }
-    close(fd);
-    return found > 0;
-#endif
+// Ranges retired lately, for a write that faulted on a protected page of a pool being retired: nvn_dirty_remove_range makes the pages writable, then drops the range, so a
+// fault raised before that and handled after finds no range to claim it. Each entry: [base, end) and the time; written with g_slot_mu held before the range's live goes 0,
+// so a fault handler that saw live 0 sees the entry. seq is odd while an entry is written: a reader passes over it (the oldest one, which a newer retirement is taking)
+enum { RETIRED_RING = 256, RETIRED_MS = 1000 };
+typedef struct { _Atomic uint64_t seq, at; _Atomic uintptr_t base, end; } retired_t;
+static retired_t g_retired[RETIRED_RING];
+static _Atomic uint64_t g_nretired;
+static void retired_add(range_t *r) {   // g_slot_mu held: one writer
+    uint64_t k = atomic_load(&g_nretired); retired_t *e = &g_retired[k % RETIRED_RING];
+    atomic_fetch_add(&e->seq, 1);
+    atomic_store(&e->base, rb(r)); atomic_store(&e->end, re(r)); atomic_store(&e->at, mach_absolute_time());
+    atomic_fetch_add(&e->seq, 1); atomic_store(&g_nretired, k + 1);
 }
-// A page this module made writable (NONE, with a generation) that faulted: re-executed at once, unless the last such re-execution of a page that hashes alike was of the same
-// page; then the kernel is asked (page_writable). A read-only protection another subsystem put on it so faults at most twice before it is handed on. Asking the kernel every
-// time, as seedds/nxnative does on the Mac (one vm_region call), would read all of /proc/self/maps here at every fault two threads race on one protected page (tens of
-// thousands of lines in Xenoblade Chronicles 3)
-static _Atomic uintptr_t g_none_last[64];
-static int none_writable(uintptr_t a) {
-    uintptr_t pg = a >> g_shift;
-    return atomic_exchange(&g_none_last[pg & 63], pg) != pg || page_writable(a);
+// 1 when a lies in a range retired lately, or when the ring cannot tell: its oldest entry is less than RETIRED_MS old (more than RETIRED_RING retirements in that time), so
+// the range a fault raced may have left it already. Signal-safe: atomic loads only, newest first
+static int retired_lately(uintptr_t a) {
+    uint64_t n = atomic_load(&g_nretired), lo = n > RETIRED_RING ? n - RETIRED_RING : 0;
+    if (n >= RETIRED_RING && (mach_absolute_time() - atomic_load(&g_retired[n % RETIRED_RING].at)) * g_tb.numer / g_tb.denom < (uint64_t)RETIRED_MS * 1000000ull) return 1;
+    for (uint64_t k = n; k-- > lo; ) {
+        retired_t *e = &g_retired[k % RETIRED_RING]; uint64_t sq = atomic_load(&e->seq);
+        uintptr_t b = atomic_load(&e->base), en = atomic_load(&e->end);
+        if (!(sq & 1) && atomic_load(&e->seq) == sq && a >= b && a < en) return 1;
+    }
+    return 0;
 }
 static void release_pages(range_t *r, uintptr_t p, uintptr_t q, _Atomic uint64_t *count);
 // One pinned range over the faulting address a: its page released (1 = it was protected, so ours; *none set when it was NONE with a generation), and the rest of its texture with it
@@ -189,9 +189,14 @@ static int on_fault_range(range_t *r, uintptr_t a, int *none) {
     return rc == 1;
 }
 // A write that faulted on a protected page may be handled only after a pool over it was retired: nvn_dirty_remove_range makes the pages writable, then drops the range, and the
-// scan then found no range to claim the fault, so the crash handler stopped the host on a write that was the tracker's (SIGBUS; seedds/nxnative 1df3182f, t_dirty_reuse). So a
-// fault no range claims is re-executed when the page is writable by now; and when it is not, but a protection change of this module ran during the scan (a pool registered over
-// the page and protected it, say), the scan runs again. Only a scan and look with no change of this module during them hands the fault on as not ours (the next hook, or the crash path)
+// scan then found no range to claim the fault, so the crash handler stopped the host on a write that was the tracker's (SIGBUS; seedds/nxnative 1df3182f, t_dirty_reuse).
+// A fault no range claims as protected is re-executed only where this module may have made the page writable under it: the page is NONE with a generation in a live range
+// (another thread let a write through first, or nvn_dirty_defrag / nvn_dirty_swap gave it back while this one waited), or it lies in a range retired lately (retired_lately);
+// and at most REEXEC_MAX times in a row (reexec_take). A re-executed write that still meets a read-only page of this module faults again and is claimed then. Neither test asks
+// the kernel: seedds/nxnative re-executes whenever the page is writable by now (one vm_region call on the Mac), but here that read all of /proc/self/maps at every fault
+// that was not ours (tens of thousands of lines in Xenoblade Chronicles 3), and re-executed forever a fault on a writable page (a store into a mapped file past its end,
+// an MTE tag fault). When neither holds but a protection change of this module ran during the scan (a pool registered over the page and protected it, say), the scan runs
+// again. Only a scan with no change of this module during it hands the fault on as not ours (the next hook, or the crash path)
 static int on_fault(void *addr, int is_write, void *uc) {
     (void)uc;
     if (!is_write) return 0;
@@ -204,7 +209,7 @@ static int on_fault(void *addr, int is_write, void *uc) {
             ours |= on_fault_range(r, a, &none);
             unpin(r);
         }
-        if (ours || (none ? none_writable(a) : page_writable(a))) return 1;
+        if (ours || ((none || retired_lately(a)) && reexec_take(a))) return 1;
         if (atomic_load(&g_mp_begun) == done) return 0;   // none begun since the scan began, none in flight then: the page's protection is not this module's
     }
     return 0;
@@ -472,7 +477,7 @@ void nvn_dirty_remove_range(const void *mem) {
     pthread_mutex_lock(&g_slot_mu);
     range_t *r = NULL; int n = atomic_load(&g_nr);
     for (int i = 0; i < n && !r; i++) if (live_at(i) && rg(i)->mem == (uintptr_t)mem) r = rg(i);   // Match by the pool's exact start: an adjacent pool sharing a page may have the same rounded base
-    if (r) { prep_write((void *)rb(r), re(r) - rb(r)); atomic_store(&r->live, 0); atomic_fetch_sub(&g_live, 1); }   // seq_cst: against pin (the reuse in add_range reads the pin count)
+    if (r) { prep_write((void *)rb(r), re(r) - rb(r)); retired_add(r); atomic_store(&r->live, 0); atomic_fetch_sub(&g_live, 1); }   // seq_cst: against pin (the reuse in add_range reads the pin count) and retired_lately
     pthread_mutex_unlock(&g_slot_mu);
 }
 int nvn_dirty_tracked(const void *addr, size_t len) {
