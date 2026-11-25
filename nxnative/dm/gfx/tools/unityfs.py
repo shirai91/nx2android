@@ -249,6 +249,14 @@ ComputeShaderCB: string name; int byteSize; vector<data:ComputeShaderParam> para
 ComputeShaderPlatformVariant: int targetRenderer; int targetLevel; vector<data:ComputeShaderKernelParent> kernels; vector<data:ComputeShaderCB> constantBuffers; bool! resourcesResolved
 ComputeShader: string m_Name; vector<data:ComputeShaderPlatformVariant> variants
 '''
+# Unity 2021.3.18f1 (Shin chan: Shiro and the Coal Town, PR #440): checked against all 144 nodes and alignment flags
+# of AssetRipper's StructsDump/release/2021.3.18f1.dump. Code is bytes in both layouts; 2021.3 stores keyword variants
+# in a map and uses a staticvector for threadGroupSize. Keep resourcesResolved aligned between platform variants.
+COMPUTE_2021_3 = COMPUTE_2022_3.replace(
+    'vector<data:ComputeShaderKernel> uniqueVariants; vector<data:pair(string,unsigned int)> variantIndices',
+    'map<data:pair(string,ComputeShaderKernel)>~ variantMap').replace(
+    '; vector<data:string> dynamicKeywords', '').replace(
+    'vector<data:unsigned int>~ threadGroupSize', 'staticvector<data:unsigned int>~ threadGroupSize')
 # The Unity 6.3 ComputeShader (Viractal: Will You Trust Your Party?, Unity 6000.3.12f1: in Data/globalgamemanagers.assets and Data/Resources/unity default resources, which carry
 # no type trees), from 6000.3.12f1's type tree as AssetRipper's TypeTreeDumps records it: 2022.3's with one field more, ComputeShaderResource.resType, at its end
 COMPUTE_6000_3 = COMPUTE_2022_3.replace('ComputeShaderResource: string name; string generatedName; int bindPoint; int samplerBindPoint; int texDimension\n',
@@ -264,6 +272,11 @@ ComputeShaderCB: string name; int byteSize; vector<data:ComputeShaderParam> para
 ComputeShaderVariant: int targetRenderer; int targetLevel; vector<data:ComputeShaderKernel> kernels; vector<data:ComputeShaderCB> constantBuffers; bool! resourcesResolved
 ComputeShader: string m_Name; vector<data:ComputeShaderVariant> variants
 '''
+# Unity 2017.4.28f1's release tree (AssetRipper TypeTreeDumps, StructsDump/release/2017.4.28f1.dump, class 72):
+# resources hold a ComputeBufferCounter instead of the later sampler / dimension fields; kernels already hold code directly.
+# Return of the Obra Dinn's stripped built-ins use this hash; its internalskinning object (12 kernels) reads to its exact end.
+COMPUTE_2017_4 = COMPUTE_2019_4.replace('int samplerBindPoint; int texDimension', 'ComputeBufferCounter counter') + \
+    'ComputeBufferCounter: int bindpoint; int offset\n'
 COMPUTE_2020_3 = (COMPUTE_2022_3.replace('; SInt64 requirements', '')
                   .replace('vector<data:ComputeShaderKernel> uniqueVariants; vector<data:pair(string,unsigned int)> variantIndices', 'map<data:pair(string,ComputeShaderKernel)>~ variantMap')
                   .replace('; vector<data:string> dynamicKeywords', ''))
@@ -274,6 +287,8 @@ KNOWN_TREES = {(CLASS_SHADER, bytes.fromhex('ea424a5fc1e48db62144df956f9e1005'))
                (CLASS_SHADER, bytes.fromhex('8db760073e1392061e4a36995f0735af')): ('Shader', SHADER_2018_3),
                (CLASS_SHADER, bytes.fromhex('ed2a06ce7fb8203f6efb5ab5e0ce20d5')): ('Shader', SHADER_2019_4),
                (CLASS_COMPUTE_SHADER, bytes.fromhex('1a95529ac2eb1a97cd9d2a4356bd722f')): ('ComputeShader', COMPUTE_2019_4),
+               (CLASS_COMPUTE_SHADER, bytes.fromhex('20291e020d10074c35d8286f5191593f')): ('ComputeShader', COMPUTE_2017_4),
+               (CLASS_COMPUTE_SHADER, bytes.fromhex('abd9135b8ce83d043fef4e9ec7f53366')): ('ComputeShader', COMPUTE_2021_3),
                (CLASS_COMPUTE_SHADER, bytes.fromhex('d0171b849bb064b2424893e7d4809be5')): ('ComputeShader', COMPUTE_2020_3),
                (CLASS_COMPUTE_SHADER, bytes.fromhex('bfdf63ab0ce84d5a2c765ee560d90fe7')): ('ComputeShader', COMPUTE_2022_3),
                (CLASS_COMPUTE_SHADER, bytes.fromhex('43a0948a3f403068c0b31bff90ba0c9a')): ('ComputeShader', COMPUTE_6000_3)}
@@ -302,7 +317,7 @@ def tree_from_layout(root, layout):
             a = Node('Array', 'Array', -1, arr_align); a.kids = [Node('int', 'size', 4, 0), el]; return a
         if t == 'string':
             n = Node('string', name, -1, flags); n.kids = [array(Node('char', 'data', 1, 0))]
-        elif t.startswith(('vector<', 'map<')):
+        elif t.startswith(('vector<', 'map<', 'staticvector<')):
             kind, inner = t[:-1].split('<', 1); el_name, el_type = inner.split(':', 1)
             n = Node(kind, name, -1, flags); n.kids = [array(node(el_type, el_name))]
         elif t.startswith('pair('):
