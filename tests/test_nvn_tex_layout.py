@@ -1,6 +1,7 @@
 """NVN texture layout (nvn_tex.c) and the CPU block-linear copies (nvn_deswizzle.c) through nxnative's own C tests.
 
-t_tex_layout checks storage sizes, level offsets and block heights against shapes the original NVN driver gives. Plain C.
+t_tex_layout checks storage sizes, level offsets and block heights against shapes the original NVN driver gives; t_sparse_layout sparse
+textures' sizes against the games' pre-swizzled data. Plain C.
 """
 from pathlib import Path
 import os
@@ -35,6 +36,10 @@ class NvnTexLayout(unittest.TestCase):
     def test_driver_shapes(self):
         out = self.run_c('t_tex_layout', GFX / 'tests/t_tex_layout.c')
         self.assertNotIn('FAIL', out)
+
+    def test_sparse_layout(self):
+        out = self.run_c('t_sparse_layout', GFX / 'tests/t_sparse_layout.c')
+        self.assertIn(' 0 failed', out)
 
 
 if __name__ == '__main__':

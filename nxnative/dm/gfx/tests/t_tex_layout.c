@@ -1,5 +1,7 @@
 // Texture storage against shapes the original NVN driver gives (digitalhivehub ran Tears of the Kingdom's driver under emulation, nxnative PR #11; MacNativeGames 3c482a7):
-// cube array depth counts layer-faces, packaged byte 0 = block height (low nibble) and block depth (high nibble). pkg is byte 0 + 1 (0 = automatic), as nvn_texdesc stores it
+// cube array depth counts layer-faces, packaged byte 0 = block height (low nibble) and block depth (high nibble). pkg is byte 0 + 1 (0 = automatic), as nvn_texdesc stores it.
+// The sparse (flag 0x20) shapes are block heights read off a game's guest bytes instead: a sparse texture at least one 64 KB tile wide and high
+// takes its tile's block height (384x384 DXT5, 1350x270 BGRA8), a smaller one keeps the automatic one (192x160 DXT5 and 384x384 DXT1, Yoshi's Crafted World)
 #include <stdio.h>
 #include "../nvn/nvn_tex.h"
 
@@ -11,6 +13,10 @@ static const shape_t driver[] = {
     {"packaged 3D RGBA8 32^3, byte 0x00",           2, 0x25, 0,    32, 32, 32, 1, 0, 0x01,   131072, 131072, 0, 512, 0, 0},
     {"packaged 3D RGBA8 32^3, byte 0x12",           2, 0x25, 0,    32, 32, 32, 1, 0, 0x13,   131072, 131072, 0, 512, 2, 1},
     {"packaged 2D RGBA8 64x64, byte 0x13",          1, 0x25, 0,    64, 64, 1, 1, 0, 0x14,    16384, 16384, 0, 512, 3, 0},
+    {"sparse DXT5 192x160, under a tile",           1, 0x48, 0x20, 192, 160, 1, 1, 0, 0,     0x10000, 0x10000, 0, 0x10000, 2, 0},
+    {"sparse DXT1 384x384, narrower than a tile",   1, 0x45, 0x20, 384, 384, 1, 1, 0, 0,     0x20000, 0x20000, 0, 0x10000, 4, 0},
+    {"sparse DXT5 384x384, a tile wide",            1, 0x48, 0x20, 384, 384, 1, 1, 0, 0,     0x40000, 0x40000, 0, 0x10000, 3, 0},
+    {"sparse BGRA8 1350x270",                       1, 0x9c, 0x20, 1350, 270, 1, 1, 0, 0,    0x210000, 0x210000, 0, 0x10000, 4, 0},
 };
 
 int main(void) {
@@ -26,6 +32,9 @@ int main(void) {
                    (unsigned long long)off1, l.align, l.tileH, l.tileD, (unsigned long long)c->size, (unsigned long long)c->layer, (unsigned long long)c->off1, c->align, c->th, c->td);
         }
     }
-    printf("t_tex_layout: %d of %d driver shapes match\n", n - fail, n);
+    nvn_texdesc icon = {.target = 1, .format = 0x48, .flags = 0x20, .width = 192, .height = 160, .depth = 1, .levels = 1};
+    uint32_t tw, th, td; int tiled = nvn_tex_sparse_tiles(&icon, &tw, &th, &td);
+    if (tw != 256 || th != 256 || tiled) { fail++; printf("FAIL sparse DXT5 192x160: tile %ux%u texels, %d tiled levels; want 256x256, 0\n", tw, th, tiled); }
+    printf("t_tex_layout: %d of %d shapes match\n", n + 1 - fail, n + 1);
     return fail != 0;
 }
