@@ -27,10 +27,12 @@ struct mavc {
     uint8_t *au; size_t aucap;   // Annex B copy of the access unit being decoded
     int unknown_format_logged, dropped_picture_logged; // once per decoder, independently of other errors
     int red, rgba;               // rgba: pictures as 4-byte RGBA (native texture mode) instead of NV12
-    // The codec's timestamps: the game's while they increase, else the last one + 1 µs, each mapped back to the game's on output (pmap). 13 Sentinels: Aegis Rim sends every
+    // The codec's timestamps: the game's while they increase, else the last one + 1 µs, and the picture goes out with the game's own time (pmap). 13 Sentinels: Aegis Rim sends every
     // packet of its 1024x576 movies with time 0, and c2.qti.avc.decoder gave no picture for 81 packets and then took no more input. With made-up timestamps the codec's
-    // own output order stands (synth: the queue is not sorted)
-    int64_t last_in; int synth; struct { int64_t c, g; } pmap[64]; int npmap;
+    // own output order stands (synth: the queue is not sorted). A stream whose game time does not move keeps the made-up time instead (last_game): a player that advances its clock
+    // with the picture's time (Catherine: Full Body's player stops feeding the decoder when the picture it shows does not move) needs a time that moves. A stream whose times do move
+    // keeps the game's own times (a B-frame stream sends its packets in decode order, so its times go down at each B-frame: they must come back out as the game sent them).
+    int64_t last_in, last_game; int synth; struct { int64_t c, g; } pmap[64]; int npmap;
 };
 
 typedef struct { uint8_t data[512]; size_t end, bit; int bad; } sps_bits;
@@ -149,12 +151,18 @@ static unsigned sps_color_flags(const uint8_t *nal, size_t n) {
     return b.bad || b.bit != b.end ? 0 : flags;
 }
 
-mavc *mavc_new(void) { mavc *a = calloc(1, sizeof *a); if (!a) die("movie: AVC decoder allocation failed"); a->last_in = INT64_MIN; return a; }
-static void close_codec(mavc *a) { if (a->mc) { AMediaCodec_stop(a->mc); AMediaCodec_delete(a->mc); a->mc = NULL; } a->nin = a->nout = 0; a->eos_sent = 0; a->last_in = INT64_MIN; a->npmap = 0; }
+// the picture's time: the game's own, as the packet's entry mapped it
+static int64_t mavc_picture_time(mavc *a, int64_t cpts) {
+    for (int m = 0; m < a->npmap; m++) if (a->pmap[m].c == cpts) { int64_t g = a->pmap[m].g; a->pmap[m] = a->pmap[--a->npmap]; return g; }
+    return cpts;
+}
+
+mavc *mavc_new(void) { mavc *a = calloc(1, sizeof *a); if (!a) die("movie: AVC decoder allocation failed"); a->last_in = a->last_game = INT64_MIN; return a; }
+static void close_codec(mavc *a) { if (a->mc) { AMediaCodec_stop(a->mc); AMediaCodec_delete(a->mc); a->mc = NULL; } a->nin = a->nout = 0; a->eos_sent = 0; a->last_in = a->last_game = INT64_MIN; a->npmap = 0; }
 void mavc_drop(mavc *a) {
     for (int i = 0; i < a->nq; i++) free(a->q[i].nv12);
     a->nq = 0;
-    if (a->mc) { AMediaCodec_flush(a->mc); a->nin = a->nout = 0; a->eos_sent = 0; a->last_in = INT64_MIN; a->npmap = 0; }   // a seek: pictures in the codec belong to the old position
+    if (a->mc) { AMediaCodec_flush(a->mc); a->nin = a->nout = 0; a->eos_sent = 0; a->last_in = a->last_game = INT64_MIN; a->npmap = 0; }   // a seek: pictures in the codec belong to the old position
 }
 void mavc_free(mavc *a) { if (!a) return; mavc_drop(a); close_codec(a); free(a->au); free(a); }
 int mavc_queued(const mavc *a) { return a->nq; }
@@ -276,7 +284,7 @@ static void keep_picture(mavc *a, const uint8_t *src, size_t n, int64_t pts) {
         *uv++ = src[cbase+at]; *uv++ = src[vbase+at];
     }
     if (a->nq == QMAX) { if (!a->red++) LOG("[RED] movie: AVC picture queue full, dropping the oldest picture"); free(a->q[0].nv12); memmove(a->q, a->q + 1, --a->nq * sizeof a->q[0]); }
-    for (int m = 0; m < a->npmap; m++) if (a->pmap[m].c == pts) { pts = a->pmap[m].g; a->pmap[m] = a->pmap[--a->npmap]; break; }   // the game's own timestamp
+    pts = mavc_picture_time(a, pts);   // the game's own timestamp
     int k = a->nq; while (!a->synth && k > 0 && a->q[k - 1].pts > pts) { a->q[k] = a->q[k - 1]; k--; }
     a->q[k].nv12 = o; a->q[k].w = w; a->q[k].h = h; a->q[k].pts = pts;
     // Metadata travels with the picture through sorting and later format changes.
@@ -322,6 +330,30 @@ static ssize_t input_slot(mavc *a) {   // a free input buffer; while none is fre
     }
     return -1;
 }
+// the codec's time for a packet: the game's while the times increase, else the last one + 1 µs (with made-up timestamps the codec's own output order stands: synth, the queue is not sorted)
+static int64_t mavc_codec_time(mavc *a, int64_t pts_us) {
+    int64_t cpts = pts_us > a->last_in ? pts_us : a->last_in + 1;
+    if (cpts != pts_us) a->synth = 1;
+    a->last_in = cpts;
+    return cpts;
+}
+// the game's own time for a packet: it, unless it does not move (the same time as the packet before): then the made-up one, so that a player which advances its clock with the picture's time
+// (Catherine: Full Body's player stops feeding the decoder when the picture it shows does not move) sees a time that moves. A stream whose times do move keeps the game's own times: a stream with
+// B-frames sends its packets in decode order, so its times go down at each B-frame, and they must come back out as the game sent them
+static int64_t mavc_game_time(mavc *a, int64_t pts_us, int64_t cpts) {
+    int64_t g = pts_us == a->last_game ? cpts : pts_us;
+    a->last_game = pts_us;
+    return g;
+}
+// a packet's times: the codec's (what is queued), the game's own, and the map from the one to the other
+static int64_t mavc_map_time(mavc *a, int64_t pts_us) {
+    int64_t cpts = mavc_codec_time(a, pts_us);
+    int64_t g = mavc_game_time(a, pts_us, cpts);
+    if (a->npmap == 64) a->pmap[0] = a->pmap[--a->npmap];   // (outputs the codec never gave)
+    a->pmap[a->npmap].c = cpts; a->pmap[a->npmap].g = g; a->npmap++;
+    return cpts;
+}
+
 int mavc_decode(mavc *a, const uint8_t *p, int n, int64_t pts_us) {
     au_ctx c = {a, 0}; each_nal(p, (size_t)n, au_add, &c);
     if (!c.len) return 0;
@@ -331,9 +363,7 @@ int mavc_decode(mavc *a, const uint8_t *p, int n, int64_t pts_us) {
     size_t cap = 0; uint8_t *b = AMediaCodec_getInputBuffer(a->mc, (size_t)i, &cap);
     if (!b || cap < c.len) { if (!a->red++) LOG("[RED] movie: AVC access unit of %zu bytes does not fit MediaCodec's %zu-byte input buffer", c.len, cap); AMediaCodec_queueInputBuffer(a->mc, (size_t)i, 0, 0, (uint64_t)pts_us, 0); return -1; }
     memcpy(b, a->au, c.len);
-    int64_t cpts = pts_us > a->last_in ? pts_us : a->last_in + 1; if (cpts != pts_us) a->synth = 1; a->last_in = cpts;
-    if (a->npmap == 64) a->pmap[0] = a->pmap[--a->npmap];   // (outputs the codec never gave)
-    a->pmap[a->npmap].c = cpts; a->pmap[a->npmap].g = pts_us; a->npmap++;
+    int64_t cpts = mavc_map_time(a, pts_us);
     if (AMediaCodec_queueInputBuffer(a->mc, (size_t)i, 0, c.len, (uint64_t)cpts, 0) != AMEDIA_OK) { if (!a->red++) LOG("[RED] movie: MediaCodec refused an AVC access unit (first case)"); return -1; }
     a->nin++;
     drain(a, 0);
