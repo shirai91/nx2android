@@ -517,13 +517,13 @@ def main():
             binds, local, io = spirv_bindings(spv)
             shader_products.validate_bindings(binds, res)
             if k in handle_remaps: spv = remap_handles(spv, *handle_remaps[k])
-            # The bundle reads modules back from disk: a module the lowering passes or a handle remap changed gets its own file, or the translator's unlowered one would ship.
-            spv_path = Path(w) / f'{k}.spv'
-            if spv != translated:
-                spv_path = Path(w) / f'{k}.bundle.spv'; spv_path.write_bytes(spv)
             st = stages[k]
             cl = [classify(st, b, res) for b in binds]
             spv, cl = lower_resource_pools(spv, cl)
+            # The bundle reads modules back from disk: a module the lowering passes, a handle remap or the pool lowering changed gets its own file, or the translator's unlowered one would ship.
+            spv_path = Path(w) / f'{k}.spv'
+            if spv != translated:
+                spv_path = Path(w) / f'{k}.bundle.spv'; spv_path.write_bytes(spv)
             for e in cl: kinds_all[e['kind']] += 1
             # header words 2-4: a compute shader's local size; a vertex shader's input locations (all, signed int, unsigned int); a pixel shader's output locations
             hdr3 = (local or jobs[k].get('local') or [1, 1, 1]) if st == 'cs' else io[1] if st == 'vs' else io[3] if st == 'ps' else [0, 0, 0]
