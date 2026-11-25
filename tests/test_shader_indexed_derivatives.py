@@ -78,7 +78,7 @@ class IndexedDerivatives(unittest.TestCase):
         jobs = self.out / 'jobs.json'
         jobs.write_text(json.dumps([dict(key='quad', stage='vs' if kwargs.get('vertex') else 'fs',
                                          code=str(binary), tex={}, img={}, attr={}, fout={},
-                                         debug=False, reduced=True)]))
+                                         debug=False, reduced=True)]), encoding='utf-8')
         result = subprocess.run([self.dotnet, str(self.dll), str(jobs), str(self.out)],
                                 capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

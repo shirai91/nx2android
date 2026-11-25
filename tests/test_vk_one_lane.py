@@ -122,7 +122,7 @@ class OneLane(unittest.TestCase):
             raise unittest.SkipTest('a C compiler is needed for the one-invocation rewrite check')
         cls.tmp = tempfile.TemporaryDirectory(prefix='vk-one-lane-')
         cls.exe = Path(cls.tmp.name) / 'one_lane'
-        (Path(cls.tmp.name) / 'harness.c').write_text(HARNESS)
+        (Path(cls.tmp.name) / 'harness.c').write_text(HARNESS, encoding='utf-8')
         subprocess.run([cc, '-std=gnu11', '-Wall', '-Werror', '-o', str(cls.exe), str(Path(cls.tmp.name) / 'harness.c'), str(SOURCE)], check=True)
         cls.val = os.environ.get('SPIRV_VAL') or shutil.which('spirv-val')
 
