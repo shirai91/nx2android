@@ -57,7 +57,7 @@ typedef struct { NVNdevice *dev; samp_par p; } samp_builder_t;                  
 typedef struct { uint64_t magic; samp_par p; } samp_t;                                        FITS(samp_t, NVNsampler);
 _Static_assert(offsetof(samp_t, p) == 8, "sampler state must participate in opaque-object hashes");
 
-// The per-stage shader keys are not kept in prog_t: the game's real NVNprogram may be smaller than the header's 0xC0 (growing prog_t corrupted the adjacent object in Mario); see prog_keys in hle_nvn.c
+// The per-stage shader keys are not kept in prog_t: the game's real NVNprogram may be smaller than the header's 0xC0 (growing prog_t corrupted the adjacent object in Mario); see pk_rec in hle_nvn.c
 typedef struct { uint32_t magic, nstage; NVNshaderData sd[6]; uint64_t serial; } prog_t;     FITS(prog_t, NVNprogram);   // serial: table key for the replay layer's resolved result
 
 typedef struct { uint32_t magic, fenced; uint64_t fence; } sync_t;                            FITS(sync_t, NVNsync);
@@ -232,7 +232,8 @@ void mtl_tex_cpu_written(const tex_t *t);
 int mtl_tex_gpu_owned(uint64_t serial);                                  // its host texture is a render target or shader-writable: GPU content, never re-uploaded from guest memory
 // A program's per-stage shader key (hle_nvn.c): the first 8 bytes of sha256(first 0x880 bytes of the control section (its own length when shorter) + code area). Computed at SetShaders (NVN lets the caller free the control section once it returns, and Unity does);
 // a stage whose code area was not yet in any memory pool then is computed the first time it is asked for, from the host's copy of its control section. The keys belong to
-// the program's serial, so a copy of the NVNprogram the game made after SetShaders finds them (Unity does: Ori and the Will of the Wisps). Returns 0 = no such stage
+// the program's serial, so a copy of the NVNprogram the game made after SetShaders finds them (Unity does: Ori and the Will of the Wisps). hle_nvn.c keeps the
+// keys of at most 16384 programs, dropping those of the program bound least recently. Returns 0 = no such stage
 int prog_key(const prog_t *p, unsigned stage, uint8_t key[8]);
 void mtl_reg_samp(int id, const samp_par *p);
 void mtl_prog_release(prog_t *p);

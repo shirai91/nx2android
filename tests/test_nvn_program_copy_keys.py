@@ -1,14 +1,20 @@
-"""A copy of an NVNprogram made after SetShaders finds the stage keys SetShaders computed (hle_nvn.c pk_get by prog_t.serial).
+"""A copy of an NVNprogram made after SetShaders finds the stage keys SetShaders computed (hle_nvn.c pk_rec, found by prog_t.serial), and the table of them is bounded.
 
 Unity copies an NVNprogram after SetShaders and draws with the copy (Ori and the Will of the Wisps 1.2.1): looked up by the program's address, the copy had no
 record, so its stages were keyed at the first draw from control sections Unity had freed. On a POCO X3 Pro the run logged 142 "[RED] shader ... is not in the
 bundle" keys, none of them in the game's 53,678 Unity shader stages, skipped the draws into the window texture and showed a black screen with sound.
 
-The harness compiles hle_nvn.c's program functions as they are (pk_get, keys_hash, prog_key, nvnProgramSetShaders, nvnProgramFinalize), with a stand-in hash and
-dictionary in place of CommonCrypto and CoreFoundation. It runs where tests/host_cc.py's posix() builds (macOS and Linux; the Windows runner's MinGW is
-skipped, as for the other NVN harnesses), and checks: a copy gets the key of the original; a stage whose code was in no pool at SetShaders is keyed later from
-the host's copy of its control section, not from the game's freed one; Finalize does not drop the keys a copy still needs; a new SetShaders gives a new record.
+A record is not dropped at Finalize (a copy can outlive the program it came from), so the table holds at most PK_CAP records and a new one takes the place of
+the program bound least recently; a stage keyed late holds a host copy of its control section only until its first bind.
+
+The harness compiles hle_nvn.c's program functions as they are (keys_hash, prog_key, the pk_* table, nvnProgramSetShaders, nvnProgramFinalize), with a
+stand-in hash in place of CommonCrypto and LOG on stdout. It runs where tests/host_cc.py's posix() builds (macOS and Linux; the Windows runner's MinGW
+is skipped, as for the other NVN harnesses), and checks: a copy gets the key of the original; a stage whose code was in no pool at SetShaders is keyed later
+from the host's copy of its control section, not from the game's freed one, and that copy is freed then; Finalize does not drop the keys a copy still needs;
+a new SetShaders gives a new record; many SetShaders keep the table at PK_CAP records, drop the program bound least recently and never one bound often, free
+a dropped record's control copies, and the counter line logs the live counts.
 """
+import re
 import subprocess
 import tempfile
 import unittest
@@ -16,6 +22,9 @@ from pathlib import Path
 
 import csrc
 from host_cc import posix
+
+COUNTER = re.compile(r'\[nvn\] program keys: (\d+) SetShaders so far, (\d+) records kept \(at most (\d+)\), (\d+) control section copies waiting for their '
+                     r'code \((\d+) KB at most\), (\d+) records dropped, (\d+) bound again after \(frame (\d+)\)')
 
 HARNESS_HEAD = r'''
 #include <assert.h>
@@ -27,8 +36,9 @@ HARNESS_HEAD = r'''
 #include "nvn_obj.h"
 
 #define NVN(name, ret, ...) static ret h_##name(__VA_ARGS__)
-#define LOG(...) ((void)0)
+#define LOG(...) (printf(__VA_ARGS__), putchar('\n'))   // on stdout, where the test reads the counter lines
 #define OLOG(...) ((void)0)
+uint64_t dm_nvn_frame_count(void) { return 7; }
 uint64_t nvn_new_serial(void) { static uint64_t n; return ++n; }
 static int g_released;
 void mtl_prog_release(prog_t *p) { (void)p; g_released++; }
@@ -43,16 +53,6 @@ static void CC_SHA256_Init(CC_SHA256_CTX *c) { c->h = 1469598103934665603ull; }
 static void CC_SHA256_Update(CC_SHA256_CTX *c, const void *d, size_t n) { const uint8_t *b = d; for (size_t i = 0; i < n; i++) c->h = (c->h ^ b[i]) * 1099511628211ull; }
 static void CC_SHA256_Final(uint8_t *md, CC_SHA256_CTX *c) { for (int i = 0; i < CC_SHA256_DIGEST_LENGTH; i++) md[i] = (uint8_t)(c->h >> (8 * (i & 7)) ^ (uint64_t)i); }
 
-// stand-in for CoreFoundation's pointer-keyed dictionary
-typedef struct { const void *k[4096]; const void *v[4096]; int n; } dict_t;
-typedef dict_t *CFMutableDictionaryRef;
-static CFMutableDictionaryRef CFDictionaryCreateMutable(void *a, int n, void *kc, void *vc) { (void)a; (void)n; (void)kc; (void)vc; return calloc(1, sizeof(dict_t)); }
-static const void *CFDictionaryGetValue(CFMutableDictionaryRef d, const void *k) { for (int i = 0; i < d->n; i++) if (d->k[i] == k) return d->v[i]; return NULL; }
-static void CFDictionarySetValue(CFMutableDictionaryRef d, const void *k, const void *v) {
-    for (int i = 0; i < d->n; i++) if (d->k[i] == k) { d->v[i] = v; return; }
-    assert(d->n < 4096); d->k[d->n] = k; d->v[d->n] = v; d->n++;
-}
-static void CFDictionaryRemoveValue(CFMutableDictionaryRef d, const void *k) { for (int i = 0; i < d->n; i++) if (d->k[i] == k) { d->n--; d->k[i] = d->k[d->n]; d->v[i] = d->v[d->n]; return; } }   // (the address-keyed table before the fix)
 '''
 
 HARNESS_TAIL = r'''
@@ -114,6 +114,45 @@ int main(int argc, char **argv) {
         assert(key_of((prog_t *)&a, 0) == w2);
         return 0;
     }
+    if (!strcmp(argv[1], "late_copy_freed_when_keyed")) {   // a stage keyed late holds a host copy of its control section until its first bind, then frees it
+        g_pool = 0;
+        NVNprogram a; h_nvnProgramInitialize(&a, NULL);
+        uint8_t *c0 = control(6), *c1 = control(7); uint64_t w0 = want_key(c0, code[0]), w1 = want_key(c1, code[1]);
+        NVNshaderData sd[2] = {{(uint64_t)(uintptr_t)code[0], c0}, {(uint64_t)(uintptr_t)code[1], c1}}; assert(h_nvnProgramSetShaders(&a, 2, sd));
+        scribble(c0); scribble(c1);
+        assert(g_pk_nctl == 2);
+        g_pool = (uintptr_t)code; g_pool_len = sizeof code;
+        assert(key_of((prog_t *)&a, 0) == w0 && g_pk_nctl == 1);
+        assert(key_of((prog_t *)&a, 1) == w1 && g_pk_nctl == 0);
+        assert(key_of((prog_t *)&a, 1) == w1 && key_of((prog_t *)&a, 0) == w0);   // kept in the record
+        return 0;
+    }
+    if (!strcmp(argv[1], "bounded")) {   // SetShaders 3 * PK_CAP times with distinct programs: the table stays at PK_CAP records
+        g_pool = (uintptr_t)code; g_pool_len = sizeof code;
+        NVNprogram hot, cold, late, tmp;
+        uint8_t *hot_c = control(8); uint64_t hot_w = want_key(hot_c, code[0]);   // serial 1, drawn now and then: never dropped
+        h_nvnProgramInitialize(&hot, NULL); NVNshaderData hs = {(uint64_t)(uintptr_t)code[0], hot_c}; assert(h_nvnProgramSetShaders(&hot, 1, &hs)); scribble(hot_c);
+        uint8_t *cold_c = control(9); uint64_t cold_w = want_key(cold_c, code[1]);   // serial 2, never drawn: the first to go; its control section stays the game's
+        h_nvnProgramInitialize(&cold, NULL); NVNshaderData cs = {(uint64_t)(uintptr_t)code[1], cold_c}; assert(h_nvnProgramSetShaders(&cold, 1, &cs));
+        g_pool = 0; uint8_t *late_c = control(10);   // serial 3, keyed late and never drawn: its control copy goes with its record
+        h_nvnProgramInitialize(&late, NULL); NVNshaderData ls = {(uint64_t)(uintptr_t)code[0], late_c}; assert(h_nvnProgramSetShaders(&late, 1, &ls)); scribble(late_c);
+        assert(g_pk_nctl == 1);
+        g_pool = (uintptr_t)code;
+        uint8_t *c = control(11); NVNshaderData ts = {(uint64_t)(uintptr_t)code[0], c};
+        const int total = 3 * PK_CAP;
+        for (int i = 0; i < total; i++) {
+            h_nvnProgramInitialize(&tmp, NULL); assert(h_nvnProgramSetShaders(&tmp, 1, &ts)); h_nvnProgramFinalize(&tmp);
+            if (i % 1000 == 0) assert(key_of((prog_t *)&hot, 0) == hot_w);
+            assert(g_pk_n <= PK_CAP);
+        }
+        assert(g_pk_n == PK_CAP && g_pk_sets == (unsigned)total + 3 && g_pk_dropped == (unsigned)total + 3 - PK_CAP);
+        assert(g_pk_nctl == 0);
+        assert(key_of((prog_t *)&hot, 0) == hot_w && g_pk_again == 0);
+        assert(key_of((prog_t *)&cold, 0) == cold_w && g_pk_again == 1);   // its record went: keyed again from its own control section, the game's
+        assert(g_pk_n == PK_CAP && g_pk_dropped == (unsigned)total + 4 - PK_CAP);
+        free(c); free(cold_c);
+        return 0;
+    }
     return 2;
 }
 '''
@@ -131,7 +170,7 @@ class NvnProgramCopyKeysTests(unittest.TestCase):
         c.write_text(HARNESS_HEAD + cut + HARNESS_TAIL, encoding='utf-8')
         nvn_dir = csrc.REPO / 'nxnative/dm/gfx/nvn'
         res = subprocess.run(
-            ['cc', '-std=gnu11', '-Wall', '-Wno-unused-function', '-Werror', f'-I{nvn_dir}', f'-I{nvn_dir / "include"}', str(c), '-pthread', '-o', str(cls.exe)],
+            ['cc', '-std=gnu11', '-O1', '-Wall', '-Wno-unused-function', '-Werror', f'-I{nvn_dir}', f'-I{nvn_dir / "include"}', str(c), '-pthread', '-o', str(cls.exe)],
             capture_output=True, text=True,
         )
         if res.returncode != 0:
@@ -143,11 +182,32 @@ class NvnProgramCopyKeysTests(unittest.TestCase):
         if hasattr(cls, '_tmp'):
             cls._tmp.cleanup()
 
+    def run_case(self, case):
+        res = subprocess.run([str(self.exe), case], capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        return res.stdout
+
     def test_scenarios(self):
-        for case in ('copy_after_set_shaders', 'keyed_later_from_host_copy', 'finalize_keeps_copy_keys', 'set_again_new_record'):
+        for case in ('copy_after_set_shaders', 'keyed_later_from_host_copy', 'finalize_keeps_copy_keys', 'set_again_new_record', 'late_copy_freed_when_keyed'):
             with self.subTest(case=case):
-                res = subprocess.run([str(self.exe), case], capture_output=True, text=True)
-                self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+                self.run_case(case)
+
+    def test_table_bounded_and_counted(self):
+        out = self.run_case('bounded')
+        cap = 16384
+        lines = COUNTER.findall(out)
+        # 3 programs set before the loop (serials 1-3), then 3 * cap: a line at the first SetShaders and every 1024th
+        self.assertEqual([int(m[0]) for m in lines], [1] + list(range(1024, 3 * cap + 3, 1024)))
+        for t, kept, most, copies, kb, dropped, again, frame in ((int(x) for x in m) for m in lines):
+            with self.subTest(t=t):
+                self.assertEqual((most, kept, dropped, again, frame), (cap, min(t, cap), max(0, t - cap), 0, 7))
+                self.assertEqual(copies, 1 if 3 <= t and t - cap < 2 else 0)   # serial 3's copy, until its record goes (the second one dropped)
+                self.assertEqual(kb, copies * 0x880 // 1024)
+        self.assertIn(f'[nvn] program key table full ({cap} records): a new record took the place of the program bound least recently (serial 2; '
+                      '1 records dropped so far, frame 7)', out)
+        self.assertIn('(serial 1025; 1024 records dropped so far, frame 7)', out)   # and every 1024th: serials 2, 3, 4, ... in turn, never serial 1, which is drawn
+        self.assertIn('[nvn] program serial 2 was bound with no key record (dropped when the table was full): keyed again from its own control sections, '
+                      'which the game may have freed (1 times so far, frame 7)', out)
 
 
 if __name__ == '__main__':

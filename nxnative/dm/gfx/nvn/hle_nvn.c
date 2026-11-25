@@ -656,20 +656,59 @@ NVN(nvnProgramInitialize, NVNboolean, NVNprogram *p, NVNdevice *d) {
     (void)d; memset(p, 0, sizeof(prog_t)); ((prog_t *)p)->magic = MAGIC('P', 'R', 'O', 'G'); return 1;
 }
 NVN(nvnProgramFinalize, void, NVNprogram *p) { mtl_prog_release((prog_t *)p); ((prog_t *)p)->magic = 0; }
-// A program's per-stage keys, one record per SetShaders, found by prog_t.serial (bit i of ok = stage i computed). A game may copy an NVNprogram after SetShaders and draw with
-// the copy, as on the console the struct holds the whole program: Unity does (Ori and the Will of the Wisps: about 140 single-stage programs a boot). The copy carries the
-// serial but not the address; looked up by address, a copy had no record, so its stages were keyed at the first draw from the control section, which the game had freed by
-// then: random keys, "[RED] shader ... is not in the bundle", draws skipped, the window texture never drawn and a black screen. A record stays as long as the process (64 bytes
-// and a table entry a SetShaders): a copy can outlive the program it was made from, and the host cannot see when the last copy goes. Adapted from seedds/nxnative e5f03403bf (MIT)
-typedef struct { uint8_t key[6][8]; uint8_t ok; } prog_keys_t;
-static pthread_mutex_t g_pk_mu = PTHREAD_MUTEX_INITIALIZER; static CFMutableDictionaryRef g_pk;   // serial → record
-static prog_keys_t *pk_get(uint64_t serial) {
-    pthread_mutex_lock(&g_pk_mu);
-    if (!g_pk) g_pk = CFDictionaryCreateMutable(NULL, 0, NULL, NULL);
-    prog_keys_t *k = (prog_keys_t *)CFDictionaryGetValue(g_pk, (const void *)(uintptr_t)serial);
-    if (!k) { k = calloc(1, sizeof *k); CFDictionarySetValue(g_pk, (const void *)(uintptr_t)serial, k); }
-    pthread_mutex_unlock(&g_pk_mu);
-    return k;
+// A program's per-stage keys, one record per SetShaders, found by prog_t.serial. A game may copy an NVNprogram after SetShaders and draw with the copy, as on the console the
+// struct holds the whole program: Unity does (Ori and the Will of the Wisps: about 140 single-stage programs a boot). The copy carries the serial but not the address; looked up
+// by address, a copy had no record, so its stages were keyed at the first draw from the control section, which the game had freed by then: random keys, "[RED] shader ... is not
+// in the bundle", draws skipped, the window texture never drawn and a black screen. A copy can outlive the program it was made from and the host cannot see when the last copy
+// goes, so Finalize does not drop a record (seedds/nxnative e5f03403bf, MIT, from which this is adapted, keeps every record for the life of the process). The table is bounded
+// instead: at most PK_CAP records of 128 bytes (2 MB), and when it is full a new record takes the place of the one whose program was bound least recently. A program bound again
+// after its record went is keyed from its own control sections, as before there was a table, and that is counted and logged, so a soak shows whether the bound was ever reached
+enum { PK_CAP = 16384, PK_NB = 4096 };   // records at most; hash buckets (serials are handed out in order, so their low bits spread them)
+typedef struct {
+    uint64_t serial; uint8_t key[6][8]; uint8_t ok;   // bit i of ok = stage i keyed
+    uint8_t *ctl[6];                                  // a host copy of stage i's control section while that stage waits for its code area (keyed at its first bind, then freed)
+    uint32_t hnext, prev, next;                       // the bucket's chain; the list by last bind, prev toward the one bound last (all index + 1, 0 = none)
+} pk_rec;
+static pthread_mutex_t g_pk_mu = PTHREAD_MUTEX_INITIALIZER;   // everything below
+static pk_rec g_pk[PK_CAP]; static uint32_t g_pk_bucket[PK_NB], g_pk_head, g_pk_tail, g_pk_n;   // head: bound last; tail: the next to go when the table is full
+static unsigned g_pk_sets, g_pk_nctl, g_pk_dropped, g_pk_again;   // SetShaders calls; control copies held; records dropped for new ones; programs bound again after their record went
+static pk_rec *pk_find(uint64_t serial) {
+    for (uint32_t i = g_pk_bucket[serial & (PK_NB - 1)]; i; i = g_pk[i - 1].hnext) if (g_pk[i - 1].serial == serial) return &g_pk[i - 1];
+    return NULL;
+}
+static void pk_unlink(pk_rec *r) {
+    if (r->prev) g_pk[r->prev - 1].next = r->next; else g_pk_head = r->next;
+    if (r->next) g_pk[r->next - 1].prev = r->prev; else g_pk_tail = r->prev;
+    r->prev = r->next = 0;
+}
+static void pk_front(pk_rec *r) {   // r's program was bound (or set) just now
+    uint32_t id = (uint32_t)(r - g_pk) + 1;
+    if (g_pk_head == id) return;
+    if (r->prev) pk_unlink(r);   // in the list: only the head has no prev
+    r->next = g_pk_head; if (g_pk_head) g_pk[g_pk_head - 1].prev = id; else g_pk_tail = id;
+    g_pk_head = id;
+}
+// A new, empty record for serial; *gone = the serial of the record it took the place of (the table was full), else left 0
+static pk_rec *pk_new(uint64_t serial, uint64_t *gone) {
+    pk_rec *r;
+    if (g_pk_n < PK_CAP) r = &g_pk[g_pk_n++];
+    else {
+        r = &g_pk[g_pk_tail - 1]; *gone = r->serial; pk_unlink(r);
+        uint32_t id = (uint32_t)(r - g_pk) + 1, *l = &g_pk_bucket[r->serial & (PK_NB - 1)];
+        while (*l != id) l = &g_pk[*l - 1].hnext;
+        *l = r->hnext;
+        for (int i = 0; i < 6; i++) if (r->ctl[i]) { free(r->ctl[i]); g_pk_nctl--; }
+        g_pk_dropped++;
+    }
+    uint32_t *b = &g_pk_bucket[serial & (PK_NB - 1)];
+    memset(r, 0, sizeof *r); r->serial = serial; r->hnext = *b; *b = (uint32_t)(r - g_pk) + 1;
+    pk_front(r);
+    return r;
+}
+uint64_t dm_nvn_frame_count(void);
+static void pk_log_gone(uint64_t gone, unsigned dropped) {   // the first record dropped and every 1024th
+    if (gone && (dropped == 1 || dropped % 1024 == 0))
+        LOG("[nvn] program key table full (%d records): a new record took the place of the program bound least recently (serial %llu; %u records dropped so far, frame %llu)", PK_CAP, (unsigned long long)gone, dropped, (unsigned long long)dm_nvn_frame_count());
 }
 // Set by a backend whose shaders are translated before the game runs (Android's Vulkan bundle, gfx_vk_shader.c): called at SetShaders for each stage whose key is known then, while the
 // control section is still the game's to read, so a shader whose code no game file holds can be saved and translated by the next port (Xenoblade Chronicles 3 sets hundreds)
@@ -692,10 +731,23 @@ static int keys_hash(const NVNshaderData *sd, int mapped, uint8_t out[8]) {
 }
 int prog_key(const prog_t *p, unsigned st, uint8_t key[8]) {
     if (st >= p->nstage) return 0;
-    if (!p->serial) return keys_hash(&p->sd[st], 0, key), 1;   // not set by SetShaders (the game wrote the struct itself): no record to keep the key in
-    prog_keys_t *k = pk_get(p->serial);   // also a program already Finalized (replayed after its Finalize under asynchronous replay): its record stays
-    if (!(k->ok >> st & 1)) { keys_hash(&p->sd[st], 0, k->key[st]); k->ok |= (uint8_t)(1u << st); }
-    memcpy(key, k->key[st], 8);
+    if (!p->serial) { if (!keys_hash(&p->sd[st], 0, key)) memset(key, 0, 8); return 1; }   // not set by SetShaders (the game wrote the struct itself): no record to keep the key in
+    // Also a program already Finalized (replayed after its Finalize under asynchronous replay, or a copy drawn after it): its record stays until the table is full
+    pthread_mutex_lock(&g_pk_mu);
+    pk_rec *r = pk_find(p->serial); uint64_t gone = 0; unsigned again = 0;
+    if (r) pk_front(r);
+    else { r = pk_new(p->serial, &gone); again = ++g_pk_again; }   // its record went for a newer one: keyed again from its own control sections (which the game may have freed)
+    if (!(r->ok >> st & 1)) {   // keyed at its first bind: from the host's copy of its control section when SetShaders made one (no control section: the key stays 0, no shader)
+        NVNshaderData s = p->sd[st]; if (r->ctl[st]) s.control = r->ctl[st];
+        keys_hash(&s, 0, r->key[st]); r->ok |= (uint8_t)(1u << st);
+        if (r->ctl[st]) { free(r->ctl[st]); r->ctl[st] = NULL; g_pk_nctl--; }
+    }
+    memcpy(key, r->key[st], 8);
+    unsigned dropped = g_pk_dropped;
+    pthread_mutex_unlock(&g_pk_mu);
+    pk_log_gone(gone, dropped);
+    if (again == 1 || (again && again % 1024 == 0))
+        LOG("[nvn] program serial %llu was bound with no key record (dropped when the table was full): keyed again from its own control sections, which the game may have freed (%u times so far, frame %llu)", (unsigned long long)p->serial, again, (unsigned long long)dm_nvn_frame_count());
     return 1;
 }
 NVN(nvnProgramSetShaders, NVNboolean, NVNprogram *p, int n, const NVNshaderData *sd) {
@@ -704,18 +756,30 @@ NVN(nvnProgramSetShaders, NVNboolean, NVNprogram *p, int n, const NVNshaderData 
     mtl_prog_release(o); o->nstage = n; memcpy(o->sd, sd, n * sizeof *sd); o->serial = nvn_new_serial();
     // The keys are computed here (see prog_key in nvn_obj.h): the control section is only guaranteed valid during this call; the code area lives in a memory pool and stays valid while the program is in use
     static int dump = -1; if (dump < 0) dump = getenv("DM_NVN_SHDUMP") != NULL;
-    prog_keys_t *k = pk_get(o->serial);   // a new serial: a new record
+    uint8_t key[6][8] = {{0}}, ok = 0; uint8_t *ctl[6] = {0};
     for (int i = 0; i < n; i++) {
-        if (keys_hash(&sd[i], 1, k->key[i])) k->ok |= (uint8_t)(1u << i);
-        if (g_nvn_on_shader && (k->ok >> i & 1)) { uint32_t ncode; memcpy(&ncode, (const uint8_t *)sd[i].control + 0x704, 4); g_nvn_on_shader(k->key[i], sd[i].control, sd[i].data, ncode); }
-        // A stage keyed later (its code area is in no memory pool yet) is keyed from the host's copy of its control section's key bytes, as NVN lets the game free its own once
-        // this call returns; DM_NVN_SHDUMP keeps a copy of every stage, for the replay layer to save shaders missing from the bundle (shader_dump writes 0x880 bytes, so the copy
-        // is 0x880 with the bytes past the section's own length zero). The program and its copies point at it, so it stays as long as the process, as the record does
-        if (sd[i].control && (dump || !(k->ok >> i & 1))) {
-            uint32_t nctl = 0x880, own; memcpy(&own, (const uint8_t *)sd[i].control + 0x20, 4); if (own >= 0x760 && own < 0x880) nctl = own;   // as keys_hash
-            uint8_t *c = calloc(1, 0x880); if (c) { memcpy(c, sd[i].control, nctl); o->sd[i].control = c; }
-        }
+        if (keys_hash(&sd[i], 1, key[i])) ok |= (uint8_t)(1u << i);
+        if (g_nvn_on_shader && (ok >> i & 1)) { uint32_t ncode; memcpy(&ncode, (const uint8_t *)sd[i].control + 0x704, 4); g_nvn_on_shader(key[i], sd[i].control, sd[i].data, ncode); }
+        // A stage keyed later (its code area is in no memory pool yet) is keyed at its first bind from a host copy of its control section's key bytes, as NVN lets the game free its
+        // own once this call returns: the record holds the copy and frees it then, or when the record goes. DM_NVN_SHDUMP points every stage at a copy of its own, for the replay
+        // layer to save shaders missing from the bundle (shader_dump writes 0x880 bytes, so that copy is 0x880 with the bytes past the section's own length zero), never freed
+        if (!sd[i].control || (!dump && (ok >> i & 1))) continue;
+        uint32_t nctl = 0x880, own; memcpy(&own, (const uint8_t *)sd[i].control + 0x20, 4); if (own >= 0x760 && own < 0x880) nctl = own;   // as keys_hash
+        uint8_t *c = calloc(1, dump ? 0x880 : nctl); if (!c) continue;
+        memcpy(c, sd[i].control, nctl);
+        if (dump) o->sd[i].control = c; else ctl[i] = c;
     }
+    pthread_mutex_lock(&g_pk_mu);
+    uint64_t gone = 0; pk_rec *r = pk_new(o->serial, &gone);   // a new serial: a new record
+    memcpy(r->key, key, sizeof key); r->ok = ok;
+    for (int i = 0; i < 6; i++) if ((r->ctl[i] = ctl[i])) g_pk_nctl++;
+    unsigned t = ++g_pk_sets, kept = g_pk_n, copies = g_pk_nctl, dropped = g_pk_dropped, again = g_pk_again;
+    pthread_mutex_unlock(&g_pk_mu);
+    pk_log_gone(gone, dropped);
+    // The table's size, at the first SetShaders and every 1024th: records and control copies are made here (a bind makes one only in place of a dropped one), so a soak's last line holds the most they reached
+    if (t == 1 || t % 1024 == 0)
+        LOG("[nvn] program keys: %u SetShaders so far, %u records kept (at most %d), %u control section copies waiting for their code (%u KB at most), %u records dropped, %u bound again after (frame %llu)",
+            t, kept, PK_CAP, copies, copies * 0x880u / 1024u, dropped, again, (unsigned long long)dm_nvn_frame_count());
     OLOG("ProgramSetShaders %p n=%d data0=%#llx", (void *)p, n, n ? (unsigned long long)sd[0].data : 0ull);
     return 1;
 }
