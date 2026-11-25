@@ -1081,9 +1081,19 @@ static void caller_chain_log(const char *e, const char *what, int w, int h, uint
 // `name` is the switch: each call site re-reads it every 4096 calls (so it can be set live) and reads the frame pointer only while it is set, so the
 // hot paths it sits on (viewports hundreds of times a frame, GPU timestamps) cost a counter and a test for every game
 #define CALLER_CHAIN_LOG(name, what, w, h) do { static const char *e_; static unsigned t_; if (!(t_++ & 4095)) e_ = getenv(name); if (e_) caller_chain_log(e_, what, (int)(w), (int)(h), (uint64_t)__builtin_return_address(0), (const uint64_t *)*(const uint64_t *)__builtin_frame_address(0)); } while (0)
+// The leading slots of a guest's range [first, first + n) that lie in a stage's table of `slots`: 0 for a stage beyond the six the replay keeps or a negative first or count
+// (SetViewports with first -1 passed the old check, first + n <= 16, and the replay wrote S.vp[-1]); computed without forming first + n, which a first near INT_MAX
+// overflows. st 0 for state without a stage. No game is known to pass such a range (seedds/nxnative 34608c72c)
+static inline int slots_fit(int st, int first, int n, int slots) { return (unsigned)st >= 6 || first < 0 || n < 0 || first >= slots ? 0 : n < slots - first ? n : slots - first; }
+// A bind whose range leaves its table binds the slots inside it (the replay dropped the others before, without a word): named in a red line
+static int slots_bound(const char *what, int st, int first, int n, int slots) {
+    int k = slots_fit(st, first, n, slots);
+    if (k != n) { static _Atomic int red; if (red++ < 16) LOG("[RED] %s stage %d first=%d n=%d: the host keeps %d slots a stage (6 stages), %d bound", what, st, first, n, slots, k); }
+    return k;
+}
 NVN(nvnCommandBufferSetViewports, void, NVNcommandBuffer *c, int first, int n, const float *v) {
     if (n > 0) CALLER_CHAIN_LOG("DM_NVN_VIEWPORT_CALLER", "viewport", v[2], v[3]);
-    if (n < 0 || first + n > 16) { LOG("[RED] SetViewports first=%d n=%d", first, n); return; }
+    if (slots_fit(0, first, n, 16) != n) { LOG("[RED] SetViewports first=%d n=%d", first, n); return; }
     p_viewports *r = REC(c, OP_VIEWPORTS, p_viewports); r->first = first; r->n = n;
     for (int i = 0; i < n; i++) memcpy(r->v[i], v + 4 * i, 16);
 }
@@ -1113,25 +1123,32 @@ NVN(nvnCommandBufferBindVertexStreamState, void, NVNcommandBuffer *c, int n, con
     p_bind_vstream *r = RECN(c, OP_BIND_VSTREAM, p_bind_vstream, st, n); r->first = 0; r->n = n; memcpy(r->st, st, 8 * n);
 }
 NVN(nvnCommandBufferBindVertexBuffers, void, NVNcommandBuffer *c, int first, int n, const NVNbufferRange *rg) {
-    if (n < 0 || first + n > 16) { LOG("[RED] BindVertexBuffers first=%d n=%d", first, n); return; }
+    if (slots_fit(0, first, n, 16) != n) { LOG("[RED] BindVertexBuffers first=%d n=%d", first, n); return; }
     p_bind_vbuf *r = RECN(c, OP_BIND_VBUF, p_bind_vbuf, r, n); r->first = first; r->n = n; memcpy(r->r, rg, sizeof *rg * n);
 }
 NVN(nvnCommandBufferBindUniformBuffer, void, NVNcommandBuffer *c, NVNshaderStage st, int i, NVNbufferAddress a, size_t n) {
+    if (!slots_bound("BindUniformBuffer", st, i, 1, 16)) return;
     *REC(c, OP_BIND_UBO, p_bind_buf) = (p_bind_buf){st, i, a, n};
 }
 NVN(nvnCommandBufferBindUniformBuffers, void, NVNcommandBuffer *c, NVNshaderStage st, int first, int n, const NVNbufferRange *rg) {
+    n = slots_bound("BindUniformBuffers", st, first, n, 16);
     for (int i = 0; i < n; i++) *REC(c, OP_BIND_UBO, p_bind_buf) = (p_bind_buf){st, first + i, rg[i].address, rg[i].size};
 }
 NVN(nvnCommandBufferBindStorageBuffer, void, NVNcommandBuffer *c, NVNshaderStage st, int i, NVNbufferAddress a, size_t n) {
+    if (!slots_bound("BindStorageBuffer", st, i, 1, 16)) return;   // the replay keeps 16 storage buffer slots a stage (NVN's limit)
     *REC(c, OP_BIND_SSBO, p_bind_buf) = (p_bind_buf){st, i, a, n};
 }
 NVN(nvnCommandBufferBindStorageBuffers, void, NVNcommandBuffer *c, NVNshaderStage st, int first, int n, const NVNbufferRange *rg) {
+    n = slots_bound("BindStorageBuffers", st, first, n, 16);
     for (int i = 0; i < n; i++) *REC(c, OP_BIND_SSBO, p_bind_buf) = (p_bind_buf){st, first + i, rg[i].address, rg[i].size};
 }
 // The backend's count of sampler registrations so far, kept with each texture / sampler bind (gfx_vk_tex.c: a bind sees the samplers as registered when it was recorded); 0 without one
 __attribute__((weak)) uint64_t mtl_samp_seq(void) { return 0; }
 static p_bind_handles *bind_handles(NVNcommandBuffer *c, int op, int st, int first, int n, const uint64_t *h) {
-    if (n < 0 || n > 32) { LOG("[RED] bind handle count %d", n); return NULL; }
+    if (n < 0 || n > 32) { LOG("[RED] bind handle count %d", n); return NULL; }   // a record holds 32
+    // the replay's tables: textures 0-255 (separate texture r at 128 + r), samplers 0-127, images 0-31
+    n = slots_bound(op == OP_BIND_SAMP ? "BindSamplers" : op == OP_BIND_IMG ? "BindImages" : "BindTextures", st, first, n, op == OP_BIND_SAMP ? 128 : op == OP_BIND_IMG ? 32 : 256);
+    if (!n) return NULL;
     p_bind_handles *r = RECN(c, op, p_bind_handles, h, n); r->stage = st; r->first = first; r->n = n; r->defer = 0; r->src = 0; r->sseq = mtl_samp_seq(); memcpy(r->h, h, 8 * n);
     {   // this command buffer may have bound a pool other than the first: move its IDs to that pool's part of the table (handle: texture ID in bits 0-19, sampler ID from bit 20)
         int tb = CB(c)->tex_base, sb = CB(c)->samp_base;
@@ -2610,6 +2627,7 @@ NVN(nvnCommandBufferCallCommands, void, NVNcommandBuffer *c, int n, const NVNcom
 // Combined texture handle (texture id | sampler id << 20) is recorded into the texture slot as is: the replay layer takes the texture from the low 20 bits and the sampler from the high bits (nvn_mtl.m NVN_RB_SAMPT)
 // One combined handle: recorded as the hardware lays the command out, the handle 16 bytes in, where Luigi's Mansion 3 patches it after recording (nvn_obj.h p_bind_tex1)
 NVN(nvnCommandBufferBindTexture, void, NVNcommandBuffer *c, NVNshaderStage st, int i, NVNtextureHandle h) {
+    if (!slots_bound("BindTexture", st, i, 1, 256)) return;
     p_bind_tex1 *r = REC(c, OP_BIND_TEX1, p_bind_tex1); *r = (p_bind_tex1){st, i, (uint64_t)h, CB(c)->tex_base, CB(c)->samp_base, mtl_samp_seq()};
 }
 _Static_assert(offsetof(p_bind_tex1, h) == 8, "a single texture bind keeps its handle 16 bytes into the record (8 of header)");
@@ -2781,7 +2799,7 @@ NVN(nvnCommandBufferSetDepthClamp, void, NVNcommandBuffer *c, uint32_t en) { REC
 // Absolum (FNA3D's NVN driver) keeps the lower-left window origin and sets viewport 0's swizzle every frame (NEGATIVE_Y: clip y negated, how a GL-heritage renderer flips its picture).
 // Ignored, its whole picture came out upside down. The replay applies it to the viewport (draw in nvn_mtl.m)
 NVN(nvnCommandBufferSetViewportSwizzles, void, NVNcommandBuffer *c, int first, int n, const NVNviewportSwizzle *s) {
-    if (n < 0 || first < 0 || first + n > 16) { LOG("[RED] SetViewportSwizzles first=%d n=%d", first, n); return; }
+    if (slots_fit(0, first, n, 16) != n) { LOG("[RED] SetViewportSwizzles first=%d n=%d", first, n); return; }
     p_vp_swizzle *r = REC(c, OP_VP_SWIZZLE, p_vp_swizzle); r->first = first; r->n = n;
     for (int i = 0; i < n; i++) for (int k = 0; k < 4; k++) r->sw[i][k] = (uint8_t)((s[4 * i + k] ^ 2 * k) & 7);
 }
