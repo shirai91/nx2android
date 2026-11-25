@@ -106,7 +106,7 @@ class UniformBounds(unittest.TestCase):
 
 def exporter():
     source = TOOLS / 'shader_vk.py'
-    tree = ast.parse(source.read_text())
+    tree = ast.parse(source.read_text(encoding='utf-8'))
     names = {'TEX_BASE', 'SSBO', 'CBSIZE_BANK', 'KIND', 'DESC', 'SAMP_NONE'}
     nodes = [n for n in tree.body if
              isinstance(n, ast.FunctionDef) and n.name in ('classify', 'refl_bin') or

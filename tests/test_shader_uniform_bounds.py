@@ -80,7 +80,7 @@ class TranslatorUniformBounds(unittest.TestCase):
         if shutil.which('spirv-val'):
             v = subprocess.run(['spirv-val', '--target-env', 'vulkan1.1', str(self.out / f'{key}.spv')], capture_output=True, text=True)
             self.assertEqual(v.returncode, 0, v.stdout + v.stderr)
-        res = json.loads((self.out / f'{key}.res.json').read_text())
+        res = json.loads((self.out / f'{key}.res.json').read_text(encoding='utf-8'))
         return instructions(spv), {c['slot']: c for c in res['cbufs']}
 
     def test_a_fixed_read_is_a_plain_load_counted_for_the_host(self):
