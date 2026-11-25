@@ -225,11 +225,13 @@ NVN(nvnMemoryPoolInitialize, NVNboolean, NVNmemoryPool *p, const NVNmemoryPoolBu
 }
 static void fl_add(const uint8_t *a, uint64_t n); static void fl_drop(const uint8_t *a, uint64_t n);   // flushed ranges, see nvn_flushed
 static void ft_drop(const uint8_t *a, uint64_t n);   // first-touch textures over a pool that goes, see ft_add
+static void hostseg_release(uintptr_t lo, uintptr_t hi);   // host-lent command segments that hang off a pool that goes, see hostseg_take
 // Under asynchronous replay the submissions queued before it are replayed first: they may still read the pool (Unicorn Overlord's skipped scenes freed theirs
 // right after submitting, and the replay then found its index buffers outside every pool and the command memory overwritten: a black screen, the sound going on)
 NVN(nvnMemoryPoolFinalize, void, NVNmemoryPool *p) { nvn_drain(); if (((pool_t *)p)->flags & 0x200 && ((pool_t *)p)->vp) vpool_release((pool_t *)p);
     if (((pool_t *)p)->mem && !(((pool_t *)p)->flags & 0x200)) {   // A virtual pool's storage is borrowed from a physical pool; do not unregister it
- nvn_dirty_remove_range(((pool_t *)p)->mem); replay_lock(); mtl_pool_del(((pool_t *)p)->mem); replay_unlock(); fl_drop(((pool_t *)p)->mem, ((pool_t *)p)->size); ft_drop(((pool_t *)p)->mem, ((pool_t *)p)->size); }
+ nvn_dirty_remove_range(((pool_t *)p)->mem); replay_lock(); mtl_pool_del(((pool_t *)p)->mem); replay_unlock(); fl_drop(((pool_t *)p)->mem, ((pool_t *)p)->size); ft_drop(((pool_t *)p)->mem, ((pool_t *)p)->size);
+ hostseg_release((uintptr_t)((pool_t *)p)->mem, (uintptr_t)((pool_t *)p)->mem + ((pool_t *)p)->size); }   // the lists recorded in its memory are dead with it, so are the segments lent to them
     replay_lock(); mtl_alias_drop_pool(p); replay_unlock(); ((pool_t *)p)->magic = 0; }
 static void ft_flush(const uint8_t *a, uint64_t n);
 NVN(nvnMemoryPoolFlushMappedRange, void, const NVNmemoryPool *p, ptrdiff_t off, size_t n) {   // see ft_add and nvn_flushed
@@ -866,6 +868,9 @@ static void cmd_new_segment(cmd_t *o, uint8_t *mem, size_t n) {
 // - A record that does not fit claims its position: Pokémon Legends: Z-A, Legends: Arceus and Violet grant 1 KB blocks, and a recording that opens with a 1,400-byte SET_RT overflows
 //   before it writes anything; the next recording given that block does the same, so only its attempt shows that the block was given out again (with writes alone, the 1 GB cap).
 // - The range is in the one segment the recording ran short in: a recording whose callback added memory elsewhere does not own the memory between its first segment and that one.
+// - The pool goes: a list recorded in a pool's memory dies with it, so nvnMemoryPoolFinalize frees the segments that hang off the pool's memory (after its drain: no queued
+//   submission still reads them). Memory the game never records in again (its command memory moved to another pool) would otherwise keep its segments up to HOSTSEG_CAP. A
+//   virtual pool's memory can be a physical pool's (MapVirtual), so only a physical pool going frees them.
 // Control-owned segments (below) hang off their 16-byte control anchor instead, and a control grant over the anchor frees them (AddControlMemory).
 // The segment pool grows on demand (SMBW opening course: many small command buffers each overflow once per frame, and the old fixed 64 segments × 1 MB ran out within 8 frames); abort only beyond HOSTSEG_CAP in total.
 // An empty command pool can still have guest control memory: reserve a distinct lifetime anchor per recording below, so any overflow has a real guest lifetime. Super Mario Odyssey's Wooded Kingdom
@@ -912,7 +917,8 @@ static uint8_t *hostseg_take(cmd_t *o, uint32_t sz) {
     return m;
 }
 static void hostseg_free(hostseg_t *s) { s->busy = 0; if (s->org_hi > s->org_lo) atomic_fetch_sub_explicit(&g_hostseg_held, 1, memory_order_relaxed); }
-// The game gives out control memory [lo, hi): control-owned segments whose anchor overlaps it are dead, reclaim them (command memory grants free nothing: see above)
+// The game gives out control memory [lo, hi) (AddControlMemory: control-owned segments whose anchor overlaps it are dead), or a pool over [lo, hi) goes (nvnMemoryPoolFinalize: the
+// lists recorded there are dead): reclaim the segments that hang off it (command memory grants free nothing: see above)
 static void hostseg_release(uintptr_t lo, uintptr_t hi) {
     pthread_mutex_lock(&g_hostseg_mu);
     for (int i = 0; i < g_nhostseg; i++) if (g_hostseg[i].busy && g_hostseg[i].org_hi > lo && g_hostseg[i].org_lo < hi) hostseg_free(&g_hostseg[i]);

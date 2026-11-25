@@ -13,28 +13,30 @@ ROOT = Path(__file__).resolve().parents[1]
 NVN = ROOT / 'nxnative/dm/gfx/nvn'
 
 
+def c_function(source, marker):
+    """The C function in source that starts at marker, up to its closing brace."""
+    start = source.index(marker)
+    body = source.index('{', start)
+    # Match braces outside comments/strings while retaining the original source.
+    tokens = re.finditer(r'//[^\n]*|/\*[\s\S]*?\*/|"(?:\\.|[^"\\])*"|[{}]', source[body:])
+    depth = 0
+    for token in tokens:
+        if token[0] == '{':
+            depth += 1
+        elif token[0] == '}':
+            depth -= 1
+            if not depth:
+                return source[start:body + token.end()]
+    raise AssertionError(marker)
+
+
 def harness():
     source = (NVN / 'hle_nvn.c').read_text(encoding='utf-8')
-
-    def function(marker):
-        start = source.index(marker)
-        body = source.index('{', start)
-        # Match braces outside comments/strings while retaining the original source.
-        tokens = re.finditer(r'//[^\n]*|/\*[\s\S]*?\*/|"(?:\\.|[^"\\])*"|[{}]', source[body:])
-        depth = 0
-        for token in tokens:
-            if token[0] == '{':
-                depth += 1
-            elif token[0] == '}':
-                depth -= 1
-                if not depth:
-                    return source[start:body + token.end()]
-        raise AssertionError(marker)
-
     funcs = [
         'static uint8_t *align8(', 'static void put_hdr(',
         'static uint8_t *cmd_own(', 'static void cmd_own_at(', 'static void cmd_own_close(',
-        'static void cmd_new_segment(', 'static uint8_t *hostseg_take(', 'static void hostseg_free(', 'static void hostseg_release(',
+        'static void cmd_new_segment(', 'static uint8_t *hostseg_take(', 'static void hostseg_free(',
+        'static void hostseg_release(uintptr_t lo, uintptr_t hi) {',
         'static void hostseg_written(const cmd_t *o, const uint8_t *p, uint64_t n) {',
         'NVN(nvnCommandBufferInitialize,', 'NVN(nvnCommandBufferFinalize,',
         'NVN(nvnCommandBufferAddCommandMemory,', 'NVN(nvnCommandBufferAddControlMemory,',
@@ -75,7 +77,7 @@ static void hostseg_written(const cmd_t *o, const uint8_t *p, uint64_t n);
     diagnostic = source.find('// CMDSTAT also measures recording-side', globals_start, globals_end)
     if diagnostic >= 0:
         globals_end = diagnostic
-    return pre + source[globals_start:globals_end] + '\n'.join(function(f) for f in funcs) + r'''
+    return pre + source[globals_start:globals_end] + '\n'.join(c_function(source, f) for f in funcs) + r'''
 static unsigned busy(void) { unsigned n=0; for (int i=0;i<g_nhostseg;i++) n+=g_hostseg[i].busy; return n; }
 static unsigned unknown(void) { unsigned n=0; for (int i=0;i<g_nhostseg;i++) n+=g_hostseg[i].busy && !g_hostseg[i].org_hi; return n; }
 static uint8_t *jump(uint8_t *p) { assert(((op_hdr *)p)->op==OP_JUMP); uint8_t *q; memcpy(&q,p+8,8); return q; }

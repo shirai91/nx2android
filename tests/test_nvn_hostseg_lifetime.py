@@ -3,8 +3,9 @@
 
 The harness compiles the real recording code from hle_nvn.c (cut out as in test_nvn_control_memory).
 A segment is freed when another recording writes over its list's guest bytes, or tries to write a
-record there that does not fit, never when command memory over it is only granted; and grants of 16
-bytes or more (Borderlands 3 grants 40 and 56) are recorded into the game's memory.
+record there that does not fit, or when the pool its list was recorded in is finalized, never when
+command memory over it is only granted; and grants of 16 bytes or more (Borderlands 3 grants 40 and
+56) are recorded into the game's memory.
 """
 from pathlib import Path
 import subprocess
@@ -12,7 +13,25 @@ import tempfile
 import unittest
 
 from host_cc import posix
-from test_nvn_control_memory import NVN, harness
+from test_nvn_control_memory import NVN, c_function, harness
+
+
+# nvnMemoryPoolFinalize from hle_nvn.c, with the pool bookkeeping it calls besides the host-lent segments stubbed out
+FINALIZE = r'''
+static void nvn_drain(void) {}
+static void vpool_release(pool_t *o) { (void)o; }
+static void nvn_dirty_remove_range(const void *mem) { (void)mem; }
+static void replay_lock(void) {}
+static void replay_unlock(void) {}
+static void mtl_pool_del(const void *mem) { (void)mem; }
+static void mtl_alias_drop_pool(const void *pool) { (void)pool; }
+static void fl_drop(const uint8_t *a, uint64_t n) { (void)a; (void)n; }
+static void ft_drop(const uint8_t *a, uint64_t n) { (void)a; (void)n; }
+'''
+
+
+def finalize():
+    return FINALIZE + c_function((NVN / 'hle_nvn.c').read_text(encoding='utf-8'), 'NVN(nvnMemoryPoolFinalize,') + '\n'
 
 
 CHECKS = r'''
@@ -153,10 +172,39 @@ static void small_grants(void) {   // bf93977b8
     EXPECT("20 bytes 4 off alignment hold a JUMP: the game's memory", (uintptr_t)(m + 8), (uintptr_t)CB(&tiny)->cur);
 }
 
+static void pool_goes(void) {
+    // A list overflowed out of a pool that the game then finalizes (it moved its command memory to another pool): nothing writes there again, the pool going frees its segment
+    static _Alignas(4096) uint8_t gone_mem[4096], live_mem[4096];
+    pool_t gone = { .magic = MAGIC('P', 'O', 'O', 'L'), .mem = gone_mem, .size = sizeof gone_mem }, live = { .magic = MAGIC('P', 'O', 'O', 'L'), .mem = live_mem, .size = sizeof live_mem };
+    pool_t virt = { .magic = MAGIC('P', 'O', 'O', 'L'), .flags = 0x200, .mem = live_mem, .size = sizeof live_mem };   // a virtual pool that MapVirtual pointed at live's memory
+    NVNcommandBuffer ca = {0}, cb = {0}, cx = {0};
+    h_nvnCommandBufferInitialize(&ca, NULL); h_nvnCommandBufferInitialize(&cb, NULL); h_nvnCommandBufferInitialize(&cx, NULL);
+    h_nvnCommandBufferAddCommandMemory(&ca, (NVNmemoryPool *)&gone, 512, 64); rec_list(&ca, 0, 0, 0xa);
+    h_nvnCommandBufferAddCommandMemory(&cb, (NVNmemoryPool *)&live, 512, 64); NVNcommandHandle hb = rec_list(&cb, 0, 0, 0xb);
+    int a = seg_of((uintptr_t)(gone_mem + 512)), b = seg_of((uintptr_t)(live_mem + 512));
+    EXPECT("a list in the pool that goes holds a segment", 1, a >= 0);
+    EXPECT("a list in a pool that stays holds a segment", 1, b >= 0);
+    h_nvnMemoryPoolFinalize((NVNmemoryPool *)&virt);
+    EXPECT("a virtual pool going frees nothing in the physical pool's memory", 1, b >= 0 && g_hostseg[b].busy);
+    h_nvnMemoryPoolFinalize((NVNmemoryPool *)&gone);
+    EXPECT("the pool going frees the segment of its list", 0, a >= 0 ? g_hostseg[a].busy : -1);
+    EXPECT("and keeps the segment of a list in another pool", 1, b >= 0 && g_hostseg[b].busy);
+    EXPECT("whose list replays whole", NB, list_ok(hb, 0xb));
+    int nseg = g_nhostseg;
+    h_nvnCommandBufferAddCommandMemory(&ca, (NVNmemoryPool *)&live, 2048, 64); NVNcommandHandle hc = rec_list(&ca, 0, 0, 0xc);
+    EXPECT("the next overflow takes the freed segment: no new one", nseg, g_nhostseg);
+    EXPECT("and it does not disturb the live list", NB, list_ok(hb, 0xb));
+    EXPECT("the new list replays whole", NB, list_ok(hc, 0xc));
+    // retire this case's lists
+    h_nvnCommandBufferAddCommandMemory(&cx, (NVNmemoryPool *)&live, 512, 64); h_nvnCommandBufferBeginRecording(&cx); h_nvnCommandBufferEndRecording(&cx);
+    h_nvnCommandBufferAddCommandMemory(&cx, (NVNmemoryPool *)&live, 2048, 64); h_nvnCommandBufferBeginRecording(&cx); h_nvnCommandBufferEndRecording(&cx);
+}
+
 int main(void) {
     grant_is_no_write(); printf("grant is no write: %d busy of %d\n", busy_n(), g_nhostseg);
     record_that_does_not_fit(); printf("record that does not fit: %d busy of %d\n", busy_n(), g_nhostseg);
     small_grants(); printf("small grants: %d busy of %d\n", busy_n(), g_nhostseg);
+    pool_goes(); printf("pool goes: %d busy of %d\n", busy_n(), g_nhostseg);
     if (failed) { printf("%d checks failed\n", failed); return 1; }
     puts("host-lent segment lifetime: PASS"); return 0;
 }
@@ -169,7 +217,7 @@ class HostSegmentLifetime(unittest.TestCase):
         prefix = harness().split('static unsigned busy(void)')[0]
         with tempfile.TemporaryDirectory(prefix='nx2a-hostseg-lifetime-') as tmp:
             c, exe = Path(tmp)/'check.c', Path(tmp)/'check'
-            c.write_text(prefix + CHECKS, encoding='utf-8')
+            c.write_text(prefix + finalize() + CHECKS, encoding='utf-8')
             # -fno-strict-aliasing as in the Android build (nxnative/dm/android/build.py): hle_nvn.c writes its cmd_t over the opaque NVNcommandBuffer
             subprocess.run(['cc', '-std=gnu11', '-O1', '-g', '-fno-strict-aliasing', '-Wall', '-Wextra', '-Wno-unused-variable',
                             '-Wno-unused-function', '-Wno-unused-parameter', '-I', str(NVN), '-I', str(NVN/'include'), str(c),
