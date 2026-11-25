@@ -23,9 +23,15 @@ class AVCPictureTime(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         source = (ROOT / 'nxnative/dm/android/movie_avc.c').read_text(encoding='utf-8')
-        at = source.index('static int64_t mavc_codec_time(')
-        last = source.index('static int64_t mavc_map_time(')
-        production = source[at:source.index('\n}', last) + 2]
+
+        def cut(first, last=None):
+            """The production functions' text: from the first one's line to the end of the last one's"""
+            at = source.index(first)
+            end = source.index('\n}', source.index(last, at) if last else at) + 2
+            return source[at:end]
+
+        # the picture's time (the output side, with keep_picture) and the packet's times (the input side, with mavc_decode)
+        production = cut('static int64_t mavc_picture_time(') + cut('static int64_t mavc_codec_time(', 'static int64_t mavc_map_time(')
         code = r'''
 #include <assert.h>
 #include <stdint.h>

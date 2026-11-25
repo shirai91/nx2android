@@ -151,32 +151,9 @@ static unsigned sps_color_flags(const uint8_t *nal, size_t n) {
     return b.bad || b.bit != b.end ? 0 : flags;
 }
 
-// the codec's time for a packet: the game's while the times increase, else the last one + 1 µs (with made-up timestamps the codec's own output order stands: synth, the queue is not sorted)
-static int64_t mavc_codec_time(mavc *a, int64_t pts_us) {
-    int64_t cpts = pts_us > a->last_in ? pts_us : a->last_in + 1;
-    if (cpts != pts_us) a->synth = 1;
-    a->last_in = cpts;
-    return cpts;
-}
-// the game's own time for a packet: it, unless it does not move (the same time as the packet before): then the made-up one, so that a player which advances its clock with the picture's time
-// (Catherine: Full Body's player stops feeding the decoder when the picture it shows does not move) sees a time that moves. A stream whose times do move keeps the game's own times: a stream with
-// B-frames sends its packets in decode order, so its times go down at each B-frame, and they must come back out as the game sent them
-static int64_t mavc_game_time(mavc *a, int64_t pts_us, int64_t cpts) {
-    int64_t g = pts_us == a->last_game ? cpts : pts_us;
-    a->last_game = pts_us;
-    return g;
-}
 // the picture's time: the game's own, as the packet's entry mapped it
 static int64_t mavc_picture_time(mavc *a, int64_t cpts) {
     for (int m = 0; m < a->npmap; m++) if (a->pmap[m].c == cpts) { int64_t g = a->pmap[m].g; a->pmap[m] = a->pmap[--a->npmap]; return g; }
-    return cpts;
-}
-// a packet's times: the codec's (what is queued), the game's own, and the map from the one to the other
-static int64_t mavc_map_time(mavc *a, int64_t pts_us) {
-    int64_t cpts = mavc_codec_time(a, pts_us);
-    int64_t g = mavc_game_time(a, pts_us, cpts);
-    if (a->npmap == 64) a->pmap[0] = a->pmap[--a->npmap];   // (outputs the codec never gave)
-    a->pmap[a->npmap].c = cpts; a->pmap[a->npmap].g = g; a->npmap++;
     return cpts;
 }
 
@@ -353,6 +330,30 @@ static ssize_t input_slot(mavc *a) {   // a free input buffer; while none is fre
     }
     return -1;
 }
+// the codec's time for a packet: the game's while the times increase, else the last one + 1 µs (with made-up timestamps the codec's own output order stands: synth, the queue is not sorted)
+static int64_t mavc_codec_time(mavc *a, int64_t pts_us) {
+    int64_t cpts = pts_us > a->last_in ? pts_us : a->last_in + 1;
+    if (cpts != pts_us) a->synth = 1;
+    a->last_in = cpts;
+    return cpts;
+}
+// the game's own time for a packet: it, unless it does not move (the same time as the packet before): then the made-up one, so that a player which advances its clock with the picture's time
+// (Catherine: Full Body's player stops feeding the decoder when the picture it shows does not move) sees a time that moves. A stream whose times do move keeps the game's own times: a stream with
+// B-frames sends its packets in decode order, so its times go down at each B-frame, and they must come back out as the game sent them
+static int64_t mavc_game_time(mavc *a, int64_t pts_us, int64_t cpts) {
+    int64_t g = pts_us == a->last_game ? cpts : pts_us;
+    a->last_game = pts_us;
+    return g;
+}
+// a packet's times: the codec's (what is queued), the game's own, and the map from the one to the other
+static int64_t mavc_map_time(mavc *a, int64_t pts_us) {
+    int64_t cpts = mavc_codec_time(a, pts_us);
+    int64_t g = mavc_game_time(a, pts_us, cpts);
+    if (a->npmap == 64) a->pmap[0] = a->pmap[--a->npmap];   // (outputs the codec never gave)
+    a->pmap[a->npmap].c = cpts; a->pmap[a->npmap].g = g; a->npmap++;
+    return cpts;
+}
+
 int mavc_decode(mavc *a, const uint8_t *p, int n, int64_t pts_us) {
     au_ctx c = {a, 0}; each_nal(p, (size_t)n, au_add, &c);
     if (!c.len) return 0;
