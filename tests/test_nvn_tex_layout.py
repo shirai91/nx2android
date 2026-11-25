@@ -1,0 +1,41 @@
+"""NVN texture layout (nvn_tex.c) and the CPU block-linear copies (nvn_deswizzle.c) through nxnative's own C tests.
+
+t_tex checks the layout's sizes and the deswizzle (round trips, hand-computed addresses). Plain C.
+"""
+from pathlib import Path
+import os
+import shutil
+import subprocess
+import tempfile
+import unittest
+
+import host_cc
+
+ROOT = Path(__file__).resolve().parents[1]
+GFX = ROOT / 'nxnative/dm/gfx'
+TEX_SOURCES = [GFX / 'tex/nvn_deswizzle.c', GFX / 'nvn/nvn_tex.c']
+
+
+@unittest.skipUnless(shutil.which('cc'), 'a host C compiler is required')
+class NvnTexLayout(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory(prefix='nx2a-nvn-tex-layout-')
+        cls.addClassCleanup(cls.tmp.cleanup)
+
+    def run_c(self, name, main):
+        exe = Path(self.tmp.name) / (name + ('.exe' if os.name == 'nt' else ''))
+        sanitize = ['-fsanitize=undefined', '-fno-sanitize-recover=all'] if host_cc.ubsan() else []
+        subprocess.run(['cc', '-std=gnu11', '-O1', '-Wall', *sanitize, str(main), *map(str, TEX_SOURCES), '-lm', '-o', str(exe)],
+                       check=True, capture_output=True, text=True)
+        r = subprocess.run([str(exe)], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=600)
+        self.assertEqual(r.returncode, 0, r.stdout[-4000:] + r.stderr[-2000:])
+        return r.stdout
+
+    def test_deswizzle(self):
+        out = self.run_c('t_tex', GFX / 'tex/tests/t_tex.c')
+        self.assertIn('all passed', out)
+
+
+if __name__ == '__main__':
+    unittest.main()

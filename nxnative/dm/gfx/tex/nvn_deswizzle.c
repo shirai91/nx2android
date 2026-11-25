@@ -28,7 +28,7 @@ static uint32_t mip(uint32_t s, unsigned l) { s >>= l; return s ? s : 1; }
 // Geometry of this level: width-in-blocks byte count, block row count, slice count, and where this level and layer starts in storage; returns -1 for unsupported textures
 int nvn_deswizzle_geom(const nvn_texdesc *d, unsigned level, unsigned layer,
                        uint32_t *row_bytes, uint32_t *rows, uint32_t *slices, uint64_t *base, unsigned *th, unsigned *td, uint32_t *bpb) {
-    if (d->target == 5 || d->target == 6 || d->target == 10 || (d->flags & 0x10) || d->samples > 1) return -1;   // MS / BUFFER / LINEAR
+    if (d->target == 5 || d->target == 6 || d->target == 10 || (d->flags & 0x50) || d->samples > 1) return -1;   // MS / BUFFER / LINEAR / LINEAR_RENDER_TARGET
     int bw, bh; *bpb = (uint32_t)nvn_fmt_bpb(d->format, &bw, &bh);
     if (!*bpb || level >= (d->levels ? d->levels : 1)) return -1;
     nvn_texlayout L; nvn_tex_layout(d, &L);
