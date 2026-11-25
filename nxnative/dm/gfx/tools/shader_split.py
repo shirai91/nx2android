@@ -319,7 +319,9 @@ def linkdata_jobs(path, rel, parts=64):
     ranges of about equal stored size, one scan job each. → [(path, rel, (first entry, end entry)), …], or None when there is no index beside the file"""
     idx = os.path.join(os.path.dirname(path), 'DATA0.bin')
     if os.path.basename(path) != 'DATA1.bin' or not os.path.exists(idx): return None
-    n = os.path.getsize(idx) // 32; step = os.path.getsize(path) / parts; jobs, lo = [], 0
+    size = os.path.getsize(path)
+    if not size: return None   # an empty DATA1.bin: a DLC patch with no data of its own (its index entries are empty too), nothing to read
+    n = os.path.getsize(idx) // 32; step = size / parts; jobs, lo = [], 0
     with open(idx, 'rb') as f: ents = [struct.unpack('<QQQQ', f.read(32)) for _ in range(n)]
     for i in range(1, n + 1):
         if i == n or ents[i][0] >= (len(jobs) + 1) * step: jobs.append((path, rel, (lo, i))); lo = i
@@ -327,6 +329,7 @@ def linkdata_jobs(path, rel, parts=64):
 
 def linkdata_shaders(path, rel, rng, out):
     import mmap
+    if not os.path.getsize(path): return   # an empty DATA1.bin: nothing to read
     with open(os.path.join(os.path.dirname(path), 'DATA0.bin'), 'rb') as f: idx = f.read()
     with open(path, 'rb') as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as d:
         for i in range(*rng):
