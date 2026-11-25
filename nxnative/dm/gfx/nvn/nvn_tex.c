@@ -112,11 +112,12 @@ void nvn_tex_layout(const nvn_texdesc *d, nvn_texlayout *o) {
         o->align = t.bpb == 12 ? 4 : t.bpb; return;
     }
     // LINEAR_RENDER_TARGET (0x40) is linear by itself. Persona 5 Royal creates a 16x16 RGBA8 target with flags 0x44 and stride 128; block-linear sizing
-    // returned 1024 instead of 2048 bytes and tripped its surface-memory assertion
+    // returned 1024 instead of 2048 bytes and tripped its surface-memory assertion. Linear storage counts pixel rows, also for block-compressed formats: a linear BC1 64x64
+    // texture with stride 128 takes 8192 bytes, not 2048 (found by digitalhivehub against the original NVN driver, nxnative PR #11, and taken from MacNativeGames 3c482a7)
     if (d->flags & 0x50) {                                            // LINEAR or LINEAR_RENDER_TARGET: row pitch = stride or aligned to 32 (128)
         o->align = (d->flags & 0x40) ? 128 : 32;
         uint32_t stride = d->stride ? d->stride : (t.bpb * blk(w, t.bw) + o->align - 1) & ~(o->align - 1);
-        o->layer_size = o->size = (uint64_t)stride * blk(h, t.bh);
+        o->layer_size = o->size = (uint64_t)stride * h;               // the driver counts pixel rows, also for block-compressed formats
         return;
     }
     unsigned tileH = 0, tileD = 0;

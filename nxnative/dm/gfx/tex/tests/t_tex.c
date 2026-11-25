@@ -67,6 +67,18 @@ int main(void) {
         CHECK(L.size == 1024 && L.align == 32, "L ordinary linear texture keeps 32-byte alignment");
         d.flags = 0x44; d.stride = 256; nvn_tex_layout(&d, &L);
         CHECK(L.size == 4096, "L explicit padded stride must be preserved");
+        // the original NVN driver's linear shapes (digitalhivehub, nxnative PR #11): stride times pixel rows, also for block-compressed formats
+        static const struct { int format, flags; uint32_t w, h, stride; uint64_t size; unsigned align; } drv[] = {
+            {0x25, 0x40, 260, 260, 1152, 299520, 128},   // linear render target RGBA8 260x260
+            {0x25, 0x40, 1, 1, 128, 128, 128},           // linear render target RGBA8 1x1
+            {0x42, 0x10, 64, 64, 128, 8192, 32},         // linear BC1 64x64: 64 pixel rows, not 16 block rows
+        };
+        for (unsigned i = 0; i < sizeof drv / sizeof *drv; i++) {
+            nvn_texdesc e = {1, drv[i].format, drv[i].flags, 0, drv[i].w, drv[i].h, 1, 1, drv[i].stride, 0}; nvn_tex_layout(&e, &L);
+            CHECK(L.size == drv[i].size && L.layer_size == drv[i].size && L.align == drv[i].align && !L.tileH && !L.tileD,
+                  "L driver shape %ux%u format %#x flags %#x stride %u: storage %llu alignment %u block %u/%u, expected %llu / %u / 0/0", drv[i].w, drv[i].h,
+                  drv[i].format, drv[i].flags, drv[i].stride, (unsigned long long)L.size, L.align, L.tileH, L.tileD, (unsigned long long)drv[i].size, drv[i].align);
+        }
     }
     printf("A round trip (random data, non-power-of-2 sizes)\n");
     roundtrip("2D 100×37 R8 4 levels", 1, 0x01, 100, 37, 1, 4);
