@@ -98,3 +98,26 @@ def stored(data):
     for o, a in ins:
         if o == 124 and a[2] in consts: consts[a[1]] = consts[a[2]]               # OpBitcast of a constant
     return [consts.get(a[1]) for o, a in ins if o == 62 and a[0] in ptrs]
+
+
+def call_args(data):
+    """the arguments of each OpFunctionCall, as the constants stored into its argument variables (None where not a constant)"""
+    ins = instructions(data)
+    consts = {a[1]: a[2] for o, a in ins if o == 43 and len(a) == 3}
+    last, calls = {}, []
+    for o, a in ins:
+        if o == 62: last[a[0]] = consts.get(a[1])
+        elif o == 57: calls.append([last.get(p) for p in a[3:]])
+    return calls
+
+
+_TABLE = {}
+
+
+def base(name):
+    """the fixed bits of an instruction, from the decoder's InstTable.cs"""
+    import re
+    if not _TABLE: _TABLE['src'] = (ROOT / 'nxnative/dm/third_party/ryujinx/src/Ryujinx.Graphics.Shader/Decoders/InstTable.cs').read_text()
+    found = re.search(r'Add\("([01x]{64})", InstName\.' + name + r'\s*,', _TABLE['src'])
+    if not found: raise AssertionError(f'{name} is not in InstTable.cs')
+    return int(found[1].replace('x', '0'), 2)
