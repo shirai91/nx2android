@@ -12,6 +12,7 @@ class TextureFormatAliases(unittest.TestCase):
             return src[src.index(start):src.index(end,src.index(start))]
         code=code.replace('/* CACHE KEYS */',part('static NVNformat texture_backing_format(', '// The sRGB / UNORM twin'))
         code=code.replace('/* CACHE LIFETIME */',part('enum { EVICT_KEEP', 'static vkimg_t *vk_tex_(const tex_t *t);'))
+        code=code.replace('/* CONTENT KIND */',part('enum { TEX_CONTENT_NONE', 'static int cpu_content_tex('))
         code=code.replace('/* LOOKUP */',part('static vkimg_t *vk_tex_(const tex_t *t) {', '// Packaged textures give up'))
         code=code.replace('/* DROP POOL */',part('void vk_tex_drop_pool(', '// CPU-written textures'))
         self.run_c(code)

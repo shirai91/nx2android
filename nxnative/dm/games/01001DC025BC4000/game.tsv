@@ -1,0 +1,47 @@
+# Game profile of Toy Story 3 Complete Edition (Switch, update v196608 = 1.0.3). Plays on a Galaxy S23 Ultra (Android 17, Adreno 740):
+# the publisher logos, the opening movie, the first level (Woody's Roundup town, Bullseye, Hamm), a mission, the game's save and the
+# pause menu, at 30 fps as on the Switch.
+# Format: see dm/games/README.md
+# Digital Eclipse's Octane engine on NVN, SDK 21.4.4, restored from Avalanche's 2010 source: modules main + sdk; FMOD (its own AudioOut)
+# beside the SDK's audio renderer, Bink movies. The RomFS keeps its assets in 1,903 Octane zips (end-of-central-directory record first,
+# CRCs zero), and the 3,070 NVN shaders are in the .tfx effects of assets/effects/fx_new.zip beside the PC build's D3D9 bytecode
+# (shader_split.py octane_members / octane_shaders). The skinned characters fetch their bone indices as R8G8B8A8_USCALED (D3D9 UBYTE4),
+# which the Adreno 740 cannot fetch: with DM_VK_SCALED_FETCH=1 (android.tsv) the host fetches them as UINT and converts in the vertex shader.
+# Memory: the survey's values, unchanged (main sets a heap; no system resource).
+
+# ---- Identity ----
+title_id	01001DC025BC4000
+program_id	01001DC025BC4000
+
+# ---- App ----
+# Game name: only a label for profile listings and the Mac window title; the Android app's name is this one unless --app-name is given
+name	Toy Story 3 Complete Edition
+ipa	ToyStory3CompleteEdition.ipa
+app_category	public.app-category.games
+
+# ---- Versions ----
+build	v1	1.0.3	main=b2f8dcb546de62ed2f76e682600655dd	sdk=148394139d9d26ca8afd5c9ba5d30601
+package	v1
+shader_versions	v1
+
+# ---- Files ----
+# every module main imports from
+modules	main sdk
+romfs_marker	assets/avatars/pieces/bl_bd_skinned/bl_bd_skinned.zip
+zip_store	.bank:.bik:.bk2:.fsb:.zip:.metallib
+
+# ---- Memory ----
+# main sets a heap of at most the pool − 64 MB: a 3328 MB heap region
+mem_reserve	0x100000000
+mem_alias	0x10000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+# the NPDM declares 0 MB of system resource: IsVirtualAddressMemoryEnabled is false, as on Horizon (Big Brain Academy: Brain vs. Brain sets a heap only then)
+sys_resource	0x0
+
+# ---- Shader split ----
+shader_groups	/assets/=assets /data_dx/=datadx
+shader_note	Toy Story 3 Complete Edition shaders
+
+# Octane zips: the 3,070 NVN shaders are in the .tfx effects of assets/effects/fx_new.zip (shader_split.py octane_shaders)
+shader_octane	on

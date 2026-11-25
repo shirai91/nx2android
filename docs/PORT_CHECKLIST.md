@@ -6,7 +6,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 
 "Profile here": `nxnative/dm/games/<title ID>/` has the game's profile from nxnative. "Upstream profile": only seedds/nxnative has one, to read as a reference or starter, not to pull. "60 fps with X" is upstream's note: they run that update at 60 fps (30 on the Switch).
 
-**73 / 121 ported**
+**77 / 124 ported**
 
 - [x] 13 Sentinels: Aegis Rim (Asia) · `01008D7016438000`
 - [x] 13 Sentinels: Aegis Rim · `01003FC01670C000`
@@ -57,7 +57,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [x] Kirby and the Forgotten Land · `01004D300C5AE000`
 - [x] Kirby's Return to Dream Land Deluxe · `01006B601380E000` · needs the console's firmware for its fonts
 - [x] Lonely Mountains: Downhill · `0100A0C00E0DE000` · Retroid Pocket 6 / PurpleVK; brief visual glitches
-- [ ] Luigi's Mansion 3 · `0100DCA0064A6000` · profile here · 60 fps with 1.4.0
+- [x] Luigi's Mansion 3 · `0100DCA0064A6000` · profile here · 60 fps with 1.4.0
 - [ ] Mario + Rabbids Kingdom Battle · `010067300059A000` · upstream profile
 - [ ] Mario + Rabbids Sparks of Hope · `0100317013770000` · upstream profile
 - [ ] Mario Kart 8 Deluxe · `0100152000022000` · profile here · no Mii heads
@@ -95,6 +95,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [ ] ROMANCE OF THE THREE KINGDOMS 8 REMAKE · `0100C2A01A730000` · profile here · controller only
 - [x] ROMANCE OF THE THREE KINGDOMS XIV with the Diplomacy and Strategy Expansion Pack (三國志14 with 威力加強版) · `0100CD4012DCA000` · 30 fps, as on the Switch
 - [x] Rune Factory 3 Special · `0100E000191B4000` · experimental · 60 fps, about 51% GPU on the Adreno 740
+- [x] Rune Factory 5 · `01002F7013224000` · experimental · 30 fps, as on the Switch
 - [ ] SHIN MEGAMI TENSEI V: Vengeance · `010069C01AB82000` · upstream profile · 60 fps with 1.0.3
 - [ ] Silver Pines · `0100D5B026844000` · upstream profile
 - [x] South Park™: The Stick Of Truth™ · `010043600B6A6000` · needs a Vulkan 1.3 driver or imageless framebuffers with render pass 2 (Turnip packed on the Adreno 640)
@@ -111,6 +112,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [ ] Taiko Risshiden V DX · `0100346017304000` · profile here · Japanese · played by touch
 - [x] Tales of Berseria Remastered · `01003FD01F22E000`
 - [x] Tales of Eternia Remastered · `010006E0230AC000`
+- [x] The Binding of Isaac: Afterbirth+ · `010021C000B6A000`
 - [x] The Great Ace Attorney Chronicles (Chinese release) · `0100D7F00FAAA000` · profile here
 - [ ] The Great Ace Attorney Chronicles · `010036E00FB20000` · profile here
 - [x] The Legend of Zelda: Breath of the Wild · `01007EF00011E000` · Galaxy S25 Ultra / Turnip; tested in the opening and on the Great Plateau
@@ -119,6 +121,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [x] The Legend of Zelda: Tears of the Kingdom · `0100F2C0115B6000`
 - [x] The World Ends with You -Final Remix- · `0100C1500B82E000`
 - [x] Tomodachi Life: Living the Dream · `010051F0207B2000`
+- [x] Toy Story 3 Complete Edition · `01001DC025BC4000` · Galaxy S23 Ultra; shaders in Octane zips, skinned characters need the USCALED vertex fetch fix
 - [x] Ultra Kaiju Monster Rancher · `01008E0019388000` · AYN Odin 2 / Turnip; tested through the tutorials and battles
 - [x] UNDER NIGHT IN-BIRTH Exe:Late[cl-r] · `010038C00EC34000`
 - [x] UNDER NIGHT IN-BIRTH II Sys:Celes · `0100BD401D18A000`

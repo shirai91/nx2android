@@ -1,0 +1,10 @@
+# Luigi's Mansion 3 1.4.0, Next Level Games / NVN, SDK 7.3.2.
+# 2026-11-19, Xiaomi 17: tested the title, menus, opening and early hotel gameplay.
+# See README.md for the lobby texture fix and the remaining checks.
+status	experimental
+tested	v327680 Xiaomi 17 (Adreno 840, Android 17)
+package	org.nx2a.luigis3
+orientation	landscape
+env	DM_NVN_CPU_NO_ACCESS_IMAGE_FIRST_USE=1
+readme_image	docs/images/luigis-mansion-3.jpg
+readme_tag	v0.5.0

@@ -39,12 +39,13 @@ int dm_overlay_custom(int l, int c, float *x, float *y, float *s) { (void)l; (vo
 static int parse(const char *line) { return fps_opt_parse(line); }
 int main(int argc, char **argv) {
     assert(argc == 2);   // a scratch file in the test's own folder (tmpfile() on MinGW with msvcrt makes it in the drive's root)
-    // five tab slots, five rows each; four tabs without mod support
-    assert(OVM_TABS == 5 && OVM_PER_TAB == 5 && OVM_ROWS == 7 && ov_menu_tabs() == 4);
-    assert(ov_menu_item(0, 0) == OVM_TAB && ov_menu_item(3, 6) == OVM_RESUME);
-    assert(ov_menu_item(1, 1) == OVM_FPS && ov_menu_item(1, 5) == OVM_AUDIO);
+    // five tab slots, six rows each; four tabs without mod support; Counter and Style end in blank rows
+    assert(OVM_TABS == 5 && OVM_PER_TAB == 6 && OVM_ROWS == 8 && ov_menu_tabs() == 4);
+    assert(ov_menu_item(0, 0) == OVM_TAB && ov_menu_item(3, 7) == OVM_RESUME);
+    assert(ov_menu_item(1, 1) == OVM_FPS && ov_menu_item(0, 6) == OVM_AUDIO && ov_menu_item(1, 5) == OVM_EXPORT);
     const int counter[5] = {OVM_ROW_FPS, OVM_ROW_SOC, OVM_ROW_BAT, OVM_ROW_DRV, OVM_ROW_GRAPH}, style[5] = {OVM_POS, OVM_COLOUR, OVM_OUTLINE, OVM_SIZE, -1};
     for (int r = 0; r < 5; r++) { assert(ov_menu_item(2, r + 1) == counter[r]); assert(ov_menu_item(3, r + 1) == style[r]); }
+    assert(ov_menu_item(2, 6) == -1 && ov_menu_item(3, 5) == -1 && ov_menu_item(3, 6) == -1);
     assert(!strcmp(OVM_TAB_NAMES[2], "Counter") && !strcmp(OVM_TAB_NAMES[3], "Style"));
     float p[4] = {0, 0, 1000, 700};
     for (int n = 4; n <= 5; n++) {

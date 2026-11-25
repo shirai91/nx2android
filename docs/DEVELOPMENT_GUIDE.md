@@ -47,6 +47,10 @@ rewrite outputs, so a completed rewrite need not run again for a different limit
 
 The APK (`NeoTheWorldEndsWithYou.apk`) and the data pack (`NeoTheWorldEndsWithYou-data/`) appear in the game folder (`-o` picks another). `python -m porter install <App>-data` installs a port made earlier; with `--romfs-at <folder on the device>` the app reads the game's RomFS from a folder already there (an emulator's dump of the same version) instead of a copy in its files folder ([ARCHITECTURE.md](ARCHITECTURE.md#the-port), A RomFS already on the device). The first port takes a while (extraction, rewriting the game's code, translating its shaders); later ones reuse what has not changed. `python -m porter -h` lists the commands.
 
+Set **Game language** to **Follow Android system language** in the GUI, or pass `--language system`.
+At launch the Android host maps the device's locale to a language supported by the game.
+Restart the app after changing the device language.
+
 ### Saves
 
 `porter saves` does what the app's **Saves** tab does (see the README's [Saves](../README.md#saves)):
