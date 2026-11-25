@@ -921,7 +921,7 @@ def patch_files(repo, exe_dir, mods):
     return [p for p in [repo / 'dm/tools/sdk_patches.py'] + sorted((repo / 'dm/games').glob('*/patches.py')) if any(i in p.read_text(errors='replace') for i in ids)]
 
 
-def collect_nros(py, repo, romfs, dst, env, logs):
+def collect_nros(py, repo, romfs, dst, env, logs, online_sdk=False):
     """The NROs a game registers in NRR files (RomFS *.nrr) and loads at run time with nn::ro, found by their SHA-256 as loose files or inside the RomFS's archives (dm/tools/nro_collect.py):
     {module name: NRO path}, {} for a game without NRRs. The host maps their rewritten copies at start and loads one when the game asks (loader.c "NRO modules"; Super Smash Bros. Ultimate:
     98 in data.arc). Reused while the NRRs, RomFS tree and collection tools are unchanged"""
@@ -930,7 +930,8 @@ def collect_nros(py, repo, romfs, dst, env, logs):
     if not nrrs:
         rmtree(dst); rmtree(kf)   # an update can remove its NRRs: do not carry the previous manifest into the rewrite
         return {}
-    key = fingerprint(('files', nrrs + [repo / f for f in ('dm/tools/nro_collect.py', 'dm/tools/nso_syms.py', 'dm/gfx/tools/smash_arc.py')]), ('tree', romfs))
+    key = fingerprint(('files', nrrs + [repo / f for f in ('dm/tools/nro_collect.py', 'dm/tools/nso_syms.py', 'dm/gfx/tools/smash_arc.py')]), ('tree', romfs), ('online_sdk', str(online_sdk)))
+    if online_sdk: env = {**env, 'NX2A_ALLOW_ONLINE_SDK': '1'}   # the profile's `online_sdk 1`: the game needs its online SDK's code (Tetris Effect: Connected crashes without Epic Online Services)
     if not ((dst / 'nro.tsv').is_file() and reused(kf, key) is not None):
         tmp = dst.with_name(dst.name + '.partial'); rmtree(tmp)
         PROG.set(step=f'finding the NROs {len(nrrs)} NRR files register')
@@ -952,7 +953,7 @@ def rewrite(py, repo, exe_dir, out, env, logs, g):
     mods = g.words('modules')
     PROG.stage('rewrite', step='checking the inputs')
     nro_dir = out.with_name('nro_' + out.name.removeprefix('patched_'))
-    nros = collect_nros(py, repo, exe_dir.parent / 'RomFS', nro_dir, env, logs)
+    nros = collect_nros(py, repo, exe_dir.parent / 'RomFS', nro_dir, env, logs, online_sdk=getattr(g, 'get', lambda k, d='': d)('online_sdk', '') == '1')
     manifest = nro_dir / 'nro.tsv'
     src = {m: exe_dir / m for m in mods} | nros
     names = list(src)

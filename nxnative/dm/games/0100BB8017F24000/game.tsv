@@ -1,0 +1,47 @@
+# Teenage Mutant Ninja Turtles: Shredder's Revenge (Tribute Games' Paris engine, MonoGame 2.22.5.0), SDK 13, update 1.0.9 (v589824).
+# The version number is the update NCA's own: the international release numbers its updates 1.0.1, 1.0.2, ... one 65536 apart, so its 1.0.9 is v589824; the build below is that
+# update's (main cd04abd22479cf46f5e8d087f325ad28).
+# The profile is the survey's provisional one (dm/games/profile_guess.py, the survey in <build folder>/0100BB8017F24000_survey/survey.md), brought up on the phone: the
+# memory values are the survey's, not checked by hand.
+# online_sdk 1: the game needs its Epic Online Services SDK (RomFS nro/EOSSDK-Switch-Shipping.nro). Without it the host refuses the NRO, the game's
+#   EOS_* imports are answered by the host's stub, and it dereferences a null online object at its start-up (SIGSEGV addr=0x10 at main+0x6d1b4c).
+
+# ---- Identity ----
+title_id	0100BB8017F24000
+program_id	0100BB8017F24000
+
+# ---- App ----
+name	Teenage Mutant Ninja Turtles: Shredder's Revenge
+ipa	TeenageMutantNinjaTurtlesShreddersRevenge.ipa
+app_category	public.app-category.games
+
+# ---- Versions ----
+build	v589824	1.0.9	main=cd04abd22479cf46f5e8d087f325ad28	subsdk0=a8cb97803f7f442a3b6cce1c7cd4ee4a	subsdk1=357efc198e728cb5d55265aff304f03c	sdk=357efc198e728cb5d55265aff304f03c
+package	v589824
+shader_versions	v589824
+
+# ---- Online SDK ----
+online_sdk	1
+
+# ---- Files ----
+# not loaded, main takes nothing from them the host does not supply: subsdk2 (GLSLC)
+modules	main subsdk0 subsdk1 sdk
+romfs_marker	Content/Audio/SFXPack.pbn
+zip_store	.mp4:.nro:.nro_old:.nro_old2:.nro_old3:.ogv:.opus:.pbn:.pdb:.metallib
+
+# ---- Memory ----
+# main sets a heap of at most the pool − 64 MB − 8 MB of bss (counted as used memory): a 3328 MB heap region
+mem_reserve	0x100000000
+mem_alias	0x10000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+# the NPDM declares 0 MB of system resource: IsVirtualAddressMemoryEnabled is false, as on Horizon (Big Brain Academy: Brain vs. Brain sets a heap only then)
+sys_resource	0x0
+
+# ---- Shader split ----
+shader_groups	/Content/=content /nro/=nro /.nrr/=nrr
+shader_note	Teenage Mutant Ninja Turtles: Shredder's Revenge shaders
+
+# ---- After the rewrite ----
+# the rewritten modules are larger than the default 64 MB of used memory (Age of Calamity: 66.6 MB → 72 MB)
+mem_used	0xabd4000

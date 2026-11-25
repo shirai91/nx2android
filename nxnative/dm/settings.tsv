@@ -163,6 +163,7 @@ DM_NVN_XV	str		debug,ios	?	nvn_mtl.m
 DM_NVN_ZBLOCK	str		debug,ios	?	nvn_mtl.m	DM_NVN_ZBLOCK=<folder>: also the raw storage of the first such texture of each format and size (up to 16), zb_<serial>.bin (unmapped pages as 0)
 DM_NVN_ZSKIP	str		debug,ios	?	nvn_mtl.m	
 DM_OE_SCRIPT	str		debug	?	hle_oe.c	
+DM_ONLINE_SDK	bool	0	profile	start	hle_ro.c	load the game's own online SDK (Epic Online Services) instead of refusing it: a game that needs the SDK's code to get past its start-up crashes without it (Teenage Mutant Ninja Turtles: Shredder's Revenge calls a null online object); 0 = refuse, as before. The SDK wants the network, which the host does not have
 DM_OODLE_JOB	str		debug	?	hle_oodle.c	
 DM_OODLE_JOB_BNSH	bool		debug	?	hle_oodle.c	
 DM_OODLE_SERVE	str		debug	?	hle_oodle.c	

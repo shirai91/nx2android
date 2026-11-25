@@ -6,7 +6,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 
 "Profile here": `nxnative/dm/games/<title ID>/` has the game's profile from nxnative. "Upstream profile": only seedds/nxnative has one, to read as a reference or starter, not to pull. "60 fps with X" is upstream's note: they run that update at 60 fps (30 on the Switch).
 
-**73 / 121 ported**
+**74 / 122 ported**
 
 - [x] 13 Sentinels: Aegis Rim (Asia) · `01008D7016438000`
 - [x] 13 Sentinels: Aegis Rim · `01003FC01670C000`
@@ -111,6 +111,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [ ] Taiko Risshiden V DX · `0100346017304000` · profile here · Japanese · played by touch
 - [x] Tales of Berseria Remastered · `01003FD01F22E000`
 - [x] Tales of Eternia Remastered · `010006E0230AC000`
+- [x] Teenage Mutant Ninja Turtles: Shredder's Revenge · `0100BB8017F24000` · Xiaomi 23117RK66C (Android 16); the logo screen at 60 fps, the main menu at 40 fps; needs the game's Epic Online Services NRO loaded (`online_sdk`, `DM_ONLINE_SDK`); the intro video is skipped (the game's own null member reference; two cuts in `patches.py`)
 - [x] The Great Ace Attorney Chronicles (Chinese release) · `0100D7F00FAAA000` · profile here
 - [ ] The Great Ace Attorney Chronicles · `010036E00FB20000` · profile here
 - [x] The Legend of Zelda: Breath of the Wild · `01007EF00011E000` · Galaxy S25 Ultra / Turnip; tested in the opening and on the Great Plateau
