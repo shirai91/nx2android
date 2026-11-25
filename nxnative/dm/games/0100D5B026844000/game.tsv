@@ -1,20 +1,20 @@
-# Silver Pines: experimental Android setup profile; requires testing.
-# Reference metadata: seedds/nxnative 6e12b9f8471c0ea80628ef33f7ffcfe2380cada5.
+# Silver Pines: experimental Android profile for update 1.0.2 (v131072), played by a community tester (README.md).
+# Keys from seedds/nxnative 6e12b9f8471c0ea80628ef33f7ffcfe2380cada5; the 1.0.2 build row and shader tables come from the tester's derived profile.
 # Known unresolved runtime requirements are documented in README.md.
-# Add 1 GiB of virtual alias headroom; this does not fix integer fragment outputs.
 title_id	0100D5B026844000
 program_id	0100D5B026844000
 name	Silver Pines
 ipa	SilverPines.ipa
 app_category	public.app-category.adventure-games
-build	v0	1.0.0	main=91046036f8850de3ec306056fcc6ba12	subsdk0=92a5f1a1e8d50e4d05b2212f564bf226	sdk=ab3835b2a37b1916e296f27e82dd4e36
-package	v0
-shader_versions	v0
+build	v131072	1.0.2	main=fde81dd4a0bef165765435c535342489	subsdk0=92a5f1a1e8d50e4d05b2212f564bf226	sdk=ab3835b2a37b1916e296f27e82dd4e36
+package	v131072
+shader_versions	v131072
 modules	main subsdk0 sdk
 romfs_marker	Data/StreamingAssets/Master.assets.bank
 zip_store	.assets:.bank:.bin:.bundle:.dat:.png:.resource:.ress:.metallib
-mem_reserve	0x180000000
-mem_alias	0x158000000
+# 1.0.2's layout, as the tester's derived profile ran it: 8 GB more alias region than nxnative's 1.0.0 profile (0x158000000), and the block with it
+mem_reserve	0x380000000
+mem_alias	0x358000000
 mem_stack	0x10000000
 app_pool	0xCD500000
 sys_resource	0x1000000

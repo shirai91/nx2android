@@ -1,9 +1,8 @@
-# Silver Pines: registered 1.0.0 (v0), SDK 21.4.7, NVN. The registered build has not been run on Android.
-# Community runs by dusk-beep of update 1.0.2 (v131072) through a porter-derived profile, with the bounded
-# shader export of #562: POCO X3 Pro (Snapdragon 860 / Adreno 640, 6 GB, Android 13), Turnip Mesa 27.0.0-devel.
+# Silver Pines: update 1.0.2 (v131072), SDK 21.4.7, NVN. Build row and shader tables from 1.0.2's own files (the tester's derived profile).
+# Community runs by dusk-beep with the bounded shader export of #562 (commit 785c575, nx2android 0.4.0): POCO X3 Pro
+# (Snapdragon 860 / Adreno 640, 6 GB, Android 13), Turnip Mesa 27.0.0-devel.
 # Run of 2026-11-24: 28 minutes, 43,073 frames, 66,250 shaders in the bundle, no [RED] line, 21 save commits.
-# The tester saw no rendering errors on the street or in the diner, and frequent drops to about 15 fps.
-# The source commit was not reported. Registering 1.0.2 waits for its derived shader tables; see README.md.
+# The tester saw no rendering errors on the street or in the diner, and frequent drops to about 15 fps; see README.md.
 status	experimental
 package	org.nx2a.t0100d5b026844000
 orientation	landscape
