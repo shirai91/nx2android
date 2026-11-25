@@ -71,7 +71,7 @@ DM_MOTION_RAW	float		debug	start	front_android.c	opt in to preserving measured a
 DM_MOVIE	str		debug	?	main.c	
 DM_MOVIE_AAC_MPEG_ORDER	str		debug	?	audioconverter_mediacodec.c	
 DM_MOVIE_AUDIO_SLOTS	int		profile	start	hle_movie.c	audio output buffers of a movie with sound (4 up to the decoder's maximum). Default: the maximum
-DM_MOVIE_FAST	bool		profile	start	movie_avc.c hle_nvn.c nvn_deswizzle.c	the movie frame's NEON NV12 -> RGBA conversion (bit-exact) and block-linear copies a whole GOB at a time (the same addresses). MMBN Legacy Collection Vol. 1 and 2: 30 -> 60 fps on an Odin 2 in Standard mode
+DM_MOVIE_FAST	bool		profile	start	movie_avc.c hle_nvn.c	the movie frame's NEON NV12 -> RGBA conversion (bit-exact) and WriteTexels' block-linear copies a whole GOB at a time (the same addresses). MMBN Legacy Collection Vol. 1 and 2: 30 -> 60 fps on an Odin 2 in Standard mode
 DM_MOVIE_TRACE	str		debug	?	hle_movie.c	
 DM_MSL_DIR	str		debug,ios	?	hle_gl.m nvn_mtl.m hle_vk.m	
 DM_NGC_CHINA_PASSTHROUGH	bool	0	profile	start	hle_misc.c	nn::ngc::MaskProfanityWordsInTextForPlatformRegionChina leaves the text as it is instead of filtering through ngct:u, which the host does not serve (abort 0xe15). Rune Factory: Guardians of Azuma calls it on the name entry once DM_NGC_CONTENT_VERSION is 1 (1)

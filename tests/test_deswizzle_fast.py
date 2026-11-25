@@ -1,4 +1,4 @@
-"""DM_MOVIE_FAST's whole-GOB copies (nvn_deswizzle.c move, hle_nvn.c write_region_bl) against nvn_bl_offset, byte by byte, on random geometries."""
+"""DM_MOVIE_FAST's whole-GOB WriteTexels copies (hle_nvn.c write_region_bl) and the deswizzle's row copier (nvn_deswizzle.c move) against nvn_bl_offset, byte by byte, on random geometries."""
 from pathlib import Path
 import os
 import shutil
