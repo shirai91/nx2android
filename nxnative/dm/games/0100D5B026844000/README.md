@@ -1,4 +1,28 @@
-# Silver Pines on Android
+<!-- game facts: made by docs/gen_tables.py from android.tsv; edit android.tsv, not this block -->
+# Silver Pines
+
+![Silver Pines](../../../../docs/images/silver-pines.jpg)
+
+| | |
+|---|---|
+| Status | **experimental** |
+| Title ID | `0100D5B026844000` |
+| Tested with nx2android | `v0.4.0` |
+| Tested build and device | v131072 POCO X3 Pro (Snapdragon 860, Adreno 640, Android 13), community test |
+| App package | `org.nx2a.t0100d5b026844000` |
+| Needs | a GPU that reads BC-compressed textures (Adreno, Xclipse; not Mali or PowerVR) |
+
+The profile sets these for you (`android.tsv`); a player changes the pause menu ones in the game, and the env rows in the data pack's `env.txt`:
+
+| Row | What it does |
+|---|---|
+| `docked=1` | pause menu default on first launch: docked mode (1) or handheld mode (0) |
+| `overlay=1` | pause menu default on first launch: on-screen gamepad shown (1) or hidden (0) |
+| `rumble=1` | pause menu default on first launch: rumble on (1) or off (0) |
+| `pacing game` | frame pacing preset: DM_FPS_TARGET=0, DM_ADAPTIVE_FPS=0 |
+
+Read the profile's porting log in the comment header of [`android.tsv`](android.tsv). Back to the [games list](../../../../README.md#games).
+<!-- end of the game facts -->
 
 **Experimental profile for update 1.0.2, played by a community tester.** dusk-beep ported update 1.0.2 with the bounded shader export from #562 and played it on a POCO X3 Pro. The profile registers 1.0.2 with the build row, shader tables and memory layout of that run; 1.0.0, which nobody has run on Android, is no longer registered.
 
@@ -17,7 +41,7 @@
 ## Frame rate
 
 - The game targets 30 fps: present interval 2 on a 60 Hz display. The profile uses `pacing game`, the game's own limiter with the adaptive governor off.
-- In the 2026-11-24 run, the tester saw drops to about 15 fps, in the same places on every run and in many places through the game. The log has 2,879 long frames among 43,073 frames in 28 minutes. The cause is not known.
+- In the 2026-11-24 run, the tester saw drops to about 15 fps, in the same places on every run and in many places through the game. The log has 2,879 long frames among 43,073 frames in 28 minutes. They are GPU-bound: GPU time in those frames has a median of 35.8 ms and a 90th percentile of 66.9 ms (a 30 fps frame has 33.3), the game draws to 1920x1080 targets, and none of them waited on a new pipeline. The Adreno 640 is the limit there.
 
 ## Tested devices
 
@@ -44,7 +68,3 @@ Results: [first run](https://github.com/shirai91/nx2android/pull/519#issuecommen
 ## Source and profile scope
 
 The profile's keys come from the pinned [nxnative profile](https://github.com/seedds/nxnative/tree/6e12b9f8471c0ea80628ef33f7ffcfe2380cada5/dm/games/0100D5B026844000) at `6e12b9f8471c`, which covers 1.0.0. The 1.0.2 build row, memory layout and shader tables (shader map, conflict table, shader facts, shader pairs, `bf_want`) come from the tester's derived profile, which the porter wrote from 1.0.2's own files ([attached here](https://github.com/shirai91/nx2android/pull/519#issuecomment-7160758064)). Apple pipeline archives, `pso_pairs.tsv` and unsupported patches are not copied.
-
-## Still needed
-
-1. A gameplay frame captured on the device with the overlay off (the last one still shows the menu button), for `docs/images/silver-pines.jpg`, then the `readme_image` / `readme_tag` rows and `python docs/gen_tables.py`.

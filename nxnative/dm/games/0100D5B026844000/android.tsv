@@ -4,6 +4,7 @@
 # Run of 2026-11-24: 28 minutes, 43,073 frames, 66,250 shaders in the bundle, no [RED] line, 21 save commits.
 # The tester saw no rendering errors on the street or in the diner, and frequent drops to about 15 fps; see README.md.
 status	experimental
+tested	v131072 POCO X3 Pro (Snapdragon 860, Adreno 640, Android 13), community test
 package	org.nx2a.t0100d5b026844000
 orientation	landscape
 requires	bcn
@@ -11,3 +12,5 @@ pacing	game
 setting	docked=1
 setting	overlay=1
 setting	rumble=1
+readme_image	docs/images/silver-pines.jpg
+readme_tag	v0.4.0
