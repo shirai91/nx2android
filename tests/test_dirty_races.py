@@ -1,7 +1,7 @@
 """nvn_dirty.c's lock-free readers against pool registration and retirement (ports of seedds/nxnative's t_dirty_init, t_dirty_reuse, t_dirty_retire_race and the
 t_dirty_slots / t_dirty_race cases of b65b9b0f, a2c731e3 and a3d58526): the hooks exist before the first pool, a stamp from an older pool over the same memory counts as written,
-a write on a pool being retired or reused never crashes, protection never lands on a retired pool, a read-only page that is not the tracker's is handed on, and overlapping pools
-keep their first-match lookups. Each case runs in its own process: a lost write ends it with 99 (a fault with no owner) or a signal."""
+a write on a pool being retired or reused never crashes, protection never lands on a retired pool, a fault that is not the tracker's (on a read-only page, or on a writable
+one: a store into a mapped file past its end) is handed on, not re-executed forever, and overlapping pools keep their first-match lookups. Each case runs in its own process: a lost write ends it with 99 (a fault with no owner) or a signal."""
 from pathlib import Path
 import platform
 import subprocess
@@ -18,6 +18,7 @@ HARNESS = r'''
 #include <fcntl.h>
 #include <pthread.h>
 #include <sched.h>
+#include <setjmp.h>
 #include <signal.h>
 #include <stdatomic.h>
 #include <stdint.h>
@@ -45,7 +46,19 @@ static void retire_stage(void);
 static int g_fail;
 #define EXPECT(name, want, got) do { long long w_ = (long long)(want), g_ = (long long)(got); if (w_ != g_) { fprintf(stderr, "%s: expected %lld, got %lld\n", name, w_, g_); g_fail++; } } while (0)
 DIRTY
-static void handle_fault(int sig, siginfo_t *info, void *uc) { (void)sig; if (!fault_hook || !fault_hook(info->si_addr, 1, uc)) _exit(99); }   // not the tracker's: a lost or stuck write
+// store_faults watching (g_catch): a fault the hook handed on returns to it, one re-executed is counted, and one re-executed 100,000 times ends the case with 98 (looped)
+static sigjmp_buf g_jb; static volatile sig_atomic_t g_catch; static volatile int g_nfault; static volatile uint8_t *volatile g_at;
+static void handle_fault(int sig, siginfo_t *info, void *uc) {
+    (void)sig;
+    if (g_catch) { if (++g_nfault > 100000) _exit(98); if (fault_hook && fault_hook(info->si_addr, 1, uc)) return; siglongjmp(g_jb, 1); }
+    if (!fault_hook || !fault_hook(info->si_addr, 1, uc)) _exit(99);   // not the tracker's: a lost or stuck write
+}
+// A store at p: -1 when it landed, else the number of faults it raised until the fault hook handed one on (to the crash handler, in the host)
+static int store_faults(volatile uint8_t *p) {
+    g_at = p; g_nfault = 0; g_catch = 1;
+    if (sigsetjmp(g_jb, 1)) { g_catch = 0; return g_nfault; }
+    *g_at = 0x5a; g_catch = 0; return -1;
+}
 // pg: the host page size, 4 KB (Linux, Android, an x86_64 build under Rosetta on the Mac) or 16 KB (the Mac). sub: a quarter page, the step of the pools'
 // sub-page starts and lengths, so that neighbours share host pages and no length or offset is 0 or negative at either size (a fixed 4096 was 0 at 4 KB pages)
 static size_t pg, sub;
@@ -114,6 +127,25 @@ static void case_foreign_ro(void) {
     nvn_dirty_protect(m, pg); dm_guest_write_prepare(m, 1);   // protected again, then a host write lets it through: NONE, stamped
     EXPECT("a write fault that raced the tracker's release: re-executed", 1, on_fault(m, 1, NULL));
     nvn_dirty_remove_range(m); munmap(m, pg);
+}
+
+// A write fault that is not the tracker's on a page mapped writable: a store into a mapped file past its end faults (SIGBUS) at every re-execution, as an MTE tag fault
+// would on Android. It must reach the crash handler (store_faults sees it handed on), not be re-executed forever as when every unclaimed fault on a writable page was.
+// The tracker re-executes it only where it made the page writable itself (a NONE page of a live range, a range retired lately), and then REEXEC_MAX times at most
+static void case_foreign_writable(void) {
+    // An empty file under four pages of mapping: every page is past its end. (A file one page long would not do under Rosetta: its pages are 4 KB, the Mac kernel's file
+    // pages 16 KB, and a store past the end but inside the kernel page holding it lands)
+    FILE *f = tmpfile(); if (!f) { perror("tmpfile"); _exit(2); }
+    uint8_t *m = mmap(NULL, 4 * pg, PROT_READ | PROT_WRITE, MAP_SHARED, fileno(f), 0);
+    if (m == MAP_FAILED) { perror("mmap"); _exit(2); }
+    EXPECT("past the file's end, a page no range ever held: handed on at its first fault", 1, store_faults(m + pg));
+    nvn_dirty_add_range(m + 2 * pg, pg); nvn_dirty_protect(m + 2 * pg, pg);
+    EXPECT("past the file's end, a page the tracker protected: claimed, re-executed REEXEC_MAX times, handed on", 2 + REEXEC_MAX, store_faults(m + 2 * pg));
+    EXPECT("... and handed on at its first fault from then on", 1, store_faults(m + 2 * pg));
+    nvn_dirty_remove_range(m + 2 * pg);
+    nvn_dirty_add_range(m + 3 * pg, pg); nvn_dirty_protect(m + 3 * pg, pg); nvn_dirty_remove_range(m + 3 * pg);
+    EXPECT("past the file's end, in a range retired lately: re-executed REEXEC_MAX times, handed on", 1 + REEXEC_MAX, store_faults(m + 3 * pg));
+    munmap(m, 4 * pg); fclose(f);
 }
 
 // af616f54: a retirement staged between nvn_dirty_protect's lookup and its first page-state exchange. Afterwards the retired pool is untracked and really writable
@@ -222,6 +254,7 @@ int main(int argc, char **argv) {
     if (!strcmp(c, "init")) case_init();
     else if (!strcmp(c, "born")) case_born();
     else if (!strcmp(c, "foreign_ro")) case_foreign_ro();
+    else if (!strcmp(c, "foreign_writable")) case_foreign_writable();
     else if (!strcmp(c, "retire_protect")) case_retire_protect();
     else if (!strcmp(c, "reuse")) case_reuse(argc > 2 ? atoi(argv[2]) : 20000);
     else if (!strcmp(c, "overlap")) { case_overlap(0); case_overlap(1); }
@@ -278,6 +311,9 @@ class DirtyRaces(unittest.TestCase):
 
     def test_foreign_read_only_page_is_handed_on(self):
         self.run_case('foreign_ro')
+
+    def test_foreign_fault_on_writable_page_is_handed_on(self):
+        self.run_case('foreign_writable')
 
     def test_protect_holds_off_a_retirement(self):
         self.run_case('retire_protect')
