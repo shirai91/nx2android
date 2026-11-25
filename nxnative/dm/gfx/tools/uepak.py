@@ -253,7 +253,7 @@ class Pak:
                 blocks = [r.take('<qq') for _ in range(r.take('<i'))] if meth else []
                 flags, bsz = r.take('<BI'); head = self.entry_header + (4 + 16 * len(blocks) if meth else 0)
                 if self.version == 8 and flags & 2: self.deleted.add(name); continue
-                if meth and not (0 < meth <= len(self.methods) and self.methods[meth - 1]): raise ValueError(f'{path}: invalid compression method {meth} on {name}')
+                if meth and not (0 < meth <= len(self.methods) and self.methods[meth - 1]): raise ValueError(f'{self.path}: invalid compression method {meth} on {name}')
                 if self.version < 5: blocks = [(s - off, t - s) for s, t in blocks]
                 else: blocks = [(s, t - s) for s, t in blocks]
                 self.files[name] = dict(off=off, raw=raw, size=size, method=self.methods[meth - 1] if meth else '', encrypted=flags & 1, block_size=bsz, blocks=blocks or [(head, size)])

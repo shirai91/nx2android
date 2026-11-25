@@ -37,7 +37,7 @@ def archive_v1(record):
     return struct.pack('<Ii', 1, 1) + bytes(20) + struct.pack('<QIIB', 0, len(compressed), len(record), 0) + compressed
 
 
-def pak_fixture(path, archive, method_bytes=1, compress_pak=False, *, deleted=False, version=8):
+def pak_fixture(path, archive, method_bytes=1, compress_pak=False, *, deleted=False, version=8, method=None):
     def fstr(text):
         text = text.encode() + b'\0'
         return struct.pack('<i', len(text)) + text
@@ -45,7 +45,7 @@ def pak_fixture(path, archive, method_bytes=1, compress_pak=False, *, deleted=Fa
     method_fmt = 'B' if method_bytes == 1 else 'I'
     plain_header = 49 + method_bytes
     blob = zlib.compress(archive) if compress_pak else archive
-    method = 2 if compress_pak else 0
+    method = method if method is not None else 2 if compress_pak else 0
     head = plain_header + 20
     blocks = struct.pack('<IQQ', 1, head, head + len(blob)) if method else b''
 
@@ -139,6 +139,14 @@ class UnrealV8(unittest.TestCase):
                     self.assertEqual(stage, 'vs')
                     self.assertEqual(len(control), 0x880)
                     self.assertEqual(len(code), 0x70)
+
+    def test_invalid_compression_method_names_the_pak(self):
+        for method in (3, 9):   # an empty method slot, and one past the footer's list
+            with self.subTest(method=method), tempfile.TemporaryDirectory() as tmp:
+                pak = Path(tmp) / 'Game-Switch.pak'
+                pak_fixture(pak, archive_v1(shader()), compress_pak=True, method=method)
+                with self.assertRaisesRegex(ValueError, f'Game-Switch.pak: invalid compression method {method} on {ARCHIVE}'):
+                    uepak.Pak(pak)
 
     def test_archive_v1_checks_version_ranges_and_zlib_size(self):
         record = shader()
