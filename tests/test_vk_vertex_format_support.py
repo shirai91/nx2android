@@ -14,6 +14,9 @@ STUBS = r"""
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdatomic.h>
+#ifdef _WIN32
+#define setenv(n, v, o) _putenv_s(n, v)   /* MinGW has no setenv */
+#endif
 
 static struct {
     VkPhysicalDevice pd;
@@ -31,15 +34,20 @@ typedef struct {
     int xfb;
     uint64_t key;
     VkShaderModule gs_mod[2];
+    VkShaderModule mod;
 } vkshader_t;
+static vkshader_t *stage_vs;
 static struct { uint64_t pipes_built; } g_vkst;
 static struct { int phase; char what[400]; } g_build[1];
 static int build_begin(void) { return 0; }
 static void build_end(int slot) { assert(slot == 0); g_build[slot].phase = 0; }
 static vkshader_t *vk_shader_gs_topo(vkshader_t *s, VkPrimitiveTopology t) { (void)t; return s; }
 static int vk_shader_gs_split_ready(vkshader_t *s) { (void)s; return 1; }
-static VkShaderModule vk_shader_module(vkshader_t *s, uint64_t a, uint64_t b, uint32_t c, int d, uint32_t e) {
-    (void)s; (void)a; (void)b; (void)c; (void)d; (void)e;
+static uint64_t last_vi;
+static int no_variant;   /* the vertex variant could not be made: vk_shader_module hands back the original module */
+static VkShaderModule vk_shader_module(vkshader_t *s, uint64_t a, uint64_t b, uint32_t c, int d, uint64_t e) {
+    (void)s; (void)a; (void)b; (void)c; (void)d; if (s && s == stage_vs) last_vi = e;
+    if (no_variant && s && e) return s->mod;
     return (VkShaderModule)(uintptr_t)12;
 }
 static const void *vk_sg_pin(VkShaderStageFlagBits stage, const uint32_t *local) {
@@ -98,12 +106,18 @@ int main(int argc, char **argv) {
         /* A key restored for prewarm already contains the final format. */
         unsupported = VK_FORMAT_R16G16B16_SFLOAT;
         k.attr[1].fmt = VK_FORMAT_R16G16B16_SFLOAT;
-    } else {
+    } else if (test == 4) {
         unsupported = VK_FORMAT_R32_UINT;
         k.attr[1].fmt = vertex_format(0x1d, 0, 0);
         assert(k.attr[1].fmt == VK_FORMAT_R16G16B16_SFLOAT);
+    } else {
+        /* An unsupported scaled format read by a float input: skipped as before (5), or with DM_VK_SCALED_FETCH=1 fetched as UINT and converted (6), unless no vertex variant could be made (7): skipped too. */
+        unsupported = VK_FORMAT_R8G8B8A8_USCALED;
+        k.attr[1].fmt = VK_FORMAT_R8G8B8A8_USCALED;
+        if (test >= 6) setenv("DM_VK_SCALED_FETCH", "1", 1);
+        if (test == 7) no_variant = 1;
     }
-    vkshader_t v = {0}, *stages[3] = {&v};
+    vkshader_t v = {0}, *stages[3] = {&v}; stage_vs = &v;
     VkPipeline result = build_pipeline(&k, VK_NULL_HANDLE, stages);
     if (test == 0) {
         // Different failed keys sharing a format stay rejected without repeating its warning.
@@ -145,6 +159,9 @@ class VertexFormatSupport(unittest.TestCase):
                 (2, "1 98 0"),  # Unsupported guest format remapped to a supported integer format.
                 (3, "0 0 1"),  # Recorded final format, bypassing vertex_format().
                 (4, "1 90 0"),  # Supported R16G16B16_SFLOAT, unchanged.
+                (5, "0 0 1"),  # Unsupported R8G8B8A8_USCALED without DM_VK_SCALED_FETCH: skipped as before.
+                (6, "1 41 0"),  # With DM_VK_SCALED_FETCH=1: fetched as R8G8B8A8_UINT (41), the vertex shader converts it.
+                (7, "0 0 1"),  # The same, but no vertex variant could be made: an integer fetch into a float input is undefined, so skipped.
             ):
                 with self.subTest(scenario=scenario):
                     result = subprocess.run([str(binary), str(scenario)], capture_output=True, text=True, check=True)
