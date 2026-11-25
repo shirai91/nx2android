@@ -74,6 +74,8 @@ __attribute__((weak)) void dm_overlay_knob(int stick, float *dx, float *dy) { (v
 __attribute__((weak)) int64_t dm_overlay_pressed(int ctl, uint64_t bit) { (void)ctl; (void)bit; return 0; }
 __attribute__((weak)) int dm_menu_state(void) { return -1; }
 __attribute__((weak)) int dm_menu_audio_available(void) { return 0; }
+__attribute__((weak)) int dm_menu_mod_available(void) { return 0; }
+__attribute__((weak)) int dm_menu_mod_manage_available(void) { return 0; }
 __attribute__((weak)) int dm_fps_opts(void) { return FPSO_DEFAULT; }   // front_android.c: the counter's options, packed (overlay_layout.h fpso_*)
 __attribute__((weak)) int dm_overlay_fps(void) { return 0; }   // front_android.c: the pause menu's Show FPS
 __attribute__((weak)) int dm_overlay_sr(void) { return 0; }   // front_android.c: the pause menu's Super resolution (settings.txt sr=)
@@ -422,6 +424,8 @@ static const char *ovm_label(int it) {
     case OVM_COLOUR: return TR("Colour", "颜色");
     case OVM_OUTLINE: return TR("Outline", "描边");
     case OVM_SIZE: return TR("Size", "大小");
+    case OVM_MOD_IMPORT: return TR("Import mod ZIP", "导入模组 ZIP");
+    case OVM_MOD_MANAGE: return TR("Manage mods", "管理模组");
     case OVM_RESUME: return TR("Resume", "继续游戏");
     default: return "";
     }
@@ -432,6 +436,8 @@ static const char *ovm_button(int it) {
     case OVM_EXPORT: return TR("Export", "导出");
     case OVM_IMPORT: return TR("Import", "导入");
     case OVM_AUDIO: return TR("Select", "选择");
+    case OVM_MOD_IMPORT: return TR("Import", "导入");
+    case OVM_MOD_MANAGE: return TR("Manage", "管理");
     default: return NULL;
     }
 }
@@ -449,8 +455,8 @@ static int ovm_bit(int it) { return it == OVM_OVERLAY ? 0 : it == OVM_RUMBLE ? 1
 static void ov_menu_panel(const ov_canvas *cv, int st) {
     float p[4] = {0, 0, (float)cv->w, (float)cv->h}, r[4]; ov_menu_rowrect(p, 0, r);
     float rh = r[3], rw = r[2], gap = rh * 0.35f, sh = rh * 0.40f, sw = sh * 1.85f;
-    int tab = (st >> 8 & 1) | (st >> 19 & 1) << 1, sel = (st >> 4 & 15) - 1, op = OV_OPACITY_MIN + 5 * (st >> 9 & 15), fo = dm_fps_opts();   // (bits 9..12: the opacity step, 13..15: the sharpness step)
-    int is = (int)fmaxf(1, roundf(rh * 0.30f / PF_CAP));
+    int tab = (st >> 8 & 1) | (st >> 19 & 1) << 1 | (st >> 27 & 1) << 2, sel = (st >> 4 & 15) - 1, op = OV_OPACITY_MIN + 5 * (st >> 9 & 15), fo = dm_fps_opts();   // (bits 9..12: the opacity step, 13..15: the sharpness step)
+    int tabs = ov_menu_tabs(), is = (int)fmaxf(1, roundf(rh * 0.30f / PF_CAP));
     for (; is > 1; is--) {   // the widest row: its label, a gap and its control
         float need = 0;
         for (int i = 0; i < OVM_RESUME; i++) {
@@ -464,8 +470,8 @@ static void ov_menu_panel(const ov_canvas *cv, int st) {
                               : i == OVM_SHARP   ? fmaxf(lw / 0.38f, cv_text_w("100%", is) / 0.14f)
                               : lw + gap + cw + rh * 0.3f);
         }
-        float tabw = 0; for (int k = 0; k < OVM_TABS; k++) tabw = fmaxf(tabw, cv_text_w(OVM_TAB_NAMES[k], is));
-        if (need <= rw && tabw < rw / OVM_TABS - sh) break;
+        float tabw = 0; for (int k = 0; k < tabs; k++) tabw = fmaxf(tabw, cv_text_w(OVM_TAB_NAMES[k], is));
+        if (need <= rw && tabw < rw / tabs - sh) break;
     }
     cv_rrect(cv, 0, 0, p[2], p[3], rh * 0.18f, C_BG);
     for (int row = 0; row < OVM_ROWS; row++) {
@@ -473,10 +479,10 @@ static void ov_menu_panel(const ov_canvas *cv, int st) {
         if (it < 0) continue;
         if (row == sel) cv_rrect(cv, r[0], r[1] + rh * 0.08f, r[0] + rw, r[1] + rh * 0.92f, rh * 0.14f, C_HI);
         if (it == OVM_TAB) {   // the tabs: a segmented bar, the open one filled
-            float th = rh * 0.62f, tw = rw / OVM_TABS;
+            float th = rh * 0.62f, tw = rw / tabs;
             cv_rrect(cv, r[0], cy - th / 2, r[0] + rw, cy + th / 2, th / 2, C_OFF);
             cv_rrect(cv, r[0] + tab * tw, cy - th / 2, r[0] + (tab + 1) * tw, cy + th / 2, th / 2, C_ACCENT);
-            for (int k = 0; k < OVM_TABS; k++) cv_text(cv, r[0] + k * tw + (tw - cv_text_w(OVM_TAB_NAMES[k], is)) / 2, cy, OVM_TAB_NAMES[k], is, k == tab ? C_WHITE : C_DIM);
+            for (int k = 0; k < tabs; k++) cv_text(cv, r[0] + k * tw + (tw - cv_text_w(OVM_TAB_NAMES[k], is)) / 2, cy, OVM_TAB_NAMES[k], is, k == tab ? C_WHITE : C_DIM);
             cv_rrect(cv, r[0], r[1] + rh - 1, r[0] + rw, r[1] + rh, 0.5f, C_LINE);
             continue;
         }

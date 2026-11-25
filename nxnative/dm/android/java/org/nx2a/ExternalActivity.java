@@ -1,6 +1,5 @@
 package org.nx2a;
 
-import android.app.NativeActivity;
 import android.app.Dialog;
 import android.app.AlertDialog;
 import android.content.Context;
@@ -36,7 +35,7 @@ import java.io.InputStreamReader;
 import java.io.IOException;
 
 /** Experimental dual-screen wrapper. NativeActivity remains the phone's input owner. */
-public class ExternalActivity extends NativeActivity implements ExternalDisplay.Listener {
+public class ExternalActivity extends ImportActivity implements ExternalDisplay.Listener {
     static { System.loadLibrary("dmhost"); }
     private static native void externalSurface(Surface surface);
     private static native void externalInput(long buttons, int lx, int ly, int rx, int ry, boolean menu);

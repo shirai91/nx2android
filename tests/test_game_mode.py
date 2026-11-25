@@ -145,6 +145,7 @@ class GameMode(unittest.TestCase):
                 p.o = SimpleNamespace(out=t, vercode_offset=0, external_display=False, native_keyboard=False, vulkan_driver=None, debug=True)
                 p.ap = SimpleNamespace(landscape=False); p.so = t/'host.so'; p.logs = t; p.env = {}; p.result = {}
                 p.icon = p.theme = p.ui_font = lambda: []
+                p.external_activity = lambda: []
                 if gl is not None: p.gl = gl
                 calls = []
                 def run(args, *a, **kw): calls.append(args); p.apk_path.write_bytes(b'unsigned placeholder')
