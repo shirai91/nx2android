@@ -1,9 +1,10 @@
 """The layer's frame history (nn::vi::ListFrameHistory, hle_vi.c) and the present interval a game reads back (nvnWindowGetPresentInterval, hle_nvn.c).
 
 Unreal Engine 5's Switch RHI takes the first shown entry of the history as its latest flip; with no entries Minecraft Dungeons II waited for ever at its first frame-end
-sync. Luigi's Mansion 3 paces itself by the newest entry and the window's interval, so in display mode the window answers the interval it presents at. The harnesses cut
-the real code out of the core sources (csrc.py) and drive it with stub backends: the history ring with the present queue's progress, flip times, GPU completion and the
-pacer's vsync grid, and the interval with the pacing policy's display mode, the cap and the frame step. Adapted from seedds/nxnative's t_vi_history.c and t_nvn.c (MIT).
+sync. Luigi's Mansion 3 paces itself by the newest entry and the window's interval, so in display mode, once the game has asked for the history, the window answers the
+interval it presents at; a game that never asks reads back the interval it set, as before the history. The harnesses cut the real code out of the core sources (csrc.py)
+and drive it with stub backends: the history ring with the present queue's progress, flip times, GPU completion and the pacer's vsync grid, and the interval with the
+history's own ListFrameHistory, the pacing policy's display mode, the cap and the frame step. Adapted from seedds/nxnative's t_vi_history.c and t_nvn.c (MIT).
 """
 from pathlib import Path
 import shutil
@@ -20,8 +21,10 @@ import host_cc  # noqa: E402
 HISTORY_HEAD = r'''
 #include <assert.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #define HLE_FORCE(mangled, why, ret, cname, ...) static ret cname(__VA_ARGS__)
 static void log_noop(const char *fmt, ...) { (void)fmt; }
@@ -46,7 +49,9 @@ static uint64_t ticks(uint64_t ns) { return ns * 12 / 625; }
 int main(void) {
     uint64_t fi[10][5];
     for (int i = 0; i < 64; i++) g_gd[i] = -1;   // no GPU record until a case sets one
+    assert(!dm_vi_history_asked());                                                   // no game has asked yet
     assert(h_vi_FrameHist(NULL, 0, NULL) == 8 && h_vi_FrameHist(fi, 0, NULL) == 8);   // the SDK's count query
+    assert(dm_vi_history_asked());                                                    // which counts as asking (hle_nvn.c window_interval)
     assert(h_vi_FrameHist(fi, 10, NULL) == 0);                                        // nothing presented yet
     for (int i = 0; i < 10; i++) { present(); g_gns += 16666667; g_hns += 16666667; }  // frames 1-10, tickets 1-10
     g_done = 7;                                   // 1-7 handed on, 8-10 still queued
@@ -138,16 +143,9 @@ int main(void) {
 '''
 
 INTERVAL_HEAD = r'''
-#include <assert.h>
-#include <stdatomic.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
 typedef struct { int interval; } win_t;
 typedef struct NVNwindow NVNwindow;
 #define NVN(name, ret, ...) static ret name(__VA_ARGS__)
-static void log_noop(const char *fmt, ...) { (void)fmt; }
-#define LOG(...) log_noop(__VA_ARGS__)
 static int g_hz = -1, g_display_mode;
 static _Atomic int g_fs_k;
 static int g_cap, g_fstep, g_display;
@@ -160,6 +158,18 @@ static int dm_pacing_display(const char **src) { *src = "test"; return g_display
 INTERVAL_MAIN = r'''
 int main(void) {
     win_t w = {2}; const NVNwindow *nw = (const NVNwindow *)&w;
+    // Before the game asks for the layer's frame history: the interval it set, whatever the mode, the cap or the frame step, exactly as before the history.
+    // A present_interval display game that sets 2 and never asks reads back its 2
+    g_display = 1;                                   // display mode, as the pacing policy says
+    assert(nvnWindowGetPresentInterval(nw) == 2);
+    g_cap = 30; assert(nvnWindowGetPresentInterval(nw) == 2);
+    g_fstep = 1; atomic_store(&g_fs_k, 3); assert(nvnWindowGetPresentInterval(nw) == 2);
+    w.interval = 1; assert(nvnWindowGetPresentInterval(nw) == 1);
+    w.interval = 0; assert(nvnWindowGetPresentInterval(nw) == 0);
+    assert(g_hz == -1 && !g_display_mode);           // nor does the getter read the pacing policy (present_cfg still runs at the first present)
+    // The game asks (Unreal's count query; Luigi's Mansion 3 before each present): from then on the window's own interval in display mode
+    w.interval = 2; g_cap = 0; g_fstep = 0; atomic_store(&g_fs_k, 0); g_display = 0;
+    assert(h_vi_FrameHist(NULL, 0, NULL) == 8);
     assert(nvnWindowGetPresentInterval(nw) == 2);    // game mode: the interval the game set
     g_cap = 30; assert(nvnWindowGetPresentInterval(nw) == 2);   // game mode under a cap: still the game's own
     g_hz = -1; g_display = 1; g_cap = 0;             // display mode, as the pacing policy says
@@ -173,17 +183,20 @@ int main(void) {
 '''
 
 
-def history_source():
+def history_cut():
     vi = csrc.read('nxnative/dm/gfx/hle_vi.c')
-    cut = csrc.between(vi, '#define VFH 8', '// Rhythm Heaven Groove', 'hle_vi.c frame history')
-    return HISTORY_HEAD + cut + HISTORY_MAIN
+    return csrc.between(vi, '#define VFH 8', '// Rhythm Heaven Groove', 'hle_vi.c frame history')
+
+
+def history_source():
+    return HISTORY_HEAD + history_cut() + HISTORY_MAIN
 
 
 def interval_source():
     nvn = csrc.read('nxnative/dm/gfx/nvn/hle_nvn.c')
     getter = csrc.between(nvn, 'static int window_interval(const win_t *o);\n', 'NVN(nvnWindowSetPresentInterval', 'hle_nvn.c nvnWindowGetPresentInterval')
     policy = csrc.between(nvn, 'static void present_cfg(const win_t *o) {', 'static uint64_t present_period(', 'hle_nvn.c present_cfg .. window_interval')
-    return INTERVAL_HEAD + getter + policy + INTERVAL_MAIN
+    return HISTORY_HEAD + history_cut() + INTERVAL_HEAD + getter + policy + INTERVAL_MAIN   # the real ListFrameHistory tells the getter the game asked
 
 
 def run(source, name):

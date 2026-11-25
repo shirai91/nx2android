@@ -72,6 +72,8 @@ HLE_FORCE("_ZN2nn2vi20GetLatestFrameNumberEPmPKNS0_5LayerE", "the layer's latest
 #define VFH 8
 typedef struct { uint64_t frame, ticket, queued_ns, seen_ns, at, grid, tick, vsync_ns; uint8_t queued, enqueued; } vfh_ent;   // at, grid, tick, vsync_ns: present, pacer vsync, one vsync, latched flip (now_ns clock, ns); queued: the game thread recorded it; enqueued: its ticket is known
 static vfh_ent g_vfh[VFH]; static pthread_mutex_t g_vfh_mu = PTHREAD_MUTEX_INITIALIZER;
+static _Atomic int g_vfh_asked;   // the game has called ListFrameHistory, with or without a buffer
+int dm_vi_history_asked(void) { return atomic_load_explicit(&g_vfh_asked, memory_order_relaxed); }   // hle_nvn.c: until then nvnWindowGetPresentInterval answers as before the history
 void mtl_present_progress(uint64_t *queued, uint64_t *done);   // the backend: the last present ticket queued, and the last its present queue has handed on
 double mtl_flip_time(uint64_t n);                              // the backend: when present ticket n reached the screen (seconds on the now_ns clock), 0 not known
 int mtl_gpu_done(uint64_t f, uint64_t *t1);                    // the backend: 1 the frame's GPU work completed (latest end, now_ns clock; 0 if unknown), 0 running, -1 no record
@@ -105,7 +107,7 @@ static int vfh_vsync(vfh_ent *e, uint64_t hnow, uint64_t *at) {
 }
 static uint64_t vfh_ticks(uint64_t ns) { return ns * 12 / 625; }   // the 19.2 MHz system counter, as GetSystemTick (hle_svc.c)
 HLE_FORCE("_ZN2nn2vi16ListFrameHistoryEPNS0_9FrameInfoEiPKNS0_5LayerE", "the layer's frame history: the last 8 presents, newest first, shown once the present queue handed them on", int, h_vi_FrameHist, void *out, int n, const void *layer) {
-    (void)layer;
+    (void)layer; atomic_store_explicit(&g_vfh_asked, 1, memory_order_relaxed);
     if (!out || n <= 0) return VFH;
     uint64_t q, d; mtl_present_progress(&q, &d); (void)q;
     uint64_t gnow = guest_ns(), hnow = now_ns(), latest = dm_nvn_frame_count();

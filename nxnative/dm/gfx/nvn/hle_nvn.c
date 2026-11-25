@@ -212,6 +212,7 @@ static uint8_t *vpool_reserve(pool_t *o); static void vpool_release(pool_t *o); 
 static void replay_lock(void); static void replay_unlock(void);   // the replay's state, from a game thread (see "Asynchronous replay")
 static void nvn_drain(void); static int job_wait(uint64_t id, uint64_t timeout_ns); static int nvn_async(void); static int nvn_jobs_wait_queued(uint64_t timeout_ns);   // asynchronous replay (see below)
 void dm_vi_frame_queued(uint64_t frame, uint64_t at, uint64_t grid, uint64_t tick); void dm_vi_frame_ticket(uint64_t frame, uint64_t ticket);   // the layer's frame history (hle_vi.c)
+int dm_vi_history_asked(void);   // hle_vi.c: 1 once the game has called nn::vi::ListFrameHistory
 __attribute__((weak)) void vk_pool_set_flags(const void *mem, int flags) { (void)mem; (void)flags; }
 __attribute__((weak)) void dm_perf_replay_thread(void) {}   // Android (perf_android.c): the replay thread's CPU placement   // Android's Vulkan host (gfx_vk_core.c): copied pools by their flags
 NVN(nvnMemoryPoolInitialize, NVNboolean, NVNmemoryPool *p, const NVNmemoryPoolBuilder *b) {
@@ -1875,11 +1876,14 @@ static void present_cfg(const win_t *o) {
         msrc, o->interval, scr > 0 ? "window, fixed 60 Hz" : "no window, fixed 60 Hz");
 }
 static int present_itv(const win_t *o) { int c = fps_step_cap(), k = atomic_load(&g_fs_k); return c ? (k && fstep_on() ? k : 60 / c) : g_display_mode ? 1 : o->interval > 0 ? o->interval : 1; }   // vsyncs per frame that presentation follows
-// The present interval the game reads back (nvnWindowGetPresentInterval): the one it set, except in display mode (dm_pacing_display), where the window presents at the interval above
-// (1, or the cap's) whatever the game set, and answering the game's own let it pace for that interval itself. Luigi's Mansion 3 (30 fps on the Switch, interval 2) reads the newest
-// frame-history entry and the interval before each present (main+0xb7a4b8): while that frame is not shown it sleeps 16.67 ms per vsync of the interval, and once shown it waits until
-// (interval - 1) vsyncs after its present time. At 60 fps (fps_target 60, present_interval display) that held it at about 25 fps on the Mac once vi::ListFrameHistory listed the presents
-static int window_interval(const win_t *o) { present_cfg(o); return g_display_mode ? present_itv(o) : o->interval; }
+// The present interval the game reads back (nvnWindowGetPresentInterval): the one it set, except in display mode (dm_pacing_display) once the game has asked for the layer's frame
+// history (nn::vi::ListFrameHistory, hle_vi.c), where the window presents at the interval above (1, or the cap's) whatever the game set, and answering the game's own let it pace for
+// that interval itself. Luigi's Mansion 3 (30 fps on the Switch, interval 2) reads the newest frame-history entry and the interval before each present (main+0xb7a4b8): while that
+// frame is not shown it sleeps 16.67 ms per vsync of the interval, and once shown it waits until (interval - 1) vsyncs after its present time; with no history entries it skips that
+// wait. At 60 fps (fps_target 60, present_interval display) that held it at about 25 fps on the Mac once vi::ListFrameHistory listed the presents. A game that never asks for the
+// history reads back the interval it set, exactly as before the history: a display-mode game that sets 2 and stepped its logic by the interval it read would otherwise change speed.
+// Luigi's Mansion 3 asks for the history before each present, the first included, so it has asked before any entry exists: every wait it makes reads the window's interval
+static int window_interval(const win_t *o) { if (!dm_vi_history_asked()) return o->interval; present_cfg(o); return g_display_mode ? present_itv(o) : o->interval; }
 static uint64_t present_period(const win_t *o) {
     present_cfg(o);
     int was = atomic_load(&g_game_itv), want = o->interval > 0 ? o->interval : 1;
