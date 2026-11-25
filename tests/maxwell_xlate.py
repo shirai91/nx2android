@@ -170,7 +170,7 @@ _INT_OPS = {128: lambda p, q: p + q, 130: lambda p, q: p - q, 132: lambda p, q: 
 _INT_COMPARES = {170: lambda p, q: p == q, 171: lambda p, q: p != q, 172: lambda p, q: p > q, 173: lambda p, q: _s32(p) > _s32(q),
                  174: lambda p, q: p >= q, 175: lambda p, q: _s32(p) >= _s32(q), 176: lambda p, q: p < q, 177: lambda p, q: _s32(p) < _s32(q),
                  178: lambda p, q: p <= q, 179: lambda p, q: _s32(p) <= _s32(q)}
-_FLOAT_COMPARES = {180: '==', 181: '!=', 182: '<', 183: '>', 184: '<=', 185: '>='}   # ordered; 186..191 the same, unordered
+_FLOAT_COMPARES = {180: '==', 182: '!=', 184: '<', 186: '>', 188: '<=', 190: '>='}   # OpFOrd*; the next opcode of each is its OpFUnord*
 
 
 def _s32(x): return x - (1 << 32) if x & 0x80000000 else x
@@ -217,6 +217,12 @@ def run(data):
         elif o == 164: values[r] = int(x[0] == x[1])                                          # OpLogicalEqual
         elif o == 165: values[r] = int(x[0] != x[1])                                          # OpLogicalNotEqual
         elif o == 127: values[r] = x[0] ^ 0x80000000                                          # OpFNegate
+        elif o == 111: values[r] = f32_round(_s32(x[0]))                                       # OpConvertSToF (to nearest)
+        elif o == 112: values[r] = f32_round(x[0])                                             # OpConvertUToF
+        elif o in (109, 110):                                                                  # OpConvertFToU, OpConvertFToS: toward zero
+            lo, hi = (0, 1 << 32) if o == 109 else (-(1 << 31), 1 << 31)
+            v = int(f32_value(x[0])) if _finite(x[0]) else None
+            values[r] = v & 0xffffffff if v is not None and lo <= v < hi else 0xdeadbeef   # out of range: undefined in SPIR-V
         elif o in (129, 131, 133):                                                            # OpFAdd, OpFSub, OpFMul
             p, q = x
             fn = {129: operator.add, 131: operator.sub, 133: operator.mul}[o]
@@ -224,13 +230,13 @@ def run(data):
             exact = fn(f32_value(p), f32_value(q))
             zero = {129: p & q, 131: p & ~q, 133: p ^ q}[o] & 0x80000000
             values[r] = f32_round(exact) if exact else zero
-        elif o in _FLOAT_COMPARES or 186 <= o <= 191:
+        elif 180 <= o <= 191:                                                                 # OpFOrdEqual .. OpFUnordGreaterThanEqual
             p, q = x
-            if _nan(p) or _nan(q): values[r] = int(o == 181 or o >= 186)
+            if _nan(p) or _nan(q): values[r] = o & 1                                           # unordered: true for OpFUnord*
             else:
                 cmp = {'==': operator.eq, '!=': operator.ne, '<': operator.lt, '>': operator.gt, '<=': operator.le, '>=': operator.ge}
-                values[r] = int(cmp[_FLOAT_COMPARES[o if o < 186 else o - 6]](f32_value(p) if _finite(p) else (1 - 2 * (p >> 31)) * 2 ** 200,
-                                                                              f32_value(q) if _finite(q) else (1 - 2 * (q >> 31)) * 2 ** 200))
+                def value(t): return f32_value(t) if _finite(t) else (1 - 2 * (t >> 31)) * 2 ** 200
+                values[r] = int(cmp[_FLOAT_COMPARES[o & ~1]](value(p), value(q)))
         elif o == 12 and a[2] in glsl:                                                         # OpExtInst GLSL.std.450
             n, arg = a[3], [values[i] for i in a[4:]]
             if n == 50:                                                                        # Fma

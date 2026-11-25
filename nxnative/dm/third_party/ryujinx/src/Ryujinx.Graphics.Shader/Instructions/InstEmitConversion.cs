@@ -70,7 +70,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
 
             Operand src = GetSrcReg(context, op.SrcB);
 
-            EmitI2F(context, op.ISrcFmt, op.DstFmt, src, op.ByteSel, op.Dest, op.AbsB, op.NegB);
+            EmitI2F(context, op.ISrcFmt, op.DstFmt, src, op.ByteSel, op.Dest, op.AbsB, op.NegB, op.RoundMode);
         }
 
         public static void I2fI(EmitterContext context)
@@ -79,7 +79,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
 
             Operand src = GetSrcImm(context, Imm20ToSInt(op.Imm20));
 
-            EmitI2F(context, op.ISrcFmt, op.DstFmt, src, op.ByteSel, op.Dest, op.AbsB, op.NegB);
+            EmitI2F(context, op.ISrcFmt, op.DstFmt, src, op.ByteSel, op.Dest, op.AbsB, op.NegB, op.RoundMode);
         }
 
         public static void I2fC(EmitterContext context)
@@ -88,7 +88,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
 
             Operand src = GetSrcCbuf(context, op.CbufSlot, op.CbufOffset);
 
-            EmitI2F(context, op.ISrcFmt, op.DstFmt, src, op.ByteSel, op.Dest, op.AbsB, op.NegB);
+            EmitI2F(context, op.ISrcFmt, op.DstFmt, src, op.ByteSel, op.Dest, op.AbsB, op.NegB, op.RoundMode);
         }
 
         public static void I2iR(EmitterContext context)
@@ -239,7 +239,8 @@ namespace Ryujinx.Graphics.Shader.Instructions
             ByteSel byteSelection,
             int rd,
             bool absolute,
-            bool negate)
+            bool negate,
+            RoundMode roundMode = RoundMode.Rn)
         {
             bool isSignedInt =
                 srcType is ISrcFmt.S8 or
@@ -271,6 +272,20 @@ namespace Ryujinx.Graphics.Shader.Instructions
                     ? context.IConvertS32ToFP64(srcB)
                     : context.IConvertU32ToFP64(srcB);
             }
+            else if (dstType == DstFmt.F32 && (srcType is ISrcFmt.U32 or ISrcFmt.S32) && roundMode != RoundMode.Rn)
+            {
+                // nxnative: a 32-bit integer to F32 with .RM / .RP / .RZ. The compiler's 32-bit integer division starts with I2F.U32.RP, so that its reciprocal
+                // estimate stays on the side its correction step expects; rounded to nearest, a value above 2^24 came out one ulp off about half the time.
+                // The float rounded to nearest is an integer, exact back in 32 bits unless it rounded up to 2^31 (signed) or 2^32, where it is above the value
+                // anyway; how it compares with the value says which neighbour the mode asks for. Narrow sources are exact; 64-bit ones keep the path below
+                Operand f = isSignedInt ? context.IConvertS32ToFP32(srcB) : context.IConvertU32ToFP32(srcB);
+                Operand big = context.BitwiseNot(context.FPCompareLess(f, ConstF(isSignedInt ? 2147483648f : 4294967296f)));
+                Operand back = isSignedInt ? context.FP32ConvertToS32(f) : context.FP32ConvertToU32(f);
+                Operand gt = context.BitwiseOr(big, isSignedInt ? context.ICompareGreater(back, srcB) : context.ICompareGreaterUnsigned(back, srcB));
+                Operand lt = context.BitwiseAnd(context.BitwiseNot(big), isSignedInt ? context.ICompareLess(back, srcB) : context.ICompareLessUnsigned(back, srcB));
+
+                srcB = FPDirected(context, roundMode, f, gt, lt, isSignedInt ? context.ICompareLess(srcB, Const(0)) : null);
+            }
             else
             {
                 srcB = isSignedInt
@@ -281,6 +296,35 @@ namespace Ryujinx.Graphics.Shader.Instructions
             WriteFP(context, dstType, srcB, rd);
 
             // TODO: CC.
+        }
+
+        // nxnative (InstEmitAmpereAlu.ADirected): r, rounded to nearest, moved to the result .RM, .RP or .RZ asks for, from how it compares with the exact value:
+        // gt (r is above it), lt (r is below it), neg (the value is negative; null: never). One step of a float's bits moves it to its neighbour of the same
+        // sign: + 1 away from zero, - 1 toward it
+        private static Operand FPDirected(EmitterContext context, RoundMode mode, Operand r, Operand gt, Operand lt, Operand neg)
+        {
+            Operand pos = neg == null ? null : context.BitwiseNot(neg);
+            Operand And(Operand a, Operand b) => a == null || b == null ? null : context.BitwiseAnd(a, b);
+            Operand away, toward;
+
+            switch (mode)
+            {
+                case RoundMode.Rp: away = neg == null ? lt : And(lt, pos); toward = And(lt, neg); break;   // below the value: step up
+                case RoundMode.Rm: away = And(gt, neg); toward = neg == null ? gt : And(gt, pos); break;   // above the value: step down
+                default: away = null; toward = neg == null ? gt : context.BitwiseOr(And(gt, pos), And(lt, neg)); break;   // RZ: larger in magnitude, step toward zero
+            }
+
+            if (away != null)
+            {
+                r = context.ConditionalSelect(away, context.IAdd(r, Const(1)), r);
+            }
+
+            if (toward != null)
+            {
+                r = context.ConditionalSelect(toward, context.IAdd(r, Const(-1)), r);
+            }
+
+            return r;
         }
 
         private static void EmitI2I(
