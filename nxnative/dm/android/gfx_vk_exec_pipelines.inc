@@ -194,11 +194,31 @@ static void build_dump(void) {   // (the crash handler: no locks, no allocation)
 static VkPipeline build_pipeline(const pkey *k, VkPipelineLayout layout, vkshader_t *const stg_in[3]) {
     // #404: the Samsung driver crashed compiling a pipeline after reporting no vertex-buffer support for RGB16F.
     // Check the final formats here, after integer remapping and for keys restored by prewarm.
+    // DM_VK_SCALED_FETCH=1 (profile, start-up; off by default): a scaled format the device cannot fetch, read by a float input, is fetched as the integer format of its
+    // layout and converted in the vertex shader (vk_spv_vertex.h; Adreno 740 has no R8G8B8A8_USCALED, the bone indices of Toy Story 3 Complete Edition's characters,
+    // which were all skipped). Vulkan orders each layout UNORM, SNORM, USCALED, SSCALED, UINT, SINT: the integer format is 2 further on. Off, nothing below changes
+    static _Atomic int scaled_on = -1; int scaled = atomic_load(&scaled_on);
+    if (scaled < 0) { const char *e = getenv("DM_VK_SCALED_FETCH"); scaled = e && atoi(e) > 0; atomic_store(&scaled_on, scaled); }
+    VkFormat afmt[16]; uint64_t vi_scaled = 0;
     for (uint32_t i = 0; i < k->nattr; i++) {
-        VkFormat format = (VkFormat)k->attr[i].fmt;
+        VkFormat format = (VkFormat)k->attr[i].fmt; afmt[i] = format;
         VkFormatProperties properties;
         vkGetPhysicalDeviceFormatProperties(V.pd, format, &properties);
         if (!(properties.bufferFeatures & VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT)) {
+            int sign = 0; uint32_t l = k->attr[i].loc;
+            if (scaled) switch (format) {
+            case VK_FORMAT_R8_USCALED: case VK_FORMAT_R8G8_USCALED: case VK_FORMAT_R8G8B8_USCALED: case VK_FORMAT_B8G8R8_USCALED: case VK_FORMAT_R8G8B8A8_USCALED:
+            case VK_FORMAT_B8G8R8A8_USCALED: case VK_FORMAT_A8B8G8R8_USCALED_PACK32: case VK_FORMAT_A2R10G10B10_USCALED_PACK32: case VK_FORMAT_A2B10G10R10_USCALED_PACK32:
+            case VK_FORMAT_R16_USCALED: case VK_FORMAT_R16G16_USCALED: case VK_FORMAT_R16G16B16_USCALED: case VK_FORMAT_R16G16B16A16_USCALED: sign = 1; break;
+            case VK_FORMAT_R8_SSCALED: case VK_FORMAT_R8G8_SSCALED: case VK_FORMAT_R8G8B8_SSCALED: case VK_FORMAT_B8G8R8_SSCALED: case VK_FORMAT_R8G8B8A8_SSCALED:
+            case VK_FORMAT_B8G8R8A8_SSCALED: case VK_FORMAT_A8B8G8R8_SSCALED_PACK32: case VK_FORMAT_A2R10G10B10_SSCALED_PACK32: case VK_FORMAT_A2B10G10R10_SSCALED_PACK32:
+            case VK_FORMAT_R16_SSCALED: case VK_FORMAT_R16G16_SSCALED: case VK_FORMAT_R16G16B16_SSCALED: case VK_FORMAT_R16G16B16A16_SSCALED: sign = 2; break;
+            default: break;
+            }
+            if (sign && l < 16 && stg_in[0] && !((stg_in[0]->local[1] | stg_in[0]->local[2]) >> l & 1)) {
+                VkFormat alt = (VkFormat)(format + 2); vkGetPhysicalDeviceFormatProperties(V.pd, alt, &properties);
+                if (properties.bufferFeatures & VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT) { afmt[i] = alt; vi_scaled |= 1ull << (l + (sign == 1 ? 16 : 32)); continue; }
+            }
             // Core vertex formats fit here. Prewarm workers can reject the same format concurrently.
             static atomic_uchar noted[256];
             if ((unsigned)format >= sizeof noted / sizeof *noted || !atomic_exchange(&noted[format], 1))
@@ -229,7 +249,7 @@ static VkPipeline build_pipeline(const pkey *k, VkPipelineLayout layout, vkshade
     const vkshader_t *fs = stg[1] && !k->raster_discard ? stg[1] : NULL; uint32_t xo[3] = {0};
     if (stg[0]) xo[0] = (stg[2] ? stg[2]->in_locs : fs ? fs->in_locs : 0) & ~stg[0]->out_locs;
     if (stg[2]) xo[2] = (fs ? fs->in_locs : 0) & ~stg[2]->out_locs;
-    uint32_t vi_flip = 0;
+    uint64_t vi_flip = vi_scaled;
     if (stg[0]) for (uint32_t a = 0; a < k->nattr; a++) {
         uint32_t l = k->attr[a].loc; int kind = vertex_integer_kind((VkFormat)k->attr[a].fmt);
         if ((kind == 2 && (stg[0]->local[1] >> l & 1)) || (kind == 1 && (stg[0]->local[2] >> l & 1))) vi_flip |= 1u << l;
@@ -237,6 +257,12 @@ static VkPipeline build_pipeline(const pkey *k, VkPipelineLayout layout, vkshade
     for (int i = 0; i < 3; i++) if (stg[i] && !(i == 1 && k->raster_discard)) {
         VkShaderModule mod = i == 2 && k->gs_split ? stg[i]->gs_mod[k->gs_split - 1] :
             vk_shader_module(stg[i], k->um[i], k->im[i], k->alt && !k->um[i] && !k->im[i] && !xo[i] ? 1u << 31 : xo[i], i == 1 ? (k->fdz ? 1 : 0) | (k->dual ? 2 : 0) : 0, i == 0 ? vi_flip : 0);
+        if (i == 0 && vi_scaled && mod == stg[0]->mod) {   // no vertex variant could be made (vk_shader_module fell back to the original): the integer fetch chosen above
+            // would feed a float input, which Vulkan leaves undefined. Skip the pipeline, as for a format with no fallback
+            static atomic_uchar noted_var; if (!atomic_exchange(&noted_var, 1))
+                VKLOG("[RED] graphics pipeline skipped: no vertex shader variant for the scaled attributes %#llx (vertex shader %016llx)", (unsigned long long)vi_scaled, (unsigned long long)k->key[0]);
+            return (VkPipeline)1;
+        }
         ss[ns++] = (VkPipelineShaderStageCreateInfo){VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, vk_sg_pin(fl[i], NULL), 0, fl[i], mod, "main", NULL};   // (pNext: DM_VK_SUBGROUP_PIN)
     }
     int flat = (int)k->debug_mode;
@@ -248,7 +274,7 @@ static VkPipeline build_pipeline(const pkey *k, VkPipelineLayout layout, vkshade
     if (flat) { static int n; if (n++ < 12) VKLOG("debugging: vertex shader %016llx with fragment %016llx: mode %d (1 magenta, 2 no depth test, 4 no blending); %u colour targets, blending %#x (target 0: src %u dst %u op %u, alpha src %u dst %u op %u, write mask %#x), depth test %u write %u func %u",
         (unsigned long long)stg[0]->key, (unsigned long long)fs->key, flat, k->ncol, k->blend_en, k->bl[0].src, k->bl[0].dst, k->bl[0].eq, k->bl[0].srca, k->bl[0].dsta, k->bl[0].eqa, k->wmask[0], k->dt, k->dw, k->df); }
     VkVertexInputAttributeDescription ad[16]; VkVertexInputBindingDescription bd[17]; VkVertexInputBindingDivisorDescriptionEXT dd[17]; uint32_t ndd = 0;
-    for (uint32_t i = 0; i < k->nattr; i++) ad[i] = (VkVertexInputAttributeDescription){k->attr[i].loc, k->attr[i].binding, (VkFormat)k->attr[i].fmt, k->attr[i].off};
+    for (uint32_t i = 0; i < k->nattr; i++) ad[i] = (VkVertexInputAttributeDescription){k->attr[i].loc, k->attr[i].binding, afmt[i], k->attr[i].off};
     for (uint32_t i = 0; i < k->nbind; i++) { bd[i] = (VkVertexInputBindingDescription){k->bind[i].binding, k->bind[i].stride, (VkVertexInputRate)k->bind[i].rate};
         if (k->bind[i].rate && k->bind[i].divisor > 1) {
             if (V.has_divisor) dd[ndd++] = (VkVertexInputBindingDivisorDescriptionEXT){k->bind[i].binding, k->bind[i].divisor};
