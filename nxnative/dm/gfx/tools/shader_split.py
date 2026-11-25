@@ -14,6 +14,7 @@
 #       Before 2019.3 (Cuphead, Unity 2017.4; found by armyja, GitHub pull request #2) a subprogram holds one stage: program code = a 0x10 header {?, ?, control length, code length} + control section
 #       + code area, and the stage is not in the code but in the Shader's m_ParsedForm (unity_stages)
 #       Unity 2022 (Ace Attorney Investigations Collection, 2022.3) keeps the 0x60 header in the program code, but the blob also holds parameter entries, which unity_code_blobs leaves out
+#       A game's own GLSLC outputs in a TextAsset are read too (FINAL FANTASY CRYSTAL CHRONICLES Remastered Edition, Unity 2018.4: shader.switch.vfxsb, unity_text_glslc)
 #   · MSHD (MercurySteam, Metroid Dread system/shd/*.bshdat): each stage = a control section (+0x20 = control length; sometimes a small compiler option table follows) + the code area starting at the next code header;
 #       NV assembly text follows the first 0x880 bytes of the control section, and SASS disassembly text follows the code area. All 478 files hold "vertex, pixel" in pairs (1, 2 or 4 pairs), paired two by two in order
 #   · G2S (Koei Tecmo's KTGL, Hyrule Warriors: Age of Calamity): GLSLC compiler outputs inside the IDRK entries of the RDB data files (zlib in chunks), see idrk_shaders;
@@ -1439,6 +1440,18 @@ def unity_compute(x, base, trees):
         return []
     return out
 
+def unity_text_glslc(x, base):
+    """Whole GLSLC outputs that a game keeps in a TextAsset of a serialized file → [(where, stage, control, code)]. FINAL FANTASY CRYSTAL CHRONICLES Remastered Edition (Unity 2018.4.2f1)
+    draws its maps and effects with programs of its own, outside Unity's Shader objects: the TextAsset shader.switch.vfxsb in Data/resources.assets (11 MB, header word 0x20160817) holds
+    1,160 GLSLC outputs of a vertex and a pixel stage each (1,207 distinct keys), which the game hands to NVN itself; without them its ground tiles and effects were not drawn.
+    The bytes are only decoded when the file holds the GLSLC magic, and glslc_shaders keeps only outputs that pass its checks, so files without such TextAssets give what they gave before"""
+    import unityfs
+    if b'\x91\x68\x86\x19' not in x: return []
+    out = []
+    for pid, name, b in unityfs.text_assets(x, COMMON):
+        if b'\x91\x68\x86\x19' in b: out += glslc_shaders(b, f'{base}#{name}', need=False)
+    return out
+
 def unity_shaders(d, label, out, trees):
     """Shaders and compute shaders in a UnityFS bundle or serialized file → out; raises NoTree when no type tree is available"""
     import unityfs
@@ -1453,6 +1466,7 @@ def unity_shaders(d, label, out, trees):
                 where = f'{label}{":" + node if node else ""}#{name}#var{plat}.{k}'
                 code = unityfs.subprogram(sp)[4]
                 out.extend((where, st, ctl, cd) for st, ctl, cd in unity_program(code, where, stages.get(k)))
+        out.extend(unity_text_glslc(x, f'{label}{":" + node if node else ""}'))
         out.extend(unity_compute(x, f'{label}{":" + node if node else ""}', trees))
 
 def scan_blob(d, label, out):
