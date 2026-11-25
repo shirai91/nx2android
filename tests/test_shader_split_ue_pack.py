@@ -154,10 +154,11 @@ class Products(unittest.TestCase):
     def split(self, name):
         out = self.tmp / name
         out.mkdir()
-        env = dict(os.environ, DM_GAME='0100000000010000', DM_UE_SHADERS=str(self.tmp / 'ue_shaders'))
+        # the porter runs the split with PYTHONUTF8=1 (porter/pipeline.py): the tables hold a '→' in their header, which the runner's code page cannot encode
+        env = dict(os.environ, DM_GAME='0100000000010000', DM_UE_SHADERS=str(self.tmp / 'ue_shaders'), PYTHONUTF8='1')
         r = subprocess.run([sys.executable, str(TOOLS / 'shader_split.py'), str(self.tmp / 'romfs'), str(self.tmp / 'main.nso'),
                             str(out / 'pkg'), str(out / 'map.tsv'), str(out / 'facts.tsv'), str(out / 'pairs.tsv')],
-                           env=env, capture_output=True, text=True)
+                           env=env, capture_output=True, text=True, encoding='utf-8')
         return r, out
 
     def test_the_modern_pak_changes_nothing(self):
