@@ -5,7 +5,8 @@ The harness compiles the real recording code from hle_nvn.c (cut out as in test_
 A segment is freed when another recording writes over its list's guest bytes, or tries to write a
 record there that does not fit, or when the pool its list was recorded in is finalized, never when
 command memory over it is only granted, until the held segments reach HOSTSEG_GRANT_FREES; and
-grants of 16 bytes or more (Borderlands 3 grants 40 and 56) are recorded into the game's memory.
+grants of 16 bytes or more (Borderlands 3 grants 40 and 56) are recorded into the game's memory. A
+write over no held segment returns without the lock (it prints the host cost of that check).
 """
 from pathlib import Path
 import subprocess
@@ -27,6 +28,14 @@ static void mtl_pool_del(const void *mem) { (void)mem; }
 static void mtl_alias_drop_pool(const void *pool) { (void)pool; }
 static void fl_drop(const uint8_t *a, uint64_t n) { (void)a; (void)n; }
 static void ft_drop(const uint8_t *a, uint64_t n) { (void)a; (void)n; }
+'''
+
+
+# Counts the locks the recording code takes, for the check that a write over no held segment takes none
+LOCKS = r'''
+static unsigned g_locks;
+#define pthread_mutex_lock(m) (g_locks++, pthread_mutex_lock(m))
+#include <time.h>
 '''
 
 
@@ -200,6 +209,48 @@ static void pool_goes(void) {
     h_nvnCommandBufferAddCommandMemory(&cx, (NVNmemoryPool *)&live, 2048, 64); h_nvnCommandBufferBeginRecording(&cx); h_nvnCommandBufferEndRecording(&cx);
 }
 
+static void written_fast_path(void) {
+    // With a segment held, an EndRecording over no held list returns without the lock; one over a held list frees its segment as before
+    static _Alignas(4096) uint8_t fp_mem[16384]; pool_t fp = { .mem = fp_mem, .size = sizeof fp_mem };
+    NVNcommandBuffer ca = {0}, cb = {0};
+    h_nvnCommandBufferInitialize(&ca, NULL); h_nvnCommandBufferInitialize(&cb, NULL);
+    h_nvnCommandBufferAddCommandMemory(&ca, (NVNmemoryPool *)&fp, 0, 64); NVNcommandHandle ha = rec_list(&ca, 0, 0, 0xa);
+    int a = seg_of((uintptr_t)fp_mem);
+    EXPECT("A's list holds a segment", 1, a >= 0);
+    unsigned locks = g_locks;
+    h_nvnCommandBufferAddCommandMemory(&cb, (NVNmemoryPool *)&fp, 8192, 4096); h_nvnCommandBufferBeginRecording(&cb);
+    for (uint32_t i = 0; i < 10; i++) rec_one(&cb, 0xb, i, 40);
+    h_nvnCommandBufferEndRecording(&cb);
+    EXPECT("a recording over no held list takes no lock", locks, g_locks);
+    EXPECT("and frees nothing", 1, a >= 0 && g_hostseg[a].busy);
+    EXPECT("A replays whole", NB, list_ok(ha, 0xa));
+    h_nvnCommandBufferAddCommandMemory(&cb, (NVNmemoryPool *)&fp, 0, 4096); h_nvnCommandBufferBeginRecording(&cb);
+    for (uint32_t i = 0; i < 10; i++) rec_one(&cb, 0xb, i, 40);
+    h_nvnCommandBufferEndRecording(&cb);
+    EXPECT("a recording over A's list frees its segment at its EndRecording", 0, a >= 0 ? g_hostseg[a].busy : -1);
+    EXPECT("through the lock", 1, g_locks > locks);
+    EXPECT("the counters of A's granules are back to 0", 0, atomic_load(&g_hostseg_map[((uintptr_t)fp_mem >> HOSTSEG_GRAN) & (HOSTSEG_MAP - 1)]));
+}
+
+static double now_s(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (double)t.tv_sec + (double)t.tv_nsec / 1e9; }
+static void written_cost(void) {
+    // Host cost of the check at an EndRecording with 256 lists held: a write over none of them, and one in a granule that shares a counter with a held list's (the locked scan)
+    enum { LISTS = 256, STRIDE = 128, FAST = 1000000, SLOW = 100000 };
+    static _Alignas(4096) uint8_t cost_mem[LISTS * STRIDE + 4096]; pool_t cp = { .mem = cost_mem, .size = sizeof cost_mem };
+    NVNcommandBuffer cc = {0}, cx = {0}; h_nvnCommandBufferInitialize(&cc, NULL); h_nvnCommandBufferInitialize(&cx, NULL);
+    for (int i = 0; i < LISTS; i++) { h_nvnCommandBufferAddCommandMemory(&cc, (NVNmemoryPool *)&cp, (ptrdiff_t)i * STRIDE, 64); rec_list(&cc, 0, 0, 0xc); }
+    int held = busy_n(); cmd_t probe = { .rec_id = 0 };
+    const uint8_t *clear = cost_mem + LISTS * STRIDE + 2048, *alias = (const uint8_t *)((uintptr_t)cost_mem + ((uintptr_t)HOSTSEG_MAP << HOSTSEG_GRAN));
+    double t0 = now_s(); for (int i = 0; i < FAST; i++) hostseg_written(&probe, clear, 408);
+    double t1 = now_s(); for (int i = 0; i < SLOW; i++) hostseg_written(&probe, alias, 408);
+    double t2 = now_s();
+    EXPECT("neither write frees a list's segment", held, busy_n());
+    printf("hostseg_written with %d segments held (%d in the pool): %.1f ns over none, %.1f ns in a shared granule (locked scan)\n",
+           held, g_nhostseg, (t1 - t0) / FAST * 1e9, (t2 - t1) / SLOW * 1e9);
+    for (int i = 0; i < LISTS; i++) { h_nvnCommandBufferAddCommandMemory(&cx, (NVNmemoryPool *)&cp, (ptrdiff_t)i * STRIDE, 64); h_nvnCommandBufferBeginRecording(&cx); h_nvnCommandBufferEndRecording(&cx); }
+    EXPECT("re-recorded in place, the lists free their segments", held - LISTS, busy_n());
+}
+
 static void grant_frees_past_the_bound(void) {   // runs last: the bound holds for the rest of the run
     // A game that grants its lists' memory again but never records in it again: each list keeps its segment. Below HOSTSEG_GRANT_FREES of them a grant frees nothing; at it,
     // grants free the segments they cover again (the rule before 0d1037875)
@@ -238,6 +289,8 @@ int main(void) {
     record_that_does_not_fit(); printf("record that does not fit: %d busy of %d\n", busy_n(), g_nhostseg);
     small_grants(); printf("small grants: %d busy of %d\n", busy_n(), g_nhostseg);
     pool_goes(); printf("pool goes: %d busy of %d\n", busy_n(), g_nhostseg);
+    written_fast_path(); printf("written fast path: %d busy of %d\n", busy_n(), g_nhostseg);
+    written_cost();
     grant_frees_past_the_bound(); printf("grant frees past the bound: %d busy of %d, %llu MB\n", busy_n(), g_nhostseg, (unsigned long long)(g_hostseg_bytes >> 20));
     if (failed) { printf("%d checks failed\n", failed); return 1; }
     puts("host-lent segment lifetime: PASS"); return 0;
@@ -249,6 +302,9 @@ int main(void) {
 class HostSegmentLifetime(unittest.TestCase):
     def test_segments_live_as_long_as_their_list(self):
         prefix = harness().split('static unsigned busy(void)')[0]
+        include = '#include "nvn_obj.h"\n'
+        self.assertEqual(prefix.count(include), 1)
+        prefix = prefix.replace(include, include + LOCKS)
         with tempfile.TemporaryDirectory(prefix='nx2a-hostseg-lifetime-') as tmp:
             c, exe = Path(tmp)/'check.c', Path(tmp)/'check'
             c.write_text(prefix + finalize() + CHECKS, encoding='utf-8')
@@ -259,6 +315,7 @@ class HostSegmentLifetime(unittest.TestCase):
             result = subprocess.run([str(exe)], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn('PASS', result.stdout)
+            print(next(line for line in result.stdout.splitlines() if line.startswith('hostseg_written with')))
 
 
 if __name__ == '__main__':

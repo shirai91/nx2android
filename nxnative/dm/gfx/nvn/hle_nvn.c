@@ -885,12 +885,33 @@ static void cmd_new_segment(cmd_t *o, uint8_t *mem, size_t n) {
 uint64_t dm_nvn_frame_count(void);
 typedef struct { uint8_t *mem; uint64_t frame; int busy; uintptr_t org_lo, org_hi; uint32_t sz, rec_id; } hostseg_t;   // org: the guest range of the recording it hangs off (0 = unknown, never reclaimed); rec_id: the recording that took it
 static hostseg_t *g_hostseg; static int g_nhostseg, g_caphostseg; static uint64_t g_hostseg_bytes;
-static _Atomic int g_hostseg_held;   // busy segments with a guest range: 0 lets hostseg_written return without the lock
+static _Atomic int g_hostseg_held;   // busy segments with a guest range: 0 lets hostseg_written return without the lock (hostseg_maybe_held)
 static uint64_t g_hostseg_held_bytes;   // their bytes
 #define HOSTSEG_GRANT_FREES (HOSTSEG_CAP / 4)
 static _Atomic int g_hostseg_grant_frees;   // the held bytes reached HOSTSEG_GRANT_FREES: command memory grants free the segments they cover (see above)
 static _Atomic uint32_t g_rec_serial;   // BeginRecording's serials (cmd_t rec_id; one that wraps around to a recording whose segment is still lent only keeps that segment lent)
 static pthread_mutex_t g_hostseg_mu = PTHREAD_MUTEX_INITIALIZER;
+// The held segments' guest ranges by 1 KB granule, so that a write over none of them returns without the lock and the scan of every segment (hostseg_written runs at every
+// EndRecording; games with many small lists, SMBW): each counter is the number of held segments with a byte in a granule that maps to it. A granule maps to its number mod
+// HOSTSEG_MAP, so a range of HOSTSEG_MAP granules or more reaches every counter, and granules HOSTSEG_MAP KB apart share one (a false hit only costs the scan)
+#define HOSTSEG_GRAN 10
+#define HOSTSEG_MAP 4096u
+static _Atomic uint32_t g_hostseg_map[HOSTSEG_MAP];
+static void hostseg_map(uintptr_t lo, uintptr_t hi, int add) {   // under g_hostseg_mu
+    uintptr_t g = lo >> HOSTSEG_GRAN, n = ((hi - 1) >> HOSTSEG_GRAN) - g + 1;
+    for (uintptr_t k = 0; k < n && k < HOSTSEG_MAP; k++) {
+        _Atomic uint32_t *c = &g_hostseg_map[(g + k) & (HOSTSEG_MAP - 1)];
+        if (add) atomic_fetch_add_explicit(c, 1, memory_order_relaxed); else atomic_fetch_sub_explicit(c, 1, memory_order_relaxed);
+    }
+}
+// Whether a held segment can have a guest byte in [lo, hi): no when none is held, or when the counters of all of its granules are 0. Without the lock: a segment taken before the
+// write, in the game's order (it lets a list's memory be written again only once the list is dead), was counted before it
+static int hostseg_maybe_held(uintptr_t lo, uintptr_t hi) {
+    if (hi <= lo || !atomic_load_explicit(&g_hostseg_held, memory_order_relaxed)) return 0;
+    uintptr_t g = lo >> HOSTSEG_GRAN, n = ((hi - 1) >> HOSTSEG_GRAN) - g + 1;
+    for (uintptr_t k = 0; k < n && k < HOSTSEG_MAP; k++) if (atomic_load_explicit(&g_hostseg_map[(g + k) & (HOSTSEG_MAP - 1)], memory_order_relaxed)) return 1;
+    return 0;
+}
 // Take a segment of sz bytes: origin = the current recording's guest bytes in the segment it ran short in, [own, end of the JUMP at the write position), or the byte at own when it has no
 // record yet; if the write pointer is already in a host segment (overflowing again), keep that segment's origin. A recording that owns no byte there (it starts at the very end of the
 // game's memory, and the game's callback added none) has no range, and its segment is not reclaimed
@@ -915,7 +936,7 @@ static uint8_t *hostseg_take(cmd_t *o, uint32_t sz) {
         m = malloc(sz); g_hostseg_bytes += sz;
         g_hostseg[g_nhostseg++] = (hostseg_t){ m, f, 1, lo, hi, sz, rid };
     }
-    if (m && hi > lo) { atomic_fetch_add_explicit(&g_hostseg_held, 1, memory_order_relaxed); g_hostseg_held_bytes += sz; }
+    if (m && hi > lo) { hostseg_map(lo, hi, 1); atomic_fetch_add_explicit(&g_hostseg_held, 1, memory_order_relaxed); g_hostseg_held_bytes += sz; }
     int bound = g_hostseg_held_bytes >= HOSTSEG_GRANT_FREES && !atomic_exchange_explicit(&g_hostseg_grant_frees, 1, memory_order_relaxed);
     unsigned t = ++total; int n = g_nhostseg; unsigned mb = (unsigned)(g_hostseg_bytes >> 20), held_mb = (unsigned)(g_hostseg_held_bytes >> 20);
     pthread_mutex_unlock(&g_hostseg_mu);
@@ -924,11 +945,12 @@ static uint8_t *hostseg_take(cmd_t *o, uint32_t sz) {
     if (t == 1 || t % 1024 == 0) LOG("[nvn] the game's command memory ran short, the host lends a segment (%u times so far, frame %llu, segment pool %d segments, %u MB)", t, (unsigned long long)f, n, mb);
     return m;
 }
-static void hostseg_free(hostseg_t *s) { s->busy = 0; if (s->org_hi > s->org_lo) { atomic_fetch_sub_explicit(&g_hostseg_held, 1, memory_order_relaxed); g_hostseg_held_bytes -= s->sz; } }   // under g_hostseg_mu
+static void hostseg_free(hostseg_t *s) { s->busy = 0; if (s->org_hi > s->org_lo) { hostseg_map(s->org_lo, s->org_hi, 0); atomic_fetch_sub_explicit(&g_hostseg_held, 1, memory_order_relaxed); g_hostseg_held_bytes -= s->sz; } }   // under g_hostseg_mu
 // The game gives out control memory [lo, hi) (AddControlMemory: control-owned segments whose anchor overlaps it are dead), or a pool over [lo, hi) goes (nvnMemoryPoolFinalize: the
 // lists recorded there are dead), or, past HOSTSEG_GRANT_FREES, command memory [lo, hi) (AddCommandMemory): reclaim the segments that hang off it (command memory grants below the
 // bound free nothing: see above)
 static void hostseg_release(uintptr_t lo, uintptr_t hi) {
+    if (!hostseg_maybe_held(lo, hi)) return;
     pthread_mutex_lock(&g_hostseg_mu);
     for (int i = 0; i < g_nhostseg; i++) if (g_hostseg[i].busy && g_hostseg[i].org_hi > lo && g_hostseg[i].org_lo < hi) hostseg_free(&g_hostseg[i]);
     pthread_mutex_unlock(&g_hostseg_mu);
@@ -936,8 +958,8 @@ static void hostseg_release(uintptr_t lo, uintptr_t hi) {
 // Recording o wrote at [p, p + n) (its bytes in a segment it leaves: cmd_own_close, EndRecording), or tried to write a record at p (n = 1: cmd_alloc_keep): segments of other recordings
 // whose guest bytes these overlap are dead, reclaim them
 static void hostseg_written(const cmd_t *o, const uint8_t *p, uint64_t n) {
-    if (!n || !atomic_load_explicit(&g_hostseg_held, memory_order_relaxed)) return;
     uintptr_t lo = (uintptr_t)p, hi = lo + n;
+    if (!hostseg_maybe_held(lo, hi)) return;
     pthread_mutex_lock(&g_hostseg_mu);
     for (int i = 0; i < g_nhostseg; i++) {
         hostseg_t *s = &g_hostseg[i];
