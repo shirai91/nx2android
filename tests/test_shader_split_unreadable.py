@@ -165,11 +165,11 @@ class Split(unittest.TestCase):
         for rel, data in files.items(): (rom / rel).parent.mkdir(parents=True, exist_ok=True); (rom / rel).write_bytes(data)
         out = [self.tmp / name / n for n in ('pkg', 'map.tsv', 'facts.tsv', 'pairs.tsv')]
         r = subprocess.run([sys.executable, str(TOOLS / 'shader_split.py'), str(rom), str(self.main), *map(str, out)], capture_output=True, text=True,
-                           env=dict(os.environ, DM_GAME=GAME, J='2'))
+                           encoding='utf-8', env=dict(os.environ, DM_GAME=GAME, J='2', PYTHONUTF8='1'))   # the porter runs the split with PYTHONUTF8=1: its tables hold a '→', which Windows' code page cannot encode
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         for p in out: self.assertTrue(p.exists(), p)
-        rows = [ln for ln in out[1].read_text().splitlines() if ln and not ln.startswith(('#', 'package\t'))]
-        return r.stdout, rows, out[3].read_text(), {f.name: f.read_bytes() for f in sorted(out[0].iterdir())}
+        rows = [ln for ln in out[1].read_text(encoding='utf-8').splitlines() if ln and not ln.startswith(('#', 'package\t'))]
+        return r.stdout, rows, out[3].read_text(encoding='utf-8'), {f.name: f.read_bytes() for f in sorted(out[0].iterdir())}
 
     def test_split_goes_on(self):
         good = {'a/one.bnsh': bnsh(1), 'b/two.sarc': sarc([(b'x.bnsh', bnsh(2))]), 'c.bin': b'no shaders'}
@@ -200,15 +200,15 @@ class SplitShaders(unittest.TestCase):
         self.nsp = nsp; self.tmp = Path(tempfile.mkdtemp()); self.addCleanup(lambda: __import__('shutil').rmtree(self.tmp))
         (self.tmp / 'logs').mkdir(); (self.tmp / 'profile').mkdir()
         self.g = mock.Mock(id='0100000000000000', table=lambda n: self.tmp / 'profile' / n)
-        for n in ('shader_map.tsv', 'shader_facts.tsv', 'shader_pairs.tsv'): (self.tmp / 'profile' / n).write_text('# old\nrow\n')
+        for n in ('shader_map.tsv', 'shader_facts.tsv', 'shader_pairs.tsv'): (self.tmp / 'profile' / n).write_text('# old\nrow\n', encoding='utf-8')
         for name, value in (('PROG', mock.Mock()), ('fingerprint', mock.Mock(return_value='key')), ('tool_files', mock.Mock(return_value=[])),
                             ('profile_files', mock.Mock(return_value=[])), ('run', mock.Mock(side_effect=self.split))):
             m = mock.patch.object(nsp, name, value); m.start(); self.addCleanup(m.stop)
 
     def split(self, cmd, log, env=None, **kw):
         (Path(cmd[4]) / 'x.bin').parent.mkdir(parents=True); (Path(cmd[4]) / 'x.bin').write_bytes(b'')
-        for t in cmd[5:]: Path(t).write_text('# new\nrow\n')
-        Path(log).write_text(self.LOG)
+        for t in cmd[5:]: Path(t).write_text('# new\nrow\n', encoding='utf-8')
+        Path(log).write_text(self.LOG, encoding='utf-8')
 
     def go(self, provisional):
         return self.nsp.split_shaders(sys.executable, ROOT / 'nxnative', [self.tmp / 'RomFS'], [self.tmp / 'main'], self.tmp / 'pkg', {}, self.tmp / 'logs', self.g, provisional)
