@@ -60,6 +60,7 @@ static VkRenderPass rp_compat(uint32_t n, const uint32_t *c, uint32_t d, uint32_
     (void)n; (void)c; (void)d; (void)s; return VK_NULL_HANDLE;
 }
 static void vk_pipeline_cache_changed(void) {}
+static void vk_crash_handlers_after_build(void) {}   // gfx_vk_core.c: the host's signal handlers after the first pipeline build
 #define VKLOG(...) do { fprintf(stderr, __VA_ARGS__); fputc('\n', stderr); } while (0)
 #define LOG(...) VKLOG(__VA_ARGS__)
 #define VKRED_ONCE(id, ...) VKLOG(__VA_ARGS__)

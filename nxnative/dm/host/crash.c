@@ -200,7 +200,10 @@ static void on_crash(int sig, siginfo_t *si, void *uc_) {
         _exit(128 + sig);
     }
     funlockfile(stderr);
+    // The first line goes out at once: the app's stderr is line-buffered and this line has no newline of its own, so a crash that kills the process before the
+    // newline (the Android host: the driver's compiler faults inside the crash handler) left the log without any trace of it (Fire Emblem: Three Houses, 2026-11-23)
     fprintf(stderr, "[dm] CRASH sig=%d", sig);
+    fflush(stderr);
     off("addr", (uint64_t)si->si_addr); off("pc", DM_UC_SS(uc)->__pc); off("lr", crash_code_addr(DM_UC_SS(uc)->__lr));
     { mach_port_t me = mach_thread_self(); char nm[64]; crash_thread_name(me, nm, sizeof nm);
       fprintf(stderr, " sp=%#llx thread %#x '%s'\n", DM_UC_SS(uc)->__sp, (unsigned)me, nm); }
@@ -285,4 +288,23 @@ void crash_install(void) {
     const int sigs[] = {SIGSEGV, SIGBUS, SIGILL, SIGTRAP, SIGABRT};
     for (int i = 0; i < 5; i++) { struct sigaction o; sigaction(sigs[i], &sa, &o);
         if (!(o.sa_flags & SA_SIGINFO && o.sa_sigaction == on_crash)) { g_old_sa[sigs[i]] = o; g_old_ok[sigs[i]] = 1; } }   // (a second call keeps the first's)
+}
+// Put the crash handlers back where a library reset them to the default action: the Vulkan driver resets the app's signal handlers when it makes the device and when it
+// loads its shader compiler, and with the default action in place a fault is a silent kill (the process dies with no crash report at all, as the Fire Emblem: Three
+// Houses case saw). A handler the driver installed over ours is left alone, as crash_handlers_check does: a library may rely on its own. Returns how many were put back.
+// This is not crash_install: that one arms the watchdog and starts its thread, and calling it again gave the run three watchdogs.
+int crash_handlers_restore(void) {
+    struct sigaction sa = {.sa_sigaction = on_crash, .sa_flags = SA_SIGINFO | SA_ONSTACK};
+    const int sigs[] = {SIGSEGV, SIGBUS, SIGILL, SIGTRAP, SIGABRT};
+    int n = 0;
+    for (int i = 0; i < 5; i++) {
+        struct sigaction o; if (sigaction(sigs[i], NULL, &o)) continue;
+        if (o.sa_flags & SA_SIGINFO && o.sa_sigaction == on_crash) continue;   // ours already
+        if (!(o.sa_flags & SA_SIGINFO) && o.sa_handler != SIG_DFL) continue;   // a library's own handler: it may rely on it
+        if (!g_old_ok[sigs[i] & 31]) { g_old_sa[sigs[i] & 31] = o; g_old_ok[sigs[i] & 31] = 1; }   // (a second call keeps the first's)
+        sigaction(sigs[i], &sa, 0);
+        n++;
+    }
+    { struct sigaction o; if (!sigaction(SIGALRM, NULL, &o) && !(o.sa_flags & SA_SIGINFO && o.sa_sigaction == on_crash) && !(o.sa_flags & SA_SIGINFO) && o.sa_handler == SIG_DFL) { sigaction(SIGALRM, &sa, 0); n++; } }   // the watchdog's alarm (DM_WATCH): a reset handler would kill the process
+    return n;
 }
