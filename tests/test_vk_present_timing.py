@@ -161,6 +161,13 @@ int main(void) {
     assert(framegen_output_rate(0, 11111111) == 0);
     framegen_cadence budget = {.interval_ns = 25000000};
     assert(framegen_pair_budget(&budget, 60) == 0 && framegen_pair_budget(&budget, 60) == 1);
+    // Smoothed input near 30 fps crosses the full-pair threshold in both directions.
+    int pairs = 0;
+    for (int i = 0; i < 100; ++i) {
+        budget.interval_ns = i % 2 ? 33800000 : 32800000;
+        pairs += framegen_pair_budget(&budget, 60);
+    }
+    assert(pairs == 98);  // 50 full pairs plus floor(50 * 0.968) fractional pairs
     framegen_cadence cadence = {0};
     uint64_t now = 1000000000;
     for (int i = 0; i < 4; ++i, now += 50000000)

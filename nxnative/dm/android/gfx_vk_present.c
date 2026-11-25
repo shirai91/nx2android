@@ -1149,7 +1149,8 @@ static int framegen_pair_budget(framegen_cadence *cadence, int fps) {
     if (!fps) return 1;
     double extra = cadence->interval_ns * fps / 1e9 - 1;
     if (extra <= 0.02) { cadence->target_credit = 0; return -1; }
-    if (extra >= 0.98) { cadence->target_credit = 0; return 1; }
+    // A full pair earns and spends one frame. Keep any fraction from earlier frames.
+    if (extra >= 0.98) return 1;
     cadence->target_credit += extra;
     if (cadence->target_credit < 1.0) return 0;
     cadence->target_credit -= 1.0;
