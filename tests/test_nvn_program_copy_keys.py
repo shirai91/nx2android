@@ -5,16 +5,17 @@ record, so its stages were keyed at the first draw from control sections Unity h
 bundle" keys, none of them in the game's 53,678 Unity shader stages, skipped the draws into the window texture and showed a black screen with sound.
 
 The harness compiles hle_nvn.c's program functions as they are (pk_get, keys_hash, prog_key, nvnProgramSetShaders, nvnProgramFinalize), with a stand-in hash and
-dictionary so it builds on every CI host, and checks: a copy gets the key of the original; a stage whose code was in no pool at SetShaders is keyed later from
+dictionary in place of CommonCrypto and CoreFoundation. It runs where tests/host_cc.py's posix() builds (macOS and Linux; the Windows runner's MinGW is
+skipped, as for the other NVN harnesses), and checks: a copy gets the key of the original; a stage whose code was in no pool at SetShaders is keyed later from
 the host's copy of its control section, not from the game's freed one; Finalize does not drop the keys a copy still needs; a new SetShaders gives a new record.
 """
-import shutil
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 
 import csrc
+from host_cc import posix
 
 HARNESS_HEAD = r'''
 #include <assert.h>
@@ -118,12 +119,10 @@ int main(int argc, char **argv) {
 '''
 
 
+@unittest.skipUnless(posix(), 'a POSIX host C compiler is required')
 class NvnProgramCopyKeysTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cc = shutil.which('cc') or shutil.which('clang') or shutil.which('gcc')
-        if not cc:
-            raise unittest.SkipTest('a C compiler is needed for the program key check')
         src = csrc.read('nxnative/dm/gfx/nvn/hle_nvn.c')
         cut = csrc.between(src, '// ---------- Programs ----------', '// ---------- Sync / events ----------', 'hle_nvn.c')
         cls._tmp = tempfile.TemporaryDirectory(prefix='nx2a_prog_keys_')
@@ -132,7 +131,7 @@ class NvnProgramCopyKeysTests(unittest.TestCase):
         c.write_text(HARNESS_HEAD + cut + HARNESS_TAIL, encoding='utf-8')
         nvn_dir = csrc.REPO / 'nxnative/dm/gfx/nvn'
         res = subprocess.run(
-            [cc, '-std=gnu11', '-Wall', '-Wno-unused-function', '-Werror', f'-I{nvn_dir}', f'-I{nvn_dir / "include"}', str(c), '-lpthread', '-o', str(cls.exe)],
+            ['cc', '-std=gnu11', '-Wall', '-Wno-unused-function', '-Werror', f'-I{nvn_dir}', f'-I{nvn_dir / "include"}', str(c), '-pthread', '-o', str(cls.exe)],
             capture_output=True, text=True,
         )
         if res.returncode != 0:
