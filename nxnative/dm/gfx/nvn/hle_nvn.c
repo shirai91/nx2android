@@ -2848,6 +2848,25 @@ static int write_region_bl(const tex_t *t, unsigned level, unsigned layer, const
         }
     return 0;
 }
+// The storage of one level of one layer (block-linear: a layer's levels follow one another, layers layer_size apart), for the write preparation below:
+// 0 when the layout gives none (the whole storage is prepared then)
+static int level_slice(const tex_t *t, unsigned level, unsigned layer, uint64_t *off, uint64_t *len) {
+    unsigned nl = t->d.levels ? t->d.levels : 1;
+    if (!t->L.layer_size || layer >= t->L.layers || level >= nl) return 0;
+    uint64_t a = nvn_tex_level_offset(&t->d, level), b = level + 1 < nl ? nvn_tex_level_offset(&t->d, level + 1) : t->L.layer_size;
+    if (b <= a || b > t->L.layer_size || (uint64_t)layer * t->L.layer_size + b > t->L.size) return 0;
+    *off = (uint64_t)layer * t->L.layer_size + a; *len = b - a; return 1;
+}
+// Only the level and layers the region writes are made writable and stamped as written, not the whole storage: Vulkan's upload of a written texture takes only
+// the levels and layers whose pages were written since (gfx_vk_tex.c pkg_upload_). NieR:Automata writes regions of 512x512 arrays of 16 and 32 MB about 70
+// times a frame, and every call marked the whole array written: the replay deswizzled and uploaded all of it again, 8 to 33 MB a frame (2.8 to 12.8 ms)
+static void prepare_region(const tex_t *t, unsigned level, unsigned layer0, int nz) {
+    for (int z = 0; z < nz; z++) {
+        uint64_t off, len;
+        if (!level_slice(t, level, layer0 + (unsigned)z, &off, &len)) { dm_guest_write_prepare(t->mem, t->L.size); return; }
+        dm_guest_write_prepare(t->mem + off, len);
+    }
+}
 static void write_texels(const tex_t *t, const view_t *v, const NVNcopyRegion *r, const uint8_t *src, size_t row, size_t img) {
     if (!t->mem) { LOG("[RED] WriteTexels: texture has no storage"); return; }
     int bw, bh, bpb = nvn_fmt_bpb(t->d.format, &bw, &bh);
@@ -2856,7 +2875,7 @@ static void write_texels(const tex_t *t, const view_t *v, const NVNcopyRegion *r
     int is3d = t->d.target == NVN_TEXTURE_TARGET_3D, nz = r->depth ? r->depth : 1;
     if (!is3d) {
         size_t wb0 = (size_t)((r->width + bw - 1) / bw) * bpb, row0 = row ? row : wb0, img0 = img ? img : row0 * (size_t)((r->height + bh - 1) / bh);
-        dm_guest_write_prepare(t->mem, t->L.size);
+        prepare_region(t, level, layer0 + (unsigned)r->zoffset, nz);
         int ok = 1;
         for (int z = 0; z < nz && ok; z++) ok = !write_region_bl(t, level, layer0 + (unsigned)(r->zoffset + z), r, src + (size_t)z * img0, row0, bw, bh, bpb);
         if (ok) { mtl_tex_cpu_written(t); return; }

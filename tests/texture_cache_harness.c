@@ -14,7 +14,7 @@ typedef int pthread_mutex_t;
 typedef struct { int depth,stencil,vk; } vkfmt_t;
 typedef struct vkimg {
     uint64_t pool,used,pkg_used,pkg_vgen,pkg_stamp,pkg_seen,pkg_hash;
-    int64_t off,size; int flags,looked,packaged,pkg_sparse,pkg_released,gpu_w;
+    int64_t off,size; int flags,looked,packaged,pkg_sparse,pkg_released,pkg_nohash,gpu_w;
     const void *pkg_span,*pkg_mem,*lin_mem;size_t pkg_len,lin_len;
     void *img,*mem,*sub,*full;
     struct vkimg *bc_draw; // No compressed-format stand-in in this family fixture.
@@ -45,8 +45,8 @@ static int cpu_content_tex(const tex_t *t,const vkfmt_t *f) {(void)t;(void)f;ret
 static uint64_t dirty_stamp=1;
 static uint64_t nvn_dirty_now(void) {return dirty_stamp;}
 static uint64_t pkg_hash(const uint8_t *mem,size_t size) {(void)size;return mem[0];}
-static void pkg_upload(vkimg_t *im,const tex_t *t,const vkfmt_t *f,int track_writes) {
-    (void)f;uploads++;im->content=t->mem[0];
+static void pkg_upload(vkimg_t *im,const tex_t *t,const vkfmt_t *f,int track_writes,const uint64_t *since) {
+    (void)f;(void)since;uploads++;im->content=t->mem[0];
     if (!track_writes) return;
     im->pkg_seen=im->pkg_stamp=nvn_dirty_now();
     im->pkg_hash=pkg_hash(t->mem,t->L.size);im->pkg_mem=t->mem;im->pkg_span=t->mem;im->pkg_len=t->L.size;

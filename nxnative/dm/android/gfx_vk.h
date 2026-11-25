@@ -117,6 +117,7 @@ struct vkimg {
     uint64_t pkg_stamp; const void *pkg_span; uint64_t pkg_seen;
     uint64_t pkg_hash;              // hash of the guest bytes it was last uploaded from: pages written around it with its own bytes unchanged keep what the GPU wrote (gfx_vk_tex.c vk_tex)
     const uint8_t *pkg_mem; size_t pkg_len; uint64_t pkg_used; int pkg_released;   // its storage, the present it was last drawn at, protection given up (vk_tex_sweep)
+    int pkg_nohash;                 // pkg_hash is not the storage's last upload: only some levels and layers were uploaded since (pkg_upload_)
     uint64_t pkg_vgen; int pkg_sparse;   // a texture of a sparse virtual pool (read through its page table, nvn_sparse_copy): the mapping generation at its upload
     uint64_t used;                  // the present it was last looked up at (vk_tex: evict_overlaps)
     int looked;                     // looked up inside a submission once (vk_tex: its first use, when its content is decided; a lookup outside one records nothing)
