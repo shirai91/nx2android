@@ -1526,7 +1526,8 @@ NVN(nvnWindowInitialize, NVNboolean, NVNwindow *w, const NVNwindowBuilder *b) {
         o->ntex ? (int)CTX(o->tex[0])->d.width : 0, o->ntex ? (int)CTX(o->tex[0])->d.height : 0, o->ntex ? CTX(o->tex[0])->d.format : 0);
     return 1;
 }
-NVN(nvnWindowGetPresentInterval, int, const NVNwindow *w) { return ((const win_t *)w)->interval; }   // Link's Awakening reads it back every frame
+static int window_interval(const win_t *o);
+NVN(nvnWindowGetPresentInterval, int, const NVNwindow *w) { return window_interval((const win_t *)w); }   // Link's Awakening reads it back every frame
 NVN(nvnWindowSetPresentInterval, void, NVNwindow *w, int v) {   // the caller in the log: where a 60 fps cut starts looking (Pokémon Legends: Z-A)
     if (((win_t *)w)->interval != v) { char at[96]; crash_addr_str(at, sizeof at, (uint64_t)__builtin_return_address(0)); LOG("[nvn] the game sets present interval %d → %d (from %s)", ((win_t *)w)->interval, v, at); }
     ((win_t *)w)->interval = v;
@@ -1874,6 +1875,11 @@ static void present_cfg(const win_t *o) {
         msrc, o->interval, scr > 0 ? "window, fixed 60 Hz" : "no window, fixed 60 Hz");
 }
 static int present_itv(const win_t *o) { int c = fps_step_cap(), k = atomic_load(&g_fs_k); return c ? (k && fstep_on() ? k : 60 / c) : g_display_mode ? 1 : o->interval > 0 ? o->interval : 1; }   // vsyncs per frame that presentation follows
+// The present interval the game reads back (nvnWindowGetPresentInterval): the one it set, except in display mode (dm_pacing_display), where the window presents at the interval above
+// (1, or the cap's) whatever the game set, and answering the game's own let it pace for that interval itself. Luigi's Mansion 3 (30 fps on the Switch, interval 2) reads the newest
+// frame-history entry and the interval before each present (main+0xb7a4b8): while that frame is not shown it sleeps 16.67 ms per vsync of the interval, and once shown it waits until
+// (interval - 1) vsyncs after its present time. At 60 fps (fps_target 60, present_interval display) that held it at about 25 fps on the Mac once vi::ListFrameHistory listed the presents
+static int window_interval(const win_t *o) { present_cfg(o); return g_display_mode ? present_itv(o) : o->interval; }
 static uint64_t present_period(const win_t *o) {
     present_cfg(o);
     int was = atomic_load(&g_game_itv), want = o->interval > 0 ? o->interval : 1;

@@ -1,8 +1,9 @@
-"""The layer's frame history (nn::vi::ListFrameHistory, hle_vi.c).
+"""The layer's frame history (nn::vi::ListFrameHistory, hle_vi.c) and the present interval a game reads back (nvnWindowGetPresentInterval, hle_nvn.c).
 
 Unreal Engine 5's Switch RHI takes the first shown entry of the history as its latest flip; with no entries Minecraft Dungeons II waited for ever at its first frame-end
-sync. The harness cuts the real code out of hle_vi.c (csrc.py) and drives it with a stub backend: the present queue's progress, flip times, GPU completion and the
-pacer's vsync grid. Adapted from seedds/nxnative's t_vi_history.c (MIT).
+sync. Luigi's Mansion 3 paces itself by the newest entry and the window's interval, so in display mode the window answers the interval it presents at. The harnesses cut
+the real code out of the core sources (csrc.py) and drive it with stub backends: the history ring with the present queue's progress, flip times, GPU completion and the
+pacer's vsync grid, and the interval with the pacing policy's display mode, the cap and the frame step. Adapted from seedds/nxnative's t_vi_history.c and t_nvn.c (MIT).
 """
 from pathlib import Path
 import shutil
@@ -136,10 +137,53 @@ int main(void) {
 }
 '''
 
+INTERVAL_HEAD = r'''
+#include <assert.h>
+#include <stdatomic.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+typedef struct { int interval; } win_t;
+typedef struct NVNwindow NVNwindow;
+#define NVN(name, ret, ...) static ret name(__VA_ARGS__)
+static void log_noop(const char *fmt, ...) { (void)fmt; }
+#define LOG(...) log_noop(__VA_ARGS__)
+static int g_hz = -1, g_display_mode;
+static _Atomic int g_fs_k;
+static int g_cap, g_fstep, g_display;
+static int fps_step_cap(void) { return g_cap; }
+static int fstep_on(void) { return g_fstep; }
+static int mtl_display_hz(void) { return 60; }
+static int dm_pacing_display(const char **src) { *src = "test"; return g_display; }   // the pacing policy's display mode (dm_pacing.c)
+'''
+
+INTERVAL_MAIN = r'''
+int main(void) {
+    win_t w = {2}; const NVNwindow *nw = (const NVNwindow *)&w;
+    assert(nvnWindowGetPresentInterval(nw) == 2);    // game mode: the interval the game set
+    g_cap = 30; assert(nvnWindowGetPresentInterval(nw) == 2);   // game mode under a cap: still the game's own
+    g_hz = -1; g_display = 1; g_cap = 0;             // display mode, as the pacing policy says
+    assert(nvnWindowGetPresentInterval(nw) == 1);    // one frame per tick whatever the game set (Luigi's Mansion 3 no longer paces for its 2)
+    g_cap = 30; assert(nvnWindowGetPresentInterval(nw) == 2);   // under a 30 cap: the cap's interval
+    g_fstep = 1; atomic_store(&g_fs_k, 3); assert(nvnWindowGetPresentInterval(nw) == 3);   // the frame step's hold, which presentation follows
+    w.interval = 1; g_cap = 0; g_fstep = 0; assert(nvnWindowGetPresentInterval(nw) == 1);
+    puts("window present interval: PASS");
+    return 0;
+}
+'''
+
+
 def history_source():
     vi = csrc.read('nxnative/dm/gfx/hle_vi.c')
     cut = csrc.between(vi, '#define VFH 8', '// Rhythm Heaven Groove', 'hle_vi.c frame history')
     return HISTORY_HEAD + cut + HISTORY_MAIN
+
+
+def interval_source():
+    nvn = csrc.read('nxnative/dm/gfx/nvn/hle_nvn.c')
+    getter = csrc.between(nvn, 'static int window_interval(const win_t *o);\n', 'NVN(nvnWindowSetPresentInterval', 'hle_nvn.c nvnWindowGetPresentInterval')
+    policy = csrc.between(nvn, 'static void present_cfg(const win_t *o) {', 'static uint64_t present_period(', 'hle_nvn.c present_cfg .. window_interval')
+    return INTERVAL_HEAD + getter + policy + INTERVAL_MAIN
 
 
 def run(source, name):
@@ -157,6 +201,9 @@ def run(source, name):
 class ViFrameHistory(unittest.TestCase):
     def test_history_ring(self):
         self.assertIn('PASS', run(history_source(), 'vi_history'))
+
+    def test_window_present_interval(self):
+        self.assertIn('PASS', run(interval_source(), 'window_interval'))
 
     def test_backends_supply_the_history(self):
         # Every graphics backend gives hle_vi.c what it asks for, and both of hle_nvn.c's present paths tell it each present's ticket
