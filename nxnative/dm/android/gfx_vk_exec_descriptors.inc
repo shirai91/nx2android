@@ -303,11 +303,56 @@ static void vk_cross(int k, uint64_t a, uint64_t n, const vkpool_t *p) {
     uint64_t c = ++g_cross[k]; if (!(c & (c - 1))) VKLOG("%s%llu %s across a memory pool chunk's end (this one %#llx +%#llx, the chunk ends at %#llx)", k == 1 || k == 3 ? "[RED] " : "", (unsigned long long)c, what[k],
                                                            (unsigned long long)a, (unsigned long long)n, (unsigned long long)p->hi);
 }
-// a constant buffer binding's descriptor (stage_set, set_memo_get): its pool's buffer from the alignment boundary below it, or the shadow of the deferred updates over it
+// Reads past a uniform binding's size give 0, as on the Switch (adapted from seedds/nxnative 26062f9e, e45694b7, 1d090a66, 6212f018). Paper Mario: The Thousand-Year Door
+// binds 16 bytes to a slot whose shader reads its light count at byte 0x900 and loops over that many lights: on the Mac the GPU hung on what lay there (nxnative issue #1860).
+// The size that bounds a slot is the one NVN's driver gives the GPU, the bound size rounded up to 256 bytes (ub_bound): nvnCommandBufferBindUniformBuffer writes
+// (size + 0xff) & ~0xff (NVN1, method 0x8e0), so a read between the bound size and the next multiple of 256 gives the memory there. Three parts:
+// - the descriptor's range is that rounded size, where the memory reaches that far (it was the exact size);
+// - a binding shorter than its shader's reads at fixed offsets (the translator's "fixed", the binding's off; shader_vk.py) is bound from a copy that holds the binding's bytes,
+//   the memory's own up to the rounded size, and zeros up to there (ub_padded): once a binding, not a comparison at each read, which on Metal took a fifth of Donkey Kong
+//   Bananza's GPU time (nxnative issue #2066);
+// - a read at a computed offset is compared in the shader with the slot's rounded size from the size table, RK_CBSIZE (cbsize_desc; TranslationFlags.UniformBounds).
+// Vulkan alone does not give it: a read past a descriptor's range is undefined without robustBufferAccess, which only promises a value from somewhere in the buffer
+// (here the game's whole memory pool, the bytes nxnative found the hang in) or zero; robustBufferAccess2 (VK_EXT_robustness2) promises zero but is device-wide (every
+// storage, vertex and texel buffer access as well) and not on every driver: DM_VK_ROBUST=2 turns it on for an A/B. DM_VK_UB_BOUNDS=0 (live, read once a submission,
+// x_read): none of the three parts, the bindings and their ranges as before (the size table then holds 64 KiB for every bound slot)
+static inline uint64_t ub_bound(uint64_t size) { return (size + 255) & ~(uint64_t)255; }
+static uint64_t g_ub_padded;   // bindings bound from a padded copy
+static void ub_padded(const vkshader_t *s, int st, int reg, const p_bind_buf *u, uint64_t live, uint32_t need, VkDescriptorBufferInfo *bi) {
+    static struct { uint64_t a, live, ep, gen; uint32_t need; VkBuffer b; VkDeviceSize o; } c[16]; unsigned k = (unsigned)(u->addr >> 8 ^ need) % 16;
+    VkBuffer buf; VkDeviceSize off;
+    if (c[k].a == u->addr && c[k].live == live && c[k].need == need && c[k].ep == g_set_epoch && c[k].gen == g_ubd_gen) { buf = c[k].b; off = c[k].o; }
+    else {
+        uint8_t *d = vk_scratch(need, V.props.limits.minUniformBufferOffsetAlignment, &buf, &off);
+        vk_ubd_read(u->addr, live, d); memset(d + live, 0, need - live);   // what the slot would read (the deferred updates over it too), then zeros
+        c[k].a = u->addr; c[k].live = live; c[k].need = need; c[k].ep = g_set_epoch; c[k].gen = g_ubd_gen; c[k].b = buf; c[k].o = off;
+        uint64_t m = ++g_ub_padded; static int nlog;
+        if (nlog < 16 || !(m & (m - 1))) { nlog++; VKLOG("uniform slot %d of shader %016llx (stage %d) is bound with %llu bytes (%llu readable) and read up to byte %u at fixed offsets: "
+            "bound from a copy with zeros past those (%llu such copies so far)", reg, (unsigned long long)s->key, st, (unsigned long long)u->size, (unsigned long long)live, need, (unsigned long long)m); }
+    }
+    ubo_log(s, st, reg, u->addr, need); *bi = (VkDescriptorBufferInfo){buf, off, need};
+}
+// The size table of the stage's uniform slots, c[25] (Ryujinx Constants.NxUniformSizesBank): a u32 for each of slots 0 to 13, in four uint4. A slot's rounded size (ub_bound),
+// at most 64 KiB; 0 for one with no buffer (it is bound the zero buffer, cbuf_desc); 64 KiB for a size of 0, as its descriptor. One copy while the sizes stay the same
+static void cbsize_desc(int st, VkDescriptorBufferInfo *bi) {
+    uint32_t t[16] = {0};
+    for (int r = 0; r < 14; r++) { const p_bind_buf *u = &S.ubo[st][r];
+        if (u->addr) t[r] = !g_ub_bounds || !u->size || u->size >= 65536 ? 65536 : (uint32_t)ub_bound(u->size); }
+    static struct { uint64_t ep; uint32_t t[16]; VkBuffer b; VkDeviceSize o; } c[6];
+    if (c[st].b && c[st].ep == g_set_epoch && !memcmp(c[st].t, t, sizeof t)) { *bi = (VkDescriptorBufferInfo){c[st].b, c[st].o, sizeof t}; return; }
+    VkBuffer buf; VkDeviceSize off; uint8_t *d = vk_scratch(sizeof t, V.props.limits.minUniformBufferOffsetAlignment, &buf, &off); memcpy(d, t, sizeof t);
+    c[st].ep = g_set_epoch; memcpy(c[st].t, t, sizeof t); c[st].b = buf; c[st].o = off;
+    *bi = (VkDescriptorBufferInfo){buf, off, sizeof t};
+}
+// a constant buffer binding's descriptor (stage_set, set_memo_get): its pool's buffer from the alignment boundary below it, or the shadow of the deferred updates over it,
+// or a copy padded with zeros (ub_padded); for RK_CBSIZE the size table
 extern uint64_t g_cbpath[3];
 static void cbuf_desc(int st, const vkshader_t *s, const dmsv_bind *b, VkDescriptorBufferInfo *bi) {
+    if (b->kind == RK_CBSIZE) { cbsize_desc(st, bi); return; }
     const p_bind_buf *u = b->reg >= 0 && b->reg < 16 ? &S.ubo[st][b->reg] : NULL;
-    uint64_t n = u && u->size ? (u->size > 65536 ? 65536 : u->size) : 65536; VkBuffer buf; VkDeviceSize off;
+    uint64_t exact = u && u->size ? (u->size > 65536 ? 65536 : u->size) : 65536, n = exact; VkBuffer buf; VkDeviceSize off;
+    if (g_ub_bounds && u && u->size && u->size < 65536) n = ub_bound(u->size);   // what NVN's driver gives the GPU (ub_bound)
+    uint32_t need = g_ub_bounds && b->off > 0 ? (b->off < 65536 ? (uint32_t)b->off : 65536) : 0;   // its shader's reads at fixed offsets reach this far
     // the pool this slot's buffer was last found in, while no pool came or went (vk_pool_gen; a lazy pool given its buffer counts): the memo's check of the
     // constant buffers (set_memo_get) looks each one up again for most draws, and pool_find's own cache (thread-local, by page) took ~8% of Sifu's replay thread
     // (the last four, most recent first: Sifu's game scene binds a slot's constant buffers from several pools in turn). As pool_find's own caches, a pool with pools inside
@@ -323,6 +368,9 @@ static void cbuf_desc(int st, const vkshader_t *s, const dmsv_bind *b, VkDescrip
         if (g_ubolog_key && s->key == g_ubolog_key && g_ubolog_n > 0) { g_ubolog_n--; VKLOG("ubo: present %llu pass %d stage %d c%d %#llx +%llu: in no memory pool, zeros bound", (unsigned long long)g_tex_frame, g_sub_pass - 1, st, b->reg, (unsigned long long)(u ? u->addr : 0), (unsigned long long)(u ? u->size : 0)); }
         *bi = (VkDescriptorBufferInfo){vk_zero_buffer(), 0, 65536}; return; }
     buf = p->buf; off = u->addr - p->lo;
+    uint64_t left = (p->end > p->hi ? p->end : p->hi) - u->addr;   // the game's pool from the binding on (its chunks after this one too)
+    if (n > exact && n > left) n = exact > left ? exact : left;   // the pool ends before the rounded size
+    if (need > n) { ub_padded(s, st, b->reg, u, n < left ? n : left, need, bi); return; }   // bound shorter than its shader reads it at fixed offsets: those reads give 0, as on the Switch
     if (off + n > p->hi - p->lo) {
         if (p->hi < p->end && u->addr + n <= p->end) {   // into the pool's next chunk (vk_cross): the whole range from CPU memory, one copy per submission
             static struct { uint64_t a, n, ep, gen; VkBuffer b; VkDeviceSize o; } cc[16]; unsigned k = (unsigned)(u->addr >> 8) % 16;
@@ -360,10 +408,11 @@ extern uint64_t g_ubd_gen; uint32_t vk_pool_gen(void);
 // 1 another shader on the stage, 2 a binding of the stage changed, 3 the texture, sampler or pool tables changed, 4 its constant buffers moved, 5 other
 // (another submission, base instance, a stage or shader the memo does not take)
 uint64_t g_memo_why[6], g_cbmiss[3], g_cbpath[3];   // g_cbpath: cbuf_desc's answers from the pool's buffer, a copy across chunks, a deferred update's shadow   // g_cbmiss: constant buffer misses by cause (another buffer, another range, a static one's offset)
-static inline int ss_kind(int k) { return k == RK_CBUF || k == RK_SBUF || k == RK_UBO_PTR || k == RK_SBUF_UBO ? 1 : k == RK_SUPPORT || k == RK_C1 || k == RK_DRV ? 2 : 0; }
+static inline int cb_kind(int k) { return k == RK_CBUF || k == RK_CBSIZE; }   // a binding cbuf_desc gives: the memo looks at it again when the uniform buffers change
+static inline int ss_kind(int k) { return cb_kind(k) || k == RK_SBUF || k == RK_UBO_PTR || k == RK_SBUF_UBO ? 1 : k == RK_SUPPORT || k == RK_C1 || k == RK_DRV ? 2 : 0; }
 static int set_memo_ok(vkshader_t *s) {
     if (!s->setmemo) { int ok = 1, ncb = 0;
-        for (int i = 0; i < s->nbind; i++) { const dmsv_bind *b = &s->b[i]; ncb += b->kind == RK_CBUF;
+        for (int i = 0; i < s->nbind; i++) { const dmsv_bind *b = &s->b[i]; ncb += cb_kind(b->kind);
             ok &= b->kind != RK_TEXD && b->kind != RK_SAMPD && b->kind != RK_SBUF_UBO && b->kind != RK_UBO_PTR && b->kind != RK_TEX_UBO && b->kind != RK_IMG_UBO && b->kind != RK_TBUF_UBO && b->samp != RS_UBO && i < 256; }
         s->setmemo = ok && ncb <= MEMO_CB ? 1 : 2; }
     return s->setmemo == 1;
@@ -425,11 +474,11 @@ static void cbuf_desc(int st, const vkshader_t *s, const dmsv_bind *b, VkDescrip
 // The stage's constant buffer descriptors, once a stage_set (the memo's check, its key and the collection all take them)
 enum { CBD_MAX = 256 };
 static void cbd_fill(int st, const vkshader_t *s, VkDescriptorBufferInfo cbd[CBD_MAX]) {
-    for (int i = 0; i < s->nbind && i < CBD_MAX; i++) if (s->b[i].kind == RK_CBUF) cbuf_desc(st, s, &s->b[i], &cbd[i]);
+    for (int i = 0; i < s->nbind && i < CBD_MAX; i++) if (cb_kind(s->b[i].kind)) cbuf_desc(st, s, &s->b[i], &cbd[i]);
 }
 static uint64_t cb_sig(const vkshader_t *s, const VkDescriptorBufferInfo *cbd) {
     uint64_t h = 0;
-    for (int i = 0; i < s->nbind && i < CBD_MAX; i++) if (s->b[i].kind == RK_CBUF) { const VkDescriptorBufferInfo *d = &cbd[i];
+    for (int i = 0; i < s->nbind && i < CBD_MAX; i++) if (cb_kind(s->b[i].kind)) { const VkDescriptorBufferInfo *d = &cbd[i];
         h = (h ^ (uint64_t)(uintptr_t)d->buffer ^ (d->range << 40)) * 0x9E3779B97F4A7C15ull; h ^= h >> 31; }
     return h;
 }
@@ -529,7 +578,7 @@ static VkDescriptorSet stage_set(int st, vkshader_t *s, uint32_t *dofs, VkDescri
         switch (b->kind) {
         case RK_SUPPORT: bi[nw] = (VkDescriptorBufferInfo){vk_support_buffer(), 0, 65536}; break;
         case RK_C1: vk_shader_c1(s, &buf, &off, &len); bi[nw] = (VkDescriptorBufferInfo){buf, off, len}; break;
-        case RK_CBUF: if (have_cbd && i < CBD_MAX) bi[nw] = cbd[i]; else cbuf_desc(st, s, b, &bi[nw]); if (ncb < MEMO_CB) { mci[ncb] = (uint8_t)i; mcd[ncb++] = bi[nw]; } break;
+        case RK_CBUF: case RK_CBSIZE: if (have_cbd && i < CBD_MAX) bi[nw] = cbd[i]; else cbuf_desc(st, s, b, &bi[nw]); if (ncb < MEMO_CB) { mci[ncb] = (uint8_t)i; mcd[ncb++] = bi[nw]; } break;
         case RK_DRV: {
             if (indirect_c0 && st == 5 && b->reg == 0) {
                 if (!indirect_c0->buffer) {   // several bindings of c0 in one shader share this dispatch's segment

@@ -226,7 +226,7 @@ static int gs_split_inputs_safe(vkshader_t *gs, uint64_t ibuf, uint64_t in) {
         }
         for (int v = 0; v < S.sh[0]->nbind; v++) {
             const dmsv_bind *r = S.sh[0]->b + v;
-            if (r->kind == RK_SUPPORT || r->kind == RK_DRV || r->kind == RK_C1) continue;
+            if (r->kind == RK_SUPPORT || r->kind == RK_DRV || r->kind == RK_C1 || r->kind == RK_CBSIZE) continue;
             if (r->reg < 0 || r->reg >= 16) return 0;
             p_bind_buf *rd;
             if (r->kind == RK_CBUF || r->kind == RK_UBO_PTR) rd = &S.ubo[0][r->reg];

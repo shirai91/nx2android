@@ -368,7 +368,7 @@ static vkshader_t *vk_shader_q(uint64_t key, int stage, int quiet) {
     VkDescriptorSetLayoutBinding lb[96]; uint32_t nl = 0;
     for (int i = 0; i < s->nbind && nl < 96; i++) {
         const dmsv_bind *b = &s->b[i];
-        int dyn = b->desc == RD_UBO && (b->kind == RK_CBUF || b->kind == RK_DRV) && b->count == 1 && (uint32_t)s->ndyn < dynmax;
+        int dyn = b->desc == RD_UBO && (b->kind == RK_CBUF || b->kind == RK_CBSIZE || b->kind == RK_DRV) && b->count == 1 && (uint32_t)s->ndyn < dynmax;
         s->dyn[i] = (uint8_t)dyn; s->ndyn += dyn;
         lb[nl++] = (VkDescriptorSetLayoutBinding){b->binding, dyn ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC : desc_type(b->desc), b->count ? b->count : 32, stage_flag(stage), NULL};
     }

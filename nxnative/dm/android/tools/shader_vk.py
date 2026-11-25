@@ -116,7 +116,7 @@ def job_for(key, stage, rec, w):   # dmsh_build.py job_for; transform feedback i
     elif code[:4] == bytes.fromhex('79563412'): code = code[0x100:]
     cp = os.path.join(w, key + '.bin'); open(cp, 'wb').write(code)
     xfb = xfb_layout(key, rec[ci:]) if stage in ('vs', 'gs') else None   # a geometry shader captures what it emits (Xenoblade Chronicles 3's particle update, 293ecebc0136519b)
-    j = {'key': key, 'stage': stage, 'code': cp, 'tex': {}, 'img': {}, 'attr': {}, 'fout': {}, 'c1': c1.hex(), 'debug': False, 'reduced': True, 'sb_align': SB_ALIGN, 'subgroup': SUBGROUP, 'gather_bias': GATHER_BIAS, 'gs_passthrough': False, 'draw_parameters': True, 'viewport_mask': False, 'render_scale': False, **({'xfb': xfb} if xfb else {})}
+    j = {'key': key, 'stage': stage, 'code': cp, 'tex': {}, 'img': {}, 'attr': {}, 'fout': {}, 'c1': c1.hex(), 'debug': False, 'reduced': True, 'sb_align': SB_ALIGN, 'subgroup': SUBGROUP, 'gather_bias': GATHER_BIAS, 'gs_passthrough': False, 'draw_parameters': True, 'viewport_mask': False, 'render_scale': False, 'uniform_bounds': True, **({'xfb': xfb} if xfb else {})}
     if stage == 'cs':   # Runtime captures have no facts-table row; their control section still declares the workgroup.
         x, y, z, shared = struct.unpack_from('<4I', rec, ci + 0x748)
         j.update(local=[x, y, z], shared=(shared + 15) // 16 * 16)
@@ -196,6 +196,7 @@ TEX_BASE, IMG_BASE, IMG_SLOTS, SEPTEX_BASE, SEPTEX_SLOT0, SAMP_BASE = 0x20, 0x12
 # NVN geometry c0 uses 0x410 + 16 * slot. NieR's IndexBuildIndependent GS reads
 # slots 0 and 2 there to write the later colour draws' indirect indices/counts.
 SSBO = {'vs': 0x110, 'gs': 0x410, 'cs': 0x310, 'ps': 0x510}
+CBSIZE_BANK = 25   # the uniform slots' size table: Ryujinx Constants.NxUniformSizesBank (TranslationFlags.UniformBounds)
 def classify(stage, b, res):
     nm = b['name']; e = dict(b)
     # Dynamic pool arrays use driver c2 slot indices (as the Metal backend).
@@ -204,7 +205,13 @@ def classify(stage, b, res):
     m = re.fullmatch(r'[a-z]+_c(\d+)', nm)
     if m:
         n = int(m.group(1))
-        e.update(kind='cbuf', reg=n - 3) if 3 <= n <= 16 else e.update(kind='c1' if n == 1 else 'drvcb', bank=n); return e
+        # A game uniform slot carries its bytes read at fixed offsets (the translator's "fixed", TranslationFlags.UniformBounds): the host pads a binding shorter than that
+        # with zeros (gfx_vk_exec_descriptors.inc cbuf_desc). At most the 64 KiB a slot can address. c25 is the slots' size table the reads at computed offsets compare with
+        if 3 <= n <= 16:
+            fixed = next((c.get('fixed', 0) for c in res.get('cbufs', ()) if c.get('slot') == n), 0)
+            e.update(kind='cbuf', reg=n - 3, off=min(max(fixed, 0), 0x10000) if fixed else None); return e
+        if n == CBSIZE_BANK: e.update(kind='cbsize'); return e
+        e.update(kind='c1' if n == 1 else 'drvcb', bank=n); return e
     if nm == 'support_buffer': e.update(kind='support'); return e
     m = re.fullmatch(r'[a-z]+_s(\d+)', nm)
     if m:
@@ -256,8 +263,9 @@ def classify(stage, b, res):
 # Binary reflection (dm/android/gfx_vk.h dmsv_refl / dmsv_bind): header {u32 nbind, u32 c1_len, u32 local[3]}, nbind × 20-byte bindings, then c1.
 # binding: u8 kind, u8 desc (descriptor type), u8 dim (SPIR-V Dim, 0xff none), u8 flags (1 arrayed, 2 multisampled, 4 written), u16 binding, u16 count,
 #          i16 reg, u8 samp (sampler source), u8 fmt (SPIR-V image format), i32 off, i32 samp_arg
+#          (a cbuf's off: its bytes read at fixed offsets, -1 or 0 none; a cbsize binding is the uniform slots' size table)
 KIND = {'support': 0, 'cbuf': 1, 'c1': 2, 'drvcb': 3, 'sbuf': 4, 'ubo_ptr': 5, 'sbuf_ubo': 6, 'tex': 7, 'tbuf': 8, 'img': 9, 'img_tbuf': 10, 'tex_c2a': 11,
-        'tex_ubo': 12, 'tbuf_ubo': 13, 'img_ubo': 14, 'texd': 15, 'sampd': 16, '?': 255}
+        'tex_ubo': 12, 'tbuf_ubo': 13, 'img_ubo': 14, 'texd': 15, 'sampd': 16, 'cbsize': 17, '?': 255}
 DESC = {'ubo': 0, 'ssbo': 1, 'sampled': 2, 'storage': 3, 'tbuf': 4, 'storage_tbuf': 5, 'image': 6, 'sampler': 7, '?': 255}
 SAMP_NONE, SAMP_TEX, SAMP_SLOT, SAMP_ID, SAMP_UBO = 0, 1, 2, 3, 4
 kinds_all = collections.Counter()

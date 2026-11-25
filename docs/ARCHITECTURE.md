@@ -215,6 +215,8 @@ The Android backend's descriptor caches (`gfx_vk_exec_descriptors.inc`) find can
 
 These hashes stay in the process: they are not persisted and do not change the Vulkan pipeline-cache identity.
 
+A read past a uniform binding's size gives 0, as on the Switch, where NVN's driver gives the GPU the bound size rounded up to 256 bytes (adapted from seedds/nxnative; Paper Mario: The Thousand-Year Door hung the GPU on a light count read past a 16-byte binding). A Vulkan read past a descriptor's range is undefined, and robust buffer access only promises some value from the buffer, here the game's memory pool. So the translator (`TranslationFlags.UniformBounds`, set by `shader_vk.py`) compares each read at a computed offset with the slot's size from a size table (binding kind `cbsize`, c[25]) and reports how far each slot is read at fixed offsets (the binding's `off`); `cbuf_desc` binds the rounded size, binds a slot shorter than its fixed-offset reads from a copy padded with zeros, and fills the table. `DM_VK_UB_BOUNDS=0` (live) binds as before, for an A/B; `DM_VK_ROBUST=2` (robustBufferAccess2, every buffer access, where the driver has it) is the other A/B.
+
 ## Game profiles on Android
 
 A profile is offered for Android when it has an `android.tsv`; the profiles without one (52 of the 54 today, upstream's iOS games) show as "ios only": an experimental port can still try them. `android.tsv` holds, one `key<TAB>value` row each:
