@@ -1,0 +1,15 @@
+# Teenage Mutant Ninja Turtles: Shredder's Revenge on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Tribute Games' Paris engine (MonoGame 2.22.5.0) on SDK 13, update 1.0.9 (v589824); 88 shaders split (35 pixel, 53 vertex).
+# Tested 2026-11-24 on the Xiaomi 23117RK66C (Android 16, Adreno 750) with the system's own driver: with the online SDK loaded the game boots to its logo screen at 60 fps and
+# goes on to its main menu at 40 fps.
+# The intro video's context crashes in the game's own code - a null member reference from its Mono lookup - and two cuts in the game's own main (patches.py) turn that into a
+# clean failure, so the intro video is skipped and the game carries on.
+# DM_ONLINE_SDK=1 lets the host load the game's Epic Online Services NRO (hle_ro.c); without it the game crashes at its start-up (a null online object).
+status	playable
+tested	v589824 Xiaomi 23117RK66C (Android 16)
+package	org.nx2a.t0100bb8017f24000
+orientation	landscape
+env	DM_ONLINE_SDK=1
+readme_name	Teenage Mutant Ninja Turtles: Shredder's Revenge
+readme_image	docs/images/tmnt-shredders-revenge.jpg
+readme_tag	v0.4.1
