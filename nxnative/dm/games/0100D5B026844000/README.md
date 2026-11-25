@@ -5,7 +5,7 @@
 
 | | |
 |---|---|
-| Status | **experimental** |
+| Status | **playable** |
 | Title ID | `0100D5B026844000` |
 | Tested with nx2android | `v0.4.0` |
 | Tested build and device | v131072 POCO X3 Pro (Snapdragon 860, Adreno 640, Android 13), community test |
@@ -24,7 +24,7 @@ The profile sets these for you (`android.tsv`); a player changes the pause menu 
 Read the profile's porting log in the comment header of [`android.tsv`](android.tsv). Back to the [games list](../../../../README.md#games).
 <!-- end of the game facts -->
 
-**Experimental profile for update 1.0.2, played by a community tester.** dusk-beep ported update 1.0.2 with the bounded shader export from #562 and played it on a POCO X3 Pro. The profile registers 1.0.2 with the build row, shader tables and memory layout of that run; 1.0.0, which nobody has run on Android, is no longer registered.
+**Plays on Android: update 1.0.2, tested by a community tester.** dusk-beep ported update 1.0.2 with the bounded shader export from #562 and played it on a POCO X3 Pro. The profile registers 1.0.2 with the build row, shader tables and memory layout of that run; 1.0.0, which nobody has run on Android, is no longer registered.
 
 ## Game version
 
