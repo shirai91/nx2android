@@ -33,7 +33,9 @@ def harness():
 
     funcs = [
         'static uint8_t *align8(', 'static void put_hdr(',
-        'static void cmd_new_segment(', 'static uint8_t *hostseg_take(', 'static void hostseg_release(',
+        'static uint8_t *cmd_own(', 'static void cmd_own_at(', 'static void cmd_own_close(',
+        'static void cmd_new_segment(', 'static uint8_t *hostseg_take(', 'static void hostseg_free(', 'static void hostseg_release(',
+        'static void hostseg_written(const cmd_t *o, const uint8_t *p, uint64_t n) {',
         'NVN(nvnCommandBufferInitialize,', 'NVN(nvnCommandBufferFinalize,',
         'NVN(nvnCommandBufferAddCommandMemory,', 'NVN(nvnCommandBufferAddControlMemory,',
         'static void cmd_host_anchor(', 'static uint8_t *cmd_alloc_keep(', 'static uint8_t *cmd_alloc(',
@@ -49,6 +51,8 @@ def harness():
 #include <stdlib.h>
 #include <stdarg.h>
 #include <pthread.h>
+#include <stdatomic.h>
+#include <stdint.h>
 #include "nvn_obj.h"
 #define NVN(name, ret, ...) ret h_##name(__VA_ARGS__)
 #define CB(c) ((cmd_t *)(c))
@@ -64,6 +68,7 @@ static int cs_on(void) { return 0; }
 static void cs_op(uint32_t op, uint32_t size) { (void)op; (void)size; }
 static struct { uint64_t waste, hostseg, grants, grant_bytes, grant_min, grant_max, cbs, bytes, recs; } g_cs;
 static pthread_mutex_t g_cs_mu = PTHREAD_MUTEX_INITIALIZER;
+static void hostseg_written(const cmd_t *o, const uint8_t *p, uint64_t n);
 '''
     globals_start = source.index('typedef struct { uint8_t *mem; uint64_t frame; int busy;')
     globals_end = source.index('// Take a segment of sz bytes:', globals_start)

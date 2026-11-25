@@ -96,6 +96,9 @@ typedef struct {
     uint64_t ctl_used;                   // Bytes reserved for lifetime anchors in the last control grant
     uintptr_t ctl_anchor;                // This recording's reserved control bytes; CPU replay records stay in host storage
     uint32_t host_control, host_sz;       // Empty GPU command pool with control-owned host storage; initial segment size
+    uint32_t rec_id;                     // The current or last recording's serial (hle_nvn.c BeginRecording): its own host-lent segments are not freed by its own writes (hostseg_written)
+    uint32_t own_back;                   // end - the recording's first byte in the current segment: its first record there, the write position where a record did not fit, or where
+                                         // its JUMP goes (0 = none yet); a segment the host lends hangs off [that byte, write position + JUMP) (hle_nvn.c cmd_own, hostseg_take)
 } cmd_t;                                                                                   FITS(cmd_t, NVNcommandBuffer);
 
 // ---------- State objects (defaults follow the NVN / GL defaults) ----------
