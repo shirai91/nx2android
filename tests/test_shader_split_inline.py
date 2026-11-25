@@ -1,5 +1,7 @@
 """Synthetic embedded and archived Media.Vision shaders."""
+import contextlib
 import importlib.util
+import io
 import os
 from pathlib import Path
 import struct
@@ -75,7 +77,10 @@ class InlineShaders(unittest.TestCase):
             struct.pack_into('<Q', records, 0, len(payload))
             path.write_bytes(header + nodes + labels + records + payload)
             with self.assertRaisesRegex(SystemExit, 'material_vp: invalid shader member range'):
-                self.split.scan_file((str(path), path.name))
+                self.split.scan_file_in((str(path), path.name))
+            with contextlib.redirect_stdout(io.StringIO()) as said: _, found, pairs, extra = self.split.scan_file((str(path), path.name))   # the split leaves the file out and goes on
+            self.assertEqual((found, pairs, extra[0]), ({}, set(), 'unreadable'))
+            self.assertIn('material_vp: invalid shader member range', extra[1]); self.assertIn('(its shaders are left out)', said.getvalue())
 
 
 if __name__ == '__main__':
