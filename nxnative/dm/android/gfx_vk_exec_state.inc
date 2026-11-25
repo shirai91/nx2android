@@ -14,10 +14,22 @@ static struct {
     int pass_open; uint32_t pass_w, pass_h; VkFormat cfmt[8], dfmt; VkImageAspectFlags daspect; uint32_t samples; int ncol;
     VkPipeline bound_pipe; int rp_pass;   // rp_pass: the open pass began with vkCmdBeginRenderPass
 } S;
-// the format a colour target is drawn in: its view's when the view sets one, as vk_tex_view makes the attachment (an RGBA16UI view of a BC4 texture is an integer target)
-static const vkfmt_t *rt_view_fmt(int i) {
-    const vkfmt_t *f = S.rt_has_cview[i] && S.rt_cview[i].set_format ? vk_fmt(S.rt_cview[i].format) : NULL;
-    return f ? f : vk_fmt(S.rt_col[i].d.format);
+// The numeric class of a colour attachment's format: 0 float or normalized, 1 unsigned integer, 2 signed integer. Blending and clear values take it from the format
+// the attachment really has, S.cfmt[i] (begin_pass: the format of the view vk_tex_view made, which the render pass, the framebuffer and the pipelines take), not from
+// the texture's or the view's NVN format. vk_tex_view gives an RGBA16UI view of a BC4 image its own format (an integer target), but keeps the image's format for a view
+// across a compressed-class change outside a block view (a BC image decoded on the CPU among them) and for a view a format-listed image does not list (DM_VK_UBWC)
+static int att_int_kind(VkFormat f) {
+    switch (f) {
+    case VK_FORMAT_R8_UINT: case VK_FORMAT_R8G8_UINT: case VK_FORMAT_R8G8B8_UINT: case VK_FORMAT_B8G8R8_UINT: case VK_FORMAT_R8G8B8A8_UINT: case VK_FORMAT_B8G8R8A8_UINT:
+    case VK_FORMAT_A8B8G8R8_UINT_PACK32: case VK_FORMAT_A2R10G10B10_UINT_PACK32: case VK_FORMAT_A2B10G10R10_UINT_PACK32: case VK_FORMAT_R16_UINT: case VK_FORMAT_R16G16_UINT:
+    case VK_FORMAT_R16G16B16_UINT: case VK_FORMAT_R16G16B16A16_UINT: case VK_FORMAT_R32_UINT: case VK_FORMAT_R32G32_UINT: case VK_FORMAT_R32G32B32_UINT: case VK_FORMAT_R32G32B32A32_UINT:
+    case VK_FORMAT_R64_UINT: case VK_FORMAT_R64G64_UINT: case VK_FORMAT_R64G64B64_UINT: case VK_FORMAT_R64G64B64A64_UINT: return 1;
+    case VK_FORMAT_R8_SINT: case VK_FORMAT_R8G8_SINT: case VK_FORMAT_R8G8B8_SINT: case VK_FORMAT_B8G8R8_SINT: case VK_FORMAT_R8G8B8A8_SINT: case VK_FORMAT_B8G8R8A8_SINT:
+    case VK_FORMAT_A8B8G8R8_SINT_PACK32: case VK_FORMAT_A2R10G10B10_SINT_PACK32: case VK_FORMAT_A2B10G10R10_SINT_PACK32: case VK_FORMAT_R16_SINT: case VK_FORMAT_R16G16_SINT:
+    case VK_FORMAT_R16G16B16_SINT: case VK_FORMAT_R16G16B16A16_SINT: case VK_FORMAT_R32_SINT: case VK_FORMAT_R32G32_SINT: case VK_FORMAT_R32G32B32_SINT: case VK_FORMAT_R32G32B32A32_SINT:
+    case VK_FORMAT_R64_SINT: case VK_FORMAT_R64G64_SINT: case VK_FORMAT_R64G64B64_SINT: case VK_FORMAT_R64G64B64A64_SINT: return 2;
+    default: return 0;
+    }
 }
 static p_tf_bind g_tf[4]; static uint64_t g_tf_off[4]; static int g_tf_on, g_tf_in_pass; static uint32_t g_tf_verts;   // transform feedback: buffers, bytes written into each, capture on, a capture in the open pass (xfb_begin), vertices captured since Begin
 static int g_depth_zero = 1, g_lower_left;

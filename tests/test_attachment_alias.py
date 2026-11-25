@@ -20,6 +20,8 @@ class AttachmentAlias(unittest.TestCase):
         helpers=source[start:source.index('// Render passes.',start)]
         start=source.index('static void clear_color(const p_clear_color *c)')
         clear=source[start:source.index('static void clear_ds(',start)]
+        start=source.index('static int att_int_kind(')
+        kind=source[start:source.index('\n}\n',start)+3]
         code=r'''
 #include <vulkan/vulkan_core.h>
 #include <stdint.h>
@@ -40,15 +42,13 @@ static int pass_commit(void) {return 1;}
 static int clear_masked(const p_clear_color *c,VkRect2D r) {(void)c;(void)r;return 0;}
 static VkRect2D scissor_rect(void) {return (VkRect2D){{0,0},{100,100}};}
 static int pass_whole(VkRect2D r) {return r.extent.width==100;}
-static const vkfmt_t *vk_fmt(int format) {(void)format;return NULL;}
-static const vkfmt_t *rt_view_fmt(int i) {(void)i;return vk_fmt(0);}
 static VkCommandBuffer vk_cmd(void) {return VK_NULL_HANDLE;}
 static void fake_clear(VkCommandBuffer cb,uint32_t na,const VkClearAttachment *a,uint32_t nr,const VkClearRect *r) {
  (void)cb;(void)nr;(void)r;assert(na==1);clears++;cleared_slot=a->colorAttachment;
 }
 #define vkCmdClearAttachments fake_clear
 #define VKRED_ONCE(...) ((void)0)
-''' + helpers + clear + r'''
+''' + kind + helpers + clear + r'''
 int main(void) {
  VkImageView views[8]={0};uint8_t map[8];views[0]=(VkImageView)(uintptr_t)1;
  views[3]=views[4]=(VkImageView)(uintptr_t)2;views[7]=(VkImageView)(uintptr_t)3;
