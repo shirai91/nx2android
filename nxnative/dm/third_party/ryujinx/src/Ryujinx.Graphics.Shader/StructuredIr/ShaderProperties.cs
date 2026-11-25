@@ -18,6 +18,19 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
         public IReadOnlyDictionary<int, MemoryDefinition> LocalMemories => _localMemories;
         public IReadOnlyDictionary<int, MemoryDefinition> SharedMemories => _sharedMemories;
 
+        // nxnative: uniform bounds (TranslationFlags.UniformBounds). The binding of each game uniform slot's buffer, whose reads past the bound size give 0, with its
+        // index in the size table; the words of each slot the shader reads at fixed offsets (the end of the highest one), which the host makes readable; and the binding of
+        // the size table (Constants.NxUniformSizesBank) that reads at computed offsets compare with, -1 when the shader has none
+        private readonly Dictionary<int, int> _boundedConstantBuffers = new();
+        public IReadOnlyDictionary<int, int> BoundedConstantBuffers => _boundedConstantBuffers;
+        public int[] FixedUniformWords { get; } = new int[Constants.NxUniformSlots];
+        public int UniformSizesBinding { get; set; } = -1;
+
+        public void AddBoundedConstantBuffer(int binding, int sizeIndex)
+        {
+            _boundedConstantBuffers[binding] = sizeIndex;
+        }
+
         public ShaderProperties()
         {
             _constantBuffers = new Dictionary<int, BufferDefinition>();

@@ -192,7 +192,10 @@ static class SwshXlate
                 byte[] code = File.ReadAllBytes((string)job["code"]);
                 var acc = new Accessor(code, job);
                 // Job debug = false: turn off DebugMode (DebugMode skips the AST optimizer and the output is full of temporaries; semantics unchanged)
-                var flags = (job["debug"] is JsonNode dbg && !(bool)dbg ? 0 : TranslationFlags.DebugMode) | ((string)job["stage"] == "cs" ? TranslationFlags.Compute : 0);
+                // Job uniform_bounds = true: a read of a game uniform slot past the size the game bound gives 0, as on Maxwell (TranslationFlags.UniformBounds; the Android
+                // exporter sets it, and the host fills the size table and pads short bindings: dm/android/gfx_vk_exec_descriptors.inc cbuf_desc)
+                var flags = (job["debug"] is JsonNode dbg && !(bool)dbg ? 0 : TranslationFlags.DebugMode) | ((string)job["stage"] == "cs" ? TranslationFlags.Compute : 0)
+                    | (job["uniform_bounds"] is JsonNode ub && (bool)ub ? TranslationFlags.UniformBounds : 0);
                 var ctx = Translator.CreateContext(0, acc, new TranslationOptions(TargetLanguage.Spirv, TargetApi.Vulkan, flags));
                 bool geometry = job["geometry_topology"] != null;
                 ShaderProgram p = ctx.Translate(geometry);
@@ -223,7 +226,7 @@ static class SwshXlate
                     ["geometry_stride"] = geometry ? ctx.GetResourceReservations().OutputSizePerInvocation : 0,
                     ["uses_frag_coord"] = p.Info.UsesFragCoord, ["frag_out_map"] = p.Info.FragmentOutputMap,
                 };
-                foreach (var b in p.Info.CBuffers) res["cbufs"].AsArray().Add(new JsonObject { ["binding"] = b.Binding, ["slot"] = b.Slot });
+                foreach (var b in p.Info.CBuffers) res["cbufs"].AsArray().Add(new JsonObject { ["binding"] = b.Binding, ["slot"] = b.Slot, ["fixed"] = b.FixedSize });   // fixed: a game uniform slot's bytes read at fixed offsets (TranslationFlags.UniformBounds), which the host makes readable
                 foreach (var b in p.Info.SBuffers) res["sbufs"].AsArray().Add(new JsonObject { ["binding"] = b.Binding, ["slot"] = b.Slot, ["cb_slot"] = b.SbCbSlot, ["cb_offset"] = b.SbCbOffset, ["flags"] = (int)b.Flags });
                 foreach (var (list, name) in new[] { (p.Info.Textures, "textures"), (p.Info.Images, "images") })
                     foreach (var t in list) res[name].AsArray().Add(new JsonObject { ["binding"] = t.Binding, ["type"] = (int)t.Type, ["format"] = t.Format.ToString(), ["cbuf_slot"] = t.CbufSlot, ["handle"] = t.HandleIndex, ["array"] = t.ArrayLength, ["separate"] = t.Separate, ["flags"] = (int)t.Flags });

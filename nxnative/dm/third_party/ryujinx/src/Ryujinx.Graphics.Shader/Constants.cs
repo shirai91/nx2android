@@ -10,5 +10,12 @@ namespace Ryujinx.Graphics.Shader
         public const int NvnBaseVertexByteOffset = 0x640;
         public const int NvnBaseInstanceByteOffset = 0x644;
         public const int NvnDrawIndexByteOffset = 0x648;
+
+        // nxnative: uniform bounds (TranslationFlags.UniformBounds). Uniform slots c[3] to c[16] are the game's (NVN's 14 a stage); for a shader that reads one at a
+        // computed offset the host gives the bound size of each as a u32 in the table of bank 25 (seedds/nxnative's DMSH_CBSIZE_BANK; on Android the binding kind
+        // cbsize, dm/android/tools/shader_vk.py, filled by gfx_vk_exec_descriptors.inc cbsize_desc), slot c[s] at index s - 3, in four uint4
+        public const int NxFirstUniformSlot = 3;
+        public const int NxUniformSlots = 14;
+        public const int NxUniformSizesBank = 25;
     }
 }

@@ -394,6 +394,8 @@ namespace Ryujinx.Graphics.Shader.Translation
         {
             ResourceManager resourceManager = new(Definitions.Stage, GpuAccessor, GetResourceReservations());
 
+            resourceManager.UniformBounds = Options.Flags.HasFlag(TranslationFlags.UniformBounds);   // nxnative: before any uniform slot gets its binding
+
             if (IsTransformFeedbackEmulated)
             {
                 StructureType tfeDataStruct = new(new StructureField[]
