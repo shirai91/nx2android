@@ -1,0 +1,29 @@
+# Rune Factory: Guardians of Azuma on Android (Unreal Engine 5, NVN; update v589824 = 1.1.4).
+# Experimental: plays from a new game through the village and combat. Docked it runs at about 21-25 fps against the game's 30 fps
+# target (GPU-bound, ~33-35 ms GPU a frame; DM_VK_X_FENCES removed the CPU wait on each submission). Game speed is time-based, so the low frame rate does not slow the game.
+# Handheld (pause menu, Game tab) at the game's 30 fps setting, with DM_GPU_TURBO: holds 30 fps in Spring Village (GPU ~29 ms a frame). Recommended on mid-range devices.
+status	experimental
+package	org.nx2a.runefactorygoa
+orientation	landscape
+tested	v589824 AYN Odin 2 (Snapdragon 8 Gen 2, Adreno 740, Android 13, Turnip)
+readme_image	docs/images/rune-factory-guardians-of-azuma.jpg
+readme_tag	v0.5.0
+# DM_VK_FDZ=0: the fragment-depth variants (gl_FragDepth = gl_FragCoord.z on draws that test a depth buffer a shader wrote) took
+# the forward base pass out of Adreno's early depth culling. Docked 1080p, character creation: GPU p50 26.4 -> 16.8 ms a frame.
+env	DM_VK_FDZ=0
+# Name entry: with GetContentVersion at 0 the game rejects every name (empty field, as Rune Factory 3 Special). At 1 it then
+# masks the name with the China-region free function, which filters through ngct:u and aborts (0xe15); passed through instead.
+env	DM_NGC_CONTENT_VERSION=1
+env	DM_NGC_CHINA_PASSTHROUGH=1
+# TU_DEBUG=sysmem (Turnip only): draws straight to memory instead of GMEM binning. Title scene, 1080p, A/B on one boot path:
+# GPU p50 38.4 -> 34.5 ms, frame p50 43.6 -> 39.5 ms; the two screenshots match. Still under 30 fps there: the depth prepass (~16 ms,
+# ~450 draws) and the base pass (~15.5 ms, ~340 draws) take most of the frame.
+env	TU_DEBUG=sysmem
+# DM_VK_X_FENCES=1: with Turnip every submission that signals the timeline semaphore blocked in vkQueueSubmit until the previous one finished
+# on the GPU (no CPU/GPU overlap). Title scene, Docked, A/B on one boot path: queue submit 18.3 -> 0.2 ms a frame, frame work p50 25.9 -> 19.7 ms
+# (GPU busy unchanged, ~20 ms). Same fix as 010055D009F78000 (settings.tsv DM_VK_X_FENCES)
+env	DM_VK_X_FENCES=1
+# DM_GPU_TURBO=1: holds the GPU at its highest clock (KGSL power control off; DM_GPU_TURBO=0 in env.txt turns it off). Spring Village, Handheld,
+# the game's 30 fps setting, Odin 2: GPU busy ~29 ms a frame (against ~35 ms Docked without it), frame work p50 28.9 / p95 29.3 ms over 4 windows
+# of 600 frames, no long frames. Power draw with it is unmeasured (higher than the ~4.9 W Docked figure).
+env	DM_GPU_TURBO=1
