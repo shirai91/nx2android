@@ -9,6 +9,7 @@
 #     8 bytes {offset, length}. A subprogram = version, program type, stats, keywords, program code bytes, ...
 #     From Unity 2021.2 (subprogram version 202012090) the local keyword list is gone; Unity 2022 also keeps each program's parameters in the blob as entries of their own (the parsed form's
 #     m_ParameterBlobIndices), and the code entries are the m_BlobIndex of m_PlayerSubPrograms (Ace Attorney Investigations Collection, Unity 2022.3.17f1)
+#   · TextAsset (class 49): name and bytes (text_assets), for games that keep whole GLSLC outputs of their own in one (FINAL FANTASY CRYSTAL CHRONICLES Remastered Edition, Unity 2018.4)
 #   The pre-2019.3 layouts were found by armyja on Cuphead (Unity 2017.4.9f1, serialized format 17), GitHub pull request #2
 # Only depends on lz4 (the same package shader_split uses for NSOs)
 import bisect, lzma, struct
@@ -323,6 +324,36 @@ def known_tree(cid, h):
 def serialized_objects(d, common, want=None, trees=None):
     """serialized file → yields (class ID, path ID, object dict); want = only decode these class IDs.
     trees = {(class ID, type hash): type tree}: files with type trees record theirs, files without (the game's own data.unity3d and so on) borrow one of the same class and hash -- the same hash means the same layout"""
+    le, doff, tlist, objs = _tables(d, common, want, trees)
+    for pid, start, size, ti in objs:
+        cid, h, root = tlist[ti]
+        if want and cid not in want: continue
+        if root is None: raise NoTree(f'class {cid} (type hash {h.hex()}) has no type tree available')
+        o = Reader(d, le); o.d = d[doff + start:doff + start + size]
+        yield cid, pid, _read(o, root)
+
+CLASS_TEXT_ASSET = 49
+
+def text_assets(d, common):
+    """serialized file → yields (path ID, name, script bytes) of its TextAsset objects (class 49). The object starts with the same two fields in every Unity version these tools read
+    (m_Name, then m_Script: an aligned string each), so it is read without a type tree, also from files that carry none"""
+    le, doff, tlist, objs = _tables(d, common, {CLASS_TEXT_ASSET}, None)
+    for pid, start, size, ti in objs:
+        if tlist[ti][0] != CLASS_TEXT_ASSET: continue
+        r = Reader(d, le); r.d = d[doff + start:doff + start + size]
+        if len(r.d) < 8: continue
+        ln = r.u('i')
+        # A TextAsset is m_Name then m_Script, two aligned strings. The first 4 bytes are the name's length (already read), so the name must leave 4 more
+        # for the script's length field after it: the -8 is those two 4-byte length fields. Anything else is not this layout, so leave it out.
+        if not 0 <= ln <= len(r.d) - 8: continue
+        name = r.d[r.p:r.p + ln].decode('utf-8', 'replace'); r.p += ln; r.align()
+        if r.p + 4 > len(r.d): continue   # the name's padding left no room for the script's length
+        ln = r.u('i')
+        if not 0 <= ln <= len(r.d) - r.p: continue
+        yield pid, name, r.d[r.p:r.p + ln]
+
+def _tables(d, common, want, trees):
+    """serialized file → (little-endian, data offset, [(class ID, type hash, type tree or None)], [(path ID, start, size, type index)]): its type table and object table"""
     msz, fsz, ver, doff = struct.unpack_from('>IIII', d, 0)
     if not 17 <= ver <= 22: raise ValueError(f'serialized file format {ver} is not supported')
     p = 16; le = d[p] == 0; p += 4
@@ -356,12 +387,7 @@ def serialized_objects(d, common, want=None, trees=None):
     for _ in range(r.u('i')):
         r.align(); pid = r.u('q'); start = r.u('q') if ver >= 22 else r.u('I'); size = r.u('I'); ti = r.u('i')
         objs.append((pid, start, size, ti))
-    for pid, start, size, ti in objs:
-        cid, h, root = tlist[ti]
-        if want and cid not in want: continue
-        if root is None: raise NoTree(f'class {cid} (type hash {h.hex()}) has no type tree available')
-        o = Reader(d, le); o.d = d[doff + start:doff + start + size]
-        yield cid, pid, _read(o, root)
+    return le, doff, tlist, objs
 
 def is_serialized(d):
     """does it look like a serialized file (big-endian header: format 17..22; from 22 the sizes follow +0x14)"""
