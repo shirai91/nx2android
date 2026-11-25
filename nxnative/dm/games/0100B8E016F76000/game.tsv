@@ -1,0 +1,40 @@
+# NieR:Automata The End of YoRHa Edition (Asia) 1.0.2, SDK 12.3.9, PlatinumGames / NVN.
+# Regional release of 010056B015FE8000; shares identical RomFS shaders (1,241 variants) and has verified 60 fps + dynamic-res floor cuts in patches.py.
+
+# ---- Identity ----
+title_id	0100B8E016F76000
+program_id	0100B8E016F76000
+
+# ---- App ----
+name	NieR:Automata The End of YoRHa Edition (Asia)
+ipa	NieRAutomataTheEndOfYoRHaEditionAsia.ipa
+app_category	public.app-category.games
+
+# ---- Versions ----
+build	v65536	1.0.2	main=992787e2b54259948b844059a8ab21ad	subsdk0=be1ee79a9968a35a6b63fc8f1036a6d4	sdk=e8cdceb1e77a8465fe20f21928e8d296
+package	v65536
+shader_versions	v65536
+
+# ---- Files ----
+modules	main subsdk0 sdk
+romfs_marker	data014.cpk
+zip_store	.bnk:.cpk:.usm:.wem:.wsp:.metallib
+
+# ---- Memory ----
+mem_reserve	0x140000000
+mem_alias	0x118000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+sys_resource	0x1000000
+
+# ---- Shader split ----
+shader_groups	/Enlighten/=enlighten /movie/=movie /sound/=sound /movie_logo/=movielogo
+shader_note	NieR:Automata The End of YoRHa Edition (Asia) shaders
+
+# ---- Input & Graphics ----
+pad_layout	full
+tex_flush_upload	on
+tex_dirty_upload	on
+present_interval	display
+fps_target	60
+gpu_timestamps	segment
