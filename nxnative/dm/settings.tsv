@@ -254,6 +254,7 @@ DM_VK_BIND_DUMP	str		debug	start	gfx_vk_exec.c	writes the storage of the texture
 DM_VK_C2_FAST	bool	1	debug	live	gfx_vk_exec.c	c2 driver segments found by the hash of their slots instead of built and hashed for every draw whose bindings changed (drv_shared; docs/ARCHITECTURE.md, Descriptor cache hashing); 0 = built every time (A/B)
 DM_VK_CAPTURE	str		debug,ios	?	hle_vk.m	
 DM_VK_CB_DRAWS	int	128	profile	live	gfx_vk_exec.c	split the frame into command buffers every N draws (128), only before passes with a new depth image; `0` = never
+DM_VK_COMPUTE_DISPATCHED	bool	0	profile	start	gfx_vk_exec_xfb.inc	the compute pipelines made ahead at the first submission are the ones the game has dispatched, not every compute shader in the bundle (a bundle holds many more than a game dispatches: Fire Emblem: Three Houses: 147, and the driver's shader compiler can die on one of them: the Adreno 750's on the game's compute shader 00d5d19d07c37895, which the game never dispatches, so the whole process dies a second and a half after the launch, before the title screen). Default: the bundle's own shaders, as before
 DM_VK_COMPUTE_WARM_MAX	int		debug	?	gfx_vk_exec.c	
 DM_VK_CPU_READY	bool		debug	?	gfx_vk_exec.c	
 DM_VK_CRUMBS	bool		debug	start	gfx_vk_exec.c	for a device lost (GPU hang): each pass end and dispatch writes its number into host-visible memory after a full barrier; when the device is lost the log names the last work the GPU finished and the passes after it, with their shaders. Slows the GPU

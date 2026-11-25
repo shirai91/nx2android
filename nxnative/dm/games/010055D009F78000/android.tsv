@@ -25,3 +25,7 @@ env	DM_AUDREN_CATCHUP_FRAMES=200
 # With Turnip a submission that signals a timeline semaphore blocked in vkQueueSubmit for about a frame (13.9-17.5 ms) and 60 fps fell to 40-45 (PR #365, AYN Odin 2,
 # Adreno 740); with the fence ring the submit takes 0.05 ms. On Qualcomm's driver the ring cost nothing measurable (settings.tsv DM_VK_X_FENCES)
 env	DM_VK_X_FENCES=1
+# The compute pipelines made ahead at the first submission are the ones the game has dispatched, not every compute shader in the bundle (147 of them): the Adreno 750's shader
+# compiler dies on one the game never dispatches (SIGSEGV, NULL+0x48, libllvm-qgl.so), and the whole process dies a second and a half after the launch, before the title
+# screen (settings.tsv DM_VK_COMPUTE_DISPATCHED). On Qualcomm's driver the bundle's own shaders are built ahead, as before.
+env	DM_VK_COMPUTE_DISPATCHED=1

@@ -50,7 +50,7 @@ def production():
     # Single-line production functions need their line, not the next function.
     for sig in ['vkpool_t *vk_pool_of(', 'uint32_t vk_pool_gen(', 'static vksub_t *cur(']:
         functions = functions.replace(function(core, sig), next(x for x in core.splitlines() if x.startswith(sig)) + '\n')
-    driver = function(replay, 'static uint64_t c2_handle(') + drvs + cache + memo + indirect
+    driver = function(replay, 'static int compute_used(') + function(replay, 'static void compute_record(') + function(replay, 'static uint64_t c2_handle(') + drvs + cache + memo + indirect
     lifecycle = function(core, 'static void slot_recycle(')
     end_pass = next(x for x in replay.splitlines() if x.startswith('void vk_end_pass_land(')) + '\n'
     wrapper = ('stage_set(st, s, offsets, NULL)' if 'uint32_t *dofs, VkDescriptorBufferInfo *' in replay
