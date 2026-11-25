@@ -144,7 +144,7 @@ int main(void) {
         for (unsigned l = 0; l < 3; l++) {
             unsigned th, td; nvn_tex_level_tiles(&d, l, &th, &td);
             CHECK(th == (c ? 2 - l : 0) && td == (c ? 1 : 0),
-                  "E packaged byte %#x mip %u block %u/%u", d.pkg_block_h - 1, l, th, td);
+                  "E packaged byte %#x mip %u block %u/%u", d.pkg_layout - 1, l, th, td);
         }
         CHECK(nvn_tex_level_offset(&d, 1) == 131072 && nvn_tex_level_offset(&d, 2) == 147456,
               "E packaged mip offsets must be 131072 / 147456");
@@ -156,7 +156,7 @@ int main(void) {
         for (unsigned i = 0; i < 3; i++) {
             const uint8_t *p = lin + ((size_t)xyz[i][2] * 32 + xyz[i][1]) * 128 + xyz[i][0] * 4;
             int ok = 1; for (unsigned k = 0; k < 4; k++) ok &= p[k] == (uint8_t)(i * 16 + k + 1);
-            CHECK(ok, "E packaged byte %#x marker %u at %llu decoded at the wrong voxel", d.pkg_block_h - 1, i, (unsigned long long)addr[c][i]);
+            CHECK(ok, "E packaged byte %#x marker %u at %llu decoded at the wrong voxel", d.pkg_layout - 1, i, (unsigned long long)addr[c][i]);
         }
         free(st); free(lin);
     }

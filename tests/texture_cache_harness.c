@@ -131,7 +131,7 @@ int main(void) {
     assert(vk_tex_(&plain)==refresh && refresh->content==0x55);
     storage[0]=0x83;
     // A real differing layout remains different even with equal formats.
-    b=a;b.serial=2;b.has_layout=1;b.d.pkg_block_h=2;assert(!same(a,b));a.d.pkg_block_h=2;assert(same(a,b));
+    b=a;b.serial=2;b.has_layout=1;b.d.pkg_layout=2;assert(!same(a,b));a.d.pkg_layout=2;assert(same(a,b));
     a=base_tex(NVN_FORMAT_RGBA8,1);b=base_tex(NVN_FORMAT_RGBA8_SRGB,2);
     for(int mask=1;mask<=3;mask++){a.has_pkg_data=mask&1;b.has_pkg_data=(mask>>1)&1;assert(!same(a,b));}a.has_pkg_data=b.has_pkg_data=0;
     a.d.flags=b.d.flags=NVN_TEXTURE_FLAGS_LINEAR;assert(!same(a,b));a.d.flags=b.d.flags=0;

@@ -64,7 +64,8 @@ static void one(int n) {
     if (d.target == 8 || d.target == 9) d.height = d.width;
     d.levels = 1 + rnd() % 5;
     unsigned k = rnd() % 6;
-    if (k == 1) { d.pkg_block_h = 1 + rnd() % 6 + (d.target == 2 ? (rnd() % 4) * 16 : 0); seen_pkg++; }   // packaged block height / depth
+    if (k == 1) { d.pkg_layout = 1 + rnd() % 6 + (d.target == 2 ? (rnd() % 4) * 16 : 0); seen_pkg++; }   // packaged block height / depth
+    if (k == 2) { d.pkg_layout = 1 + (rnd() % 5 | (1 + rnd() % 4) << 8); seen_pkg++; }                     // with width alignment
     if (k == 3) d.flags = 0x20;                                                                              // sparse
     if (k == 4) d.flags = 0x200;                                                                             // MINIMAL_LAYOUT
     if (k == 5 && rnd() % 2) { d.flags = 0x20; d.width = 512 + rnd() % 1500; d.height = 256 + rnd() % 900; } // sparse, wide enough for tiled levels
@@ -83,13 +84,13 @@ static void one(int n) {
         int ra = old_move(&d, l, layer, st0, a, pitch, 1), rb_ = nvn_deswizzle(&d, l, layer, st0, b, pitch);
         if (ra || rb_ || memcmp(a, b, nlin))
             FAIL("case %d: deswizzle differs: target %d %ux%ux%u fmt %#x flags %#x pkg %#x level %u layer %u (row %u bytes, %u rows, tileH %u tileD %u, pitch %zu)",
-                 n, d.target, d.width, d.height, d.depth, d.format, d.flags, d.pkg_block_h, l, layer, rb, rows, th, td, pitch);
+                 n, d.target, d.width, d.height, d.depth, d.format, d.flags, d.pkg_layout, l, layer, rb, rows, th, td, pitch);
         for (size_t i = 0; i < nlin; i++) src[i] = (uint8_t)rnd();
         memcpy(st1, st0, nst);
         ra = old_move(&d, l, layer, st0, src, pitch, 0); rb_ = nvn_swizzle(&d, l, layer, src, pitch, st1);
         if (ra || rb_ || memcmp(st0, st1, nst))
             FAIL("case %d: swizzle differs: target %d %ux%ux%u fmt %#x flags %#x pkg %#x level %u layer %u (row %u bytes, tileH %u tileD %u)",
-                 n, d.target, d.width, d.height, d.depth, d.format, d.flags, d.pkg_block_h, l, layer, rb, th, td);
+                 n, d.target, d.width, d.height, d.depth, d.format, d.flags, d.pkg_layout, l, layer, rb, th, td);
         if (pitch > rb && nvn_deswizzle(&d, l, layer, st0, b, rb - 1) != -1) FAIL("case %d: short pitch accepted", n);
         free(a); free(b); free(src); cases++;
     }
