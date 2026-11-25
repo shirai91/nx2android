@@ -5,6 +5,7 @@ import android.content.Intent;
 import android.database.Cursor;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.SystemClock;
 import android.provider.DocumentsContract;
 import android.util.Log;
 import android.view.DisplayCutout;
@@ -29,7 +30,6 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.Arrays;
 import java.util.List;
 import java.util.Set;
 import java.util.zip.ZipEntry;
@@ -117,7 +117,7 @@ public final class DataImportActivity extends Activity {
         zipButton.setEnabled(false);
         progress.setVisibility(View.VISIBLE);
         message.setText(request == 1 ? "Checking data folder. Keep this app open until import finishes."
-                : "Checking ZIP. Keep this app open until import finishes.");
+                : "Clearing old game data. Keep this app open until import finishes.");
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         new Thread(() -> {
             try {
@@ -138,7 +138,9 @@ public final class DataImportActivity extends Activity {
                     copying = false;
                     progress.setVisibility(View.GONE);
                     getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-                    message.setText("Import failed: " + e.getMessage() + "\nSelect the data folder or ZIP and try again.\nImport replaces current game data. Saves and backups are kept. Keep this app open until import finishes.");
+                    message.setText(request == 2
+                            ? "Import failed: " + e.getMessage() + "\nZIP import did not complete. Retrying clears partial game data. Saves and backups are kept. Keep this app open until import finishes."
+                            : "Import failed: " + e.getMessage() + "\nSelect the data folder or ZIP and try again.\nImport replaces current game data. Saves and backups are kept. Keep this app open until import finishes.");
                     importButton.setEnabled(true);
                     zipButton.setEnabled(true);
                 });
@@ -239,6 +241,7 @@ public final class DataImportActivity extends Activity {
         Path marker = root.resolve("nx2a-data.json"), temp = root.resolve("nx2a-data.json.tmp");
         if (Files.isSymbolicLink(marker) || Files.isSymbolicLink(temp)) throw new IOException("Unsafe destination manifest");
         Files.deleteIfExists(marker);
+        Files.deleteIfExists(temp);
         for (String name : new String[]{"RomFS", "aoc", "sysdata", "standard.ttf", "env.txt", "settings.txt"}) {
             Path path = root.resolve(name);
             if (Files.exists(path, LinkOption.NOFOLLOW_LINKS)) RuntimeBundle.removeStage(path);
@@ -255,14 +258,6 @@ public final class DataImportActivity extends Activity {
             out.write(raw);
         }
         Files.move(temp, marker, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-    }
-
-    private static final class ZipInfo {
-        final boolean directory;
-        final long size, crc;
-        ZipInfo(ZipEntry entry) {
-            directory = entry.isDirectory(); size = entry.getSize(); crc = entry.getCrc();
-        }
     }
 
     private String zipPath(ZipEntry entry, Map<String, Boolean> paths, Set<String> entries) throws IOException {
@@ -293,61 +288,47 @@ public final class DataImportActivity extends Activity {
     }
 
     private void importZip(Uri uri) throws Exception {
-        Map<String, ZipInfo> inventory = new HashMap<>();
+        Path root = resetData();
+        importing("ZIP");
         Map<String, Boolean> paths = new HashMap<>();
         Set<String> entries = new HashSet<>();
+        Set<String> roots = new HashSet<>();
         byte[] buffer = new byte[1024 * 1024], raw = null;
-        String manifest = null;
+        String prefix = null;
+        long unpacked = 0, lastUpdate = 0;
         try (ZipInputStream zip = openZip(uri)) {
             ZipEntry entry;
             while ((entry = zip.getNextEntry()) != null) {
                 String path = zipPath(entry, paths, entries);
-                if (!entry.isDirectory() && (path.equals("nx2a-data.json")
-                        || (path.endsWith("/nx2a-data.json") && path.indexOf('/') == path.lastIndexOf('/')))) {
-                    if (manifest != null) throw new IOException("Multiple ZIP data manifests");
-                    manifest = path;
-                    raw = RuntimeBundle.readSmall(zip);
-                } else {
-                    while (zip.read(buffer) != -1) {}
+                String[] components = path.split("/", 3);
+                String top = components[0], candidate = "";
+                boolean managed = top.equals("RomFS") || top.equals("aoc") || top.equals("sysdata")
+                        || top.equals("standard.ttf") || top.equals("env.txt") || top.equals("settings.txt")
+                        || top.equals("nx2a-data.json");
+                if ((!managed && components.length > 1)
+                        || (components.length == 2 && components[1].equals("nx2a-data.json"))) {
+                    candidate = top + "/";
+                    top = components[1];
+                    managed = top.equals("RomFS") || top.equals("aoc") || top.equals("sysdata")
+                            || top.equals("standard.ttf") || top.equals("env.txt") || top.equals("settings.txt")
+                            || top.equals("nx2a-data.json");
                 }
-                zip.closeEntry();
-                if (entry.isDirectory() && entry.getSize() != 0) throw new IOException("ZIP directory has data: " + path);
-                inventory.put(path, new ZipInfo(entry));
-            }
-        }
-        if (manifest == null) throw new IOException("ZIP must contain nx2a-data.json at its root or inside one folder");
-        String prefix = manifest.substring(0, manifest.length() - "nx2a-data.json".length());
-        Set<String> roots = new HashSet<>();
-        for (Map.Entry<String, Boolean> item : paths.entrySet()) {
-            String path = item.getKey();
-            if (!path.startsWith(prefix)) continue;
-            String relative = path.substring(prefix.length());
-            if (relative.isEmpty() || relative.contains("/")) continue;
-            if ((relative.equals("RomFS") || relative.equals("aoc") || relative.equals("sysdata")) && !item.getValue())
-                throw new IOException("Expected a directory: " + relative);
-            if ((relative.equals("standard.ttf") || relative.equals("env.txt") || relative.equals("settings.txt")) && item.getValue())
-                throw new IOException("Expected a file: " + relative);
-            roots.add(relative);
-        }
-        validateRoots(raw, roots);
-        importing("ZIP");
-        Path root = resetData();
-        Map<String, Boolean> secondPaths = new HashMap<>();
-        Set<String> secondEntries = new HashSet<>();
-        try (ZipInputStream zip = openZip(uri)) {
-            ZipEntry entry;
-            while ((entry = zip.getNextEntry()) != null) {
-                String path = zipPath(entry, secondPaths, secondEntries);
-                ZipInfo before = inventory.get(path);
-                if (before == null || before.directory != entry.isDirectory()) throw new IOException("ZIP changed: " + path);
-                if (path.equals(manifest)) {
-                    if (!Arrays.equals(raw, RuntimeBundle.readSmall(zip))) throw new IOException("ZIP manifest changed");
-                } else if (path.startsWith(prefix)) {
-                    String relative = path.substring(prefix.length());
-                    String top = relative.split("/", 2)[0];
-                    boolean directoryRoot = top.equals("RomFS") || top.equals("aoc") || top.equals("sysdata");
-                    boolean fileRoot = top.equals("standard.ttf") || top.equals("env.txt") || top.equals("settings.txt");
-                    if (directoryRoot || (fileRoot && relative.equals(top))) {
+                String relative = path.substring(candidate.length());
+                boolean directoryRoot = top.equals("RomFS") || top.equals("aoc") || top.equals("sysdata");
+                boolean fileRoot = top.equals("standard.ttf") || top.equals("env.txt") || top.equals("settings.txt");
+                boolean manifest = top.equals("nx2a-data.json") && relative.equals(top);
+                if (managed && (directoryRoot || relative.equals(top))) {
+                    if (prefix != null && !prefix.equals(candidate)) throw new IOException("Multiple ZIP data roots");
+                    prefix = candidate;
+                    if (manifest) {
+                        if (raw != null || entry.isDirectory()) throw new IOException("Invalid ZIP data manifest");
+                        raw = RuntimeBundle.readSmall(zip);
+                        unpacked += raw.length;
+                    } else {
+                        if (relative.equals(top) && directoryRoot && !entry.isDirectory())
+                            throw new IOException("Expected a directory: " + top);
+                        if (fileRoot && entry.isDirectory()) throw new IOException("Expected a file: " + top);
+                        roots.add(top);
                         Path dest = root;
                         String[] parts = relative.split("/");
                         for (int i = 0; i < parts.length; i++) {
@@ -360,17 +341,34 @@ public final class DataImportActivity extends Activity {
                         if (!entry.isDirectory()) {
                             try (OutputStream out = Files.newOutputStream(dest, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS)) {
                                 int n;
-                                while ((n = zip.read(buffer)) != -1) out.write(buffer, 0, n);
+                                while ((n = zip.read(buffer)) != -1) {
+                                    out.write(buffer, 0, n);
+                                    unpacked += n;
+                                    long now = SystemClock.uptimeMillis();
+                                    if (now - lastUpdate >= 250) {
+                                        importing("ZIP: " + (unpacked / (1024 * 1024)) + " MiB, " + relative);
+                                        lastUpdate = now;
+                                    }
+                                }
                             }
                         }
                     }
                 }
-                while (zip.read(buffer) != -1) {}
+                int n;
+                while ((n = zip.read(buffer)) != -1) {
+                    unpacked += n;
+                    long now = SystemClock.uptimeMillis();
+                    if (now - lastUpdate >= 250) {
+                        importing("ZIP: " + (unpacked / (1024 * 1024)) + " MiB, " + path);
+                        lastUpdate = now;
+                    }
+                }
                 zip.closeEntry();
-                if (before.size != entry.getSize() || before.crc != entry.getCrc()) throw new IOException("ZIP changed: " + path);
+                if (entry.isDirectory() && entry.getSize() != 0) throw new IOException("ZIP directory has data: " + path);
             }
         }
-        if (secondEntries.size() != inventory.size()) throw new IOException("ZIP entries changed");
+        if (raw == null) throw new IOException("ZIP must contain nx2a-data.json at its root or inside one folder");
+        validateRoots(raw, roots);
         publishData(root, raw);
     }
 }
