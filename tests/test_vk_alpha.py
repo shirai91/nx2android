@@ -131,7 +131,7 @@ int main(int argc, char **argv) {
             runtime = runtime.replace('X(' + name + ')', '')
         helpers = ''.join(function(src, sig) for sig in ('static int spv_is_vec4(', 'static uint32_t *spv_vs_init(', 'static uint32_t *spv_add_outputs(', 'static uint32_t *spv_frag_depth(', 'static uint32_t *spv_dual('))
         integer = src[src.index('typedef struct { const uint32_t *w; uint32_t fn,'):src.index('// A variant of a fragment shader that writes gl_FragDepth')]
-        variant = function(src, 'static VkShaderModule vk_shader_module_(vkshader_t *s, uint64_t um, uint64_t im, uint32_t xo, int fd, uint32_t vi) {')
+        variant = function(src, 'static VkShaderModule vk_shader_module_(vkshader_t *s, uint64_t um, uint64_t im, uint32_t xo, int fd, uint64_t vi) {')
         spv = self.compile('''#version 450
 layout(set=1,binding=0) uniform sampler2D tex;
 layout(location=0) out vec4 color;
