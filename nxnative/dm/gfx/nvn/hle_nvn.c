@@ -2840,6 +2840,13 @@ NVN(nvnCommandBufferDownsample, void, NVNcommandBuffer *c, const NVNtexture *s, 
 NVN(nvnCommandBufferDownsampleTextureView, void, NVNcommandBuffer *c, const NVNtexture *s, const NVNtextureView *sv, const NVNtexture *d, const NVNtextureView *dv) {
     rec_downsample(c, s, sv, d, dv, (uint64_t)__builtin_return_address(0));
 }
+// Tiled resolves differ from ordinary ones only in Tegra's tiled-cache scheduling, which the host already treats as a hint (SetTiledCacheTileSize above), not in the
+// destination's pixels: both forms record the ordinary resolve. They reached the unimplemented stub before, and the destination was never resolved (Ikaruga: menus drawn,
+// the stage black; seedds/nxnative 03039baaa)
+NVN(nvnCommandBufferTiledDownsample, void, NVNcommandBuffer *c, const NVNtexture *s, const NVNtexture *d) { rec_downsample(c, s, NULL, d, NULL, (uint64_t)__builtin_return_address(0)); }
+NVN(nvnCommandBufferTiledDownsampleTextureView, void, NVNcommandBuffer *c, const NVNtexture *s, const NVNtextureView *sv, const NVNtexture *d, const NVNtextureView *dv) {
+    rec_downsample(c, s, sv, d, dv, (uint64_t)__builtin_return_address(0));
+}
 
 // CPU texture write (NVN WriteTexels): texture storage lives in pool memory in Tegra block-linear layout; decode the whole level → patch the region → re-encode.
 // Write protection is lifted and the range marked dirty first, so the replay layer re-uploads it the next time it is used
