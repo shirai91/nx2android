@@ -121,3 +121,14 @@ def base(name):
     found = re.search(r'Add\("([01x]{64})", InstName\.' + name + r'\s*,', _TABLE['src'])
     if not found: raise AssertionError(f'{name} is not in InstTable.cs')
     return int(found[1].replace('x', '0'), 2)
+
+
+def uniform_reads(data):
+    """(variable name, constant indices or None) of each access chain into a Uniform variable, e.g. ('cp_c14', [0, 2116, 2])"""
+    ins = instructions(data)
+    consts = {a[1]: a[2] for o, a in ins if o == 43 and len(a) == 3}
+    names = {}
+    for o, a in ins:
+        if o == 5: names[a[0]] = struct.pack(f'<{len(a) - 1}I', *a[1:]).split(b'\0', 1)[0].decode()
+    uniform = {a[1] for o, a in ins if o == 59 and a[2] == 2}
+    return [(names.get(a[2], str(a[2])), [consts.get(i) for i in a[3:]]) for o, a in ins if o == 65 and a[2] in uniform]
