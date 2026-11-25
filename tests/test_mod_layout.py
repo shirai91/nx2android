@@ -205,14 +205,14 @@ class Layout(unittest.TestCase):
         nro_path = root / 'nro0.nro'; nro_path.write_bytes(self.old_bytes)
         nso_raw, _ = small_nso()
         nso_path = root / 'subsdk9'; nso_path.write_bytes(nso_raw)
-        env = dict(os.environ, DM_TARGET='android')
+        env = dict(os.environ, DM_TARGET='android', PYTHONUTF8='1')   # as the porter runs it: patch_nso.py writes its tables with open() and no encoding
         for path, name, exp_te, exp_ro, exp_do in ((nro_path, 'nro0', 0x1000, 0x1000, 0x4000),
                                                    (nso_path, 'subsdk9', 0x11000, 0x11000, 0x14000)):
             out_dir = root / f'out_{name}'; out_dir.mkdir()
             p = subprocess.run([sys.executable, str(TOOLS / 'patch_nso.py'), str(path), str(out_dir), name],
-                               env=env, capture_output=True, text=True)
+                               env=env, capture_output=True, text=True, encoding='utf-8')
             self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
-            hdr = dict(ln[2:].split() for ln in (out_dir / f'{name}.fixups.tsv').read_text().splitlines() if ln.startswith('# '))
+            hdr = dict(ln[2:].split() for ln in (out_dir / f'{name}.fixups.tsv').read_text(encoding='utf-8').splitlines() if ln.startswith('# '))
             self.assertEqual((int(hdr['TEXT_END'], 16), int(hdr['RO_OFF'], 16), int(hdr['DATA_OFF'], 16)), (exp_te, exp_ro, exp_do))
             self.assertGreaterEqual(exp_do, (exp_te + 0x3FFF) & ~0x3FFF)
             if name == 'nro0':
