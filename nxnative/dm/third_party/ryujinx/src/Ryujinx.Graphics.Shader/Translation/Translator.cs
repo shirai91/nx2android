@@ -80,7 +80,7 @@ namespace Ryujinx.Graphics.Shader.Translation
         {
             TransformFeedbackOutput[] transformFeedbackOutputs = GetTransformFeedbackOutputs(gpuAccessor, out ulong transformFeedbackVecMap);
 
-            return new ShaderDefinitions(
+            ShaderDefinitions definitions = new(
                 header.Stage,
                 gpuAccessor.QueryGraphicsState(),
                 header.Stage == ShaderStage.Geometry && header.GpPassthrough,
@@ -93,7 +93,13 @@ namespace Ryujinx.Graphics.Shader.Translation
                 header.OmapDepth,
                 gpuAccessor.QueryHostSupportsScaledVertexFormats(),
                 transformFeedbackVecMap,
-                transformFeedbackOutputs);
+                transformFeedbackOutputs)
+            {
+                OutputWords = header.OutputWords ?? System.Array.Empty<int>(),
+                PerPatchAttributeCount = header.PerPatchAttributeCount,
+            };
+
+            return definitions;
         }
 
         internal static TransformFeedbackOutput[] GetTransformFeedbackOutputs(IGpuAccessor gpuAccessor, out ulong transformFeedbackVecMap)

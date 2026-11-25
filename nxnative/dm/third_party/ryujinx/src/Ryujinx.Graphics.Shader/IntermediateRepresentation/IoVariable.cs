@@ -45,5 +45,10 @@ namespace Ryujinx.Graphics.Shader.IntermediateRepresentation
         VertexIndex,
         ViewportIndex,
         ViewportMask,
+        // nxnative: a hull shader's view of the stage's circular buffer (system registers 21 and 22) and its reads of its own outputs (ISBERD with O): the
+        // translator's own values, which DirectCbeWrites turns into outputs and constants before any code is generated
+        DirectCbeAddressLow,
+        DirectCbeAddressHigh,
+        IsbeOutput,
     }
 }
