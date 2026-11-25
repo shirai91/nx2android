@@ -1,0 +1,35 @@
+# Digimon Story Time Stranger on SDK 20.5.21 (update 1.2.2). Brought up on Android only: the keys come from the survey (dm/games/profile_guess.py) and have not been
+# checked with the heap check, which boots the game on a Mac; the memory keys below are that guess, and the game plays with them on a Poco F5 (see android.tsv).
+
+# ---- Identity ----
+title_id	010062E01FE0C000
+program_id	010062E01FE0C000
+
+# ---- App ----
+name	Digimon Story Time Stranger
+ipa	DigimonStoryTimeStranger.ipa
+app_category	public.app-category.games
+
+# ---- Versions ----
+build	v262144	1.2.2	main=135c83cdea06aec2d858e1bc7d53d72f	subsdk0=a870a783a09f57256d3630b73485398e	sdk=c668ae02ea221e429677aa61d3dab7c6
+package	v262144
+shader_versions	v262144
+
+# ---- Files ----
+# every module main imports from
+modules	main subsdk0 sdk
+romfs_marker	app_0.nx64.mvgl
+zip_store	.cpk:.mvgl:.metallib
+
+# ---- Memory ----
+# the NPDM declares 20 MB of system resource (virtual address memory) and main sets a heap: a 5 GB block with a large alias region; the heap check sizes the heap region from the heap the game asks for
+mem_reserve	0x140000000
+mem_alias	0x118000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+# the NPDM declares 20 MB of system resource
+sys_resource	0x1400000
+
+# ---- Shader split ----
+shader_groups	/=romfs
+shader_note	Digimon Story Time Stranger shaders (provisional profile)
