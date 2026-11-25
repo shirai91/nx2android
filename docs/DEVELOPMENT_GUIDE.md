@@ -292,6 +292,10 @@ The `sync-scan`, `sync-protect`, `sync-upload` and `sync-baseline` phases report
 
 Eligible transfer-only completion also reuses NVN CPU_UNCACHED baselines. Native cases cover coherent and simulated non-coherent memory, empty/disjoint writes, independent CPU changes, incremental and clean snapshot volume, and fallback-to-eligible transitions. The old exclusion fails these tests. This does not change CPU_UNCACHED merge coverage for uncertain submissions; their baselines are reused too (no full snapshot of the pool at the next sync).
 
+## Pull requests
+
+A pull request needs at least one run on a real Android device by its author, named in its text (device, driver, game and version, commit, what was played, proof). Community testers only confirm a tested result. [CONTRIBUTING.md](../CONTRIBUTING.md) has the full rule; `.github/pull_request_template.md` asks for each item.
+
 ## Commit messages
 
 [Conventional Commits 1.0.0](https://www.conventionalcommits.org/en/v1.0.0/), with commitlint's `config-conventional` types and limits:
