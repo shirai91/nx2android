@@ -571,32 +571,46 @@ class Port:
         cap, backup, dst = staging / 'capture', staging / 'previous', d / 'glslc_capture'
         log = self.logs / 'android_glslc.log'
         log.write_text('Android shader capture started; complete device log not retrieved.\n', encoding='utf-8')
+        aoc_dir = getattr(self, 'aoc', None)
+        if not (aoc_dir and aoc_dir.is_dir()): aoc_dir = None
+        def stage_tree(src_root, dst_root):
+            dst_root.mkdir()
+            big_files = []
+            for src in sorted(src_root.rglob('*')):
+                if not src.is_file(): continue
+                rel = src.relative_to(src_root)
+                size = src.stat().st_size
+                if size > self.GLSLC_SMALL and src.suffix.lower() not in ('.nro', '.nrr'):
+                    big_files.append((rel.as_posix(), size)); continue
+                dest = dst_root / rel; dest.parent.mkdir(parents=True, exist_ok=True)
+                try: os.link(src, dest)
+                except OSError: shutil.copyfile(src, dest)
+            return big_files
         try:
-            adb.shell(f'mkdir -p {dev}/mods {dev}/RomFS {dev}/save {dev}/temp {dev}/capture', retries=1)
+            dirs = f'{dev}/mods {dev}/RomFS {dev}/save {dev}/temp {dev}/capture' + (f' {dev}/aoc' if aoc_dir else '')
+            adb.shell(f'mkdir -p {dirs}', retries=1)
             PROG.set(step='copying the game for its compiler')
             adb.push_file(host / 'dmhost', f'{dev}/dmhost')
             adb.push_tree(self.patched, f'{dev}/mods')
-            rom, small = d / 'RomFS', staging / 'romfs'
-            small.mkdir()
-            big = []
-            for src in sorted(rom.rglob('*')):
-                if not src.is_file(): continue
-                rel = src.relative_to(rom)
-                size = src.stat().st_size
-                if size > self.GLSLC_SMALL:
-                    big.append((rel.as_posix(), size)); continue
-                dest = small / rel; dest.parent.mkdir(parents=True, exist_ok=True)
-                try: os.link(src, dest)
-                except OSError: shutil.copyfile(src, dest)
-            adb.push_tree(small, f'{dev}/RomFS')
+            small = staging / 'romfs'
+            big = stage_tree(d / 'RomFS', small)
+            if any(small.iterdir()): adb.push_tree(small, f'{dev}/RomFS')
+            aoc_small = staging / 'aoc' if aoc_dir else None
+            aoc_big = stage_tree(aoc_dir, aoc_small) if aoc_dir else []
+            if aoc_small and any(aoc_small.iterdir()): adb.push_tree(aoc_small, f'{dev}/aoc')
             adb.push_file(self.g.table('shader_map.tsv'), f'{dev}/shader_map.tsv')
-            for start in range(0, len(big), 50):
-                adb.shell('; '.join(f'mkdir -p {shlex.quote(os.path.dirname(f"{dev}/RomFS/{rel}"))}; '
-                                    f'truncate -s {size} {shlex.quote(f"{dev}/RomFS/{rel}")}'
-                                    for rel, size in big[start:start + 50]), retries=1)
+            sparse_roots = [(f'{dev}/RomFS', big)]
+            if aoc_dir: sparse_roots.append((f'{dev}/aoc', aoc_big))
+            for remote_root, files in sparse_roots:
+                for start in range(0, len(files), 50):
+                    adb.shell('; '.join(f'mkdir -p {shlex.quote(os.path.dirname(f"{remote_root}/{rel}"))}; '
+                                        f'truncate -s {size} {shlex.quote(f"{remote_root}/{rel}")}'
+                                        for rel, size in files[start:start + 50]), retries=1)
             # No live save data, shader bundle or installed application environment enters this boot.
-            env = {f'DM_{key}': f'{dev}/{value}' for key, value in
-                   (('ROOT', '.'), ('ROMFS', 'RomFS'), ('SAVE', 'save'), ('TEMP', 'temp'), ('GLSLC_CAPTURE', 'capture'), ('NVN_SHMAP', 'shader_map.tsv'))}
+            env_pairs = [('ROOT', '.'), ('ROMFS', 'RomFS')]
+            if aoc_dir: env_pairs.append(('AOC_DIR', 'aoc'))
+            env_pairs += [('SAVE', 'save'), ('TEMP', 'temp'), ('GLSLC_CAPTURE', 'capture'), ('NVN_SHMAP', 'shader_map.tsv')]
+            env = {f'DM_{key}': f'{dev}/{value}' for key, value in env_pairs}
             command = ' '.join(f'{k}={shlex.quote(v)}' for k, v in env.items())
             PROG.set(step='capturing run-time shaders')
             say(f'booting {self.app_name} on the Android device to capture its run-time shaders (up to {self.GLSLC_SECS} seconds)')
