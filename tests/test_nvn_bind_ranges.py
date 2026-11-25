@@ -1,8 +1,9 @@
 """NVN bind ranges are checked when they are recorded (slots_fit): a negative first or count, a stage beyond the six the replay keeps, or a first near INT_MAX
 records nothing (SetViewports with first -1 had passed first + n <= 16, and the Vulkan replay wrote S.vp[-1]); a bind running past its table records the slots inside it."""
 from pathlib import Path
-import shutil, subprocess, tempfile, unittest
+import subprocess, tempfile, unittest
 import csrc
+import host_cc
 
 NVN = csrc.REPO / 'nxnative/dm/gfx/nvn'
 NAMES = ('SetViewports', 'SetViewportSwizzles', 'BindVertexBuffers', 'BindUniformBuffer', 'BindUniformBuffers', 'BindStorageBuffer',
@@ -62,7 +63,7 @@ int main(void) {
 '''
 
 
-@unittest.skipUnless(shutil.which('cc'), 'host C compiler required')
+@unittest.skipUnless(host_cc.posix(), 'a POSIX host C compiler is required')
 class NvnBindRanges(unittest.TestCase):
     def test_out_of_range_binds_record_nothing(self):
         with tempfile.TemporaryDirectory() as td:

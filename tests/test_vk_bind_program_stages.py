@@ -1,8 +1,9 @@
 """The Vulkan replay's bind_program: a program without a vertex shader bound with the vertex bit (BindProgram(ps, 0x1f), Little Busters! Converted Edition)
 keeps the vertex stage; NULL, vertex-only, compute-only and partly unknown programs change every stage they name."""
 from pathlib import Path
-import shutil, subprocess, tempfile, unittest
+import subprocess, tempfile, unittest
 import csrc
+import host_cc
 
 
 def production():
@@ -47,7 +48,7 @@ int main(void) {
 '''
 
 
-@unittest.skipUnless(shutil.which('cc'), 'host C compiler required')
+@unittest.skipUnless(host_cc.posix(), 'a POSIX host C compiler is required')
 class VkBindProgramStages(unittest.TestCase):
     def test_vertex_stage_kept_for_pixel_only_program(self):
         with tempfile.TemporaryDirectory() as td:

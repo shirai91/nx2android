@@ -1,7 +1,8 @@
 """NVNbuffer keeps its offset and size where guest ring allocators store them (+0x18, +0x20), so the buffer queries follow those stores."""
 from pathlib import Path
-import shutil, subprocess, tempfile, unittest
+import subprocess, tempfile, unittest
 import csrc
+import host_cc
 
 NVN = csrc.REPO / 'nxnative/dm/gfx/nvn'
 
@@ -52,7 +53,7 @@ int main(void) {
 '''
 
 
-@unittest.skipUnless(shutil.which('cc'), 'host C compiler required')
+@unittest.skipUnless(host_cc.posix(), 'a POSIX host C compiler is required')
 class NvnBufferRingStores(unittest.TestCase):
     def test_queries_follow_guest_stores(self):
         with tempfile.TemporaryDirectory() as td:

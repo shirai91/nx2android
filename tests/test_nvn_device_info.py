@@ -1,7 +1,8 @@
 """nvnDeviceGetInteger: items 0x5F to 0x68 answer the Switch driver's own constants, and items past them answer 0 with a red line."""
 from pathlib import Path
-import shutil, subprocess, tempfile, unittest
+import subprocess, tempfile, unittest
 import csrc
+import host_cc
 
 NVN = csrc.REPO / 'nxnative/dm/gfx/nvn'
 
@@ -49,7 +50,7 @@ def run(main):
         return out.stdout + out.stderr
 
 
-@unittest.skipUnless(shutil.which('cc'), 'host C compiler required')
+@unittest.skipUnless(host_cc.posix(), 'a POSIX host C compiler is required')
 class NvnDeviceInfo(unittest.TestCase):
     def test_driver_constants_past_the_measured_table(self):
         out = run(r'''
@@ -74,7 +75,7 @@ static module_t g_mod[2]; static int g_nmod;
 '''
 
 
-@unittest.skipUnless(shutil.which('cc'), 'host C compiler required')
+@unittest.skipUnless(host_cc.posix(), 'a POSIX host C compiler is required')
 class NvnApiMinor(unittest.TestCase):
     def test_old_sdk_minor_from_its_switch(self):
         # nvn_api: SDK 10 and older take 53 and the sdk's own minor, 313 when it cannot be read; SDK 11 and later 55.15
