@@ -1,0 +1,13 @@
+# NieR:Automata The End of YoRHa Edition (Asia 1.0.2, v65536), PlatinumGames / NVN, SDK 12.3.9.
+# Regional counterpart of 010056B015FE8000 (same subsdk0/sdk builds and 1,241 shader variants; distinct main build 992787e2b54259948b844059a8ab21ad).
+# Tested 2026-11-24 through 2026-11-25 on Retroid Pocket 6 (Snapdragon 8 Gen 2, Adreno 740, Mesa Turnip v27.0.0-R2):
+# movies, title, menus, saving/loading, City Ruins traversal and combat, Desert cave, and DLC (0100B8E016F77001 / aoc/1/data500.cpk).
+status	experimental
+tested	v65536 Retroid Pocket 6 (Snapdragon 8 Gen 2, Adreno 740; Mesa Turnip v27.0.0-R2)
+package	org.nx2a.nierautomataasia
+orientation	landscape
+# 256x16 RGBA8 colour LUT is CPU-filled; index-building geometry shaders need the once-only split on Adreno
+env	DM_NVN_CPU_TEX2D_FIRST_USE=1
+env	DM_VK_GS_SPLIT=1
+readme_image	docs/images/nier-automata-asia.jpg
+readme_tag	v0.4.0

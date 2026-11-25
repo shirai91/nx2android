@@ -1,14 +1,19 @@
-# NieR:Automata The End of YoRHa Edition 1.0.3, PlatinumGames / NVN, SDK 12.3.9.
+# NieR:Automata The End of YoRHa Edition (Global / US 1.0.1 v0 and 1.0.3 v131072), PlatinumGames / NVN, SDK 12.3.9.
 # Tested 2026-11-08 through 2026-11-10: movies, title, menus and save-loaded Desert Zone.
 # CPU-filled colour LUT upload and geometry storage bindings restore title/map materials.
 # Once-only GS buffer effects recover missing triangles on Adreno; short movement/camera tested.
 # Rebased build tested 2026-11-15 on Xiaomi Pad 7: user reports gameplay working; no Vulkan VUIDs in the collected log.
-# Distant lighting needs reference comparison. New Game progression,
-# gameplay saving and long-session stability are unverified. See docs/NIER_AUTOMATA_ANDROID_PORT.md.
-status	boots
-tested	v131072 Xiaomi POCO F5 23049PCD8G (Snapdragon 7+ Gen 2 SM7475, Adreno 725, Android 15; Mesa Turnip v26 R8); Xiaomi Pad 7 2410CRP4CG (Snapdragon 7+ Gen 3 SM7675; Mesa Turnip v26 R8)
+# Tested 2026-11-25 on Retroid Pocket 6 (Snapdragon 8 Gen 2, Adreno 740, Mesa Turnip v27.0.0-R2):
+# - Base 1.0.1 (v0) registered alongside optional update 1.0.3 (v131072); both builds carry verified 60 fps + 1.0f dynamic-resolution floor cuts in patches.py.
+# - Update 1.0.3 (v131072): movies, title (60 fps), save loading/committing (6 atomic save commits), City Ruins, Desert cave, and DLC mounting (aoc/1/data500.cpk) verified.
+# - Base 1.0.1 (v0): boot to title at 60 fps verified on device.
+# Full-game completion and long-session stability are unverified. See docs/NIER_AUTOMATA_ANDROID_PORT.md.
+status	experimental
+tested	v131072 Xiaomi POCO F5 23049PCD8G (Snapdragon 7+ Gen 2 SM7475, Adreno 725, Android 15; Mesa Turnip v26 R8); Xiaomi Pad 7 2410CRP4CG (Snapdragon 7+ Gen 3 SM7675; Mesa Turnip v26 R8); Retroid Pocket 6 (Snapdragon 8 Gen 2, Adreno 740; Mesa Turnip v27.0.0-R2)
 package	org.nx2a.nierautomata
 orientation	landscape
 # its 256x16 RGBA8 colour LUT is filled by the CPU (gfx_vk_tex.c cpu_content_tex); its index-building geometry shaders need the once-only split on Adreno (gfx_vk_exec.c)
 env	DM_NVN_CPU_TEX2D_FIRST_USE=1
 env	DM_VK_GS_SPLIT=1
+readme_image	docs/images/nier-automata/geometry-after.jpg
+readme_tag	v0.4.0
