@@ -167,13 +167,13 @@ def alias_headroom(tsv, gb=None):
 
 def registered_patches():
     """{build ID: (the file, [the reason of each patch])} of the files the rewriter loads (patch_nso.py "Registered patches": dm/tools/sdk_patches.py and the profiles' patches.py;
-    CUTS and OBS by their reasons, FRAME_STEP as its stubs)"""
+    CUTS and OBS by their reasons, FRAME_STEP and STUBS as their stubs)"""
     out = {}
     for n, p in enumerate([DM / 'tools/sdk_patches.py'] + sorted((DM / 'games').glob('*/patches.py'))):
         spec = importlib.util.spec_from_file_location(f'porter_patches_{n}', p); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
         rel = p.relative_to(DM.parent).as_posix()
-        for kind in ('CUTS', 'OBS', 'FRAME_STEP'):
-            for bid, v in getattr(m, kind, {}).items(): out.setdefault(bid, (rel, []))[1].extend(['frame step stubs'] if kind == 'FRAME_STEP' else [x[3] for x in v])
+        for kind in ('CUTS', 'OBS', 'FRAME_STEP', 'STUBS'):
+            for bid, v in getattr(m, kind, {}).items(): out.setdefault(bid, (rel, []))[1].extend({'FRAME_STEP': ['frame step stubs'], 'STUBS': ['stubs']}.get(kind) or [x[3] for x in v])
     return out
 
 

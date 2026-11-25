@@ -28,10 +28,10 @@ def module_tables(cuts_tsv, obs_tsv):
     return {'build_id': bid, **rows}
 
 
-def _tables(path):   # CUTS, OBS and FRAME_STEP of a patch file, as patch_nso.py load_patches reads them
+def _tables(path):   # CUTS, OBS, FRAME_STEP and STUBS of a patch file, as patch_nso.py load_patches reads them
     import importlib.util
     spec = importlib.util.spec_from_file_location(f'nx2a_host_{abs(hash(str(path)))}', path); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
-    return {k: getattr(m, k, {}) for k in ('CUTS', 'OBS', 'FRAME_STEP')}
+    return {k: getattr(m, k, {}) for k in ('CUTS', 'OBS', 'FRAME_STEP', 'STUBS')}
 
 
 def sdk_patches_fit(modules, title_id, extra, tools=DM / 'tools'):
@@ -43,7 +43,7 @@ def sdk_patches_fit(modules, title_id, extra, tools=DM / 'tools'):
     except Exception: return False
     for m in modules:
         bid = m['build_id']
-        if any(bid in t['FRAME_STEP'] for t in tables[:1]): return False   # a frame step the SDK's patches now give it
+        if any(bid in t['FRAME_STEP'] or bid in t['STUBS'] for t in tables[:1]): return False   # a frame step or stubs the SDK's patches now give it
         cuts = [(o, ob.lower(), nb.lower()) for t in tables for o, ob, nb, _ in t['CUTS'].get(bid, [])]
         obs = [(o, str(n).lower(), str(w).lower()) for t in tables for o, n, w, _ in t['OBS'].get(bid, [])]
         if m['obs'] != obs: return False
