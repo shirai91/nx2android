@@ -185,7 +185,7 @@ public class ExternalActivity extends NativeActivity implements ExternalDisplay.
         @Override protected void onDraw(Canvas canvas) {
             canvas.drawColor(Color.rgb(15,18,22));
             float[] data = externalOverlay(getWidth(), getHeight());
-            if (data == null || data.length != 5 + names.length * 9) return;
+            if (data == null || data.length != 6 + names.length * 9) return;
             int layout = (int)data[0]; if (layout < 0 || layout >= themes.length) return;
             OverlayTheme theme = themes[layout]; Bitmap atlas = atlases[layout];
             int menu = externalMenuState(); menuState = menu; boolean edit = menu >= 0 && (menu & 0x20000) != 0 && (menu & 0x10000) == 0;
@@ -220,15 +220,16 @@ public class ExternalActivity extends NativeActivity implements ExternalDisplay.
             menuRaster.setPixels(pixels, 2, pixels[0], 0, 0, pixels[0], pixels[1]);
             rasterState = state; rasterWidth = W; rasterHeight = H; return menuRaster;
         }
+        private float menuRows(float[] data) { return data[5 + names.length * 9]; }   // overlay_layout.h OVM_ROWS: the menu's rows
         private void drawMenu(Canvas c, float[] data) {
             Bitmap bitmap = menuRaster(menuState); if (bitmap == null) return;
-            float W = getWidth(), H = getHeight(), scale = Math.min(data[1], .92f / (7 * .115f + 2 * .03f));
-            float w = Math.min(.95f * H * scale, W * .96f), h = (7 * .115f + 2 * .03f) * H * scale;
+            float rows = menuRows(data), W = getWidth(), H = getHeight(), scale = Math.min(data[1], .92f / (rows * .115f + 2 * .03f));
+            float w = Math.min(.95f * H * scale, W * .96f), h = (rows * .115f + 2 * .03f) * H * scale;
             paint.setAlpha(255); c.drawBitmap(bitmap, null, new RectF((W-w)/2, (H-h)/2, (W+w)/2, (H+h)/2), paint);
         }
         private void drawEditor(Canvas c, float[] data, int state) {
             Bitmap bitmap = menuRaster(state); if (bitmap == null) return;
-            float W = getWidth(), H = getHeight(), scale = Math.min(data[1], .92f / (7 * .115f + 2 * .03f));
+            float rows = menuRows(data), W = getWidth(), H = getHeight(), scale = Math.min(data[1], .92f / (rows * .115f + 2 * .03f));
             if ((state & 4) != 0) {
                 paint.setStyle(Paint.Style.STROKE); paint.setStrokeWidth(Math.max(1, H*.001f)); paint.setColor(Color.argb(51,255,255,255));
                 float step=H/20; for(float x=step;x<W;x+=step)c.drawLine(x,0,x,H,paint); for(float y=step;y<H;y+=step)c.drawLine(0,y,W,y,paint);

@@ -87,6 +87,7 @@ class PortTab(QWidget):
         self.app_name = QLineEdit(); self.app_name.setPlaceholderText('the game\'s name')
         self.language = QComboBox()
         for code, name in LANGUAGES: self.language.addItem(name, code)
+        self.language.addItem('Follow Android system language', 'system')
         self.out = QLineEdit(); self.out.setPlaceholderText('the game folder')
         self.install = QCheckBox('Install on the device when done')
         self.device = QComboBox(); self.device.setMinimumWidth(260)

@@ -99,6 +99,20 @@ def romfs_mismatch(folder, want, have, n=5, changed=()):
     return f'{folder} is not this pack\'s RomFS ({len(want):,} files): ' + '; '.join(parts) if parts else ''
 
 
+def push_mismatch(data, have, skip=(), exclude=(), n=5):
+    """What keeps the files folder's listing (have) from holding the pack after a push (issue #74: env.txt arrived as "e", and the install still reported success), the first n
+    of each kind; '' when it holds it. skip / exclude: as push_tree's. A file the player keeps (KEEP_ON_DEVICE) only has to be there, at any size. Only ASCII paths are compared:
+    adb's output is decoded in the PC's locale, so another name can read differently here without being wrong on the device"""
+    data, missing, other = Path(data), [], []
+    for p in sorted(p for top in data.iterdir() if top.name not in exclude for p in (top.rglob('*') if top.is_dir() else [top]) if p.is_file()):
+        rel = p.relative_to(data).as_posix()
+        if rel in skip or rel.startswith('.dmpart') or not rel.isascii(): continue
+        if rel not in have: missing.append(rel)
+        elif rel not in datapack.KEEP_ON_DEVICE and have[rel] != p.stat().st_size: other.append(f'{rel}: {have[rel]:,} bytes, the pack has {p.stat().st_size:,}')
+    first = lambda xs: ', '.join(xs[:n]) + (', …' if len(xs) > n else '')
+    return '; '.join(([f'{len(missing):,} files are not there ({first(missing)})'] if missing else []) + ([f'{len(other):,} have another size ({first(other)})'] if other else []))
+
+
 def sibling_parts(adb, man, files):
     """{part: files folder of another port on the device whose pack has the same content key for that part} (datapack.part_key), for the parts this pack has"""
     want = man.get('parts') or {}
@@ -254,7 +268,8 @@ def install(apk, data, adb_exe, serial=None, replace_signer=False, romfs_at=None
         have = adb.remote_sizes(files)   # again: an install with --replace-signer uninstalls first, and Android deletes the files folder with the app
         if not target and seed_from_sibling(adb, man, files, have, data): have = adb.remote_sizes(files)   # another port of the game on the device gives its RomFS / DLC
         PROG.set(step='pushing the game data')
-        adb.push_tree(data, files, keep=datapack.KEEP_ON_DEVICE, skip=(datapack.MANIFEST,) + (('env.txt',) if target else ()), exclude=(datapack.ROMFS,) if target else (),
+        pushed = dict(skip=(datapack.MANIFEST,) + (('env.txt',) if target else ()), exclude=(datapack.ROMFS,) if target else ())
+        adb.push_tree(data, files, keep=datapack.KEEP_ON_DEVICE, **pushed,
                       verify=lambda rel: rel.split('/', 1)[0] not in ('RomFS', 'aoc'),   # the game's own files change only with their version
                       progress=lambda d, t, note: PROG.set(done=d, total=t, note=note), have=have)
         if own and extra:   # files of an older game version in the installer's own card folder, which the game would still find
@@ -281,6 +296,8 @@ def install(apk, data, adb_exe, serial=None, replace_signer=False, romfs_at=None
             PROG.set(step='removing the RomFS copy in the files folder')
             adb.shell(f'rm -rf {shlex.quote(f"{files}/{datapack.ROMFS}")}', timeout=1200)
             say(f'removed the earlier copy of the RomFS from the app\'s files folder ({len(old):,} files, {sum(have[r] for r in old) / 2**30:.1f} GB)')
+        if bad := push_mismatch(data, adb.remote_sizes(files), **pushed):   # no manifest on a pack that did not arrive whole: the next install pushes what is missing
+            raise BuildError(f'after the push, {files} is not the whole pack: {bad}. Install again; if the same files fail, update adb (platform-tools)')
         adb.push_file(data / datapack.MANIFEST, f'{files}/{datapack.MANIFEST}')   # last: a pack on the device with its manifest is a complete one
     except AdbError as e:
         try: gone = pushing and adb.serial in [s for s, st, _ in adb.devices() if st == 'device'] and not adb.installed(man['package'])   # a device that went away is not an uninstall

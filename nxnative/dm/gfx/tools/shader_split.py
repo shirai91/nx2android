@@ -33,6 +33,9 @@
 #   · Monolith archives (Xenoblade Chronicles 3: bf3.arh index + bf3.ard data): HCPS shader archives (a control section and a code area per stage, vertex / pixel per program) in the files and in
 #       their xbc1 streams (zstd / zlib), see arh_entries, ard_shaders and spch_shaders
 #   · control sections loose in main, in no GLSLC output or BNSH file (Advance Wars 1+2: Re-Boot Camp's Bink 2 shaders): paired with their code areas by data records or adjacency, see raw_shaders
+#   · Octane zips (Digital Eclipse's Octane engine, Toy Story 3 Complete Edition): deflate members behind a leading end-of-central-directory record; the .tfx effects hold, after the D3D9
+#       bytecode of the PC build, each NVN stage as its code area immediately followed by its control section, see octane_members and octane_shaders; read only for a profile
+#       with shader_octane on (game.tsv), so no other game's split changes
 # Code area: 0x30 header + (graphics) 0x50 SPH + instructions; header magic 0x12345678 for graphics, 0x12345679 for compute. The control section starts with 0x98761234, +0x704 = code area length,
 #   +0x700 = start of the c1 constant segment within the code area; for compute +0x748 thread group xyz (u32 ×3), +0x754 shared memory bytes (checked one by one against PC reflection on D2R's 22 compute shaders).
 # Stage: BNSH uses the stage slot; BAHS uses bits 10..13 of SPH word 0 (1 vertex 2 hull 3 domain 4 geometry 5 pixel), and a compute header means compute.
@@ -50,6 +53,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); import uepak, ea
 GAME = _game.load()   # the current game profile (DM_GAME, required): source group rules and the table header note
 GROUPS, NOTE = GAME.pairs('shader_groups'), GAME.get('shader_note')
 LOOSE_MONO = tuple(GAME.words('shader_loose_monolith', ''))   # extensions of loose Monolith files that carry HCPS shader archives (Xenoblade Chronicles: Definitive Edition: .wishp .wismt .wismda .wiefb .wimdo); empty: none are scanned
+OCTANE = GAME.get('shader_octane', 'off') == 'on'   # Octane zips are read (octane_members / octane_shaders; Toy Story 3 Complete Edition); off: such files go the way they always did
 # The sources are what the game files hold, with no profile switch: GLSLC outputs in main (glslc_shaders), the outputs the game compiles at run time when a capture is there (DM_GLSLC_CAPTURE,
 # hle_glslc.c), the shader code archives of Unreal paks once decoded on the Mac (uepak.py, DM_OODLE_JOB, hle_oodle.c); the NSP script decides from the files which of the last two to make
 
@@ -315,7 +319,9 @@ def linkdata_jobs(path, rel, parts=64):
     ranges of about equal stored size, one scan job each. → [(path, rel, (first entry, end entry)), …], or None when there is no index beside the file"""
     idx = os.path.join(os.path.dirname(path), 'DATA0.bin')
     if os.path.basename(path) != 'DATA1.bin' or not os.path.exists(idx): return None
-    n = os.path.getsize(idx) // 32; step = os.path.getsize(path) / parts; jobs, lo = [], 0
+    size = os.path.getsize(path)
+    if not size: return None   # an empty DATA1.bin: a DLC patch with no data of its own (its index entries are empty too), nothing to read
+    n = os.path.getsize(idx) // 32; step = size / parts; jobs, lo = [], 0
     with open(idx, 'rb') as f: ents = [struct.unpack('<QQQQ', f.read(32)) for _ in range(n)]
     for i in range(1, n + 1):
         if i == n or ents[i][0] >= (len(jobs) + 1) * step: jobs.append((path, rel, (lo, i))); lo = i
@@ -323,6 +329,7 @@ def linkdata_jobs(path, rel, parts=64):
 
 def linkdata_shaders(path, rel, rng, out):
     import mmap
+    if not os.path.getsize(path): return   # an empty DATA1.bin: nothing to read
     with open(os.path.join(os.path.dirname(path), 'DATA0.bin'), 'rb') as f: idx = f.read()
     with open(path, 'rb') as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as d:
         for i in range(*rng):
@@ -1284,6 +1291,17 @@ def ue_inline_shaders(d, label, out):
         i = m.start(); n = int.from_bytes(d[i - 4:i], 'little') if i >= 4 else 0
         if 2 <= n <= len(d) - i and uepak.lslg(d[i:i + n]): take(d[i:i + n], i)
 
+def ue_modern_pack(path):
+    """Whether the file is an Unreal modern pak (version 11) or an IoStore container (.utoc / .ucas): the shaders of a modern Unreal game live in the shader code archives the decode stage
+    wrote (ue_shaders), not in the file, and these are the biggest files of its RomFS (FINAL FANTASY RESONANCE's are 8.9 GB) — reading them whole finds nothing and fills the device's
+    memory. A legacy pak (version 4) keeps its shaders inline in the cooked packages, so it is left to the legacy path"""
+    ext = os.path.splitext(path)[1].lower()
+    if ext in ('.ucas', '.utoc'): return True
+    if ext != '.pak': return False
+    try:
+        with open(path, 'rb') as f: return uepak.pak_version(f) == 11
+    except (OSError, ValueError, struct.error): return False
+
 def yaz0(s):
     """Yaz0 decompression (Super Mario 3D World + Bowser's Fury: almost all of RomFS is .szs = SARC wrapped in Yaz0). Pure Python runs at about 20–45 MB/s per core, under a minute for the whole 4.7 GB RomFS in parallel, and needs no extra dependency.
     Group header bits: 1 = one literal byte; 0 = back-reference, 2 bytes {length high nibble, 12-bit distance} (distance + 1); length 0 reads one more byte + 0x12, else + 2. Overlapping copies are expanded by their period"""
@@ -1443,7 +1461,7 @@ def unity_shaders(d, label, out, trees):
     """Shaders and compute shaders in a UnityFS bundle or serialized file → out; raises NoTree when no type tree is available"""
     import unityfs
     if COMMON is None: red(f'{label}: a Unity asset, but main has no Unity common string table')
-    sers = unityfs.bundle_files(d) if d[:8] == b'UnityFS\0' else [('', d)]
+    sers = unityfs.bundle_nodes(d, unityfs.serialized_head) if d[:8] == b'UnityFS\0' else [('', d)]   # one node at a time, and only the serialized files
     for node, x in sers:
         if not unityfs.is_serialized(x): continue
         for cid, pid, o in unityfs.serialized_objects(x, COMMON, {unityfs.CLASS_SHADER}, trees):
@@ -1454,6 +1472,7 @@ def unity_shaders(d, label, out, trees):
                 code = unityfs.subprogram(sp)[4]
                 out.extend((where, st, ctl, cd) for st, ctl, cd in unity_program(code, where, stages.get(k)))
         out.extend(unity_compute(x, f'{label}{":" + node if node else ""}', trees))
+        x = None   # let this node go before bundle_nodes unpacks the next
 
 def scan_blob(d, label, out):
     if d[:4] == b'Yaz0': d = yaz0(d)
@@ -1484,7 +1503,7 @@ def ps_inputs(code):
     """Generic attributes a pixel shader reads: SPH words 6–13 are the input map, 8 bits for each of the 32 attributes (Ryujinx ShaderHeader.ImapTypes), non-zero = read; the translated MSL inputs are exactly user(locn<attribute>)"""
     return {i for i in range(32) if struct.unpack_from('<I', code, 0x30 + 4 * (6 + (i >> 2)))[0] >> ((i & 3) * 8) & 0xff}
 
-SINGLE_STAGE = ('#GLSLC@', '#UE', '#MTSPK@', '#MGFX@', '#NLG', '#PGSO', '#RAW@')   # sources whose every shader is a program of one stage: GLSLC outputs, Unreal's shader records, MT Framework's shader package (BNSH variations, Unity programs, MSHD and SDF pair theirs);
+SINGLE_STAGE = ('#GLSLC@', '#UE', '#MTSPK@', '#MGFX@', '#NLG', '#PGSO', '#RAW@', '#OCT@')   # sources whose every shader is a program of one stage: GLSLC outputs, Unreal's shader records, MT Framework's shader package (BNSH variations, Unity programs, MSHD and SDF pair theirs);
 # MonoGame's effects, whose passes may name no vertex shader and keep the one bound (Celeste: 10 of its 13 effects draw through SpriteBatch's vertex shader, which is in main); Next Level Games'
 # archives (Luigi's Mansion 3 makes 5,317 programs of one stage each at boot); PlatinumGames' shader objects (Bayonetta 3: one stage each, pg_shader); and control sections loose in main
 # (Advance Wars 1+2: Re-Boot Camp's Bink shaders, raw_shaders), which no file pairs
@@ -1588,6 +1607,36 @@ def var_pairs(found):
     return {(v['vs'], v['ps']) for v in var.values() if 'vs' in v and 'ps' in v}
 
 BND2 = b'bnd2'
+OCTZIP = b'PK\x05\x06'   # an Octane zip starts with its end-of-central-directory record (octane_members)
+
+def octane_members(d, label):
+    """(name, data) of each member of an Octane zip (Toy Story 3 Complete Edition's 1,903 RomFS .zip files): the end-of-central-directory record is at +0 (+0xa entry count, +0x10 central
+    directory offset), then the central directory, then local headers with raw deflate data; CRCs are 0, so zipfile cannot open them. Members are stored (0) or deflate (8, all 54,143 seen)"""
+    n, cd = struct.unpack_from('<H', d, 0xa)[0], struct.unpack_from('<I', d, 0x10)[0]
+    for _ in range(n):
+        if d[cd:cd + 4] != b'PK\x01\x02': red(f'{label}: Octane zip central directory entry @{cd:#x} has no signature')
+        meth, csz, usz, fnl, exl, cml = struct.unpack_from('<H8xII3H', d, cd + 10); lho = struct.unpack_from('<I', d, cd + 42)[0]
+        name = d[cd + 46:cd + 46 + fnl].decode('utf-8', 'replace'); cd += 46 + fnl + exl + cml
+        if d[lho:lho + 4] != b'PK\x03\x04': red(f'{label}/{name}: Octane zip local header @{lho:#x} has no signature')
+        at = lho + 30 + sum(struct.unpack_from('<2H', d, lho + 26)); raw = d[at:at + csz]
+        if meth not in (0, 8): red(f'{label}/{name}: Octane zip method {meth}')
+        yield name, raw if meth == 0 else zlib.decompress(raw, -15, usz or 65536)
+
+def octane_shaders(d, label):
+    """The NVN stages of an Octane .tfx effect: past the PC build's D3D9 bytecode, each stage is its code area (0x12345678 header, length = control +0x704) immediately followed by its control
+    section (Toy Story 3 Complete Edition: 7,201 stages in 1,405 files of assets/effects/fx_new.zip, 3,070 distinct keys, every one laid out so). The vertex and pixel stages of a pass are combined
+    per draw by the effect's technique, so each is a program of one stage (SINGLE_STAGE)"""
+    out, c = [], d.find(CTL_MAGIC)
+    while c >= 0:
+        n = struct.unpack_from('<I', d, c + 0x704)[0] if c + 0x708 <= len(d) else 0
+        nctl = struct.unpack_from('<I', d, c + 0x20)[0] if c + 0x24 <= len(d) else 0
+        code, ctl = d[c - n:c] if 0 < n <= c else b'', d[c:c + nctl]
+        st = glslc_stage(ctl, code) if code[:4] in (GFX_MAGIC, CS_MAGIC) else None
+        why = check(label, st, ctl, code) if st else 'no code area right before it'
+        if why: red(f'{label} Octane control section @{c:#x}: {why}')
+        out.append((f'{label}#OCT@{c:#x}', st, ctl, code))
+        c = d.find(CTL_MAGIC, c + nctl)
+    return out
 
 def field(d, fmt, at, where):
     """struct.unpack_from(fmt, d, at) of a field a header or table points at: red() naming where and the offset when it is not inside d (a damaged or cut file)"""
@@ -1753,6 +1802,9 @@ def scan_file(args):
     stem, ext = os.path.splitext(path)
     if ext in ('.data', '.patch', '.debug', '.nxpc') and os.path.exists(stem + '.dict'): return rel, {}, set(), {}   # read through its Next Level Games index (nlg_shaders)
     with open(path, 'rb') as f: head = f.read(16)
+    if ue_modern_pack(path):   # an Unreal modern pak or an IoStore container: its shaders are in the shader code archives (ue_shaders), not in the file — reading it whole finds nothing and fills the device's memory
+        print(f'skipped {rel}: {os.path.getsize(path):,} bytes, an Unreal modern pak or an IoStore container (the shaders are in the shader code archives)', flush=True)
+        return rel, {}, set(), {}
     found = []; trees = {}
     # The original narrow MDB1 archives (and archives for another console) keep their existing readers.
     if head[:4] == b'MDB1' and path.endswith('.nx64.mvgl') and (members := mvgl_nvn_shaders(path, '/' + rel)) is not None:
@@ -1823,6 +1875,10 @@ def scan_file(args):
     if head[:4] == b'\0\0\2\0' and path.endswith('.gz') and (z := kt_gz(open(path, 'rb').read(), 0x20000)) is not None:   # Ultra Kaiju Monster Rancher's chunked zlib files (128 KB chunks): taken only when the whole file parses as one; anything else reads raw as before
         kt_shaders(z, '/' + rel, found)
         return rel, uniq_keys(found), var_pairs(found), trees
+    if OCTANE and head[:4] == OCTZIP:   # an Octane zip (octane_members): the NVN stages in its .tfx effects (octane_shaders); other members hold no shaders. Only for a profile with shader_octane on
+        for nm, m in octane_members(open(path, 'rb').read(), '/' + rel):
+            if nm.lower().endswith('.tfx') and CTL_MAGIC in m: found += octane_shaders(m, f'/{rel}/{nm}')
+        return rel, uniq_keys(found), var_pairs(found), trees
     if head[:4] == MTARC:   # an MT Framework archive (mtarc_members): its shader package
         mtarc_shaders(open(path, 'rb').read(), '/' + rel, found)
         return rel, uniq_keys(found), var_pairs(found), trees
@@ -1831,6 +1887,12 @@ def scan_file(args):
         return rel, uniq_keys(found), var_pairs(found), trees
     if head[:8] == GFPAK:   # a Game Freak archive (gfpak_members): each entry scanned as a file of its own (the shaders are BNSH entries)
         for nm, m in gfpak_members(open(path, 'rb').read(), '/' + rel): scan_blob(m, f'/{rel}{nm}', found)
+        return rel, uniq_keys(found), var_pairs(found), trees
+    if head[:8] == b'UnityFS\0':   # a UnityFS bundle: mapped, not read, and unpacked one node at a time (unityfs.bundle_nodes); Ori and the Will of the Wisps' 822 MB data_1.unity3d, read and unpacked whole, ran a 6 GB phone out of memory
+        import mmap, unityfs
+        with open(path, 'rb') as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as d:
+            try: unity_shaders(d, '/' + rel, found, trees if not TREES else dict(TREES))
+            except unityfs.NoTree: return rel, {}, set(), 'defer'
         return rel, uniq_keys(found), var_pairs(found), trees
     d = unzs(path) if head[:4] == ZSTD_MAGIC else open(path, 'rb').read()   # by the magic: Paper Mario: The Thousand-Year Door names its zstd files .zst (8,726, its shaders among them)
     if head[4:5] == b'\x78' and path.endswith('.gz') and (z := gust_gz(d)) is not None: d = z   # Gust's chunked zlib, before the shader prefilter
@@ -1975,12 +2037,12 @@ def main():
             facts[key] = {'local': [x, y, z], 'shared': (sh + 15) // 16 * 16}
     for name, rr in recs.items():
         with open(os.path.join(pkg, name), 'wb') as f: f.write(b''.join(rr))
-    with open(mapout, 'w') as f:
+    with open(mapout, 'w', encoding='utf-8') as f:
         kinds = ' / '.join(k for k, hit in (('BNSH / BAHS', any('#BNSH@' in r[4] or '#BAHS@' in r[4] for r in rows)), ('Unity Shader', any('#var' in r[4] and '#BNSH@' not in r[4] and '#MSHD#' not in r[4] and '#SDF#' not in r[4] and '#HCPS@' not in r[4] and '#SLCT@' not in r[4] for r in rows)),
                                             ('MSHD', any('#MSHD#' in r[4] for r in rows)), ('GLSLC', any('#GLSLC@' in r[4] for r in rows)), ('RE Engine SDF', any('#SDF#' in r[4] for r in rows)),
                                             ('MT Framework SPK', any('#MTSPK@' in r[4] for r in rows)), ('MonoGame MGFX', any('#MGFX@' in r[4] for r in rows)),
                                             ('PlatinumGames shader objects', any('#PGSO' in r[4] for r in rows)), ('Monolith SLCT', any('#HCPS@' in r[4] or '#SLCT@' in r[4] for r in rows)),
-                                            ('Unreal Engine shader code archives', any('#UE' in r[4] for r in rows))) if hit)
+                                            ('Unreal Engine shader code archives', any('#UE' in r[4] for r in rows)), ('Octane effects', any('#OCT@' in r[4] for r in rows))) if hit)
         f.write(f'# kind: evidence  {NOTE} ({kinds} in RomFS + main) → control section + code area keys (dm/gfx/tools/shader_split.py)\n')
         f.write('# column 5 records where each key first appears; this game has no PC version to pair with\n')
         f.write('package\tindex\tstage\tdm_ctl_sha16\tsource\n')
@@ -1990,11 +2052,11 @@ def main():
     if os.path.exists(manual):
         for ln in open(manual):
             if ln.strip() and not ln.startswith('#'): k, v = ln.rstrip('\n').split('\t', 1); facts[k] = {**facts.get(k, {}), **json.loads(v)}
-    with open(factsout, 'w') as f:
+    with open(factsout, 'w', encoding='utf-8') as f:
         f.write('# Answer table for translation queries (generated by dm/gfx/tools/shader_split.py, do not edit): key <TAB> fact JSON. This game has no PC version to pair with: only the thread group / shared memory of compute shaders (taken from the control section); other queries get the translator defaults\n')
         for k in sorted(facts): f.write(k + '\t' + json.dumps(facts[k], sort_keys=True, separators=(',', ':')) + '\n')
     if pairsout:
-        with open(pairsout, 'w') as f:
+        with open(pairsout, 'w', encoding='utf-8') as f:
             f.write('# kind: evidence  vertex / pixel shader pairs within BNSH variations (generated by dm/gfx/tools/shader_split.py, do not edit): vertex key <TAB> pixel key\n')
             for a, b in sorted(pairs): f.write(f'{a}\t{b}\n')
     print(f'shaders: {len(rows)} (' + ', '.join(f'{STAGE_NAME[s]} {n}' for s, n in sorted(stat.items())) + '); sources ' + ', '.join(f'{g} {n}' for g, n in per_src.most_common()) + f'; compute shader answers {len(facts)} rows' + (f'; variation pairs {len(pairs)}' if pairsout else ''))
