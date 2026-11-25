@@ -3,6 +3,7 @@ t_dirty_slots / t_dirty_race cases of b65b9b0f, a2c731e3 and a3d58526): the hook
 a write on a pool being retired or reused never crashes, protection never lands on a retired pool, a read-only page that is not the tracker's is handed on, and overlapping pools
 keep their first-match lookups. Each case runs in its own process: a lost write ends it with 99 (a fault with no owner) or a signal."""
 from pathlib import Path
+import platform
 import subprocess
 import tempfile
 import unittest
@@ -48,7 +49,9 @@ static int g_fail;
 #define EXPECT(name, want, got) do { long long w_ = (long long)(want), g_ = (long long)(got); if (w_ != g_) { fprintf(stderr, "%s: expected %lld, got %lld\n", name, w_, g_); g_fail++; } } while (0)
 DIRTY
 static void handle_fault(int sig, siginfo_t *info, void *uc) { (void)sig; if (!fault_hook || !fault_hook(info->si_addr, 1, uc)) _exit(99); }   // not the tracker's: a lost or stuck write
-static size_t pg;
+// pg: the host page size, 4 KB (Linux, Android, an x86_64 build under Rosetta on the Mac) or 16 KB (the Mac). sub: a quarter page, the step of the pools'
+// sub-page starts and lengths, so that neighbours share host pages and no length or offset is 0 or negative at either size (a fixed 4096 was 0 at 4 KB pages)
+static size_t pg, sub;
 static uint8_t *page_map(size_t n) { uint8_t *p = mmap(NULL, n, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0); if (p == MAP_FAILED) { perror("mmap"); _exit(2); } return p; }
 
 // de2018e0: geometry and both hooks are set when the program loads, before any pool; then eight threads register their first pools at once while another prepares host writes
@@ -87,16 +90,16 @@ static void case_init(void) {
 // no generation saw it; a stamp from the old pool's time must count as written, also through the handle kept from the old pool
 static void case_born(void) {
     uint8_t *m = page_map(pg);
-    nvn_dirty_add_range(m, 4096); nvn_dirty_protect(m, 4096);
-    uint64_t stamp = nvn_dirty_now(); const void *kept = nvn_dirty_span(m, 4096);
-    EXPECT("a protected pool not written: clean", 0, nvn_dirty_since_span(kept, m, 4096, stamp));
+    nvn_dirty_add_range(m, sub); nvn_dirty_protect(m, sub);
+    uint64_t stamp = nvn_dirty_now(); const void *kept = nvn_dirty_span(m, sub);
+    EXPECT("a protected pool not written: clean", 0, nvn_dirty_since_span(kept, m, sub, stamp));
     nvn_dirty_remove_range(m);
     ((volatile uint8_t *)m)[0] = 3;   // the next pool's data, written with no pool registered: no fault
-    nvn_dirty_add_range(m, 4096);
-    EXPECT("same memory, a new pool: an older stamp is dirty", 1, nvn_dirty_since(m, 4096, stamp));
-    EXPECT("the same, through the handle kept from the old pool", 1, nvn_dirty_since_span(kept, m, 4096, stamp));
+    nvn_dirty_add_range(m, sub);
+    EXPECT("same memory, a new pool: an older stamp is dirty", 1, nvn_dirty_since(m, sub, stamp));
+    EXPECT("the same, through the handle kept from the old pool", 1, nvn_dirty_since_span(kept, m, sub, stamp));
     uint64_t stamp2 = nvn_dirty_now();
-    EXPECT("a stamp taken after the new pool's registration: clean", 0, nvn_dirty_since(m, 4096, stamp2));
+    EXPECT("a stamp taken after the new pool's registration: clean", 0, nvn_dirty_since(m, sub, stamp2));
     nvn_dirty_remove_range(m);
 }
 
@@ -145,8 +148,11 @@ static void *churn(void *arg) {
     for (int k = 0; k < rounds; k++) {
         int j = k % LIVE;
         if (live[j]) nvn_dirty_remove_range(live[j]);
-        size_t first = rnd(&s) % (PAGES / 2), len = (1 + rnd(&s) % (PAGES / 2)) * pg - (rnd(&s) % 4) * 4096;   // 4 KB aligned: neighbours share host pages
-        live[j] = arena + first * pg + (rnd(&s) % 4) * 4096;
+        // A pool sub aligned, so neighbours share host pages: from 1 page - 3 sub (a quarter page) to PAGES / 2 pages long, starting at most PAGES / 2 - 1 pages + 3 sub
+        // in, so it ends inside the arena (below PAGES pages)
+        size_t first = rnd(&s) % (PAGES / 2), len = (1 + rnd(&s) % (PAGES / 2)) * pg - (rnd(&s) % 4) * sub;
+        live[j] = arena + first * pg + (rnd(&s) % 4) * sub;
+        if (!len || live[j] + len > arena + PAGES * pg) { fprintf(stderr, "reuse: pool %zu +%zu outside the arena\n", (size_t)(live[j] - arena), len); _exit(3); }
         nvn_dirty_add_range(live[j], len); nvn_dirty_protect(live[j], len);
     }
     for (int j = 0; j < LIVE; j++) if (live[j]) nvn_dirty_remove_range(live[j]);
@@ -165,9 +171,9 @@ static void *preparer(void *arg) {
 static void *checker(void *arg) {
     uint32_t s = (uint32_t)(intptr_t)arg; const void *span = NULL;
     while (!atomic_load(&stop)) {
-        uint8_t *a = arena + rnd(&s) % (PAGES * pg - 4096);
-        if (!span || !(rnd(&s) & 15)) span = nvn_dirty_span(a, 4096);   // kept, as packaged textures keep theirs, across retirements and reuses
-        (void)nvn_dirty_since_span(span, a, 4096, nvn_dirty_now() / 2); atomic_fetch_add(&checks, 1);
+        uint8_t *a = arena + rnd(&s) % (PAGES * pg - sub);
+        if (!span || !(rnd(&s) & 15)) span = nvn_dirty_span(a, sub);   // kept, as packaged textures keep theirs, across retirements and reuses
+        (void)nvn_dirty_since_span(span, a, sub, nvn_dirty_now() / 2); atomic_fetch_add(&checks, 1);
     }
     return NULL;
 }
@@ -190,11 +196,13 @@ static void case_reuse(int rounds) {
 }
 
 // a2c731e3: adjacent pools share a host page after rounding, and only the range a texture was protected in gets the write's generation; looking up a different range
-// that holds the span (nxnative's last-range shortcut) missed the write. Lookups stay first-match
+// that holds the span (nxnative's last-range shortcut) missed the write. Lookups stay first-match. Pages as host pages p0..p3:
+//   starts_later 0: first [p0, p1 - sub) -> range p0..p1; second [p1 - sub, p3 - sub) -> range p0..p3; they share p0
+//   starts_later 1: first [p2 - sub, p2) -> range p1..p2; second [p0, p2 - sub) -> range p0..p2; they share p1
 static void case_overlap(int starts_later) {
     uint8_t *m = page_map(4 * pg), *first, *second; const void *other_span; size_t nfirst, nsecond;
-    if (starts_later) { first = m + 2 * pg - 4096; nfirst = 4096; second = m; nsecond = 2 * pg - 4096; other_span = m; }
-    else { first = m; nfirst = pg - 4096; second = m + pg - 4096; nsecond = 2 * pg; other_span = m + pg; }
+    if (starts_later) { first = m + 2 * pg - sub; nfirst = sub; second = m; nsecond = 2 * pg - sub; other_span = m; }
+    else { first = m; nfirst = pg - sub; second = m + pg - sub; nsecond = 2 * pg; other_span = m + pg; }
     nvn_dirty_add_range(first, nfirst);
     const void *first_range = nvn_dirty_span(first, 16);
     nvn_dirty_add_range(second, nsecond);
@@ -209,7 +217,7 @@ static void case_overlap(int starts_later) {
 }
 
 int main(int argc, char **argv) {
-    pg = (size_t)getpagesize();
+    pg = (size_t)getpagesize(); sub = pg / 4;
     struct sigaction sa = {0}; sa.sa_sigaction = handle_fault; sa.sa_flags = SA_SIGINFO; sigemptyset(&sa.sa_mask);
     sigaction(SIGSEGV, &sa, NULL); sigaction(SIGBUS, &sa, NULL);
     const char *c = argc > 1 ? argv[1] : "";
@@ -219,20 +227,34 @@ int main(int argc, char **argv) {
     else if (!strcmp(c, "retire_protect")) case_retire_protect();
     else if (!strcmp(c, "reuse")) case_reuse(argc > 2 ? atoi(argv[2]) : 20000);
     else if (!strcmp(c, "overlap")) { case_overlap(0); case_overlap(1); }
+    else if (!strcmp(c, "pagesize")) printf("%zu\n", pg);
     else { fprintf(stderr, "no case %s\n", c); return 2; }
     return g_fail != 0;
 }
 '''
 
 
-def build(tmp, dirty_src):
+def build(tmp, dirty_src, arch=None):
     dirty = '\n'.join(s for s in dirty_src.splitlines() if not s.startswith('#include'))
-    c, exe = Path(tmp) / 'races.c', Path(tmp) / 'races'
+    c, exe = Path(tmp) / 'races.c', Path(tmp) / (f'races-{arch}' if arch else 'races')
     c.write_text(HARNESS.replace('DIRTY', dirty), encoding='utf-8')
     # -Wno-misleading-indentation: gcc refuses nvn_dirty.c's one-line release_page under -Werror (as test_dirty_swap)
-    subprocess.run(['cc', '-std=gnu11', '-pthread', '-O1', '-Wall', '-Wextra', '-Werror', '-Wno-unused-function', '-Wno-unused-parameter', '-Wno-misleading-indentation',
-                    str(c), '-o', str(exe)], check=True)
+    subprocess.run(['cc', *(['-arch', arch] if arch else []), '-std=gnu11', '-pthread', '-O1', '-Wall', '-Wextra', '-Werror', '-Wno-unused-function', '-Wno-unused-parameter',
+                    '-Wno-misleading-indentation', str(c), '-o', str(exe)], check=True, capture_output=bool(arch))
     return exe
+
+
+def build_4k(tmp, dirty_src):
+    """The harness built for x86_64 on an arm64 Mac and run under Rosetta, whose processes have 4 KB pages (16 KB native), as Android and the Linux runners have:
+    the cases run at both page sizes on the Mac. None when it does not build or run there, or the pages are not 4 KB"""
+    if platform.system() != 'Darwin' or platform.machine() != 'arm64':
+        return None
+    try:
+        exe = build(tmp, dirty_src, 'x86_64')
+        r = subprocess.run([str(exe), 'pagesize'], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return exe if r.returncode == 0 and r.stdout.strip() == '4096' else None
 
 
 @unittest.skipUnless(host_cc.posix(), 'a POSIX host C compiler is required (<sys/mman.h>, sigaction)')
@@ -267,6 +289,17 @@ class DirtyRaces(unittest.TestCase):
 
     def test_overlapping_pools_first_match(self):
         self.run_case('overlap')
+
+
+class DirtyRaces4K(DirtyRaces):
+    """The same cases with 4 KB host pages on an arm64 Mac (build_4k). Linux and Android hosts mostly have 4 KB pages already and run DirtyRaces at that size"""
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory(prefix='nx2a-dirty-races-4k-')
+        cls.exe = build_4k(cls.tmp.name, (DM / 'gfx/nvn/nvn_dirty.c').read_text(encoding='utf-8'))
+        if not cls.exe:
+            cls.tmp.cleanup()
+            raise unittest.SkipTest('4 KB pages: only on an arm64 Mac with Rosetta (x86_64 build)')
 
 
 if __name__ == '__main__':
