@@ -65,6 +65,9 @@ static void one(int n) {
     d.levels = 1 + rnd() % 5;
     unsigned k = rnd() % 6;
     if (k == 1) { d.pkg_block_h = 1 + rnd() % 6 + (d.target == 2 ? (rnd() % 4) * 16 : 0); seen_pkg++; }   // packaged block height / depth
+#ifdef WIDTH_ALIGN
+    if (k == 2) { d.pkg_block_h = 1 + (rnd() % 5 | (1 + rnd() % 4) << 8); seen_pkg++; }                    // with a width alignment (packaged byte 1)
+#endif
     if (k == 3) d.flags = 0x20;                                                                              // sparse
     if (k == 4) d.flags = 0x200;                                                                             // MINIMAL_LAYOUT
     if (k == 5 && rnd() % 2) { d.flags = 0x20; d.width = 512 + rnd() % 1500; d.height = 256 + rnd() % 900; } // sparse, wide enough for tiled levels
@@ -116,7 +119,10 @@ class DeswizzleRows(unittest.TestCase):
         c.write_text(HARNESS, encoding='utf-8')
         cls.binary = c.with_suffix('.exe' if os.name == 'nt' else '')
         sanitize = ['-fsanitize=undefined', '-fno-sanitize-recover=all'] if host_cc.ubsan() else []
-        subprocess.run(['cc', '-std=c11', '-O1', '-Wall', '-Werror', *sanitize, '-I', str(TEX), '-I', str(NVN),
+        # The width alignment in packaged byte 1 is read only where nvn_tex.c has packaged_width_log2 (nvn_tex_layout's packaged path);
+        # until then the case is left out, since the older layout reads the whole field as a block height
+        width = ['-DWIDTH_ALIGN'] if 'packaged_width_log2' in (NVN / 'nvn_tex.c').read_text(encoding='utf-8') else []
+        subprocess.run(['cc', '-std=c11', '-O1', '-Wall', '-Werror', *sanitize, *width, '-I', str(TEX), '-I', str(NVN),
                         str(c), str(TEX / 'nvn_deswizzle.c'), str(NVN / 'nvn_tex.c'), '-o', str(cls.binary)],
                        check=True, capture_output=True, text=True)
 
