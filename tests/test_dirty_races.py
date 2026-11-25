@@ -3,6 +3,7 @@ t_dirty_slots / t_dirty_race cases of b65b9b0f, a2c731e3 and a3d58526): the hook
 a write on a pool being retired or reused never crashes, protection never lands on a retired pool, a fault that is not the tracker's (on a read-only page, or on a writable
 one: a store into a mapped file past its end) is handed on, not re-executed forever, and overlapping pools keep their first-match lookups. Each case runs in its own process: a lost write ends it with 99 (a fault with no owner) or a signal."""
 from pathlib import Path
+import os
 import platform
 import subprocess
 import tempfile
@@ -326,9 +327,13 @@ class DirtyRaces(unittest.TestCase):
 
 
 class DirtyRaces4K(DirtyRaces):
-    """The same cases with 4 KB host pages on an arm64 Mac (build_4k). Linux and Android hosts mostly have 4 KB pages already and run DirtyRaces at that size"""
+    """The same cases with 4 KB host pages on an arm64 Mac (build_4k). Linux and Android hosts mostly have 4 KB pages already and run DirtyRaces at that size.
+    Not on GitHub's macOS runners: there, under Rosetta in a virtual Mac, the reuse case's mprotect calls hit the mapping limit and the case ran past its 100 s
+    alarm, while the Linux runners run every case at real 4 KB pages"""
     @classmethod
     def setUpClass(cls):
+        if os.environ.get('GITHUB_ACTIONS') == 'true':
+            raise unittest.SkipTest('4 KB pages under Rosetta: not on the CI runners (the Linux jobs run these cases at real 4 KB pages)')
         cls.tmp = tempfile.TemporaryDirectory(prefix='nx2a-dirty-races-4k-')
         cls.exe = build_4k(cls.tmp.name, (DM / 'gfx/nvn/nvn_dirty.c').read_text(encoding='utf-8'))
         if not cls.exe:
