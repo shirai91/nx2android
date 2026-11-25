@@ -14,19 +14,20 @@ REPO = Path(__file__).resolve().parents[1] / 'nxnative'
 
 
 def fixture_nso(path):
-    image = bytearray(0x200)
+    # text 0x40 bytes, ro (MOD0, eh_frame_hdr) right after it, data on a 16 KB page of its own at 0x4000, so patch_nso.py lays nothing out again (mod_layout.py)
+    image = bytearray(0x4160)
     struct.pack_into('<II', image, 0, 0x14000004, 0x60)
     struct.pack_into('<I', image, 0x10, 0xd503201f)
     image[0x60:0x64] = b'MOD0'
-    struct.pack_into('<i', image, 0x64, 0x40)
+    struct.pack_into('<i', image, 0x64, 0x4000 - 0x60)
     struct.pack_into('<ii', image, 0x70, 0x20, 0x2c)
     image[0x80:0x84] = bytes((1, 3, 3, 3))
-    struct.pack_into('<qQqQ', image, 0xa0, 6, 0x100, 5, 0x130)
+    struct.pack_into('<qQqQ', image, 0x4000, 6, 0x4060, 5, 0x4090)
     header = bytearray(0x100); header[:4] = b'NSO0'
-    struct.pack_into('<III4xIII4xIII', header, 0x10, 0x100, 0, 0x40, 0x140, 0x40, 0x60, 0x1a0, 0xa0, 0x160)
+    struct.pack_into('<III4xIII4xIII', header, 0x10, 0x100, 0, 0x40, 0x140, 0x40, 0x60, 0x1a0, 0x4000, 0x160)
     header[0x40:0x50] = bytes(range(16))
     struct.pack_into('<III', header, 0x60, 0x40, 0x60, 0x160)
-    path.write_bytes(header + image)
+    path.write_bytes(header + image[:0xa0] + image[0x4000:])
 
 
 class ProvisionalPatchWarning(unittest.TestCase):

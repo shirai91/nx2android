@@ -16,7 +16,8 @@ from itertools import combinations
 import lz4.block
 from capstone import *
 from capstone.arm64 import ARM64_OP_IMM, ARM64_OP_MEM, ARM64_OP_REG
-import nso_asm
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import mod_layout, nso_asm
 from nso_asm import *   # the instruction encoders (B, ADRP, LDRX, ...), shared with the per-build patch files
 
 src, outdir, NAME = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -33,6 +34,18 @@ else:
     segs = [struct.unpack_from('<III', d, 0x10 + i * 0x10) for i in range(3)]
     bss = struct.unpack_from('<I', d, 0x3c)[0]
     csz = struct.unpack_from('<III', d, 0x60)
+IMG = bytearray(segs[2][1] + segs[2][2])   # text + ro + data at their memory offsets; bss is added below unless FAR
+for i, (fo, mo, sz) in enumerate(segs):
+    raw = d[fo:fo + csz[i]]
+    if flags >> i & 1: raw = lz4.block.decompress(raw, uncompressed_size=sz)
+    IMG[mo:mo + sz] = raw
+# Horizon maps modules at 4 KB, the loader at 16 KB on every host (it seals [0, text_end rounded up to 16 KB) read + execute): move writable data up by whole 4 KB pages when it
+# would share the code's 16 KB page (mod_layout.py; FINAL FANTASY VIII Remastered's Math.nro and Platform.nro). Every other module comes out as before
+try: IMG, _layout, _relayout_D, _relayout_notes = mod_layout.relayout(IMG, tuple((mo, sz) for _, mo, sz in segs))
+except mod_layout.Error as e: sys.exit(f'[RED] {NAME}: {e}')
+if _relayout_D:
+    print(f'{NAME}: ' + '; '.join(_relayout_notes))
+    segs = [(None, mo, sz) for mo, sz in _layout]   # the file offsets are no longer used
 # Every jump between the patch area and the code is a B (±128 MB). A patch area appended after the image (with bss) cannot reach the code when it would start beyond 112 MB (leaving 16 MB for the patch area): Metroid Dread's main has about 1.8 GB of bss (the engine's static heap); Engage's main starts its patch area at about 103 MB and keeps it after the image.
 # The patch area then sits FRONT bytes before the module base (PATCH_OFF is negative), and the output file holds only text + ro + data (FILE_IMAGE_LEN) followed by the patch area; the loader supplies zero pages for bss and the key page (IMAGE_SIZE is the whole image).
 # The key page stays after bss (the patch area reaches it through ADRP, ±4 GB). Modules below the limit produce output byte-identical to before
@@ -43,11 +56,7 @@ FAR, FRONT = NEAR_PATCH_OFF > 0x7000000, 0x2000000
 # (Monster Hunter Rise: 3.6 MB), the rewriter runs again with exactly the size it needs (DM_PATCH_FRONT, set only by that rerun) and B() checks every branch
 BIG_TEXT = FAR and segs[0][2] + FRONT > 0x8000000 - 0x10000
 if BIG_TEXT: FRONT = int(os.environ.get('DM_PATCH_FRONT', '0'), 0) or (0x8000000 - 0x10000 - segs[0][2]) & ~0xFFFF
-IMG = bytearray(segs[2][1] + segs[2][2] + (0 if FAR else bss))
-for i, (fo, mo, sz) in enumerate(segs):
-    raw = d[fo:fo + csz[i]]
-    if flags >> i & 1: raw = lz4.block.decompress(raw, uncompressed_size=sz)
-    IMG[mo:mo + sz] = raw
+if not FAR: IMG.extend(bytes(bss))
 TEXT_END = segs[0][2]
 RO_OFF, DATA_OFF = segs[1][1], segs[2][1]
 if FAR:
@@ -1166,7 +1175,7 @@ else:
     open(P('patched.bin'), 'wb').write(IMG + bytearray(PATCH_OFF - len(IMG)) + patch)
 import hashlib
 with open(os.path.join(outdir, 'build_src.sha256'), 'w') as f:   # the same for every module: the rewriter and every patch file, by path from dm/tools
-    for src_ in (os.path.abspath(__file__), nso_code.__file__, nso_asm.__file__, *PATCH_FILES): f.write(hashlib.sha256(open(src_, 'rb').read()).hexdigest() + f'  {os.path.relpath(os.path.abspath(src_), os.path.dirname(os.path.abspath(__file__)))}\n')
+    for src_ in (os.path.abspath(__file__), nso_code.__file__, nso_asm.__file__, mod_layout.__file__, *PATCH_FILES): f.write(hashlib.sha256(open(src_, 'rb').read()).hexdigest() + f'  {os.path.relpath(os.path.abspath(src_), os.path.dirname(os.path.abspath(__file__)))}\n')
 with open(P('fixups.tsv'), 'w') as f:
     f.write(f'# PATCH_OFF\t{PATCH_OFF:#x}\n# KEY_PAGE_OFF\t{KEY_PAGE_OFF:#x}\n# KEY_PAGE_SIZE\t0x4000\n# TEXT_END\t{TEXT_END:#x}\n# RO_OFF\t{RO_OFF:#x}\n# DATA_OFF\t{DATA_OFF:#x}\n')
     if FAR: f.write(f'# IMAGE_SIZE\t{IMAGE_SIZE:#x}\n# FILE_IMAGE_LEN\t{FILE_IMAGE_LEN:#x}\n')   # patch area before the base (negative PATCH_OFF): whole image size, length of the image part of the file

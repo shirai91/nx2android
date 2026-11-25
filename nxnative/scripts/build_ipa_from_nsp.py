@@ -966,7 +966,7 @@ def rewrite(py, repo, exe_dir, out, env, logs, g):
     if local_patches.is_file() and local_patches.resolve() not in {p.resolve() for p in extra + list((repo / 'dm/games').glob('*/patches.py'))}:
         PROG.say(f'[RED] {local_patches} is not loaded automatically from an external profile. Register these build-specific patches in a dm/games profile before rebuilding. '
                  'This rewrite does not apply that file.')
-    key = fingerprint(('files', [repo / 'dm/tools' / f for f in ('patch_nso.py', 'nso_code.py', 'nso_asm.py')] + patch_files(repo, exe_dir, mods) + extra + list(src.values()) + ([manifest] if manifest.is_file() else [])), names, capstone.__version__,
+    key = fingerprint(('files', [repo / 'dm/tools' / f for f in ('patch_nso.py', 'nso_code.py', 'nso_asm.py', 'mod_layout.py')] + patch_files(repo, exe_dir, mods) + extra + list(src.values()) + ([manifest] if manifest.is_file() else [])), names, capstone.__version__,
                       {k: env.get(k) for k in ('DM_PATCH_FRONT',)})
     if all((out / f'{m}.patched.bin').is_file() for m in names) and reused(kf, key) is not None:
         PROG.end(f'{", ".join(mods)}{f" and {len(nros)} NROs" if nros else ""}, reused (inputs unchanged)'); return
