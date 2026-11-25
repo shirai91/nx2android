@@ -46,7 +46,7 @@ static int move(const nvn_texdesc *d, unsigned level, unsigned layer, uint8_t *b
     uint32_t row_bytes, rows, slices, bpb; uint64_t base; unsigned th, td;
     if (nvn_deswizzle_geom(d, level, layer, &row_bytes, &rows, &slices, &base, &th, &td, &bpb)) return -1;
     if (pitch < row_bytes) return -1;
-    bl += base; uint32_t lb = nvn_tex_level_gobs(d, level) * 64;   // the row as laid out (padded in a sparse texture's tiled levels)
+    bl += base; uint32_t lb = nvn_tex_level_gobs(d, level) * 64;   // the row as laid out (padded in the tiled levels of a sparse texture or a packaged layout with width alignment)
     if (lb < row_bytes) lb = row_bytes;
     static int fast = -1; if (fast < 0) { const char *e = getenv("DM_MOVIE_FAST"); fast = e && !strcmp(e, "1"); }
     for (uint32_t z = 0; z < slices; z++)
