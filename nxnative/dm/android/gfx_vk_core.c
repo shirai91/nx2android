@@ -411,6 +411,47 @@ static int recv_fds(int sock, int *fds, int max) {
             for (size_t i = 0; i < (c->cmsg_len - CMSG_LEN(0)) / sizeof(int) && n < max; i++) fds[n++] = ((int *)CMSG_DATA(c))[i];
     return n;
 }
+// Extract the mappable dma-buf fd from an AHardwareBuffer's native handle. Adreno sends 1 fd; MediaTek gralloc_extra sends 3 (metadata at 0, dma-buf at 1).
+static int ahb_fd(AHardwareBuffer *ahb, int *why) {
+    int sv[2], fds[16], nfd = -1;
+    if (why) *why = 4;   // the caller's diagnostic stage: 2 socketpair, 3 the handle never arrived, 4 nothing usable came back
+    if (!ahb || socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sv)) { if (why) *why = 2; return -1; }
+    if (!AHardwareBuffer_sendHandleToUnixSocket(ahb, sv[0])) nfd = recv_fds(sv[1], fds, 16);
+    else if (why) *why = 3;
+    close(sv[0]); close(sv[1]);
+    if (nfd < 1) return -1;   // (still 4: the receive brought nothing back)
+    int pick = -1;
+    if (nfd == 1) {
+        pick = 0;
+    } else {
+        int first = -1;   // a dma-buf names itself: prefer it to another mappable fd (an ashmem region also maps read-write on some grallocs)
+        for (int i = 0; i < nfd; i++) {
+            void *p = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, fds[i], 0);
+            if (p == MAP_FAILED) continue;
+            munmap(p, 4096);
+            if (first < 0) first = i;
+            char link[64], tgt[128] = "";
+            snprintf(link, sizeof link, "/proc/self/fd/%d", fds[i]);
+            ssize_t r = readlink(link, tgt, sizeof tgt - 1);
+            if (r > 0) { tgt[r] = 0; if (strstr(tgt, "dmabuf") || strstr(tgt, "gralloc")) { pick = i; break; } }
+        }
+        if (pick < 0) pick = first;
+    }
+    if (pick >= 0) {
+        static int said;
+        if (!said) {
+            said = 1;
+            char link[64], target[128] = "?";
+            snprintf(link, sizeof link, "/proc/self/fd/%d", fds[pick]);
+            ssize_t r = readlink(link, target, sizeof target - 1);
+            if (r > 0) target[r] = 0;
+            VKLOG("hardware buffer handle (%d fd%s): selected fd[%d] (%s)", nfd, nfd == 1 ? "" : "s", pick, target);
+        }
+    }
+    int chosen = pick >= 0 ? fds[pick] : -1;
+    for (int i = 0; i < nfd; i++) if (i != pick) close(fds[i]);
+    return chosen;
+}
 static const VkBufferUsageFlags POOL_USAGE0 = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT |
     VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
     VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
@@ -508,12 +549,7 @@ static slab_t *slab_new(int c) {   // a slab of class c, allocated and imported 
     s->slot_bytes = sb; s->nslot = s->nfree = n; s->fd = -1;
     AHardwareBuffer_Desc d = {(uint32_t)size, 1, 1, AHARDWAREBUFFER_FORMAT_BLOB, AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN | AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN | AHARDWAREBUFFER_USAGE_GPU_DATA_BUFFER, 0, 0, 0};
     if (AHardwareBuffer_allocate(&d, &s->ahb)) { free(s); return NULL; }
-    int sv[2], fds[16], nfd = -1;
-    if (!socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sv)) {
-        if (!AHardwareBuffer_sendHandleToUnixSocket(s->ahb, sv[0])) nfd = recv_fds(sv[1], fds, 16);
-        close(sv[0]); close(sv[1]);
-    }
-    if (nfd >= 1) { s->fd = fds[0]; for (int i = 1; i < nfd; i++) close(fds[i]); }
+    s->fd = ahb_fd(s->ahb, NULL);
     s->map = s->fd >= 0 ? mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, s->fd, 0) : MAP_FAILED;
     VkAndroidHardwareBufferPropertiesANDROID ap = {VK_STRUCTURE_TYPE_ANDROID_HARDWARE_BUFFER_PROPERTIES_ANDROID};
     VkExternalMemoryBufferCreateInfo eb = {VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO, NULL, VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID};
@@ -643,19 +679,15 @@ static int pool_zero_copy(vkpool_t *p, uint8_t *mem, uint64_t size, int lazy, co
     AHardwareBuffer *ahb = reuse ? re.ahb : NULL; int ar = reuse ? 0 : AHardwareBuffer_allocate(&d, &ahb);
     if (ar) { mem_diag_zc(1, "AHardwareBuffer_allocate", size, "return", ar); return -1; }
 #define ZC_DROP() do { if (reuse) zcf_free_now(&re); else AHardwareBuffer_release(ahb); } while (0)
-    int sv[2]; if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sv)) {
-        mem_diag_zc(2, "socketpair", size, "errno", errno); ZC_DROP(); return -1; }
-    int fds[16], nfd = -1;
-    ar = AHardwareBuffer_sendHandleToUnixSocket(ahb, sv[0]);
-    if (!ar) { nfd = recv_fds(sv[1], fds, 16); if (nfd < 1) mem_diag_zc(4, "recv_fds", size, "return", nfd); }
-    else mem_diag_zc(3, "AHardwareBuffer_sendHandleToUnixSocket", size, "return", ar);
-    close(sv[0]); close(sv[1]);
-    if (nfd < 1) { ZC_DROP(); return -1; }
+    int why = 4; int fd = ahb_fd(ahb, &why);
+    if (fd < 0) {   // the stage says which step of ahb_fd it was, and the name says the same: 2 socketpair, 3 the handle never arrived, 4 nothing usable came back
+        static const char *const stage_name[] = {"ahb_fd", "ahb_fd", "socketpair", "AHardwareBuffer_sendHandleToUnixSocket", "recv_fds"};
+        mem_diag_zc(why, why >= 0 && why < 5 ? stage_name[why] : "ahb_fd", size, "return", fd); ZC_DROP(); return -1; }
     // copy the pool's current contents into the buffer through a temporary mapping, then put the buffer's pages at the pool's address
-    zcfill_t f = {fds[0], 0, NULL, 0, in}; int rc = zc_place(mem, size, &f, lazy, &done);
+    zcfill_t f = {fd, 0, NULL, 0, in}; int rc = zc_place(mem, size, &f, lazy, &done);
     if (rc == -5) mem_diag_zc(5, "mmap-temporary", size, "errno", errno);
     else if (rc == -6) mem_diag_zc(6, "mmap-fixed", size, "errno", errno);
-    for (int i = 0; i < nfd; i++) close(fds[i]);
+    close(fd);
     if (rc) { p->left = zc_unplace(mem, done, lazy, in); ZC_DROP(); return rc == 1 || rc == 2 ? rc : -1; }   // (a slice swapped before the failing one goes back first)
 #undef ZC_DROP
     if (reuse) { p->buf = re.buf; p->mem = re.mem; p->ahb = ahb; p->zero_copy = 1; return 0; }   // imported already
@@ -695,12 +727,9 @@ static int pool_fd(const vkpool_t *p, int *own) {
     *own = 0;
     if (!p->zero_copy) return -1;
     if (p->slab) return ((slab_t *)p->slab)->fd;
-    int sv[2], fds[16], nfd = -1; if (!p->ahb || socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sv)) return -1;
-    if (!AHardwareBuffer_sendHandleToUnixSocket(p->ahb, sv[0])) nfd = recv_fds(sv[1], fds, 16);
-    close(sv[0]); close(sv[1]);
-    for (int k = 1; k < nfd; k++) close(fds[k]);
-    if (nfd < 1) return -1;
-    *own = 1; return fds[0];
+    int fd = ahb_fd(p->ahb, NULL);
+    if (fd < 0) return -1;
+    *own = 1; return fd;
 }
 // A zero-copy pool's dma-buf mapped again over [mem, mem+len) in one piece per chunk, read-only (nvn_dirty_defrag: the mappings its protection split never merge), but for
 // the pools inside it, whose pages stay their own. 0 = done; 1 = nothing mapped (no pool is exactly [mem, mem+len): a pool not whole host pages, whose tracked range is
@@ -820,10 +849,9 @@ static int zc_uncached(void) {
     enum { N = 1 << 20 }; v = 0;
     AHardwareBuffer_Desc d = {N, 1, 1, AHARDWAREBUFFER_FORMAT_BLOB, AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN | AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN | AHARDWAREBUFFER_USAGE_GPU_DATA_BUFFER, 0, 0, 0};
     AHardwareBuffer *ahb = NULL; if (AHardwareBuffer_allocate(&d, &ahb)) return v;
-    int sv[2], fds[16], nfd = -1;
-    if (!socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sv)) { if (!AHardwareBuffer_sendHandleToUnixSocket(ahb, sv[0])) nfd = recv_fds(sv[1], fds, 16); close(sv[0]); close(sv[1]); }
-    uint8_t *a = nfd >= 1 ? mmap(NULL, N, PROT_READ | PROT_WRITE, MAP_SHARED, fds[0], 0) : MAP_FAILED, *m = malloc(N);
-    for (int i = 0; i < nfd; i++) close(fds[i]);
+    int fd = ahb_fd(ahb, NULL);
+    uint8_t *a = fd >= 0 ? mmap(NULL, N, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0) : MAP_FAILED, *m = malloc(N);
+    if (fd >= 0) close(fd);
     if (a != MAP_FAILED && m) {
         memset(a, 1, N); memset(m, 1, N);
         uint64_t ta = read_ns(a, N), tm = read_ns(m, N); v = ta > 4 * tm;
