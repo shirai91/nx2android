@@ -1461,7 +1461,7 @@ def unity_shaders(d, label, out, trees):
     """Shaders and compute shaders in a UnityFS bundle or serialized file → out; raises NoTree when no type tree is available"""
     import unityfs
     if COMMON is None: red(f'{label}: a Unity asset, but main has no Unity common string table')
-    sers = unityfs.bundle_files(d) if d[:8] == b'UnityFS\0' else [('', d)]
+    sers = unityfs.bundle_nodes(d, unityfs.serialized_head) if d[:8] == b'UnityFS\0' else [('', d)]   # one node at a time, and only the serialized files
     for node, x in sers:
         if not unityfs.is_serialized(x): continue
         for cid, pid, o in unityfs.serialized_objects(x, COMMON, {unityfs.CLASS_SHADER}, trees):
@@ -1472,6 +1472,7 @@ def unity_shaders(d, label, out, trees):
                 code = unityfs.subprogram(sp)[4]
                 out.extend((where, st, ctl, cd) for st, ctl, cd in unity_program(code, where, stages.get(k)))
         out.extend(unity_compute(x, f'{label}{":" + node if node else ""}', trees))
+        x = None   # let this node go before bundle_nodes unpacks the next
 
 def scan_blob(d, label, out):
     if d[:4] == b'Yaz0': d = yaz0(d)
@@ -1886,6 +1887,12 @@ def scan_file(args):
         return rel, uniq_keys(found), var_pairs(found), trees
     if head[:8] == GFPAK:   # a Game Freak archive (gfpak_members): each entry scanned as a file of its own (the shaders are BNSH entries)
         for nm, m in gfpak_members(open(path, 'rb').read(), '/' + rel): scan_blob(m, f'/{rel}{nm}', found)
+        return rel, uniq_keys(found), var_pairs(found), trees
+    if head[:8] == b'UnityFS\0':   # a UnityFS bundle: mapped, not read, and unpacked one node at a time (unityfs.bundle_nodes); Ori and the Will of the Wisps' 822 MB data_1.unity3d, read and unpacked whole, ran a 6 GB phone out of memory
+        import mmap, unityfs
+        with open(path, 'rb') as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as d:
+            try: unity_shaders(d, '/' + rel, found, trees if not TREES else dict(TREES))
+            except unityfs.NoTree: return rel, {}, set(), 'defer'
         return rel, uniq_keys(found), var_pairs(found), trees
     d = unzs(path) if head[:4] == ZSTD_MAGIC else open(path, 'rb').read()   # by the magic: Paper Mario: The Thousand-Year Door names its zstd files .zst (8,726, its shaders among them)
     if head[4:5] == b'\x78' and path.endswith('.gz') and (z := gust_gz(d)) is not None: d = z   # Gust's chunked zlib, before the shader prefilter

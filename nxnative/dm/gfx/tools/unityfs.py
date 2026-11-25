@@ -11,7 +11,7 @@
 #     m_ParameterBlobIndices), and the code entries are the m_BlobIndex of m_PlayerSubPrograms (Ace Attorney Investigations Collection, Unity 2022.3.17f1)
 #   The pre-2019.3 layouts were found by armyja on Cuphead (Unity 2017.4.9f1, serialized format 17), GitHub pull request #2
 # Only depends on lz4 (the same package shader_split uses for NSOs)
-import lzma, struct
+import bisect, lzma, struct
 
 CLASS_SHADER = 48
 
@@ -29,11 +29,13 @@ def _decomp(raw, size, kind):
     if kind in (2, 3): return _lz4(raw, size)
     raise ValueError(f'UnityFS: unknown compression {kind}')
 
-def _cstr(d, p):
-    e = d.index(b'\0', p); return d[p:e].decode('utf-8', 'replace'), e + 1
+def _cstr(d, p):   # find, not index: a bundle may be an mmap, which has no index
+    e = d.find(b'\0', p)
+    if e < 0: raise ValueError('UnityFS: unterminated string')
+    return d[p:e].decode('utf-8', 'replace'), e + 1
 
-def bundle_files(d):
-    """UnityFS bundle → [(path, bytes)]"""
+def _bundle_layout(d):
+    """UnityFS bundle → (offset of the first data block, [(uncompressed size, compressed size, flags)], [(offset, size, path)])"""
     if d[:8] != b'UnityFS\0': raise ValueError('not UnityFS')
     fmt = struct.unpack_from('>I', d, 8)[0]
     _, p = _cstr(d, 12); _, p = _cstr(d, p)
@@ -52,10 +54,39 @@ def bundle_files(d):
         off, sz, f = struct.unpack_from('>qqI', info, q); q += 20
         name, q = _cstr(info, q); nodes.append((off, sz, name))
     if flags & 0x200: p = (p + 15) & ~15   # BlockInfoNeedPaddingAtStart
-    out = bytearray()
-    for u, c, f in blocks:
-        out += _decomp(d[p:p + c], u, f & 0x3f); p += c
-    return [(name, bytes(out[off:off + sz])) for off, sz, name in nodes]
+    return p, blocks, nodes
+
+def bundle_nodes(d, keep=None):
+    """UnityFS bundle → yields (path, bytes), one node at a time, unpacking only the data blocks that node covers. d may be an mmap.
+    keep(head, size): given a node's first 48 bytes (fewer if it is shorter) and its size, says whether to unpack the rest; a node it refuses is not yielded (None: every node).
+    Memory: one node and the blocks around it, not the whole unpacked bundle (bundle_files): Ori and the Will of the Wisps' 822 MB data_1.unity3d, unpacked whole, ran a 6 GB phone out of memory"""
+    p, blocks, nodes = _bundle_layout(d)
+    table, u0, c0 = [], 0, p   # (uncompressed start, compressed start, uncompressed size, compressed size, flags) per block
+    for u, c, f in blocks: table.append((u0, c0, u, c, f)); u0 += u; c0 += c
+    starts = [t[0] for t in table]
+    last = [None, None]   # the last block unpacked (two nodes often share one)
+    def block(i):
+        if last[0] != i:
+            last[1] = None   # drop the old block before unpacking the new one
+            _, cs, u, c, f = table[i]; last[0], last[1] = i, _decomp(d[cs:cs + c], u, f & 0x3f)
+        return last[1]
+    def read(off, n):   # bytes [off, off + n) of the unpacked stream, cut short at its end like a slice
+        i = bisect.bisect_right(starts, off) - 1
+        if i < 0 or n <= 0: return b''
+        parts = []
+        while n > 0 and i < len(table):
+            b = block(i); s = off - table[i][0]
+            part = b[s:s + n]
+            if not part and s >= len(b): break
+            parts.append(part); off += len(part); n -= len(part); i += 1
+        return parts[0] if len(parts) == 1 else b''.join(parts)
+    for off, sz, name in nodes:
+        if keep is not None and not keep(read(off, min(sz, 48)), sz): continue
+        yield name, bytes(read(off, sz))
+
+def bundle_files(d):
+    """UnityFS bundle → [(path, bytes)]"""
+    return list(bundle_nodes(d))
 
 def common_strings(image):
     """Unity's common string table in the game's main → {offset: string}"""
@@ -334,12 +365,16 @@ def serialized_objects(d, common, want=None, trees=None):
 
 def is_serialized(d):
     """does it look like a serialized file (big-endian header: format 17..22; from 22 the sizes follow +0x14)"""
-    if len(d) < 48: return False
+    return serialized_head(d, len(d))
+
+def serialized_head(d, size):
+    """is_serialized for a file of this size, from its first 48 bytes (bundle_nodes' keep: a node that is no serialized file, such as a .resS of textures, is never unpacked)"""
+    if size < 48 or len(d) < 48: return False
     ver = struct.unpack_from('>I', d, 8)[0]
     if not 17 <= ver <= 22 or d[16] not in (0, 1): return False
     if ver >= 22: msz, fsz, doff = struct.unpack_from('>Iqq', d, 20)
     else: msz, fsz, _, doff = struct.unpack_from('>IIII', d, 0)
-    return fsz == len(d) and 0 < msz < fsz and doff <= fsz
+    return fsz == size and 0 < msz < fsz and doff <= fsz
 
 def shader_programs(sh, only=None):
     """Shader object → yields (platform, subprogram index, subprogram bytes); only = the subprogram indices to yield (None: all)"""
