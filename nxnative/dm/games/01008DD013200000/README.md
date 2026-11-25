@@ -1,15 +1,35 @@
-# Ori and the Will of the Wisps on Android
+<!-- game facts: made by docs/gen_tables.py from android.tsv; edit android.tsv, not this block -->
+# Ori and the Will of the Wisps
 
-**Experimental setup profile — known blockers remain; requires testing.** A full port of 1.2.1 builds the APK and data pack with #581, #585 and #562 merged (see Quirks); no Android launch or device test is established. This profile makes the exact build's metadata available to the porter; it does not establish that the game boots or plays.
+![Ori and the Will of the Wisps](../../../../docs/images/ori-and-the-will-of-the-wisps.jpg)
 
-**Startup crash risk:** nxnative needs a lock around Unity's shared constant-buffer table. This fork cannot apply that upstream patch, and this profile does not include it.
+| | |
+|---|---|
+| Status | **experimental** |
+| Title ID | `01008DD013200000` |
+| Tested with nx2android | `v0.4.0` |
+| Tested build and device | v196608 POCO X3 Pro (Snapdragon 860, Adreno 640, Android 13), community test |
+| App package | `org.nx2a.t01008dd013200000` |
+| Needs | a GPU that reads BC-compressed textures (Adreno, Xclipse; not Mali or PowerVR) |
+
+The profile sets these for you (`android.tsv`); a player changes the pause menu ones in the game, and the env rows in the data pack's `env.txt`:
+
+| Row | What it does |
+|---|---|
+| `docked=1` | pause menu default on first launch: docked mode (1) or handheld mode (0) |
+| `overlay=1` | pause menu default on first launch: on-screen gamepad shown (1) or hidden (0) |
+| `rumble=1` | pause menu default on first launch: rumble on (1) or off (0) |
+| `pacing game` | frame pacing preset: DM_FPS_TARGET=0, DM_ADAPTIVE_FPS=0 |
+
+Read the profile's porting log in the comment header of [`android.tsv`](android.tsv). Back to the [games list](../../../../README.md#games).
+<!-- end of the game facts -->
+
+**Experimental. A community tester plays it on Android, but it crashes at random at boot.** The crash is a Unity race that nxnative fixes with a patch nx2android's rewriter cannot load yet (see Quirks). Retry the start when it happens.
 
 ## Game version
 
-- Switch 1 title ID: `01008DD013200000`.
-- Source profile: **1.2.1 (`v196608`)** over the base game.
+- Update **1.2.1 (`v196608`)** over the base game, title ID `01008DD013200000`. Other updates are untested.
 - SDK 9.4.0; Unity 2018.4.24f1 IL2CPP with Wwise, NVN rendering.
-- Other builds are outside this source assessment; no Android version is claimed tested.
 
 | Module | Build ID |
 |---|---|
@@ -19,41 +39,35 @@
 
 ## Frame rate
 
-The profile uses `pacing game`: the game's own limiter, with the adaptive governor disabled and no frame-rate override. Upstream reports a native 60 fps target on Switch/Mac; Android frame rate and pacing have not been measured.
+- The game targets 60 fps (`pacing game`: its own limiter, the adaptive governor off).
+- On an Adreno 640: 36-39 fps in the menus and 18-31 fps in play. The GPU is the limit: the game draws at 1600x900, and long frames take 33-100 ms of GPU time. Handheld mode in the pause menu gave the same frame rate.
 
 ## Tested devices
 
-None. No APK, full shader translation, game launch, screenshots or gameplay validation were produced for this change.
+| Device | GPU | Vulkan driver | Game version | nx2android | Result |
+|---|---|---|---|---|---|
+| POCO X3 Pro (Snapdragon 860, 6 GB, Android 13), community test by dusk-beep, 2026-11-25 | Adreno 640 | Turnip, Mesa 27.0.0-devel | 1.2.1 | `v0.4.0` with #581, #585, #562, #590 | plays: the opening, through the wolf fight to the first ability, about 13 minutes with 59 saves; random crash at boot |
+
+Results: [the run](https://github.com/shirai91/nx2android/pull/518#issuecomment-7160590170), [route and boot crash](https://github.com/shirai91/nx2android/pull/518#issuecomment-7161015990).
 
 ## Options
 
-- An arm64 Android device with BC texture support and the Vulkan features required by the shaders is needed. Driver compatibility is untested; the default system driver is retained.
-- Start docked with the on-screen gamepad visible and rumble enabled. These are initial pause-menu defaults.
-- Use the exact game version above and the player's own dump and keys. The profile is experimental even though it is selectable without generating a provisional profile.
+- An arm64 device with BC texture support. The only device run used Turnip on Adreno 640; the system driver is untested for this game.
+- Starts docked, with the on-screen gamepad visible and rumble on (pause-menu defaults).
+- Until they are merged, a port needs these core fixes, each found with this game:
+  - #581: the shader split unpacks Unity bundles one node at a time (the 822 MB `data_1.unity3d` ran a 6 GB phone out of memory, even with `--jobs 1`);
+  - #585: the shader translator no longer copies one expression into both operands of `x * x` (12 pixel shaders grew the translator without end);
+  - #562 (merged): the shader export writes the bundle in batches;
+  - #590: a copy of an NVN program finds its shader keys (without it the screen stays black, with 142 `[RED] shader ... is not in the bundle` lines).
 
 ## Quirks and known issues
 
-- A community port of the registered `main` build stopped at `jump table 1b56540`, then at `jump table 1b574e0`. The shared rewriter now tries nxnative's tail-call proofs, the ones nxnative uses on this build, at any `br x18` it could not otherwise classify. Synthetic regressions cover these forms and unsafe variants. The rewrite of `main`, `subsdk0` and `sdk` now finishes on a real 1.2.1 dump, on a Mac and in Termux on a phone.
-- Until they are merged, a port of this game needs three core fixes, each found with it:
-  - #581: the shader split unpacks Unity bundles one node at a time. Unpacking the 822 MB `data_1.unity3d` whole ran a 6 GB phone out of memory, even with `--jobs 1`.
-  - #585: the shader translator's optimizer no longer copies one expression into both operands of `x * x`. 12 pixel shaders made the translator grow without end, about 13 GB in 30 s for one of them.
-  - #562: the shader export writes the bundle in batches. Without it, the export held all 1.25 GB of SPIR-V and peaked at about 2 GB.
-  On a Mac with all three, the port's largest processes peaked at 843 MB (the shader export), 798 MB (porter) and 133 MB (each translator).
-- **Unity startup race remains unfixed.** [Upstream's analysis](https://github.com/seedds/nxnative/blob/6e12b9f8471c0ea80628ef33f7ffcfe2380cada5/dm/games/01008DD013200000/README.md#startup) records concurrent main/render-thread access to a constant-buffer table and 3 crashes in 7 Mac boots without the lock. This is upstream evidence, not an Android measurement. Disabling Unity graphics jobs did not remove the race upstream.
-- The upstream `registry_lock` patch for `main` build `11c33c7c2dbd3c5491841f67495c7ee8` uses `STUBS`. nx2android's `patch_nso.py::load_patches` reads only `CUTS`, `OBS` and `FRAME_STEP`. Its patch registry test also rejects unrecognized tables. The unsupported `patches.py` is deliberately omitted; a successful port command would not mean the lock was applied.
-- The shader inventory includes six hull and six domain shaders. The Android graphics pipeline currently assembles vertex, fragment and geometry stages only. Whether these tessellation shaders are invoked, and the impact if they are, remain untested.
-- The source profile retains the 4 GiB guest reservation, 256 MiB alias and stack regions, `sys_resource 0`, hardware application pool and `mem_used 0x9d6c000`. The remaining heap is 3.25 GiB. These are source-derived settings, not measured Android memory requirements.
-- The upstream shader-prewarm loading screen can take minutes. Android startup time, movies, Wwise audio, later areas, saves and stability require testing.
+- **Random crash at boot.** It crashes in a `std::map` copy (`main+0x3e540`) while the game loads its shaders. This is the race [nxnative's analysis](https://github.com/seedds/nxnative/blob/6e12b9f8471c0ea80628ef33f7ffcfe2380cada5/dm/games/01008DD013200000/README.md#startup) found (3 crashes in 7 Mac boots): the main thread and the render thread change Unity's constant-buffer table at once. nxnative's fix, `registry_lock`, runs Unity's own mutex around that table through `STUBS`, which nx2android's `patch_nso.py` does not load, so this profile does not carry it. Start the game again when it happens.
+- A brief audio stall at boot (`[RED] audio #0: the device has not called back for 201 ms`); sound played normally after it.
+- The rewrite of `main` stopped at `jump table 1b56540` and `1b574e0` on earlier builds. The shared rewriter now tries nxnative's tail-call proofs at a `br x18` it cannot otherwise classify, and the rewrite finishes on a real 1.2.1 dump.
+- Six hull and six domain shaders are in the game; the Android pipeline builds vertex, fragment and geometry stages only. Nothing missing was seen in the scenes played.
+- Memory layout from nxnative's profile: 4 GiB guest reservation, 256 MiB alias and stack regions. The tester's run stayed at about 1.8 GB.
 
 ## Source and profile scope
 
-Audited against nx2android [`581ca540f7b2`](https://github.com/shirai91/nx2android/tree/581ca540f7b2214d47aee1e9be6156fc36809426). Build identity and ordinary shader tables are taken from the pinned [nxnative profile](https://github.com/seedds/nxnative/tree/6e12b9f8471c0ea80628ef33f7ffcfe2380cada5/dm/games/01008DD013200000) at `6e12b9f8471c`. The local Unity asset reader, static GLSLC-output splitter and NVN-to-Vulkan path already exist. A port of a real 1.2.1 dump reproduces the shader tables (the split stops when they differ) and translates all 52,682 shaders, with none failed, with #585 merged.
-
-Only the ordinary shader map, conflict table, shader facts, shader pairs and `bf_want` inputs are included. Apple pipeline archives, supplemental `pso_pairs.tsv` and unsupported patches are not copied. The shared rewriter has a general fixed-frame tail-call recognition rule prompted by the community port failure; no runtime or shader-translator change is included. No `tested`, screenshot or tested-release metadata is supplied.
-
-## Required testing
-
-1. Port the exact version and retain extraction, rewrite and shader logs; check for table mismatches and missing shader inputs.
-2. Test repeated fresh boots, movies, menus and the first playable scene, recording failures rather than assuming experimental means playable.
-3. Watch for the documented startup race; test Swallow's Nest movement/jumping, pause menus, effects, audio and progression.
-4. Exercise save/reload, later areas and a sustained session. Record device, GPU, driver, game version and route before changing the status.
+Build identity and shader tables come from the pinned [nxnative profile](https://github.com/seedds/nxnative/tree/6e12b9f8471c0ea80628ef33f7ffcfe2380cada5/dm/games/01008DD013200000) at `6e12b9f8471c`. A port of a real 1.2.1 dump reproduces the shader tables (the split stops when they differ) and translates all 52,682 shaders. Apple pipeline archives, `pso_pairs.tsv` and the `STUBS` patch are not copied.

@@ -1,9 +1,13 @@
-# Ori and the Will of the Wisps, 1.2.1 (v196608), SDK 9.4.0, NVN.
-# Community rewrite failures at main+0x1b56540 and +0x1b574e0: fixed with nxnative's tail-call proofs; the rewrite finishes on a real 1.2.1 dump.
-# A full port builds with #581, #585 and #562 merged. No Android launch or device testing is established.
-# Startup race: upstream registry_lock STUBS are unsupported and omitted.
-# See README.md for blockers and the required testing route.
+# Ori and the Will of the Wisps, 1.2.1 (v196608), SDK 9.4.0, NVN. Unity 2018.4.24f1 IL2CPP.
+# Community run by dusk-beep, 2026-11-25: this profile with #581, #585, #562 and #590 merged (nx2android 0.4.0), POCO X3 Pro (Snapdragon 860 /
+# Adreno 640, 6 GB, Android 13), Turnip Mesa 27.0.0-devel. Played from the opening through the wolf fight to the first ability: about 13 minutes,
+# 18,995 frames, 59 save commits, 0 'not in the bundle' shaders (142 before #590), one [RED] line (an audio stall at boot), footprint about 1.8 GB.
+# 36-39 fps in the menus, 18-31 fps in play; GPU-bound at 1600x900 (long frames 33-100 ms of GPU). Handheld mode gave the same frame rate.
+# Rewrite failures at main+0x1b56540 and +0x1b574e0: fixed with nxnative's tail-call proofs.
+# Startup race (random crash at boot, main+0x3e540, seen again by the tester): nxnative's registry_lock needs STUBS, which patch_nso.py does not
+# load, so it is not applied. See README.md.
 status	experimental
+tested	v196608 POCO X3 Pro (Snapdragon 860, Adreno 640, Android 13), community test
 package	org.nx2a.t01008dd013200000
 orientation	landscape
 requires	bcn
@@ -11,3 +15,5 @@ pacing	game
 setting	docked=1
 setting	overlay=1
 setting	rumble=1
+readme_image	docs/images/ori-and-the-will-of-the-wisps.jpg
+readme_tag	v0.4.0
