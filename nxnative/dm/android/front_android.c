@@ -121,9 +121,8 @@ static int fps_opt_press(int item) {   // a menu item of the Counter or Style ta
 // FPS_OPTS_END
 int dm_fps_opts(void) { return atomic_load(&g_fps_opts); }   // gfx_vk_present.c: the counter's options, packed (fpso_*)
 static void settings_load(void) {
-    char p[600]; snprintf(p, sizeof p, "%s/settings.txt", g_root); FILE *f = fopen(p, "r"); char line[128];
-    if (!f) return;
-    while (fgets(line, sizeof line, f)) { int v; if (sscanf(line, "overlay=%d", &v) == 1) atomic_store(&g_set_overlay, v != 0); else if (sscanf(line, "rumble=%d", &v) == 1) atomic_store(&g_set_rumble, v != 0);
+    char p[600]; snprintf(p, sizeof p, "%s/settings.txt", g_root); FILE *f = fopen(p, "r"); char line[128]; int seen_overlay = 0;
+    while (f && fgets(line, sizeof line, f)) { int v; if (sscanf(line, "overlay=%d", &v) == 1) { atomic_store(&g_set_overlay, v != 0); seen_overlay = 1; } else if (sscanf(line, "rumble=%d", &v) == 1) atomic_store(&g_set_rumble, v != 0);
         else if (sscanf(line, "fps=%d", &v) == 1) atomic_store(&g_set_fps, v != 0);
         else if (fps_opt_parse(line)) {}
         else if (sscanf(line, "sr=%d", &v) == 1) atomic_store(&g_set_sr, v != 0);
@@ -143,7 +142,10 @@ static void settings_load(void) {
         } else if (sscanf(line, "menu_x=%d", &v) == 1 && v >= 0 && v <= 10000) { int m = ctl_named("menu"); for (int l = 0; l < 2 && m >= 0; l++) atomic_store(&g_cust[0][l][m][0], v + 1); }   // before
         else if (sscanf(line, "menu_y=%d", &v) == 1 && v >= 0 && v <= 10000) { int m = ctl_named("menu"); for (int l = 0; l < 2 && m >= 0; l++) atomic_store(&g_cust[0][l][m][1], v + 1); }   // the editor
     }
-    fclose(f);
+    if (f) fclose(f);
+    // A touch-only game's profile (DM_TOUCH): until the player sets Show gamepad themselves, the game starts with the gamepad hidden, so with dm_overlay_visible() == 2
+    // every touch goes to the game's touch screen and only the menu button answers. The player's own switch is saved and wins on the next start.
+    if (!seen_overlay) { const char *e = getenv("DM_TOUCH"); if (e && atoi(e)) atomic_store(&g_set_overlay, 0); }
 }
 static void settings_save(void) {
     char p[600], tmp[610]; snprintf(p, sizeof p, "%s/settings.txt", g_root); snprintf(tmp, sizeof tmp, "%s.new", p);
