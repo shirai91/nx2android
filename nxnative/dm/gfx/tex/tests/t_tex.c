@@ -128,6 +128,33 @@ int main(void) {
               (unsigned long long)nvn_tex_level_offset(&d, 1), (unsigned long long)L.size);
     }
 
+    // ---------- M MINIMAL_LAYOUT (flag 0x200): the automatic blocks only when they add no padding to the layer, else 1 GOB. The original NVN driver's shapes: PR #11's
+    // (digitalhivehub ran Tears of the Kingdom's driver under emulation), the array and packaged ones from TotK 1.2.1's driver (nxnative issue #183) ----------
+    printf("M MINIMAL_LAYOUT (the driver's storage, level 1 offset and blocks)\n");
+    {
+        static const struct { const char *what; int target, format; uint32_t w, h, depth, levels; int pkg; uint64_t size, layer, off1; unsigned th, td; } M[] = {
+            {"RG8 260x260, 9 levels",               1, 0x0d, 260, 260, 1, 9, 0,   214528, 214528, 152064, 0, 0},
+            {"RGB565 320x320 (Depths)",             1, 0x3c, 320, 320, 1, 1, 0,   204800, 204800, 0, 0, 0},
+            {"RGB5A1 320x320 (Depths)",             1, 0x3b, 320, 320, 1, 1, 0,   204800, 204800, 0, 0, 0},
+            {"RGBA8 64x128, no padding: automatic", 1, 0x25, 64, 128, 1, 1, 0,    32768, 32768, 0, 4, 0},
+            {"R8 8x1920, 11 levels",                1, 0x01, 8, 1920, 1, 11, 0,   246784, 246784, 122880, 0, 0},
+            {"3D RGBA8 64x64x8: automatic",         2, 0x25, 64, 64, 8, 1, 0,     131072, 131072, 0, 0, 3},
+            {"3D RGBA8 64x64x9",                    2, 0x25, 64, 64, 9, 1, 0,     147456, 147456, 0, 0, 0},
+            {"2D array RGBA8 64x64x3, 7 levels",    4, 0x25, 64, 64, 3, 7, 0,     70656, 23552, 16384, 0, 0},
+            {"RGB565 320x320, packaged byte 0x04",  1, 0x3c, 320, 320, 1, 1, 5,   245760, 245760, 0, 4, 0},
+        };
+        for (unsigned i = 0; i < sizeof M / sizeof *M; i++) {
+            nvn_texdesc d = {M[i].target, M[i].format, 0x200, 0, M[i].w, M[i].h, M[i].depth, M[i].levels, 0, M[i].pkg};
+            nvn_texlayout L; nvn_tex_layout(&d, &L);
+            uint64_t off1 = M[i].levels > 1 ? nvn_tex_level_offset(&d, 1) : 0;
+            CHECK(L.size == M[i].size && L.layer_size == M[i].layer && off1 == M[i].off1 && L.align == 512 && L.tileH == M[i].th && L.tileD == M[i].td,
+                  "M %s: size %llu layer %llu level 1 at %llu align %u block %u/%u; driver %llu %llu %llu 512 %u/%u", M[i].what, (unsigned long long)L.size,
+                  (unsigned long long)L.layer_size, (unsigned long long)off1, L.align, L.tileH, L.tileD, (unsigned long long)M[i].size, (unsigned long long)M[i].layer,
+                  (unsigned long long)M[i].off1, M[i].th, M[i].td);
+        }
+        printf("  M %u driver shapes checked\n", (unsigned)(sizeof M / sizeof *M));
+    }
+
     printf("%s: %d/%d checks passed\n", fails ? "RED" : "all passed", checks - fails, checks);
     return fails ? 1 : 0;
 }
