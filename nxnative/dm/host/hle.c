@@ -103,7 +103,8 @@ uint64_t gate_dispatch(uint64_t ret_addr, uint64_t *regs) {
             case G_CNTPCT: case G_CNTVCT: {
                 guest_clock_read_wait();
                 uint64_t t = guest_ns() * 12 / 625;    // 19.2 MHz system counter; original instruction mrs xN, cntpct_el0, arg = N
-                regs[g->arg] = t;
+                // dm_gate does not restore x18 (the platform register on both hosts): the guest's x18 is the thread slot K18, which every rewritten x18 site reads
+                if (g->arg == 18) dm_tsd_set(g_key18, (void *)(uintptr_t)t); else regs[g->arg] = t;
                 return t;
             }
             case G_OBS: if (g_obs_fn[g->arg]) g_obs_fn[g->arg](regs); return 0;   // Registers are read-only; the x0–x8 that dm_gate writes back are the original values
