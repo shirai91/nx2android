@@ -1190,6 +1190,14 @@ int mtl_gpu_span(uint64_t f, uint64_t *t0, uint64_t *t1) {
     *t0 = atomic_load(&g_gpu[k].t0); *t1 = atomic_load(&g_gpu[k].t1);
     return *t1 >= *t0 && *t1;
 }
+// For the layer's frame history (hle_vi.c): 1 once all of the frame's command buffers have completed, with their latest GPU end (0 if none had a time), 0 while some are still
+// running, -1 when the ring holds no record of the frame (no GPU work tagged with it, or overwritten)
+int mtl_gpu_done(uint64_t f, uint64_t *t1) {
+    unsigned k = f % GRING;
+    if (atomic_load(&g_gpu[k].frame) != f) return -1;
+    if (atomic_load(&g_gpu[k].pending)) return 0;
+    *t1 = atomic_load(&g_gpu[k].t1); return 1;
+}
 static void rp_flush(void);
 static const char *cctx_snap(void);   // What is in this submission (printed into the failure line on error; defined before mtl_exec)
 static void lc_land(void);
@@ -8453,6 +8461,10 @@ static uint64_t present_enqueue(const tex_t *t, double period, const int crop[4]
 }
 // Do not wait during discard: the frame enqueued only after the flag was set (the present thread had just passed the flag check) has nobody to take it, and waiting for it would stall again; it is left for the following mtl_drain to clear
 // Do not wait indefinitely in display-link mode: see the note at STALL_NS. Only frames "not yet taken by the display link" are dropped; the one already on its way to the screen is waited for until handed to the GPU (same dropping as when entering the background)
+// For the layer's frame history (hle_vi.c): the ticket of the last present queued, and the last one the present queue has handed on (to the GPU and the display, or dropped);
+// and a present's flip time, the drawable's presented time (CACurrentMediaTime seconds, the now_ns clock; 0 not yet, -1 dropped by the system: the history treats both as not known)
+void mtl_present_progress(uint64_t *queued, uint64_t *done) { pthread_mutex_lock(&g_pq_mu); *queued = g_pq_in; *done = g_pq_done; pthread_mutex_unlock(&g_pq_mu); }
+double mtl_flip_time(uint64_t n) { return mtl_presented_time(n); }
 void mtl_present_wait(uint64_t tk) {
     pthread_mutex_lock(&g_pq_mu);
     while (g_pq_done < tk && !atomic_load(&g_present_discard)) {

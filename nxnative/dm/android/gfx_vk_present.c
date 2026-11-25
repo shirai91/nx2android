@@ -36,13 +36,32 @@ static void present_time_begin(uint64_t ticket, uint64_t ns) {   // ns: the time
 static void present_time_map(uint32_t id, uint64_t ticket) {   // the present thread, under g_present_mu
     g_pres_ids[id % PRES_TIMES] = (typeof(g_pres_ids[0])){id, ticket};
 }
+// The layer's frame history (hle_vi.c mtl_flip_time) asks when each game present reached the screen: the display's actual present time where VK_GOOGLE_display_timing reports
+// one, else the time vkQueuePresentKHR returned for it (CLOCK_MONOTONIC, the now_ns clock, as the display's times are). Kept apart from g_pres_t, whose stand-in is the
+// hand-over time the governor's late check has always read
+static struct { uint64_t ticket, queued_ns, display_ns; } g_flip[PRES_TIMES];   // under g_pres_mu
+static void flip_queued(uint64_t ticket, uint64_t ns) {   // the present thread: vkQueuePresentKHR took the frame
+    if (!ticket) return;
+    pthread_mutex_lock(&g_pres_mu); typeof(g_flip[0]) *f = &g_flip[ticket % PRES_TIMES];
+    if (f->ticket != ticket) *f = (typeof(g_flip[0])){ticket, ns, 0}; else f->queued_ns = ns;
+    pthread_mutex_unlock(&g_pres_mu);
+}
 static void present_time_record(uint32_t id, uint64_t ns) {   // the present thread, under g_present_mu
     typeof(g_pres_ids[0]) *m = &g_pres_ids[id % PRES_TIMES];
     if (m->id != id || !m->ticket || !ns) return;
     pthread_mutex_lock(&g_pres_mu);
     typeof(g_pres_t[0]) *p = &g_pres_t[m->ticket % PRES_TIMES];
     if (p->ticket == m->ticket) p->ns = ns;
+    typeof(g_flip[0]) *f = &g_flip[m->ticket % PRES_TIMES];
+    if (f->ticket == m->ticket) f->display_ns = ns;
     pthread_mutex_unlock(&g_pres_mu); g_pres_recorded++;
+}
+double mtl_flip_time(uint64_t ticket) {   // seconds on the now_ns clock, 0 not known (not presented to a window, or not yet)
+    pthread_mutex_lock(&g_pres_mu);
+    typeof(g_flip[0]) f = g_flip[ticket % PRES_TIMES];
+    pthread_mutex_unlock(&g_pres_mu);
+    if (!ticket || f.ticket != ticket) return 0;
+    return (f.display_ns ? f.display_ns : f.queued_ns) / 1e9;
 }
 static void present_time_reset(void) {   // the old swapchain's pending results cannot describe the new one
     memset(g_pres_ids, 0, sizeof g_pres_ids);
@@ -1254,6 +1273,7 @@ static void present_window(vkimg_t *im, const int crop[4], double period, uint64
     VkPresentTimesInfoGOOGLE pti = {VK_STRUCTURE_TYPE_PRESENT_TIMES_INFO_GOOGLE, NULL, 1, &ptm};
     if (V.has_dtiming) pi.pNext = &pti;
     r = vkQueuePresentKHR(V.q, &pi);
+    if (r >= 0) flip_queued(ticket, mono_ns());   // (before the display's time is mapped: present_time_record finds the ticket's entry)
     if (V.has_dtiming && r >= 0) present_time_map(ptm.presentID, ticket);
     pthread_mutex_unlock(&g_vk_queue_mu);
     if (r == VK_ERROR_OUT_OF_DATE_KHR) swap_destroy();
@@ -1463,6 +1483,10 @@ void mtl_present_wait(uint64_t tk) {   // NVN acquire: the window texture's last
     pthread_mutex_unlock(&g_pq_mu);
 }
 double mtl_presented_time(uint64_t n) { return present_time_get(n); }
+void mtl_present_progress(uint64_t *queued, uint64_t *done) {   // the layer's frame history (hle_vi.c): the last ticket given out, and the last the present thread has handed on
+    *queued = __atomic_load_n(&g_presents, __ATOMIC_RELAXED);
+    pthread_mutex_lock(&g_pq_mu); *done = g_pq_done; pthread_mutex_unlock(&g_pq_mu);
+}
 double vk_refresh_ms(void) { return V.has_dtiming && g_pres_recorded && g_refresh_ns ? g_refresh_ns / 1e6 : 0; }   // perf_android.c's late check: the display's refresh, when display times are what it gets
 uint32_t mtl_present_qos(void) { return 0; }
 int mtl_link_active(void) { return 0; }

@@ -54,9 +54,79 @@ uint64_t dm_nvn_frame_count(void);
 HLE_FORCE("_ZN2nn2vi20GetLatestFrameNumberEPmPKNS0_5LayerE", "the layer's latest frame number: the frames presented so far", Result, h_vi_FrameNo, uint64_t *out, const void *layer) {
     (void)layer; *out = dm_nvn_frame_count(); return RES_OK;
 }
-HLE_FORCE("_ZN2nn2vi16ListFrameHistoryEPNS0_9FrameInfoEiPKNS0_5LayerE", "the layer's frame history: none kept, 0 entries", int, h_vi_FrameHist, void *out, int n, const void *layer) {
-    (void)out; (void)layer; static int once; if (!once++) LOG("vi::ListFrameHistory (%d entries asked): the host keeps no frame history, 0 returned", n);
-    return 0;
+// The layer's frame history: the last 8 frames presented, newest first, each with whether it reached the screen. Unreal Engine 5's Switch RHI tracks its flips by it: its
+// "Viewport Thread" (Minecraft Dungeons II main+0x142afb0) waits for each vsync, asks how many entries there are (a null buffer: the SDK answers 8, the history's size), reads them and
+// takes the first one shown as the latest flip, which completes the frame-end fences that wait for the swap chain (r.GTSyncType 2). With no history no flip ever came, and the first
+// FlushRenderingCommands, which waits for every fence (FFrameEndSync, main+0x15015f0), waited for ever right after the opening movie: the game thread polled its fence each ms, nothing
+// was presented again. FrameInfo is 40 bytes, as the SDK's ListFrameHistory (sdk 20.5.15, sdk+0x4510a0) fills it from the compositor's records: status (2 shown with a present
+// time, 1 queued and not shown yet), frame number (the numbering of GetLatestFrameNumber), the queue tick and the present tick twice; sorted by frame number, newest first.
+// A frame is shown once the backend's present queue has handed it on (gfx_vk_present.c / nvn_mtl.m g_pq_done); its present time is the flip time the backend reports
+// (mtl_flip_time: on Android the display's actual present time from VK_GOOGLE_display_timing, else the time vkQueuePresentKHR returned for it; on Apple the drawable's
+// presented time). Else (headless, before the time comes back, or a frame never put on screen), when the host pacer drives a vsync grid, it is the first tick of that grid at
+// or after both its present and the end of its GPU work, latched once reached so a frame never reverts to queued or shifts its flip tick. A game that times its frames by these
+// flips (Star Fox's throttle) sees a fixed vsync grid, as on the Switch, instead of its own first-read time. Without a pacer grid (DM_DETCLOCK, or unpaced presents), the time it
+// was first seen handed on stays. A Switch's compositor shows every frame it is handed, in order, so a frame the host dropped still counts as shown: listed as queued, the newest
+// ones stayed so for ever when the game presented nothing more until their flip came (Orbitals, main+0x1540460: its FFrameEndSync waited for the flip of a dropped frame, until
+// Unreal aborted: "GameThread timed out waiting for ..."). Each entry takes the backend's own ticket for its present (dm_vi_frame_ticket, from wherever mtl_present ran: the
+// game thread, or the replay thread under DM_NVN_ASYNC), so a frame is never judged by the previous frame's present
+#define VFH 8
+typedef struct { uint64_t frame, ticket, queued_ns, seen_ns, at, grid, tick, vsync_ns; uint8_t queued, enqueued; } vfh_ent;   // at, grid, tick, vsync_ns: present, pacer vsync, one vsync, latched flip (now_ns clock, ns); queued: the game thread recorded it; enqueued: its ticket is known
+static vfh_ent g_vfh[VFH]; static pthread_mutex_t g_vfh_mu = PTHREAD_MUTEX_INITIALIZER;
+void mtl_present_progress(uint64_t *queued, uint64_t *done);   // the backend: the last present ticket queued, and the last its present queue has handed on
+double mtl_flip_time(uint64_t n);                              // the backend: when present ticket n reached the screen (seconds on the now_ns clock), 0 not known
+int mtl_gpu_done(uint64_t f, uint64_t *t1);                    // the backend: 1 the frame's GPU work completed (latest end, now_ns clock; 0 if unknown), 0 running, -1 no record
+void dm_vi_frame_queued(uint64_t frame, uint64_t at, uint64_t grid, uint64_t tick) {   // hle_nvn.c, at each present the game queues: frame = GetLatestFrameNumber's count with it
+    pthread_mutex_lock(&g_vfh_mu);
+    vfh_ent *e = &g_vfh[frame % VFH];
+    uint64_t tk = e->frame == frame && e->enqueued ? e->ticket : 0;
+    uint8_t enq = e->frame == frame ? e->enqueued : 0;
+    *e = (vfh_ent){frame, tk, guest_ns(), 0, at, grid, tick, 0, 1, enq};
+    pthread_mutex_unlock(&g_vfh_mu);
+}
+void dm_vi_frame_ticket(uint64_t frame, uint64_t ticket) {   // hle_nvn.c, when mtl_present has given this frame's present its ticket (0: nothing presented), in either order with the above
+    pthread_mutex_lock(&g_vfh_mu);
+    vfh_ent *e = &g_vfh[frame % VFH];
+    if (e->frame == frame) { e->ticket = ticket; e->enqueued = 1; }
+    else if (e->frame < frame) *e = (vfh_ent){frame, ticket, 0, 0, 0, 0, 0, 0, 0, 1};
+    pthread_mutex_unlock(&g_vfh_mu);
+}
+// The vsync a display would show the frame at (now_ns clock): 1 with it, 0 not yet (its GPU work still running, or that vsync still to come), -1 no pacer grid.
+// Once reached, e->vsync_ns latches the flip time so later reads stay monotonic. The frame's GPU work is tagged with the frame count before its present
+// (mtl_set_frame at the previous present), one less than its number here.
+static int vfh_vsync(vfh_ent *e, uint64_t hnow, uint64_t *at) {
+    if (e->vsync_ns) { *at = e->vsync_ns; return 1; }
+    if (!e->grid || !e->tick) return -1;
+    uint64_t ready = e->at, end = 0; int g = mtl_gpu_done(e->frame - 1, &end);
+    if (!g) return 0;
+    if (g > 0 && end > ready) ready = end;
+    uint64_t t = ready <= e->grid ? e->grid : e->grid + (ready - e->grid + e->tick - 1) / e->tick * e->tick;
+    if (t > hnow) return 0;
+    e->vsync_ns = t; *at = t; return 1;
+}
+static uint64_t vfh_ticks(uint64_t ns) { return ns * 12 / 625; }   // the 19.2 MHz system counter, as GetSystemTick (hle_svc.c)
+HLE_FORCE("_ZN2nn2vi16ListFrameHistoryEPNS0_9FrameInfoEiPKNS0_5LayerE", "the layer's frame history: the last 8 presents, newest first, shown once the present queue handed them on", int, h_vi_FrameHist, void *out, int n, const void *layer) {
+    (void)layer;
+    if (!out || n <= 0) return VFH;
+    uint64_t q, d; mtl_present_progress(&q, &d); (void)q;
+    uint64_t gnow = guest_ns(), hnow = now_ns(), latest = dm_nvn_frame_count();
+    int k = 0;
+    pthread_mutex_lock(&g_vfh_mu);
+    for (uint64_t f = latest; f > 0 && latest - f < VFH && k < n; f--) {
+        vfh_ent *e = &g_vfh[f % VFH]; if (e->frame != f || !e->queued) continue;
+        uint64_t *o = (uint64_t *)out + 5 * k++, shown = 0;
+        int handed = e->enqueued && e->ticket <= d;
+        double pt = handed && e->ticket ? mtl_flip_time(e->ticket) : 0;
+        if (pt > 0) { uint64_t ago = hnow > (uint64_t)(pt * 1e9) ? hnow - (uint64_t)(pt * 1e9) : 0; shown = gnow > ago ? gnow - ago : 1; }
+        else if (handed) {
+            uint64_t vs; int v = vfh_vsync(e, hnow, &vs);
+            if (v > 0) { uint64_t ago = hnow > vs ? hnow - vs : 0; shown = gnow > ago ? gnow - ago : 1; }
+            else if (v < 0) { if (!e->seen_ns) e->seen_ns = gnow; shown = e->seen_ns; }
+        }
+        o[0] = shown ? 2 : 1; o[1] = f; o[2] = vfh_ticks(e->queued_ns); o[3] = o[4] = shown ? vfh_ticks(shown) : 0;
+    }
+    pthread_mutex_unlock(&g_vfh_mu);
+    static int once; if (k && !once++) LOG("vi::ListFrameHistory: %d of the last %d presents returned (up to frame %llu, the present queue at %llu)", k, VFH, (unsigned long long)latest, (unsigned long long)d);
+    return k;
 }
 // Rhythm Heaven Groove (SDK 21) asks for the built-in panel's identity at start (main+0xa9a4); the SDK's version calls through the vi service object the host never made (SIGSEGV at +0x20).
 //   The game reads a u32 kind and, when it is 2 or more, 0x14 more bytes that it hands on; any other answer makes it hand on zeros. The host has no panel: an all-zero identifier, kind 0

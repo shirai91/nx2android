@@ -211,6 +211,7 @@ NVN(nvnMemoryPoolBuilderSetFlags, void, NVNmemoryPoolBuilder *b, int f) { ((pool
 static uint8_t *vpool_reserve(pool_t *o); static void vpool_release(pool_t *o);   // sparse virtual pools, see MapVirtual
 static void replay_lock(void); static void replay_unlock(void);   // the replay's state, from a game thread (see "Asynchronous replay")
 static void nvn_drain(void); static int job_wait(uint64_t id, uint64_t timeout_ns); static int nvn_async(void); static int nvn_jobs_wait_queued(uint64_t timeout_ns);   // asynchronous replay (see below)
+void dm_vi_frame_queued(uint64_t frame, uint64_t at, uint64_t grid, uint64_t tick); void dm_vi_frame_ticket(uint64_t frame, uint64_t ticket);   // the layer's frame history (hle_vi.c)
 __attribute__((weak)) void vk_pool_set_flags(const void *mem, int flags) { (void)mem; (void)flags; }
 __attribute__((weak)) void dm_perf_replay_thread(void) {}   // Android (perf_android.c): the replay thread's CPU placement   // Android's Vulkan host (gfx_vk_core.c): copied pools by their flags
 NVN(nvnMemoryPoolInitialize, NVNboolean, NVNmemoryPool *p, const NVNmemoryPoolBuilder *b) {
@@ -1340,7 +1341,7 @@ static pthread_mutex_t g_sub_mu = PTHREAD_MUTEX_INITIALIZER;
 // Whatever else touches the replay's state from the game's threads (memory pools made and destroyed, CPU texel readback) takes g_sub_mu, which the replay thread holds per job
 enum { JOB_SUBMIT, JOB_PRESENT }; enum { JOB_RING = 4096 };
 #define ASYNC_FENCE (1ull << 63)
-typedef struct { int kind, n; uint64_t *h; NVNqueue *q; const tex_t *tex; double period; int crop[4]; uint64_t *ticket; uint64_t t_enq; } nvn_job;
+typedef struct { int kind, n; uint64_t *h; NVNqueue *q; const tex_t *tex; double period; int crop[4]; uint64_t *ticket; uint64_t t_enq, frame; } nvn_job;   // frame: a present's number in the layer's frame history (hle_vi.c)
 // The frame's timeline under asynchronous replay, logged every 300 waits: from a sync wait's return to the next submission (the game), the job's wait in the queue,
 // its replay, and what the GPU still had to do after it (Xenoblade Chronicles 3 waits for each frame's GPU work before submitting the next, so its frame is all four)
 static uint64_t g_tl_enq, g_tl_start, g_tl_end, g_tl_wret, g_tl_sum[4], g_tl_n, g_tl_jobs, g_tl_lastjob;
@@ -1361,7 +1362,7 @@ static void *replay_main(void *arg) {
             static nvn_job prev; if (prev.h) { for (int i = 0; i < prev.n; i++) free((void *)(uintptr_t)prev.h[i]); free(prev.h); }   // the copies (rec_copy) go one submission later
             prev = j; uint64_t te = now_ns(); fs_racc += te - ts; g_tl_enq = j.t_enq; g_tl_start = ts; g_tl_end = te; }
         else { dm_perf_replay_thread();   // (again while its cores were refused: perf_android.c)
-            gfx_enter(); uint64_t t0 = now_ns(); uint64_t tk = mtl_present(j.tex, j.period, j.crop); __atomic_store_n(j.ticket, tk, __ATOMIC_RELEASE); gfx_leave(); uint64_t dt = now_ns() - t0; atomic_fetch_add(&g_nvn_ns, dt); atomic_store(&g_fs_replay_ns, fs_racc + dt); fs_racc = 0; }
+            gfx_enter(); uint64_t t0 = now_ns(); uint64_t tk = mtl_present(j.tex, j.period, j.crop); __atomic_store_n(j.ticket, tk, __ATOMIC_RELEASE); dm_vi_frame_ticket(j.frame, tk); gfx_leave(); uint64_t dt = now_ns() - t0; atomic_fetch_add(&g_nvn_ns, dt); atomic_store(&g_fs_replay_ns, fs_racc + dt); fs_racc = 0; }
         pthread_mutex_lock(&g_job_mu);
         memmove(g_jobs, g_jobs + 1, sizeof *g_jobs * (size_t)--g_njob); g_job_done++; g_job_fence[g_job_done % JOB_RING] = mtl_last_fence();
         pthread_cond_broadcast(&g_jobdone_cv); pthread_mutex_unlock(&g_job_mu);
@@ -2089,11 +2090,13 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
     }
     gfx_enter();
     uint64_t t0 = now_ns();
+    int presented = 0;   // the frame's present has a ticket coming (the layer's frame history, hle_vi.c: g_frame + 1 is this present's number once dump_frame counts it)
     if (idx >= 0 && idx < o->ntex && idx < 4) {
         o->done[idx] = nvn_fence_now();
-        if (nvn_async()) { nvn_job j = {JOB_PRESENT, 0, NULL, q, CTX(o->tex[idx]), present_period(o) / 1e9, {0}, &o->ticket[idx]}; memcpy(j.crop, o->crop, sizeof j.crop);
+        presented = 1;
+        if (nvn_async()) { nvn_job j = {JOB_PRESENT, 0, NULL, q, CTX(o->tex[idx]), present_period(o) / 1e9, {0}, &o->ticket[idx], 0, g_frame + 1}; memcpy(j.crop, o->crop, sizeof j.crop);
             o->ticket[idx] = ASYNC_FENCE | (g_job_enq + 1); job_push(j); }   // (the job overwrites the ticket with the present's own when it runs)
-        else o->ticket[idx] = mtl_present(CTX(o->tex[idx]), present_period(o) / 1e9, o->crop);   // enqueue only, return immediately
+        else { o->ticket[idx] = mtl_present(CTX(o->tex[idx]), present_period(o) / 1e9, o->crop); dm_vi_frame_ticket(g_frame + 1, o->ticket[idx]); }   // enqueue only, return immediately
     }
     gfx_leave();
     atomic_fetch_add(&g_nvn_ns, now_ns() - t0);
@@ -2181,6 +2184,12 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
     nvn_pacer pc = {o->pace};
     uint64_t slot = now + nvn_pace(&pc, now, period);
     o->pace = pc.target;
+    // The layer's frame history (hle_vi.c), numbered as GetLatestFrameNumber: when the host pacer drives a vsync grid (!DM_DETCLOCK, period > 0, g_hz > 0), pass the present time,
+    // the pacer's slot and one vsync, so a frame whose flip time the backend has not reported (headless, or before the display's time comes back) flips on that grid instead of at
+    // its first read. Under DM_DETCLOCK or unpaced presents (period 0) there is no grid (0) and the first-seen time stays. A window index the game did not give presents nothing: ticket 0
+    { int paced = !dm_detclock_enabled() && period > 0 && g_hz > 0;
+      dm_vi_frame_queued(g_frame, paced ? now : 0, paced ? pc.target : 0, paced ? 1000000000ull / (uint64_t)g_hz : 0);
+      if (!presented) dm_vi_frame_ticket(g_frame, 0); }
     if (idx >= 0 && idx < 4) o->avail[idx] = period ? slot + period : 0;
     static uint64_t prev_slot; if (prev_slot && period) trow(f, "@display_ms", (slot - prev_slot) / 1e6); prev_slot = slot;   // display interval between two adjacent frames on screen (this is the one to look at for dropped frames)
     // Actual presentation interval (windowed mode): taken 8 presents late (the presented callback has arrived by then), as the difference between the n-th and the (n−1)-th; −1 = discarded

@@ -98,6 +98,8 @@ uint64_t mtl_present(const tex_t *t, double period, const int crop[4]) {
 }
 void mtl_present_wait(uint64_t tk) { (void)tk; }
 double mtl_presented_time(uint64_t n) { return n && n <= g_presents && g_presents - n < 64 ? g_pres_t[n % 64] : 0; }
+void mtl_present_progress(uint64_t *queued, uint64_t *done) { *queued = *done = g_presents; }   // the layer's frame history (hle_vi.c): every present is handed on at once
+double mtl_flip_time(uint64_t n) { (void)n; return 0; }   // nothing reaches a screen: the history falls back to the pacer's grid or the first-seen time
 uint32_t mtl_present_qos(void) { return 0; }
 int mtl_link_active(void) { return 0; }
 int mtl_link_wait_tick(int vsyncs, uint64_t timeout_ns) { (void)vsyncs; (void)timeout_ns; return 0; }

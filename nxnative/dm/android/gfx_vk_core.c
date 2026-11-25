@@ -1793,6 +1793,26 @@ static uint64_t gpu_ticks(void) { uint64_t g = guest_ns(); if (!g) { struct time
 static uint64_t g_cur_frame, g_frame_gpu[64], g_frame_gpu_of[64];
 void mtl_set_frame(uint64_t f) { __atomic_store_n(&g_cur_frame, f, __ATOMIC_RELAXED); }
 double mtl_gpu_ms(uint64_t f) { return g_frame_gpu_of[f % 64] == f + 1 ? g_frame_gpu[f % 64] / 1e6 : -1; }
+// For the layer's frame history (hle_vi.c): whether all of an NVN frame's submissions have completed, and when the completion thread saw the last of them (CLOCK_MONOTONIC,
+// the now_ns clock). Per frame: its newest submission's fence (at the commit) and the latest completion time (on the completion thread, before g_done passes the fence)
+static struct { uint64_t tag, fence, end_ns; } g_fdone[64]; static pthread_mutex_t g_fdone_mu = PTHREAD_MUTEX_INITIALIZER;   // tag: frame + 1 (0: empty)
+static void fdone_submit(uint64_t frame, uint64_t fence) {
+    pthread_mutex_lock(&g_fdone_mu); typeof(g_fdone[0]) *e = &g_fdone[frame % 64];
+    if (e->tag != frame + 1) *e = (typeof(g_fdone[0])){frame + 1, fence, 0}; else if (fence > e->fence) e->fence = fence;
+    pthread_mutex_unlock(&g_fdone_mu);
+}
+static void fdone_complete(uint64_t frame) {
+    struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); uint64_t ns = (uint64_t)t.tv_sec * 1000000000ull + (uint64_t)t.tv_nsec;
+    pthread_mutex_lock(&g_fdone_mu); typeof(g_fdone[0]) *e = &g_fdone[frame % 64];
+    if (e->tag == frame + 1 && ns > e->end_ns) e->end_ns = ns;
+    pthread_mutex_unlock(&g_fdone_mu);
+}
+int mtl_gpu_done(uint64_t f, uint64_t *t1) {   // 1 done (*t1 its latest completion, 0 unknown), 0 still running, -1 no submission of that frame on record
+    pthread_mutex_lock(&g_fdone_mu); typeof(g_fdone[0]) e = g_fdone[f % 64]; pthread_mutex_unlock(&g_fdone_mu);
+    if (e.tag != f + 1) return -1;
+    if (vk_fence_done() < e.fence) return 0;
+    *t1 = e.end_ns; return 1;
+}
 double vk_gpu_ms_recent(void) {   // the latest finished frame's GPU time among the last 8 (-1: none known)
     uint64_t f = __atomic_load_n(&g_cur_frame, __ATOMIC_RELAXED);
     for (uint64_t k = 2; k < 8 && k <= f; k++) { double g = mtl_gpu_ms(f - k); if (g >= 0) return g; }
@@ -1859,6 +1879,7 @@ static void *completion_main(void *a) {
         pthread_mutex_lock(&g_cmu); g_ch = c->next; if (!g_ch) g_ct = NULL; pthread_mutex_unlock(&g_cmu);
         if (g_prereset > 0 && c->rslot >= 0) { vksub_t *s = &g_slot[c->rslot];   // its command buffers reset here (slot_recycle); the slot is not taken before g_done passes this fence
             if (s->fence == c->fence) { for (int i = 0; i < s->nmain_alloc; i++) vkResetCommandBuffer(s->mains[i], 0); for (int i = 0; i < s->nup_alloc; i++) vkResetCommandBuffer(s->ups[i], 0); } }
+        fdone_complete(c->frame);   // (before g_done passes its fence: mtl_gpu_done reads the time once the fence is done)
         pthread_mutex_lock(&g_done_mu); if (c->fence > g_done) __atomic_store_n(&g_done, c->fence, __ATOMIC_RELEASE); pthread_cond_broadcast(&g_done_cv); pthread_mutex_unlock(&g_done_mu);
         free(c->ops); free(c);
     }
@@ -1928,7 +1949,7 @@ uint64_t mtl_sub_commit(void) {
     struct timespec t0, t1; clock_gettime(CLOCK_MONOTONIC, &t0); pthread_mutex_lock(&g_vk_queue_mu); VkResult r = vkQueueSubmit(V.q, 1, &si, fe); pthread_mutex_unlock(&g_vk_queue_mu); clock_gettime(CLOCK_MONOTONIC, &t1); g_ns_submit += (uint64_t)((t1.tv_sec - t0.tv_sec) * 1000000000ll + (t1.tv_nsec - t0.tv_nsec));
     if (r) { void vk_crumbs_report(void); vk_crumbs_report(); die("[vk] vkQueueSubmit: %d (device lost?)", r); }
     s->fence = f;
-    cpend *c = calloc(1, sizeof *c); c->fence = f; c->frame = __atomic_load_n(&g_cur_frame, __ATOMIC_RELAXED); c->n = s->npost; c->rslot = g_cur; c->slot = s->no_ts ? -1 : g_cur; s->no_ts = 0;
+    cpend *c = calloc(1, sizeof *c); c->fence = f; c->frame = __atomic_load_n(&g_cur_frame, __ATOMIC_RELAXED); fdone_submit(c->frame, f); c->n = s->npost; c->rslot = g_cur; c->slot = s->no_ts ? -1 : g_cur; s->no_ts = 0;
     c->npass = g_npass[g_cur]; memcpy(c->pmeta, g_pmeta[g_cur], sizeof(pass_meta) * (size_t)c->npass);
     if (s->npost) { c->ops = malloc(s->npost * sizeof *c->ops); memcpy(c->ops, s->post, s->npost * sizeof *c->ops); }
     pthread_mutex_lock(&g_cmu); if (g_ct) g_ct->next = c; else g_ch = c; g_ct = c; pthread_cond_signal(&g_ccv); pthread_mutex_unlock(&g_cmu);

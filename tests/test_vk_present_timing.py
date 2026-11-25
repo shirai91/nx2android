@@ -116,6 +116,21 @@ int main(void) {
     assert(present_time_get(4) == 4);
     present_time_begin(5, 0);  // failed, headless or unsupported presents get no result
     assert(present_time_get(5) == 0);
+
+    // the flip times of the layer's frame history (hle_vi.c): the display's time where it comes back, else when vkQueuePresentKHR returned
+    assert(mtl_flip_time(0) == 0 && mtl_flip_time(6) == 0);
+    flip_queued(0, 1000000000ull);  // a redraw: no ticket
+    assert(mtl_flip_time(0) == 0);
+    flip_queued(6, 6000000000ull);
+    assert(mtl_flip_time(6) == 6);
+    present_time_map(300, 6);
+    present_time_record(300, 6500000000ull);
+    assert(mtl_flip_time(6) == 6.5);  // the display's own time wins
+    present_time_begin(7, 7000000000ull);  // no display times: the governor's stand-in stays the hand-over time
+    flip_queued(7, 7250000000ull);
+    assert(present_time_get(7) == 7 && mtl_flip_time(7) == 7.25);
+    flip_queued(6 + PRES_TIMES, 9000000000ull);  // a newer ticket in the same slot
+    assert(mtl_flip_time(6) == 0 && mtl_flip_time(6 + PRES_TIMES) == 9);
     return 0;
 }
 '''

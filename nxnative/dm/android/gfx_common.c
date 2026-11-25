@@ -22,6 +22,7 @@ uint64_t mtl_drawable_ns_take(void) { return 0; }
 uint64_t mtl_ds_omit(void) { return 0; }
 __attribute__((weak)) double mtl_gpu_ms(uint64_t f) { (void)f; return 0; }   // gfx_vk_core.c has the real one
 int mtl_gpu_span(uint64_t f, uint64_t *t0, uint64_t *t1) { (void)f; *t0 = *t1 = 0; return 0; }
+__attribute__((weak)) int mtl_gpu_done(uint64_t f, uint64_t *t1) { (void)f; (void)t1; return -1; }   // no record of any frame's GPU work (gfx_vk_core.c has the real one)
 void mtl_lc_stats(uint64_t *t, uint64_t *l) { *t = *l = 0; }
 void mtl_mem_stat(unsigned long long frame, unsigned long long rss_mb) { (void)frame; (void)rss_mb; }
 uint64_t mtl_pkg_miss(void) { return 0; }
