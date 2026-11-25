@@ -130,8 +130,8 @@ static void trace_draw(const char *kind, int prim, uint32_t count, uint32_t inst
               im ? im->fmt : 0, t->d.format, t->d.flags, (unsigned long long)t->L.size, (const void *)t->pool, (unsigned long long)t->off); }
     VKLOG("  scissor set %d: %d %d %d %d; depth range %.3f %.3f; viewport count first %.1f %.1f %.1f %.1f", S.sc_set, S.sc.x, S.sc.y, S.sc.w, S.sc.h, S.dnear, S.dfar, S.vp[0][0], S.vp[0][1], S.vp[0][2], S.vp[0][3]);
     vkshader_t *vsh = S.sh[0]; uint32_t in_mask = vsh ? vsh->local[0] : 0;
-    for (int l = 0; l < 16; l++) if (in_mask >> l & 1) { uint32_t a = S.vattr[l]; VKLOG("  location %d: attrib state %#x (stream %u) stride %d divisor %d buffer %#llx +%llu", l, a, (a >> 16) & 0x1f,
-        S.vstream[(a >> 16) & 0xf].stride, S.vstream[(a >> 16) & 0xf].divisor, (unsigned long long)S.vbuf[(a >> 16) & 0xf].address, (unsigned long long)S.vbuf[(a >> 16) & 0xf].size); }
+    for (int l = 0; l < 16; l++) if (in_mask >> l & 1) { uint32_t a = S.vattr[l]; va_st st; memcpy(&st, &a, 4); VKLOG("  location %d: attrib state %#x (stream %u) stride %d divisor %d buffer %#llx +%llu", l, a, st.stream,
+        S.vstream[st.stream].stride, S.vstream[st.stream].divisor, (unsigned long long)S.vbuf[st.stream].address, (unsigned long long)S.vbuf[st.stream].size); }
 }
 // Vertex fetches past a stream's bound size. NVN binds each stream with a size (BindVertexBuffers), and Maxwell's fetch reads zeros past it; Vulkan's binding carries no
 // size here (robustBufferAccess is off), so Adreno read on into whatever followed the stream in the pool. agl draws full-screen passes past their streams: Super Mario
@@ -314,6 +314,12 @@ static void draw(const p_draw *d) {
     int prim = d->prim;
     VkBuffer qib = VK_NULL_HANDLE; VkDeviceSize qio = 0;   // an indirect quad draw's records, rewritten as indexed ones (before prepare_draw: the rewrite ends the pass)
     if (d->ind && prim == 7 && !g_tf_on) quad_indirect(d->ind, mcb ? d->mdi_max : 1, mcb ? d->mdi_stride : 16, &qib, &qio);
+    VkBuffer xind = VK_NULL_HANDLE; VkDeviceSize xindo = 0;
+    if (d->ind && !qib && !nvn_sparse_address_pool(d->ind, 1)) {
+        uint64_t ind_bytes = mcb ? (uint64_t)d->mdi_stride * (uint64_t)d->mdi_max : 16;
+        vkpool_t *ip = vk_pool_of(d->ind, 1);
+        if (ip && ip->hi < ip->end && ind_bytes > ip->hi - d->ind) vk_cross_buf(d->ind, ind_bytes, &xind, &xindo);
+    }
     // before prepare_draw, whose driver segment carries it (c0 + 0x644): set after it, each draw's segment had the draw before's. An indirect draw's is in GPU memory: 0
     g_draw_binst = d->ind ? 0 : (uint32_t)d->base_instance;
     if (!prepare_draw(prim == 7 ? 4 : prim, prim == 7)) return;
@@ -337,8 +343,9 @@ static void draw(const p_draw *d) {
             if (!(dbg_draw() & 1) && g_ok) { if (mcb) vkCmdDrawIndexedIndirectCount(cb, qib, qio, mcb, mco, (uint32_t)d->mdi_max, 20); else vkCmdDrawIndexedIndirect(cb, qib, qio, 1, 20); }
             return;
         }
-        if (!vk_buf_at(d->ind, mcb ? (uint64_t)d->mdi_stride * (uint64_t)d->mdi_max : 16, &b, &o)) VKRED_ONCE(53, "indirect draw arguments outside the memory pools");   // (an else after the nested if once went to the inner one)
-        else if (!(dbg_draw() & 1) && g_ok) { if (mcb) vkCmdDrawIndirectCount(cb, b, o, mcb, mco, (uint32_t)d->mdi_max, (uint32_t)d->mdi_stride); else vkCmdDrawIndirect(cb, b, o, 1, 16); }
+        if (xind) { b = xind; o = xindo; }
+        else if (!vk_buf_at(d->ind, mcb ? (uint64_t)d->mdi_stride * (uint64_t)d->mdi_max : 16, &b, &o)) { VKRED_ONCE(53, "indirect draw arguments outside the memory pools"); return; }
+        if (!(dbg_draw() & 1) && g_ok) { if (mcb) vkCmdDrawIndirectCount(cb, b, o, mcb, mco, (uint32_t)d->mdi_max, (uint32_t)d->mdi_stride); else vkCmdDrawIndirect(cb, b, o, 1, 16); }
         return;
     }
     if (prim == 7) {   // quads: the triangle list indices of one static buffer (built once), the first vertex as the vertex offset
@@ -375,6 +382,16 @@ static void draw_idx(const p_draw_idx *d) {
     }
     VkBuffer mcb = VK_NULL_HANDLE; VkDeviceSize mco = 0; if (mdi_group(d->mdi_cnt, d->ind, d->mdi_i, d->mdi_max, d->mdi_stride, 20, &mcb, &mco)) return;
     int prim = d->prim;
+    VkBuffer xib = VK_NULL_HANDLE, xind = VK_NULL_HANDLE; VkDeviceSize xio = 0, xindo = 0;
+    if (!d->ind && d->count > 0 && prim != 7 && !nvn_sparse_address_pool(d->ibuf, 1)) {
+        vkpool_t *ip = vk_pool_of(d->ibuf, 1);
+        if (ip && ip->hi < ip->end && index_bytes > ip->hi - d->ibuf) vk_cross_buf(d->ibuf, index_bytes, &xib, &xio);
+    }
+    if (d->ind && !nvn_sparse_address_pool(d->ind, 1)) {
+        uint64_t ind_bytes = mcb ? (uint64_t)d->mdi_stride * (uint64_t)d->mdi_max : 20;
+        vkpool_t *ip = vk_pool_of(d->ind, 1);
+        if (ip && ip->hi < ip->end && ind_bytes > ip->hi - d->ind) vk_cross_buf(d->ind, ind_bytes, &xind, &xindo);
+    }
     g_draw_binst = d->ind ? 0 : (uint32_t)d->base_instance;   // before prepare_draw (see draw)
     if (!prepare_draw(prim == 7 ? 4 : prim, 1)) return;
     if (!d->ind && d->count < 0) { VKRED_ONCE(99, "indexed draw with a negative index count: skipped"); return; }
@@ -396,8 +413,9 @@ static void draw_idx(const p_draw_idx *d) {
     VkIndexType it = d->itype == 0 ? VK_INDEX_TYPE_UINT8_EXT : d->itype == 1 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32;
     VkBuffer ib; VkDeviceSize io;
     if (d->ind && nvn_sparse_address_pool(d->ibuf, 1)) { VKRED_ONCE(98, "indexed indirect draw with a sparse index buffer has no bounded index extent: skipped"); return; }
-    if (!vk_buf_at(d->ibuf, index_lookup, &ib, &io)) { VKRED_ONCE(56, "index buffer outside the memory pools"); return; }
-    if (!d->ind) { vkpool_t *ip = vk_pool_of(d->ibuf, 1); if (ip && d->ibuf + index_bytes > ip->hi && ip->hi < ip->end) vk_cross(3, d->ibuf, index_bytes, ip); }
+    if (xib) { ib = xib; io = xio; }
+    else if (!vk_buf_at(d->ibuf, index_lookup, &ib, &io)) { VKRED_ONCE(56, "index buffer outside the memory pools"); return; }
+    else if (!d->ind) { vkpool_t *ip = vk_pool_of(d->ibuf, 1); if (ip && d->ibuf + index_bytes > ip->hi && ip->hi < ip->end) vk_cross(3, d->ibuf, index_bytes, ip); }
     if (g_ubolog_key && S.sh[0] && S.sh[0]->key == g_ubolog_key && g_ubolog_n > 0) {   // DM_VK_UBO_LOG: the index data the draw reads (CPU view at replay)
         uint64_t h = 1469598103934665603ull; uint32_t mn = ~0u, mx = 0;
         for (uint32_t i = 0; i < index_count; i++) { uint8_t ix[4] = {0}; vk_ubd_read(d->ibuf + (uint64_t)i * isz, isz, ix);
@@ -420,8 +438,10 @@ static void draw_idx(const p_draw_idx *d) {
     uint32_t inst = d->instances ? (uint32_t)d->instances : 1;
     { static int n; if (n < 12 && (d->itype == 0 || d->ind || (uint32_t)d->count > (1u << 20) || inst > (1u << 16))) { n++;
         VKLOG("unusual indexed draw: itype %d count %u instances %u indirect %#llx prim %d base vertex %d", d->itype, (unsigned)d->count, inst, (unsigned long long)d->ind, d->prim, d->base_vertex); } }
-    if (d->ind) { VkBuffer b; VkDeviceSize o; bc_index(cb, ib, io, it); if (!vk_buf_at(d->ind, mcb ? (uint64_t)d->mdi_stride * (uint64_t)d->mdi_max : 20, &b, &o)) VKRED_ONCE(97, "indexed indirect draw arguments outside the memory pools");
-        else if (!(dbg_draw() & 1) && g_ok) { if (mcb) vkCmdDrawIndexedIndirectCount(cb, b, o, mcb, mco, (uint32_t)d->mdi_max, (uint32_t)d->mdi_stride); else vkCmdDrawIndexedIndirect(cb, b, o, 1, 20); } return; }
+    if (d->ind) { VkBuffer b; VkDeviceSize o; bc_index(cb, ib, io, it);
+        if (xind) { b = xind; o = xindo; }
+        else if (!vk_buf_at(d->ind, mcb ? (uint64_t)d->mdi_stride * (uint64_t)d->mdi_max : 20, &b, &o)) { VKRED_ONCE(97, "indexed indirect draw arguments outside the memory pools"); return; }
+        if (!(dbg_draw() & 1) && g_ok) { if (mcb) vkCmdDrawIndexedIndirectCount(cb, b, o, mcb, mco, (uint32_t)d->mdi_max, (uint32_t)d->mdi_stride); else vkCmdDrawIndexedIndirect(cb, b, o, 1, 20); } return; }
     if (prim == 7) { uint32_t nq = index_count / 4; if (!nq) return;
         uint64_t raw_n = (uint64_t)nq * 4 * isz; if (raw_n > SIZE_MAX) { VKRED_ONCE(100, "indexed quad draw of %u quads exceeds the host address range: skipped", nq); return; }
         uint8_t *raw = malloc((size_t)raw_n); if (!raw) { VKRED_ONCE(101, "indexed quad draw of %u quads could not allocate its CPU index snapshot: skipped", nq); return; }
