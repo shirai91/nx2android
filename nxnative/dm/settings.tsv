@@ -246,6 +246,7 @@ DM_TOUCH	int		profile	start	front_android.c	1 = this game is touch-only: it star
 DM_TOUCH_DOCKED	str		profile	start	hle_touch.c	touch in docked mode: "screen" = the screen's points, "pixels" = the game's pixels; unset = no touch when docked
 DM_TOUCH_HAPTICS	int		debug,ios	?	DmGamepad.m	
 DM_TOUCH_LOG	str		debug	?	hle_touch.c	DM_TOUCH_LOG=1 also logs each gesture entry (up to 500 lines)
+DM_TOUCH_STATES	int		profile	start	hle_hid.c	GetTouchScreenStates hands back this many entries (1-16; unset = 1), the newest state repeated: Okami HD drops a held finger unless more than 8 history entries hold it
 DM_UDC_SELFTEST	str		debug,ios	?	nvn_mtl.m	
 DM_UI_LANG	str		app	start	front_android.c	overlay UI language: unset follows the device locale (persist.sys.locale / ro.product.locale); any value starting with "z" ("zh", "zh-CN", "zh-TW") gives Chinese, anything else English. The Chinese strings are Simplified, so every zh* locale gets Simplified Chinese
 DM_VK_ASYNC_PIPE	bool	1	profile	live	gfx_vk_exec.c	0 = new pipelines are built on the replay thread, not in the background
