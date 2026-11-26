@@ -178,6 +178,7 @@ DM_PAD_XBOX	bool		debug	start	front_android.c	a physical controller's face butto
 DM_PIN_REPLAY	str	0	profile	?	perf_android.c	pin the replay thread to fast cores: 0 = no, "prime" = the fastest core, "need" = the fastest core only while the replay is slow, other values = the big cores
 DM_PREEMPT	int		debug	?	hle_thread.c	
 DM_PRELOAD	str		debug	?	main.c	Exercise the early-start path on Mac (on iOS it is called from the App's main())
+DM_PRESENT_ASPECT	str		porter	?	gfx_vk_present.c	Picture aspect ratio as width:height; unset uses the source aspect
 DM_PRESENT_FIFO	str		debug,ios	?	nvn_mtl.m	
 DM_PRESENT_HZ	int		debug	?	hle_nvn.c	
 DM_PRESENT_INTERVAL	str		porter	?	hle_nvn.c	"display" = presents follow the display's rate; else the game's interval. Default: the profile (present_interval)

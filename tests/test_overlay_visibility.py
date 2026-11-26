@@ -40,7 +40,7 @@ class OverlayVisibility(unittest.TestCase):
 #include "stick_axis.h"
 static _Atomic int g_set_overlay, g_overlay, g_pads, g_edit, g_menu_btn = 1;
 static _Atomic int g_cust[2][2][OV_N][4];
-static _Atomic int g_set_rumble, g_set_fps, g_set_sr, g_set_labels, g_menu_tab, g_sv_st, g_set_zone, g_fps_ver, g_stick_at[2][2];
+static _Atomic int g_set_fill, g_set_rumble, g_set_fps, g_set_sr, g_set_labels, g_menu_tab, g_sv_st, g_set_zone, g_fps_ver, g_stick_at[2][2];
 static int layout, saves;
 int dm_overlay_layout(void) { return layout; }
 float dm_overlay_scale(void) { return 1; }
@@ -55,6 +55,7 @@ static void dm_haptics_android_tap(void) {}
 static int dm_opmode(void) { return 0; }
 static void dm_set_opmode(int mode) { (void)mode; }
 static int pad_labels(void) { return 0; }
+static void menu_fill(int v) { atomic_store(&g_set_fill, v); }
 static void menu_tab(int tab) { (void)tab; }
 static int fps_opt_press(int item) { (void)item; return 0; }
 static void ed_open(void) {}

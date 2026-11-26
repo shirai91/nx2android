@@ -411,6 +411,7 @@ static const char *ovm_label(int it) {
     case OVM_FPS: return TR("Show FPS", "显示帧率");
     case OVM_SR: return TR("Super resolution", "超级分辨率");
     case OVM_SHARP: return TR("Sharpness", "锐度");
+    case OVM_DISPLAY: return TR("Display", "显示");
     case OVM_MODE: return TR("Mode", "模式");
     case OVM_EXPORT: return TR("Export save", "导出存档");
     case OVM_IMPORT: return TR("Import save", "导入存档");
@@ -442,7 +443,9 @@ static const char *ovm_button(int it) {
 static const char *ovm_mode(int i) { return i ? TR("Docked", "底座") : TR("Handheld", "掌机"); }
 static const char *ovm_pad(int i) { return i ? TR("Label", "标签") : TR("Position", "位置"); }   // a controller's face buttons (front_android.c pad_labels)
 static const char *ovm_zone(int i) { return i ? TR("Half", "半屏") : TR("Circle", "圆圈"); }   // the sticks' touch area (dm_overlay_stick_zone); "Half screen" was the widest row, and the widest row sets every label's size (ov_menu_panel)
-static const char *ovm_seg(int it, int i) { return it == OVM_MODE ? ovm_mode(i) : it == OVM_PAD ? ovm_pad(i) : ovm_zone(i); }   // a two-segment row's names
+int dm_overlay_fill(void);
+static const char *ovm_display(int i) { return i ? TR("Fill", "填充") : TR("Fit", "适应"); }
+static const char *ovm_seg(int it, int i) { return it == OVM_DISPLAY ? ovm_display(i) : it == OVM_MODE ? ovm_mode(i) : it == OVM_PAD ? ovm_pad(i) : ovm_zone(i); }   // a two-segment row's names
 static int ov_val_n(int it) { return it == OVM_POS ? FPSO_POS_N : it == OVM_COLOUR ? FPSO_COLOUR_N : it == OVM_OUTLINE ? FPSO_OUTLINE_N : it == OVM_SIZE ? FPSO_SIZE_N : 0; }   // the choice rows' values
 static const char *ov_val_name(int it, int v) {
     return it == OVM_POS ? FPSO_POS_NAMES[v] : it == OVM_COLOUR ? FPSO_COLOUR_NAMES[v] : it == OVM_OUTLINE ? FPSO_OUTLINE_NAMES[v] : FPSO_SIZE_NAMES[v];
@@ -463,7 +466,7 @@ static void ov_menu_panel(const ov_canvas *cv, int st, int position) {
         for (int i = 0; i < OVM_RESUME; i++) {
             float lw = cv_text_w(ovm_label(i), is); const char *btn = ovm_button(i);
             float cw = ov_val_n(i) ? ov_val_w(i, is) + 2 * sh
-                     : i == OVM_MODE || i == OVM_PAD || i == OVM_ZONE ? 2 * (fmaxf(cv_text_w(ovm_seg(i, 0), is), cv_text_w(ovm_seg(i, 1), is)) + sh)
+                     : i == OVM_MODE || i == OVM_PAD || i == OVM_ZONE || i == OVM_DISPLAY ? 2 * (fmaxf(cv_text_w(ovm_seg(i, 0), is), cv_text_w(ovm_seg(i, 1), is)) + sh)
                      : btn ? cv_text_w(btn, is) + 2 * sh
                      : sw + gap + fmaxf(cv_text_w(TR("ON", "开"), is), cv_text_w(TR("OFF", "关"), is));
             need = fmaxf(need, i == OVM_OPACITY ? fmaxf(lw / 0.38f, cv_text_w("80%", is) / 0.14f)
@@ -519,9 +522,9 @@ static void ov_menu_panel(const ov_canvas *cv, int st, int position) {
             cv_text(target, x1 - pw + (pw - cv_text_w(nm, is)) / 2, cy, nm, is, it == OVM_COLOUR ? rgb : tc);
         } else if (btn) {   // a button
             float bw = cv_text_w(btn, is) + 2 * sh, b[4] = {x1 - bw, cy - rh * 0.30f, bw, rh * 0.60f}; cv_button(target, b, btn, 0, 0);
-        } else if (it == OVM_MODE || it == OVM_PAD || it == OVM_ZONE) {   // two segments, the current one filled: handheld (performance) | docked (resolution); by position | by label; circle | half screen
+        } else if (it == OVM_MODE || it == OVM_PAD || it == OVM_ZONE || it == OVM_DISPLAY) {   // two segments, the current one filled: handheld (performance) | docked (resolution); by position | by label; circle | half screen
             const char *seg[2] = {ovm_seg(it, 0), ovm_seg(it, 1)};
-            int cur = it == OVM_MODE ? st >> 2 & 1 : it == OVM_PAD ? st >> 28 & 1 : dm_overlay_stick_zone() != 0;
+            int cur = it == OVM_DISPLAY ? dm_overlay_fill() : it == OVM_MODE ? st >> 2 & 1 : it == OVM_PAD ? st >> 28 & 1 : dm_overlay_stick_zone() != 0;
             float hh = rh * 0.46f, segw = fmaxf(cv_text_w(seg[0], is), cv_text_w(seg[1], is)) + sh, x0 = x1 - 2 * segw;
             cv_rrect(target, x0, cy - hh / 2, x1, cy + hh / 2, hh / 2, C_OFF);
             cv_rrect(target, x0 + cur * segw, cy - hh / 2, x0 + (cur + 1) * segw, cy + hh / 2, hh / 2, C_ACCENT);
@@ -1180,10 +1183,25 @@ static void present_window(vkimg_t *im, const int crop[4], double period, uint64
     VkCommandBufferBeginInfo bi = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, NULL, VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT}; vkBeginCommandBuffer(cb, &bi);
     vk_img_barrier_all(cb);   // after everything submitted before on this queue
     int cx = crop ? crop[0] : 0, cy = crop ? crop[1] : 0, cw = crop && crop[2] ? crop[2] : (int)im->w, ch = crop && crop[3] ? crop[3] : (int)im->h;
-    double s = fmin((double)g_sext.width / cw, (double)g_sext.height / ch); int dw = (int)(cw * s), dh = (int)(ch * s), dx = ((int)g_sext.width - dw) / 2, dy = ((int)g_sext.height - dh) / 2;
-    { float y0, bh; if (dm_overlay_visible() == 1 && ov_band((float)g_sext.width, (float)g_sext.height, &y0, &bh)) {   // the picture across the top, the gamepad under it (ov_band: never on an external display, whose gamepad stays on the phone)
-          s = fmin((double)g_sext.width / cw, (double)y0 / ch); dw = (int)(cw * s); dh = (int)(ch * s); dx = ((int)g_sext.width - dw) / 2; dy = ((int)y0 - dh) / 2; } }
-    vk_pic_set((float)dx / g_sext.width, (float)dy / g_sext.height, (float)dw / g_sext.width, (float)dh / g_sext.height);
+    static double aspect; static int aspect_init;
+    if (!aspect_init) { const char *e = getenv("DM_PRESENT_ASPECT"); double w, h; char tail; aspect_init = 1;
+        if (e && sscanf(e, "%lf:%lf%c", &w, &h, &tail) == 2 && isfinite(w) && isfinite(h) && w > 0 && h > 0 && isfinite(w / h) && w / h > 0) {
+            aspect = w / h; VKLOG("presentation aspect: %s", e);
+        } else if (e) VKLOG("[RED] invalid DM_PRESENT_ASPECT: %s; using source aspect", e); }
+    double pw = aspect ? ch * aspect : cw, aw = g_sext.width, ah = g_sext.height;
+    { float y0, bh; if (dm_overlay_visible() == 1 && ov_band((float)g_sext.width, (float)g_sext.height, &y0, &bh)) ah = y0; }   // the picture across the top, the gamepad under it (ov_band: never on an external display, whose gamepad stays on the phone)
+    double s = dm_overlay_fill() ? fmax(aw / pw, ah / ch) : fmin(aw / pw, ah / ch);
+    int fw = (int)fmax(1, pw * s), fh = (int)fmax(1, ch * s), fx = ((int)aw - fw) / 2, fy = ((int)ah - fh) / 2;
+    int dx = fx < 0 ? 0 : fx, dy = fy < 0 ? 0 : fy;
+    int ex = fx + fw > (int)aw ? (int)aw : fx + fw, ey = fy + fh > (int)ah ? (int)ah : fy + fh;
+    int dw = ex - dx, dh = ey - dy;
+    int x0 = cx + (int)lround((double)(dx - fx) * cw / fw), x1 = cx + (int)lround((double)(ex - fx) * cw / fw);
+    int y0 = cy + (int)lround((double)(dy - fy) * ch / fh), y1 = cy + (int)lround((double)(ey - fy) * ch / fh);
+    if (x0 >= cx + cw) x0 = cx + cw - 1; if (x1 <= x0) x1 = x0 + 1;
+    if (y0 >= cy + ch) y0 = cy + ch - 1; if (y1 <= y0) y1 = y0 + 1;
+    if (vk_window_bottom_up()) { int t = cy + ch - (y1 - cy); y1 = cy + ch - (y0 - cy); y0 = t; }
+    cx = x0; cy = y0; cw = x1 - x0; ch = y1 - y0;
+    vk_pic_set((float)fx / g_sext.width, (float)fy / g_sext.height, (float)fw / g_sext.width, (float)fh / g_sext.height);
     if (im->layout == VK_IMAGE_LAYOUT_UNDEFINED) { barrier(cb, im->img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL); im->layout = VK_IMAGE_LAYOUT_GENERAL; }   // an imported frame buffer, first shown (gl_android.c)
     int external = dm_external_active();
     int ovm = external ? 0 : dm_overlay_visible(), menu = external ? -1 : dm_menu_state(), fps = dm_overlay_fps();

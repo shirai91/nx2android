@@ -7,7 +7,7 @@ import hashlib, importlib.util, json, os, re, shlex, shutil, sys, time, tracebac
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from porter import config, datapack, dumps, fpslocker, install, paths, profiles, product_cache, romfs_pack, toolchain
+from porter import aspect_patch, config, datapack, dumps, fpslocker, install, paths, profiles, product_cache, romfs_pack, toolchain
 from porter.adb import NO_ADB, Adb, AdbError
 from porter.paths import DM, NXNATIVE
 from porter.upstream import BuildError, PROG, android_profile, game, nacp, nsp, profile_guess, say, trinity, uepak
@@ -64,6 +64,8 @@ class Options:
     experimental: bool = False         # a game not ported to Android yet: a provisional profile from upstream's survey (or a copy of its iOS profile), status experimental
     package: str = ''                  # the app's package instead of the profile's (a test install beside another build of the game)
     fps60: bool = False                # 60 fps: the profile's own frame-rate cap, else the build's FPSLocker-Warehouse config (porter/fpslocker.py)
+    aspect_ratio: str = 'native'
+    aspect_patch: Path = None
     vulkan_driver: Path = None         # an arm64 Vulkan driver (Mesa's Turnip) packed in the APK and used instead of the system's (DM_VK_DRIVER, dm/android/gfx_vk_core.c)
     shared_font: Path = None           # a TrueType font packed as the system's shared fonts, instead of the device's Roboto (DM_SHARED_FONT, dm/host/hle_sdk16.c)
     firmware: Path = None              # the player's system content files (.nca), for the profile's sysdata titles (extract_sysdata; DM_SYSDATA, dm/host/hle_fs.c)
@@ -246,6 +248,11 @@ class Port:
 
     def _run(self):
         o = self.o
+        if (o.aspect_ratio == '21:9') != bool(o.aspect_patch): raise BuildError('--aspect-ratio 21:9 and --aspect-patch must be given together')
+        if o.aspect_ratio not in ('native', '21:9'): raise BuildError(f'unsupported aspect ratio: {o.aspect_ratio}')
+        if o.aspect_patch:
+            o.aspect_patch = Path(o.aspect_patch).expanduser().resolve()
+            if not o.aspect_patch.is_file() or o.aspect_patch.suffix.lower() not in ('.zip', '.pchtxt'): raise BuildError('--aspect-patch must be a ZIP or .pchtxt file')
         o.folder = Path(o.folder).expanduser().resolve()
         if o.folder.is_file():   # one dump selected instead of a folder: the build folder goes beside it, and only it is scanned (a merged dump carries everything)
             o.dump, o.folder = o.folder, o.folder.parent
@@ -276,11 +283,16 @@ class Port:
 
         try:
             self.inputs()
-            PROG.plan(1 + len(self.versions) + bool(self.fam['dlc']) + bool(o.firmware and self.ap.sysdata) + bool(o.fps60) + 6 + bool(o.install))   # nx_extract, the versions, the DLC, the system data, 60 fps, rewrite / split / Vulkan shaders / host / APK / data, install (unpack adds its own)
+            PROG.plan(1 + len(self.versions) + bool(self.fam['dlc']) + bool(o.firmware and self.ap.sysdata) + bool(o.fps60) + bool(o.aspect_patch) + 6 + bool(o.install))   # nx_extract, the versions, the DLC, the system data, 60 fps, rewrite / split / Vulkan shaders / host / APK / data, install (unpack adds its own)
             self.extract()
         finally: self.drop_unpacked()   # a failed run leaves no decompressed dumps behind either
         self.check_graphics()
         self.fps_unlock()
+        if o.aspect_patch:
+            PROG.stage('Ultrawide', step='matching the game build')
+            patch = aspect_patch.prepare(o.aspect_patch, self.game / 'ExeFS/main', self.g.id, self.aw, self.env.get('DM_PATCHES_EXTRA', ''))
+            self.env['DM_PATCHES_EXTRA'] = os.pathsep.join(filter(None, (self.env.get('DM_PATCHES_EXTRA', ''), str(patch))))
+            PROG.end('21:9 (43:18) patch prepared for rewriting')
         self.rewrite()
         self.pull_captures()
         self.shaders()
@@ -1086,7 +1098,7 @@ class Port:
             romfs, zenv = self.aw / 'romfs_zstd' / self.pkg_ver, ['DM_ROMFS_ZSTD=1']
         man = datapack.build(dst, profile=self.ap, version=self.pkg_ver, display=self.display, patched=self.patched, romfs=romfs, shaders=self.dmsv,
                              aoc=self.aoc, sysdata=self.sysdata, language=self.lang, languages=self.languages, package=self.package, env=self.fps_env + font_env + zenv + (['DM_VK_MT_REPLAY=1'] if self.o.mt_replay else [])
-                             + (['DM_MENU_BUTTON=0'] if self.o.no_menu_button else [])
+                             + (['DM_MENU_BUTTON=0'] if self.o.no_menu_button else []) + (['DM_PRESENT_ASPECT=43:18'] if self.o.aspect_ratio == '21:9' else [])
                              + ([f'DM_VK_DRIVER={driver_lib_name(self.o.vulkan_driver)}'] if self.o.vulkan_driver else []), settings=TOUCH_SETTINGS if self.o.touch else None,
                              files={**self.fps_files, **font_files}, profile_h=getattr(self, 'profile_h', None),
                              progress=lambda what: PROG.set(step=f'linking {what}'))
