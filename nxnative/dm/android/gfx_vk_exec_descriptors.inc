@@ -546,11 +546,12 @@ static VkDescriptorSet stage_set(int st, vkshader_t *s, uint32_t *dofs, VkDescri
             else if (b->kind == RK_SBUF_UBO) { a = (uint64_t)ubo_word(st, b->reg, b->off) | (uint64_t)ubo_word(st, b->reg, b->off + 4) << 32; }
             uint64_t guest_a = a, physical = 0; vkpool_t *p = a ? vk_pool_of(a, 1) : NULL;
             if (!p && a && n && nvn_sparse_address_translate(a, n, &physical)) { p = vk_pool_of(physical, n); if (p) a = physical; }
-            if (p) { buf = p->buf; off = a - p->lo; if (n && off + n > p->hi - p->lo && p->hi < p->end) vk_cross(1, a, n, p); if (!n || off + n > p->hi - p->lo) n = p->hi - p->lo - off;
+            if (p) { uint64_t orig_n = n; buf = p->buf; off = a - p->lo; if (n && off + n > p->hi - p->lo && p->hi < p->end) vk_cross(1, a, n, p); if (!n || off + n > p->hi - p->lo) n = p->hi - p->lo - off;
                 // bound from the 256-byte boundary below it, the boundary the translator offsets every access from (shader_vk.py SB_ALIGN; a multiple of any device's minimum alignment)
                 const VkDeviceSize al = SB_ALIGN; if (V.props.limits.minStorageBufferOffsetAlignment > al) VKRED_ONCE(41, "storage buffer alignment %llu above %llu", (unsigned long long)V.props.limits.minStorageBufferOffsetAlignment, (unsigned long long)al);
                 bi[nw] = (VkDescriptorBufferInfo){buf, p->boff + off - off % al, n + off % al};
                 if (st == 5 && b->kind != RK_UBO_PTR) { void vk_gpu_wrote(uint64_t a, uint64_t n); vk_gpu_wrote(a, n); }   // a dispatch's storage buffers: taken as written
+                else if (b->kind != RK_UBO_PTR && shader_wmem(s)) vk_cross_invalidate(a, orig_n ? orig_n : p->end - a);
             } else if (b->kind == RK_SBUF && st != 5 && !shader_wmem(s) && sparse_sbuf_desc(guest_a, n, &bi[nw])) { /* read-only sparse storage: snapshot into this submission */ }
             else bi[nw] = (VkDescriptorBufferInfo){vk_zero_buffer(), 0, 65536};
             break; }

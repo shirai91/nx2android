@@ -41,6 +41,7 @@ static uint64_t g_fence,done;static int waits,cuts,resumes;
 typedef struct {uint64_t lo,hi;} ubd_t;
 static ubd_t g_ubd[512];static int g_nubd;
 static void sub_gpu_wrote(uint64_t a,uint64_t n){}
+void vk_cross_invalidate(uint64_t a,uint64_t n){(void)a;(void)n;}
 static int sparse_mode,sparse_fragmented;
 const void *nvn_sparse_address_pool(uint64_t a,uint64_t n){return sparse_mode&&a>=0x1000&&a<0x20000&&n<=0x20000-a?(const void *)(uintptr_t)1:NULL;}
 int nvn_sparse_address_translate(uint64_t a,uint64_t n,uint64_t *p){if(sparse_fragmented||!nvn_sparse_address_pool(a,n))return 0;*p=0x800000+(a-0x1000);return 1;}

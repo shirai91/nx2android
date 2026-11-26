@@ -186,6 +186,22 @@ static int prepare_draw(int prim, int indexed) {
             vk_end_pass(); g_psplit_now = 1; } }
     else if (g_psplit > 0 && S.pass_open == 1 && g_pass_draws == (uint64_t)g_psplit && S.daspect && !g_psplit_depth) { static int n; if (n++ < 3) VKLOG("pass split: pass %d (%ux%u) has depth (format %d): not split", g_sub_pass - 1, S.pass_w, S.pass_h, S.dfmt); }
     { uint64_t fs = S.sh[1] ? S.sh[1]->key : 0; if (g_x_cutfs && S.pass_open == 1 && (fs == g_x_cutfs || g_prev_fs == g_x_cutfs)) vk_end_pass(); g_prev_fs = fs; }
+    // Bridge any active vertex stream whose bound range crosses a memory pool chunk's end before opening the pass
+    // (a cache hit keeps the pass open; a miss or dirty refresh ends the pass, copies the chunks on the GPU, and begin_pass reopens it).
+    VkBuffer xvb[16] = {0}; VkDeviceSize xvo[16] = {0};
+    { vkshader_t *vsh0 = S.sh[0]; uint32_t im0 = vsh0->local[0], intm0 = vsh0->local[1] | vsh0->local[2], sintm0 = vsh0->local[1], us0 = 0;
+      for (int loc = 0; loc < 16; loc++) {
+          if (!(im0 >> loc & 1)) continue;
+          va_st a; memcpy(&a, &S.vattr[loc], 4);
+          if (!a.fmt || !S.vbuf[a.stream].address) continue;
+          if (vertex_format(a.fmt, intm0 >> loc & 1, sintm0 >> loc & 1) == VK_FORMAT_UNDEFINED) continue;
+          us0 |= 1u << a.stream;
+      }
+      for (int b = 0; b < 16; b++) if ((us0 >> b & 1) && S.vbuf[b].size && !nvn_sparse_address_pool(S.vbuf[b].address, 1)) {
+          vkpool_t *vp = vk_pool_of(S.vbuf[b].address, 1);
+          if (vp && vp->hi < vp->end && S.vbuf[b].size > vp->hi - S.vbuf[b].address)
+              vk_cross_buf(S.vbuf[b].address, S.vbuf[b].size, &xvb[b], &xvo[b]);
+      } }
     if (g_order_pending) { g_order_pending = 0; g_order_check = S.pass_open == 1; }   // an order-only barrier kept the pass open: decided below, once the draw's images are known
     if (!begin_pass() || !pass_commit()) { g_vkst.skip_rt++; return 0; }
     if (g_x_tracepass >= 0 && g_sub_pass - 1 == g_x_tracepass) g_tracing = 1;
@@ -342,6 +358,7 @@ static int prepare_draw(int prim, int indexed) {
         uint32_t b = k.bind[i].binding; VkBuffer buf; VkDeviceSize off;
         uint64_t vlookup = b < 16 && S.vbuf[b].size && nvn_sparse_address_pool(S.vbuf[b].address, 1) ? S.vbuf[b].size : 1;
         if (b == 16) { buf = vk_default_attribute_buffer(); off = 0; }
+        else if (b < 16 && xvb[b]) { buf = xvb[b]; off = xvo[b]; }
         else if (!vk_buf_at(S.vbuf[b].address, vlookup, &buf, &off)) { buf = vk_zero_buffer(); off = 0; VKRED_ONCE(51, "vertex buffer outside the memory pools"); }
         else if (S.vbuf[b].size) { vkpool_t *vp = vk_pool_of(S.vbuf[b].address, 1); if (vp && S.vbuf[b].address + S.vbuf[b].size > vp->hi && vp->hi < vp->end) vk_cross(2, S.vbuf[b].address, S.vbuf[b].size, vp); }
         if (g_var_now == 5) { buf = vk_zero_buffer(); off = 0; }

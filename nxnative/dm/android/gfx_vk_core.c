@@ -1014,8 +1014,10 @@ static int pool_back(vkpool_t *p, uint64_t serial) {
     }
     return rc;
 }
+static void cross_drop_pool(uint64_t base);
 void mtl_pool_del(const void *mem) {
     if (pool_log_on()) VKLOG("memory pool %p finalized (present %llu)", mem, (unsigned long long)mtl_last_fence());
+    cross_drop_pool((uint64_t)(uintptr_t)mem);
     for (;;) {   // every chunk of the pool
         pthread_mutex_lock(&g_lazy_mu); pthread_mutex_lock(&g_nest_mu); pthread_rwlock_wrlock(&g_pool_mu);   // (lock order: g_lazy_mu, g_nest_mu, g_pool_mu)
         int i = 0; while (i < g_npool && g_pool[i].base != (uint64_t)(uintptr_t)mem) i++;
@@ -1589,22 +1591,68 @@ void vk_img_barrier_all(VkCommandBuffer cb) {
     vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &b, 0, NULL, 0, NULL);
 }
 void vk_gpu_wrote(uint64_t a, uint64_t n);
+static int pool_range_ok(uint64_t a, uint64_t n, uint64_t *first_ser, uint64_t *last_ser) {
+    if (!n || n > UINT64_MAX - a) return 0;
+    vkpool_t *p0 = vk_pool_of(a, 1); if (!p0 || !p0->buf || n > p0->end - a) return 0;
+    uint64_t fser = p0->serial, lser = p0->serial, done = p0->hi - a;
+    while (done < n) {
+        vkpool_t *p = vk_pool_of(a + done, 1);
+        if (!p || !p->buf || p->base != p0->base) return 0;
+        lser = p->serial;
+        done += p->hi - (a + done);
+    }
+    if (first_ser) *first_ser = fser;
+    if (last_ser) *last_ser = lser;
+    return 1;
+}
 void mtl_sub_copy(uint64_t src, uint64_t dst, uint64_t n) {
     VkBuffer sb, db; VkDeviceSize so, dof;
     if (!n) return;
-    if (!vk_buf_at(src, n, &sb, &so) || !vk_buf_at(dst, n, &db, &dof)) { VKRED_ONCE(1, "buffer copy outside the memory pools (%#llx → %#llx, %llu bytes)", (unsigned long long)src, (unsigned long long)dst, (unsigned long long)n); return; }
+    if (vk_buf_at(src, n, &sb, &so) && vk_buf_at(dst, n, &db, &dof)) {
+        vk_end_pass_land();
+        VkCommandBuffer cb = vk_cmd(); vk_img_barrier_all(cb);
+        VkBufferCopy r = {so, dof, n}; vkCmdCopyBuffer(cb, sb, db, 1, &r);
+        vk_img_barrier_all(cb); vk_gpu_wrote(dst, n);
+        return;
+    }
+    if (!pool_range_ok(src, n, NULL, NULL) || !pool_range_ok(dst, n, NULL, NULL) || (dst > src && dst < src + n)) {
+        VKRED_ONCE(1, "buffer copy outside the memory pools (%#llx → %#llx, %llu bytes)", (unsigned long long)src, (unsigned long long)dst, (unsigned long long)n); return;
+    }
     vk_end_pass_land();
     VkCommandBuffer cb = vk_cmd(); vk_img_barrier_all(cb);
-    VkBufferCopy r = {so, dof, n}; vkCmdCopyBuffer(cb, sb, db, 1, &r);
+    uint64_t done = 0;
+    while (done < n) {
+        vkpool_t *sp = vk_pool_of(src + done, 1), *dp = vk_pool_of(dst + done, 1);
+        if (!sp || !dp || !sp->buf || !dp->buf) break;
+        uint64_t sa = sp->hi - (src + done), da = dp->hi - (dst + done);
+        uint64_t step = n - done; if (sa < step) step = sa; if (da < step) step = da;
+        VkBufferCopy r = {(VkDeviceSize)(src + done - sp->lo + sp->boff), (VkDeviceSize)(dst + done - dp->lo + dp->boff), step};
+        vkCmdCopyBuffer(cb, sp->buf, dp->buf, 1, &r);
+        done += step;
+    }
     vk_img_barrier_all(cb); vk_gpu_wrote(dst, n);
 }
 void mtl_sub_fill(uint64_t dst, uint64_t n, uint32_t value) {
     VkBuffer db; VkDeviceSize dof;
     if (!n) return;
-    if (!vk_buf_at(dst, n, &db, &dof)) { VKRED_ONCE(2, "buffer fill outside the memory pools"); return; }
+    if (vk_buf_at(dst, n, &db, &dof)) {
+        vk_end_pass_land();
+        VkCommandBuffer cb = vk_cmd(); vk_img_barrier_all(cb);
+        vkCmdFillBuffer(cb, db, dof, n & ~3ull, value);
+        vk_img_barrier_all(cb); vk_gpu_wrote(dst, n);
+        return;
+    }
+    if (!pool_range_ok(dst, n, NULL, NULL)) { VKRED_ONCE(2, "buffer fill outside the memory pools"); return; }
     vk_end_pass_land();
     VkCommandBuffer cb = vk_cmd(); vk_img_barrier_all(cb);
-    vkCmdFillBuffer(cb, db, dof, n & ~3ull, value);
+    uint64_t done = 0, rem = n & ~3ull;
+    while (done < rem) {
+        vkpool_t *dp = vk_pool_of(dst + done, 1); if (!dp || !dp->buf) break;
+        uint64_t avail = dp->hi - (dst + done);
+        uint64_t step = rem - done < avail ? rem - done : avail;
+        if (step >= 4) vkCmdFillBuffer(cb, dp->buf, (VkDeviceSize)(dst + done - dp->lo + dp->boff), step & ~3ull, value);
+        done += step;
+    }
     vk_img_barrier_all(cb); vk_gpu_wrote(dst, n);
 }
 // an inline uniform update (UpdateUniformBuffer): the bytes are taken at record time, copied in GPU order from scratch memory
@@ -1620,7 +1668,12 @@ void vk_end_pass_land(void);
 void vk_sub_update(uint64_t dst, const void *data, uint64_t n) {
     VkBuffer db, sb; VkDeviceSize dof, so;
     if (!n) return;
-    if (!vk_buf_at(dst, n, &db, &dof)) { VKRED_ONCE(3, "uniform update outside the memory pools"); return; }
+    if (!vk_buf_at(dst, n, &db, &dof)) {
+        vkpool_t *p0 = n <= UINT64_MAX - dst ? vk_pool_of(dst, 1) : NULL;
+        int ok = p0 && p0->buf && n <= p0->end - dst;
+        for (uint64_t d = ok ? p0->hi - dst : n; ok && d < n; ) { vkpool_t *p = vk_pool_of(dst + d, 1); if (!p || !p->buf || p->base != p0->base) ok = 0; else d += p->hi - (dst + d); }
+        if (!ok) { VKRED_ONCE(3, "uniform update outside the memory pools"); return; }
+    }
     // an update of exactly the range of a deferred one supersedes it: the older one goes (Unity rewrites the same few constant buffers before every draw,
     // so the list keeps about one entry per buffer region, which keeps the landing to a few copies and the shadows cheap to build)
     for (int i = g_nubd - 1; i >= 0; i--) if (g_ubd[i].lo == dst && g_ubd[i].hi == dst + n) { free(g_ubd[i].own); memmove(&g_ubd[i], &g_ubd[i + 1], sizeof *g_ubd * (size_t)(g_nubd - i - 1)); g_nubd--; g_ubd_superseded++; break; }
@@ -1685,13 +1738,262 @@ void vk_ubd_land(VkCommandBuffer cb) {   // outside a render pass
         uint64_t dst = g_ubd[i].lo, n = g_ubd[i].hi - dst; VkBuffer db; VkDeviceSize dof;
         if (nvn_sparse_address_pool(dst, n) && !nvn_sparse_address_translate(dst, n, &dst)) { vk_readback_unknown(); continue; }
         if (vk_buf_at(dst, n, &db, &dof)) {
-            VkBufferCopy r = {g_ubd[i].so, dof, n}; vkCmdCopyBuffer(cb, g_ubd[i].sb, db, 1, &r); sub_gpu_wrote(dst, n);
+            VkBufferCopy r = {g_ubd[i].so, dof, n}; vkCmdCopyBuffer(cb, g_ubd[i].sb, db, 1, &r); sub_gpu_wrote(dst, n); vk_cross_invalidate(dst, n);
+        } else {
+            uint64_t done = 0; vkpool_t *p0 = vk_pool_of(dst, 1);
+            if (p0 && p0->buf && n <= p0->end - dst) {
+                while (done < n) {
+                    vkpool_t *p = vk_pool_of(dst + done, 1); if (!p || !p->buf || p->base != p0->base) break;
+                    uint64_t avail = p->hi - (dst + done), step = n - done < avail ? n - done : avail;
+                    VkBufferCopy r = {g_ubd[i].so + done, (VkDeviceSize)(dst + done - p->lo + p->boff), step};
+                    vkCmdCopyBuffer(cb, g_ubd[i].sb, p->buf, 1, &r);
+                    done += step;
+                }
+                if (done) { sub_gpu_wrote(dst, done); vk_cross_invalidate(dst, done); }
+            }
         }
     }
     vk_img_barrier_all(cb);
     g_ubd_landed += (uint64_t)g_nubd; g_nubd = 0; g_ubd_gen++;
 }
 int vk_ubd_overlaps(uint64_t a, uint64_t n) { for (int i = 0; i < g_nubd; i++) if (g_ubd[i].lo < a + n && a < g_ubd[i].hi) return 1; return 0; }
+// Pools over ZC_CHUNK are split into separate VkBuffers (chunks). Ranges that span a chunk boundary cannot be bound directly from one chunk:
+// Adreno / Turnip vertex fetch returns zeros past the first chunk's VkBuffer end (e.g. a mega-buffer's normal stream reading (0,0,0) -> normalize(0) = NaN).
+// A small LRU cache of device-local bridge buffers stitches the chunks via GPU vkCmdCopyBuffer, staying coherent with CPU writes (nvn_dirty write-protect
+// for static meshes; per-submission GPU refresh after repeated writes for streaming rings), GPU writes (vk_cross_invalidate), deferred inline updates
+// (vk_ubd_land), and pool finalization (cross_drop_pool).
+enum { CROSS_CAP = 16 };
+#define CROSS_MAX_ENTRY (64ull << 20)
+#define CROSS_MAX_TOTAL (128ull << 20)
+typedef struct {
+    uint64_t addr, len, pool_base, pool_end, first_serial, last_serial;
+    uint32_t pool_gen;
+    const void *dirty_span; uint64_t dirty_stamp;
+    int dirty_prot, dynamic, dirty_hits, gpu_dirty;
+    uint64_t sync_fence, last_use;
+    VkBuffer buf; VkDeviceMemory mem; VkDeviceSize cap;
+} cross_ent_t;
+static cross_ent_t g_cross[CROSS_CAP];
+static uint64_t g_cross_bytes, g_cross_seq, g_cross_copies, g_cross_hits;
+static int g_cross_live;
+static pthread_mutex_t g_cross_mu = PTHREAD_MUTEX_INITIALIZER;
+static int cross_copy_chunks(VkCommandBuffer cb, uint64_t addr, uint64_t len, VkBuffer dst, VkDeviceSize dst_off) {
+    uint64_t done = 0;
+    while (done < len) {
+        vkpool_t *p = vk_pool_of(addr + done, 1);
+        if (!p || !p->buf) return 0;
+        uint64_t avail = p->hi - (addr + done);
+        uint64_t step = len - done < avail ? len - done : avail;
+        VkBufferCopy r = {(VkDeviceSize)(addr + done - p->lo + p->boff), dst_off + done, step};
+        vkCmdCopyBuffer(cb, p->buf, dst, 1, &r);
+        done += step;
+    }
+    return 1;
+}
+static void cross_recount(void) {
+    int n = 0; for (int i = 0; i < CROSS_CAP; i++) if (g_cross[i].buf) n++;
+    __atomic_store_n(&g_cross_live, n, __ATOMIC_RELEASE);
+}
+static void cross_drop_pool(uint64_t base) {
+    if (!__atomic_load_n(&g_cross_live, __ATOMIC_ACQUIRE)) return;
+    VkBuffer fb[CROSS_CAP]; VkDeviceMemory fm[CROSS_CAP]; int nf = 0;
+    pthread_mutex_lock(&g_cross_mu);
+    for (int i = 0; i < CROSS_CAP; i++) if (g_cross[i].buf && g_cross[i].pool_base == base) {
+        fb[nf] = g_cross[i].buf; fm[nf] = g_cross[i].mem; nf++;
+        g_cross_bytes -= (uint64_t)g_cross[i].cap;
+        memset(&g_cross[i], 0, sizeof g_cross[i]);
+    }
+    cross_recount();
+    pthread_mutex_unlock(&g_cross_mu);
+    for (int i = 0; i < nf; i++) vk_defer_free_buffer(fb[i], fm[i]);
+}
+void vk_cross_invalidate(uint64_t a, uint64_t n) {
+    if (!n || a > UINT64_MAX - n || !__atomic_load_n(&g_cross_live, __ATOMIC_ACQUIRE)) return;
+    pthread_mutex_lock(&g_cross_mu);
+    for (int i = 0; i < CROSS_CAP; i++) {
+        cross_ent_t *e = &g_cross[i];
+        if (e->buf && e->addr < a + n && a < e->addr + e->len) e->gpu_dirty = 1;
+    }
+    pthread_mutex_unlock(&g_cross_mu);
+}
+static int cross_alloc_buf(VkDeviceSize cap, VkBuffer *ob, VkDeviceMemory *om) {
+    VkBufferCreateInfo bi = {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, NULL, 0, cap, POOL_USAGE, VK_SHARING_MODE_EXCLUSIVE};
+    VkBuffer b = VK_NULL_HANDLE; if (vkCreateBuffer(V.dev, &bi, NULL, &b)) return 0;
+    VkMemoryRequirements req; vkGetBufferMemoryRequirements(V.dev, b, &req);
+    uint32_t mt = vk_mem_type(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0);
+    VkMemoryAllocateInfo ai = {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, req.size, mt};
+    VkDeviceMemory m = VK_NULL_HANDLE;
+    if (vkAllocateMemory(V.dev, &ai, NULL, &m) || vkBindBufferMemory(V.dev, b, m, 0)) {
+        if (m) vkFreeMemory(V.dev, m, NULL);
+        vkDestroyBuffer(V.dev, b, NULL);
+        return 0;
+    }
+    *ob = b; *om = m; return 1;
+}
+int vk_cross_buf(uint64_t addr, uint64_t len, VkBuffer *buf, VkDeviceSize *off) {
+    if (!addr || !len || len > UINT64_MAX - addr) return 0;
+    vkpool_t *p = vk_pool_of(addr, 1);
+    if (!p || !p->buf || p->hi >= p->end || len <= p->hi - addr) return 0;
+    if (len > p->end - addr) len = p->end - addr;
+    if (len <= p->hi - addr) return 0;
+    // Align the cached entry's base down to 16 bytes (still >= p->lo, same host page) so sub-range offsets preserve 2/4/8/16-byte alignment.
+    uint64_t a0 = (addr & ~15ull) >= p->lo ? (addr & ~15ull) : addr;
+    uint64_t len0 = len + (addr - a0);
+    if (len0 > p->end - a0) len0 = p->end - a0;
+    if (len0 > CROSS_MAX_ENTRY) {
+        VKRED_ONCE(178, "cross-chunk buffer %#llx +%#llx exceeds the %llu MiB bridge cap: not bridged",
+                   (unsigned long long)addr, (unsigned long long)len, (unsigned long long)(CROSS_MAX_ENTRY >> 20));
+        return 0;
+    }
+    uint64_t fser = 0, lser = 0;
+    if (!pool_range_ok(a0, len0, &fser, &lser)) return 0;
+    uint32_t pgen = vk_pool_gen();
+    uint64_t sub_f = g_fence + 1;
+    VkBuffer fb[CROSS_CAP]; VkDeviceMemory fm[CROSS_CAP]; int nf = 0;
+    uint64_t rel_a[CROSS_CAP], rel_n[CROSS_CAP]; int nrel = 0;
+    int idx = -1, need_full = 0; uint64_t old_len = 0, tail_len = 0;
+    uint64_t pbase = p->base, pend = p->end, phi = p->hi;
+    pthread_mutex_lock(&g_cross_mu);
+    // 1. Existing covering entry (exact or sub-range)
+    for (int i = 0; i < CROSS_CAP; i++) {
+        cross_ent_t *e = &g_cross[i];
+        if (e->buf && e->pool_base == pbase && e->addr <= addr && addr + len <= e->addr + e->len) { idx = i; break; }
+    }
+    // 2. Existing same-base entry that can be extended/grown in place
+    if (idx < 0) {
+        for (int i = 0; i < CROSS_CAP; i++) {
+            cross_ent_t *e = &g_cross[i];
+            if (e->buf && e->pool_base == pbase && e->addr == a0) { idx = i; break; }
+        }
+    }
+    if (idx >= 0) {
+        cross_ent_t *e = &g_cross[idx];
+        uint64_t need_len = a0 == e->addr && len0 > e->len ? len0 : e->len;
+        // Verify chunk serials if the pool table changed since this entry was built
+        if (e->pool_gen != pgen) {
+            uint64_t ef = 0, el = 0;
+            int same = pool_range_ok(e->addr, need_len, &ef, &el) && ef == e->first_serial && el == e->last_serial;
+            e->pool_gen = pgen;
+            if (!same) { e->first_serial = ef; e->last_serial = el; need_full = 1; }
+        }
+        if (need_len > (uint64_t)e->cap) {
+            // Reallocate with headroom so minor size increments reuse one buffer
+            VkDeviceSize ncap = (VkDeviceSize)((need_len + (need_len >> 3) + 0xffffull) & ~0xffffull);
+            if (ncap > CROSS_MAX_ENTRY) ncap = CROSS_MAX_ENTRY;
+            if (ncap < need_len) ncap = need_len;
+            if (e->dirty_prot && e->len) { rel_a[nrel] = e->addr; rel_n[nrel] = e->len; nrel++; e->dirty_prot = 0; }
+            fb[nf] = e->buf; fm[nf] = e->mem; nf++;
+            g_cross_bytes -= (uint64_t)e->cap;
+            e->buf = VK_NULL_HANDLE; e->mem = VK_NULL_HANDLE; e->cap = 0;
+            // Evict LRU siblings if total cap would be exceeded
+            while (g_cross_bytes + (uint64_t)ncap > CROSS_MAX_TOTAL) {
+                int vic = -1;
+                for (int j = 0; j < CROSS_CAP; j++) if (j != idx && g_cross[j].buf && (vic < 0 || g_cross[j].last_use < g_cross[vic].last_use)) vic = j;
+                if (vic < 0) break;
+                if (g_cross[vic].dirty_prot && g_cross[vic].len) { rel_a[nrel] = g_cross[vic].addr; rel_n[nrel] = g_cross[vic].len; nrel++; }
+                fb[nf] = g_cross[vic].buf; fm[nf] = g_cross[vic].mem; nf++;
+                g_cross_bytes -= (uint64_t)g_cross[vic].cap;
+                memset(&g_cross[vic], 0, sizeof g_cross[vic]);
+            }
+            VkBuffer nb; VkDeviceMemory nm;
+            if (!cross_alloc_buf(ncap, &nb, &nm)) { memset(e, 0, sizeof *e); cross_recount(); pthread_mutex_unlock(&g_cross_mu); goto fail_cleanup; }
+            e->buf = nb; e->mem = nm; e->cap = ncap; g_cross_bytes += (uint64_t)ncap;
+            e->len = need_len; e->first_serial = fser; e->last_serial = lser; e->pool_gen = pgen;
+            need_full = 1;
+        } else {
+            if (e->gpu_dirty || vk_ubd_overlaps(e->addr, need_len)) need_full = 1;
+            else if (e->dynamic || !e->dirty_span) { if (e->sync_fence != sub_f) need_full = 1; }
+            else if (nvn_dirty_since_span(e->dirty_span, (const void *)(uintptr_t)e->addr, e->len, e->dirty_stamp)) {
+                need_full = 1;
+                if (++e->dirty_hits >= 3) {
+                    e->dynamic = 1;
+                    if (e->dirty_prot) { rel_a[nrel] = e->addr; rel_n[nrel] = e->len; nrel++; e->dirty_prot = 0; }
+                }
+            }
+            if (!need_full && need_len > e->len) { old_len = e->len; tail_len = need_len - e->len; }
+            e->len = need_len;
+            if (tail_len || need_full) { e->first_serial = fser; e->last_serial = lser; }
+        }
+    } else {
+        VkDeviceSize ncap = (VkDeviceSize)((len0 + (len0 >> 3) + 0xffffull) & ~0xffffull);
+        if (ncap > CROSS_MAX_ENTRY) ncap = CROSS_MAX_ENTRY;
+        if (ncap < len0) ncap = len0;
+        for (int i = 0; i < CROSS_CAP; i++) if (!g_cross[i].buf) { idx = i; break; }
+        if (idx < 0) {
+            for (int i = 0; i < CROSS_CAP; i++) if (idx < 0 || g_cross[i].last_use < g_cross[idx].last_use) idx = i;
+            if (g_cross[idx].dirty_prot && g_cross[idx].len) { rel_a[nrel] = g_cross[idx].addr; rel_n[nrel] = g_cross[idx].len; nrel++; }
+            fb[nf] = g_cross[idx].buf; fm[nf] = g_cross[idx].mem; nf++;
+            g_cross_bytes -= (uint64_t)g_cross[idx].cap;
+            memset(&g_cross[idx], 0, sizeof g_cross[idx]);
+        }
+        while (g_cross_bytes + (uint64_t)ncap > CROSS_MAX_TOTAL) {
+            int vic = -1;
+            for (int j = 0; j < CROSS_CAP; j++) if (j != idx && g_cross[j].buf && (vic < 0 || g_cross[j].last_use < g_cross[vic].last_use)) vic = j;
+            if (vic < 0) break;
+            if (g_cross[vic].dirty_prot && g_cross[vic].len) { rel_a[nrel] = g_cross[vic].addr; rel_n[nrel] = g_cross[vic].len; nrel++; }
+            fb[nf] = g_cross[vic].buf; fm[nf] = g_cross[vic].mem; nf++;
+            g_cross_bytes -= (uint64_t)g_cross[vic].cap;
+            memset(&g_cross[vic], 0, sizeof g_cross[vic]);
+        }
+        VkBuffer nb; VkDeviceMemory nm;
+        if (!cross_alloc_buf(ncap, &nb, &nm)) { cross_recount(); pthread_mutex_unlock(&g_cross_mu); goto fail_cleanup; }
+        g_cross[idx] = (cross_ent_t){.addr = a0, .len = len0, .pool_base = pbase, .pool_end = pend, .first_serial = fser, .last_serial = lser,
+            .pool_gen = pgen, .buf = nb, .mem = nm, .cap = ncap};
+        g_cross_bytes += (uint64_t)ncap;
+        need_full = 1;
+        cross_recount();
+        static int nlog; if (nlog++ < 8)
+            VKLOG("cross-chunk buffer bridge #%d: %#llx +%#llx across chunk end %#llx (%.1f MiB buffer, %.1f MiB cached)",
+                  nlog, (unsigned long long)a0, (unsigned long long)len0, (unsigned long long)phi,
+                  (double)ncap / 1048576.0, (double)g_cross_bytes / 1048576.0);
+    }
+    cross_ent_t snap = g_cross[idx];
+    g_cross[idx].last_use = ++g_cross_seq;
+    pthread_mutex_unlock(&g_cross_mu);
+    for (int i = 0; i < nrel; i++) nvn_dirty_release((const void *)(uintptr_t)rel_a[i], rel_n[i]);
+    for (int i = 0; i < nf; i++) vk_defer_free_buffer(fb[i], fm[i]);
+    if (need_full || tail_len) {
+        vk_end_pass_land();
+        VkCommandBuffer cb = vk_cmd();
+        vk_img_barrier_all(cb);
+        // Protect before copying so any concurrent CPU write right after protect bumps gen > stamp and triggers a refresh next bind.
+        const void *sp = snap.dirty_span; uint64_t ts = snap.dirty_stamp; int prot = snap.dirty_prot;
+        if (need_full && !snap.dynamic) {
+            sp = nvn_dirty_span((const void *)(uintptr_t)snap.addr, snap.len);
+            if (sp) { nvn_dirty_protect((const void *)(uintptr_t)snap.addr, snap.len); ts = nvn_dirty_now(); prot = 1; }
+        } else if (tail_len && !snap.dynamic && sp) {
+            nvn_dirty_protect((const void *)(uintptr_t)(snap.addr + old_len), tail_len);
+            uint64_t nts = nvn_dirty_now();
+            if (!nvn_dirty_since_span(sp, (const void *)(uintptr_t)snap.addr, old_len, ts)) ts = nts;
+            prot = 1;
+        }
+        uint64_t cp_addr = need_full ? snap.addr : snap.addr + old_len;
+        uint64_t cp_len = need_full ? snap.len : tail_len;
+        VkDeviceSize cp_off = need_full ? 0 : (VkDeviceSize)old_len;
+        int ok = cross_copy_chunks(cb, cp_addr, cp_len, snap.buf, cp_off);
+        vk_img_barrier_all(cb);
+        pthread_mutex_lock(&g_cross_mu);
+        if (g_cross[idx].buf == snap.buf) {
+            if (ok) {
+                g_cross[idx].dirty_span = sp; g_cross[idx].dirty_stamp = ts; g_cross[idx].dirty_prot = prot;
+                g_cross[idx].gpu_dirty = 0; g_cross[idx].sync_fence = sub_f;
+                g_cross_copies++;
+            } else {
+                g_cross[idx].gpu_dirty = 1;
+            }
+        }
+        pthread_mutex_unlock(&g_cross_mu);
+        if (!ok) return 0;
+    } else {
+        g_cross_hits++;
+    }
+    *buf = snap.buf; *off = (VkDeviceSize)(addr - snap.addr);
+    return 1;
+fail_cleanup:
+    for (int i = 0; i < nrel; i++) nvn_dirty_release((const void *)(uintptr_t)rel_a[i], rel_n[i]);
+    for (int i = 0; i < nf; i++) vk_defer_free_buffer(fb[i], fm[i]);
+    return 0;
+}
 // GPU writes to pool memory (buffer copies and fills, texture → buffer copies, storage buffers of dispatches) whose submission may not have completed:
 // until it has, a CPU read of that memory (vk_ubd_read: a shadow, a handle in a uniform buffer) may see the bytes from before them or after them
 typedef struct { uint64_t lo, hi, fence; } gpuw_t;
@@ -1731,6 +2033,7 @@ void vk_gpu_wrote(uint64_t a, uint64_t n) {
     }
     g_gw[g_ngw++] = (gpuw_t){a, a + n, f};
     sub_gpu_wrote(a, n);
+    vk_cross_invalidate(a, n);
 }
 int vk_gpu_pending(uint64_t a, uint64_t n) {
     if (!n || a > UINT64_MAX - n || !g_ngw) return 0;
