@@ -210,11 +210,15 @@ static int pin_set(int which, char *l, size_t ln, long *hi) {
 // PIN_ON_NS, and back to every core once it has stayed under PIN_OFF_NS for 20 s. Pinned for good (prime), a fast device pays for cores it does not need: an
 // AYN Odin 3 (Snapdragon 8 Elite) replayed Breath of the Wild's 4,000-5,000 draws in 4-6 ms a frame on them, and its two prime cores ran at 90 C with the
 // fan at 70% while the GPU idled. A Galaxy S25 Ultra took 9-12 ms for the same draws and needs them. Looked at every 60 presents (the replay thread)
+// A pin that must come back within 60 s of going off also lowers the limit by a fifth (down to PIN_OFF_MIN_NS) and doubles the time kept pinned (20 s to 5 min): the
+// prime cores themselves bring the replay under the limit. On the Odin 3 the replay took 9.0-9.4 ms a frame on every core and 5.8-6.0 ms on the prime cores, so
+// it went back and forth every 40-60 s for a whole 14-minute run
 #define PIN_ON_NS 9000000ll
 #define PIN_OFF_NS 6000000ll
+#define PIN_OFF_MIN_NS 3000000ll
 static int64_t g_replay_mean;   // the replay's time a frame, a running mean over ~16 frames (dm_perf_frame_cost; read here on the replay thread)
 static void replay_need(void) {
-    static unsigned calls; static int pinned, dead; static int64_t changed;
+    static unsigned calls; static int pinned, dead; static int64_t changed, off_at, hold = 20000000000ll, lim = PIN_OFF_NS;
     if (dead || ++calls % 60) return;
     int64_t r = __atomic_load_n(&g_replay_mean, __ATOMIC_RELAXED), now = perf_now(); char l[160]; long hi;
     if (r <= 0) return;
@@ -222,10 +226,11 @@ static void replay_need(void) {
         int e = pin_set(1, l, sizeof l, &hi);
         if (e == -2) { dead = 1; LOG("[perf] DM_PIN_REPLAY=need: the cores' clocks are unknown or all alike, not pinned"); return; }
         if (e) { static int said; if (!said++) LOG("[perf] DM_PIN_REPLAY=need: sched_setaffinity refused CPUs%s (%s): tried again every 60 presents", l, strerror(errno)); return; }
-        pinned = 1; changed = now; LOG("[perf] DM_PIN_REPLAY=need: replay %.1f ms a frame, the replay thread on CPUs%s (prime, up to %ld MHz)", r / 1e6, l, hi);
-    } else if (pinned && r < PIN_OFF_NS && now - changed > 20000000000ll) {
+        if (off_at && now - off_at < 60000000000ll) { hold = hold * 2 > 300000000000ll ? 300000000000ll : hold * 2; lim = lim * 4 / 5 < PIN_OFF_MIN_NS ? PIN_OFF_MIN_NS : lim * 4 / 5; }
+        pinned = 1; changed = now; LOG("[perf] DM_PIN_REPLAY=need: replay %.1f ms a frame, the replay thread on CPUs%s (prime, up to %ld MHz; kept at least %.0f s, back under %.1f ms)", r / 1e6, l, hi, hold / 1e9, lim / 1e6);
+    } else if (pinned && r < lim && now - changed > hold) {
         if (pin_set(0, l, sizeof l, &hi)) return;
-        pinned = 0; changed = now; LOG("[perf] DM_PIN_REPLAY=need: replay %.1f ms a frame, the replay thread on every core again", r / 1e6);
+        pinned = 0; changed = off_at = now; LOG("[perf] DM_PIN_REPLAY=need: replay %.1f ms a frame, the replay thread on every core again", r / 1e6);
     }
 }
 void dm_perf_replay_thread(void) {
