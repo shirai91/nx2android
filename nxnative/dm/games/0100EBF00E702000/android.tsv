@@ -6,6 +6,7 @@ status	experimental
 tested	v0 AYN Odin 2 (Snapdragon 8 Gen 2 QCS8550, Adreno 740, Android 13; Mesa Turnip KIMCHI v26.0.0_R8)
 package	org.nx2a.staroceanfirstdeparturer
 orientation	landscape
+vulkan_driver	turnip
 # NVN RGBA4 (0x39) as VK_FORMAT_A4B4G4R4_UNORM_PACK16, not the truncated table value: without it every string is a dark box
 env	DM_VK_FMT_4444=1
 readme_image	docs/images/star-ocean-first-departure-r.jpg

@@ -10,6 +10,7 @@
 | Tested with nx2android | `v0.4.0` |
 | Tested build and device | v0 AYN Odin 2 (Snapdragon 8 Gen 2 QCS8550, Adreno 740, Android 13; Mesa Turnip KIMCHI v26.0.0_R8) |
 | App package | `org.nx2a.staroceanfirstdeparturer` |
+| Vulkan driver | Turnip: the port packs Mesa's Turnip driver when the porter finds it (`vulkan_driver turnip`) |
 
 The profile sets these for you (`android.tsv`); a player changes the pause menu ones in the game, and the env rows in the data pack's `env.txt`:
 
@@ -33,11 +34,11 @@ Read the profile's porting log in the comment header of [`android.tsv`](android.
 
 | Device | GPU | Vulkan driver | Game version | nx2android | Result |
 |---|---|---|---|---|---|
-| AYN Odin 2 (Android 13) | Adreno 740 | Mesa Turnip KIMCHI v26.0.0_R8 (`--vulkan-driver vulkan.ad07xx.so`) | 1.0.0 (v0) | `v0.4.0` | plays: the title, a new game, the opening house and Kratus |
+| AYN Odin 2 (Android 13) | Adreno 740 | Mesa Turnip KIMCHI v26.0.0_R8 (packed by default) | 1.0.0 (v0) | `v0.4.0` | plays: the title, a new game, the opening house and Kratus |
 
 ## Options
 
-- `--vulkan-driver` with the KIMCHI Turnip v26.0.0_R8 build (`vulkan.ad07xx.so`), the driver this port was tested with. The device's own Qualcomm driver was not tested.
+- The profile packs Turnip by default (`vulkan_driver turnip`; tested with KIMCHI v26.0.0_R8). `--vulkan-driver system` keeps the device's own Qualcomm driver, which was not tested.
 - The profile sets `DM_VK_FMT_4444=1` for you. Without it every text string is drawn as a dark box.
 
 ## Quirks and known issues
