@@ -62,6 +62,7 @@ int main(void) {
         start = core.index('static void vk_pools_sync_(VkCommandBuffer cb) {')
         sync = csrc.function(core, 'static void vk_pools_sync_(VkCommandBuffer cb) {')
         cache_sync = csrc.function(core, 'static void pool_cache_sync(')
+        dc_cvac = csrc.function(core, 'static void dc_cvac_range(')
         harness = r'''
 #define _GNU_SOURCE
 #include <assert.h>
@@ -99,7 +100,7 @@ static int checked_mprotect(void *a, size_t n, int prot) {
 }
 #define mprotect checked_mprotect
 DIRTY
-typedef struct { uint64_t lo, hi, mem; uint8_t *shadow; int synced, flags, baseline_complete, noncoherent; uint8_t *baseline; uint64_t stamp, stamp0; const void *span; } vkpool_t;
+typedef struct { uint64_t lo, hi, mem; uint8_t *shadow; int synced, flags, baseline_complete, noncoherent, zero_copy; uint8_t *baseline; uint64_t stamp, stamp0; const void *span; } vkpool_t;
 static vkpool_t g_pool[5]; static int g_npool = 5;
 static pthread_rwlock_t g_pool_mu = PTHREAD_RWLOCK_INITIALIZER;
 struct vksub { struct { uint64_t lo, hi; } gw[2]; int ngw, readback_ranges; };
@@ -121,7 +122,7 @@ typedef struct { int sType; const void *pNext; uint64_t memory, offset, size; } 
 #define VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE 6
 #define VK_WHOLE_SIZE UINT64_MAX
 #define VKCHK(x) do { if ((x)<0) _exit(88); } while (0)
-static struct { int dev; struct { struct { uint64_t nonCoherentAtomSize; } limits; } props; } V;
+static struct { int dev; struct { struct { uint64_t nonCoherentAtomSize; } limits; uint32_t vendorID; } props; } V;
 static uint8_t *device_data;
 static int flushes, invalidates, cache_failure;
 static uint64_t last_flush_offset, last_flush_size, last_invalidate_offset, last_invalidate_size;
@@ -151,6 +152,7 @@ static void *snapshot_memcpy(void *dst, const void *src, size_t n) {
 }
 #undef memcpy // macOS headers may provide a fortified memcpy macro
 #define memcpy snapshot_memcpy
+DC_CVAC
 SYNC
 #undef memcpy
 COPY_BACK
@@ -194,6 +196,20 @@ int main(int argc, char **argv) {
         uint8_t *baseline = malloc(size); assert(baseline); memset(baseline, 11, size);
         g_npool = 1; g_pool[0] = (vkpool_t){.lo=(uintptr_t)mem, .hi=(uintptr_t)(mem + size), .shadow=shadow, .synced=1, .baseline=baseline};
         int mode = atoi(argv[1]);
+        if (mode == 20) {
+            // A zero-copy pool on a Mali device (vendor 0x13b5): its dirty bytes are cleaned in place, with no
+            // shadow and no baseline copy; on a coherent GPU (Adreno, 0x5143) nothing is flushed at all.
+            // `dc cvac` is a no-op on a host that is not aarch64, so the accounting is what this case observes.
+            g_pool[0] = (vkpool_t){.lo=(uintptr_t)mem, .hi=(uintptr_t)(mem + size), .shadow=NULL, .baseline=NULL, .zero_copy=1};
+            V.props.vendorID = 0x5143; g_sync_bytes = 0;
+            vk_pools_sync_(NULL);
+            assert(g_sync_bytes == 0);            // a coherent GPU needs no cache maintenance
+            V.props.vendorID = 0x13b5; g_sync_bytes = 0;
+            vk_pools_sync_(NULL);
+            assert(g_sync_bytes == size);         // untracked pool: the whole of it, once
+            assert(g_pool[0].baseline == NULL);   // a zero-copy pool never allocates a baseline
+            return 0;
+        }
         if (mode == 8) {
             // Untracked/unaligned pools, partial final blocks, overlapping ranges and untouched guard bytes.
             for (size_t round = 0; round < 200; round++) {
@@ -430,14 +446,14 @@ int main(int argc, char **argv) {
     assert(munmap(mem, size * 5) == 0);
     return 0;
 }
-'''.replace('DIRTY', dirty).replace('CACHE_SYNC', cache_sync).replace('SYNC', sync).replace('COPY_BACK', copy_back)
+'''.replace('DIRTY', dirty).replace('CACHE_SYNC', cache_sync).replace('DC_CVAC', dc_cvac).replace('SYNC', sync).replace('COPY_BACK', copy_back)
         with tempfile.TemporaryDirectory(prefix='nx2a-copyback-') as tmp:
             c, exe = Path(tmp) / 'check.c', Path(tmp) / 'check'
             c.write_text(harness)
             subprocess.run(['cc', '-std=gnu11', '-pthread', '-Wall', '-Wextra', '-Werror',
                             '-Wno-misleading-indentation', str(c), '-o', str(exe)], check=True)
             subprocess.run([str(exe)], check=True, timeout=15)
-            for case in ('4', '5', '6', '7', '8', '9', '10', '11', '12', '15', '16', '17', '18', '19'):
+            for case in ('4', '5', '6', '7', '8', '9', '10', '11', '12', '15', '16', '17', '18', '19', '20'):
                 subprocess.run([str(exe), case], check=True, timeout=15)
             for case in ('13', '14'):
                 result = subprocess.run([str(exe), case], capture_output=True, text=True, timeout=15)
