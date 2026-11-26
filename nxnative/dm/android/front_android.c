@@ -83,6 +83,7 @@ static _Atomic int g_set_opacity = 60;   // the gamepad's opacity, percent (OV_O
 static _Atomic int g_set_sr;   // Super resolution: the game's picture upscaled into a larger window by the present pass (gfx_vk_present.c sr_ready)
 static _Atomic int g_set_sharp;   // its Sharpness, percent by 25 (the menu's slider, settings.txt sharpness=)
 static _Atomic int g_set_grid;   // the layout editor's Snap to grid
+static _Atomic int g_set_zone;   // the sticks' touch area: 0 their circles, 1 half the screen each (overlay_layout.h dm_overlay_stick_zone)
 // the menu button in play (issue #397): env.txt's DM_MENU_BUTTON=0 (porter port --no-menu-button) leaves it out, as a control the player hid (dm_overlay_hidden):
 // not drawn and not touchable, on the gamepad and over the pause menu, so its corner of the screen is the game's. Back (the system's back gesture or key) and a
 // controller's Home/Menu key open the menu (handle_event); the layout editor shows it darkened. The external screen's gamepad keeps it (externalOverlay)
@@ -131,6 +132,7 @@ static void settings_load(void) {
         else if (sscanf(line, "docked=%d", &v) == 1) setenv("DM_OPMODE", v ? "1" : "0", 1);   // over env.txt's: the host reads it once, at its first query
         else if (sscanf(line, "opacity=%d", &v) == 1) atomic_store(&g_set_opacity, v < OV_OPACITY_MIN ? OV_OPACITY_MIN : v > OV_OPACITY_MAX ? OV_OPACITY_MAX : v);
         else if (sscanf(line, "grid=%d", &v) == 1) atomic_store(&g_set_grid, v != 0);
+        else if (sscanf(line, "stick_zone=%d", &v) == 1) atomic_store(&g_set_zone, v != 0);
         else if (sscanf(line, "labels=%d", &v) == 1) atomic_store(&g_set_labels, v != 0);
         else if (!strncmp(line, "ui=", 3)) {   // ui=<layout>,<control>,<x>,<y>,<size>[,<hidden>]: x, y in 1/10000 of the window (-1 the layout's place), size in 1/1000
             char lay[16], name[32]; int x, y, z, hid = 0, l, i;
@@ -151,8 +153,8 @@ static void settings_load(void) {
 static void settings_save(void) {
     char p[600], tmp[610]; snprintf(p, sizeof p, "%s/settings.txt", g_root); snprintf(tmp, sizeof tmp, "%s.new", p);
     FILE *f = fopen(tmp, "w"); if (!f) { LOG("[RED] cannot write %s", tmp); return; }
-    fprintf(f, "overlay=%d\nrumble=%d\ndocked=%d\nfps=%d\nsr=%d\nsharpness=%d\nopacity=%d\ngrid=%d\n", atomic_load(&g_set_overlay), atomic_load(&g_set_rumble), dm_opmode() != 0,
-            atomic_load(&g_set_fps), atomic_load(&g_set_sr), atomic_load(&g_set_sharp), atomic_load(&g_set_opacity), atomic_load(&g_set_grid));
+    fprintf(f, "overlay=%d\nrumble=%d\ndocked=%d\nfps=%d\nsr=%d\nsharpness=%d\nopacity=%d\ngrid=%d\nstick_zone=%d\n", atomic_load(&g_set_overlay), atomic_load(&g_set_rumble), dm_opmode() != 0,
+            atomic_load(&g_set_fps), atomic_load(&g_set_sr), atomic_load(&g_set_sharp), atomic_load(&g_set_opacity), atomic_load(&g_set_grid), atomic_load(&g_set_zone));
     fps_opt_write(f);
     if (atomic_load(&g_set_labels) >= 0) fprintf(f, "labels=%d\n", atomic_load(&g_set_labels));   // (only once the player chose: until then env.txt decides)
     for (int l = 0; l < 2; l++) for (int i = 0; i < OV_N; i++) {
@@ -457,6 +459,14 @@ float dm_overlay_scale(void) {
     return s;
 }
 void dm_overlay_knob(int stick, float *dx, float *dy) { *dx = atomic_load(&g_knob[stick][0]) / 10000.0f; *dy = atomic_load(&g_knob[stick][1]) / 10000.0f; }
+static _Atomic int g_stick_at[2][2];   // Stick area half screen: a held stick's centre, x + 1, y + 1 in 1/10000 of the window's width and height (0 = at its place)
+int dm_overlay_stick_zone(void) { return atomic_load(&g_set_zone); }
+int dm_overlay_stick_at(int stick, float W, float H, float b[4]) {
+    int x = atomic_load(&g_stick_at[stick & 1][0]), y = atomic_load(&g_stick_at[stick & 1][1]);
+    if (!x || !y) return 0;
+    b[0] = (x - 1) / 10000.0f * W; b[1] = (y - 1) / 10000.0f * H; return 1;
+}
+static void stick_at_clear(void) { for (int s = 0; s < 2; s++) for (int a = 0; a < 2; a++) atomic_store(&g_stick_at[s][a], 0); }
 // Geometry and state come from the same tables and saved settings as native hit-testing.
 JNIEXPORT jfloatArray JNICALL Java_org_nx2a_ExternalActivity_externalOverlay(JNIEnv *env, jclass cls, jint width, jint height) {
     (void)cls;
@@ -468,7 +478,7 @@ JNIEXPORT jfloatArray JNICALL Java_org_nx2a_ExternalActivity_externalOverlay(JNI
     for (int i = 0; i < OV_N; i++) {
         const ov_ctl *c = &OV_LAYOUTS[layout][i]; float b[4], kx = 0, ky = 0;
         ov_box(c, (float)width, (float)height, b);
-        if (c->kind == OV_STICK_L || c->kind == OV_STICK_R) dm_overlay_knob(c->kind == OV_STICK_R, &kx, &ky);
+        if (c->kind == OV_STICK_L || c->kind == OV_STICK_R) { dm_overlay_knob(c->kind == OV_STICK_R, &kx, &ky); dm_overlay_stick_at(c->kind == OV_STICK_R, (float)width, (float)height, b); }
         uint64_t held = 0;
         if (c->kind == OV_DPAD) { for (int d = 0; d < 4; d++) if (dm_overlay_pressed(i, OV_DPAD_BITS[d])) held |= 1u << d; }
         else if (dm_overlay_pressed(i, 0)) held = 1;
@@ -664,6 +674,7 @@ static void menu_open(int hi) {
     dm_input_set(0, 0, 0, 0, 0); dm_touch_set(NULL, 0); atomic_store(&g_touch_btn, 0);   // nothing stays pressed in the game
     for (int i = 0; i < 16; i++) atomic_store(&g_press_t[i], 0);
     for (int s = 0; s < 2; s++) { atomic_store(&g_stick_t[s], 0); for (int a = 0; a < 2; a++) atomic_store(&g_knob[s][a], 0); }
+    stick_at_clear();
     if (g_pad_used) { pthread_mutex_lock(&g_slot_mu); for (int p = 0; p < DM_PLAYERS; p++) { g_btn[p] = 0; memset(g_ax[p], 0, sizeof g_ax[p]); pad_publish(p); } pthread_mutex_unlock(&g_slot_mu); }
     for (int i = 0; i < 32; i++) g_ptr_ctl[i] = 0;
     dm_haptics_suspend(4, 1);   // (bits 1 and 2 are the iOS front end's reasons)
@@ -677,7 +688,8 @@ static void menu_close(void) {
     if (!atomic_exchange(&g_menu, 0)) return;
     g_menu_ptr = -1; atomic_store(&g_menu_t, 0);
     hold_sync(); dm_haptics_suspend(4, 0); dm_overlay_redraw();
-    LOG("[menu] closed: the game goes on (gamepad %s, opacity %d%%, rumble %s, face buttons by %s, frame rate %s %#x, super resolution %s (%d%% sharp), %s)", atomic_load(&g_set_overlay) ? "on" : "off", atomic_load(&g_set_opacity),
+    LOG("[menu] closed: the game goes on (gamepad %s, opacity %d%%, sticks %s, rumble %s, face buttons by %s, frame rate %s %#x, super resolution %s (%d%% sharp), %s)", atomic_load(&g_set_overlay) ? "on" : "off", atomic_load(&g_set_opacity),
+        atomic_load(&g_set_zone) ? "half screen" : "circle",
         atomic_load(&g_set_rumble) ? "on" : "off", pad_labels() ? "label" : "position", atomic_load(&g_set_fps) ? "shown" : "hidden", atomic_load(&g_fps_opts), atomic_load(&g_set_sr) ? "on" : "off",
         atomic_load(&g_set_sharp), dm_opmode() ? "docked" : "handheld");
 }
@@ -711,6 +723,7 @@ static void menu_do(int item) {
     else if (item == OVM_SHARP) return;   // (the slider is dragged, or stepped with left and right, as the opacity's)
     else if (item == OVM_MODE) { dm_set_opmode(dm_opmode() ? 0 : 1); settings_save(); }   // the game takes it when it goes on
     else if (item == OVM_PAD) { atomic_store(&g_set_labels, !pad_labels()); settings_save(); }   // at once (pad_labels)
+    else if (item == OVM_ZONE) { atomic_store(&g_set_zone, !atomic_load(&g_set_zone)); atomic_fetch_add(&g_fps_ver, 1); settings_save(); }   // (no bit of dm_menu_state is free: the change count draws the panel again)
     else if (item == OVM_TAB) { menu_tab(atomic_load(&g_menu_tab) + 1); return; }
     else if (item == OVM_EDIT) { dm_haptics_android_tap(); ed_open(); return; }
     else if (item == OVM_OPACITY) return;   // (the slider is dragged, or stepped with left and right)
@@ -1125,6 +1138,20 @@ int front_text_input(const char *title, const char *sub, const char *guide, cons
 }
 
 __attribute__((weak)) void dm_picture_rect(float r[4]);   // gfx_vk_present.c
+// Stick area half screen (issue #589): a touch that went down on no control is the stick of its half of the window, while the gamepad shows (not with it
+// hidden or a touch-only game's DM_TOUCH start: those touches stay the game's), the player has not hidden that stick, and no other finger holds it (a second
+// finger on the same half stays the game's touch screen). With the gamepad in the band under the picture (ov_band), the picture keeps its touches
+static int zone_stick(int id, float x, float y, float W, float H) {
+    if (!atomic_load(&g_set_zone) || dm_overlay_visible() != 1 || atomic_load(&g_edit)) return -1;
+    float y0, bh; if (ov_band(W, H, &y0, &bh) && y < y0) return -1;
+    int kind = x < W / 2 ? OV_STICK_L : OV_STICK_R;
+    for (int i = 0; i < OV_N; i++) {
+        if (OV_CTLS[i].kind != kind || ov_off(&OV_CTLS[i])) continue;
+        for (int j = 0; j < 32; j++) if (j != id && g_ptr_ctl[j] == i + 1) return -1;
+        return i;
+    }
+    return -1;
+}
 static void touch_event(AInputEvent *e) {
     ANativeWindow *w = phone_window(); float W = w ? (float)ANativeWindow_getWidth(w) : 1, H = w ? (float)ANativeWindow_getHeight(w) : 1;
     if (atomic_load(&g_tx_on)) { tx_touch(e, W, H); return; }   // the text entry's keys
@@ -1133,13 +1160,16 @@ static void touch_event(AInputEvent *e) {
     size_t pc = AMotionEvent_getPointerCount(e);
     if (act == AMOTION_EVENT_ACTION_DOWN || act == AMOTION_EVENT_ACTION_POINTER_DOWN) {
         int i = act == AMOTION_EVENT_ACTION_DOWN ? 0 : ai, id = AMotionEvent_getPointerId(e, (size_t)i) & 31;
+        // the first finger down: no other is, so every pointer's control is stale (a lift the text entry took, tx_touch), which zone_stick would read as a held stick
+        if (act == AMOTION_EVENT_ACTION_DOWN) for (int k = 0; k < 32; k++) g_ptr_ctl[k] = 0;
         int c = ctl_at(AMotionEvent_getX(e, (size_t)i), AMotionEvent_getY(e, (size_t)i), W, H);
+        if (c < 0) c = zone_stick(id, AMotionEvent_getX(e, (size_t)i), AMotionEvent_getY(e, (size_t)i), W, H);
         g_ptr_ctl[id] = c + 1;
         g_ptr_origin[id][0] = AMotionEvent_getX(e, (size_t)i); g_ptr_origin[id][1] = AMotionEvent_getY(e, (size_t)i);
         if (c >= 0 && OV_CTLS[c].kind == OV_MENU) { atomic_store(&g_menu_t, mono_ns()); dm_haptics_android_tap(); menu_grab(id, &OV_CTLS[c], AMotionEvent_getX(e, (size_t)i), AMotionEvent_getY(e, (size_t)i), W, H); }
         if (!atomic_exchange(&g_overlay, 1) && !atomic_load(&g_pads)) dm_haptics_android_device(-1);   // keep vibration on a used controller that is still attached
     }
-    uint64_t btn = 0; int32_t lx = 0, ly = 0, rx = 0, ry = 0; float kn[2][2] = {{0, 0}, {0, 0}}; int open = 0, held[2] = {0, 0};
+    uint64_t btn = 0; int32_t lx = 0, ly = 0, rx = 0, ry = 0; float kn[2][2] = {{0, 0}, {0, 0}}, at[2][2] = {{-1, -1}, {-1, -1}}; int open = 0, held[2] = {0, 0};
     dm_touch t[16]; int n = 0;
     float pic[4] = {0, 0, 1, 1}; if (dm_picture_rect) dm_picture_rect(pic); if (pic[2] <= 0 || pic[3] <= 0) pic[2] = pic[3] = 1;   // gfx_vk_present.c: the picture inside the window
     for (size_t i = 0; i < pc; i++) {
@@ -1170,6 +1200,7 @@ static void touch_event(AInputEvent *e) {
             float ox = fminf(fmaxf(g_ptr_origin[id][0], b[2]), W - b[2]);
             float oy = fminf(fmaxf(g_ptr_origin[id][1], b[2]), H - b[2]);
             ov_touch_stick(x - ox, y - oy, b[2], k->kind == OV_STICK_R, &dx, &dy);
+            if (atomic_load(&g_set_zone)) { at[k->kind == OV_STICK_R][0] = ox / W; at[k->kind == OV_STICK_R][1] = oy / H; }   // the stick drawn where the finger went down
             kn[k->kind == OV_STICK_R][0] = dx; kn[k->kind == OV_STICK_R][1] = dy; held[k->kind == OV_STICK_R] = 1;   // the knob shows the output
             int32_t sx = (int32_t)(dx * DM_STICK_MAX), sy = (int32_t)(-dy * DM_STICK_MAX);
             if (k->kind == OV_STICK_L) { lx = sx; ly = sy; } else { rx = sx; ry = sy; }
@@ -1180,6 +1211,7 @@ static void touch_event(AInputEvent *e) {
     for (int b = 0; b < 16; b++) { if (down >> b & 1) atomic_store(&g_press_t[b], now); else if (up >> b & 1) atomic_store(&g_press_t[b], 0); }
     if (down) dm_haptics_android_tap();   // a tick for each button (or d-pad direction) the finger reaches
     for (int s = 0; s < 2; s++) for (int a = 0; a < 2; a++) atomic_store(&g_knob[s][a], (int)(kn[s][a] * 10000));
+    for (int s = 0; s < 2; s++) for (int a = 0; a < 2; a++) atomic_store(&g_stick_at[s][a], at[s][0] < 0 ? 0 : 1 + (int)lroundf(at[s][a] * 10000));
     for (int s = 0; s < 2; s++) if (!held[s]) atomic_store(&g_stick_t[s], 0); else if (!atomic_load(&g_stick_t[s])) atomic_store(&g_stick_t[s], now);
     dm_input_set(btn, lx, ly, rx, ry);
     dm_touch_set(t, n);

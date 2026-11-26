@@ -58,6 +58,12 @@ int dm_overlay_layout(void);   // front_android.c: 0 the tablet's, 1 the phone's
 // in stick radii, -1..1), and when each control was pressed (0 = not held; for the d-pad, its four directions by DM_BTN_* bit; a stick: while a finger holds it)
 int dm_overlay_visible(void);
 void dm_overlay_knob(int stick, float *dx, float *dy);
+// Stick area (the pause menu's Gamepad tab, settings.txt stick_zone=; issue #589): 0 a stick takes the touches on and around its circle; 1 half screen: a touch
+// that goes down on no control in the left half of the gamepad's window is the left stick's, in the right half the right stick's, centred where it went down
+// (as a touch on the circle is: g_ptr_origin), so no touch of the game's touch screen is left there. dm_overlay_stick_at moves a held stick's centre (b: ov_box,
+// on a W x H window) to that point; 0 when the stick is at its place
+int dm_overlay_stick_zone(void);
+int dm_overlay_stick_at(int stick, float W, float H, float b[4]);
 int64_t dm_overlay_pressed(int ctl, uint64_t bit);   // CLOCK_MONOTONIC ns of the press, 0 = not held
 // the player's own layout (the layout editor; the menu button can also be dragged any time, where it hides nothing of the game's): a control's centre as
 // fractions of the window's width and height and its size factor, per layout, kept in settings.txt. 1 and x, y when the player moved the control, 0 when it
@@ -228,17 +234,18 @@ static inline int fpso_scale(int base, int size) { return size == FPSO_SMALL ? (
 // ---- the pause menu: a panel in the middle of the window: a row of tabs, the open tab's rows, and Resume. Everything is placed in a panel rectangle p
 // (x, y, width, height: the window's for touches, the raster's for drawing), so the touches and the drawing agree ----
 enum { OVM_OVERLAY, OVM_OPACITY, OVM_EDIT, OVM_RUMBLE, OVM_FPS, OVM_SR, OVM_SHARP, OVM_MODE, OVM_EXPORT, OVM_IMPORT, OVM_PAD, OVM_AUDIO,
-       OVM_ROW_FPS, OVM_ROW_SOC, OVM_ROW_BAT, OVM_ROW_DRV, OVM_ROW_GRAPH, OVM_POS, OVM_COLOUR, OVM_OUTLINE, OVM_SIZE, OVM_RESUME, OVM_TAB, OVM_N };   // OVM_TAB: the tabs' row;
+       OVM_ROW_FPS, OVM_ROW_SOC, OVM_ROW_BAT, OVM_ROW_DRV, OVM_ROW_GRAPH, OVM_POS, OVM_COLOUR, OVM_OUTLINE, OVM_SIZE, OVM_ZONE, OVM_RESUME, OVM_TAB, OVM_N };   // OVM_TAB: the tabs' row;
+            // OVM_ZONE: the sticks' touch area, their circles or half the screen each (dm_overlay_stick_zone);
             // OVM_ROW_*: the counter's rows on or off; OVM_POS .. OVM_SIZE: its corner, colour, outline and size, one value on with each press (fpso_step below);
             // OVM_EDIT: the layout editor; OVM_MODE: handheld (performance) or docked (resolution); OVM_EXPORT, OVM_IMPORT: the save manager (saves_android.c);
             // OVM_SR: Super resolution (the present pass upscales the game's picture into a larger window); OVM_SHARP: its Sharpness slider (0 to 100 percent by 25);
             // OVM_PAD: a controller's face buttons by their position or by their label (front_android.c pad_labels)
 #define OVM_TABS 4   // (a power of two: ov_menu_item masks the tab)
-#define OVM_PER_TAB 6   // (a tab's rows: as many for every tab, the panel keeps its size; Audio output sits with the gamepad's settings)
-static const int OVM_TAB_ITEMS[OVM_TABS][OVM_PER_TAB] = {{OVM_OVERLAY, OVM_OPACITY, OVM_EDIT, OVM_RUMBLE, OVM_PAD, OVM_AUDIO},
-                                                         {OVM_FPS, OVM_SR, OVM_SHARP, OVM_MODE, OVM_EXPORT, OVM_IMPORT},
-                                                         {OVM_ROW_FPS, OVM_ROW_SOC, OVM_ROW_BAT, OVM_ROW_DRV, OVM_ROW_GRAPH, -1},
-                                                         {OVM_POS, OVM_COLOUR, OVM_OUTLINE, OVM_SIZE, -1, -1}};
+#define OVM_PER_TAB 7   // (a tab's rows: as many for every tab, the panel keeps its size; Audio output sits with the gamepad's settings)
+static const int OVM_TAB_ITEMS[OVM_TABS][OVM_PER_TAB] = {{OVM_OVERLAY, OVM_OPACITY, OVM_EDIT, OVM_ZONE, OVM_RUMBLE, OVM_PAD, OVM_AUDIO},
+                                                         {OVM_FPS, OVM_SR, OVM_SHARP, OVM_MODE, OVM_EXPORT, OVM_IMPORT, -1},
+                                                         {OVM_ROW_FPS, OVM_ROW_SOC, OVM_ROW_BAT, OVM_ROW_DRV, OVM_ROW_GRAPH, -1, -1},
+                                                         {OVM_POS, OVM_COLOUR, OVM_OUTLINE, OVM_SIZE, -1, -1, -1}};
 static const char *const OVM_TAB_NAMES_EN[OVM_TABS] = {"Gamepad", "Game", "Counter", "Style"};
 static const char *const OVM_TAB_NAMES_ZH[OVM_TABS] = {"手柄", "游戏", "计数", "样式"};
 #define OVM_TAB_NAMES (dm_ui_zh() ? OVM_TAB_NAMES_ZH : OVM_TAB_NAMES_EN)

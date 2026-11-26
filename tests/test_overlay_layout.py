@@ -93,9 +93,10 @@ int main(void) {
     assert(ov_drag_pos(1100, 600, 1013, 50) == 506.5f);
     assert(ov_drag_pos(1100, 505, 1013, 50) == 508);
 
-    // Six rows a tab: the gamepad's settings then the audio picker (a device may not offer it), the Game tab the picture's
+    // Seven rows a tab: the gamepad's settings (Stick area after Edit layout) then the audio picker (a device may not offer it), the Game tab the picture's
     assert(ov_menu_item(0, OVM_ROWS - 1) == OVM_RESUME);
-    assert(ov_menu_item(1, 1) == OVM_FPS && ov_menu_item(1, 2) == OVM_SR && ov_menu_item(1, 3) == OVM_SHARP && ov_menu_item(1, OVM_ROWS - 2) == OVM_IMPORT);
+    assert(ov_menu_item(1, 1) == OVM_FPS && ov_menu_item(1, 2) == OVM_SR && ov_menu_item(1, 3) == OVM_SHARP && ov_menu_item(1, 6) == OVM_IMPORT && ov_menu_item(1, OVM_ROWS - 2) == -1);
+    assert(ov_menu_item(0, 3) == OVM_EDIT && ov_menu_item(0, 4) == OVM_ZONE && ov_menu_item(0, 5) == OVM_RUMBLE);
     audio_available = 0;
     assert(ov_menu_item(0, OVM_ROWS - 2) == -1);
     audio_available = 1;

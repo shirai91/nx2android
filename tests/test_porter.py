@@ -82,6 +82,11 @@ class AndroidProfiles(unittest.TestCase):
         self.assertEqual(android_profile.load(d.name).settings, {'sr': '1'})
         with self.assertRaises(android_profile.ProfileError): android_profile.load(profile_dir([('status', 'boots'), ('setting', 'sr=2')]).name)
 
+    def test_stick_zone_setting(self):   # Stick area, circle or half screen (the pause menu's Gamepad tab row, front_android.c settings_load stick_zone=; issue #589)
+        d = profile_dir([('status', 'boots'), ('setting', 'stick_zone=1')])
+        self.assertEqual(android_profile.load(d.name).settings, {'stick_zone': '1'})
+        with self.assertRaises(android_profile.ProfileError): android_profile.load(profile_dir([('status', 'boots'), ('setting', 'stick_zone=2')]).name)
+
     def test_default_package(self):
         d = profile_dir([('status', 'boots')])
         self.assertEqual(android_profile.load(d.name).package, 'org.nx2a.t0100000000aaa000')
