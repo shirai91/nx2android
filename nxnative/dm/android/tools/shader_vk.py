@@ -458,6 +458,28 @@ def main():
     if again:
         print(f'translating {len(again)} vertex shaders again with their integer inputs ...', flush=True)
         translate(again)
+    # android_fetch1d buffer (game profile, default off): the texture slots a shader reads with 1D integer fetches and the answer table gives no type for (res "fetch1d",
+    # translated as 2D rows) are translated again as texture buffers. Vulkan has no image over a buffer, so a texture buffer bound in such a slot read the dummy view.
+    # DRAGON QUEST XI S reads its skinning bone matrices so (Unreal's Buffer<float4>): every skinned character was invisible. A 1D texture bound in a slot answered so
+    # reads zeros and logs a red line on the device (gfx_vk_exec_descriptors.inc)
+    fetch1d = GAME.get('android_fetch1d', 'off')
+    if fetch1d not in ('off', 'buffer'): raise ValueError(f'android_fetch1d must be off or buffer: {fetch1d}')
+    if fetch1d == 'buffer':
+        again = []
+        for k in keys:
+            if k in failures: continue
+            try:
+                product = shader_products.output(w, k, STAGES[stages[k]])
+                if product is None: continue
+                slots = [s for s in product[1].get('fetch1d', ()) if str(s) not in jobs[k]['tex']]
+                if slots:
+                    jobs[k]['tex'] = {**jobs[k]['tex'], **{str(s): 'buffer' for s in slots}}
+                    for suffix in ('.spv', '.res.json'): os.unlink(os.path.join(w, k + suffix))
+                    again.append(k)
+            except Exception as e: failures[k] = str(e)
+        if again:
+            print(f'translating {len(again)} shaders again with their 1D integer fetch slots as texture buffers (android_fetch1d buffer) ...', flush=True)
+            translate(again)
     # Standalone software GS passthrough needs only locations consumed by the bundle's fragment
     # shaders. Forwarding 16 vec4s plus built-ins exceeds a 64-component geometry input limit.
     # Guest reads used for culling remain tracked independently. XFB keeps the conservative path.

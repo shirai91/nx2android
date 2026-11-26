@@ -684,7 +684,7 @@ class UnrealShaders(unittest.TestCase):
             d = Path(tmp); (d / 'RomFS').mkdir(); (d / 'ue_shaders').mkdir()
             (d / 'RomFS/game.pak').write_bytes(b'pak')
             (d / 'ue_shaders/stamp').write_text(pipeline.nsp.ue_stamp(d))
-            p = SimpleNamespace(game=d, g=mock.Mock(), dirs={'v1': d}, versions=['v1'], tools={}, app_name='test')
+            p = SimpleNamespace(game=d, g=mock.Mock(get=lambda k, d=None: d), dirs={'v1': d}, versions=['v1'], tools={}, app_name='test')
             kinds = {k: (False, '') for k in ('oodle_packs', 'glslc_capture', 'ue_legacy')}
             kinds.update(graphics=('nvn', ''), ue_decode=(True, 'Unreal shader archive'))
             with mock.patch.object(pipeline.profile_guess, 'build_sources', return_value=kinds), mock.patch.object(pipeline, 'Adb') as adb:

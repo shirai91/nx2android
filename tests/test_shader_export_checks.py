@@ -76,7 +76,7 @@ class ExportChecks(unittest.TestCase):
         count = self.shader_count or (2 if self.second_shader else 1)
         table.write_text(''.join(f'{self.stage}_test.bin\t0\t0\t{k:016x}\t0\n' for k in range(1, count + 1)))
         (self.root / 'pkg' / f'{self.stage}_test.bin').write_bytes(b'fixture')
-        game = SimpleNamespace(table=lambda name: self.root / name)
+        game = SimpleNamespace(table=lambda name: self.root / name, get=lambda k, d=None: d)
         try: products = importlib.import_module('shader_products')
         except ModuleNotFoundError: products = None
         numeric = {}

@@ -172,6 +172,8 @@ def header(g):
     if mml not in ('on', 'off'): sys.exit(f'{g.id}: mem_map_limit must be on or off: {mml}')
     gts = g.get('gpu_timestamps', 'submission')   # counter timestamps (nvn_mtl.m rep_ticks): submission = one time per submission, segment = the GPU start / end of the segment holding the report
     if gts not in ('submission', 'segment'): sys.exit(f'{g.id}: gpu_timestamps must be submission or segment: {gts}')
+    gtr = g.get('gpu_tick_rate', '19.2')   # the unit of counter timestamps in MHz (nvnDeviceGetTimestampInNanoseconds converts back): 19.2 = the system counter's, 614.4 = the GPU clock Unreal's NVN RHI divides by
+    if gtr not in ('19.2', '614.4'): sys.exit(f'{g.id}: gpu_tick_rate must be 19.2 or 614.4: {gtr}')
     om = g.get('op_mode', 'console')   # the operation mode reported at start (hle_oe.c dm_opmode; DM_OPMODE overrides): console = docked, handheld = touch screen in use (Super Mario Galaxy's pointer)
     if om not in ('console', 'handheld'): sys.exit(f'{g.id}: op_mode must be console or handheld: {om}')
     if pl == 'touch' and om != 'handheld': sys.exit(f'{g.id}: pad_layout touch needs op_mode handheld (the touch screen reaches the game only in handheld mode)')
@@ -218,6 +220,7 @@ def header(g):
          f'#define DM_GAME_TEX_DYN_SLOTS {int(tds == "on")}',
          f'#define DM_GAME_TEX_CPU_UNCACHED {int(tcu == "on")}',
          f'#define DM_GAME_GPU_TS_SEGMENT {int(gts == "segment")}',
+         f'#define DM_GAME_GPU_TICK_NUM {384 if gtr == "614.4" else 12}ull',   # counter ticks per 625 ns
          f'#define DM_GAME_VCONV_RANGE {int(vcr == "on")}',
          f'#define DM_GAME_ORDER_KEEP {int(ok == "on")}',
          *build_table_defines(g, q),   # fps_locks.tsv, ue_malloc.tsv: only when the profile has one

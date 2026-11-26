@@ -1788,7 +1788,7 @@ void mtl_exec_rest(const uint64_t *h, int n) { (void)h; (void)n; }
 typedef struct cpend { uint64_t fence, frame; post_op *ops; int n; int slot, rslot; int npass; pass_meta pmeta[PASSQ]; struct cpend *next; } cpend;
 static cpend *g_ch, *g_ct; static pthread_mutex_t g_cmu = PTHREAD_MUTEX_INITIALIZER; static pthread_cond_t g_ccv = PTHREAD_COND_INITIALIZER;
 uint64_t guest_ns(void);
-static uint64_t gpu_ticks(void) { uint64_t g = guest_ns(); if (!g) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); g = (uint64_t)t.tv_sec * 1000000000ull + (uint64_t)t.tv_nsec; } return g * 12 / 625; }
+static uint64_t gpu_ticks(void) { uint64_t g = guest_ns(); if (!g) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); g = (uint64_t)t.tv_sec * 1000000000ull + (uint64_t)t.tv_nsec; } return g * DM_GAME_GPU_TICK_NUM / 625; }   // profile gpu_tick_rate: 19.2 MHz (12 per 625 ns) or 614.4 MHz (384)
 // GPU time per NVN frame (the sum of its submissions' timestamp spans), for the timing line's GPU column: the frame a submission belongs to is the one being replayed
 static uint64_t g_cur_frame, g_frame_gpu[64], g_frame_gpu_of[64];
 void mtl_set_frame(uint64_t f) { __atomic_store_n(&g_cur_frame, f, __ATOMIC_RELAXED); }
@@ -1840,8 +1840,8 @@ static void *completion_main(void *a) {
         // wrap (a driver with fewer valid timestamp bits) and slow drift; a report then never lands past the guest clock.
         static uint64_t g_ts_o; static int g_ts_set; uint64_t ts_end = now;
         if (tend) {
-            uint64_t qe = (uint64_t)((double)tend * V.props.limits.timestampPeriod * 12 / 625);   // GPU ticks → NVN ticks, the guest's 625/12 ns unit
-            if (!g_ts_set || g_ts_o + qe > now || now - (g_ts_o + qe) > 1920000ull) { g_ts_o = now - qe; g_ts_set = 1; }   // 100 ms in NVN ticks
+            uint64_t qe = (uint64_t)((double)tend * V.props.limits.timestampPeriod * DM_GAME_GPU_TICK_NUM / 625);   // GPU ticks → NVN ticks, the guest's 625/12 ns unit (625/384 with gpu_tick_rate 614.4)
+            if (!g_ts_set || g_ts_o + qe > now || now - (g_ts_o + qe) > 100000000ull * DM_GAME_GPU_TICK_NUM / 625) { g_ts_o = now - qe; g_ts_set = 1; }   // 100 ms in NVN ticks
             ts_end = g_ts_o + qe;
         }
         for (int i = 0; i < c->n; i++) {
@@ -1852,7 +1852,7 @@ static void *completion_main(void *a) {
             // frame that took 33 ms and raised the resolution. A report without a usable query takes the submission's end on the same map.
             uint64_t ts = ts_end, tq = 0;
             if (o->q >= 0 && tend && vkGetQueryPoolResults(V.dev, g_cq, (uint32_t)o->q, 1, 8, &tq, 8, VK_QUERY_RESULT_64_BIT) == VK_SUCCESS && tq && tq <= tend)
-                ts = g_ts_o + (uint64_t)((double)tq * V.props.limits.timestampPeriod * 12 / 625);
+                ts = g_ts_o + (uint64_t)((double)tq * V.props.limits.timestampPeriod * DM_GAME_GPU_TICK_NUM / 625);
             // render_cond: a timestamp report's counter field is 0, as on the GPU (gfx_vk_exec.c render_cond evaluates conditions on it)
             uint64_t rec[2] = {o->type == 0 || o->type == 0x10 ? (DM_GAME_RENDER_COND ? 0 : ts) : o->type == NVN_COUNTER_TYPE_SAMPLES_PASSED ? (1u << 20) : 0, ts}; memcpy((void *)(uintptr_t)o->addr, rec, sizeof rec);
         }
