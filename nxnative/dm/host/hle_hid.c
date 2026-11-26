@@ -593,12 +593,29 @@ static void touch_read(void *s, int n) {
     if (touch_on()) { touch_fill_n(s, n, now_ns()); return; }
     int64_t *p = s; p[0] = atomic_fetch_add(&g_sampling, 1) + 1; ((int32_t *)s)[2] = 0; ((int32_t *)s)[3] = 0;
 }
+// DM_TOUCH_STATES=<k> (a profile env, 1-16, default 1): GetTouchScreenStates hands back up to k entries (newest first) instead of 1. Entry 0 is the current state as
+// GetTouchScreenState gives it; each older entry repeats its touch points with Start / End cleared and the sampling number counting down. Okami HD's touch reader
+// (main 0x747c) tracks one finger and, every frame after the press, drops it for good (until all fingers lift) unless more than 8 of the newest history entries hold
+// that finger: with 1 entry the Celestial Brush vanished while the finger was still down. The Switch samples the panel far faster than a frame, so a held finger
+// fills the whole history there; repeating the newest state is that same picture
+static int touch_states_k(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_TOUCH_STATES"); int k = e ? atoi(e) : 1; v = k < 1 ? 1 : k > 16 ? 16 : k; } return v; }
+static int touch_states_read(void *s, int max, int n) {
+    touch_read(s, max);
+    int k = touch_on() ? touch_states_k() : 1; if (k > n) k = n;
+    size_t sz = 0x10 + 0x28 * (size_t)max; uint8_t *b = s; int64_t samp; int32_t cnt;
+    memcpy(&samp, b, 8); memcpy(&cnt, b + 8, 4);
+    for (int i = 1; i < k; i++) {
+        uint8_t *e = b + sz * (size_t)i; int64_t sp = samp - i; memcpy(e, b, sz); memcpy(e, &sp, 8);
+        for (int j = 0; j < cnt && j < max; j++) { uint32_t a; memcpy(&a, e + 0x10 + 0x28 * j + 8, 4); a &= ~3u; memcpy(e + 0x10 + 0x28 * j + 8, &a, 4); }
+    }
+    return k;
+}
 HLE_FORCE("_ZN2nn3hid21InitializeTouchScreenEv", "connect to the hid touch screen; the host takes touch points from the front end", void, h_hid_InitTouch, void) {}
 // SDK 18 overload with two ints (Super Mario Galaxy); the SDK's own one opens the hid service and aborts in sm::Initialize
 HLE_FORCE("_ZN2nn3hid21InitializeTouchScreenEii", "connect to the hid touch screen (SDK 18 two-argument version); the host takes touch points from the front end", void, h_hid_InitTouch2, int a, int b) { (void)a; (void)b; }
 #define TOUCH(N) \
     HLE_FORCE("_ZN2nn3hid19GetTouchScreenStateILm" #N "EEEvPNS0_16TouchScreenStateIXT_EEE", "touch screen current state (touch points only in handheld mode)", void, h_hid_Touch1_##N, void *s) { touch_read(s, N); } \
-    HLE_FORCE("_ZN2nn3hid20GetTouchScreenStatesILm" #N "EEEiPNS0_16TouchScreenStateIXT_EEEi", "touch screen states: 1 entry (touch points only in handheld mode)", int, h_hid_TouchN_##N, void *s, int n) { if (n <= 0) return 0; touch_read(s, N); return 1; }
+    HLE_FORCE("_ZN2nn3hid20GetTouchScreenStatesILm" #N "EEEiPNS0_16TouchScreenStateIXT_EEEi", "touch screen states: 1 entry, DM_TOUCH_STATES entries if set (touch points only in handheld mode)", int, h_hid_TouchN_##N, void *s, int n) { if (n <= 0) return 0; return touch_states_read(s, N, n); }
 TOUCH(1) TOUCH(2) TOUCH(3) TOUCH(4) TOUCH(5) TOUCH(6) TOUCH(7) TOUCH(8) TOUCH(9) TOUCH(10) TOUCH(11) TOUCH(12) TOUCH(13) TOUCH(14) TOUCH(15) TOUCH(16)
 // Gestures: recognized from the same touch points (hle_touch.c gesture_fill), so only in handheld mode too
 int gesture_fill(void *out, int n, uint64_t now_ns);
