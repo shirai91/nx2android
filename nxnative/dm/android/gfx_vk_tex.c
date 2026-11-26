@@ -304,19 +304,30 @@ int nvn_sparse_pool(const void *pool); uint64_t nvn_sparse_gen(void); uint64_t n
 int nvn_sparse_since(const void *pool, uint64_t a, uint64_t n, uint64_t gen, uint64_t stamp); void nvn_sparse_protect(const void *pool, uint64_t a, uint64_t n);
 static int sparse_tex(const tex_t *t) { return t->pool && nvn_sparse_pool(t->pool); }
 uint64_t g_pkg_n, g_pkg_bytes, g_pkg_ns;   // packaged texture uploads: count, bytes, CPU time (the replay's per-frame line)
-static void pkg_upload_(vkimg_t *im, const tex_t *t, const vkfmt_t *f, int track_writes);
+static uint64_t g_pkg_raced;   // uploads during which the game wrote the texture (vk_tex_sweep's line)
+static size_t pkg_upload_(vkimg_t *im, const tex_t *t, const vkfmt_t *f, int track_writes, const uint64_t *since);
 static uint64_t pkg_hash(const uint8_t *m, size_t n) {   // FNV-1a over 8-byte words
     uint64_t h = 1469598103934665603ull; size_t i = 0;
     for (; i + 8 <= n; i += 8) { uint64_t w; memcpy(&w, m + i, 8); h = (h ^ w) * 1099511628211ull; }
     for (; i < n; i++) h = (h ^ m[i]) * 1099511628211ull;
     return h;
 }
-static void pkg_upload(vkimg_t *im, const tex_t *t, const vkfmt_t *f, int track_writes) {
+// since: only the levels and layers with a page written after that stamp (an upload again of an image that holds every earlier one), or NULL for all of them
+static void pkg_upload(vkimg_t *im, const tex_t *t, const vkfmt_t *f, int track_writes, const uint64_t *since) {
     struct timespec a, b; clock_gettime(CLOCK_MONOTONIC, &a);
-    pkg_upload_(im, t, f, track_writes);
-    clock_gettime(CLOCK_MONOTONIC, &b); g_pkg_ns += (uint64_t)((b.tv_sec - a.tv_sec) * 1000000000ll + (b.tv_nsec - a.tv_nsec)); g_pkg_n++; g_pkg_bytes += t->L.size;
+    size_t n = pkg_upload_(im, t, f, track_writes, since);
+    clock_gettime(CLOCK_MONOTONIC, &b); g_pkg_ns += (uint64_t)((b.tv_sec - a.tv_sec) * 1000000000ll + (b.tv_nsec - a.tv_nsec)); g_pkg_n++; g_pkg_bytes += n;
 }
-static void pkg_upload_(vkimg_t *im, const tex_t *t, const vkfmt_t *f, int track_writes) {
+// The storage of one level of one layer of a block-linear texture (as hle_nvn.c level_slice: a layer's levels follow one another, layers layer_size apart); 0 when the layout gives none
+static int pkg_slice(const tex_t *t, unsigned level, unsigned layer, uint64_t *off, uint64_t *len) {
+    unsigned nl = t->d.levels ? t->d.levels : 1;
+    if (!t->L.layer_size || layer >= t->L.layers || level >= nl) return 0;
+    uint64_t a = nvn_tex_level_offset(&t->d, level), b = level + 1 < nl ? nvn_tex_level_offset(&t->d, level + 1) : t->L.layer_size;
+    if (b <= a || b > t->L.layer_size || (uint64_t)layer * t->L.layer_size + b > t->L.size) return 0;
+    *off = (uint64_t)layer * t->L.layer_size + a; *len = b - a; return 1;
+}
+// → the bytes of guest storage taken: all of it, or the levels and layers written since
+static size_t pkg_upload_(vkimg_t *im, const tex_t *t, const vkfmt_t *f, int track_writes, const uint64_t *since) {
     { static int n; const char *e = getenv("DM_VK_LOG_UPLOADS"); if (e && atoi(e) && n < 60) { n++;   // which packaged textures are (re-)uploaded
         VKLOG("upload: serial %llu %ux%ux%u nvn format %#x (vk %d) target %d levels %u layers %u flags %#x stride %u size %llu mem %p, tileH*100+pkg_block_h %d%s",
               (unsigned long long)t->serial, t->d.width, t->d.height, t->d.depth, t->d.format, f->vk, t->d.target, im->levels, im->layers, t->d.flags, t->d.stride, (unsigned long long)t->L.size,
@@ -325,38 +336,57 @@ static void pkg_upload_(vkimg_t *im, const tex_t *t, const vkfmt_t *f, int track
     VkCommandBuffer cb = vk_upload_cmd();
     if (im->layout != VK_IMAGE_LAYOUT_GENERAL) vk_tex_prepare(cb, im);
     const uint8_t *mem = t->mem; uint8_t *copy = NULL;
+    // The stamp is taken before the pages are made read-only: a write by another thread that lands while they are (its fault or preparation stamps it) is then newer than
+    // the stamp, and the next lookup uploads it. Taken after, a write stamped in between was older than the stamp and never uploaded: the image kept what the deswizzle
+    // read, maybe half of it. With a whole upload the game's next write anywhere in the texture made up for it; with a partial one (below) only a write into the same
+    // level and layer does
+    uint64_t s0 = nvn_dirty_now();
     if ((im->pkg_sparse = sparse_tex(t))) {   // through the page table (see above); its physical pages stay protected, so no sweep releases them (pkg_mem NULL)
-        im->pkg_vgen = nvn_sparse_gen(); nvn_sparse_protect(t->pool, (uint64_t)(uintptr_t)t->mem, t->L.size); im->pkg_stamp = nvn_dirty_now(); im->pkg_seen = im->pkg_stamp;
+        im->pkg_vgen = nvn_sparse_gen(); nvn_sparse_protect(t->pool, (uint64_t)(uintptr_t)t->mem, t->L.size); im->pkg_stamp = s0; im->pkg_seen = im->pkg_stamp;
         im->pkg_span = NULL; im->pkg_mem = NULL; im->pkg_len = 0; im->pkg_released = 0;
-        if (!(copy = malloc(t->L.size))) return;
+        if (!(copy = malloc(t->L.size))) return 0;
         uint64_t miss = nvn_sparse_copy(t->pool, copy, (uint64_t)(uintptr_t)t->mem, t->L.size); mem = copy;
         { static int n; const char *e = getenv("DM_VK_LOG_SPARSE"); if (e && atoi(e) && n < 400) { n++;   // which sparse textures are read, and how much of them was not mapped yet
             VKLOG("sparse upload: serial %llu %ux%ux%u format %#x levels %u flags %#x size %#llx mem %p pool %p tileH %u: %#llx bytes not mapped%s", (unsigned long long)t->serial, t->d.width, t->d.height,
                   t->d.depth, t->d.format, im->levels, t->d.flags, (unsigned long long)t->L.size, (const void *)t->mem, t->pool, t->L.tileH, (unsigned long long)miss, im->packaged > 1 ? " (again)" : ""); } }
-    } else if (track_writes) {
-        nvn_dirty_protect(t->mem, t->L.size);
-        im->pkg_stamp = nvn_dirty_now(); im->pkg_span = nvn_dirty_span(t->mem, t->L.size); im->pkg_seen = im->pkg_stamp;
-        im->pkg_mem = t->mem; im->pkg_len = t->L.size; im->pkg_released = 0; im->pkg_hash = pkg_hash(t->mem, t->L.size);
     }
     int linear = (t->d.flags & (NVN_TEXTURE_FLAGS_LINEAR | NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET)) != 0;
+    // An upload again of a block-linear image with more than one level or layer: only the levels and layers with a page written after `since` are deswizzled
+    // and copied, the rest of the image holding the storage as of then. NieR:Automata writes regions of 512x512 arrays of 16 and 32 MB with WriteTexels about
+    // 70 times a frame (hle_nvn.c marks only the level and layers written): uploaded whole, they took 7-9 MB of deswizzling a frame in the City Ruins and 2.5-3 ms
+    // of the replay (up to 33 MB and 12.8 ms in a fight); level by level it was 0.4-1 MB and 0.4-0.6 ms. The pages are protected and stamped before the check,
+    // so a write racing it is seen either now or at the next lookup
+    int part = since && track_writes && !im->pkg_sparse && !linear && !f->dec && t->L.layers == im->layers && (im->levels > 1 || im->layers > 1);
+    if (!im->pkg_sparse && track_writes) {
+        nvn_dirty_protect(t->mem, t->L.size);
+        im->pkg_stamp = s0; im->pkg_span = nvn_dirty_span(t->mem, t->L.size); im->pkg_seen = im->pkg_stamp;
+        im->pkg_mem = t->mem; im->pkg_len = t->L.size; im->pkg_released = 0;
+        // (a hash of all of it would cost about what the partial upload saves; the GPU-written check below uploads an image whose hash is not its storage's)
+        if (part) im->pkg_nohash = 1; else { im->pkg_hash = pkg_hash(t->mem, t->L.size); im->pkg_nohash = 0; }
+    }
+    size_t took = 0;
     unsigned bw = f->bw ? f->bw : 1, bh = f->bh ? f->bh : 1, bpb = f->bpb;
-    if (!bpb) { free(copy); VKRED_ONCE(12, "packaged texture format %#x has no block size", t->d.format); return; }
+    if (!bpb) { free(copy); VKRED_ONCE(12, "packaged texture format %#x has no block size", t->d.format); return 0; }
     for (unsigned lv = 0; lv < im->levels; lv++) {
         uint32_t w = im->w >> lv ? im->w >> lv : 1, h = im->h >> lv ? im->h >> lv : 1, z = im->d >> lv ? im->d >> lv : 1;
         uint32_t bx = (w + bw - 1) / bw, by = (h + bh - 1) / bh; size_t pitch = (size_t)bx * bpb, slab = pitch * by * z;
         for (unsigned ly = 0; ly < im->layers; ly++) {
+            uint64_t sl_off, sl_len;
+            if (part) { if (!pkg_slice(t, lv, ly, &sl_off, &sl_len)) took += slab; else if (nvn_dirty_since_span(im->pkg_span, t->mem + sl_off, sl_len, *since)) took += sl_len; else continue; }
             VkBuffer sb; VkDeviceSize so; uint8_t *blocks = f->dec ? malloc(slab) : NULL, *dst = blocks ? blocks : vk_scratch(slab, 16, &sb, &so);
-            if (f->dec && !blocks) { free(copy); return; }
+            if (f->dec && !blocks) { free(copy); return took; }
             if (linear) {   // linear storage: rows of the texture's stride, one level, one layer
                 size_t stride = t->d.stride ? t->d.stride : pitch;
                 for (uint32_t y = 0; y < by * z; y++) memcpy(dst + y * pitch, mem + (size_t)y * stride, pitch);
-            } else if (nvn_deswizzle(&t->d, lv, ly, mem, dst, pitch)) { free(blocks); free(copy); VKRED_ONCE(13, "deswizzle refused texture format %#x target %d", t->d.format, t->d.target); return; }
+            } else if (nvn_deswizzle(&t->d, lv, ly, mem, dst, pitch)) { free(blocks); free(copy); VKRED_ONCE(13, "deswizzle refused texture format %#x target %d", t->d.format, t->d.target); return took; }
             if (blocks) { dst = vk_scratch((size_t)w * h * z * f->dbpp, 16, &sb, &so); bc_decode(f, blocks, pitch, w, h, z, dst); free(blocks); }   // (BC the device lacks)
             VkBufferImageCopy r = {so, 0, 0, {im->aspect & VK_IMAGE_ASPECT_COLOR_BIT ? VK_IMAGE_ASPECT_COLOR_BIT : VK_IMAGE_ASPECT_DEPTH_BIT, lv, ly, 1}, {0, 0, 0}, {w, h, z}};
             vkCmdCopyBufferToImage(cb, sb, im->img, VK_IMAGE_LAYOUT_GENERAL, 1, &r);
         }
     }
     free(copy);
+    if (!im->pkg_sparse && track_writes && nvn_dirty_now() != s0 && nvn_dirty_since_span(im->pkg_span, t->mem, t->L.size, s0)) __atomic_fetch_add(&g_pkg_raced, 1, __ATOMIC_RELAXED);
+    return part ? took : t->L.size;
 }
 static int packaged_tex(const tex_t *t);
 enum { TEX_CONTENT_NONE, TEX_CONTENT_TRACKED, TEX_CONTENT_INITIAL };
@@ -442,21 +472,24 @@ static vkimg_t *vk_tex_(const tex_t *t) {
         if (packaged_tex(t) || (im->packaged && !im->gpu_w) || (first && nvn_ft_written(t))) content = TEX_CONTENT_TRACKED;
         else if (first) content = cpu_content_tex(t, f);
     }
-    if (content == TEX_CONTENT_INITIAL) pkg_upload(im, t, f, 0);
+    if (content == TEX_CONTENT_INITIAL) pkg_upload(im, t, f, 0, NULL);
     else if (content == TEX_CONTENT_TRACKED) {
         im->pkg_used = g_tex_frame;
-        if (!im->packaged) { im->packaged = 1; pkg_upload(im, t, f, 1); }
+        if (!im->packaged) { im->packaged = 1; pkg_upload(im, t, f, 1, NULL); }
         else {
             uint64_t now = nvn_dirty_now();
-            if (im->pkg_sparse) { if (nvn_sparse_since(t->pool, (uint64_t)(uintptr_t)t->mem, t->L.size, im->pkg_vgen, im->pkg_stamp)) pkg_upload(im, t, f, 1); }   // mapped or written since
+            if (im->pkg_sparse) { if (nvn_sparse_since(t->pool, (uint64_t)(uintptr_t)t->mem, t->L.size, im->pkg_vgen, im->pkg_stamp)) pkg_upload(im, t, f, 1, NULL); }   // mapped or written since
             else if (now != im->pkg_seen && nvn_dirty_since_span(im->pkg_span, t->mem, t->L.size, im->pkg_stamp)) {   // pages written since the upload
                 // The GPU wrote the image since (a compute shader's image stores, a copy, a render) and its storage still holds the bytes of the upload: the writes were around
                 // it on shared pages, and an upload would put the CPU's bytes over the GPU's. Monster Hunter Rise's spot light profiles (512x1x64 R16F, written by a compute
                 // shader into memory the game had zeroed) were uploaded again as zeros at presents 60 and 1079: every spot light's profile read 0 and the faces lit only by
                 // those lights (the character maker, cutscenes) came out black. A sparse texture has no memory at t->mem to hash (it takes the branch above)
-                if (im->gpu_w && pkg_hash(t->mem, t->L.size) == im->pkg_hash) { nvn_dirty_protect(t->mem, t->L.size); im->pkg_stamp = nvn_dirty_now(); im->pkg_released = 0;
+                if (im->gpu_w && !im->pkg_nohash && pkg_hash(t->mem, t->L.size) == im->pkg_hash) { uint64_t s0 = nvn_dirty_now(); nvn_dirty_protect(t->mem, t->L.size); im->pkg_stamp = s0; im->pkg_released = 0;
                     static int nl; if (nl++ < 16) VKLOG("texture %ux%u nvn format %#x at %p: its pages were written, its bytes are as uploaded and the GPU wrote it: kept", t->d.width, t->d.height, t->d.format, (const void *)t->mem); }
-                else pkg_upload(im, t, f, 1);
+                else {   // only the levels and layers written since (DM_VK_PKG_PART=0: all of it); a GPU-written image whole, as before (the GPU's levels and layers are not the storage's)
+                    const char *pe = getenv("DM_VK_PKG_PART"); uint64_t old = im->pkg_stamp;
+                    pkg_upload(im, t, f, 1, im->gpu_w || (pe && !atoi(pe)) ? NULL : &old);
+                }
             }
             im->pkg_seen = now;
         }
@@ -502,6 +535,8 @@ void vk_tex_sweep(void) {
     free(v);
     static uint64_t total; total += idle + lru;
     if (g_tex_frame % 3000 == 0) VKLOG("images: %llu live, %.0f MB of textures, %llu evicted so far (a newer texture over their memory)", (unsigned long long)g_img_n, g_img_bytes / 1048576.0, (unsigned long long)g_img_evicted);
+    { static uint64_t said; uint64_t r = __atomic_load_n(&g_pkg_raced, __ATOMIC_RELAXED);
+        if (r != said) { said = r; VKLOG("packaged textures written by the game during their own upload: %llu so far (each uploaded again at its next draw)", (unsigned long long)r); } }
     if ((idle || lru) && (g_tex_frame % 3000 == 0 || lru)) VKLOG("packaged textures: %llu not drawn for %d presents and %llu least recently drawn released their write protection (%llu pages; %llu so far); %d protected runs",
                     (unsigned long long)idle, PKG_IDLE, (unsigned long long)lru, (unsigned long long)(nvn_dirty_released() - before), (unsigned long long)total, runs);
 }
