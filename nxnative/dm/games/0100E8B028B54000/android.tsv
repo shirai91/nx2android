@@ -1,0 +1,20 @@
+# Trails in the Sky the 2nd (Korean release) on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Nihon Falcom's engine on SDK 21, NVN, CRIWARE sound; update 1.0.3a (v196608); 11,340 shaders, one of them patched (patches.py SPIRV: the instance culling compute shader 37727c65c9440244).
+# Tested 2026-11-25 on the Xiaomi 23117RK66C (Android 16, Adreno 750) with Turnip (Mesa 27.0.0-devel, driver 26.99.99, Vulkan 1.4.367) through the app's 710_720_722_v4.6-sw build
+# (the system's own driver crashes in its shader compiler on this game's shaders): the title, a new game's opening (the first town), the walk with the HUD and the minimap, 2,400
+# frames (about a minute) in the app and the same scene in the headless runs before it. The frame rate there: the governor holds 60 fps, the frame work p50 17.3 / p90 25.5 / p95 31.2
+# ms, 2 of the last 64 frames late, 25 of the last 300 frames dropped on screen; the footprint 982 MiB.
+# The terrain, the cliffs, the shore and the grass are drawn: the instance culling compute shader wrote 0 instances into every indirect draw (the ground was one flat grey), which the
+# profile's SPIR-V patch fixes (the 1st Chapter's cull_visibility and cull_private_memory, PR #411, ported to this game's own ids: the shader's 45,056-byte workgroup array is past an
+# Adreno's 32 KB, so the farthest terrain band stayed culled).
+# DM_VK_ZEROCOPY_MAX_MB=2048: the game's main pool is 1,508 MiB, and above 1,024 it fell back to a copied (shadow) pool whose sync drains the GPU before every submission (the
+# governor's 30 fps step with every frame late: 15 fps). With the pool zero-copy the submission does not wait for the GPU (the submit+present p50 15.3 ms, the GPU p50 18.1 ms).
+# One red log line: "[vk] the surface offers no format 0 for the window texture: its picture is lighter" - the picture is not washed out on this device.
+status	playable
+tested	v196608 Xiaomi 23117RK66C (Android 16, Adreno 750); Turnip (libvulkan_freedreno.so)
+package	org.nx2a.t0100e8b028b54000
+orientation	landscape
+env	DM_VK_ZEROCOPY_MAX_MB=2048
+readme_name	Trails in the Sky the 2nd (Korean release)
+readme_image	docs/images/trails-in-the-sky-the-2nd.jpg
+readme_tag	v0.4.0

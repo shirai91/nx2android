@@ -6,7 +6,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 
 "Profile here": `nxnative/dm/games/<title ID>/` has the game's profile from nxnative. "Upstream profile": only seedds/nxnative has one, to read as a reference or starter, not to pull. "60 fps with X" is upstream's note: they run that update at 60 fps (30 on the Switch).
 
-**77 / 124 ported**
+**78 / 125 ported**
 
 - [x] 13 Sentinels: Aegis Rim (Asia) · `01008D7016438000`
 - [x] 13 Sentinels: Aegis Rim · `01003FC01670C000`
@@ -122,6 +122,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [x] The World Ends with You -Final Remix- · `0100C1500B82E000`
 - [x] Tomodachi Life: Living the Dream · `010051F0207B2000`
 - [x] Toy Story 3 Complete Edition · `01001DC025BC4000` · Galaxy S23 Ultra; shaders in Octane zips, skinned characters need the USCALED vertex fetch fix
+- [x] Trails in the Sky the 2nd (Korean release) · `0100E8B028B54000` · Xiaomi 23117RK66C / Turnip; the title, a new game's opening and the walk; 60 fps in the opening scene
 - [x] Ultra Kaiju Monster Rancher · `01008E0019388000` · AYN Odin 2 / Turnip; tested through the tutorials and battles
 - [x] UNDER NIGHT IN-BIRTH Exe:Late[cl-r] · `010038C00EC34000`
 - [x] UNDER NIGHT IN-BIRTH II Sys:Celes · `0100BD401D18A000`

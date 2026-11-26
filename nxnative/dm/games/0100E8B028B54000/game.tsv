@@ -1,0 +1,50 @@
+# Trails in the Sky the 2nd (Korean release, 0100E8B028B54000), update 1.0.3a (v196608), SDK 21, NVN, CRIWARE sound; Nihon Falcom's engine.
+# The Korean release of the game the 1st Chapter's profile (PR #411) shares the engine and the shader file with: the same instance culling compute shader, this game's own ids.
+# The memory keys are the survey's (dm/games/profile_guess.py), unchanged: the game runs with them.
+# The update NSP of this release carries no [v<N>] tag in its name, so the number above is the release's own update series (1.0.3 -> 3 x 65536), to be confirmed
+# against the update NCA's header (the number of a regional release's update is its own, not the international one's).
+# See android.tsv for what was tested.
+# Format: see dm/games/README.md
+
+# ---- Identity ----
+title_id	0100E8B028B54000
+program_id	0100E8B028B54000
+
+# ---- App ----
+# Game name: only a label for profile listings and the Mac window title; the iOS app name is the game name in the base NSP, and the bundle ID comes from the base game title ID (build_ipa.sh / NSP script)
+name	Trails in the Sky the 2nd (Korean release)
+ipa	The2nd.ipa
+app_category	public.app-category.games
+
+# ---- Versions ----
+build	v196608	1.0.3a	main=7e1de35bfa52f4a89320ed2eb9c09948	subsdk0=fc537f0b21c880e89d6f247d22a150ca	sdk=148394139d9d26ca8afd5c9ba5d30601
+package	v196608
+shader_versions	v196608
+
+# ---- Files ----
+# every module main imports from
+modules	main subsdk0 sdk
+romfs_marker	movie_ko/webm/sora_2nd_ed.webm
+zip_store	.bmp:.otf:.png:.webm:.metallib
+
+# ---- Memory ----
+# the NPDM declares 16 MB of system resource (virtual address memory) and main sets a heap: a 5 GB block; the heap check (needs the Mac host) never ran, so the split is set by hand
+# the game asks for a 0x81200000 (2.02 GB) heap (pool 0xCD500000 - its ~1.12 GB virtual address memory - 64 MB used); the guessed 0x118000000 alias left only a 0x8000000 (128 MB) heap region, so SetHeapSize returned 0xD401 and the game aborted at nninitStartup
+# the alias region keeps the virtual address memory room (62 MB node area + the game's own regions) and the heap region takes the rest of the block: 0x140000000 - 0x10000000 - 0x80000000 - 0x10000000 = 0xA0000000 (2.50 GB)
+# the game's own VirtualMemoryAllocator::Initialize reserves 0x2d1400000 (11.27 GiB) of virtual address space in one nn::os::AllocateAddressRegion: the SDK's VammManager places the regions in the alias region, so the alias window has to hold it (on the Switch the alias region is 64 GB) plus the SDK's node area (62 MB after the cut) and its own StandardAllocator region (pool - used = 3.15 GiB): a 16 GB alias, the heap region still 2.50 GB, the guest block 19 GB (0x10000000 front + 0x400000000 alias + 0x10000000 stack + 0xA0000000 heap)
+mem_reserve	0x4C0000000
+mem_alias	0x400000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+# the NPDM declares 16 MB of system resource
+sys_resource	0x1000000
+
+# ---- Textures ----
+# the engine fills its textures on the CPU into a pool and publishes them with a pool flush: without the upload they stay zeros on the GPU and the 3D scene is black (the 2D HUD has its own textures)
+tex_flush_upload	on
+tex_dirty_upload	on
+render_cond	on
+
+# ---- Shader split ----
+shader_groups	/asset/=asset /voice/=voice /vfx/=vfx /se/=se /scene/=scene /script_ko/=scriptko /script_sc/=scriptsc /script_tc/=scripttc /table_ko/=tableko /table_sc/=tablesc /table_tc/=tabletc /bgm1/=bgm1 /bgm2/=bgm2 /bgm3/=bgm3 /layout/=layout /asset_ko/=assetko /asset_sc/=assetsc /asset_tc/=assettc /system/=system /movie/=movie /movie_ko/=movieko /movie_sc/=moviesc /movie_tc/=movietc /system_nx/=systemnx
+shader_note	Trails in the Sky the 2nd (Korean release) shaders (the provisional profile's, checked on the device)

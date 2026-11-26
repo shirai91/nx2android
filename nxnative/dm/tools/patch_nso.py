@@ -66,12 +66,15 @@ else:
 #   OBS = {build ID: [(offset, number, original instruction word, reason)]}: observation gates. Numbers match OBS_* in the host's hle.h; the original instruction must be position
 #     independent (no PC-relative / branch / anything involving x18 or tpidr), asserted offline; when the host has no callback attached the gate block goes in and out once and returns
 #   FRAME_STEP = {build ID: function(ctx)}: the frame step stubs of a main ("Frame step in whole vsyncs" below)
+#   (SPIRV = {shader key: function} is not read here: the Android shader build applies it to one translated shader, dm/android/tools/shader_vk.py spirv_patches)
 #   DM_PATCHES_EXTRA (os.pathsep-separated files outside the repository): CUTS only, added after the registered ones of the same build (an Android port's 60 fps code bytes from a
 #     FPSLocker config, porter/fpslocker.py); an overlap with a registered cut fails that cut's original-bytes assert
 PATCH_FILES = [os.path.join(os.path.dirname(os.path.abspath(__file__)), 'sdk_patches.py')] + sorted(glob.glob(os.path.join(os.path.dirname(os.path.abspath(__file__)), '../games/*/patches.py')))
 EXTRA_PATCH_FILES = [p for p in os.environ.get('DM_PATCHES_EXTRA', '').split(os.pathsep) if p]
 def load_patches():
     tables, where = {'CUTS': {}, 'OBS': {}, 'FRAME_STEP': {}}, {}
+    # A profile's patches.py may import spv_post (the shader tools' module, dm/android/tools) for its SPIR-V patch: every profile's file is loaded here, so that folder is on the path
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '../android/tools'))
     for n, path in enumerate(PATCH_FILES + EXTRA_PATCH_FILES):
         spec = importlib.util.spec_from_file_location(f'patches_{n}', path); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
         extra = path in EXTRA_PATCH_FILES
