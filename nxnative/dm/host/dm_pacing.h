@@ -15,6 +15,7 @@ int dm_pacing_hold(const char **src);
 int dm_pacing_display(const char **src);
 // The adaptive governor (Android): on unless DM_ADAPTIVE_FPS=0. *explicit_set is 1 when the switch is set at all (a player's or profile's choice)
 int dm_pacing_adaptive(int *explicit_set);
+int dm_menu_fps60(void);
 // The governor pinned at a rate: DM_FPS_PIN=60, 40 or 30; 0 when not pinned (any other value)
 int dm_pacing_pin(void);
 // The percentile of frame work the governor judges for a step up (DM_ADAPT_UP_PCT, 1..99, default 90)

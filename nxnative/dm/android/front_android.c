@@ -53,6 +53,7 @@ void front_screen_match(int fps) { (void)fps; }
 static ANativeActivity *g_act;
 static jmethodID g_audio_menu_method;
 int dm_menu_audio_available(void) { return g_audio_menu_method != NULL; }
+__attribute__((weak)) int dm_fps_lock_available(void) { return 0; }
 AAssetManager *dm_front_assets(void) { return g_act ? g_act->assetManager : NULL; }   // the APK's assets (overlay_theme.c: the gamepad's theme)
 static pthread_mutex_t g_win_mu = PTHREAD_MUTEX_INITIALIZER;
 static ANativeWindow *g_win, *g_external_win;
@@ -79,6 +80,7 @@ void dm_focus_set(int st); void dm_audio_suspend(int on); void guest_clock_freez
 // ---- settings (the pause menu's), kept in the files folder as KEY=VALUE lines ----
 static char g_root[512];
 static _Atomic int g_set_overlay = 1, g_set_rumble = 1, g_set_fps;   // the gamepad shown; rumble and tap vibration; the frame rate counter (top left)
+static _Atomic int g_set_fps60;   // live 60 fps toggle in the pause menu Game tab (settings.txt fps60=)
 static _Atomic int g_set_opacity = 60;   // the gamepad's opacity, percent (OV_OPACITY_MIN..MAX: the menu's Opacity slider)
 static _Atomic int g_set_sr;   // Super resolution: the game's picture upscaled into a larger window by the present pass (gfx_vk_present.c sr_ready)
 static _Atomic int g_set_sharp;   // its Sharpness, percent by 25 (the menu's slider, settings.txt sharpness=)
@@ -126,6 +128,7 @@ static void settings_load(void) {
     char p[600]; snprintf(p, sizeof p, "%s/settings.txt", g_root); FILE *f = fopen(p, "r"); char line[128]; int seen_overlay = 0;
     while (f && fgets(line, sizeof line, f)) { int v; if (sscanf(line, "overlay=%d", &v) == 1) { atomic_store(&g_set_overlay, v != 0); seen_overlay = 1; } else if (sscanf(line, "rumble=%d", &v) == 1) atomic_store(&g_set_rumble, v != 0);
         else if (sscanf(line, "fps=%d", &v) == 1) atomic_store(&g_set_fps, v != 0);
+        else if (sscanf(line, "fps60=%d", &v) == 1) atomic_store(&g_set_fps60, v != 0);
         else if (fps_opt_parse(line)) {}
         else if (sscanf(line, "sr=%d", &v) == 1) atomic_store(&g_set_sr, v != 0);
         else if (sscanf(line, "sharpness=%d", &v) == 1) atomic_store(&g_set_sharp, v < 0 ? 0 : v > 100 ? 100 : v / 25 * 25);
@@ -153,8 +156,8 @@ static void settings_load(void) {
 static void settings_save(void) {
     char p[600], tmp[610]; snprintf(p, sizeof p, "%s/settings.txt", g_root); snprintf(tmp, sizeof tmp, "%s.new", p);
     FILE *f = fopen(tmp, "w"); if (!f) { LOG("[RED] cannot write %s", tmp); return; }
-    fprintf(f, "overlay=%d\nrumble=%d\ndocked=%d\nfps=%d\nsr=%d\nsharpness=%d\nopacity=%d\ngrid=%d\nstick_zone=%d\n", atomic_load(&g_set_overlay), atomic_load(&g_set_rumble), dm_opmode() != 0,
-            atomic_load(&g_set_fps), atomic_load(&g_set_sr), atomic_load(&g_set_sharp), atomic_load(&g_set_opacity), atomic_load(&g_set_grid), atomic_load(&g_set_zone));
+    fprintf(f, "overlay=%d\nrumble=%d\ndocked=%d\nfps=%d\nfps60=%d\nsr=%d\nsharpness=%d\nopacity=%d\ngrid=%d\nstick_zone=%d\n", atomic_load(&g_set_overlay), atomic_load(&g_set_rumble), dm_opmode() != 0,
+            atomic_load(&g_set_fps), atomic_load(&g_set_fps60), atomic_load(&g_set_sr), atomic_load(&g_set_sharp), atomic_load(&g_set_opacity), atomic_load(&g_set_grid), atomic_load(&g_set_zone));
     fps_opt_write(f);
     if (atomic_load(&g_set_labels) >= 0) fprintf(f, "labels=%d\n", atomic_load(&g_set_labels));   // (only once the player chose: until then env.txt decides)
     for (int l = 0; l < 2; l++) for (int i = 0; i < OV_N; i++) {
@@ -667,6 +670,14 @@ int dm_ui_zh(void) {
 int dm_overlay_fps(void) { return atomic_load(&g_menu) ? atomic_load(&g_menu_tab) >= 2 && !atomic_load(&g_edit) && !atomic_load(&g_sp_on) && !atomic_load(&g_tx_on) : atomic_load(&g_set_fps); }
 int dm_overlay_sr(void) { return atomic_load(&g_set_sr); }   // gfx_vk_present.c: the present pass upscales with SGSR 1.0 when the picture grows
 int dm_overlay_sharp(void) { return atomic_load(&g_set_sharp); }   // its Sharpness, percent
+int dm_menu_fps60_available(void) {
+    const char *tog = getenv("DM_FPS60_TOGGLE");
+    if (!tog || !atoi(tog)) return 0;
+    if (!dm_fps_lock_available()) return 0;
+    const char *e = getenv("DM_FPS_TARGET");
+    return !(e && *e);
+}
+int dm_menu_fps60(void) { return atomic_load(&g_set_fps60) && dm_menu_fps60_available(); }
 static void menu_open(int hi) {
     if (!atomic_load(&g_running) || atomic_exchange(&g_menu, 1)) return;
     atomic_store(&g_menu_hi, hi); atomic_store(&g_menu_scroll, 0); g_menu_ptr = -1;
@@ -688,10 +699,10 @@ static void menu_close(void) {
     if (!atomic_exchange(&g_menu, 0)) return;
     g_menu_ptr = -1; atomic_store(&g_menu_t, 0);
     hold_sync(); dm_haptics_suspend(4, 0); dm_overlay_redraw();
-    LOG("[menu] closed: the game goes on (gamepad %s, opacity %d%%, sticks %s, rumble %s, face buttons by %s, frame rate %s %#x, super resolution %s (%d%% sharp), %s)", atomic_load(&g_set_overlay) ? "on" : "off", atomic_load(&g_set_opacity),
+    LOG("[menu] closed: the game goes on (gamepad %s, opacity %d%%, sticks %s, rumble %s, face buttons by %s, frame rate %s %#x, super resolution %s (%d%% sharp), %s, 60fps %s)", atomic_load(&g_set_overlay) ? "on" : "off", atomic_load(&g_set_opacity),
         atomic_load(&g_set_zone) ? "half screen" : "circle",
         atomic_load(&g_set_rumble) ? "on" : "off", pad_labels() ? "label" : "position", atomic_load(&g_set_fps) ? "shown" : "hidden", atomic_load(&g_fps_opts), atomic_load(&g_set_sr) ? "on" : "off",
-        atomic_load(&g_set_sharp), dm_opmode() ? "docked" : "handheld");
+        atomic_load(&g_set_sharp), dm_opmode() ? "docked" : "handheld", dm_menu_fps60() ? "on" : "off");
 }
 static void menu_sharp(int v) {   // the Sharpness slider: whole 25 percent steps, drawn at once and saved when the finger lifts or with each controller step
     v = v < 0 ? 0 : v > 100 ? 100 : (v + 12) / 25 * 25;
@@ -722,6 +733,7 @@ static void menu_do(int item) {
     else if (item == OVM_SR) { atomic_store(&g_set_sr, !atomic_load(&g_set_sr)); settings_save(); }   // the next present draws the frame again through it
     else if (item == OVM_SHARP) return;   // (the slider is dragged, or stepped with left and right, as the opacity's)
     else if (item == OVM_MODE) { dm_set_opmode(dm_opmode() ? 0 : 1); settings_save(); }   // the game takes it when it goes on
+    else if (item == OVM_FPS60) { atomic_store(&g_set_fps60, !atomic_load(&g_set_fps60)); atomic_fetch_add(&g_fps_ver, 1); settings_save(); }
     else if (item == OVM_PAD) { atomic_store(&g_set_labels, !pad_labels()); settings_save(); }   // at once (pad_labels)
     else if (item == OVM_ZONE) { atomic_store(&g_set_zone, !atomic_load(&g_set_zone)); atomic_fetch_add(&g_fps_ver, 1); settings_save(); }   // (no bit of dm_menu_state is free: the change count draws the panel again)
     else if (item == OVM_TAB) { menu_tab(atomic_load(&g_menu_tab) + 1); return; }

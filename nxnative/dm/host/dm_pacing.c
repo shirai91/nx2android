@@ -9,9 +9,13 @@
 
 #define PLOG(...) do { fprintf(stderr, "[dm] " __VA_ARGS__); fputc('\n', stderr); } while (0)
 
+__attribute__((weak)) int dm_menu_fps60(void) { return 0; }
+
 int dm_pacing_target(const char **src) {
-    const char *e = getenv("DM_FPS_TARGET"); int t = e ? atoi(e) : DM_GAME_FPS_TARGET;
-    if (src) *src = e ? "DM_FPS_TARGET" : "game profile fps_target";
+    const char *e = getenv("DM_FPS_TARGET");
+    int menu60 = !(e && *e) && dm_menu_fps60();
+    int t = e ? atoi(e) : menu60 ? 60 : DM_GAME_FPS_TARGET;
+    if (src) *src = e ? "DM_FPS_TARGET" : menu60 ? "pause menu 60 fps" : "game profile fps_target";
     if (t != 0 && t != 30 && t != 60) {
         static int said; if (!said++) PLOG("[RED] DM_FPS_TARGET=%s: must be 0, 30 or 60; the game's own frame limit is used", e ? e : "(profile)");
         t = 0;
@@ -36,7 +40,9 @@ int dm_pacing_display(const char **src) {
 int dm_pacing_adaptive(int *explicit_set) {
     const char *e = getenv("DM_ADAPTIVE_FPS");
     if (explicit_set) *explicit_set = e && *e;
-    return !(e && !atoi(e));
+    if (e) return atoi(e) != 0;
+    if (dm_menu_fps60()) return 0;
+    return 1;
 }
 
 int dm_pacing_pin(void) { const char *e = getenv("DM_FPS_PIN"); int v = e ? atoi(e) : 0; return v == 60 || v == 40 || v == 30 ? v : 0; }

@@ -51,7 +51,10 @@ static const uint8_t k_tsize[T_N] = {1, 2, 4, 8, 1, 2, 4, 8, 4, 8};
 enum { IMP_MAX = 64, IMP_CHAIN = 8, IMP_COPIES = 16 };
 typedef struct { int n; int64_t off[IMP_CHAIN]; } imp_chain;
 static struct { char what[32]; uint8_t type, ncopy, ctype, cop; imp_chain a, c; uint64_t v[2][IMP_COPIES], cv; } g_imp[IMP_MAX];   // v[0]: at 30 fps, v[1]: at 60; cop 0 = no compare
-static int g_nimp;
+static int g_nimp, g_lock_matched;
+int dm_fps_lock_available(void) {
+    return DM_GAME_FPS_TARGET != 60 && __atomic_load_n(&g_lock_matched, __ATOMIC_ACQUIRE);
+}
 static int imp_type(const char *s) { for (int t = 0; t < T_N; t++) if (!strcmp(s, k_tname[t])) return t; return -1; }
 static int imp_chain_parse(char *s, imp_chain *c) {   // "0x7a642d8" or "0x1ba1a90,0x80,-0x4"
     c->n = 0;
@@ -112,25 +115,36 @@ static int imp_holds(uint8_t *base, int i) {
     else { int sh = 64 - 8 * k_tsize[t]; int64_t x = (int64_t)(bits << sh) >> sh, y = (int64_t)(r->cv << sh) >> sh; cmp = x < y ? -1 : x > y; }
     switch (r->cop) { case 1: return cmp < 0; case 2: return cmp <= 0; case 3: return cmp > 0; case 4: return cmp >= 0; case 5: return cmp == 0; default: return cmp != 0; }
 }
-static void imp_tick(uint8_t *base, int target) {
+static void imp_tick(uint8_t *base, int target, int restore) {
     static int nlog[IMP_MAX];
+    static uint64_t orig[IMP_MAX][IMP_COPIES];
+    static uint8_t has_orig[IMP_MAX][IMP_COPIES];
     for (int i = 0; i < g_nimp; i++) {
         typeof(g_imp[0]) *r = &g_imp[i]; int sz = k_tsize[r->type];
-        if (!imp_holds(base, i)) continue;
+        if (!restore && !imp_holds(base, i)) continue;
         uint64_t a = imp_addr(base, &r->a); if (!a) continue;
         for (int c = 0; c < r->ncopy; c++) {
-            uint64_t cur = 0, want = r->v[target == 60][c]; uint8_t *p = (uint8_t *)(uintptr_t)(a + (uint64_t)c * (uint64_t)sz);
+            uint64_t cur = 0; uint8_t *p = (uint8_t *)(uintptr_t)(a + (uint64_t)c * (uint64_t)sz);
             if (!rd((uint64_t)(uintptr_t)p, &cur, (size_t)sz)) break;
+            uint64_t want;
+            if (restore) {
+                if (!has_orig[i][c]) continue;
+                want = orig[i][c];
+            } else {
+                if (!has_orig[i][c]) { orig[i][c] = cur; has_orig[i][c] = 1; }
+                want = r->v[target == 60][c];
+            }
             if (cur == want) continue;
             dm_guest_write_prepare(p, (size_t)sz); memcpy(p, &want, (size_t)sz);
-            if (nlog[i] < 8) { nlog[i]++; LOG("main: %s (%s at %#llx%s) %#llx → %#llx (%d fps)", r->what, k_tname[r->type], (unsigned long long)(a - (uint64_t)(uintptr_t)base),
-                                              r->a.n > 1 ? " through pointers" : "", (unsigned long long)cur, (unsigned long long)want, target); }
+            if (nlog[i] < 8) { nlog[i]++; LOG("main: %s (%s at %#llx%s) %#llx → %#llx (%s)", r->what, k_tname[r->type], (unsigned long long)(a - (uint64_t)(uintptr_t)base),
+                                              r->a.n > 1 ? " through pointers" : "", (unsigned long long)cur, (unsigned long long)want, restore ? "restored" : target == 60 ? "60 fps" : "30 fps"); }
         }
     }
 }
 
 void dm_fps_lock_tick(void) {
-    static int state = -2, rows[NLOCKS], nrow, nlog[NLOCKS], target; static uint8_t *base; static const char *src;
+    static int state = -2, rows[NLOCKS], nrow, nlog[NLOCKS], prev_t; static uint8_t *base;
+    static uint32_t orig[NLOCKS][2]; static uint8_t has_orig[NLOCKS][2];
     if (state == -1) return;
     if (state == -2) {
         state = -1;
@@ -140,12 +154,19 @@ void dm_fps_lock_tick(void) {
             else if (!nrow) { imp_load(g_mod[i].build_id); if (g_nimp) base = g_mod[i].base; }
         }
         if (!nrow && !g_nimp) return;
-        int t = dm_pacing_target(&src);   // dm_pacing.c
-        if (!t) { for (int r = 0; r < nrow; r++) LOG("main: %s left as the game sets it (%s)", k_locks[rows[r]].what, src);
-                  if (g_nimp) LOG("main: %d FPSLocker write(s) left out (%s 0)", g_nimp, src); return; }
-        target = t; state = 0;
+        __atomic_store_n(&g_lock_matched, 1, __ATOMIC_RELEASE);
+        state = 0;
     }
-    if (g_nimp) { imp_tick(base, target); return; }
+    const char *src = NULL;
+    int t = dm_pacing_target(&src);   // dm_pacing.c
+    if (t == 0 && prev_t == 0) return;
+    int restore = (t == 0 && prev_t != 0);
+    if (t != prev_t) {
+        LOG("main: fps lock target %d → %d (%s)", prev_t, t, restore ? "restored" : (src ? src : "default"));
+        memset(nlog, 0, sizeof nlog);
+        prev_t = t;
+    }
+    if (g_nimp) { imp_tick(base, t, restore); return; }
     for (int r = 0; r < nrow; r++) {
         int k = rows[r]; uint64_t obj = (uint64_t)(uintptr_t)base;
         if (k_locks[k].ptr_off && (!rd((uint64_t)(uintptr_t)(base + k_locks[k].ptr_off), &obj, sizeof obj) || !obj)) continue;   // not created yet
@@ -153,22 +174,29 @@ void dm_fps_lock_tick(void) {
         for (int c = 0; c < k_locks[k].copies; c++) {
             uint64_t a = obj + k_locks[k].field + 4 * (uint64_t)c; uint32_t cur, want; char was[16];
             if (!rd(a, &cur, sizeof cur)) break;
-            if (k_locks[k].kind != VSYNCS_I32 && k_locks[k].kind != FPS_I32) {
-                int ms = k_locks[k].kind == MS_F32 ? 1 : k_locks[k].kind == SEC_F32 ? 1000 : 0; float f, w = ms ? ms_want(target) / (float)ms : (float)target; memcpy(&f, &cur, sizeof f); memcpy(&want, &w, sizeof want);
+            if (restore) {
+                if (c >= 2 || !has_orig[k][c] || cur == orig[k][c]) continue;
+                want = orig[k][c];
+                snprintf(was, sizeof was, "%#x", cur);
+            } else if (k_locks[k].kind != VSYNCS_I32 && k_locks[k].kind != FPS_I32) {
+                int ms = k_locks[k].kind == MS_F32 ? 1 : k_locks[k].kind == SEC_F32 ? 1000 : 0; float f, w = ms ? ms_want(t) / (float)ms : (float)t; memcpy(&f, &cur, sizeof f); memcpy(&want, &w, sizeof want);
                 if (cur == want || !(ms ? f * (float)ms >= 8 && f * (float)ms <= 100 : f >= 10 && f <= 120)) continue;   // already set, or not set yet (RE Engine: 6000 at boot; Unreal: 0 = no limit until the config sets it)
+                if (c < 2 && !has_orig[k][c]) { orig[k][c] = cur; has_orig[k][c] = 1; }
                 snprintf(was, sizeof was, ms ? "%.3f ms" : "%g", ms ? f * (float)ms : f);
             } else {
                 int fps = k_locks[k].kind == FPS_I32;
-                want = fps ? (uint32_t)target : 60 / (uint32_t)target;
+                want = fps ? (uint32_t)t : 60 / (uint32_t)t;
                 if (cur == want || cur < (fps ? 10u : 1u) || cur > (fps ? 120u : 4u)) continue;
+                if (c < 2 && !has_orig[k][c]) { orig[k][c] = cur; has_orig[k][c] = 1; }
                 snprintf(was, sizeof was, "%u", cur);
             }
             uint32_t *p = (uint32_t *)(uintptr_t)a;
             dm_guest_write_prepare(p, sizeof *p); __atomic_store_n(p, want, __ATOMIC_RELAXED);
             if (nlog[k] < 8) { nlog[k]++; char now[24];
-                if (k_locks[k].kind == MS_F32 || k_locks[k].kind == SEC_F32) snprintf(now, sizeof now, "%.3f ms (%d fps)", ms_want(target), target);
-                else snprintf(now, sizeof now, "%u%s", k_locks[k].kind == FPS_F32 ? (unsigned)target : want, k_locks[k].kind == FPS_F32 || k_locks[k].kind == FPS_I32 ? " fps" : " vsyncs");
-                LOG("main: %s%s %s → %s (%s)", k_locks[k].what, k_locks[k].copies > 1 ? (c ? " (render thread)" : " (game thread)") : "", was, now, src); }
+                if (restore) snprintf(now, sizeof now, "%#x (restored)", want);
+                else if (k_locks[k].kind == MS_F32 || k_locks[k].kind == SEC_F32) snprintf(now, sizeof now, "%.3f ms (%d fps)", ms_want(t), t);
+                else snprintf(now, sizeof now, "%u%s", k_locks[k].kind == FPS_F32 ? (unsigned)t : want, k_locks[k].kind == FPS_F32 || k_locks[k].kind == FPS_I32 ? " fps" : " vsyncs");
+                LOG("main: %s%s %s → %s (%s)", k_locks[k].what, k_locks[k].copies > 1 ? (c ? " (render thread)" : " (game thread)") : "", was, now, restore ? "restored" : (src ? src : "default")); }
         }
     }
 }

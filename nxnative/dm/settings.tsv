@@ -29,6 +29,7 @@ DM_FIXED_TIME	str		debug	?	hle_time.c main.c
 DM_FONT_DIR	str		debug	?	hle_sdk16.c	
 DM_FORCE_STRICT	str		debug	?	loader.c	
 DM_FPS	int		debug,ios	?	nvn_mtl.m	
+DM_FPS60_TOGGLE	bool	0	profile	start	front_android.c	1 = show the live 60 fps toggle in the Android pause menu Game tab when the running build has a matching fps_locks row and DM_FPS_TARGET is unset
 DM_FPS_CEILING	int		porter	?	gfx_vk_present.c	the 30 fps ceiling of the profile (fps_ceiling) when 30; 0 lifts it. Default: the profile
 DM_FPS_HOLD	str		profile	?	hle_nvn.c	"off" = no frame hold; any other value holds. Default: the profile (fps_hold)
 DM_FPS_LOCKS	str		porter	?	hle_fpslock.c	a fpslock.tsv the porter wrote (FPSLocker rows for this build) when the host has none
