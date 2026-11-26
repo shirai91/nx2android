@@ -14,6 +14,308 @@ SOURCE = Path(__file__).resolve().parents[1] / 'nxnative/dm/android/gfx_vk_prese
 
 
 class PresentTiming(unittest.TestCase):
+    def test_sgsr_on_alternating_presents(self):
+        src = SOURCE.read_text(encoding='utf-8')
+        # Use the presenter's actual source selection, SGSR decision, log and shader constants.
+        harness = r'''
+#include <assert.h>
+#include <stdint.h>
+typedef int VkImage, VkImageView;
+typedef struct { int x, y, z; } VkOffset3D;
+typedef struct { unsigned w, h; int samples, layers, d, img; } vkimg_t;
+static struct { int has_dynrender; } V = {1};
+static struct { unsigned width, height; } g_sext = {800, 400};
+static int logs, sharpness = 50, selected;
+#define VKLOG(...) (++logs)
+#define VK_NULL_HANDLE 0
+static int sr_on(void) { return 1; }
+static int sr_sharp(void) { return sharpness; }
+static int sr_ready(unsigned slot, vkimg_t *im, VkImageView midpoint) {
+    (void)slot; selected = midpoint ? midpoint : im->img; return 1;
+}
+static VkImage vk_lsfg_record(int cb, VkImage source, int generated, VkImageView *view) {
+    (void)cb; assert(source == 1);
+    if (generated) *view = 2;
+    return generated ? 3 : 0;
+}
+''' + csrc.between(src, 'typedef struct { float vp[4]', 'static int sr_on(') + r'''
+static void present(int generated, int bottom_up) {
+    vkimg_t image = {640, 400, 1, 1, 1, 1}, *im = &image;
+    int cx = 32, cy = 40, cw = 400, ch = 200, dw = 800, dh = 400, dx = 0, dy = 0;
+    VkOffset3D offsets[2] = {{cx, bottom_up ? cy + ch : cy, 0}, {cx+cw, bottom_up ? cy : cy+ch, 1}};
+    int capture = generated, cb = 0, k = 0, ticket = 1; double period = 1.0/30;
+''' + csrc.between(src, '    VkImage source = im->img;', '    double s = fmin(') + csrc.between(
+            src, '    int sr = ', '    VkImageLayout lay;') + r'''
+    assert(sr && selected == (generated ? 2 : 1));
+    assert(source == (generated ? 3 : 1)); (void)period; (void)ticket;
+''' + csrc.between(src, '        float src_w = generated', '        vkCmdBindPipeline(') + r'''
+    assert(pc.vp[2] == (generated ? cw : 640) && pc.vp[3] == (generated ? ch : 400));
+    assert(pc.vp[0] == 1.f / pc.vp[2] && pc.vp[1] == 1.f / pc.vp[3]);
+    assert(pc.uv[0] == (generated ? 0 : cx / 640.f) && pc.uv[1] == (generated ? 0 : cy / 400.f));
+    assert(pc.uv[2] == (generated ? 1 : (cx+cw) / 640.f) && pc.uv[3] == (generated ? 1 : (cy+ch) / 400.f));
+    assert(pc.flip == (!generated && bottom_up) && pc.sharp == sharpness / 100.f);
+}
+int main(void) {
+    for (int i = 0; i < 16; ++i) present(i % 2, (i / 2) % 2);
+    assert(logs == 1);
+    sharpness = 75; present(1, 1); present(0, 1); assert(logs == 2);
+}
+'''
+        cc = shutil.which('cc') or shutil.which('clang')
+        if not cc: self.skipTest('a C compiler is required')
+        with tempfile.TemporaryDirectory() as tmp:
+            c, exe = Path(tmp) / 'check.c', Path(tmp) / 'check'
+            c.write_text(harness, encoding='utf-8')
+            subprocess.run([cc, '-std=c11', str(c), '-o', str(exe)], check=True)
+            subprocess.run([str(exe)], check=True)
+
+    def test_frame_pairs_without_driver_display_times(self):
+        cc = shutil.which('cc') or shutil.which('clang')
+        if not cc: self.skipTest('a C compiler is required')
+        src = SOURCE.read_text(encoding='utf-8')
+        front = SOURCE.with_name('front_android.c').read_text(encoding='utf-8')
+        start = src.index('enum framegen_outcome {')
+        cadence = src[start:src.index('static framegen_cadence g_fg_cadence;', start)]
+        harness = r'''
+#include <assert.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <stdatomic.h>
+#include <math.h>
+#include <string.h>
+static const char *pace_setting;
+static const char *test_getenv(const char *name) {
+    assert(strcmp(name, "DM_VK_PACE") == 0);
+    return pace_setting;
+}
+#define getenv test_getenv
+#define VKLOG(...) ((void)0)
+typedef struct { int unused; } vkimg_t;
+static struct { int has_dtiming; } V;
+static uint64_t g_pace_anchor, g_refresh_ns, g_fg_sample_ns, g_fg_cpu_present_ns;
+static uint64_t platform_refresh = 16666667;
+static int refresh_queries, external;
+static double window_vote, real_period;
+static int g_pace_on = 1, held, menu = -1, captures, followups, histories, forgets, goal, usable_rate, fail_setup;
+static _Atomic int g_set_framegen = 1;
+static int available;
+static int vk_lsfg_available(void) { return available; }
+uint8_t *dm_fps_state;
+''' + csrc.function(front, 'int dm_framegen_enabled(void)') + csrc.between(src, 'enum { PRESENT_REAL, PRESENT_CAPTURE', 'static enum present_result present_window(') + cadence + r'''
+static framegen_cadence g_fg_cadence;
+static enum framegen_outcome last_outcome;
+static uint64_t mono_ns(void) { return 1; }
+static uint64_t dm_display_refresh_ns(void) { ++refresh_queries; return platform_refresh; }
+static int dm_opmode(void) { return 0; }
+static int dm_external_active(void) { return external; }
+static int dm_framegen_target(void) { return goal; }
+static void dm_perf_framegen_rate(int fps) { usable_rate = fps; }
+static int dm_game_held(void) { return held; }
+static int dm_menu_state(void) { return menu; }
+static int vk_lsfg_poll(uint64_t n) { (void)n; return 0; }
+static int dm_pacing_window_game_rate(void) { return 0; }
+int nvn_game_fps(void) { return 30; }
+static void window_rate(double p, uint64_t n) { window_vote = p; (void)n; }
+static void vk_lsfg_forget(void) { forgets++; }
+static int swap_make(void) { return 1; }
+static void log_framegen_rate(uint64_t n, enum framegen_outcome outcome, uint64_t refresh, uint64_t pair) {
+    g_fg_sample_ns = n; last_outcome = outcome; (void)refresh; (void)pair;
+}
+static enum present_result present_window(vkimg_t *im, const int c[4], double p, uint64_t t, int m) {
+    (void)im; (void)c; (void)t;
+    if (m == PRESENT_REAL) real_period = p;
+    if ((m == PRESENT_CAPTURE || m == PRESENT_HISTORY) && fail_setup) {
+        if (fail_setup == 2) available = 0;
+        return PRESENT_SETUP_FAILED;
+    }
+    if (m == PRESENT_CAPTURE) { captures++; return PRESENT_GENERATED; }
+    if (m == PRESENT_HISTORY) histories++;
+    if (m == PRESENT_AFTER_MIDPOINT) followups++;
+    return PRESENT_SUBMITTED;
+}
+''' + csrc.between(src, 'static int framegen_display_clock(void) {', 'static void framegen_wait_followup(') + csrc.function(src, 'static void present_game_frame(') + r'''
+static void run_frames(void) {
+    g_fg_cadence = (framegen_cadence){0}; captures = followups = histories = 0;
+    for (int i = 1; i <= 8; ++i) present_game_frame(NULL, NULL, 1.0/30, i, 1000000000ull + i * 33333333ull, 0);
+}
+int main(void) {
+    V.has_dtiming = 1; goal = 60;
+    run_frames(); assert(captures == 0 && histories == 0 && usable_rate == 0 && real_period == 1.0/30);
+    assert(fabs(window_vote - 1.0/30) < 1e-9);  // Missing DLL retains ordinary presentation pacing.
+    assert(!refresh_queries);
+    available = 1; run_frames(); assert(captures > 0 && captures == followups && refresh_queries > 0); // extension with no feedback
+    refresh_queries = 0;
+    assert(fabs(window_vote - 1.0/60) < 1e-9);
+    available = 0; run_frames(); assert(captures == 0 && histories == 0 && usable_rate == 0);
+    available = 1;
+    g_pace_anchor = 1; g_refresh_ns = 16666667; platform_refresh = 0;
+    run_frames(); assert(captures > 0 && captures == followups);  // actual driver timing
+    assert(!refresh_queries);
+    g_pace_anchor = 0; run_frames(); assert(captures == 0);       // unknown refresh: no guess
+    assert(last_outcome == FG_NO_REFRESH && refresh_queries > 0);
+    refresh_queries = 0;
+    external = 1; run_frames(); assert(captures == 0); external = 0;
+    present_game_frame(NULL, NULL, 1.0/30, 9, 0, 0);
+    uint32_t movie_state[2] = {0, 1}; dm_fps_state = (uint8_t *)movie_state;
+    run_frames(); assert(captures == 0 && last_outcome == FG_MOVIE); dm_fps_state = NULL;
+    platform_refresh = 16666667; g_set_framegen = 0; run_frames(); assert(captures == 0 && usable_rate == 0);
+    g_set_framegen = 1; goal = 0; held = 1; run_frames(); assert(captures == 0);
+    held = 0; menu = 0; run_frames(); assert(captures == 0);
+    menu = -1; pace_setting = "0"; run_frames(); assert(captures == 0);
+    assert(!refresh_queries);
+    pace_setting = NULL; run_frames(); assert(captures > 0 && refresh_queries > 0);
+    int previous = captures;
+    int previous_forgets = forgets;
+    present_game_frame(NULL, NULL, 1.0/30, 9, 1300000000ull, 1); assert(captures == previous);
+    assert(last_outcome == FG_QUEUED && forgets == previous_forgets + 1 && real_period == 0);
+    present_game_frame(NULL, NULL, 1.0/30, 10, 1333333333ull, 0);
+    assert(captures == previous + 1);  // rebuild image history immediately after the queue drains
+    platform_refresh = 8333333; g_fg_cadence = (framegen_cadence){0}; captures = followups = 0;
+    for (int i = 1; i <= 8; ++i) present_game_frame(NULL, NULL, 1.0/60, i, 2000000000ull + i * 16666667ull, 0);
+    assert(captures > 0 && captures == followups);
+    assert(fabs(window_vote - 1.0/120) < 1e-9);  // request room for 60 -> 120 too
+    goal = 60; platform_refresh = 16666667; run_frames();
+    assert(usable_rate == 60 && captures == 4 && captures == followups);
+    goal = 0; platform_refresh = 8333333; captures = followups = 0;
+    for (int i = 1; i <= 8; ++i) present_game_frame(NULL, NULL, 1.0/60, i, 3000000000ull + i * 16666667ull, 0);
+    assert(usable_rate == 0 && captures == 4 && captures == followups);
+    assert(fabs(window_vote - 1.0/120) < 1e-9);  // no cap: 60 -> 120 when the display permits it
+    // An uncapped 40 fps producer on a 60 Hz display gets twenty midpoints per
+    // second, without publishing a 30 fps cap to the game's pacing thread.
+    platform_refresh = 16666667; captures = followups = histories = 0;
+    for (int i = 1; i <= 44; ++i) present_game_frame(NULL, NULL, 1.0/40, i, 3500000000ull + i * 25000000ull, 0);
+    assert(usable_rate == 0 && captures == 20 && followups == 20 && histories == 20);
+    goal = 60;
+    captures = followups = histories = 0;
+    uint32_t patched_step[2] = {0}; dm_fps_state = (uint8_t *)patched_step;  // a game with its own timing
+    for (int i = 1; i <= 12; ++i) present_game_frame(NULL, NULL, 1.0/40, i, 4000000000ull + i * 25000000ull, 0);
+    assert(usable_rate == 0 && captures == 4 && followups == 4 && histories == 4);
+    dm_fps_state = NULL;
+    fail_setup = 1; goal = 60; platform_refresh = 16666667;
+    for (int i = 1; i <= 12; ++i) present_game_frame(NULL, NULL, 1.0/30, i, 5000000000ull + i * 33333334ull, 0);
+    assert(last_outcome == FG_SETUP_FAILED && usable_rate == 0);
+    fail_setup = 0; g_set_framegen = 0; run_frames();
+    assert(usable_rate == 0 && captures == 0);
+    fail_setup = 2; g_set_framegen = 1; run_frames();
+    assert(!available && usable_rate == 0 && captures == 0 && histories == 0);
+    assert(framegen_followup_deadline(1000000000ull, .025) == 1025000000ull);
+    assert(forgets > 0);
+    return 0;
+}
+'''
+        with tempfile.TemporaryDirectory(prefix='nx2a_fg_no_timing_') as tmp:
+            c, exe = Path(tmp) / 'check.c', Path(tmp) / 'check'
+            c.write_text(harness, encoding='utf-8')
+            result = subprocess.run([cc, '-std=gnu11', '-Wall', '-Wextra', '-Werror', str(c), '-lm', '-o', str(exe)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            result = subprocess.run([str(exe)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_framegen_tracks_render_cadence(self):
+        cc = shutil.which('cc') or shutil.which('clang')
+        if not cc:
+            self.skipTest('a C compiler is needed for the frame cadence check')
+        src = SOURCE.read_text(encoding='utf-8')
+        start = src.index('enum framegen_outcome {')
+        cadence = src[start:src.index('static framegen_cadence g_fg_cadence;', start)]
+        harness = r'''
+#include <assert.h>
+#include <math.h>
+#include <stdint.h>
+''' + cadence + r'''
+int main(void) {
+    const uint64_t refresh = 16666667;
+    assert(framegen_output_rate(60, refresh) == 60);
+    assert(framegen_output_rate(60, 11111111) == 60);
+    assert(framegen_output_rate(60, 20833333) == 48);
+    assert(framegen_output_rate(0, 11111111) == 90);
+    framegen_cadence budget = {.interval_ns = 25000000};
+    assert(framegen_pair_budget(&budget, 60) == 0 && framegen_pair_budget(&budget, 60) == 1);
+    // Smoothed input near 30 fps crosses the full-pair threshold in both directions.
+    int pairs = 0;
+    for (int i = 0; i < 100; ++i) {
+        budget.interval_ns = i % 2 ? 33800000 : 32800000;
+        pairs += framegen_pair_budget(&budget, 60);
+    }
+    assert(pairs == 98);  // 50 full pairs plus floor(50 * 0.968) fractional pairs
+    framegen_cadence cadence = {0};
+    uint64_t now = 1000000000;
+    for (int i = 0; i < 4; ++i, now += 50000000)
+        assert(framegen_step(&cadence, now, refresh) == 0);
+    assert(fabs(framegen_step(&cadence, now, refresh) - 0.025) < 1e-9);
+    for (int i = 0; i < 2; ++i) {
+        now += 50000000;
+        assert(framegen_frame_step(&cadence, now, refresh, 1) == 0);
+        assert(cadence.stable == 4);
+    }
+    now += 50000000;
+    assert(framegen_frame_step(&cadence, now, refresh, 0) > 0);
+    for (int i = 0; i < 4; ++i) {
+        now += 50000000;
+        assert(framegen_frame_step(&cadence, now, refresh, 1) == 0);
+    }
+    assert(cadence.stable == 0 && cadence.queued_frames == 3);
+    for (int i = 0; i < 4; ++i) {
+        now += 50000000;
+        assert(framegen_frame_step(&cadence, now, refresh, 0) == 0);
+    }
+    now += 50000000;
+    assert(framegen_frame_step(&cadence, now, refresh, 0) > 0);
+    now += 54000000;
+    assert(fabs(framegen_step(&cadence, now, refresh) - 0.0255) < 1e-9);
+
+    now += 101000000;
+    assert(framegen_step(&cadence, now, refresh) == 0);
+    assert(cadence.outcome == FG_STALL);
+    for (int i = 0; i < 3; ++i) {
+        now += 50000000;
+        assert(framegen_step(&cadence, now, refresh) == 0);
+    }
+    now += 50000000;
+    assert(framegen_step(&cadence, now, refresh) > 0);
+    assert(framegen_step(&cadence, now + 10000000, refresh) == 0);  // bunched input
+    assert(cadence.outcome == FG_BUNCHED);
+    assert(framegen_step(&cadence, 0, refresh) == 0);  // pause or backlog
+    assert(framegen_step(&cadence, now + 50000000, refresh) == 0);
+    assert(cadence.outcome == FG_WARMUP);
+
+    cadence = (framegen_cadence){0};
+    for (int i = 0; i < 12; ++i, now += refresh)
+        assert(framegen_step(&cadence, now, refresh) == 0);  // no spare refresh at 60 real fps
+    cadence = (framegen_cadence){0};
+    for (int i = 0; i < 4; ++i, now += 33333333)
+        assert(framegen_step(&cadence, now, refresh) == 0);
+    assert(fabs(framegen_step(&cadence, now, refresh) - refresh / 1e9) < 1e-9);
+    // A brief burst around a sustainable 30 fps cadence keeps its history.
+    for (int i = 0; i < 3; ++i) {
+        now += 28000000;
+        assert(fabs(framegen_step(&cadence, now, refresh) - refresh / 1e9) < 1e-9);
+    }
+    now += 49200000;
+    assert(framegen_step(&cadence, now, refresh) > 0);
+    // Sustained input above half the refresh rate can keep a fractional cadence.
+    cadence.interval_ns = 31000000;
+    for (int i = 0; i < 6; ++i) {
+        now += 31000000;
+        assert(framegen_step(&cadence, now, refresh) > 0);
+    }
+    assert(framegen_step(&cadence, now + 33333333, 0) == 0);
+    assert(framegen_followup_deadline(1000000000ull, 0.025) == 1025000000ull);
+    assert(framegen_followup_deadline(0, 0.025) == 0);
+    assert(framegen_followup_deadline(1000000000ull, 0) == 0);
+    assert(framegen_followup_deadline(1000000000ull, -0.1) == 0);
+    assert(framegen_followup_deadline(1000000000ull, 0.1) == 0);
+    return 0;
+}
+'''
+        with tempfile.TemporaryDirectory(prefix='nx2a_framegen_cadence_') as tmp:
+            c, exe = Path(tmp) / 'check.c', Path(tmp) / 'check'
+            c.write_text(harness, encoding='utf-8')
+            result = subprocess.run([cc, '-std=c11', '-Wall', '-Wextra', '-Werror', str(c), '-lm', '-o', str(exe)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            result = subprocess.run([str(exe)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_swapchain_recreated_on_window_resize(self):
         cc = shutil.which('cc') or shutil.which('clang')
         if not cc:
@@ -72,49 +374,57 @@ int main(void) {
 int main(void) {
     assert(present_time_get(0) == 0);
     assert(present_time_get(1) == 0);
-    present_time_begin(1, 0);
+    present_time_begin(1, 0, 950000000ull);
     assert(present_time_get(1) == 0);  // queued is not displayed
-    present_time_map(42, 1);
-    present_time_begin(2, 0);
-    present_time_map(43, 2);
+    present_time_map(42, 1, 0);
+    present_time_begin(2, 0, 1980000000ull);
+    present_time_map(43, 2, 0);
     present_time_record(43, 2000000000ull);  // results need not be in ticket order
     present_time_record(42, 1000000000ull);
     assert(present_time_get(1) == 1);
     assert(present_time_get(2) == 2);
+    assert(g_real_latency.samples == 2 && g_real_latency.total_ns == 70000000ull && g_real_latency.max_ns == 50000000ull);
     present_time_record(43, 0);
     assert(present_time_get(2) == 2);
-    present_time_map(44, 0);  // a menu redraw has a Vulkan ID but no game ticket
+    present_time_map(44, 0, 0);  // a menu redraw has a Vulkan ID but no game ticket
     present_time_record(44, 3000000000ull);
     assert(present_time_get(2) == 2);
     assert(present_time_get(0) == 0);
+    assert(g_real_displayed == 2 && g_generated_displayed == 0);
+    present_time_map(45, 0, 1);
+    present_time_record(45, 3500000000ull);
+    present_time_record(45, 3500000000ull);  // driver feedback may be repeated
+    assert(g_real_displayed == 2 && g_generated_displayed == 1);
+    assert(g_real_latency.samples == 2);
+    assert(present_time_get(2) == 2 && present_time_get(0) == 0);
 
-    present_time_begin(3, 0);
-    present_time_map(42 + PRES_TIMES, 3);
+    present_time_begin(3, 0, 0);
+    present_time_map(42 + PRES_TIMES, 3, 0);
     present_time_record(42, 9000000000ull);  // overwritten Vulkan ID mapping
     assert(present_time_get(3) == 0);
     present_time_record(42 + PRES_TIMES, 3000000000ull);
     assert(present_time_get(3) == 3);
-    present_time_begin(1 + PRES_TIMES, 0);
-    present_time_map(200, 1);  // a delayed result must not overwrite a newer ticket
+    present_time_begin(1 + PRES_TIMES, 0, 0);
+    present_time_map(200, 1, 0);  // a delayed result must not overwrite a newer ticket
     present_time_record(200, 9000000000ull);
     assert(present_time_get(1) == 0);
     assert(present_time_get(1 + PRES_TIMES) == 0);
 
-    present_time_begin(5, 7000000000ull);  // no display times: the hand-over time stands in at once
+    present_time_begin(5, 7000000000ull, 0);  // no display times: the hand-over time stands in at once
     assert(present_time_get(5) == 7);
     present_time_reset();
     assert(present_time_get(2) == 0);
-    present_time_begin(3, 0);
+    present_time_begin(3, 0, 0);
     present_time_record(42 + PRES_TIMES, 9000000000ull);  // old swapchain feedback
     assert(present_time_get(3) == 0);
-    present_time_map(UINT32_MAX, 3);
+    present_time_map(UINT32_MAX, 3, 0);
     present_time_record(UINT32_MAX, 3000000000ull);
     assert(present_time_get(3) == 3);
-    present_time_begin(4, 0);
-    present_time_map(0, 4);  // Vulkan's 32-bit present ID may wrap
+    present_time_begin(4, 0, 0);
+    present_time_map(0, 4, 0);  // Vulkan's 32-bit present ID may wrap
     present_time_record(0, 4000000000ull);
     assert(present_time_get(4) == 4);
-    present_time_begin(5, 0);  // failed, headless or unsupported presents get no result
+    present_time_begin(5, 0, 0);  // failed, headless or unsupported presents get no result
     assert(present_time_get(5) == 0);
     return 0;
 }

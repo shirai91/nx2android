@@ -334,6 +334,9 @@ void vk_init(void) {
     // DM_VK_ROBUST=1 (start-up, A/B): robust buffer access, so a buffer, texel buffer or vertex read past its range reads 0 instead of faulting the GPU (a device lost)
     if (robust && ff.features.robustBufferAccess) { en.robustBufferAccess = 1; VKLOG("robust buffer access on (DM_VK_ROBUST)%s", robust >= 2 ? ", with robust image access and robustness2 where the device has them" : ""); }
     else fr2.robustBufferAccess2 = 0;   // (robustBufferAccess2 needs robustBufferAccess)
+    V.has_float16 = v12 ? f12.shaderFloat16 : featx(xf, nxf, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES)[0];
+    V.has_storage_image_extended_formats = en.shaderStorageImageExtendedFormats;
+    V.has_storage_image_write_without_format = en.shaderStorageImageWriteWithoutFormat;
     f12.bufferDeviceAddressCaptureReplay = 0; f12.bufferDeviceAddressMultiDevice = 0;
     featx(xf, nxf, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES)[1] = featx(xf, nxf, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES)[2] = 0;   // (its extension's: the same two)
     if (robust < 2) f13.robustImageAccess = 0;

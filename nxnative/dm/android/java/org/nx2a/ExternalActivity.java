@@ -4,6 +4,7 @@ import android.app.NativeActivity;
 import android.app.Dialog;
 import android.app.AlertDialog;
 import android.content.Context;
+import android.content.Intent;
 import android.os.Bundle;
 import android.graphics.Canvas;
 import android.graphics.Color;
@@ -51,6 +52,11 @@ public class ExternalActivity extends NativeActivity implements ExternalDisplay.
     private static native int externalMenuScroll();
     private static native int[] externalMenuPixels(int width, int height, int state);
     private ExternalDisplay external;
+    private final GameFiles files = new GameFiles(this);
+    public void importLosslessDll() { files.openLossless(); }
+    @Override protected void onActivityResult(int request, int result, Intent data) {
+        if (!files.result(request, result, data)) super.onActivityResult(request, result, data);
+    }
     private View pad;
     private Dialog phonePad;
     private AlertDialog audioDialog;
@@ -82,6 +88,7 @@ public class ExternalActivity extends NativeActivity implements ExternalDisplay.
         external.start();
     }
     @Override protected void onDestroy() {
+        files.close();
         if (external != null) external.stop();
         if (phonePad != null) phonePad.dismiss();
         if (audioDialog != null) audioDialog.dismiss();

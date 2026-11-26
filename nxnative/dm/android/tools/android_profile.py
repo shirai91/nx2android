@@ -28,6 +28,7 @@ import settings_registry   # noqa: E402  (nxnative/dm/settings.tsv: which switch
 
 STATUS = ('playable', 'wip', 'boots', 'experimental')
 SETTINGS = {'overlay': ('0', '1'), 'rumble': ('0', '1'), 'docked': ('0', '1'), 'fps': ('0', '1'), 'sr': ('0', '1'), 'stick_zone': ('0', '1'),   # the pause menu's settings (front_android.c settings_load)
+            'framegen': ('0', '1'), 'framegen_target': ('60', '0'),  # Lossless on/off and display target (0 = uncapped)
             'opacity': tuple(str(v) for v in range(20, 81, 5)),                                    # the gamepad's, percent (overlay_layout.h OV_OPACITY_MIN..MAX)
             'sharpness': tuple(str(v) for v in range(0, 101, 25)),                                 # super resolution's, percent by 25
             'fps_rows': tuple(str(v) for v in range(32)), 'fps_pos': tuple('0123'), 'fps_colour': tuple('01234'),   # the frame rate counter's rows (a bit each: 1 FPS, 2 SOC, 4 BAT,

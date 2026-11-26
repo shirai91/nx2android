@@ -24,6 +24,8 @@ class OverlayLayout(unittest.TestCase):
 static int custom_faces, custom_a, custom_x, hidden_ctl = -1, audio_available, ui_zh;
 int dm_ui_zh(void) { return ui_zh; }
 int dm_menu_audio_available(void) { return audio_available; }
+static int import_available;
+int dm_menu_lossless_import_available(void) { return import_available; }
 float dm_overlay_scale(void) { return 1; }
 int dm_external_active(void) { return 0; }
 int dm_overlay_dpi(void) { return 0; }
@@ -93,14 +95,18 @@ int main(void) {
     assert(ov_drag_pos(1100, 600, 1013, 50) == 506.5f);
     assert(ov_drag_pos(1100, 505, 1013, 50) == 508);
 
-    // Seven rows a tab: the gamepad's settings (Stick area after Edit layout) then the audio picker (a device may not offer it), the Game tab the picture's
     assert(ov_menu_item(0, OVM_ROWS - 1) == OVM_RESUME);
-    assert(ov_menu_item(1, 1) == OVM_FPS && ov_menu_item(1, 2) == OVM_SR && ov_menu_item(1, 3) == OVM_SHARP && ov_menu_item(1, 6) == OVM_IMPORT && ov_menu_item(1, OVM_ROWS - 2) == -1);
+    assert(ov_menu_item(1, 1) == OVM_FPS && ov_menu_item(1, 2) == OVM_SR && ov_menu_item(1, 3) == OVM_SHARP && ov_menu_item(1, 6) == OVM_IMPORT);
     assert(ov_menu_item(0, 3) == OVM_EDIT && ov_menu_item(0, 4) == OVM_ZONE && ov_menu_item(0, 5) == OVM_RUMBLE);
     audio_available = 0;
-    assert(ov_menu_item(0, OVM_ROWS - 2) == -1);
+    assert(ov_menu_item(0, 7) == -1);
     audio_available = 1;
-assert(ov_menu_item(0, OVM_ROWS - 2) == OVM_AUDIO && ov_menu_item(0, OVM_ROWS - 3) == OVM_PAD);
+    assert(ov_menu_item(0, 7) == OVM_AUDIO && ov_menu_item(0, 6) == OVM_PAD);
+    assert(ov_menu_item(1, 7) == OVM_FRAMEGEN && ov_menu_item(1, 8) == OVM_FG_TARGET);
+    assert(ov_menu_item(1, OVM_ROWS - 2) == -1);
+    import_available = 1;
+    assert(ov_menu_item(1, OVM_ROWS - 2) == OVM_FG_IMPORT);
+    assert(ov_menu_item(1, OVM_ROWS - 1) == OVM_RESUME);
     ui_zh = 0;
     assert(!strcmp(OVM_TAB_NAMES[0], "Gamepad") && !strcmp(OVM_TAB_NAMES[1], "Game") && !strcmp(OVM_TAB_NAMES[2], "Counter") && !strcmp(OVM_TAB_NAMES[3], "Style"));
     assert(!strcmp(FPSO_POS_NAMES[0], "Top left") && !strcmp(FPSO_SIZE_NAMES[3], "Extra large"));
@@ -114,10 +120,18 @@ assert(ov_menu_item(0, OVM_ROWS - 2) == OVM_AUDIO && ov_menu_item(0, OVM_ROWS - 
     for (unsigned s = 0; s < sizeof screens / sizeof screens[0]; s++) {
         float W = screens[s][0], H = screens[s][1], step = H / OVE_GRID_ROWS, p[4];
         ov_menu_rect(W, H, p);
-        for (int row = 0; row < OVM_VIEW_ROWS; row++) {
-            float r[4]; ov_menu_rowrect(p, row, r);
-            assert(ov_menu_row_at(r[0] + r[2] / 2, r[1] + r[3] / 2, W, H) == row);
+        for (int slot = 0; slot < OVM_VIEW_ROWS; slot++) {
+            float r[4]; ov_menu_rowrect(p, slot, r);
+            assert(ov_menu_row_at(r[0] + r[2] / 2, r[1] + r[3] / 2, W, H) == slot);
         }
+        const int target = 8;
+        float slot = ov_menu_scroll_slot(1, ov_menu_scroll_limit(1), target), r[4];
+        assert(ov_menu_fg_choice(ov_menu_item(1, target)));
+        ov_menu_rowrect(p, slot, r);
+        float end = r[0] + r[2] - r[3] * 0.15f, width = ov_menu_fg_choice_width(r);
+        assert(ov_menu_fg_choice_at(end - 1.5f * width, p, slot) == 0);
+        assert(ov_menu_fg_choice_at(end - 0.5f * width, p, slot) == 1);
+        assert(ov_menu_fg_choice_at(r[0], p, slot) == -1);
         for (int axis = 0; axis < 2; axis++) for (int i = -10; i <= 110; i++) {
             float extent = screens[s][axis], half = H * 0.12f;
             float pos = ov_drag_pos(extent * i / 100, half, extent, step);

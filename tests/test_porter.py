@@ -67,6 +67,15 @@ class AndroidProfiles(unittest.TestCase):
         self.assertEqual(android_profile.load(d.name).settings, {'fps': '1'})
         with self.assertRaises(android_profile.ProfileError): android_profile.load(profile_dir([('status', 'boots'), ('setting', 'fps=2')]).name)
 
+    def test_frame_generation_settings(self):
+        for enabled in ('0', '1'):
+            for target in ('60', '0'):
+                rows = [('status', 'boots'), ('setting', 'framegen=' + enabled), ('setting', 'framegen_target=' + target)]
+                self.assertEqual(android_profile.load(profile_dir(rows).name).settings, {'framegen': enabled, 'framegen_target': target})
+        for bad in ('framegen=2', 'framegen_target=90', 'framegen_engine=1'):
+            with self.assertRaises(android_profile.ProfileError):
+                android_profile.load(profile_dir([('status', 'boots'), ('setting', bad)]).name)
+
     def test_opacity_setting(self):   # the gamepad's opacity, 20..80 percent by 5 (the menu's slider, overlay_layout.h OV_OPACITY_MIN..MAX)
         self.assertEqual(android_profile.load(profile_dir([('status', 'boots'), ('setting', 'opacity=45')]).name).settings, {'opacity': '45'})
         for v in ('10', '85', '42'):
