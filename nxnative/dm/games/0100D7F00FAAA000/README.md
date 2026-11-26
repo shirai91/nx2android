@@ -12,6 +12,12 @@
 | App package | `org.nx2a.t0100d7f00faaa000` |
 | Vulkan driver | Turnip: the port packs Mesa's Turnip driver when the porter finds it (`vulkan_driver turnip`) |
 
+The profile sets these for you (`android.tsv`); a player changes the pause menu ones in the game, and the env rows in the data pack's `env.txt`:
+
+| Row | What it does |
+|---|---|
+| `DM_VK_DEFER_CLEAR=1` | opt-in (default 0): on 0-draw deferred clear passes, drop unmodified attachments (loadOp != CLEAR) and forward full-image cleared depth copies as … |
+
 Read the profile's porting log in the comment header of [`android.tsv`](android.tsv). Back to the [games list](../../../../README.md#games).
 <!-- end of the game facts -->
 

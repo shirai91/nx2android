@@ -418,6 +418,25 @@ static void bc_draw_back(void) {
 }
 void vk_end_pass(void) {
     if (g_x_listpasses && S.pass_open == 1) { Dl_info di; void *ra = __builtin_return_address(0); uintptr_t base = dladdr((void *)vk_end_pass, &di) ? (uintptr_t)di.dli_fbase : 0; VKLOG("    ended from %#llx (%llu draws)", (unsigned long long)((uintptr_t)ra - base), (unsigned long long)g_pass_draws); list_reads("it"); }   // (DM_VK_TRACE_PASS=-2: who ends each pass)
+    if (S.pass_open == 2 && P_cleared && g_defer_clear) {
+        uint32_t last_c = 0;
+        for (uint32_t i = 0; i < P_ri.colorAttachmentCount && i < 8; i++) {
+            if (P_ca[i].imageView && P_ca[i].loadOp != VK_ATTACHMENT_LOAD_OP_CLEAR && P_att[i].im != &g_s0_image) {
+                P_ca[i].imageView = VK_NULL_HANDLE; P_att[i].im = NULL; S.cfmt[i] = VK_FORMAT_UNDEFINED;
+            } else if (P_ca[i].imageView) last_c = i + 1;
+        }
+        if (last_c == 1 && P_att[0].im == &g_s0_image) {
+            P_ca[0].imageView = VK_NULL_HANDLE; P_att[0].im = NULL; S.cfmt[0] = VK_FORMAT_UNDEFINED; last_c = 0;
+        }
+        P_ri.colorAttachmentCount = last_c;
+        if ((P_ri.pDepthAttachment || P_ri.pStencilAttachment) &&
+            P_da.loadOp != VK_ATTACHMENT_LOAD_OP_CLEAR &&
+            (!P_sa.imageView || P_sa.loadOp != VK_ATTACHMENT_LOAD_OP_CLEAR)) {
+            P_ri.pDepthAttachment = NULL; P_ri.pStencilAttachment = NULL;
+            P_da.imageView = VK_NULL_HANDLE; P_sa.imageView = VK_NULL_HANDLE;
+            P_att[8].im = NULL; S.daspect = 0;
+        }
+    }
     if (S.pass_open == 2 && P_cleared) (void)pass_commit();   // only clears: the pass still runs, for its load ops
     if (S.pass_open == 1) { if (S.rp_pass) vkCmdEndRenderPass(vk_cmd()); else vkCmdEndRendering(vk_cmd()); bc_draw_back(); void vk_pass_ts(int end, uint32_t w, uint32_t h, uint32_t fmt, uint32_t draws); vk_pass_ts(1, S.pass_w, S.pass_h, (uint32_t)S.cfmt[0], (uint32_t)g_pass_draws | (g_pass_draws ? (uint32_t)((g_pass_bb[2] - g_pass_bb[0]) & 0xffff) << 16 : 0));  pass_dump(); if (g_x_tracepass >= 0 && g_sub_pass - 1 == g_x_tracepass) { setenv("DM_VK_TRACE_PASS", "-1", 1); g_x_tracepass = -1; } }
     if (S.pass_open == 1 && g_lin_back && g_pass_draws) lin_back();
