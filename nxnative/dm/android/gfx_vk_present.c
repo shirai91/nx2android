@@ -441,7 +441,7 @@ static const char *ovm_button(int it) {
 }
 static const char *ovm_mode(int i) { return i ? TR("Docked", "底座") : TR("Handheld", "掌机"); }
 static const char *ovm_pad(int i) { return i ? TR("Label", "标签") : TR("Position", "位置"); }   // a controller's face buttons (front_android.c pad_labels)
-static const char *ovm_zone(int i) { return i ? TR("Half screen", "半屏") : TR("Circle", "圆圈"); }   // the sticks' touch area (dm_overlay_stick_zone)
+static const char *ovm_zone(int i) { return i ? TR("Half", "半屏") : TR("Circle", "圆圈"); }   // the sticks' touch area (dm_overlay_stick_zone); "Half screen" was the widest row, and the widest row sets every label's size (ov_menu_panel)
 static const char *ovm_seg(int it, int i) { return it == OVM_MODE ? ovm_mode(i) : it == OVM_PAD ? ovm_pad(i) : ovm_zone(i); }   // a two-segment row's names
 static int ov_val_n(int it) { return it == OVM_POS ? FPSO_POS_N : it == OVM_COLOUR ? FPSO_COLOUR_N : it == OVM_OUTLINE ? FPSO_OUTLINE_N : it == OVM_SIZE ? FPSO_SIZE_N : 0; }   // the choice rows' values
 static const char *ov_val_name(int it, int v) {

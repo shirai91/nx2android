@@ -198,7 +198,7 @@ int main(void) {
             assert(ov_menu_item(1,hi)>=0 && ov_menu_scroll_rowrect(p,1,offset,hi,r));
             if(hi>0 && hi<OVM_ROWS-1) {float slot=ov_menu_scroll_slot(1,offset,hi);assert(slot>=1 && slot+1<=OVM_VIEW_ROWS-1);}
         }
-        atomic_store(&g_menu_scroll,OVM_SCROLL_UNITS); atomic_store(&g_menu_hi,OVM_ROWS-2); menu_key(DM_BTN_A);
+        atomic_store(&g_menu_scroll,OVM_SCROLL_UNITS); atomic_store(&g_menu_hi,ov_menu_body_row(1,ov_menu_body_count(1)-1)); menu_key(DM_BTN_A);   // (the Game tab's last item: its last rows can be empty)
         assert(last_action==OVM_IMPORT);
         menu_tab(0); assert(atomic_load(&g_menu_scroll)==0);
         ov_menu_rowrect(p,2,r); float track[3]; ov_menu_track(p,2,track);
