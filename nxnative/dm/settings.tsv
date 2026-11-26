@@ -194,6 +194,7 @@ DM_PROBE_HEAPWORDS	str		debug	?	probe.c
 DM_PROBE_POLL	hex		debug	?	probe.c	
 DM_PROBE_WATCH	str		debug	?	probe.c	
 DM_PROBE_X2	int		debug	?	probe.c	DM_PROBE_X2=bytes: also print the memory x2 points to (to read object fields)
+DM_PROD_KEYS	str		porter	?	dm_romfs.c	the prod.keys a container RomFS (DM_ROMFS_CONTAINER) is decrypted with
 DM_PROGRAM_ID	hex		debug	?	hle_svc.c	default from the game profile's program_id; DM_PROGRAM_ID=hex overrides
 DM_PSO_MANIFEST	str		debug,ios	?	nvn_mtl.m	
 DM_PSO_RECORD	str		debug,ios	?	nvn_mtl.m	
@@ -203,7 +204,9 @@ DM_QOS_MAP	bool		debug	?	hle_thread.c
 DM_RENDER_SCALE	float		debug	live	hle_nvn.c loader.c	games with a render-scale stub (Tears of the Kingdom, Breath of the Wild): the 3D views at that fraction of the game's size; 1.0 gives the game's own dynamic resolution back
 DM_RES_CHECK	str		debug,ios	?	nvn_mtl.m	
 DM_ROMFS	str		porter	?	front_android.c	a RomFS folder outside the app's files folder (porter install --romfs-at)
+DM_ROMFS_CONTAINER	str		porter	?	hle_fs.c	the player's own .nsp or .xci: rom reads its RomFS straight out of the container, no unpacked tree (needs DM_PROD_KEYS)
 DM_ROMFS_OVERLAY	str		debug	?	hle_fs.c	
+DM_ROMFS_UPDATE	str		porter	?	hle_fs.c	the player's own update .nsp for DM_ROMFS_CONTAINER: a BKTR update is layered over the base RomFS, a full one replaces it
 DM_ROMFS_ZSTD	bool	0	porter	?	hle_fs.c	1 = the RomFS holds zstd-packed files (porter writes it for a packed RomFS)
 DM_ROOT	str		app	?	gfx_vk_exec.c gfx_vk_pipeline_cache.inc gfx_vk_present.c …	the app's files folder (the Android front end sets it)
 DM_RT	str		debug	?	hle_nvn.c	
