@@ -93,6 +93,13 @@ class Bundle(unittest.TestCase):
         self.assertEqual(ver, 1); self.assertIn('[RED] ', out.getvalue()); self.assertEqual(p.read_bytes(), v1_reference(ENTRIES))
 
     @unittest.skipUnless(ZSTD, 'no zstd in this Python')
+    def test_progress_counts_every_module(self):   # the caller learns how far the compression has come (the shader export shows it): every module once, the total with it
+        p, seen = self.d / 'p.dmsv', []
+        dmsv.write(str(p), ENTRIES, jobs=2, progress=lambda i, n: seen.append((i, n)))
+        self.assertEqual([i for i, _ in seen], [1, 2, 3]); self.assertEqual({n for _, n in seen}, {3})
+        self.assertEqual(self.read(p)[1], sorted(ENTRIES))   # the bundle itself is the same
+
+    @unittest.skipUnless(ZSTD, 'no zstd in this Python')
     def test_pack_both_ways(self):   # dmsv.py pack: version 1 → 2 → 1 gives the first file back
         v1, v2, back = self.d / 'a.dmsv', self.d / 'b.dmsv', self.d / 'c.dmsv'; v1.write_bytes(v1_reference(ENTRIES))
         with contextlib.redirect_stdout(io.StringIO()):
