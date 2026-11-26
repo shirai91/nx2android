@@ -59,15 +59,16 @@ public class FilesTest {
   try(java.util.stream.Stream<Path> s=Files.list(a.dir.toPath())){check(s.noneMatch(p->p.getFileName().toString().startsWith(".lossless-")));}
  }
  public static void main(String[] args)throws Exception{
-  Activity a=new Activity(); a.dir=Files.createDirectory(Paths.get(args[0],"files")).toFile(); GameFiles f=new GameFiles(a);
+  boolean zh=args[1].equals("zh");
+  Activity a=new Activity(); a.dir=Files.createDirectory(Paths.get(args[0],"files-"+args[1])).toFile(); GameFiles f=new GameFiles(a);
   Path input=Paths.get(args[0],"input.dll"), target=a.dir.toPath().resolve("Lossless.dll");
   byte[] valid={'M','Z','o','k'};
   try{
-   Files.write(input,valid); copy(f,a,input,"imported"); check(Arrays.equals(Files.readAllBytes(target),valid));
-   Files.write(input,new byte[]{1,2,3}); copy(f,a,input,"not a supported"); check(Arrays.equals(Files.readAllBytes(target),valid));
-   a.resolver.denied=true; copy(f,a,input,"Cannot read"); check(Arrays.equals(Files.readAllBytes(target),valid));
+   Files.write(input,valid); copy(f,a,input,zh?"已导入":"imported"); check(Arrays.equals(Files.readAllBytes(target),valid));
+   Files.write(input,new byte[]{1,2,3}); copy(f,a,input,zh?"不是受支持":"not a supported"); check(Arrays.equals(Files.readAllBytes(target),valid));
+   a.resolver.denied=true; copy(f,a,input,zh?"无法读取":"Cannot read"); check(Arrays.equals(Files.readAllBytes(target),valid));
    a.resolver.denied=false; f.openLossless(); check(f.result(a.request,0,null));
-   Files.write(input,valid); copy(f,a,input,"imported");
+   Files.write(input,valid); copy(f,a,input,zh?"已导入":"imported");
   }finally{f.close();}
  }
 }''',
@@ -80,6 +81,8 @@ public class FilesTest {
                 p.write_text(source)
             native = tmp / 'bridge.c'
             native.write_text('''#include <jni.h>
+#include <stdlib.h>
+JNIEXPORT jboolean JNICALL Java_org_nx2a_GameFiles_isChinese(JNIEnv *e,jclass c){return getenv("DM_UI_LANG")[0]=='z';}
 JNIEXPORT jboolean JNICALL Java_org_nx2a_GameFiles_validLossless(JNIEnv *e,jclass c,jbyteArray a){
  (void)c; if((*e)->GetArrayLength(e,a)!=4)return JNI_FALSE; jbyte b[4];(*e)->GetByteArrayRegion(e,a,0,4,b);return b[0]=='M'&&b[1]=='Z'&&b[2]=='o'&&b[3]=='k';}
 JNIEXPORT void JNICALL Java_org_nx2a_GameFiles_losslessImported(JNIEnv *e,jclass c){(void)e;(void)c;}
@@ -88,5 +91,8 @@ JNIEXPORT void JNICALL Java_org_nx2a_GameFiles_losslessImported(JNIEnv *e,jclass
             subprocess.run([cc, '-shared', '-fPIC', '-I'+str(jdk/'include'), '-I'+str(jdk/'include'/platform), str(native), '-o', str(tmp/f'libdmhost.{ext}')], capture_output=True, text=True, check=True)
             production = ROOT / 'nxnative/dm/android/java/org/nx2a/GameFiles.java'
             subprocess.run([javac, '-d', str(tmp), str(production), *map(str, tmp.rglob('*.java'))], capture_output=True, text=True, check=True)
-            result = subprocess.run([java, '-Djava.library.path='+str(tmp), '-cp', str(tmp), 'org.nx2a.FilesTest', str(tmp)], capture_output=True, text=True, timeout=20)
-            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            for language in ('en', 'zh'):
+                with self.subTest(language=language):
+                    result = subprocess.run([java, '-Djava.library.path='+str(tmp), '-cp', str(tmp), 'org.nx2a.FilesTest', str(tmp), language],
+                                            env={**os.environ, 'DM_UI_LANG': language}, capture_output=True, text=True, timeout=20)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

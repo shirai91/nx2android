@@ -253,7 +253,7 @@ static void barrier(VkCommandBuffer cb, VkImage img, VkImageLayout from, VkImage
 // With a theme in the APK (overlay_theme.c), the gamepad is its sprites instead: an atlas per layout in a texture of its own (g_tt), uploaded once, every
 // control drawn from it on each present; the procedural layer is then only the menu's panel, the dimming and the counter.
 enum { SP_DISC = OV_N, SP_BLACK, SP_WHITE, SP_ACCENT, SP_GREEN, SP_AMBER, SP_RED, SP_GREY, SP_N };   // (black, white, accent: solid blocks, the dimming and the layout editor's frames; green, amber, red, grey: the frame-time graph's bars and target line)
-#define OV_FPS_CHARS "0123456789 FPS-CBATOURNIQM.DELGVY"   // (the temperature rows: "SOC 52C", "BAT 38C"; the driver row: "TURNIP 27.0.0", "QCOM 512.676.53", "NVIDIA ...", "ID 1AB2 ...")
+#define OV_FPS_CHARS "0123456789 FPS-CBATOURNIQM.DELGVY渲染显示提交"   // (the temperature rows: "SOC 52C", "BAT 38C"; the driver row: "TURNIP 27.0.0", "QCOM 512.676.53", "NVIDIA ...", "ID 1AB2 ...")
 static struct { VkImage img; VkDeviceMemory mem; VkImageView view; VkSampler samp; VkDescriptorSetLayout dsl; VkPipelineLayout layout; VkDescriptorPool pool; VkDescriptorSet set;
                 VkPipeline pipe; VkFormat pfmt; uint32_t w, h, sh, pw, ph, gh, gs, gl, cpr, pad; int fk; VkBuffer up; VkDeviceMemory upm; uint8_t *px, *map; uint64_t panel; int uploaded, lay, cver; float sp[SP_N][4];
                 VkRenderPass rp; VkFramebuffer fb[8]; VkImageView fbview[8]; VkExtent2D fbext[8]; } g_ov;
@@ -724,47 +724,73 @@ static float ov_glow(int64_t t, int64_t now) {   // a held button's glow: bright
 // in use, in a corner of the window (the pause menu's Counter and Style tabs, overlay_layout.h fpso_*: the rows, the corner, the colour, the outline or a dark block
 // behind, the letters' size). The rows are put together from the characters of OV_FPS_CHARS on every present, so a changing number needs no upload. The characters are
 // rasterized in the current size: three sets (the colour, red for a temperature too hot, black for the outline), wrapped into rows of the atlas
-static int ov_fps_wmax(void) {   // the widest advance of OV_FPS_CHARS, in font columns
-    static int adv;
-    if (!adv) for (const char *c = OV_FPS_CHARS; *c; c++) { char one[2] = {*c, 0}; int a = pf_width(dm_overlay_font(), one); if (a > adv) adv = a; }
-    return adv;
+static struct {
+    uint32_t code;
+    char text[5];
+    int advance;
+} fps_glyph[sizeof OV_FPS_CHARS];
+static int fps_glyph_count, fps_widest, fps_digit_width;
+
+static void ov_fps_init_glyphs(void) {
+    if (fps_glyph_count) return;
+    const char *s = OV_FPS_CHARS;
+    while (*s) {
+        const char *start = s;
+        int i = fps_glyph_count++;
+        fps_glyph[i].code = pf_next(&s);
+        memcpy(fps_glyph[i].text, start, s - start);
+        int width = pf_width(dm_overlay_font(), fps_glyph[i].text);
+        fps_glyph[i].advance = width;
+        if (width > fps_widest) fps_widest = width;
+        if (fps_glyph[i].code >= '0' && fps_glyph[i].code <= '9' && width > fps_digit_width) fps_digit_width = width;
+    }
 }
-static float ov_fps_cell(void) { return (float)ov_fps_wmax() * g_ov.gs + 2 + 2 * g_ov.pad; }   // an atlas cell's width in texels: the widest character, a clear texel each side, and the outline's room (pad)
-static float ov_fps_adv(char c) {   // a character's advance in texels: digits and the space all as wide as the widest digit (the numbers do not jitter), the rest as wide as they are
-    static int dig;
-    if (!dig) for (char d = '0'; d <= '9'; d++) { char one[2] = {d, 0}; int a = pf_width(dm_overlay_font(), one); if (a > dig) dig = a; }
-    char one[2] = {c, 0}; int a = c >= '0' && c <= '9' || c == ' ' ? dig : pf_width(dm_overlay_font(), one);
-    return (float)a * g_ov.gs + 2;
+static int ov_fps_index(uint32_t code) {
+    for (int i = 0; i < fps_glyph_count; i++) if (fps_glyph[i].code == code) return i;
+    return -1;
+}
+static float ov_fps_cell(void) { return (float)fps_widest * g_ov.gs + 2 + 2 * g_ov.pad; }
+static float ov_fps_adv(int i) {
+    if (i < 0) return 0;
+    uint32_t code = fps_glyph[i].code;
+    int width = (code >= '0' && code <= '9') || code == ' ' ? fps_digit_width : fps_glyph[i].advance;
+    return (float)width * g_ov.gs + 2;
 }
 static int ov_fps_key(int o) { int ol = fpso_outline(o); return fpso_colour(o) << 8 | fpso_size(o) << 4 | (ol >= FPSO_THIN ? ol : 0); }   // what the atlas holds (a change rasterizes it again: overlay_ready)
 static void ov_fps_dims(uint32_t w, uint32_t h, int o) {   // the letters' scale for the size chosen, the outline's room and the atlas rows (g_ov.gs, pad, gl, cpr, gh)
-    int n = (int)strlen(OV_FPS_CHARS), base = (int)fmaxf(2, roundf(h * 0.022f / PF_CAP)), s = fpso_scale(base, fpso_size(o)), ol = fpso_outline(o);
+    ov_fps_init_glyphs();
+    int n = fps_glyph_count, base = (int)fmaxf(2, roundf(h * 0.022f / PF_CAP)), s = fpso_scale(base, fpso_size(o)), ol = fpso_outline(o);
     for (;; s--) {
         g_ov.gs = (uint32_t)s; g_ov.pad = ol >= FPSO_THIN ? (uint32_t)((ol - FPSO_NONE) * s) : 0; g_ov.cpr = (uint32_t)(w / ov_fps_cell());
         if (g_ov.cpr >= 1 || s <= 1) break;   // (a window too narrow for a single character: not seen)
     }
     if (!g_ov.cpr) g_ov.cpr = 1;
-    g_ov.gl = PF_CAP * g_ov.gs + 4 + 2 * g_ov.pad; g_ov.gh = g_ov.gl * ((3 * n + g_ov.cpr - 1) / g_ov.cpr);
+    g_ov.gl = (PF_CAP + 3) * g_ov.gs + 4 + 2 * g_ov.pad; g_ov.gh = g_ov.gl * ((3 * n + g_ov.cpr - 1) / g_ov.cpr);
 }
 static void ov_fps_glyphs(int o) {   // the characters into the rows under the panel
     ov_canvas cv = {g_ov.px, g_ov.w, 0, g_ov.h + g_ov.sh + g_ov.ph, g_ov.w, g_ov.gh};
-    int n = (int)strlen(OV_FPS_CHARS), c = fpso_colour(o), pad = (int)g_ov.pad, gs = (int)g_ov.gs;
+    int n = fps_glyph_count, c = fpso_colour(o), pad = (int)g_ov.pad, gs = (int)g_ov.gs;
     const uint8_t ink[4] = {FPSO_RGB[c][0], FPSO_RGB[c][1], FPSO_RGB[c][2], 255}, black[4] = {0, 0, 0, 255};
     for (int id = 0; id < 3 * n; id++) {   // the colour, then the same characters in red (a temperature too hot: ov_fps), then in black
-        char one[2] = {OV_FPS_CHARS[id % n], 0};
+        const char *one = fps_glyph[id % n].text;
         float x = (id % (int)g_ov.cpr) * ov_fps_cell() + pad + 1 + g_ov.gs * 0.5f, cy = (id / (int)g_ov.cpr) * (float)g_ov.gl + g_ov.gl / 2.0f;
         if (id < 2 * n) cv_text(&cv, x, cy, one, (int)g_ov.gs, id < n ? ink : C_HOT);
         else for (int dy = -pad; dy <= pad; dy += gs) for (int dx = -pad; dx <= pad; dx += gs) cv_text(&cv, x + dx, cy + dy, one, gs, black);   // the glyph's shape grown by pad texels every way: a glyph is a union of gs x gs blocks on the gs grid and pad a multiple of gs, so steps of gs give the same shape (7 x 7 draws for Thick, not (6 gs + 1)^2)
     }
 }
 __attribute__((weak)) void dm_android_temps(int *soc, int *bat) { (void)soc; (void)bat; }   // (front_android.c; absent in other builds)
-static float ov_fps_len(const char *s, float k) { float w = 0; for (; *s; s++) w += ov_fps_adv(*s) * k; return w; }
+static float ov_fps_len(const char *s, float k) { float w = 0; while (*s) w += ov_fps_adv(ov_fps_index(pf_next(&s))) * k; return w; }
 static void ov_fps_text(VkCommandBuffer cb, int set, const char *s, float x, float y, float k) {   // a row's characters from the atlas' set (0 colour, 1 red, 2 black); (x, y): its top left
-    int n = (int)strlen(OV_FPS_CHARS); float gy = (float)(g_ov.h + g_ov.sh + g_ov.ph), pd = (float)g_ov.pad * k;
-    for (int i = 0; s[i]; x += ov_fps_adv(s[i]) * k, i++) {
-        const char *c = strchr(OV_FPS_CHARS, s[i]); if (!c || s[i] == ' ') continue;
-        int id = set * n + (int)(c - OV_FPS_CHARS); float u = (float)(id % (int)g_ov.cpr) * ov_fps_cell(), v = gy + (float)(id / (int)g_ov.cpr) * (float)g_ov.gl;
-        ov_rect(cb, x - pd, y - pd, x - pd + ov_fps_cell() * k, y - pd + g_ov.gl * k, u, v, u + ov_fps_cell(), v + g_ov.gl, 1);
+    int n = fps_glyph_count; float gy = (float)(g_ov.h + g_ov.sh + g_ov.ph), pd = (float)g_ov.pad * k;
+    while (*s) {
+        uint32_t code = pf_next(&s);
+        int i = ov_fps_index(code);
+        if (i < 0) continue;
+        float left = x - pd;
+        x += ov_fps_adv(i) * k;
+        if (code == ' ') continue;
+        int id = set * n + i; float u = (float)(id % (int)g_ov.cpr) * ov_fps_cell(), v = gy + (float)(id / (int)g_ov.cpr) * (float)g_ov.gl;
+        ov_rect(cb, left, y - pd, left + ov_fps_cell() * k, y - pd + g_ov.gl * k, u, v, u + ov_fps_cell(), v + g_ov.gl, 1);
     }
 }
 __attribute__((weak)) double dm_perf_period_ms(void) { return 0; }   // perf_android.c: the present period in force (the game's, or the adaptive step's when longer)
@@ -814,10 +840,12 @@ static void ov_fps(VkCommandBuffer cb, int64_t now) {   // one value a row: FPS,
     char rows[5][32]; int nr = 0, hot[5] = {0};
     if (want & FPSO_FPS) {
         if (dm_framegen_enabled()) {
-            if (fps < 0) snprintf(rows[nr++], 32, "RENDER --"); else snprintf(rows[nr++], 32, "RENDER %d", fps);
-            const char *label = measured ? "DISPLAY" : "PRESENT";
-            if (display_fps < 0) snprintf(rows[nr++], 32, "%s --", label); else snprintf(rows[nr++], 32, "%s %d", label, display_fps);
-        } else if (fps < 0) snprintf(rows[nr++], 32, "FPS --"); else snprintf(rows[nr++], 32, "FPS %d", fps > 999 ? 999 : fps);
+            const char *render = TR("RENDER", "渲染");
+            const char *output = measured ? TR("DISPLAY", "显示") : TR("PRESENT", "提交");
+            if (fps < 0) snprintf(rows[nr++], 32, "%s --", render); else snprintf(rows[nr++], 32, "%s %d", render, fps);
+            if (display_fps < 0) snprintf(rows[nr++], 32, "%s --", output); else snprintf(rows[nr++], 32, "%s %d", output, display_fps);
+        } else if (fps < 0) snprintf(rows[nr++], 32, "FPS --");
+        else snprintf(rows[nr++], 32, "FPS %d", fps > 999 ? 999 : fps);
     }
     int soc = -1000, bat = -1000; if (want & (FPSO_SOC | FPSO_BAT)) dm_android_temps(&soc, &bat);   // front_android.c: the chip's hottest CPU / GPU zone and the battery, whole degrees C (-1000: not known)
     // red from where it is dangerously hot: the chip at 80 C (phones throttle hard in the high 80s), the battery at 45 C (Android's warnings and charging limits)
@@ -826,12 +854,12 @@ static void ov_fps(VkCommandBuffer cb, int64_t now) {   // one value a row: FPS,
     if (want & FPSO_DRV) snprintf(rows[nr++], 32, "%s", g_vk_driver);
     int gr = (want & FPSO_GRAPH) != 0;   // the frame-time graph under the rows: as wide as the block, at least 24 digits, 2.5 text lines high
     if (!nr && !gr) return;
-    float W = (float)g_sext.width, H = (float)g_sext.height, k = W / g_ov.w, ch = (float)(PF_CAP * g_ov.gs + 4) * k, m = H * 0.02f, pad = ch * 0.2f, lh = ch * 1.1f;
+    float W = (float)g_sext.width, H = (float)g_sext.height, k = W / g_ov.w, ch = (float)(g_ov.gl - 2 * g_ov.pad) * k, m = H * 0.02f, pad = ch * 0.2f, lh = ch * 1.1f;
     float bx = g_ov.sp[SP_BLACK][0], by = g_ov.sp[SP_BLACK][1], wmax = 0;
     for (int r = 0; r < nr; r++) wmax = fmaxf(wmax, ov_fps_len(rows[r], k));
     float bw = ch * 0.5f + wmax, bh_t = nr ? 2 * pad + ch + (nr - 1) * lh : pad, gh = 0, gw = 0;
     if (gr) {   // the graph: 24 digits wide, but at most a quarter of the window (the letters of a large size grow, the graph does not), its height in proportion (2.5 text lines at 24 digits)
-        float full = 24 * ov_fps_adv('0') * k, f = fminf(1, W * 0.25f / full); gw = full * f; gh = 2.5f * lh * f;
+        float full = 24 * ov_fps_adv(ov_fps_index('0')) * k, f = fminf(1, W * 0.25f / full); gw = full * f; gh = 2.5f * lh * f;
         bw = fmaxf(bw, ch * 0.5f + gw);
     }
     float bh = bh_t + (gr ? gh + pad : 0), left = fpso_pos(o) & 1 ? W - m - bw : m, top = fpso_pos(o) & 2 ? H - m - bh : m;   // the block, in its corner

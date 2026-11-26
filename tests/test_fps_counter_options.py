@@ -106,7 +106,7 @@ int main(int argc, char **argv) {
         self.assertIn('d >> 22, d >> 12 & 0x3ff, d & 0xfff', core)
         line = next(l for l in present.splitlines() if l.startswith('#define OV_FPS_CHARS'))
         chars = line.split('"')[1]
-        for name in ('TURNIP', 'QCOM', 'ARM', 'IMG', 'NVIDIA', 'AMD', 'INTEL', 'ID 0123456789ABCDEF.'):
+        for name in ('RENDER', 'DISPLAY', 'PRESENT', '渲染', '显示', '提交', 'TURNIP', 'QCOM', 'ARM', 'IMG', 'NVIDIA', 'AMD', 'INTEL', 'ID 0123456789ABCDEF.'):
             for ch in name:
                 self.assertIn(ch, chars, f'{ch!r} of {name} is not a counter character')
 
