@@ -27,6 +27,11 @@ zip_store	.pak:.webm:.metallib
 # interval 2 it asks for); the host writes t.MaxFPS 60 and nvn.SyncInterval 1 into its console variables (hle_fpslock.c), so the game asks for present interval 1 itself. Unreal steps the game by
 # the time that really passed. DM_FPS_TARGET=30 (Documents/env.txt on the iPhone) keeps the game's 30 and saves power
 fps_target	60
+# Dynamic resolution: Unreal's controller (main+0x3140180) takes the median of RHIGetGPUFrameCycles (main+0x373bd80), the sum of the frame's begin / end timestamp-report
+# deltas divided by 615,384,615 ticks a second (main+0x372ae1c, the constant at main+0x6205fe8), and lowers the resolution above r.DynamicResolution.MaxTimeBudget (33 ms).
+# With the host's 19.2 MHz counter ticks it read a 28 ms frame as 0.74 ms (read from the running game, main+0x84eda28) and never lowered it; with 614.4 MHz ticks it reads
+# the real GPU time
+gpu_tick_rate	614.4
 
 # ---- Input ----
 # a 3D game: D-pad, right stick (camera) and L3 / R3 on the iPhone's virtual gamepad
@@ -46,5 +51,11 @@ app_pool	0xCD500000
 # ---- Shader split ----
 # The engine's global shaders (Engine/GlobalShaderCache-GLSL_SWITCH.bin), the engine's own materials and the game's. Unreal Engine 4.18 keeps every shader inline in the cooked packages,
 # zlib-compressed, in paks whose blocks are LZ5-compressed; the NSP script decodes them on the Mac with the game's own LZ5 (uepak.py, shader_split.py ue_legacy_jobs, DM_OODLE_SERVE)
+# Android: the paks' LZ5 files are decoded by the game's own LZ5 on the Android device instead (porter/pipeline.py device_ue_legacy, hle_oodle.c ue_group_job), and only the files that can hold a
+# shader record come back
+ue_legacy_decode	device
+# The skinning shaders read their bone matrices from texture buffers with 1D integer fetches the answer table has no type for: as 2D rows they read the dummy
+# view and every skinned character was invisible (the field showed only the hero's sword). Translated as texture buffers instead (dm/android/tools/shader_vk.py)
+android_fetch1d	buffer
 shader_groups	GlobalShaderCache=global #Engine/=engine #JackGame/=game
 shader_note	DRAGON QUEST XI S shaders

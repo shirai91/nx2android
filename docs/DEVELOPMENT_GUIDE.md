@@ -47,6 +47,10 @@ rewrite outputs, so a completed rewrite need not run again for a different limit
 
 The APK (`NeoTheWorldEndsWithYou.apk`) and the data pack (`NeoTheWorldEndsWithYou-data/`) appear in the game folder (`-o` picks another). `python -m porter install <App>-data` installs a port made earlier; with `--romfs-at <folder on the device>` the app reads the game's RomFS from a folder already there (an emulator's dump of the same version) instead of a copy in its files folder ([ARCHITECTURE.md](ARCHITECTURE.md#the-port), A RomFS already on the device). The first port takes a while (extraction, rewriting the game's code, translating its shaders); later ones reuse what has not changed. `python -m porter -h` lists the commands.
 
+Set **Game language** to **Follow Android system language** in the GUI, or pass `--language system`.
+At launch the Android host maps the device's locale to a language supported by the game.
+Restart the app after changing the device language.
+
 ### Saves
 
 `porter saves` does what the app's **Saves** tab does (see the README's [Saves](../README.md#saves)):
@@ -157,7 +161,10 @@ graphs do not gain new inferred types. `test_shader_export_checks` verifies that
 baseline inference precedes address optimization, types remain fixed across
 retries, and failed or incompatible optimized products fall back to the exact
 baseline SPIR-V and reflection with one diagnostic. Unsupported baseline input
-signatures skip optimization without dropping the shader.
+signatures skip optimization without dropping the shader. Buffer-texture retries
+precede baseline capture, and fallback restores their updated reflection too.
+Finalization checks cover file-backed lowering for accepted and fallback vertex
+products, handle remaps and bounded aggregate module memory.
 
 `test_nvn_sampler_cache` exercises the production sampler initializer, finalizer,
 comparison and object layout. It checks that all four formerly skipped filter/wrap
@@ -301,6 +308,10 @@ The `sync-scan`, `sync-protect`, `sync-upload` and `sync-baseline` phases report
 `baseline-reason` reports per-sync and cumulative full-snapshot counts/MiB by mutually exclusive reason: `resync` (not synchronized yet, including newly registered tracking; takes priority over missing tracking), `untracked` (already synchronized but no tracking span), `incomplete-uncached` (tracked incremental sync with no completion merge since the last one, NVN CPU_UNCACHED flag) and `incomplete-other`. NVN CPU_UNCACHED is distinct from Vulkan HOST_CACHED. Incremental baseline block copies are excluded. The first three syncs and then at most once per second per thread report all categories. No memory contents are logged.
 
 Eligible transfer-only completion also reuses NVN CPU_UNCACHED baselines. Native cases cover coherent and simulated non-coherent memory, empty/disjoint writes, independent CPU changes, incremental and clean snapshot volume, and fallback-to-eligible transitions. The old exclusion fails these tests. This does not change CPU_UNCACHED merge coverage for uncertain submissions; their baselines are reused too (no full snapshot of the pool at the next sync).
+
+## Pull requests
+
+A pull request needs at least one run on a real Android device by its author, named in its text (device, driver, game and version, commit, what was played, proof). Community testers only confirm a tested result. [CONTRIBUTING.md](../CONTRIBUTING.md) has the full rule; `.github/pull_request_template.md` asks for each item.
 
 ## Commit messages
 

@@ -1,0 +1,26 @@
+# Digimon Story: Time Stranger on Android (Unreal Engine 4 on SDK 20.5.21, update 1.2.2 with its 14 DLC; keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Brought up on a Poco F5 (Snapdragon 7+ Gen 2, Adreno 725) from Termux, with the whole port built on the phone in Termux.
+# Fast camera turns with DM_NVN_ACQ_REPLAYED=0 produced no whole-screen garbage.
+# The previously reported blue-line artifact was not reproduced on recheck.
+# The shaders sit in MVGL archives and in main; the shader split reads them (19,932 shaders, 2026-11-23). On 2026-11-23 it played into the game and held 30 fps in handheld
+# and in docked mode, in a crowded area, with Mesa's Turnip (vulkan_driver below: Turnip 26.99.99, Mesa 27.0.0-devel) and no GPU turbo. The system Vulkan driver gives about
+# 20 fps there even with DM_GPU_TURBO=1. The env rows are what holds 30 fps: a build installed without DM_NVN_ACQ_REPLAYED=0 and DM_PIN_REPLAY=prime ran about 20 fps with
+# the same driver (not measured one at a time); the port writes the profile's env rows into the app's env.txt, so a switch missing here is missing on the device.
+# DM_VK_PASS_SPLIT=128 with DM_VK_PASS_SPLIT_DEPTH=1 splits the long 1920x1080 pass (it has depth) so its first part reaches the GPU while the rest records. Same area and route on
+# 2026-11-23, three short runs (300-frame windows, median): p95 frame time 56 ms without the two rows, 38 ms with 128, 45 ms with 512; the log shows only the first three splits, so which passes 512 cut is not known.
+# Only a short session, including one crowded area, was played, in both modes, so the status stays wip until more of the game has been tested.
+status	wip
+tested	v262144 Poco F5 (Snapdragon 7+ Gen 2, Adreno 725, Turnip 26.99.99)
+package	org.nx2a.t010062e01fe0c000
+orientation	landscape
+vulkan_driver	turnip
+env	DM_NVN_ASYNC=1
+env	DM_VK_MT_REPLAY=1
+env	DM_NVN_ACQ_REPLAYED=0
+env	DM_PIN_REPLAY=prime
+env	DM_VK_PASS_SPLIT=128
+env	DM_VK_PASS_SPLIT_DEPTH=1
+env	DM_FPS_PIN=30
+readme_name	Digimon Story: Time Stranger
+readme_image	docs/images/digimon-story-time-stranger.jpg
+readme_tag	v0.5.0

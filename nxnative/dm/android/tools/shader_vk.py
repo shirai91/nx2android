@@ -15,6 +15,7 @@ HERE = Path(__file__).resolve().parent
 TOOLS = HERE.parent.parent / 'gfx/tools'
 sys.path[:0] = [str(TOOLS), str(HERE)]
 import dmsh_facts, dmsh_chain, dmsv, shader_products, spv_half, spv_precise, spv_texture_offsets   # noqa: E402  (DM_GAME picks the profile)
+from forkpool import fork_map   # noqa: E402  (the pool without /dev/shm's semaphores, as on Android)
 from shader_split import glslc_stage   # the package reader also recognizes headerless compute code
 
 ap = argparse.ArgumentParser()
@@ -386,6 +387,69 @@ def int_inputs(spv):
             else: other.add(loads[x])
     return {str(loc[v]): 'sint' if v in sint else 'uint' for v in uses if v not in other and v in loc}
 
+_FINAL_W = None   # a pool child's work folder (shader_products.output reads <w>/<key>.spv)
+
+def _final_init(w):
+    global _FINAL_W
+    _FINAL_W = w
+
+def _use_baseline(w, k, reason):
+    for suffix in ('.spv', '.res.json'):
+        os.replace(os.path.join(w, k + '.base' + suffix), os.path.join(w, k + suffix))
+    reason = ' '.join(reason.splitlines())
+    print(f'[RED] {k}: constant-buffer address optimization skipped ({reason}); using baseline vertex shader', flush=True)
+
+def _final_one(item):
+    """One shader's end of the build, in a pool child: the parity passes, the reflection and the bundle entry. The bundle
+    reads modules back from disk, so a module the lowering passes or a handle remap changed is written beside the
+    translator's own <w>/<key>.spv (not through the pool's pipe: the shaders are gigabytes together); the entry's small
+    parts come back. A shader that fails comes back with its reason, not as an exception: the parent lists it, as the
+    serial loop did"""
+    k, st, c1, key16, remap, local_hint, fail, berr, signature = item
+    def read_product(check_interface):
+        product = shader_products.output(_FINAL_W, k, STAGES[st])
+        if product is None: raise ValueError(berr or 'no output')
+        translated, res = product
+        if check_interface:
+            if res.get('constant_buffer_address') is not True:
+                raise ValueError('translator did not enable constant-buffer address optimization')
+            if shader_products.vertex_input_signature(translated) != signature:
+                raise ValueError('address optimization changed the baseline vertex input interface')
+        spv = spv_precise.lower(spv_half.lower(spv_texture_offsets.lower(translated)))
+        binds, local, io = spirv_bindings(spv)
+        shader_products.validate_bindings(binds, res)
+        return translated, res, spv, binds, local, io
+    try:
+        if fail: raise ValueError(fail)
+        try: translated, res, spv, binds, local, io = read_product(signature is not None)
+        except Exception as e:
+            if signature is None: raise
+            # Both products stay on disk: a failed optional optimization falls
+            # back inside this worker, through the same parity/reflection passes.
+            _use_baseline(_FINAL_W, k, str(e))
+            translated, res, spv, binds, local, io = read_product(False)
+        if remap: spv = remap_handles(spv, *remap)
+        cl = [classify(st, b, res) for b in binds]
+        # header words 2-4: a compute shader's local size; a vertex shader's input locations (all, signed int, unsigned int); a pixel shader's output locations
+        hdr3 = (local or local_hint or [1, 1, 1]) if st == 'cs' else io[1] if st == 'vs' else io[3] if st == 'ps' else [0, 0, 0]
+        path = os.path.join(_FINAL_W, k + '.spv')
+        if spv != translated:   # the translator's file stays as it wrote it; the bundle reads the adjusted one
+            path = os.path.join(_FINAL_W, k + '.bundle.spv')
+            with open(path + '.partial', 'wb') as f: f.write(spv)
+            os.replace(path + '.partial', path)
+        return key16, (st, k, cl, refl_bin(cl, c1, hdr3), path), None
+    except Exception as e:
+        return key16, None, str(e)
+
+def final_map(items, J, w):
+    """The per-shader end of the build over forked children (forkpool.py: Android has no /dev/shm for a pool's semaphores),
+    or in order where fork does not exist (Windows)"""
+    if J <= 1 or not hasattr(os, 'fork'):
+        _final_init(w)
+        return [_final_one(it) for it in items]
+    _final_init(w)
+    return fork_map(_final_one, items, J)
+
 def main():
     handle_remaps = {}
     table = GAME.table('android_shader_handles.tsv')
@@ -419,6 +483,7 @@ def main():
         for t in (0, 1, 2, 4):
             vk_ = f'{k}_t{t}'; jobs[vk_] = {**jobs[k], 'key': vk_, 'gs_input': t}; c1s[vk_] = c1s[k]; stages[vk_] = 'gs'; gs_var[vk_] = gs_variant_key(int(k, 16), t)
     keys = keys + sorted(gs_var)
+    packs.clear()   # the shader records are in the jobs: the children fork without their gigabytes
     if not keys: raise ValueError('no shaders selected for export')
     if a.report and os.path.abspath(a.report) == os.path.abspath(a.out): raise ValueError('shader report must not overwrite the bundle')
     batch_errors, failures, rs = {}, {}, []
@@ -465,13 +530,29 @@ def main():
     if again:
         print(f'translating {len(again)} vertex shaders again with their integer inputs ...', flush=True)
         translate(again)
+    # android_fetch1d buffer (game profile, default off): the texture slots a shader reads with 1D integer fetches and the answer table gives no type for (res "fetch1d",
+    # translated as 2D rows) are translated again as texture buffers. Vulkan has no image over a buffer, so a texture buffer bound in such a slot read the dummy view.
+    # DRAGON QUEST XI S reads its skinning bone matrices so (Unreal's Buffer<float4>): every skinned character was invisible. A 1D texture bound in a slot answered so
+    # reads zeros and logs a red line on the device (gfx_vk_exec_descriptors.inc)
+    fetch1d = GAME.get('android_fetch1d', 'off')
+    if fetch1d not in ('off', 'buffer'): raise ValueError(f'android_fetch1d must be off or buffer: {fetch1d}')
+    if fetch1d == 'buffer':
+        again = []
+        for k in keys:
+            if k in failures: continue
+            try:
+                product = shader_products.output(w, k, STAGES[stages[k]])
+                if product is None: continue
+                slots = [s for s in product[1].get('fetch1d', ()) if str(s) not in jobs[k]['tex']]
+                if slots:
+                    jobs[k]['tex'] = {**jobs[k]['tex'], **{str(s): 'buffer' for s in slots}}
+                    for suffix in ('.spv', '.res.json'): os.unlink(os.path.join(w, k + suffix))
+                    again.append(k)
+            except Exception as e: failures[k] = str(e)
+        if again:
+            print(f'translating {len(again)} shaders again with their 1D integer fetch slots as texture buffers (android_fetch1d buffer) ...', flush=True)
+            translate(again)
     original_inputs, optimized, baselines = {}, [], set()
-    def use_baseline(k, reason):
-        for suffix in ('.spv', '.res.json'):
-            os.replace(os.path.join(w, k + '.base' + suffix), os.path.join(w, k + suffix))
-        baselines.remove(k)
-        reason = ' '.join(reason.splitlines())
-        print(f'[RED] {k}: constant-buffer address optimization skipped ({reason}); using baseline vertex shader', flush=True)
     for k in keys:
         if stages[k] != 'vs' or k in failures: continue
         try:
@@ -489,7 +570,7 @@ def main():
             # Freeze attr: never re-infer from optimized SPIR-V.
             optimized.append(k)
         except Exception as e:
-            if k in baselines: use_baseline(k, str(e))
+            if k in baselines: _use_baseline(w, k, str(e)); baselines.remove(k)
             else: failures[k] = str(e)
     if optimized:
         print(f'optimizing {len(optimized)} vertex shaders with fixed baseline input types ...', flush=True)
@@ -519,40 +600,24 @@ def main():
     entries, fails, failed = [], collections.Counter(), []
     expected = [[f'{gs_var[k] if k in gs_var else int(k, 16):016x}', STAGES[stages[k]]] for k in keys]
     if len({k for k, _ in expected}) != len(expected): raise ValueError('shader keys collide with geometry variants')
-    def read_product(k):
-        product = shader_products.output(w, k, STAGES[stages[k]])
-        if product is None: raise ValueError(batch_errors[k] or 'no output')
-        spv, res = product
-        if k in baselines:
-            if res.get('constant_buffer_address') is not True:
-                raise ValueError('translator did not enable constant-buffer address optimization')
-            if shader_products.vertex_input_signature(spv) != original_inputs[k]:
-                raise ValueError('address optimization changed the baseline vertex input interface')
-        spv = spv_precise.lower(spv_half.lower(spv_texture_offsets.lower(spv)))
-        binds, local, io = spirv_bindings(spv)
-        shader_products.validate_bindings(binds, res)
-        return spv, res, binds, local, io
-    for k in keys:
-        try:
-            if k in failures: raise ValueError(failures[k])
-            try: spv, res, binds, local, io = read_product(k)
-            except Exception as e:
-                if k not in baselines: raise
-                use_baseline(k, str(e))
-                spv, res, binds, local, io = read_product(k)
-            if k in handle_remaps:
-                spv = remap_handles(spv, *handle_remaps[k])
-            st = stages[k]
-            cl = [classify(st, b, res) for b in binds]
-            for e in cl: kinds_all[e['kind']] += 1
-            # header words 2-4: a compute shader's local size; a vertex shader's input locations (all, signed int, unsigned int); a pixel shader's output locations
-            hdr3 = (local or jobs[k].get('local') or [1, 1, 1]) if st == 'cs' else io[1] if st == 'vs' else io[3] if st == 'ps' else [0, 0, 0]
-            entries.append((gs_var[k] if k in gs_var else int(k, 16), STAGES.get(st, 0), spv, refl_bin(cl, c1s[k], hdr3)))
-        except Exception as e:
-            reason = str(e)
-            failed.append([f'{gs_var[k] if k in gs_var else int(k, 16):016x}', reason])
-            fails[reason] += 1
-            print(f'[RED] {failed[-1][0]}: {reason}', flush=True)
+    # The parity passes and the reflection are pure Python, per shader: over the whole set they cost minutes on a phone's
+    # cores, and they ran one at a time. The pool runs them on every core; an adjusted module reaches the bundle as
+    # <w>/<key>.bundle.spv beside the translator's own <w>/<key>.spv (not through the pool's pipe: the shaders are
+    # gigabytes together), and the entry's small parts come back.
+    items = [(k, stages[k], c1s[k], gs_var[k] if k in gs_var else int(k, 16), handle_remaps.get(k), jobs[k].get('local'),
+              failures.get(k), batch_errors.get(k), original_inputs.get(k)) for k in keys]
+    for key16, got, err in final_map(items, min(a.jobs, len(items)), w):
+        if err is not None:
+            failed.append([f'{key16:016x}', err])
+            fails[err] += 1
+            print(f'[RED] {failed[-1][0]}: {err}', flush=True)
+            continue
+        st, k, cl, refl, spv_path = got
+        for e in cl: kinds_all[e['kind']] += 1
+        entries.append((key16, STAGES.get(st, 0), Path(spv_path), refl))
+    # The validated modules are already on disk. Do not retain their aggregate
+    # SPIR-V or the source packs/jobs while dmsv compresses bounded batches.
+    packs.clear(); jobs.clear(); c1s.clear(); cap.clear()
     if a.zstd: print(f'compressing {len(entries)} shaders (zstd level {a.zstd}, {a.jobs} threads) ...', flush=True)
     ver, raw, stored = dmsv.write(a.out, entries, level=a.zstd, jobs=a.jobs)
     if a.report:

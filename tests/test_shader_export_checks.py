@@ -15,6 +15,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import tracemalloc
 from types import SimpleNamespace
 import unittest
 from unittest import mock
@@ -64,6 +65,8 @@ class ExportChecks(unittest.TestCase):
         self.behavior = 'ok'; self.reflect = True; self.second_shader = False; self.bad_resource = None
         self.jobs = 1; self.bad_key = None; self.log = io.StringIO(); self.bindings = []
         self.job_history = []; self.inference = {'0': 'uint'}
+        self.shader_count = 0; self.extra_spv = b''; self.spv_override = None
+        self.fetch1d = 'off'
         (self.root / 'pkg').mkdir()
 
     def translate(self, argv, **kwargs):
@@ -85,14 +88,18 @@ class ExportChecks(unittest.TestCase):
             if broken and self.behavior == 'optimized-missing' and optimized: bad += 1; continue
             key = job['key']
             spv = vertex_module(id_offset=20 if optimized else 0) if self.stage == 'vs' else module(self.stage)
+            if self.stage == 'vs' and not optimized and job['tex'].get('7') == 'buffer': spv = vertex_module(id_offset=10)
             if self.behavior == 'input-type-change': spv = vertex_module('sint' if optimized else 'float')
             if broken and (self.behavior == 'baseline-interface-unsupported' or
                            self.behavior == 'optimized-interface-unsupported' and optimized): spv = vertex_module(location=None)
             if broken and optimized and self.behavior == 'optimized-bad-module': spv = b'bad module'
-            (dest / f'{key}.spv').write_bytes(b'bad module' if broken and self.behavior == 'bad-module' else spv)
+            (dest / f'{key}.spv').write_bytes(b'bad module' if broken and self.behavior == 'bad-module' else self.spv_override or spv + self.extra_spv)
             if broken and self.behavior == 'failed-after-spv': bad += 1; continue
             if broken and optimized and self.behavior == 'optimized-missing-reflection': bad += 1; continue
             resource = reflection(key, self.stage)
+            if self.fetch1d == 'buffer':
+                resource['fetch1d'] = [7]
+                if job['tex'].get('7') == 'buffer': resource['cbufs'] = [dict(binding=0, slot=3)]
             if self.behavior != 'old-translator': resource['constant_buffer_address'] = job.get('constant_buffer_address', True)
             if broken and optimized and self.behavior == 'optimized-no-ack': resource.pop('constant_buffer_address')
             if broken and optimized and self.behavior == 'optimized-bad-reflection': resource['key'] = 'wrong'
@@ -106,10 +113,10 @@ class ExportChecks(unittest.TestCase):
 
     def run_export(self):
         table = self.root / 'shader_map.tsv'
-        table.write_text(f'{self.stage}_test.bin\t0\t0\t0000000000000001\t0\n' +
-                         (f'{self.stage}_test.bin\t0\t0\t0000000000000002\t0\n' if self.second_shader else ''))
+        count = self.shader_count or (2 if self.second_shader else 1)
+        table.write_text(''.join(f'{self.stage}_test.bin\t0\t0\t{k:016x}\t0\n' for k in range(1, count + 1)))
         (self.root / 'pkg' / f'{self.stage}_test.bin').write_bytes(b'fixture')
-        game = SimpleNamespace(table=lambda name: self.root / name)
+        game = SimpleNamespace(table=lambda name: self.root / name, get=lambda k, d=None: self.fetch1d if k == 'android_fetch1d' else d)
         try: products = importlib.import_module('shader_products')
         except ModuleNotFoundError: products = None
         numeric = {}
@@ -123,13 +130,14 @@ class ExportChecks(unittest.TestCase):
                                      jobs=self.jobs, dotnet='dotnet', zstd=0, report=str(self.report)),
                    STAGES={'vs': 0, 'cs': 5}, kinds_all=collections.Counter(),
                    captured=lambda _: {}, records=lambda _: [b'fixture'],
-                   job_for=lambda key, stage, rec, w: ({'key': key, 'attr': {}}, b''),
+                   job_for=lambda key, stage, rec, w: ({'key': key, 'attr': {}, 'tex': {}}, b''),
                    int_inputs=lambda _: self.inference,
                    spirv_bindings=lambda _: (self.bindings, [1, 1, 1], {1: [0, 0, 0], 3: [0, 0, 0]}),
                    refl_bin=lambda cl,c1,hdr: struct.pack('<5I', 0, 0, *hdr),
-                   classify=lambda *args: dict(kind='ssbo'))
+                   classify=lambda *args: dict(kind='ssbo'),
+                   fork_map=lambda fn, items, J, init=None: [fn(i) for i in items])
         source = TOOLS / 'shader_vk.py'; tree = ast.parse(source.read_text(encoding='utf-8'))
-        nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'main']
+        nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in ('main', 'remap_handles', 'final_map', '_final_one', '_final_init', '_use_baseline')]
         exec(compile(ast.Module(body=nodes, type_ignores=[]), str(source), 'exec'), env)
         with mock.patch.dict(os.environ, {'WORK': str(self.root)}), mock.patch.object(subprocess, 'run', side_effect=self.translate), contextlib.redirect_stdout(self.log):
             env['main']()
@@ -252,6 +260,38 @@ void main(){d.smallest=min(d.a.x,d.a.y);d.packed=packHalf2x16(d.a);}
         self.assertEqual([j['constant_buffer_address'] for j in self.job_history], [False, True])
         self.assertTrue(all(j['attr'] == {} for j in self.job_history))
 
+    def test_fetch1d_retry_precedes_optimization_and_survives_fallback(self):
+        self.stage = 'vs'; self.fetch1d = 'buffer'; self.behavior = 'optimized-missing'
+        self.run_export()
+        self.assertEqual([(j['constant_buffer_address'], j['attr'], j['tex']) for j in self.job_history],
+                         [(False, {}, {}), (False, {'0': 'uint'}, {}),
+                          (False, {'0': 'uint'}, {'7': 'buffer'}), (True, {'0': 'uint'}, {'7': 'buffer'})])
+        self.assertEqual(json.loads(self.report.read_text())['failed'], [])
+        with dmsv.Bundle(self.out) as bundle:
+            self.assertEqual(bundle.spv(bundle.entries[0]), vertex_module(id_offset=10))
+        resource = json.loads(next(self.root.glob('shvk_*/0000000000000001.res.json')).read_text())
+        self.assertEqual(resource['cbufs'], [dict(binding=0, slot=3)])
+        self.assertIs(resource['constant_buffer_address'], False)
+
+    def test_fetch1d_retry_still_applies_to_compute(self):
+        self.fetch1d = 'buffer'; self.run_export()
+        self.assertEqual([j['tex'] for j in self.job_history], [{}, {'7': 'buffer'}])
+        self.assertFalse(any('constant_buffer_address' in j for j in self.job_history))
+        self.assertEqual(json.loads(self.report.read_text())['failed'], [])
+
+    def test_vertex_finalization_keeps_lowered_products_file_backed(self):
+        self.stage = 'vs'
+        nop = struct.pack('<I', 1 << 16)
+        for self.behavior in ('ok', 'optimized-bad-module'):
+            with self.subTest(behavior=self.behavior), mock.patch.object(importlib.import_module('spv_precise'), 'lower', side_effect=lambda spv: spv + nop):
+                self.run_export()
+                raw = vertex_module(id_offset=20 if self.behavior == 'ok' else 0)
+                with dmsv.Bundle(self.out) as bundle:
+                    self.assertEqual(bundle.spv(bundle.entries[0]), raw + nop)
+                translated = sorted(self.root.glob('shvk_*/0000000000000001.spv'), key=lambda p: p.stat().st_mtime_ns)[-1]
+                self.assertEqual(translated.read_bytes(), raw)
+                self.assertEqual(translated.with_suffix('.bundle.spv').read_bytes(), raw + nop)
+
     def assert_fallback(self, key, reason, emitted=(1,)):
         self.assertEqual(json.loads(self.report.read_text())['failed'], [])
         lines = [line for line in self.log.getvalue().splitlines() if 'using baseline vertex shader' in line]
@@ -329,6 +369,44 @@ void main(){d.smallest=min(d.a.x,d.a.y);d.packed=packHalf2x16(d.a);}
         self.run_export()
         self.assertEqual(len(calls), 1)
 
+    def test_export_does_not_retain_all_translated_modules(self):
+        # One 256 KiB OpSourceContinued per module: retaining all 64 products
+        # adds 16 MiB even with compression off and a single translation job.
+        self.shader_count = 64
+        self.extra_spv = struct.pack('<I', (65535 << 16) | 2) + bytes(65534 * 4)
+        tracemalloc.start()
+        try:
+            self.run_export()
+            _, peak = tracemalloc.get_traced_memory()
+        finally: tracemalloc.stop()
+        self.assertLess(peak, 8 * 1024 * 1024, 'export retained the aggregate SPIR-V before writing')
+        with dmsv.Bundle(self.out) as b:
+            self.assertEqual(len(b.entries), 64)
+            self.assertEqual(b.spv(b.entries[-1]), module(self.stage) + self.extra_spv)
+
+    def test_file_backed_export_keeps_remapped_handles(self):
+        # The translated file must remain unchanged, but the bundle must contain
+        # the adjusted module, including both constants added by remap_handles.
+        w = list(struct.unpack(f'<{len(module("cs")) // 4}I', module('cs'))); w[3] = 32
+        at = w.index(5 << 16 | 54)
+        w[at:at] = [2 << 16 | 20, 7, 4 << 16 | 21, 8, 32, 0,
+                    4 << 16 | 32, 9, 7, 8,
+                    4 << 16 | 43, 8, 10, 20, 4 << 16 | 43, 8, 11, 0xfffff,
+                    4 << 16 | 43, 8, 12, 0x1234]
+        at = w.index(1 << 16 | 253)
+        w[at:at] = [4 << 16 | 59, 9, 13, 7, 3 << 16 | 62, 13, 12,
+                    4 << 16 | 61, 8, 14, 13,
+                    5 << 16 | 194, 8, 15, 14, 10, 5 << 16 | 199, 8, 16, 14, 11]
+        self.spv_override = struct.pack(f'<{len(w)}I', *w)
+        (self.root / 'android_shader_handles.tsv').write_text('0000000000000001 0x1234 0x5678 1\n')
+        self.run_export()
+        with dmsv.Bundle(self.out) as b:
+            spv = b.spv(b.entries[0])
+            self.assertIn(struct.pack('<4I', 4 << 16 | 43, 8, 32, 0x1234), spv)
+            self.assertIn(struct.pack('<4I', 4 << 16 | 43, 8, 33, 0x5678), spv)
+            self.assertEqual(struct.unpack_from('<I', spv, 12)[0], 36)
+        translated = next(self.root.glob('shvk_*/0000000000000001.spv'))
+        self.assertEqual(translated.read_bytes(), self.spv_override)
 
 
 class ProductValidation(unittest.TestCase):
@@ -410,6 +488,26 @@ class ProductValidation(unittest.TestCase):
                 dmsv.write(str(path), [], level=level)
                 empty = dict(schema=1, expected=[['0000000000000001',5]], failed=[['0000000000000001', 'no output']])
                 self.assertEqual(shader_products.check_bundle(path, empty), (0, 1, False))
+
+
+class ForkPoolInTheRealModuleTest(unittest.TestCase):
+    """The harness above execs shader_vk.py's functions with a fork_map of its own, so a fork pool left out of the
+    branch failed only on a port. These run the module itself: its imports, and the pool it runs the passes in."""
+
+    def test_shader_vk_imports_the_fork_pool_it_runs_on(self):
+        p = subprocess.run([sys.executable, str(TOOLS / 'shader_vk.py'), '--help'], capture_output=True, text=True,
+                           env=dict(os.environ, DM_GAME='0100000000010000'))
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn('usage: shader_vk.py', p.stdout)
+
+    @unittest.skipUnless(hasattr(os, 'fork'), 'forkpool forks: where fork does not exist final_map runs in order')
+    def test_the_fork_pool_runs_the_work_in_two_children(self):
+        snippet = (f'import sys; sys.path.insert(0, {str(ROOT / "nxnative/dm/gfx/tools")!r})\n'
+                   'from forkpool import fork_map\n'
+                   'print(fork_map(lambda n: n * 2, [1, 2, 3, 4], 2))\n')
+        p = subprocess.run([sys.executable, '-c', snippet], capture_output=True, text=True)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(p.stdout.strip(), '[2, 4, 6, 8]')
 
 
 if __name__ == '__main__': unittest.main()

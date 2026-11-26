@@ -195,6 +195,7 @@ static void force_init(void) {
 static void *force_lookup(const char *name) {
     for (unsigned i = 0; i < g_nforce; i++)
         if (!strcmp(g_force[i].name, name)) {
+            if (g_force[i].gate) { const char *e = getenv(g_force[i].gate); if (!e || !strtol(e, NULL, 0)) return NULL; }   // Gated entry, switch off: the module keeps its definition
             if (!g_force_hits[i]++ && g_flag.imports) LOG("force %s  (%s)", name, g_force[i].why);
             void *hlecount_wrap(const char *, const char *, void *); return hlecount_wrap("FORCE", name, g_force[i].fn);   // A counting stub when DM_HLECOUNT is set
         }

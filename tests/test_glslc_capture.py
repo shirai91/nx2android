@@ -77,7 +77,7 @@ class GlslcCapture(unittest.TestCase):
         p.tools = {'adb': 'fixture-adb', 'ndk': 'fixture-ndk'}; p.glslc_why = 'runtime GLSLC outputs'
         self.map = self.root / 'shader_map.tsv'
         self.map.write_text(f'x\t0\tvertex\tkey\t/glslc_capture/{NAME}#GLSLC@0\n', encoding='utf-8')
-        p.g = SimpleNamespace(id='0100000000010000', table=lambda _: self.map, words=lambda _: ['main', 'subsdk0', 'sdk'])
+        p.g = SimpleNamespace(id='0100000000010000', table=lambda _: self.map, words=lambda _: ['main', 'subsdk0', 'sdk'], get=lambda k, d=None: d)
         self.src = {k: (False, '') for k in ('glslc_capture', 'oodle_packs', 'ue_decode', 'ue_legacy')}
         self.src.update(graphics=('nvn', 'NVN'), glslc_capture=(True, p.glslc_why))
         self.adb = Device()

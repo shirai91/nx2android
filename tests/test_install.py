@@ -117,6 +117,30 @@ class RomfsAt(unittest.TestCase):
             with self.assertRaises(BuildError, msg=bad): install.romfs_target(bad, FILES)
         with self.assertRaisesRegex(BuildError, 'installer\'s own'): install.romfs_target(f'{FILES}/romfs2', FILES)
 
+    def test_push_cut_name(self):   # issue #74: a file that lands under a shortened name fails the install, and the pack gets no manifest
+        class Cut(Device):
+            def push_tree(self, local, remote, **kw):
+                super().push_tree(local, remote, **kw); self.fs[f'{remote}/e'] = self.fs.pop(f'{remote}/env.txt')
+        dev = Cut()
+        with self.assertRaisesRegex(BuildError, r'not the whole pack: 1 files are not there \(env\.txt\)'): self.run_on(dev)
+        self.assertNotIn(f'{FILES}/{datapack.MANIFEST}', dev.fs)
+
+    def test_push_wrong_size(self):   # a file cut short is refused too
+        class Short(Device):
+            def push_tree(self, local, remote, **kw): super().push_tree(local, remote, **kw); self.fs[f'{remote}/mods/main'] = 3
+        dev = Short()
+        with self.assertRaisesRegex(BuildError, 'mods/main: 3 bytes, the pack has 10'): self.run_on(dev)
+        self.assertNotIn(f'{FILES}/{datapack.MANIFEST}', dev.fs)
+
+    def test_push_check_allows(self):   # the player's settings at any size, and a name adb's output decoded in another locale, are not failures
+        (self.data / 'settings.txt').write_text('a=1\n', encoding='utf-8'); (self.data / 'RomFS' / 'データ.bin').write_bytes(b'x')
+        class Kept(Device):
+            def push_tree(self, local, remote, **kw):
+                super().push_tree(local, remote, **kw); self.fs[f'{remote}/settings.txt'] = 99
+                self.fs[f'{remote}/RomFS/ãƒ‡.bin'] = self.fs.pop(f'{remote}/RomFS/データ.bin')
+        dev = self.run_on(Kept())
+        self.assertIn(f'{FILES}/{datapack.MANIFEST}', dev.fs)
+
     def test_env_row(self):   # the installer's row, last, read back from the device's env.txt; a hand-written DM_ROMFS is not the installer's
         env = install.env_with_romfs('# porter\nDM_LANG=en-US\n', DUMP)
         self.assertTrue(env.endswith(f'\nDM_ROMFS={DUMP}\n')); self.assertEqual(env.count('DM_ROMFS='), 1)

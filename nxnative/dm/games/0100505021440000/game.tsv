@@ -1,0 +1,51 @@
+# DRAGON QUEST VII Reimagined, Asian release (0100505021440000): Square Enix / HEXA DRIVE, Unreal Engine 4.27 (IoStore containers beside one pak, PhysX 3.4, MallocBinned3), SDK 19.3.1, NVN,
+# CRIWARE sound and Sofdec movies (VP9 through the SDK's movie decoder); update 1.1.0. The JP/WW profile (dm/games/0100A9D01C446000) covers the same engine at 1.2.0: its sdk and subsdk0
+# builds are byte-identical, so the SDK patches and the memory layout apply here, and only the main's per-build rows were found again for this build (patches.py, ue_malloc.tsv, fps_locks.tsv).
+# Format: see dm/games/README.md
+
+# ---- Identity ----
+title_id	0100505021440000
+program_id	0100505021440000
+
+# ---- App ----
+name	DRAGON QUEST VII Reimagined
+ipa	DragonQuestViiReimagined.ipa
+app_category	public.app-category.games
+
+# ---- Versions ----
+build	v65536	1.1.0	main=ab06020960edd8285b7ff5fad2e3224b	subsdk0=92ef43cb1f9917ab206ac5c9e36240bc	sdk=145dde94fb574acc9e09780a11995bd3
+package	v65536
+shader_versions	v65536
+
+# ---- Files ----
+# load order as on Horizon: main, subsdk*, sdk (subsdk0 = NintendoSDK_movie, which Sofdec feeds its VP9 video to)
+modules	main subsdk0 sdk
+romfs_marker	DOLL/Content/Paks/pakchunk0-Switch.ucas
+zip_store	.pak:.ttf:.ucas:.usm:.utoc:.metallib
+
+# ---- Graphics ----
+# 60 fps (30 on the Switch): the game's config caps Unreal at 30 (FrameRateLimit=30, rhi.syncinterval=2), as the JP/WW profile; the host writes t.MaxFPS and rhi.SyncInterval in the
+# game's memory (hle_fpslock.c, fps_locks.tsv) to the frame-rate target, so at the Android profile's fixed 30 (android.tsv pacing) the game asks for present interval 2 as on the Switch
+fps_target	60
+
+# ---- Memory ----
+# Unreal Engine 4.27: nninitStartup reserves 62 GB of address space unless -SwitchVirtualAddressSpaceSize= caps it, and its FMallocBinned3 cuts 37 GB of pools out of that region; the
+# constructor call is cut and the host runs Unreal's heap on a malloc zone outside the guest block (patches.py, hle_uemalloc.c layout UE4_27). The region is 2 GB in a 3.75 GB guest block, with
+# the SDK's node-area cut on this sdk build (sdk_patches.py, the same build as the JP/WW profile's)
+game_args	-SwitchVirtualAddressSpaceSize=2048
+mem_reserve	0xF0000000
+mem_alias	0xC8000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+# the NPDM declares 80 MB of system resource
+sys_resource	0x5000000
+
+# ---- Input ----
+# A 3D game with a free camera on the right stick: the 3D pad layout. It reads the controller only, so either operation mode works; the player's docked setting decides 1920x1080 or 1280x720
+pad_layout	full
+
+# ---- Shader split ----
+# The shader code archives of pakchunk0-Switch.pak (ShaderArchive-*.ushaderbytecode), each shader LZ4-compressed (uepak.py lz4_shaders): the engine's global shaders and the game's
+# material shaders. Unreal combines vertex and pixel shaders per draw from its pipeline state, so every vertex shader is made to link with any pixel shader (shader_split.py separable_pairs)
+shader_groups	ShaderArchive-Global-=global ShaderArchive-=game
+shader_note	DRAGON QUEST VII Reimagined shaders

@@ -27,6 +27,7 @@ class OverlayVisibility(unittest.TestCase):
         hidden = csrc.between(front, 'int dm_overlay_hidden(', 'float dm_overlay_opacity(')
         hit = csrc.between(front, 'static int ctl_at(', '// dragging the menu button:')
         menu = csrc.between(front, 'static void menu_do(', 'static void menu_touch(')
+        zone = csrc.between(front, 'static int zone_stick(', 'static void touch_event(AInputEvent *e) {')   # Stick area half screen (issue #589)
         events = csrc.between(front, 'static void touch_event(AInputEvent *e) {', 'static int on_input(')
         harness = r'''
 #include <assert.h>
@@ -39,7 +40,7 @@ class OverlayVisibility(unittest.TestCase):
 #include "stick_axis.h"
 static _Atomic int g_set_overlay, g_overlay, g_pads, g_edit, g_menu_btn = 1;
 static _Atomic int g_cust[2][2][OV_N][4];
-static _Atomic int g_set_rumble, g_set_fps, g_set_labels, g_menu_tab, g_sv_st;
+static _Atomic int g_set_rumble, g_set_fps, g_set_sr, g_set_labels, g_menu_tab, g_sv_st, g_set_zone, g_fps_ver, g_stick_at[2][2];
 static int layout, saves;
 int dm_overlay_layout(void) { return layout; }
 float dm_overlay_scale(void) { return 1; }
@@ -145,7 +146,7 @@ void dm_input_set(uint64_t b, int32_t lx, int32_t ly, int32_t rx, int32_t ry) {
 }
 void dm_touch_set(const dm_touch *points, int n) { (void)points; touches = n; }
 static void (*dm_picture_rect)(float r[4]);
-''' + pad + events + r'''
+''' + pad + zone + events + r'''
 static void controls(int shown);
 static void input_handoff(int test) {
     width = layout ? 2400 : 1920; height = 1080;
