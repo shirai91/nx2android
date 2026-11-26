@@ -105,6 +105,15 @@ const vkfmt_t *vk_fmt(int f) {
         if (e.vk) {
             int bw, bh; o->bpb = (uint8_t)nvn_fmt_bpb(f, &bw, &bh); o->bw = (uint8_t)bw; o->bh = (uint8_t)bh;
             o->vk = (VkFormat)(e.vk == (uint16_t)VK_FORMAT_A1B5G5R5_UNORM_PACK16_KHR ? VK_FORMAT_A1B5G5R5_UNORM_PACK16_KHR : e.vk);
+            // RGBA4 (0x39): its VkFormat (1000340001) does not fit the table's 16 bits either, and the truncated 64033 is no format at all. Star Ocean First Departure R
+            // rasterizes all its UI text on the CPU into a 1024x512 RGBA4 linear render target: the image made in the invalid format sampled as flat half-transparent black,
+            // so every string was a dark box. The profile's DM_VK_FMT_4444=1 restores the full value where the device samples it (Vulkan 1.3 or VK_EXT_4444_formats)
+            if (f == 0x39) {
+                static int fix = -1; if (fix < 0) { const char *x = getenv("DM_VK_FMT_4444"); fix = x && atoi(x) != 0; }
+                VkFormatProperties fp; vkGetPhysicalDeviceFormatProperties(V.pd, VK_FORMAT_A4B4G4R4_UNORM_PACK16, &fp);
+                if (fix && (fp.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT)) o->vk = VK_FORMAT_A4B4G4R4_UNORM_PACK16;
+                else if (fix) VKLOG("[RED] texture format 0x39 (RGBA4): the device cannot sample VK_FORMAT_A4B4G4R4_UNORM_PACK16 (optimal features %#x)", (unsigned)fp.optimalTilingFeatures);
+            }
             if (f == 0x33) {   // DEPTH24: X8_D24 where the device renders to it, else D32
                 VkFormatProperties fp; vkGetPhysicalDeviceFormatProperties(V.pd, VK_FORMAT_X8_D24_UNORM_PACK32, &fp);
                 if (!(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)) o->vk = VK_FORMAT_D32_SFLOAT;

@@ -264,6 +264,7 @@ DM_VK_DRIVER	str		porter	start	gfx_vk_core.c	the Vulkan driver library in the AP
 DM_VK_DYN_UBO	bool		debug	start	gfx_vk_shader.c	no dynamic uniform-buffer offsets (descriptor reuse drops)
 DM_VK_FDZ	bool	1	profile	live	gfx_vk_exec.c	no fragment-depth variants: draws that test a depth buffer a fragment shader wrote through `gl_FragDepth` (in the last two presents) normally get a variant of their fragment shader that writes `gl_FragDepth = gl_FragCoord.z`, the same depth tested after the shader, out of Adreno's early culling, whi
 DM_VK_FLIPY	bool		debug	live	gfx_vk_exec.c	the old clip-space y convention (pictures flip)
+DM_VK_FMT_4444	bool	0	profile	start	gfx_vk_tex.c	1 = NVN RGBA4 textures (format 0x39) get VK_FORMAT_A4B4G4R4_UNORM_PACK16 where the device samples it, not the 16-bit table value (64033, not a format); Star Ocean First Departure R's UI text
 DM_VK_FRONT	int		debug	start	gfx_vk_exec.c	2`
 DM_VK_GS_SPLIT	bool	0	profile	live	gfx_vk_exec.c	1 = split geometry-shader draws (gfx_vk_gs_split.c)
 DM_VK_IMG_BLOCKS	bool		debug	start	gfx_vk_core.c	small images take a slot of a shared memory block (default); 0: every image gets memory of its own (A/B)

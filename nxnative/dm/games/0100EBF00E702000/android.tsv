@@ -1,0 +1,13 @@
+# STAR OCEAN First Departure R 1.0.0 (v0), tri-Ace / Square Enix, NVN + CRIWARE, SDK 8.2.1.
+# Tested 2026-11-24 on an AYN Odin 2 (Adreno 740) with Turnip KIMCHI v26.0.0_R8: intro movie, title, menus, a new game, the opening house and Kratus.
+# All UI text is rasterized on the CPU into a 1024x512 RGBA4 linear render target; RGBA4 needs its full VkFormat (gfx_vk_tex.c vk_fmt).
+# Experimental: a new game was played through the opening house and the town of Kratus; battle, saving to a slot and the world map are not tested yet.
+status	experimental
+tested	v0 AYN Odin 2 (Snapdragon 8 Gen 2 QCS8550, Adreno 740, Android 13; Mesa Turnip KIMCHI v26.0.0_R8)
+package	org.nx2a.staroceanfirstdeparturer
+orientation	landscape
+vulkan_driver	turnip
+# NVN RGBA4 (0x39) as VK_FORMAT_A4B4G4R4_UNORM_PACK16, not the truncated table value: without it every string is a dark box
+env	DM_VK_FMT_4444=1
+readme_image	docs/images/star-ocean-first-departure-r.jpg
+readme_tag	v0.4.0
