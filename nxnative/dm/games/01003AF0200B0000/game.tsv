@@ -34,3 +34,9 @@ sys_resource	0x2000000
 # the decoded shader code archives: the engine's global shaders and the game's material shaders
 shader_groups	ShaderArchive-Global-=global ShaderArchive-=game
 shader_note	Rune Factory: Guardians of Azuma shaders (provisional profile)
+
+# ---- Timing ----
+# Unreal's NVN RHI stores 614,400,000 as its GPU timestamp frequency (main+0x10bdb24, main+0x10bde34, main+0x10cc498) and divides the
+# nvnCommandBufferReportCounter timestamp deltas by it; the game never calls nvnDeviceGetTimestampInNanoseconds. With the host's 19.2 MHz
+# counter ticks it reads GPU time 32 times too short; with 614.4 MHz ticks it reads the real GPU time
+gpu_tick_rate	614.4
