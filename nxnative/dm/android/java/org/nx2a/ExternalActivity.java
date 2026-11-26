@@ -48,7 +48,8 @@ public class ExternalActivity extends NativeActivity implements ExternalDisplay.
     private static native boolean externalControllerMotion(MotionEvent event);
     private static native float[] externalOverlay(int width, int height);
     private static native int externalMenuState();
-    private static native int externalMenuScroll();
+    private static native int externalMenuRevision();
+    private static native float[] externalMenuRect(int width, int height, int state);
     private static native int[] externalMenuPixels(int width, int height, int state);
     private ExternalDisplay external;
     private View pad;
@@ -157,7 +158,7 @@ public class ExternalActivity extends NativeActivity implements ExternalDisplay.
         private final OverlayTheme[] themes = new OverlayTheme[2];
         private final Bitmap[] atlases = new Bitmap[2];
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
-        private int menuState = -1, rasterState = -2, rasterWidth, rasterHeight, rasterScroll;
+        private int menuState = -1, rasterState = -2, rasterRevision = -1, rasterWidth, rasterHeight;
         private Bitmap menuRaster;
 
         OriginalPad() throws IOException {
@@ -212,21 +213,20 @@ public class ExternalActivity extends NativeActivity implements ExternalDisplay.
             postInvalidateDelayed(33);
         }
         private Bitmap menuRaster(int state) {
-            int W = getWidth(), H = getHeight(), scroll = externalMenuScroll();
-            if (menuRaster != null && rasterState == state && rasterScroll == scroll && rasterWidth == W && rasterHeight == H) return menuRaster;
+            int W = getWidth(), H = getHeight(), revision = externalMenuRevision();
+            if (menuRaster != null && rasterRevision == revision && rasterState == state && rasterWidth == W && rasterHeight == H) return menuRaster;
             int[] pixels = externalMenuPixels(W, H, state);
             if (pixels == null || pixels.length < 3 || pixels[0] <= 0 || pixels[1] <= 0 || pixels.length != 2 + pixels[0] * pixels[1]) return null;
             if (menuRaster == null || menuRaster.getWidth() != pixels[0] || menuRaster.getHeight() != pixels[1])
                 menuRaster = Bitmap.createBitmap(pixels[0], pixels[1], Bitmap.Config.ARGB_8888);
             menuRaster.setPixels(pixels, 2, pixels[0], 0, 0, pixels[0], pixels[1]);
-            rasterState = state; rasterScroll = scroll; rasterWidth = W; rasterHeight = H; return menuRaster;
+            rasterState = state; rasterRevision = revision; rasterWidth = W; rasterHeight = H; return menuRaster;
         }
         private float menuRows(float[] data) { return data[5 + names.length * 9]; }   // overlay_layout.h OVM_VIEW_ROWS: the panel's visible rows
         private void drawMenu(Canvas c, float[] data) {
             Bitmap bitmap = menuRaster(menuState); if (bitmap == null) return;
-            float rows = menuRows(data), W = getWidth(), H = getHeight(), scale = Math.min(data[1], .92f / (rows * .115f + 2 * .03f));
-            float w = Math.min(.95f * H * scale, W * .96f), h = (rows * .115f + 2 * .03f) * H * scale;
-            paint.setAlpha(255); c.drawBitmap(bitmap, null, new RectF((W-w)/2, (H-h)/2, (W+w)/2, (H+h)/2), paint);
+            float[] r = externalMenuRect(getWidth(), getHeight(), menuState);
+            paint.setAlpha(255); c.drawBitmap(bitmap, null, new RectF(r[0], r[1], r[0]+r[2], r[1]+r[3]), paint);
         }
         private void drawEditor(Canvas c, float[] data, int state) {
             Bitmap bitmap = menuRaster(state); if (bitmap == null) return;

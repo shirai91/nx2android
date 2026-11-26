@@ -38,6 +38,7 @@ class OverlayVisibility(unittest.TestCase):
 #include "overlay_layout.h"
 #include "pad_slots.h"
 #include "stick_axis.h"
+static _Atomic uint32_t g_menu_revision;
 static _Atomic int g_set_overlay, g_overlay, g_pads, g_edit, g_menu_btn = 1;
 static _Atomic int g_cust[2][2][OV_N][4];
 static _Atomic int g_set_rumble, g_set_fps, g_set_sr, g_set_labels, g_menu_tab, g_sv_st, g_set_zone, g_fps_ver, g_stick_at[2][2];
@@ -70,7 +71,7 @@ enum { AINPUT_EVENT_TYPE_KEY = 1, AINPUT_EVENT_TYPE_MOTION };
 enum { AKEYCODE_BACK = 1, AKEYCODE_BUTTON_MODE, AKEYCODE_MENU, TEST_PAD_KEY };
 enum { AKEY_EVENT_ACTION_DOWN, AKEY_EVENT_ACTION_UP };
 enum { AMOTION_EVENT_ACTION_DOWN, AMOTION_EVENT_ACTION_UP, AMOTION_EVENT_ACTION_CANCEL,
-       AMOTION_EVENT_ACTION_POINTER_DOWN, AMOTION_EVENT_ACTION_POINTER_UP };
+       AMOTION_EVENT_ACTION_POINTER_DOWN, AMOTION_EVENT_ACTION_POINTER_UP, AMOTION_EVENT_ACTION_SCROLL };
 enum { AMOTION_EVENT_ACTION_MASK = 255, AMOTION_EVENT_ACTION_POINTER_INDEX_SHIFT = 8 };
 enum { AMOTION_EVENT_AXIS_X, AMOTION_EVENT_AXIS_Y, AMOTION_EVENT_AXIS_Z, AMOTION_EVENT_AXIS_RZ,
        AMOTION_EVENT_AXIS_LTRIGGER, AMOTION_EVENT_AXIS_RTRIGGER, AMOTION_EVENT_AXIS_HAT_X,

@@ -27,6 +27,7 @@ class FpsCounterOptions(unittest.TestCase):
 #include <string.h>
 #include "overlay_layout.h"
 static _Atomic int g_fps_opts = FPSO_DEFAULT, g_fps_ver;
+static _Atomic uint32_t g_menu_revision;
 int dm_ui_zh(void) { return 0; }
 int dm_menu_audio_available(void) { return 1; }
 float dm_overlay_scale(void) { return 1; }
@@ -75,7 +76,7 @@ int main(int argc, char **argv) {
     assert(atomic_load(&g_fps_opts) == fpso_pack(5, 2, 3, 2, 3));
     // the menu presses: a row's bit flips, the choices go round, each change counts
     atomic_store(&g_fps_opts, FPSO_DEFAULT);
-    assert(fps_opt_press(OVM_ROW_SOC) && fpso_rows(atomic_load(&g_fps_opts)) == 5 && atomic_load(&g_fps_ver) == 1);
+    assert(fps_opt_press(OVM_ROW_SOC) && fpso_rows(atomic_load(&g_fps_opts)) == 5 && atomic_load(&g_fps_ver) == 1 && atomic_load(&g_menu_revision) == 1);
     assert(fps_opt_press(OVM_ROW_SOC) && fpso_rows(atomic_load(&g_fps_opts)) == 7);
     assert(fps_opt_press(OVM_ROW_GRAPH) && fpso_rows(atomic_load(&g_fps_opts)) == 23 && fpso_pos(atomic_load(&g_fps_opts)) == FPSO_TL);   // (the bit does not reach the corner)
     assert(fps_opt_press(OVM_ROW_GRAPH) && fpso_rows(atomic_load(&g_fps_opts)) == 7);
