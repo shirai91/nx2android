@@ -39,6 +39,7 @@ float dm_overlay_scale(void) { return 1; }
 int dm_overlay_custom(int l,int c,float*x,float*y,float*s) {(void)l;(void)c;(void)x;(void)y;*s=1;return 0;}
 int dm_menu_audio_available(void) { return 0; }
 int dm_overlay_stick_zone(void) { return 0; }   // (the Stick area row's segments)
+int dm_touch_passthrough(void) { return 0; }
 int dm_save_note(char *s,int n) { if(n)s[0]=0;return OVX_IDLE; }
 ''' + draw + menu + r'''
 int main(int argc,char **argv) {
@@ -142,7 +143,7 @@ int main(void) {
         assert(p[0]>=0 && p[1]>=0 && p[2]<=W && p[3]<=H);
         atomic_store(&g_menu_tab,1); atomic_store(&g_menu_scroll,0); g_menu_ptr=-1; actions=0;
         assert(ov_menu_body_count(1)==6 && ov_menu_scroll_limit(1)==1);
-        assert(ov_menu_body_count(0)==6 && ov_menu_scroll_limit(0)==1);   // Gamepad: Stick area makes six without the audio action (issue #589)
+        assert(ov_menu_body_count(0)==7 && ov_menu_scroll_limit(0)==2);   // Gamepad: Touch input + Stick area makes seven without the audio action
         for (int offset=0;offset<=1;offset++) for (int slot=0;slot<OVM_VIEW_ROWS;slot++) {
             ov_menu_rowrect(p,slot,r);
             int row=slot==0?0:slot==OVM_VIEW_ROWS-1?OVM_ROWS-1:ov_menu_body_row(1,offset+slot-1);
@@ -182,7 +183,7 @@ int main(void) {
         touch(AMOTION_EVENT_ACTION_DOWN,x,y,W,H);
         touch(AMOTION_EVENT_ACTION_MOVE,x,y-3.3f*rh,W,H);
         touch(AMOTION_EVENT_ACTION_UP,x,y-3.3f*rh,W,H);
-        assert(atomic_load(&g_menu_scroll)==OVM_SCROLL_UNITS && actions==0); // no accidental export on swipe
+        assert(atomic_load(&g_menu_scroll)==1*OVM_SCROLL_UNITS && actions==0); // no accidental export on swipe
         ov_menu_rowrect(p,5,r); x=r[0]+r[2]*.2f; y=r[1]+r[3]/2;
         touch(AMOTION_EVENT_ACTION_DOWN,x,y,W,H); touch(AMOTION_EVENT_ACTION_UP,x,y,W,H);
         assert(last_action==OVM_IMPORT && actions==1);
@@ -198,10 +199,10 @@ int main(void) {
             assert(ov_menu_item(1,hi)>=0 && ov_menu_scroll_rowrect(p,1,offset,hi,r));
             if(hi>0 && hi<OVM_ROWS-1) {float slot=ov_menu_scroll_slot(1,offset,hi);assert(slot>=1 && slot+1<=OVM_VIEW_ROWS-1);}
         }
-        atomic_store(&g_menu_scroll,OVM_SCROLL_UNITS); atomic_store(&g_menu_hi,ov_menu_body_row(1,ov_menu_body_count(1)-1)); menu_key(DM_BTN_A);   // (the Game tab's last item: its last rows can be empty)
+        atomic_store(&g_menu_scroll,1*OVM_SCROLL_UNITS); atomic_store(&g_menu_hi,ov_menu_body_row(1,ov_menu_body_count(1)-1)); menu_key(DM_BTN_A);
         assert(last_action==OVM_IMPORT);
         menu_tab(0); assert(atomic_load(&g_menu_scroll)==0);
-        ov_menu_rowrect(p,2,r); float track[3]; ov_menu_track(p,2,track);
+        ov_menu_rowrect(p,3,r); float track[3]; ov_menu_track(p,3,track);
         x=track[0]; y=track[1];
         touch(AMOTION_EVENT_ACTION_DOWN,x,y,W,H);
         touch(AMOTION_EVENT_ACTION_MOVE,x+track[2],y-rh,W,H);

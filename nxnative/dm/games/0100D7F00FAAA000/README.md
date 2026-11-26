@@ -17,6 +17,7 @@ The profile sets these for you (`android.tsv`); a player changes the pause menu 
 | Row | What it does |
 |---|---|
 | `DM_VK_DEFER_CLEAR=1` | opt-in (default 0): on 0-draw deferred clear passes, drop unmodified attachments (loadOp != CLEAR) and forward full-image cleared depth copies as … |
+| `DM_TOUCH_DOCKED=pixels` | touch in docked mode: "screen" = the screen's points, "pixels" = the game's pixels; unset = no touch when docked |
 
 Read the profile's porting log in the comment header of [`android.tsv`](android.tsv). Back to the [games list](../../../../README.md#games).
 <!-- end of the game facts -->

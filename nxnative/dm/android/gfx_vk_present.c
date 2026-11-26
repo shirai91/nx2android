@@ -91,6 +91,7 @@ __attribute__((weak)) float dm_overlay_opacity(void) { return 0.6f; }
 __attribute__((weak)) int dm_overlay_layout(void) { return 0; }
 __attribute__((weak)) int dm_text_entry(char *title, int tcap, char *text, int xcap, int *sel, int *shift) { (void)title; (void)tcap; (void)text; (void)xcap; (void)sel; (void)shift; return 0; }
 __attribute__((weak)) int dm_ui_zh(void) { return 0; }
+__attribute__((weak)) int dm_touch_passthrough(void) { return 0; }
 static void pace_reset(void); static void ov_fb_drop(void);
 // Pre-rotation. A landscape window on a panel whose own orientation is portrait (the Retroid Pocket 5: 1080x1920, the window 1920x1080, currentTransform
 // ROTATE_90) left the turn to Android's compositor, and its display hardware does not rotate such a layer: SurfaceFlinger composited it on the GPU every
@@ -417,6 +418,7 @@ static const char *ovm_label(int it) {
     case OVM_PAD: return TR("Face buttons", "按键布局");
     case OVM_AUDIO: return TR("Audio output", "音频输出");
     case OVM_ZONE: return TR("Stick area", "摇杆区域");
+    case OVM_TOUCH: return TR("Touch input", "触控输入");
     case OVM_ROW_FPS: return TR("FPS row", "帧率行");
     case OVM_ROW_SOC: return TR("SOC row", "SoC 行");
     case OVM_ROW_BAT: return TR("BAT row", "电量行");
@@ -527,7 +529,7 @@ static void ov_menu_panel(const ov_canvas *cv, int st, int position) {
             cv_rrect(target, x0 + cur * segw, cy - hh / 2, x0 + (cur + 1) * segw, cy + hh / 2, hh / 2, C_ACCENT);
             for (int k = 0; k < 2; k++) cv_text(target, x0 + k * segw + (segw - cv_text_w(seg[k], is)) / 2, cy, seg[k], is, k == cur ? C_WHITE : C_DIM);
         } else {   // a switch
-            int on = it >= OVM_ROW_FPS && it <= OVM_ROW_GRAPH ? fpso_rows(fo) >> (it - OVM_ROW_FPS) & 1 : st >> ovm_bit(it) & 1; float sx0 = x1 - sw;
+            int on = it == OVM_TOUCH ? dm_touch_passthrough() : it >= OVM_ROW_FPS && it <= OVM_ROW_GRAPH ? fpso_rows(fo) >> (it - OVM_ROW_FPS) & 1 : st >> ovm_bit(it) & 1; float sx0 = x1 - sw;
             cv_rrect(target, sx0, cy - sh / 2, x1, cy + sh / 2, sh / 2, on ? C_ACCENT : C_OFF);
             cv_disc(target, on ? x1 - sh / 2 : sx0 + sh / 2, cy, sh / 2 - fmaxf(2, sh * 0.1f), on ? C_WHITE : C_KNOB_OFF);
             const char *word = on ? TR("ON", "开") : TR("OFF", "关"); cv_text(target, sx0 - gap - cv_text_w(word, is), cy, word, is, on ? C_WHITE : C_DIM);
@@ -826,7 +828,7 @@ static void ov_frame(VkCommandBuffer cb, int sp, const float b[4], float t, floa
     float x0 = b[0] - b[2] - t, x1 = b[0] + b[2] + t, y0 = b[1] - b[3] - t, y1 = b[1] + b[3] + t;
     ov_block(cb, sp, x0, y0, x1, y0 + t, alpha); ov_block(cb, sp, x0, y1 - t, x1, y1, alpha); ov_block(cb, sp, x0, y0 + t, x0 + t, y1 - t, alpha); ov_block(cb, sp, x1 - t, y0 + t, x1, y1 - t, alpha);
 }
-static void ov_render(VkCommandBuffer cb, int mode, int menu, int fps) {
+static void ov_render(VkCommandBuffer cb, int mode, int menu, int fps) {   // mode (dm_overlay_visible): 0 nothing, 1 the gamepad, 2 and 3 the menu button alone
     float W = (float)g_sext.width, H = (float)g_sext.height, op = dm_overlay_opacity();
     struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); int64_t now = (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec;
     int edit = menu >= 0 && !(menu & OVT_ST) && (menu & OVE_ST);   // the layout editor: the gamepad over the held frame, every control (shown or not)
