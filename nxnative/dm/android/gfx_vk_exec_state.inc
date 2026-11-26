@@ -60,6 +60,7 @@ static inline uint64_t tick(void) {
 // DM_VK_X_NOBAR=1 no barrier before a pass, DM_VK_X_DEPTH=1 depth neither loaded nor stored, DM_VK_X_COLOR=1 colour not loaded unless cleared
 static int g_x_nobar, g_x_depth, g_x_color, g_x_cbdraws, g_x_tracepass = -1, g_sub_pass;   // DM_VK_TRACE_PASS=n: log every draw of the submission's pass n (once)
 static int g_x_listpasses;
+static int g_x_prune_color = 1;   // DM_VK_X_PRUNE_COLOR=0 (live): retain masked colour attachments for A/B or format-filtered diagnostics
 static int g_c2fast = 1;   // DM_VK_C2_FAST (x_read; drv_shared)
 // c2 by its slots (DM_VK_C2_FAST, live, default on): a c2 segment (bank != 0, not the slot-index form) is S.tex / S.img / S.samp of its stage and nothing else,
 // and only bind_handles_rec changes those, so it keeps g_c2h[st], an order-free hash of every non-zero slot (O(1) a bind). drv_shared then finds an equal
@@ -156,7 +157,10 @@ static void cpu_ready_config(void) {
     g_vk_cpu_ready = !(e && !atoi(e));   // live A/B: =0 leaves CPU reads unsynchronized
 }
 static int g_dbg_draw_live; static uint64_t g_skip_ops_live;   // DM_VK_DBG_DRAW, DM_VK_SKIP_OPS: read with the other live switches, once a submission (bisection at a chosen moment)
-static void x_read(void) { cpu_ready_config(); { const char *e = getenv("DM_VK_DBG_DRAW"); g_dbg_draw_live = e ? atoi(e) : 0; } { uint64_t s = 0; const char *e = getenv("DM_VK_SKIP_OPS"); for (const char *q = e; q && *q;) { char *n; long v = strtol(q, &n, 10); if (n == q) break; if (v > 0 && v < 64) s |= 1ull << v; q = *n ? n + 1 : n; } g_skip_ops_live = s; } const char *c = getenv("DM_VK_CB_DRAWS"); g_x_cbdraws = c ? atoi(c) : 128; g_sub_pass = 0;
+static void prune_color_config(void) {
+    const char *e = getenv("DM_VK_X_PRUNE_COLOR"); g_x_prune_color = !(e && !atoi(e));
+}
+static void x_read(void) { cpu_ready_config(); prune_color_config(); { const char *e = getenv("DM_VK_DBG_DRAW"); g_dbg_draw_live = e ? atoi(e) : 0; } { uint64_t s = 0; const char *e = getenv("DM_VK_SKIP_OPS"); for (const char *q = e; q && *q;) { char *n; long v = strtol(q, &n, 10); if (n == q) break; if (v > 0 && v < 64) s |= 1ull << v; q = *n ? n + 1 : n; } g_skip_ops_live = s; } const char *c = getenv("DM_VK_CB_DRAWS"); g_x_cbdraws = c ? atoi(c) : 128; g_sub_pass = 0;
     const char *fy = getenv("DM_VK_FLIPY"); g_flipy = !(fy && !atoi(fy));   // on unless DM_VK_FLIPY=0
     { const char *e = getenv("DM_VK_C2_FAST"); g_c2fast = !(e && !atoi(e)); }   // c2 segments found by their slots' hash (drv_shared); on unless DM_VK_C2_FAST=0
     if (g_x_listpasses) { g_x_listpasses = 0; setenv("DM_VK_TRACE_PASS", "-1", 1); }

@@ -60,6 +60,15 @@ skip identical content by digest; incomplete snapshots and publication failures
 remain retryable. The legacy path cannot provide integrity guarantees absent from
 the old format.
 
+Before committing a single-sample depth pass with all colour channels disabled
+and alpha-to-coverage off, LOAD-only colour attachments without resolves or BC
+stand-ins are omitted. Colour writes, clears or alpha-to-coverage end that pass
+before restoring the targets. Slot counts and the original extent are preserved.
+`DM_VK_X_PRUNE_COLOR=0` disables omission at the next submission for live A/B
+or colour-format-filtered diagnostics. Pixel history automatically retains the
+targets. The first five committed pruned passes log their extent, depth format
+and omitted-slot mask; replay reports include pruning and early-split counters.
+
 Vulkan colour attachments outside the fragment shader's reflected output map
 have writes and blending disabled, so undefined outputs cannot overwrite them.
 The replacement flat diagnostic fragment shader writes all eight outputs and

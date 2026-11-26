@@ -1386,6 +1386,12 @@ uint64_t mtl_present(const tex_t *t, double period, const int crop[4]) {
         VKLOG("replay per frame (last 600): %.0f draws, replay %.2f ms (descriptor sets %.2f, pipeline keys %.2f), queue submit %.2f ms, uniform shadows %.0f KB; GPU busy %.2f ms; texture uploads %.1f (%.2f MB, %.2f ms); descriptor sets reused %llu, new %llu, key arena bypasses %llu (collecting %.2f ms, hashing %.2f, new ones %.2f), kept per stage %.0f a frame (memo differences %llu)",
               nd, (g_vkst.ns_exec - pe) / 6e8, (g_vkst.ns_desc - pd) / 6e8, (g_vkst.ns_pipe - pp) / 6e8, (g_ns_submit - ps) / 6e8, (g_ubd_bytes - pb) / 600.0 / 1024, (g_gpu_ns - pg) / 6e8, (g_pkg_n - pkn) / 600.0, (g_pkg_bytes - pkb) / 600.0 / 1048576, (g_pkg_ns - pkt) / 6e8, (unsigned long long)g_set_hits, (unsigned long long)g_set_new, (unsigned long long)g_set_key_bypass, (g_ns_set_build - psb) / 6e8, (g_ns_set_hash - psh) / 6e8, (g_ns_set_new - psn) / 6e8,
               (g_set_memo - psm) / 600.0, (unsigned long long)g_set_memo_bad);
+        { extern uint64_t g_prune_passes, g_prune_split_color, g_prune_split_clear, g_prune_split_a2c;
+          static uint64_t p, c, cl, a;
+          if (g_prune_passes) VKLOG("pruned colour passes (last 600): %.2f pruned, %.2f ended by colour writes, %.2f by clears, %.2f by alpha-to-coverage; totals %llu/%llu/%llu/%llu",
+              (g_prune_passes - p) / 600.0, (g_prune_split_color - c) / 600.0, (g_prune_split_clear - cl) / 600.0, (g_prune_split_a2c - a) / 600.0,
+              (unsigned long long)g_prune_passes, (unsigned long long)g_prune_split_color, (unsigned long long)g_prune_split_clear, (unsigned long long)g_prune_split_a2c);
+          p = g_prune_passes; c = g_prune_split_color; cl = g_prune_split_clear; a = g_prune_split_a2c; }
         { extern uint64_t g_order_kept, g_order_ended; static uint64_t pk, pn;   // gfx_vk_exec.c g_order_keep
           if (g_order_kept + g_order_ended > pk + pn) VKLOG("order-only barriers per frame (last 600): %.1f kept inside their pass, %.1f ended it", (g_order_kept - pk) / 600.0, (g_order_ended - pn) / 600.0);
           pk = g_order_kept; pn = g_order_ended; }

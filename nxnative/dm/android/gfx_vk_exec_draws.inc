@@ -187,7 +187,11 @@ static int prepare_draw(int prim, int indexed) {
     else if (g_psplit > 0 && S.pass_open == 1 && g_pass_draws == (uint64_t)g_psplit && S.daspect && !g_psplit_depth) { static int n; if (n++ < 3) VKLOG("pass split: pass %d (%ux%u) has depth (format %d): not split", g_sub_pass - 1, S.pass_w, S.pass_h, S.dfmt); }
     { uint64_t fs = S.sh[1] ? S.sh[1]->key : 0; if (g_x_cutfs && S.pass_open == 1 && (fs == g_x_cutfs || g_prev_fs == g_x_cutfs)) vk_end_pass(); g_prev_fs = fs; }
     if (g_order_pending) { g_order_pending = 0; g_order_check = S.pass_open == 1; }   // an order-only barrier kept the pass open: decided below, once the draw's images are known
-    if (!begin_pass() || !pass_commit()) { g_vkst.skip_rt++; return 0; }
+    if (S.ms.a2c) pruned_color_end(&g_prune_split_a2c);
+    if (!begin_pass()) { g_vkst.skip_rt++; return 0; }
+    prune_masked_color();
+    if (!pass_commit()) { g_vkst.skip_rt++; return 0; }
+    uint32_t pruned_for_draw = g_pruned_color;
     if (g_x_tracepass >= 0 && g_sub_pass - 1 == g_x_tracepass) g_tracing = 1;
     uint64_t t0 = tick();
     VkCommandBuffer cb = vk_cmd();
@@ -293,7 +297,9 @@ static int prepare_draw(int prim, int indexed) {
         g_order_check = 0; vkshader_t *fs = k.raster_discard ? NULL : S.sh[1];
         if (g_pass_wmem || shader_wmem(S.sh[0]) || shader_wmem(fs) || shader_wmem(S.sh[2]) || order_feedback(3)) {
             g_order_ended++; vk_end_pass(); vk_img_barrier_all(vk_cmd());
-            if (!begin_pass() || !pass_commit()) { g_vkst.skip_rt++; return 0; }
+            if (!begin_pass()) { g_vkst.skip_rt++; return 0; }
+            if (pruned_for_draw) prune_masked_color();   // retain this draw's attachment compatibility
+            if (!pass_commit()) { g_vkst.skip_rt++; return 0; }
             cb = vk_cmd();
         } else g_order_kept++;
     }

@@ -17,7 +17,15 @@ static void color_alias_map(uint32_t n, const VkImageView views[8], uint32_t mas
         for (uint32_t j=0;j<n && j<8;j++) if (j!=keep && views[j]==views[i] && !((mask>>(4*j))&15u)) map[j]=(uint8_t)keep;
     }
 }
+static uint32_t g_pruned_color;
+uint64_t g_prune_passes, g_prune_split_color, g_prune_split_clear, g_prune_split_a2c;
+static void pruned_color_end(uint64_t *reason) {
+    if (!g_pruned_color) return;
+    if (S.pass_open == 1) (*reason)++;
+    vk_end_pass();
+}
 static void bind_chmask(uint32_t mask) {
+    if (mask) pruned_color_end(&g_prune_split_color);   // restore omitted targets before colour writes resume
     if (S.pass_open && mask!=S.chmask.mask) {
         uint8_t map[8];color_alias_map((uint32_t)S.ncol,P_alias_views,mask,map);
         if (memcmp(map,P_alias,sizeof map)) vk_end_pass();
@@ -107,6 +115,29 @@ static void lrz_touch(vkimg_t *im, int write) {
 // GPU +1 ms), as did writing back only the one a pass switches away from (0 genuine drops in about 140 frames, GPU +0.6-0.8 ms of 13-18)
 static vkimg_t *g_lrz_prev;
 void vk_lrz_forget(vkimg_t *im) { if (g_lrz_prev == im) g_lrz_prev = NULL; }   // an image dropped (gfx_vk_tex.c img_drop)
+static int pixel_history_busy(void);
+// Odyssey's depth passes bind four colour targets with every channel disabled.
+// Omit LOAD-only targets before commit; their contents remain available to later passes.
+// Pixel history needs the original targets. For colour-format-filtered pass dumps or traces,
+// use DM_VK_X_PRUNE_COLOR=0. Keep the slot count and extent for pipeline/pass compatibility.
+static void prune_masked_color(void) {
+    if (!g_x_prune_color || pixel_history_busy() || S.pass_open != 2 || S.chmask.mask ||
+        S.samples != 1 || S.ms.a2c || !(S.daspect & VK_IMAGE_ASPECT_DEPTH_BIT)) return;
+    for (int i = 0; i < S.ncol; i++) if (P_ca[i].imageView &&
+        (P_ca[i].loadOp != VK_ATTACHMENT_LOAD_OP_LOAD || P_ca[i].resolveImageView ||
+         !P_att[i].im || P_att[i].im->bc_of)) return;
+    for (int i = 0; i < S.ncol; i++) if (P_ca[i].imageView) {
+        g_pruned_color |= 1u << i;
+        P_ca[i].imageView = VK_NULL_HANDLE; S.cfmt[i] = VK_FORMAT_UNDEFINED; P_att[i].im = NULL;
+    }
+}
+static void pruned_color_commit(void) {
+    if (!g_pruned_color) return;
+    g_prune_passes++;
+    static unsigned logged;
+    if (logged < 5) { logged++; VKLOG("pruned colour: pass %d, %ux%u, depth format %d, omitted slots %#x (mask)",
+        g_sub_pass - 1, S.pass_w, S.pass_h, S.dfmt, g_pruned_color); }
+}
 // 0: no pass could be begun (no render pass or framebuffer, and no dynamic rendering to fall back on): the caller records nothing that needs one
 static int pass_commit(void) {
     if (S.pass_open != 2) return S.pass_open == 1;
@@ -139,6 +170,7 @@ static int pass_commit(void) {
         else { VKRED_ONCE(76, "render pass or framebuffer failed without dynamic rendering: pass skipped"); return 0; }   // (still pass_open 2: vk_end_pass drops it)
     } else { vkCmdBeginRendering(vk_cmd(), &P_ri); S.rp_pass = 0; }
     S.pass_open = 1; g_vkst.passes++; g_sub_pass++; g_pass_wmem = 0;
+    pruned_color_commit();
     for (int i = 0; i < 9; i++) { vkimg_t *a = P_att[i].im; if (a && a->rt_last != g_tex_frame + 1) { a->rt_frames = a->rt_last == g_tex_frame ? a->rt_frames + 1 : 1; a->rt_last = g_tex_frame + 1; } }   // (async_pipe)
     { extern uint64_t g_cmd_gen; g_cmd_gen++; }   // the bind cache starts empty in each pass: Adreno does not keep the state a pass's draws set for the next pass (XC3 drew its lighting black)
     if (g_x_tracepass == -2) { g_x_listpasses = 1; list_reads("before it, dispatches");
@@ -251,7 +283,6 @@ static inline float half2f(uint16_t h) { uint32_t s = (uint32_t)(h >> 15) << 31,
     if (!e) { if (!m) f = s; else { e = 1; while (!(m & 1024)) { m <<= 1; e--; } m &= 1023; f = s | ((e + 112) << 23) | (m << 13); } } else if (e == 31) f = s | 0x7f800000 | (m << 13); else f = s | ((e + 112) << 23) | (m << 13);
     float r; memcpy(&r, &f, 4); return r; }
 static void pixel_history_poll(uint64_t done_fence);
-static int pixel_history_busy(void);
 void vk_pass_dump_poll(uint64_t done_fence) {   // gfx_vk_present.c, every present: start on the switch, write once the GPU finished
     pixel_history_poll(done_fence);
     if (pixel_history_busy()) return;
@@ -422,7 +453,7 @@ void vk_end_pass(void) {
     if (S.pass_open == 1) { if (S.rp_pass) vkCmdEndRenderPass(vk_cmd()); else vkCmdEndRendering(vk_cmd()); bc_draw_back(); void vk_pass_ts(int end, uint32_t w, uint32_t h, uint32_t fmt, uint32_t draws); vk_pass_ts(1, S.pass_w, S.pass_h, (uint32_t)S.cfmt[0], (uint32_t)g_pass_draws | (g_pass_draws ? (uint32_t)((g_pass_bb[2] - g_pass_bb[0]) & 0xffff) << 16 : 0));  pass_dump(); if (g_x_tracepass >= 0 && g_sub_pass - 1 == g_x_tracepass) { setenv("DM_VK_TRACE_PASS", "-1", 1); g_x_tracepass = -1; } }
     if (S.pass_open == 1 && g_lin_back && g_pass_draws) lin_back();
     if (S.pass_open == 1) crumb_mark(0);
-    S.pass_open = 0; S.bound_pipe = VK_NULL_HANDLE; g_tf_in_pass = 0;
+    S.pass_open = 0; g_pruned_color = 0; S.bound_pipe = VK_NULL_HANDLE; g_tf_in_pass = 0;
 }
 // a pass end before something that reads or writes pool memory other than through a uniform binding (copies, fills, dispatches, buffer ↔ texture
 // copies, the submission's end): the deferred uniform updates land first (draws read them through their shadows, so ordinary pass ends keep them)
@@ -554,6 +585,7 @@ fail:
 }
 static int begin_pass(void) {
     if (S.pass_open) return 1;
+    g_pruned_color = 0;
     int psplit = g_psplit_now; g_psplit_now = 0;   // a pass split (prepare_draw): taken before any early return, so the flag never forces a later pass's cut
     VkCommandBuffer cb = vk_cmd();
     VkRenderingAttachmentInfo *ca = P_ca; memset(ca, 0, sizeof P_ca);
@@ -724,6 +756,7 @@ static int clear_masked(const p_clear_color *c, VkRect2D r) {   // 1 = done
     return 1;
 }
 static void clear_color(const p_clear_color *c) {
+    pruned_color_end(&g_prune_split_clear);   // clears are independent of the draw channel mask
     if (!begin_pass()) return;
     if (c->index < 0 || c->index >= S.ncol) return;
     p_clear_color mapped=*c;mapped.index=P_alias[c->index];c=&mapped;

@@ -133,6 +133,18 @@ axis preservation, not game recognition or device behavior.
 
 ## Tests
 
+`test_attachment_alias` and `test_masked_color_attachments` compile the production
+colour-alias, clear-routing and masked-attachment policy with `cc -Werror`.
+They cover restoration before colour writes/clears, live disabling, pixel-history
+exclusion, eligibility boundaries and bounded prune logging/counters. These host
+checks do not qualify GPU rendering or performance. For device A/B, use a debug
+build and toggle `DM_VK_X_PRUNE_COLOR=0/1` through `DM_CTL`; keep the view, driver,
+resolution and pass-split settings fixed. Replay reports every 600 presents show
+pruned passes and early endings by colour writes, clears and alpha-to-coverage,
+both per-frame averages and cumulative totals. Pruning defaults on; pixel history
+retains attachments automatically. Disable pruning explicitly when using colour-
+format filters with pass dumps or pass traces.
+
 `test_avc_color` exercises the Android AVC format reader, SPS declarations,
 picture queue and output conversion on the host. Synthetic SPS cases cover
 untagged decoder defaults, independently declared range, parameter changes,

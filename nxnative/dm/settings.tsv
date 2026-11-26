@@ -378,6 +378,7 @@ DM_VK_X_NOSETC	bool		debug	live	gfx_vk_exec.c	flicker experiments: no descriptor
 DM_VK_X_NOSETMEMO	bool		debug	live	gfx_vk_exec.c	1 = stage sets always collected: no memo of the last set, none found by their bindings (rmemo), for an A/B of those caches
 DM_VK_X_NOSHC	bool		debug	?	gfx_vk_exec.c	
 DM_VK_X_NOTARGET	bool		debug	start	gfx_vk_exec.c	skip draws with no colour or depth target set, as before (A/B); default 1 runs them in an attachment-less pass the size of viewport 0
+DM_VK_X_PRUNE_COLOR	bool	1	profile	live	gfx_vk_exec_state.inc	0 = retain masked colour attachments for regression recovery, A/B or colour-format-filtered diagnostics. Re-read each submission; pixel history automatically retains targets.
 DM_VK_X_RDKEEP	hex		debug	live	gfx_vk_exec.c	runs of rasterizer-discard draws (vertex shaders that write memory) stay in the pass of the draws around them instead of a pass of their own: Xenoblade Chronicles 3 then draws thin black slivers over cliffs and grass in a few percent of frames
 DM_VK_X_SETVERIFY	bool		debug	live	gfx_vk_exec.c	1 = one memo hit in 64 is collected anyway and compared, and c2 segments found by hash are built again and compared: a [RED] line on any difference (docs/ARCHITECTURE.md, Descriptor cache hashing)
 DM_VK_X_SKIPFS	hex		debug	live	gfx_vk_exec.c	Skip draws with one of up to 16 fragment shader keys for pass/shader bisection. Diagnostic only: this deliberately removes rendering. `=0` clears the list.
