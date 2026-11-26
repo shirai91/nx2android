@@ -21,7 +21,11 @@ Read the profile's porting log in the comment header of [`android.tsv`](android.
 
 ## Frame rate
 
-- 30 fps, as on the Switch, and steady: the frame time's p50 is 33.3 ms and the GPU takes 10-14 ms of it, so the engine's own 1/30 step is the limit, not the GPU.
+- 30 fps by default, as on the Switch, and steady: the frame time's p50 is 33.3 ms and the GPU takes 10-14 ms of it, so the engine's own 1/30 step is the limit, not the GPU.
+- 60 fps on request: the profile carries one frame-lock row ([`fps_locks.tsv`](fps_locks.tsv)) that raises MT Framework's render ceiling `sApp.mMaxFps` from 30 to 60 and leaves the logical step `mFps` at 30. The frame loop divides one by the other on every frame, so `mDeltaTime` comes out at half the real frame time and the 83 readers of `mDeltaTime` stay 1:1 - typing, Auto-Play, transitions, camera moves and 3D animation all keep their speed. Raising `mFps` as well makes the ratio 1.0 and the whole game runs at double speed.
+  - Reached with a frame-rate target (`DM_FPS_TARGET=60`), or from the pause menu's 60 fps switch where the host has one.
+  - Measured with the row: a Snapdragon 8 Elite class phone (Adreno 830) holds frame p50 16.67 ms in the title court with the GPU at 1.99 ms; the OPPO Pad holds 60 at the handheld 720p picture and about 50 at the docked 1080p one; the Dimensity 900 (Mali-G68) stays at 30, its GPU needs 27 ms a frame.
+  - 60 fps is a resolution question on the weaker GPUs: the docked 1080p picture is 2.25x the pixels of the handheld 720p one.
 
 ## Tested devices
 
@@ -37,5 +41,5 @@ Read the profile's porting log in the comment header of [`android.tsv`](android.
 ## Quirks and known issues
 
 - Without `tex_flush_upload` and `tex_dirty_upload` (this profile sets both) every 3D prop renders black: the game copies each texture into a CPU-cached pool after `nvnTextureInitialize` and never flushes it, and `main` has no cache maintenance at all
-- 30 fps only (see above): the frame gate is inside the engine, so a faster GPU does not raise it
+- No cap removal without the frame-lock row: the gate is inside the engine (`sApp.mMaxFps`), so a faster GPU alone does not raise it; with the row the ceiling is 60 and the speed stays 1:1 (see [Frame rate](#frame-rate))
 - Not played end to end: the title screen, the first episode's office and the pause menu are what was checked
