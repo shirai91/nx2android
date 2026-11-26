@@ -38,6 +38,7 @@ const uint8_t *dm_overlay_font(void) { return font; }
 float dm_overlay_scale(void) { return 1; }
 int dm_overlay_custom(int l,int c,float*x,float*y,float*s) {(void)l;(void)c;(void)x;(void)y;*s=1;return 0;}
 int dm_menu_audio_available(void) { return 0; }
+int dm_overlay_stick_zone(void) { return 0; }   // (the Stick area row's segments)
 int dm_save_note(char *s,int n) { if(n)s[0]=0;return OVX_IDLE; }
 ''' + draw + menu + r'''
 int main(int argc,char **argv) {
@@ -141,7 +142,7 @@ int main(void) {
         assert(p[0]>=0 && p[1]>=0 && p[2]<=W && p[3]<=H);
         atomic_store(&g_menu_tab,1); atomic_store(&g_menu_scroll,0); g_menu_ptr=-1; actions=0;
         assert(ov_menu_body_count(1)==6 && ov_menu_scroll_limit(1)==1);
-        assert(ov_menu_scroll_limit(0)==0);
+        assert(ov_menu_body_count(0)==6 && ov_menu_scroll_limit(0)==1);   // Gamepad: Stick area makes six without the audio action (issue #589)
         for (int offset=0;offset<=1;offset++) for (int slot=0;slot<OVM_VIEW_ROWS;slot++) {
             ov_menu_rowrect(p,slot,r);
             int row=slot==0?0:slot==OVM_VIEW_ROWS-1?OVM_ROWS-1:ov_menu_body_row(1,offset+slot-1);
