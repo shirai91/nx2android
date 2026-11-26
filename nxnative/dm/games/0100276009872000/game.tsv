@@ -1,0 +1,37 @@
+# ŌKAMI HD (Capcom, NVN with CRIWARE on SDK 4, base game 1.0.0). Started from the NSP script's provisional profile (dm/games/profile_guess.py);
+# checked by hand against the survey and the device log on 2026-11-26: the modules (subsdk0 is the SDK's movie library), the 4 GB guest layout where main sets a
+# 2 GB heap in its 3.25 GB heap region, no system resource from the NPDM; on Android it plays with these keys (AYN Odin 2)
+# ŌKAMI HD, SDK 4, survey <NSP folder>/0100276009872000_survey/survey.md
+
+# ---- Identity ----
+title_id	0100276009872000
+program_id	0100276009872000
+
+# ---- App ----
+name	ŌKAMI HD
+ipa	KamiHd.ipa
+app_category	public.app-category.games
+
+# ---- Versions ----
+build	v0	1.0.0	main=a4fddc7fd35b30cb763bf70c3213dcb7	subsdk0=303578054faefc2198114b62e408c498	sdk=e01ad5381c948c4ec3b0bb210b08d5c8
+package	v0
+shader_versions	v0
+
+# ---- Files ----
+# every module main imports from
+modules	main subsdk0 sdk
+romfs_marker	data/privilege/IllustPrivilege.dat
+zip_store	.adx:.afs2:.dat:.dds:.idd:.pac:.usm:.metallib
+
+# ---- Memory ----
+# main sets a heap of at most the pool − 64 MB: a 3328 MB heap region
+mem_reserve	0x100000000
+mem_alias	0x10000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+# the NPDM declares 0 MB of system resource: IsVirtualAddressMemoryEnabled is false, as on Horizon (Big Brain Academy: Brain vs. Brain sets a heap only then)
+sys_resource	0x0
+
+# ---- Shader split ----
+shader_groups	/data/=data /shader/=shader
+shader_note	ŌKAMI HD shaders
