@@ -326,6 +326,7 @@ DM_VK_QUIRK_LRZ_TOUCH	bool		debug	start	gfx_vk_quirks.c	force the lrz_touch quir
 DM_VK_RD_TOUCH	bool		debug	live	gfx_vk_exec.c	no transfer read of the memory a run of rasterizer-discard draws wrote, where the run ends: Xenoblade Chronicles 3's grass then flickers (whole blades black in some frames: the G-buffer's grass cards, depth EQUAL against the pre-pass, meet sway records not yet written)
 DM_VK_ROBUST	bool		debug	start	gfx_vk_core.c	robust buffer access on (A/B for a device lost): a buffer, texel buffer or vertex read past its range reads 0 and a write past it is dropped, instead of faulting the GPU
 DM_VK_RP	bool		debug	start	gfx_vk_exec.c	dynamic rendering instead of cached `VkRenderPass` objects with imageless framebuffers (Adreno's `vkCmdBeginRendering` cost about 40 µs a pass)
+DM_VK_RUNTIME_SHADERS	bool	0	profile	start	gfx_vk_shader_rt.c	1 = a shader the bundle lacks is translated while the game runs, on worker threads, by libdmsh_xlate_rt.so (android.tsv runtime_shaders on packs it); its draws are left out until it is ready, and translations are kept for the next start
 DM_VK_SAMP_LOG	bool		debug	live	gfx_vk_exec.c gfx_vk_tex.c	log the next n sampler registrations (ID, LOD range, wrap, aniso, compare, border, present, thread) and each submission's start, in time order with the replay's lines
 DM_VK_SCALED_FETCH	bool	0	profile	start	gfx_vk_exec.c	a USCALED / SSCALED vertex format the device cannot fetch, read by a float input, is fetched as the UINT / SINT format of its layout and converted to float in the vertex shader (vk_spv_vertex.h) instead of the pipeline being skipped. Toy Story 3 Complete Edition's profile sets it: the Adreno 740 has no R8G8B8A8_USCALED, its skinned characters' bone indices
 DM_VK_SCRATCH_MB	bool		debug	?	gfx_vk_core.c	
@@ -334,6 +335,7 @@ DM_VK_SHADERS	str		app	?	gfx_vk_shader.c	the shader bundle (shaders.dmsv); defau
 DM_VK_SHOT	str		debug	start	gfx_vk_present.c	headless runs: save those presents (`DM_VK_SHOT_DIR`)
 DM_VK_SHOTS	bool		debug	live	gfx_vk_present.c	save each of the next N presented frames as `frame_<n>.ppm` in the files folder (logs "frame shots: presents a to b")
 DM_VK_SHOT_DIR	str		debug	?	gfx_vk_present.c	
+DM_VK_SKIP_MISSING	bool	0	profile	live	gfx_vk_exec.c	1 = a draw whose program names a vertex or pixel shader not in the bundle is left out (by default a missing pixel shader leaves a depth-only draw)
 DM_VK_SKIP_OPS	str		debug	live	gfx_vk_exec.c	bisection aids: skip command kinds; 1 no draw calls, 2 no vertex buffers, 4 no descriptor sets
 DM_VK_SLOT0_FILL	bool		debug	?	gfx_vk_exec.c	
 DM_VK_SPV_ALT	bool		debug	?	gfx_vk_exec.c	pipelines made while `ALT` is on use `<dir>/<key>.spv` in place of the bundle's code where the file exists (same bindings), so two compilations of a shader compare in one run (e.g. the translator's GLSL through `glslc`, or a patched module)

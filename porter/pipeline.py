@@ -49,6 +49,40 @@ def build_translator(dotnet, env, logs):
     return dll, nsp.fingerprint(key, product_cache.inventory(out))
 
 
+def build_runtime_translator(dotnet, env, logs, ndk):
+    """The shader translator as an Android library (dm/android/xlate_rt: Program.cs and shader_vk.py's steps, NativeAOT for linux-bionic-arm64, linked with the NDK's clang),
+    for profiles with runtime_shaders on (dm/android/gfx_vk_shader_rt.c loads it). Built once for every game in <user dir>/tools/dmsh_xlate_rt: libdmsh_xlate_rt.so.
+    NativeAOT does not support linking for another OS; the NDK's clang does it on any host (DisableUnsupportedError, the csproj)"""
+    src = DM / 'android/xlate_rt'; ryu = DM / 'third_party/ryujinx'; prog = DM / 'gfx/tools/dmsh_xlate/Program.cs'
+    host = 'windows-x86_64' if os.name == 'nt' else 'darwin-x86_64' if sys.platform == 'darwin' else 'linux-x86_64'
+    ndk_bin = Path(ndk) / 'toolchains/llvm/prebuilt' / host / 'bin'
+    def source_key():
+        files = sorted([p for root in (src, ryu) for p in root.rglob('*') if p.is_file() and
+                        (p.suffix in ('.cs', '.csproj', '.props', '.targets') or p.name in ('global.json', 'NuGet.Config', 'nuget.config'))
+                        and not {'bin', 'obj'} & set(p.relative_to(root).parts)] + [prog])
+        from porter import codekey
+        return nsp.fingerprint([str(p.relative_to(DM)) for p in files], [codekey.file_key(p) for p in files], Path(ndk).name,
+                               ('cmd', [str(dotnet), '--version']), env=env)
+    key = source_key()
+    out = paths.user_dir() / 'tools/dmsh_xlate_rt'; kf = out.with_name('dmsh_xlate_rt.key'); so = out / 'libdmsh_xlate_rt.so'
+    if so.is_file() and product_cache.reused(kf, key, out) is not None:
+        return so
+    if not (ndk_bin / ('clang.exe' if os.name == 'nt' else 'clang')).is_file(): raise BuildError(f'runtime_shaders: no clang in {ndk_bin}')
+    say('runtime_shaders: building the shader translator for Android (NativeAOT, once for every game) …')
+    tmp = out.with_name('dmsh_xlate_rt.partial'); nsp.rmtree(tmp); work = out.with_name('dmsh_xlate_rt.work')
+    e = dict(env or os.environ); e['PATH'] = str(ndk_bin) + os.pathsep + e.get('PATH', '')   # the ILCompiler targets look the linker up by name on PATH
+    nsp.run([dotnet, 'publish', src / 'dmsh_xlate_rt.csproj', '-c', 'Release', '-p:DmshRtNative=true', '-p:CppCompilerAndLinker=clang', f'-p:SysRoot={(ndk_bin.parent / "sysroot").as_posix()}',
+             '-p:ObjCopyName=llvm-objcopy', '--artifacts-path', work, '-o', tmp, '-nologo', '-v', 'quiet'], logs / 'android_runtime_translator_build.log', env=e)
+    built = tmp / 'dmsh_xlate_rt.so'
+    if not built.is_file(): raise BuildError(f'the runtime translator built without dmsh_xlate_rt.so (see {logs / "android_runtime_translator_build.log"})')
+    built.rename(tmp / so.name)   # Android extracts only lib*.so from an APK
+    for p in tmp.iterdir():
+        if p.name != so.name: nsp.rmtree(p) if p.is_dir() else p.unlink()   # debug symbols (.dbg) stay out of the APK
+    if source_key() != key: raise BuildError('runtime translator inputs changed during build; port again')
+    nsp.swap_in(tmp, out); product_cache.stamp(kf, key, out)
+    return so
+
+
 @dataclass
 class Options:
     folder: Path                       # the game's folder: the base game, its updates and DLC
@@ -1032,11 +1066,13 @@ class Port:
         if driver and driver.name != driver_lib_name(driver):   # packed under a lib*.so name (driver_lib_name), copied beside the host library
             driver = self.so.parent / driver_lib_name(driver); shutil.copyfile(self.o.vulkan_driver, driver)
             say(f'--vulkan-driver: {self.o.vulkan_driver.name} is packed as {driver.name} (Android extracts only lib*.so libraries)')
+        # android.tsv runtime_shaders on: the shader translator as a library, for the shaders the game builds at run time (dm/android/gfx_vk_shader_rt.c)
+        rt = [build_runtime_translator(self.tools['dotnet'], self.env, self.logs, self.tools['ndk'])] if self.ap.runtime_shaders else []
         nsp.run([PY, DM / 'android/apk/mkapk.py', self.so, self.apk_path, paths.signing_key(), '--package', self.package, '--label', self.app_name, '--lib', 'dmhost',
                  '--version-code', str(code), '--version-name', self.display]
                 + (['--landscape'] if self.ap.landscape else []) + icon + self.theme() + self.ui_font() + external + ([] if self.o.debug else ['--release'])
                 + (['--game-mode-performance'] if getattr(self, 'gl', None) is False else [])   # only NVN implements the mode's pacing policy; GL keeps OEM interventions
-                + [a for f in ([driver] + [self.so.parent / n for n in ADRENOTOOLS_LIBS] if driver else []) for a in ('--extra-so', str(f))],
+                + [a for f in ([driver] + [self.so.parent / n for n in ADRENOTOOLS_LIBS] if driver else []) + rt for a in ('--extra-so', str(f))],
                 self.logs / 'android_apk.log', env=self.env)
         self.result['apk'] = str(self.apk_path)
         PROG.end(f'{self.apk_path.name}, {self.apk_path.stat().st_size / 2**20:.1f} MB')
