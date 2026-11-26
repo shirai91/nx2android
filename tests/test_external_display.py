@@ -11,14 +11,15 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 SOURCE = ROOT / 'nxnative/dm/android/java/org/nx2a/ExternalDisplay.java'
 STUBS = {
     'android/content/Context.java': '''package android.content; public class Context { public static final String DISPLAY_SERVICE="display"; public Object getSystemService(String name) { return null; } }''',
-    'android/app/Activity.java': '''package android.app; public class Activity extends android.content.Context { public final android.hardware.display.DisplayManager manager = new android.hardware.display.DisplayManager(); @Override public Object getSystemService(String n) { return manager; } }''',
+    'android/app/Activity.java': '''package android.app; public class Activity extends android.content.Context { public final android.hardware.display.DisplayManager manager = new android.hardware.display.DisplayManager(); public java.io.File root; @Override public Object getSystemService(String n) { return manager; } public java.io.File getExternalFilesDir(String n) { return root; } }''',
     'android/os/Looper.java': '''package android.os; public class Looper { public static Looper getMainLooper() { return new Looper(); } }''',
     'android/os/Handler.java': '''package android.os; public class Handler { public Handler(Looper l) {} }''',
-    'android/view/Display.java': '''package android.view; public class Display { public static final int INVALID_DISPLAY=-1; private final int id; public Display(int i) { id=i; } public int getDisplayId() { return id; } }''',
+    'android/graphics/Point.java': '''package android.graphics; public class Point { public int x,y; }''',
+    'android/view/Display.java': '''package android.view; public class Display { public static final int INVALID_DISPLAY=-1; private final int id; public Display(int i) { id=i; } public int getDisplayId() { return id; } public void getRealSize(android.graphics.Point p) { p.x=1920;p.y=1080; } }''',
     'android/view/Surface.java': '''package android.view; public class Surface {}''',
-    'android/view/SurfaceHolder.java': '''package android.view; public interface SurfaceHolder { Surface getSurface(); void addCallback(Callback c); interface Callback { void surfaceCreated(SurfaceHolder h); void surfaceChanged(SurfaceHolder h,int format,int w,int height); void surfaceDestroyed(SurfaceHolder h); } }''',
-    'android/view/SurfaceView.java': '''package android.view; public class SurfaceView { public static Holder last; public SurfaceView(android.content.Context c) { last=new Holder(); } public SurfaceHolder getHolder(){ return last; } public static class Holder implements SurfaceHolder { public Callback cb; public final Surface surface=new Surface(); public Surface getSurface(){return surface;} public void addCallback(Callback c){cb=c;} } }''',
-    'android/app/Presentation.java': '''package android.app; public class Presentation { public static boolean fail; public Presentation(Activity a,android.view.Display d){} public android.content.Context getContext(){return new android.content.Context();} public void setContentView(android.view.SurfaceView v){} public void show(){if(fail)throw new RuntimeException();} public void dismiss(){} }''',
+    'android/view/SurfaceHolder.java': '''package android.view; public interface SurfaceHolder { Surface getSurface(); void addCallback(Callback c); void setFixedSize(int w,int h); void setSizeFromLayout(); interface Callback { void surfaceCreated(SurfaceHolder h); void surfaceChanged(SurfaceHolder h,int format,int w,int height); void surfaceDestroyed(SurfaceHolder h); } }''',
+    'android/view/SurfaceView.java': '''package android.view; public class SurfaceView { public static Holder last; public SurfaceView(android.content.Context c) { last=new Holder(); } public SurfaceHolder getHolder(){ return last; } public static class Holder implements SurfaceHolder { public Callback cb; public int w,h; public final Surface surface=new Surface(); public Surface getSurface(){return surface;} public void addCallback(Callback c){cb=c;} public void setFixedSize(int w,int h){this.w=w;this.h=h;} public void setSizeFromLayout(){w=h=0;} } }''',
+    'android/app/Presentation.java': '''package android.app; public class Presentation { public static boolean fail; private final android.view.Display display; public Presentation(Activity a,android.view.Display d){display=d;} public android.view.Display getDisplay(){return display;} public android.content.Context getContext(){return new android.content.Context();} public void setContentView(android.view.SurfaceView v){} public void show(){if(fail)throw new RuntimeException();} public void dismiss(){} }''',
     'android/hardware/display/DisplayManager.java': '''package android.hardware.display; public class DisplayManager { public static final String DISPLAY_CATEGORY_PRESENTATION="presentation"; public android.view.Display[] displays={}; public int registrations; public interface DisplayListener { void onDisplayAdded(int i); void onDisplayRemoved(int i); void onDisplayChanged(int i); } public void registerDisplayListener(DisplayListener l,android.os.Handler h){registrations++;} public void unregisterDisplayListener(DisplayListener l){registrations--;} public android.view.Display[] getDisplays(String c){return displays;} }''',
     'Check.java': '''import org.nx2a.ExternalDisplay; import android.app.*; import android.view.*;
 public class Check {
@@ -32,6 +33,19 @@ public class Check {
   SurfaceView.Holder fresh=SurfaceView.last; fresh.cb.surfaceChanged(fresh,0,1920,1080); d.stop(); d.stop();
   if(events[0]!=2||events[1]!=2||a.manager.registrations!=0)throw new AssertionError("stop");
   Presentation.fail=true; d.start(); d.stop(); if(a.manager.registrations!=0)throw new AssertionError("failure");
+ }
+}''',
+    'org/nx2a/CanvasCheck.java': '''package org.nx2a; import android.app.*; import android.view.*;
+public class CanvasCheck {
+ public static void main(String[] args) throws Exception {
+  Activity a=new Activity(); a.root=java.nio.file.Files.createTempDirectory("canvas").toFile();
+  a.manager.displays=new Display[]{new Display(7)};
+  ExternalDisplay d=new ExternalDisplay(a,new ExternalDisplay.Listener(){public void surfaceChanged(Surface s,int w,int h){} public void surfaceLost(){}});
+  d.start(); if(SurfaceView.last.w!=0)throw new AssertionError("auto");
+  if(!ExternalDisplay.writeCanvas(a,"1280x720"))throw new AssertionError("write"); d.applyCanvas();
+  if(SurfaceView.last.w!=1280||SurfaceView.last.h!=720)throw new AssertionError("live");
+  d.stop(); d.start(); if(SurfaceView.last.w!=1280||SurfaceView.last.h!=720)throw new AssertionError("reconnect");
+  ExternalDisplay.writeCanvas(a,"auto"); d.applyCanvas(); if(SurfaceView.last.w!=0)throw new AssertionError("auto restore"); d.stop();
  }
 }''',
 }
@@ -61,6 +75,7 @@ class ExternalDisplayTest(unittest.TestCase):
                 paths.append(str(p))
             subprocess.run(['javac', '-d', str(root), str(SOURCE), *paths], check=True)
             subprocess.run(['java', '-cp', str(root), 'Check'], check=True)
+            subprocess.run(['java', '-cp', str(root), 'org.nx2a.CanvasCheck'], check=True)
 
     def test_optional_activity_is_packaged_without_changing_default(self):
         with tempfile.TemporaryDirectory() as t:

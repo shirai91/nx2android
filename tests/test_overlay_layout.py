@@ -23,6 +23,8 @@ class OverlayLayout(unittest.TestCase):
 #include "overlay_layout.h"
 static int custom_faces, custom_a, custom_x, hidden_ctl = -1, audio_available, ui_zh;
 int dm_ui_zh(void) { return ui_zh; }
+static int extra_available;
+int dm_menu_external_size_available(void) { return extra_available; }
 int dm_menu_audio_available(void) { return audio_available; }
 float dm_overlay_scale(void) { return 1; }
 int dm_external_active(void) { return 0; }
@@ -110,6 +112,13 @@ assert(ov_menu_item(0, OVM_ROWS - 2) == OVM_AUDIO && ov_menu_item(0, OVM_ROWS - 
     assert(!strcmp(FPSO_POS_NAMES[0], "左上") && !strcmp(FPSO_SIZE_NAMES[3], "特大"));
     assert(!strcmp(TR("Resume", "继续游戏"), "继续游戏"));
     ui_zh = 0;
+    extra_available = 1;
+    assert(ov_menu_item(1, 7) == OVM_EXTERNAL_SIZE && OVM_VIEW_ROWS == 7);
+    float panel[4], hit[4]; ov_menu_rect(1280, 720, panel);
+    int offset = ov_menu_scroll_limit(1);
+    assert(ov_menu_scroll_rowrect(panel, 1, offset, 7, hit));
+    assert(ov_menu_scroll_row_at(hit[0]+hit[2]/2, hit[1]+hit[3]/2, 1280, 720, 1, offset) == 7);
+    extra_available = 0;
     const float screens[][2] = {{915, 412}, {1216, 760}, {2400, 1080}, {1080, 2400}};
     for (unsigned s = 0; s < sizeof screens / sizeof screens[0]; s++) {
         float W = screens[s][0], H = screens[s][1], step = H / OVE_GRID_ROWS, p[4];
