@@ -43,7 +43,13 @@ Read the profile's porting log in the comment header of [`android.tsv`](android.
 - For smoother play, a Snapdragon 8 Gen 3 or newer is recommended. The Odin 2 (Snapdragon 8 Gen 2) stays below 30 fps.
 - Game speed follows real time, not the frame rate, so the game does not slow down when the frame rate drops.
 - Handheld mode is faster (about 25 fps outdoors against about 21.5 fps Docked) at a lower render resolution.
-- The game's 60 fps mode is not useful: it does not hold 30 fps.
+- The port stays at 30 fps by default. Users who want a higher frame rate can unlock 60 fps with
+  `porter port --fps60`, but the game does not hold it: it drops many frames and the frame pacing is uneven. On the Odin 2
+  (Handheld, Spring Village, camera turning) it settles near 40 fps (frame time p50 25 ms, p95 31 ms). The CPU's submit and
+  present work, about 21 ms a frame, is the limit. For smooth play, keep the 30 fps default.
+- `gpu_tick_rate 614.4` (`game.tsv`): the game's renderer reads GPU timestamps at 614.4 MHz. Without the row it reads its GPU
+  time 32 times too short. With it, the same 60 fps test reached 40 fps sooner and used less GPU time a frame (p50 about 19 ms
+  against 21-23 ms), at the same 680 MHz GPU clock.
 - `DM_GPU_TURBO=1` holds the GPU at its highest clock. It uses more power; `DM_GPU_TURBO=0` in `env.txt` turns it off.
 
 ## Tested devices
