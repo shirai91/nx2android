@@ -16,6 +16,18 @@
 # 0 or 512 1 ms more GPU. Depth not loaded or stored (DM_VK_X_DEPTH, draws wrong) saved 3.1 ms: six of the passes only clear a 1080p depth buffer (0.22 ms each).
 # Handheld (DM_OPMODE=0) is not fixed: the 3D draws at 1280x720 but the title and the fields come out blurred all over (a depth-of-field-like blur, its chain mixes
 # 720p and 1080p buffer sizes); docked is the default and correct. Local wireless is not checked yet.
+# 2026-11-22, same device, mrpurple and kimchi Turnip: before a port has the Vfx programs, a draw whose pixel shader is missing still wrote depth, so the opening
+# froze on the old shot (8-12 s spans in the stadium and after the logo). DM_VK_SKIP_MISSING=1 leaves those draws out entirely; the opening then plays through.
+# runtime_shaders on (issue #490): the first port showed black and frozen frames in the opening until the 46 Vfx programs were captured and ported in. They are not
+# stored in any game file (each one's instruction words, looked for in every decompressed GFPAK member, matched at most 22-67% and spread over unrelated effect
+# archives: Vfx assembles them), so the shader split cannot find them; the app now translates each one the first time a draw needs it (dm/android/gfx_vk_shader_rt.c).
+# The 46 came out byte for byte as the porter's bundle has them; on the Odin 2 they took 51 ms together, about 1 ms each, on a worker thread.
+# 2026-11-22, same device, kimchi and mrpurple Turnip: every lake and river rendered flat black (issue #511, seen on Shield too). The water's reflection samples
+# a 16x16 cube probe (6 layers, cube compatible) through a view narrowed to one face, range 0+1; vk_tex_view_as refused it ("cube view refused ... range 0+1
+# type 3"), the dummy view read zero and the Fresnel term made the whole surface black. DM_VK_CUBE_WIDEN=1 widens such a view to the whole cube; water has its colour
+# and reflections again.
+env	DM_VK_CUBE_WIDEN=1
+runtime_shaders	on
 status	playable
 tested	v458752 AYN Odin 2 (Snapdragon 8 Gen 2, Adreno 740, Android 13)
 package	org.nx2a.pokemonsword

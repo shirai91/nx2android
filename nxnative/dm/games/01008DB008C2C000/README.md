@@ -11,6 +11,12 @@
 | Tested build and device | v458752 AYN Odin 2 (Snapdragon 8 Gen 2, Adreno 740, Android 13) |
 | App package | `org.nx2a.pokemonshield` |
 
+The profile sets these for you (`android.tsv`); a player changes the pause menu ones in the game, and the env rows in the data pack's `env.txt`:
+
+| Row | What it does |
+|---|---|
+| `DM_VK_CUBE_WIDEN=1` | 1 = a cube read through fewer than six faces of a cube-compatible image takes the whole cube (Pokemon Sword's reflection probe; otherwise refused and read as … |
+
 Read the profile's porting log in the comment header of [`android.tsv`](android.tsv). Back to the [games list](../../../../README.md#games).
 <!-- end of the game facts -->
 
