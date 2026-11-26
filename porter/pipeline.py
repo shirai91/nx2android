@@ -922,7 +922,7 @@ class Port:
         icon = self.icon()
         code = version_code(self.pkg_ver, self.o.vercode_offset)
         if self.o.vercode_offset: say(f'versionCode {code} ({self.pkg_ver} + 1 + offset {self.o.vercode_offset})')
-        external = self.external_activity() if self.o.external_display or self.o.native_keyboard else self.pad_motion()
+        external = self.app_dex()
         driver = self.o.vulkan_driver
         if driver and driver.name != driver_lib_name(driver):   # packed under a lib*.so name (driver_lib_name), copied beside the host library
             driver = self.so.parent / driver_lib_name(driver); shutil.copyfile(self.o.vulkan_driver, driver)
@@ -936,9 +936,9 @@ class Port:
         self.result['apk'] = str(self.apk_path)
         PROG.end(f'{self.apk_path.name}, {self.apk_path.stat().st_size / 2**20:.1f} MB')
 
-    def java_dex(self, name, min_api=29):
+    def java_dex(self, name, min_api):
         """classes.dex from dm/android/java/org/nx2a, built with javac and d8 from Android's SDK (ANDROID_HOME): None when either is missing, or when the newest
-        platform there is older than min_api (31 for InputDevice.getSensorManager, 29 for the rest)"""
+        platform there is older than min_api (31: InputDevice.getSensorManager, which org.nx2a.PadMotion needs)"""
         javac = shutil.which('javac')
         roots = toolchain._sdk_roots()
         platforms = [p for root in roots for p in (root / 'platforms').glob('android-*/android.jar')]
@@ -950,26 +950,31 @@ class Port:
         out = self.aw / name; classes, dex = out / 'classes', out / 'dex'
         shutil.rmtree(out, ignore_errors=True); classes.mkdir(parents=True); dex.mkdir()
         sources = sorted((DM / 'android/java/org/nx2a').glob('*.java'))
-        nsp.run([javac, '-source', '8', '-target', '8', '-classpath', platform, '-d', classes, *sources], self.logs / f'android_{name}_java.log', env=self.env)
-        nsp.run([d8, '--min-api', '29', '--lib', platform, '--output', dex, *sorted(classes.rglob('*.class'))], self.logs / f'android_{name}_dex.log', env=self.env)
+        # -encoding utf-8: the sources carry "→" and the face-button labels' arrows, and javac reads them in the
+        # platform's encoding otherwise (a Chinese Windows reads GBK and stops at the first unmappable character)
+        nsp.run([javac, '-encoding', 'utf-8', '-source', '8', '-target', '8', '-classpath', platform, '-d', classes, *sources], self.logs / f'android_{name}_java.log', env=self.env)
+        nsp.run([d8, '--min-api', str(min_api), '--lib', platform, '--output', dex, *sorted(classes.rglob('*.class'))], self.logs / f'android_{name}_dex.log', env=self.env)
         return dex / 'classes.dex'
 
-    def external_activity(self):
-        dex = self.java_dex('external-activity')
-        if dex is None:
-            raise BuildError('--external-display / --native-keyboard needs javac and an Android SDK with a platform (API 31 or newer) and build-tools (set ANDROID_HOME)')
-        activity = 'KeyboardExternalActivity' if self.o.native_keyboard else 'ExternalActivity'
-        return ['--dex', str(dex), '--activity', 'org.nx2a.' + activity if self.o.external_display else 'org.nx2a.GameActivity']
+    def app_dex(self):
+        """The APK's classes.dex (--dex ...), or [] when this checkout cannot make one.
 
-    def pad_motion(self):
-        """The APK's classes.dex for a controller's own gyroscope (org.nx2a.PadMotion): InputDevice.getSensorManager is Java-only, and the app is otherwise a code-less
-        NativeActivity. Android's SDK is not something the porter downloads, so a checkout without one ports as before, minus the pad's motion: the host logs that
-        (front_android.c pad_motion_start), and env.txt's DM_MOTION_SRC=pad would leave the sensor at rest"""
-        dex = self.java_dex('pad-motion', 31)
+        One dex for every class in dm/android/java/org/nx2a: javac compiles the folder as a whole, so the two users of it - the external display's activity and
+        org.nx2a.PadMotion for a controller's own gyroscope - cannot ask for different API levels, and 31 (InputDevice.getSensorManager) is the higher of the two. An
+        external display without the SDK is an error the player cannot work around; a controller's own gyroscope without it is not, because the features are independent
+        and the host logs which one is missing (front_android.c pad_motion_start)"""
+        needs_activity = self.o.external_display or self.o.native_keyboard
+        dex = self.java_dex('app', 31)
         if dex is None:
-            say('[RED] no javac / Android SDK with API 31 or newer (ANDROID_HOME): a controller\'s own gyroscope is not read')
+            if needs_activity:
+                raise BuildError('--external-display / --native-keyboard needs javac and an Android SDK with a platform (API 31 or newer) and build-tools (set ANDROID_HOME)')
+            say("no javac / Android SDK with API 31 or newer (ANDROID_HOME): a controller's own gyroscope is not read")
             return []
-        return ['--dex', str(dex)]
+        args = ['--dex', str(dex)]
+        if needs_activity:
+            activity = 'KeyboardExternalActivity' if self.o.native_keyboard else 'ExternalActivity'
+            args += ['--activity', 'org.nx2a.' + activity if self.o.external_display else 'org.nx2a.GameActivity']
+        return args
 
     def theme(self):
         """The on-screen gamepad's theme: only the game's own pack goes in the APK (dm/android/themes/themes.tsv maps title IDs to packs; a game with no row
