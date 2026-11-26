@@ -107,6 +107,10 @@ class PortTab(QWidget):
         self.package.setToolTip('Install under another package than the profile\'s (org.nx2a.<game>.test), beside your other build of the game.\n'
                                 'An app of another package has its own saves.')
         self.fps60 = QCheckBox('60 fps (the profile\'s own frame-rate cap, else the community\'s FPSLocker-Warehouse config of the game\'s build, fetched from GitHub)')
+        self.aspect = QComboBox(); self.aspect.addItem('Original', 'native'); self.aspect.addItem('21:9 (3440:1440)', '21:9')
+        self.aspect_file = QLineEdit(); self.aspect_file.setPlaceholderText('your matching ultrawide ZIP or .pchtxt')
+        self.aspect_row = path_row(self.aspect_file, self.pick_aspect); self.aspect_row.setEnabled(False)
+        self.aspect.currentIndexChanged.connect(lambda _: self.aspect_row.setEnabled(self.aspect.currentData() == '21:9'))
         self.touch = QCheckBox('Touch game: start with the on-screen gamepad hidden, so every touch but the menu button\'s goes to the game (the pause menu shows it again)')   # porter port --touch
         self.no_menu_button = QCheckBox('No menu button: hide the on-screen menu button; the Back gesture or key, or a controller\'s Home/Menu key, opens the menu (port again to show it)')   # porter port --no-menu-button
         self.driver = QLineEdit(); self.driver.setPlaceholderText('the device\'s own')   # porter port --vulkan-driver
@@ -136,6 +140,7 @@ class PortTab(QWidget):
         f.addRow('Package', self.package); f.addRow('versionCode offset', self.vercode); f.addRow('Extra address space', headroom)
         f.addRow('Vulkan driver', path_row(self.driver, self.pick_driver))
         f.addRow('System font', path_row(self.shared_font, self.pick_shared_font))
+        f.addRow('Aspect ratio', self.aspect); f.addRow('Ultrawide patch', self.aspect_row)
         f.addRow('', self.fps60); f.addRow('', self.touch); f.addRow('', self.no_menu_button); f.addRow('', self.mt_replay); f.addRow('', self.debug); f.addRow('', self.experimental)
         scroll = FitScroll(); scroll.setWidgetResizable(True); scroll.setFrameShape(QFrame.NoFrame); scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll.setMinimumHeight(120); scroll.setWidget(inner); scroll.fit()   # the options scroll only when the window is too short for them, so the tab fits a 1080p screen
@@ -182,6 +187,10 @@ class PortTab(QWidget):
     def pick_shared_font(self):
         p = QFileDialog.getOpenFileName(self, 'System font', self.shared_font.text() or str(Path.home()), 'TrueType font (*.ttf)')[0]
         if p: self.shared_font.setText(p)
+
+    def pick_aspect(self):
+        p = QFileDialog.getOpenFileName(self, 'Ultrawide patch', self.aspect_file.text() or str(Path.home()), 'Patches (*.zip *.pchtxt)')[0]
+        if p: self.aspect_file.setText(p)
 
     def pick_out(self):
         d = QFileDialog.getExistingDirectory(self, 'Output folder', self.out.text() or self.folder.text() or str(Path.home()))
@@ -250,6 +259,7 @@ class PortTab(QWidget):
         if self.vercode.value(): args += ['--vercode-offset', str(self.vercode.value())]
         if self.headroom.value() >= 0: args += ['--alias-headroom', str(self.headroom.value())]
         if self.fps60.isChecked(): args.append('--fps60')
+        if self.aspect.currentData() == '21:9': args += ['--aspect-ratio', '21:9', '--aspect-patch', self.aspect_file.text().strip()]
         if self.touch.isChecked(): args.append('--touch')
         if self.no_menu_button.isChecked(): args.append('--no-menu-button')
         if self.mt_replay.isChecked(): args.append('--mt-replay')

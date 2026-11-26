@@ -82,6 +82,7 @@ static _Atomic int g_set_overlay = 1, g_set_rumble = 1, g_set_fps;   // the game
 static _Atomic int g_set_opacity = 60;   // the gamepad's opacity, percent (OV_OPACITY_MIN..MAX: the menu's Opacity slider)
 static _Atomic int g_set_sr;   // Super resolution: the game's picture upscaled into a larger window by the present pass (gfx_vk_present.c sr_ready)
 static _Atomic int g_set_sharp;   // its Sharpness, percent by 25 (the menu's slider, settings.txt sharpness=)
+static _Atomic int g_set_fill;   // Fit (default) or Fill: crop the picture to cover the display
 static _Atomic int g_set_grid;   // the layout editor's Snap to grid
 static _Atomic int g_set_zone;   // the sticks' touch area: 0 their circles, 1 half the screen each (overlay_layout.h dm_overlay_stick_zone)
 // the menu button in play (issue #397): env.txt's DM_MENU_BUTTON=0 (porter port --no-menu-button) leaves it out, as a control the player hid (dm_overlay_hidden):
@@ -128,6 +129,7 @@ static void settings_load(void) {
         else if (sscanf(line, "fps=%d", &v) == 1) atomic_store(&g_set_fps, v != 0);
         else if (fps_opt_parse(line)) {}
         else if (sscanf(line, "sr=%d", &v) == 1) atomic_store(&g_set_sr, v != 0);
+        else if (sscanf(line, "display_fill=%d", &v) == 1) atomic_store(&g_set_fill, v != 0);
         else if (sscanf(line, "sharpness=%d", &v) == 1) atomic_store(&g_set_sharp, v < 0 ? 0 : v > 100 ? 100 : v / 25 * 25);
         else if (sscanf(line, "docked=%d", &v) == 1) setenv("DM_OPMODE", v ? "1" : "0", 1);   // over env.txt's: the host reads it once, at its first query
         else if (sscanf(line, "opacity=%d", &v) == 1) atomic_store(&g_set_opacity, v < OV_OPACITY_MIN ? OV_OPACITY_MIN : v > OV_OPACITY_MAX ? OV_OPACITY_MAX : v);
@@ -155,6 +157,7 @@ static void settings_save(void) {
     FILE *f = fopen(tmp, "w"); if (!f) { LOG("[RED] cannot write %s", tmp); return; }
     fprintf(f, "overlay=%d\nrumble=%d\ndocked=%d\nfps=%d\nsr=%d\nsharpness=%d\nopacity=%d\ngrid=%d\nstick_zone=%d\n", atomic_load(&g_set_overlay), atomic_load(&g_set_rumble), dm_opmode() != 0,
             atomic_load(&g_set_fps), atomic_load(&g_set_sr), atomic_load(&g_set_sharp), atomic_load(&g_set_opacity), atomic_load(&g_set_grid), atomic_load(&g_set_zone));
+    fprintf(f, "display_fill=%d\n", atomic_load(&g_set_fill));
     fps_opt_write(f);
     if (atomic_load(&g_set_labels) >= 0) fprintf(f, "labels=%d\n", atomic_load(&g_set_labels));   // (only once the player chose: until then env.txt decides)
     for (int l = 0; l < 2; l++) for (int i = 0; i < OV_N; i++) {
@@ -683,6 +686,7 @@ int dm_ui_zh(void) {
 }
 // gfx_vk_present.c draws the counter: not while the menu holds the game, except under the pause menu's Counter and Style tabs, where it shows what they change
 int dm_overlay_fps(void) { return atomic_load(&g_menu) ? atomic_load(&g_menu_tab) >= 2 && !atomic_load(&g_edit) && !atomic_load(&g_sp_on) && !atomic_load(&g_tx_on) : atomic_load(&g_set_fps); }
+int dm_overlay_fill(void) { return atomic_load(&g_set_fill); }
 int dm_overlay_sr(void) { return atomic_load(&g_set_sr); }   // gfx_vk_present.c: the present pass upscales with SGSR 1.0 when the picture grows
 int dm_overlay_sharp(void) { return atomic_load(&g_set_sharp); }   // its Sharpness, percent
 static void menu_open(int hi) {
@@ -719,6 +723,9 @@ static void menu_opacity(int v) {   // the slider: a new value is drawn at once 
     v = v < OV_OPACITY_MIN ? OV_OPACITY_MIN : v > OV_OPACITY_MAX ? OV_OPACITY_MAX : v;
     if (atomic_exchange(&g_set_opacity, v) != v) { dm_haptics_android_tap(); dm_overlay_redraw(); }
 }
+static void menu_fill(int v) {
+    if (atomic_exchange(&g_set_fill, v) != v) { atomic_fetch_add(&g_fps_ver, 1); settings_save(); dm_haptics_android_tap(); dm_overlay_redraw(); }
+}
 static void menu_tab(int t) { t = (t % OVM_TABS + OVM_TABS) % OVM_TABS; if (atomic_exchange(&g_menu_tab, t) != t) { atomic_store(&g_menu_scroll, 0); dm_haptics_android_tap(); } dm_overlay_redraw(); }
 static void ed_open(void); static void sp_open(void); static void save_export(void);
 static void menu_audio(void) {
@@ -738,6 +745,7 @@ static void menu_do(int item) {
     else if (item == OVM_FPS) { atomic_store(&g_set_fps, !atomic_load(&g_set_fps)); settings_save(); }
     else if (fps_opt_press(item)) settings_save();   // the counter's rows, corner, colour, outline and size
     else if (item == OVM_SR) { atomic_store(&g_set_sr, !atomic_load(&g_set_sr)); settings_save(); }   // the next present draws the frame again through it
+    else if (item == OVM_DISPLAY) { menu_fill(!atomic_load(&g_set_fill)); return; }
     else if (item == OVM_SHARP) return;   // (the slider is dragged, or stepped with left and right, as the opacity's)
     else if (item == OVM_MODE) { dm_set_opmode(dm_opmode() ? 0 : 1); settings_save(); }   // the game takes it when it goes on
     else if (item == OVM_PAD) { atomic_store(&g_set_labels, !pad_labels()); settings_save(); }   // at once (pad_labels)
@@ -804,6 +812,7 @@ static void menu_key(uint64_t bit) {   // a controller key pressed while the men
         atomic_store(&g_menu_hi, hi); atomic_store(&g_menu_scroll, (int)lroundf(ov_menu_scroll_reveal(tab, ov_menu_scroll_rows(atomic_load(&g_menu_scroll)), hi) * OVM_SCROLL_UNITS)); dm_overlay_redraw();
     } else if ((bit == DM_BTN_LEFT || bit == DM_BTN_RIGHT) && item == OVM_OPACITY) { menu_opacity(atomic_load(&g_set_opacity) + (bit == DM_BTN_LEFT ? -5 : 5)); settings_save(); }
     else if ((bit == DM_BTN_LEFT || bit == DM_BTN_RIGHT) && item == OVM_SHARP) { menu_sharp(atomic_load(&g_set_sharp) + (bit == DM_BTN_LEFT ? -25 : 25)); settings_save(); }
+    else if ((bit == DM_BTN_LEFT || bit == DM_BTN_RIGHT) && item == OVM_DISPLAY) menu_fill(bit == DM_BTN_RIGHT);
     else if ((bit == DM_BTN_LEFT || bit == DM_BTN_RIGHT) && item == OVM_TAB) menu_tab(tab + (bit == DM_BTN_LEFT ? -1 : 1));
     else if (bit == DM_BTN_L || bit == DM_BTN_ZL || bit == DM_BTN_R || bit == DM_BTN_ZR) {
         menu_tab(tab + (bit == DM_BTN_L || bit == DM_BTN_ZL ? -1 : 1));
