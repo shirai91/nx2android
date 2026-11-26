@@ -48,6 +48,7 @@ DM_GL_STUBS	str		debug,ios	?	hle_gl.m
 DM_GPU_TURBO	str		profile	live	perf_android.c	"auto" or 1: ask the GPU for its high clocks while the game is GPU-bound; "need": only while the game is held below its target; unset or 0 = no
 DM_GUEST_SPAWN_TEST	int		debug	?	hle_guestthread.c	
 DM_HLECOUNT	str		debug	start	hle_count.c	count every HLE call and write a TSV (category, name, count) at exit; the `ctl.txt` line `hlecount <file>` writes the counts so far, so two dumps around one action show the calls it made
+DM_IMMERSIVE	bool	1	debug	start	front_android.c	0 = the system bars stay as before (AWINDOW_FLAG_FULLSCREEN hides the status bar only); default hides both, immersive-sticky (an edge swipe shows them until they slide away)
 DM_IMPORTS	str		debug	?	main.c	
 DM_KBD	str		debug	?	hle_swkbd.c	
 DM_KBD_PLAYER	str		debug,ios	?	front_mac.m	

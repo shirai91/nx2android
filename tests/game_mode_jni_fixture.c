@@ -24,6 +24,7 @@ static jint integer(JNIEnv *e, jobject o, jmethodID m, ...) { (void)e; assert(o&
 static void dm_perf_game_mode(int m) { received=m; }
 static void go_foreground(void) { assert(received>=0); resumed++; }
 static void act_finish(ANativeActivity *a) { (void)a; assert(g_quit); }
+static void immersive(ANativeActivity *a) { (void)a; assert(!g_quit); }   // the system bars (its own JNI calls are not counted here)
 /* PRODUCTION */
 int main(void) {
     struct JNINativeInterface_ table={0}; table.PushLocalFrame=push; table.PopLocalFrame=pop;
