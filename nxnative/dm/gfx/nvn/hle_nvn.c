@@ -725,13 +725,13 @@ NVN(nvnSyncInitialize, NVNboolean, NVNsync *s, NVNdevice *d) { (void)d; *(sync_t
 NVN(nvnSyncFinalize, void, NVNsync *s) { ((sync_t *)s)->magic = 0; }
 NVN(nvnSyncSetDebugLabel, void, NVNsync *s, const char *l) { (void)s; (void)l; }
 // Fence = "all commands previously submitted to the queue have completed": record the fence value of the most recent submit
-static uint64_t nvn_fence_now(void); static int nvn_fence_wait(uint64_t f, uint64_t timeout_ns);
+static uint64_t nvn_fence_now(void); static int nvn_fence_lag(void); static uint64_t nvn_fence_lagged(void); static int nvn_fence_wait(uint64_t f, uint64_t timeout_ns);
 static uint64_t g_frame;
 // DM_NVN_SEQ=N (live, a DM_CTL env line): the next N frames' submissions, fences, acquires, sync waits and presents in order, with thread and time
 // (how Xenoblade Chronicles 3's render thread was found waiting in SyncWait on the acquire sync for its whole frame's GPU work)
 static int seq_on(void) { static uint64_t until; const char *e = getenv("DM_NVN_SEQ"); if (e && atoi(e)) { until = g_frame + (uint64_t)atoi(e); setenv("DM_NVN_SEQ", "0", 1); } return g_frame < until; }
 #define SEQ(...) do { if (seq_on()) { char sb_[256]; snprintf(sb_, sizeof sb_, __VA_ARGS__); LOG("[seq] f%llu t%lx %.3f %s", (unsigned long long)g_frame, (unsigned long)(uintptr_t)pthread_self(), now_ns() / 1e6, sb_); } } while (0)
-NVN(nvnQueueFenceSync, void, NVNqueue *q, NVNsync *s, NVNsyncCondition c, int f) { (void)q; (void)c; (void)f; ((sync_t *)s)->fenced = 1; ((sync_t *)s)->fence = nvn_fence_now(); SEQ("fence %p", (void *)s); }
+NVN(nvnQueueFenceSync, void, NVNqueue *q, NVNsync *s, NVNsyncCondition c, int f) { (void)q; (void)c; (void)f; ((sync_t *)s)->fenced = 1; ((sync_t *)s)->fence = nvn_fence_lag() ? nvn_fence_lagged() : nvn_fence_now(); SEQ("fence %p", (void *)s); }
 // A sync object that was never fenced waits until timeout, as on a real device; a fenced one is released only after the GPU has actually completed up to that fence value
 // A GPU-side wait on a sync: the host has a single Metal queue that executes submissions in order, so commands before the fence are always done first and nothing needs waiting. A sync not fenced yet (fenced later by another thread) is not waited for here; logged once
 NVN(nvnQueueWaitSync, NVNboolean, NVNqueue *q, const NVNsync *s) { (void)q; static int once; if (!((const sync_t *)s)->fenced && !once++) LOG("[nvn] QueueWaitSync: the sync object has no fence yet, the host does not wait"); return 1; }
@@ -1393,6 +1393,13 @@ static int job_wait(uint64_t id, uint64_t timeout_ns) {
 }
 // The fence a sync takes now: the last job queued, or the last commit when replay is synchronous
 static uint64_t nvn_fence_now(void) { return nvn_async() ? ASYNC_FENCE | g_job_enq : mtl_last_fence(); }
+// DM_NVN_FENCE_LAG=1 (start-up; with DM_NVN_ASYNC=1 only): a sync the game fences on the queue names the frame before the one it covers. A game that waits once a frame
+// for a sync fenced over the whole frame's work (Donkey Kong Bananza: one SyncWait a frame) otherwise runs "record, then replay, then the GPU's tail" one after the other,
+// where on the console its submissions ran on the GPU as they were made; with the lag it records frame N + 1 while frame N is replayed and drawn, and is never more than
+// one frame ahead. g_pj: the job numbers of the last two presents queued; a fence taken right after a present (nothing queued since) names the present before it
+static uint64_t g_pj[2];
+static int nvn_fence_lag(void) { static int on = -1; if (on < 0) { const char *e = getenv("DM_NVN_FENCE_LAG"); on = e && atoi(e) && nvn_async(); if (on) LOG("[nvn] a fenced sync names the frame before (DM_NVN_FENCE_LAG): the game records one frame ahead of the replay"); } return on; }
+static uint64_t nvn_fence_lagged(void) { return ASYNC_FENCE | (g_job_enq == g_pj[0] ? g_pj[1] : g_pj[0]); }
 // mtl_wait for a fence nvn_fence_now gave: first the job's replay, then its commit fence on the GPU (a job too old for the ring has long been replayed: the latest fence covers it)
 static int nvn_fence_wait(uint64_t f, uint64_t timeout_ns) {
     if (!(f & ASYNC_FENCE)) return mtl_wait(f, timeout_ns);
@@ -2092,7 +2099,7 @@ NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
     if (idx >= 0 && idx < o->ntex && idx < 4) {
         o->done[idx] = nvn_fence_now();
         if (nvn_async()) { nvn_job j = {JOB_PRESENT, 0, NULL, q, CTX(o->tex[idx]), present_period(o) / 1e9, {0}, &o->ticket[idx]}; memcpy(j.crop, o->crop, sizeof j.crop);
-            o->ticket[idx] = ASYNC_FENCE | (g_job_enq + 1); job_push(j); }   // (the job overwrites the ticket with the present's own when it runs)
+            o->ticket[idx] = ASYNC_FENCE | (g_job_enq + 1); g_pj[1] = g_pj[0]; g_pj[0] = job_push(j); }   // (the job overwrites the ticket with the present's own when it runs)
         else o->ticket[idx] = mtl_present(CTX(o->tex[idx]), present_period(o) / 1e9, o->crop);   // enqueue only, return immediately
     }
     gfx_leave();
