@@ -94,9 +94,17 @@ static int async_pipe(const pkey *k) {   // 1: queued (the draw is left out); un
 }
 static VkPipeline graphics_pipeline(const pkey *k, VkPipelineLayout layout) {
     if (g_last_p && !memcmp(k, &g_last_k, sizeof *k)) return g_last_p == (void *)1 ? VK_NULL_HANDLE : g_last_p;
+    // The pipelines of the last few hundred keys, in front of the locked map: where materials alternate the one-entry memo above misses most draws, and each miss
+    // took the mutex and the map's hash of the whole key (Donkey Kong Bananza's hub on an Odin 3: nvn_hm_get 2.6 % of the replay thread). One slot a hash of a few
+    // of the key's words; a hit compares the whole key. Pipelines in the map are never dropped and only the replay thread reads these. DM_VK_PIPE_FRONT=0 (start-up): off
+    static struct { pkey k; VkPipeline p; } *fc; static int fc_on = -1;
+    if (fc_on < 0) { const char *e = getenv("DM_VK_PIPE_FRONT"); fc_on = !(e && *e == '0') && (fc = calloc(256, sizeof *fc)) != NULL; }
+    const uint64_t *kw = (const uint64_t *)(const void *)k; const size_t nkw = sizeof *k / 8;
+    unsigned fi = (unsigned)(((k->key[0] ^ k->key[1] * 3 ^ k->key[2] * 5 ^ kw[3] * 7 ^ kw[nkw / 4] * 11 ^ kw[nkw / 2] * 13 ^ kw[nkw - 1] * 17) * 0x9E3779B97F4A7C15ull) >> 56);
+    if (fc_on && fc[fi].p && !memcmp(k, &fc[fi].k, sizeof *k)) { g_last_k = *k; g_last_p = fc[fi].p; return fc[fi].p == (void *)1 ? VK_NULL_HANDLE : fc[fi].p; }
     pthread_mutex_lock(&g_pipe_mu); VkPipeline p = nvn_hm_get(&g_pipes, k); pthread_mutex_unlock(&g_pipe_mu);
     if (p == PIPE_PENDING) return VK_NULL_HANDLE;
-    if (p) { g_last_k = *k; g_last_p = p; return p == (void *)1 ? VK_NULL_HANDLE : p; }
+    if (p) { g_last_k = *k; g_last_p = p; if (fc_on) { fc[fi].k = *k; fc[fi].p = p; } return p == (void *)1 ? VK_NULL_HANDLE : p; }
     if (async_pipe(k)) return VK_NULL_HANDLE;
     vkshader_t *stg[3] = {S.sh[0], S.sh[1], S.sh[2]};
     uint64_t tb = g_prof_on ? tick() : 0; p = build_pipeline(k, layout, stg); if (g_prof_on) g_prof_ns[0] += tick() - tb; g_vkst.pipes_built++;

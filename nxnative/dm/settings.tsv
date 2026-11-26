@@ -48,6 +48,7 @@ DM_GL_STUBS	str		debug,ios	?	hle_gl.m
 DM_GPU_TURBO	str		profile	live	perf_android.c	"auto" or 1: ask the GPU for its high clocks while the game is GPU-bound; "need": only while the game is held below its target; unset or 0 = no
 DM_GUEST_SPAWN_TEST	int		debug	?	hle_guestthread.c	
 DM_HLECOUNT	str		debug	start	hle_count.c	count every HLE call and write a TSV (category, name, count) at exit; the `ctl.txt` line `hlecount <file>` writes the counts so far, so two dumps around one action show the calls it made
+DM_IMMERSIVE	bool	1	debug	start	front_android.c	0 = the system bars stay as before (AWINDOW_FLAG_FULLSCREEN hides the status bar only); default hides both, immersive-sticky (an edge swipe shows them until they slide away)
 DM_IMPORTS	str		debug	?	main.c	
 DM_KBD	str		debug	?	hle_swkbd.c	
 DM_KBD_PLAYER	str		debug,ios	?	front_mac.m	
@@ -259,6 +260,7 @@ DM_VK_COMPUTE_WARM_MAX	int		debug	?	gfx_vk_exec.c
 DM_VK_CPU_READY	bool		debug	?	gfx_vk_exec.c	
 DM_VK_CRUMBS	bool		debug	start	gfx_vk_exec.c	for a device lost (GPU hang): each pass end and dispatch writes its number into host-visible memory after a full barrier; when the device is lost the log names the last work the GPU finished and the passes after it, with their shaders. Slows the GPU
 DM_VK_DBG_DRAW	int		debug	live	gfx_vk_exec.c	bisection aids: skip command kinds; 1 no draw calls, 2 no vertex buffers, 4 no descriptor sets
+DM_VK_DQ_SPIN	bool		debug	start	gfx_vk_dq.c	the two-stage replay's threads wait for each other in sched_yield loops, as before they spun briefly and then slept (A/B)
 DM_VK_DRIVER	str		porter	start	gfx_vk_core.c	the Vulkan driver library in the APK (porter --vulkan-driver, e.g. Turnip)
 DM_VK_DYN_UBO	bool		debug	start	gfx_vk_shader.c	no dynamic uniform-buffer offsets (descriptor reuse drops)
 DM_VK_FDZ	bool	1	profile	live	gfx_vk_exec.c	no fragment-depth variants: draws that test a depth buffer a fragment shader wrote through `gl_FragDepth` (in the last two presents) normally get a variant of their fragment shader that writes `gl_FragDepth = gl_FragCoord.z`, the same depth tested after the shader, out of Adreno's early culling, whi
@@ -303,6 +305,7 @@ DM_VK_PASS_SPIKE	float		debug	start	gfx_vk_core.c	a frame whose timed passes and
 DM_VK_PASS_SPLIT	int	0	profile	?	gfx_vk_exec.c	split a pass into command buffers every N draws; 0 = never. Digimon Story: Time Stranger sets 128 (with DM_VK_PASS_SPLIT_DEPTH=1)
 DM_VK_PASS_SPLIT_DEPTH	hex		profile	?	gfx_vk_exec.c	with DM_VK_PASS_SPLIT: also split a pass that has a depth attachment (it writes back a depth texel before the second part, for Adreno's LRZ); 0 or unset = such passes are not split. Digimon Story: Time Stranger sets 1: its main 3D pass has depth
 DM_VK_PASS_TIMES	bool		debug	start	gfx_vk_core.c	GPU timestamps around every pass; the per-frame line lists the costliest passes. Disturbs Adreno's binning: compare runs only
+DM_VK_PIPE_FRONT	bool	1	debug	start	gfx_vk_exec_pipelines.inc	0 = the pipeline look-up goes to the locked map whenever the last key differs, as before (default: the pipelines of the last few hundred keys are kept in front of it)
 DM_VK_PIPE_LOG	str		debug	start	gfx_vk_exec.c	one log line per pipeline built (first 600), and the polygon-state lines (cull, front face, origin, the Vulkan values; one per combination, at most 16): shaders, topology, cull/front, depth and stencil state, colour formats, blend, attribute and binding counts. Compare the lines of a wrong material 
 DM_VK_PIXEL_HISTORY	str		debug	live	gfx_vk_exec.c	Default off. For matching single-sample B10G11R11 target 0, record one pixel's colour/depth after each logical draw or clear in `pixel_history.tsv`, at most 4096 events. Includes shader keys, vertex/index buffers, vertex UBO addresses, depth/bias/scissor/viewport state and packed source words. A sin
 DM_VK_POOL_CACHED	bool		debug	start	gfx_vk_core.c	opt into host-visible cached memory for copied pools only; default off. Allocation/map/bind failure falls back to coherent memory, except device loss. Non-coherent pools flush initial uploads whole and incremental uploads over one atom-aligned interval spanning changed blocks; after GPU completion, 

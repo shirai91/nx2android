@@ -1,0 +1,26 @@
+# DRAGON QUEST VII Reimagined, Asian release (0100505021440000) on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# The Korean / Chinese release of DRAGON QUEST VII Reimagined, the game the JP/WW profile (dm/games/0100A9D01C446000) covers: Unreal Engine 4.27 on SDK 19.3.1, update 1.1.0 (v65536), the same
+# sdk and subsdk0 builds (byte for byte), and this main build's allocator cut and vtable found again (patches.py, ue_malloc.tsv). Unreal's 37 GB allocator is cut and the engine region capped at
+# 2 GB (game_args) as in the JP/WW profile; the shaders are LZ4 blocks in pakchunk0-Switch.pak, which uepak.py decodes without the device (63,153 translated, 1,054 MB), one output-typed by hand
+# (shader_facts_manual.tsv, the GLSL_SWITCH camera-preview shader).
+# Tested 2026-11-23 on the Legion Y700 TB321FU (Snapdragon 8 Gen 3, Adreno 750, Android 16), docked (1920x1080) with Mesa's Turnip 26.2.3: the title, a new game (names in Simplified
+# Chinese), the opening, the first village and its surroundings (walking, dialogue, battles), village transitions, the pause menu, an autosave and Continue from it.
+# Turnip is required (vulkan_driver turnip): on the Adreno 750's system driver (LLVM libllvm-qgl.so) the first compute pipeline crashes at boot.
+# The texture streaming pool stays at SwitchDeviceProfiles.ini's 200 MB until the ue_cvars.tsv reader (#635) lands; then it is raised to the
+# game's Windows 1000.
+# Frame rate: the governor (pacing adaptive, the profile's fps_target 60), no pin, and DM_GPU_TURBO=auto. A fixed 30 pin without the turbo was measured 2026-11-24
+# to let the GPU governor lower the clock until the work filled the longer frame (perf_android.c "adrenotools_set_turbo"): GPU p50 30 ms, frame 45 ms (~22 fps)
+# and the SoC only ~40 C, neither unit busy. The turbo halved the GPU time (p50 14-16 ms, frame 33.5 ms holding 30); with the governor on, handheld 720p reaches
+# 60 fps on the overworld (GPU p50 10.0 ms) and 40 in the village (work p90 19.6-20.7 ms against the 16.67 ms of 60). Docked 1080p holds 30 with the turbo, at a
+# higher SoC temperature. The operation mode is the player's own setting, not the profile's: it decides 1280x720 against 1920x1080.
+# The heavy scene's cost is fragment work: 243 draws in the main 1080p HDR pass (14.8 ms of a 37 ms frame), ~14 passes per object (3465 draws a frame), and the
+# 3072x1024 shadow atlas only 1.0 ms. Async replay on its own changed nothing here — the clock was the limit, not serialization.
+# Frame rates and the temperature on other devices are not checked.
+status	experimental
+tested	v65536 Lenovo Legion Y700 TB321FU (Snapdragon 8 Gen 3, Adreno 750, Android 16)
+package	org.nx2a.dragonquestvii.asia
+orientation	landscape
+vulkan_driver	turnip
+env	DM_GPU_TURBO=auto
+readme_image	docs/images/dragon-quest-vii-reimagined.jpg
+readme_tag	v0.5.0

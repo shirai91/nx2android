@@ -76,7 +76,7 @@ class ExportChecks(unittest.TestCase):
         count = self.shader_count or (2 if self.second_shader else 1)
         table.write_text(''.join(f'{self.stage}_test.bin\t0\t0\t{k:016x}\t0\n' for k in range(1, count + 1)))
         (self.root / 'pkg' / f'{self.stage}_test.bin').write_bytes(b'fixture')
-        game = SimpleNamespace(table=lambda name: self.root / name)
+        game = SimpleNamespace(table=lambda name: self.root / name, get=lambda k, d=None: d)
         try: products = importlib.import_module('shader_products')
         except ModuleNotFoundError: products = None
         numeric = {}
@@ -94,9 +94,10 @@ class ExportChecks(unittest.TestCase):
                    int_inputs=lambda _: {'0': 'uint'},
                    spirv_bindings=lambda _: (self.bindings, [1, 1, 1], {1: [0, 0, 0], 3: [0, 0, 0]}),
                    refl_bin=lambda cl,c1,hdr: struct.pack('<5I', 0, 0, *hdr),
-                   classify=lambda *args: None)
+                   classify=lambda *args: None,
+                   fork_map=lambda fn, items, J, init=None: [fn(i) for i in items])
         source = TOOLS / 'shader_vk.py'; tree = ast.parse(source.read_text())
-        nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in ('main', 'remap_handles')]
+        nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in ('main', 'remap_handles', 'final_map', '_final_one', '_final_init')]
         exec(compile(ast.Module(body=nodes, type_ignores=[]), str(source), 'exec'), env)
         with mock.patch.dict(os.environ, {'WORK': str(self.root)}), mock.patch.object(subprocess, 'run', side_effect=self.translate), contextlib.redirect_stdout(self.log):
             env['main']()
@@ -310,6 +311,26 @@ class ProductValidation(unittest.TestCase):
                 dmsv.write(str(path), [], level=level)
                 empty = dict(schema=1, expected=[['0000000000000001',5]], failed=[['0000000000000001', 'no output']])
                 self.assertEqual(shader_products.check_bundle(path, empty), (0, 1, False))
+
+
+class ForkPoolInTheRealModuleTest(unittest.TestCase):
+    """The harness above execs shader_vk.py's functions with a fork_map of its own, so a fork pool left out of the
+    branch failed only on a port. These run the module itself: its imports, and the pool it runs the passes in."""
+
+    def test_shader_vk_imports_the_fork_pool_it_runs_on(self):
+        p = subprocess.run([sys.executable, str(TOOLS / 'shader_vk.py'), '--help'], capture_output=True, text=True,
+                           env=dict(os.environ, DM_GAME='0100000000010000'))
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn('usage: shader_vk.py', p.stdout)
+
+    @unittest.skipUnless(hasattr(os, 'fork'), 'forkpool forks: where fork does not exist final_map runs in order')
+    def test_the_fork_pool_runs_the_work_in_two_children(self):
+        snippet = (f'import sys; sys.path.insert(0, {str(ROOT / "nxnative/dm/gfx/tools")!r})\n'
+                   'from forkpool import fork_map\n'
+                   'print(fork_map(lambda n: n * 2, [1, 2, 3, 4], 2))\n')
+        p = subprocess.run([sys.executable, '-c', snippet], capture_output=True, text=True)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(p.stdout.strip(), '[2, 4, 6, 8]')
 
 
 if __name__ == '__main__': unittest.main()

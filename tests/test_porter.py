@@ -82,6 +82,11 @@ class AndroidProfiles(unittest.TestCase):
         self.assertEqual(android_profile.load(d.name).settings, {'sr': '1'})
         with self.assertRaises(android_profile.ProfileError): android_profile.load(profile_dir([('status', 'boots'), ('setting', 'sr=2')]).name)
 
+    def test_stick_zone_setting(self):   # Stick area, circle or half screen (the pause menu's Gamepad tab row, front_android.c settings_load stick_zone=; issue #589)
+        d = profile_dir([('status', 'boots'), ('setting', 'stick_zone=1')])
+        self.assertEqual(android_profile.load(d.name).settings, {'stick_zone': '1'})
+        with self.assertRaises(android_profile.ProfileError): android_profile.load(profile_dir([('status', 'boots'), ('setting', 'stick_zone=2')]).name)
+
     def test_default_package(self):
         d = profile_dir([('status', 'boots')])
         self.assertEqual(android_profile.load(d.name).package, 'org.nx2a.t0100000000aaa000')
@@ -684,7 +689,7 @@ class UnrealShaders(unittest.TestCase):
             d = Path(tmp); (d / 'RomFS').mkdir(); (d / 'ue_shaders').mkdir()
             (d / 'RomFS/game.pak').write_bytes(b'pak')
             (d / 'ue_shaders/stamp').write_text(pipeline.nsp.ue_stamp(d))
-            p = SimpleNamespace(game=d, g=mock.Mock(), dirs={'v1': d}, versions=['v1'], tools={}, app_name='test')
+            p = SimpleNamespace(game=d, g=mock.Mock(get=lambda k, d=None: d), dirs={'v1': d}, versions=['v1'], tools={}, app_name='test')
             kinds = {k: (False, '') for k in ('oodle_packs', 'glslc_capture', 'ue_legacy')}
             kinds.update(graphics=('nvn', ''), ue_decode=(True, 'Unreal shader archive'))
             with mock.patch.object(pipeline.profile_guess, 'build_sources', return_value=kinds), mock.patch.object(pipeline, 'Adb') as adb:

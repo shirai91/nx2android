@@ -515,12 +515,17 @@ class Port:
         self.oodle_why = src['oodle_packs'][1] if src['oodle_packs'][0] and ('GFPAK' in src['oodle_packs'][1] or 'Trinity' in src['oodle_packs'][1]) else ''
         # Unreal paks (version 11) and IoStore containers: their shader code archives are decoded with the game's own Oodle on the device too (device_ue)
         self.ue_why = src['ue_decode'][1] if src['ue_decode'][0] else ''
+        # Legacy Unreal paks with LZ5 blocks (DRAGON QUEST XI S): the files decoded by the game's own LZ5 on the device (device_ue_legacy), for a profile that opts in (ue_legacy_decode device)
+        uld = self.g.get('ue_legacy_decode', '')
+        if uld not in ('', 'device'): raise BuildError(f'{self.g.id}: ue_legacy_decode must be device or absent: {uld}')
+        self.uel_why = src['ue_legacy'][1] if src['ue_legacy'][0] and uld == 'device' else ''
+        uel_cached = self.uel_why and all(self.uel_stamp_ok(v) for v in self.versions)
         # Already decoded UE archives need no device: rebuilding an APK's keyboard or host must also work after the player disconnects adb.
         ue_cached = self.ue_why and all((self.dirs[v] / 'ue_shaders/stamp').is_file() and
                                       (self.dirs[v] / 'ue_shaders/stamp').read_text() == nsp.ue_stamp(self.dirs[v]) for v in self.versions)
         self.glslc_why = src['glslc_capture'][1] if src['glslc_capture'][0] else ''
         capture_needed = self.glslc_why and self.glslc_todo()[1]
-        why = self.oodle_why or ('' if ue_cached else self.ue_why) or (self.glslc_why if capture_needed else '')
+        why = self.oodle_why or ('' if ue_cached else self.ue_why) or ('' if uel_cached else self.uel_why) or (self.glslc_why if capture_needed else '')
         if why:
             if not self.tools.get('adb'):   # adb is optional for a port that does not install (toolchain.require): this one needs it
                 raise BuildError(f"{self.app_name}'s shaders need preparation ({why}): the port runs the game's own code on the Android "
@@ -529,7 +534,7 @@ class Port:
             except (AdbError, KeyError) as e: raise BuildError(f"{self.app_name}'s shaders need preparation ({why}): the port runs the game's own code on "
                                                                f'the Android device, so connect it (adb) and port again ({e})') from e
 
-        for k in ('ue_legacy',) + (() if self.ue_why else ('ue_decode',)) + (() if self.oodle_why else ('oodle_packs',)):
+        for k in (() if self.uel_why else ('ue_legacy',)) + (() if self.ue_why else ('ue_decode',)) + (() if self.oodle_why else ('oodle_packs',)):
             if src[k][0]: raise BuildError(f'{self.app_name} needs a step that boots the game in the Mac host ({src[k][1]}), which the Android port cannot run yet')
 
     # ---- shaders compiled by the game's GLSLC at boot, captured on the Android device ----
@@ -723,6 +728,68 @@ class Port:
         say(f"shaders in Oodle-compressed archives ({self.oodle_why}): {len(recs):,} entries decoded by the game's own decoder on the device, "
             f"{sum(len(e) for _, e in by.values()):,} of them hold shaders")
         return {'DM_GFPAK_DECODED': str(dec)}
+    # ---- legacy Unreal paks (version 4) with LZ5 blocks, decoded by the game's own LZ5 on the device (DRAGON QUEST XI S; the Mac serves the split through its host, DM_OODLE_SERVE) ----
+    UEL_JOB = 1 << 30   # compressed bytes per job: the device holds one job and its output at a time
+    def uel_stamp(self, v):
+        return ''.join(f'{p.relative_to(self.dirs[v] / "RomFS").as_posix()}\t{p.stat().st_size}\n' for p in sorted((self.dirs[v] / 'RomFS').rglob('*.pak')))
+    def uel_stamp_ok(self, v):
+        st = self.dirs[v] / 'ue_legacy/stamp'
+        return st.is_file() and st.read_text(encoding='utf-8') == self.uel_stamp(v)
+    def device_ue_legacy(self):
+        """DRAGON QUEST XI S keeps its shaders inline in the cooked packages of four version 4 paks whose files are LZ5 2.0 blocks (13.8 GB, 24 GB decoded), and only the game's own
+        LZ5_decompress_safe decodes them. Every LZ5 file goes to the device in grouped jobs (hle_oodle.c ue_group_job, "DMOG": one group per file, its blocks as records) of about UEL_JOB bytes;
+        the host decodes each file and sends back only the ones that can hold a shader record (ue_has_shader). They land in <version dir>/ue_legacy/<pak path with / as __>.dec, which
+        shader_split.py ue_legacy_decoded reads; an LZ5 file not there holds no shader record"""
+        import struct
+        todo = [v for v in self.versions if not self.uel_stamp_ok(v)]
+        if not todo: return
+        PROG.add(1); PROG.stage('UE legacy decode', step='the LZ5 files of the paks')
+        tmp = self.work / 'tmp/uel'; kept_all = files_all = 0
+        for v in todo:
+            rom = self.dirs[v] / 'RomFS'; out = self.dirs[v] / 'ue_legacy.partial'; nsp.rmtree(out); out.mkdir(parents=True)
+            for pp in sorted(rom.rglob('*.pak')):
+                with open(pp, 'rb') as f: ver = uepak.pak_version(f)
+                if ver != 4: continue
+                pk = uepak.Pak(str(pp)); rel = pp.relative_to(rom).as_posix()
+                names = [n for n, e in pk.files.items() if e['method'] == 'LZ5']
+                if not names: pk.f.close(); continue
+                kept, df = 0, open(out / (rel.replace('/', '__') + '.dec'), 'wb')   # written as the files come back, the count last
+                df.write(b'DULD' + struct.pack('<QI', pp.stat().st_size, 0))
+                with pk.f, df:
+                    i = 0
+                    while i < len(names):
+                        nsp.rmtree(tmp); tmp.mkdir(parents=True); job, jout, size, batch = tmp / 'job.bin', tmp / 'job.out', 0, []
+                        with open(job, 'wb') as jf:
+                            jf.write(b'DMOG' + struct.pack('<I', 0))
+                            while i < len(names) and (not batch or size < self.UEL_JOB):
+                                e = pk.files[names[i]]; left = e['raw']
+                                if e['encrypted']: raise BuildError(f'{rel}: {names[i]} is encrypted in the pak')
+                                jf.write(struct.pack('<I', len(e['blocks'])))
+                                for s0, n in e['blocks']:
+                                    k = min(left, e['block_size']); left -= k
+                                    jf.write(struct.pack('<II', n, k) + pk.read_at(e['off'] + s0, n, False)); size += n
+                                batch.append(names[i]); i += 1
+                            jf.seek(4); jf.write(struct.pack('<I', len(batch)))
+                        PROG.set(step=f'{v}: {rel}: {i:,} of {len(names):,} LZ5 files on the device')
+                        self.device_oodle_job(job, jout)
+                        with open(jout, 'rb') as r:
+                            if r.read(4) != b'DMOR' or struct.unpack('<I', r.read(4))[0] != len(batch): raise BuildError("the game's LZ5 decoder on the device answered for other files than it was given")
+                            for nm in batch:
+                                n = struct.unpack('<I', r.read(4))[0]
+                                if n == 0xffffffff: continue
+                                if n != pk.files[nm]['raw']: raise BuildError(f"the game's LZ5 decoder on the device failed on {rel}#{nm} (see {self.logs / 'android_oodle_job.log'})")
+                                b = r.read(n)
+                                if len(b) != n: raise BuildError(f"the game's LZ5 decoder on the device returned a truncated result for {rel}#{nm}")
+                                e = nm.encode('utf-8'); df.write(struct.pack('<H', len(e)) + e + struct.pack('<I', n)); df.write(b); kept += 1
+                        nsp.rmtree(jout)
+                    df.seek(12); df.write(struct.pack('<I', kept))
+                say(f'{v}: {rel}: {len(names):,} LZ5 files decoded on the device, {kept:,} can hold shaders')
+                kept_all += kept; files_all += len(names)
+            (out / 'stamp').write_text(self.uel_stamp(v), encoding='utf-8')
+            nsp.swap_in(out, self.dirs[v] / 'ue_legacy')
+        nsp.rmtree(tmp)
+        PROG.end(f'{files_all:,} LZ5 files decoded on the device, {kept_all:,} can hold shaders')
+
     def device_oodle_job(self, job, out, bnsh=False):
         """One Oodle job file (hle_oodle.c: "DMOJ" records) decoded on the device into out ("DMOR"); the job file is removed. The host as an executable and the rewritten modules
         go to the device once a port (device_oodle_end removes them). bnsh: only the entries that hold a BNSH shader come back (DM_OODLE_JOB_BNSH)"""
@@ -860,6 +927,7 @@ class Port:
         pkg = self.work / 'shader' / 'pkg'
         try:
             if getattr(self, 'glslc_why', ''): self.device_glslc()
+            if getattr(self, 'uel_why', ''): self.device_ue_legacy()   # legacy Unreal paks with LZ5 blocks (ue_legacy_decode device), decoded on the device into <version dir>/ue_legacy
             if getattr(self, "ue_why", ""): self.device_ue()   # Unreal's shader code archives, decoded on the device into <version dir>/ue_shaders before the split reads them
             nsp.split_shaders(PY, NXNATIVE, [self.dirs[v] / 'RomFS' for v in sv], [self.dirs[v] / 'ExeFS/main' for v in sv], pkg, self.env, self.logs, self.g, bool(self.derived or self.provisional),
                                oodle=self.device_oodle if self.oodle_why else None,   # Oodle-compressed archives: the game's own decoder on the device
