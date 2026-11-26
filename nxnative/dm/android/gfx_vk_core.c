@@ -414,6 +414,47 @@ static int recv_fds(int sock, int *fds, int max) {
             for (size_t i = 0; i < (c->cmsg_len - CMSG_LEN(0)) / sizeof(int) && n < max; i++) fds[n++] = ((int *)CMSG_DATA(c))[i];
     return n;
 }
+// Extract the mappable dma-buf fd from an AHardwareBuffer's native handle. Adreno sends 1 fd; MediaTek gralloc_extra sends 3 (metadata at 0, dma-buf at 1).
+static int ahb_fd(AHardwareBuffer *ahb, int *why) {
+    int sv[2], fds[16], nfd = -1;
+    if (why) *why = 4;   // the caller's diagnostic stage: 2 socketpair, 3 the handle never arrived, 4 nothing usable came back
+    if (!ahb || socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sv)) { if (why) *why = 2; return -1; }
+    if (!AHardwareBuffer_sendHandleToUnixSocket(ahb, sv[0])) nfd = recv_fds(sv[1], fds, 16);
+    else if (why) *why = 3;
+    close(sv[0]); close(sv[1]);
+    if (nfd < 1) return -1;   // (still 4: the receive brought nothing back)
+    int pick = -1;
+    if (nfd == 1) {
+        pick = 0;
+    } else {
+        int first = -1;   // a dma-buf names itself: prefer it to another mappable fd (an ashmem region also maps read-write on some grallocs)
+        for (int i = 0; i < nfd; i++) {
+            void *p = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, fds[i], 0);
+            if (p == MAP_FAILED) continue;
+            munmap(p, 4096);
+            if (first < 0) first = i;
+            char link[64], tgt[128] = "";
+            snprintf(link, sizeof link, "/proc/self/fd/%d", fds[i]);
+            ssize_t r = readlink(link, tgt, sizeof tgt - 1);
+            if (r > 0) { tgt[r] = 0; if (strstr(tgt, "dmabuf") || strstr(tgt, "gralloc")) { pick = i; break; } }
+        }
+        if (pick < 0) pick = first;
+    }
+    if (pick >= 0) {
+        static int said;
+        if (!said) {
+            said = 1;
+            char link[64], target[128] = "?";
+            snprintf(link, sizeof link, "/proc/self/fd/%d", fds[pick]);
+            ssize_t r = readlink(link, target, sizeof target - 1);
+            if (r > 0) target[r] = 0;
+            VKLOG("hardware buffer handle (%d fd%s): selected fd[%d] (%s)", nfd, nfd == 1 ? "" : "s", pick, target);
+        }
+    }
+    int chosen = pick >= 0 ? fds[pick] : -1;
+    for (int i = 0; i < nfd; i++) if (i != pick) close(fds[i]);
+    return chosen;
+}
 static const VkBufferUsageFlags POOL_USAGE0 = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT |
     VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT | VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
     VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
@@ -511,12 +552,7 @@ static slab_t *slab_new(int c) {   // a slab of class c, allocated and imported 
     s->slot_bytes = sb; s->nslot = s->nfree = n; s->fd = -1;
     AHardwareBuffer_Desc d = {(uint32_t)size, 1, 1, AHARDWAREBUFFER_FORMAT_BLOB, AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN | AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN | AHARDWAREBUFFER_USAGE_GPU_DATA_BUFFER, 0, 0, 0};
     if (AHardwareBuffer_allocate(&d, &s->ahb)) { free(s); return NULL; }
-    int sv[2], fds[16], nfd = -1;
-    if (!socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sv)) {
-        if (!AHardwareBuffer_sendHandleToUnixSocket(s->ahb, sv[0])) nfd = recv_fds(sv[1], fds, 16);
-        close(sv[0]); close(sv[1]);
-    }
-    if (nfd >= 1) { s->fd = fds[0]; for (int i = 1; i < nfd; i++) close(fds[i]); }
+    s->fd = ahb_fd(s->ahb, NULL);
     s->map = s->fd >= 0 ? mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, s->fd, 0) : MAP_FAILED;
     VkAndroidHardwareBufferPropertiesANDROID ap = {VK_STRUCTURE_TYPE_ANDROID_HARDWARE_BUFFER_PROPERTIES_ANDROID};
     VkExternalMemoryBufferCreateInfo eb = {VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO, NULL, VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID};
@@ -646,19 +682,15 @@ static int pool_zero_copy(vkpool_t *p, uint8_t *mem, uint64_t size, int lazy, co
     AHardwareBuffer *ahb = reuse ? re.ahb : NULL; int ar = reuse ? 0 : AHardwareBuffer_allocate(&d, &ahb);
     if (ar) { mem_diag_zc(1, "AHardwareBuffer_allocate", size, "return", ar); return -1; }
 #define ZC_DROP() do { if (reuse) zcf_free_now(&re); else AHardwareBuffer_release(ahb); } while (0)
-    int sv[2]; if (socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sv)) {
-        mem_diag_zc(2, "socketpair", size, "errno", errno); ZC_DROP(); return -1; }
-    int fds[16], nfd = -1;
-    ar = AHardwareBuffer_sendHandleToUnixSocket(ahb, sv[0]);
-    if (!ar) { nfd = recv_fds(sv[1], fds, 16); if (nfd < 1) mem_diag_zc(4, "recv_fds", size, "return", nfd); }
-    else mem_diag_zc(3, "AHardwareBuffer_sendHandleToUnixSocket", size, "return", ar);
-    close(sv[0]); close(sv[1]);
-    if (nfd < 1) { ZC_DROP(); return -1; }
+    int why = 4; int fd = ahb_fd(ahb, &why);
+    if (fd < 0) {   // the stage says which step of ahb_fd it was, and the name says the same: 2 socketpair, 3 the handle never arrived, 4 nothing usable came back
+        static const char *const stage_name[] = {"ahb_fd", "ahb_fd", "socketpair", "AHardwareBuffer_sendHandleToUnixSocket", "recv_fds"};
+        mem_diag_zc(why, why >= 0 && why < 5 ? stage_name[why] : "ahb_fd", size, "return", fd); ZC_DROP(); return -1; }
     // copy the pool's current contents into the buffer through a temporary mapping, then put the buffer's pages at the pool's address
-    zcfill_t f = {fds[0], 0, NULL, 0, in}; int rc = zc_place(mem, size, &f, lazy, &done);
+    zcfill_t f = {fd, 0, NULL, 0, in}; int rc = zc_place(mem, size, &f, lazy, &done);
     if (rc == -5) mem_diag_zc(5, "mmap-temporary", size, "errno", errno);
     else if (rc == -6) mem_diag_zc(6, "mmap-fixed", size, "errno", errno);
-    for (int i = 0; i < nfd; i++) close(fds[i]);
+    close(fd);
     if (rc) { p->left = zc_unplace(mem, done, lazy, in); ZC_DROP(); return rc == 1 || rc == 2 ? rc : -1; }   // (a slice swapped before the failing one goes back first)
 #undef ZC_DROP
     if (reuse) { p->buf = re.buf; p->mem = re.mem; p->ahb = ahb; p->zero_copy = 1; return 0; }   // imported already
@@ -698,12 +730,9 @@ static int pool_fd(const vkpool_t *p, int *own) {
     *own = 0;
     if (!p->zero_copy) return -1;
     if (p->slab) return ((slab_t *)p->slab)->fd;
-    int sv[2], fds[16], nfd = -1; if (!p->ahb || socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sv)) return -1;
-    if (!AHardwareBuffer_sendHandleToUnixSocket(p->ahb, sv[0])) nfd = recv_fds(sv[1], fds, 16);
-    close(sv[0]); close(sv[1]);
-    for (int k = 1; k < nfd; k++) close(fds[k]);
-    if (nfd < 1) return -1;
-    *own = 1; return fds[0];
+    int fd = ahb_fd(p->ahb, NULL);
+    if (fd < 0) return -1;
+    *own = 1; return fd;
 }
 // A zero-copy pool's dma-buf mapped again over [mem, mem+len) in one piece per chunk, read-only (nvn_dirty_defrag: the mappings its protection split never merge), but for
 // the pools inside it, whose pages stay their own. 0 = done; 1 = nothing mapped (no pool is exactly [mem, mem+len): a pool not whole host pages, whose tracked range is
@@ -823,10 +852,9 @@ static int zc_uncached(void) {
     enum { N = 1 << 20 }; v = 0;
     AHardwareBuffer_Desc d = {N, 1, 1, AHARDWAREBUFFER_FORMAT_BLOB, AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN | AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN | AHARDWAREBUFFER_USAGE_GPU_DATA_BUFFER, 0, 0, 0};
     AHardwareBuffer *ahb = NULL; if (AHardwareBuffer_allocate(&d, &ahb)) return v;
-    int sv[2], fds[16], nfd = -1;
-    if (!socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0, sv)) { if (!AHardwareBuffer_sendHandleToUnixSocket(ahb, sv[0])) nfd = recv_fds(sv[1], fds, 16); close(sv[0]); close(sv[1]); }
-    uint8_t *a = nfd >= 1 ? mmap(NULL, N, PROT_READ | PROT_WRITE, MAP_SHARED, fds[0], 0) : MAP_FAILED, *m = malloc(N);
-    for (int i = 0; i < nfd; i++) close(fds[i]);
+    int fd = ahb_fd(ahb, NULL);
+    uint8_t *a = fd >= 0 ? mmap(NULL, N, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0) : MAP_FAILED, *m = malloc(N);
+    if (fd >= 0) close(fd);
     if (a != MAP_FAILED && m) {
         memset(a, 1, N); memset(m, 1, N);
         uint64_t ta = read_ns(a, N), tm = read_ns(m, N); v = ta > 4 * tm;
@@ -1088,23 +1116,43 @@ void vk_pools_sync(VkCommandBuffer cb) { extern int g_prof_on; extern uint64_t g
     int diag = mem_diag_on(); uint64_t t = diag ? mem_diag_ns() : 0, bytes = diag ? g_sync_bytes : 0;
     vk_pools_sync_(cb); if (diag) mem_diag_note(1, t, g_sync_bytes - bytes);
     if (g_prof_on) { clock_gettime(CLOCK_MONOTONIC, &b); g_prof_ns[2] += (uint64_t)((b.tv_sec - a.tv_sec) * 1000000000ll + (b.tv_nsec - a.tv_nsec)); } }
+static void dc_cvac_range(const void *addr, size_t len) {
+#if defined(__aarch64__)
+    uintptr_t a = (uintptr_t)addr & ~(uintptr_t)63, e = ((uintptr_t)addr + len + 63) & ~(uintptr_t)63;
+    for (; a < e; a += 64) __asm__ volatile("dc cvac, %0" :: "r"(a) : "memory");
+    __asm__ volatile("dsb ish" ::: "memory");
+#else
+    (void)addr; (void)len;
+#endif
+}
 static void vk_pools_sync_(VkCommandBuffer cb) {
     (void)cb;
     int diag = mem_diag_on(); uint64_t ns[4] = {0}, amount[4] = {0};
     uint64_t reason_count[4] = {0}, reason_bytes[4] = {0};
+    int zc_flush = (V.props.vendorID == 0x13b5);   // Mali: CPU-cached AHB is not IO-coherent with the GPU
 #define SYNC_MEASURE(k, n, op) do { if (diag) { uint64_t t_ = mem_diag_ns(); op; ns[k] += mem_diag_ns() - t_; amount[k] += (n); } else { op; } } while (0)
     enum { BLK = 64 << 10 };
     pthread_rwlock_rdlock(&g_pool_mu);
     for (int i = 0; i < g_npool; i++) {
-        vkpool_t *p = &g_pool[i]; if (!p->shadow) continue;
+        vkpool_t *p = &g_pool[i];
+        int zc = !p->shadow && zc_flush && p->zero_copy;
+        if (!p->shadow && !zc) continue;
+        if (zc) { static int said; if (!said++) VKLOG("Mali zero-copy CPU cache sync active (vendor %#x)", V.props.vendorID); }
         uint8_t *lo = (uint8_t *)(uintptr_t)p->lo; uint64_t size = p->hi - p->lo, st = nvn_dirty_now();
-        if (!p->baseline) { p->baseline = malloc(size); if (!p->baseline) die("[RED] [vk] copied-pool baseline allocation failed (%llu bytes)", (unsigned long long)size);
+        if (!zc && !p->baseline) { p->baseline = malloc(size); if (!p->baseline) die("[RED] [vk] copied-pool baseline allocation failed (%llu bytes)", (unsigned long long)size);
             p->synced = 0; if (mem_diag_on()) VKLOG("[memdiag] copy-back baseline allocated: %.2f MiB", size / 1048576.0); }
-        if (!p->span && (p->span = nvn_dirty_span(lo, size))) p->synced = 0;   // tracked only now: copied whole once more, protected
-        if (!p->synced || !p->span) {   // untracked: every sync copies all of it, as before
+        if (!p->span && (p->span = nvn_dirty_span(lo, size))) p->synced = 0;   // tracked only now: copied/flushed whole once more, protected
+        if (zc && !p->span) { static int said_untracked; if (!said_untracked++) VKLOG("Mali zero-copy pool has no dirty span: all %llu bytes are cleaned on every submission", (unsigned long long)size); }
+        if (!p->synced || !p->span) {   // untracked: every sync copies/flushes all of it
             if (diag) { int reason = !p->synced ? 0 : 1; reason_count[reason]++; reason_bytes[reason] += size; }
             if (p->span) SYNC_MEASURE(1, size, nvn_dirty_protect(lo, size));
-            SYNC_MEASURE(2, size, memcpy(p->shadow, lo, size)); SYNC_MEASURE(3, size, memcpy(p->baseline, p->shadow, size)); pool_cache_sync(p, 0, 0, size); g_sync_bytes += size; g_sync_full++; p->synced = 1; p->baseline_complete = 0; p->stamp0 = p->stamp = st; continue; }
+            if (zc) {
+                SYNC_MEASURE(2, size, dc_cvac_range(lo, size));
+            } else {
+                SYNC_MEASURE(2, size, memcpy(p->shadow, lo, size)); SYNC_MEASURE(3, size, memcpy(p->baseline, p->shadow, size)); pool_cache_sync(p, 0, 0, size);
+            }
+            g_sync_bytes += size; g_sync_full++; p->synced = 1; p->baseline_complete = 0; p->stamp0 = p->stamp = st; continue;
+        }
         // judged against the sync before the last: a write whose fault took its generation before the last sync's stamp but stored it after that sync looked
         // at its block would otherwise never count (its page is writable from then on, and clean by every later stamp). A dirty block is copied twice
         uint64_t first = size, last = 0;
@@ -1113,17 +1161,22 @@ static void vk_pools_sync_(VkCommandBuffer cb) {
             uint64_t n = size - off < BLK ? size - off : BLK;
             if (!nvn_dirty_since_span(p->span, lo + off, n, p->stamp0)) continue;
             SYNC_MEASURE(1, n, nvn_dirty_protect(lo + off, n));
-            SYNC_MEASURE(2, n, memcpy(p->shadow + off, lo + off, n)); g_sync_bytes += n;
+            if (zc) {
+                SYNC_MEASURE(2, n, dc_cvac_range(lo + off, n));
+            } else {
+                SYNC_MEASURE(2, n, memcpy(p->shadow + off, lo + off, n));
+                if (p->baseline_complete) SYNC_MEASURE(3, n, memcpy(p->baseline + off, p->shadow + off, n));
+            }
+            g_sync_bytes += n;
             if (off < first) first = off; last = off + n;
-            if (p->baseline_complete) SYNC_MEASURE(3, n, memcpy(p->baseline + off, p->shadow + off, n));
         }
         // A full merge already refreshed the baseline; only uploaded blocks changed. A pool synced again with no merge since (no completion) takes a full snapshot.
         if (diag) { ns[0] += mem_diag_ns() - scan_start - (ns[1] + ns[2] + ns[3] - work_start); amount[0] += size; }
-        if (!p->baseline_complete) {
+        if (!zc && !p->baseline_complete) {
             if (diag) { int reason = p->flags & 0x2 ? 2 : 3; reason_count[reason]++; reason_bytes[reason] += size; }
             SYNC_MEASURE(3, size, memcpy(p->baseline, p->shadow, size));
         }
-        if (last) pool_cache_sync(p, 0, first, last);
+        if (!zc && last) pool_cache_sync(p, 0, first, last);
         p->baseline_complete = 0;
         p->stamp0 = p->stamp; p->stamp = st;
     }
@@ -1513,6 +1566,8 @@ static void begin_segment(int continuing) {
         int diag = mem_diag_on(); uint64_t t = diag ? mem_diag_ns() : 0;
         mtl_wait(g_fence, ~0ull); if (diag) mem_diag_note(0, t, 0);
         vk_pools_sync(NULL);
+    } else if (V.props.vendorID == 0x13b5) {
+        vk_pools_sync(NULL);
     }   // (after the completion thread's copy-back of the last submission, not only its GPU work)
     if (g_tsq) { vkCmdResetQueryPool(s->main, g_tsq, 2 * (uint32_t)g_cur, 2); vkCmdWriteTimestamp(s->main, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, g_tsq, 2 * (uint32_t)g_cur); }
     if (g_cq) vkCmdResetQueryPool(s->main, g_cq, (uint32_t)g_cur * CQ, CQ);
@@ -1763,7 +1818,7 @@ void mtl_exec_rest(const uint64_t *h, int n) { (void)h; (void)n; }
 typedef struct cpend { uint64_t fence, frame; post_op *ops; int n; int slot, rslot; int npass; pass_meta pmeta[PASSQ]; struct cpend *next; } cpend;
 static cpend *g_ch, *g_ct; static pthread_mutex_t g_cmu = PTHREAD_MUTEX_INITIALIZER; static pthread_cond_t g_ccv = PTHREAD_COND_INITIALIZER;
 uint64_t guest_ns(void);
-static uint64_t gpu_ticks(void) { uint64_t g = guest_ns(); if (!g) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); g = (uint64_t)t.tv_sec * 1000000000ull + (uint64_t)t.tv_nsec; } return g * 12 / 625; }
+static uint64_t gpu_ticks(void) { uint64_t g = guest_ns(); if (!g) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); g = (uint64_t)t.tv_sec * 1000000000ull + (uint64_t)t.tv_nsec; } return g * DM_GAME_GPU_TICK_NUM / 625; }   // profile gpu_tick_rate: 19.2 MHz (12 per 625 ns) or 614.4 MHz (384)
 // GPU time per NVN frame (the sum of its submissions' timestamp spans), for the timing line's GPU column: the frame a submission belongs to is the one being replayed
 static uint64_t g_cur_frame, g_frame_gpu[64], g_frame_gpu_of[64];
 void mtl_set_frame(uint64_t f) { __atomic_store_n(&g_cur_frame, f, __ATOMIC_RELAXED); }
@@ -1815,8 +1870,8 @@ static void *completion_main(void *a) {
         // wrap (a driver with fewer valid timestamp bits) and slow drift; a report then never lands past the guest clock.
         static uint64_t g_ts_o; static int g_ts_set; uint64_t ts_end = now;
         if (tend) {
-            uint64_t qe = (uint64_t)((double)tend * V.props.limits.timestampPeriod * 12 / 625);   // GPU ticks → NVN ticks, the guest's 625/12 ns unit
-            if (!g_ts_set || g_ts_o + qe > now || now - (g_ts_o + qe) > 1920000ull) { g_ts_o = now - qe; g_ts_set = 1; }   // 100 ms in NVN ticks
+            uint64_t qe = (uint64_t)((double)tend * V.props.limits.timestampPeriod * DM_GAME_GPU_TICK_NUM / 625);   // GPU ticks → NVN ticks, the guest's 625/12 ns unit (625/384 with gpu_tick_rate 614.4)
+            if (!g_ts_set || g_ts_o + qe > now || now - (g_ts_o + qe) > 100000000ull * DM_GAME_GPU_TICK_NUM / 625) { g_ts_o = now - qe; g_ts_set = 1; }   // 100 ms in NVN ticks
             ts_end = g_ts_o + qe;
         }
         for (int i = 0; i < c->n; i++) {
@@ -1827,7 +1882,7 @@ static void *completion_main(void *a) {
             // frame that took 33 ms and raised the resolution. A report without a usable query takes the submission's end on the same map.
             uint64_t ts = ts_end, tq = 0;
             if (o->q >= 0 && tend && vkGetQueryPoolResults(V.dev, g_cq, (uint32_t)o->q, 1, 8, &tq, 8, VK_QUERY_RESULT_64_BIT) == VK_SUCCESS && tq && tq <= tend)
-                ts = g_ts_o + (uint64_t)((double)tq * V.props.limits.timestampPeriod * 12 / 625);
+                ts = g_ts_o + (uint64_t)((double)tq * V.props.limits.timestampPeriod * DM_GAME_GPU_TICK_NUM / 625);
             // render_cond: a timestamp report's counter field is 0, as on the GPU (gfx_vk_exec.c render_cond evaluates conditions on it)
             uint64_t rec[2] = {o->type == 0 || o->type == 0x10 ? (DM_GAME_RENDER_COND ? 0 : ts) : o->type == NVN_COUNTER_TYPE_SAMPLES_PASSED ? (1u << 20) : 0, ts}; memcpy((void *)(uintptr_t)o->addr, rec, sizeof rec);
         }

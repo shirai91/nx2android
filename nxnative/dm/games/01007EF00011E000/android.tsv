@@ -58,6 +58,10 @@
 # and held 60 throughout (1,699 of 1,800 frames at one vsync, 0-4 of 300 dropped), the replay unchanged (about 10-11 ms) and no picture fault seen. Each cut ends a
 # command buffer and its passes' state, and a busy frame of 4,000-5,000 draws made about 130 of them. The 128 run came fourth of five, so the phone was warmer
 # than in the run at 32. DM_VK_LRZ_TOUCH=0 in the same session gave no GPU time back (13.1-15.5 ms at 4,300-5,300 draws)
+# DM_GPU_TURBO=need and DM_PIN_REPLAY=need (perf_android.c turbo_need, replay_need) in place of 1 and prime, at the player's request: the turbo and the prime cores
+# only while the game needs them. In a 148 s run on the S25 Ultra both stayed off in a light area at 60 fps (GPU 5-7 ms, replay 1-2 ms a frame) and came on as the
+# village held it at 30 (the replay at 12.5 ms a frame went to CPUs 6 7; the turbo on with the GPU at 5.0 ms on the governor's clock); the turbo went off at the target
+# twice (GPU 9.6 and 11.3 ms at the highest clock) and came back within 1.3 s each time, which now lowers its limit. Not yet measured: whether a long run stays cooler
 status	experimental
 tested	v1114112 Samsung Galaxy S25 Ultra (Snapdragon 8 Elite for Galaxy, Adreno 830); Turnip 26.2.3
 package	org.nx2a.zeldabreathofthewild
@@ -65,11 +69,11 @@ orientation	landscape
 requires	bcn
 env	DM_VK_FDZ=0
 env	DM_NVN_ASYNC=1
-env	DM_PIN_REPLAY=prime
+env	DM_PIN_REPLAY=need
 env	DM_VK_X_CUTANY=1
 env	DM_VK_CB_DRAWS=128
 env	DM_VK_WINDOW_GAME_RATE=1
 env	DM_VK_BC_DRAW=1
-env	DM_GPU_TURBO=1
+env	DM_GPU_TURBO=need
 readme_image	docs/images/the-legend-of-zelda-breath-of-the-wild.jpg
 readme_tag	v0.4.0

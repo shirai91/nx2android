@@ -39,6 +39,7 @@ float dm_overlay_scale(void) { return 1; }
 int dm_overlay_custom(int l,int c,float*x,float*y,float*s) {(void)l;(void)c;(void)x;(void)y;*s=1;return 0;}
 int dm_menu_audio_available(void) { return 0; }
 int dm_menu_lossless_import_available(void) { return 1; }
+int dm_overlay_stick_zone(void) { return 0; }   // (the Stick area row's segments)
 int dm_save_note(char *s,int n) { if(n)s[0]=0;return OVX_IDLE; }
 ''' + draw + menu + r'''
 int main(int argc,char **argv) {
@@ -51,7 +52,7 @@ int main(int argc,char **argv) {
         float p[4];ov_menu_rect(screens[k][0],screens[k][1],p);
         unsigned w=(unsigned)(p[2]/2)+1,h=(unsigned)(p[3]/2)+1;
         uint8_t *pixels=calloc((size_t)w*h,4);assert(pixels);
-        int state=(1<<8)|(60<<9);
+        int state=(1<<8)|(((60-OV_OPACITY_MIN)/5)<<9)|(3<<13);
         ov_canvas cv={pixels,w,0,0,w,h};ov_menu_panel(&cv,state,0);
         float r[4];ov_menu_rowrect((float[4]){0,0,w,h},1,r);
         // Compare the actual body label to a reference drawn at the intended scale in this language.
@@ -69,8 +70,14 @@ int main(int argc,char **argv) {
         uint8_t *fixed=malloc((size_t)w*h*4);assert(fixed);memcpy(fixed,pixels,(size_t)w*h*4);
         float first[4],last[4];ov_menu_rowrect((float[4]){0,0,w,h},1,first);ov_menu_rowrect((float[4]){0,0,w,h},OVM_VIEW_ROWS-1,last);
         unsigned top=(unsigned)ceilf(first[1]),bottom=(unsigned)floorf(last[1]);
-        for(int position=1;position<=2*OVM_SCROLL_UNITS;position+=137) {
+        for(int position=1;position<=ov_menu_scroll_limit(1)*OVM_SCROLL_UNITS;position+=137) {
             memset(pixels,0,(size_t)w*h*4);ov_menu_panel(&cv,state,position);
+            float slot=ov_menu_scroll_slot(1,ov_menu_scroll_rows(position),3);
+            if (slot >= 1 && slot <= OVM_VISIBLE) {
+                float track[3]; ov_menu_track((float[4]){0,0,w,h},slot,track);
+                size_t knob=(size_t)(track[1])*w+(unsigned)(track[0]+.75f*track[2]);
+                assert(memcmp(pixels+4*knob,C_WHITE,4)==0); // Sharpness at 75%, on the shifted row
+            }
             assert(ov_menu_raster_key(state,position)!=ov_menu_raster_key(state,position-1));
             assert(memcmp(fixed,pixels,(size_t)top*w*4)==0); // partial rows and scrollbar never cover the tabs
             assert(memcmp(fixed+(size_t)bottom*w*4,pixels+(size_t)bottom*w*4,(size_t)(h-bottom)*w*4)==0); // Resume stays fixed
@@ -117,7 +124,7 @@ typedef struct { int action; float x, y; } AInputEvent;
 #define AMotionEvent_getPointerCount(e) ((void)(e),1u)
 #define AMotionEvent_getX(e,i) ((void)(i),(e)->x)
 #define AMotionEvent_getY(e,i) ((void)(i),(e)->y)
-static _Atomic int g_edit, g_sp_on, g_set_opacity = 60, g_set_fg_target = 60;
+static _Atomic int g_edit, g_set_sharp, g_sp_on, g_set_opacity = 60, g_set_fg_target = 60;
 static int actions, last_action = -1;
 static void dm_overlay_redraw(void) {}
 static void dm_haptics_android_tap(void) {}
@@ -127,7 +134,7 @@ static void menu_do(int item) { actions++; last_action=item; }
 static void menu_close(void) {}
 static void ed_key(uint64_t bit) { (void)bit; }
 static void sp_key(uint64_t bit) { (void)bit; }
-''' + state + csrc.function(front, 'static void menu_opacity(') + next(line for line in front.splitlines(True) if line.startswith('static void menu_tab(int t)')) + csrc.function(front, 'static void menu_set_fg_choice(') + csrc.function(front, 'static void menu_touch(') + csrc.function(front, 'static void menu_key(') + r'''
+''' + state + csrc.function(front, 'static void menu_sharp(') + csrc.function(front, 'static void menu_opacity(') + next(line for line in front.splitlines(True) if line.startswith('static void menu_tab(int t)')) + csrc.function(front, 'static void menu_set_fg_choice(') + csrc.function(front, 'static void menu_touch(') + csrc.function(front, 'static void menu_key(') + r'''
 static void touch(int action, float x, float y, float W, float H) {
     AInputEvent e={action,x,y}; menu_touch(&e,W,H);
 }
@@ -137,16 +144,16 @@ int main(void) {
         float W=screens[n][0], H=screens[n][1], p[4], r[4]; ov_menu_rect(W,H,p);
         assert(p[0]>=0 && p[1]>=0 && p[2]<=W && p[3]<=H);
         atomic_store(&g_menu_tab,1); atomic_store(&g_menu_scroll,0); g_menu_ptr=-1; actions=0;
-        assert(ov_menu_body_count(1)==7 && ov_menu_scroll_limit(1)==2);
-        assert(ov_menu_scroll_limit(0)==0);
-        for (int offset=0;offset<=2;offset++) for (int slot=0;slot<OVM_VIEW_ROWS;slot++) {
+        assert(ov_menu_body_count(1)==9 && ov_menu_scroll_limit(1)==4);
+        assert(ov_menu_body_count(0)==6 && ov_menu_scroll_limit(0)==1);   // Gamepad: Stick area makes six without the audio action (issue #589)
+        for (int offset=0;offset<=ov_menu_scroll_limit(1);offset++) for (int slot=0;slot<OVM_VIEW_ROWS;slot++) {
             ov_menu_rowrect(p,slot,r);
             int row=slot==0?0:slot==OVM_VIEW_ROWS-1?OVM_ROWS-1:ov_menu_body_row(1,offset+slot-1);
             assert(ov_menu_scroll_row_at(r[0]+r[2]/2,r[1]+r[3]/2,W,H,1,offset)==row);
             assert(ov_menu_scroll_slot(1,offset,row)==slot);
             assert(ov_menu_item(1,row)>=0);  // the unavailable audio action consumes no space
         }
-        ov_menu_rowrect(p,3,r); float x=r[0]+r[2]*.2f, y=r[1]+r[3]/2, rh=r[3];
+        ov_menu_rowrect(p,5,r); float x=r[0]+r[2]*.2f, y=r[1]+r[3]/2, rh=r[3];
         touch(AMOTION_EVENT_ACTION_DOWN,x,y,W,H);
         int previous=0;
         for(int step=0;step<3;step++) {
@@ -158,18 +165,29 @@ int main(void) {
         touch(AMOTION_EVENT_ACTION_UP,x,y-.48f*rh,W,H);
         assert(atomic_load(&g_menu_scroll)==previous && actions==0); // release does not snap
         float fraction=ov_menu_scroll_rows(previous);
-        assert(ov_menu_scroll_rowrect(p,1,fraction,3,r));
+        assert(ov_menu_scroll_rowrect(p,1,fraction,5,r));
         x=r[0]+r[2]*.2f;y=r[1]+r[3]/2;
         touch(AMOTION_EVENT_ACTION_DOWN,x,y,W,H);touch(AMOTION_EVENT_ACTION_UP,x,y,W,H);
         assert(last_action==OVM_EXPORT && actions==1); // hit test follows a fractionally shifted row
-        atomic_store(&g_menu_scroll,0);actions=0;
-        ov_menu_rowrect(p,3,r);x=r[0]+r[2]*.2f;y=r[1]+r[3]/2;
+        float sharp_track[3];
+        ov_menu_track(p,ov_menu_scroll_slot(1,fraction,3),sharp_track);
+        x=sharp_track[0];y=sharp_track[1];
         touch(AMOTION_EVENT_ACTION_DOWN,x,y,W,H);
-        touch(AMOTION_EVENT_ACTION_MOVE,x,y-3.3f*rh,W,H);
-        touch(AMOTION_EVENT_ACTION_UP,x,y-3.3f*rh,W,H);
-        assert(atomic_load(&g_menu_scroll)==2*OVM_SCROLL_UNITS && actions==0); // no accidental export on swipe
-        int goal_row = ov_menu_body_row(1, 5);
-        assert(ov_menu_item(1,goal_row)==OVM_FG_TARGET && ov_menu_scroll_rowrect(p,1,2,goal_row,r));
+        assert(atomic_load(&g_set_sharp)==0);
+        touch(AMOTION_EVENT_ACTION_MOVE,x+.74f*sharp_track[2],y+rh,W,H);
+        assert(atomic_load(&g_set_sharp)==75);
+        touch(AMOTION_EVENT_ACTION_UP,x+.74f*sharp_track[2],y+rh,W,H);
+        assert(atomic_load(&g_menu_scroll)==previous && actions==1);
+        atomic_store(&g_menu_hi,3);menu_key(DM_BTN_LEFT);
+        assert(atomic_load(&g_set_sharp)==50);
+        atomic_store(&g_menu_scroll,0);actions=0;
+        ov_menu_rowrect(p,5,r);x=r[0]+r[2]*.2f;y=r[1]+r[3]/2;
+        touch(AMOTION_EVENT_ACTION_DOWN,x,y,W,H);
+        touch(AMOTION_EVENT_ACTION_MOVE,x,y-5.3f*rh,W,H);
+        touch(AMOTION_EVENT_ACTION_UP,x,y-5.3f*rh,W,H);
+        assert(atomic_load(&g_menu_scroll)==4*OVM_SCROLL_UNITS && actions==0); // no accidental export on swipe
+        int goal_row = ov_menu_body_row(1, 7);
+        assert(ov_menu_item(1,goal_row)==OVM_FG_TARGET && ov_menu_scroll_rowrect(p,1,4,goal_row,r));
         x=r[0]+r[2]-r[3]*.15f-ov_menu_fg_choice_width(r)*.5f; y=r[1]+r[3]/2;
         touch(AMOTION_EVENT_ACTION_DOWN,x,y,W,H); touch(AMOTION_EVENT_ACTION_UP,x,y,W,H);
         assert(atomic_load(&g_set_fg_target)==0 && actions==0);
@@ -190,7 +208,7 @@ int main(void) {
             assert(ov_menu_item(1,hi)>=0 && ov_menu_scroll_rowrect(p,1,offset,hi,r));
             if(hi>0 && hi<OVM_ROWS-1) {float slot=ov_menu_scroll_slot(1,offset,hi);assert(slot>=1 && slot+1<=OVM_VIEW_ROWS-1);}
         }
-        atomic_store(&g_menu_scroll,2*OVM_SCROLL_UNITS); atomic_store(&g_menu_hi,OVM_ROWS-2); menu_key(DM_BTN_A);
+        atomic_store(&g_menu_scroll,4*OVM_SCROLL_UNITS); atomic_store(&g_menu_hi,OVM_ROWS-2); menu_key(DM_BTN_A);
         assert(last_action==OVM_FG_IMPORT);
         menu_tab(0); assert(atomic_load(&g_menu_scroll)==0);
         ov_menu_rowrect(p,2,r); float track[3]; ov_menu_track(p,2,track);

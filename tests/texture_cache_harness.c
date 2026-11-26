@@ -16,7 +16,7 @@ typedef struct vkimg {
     uint64_t pool,used,pkg_used,pkg_vgen,pkg_stamp,pkg_seen,pkg_hash;
     int64_t off,size; int flags,looked,packaged,pkg_sparse,pkg_released,gpu_w;
     const void *pkg_span,*pkg_mem,*lin_mem;size_t pkg_len,lin_len;
-    void *img,*mem,*sub;
+    void *img,*mem,*sub,*full;
     struct vkimg *bc_draw; // No compressed-format stand-in in this family fixture.
     unsigned family_formats,family_closed;
     int format,content;
@@ -33,21 +33,26 @@ static void vk_tex_view_drop_all(vkimg_t *im) {(void)im;}
 static void nvn_dirty_release(const void *mem,size_t len) {(void)mem;(void)len;}
 static void vk_defer_free_image(void *img,void *mem) {(void)mem;unsigned n=(unsigned)(uintptr_t)img;assert(n && n<=created && !retired[n]);retired[n]=1;dropped++;}
 static void vk_defer_free_image_sub(void *img,void *sub) {(void)sub;vk_defer_free_image(img,NULL);}
+static void vk_defer_free_view(void *view) {(void)view;}
 static int vk_sub_open(void) {return 1;}
 static int vk_upload_cmd(void) {return 1;}
 static void vk_tex_prepare(int cb,vkimg_t *im) {(void)cb;im->content=0;}
 static int lin_copy(vkimg_t *im,const tex_t *t,const vkfmt_t *f) {(void)im;(void)t;(void)f;return 0;}
 static int packaged_tex(const tex_t *t) {return t->has_pkg_data || t->has_layout || (written&(1u<<(t->serial-1)));}
 int nvn_ft_written(const tex_t *t) {(void)t;return 0;}
-static int cpu_content_tex(const tex_t *t,const vkfmt_t *f) {(void)t;(void)f;return 0;}
-static uint64_t nvn_dirty_now(void) {return 1;}
+/* CONTENT KIND */
+static int cpu_content_tex(const tex_t *t,const vkfmt_t *f) {(void)t;(void)f;return TEX_CONTENT_NONE;}
+static uint64_t dirty_stamp=1;
+static uint64_t nvn_dirty_now(void) {return dirty_stamp;}
 static uint64_t pkg_hash(const uint8_t *mem,size_t size) {(void)size;return mem[0];}
-static void pkg_upload(vkimg_t *im,const tex_t *t,const vkfmt_t *f) {
-    (void)f;uploads++;im->content=t->mem[0];im->pkg_seen=im->pkg_stamp=1;
+static void pkg_upload(vkimg_t *im,const tex_t *t,const vkfmt_t *f,int track_writes) {
+    (void)f;uploads++;im->content=t->mem[0];
+    if (!track_writes) return;
+    im->pkg_seen=im->pkg_stamp=nvn_dirty_now();
     im->pkg_hash=pkg_hash(t->mem,t->L.size);im->pkg_mem=t->mem;im->pkg_span=t->mem;im->pkg_len=t->L.size;
 }
 static int nvn_sparse_since(const void *pool,uint64_t addr,size_t size,uint64_t gen,uint64_t stamp) {(void)pool;(void)addr;(void)size;(void)gen;(void)stamp;return 0;}
-static int nvn_dirty_since_span(const void *span,const void *mem,size_t size,uint64_t stamp) {(void)span;(void)mem;(void)size;(void)stamp;return 0;}
+static int nvn_dirty_since_span(const void *span,const void *mem,size_t size,uint64_t stamp) {(void)span;(void)mem;(void)size;return stamp<dirty_stamp;}
 static void nvn_dirty_protect(const void *mem,size_t size) {(void)mem;(void)size;}
 /* CACHE KEYS */
 /* CACHE LIFETIME */
@@ -115,6 +120,16 @@ int main(void) {
     assert(g_img_n==0 && g_by_key.n==0 && dropped==before+2);
     image=vk_tex_(&pa);assert(vk_tex_(&a)==image);assert(vk_tex_(&b)!=image);
     before=dropped;vk_tex_drop_pool(&pool);assert(g_img_n==0 && g_by_key.n==0 && dropped==before+2);
+    // An ordinary exact alias refreshes a CPU-dirty packaged image until the GPU writes it.
+    reset();tex_t pkg=base_tex(NVN_FORMAT_RGBA8,1),plain=base_tex(NVN_FORMAT_RGBA8,2);
+    pkg.has_pkg_data=1;
+    vkimg_t *refresh=vk_tex_(&pkg);assert(refresh && refresh->content==0x83);
+    storage[0]=0x26;dirty_stamp++;
+    assert(vk_tex_(&plain)==refresh && refresh->content==0x26);
+    refresh->gpu_w=1;refresh->content=0x55;
+    storage[0]=0x63;dirty_stamp++;
+    assert(vk_tex_(&plain)==refresh && refresh->content==0x55);
+    storage[0]=0x83;
     // A real differing layout remains different even with equal formats.
     b=a;b.serial=2;b.has_layout=1;b.d.pkg_block_h=2;assert(!same(a,b));a.d.pkg_block_h=2;assert(same(a,b));
     a=base_tex(NVN_FORMAT_RGBA8,1);b=base_tex(NVN_FORMAT_RGBA8_SRGB,2);

@@ -1,0 +1,10 @@
+# Engine frame limits kept in game memory that the host raises to the frame-rate target (nxnative/dm/host/hle_fpslock.c; dm/games/game.py puts these rows in the
+# profile header as DM_GAME_FPS_LOCKS). Each row runs only on its main build. ptr_off: a pointer at main + ptr_off to the object holding the field (0: the field is at
+# main + field); kind: FPS_F32, VSYNCS_I32, MS_F32, SEC_F32, FPS_I32; copies: consecutive copies of the value; ptr2: a second pointer at that object + ptr2 (0 = none).
+#	build	what	ptr_off	field	kind	copies	ptr2
+# MT Framework keeps two rates in sApp: mFps (+0x48, the logical step the game thinks at) and mMaxFps (+0x4c, the render ceiling). The frame loop at main+0x6e2834 loads
+# sApp through main+0xcf97f0 -> +0x2838 and divides the two (fdiv s10, s0, s1), so raising only mMaxFps doubles the rate while mDeltaTime comes out at 30/60 = 0.5 of
+# the real frame time: the 83 readers of mDeltaTime (0x2ee8..0x97678 through 0xbd7c88) keep the typing, Auto-Play, transitions, camera and 3D animation at 1:1.
+# Raising mFps as well makes the ratio 1.0 and the whole game runs at double speed. The cinematics set mMaxFps to 60 themselves (main+0x1446c0), which is how the
+# engine's own 60 fps path was found. Reached with the frame-rate target (DM_FPS_TARGET=60, or the pause menu's 60 fps switch where the host has one).
+d871b992e95b71c541ddc834f63c664b	MT Framework sApp.mMaxFps	0xcf97f0	0x4c	FPS_F32	1	0x2838

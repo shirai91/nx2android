@@ -1,6 +1,6 @@
 # The Vulkan shader bundle (nxnative/dm/android/tools/dmsv.py): tiny bundles written, read back, converted between versions 1 and 2, and read by the host's own
 # reader (gfx_vk_shader.c, its bundle functions compiled with the vendored zstd decoder when a C compiler is at hand).
-import contextlib, io, os, random, re, shutil, struct, subprocess, sys, tempfile, threading, unittest
+import contextlib, io, os, random, re, shutil, struct, subprocess, sys, tempfile, threading, tracemalloc, unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest import mock
@@ -58,6 +58,34 @@ class Bundle(unittest.TestCase):
             frame = p.read_bytes()[e[2]:e[2] + e[3]]; self.assertEqual(frame[:4], b'\x28\xb5\x2f\xfd'); self.assertTrue(frame[4] & 0x04, 'no checksum flag')
         e = by[ENTRIES[2][0]]; self.assertEqual((e[6], e[3]), (0, len(ENTRIES[2][2])))   # one zstd does not shrink: stored as it is
         self.assertEqual([e[0] for e in ents], sorted(e[0] for e in ENTRIES))
+
+    @unittest.skipUnless(ZSTD, 'no zstd in this Python')
+    def test_compression_does_not_retain_all_completed_payloads(self):
+        # Half-random modules shrink to ~128 KiB each. Retaining every result
+        # adds >8 MiB even though the caller shares one immutable input blob.
+        spv = random.Random(51).randbytes(128 * 1024) + bytes(128 * 1024)
+        entries = [(i, 5, spv, refl(0, b'')) for i in range(64)]
+        tracemalloc.start()
+        try:
+            ver, raw, stored = dmsv.write(self.d / 'bounded.dmsv', entries, jobs=2)
+            _, peak = tracemalloc.get_traced_memory()
+        finally: tracemalloc.stop()
+        self.assertEqual((ver, raw), (2, 16 * 1024 * 1024))
+        self.assertGreater(stored, 8 * 1024 * 1024)
+        self.assertLess(peak, 4 * 1024 * 1024, 'completed compressed shaders accumulated in memory')
+
+    def test_file_backed_payloads_match_bytes_in_both_formats(self):
+        entries = []
+        for key, stage, spv, reflection in ENTRIES:
+            path = self.d / f'{key:x}.spv'; path.write_bytes(spv)
+            entries.append((key, stage, path, reflection))
+        for level in ([0, 3] if ZSTD else [0]):
+            with self.subTest(level=level):
+                reference, actual = self.d / 'bytes.dmsv', self.d / 'paths.dmsv'
+                dmsv.write(reference, ENTRIES, level=level, jobs=1)
+                dmsv.write(actual, entries, level=level, jobs=2)
+                self.assertEqual(actual.read_bytes(), reference.read_bytes())
+                self.assertEqual(self.read(actual)[1], sorted(ENTRIES))
 
     def test_without_zstd_version1(self):   # a Python without compression.zstd or backports.zstd: version 1, and a [RED] line says why
         p, out = self.d / 'nz.dmsv', io.StringIO()

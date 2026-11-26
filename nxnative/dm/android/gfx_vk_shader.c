@@ -556,14 +556,14 @@ static uint32_t *spv_dual(const uint32_t *w, uint32_t nw, uint32_t *onw) {
     memcpy(&o[at + 8], &w[at + 4], (size_t)(nw - at - 4) * 4); *onw = nw + 4;
     return o;
 }
-static VkShaderModule vk_shader_module_(vkshader_t *s, uint64_t um, uint64_t im, uint32_t xo, int fd, uint32_t vi);
-VkShaderModule vk_shader_module(vkshader_t *s, uint64_t um, uint64_t im, uint32_t xo, int fd, uint32_t vi) { extern int g_prof_on; extern uint64_t g_prof_ns[8]; struct timespec a, b; if (g_prof_on) clock_gettime(CLOCK_MONOTONIC, &a);
+static VkShaderModule vk_shader_module_(vkshader_t *s, uint64_t um, uint64_t im, uint32_t xo, int fd, uint64_t vi);
+VkShaderModule vk_shader_module(vkshader_t *s, uint64_t um, uint64_t im, uint32_t xo, int fd, uint64_t vi) { extern int g_prof_on; extern uint64_t g_prof_ns[8]; struct timespec a, b; if (g_prof_on) clock_gettime(CLOCK_MONOTONIC, &a);
     VkShaderModule m = vk_shader_module_(s, um, im, xo, fd, vi); if (g_prof_on) { clock_gettime(CLOCK_MONOTONIC, &b); g_prof_ns[3] += (uint64_t)((b.tv_sec - a.tv_sec) * 1000000000ll + (b.tv_nsec - a.tv_nsec)); } return m; }
-static VkShaderModule vk_shader_module_(vkshader_t *s, uint64_t um, uint64_t im, uint32_t xo, int fd, uint32_t vi) {
+static VkShaderModule vk_shader_module_(vkshader_t *s, uint64_t um, uint64_t im, uint32_t xo, int fd, uint64_t vi) {
     int dual = fd >> 1 & 1; fd &= 1;   // fd bit 1: the dual-source variant
     if (fd && (s->stage != 1 || s->depth_repl)) fd = 0;
     if (dual && s->stage != 1) dual = 0;
-    if (!(um | im | xo | (uint32_t)fd | (uint32_t)dual | vi) || !s->spv) return s->mod;
+    if (!(um | im | xo | (uint64_t)fd | (uint64_t)dual | vi) || !s->spv) return s->mod;
     if (xo == 1u << 31) {   // DM_VK_SPV_ALT
         pthread_mutex_lock(&g_sh_mu); for (int i = 0; i < s->nvar; i++) if (s->var[i].um == 0 && s->var[i].im == 0 && s->var[i].xo == xo) { VkShaderModule m = s->var[i].mod; pthread_mutex_unlock(&g_sh_mu); return m; }
         VkShaderModule m = alt_module(s); if (s->nvar < 8) s->var[s->nvar++] = (typeof(s->var[0])){0, 0, xo, 0, m}; pthread_mutex_unlock(&g_sh_mu); return m; }

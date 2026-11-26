@@ -40,9 +40,10 @@ int main(int argc, char **argv) {
     // four tabs, five visible rows; the Counter tab: the five rows (FPS, SOC, BAT, driver, graph); the Style tab: the four choices then a blank
     assert(OVM_TABS == 4 && OVM_VISIBLE == 5 && OVM_VIEW_ROWS == 7);
     assert(ov_menu_item(0, 0) == OVM_TAB && ov_menu_item(3, OVM_ROWS - 1) == OVM_RESUME);
-    assert(ov_menu_item(1, 1) == OVM_FPS && ov_menu_item(1, 5) == OVM_AUDIO);
+    assert(ov_menu_item(1, 1) == OVM_FPS && ov_menu_item(0, 7) == OVM_AUDIO && ov_menu_item(0, 4) == OVM_ZONE && ov_menu_item(1, 5) == OVM_EXPORT);
     const int counter[5] = {OVM_ROW_FPS, OVM_ROW_SOC, OVM_ROW_BAT, OVM_ROW_DRV, OVM_ROW_GRAPH}, style[5] = {OVM_POS, OVM_COLOUR, OVM_OUTLINE, OVM_SIZE, -1};
     for (int r = 0; r < 5; r++) { assert(ov_menu_item(2, r + 1) == counter[r]); assert(ov_menu_item(3, r + 1) == style[r]); }
+    assert(ov_menu_item(2, 6) == -1 && ov_menu_item(2, 7) == -1 && ov_menu_item(3, 5) == -1 && ov_menu_item(3, 6) == -1 && ov_menu_item(3, 7) == -1 && ov_menu_item(1, 7) == OVM_FRAMEGEN);
     assert(!strcmp(OVM_TAB_NAMES[2], "Counter") && !strcmp(OVM_TAB_NAMES[3], "Style"));
     float p[4] = {0, 0, 1000, 700};
     for (int t = 0; t < OVM_TABS; t++) { float r[4]; ov_menu_rowrect(p, 0, r); assert(ov_menu_tab_at(r[0] + (t + 0.5f) * r[2] / OVM_TABS, p) == t); }

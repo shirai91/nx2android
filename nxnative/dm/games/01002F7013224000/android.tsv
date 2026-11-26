@@ -1,0 +1,10 @@
+# Rune Factory 5 1.0.2 (update v131072): Unity 2019.4.17f1 IL2CPP, FMOD, SDK 10.4.1, NVN. Brought up on an AYN Odin 2 (Adreno 740), 2026-11-23.
+# The experimental build aborted when a new game started (nn::os::CreateThread found no room for an 8 MB thread stack): game.tsv's mem_stack.
+status	experimental
+tested	v131072 AYN Odin 2 (Snapdragon 8 Gen 2, Adreno 740, Android 13)
+package	org.nx2a.runefactory5
+orientation	landscape
+# Unity blits CPU-filled R16 heightmap sources (257x257) into the terrain heightmap target; without a first-use upload they stay zero and the ground goes flat/invisible
+env	DM_NVN_CPU_TEX2D_FIRST_USE=1
+readme_image	docs/images/rune-factory-5.jpg
+readme_tag	v0.4.0

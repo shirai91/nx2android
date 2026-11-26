@@ -28,6 +28,7 @@ class OverlayVisibility(unittest.TestCase):
         hit = csrc.between(front, 'static int ctl_at(', '// dragging the menu button:')
         menu = (csrc.function(front, 'int dm_framegen_enabled(void)') + csrc.function(front, 'static void menu_set_fg_choice(')
                 + csrc.function(front, 'static void menu_do('))
+        zone = csrc.between(front, 'static int zone_stick(', 'static void touch_event(AInputEvent *e) {')   # Stick area half screen (issue #589)
         events = csrc.between(front, 'static void touch_event(AInputEvent *e) {', 'static int on_input(')
         harness = r'''
 #include <assert.h>
@@ -40,7 +41,7 @@ class OverlayVisibility(unittest.TestCase):
 #include "stick_axis.h"
 static _Atomic int g_set_overlay, g_overlay, g_pads, g_edit, g_menu_btn = 1;
 static _Atomic int g_cust[2][2][OV_N][4];
-static _Atomic int g_set_rumble, g_set_fps, g_set_framegen, g_set_labels, g_menu_tab, g_sv_st;
+static _Atomic int g_set_rumble, g_set_fps, g_set_framegen, g_set_sr, g_set_zone, g_fps_ver, g_stick_at[2][2], g_set_labels, g_menu_tab, g_sv_st;
 static _Atomic int g_set_fg_target = 60;
 static int dm_framegen_target(void) { return atomic_load(&g_set_fg_target); }
 static int layout, saves, lossless_available;
@@ -153,7 +154,7 @@ void dm_input_set(uint64_t b, int32_t lx, int32_t ly, int32_t rx, int32_t ry) {
 }
 void dm_touch_set(const dm_touch *points, int n) { (void)points; touches = n; }
 static void (*dm_picture_rect)(float r[4]);
-''' + pad + events + r'''
+''' + pad + zone + events + r'''
 static void controls(int shown);
 static void input_handoff(int test) {
     width = layout ? 2400 : 1920; height = 1080;

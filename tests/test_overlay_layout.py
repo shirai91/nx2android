@@ -95,12 +95,14 @@ int main(void) {
     assert(ov_drag_pos(1100, 600, 1013, 50) == 506.5f);
     assert(ov_drag_pos(1100, 505, 1013, 50) == 508);
 
-    assert(ov_menu_item(0, 5) == OVM_PAD);
-    for (int row = 6; row < OVM_ROWS - 1; ++row) assert(ov_menu_item(0, row) < 0);
-    assert(ov_menu_item(1, 5) == -1);
+    assert(ov_menu_item(0, OVM_ROWS - 1) == OVM_RESUME);
+    assert(ov_menu_item(1, 1) == OVM_FPS && ov_menu_item(1, 2) == OVM_SR && ov_menu_item(1, 3) == OVM_SHARP && ov_menu_item(1, 6) == OVM_IMPORT);
+    assert(ov_menu_item(0, 3) == OVM_EDIT && ov_menu_item(0, 4) == OVM_ZONE && ov_menu_item(0, 5) == OVM_RUMBLE);
+    audio_available = 0;
+    assert(ov_menu_item(0, 7) == -1);
     audio_available = 1;
-    assert(ov_menu_item(1, 5) == OVM_AUDIO);
-    assert(ov_menu_item(1, 6) == OVM_FRAMEGEN && ov_menu_item(1, 7) == OVM_FG_TARGET);
+    assert(ov_menu_item(0, 7) == OVM_AUDIO && ov_menu_item(0, 6) == OVM_PAD);
+    assert(ov_menu_item(1, 7) == OVM_FRAMEGEN && ov_menu_item(1, 8) == OVM_FG_TARGET);
     assert(ov_menu_item(1, OVM_ROWS - 2) == -1);
     import_available = 1;
     assert(ov_menu_item(1, OVM_ROWS - 2) == OVM_FG_IMPORT);
@@ -122,7 +124,7 @@ int main(void) {
             float r[4]; ov_menu_rowrect(p, slot, r);
             assert(ov_menu_row_at(r[0] + r[2] / 2, r[1] + r[3] / 2, W, H) == slot);
         }
-        const int target = 7;
+        const int target = 8;
         float slot = ov_menu_scroll_slot(1, ov_menu_scroll_limit(1), target), r[4];
         assert(ov_menu_fg_choice(ov_menu_item(1, target)));
         ov_menu_rowrect(p, slot, r);
