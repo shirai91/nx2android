@@ -136,6 +136,8 @@ def header(g):
     if fc not in ('0', '30'): sys.exit(f'{g.id}: fps_ceiling must be 0 or 30: {fc}')
     ft = g.get('fps_target', '0')   # frame rate cap of the rewriter's frame step (FRAME_STEP in the profile's patches.py: Tears of the Kingdom 1.4.3, Breath of the Wild 1.9.0) or of the engine's own frame limit (hle_fpslock.c): 0 = the game's own step, 30 / 60
     if ft not in ('0', '30', '60'): sys.exit(f'{g.id}: fps_target must be 0, 30 or 60: {ft}')
+    f60t = g.get('fps60_toggle', 'off')   # opt-in live 60 fps switch in the Android pause menu Game tab (front_android.c, hle_fpslock.c): on / off
+    if f60t not in ('on', 'off'): sys.exit(f'{g.id}: fps60_toggle must be on or off: {f60t}')
     fh = g.get('fps_hold', 'on')   # whether the frame step may hold a frame longer than the cap's vsyncs when frames come late (hle_nvn.c fstep_tick): on / off
     if fh not in ('on', 'off'): sys.exit(f'{g.id}: fps_hold must be on or off: {fh}')
     cp = g.get('core_preempt', 'off')   # same-core preemption approximation (hle_thread.c): on / off

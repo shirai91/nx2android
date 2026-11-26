@@ -265,9 +265,15 @@ static int adaptive_enabled(void) {
     return atomic_load(&g_adapt) && !atomic_load(&g_game_mode_performance);
 }
 static void game_mode_sync(void) {   // presenting thread only: publish cached policy to guest acquire without environment reads there
-    static unsigned frames; static int explicit_override;
-    if (frames++ % 30 == 0) {
-        atomic_store(&g_adapt, dm_pacing_adaptive(&explicit_override));   // dm_pacing.c
+    static unsigned frames; static int explicit_override, last_fps60;
+    int cur_fps60 = dm_menu_fps60();
+    if (frames++ % 30 == 0 || cur_fps60 != last_fps60) {
+        last_fps60 = cur_fps60;
+        int next_adapt = dm_pacing_adaptive(&explicit_override);
+        if (next_adapt != atomic_exchange(&g_adapt, next_adapt)) {
+            g_step = 0; g_nwork = g_nshown = g_ok_frames = 0;
+            g_last_change = g_last_up = 0; g_up_hold = 2000000000;
+        }
         int v = dm_pacing_pin();
         int pin = v == 60 ? 0 : v == 40 ? 1 : v == 30 ? 2 : -1;
         if (pin != g_fps_pin) { g_fps_pin = pin; LOG("[perf] adaptive frame rate %s", pin < 0 ? "free again" : "pinned"); }

@@ -122,7 +122,9 @@ class AndroidProfile:
     def pacing(self): return self.get('pacing', 'adaptive')
     @property
     def env(self):   # ['KEY=VALUE', ...]: the pacing preset's rows, then the profile's env rows
-        return PACING.get(self.pacing, []) + self.values('env')
+        f60t = self.game.get('fps60_toggle', 'off') if hasattr(self.game, 'get') else 'off'
+        extra = ['DM_FPS60_TOGGLE=1'] if f60t == 'on' and not any(v.startswith('DM_FPS60_TOGGLE=') for v in self.values('env')) else []
+        return PACING.get(self.pacing, []) + extra + self.values('env')
 
     def overlay_table(self):
         """The gamepad layouts: the default ones with this profile's moves (a moved control's x is a fraction of the window's width: its anchor, no offset)"""
@@ -139,6 +141,7 @@ class AndroidProfile:
         if self.get('orientation', 'landscape') not in ('landscape', 'any'): bad.append('orientation: landscape or any')
         if self.get('romfs', 'raw') not in ('raw', 'zstd'): bad.append('romfs: raw or zstd')
         if self.vulkan_driver not in ('system', 'turnip'): bad.append('vulkan_driver: system or turnip')
+        if hasattr(self.game, 'get') and self.game.get('fps60_toggle', 'off') not in ('on', 'off'): bad.append('fps60_toggle: on or off')
         readme = [k for k in ('readme_image', 'readme_tag') if self.get(k)]
         if (readme or self.get('readme_name')) and len(readme) != 2: bad.append("readme_image and readme_tag go together (README.md's Games list and the game's own README.md, docs/gen_tables.py)")
         if self.get('readme_tag') and not re.fullmatch(r'v\d+\.\d+\.\d+', self.get('readme_tag')): bad.append(f"readme_tag {self.get('readme_tag')!r}: the nx2android version tested, v<major>.<minor>.<patch>")

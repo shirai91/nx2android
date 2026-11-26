@@ -43,6 +43,7 @@ app_pool	0xCD500000
 # tex_flush_upload alone every texture read 0 and the screen stayed black (the guard of the first scene, then every 3D prop)
 tex_flush_upload	on
 tex_dirty_upload	on
+fps60_toggle	on
 
 # ---- Shader split (shader_split.py; MT Framework SPK in an ARC archive) ----
 shader_groups	/nativeNXx64/=nativenxx64

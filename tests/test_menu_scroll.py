@@ -38,6 +38,8 @@ const uint8_t *dm_overlay_font(void) { return font; }
 float dm_overlay_scale(void) { return 1; }
 int dm_overlay_custom(int l,int c,float*x,float*y,float*s) {(void)l;(void)c;(void)x;(void)y;*s=1;return 0;}
 int dm_menu_audio_available(void) { return 0; }
+int dm_menu_fps60_available(void) { return 0; }
+int dm_menu_fps60(void) { return 0; }
 int dm_overlay_stick_zone(void) { return 0; }   // (the Stick area row's segments)
 int dm_save_note(char *s,int n) { if(n)s[0]=0;return OVX_IDLE; }
 ''' + draw + menu + r'''
@@ -111,6 +113,7 @@ float dm_overlay_scale(void) { return 1; }
 int dm_overlay_layout(void) { return 0; }
 int dm_overlay_custom(int l, int c, float *x, float *y, float *s) { (void)l; (void)c; (void)x; (void)y; *s=1; return 0; }
 int dm_menu_audio_available(void) { return 0; }
+int dm_menu_fps60_available(void) { return 0; }
 enum { AMOTION_EVENT_ACTION_DOWN, AMOTION_EVENT_ACTION_UP, AMOTION_EVENT_ACTION_MOVE,
        AMOTION_EVENT_ACTION_CANCEL, AMOTION_EVENT_ACTION_POINTER_DOWN, AMOTION_EVENT_ACTION_POINTER_UP };
 #define AMOTION_EVENT_ACTION_MASK 255
