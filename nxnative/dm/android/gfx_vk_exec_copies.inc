@@ -200,39 +200,45 @@ static void t2t_lin_back(VkCommandBuffer cb, vkimg_t *d, const tex_t *t, const v
     static int n; if (n++ < 4) VKLOG("texture copy into a linear %ux%u texture (nvn format %#x, stride %zu): region %dx%d copied back to its storage %p (DM_VK_LIN_COPY_BACK)", d->w, d->h, t->d.format, stride, c->dr.width, c->dr.height, (void *)t->mem);
 }
 static void copy_t2t(const p_copy_t2t *c) {
-    vkimg_t *s = vk_tex(c->src), *d = vk_tex(c->dst);
-    int keep_pass = 0;
-    if (g_defer_clear && S.pass_open == 2 && P_cleared && s && d) {
-        int s_att = -1, d_att = -1;
-        for (int i = 0; i < 9; i++) {
-            if (P_att[i].im == s) s_att = i;
-            if (P_att[i].im == d) d_att = i;
-        }
-        if (s_att < 0 && d_att < 0) {
-            // Neither source nor destination is in the deferred clear pass; run copy outside it without committing.
-            keep_pass = 1;
-        } else if (s_att == 8 && d_att < 0 && P_da.loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR &&
-            (!(d->aspect & VK_IMAGE_ASPECT_STENCIL_BIT) || (P_sa.imageView && P_sa.loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR)) &&
-            !(c->flags & (CF_MIRROR_X | CF_MIRROR_Y)) && s->aspect == d->aspect &&
-            (d->aspect & VK_IMAGE_ASPECT_DEPTH_BIT) &&
-            S.pass_w == s->w && S.pass_h == s->h &&
-            s->levels == 1 && d->levels == 1 && s->layers == 1 && d->layers == 1 &&
-            s->d <= 1 && d->d <= 1 && c->sr.depth <= 1 && c->dr.depth <= 1 &&
-            c->sr.xoffset == 0 && c->sr.yoffset == 0 && c->sr.width == (int32_t)s->w && c->sr.height == (int32_t)s->h &&
-            c->dr.xoffset == 0 && c->dr.yoffset == 0 && c->dr.width == (int32_t)d->w && c->dr.height == (int32_t)d->h) {
-            VkImageSubresourceLayers ss = sub_of(s, &c->sv, c->has_sv, c->sr.zoffset), ds = sub_of(d, &c->dv, c->has_dv, c->dr.zoffset);
-            if (ss.mipLevel == 0 && ss.baseArrayLayer == 0 && ds.mipLevel == 0 && ds.baseArrayLayer == 0) {
-                VkCommandBuffer cb = vk_cmd(); vk_tex_prepare(cb, d); vk_img_barrier_all(cb); d->gpu_w = 1;
-                VkImageSubresourceRange rg = {d->aspect, 0, 1, 0, 1};
-                VkClearDepthStencilValue v = P_da.clearValue.depthStencil;
-                if (d->aspect & VK_IMAGE_ASPECT_STENCIL_BIT) v.stencil = P_sa.clearValue.depthStencil.stencil;
-                vkCmdClearDepthStencilImage(cb, d->img, VK_IMAGE_LAYOUT_GENERAL, &v, 1, &rg);
-                vk_img_barrier_all(cb);
-                return;
+    vkimg_t *s, *d;
+    if (g_defer_clear && S.pass_open == 2 && P_cleared) {
+        s = vk_tex(c->src); d = vk_tex(c->dst);
+        int keep_pass = 0;
+        if (s && d) {
+            int s_att = -1, d_att = -1;
+            for (int i = 0; i < 9; i++) {
+                if (P_att[i].im == s) s_att = i;
+                if (P_att[i].im == d) d_att = i;
+            }
+            if (s_att < 0 && d_att < 0) {
+                // Neither source nor destination is in the deferred clear pass; run copy outside it without committing.
+                keep_pass = 1;
+            } else if (s_att == 8 && d_att < 0 && P_da.loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR &&
+                (!(d->aspect & VK_IMAGE_ASPECT_STENCIL_BIT) || (P_sa.imageView && P_sa.loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR)) &&
+                !(c->flags & (CF_MIRROR_X | CF_MIRROR_Y)) && s->aspect == d->aspect &&
+                (d->aspect & VK_IMAGE_ASPECT_DEPTH_BIT) &&
+                S.pass_w == s->w && S.pass_h == s->h &&
+                s->levels == 1 && d->levels == 1 && s->layers == 1 && d->layers == 1 &&
+                s->d <= 1 && d->d <= 1 && c->sr.depth <= 1 && c->dr.depth <= 1 &&
+                c->sr.xoffset == 0 && c->sr.yoffset == 0 && c->sr.width == (int32_t)s->w && c->sr.height == (int32_t)s->h &&
+                c->dr.xoffset == 0 && c->dr.yoffset == 0 && c->dr.width == (int32_t)d->w && c->dr.height == (int32_t)d->h) {
+                VkImageSubresourceLayers ss = sub_of(s, &c->sv, c->has_sv, c->sr.zoffset), ds = sub_of(d, &c->dv, c->has_dv, c->dr.zoffset);
+                if (ss.mipLevel == 0 && ss.baseArrayLayer == 0 && ds.mipLevel == 0 && ds.baseArrayLayer == 0) {
+                    VkCommandBuffer cb = vk_cmd(); vk_tex_prepare(cb, d); vk_img_barrier_all(cb); d->gpu_w = 1;
+                    VkImageSubresourceRange rg = {d->aspect, 0, 1, 0, 1};
+                    VkClearDepthStencilValue v = P_da.clearValue.depthStencil;
+                    if (d->aspect & VK_IMAGE_ASPECT_STENCIL_BIT) v.stencil = P_sa.clearValue.depthStencil.stencil;
+                    vkCmdClearDepthStencilImage(cb, d->img, VK_IMAGE_LAYOUT_GENERAL, &v, 1, &rg);
+                    vk_img_barrier_all(cb);
+                    return;
+                }
             }
         }
+        if (!keep_pass) vk_end_pass();
+    } else {
+        vk_end_pass();
+        s = vk_tex(c->src); d = vk_tex(c->dst);
     }
-    if (!keep_pass) vk_end_pass();
     if (!s || !d) return;
     const vkfmt_t *sf = vk_fmt(c->src->d.format), *df = vk_fmt(c->dst->d.format);
     if (!sf || !df) return;
