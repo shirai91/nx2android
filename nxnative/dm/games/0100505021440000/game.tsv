@@ -1,6 +1,6 @@
 # DRAGON QUEST VII Reimagined, Asian release (0100505021440000): Square Enix / HEXA DRIVE, Unreal Engine 4.27 (IoStore containers beside one pak, PhysX 3.4, MallocBinned3), SDK 19.3.1, NVN,
 # CRIWARE sound and Sofdec movies (VP9 through the SDK's movie decoder); update 1.1.0. The JP/WW profile (dm/games/0100A9D01C446000) covers the same engine at 1.2.0: its sdk and subsdk0
-# builds are byte-identical, so the SDK patches and the memory layout apply here, and only the main's per-build rows were found again for this build (patches.py, ue_malloc.tsv, fps_locks.tsv, ue_cvars.tsv).
+# builds are byte-identical, so the SDK patches and the memory layout apply here, and only the main's per-build rows were found again for this build (patches.py, ue_malloc.tsv, fps_locks.tsv).
 # Format: see dm/games/README.md
 
 # ---- Identity ----

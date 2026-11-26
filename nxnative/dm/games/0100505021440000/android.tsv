@@ -6,8 +6,8 @@
 # Tested 2026-11-23 on the Legion Y700 TB321FU (Snapdragon 8 Gen 3, Adreno 750, Android 16), docked (1920x1080) with Mesa's Turnip 26.2.3: the title, a new game (names in Simplified
 # Chinese), the opening, the first village and its surroundings (walking, dialogue, battles), village transitions, the pause menu, an autosave and Continue from it.
 # Turnip is required (vulkan_driver turnip): on the Adreno 750's system driver (LLVM libllvm-qgl.so) the first compute pipeline crashes at boot.
-# The texture streaming pool is raised from SwitchDeviceProfiles.ini's 200 MB to the game's Windows 1000 (ue_cvars.tsv, hle_uecvar.c; the fix upstream nxnative made for this game, its issue
-# #589). The game sets it back on loads and the host raises it again.
+# The texture streaming pool stays at SwitchDeviceProfiles.ini's 200 MB until the ue_cvars.tsv reader (#635) lands; then it is raised to the
+# game's Windows 1000.
 # Frame rate: the governor (pacing adaptive, the profile's fps_target 60), no pin, and DM_GPU_TURBO=auto. A fixed 30 pin without the turbo was measured 2026-11-24
 # to let the GPU governor lower the clock until the work filled the longer frame (perf_android.c "adrenotools_set_turbo"): GPU p50 30 ms, frame 45 ms (~22 fps)
 # and the SoC only ~40 C, neither unit busy. The turbo halved the GPU time (p50 14-16 ms, frame 33.5 ms holding 30); with the governor on, handheld 720p reaches
