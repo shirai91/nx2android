@@ -348,6 +348,36 @@ static inline int ov_menu_scroll_drag(int tab, int start, float delta_rows) {
     return value < 0 ? 0 : value > limit ? limit : value;
 }
 static inline int ov_menu_tab_at(float x, const float p[4]) { float r[4]; ov_menu_rowrect(p, 0, r); int t = (int)((x - r[0]) / (r[2] / OVM_TABS)); return t < 0 ? 0 : t >= OVM_TABS ? OVM_TABS - 1 : t; }
+typedef struct { float p[4], header[4], view[4], footer[4], row, scroll, maxscroll, dp; int count, stacked; } ov_pause;
+static inline void ov_pause_layout(float W, float H, int dpi, int tab, float scroll, ov_pause *l) {
+    float dp = dpi > 0 && dpi < 0xfffe ? dpi / 160.0f : 1.0f, margin = 12 * dp;
+    int n = OVM_PER_TAB; while (n > 0 && ov_menu_item(tab, n) < 0) n--;
+    float w = fminf(600 * dp, fmaxf(1, W - 2 * margin));
+    l->stacked = w < 400 * dp; l->row = (l->stacked ? 88 : 64) * dp; l->count = n; l->dp = dp;
+    float chrome = 56 * dp, pad = 12 * dp, h = fminf(fmaxf(1, H - 2 * margin), 2 * (chrome + pad) + n * l->row);
+    l->p[0] = (W - w) / 2; l->p[1] = (H - h) / 2; l->p[2] = w; l->p[3] = h;
+    float hh = fminf(chrome, fmaxf(0, (h - 2 * pad) / 2));
+    l->header[0] = l->footer[0] = l->view[0] = l->p[0] + pad;
+    l->header[2] = l->footer[2] = l->view[2] = fmaxf(0, w - 2 * pad);
+    l->header[1] = l->p[1] + pad; l->header[3] = hh;
+    l->footer[1] = l->p[1] + h - pad - hh; l->footer[3] = hh;
+    l->view[1] = l->header[1] + hh; l->view[3] = fmaxf(0, l->footer[1] - l->view[1]);
+    l->maxscroll = fmaxf(0, n * l->row - l->view[3]); l->scroll = fminf(l->maxscroll, fmaxf(0, scroll));
+}
+static inline void ov_pause_rowrect(const ov_pause *l, int row, float r[4]) {
+    if (row == 0 || row == OVM_ROWS - 1) { const float *q = row == 0 ? l->header : l->footer; for (int i = 0; i < 4; i++) r[i] = q[i]; return; }
+    r[0] = l->view[0]; r[1] = l->view[1] + (row - 1) * l->row - l->scroll; r[2] = l->view[2]; r[3] = l->row;
+}
+static inline int ov_pause_row_at(const ov_pause *l, float x, float y) {
+    if (x < l->p[0] || x >= l->p[0] + l->p[2] || y < l->p[1] || y >= l->p[1] + l->p[3]) return -2;
+    if (x < l->view[0] || x >= l->view[0] + l->view[2]) return -1;
+    if (y >= l->header[1] && y < l->header[1] + l->header[3]) return 0;
+    if (y >= l->footer[1] && y < l->footer[1] + l->footer[3]) return OVM_ROWS - 1;
+    if (y >= l->view[1] && y < l->view[1] + l->view[3]) { int row = 1 + (int)((y - l->view[1] + l->scroll) / l->row); return row <= l->count ? row : -1; }
+    return -1;
+}
+static inline void ov_pause_track(const ov_pause *l, int row, float t[3]) { float r[4]; ov_pause_rowrect(l, row, r); t[0] = r[0] + r[2] * (l->stacked ? 0.10f : 0.48f); t[1] = r[1] + r[3] * (l->stacked ? 0.72f : 0.5f); t[2] = r[2] * (l->stacked ? 0.70f : 0.36f); }
+static inline int ov_pause_pct(float x, const ov_pause *l, int row) { float t[3]; ov_pause_track(l, row, t); return (int)lroundf(fmaxf(0, fminf(1, (x - t[0]) / t[2])) * 100); }
 // the Opacity slider's track in its row (x, y of its left end's centre line, width): the right part of the row, room for the value after it
 static inline void ov_menu_track(const float p[4], float row, float t[3]) { float r[4]; ov_menu_rowrect(p, row, r); t[0] = r[0] + r[2] * 0.40f; t[1] = r[1] + r[3] / 2; t[2] = r[2] * 0.44f; }
 static inline int ov_menu_track_value(float x, const float p[4], float row) {   // the opacity a finger at x sets, whole 5 percents
