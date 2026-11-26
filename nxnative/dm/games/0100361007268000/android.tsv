@@ -1,0 +1,7 @@
+# MotoGP 18 on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Milestone's MotoGP 18 (Unreal Engine 4.19), base game v0.
+# Tested 2026-11-24 on the Redmi Turbo 3 (Snapdragon 8s Gen 3, Adreno 735): races run fullscreen at 30 fps, rider leathers and liveries render correctly. Known issue: the bike's front windscreen does not render.
+status	playable
+tested	base game (v0) Redmi Turbo 3 (Snapdragon 8s Gen 3, Adreno 735)
+package	org.nx2a.t0100361007268000
+orientation	landscape
