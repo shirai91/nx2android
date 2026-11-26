@@ -11,6 +11,13 @@
 | Tested build and device | v393216 Lenovo Legion Y700 TB322FC (Snapdragon 8 Elite, Adreno 830, Android 16) |
 | App package | `org.nx2a.supermarioodyssey` |
 
+The profile sets these for you (`android.tsv`); a player changes the pause menu ones in the game, and the env rows in the data pack's `env.txt`:
+
+| Row | What it does |
+|---|---|
+| `DM_VK_PASS_SPLIT=256` | split a pass into command buffers every N draws; 0 = never |
+| `DM_VK_PASS_SPLIT_DEPTH=1` | with DM_VK_PASS_SPLIT: also split a pass that has a depth attachment (it writes back a depth texel before the second part, for Adreno's LRZ); 0 or unset = such … |
+
 Read the profile's porting log in the comment header of [`android.tsv`](android.tsv). Back to the [games list](../../../../README.md#games).
 <!-- end of the game facts -->
 
