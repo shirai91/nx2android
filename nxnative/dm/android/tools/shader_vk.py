@@ -393,21 +393,41 @@ def _final_init(w):
     global _FINAL_W
     _FINAL_W = w
 
+def _use_baseline(w, k, reason):
+    for suffix in ('.spv', '.res.json'):
+        os.replace(os.path.join(w, k + '.base' + suffix), os.path.join(w, k + suffix))
+    reason = ' '.join(reason.splitlines())
+    print(f'[RED] {k}: constant-buffer address optimization skipped ({reason}); using baseline vertex shader', flush=True)
+
 def _final_one(item):
     """One shader's end of the build, in a pool child: the parity passes, the reflection and the bundle entry. The bundle
     reads modules back from disk, so a module the lowering passes or a handle remap changed is written beside the
     translator's own <w>/<key>.spv (not through the pool's pipe: the shaders are gigabytes together); the entry's small
     parts come back. A shader that fails comes back with its reason, not as an exception: the parent lists it, as the
     serial loop did"""
-    k, st, c1, key16, remap, local_hint, fail, berr = item
-    try:
-        if fail: raise ValueError(fail)
+    k, st, c1, key16, remap, local_hint, fail, berr, signature = item
+    def read_product(check_interface):
         product = shader_products.output(_FINAL_W, k, STAGES[st])
         if product is None: raise ValueError(berr or 'no output')
         translated, res = product
+        if check_interface:
+            if res.get('constant_buffer_address') is not True:
+                raise ValueError('translator did not enable constant-buffer address optimization')
+            if shader_products.vertex_input_signature(translated) != signature:
+                raise ValueError('address optimization changed the baseline vertex input interface')
         spv = spv_precise.lower(spv_half.lower(spv_texture_offsets.lower(translated)))
         binds, local, io = spirv_bindings(spv)
         shader_products.validate_bindings(binds, res)
+        return translated, res, spv, binds, local, io
+    try:
+        if fail: raise ValueError(fail)
+        try: translated, res, spv, binds, local, io = read_product(signature is not None)
+        except Exception as e:
+            if signature is None: raise
+            # Both products stay on disk: a failed optional optimization falls
+            # back inside this worker, through the same parity/reflection passes.
+            _use_baseline(_FINAL_W, k, str(e))
+            translated, res, spv, binds, local, io = read_product(False)
         if remap: spv = remap_handles(spv, *remap)
         cl = [classify(st, b, res) for b in binds]
         # header words 2-4: a compute shader's local size; a vertex shader's input locations (all, signed int, unsigned int); a pixel shader's output locations
@@ -484,6 +504,11 @@ def main():
                 # A failed process may have written valid products before it stopped.
                 # Keep its diagnostic for keys with no output, and validate each product.
                 batch_errors.update(dict.fromkeys(ch, error))
+    # Establish the interface using exactly main's inference before address sharing.
+    # Inferring from optimized code can both lose old integer inputs and add new
+    # ones. Neither change belongs to an address-only optimization.
+    for k in keys:
+        if stages[k] == 'vs': jobs[k]['constant_buffer_address'] = False
     print(f'translating {len(keys)} shaders in {min(a.jobs, len(keys))} batches ...', flush=True)
     translate(keys)
     # second pass (as the Mac chain's dmsh_build.py finish): vertex shaders with inputs used only as integers, translated again with those inputs reported as uint (int_inputs)
@@ -493,6 +518,8 @@ def main():
         try:
             product = shader_products.output(w, k, STAGES[stages[k]])
             if product is None: continue
+            if product[1].get('constant_buffer_address') is not False:
+                raise ValueError('translator did not disable constant-buffer address optimization')
             extra = {l: t for l, t in int_inputs(product[0]).items() if l not in jobs[k]['attr']}
             if extra:
                 jobs[k]['attr'].update(extra)
@@ -525,6 +552,29 @@ def main():
         if again:
             print(f'translating {len(again)} shaders again with their 1D integer fetch slots as texture buffers (android_fetch1d buffer) ...', flush=True)
             translate(again)
+    original_inputs, optimized, baselines = {}, [], set()
+    for k in keys:
+        if stages[k] != 'vs' or k in failures: continue
+        try:
+            product = shader_products.output(w, k, 0)
+            if product is None: continue
+            if product[1].get('constant_buffer_address') is not False:
+                raise ValueError('translator did not preserve the baseline vertex interface')
+            # Keep both validated baseline files: an optional optimization must
+            # never remove a shader that the original export could ship.
+            for suffix in ('.spv', '.res.json'):
+                os.replace(os.path.join(w, k + suffix), os.path.join(w, k + '.base' + suffix))
+            baselines.add(k)
+            original_inputs[k] = shader_products.vertex_input_signature(product[0])
+            jobs[k]['constant_buffer_address'] = True
+            # Freeze attr: never re-infer from optimized SPIR-V.
+            optimized.append(k)
+        except Exception as e:
+            if k in baselines: _use_baseline(w, k, str(e)); baselines.remove(k)
+            else: failures[k] = str(e)
+    if optimized:
+        print(f'optimizing {len(optimized)} vertex shaders with fixed baseline input types ...', flush=True)
+        translate(optimized)
     # Standalone software GS passthrough needs only locations consumed by the bundle's fragment
     # shaders. Forwarding 16 vec4s plus built-ins exceeds a 64-component geometry input limit.
     # Guest reads used for culling remain tracked independently. XFB keeps the conservative path.
@@ -555,7 +605,7 @@ def main():
     # <w>/<key>.bundle.spv beside the translator's own <w>/<key>.spv (not through the pool's pipe: the shaders are
     # gigabytes together), and the entry's small parts come back.
     items = [(k, stages[k], c1s[k], gs_var[k] if k in gs_var else int(k, 16), handle_remaps.get(k), jobs[k].get('local'),
-              failures.get(k), batch_errors.get(k)) for k in keys]
+              failures.get(k), batch_errors.get(k), original_inputs.get(k)) for k in keys]
     for key16, got, err in final_map(items, min(a.jobs, len(items)), w):
         if err is not None:
             failed.append([f'{key16:016x}', err])

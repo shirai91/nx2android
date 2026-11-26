@@ -133,21 +133,38 @@ axis preservation, not game recognition or device behavior.
 
 ## Tests
 
+```
+python -m unittest discover tests
+```
+
 `test_avc_color` exercises the Android AVC format reader, SPS declarations,
 picture queue and output conversion on the host. Synthetic SPS cases cover
 untagged decoder defaults, independently declared range, parameter changes,
 byte-prefix truncation, emulation prevention and optional SPS/VUI syntax.
 `probes/avc_color.md` describes the decoder probes and remaining RGBA device check.
 
-```
-python -m unittest discover tests
-```
-
 **Every push and pull request** runs them on GitHub (`.github/workflows/tests.yml`): Linux with gcc and with clang, macOS, and Windows with MinGW gcc, plus an NDK compile of the Android host (debug and release). A Windows PC without a POSIX C compiler skips about 150 C harness tests, so a red Tests run is the first place such a break shows: wait for it before you merge into main. The release workflows run the tests again before they build the bundles.
 
 **Shader translator changes**: the CI runs the synthetic shader tests (`tests/test_spirv_per_vertex.py`); game shaders are game data and stay on your PC. `python devtools/shader_corpus.py record` (on main) and `check` (on the change) translate the split shaders of every port in `.gamedump` with the checkout's translator and list, game by game, the shaders whose SPIR-V the change touches (`--sample N` for a quick look: 300 shaders take seconds). The translator's key ignores comments and whitespace (`porter/codekey.py`), so a comment-only change keeps every game's shader bundle.
 
 **C harnesses** compile code cut out of core sources with their own stubs. Cut with `tests/csrc.py` (`csrc.function(src, 'static void f(')` takes a whole function; `csrc.between(src, begin, end)`), which names the source and the marker when the code moved. A cut function that calls a new symbol needs a stub in that harness: the Tests run on the pull request shows which.
+
+`test_shader_constant_buffer_address` executes the production SSA rule through
+a .NET 10 reflection harness. It checks wrapping, truncation, carry bounds, signed
+shifts, near matches, block-local sharing and idempotence across generated graphs.
+SDK, reference-pack, runtime and cached-package prerequisites are checked before
+building. Restore uses an empty local feed with remote sources cleared and NuGet
+audit disabled; build uses `--no-restore`. Missing dependencies and command timeouts
+skip rather than fail release runners. `test_shader_integer_input_flow` keeps the
+original direct-use inference contract; Function temporaries and vector/copy
+graphs do not gain new inferred types. `test_shader_export_checks` verifies that
+baseline inference precedes address optimization, types remain fixed across
+retries, and failed or incompatible optimized products fall back to the exact
+baseline SPIR-V and reflection with one diagnostic. Unsupported baseline input
+signatures skip optimization without dropping the shader. Buffer-texture retries
+precede baseline capture, and fallback restores their updated reflection too.
+Finalization checks cover file-backed lowering for accepted and fallback vertex
+products, handle remaps and bounded aggregate module memory.
 
 `test_nvn_sampler_cache` exercises the production sampler initializer, finalizer,
 comparison and object layout. It checks that all four formerly skipped filter/wrap

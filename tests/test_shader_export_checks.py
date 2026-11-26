@@ -42,6 +42,21 @@ def module(stage):
     return struct.pack(f'<{len(w)}I', *w)
 
 
+def vertex_module(numeric='float', width=32, channels=4, location=11, component=0, id_offset=0, array_length=None):
+    def ident(n): return n + id_offset
+    i = ident
+    scalar = (22, [i(1), width]) if numeric == 'float' else (21, [i(1), width, numeric == 'sint'])
+    array = [] if array_length is None else [(21, [i(9), 32, 0]), (43, [i(9), i(10), array_length]), (28, [i(11), i(2), i(10)])]
+    instructions = [(17, [1]), (14, [0, 1]), (15, [0, i(7), 0x6e69616d, 0, i(4)]),
+                    *([] if location is None else [(71, [i(4), 30, location])]), (71, [i(4), 31, component]), scalar,
+                    (23, [i(2), i(1), channels]), *array, (32, [i(3), 1, i(2) if array_length is None else i(11)]), (59, [i(3), i(4), 1]),
+                    (19, [i(5)]), (33, [i(6), i(5)]), (54, [i(5), i(7), 0, i(6)]),
+                    (248, [i(8)]), (253, []), (56, [])]
+    words = [0x07230203, 0x10300, 0, i(9 if array_length is None else 12), 0]
+    for op, args in instructions: words.extend([(len(args)+1)<<16|op, *args])
+    return struct.pack(f'<{len(words)}I', *words)
+
+
 class ExportChecks(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix='nx2a_export_check_'); self.addCleanup(self.tmp.cleanup)
@@ -49,23 +64,48 @@ class ExportChecks(unittest.TestCase):
         self.report = self.root / 'report.json'; self.stage = 'cs'; self.calls = 0
         self.behavior = 'ok'; self.reflect = True; self.second_shader = False; self.bad_resource = None
         self.jobs = 1; self.bad_key = None; self.log = io.StringIO(); self.bindings = []
+        self.job_history = []; self.inference = {'0': 'uint'}
         self.shader_count = 0; self.extra_spv = b''; self.spv_override = None
+        self.fetch1d = 'off'
         (self.root / 'pkg').mkdir()
 
     def translate(self, argv, **kwargs):
         self.calls += 1; jobs = json.loads(Path(argv[2]).read_text()); dest = Path(argv[3])
+        self.job_history.extend(jobs)
         affected = self.bad_key is None or any(job['key'] == self.bad_key for job in jobs)
         if affected and self.behavior == 'launch-failed': raise OSError('translator unavailable')
+        if affected and any(job.get('constant_buffer_address') is True for job in jobs):
+            if self.behavior == 'optimized-launch-failed': raise OSError('optimizer unavailable')
+            if self.behavior == 'optimized-process-failed':
+                return subprocess.CompletedProcess(argv, 17, '', 'injected optimizer failure\nsecond error line')
         bad = 0
         for job in jobs:
             broken = self.bad_key is None or job['key'] == self.bad_key
             if self.behavior == 'partial' and job['key'].endswith('2'): bad += 1; continue
             if broken and self.behavior in ('process-failed', 'crash-after-output'): bad += 1; continue
             if broken and self.behavior == 'second-missing' and job['attr']: bad += 1; continue
+            optimized = job.get('constant_buffer_address') is True
+            if broken and self.behavior == 'optimized-missing' and optimized: bad += 1; continue
             key = job['key']
-            (dest / f'{key}.spv').write_bytes(b'bad module' if broken and self.behavior == 'bad-module' else self.spv_override or module(self.stage) + self.extra_spv)
+            spv = vertex_module(id_offset=20 if optimized else 0) if self.stage == 'vs' else module(self.stage)
+            if self.stage == 'vs' and not optimized and job['tex'].get('7') == 'buffer': spv = vertex_module(id_offset=10)
+            if self.behavior == 'input-type-change': spv = vertex_module('sint' if optimized else 'float')
+            if broken and (self.behavior == 'baseline-interface-unsupported' or
+                           self.behavior == 'optimized-interface-unsupported' and optimized): spv = vertex_module(location=None)
+            if broken and optimized and self.behavior == 'optimized-bad-module': spv = b'bad module'
+            (dest / f'{key}.spv').write_bytes(b'bad module' if broken and self.behavior == 'bad-module' else self.spv_override or spv + self.extra_spv)
             if broken and self.behavior == 'failed-after-spv': bad += 1; continue
-            if self.reflect or not broken: (dest / f'{key}.res.json').write_text(json.dumps(self.bad_resource if broken and self.bad_resource is not None else reflection(key, self.stage)))
+            if broken and optimized and self.behavior == 'optimized-missing-reflection': bad += 1; continue
+            resource = reflection(key, self.stage)
+            if self.fetch1d == 'buffer':
+                resource['fetch1d'] = [7]
+                if job['tex'].get('7') == 'buffer': resource['cbufs'] = [dict(binding=0, slot=3)]
+            if self.behavior != 'old-translator': resource['constant_buffer_address'] = job.get('constant_buffer_address', True)
+            if broken and optimized and self.behavior == 'optimized-no-ack': resource.pop('constant_buffer_address')
+            if broken and optimized and self.behavior == 'optimized-bad-reflection': resource['key'] = 'wrong'
+            if self.behavior == 'optimized-binding-mismatch':
+                resource['sbufs'] = [dict(binding=4 if broken and optimized else 3, slot=0, cb_slot=0, cb_offset=132, flags=1)]
+            if self.reflect or not broken: (dest / f'{key}.res.json').write_text(json.dumps(self.bad_resource if broken and self.bad_resource is not None else resource))
         summary = f'translated: {len(jobs)-bad} ok, {bad} failed\n'
         if affected and self.behavior in ('process-failed', 'crash-after-output'):
             return subprocess.CompletedProcess(argv, 17, '', 'injected translator failure')
@@ -76,7 +116,7 @@ class ExportChecks(unittest.TestCase):
         count = self.shader_count or (2 if self.second_shader else 1)
         table.write_text(''.join(f'{self.stage}_test.bin\t0\t0\t{k:016x}\t0\n' for k in range(1, count + 1)))
         (self.root / 'pkg' / f'{self.stage}_test.bin').write_bytes(b'fixture')
-        game = SimpleNamespace(table=lambda name: self.root / name, get=lambda k, d=None: d)
+        game = SimpleNamespace(table=lambda name: self.root / name, get=lambda k, d=None: self.fetch1d if k == 'android_fetch1d' else d)
         try: products = importlib.import_module('shader_products')
         except ModuleNotFoundError: products = None
         numeric = {}
@@ -90,14 +130,14 @@ class ExportChecks(unittest.TestCase):
                                      jobs=self.jobs, dotnet='dotnet', zstd=0, report=str(self.report)),
                    STAGES={'vs': 0, 'cs': 5}, kinds_all=collections.Counter(),
                    captured=lambda _: {}, records=lambda _: [b'fixture'],
-                   job_for=lambda key, stage, rec, w: ({'key': key, 'attr': {}}, b''),
-                   int_inputs=lambda _: {'0': 'uint'},
+                   job_for=lambda key, stage, rec, w: ({'key': key, 'attr': {}, 'tex': {}}, b''),
+                   int_inputs=lambda _: self.inference,
                    spirv_bindings=lambda _: (self.bindings, [1, 1, 1], {1: [0, 0, 0], 3: [0, 0, 0]}),
                    refl_bin=lambda cl,c1,hdr: struct.pack('<5I', 0, 0, *hdr),
-                   classify=lambda *args: None,
+                   classify=lambda *args: dict(kind='ssbo'),
                    fork_map=lambda fn, items, J, init=None: [fn(i) for i in items])
-        source = TOOLS / 'shader_vk.py'; tree = ast.parse(source.read_text())
-        nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in ('main', 'remap_handles', 'final_map', '_final_one', '_final_init')]
+        source = TOOLS / 'shader_vk.py'; tree = ast.parse(source.read_text(encoding='utf-8'))
+        nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in ('main', 'remap_handles', 'final_map', '_final_one', '_final_init', '_use_baseline')]
         exec(compile(ast.Module(body=nodes, type_ignores=[]), str(source), 'exec'), env)
         with mock.patch.dict(os.environ, {'WORK': str(self.root)}), mock.patch.object(subprocess, 'run', side_effect=self.translate), contextlib.redirect_stdout(self.log):
             env['main']()
@@ -209,6 +249,103 @@ void main(){d.smallest=min(d.a.x,d.a.y);d.packed=packHalf2x16(d.a);}
         self.second_shader = True; self.bad_key = '0000000000000002'
         self.run_export(); self.assert_failed(self.bad_key, 'no output', [1])
 
+    def test_address_pass_runs_after_legacy_inference_with_frozen_attributes(self):
+        self.stage = 'vs'; self.run_export()
+        self.assertEqual([j['constant_buffer_address'] for j in self.job_history], [False, False, True])
+        self.assertEqual([j['attr'] for j in self.job_history], [{}, {'0':'uint'}, {'0':'uint'}])
+        self.assertEqual(json.loads(self.report.read_text())['failed'], [])
+
+    def test_inputs_not_inferred_still_get_address_optimization(self):
+        self.stage = 'vs'; self.inference = {}; self.run_export()
+        self.assertEqual([j['constant_buffer_address'] for j in self.job_history], [False, True])
+        self.assertTrue(all(j['attr'] == {} for j in self.job_history))
+
+    def test_fetch1d_retry_precedes_optimization_and_survives_fallback(self):
+        self.stage = 'vs'; self.fetch1d = 'buffer'; self.behavior = 'optimized-missing'
+        self.run_export()
+        self.assertEqual([(j['constant_buffer_address'], j['attr'], j['tex']) for j in self.job_history],
+                         [(False, {}, {}), (False, {'0': 'uint'}, {}),
+                          (False, {'0': 'uint'}, {'7': 'buffer'}), (True, {'0': 'uint'}, {'7': 'buffer'})])
+        self.assertEqual(json.loads(self.report.read_text())['failed'], [])
+        with dmsv.Bundle(self.out) as bundle:
+            self.assertEqual(bundle.spv(bundle.entries[0]), vertex_module(id_offset=10))
+        resource = json.loads(next(self.root.glob('shvk_*/0000000000000001.res.json')).read_text())
+        self.assertEqual(resource['cbufs'], [dict(binding=0, slot=3)])
+        self.assertIs(resource['constant_buffer_address'], False)
+
+    def test_fetch1d_retry_still_applies_to_compute(self):
+        self.fetch1d = 'buffer'; self.run_export()
+        self.assertEqual([j['tex'] for j in self.job_history], [{}, {'7': 'buffer'}])
+        self.assertFalse(any('constant_buffer_address' in j for j in self.job_history))
+        self.assertEqual(json.loads(self.report.read_text())['failed'], [])
+
+    def test_vertex_finalization_keeps_lowered_products_file_backed(self):
+        self.stage = 'vs'
+        nop = struct.pack('<I', 1 << 16)
+        for self.behavior in ('ok', 'optimized-bad-module'):
+            with self.subTest(behavior=self.behavior), mock.patch.object(importlib.import_module('spv_precise'), 'lower', side_effect=lambda spv: spv + nop):
+                self.run_export()
+                raw = vertex_module(id_offset=20 if self.behavior == 'ok' else 0)
+                with dmsv.Bundle(self.out) as bundle:
+                    self.assertEqual(bundle.spv(bundle.entries[0]), raw + nop)
+                translated = sorted(self.root.glob('shvk_*/0000000000000001.spv'), key=lambda p: p.stat().st_mtime_ns)[-1]
+                self.assertEqual(translated.read_bytes(), raw)
+                self.assertEqual(translated.with_suffix('.bundle.spv').read_bytes(), raw + nop)
+
+    def assert_fallback(self, key, reason, emitted=(1,)):
+        self.assertEqual(json.loads(self.report.read_text())['failed'], [])
+        lines = [line for line in self.log.getvalue().splitlines() if 'using baseline vertex shader' in line]
+        self.assertEqual(len(lines), 1)
+        self.assertIn('[RED] ' + key, lines[0])
+        self.assertIn(reason, lines[0])
+        with dmsv.Bundle(str(self.out)) as bundle:
+            self.assertEqual([e[0] for e in bundle.entries], list(emitted))
+            entry = next(e for e in bundle.entries if e[0] == int(key, 16))
+            baseline = vertex_module(location=None) if self.behavior == 'baseline-interface-unsupported' else vertex_module()
+            self.assertEqual(bundle.spv(entry), baseline)
+        resource = next(self.root.glob('shvk_*/' + key + '.res.json'))
+        self.assertIs(json.loads(resource.read_text())['constant_buffer_address'], False)
+
+    def test_failed_optimized_pass_uses_baseline_product(self):
+        self.stage = 'vs'; self.behavior = 'optimized-missing'
+        self.second_shader = True; self.bad_key = '0000000000000002'
+        self.run_export(); self.assert_fallback(self.bad_key, 'no output', [1, 2])
+
+    def test_changed_optimized_input_type_uses_baseline(self):
+        self.stage = 'vs'; self.behavior = 'input-type-change'
+        self.run_export(); self.assert_fallback('0000000000000001', 'changed the baseline vertex input interface')
+
+    def test_unreadable_baseline_interface_skips_only_optimization(self):
+        self.stage = 'vs'; self.behavior = 'baseline-interface-unsupported'
+        self.run_export(); self.assert_fallback('0000000000000001', 'without a supported location')
+        self.assertFalse(any(j['constant_buffer_address'] for j in self.job_history))
+
+    def test_invalid_optimized_products_use_baseline(self):
+        self.stage = 'vs'
+        cases = {'optimized-bad-module': 'SPIR-V', 'optimized-missing-reflection': 'omitted reflection',
+                 'optimized-bad-reflection': 'reflection identity', 'optimized-no-ack': 'did not enable',
+                 'optimized-interface-unsupported': 'without a supported location',
+                 'optimized-launch-failed': 'optimizer unavailable', 'optimized-process-failed': 'injected optimizer failure'}
+        for self.behavior, reason in cases.items():
+            with self.subTest(behavior=self.behavior):
+                self.log = io.StringIO(); self.job_history = []
+                self.run_export(); self.assert_fallback('0000000000000001', reason)
+
+    def test_optimized_binding_mismatch_restores_baseline_reflection_too(self):
+        self.stage = 'vs'; self.behavior = 'optimized-binding-mismatch'
+        self.bindings = [dict(name='vp_s0', binding=3, type='ssbo')]
+        self.run_export(); self.assert_fallback('0000000000000001', 'reflection does not match')
+
+    def test_valid_optimized_product_is_packed(self):
+        self.stage = 'vs'; self.run_export()
+        self.assertNotIn('using baseline vertex shader', self.log.getvalue())
+        with dmsv.Bundle(str(self.out)) as bundle:
+            self.assertEqual(bundle.spv(bundle.entries[0]), vertex_module(id_offset=20))
+
+    def test_stale_translator_cannot_silently_skip_interface_baseline(self):
+        self.stage = 'vs'; self.behavior = 'old-translator'
+        self.run_export(); self.assert_failed('0000000000000001', 'did not disable', [])
+
     def test_export_reports_exact_expected_inventory(self):
         self.run_export()
         self.assertTrue(self.report.is_file())
@@ -217,6 +354,20 @@ void main(){d.smallest=min(d.a.x,d.a.y);d.packed=packHalf2x16(d.a);}
         self.assertEqual(report['failed'], [])
         with dmsv.Bundle(str(self.out)) as b:
             self.assertEqual([(x[0], x[1]) for x in b.entries], [(1, 5)])
+
+    def test_opt_in_is_acknowledged_and_not_reinferred_after_optimization(self):
+        self.stage = 'vs'
+        calls = []
+        self.inference = {}
+        # Existing orchestration fixtures expose inference through this property.
+        class Once(dict):
+            def items(inner):
+                calls.append(True)
+                if len(calls) != 1: raise AssertionError('Inference ran after address sharing')
+                return super().items()
+        self.inference = Once({'0':'uint'})
+        self.run_export()
+        self.assertEqual(len(calls), 1)
 
     def test_export_does_not_retain_all_translated_modules(self):
         # One 256 KiB OpSourceContinued per module: retaining all 64 products
@@ -259,6 +410,32 @@ void main(){d.smallest=min(d.a.x,d.a.y);d.packed=packHalf2x16(d.a);}
 
 
 class ProductValidation(unittest.TestCase):
+    def test_vertex_array_shape_uses_length_values_not_spirv_ids(self):
+        import shader_products
+        a = shader_products.vertex_input_signature(vertex_module(array_length=4))
+        self.assertEqual(a, shader_products.vertex_input_signature(vertex_module(array_length=4, id_offset=20)))
+        self.assertNotEqual(a, shader_products.vertex_input_signature(vertex_module(array_length=6)))
+
+    def test_vertex_interface_ignores_ids_but_keeps_types_and_locations(self):
+        import shader_products
+        signature = shader_products.vertex_input_signature(vertex_module())
+        self.assertEqual(signature, shader_products.vertex_input_signature(vertex_module(id_offset=20)))
+        for change in (dict(numeric='sint'), dict(numeric='uint'), dict(width=16), dict(channels=2), dict(location=10), dict(component=1)):
+            with self.subTest(change=change):
+                self.assertNotEqual(signature, shader_products.vertex_input_signature(vertex_module(**change)))
+
+    def test_unlocated_non_builtin_input_is_rejected(self):
+        import shader_products
+        data = vertex_module()
+        words = list(struct.unpack(f'<{len(data)//4}I', data)); at = 5
+        while at < len(words):
+            count, op = words[at]>>16, words[at]&65535
+            if op == 71 and words[at+2] == 30: break
+            at += count
+        removed = words[:at]+words[at+count:]
+        with self.assertRaises(ValueError):
+            shader_products.vertex_input_signature(struct.pack(f'<{len(removed)}I', *removed))
+
     def test_module_header_framing_and_stage_rejected(self):
         import shader_products
         good = module('cs')

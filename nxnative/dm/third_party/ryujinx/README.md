@@ -33,6 +33,25 @@ These Android changes are built from source by the porter. They do not update th
 
 Android standalone geometry translation can now supply `gs_passthrough_mask`: the union of fragment input locations in the shader bundle. Software passthrough forwards these consumers' attributes, with the guest's own culling reads tracked independently. Jobs without the hint retain the original 16-location mask; transform-feedback jobs keep the conservative path. NieR's fragment shaders consume locations 1–11, so this removes the excess geometry inputs without arbitrarily truncating the interface. A synthetic translation checks the resulting locations.
 
+- `Ryujinx.Graphics.Shader/Translation/Optimizations/ConstantBufferAddress.cs`,
+  called by `Optimizer` for explicitly opted-in vertex shaders: simplify constant-buffer integer
+  indices whose vec4 lane is provably constant. A bounded affine analysis retains
+  32-bit wrapping and reduced-width masks; additions after truncation require a
+  no-carry bound. Unknown operations remain opaque roots, signed shifts require
+  nonnegative values, and floating-point operations are not reassociated.
+  Equivalent addresses share temporaries within a block only. This removes
+  dynamic component-selection ladders found in Turnip matrix loads without
+  shader hashes or uniform specialization. Marked `nxnative:` in the code.
+  Android export first determines inputs using the original inference with this
+  pass off, then fixes those types for the optimized translation and checks the
+  full location/type signature before packing. Failed or incompatible optimized
+  products retain the baseline SPIR-V and reflection; an unsupported baseline
+  interface skips optimization. It does not widen inference to existing Function
+  temporaries. The job's `constant_buffer_address` switch and
+  its reflection acknowledgement prevent a stale translator from silently
+  skipping the baseline or the optimization; absent switches leave the pass off.
+  Not yet in `dm/gfx/tools/dmsh_xlate_bin`; Android builds from this source.
+
 The shader translation tool in `dm/gfx/tools/dmsh_xlate` references them to translate the original Switch shaders to SPIR-V.
 
 License: MIT, see `LICENSE.txt`. Upstream: <https://github.com/Ryubing>.

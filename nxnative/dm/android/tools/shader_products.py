@@ -83,6 +83,44 @@ def output(directory, key, stage):
     return data, resource
 
 
+def vertex_input_signature(data):
+    """User input locations/components and complete numeric types, independent of IDs."""
+    validate_spirv(data, 0)
+    words = struct.unpack(f'<{len(data)//4}I', data)
+    types, constants, decorations, inputs = {}, {}, {}, {}
+    at = 5
+    while at < len(words):
+        count, op = words[at] >> 16, words[at] & 0xffff
+        args = words[at+1:at+count]
+        if op in (20, 21, 22, 23, 24, 28, 29, 30, 32): types[args[0]] = (op, args[1:])
+        elif op == 43: constants[args[1]] = tuple(args[2:])
+        elif op == 59 and args[2] == 1: inputs[args[1]] = args[0]
+        elif op == 71: decorations.setdefault(args[0], {})[args[1]] = tuple(args[2:])
+        at += count
+
+    def describe(type_id, seen=()):
+        if type_id in seen or type_id not in types: raise ValueError('unsupported vertex input type')
+        op, args = types[type_id]; seen = (*seen, type_id)
+        if op in (20, 21, 22): return (op, *args)  # bool, int width/signedness, float width
+        if op in (23, 24): return (op, describe(args[0], seen), args[1])
+        if op == 28 and args[1] in constants: return (op, describe(args[0], seen), constants[args[1]])
+        if op == 30: return (op, *(describe(t, seen) for t in args))
+        raise ValueError('unsupported vertex input type')
+
+    result = {}
+    for variable, pointer in inputs.items():
+        decor = decorations.get(variable, {})
+        if 30 not in decor:
+            if 11 in decor: continue  # Built-ins do not have vertex attribute locations.
+            raise ValueError('vertex input without a supported location or built-in')
+        location = (decor[30][0], decor.get(31, (0,))[0])
+        if location in result: raise ValueError('duplicate vertex input location/component')
+        op, args = types[pointer]
+        if op != 32 or args[0] != 1: raise ValueError('invalid vertex input pointer')
+        result[location] = describe(args[1])
+    return result
+
+
 def check_bundle(path, report):
     """Validate the emitted inventory against the exporter's complete expected list."""
     if not isinstance(report, dict) or report.get('schema') != 1: raise ValueError('invalid shader export report')
