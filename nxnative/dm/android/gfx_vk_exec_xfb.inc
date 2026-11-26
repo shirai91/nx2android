@@ -284,7 +284,15 @@ static int quad_indirect(uint64_t ind, int n, int stride, VkBuffer *ob, VkDevice
     if (n < 1 || n > QI_MAX || stride < 16 || stride > QI_SRC_STRIDE_MAX || stride & 3) { VKRED_ONCE(177, "indirect quad draw of %d records %d bytes apart: drawn as a triangle list", n, stride); return 0; }
     if (!qi_init()) return 0;
     VkDeviceSize len = (VkDeviceSize)stride * (VkDeviceSize)(n - 1) + 16; VkBuffer sb; VkDeviceSize so;
-    if (!vk_buf_at(ind, len, &sb, &so)) { VKRED_ONCE(53, "indirect draw arguments outside the memory pools"); return 0; }
+    // one buffer's worth: a pool over ZC_CHUNK is made of chunks, each with a buffer of its own, so a run of records that runs over a chunk's end has none. The whole
+    // range is looked up first (vk_buf_at): it finds the pool whose buffer holds it, and it translates a sparse address (the chunk lookup comes out short with a
+    // pool inside a pool).
+    if (!vk_buf_at(ind, len, &sb, &so)) {
+        uint64_t span = vk_chunk_span(ind, (uint64_t)len, &sb, &so);
+        if (span) VKRED_ONCE(182, "the indirect draw arguments cross a chunk boundary (ZC_CHUNK): nothing drawn");
+        else VKRED_ONCE(53, "indirect draw arguments outside the memory pools");
+        return 0;
+    }
     vk_end_pass_land();
     VkCommandBuffer cb = vk_cmd();
     vk_img_barrier_all(cb);   // the records' writers before the copy; an earlier rewrite's draw before this one overwrites the buffer

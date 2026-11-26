@@ -547,9 +547,17 @@ extern uint64_t g_up_gen;
 static int lin_copy(vkimg_t *im, const tex_t *t, const vkfmt_t *f) {   // 1 = the image holds its storage as of this upload buffer
     if (!linear_storage(t) || im->levels != 1 || im->d != 1 || im->layers != 1 || f->bw > 1 || f->bh > 1 || !f->bpb || im->aspect != VK_IMAGE_ASPECT_COLOR_BIT) return 0;
     size_t stride = t->d.stride ? t->d.stride : (size_t)im->w * f->bpb; VkBuffer b; VkDeviceSize o;
-    if (stride % f->bpb || stride < (size_t)im->w * f->bpb || !vk_buf_at((uint64_t)(uintptr_t)t->mem, (uint64_t)stride * (im->h - 1) + (uint64_t)im->w * f->bpb, &b, &o) || o % f->bpb) return 0;
-    // the GPU wrote it (a clear, a copy, a storage write): it holds that until the CPU writes its storage again, which its pages, set read-only, tell
     size_t len = stride * (im->h - 1) + (size_t)im->w * f->bpb;
+    // the storage is one buffer's worth: a pool over ZC_CHUNK is made of chunks, each with a buffer of its own, so a texture that runs over a chunk's end has none.
+    // The whole range is looked up first (vk_buf_at): it finds the pool whose buffer holds it (with a pool inside a pool, the inner pool's pages are in the inner pool's
+    // buffer and the rest is in the outer one's, and the chunk lookup would come out short), and it translates a sparse address.
+    if (!vk_buf_at((uint64_t)(uintptr_t)t->mem, (uint64_t)len, &b, &o)) {
+        uint64_t span = vk_chunk_span((uint64_t)(uintptr_t)t->mem, (uint64_t)len, &b, &o);
+        if (span) VKRED_ONCE(180, "a linear texture's storage crosses a chunk boundary (ZC_CHUNK): not uploaded");
+        return 0;
+    }
+    if (stride % f->bpb || stride < (size_t)im->w * f->bpb || o % f->bpb) return 0;
+    // the GPU wrote it (a clear, a copy, a storage write): it holds that until the CPU writes its storage again, which its pages, set read-only, tell
     if (im->gpu_w && !im->lin_mem) { nvn_dirty_protect(t->mem, len); im->lin_stamp = nvn_dirty_now(); im->lin_span = nvn_dirty_span(t->mem, len); im->lin_mem = t->mem; im->lin_len = len; return 1; }
     if (im->gpu_w) { if (!nvn_dirty_since_span(im->lin_span, t->mem, len, im->lin_stamp)) return 1; nvn_dirty_release(im->lin_mem, im->lin_len); im->lin_mem = NULL; im->gpu_w = 0; im->lin_gen = 0; }
     VkCommandBuffer cb = vk_upload_cmd();
