@@ -6,13 +6,18 @@ import android.content.Context;
 import android.content.SharedPreferences;
 import android.util.Log;
 import android.view.ViewGroup;
+import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.RadioButton;
-import android.widget.RadioGroup;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import java.io.File;
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.SimpleFileVisitor;
+import java.nio.file.FileVisitResult;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.UUID;
@@ -20,6 +25,7 @@ import java.util.UUID;
 final class ModManager {
     private static String applied = "";
     private static boolean conflict;
+    private static boolean deleting;
 
     private static SharedPreferences state(Context c) { return c.getSharedPreferences("mod-selection", Context.MODE_PRIVATE); }
     private static File root(Context c) { return new File(c.getExternalFilesDir(null), "usermods"); }
@@ -84,7 +90,7 @@ final class ModManager {
         if (!state(c).edit().putString("name." + id, name).putString("path." + id, path).commit())
             throw new IOException("Cannot save mod metadata");
     }
-    static void open(Activity a) { a.runOnUiThread(() -> { if (!a.isFinishing() && !a.isDestroyed()) show(a); }); }
+    static void open(Activity a) { a.runOnUiThread(() -> { if (!deleting && !a.isFinishing() && !a.isDestroyed()) show(a); }); }
     private static void show(Activity a) {
         File[] dirs = root(a).listFiles();
         ArrayList<String> ids = new ArrayList<>(), labels = new ArrayList<>(), errors = new ArrayList<>();
@@ -117,39 +123,107 @@ final class ModManager {
         TextView text = new TextView(a);
         text.setText(message);
         content.addView(text);
-        RadioGroup group = new RadioGroup(a);
-        group.setId(ViewGroup.generateViewId());
         String[] choices = new String[ids.size() + 1]; choices[0] = "Off";
         for (int i = 0; i < ids.size(); i++) choices[i + 1] = labels.get(i);
         int checked = ids.indexOf(selected) + 1;
+        ArrayList<RadioButton> buttons = new ArrayList<>();
+        AlertDialog shown = dialog.create();
         for (int i = 0; i < choices.length; i++) {
+            LinearLayout row = new LinearLayout(a);
             RadioButton button = new RadioButton(a);
             button.setId(ViewGroup.generateViewId());
             button.setText(choices[i]);
-            group.addView(button, new RadioGroup.LayoutParams(RadioGroup.LayoutParams.MATCH_PARENT, RadioGroup.LayoutParams.WRAP_CONTENT));
-            if (i == checked) group.check(button.getId());
+            button.setChecked(i == checked);
+            buttons.add(button);
+            row.addView(button, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+            if (i > 0) {
+                String mod = ids.get(i - 1);
+                Button remove = new Button(a);
+                remove.setText("Delete");
+                remove.setOnClickListener(v -> {
+                    if (mod.equals(applied)) {
+                        new AlertDialog.Builder(a).setMessage("Select Off and restart before deleting this mod.").setPositiveButton("OK", null).show();
+                        return;
+                    }
+                    new AlertDialog.Builder(a).setTitle("Delete mod")
+                        .setMessage("Delete " + label(a, mod) + "?")
+                        .setNegativeButton("Cancel", null)
+                        .setPositiveButton("Delete", (d, w) -> {
+                            shown.dismiss();
+                            deleteMod(a, mod);
+                        }).show();
+                });
+                row.addView(remove);
+            }
+            content.addView(row);
         }
-        content.addView(group);
         ScrollView scroll = new ScrollView(a);
         scroll.addView(content);
-        AlertDialog shown = dialog.setView(scroll).show();
-        group.setOnCheckedChangeListener((g, id) -> {   // attached after the initial check: opening the dialog selects nothing
-            int which = -1;
-            for (int i = 0; i < group.getChildCount(); i++) if (group.getChildAt(i).getId() == id) which = i;
-            if (which < 0) return;
-            if (which > 0 && !errors.get(which - 1).isEmpty()) {
-                shown.dismiss();
-                new AlertDialog.Builder(a).setMessage("Cannot enable: " + errors.get(which - 1)).setPositiveButton("OK", (x, y) -> show(a)).show();
-                return;
+        shown.setView(scroll);
+        shown.show();
+        for (int i = 0; i < buttons.size(); i++) {
+            final int which = i;
+            buttons.get(i).setOnClickListener(v -> {   // attached after the initial check: opening the dialog selects nothing
+                if (which > 0 && !errors.get(which - 1).isEmpty()) {
+                    shown.dismiss();
+                    new AlertDialog.Builder(a).setMessage("Cannot enable: " + errors.get(which - 1)).setPositiveButton("OK", (x, y) -> show(a)).show();
+                    return;
+                }
+                String choice = which == 0 ? "" : ids.get(which - 1);
+                if (!state(a).edit().putString("selected", choice).commit()) {
+                    shown.dismiss();
+                    new AlertDialog.Builder(a).setMessage("Could not save selection.").setPositiveButton("OK", (x, y) -> show(a)).show();
+                    return;
+                }
+                shown.dismiss(); show(a);
+            });
+        }
+    }
+    private static void deleteMod(Activity a, String id) {
+        if (deleting) return;
+        deleting = true;
+        AlertDialog progress = new AlertDialog.Builder(a).setMessage("Deleting mod...").setCancelable(false).show();
+        Context context = a.getApplicationContext();
+        new Thread(() -> {
+            String error = "";
+            try {
+                if (id.equals(applied)) throw new IOException("Select Off and restart before deleting this mod.");
+                try { if (!UUID.fromString(id).toString().equals(id)) throw new IllegalArgumentException(); }
+                catch (IllegalArgumentException e) { throw new IOException("Invalid mod ID"); }
+                File external = context.getExternalFilesDir(null).getCanonicalFile();
+                File base = new File(external, "usermods"), dir = new File(base, id);
+                if (!base.getCanonicalPath().equals(base.getAbsolutePath())
+                        || !dir.getCanonicalPath().equals(dir.getAbsolutePath()) || !dir.isDirectory())
+                    throw new IOException("Missing or unsafe mod directory");
+                SharedPreferences prefs = state(context);
+                if (id.equals(prefs.getString("selected", "")) && !prefs.edit().putString("selected", "").commit())
+                    throw new IOException("Cannot clear selection");
+                Files.walkFileTree(dir.toPath(), new SimpleFileVisitor<Path>() {
+                    @Override public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
+                        Files.delete(file); return FileVisitResult.CONTINUE;
+                    }
+                    @Override public FileVisitResult postVisitDirectory(Path directory, IOException failure) throws IOException {
+                        if (failure != null) throw failure;
+                        Files.delete(directory); return FileVisitResult.CONTINUE;
+                    }
+                });
+                if (!prefs.edit().remove("name." + id).remove("path." + id).commit())
+                    throw new IOException("Cannot remove mod metadata");
+                Log.i("dmhost", "[mod] deleted " + id);
+            } catch (Exception e) {
+                error = e.toString();
+                Log.e("dmhost", "[RED] [mod] delete failed: " + error);
             }
-            String choice = which == 0 ? "" : ids.get(which - 1);
-            if (!state(a).edit().putString("selected", choice).commit()) {
-                shown.dismiss();
-                new AlertDialog.Builder(a).setMessage("Could not save selection.").setPositiveButton("OK", (x, y) -> show(a)).show();
-                return;
-            }
-            shown.dismiss(); show(a);
-        });
+            String result = error;
+            a.runOnUiThread(() -> {
+                deleting = false;
+                if (a.isFinishing() || a.isDestroyed()) return;
+                progress.dismiss();
+                if (!result.isEmpty()) new AlertDialog.Builder(a).setMessage("Delete failed: " + result)
+                    .setPositiveButton("OK", (d, w) -> show(a)).show();
+                else show(a);
+            });
+        }, "mod-delete").start();
     }
     private static String label(Context c, String id) { return state(c).getString("name." + id, "Mod " + id.substring(0, 8)); }
 }
