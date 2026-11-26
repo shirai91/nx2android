@@ -22,7 +22,7 @@ enum { NVN_TEXTURE_FLAGS_IMAGE=1, NVN_TEXTURE_FLAGS_COMPRESSIBLE=2, NVN_TEXTURE_
  NVN_TEXTURE_FLAGS_DISPLAY=32, NVN_TEXTURE_FLAGS_VIDEO_DECODE=64 };
 typedef struct { unsigned flags; } pool_t;
 typedef struct { const pool_t *pool; const uint8_t *mem; int has_layout; int64_t off; struct { unsigned target,samples,flags,width,height,depth,format; } d; struct { uint64_t size; } L; } tex_t;
-typedef struct { int compressed,depth,stencil; } vkfmt_t;
+typedef struct { int compressed,depth,stencil,dec; } vkfmt_t;
 typedef struct { int gpu_w; uint64_t pool; int64_t off,size; } vkimg_t;
 static struct { uint32_t cap; void *vals[4]; } g_by_key={.cap=4};
 static int g_img_mu, marked;
@@ -38,7 +38,7 @@ static const char *fixture_getenv(const char *name) {
 #define getenv fixture_getenv
 ''' + next(line for line in text.splitlines() if line.startswith('enum { TEX_CONTENT_NONE'))+'\n'+function('mem_any')+'\n'+function('cpu_storage_gpu_written')+'\n'+function('cpu_content_tex')+r'''
 int main(void) {
- uint8_t pixels[64]={1}; pool_t pool={0}; vkfmt_t rgba={0}, bc={1,0,0};
+ uint8_t pixels[64]={1}; pool_t pool={0}; vkfmt_t rgba={0}, bc={1,0,0}, dec_bc={0,0,0,1};
  tex_t t={.pool=&pool,.mem=pixels,.d={.target=1,.samples=1,.width=4,.height=4,.depth=1},.L={64}};
  t.d.flags=NVN_TEXTURE_FLAGS_IMAGE; assert(cpu_content_tex(&t,&bc)==1);
  t.d.flags=NVN_TEXTURE_FLAGS_COMPRESSIBLE; assert(cpu_content_tex(&t,&bc)==DM_GAME_TEX_CPU_UNCACHED);
@@ -58,9 +58,15 @@ int main(void) {
  memset(pixels,0,sizeof pixels); assert(cpu_content_tex(&t,&rgba)==TEX_CONTENT_NONE);
  pixels[63]=255; assert(cpu_content_tex(&t,&rgba)==image_content && marked==0);
  pool.flags=0; assert(cpu_content_tex(&t,&rgba)==TEX_CONTENT_NONE);
+ /* a BC format decoded on the CPU (compressed 0, dec 1) is still block-compressed in guest memory: it is uploaded
+    on first use, and the CPU_NO_ACCESS gate above (about who may write the storage) does not apply to it */
+ t.d.flags=NVN_TEXTURE_FLAGS_IMAGE; pool.flags=0; assert(cpu_content_tex(&t,&dec_bc)==1);
+ pool.flags=NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS; assert(cpu_content_tex(&t,&dec_bc)==1); pool.flags=0;
  t.d.flags=0; marked=0;
  if (!TEX2D_ON) {   /* without the profile switch an uncompressed 2D texture keeps its old path; compressed ones are still uploaded */
-  assert(cpu_content_tex(&t,&rgba)==0 && marked==0); assert(cpu_content_tex(&t,&bc)==1); return 0; }
+  assert(cpu_content_tex(&t,&rgba)==0 && marked==0); assert(cpu_content_tex(&t,&bc)==1);
+  assert(cpu_content_tex(&t,&dec_bc)==1);   /* and a CPU-decoded one is uploaded without the 2D switch too */
+  return 0; }
  assert(cpu_content_tex(&t,&rgba)==1 && marked==1);
  vkimg_t alias={.gpu_w=1,.pool=(uint64_t)(uintptr_t)&pool,.off=16,.size=16}; g_by_key.vals[0]=&alias;
  assert(cpu_content_tex(&t,&rgba)==0);
@@ -71,6 +77,7 @@ int main(void) {
  pool.flags=NVN_MEMORY_POOL_FLAGS_CPU_NO_ACCESS; assert(cpu_content_tex(&t,&rgba)==0); pool.flags=0;
  memset(pixels,0,sizeof pixels); assert(cpu_content_tex(&t,&rgba)==0);
  pixels[63]=255; assert(cpu_content_tex(&t,&bc)==1);
+ assert(cpu_content_tex(&t,&dec_bc)==1);   /* the same for a CPU-decoded BC format, with the 2D switch on */
  return 0;
 }
 '''

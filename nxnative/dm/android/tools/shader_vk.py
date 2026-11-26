@@ -15,6 +15,7 @@ HERE = Path(__file__).resolve().parent
 TOOLS = HERE.parent.parent / 'gfx/tools'
 sys.path[:0] = [str(TOOLS), str(HERE)]
 import dmsh_facts, dmsh_chain, dmsv, shader_products, spv_half, spv_precise, spv_texture_offsets   # noqa: E402  (DM_GAME picks the profile)
+from forkpool import fork_map   # noqa: E402  (the pool without /dev/shm's semaphores, as on Android)
 from shader_split import glslc_stage   # the package reader also recognizes headerless compute code
 
 ap = argparse.ArgumentParser()
@@ -386,6 +387,49 @@ def int_inputs(spv):
             else: other.add(loads[x])
     return {str(loc[v]): 'sint' if v in sint else 'uint' for v in uses if v not in other and v in loc}
 
+_FINAL_W = None   # a pool child's work folder (shader_products.output reads <w>/<key>.spv)
+
+def _final_init(w):
+    global _FINAL_W
+    _FINAL_W = w
+
+def _final_one(item):
+    """One shader's end of the build, in a pool child: the parity passes, the reflection and the bundle entry. The bundle
+    reads modules back from disk, so a module the lowering passes or a handle remap changed is written beside the
+    translator's own <w>/<key>.spv (not through the pool's pipe: the shaders are gigabytes together); the entry's small
+    parts come back. A shader that fails comes back with its reason, not as an exception: the parent lists it, as the
+    serial loop did"""
+    k, st, c1, key16, remap, local_hint, fail, berr = item
+    try:
+        if fail: raise ValueError(fail)
+        product = shader_products.output(_FINAL_W, k, STAGES[st])
+        if product is None: raise ValueError(berr or 'no output')
+        translated, res = product
+        spv = spv_precise.lower(spv_half.lower(spv_texture_offsets.lower(translated)))
+        binds, local, io = spirv_bindings(spv)
+        shader_products.validate_bindings(binds, res)
+        if remap: spv = remap_handles(spv, *remap)
+        cl = [classify(st, b, res) for b in binds]
+        # header words 2-4: a compute shader's local size; a vertex shader's input locations (all, signed int, unsigned int); a pixel shader's output locations
+        hdr3 = (local or local_hint or [1, 1, 1]) if st == 'cs' else io[1] if st == 'vs' else io[3] if st == 'ps' else [0, 0, 0]
+        path = os.path.join(_FINAL_W, k + '.spv')
+        if spv != translated:   # the translator's file stays as it wrote it; the bundle reads the adjusted one
+            path = os.path.join(_FINAL_W, k + '.bundle.spv')
+            with open(path + '.partial', 'wb') as f: f.write(spv)
+            os.replace(path + '.partial', path)
+        return key16, (st, k, cl, refl_bin(cl, c1, hdr3), path), None
+    except Exception as e:
+        return key16, None, str(e)
+
+def final_map(items, J, w):
+    """The per-shader end of the build over forked children (forkpool.py: Android has no /dev/shm for a pool's semaphores),
+    or in order where fork does not exist (Windows)"""
+    if J <= 1 or not hasattr(os, 'fork'):
+        _final_init(w)
+        return [_final_one(it) for it in items]
+    _final_init(w)
+    return fork_map(_final_one, items, J)
+
 def main():
     handle_remaps = {}
     table = GAME.table('android_shader_handles.tsv')
@@ -419,6 +463,7 @@ def main():
         for t in (0, 1, 2, 4):
             vk_ = f'{k}_t{t}'; jobs[vk_] = {**jobs[k], 'key': vk_, 'gs_input': t}; c1s[vk_] = c1s[k]; stages[vk_] = 'gs'; gs_var[vk_] = gs_variant_key(int(k, 16), t)
     keys = keys + sorted(gs_var)
+    packs.clear()   # the shader records are in the jobs: the children fork without their gigabytes
     if not keys: raise ValueError('no shaders selected for export')
     if a.report and os.path.abspath(a.report) == os.path.abspath(a.out): raise ValueError('shader report must not overwrite the bundle')
     batch_errors, failures, rs = {}, {}, []
@@ -458,6 +503,28 @@ def main():
     if again:
         print(f'translating {len(again)} vertex shaders again with their integer inputs ...', flush=True)
         translate(again)
+    # android_fetch1d buffer (game profile, default off): the texture slots a shader reads with 1D integer fetches and the answer table gives no type for (res "fetch1d",
+    # translated as 2D rows) are translated again as texture buffers. Vulkan has no image over a buffer, so a texture buffer bound in such a slot read the dummy view.
+    # DRAGON QUEST XI S reads its skinning bone matrices so (Unreal's Buffer<float4>): every skinned character was invisible. A 1D texture bound in a slot answered so
+    # reads zeros and logs a red line on the device (gfx_vk_exec_descriptors.inc)
+    fetch1d = GAME.get('android_fetch1d', 'off')
+    if fetch1d not in ('off', 'buffer'): raise ValueError(f'android_fetch1d must be off or buffer: {fetch1d}')
+    if fetch1d == 'buffer':
+        again = []
+        for k in keys:
+            if k in failures: continue
+            try:
+                product = shader_products.output(w, k, STAGES[stages[k]])
+                if product is None: continue
+                slots = [s for s in product[1].get('fetch1d', ()) if str(s) not in jobs[k]['tex']]
+                if slots:
+                    jobs[k]['tex'] = {**jobs[k]['tex'], **{str(s): 'buffer' for s in slots}}
+                    for suffix in ('.spv', '.res.json'): os.unlink(os.path.join(w, k + suffix))
+                    again.append(k)
+            except Exception as e: failures[k] = str(e)
+        if again:
+            print(f'translating {len(again)} shaders again with their 1D integer fetch slots as texture buffers (android_fetch1d buffer) ...', flush=True)
+            translate(again)
     # Standalone software GS passthrough needs only locations consumed by the bundle's fragment
     # shaders. Forwarding 16 vec4s plus built-ins exceeds a 64-component geometry input limit.
     # Guest reads used for culling remain tracked independently. XFB keeps the conservative path.
@@ -483,31 +550,21 @@ def main():
     entries, fails, failed = [], collections.Counter(), []
     expected = [[f'{gs_var[k] if k in gs_var else int(k, 16):016x}', STAGES[stages[k]]] for k in keys]
     if len({k for k, _ in expected}) != len(expected): raise ValueError('shader keys collide with geometry variants')
-    for k in keys:
-        try:
-            if k in failures: raise ValueError(failures[k])
-            product = shader_products.output(w, k, STAGES[stages[k]])
-            if product is None: raise ValueError(batch_errors[k] or 'no output')
-            translated, res = product
-            spv = spv_precise.lower(spv_half.lower(spv_texture_offsets.lower(translated)))
-            binds, local, io = spirv_bindings(spv)
-            shader_products.validate_bindings(binds, res)
-            if k in handle_remaps: spv = remap_handles(spv, *handle_remaps[k])
-            # The bundle reads modules back from disk: a module the lowering passes or a handle remap changed gets its own file, or the translator's unlowered one would ship.
-            spv_path = Path(w) / f'{k}.spv'
-            if spv != translated:
-                spv_path = Path(w) / f'{k}.bundle.spv'; spv_path.write_bytes(spv)
-            st = stages[k]
-            cl = [classify(st, b, res) for b in binds]
-            for e in cl: kinds_all[e['kind']] += 1
-            # header words 2-4: a compute shader's local size; a vertex shader's input locations (all, signed int, unsigned int); a pixel shader's output locations
-            hdr3 = (local or jobs[k].get('local') or [1, 1, 1]) if st == 'cs' else io[1] if st == 'vs' else io[3] if st == 'ps' else [0, 0, 0]
-            entries.append((gs_var[k] if k in gs_var else int(k, 16), STAGES.get(st, 0), spv_path, refl_bin(cl, c1s[k], hdr3)))
-        except Exception as e:
-            reason = str(e)
-            failed.append([f'{gs_var[k] if k in gs_var else int(k, 16):016x}', reason])
-            fails[reason] += 1
-            print(f'[RED] {failed[-1][0]}: {reason}', flush=True)
+    # The parity passes and the reflection are pure Python, per shader: over the whole set they cost minutes on a phone's
+    # cores, and they ran one at a time. The pool runs them on every core; an adjusted module reaches the bundle as
+    # <w>/<key>.bundle.spv beside the translator's own <w>/<key>.spv (not through the pool's pipe: the shaders are
+    # gigabytes together), and the entry's small parts come back.
+    items = [(k, stages[k], c1s[k], gs_var[k] if k in gs_var else int(k, 16), handle_remaps.get(k), jobs[k].get('local'),
+              failures.get(k), batch_errors.get(k)) for k in keys]
+    for key16, got, err in final_map(items, min(a.jobs, len(items)), w):
+        if err is not None:
+            failed.append([f'{key16:016x}', err])
+            fails[err] += 1
+            print(f'[RED] {failed[-1][0]}: {err}', flush=True)
+            continue
+        st, k, cl, refl, spv_path = got
+        for e in cl: kinds_all[e['kind']] += 1
+        entries.append((key16, STAGES.get(st, 0), Path(spv_path), refl))
     # The validated modules are already on disk. Do not retain their aggregate
     # SPIR-V or the source packs/jobs while dmsv compresses bounded batches.
     packs.clear(); jobs.clear(); c1s.clear(); cap.clear()

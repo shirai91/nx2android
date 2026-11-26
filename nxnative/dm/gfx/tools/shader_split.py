@@ -155,6 +155,96 @@ def mshd_shaders(d, label):
     if len(out) % 2: red(f'{label} MSHD: {len(out)} stages, not in pairs')
     return out
 
+# DrinkBox container reader adapted from seedds/nxnative df20cc2.
+DBX = b'SHADERS\0'
+DBX_UNIFORM = 127   # fixed-size uniform descriptor: char name[124] + 3 binding bytes (Guacamelee! 2 main +0x62e1c / +0x67518)
+DBX_ENTRY = 29      # <6IBI: name_off, entry_off, u_start, u_cnt, data_off, data_len, kind (0 vs / 1 ps), shader_id (+0x62fe4)
+DBX_BLOB_HEAD = 20  # <5I: code_len, ctl_len, n_uniforms, cbuf_size, flags (+0x67448 / +0x67500)
+
+def dbx_shaders(d, label):
+    """DrinkBox's SHADERS container (Guacamelee! STCE and Guacamelee! 2 shaders.dat.nx; verified against Guacamelee! 2 main +0x62ba0 and +0x673f0):
+      'SHADERS\\0' + u8 endian (1 = little-endian)
+      + u32 strtab_len + strtab (NUL-terminated UTF-8 shader source names and entry names)
+      + u32 uniform_count + uniform_count * 127-byte uniform descriptors
+      + u32 data_len + data (16-byte-aligned shader blobs)
+      + u32 shader_count + shader_count * 29-byte entries ending at EOF.
+    Each blob in data is a 20-byte header {u32 code_len, u32 ctl_len, u32 n_uniforms, u32 cbuf_size, u32 flags}, n_uniforms * 127-byte uniform descriptors,
+    the GPU code area (code_len bytes), and the NVN control section (ctl_len bytes, 0x838 here).
+    The engine caches pipelines in a vs_count * ps_count table (main +0x63300), so its shaders are single-stage programs paired through separable_pairs."""
+    where = f'{label} SHADERS'
+    if len(d) < 13 or d[:8] != DBX: red(f'{where}: truncated header')
+    endian, strtab_len = struct.unpack_from('<BI', d, 8)
+    if endian != 1: red(f'{where}: unsupported endian flag {endian}')
+    strtab = span(d, 13, strtab_len, f'{where} string table')
+    pos = 13 + strtab_len
+    uniform_cnt, = field(d, '<I', pos, f'{where} uniform count'); pos += 4
+    uniform_bytes = uniform_cnt * DBX_UNIFORM
+    if uniform_bytes > len(d) - pos:
+        red(f'{where}: {uniform_cnt} uniform records ({uniform_bytes:#x} bytes at {pos:#x}) lie outside the {len(d):#x} bytes there are')
+    pos += uniform_bytes
+    data_len, = field(d, '<I', pos, f'{where} data length'); pos += 4
+    if data_len > len(d) - pos:
+        red(f'{where}: {data_len:#x} bytes of shader data at {pos:#x} lie outside the {len(d):#x} bytes there are')
+    data_start = pos; pos += data_len
+    shader_cnt, = field(d, '<I', pos, f'{where} entry count'); pos += 4
+    table_bytes = shader_cnt * DBX_ENTRY
+    if pos + table_bytes != len(d):
+        red(f'{where}: {shader_cnt} entries ({table_bytes:#x} bytes at {pos:#x}) do not end at file size {len(d):#x}')
+
+    def cstr(off, what):
+        if off >= len(strtab): red(f'{what}: string offset {off:#x} lies outside the {len(strtab):#x}-byte string table')
+        end = strtab.find(0, off)
+        if end < 0: red(f'{what}: unterminated string at {off:#x}')
+        try: text = strtab[off:end].decode('utf-8')
+        except UnicodeDecodeError: red(f'{what}: string at {off:#x} is not UTF-8')
+        if any(ch in text for ch in '\t\r\n'): red(f'{what}: string {text!r} contains a control character that would break the shader map')
+        return text
+
+    entries = []
+    for i in range(shader_cnt):
+        item = f'{where} entry {i}'
+        name_off, entry_off, u_start, u_cnt, d_off, d_sz, kind, _ = struct.unpack_from('<6IBI', d, pos + i * DBX_ENTRY)
+        name, entry = cstr(name_off, f'{item} name'), cstr(entry_off, f'{item} entry')
+        if u_start > uniform_cnt or u_cnt > uniform_cnt - u_start:
+            red(f'{item} ({name}:{entry}): uniform range [{u_start}, {u_start + u_cnt}) lies outside {uniform_cnt} uniforms')
+        if kind not in (0, 1):
+            red(f'{item} ({name}:{entry}): unsupported shader kind {kind}')
+        if d_sz < DBX_BLOB_HEAD or d_off > data_len or d_sz > data_len - d_off:
+            red(f'{item} ({name}:{entry}): blob ({d_sz:#x} bytes at {d_off:#x}) lies outside the {data_len:#x}-byte data section')
+        entries.append((i, name, entry, u_cnt, d_off, d_sz, kind))
+
+    # Validate non-overlapping blobs before copying code or control sections.
+    cursor = 0
+    for _, name, entry, _, d_off, d_sz, _ in sorted(entries, key=lambda e: (e[4], e[5])):
+        if d_off < cursor: red(f'{where} ({name}:{entry}): shader blob at {d_off:#x} overlaps preceding blob ending at {cursor:#x}')
+        cursor = d_off + d_sz
+
+    out = []
+    for i, name, entry, u_cnt, d_off, d_sz, kind in entries:
+        item = f'{where} entry {i} ({name}:{entry})'
+        base = data_start + d_off
+        code_len, nctl, n_uni, _, _ = struct.unpack_from('<5I', d, base)
+        if n_uni != u_cnt:
+            red(f'{item}: blob uniform count {n_uni} does not match entry count {u_cnt}')
+        code_off = DBX_BLOB_HEAD + DBX_UNIFORM * n_uni
+        ctl_off = code_off + code_len
+        if ctl_off + nctl != d_sz:
+            red(f'{item}: blob spans ({code_off:#x} + {code_len:#x} + {nctl:#x}) do not match entry size {d_sz:#x}')
+        code = d[base + code_off:base + ctl_off]
+        ctl = d[base + ctl_off:base + ctl_off + nctl]
+        if ctl[:8] == CTL_MAGIC + b'\xc9\0\0\0': red(f'{item}: unsupported NVN2 control section')
+        if code[:4] != GFX_MAGIC or len(code) < 0x80:
+            red(f'{item}: graphics code area ({len(code):#x} bytes) missing header or truncated SPH')
+        st = sph_stage(code)
+        expected = ('vs', 'ps')[kind]
+        if st != expected:
+            red(f'{item}: code stage {st!r} does not match entry stage {expected!r}')
+        why = check(item, st, ctl, code)
+        if why: red(f'{item}: {why}')
+        out.append((f'{label}#SHDR#{name}:{entry}', st, ctl, code))
+    return out
+
+
 def glslc_stage(ctl, code):
     """A GLSLC output's stage, from its code area's header (graphics: the SPH's stage bits), or compute when the code has no header and the control's thread group (+0x748) is filled"""
     headerless_cs = code[:4] not in (CS_MAGIC, GFX_MAGIC) and len(ctl) >= 0x754 and all(struct.unpack_from('<3I', ctl, 0x748))
@@ -1258,12 +1348,36 @@ _PAKS = {}
 def ue_legacy_shaders(path, rel, names, out):
     """Files of a legacy Unreal pak (ue_legacy_jobs), each decoded block by block with the game's own decoder (DRAGON QUEST XI S: LZ5; zlib blocks, OCTOPATH TRAVELER's, by uepak itself) and scanned for the shader records the engine keeps inline"""
     pk = _PAKS.get(path) or _PAKS.setdefault(path, uepak.Pak(path))
+    dec = ue_legacy_decoded(path, rel)
     for name in names:
-        d = pk.read(name, decode=oodle)
-        normpath = os.path.normpath if pk.version == 4 else posixpath.normpath
+        if dec is not None and pk.files[name]['method'] == 'LZ5':
+            if name not in dec[1]: continue   # decoded on the device and holds no shader record (hle_oodle.c ue_has_shader)
+            o, n = dec[1][name]; dec[0].seek(o); d = dec[0].read(n)
+            if len(d) != n or n != pk.files[name]['raw']: red(f'/{rel}#{name}: the file decoded on the device is cut short ({len(d)} of {pk.files[name]["raw"]} bytes)')
+        else: d = pk.read(name, decode=oodle)
+        # Version 4 labels follow the platform's separators (OCTOPATH TRAVELER's tables were written on Windows); DRAGON QUEST XI S's were written on the Mac, so its paks decoded on the
+        # Android device (dec) keep forward slashes when the porter runs on Windows
+        normpath = os.path.normpath if pk.version == 4 and dec is None else posixpath.normpath
         label = re.sub(r"^(\.\./)+", "", normpath(pk.mount + name))
         if pk.version == 8: out.extend(ue_shaders(d, f'/{rel}#{label}', version=1))
         else: ue_inline_shaders(d, f'/{rel}#{label}', out)
+
+_UEL_DEC = {}
+def ue_legacy_decoded(path, rel):
+    """A legacy Unreal pak's LZ5 files decoded already, on the Android device (the porter's device_ue_legacy; DRAGON QUEST XI S, profile key ue_legacy_decode device): the files that can hold a
+    shader record, in <version dir>/ue_legacy/<rel with / as __>.dec = 'DULD', u64 the pak's size, u32 count, then per file u16 name length, the name (UTF-8), u32 length and the bytes.
+    An LZ5 file not in it holds no shader record. None: no such file (the Mac decodes through the host, oodle). → (open file, {name: (offset, length)})"""
+    if path in _UEL_DEC: return _UEL_DEC[path]
+    ap = os.path.abspath(path); romfs = ap[:len(ap) - len(rel)].rstrip('\/')
+    p = os.path.join(os.path.dirname(romfs), 'ue_legacy', rel.replace('/', '__') + '.dec')
+    if not os.path.isfile(p): _UEL_DEC[path] = None; return None
+    f = open(p, 'rb'); head = f.read(16)
+    if len(head) != 16 or head[:4] != b'DULD' or struct.unpack_from('<Q', head, 4)[0] != os.path.getsize(path): red(f'{p}: not the decoded files of /{rel} (stale: port again)')
+    ent = {}
+    for _ in range(struct.unpack_from('<I', head, 12)[0]):
+        name = f.read(struct.unpack('<H', f.read(2))[0]).decode('utf-8'); n = struct.unpack('<I', f.read(4))[0]
+        ent[name] = (f.tell(), n); f.seek(n, os.SEEK_CUR)
+    _UEL_DEC[path] = (f, ent); return _UEL_DEC[path]
 
 ZLIB_HEAD = re.compile(b'\x78[\x01\x5e\x9c\xda]')
 def ue_inline_shaders(d, label, out):
@@ -1481,6 +1595,7 @@ def scan_blob(d, label, out):
         return
     if d[:4] == b'BAHS': out.extend(bahs_shaders(d, label)); return
     if d[:4] == b'MSHD': out.extend(mshd_shaders(d, label)); return
+    if d[:8] == DBX: out.extend(dbx_shaders(d, label)); return
     if d[:4] == PGDAT and len(d) >= 0x1c and (mem := pgdat_members(d, label)) is not None:   # PlatinumGames
         for nm, m in mem: scan_blob(m, f'{label}/{nm}', out)
         return
@@ -1503,7 +1618,7 @@ def ps_inputs(code):
     """Generic attributes a pixel shader reads: SPH words 6–13 are the input map, 8 bits for each of the 32 attributes (Ryujinx ShaderHeader.ImapTypes), non-zero = read; the translated MSL inputs are exactly user(locn<attribute>)"""
     return {i for i in range(32) if struct.unpack_from('<I', code, 0x30 + 4 * (6 + (i >> 2)))[0] >> ((i & 3) * 8) & 0xff}
 
-SINGLE_STAGE = ('#GLSLC@', '#UE', '#MTSPK@', '#MGFX@', '#NLG', '#PGSO', '#RAW@', '#OCT@')   # sources whose every shader is a program of one stage: GLSLC outputs, Unreal's shader records, MT Framework's shader package (BNSH variations, Unity programs, MSHD and SDF pair theirs);
+SINGLE_STAGE = ('#GLSLC@', '#UE', '#MTSPK@', '#MGFX@', '#NLG', '#PGSO', '#RAW@', '#OCT@', '#SHDR#')   # sources whose every shader is a program of one stage: GLSLC outputs, Unreal's shader records, MT Framework's shader package (BNSH variations, Unity programs, MSHD and SDF pair theirs);
 # MonoGame's effects, whose passes may name no vertex shader and keep the one bound (Celeste: 10 of its 13 effects draw through SpriteBatch's vertex shader, which is in main); Next Level Games'
 # archives (Luigi's Mansion 3 makes 5,317 programs of one stage each at boot); PlatinumGames' shader objects (Bayonetta 3: one stage each, pg_shader); and control sections loose in main
 # (Advance Wars 1+2: Re-Boot Camp's Bink shaders, raw_shaders), which no file pairs
@@ -1894,11 +2009,17 @@ def scan_file(args):
             try: unity_shaders(d, '/' + rel, found, trees if not TREES else dict(TREES))
             except unityfs.NoTree: return rel, {}, set(), 'defer'
         return rel, uniq_keys(found), var_pairs(found), trees
-    d = unzs(path) if head[:4] == ZSTD_MAGIC else open(path, 'rb').read()   # by the magic: Paper Mario: The Thousand-Year Door names its zstd files .zst (8,726, its shaders among them)
+    if head[:4] == ZSTD_MAGIC:   # Paper Mario: The Thousand-Year Door names its zstd files .zst (8,726, its shaders among them)
+        d = unzs(path)
+    else:
+        with open(path, 'rb') as f:
+            d = f.read()
     if head[4:5] == b'\x78' and path.endswith('.gz') and (z := gust_gz(d)) is not None: d = z   # Gust's chunked zlib, before the shader prefilter
     if head[:4] != ZSTD_MAGIC and head[4:8] in (ZSTD_MAGIC, LZ4_FRAME_MAGIC): d = unsized(d, '/' + rel)   # a size-prefixed frame (unsized): Kirby and the Forgotten Land keeps its BNSH in 7,201 .cmp files; read raw, the split found 121 of its 27,297 shaders
     if d[:4] == b'Yaz0': d = yaz0(d)
-    if d[:8] == b'UnityFS\0' or (d[8:11] == b'\0\0\0' and __import__('unityfs').is_serialized(d)):
+    if d[:8] == DBX:   # whole-file DrinkBox SHADERS container (also after decompression)
+        found += dbx_shaders(d, '/' + rel)
+    elif d[:8] == b'UnityFS\0' or (d[8:11] == b'\0\0\0' and __import__('unityfs').is_serialized(d)):
         import unityfs
         try: unity_shaders(d, '/' + rel, found, trees if not TREES else dict(TREES))
         except unityfs.NoTree: return rel, {}, set(), 'defer'
@@ -2039,7 +2160,7 @@ def main():
         with open(os.path.join(pkg, name), 'wb') as f: f.write(b''.join(rr))
     with open(mapout, 'w', encoding='utf-8') as f:
         kinds = ' / '.join(k for k, hit in (('BNSH / BAHS', any('#BNSH@' in r[4] or '#BAHS@' in r[4] for r in rows)), ('Unity Shader', any('#var' in r[4] and '#BNSH@' not in r[4] and '#MSHD#' not in r[4] and '#SDF#' not in r[4] and '#HCPS@' not in r[4] and '#SLCT@' not in r[4] for r in rows)),
-                                            ('MSHD', any('#MSHD#' in r[4] for r in rows)), ('GLSLC', any('#GLSLC@' in r[4] for r in rows)), ('RE Engine SDF', any('#SDF#' in r[4] for r in rows)),
+                                            ('MSHD', any('#MSHD#' in r[4] for r in rows)), ('DrinkBox SHADERS', any('#SHDR#' in r[4] for r in rows)), ('GLSLC', any('#GLSLC@' in r[4] for r in rows)), ('RE Engine SDF', any('#SDF#' in r[4] for r in rows)),
                                             ('MT Framework SPK', any('#MTSPK@' in r[4] for r in rows)), ('MonoGame MGFX', any('#MGFX@' in r[4] for r in rows)),
                                             ('PlatinumGames shader objects', any('#PGSO' in r[4] for r in rows)), ('Monolith SLCT', any('#HCPS@' in r[4] or '#SLCT@' in r[4] for r in rows)),
                                             ('Unreal Engine shader code archives', any('#UE' in r[4] for r in rows)), ('Octane effects', any('#OCT@' in r[4] for r in rows))) if hit)
