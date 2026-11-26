@@ -15,6 +15,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import time
 import tracemalloc
 from types import SimpleNamespace
 import unittest
@@ -50,6 +51,7 @@ class ExportChecks(unittest.TestCase):
         self.behavior = 'ok'; self.reflect = True; self.second_shader = False; self.bad_resource = None
         self.jobs = 1; self.bad_key = None; self.log = io.StringIO(); self.bindings = []
         self.shader_count = 0; self.extra_spv = b''; self.spv_override = None
+        self.zstd = 0
         (self.root / 'pkg').mkdir()
 
     def translate(self, argv, **kwargs):
@@ -84,10 +86,10 @@ class ExportChecks(unittest.TestCase):
             try: numeric[name] = importlib.import_module(name)
             except ModuleNotFoundError: numeric[name] = None
         env = dict(**numeric, collections=collections, cf=cf, os=os, json=json, struct=struct,
-                   tempfile=tempfile, subprocess=subprocess, dmsv=dmsv, Path=Path, re=re,
+                   tempfile=tempfile, subprocess=subprocess, dmsv=dmsv, Path=Path, re=re, time=time,
                    shader_products=products, GAME=game, MAP=str(table), XLATE_DLL='translator.dll',
                    a=SimpleNamespace(pkg=str(self.root/'pkg'), out=str(self.out), capture=None, keys='',
-                                     jobs=self.jobs, dotnet='dotnet', zstd=0, report=str(self.report)),
+                                     jobs=self.jobs, dotnet='dotnet', zstd=self.zstd, report=str(self.report)),
                    STAGES={'vs': 0, 'cs': 5}, kinds_all=collections.Counter(),
                    captured=lambda _: {}, records=lambda _: [b'fixture'],
                    job_for=lambda key, stage, rec, w: ({'key': key, 'attr': {}}, b''),
@@ -217,6 +219,39 @@ void main(){d.smallest=min(d.a.x,d.a.y);d.packed=packHalf2x16(d.a);}
         self.assertEqual(report['failed'], [])
         with dmsv.Bundle(str(self.out)) as b:
             self.assertEqual([(x[0], x[1]) for x in b.entries], [(1, 5)])
+
+    def test_translation_reports_its_progress(self):   # a translation of minutes is not a silence: the count grows line by line
+        self.run_export()
+        lines = self.log.getvalue().splitlines()
+        self.assertIn('progress: translating 1 shaders: 0/1 shaders', lines)
+        self.assertTrue(any(l.startswith('progress: translating 1 shaders: 1/1 shaders (1 of 1 batches,') for l in lines), lines)
+        self.assertTrue(any(l.startswith('translating 1 shaders: 1 batches,') for l in lines), lines)   # the time the pass took
+
+    def test_every_progress_line_means_something_to_the_porter(self):   # the porter reads these lines: a line it cannot read is a lost count
+        sys.path.insert(0, str(ROOT))
+        from porter.pipeline import shader_progress
+        self.shader_count = 2; self.jobs = 2
+        self.run_export()
+        progress = [l for l in self.log.getvalue().splitlines() if l.startswith('progress:')]
+        self.assertTrue(progress, self.log.getvalue())
+        for line in progress:
+            parsed = shader_progress(line)
+            self.assertIsNotNone(parsed, line)
+            self.assertEqual(parsed[2], 2, line)   # the count of the shaders of the pass
+
+    @unittest.skipUnless(dmsv.zstd_mod(), 'no zstd in this Python')
+    def test_compression_reports_its_progress(self):   # the bundle's SPIR-V is compressed after the translation: that wait is not a silence either
+        sys.path.insert(0, str(ROOT))
+        from porter.pipeline import shader_progress
+        self.shader_count = 2; self.zstd = 3
+        self.run_export()
+        lines = [l for l in self.log.getvalue().splitlines() if l.startswith('progress: compressing')]
+        self.assertTrue(lines, self.log.getvalue())
+        for line in lines:
+            parsed = shader_progress(line)
+            self.assertIsNotNone(parsed, line)
+            self.assertEqual(parsed[0], 'compressing 2 shaders'); self.assertEqual(parsed[2], 2)
+        self.assertTrue(any(re.search(r'/2 shaders \(\d+s\)$', l) for l in lines), lines)
 
     def test_export_does_not_retain_all_translated_modules(self):
         # One 256 KiB OpSourceContinued per module: retaining all 64 products
