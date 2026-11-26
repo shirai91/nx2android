@@ -8,6 +8,7 @@
 # extraction. The packed tree lives in <build folder>/android/romfs_zstd/<version>/ (its state in <version>.json beside it), made once and reused (a file is packed again only when its source's size or time changes).
 import concurrent.futures as cf, io, json, os, shutil, struct
 from pathlib import Path
+from porter import rootlink
 
 MAGIC, VERSION, BLOCK = b'NXZR', 1, 1 << 18
 HDR = struct.Struct('<4sIQIIQ')
@@ -90,6 +91,8 @@ def pack_tree(src, dst, jobs=8, progress=None):
             else: tmp.unlink()
         if not packed:
             try: os.link(p, out)
+            except AttributeError:   # Python on Android (Termux) has no os.link
+                if not (rootlink.enabled() and rootlink.su_link(p, out)): shutil.copyfile(p, out)
             except OSError: shutil.copyfile(p, out)
         return rel, {'src': key, 'size': out.stat().st_size, 'packed': packed}, st.st_size
 

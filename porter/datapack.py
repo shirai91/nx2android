@@ -13,6 +13,7 @@
 # Big trees are hard links into the extraction when the volume allows, so the pack takes no extra space; the pack is rebuilt whole when anything in it changes.
 import json, os, shutil, time
 from pathlib import Path
+from porter import rootlink
 
 from porter.upstream import settings_registry
 
@@ -25,6 +26,8 @@ ROMFS = 'RomFS'
 def link_or_copy(src, dst):
     dst.parent.mkdir(parents=True, exist_ok=True)
     try: os.link(src, dst)
+    except AttributeError:   # Python on Android (Termux) has no os.link
+        if not (rootlink.enabled() and rootlink.su_link(src, dst)): shutil.copy2(src, dst)
     except OSError: shutil.copy2(src, dst)
 
 
