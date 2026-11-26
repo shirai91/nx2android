@@ -187,8 +187,13 @@ uint32_t dm_player_npad(int p) { return p <= 0 ? connected_id() : (uint32_t)p; }
 // The players with a controller (bit p = player p + 1, from the front end's dm_pad_players; player 1 always) and the npads the game supports (bit id for No1..No8, bit 8
 // Handheld, bit 9 Other: all of them until SetSupportedNpadIdType, as the hid service starts)
 static _Atomic uint32_t g_players = 1, g_ids_supported = 0x3ff;
+#define PLAYERS_EXACT (1u << 31)
 static uint32_t id_bit(uint32_t id) { return id < DM_PLAYERS ? 1u << id : id == NPAD_HANDHELD ? 1u << 8 : id == 0x10 ? 1u << 9 : 0; }
-static int reported(int p) { return p == 0 || (atomic_load(&g_players) >> p & 1 && atomic_load(&g_ids_supported) & id_bit((uint32_t)p)); }
+static int reported_first(uint32_t m, uint32_t ids) {
+    if (!(m & PLAYERS_EXACT) || (m & 1)) return 1;
+    return !(ids & ((1u << DM_PLAYERS) - 2)) && (m & ((1u << DM_PLAYERS) - 1));
+}
+static int reported(int p) { uint32_t m = atomic_load(&g_players), ids = atomic_load(&g_ids_supported); return p == 0 ? reported_first(m, ids) : (m >> p & 1 && ids & id_bit((uint32_t)p)); }
 // Players with a controller whose npad the game does not support. A one-player game (no npad past No1 supported) gets them as player 1, so any controller plays it; in a game for
 // fewer players than are connected (a fifth controller in a four-player game) they are not used, as on the Switch, where the system does not connect them
 static uint32_t unsupported_players(void) {
@@ -206,7 +211,7 @@ int dm_player_seen_as(int p) {
     return atomic_load(&g_ids_supported) & id_bit((uint32_t)p) ? p : -1;
 }
 static int player_of(uint32_t id) {   // the reported player on npad id; -1 when none
-    if (id == connected_id()) return 0;
+    if (id == connected_id()) return reported(0) ? 0 : -1;
     return id > 0 && id < DM_PLAYERS && reported((int)id) ? (int)id : -1;
 }
 // The style and the player of one npad come from one player_of: a controller that leaves (dm_pad_players, from the front end's thread) or an operation mode change between two
@@ -235,15 +240,25 @@ static void note_merged(void) {   // logs the players whose npad the game does n
         else LOG("hid: player %d's controller is not used: the game supports no npad %d", p + 1, p);
     }
 }
-void dm_pad_players(uint32_t mask) {
-    mask = (mask | 1u) & ((1u << DM_PLAYERS) - 1);
+static void pad_players_set(uint32_t mask, int exact) {
+    mask &= (1u << DM_PLAYERS) - 1;
+    if (exact) mask |= PLAYERS_EXACT; else mask |= 1u;
     uint32_t old = atomic_exchange(&g_players, mask);
+    uint32_t ids = atomic_load(&g_ids_supported);
+    int old0 = reported_first(old, ids), new0 = reported_first(mask, ids);
+    if ((old & 1) && !(mask & 1)) { dm_pad_set_player(0, 0, 0, 0, 0, 0); atomic_store(&g_pad_latch[0], 0); atomic_store(&g_btn, 0); atomic_store(&g_latch, 0); atomic_store(&g_axes, 0); }
+    if (old0 != new0) {
+        if (!new0) { dm_pad_set_player(0, 0, 0, 0, 0, 0); atomic_store(&g_pad_latch[0], 0); atomic_store(&g_btn, 0); atomic_store(&g_latch, 0); atomic_store(&g_axes, 0); }
+        style_changed(connected_id());
+    }
     for (int p = 1; p < DM_PLAYERS; p++) if ((old ^ mask) >> p & 1) {
-        if (!(mask >> p & 1)) dm_pad_set_player(p, 0, 0, 0, 0, 0);   // a controller that went away leaves nothing pressed
+        if (!(mask >> p & 1)) { dm_pad_set_player(p, 0, 0, 0, 0, 0); atomic_store(&g_pad_latch[p], 0); }   // a controller that went away leaves nothing pressed
         if (atomic_load(&g_ids_supported) & id_bit((uint32_t)p)) style_changed((uint32_t)p);
     }
     note_merged();
 }
+void dm_pad_players(uint32_t mask) { pad_players_set(mask, 0); }
+void dm_pad_players_exact(uint32_t mask) { pad_players_set(mask, 1); }
 
 static void fill(NpadState *s, uint32_t id, uint32_t style) {
     memset(s, 0, sizeof *s);
@@ -287,10 +302,11 @@ HLE_FORCE("_ZN2nn3hid14InitializeNpadEv", "connect to the hid service; the host 
 // game ({No1..No4, Handheld}) gets players 1..4, and a fifth controller is not used
 HLE_FORCE("_ZN2nn3hid22SetSupportedNpadIdTypeEPKjm", "supported controller ids; the host records them and reports further players only on supported ids", void, h_hid_SetIds, const uint32_t *ids, uint64_t n) {
     uint32_t m = 0; for (uint64_t i = 0; ids && i < n; i++) m |= id_bit(ids[i]);
-    uint32_t was = 0; for (int p = 1; p < DM_PLAYERS; p++) was |= (uint32_t)reported(p) << p;
+    uint32_t was = 0; for (int p = 0; p < DM_PLAYERS; p++) was |= (uint32_t)reported(p) << p;
     if (atomic_exchange(&g_ids_supported, m) == m) return;
     for (int p = 0; p < DM_PLAYERS; p++) dm_haptics_clear(p);
     LOG("hid supported controller ids %#x (bit n: No n+1, bit 8 Handheld, bit 9 Other)", m);
+    if ((uint32_t)reported(0) != (was & 1)) style_changed(connected_id());
     for (int p = 1; p < DM_PLAYERS; p++) if ((uint32_t)reported(p) != (was >> p & 1)) style_changed((uint32_t)p);
     note_merged();
 }

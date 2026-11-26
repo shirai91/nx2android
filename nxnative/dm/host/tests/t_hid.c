@@ -273,6 +273,37 @@ static void t_one_lookup(void) {
     g_mode = 1; g_mode_flip = 0; dm_pad_set_player(0, 0, 0, 0, 0, 0);
 }
 
+static void t_exact_players(void) {
+    g_mode = 1; ids((uint32_t[]){0, 1, 2, 3, NPAD_HANDHELD}, 5);
+    dm_input_set(DM_BTN_B, 0, 0, 0, 0); dm_pad_set_player(0, DM_BTN_X, 0, 0, 0, 0);
+    dm_pad_players_exact(0);
+    CHECK(h_hid_GetStyle(&(uint32_t){0}) == 0 && h_hid_GetStyle(&(uint32_t){3}) == 0, "all assignment slots can be empty");
+    dm_pad_players_exact(1u << 3); dm_pad_set_player(3, DM_BTN_A, 500, 0, 0, 0);
+    CHECK(h_hid_GetStyle(&(uint32_t){0}) == 0 && buttons_of(3, STYLE_FULLKEY) == DM_BTN_A && lx_of(3) == 500, "only player 4 receives the assigned input");
+    static char ev4;
+    h_hid_BindStyleEv(&(uint32_t){3}, &ev4, 0);
+    int before = g_signals;
+    dm_pad_players_exact(0);
+    CHECK(buttons_of(3, STYLE_FULLKEY) == 0, "removing a player releases its input");
+    CHECK(h_hid_GetStyle(&(uint32_t){3}) == 0 && g_signals == before + 1 && g_signalled == &ev4, "removing the last source signals player 4 disconnected");
+    NpadState disconnected; fill(&disconnected, 3, STYLE_FULLKEY);
+    CHECK(disconnected.attributes == 0, "the disconnected state has no connection attribute");
+    before = g_signals; dm_pad_players_exact(0);
+    CHECK(g_signals == before, "unchanged assignments do not repeat the disconnect event");
+    dm_pad_players(0);
+    CHECK(h_hid_GetStyle(&(uint32_t){0}) == STYLE_FULLKEY, "legacy mode restores player 1");
+    CHECK(buttons_of(0, STYLE_FULLKEY) == 0, "unassigned player cannot replay stale button presses");
+    ids((uint32_t[]){0, NPAD_HANDHELD}, 2);
+    dm_pad_players_exact(1u << 3); dm_pad_set_player(3, DM_BTN_A, 500, 0, 0, 0);
+    CHECK(h_hid_GetStyle(&(uint32_t){0}) == STYLE_FULLKEY && buttons_of(0, STYLE_FULLKEY) == DM_BTN_A, "a one-player game receives an assigned player 4 without player 1");
+    dm_pad_players_exact(0);
+    CHECK(h_hid_GetStyle(&(uint32_t){0}) == 0, "a one-player game disconnects when every assignment is empty");
+    dm_pad_players_exact(1u << 3);
+    ids((uint32_t[]){0, 1, 2, 3, NPAD_HANDHELD}, 5);
+    CHECK(h_hid_GetStyle(&(uint32_t){0}) == 0 && h_hid_GetStyle(&(uint32_t){3}) == STYLE_FULLKEY, "a multiplayer game does not invent player 1");
+    dm_pad_players(0);
+}
+
 int main(void) {
     CHECK(setenv("DM_RUMBLE_LOG", "1", 1) == 0, "enable rumble diagnostics");
     t_slots();
@@ -281,6 +312,7 @@ int main(void) {
     t_rumble_log();
     t_one_lookup();
     t_opmode();
+    t_exact_players();
     printf("hid players: %d checks, %d failed\n", checks, fails);
     return fails != 0;
 }
