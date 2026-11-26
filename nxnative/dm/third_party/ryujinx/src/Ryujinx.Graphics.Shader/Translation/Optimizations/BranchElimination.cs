@@ -7,7 +7,14 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
     {
         public static bool RunPass(BasicBlock block)
         {
-            if (block.HasBranch && IsRedundantBranch((Operation)block.GetLastOp(), Next(block)))
+            // nxnative: a branch to a block that carries a PhiNode is not redundant even when the
+            // fallthrough block holds only an unconditional jump to the same target. Optimizer.PropagateCopy
+            // folds a single-copy fallthrough block (such as the predicated-SYNC tail in NieR:Automata's
+            // Forward+ fragment shaders) into the target's PhiNode, leaving only its Branch; clearing
+            // block.Branch made block fall straight into the fallthrough block's phi copy and
+            // unconditionally overwrite its own incoming value. Ssa.AddPhi keeps all PhiNodes at the
+            // front of a block's Operations, so checking First is sufficient.
+            if (block.HasBranch && block.Branch.Operations.First?.Value is not PhiNode && IsRedundantBranch((Operation)block.GetLastOp(), Next(block)))
             {
                 block.Branch = null;
 
