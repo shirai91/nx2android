@@ -10,6 +10,7 @@
 | Tested with nx2android | `v0.5.0` |
 | Tested build and device | 1.0.0 AYN Odin 2 (Adreno 740, Android 13, Turnip) |
 | App package | `org.nx2a.okamihd` |
+| Vulkan driver | Turnip: the port packs Mesa's Turnip driver when the porter finds it (`vulkan_driver turnip`) |
 
 The profile sets these for you (`android.tsv`); a player changes the pause menu ones in the game, and the env rows in the data pack's `env.txt`:
 
@@ -35,11 +36,11 @@ Read the profile's porting log in the comment header of [`android.tsv`](android.
 
 | Device | GPU | Vulkan driver | Game version | nx2android | Result |
 |---|---|---|---|---|---|
-| AYN Odin 2 (Android 13) | Adreno 740 | Turnip (KIMCHI turnip v26.0.0_R8, Mesa 26.0.0-devel), packed with `--vulkan-driver` | 1.0.0 | `v0.5.0` | plays: the intro, the first area, the Celestial Brush by touch and with the stick (Tachigami Power Slash) |
+| AYN Odin 2 (Android 13) | Adreno 740 | Turnip (KIMCHI turnip v26.0.0_R8, Mesa 26.0.0-devel), packed by default | 1.0.0 | `v0.5.0` | plays: the intro, the first area, the Celestial Brush by touch and with the stick (Tachigami Power Slash) |
 
 ## Options
 
-- `--vulkan-driver`: pack the Turnip driver above. The stock Qualcomm driver is not tested.
+- The profile packs Turnip by default (`vulkan_driver turnip`; tested with KIMCHI turnip v26.0.0_R8). `--vulkan-driver system` keeps the device's own Qualcomm driver, which was not tested.
 - Keep the profile's env rows. Without them the Celestial Brush does not work (see Quirks and known issues).
 
 ## Quirks and known issues

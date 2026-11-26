@@ -4,6 +4,7 @@ status	experimental
 tested	1.0.0 AYN Odin 2 (Adreno 740, Android 13, Turnip)
 package	org.nx2a.okamihd
 orientation	landscape
+vulkan_driver	turnip
 # The Celestial Brush drawn by touch vanished while the finger was still down: the game's touch reader (main 0x747c) keeps a held finger only while more than 8 of
 # the newest GetTouchScreenStates entries hold it, and the host handed back 1 entry. 16 entries repeat the newest state (hle_hid.c touch_states_read)
 env	DM_TOUCH_STATES=16
