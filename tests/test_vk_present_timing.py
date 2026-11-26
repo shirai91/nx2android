@@ -180,6 +180,11 @@ int main(void) {
     for (int i = 1; i <= 8; ++i) present_game_frame(NULL, NULL, 1.0/60, i, 3000000000ull + i * 16666667ull, 0);
     assert(usable_rate == 0 && captures == 4 && captures == followups);
     assert(fabs(window_vote - 1.0/120) < 1e-9);  // no cap: 60 -> 120 when the display permits it
+    // An uncapped 40 fps producer on a 60 Hz display gets twenty midpoints per
+    // second, without publishing a 30 fps cap to the game's pacing thread.
+    platform_refresh = 16666667; captures = followups = histories = 0;
+    for (int i = 1; i <= 44; ++i) present_game_frame(NULL, NULL, 1.0/40, i, 3500000000ull + i * 25000000ull, 0);
+    assert(usable_rate == 0 && captures == 20 && followups == 20 && histories == 20);
     goal = 60;
     captures = followups = histories = 0;
     uint32_t patched_step[2] = {0}; dm_fps_state = (uint8_t *)patched_step;  // a game with its own timing
@@ -223,7 +228,7 @@ int main(void) {
     assert(framegen_output_rate(60, refresh) == 60);
     assert(framegen_output_rate(60, 11111111) == 60);
     assert(framegen_output_rate(60, 20833333) == 48);
-    assert(framegen_output_rate(0, 11111111) == 0);
+    assert(framegen_output_rate(0, 11111111) == 90);
     framegen_cadence budget = {.interval_ns = 25000000};
     assert(framegen_pair_budget(&budget, 60) == 0 && framegen_pair_budget(&budget, 60) == 1);
     // Smoothed input near 30 fps crosses the full-pair threshold in both directions.
@@ -275,8 +280,8 @@ int main(void) {
     assert(cadence.outcome == FG_WARMUP);
 
     cadence = (framegen_cadence){0};
-    for (int i = 0; i < 12; ++i, now += 25000000)
-        assert(framegen_step(&cadence, now, refresh) == 0);  // 80 fps will not fit
+    for (int i = 0; i < 12; ++i, now += refresh)
+        assert(framegen_step(&cadence, now, refresh) == 0);  // no spare refresh at 60 real fps
     cadence = (framegen_cadence){0};
     for (int i = 0; i < 4; ++i, now += 33333333)
         assert(framegen_step(&cadence, now, refresh) == 0);
@@ -288,16 +293,12 @@ int main(void) {
     }
     now += 49200000;
     assert(framegen_step(&cadence, now, refresh) > 0);
-    // Sustained excess input ends the grace period even when close to the display limit.
+    // Sustained input above half the refresh rate can keep a fractional cadence.
     cadence.interval_ns = 31000000;
-    cadence.near_limit = 0;
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < 6; ++i) {
         now += 31000000;
         assert(framegen_step(&cadence, now, refresh) > 0);
     }
-    now += 31000000;
-    assert(framegen_step(&cadence, now, refresh) == 0);
-    assert(cadence.outcome == FG_REFRESH_LIMIT);
     assert(framegen_step(&cadence, now + 33333333, 0) == 0);
     assert(framegen_followup_deadline(1000000000ull, 0.025) == 1025000000ull);
     assert(framegen_followup_deadline(0, 0.025) == 0);

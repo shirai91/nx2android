@@ -1133,7 +1133,6 @@ typedef struct {
     double interval_ns;
     double target_credit;
     unsigned stable;
-    unsigned near_limit;
     unsigned queued_frames;
     enum framegen_outcome outcome;
 } framegen_cadence;
@@ -1154,16 +1153,14 @@ static double framegen_step(framegen_cadence *cadence, uint64_t ready_ns, uint64
     else cadence->interval_ns = elapsed;
 
     double half_ns = cadence->interval_ns * 0.5;
-    if (!refresh_ns || half_ns < refresh_ns * 0.96) {
-        // Keep a locked cadence through up to three slightly fast samples. The presents
-        // still occupy separate refresh slots, so sustained or larger overruns must unlock.
-        int brief = refresh_ns && cadence->stable == 4 && half_ns >= refresh_ns * 0.90 && ++cadence->near_limit <= 3;
-        if (!brief) {
-            cadence->stable = 0;
-            cadence->outcome = refresh_ns ? FG_REFRESH_LIMIT : FG_NO_REFRESH;
-            return 0;
-        }
-    } else cadence->near_limit = 0;
+    // Preserve history when only some intervals have room for a midpoint.
+    // The pair budget below distributes those spare refresh slots across frames.
+    if (!refresh_ns || cadence->interval_ns <= refresh_ns * 1.02) {
+        cadence->stable = 0;
+        cadence->target_credit = 0;
+        cadence->outcome = refresh_ns ? FG_REFRESH_LIMIT : FG_NO_REFRESH;
+        return 0;
+    }
     if (cadence->stable < 4) ++cadence->stable;
     cadence->outcome = cadence->stable == 4 ? FG_PAIR : FG_WARMUP;
     return cadence->stable == 4 ? fmax(half_ns, (double)refresh_ns) / 1e9 : 0;
@@ -1183,9 +1180,9 @@ static double framegen_frame_step(framegen_cadence *cadence, uint64_t ready_ns, 
 }
 
 static int framegen_output_rate(int target, uint64_t refresh_ns) {
-    if (!target || !refresh_ns) return 0;
+    if (!refresh_ns) return 0;
     int refresh_fps = (int)((1000000000ull + refresh_ns / 2) / refresh_ns);
-    return refresh_fps < target ? refresh_fps : target;
+    return target && target < refresh_fps ? target : refresh_fps;
 }
 
 // A pair uses one additional frame. When a game supplies more than half of
@@ -1649,7 +1646,7 @@ static void present_game_frame(vkimg_t *im, const int crop[4], double period, ui
     int eligible = wants_fg && refresh_ns && ticket >= retry_at;
     // A title with a patched frame step manages its own game clock in whole
     // guest vsyncs. Pace the display and interpolate its frames as they arrive.
-    dm_perf_framegen_rate(eligible && !dm_fps_state ? output_fps : 0);
+    dm_perf_framegen_rate(eligible && goal && !dm_fps_state ? output_fps : 0);
     if (ready_ns) {
         double vote = period > 0 ? period : 1.0 / 60;
         static int game_rate = -1; static uint64_t game_rate_at;
@@ -1673,6 +1670,8 @@ static void present_game_frame(vkimg_t *im, const int crop[4], double period, ui
         int budget = framegen_pair_budget(&g_fg_cadence, output_fps);
         if (budget <= 0) {
             mode = budget == 0 ? PRESENT_HISTORY : PRESENT_REAL;
+            // In a refresh-limited mix a history-only real frame occupies one slot.
+            if (budget == 0 && g_fg_cadence.interval_ns < 2.0 * refresh_ns) period = refresh_ns / 1e9;
             outcome = FG_TARGET_LIMIT;
             step = 0;
         }
