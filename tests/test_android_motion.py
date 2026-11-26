@@ -30,6 +30,7 @@ class AndroidMotion(unittest.TestCase):
         shake = csrc.between(hid, '#define SHAKE_HZ', 'void dm_input_set(')
         motion = csrc.between(hid, 'typedef struct { int64_t delta_ns', '// SixAxisSensorHandle:')
         sensor = csrc.between(front, 'static void motion_feed(', 'static void *input_thread(')
+        padfeed = csrc.between(front, 'static void pad_motion_feed(', 'JNIEXPORT void JNICALL Java_org_nx2a_PadMotion_nativeSample')
         harness = r'''
 #include <assert.h>
 #include <math.h>
@@ -41,6 +42,7 @@ class AndroidMotion(unittest.TestCase):
 #include <string.h>
 #include <sys/types.h>
 #include "dm_input.h"
+#include "pad_motion_map.h"
 #define LOG(...) do { if (0) printf(__VA_ARGS__); } while (0)
 static uint64_t clock_ns = 1000000000;
 static uint64_t guest_ns(void) { return clock_ns; }
@@ -83,7 +85,7 @@ static void rotation_poll(int64_t now) { (void)now; }
 static void shake_sensor(int on) { (void)on; }
 static pthread_mutex_t g_slot_mu = PTHREAD_MUTEX_INITIALIZER;   // the per-player state's lock (each controller a player of its own)
 static void pad_publish(int p) { (void)p; atomic_store(&g_pad_btn[0], g_shake_btn); shake_note(); }
-''' + sensor + r'''
+''' + sensor + padfeed + r'''
 // Two sources feed one sensor (hle_hid.c): the device's own and a controller's. The newest owns it, and DM_MOTION_SRC
 // picks instead. Each case starts from an empty ring and a 1 s guest clock, as the test harness begins.
 static void near(float got, float want);
@@ -120,6 +122,24 @@ static void pad_case(const char *mode) {
     six_sample(&s, clock_ns / SIX_PERIOD_NS, 1);
     near(s.gyro[2], 0.5f); near(s.gyro[0], 0);
 }
+// The pad's own frame (pad_motion_map.h): a spec that is a signed permutation is taken, anything else leaves Android's frame as it is, and the raw sample goes through the
+// map before the host's units (rev/s, G with gravity's sign flipped) - the order front_android.c's pad_motion_feed uses
+static void padmap_case(void) {
+    dm_pad_map m = dm_pad_map_identity();
+    const char *spec = getenv("DM_PAD_MOTION_MAP"), *want = getenv("DM_PAD_MOTION_MAP_TAKES");
+    int took = dm_pad_map_parse(spec, &m);
+    if (want && atoi(want) != took) { fprintf(stderr, "spec %s: taken %d, expected %s\n", spec ? spec : "(none)", took, want); exit(1); }
+    // a pad turning 1 rev/s about its own +y, lying so gravity is along its own -y: identity reads that on y, "-y,+x,+z" (a Flydigi Direwolf 4 in Switch mode) on x and
+    // reversed there
+    pad_motion_feed(&m, 7, 0, (float)(2 * M_PI), 0, 0, (float)-ASENSOR_STANDARD_GRAVITY, 0, clock_ns);
+    SixAxisState s;
+    six_sample(&s, clock_ns / SIX_PERIOD_NS, 1);
+    float eg[3] = {0, 1, 0}, ea[3] = {0, 1, 0};
+    if (took) { eg[0] = -1; eg[1] = 0; ea[0] = -1; ea[1] = 0; }
+    near(s.gyro[2], 0); near(s.acc[2], 0);
+    near(s.gyro[0], eg[0]); near(s.gyro[1], eg[1]);
+    near(s.acc[0], ea[0]); near(s.acc[1], ea[1]);
+}
 static void event(int type, uint64_t time, float x, float y, float z) {
     pending = (ASensorEvent){.type = type, .timestamp = time, .vector = {x, y, z}};
     available = 1; assert(on_sensor(0, 0, NULL) == 1 && !available);
@@ -130,7 +150,7 @@ static void near(float got, float want) {
 int main(int argc, char **argv) {
     assert(argc == 5 || argc == 6);
     has_gyro = atoi(argv[1]); g_rot = atoi(argv[2]);
-    if (argc == 6) { pad_case(argv[5]); return 0; }
+    if (argc == 6) { if (!strcmp(argv[5], "padmap")) padmap_case(); else pad_case(argv[5]); return 0; }
     float flick = (float)atof(argv[3]); int manual = atoi(argv[4]);
     shake_start();
     const char *motion_env = getenv("DM_MOTION");
@@ -175,7 +195,7 @@ int main(int argc, char **argv) {
         cls.exe = Path(cls.tmp.name) / 'motion'
         c.write_text(harness, encoding='utf-8')
         result = subprocess.run([cc, '-std=gnu11', '-Wall', '-Wextra', '-Werror',
-                                 '-I' + str(ROOT / 'nxnative/dm/host'), str(c),
+                                 '-I' + str(ROOT / 'nxnative/dm/host'), '-I' + str(ROOT / 'nxnative/dm/android'), str(c),
                                  '-lm', '-pthread', '-o', str(cls.exe)], capture_output=True, text=True)
         if result.returncode:
             raise AssertionError(result.stdout + result.stderr)
@@ -208,6 +228,21 @@ int main(int argc, char **argv) {
 
     def test_phone_only_source(self):
         self.run_pad('phoneonly', 'phone')
+
+    def run_padmap(self, spec, takes):
+        env = dict(os.environ, DM_MOTION='1', DM_SHAKE_G='1.5', DM_MOTION_LOG='0', DM_PAD_MOTION_MAP_TAKES=str(takes))
+        env.pop('DM_PAD_MOTION_MAP', None); env.pop('DM_MOTION_SRC', None); env.pop('DM_MOTION_RAW', None)
+        if spec is not None:
+            env['DM_PAD_MOTION_MAP'] = spec
+        result = subprocess.run([str(self.exe), '1', '0', '0.5', '0', 'padmap'], env=env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, f'{spec!r}: ' + result.stdout + result.stderr)
+
+    def test_pad_axis_map(self):
+        # taken: the measured Flydigi Direwolf 4 spec; refused (identity): empty, a repeated axis, two axes, a fourth token
+        for spec, takes in ((None, 0), ('', 0), ('-y,+x,+z', 1), (' -y, +x, +z', 1),
+                            ('x,x,z', 0), ('-y,+x', 0), ('-y,+x,+z,w', 0)):
+            with self.subTest(spec=spec):
+                self.run_padmap(spec, takes)
 
     def test_directional_flicks_with_real_motion(self):
         for rotation in range(4):
