@@ -20,8 +20,11 @@ uint32_t *spv_one_lane(const uint32_t *w, uint32_t nw, uint32_t ops, uint32_t *o
 int main(int argc, char **argv) {   // harness <in.spv> <ops> <out.spv>: prints "rewritten", "unchanged" or the reason
     (void)argc; FILE *f = fopen(argv[1], "rb"); fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
     uint32_t *w = malloc((size_t)n); if (fread(w, 1, (size_t)n, f) != (size_t)n) return 2; fclose(f);
-    char why[64]; uint32_t no = 0, *o = spv_one_lane(w, (uint32_t)(n / 4), (uint32_t)strtoul(argv[2], NULL, 0), &no, why, sizeof why);
-    if (o) { f = fopen(argv[3], "wb"); fwrite(o, 4, no, f); fclose(f); puts("rewritten"); } else puts(why[0] ? why : "unchanged");
+    char why[512]; size_t cap = argc > 4 ? (size_t)strtoul(argv[4], NULL, 0) : sizeof why;
+    if (cap > sizeof why) return 3;
+    uint32_t no = 0, *o = spv_one_lane(w, (uint32_t)(n / 4), (uint32_t)strtoul(argv[2], NULL, 0), &no, why, cap);
+    if (cap) fprintf(stderr, "%s", why);
+    if (o) { f = fopen(argv[3], "wb"); fwrite(o, 4, no, f); fclose(f); puts("rewritten"); } else puts(cap && why[0] ? why : "unchanged");
     return 0;
 }
 '''
@@ -119,7 +122,7 @@ class OneLane(unittest.TestCase):
             raise unittest.SkipTest('a C compiler is needed for the one-invocation rewrite check')
         cls.tmp = tempfile.TemporaryDirectory(prefix='vk-one-lane-')
         cls.exe = Path(cls.tmp.name) / 'one_lane'
-        (Path(cls.tmp.name) / 'harness.c').write_text(HARNESS)
+        (Path(cls.tmp.name) / 'harness.c').write_text(HARNESS, encoding='utf-8')
         subprocess.run([cc, '-std=gnu11', '-Wall', '-Werror', '-o', str(cls.exe), str(Path(cls.tmp.name) / 'harness.c'), str(SOURCE)], check=True)
         cls.val = os.environ.get('SPIRV_VAL') or shutil.which('spirv-val')
 
@@ -139,6 +142,48 @@ class OneLane(unittest.TestCase):
             return
         r = subprocess.run([self.val, '--target-env', env, '-'], input=struct.pack(f'<{len(words)}I', *words), capture_output=True)
         self.assertEqual(r.returncode, 0, (r.stdout + r.stderr).decode(errors='replace'))
+
+    def report(self, words, cap=512, ops=0):
+        src, dst = Path(self.tmp.name) / 'report.spv', Path(self.tmp.name) / 'report-out.spv'
+        src.write_bytes(struct.pack(f'<{len(words)}I', *words))
+        return subprocess.run([str(self.exe), str(src), hex(ops), str(dst), str(cap)],
+                              capture_output=True, text=True, check=True).stderr
+
+    def test_report_identifies_original_operations_and_builtins(self):
+        # Counts describe instructions in the input, not executions or declarations
+        # of unused capabilities. A second ballot must not be collapsed to one.
+        words, _ = fragment(extra=lambda i: [ins(339, i.v4, i.ballot2, i.c3, i.p)])
+        self.validate(words)
+        report = dict(token.split('=') for token in self.report(words).split())
+        self.assertEqual(report, {'op333': '1', 'op334': '1', 'op335': '1', 'op336': '1',
+                                 'op337': '1', 'op338': '1', 'op339': '2', 'op345': '1',
+                                 'op346': '1', 'op347': '1', 'op366': '1',
+                                 'bi41': '1', 'bi36': '1', 'bi4416': '1', 'bi4420': '1'})
+        _, rewritten = self.run_rewrite(words)
+        self.assertEqual(self.report(rewritten), '')
+
+    def test_report_marks_truncation_without_changing_rewrite(self):
+        words, _ = fragment()
+        _, expected = self.run_rewrite(words)
+        for cap in (0, 1, 4, 24):
+            with self.subTest(cap=cap):
+                report = self.report(words, cap)
+                self.assertLessEqual(len(report), max(0, cap - 1))
+                if cap >= 4:
+                    self.assertTrue(report.endswith('...'), report)
+                else:
+                    self.assertEqual(report, '')
+                actual = (Path(self.tmp.name) / 'report-out.spv').read_bytes()
+                self.assertEqual(actual, struct.pack(f'<{len(expected)}I', *expected))
+
+    def test_report_covers_legacy_ops_and_preserves_refusal(self):
+        i = Ids()
+        words = module(i, [], [ins(4428, i.bool, i.all, i.true), ins(4421, i.v4, i.ballot, i.all), ins(STORE, i.out, i.ballot)],
+                       caps=(1, 4423, 4431), exts=('SPV_KHR_shader_ballot', 'SPV_KHR_subgroup_vote'))
+        self.assertEqual(dict(token.split('=') for token in self.report(words).split()), {'op4428': '1', 'op4421': '1'})
+        self.assertEqual(self.report(words, ops=0xff), '')
+        words, _ = fragment(extra=lambda i: [ins(342, i.uint, i.count, i.c3, 0, i.ballot)])
+        self.assertEqual(self.report(words), 'opcode 342')
 
     def value(self, d, cid):   # a constant's value: an int, a tuple for a composite, True
         x = d[cid]

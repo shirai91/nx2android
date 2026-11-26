@@ -63,6 +63,8 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Glsl.Instructions
             Add(Instruction.ConvertU32ToFP64,         InstType.CallUnary,      "double");
             Add(Instruction.Cosine,                   InstType.CallUnary,      "cos");
             Add(Instruction.Ddx,                      InstType.CallUnary,      "dFdx");
+            Add(Instruction.DdxCoarse,                InstType.CallUnary,      "dFdxCoarse");
+            Add(Instruction.DdyCoarse,                InstType.CallUnary,      "dFdyCoarse");
             Add(Instruction.Ddy,                      InstType.CallUnary,      "dFdy");
             Add(Instruction.Discard,                  InstType.OpNullary,      "discard");
             Add(Instruction.Divide,                   InstType.OpBinary,       "/",               1);

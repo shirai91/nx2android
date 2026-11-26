@@ -40,6 +40,7 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
                 if (context.Stage == ShaderStage.Fragment)
                 {
                     EliminateMultiplyByFragmentCoordW(context.Blocks[blkIndex]);
+                    MatchIndexedQuadDerivatives(context.Blocks[blkIndex]);
                 }
 
                 // If the host does not support double operations, we need to turn them into float operations.
@@ -217,6 +218,39 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
             }
 
             return modified;
+        }
+
+        private static void MatchIndexedQuadDerivatives(BasicBlock block)
+        {
+            // Maxwell also forms coarse derivatives with indexed quad shuffles:
+            // base = shuffle(value, 0, 0x1c03);
+            // delta = swizzleAdd(base, value, 0xd7); // lanes 1/2: value - base
+            // dx/dy = shuffle(delta, 1/2, 0x1c03).
+            // Preserve those neighbor reads on hosts without fragment subgroups.
+            static bool IsConstant(Operand operand, int value) =>
+                operand.Type == OperandType.Constant && operand.Value == value;
+
+            foreach (INode node in block.Operations.ToArray())
+            {
+                if (node is not Operation op || op.Inst != Instruction.Shuffle ||
+                    !IsConstant(op.GetSource(2), 0x1c03)) continue;
+                Operand lane = op.GetSource(1);
+                if (lane.Type != OperandType.Constant || (lane.Value != 1 && lane.Value != 2)) continue;
+                if (op.GetSource(0).AsgOp is not Operation delta || delta.Inst != Instruction.SwizzleAdd ||
+                    !IsConstant(delta.GetSource(2), 0xd7)) continue;
+                if (delta.GetSource(0).AsgOp is not Operation origin || origin.Inst != Instruction.Shuffle ||
+                    !IsConstant(origin.GetSource(1), 0) || !IsConstant(origin.GetSource(2), 0x1c03) ||
+                    origin.GetSource(0) != delta.GetSource(1)) continue;
+
+                LinkedListNode<INode> position = block.Operations.Find(node);
+                block.Operations.AddBefore(position, new Operation(
+                    lane.Value == 1 ? Instruction.DdxCoarse : Instruction.DdyCoarse, op.Dest, delta.GetSource(1)));
+                // Both selected indices are inside the four-lane segment.
+                if (op.DestsCount > 1 && op.GetDest(1) != null)
+                    block.Operations.AddBefore(position, new Operation(Instruction.Copy, op.GetDest(1),
+                        new Operand(OperandType.Constant, -1)));
+                RemoveNode(block, position);
+            }
         }
 
         public static bool MatchDdxOrDdy(Operation operation)

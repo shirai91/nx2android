@@ -64,7 +64,8 @@ extern vkdev_t V;
 extern char g_vk_driver[32];   // the driver in use for the frame rate counter's driver row: "TURNIP 27.0.0", "QCOM 512.676.53" (set at init, gfx_vk_core.c)
 const void *vk_sg_pin(VkShaderStageFlagBits stage, const uint32_t *local);   // DM_VK_SUBGROUP_PIN: a game pipeline stage's pNext, NULL when the driver picks its size (local: a compute shader's workgroup size)
 // gfx_vk_subgroup.c (no Vulkan): the module as subgroups of one invocation when it uses a subgroup class not in ops (its stage's; 0 when the device has none there).
-// NULL when there is nothing the stage lacks (why empty) or it uses something not covered (why names it); the module then stays as it is
+// On success why reports original subgroup opcode / built-in counts. NULL when there is nothing the stage lacks (why empty) or it uses something not covered
+// (why names it); the module then stays as it is. Reports truncated to the caller's buffer end in ... when there is room for the marker.
 uint32_t *spv_one_lane(const uint32_t *w, uint32_t nw, uint32_t ops, uint32_t *onw, char *why, size_t nwhy);
 // gfx_vk_ubo_comp.c (no Vulkan): uniform buffer loads of a vector component at a run-time index as a load of the vector and OpVectorExtractDynamic
 // (DM_VK_UBO_COMPONENT); NULL when there is none

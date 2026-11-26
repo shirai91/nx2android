@@ -339,8 +339,8 @@ static vkshader_t *vk_shader_q(uint64_t key, int stage, int quiet) {
     // Chronicles 3's are rewritten there. DM_VK_SUBGROUP_ONE_LANE=0 (start-up): no module is rewritten, as before, for A/B tests
     static int one_lane = -1; if (one_lane < 0) { const char *e = getenv("DM_VK_SUBGROUP_ONE_LANE"); one_lane = !(e && !atoi(e)); if (!one_lane) VKLOG("subgroups: no one-invocation rewrite (DM_VK_SUBGROUP_ONE_LANE=0)"); }
     if (one_lane) { uint32_t ops = V.sg_stages & stage_flag(stage) ? V.sg_ops : 0; if (stage != 1 && stage != 5 && !V.sg_quad_all) ops &= ~(uint32_t)VK_SUBGROUP_FEATURE_QUAD_BIT;
-      char why[64]; uint32_t n2 = 0, *w2 = spv_one_lane(w, nw, ops, &n2, why, sizeof why);
-      if (w2) { free(w); w = w2; nw = n2; VKLOG("shader %016llx (stage %d): subgroups of one invocation (the device's subgroup operations in this stage: %#x)", (unsigned long long)key, stage, ops); }
+      char why[512]; uint32_t n2 = 0, *w2 = spv_one_lane(w, nw, ops, &n2, why, sizeof why);
+      if (w2) { free(w); w = w2; nw = n2; VKLOG("shader %016llx (stage %d): subgroups of one invocation (the device's subgroup operations in this stage: %#x); original %s", (unsigned long long)key, stage, ops, why); }
       else if (why[0]) VKLOG("[RED] shader %016llx (stage %d) uses subgroup operations the device lacks in this stage (it has %#x), and %s is not covered by the one-invocation rewrite: left as it is", (unsigned long long)key, stage, ops, why); }
     if (stage == 0) { uint32_t n2 = 0, *w2 = spv_vs_init(w, nw, &n2); if (w2) { free(w); w = w2; nw = n2; } }
     // Maxwell's FMNMX returns the operand that is a number when the other is NaN, and its saturate turns NaN into 0 (IEEE minNum / maxNum, as Metal's fmin / fmax).

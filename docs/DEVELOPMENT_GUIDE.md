@@ -84,6 +84,26 @@ python -m porter host --package org.nx2a.supermario3dworld
 
 It refuses when the game's code on the device was rewritten with other rewriter sources than this checkout's; then port the game again from its files. It also refuses a host built from another profile header than this checkout's (another layout, `--alias-headroom` or a derived profile); a header that differs only by defines added later that are off (`ADDED_DEFINES` in `porter/host.py`) is accepted. The data pack is not changed. How it works: [ARCHITECTURE.md](ARCHITECTURE.md#the-port).
 
+### Reporting subgroup fallback rendering problems
+
+A `subgroups of one invocation` shader log entry means the device lacks subgroup
+operations required by that shader stage. Its `original` field lists static
+SPIR-V instruction counts (`op<number>=<count>`) and subgroup BuiltIn decoration
+counts (`bi<number>=<count>`) before the fallback. These are not execution counts.
+For example, `op339` is Ballot, `op345` is Shuffle, `op346` is ShuffleXor,
+`op347`/`op348` are ShuffleUp/ShuffleDown, and `op365`/`op366` are
+QuadBroadcast/QuadSwap. `bi41` is SubgroupLocalInvocationId. A trailing `...`
+means the list was truncated. The report contains no shader operands or binaries.
+
+Include the checkout commit (`git rev-parse HEAD`), game version, device and
+driver version, a screenshot of the affected scene, and the complete startup and
+gameplay log. Keep the game version, scene and settings fixed when comparing
+drivers. The presence of a fallback entry alone does not establish the cause of
+corruption: single-invocation behavior can preserve scalarization patterns, but
+does not reproduce algorithms that require values from neighboring lanes.
+Disabling it can submit unsupported operations to the driver and is not a
+recommended correctness comparison.
+
 ## Layout
 
 - `porter/`: the port pipeline (`python -m porter`).
