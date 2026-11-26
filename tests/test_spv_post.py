@@ -1,4 +1,5 @@
-"""dm/android/tools/spv_post.py: a pixel shader's discards as demotions (game.tsv android_discard demote)."""
+"""dm/android/tools/spv_post.py: a pixel shader's discards as demotions (game.tsv android_discard demote) and a
+profile's patch of one translated shader (the text way, on its spirv-dis text, and the binary way, on its words)."""
 import struct, sys, unittest
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'nxnative/dm/android/tools'))
@@ -36,5 +37,30 @@ class DemoteDiscards(unittest.TestCase):
 class TextPatch(unittest.TestCase):
     def test_missing_tools_refuse(self):
         with self.assertRaises(ValueError): spv_post.text_patch(b'', lambda t: t, None, '.', 'x')
+
+class BinaryPatch(unittest.TestCase):
+    """the binary way: a patch on the SPIR-V words, which needs no spirv-dis, spirv-as and spirv-val"""
+
+    def test_a_module_survives_the_reader_and_the_writer(self):
+        body = CAP_SHADER + ins(19, 1, 32, 0) + ins(59, 2, 1, 7)
+        m = spv_post.Module(mod(body))
+        self.assertEqual([spv_post.spv_opcode(i) for i in m.code], [17, 19, 59])
+        self.assertEqual(m.op(0), 17)
+        self.assertEqual([x[0] for x in ops(m.bytes())], [17, 19, 59])
+
+    def test_a_fresh_id_grows_the_bound(self):
+        m = spv_post.Module(mod(CAP_SHADER)); bound = m.header[3]
+        self.assertEqual(m.ident(), bound); self.assertEqual(m.header[3], bound + 1)
+
+    def test_the_binary_path_needs_no_external_tool(self):
+        @spv_post.binary
+        def patch(m):
+            m.replace(0, [ins(17, 1)]); return m
+        self.assertEqual(spv_post.text_patch(mod(CAP_SHADER), patch, None, '.', 'x'), mod(CAP_SHADER))
+
+    def test_a_patch_that_is_written_for_another_module_raises(self):
+        @spv_post.binary
+        def patch(m): raise ValueError('not the module this patch was written for')
+        with self.assertRaises(ValueError): spv_post.binary_patch(mod(CAP_SHADER), patch)
 
 if __name__ == '__main__': unittest.main()

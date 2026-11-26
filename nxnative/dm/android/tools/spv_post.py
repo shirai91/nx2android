@@ -1,7 +1,18 @@
-# Changes to a translated shader's SPIR-V that a game profile asks for (shader_vk.py applies them before it reads the module's bindings):
-#   demote_discards: game.tsv "android_discard demote", every pixel shader
-#   text_patch: SPIRV = {shader key: function} of the profile's patches.py, one shader, on its spirv-dis text
+"""Changes to a translated shader's SPIR-V that a game profile asks for (shader_vk.py applies them before it reads the module's bindings):
+  demote_discards: game.tsv "android_discard demote", every pixel shader
+  text_patch: SPIRV = {shader key: function} of the profile's patches.py, one shader
+
+Two ways to patch a module:
+  * a text patch (the profile's function takes the lines of the shader's spirv-dis text and returns the lines): it needs spirv-dis, spirv-as and spirv-val
+    (the NDK's shader-tools). Without them the patch cannot run and the shader stays as it was translated.
+  * a binary patch (the profile's function takes a Module, this file's reader of the SPIR-V words, and returns the module): the same patch without any external tool.
+    The profile marks it with @spv_post.binary. The patch raises ValueError when the module is not the one it was written for; the shader then stays as it was
+    translated, with a [RED] line (shader_vk.py).
+"""
 import os, struct, subprocess
+
+from spv_builder import instruction as spv_instruction   # the encoder (the word count in the high 16 bits)
+from spv_module import decode as spv_decode, opcode as spv_opcode   # the decoder (the header, the instructions)
 
 OP_EXTENSION, OP_CAPABILITY, OP_LABEL, OP_SELMERGE, OP_BRANCH, OP_BRCOND, OP_SWITCH, OP_KILL, OP_DEMOTE, CAP_DEMOTE = 10, 17, 248, 247, 249, 250, 251, 252, 5380, 5379
 EXT_DEMOTE = b'SPV_EXT_demote_to_helper_invocation\0'; EXT_DEMOTE += b'\0' * (-len(EXT_DEMOTE) % 4)
@@ -37,10 +48,58 @@ def demote_discards(spv):
     o += w[p:]
     return struct.pack('<%dI' % len(o), *o), len(ins), left
 
+
+# ---- The SPIR-V words: a reader and a writer for the instructions a patch needs, on the decoder and the encoder ----
+# The module's instructions, each as its words (the opcode word first). A patch that works on the words needs no spirv-dis and no spirv-as, so it runs on a
+# phone (the shader stage runs there) and on a build machine alike.
+class Module:
+    """A SPIR-V module as its instructions, read with the decoder (spv_module.decode) and written back with its encoder (spv_builder.instruction)."""
+    def __init__(self, data):
+        self.header, self.code = spv_decode(data)      # the header's words, the instructions' word lists
+        self.header = list(self.header)
+        self.code = [list(x) for x in self.code]       # the instructions as lists, so a patch can edit a word in place
+    def op(self, i): return spv_opcode(self.code[i])
+    def args(self, i): return list(self.code[i][1:])
+    def find(self, op, pred=None):
+        """the indexes of the instructions with the opcode, whose operands the predicate accepts"""
+        return [i for i in range(len(self.code)) if self.op(i) == op and (pred is None or pred(self.args(i)))]
+    def ident(self):
+        """a fresh id (the module's bound grows with it)"""
+        b = self.header[3]; self.header[3] = b + 1; return b
+    def insert(self, i, ins): self.code[i:i] = [list(x) for x in ins]
+    def replace(self, i, ins): self.code[i:i + 1] = [list(x) for x in ins]
+    def bytes(self):
+        out = list(self.header)
+        for ins in self.code: out.extend(ins)
+        data = struct.pack('<%dI' % len(out), *out)
+        # the self-check: the module must decode again, with the instructions it was written with
+        header, code = spv_decode(data)
+        if len(code) != len(self.code): raise ValueError(f'the patched module decodes into {len(code)} instructions, {len(self.code)} expected')
+        return data
+
+def instruction(op, *args): return list(spv_instruction(op, *args))
+
+# The profile marks a binary patch with this decorator, so that one function can be both a text patch and a binary patch.
+def binary(fn):
+    fn.spv_binary = True
+    return fn
+
+def binary_patch(spv, fn):
+    """One shader through the profile's binary patch: the module, the patch (it changes the module and returns it, or returns the bytes), the module's bytes.
+    A patch that raises ValueError (the module is not the one it was written for) leaves the shader as it was translated."""
+    m = Module(spv)
+    out = fn(m)
+    if out is None: out = m
+    if isinstance(out, Module): out = out.bytes()
+    if not isinstance(out, (bytes, bytearray)) or len(out) % 4: raise ValueError('the patch did not return a SPIR-V module')
+    return bytes(out)
+
 def text_patch(spv, fn, tools, work, name):
-    """One shader through its profile's patch: spirv-dis, fn(the text's lines) -> lines, spirv-as with the same ids, spirv-val. tools is the folder of the three
-    programs (the NDK's shader-tools). Raises ValueError with the reason when the patch does not take: fn refuses a text that is not the one it was written for
-    (the translator changed), the tools are missing, or the result does not assemble or validate."""
+    """One shader through its profile's patch. A binary patch (the profile marked it with @spv_post.binary) works on the SPIR-V words and needs no external
+    tool. A text patch (the profile's function takes the lines of the shader's spirv-dis text) needs spirv-dis, spirv-as and spirv-val (the NDK's
+    shader-tools): spirv-dis, fn(the text's lines) -> lines, spirv-as with the same ids, spirv-val. Raises ValueError with the reason when the patch does not
+    take: fn refuses a text that is not the one it was written for (the translator changed), the tools are missing, or the result does not assemble or validate."""
+    if getattr(fn, 'spv_binary', False): return binary_patch(spv, fn)
     exe = '.exe' if os.name == 'nt' else ''; prog = {t: os.path.join(tools or '', f'spirv-{t}{exe}') for t in ('dis', 'as', 'val')}
     if not tools or not all(os.path.isfile(p) for p in prog.values()): raise ValueError(f'no spirv-dis, spirv-as and spirv-val in {tools or "(no --spirv-tools)"}')
     a, t, b = (os.path.join(work, f'{name}.patch.{x}') for x in ('in.spv', 'txt', 'out.spv'))

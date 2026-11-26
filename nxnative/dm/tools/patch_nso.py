@@ -73,6 +73,8 @@ PATCH_FILES = [os.path.join(os.path.dirname(os.path.abspath(__file__)), 'sdk_pat
 EXTRA_PATCH_FILES = [p for p in os.environ.get('DM_PATCHES_EXTRA', '').split(os.pathsep) if p]
 def load_patches():
     tables, where = {'CUTS': {}, 'OBS': {}, 'FRAME_STEP': {}}, {}
+    # A profile's patches.py may import spv_post (the shader tools' module, dm/android/tools) for its SPIR-V patch: every profile's file is loaded here, so that folder is on the path
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '../android/tools'))
     for n, path in enumerate(PATCH_FILES + EXTRA_PATCH_FILES):
         spec = importlib.util.spec_from_file_location(f'patches_{n}', path); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
         extra = path in EXTRA_PATCH_FILES
