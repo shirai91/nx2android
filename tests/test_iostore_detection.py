@@ -77,7 +77,7 @@ class IoStoreDetection(unittest.TestCase):
 
     def test_port_selects_existing_device_decode_and_checks_device_requirement(self):
         container(self.romfs / 'Synthetic')
-        port = SimpleNamespace(game=self.root, g=SimpleNamespace(words=lambda _: ['main']), app_name='Synthetic',
+        port = SimpleNamespace(game=self.root, g=SimpleNamespace(words=lambda _: ['main'], get=lambda k, d=None: d), app_name='Synthetic',
                                tools={}, o=SimpleNamespace(device=None), cfg={}, dirs={'v': self.root}, versions=['v'])
         with self.assertRaisesRegex(BuildError, 'needs adb'):
             Port.check_graphics(port)

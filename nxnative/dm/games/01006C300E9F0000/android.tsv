@@ -1,0 +1,28 @@
+# DRAGON QUEST XI S: Echoes of an Elusive Age – Definitive Edition on Android (Unreal Engine 4.18, NVN; update v262144 = 1.0.4).
+# Experimental: plays from a new game through the prologue into the first field. Tested with Turnip (Mesa Turnip driver v26.0.0 - R8 by KIMCHI, Mesa 26.0.0-devel git-5ac41be677).
+status	experimental
+package	org.nx2a.dragonquestxide
+orientation	landscape
+vulkan_driver	turnip
+readme_image	docs/images/dragon-quest-xi-s.jpg
+readme_tag	v0.5.0
+tested	v262144 AYN Odin 2 (Snapdragon 8 Gen 2, Adreno 740, Android 13, Turnip)
+# 30 fps, the Switch's own rate: in the first field the GPU takes about 58 ms a frame (16 fps) at 60, so 60 is out of reach there. game.tsv's fps_target 60
+# stays for iOS; porter port --fps60 brings 60 back (its DM_FPS_TARGET=60 row comes after this one in env.txt)
+env	DM_FPS_TARGET=30
+# Measured at the Cobblestone Tor autosave (AYN Odin 2, Turnip R8, 30 fps target, 600-frame means from the log). Docked 1080p as ported: GPU busy 63 ms,
+# vkQueueSubmit 50 ms, frame p50 66.7 ms (15 fps).
+# With Turnip a submission that signals a timeline semaphore blocked in vkQueueSubmit for 50 ms a frame; with the fence ring it takes 0.13 ms (as PR #365 found
+# on the same device). No picture change.
+env	DM_VK_X_FENCES=1
+# Turnip's GMEM (tiled) rendering cost more than it saved for this game's many render passes: sysmem rendering took GPU busy 63 -> 53 ms docked, and the
+# screenshot was identical. Other Vulkan drivers ignore the variable.
+env	TU_DEBUG=sysmem
+# Docked 1080p with both rows above still took 53 ms of GPU (frame p50 54 ms, 18 fps), so 30 fps was out of reach. Handheld mode is the game's own
+# lower-resolution output, as on a Switch held in the hands: the same spot took 19 ms of GPU and held 30 fps, and the busiest view of the field took 36 ms
+# (26-27 fps). With the game's own dynamic resolution working (game.tsv gpu_tick_rate) docked holds 30 fps too, at a lower resolution, but handheld stays the
+# default: it draws less, so it runs cooler and drains the battery less. Docked is a pause-menu switch away.
+# Battery at the same spot, 2 minutes each with both rows above and dynamic resolution: handheld 1.21 A (GPU busy 23 ms, frame p50 33.2 ms), docked 1.62 A
+# (GPU busy 29 ms, frame p50 33.4 ms). Capping the GPU clock at 475 or 401 MHz drew the same 1.21-1.24 A in handheld, and GMEM rendering drew 1.20 A with
+# GPU busy 27 ms, so neither is used.
+setting	docked=0

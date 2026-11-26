@@ -246,8 +246,17 @@ static class P {
         }
         return metas;
     }
-    // A multi-program title (an update may add a whole second program, e.g. ROMANCE OF THE THREE KINGDOMS 8 REMAKE's 1.1.3, title ID …0001) lists a Program (and Control) entry per index: take the lowest IdOffset (program 0, the game), as Pick takes the lowest title ID on the ordinary path — the list's order need not start at 0
-    static CnmtContentEntry EntryOf(Cnmt m, LibHac.Ncm.ContentType t) => m?.ContentEntries.Where(c => c.Type == t).OrderBy(c => c.IdOffset).FirstOrDefault();
+    // A multi-program title (an update may add a whole second program, e.g. ROMANCE OF THE THREE KINGDOMS 8 REMAKE's 1.1.3, title ID …0001) lists a Program (and Control) entry per
+    // index: take program 0, the game, as Pick takes the lowest title ID on the ordinary path — the list's order need not start at 0. LibHac 0.19's CnmtContentEntry keeps only Hash,
+    // NcaId, Size and Type, so the CNMT's IdOffset byte that names the index cannot be read through it; the index comes from the content: a program entry's NCA's title ID is the base
+    // title ID + the index, so among a meta's Program entries the lowest NCA title ID is program 0 (a patch meta's program 0 carries the base game's title ID). A meta with one entry
+    // of the type needs no NCA at all
+    static CnmtContentEntry EntryOf(Cnmt m, LibHac.Ncm.ContentType t, List<NcaEntry> ncas) {
+        var cands = m?.ContentEntries.Where(c => c.Type == t).ToArray() ?? Array.Empty<CnmtContentEntry>();
+        if (cands.Length == 0) return null;
+        if (cands.Length == 1) return cands[0];
+        return cands.OrderBy(c => ncas.FirstOrDefault(e => Path.GetFileNameWithoutExtension(e.Name).Equals(Convert.ToHexString(c.NcaId), StringComparison.OrdinalIgnoreCase))?.Nca.Header.TitleId ?? ulong.MaxValue).First();
+    }
 
     // A merged dump ("(1G+1U)"): base game, update and DLC NCAs beside one another in one container. NCA headers cannot pick them: an update's program and control NCAs carry the
     // base game's title ID, so base and update both read …000. The content metas decide: the application CNMT's entries are the base's NCAs, the newest patch CNMT's the update's
@@ -267,13 +276,13 @@ static class P {
             }
         }
         NcaEntry of(byte[] id) => id == null ? null : entries.FirstOrDefault(e => Path.GetFileNameWithoutExtension(e.Name).Equals(Convert.ToHexString(id), StringComparison.OrdinalIgnoreCase));
-        NcaEntry baseProg = of(EntryOf(app, LibHac.Ncm.ContentType.Program)?.NcaId);
+        NcaEntry baseProg = of(EntryOf(app, LibHac.Ncm.ContentType.Program, entries)?.NcaId);
         if (baseProg == null)   // the application's content meta has no program entry (not seen): the lowest title ID's program NCA, as Pick picks
             foreach (var e in entries) if (e.Nca.Header.ContentType == NcaContentType.Program && (baseProg == null || e.Nca.Header.TitleId < baseProg.Nca.Header.TitleId)) baseProg = e;
         if (baseProg == null) throw new Exception("no Program NCA in the merged dump");
-        NcaEntry updProg = patch == null ? null : of(EntryOf(patch, LibHac.Ncm.ContentType.Program)?.NcaId);
+        NcaEntry updProg = patch == null ? null : of(EntryOf(patch, LibHac.Ncm.ContentType.Program, entries)?.NcaId);
         if (patch != null && updProg == null) throw new Exception($"the update's content meta ({patch.TitleId:x16} v{patch.TitleVersion.Version}) lists a program NCA that is not in {Path.GetFileName(path)}");
-        NcaEntry ctrl = of(EntryOf(patch ?? app, LibHac.Ncm.ContentType.Control)?.NcaId);
+        NcaEntry ctrl = of(EntryOf(patch ?? app, LibHac.Ncm.ContentType.Control, entries)?.NcaId);
         return ExtractTitles(baseProg.Nca, updProg?.Nca, ctrl?.Nca, outDir, cmpDir, manifest);
     }
 

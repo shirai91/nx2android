@@ -318,15 +318,17 @@ def ask(prompt, what):   # what: what is missing, for the error message
 
 def run(cmd, log, env=None, cwd=None, on_line=None):
     """Run a subprocess with all its output written to log (the console shows the stage line instead: the shader build alone emits tens of thousands of compiler warnings);
-    stop on a non-zero exit, printing the log's last lines. on_line: called with every output line (build_ipa.sh's own step lines move its stages on)"""
+    stop on a non-zero exit, printing the log's red lines and its last lines. on_line: called with every output line (build_ipa.sh's own step lines move its stages on)"""
     cmd = [str(c) for c in cmd]
     log.parent.mkdir(parents=True, exist_ok=True)
     tail = collections.deque(maxlen=40)
+    reds = collections.deque(maxlen=20)   # the log's red lines: the reason is in one of them, and the tail holds the lines behind it (a pool's children dying). Only the lines that start with the tag count: a traceback quotes the source line it failed on, and the compiler's diagnostics quote C lines that hold a red message
     p = subprocess.Popen(cmd, env=env, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='replace', bufsize=1)
     try:
         with open(log, 'w') as f:
             for line in p.stdout:
                 f.write(line); tail.append(line)
+                if line.startswith('[RED] '): reds.append(line.rstrip('\n'))
                 if on_line:
                     try: on_line(line.rstrip('\n'))
                     except Exception: pass   # progress never stops the build
@@ -337,9 +339,11 @@ def run(cmd, log, env=None, cwd=None, on_line=None):
         p.stdout.close()
     if p.returncode:
         PROG.end(ok=False)
+        if reds: PROG.say(f'---- red lines of {log} ----\n' + '\n'.join(reds))
         PROG.say(f'---- last lines of {log} ----\n' + ''.join(tail).rstrip('\n'))
         tool = Path(cmd[1] if cmd[0] in (sys.executable, 'bash') else cmd[0]).name
-        raise BuildError(f'{tool} exit code {p.returncode} (full output: {log})')
+        last = reds[-1][len('[RED] '):] if reds else ''   # the tag is not repeated here: the porter prints the error as '[RED] {e}'
+        raise BuildError(f'{tool} exit code {p.returncode}' + (f' (last red line: {last})' if reds else '') + f' (full output: {log})')
 
 
 def build_id(nso):

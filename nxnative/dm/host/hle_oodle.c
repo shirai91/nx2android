@@ -9,7 +9,7 @@
 // while they are scanned, about 4.7 GB, so they are never written out). Request: u64 compressed length, u64 decompressed length, the compressed bytes; answer: u64 bytes decoded (0 on failure),
 // then those bytes.
 // Job file: "DMOJ", u32 count, then per record u32 compressed length, u32 raw length and the compressed bytes. Output: "DMOR", u32 count, then per record u32 decoded length
-// (0 = failed; 0xffffffff = left out, no BNSH in it, with DM_OODLE_JOB_BNSH=1) and the decoded bytes.
+// (0 = failed; 0xffffffff = left out, no BNSH in it, with DM_OODLE_JOB_BNSH=1) and the decoded bytes. On Android a "DMOG" job groups the records by file (ue_group_job).
 #include "hle.h"
 #include <unistd.h>
 
@@ -145,13 +145,68 @@ static int64_t dec_run(const void *c, int64_t cl, void *r, int64_t rl, void *scr
 
 static uint32_t rd32(FILE *f) { uint32_t v = 0; if (fread(&v, 4, 1, f) != 1) die("DM_OODLE_JOB: the job file ends early"); return v; }
 
+#ifdef __ANDROID__
+#include <zlib.h>
+// Whether a decoded legacy Unreal package can hold a shader record that shader_split.py ue_inline_shaders takes: "LSLG" anywhere (a record stored as is), or a zlib stream whose i32 length
+// is in front of it and whose first 4 inflated bytes are "LSLG". Wider than the split's test (it inflates the whole stream), so a file left out holds no shader the split finds
+static int ue_has_shader(const uint8_t *d, size_t n) {
+    if (memmem(d, n, "LSLG", 4)) return 1;
+    for (size_t i = 4; i + 2 <= n; i++) {
+        if (d[i] != 0x78 || (d[i + 1] != 0x01 && d[i + 1] != 0x5e && d[i + 1] != 0x9c && d[i + 1] != 0xda)) continue;
+        uint32_t len; memcpy(&len, d + i - 4, 4);
+        if (len < 2 || len > n - i) continue;
+        uint8_t o[4]; z_stream z; memset(&z, 0, sizeof z); if (inflateInit(&z) != Z_OK) die("DM_OODLE_JOB_UE: inflateInit");
+        z.next_in = (Bytef *)(d + i); z.avail_in = len < 4096 ? len : 4096; z.next_out = o; z.avail_out = 4;
+        int r = inflate(&z, Z_SYNC_FLUSH); size_t got = 4 - z.avail_out; inflateEnd(&z);
+        if ((r == Z_OK || r == Z_STREAM_END || r == Z_BUF_ERROR) && got == 4 && !memcmp(o, "LSLG", 4)) return 1;
+    }
+    return 0;
+}
+// DM_OODLE_JOB with a grouped job ("DMOG", the porter's device_ue_legacy; DRAGON QUEST XI S only, profile key ue_legacy_decode device): u32 group count, then per group (one file of a legacy
+// Unreal pak) u32 record count and its blocks as records (u32 compressed, u32 raw, bytes). Out: "DMOR", u32 group count, then per group u32 length (0 = a block failed, 0xffffffff = no shader
+// in the file, ue_has_shader) and the file's decoded bytes. Only the files that can hold a shader come back: the paks decode to 24 GB
+static void ue_group_job(FILE *in, const char *job) {
+    uint32_t ng = rd32(in);
+    char outp[1024]; snprintf(outp, sizeof outp, "%s.out", job);
+    FILE *out = fopen(outp, "wb"); if (!out) die("DM_OODLE_JOB: cannot write %s", outp);
+    uint32_t hdr[2] = {0x524f4d44, ng}; fwrite(hdr, 4, 2, out);
+    size_t scratch_n = 16u << 20, cap = 0, ccap = 0; void *scratch = malloc(scratch_n); uint8_t *file = NULL, *c = NULL;
+    uint32_t bad = 0, kept = 0; uint64_t raw_total = 0, kept_total = 0;
+    for (uint32_t g = 0; g < ng; g++) {
+        uint32_t nr = rd32(in); size_t len = 0; int ok = 1;
+        for (uint32_t i = 0; i < nr; i++) {
+            uint32_t cl = rd32(in), rl = rd32(in);
+            if (cl > ccap) { free(c); ccap = cl; if (!(c = malloc(ccap))) die("DM_OODLE_JOB_UE: input buffer"); }
+            if (len + rl + 64 > cap) { cap = (len + rl + 64) * 2; if (!(file = realloc(file, cap))) die("DM_OODLE_JOB_UE: output buffer"); }
+            if (fread(c, 1, cl, in) != cl) die("DM_OODLE_JOB: group %u record %u ends early", g, i);
+            if (!ok) continue;
+            int64_t got = dec_run(c, cl, file + len, rl, scratch, (int64_t)scratch_n);
+            if (got != (int64_t)rl) { ok = 0; if (bad++ < 8) LOG("[RED] DM_OODLE_JOB: group %u record %u (%u → %u bytes) failed (decoder returned %lld)", g, i, cl, rl, (long long)got); continue; }
+            len += rl;
+        }
+        if (ok && len > 0xfffffffeu) die("DM_OODLE_JOB_UE: group %u decodes to %zu bytes", g, len);
+        raw_total += len;
+        uint32_t ol = !ok ? 0 : ue_has_shader(file, len) ? (uint32_t)len : 0xffffffffu;
+        fwrite(&ol, 4, 1, out);
+        if (ok && ol != 0xffffffffu) { fwrite(file, 1, len, out); kept++; kept_total += len; }
+    }
+    fclose(in); fclose(out); free(scratch); free(file); free(c);
+    LOG("DM_OODLE_JOB: %u files decoded with the game's %s (%u failed, %.1f MB), %u can hold shaders (%.1f MB out) → %s", ng - bad, g_dec.name, bad, raw_total / 1048576.0, kept, kept_total / 1048576.0, outp);
+    fflush(stderr); _exit(bad ? 1 : 0);
+}
+#endif
+
 void dm_oodle_job_maybe(void) {
     const char *job = getenv("DM_OODLE_JOB");
     if (!job || !*job) return;
     dec_find("DM_OODLE_JOB");
     LOG("DM_OODLE_JOB: %s at main+%#llx", g_dec.name, (unsigned long long)g_dec.off);
     FILE *in = fopen(job, "rb"); if (!in) die("DM_OODLE_JOB: cannot open %s", job);
-    if (rd32(in) != 0x4a4f4d44) die("DM_OODLE_JOB: %s is not a job file", job);
+    uint32_t magic = rd32(in);
+#ifdef __ANDROID__
+    if (magic == 0x474f4d44) ue_group_job(in, job);   // "DMOG": a legacy Unreal pak's files (ue_group_job)
+#endif
+    if (magic != 0x4a4f4d44) die("DM_OODLE_JOB: %s is not a job file", job);
     uint32_t n = rd32(in);
     char outp[1024]; snprintf(outp, sizeof outp, "%s.out", job);
     FILE *out = fopen(outp, "wb"); if (!out) die("DM_OODLE_JOB: cannot write %s", outp);

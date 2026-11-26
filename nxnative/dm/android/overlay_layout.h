@@ -58,6 +58,12 @@ int dm_overlay_layout(void);   // front_android.c: 0 the tablet's, 1 the phone's
 // in stick radii, -1..1), and when each control was pressed (0 = not held; for the d-pad, its four directions by DM_BTN_* bit; a stick: while a finger holds it)
 int dm_overlay_visible(void);
 void dm_overlay_knob(int stick, float *dx, float *dy);
+// Stick area (the pause menu's Gamepad tab, settings.txt stick_zone=; issue #589): 0 a stick takes the touches on and around its circle; 1 half screen: a touch
+// that goes down on no control in the left half of the gamepad's window is the left stick's, in the right half the right stick's, centred where it went down
+// (as a touch on the circle is: g_ptr_origin), so no touch of the game's touch screen is left there. dm_overlay_stick_at moves a held stick's centre (b: ov_box,
+// on a W x H window) to that point; 0 when the stick is at its place
+int dm_overlay_stick_zone(void);
+int dm_overlay_stick_at(int stick, float W, float H, float b[4]);
 int64_t dm_overlay_pressed(int ctl, uint64_t bit);   // CLOCK_MONOTONIC ns of the press, 0 = not held
 // the player's own layout (the layout editor; the menu button can also be dragged any time, where it hides nothing of the game's): a control's centre as
 // fractions of the window's width and height and its size factor, per layout, kept in settings.txt. 1 and x, y when the player moved the control, 0 when it
@@ -227,19 +233,29 @@ static inline int fpso_pack(int rows, int pos, int colour, int outline, int size
 static inline int fpso_scale(int base, int size) { return size == FPSO_SMALL ? (base > 1 ? base - 1 : 1) : size == FPSO_LARGE ? base + 1 : size == FPSO_XL ? 2 * base : base; }
 // ---- the pause menu: a panel in the middle of the window: a row of tabs, the open tab's rows, and Resume. Everything is placed in a panel rectangle p
 // (x, y, width, height: the window's for touches, the raster's for drawing), so the touches and the drawing agree ----
-enum { OVM_OVERLAY, OVM_OPACITY, OVM_EDIT, OVM_RUMBLE, OVM_FPS, OVM_MODE, OVM_EXPORT, OVM_IMPORT, OVM_PAD, OVM_AUDIO,
-       OVM_ROW_FPS, OVM_ROW_SOC, OVM_ROW_BAT, OVM_ROW_DRV, OVM_ROW_GRAPH, OVM_POS, OVM_COLOUR, OVM_OUTLINE, OVM_SIZE, OVM_RESUME, OVM_TAB, OVM_N };   // OVM_TAB: the tabs' row;
+enum { OVM_OVERLAY, OVM_OPACITY, OVM_EDIT, OVM_RUMBLE, OVM_FPS, OVM_SR, OVM_SHARP, OVM_MODE, OVM_EXPORT, OVM_IMPORT, OVM_PAD, OVM_AUDIO,
+       OVM_ROW_FPS, OVM_ROW_SOC, OVM_ROW_BAT, OVM_ROW_DRV, OVM_ROW_GRAPH, OVM_POS, OVM_COLOUR, OVM_OUTLINE, OVM_SIZE, OVM_ZONE, OVM_RESUME, OVM_TAB, OVM_N };   // OVM_TAB: the tabs' row;
+            // OVM_ZONE: the sticks' touch area, their circles or half the screen each (dm_overlay_stick_zone);
             // OVM_ROW_*: the counter's rows on or off; OVM_POS .. OVM_SIZE: its corner, colour, outline and size, one value on with each press (fpso_step below);
             // OVM_EDIT: the layout editor; OVM_MODE: handheld (performance) or docked (resolution); OVM_EXPORT, OVM_IMPORT: the save manager (saves_android.c);
+            // OVM_SR: Super resolution (the present pass upscales the game's picture into a larger window); OVM_SHARP: its Sharpness slider (0 to 100 percent by 25);
             // OVM_PAD: a controller's face buttons by their position or by their label (front_android.c pad_labels)
 #define OVM_TABS 4   // (a power of two: ov_menu_item masks the tab)
-#define OVM_PER_TAB 5
-static const int OVM_TAB_ITEMS[OVM_TABS][OVM_PER_TAB] = {{OVM_OVERLAY, OVM_OPACITY, OVM_EDIT, OVM_RUMBLE, OVM_PAD}, {OVM_FPS, OVM_MODE, OVM_EXPORT, OVM_IMPORT, OVM_AUDIO},
-                                                         {OVM_ROW_FPS, OVM_ROW_SOC, OVM_ROW_BAT, OVM_ROW_DRV, OVM_ROW_GRAPH}, {OVM_POS, OVM_COLOUR, OVM_OUTLINE, OVM_SIZE, -1}};
+#define OVM_PER_TAB 7   // (a tab's rows: as many for every tab, the panel keeps its size; Audio output sits with the gamepad's settings)
+static const int OVM_TAB_ITEMS[OVM_TABS][OVM_PER_TAB] = {{OVM_OVERLAY, OVM_OPACITY, OVM_EDIT, OVM_ZONE, OVM_RUMBLE, OVM_PAD, OVM_AUDIO},
+                                                         {OVM_FPS, OVM_SR, OVM_SHARP, OVM_MODE, OVM_EXPORT, OVM_IMPORT, -1},
+                                                         {OVM_ROW_FPS, OVM_ROW_SOC, OVM_ROW_BAT, OVM_ROW_DRV, OVM_ROW_GRAPH, -1, -1},
+                                                         {OVM_POS, OVM_COLOUR, OVM_OUTLINE, OVM_SIZE, -1, -1, -1}};
 static const char *const OVM_TAB_NAMES_EN[OVM_TABS] = {"Gamepad", "Game", "Counter", "Style"};
 static const char *const OVM_TAB_NAMES_ZH[OVM_TABS] = {"手柄", "游戏", "计数", "样式"};
 #define OVM_TAB_NAMES (dm_ui_zh() ? OVM_TAB_NAMES_ZH : OVM_TAB_NAMES_EN)
-#define OVM_ROWS (OVM_PER_TAB + 2)   // the tabs, a tab's rows (as many for every tab: the panel keeps its size), Resume
+#define OVM_ROWS (OVM_PER_TAB + 2)   // logical row capacity: tabs, body actions, Resume
+#define OVM_VISIBLE 5              // fixed-size body viewport; extra items scroll instead of shrinking all text
+#define OVM_VIEW_ROWS (OVM_VISIBLE + 2)
+#define OVM_SCROLL_UNITS 1024      // fixed-point rows for continuous dragging, with no row snapping
+int dm_menu_scroll_position(void);
+static inline float ov_menu_scroll_rows(int position) { return (float)position / OVM_SCROLL_UNITS; }
+static inline uint64_t ov_menu_raster_key(int state, int position) { return state < 0 ? UINT64_MAX : (uint64_t)(uint32_t)state << 32 | (uint32_t)position; }
 static inline int fpso_step(int o, int item) {   // the options after a press on a menu item: a row's bit flips, the others go to their next value (and round)
     int r = fpso_rows(o), p = fpso_pos(o), c = fpso_colour(o), l = fpso_outline(o), z = fpso_size(o);
     switch (item) {
@@ -267,35 +283,80 @@ static inline int ov_menu_item(int tab, int row) {
 #define OV_OPACITY_MIN 20    // the gamepad's opacity, percent (the Opacity slider, settings.txt opacity=)
 #define OV_OPACITY_MAX 80
 // what the menu shows (-1 = closed): bit 0 the gamepad is on, bit 1 rumble is on, bit 2 docked, bit 3 the frame rate shown, bits 4..7 the highlighted row + 1
-// (0 = none), bit 8 the open tab, bits 9..15 the opacity in percent, bit 19 the open tab's second bit (the Counter and Style tabs), bits 29..30 a count of the counter options' changes (dm_fps_opts: the panel
-// shows them), bits 20..23 the last export's outcome (OVX_*), bits 24..27 a count of exports (its name
-// changes with each). Bit 16: the text entry's panel instead (its edit count below); bit 17: the layout editor (OVE_ST_* below); bit 18: the save picker (OVS_ST)
+// (0 = none), bit 8 the open tab's first bit and bit 19 its second (the Counter and Style tabs), bits 9..12 the opacity as steps of 5 from OV_OPACITY_MIN,
+// bits 13..15 the sharpness in 25 percent steps, bit 23 the super resolution is on, bits 20..22 the last export's outcome (OVX_*), bits 24..27 a count of
+// exports (its name changes with each), bit 28 the face buttons by label, bits 29..30 a count of the counter options' changes (dm_fps_opts: the panel shows
+// them); bit 31 is never set (a negative state reads as "no menu", which is how a closed one is named). Bit 16: the text entry's panel instead (its edit
+// count below); bit 17: the layout editor (OVE_ST_* below); bit 18: the save picker (OVS_ST)
 #define OVT_ST 0x10000   // the mode bits of dm_menu_state, one each: OVT_ST the text entry, OVE_ST the layout editor, OVS_ST the save picker (tests/test_menu_bits.py)
 int dm_menu_state(void);
 enum { OVX_IDLE, OVX_BUSY, OVX_DONE, OVX_NOSAVE, OVX_FAILED };   // Export save: the button; copying; the export's name; the game has not saved yet; failed
 int dm_save_note(char *out, int cap);   // front_android.c: the outcome (OVX_*) and the last export's name, or why it failed
-static inline float ov_menu_scale(void) { float s = dm_overlay_scale(), fit = 0.92f / (OVM_ROWS * OV_MENU_ROW + 2 * OV_MENU_PAD); return s < fit ? s : fit; }
+static inline float ov_menu_scale(void) { float s = dm_overlay_scale(), fit = 0.92f / (OVM_VIEW_ROWS * OV_MENU_ROW + 2 * OV_MENU_PAD); return s < fit ? s : fit; }
 static inline void ov_menu_rect(float W, float H, float r[4]) {   // x, y, width, height in window pixels
-    float s = ov_menu_scale(), pw = OV_MENU_W * H * s, ph = (OVM_ROWS * OV_MENU_ROW + 2 * OV_MENU_PAD) * H * s;
+    float s = ov_menu_scale(), pw = OV_MENU_W * H * s, ph = (OVM_VIEW_ROWS * OV_MENU_ROW + 2 * OV_MENU_PAD) * H * s;
     if (pw > W * 0.96f) pw = W * 0.96f;
     r[0] = (W - pw) / 2; r[1] = (H - ph) / 2; r[2] = pw; r[3] = ph;
 }
-static inline void ov_menu_rowrect(const float p[4], int row, float r[4]) {   // row's rectangle in the panel p
-    float u = p[3] / (OVM_ROWS * OV_MENU_ROW + 2 * OV_MENU_PAD);
-    r[0] = p[0] + OV_MENU_PAD * u; r[1] = p[1] + (OV_MENU_PAD + row * OV_MENU_ROW) * u; r[2] = p[2] - 2 * OV_MENU_PAD * u; r[3] = OV_MENU_ROW * u;
+static inline void ov_menu_rowrect(const float p[4], float slot, float r[4]) {
+    float u = p[3] / (OVM_VIEW_ROWS * OV_MENU_ROW + 2 * OV_MENU_PAD);
+    r[0] = p[0] + OV_MENU_PAD * u; r[1] = p[1] + (OV_MENU_PAD + slot * OV_MENU_ROW) * u; r[2] = p[2] - 2 * OV_MENU_PAD * u; r[3] = OV_MENU_ROW * u;
 }
-static inline int ov_menu_row_at(float x, float y, float W, float H) {   // the row under (x, y): 0..OVM_ROWS-1, -1 the panel elsewhere, -2 outside it
+static inline int ov_menu_row_at(float x, float y, float W, float H) {   // the row under (x, y): 0..OVM_VIEW_ROWS-1, -1 the panel elsewhere, -2 outside it
     float r[4]; ov_menu_rect(W, H, r);
     if (x < r[0] || x >= r[0] + r[2] || y < r[1] || y >= r[1] + r[3]) return -2;
     float q[4]; ov_menu_rowrect(r, 0, q); int i = (int)floorf((y - q[1]) / q[3]);
-    return i >= 0 && i < OVM_ROWS ? i : -1;
+    return i >= 0 && i < OVM_VIEW_ROWS ? i : -1;
+}
+static inline int ov_menu_body_count(int tab) {
+    int n = 0; for (int row = 1; row < OVM_ROWS - 1; row++) n += ov_menu_item(tab, row) >= 0; return n;
+}
+static inline int ov_menu_scroll_limit(int tab) { int n = ov_menu_body_count(tab) - OVM_VISIBLE; return n > 0 ? n : 0; }
+static inline int ov_menu_body_row(int tab, int index) {
+    int n = 0; for (int row = 1; row < OVM_ROWS - 1; row++) if (ov_menu_item(tab, row) >= 0 && n++ == index) return row;
+    return -1;
+}
+static inline int ov_menu_body_index(int tab, int row) {
+    int n = 0; for (int r = 1; r < OVM_ROWS - 1; r++) if (ov_menu_item(tab, r) >= 0) { if (r == row) return n; n++; }
+    return -1;
+}
+static inline float ov_menu_scroll_slot(int tab, float offset, int row) {
+    return row == 0 ? 0 : row == OVM_ROWS - 1 ? OVM_VIEW_ROWS - 1 : 1 + ov_menu_body_index(tab, row) - offset;
+}
+static inline int ov_menu_scroll_rowrect(const float p[4], int tab, float offset, int row, float r[4]) {
+    if (ov_menu_item(tab, row) < 0) return 0;
+    float slot = ov_menu_scroll_slot(tab, offset, row); ov_menu_rowrect(p, slot, r);
+    return row == 0 || row == OVM_ROWS - 1 || (slot + 1 > 1 && slot < OVM_VIEW_ROWS - 1);
+}
+static inline int ov_menu_scroll_row_at(float x, float y, float W, float H, int tab, float offset) {
+    float p[4], r[4]; ov_menu_rect(W, H, p);
+    if (x < p[0] || x >= p[0] + p[2] || y < p[1] || y >= p[1] + p[3]) return -2;
+    ov_menu_rowrect(p, 0, r); float slot = (y - r[1]) / r[3];
+    if (slot < 0 || slot >= OVM_VIEW_ROWS) return -1;
+    if (slot < 1) return 0;
+    if (slot >= OVM_VIEW_ROWS - 1) return OVM_ROWS - 1;
+    return ov_menu_body_row(tab, (int)floorf(slot - 1 + offset));
+}
+static inline float ov_menu_scroll_reveal(int tab, float offset, int row) {
+    int n = 0; for (int r = 1; r < OVM_ROWS - 1; r++) if (ov_menu_item(tab, r) >= 0) {
+        if (r == row) { if (n < offset) offset = n; else if (n + 1 > offset + OVM_VISIBLE) offset = n - OVM_VISIBLE + 1; break; } n++;
+    }
+    int limit = ov_menu_scroll_limit(tab); return offset < 0 ? 0 : offset > limit ? limit : offset;
+}
+static inline int ov_menu_scroll_drag(int tab, int start, float delta_rows) {
+    int value = start + (int)lroundf(delta_rows * OVM_SCROLL_UNITS), limit = ov_menu_scroll_limit(tab) * OVM_SCROLL_UNITS;
+    return value < 0 ? 0 : value > limit ? limit : value;
 }
 static inline int ov_menu_tab_at(float x, const float p[4]) { float r[4]; ov_menu_rowrect(p, 0, r); int t = (int)((x - r[0]) / (r[2] / OVM_TABS)); return t < 0 ? 0 : t >= OVM_TABS ? OVM_TABS - 1 : t; }
 // the Opacity slider's track in its row (x, y of its left end's centre line, width): the right part of the row, room for the value after it
-static inline void ov_menu_track(const float p[4], int row, float t[3]) { float r[4]; ov_menu_rowrect(p, row, r); t[0] = r[0] + r[2] * 0.40f; t[1] = r[1] + r[3] / 2; t[2] = r[2] * 0.44f; }
-static inline int ov_menu_track_value(float x, const float p[4], int row) {   // the opacity a finger at x sets, whole 5 percents
+static inline void ov_menu_track(const float p[4], float row, float t[3]) { float r[4]; ov_menu_rowrect(p, row, r); t[0] = r[0] + r[2] * 0.40f; t[1] = r[1] + r[3] / 2; t[2] = r[2] * 0.44f; }
+static inline int ov_menu_track_value(float x, const float p[4], float row) {   // the opacity a finger at x sets, whole 5 percents
     float t[3]; ov_menu_track(p, row, t); float f = (x - t[0]) / t[2]; f = f < 0 ? 0 : f > 1 ? 1 : f;
     return OV_OPACITY_MIN + 5 * (int)lroundf(f * (OV_OPACITY_MAX - OV_OPACITY_MIN) / 5);
+}
+static inline int ov_menu_track_pct(float x, const float p[4], float row) {   // the same track as a percent of its width 0..100 (the Sharpness slider)
+    float t[3]; ov_menu_track(p, row, t); float f = (x - t[0]) / t[2]; f = f < 0 ? 0 : f > 1 ? 1 : f;
+    return (int)lroundf(f * 100.0f);
 }
 
 // ---- the layout editor (front_android.c, from the menu's Edit layout): the game stays held; every control (the menu button too) can be dragged, and
@@ -327,12 +388,12 @@ static inline int ov_ed_button_at(float x, float y, const float p[4], int first,
 }
 
 // ---- the save picker (front_android.c, from the menu's Import save): the pause menu's panel and rows, with what front_android.c puts in each row: the saves in
-// saves/ newest first, OVM_ROWS - 2 to a page (left and right page), then the confirmation, then the note that the game closes. dm_menu_state: bit 18, bits 4..7
+// saves/ newest first, OVM_VIEW_ROWS - 2 to a page (left and right page), then the confirmation, then the note that the game closes. dm_menu_state: bit 18, bits 4..7
 // the highlighted row + 1, bits 20..27 the picker's edit count (a page, a confirmation) ----
 #define OVS_ST 0x40000
 enum { OVS_EMPTY, OVS_TITLE, OVS_ITEM, OVS_NOTE, OVS_BUTTON, OVS_BACK };   // a row: nothing; the title (left) and the page (right); a save (its name, its size);
 typedef struct { int style; char left[80], right[40]; } ov_srow;            // a line of text; a button (the import); Back or Cancel, centred as Resume is
-int dm_save_rows(ov_srow rows[OVM_ROWS]);   // front_android.c: the picker's rows, 0 when it is not open
+int dm_save_rows(ov_srow rows[OVM_VIEW_ROWS]);   // front_android.c: the picker's rows, 0 when it is not open
 
 // ---- the text entry's keyboard (front_android.c front_text_input, drawn by gfx_vk_present.c ov_text_panel), in the pause menu's panel rectangle ----
 // Four rows of ten character keys and a row of four wide ones; p is the panel's rectangle (x, y, width, height: the window's for touches, the raster's for drawing).

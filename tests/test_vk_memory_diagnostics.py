@@ -70,6 +70,8 @@ int main(void) {
         src = (Path(__file__).resolve().parents[1] / 'nxnative/dm/android/gfx_vk_core.c').read_text(encoding='utf-8')
         helpers = csrc.between(src, '// DM_VK_MEM_DIAG', '\nuint32_t vk_mem_type')
         start = src.index('typedef struct { const uint64_t *r; int n; } zcin_t;')   # zc_next_in, zc_fill, zc_place, zc_anon_fill, zc_unplace, pool_zero_copy
+        # pool_zero_copy() now calls ahb_fd(), which sits above this range: copy it in too, or the harness sees an implicit declaration (and its mocks look unused)
+        ahb = src[src.rindex('// Extract the mappable dma-buf fd', 0, start):src.index('\n}\n', src.index('static int ahb_fd(')) + 3]
         function = src[start:src.index('\n}\n', src.index('static int pool_zero_copy(')) + 3]
         harness = r'''
 #define _GNU_SOURCE
@@ -118,13 +120,17 @@ static int nvn_dirty_swap(void *mem, size_t len, int (*fill)(void *at, size_t n,
 }
 static char last[1024];
 static uint8_t temporary[64];
+static uint8_t probe_page[4096];   // ahb_fd maps one page of each candidate fd to see which of them maps
 static uint64_t clock_ns;
 static int mock_clock(clockid_t id, struct timespec *t) {
     (void)id; clock_ns += 1000000; t->tv_sec = clock_ns / 1000000000; t->tv_nsec = clock_ns % 1000000000; return 0;
 }
 #define clock_gettime mock_clock
 static void log_message(const char *fmt, ...) {
-    va_list a; va_start(a, fmt); vsnprintf(last, sizeof last, fmt, a); va_end(a); messages++;
+    char buf[1024]; va_list a; va_start(a, fmt); vsnprintf(buf, sizeof buf, fmt, a); va_end(a);
+    // Only the diagnostic messages are counted; ahb_fd's one-time "hardware buffer handle (n fds): selected fd[i]" line is not one of them
+    if (!strncmp(buf, "[memdiag]", 9)) messages++;
+    snprintf(last, sizeof last, "%s", buf);
 }
 #define VKLOG(...) log_message(__VA_ARGS__)
 static void nvn_dirty_stats(uint64_t *f, uint64_t *p) { *f = 7; *p = 3; }
@@ -149,12 +155,14 @@ static uint8_t anon_pages[64];
 static void *mock_mmap(void *addr, size_t n, int prot, int flags, int fd, off_t off) {
     if (flags & MAP_ANONYMOUS) {   // copy_back (fixed, over the pool) or zc_anon_fill (new pages)
         assert(fd == -1 && n <= 64 && prot == (PROT_READ | PROT_WRITE) && (flags & MAP_PRIVATE)); anon++; return addr ? addr : anon_pages; }
+    if (n == 4096) {   // ahb_fd probing a candidate fd: one page, never kept
+        assert(!addr && fd == 12 && prot == (PROT_READ | PROT_WRITE) && flags == MAP_SHARED && off == 0); return probe_page; }
     assert(n == 64 && prot == (addr ? fixed_prot : PROT_READ | PROT_WRITE) && fd == 12 && off == 0);
     if (failure == (addr ? 6 : 5)) { errno = EACCES; return MAP_FAILED; }
     assert(flags == (addr ? MAP_SHARED | MAP_FIXED : MAP_SHARED)); return addr ? addr : temporary;
 }
 #define mmap mock_mmap
-static int mock_munmap(void *p, size_t n) { assert(p == temporary && n == 64); return 0; }
+static int mock_munmap(void *p, size_t n) { assert((p == temporary && n == 64) || (p == probe_page && n == 4096)); return 0; }
 #define munmap mock_munmap
 static int mock_mprotect(void *p, size_t n, int prot) { assert(p == anon_pages && n <= 64 && prot == PROT_READ); return 0; }
 #define mprotect mock_mprotect
@@ -252,7 +260,7 @@ int main(void) {
     assert(strstr(last,"mean total 14.00 ms, invalidate 6.40 ms (45.7%, 1.60 MiB), 5 submissions"));
     return 0;
 }
-'''.replace('HELPERS', helpers).replace('FUNCTION', function)
+'''.replace('HELPERS', helpers + '\n' + ahb).replace('FUNCTION', function)
         with tempfile.TemporaryDirectory(prefix='nx2a-memdiag-test-') as tmp:
             c, exe = Path(tmp) / 'check.c', Path(tmp) / 'check'
             c.write_text(harness)

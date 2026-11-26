@@ -93,10 +93,14 @@ int main(void) {
     assert(ov_drag_pos(1100, 600, 1013, 50) == 506.5f);
     assert(ov_drag_pos(1100, 505, 1013, 50) == 508);
 
-    assert(ov_menu_item(0, OVM_ROWS - 2) == OVM_PAD && ov_menu_item(1, OVM_ROWS - 2) == -1);
-    assert(ov_menu_item(1, OVM_ROWS - 1) == OVM_RESUME);
+    // Seven rows a tab: the gamepad's settings (Stick area after Edit layout) then the audio picker (a device may not offer it), the Game tab the picture's
+    assert(ov_menu_item(0, OVM_ROWS - 1) == OVM_RESUME);
+    assert(ov_menu_item(1, 1) == OVM_FPS && ov_menu_item(1, 2) == OVM_SR && ov_menu_item(1, 3) == OVM_SHARP && ov_menu_item(1, 6) == OVM_IMPORT && ov_menu_item(1, OVM_ROWS - 2) == -1);
+    assert(ov_menu_item(0, 3) == OVM_EDIT && ov_menu_item(0, 4) == OVM_ZONE && ov_menu_item(0, 5) == OVM_RUMBLE);
+    audio_available = 0;
+    assert(ov_menu_item(0, OVM_ROWS - 2) == -1);
     audio_available = 1;
-    assert(ov_menu_item(1, OVM_ROWS - 2) == OVM_AUDIO);
+assert(ov_menu_item(0, OVM_ROWS - 2) == OVM_AUDIO && ov_menu_item(0, OVM_ROWS - 3) == OVM_PAD);
     ui_zh = 0;
     assert(!strcmp(OVM_TAB_NAMES[0], "Gamepad") && !strcmp(OVM_TAB_NAMES[1], "Game") && !strcmp(OVM_TAB_NAMES[2], "Counter") && !strcmp(OVM_TAB_NAMES[3], "Style"));
     assert(!strcmp(FPSO_POS_NAMES[0], "Top left") && !strcmp(FPSO_SIZE_NAMES[3], "Extra large"));
@@ -110,7 +114,7 @@ int main(void) {
     for (unsigned s = 0; s < sizeof screens / sizeof screens[0]; s++) {
         float W = screens[s][0], H = screens[s][1], step = H / OVE_GRID_ROWS, p[4];
         ov_menu_rect(W, H, p);
-        for (int row = 0; row < OVM_ROWS; row++) {
+        for (int row = 0; row < OVM_VIEW_ROWS; row++) {
             float r[4]; ov_menu_rowrect(p, row, r);
             assert(ov_menu_row_at(r[0] + r[2] / 2, r[1] + r[3] / 2, W, H) == row);
         }

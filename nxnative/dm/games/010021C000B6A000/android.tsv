@@ -1,0 +1,13 @@
+# The Binding of Isaac: Afterbirth+ on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# Custom NVN engine on SDK 13.3.5, update v524288 (1.7.9b) with Repentance DLC (010021C000B6B001).
+# main is a thin launcher that loads Repentance.nro via nn::ro and compiles 43 GLSL shaders at boot through subsdk0
+# (GLSLC API 17.22, GPU code 1.16), captured on device by porter device_glslc with DM_AOC_DIR mounted; all 43 translate to Vulkan SPIR-V.
+# Tested 2026-11-24 on OnePlus 11 CPH2449 (Snapdragon 8 Gen 2, Adreno 740, Android 15) with Qualcomm driver 512.676.71:
+# intro, title, file select, Repentance gameplay, saving and audio (0 underruns across 28,000 callbacks); steady 60 fps
+# (p50 16.70 ms, GPU 3.26-4.10 ms, 711-715 MiB footprint, 0 [RED] lines across 8,288 frames).
+status	playable
+tested	v524288 OnePlus 11 CPH2449 (Snapdragon 8 Gen 2, Adreno 740, Android 15)
+package	org.nx2a.bindingofisaac
+orientation	landscape
+readme_image	docs/images/binding-of-isaac-afterbirth-plus.jpg
+readme_tag	v0.5.0

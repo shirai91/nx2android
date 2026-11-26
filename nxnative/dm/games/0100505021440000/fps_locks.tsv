@@ -1,0 +1,9 @@
+# Engine frame limits kept in game memory that the host raises to the frame-rate target (nxnative/dm/host/hle_fpslock.c; dm/games/game.py puts these rows in the
+# profile header as DM_GAME_FPS_LOCKS). Each row runs only on its main build. ptr_off: a pointer at main + ptr_off to the object holding the field (0: the field is at
+# main + field); kind: FPS_F32, VSYNCS_I32, MS_F32, SEC_F32, FPS_I32; copies: consecutive copies of the value; ptr2: a second pointer at that object + ptr2 (0 = none).
+#	build	what	ptr_off	field	kind	copies	ptr2
+# DRAGON QUEST VII Reimagined 1.1.0: Unreal Engine 4.27's t.MaxFPS and rhi.SyncInterval, the same TAutoConsoleVariable layout as the JP/WW 1.2.0 build: the static object holds at
+# +0x10 the pointer to its value (the game thread's copy, then the render thread's). The game's config sets FrameRateLimit=30 and rhi.syncinterval=2. Found from the code that reads
+# them: main+0x27fd2c reads one of the two floats at [main+0x7f41918], main+0x313e3c one of the two ints at [main+0x7dedf48]
+ab06020960edd8285b7ff5fad2e3224b	Unreal t.MaxFPS	0x7f41918	0x0	FPS_F32	2	0
+ab06020960edd8285b7ff5fad2e3224b	Unreal rhi.SyncInterval	0x7dedf48	0x0	VSYNCS_I32	2	0

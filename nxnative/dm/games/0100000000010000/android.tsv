@@ -42,7 +42,11 @@
 # Cap / power-saving / Turnip: F 35.48 -> 23.62-23.66; G 30.91 -> 20.22-20.28.
 # Cap / power-saving / stock:  F 48.13 -> 33.37-33.53; G 38.38 -> 25.04-25.05.
 # Reviewer TB322FC (Adreno 830), stock 512.800.72, Cap: 60 fps either way, GPU p50 7.8 -> 9.0 ms; gains are device/scene dependent.
-# The isolated rerun checked still views; its Metro stock-driver moving-camera LRZ recording remains pending. These are historical results, not a retest of this main merge.
+# The isolated rerun above checked still views; those timings remain historical.
+# Moving-camera check 2026-11-26: main 2b6c4ee + #317 only, fresh host/modules/all 27,996 shaders; original graphics resources, docked.
+# TB321FU / Adreno 750, stock Qualcomm 512.762.40 (Vulkan 1.3.128), split256/depth1: ~30 s in Metro near ground, walls and taxis, turning the camera.
+# The player reported no LRZ blocks, nearby flicker/disappearance or one-frame dark lights; recording samples/temporal-spike triplets showed no obvious instance.
+# Same process, no device loss and no new [RED] lines during the recording. This is bounded rendering qualification, not a new performance A/B or Adreno 830 result.
 # DM_VK_PASS_SPLIT=256 splits passes without depth after 256 draws; DM_VK_PASS_SPLIT_DEPTH=1 includes depth passes.
 # DM_VK_PASS_SPLIT_DEPTH=0 keeps depth passes whole (Adreno LRZ A/B); DM_VK_PASS_SPLIT=0 disables both kinds of split.
 status	playable
