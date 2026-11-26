@@ -450,7 +450,7 @@ static VkExtent2D mip_extent(VkExtent2D size, unsigned level) {
 static void create_graph_images(lsfg_graph *graph) {
     fg.input[0] = graph_image(graph, fg.size, work_format, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
     fg.input[1] = graph_image(graph, fg.size, work_format, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
-    fg.output = graph_image(graph, fg.size, work_format, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
+    fg.output = graph_image(graph, fg.size, work_format, work_usage | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
     graph->flow = mip_extent(fg.size, 1);
     for (unsigned i = 0; i < LEVELS; ++i) {
         VkExtent2D mip = mip_extent(graph->flow, i), half = div_up(mip, 2), quarter = div_up(half, 2);
@@ -696,7 +696,7 @@ static void initialize_images(VkCommandBuffer cb) {
                          0, 0, NULL, 0, NULL, fg.images_used, barriers);
 }
 
-VkImage vk_lsfg_record(VkCommandBuffer cb, VkImage source, int interpolate) {
+VkImage vk_lsfg_record(VkCommandBuffer cb, VkImage source, int interpolate, VkImageView *midpoint_view) {
     if (!fg.initialized) initialize_images(cb);
     VkImageBlit copy = {
         .srcSubresource = color_layers, .srcOffsets = {fg.offsets[0], fg.offsets[1]},
@@ -717,9 +717,10 @@ VkImage vk_lsfg_record(VkCommandBuffer cb, VkImage source, int interpolate) {
     }
     if (!interpolate) return VK_NULL_HANDLE;
     VkMemoryBarrier barrier = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER, .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
-                               .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT};
-    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                               .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_SHADER_READ_BIT};
+    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                          0, 1, &barrier, 0, NULL, 0, NULL);
+    *midpoint_view = fg.output->view;
     return fg.output->image;
 }
 

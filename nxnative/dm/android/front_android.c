@@ -272,7 +272,7 @@ static void on_resume(ANativeActivity *a) { if (g_quit) { act_finish(a); return;
 static void on_destroy(ANativeActivity *a) { (void)a; dm_perf_gpu_release(); _exit(0); }   // one game per process
 
 // ---- input ----
-static AInputQueue *g_queue; static ALooper *g_ilooper;
+static AInputQueue *g_queue; static _Atomic(ALooper *) g_ilooper;
 // Java's dialog has its own input channel; hand its events to the normal input thread.
 typedef struct ext_touch { const AInputEvent *event; struct ext_touch *next; unsigned epoch; } ext_touch;
 static pthread_mutex_t g_ext_touch_mu = PTHREAD_MUTEX_INITIALIZER;
@@ -1414,7 +1414,18 @@ static void shake_sensor(int on) {
 }
 static JNIEnv *g_ienv; static jobject g_display; static jmethodID g_mRotation, g_mRefreshRate;   // the input thread's JNI: Display rotation and refresh
 static _Atomic uint64_t g_display_refresh_ns;
-uint64_t dm_display_refresh_ns(void) { return atomic_load(&g_display_refresh_ns); }
+static _Atomic int g_refresh_requested;
+uint64_t dm_display_refresh_ns(void) {
+    // Serialized by the presenter. Only active frame generation without a driver clock asks.
+    static int64_t next;
+    int64_t now = mono_ns();
+    ALooper *looper = atomic_load(&g_ilooper);
+    if (looper && now >= next) {
+        next = now + 250000000;
+        if (!atomic_exchange(&g_refresh_requested, 1)) ALooper_wake(looper);
+    }
+    return atomic_load(&g_display_refresh_ns);
+}
 static int g_rot;   // the display's rotation, Surface.ROTATION_0..270 = 0..3
 static void rotation_start(void) {
     JavaVM *vm = g_act ? g_act->vm : NULL; JNIEnv *E;
@@ -1427,14 +1438,18 @@ static void rotation_start(void) {
     g_display = (*E)->NewGlobalRef(E, d); g_ienv = E;
     g_mRefreshRate = (*E)->GetMethodID(E, cD, "getRefreshRate", "()F"); jx(E);
 }
+static void display_refresh_sample(void) {
+    uint64_t period = 0;
+    if (g_display && g_mRefreshRate) {
+        float hz = (*g_ienv)->CallFloatMethod(g_ienv, g_display, g_mRefreshRate);
+        if (!jx(g_ienv) && hz >= 20 && hz <= 1000) period = (uint64_t)(1e9 / hz);
+    }
+    atomic_store(&g_display_refresh_ns, period);
+}
 static void rotation_poll(int64_t now) {
     static int64_t next; static int first = 1;
     if (!g_display || now < next) return;
     next = now + 250000000;
-    if (g_mRefreshRate) {
-        float hz = (*g_ienv)->CallFloatMethod(g_ienv, g_display, g_mRefreshRate);
-        if (!jx(g_ienv) && hz >= 20 && hz <= 1000) atomic_store(&g_display_refresh_ns, (uint64_t)(1e9 / hz));
-    }
     int r = (*g_ienv)->CallIntMethod(g_ienv, g_display, g_mRotation); if (jx(g_ienv)) return;
     if ((r & 3) != g_rot || first) LOG("front end: display rotation %d degrees: motion axes follow it", (r & 3) * 90);
     g_rot = r & 3; first = 0;
@@ -1520,8 +1535,8 @@ static void *input_thread(void *a) {
     shake_start();
     uint64_t prev = 0, latched = 0, sample = 0; int64_t since = 0;
     for (;;) {
-        ALooper_pollOnce(latched ? 10 : 250, NULL, NULL, NULL);
-        rotation_poll(mono_ns());
+        ALooper_pollOnce(latched ? 10 : -1, NULL, NULL, NULL);
+        if (atomic_exchange(&g_refresh_requested, 0)) display_refresh_sample();
         ext_touch_drain();
         if (!dm_external_active()) { prev = latched = 0; atomic_store(&g_ext_presses, 0); atomic_store(&g_ext_touch_enabled, 0); continue; }
         if (atomic_load(&g_ext_touch_enabled)) continue;

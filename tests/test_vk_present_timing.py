@@ -14,6 +14,61 @@ SOURCE = Path(__file__).resolve().parents[1] / 'nxnative/dm/android/gfx_vk_prese
 
 
 class PresentTiming(unittest.TestCase):
+    def test_sgsr_on_alternating_presents(self):
+        src = SOURCE.read_text(encoding='utf-8')
+        # Use the presenter's actual source selection, SGSR decision, log and shader constants.
+        harness = r'''
+#include <assert.h>
+#include <stdint.h>
+typedef int VkImage, VkImageView;
+typedef struct { int x, y, z; } VkOffset3D;
+typedef struct { unsigned w, h; int samples, layers, d, img; } vkimg_t;
+static struct { int has_dynrender; } V = {1};
+static struct { unsigned width, height; } g_sext = {800, 400};
+static int logs, sharpness = 50, selected;
+#define VKLOG(...) (++logs)
+#define VK_NULL_HANDLE 0
+static int sr_on(void) { return 1; }
+static int sr_sharp(void) { return sharpness; }
+static int sr_ready(unsigned slot, vkimg_t *im, VkImageView midpoint) {
+    (void)slot; selected = midpoint ? midpoint : im->img; return 1;
+}
+static VkImage vk_lsfg_record(int cb, VkImage source, int generated, VkImageView *view) {
+    (void)cb; assert(source == 1);
+    if (generated) *view = 2;
+    return generated ? 3 : 0;
+}
+''' + csrc.between(src, 'typedef struct { float vp[4]', 'static int sr_on(') + r'''
+static void present(int generated, int bottom_up) {
+    vkimg_t image = {640, 400, 1, 1, 1, 1}, *im = &image;
+    int cx = 32, cy = 40, cw = 400, ch = 200, dw = 800, dh = 400, dx = 0, dy = 0;
+    VkOffset3D offsets[2] = {{cx, bottom_up ? cy + ch : cy, 0}, {cx+cw, bottom_up ? cy : cy+ch, 1}};
+    int capture = generated, cb = 0, k = 0, ticket = 1; double period = 1.0/30;
+''' + csrc.between(src, '    VkImage source = im->img;', '    double s = fmin(') + csrc.between(
+            src, '    int sr = ', '    VkImageLayout lay;') + r'''
+    assert(sr && selected == (generated ? 2 : 1));
+    assert(source == (generated ? 3 : 1)); (void)period; (void)ticket;
+''' + csrc.between(src, '        float src_w = generated', '        vkCmdBindPipeline(') + r'''
+    assert(pc.vp[2] == (generated ? cw : 640) && pc.vp[3] == (generated ? ch : 400));
+    assert(pc.vp[0] == 1.f / pc.vp[2] && pc.vp[1] == 1.f / pc.vp[3]);
+    assert(pc.uv[0] == (generated ? 0 : cx / 640.f) && pc.uv[1] == (generated ? 0 : cy / 400.f));
+    assert(pc.uv[2] == (generated ? 1 : (cx+cw) / 640.f) && pc.uv[3] == (generated ? 1 : (cy+ch) / 400.f));
+    assert(pc.flip == (!generated && bottom_up) && pc.sharp == sharpness / 100.f);
+}
+int main(void) {
+    for (int i = 0; i < 16; ++i) present(i % 2, (i / 2) % 2);
+    assert(logs == 1);
+    sharpness = 75; present(1, 1); present(0, 1); assert(logs == 2);
+}
+'''
+        cc = shutil.which('cc') or shutil.which('clang')
+        if not cc: self.skipTest('a C compiler is required')
+        with tempfile.TemporaryDirectory() as tmp:
+            c, exe = Path(tmp) / 'check.c', Path(tmp) / 'check'
+            c.write_text(harness, encoding='utf-8')
+            subprocess.run([cc, '-std=c11', str(c), '-o', str(exe)], check=True)
+            subprocess.run([str(exe)], check=True)
+
     def test_frame_pairs_without_driver_display_times(self):
         cc = shutil.which('cc') or shutil.which('clang')
         if not cc: self.skipTest('a C compiler is required')
@@ -39,6 +94,7 @@ typedef struct { int unused; } vkimg_t;
 static struct { int has_dtiming; } V;
 static uint64_t g_pace_anchor, g_refresh_ns, g_fg_sample_ns, g_fg_cpu_present_ns;
 static uint64_t platform_refresh = 16666667;
+static int refresh_queries, external;
 static double window_vote, real_period;
 static int g_pace_on = 1, held, menu = -1, captures, followups, histories, forgets, goal, usable_rate, fail_setup;
 static _Atomic int g_set_framegen = 1;
@@ -49,9 +105,9 @@ uint8_t *dm_fps_state;
 static framegen_cadence g_fg_cadence;
 static enum framegen_outcome last_outcome;
 static uint64_t mono_ns(void) { return 1; }
-static uint64_t dm_display_refresh_ns(void) { return platform_refresh; }
+static uint64_t dm_display_refresh_ns(void) { ++refresh_queries; return platform_refresh; }
 static int dm_opmode(void) { return 0; }
-static int dm_external_active(void) { return 0; }
+static int dm_external_active(void) { return external; }
 static int dm_framegen_target(void) { return goal; }
 static void dm_perf_framegen_rate(int fps) { usable_rate = fps; }
 static int dm_game_held(void) { return held; }
@@ -86,19 +142,28 @@ int main(void) {
     V.has_dtiming = 1; goal = 60;
     run_frames(); assert(captures == 0 && histories == 0 && usable_rate == 0 && real_period == 1.0/30);
     assert(fabs(window_vote - 1.0/30) < 1e-9);  // Missing DLL retains ordinary presentation pacing.
-    available = 1; run_frames(); assert(captures > 0 && captures == followups); // extension with no feedback
+    assert(!refresh_queries);
+    available = 1; run_frames(); assert(captures > 0 && captures == followups && refresh_queries > 0); // extension with no feedback
+    refresh_queries = 0;
     assert(fabs(window_vote - 1.0/60) < 1e-9);
     available = 0; run_frames(); assert(captures == 0 && histories == 0 && usable_rate == 0);
     available = 1;
     g_pace_anchor = 1; g_refresh_ns = 16666667; platform_refresh = 0;
     run_frames(); assert(captures > 0 && captures == followups);  // actual driver timing
+    assert(!refresh_queries);
     g_pace_anchor = 0; run_frames(); assert(captures == 0);       // unknown refresh: no guess
-    assert(last_outcome == FG_NO_REFRESH);
+    assert(last_outcome == FG_NO_REFRESH && refresh_queries > 0);
+    refresh_queries = 0;
+    external = 1; run_frames(); assert(captures == 0); external = 0;
+    present_game_frame(NULL, NULL, 1.0/30, 9, 0, 0);
+    uint32_t movie_state[2] = {0, 1}; dm_fps_state = (uint8_t *)movie_state;
+    run_frames(); assert(captures == 0 && last_outcome == FG_MOVIE); dm_fps_state = NULL;
     platform_refresh = 16666667; g_set_framegen = 0; run_frames(); assert(captures == 0 && usable_rate == 0);
     g_set_framegen = 1; goal = 0; held = 1; run_frames(); assert(captures == 0);
     held = 0; menu = 0; run_frames(); assert(captures == 0);
     menu = -1; pace_setting = "0"; run_frames(); assert(captures == 0);
-    pace_setting = NULL; run_frames(); assert(captures > 0);
+    assert(!refresh_queries);
+    pace_setting = NULL; run_frames(); assert(captures > 0 && refresh_queries > 0);
     int previous = captures;
     int previous_forgets = forgets;
     present_game_frame(NULL, NULL, 1.0/30, 9, 1300000000ull, 1); assert(captures == previous);

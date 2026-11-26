@@ -10,5 +10,6 @@ int vk_lsfg_prepare(VkExtent2D size, const VkOffset3D offsets[2]);
 int vk_lsfg_has_history(void);
 void vk_lsfg_forget(void);
 void vk_lsfg_destroy(void);   // releases size-dependent resources; the queue must be idle
-VkImage vk_lsfg_record(VkCommandBuffer cb, VkImage source, int interpolate);
+// Interpolation returns the cropped, upright output and writes its matching sampled view.
+VkImage vk_lsfg_record(VkCommandBuffer cb, VkImage source, int interpolate, VkImageView *midpoint_view);
 void vk_lsfg_submitted(void);

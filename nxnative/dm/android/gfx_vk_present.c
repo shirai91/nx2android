@@ -1310,7 +1310,7 @@ static int sr_sharp(void) {   // the pause menu's Sharpness, percent (settings.t
     int v = e ? atoi(e) : dm_overlay_sharp();
     return v < 0 ? 0 : v > 100 ? 100 : v;
 }
-static int sr_ready(uint32_t k, vkimg_t *im) {   // the pipeline and present slot k's descriptor set; 0: the blit draws this frame instead
+static int sr_ready(uint32_t k, vkimg_t *im, VkImageView midpoint_view) {   // the pipeline and present slot k's descriptor set; 0: the blit draws this frame instead
     if (g_sr_dead) return 0;
     if (!g_sr.dsl) {
         VkDescriptorSetLayoutBinding b = {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, NULL};
@@ -1359,7 +1359,7 @@ static int sr_ready(uint32_t k, vkimg_t *im) {   // the pipeline and present slo
         VkImageViewCreateInfo vi = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, NULL, 0, im->img, VK_IMAGE_VIEW_TYPE_2D, im->fmt, {0}, {VK_IMAGE_ASPECT_COLOR_BIT, 0, im->levels, 0, 1}};
         if (vkCreateImageView(V.dev, &vi, NULL, &im->full)) { im->full = VK_NULL_HANDLE; VKRED_ONCE(115, "super resolution: a view of the %ux%u picture: the blit scales it", im->w, im->h); return 0; }
     }
-    VkDescriptorImageInfo ii = {g_sr.samp, im->full, VK_IMAGE_LAYOUT_GENERAL};   // version 1 keeps every image in GENERAL
+    VkDescriptorImageInfo ii = {g_sr.samp, midpoint_view ? midpoint_view : im->full, VK_IMAGE_LAYOUT_GENERAL};   // version 1 keeps every image in GENERAL
     VkWriteDescriptorSet wr = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, g_sr.set[k], 0, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &ii};
     vkUpdateDescriptorSets(V.dev, 1, &wr, 0, NULL);   // this slot's fence was just waited, so its previous descriptor is no longer in use
     return 1;
@@ -1395,8 +1395,9 @@ static enum present_result present_window(vkimg_t *im, const int crop[4], double
     vk_img_barrier_all(cb);   // after everything submitted before on this queue
     if (im->layout == VK_IMAGE_LAYOUT_UNDEFINED) { barrier(cb, im->img, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL); im->layout = VK_IMAGE_LAYOUT_GENERAL; }   // an imported frame buffer, first shown (gl_android.c)
     VkImage source = im->img;
+    VkImageView midpoint_view = VK_NULL_HANDLE;
     if (capture) {
-        VkImage midpoint = vk_lsfg_record(cb, source, generated);
+        VkImage midpoint = vk_lsfg_record(cb, source, generated, &midpoint_view);
         if (generated) {
             source = midpoint;
             offsets[0] = (VkOffset3D){0, 0, 0};
@@ -1415,13 +1416,13 @@ static enum present_result present_window(vkimg_t *im, const int crop[4], double
     // the panel's raster is uploaded before the target's rendering scope starts, so the overlay can draw inside it
     int ovon = (ovm || menu >= 0 || fps) && overlay_ready(cb, k, menu) && (V.has_dynrender || ov_fb(idx));
     // a picture that grows by at least a sixteenth goes through SGSR 1.0; one that shrinks or fits stays with the blit (the same cost, no filter)
-    int sr = !generated && sr_on() && dw * 16 >= cw * 17 && V.has_dynrender && im->samples == 1 && im->layers == 1 && im->d == 1 && sr_ready(k, im);
-    static int sr_was = -1, sr_ws = -1; static uint32_t sr_lw, sr_ldw;   // the log follows the switch, a new picture size and a new sharpness, not every frame
+    int sr = sr_on() && dw * 16 >= cw * 17 && V.has_dynrender && im->samples == 1 && im->layers == 1 && im->d == 1 && sr_ready(k, im, midpoint_view);
+    static int sr_was = -1, sr_ws = -1, sr_lw, sr_lh, sr_ldw, sr_ldh;   // the log follows the switch, a new picture size and a new sharpness, not every frame
     int sh = sr ? sr_sharp() : 0;
-    if (sr && (sr_was != 1 || sr_lw != im->w || sr_ldw != (uint32_t)dw || sr_ws != sh))
-        VKLOG("[perf] super resolution on: SGSR 1.0 (edge direction) %ux%u into %ux%u, sharpness %d%%", im->w, im->h, (uint32_t)dw, (uint32_t)dh, sh);
+    if (sr && (sr_was != 1 || sr_lw != cw || sr_lh != ch || sr_ldw != dw || sr_ldh != dh || sr_ws != sh))
+        VKLOG("[perf] super resolution on: SGSR 1.0 (edge direction) %dx%d into %dx%d, sharpness %d%%", cw, ch, dw, dh, sh);
     else if (!sr && sr_was == 1) VKLOG("[perf] super resolution off: the blit scales the picture");
-    sr_was = sr; sr_lw = im->w; sr_ldw = (uint32_t)dw; sr_ws = sh;
+    sr_was = sr; sr_lw = cw; sr_lh = ch; sr_ldw = dw; sr_ldh = dh; sr_ws = sh;
     VkImageLayout lay;
     if (sr) {
         // One rendering scope for the upscale and the overlay: dynamic rendering needs no render pass, and the game's picture is read (12 taps) and
@@ -1434,10 +1435,14 @@ static enum present_result present_window(vkimg_t *im, const int crop[4], double
         vkCmdBeginRendering(cb, &ri);
         VkViewport vp = {0, 0, (float)g_sext.width, (float)g_sext.height, 0, 1}; VkRect2D sc = {{0, 0}, g_sext};
         vkCmdSetViewport(cb, 0, 1, &vp); vkCmdSetScissor(cb, 0, 1, &sc);
-        sr_push pc = {{1.0f / im->w, 1.0f / im->h, (float)im->w, (float)im->h},
+        // LSFG has already cropped and oriented the midpoint during capture.
+        float src_w = generated ? (float)cw : (float)im->w;
+        float src_h = generated ? (float)ch : (float)im->h;
+        int src_x = generated ? 0 : cx, src_y = generated ? 0 : cy;
+        sr_push pc = {{1.0f / src_w, 1.0f / src_h, src_w, src_h},
                       {(float)dx * 2 / g_sext.width - 1, (float)dy * 2 / g_sext.height - 1, (float)(dx + dw) * 2 / g_sext.width - 1, (float)(dy + dh) * 2 / g_sext.height - 1},
-                      {(float)cx / im->w, (float)cy / im->h, (float)(cx + cw) / im->w, (float)(cy + ch) / im->h},
-                      vk_window_bottom_up() ? 1.0f : 0.0f, (float)sh / 100.0f};
+                      {src_x / src_w, src_y / src_h, (src_x + cw) / src_w, (src_y + ch) / src_h},
+                      offsets[0].y > offsets[1].y ? 1.0f : 0.0f, (float)sh / 100.0f};
         vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_sr.pipe);
         vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, g_sr.layout, 0, 1, &g_sr.set[k], 0, NULL);
         vkCmdPushConstants(cb, g_sr.layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof pc, &pc);
@@ -1625,10 +1630,11 @@ static void present_game_frame(vkimg_t *im, const int crop[4], double period, ui
     int movie = dm_fps_state && __atomic_load_n((uint32_t *)(dm_fps_state + 4), __ATOMIC_RELAXED);
     if (vk_lsfg_poll(mono_ns())) g_fg_sample_ns = 0;
     const char *pace = getenv("DM_VK_PACE"); g_pace_on = !(pace && !atoi(pace));
-    uint64_t refresh_ns = framegen_display_clock() ? g_refresh_ns : dm_external_active() ? 0 : dm_display_refresh_ns();
     int enabled = dm_framegen_enabled(), goal = enabled ? dm_framegen_target() : 0;
     int held = dm_game_held() || dm_menu_state() >= 0;
     int wants_fg = ready_ns && g_pace_on && enabled && !movie && !held;
+    uint64_t refresh_ns = framegen_display_clock() ? g_refresh_ns :
+                          (wants_fg && !dm_external_active() ? dm_display_refresh_ns() : 0);
     int output_fps = wants_fg ? framegen_output_rate(goal, refresh_ns) : 0;
     static int last_goal, last_output, setup_errors;
     static uint64_t retry_at;
@@ -1655,10 +1661,10 @@ static void present_game_frame(vkimg_t *im, const int crop[4], double period, ui
     uint64_t sample = eligible && docked == was_docked ? ready_ns : 0;
     double step = framegen_frame_step(&g_fg_cadence, sample, refresh_ns, queued);
     enum framegen_outcome outcome = g_fg_cadence.outcome;
-    if (!refresh_ns) outcome = FG_NO_REFRESH;
-    else if (!g_pace_on) outcome = FG_PACE_OFF;
+    if (!g_pace_on) outcome = FG_PACE_OFF;
     else if (movie) outcome = FG_MOVIE;
     else if (held) outcome = FG_HELD;
+    else if (!refresh_ns) outcome = FG_NO_REFRESH;
     else if (docked != was_docked) outcome = FG_MODE_CHANGE;
     else if (queued) outcome = FG_QUEUED;
     was_docked = docked;
