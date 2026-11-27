@@ -292,9 +292,16 @@ static void copy_t2t(const p_copy_t2t *c) {
             vkCmdCopyImage(cb, tmp, VK_IMAGE_LAYOUT_GENERAL, d->img, VK_IMAGE_LAYOUT_GENERAL, 1, &cp);
         }
     } else if (!mir && c->sr.width == c->dr.width && c->sr.height == c->dr.height && sf->vk == df->vk) {
-        VkImageCopy r = {ss, {c->sr.xoffset, c->sr.yoffset, s->layers > 1 ? 0 : c->sr.zoffset}, ds, {c->dr.xoffset, c->dr.yoffset, d->layers > 1 ? 0 : c->dr.zoffset},
-                         {(uint32_t)c->sr.width, (uint32_t)(c->sr.height ? c->sr.height : 1), s->layers > 1 ? 1 : (uint32_t)(c->sr.depth ? c->sr.depth : 1)}};
-        vkCmdCopyImage(cb, s->img, VK_IMAGE_LAYOUT_GENERAL, d->img, VK_IMAGE_LAYOUT_GENERAL, 1, &r);
+        VkImageCopy r[2] = {{ss, {c->sr.xoffset, c->sr.yoffset, s->layers > 1 ? 0 : c->sr.zoffset}, ds, {c->dr.xoffset, c->dr.yoffset, d->layers > 1 ? 0 : c->dr.zoffset},
+                         {(uint32_t)c->sr.width, (uint32_t)(c->sr.height ? c->sr.height : 1), s->layers > 1 ? 1 : (uint32_t)(c->sr.depth ? c->sr.depth : 1)}}};
+        // A depth-stencil texture's copy takes its stencil too, as NVN's copy of the packed texels does (sub_of names one aspect: the depth). The Legend of Zelda:
+        // Echoes of Wisdom copies its scene depth into the rifts' depth-stencil texture every frame and marks the rift's own objects there with stencil 0x40 (REPLACE,
+        // write mask 0x40); with the depth alone copied, the marks of every earlier frame stayed, and the rift mask (fs 5cb0d43f214f2da8, which leaves out texels with
+        // 0x20 or 0x40) left a house's door and the paths around it uncovered
+        uint32_t nr = 1;
+        if ((s->aspect & d->aspect & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) == (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT) && ss.aspectMask == VK_IMAGE_ASPECT_DEPTH_BIT) {
+            r[1] = r[0]; r[1].srcSubresource.aspectMask = r[1].dstSubresource.aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT; nr = 2; }
+        vkCmdCopyImage(cb, s->img, VK_IMAGE_LAYOUT_GENERAL, d->img, VK_IMAGE_LAYOUT_GENERAL, nr, r);
     } else {
         VkImageBlit r = {ss, {{c->sr.xoffset, c->sr.yoffset, 0}, {c->sr.xoffset + c->sr.width, c->sr.yoffset + (c->sr.height ? c->sr.height : 1), 1}},
                          ds, {{c->dr.xoffset, c->dr.yoffset, 0}, {c->dr.xoffset + c->dr.width, c->dr.yoffset + (c->dr.height ? c->dr.height : 1), 1}}};
