@@ -1,0 +1,8 @@
+# Unreal console variables the host raises in game memory (host/hle_uecvar.c; dm/games/game.py writes these rows into game_profile.h as DM_GAME_UE_CVARS).
+# A TAutoConsoleVariable is a global in main's data: obj_off = main + offset of the object, field = the object's pointer to the value, copies = the game thread's int32 copy
+# then the render thread's. A value the game sets below the row's value is written back (only while it is above 0 and below), never one it sets higher. Each row runs only
+# on its main build. The object was found by the registration scan of upstream nxnative's dm/tools/ue_cvar.py (ue_cvar.py <ExeFS/main>; not part of this repository)
+#	build	what	obj_off	field	kind	copies	value
+# DRAGON QUEST VII Reimagined 1.1.0: r.Streaming.PoolSize, the texture streaming pool in MB, raised from SwitchDeviceProfiles.ini's 200 to the game's own Windows value (1000).
+# The fix is upstream nxnative's (its issue #589; the 1.2.0 build's object is at the same offset). The streaming manager reads its copies again when they change.
+ab06020960edd8285b7ff5fad2e3224b	r.Streaming.PoolSize	0x7f3ffc8	0x10	INT32	2	1000
