@@ -105,6 +105,7 @@ static void tf_state(const p_tf_state *t) {
     }
 }
 static void draw(const p_draw *d);
+static void draw_idx(const p_draw_idx *d);
 static void draw_tf(const p_draw_tf *t) {
     int i = tf_ctl_slot(t->ctl, 0);
     if (i < 0) { VKRED_ONCE(86, "DrawTransformFeedback with a control buffer no capture ended into (%#llx): nothing drawn", (unsigned long long)t->ctl); return; }
@@ -205,11 +206,11 @@ static int mdi_group(uint64_t cnt, uint64_t ind, int i, int max, int stride, int
 // builders this changed three copies of each triangle to one and recovered the
 // colour pass without changing depth comparisons. Indirect arguments, XFB, user
 // UBO/image aliases and VS memory effects stay on the original path.
-// Off unless a profile sets DM_VK_GS_SPLIT=1 (NieR:Automata): each split draw ends the pass and adds a barrier.
+// Off unless a profile sets DM_VK_GS_SPLIT=1 (NieR:Automata): when consecutive
+// split draws have no hazard with pending GS writes, raster halves stay in one
+// render pass and effects halves batch into one attachment-less 1x1 pass on flush
+// (DM_VK_GS_SPLIT_BATCH=0 restores per-draw passes live for an A/B).
 // The switch is read with the other live ones (x_read); DM_VK_GS_SPLIT=0 restores the original path for an A/B.
-static int gs_ranges_overlap(uint64_t a, uint64_t n, uint64_t b, uint64_t m) {
-    return a && b && n && m && (a >= b ? a - b < m : b - a < n);
-}
 // The second draw re-runs the VS and vertex/index fetch. Its inputs must not be
 // among the GS's mutable buffers, even if the GS's own outputs are independent.
 static int gs_split_inputs_safe(vkshader_t *gs, uint64_t ibuf, uint64_t in) {
@@ -244,6 +245,189 @@ static int gs_split_draw(int prim, uint64_t indirect, uint64_t ibuf, uint64_t in
     vkshader_t *gs = vk_shader_gs_topo(S.sh[2], topo(prim == 7 ? 4 : prim));
     if (!gs || (S.sh[1] && (S.sh[1]->in_locs & ~gs->out_locs))) return 0;
     return vk_shader_gs_split_ready(gs) && gs_split_inputs_safe(gs, ibuf, in);
+}
+typedef struct {
+    vkshader_t *vs, *gs;
+    p_bind_buf ubo0[16], ssbo0[16], ssbo2[16];
+    uint64_t ssboh0, ssboh2;
+    uint32_t vattr[16];
+    vs_st vstream[16];
+    NVNbufferRange vbuf[16];
+    int prim_restart;
+    uint8_t is_idx;
+    union { p_draw d; p_draw_idx di; } u;
+} gs_batch_ent_t;
+static gs_batch_ent_t *g_gs_q;
+// Batched split-GS effects: instead of breaking the active render pass for every
+// split draw (effects pass + barrier + raster pass), keep consecutive raster
+// halves inside the current pass and defer their discarded effects halves into
+// g_gs_q, replayed in FIFO order in one attachment-less 1x1 pass + single barrier
+// on vk_end_pass(). Reordering raster before effects is equivalent whenever:
+//  - this draw's GS writes W_i do not alias active color/depth targets, VS/VB/IB
+//    inputs (checked by gs_split_inputs_safe), or FS UBO/SSBO/texture reads;
+//  - the FS has no memory writes (shader_wmem) and no indirect/image aliases;
+//  - neither this draw's VB/IB/VS/FS reads nor any later non-split draw, clear,
+//    UBO update, copy, dispatch, or barrier observes queued writes g_gs_wr
+//    before gs_batch_flush() runs (any hazard flushes the batch first or falls
+//    back to the per-draw split).
+// Returns 0: cannot batch (use per-draw split); 1: batch into current pass;
+// 2: flush queued batch first, then re-check.
+static int gs_batch_can(vkshader_t *gs, uint64_t ibuf, uint64_t in) {
+    if (!g_gs_split_batch || S.rast_discard || g_ph.state || g_bis_on || g_bis_trace >= 0 || g_x_tracepass >= 0 || g_x_nokeep || g_x_nskipfs) return 0;
+    for (int i = 0; i < S.rt_n && i < 8; i++)
+        if (S.rt_has_col[i] && (S.rt_col[i].d.flags & NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET)) return 0;
+    for (int i = 0; i < S.sh[0]->nbind; i++)
+        if (S.sh[0]->b[i].kind == RK_DRV && S.sh[0]->b[i].reg != 0) return 0;
+    int gs_sbufs = 0;
+    for (int i = 0; i < gs->nbind; i++) {
+        if (gs->b[i].kind == RK_DRV && gs->b[i].reg != 0) return 0;
+        if (gs->b[i].kind == RK_SBUF) {
+            const p_bind_buf *wr = &S.ssbo[2][gs->b[i].reg];
+            for (int a = 0; a < S.rt_n && a < 8; a++)
+                if (S.rt_has_col[a] && gs_ranges_overlap(wr->addr, wr->size, (uint64_t)(uintptr_t)S.rt_col[a].mem, S.rt_col[a].L.size)) return 0;
+            if (S.rt_has_dep && gs_ranges_overlap(wr->addr, wr->size, (uint64_t)(uintptr_t)S.rt_dep.mem, S.rt_dep.L.size)) return 0;
+            gs_sbufs++;
+        }
+    }
+    int need_flush = 0;
+    if (S.sh[1]) {
+        if (shader_wmem(S.sh[1])) return 0;
+        for (int i = 0; i < S.sh[1]->nbind; i++) {
+            const dmsv_bind *r = S.sh[1]->b + i;
+            if (r->kind == RK_SUPPORT || r->kind == RK_DRV || r->kind == RK_C1) continue;
+            if (r->kind == RK_TEX) {
+                uint64_t h = vk_tex_slot_handle(S.tex[1], S.img[1], (unsigned)r->reg);
+                int tid = (int)(h & 0xfffff);
+                if (tid) {
+                    const view_t *v = NULL; const tex_t *t = NULL;
+                    if (!vk_tex_by_id(tid, &v, &t) || !t) return 0;
+                    uint64_t ta = (uint64_t)(uintptr_t)t->mem, tn = t->L.size;
+                    if (!ta || !tn) return 0;
+                    for (int a = 0; a < S.rt_n && a < 8; a++)
+                        if (S.rt_has_col[a] && gs_ranges_overlap((uint64_t)(uintptr_t)S.rt_col[a].mem, S.rt_col[a].L.size, ta, tn)) return 0;
+                    if (S.rt_has_dep && gs_ranges_overlap((uint64_t)(uintptr_t)S.rt_dep.mem, S.rt_dep.L.size, ta, tn)) return 0;
+                    for (int j = 0; j < gs->nbind; j++) {
+                        if (gs->b[j].kind != RK_SBUF) continue;
+                        const p_bind_buf *wr = &S.ssbo[2][gs->b[j].reg];
+                        if (gs_ranges_overlap(wr->addr, wr->size, ta, tn)) return 0;
+                    }
+                    if (g_gs_qn && gs_wr_overlaps(&g_gs_wr, ta, tn)) need_flush = 1;
+                }
+                continue;
+            }
+            if (r->reg < 0 || r->reg >= 16) return 0;
+            const p_bind_buf *rd;
+            if (r->kind == RK_CBUF || r->kind == RK_UBO_PTR) rd = &S.ubo[1][r->reg];
+            else if (r->kind == RK_SBUF) rd = &S.ssbo[1][r->reg];
+            else return 0; // Images, texel buffers and indirect handles can conceal an alias.
+            if (rd->addr && !rd->size) return 0;
+            for (int j = 0; j < gs->nbind; j++) {
+                if (gs->b[j].kind != RK_SBUF) continue;
+                const p_bind_buf *wr = &S.ssbo[2][gs->b[j].reg];
+                if (gs_ranges_overlap(wr->addr, wr->size, rd->addr, rd->size)) return 0;
+            }
+            if (g_gs_qn && gs_wr_overlaps(&g_gs_wr, rd->addr, rd->size)) need_flush = 1;
+        }
+    }
+    if (!g_gs_qn) return 1;
+    if (need_flush || g_gs_qn >= GS_BATCH_MAX || g_gs_wr.n + gs_sbufs > GS_WR_MAX) return 2;
+    if (gs_wr_overlaps(&g_gs_wr, ibuf, in)) return 2;
+    for (int v = 0; v < 16; v++)
+        if (S.vbuf[v].address && (!S.vbuf[v].size || gs_wr_overlaps(&g_gs_wr, S.vbuf[v].address, S.vbuf[v].size))) return 2;
+    for (int i = 0; i < S.sh[0]->nbind; i++) {
+        const dmsv_bind *r = S.sh[0]->b + i;
+        if (r->kind == RK_SUPPORT || r->kind == RK_DRV || r->kind == RK_C1) continue;
+        const p_bind_buf *rd = r->kind == RK_SBUF ? &S.ssbo[0][r->reg] : &S.ubo[0][r->reg];
+        if (gs_wr_overlaps(&g_gs_wr, rd->addr, rd->size)) return 2;
+    }
+    return 1;
+}
+static int gs_batch_enqueue(vkshader_t *gs, int is_idx, const p_draw *d, const p_draw_idx *di) {
+    if (!g_gs_q && !(g_gs_q = calloc(GS_BATCH_MAX, sizeof *g_gs_q))) return 0;
+    if (g_gs_qn >= GS_BATCH_MAX) return 0;
+    for (int i = 0; i < gs->nbind; i++) {
+        if (gs->b[i].kind != RK_SBUF) continue;
+        const p_bind_buf *wr = &S.ssbo[2][gs->b[i].reg];
+        if (!gs_wr_add(&g_gs_wr, wr->addr, wr->size)) return 0;
+    }
+    gs_batch_ent_t *e = &g_gs_q[g_gs_qn++];
+    e->vs = S.sh[0]; e->gs = S.sh[2];
+    memcpy(e->ubo0, S.ubo[0], sizeof e->ubo0);
+    memcpy(e->ssbo0, S.ssbo[0], sizeof e->ssbo0);
+    memcpy(e->ssbo2, S.ssbo[2], sizeof e->ssbo2);
+    e->ssboh0 = g_ssboh[0]; e->ssboh2 = g_ssboh[2];
+    memcpy(e->vattr, S.vattr, sizeof e->vattr);
+    memcpy(e->vstream, S.vstream, sizeof e->vstream);
+    memcpy(e->vbuf, S.vbuf, sizeof e->vbuf);
+    e->prim_restart = S.prim_restart;
+    e->is_idx = (uint8_t)is_idx;
+    if (is_idx) e->u.di = *di; else e->u.d = *d;
+    return 1;
+}
+static void gs_batch_flush(void) {
+    int n = g_gs_qn;
+    if (!n || g_gs_flushing) return;
+    g_gs_qn = 0; g_gs_wr.n = 0; g_gs_flushing = 1; g_gs_fx_pass = 1;
+    vkshader_t *sv_sh[3] = {S.sh[0], S.sh[1], S.sh[2]};
+    p_bind_buf sv_ubo0[16], sv_ssbo0[16], sv_ssbo2[16];
+    memcpy(sv_ubo0, S.ubo[0], sizeof sv_ubo0);
+    memcpy(sv_ssbo0, S.ssbo[0], sizeof sv_ssbo0);
+    memcpy(sv_ssbo2, S.ssbo[2], sizeof sv_ssbo2);
+    uint64_t sv_ssboh0 = g_ssboh[0], sv_ssboh2 = g_ssboh[2];
+    uint32_t sv_vattr[16]; vs_st sv_vstream[16]; NVNbufferRange sv_vbuf[16];
+    memcpy(sv_vattr, S.vattr, sizeof sv_vattr);
+    memcpy(sv_vstream, S.vstream, sizeof sv_vstream);
+    memcpy(sv_vbuf, S.vbuf, sizeof sv_vbuf);
+    poly_st sv_poly = S.poly; ds_st sv_ds = S.ds; ms_st sv_ms = S.ms;
+    float sv_vp0[4]; memcpy(sv_vp0, S.vp[0], sizeof sv_vp0);
+    float sv_dnear = S.dnear, sv_dfar = S.dfar;
+    p_scissor sv_sc = S.sc; int sv_sc_set = S.sc_set;
+    uint8_t sv_vpsw0[4]; memcpy(sv_vpsw0, S.vp_sw[0], sizeof sv_vpsw0);
+    p_poly_offset sv_pofs = S.pofs; float sv_blendc[4]; memcpy(sv_blendc, S.blendc, sizeof sv_blendc);
+    int sv_dclamp = S.depth_clamp, sv_rdisc = S.rast_discard, sv_prestart = S.prim_restart;
+    uint32_t sv_binst = g_draw_binst;
+    int sv_mode = g_gs_split_mode;
+    // Canonical discarded state: rasterization, attachments and FS are inactive.
+    S.sh[1] = NULL; S.rast_discard = 1; S.depth_clamp = 0;
+    memset(&S.poly, 0, sizeof S.poly); S.poly.front = 1; S.poly.mode = 2;
+    memset(&S.ds, 0, sizeof S.ds); memset(&S.ms, 0, sizeof S.ms);
+    S.vp[0][0] = 0; S.vp[0][1] = 0; S.vp[0][2] = 1; S.vp[0][3] = 1; S.dnear = 0; S.dfar = 1;
+    S.sc_set = 0; memset(S.vp_sw[0], 0, 4); memset(&S.pofs, 0, sizeof S.pofs); memset(S.blendc, 0, sizeof S.blendc);
+    for (int i = 0; i < n; i++) {
+        const gs_batch_ent_t *e = &g_gs_q[i];
+        S.sh[0] = e->vs; S.sh[2] = e->gs;
+        memcpy(S.ubo[0], e->ubo0, sizeof S.ubo[0]);
+        memcpy(S.ssbo[0], e->ssbo0, sizeof S.ssbo[0]);
+        memcpy(S.ssbo[2], e->ssbo2, sizeof S.ssbo[2]);
+        g_ssboh[0] = e->ssboh0; g_ssboh[2] = e->ssboh2;
+        g_ubo_gen[0]++; g_bind_gen[0]++; g_bind_gen[2]++;
+        memcpy(S.vattr, e->vattr, sizeof S.vattr);
+        memcpy(S.vstream, e->vstream, sizeof S.vstream);
+        memcpy(S.vbuf, e->vbuf, sizeof S.vbuf);
+        S.prim_restart = e->prim_restart;
+        g_gs_split_mode = 1;
+        if (e->is_idx) draw_idx(&e->u.di); else draw(&e->u.d);
+    }
+    g_gs_split_mode = sv_mode;
+    vk_end_pass();
+    vk_img_barrier_all(vk_cmd());
+    { static int said; if (!said++) VKLOG("geometry-shader split effects: batched %d draws into one attachment-less pass (DM_VK_GS_SPLIT_BATCH)", n); }
+    S.sh[0] = sv_sh[0]; S.sh[1] = sv_sh[1]; S.sh[2] = sv_sh[2];
+    memcpy(S.ubo[0], sv_ubo0, sizeof S.ubo[0]);
+    memcpy(S.ssbo[0], sv_ssbo0, sizeof S.ssbo[0]);
+    memcpy(S.ssbo[2], sv_ssbo2, sizeof S.ssbo[2]);
+    g_ssboh[0] = sv_ssboh0; g_ssboh[2] = sv_ssboh2;
+    g_ubo_gen[0]++; g_bind_gen[0]++; g_bind_gen[2]++;
+    memcpy(S.vattr, sv_vattr, sizeof S.vattr);
+    memcpy(S.vstream, sv_vstream, sizeof S.vstream);
+    memcpy(S.vbuf, sv_vbuf, sizeof S.vbuf);
+    S.poly = sv_poly; S.ds = sv_ds; S.ms = sv_ms;
+    memcpy(S.vp[0], sv_vp0, sizeof S.vp[0]); S.dnear = sv_dnear; S.dfar = sv_dfar;
+    S.sc = sv_sc; S.sc_set = sv_sc_set; memcpy(S.vp_sw[0], sv_vpsw0, 4);
+    S.pofs = sv_pofs; memcpy(S.blendc, sv_blendc, sizeof S.blendc);
+    S.depth_clamp = sv_dclamp; S.rast_discard = sv_rdisc; S.prim_restart = sv_prestart;
+    g_draw_binst = sv_binst;
+    g_gs_fx_pass = 0; g_gs_flushing = 0;
 }
 // Indirect quad draws: Vulkan has no quads, and the vertex count of an indirect draw is in GPU memory, often written by the game's compute shaders in the same submission
 // (Fire Emblem: Three Houses' particles: its compute VM writes the records, and they were drawn as a triangle list of the quads' vertices, so every quad lost a triangle
@@ -300,9 +484,25 @@ static int quad_indirect(uint64_t ind, int n, int stride, VkBuffer *ob, VkDevice
     *ob = g_qi.b; *oo = QI_DST; return 1;
 }
 static void draw(const p_draw *d) {
-    graphics_updates_ready();
-    graphics_cpu_ready();
     if (gs_split_draw(d->prim, d->ind, 0, 0)) {
+        vkshader_t *gs = vk_shader_gs_topo(S.sh[2], topo(d->prim == 7 ? 4 : d->prim));
+        int batch = gs_batch_can(gs, 0, 0);
+        if (batch == 2) { vk_end_pass(); batch = gs_batch_can(gs, 0, 0); }
+        if (batch == 1) {
+            graphics_updates_ready();
+            graphics_cpu_ready();
+            g_gs_split_mode = 2; draw(d); g_gs_split_mode = 0;
+            if (S.pass_open == 1 && !gs_batch_enqueue(gs, 0, d, NULL)) {
+                vk_end_pass();
+                g_gs_split_mode = 1; S.rast_discard = 1; draw(d);
+                vk_end_pass(); vk_img_barrier_all(vk_cmd());
+                S.rast_discard = 0; g_gs_split_mode = 0;
+            }
+            return;
+        }
+        if (g_gs_qn) vk_end_pass();
+        graphics_updates_ready();
+        graphics_cpu_ready();
         int discard = S.rast_discard;
         g_gs_split_mode = 1; S.rast_discard = 1; draw(d);
         vk_end_pass(); vk_img_barrier_all(vk_cmd());
@@ -310,6 +510,9 @@ static void draw(const p_draw *d) {
         if (!discard) { g_gs_split_mode = 2; draw(d); }
         g_gs_split_mode = 0; return;
     }
+    if (g_gs_qn && !g_gs_flushing && !g_gs_split_mode) vk_end_pass();
+    graphics_updates_ready();
+    graphics_cpu_ready();
     VkBuffer mcb = VK_NULL_HANDLE; VkDeviceSize mco = 0; if (mdi_group(d->mdi_cnt, d->ind, d->mdi_i, d->mdi_max, d->mdi_stride, 16, &mcb, &mco)) return;
     int prim = d->prim;
     VkBuffer qib = VK_NULL_HANDLE; VkDeviceSize qio = 0;   // an indirect quad draw's records, rewritten as indexed ones (before prepare_draw: the rewrite ends the pass)
@@ -362,10 +565,26 @@ static void draw(const p_draw *d) {
     if (!(dbg_draw() & 1) && g_ok) { int xf = xfb_begin(cb); vkCmdDraw(cb, (uint32_t)d->count, inst, (uint32_t)d->first, (uint32_t)d->base_instance); if (xf) xfb_end(cb, prim, (uint32_t)d->count, inst, xf); }
 }
 static void draw_idx(const p_draw_idx *d) {
-    graphics_updates_ready();
-    graphics_cpu_ready();
     uint64_t index_bytes = (uint64_t)(uint32_t)d->count * (d->itype == 0 ? 1u : d->itype == 1 ? 2u : 4u);
     if (gs_split_draw(d->prim, d->ind, d->ibuf, index_bytes)) {
+        vkshader_t *gs = vk_shader_gs_topo(S.sh[2], topo(d->prim == 7 ? 4 : d->prim));
+        int batch = gs_batch_can(gs, d->ibuf, index_bytes);
+        if (batch == 2) { vk_end_pass(); batch = gs_batch_can(gs, d->ibuf, index_bytes); }
+        if (batch == 1) {
+            graphics_updates_ready();
+            graphics_cpu_ready();
+            g_gs_split_mode = 2; draw_idx(d); g_gs_split_mode = 0;
+            if (S.pass_open == 1 && !gs_batch_enqueue(gs, 1, NULL, d)) {
+                vk_end_pass();
+                g_gs_split_mode = 1; S.rast_discard = 1; draw_idx(d);
+                vk_end_pass(); vk_img_barrier_all(vk_cmd());
+                S.rast_discard = 0; g_gs_split_mode = 0;
+            }
+            return;
+        }
+        if (g_gs_qn) vk_end_pass();
+        graphics_updates_ready();
+        graphics_cpu_ready();
         int discard = S.rast_discard;
         g_gs_split_mode = 1; S.rast_discard = 1; draw_idx(d);
         vk_end_pass(); vk_img_barrier_all(vk_cmd());
@@ -373,6 +592,9 @@ static void draw_idx(const p_draw_idx *d) {
         if (!discard) { g_gs_split_mode = 2; draw_idx(d); }
         g_gs_split_mode = 0; return;
     }
+    if (g_gs_qn && !g_gs_flushing && !g_gs_split_mode) vk_end_pass();
+    graphics_updates_ready();
+    graphics_cpu_ready();
     VkBuffer mcb = VK_NULL_HANDLE; VkDeviceSize mco = 0; if (mdi_group(d->mdi_cnt, d->ind, d->mdi_i, d->mdi_max, d->mdi_stride, 20, &mcb, &mco)) return;
     int prim = d->prim;
     g_draw_binst = d->ind ? 0 : (uint32_t)d->base_instance;   // before prepare_draw (see draw)

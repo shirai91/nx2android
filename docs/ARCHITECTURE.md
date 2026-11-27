@@ -154,7 +154,10 @@ PPE3 invalidates older prewarm records. The effects shader writes PointSize, and
 discarded pipelines invalidate cached stencil state before the next raster draw.
 The split is off unless a profile sets `env DM_VK_GS_SPLIT=1` (NieR:Automata), and runs only on
 Adreno (vendor 0x5143, Qualcomm's driver or Turnip); `DM_VK_GS_SPLIT=0` restores the original path live
-for diagnosis. The first-use upload of CPU-filled uncompressed 2D textures in CPU-accessible pools
+for diagnosis. When consecutive split draws have no range hazard with pending GS writes or active
+render targets (`gfx_vk_gs_batch.h`, `gfx_vk_exec_xfb.inc`), rasterization halves stay in one render
+pass and the discarded effects halves are batched into a single attachment-less `1x1` pass followed by
+one memory barrier on flush (`DM_VK_GS_SPLIT_BATCH=0` restores per-draw passes live for an A/B). The first-use upload of CPU-filled uncompressed 2D textures in CPU-accessible pools
 needs `env DM_NVN_CPU_TEX2D_FIRST_USE=1`. With `env DM_NVN_CPU_NO_ACCESS_IMAGE_FIRST_USE=1`, an
 uncompressed 2D colour `IMAGE` can upload initial data from `CPU_NO_ACCESS` storage once without
 CPU write tracking. Both paths check for GPU-written aliases.

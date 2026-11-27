@@ -140,11 +140,13 @@ static void exec_ops(const uint8_t *p) {
             if (g_x_tracepass == -2 || mdi_log_now()) VKLOG("--- copy %#llx → %#llx, %llu bytes, after pass %d", (unsigned long long)s_, (unsigned long long)d, (unsigned long long)n, g_sub_pass - 1); break; }
         case OP_CLEAR_BUF: { const p_clear_buf *c = (const p_clear_buf *)a; mtl_sub_fill(c->addr, c->size, c->value);
             if (g_x_tracepass == -2 || mdi_log_now()) VKLOG("--- buffer clear %#llx, %llu bytes to %#x, after pass %d", (unsigned long long)c->addr, (unsigned long long)c->size, c->value, g_sub_pass - 1); break; }
-        case OP_UPDATE_UB: { uint64_t d, n; memcpy(&d, a, 8); memcpy(&n, a + 8, 8); vk_sub_update(d, a + 16, n);
+        case OP_UPDATE_UB: { uint64_t d, n; memcpy(&d, a, 8); memcpy(&n, a + 8, 8);
+            if (g_gs_qn && !g_gs_flushing) vk_end_pass();
+            vk_sub_update(d, a + 16, n);
             if (g_x_tracepass == -2) VKLOG("--- uniform update %#llx, %llu bytes, after pass %d", (unsigned long long)d, (unsigned long long)n, g_sub_pass - 1); break; }
         case OP_SET_RT: set_rt((const p_set_rt *)a); break;
-        case OP_CLEAR_COLOR: if (!g_rc_skip) { clear_color((const p_clear_color *)a); pixel_history_record(1, -1, 0, 0, 0, 0, 0); } break;
-        case OP_CLEAR_DS: if (!g_rc_skip) { clear_ds((const p_clear_ds *)a); pixel_history_record(2, -1, 0, 0, 0, 0, 0); } break;
+        case OP_CLEAR_COLOR: if (!g_rc_skip) { if (g_gs_qn && !g_gs_flushing) vk_end_pass(); clear_color((const p_clear_color *)a); pixel_history_record(1, -1, 0, 0, 0, 0, 0); } break;
+        case OP_CLEAR_DS: if (!g_rc_skip) { if (g_gs_qn && !g_gs_flushing) vk_end_pass(); clear_ds((const p_clear_ds *)a); pixel_history_record(2, -1, 0, 0, 0, 0, 0); } break;
         case OP_VIEWPORTS: { const p_viewports *v = (const p_viewports *)a; for (int i = 0; i < v->n && v->first + i < 16; i++) memcpy(S.vp[v->first + i], v->v[i], 16); break; }
         case OP_SCISSOR: S.sc = *(const p_scissor *)a; S.sc_set = 1; break;
         case OP_DEPTH_RANGE: { const p_depth_range *d = (const p_depth_range *)a; S.dnear = d->n; S.dfar = d->f; break; }
@@ -185,10 +187,10 @@ static void exec_ops(const uint8_t *p) {
             int32_t bits = *(const int32_t *)a;
             if (g_x_listpasses) VKLOG("    barrier %#x%s", bits,
                 S.pass_open == 2 && !(bits & ~0x7) ? " (deferred pass: kept for loadOp clear)" :
-                g_order_keep && S.pass_open == 1 && !(bits & ~0x7) ? " (order only: decided at the next draw)" : "");
+                g_order_keep && !g_gs_qn && S.pass_open == 1 && !(bits & ~0x7) ? " (order only: decided at the next draw)" : "");
             // A deferred pass (pass_open == 2) has no draws yet, only folded loadOp=CLEARs; an order-only barrier is already satisfied before the first draw by Vulkan's loadOp ordering.
             if (S.pass_open == 2 && !(bits & ~0x7)) break;
-            if (g_order_keep && S.pass_open == 1 && !(bits & ~0x7)) { g_order_pending = 1; break; }   // (g_order_keep)
+            if (g_order_keep && !g_gs_qn && S.pass_open == 1 && !(bits & ~0x7)) { g_order_pending = 1; break; }   // (g_order_keep)
             vk_end_pass(); vk_img_barrier_all(vk_cmd()); g_order_pending = 0; break; }
         case OP_SET_TEX_POOL: case OP_SET_SAMP_POOL: {   // bound handles were rebased when recorded (hle_nvn.c bind_handles); handles read from memory are rebased by these (mem_handle)
             const p_set_pool *sp = (const p_set_pool *)a; int base = sp->pool ? nvn_dpool_base(sp->pool, h.op == OP_SET_TEX_POOL) : 0;
