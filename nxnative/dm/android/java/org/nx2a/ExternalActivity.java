@@ -50,6 +50,18 @@ public class ExternalActivity extends NativeActivity implements ExternalDisplay.
     private static native int externalMenuState();
     private static native int externalMenuScroll();
     private static native int[] externalMenuPixels(int width, int height, int state);
+    private static native void externalPolicyState(int state);
+    public void toggleAutoExternal() {
+        runOnUiThread(() -> {
+            if (external == null) return;
+            external.toggleAuto();
+            externalPolicyState(external.autoEnabled() ? 1 : 0);
+        });
+    }
+    @Override public void onConfigurationChanged(android.content.res.Configuration config) {
+        super.onConfigurationChanged(config);
+        if (external != null) external.update();
+    }
     private ExternalDisplay external;
     private View pad;
     private Dialog phonePad;
@@ -80,9 +92,10 @@ public class ExternalActivity extends NativeActivity implements ExternalDisplay.
         phonePad.setContentView(pad);
         external = new ExternalDisplay(this, this);
         external.start();
+        externalPolicyState(external.autoEnabled() ? 1 : 0);
     }
     @Override protected void onDestroy() {
-        if (external != null) external.stop();
+        if (external != null) { external.stop(); externalPolicyState(-1); }
         if (phonePad != null) phonePad.dismiss();
         if (audioDialog != null) audioDialog.dismiss();
         audioExecutor.shutdown();

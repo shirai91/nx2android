@@ -23,6 +23,8 @@ class OverlayLayout(unittest.TestCase):
 #include "overlay_layout.h"
 static int custom_faces, custom_a, custom_x, hidden_ctl = -1, audio_available, ui_zh;
 int dm_ui_zh(void) { return ui_zh; }
+static int auto_external = -1;
+int dm_auto_external(void) { return auto_external; }
 int dm_menu_audio_available(void) { return audio_available; }
 float dm_overlay_scale(void) { return 1; }
 int dm_external_active(void) { return 0; }
@@ -101,6 +103,9 @@ int main(void) {
     assert(ov_menu_item(0, OVM_ROWS - 2) == -1);
     audio_available = 1;
 assert(ov_menu_item(0, OVM_ROWS - 2) == OVM_AUDIO && ov_menu_item(0, OVM_ROWS - 3) == OVM_PAD);
+    auto_external = 0;
+    assert(ov_menu_item(1, OVM_ROWS - 2) == OVM_AUTO_EXTERNAL);
+    auto_external = -1;
     ui_zh = 0;
     assert(!strcmp(OVM_TAB_NAMES[0], "Gamepad") && !strcmp(OVM_TAB_NAMES[1], "Game") && !strcmp(OVM_TAB_NAMES[2], "Counter") && !strcmp(OVM_TAB_NAMES[3], "Style"));
     assert(!strcmp(FPSO_POS_NAMES[0], "Top left") && !strcmp(FPSO_SIZE_NAMES[3], "Extra large"));

@@ -74,6 +74,7 @@ __attribute__((weak)) void dm_overlay_knob(int stick, float *dx, float *dy) { (v
 __attribute__((weak)) int dm_overlay_stick_zone(void) { return 0; }   // front_android.c: the pause menu's Stick area (settings.txt stick_zone=)
 __attribute__((weak)) int dm_overlay_stick_at(int stick, float W, float H, float b[4]) { (void)stick; (void)W; (void)H; (void)b; return 0; }
 __attribute__((weak)) int64_t dm_overlay_pressed(int ctl, uint64_t bit) { (void)ctl; (void)bit; return 0; }
+__attribute__((weak)) int dm_auto_external(void) { return -1; }
 __attribute__((weak)) int dm_menu_state(void) { return -1; }
 __attribute__((weak)) int dm_menu_scroll_position(void) { return 0; }
 __attribute__((weak)) int dm_menu_audio_available(void) { return 0; }
@@ -415,6 +416,7 @@ static const char *ovm_label(int it) {
     case OVM_EXPORT: return TR("Export save", "导出存档");
     case OVM_IMPORT: return TR("Import save", "导入存档");
     case OVM_PAD: return TR("Face buttons", "按键布局");
+    case OVM_AUTO_EXTERNAL: return TR("Auto external display", "自动使用外屏");
     case OVM_AUDIO: return TR("Audio output", "音频输出");
     case OVM_ZONE: return TR("Stick area", "摇杆区域");
     case OVM_ROW_FPS: return TR("FPS row", "帧率行");
@@ -527,7 +529,7 @@ static void ov_menu_panel(const ov_canvas *cv, int st, int position) {
             cv_rrect(target, x0 + cur * segw, cy - hh / 2, x0 + (cur + 1) * segw, cy + hh / 2, hh / 2, C_ACCENT);
             for (int k = 0; k < 2; k++) cv_text(target, x0 + k * segw + (segw - cv_text_w(seg[k], is)) / 2, cy, seg[k], is, k == cur ? C_WHITE : C_DIM);
         } else {   // a switch
-            int on = it >= OVM_ROW_FPS && it <= OVM_ROW_GRAPH ? fpso_rows(fo) >> (it - OVM_ROW_FPS) & 1 : st >> ovm_bit(it) & 1; float sx0 = x1 - sw;
+            int on = it == OVM_AUTO_EXTERNAL ? dm_auto_external() > 0 : it >= OVM_ROW_FPS && it <= OVM_ROW_GRAPH ? fpso_rows(fo) >> (it - OVM_ROW_FPS) & 1 : st >> ovm_bit(it) & 1; float sx0 = x1 - sw;
             cv_rrect(target, sx0, cy - sh / 2, x1, cy + sh / 2, sh / 2, on ? C_ACCENT : C_OFF);
             cv_disc(target, on ? x1 - sh / 2 : sx0 + sh / 2, cy, sh / 2 - fmaxf(2, sh * 0.1f), on ? C_WHITE : C_KNOB_OFF);
             const char *word = on ? TR("ON", "开") : TR("OFF", "关"); cv_text(target, sx0 - gap - cv_text_w(word, is), cy, word, is, on ? C_WHITE : C_DIM);

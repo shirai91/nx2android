@@ -11,10 +11,18 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 SOURCE = ROOT / 'nxnative/dm/android/java/org/nx2a/ExternalDisplay.java'
 STUBS = {
     'android/content/Context.java': '''package android.content; public class Context { public static final String DISPLAY_SERVICE="display"; public Object getSystemService(String name) { return null; } }''',
-    'android/app/Activity.java': '''package android.app; public class Activity extends android.content.Context { public final android.hardware.display.DisplayManager manager = new android.hardware.display.DisplayManager(); @Override public Object getSystemService(String n) { return manager; } }''',
+    'android/app/Activity.java': '''package android.app; public class Activity extends android.content.Context { public final android.view.Window window = new android.view.Window();
+ public android.view.Window getWindow() { return window; }
+ public final android.content.SharedPreferences prefs = new android.content.SharedPreferences();
+ public android.content.SharedPreferences getPreferences(int mode) { return prefs; }
+ public final android.hardware.display.DisplayManager manager = new android.hardware.display.DisplayManager(); @Override public Object getSystemService(String n) { return manager; } }''',
+    'android/view/Window.java': 'package android.view; public class Window { private final View decor = new View(); public View getDecorView(){return decor;} }',
+    'android/view/View.java': 'package android.view; public class View { public Display display = new Display(0); public Display getDisplay(){return display;} private final ViewTreeObserver observer = new ViewTreeObserver(); public ViewTreeObserver getViewTreeObserver(){return observer;} }',
+    'android/view/ViewTreeObserver.java': 'package android.view; public class ViewTreeObserver { public interface OnGlobalLayoutListener {void onGlobalLayout();} public OnGlobalLayoutListener layout; public void addOnGlobalLayoutListener(OnGlobalLayoutListener x){layout=x;} public void removeOnGlobalLayoutListener(OnGlobalLayoutListener x){layout=null;} }',
+    'android/content/SharedPreferences.java': 'package android.content; public class SharedPreferences { private Boolean value; public boolean getBoolean(String k,boolean d){return value==null?d:value;} public SharedPreferences edit(){return this;} public SharedPreferences putBoolean(String k,boolean b){value=b;return this;} public void apply(){} }',
     'android/os/Looper.java': '''package android.os; public class Looper { public static Looper getMainLooper() { return new Looper(); } }''',
     'android/os/Handler.java': '''package android.os; public class Handler { public Handler(Looper l) {} }''',
-    'android/view/Display.java': '''package android.view; public class Display { public static final int INVALID_DISPLAY=-1; private final int id; public Display(int i) { id=i; } public int getDisplayId() { return id; } }''',
+    'android/view/Display.java': '''package android.view; public class Display { public static final int DEFAULT_DISPLAY=0, INVALID_DISPLAY=-1; private final int id; public Display(int i) { id=i; } public int getDisplayId() { return id; } }''',
     'android/view/Surface.java': '''package android.view; public class Surface {}''',
     'android/view/SurfaceHolder.java': '''package android.view; public interface SurfaceHolder { Surface getSurface(); void addCallback(Callback c); interface Callback { void surfaceCreated(SurfaceHolder h); void surfaceChanged(SurfaceHolder h,int format,int w,int height); void surfaceDestroyed(SurfaceHolder h); } }''',
     'android/view/SurfaceView.java': '''package android.view; public class SurfaceView { public static Holder last; public SurfaceView(android.content.Context c) { last=new Holder(); } public SurfaceHolder getHolder(){ return last; } public static class Holder implements SurfaceHolder { public Callback cb; public final Surface surface=new Surface(); public Surface getSurface(){return surface;} public void addCallback(Callback c){cb=c;} } }''',
@@ -31,6 +39,18 @@ public class Check {
   old.cb.surfaceChanged(old,0,1920,1080); old.cb.surfaceDestroyed(old); if(events[0]!=1||events[1]!=1)throw new AssertionError("stale callback");
   SurfaceView.Holder fresh=SurfaceView.last; fresh.cb.surfaceChanged(fresh,0,1920,1080); d.stop(); d.stop();
   if(events[0]!=2||events[1]!=2||a.manager.registrations!=0)throw new AssertionError("stop");
+  View decor=a.getWindow().getDecorView(); decor.display=new Display(8);
+  SurfaceView.Holder previous=SurfaceView.last; d.start();
+  if(previous!=SurfaceView.last)throw new AssertionError("started on external window");
+  decor.display=new Display(0); decor.getViewTreeObserver().layout.onGlobalLayout();
+  if(previous==SurfaceView.last)throw new AssertionError("returned to phone");
+  SurfaceView.Holder attached=SurfaceView.last; attached.cb.surfaceChanged(attached,0,1920,1080);
+  decor.display=new Display(8); decor.getViewTreeObserver().layout.onGlobalLayout();
+  if(events[1]!=3)throw new AssertionError("moved to external window");
+  a.prefs.edit().putBoolean("auto_external",false).apply(); decor.display=new Display(0);
+  decor.getViewTreeObserver().layout.onGlobalLayout(); d.onDisplayAdded(8);
+  if(SurfaceView.last!=attached)throw new AssertionError("disabled auto projection");
+  d.stop(); a.prefs.edit().putBoolean("auto_external",true).apply();
   Presentation.fail=true; d.start(); d.stop(); if(a.manager.registrations!=0)throw new AssertionError("failure");
  }
 }''',
