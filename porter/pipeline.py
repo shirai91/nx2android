@@ -71,6 +71,7 @@ class Options:
     touch: bool = False                # a game played by touch: the on-screen gamepad starts hidden (TOUCH_SETTINGS), so it takes none of the game's touches
     no_menu_button: bool = False       # no on-screen menu button: DM_MENU_BUTTON=0 in env.txt (dm/android/front_android.c g_menu_btn); Back opens the menu (issue #397)
     native_keyboard: bool = False      # optional Unicode Android IME (requires SDK/JDK)
+    pad_motion: bool = False           # a controller's own gyroscope and accelerometer as player 1's six-axis: the APK's classes.dex at API 31 (dm/android/java/org/nx2a/PadMotion.java, front_android.c pad_motion_start)
     external_display: bool = False     # compile the optional external-screen activity with the Android SDK
     vercode_offset: int = 0            # added to the APK's versionCode: a rebuild of the same game version installs over a build with a higher one (version_code)
     alias_headroom: int = None         # GB more alias region (alias_headroom); None: ALIAS_HEADROOM for a version the profile was not brought up on, none for one it was
@@ -936,9 +937,9 @@ class Port:
         self.result['apk'] = str(self.apk_path)
         PROG.end(f'{self.apk_path.name}, {self.apk_path.stat().st_size / 2**20:.1f} MB')
 
-    def java_dex(self, name, min_api):
-        """classes.dex from dm/android/java/org/nx2a, built with javac and d8 from Android's SDK (ANDROID_HOME): None when either is missing, or when the newest
-        platform there is older than min_api (31: InputDevice.getSensorManager, which org.nx2a.PadMotion needs)"""
+    def java_dex(self, name, min_api, sources):
+        """classes.dex from the given dm/android/java/org/nx2a sources, built with javac and d8 from Android's SDK (ANDROID_HOME): None when either is missing, or
+        when the newest platform there is older than min_api (31: InputDevice.getSensorManager, which org.nx2a.PadMotion needs, 29: the activity and the IME)"""
         javac = shutil.which('javac')
         roots = toolchain._sdk_roots()
         platforms = [p for root in roots for p in (root / 'platforms').glob('android-*/android.jar')]
@@ -949,32 +950,43 @@ class Port:
         if version(platform)[0] < min_api: return None
         out = self.aw / name; classes, dex = out / 'classes', out / 'dex'
         shutil.rmtree(out, ignore_errors=True); classes.mkdir(parents=True); dex.mkdir()
-        sources = sorted((DM / 'android/java/org/nx2a').glob('*.java'))
         # -encoding utf-8: the sources carry "→" and the face-button labels' arrows, and javac reads them in the
         # platform's encoding otherwise (a Chinese Windows reads GBK and stops at the first unmappable character)
         nsp.run([javac, '-encoding', 'utf-8', '-source', '8', '-target', '8', '-classpath', platform, '-d', classes, *sources], self.logs / f'android_{name}_java.log', env=self.env)
         nsp.run([d8, '--min-api', str(min_api), '--lib', platform, '--output', dex, *sorted(classes.rglob('*.class'))], self.logs / f'android_{name}_dex.log', env=self.env)
         return dex / 'classes.dex'
 
-    def app_dex(self):
-        """The APK's classes.dex (--dex ...), or [] when this checkout cannot make one.
+    def activity_args(self):
+        """mkapk's --activity: the external display's activity, that one with the keyboard wired in, or the keyboard's own over NativeActivity; nothing when
+        neither flag is set, where the dex exists for a controller's gyroscope alone and the app keeps android.app.NativeActivity"""
+        if not (self.o.external_display or self.o.native_keyboard): return []
+        activity = 'KeyboardExternalActivity' if self.o.native_keyboard else 'ExternalActivity'
+        return ['--activity', 'org.nx2a.' + activity if self.o.external_display else 'org.nx2a.GameActivity']
 
-        One dex for every class in dm/android/java/org/nx2a: javac compiles the folder as a whole, so the two users of it - the external display's activity and
-        org.nx2a.PadMotion for a controller's own gyroscope - cannot ask for different API levels, and 31 (InputDevice.getSensorManager) is the higher of the two. An
-        external display without the SDK is an error the player cannot work around; a controller's own gyroscope without it is not, because the features are independent
-        and the host logs which one is missing (front_android.c pad_motion_start)"""
-        needs_activity = self.o.external_display or self.o.native_keyboard
-        dex = self.java_dex('app', 31)
+    def external_activity(self):
+        """The external display's activity and the on-screen keyboard's IME, at API 29 and from every class in the folder but org.nx2a.PadMotion: a port
+        without --pad-motion carries neither that class nor API 31's InputDevice.getSensorManager. tests/test_external_display.py, test_native_keyboard.py and
+        tests/android/keyboard_smoke.py call this, and a missing SDK is a BuildError here because the player asked for one of these two features"""
+        sources = [p for p in sorted((DM / 'android/java/org/nx2a').glob('*.java')) if p.name != 'PadMotion.java']
+        dex = self.java_dex('external-activity', 29, sources)
         if dex is None:
-            if needs_activity:
-                raise BuildError('--external-display / --native-keyboard needs javac and an Android SDK with a platform (API 31 or newer) and build-tools (set ANDROID_HOME)')
-            say("no javac / Android SDK with API 31 or newer (ANDROID_HOME): a controller's own gyroscope is not read")
-            return []
-        args = ['--dex', str(dex)]
-        if needs_activity:
-            activity = 'KeyboardExternalActivity' if self.o.native_keyboard else 'ExternalActivity'
-            args += ['--activity', 'org.nx2a.' + activity if self.o.external_display else 'org.nx2a.GameActivity']
-        return args
+            raise BuildError('--external-display / --native-keyboard needs javac and an Android SDK with a platform and build-tools (set ANDROID_HOME)')
+        return ['--dex', str(dex)] + self.activity_args()
+
+    def pad_motion_dex(self):
+        """With --pad-motion: the whole folder at API 31, org.nx2a.PadMotion included (InputDevice.getSensorManager). A missing SDK is a BuildError that names
+        the flag - the player asked for this, unlike a controller's own gyroscope being absent from a build that never offered it"""
+        dex = self.java_dex('pad-motion', 31, sorted((DM / 'android/java/org/nx2a').glob('*.java')))
+        if dex is None:
+            raise BuildError('--pad-motion needs javac and an Android SDK with a platform (API 31 or newer) and build-tools (set ANDROID_HOME)')
+        return ['--dex', str(dex)] + self.activity_args()
+
+    def app_dex(self):
+        """The APK's --dex and --activity, or [] when this port needs no dex at all: with neither --pad-motion nor --external-display nor --native-keyboard the
+        APK stays code-less (hasCode false) as on main, which docs/ARCHITECTURE.md and DEVELOPMENT_GUIDE.md describe"""
+        if self.o.pad_motion: return self.pad_motion_dex()
+        if self.o.external_display or self.o.native_keyboard: return self.external_activity()
+        return []
 
     def theme(self):
         """The on-screen gamepad's theme: only the game's own pack goes in the APK (dm/android/themes/themes.tsv maps title IDs to packs; a game with no row

@@ -11,6 +11,7 @@ import subprocess
 import tempfile
 import unittest
 import sys
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import csrc  # noqa: E402
@@ -286,6 +287,91 @@ int main(int argc, char **argv) {
         for raw in (None, '1'):
             with self.subTest(raw=raw):
                 self.run_case(1, 0, 0.5, manual=True, raw=raw)
+
+
+class ApkDex(unittest.TestCase):
+    """Which dex the APK gets, from porter/pipeline.py: none at all for a plain port, API 29 for the two activity flags, API 31 only for --pad-motion.
+
+    A port with no flag must stay code-less (hasCode false) as on main: an APK that suddenly carries a classes.dex is a behaviour change nobody asked for,
+    and a port that cannot build mid-activity is a worse failure than a missing feature.
+    """
+    SDK_ARGS = ('toolchain', '_sdk_roots')
+
+    def port(self, root, **kw):
+        from porter import pipeline
+        port = pipeline.Port(pipeline.Options(folder=root, **kw))
+        port.aw = root / 'out'; port.logs = root / 'logs'; port.env = {}
+        return pipeline, port
+
+    def sdk(self, root, api):
+        platform = root / f'platforms/android-{api}/android.jar'; platform.parent.mkdir(parents=True, exist_ok=True); platform.touch()
+        d8 = root / 'build-tools' / f'{api}.0.0' / ('d8.bat' if os.name == 'nt' else 'd8'); d8.parent.mkdir(parents=True, exist_ok=True); d8.touch()
+
+    def run_apk_dex(self, pipeline, port, root, javac='javac'):
+        with mock.patch.object(pipeline.toolchain, '_sdk_roots', return_value=[root]), mock.patch.object(pipeline.shutil, 'which', return_value=javac), mock.patch.object(pipeline.nsp, 'run') as run:
+            return port.app_dex(), run
+
+    @staticmethod
+    def command(run, n):
+        return [str(a) for a in run.call_args_list[n].args[0]]
+
+    @staticmethod
+    def min_api(cmd):
+        return cmd[cmd.index('--min-api') + 1]
+
+    def test_a_default_port_builds_no_dex(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t)
+            pipeline, port = self.port(root)
+            sdk = root / 'platforms/android-36/android.jar'; sdk.parent.mkdir(parents=True); sdk.touch()   # even with a full SDK there
+            args, run = self.run_apk_dex(pipeline, port, root)
+            self.assertEqual(args, [], 'no --dex and no --activity: mkapk writes hasCode=false and no classes.dex')
+            self.assertEqual(run.call_count, 0, 'a port with no flag must not run javac or d8')
+
+    def test_pad_motion_alone_is_api_31_and_carries_the_class(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t); self.sdk(root, 36)
+            pipeline, port = self.port(root, pad_motion=True)
+            args, run = self.run_apk_dex(pipeline, port, root)
+            self.assertEqual(args[0], '--dex')
+            self.assertNotIn('--activity', args, 'a pad-motion port keeps android.app.NativeActivity')
+            self.assertTrue(any(s.endswith('PadMotion.java') for s in self.command(run, 0)))
+            self.assertEqual(self.min_api(self.command(run, 1)), '31')
+
+    def test_the_two_activity_flags_stay_at_api_29_without_pad_motion(self):
+        for kw in ({'external_display': True}, {'native_keyboard': True}):
+            with self.subTest(**kw), tempfile.TemporaryDirectory() as t:
+                root = Path(t); self.sdk(root, 35)
+                pipeline, port = self.port(root, **kw)
+                args, run = self.run_apk_dex(pipeline, port, root)
+                self.assertEqual(args[0], '--dex')
+                self.assertIn('--activity', args)
+                self.assertFalse([s for s in self.command(run, 0) if s.endswith('PadMotion.java')],
+                                 'API 31 and its class belong to --pad-motion alone')
+                self.assertEqual(self.min_api(self.command(run, 1)), '29')
+
+    def test_pad_motion_with_an_activity_flag_is_one_dex_for_both(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t); self.sdk(root, 36)
+            pipeline, port = self.port(root, pad_motion=True, external_display=True)
+            args, run = self.run_apk_dex(pipeline, port, root)
+            self.assertEqual(run.call_count, 2, 'one javac and one d8, not one pair per feature')
+            self.assertTrue(any(s.endswith('PadMotion.java') for s in self.command(run, 0)))
+            self.assertEqual(self.min_api(self.command(run, 1)), '31')
+            self.assertEqual(args[-1], 'org.nx2a.ExternalActivity')
+
+    def test_pad_motion_without_an_sdk_names_the_flag(self):
+        with tempfile.TemporaryDirectory() as t:
+            pipeline, port = self.port(Path(t), pad_motion=True)
+            with mock.patch.object(pipeline.toolchain, '_sdk_roots', return_value=[]), mock.patch.object(pipeline.shutil, 'which', return_value=None):
+                with self.assertRaisesRegex(pipeline.BuildError, r'--pad-motion', msg='the player asked for it: say which flag needs the SDK'):
+                    port.app_dex()
+
+    def test_the_flag_reaches_the_options(self):
+        from porter import cli, pipeline
+        self.assertTrue(cli._parser().parse_args(['port', '/game', '--pad-motion']).pad_motion)
+        self.assertTrue(pipeline.Options.from_args(cli._parser().parse_args(['port', '/game', '--pad-motion'])).pad_motion)
+        self.assertFalse(pipeline.Options(folder=Path('/game')).pad_motion)
 
 
 if __name__ == '__main__':
