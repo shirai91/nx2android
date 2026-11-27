@@ -210,7 +210,7 @@ static void immersive(ANativeActivity *a) {
 static void on_window_focus(ANativeActivity *a, int focused) { if (focused) immersive(a); if (atomic_load(&g_running) && !atomic_load(&g_bg)) dm_focus_set(focused ? 1 : 2); }
 // A save manager's request, or a RomFS the app cannot read (romfs_readable), asked the app to end (ANativeActivity_onCreate): Activity.finish() when it is resumed, through JNI on the main thread.
 // ANativeActivity_finish, from onCreate or from here, left the activity on the screen (Y700, Android 16), and porter's am start -W waited out its timeout
-static int g_quit;
+static _Atomic int g_quit;   // the menu's Exit and the boot's quit requests write it from their threads; on_resume reads it on the main one
 static void act_finish(ANativeActivity *a) {
     JNIEnv *E = a->env; jclass c = (*E)->GetObjectClass(E, a->clazz); jmethodID m = c ? (*E)->GetMethodID(E, c, "finish", "()V") : NULL;
     if (m) (*E)->CallVoidMethod(E, a->clazz, m);
@@ -651,6 +651,8 @@ static void *temp_watch(void *a) {
 static _Atomic int g_menu_hi = -1, g_menu_tab;   // the highlighted row (a controller's selection, or the row a finger is on), -1 none; the open tab
 static _Atomic int g_menu_scroll;
 int dm_menu_scroll_position(void) { return atomic_load(&g_menu_scroll); }
+static _Atomic int g_menu_exit_armed;   // Exit game asked once (the bottom row's left half): the draw shows "Exit game?" and the next press on it ends the game
+int dm_menu_exit_armed(void) { return atomic_load(&g_menu_exit_armed); }
 static int g_menu_ptr = -1, g_menu_row = -2;
 static float g_menu_down_y; static int g_menu_down_scroll, g_menu_scrolled, g_menu_can_scroll;
 static _Atomic int g_tx_ver;   // the text entry's edit count: the panel is drawn again when it changes
@@ -705,6 +707,7 @@ static void menu_close(void) {
     if (atomic_load(&g_sp_on)) { sp_back(); return; }    // the save picker: back a step
     if (!atomic_exchange(&g_menu, 0)) return;
     g_menu_ptr = -1; atomic_store(&g_menu_t, 0);
+    atomic_store(&g_menu_exit_armed, 0);   // an armed Exit game goes back to plain when the menu closes any other way (a touch outside, Back, +)
     hold_sync(); dm_haptics_suspend(4, 0); dm_overlay_redraw();
     LOG("[menu] closed: the game goes on (gamepad %s, opacity %d%%, sticks %s, rumble %s, face buttons by %s, frame rate %s %#x, super resolution %s (%d%% sharp), %s)", atomic_load(&g_set_overlay) ? "on" : "off", atomic_load(&g_set_opacity),
         atomic_load(&g_set_zone) ? "half screen" : "circle",
@@ -732,7 +735,25 @@ static void menu_audio(void) {
     if ((*e)->ExceptionCheck(e)) { (*e)->ExceptionClear(e); LOG("[menu] audio selection is unavailable"); }
     if (attached) (*g_act->vm)->DetachCurrentThread(g_act->vm);
 }
+// Exit game (the pause menu's bottom row's left half): the activity finishes the way Android ends it — Activity.finish()
+// through JNI, never a hard exit: the game may be mid-write, and its saves commit atomically (#463). The menu runs
+// on the input thread, so attach like menu_audio; a resume before the destroy finishes again (g_quit, on_resume).
+static void menu_exit(void) {
+    if (!g_act || !g_act->vm || !g_act->clazz) { LOG("[RED] [menu] no activity to finish"); return; }
+    JNIEnv *e = NULL; int attached = 0;
+    if ((*g_act->vm)->GetEnv(g_act->vm, (void **)&e, JNI_VERSION_1_6) != JNI_OK) {
+        if ((*g_act->vm)->AttachCurrentThread(g_act->vm, &e, NULL) != JNI_OK) { LOG("[RED] [menu] cannot attach for the exit"); return; }
+        attached = 1;
+    }
+    jclass c = (*e)->GetObjectClass(e, g_act->clazz); jmethodID m = c ? (*e)->GetMethodID(e, c, "finish", "()V") : NULL;
+    if (m) (*e)->CallVoidMethod(e, g_act->clazz, m);
+    if (!m || (*e)->ExceptionCheck(e)) { (*e)->ExceptionClear(e); LOG("[RED] [menu] Activity.finish() failed"); }
+    if (attached) (*g_act->vm)->DetachCurrentThread(g_act->vm);
+    atomic_store(&g_quit, 1);
+    LOG("[menu] exit game: the activity finishes");
+}
 static void menu_do(int item) {
+    if (item != OVM_EXIT) atomic_store(&g_menu_exit_armed, 0);   // any other row's press takes an armed Exit game back to plain
     if (item == OVM_OVERLAY) { atomic_store(&g_set_overlay, !atomic_load(&g_set_overlay)); atomic_store(&g_overlay, 1); settings_save(); }
     else if (item == OVM_RUMBLE) { int on = !atomic_load(&g_set_rumble); atomic_store(&g_set_rumble, on); dm_haptics_android_set(on); settings_save(); }
     else if (item == OVM_FPS) { atomic_store(&g_set_fps, !atomic_load(&g_set_fps)); settings_save(); }
@@ -748,6 +769,10 @@ static void menu_do(int item) {
     else if (item == OVM_EXPORT) { if (atomic_load(&g_sv_st) == OVX_BUSY) return; save_export(); }
     else if (item == OVM_IMPORT) { dm_haptics_android_tap(); sp_open(); return; }
     else if (item == OVM_AUDIO) { menu_audio(); }
+    else if (item == OVM_EXIT) {   // two presses: the first arms ("Exit game?"), the second ends the game (menu_exit)
+        if (atomic_exchange(&g_menu_exit_armed, 1)) menu_exit();
+        dm_haptics_android_tap(); dm_overlay_redraw(); return;
+    }
     if (item >= 0 && item < OVM_N) dm_haptics_android_tap();
     if (item == OVM_RESUME) menu_close(); else dm_overlay_redraw();
 }
@@ -789,6 +814,10 @@ static void menu_touch(AInputEvent *e, float W, float H) {   // a press on a row
         int down = g_menu_row; g_menu_ptr = -1; atomic_store(&g_menu_hi, -1);
         if (g_menu_scrolled) { atomic_store(&g_menu_scroll, ov_menu_scroll_drag(tab, g_menu_down_scroll, (g_menu_down_y - y) / vr[3])); dm_overlay_redraw(); return; }   // no snapping or activation on release
         if (down >= 0 && (ov_menu_item(tab, down) == OVM_OPACITY || ov_menu_item(tab, down) == OVM_SHARP)) { settings_save(); dm_overlay_redraw(); }
+        else if (row == down && item == OVM_RESUME) {   // the bottom row: Exit game on its left half, Resume on its right — split at the same midline the draw centres its labels on
+            float rr[4]; ov_menu_scroll_rowrect(p, tab, offset, row, rr);
+            menu_do(x < rr[0] + rr[2] / 2 ? OVM_EXIT : OVM_RESUME);
+        }
         else if (row == down && item >= 0 && item != OVM_TAB) menu_do(item);
         else if (row == down && (row == -2 || row == -3)) { dm_haptics_android_tap(); menu_close(); }
         else dm_overlay_redraw();
