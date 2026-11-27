@@ -37,4 +37,6 @@ Playable on Retroid Pocket 6 with PurpleVK.
 
 ## Quirks and known issues
 
-- **work in progress**: minor transparency artifacts around rifts.
+- Rifts: the rift mask reads the stencil of a depth-stencil texture the game fills by a copy every frame. Before the copy took the
+  stencil too, the marks of earlier frames stayed there, and a rift left a house's door and the paths around it uncovered and looked
+  brighter than on the console (the "minor transparency artifacts around rifts").
