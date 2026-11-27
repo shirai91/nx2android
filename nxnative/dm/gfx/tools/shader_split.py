@@ -1313,40 +1313,48 @@ def ard_shaders(path, rel, ents, out):
                     if b'\x91\x68\x86\x19' in z: out.extend(glslc_shaders(z, lab, need=False))
 
 UE_LEGACY = 'UE legacy pak'
-def ue_legacy_jobs(files, parts=64):
-    """Legacy Unreal paks (version 4, DRAGON QUEST XI S: pakchunk0-Switch.pak and pakchunk1-Switch.pak, 13.8 GB, and the update's *_0_P.pak): the engine mounts them all as one view, and a patch pak
+def ue_legacy_jobs(files, parts=64, *, archive_paks=()):
+    """Inline Unreal paks (versions 4 and 11, DRAGON QUEST XI S: pakchunk0-Switch.pak and pakchunk1-Switch.pak, 13.8 GB, and the update's *_0_P.pak): the engine mounts them all as one view, and a patch pak
     (name ending in _P.pak) wins over the others for the same path. Version 8 reads only shader archives (Unreal 4.22, Minecraft Dungeons) and orders patches by the numeric suffix before _P.
     → ([(pak path, rel, (UE_LEGACY, names)), …] in about equal raw sizes, the pak paths taken)"""
     def pak_priority(p, rel):
         try:
             with open(p, 'rb') as f: version = uepak.pak_version(f)
         except (OSError, ValueError, struct.error): return None
-        if version not in uepak.LEGACY: return None
+        if version not in uepak.LEGACY and p in archive_paks: return None
         if not rel.endswith('_P.pak'): return 0
         patch = re.search(r'_([0-9]+)_P\.pak$', posixpath.basename(rel)) if version == 8 else None
         return int(patch[1]) + 1 if patch else 1
     paks = [(priority, r, p) for p, r in files if p.endswith('.pak') and (priority := pak_priority(p, r)) is not None]
     if not paks: return [], set()
-    view = {}
+    view, taken = {}, set()
     for priority, r, p in sorted(paks):   # higher-priority patches replace earlier entries within each pak folder
-        pk = uepak.Pak(p)
+        try:
+            pk = uepak.Pak(p)
+        except (OSError, ValueError, struct.error):
+            with open(p, 'rb') as f: version = uepak.pak_version(f)
+            if version in uepak.LEGACY: raise
+            continue   # encrypted or unsupported indexes use the archive extraction step
         folder = os.path.dirname(p)
         with pk.f:
+            if pk.shader_layout() != 'inline': continue
+            taken.add(p)
             # Unreal searches all paks at a delete record's priority for a live copy. A patch can move an asset between chunks at the same priority.
             for name in pk.deleted:
                 key = folder, posixpath.normpath(pk.mount + name)
                 if (current := view.get(key)) and current[0] < priority: del view[key]
-            for name, e in pk.legacy_shader_entries(): view[(folder, posixpath.normpath(pk.mount + name))] = (priority, p, r, name, e['raw'])
+            entries = pk.legacy_shader_entries() if pk.version in uepak.LEGACY else ((name, pk.entry(name)) for name in pk.files)
+            for name, e in entries: view[(folder, posixpath.normpath(pk.mount + name))] = (priority, p, r, name, e['raw'])
     jobs, cur, size, step = [], collections.defaultdict(list), 0, sum(v[4] for v in view.values()) / parts
     for _, p, r, name, raw in sorted(view.values(), key=lambda x: (x[2], x[3])):
         cur[(p, r)].append(name); size += raw
         if size >= step: jobs += [(p_, r_, (UE_LEGACY, tuple(ns))) for (p_, r_), ns in cur.items()]; cur, size = collections.defaultdict(list), 0
     jobs += [(p_, r_, (UE_LEGACY, tuple(ns))) for (p_, r_), ns in cur.items()]
-    return jobs, {p for _, _, p in paks}
+    return jobs, taken
 
 _PAKS = {}
 def ue_legacy_shaders(path, rel, names, out):
-    """Files of a legacy Unreal pak (ue_legacy_jobs), each decoded block by block with the game's own decoder (DRAGON QUEST XI S: LZ5; zlib blocks, OCTOPATH TRAVELER's, by uepak itself) and scanned for the shader records the engine keeps inline"""
+    """Decode inline shader pak members block by block and scan them for the shader records kept in the cooked packages."""
     pk = _PAKS.get(path) or _PAKS.setdefault(path, uepak.Pak(path))
     dec = ue_legacy_decoded(path, rel)
     for name in names:
@@ -1380,20 +1388,42 @@ def ue_legacy_decoded(path, rel):
     _UEL_DEC[path] = (f, ent); return _UEL_DEC[path]
 
 ZLIB_HEAD = re.compile(b'\x78[\x01\x5e\x9c\xda]')
+MAX_UE_SHADER_SIZE = 16 << 20   # bound LZ4 allocations while scanning arbitrary cooked data
+
+def _ue_lz4_starts(d, at):
+    """Possible LZ4 tokens before a run of first literals at at, with their literal counts."""
+    token = d[at - 1]
+    if 4 <= token >> 4 < 15:
+        yield at - 1, token >> 4
+    if token == 0xff:
+        return   # an extended literal count must end with a byte smaller than 255
+    length = 15 + token
+    for start in range(at - 2, 3, -1):
+        if d[start] >> 4 == 15:
+            yield start, length
+        if d[start] != 0xff or length + 255 > MAX_UE_SHADER_SIZE:
+            break
+        length += 255
+
 def ue_inline_shaders(d, label, out):
-    """Shaders kept inline in cooked Unreal packages (UE 4.18, DRAGON QUEST XI S: each material's shader map in its .uexp, 38 to 87 shaders in the ones looked at, and the engine's global shaders in
-    Engine/GlobalShaderCache-GLSL_SWITCH.bin, 945): each shader's code is a byte array (i32 length, then the bytes) holding one zlib stream, which inflates to an LSLG record as in the shader code
-    archives (uepak.lslg). Found by the zlib header and the length in front of it: a stream that inflates whole from exactly that many bytes and starts with LSLG (every such stream in the files
-    looked at). A record stored without compression (LSLG right after its length) is taken too. The engine combines vertex and pixel shaders per draw (separable_pairs)"""
+    """Scan length-prefixed raw or zlib LSLG records and UE 4.27 FShaderMapResourceCode entries.
+    The latter put an LZ4 block after its byte-array length, then a 32-bit decoded size and an 8-bit shader frequency.
+    The first literals of the LZ4 block identify candidate LSLG records."""
+    import lz4.block
     import zlib
-    def take(s, at):
+
+    def take(s, at, frequency=None):
         rec = uepak.lslg(s)
+        if frequency is not None and (not rec or UE_TAG.get(rec[0]) != uepak.FREQ[frequency]):
+            return False
         if not rec: red(f'{label}: the shader record at {at:#x} is not an LSLG record of the known layout')
         tag, ctl, code = rec; st = UE_TAG.get(tag)
         if not st: red(f'{label}: the shader record at {at:#x} has stage tag {tag}')
         why = check(label, st, ctl, code)
         if why: red(f'{label}: shader at {at:#x} ({st}): {why}')
         out.append((f'{label}#UE{at:x}', st, ctl, code))
+        return True
+
     for m in ZLIB_HEAD.finditer(d):
         i = m.start(); n = int.from_bytes(d[i - 4:i], 'little') if i >= 4 else 0
         if not 2 <= n <= len(d) - i: continue
@@ -1403,7 +1433,25 @@ def ue_inline_shaders(d, label, out):
         if z.eof and not z.unused_data and s[:4] == b'LSLG': take(s, i)
     for m in re.finditer(b'LSLG', d):
         i = m.start(); n = int.from_bytes(d[i - 4:i], 'little') if i >= 4 else 0
-        if 2 <= n <= len(d) - i and uepak.lslg(d[i:i + n]): take(d[i:i + n], i)
+        if 2 <= n <= len(d) - i and uepak.lslg(d[i:i + n]):
+            take(d[i:i + n], i)
+            continue
+        if i < 5:
+            continue
+        for start, literals in _ue_lz4_starts(d, i):
+            size = struct.unpack_from('<I', d, start - 4)[0]
+            end = start + size
+            if end < i + literals or end + 5 > len(d):
+                continue
+            raw, frequency = struct.unpack_from('<IB', d, end)
+            if not size < raw <= min(MAX_UE_SHADER_SIZE, size * 255) or frequency not in uepak.FREQ:
+                continue
+            try:
+                shader = lz4.block.decompress(d[start:end], uncompressed_size=raw)
+            except lz4.block.LZ4BlockError:
+                continue
+            if len(shader) == raw and take(shader, start, frequency):
+                break
 
 def ue_modern_pack(path):
     """Whether the file is an Unreal modern pak (version 11) or an IoStore container (.utoc / .ucas): the shaders of a modern Unreal game live in the shader code archives the decode stage
@@ -1917,7 +1965,7 @@ def scan_file(args):
     stem, ext = os.path.splitext(path)
     if ext in ('.data', '.patch', '.debug', '.nxpc') and os.path.exists(stem + '.dict'): return rel, {}, set(), {}   # read through its Next Level Games index (nlg_shaders)
     with open(path, 'rb') as f: head = f.read(16)
-    if ue_modern_pack(path):   # an Unreal modern pak or an IoStore container: its shaders are in the shader code archives (ue_shaders), not in the file — reading it whole finds nothing and fills the device's memory
+    if not (len(args) > 2 and args[2][0] == UE_LEGACY) and ue_modern_pack(path):   # an Unreal modern pak or an IoStore container: its shaders are in the shader code archives (ue_shaders), not in the file — reading it whole finds nothing and fills the device's memory. A version 11 pak whose cooked packages keep their shaders inline (ue_legacy_jobs) is read member by member through its index below, not whole
         print(f'skipped {rel}: {os.path.getsize(path):,} bytes, an Unreal modern pak or an IoStore container (the shaders are in the shader code archives)', flush=True)
         return rel, {}, set(), {}
     found = []; trees = {}
@@ -1952,7 +2000,7 @@ def scan_file(args):
     if len(args) > 2 and args[2][0] == MONO_ARD:   # files of a Monolith archive (ard_jobs)
         ard_shaders(path, rel, args[2][1], found)
         return rel, uniq_keys(found), var_pairs(found), trees
-    if len(args) > 2 and args[2][0] == UE_LEGACY:   # files of a legacy Unreal pak (ue_legacy_jobs)
+    if len(args) > 2 and args[2][0] == UE_LEGACY:   # files of an inline shader pak (ue_legacy_jobs)
         ue_legacy_shaders(path, rel, args[2][1], found)
         return rel, uniq_keys(found), var_pairs(found), trees
     if len(args) > 2 and head[:4] == CPK:   # entries of a CRI CPK (cpk_jobs)
@@ -2064,6 +2112,7 @@ def main():
     romfs_v, main_v = romfs_l.split(','), main_l.split(',')
     if len(romfs_v) != len(main_v): red(f'{len(romfs_v)} RomFS and {len(main_v)} main: they must pair one to one')
     files, results, common = [], [], None
+    archive_paks = set()
     ea_jobs, ea_archives = [], set()
     for i, (romfs, mainnso) in enumerate(zip(romfs_v, main_v)):
         tag = os.path.basename(os.path.dirname(os.path.abspath(romfs))) if i else ''
@@ -2089,17 +2138,25 @@ def main():
         if not names and img.count(b'#version ') and 'glslcCompile' in main_imports(img) and glslc_module(os.path.dirname(os.path.abspath(mainnso))):
             print(f'[RED] main holds GLSL sources and imports glslcCompile, but there are no captured GLSLC outputs in {cap}: the shaders the game compiles at run time will have no translation', flush=True)
         for nm in names: found += glslc_shaders(open(os.path.join(cap, nm), 'rb').read(), f'/glslc_capture/{nm}')
-        # Unreal Engine shader code archives decoded on the Mac (uepak.py): <version dir>/ue_shaders, or DM_UE_SHADERS; needed when the RomFS has Unreal paks
+        # Decoded Unreal shader code archives (uepak.py): <version dir>/ue_shaders, or DM_UE_SHADERS
         ued = os.environ.get('DM_UE_SHADERS') or os.path.join(os.path.dirname(os.path.abspath(romfs)), 'ue_shaders')
         names = sorted(f for f in os.listdir(ued) if f.endswith('.ushaderbytecode')) if os.path.isdir(ued) else []
-        if not names and uepak.unreal_paks(romfs, legacy=False): red(f'the RomFS has Unreal paks, but there are no decoded shader code archives in {ued} (the NSP script writes them)')
+        if uepak.shader_archive_sources(romfs):
+            if not names: red(f'the RomFS has Unreal shader archives, but there are no decoded copies in {ued} (the NSP script writes them)')
+            # Shader code sharing is chosen for the cook. An ordinary package in a sibling pak does not establish an inline shader source.
+            archive_paks.update(p for p, _ in version_files if p.endswith('.pak'))
         for nm in names: found += ue_shaders(open(os.path.join(ued, nm), 'rb').read(), f'/ue_shaders/{nm}')
         results.append(('main', {skey(c, k): (w, s, c, k) for w, s, c, k in found}, var_pairs(found), {}))
     # DLC content (DM_SPLIT_AOC: a folder holding each DLC's RomFS as <index>/, the NSP script's aoc/) can bring shaders of its own: Xenoblade Chronicles 3's Future Redeemed keeps its models,
     # maps and effects in an archive of its own (aoc/4/bf3_dlc04.ard). Scanned like a version's RomFS, under aoc/<index>/
     aoc = os.environ.get('DM_SPLIT_AOC')
     if aoc and os.path.isdir(aoc):
-        files += romfs_sources(aoc, 'aoc/')
+        aoc_files = romfs_sources(aoc, 'aoc/')
+        files.extend(aoc_files)
+        # Each add-on is a separate RomFS with its own shader code sharing setting.
+        with os.scandir(aoc) as addons:
+            archive_addons = {a.name for a in addons if a.is_dir(follow_symlinks=False) and uepak.shader_archive_sources(a.path)}
+        archive_paks.update(p for p, r in aoc_files if p.endswith('.pak') and r.split('/', 2)[1] in archive_addons)
     zdicts = {k: v for r in romfs_v for k, v in zs_dicts(r).items()}   # Tears of the Kingdom's zstd dictionaries (zs_dicts)
     keys = {}
     # First pass: every file; Unity bundles carry type trees, and the Shader trees are collected on the way. Second pass: Unity serialized files without type trees are scanned again with the borrowed trees
@@ -2107,7 +2164,7 @@ def main():
     big = [j for p, r in files for j in (linkdata_jobs(p, r) or [])]   # Three Houses' 6.9 GB DATA1.bin: one job per range of entries, not one read of the whole file
     pak_jobs, paks = kpka_jobs(files)   # Monster Hunter Rise's PAKs: the newest copy of each path, in ranges of entries
     tr_jobs, trp = trpfs_jobs(files)   # Pokémon Legends: Z-A's Trinity packs (data.trpfs and its index data.trpfd), decoded by the game's own Oodle in the Mac host
-    ue_jobs, uep = ue_legacy_jobs(files)   # legacy Unreal paks: DRAGON QUEST XI S's decoded by the game's own LZ5 in the Mac host, OCTOPATH TRAVELER's zlib by uepak
+    ue_jobs, uep = ue_legacy_jobs(files, archive_paks=archive_paks)   # Unreal paks whose cooked packages keep their shaders inline
     bd_jobs, bdts = bdt_jobs(files)   # Dark Souls Remastered's dvdbnd archives: the entries of each .bdt by its .bhd5 index, in ranges
     arc_jobs, arcs = smash_arc_jobs(files)   # Super Smash Bros. Ultimate's data.arc: its current files, in ranges
     pz_jobs, pkzs = pkz_jobs(files)   # Bayonetta 3's PKZ archives, Oodle Kraken decoded by the game's own decoder in the Mac host

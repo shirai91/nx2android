@@ -1,0 +1,46 @@
+# OCTOPATH TRAVELER II: Square Enix / Acquire, Unreal Engine 4.27, SDK 12.3.2, NVN.
+# Experimental Android profile for update 1.1.1 (v131072); community run on Adreno 640 at 914c432, maintainer run pending.
+# Version, memory and shader metadata reference: seedds/nxnative commit
+# 16f4889192dd9bc6363a77b5d8b9654fe65441a2. See README.md for provenance and validation gaps.
+# Format: ../README.md; Android settings: android.tsv.
+
+# ---- Identity and packaging ----
+title_id	0100A3501946E000
+program_id	0100A3501946E000
+name	OCTOPATH TRAVELER II
+ipa	OctopathTravelerII.ipa
+app_category	public.app-category.games
+build	v131072	1.1.1	main=0d9649011312f62e93f6a5673a09d7e9	subsdk0=dade22cfe6f24efe62d76409522c850b	sdk=5bcf525f24eb28658a8d67ac27800d9b
+package	v131072
+shader_versions	v131072
+# subsdk0 supplies NintendoSDK_movie; preserve Horizon's module order.
+modules	main subsdk0 sdk
+romfs_marker	Majesty/Content/Paks/Majesty-Switch.pak
+zip_store	.awb:.pak:.usm:.metallib
+
+# ---- Memory ----
+# Keep the original upstream layout, which uses the existing build-keyed allocator gate
+# (patches.py + ue_malloc.tsv) and SDK node-area cuts, rather than newer upstream engine-wide rules.
+# Unreal reserves 62 GB by default. Cap it to 2 GB; the alias region also allows the
+# 62 MB SDK node area and up to 1 GB alignment. 256 MB stacks and 384 MB heap remain.
+game_args	-SwitchVirtualAddressSpaceSize=2048
+mem_reserve	0xF0000000
+mem_alias	0xC8000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+# The upstream survey reports an 80 MB NPDM system resource.
+sys_resource	0x5000000
+
+# ---- Input and frame pacing ----
+# Weapon selection needs the D-pad. L / R cycle through travelers on the selection screen.
+pad_layout	full
+# Preserve the game's 30 fps limit until Android validation. The build-keyed fps_locks.tsv
+# also supports an explicit DM_FPS_TARGET=60; this is a requested cap, not a measured rate.
+fps_target	30
+
+# ---- Shader split ----
+# The v11 pak holds LZ4 shaders inline in cooked packages and the global shader cache;
+# it has no .ushaderbytecode archive. These tables are upstream reference metadata,
+# not a shader split measured with nx2android. Validate them against the real dump before promotion.
+shader_groups	GlobalShaderCache=global #Engine/=engine #Majesty/=game
+shader_note	OCTOPATH TRAVELER II shaders
