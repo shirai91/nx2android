@@ -22,8 +22,12 @@ HLE_FORCE("_ZN2nn2oe17GetDisplayVersionEPNS0_14DisplayVersionE", "display versio
 }
 HLE_FORCE("_ZN2nn2oe24GetExpectedVolumeBalanceEPfS1_", "system / application volume balance; the host always reports 1:1", void, h_oe_GetVolBal, float *sys, float *app) { *sys = 1.0f; *app = 1.0f; }
 HLE_FORCE("_ZN2nn2oe24SetExpectedVolumeBalanceEff", "volume balance; the host ignores it", void, h_oe_SetVolBal, float sys, float app) { (void)sys; (void)app; }
-// Program total active time (nn::TimeSpan, nanoseconds): the host's monotonic time since startup
-HLE_FORCE("_ZN2nn2oe25GetProgramTotalActiveTimeEv", "total active time → time since the host started", int64_t, h_oe_ActiveTime, void) { return (int64_t)(now_ns() - g_t0_ns); }
+// Program total active time (nn::TimeSpan, nanoseconds): the guest clock since startup, so time the app is held (in the background) does not count, and a read
+// while it is held waits as a system tick read does (guest_clock_read_wait). The Legend of Zelda: Echoes of Wisdom's movie player times its frames with it; with the
+// host's wall time, a few seconds in the background over the title movie left the movie's clock ahead by as much, every frame was dropped as late, the player's
+// message queue filled and its input thread blocked for good, and loading a save then waited forever on the movie's stop (a black screen with sound)
+HLE_FORCE("_ZN2nn2oe25GetProgramTotalActiveTimeEv", "total active time: the guest clock since start (time held does not count)", int64_t, h_oe_ActiveTime, void) {
+    guest_clock_read_wait(); return (int64_t)(guest_ns() - g_t0_ns); }
 HLE_FORCE("_ZN2nn2oe31EnterExitRequestHandlingSectionEv", "exit request critical section; the host exits through SIGTERM / the lifecycle", void, h_oe_EnterExit, void) {}
 HLE_FORCE("_ZN2nn2oe31LeaveExitRequestHandlingSectionEv", "exit request critical section; the host ignores it", void, h_oe_LeaveExit, void) {}
 HLE_FORCE("_ZN2nn2oe38SetUserInactivityDetectionTimeExtendedEb", "extended auto-sleep delay; the host ignores it", void, h_oe_Inactivity, unsigned on) { (void)on; }
