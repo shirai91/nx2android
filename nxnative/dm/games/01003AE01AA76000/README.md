@@ -10,6 +10,7 @@
 | Tested with nx2android | `v0.5.0` |
 | Tested build and device | 1.3.2 AYN Odin 2 |
 | App package | `org.nx2a.fatesamurairemnant` |
+| Vulkan driver | Turnip: the port packs Mesa's Turnip driver when the porter finds it (`vulkan_driver turnip`) |
 
 The profile sets these for you (`android.tsv`); a player changes the pause menu ones in the game, and the env rows in the data pack's `env.txt`:
 
@@ -41,7 +42,7 @@ Read the profile's porting log in the comment header of [`android.tsv`](android.
 
 ## Options
 
-- Port with the KIMCHI turnip v26.0.0_R8 driver: `--vulkan-driver <path to vulkan.ad07xx.so>`.
+- The profile packs Turnip by default (`vulkan_driver turnip`; tested with KIMCHI v26.0.0_R8). `--vulkan-driver <path to vulkan.ad07xx.so>` packs a given Turnip build. `--vulkan-driver system` keeps the device's own Qualcomm driver, which was not tested.
   - It draws less power than the stock Qualcomm driver: 5.67 W against 5.93 W in the same scene.
 - The profile sets these switches:
   - `DM_VK_X_FENCES=1`: with Turnip, each submit that signals the timeline semaphore blocked in `vkQueueSubmit` for 15 ms a frame.

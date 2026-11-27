@@ -5,6 +5,7 @@ status	experimental
 tested	1.3.2 AYN Odin 2
 package	org.nx2a.fatesamurairemnant
 orientation	landscape
+vulkan_driver	turnip
 readme_image	docs/images/fate-samurai-remnant.jpg
 readme_tag	v0.5.0
 # DM_VK_X_FENCES=1: with Turnip every submission that signals the timeline semaphore blocked in vkQueueSubmit (boss fight: queue submit
