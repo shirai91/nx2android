@@ -234,7 +234,8 @@ static inline int fpso_scale(int base, int size) { return size == FPSO_SMALL ? (
 // ---- the pause menu: a panel in the middle of the window: a row of tabs, the open tab's rows, and Resume. Everything is placed in a panel rectangle p
 // (x, y, width, height: the window's for touches, the raster's for drawing), so the touches and the drawing agree ----
 enum { OVM_OVERLAY, OVM_OPACITY, OVM_EDIT, OVM_RUMBLE, OVM_FPS, OVM_SR, OVM_SHARP, OVM_MODE, OVM_EXPORT, OVM_IMPORT, OVM_PAD, OVM_AUDIO,
-       OVM_ROW_FPS, OVM_ROW_SOC, OVM_ROW_BAT, OVM_ROW_DRV, OVM_ROW_GRAPH, OVM_POS, OVM_COLOUR, OVM_OUTLINE, OVM_SIZE, OVM_ZONE, OVM_RESUME, OVM_TAB, OVM_N };   // OVM_TAB: the tabs' row;
+       OVM_ROW_FPS, OVM_ROW_SOC, OVM_ROW_BAT, OVM_ROW_DRV, OVM_ROW_GRAPH, OVM_POS, OVM_COLOUR, OVM_OUTLINE, OVM_SIZE, OVM_ZONE, OVM_RESUME, OVM_EXIT, OVM_TAB, OVM_N };   // OVM_TAB: the tabs' row;
+            // OVM_EXIT: the bottom row's Exit game half — the row keeps OVM_RESUME as its item, the draw and menu_touch split it at one midline
             // OVM_ZONE: the sticks' touch area, their circles or half the screen each (dm_overlay_stick_zone);
             // OVM_ROW_*: the counter's rows on or off; OVM_POS .. OVM_SIZE: its corner, colour, outline and size, one value on with each press (fpso_step below);
             // OVM_EDIT: the layout editor; OVM_MODE: handheld (performance) or docked (resolution); OVM_EXPORT, OVM_IMPORT: the save manager (saves_android.c);
@@ -254,6 +255,7 @@ static const char *const OVM_TAB_NAMES_ZH[OVM_TABS] = {"手柄", "游戏", "计�
 #define OVM_VIEW_ROWS (OVM_VISIBLE + 2)
 #define OVM_SCROLL_UNITS 1024      // fixed-point rows for continuous dragging, with no row snapping
 int dm_menu_scroll_position(void);
+int dm_menu_exit_armed(void);   // Exit game armed (one press on the bottom row's left half; the next press on it ends the game — front_android.c menu_do)
 static inline float ov_menu_scroll_rows(int position) { return (float)position / OVM_SCROLL_UNITS; }
 static inline uint64_t ov_menu_raster_key(int state, int position) { return state < 0 ? UINT64_MAX : (uint64_t)(uint32_t)state << 32 | (uint32_t)position; }
 static inline int fpso_step(int o, int item) {   // the options after a press on a menu item: a row's bit flips, the others go to their next value (and round)

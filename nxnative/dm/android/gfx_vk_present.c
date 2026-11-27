@@ -427,6 +427,7 @@ static const char *ovm_label(int it) {
     case OVM_OUTLINE: return TR("Outline", "描边");
     case OVM_SIZE: return TR("Size", "大小");
     case OVM_RESUME: return TR("Resume", "继续游戏");
+    case OVM_EXIT: return TR("Exit game", "退出游戏");
     default: return "";
     }
 }
@@ -495,7 +496,13 @@ static void ov_menu_panel(const ov_canvas *cv, int st, int position) {
             cv_rrect(target, r[0], r[1] + rh - 1, r[0] + rw, r[1] + rh, 0.5f, C_LINE);
             continue;
         }
-        if (it == OVM_RESUME) { const char *w = ovm_label(OVM_RESUME); cv_rrect(target, r[0], r[1], r[0] + rw, r[1] + 1, 0.5f, C_LINE); cv_text(target, r[0] + (rw - cv_text_w(w, is)) / 2, cy, w, is, C_ACCENT); continue; }
+        if (it == OVM_RESUME) {   // the bottom row: Exit game on the left half, Resume on the right, each centred in its half (menu_touch splits at the same midline)
+            cv_rrect(target, r[0], r[1], r[0] + rw, r[1] + 1, 0.5f, C_LINE);
+            const char *x = dm_menu_exit_armed() ? TR("Exit game?", "退出游戏?") : ovm_label(OVM_EXIT), *w = ovm_label(OVM_RESUME);
+            cv_text(target, r[0] + rw / 4 - cv_text_w(x, is) / 2, cy, x, is, dm_menu_exit_armed() ? C_ACCENT : C_WHITE);
+            cv_text(target, r[0] + rw * 3 / 4 - cv_text_w(w, is) / 2, cy, w, is, C_ACCENT);
+            continue;
+        }
         const char *lbl = ovm_label(it), *btn = ovm_button(it);
         cv_text(target, r[0] + rh * 0.15f, cy, lbl, is, row == sel ? C_WHITE : C_DIM);
         if (it == OVM_OPACITY || it == OVM_SHARP) {   // a slider: its track, filled to the value, the knob and the percent

@@ -41,6 +41,7 @@ class OverlayVisibility(unittest.TestCase):
 static _Atomic int g_set_overlay, g_overlay, g_pads, g_edit, g_menu_btn = 1;
 static _Atomic int g_cust[2][2][OV_N][4];
 static _Atomic int g_set_rumble, g_set_fps, g_set_sr, g_set_labels, g_menu_tab, g_sv_st, g_set_zone, g_fps_ver, g_stick_at[2][2];
+static _Atomic int g_menu_exit_armed;   // front_android.c: Exit game armed (one press; the next press on it ends the game)
 static int layout, saves;
 int dm_overlay_layout(void) { return layout; }
 float dm_overlay_scale(void) { return 1; }
@@ -62,6 +63,8 @@ static void sp_open(void) {}
 static void save_export(void) {}
 static void menu_audio(void) {}
 static void menu_close(void) {}
+static int exits;
+static void menu_exit(void) { exits++; }   // front_android.c: the armed Exit game's second press ends the game
 static void dm_overlay_redraw(void) {}
 ''' + visible + hidden + hit + menu + r'''
 // Synthetic Android events. The production dispatch and touch handlers below consume them.
@@ -385,6 +388,15 @@ static void edge_stick(void) {
 
 int main(int argc, char **argv) {
     assert(argc == 2); int test = atoi(argv[1]);
+    if (test == 12) {   // Exit game: the first press arms ("Exit game?"), the second ends the game; any other row's press takes it back to plain
+        menu_do(OVM_EXIT);
+        assert(exits == 0 && atomic_load(&g_menu_exit_armed) == 1);
+        menu_do(OVM_EXIT);
+        assert(exits == 1);
+        menu_do(OVM_SHARP);   // (the slider's row does nothing: here it only stands for "another row")
+        assert(atomic_load(&g_menu_exit_armed) == 0);
+        return 0;
+    }
     if (test == 10) { players(); return 0; }
     if (test == 11) { for (layout = 0; layout < 2; layout++) edge_stick(); return 0; }
     if (test == 9) { for (layout = 0; layout < 2; layout++) no_menu_button(); return 0; }
@@ -465,6 +477,9 @@ int main(int argc, char **argv) {
 
     def test_each_controller_is_a_player_of_its_own(self):
         self.run_case(10)
+
+    def test_exit_game_arms_then_exits_on_the_second_press(self):
+        self.run_case(12)
 
 
 if __name__ == '__main__':
