@@ -269,6 +269,7 @@ DM_VK_FLIPY	bool		debug	live	gfx_vk_exec.c	the old clip-space y convention (pict
 DM_VK_FMT_4444	bool	0	profile	start	gfx_vk_tex.c	1 = NVN RGBA4 textures (format 0x39) get VK_FORMAT_A4B4G4R4_UNORM_PACK16 where the device samples it, not the 16-bit table value (64033, not a format); Star Ocean First Departure R's UI text
 DM_VK_FRONT	int		debug	start	gfx_vk_exec.c	2`
 DM_VK_GS_SPLIT	bool	0	profile	live	gfx_vk_exec.c	1 = split geometry-shader draws (gfx_vk_gs_split.c)
+DM_VK_GS_SPLIT_BATCH	bool	1	debug	live	gfx_vk_exec.c	0 = run each split geometry-shader draw in its own pass instead of batching effects into one attachment-less pass (A/B)
 DM_VK_IMG_BLOCKS	bool		debug	start	gfx_vk_core.c	small images take a slot of a shared memory block (default); 0: every image gets memory of its own (A/B)
 DM_VK_LIN_BACK	bool		debug	live	gfx_vk_exec.c	what the GPU draws into a linear render target (NVN `LINEAR_RENDER_TARGET`) stays in the Vulkan image, as before (default: copied back to the texture's pool memory after the pass, so the CPU can read it; Super Mario Odyssey's ground fog reads its wave surface this way)
 DM_VK_LIN_COPY_BACK	bool	0	profile	start	gfx_vk_exec_copies.inc	1 = a texture copy into a LINEAR texture in CPU-visible memory also copies the region back to its storage, so the CPU reads what the GPU copied (gfx_vk_exec_copies.inc t2t_lin_back; Pokémon Violet encodes its enrollment portrait to BC1 on the CPU from such a capture)

@@ -42,7 +42,7 @@ static void render_cond(const p_render_cond *rc) {
 
 static void exec_begin(int continuing) {   // internal segments retain the current logical NVN and conditional state
     static int inited; if (!inited) { inited = 1; state_reset(); crash_add_note_hook(build_dump); prewarm_start(); compute_warm_start(); }
-    if (!continuing) { g_rc_npend = 0; g_rc_skip = 0; }
+    if (!continuing) { g_rc_npend = 0; g_rc_skip = 0; g_gs_qn = 0; g_gs_wr.n = 0; g_gs_flushing = 0; g_gs_fx_pass = 0; }
     { void vk_tex_release_drain(void); vk_tex_release_drain(); }   // Finalized textures' CPU-written marks that no queued job needs any more (gfx_vk_tex.c)
     S.pass_open = 0; S.bound_pipe = VK_NULL_HANDLE; g_cb_draws = 0; g_ord_parts = 0; g_psplit_now = 0; g_set_epoch++; x_read();
     if (g_prof_on) { extern uint64_t g_pkg_ns, g_pkg_n; memset(g_prof_ns, 0, sizeof g_prof_ns); g_prof_t0 = tick(); g_prof_pkg0 = g_pkg_ns; g_prof_npkg0 = g_pkg_n; g_prof_pipes0 = g_vkst.pipes_built; }

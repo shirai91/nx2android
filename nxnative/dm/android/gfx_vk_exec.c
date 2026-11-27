@@ -5,6 +5,7 @@
 // Version 1 orders everything with whole-pipeline barriers around passes, copies and dispatches.
 #include "gfx_vk.h"
 #include "gfx_vk_slot.h"
+#include "gfx_vk_gs_batch.h"
 #include "nvn_hmap.h"
 #include "game_profile.h"
 #include <math.h>

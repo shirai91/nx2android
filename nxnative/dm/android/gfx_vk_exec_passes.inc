@@ -442,6 +442,7 @@ void vk_end_pass(void) {
     if (S.pass_open == 1 && g_lin_back && g_pass_draws) lin_back();
     if (S.pass_open == 1) crumb_mark(0);
     S.pass_open = 0; S.bound_pipe = VK_NULL_HANDLE; g_tf_in_pass = 0;
+    if (g_gs_qn && !g_gs_flushing) gs_batch_flush();
 }
 // a pass end before something that reads or writes pool memory other than through a uniform binding (copies, fills, dispatches, buffer ↔ texture
 // copies, the submission's end): the deferred uniform updates land first (draws read them through their shadows, so ordinary pass ends keep them)
@@ -579,6 +580,11 @@ static int begin_pass(void) {
     for (int i = 0; i < 9; i++) P_att[i].im = NULL;
     VkRenderingAttachmentInfo da = {0}, sa = {0};
     uint32_t w = UINT32_MAX, h = UINT32_MAX, layers = UINT32_MAX, samples = 1; int ncol = 0, have = 0;
+    if (g_gs_fx_pass) {
+        w = 1; h = 1; layers = 1; samples = 1; ncol = 0; have = 1;
+        for (int i = 0; i < 8; i++) S.cfmt[i] = VK_FORMAT_UNDEFINED;
+        S.dfmt = VK_FORMAT_UNDEFINED; S.daspect = 0;
+    } else {
     for (int i = 0; i < S.rt_n; i++) {
         S.cfmt[i] = VK_FORMAT_UNDEFINED;
         ca[i].sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO; ca[i].imageLayout = VK_IMAGE_LAYOUT_GENERAL; ca[i].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD; ca[i].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -636,6 +642,7 @@ static int begin_pass(void) {
         for (int i = 0; i < 8; i++) S.cfmt[i] = VK_FORMAT_UNDEFINED;
         S.dfmt = VK_FORMAT_UNDEFINED; S.daspect = 0;
         static int said; if (!said++) VKLOG("draw with no render target: attachment-less pass %ux%u", w, h);
+    }
     }
     if (have && slot0_fill_wanted(ncol, ca[0].imageView != VK_NULL_HANDLE, samples, layers) && slot0_scratch(w, h)) {   // an empty slot 0 gets the scratch (DM_VK_SLOT0_FILL, opt-in; above)
         ca[0] = (VkRenderingAttachmentInfo){VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, NULL, g_s0_view, VK_IMAGE_LAYOUT_GENERAL, 0, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED,
