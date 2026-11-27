@@ -1113,6 +1113,42 @@ VkBufferView vk_tbuf_view(const tex_t *t, int storage) {
     pthread_mutex_unlock(&g_tbuf_mu);
     return v;
 }
+// Profile android_fetch1d buffer: a 2D texture bound in a slot translated as a texture buffer is read as its row 0 (level 0, layer 0), what the slot's 1D integer fetch
+// read as 2D rows before (x < 16384: row 0). The row is copied from guest memory (vk_ubd_read, block-linear or pitch-linear) into scratch for this bind, so the stage is
+// not kept for later draws (g_tbuf_copies). Fate/Samurai Remnant's skinning vertex shaders read the bone matrices in slots 0-3 from texture buffers for some characters and
+// from 2D textures for others: with the slots answered as buffers (shader_facts_manual.tsv) the second kind read zeros, and those bodies collapsed (a floating head)
+VkBufferView vk_tex_row_view(const tex_t *t) {
+    const vkfmt_t *f = vk_fmt(t->d.format);
+    uint32_t row_bytes, rows, slices, bpb; uint64_t base; unsigned th, td; int linear = (t->d.flags & 0x10) != 0;
+    static unsigned nr;
+#define ROW_NO(why) do { if (nr++ < 16) VKLOG("[RED] 2D texture %ux%u format %#x flags %#x samples %u in a texture buffer slot: not read as a row (%s): zeros", t->d.width, t->d.height, t->d.format, t->d.flags, t->d.samples, why); return VK_NULL_HANDLE; } while (0)
+    if (!f || !f->bpb) ROW_NO("no host format");
+    if (!t->mem || t->d.target != 1 || t->d.samples > 1) ROW_NO("no memory, not 2D or multisampled");
+    int bw, bh, gb = nvn_fmt_bpb(t->d.format, &bw, &bh); if (gb != (int)f->bpb || bw != 1 || bh != 1) ROW_NO("compressed or host texel size differs");   // plain texels only
+    uint32_t w = t->d.width > 16384 ? 16384 : t->d.width;
+    VkDeviceSize n = (VkDeviceSize)w * f->bpb;
+    if (!linear && nvn_deswizzle_geom(&t->d, 0, 0, &row_bytes, &rows, &slices, &base, &th, &td, &bpb)) ROW_NO("no block-linear geometry");
+    VkDeviceSize al = V.props.limits.minTexelBufferOffsetAlignment;
+    VkDeviceSize eu = V.tbuf_align_uniform ? V.tbuf_align_uniform : al, es = V.tbuf_align_storage ? V.tbuf_align_storage : al;
+    VkDeviceSize sa = al; if (eu > sa) sa = eu; if (es > sa) sa = es;
+    VkBuffer sb; VkDeviceSize so; uint8_t *p = vk_scratch(n, sa, &sb, &so); void vk_ubd_read(uint64_t a, uint64_t n, uint8_t *dst);
+    uint64_t a0 = (uint64_t)(uintptr_t)t->mem;
+    if (linear) vk_ubd_read(a0, n, p);
+    else {   // row 0 of a GOB is four 16-byte runs (nvn_deswizzle.c gob_off): copy them run by run; a GOB row's bytes past the texture's own are left out
+        uint8_t tmp[16];
+        for (uint32_t x = 0; x < n; x += 16) {
+            uint32_t k = n - x < 16 ? (uint32_t)(n - x) : 16;
+            vk_ubd_read(a0 + base + nvn_bl_offset(x, 0, 0, row_bytes, rows, th, td), 16, tmp); memcpy(p + x, tmp, k);
+        }
+    }
+    VkBufferViewCreateInfo ci = {VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO, NULL, 0, sb, f->vk, so, n}; VkBufferView v;
+    if (vkCreateBufferView(V.dev, &ci, NULL, &v)) ROW_NO("buffer view creation failed");
+#undef ROW_NO
+    vk_defer_free_bview(v); g_tbuf_copies++;
+    static unsigned nc; if (nc++ < 4) VKLOG("2D texture %ux%u format %#x flags %#x (%s) bound in a texture buffer slot: row 0 read as %u texels (android_fetch1d buffer)",
+                                            t->d.width, t->d.height, t->d.format, t->d.flags, linear ? "pitch-linear" : "block-linear", w);
+    return v;
+}
 // A depth / stencil image read back by the CPU (mtl_read_texels) is copied aspect by aspect: a buffer copy of the depth aspect holds 2 bytes a texel (D16) or 4 (D32F; D24
 // in the low 24 bits of 4) and one of the stencil aspect 1, tightly packed, whatever the combined texel's size. The guest's texels (bpb bytes each) are rebuilt from them:
 // DEPTH32F_STENCIL8 the float, then the stencil byte, then 3 zero bytes (Maxwell's ZF32_X24S8); DEPTH24_STENCIL8 the depth's low 24 bits with the stencil in the top byte

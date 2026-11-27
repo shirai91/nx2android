@@ -55,6 +55,9 @@ static pkey g_last_k; static VkPipeline g_last_p;
 // So a capture's new full-screen targets still build at once (SMO's first frog capture: 33 pipelines, two 300 ms frames, once). So do passes into a linear render target:
 // the CPU reads it (lin_back), and SMO's fog wave solver feeds what it reads into the next step, so one step left out lost the Cap Kingdom fog for the run.
 // DM_VK_ASYNC_PIPE=0 (live): every pipeline is built at once
+// DM_VK_SYNC_PIPE_MS=N (live, a profile's): once the builds kept on the replay thread in one present took N ms, a young target's draws go to the background threads too.
+// Fate/Samurai Remnant opened a scene with 22 new pipelines into fresh 400x225 targets: one 1990 ms frame (45-415 ms a build on Turnip, about 88 on average). The
+// cost of the cap: a target drawn only in that present keeps its missing draws (`young target … drawn in 3 presents in a row since` logs the ones redrawn)
 #define PIPE_PENDING ((VkPipeline)(uintptr_t)2)
 enum { APQ = 256 };
 static pkey g_apq[APQ]; static int g_apq_h, g_apq_t, g_apq_on;   // queued keys (a draw left out counts as skipped for no pipeline)
@@ -81,10 +84,13 @@ static void *async_pipe_thread(void *arg) {
 static int async_pipe(const pkey *k) {   // 1: queued (the draw is left out); under nothing (takes g_pipe_mu)
     if (!g_async_pipe || k->raster_discard || (S.sh[0] && S.sh[0]->xfb) || (S.sh[2] && S.sh[2]->xfb)) return 0;
     for (int i = 0; i < S.ncol && i < 8; i++) if (S.rt_has_col[i] && (S.rt_col[i].d.flags & NVN_TEXTURE_FLAGS_LINEAR_RENDER_TARGET)) return 0;   // (the CPU reads it: lin_back)
-    int natt = 0; for (int i = 0; i < 9; i++) { const vkimg_t *a = P_att[i].im; if (!a) continue; natt++; if (a->rt_frames < 3) {
+    int natt = 0, young = 0; for (int i = 0; i < 9; i++) { vkimg_t *a = P_att[i].im; if (!a) continue; natt++; if (a->rt_frames < 3) {
+            if (g_sync_pipe_ns && g_sync_pipe_frame == g_tex_frame && g_sync_pipe_ns_used >= g_sync_pipe_ns) { young = 1; continue; }   // over the budget
             if (g_prof_on) { static int n; if (n++ < 300) VKLOG("pipeline built here: attachment %d %ux%u nvn format %#x drawn in %llu presents in a row (shaders %016llx %016llx)", i, a->w, a->h, a->nvn_format, (unsigned long long)a->rt_frames, (unsigned long long)k->key[0], (unsigned long long)k->key[1]); }
             return 0; } }   // (counted in this present too)
     if (!natt) return 0;
+    if (young) { for (int i = 0; i < 9; i++) { vkimg_t *a = P_att[i].im; if (a && a->rt_frames < 3 && !a->rt_left_out) a->rt_left_out = 1; }
+        static int n; if (n++ < 50) VKLOG("present %llu: sync pipeline budget spent (%.0f ms), a young target's draw goes to the background threads", (unsigned long long)g_tex_frame, g_sync_pipe_ns_used / 1e6); }
     pthread_mutex_lock(&g_apq_mu);
     if (!g_apq_on) { g_apq_on = 1; for (int i = 0; i < 2; i++) { pthread_t t; pthread_attr_t a; pthread_attr_init(&a); pthread_attr_setdetachstate(&a, PTHREAD_CREATE_DETACHED); pthread_create(&t, &a, async_pipe_thread, NULL); pthread_attr_destroy(&a); } }
     int ok = g_apq_h - g_apq_t < APQ; if (ok) { g_apq[g_apq_h % APQ] = *k; g_apq_h++; pthread_cond_signal(&g_apq_cv); }
@@ -107,7 +113,8 @@ static VkPipeline graphics_pipeline(const pkey *k, VkPipelineLayout layout) {
     if (p) { g_last_k = *k; g_last_p = p; if (fc_on) { fc[fi].k = *k; fc[fi].p = p; } return p == (void *)1 ? VK_NULL_HANDLE : p; }
     if (async_pipe(k)) return VK_NULL_HANDLE;
     vkshader_t *stg[3] = {S.sh[0], S.sh[1], S.sh[2]};
-    uint64_t tb = g_prof_on ? tick() : 0; p = build_pipeline(k, layout, stg); if (g_prof_on) g_prof_ns[0] += tick() - tb; g_vkst.pipes_built++;
+    uint64_t tb = g_prof_on || g_sync_pipe_ns ? tick() : 0; p = build_pipeline(k, layout, stg); if (g_prof_on) g_prof_ns[0] += tick() - tb; g_vkst.pipes_built++;
+    if (g_sync_pipe_ns) { if (g_sync_pipe_frame != g_tex_frame) { g_sync_pipe_frame = g_tex_frame; g_sync_pipe_ns_used = 0; } g_sync_pipe_ns_used += tick() - tb; }
     pthread_mutex_lock(&g_pipe_mu);
     VkPipeline had = nvn_hm_get(&g_pipes, k);
     if (had) { if (p != (void *)1) vkDestroyPipeline(V.dev, p, NULL); p = had; }   // a prewarm thread made it meanwhile
@@ -176,9 +183,27 @@ static void prewarm_start(void) {
     if (f) fclose(f);
     // rewrite the file with the records read (dropping a torn last record), then append to it
     g_prec = fopen(path, "wb"); if (g_prec) { fwrite(hdr, sizeof hdr, 1, g_prec); if (g_pw_n) fwrite(g_pw, sizeof(pkey), g_pw_n, g_prec); fflush(g_prec); }
+    // The profile's seed (porter packs dm/games/<id>/vk_pipelines_seed.bin, a vk_pipelines.bin recorded in play, as DM_ROOT/vk_pipelines_seed.bin): its pipelines this
+    // device has not recorded go after its own. Without it a new install compiled each pipeline on the replay thread at first sight: a target drawn for the first
+    // time builds at once (async_pipe), and Fate/Samurai Remnant's first battle effects held one frame 2 s. Never written to vk_pipelines.bin (the pack keeps it);
+    // a seed of another key layout (header) is ignored, and a record whose shaders this build lacks is skipped by prewarm_thread
+    size_t own = g_pw_n, nseed = 0;
+    snprintf(path, sizeof path, "%s/vk_pipelines_seed.bin", root);
+    if ((f = fopen(path, "rb")) && fread(fh, sizeof fh, 1, f) == 1 && fh[0] == hdr[0] && fh[1] == hdr[1]) {
+        fseek(f, 0, SEEK_END); long n = (ftell(f) - (long)sizeof fh) / (long)sizeof(pkey); fseek(f, sizeof fh, SEEK_SET);
+        pkey *all = n > 0 ? realloc(g_pw, (own + (size_t)n) * sizeof(pkey)) : NULL;
+        if (all) {
+            g_pw = all; size_t got = fread(g_pw + own, sizeof(pkey), (size_t)n, f);
+            nvn_hmap seen; nvn_hm_init(&seen, sizeof(pkey));
+            for (size_t i = 0; i < own; i++) nvn_hm_put(&seen, &g_pw[i], (void *)1);
+            for (size_t i = 0; i < got; i++) { const pkey *k = &g_pw[own + i]; if (k->alt || nvn_hm_put(&seen, k, (void *)1)) continue; g_pw[own + nseed++] = *k; }
+            free(seen.keys); free(seen.vals); g_pw_n = own + nseed;
+        }
+    }
+    if (f) fclose(f);
     if (!g_pw_n || getenv("DM_VK_NOPREWARM")) { VKLOG("prewarm: %zu pipelines recorded%s", g_pw_n, g_pw_n ? ", off (DM_VK_NOPREWARM)" : ""); return; }
     long nc = sysconf(_SC_NPROCESSORS_ONLN); int nt = nc >= 8 ? 3 : nc >= 4 ? 2 : 1;
-    VKLOG("prewarm: %zu recorded pipelines on %d threads", g_pw_n, nt);
+    VKLOG("prewarm: %zu recorded pipelines (%zu from the profile's seed) on %d threads", g_pw_n, nseed, nt);
     for (int i = 0; i < nt; i++) { pthread_t t; pthread_attr_t a; pthread_attr_init(&a); pthread_attr_setdetachstate(&a, PTHREAD_CREATE_DETACHED); pthread_create(&t, &a, prewarm_thread, NULL); pthread_attr_destroy(&a); }
 }
 // ---- what each thread is building, for the crash dump. Issue #64: Super Mario Bros. Wonder crashed in the Adreno 750's shader compiler (libllvm-qgl.so, driver 512.762)

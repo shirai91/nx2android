@@ -25,7 +25,8 @@ def _load_nsp():
     m.nacp, m.pg = nacp, profile_guess   # module globals its main() sets
     if sys.platform != 'darwin': m.can_clone = lambda d: False   # APFS clones (clonefile) exist only on a Mac
     files = m.profile_files   # the shader stages' reuse keys: android.tsv changes no shader (an edit to it re-split and re-translated Viractal's 25,464 shaders)
-    m.profile_files = lambda g: [p for p in files(g) if p.name != 'android.tsv']
+    # nor do the profile's notes (README.md) and its Vulkan pipeline seed (vk_pipelines_seed.bin, which only the data pack carries)
+    m.profile_files = lambda g: [p for p in files(g) if p.name not in ('android.tsv', 'README.md', 'vk_pipelines_seed.bin')]
     return m
 
 

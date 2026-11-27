@@ -1,0 +1,34 @@
+# Hand-written translation facts, merged over the generated rows of shader_facts.tsv by dm/gfx/tools/shader_split.py: key <TAB> facts JSON (same format)
+# Fate/Samurai Remnant: these shaders fetch with a 1D texel fetch whose type the machine code does not give, and the game binds a texture buffer there (the host's red line printed each row, 2026-11-26).
+00c66292aaeda7b3	{"tex":{"16":"buffer","17":"buffer","18":"buffer","20":"buffer"}}
+072e73fed5d6c2c3	{"tex":{"16":"buffer","17":"buffer","18":"buffer","19":"buffer","20":"buffer","21":"buffer"}}
+0e87a2e5ca548736	{"tex":{"0":"buffer","29":"buffer","30":"buffer","31":"buffer"}}
+10959b1dff4d8582	{"tex":{"16":"buffer","17":"buffer","18":"buffer","19":"buffer","20":"buffer","21":"buffer"}}
+16167cd16d552170	{"tex":{"0":"buffer","1":"buffer"}}
+1ef85ed20e7fe09e	{"tex":{"0":"buffer"}}
+25131385341cb2fe	{"tex":{"16":"buffer","17":"buffer","18":"buffer","19":"buffer","20":"buffer","21":"buffer"}}
+2e5f6a6e3d67e120	{"tex":{"0":"buffer","29":"buffer"}}
+402b5d68a9e791f2	{"tex":{"0":"buffer"}}
+4fc7b6a167d6489f	{"tex":{"0":"buffer","29":"buffer","30":"buffer","31":"buffer"}}
+515fd43fffba4593	{"tex":{"0":"buffer"}}
+52a4157f93d40db2	{"tex":{"16":"buffer","17":"buffer","18":"buffer","19":"buffer","20":"buffer","21":"buffer"}}
+582b971efe9cf358	{"tex":{"0":"buffer","29":"buffer","30":"buffer"}}
+5e44444080c9db32	{"tex":{"0":"buffer","1":"buffer","2":"buffer","3":"buffer"}}
+5ef33d8e2636e917	{"tex":{"16":"buffer","17":"buffer","18":"buffer","19":"buffer","20":"buffer","21":"buffer","25":"buffer"}}
+79b7dd666a6826a7	{"tex":{"16":"buffer","17":"buffer","18":"buffer","19":"buffer","20":"buffer","21":"buffer"}}
+806456f83ff397ea	{"tex":{"0":"buffer","29":"buffer","30":"buffer"}}
+8142aa9f9596d9d7	{"tex":{"0":"buffer","1":"buffer","2":"buffer","3":"buffer"}}
+8164c1c78d6aee79	{"tex":{"16":"buffer","17":"buffer","18":"buffer","20":"buffer"}}
+8a56446f60846f03	{"tex":{"0":"buffer","1":"buffer","2":"buffer","3":"buffer"}}
+931abafd2f30d13c	{"tex":{"0":"buffer","1":"buffer"}}
+9b0991441bd4b9bf	{"tex":{"0":"buffer","1":"buffer","2":"buffer","3":"buffer"}}
+a07d7d82a7679cab	{"tex":{"16":"buffer","17":"buffer","18":"buffer","19":"buffer","20":"buffer","21":"buffer"}}
+a179b2e0a2c88830	{"tex":{"17":"buffer","18":"buffer"}}
+a2261c7f07d023fb	{"tex":{"0":"buffer","1":"buffer","2":"buffer","3":"buffer"}}
+b084e9eb02896678	{"tex":{"16":"buffer","17":"buffer","18":"buffer","19":"buffer","20":"buffer","21":"buffer"}}
+b7794be0b4135395	{"tex":{"25":"buffer"}}
+c72c5af55c40a05b	{"tex":{"0":"buffer","29":"buffer"}}
+c870e35d67ddcc3a	{"tex":{"16":"buffer","17":"buffer","18":"buffer","19":"buffer","20":"buffer","21":"buffer"}}
+c8b94b9791f99e6b	{"tex":{"16":"buffer","17":"buffer","18":"buffer","19":"buffer","20":"buffer","21":"buffer"}}
+f2ad23e10ed3833c	{"tex":{"0":"buffer","1":"buffer","29":"buffer","30":"buffer"}}
+f4893b643adcf984	{"tex":{"0":"buffer","1":"buffer","2":"buffer"}}

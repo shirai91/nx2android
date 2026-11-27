@@ -623,6 +623,9 @@ static VkDescriptorSet stage_set(int st, vkshader_t *s, uint32_t *dofs, VkDescri
             bv[nbv] = tid && vk_tex_by_id(tid, &v, &t) && t && t->d.target == NVN_TEXTURE_TARGET_BUFFER ? vk_tbuf_view(t, b->kind == RK_IMG_TBUF) : VK_NULL_HANDLE;
             if ((g_tracing && g_x_tracepass >= 0) || (st == 5 && g_x_tracepass == -2)) VKLOG("  texel buffer binding %d (kind %d, cbuf %d +%d): handle %#llx → %s format %#x, %u elements at %#llx%s", b->binding, b->kind, b->reg, b->off,
                 (unsigned long long)h, t ? "texture" : "no texture", t ? t->d.format : 0, t ? t->d.width : 0, t ? (unsigned long long)(uintptr_t)t->mem : 0ull, bv[nbv] ? "" : " (the dummy: zeros)");
+#if DM_GAME_FETCH1D_BUFFER
+            if (!bv[nbv] && t && t->d.target == 1 && b->kind == RK_TBUF) { VkBufferView vk_tex_row_view(const tex_t *t); bv[nbv] = vk_tex_row_view(t); }   // a 2D texture: its row 0 (gfx_vk_tex.c)
+#endif
             if (!bv[nbv] && t && t->d.target != NVN_TEXTURE_TARGET_BUFFER && b->kind == RK_TBUF) {   // a profile's "buffer" answer (shader_facts_manual.tsv) that met an image: the answer is wrong
                 static uint64_t seen[64]; static int ns; uint64_t key = S.sh[st] ? S.sh[st]->key : 0, id = key ^ (uint64_t)(uint16_t)b->reg << 48; int dup = 0;
                 for (int j = 0; j < ns; j++) dup |= seen[j] == id;
