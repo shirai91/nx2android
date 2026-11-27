@@ -7,7 +7,7 @@
 |---|---|
 | Status | **experimental** |
 | Title ID | `01008DD013200000` |
-| Tested with nx2android | `v0.4.0` |
+| Tested with nx2android | `v0.5.0` |
 | Tested build and device | v196608 POCO X3 Pro (Snapdragon 860, Adreno 640, Android 13), community test |
 | App package | `org.nx2a.t01008dd013200000` |
 | Needs | a GPU that reads BC-compressed textures (Adreno, Xclipse; not Mali or PowerVR) |
