@@ -1189,7 +1189,10 @@ static void touch_event(AInputEvent *e) {
     }
     uint64_t btn = 0; int32_t lx = 0, ly = 0, rx = 0, ry = 0; float kn[2][2] = {{0, 0}, {0, 0}}, at[2][2] = {{-1, -1}, {-1, -1}}; int open = 0, held[2] = {0, 0};
     dm_touch t[16]; int n = 0;
-    float pic[4] = {0, 0, 1, 1}; if (dm_picture_rect) dm_picture_rect(pic); if (pic[2] <= 0 || pic[3] <= 0) pic[2] = pic[3] = 1;   // gfx_vk_present.c: the picture inside the window
+    float pic[4] = {0, 0, 1, 1}; if (dm_picture_rect) dm_picture_rect(pic);
+    // A picture rect that cannot be true — a mode switch mid-frame, a surface that had no size yet — used to map every touch into one corner of the window. The whole
+    // window is the picture then: the game still gets a usable touch while the mode settles.
+    if (pic[2] < 0.05f || pic[3] < 0.05f || pic[2] > 4 || pic[3] > 4 || pic[0] < -1 || pic[1] < -1) { pic[0] = pic[1] = 0; pic[2] = pic[3] = 1; }
     for (size_t i = 0; i < pc; i++) {
         int id = AMotionEvent_getPointerId(e, i) & 31;
         int lifted = act == AMOTION_EVENT_ACTION_UP || act == AMOTION_EVENT_ACTION_CANCEL || (act == AMOTION_EVENT_ACTION_POINTER_UP && (int)i == ai);
