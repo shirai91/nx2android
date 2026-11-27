@@ -17,7 +17,7 @@
     X(vkCmdEndRendering) X(vkCmdBindPipeline) X(vkCmdBindDescriptorSets) X(vkCmdBindVertexBuffers) X(vkCmdBindIndexBuffer) X(vkCmdSetViewport) X(vkCmdSetScissor) \
     X(vkCmdSetBlendConstants) X(vkCmdSetStencilReference) X(vkCmdSetStencilCompareMask) X(vkCmdSetStencilWriteMask) X(vkCmdSetDepthBias) X(vkCmdSetLineWidth) X(vkCmdDraw) \
     X(vkCmdPushConstants) X(vkCmdDrawIndexed) X(vkCmdDrawIndirect) X(vkCmdDrawIndexedIndirect) X(vkCmdDispatch) X(vkCmdDispatchIndirect) X(vkCmdResetQueryPool) \
-    X(vkCmdWriteTimestamp) X(vkCmdBindTransformFeedbackBuffersEXT) X(vkCmdBeginTransformFeedbackEXT) X(vkCmdEndTransformFeedbackEXT) X(vkCmdDrawIndirectByteCountEXT) X(vkCmdDrawIndirectCount) X(vkCmdDrawIndexedIndirectCount)
+    X(vkCmdBeginQuery) X(vkCmdEndQuery) X(vkCmdWriteTimestamp) X(vkCmdBindTransformFeedbackBuffersEXT) X(vkCmdBeginTransformFeedbackEXT) X(vkCmdEndTransformFeedbackEXT) X(vkCmdDrawIndirectByteCountEXT) X(vkCmdDrawIndirectCount) X(vkCmdDrawIndexedIndirectCount)
 #define DQ_SYNC(X) X(vkBeginCommandBuffer) X(vkEndCommandBuffer) X(vkAllocateCommandBuffers) X(vkResetCommandPool) X(vkQueueSubmit) X(vkQueuePresentKHR) X(vkQueueWaitIdle) X(vkDeviceWaitIdle)
 #define DQ_REAL(f) static PFN_##f r_##f;
 DQ_CMDS(DQ_REAL) DQ_SYNC(DQ_REAL)
@@ -148,6 +148,7 @@ typedef struct { uint32_t a, b, c, d; int32_t e; uint32_t f; } a_draw;
 typedef struct { VkPipelineLayout l; VkShaderStageFlags st; uint32_t off, size; } a_push;
 typedef struct { VkBuffer b; VkDeviceSize off; uint32_t n, stride; } a_indirect;
 typedef struct { VkQueryPool p; uint32_t first, n; } a_qreset;
+typedef struct { VkQueryPool p; uint32_t q, flags; } a_query;
 typedef struct { VkPipelineStageFlagBits st; VkQueryPool p; uint32_t q; } a_ts;
 typedef struct { uint32_t first, n; int has_sizes, has_bufs, has_offs; } a_xfb;
 typedef struct { uint32_t inst, first_inst; VkBuffer b; VkDeviceSize off; uint32_t ctr_off, stride; } a_bytecount;
@@ -202,6 +203,8 @@ static void run(const rec_hdr *h) {
     case OP_vkCmdDispatch: { const a_draw *a = (const void *)p; r_vkCmdDispatch(cb, a->a, a->b, a->c); break; }
     case OP_vkCmdDispatchIndirect: { const a_indirect *a = (const void *)p; r_vkCmdDispatchIndirect(cb, a->b, a->off); break; }
     case OP_vkCmdResetQueryPool: { const a_qreset *a = (const void *)p; r_vkCmdResetQueryPool(cb, a->p, a->first, a->n); break; }
+    case OP_vkCmdBeginQuery: { const a_query *a = (const void *)p; r_vkCmdBeginQuery(cb, a->p, a->q, a->flags); break; }
+    case OP_vkCmdEndQuery: { const a_query *a = (const void *)p; r_vkCmdEndQuery(cb, a->p, a->q); break; }
     case OP_vkCmdWriteTimestamp: { const a_ts *a = (const void *)p; r_vkCmdWriteTimestamp(cb, a->st, a->p, a->q); break; }
     case OP_vkCmdBindTransformFeedbackBuffersEXT: { const a_xfb *a = (const void *)p; const VkBuffer *b = (const void *)(p + sizeof *a); const VkDeviceSize *o = (const void *)(b + a->n);
         r_vkCmdBindTransformFeedbackBuffersEXT(cb, a->first, a->n, b, o, a->has_sizes ? o + a->n : NULL); break; }
@@ -341,6 +344,12 @@ static VKAPI_ATTR void VKAPI_CALL w_vkCmdDispatchIndirect(VkCommandBuffer cb, Vk
     { BEGIN(OP_vkCmdDispatchIndirect, a_indirect, 0); *a = (a_indirect){b, off, 0, 0}; (void)at_; rec_end(base_); return; } direct: DIRECT(vkCmdDispatchIndirect, cb, b, off); }
 static VKAPI_ATTR void VKAPI_CALL w_vkCmdResetQueryPool(VkCommandBuffer cb, VkQueryPool p, uint32_t first, uint32_t n) {
     { BEGIN(OP_vkCmdResetQueryPool, a_qreset, 0); *a = (a_qreset){p, first, n}; (void)at_; rec_end(base_); return; } direct: DIRECT(vkCmdResetQueryPool, cb, p, first, n); }
+// the occlusion queries of gfx_vk_occlusion.inc: without these in the queue they would be recorded on the replay thread while the recorder is
+// making its own calls into the same command buffer (two threads, one command buffer: undefined, and Turnip faults or loses the device)
+static VKAPI_ATTR void VKAPI_CALL w_vkCmdBeginQuery(VkCommandBuffer cb, VkQueryPool p, uint32_t q, VkQueryControlFlags f) {
+    { BEGIN(OP_vkCmdBeginQuery, a_query, 0); *a = (a_query){p, q, f}; (void)at_; rec_end(base_); return; } direct: DIRECT(vkCmdBeginQuery, cb, p, q, f); }
+static VKAPI_ATTR void VKAPI_CALL w_vkCmdEndQuery(VkCommandBuffer cb, VkQueryPool p, uint32_t q) {
+    { BEGIN(OP_vkCmdEndQuery, a_query, 0); *a = (a_query){p, q, 0}; (void)at_; rec_end(base_); return; } direct: DIRECT(vkCmdEndQuery, cb, p, q); }
 static VKAPI_ATTR void VKAPI_CALL w_vkCmdWriteTimestamp(VkCommandBuffer cb, VkPipelineStageFlagBits st, VkQueryPool p, uint32_t q) {
     { BEGIN(OP_vkCmdWriteTimestamp, a_ts, 0); *a = (a_ts){st, p, q}; (void)at_; rec_end(base_); return; } direct: DIRECT(vkCmdWriteTimestamp, cb, st, p, q); }
 static VKAPI_ATTR void VKAPI_CALL w_vkCmdBindTransformFeedbackBuffersEXT(VkCommandBuffer cb, uint32_t first, uint32_t n, const VkBuffer *b, const VkDeviceSize *o, const VkDeviceSize *sz) {

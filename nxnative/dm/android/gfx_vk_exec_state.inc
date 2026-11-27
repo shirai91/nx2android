@@ -46,6 +46,10 @@ static int g_var_now;   // the bisection's change for the draw being recorded (s
 static int g_tracing;   // the draw being recorded is the one the bisection found (its descriptors are logged)
 // replay counters, printed by gfx_vk_present.c every 600 presents (draws done and skipped by reason, passes, clears folded into load ops, dispatches)
 struct { uint64_t draws, skip_prog, skip_rt, skip_pipe, passes, folded, dispatches, pipes_built, rt_kept, ns_exec, ns_desc, ns_pipe, max_pass_draws; } g_vkst; static uint64_t g_pass_draws;   // ns_*: time in the replay, its descriptor sets, its pipeline keys and lookups
+// samples-passed counting (gfx_vk_core.c, gfx_vk_occlusion.inc): the replay's hooks. Each is a no-op while DM_VK_OCCLUSION is off, which keeps the old constant path
+void vk_oq_begin_draw(void); void vk_oq_end_pass(void); void vk_oq_draw_skipped(void);
+int vk_oq_enabled(void);
+void vk_sub_samples_reset(void); int vk_sub_samples_passed(uint64_t addr);
 static inline uint64_t tnow(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (uint64_t)t.tv_sec * 1000000000ull + (uint64_t)t.tv_nsec; }
 // The per-draw timers (about 10 a draw, ~3,000 draws a frame): the arm64 counter register read directly, a few ns against clock_gettime's ~20-40, in ns
 static inline uint64_t tick(void) {

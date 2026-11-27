@@ -1417,6 +1417,8 @@ uint64_t mtl_present(const tex_t *t, double period, const int crop[4]) {
           if (g_order_kept + g_order_ended > pk + pn) VKLOG("order-only barriers per frame (last 600): %.1f kept inside their pass, %.1f ended it", (g_order_kept - pk) / 600.0, (g_order_ended - pn) / 600.0);
           pk = g_order_kept; pn = g_order_ended; }
         void vk_pass_report(void); vk_pass_report();
+        { int vk_oq_stats_line(char *b, size_t n, double frames); char oqb[320];   // samples-passed counting (gfx_vk_occlusion.inc): no line while the game uses no occlusion counter
+          if (vk_oq_stats_line(oqb, sizeof oqb, 600) > 0) VKLOG("%s (last 600)", oqb); }
         { static int lf = -1; if (lf < 0) { const char *e = getenv("DM_LOG_FPS"); lf = e && atoi(e) > 0; }   // the descriptor caches (gfx_vk_exec.c), only with DM_LOG_FPS=1
           if (lf) { extern uint64_t g_memo_why[6], g_cbpath[3], g_cbmiss[3], g_rmemo_hit, g_rmemo_put, g_tvc_hit, g_tvc_miss, g_tvc_cold, g_c2_hit, g_c2_put, g_drv_content;
             static uint64_t pw[6], pc[3], pm[3], prh, prp, pth, ptm, ptc, p2h, p2p, pdc;
