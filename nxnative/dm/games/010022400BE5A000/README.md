@@ -37,11 +37,11 @@ Read the profile's porting log in the comment header of [`android.tsv`](android.
 
 | Device | GPU | Vulkan driver | Game version | nx2android | Result |
 |---|---|---|---|---|---|
-| AYN Odin 2 (Android 13) | Adreno 740 | Mesa Turnip KIMCHI v26.0.0_R8 | 1.0.1 (v65536) | `v0.4.0` | plays: the title, a story duel, cutscenes, the card shop, card details and saving |
+| AYN Odin 2 (Android 13) | Adreno 740 | Mesa Turnip KIMCHI v26.0.0_R8 (packed by default) | 1.0.1 (v65536) | `v0.4.0` | plays: the title, a story duel, cutscenes, the card shop, card details and saving |
 
 ## Options
 
-- The game draws with OpenGL ES on the device's own GLES driver. The port presents its frames through Vulkan, on Turnip by default (`vulkan_driver turnip`; tested with KIMCHI v26.0.0_R8).
+- The game draws with OpenGL ES on the device's own GLES driver. The port presents its frames through Vulkan, on Turnip, which the profile packs by default (`vulkan_driver turnip`; tested with KIMCHI v26.0.0_R8). `--vulkan-driver system` keeps the device's own Qualcomm Vulkan driver, which was not tested.
 - The profile sets `DM_GL_STRAY_SEMI=1` for you. Without it the movies stay black, because Adreno's GLSL compiler rejects the stray `;` after `void main() {...}` in the game's movie shaders.
 - `--fps60` gives 60 fps at 2x game speed (see Frame rate). Leave it off for normal speed.
 
