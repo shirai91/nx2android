@@ -9,5 +9,6 @@ package	org.nx2a.t0100d7f00faaa000
 orientation	landscape
 vulkan_driver	turnip
 env	DM_VK_DEFER_CLEAR=1
+env	DM_TOUCH_DOCKED=pixels
 readme_image	docs/images/the-great-ace-attorney-chronicles-chinese.jpg
 readme_tag	v0.4.0

@@ -76,7 +76,7 @@ int touch_fill_n(void *out, int max, uint64_t now_ns) {
     pthread_mutex_unlock(&g_tl);
     int32_t cnt = k; memcpy(o + 0, &samp, 8); memcpy(o + 8, &cnt, 4);
     // DM_TOUCH_LOG=1 (acceptance diagnostics): each read with non-zero touch points logs one line -- sample number, touch count, and for each point finger_id / panel x,y / attributes (1 Start, 2 End); capped at 500 lines
-    static int lg = -1, nl; if (lg < 0) lg = getenv("DM_TOUCH_LOG") != NULL;
+    static int lg = -1, nl; if (lg < 0) { const char *e = getenv("DM_TOUCH_LOG"); lg = e && !strcmp(e, "1"); }
     if (lg && k && nl < 500) {
         char b[256]; int m = snprintf(b, sizeof b, "touch read sample %lld points %d", (long long)samp, k);
         for (int i = 0; i < k && m < (int)sizeof b - 40; i++) { int32_t v[4]; memcpy(v, o + 0x10 + 0x28 * i + 0x08, 16);
@@ -171,7 +171,7 @@ static void gesture_sample(uint64_t now) {
     } else if (ltype == GT_COMPLETE || ltype == GT_CANCEL) g_gctx++;
     s.ctx = g_gctx; s.type = type; s.attr = attr; s.x = g.mx; s.y = g.my; s.npt = g.n; memcpy(s.pt, g.pt, sizeof s.pt);
     g_glast = g; g_gupd_ns = now; g_gr[g_gw++ % 16] = s;
-    static int lg = -1, nl; if (lg < 0) lg = getenv("DM_TOUCH_LOG") != NULL;   // DM_TOUCH_LOG=1 also logs each gesture entry (up to 500 lines)
+    static int lg = -1, nl; if (lg < 0) { const char *e = getenv("DM_TOUCH_LOG"); lg = e && !strcmp(e, "1"); }   // DM_TOUCH_LOG=1 also logs each gesture entry (up to 500 lines)
     if (lg && nl < 500) { LOG("gesture #%lld context %lld type %d (%d,%d) delta (%d,%d) points %d attributes %#x direction %d", (long long)s.samp, (long long)s.ctx, s.type, s.x, s.y, s.dx, s.dy, s.npt, s.attr, s.dir); nl++; }
 }
 // Fill up to n GestureStates, newest first; returns how many

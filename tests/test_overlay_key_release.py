@@ -43,7 +43,7 @@ typedef struct { int source, type, key, action, device; } AInputEvent;
 #define AKeyEvent_getAction(e) ((e)->action)
 #define AKeyEvent_getRepeatCount(e) (0)
 #define LOG(...) ((void)0)
-static _Atomic int g_set_overlay = 1, g_overlay = 1, g_pad_in = -1, g_tx_on, g_menu;
+static _Atomic int g_set_overlay = 1, g_overlay = 1, g_pad_in = -1, g_tx_on, g_menu, g_set_touch;
 static int g_pad_used, vibration = -1, publications;
 static uint64_t g_btn[1];   // per player (PR #238); the device here is player 1's
 static pthread_mutex_t g_slot_mu = PTHREAD_MUTEX_INITIALIZER;
