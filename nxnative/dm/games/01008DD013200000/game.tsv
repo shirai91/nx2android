@@ -1,0 +1,24 @@
+# Ori and the Will of the Wisps: experimental Android setup profile; requires testing.
+# Reference metadata: seedds/nxnative 6e12b9f8471c0ea80628ef33f7ffcfe2380cada5.
+# Known unresolved runtime requirements are documented in README.md.
+# Upstream registry_lock STUBS are not supported by this rewriter and are not included.
+title_id	01008DD013200000
+program_id	01008DD013200000
+name	Ori and the Will of the Wisps
+ipa	OriAndTheWillOfTheWisps.ipa
+app_category	public.app-category.games
+build	v196608	1.2.1	main=11c33c7c2dbd3c5491841f67495c7ee8	subsdk0=8bdabfabc6964cd9e55b7079659f51f1	sdk=014256a5d58180219805a7d05fba02e4
+package	v196608
+shader_versions	v196608
+modules	main subsdk0 sdk
+romfs_marker	Data/data_1.unity3d
+zip_store	.bnk:.dat:.resource:.unity3d:.wmv:.metallib
+mem_reserve	0x100000000
+mem_alias	0x10000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+sys_resource	0x0
+mem_used	0x9d6c000
+shader_groups	/Data/=data
+shader_note	Ori and the Will of the Wisps shaders
+depth_mode	zero

@@ -45,6 +45,15 @@ count (eight if unavailable). Serial rewriting reduces concurrent work but does
 not cap a single module's memory use. Changing `--jobs` preserves reusable
 rewrite outputs, so a completed rewrite need not run again for a different limit.
 
+An indirect tail call may load its target with `ldp x18, xN, [xM]`, restore a
+fixed-size frame, and branch before later error blocks. When every other
+`br x18` form fails, the rewriter tries nxnative's padded-thunk and framed
+tail-call proofs before stopping at `jump table <addr>`, so a module that already
+rewrites keeps its output. It still refuses an unproven `br x18`. Synthetic
+coverage is in `tests/test_x18_tail_calls.py` and
+`tests/test_x18_tail_call_forms.py`. A fresh port is still needed to confirm a
+failing game's whole module.
+
 The APK (`NeoTheWorldEndsWithYou.apk`) and the data pack (`NeoTheWorldEndsWithYou-data/`) appear in the game folder (`-o` picks another). `python -m porter install <App>-data` installs a port made earlier; with `--romfs-at <folder on the device>` the app reads the game's RomFS from a folder already there (an emulator's dump of the same version) instead of a copy in its files folder ([ARCHITECTURE.md](ARCHITECTURE.md#the-port), A RomFS already on the device). The first port takes a while (extraction, rewriting the game's code, translating its shaders); later ones reuse what has not changed. `python -m porter -h` lists the commands.
 
 Set **Game language** to **Follow Android system language** in the GUI, or pass `--language system`.

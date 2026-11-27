@@ -690,6 +690,102 @@ def table_cands(insl, rb):
         m = re.fullmatch(rf'{rb}, {rb}, #(0x[0-9a-f]+|\d+)', q.op_str) if q is not None and q.mnemonic == 'add' else None
         if m: cands.add(p.operands[1].imm + int(m.group(1), 0))
     return sorted(cands)
+def tail_call_padded(insl, j):
+    """An unframed, straight-line pointer thunk ending in br x18 and unreachable NOP or zero trap padding."""
+    if j + 1 >= len(insl) or any(not (p.mnemonic == 'nop' or p.mnemonic == 'udf' and p.op_str == '#0') for p in insl[j + 1:]): return False
+    if any(b.address != a.address + 4 for a, b in zip(insl, insl[1:])): return False
+    for p in insl[:j]:
+        if p.mnemonic not in ('mov', 'ldr', 'ldrh', 'ldp', 'add', 'str', 'stp'): return False
+        if {p.reg_name(r) for r in p.regs_access()[1]} & {'sp', 'wsp', 'fp', 'lr', 'x29', 'w29', 'x30', 'w30'}: return False
+    for p in reversed(insl[:j]):
+        if not {'x18', 'w18'} & {p.reg_name(r) for r in p.regs_access()[1]}: continue
+        return p.mnemonic in ('ldr', 'ldp') and bool(re.fullmatch(r'x18, (x\d+, )?\[(x\d+|sp)(, #(0x[0-9a-f]+|\d+))?\]', p.op_str))
+    return False
+def tail_call_frame(insl, j):
+    """After terminal or padded unframed tails, a br x18 with other code after it is a tail call only when the frame is provably gone: a jump inside a function needs that function's frame.
+    A wrong accept is silent, where a rejection stops at `jump table <addr>`, so anything not proven here is rejected. Two forms (Warm Snow and Ori and the Blind Forest, Unity IL2CPP):
+    a 16-byte thunk, stp x29,x30,[sp,#-0x10]!; mov x29,sp, only guards and argument moves, its error blocks after the br; or an ordinary function, sub sp,sp,#N first and add sp,sp,#N right
+    before the br, the pair saved to and restored from one slot, whose body may branch and call (lazy init, loops) and whose other paths may follow the br. Either way nothing writes sp, x29
+    or x30 on the way, no stack store touches the pair, and from the restore to the br every path runs straight"""
+    if j < 4 or any(b.address != a.address + 4 for a, b in zip(insl, insl[1:])): return False
+    writes = lambda p: {p.reg_name(r) for r in p.regs_access()[1]}
+    cond = lambda p: p.mnemonic in ('cbz', 'cbnz', 'tbz', 'tbnz') or p.mnemonic.startswith('b.')
+    # The last write of x18 is a plain pointer load
+    load = next((k for k in range(j - 1, -1, -1) if writes(insl[k]) & {'x18', 'w18'}), None)
+    if load is None or insl[load].mnemonic not in ('ldr', 'ldp') or not re.fullmatch(r'x18, (x\d+, )?\[(x\d+|sp)(, #(0x[0-9a-f]+|\d+))?\]', insl[load].op_str): return False
+    # The frame. disp is the saved pair's offset from sp
+    thunk = insl[0].mnemonic == 'stp' and insl[0].op_str == 'x29, x30, [sp, #-0x10]!'
+    if thunk:
+        if insl[1].mnemonic != 'mov' or insl[1].op_str != 'x29, sp': return False
+        if insl[j - 1].mnemonic != 'ldp' or insl[j - 1].op_str != 'x29, x30, [sp], #0x10': return False
+        restore, start, disp, saved, fp_set = j - 1, 2, 0, True, True
+    else:
+        sub, add = (re.fullmatch(r'sp, sp, #(0x[0-9a-f]+|\d+)', p.op_str) if p.mnemonic == m else None for p, m in ((insl[0], 'sub'), (insl[j - 1], 'add')))
+        if not sub or not add or int(sub[1], 0) != int(add[1], 0): return False
+        restore = next((k for k in range(j - 2, 0, -1) if insl[k].mnemonic == 'ldp' and re.fullmatch(r'x29, x30, \[sp(, #(0x[0-9a-f]+|\d+))?\]', insl[k].op_str)), None)
+        if restore is None: return False
+        disp = insl[restore].operands[-1].mem.disp
+        if disp < 0 or disp + 16 > int(sub[1], 0): return False
+        start, saved, fp_set = 1, False, False
+    tail = min(load, restore)   # no call or jump from here on
+    after_br = insl[j].address
+    setup_end = insl[start].address   # no branch re-enters the frame's setup: raised as the setup is walked
+    targets = []
+    guarded = False
+    for k in range(start, j - 1):   # the body and the epilogue; j - 1 is the frame's last restore or add sp
+        p = insl[k]
+        if k == restore: continue
+        if cond(p) or p.mnemonic == 'b':
+            t = p.operands[-1].imm
+            if not saved or k >= restore or p.mnemonic == 'b' and k >= tail: return False
+            if t > after_br: guarded = True
+            elif thunk: return False
+            targets.append(t)
+            continue
+        if p.mnemonic in ('bl', 'blr'):
+            # A saved x30, and x18 not live across the call
+            if thunk or not saved or k >= tail: return False
+            continue
+        if p.mnemonic in ('br', 'ret', 'udf', 'brk', 'hlt', 'svc', 'hvc', 'smc', 'msr', 'sys', 'dc', 'ic'): return False
+        w = writes(p)
+        if w & {'sp', 'wsp', 'lr', 'x30', 'w30'}: return False
+        if w & {'fp', 'x29', 'w29'}:
+            sets_fp = p.op_str == 'x29, sp' and not disp if p.mnemonic == 'mov' else p.mnemonic == 'add' and p.op_str.startswith('x29, sp, #') and p.operands[2].imm == disp
+            if k > restore or fp_set or not saved or not sets_fp: return False
+            fp_set = True
+            setup_end = insl[k + 1].address
+            continue
+        if not saved and p.mnemonic == 'stp' and p.op_str == insl[restore].op_str:
+            saved = True
+            setup_end = insl[k + 1].address
+            continue
+        if '[' not in p.op_str or p.mnemonic.startswith(('ldr', 'ldur', 'ldp', 'ldar', 'prfm')): continue
+        # regs_access does not report memory writes, so a stack store's bytes are checked against the saved pair. A register offset is unproven. A store through another base can
+        # alias it only through a pointer to the frame's own pair, which no compiled code holds; a function that calls out cannot prove that of its callees either, so only the thunk rejects them
+        if k > restore or p.mnemonic not in ('str', 'strb', 'strh', 'stur', 'sturb', 'sturh', 'stp') or p.writeback: return False
+        mem = p.operands[-1].mem
+        base = p.reg_name(mem.base)
+        if base not in ('sp', 'fp', 'x29'):
+            if thunk: return False
+            continue
+        if mem.index or base != 'sp' and not fp_set: return False
+        at = mem.disp + (disp if base != 'sp' else 0)
+        size = {'b': 1, 'h': 2}.get(p.mnemonic[-1]) or {'x': 8, 'w': 4, 'q': 16, 'd': 8, 's': 4, 'h': 2, 'b': 1}.get(p.reg_name(p.operands[0].reg)[0], 8)
+        if p.mnemonic == 'stp': size *= 2
+        if at < 0 or at < disp + 16 and at + size > disp: return False
+    if not saved: return False
+    # What follows the br never comes back to a place whose stack it cannot vouch for. A thunk's is error blocks entered by a guard, leaving through a call or a trap; a function's may be any of its other paths
+    suffix = insl[j + 1:]
+    leaves = False
+    for p in suffix:
+        if p.mnemonic == 'bl':
+            if insl[0].address <= p.operands[-1].imm <= insl[-1].address: return False
+            leaves = True
+        elif (cond(p) or p.mnemonic == 'b') and p.operands[-1].imm <= after_br: return False
+    if thunk and (not guarded or not leaves or suffix[-1].mnemonic not in ('bl', 'udf', 'b') or any(p.mnemonic in ('ret', 'br', 'blr') for p in suffix)): return False
+    # Nothing re-enters the frame's setup, or lands past the restore: the frame's end is what the proof rests on. A guard may skip a reload of x18 (Subnautica main+0x24f210 through x2)
+    return not any(t < setup_end or insl[restore].address < t <= after_br for t in targets)
+
 def tail_call(insl, j):
     """The br x18 is an indirect tail call, not a jump table: the last write of x18 before it is a plain pointer load and the br ends the function. Ace Attorney Investigations Collection
     (Unity 2022.3 IL2CPP) main+0x1d271bc: ldr x18,[x0,#0x18]; ...; ldr x16,[sp]; ...; br x18, a thunk that moves stack arguments and jumps to the method pointer at +0x18.
@@ -701,6 +797,10 @@ def tail_call(insl, j):
         if 'x18' not in [p.reg_name(r) for r in p.regs_access()[1]]: continue
         return popped and p.mnemonic == 'ldr' and bool(re.fullmatch(r'x18, \[(x\d+|sp)(, #(0x[0-9a-f]+|\d+))?\]', p.op_str))
     return False
+def tail_call_proven(insl, j):
+    """The stricter tail-call proofs from nxnative, tried only where every other form has failed and the rewrite would otherwise stop at `jump table <addr>`, so a module that already rewrites
+    keeps every classification. Ori and the Will of the Wisps 1.2.1 main+0x1b56540 and main+0x1b574e0 stop there"""
+    return tail_call_padded(insl, j) or tail_call_frame(insl, j)
 def jump_bytes_far(insl, j):
     """The byte / halfword table form with its add further back (Octopath Traveler 0 main+0x37f9bc8: adr x18,#L; ldrb w0,[x17,x15]; add x18,x18,x0,lsl #2, then 17 register moves before br x18).
     Up to 32 instructions back, and x18 must not change between the add and the br. Tried only where the 16-instruction search and the offset forms find nothing. Returns (base, width) or None"""
@@ -827,6 +927,7 @@ for pi, (fa, fb) in enumerate(funcs):
                 if not tgt and tail_call(insl, j): tailcalls.add(ins.address); continue
                 if not tgt and (far := jump_bytes_far(insl, j)): jumps[ins.address] = far; continue
                 if not tgt: tgt = jump_offsets(insl, j, copy_first=True, far_base=True)   # the index copied before the check (check_before_copy) or the base set far back, only where every other form failed
+                if not tgt and tail_call_proven(insl, j): tailcalls.add(ins.address); continue
                 assert tgt, f'jump table {ins.address:x}'
                 tabjumps[ins.address] = tgt; continue
             jumps[ins.address] = (base, width)

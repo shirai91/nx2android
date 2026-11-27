@@ -256,6 +256,13 @@ module at a time. Direct callers that omit `J` retain the CPU-based default
 concurrent processes, not the memory used by one module. Changing the count
 does not invalidate completed rewrite outputs.
 
+The shared rewriter recognizes indirect `br x18` tail calls after fixed-size
+stack frames as well as the existing terminal and post-index frame-pop forms.
+The fixed-frame form requires matching stack allocation/deallocation and saved
+frame/link registers, an unclobbered pointer load (`ldr` or `ldp`), and control
+flow that cannot skip the load or frame restore. Unproven frame aliases, stack
+stores and control flow remain rejected; unknown jumps still stop rewriting.
+
 Shader reuse checks the generated bundle against its receipt. Windows uses size
 and modification time for the fast path. POSIX also checks change time and file
 identity. A metadata change triggers a digest check. On Windows, a same-size
