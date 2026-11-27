@@ -44,6 +44,7 @@ DM_GLSLC_CAPTURE	str		debug	?	hle_glslc.c
 DM_GL_ACTIVE	str		debug	?	gfx_vk_shader.c	
 DM_GL_CAPTURE	str		debug,ios	?	hle_gl.m	
 DM_GL_LOG	str		debug,ios	?	hle_gl.m	
+DM_GL_STRAY_SEMI	bool	0	profile	start	gl_android.c	removes a ';' after a function body in the game's GLSL (Adreno's compiler rejects it; NVIDIA's accepts it)
 DM_GL_STUBS	str		debug,ios	?	hle_gl.m	
 DM_GPU_TURBO	str		profile	live	perf_android.c	"auto" or 1: ask the GPU for its high clocks while the game is GPU-bound; "need": only while the game is held below its target; unset or 0 = no
 DM_GUEST_SPAWN_TEST	int		debug	?	hle_guestthread.c	

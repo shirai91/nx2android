@@ -23,6 +23,8 @@
 #include <dlfcn.h>
 #include <pthread.h>
 #include <string.h>
+#include <stdlib.h>
+int dm_fps_ceiling(void);   // gfx_vk_present.c
 
 #define GLOG(...) LOG("[gl] " __VA_ARGS__)
 #define RED1(...) do { static int once_; if (!once_) { once_ = 1; LOG("[gl] [RED] " __VA_ARGS__); } } while (0)
@@ -323,6 +325,38 @@ GLW(glClipControl, void, GLenum origin, GLenum depth) {
 }
 GLW(glFrameTerminatorGREMEDY, void, void) {}
 GLW(glStringMarkerGREMEDY, void, GLsizei n, const void *s) { (void)n; (void)s; }
+// Opt-in (env DM_GL_STRAY_SEMI=1, a profile's env row): a ';' after a function body, `void main() {...};`, is accepted by NVIDIA's compiler but is a syntax error on Adreno's ("ERROR: 0:17: ';'
+// : Syntax error"), so the game's movie shaders failed and its frames stayed black. Each such ';' becomes a space (line numbers stay); struct and block bodies keep theirs.
+static int sp_(char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; }
+static char *strip_stray_semi(const char *src, size_t n) {
+    char *o = malloc(n + 1); if (!o) return NULL; memcpy(o, src, n); o[n] = 0;
+    int depth = 0; long open = -1;
+    for (size_t i = 0; i < n; i++) {
+        if (o[i] == '/' && i + 1 < n && o[i + 1] == '/') { while (i < n && o[i] != '\n') i++; continue; }
+        if (o[i] == '/' && i + 1 < n && o[i + 1] == '*') { i += 2; while (i + 1 < n && !(o[i] == '*' && o[i + 1] == '/')) i++; i++; continue; }
+        if (o[i] == '{') { if (depth++ == 0) open = (long)i; }
+        else if (o[i] == '}' && depth > 0 && --depth == 0) {
+            long b = open - 1; while (b >= 0 && sp_(o[b])) b--;
+            size_t j = i + 1; while (j < n && sp_(o[j])) j++;
+            if (b >= 0 && o[b] == ')' && j < n && o[j] == ';') o[j] = ' ';
+        }
+    }
+    return o;
+}
+GLW(glShaderSource, void, GLuint sh, GLsizei count, const char *const *str, const GLint *len) {
+    REAL(void, glShaderSource, GLuint, GLsizei, const char *const *, const GLint *);
+    static int on = -1; if (on < 0) { const char *e = getenv("DM_GL_STRAY_SEMI"); on = e && *e == '1'; }
+    if (!on || count <= 0 || !str) { r_glShaderSource(sh, count, str, len); return; }
+    char **cp = calloc((size_t)count, sizeof *cp); const char **ps = calloc((size_t)count, sizeof *ps);
+    if (!cp || !ps) { free(cp); free(ps); r_glShaderSource(sh, count, str, len); return; }
+    for (GLsizei i = 0; i < count; i++) {
+        size_t n = !str[i] ? 0 : (len && len[i] >= 0) ? (size_t)len[i] : strlen(str[i]);
+        cp[i] = str[i] ? strip_stray_semi(str[i], n) : NULL; ps[i] = cp[i] ? cp[i] : str[i];
+    }
+    r_glShaderSource(sh, count, ps, len);
+    for (GLsizei i = 0; i < count; i++) free(cp[i]);
+    free(cp); free(ps);
+}
 
 // ---------- EGL ----------
 // Android's EGL objects are handed to the game as they are; the window surface is a pbuffer, and the frames reach the screen through Vulkan (below)
@@ -454,6 +488,10 @@ EGLB(eglSwapBuffers, EGLBoolean, EGLDisplay d, EGLSurface surf) {
     if (sc) r_glEnable(GL_SCISSOR_TEST); if (rd) r_glEnable(GL_RASTERIZER_DISCARD);
     r_glFinish();   // the GL work is done before Vulkan reads the buffer
     int vs = G.interval < 1 ? 1 : G.interval > 4 ? 4 : G.interval;
+    // The profile's 30 fps ceiling (game.tsv fps_ceiling 30, gfx_vk_present.c dm_fps_ceiling; porter's --fps60 lifts it): at least 2 vsyncs a frame. Yu-Gi-Oh! Legacy of the Duelist:
+    // Link Evolution never calls eglSwapInterval, so it would present at 60. Only GL games with fps_ceiling are affected; the key defaults to 0.
+    static int minvs = -1; if (minvs < 0) minvs = dm_fps_ceiling() == 30 ? 2 : 0;
+    if (vs < minvs) vs = minvs;
     s->ticket = vk_present_vkimg(s->vk, vs / 60.0);
     G.cur = (G.cur + 1) % 3;
     if (++G.frames <= 3 || G.frames % 1800 == 0) GLOG("frame %llu presented (%dx%d)", (unsigned long long)G.frames, G.w, G.h);

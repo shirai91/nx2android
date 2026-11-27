@@ -6,7 +6,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 
 "Profile here": `nxnative/dm/games/<title ID>/` has the game's profile from nxnative. "Upstream profile": only seedds/nxnative has one, to read as a reference or starter, not to pull. "60 fps with X" is upstream's note: they run that update at 60 fps (30 on the Switch).
 
-**80 / 126 ported**
+**81 / 127 ported**
 
 - [x] 13 Sentinels: Aegis Rim (Asia) · `01008D7016438000`
 - [x] 13 Sentinels: Aegis Rim · `01003FC01670C000`
@@ -134,3 +134,4 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [x] Xenoblade Chronicles 3 · `010074F013262000` · work in progress: some effects and models don't draw yet
 - [x] Xenoblade Chronicles: Definitive Edition · `0100FF500E34A000` · 30 fps; boots rarely crash (1 in ~35), tested to Colony 9 with the pause menu and saving, later maps not tested yet
 - [ ] Yoshi's Crafted World · `01006000040C2000` · upstream profile
+- [x] Yu-Gi-Oh! Legacy of the Duelist : Link Evolution · `010022400BE5A000` · experimental · 30 fps by default (60 with `--fps60` runs at 2x speed), about 9% GPU on the Adreno 740
