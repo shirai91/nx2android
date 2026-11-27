@@ -78,6 +78,7 @@ typedef struct {
     pthread_mutex_t dmu, wmu; pthread_cond_t wcv; pthread_t wk;
     int job; const uint8_t *jp; int jn, jslot, jgot; int64_t jpts, jpts_out; int jflush;
     mavc *avc; int avc_drain;                    // H.264 (hle_movie_avc.c); avc_drain: the end-of-stream packet came with pictures still queued, they leave one per free slot
+    uint8_t *avc_cfg[3]; int avc_cfg_n[3];       // csd-0, csd-1, avcc saved from Configure so Stop -> Start without Configure keeps SPS / PPS
     vpx_codec_ctx_t vpx; int vpx_on, red_dec, red_img;
     // Vorbis: the identification and setup headers from Configure's MediaData ("csd-0", "csd-1", as with Android's MediaCodec), the decoder (opened at the first packet), channels / rate, Ogg page sequence
     uint8_t *vhdr[2]; int vhdr_n[2]; stb_vorbis *vb; int ch, rate; uint32_t ogg_seq; int64_t ogg_gran; int red_vb;
@@ -426,7 +427,13 @@ static int md_aac_tail(mdec_t *d, int slot) {
 }
 // The H.264 decoder, made by Configure (when the stream's parameter sets come with it) or by the first packet; RGBA pictures in the native texture mode either way.
 // Absolum's movies bring csd-0 / csd-1 to Configure, and a decoder made there used to stay NV12: the frames' bytes went into the RGBA texture as they were
-static void md_avc_open(mdec_t *d) { if (!d->avc) { d->avc = mavc_new(); if (d->fmt == MD_FMT_ABGR) mavc_set_rgba(d->avc); } }
+static void md_avc_open(mdec_t *d) {
+    if (d->avc) return;
+    d->avc = mavc_new();
+    if (d->fmt == MD_FMT_ABGR) mavc_set_rgba(d->avc);
+    for (int k = 0; k < 2; k++) if (d->avc_cfg[k] && d->avc_cfg_n[k] > 0) mavc_param_sets(d->avc, d->avc_cfg[k], (size_t)d->avc_cfg_n[k]);
+    if (d->avc_cfg[2] && d->avc_cfg_n[2] > 0) mavc_avcc(d->avc, d->avc_cfg[2], (size_t)d->avc_cfg_n[2]);
+}
 // H.264: decode the packet (if any) and hand out the next picture in presentation order (with jflush every queued one in turn); 1 = a picture is in the slot, its time in jpts_out
 static int md_avc(mdec_t *d, const uint8_t *p, int n, int slot, int take_only) {
     md_avc_open(d);
@@ -565,6 +572,7 @@ static void md_free(void **self) {
     for (int i = 0; i < MD_NIN; i++) free(d->in[i]);
     for (int k = 0; k < MD_NOUT; k++) free(d->out[k].frm);
     free(d->vhdr[0]); free(d->vhdr[1]);
+    for (int k = 0; k < 3; k++) free(d->avc_cfg[k]);
     pthread_mutex_destroy(&d->mu); pthread_mutex_destroy(&d->dmu); pthread_mutex_destroy(&d->wmu); pthread_cond_destroy(&d->wcv); free(d);
 }
 HLE_FORCE("_ZN5movie7DecoderD2Ev", "movie decoder destructor: frees the host object", void, h_movie_DecD2, void **self) { md_free(self); }
@@ -589,10 +597,22 @@ HLE_FORCE("_ZN5movie7Decoder9ConfigureEPNS_9MediaDataE", "movie decoder configur
         return 0;
     }
     if (d->type == MD_TYPE_AVC && md) {   // SPS / PPS: csd-0 / csd-1 (Annex B, as Android's MediaCodec takes them) or, from this SDK's MP4 demuxer (Super Mario Odyssey), "avcc" = the avcC box
+        static const char *const keys[3] = {"csd-0", "csd-1", "avcc"};
+        // A Configure that carries only some of them replaces the whole set: a stale entry from an earlier one
+        // would otherwise be handed to the new decoder, and an old SPS / PPS staying alive is exactly the bug
+        // this change exists for.
+        for (int k = 0; k < 3; k++) { free(d->avc_cfg[k]); d->avc_cfg[k] = NULL; d->avc_cfg_n[k] = 0; }
+        for (int k = 0; k < 3; k++) {
+            void *b = NULL;
+            if (G.find_buf(md, keys[k], &b) && b && G.data(b) && G.size(b)) {
+                size_t n = G.size(b); d->avc_cfg[k] = malloc(n);
+                if (!d->avc_cfg[k]) die("movie: AVC config allocation failed");
+                memcpy(d->avc_cfg[k], G.data(b), n); d->avc_cfg_n[k] = (int)n;
+            }
+        }
         md_avc_open(d);
-        void *b = NULL;
-        for (int k = 0; k < 2; k++) { char key[8]; snprintf(key, sizeof key, "csd-%d", k); if (G.find_buf(md, key, &b) && b && G.data(b) && G.size(b)) mavc_param_sets(d->avc, G.data(b), G.size(b)); }
-        if (G.find_buf(md, "avcc", &b) && b && G.data(b) && G.size(b)) mavc_avcc(d->avc, G.data(b), G.size(b));
+        for (int k = 0; k < 2; k++) if (d->avc_cfg[k] && d->avc_cfg_n[k] > 0) mavc_param_sets(d->avc, d->avc_cfg[k], (size_t)d->avc_cfg_n[k]);
+        if (d->avc_cfg[2] && d->avc_cfg_n[2] > 0) mavc_avcc(d->avc, d->avc_cfg[2], (size_t)d->avc_cfg_n[2]);
     }
     int w = 0, h = 0; if (md) { G.find_i32(md, "width", &w); G.find_i32(md, "height", &h); }
     pthread_mutex_lock(&d->mu); if (w > 0 && h > 0 && !d->fmt_sent) { d->w = w; d->h = h; } pthread_mutex_unlock(&d->mu);
@@ -688,6 +708,14 @@ HLE_FORCE("_ZN5movie7Decoder24SendInputBufferForDecodeEiiilj", "movie decoder: s
     mdec_t *d = md_of(self); if (!d) return 0x1000;
     if (i < 0 || i >= MD_NIN || off < 0 || size < 0 || (uint32_t)off + (uint32_t)size > MD_INCAP) return 0x100b;
     pthread_mutex_lock(&d->mu);
+    if (!d->started) {
+        int have = 0;
+        for (int k = 0; k < d->ninfree; k++) if (d->infree[k] == i) { have = 1; break; }
+        if (!have) d->infree[d->ninfree++] = i;
+        d->inown[i] = d->instale[i] = 0;
+        pthread_mutex_unlock(&d->mu);
+        return 0;
+    }
     // An index the client acquired before a Flush and sends after it (Big Brain Academy: Brain vs. Brain loops its activity previews this way): the flush put it back in the free list,
     // so it is claimed from there now. Before, it could be handed out a second time, two packets shared one buffer (VideoToolbox -12909 on the overwritten one) and the fifth pending
     // packet wrote past pend[] into npend and dmu (the process died destroying dmu, 2 runs in 5)
