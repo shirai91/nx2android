@@ -11,6 +11,7 @@ import subprocess
 import tempfile
 import unittest
 import sys
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import csrc  # noqa: E402
@@ -30,6 +31,7 @@ class AndroidMotion(unittest.TestCase):
         shake = csrc.between(hid, '#define SHAKE_HZ', 'void dm_input_set(')
         motion = csrc.between(hid, 'typedef struct { int64_t delta_ns', '// SixAxisSensorHandle:')
         sensor = csrc.between(front, 'static void motion_feed(', 'static void *input_thread(')
+        padfeed = csrc.between(front, 'static void pad_motion_feed(', 'JNIEXPORT void JNICALL Java_org_nx2a_PadMotion_nativeSample')
         harness = r'''
 #include <assert.h>
 #include <math.h>
@@ -41,6 +43,7 @@ class AndroidMotion(unittest.TestCase):
 #include <string.h>
 #include <sys/types.h>
 #include "dm_input.h"
+#include "pad_motion_map.h"
 #define LOG(...) do { if (0) printf(__VA_ARGS__); } while (0)
 static uint64_t clock_ns = 1000000000;
 static uint64_t guest_ns(void) { return clock_ns; }
@@ -83,7 +86,61 @@ static void rotation_poll(int64_t now) { (void)now; }
 static void shake_sensor(int on) { (void)on; }
 static pthread_mutex_t g_slot_mu = PTHREAD_MUTEX_INITIALIZER;   // the per-player state's lock (each controller a player of its own)
 static void pad_publish(int p) { (void)p; atomic_store(&g_pad_btn[0], g_shake_btn); shake_note(); }
-''' + sensor + r'''
+''' + sensor + padfeed + r'''
+// Two sources feed one sensor (hle_hid.c): the device's own and a controller's. The newest owns it, and DM_MOTION_SRC
+// picks instead. Each case starts from an empty ring and a 1 s guest clock, as the test harness begins.
+static void near(float got, float want);
+static void pad_case(const char *mode) {
+    const float pg[3] = {0, 0, 0.5f}, pa[3] = {0, 0, -1};   // the device turning 0.5 rev/s about z
+    const float qg[3] = {-1, 0, 0}, qa[3] = {0, 0, -1};     // the pad turning 1 rev/s the other way about x
+    SixAxisState s;
+    if (!strcmp(mode, "padonly")) {   // DM_MOTION_SRC=pad: the device's motion is left out
+        dm_motion_set(pa, pg, clock_ns);
+        six_sample(&s, clock_ns / SIX_PERIOD_NS, 1);
+        near(s.gyro[2], 0); near(s.acc[2], -1);
+        clock_ns += 10000000; dm_motion_pad_set(qa, qg, clock_ns);
+        clock_ns += 10000000; six_sample(&s, clock_ns / SIX_PERIOD_NS, 1);
+        near(s.gyro[0], -1); near(s.gyro[2], 0);
+        return;
+    }
+    if (!strcmp(mode, "phoneonly")) {   // DM_MOTION_SRC=phone: the pad's motion is left out
+        clock_ns += 10000000; dm_motion_pad_set(qa, qg, clock_ns);
+        clock_ns += 10000000; six_sample(&s, clock_ns / SIX_PERIOD_NS, 1);
+        near(s.gyro[0], 0);
+        clock_ns += 10000000; dm_motion_set(pa, pg, clock_ns);
+        clock_ns += 10000000; six_sample(&s, clock_ns / SIX_PERIOD_NS, 1);
+        near(s.gyro[2], 0.5f);
+        return;
+    }
+    dm_motion_set(pa, pg, clock_ns);   // auto, nothing else feeding: the device's
+    six_sample(&s, clock_ns / SIX_PERIOD_NS, 1);
+    near(s.gyro[2], 0.5f); near(s.gyro[0], 0);
+    clock_ns += 10000000; dm_motion_pad_set(qa, qg, clock_ns);   // the pad feeds: it owns the sensor at once
+    clock_ns += 10000000; dm_motion_set(pa, pg, clock_ns);       // the device's next sample is left out
+    six_sample(&s, clock_ns / SIX_PERIOD_NS, 1);
+    near(s.gyro[0], -1); near(s.gyro[2], 0);
+    clock_ns += 2 * 1000000000ULL; dm_motion_set(pa, pg, clock_ns);   // the pad quiet for over a second: the device's again
+    six_sample(&s, clock_ns / SIX_PERIOD_NS, 1);
+    near(s.gyro[2], 0.5f); near(s.gyro[0], 0);
+}
+// The pad's own frame (pad_motion_map.h): a spec that is a signed permutation is taken, anything else leaves Android's frame as it is, and the raw sample goes through the
+// map before the host's units (rev/s, G with gravity's sign flipped) - the order front_android.c's pad_motion_feed uses
+static void padmap_case(void) {
+    dm_pad_map m = dm_pad_map_identity();
+    const char *spec = getenv("DM_PAD_MOTION_MAP"), *want = getenv("DM_PAD_MOTION_MAP_TAKES");
+    int took = dm_pad_map_parse(spec, &m);
+    if (want && atoi(want) != took) { fprintf(stderr, "spec %s: taken %d, expected %s\n", spec ? spec : "(none)", took, want); exit(1); }
+    // a pad turning 1 rev/s about its own +y, lying so gravity is along its own -y: identity reads that on y, "-y,+x,+z" (a Flydigi Direwolf 4 in Switch mode) on x and
+    // reversed there
+    pad_motion_feed(&m, 7, 0, (float)(2 * M_PI), 0, 0, (float)-ASENSOR_STANDARD_GRAVITY, 0, clock_ns);
+    SixAxisState s;
+    six_sample(&s, clock_ns / SIX_PERIOD_NS, 1);
+    float eg[3] = {0, 1, 0}, ea[3] = {0, 1, 0};
+    if (took) { eg[0] = -1; eg[1] = 0; ea[0] = -1; ea[1] = 0; }
+    near(s.gyro[2], 0); near(s.acc[2], 0);
+    near(s.gyro[0], eg[0]); near(s.gyro[1], eg[1]);
+    near(s.acc[0], ea[0]); near(s.acc[1], ea[1]);
+}
 static void event(int type, uint64_t time, float x, float y, float z) {
     pending = (ASensorEvent){.type = type, .timestamp = time, .vector = {x, y, z}};
     available = 1; assert(on_sensor(0, 0, NULL) == 1 && !available);
@@ -92,8 +149,9 @@ static void near(float got, float want) {
     if (fabsf(got - want) > 0.00001f) { fprintf(stderr, "got %g, expected %g\n", got, want); exit(1); }
 }
 int main(int argc, char **argv) {
-    assert(argc == 5);
+    assert(argc == 5 || argc == 6);
     has_gyro = atoi(argv[1]); g_rot = atoi(argv[2]);
+    if (argc == 6) { if (!strcmp(argv[5], "padmap")) padmap_case(); else pad_case(argv[5]); return 0; }
     float flick = (float)atof(argv[3]); int manual = atoi(argv[4]);
     shake_start();
     const char *motion_env = getenv("DM_MOTION");
@@ -138,7 +196,7 @@ int main(int argc, char **argv) {
         cls.exe = Path(cls.tmp.name) / 'motion'
         c.write_text(harness, encoding='utf-8')
         result = subprocess.run([cc, '-std=gnu11', '-Wall', '-Wextra', '-Werror',
-                                 '-I' + str(ROOT / 'nxnative/dm/host'), str(c),
+                                 '-I' + str(ROOT / 'nxnative/dm/host'), '-I' + str(ROOT / 'nxnative/dm/android'), str(c),
                                  '-lm', '-pthread', '-o', str(cls.exe)], capture_output=True, text=True)
         if result.returncode:
             raise AssertionError(result.stdout + result.stderr)
@@ -152,6 +210,40 @@ int main(int argc, char **argv) {
                                 env=env,
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def run_pad(self, mode, src=None):
+        env = dict(os.environ, DM_MOTION='1', DM_SHAKE_G='1.5', DM_MOTION_LOG='0')
+        env.pop('DM_MOTION_RAW', None); env.pop('DM_MOTION_SRC', None)
+        if src is not None:
+            env['DM_MOTION_SRC'] = src
+        result = subprocess.run([str(self.exe), '1', '0', '0.5', '0', mode], env=env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_controller_motion_owns_the_sensor_while_it_feeds(self):
+        for src in (None, 'auto'):
+            with self.subTest(src=src):
+                self.run_pad('pad', src)
+
+    def test_controller_only_source(self):
+        self.run_pad('padonly', 'pad')
+
+    def test_phone_only_source(self):
+        self.run_pad('phoneonly', 'phone')
+
+    def run_padmap(self, spec, takes):
+        env = dict(os.environ, DM_MOTION='1', DM_SHAKE_G='1.5', DM_MOTION_LOG='0', DM_PAD_MOTION_MAP_TAKES=str(takes))
+        env.pop('DM_PAD_MOTION_MAP', None); env.pop('DM_MOTION_SRC', None); env.pop('DM_MOTION_RAW', None)
+        if spec is not None:
+            env['DM_PAD_MOTION_MAP'] = spec
+        result = subprocess.run([str(self.exe), '1', '0', '0.5', '0', 'padmap'], env=env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, f'{spec!r}: ' + result.stdout + result.stderr)
+
+    def test_pad_axis_map(self):
+        # taken: the measured Flydigi Direwolf 4 spec; refused (identity): empty, a repeated axis, two axes, a fourth token
+        for spec, takes in ((None, 0), ('', 0), ('-y,+x,+z', 1), (' -y, +x, +z', 1),
+                            ('x,x,z', 0), ('-y,+x', 0), ('-y,+x,+z,w', 0)):
+            with self.subTest(spec=spec):
+                self.run_padmap(spec, takes)
 
     def test_directional_flicks_with_real_motion(self):
         for rotation in range(4):
@@ -195,6 +287,91 @@ int main(int argc, char **argv) {
         for raw in (None, '1'):
             with self.subTest(raw=raw):
                 self.run_case(1, 0, 0.5, manual=True, raw=raw)
+
+
+class ApkDex(unittest.TestCase):
+    """Which dex the APK gets, from porter/pipeline.py: none at all for a plain port, API 29 for the two activity flags, API 31 only for --pad-motion.
+
+    A port with no flag must stay code-less (hasCode false) as on main: an APK that suddenly carries a classes.dex is a behaviour change nobody asked for,
+    and a port that cannot build mid-activity is a worse failure than a missing feature.
+    """
+    SDK_ARGS = ('toolchain', '_sdk_roots')
+
+    def port(self, root, **kw):
+        from porter import pipeline
+        port = pipeline.Port(pipeline.Options(folder=root, **kw))
+        port.aw = root / 'out'; port.logs = root / 'logs'; port.env = {}
+        return pipeline, port
+
+    def sdk(self, root, api):
+        platform = root / f'platforms/android-{api}/android.jar'; platform.parent.mkdir(parents=True, exist_ok=True); platform.touch()
+        d8 = root / 'build-tools' / f'{api}.0.0' / ('d8.bat' if os.name == 'nt' else 'd8'); d8.parent.mkdir(parents=True, exist_ok=True); d8.touch()
+
+    def run_apk_dex(self, pipeline, port, root, javac='javac'):
+        with mock.patch.object(pipeline.toolchain, '_sdk_roots', return_value=[root]), mock.patch.object(pipeline.shutil, 'which', return_value=javac), mock.patch.object(pipeline.nsp, 'run') as run:
+            return port.app_dex(), run
+
+    @staticmethod
+    def command(run, n):
+        return [str(a) for a in run.call_args_list[n].args[0]]
+
+    @staticmethod
+    def min_api(cmd):
+        return cmd[cmd.index('--min-api') + 1]
+
+    def test_a_default_port_builds_no_dex(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t)
+            pipeline, port = self.port(root)
+            sdk = root / 'platforms/android-36/android.jar'; sdk.parent.mkdir(parents=True); sdk.touch()   # even with a full SDK there
+            args, run = self.run_apk_dex(pipeline, port, root)
+            self.assertEqual(args, [], 'no --dex and no --activity: mkapk writes hasCode=false and no classes.dex')
+            self.assertEqual(run.call_count, 0, 'a port with no flag must not run javac or d8')
+
+    def test_pad_motion_alone_is_api_31_and_carries_the_class(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t); self.sdk(root, 36)
+            pipeline, port = self.port(root, pad_motion=True)
+            args, run = self.run_apk_dex(pipeline, port, root)
+            self.assertEqual(args[0], '--dex')
+            self.assertNotIn('--activity', args, 'a pad-motion port keeps android.app.NativeActivity')
+            self.assertTrue(any(s.endswith('PadMotion.java') for s in self.command(run, 0)))
+            self.assertEqual(self.min_api(self.command(run, 1)), '31')
+
+    def test_the_two_activity_flags_stay_at_api_29_without_pad_motion(self):
+        for kw in ({'external_display': True}, {'native_keyboard': True}):
+            with self.subTest(**kw), tempfile.TemporaryDirectory() as t:
+                root = Path(t); self.sdk(root, 35)
+                pipeline, port = self.port(root, **kw)
+                args, run = self.run_apk_dex(pipeline, port, root)
+                self.assertEqual(args[0], '--dex')
+                self.assertIn('--activity', args)
+                self.assertFalse([s for s in self.command(run, 0) if s.endswith('PadMotion.java')],
+                                 'API 31 and its class belong to --pad-motion alone')
+                self.assertEqual(self.min_api(self.command(run, 1)), '29')
+
+    def test_pad_motion_with_an_activity_flag_is_one_dex_for_both(self):
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t); self.sdk(root, 36)
+            pipeline, port = self.port(root, pad_motion=True, external_display=True)
+            args, run = self.run_apk_dex(pipeline, port, root)
+            self.assertEqual(run.call_count, 2, 'one javac and one d8, not one pair per feature')
+            self.assertTrue(any(s.endswith('PadMotion.java') for s in self.command(run, 0)))
+            self.assertEqual(self.min_api(self.command(run, 1)), '31')
+            self.assertEqual(args[-1], 'org.nx2a.ExternalActivity')
+
+    def test_pad_motion_without_an_sdk_names_the_flag(self):
+        with tempfile.TemporaryDirectory() as t:
+            pipeline, port = self.port(Path(t), pad_motion=True)
+            with mock.patch.object(pipeline.toolchain, '_sdk_roots', return_value=[]), mock.patch.object(pipeline.shutil, 'which', return_value=None):
+                with self.assertRaisesRegex(pipeline.BuildError, r'--pad-motion', msg='the player asked for it: say which flag needs the SDK'):
+                    port.app_dex()
+
+    def test_the_flag_reaches_the_options(self):
+        from porter import cli, pipeline
+        self.assertTrue(cli._parser().parse_args(['port', '/game', '--pad-motion']).pad_motion)
+        self.assertTrue(pipeline.Options.from_args(cli._parser().parse_args(['port', '/game', '--pad-motion'])).pad_motion)
+        self.assertFalse(pipeline.Options(folder=Path('/game')).pad_motion)
 
 
 if __name__ == '__main__':
