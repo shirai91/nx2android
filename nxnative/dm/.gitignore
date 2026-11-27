@@ -2,6 +2,8 @@ host/dmhost
 host/dmhost_*
 host/*.dSYM/
 *.bin
+# a profile's Vulkan pipeline seed is source (porter packs it; gfx_vk_exec_pipelines.inc prewarm_start)
+!games/*/vk_pipelines_seed.bin
 *.pkl
 __pycache__/
 # Intermediate build outputs of the shader translation tool (dotnet writes them next to the sources)

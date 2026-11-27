@@ -1074,6 +1074,9 @@ class Port:
     # ---- data: the files the app reads from its files folder ----
     def data(self):
         PROG.stage('data pack', step='button-icon font')
+        # the profile's Vulkan pipeline seed, when it has one (gfx_vk_exec_pipelines.inc prewarm_start): a derived profile's folder first, then dm/games
+        seed = next((p for p in (self.g.dir / 'vk_pipelines_seed.bin', DM / 'games' / self.g.id / 'vk_pipelines_seed.bin') if p.is_file()), None)
+        seed_files = {seed.name: seed} if seed else {}
         font_env, font_files = self.button_font()
         if self.o.shared_font:   # the host serves it for every shared-font type but the button icons (hle_sdk16.c font_get)
             font_env, font_files = font_env + [f'DM_SHARED_FONT={datapack.files_folder(self.package)}/standard.ttf'], {**font_files, 'standard.ttf': self.o.shared_font}
@@ -1088,7 +1091,7 @@ class Port:
                              aoc=self.aoc, sysdata=self.sysdata, language=self.lang, languages=self.languages, package=self.package, env=self.fps_env + font_env + zenv + (['DM_VK_MT_REPLAY=1'] if self.o.mt_replay else [])
                              + (['DM_MENU_BUTTON=0'] if self.o.no_menu_button else [])
                              + ([f'DM_VK_DRIVER={driver_lib_name(self.o.vulkan_driver)}'] if self.o.vulkan_driver else []), settings=TOUCH_SETTINGS if self.o.touch else None,
-                             files={**self.fps_files, **font_files}, profile_h=getattr(self, 'profile_h', None),
+                             files={**self.fps_files, **font_files, **seed_files}, profile_h=getattr(self, 'profile_h', None),
                              progress=lambda what: PROG.set(step=f'linking {what}'))
         self.data_path = dst; self.result['data'] = str(dst)
         PROG.end(f'{man["files"]:,} files, {man["bytes"] / 2**30:.1f} GB')

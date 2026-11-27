@@ -223,6 +223,7 @@ def header(g):
          f'#define DM_GAME_GPU_TICK_NUM {384 if gtr == "614.4" else 12}ull',   # counter ticks per 625 ns
          f'#define DM_GAME_VCONV_RANGE {int(vcr == "on")}',
          f'#define DM_GAME_ORDER_KEEP {int(ok == "on")}',
+         f'#define DM_GAME_FETCH1D_BUFFER {int(g.get("android_fetch1d", "off") == "buffer")}',   # Android: a 2D texture bound in a texture buffer slot is read as its row 0 (gfx_vk_tex.c vk_tex_row_view)
          *build_table_defines(g, q),   # fps_locks.tsv, ue_malloc.tsv: only when the profile has one
          *([f'#define DM_GAME_NVN_API_MAJOR {api.split(".")[0]}', f'#define DM_GAME_NVN_API_MINOR {api.split(".")[1]}'] if g.get('device_api', '') else []),   # without the key: by the SDK version (hle_nvn.c nvn_api)
          '']

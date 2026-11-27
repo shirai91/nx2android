@@ -121,6 +121,7 @@ struct vkimg {
     uint64_t used;                  // the present it was last looked up at (vk_tex: evict_overlaps)
     int looked;                     // looked up inside a submission once (vk_tex: its first use, when its content is decided; a lookup outside one records nothing)
     uint64_t rt_last, rt_frames;     // as an attachment: 1 + the present it was last drawn in, and in how many presents in a row up to it (gfx_vk_exec.c async_pipe)
+    int rt_left_out;                 // 1: draws into it while young went to the background threads (DM_VK_SYNC_PIPE_MS); 2: drawn in 3 presents in a row since (logged)
     uint64_t fdz_frame;             // depth images: 1 + the present at which a fragment shader that replaces depth last wrote it (gfx_vk_exec.c fdz)
     int gpu_w;                      // the GPU wrote it: an attachment, a storage image, a copy or clear destination (gfx_vk_exec.c); lin_copy keeps that until the CPU writes its storage
     uint64_t lin_stamp; const void *lin_span; const uint8_t *lin_mem; size_t lin_len;   // lin_copy: the storage watched since the GPU wrote it

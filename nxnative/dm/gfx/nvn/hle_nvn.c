@@ -1999,7 +1999,9 @@ static void dyn_scale_tick(uint64_t presents) {
     win[n++] = g; if (n < 30) return; n = 0;
     double s[30]; memcpy(s, win, sizeof s);
     for (int i = 1; i < 30; i++) { double x = s[i]; int j = i; while (j && s[j - 1] > x) { s[j] = s[j - 1]; j--; } s[j] = x; }
-    double p90 = s[26], budget = g_dyn_budget * 1000.0 / (fps_step_cap() ? fps_step_cap() : nvn_game_fps());   // no frame step: the rate the game presents at (its interval)
+    // no frame step: the rate the game presents at (its interval), or DM_DYN_FPS for a game that paces itself at 30 with interval 1 (nvn_game_fps reads 60 there)
+    const char *df = getenv("DM_DYN_FPS"); int dfps = df ? atoi(df) : 0;
+    double p90 = s[26], budget = g_dyn_budget * 1000.0 / (fps_step_cap() ? fps_step_cap() : dfps == 30 || dfps == 60 ? dfps : nvn_game_fps());
     float nsc = p90 > budget ? sc - 0.05f : p90 < 0.7 * budget ? sc + 0.05f : sc;
     if (nsc < g_dyn_min) nsc = g_dyn_min;
     if (nsc > 1.0f) nsc = 1.0f;

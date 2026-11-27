@@ -139,7 +139,8 @@ static int pass_commit(void) {
         else { VKRED_ONCE(76, "render pass or framebuffer failed without dynamic rendering: pass skipped"); return 0; }   // (still pass_open 2: vk_end_pass drops it)
     } else { vkCmdBeginRendering(vk_cmd(), &P_ri); S.rp_pass = 0; }
     S.pass_open = 1; g_vkst.passes++; g_sub_pass++; g_pass_wmem = 0;
-    for (int i = 0; i < 9; i++) { vkimg_t *a = P_att[i].im; if (a && a->rt_last != g_tex_frame + 1) { a->rt_frames = a->rt_last == g_tex_frame ? a->rt_frames + 1 : 1; a->rt_last = g_tex_frame + 1; } }   // (async_pipe)
+    for (int i = 0; i < 9; i++) { vkimg_t *a = P_att[i].im; if (a && a->rt_last != g_tex_frame + 1) { a->rt_frames = a->rt_last == g_tex_frame ? a->rt_frames + 1 : 1; a->rt_last = g_tex_frame + 1;
+            if (a->rt_left_out == 1 && a->rt_frames >= 3) { a->rt_left_out = 2; static int n; if (n++ < 50) VKLOG("young target %ux%u nvn format %#x that lost draws to the background threads drawn in 3 presents in a row since", a->w, a->h, a->nvn_format); } } }   // (async_pipe)
     { extern uint64_t g_cmd_gen; g_cmd_gen++; }   // the bind cache starts empty in each pass: Adreno does not keep the state a pass's draws set for the next pass (XC3 drew its lighting black)
     if (g_x_tracepass == -2) { g_x_listpasses = 1; list_reads("before it, dispatches");
         char t[512]; int n = 0; static const char LO[] = "LCD";   // load ops: Load, Clear, Don't care; each attachment's image by pool offset

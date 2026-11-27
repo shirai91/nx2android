@@ -509,7 +509,8 @@ static void dispatch(const p_dispatch *d) {
     uint64_t ck[3] = {cs->key, g_num_um, g_num_im};
     pthread_mutex_lock(&g_cpipe_mu); VkPipeline p = nvn_hm_get(&g_cpipes, ck); pthread_mutex_unlock(&g_cpipe_mu);
     if (!p) {
-        uint64_t tb = g_prof_on ? tick() : 0; p = compute_build(cs, ck[1], ck[2]); if (g_prof_on) g_prof_ns[7] += tick() - tb;
+        uint64_t tb = g_prof_on ? tick() : 0; p = compute_build(cs, ck[1], ck[2]);
+        if (g_prof_on) { uint64_t dt = tick() - tb; g_prof_ns[7] += dt; static int n; if (n++ < 300) VKLOG("compute pipeline built here in %.1f ms: shader %016llx, integer-texel views %#llx/%#llx", dt / 1e6, (unsigned long long)ck[0], (unsigned long long)ck[1], (unsigned long long)ck[2]); }
         pthread_mutex_lock(&g_cpipe_mu); VkPipeline had = nvn_hm_get(&g_cpipes, ck);
         if (had) { if (p != (void *)1) vkDestroyPipeline(V.dev, p, NULL); p = had; } else nvn_hm_put(&g_cpipes, ck, p);   // (compute_warm made it meanwhile)
         pthread_mutex_unlock(&g_cpipe_mu);
