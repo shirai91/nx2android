@@ -248,6 +248,7 @@ DM_TOUCH	int		profile	start	front_android.c	1 = this game is touch-only: it star
 DM_TOUCH_DOCKED	str		profile	start	hle_touch.c	touch in docked mode: "screen" = the screen's points, "pixels" = the game's pixels; unset = no touch when docked
 DM_TOUCH_HAPTICS	int		debug,ios	?	DmGamepad.m	
 DM_TOUCH_LOG	str		debug	?	hle_touch.c	DM_TOUCH_LOG=1 also logs each gesture entry (up to 500 lines)
+DM_TOUCH_STATES	int		profile	start	hle_hid.c	GetTouchScreenStates hands back this many entries (1-16; unset = 1), the newest state repeated: Okami HD drops a held finger unless more than 8 history entries hold it
 DM_UDC_SELFTEST	str		debug,ios	?	nvn_mtl.m	
 DM_UI_LANG	str		app	start	front_android.c	overlay UI language: unset follows the device locale (persist.sys.locale / ro.product.locale); any value starting with "z" ("zh", "zh-CN", "zh-TW") gives Chinese, anything else English. The Chinese strings are Simplified, so every zh* locale gets Simplified Chinese
 DM_VK_ASYNC_PIPE	bool	1	profile	live	gfx_vk_exec.c	0 = new pipelines are built on the replay thread, not in the background
@@ -260,11 +261,13 @@ DM_VK_COMPUTE_WARM_MAX	int	256	profile	start	gfx_vk_exec.c	the most compute shad
 DM_VK_CPU_READY	bool		debug	?	gfx_vk_exec.c	
 DM_VK_CRUMBS	bool		debug	start	gfx_vk_exec.c	for a device lost (GPU hang): each pass end and dispatch writes its number into host-visible memory after a full barrier; when the device is lost the log names the last work the GPU finished and the passes after it, with their shaders. Slows the GPU
 DM_VK_DBG_DRAW	int		debug	live	gfx_vk_exec.c	bisection aids: skip command kinds; 1 no draw calls, 2 no vertex buffers, 4 no descriptor sets
+DM_VK_DEFER_CLEAR	bool	0	profile	live	gfx_vk_exec.c	opt-in (default 0): on 0-draw deferred clear passes, drop unmodified attachments (loadOp != CLEAR) and forward full-image cleared depth copies as vkCmdClearDepthStencilImage (saves two 1080p attachment load/store round trips per frame on The Great Ace Attorney Chronicles)
 DM_VK_DQ_SPIN	bool		debug	start	gfx_vk_dq.c	the two-stage replay's threads wait for each other in sched_yield loops, as before they spun briefly and then slept (A/B)
 DM_VK_DRIVER	str		porter	start	gfx_vk_core.c	the Vulkan driver library in the APK (porter --vulkan-driver, e.g. Turnip)
 DM_VK_DYN_UBO	bool		debug	start	gfx_vk_shader.c	no dynamic uniform-buffer offsets (descriptor reuse drops)
 DM_VK_FDZ	bool	1	profile	live	gfx_vk_exec.c	no fragment-depth variants: draws that test a depth buffer a fragment shader wrote through `gl_FragDepth` (in the last two presents) normally get a variant of their fragment shader that writes `gl_FragDepth = gl_FragCoord.z`, the same depth tested after the shader, out of Adreno's early culling, whi
 DM_VK_FLIPY	bool		debug	live	gfx_vk_exec.c	the old clip-space y convention (pictures flip)
+DM_VK_FMT_4444	bool	0	profile	start	gfx_vk_tex.c	1 = NVN RGBA4 textures (format 0x39) get VK_FORMAT_A4B4G4R4_UNORM_PACK16 where the device samples it, not the 16-bit table value (64033, not a format); Star Ocean First Departure R's UI text
 DM_VK_FRONT	int		debug	start	gfx_vk_exec.c	2`
 DM_VK_GS_SPLIT	bool	0	profile	live	gfx_vk_exec.c	1 = split geometry-shader draws (gfx_vk_gs_split.c)
 DM_VK_IMG_BLOCKS	bool		debug	start	gfx_vk_core.c	small images take a slot of a shared memory block (default); 0: every image gets memory of its own (A/B)

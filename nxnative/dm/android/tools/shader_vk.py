@@ -8,7 +8,7 @@
 #   control section, code area), translated beside the package's; a file whose content does not hash to its name, or whose key the package has, is left out
 # Bundle (read by the Vulkan backend, dm/android/gfx_vk_shader.c): dmsv.py has the format and writes it. Each shader's SPIR-V and its binary reflection (refl_bin, below);
 #   version 2, the SPIR-V of each module zstd-compressed (--zstd, default dmsv.LEVEL; 0 or a Python without zstd: version 1, uncompressed).
-import argparse, collections, concurrent.futures as cf, hashlib, json, os, re, struct, subprocess, sys, tempfile
+import argparse, collections, concurrent.futures as cf, hashlib, json, os, re, struct, subprocess, sys, tempfile, time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -431,6 +431,8 @@ def final_map(items, J, w):
     return fork_map(_final_one, items, J)
 
 def main():
+    # The progress lines are at most this many seconds apart: a translation of minutes is not a silence, a log of thousands of lines is no help either. The last one of a pass always goes out.
+    BEAT = 3.0
     handle_remaps = {}
     table = GAME.table('android_shader_handles.tsv')
     if table.exists():
@@ -476,16 +478,31 @@ def main():
             return result, None
         except Exception as e:
             return result, str(e)
-    def translate(selected):
+    def translate(selected, step):
+        """Translate the shaders in batches, one translation process per batch. Each batch that finishes adds to the count and the progress lines say how far the pass has come:
+        a translation of minutes is not a silence. The step is the name of the pass (the porter shows it)"""
         chunks = [selected[i::a.jobs] for i in range(a.jobs) if selected[i::a.jobs]]
+        total, done, t0, last, ends = len(selected), 0, time.time(), 0.0, []
+        print(f'progress: {step}: 0/{total} shaders', flush=True)
         with cf.ThreadPoolExecutor(len(chunks)) as ex:
-            for ch, (result, error) in zip(chunks, ex.map(xl, chunks)):
+            futs = {ex.submit(xl, ch): ch for ch in chunks}
+            # as_completed, not map: a batch that finishes first is counted first, so the count follows the work and not the order of the batches
+            for i, fut in enumerate(cf.as_completed(futs), 1):
+                ch = futs[fut]
+                result, error = fut.result()
                 if result is not None: rs.append(result)
                 # A failed process may have written valid products before it stopped.
                 # Keep its diagnostic for keys with no output, and validate each product.
                 batch_errors.update(dict.fromkeys(ch, error))
+                done += len(ch)
+                now = time.time(); ends.append(now - t0)
+                if i == len(chunks) or now - last >= BEAT:
+                    last = now
+                    print(f'progress: {step}: {done}/{total} shaders ({i} of {len(chunks)} batches, {now - t0:.0f}s)', flush=True)
+        # The batches run at the same time, so the time a batch ends at is about the time it took: the slowest one says how long a batch of this size takes on this device.
+        print(f'{step}: {len(chunks)} batches, {time.time() - t0:.0f} s (the slowest batch {max(ends) if ends else 0:.0f} s)', flush=True)
     print(f'translating {len(keys)} shaders in {min(a.jobs, len(keys))} batches ...', flush=True)
-    translate(keys)
+    translate(keys, f'translating {len(keys):,} shaders')
     # second pass (as the Mac chain's dmsh_build.py finish): vertex shaders with inputs used only as integers, translated again with those inputs reported as uint (int_inputs)
     again = []
     for k in keys:
@@ -502,7 +519,7 @@ def main():
         except Exception as e: failures[k] = str(e)
     if again:
         print(f'translating {len(again)} vertex shaders again with their integer inputs ...', flush=True)
-        translate(again)
+        translate(again, f'translating {len(again):,} shaders again')
     # android_fetch1d buffer (game profile, default off): the texture slots a shader reads with 1D integer fetches and the answer table gives no type for (res "fetch1d",
     # translated as 2D rows) are translated again as texture buffers. Vulkan has no image over a buffer, so a texture buffer bound in such a slot read the dummy view.
     # DRAGON QUEST XI S reads its skinning bone matrices so (Unreal's Buffer<float4>): every skinned character was invisible. A 1D texture bound in a slot answered so
@@ -524,7 +541,7 @@ def main():
             except Exception as e: failures[k] = str(e)
         if again:
             print(f'translating {len(again)} shaders again with their 1D integer fetch slots as texture buffers (android_fetch1d buffer) ...', flush=True)
-            translate(again)
+            translate(again, f'translating {len(again):,} shaders again (1D fetch slots)')
     # Standalone software GS passthrough needs only locations consumed by the bundle's fragment
     # shaders. Forwarding 16 vec4s plus built-ins exceeds a 64-component geometry input limit.
     # Guest reads used for culling remain tracked independently. XFB keeps the conservative path.
@@ -542,7 +559,7 @@ def main():
             if os.path.exists(os.path.join(w, k + suffix)): os.unlink(os.path.join(w, k + suffix))
     if geometry:
         print(f'translating {len(geometry)} geometry shaders with fragment input mask {fragment_inputs:#x} ...', flush=True)
-        translate(geometry)
+        translate(geometry, f'translating {len(geometry):,} geometry shaders')
     errs = collections.Counter()
     for r in rs:
         for ln in r.stderr.splitlines():
@@ -569,7 +586,14 @@ def main():
     # SPIR-V or the source packs/jobs while dmsv compresses bounded batches.
     packs.clear(); jobs.clear(); c1s.clear(); cap.clear()
     if a.zstd: print(f'compressing {len(entries)} shaders (zstd level {a.zstd}, {a.jobs} threads) ...', flush=True)
-    ver, raw, stored = dmsv.write(a.out, entries, level=a.zstd, jobs=a.jobs)
+    # The writer calls the callback one call at a time: the count only grows
+    cplast, t0 = [0.0], time.time()
+    def compressed(done, total):
+        now = time.time()
+        if done < total and now - cplast[0] < BEAT: return
+        cplast[0] = now
+        print(f'progress: compressing {total:,} shaders: {done}/{total} shaders ({now - t0:.0f}s)', flush=True)
+    ver, raw, stored = dmsv.write(a.out, entries, level=a.zstd, jobs=a.jobs, progress=compressed)
     if a.report:
         with open(a.report, 'w', encoding='utf-8') as f: json.dump(dict(schema=1, expected=expected, failed=failed), f)
     print(f'{len(entries)} of {len(keys)} shaders → {a.out} ({os.path.getsize(a.out) / 2**20:.1f} MB, version {ver}: SPIR-V {raw / 2**20:.1f} MB'

@@ -37,7 +37,7 @@ def spv_bytes(spv):
     return spv
 
 
-def write(path, entries, level=LEVEL, jobs=None):
+def write(path, entries, level=LEVEL, jobs=None, progress=None):
     """entries [(key, stage, spv, refl)] → a bundle at path: version 2 with each module's SPIR-V zstd-compressed at level, in jobs threads (zstd lets go of the GIL: 7x faster
     on 12 threads), or version 1 with level 0 or in a Python without zstd. spv may
     be bytes or a PathLike to an immutable module. Only jobs payloads are queued;
@@ -45,6 +45,7 @@ def write(path, entries, level=LEVEL, jobs=None):
     Verified in a private sibling directory, then atomically replaces path. A write,
     verification or replace failure leaves the old bundle intact (shader_vk.py
     calls this directly, without the CLI repacker's former .partial protection).
+    progress(i, n): called with the number of modules written so far and their total (the count grows as the writer goes, so a long compression is not a silence).
     Returns (version, SPIR-V bytes, SPIR-V bytes stored)"""
     entries = sorted(entries, key=lambda e: e[0]); z = zstd_mod() if level else None
     if level and not z: print('[RED] this Python has no zstd (compression.zstd from Python 3.14, or pip install backports.zstd): the shader bundle is written uncompressed (version 1)', flush=True)
@@ -76,9 +77,10 @@ def write(path, entries, level=LEVEL, jobs=None):
         tmp = os.path.join(scratch, 'bundle.dmsv')
         with open(tmp, 'wb') as f, contextlib.closing(packed()) as results:
             f.write(HDR.pack(MAGIC, ver, len(entries)) + bytes(ENT.size * len(entries)))
-            for (key, st, _, refl), (s, n) in zip(entries, results):
+            for i, ((key, st, _, refl), (s, n)) in enumerate(zip(entries, results), 1):
                 table.append(ENT.pack(key, st, off, len(s), off + len(s), len(refl), n)); off += len(s) + len(refl)
                 f.write(s); f.write(refl); raw += n or len(s); stored += len(s)
+                if progress: progress(i, len(entries))
             f.seek(HDR.size); f.write(b''.join(table))
             f.flush(); os.fsync(f.fileno())
         with Bundle(tmp) as check:

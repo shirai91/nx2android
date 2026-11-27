@@ -58,7 +58,7 @@ static inline uint64_t tick(void) {
 }
 // Measurement switches, read again at every submission so DM_CTL "env" lines change them while the game runs (never for normal play: they draw wrong):
 // DM_VK_X_NOBAR=1 no barrier before a pass, DM_VK_X_DEPTH=1 depth neither loaded nor stored, DM_VK_X_COLOR=1 colour not loaded unless cleared
-static int g_x_nobar, g_x_depth, g_x_color, g_x_cbdraws, g_x_tracepass = -1, g_sub_pass;   // DM_VK_TRACE_PASS=n: log every draw of the submission's pass n (once)
+static int g_x_nobar, g_x_depth, g_x_color, g_x_cbdraws, g_x_tracepass = -1, g_sub_pass, g_defer_clear;   // DM_VK_TRACE_PASS=n: log every draw of the submission's pass n (once)
 static int g_x_listpasses;
 static int g_c2fast = 1;   // DM_VK_C2_FAST (x_read; drv_shared)
 // c2 by its slots (DM_VK_C2_FAST, live, default on): a c2 segment (bank != 0, not the slot-index form) is S.tex / S.img / S.samp of its stage and nothing else,
@@ -185,4 +185,5 @@ static void x_read(void) { cpu_ready_config(); { const char *e = getenv("DM_VK_D
       if ((e = getenv("DM_VK_SAMP_LOG")) && atoi(e) > 0) { if (!(first && atoi(e) == g_vk_samp_log_boot)) g_vk_samp_log = atoi(e); setenv("DM_VK_SAMP_LOG", "0", 1); } first = 0; } g_x_nosetmemo = (e = getenv("DM_VK_X_NOSETMEMO")) && atoi(e); g_x_setverify = (e = getenv("DM_VK_X_SETVERIFY")) && atoi(e); g_gs_split = (e = getenv("DM_VK_GS_SPLIT")) && atoi(e);
     g_x_nskipvs = 0; for (const char *q = getenv("DM_VK_X_SKIPVS"); q && *q && g_x_nskipvs < 8;) { char *n; uint64_t v = strtoull(q, &n, 16); if (n == q) break; if (v) g_x_skipvs[g_x_nskipvs++] = v; q = *n ? n + 1 : n;  }
     g_x_nskipfs = 0; for (const char *q = getenv("DM_VK_X_SKIPFS"); q && *q && g_x_nskipfs < 16;) { char *n; uint64_t v = strtoull(q, &n, 16); if (n == q) break; if (v) g_x_skipfs[g_x_nskipfs++] = v; q = *n ? n + 1 : n; }
-    g_x_cutfs = (e = getenv("DM_VK_X_CUTFS")) ? strtoull(e, NULL, 16) : 0; }
+    g_x_cutfs = (e = getenv("DM_VK_X_CUTFS")) ? strtoull(e, NULL, 16) : 0;
+    g_defer_clear = (e = getenv("DM_VK_DEFER_CLEAR")) && atoi(e); }

@@ -1,0 +1,34 @@
+# STAR OCEAN First Departure R (tri-Ace / Square Enix), SDK 8.2.1, NVN + CRIWARE; generated from the survey by dm/games/profile_guess.py and checked against it by hand
+
+# ---- Identity ----
+title_id	0100EBF00E702000
+program_id	0100EBF00E702000
+
+# ---- App ----
+name	STAR OCEAN First Departure R
+ipa	StarOceanFirstDepartureR.ipa
+app_category	public.app-category.games
+
+# ---- Versions ----
+build	v0	1.0.0	main=5ec132f471291b7e3e667e77487195b9	subsdk0=c8a3cc0b1d1858330a881c0c2fc87940	subsdk1=60c6edbbfcebd4176cc301d5d9cb5a6f	sdk=5fd4f531c1195e9e5510c9e73f22cd39
+package	v0
+shader_versions	v0
+
+# ---- Files ----
+# every module main imports from
+modules	main subsdk0 subsdk1 sdk
+romfs_marker	so1_en_data0.cpk
+zip_store	.cpk:.metallib
+
+# ---- Memory ----
+# main sets a heap of at most the pool − 64 MB − 126 MB of bss (counted as used memory): a 3328 MB heap region
+mem_reserve	0x100000000
+mem_alias	0x10000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+# the NPDM declares 0 MB of system resource: IsVirtualAddressMemoryEnabled is false, as on Horizon (Big Brain Academy: Brain vs. Brain sets a heap only then)
+sys_resource	0x0
+
+# ---- Shader split ----
+shader_groups	/Debug/=debug
+shader_note	STAR OCEAN First Departure R shaders
