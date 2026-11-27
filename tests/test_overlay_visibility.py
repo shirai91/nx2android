@@ -60,7 +60,8 @@ static int fps_opt_press(int item) { (void)item; return 0; }
 static void ed_open(void) {}
 static void sp_open(void) {}
 static void save_export(void) {}
-static void menu_audio(void) {}
+static void *g_audio_menu_method, *g_toggle_external_method;
+static void menu_java(void *method) { (void)method; }
 static void menu_close(void) {}
 static void dm_overlay_redraw(void) {}
 ''' + visible + hidden + hit + menu + r'''

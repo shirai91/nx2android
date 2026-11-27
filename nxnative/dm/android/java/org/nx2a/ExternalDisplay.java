@@ -24,6 +24,12 @@ public final class ExternalDisplay implements DisplayManager.DisplayListener {
     private Presentation presentation;
     private int displayId = Display.INVALID_DISPLAY;
     private boolean active;
+    private final android.view.ViewTreeObserver.OnGlobalLayoutListener windowLayout = this::update;
+    boolean autoEnabled() { return activity.getPreferences(0).getBoolean("auto_external", true); }
+    void toggleAuto() {
+        activity.getPreferences(0).edit().putBoolean("auto_external", !autoEnabled()).apply();
+        update();
+    }
     private boolean surfaceLive;
 
     public ExternalDisplay(Activity activity, Listener listener) {
@@ -35,6 +41,7 @@ public final class ExternalDisplay implements DisplayManager.DisplayListener {
     public void start() {
         if (active || displays == null) return;
         active = true;
+        activity.getWindow().getDecorView().getViewTreeObserver().addOnGlobalLayoutListener(windowLayout);
         displays.registerDisplayListener(this, new Handler(Looper.getMainLooper()));
         update();
     }
@@ -42,6 +49,7 @@ public final class ExternalDisplay implements DisplayManager.DisplayListener {
     public void stop() {
         if (!active) return;
         active = false;
+        activity.getWindow().getDecorView().getViewTreeObserver().removeOnGlobalLayoutListener(windowLayout);
         displays.unregisterDisplayListener(this);
         dismiss();
     }
@@ -54,8 +62,13 @@ public final class ExternalDisplay implements DisplayManager.DisplayListener {
         if (old != null) old.dismiss();
     }
 
-    private void update() {
+    void update() {
         if (!active) return;
+        Display host = activity.getWindow().getDecorView().getDisplay();
+        if (!autoEnabled() || host == null || host.getDisplayId() != Display.DEFAULT_DISPLAY) {
+            dismiss();
+            return;
+        }
         Display[] candidates = displays.getDisplays(DisplayManager.DISPLAY_CATEGORY_PRESENTATION);
         Display selected = candidates.length == 0 ? null : candidates[0];
         if (selected == null) { dismiss(); return; }
