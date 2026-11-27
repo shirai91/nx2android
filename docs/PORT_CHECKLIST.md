@@ -6,7 +6,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 
 "Profile here": `nxnative/dm/games/<title ID>/` has the game's profile from nxnative. "Upstream profile": only seedds/nxnative has one, to read as a reference or starter, not to pull. "60 fps with X" is upstream's note: they run that update at 60 fps (30 on the Switch).
 
-**80 / 126 ported**
+**81 / 126 ported**
 
 - [x] 13 Sentinels: Aegis Rim (Asia) · `01008D7016438000`
 - [x] 13 Sentinels: Aegis Rim · `01003FC01670C000`
@@ -98,7 +98,7 @@ Left out because they have an official Android release: Unpacking (ported here a
 - [x] Rune Factory 3 Special · `0100E000191B4000` · experimental · 60 fps, about 51% GPU on the Adreno 740
 - [x] Rune Factory 5 · `01002F7013224000` · experimental · 30 fps, as on the Switch
 - [ ] SHIN MEGAMI TENSEI V: Vengeance · `010069C01AB82000` · upstream profile · 60 fps with 1.0.3
-- [ ] Silver Pines · `0100D5B026844000` · upstream profile
+- [x] Silver Pines · `0100D5B026844000` · update 1.0.2; POCO X3 Pro / Turnip (community test); drops to about 15 fps in places
 - [x] South Park™: The Stick Of Truth™ · `010043600B6A6000` · needs a Vulkan 1.3 driver or imageless framebuffers with render pass 2 (Turnip packed on the Adreno 640)
 - [x] STAR OCEAN First Departure R · `0100EBF00E702000` · experimental · 60 fps on the Adreno 740
 - [ ] SteamWorld Heist II · `010089C01E9CA000` · upstream profile
