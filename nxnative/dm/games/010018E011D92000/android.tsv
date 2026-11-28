@@ -1,0 +1,10 @@
+# Pokémon Shining Pearl on Android: cloned from the sister release Brilliant Diamond (the same Unity 2019.4.27f1 / SDK 11.4.3 / shader tables), then checked on a device.
+# On the 2410DPN6CC (Snapdragon 8 Elite, Adreno 830, Android 16), nx2android v0.4.0, a build made from this profile: the boot logos and the title screen
+# ("PUSH A BUTTON") at 60 fps, 0 of 64 frames late (frame work p50 1.1 ms at the title); an earlier build of the same profile reached the opening area at 60 fps
+# (frame work p50 10.4 ms, 0 late). Not played past the opening yet: the story, the battles and the underground are unchecked.
+status	experimental
+tested	v393216 2410DPN6CC (Snapdragon 8 Elite, Adreno 830, Android 16)
+package	org.nx2a.t010018e011d92000
+orientation	landscape
+readme_image	docs/images/pokemon-shining-pearl.jpg
+readme_tag	v0.4.0

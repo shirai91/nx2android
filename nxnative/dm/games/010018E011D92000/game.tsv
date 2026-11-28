@@ -1,0 +1,45 @@
+# Derived from game profile /Users/esc/Downloads/ns/profiles/010018E011D92000 by scripts/build_ipa_from_nsp.py for v393216 (1.3.0), a version that profile was not brought up on:
+# its keys as they are, this version's build row, and shader tables made from this version's own files
+# Game profile of Pokemon Shining Pearl (cloned from the sister release, Pokemon Brilliant Diamond 0100000011D90000, whose engine, SDK and shader tables it shares) 1.3.0 (Unity 2019.4.27f1 IL2CPP, SDK 11.4.3, NVN).
+# Format: see dm/games/README.md; bring-up and measurements in README.md beside this file.
+
+# ---- Identity ----
+title_id	010018E011D92000
+program_id	010018E011D92000
+
+# ---- App ----
+name	Pokémon Shining Pearl
+ipa	PokemonShiningPearl.ipa
+app_category	public.app-category.role-playing-games
+
+# ---- Versions ----
+build	v393216	1.3.0	main=38f59cbda2eb9c44b72f94c4d25935a2	subsdk0=507f19d1240d09d00992248e8a0fd77e	sdk=2d369d9999e3e10e665106f840ffff9b
+package	v393216
+shader_versions	v393216
+
+# ---- Files ----
+# every module main imports from
+modules	main subsdk0 sdk
+romfs_marker	Data/StreamingAssets/Movie/pea/Ending/movie_pea_ed_female_00.webm
+zip_store	.bin:.dat:.en:.fr:.ge:.h:.it:.jp:.ko:.ress:.si:.sp:.tr:.webm:.metallib
+
+# ---- Memory ----
+# Virtual address memory: nninitStartup gives pool - used to StandardAllocator, without setting a heap.
+# The SDK node-area cut is in dm/tools/sdk_patches.py. A 2 GB pool leaves room beside StandardAllocator for Unity pools; see README.md.
+# porter: 8 GB more alias region than the tested build's (0x118000000), and the block with it, for this build's address regions
+mem_reserve	0x340000000
+mem_alias	0x318000000
+mem_stack	0x10000000
+app_pool	0x80000000
+# the NPDM declares 16 MB of system resource
+sys_resource	0x1000000
+
+# ---- Frame rate ----
+# Unity sets Application.targetFrameRate to 30 when entering the field. The build-gated engine limiter raises it; display pacing also ignores the game's interval 2.
+# DM_FPS_TARGET=30 DM_PRESENT_INTERVAL=game restores the original rate.
+fps_target	60
+present_interval	display
+
+# ---- Shader split ----
+shader_groups	/Data/=data
+shader_note	Pokémon Shining Pearl shaders
