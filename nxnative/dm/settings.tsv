@@ -226,6 +226,7 @@ DM_STEADY_REALTIME	bool	0	profile	?	hle_time.c	1 = the steady clock follows real
 DM_SVC	str		debug	?	main.c	
 DM_SVC_SPIN	bool		debug	live	hle_thread.c	the SVC layer's lock G and guest waits sleep at once, as before (default: taking G spins a few microseconds before sleeping, and a guest thread that waits on a lock, condition variable, address or synchronization object spins on its wake flag first, `DM_SVC_SPIN_US`, before it parks; a thread whose 
 DM_SVC_SPIN_US	bool		debug	live	hle_thread.c	how long a guest wait spins before it parks (30)
+DM_SWKBD_SETTLE_MS	int		profile	start	hle_swkbd.c	the game runs this long (ms) after the software keyboard closes before it gets the result, as the applet's close takes on hardware (Romancing SaGa 2: Revenge of the Seven's name confirmation: 1000)
 DM_SYMCHECK	str		debug	?	loader.c	
 DM_SYSDATA	str		porter	?	hle_fs.c hle_sdk16.c	the system data folder (firmware titles the porter extracted)
 DM_TEMP	str		app	start	hle_fs.c front_android.c main.m	the host's temp folder (the app's internal temp/); default $DM_ROOT/run/platform/temp

@@ -81,6 +81,11 @@ Result swkbd_show(void *out, const void *arg_, swkbd_input_fn input) {
     int32_t minlen; memcpy(&minlen, arg + ARG_MINLEN, sizeof minlen);
     g_swkbd_min_chars = minlen > 0 ? minlen : 0;
     int r = script ? (snprintf(text, sizeof text, "%s", script), 1) : input(title, sub, guide, init, maxlen > 0 ? maxlen : 0, text, sizeof text);
+    // DM_SWKBD_SETTLE_MS=<ms> (profile): the game runs this long between the keyboard closing and the result reaching it. On hardware the applet takes seconds and the game keeps
+    // running; the host's input box holds the game (front_android.c hold_sync) and DM_KBD answers at once, so the game saw the result with no time gone by. Romancing SaGa 2: Revenge of
+    // the Seven then never showed its "Is this name okay?" confirmation and the naming page took no more input (1000 ms tested, 0 fails)
+    static int settle = -1; if (settle < 0) { const char *e = getenv("DM_SWKBD_SETTLE_MS"); settle = e ? atoi(e) : 0; }
+    if (settle > 0) usleep((useconds_t)settle * 1000);
     g_swkbd_min_chars = -1;
     g_swkbd_numeric_max = -1;   // the numeric box mark applies to this one time only (set by dm_textinput.c before bringing up the keyboard)
     LOG("swkbd: title '%s' initial '%s' limit %d → %s%s%s", title, init, maxlen,
