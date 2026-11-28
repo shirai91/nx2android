@@ -1,0 +1,20 @@
+# DRAGON QUEST III HD-2D Remake (01003E601E324000) on Android (keys in docs/ARCHITECTURE.md "Game profiles on Android")
+# The profile is upstream's Mac (iOS) bring-up of update 1.1.2; this Android port packs the same version and patches its main build
+# (patches.py, ue_malloc.tsv, dm/tools/sdk_patches.py). Unreal Engine 4.27 (MallocBinned3, a 62 GB engine region by default) as
+# DRAGON QUEST VII Reimagined: the region is capped at 2 GB with game_args (-SwitchVirtualAddressSpaceSize=2048), the allocator's
+# constructor call is cut and the host runs Unreal's heap (hle_uemalloc.c), the SDK's node area is cut to 62 MB (sdk_patches.py) and
+# the engine's pak index key is read from main's code (uepak.py code_keys). The build read the game out of the player's own NSPs
+# (the base game's 7.0 GB one and the update's 0.8 GB one).
+# Brought up 2026-11-28 on the Legion Y700 (TB321FU, Adreno 750, Android 16, Turnip 26.2.3), docked 1920x1080: the logos and the
+# opening movie, the title, a new adventure log (name, appearance, voice language, difficulty), the opening into the prologue's church by
+# the water, 30 fps (frame p50 33.7 ms, GPU p50 22.8 ms) over about 10 minutes; no red line at run time. Battles, saves, the field menu
+# and handheld mode are not tested yet.
+status	experimental
+tested	1.1.2 Lenovo Legion Y700 TB321FU (Snapdragon 8 Gen 3, Adreno 750, Android 16, Turnip 26.2.3)
+package	org.nx2a.dragonquestiii
+orientation	landscape
+# Turnip: on the Y700's Adreno system driver (LLVM libllvm-qgl.so) the app died with SIGSEGV at libllvm-qgl.so+0x463ed4 while
+# compiling a pipeline at boot (log.txt "CRASH sig=11", 2026-11-28), as DRAGON QUEST VII Reimagined's Asian release did
+vulkan_driver	turnip
+readme_image	docs/images/dragon-quest-iii-hd-2d-remake.jpg
+readme_tag	v0.5.0
