@@ -212,4 +212,13 @@ CUTS = {
     (0x336b50, 'e9230b32', '097ca052', 'AddressRegionManager constructor: node area limit orr w9,wzr,#0x3fe00000 → mov w9,#0x3e00000'),
     (0x336bf0, 'e9230b32', '097ca052', 'AddressRegionManager constructor: length of the node area registered as an occupied region orr w9,wzr,#0x3fe00000 → mov w9,#0x3e00000'),
   ],
+
+  # DRAGON QUEST III HD-2D Remake 1.0.0 (v0) sdk (SDK 16.2.6, Unreal Engine 4.27.2): the same node area cut as Brain Memory Training Academy's build (the same offsets; the SDK 16
+  # AddressRegionManager carves a 1 GB node area out of the alias region before AllocateAddressRegion hands out regions). Without it nninitStartup's 62 GB engine region (capped at
+  # 2 GB by game_args) and its allocator pools leave too little of the 4.375 GB alias region. The constructor is at sdk+0x134768 (the limit at +0x134778 and the occupied length
+  # at +0x13480c, both mov wN,#0x3fe00000)
+  'a5cb2175cad2ca2afdd4c13577dbd079': [
+    (0x134778, '08fca752', '087ca052', 'AddressRegionManager constructor: node area limit mov w8,#0x3fe00000 → mov w8,#0x3e00000'),
+    (0x13480c, '09fca752', '097ca052', 'AddressRegionManager constructor: length of the node area registered as an occupied region mov w9,#0x3fe00000 → mov w9,#0x3e00000'),
+  ],
 }
