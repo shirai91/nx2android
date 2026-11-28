@@ -1,0 +1,16 @@
+# Romancing SaGa 2: Revenge of the Seven 1.1.0 (v196608), Square Enix, Unreal Engine 4 + NVN, SDK 16.
+# Tested 2026-11-28 on an AYN Odin 2 (Adreno 740) with Turnip KIMCHI v26.0.0_R8: intro, title, a new game with naming, the opening story, the field, Sealed Cave dungeon and battles, the start menu, save and Continue; a fresh install with no shader caches.
+# The name entry needs the keyboard result delayed (DM_SWKBD_SETTLE_MS); texture pop-in on menu toggles and camera cuts is fixed by a patch of the game's code (patches.py, KeepOneMip).
+# Game speed follows real time (same at 30 and 60 fps), but frames take 24-35 ms of work, so the profile caps at 30 fps (fps_ceiling); --fps60 lifts the cap.
+status	experimental
+tested	v196608 AYN Odin 2 (Snapdragon 8 Gen 2 QCS8550, Adreno 740, Android 13; Mesa Turnip KIMCHI v26.0.0_R8)
+package	org.nx2a.romancingsaga2rots
+vulkan_driver	turnip
+orientation	landscape
+# the game sees the keyboard's result 1 s after it closes, as the applet takes on hardware: with no delay the "Is this name okay?" confirmation never shows and the naming page takes no more input
+env	DM_SWKBD_SETTLE_MS=1000
+# Vulkan sync by fences, not Turnip's emulated timeline semaphore: its lock held each submit about 20 ms. Avalon (town) in handheld mode on the Odin 2: frame p50 41.5 -> 33.2 ms,
+# p95 45 -> 37 ms (24 -> 30 fps). DM_NVN_ASYNC=1, DM_VK_MT_REPLAY=1, DM_PIN_REPLAY=prime and DM_NO_ADPF=1 were measured there too: none helped, and the first two made p95 worse (about 47 ms)
+env	DM_VK_X_FENCES=1
+readme_image	docs/images/romancing-saga-2-revenge-of-the-seven.jpg
+readme_tag	v0.5.0

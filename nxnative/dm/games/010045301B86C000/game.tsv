@@ -1,0 +1,42 @@
+# Romancing SaGa 2: Revenge of the Seven (Square Enix), SDK 16, Unreal Engine 4 + NVN; generated from the survey by dm/games/profile_guess.py and checked against it by hand
+
+# ---- Identity ----
+title_id	010045301B86C000
+program_id	010045301B86C000
+
+# ---- App ----
+name	Romancing SaGa 2: Revenge of the Seven
+ipa	RomancingSaGa2RevengeOfTheSeven.ipa
+app_category	public.app-category.games
+
+# ---- Versions ----
+build	v196608	1.1.0	main=d7a32c718e9d63639fa1cc7ef29b836d	subsdk0=220d36873cbb6d5dc39a9a37127ea80d	sdk=a5cb2175cad2ca2afdd4c13577dbd079
+package	v196608
+shader_versions	v196608
+
+# ---- Files ----
+# every module main imports from
+modules	main subsdk0 sdk
+romfs_marker	Game/Content/Paks/pakchunk1-Switch.ucas
+zip_store	.bk2:.pak:.ucas:.utoc:.metallib
+
+# ---- Memory ----
+# Unreal: nninitStartup reserves a 62 GB address region and its FMallocBinned3 takes 37 GB of it, so a 64 GB alias region for the bring-up on the Mac. The guest block keeps the provisional heap. An iPhone needs the allocator cut for the build and a capped region (game_args), as Octopath Traveler 0's profile (docs/agents/03)
+mem_reserve	0x1030000000
+mem_alias	0x1008000000
+mem_stack	0x10000000
+app_pool	0xCD500000
+# the NPDM declares 100 MB of system resource
+sys_resource	0x6400000
+
+# ---- Frame rate ----
+# The game steps by the time that really passed: the opening story and the field ran at the same speed at 30 and 60 fps (DM_FPS_PIN, Odin 2). Its frames
+# take 24-35 ms of work in the story and the field on the Odin 2, so 60 is out of reach: fps_ceiling 30 holds it at 30 and porter's --fps60 lifts it (DM_FPS_CEILING=0)
+fps_ceiling	30
+# the engine reads its GPU frame times from NVN timestamps, which count at 614.4 MHz on the Switch
+gpu_tick_rate	614.4
+
+# ---- Shader split ----
+# the decoded shader code archives: the engine's global shaders and the game's material shaders
+shader_groups	ShaderArchive-Global-=global ShaderArchive-=game
+shader_note	Romancing SaGa 2: Revenge of the Seven shaders
