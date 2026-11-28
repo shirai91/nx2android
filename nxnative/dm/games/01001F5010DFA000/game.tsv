@@ -36,6 +36,11 @@ mem_stack	0x10000000
 app_pool	0xCD500000
 sys_resource	0x1000000
 
+# ---- Frame rate ----
+# 60 fps: patches.py moves the engine's per-frame step from 1/30 to 1/60 (PLARecomp's patch list for this build, 61 sites) and the presentation interval to 1, so 60 updates a
+# second run at the Switch's speed. The host paces and presents at 60 (fps_target).
+fps_target	60
+
 # ---- Shader split ----
 # 12,851 shaders, by where each first appears: 11,352 in the effects' particle files (bin/effect/**/*.ptcl), 1,386 in the loose BNSH files (system_resource/gfx2/shader, the scene's
 # materials, terrain, water, lighting, shadows and post effects), 73 in the 678 GFPAK archives under bin/archive (Oodle Kraken entries, decoded with the game's own OodleLZ_Decompress), 40 in main
