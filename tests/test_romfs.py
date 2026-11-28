@@ -122,6 +122,40 @@ class Mount(unittest.TestCase):
         self.assertEqual(mounted, nsp.fingerprint(('tree', real)))
 
 
+def unity_bundle(name=b'a.bin', data=b'hello'):
+    """A minimal UnityFS bundle: the header, the block info (stored) and the data. The info block is big-endian, as the reader reads it"""
+    info = bytearray(16)                                   # the info block's first 16 bytes are skipped
+    info += struct.pack('>i', 1)                           # one block
+    info += struct.pack('>IIH', len(data), len(data), 0)   # its uncompressed size, its compressed size, its flags
+    info += struct.pack('>i', 1)                           # one node
+    info += struct.pack('>qqI', 0, len(data), 0)           # its offset, its size, its flags
+    info += name + b'\0'
+    head = b'UnityFS\0' + struct.pack('>I', 6) + b'5.x.x\0' + b'Unity\0'
+    head += struct.pack('>qIII', 0, len(info), len(info), 0)   # the size, the info's size, the uncompressed size, the flags
+    return head + bytes(info) + data
+
+
+class Split(unittest.TestCase):
+    """shader_split.py reads the view too: a UnityFS bundle is mapped, not read, and a mounted entry's descriptor is virtual, so the split's
+    own mmap (romfs's) maps it. scan_file once did `import mmap` locally, which took the real module instead: the real mmap got the virtual
+    descriptor, and every worker stopped with Bad file descriptor (Fire Emblem Engage, read in place on the phone)."""
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix='romfs-split-')
+        self.tree = '/'.join((self.root, 'v1', 'RomFS'))
+        romfs.mount(self.tree, Tree({'Data/x.bundle': unity_bundle()}))
+    def tearDown(self):
+        romfs.unmount(self.tree)
+        shutil.rmtree(self.root)
+    def test_a_mounted_bundle_is_scanned(self):
+        import importlib.util
+        from unittest.mock import patch
+        spec = importlib.util.spec_from_file_location('split_romfs_test', Path(__file__).resolve().parents[1] / 'nxnative/dm/gfx/tools/shader_split.py')
+        split = importlib.util.module_from_spec(spec)
+        with patch.dict(os.environ, {'DM_GAME': '0100000000010000'}): spec.loader.exec_module(split)
+        split.COMMON = {}   # the pool's initializer hands it to every worker; set in this process too
+        self.assertEqual(split.scan_file((self.tree + '/Data/x.bundle', 'Data/x.bundle')), ('Data/x.bundle', {}, set(), {}))
+
+
 @unittest.skipUnless(os.name == 'posix', 'the stand-in serve script runs through its shebang')
 class Daemon(unittest.TestCase):
     """The real client (romfs.Container) against tests/fixtures/fake_container_serve.py, the protocol nx_extract --serve speaks."""

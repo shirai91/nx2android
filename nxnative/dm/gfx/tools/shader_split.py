@@ -1885,7 +1885,7 @@ def scan_file(args):
         for nm, m in gfpak_members(open(path, 'rb').read(), '/' + rel): scan_blob(m, f'/{rel}{nm}', found)
         return rel, uniq_keys(found), var_pairs(found), trees
     if head[:8] == b'UnityFS\0':   # a UnityFS bundle: mapped, not read, and unpacked one node at a time (unityfs.bundle_nodes); Ori and the Will of the Wisps' 822 MB data_1.unity3d, read and unpacked whole, ran a 6 GB phone out of memory
-        import mmap, unityfs
+        import unityfs   # not mmap: the module's own is the RomFS view's, and a mounted entry's fd is virtual (only its mmap reads the entry)
         with open(path, 'rb') as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as d:
             try: unity_shaders(d, '/' + rel, found, trees if not TREES else dict(TREES))
             except unityfs.NoTree: return rel, {}, set(), 'defer'
