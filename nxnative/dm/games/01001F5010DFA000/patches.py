@@ -1,10 +1,77 @@
 # Pokémon Legends: Arceus (01001F5010DFA000): the rewriter's patches of this game's own builds. dm/tools/patch_nso.py loads every profile's patches.py and applies those of a module's NSO build ID;
 # CUTS as described there ("Registered patches"). Patches of Nintendo SDK module builds are in dm/tools/sdk_patches.py
 #
-# None for now: the game runs at its own 30 fps (present interval 2). A 60 fps patch was tried on 1.1.1 (v262144) main, build aee8f150dda1b5a838806e1a5ea6827a, and taken out:
-#   (0x277d838, '280080d2', '080080d2')  display settings: present interval − 1 mov x8,#1 → mov x8,#0 (interval 1). The start-up code builds the display's settings on the stack
-#                                        (main+0x277d7xx) and hands them to the display setup (main+0x29d6a64 → main+0x2aa24c4), which sets the window's present interval to that
-#                                        word + 1 (main+0x2aa2788).
-# Why it was taken out (AYN Thor, 2026-11-10/11): played by hand from the same save, the build with this cut runs like fast-forward (walking, running and animations about
-# twice as fast) next to the build without it, which plays at the Switch's pace. The adaptive governor also swung between 60 and 40 fps there (frame work p50 16-17 ms).
-CUTS = {}
+# 60 fps, from PLARecomp (artesanalintelligence/PLARecomp, recomp/patches/60fps/pla-111-60fps-fixed.json, "Fixed 60 FPS (corrected delta)", for this very build
+# AEE8F150…, our 1.1.1 v262144; every original byte below was asserted against this build). The engine advances one step per update and holds that step as the 1/30 built with
+# movz/movk, not in data — which is why the presentation-interval cut alone (PR #219) doubled walking speed and the image has no 1/30 to scale. This list moves the step to 1/60
+# in every place that holds it (timers, movement, gravity, velocity integration, AI prediction, the ride, the sky), the frame clock's ns-per-frame table 33333334 -> 16666667,
+# the presentation interval at the window call to 1, and six divisions by 30 call a small cave in the text's padding (PLARecomp's hand-encoded instructions; the cave's original
+# bytes are that padding's zeros).
+# Logic runs at the Switch's speed only while the game holds 60 fps: below it the fixed 1/60 step makes the game slower, not faster.
+# The frame clock's ns-per-frame table starts at 0x397E8D0 (u64[5] for interval 1..5): the main loop's entry (index 1) is the patch below.
+CUTS = {
+  # the NSO build ID's first 16 bytes (patch_nso's BUILD_ID = d[0x40:0x50])
+  'aee8f150dda1b5a838806e1a5ea6827a': [
+    (0xAFBBC8, '08a1b772', '0891b772', 'AI node (calls 0x1984fc8): s0 *= -1/30 (vertical step) -> -1/60'),
+    (0x13B33A0, '08a1a772', '0891a772', 'vtable_7104114778::vf9: timer +0x48c += 1/30 -> 1/60'),
+    (0x167FF10, '08a1a772', '0891a772', 'FUN_710167f988: timer +0x190 += 1/30 -> 1/60'),
+    (0x16832C4, '08a1a772', '0891a772', 'FUN_710168300c: timer +0x1a0 += 1/30 -> 1/60'),
+    (0x16832E8, '08a1a772', '0891a772', 'FUN_710168300c: timer +0x198 += 1/30 (6.0 s threshold) -> 1/60'),
+    (0x16836D4, '08a1a772', '0891a772', 'FUN_7101683528: timer +0x19c += 1/30 -> 1/60'),
+    (0x1982934, '08a1a772', '0891a772', 'vtable_7104139aa0::vf33: displacement = vel * k * 1/30 (see also 0x1982960) -> 1/60'),
+    (0x1982960, '08c2b712', '08b2b712', 'vtable_7104139aa0::vf33: inverse of the step 29.999998 -> 59.999996 (0x426fffff)'),
+    (0x1983764, '08a1a772', '0891a772', 'FUN_7101983760: returns the fixed 1/30 step (5 movement callers) -> 1/60'),
+    (0x1984A74, '08a1b772', '0891b772', 'vtable_7104139aa0::vf37: gravity v.y += g(+0xf8) * scale(+0xbe8) * -1/30 -> -1/60'),
+    (0x198DA90, '08a1b772', '0891b772', 'vtable_7104139aa0::vf78: gravity * -1/30 -> -1/60'),
+    (0x198E024, '08a1a772', '0891a772', 'vtable_7104139aa0::vf78: velocity integration * 1/30 -> 1/60'),
+    (0x198EC70, '08a1a772', '0891a772', 'vtable_7104139aa0::vf82: velocity integration * 1/30 -> 1/60'),
+    (0x1A0B3B0, '08a1b772', '0891b772', 'vtable_710413db48: timer +0x750 -= f * 1/30 -> -1/60'),
+    (0x1A0BAF4, '08a1a772', '0891a772', 'vtable_710413db48::vf84: pos += v * 1/30 -> 1/60'),
+    (0x1A0BEE8, '08a1a772', '0891a772', 'vtable_710413db48::vf84: v * 1/30 (vector) -> 1/60'),
+    (0x1A0DA24, '08a1a772', '0891a772', 'vtable_710413db48::vf35: displacement = v * 1/30 -> 1/60'),
+    (0x1A0EEA4, '08a1a772', '0891a772', 'vtable_710413db48::vf82: integration * 1/30 -> 1/60'),
+    (0x1A0F308, '08a1a772', '0891a772', 'vtable_710413db48::vf119: step = 1/30 (default value) -> 1/60'),
+    (0x1A0F49C, '16a1a772', '1691a772', 'vtable_710413db48::vf119: step = 1/30 (w22) -> 1/60'),
+    (0x1A0F560, '08a1a772', '0891a772', 'vtable_710413db48::vf119: step = 1/30 -> 1/60'),
+    (0x1A158CC, '08a1b772', '0891b772', 'vtable_710413db48: gravity v.y += g(+0xf8) * k * -1/30 -> -1/60'),
+    (0x1A17B14, '08a1a772', '0891a772', 'vtable_710413db48::vf70: pos += v * 1/30 -> 1/60'),
+    (0x1A17F40, '08a1a772', '0891a772', 'vtable_710413db48::vf70: pos += v * 1/30 -> 1/60'),
+    (0x1A19108, '08a1a772', '0891a772', 'vtable_710413db48::vf70: FUN_7101727df4(dt=1/30, ...) -> 1/60'),
+    (0x1A196C8, '08a1a772', '0891a772', 'FUN_7101a19654: FUN_7101727df4(dt=1/30, ...) -> 1/60'),
+    (0x1A71A6C, '00d0271e2118201e', '25cf60941f2003d5', 'vtable_7104137528::vf17: +0x618 += f / 30 (s1 = s1 / s0) -> / 60 (bl to the cave; x30 is already saved in the prologue)'),
+    (0x1A71ABC, '01d0271e4418211e', '15cf60941f2003d5', 'vtable_7104137528::vf17: +0x618 += f / 30 (s4 = s2 / s1) -> / 60 (bl to the cave; x30 is already saved in the prologue)'),
+    (0x1AAB5A8, '08a1b772', '0891b772', 'FUN_7101aab*: timer +0x50 -= 1/30 -> -1/60'),
+    (0x1AAB5D8, '08a1b772', '0891b772', 'FUN_7101aab*: timer +0x54 -= 1/30 -> -1/60'),
+    (0x1B47F60, '08a1b772', '0891b772', 'vtable_710414bc28::vf18: timer [x21] -= f * 1/30 -> -1/60'),
+    (0x1B47F98, '08a1b772', '0891b772', 'vtable_710414bc28::vf18: timer +0x250 -= f * 1/30 -> -1/60'),
+    (0x1B47FD0, '08a1b772', '0891b772', 'vtable_710414bc28::vf18: timer +0x254 -= f * 1/30 -> -1/60'),
+    (0x1B48A4C, '08a1a772', '0891a772', 'vtable_710414bc28::vf18: timer +0x254 += f * 1/30 -> 1/60'),
+    (0x1B48A98, '08a1a772', '0891a772', 'vtable_710414bc28::vf18: timer +0x24c += f * 1/30 -> 1/60'),
+    (0x1B49008, '08a1a772', '0891a772', 'vtable_710414bc28::vf18: timer +0x24c += f * 1/30 -> 1/60'),
+    (0x1B493F8, '08a1a772', '0891a772', 'vtable_710414bc28::vf18: timer +0x250 += f * 1/30 -> 1/60'),
+    (0x1D1B7D0, '08a1a772', '0891a772', 'vtable_7104152798::vf9: prediction pos + v * 1/30 -> 1/60'),
+    (0x1D5D688, '08a1a772', '0891a772', 'FUN_7101d5d59c: FUN_71024ac8c4(1/30, ...) (minute counter) -> 1/60'),
+    (0x1D5D858, '28f4e7f2', '28f2e7f2', 'FUN_7101d5d59c: FUN_7102a1a728((double)1/30, obj, 1) -> (double)(float)1/60'),
+    (0x1D5D874, '28f4e7f2', '28f2e7f2', 'FUN_7101d5d59c: FUN_7102a1a728((double)1/30, obj, 1) -> (double)(float)1/60'),
+    (0x1D5D890, '28f4e7f2', '28f2e7f2', 'FUN_7101d5d59c: FUN_7102a1a728((double)1/30, obj, 1) -> (double)(float)1/60'),
+    (0x257AC34, '08a1a772', '0891a772', 'vtable_71041629a8::vf119: FUN_7101713904(f * k * 1/30) -> 1/60'),
+    (0x257C9F8, '08a1a772', '0891a772', 'vtable_71041629a8::vf84: pos += v * 1/30 -> 1/60'),
+    (0x257CE3C, '08a1a772', '0891a772', 'vtable_71041629a8::vf84: v * 1/30 (vector) -> 1/60'),
+    (0x25AC3DC, '08a1b772', '0891b772', 'ride controller: gravity * -1/30 (mount jumps) -> -1/60'),
+    (0x2795234, '08a1a772', '0891a772', 'FUN_7102795204: fixed dt 1/30 unless flag +0x150 -> 1/60'),
+    (0x29C17FC, '0101271e', 'd18f2394', 'sky vf7: s1 = -300 (+0x5dc += speed / -300 per frame) -> -600 (bl to the cave)'),
+    (0x29C1930, '0101271e', '888f2394', 'sky vf7: s1 = -300 (+0x614 += speed / -300 per frame) -> -600 (bl to the cave)'),
+    (0x29C1FA4, '0bd0271e', 'df8d2394', 'sky vf7: s11 = 30 (divisor of the cloud UV scroll +0x608/+0x60c/+0x610) -> 60 (bl to the cave)'),
+    (0x29C2990, '02d0271e', '688b2394', 'sky vf7: s2 = 30 (k * 30, divisor of the +0x64c offset) -> 60 (bl to the cave)'),
+    (0x29FAF90, '08a1a772', '0891a772', 'vtable_7104183390::vf17: time accumulator += 1/30 (wraps at 10000) -> 1/60'),
+    (0x2AA278C, '01050011', '21008052', 'nvnWindowSetPresentInterval(win, 1) instead of cfg+1 (=2)'),
+    (0x2AF25F8, '08a1a772', '0891a772', 'FUN_7102af25b4: fixed dt 1/30 unless flag +0x121 -> 1/60'),
+    (0x32A5700, '00000000000000000000000000000000', '00d0271e0028201e2118201ec0035fd6', 'cave: s1 = s1 / 60 (for 0x1a71a6c)'),
+    (0x32A5710, '00000000000000000000000000000000', '01d0271e2128211e4418211ec0035fd6', 'cave: s4 = s2 / 60 (for 0x1a71abc)'),
+    (0x32A5720, '00000000000000000000000000000000', '4b00001cc0035fd6000070421f2003d5', 'cave: s11 = 60 (for 0x29c1fa4)'),
+    (0x32A5730, '00000000000000000000000000000000', '4200001cc0035fd6000070421f2003d5', 'cave: s2 = 60 (for 0x29c2990)'),
+    (0x32A5740, '00000000000000000000000000000000', '4100001cc0035fd6000016c41f2003d5', 'cave: s1 = -600 (for 0x29c17fc)'),
+    (0x32A5750, '00000000000000000000000000000000', '4100001cc0035fd6000016c41f2003d5', 'cave: s1 = -600 (for 0x29c1930)'),
+    (0x397E8D8, '56a0fc0100000000', '2b50fe0000000000', 'rodata: ns per frame of mode 1 (33333334 -> 16666667); read by the game clocks every frame'),
+  ],
+}
