@@ -11,6 +11,8 @@ unsigned char g_vk_quirks[VQ_COUNT];
 vk_gpu g_vk_gpu;
 
 static int adreno(const vk_gpu *g) { return g->vendor == VENDOR_QUALCOMM; }   // both drivers: Qualcomm's own and Mesa's Turnip
+static int mali(const vk_gpu *g) { return g->vendor == VENDOR_ARM; }
+static int powervr(const vk_gpu *g) { return g->vendor == VENDOR_IMG; }
 
 static const struct {
     enum vk_quirk q; const char *name, *setting; int (*match)(const vk_gpu *); const char *why;
@@ -21,6 +23,14 @@ static const struct {
     // written for NieR:Automata
     {VQ_GS_SPLIT, "gs_split", "DM_VK_QUIRK_GS_SPLIT", adreno,
      "geometry-shader draws split into vertex and fragment passes: written and checked on Adreno only"},
+    // found on Mali (#551)
+    {VQ_ZC_FLUSH, "zc_flush", "DM_VK_QUIRK_ZC_FLUSH", mali,
+     "the GPU does not see CPU-cached writes to hardware buffers: each submission cleans the zero-copy pages the CPU wrote"},
+    // PowerVR CXTP-48-1536 (Pixel 11 Pro, driver 1.662.3024) with Animal Crossing: New Horizons: with cached buffers, black or stale patches (trees, hair) in 8 of
+    // 150 frames by the tent; cleaned before each submission (zc_flush) 0, but ~830 write-protect faults a frame cost 19-42 of 1,800 frames on a run; uncached,
+    // 0 of 300 frames with patches and 0-1 of 1,800 dropped (the replay 3.5 ms slower where it reads such pools)
+    {VQ_ZC_UNCACHED, "zc_uncached", "DM_VK_QUIRK_ZC_UNCACHED", powervr,
+     "the GPU does not see CPU-cached writes to hardware buffers: zero-copy buffers are allocated for rare CPU access, which this gralloc maps uncached"},
 };
 _Static_assert(sizeof ROWS / sizeof *ROWS == VQ_COUNT, "one row a quirk");
 

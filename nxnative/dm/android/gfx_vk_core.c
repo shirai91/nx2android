@@ -542,12 +542,16 @@ typedef struct slab_t { struct slab_t *next; AHardwareBuffer *ahb; int fd; uint8
 static slab_t *g_slab[SLAB_NCLS]; static pthread_mutex_t g_slab_mu = PTHREAD_MUTEX_INITIALIZER;
 static uint64_t g_slab_used, g_slab_bytes;   // pools placed in slabs so far, slab memory (under g_slab_mu: the pool line)
 static int slab_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_VK_POOL_SLABS"); v = !(e && !atoi(e)); } return v; }
+static uint64_t zc_cpu_usage(void) {   // (after vk_init: the quirks are known)
+    return vk_quirk(VQ_ZC_UNCACHED) ? AHARDWAREBUFFER_USAGE_CPU_READ_RARELY | AHARDWAREBUFFER_USAGE_CPU_WRITE_RARELY
+                                    : AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN | AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN;
+}
 static slab_t *slab_new(int c) {   // a slab of class c, allocated and imported (no lock held)
     uint64_t sb = (uint64_t)SLAB_PAGES[c] << 12; uint32_t n = 64;
     if (sb * n < (2u << 20)) n = (uint32_t)((2u << 20) / sb); if (sb * n > (8u << 20)) n = (uint32_t)((8u << 20) / sb); if (n > SLAB_SLOTS) n = SLAB_SLOTS;
     uint64_t size = sb * n; slab_t *s = calloc(1, sizeof *s); if (!s) return NULL;
     s->slot_bytes = sb; s->nslot = s->nfree = n; s->fd = -1;
-    AHardwareBuffer_Desc d = {(uint32_t)size, 1, 1, AHARDWAREBUFFER_FORMAT_BLOB, AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN | AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN | AHARDWAREBUFFER_USAGE_GPU_DATA_BUFFER, 0, 0, 0};
+    AHardwareBuffer_Desc d = {(uint32_t)size, 1, 1, AHARDWAREBUFFER_FORMAT_BLOB, zc_cpu_usage() | AHARDWAREBUFFER_USAGE_GPU_DATA_BUFFER, 0, 0, 0};
     if (AHardwareBuffer_allocate(&d, &s->ahb)) { free(s); return NULL; }
     s->fd = ahb_fd(s->ahb, NULL);
     s->map = s->fd >= 0 ? mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, s->fd, 0) : MAP_FAILED;
@@ -673,7 +677,7 @@ static int pool_zero_copy(vkpool_t *p, uint8_t *mem, uint64_t size, int lazy, co
         mem_diag_zc(11, "mmap-fixed slab", size, "errno", errno);   // (the old pages are still there: a buffer of its own)
     }
     AHardwareBuffer_Desc d = {(uint32_t)size, 1, 1, AHARDWAREBUFFER_FORMAT_BLOB,
-        AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN | AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN | AHARDWAREBUFFER_USAGE_GPU_DATA_BUFFER, 0, 0, 0};
+        zc_cpu_usage() | AHARDWAREBUFFER_USAGE_GPU_DATA_BUFFER, 0, 0, 0};
     if (size > 0xffffffffull) { mem_diag_zc(0, "size", size, "limit", -1); return -1; }
     zcfree_t re; int reuse = zcf_take(size, &re);
     AHardwareBuffer *ahb = reuse ? re.ahb : NULL; int ar = reuse ? 0 : AHardwareBuffer_allocate(&d, &ahb);
@@ -847,7 +851,7 @@ static uint64_t read_ns(const uint8_t *p, size_t n) {
 static int zc_uncached(void) {
     static int v = -1; if (v >= 0) return v;
     enum { N = 1 << 20 }; v = 0;
-    AHardwareBuffer_Desc d = {N, 1, 1, AHARDWAREBUFFER_FORMAT_BLOB, AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN | AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN | AHARDWAREBUFFER_USAGE_GPU_DATA_BUFFER, 0, 0, 0};
+    AHardwareBuffer_Desc d = {N, 1, 1, AHARDWAREBUFFER_FORMAT_BLOB, zc_cpu_usage() | AHARDWAREBUFFER_USAGE_GPU_DATA_BUFFER, 0, 0, 0};
     AHardwareBuffer *ahb = NULL; if (AHardwareBuffer_allocate(&d, &ahb)) return v;
     int fd = ahb_fd(ahb, NULL);
     uint8_t *a = fd >= 0 ? mmap(NULL, N, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0) : MAP_FAILED, *m = malloc(N);
@@ -1126,7 +1130,7 @@ static void vk_pools_sync_(VkCommandBuffer cb) {
     (void)cb;
     int diag = mem_diag_on(); uint64_t ns[4] = {0}, amount[4] = {0};
     uint64_t reason_count[4] = {0}, reason_bytes[4] = {0};
-    int zc_flush = (V.props.vendorID == 0x13b5);   // Mali: CPU-cached AHB is not IO-coherent with the GPU
+    int zc_flush = vk_quirk(VQ_ZC_FLUSH);   // CPU-cached AHB is not IO-coherent with the GPU (Mali, PowerVR)
 #define SYNC_MEASURE(k, n, op) do { if (diag) { uint64_t t_ = mem_diag_ns(); op; ns[k] += mem_diag_ns() - t_; amount[k] += (n); } else { op; } } while (0)
     enum { BLK = 64 << 10 };
     pthread_rwlock_rdlock(&g_pool_mu);
@@ -1134,12 +1138,12 @@ static void vk_pools_sync_(VkCommandBuffer cb) {
         vkpool_t *p = &g_pool[i];
         int zc = !p->shadow && zc_flush && p->zero_copy;
         if (!p->shadow && !zc) continue;
-        if (zc) { static int said; if (!said++) VKLOG("Mali zero-copy CPU cache sync active (vendor %#x)", V.props.vendorID); }
+        if (zc) { static int said; if (!said++) VKLOG("zero-copy CPU cache sync active (vendor %#x)", V.props.vendorID); }
         uint8_t *lo = (uint8_t *)(uintptr_t)p->lo; uint64_t size = p->hi - p->lo, st = nvn_dirty_now();
         if (!zc && !p->baseline) { p->baseline = malloc(size); if (!p->baseline) die("[RED] [vk] copied-pool baseline allocation failed (%llu bytes)", (unsigned long long)size);
             p->synced = 0; if (mem_diag_on()) VKLOG("[memdiag] copy-back baseline allocated: %.2f MiB", size / 1048576.0); }
         if (!p->span && (p->span = nvn_dirty_span(lo, size))) p->synced = 0;   // tracked only now: copied/flushed whole once more, protected
-        if (zc && !p->span) { static int said_untracked; if (!said_untracked++) VKLOG("Mali zero-copy pool has no dirty span: all %llu bytes are cleaned on every submission", (unsigned long long)size); }
+        if (zc && !p->span) { static int said_untracked; if (!said_untracked++) VKLOG("zero-copy pool has no dirty span: all %llu bytes are cleaned on every submission", (unsigned long long)size); }
         if (!p->synced || !p->span) {   // untracked: every sync copies/flushes all of it
             if (diag) { int reason = !p->synced ? 0 : 1; reason_count[reason]++; reason_bytes[reason] += size; }
             if (p->span) SYNC_MEASURE(1, size, nvn_dirty_protect(lo, size));
@@ -1563,7 +1567,7 @@ static void begin_segment(int continuing) {
         int diag = mem_diag_on(); uint64_t t = diag ? mem_diag_ns() : 0;
         mtl_wait(g_fence, ~0ull); if (diag) mem_diag_note(0, t, 0);
         vk_pools_sync(NULL);
-    } else if (V.props.vendorID == 0x13b5) {
+    } else if (vk_quirk(VQ_ZC_FLUSH)) {
         vk_pools_sync(NULL);
     }   // (after the completion thread's copy-back of the last submission, not only its GPU work)
     if (g_tsq) { vkCmdResetQueryPool(s->main, g_tsq, 2 * (uint32_t)g_cur, 2); vkCmdWriteTimestamp(s->main, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, g_tsq, 2 * (uint32_t)g_cur); }
