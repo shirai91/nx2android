@@ -9,6 +9,7 @@
 enum vk_quirk {
     VQ_LRZ_TOUCH,    // Adreno LRZ: one-texel depth reads around passes that load depth (gfx_vk_exec_passes.inc lrz_touch); default of DM_VK_LRZ_TOUCH
     VQ_GS_SPLIT,     // geometry-shader split draws (gfx_vk_gs_split.c) run on this GPU when a profile asks (DM_VK_GS_SPLIT=1)
+    VQ_VB_REBIND,    // every draw binds its vertex buffers again (gfx_vk_exec_draws.inc): the driver loses them between draws that the bind cache sees as unchanged
     VQ_COUNT
 };
 

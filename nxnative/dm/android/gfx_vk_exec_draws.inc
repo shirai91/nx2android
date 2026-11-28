@@ -8,9 +8,13 @@ static struct { uint64_t gen; VkViewport vp; VkRect2D sc; float bc[4]; int sm[2]
                 VkDescriptorSet sets[5]; uint32_t dofs[3 * 96]; VkBuffer vb[17]; VkDeviceSize vo[17]; VkBuffer ib; VkDeviceSize io; VkIndexType it; } g_bc;
 
 static int bc_fresh(void) { if (g_bc.gen != g_cmd_gen || g_x_nobc || g_bc_stale) { g_bc_stale = 0; memset(&g_bc, 0, sizeof g_bc); g_bc.gen = g_cmd_gen; g_bc.it = (VkIndexType)-1; return 1; } return 0; }
+// DM_VK_X_NOBC_MASK (live, bits): only these kinds are set again by every draw, to find which one a driver loses: 1 viewport and scissor, 2 blend constants, stencil,
+// depth bias and line width, 4 descriptor sets, 8 vertex buffers, 16 the index buffer
+enum { BCM_VIEW = 1, BCM_DYN = 2, BCM_SETS = 4, BCM_VB = 8, BCM_IB = 16 };
 #define BC_SAME(field, val) (!fresh && !memcmp(&g_bc.field, &(val), sizeof g_bc.field))
+#define BC_SAME_K(field, val, kind) (!(g_x_nobcm & (kind)) && BC_SAME(field, val))
 static void bc_index(VkCommandBuffer cb, VkBuffer b, VkDeviceSize o, VkIndexType t) {
-    int fresh = bc_fresh(); if (!fresh && g_bc.ib == b && g_bc.io == o && g_bc.it == t) return;
+    int fresh = bc_fresh(); if (!fresh && !(g_x_nobcm & BCM_IB) && g_bc.ib == b && g_bc.io == o && g_bc.it == t) return;
     vkCmdBindIndexBuffer(cb, b, o, t); g_bc.ib = b; g_bc.io = o; g_bc.it = t;
 }
 static void set_dynamic(VkCommandBuffer cb) {
@@ -27,12 +31,13 @@ static void set_dynamic(VkCommandBuffer cb) {
       if (sw == 0x100) { vp.y += vp.height; vp.height = -vp.height; }
       else if (sw) VKRED_ONCE(81, "viewport swizzle %d,%d,%d,%d not implemented (drawn unswizzled)", S.vp_sw[0][0], S.vp_sw[0][1] ^ 2, S.vp_sw[0][2] ^ 4, S.vp_sw[0][3] ^ 6); }
     if (vp.minDepth < 0) vp.minDepth = 0; if (vp.maxDepth > 1) vp.maxDepth = 1;
-    if (!BC_SAME(vp, vp)) { vkCmdSetViewport(cb, 0, 1, &vp); g_bc.vp = vp; }
-    VkRect2D sc = scissor_rect(); if (!BC_SAME(sc, sc)) { vkCmdSetScissor(cb, 0, 1, &sc); g_bc.sc = sc; }
+    if (!BC_SAME_K(vp, vp, BCM_VIEW)) { vkCmdSetViewport(cb, 0, 1, &vp); g_bc.vp = vp; }
+    VkRect2D sc = scissor_rect(); if (!BC_SAME_K(sc, sc, BCM_VIEW)) { vkCmdSetScissor(cb, 0, 1, &sc); g_bc.sc = sc; }
     { int32_t vx0 = (int32_t)fmaxf(vp.x, 0), vy0 = (int32_t)fmaxf(fminf(vp.y, vp.y + vp.height), 0), vx1 = (int32_t)(vp.x + vp.width), vy1 = (int32_t)fmaxf(vp.y, vp.y + vp.height);   // what this draw can touch
       int32_t x0 = sc.offset.x > vx0 ? sc.offset.x : vx0, y0 = sc.offset.y > vy0 ? sc.offset.y : vy0, x1 = sc.offset.x + (int32_t)sc.extent.width < vx1 ? sc.offset.x + (int32_t)sc.extent.width : vx1, y1 = sc.offset.y + (int32_t)sc.extent.height < vy1 ? sc.offset.y + (int32_t)sc.extent.height : vy1;
       if (x0 < g_pass_bb[0]) g_pass_bb[0] = x0; if (y0 < g_pass_bb[1]) g_pass_bb[1] = y0; if (x1 > g_pass_bb[2]) g_pass_bb[2] = x1; if (y1 > g_pass_bb[3]) g_pass_bb[3] = y1; }
-    if (!BC_SAME(bc, S.blendc)) { vkCmdSetBlendConstants(cb, S.blendc); memcpy(g_bc.bc, S.blendc, sizeof g_bc.bc); }
+    if (!BC_SAME_K(bc, S.blendc, BCM_DYN)) { vkCmdSetBlendConstants(cb, S.blendc); memcpy(g_bc.bc, S.blendc, sizeof g_bc.bc); }
+    if (g_x_nobcm & BCM_DYN) g_bc.stencil = 0;
     if (S.rast_discard) g_bc.stencil = 0; // Ignored stencil state is static in discarded pipelines; re-emit on the next raster draw.
     else {
         if (!g_bc.stencil || !BC_SAME(sm, S.smask)) { vkCmdSetStencilCompareMask(cb, VK_STENCIL_FACE_FRONT_BIT, (uint32_t)S.smask[0]); vkCmdSetStencilCompareMask(cb, VK_STENCIL_FACE_BACK_BIT, (uint32_t)S.smask[1]); memcpy(g_bc.sm, S.smask, sizeof g_bc.sm); }
@@ -40,8 +45,8 @@ static void set_dynamic(VkCommandBuffer cb) {
         if (!g_bc.stencil || !BC_SAME(sr, S.sref)) { vkCmdSetStencilReference(cb, VK_STENCIL_FACE_FRONT_BIT, (uint32_t)S.sref[0]); vkCmdSetStencilReference(cb, VK_STENCIL_FACE_BACK_BIT, (uint32_t)S.sref[1]); memcpy(g_bc.sr, S.sref, sizeof g_bc.sr); }
         g_bc.stencil = 1;
     }
-    if (!BC_SAME(po, S.pofs)) { vkCmdSetDepthBias(cb, S.pofs.units, S.pofs.clamp, S.pofs.factor); g_bc.po = S.pofs; }
-    if (fresh || !g_bc.line) { vkCmdSetLineWidth(cb, 1.0f); g_bc.line = 1; }
+    if (!BC_SAME_K(po, S.pofs, BCM_DYN)) { vkCmdSetDepthBias(cb, S.pofs.units, S.pofs.clamp, S.pofs.factor); g_bc.po = S.pofs; }
+    if (fresh || !g_bc.line || (g_x_nobcm & BCM_DYN)) { vkCmdSetLineWidth(cb, 1.0f); g_bc.line = 1; }
 }
 static int g_no_cull = -1, g_front_ovr = -2;   // DM_VK_FRONT=0|1 forces the Vulkan front face for every draw (0 = clockwise, 1 = counter-clockwise: k.front, build_pipeline); =2 inverts the rule below for every draw (Criterion's games: Burnout
 // Paradise culled its ground and showed cars' back faces, NFS Hot Pursuit drew its cars black; the rule suits NEO). -2: not read
@@ -328,13 +333,13 @@ static int prepare_draw(int prim, int indexed) {
     for (int i = 0; i < nsets; i++) if (!sets[i]) sets[i] = vk_alloc_set(dsl[i]);   // an absent stage's set: from the empty layout vk_pipeline_layout filled in
     // DM_VK_SETSPLIT=1 (live): under the same layout, only the run of sets whose handle or dynamic offsets changed is bound again. Adreno's vkCmdBindDescriptorSets
     // took ~22% of the replay thread on Unicorn Overlord's battle map (one load in it), and a draw that moves only its vertex stage's offsets sent the fragment set too
-    if (!(dbg_draw() & 4) && g_setsplit && !bc_fresh() && g_bc.lay == layout && g_bc.nsets == (uint32_t)nsets && g_bc.ndofs == ndofs) {
+    if (!(dbg_draw() & 4) && g_setsplit && !bc_fresh() && !(g_x_nobcm & BCM_SETS) && g_bc.lay == layout && g_bc.nsets == (uint32_t)nsets && g_bc.ndofs == ndofs) {
         int lo = -1, hi = -1;
         for (int i = 0; i < nsets; i++) if (g_bc.sets[i] != sets[i] || memcmp(g_bc.dofs + at[i], dall + at[i], sizeof *dall * (at[i + 1] - at[i]))) { if (lo < 0) lo = i; hi = i; }
         if (lo >= 0) { vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, (uint32_t)lo, (uint32_t)(hi - lo + 1), sets + lo, at[hi + 1] - at[lo], dall + at[lo]);
             memcpy(g_bc.sets + lo, sets + lo, sizeof *sets * (size_t)(hi - lo + 1)); memcpy(g_bc.dofs + at[lo], dall + at[lo], sizeof *dall * (at[hi + 1] - at[lo])); } }
     else if (!(dbg_draw() & 4)) { int fresh = bc_fresh();
-        if (fresh || g_bc.lay != layout || g_bc.nsets != (uint32_t)nsets || g_bc.ndofs != ndofs || memcmp(g_bc.sets, sets, sizeof *sets * (size_t)nsets) || memcmp(g_bc.dofs, dall, sizeof *dall * ndofs)) {
+        if (fresh || (g_x_nobcm & BCM_SETS) || g_bc.lay != layout || g_bc.nsets != (uint32_t)nsets || g_bc.ndofs != ndofs || memcmp(g_bc.sets, sets, sizeof *sets * (size_t)nsets) || memcmp(g_bc.dofs, dall, sizeof *dall * ndofs)) {
             vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, (uint32_t)nsets, sets, ndofs, dall);
             g_bc.lay = layout; g_bc.nsets = (uint32_t)nsets; g_bc.ndofs = ndofs; memcpy(g_bc.sets, sets, sizeof *sets * (size_t)nsets); memcpy(g_bc.dofs, dall, sizeof *dall * ndofs); } }
     // vertex buffers
@@ -345,7 +350,8 @@ static int prepare_draw(int prim, int indexed) {
         else if (!vk_buf_at(S.vbuf[b].address, vlookup, &buf, &off)) { buf = vk_zero_buffer(); off = 0; VKRED_ONCE(51, "vertex buffer outside the memory pools"); }
         else if (S.vbuf[b].size) { vkpool_t *vp = vk_pool_of(S.vbuf[b].address, 1); if (vp && S.vbuf[b].address + S.vbuf[b].size > vp->hi && vp->hi < vp->end) vk_cross(2, S.vbuf[b].address, S.vbuf[b].size, vp); }
         if (g_var_now == 5) { buf = vk_zero_buffer(); off = 0; }
-        if (!(dbg_draw() & 2) && b < 17) { int fresh = bc_fresh(); if (fresh || g_bc.vb[b] != buf || g_bc.vo[b] != off) { vkCmdBindVertexBuffers(cb, b, 1, &buf, &off); g_bc.vb[b] = buf; g_bc.vo[b] = off; } }
+        if (!(dbg_draw() & 2) && b < 17) { int fresh = bc_fresh(); if (fresh || (g_x_nobcm & BCM_VB) || vk_quirk(VQ_VB_REBIND) || g_bc.vb[b] != buf || g_bc.vo[b] != off) {
+            vkCmdBindVertexBuffers(cb, b, 1, &buf, &off); g_bc.vb[b] = buf; g_bc.vo[b] = off; } }
     }
     (void)indexed;
     return 1;
