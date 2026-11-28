@@ -92,20 +92,30 @@ static void obj_made(const uint64_t *regs) {
     static int once; if (!once++) LOG("%s: Unreal's allocator (FMallocBinned3, made at run time at %#llx) runs on a host malloc zone", g_what, (unsigned long long)regs[19]);
 }
 
+// Observation gate OBS_UE_MALLOC_X0: the allocator object is in x0 (the caller's store of GMalloc right after GCreateMalloc returned; GCreateMalloc itself is a leaf and returns at once)
+static void obj_made_x0(const uint64_t *regs) {
+    *(void **)(uintptr_t)regs[0] = g_vt;
+    static int once; if (!once++) LOG("%s: Unreal's allocator (FMallocBinned3, made at run time at %#llx) runs on a host malloc zone", g_what, (unsigned long long)regs[0]);
+}
+
 // Called once the modules are loaded and relocated, before any guest code runs
 void dm_ue_malloc_install(void) {
     for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "main"))
         for (int k = 0; k < NUE; k++) if (!strcmp(g_mod[i].build_id, k_ue[k].build)) {
             uint8_t *b = g_mod[i].base; int L = k_ue[k].layout;
             if (*(uint32_t *)(b + k_ue[k].cut) != 0xd503201f) { LOG("[RED] %s: main is rewritten without the allocator cut (its patches.py): Unreal's own FMallocBinned3 runs", k_ue[k].what); return; }
-            if (!k_ue[k].obj && !gate_obs_present(OBS_UE_MALLOC)) { LOG("[RED] %s: main is rewritten without the allocator gate (OBS of its patches.py): the allocator would have no vtable", k_ue[k].what); return; }
+            if (!k_ue[k].obj && !gate_obs_present(OBS_UE_MALLOC) && !gate_obs_present(OBS_UE_MALLOC_X0)) { LOG("[RED] %s: main is rewritten without the allocator gate (OBS of its patches.py): the allocator would have no vtable", k_ue[k].what); return; }
             memcpy(g_vt, b + k_ue[k].vtable, sizeof g_vt[0] * k_lay[L].nslot);   // the relocated vtable: the trivial slots stay the guest's
             g_vt[k_lay[L].malloc_] = (void *)m_Malloc; g_vt[k_lay[L].try_malloc] = (void *)m_TryMalloc; g_vt[k_lay[L].realloc_] = (void *)m_Realloc;
             g_vt[k_lay[L].try_realloc] = (void *)m_TryRealloc; g_vt[k_lay[L].free_] = (void *)m_Free;
             g_vt[k_lay[L].quantize] = (void *)m_QuantizeSize; g_vt[k_lay[L].get_size] = (void *)m_GetAllocationSize;
             for (int s = 0; s < 6 && k_lay[L].nothing[s]; s++) g_vt[k_lay[L].nothing[s]] = (void *)m_Nothing;
             g_zone = malloc_create_zone(0, 0); malloc_set_zone_name(g_zone, "guest Unreal heap"); g_what = k_ue[k].what;
-            if (!k_ue[k].obj) { gate_obs_set(OBS_UE_MALLOC, obj_made); continue; }
+            if (!k_ue[k].obj) {
+                if (gate_obs_present(OBS_UE_MALLOC_X0)) gate_obs_set(OBS_UE_MALLOC_X0, obj_made_x0);
+                else gate_obs_set(OBS_UE_MALLOC, obj_made);
+                continue;
+            }
             *(void **)(b + k_ue[k].obj) = g_vt;
             LOG("%s: Unreal's allocator (FMallocBinned3 at main+%#llx) runs on a host malloc zone", k_ue[k].what, (unsigned long long)k_ue[k].obj);
         }

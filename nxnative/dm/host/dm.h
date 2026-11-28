@@ -106,7 +106,8 @@ uint64_t gate_dispatch(uint64_t ret_addr, uint64_t *regs);
 // Observation gates (rewriter OBS tables in the profiles' patches.py, applied by patch_nso.py; numbering matches): read-only callbacks, called on a gate hit once attached
 enum { OBS_MOVIE_RING_LINK = 19, OBS_MOVIE_RING_UNLINK = 20,   // Metroid Dread 2.1.0's movie request ring (hle_movie.c)
        OBS_UE_MALLOC = 21,                                       // DRAGON QUEST VII Reimagined 1.2.0: Unreal's allocator object just made (hle_uemalloc.c)
-       OBS_MAX = 22 };
+       OBS_UE_MALLOC_X0 = 22,                                    // DRAGON QUEST III HD-2D Remake 1.0.0: the allocator object in x0 at the caller's store of GMalloc (hle_uemalloc.c)
+       OBS_MAX = 23 };
 void gate_obs_set(int id, void (*fn)(const uint64_t *regs));
 int gate_obs_present(int id);
 uint64_t now_ns(void);
