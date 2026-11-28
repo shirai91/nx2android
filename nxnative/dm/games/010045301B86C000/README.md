@@ -10,6 +10,7 @@
 | Tested with nx2android | `v0.5.0` |
 | Tested build and device | v196608 AYN Odin 2 (Snapdragon 8 Gen 2 QCS8550, Adreno 740, Android 13; Mesa Turnip KIMCHI v26.0.0_R8) |
 | App package | `org.nx2a.romancingsaga2rots` |
+| Vulkan driver | Turnip: the port packs Mesa's Turnip driver when the porter finds it (`vulkan_driver turnip`) |
 
 The profile sets these for you (`android.tsv`); a player changes the pause menu ones in the game, and the env rows in the data pack's `env.txt`:
 
@@ -48,7 +49,7 @@ Read the profile's porting log in the comment header of [`android.tsv`](android.
 
 ## Options
 
-- Tested with `--vulkan-driver` set to Mesa Turnip KIMCHI v26.0.0_R8. The device's own Qualcomm driver was not tested.
+- The profile packs Turnip by default (`vulkan_driver turnip`; tested with KIMCHI v26.0.0_R8). `--vulkan-driver system` keeps the device's own Qualcomm driver, which was not tested.
 - The profile sets `DM_SWKBD_SETTLE_MS=1000` for you. Without it the game never shows "Is this name okay?" after the name is typed, and the naming page takes no more input.
 - Handheld mode (`docked=0`) draws about 0.9 W less than docked mode in the Sealed Cave, and about 1.5 W less in Avalon (1280x720 against 1600x900), for a slightly softer picture.
 - The profile sets `DM_VK_X_FENCES=1` for you. Without it, towns run at about 24 fps.

@@ -5,6 +5,7 @@
 status	experimental
 tested	v196608 AYN Odin 2 (Snapdragon 8 Gen 2 QCS8550, Adreno 740, Android 13; Mesa Turnip KIMCHI v26.0.0_R8)
 package	org.nx2a.romancingsaga2rots
+vulkan_driver	turnip
 orientation	landscape
 # the game sees the keyboard's result 1 s after it closes, as the applet takes on hardware: with no delay the "Is this name okay?" confirmation never shows and the naming page takes no more input
 env	DM_SWKBD_SETTLE_MS=1000
