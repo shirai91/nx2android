@@ -472,6 +472,56 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import nso_code
 DATA_BLOCKS = nso_code.data_blocks(IMG, TEXT_END, md)
 CODE_RANGES = list(zip([0] + [e for _, e in DATA_BLOCKS], [s for s, _ in DATA_BLOCKS] + [TEXT_END]))
+
+# ---- Memory ordering the games leave out (nxnative upstream, docs/reference/threads.md; ported 2026-11-25) ----
+# Every exclusive access without acquire/release ordering becomes the ordered form: ldxr* / ldxp -> ldaxr* / ldaxp, stxr* / stxp -> stlxr* / stlxp (bit 15). Armv8 lets the accesses after
+# an exclusive load without acquire be satisfied before it, and those before an exclusive store without release be seen after it; the Switch's Cortex-A57 never showed it, Apple's and the
+# phones' out-of-order cores do (a job-queue lock taken with ldxr/stxr let two workers pop the same item). Ordering only removes outcomes, so every one is upgraded, with no shape list.
+# Runs before the exclusive windows are found, so the windows' copies in the patch area carry the ordered forms too.
+def exclusive_order_sites(img, ranges):
+    """Offsets of the exclusive loads and stores without ordering: ldxr / ldxrb / ldxrh / ldxp and stxr / stxrb / stxrh / stxp, any size (each with its fixed fields exact; not CAS or CASP)"""
+    out = []
+    for s, e in ranges:
+        for m in re.finditer(rb'[\x08\x48\x88\xC8]', img[s:e]):   # the top byte of every form: size << 6 | 0x08
+            o = s + m.start() - 3
+            if o & 3 or o < s: continue
+            w = struct.unpack_from('<I', img, o)[0]
+            if (w & 0x3FFFFC00 == 0x085F7C00 or w & 0xBFFF8000 == 0x887F0000           # ldxr* (Rs and Rt2 all ones), ldxp (Rs all ones)
+                    or w & 0x3FE0FC00 == 0x08007C00 or w & 0xBFE08000 == 0x88200000):   # stxr* (Rt2 all ones), stxp
+                out.append(o)
+    return out
+ORDERED = set(exclusive_order_sites(IMG, CODE_RANGES))
+for o in ORDERED:
+    struct.pack_into('<I', IMG, o, struct.unpack_from('<I', IMG, o)[0] | 0x8000)   # ldxr -> ldaxr, stxr -> stlxr
+    stat('exclusive_ordered')
+
+# The completer of Trinity's (and the older Game Freak engines') per-frame rendezvous: it sets a release flag with a plain strb, then reads the state word with ldar. A load-acquire does not
+# order an earlier plain store, so the flag can stay invisible while main resets the state to 0, reads the flag as 0 and parks for good: the picture stops and the audio goes on
+# (nxnative issue #1250). A dmb ish after the strb, in the word the frame pointer's mov gives up, fixes it; exactly one such function in a module or no change.
+def trinity_completer_sites(img, ranges):
+    """Offsets of the frame: stp x29,x30,[sp,#-0x20]!; stp x20,x19,[sp,#0x10]; mov x29,sp; ldr x8,[x0,#imm]; mov w9,#1; strb w9,[x8,#A]; ldrb w9,[x8,#A+1]; cbz w9; ldr x20,[x8,#B];
+    add x9,x20,#C; ldar w8,[x9]; cmp w8,#2; b.ne"""
+    out, needle = [], struct.pack('<II', 0x88DFFD28, 0x7100091F)   # ldar w8,[x9]; cmp w8,#2
+    for s, e in ranges:
+        o = img.find(needle, s, e)
+        while o >= 0:
+            f = o - 40
+            if o % 4 == 0 and f >= s and o + 12 <= e:
+                w = struct.unpack_from('<13I', img, f)
+                if w[:3] == (0xA9BE7BFD, 0xA9014FF4, 0x910003FD) and w[3] & 0xFFC003FF == 0xF9400008 and w[4] == 0x52800029 and w[5] & 0xFFC003FF == 0x39000109 and \
+                        w[6] & 0xFFC003FF == 0x39400109 and w[6] >> 10 & 0xFFF == (w[5] >> 10 & 0xFFF) + 1 and w[7] & 0xFF00001F == 0x34000009 and w[8] & 0xFFC003FF == 0xF9400114 and \
+                        w[9] & 0xFFC003FF == 0x91000289 and w[12] & 0xFF00001F == 0x54000001:
+                    out.append(f)
+            o = img.find(needle, o + 4, e)
+    return out
+def trinity_completer_barrier(img, f):
+    """The frame pointer's mov gives up its word: the ldr, the mov and the strb move up one and dmb ish follows the strb"""
+    struct.pack_into('<4I', img, f + 8, *struct.unpack_from('<3I', img, f + 12), 0xD5033BBF)
+TRINITY = trinity_completer_sites(IMG, CODE_RANGES)
+if len(TRINITY) > 1: print(f'[RED] {NAME}: {len(TRINITY)} per-frame rendezvous completers match, no barrier written: {" ".join(hex(f) for f in TRINITY)}')
+elif TRINITY:
+    trinity_completer_barrier(IMG, TRINITY[0]); stat('trinity_completer')
+
 md_lite = Cs(CS_ARCH_ARM64, CS_MODE_ARM)   # no details: the x18 scan reads only the operand text
 R18 = re.compile(r'\b[xw]18\b')
 def x18_words(lo, hi):
