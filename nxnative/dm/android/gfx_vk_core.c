@@ -1126,7 +1126,7 @@ static void vk_pools_sync_(VkCommandBuffer cb) {
     (void)cb;
     int diag = mem_diag_on(); uint64_t ns[4] = {0}, amount[4] = {0};
     uint64_t reason_count[4] = {0}, reason_bytes[4] = {0};
-    int zc_flush = (V.props.vendorID == 0x13b5);   // Mali: CPU-cached AHB is not IO-coherent with the GPU
+    int zc_flush = vk_quirk(VQ_ZC_FLUSH);   // CPU-cached AHB is not IO-coherent with the GPU (Mali, PowerVR)
 #define SYNC_MEASURE(k, n, op) do { if (diag) { uint64_t t_ = mem_diag_ns(); op; ns[k] += mem_diag_ns() - t_; amount[k] += (n); } else { op; } } while (0)
     enum { BLK = 64 << 10 };
     pthread_rwlock_rdlock(&g_pool_mu);
@@ -1134,12 +1134,12 @@ static void vk_pools_sync_(VkCommandBuffer cb) {
         vkpool_t *p = &g_pool[i];
         int zc = !p->shadow && zc_flush && p->zero_copy;
         if (!p->shadow && !zc) continue;
-        if (zc) { static int said; if (!said++) VKLOG("Mali zero-copy CPU cache sync active (vendor %#x)", V.props.vendorID); }
+        if (zc) { static int said; if (!said++) VKLOG("zero-copy CPU cache sync active (vendor %#x)", V.props.vendorID); }
         uint8_t *lo = (uint8_t *)(uintptr_t)p->lo; uint64_t size = p->hi - p->lo, st = nvn_dirty_now();
         if (!zc && !p->baseline) { p->baseline = malloc(size); if (!p->baseline) die("[RED] [vk] copied-pool baseline allocation failed (%llu bytes)", (unsigned long long)size);
             p->synced = 0; if (mem_diag_on()) VKLOG("[memdiag] copy-back baseline allocated: %.2f MiB", size / 1048576.0); }
         if (!p->span && (p->span = nvn_dirty_span(lo, size))) p->synced = 0;   // tracked only now: copied/flushed whole once more, protected
-        if (zc && !p->span) { static int said_untracked; if (!said_untracked++) VKLOG("Mali zero-copy pool has no dirty span: all %llu bytes are cleaned on every submission", (unsigned long long)size); }
+        if (zc && !p->span) { static int said_untracked; if (!said_untracked++) VKLOG("zero-copy pool has no dirty span: all %llu bytes are cleaned on every submission", (unsigned long long)size); }
         if (!p->synced || !p->span) {   // untracked: every sync copies/flushes all of it
             if (diag) { int reason = !p->synced ? 0 : 1; reason_count[reason]++; reason_bytes[reason] += size; }
             if (p->span) SYNC_MEASURE(1, size, nvn_dirty_protect(lo, size));
@@ -1563,7 +1563,7 @@ static void begin_segment(int continuing) {
         int diag = mem_diag_on(); uint64_t t = diag ? mem_diag_ns() : 0;
         mtl_wait(g_fence, ~0ull); if (diag) mem_diag_note(0, t, 0);
         vk_pools_sync(NULL);
-    } else if (V.props.vendorID == 0x13b5) {
+    } else if (vk_quirk(VQ_ZC_FLUSH)) {
         vk_pools_sync(NULL);
     }   // (after the completion thread's copy-back of the last submission, not only its GPU work)
     if (g_tsq) { vkCmdResetQueryPool(s->main, g_tsq, 2 * (uint32_t)g_cur, 2); vkCmdWriteTimestamp(s->main, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, g_tsq, 2 * (uint32_t)g_cur); }
