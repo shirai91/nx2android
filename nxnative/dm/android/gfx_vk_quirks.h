@@ -10,6 +10,7 @@ enum vk_quirk {
     VQ_LRZ_TOUCH,    // Adreno LRZ: one-texel depth reads around passes that load depth (gfx_vk_exec_passes.inc lrz_touch); default of DM_VK_LRZ_TOUCH
     VQ_GS_SPLIT,     // geometry-shader split draws (gfx_vk_gs_split.c) run on this GPU when a profile asks (DM_VK_GS_SPLIT=1)
     VQ_ZC_FLUSH,     // zero-copy pools' CPU writes cleaned to memory before each submission (gfx_vk_core.c vk_pools_sync_): CPU-cached hardware buffers not IO-coherent
+    VQ_ZC_UNCACHED,  // zero-copy hardware buffers allocated for rare CPU access (gfx_vk_core.c zc_cpu_usage): the gralloc maps them uncached, so CPU writes need no cleaning
     VQ_COUNT
 };
 

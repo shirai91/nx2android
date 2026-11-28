@@ -542,12 +542,16 @@ typedef struct slab_t { struct slab_t *next; AHardwareBuffer *ahb; int fd; uint8
 static slab_t *g_slab[SLAB_NCLS]; static pthread_mutex_t g_slab_mu = PTHREAD_MUTEX_INITIALIZER;
 static uint64_t g_slab_used, g_slab_bytes;   // pools placed in slabs so far, slab memory (under g_slab_mu: the pool line)
 static int slab_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_VK_POOL_SLABS"); v = !(e && !atoi(e)); } return v; }
+static uint64_t zc_cpu_usage(void) {   // (after vk_init: the quirks are known)
+    return vk_quirk(VQ_ZC_UNCACHED) ? AHARDWAREBUFFER_USAGE_CPU_READ_RARELY | AHARDWAREBUFFER_USAGE_CPU_WRITE_RARELY
+                                    : AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN | AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN;
+}
 static slab_t *slab_new(int c) {   // a slab of class c, allocated and imported (no lock held)
     uint64_t sb = (uint64_t)SLAB_PAGES[c] << 12; uint32_t n = 64;
     if (sb * n < (2u << 20)) n = (uint32_t)((2u << 20) / sb); if (sb * n > (8u << 20)) n = (uint32_t)((8u << 20) / sb); if (n > SLAB_SLOTS) n = SLAB_SLOTS;
     uint64_t size = sb * n; slab_t *s = calloc(1, sizeof *s); if (!s) return NULL;
     s->slot_bytes = sb; s->nslot = s->nfree = n; s->fd = -1;
-    AHardwareBuffer_Desc d = {(uint32_t)size, 1, 1, AHARDWAREBUFFER_FORMAT_BLOB, AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN | AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN | AHARDWAREBUFFER_USAGE_GPU_DATA_BUFFER, 0, 0, 0};
+    AHardwareBuffer_Desc d = {(uint32_t)size, 1, 1, AHARDWAREBUFFER_FORMAT_BLOB, zc_cpu_usage() | AHARDWAREBUFFER_USAGE_GPU_DATA_BUFFER, 0, 0, 0};
     if (AHardwareBuffer_allocate(&d, &s->ahb)) { free(s); return NULL; }
     s->fd = ahb_fd(s->ahb, NULL);
     s->map = s->fd >= 0 ? mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, s->fd, 0) : MAP_FAILED;
@@ -673,7 +677,7 @@ static int pool_zero_copy(vkpool_t *p, uint8_t *mem, uint64_t size, int lazy, co
         mem_diag_zc(11, "mmap-fixed slab", size, "errno", errno);   // (the old pages are still there: a buffer of its own)
     }
     AHardwareBuffer_Desc d = {(uint32_t)size, 1, 1, AHARDWAREBUFFER_FORMAT_BLOB,
-        AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN | AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN | AHARDWAREBUFFER_USAGE_GPU_DATA_BUFFER, 0, 0, 0};
+        zc_cpu_usage() | AHARDWAREBUFFER_USAGE_GPU_DATA_BUFFER, 0, 0, 0};
     if (size > 0xffffffffull) { mem_diag_zc(0, "size", size, "limit", -1); return -1; }
     zcfree_t re; int reuse = zcf_take(size, &re);
     AHardwareBuffer *ahb = reuse ? re.ahb : NULL; int ar = reuse ? 0 : AHardwareBuffer_allocate(&d, &ahb);
@@ -847,7 +851,7 @@ static uint64_t read_ns(const uint8_t *p, size_t n) {
 static int zc_uncached(void) {
     static int v = -1; if (v >= 0) return v;
     enum { N = 1 << 20 }; v = 0;
-    AHardwareBuffer_Desc d = {N, 1, 1, AHARDWAREBUFFER_FORMAT_BLOB, AHARDWAREBUFFER_USAGE_CPU_READ_OFTEN | AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN | AHARDWAREBUFFER_USAGE_GPU_DATA_BUFFER, 0, 0, 0};
+    AHardwareBuffer_Desc d = {N, 1, 1, AHARDWAREBUFFER_FORMAT_BLOB, zc_cpu_usage() | AHARDWAREBUFFER_USAGE_GPU_DATA_BUFFER, 0, 0, 0};
     AHardwareBuffer *ahb = NULL; if (AHardwareBuffer_allocate(&d, &ahb)) return v;
     int fd = ahb_fd(ahb, NULL);
     uint8_t *a = fd >= 0 ? mmap(NULL, N, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0) : MAP_FAILED, *m = malloc(N);
