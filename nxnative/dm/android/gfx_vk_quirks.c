@@ -11,6 +11,7 @@ unsigned char g_vk_quirks[VQ_COUNT];
 vk_gpu g_vk_gpu;
 
 static int adreno(const vk_gpu *g) { return g->vendor == VENDOR_QUALCOMM; }   // both drivers: Qualcomm's own and Mesa's Turnip
+static int powervr(const vk_gpu *g) { return g->vendor == VENDOR_IMG; }
 
 static const struct {
     enum vk_quirk q; const char *name, *setting; int (*match)(const vk_gpu *); const char *why;
@@ -21,6 +22,11 @@ static const struct {
     // written for NieR:Automata
     {VQ_GS_SPLIT, "gs_split", "DM_VK_QUIRK_GS_SPLIT", adreno,
      "geometry-shader draws split into vertex and fragment passes: written and checked on Adreno only"},
+    // PowerVR CXTP-48-1536 (Pixel 11 Pro, driver 1.662.3024) with Animal Crossing: New Horizons: on the island every world draw of the depth pre-pass, shadow map
+    // and G-buffer drew nothing (depth stayed 1.0); binding the vertex buffers at every draw (DM_VK_X_NOBC_MASK=8) drew them, while binding them again at each
+    // pipeline change or stride change did not
+    {VQ_VB_REBIND, "vb_rebind", "DM_VK_QUIRK_VB_REBIND", powervr,
+     "vertex buffer bindings lost between draws the bind cache sees as unchanged: every draw binds them again"},
 };
 _Static_assert(sizeof ROWS / sizeof *ROWS == VQ_COUNT, "one row a quirk");
 

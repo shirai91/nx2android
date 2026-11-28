@@ -323,6 +323,7 @@ DM_VK_PROF_SLOW	bool		debug	live	gfx_vk_exec.c	a submission whose replay took ov
 DM_VK_PROF_TID	bool		debug	start	gfx_vk_exec.c	sample that thread of the process instead of the replay thread, and append the raw samples (leaf pc, lr, six frame-chain returns) to the file. **Host threads only: sampling Xenoblade Chronicles 3's render thread crashed the game in its own code** (use `DM_NVN_ASYNC=1` to profile the replay on a host
 DM_VK_QUIRK_GS_SPLIT	bool		debug	start	gfx_vk_quirks.c	force the gs_split quirk row (gfx_vk_quirks.c): 1 lets profiles' geometry-shader splits run on a GPU other than Adreno, 0 stops them
 DM_VK_QUIRK_LRZ_TOUCH	bool		debug	start	gfx_vk_quirks.c	force the lrz_touch quirk row (gfx_vk_quirks.c): the default of DM_VK_LRZ_TOUCH (on for Adreno)
+DM_VK_QUIRK_VB_REBIND	bool		debug	start	gfx_vk_quirks.c	force the vb_rebind quirk row (gfx_vk_quirks.c): every draw binds its vertex buffers again (on for PowerVR)
 DM_VK_RD_TOUCH	bool		debug	live	gfx_vk_exec.c	no transfer read of the memory a run of rasterizer-discard draws wrote, where the run ends: Xenoblade Chronicles 3's grass then flickers (whole blades black in some frames: the G-buffer's grass cards, depth EQUAL against the pre-pass, meet sway records not yet written)
 DM_VK_ROBUST	bool		debug	start	gfx_vk_core.c	robust buffer access on (A/B for a device lost): a buffer, texel buffer or vertex read past its range reads 0 and a write past it is dropped, instead of faulting the GPU
 DM_VK_RP	bool		debug	start	gfx_vk_exec.c	dynamic rendering instead of cached `VkRenderPass` objects with imageless framebuffers (Adreno's `vkCmdBeginRendering` cost about 40 µs a pass)
@@ -375,6 +376,7 @@ DM_VK_X_LANDCUT	bool		debug	?	gfx_vk_exec.c
 DM_VK_X_LEAK	int		debug	live	gfx_vk_core.c	freed Vulkan objects of the kinds in the mask are never destroyed (1 buffers, 2 images, 4 image views, 8 buffer views, 16 images in a block slot): no handle value is used twice. A/B only, memory grows
 DM_VK_X_NOBAR	bool		debug	live	gfx_vk_exec.c	cost measurements that **draw wrong**: no barrier before a pass; depth neither loaded nor stored; colour not loaded unless cleared
 DM_VK_X_NOBC	bool		debug	live	gfx_vk_exec.c	every draw sets all its dynamic state and binds again (no bind cache; the cache starts empty in each command buffer and each render pass)
+DM_VK_X_NOBC_MASK	int		debug	live	gfx_vk_exec.c	only these kinds are set again by every draw (bits): 1 viewport and scissor, 2 blend constants, stencil, depth bias and line width, 4 descriptor sets, 8 vertex buffers, 16 the index buffer; to find which one a driver loses
 DM_VK_X_NODISPBAR	bool		debug	live	gfx_vk_exec.c	cost measurement that may draw wrong: no barrier after compute dispatches (Tears of the Kingdom: no GPU change at about 23 dispatches a frame)
 DM_VK_X_NODRVC	bool		debug	?	gfx_vk_exec.c	
 DM_VK_X_NOGS	bool		debug	live	gfx_vk_exec.c	leave out draws with a geometry shader (A/B their GPU cost: Xenoblade Chronicles 3's effects, 0.7 ms of 22 in a battle)
