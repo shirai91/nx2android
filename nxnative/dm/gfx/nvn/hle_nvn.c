@@ -1352,7 +1352,7 @@ static int nvn_async(void) { static int on = -1; if (on < 0) { const char *e = g
 static void submit_now(NVNqueue *q, int n, const NVNcommandHandle *h);
 static _Atomic uint64_t g_fs_replay_ns;   // replay time accrued between JOB_PRESENTs so fstep_tick sees replay-thread saturation even when pq_ns hides it
 static void *replay_main(void *arg) {
-    (void)arg; pthread_setname_np(pthread_self(), "nvn replay"); dm_perf_replay_thread();
+    (void)arg; pthread_setname_np("nvn replay"); dm_perf_replay_thread();   // Darwin's form (one argument); dm/android/compat/include/darwin_compat.h maps it to the caller for the Android build
     uint64_t fs_racc = 0;
     for (;;) {
         pthread_mutex_lock(&g_job_mu); while (!g_njob) pthread_cond_wait(&g_job_cv, &g_job_mu);

@@ -6,7 +6,11 @@
 #pragma once
 #include <signal.h>
 #include <stdint.h>
+#if defined(__APPLE__)
+#include <sys/ucontext.h>   // Darwin's own header: <ucontext.h> only declares the getcontext/setcontext family, which needs _XOPEN_SOURCE and a newer macOS SDK refuses it
+#else
 #include <ucontext.h>
+#endif
 #if defined(__APPLE__)
 #define DM_UC_SS(uc) (&(uc)->uc_mcontext->__ss)
 #define DM_UC_V(uc) ((uc)->uc_mcontext->__ns.__v)

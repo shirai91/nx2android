@@ -217,7 +217,7 @@ static void on_host(lan_sock *s, int type, const uint8_t *b, int n, const struct
     node_changes();
 }
 static void *lan_worker(void *a) {   // ldn_mitm's worker: polls the UDP socket, the TCP socket and the stations
-    (void)a; pthread_setname_np(pthread_self(), "ldn-lan");
+    (void)a; pthread_setname_np("ldn-lan");   // Darwin's form (one argument); dm/android/compat/include/darwin_compat.h maps it to the caller for the Android build
     while (g_lrun) {
         struct pollfd p[2 + LDN_NODES - 1]; int np = 0;
         pthread_mutex_lock(&g_lmu);

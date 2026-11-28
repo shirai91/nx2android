@@ -526,8 +526,10 @@ class Port:
         self.gl = gfx == 'gl'
         if self.gl: say(f"{self.app_name} renders with OpenGL ({src['graphics'][1]}): the Android host hands its GL calls to the device's OpenGL ES driver"); return
         if gfx != 'nvn': raise BuildError(f'{self.app_name} renders with {gfx} ({src["graphics"][1]}): the Android host replays NVN or OpenGL ES only so far')
-        # Game Freak's GFPAKs and Trinity packs with Oodle entries: decoded by the game's own decoder on the Android device (device_oodle); PKZ packs still need the Mac host
+        # Game Freak's GFPAKs and Trinity packs with Oodle entries: the game's own decoder, in the Mac host this repository builds when the port runs on a Mac (mac_oodle, no
+        # device needed) and on the Android device otherwise (device_oodle); PKZ packs still need the Mac host, on any machine
         self.oodle_why = src['oodle_packs'][1] if src['oodle_packs'][0] and ('GFPAK' in src['oodle_packs'][1] or 'Trinity' in src['oodle_packs'][1]) else ''
+        self.oodle_mac = bool(self.oodle_why) and sys.platform == 'darwin'   # the Mac host runs the game's own arm64 code natively: Windows and Linux have only the device
         # Unreal paks (version 11) and IoStore containers: their shader code archives are decoded with the game's own Oodle on the device too (device_ue)
         self.ue_why = src['ue_decode'][1] if src['ue_decode'][0] else ''
         # Legacy Unreal paks with LZ5 blocks (DRAGON QUEST XI S): the files decoded by the game's own LZ5 on the device (device_ue_legacy), for a profile that opts in (ue_legacy_decode device)
@@ -540,7 +542,7 @@ class Port:
                                       (self.dirs[v] / 'ue_shaders/stamp').read_text() == nsp.ue_stamp(self.dirs[v]) for v in self.versions)
         self.glslc_why = src['glslc_capture'][1] if src['glslc_capture'][0] else ''
         capture_needed = self.glslc_why and self.glslc_todo()[1]
-        why = self.oodle_why or ('' if ue_cached else self.ue_why) or ('' if uel_cached else self.uel_why) or (self.glslc_why if capture_needed else '')
+        why = ('' if self.oodle_mac else self.oodle_why) or ('' if ue_cached else self.ue_why) or ('' if uel_cached else self.uel_why) or (self.glslc_why if capture_needed else '')
         if why:
             if not self.tools.get('adb'):   # adb is optional for a port that does not install (toolchain.require): this one needs it
                 raise BuildError(f"{self.app_name}'s shaders need preparation ({why}): the port runs the game's own code on the Android "
@@ -890,6 +892,17 @@ class Port:
         try: adb.shell(f'rm -rf {self.ODEV}', check=False)
         except AdbError as e: say(f'the Oodle decoder left on the device ({e}): {self.ODEV}')
 
+    def mac_oodle(self):
+        """The game's own Oodle decoder in the Mac host (hle_oodle.c DM_OODLE_SERVE over a pipe), so a port on macOS needs no device: the split gives each Oodle entry of a
+        GFPAK / Trinity file to this process while it scans the pack. DM_OODLE_HOST is the host built for this profile; DM_OODLE_MODULES the modules patched for it (not the
+        Android build's patched_<version>: its layout and TLS stubs are the device's, and the Mac host refuses them). Both are built once into the build folder and reused."""
+        hd = self.aw / 'mac-host'; hd.mkdir(parents=True, exist_ok=True)
+        host = nsp.build_mac_host(NXNATIVE, hd / 'dmhost', self.env, self.logs, self.g)
+        mods = self.aw / f'patched_{self.pkg_ver}-mac'   # beside the Android build's patched_<version>: the rewrite's reuse key does not include the target
+        nsp.rewrite(PY, NXNATIVE, self.game / 'ExeFS', mods, self.env, self.logs, self.g)   # no DM_TARGET: the Mac host loads the iOS layout
+        say(f'the game\'s own Oodle decoder runs in the Mac host ({host}): no device is needed for this port')
+        return {'DM_OODLE_HOST': str(host), 'DM_OODLE_MODULES': str(mods)}
+
     # ---- 60 fps (--fps60): the profile's own cap (fps_target: frame-step stubs or hle_fpslock.c's rows), else the community's FPSLocker config of the build ----
     def fps_unlock(self):
         self.fps_env, self.fps_files = [], {}
@@ -945,7 +958,7 @@ class Port:
             if getattr(self, 'uel_why', ''): self.device_ue_legacy()   # legacy Unreal paks with LZ5 blocks (ue_legacy_decode device), decoded on the device into <version dir>/ue_legacy
             if getattr(self, "ue_why", ""): self.device_ue()   # Unreal's shader code archives, decoded on the device into <version dir>/ue_shaders before the split reads them
             nsp.split_shaders(PY, NXNATIVE, [self.dirs[v] / 'RomFS' for v in sv], [self.dirs[v] / 'ExeFS/main' for v in sv], pkg, self.env, self.logs, self.g, bool(self.derived or self.provisional),
-                               oodle=self.device_oodle if self.oodle_why else None,   # Oodle-compressed archives: the game's own decoder on the device
+                               oodle=((self.mac_oodle if getattr(self, 'oodle_mac', False) else self.device_oodle) if getattr(self, 'oodle_why', '') else None),   # Oodle-compressed archives: the game's own decoder, in the Mac host on a Mac and on the device otherwise
                                aoc=self.aoc)   # DLC with shaders of its own (Xenoblade Chronicles 3's archives)
         finally: self.device_oodle_end()
         self.dmsv = self.aw / 'shaders.dmsv'; kf = self.aw / 'shaders.dmsv.key'; cap = self.aw / 'captured_shaders'
