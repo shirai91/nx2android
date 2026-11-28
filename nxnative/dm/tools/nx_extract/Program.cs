@@ -67,6 +67,7 @@ static class P {
     static int Extract(string[] a) {
         bool manifest = Array.IndexOf(a, "--manifest") >= 0; a = Array.FindAll(a, s => s != "--manifest");
         bool exefsOnly = Array.IndexOf(a, "--exefs") >= 0; a = Array.FindAll(a, s => s != "--exefs");
+        bool listOnly = Array.IndexOf(a, "--list") >= 0; a = Array.FindAll(a, s => s != "--list");   // read the headers only: the container's titles and the update it may carry (porter's bundled_update)
         g_allow = Array.IndexOf(a, "--allow-damaged") >= 0; a = Array.FindAll(a, s => s != "--allow-damaged");
         string verArg = null;   // --version N (--merged): extract exactly the update whose content meta says version N; 0 = the base game alone. Without it, the newest patch
         var kept = new List<string>(a.Length);
@@ -81,7 +82,16 @@ static class P {
         if (a[1] == "--serve") { if (a.Length < 4) { Console.Error.WriteLine("usage: nx_extract <prod.keys> --serve <base.nsp|base.xci> <update.nsp|->"); return 2; } return Serve(ks, a[2], a[3] == "-" ? null : a[3]); }
         if (a[1] == "--sysdata") { if (a.Length < 5) { Console.Error.WriteLine("usage: nx_extract <prod.keys> --sysdata <firmware dir> <title id> <out dir>"); return 2; } return SysData(ks, a[2], Convert.ToUInt64(a[3], 16), a[4]); }
         if (a[1] == "--merged") return Merged(ks, a[2], a[3], a.Length > 4 ? a[4] : null, manifest, verArg, exefsOnly);
-        var basePkg = OpenNsp(ks, a[1]); var updPkg = a[2] == "-" ? null : OpenNsp(ks, a[2]);
+        var basePkg = OpenNsp(ks, a[1]);
+        if (listOnly) {   // "title <id>" or "title <id>, update <id>" when the file also holds a Patch content meta (an integrated image, "1G+1U")
+            var metas = Cnmts(basePkg);
+            Cnmt app = metas.Where(m => m.Type == ContentMetaType.Application).OrderBy(m => m.TitleId).FirstOrDefault();
+            Cnmt patch = metas.Where(m => m.Type == ContentMetaType.Patch).OrderByDescending(m => m.TitleVersion.Version).FirstOrDefault();
+            ulong baseId = app != null ? app.TitleId : (Pick(basePkg, NcaContentType.Program)?.Header.TitleId ?? 0);
+            Console.WriteLine($"title {baseId:x16}" + (patch != null ? $", update {patch.TitleId:x16}" : ""));
+            return 0;
+        }
+        var updPkg = a[2] == "-" ? null : OpenNsp(ks, a[2]);
         Nca baseProg = Pick(basePkg, NcaContentType.Program) ?? throw new Exception("no Program NCA in the base NSP");
         Nca updProg = updPkg == null ? null : Pick(updPkg, NcaContentType.Program, baseProg.Header.TitleId) ?? throw new Exception("no Program NCA of the base game's program in the update NSP");
         Nca ctrl = Pick(updPkg ?? basePkg, NcaContentType.Control, baseProg.Header.TitleId);

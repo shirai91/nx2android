@@ -562,13 +562,29 @@ def nsp_versions(fam, builds):
     return out
 
 
-def pick_nsps(fam, have, versions):
+def bundled_update(nx, keys, p):
+    """Whether the container carries an update of its own (an integrated cartridge image, "1G+1U": nx_extract reads the base game and the Patch content meta
+    out of the one file). Asked with the file as both sides, which reads headers only. The Patch's Program NCA is the code the console runs — not the base NCA's
+    (Super Robot Wars 30: v1.0.0 base code with v1.2.3 data boots to a black screen in the game's own async asset loader)"""
+    if p.suffix.lower() not in ('.xci', '.nsp'): return False
+    with tempfile.TemporaryDirectory(prefix='bundle_') as t:
+        r = subprocess.run([str(nx), str(keys), str(p), str(p), t, '--list'], capture_output=True, text=True, errors='replace')
+    # "title <id>, update <id>" when the file also holds a Patch content meta; the newer nx_extract lists "update Program <id>"
+    return r.returncode == 0 and (re.search(r', update [0-9a-f]{16}', r.stdout) is not None or 'update Program' in r.stdout)
+
+
+def pick_nsps(fam, have, versions, bundled=None):
     """For each version to extract, (base game, update or None): v0 = the base game alone, v<N> = the base game + the update with version number N. When the base game is a merged dump,
-    every version extracts from the base game's own file (the update's NCAs are in it): extract() runs that through nx_extract --merged"""
+    every version extracts from the base game's own file (the update's NCAs are in it): extract() runs that through nx_extract --merged. bundled: the base file carries an update of its
+    own (an integrated cartridge image); a version the folder holds no separate update for is read from it, its Program NCA laid over the base game (extract asks it for the file as both sides)"""
     say(f'base: {fam["base"].name}')
     out = {}
     for ver in versions:
-        if ver not in have: raise BuildError(f'no NSP for update {ver} (the game profile needs these versions: {", ".join(versions)})')
+        if ver not in have:
+            if not bundled: raise BuildError(f'no NSP for update {ver} (the game profile needs these versions: {", ".join(versions)})')
+            say(f'update {ver}: {bundled.name}, the update this container carries')
+            out[ver] = (fam['base'], None)
+            continue
         if have[ver]: say(f'update {ver}: {have[ver].name}' + (' (the merged dump holds it)' if have[ver] == fam['base'] else ''))
         out[ver] = (fam['base'], have[ver])
     return out
