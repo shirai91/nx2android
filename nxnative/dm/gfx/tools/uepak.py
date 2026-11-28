@@ -37,6 +37,8 @@
 #                                                                       decoded at once); IoStore shader libraries (UE 5.6) decoded at once through the game's Oodle in the host (OodleHost)
 #        uepak.py finish <work dir> <out dir>                           after the host has run the job: the archives with every shader decoded
 import ctypes, json, os, struct, sys, zlib
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '../../tools'))
+from romfs import os, open   # noqa: E402,F811  (a RomFS dir the build mounts reads the player's own container; other paths are untouched)
 
 PAK_MAGIC, ARCHIVE_VERSION = 0x5A6F12E1, 2
 JOB_MAGIC, OUT_MAGIC = 0x4a4f4d44, 0x524f4d44   # "DMOJ", "DMOR" (hle_oodle.c)
